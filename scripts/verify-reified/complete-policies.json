@@ -2164,6 +2164,79 @@
         "rholang/src/rust/interpreter/reified/runtime.rs",
         "rholang/tests/support/props.rs"
       ]
+    },
+    "p8": {
+      "description": "Phase P8, the spaces that user agents implement (design v2, plan decision 77). Step 1 (W1 and W5) adds the routes of user agents with the agent reference and the raw channel (AG-1), the use-context of a native space or an agent (AG-2), the write rule of an agent reference under the bundle rule of eval_send (AG-4, the generalized HandleNotWritable), the abort of a persistent send to a matcher or body capability (A13), the canonical matcher state with its strict codec (TR-5), the matcher and body ids of the namespace, the matcher process (MO-1 to MO-4) and the sink (SK-1) with their URN-bound definitions after the factories of P7 (U1).",
+      "sources": [
+        "rholang/src/rust/interpreter/reified/user_agent.rs",
+        "rholang/src/rust/interpreter/reified/route.rs",
+        "rholang/src/rust/interpreter/reified/scope.rs",
+        "rholang/src/rust/interpreter/reified/system_channels.rs",
+        "rholang/src/rust/interpreter/reified/system_processes.rs",
+        "rholang/src/rust/interpreter/reified/errors.rs",
+        "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
+        "rholang/src/rust/interpreter/spaces/namespace.rs"
+      ],
+      "entry_points": [
+        {
+          "file": "rholang/src/rust/interpreter/reified/user_agent.rs",
+          "pattern": "pub struct MatcherState {"
+        },
+        {
+          "file": "rholang/src/rust/interpreter/reified/user_agent.rs",
+          "pattern": "pub fn decode(bytes: &[u8], meter: &ScanMeter) -> Result<Option<Self>, SpaceError> {"
+        },
+        {
+          "file": "rholang/src/rust/interpreter/reified/user_agent.rs",
+          "pattern": "pub struct MatcherProcess {"
+        },
+        {
+          "file": "rholang/src/rust/interpreter/reified/user_agent.rs",
+          "pattern": "pub async fn sink(contract_args: ContractArgs) -> Result<Vec<Par>, InterpreterError> {"
+        },
+        {
+          "file": "rholang/src/rust/interpreter/reified/route.rs",
+          "pattern": "pub fn agent_parts(channel: &Par) -> Option<(&Par, &Par)> {"
+        },
+        {
+          "file": "rholang/src/rust/interpreter/reified/scope.rs",
+          "pattern": "pub enum UseKind {"
+        },
+        {
+          "file": "rholang/src/rust/interpreter/reified/scope.rs",
+          "pattern": "pub fn call_channel(agent: &Par) -> Result<Par, SpaceRefError> {"
+        },
+        {
+          "file": "rholang/src/rust/interpreter/reified/system_channels.rs",
+          "pattern": "pub const MATCHER_OP_PROCESS: SystemChannel = SystemChannel {"
+        },
+        {
+          "file": "rholang/src/rust/interpreter/reified/system_channels.rs",
+          "pattern": "pub const SINK_OP_PROCESS: SystemChannel = SystemChannel {"
+        },
+        {
+          "file": "rholang/src/rust/interpreter/spaces/namespace.rs",
+          "pattern": "pub fn matcher_channel(state: &[u8]) -> Vec<u8> {"
+        },
+        {
+          "file": "rholang/src/rust/interpreter/spaces/namespace.rs",
+          "pattern": "pub fn body_channel(tag: &[u8; SID_LEN]) -> Vec<u8> {"
+        }
+      ],
+      "tests": [
+        "rholang/src/rust/interpreter/reified/user_agent.rs",
+        "rholang/src/rust/interpreter/reified/route.rs",
+        "rholang/src/rust/interpreter/reified/scope.rs",
+        "rholang/src/rust/interpreter/reified/system_channels.rs",
+        "rholang/src/rust/interpreter/reified/system_processes.rs",
+        "rholang/tests/reified_p8_props.rs",
+        "rholang/tests/reified_routing.rs",
+        "rholang/tests/reified_factory.rs",
+        "rholang/tests/reified_p4_props.rs"
+      ],
+      "property_files": [
+        "rholang/tests/reified_p8_props.rs"
+      ]
     }
   }
 }

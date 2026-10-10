@@ -19,7 +19,8 @@
 # VectorOps.v (2: S27 and S28). P7 step 2 adds headline 12 of Namespace.v
 # (seq_name_iff, SQ-1). P7 step 4 adds TheoryAdmission.v (6: TA1 to TA6),
 # headline 4 of Match.v (theory_refusal_is_guard_refusal, TH-6) and
-# headline 15 of SpaceFactory.v (theory_gate_validated, TH-4).
+# headline 15 of SpaceFactory.v (theory_gate_validated, TH-4). P8 step 1 adds
+# headline 13 of SpaceRefs.v (agent_ref_requires_write_flag, AG-4).
 #
 # The gate copies the formal tree into a scratch directory and builds it
 # there. It never builds in the source tree. Legs:
@@ -53,7 +54,7 @@
 # A missing tool is a FAIL, never a SKIP.
 #
 # Environment:
-#   RRS_EXPECTED_CLOSED  total closed headlines (default 287: 23 for P1 with
+#   RRS_EXPECTED_CLOSED  total closed headlines (default 288: 23 for P1 with
 #                        H23 of decision 36, the 15 headlines of Encoding.v
 #                        for P2 and I-20, 67 for the six P4 modules with
 #                        the native headline of decision 46 in SpaceRefs.v,
@@ -94,7 +95,8 @@
 #                        for P7 step 4: the 6 headlines of
 #                        TheoryAdmission.v, theory_refusal_is_guard_refusal
 #                        of Match.v and theory_gate_validated of
-#                        SpaceFactory.v)
+#                        SpaceFactory.v, and 1 for P8 step 1:
+#                        agent_ref_requires_write_flag of SpaceRefs.v)
 #   RRS_SANDBOX=1        the job runs inside the verifier scope: no
 #                        systemd-run, logs under $RRS_SCRATCH/logs
 #   RRS_SCRATCH          scratch root (default <repo>/target/verification/
@@ -113,7 +115,7 @@ if [[ "${RRS_SANDBOX:-}" == "1" ]]; then
 else
   LOG_DIR="$ROOT/target/verification/reified-rspaces/logs/proofs"
 fi
-EXPECTED_CLOSED="${RRS_EXPECTED_CLOSED:-287}"
+EXPECTED_CLOSED="${RRS_EXPECTED_CLOSED:-288}"
 RRS_MEMORY_MAX="${RRS_MEMORY_MAX:-6G}"
 RRS_CPU_QUOTA="${RRS_CPU_QUOTA:-400%}"
 
@@ -127,7 +129,7 @@ declare -A EXPECTED_PER_MODULE=(
   [RecordEnvelope]=11
   [CounterConflict]=16
   [HeadOnlyDisciplines]=20
-  [SpaceRefs]=12
+  [SpaceRefs]=13
   [SpaceFactory]=15
   [AgentReadCoverage]=9
   [LegacyCharges]=2

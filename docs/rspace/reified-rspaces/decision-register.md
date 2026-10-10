@@ -79,7 +79,7 @@ The minimal-footprint revision (M-1 to M-5) overrides the target architecture of
 | [Decision 29](#decision-29) | Joins into ordered collections in P5 | 2026-10-04 | In force. Implemented in P5 wave W3 |
 | [Decision 30](#decision-30) | Peek fires re-offer the sent value | 2026-10-04 | In force |
 | [Decision 31](#decision-31) | Every operation on an ordered collection bumps its counter | 2026-10-04 | In force |
-| [Decision 32](#decision-32) | P4 plan-text changes | 2026-10-04 | In force |
+| [Decision 32](#decision-32) | P4 plan-text changes | 2026-10-04 | In force. Its open P8 item is settled by decision 77 |
 | [Decision 33](#decision-33) | assertEqual has arity 3 | 2026-10-04 | In force |
 | [Decision 34](#decision-34) | P4 detail items | 2026-10-04 | In force |
 | [Decision 35](#decision-35) | P1 close-out scope: lean, verify at P4 | 2026-10-04 | In force. Its shared freeze moved to P11 by decision 75 |
@@ -124,6 +124,8 @@ The minimal-footprint revision (M-1 to M-5) overrides the target architecture of
 | [Decision 74](#decision-74) | The config persists the theory identity as compact bytes | 2026-10-09 | In force. Implemented in P7 step 4 |
 | [Decision 75](#decision-75) | One pgmcp freeze at P11 | 2026-10-09 | In force |
 | [Decision 76](#decision-76) | The P8 design process | 2026-10-09 | In force |
+| [Decision 77](#decision-77) | P8 design v2, the URNs of the internal ops, the space-view clause | 2026-10-10 | In force |
+| [Decision 78](#decision-78) | One native replay test runs at the v6 host-work limits | 2026-10-10 | In force. Implemented in P8 step 1 |
 | [M-1](#m-1) | Counter meta-channels and merge check #1 | 2026-10-04 | In force, scope widened by decision 31 |
 | [M-2](#m-2) | Space-owned record envelope | 2026-10-04 | In force |
 | [M-3](#m-3) | Charging through the accounting observer | 2026-10-04 | In force, revised 2026-10-04 |
@@ -917,7 +919,7 @@ With a counter step on every operation, both cases race on the counters, and mer
 | Field | Value |
 |---|---|
 | Date | 2026-10-04 |
-| Status | In force |
+| Status | In force. Its open P8 item is settled by [decision 77](#decision-77) |
 | Supersedes | The forwarder argument `GByteArray(sid)` of [I-2](#i-2), and the claim of [I-19](#i-19) that `SpaceAlreadyExists` stops the `Factory!!(…)` re-produce loop |
 | Related | [Decision 18](#decision-18), [decision 22](#decision-22), [internal operation](glossary.md#internal-operation), [handle](glossary.md#handle) |
 
@@ -1349,7 +1351,7 @@ One rule for play and replay makes the deploy fail in play, and native replay re
 | Field | Value |
 |---|---|
 | Date | 2026-10-06 |
-| Status | In force. Implemented on 2026-10-07. [Decision 48](#decision-48) moved the phase after P5. |
+| Status | In force. Implemented on 2026-10-07. [Decision 48](#decision-48) moved the phase after P5. [Decision 78](#decision-78) adds one test edit to the accounting module. |
 | Amends | [M-3](#m-3), for one accessor. It supersedes [decision 46](#decision-46) and [I-13](#i-13). |
 | Related | [Decision 46](#decision-46), [decision 48](#decision-48), [I-11](#i-11), [I-12](#i-12) |
 
@@ -2023,7 +2025,7 @@ Their main terms are these:
 - In native execution, with `capacity = 2` and one stored record, two concurrent branches that each add a record merge with no conflict. The merged collection holds 3 records.
 - An exact bound needs a counter bump on each store, and then all VectorDB writes into one collection serialize across branches. The plan keeps full merge concurrency for bag, set and VectorDB spaces.
 
-## User decisions 72 to 73
+## User decisions 72 to 78
 
 ### <a id="decision-72"></a>Decision 72: The P7 design process
 
@@ -2155,6 +2157,74 @@ Both checks run before any staging, in the driver and in the join engine.
 
 **Reason.** The same process produced the approved designs of decision 47, P6 and P7.
 
+### <a id="decision-77"></a>Decision 77: P8 design v2, the URNs of the internal ops, and the space-view clause
+
+| Field | Value |
+|---|---|
+| Date | 2026-10-10 |
+| Status | In force |
+| Amends | [Decision 32](#decision-32) (its open P8 item), the plan sentence that the internal ops are "installed but never bound to a URN", and divergence 5 of the [design ledger](design-record/2026-08-15-design-ledger.md) |
+| Related | [Decision 76](#decision-76), [I-15](#i-15), [I-16](#i-16), [glossary: internal operation](glossary.md#internal-operation) |
+
+**Statement.**
+
+- The P8 design v2 is approved: design v1 with the 16 amendments of the review and one change of the main session.
+- `MATCHER_OP` and `SINK_OP` are bound to the URNs `rho:reified:internal:matcherOp` and `rho:reified:internal:sinkOp`, as `HANDLE_OP` is.
+- The FIPS clause on "modified" and "unmodified" spaces is the scoping of a typing context.
+- `new x : s` adds the channel `x` to `s`, typed by the theory of `s`, and the theory stays immutable.
+- `getSpaceAgent` of a user agent replies `NotANativeSpace`, and a native handle accepts only the matchers that a translation built.
+
+**User's words.**
+
+- On the design: "So long as this aligns completely with the FIPS then it is okay with me".
+- On the URNs: "You can go with your recommendations, but I don't remember these being mentioned in the FIPS. Where did they come from?"
+- On the clause: "Reading 1 (Recommended)", after the user explained that the FIPS example concerns GSLT typing in F1r3lang.
+- On the narrower points: "Keep and document (Recommended)".
+
+**Reason.**
+
+- The FIPS defines what a matcher does and that a method call has a return channel. It does not define how the node builds them.
+- The semantics design pass of the plan (2026-10-04) introduced the two ops. A synthesized `match` would be unmetered, and `rho:io:devNull` takes one argument only.
+- A node binds every installed definition to a URN. The ops reject every forged call, so a URN grants no capability.
+- F1r3lang theories are immutable, and a change gives a new handle. A name from `new` is unforgeable and lexically scoped, so the reference semantics of a space gives the behavior of the typing reading.
+- F1r3lang's theorem-channel kernel does not let a caller supply capture values. So a native space runs only the matchers whose pattern it can check.
+
+### <a id="decision-78"></a>Decision 78: One native replay test runs at the v6 host-work limits
+
+| Field | Value |
+|---|---|
+| Date | 2026-10-10 |
+| Status | In force. Implemented in P8 step 1 |
+| Amends | [Decision 47](#decision-47) (its sentence "That accessor is the only exception to M-3"), [M-3](#m-3), and item 21 of the consensus-preservation checklist, for one test edit |
+| Related | [Decision 77](#decision-77), [I-12](#i-12), [host work](glossary.md#host-work) |
+
+**Statement.**
+
+- The accounting test `native_replay_authority_charge_is_schedule_independent` runs its native replay at the v6 host-work limits (`offered_funded_v6_host_work_limits`).
+- The old budget of 100,000,000 units in each dimension stays in the test file as a comment.
+- This edit and the accessor of decision 47 are the only changes to the accounting module. Production code does not change.
+
+**User's words.** "v6 limits in the test (Recommended)".
+
+**Reason.**
+
+- Native replay installs every system process on the host-work budget of the deploy, so each install reserves host work.
+- At P7, the replay of this test used 99,944,586 VerificationBytes of its budget of 100,000,000.
+- The `MATCHER_OP` and `SINK_OP` installs of decision 77 reserve 515,355 VerificationBytes together. They crossed that limit, and the replay failed with `HostWorkRejected`. Either install alone crossed it.
+- The installs of P4 to P7 had used the headroom. The cost-accounting branch has the same test and the same budget, without the Reified installs.
+- The test checks that replay charges do not depend on the schedule. The v6 limits are the limits of certification in production, so the test keeps its purpose.
+
+**Rejected alternatives.**
+
+- Remove the two installs. This changes design v2 and decision 77, adds events to each agent call, and leaves only 55,414 units of headroom.
+- Let the cost-accounting owner change the test. The step 1 commit then waits for a merge.
+
+**Evidence.** With the edit, the test passes, so no v6 dimension binds.
+A temporary print measured the VerificationBytes of the replay before its evaluation: 52,547,059 without the two installs and 53,062,414 with them.
+The evaluation adds 47,397,527 in both cases.
+The two installs take about 0.19 % of the v6 limit of 268,435,456 VerificationBytes.
+The footprint policy `p8` approves the edit, and checklist items 11 and 21 name it from the milestone `p8`.
+
 ## Minimal-footprint revision: M-1 to M-5
 
 On 2026-10-04 the user asked to "only modify what is required for reified rspaces and certainly not touch casper unless it is absolutely required … that was the purpose of the realignment".
@@ -2243,7 +2313,7 @@ The independent arbitration pass of 2026-10-04 confirmed M-1 for writes. It refu
 | Field | Value |
 |---|---|
 | Date | 2026-10-04 |
-| Status | In force, revised 2026-10-04. [Decision 45](#decision-45) adds the legacy charges of a legacy deploy. |
+| Status | In force, revised 2026-10-04. [Decision 45](#decision-45) adds the legacy charges of a legacy deploy. [Decision 47](#decision-47) adds one accessor, and [decision 78](#decision-78) adds one test edit. |
 | Replaces | `observe_space_work` on the accounting observer, edits to `accounting/costs.rs`, and the earlier `reserve_primitive` plan |
 | Footprint | Zero edits to the cost-accounting module and the observer trait |
 | Related | [I-12](#i-12), [phlo](glossary.md#phlo), [host work](glossary.md#host-work) |

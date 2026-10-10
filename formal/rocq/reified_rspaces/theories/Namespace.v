@@ -56,9 +56,9 @@
    op ids                   spaces/namespace.rs:53-83 (FACTORY_LAST to
                             AGENT_TAG), models/src/rust/reified/encoding.rs:
                             34-45 (Marker 0xD0 to 0xD4)
-   reified_id               spaces/namespace.rs:288-303 (ReifiedId)
-   decode_name_tail         spaces/namespace.rs:305-313 (fn name_tail)
-   decode_reified_id        spaces/namespace.rs:318-348
+   reified_id               spaces/namespace.rs:310-325 (ReifiedId)
+   decode_name_tail         spaces/namespace.rs:327-335 (fn name_tail)
+   decode_reified_id        spaces/namespace.rs:340-370
    canon, key_of            spaces/namespace.rs:206-212, 186-197
                             (canonical_inner_channel_bytes, then
                             CollectionKey::of_channel and from_bytes)

@@ -11,7 +11,8 @@
 //! | `rho:lang:vector`               | `[E0, 23]`  | 2     | 235     | P6         |
 //! | `rho:vectordb:embed`            | `[E0, 24]`  | 2     | 236     | P6         |
 //! | `rho:vectordb:ann`              | `[E0, 25]`  | 5     | 237     | P6         |
-//! | the matcher and the sink        | `[E0, 31]`, `[E0, 32]` | — | 249, 250 | P8 |
+//! | `rho:reified:internal:matcherOp` | `[E0, 31]` | 2     | 249     | P8         |
+//! | `rho:reified:internal:sinkOp`   | `[E0, 32]`  | 0 and a remainder | 250 | P8  |
 //!
 //! The body ref of an op is `200 + op`. HEAD uses the body refs 0 to 36 and 101 to 108, and
 //! 1-byte names, so the Reified ids cannot collide with them.
@@ -20,7 +21,7 @@ use models::rhoapi::Par;
 
 use super::errors::ReifiedReduceError;
 use crate::rust::interpreter::spaces::namespace::{
-    self, NativeSpace, ReifiedId, ANN, ASSERT_EQUAL, EMBED, GET_SPACE_AGENT, HANDLE_OP,
+    self, NativeSpace, ReifiedId, ANN, ASSERT_EQUAL, EMBED, GET_SPACE_AGENT, HANDLE_OP, MATCHER_OP,
     NATIVE_ENGINE_FACTORY, SINK_OP, VECTOR,
 };
 use crate::rust::interpreter::system_processes::{Arity, BodyRef};
@@ -106,9 +107,10 @@ pub const fn is_factory_op(op: u8) -> bool { op <= NATIVE_ENGINE_FACTORY }
 /// take no calls.
 pub const fn is_call_op(op: u8) -> bool { op <= ANN || (HANDLE_OP <= op && op <= SINK_OP) }
 
-/// A persistent send (`!!`) aborts on every op that takes calls and on every handle (A21).
-/// The runtime never cancels the re-produce of a persistent send, so a call could repeat
-/// forever. `channel` is the channel after the unbundling of `eval_send`.
+/// A persistent send (`!!`) aborts on every op that takes calls and on every handle (A21),
+/// and on every matcher and body capability of a translated receive (P8, design v2 A13). The
+/// runtime never cancels the re-produce of a persistent send, so a call could repeat forever.
+/// `channel` is the channel after the unbundling of `eval_send`.
 pub fn check_persistent_send(channel: &Par, persistent: bool) -> Result<(), ReifiedReduceError> {
     if !persistent {
         return Ok(());
@@ -119,6 +121,9 @@ pub fn check_persistent_send(channel: &Par, persistent: bool) -> Result<(), Reif
         }
         Some(ReifiedId::Op(op)) if is_call_op(op) => Err(ReifiedReduceError::PersistentOpCall),
         Some(ReifiedId::Handle(_)) => Err(ReifiedReduceError::PersistentHandleCall),
+        Some(ReifiedId::Matcher(..) | ReifiedId::Body(..)) => {
+            Err(ReifiedReduceError::PersistentCapabilityCall)
+        }
         _ => Ok(()),
     }
 }
@@ -485,6 +490,32 @@ pub const P7_SYSTEM_CHANNELS: [SystemChannel; 6] = [
     HASHSET_PRIORITY_QUEUE_FACTORY,
 ];
 
+/// The internal matcher process `(m, args)` of the matcher capabilities of user agents (P8,
+/// design v2 MO-1, plan decision 77 U1). The forwarder of a matcher capability sends it the
+/// matcher id and the message `[ret, proc]` of the call.
+pub const MATCHER_OP_PROCESS: SystemChannel = SystemChannel {
+    urn: "rho:reified:internal:matcherOp",
+    op: MATCHER_OP,
+    arity: 2,
+};
+
+/// The internal sink of the calls that a translation makes (P8, design v2 TS-2, plan decision
+/// 77 U1). It has the arity 0 and a remainder, so it takes a reply of any arity and drops it.
+pub const SINK_OP_PROCESS: SystemChannel = SystemChannel {
+    urn: "rho:reified:internal:sinkOp",
+    op: SINK_OP,
+    arity: 0,
+};
+
+/// The system processes that P8 adds after the processes of P7, so every earlier definition
+/// keeps its place (design v2 MO-1).
+///
+/// | URN                              | Channel    | Arity             | BodyRef |
+/// |----------------------------------|------------|-------------------|---------|
+/// | `rho:reified:internal:matcherOp` | `[E0, 31]` | 2                 | 249     |
+/// | `rho:reified:internal:sinkOp`    | `[E0, 32]` | 0 and a remainder | 250     |
+pub const P8_PROCESSES: [SystemChannel; 2] = [MATCHER_OP_PROCESS, SINK_OP_PROCESS];
+
 /// True for an op whose call the reducer packs into `[ret, [x…]]` (I-18): every factory, and
 /// `rho:lang:vector`.
 pub const fn packs_arguments(op: u8) -> bool { is_factory_op(op) || op == VECTOR }
@@ -822,6 +853,23 @@ mod tests {
             );
             let name = namespace::gprivate(namespace::name_id(space, NameTail::Random([1; 32])));
             assert_eq!(check_persistent_send(&name, true), Ok(()));
+        }
+        // P8 (design v2 A13): a matcher or a body capability takes no persistent send, in its
+        // uppercase and its lowercase form.
+        for kind in [b'X', b'B', b'x', b'b'] {
+            let mut id = vec![namespace::REIFIED_TAG, kind];
+            id.extend_from_slice(&[4; SID_LEN]);
+            let capability = namespace::gprivate(id);
+            assert!(matches!(
+                namespace::reified_id_of(&capability),
+                Some(ReifiedId::Matcher(..) | ReifiedId::Body(..))
+            ));
+            assert_eq!(check_persistent_send(&capability, false), Ok(()));
+            assert_eq!(
+                check_persistent_send(&capability, true),
+                Err(ReifiedReduceError::PersistentCapabilityCall),
+                "kind {kind:#04x}"
+            );
         }
         for ordinary in [
             byte_name(0),

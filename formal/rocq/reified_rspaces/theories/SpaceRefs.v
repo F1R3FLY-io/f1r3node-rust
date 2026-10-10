@@ -1,6 +1,7 @@
 (* ═══════════════════════════════════════════════════════════════════════════
-   SpaceRefs.v — space references, channel routing, the handle dispatch (P4)
-   and the routing of receive queries (P5b)
+   SpaceRefs.v — space references, channel routing, the handle dispatch (P4),
+   the routing of receive queries (P5b) and the routes and use-contexts of
+   user agents (P8)
 
    This module models how the reducer of P4 finds the space of a channel and
    of a space reference. A space reference (`use s { P }`, `new x : s`,
@@ -17,7 +18,12 @@
    and replies only on a reply name. A receive with a QUERY tuple as its
    source routes the inner channel of the query (P5b): the tuple never
    takes the fast path, the inner channel takes the read rule of HEAD, and
-   the default space rejects the query.
+   the default space rejects the query. P8 (step 1) adds the spaces of user
+   agents: an agent route carries the agent reference and the raw channel,
+   a use-context names a native space or an agent, a forged channel under
+   the context of an agent routes to that agent, and a use block enters
+   the context of an agent only when the bundle rule of eval_send gives
+   the reference a call channel.
 
    Sources
    - Design: the P4 design report C.1 (routing), C.2 (space references and
@@ -26,6 +32,8 @@
      row) and A.13 (the headline query_source_routes_inner_channel).
    - Plan: rules R1 to R7, A6, A23, decision 21 (the QUERY tuple) and I-20
      (the refresh before each strict decode).
+   - P8 design v2 (plan decision 77): AG-1 (the route data), AG-2 (the
+     use-context), AG-3 (agent identity) and AG-4 (the write rule).
    - Code: the current tree (P5). The line numbers below are the line
      numbers of that tree.
 
@@ -34,42 +42,54 @@
    ─────────────────────────────────────────────────────────────────────────
    kind_of_byte, decode_reified_id
                             rholang/src/rust/interpreter/spaces/namespace.rs:
-                            318-348, 305-313 (decode_reified_id and
+                            340-370, 327-335 (decode_reified_id and
                             name_tail, copied from Namespace.v, which
                             proves their properties)
    space_scoped_id, handle_channel, name_id, op_channel
                             rholang/src/rust/interpreter/spaces/namespace.rs:
                             229-236, 255, 276-281, 284
-   is_empty                 rholang/src/rust/interpreter/reified/scope.rs:68-95
+   is_empty                 rholang/src/rust/interpreter/reified/scope.rs:103-130
    sole_unforgeable, sole_gprivate_id, reified_id_of
                             rholang/src/rust/interpreter/spaces/namespace.rs:
-                            352-382, 385-392, 395-397
+                            374-404, 407-414, 417-419
    single_bundle            models/src/rust/rholang/implicits.rs:65-81
-   sole_expr                rholang/src/rust/interpreter/reified/route.rs:52-87
-   is_agent_tagged          rholang/src/rust/interpreter/reified/route.rs:89-99
+   sole_expr                rholang/src/rust/interpreter/reified/route.rs:60-95
+   is_agent_tagged          rholang/src/rust/interpreter/reified/route.rs:97-107
    classify_channel         rholang/src/rust/interpreter/reified/route.rs:
-                            101-136
+                            125-160
    key_of                   rholang/src/rust/interpreter/spaces/namespace.rs:
                             186-189, 206-212 (CollectionKey::of_channel and
                             canonical_inner_channel_bytes)
    route                    rholang/src/rust/interpreter/reified/route.rs:
-                            149-169, 174-176 (R1 to R5, and route_channel)
+                            173-225, 230-232 (R1 to R5, and route_channel)
    r7_produce               rholang/src/rust/interpreter/reified/execution.rs:
-                            113-130 (produce routes with no context)
+                            113-131 (produce routes with no context)
    routes_to_default_       rholang/src/rust/interpreter/reified/
-     without_context        reducer_hooks.rs:845-850
+     without_context        reducer_hooks.rs:934-939
    classify_space_ref, unbundle
                             rholang/src/rust/interpreter/reified/scope.rs:
-                            106-129
+                            141-180
    wrap_body                rholang/src/rust/interpreter/reified/scope.rs:
-                            134-142
+                            185-193
    enter_use, fire_step     rholang/src/rust/interpreter/reified/
-                            reducer_hooks.rs:246-263, 267-282, 328-340
-                            (eval_marker, eval_use, native_space_ref),
+                            reducer_hooks.rs:246-263, 275-303, 390-405
+                            (eval_marker, eval_use, space_ref),
                             rholang/src/rust/interpreter/dispatch.rs:62-71
-                            (a fired body runs on the root reducer)
+                            (a fired body runs on the root reducer).
+                            enter_use models the target of P8: until the
+                            translation of `new` lands (P8 step 4),
+                            eval_use applies the write rule to an agent
+                            and then fails closed with
+                            AgentSpacesUnavailable
+   use_kind, target, ctx_key
+                            rholang/src/rust/interpreter/reified/scope.rs:
+                            34-59 (UseKind, UseTarget and its native)
+   agent_parts              rholang/src/rust/interpreter/reified/route.rs:
+                            109-123
+   call_channel             rholang/src/rust/interpreter/reified/scope.rs:
+                            166-180
    handle_of                rholang/src/rust/interpreter/reified/
-                            system_channels.rs:95-100
+                            system_channels.rs:96-101
    parse_message            rholang/src/rust/interpreter/reified/handle.rs:
                             139-168, 182-191, 642-678, 680-685, 687-692,
                             694-703, 712-717 (ParsedMessage::parse,
@@ -89,20 +109,20 @@
                             models/src/rust/reified/encoding.rs:346-356,
                             369-374 (marker_of, sole_marker_tuple)
    decode_source, h4_passes rholang/src/rust/interpreter/reified/
-                            reducer_hooks.rs:830-841 (reject_query_source),
+                            reducer_hooks.rs:919-930 (reject_query_source),
                             models/src/rust/reified/encoding.rs:841-848
                             (decode_query_source)
    takes_fast_path          rholang/src/rust/interpreter/reified/
-                            reducer_hooks.rs:872-874
+                            reducer_hooks.rs:961-963
    read_channel             rholang/src/rust/interpreter/reified/
-                            reducer_hooks.rs:889-897 (readable_channel)
+                            reducer_hooks.rs:978-986 (readable_channel)
    read_bind, route_bind    rholang/src/rust/interpreter/reified/
-                            reducer_hooks.rs:870-884, 562-582 (query_bind,
+                            reducer_hooks.rs:959-973, 629-649 (query_bind,
                             route_receive)
    single_target            rholang/src/rust/interpreter/reified/
-                            reducer_hooks.rs:901-931 (single_bind_route)
+                            reducer_hooks.rs:990-1020 (single_bind_route)
    receive_one              rholang/src/rust/interpreter/reified/
-                            reducer_hooks.rs:481-558 (reified_consume)
+                            reducer_hooks.rs:548-625 (reified_consume)
 
    ─────────────────────────────────────────────────────────────────────────
    Abstraction
@@ -122,8 +142,8 @@
      Encoding.v proves the strict decoder of the code against its encoder.
    - The evaluation of a space reference (eval_expr, then
      substitute_and_charge) is a section variable eval_ref. The section
-     hypothesis eval_native_ref states that a native handle reference is a
-     value, which evaluation leaves as it is. The corollary
+     hypothesis eval_space_ref states that a space reference, native or
+     agent, is a value, which evaluation leaves as it is. The corollary
      use_wrapper_restores_ctx_instance discharges it.
    - The handle process: split_trailing_params, the config read, the
      param schema and the method bodies are section variables. The theorem
@@ -162,6 +182,10 @@
                                           the inner channel of the query, and
                                           a source without one keeps the
                                           receive of P4 (P5b)
+   13. agent_ref_requires_write_flag      a use block enters the context of a
+                                          user agent only when the reference
+                                          has a call channel under the bundle
+                                          rule of eval_send (P8, AG-4)
 
    No Axiom, Parameter, Admitted, admit, Abort or Conjecture. Section
    variables are parameters of the closed theorems. The file imports only
@@ -591,17 +615,63 @@ Definition classify_channel (c : par) : chan_class :=
   | None => if is_agent_tagged c then CAgentTagged else CForged
   end.
 
-(* The use-context: the evaluated reference and its native space. *)
-Record target : Type := mkTarget { t_space : par; t_native : native_space }.
+(* Changed by P8 step 1 (design v2 AG-2): a use-context names a native space
+   or a user agent, so the target holds a kind instead of a native space.
+   The P4 definitions were:
+   Record target : Type := mkTarget { t_space : par; t_native : native_space }.
+   Definition ctx_native (cx : ctx) : option native_space :=
+     match cx with Some t => Some (t_native t) | None => None end. *)
+
+(* What a use block names: a native space, or a user agent whose reference
+   is the evaluated reference itself (P8 AG-2, AG-3). *)
+Inductive use_kind : Type := UKNative : native_space -> use_kind | UKAgent.
+
+(* The use-context: the evaluated reference and what it names. *)
+Record target : Type := mkTarget { t_space : par; t_kind : use_kind }.
 Definition ctx : Type := option target.
 
-Definition ctx_native (cx : ctx) : option native_space :=
-  match cx with Some t => Some (t_native t) | None => None end.
+(* What a route reads from a context: the native space, or the agent
+   reference (P8). *)
+Definition ctx_key (cx : ctx) : option (native_space + par) :=
+  match cx with
+  | Some (mkTarget _ (UKNative n)) => Some (inl n)
+  | Some (mkTarget s UKAgent) => Some (inr s)
+  | None => None
+  end.
 
+(* Changed by P8 step 1 (design v2 AG-1): an agent route carries the agent
+   reference A and the raw channel. The P4 constructor was `| RAgent.` *)
 Inductive route_t : Type :=
 | RDefault
 | RSpace : native_space -> bytes -> route_t
-| RAgent.
+| RAgent : par -> par -> route_t.
+
+(* The parts (A, raw) of an agent-tagged tuple (AGENT_TAG, A, raw)
+   (route.rs agent_parts). *)
+Definition agent_parts (c : par) : option (par * par) :=
+  match sole_expr c with Some (ETuple [_; a; r]) => Some (a, r) | _ => None end.
+
+Lemma agent_tagged_parts :
+  forall c, is_agent_tagged c = true -> exists a r, agent_parts c = Some (a, r).
+Proof.
+  intros c H. unfold is_agent_tagged in H. unfold agent_parts.
+  destruct (sole_expr c) as [e |]; [| discriminate H].
+  destruct e as [| ps | ps rem | str | bo | m]; try discriminate H.
+  destruct ps as [| h [| a [| r [| x rest]]]]; try discriminate H.
+  exists a, r. reflexivity.
+Qed.
+
+Lemma classify_agent_tagged :
+  forall c, classify_channel c = CAgentTagged -> is_agent_tagged c = true.
+Proof.
+  intros c H. unfold classify_channel in H.
+  destruct (sole_unforgeable c) as [[id | m] |].
+  - unfold class_of_id in H.
+    destruct ((length id =? 1) || (length id =? 2)); [discriminate H |].
+    destruct (decode_reified_id id) as [[] |]; discriminate H.
+  - discriminate H.
+  - destruct (is_agent_tagged c); [reflexivity | discriminate H].
+Qed.
 
 (* RouteErr: CollectionKey::of_channel fails. *)
 Inductive route_result : Type := RouteOk : route_t -> route_result | RouteErr.
@@ -621,58 +691,84 @@ Section Routing.
   Definition space_route (n : native_space) (c : par) : route_result :=
     match key_of c with Some k => RouteOk (RSpace n k) | None => RouteErr end.
 
+  (* Changed by P8 step 1 (design v2 AG-1): R4 carries the parts of the tag,
+     and R5 under the context of a user agent routes to that agent with the
+     forged channel as the raw channel. The P4 arms were
+     `| CAgentTagged, _ => RouteOk RAgent` and
+     `| CForged, Some t => space_route (t_native t) c`. *)
   Definition route (cx : ctx) (c : par) : route_result :=
     match classify_channel c, cx with
     | CSystem, _ | CDefaultObject, _ | CUnforgeable, _ | CStorage, _ => RouteOk RDefault
     | CSpaceName n, _ => space_route n c
-    | CAgentTagged, _ => RouteOk RAgent
-    | CForged, Some t => space_route (t_native t) c
+    | CAgentTagged, _ =>
+        match agent_parts c with Some (a, r) => RouteOk (RAgent a r) | None => RouteErr end
+    | CForged, Some (mkTarget _ (UKNative n)) => space_route n c
+    | CForged, Some (mkTarget s UKAgent) => RouteOk (RAgent s c)
     | CForged, None => RouteOk RDefault
     end.
 
   (* Headline 4. A route fails only when the key of a space route fails,
      every channel with a key has a route, and the route depends on the
-     context only through the native space of the context. *)
+     context only through the native space or the agent reference of the
+     context. *)
   Theorem route_total_deterministic :
     forall cx c,
       (route cx c = RouteErr ->
        key_of c = None /\
-       ((exists n, classify_channel c = CSpaceName n) \/ (classify_channel c = CForged /\ cx <> None))) /\
+       ((exists n, classify_channel c = CSpaceName n) \/
+        (classify_channel c = CForged /\ exists s n, cx = Some (mkTarget s (UKNative n))))) /\
       (key_of c <> None -> exists r, route cx c = RouteOk r) /\
-      (forall cx', ctx_native cx = ctx_native cx' -> route cx c = route cx' c).
+      (forall cx', ctx_key cx = ctx_key cx' -> route cx c = route cx' c).
   Proof.
     intros cx c. unfold route, space_route.
     split; [| split].
-    - destruct (classify_channel c) as [| | | n | | |] eqn:Ec; destruct cx as [t |]; intros H;
-        try discriminate H;
-        destruct (key_of c) as [k |] eqn:Ek; try discriminate H.
-      + split; [reflexivity | left; exists n; reflexivity].
-      + split; [reflexivity | left; exists n; reflexivity].
-      + split; [reflexivity | right; split; [reflexivity | discriminate]].
+    - destruct (classify_channel c) as [| | | n | | |] eqn:Ec; intros H.
+      + discriminate H.
+      + discriminate H.
+      + discriminate H.
+      + destruct (key_of c) as [k |] eqn:Ek; [discriminate H |].
+        split; [reflexivity | left; exists n; reflexivity].
+      + exfalso. destruct (agent_tagged_parts c (classify_agent_tagged c Ec)) as [a [r Ep]].
+        rewrite Ep in H. discriminate H.
+      + discriminate H.
+      + destruct cx as [[s [n |]] |]; try discriminate H.
+        destruct (key_of c) as [k |] eqn:Ek; [discriminate H |].
+        split; [reflexivity | right; split; [reflexivity | exists s, n; reflexivity]].
     - intros Hk. destruct (key_of c) as [k |] eqn:Ek; [| contradiction Hk; reflexivity].
-      destruct (classify_channel c); destruct cx; eexists; reflexivity.
+      destruct (classify_channel c) eqn:Ec; try (eexists; reflexivity).
+      + destruct (agent_tagged_parts c (classify_agent_tagged c Ec)) as [a [r Ep]].
+        rewrite Ep. eexists; reflexivity.
+      + destruct cx as [[s [n |]] |]; eexists; reflexivity.
     - intros cx' Hn. destruct (classify_channel c); try reflexivity.
-      destruct cx as [t |]; destruct cx' as [t' |]; cbn in Hn; try discriminate Hn; [| reflexivity].
-      injection Hn as Hn. rewrite Hn. reflexivity.
+      destruct cx as [[s [n |]] |]; destruct cx' as [[s' [n' |]] |]; cbn in Hn;
+        try discriminate Hn; try reflexivity; injection Hn as Hn; subst; reflexivity.
   Qed.
 
-  (* Headline 5. The rules R1 to R5 of route.rs. *)
+  (* Headline 5. The rules R1 to R5 of route.rs, with the agent routes of
+     P8. *)
   Theorem route_rules :
     forall cx c,
       ((classify_channel c = CSystem \/ classify_channel c = CDefaultObject \/
         classify_channel c = CUnforgeable) -> route cx c = RouteOk RDefault) /\
       (classify_channel c = CStorage -> route cx c = RouteOk RDefault) /\
       (forall n, classify_channel c = CSpaceName n -> route cx c = space_route n c) /\
-      (classify_channel c = CAgentTagged -> route cx c = RouteOk RAgent) /\
+      (classify_channel c = CAgentTagged ->
+       exists a r, agent_parts c = Some (a, r) /\ route cx c = RouteOk (RAgent a r)) /\
       (classify_channel c = CForged ->
-       route cx c = match cx with Some t => space_route (t_native t) c | None => RouteOk RDefault end).
+       route cx c = match cx with
+                    | Some (mkTarget _ (UKNative n)) => space_route n c
+                    | Some (mkTarget s UKAgent) => RouteOk (RAgent s c)
+                    | None => RouteOk RDefault
+                    end).
   Proof.
     intros cx c. unfold route.
     split; [intros [H | [H | H]]; rewrite H; reflexivity |].
     split; [intros H; rewrite H; reflexivity |].
     split; [intros n H; rewrite H; reflexivity |].
-    split; [intros H; rewrite H; reflexivity |].
-    intros H. rewrite H. destruct cx; reflexivity.
+    split.
+    - intros H. destruct (agent_tagged_parts c (classify_agent_tagged c H)) as [a [r Ep]].
+      exists a, r. rewrite H, Ep. split; reflexivity.
+    - intros H. rewrite H. destruct cx as [[s [n |]] |]; reflexivity.
   Qed.
 
   (* Headline 6. A space name (the name id of gensym, or a binder of a use
@@ -705,7 +801,7 @@ Section Routing.
     match route None c with
     | RouteOk RDefault => R7Inner
     | RouteOk (RSpace n k) => R7Space n k
-    | RouteOk RAgent => R7AgentFail
+    | RouteOk (RAgent _ _) => R7AgentFail
     | RouteErr => R7KeyFail
     end.
 
@@ -713,7 +809,7 @@ Section Routing.
     match r with
     | RouteOk RDefault => R7Inner
     | RouteOk (RSpace n k) => R7Space n k
-    | RouteOk RAgent => R7AgentFail
+    | RouteOk (RAgent _ _) => R7AgentFail
     | RouteErr => R7KeyFail
     end.
 
@@ -752,7 +848,8 @@ Section Routing.
     assert (Hiff : routes_to_default_without_context c = true <-> route None c = RouteOk RDefault).
     { unfold routes_to_default_without_context, route, space_route.
       destruct (classify_channel c); split; intros H; try reflexivity; try discriminate H.
-      destruct (key_of c); discriminate H. }
+      - destruct (key_of c); discriminate H.
+      - destruct (agent_parts c) as [[a r] |]; discriminate H. }
     split; [exact Hiff |]. intros [Hid Htup].
     assert (Hd : routes_to_default_without_context c = true).
     { unfold routes_to_default_without_context, classify_channel.
@@ -795,27 +892,70 @@ Proof. intros s b. reflexivity. Qed.
 Definition wrap_body (cx : ctx) (body : par) : par :=
   match cx with Some t => use_tuple (t_space t) body | None => body end.
 
-Inductive use_error : Type := UseAgent | UseRef : ref_error -> use_error.
+(* AG-4 (P8): the call channel of an agent reference under the bundle rule of
+   eval_send (reduce.rs): a bundle with the write flag gives its body, a
+   bundle without the write flag or without a body gives none, and a value
+   that is no bundle is its own call channel (scope.rs call_channel). *)
+Definition call_channel (a : par) : option par :=
+  match single_bundle a with
+  | Some (mkBundle (Some body) true _) => Some body
+  | Some _ => None
+  | None => Some a
+  end.
+
+(* Changed by P8 step 1: a use block on a user agent no longer fails closed,
+   so the error UseAgent has no site. The P4 type was
+   `Inductive use_error : Type := UseAgent | UseRef : ref_error -> use_error.` *)
+Inductive use_error : Type := UseRef : ref_error -> use_error.
 Inductive enter_result : Type := Entered : target -> enter_result | UseFailed : use_error -> enter_result.
 Inductive fire_result : Type := Runs : ctx -> par -> fire_result | Aborts : use_error -> fire_result.
 
+(* Changed by P8 step 1: a valid context names a native space through its
+   reference, or a user agent through a reference that has a call channel.
+   The P4 definition was
+   `match cx with None => True | Some t => classify_space_ref (t_space t) =
+    SROk (SNative (t_native t)) end`. *)
 Definition ctx_valid (cx : ctx) : Prop :=
-  match cx with None => True | Some t => classify_space_ref (t_space t) = SROk (SNative (t_native t)) end.
+  match cx with
+  | None => True
+  | Some (mkTarget s (UKNative n)) => classify_space_ref s = SROk (SNative n)
+  | Some (mkTarget s UKAgent) => classify_space_ref s = SROk (SAgent s) /\ call_channel s <> None
+  end.
+
+(* classify_space_ref names an agent by the reference itself. *)
+Lemma classify_agent_is_reference :
+  forall p q, classify_space_ref p = SROk (SAgent q) -> q = p.
+Proof.
+  intros p q H. unfold classify_space_ref in H. destruct (is_empty p); [discriminate H |].
+  destruct (reified_id_of (fst (unbundle p))) as [x |].
+  - destruct x; destruct (snd (unbundle p)); discriminate H.
+  - injection H as <-. reflexivity.
+Qed.
 
 Section UseWrapper.
   Variable env : Type.
   (* eval_expr, then substitute_and_charge, of a space reference. *)
   Variable eval_ref : env -> par -> par.
-  (* A native handle reference is a value: evaluation leaves it as it is. *)
-  Hypothesis eval_native_ref : forall e p n, classify_space_ref p = SROk (SNative n) -> eval_ref e p = p.
+  (* Changed by P8 step 1: a space reference is a value, native or agent:
+     evaluation leaves it as it is. The P4 hypothesis covered native
+     references only:
+     `forall e p n, classify_space_ref p = SROk (SNative n) -> eval_ref e p = p`. *)
+  Hypothesis eval_space_ref : forall e p r, classify_space_ref p = SROk r -> eval_ref e p = p.
 
   (* eval_use: evaluate the reference, classify it, and enter its context.
-     An agent space fails closed until P8. *)
+     Changed by P8 step 1 (AG-2, AG-4): an agent reference enters the
+     context of the agent when it has a call channel, and it fails with
+     HandleNotWritable otherwise. The P4 arm was
+     `| SROk (SAgent _) => UseFailed UseAgent`. *)
   Definition enter_use (e : env) (space : par) : enter_result :=
     let v := eval_ref e space in
     match classify_space_ref v with
-    | SROk (SNative n) => Entered (mkTarget v n)
-    | SROk (SAgent _) => UseFailed UseAgent
+    | SROk (SNative n) => Entered (mkTarget v (UKNative n))
+    | SROk (SAgent _) =>
+        match call_channel v with
+        | Some _ => Entered (mkTarget v UKAgent)
+        | None => UseFailed (UseRef HandleNotWritable)
+        end
     | SRErr err => UseFailed (UseRef err)
     end.
 
@@ -848,13 +988,44 @@ Section UseWrapper.
     split.
     - intros e space t H. unfold enter_use in H.
       destruct (classify_space_ref (eval_ref e space)) as [[n | q] | err] eqn:Ec; try discriminate H.
-      injection H as <-. cbn. exact Ec.
-    - intros [t |] body e Hv; [| reflexivity].
-      cbn [wrap_body]. unfold fire_step. rewrite decode_use_tuple. unfold enter_use.
-      cbn [ctx_valid] in Hv. rewrite (eval_native_ref e _ _ Hv), Hv.
-      destruct t. reflexivity.
+      + injection H as <-. cbn. exact Ec.
+      + destruct (call_channel (eval_ref e space)) as [ch |] eqn:Ecc; [| discriminate H].
+        injection H as <-. cbn.
+        rewrite (classify_agent_is_reference _ _ Ec) in Ec.
+        split; [exact Ec | rewrite Ecc; discriminate].
+    - intros [[s [n |]] |] body e Hv; [| | reflexivity].
+      + cbn [wrap_body t_space]. unfold fire_step. rewrite decode_use_tuple. unfold enter_use.
+        cbn [ctx_valid] in Hv. rewrite (eval_space_ref e _ _ Hv), Hv. reflexivity.
+      + cbn [wrap_body t_space]. unfold fire_step. rewrite decode_use_tuple. unfold enter_use.
+        cbn [ctx_valid] in Hv. destruct Hv as [Hc Hw].
+        rewrite (eval_space_ref e _ _ Hc), Hc.
+        destruct (call_channel s) as [ch |]; [reflexivity | contradiction Hw; reflexivity].
   Qed.
 End UseWrapper.
+
+(* Headline 13 (P8, AG-4). A use block enters the context of a user agent
+   exactly when the evaluated reference has a call channel under the bundle
+   rule of eval_send. Under a bundle without the write flag the block fails
+   with HandleNotWritable, as eval_send fails on such a bundle. So no
+   context ever holds an agent that a call cannot reach. *)
+Theorem agent_ref_requires_write_flag :
+  forall (env : Type) (eval_ref : env -> par -> par) e space,
+    classify_space_ref (eval_ref e space) = SROk (SAgent (eval_ref e space)) ->
+    (enter_use env eval_ref e space = Entered (mkTarget (eval_ref e space) UKAgent) <->
+     call_channel (eval_ref e space) <> None) /\
+    (forall body r, single_bundle (eval_ref e space) = Some (mkBundle body false r) ->
+       enter_use env eval_ref e space = UseFailed (UseRef HandleNotWritable)).
+Proof.
+  intros env eval_ref e space Hc. split.
+  - unfold enter_use. cbv zeta. rewrite Hc.
+    destruct (call_channel (eval_ref e space)) as [ch |] eqn:Ecc; split; intros H.
+    + discriminate.
+    + reflexivity.
+    + discriminate H.
+    + contradiction H; reflexivity.
+  - intros body r Hb. unfold enter_use. cbv zeta. rewrite Hc.
+    unfold call_channel. rewrite Hb. destruct body; reflexivity.
+Qed.
 
 (* The hypothesis holds for the evaluation that leaves values as they are. *)
 Corollary use_wrapper_restores_ctx_instance :
@@ -1293,7 +1464,7 @@ Section Queries.
     | BindOk ch None RDefault => THost ch
     | BindOk _ (Some _) RDefault => TFail RQuerySpecUnsupported
     | BindOk ch q (RSpace n k) => TSpace n k ch q
-    | BindOk _ _ RAgent => TFail RAgentSpaces
+    | BindOk _ _ (RAgent _ _) => TFail RAgentSpaces
     end.
 
   (* reified_consume for one bind: the fast path outside every use block, and
@@ -1323,7 +1494,7 @@ Section Queries.
         match route canon cx ch with
         | RouteOk RDefault => TFail RQuerySpecUnsupported
         | RouteOk (RSpace n k) => TSpace n k ch (Some q)
-        | RouteOk RAgent => TFail RAgentSpaces
+        | RouteOk (RAgent _ _) => TFail RAgentSpaces
         | RouteErr => TFail RKey
         end
     | NotReadable => TFail RNotReadable
@@ -1365,11 +1536,11 @@ Section Queries.
         { unfold receive_one. destruct cx; [reflexivity | rewrite Hfast; reflexivity]. }
         rewrite Hroute. unfold read_bind, query_target. rewrite Hd. cbv beta iota.
         destruct (read_channel inner) as [ch | |]; [| reflexivity | reflexivity].
-        unfold route_bind. destruct (route canon cx ch) as [[| n k |] |]; reflexivity. }
+        unfold route_bind. destruct (route canon cx ch) as [[| n k | a r] |]; reflexivity. }
       split; [exact Hfast | split; [| exact Hrecv]].
       intros h Hh. rewrite Hrecv in Hh. unfold query_target in Hh.
       destruct (read_channel inner) as [ch | |]; try discriminate Hh.
-      destruct (route canon cx ch) as [[| n k |] |]; discriminate Hh.
+      destruct (route canon cx ch) as [[| n k | a r] |]; discriminate Hh.
     - intros Hd. unfold receive_one, p4_receive_one, read_bind. rewrite Hd.
       destruct cx as [t |]; [reflexivity |].
       unfold takes_fast_path. destruct (is_marker_tuple c) eqn:Em; cbn [negb].
@@ -1393,3 +1564,4 @@ Print Assumptions use_wrapper_restores_ctx.
 Print Assumptions handle_dispatch_total.
 Print Assumptions native_execution_runs_spaces.
 Print Assumptions query_source_routes_inner_channel.
+Print Assumptions agent_ref_requires_write_flag.

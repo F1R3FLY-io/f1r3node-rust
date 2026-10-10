@@ -1093,4 +1093,53 @@ new n : bare in { n!(4) | @"rrs-n"!(*n) }
             Err(rholang::rust::interpreter::reified::scope::SpaceRefError::NotASpaceRef)
         );
     }
+
+    /// P8 step 1 (design v2 AG-4): a call on a user agent is an ordinary send, so the reference
+    /// of an agent follows the bundle rule of `eval_send`. `use` and an annotation of `new`
+    /// reject a reference under a bundle without the write flag with `HandleNotWritable`, the
+    /// code of P4 that P8 generalizes. A reference with a call channel passes the rule. Its
+    /// `use` block and its annotation then fail closed with `AgentSpacesUnavailable` until the
+    /// translation of `new` lands (P8 step 4).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn reducer_agent_reference_write_rule() {
+        let mut session = Session::new().await;
+        session.setup().await;
+        for (label, reference, code) in [
+            (
+                "read-only",
+                r#"@{bundle-{"user agent"}}"#,
+                "HandleNotWritable",
+            ),
+            (
+                "no-flags",
+                r#"@{bundle0{"user agent"}}"#,
+                "HandleNotWritable",
+            ),
+            (
+                "write-only",
+                r#"@{bundle+{"user agent"}}"#,
+                "AgentSpacesUnavailable",
+            ),
+            (
+                "read-write",
+                r#"@{bundle{"user agent"}}"#,
+                "AgentSpacesUnavailable",
+            ),
+            ("plain", r#"@"user agent""#, "AgentSpacesUnavailable"),
+        ] {
+            for (form, body) in [
+                ("use", format!("use {reference} {{ Nil }}")),
+                ("annotation", format!("new x : {reference} in {{ Nil }}")),
+            ] {
+                session
+                    .fail_with(
+                        &with_space(&body),
+                        &format!("rrs-p8-agent-write-{label}-{form}"),
+                        &Injections::new(),
+                        &[code],
+                    )
+                    .await;
+            }
+        }
+    }
 }

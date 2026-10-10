@@ -54,10 +54,10 @@
                             qualifier_of)
    derive_space_id          rholang/src/rust/interpreter/spaces/types/id.rs:
                             13-22, rholang/src/rust/interpreter/spaces/
-                            namespace.rs:403-428, 432-434 (RandomPurpose and
+                            namespace.rs:425-450, 454-456 (RandomPurpose and
                             derive)
    check_persistent_send    rholang/src/rust/interpreter/reified/
-                            system_channels.rs:103, 107, 112-124
+                            system_channels.rs:104, 108, 114-129
    prepare_create           rholang/src/rust/interpreter/spaces/generic.rs:
                             2904-3022
 
@@ -880,30 +880,30 @@ Print Assumptions space_already_exists_is_deterministic_abort.
    Traceability: Rocq definition → Rust code
    ─────────────────────────────────────────────────────────────────────────
    sys_channel, body_ref    rholang/src/rust/interpreter/reified/
-                            system_channels.rs:32, 36-40, 44
+                            system_channels.rs:33, 37-41, 45
    p4_rows, p4_others       rholang/src/rust/interpreter/spaces/factory/
                             urn.rs:38-39 (REGISTERED_FAMILIES),
                             rholang/src/rust/interpreter/reified/
-                            system_channels.rs:51-55, 58-62, 65-69, 72-76,
-                            79-84 (P4_SYSTEM_CHANNELS)
+                            system_channels.rs:52-56, 59-63, 66-70, 73-77,
+                            80-85 (P4_SYSTEM_CHANNELS)
    p5_rows                  rholang/src/rust/interpreter/spaces/factory/
                             urn.rs:50-143 (P5_FAMILY_ROWS),
                             rholang/src/rust/interpreter/reified/
-                            system_channels.rs:127-285 (the factories)
+                            system_channels.rs:132-290 (the factories)
    alias_rows               rholang/src/rust/interpreter/spaces/factory/
                             urn.rs:191-200 (P5_ALIAS_ROWS),
                             rholang/src/rust/interpreter/reified/
-                            system_channels.rs:305-309, 313-317, 340-366
+                            system_channels.rs:310-314, 318-322, 345-371
    p6_rows, p6_others       rholang/src/rust/interpreter/spaces/factory/
                             urn.rs:148-157 (P6_FAMILY_ROWS),
                             rholang/src/rust/interpreter/reified/
-                            system_channels.rs:288-292, 295-299, 378-379
+                            system_channels.rs:293-297, 300-304, 383-384
                             (the VectorDB factories, P6_SYSTEM_CHANNELS),
                             384-388, 392-396, 407-411, 421 (P6_PROCESSES)
    p7_rows                  rholang/src/rust/interpreter/spaces/factory/
                             urn.rs:162-187 (P7_FAMILY_ROWS),
                             rholang/src/rust/interpreter/reified/
-                            system_channels.rs:424-463 (the HashSet
+                            system_channels.rs:429-468 (the HashSet
                             factories), 479-486 (P7_SYSTEM_CHANNELS)
    schema_of, required_of, vectordb_params, vectordb_required
                             rholang/src/rust/interpreter/spaces/factory/
@@ -916,11 +916,11 @@ Print Assumptions space_already_exists_is_deterministic_abort.
                             urn.rs:207-211, 215-219, 223-227, 231-237,
                             241-245, 248-252
    definitions, binds       rholang/src/rust/interpreter/
-                            reified/system_processes.rs:96-157 (definitions),
+                            reified/system_processes.rs:101-172 (definitions),
                             rholang/src/rust/
                             interpreter/system_processes.rs:493-501 (to_urn_map)
    get_space_agent_of       rholang/src/rust/interpreter/
-                            reified/system_processes.rs:228-266 (get_space_agent),
+                            reified/system_processes.rs:260-298 (get_space_agent),
                             rholang/src/rust/interpreter/spaces/factory/
                             constructor.rs:282-300 (family_of), urn.rs:263-265
                             (factory_capability)

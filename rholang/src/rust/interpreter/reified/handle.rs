@@ -594,7 +594,7 @@ fn string_par(value: &str) -> Par {
 
 /// A `Par` that holds exactly the map of `pairs`, sorted, with the bit sets that
 /// `ParMap::create_from_vec` computes.
-fn map_par(pairs: Vec<(Par, Par)>) -> Par {
+pub(super) fn map_par(pairs: Vec<(Par, Par)>) -> Par {
     let map = ParMapTypeMapper::par_map_to_emap(ParMap::create_from_vec(pairs));
     Par {
         locally_free: map.locally_free.clone(),
@@ -608,7 +608,7 @@ fn map_par(pairs: Vec<(Par, Par)>) -> Par {
 
 /// A `Par` that holds exactly the tuple of `ps`, with the union and the disjunction of the bit
 /// sets of its elements.
-fn tuple_par(ps: Vec<Par>) -> Par {
+pub(super) fn tuple_par(ps: Vec<Par>) -> Par {
     let (locally_free, connective_used) = ps.iter().fold(
         (Vec::new(), false),
         |(locally_free, connective_used), par| {
@@ -691,7 +691,7 @@ fn sole_bundle(par: &Par) -> Option<&Bundle> {
     }
 }
 
-fn sole_list(par: &Par) -> Option<&[Par]> {
+pub(super) fn sole_list(par: &Par) -> Option<&[Par]> {
     match sole_expr(par) {
         Some(ExprInstance::EListBody(EList {
             ps,

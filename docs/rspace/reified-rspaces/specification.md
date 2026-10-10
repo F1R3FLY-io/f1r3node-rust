@@ -174,8 +174,8 @@ Each arm that it tries reserves one comparison of the names, so a queue operatio
 New arms come after the old ones, so the dispatch of an earlier family reserves the comparisons that it reserved before.
 A config that names no wired family fails with `FamilyUnavailable`.
 
-**Rule FA-3: aliases.** The FIPS alias `rho:space:HashMapBagSpace` names the channel of `hashmap:bag` (`rholang/src/rust/interpreter/reified/system_channels.rs:305-309`).
-The FIPS alias `rho:space:PathMapSpace` names the channel of `pathmap:bag` (`rholang/src/rust/interpreter/reified/system_channels.rs:313-317`).
+**Rule FA-3: aliases.** The FIPS alias `rho:space:HashMapBagSpace` names the channel of `hashmap:bag` (`rholang/src/rust/interpreter/reified/system_channels.rs:310-314`).
+The FIPS alias `rho:space:PathMapSpace` names the channel of `pathmap:bag` (`rholang/src/rust/interpreter/reified/system_channels.rs:318-322`).
 An alias is registered exactly when its family is registered, and both URNs bind the same capability.
 `getSpaceAgent` replies that capability for every space of the family ([decision 33](decision-register.md#decision-33)).
 
@@ -301,7 +301,7 @@ This covers the names of its lock keys, the config and the shape of an Array spa
 It also covers the copy and the decode of $`A(\mathit{sid})`$, each comparison, and the buffer of the indices.
 In native execution, an allocation job runs as every space job does ([section 8](#8-native-execution), [decision 47](decision-register.md#decision-47)).
 
-**Rule AL-8: authority.** An allocation job takes the cost authority of the process that asks for the names (`rholang/src/rust/interpreter/reified/reducer_hooks.rs:694-721`).
+**Rule AL-8: authority.** An allocation job takes the cost authority of the process that asks for the names (`rholang/src/rust/interpreter/reified/reducer_hooks.rs:783-810`).
 That process evaluates the `new`, or it calls the handle method `gensym`.
 So each allocation is paid by its caller, and the allocator record that the job puts carries that authority (P4 design B.7).
 
@@ -826,14 +826,14 @@ A re-issued element takes its FIFO place in its level, and a re-entered waiter k
 
 ### 3.7 Receive queries
 
-**Rule RQ-1: inner channel.** A receive bind with a QUERY tuple as its source reads from the inner channel of the query (`rholang/src/rust/interpreter/reified/reducer_hooks.rs:885-899`).
+**Rule RQ-1: inner channel.** A receive bind with a QUERY tuple as its source reads from the inner channel of the query (`rholang/src/rust/interpreter/reified/reducer_hooks.rs:974-988`).
 The inner channel takes the read rule of a receive source.
 
-**Rule RQ-2: route.** The route of the inner channel decides (`rholang/src/rust/interpreter/reified/reducer_hooks.rs:916-946`).
+**Rule RQ-2: route.** The route of the inner channel decides (`rholang/src/rust/interpreter/reified/reducer_hooks.rs:1005-1035`).
 A native space gets the payload and the named params in its consume, and its discipline checks them before the bump.
 The default space fails with `QuerySpecUnsupported`, and a user agent fails closed until P8.
 
-**Rule RQ-3: no host channel.** A QUERY tuple never becomes a channel of the host (`rholang/src/rust/interpreter/reified/reducer_hooks.rs:872-874`).
+**Rule RQ-3: no host channel.** A QUERY tuple never becomes a channel of the host (`rholang/src/rust/interpreter/reified/reducer_hooks.rs:961-963`).
 
 ### 3.8 Joins
 
@@ -1273,7 +1273,7 @@ A Rocq theorem shows the file and the line of its statement, and a TLA+ invarian
 | SM-4, SM-5 | `storage_id_injective` (`Namespace.v:732`), `space_and_collection_counters_distinct` (`Namespace.v:789`) | `space_meta_channels_counters`, `space_queue_events_namespaced` |
 | SM-8 | The P1 headlines of the substrate, which section [4 of the dossier](verification.md#4-rocq-models) lists | `space_queue_observer_parity`, `reified_p4_smoke_hashmap_queue_play_and_replay` |
 | SM-9 | `queue_plan_permutation_invariant` (`HeadOnlyDisciplines.v:1552`) | `prop_queue_plan_permutation_invariant`, `space_queue_ord_survives_restart` |
-| SM-10 | `route_rules` (`SpaceRefs.v:660`), `space_name_route_ignores_ctx` (`SpaceRefs.v:681`), `ordinary_channels_route_default` (`SpaceRefs.v:746`) | `prop_route_rules`, `reducer_space_routing_ordinary_unchanged` |
+| SM-10 | `route_rules` (`SpaceRefs.v:749`), `space_name_route_ignores_ctx` (`SpaceRefs.v:777`), `ordinary_channels_route_default` (`SpaceRefs.v:842`) | `prop_route_rules`, `reducer_space_routing_ordinary_unchanged` |
 | HM-1, HM-2 | `canon_respects_par_eq` (`Namespace.v:1043`) | `prop_canonical_inner_bytes_respects_par_eq` |
 | HM-4 | `name_id_routes_to_sid` (`Namespace.v:1003`) | `prop_name_id_routes_to_sid`, `space_handle_methods_gensym` |
 | OC-1, OC-3 | `queue_ord_fresh` (`HeadOnlyDisciplines.v:1046`) | `prop_queue_ord_fresh`, `space_queue_counter_bump_shape` |
@@ -1353,7 +1353,7 @@ A Rocq theorem shows the file and the line of its statement, and a TLA+ invarian
 | CL-2, CL-3 | `cell_capacity_one` (`CellDiscipline.v:672`) | `space_disciplines_cell_every_operation_bumps_counter`, `space_disciplines_cell_branch_writes_race_on_the_counter` |
 | CL-4 | `cell_restore_never_occupied` (`CellDiscipline.v:858`) | `prop_cell_restore_never_occupied` |
 | CL-5 | `cell_reentry_as_fresh` (`CellDiscipline.v:889`) | `prop_cell_reentry_as_fresh` |
-| RQ-1 to RQ-3 | `query_source_routes_inner_channel` (`SpaceRefs.v:1344`) | `prop_query_bind_routes_inner_channel`, `prop_query_source_routes_inner_channel` |
+| RQ-1 to RQ-3 | `query_source_routes_inner_channel` (`SpaceRefs.v:1515`) | `prop_query_bind_routes_inner_channel`, `prop_query_source_routes_inner_channel` |
 | SK-1 | `stack_head_is_max_ord` (`StackDiscipline.v:556`), `stack_head_blocks` (`StackDiscipline.v:1348`) | `prop_stack_head_is_max_ord` |
 | SK-2 | `stack_reentry_at_lifo_place` (`StackDiscipline.v:1444`), `stack_reissue_keeps_ord` (`StackDiscipline.v:1576`), the TLA+ invariant `ReissueKeepsOrd` (V14) | `prop_stack_reissue_keeps_ord_any_schedule` |
 | SK-3, SK-4 | `stack_produce_preserves_inv` (`StackDiscipline.v:1043`), `stack_settle_keeps_unspent_records` (`StackDiscipline.v:2151`), `stack_peek_restore_needs_no_settle` (`StackDiscipline.v:1405`), the TLA+ invariants `StackNoPendingMatch` (V12) and `NoRecordLost` (V13) | `prop_stack_no_pending_match_any_schedule` |
@@ -1486,21 +1486,21 @@ So `dot` rounds its exact sum once, and never a partial sum ([decision 54](decis
 The reply of `norm` and `distance` is correctly rounded (`root_midpoint_nearest`, S28 of `VectorOps.v`).
 
 The failure codes are `UnknownMethod`, `BadArgument`, `NotAVector`, `NotANumber`, `NonFiniteValue`, `MalformedNumber`, `DimensionMismatch` and `ValueOutOfRange`.
-The process reserves its work on the host-work budget of the deploy, and a rejection fails the deploy (`rholang/src/rust/interpreter/reified/system_processes.rs:333-357`).
+The process reserves its work on the host-work budget of the deploy, and a rejection fails the deploy (`rholang/src/rust/interpreter/reified/system_processes.rs:365-389`).
 
-**Rule SP-3: `embed`.** The argument is one text, or a non-empty list of texts (`rholang/src/rust/interpreter/reified/system_processes.rs:383-426`).
+**Rule SP-3: `embed`.** The argument is one text, or a non-empty list of texts (`rholang/src/rust/interpreter/reified/system_processes.rs:415-458`).
 A call holds at most 64 texts and at most 64 KiB of text. Otherwise the reply is `EmbeddingRateLimited`.
 
 Play asks the embedder of the node, and it replies `[true, vector, model]` for one text or `[true, [vector…], model]` for a list.
 Each vector is a list of `GFloat32` values. The failure codes are `BadArgument`, `EmbeddingRateLimited`, `EmbeddingUnavailable` and `NonFiniteEmbedding`.
 
-**Rule SP-4: `ann`.** Play and replay both make the checks of the call against consensus state, in this order ([decision 67](decision-register.md#decision-67), `rholang/src/rust/interpreter/reified/system_processes.rs:509-554`):
+**Rule SP-4: `ann`.** Play and replay both make the checks of the call against consensus state, in this order ([decision 67](decision-register.md#decision-67), `rholang/src/rust/interpreter/reified/system_processes.rs:541-586`):
 
 1. `space` is a native VectorDB space (`NotAVectorDbSpace`) with a mirror (`MirrorDisabled`).
 2. `query` is a text, or a numeric vector of the dimensions of the space whose elements are finite as `f32` values (`DimensionMismatch`, `BadArgument`).
 3. `options` is a map of the one key `k`, an `Int` in $`[1, \mathit{capacity}]`$ (`InvalidOption`).
 
-In play, the embedder of the node embeds a text query, and the mirror of the node answers the nearest records of `channel` (`rholang/src/rust/interpreter/reified/system_processes.rs:609-654`).
+In play, the embedder of the node embeds a text query, and the mirror of the node answers the nearest records of `channel` (`rholang/src/rust/interpreter/reified/system_processes.rs:641-686`).
 The reply is `[true, ids, distances, watermark]`.
 It holds at most $`k`$ record ids as 32-byte byte arrays, their distances as `GFloat32` values, and the watermark as an `Int`.
 A mirror that does not answer gives the reply `MirrorUnavailable`.

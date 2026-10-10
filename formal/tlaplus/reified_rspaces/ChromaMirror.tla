@@ -88,15 +88,15 @@
 \*                         spaces/mirror.rs:236-313 (MirrorCapture::writes: the first and the last event)
 \*   journal               spaces/mirror.rs:408-426, 429-457 (MirrorJournal::record, take)
 \*                         reified/runtime.rs:302-304 (a space job records its net writes)
-\*   CheckWork             reified/system_processes.rs:509-554 (ann_request: the checks of decision 67)
+\*   CheckWork             reified/system_processes.rs:541-586 (ann_request: the checks of decision 67)
 \*   Deploy (M1)           reified/runtime.rs:315-320 (settle_mirror_journal), interpreter.rs:257, rho_runtime.rs:1808
 \*   Explore               reified/runtime.rs:102-118 (begin_evaluation_scope clears the journal)
 \*   Publish               reified/vectordb_services.rs:486-499 (MirrorWriter::publish: try_send, never waits)
 \*   Apply                 reified/vectordb_services.rs:365-381 (apply), 455-482 (the writer task: attempts, dirty)
 \*   Reconcile             reified/mirror_reconciler.rs:139-212 (reconcile), 216-230 (prepare_dirty), 235-248 (remark)
 \*                         reified/mirror_reconciler.rs:253-296, 300-344 (repair, channel_repair)
-\*   Replay                reified/system_processes.rs:453-479 (ann: the checks, then the recorded reply in replay)
-\*   (the answer of play)  reified/system_processes.rs:609-654, 659-671 (ann_answer, produce_recorded)
+\*   Replay                reified/system_processes.rs:485-511 (ann: the checks, then the recorded reply in replay)
+\*   (the answer of play)  reified/system_processes.rs:641-686, 691-703 (ann_answer, produce_recorded)
 
 EXTENDS Naturals, Sequences, FiniteSets
 

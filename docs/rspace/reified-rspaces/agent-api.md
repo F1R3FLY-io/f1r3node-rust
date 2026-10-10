@@ -67,11 +67,11 @@ Figure 1 shows the creation of a space and one handle call, from the send of the
 
 ## 2. System processes
 
-P4 installs four system processes (`reified/system_processes.rs:96-157`).
+P4 installs four system processes (`reified/system_processes.rs:101-172`).
 Each one listens on an [op channel](glossary.md#op-channel) $`[\mathtt{0xE0}, \mathit{op}]`$ and has the body reference $`200 + \mathit{op}`$.
 The URN map binds each URN to the write bundle of its op channel. So a program can call each process, but it cannot receive on its channel.
 
-*Table 2. The system processes of P4 (`reified/system_channels.rs:51-84`).*
+*Table 2. The system processes of P4 (`reified/system_channels.rs:52-85`).*
 
 | URN | Op channel | Arity | Body reference | Call | Reply |
 |---|---|---|---|---|---|
@@ -80,7 +80,7 @@ The URN map binds each URN to the write bundle of its op channel. So a program c
 | `rho:assert:assertEqual` | `[0xE0, 0x22]` | 3 | 234 | `assertEqual!(ret, a, b)` | A Boolean |
 | `rho:reified:internal:handleOp` | `[0xE0, 0x30]` | 2 | 248 | `(this, message)`, from the handle continuation of a space | The reply of the method, or a typed reply |
 
-*Table 2a. The factories of P5 (`reified/system_channels.rs:340-366`).*
+*Table 2a. The factories of P5 (`reified/system_channels.rs:345-371`).*
 
 | URN | Op channel | Arity | Body reference | Constructor params |
 |---|---|---|---|---|
@@ -112,7 +112,7 @@ A program that names one of them fails with the baseline error `No value set for
 ### 3.1 The call
 
 A factory call is a send on the factory capability: `hmq!(ret, a1, …, an)`.
-The send hook packs the arguments after `ret` into one list, so the factory receives `[ret, [a1, …, an]]` (`reified/reducer_hooks.rs:1094-1134`).
+The send hook packs the arguments after `ret` into one list, so the factory receives `[ret, [a1, …, an]]` (`reified/reducer_hooks.rs:1186-1226`).
 So every factory has the fixed arity 2, and a constructor can have any number of elements.
 The params section of the call stays in the list as its last element.
 
@@ -353,8 +353,8 @@ A typed reply never changes a space: a `produce` call with a typed reply stores 
 
 ## 8. getSpaceAgent
 
-The call `getSpaceAgent!(ret, s)` gives the factory capability of the family of the space `s` (`reified/system_processes.rs:227-265`).
-The process classifies `s` with the five rules of `classify_space_ref` (`reified/scope.rs:106-129`):
+The call `getSpaceAgent!(ret, s)` gives the factory capability of the family of the space `s` (`reified/system_processes.rs:259-297`).
+The process classifies `s` with the five rules of `classify_space_ref` (`reified/scope.rs:141-180`):
 
 1. The empty `Par` gives the typed reply `EmptySpaceRef`.
 2. The process removes at most one bundle, as a send does.
@@ -373,7 +373,7 @@ Like the factories and `assertEqual`, the process applies no name rule to `ret`.
 ## 9. assertEqual
 
 The call `assertEqual!(ret, a, b)` has the arity 3 ([decision 33](decision-register.md#decision-33)).
-It replies `true` when the sorted forms of `a` and `b` are equal, and `false` in every other case (`reified/system_processes.rs:313-327`).
+It replies `true` when the sorted forms of `a` and `b` are equal, and `false` in every other case (`reified/system_processes.rs:345-359`).
 The sort is the one of `ParSortMatcher`, so the order of parallel processes, of map entries, and of set elements does not count.
 The order of list elements and of tuple elements counts.
 
@@ -397,6 +397,7 @@ Table 10 lists the aborts that a call can cause, and section [N8 of the design](
 | Code | Call | Trigger |
 |---|---|---|
 | `PersistentFactoryCall`, `PersistentOpCall`, `PersistentHandleCall` | Every call | A persistent send `!!` |
+| `PersistentCapabilityCall` | A matcher or a body capability of a user agent (P8) | A persistent send `!!` |
 | `ParamsUnsupported` | `getSpaceAgent`, `assertEqual` | A params section |
 | `Malformed` | Every call with params | A params section that is not canonical after the refresh of [I-20](decision-register.md#i-20) |
 | `PositionalParamsUnsupported` | A factory, a handle | A positional param |

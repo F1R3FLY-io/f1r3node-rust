@@ -659,7 +659,13 @@ async fn replayed_host_usage(term: &str) -> HostWorkUsages {
     let recording = budget.native_budget_recording().unwrap().unwrap();
     let operations = budget.native_operation_recording().unwrap().unwrap();
     let log = play.create_soft_checkpoint().await.log;
-    let host = priced_config(limit, weights, funding.price).host_work();
+    // Changed by P8 step 1 (decision 78): the replay runs at the v6 host-work limits of
+    // certification. Native replay reserves host work for each installed system process, and
+    // the 100 M test budget had no room left for the two P8 processes.
+    // let host = priced_config(limit, weights, funding.price).host_work();
+    let host = HostWorkBudget::new(
+        models::rust::cost_protocol_limits::offered_funded_v6_host_work_limits(),
+    );
     let trace = with_priced_contract(limit, weights, funding.price, |contract| {
         contract
             .check_operation_journal(

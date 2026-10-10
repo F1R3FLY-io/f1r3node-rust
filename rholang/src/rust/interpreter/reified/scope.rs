@@ -1,9 +1,16 @@
-//! The lexical use-context of the reducer (P4 design C.2).
+//! The lexical use-context of the reducer (P4 design C.2, P8 design v2 AG-2 to AG-4).
 //!
 //! `ReducerCore` holds the immutable field `space_ctx`. `use s { P }` evaluates `P` with a
-//! context that names the space `s`. `with_metering_child` clones the context into parallel
-//! branches. A body that the reducer stores for later evaluation under a context is wrapped in
-//! a USE tuple, so the context returns when the body runs (a lexical closure).
+//! context that names the space `s`: a native space, or a user agent (P8). `with_metering_child`
+//! clones the context into parallel branches. A body that the reducer stores for later
+//! evaluation under a context is wrapped in a USE tuple, so the context returns when the body
+//! runs (a lexical closure).
+//!
+//! A user agent is named by its reference as the program evaluated it, with its bundle (AG-3).
+//! A call on the agent is an ordinary send, so it follows the bundle rule of `eval_send`
+//! ([`call_channel`]): a bundle with the write flag gives its body, and a bundle without it
+//! fails. `use A` and `new x : A` apply the rule when they classify an agent (AG-4), so no
+//! context and no agent-tagged name holds an agent that a call cannot reach.
 
 use std::sync::Arc;
 
@@ -15,12 +22,40 @@ use super::errors::ReifiedReduceError;
 use crate::rust::interpreter::spaces::errors::SpaceReplyCode;
 use crate::rust::interpreter::spaces::namespace::{self, NativeSpace, ReifiedId};
 
-/// The target of a `use` block: the space reference as the program evaluated it, and the
-/// native space that it names.
+// Changed by P8 step 1 (design v2 AG-2): a `use` block names a native space or a user agent.
+// /// The target of a `use` block: the space reference as the program evaluated it, and the
+// /// native space that it names.
+// #[derive(Clone, Debug, PartialEq)]
+// pub struct UseTarget {
+//     pub space: Par,
+//     pub native: NativeSpace,
+// }
+
+/// What a `use` block names (P8, design v2 AG-2).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UseKind {
+    /// A native space.
+    Native(NativeSpace),
+    /// A user agent. Its reference is [`UseTarget::space`] (AG-3).
+    Agent,
+}
+
+/// The target of a `use` block: the space reference as the program evaluated it, and what it
+/// names.
 #[derive(Clone, Debug, PartialEq)]
 pub struct UseTarget {
     pub space: Par,
-    pub native: NativeSpace,
+    pub kind: UseKind,
+}
+
+impl UseTarget {
+    /// The native space of the target, or `None` for a user agent.
+    pub fn native(&self) -> Option<NativeSpace> {
+        match self.kind {
+            UseKind::Native(space) => Some(space),
+            UseKind::Agent => None,
+        }
+    }
 }
 
 /// The use-context of a reducer: `None` outside every `use` block.
@@ -125,6 +160,22 @@ pub fn classify_space_ref(space: &Par) -> Result<SpaceRef, SpaceRefError> {
         (Some(ReifiedId::Handle(_)), false) => Err(SpaceRefError::HandleNotWritable),
         (Some(_), _) => Err(SpaceRefError::NotASpaceRef),
         (None, _) => Ok(SpaceRef::Agent(space.clone())),
+    }
+}
+
+/// The channel of a call on the user agent `agent` (P8, design v2 AG-4): the rule of
+/// `eval_send` for a bundle. A bundle with the write flag gives its body, and a value that is no
+/// bundle is its own channel. A bundle without the write flag, or without a body, gives
+/// `HandleNotWritable`, the code of P4 that P8 generalizes to every space reference.
+pub fn call_channel(agent: &Par) -> Result<Par, SpaceRefError> {
+    match single_bundle(agent) {
+        Some(Bundle {
+            body: Some(body),
+            write_flag: true,
+            ..
+        }) => Ok(body),
+        Some(Bundle { .. }) => Err(SpaceRefError::HandleNotWritable),
+        None => Ok(agent.clone()),
     }
 }
 
@@ -259,7 +310,7 @@ mod tests {
         assert_eq!(wrap_body(&None, body.clone()), body);
         let target = UseTarget {
             space: new_bundle_par(handle(Durability::Durable), true, false),
-            native: native(Durability::Durable),
+            kind: UseKind::Native(native(Durability::Durable)),
         };
         let wrapped = wrap_body(&Some(Arc::new(target.clone())), body.clone());
         assert_eq!(wrapped.exprs.len(), 1);
@@ -276,9 +327,52 @@ mod tests {
         );
         assert_eq!(
             classify_space_ref(&target.space),
-            Ok(SpaceRef::Native(target.native))
+            Ok(SpaceRef::Native(native(Durability::Durable)))
         );
+        assert_eq!(target.native(), Some(native(Durability::Durable)));
         let other = wrap_body(&Some(Arc::new(target)), new_gint_par(1, Vec::new(), false));
         assert_ne!(other, wrapped);
+    }
+
+    /// P8 (design v2 AG-4): the call channel of an agent follows the bundle rule of `eval_send`.
+    #[test]
+    fn agent_call_channel_follows_the_write_rule_of_eval_send() {
+        let agent = new_gstring_par("agent".to_string(), Vec::new(), false);
+        assert_eq!(call_channel(&agent), Ok(agent.clone()));
+        for read_flag in [false, true] {
+            assert_eq!(
+                call_channel(&new_bundle_par(agent.clone(), true, read_flag)),
+                Ok(agent.clone())
+            );
+            assert_eq!(
+                call_channel(&new_bundle_par(agent.clone(), false, read_flag)),
+                Err(SpaceRefError::HandleNotWritable)
+            );
+        }
+        let no_body = Par::default().with_bundles(vec![Bundle {
+            body: None,
+            write_flag: true,
+            read_flag: true,
+        }]);
+        assert_eq!(
+            call_channel(&no_body),
+            Err(SpaceRefError::HandleNotWritable)
+        );
+        // classify_space_ref keeps its P4 result for the same references (F12): the bundle stays
+        // on the agent reference.
+        let read_only = new_bundle_par(agent.clone(), false, true);
+        assert_eq!(
+            classify_space_ref(&read_only),
+            Ok(SpaceRef::Agent(read_only.clone()))
+        );
+        let target = UseTarget {
+            space: new_bundle_par(agent, true, true),
+            kind: UseKind::Agent,
+        };
+        assert_eq!(target.native(), None);
+        assert_eq!(
+            ReifiedReduceError::from(SpaceRefError::HandleNotWritable).code(),
+            "HandleNotWritable"
+        );
     }
 }

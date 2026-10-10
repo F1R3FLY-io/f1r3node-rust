@@ -594,7 +594,10 @@ An internal operation is a system process with a two-byte id from $`[\mathtt{0xE
 The three internal operations are `HANDLE_OP`, `MATCHER_OP`, and `SINK_OP`.
 The forwarding receives and the translations that the campaign synthesizes call them.
 The node binds `HANDLE_OP` to the URN `rho:reified:internal:handleOp`, because it binds every system definition to a URN ([decision 32](decision-register.md#decision-32)).
+
+P8 binds `MATCHER_OP` to `rho:reified:internal:matcherOp` and `SINK_OP` to `rho:reified:internal:sinkOp` in the same way ([decision 77](decision-register.md#decision-77)).
 `HANDLE_OP` accepts a call only with the unforgeable channel `this` of an existing space, so a program that names the URN gains no capability.
+`MATCHER_OP` accepts a call only with a bare matcher id whose state decodes exactly, and `SINK_OP` drops every message.
 
 ### Factory
 

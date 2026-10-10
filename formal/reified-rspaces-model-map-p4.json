@@ -2200,6 +2200,23 @@
       ]
     },
     {
+      "item": "agent_parts",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/route.rs",
+      "kind": "fn",
+      "name": "agent_parts",
+      "line": 111,
+      "role": "The parts (A, raw) of an agent-tagged tuple, the data of an agent route (P8 AG-1).",
+      "rocq": [
+        "agent_parts",
+        "agent_tagged_parts"
+      ],
+      "covers": [
+        "Q41",
+        "Q42"
+      ]
+    },
+    {
       "item": "classify_channel",
       "required": true,
       "file": "rholang/src/rust/interpreter/reified/route.rs",
@@ -2224,12 +2241,13 @@
       "file": "rholang/src/rust/interpreter/reified/route.rs",
       "kind": "fn",
       "name": "route",
-      "line": 149,
-      "role": "R1 to R5.",
+      "line": 173,
+      "role": "R1 to R5, with the agent routes of P8 (AG-1): R4 carries the parts of the tag, and R5 routes to the agent of an agent context.",
       "rocq": [
         "route",
         "space_route",
-        "key_of"
+        "key_of",
+        "agent_parts"
       ],
       "covers": [
         "Q41",
@@ -2255,15 +2273,33 @@
       ]
     },
     {
+      "item": "UseKind",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/scope.rs",
+      "kind": "struct",
+      "name": "UseKind",
+      "line": 36,
+      "role": "What a use block names: a native space or a user agent (P8 AG-2).",
+      "rocq": [
+        "use_kind",
+        "ctx_key"
+      ],
+      "covers": [
+        "Q41",
+        "Q46"
+      ]
+    },
+    {
       "item": "UseTarget",
       "required": true,
       "file": "rholang/src/rust/interpreter/reified/scope.rs",
       "kind": "struct",
       "name": "UseTarget",
-      "line": 21,
-      "role": "The evaluated reference and its native space.",
+      "line": 46,
+      "role": "The evaluated reference and what it names: a native space or a user agent (P8 AG-2).",
       "rocq": [
-        "target"
+        "target",
+        "use_kind"
       ],
       "covers": [
         "Q46"
@@ -2275,10 +2311,11 @@
       "file": "rholang/src/rust/interpreter/reified/scope.rs",
       "kind": "type",
       "name": "SpaceCtx",
-      "line": 27,
+      "line": 62,
       "role": "None outside every use block.",
       "rocq": [
-        "ctx"
+        "ctx",
+        "ctx_key"
       ],
       "covers": [
         "Q41",
@@ -2426,7 +2463,7 @@
       "scope": "ReducerCore",
       "kind": "fn",
       "name": "eval_use",
-      "line": 212,
+      "line": 275,
       "role": "use s { P }: P under the context of s.",
       "rocq": [
         "enter_use"
@@ -2436,16 +2473,17 @@
       ]
     },
     {
-      "item": "ReducerCore::native_space_ref",
+      "item": "ReducerCore::space_ref",
       "required": true,
       "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
       "scope": "ReducerCore",
       "kind": "fn",
-      "name": "native_space_ref",
-      "line": 273,
-      "role": "Evaluate, substitute and classify a space reference.",
+      "name": "space_ref",
+      "line": 390,
+      "role": "Evaluate, substitute and classify a space reference. P8 step 1 replaced native_space_ref: the reference of a user agent passes the write rule of AG-4 (call_channel).",
       "rocq": [
-        "enter_use"
+        "enter_use",
+        "call_channel"
       ],
       "covers": [
         "Q38",

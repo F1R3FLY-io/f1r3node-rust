@@ -42,7 +42,7 @@
                           products, with no rounding)
    add_reply, scale_reply,
    dot_reply              tensor/ops.rs:234-272 (evaluate: the operations),
-                          reified/system_processes.rs:333-357 (the process
+                          reified/system_processes.rs:365-389 (the process
                           rho:lang:vector replies the value)
    root_midpoint_nearest  tensor/num.rs:484-511 (sqrt_to_f64: the mantissa
                           is rounded by the square of the odd midpoint)

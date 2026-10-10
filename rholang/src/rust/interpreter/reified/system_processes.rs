@@ -9,6 +9,8 @@
 //! | `rho:lang:vector`               | `vec!(ret, op, x…)` (P6 step 6)           |
 //! | `rho:vectordb:embed`            | `embed!(ret, text)` (P6 step 7, recorded) |
 //! | `rho:vectordb:ann`              | `ann!(ret, space, channel, query, options)` (P6 step 7, recorded) |
+//! | `rho:reified:internal:matcherOp` | the matcher process of user agents (`user_agent.rs`, P8) |
+//! | `rho:reified:internal:sinkOp`   | the sink of the calls of a translation (`user_agent.rs`, P8) |
 //!
 //! `create_rho_env` calls [`register`] with the runtime of the host store, before
 //! `setup_maps_and_refs` binds the URNs. `dispatch_table_creator` drains the vector, so a
@@ -42,7 +44,7 @@ use models::rhoapi::{CostAuthority, EList, Par};
 use models::rust::rholang::sorter::par_sort_matcher::ParSortMatcher;
 use models::rust::rholang::sorter::sortable::Sortable;
 use models::rust::space_factory_urn::SpaceInner;
-use models::rust::utils::new_gbool_par;
+use models::rust::utils::{new_gbool_par, new_wildcard_var};
 use prost::Message;
 
 use super::costs::ScanMeter;
@@ -52,8 +54,10 @@ use super::runtime::ReifiedRuntime;
 use super::scope::{classify_space_ref, SpaceRef};
 use super::system_channels::{
     SystemChannel, ANN_PROCESS, ASSERT_EQUAL_PROCESS, EMBED_PROCESS, GET_SPACE_AGENT_PROCESS,
-    HANDLE_OP_PROCESS, P4_SYSTEM_CHANNELS, P6_PROCESSES, VECTOR_PROCESS,
+    HANDLE_OP_PROCESS, MATCHER_OP_PROCESS, P4_SYSTEM_CHANNELS, P6_PROCESSES, P8_PROCESSES,
+    SINK_OP_PROCESS, VECTOR_PROCESS,
 };
+use super::user_agent::{self, MatcherProcess};
 use super::vectordb_services::{
     self, channel_digest, collection_name, f32_list, failed_reply, list_par, ok_reply,
     EmbedFailure, Neighbour, ServiceReplyCode, VectorDbServices,
@@ -74,7 +78,7 @@ use crate::rust::interpreter::spaces::families::FamilyAgent;
 use crate::rust::interpreter::spaces::namespace::{CollectionKey, NativeSpace, SpaceId};
 use crate::rust::interpreter::spaces::record::{expr_par, sole_expr};
 use crate::rust::interpreter::spaces::types::config::{map_entries, SpaceConfig};
-use crate::rust::interpreter::system_processes::{Definition, ProcessContext};
+use crate::rust::interpreter::system_processes::{Definition, ProcessContext, Remainder};
 use crate::rust::interpreter::tensor::num::{self, NumError};
 use crate::rust::interpreter::tensor::ops::{self, OpFailure};
 
@@ -92,7 +96,8 @@ pub fn native_agent() -> Arc<dyn SpaceAgent> { Arc::new(FamilyAgent) }
 /// factory of each registered family of P7 (`urn::registered_p7_families`), so every earlier
 /// definition keeps its place. An alias has the channel, the arity, the body ref and the
 /// handler of its family, so the second install of its channel changes nothing: the install
-/// map and the dispatch table are keyed by the channel and by the body ref.
+/// map and the dispatch table are keyed by the channel and by the body ref. P8 appends the
+/// matcher process and the sink of user agents (`P8_PROCESSES`) after the factories of P7.
 pub fn definitions(runtime: &Arc<ReifiedRuntime>) -> Vec<Definition> {
     let agent = native_agent();
     let families: Vec<_> = urn::registered_p5_families().collect();
@@ -105,7 +110,8 @@ pub fn definitions(runtime: &Arc<ReifiedRuntime>) -> Vec<Definition> {
             + aliases.len()
             + p6_families.len()
             + P6_PROCESSES.len()
-            + p7_families.len(),
+            + p7_families.len()
+            + P8_PROCESSES.len(),
     );
     let factory = |family, channel| {
         definition(
@@ -153,6 +159,15 @@ pub fn definitions(runtime: &Arc<ReifiedRuntime>) -> Vec<Definition> {
     for (family, channel) in p7_families {
         definitions.push(factory(family, channel));
     }
+    definitions.push(definition(
+        MATCHER_OP_PROCESS,
+        ReifiedProcess::Matcher(MatcherProcess::new(Arc::clone(runtime))),
+    ));
+    definitions.push(definition_with_remainder(
+        SINK_OP_PROCESS,
+        ReifiedProcess::Sink,
+        Some(new_wildcard_var()),
+    ));
     definitions
 }
 
@@ -176,6 +191,10 @@ enum ReifiedProcess {
         runtime: Arc<ReifiedRuntime>,
         agent: Arc<dyn SpaceAgent>,
     },
+    /// The matcher process of user agents (P8, design v2 MO-1).
+    Matcher(MatcherProcess),
+    /// The sink of the calls of a translation (P8, design v2 SK-1).
+    Sink,
 }
 
 impl ReifiedProcess {
@@ -196,11 +215,24 @@ impl ReifiedProcess {
             ReifiedProcess::Ann { runtime, agent } => {
                 ann(runtime, agent, contract, contract_args).await
             }
+            ReifiedProcess::Matcher(matcher) => matcher.call(contract, contract_args).await,
+            ReifiedProcess::Sink => user_agent::sink(contract_args).await,
         }
     }
 }
 
 fn definition(channel: SystemChannel, process: ReifiedProcess) -> Definition {
+    definition_with_remainder(channel, process, None)
+}
+
+/// The definition of `process` on `channel` with the remainder `remainder` of its install
+/// pattern. Every process but the sink of P8 has no remainder (I-18). The sink has the arity 0
+/// and a wildcard remainder, so it takes a message of any arity (design v2 TS-2).
+fn definition_with_remainder(
+    channel: SystemChannel,
+    process: ReifiedProcess,
+    remainder: Remainder,
+) -> Definition {
     let process = Arc::new(process);
     Definition::new(
         channel.urn.to_string(),
@@ -220,7 +252,7 @@ fn definition(channel: SystemChannel, process: ReifiedProcess) -> Definition {
                 Box::pin(async move { process.call(&contract, contract_args).await })
             })
         }),
-        None,
+        remainder,
     )
 }
 
@@ -919,7 +951,7 @@ mod tests {
     use crate::rust::interpreter::reified::system_channels::{
         P5_SYSTEM_CHANNELS, P6_SYSTEM_CHANNELS, P7_SYSTEM_CHANNELS,
     };
-    use crate::rust::interpreter::spaces::namespace::{self, NameTail, GET_SPACE_AGENT};
+    use crate::rust::interpreter::spaces::namespace::{self, NameTail, GET_SPACE_AGENT, SINK_OP};
 
     fn typed(code: SpaceReplyCode) -> Par { typed_error(code, Vec::new()) }
 
@@ -939,7 +971,7 @@ mod tests {
         let defined = definitions(&runtime);
         // The four processes of P4 first, then the registered families of P5 in family-index
         // order, then the registered aliases, then the registered families of P6, then the
-        // processes of P6, then the registered families of P7.
+        // processes of P6, then the registered families of P7, then the processes of P8.
         let p5: Vec<SystemChannel> = urn::registered_p5_families()
             .map(|(_, channel)| channel)
             .chain(urn::registered_aliases().map(|(channel, _)| channel))
@@ -964,6 +996,7 @@ mod tests {
             .chain(p6.iter())
             .chain(P6_PROCESSES.iter())
             .chain(p7.iter())
+            .chain(P8_PROCESSES.iter())
             .copied()
             .collect();
         assert_eq!(defined.len(), expected.len());
@@ -972,7 +1005,13 @@ mod tests {
             assert_eq!(definition.fixed_channel, channel.channel());
             assert_eq!(definition.arity, channel.arity);
             assert_eq!(definition.body_ref, channel.body_ref());
-            assert_eq!(definition.remainder, None);
+            // Changed by P8 step 1: the sink has a wildcard remainder (design v2 TS-2).
+            // assert_eq!(definition.remainder, None);
+            let expected_remainder = match channel.op {
+                SINK_OP => Some(new_wildcard_var()),
+                _ => None,
+            };
+            assert_eq!(definition.remainder, expected_remainder);
             assert_eq!(
                 definition.to_urn_map(),
                 (

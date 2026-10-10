@@ -31,6 +31,10 @@ pub enum ReifiedReduceError {
     /// A persistent send to another op channel that takes calls (readiness review §4).
     #[error("a persistent send to a Reified system channel aborts")]
     PersistentOpCall,
+    /// A persistent send to a matcher capability `X` or a body capability `B` of a translated
+    /// receive (P8, design v2 A13), as A21 aborts one to a handle.
+    #[error("a persistent send to a Reified capability aborts")]
+    PersistentCapabilityCall,
     /// A space that a user agent implements (P8).
     #[error("spaces that user agents implement are not available")]
     AgentSpacesUnavailable,
@@ -46,8 +50,11 @@ pub enum ReifiedReduceError {
     /// The empty `Par` as a space reference.
     #[error("the space reference is empty")]
     EmptySpaceRef,
-    /// A space handle under a bundle without the write flag.
-    #[error("the space handle is not writable")]
+    /// A space reference under a bundle without the write flag: a space handle, or the
+    /// reference of a user agent (P8, design v2 AG-4, which generalizes the code of P4).
+    // Changed by P8 step 1: the message named only a handle.
+    // #[error("the space handle is not writable")]
+    #[error("the space reference is not writable")]
     HandleNotWritable,
     /// A Reified id that is not a space handle, as a space reference.
     #[error("the value is not a space reference")]
@@ -66,6 +73,7 @@ impl ReifiedReduceError {
             ReifiedReduceError::PersistentFactoryCall => "PersistentFactoryCall",
             ReifiedReduceError::PersistentHandleCall => "PersistentHandleCall",
             ReifiedReduceError::PersistentOpCall => "PersistentOpCall",
+            ReifiedReduceError::PersistentCapabilityCall => "PersistentCapabilityCall",
             ReifiedReduceError::AgentSpacesUnavailable => "AgentSpacesUnavailable",
             ReifiedReduceError::CrossSpaceJoin => "CrossSpaceJoin",
             // Disabled by decision 29 with its variant (P5c).
@@ -103,6 +111,7 @@ mod tests {
             ReifiedReduceError::PersistentFactoryCall,
             ReifiedReduceError::PersistentHandleCall,
             ReifiedReduceError::PersistentOpCall,
+            ReifiedReduceError::PersistentCapabilityCall,
             ReifiedReduceError::AgentSpacesUnavailable,
             ReifiedReduceError::CrossSpaceJoin,
             // Disabled by decision 29 with its variant (P5c).

@@ -1245,7 +1245,7 @@ Table S8 maps the checklist items to the reason and to the gate that shows it.
 | 15 | System byte names are unchanged. | `rholang/src` is unchanged in P1. | Footprint `p1` |
 | 16 | No schema shift happens. | The protobuf files are frozen, and ordinary terms keep their bytes. | R7, `runtime_spec` |
 | 17 | `ISpace` implementors compile unchanged. | `rspace_interface.rs` and `ispace_impl.rs` are frozen. | Workspace build, footprint `p1` |
-| 21 | `contract_call.rs`, `dispatch.rs`, `ispace_impl.rs`, and the cost-accounting module are byte-identical, except the accessor `space_store` of the native replay session that decision 47 approves. | The policy `campaign`, which `p1` extends, freezes them. From decision 47, the policy `d47` approves the accessor as the only edit of the accounting module. | Footprints `p1` and `d47` |
+| 21 | `contract_call.rs`, `dispatch.rs`, `ispace_impl.rs`, and the cost-accounting module are byte-identical, with two approved exceptions. Decision 47 approves the accessor `space_store` of the native replay session. Decision 78 approves the v6 host-work limits of one native replay test. | The policy `campaign`, which `p1` extends, freezes them. From decision 47, the policy `d47` approves the accessor as the only production edit of the accounting module. From decision 78, the policy `p8` also approves one test edit. | Footprints `p1`, `d47` and `p8` |
 | 22 | The parser is a conservative extension of HEAD parsing. | Every repository source normalizes to the bytes of HEAD. | `ordinary_source_normalization_unchanged` |
 
 Items 18 to 20 concern the space machinery of P4 to P7, which P1 does not add.
@@ -1543,7 +1543,7 @@ Here ‖ is byte concatenation, `sid` is the 32-byte [space id](glossary.md#spac
 | `E0‖H‖sid` | 34 | `handle_channel` | the channel `this`, $`H(\mathit{sid})`$ |
 | `E0‖N‖sid‖tail` | 66 or 42 | `name_id` | a [space name](glossary.md#space-name) |
 
-The decoder `decode_reified_id` (`spaces/namespace.rs:318-348`) is total, and it accepts only the image of a constructor:
+The decoder `decode_reified_id` (`spaces/namespace.rs:340-370`) is total, and it accepts only the image of a constructor:
 
 - An id without the tag, or with fewer than 2 bytes, is not a Reified id.
 - An id of exactly 2 bytes is an op.
@@ -1577,7 +1577,7 @@ The bincode bytes have one key for both, and the headline `canon_respects_par_eq
 r_{\mathit{purpose}} = \mathrm{split}_{\mathit{purpose}}\bigl(\mathrm{split}_{\mathtt{0xE0}}(r)\bigr)
 ```
 
-*Table N2.2. The random purposes of `RandomPurpose` (`spaces/namespace.rs:403-428`).*
+*Table N2.2. The random purposes of `RandomPurpose` (`spaces/namespace.rs:425-450`).*
 
 | Purpose | Byte | Use |
 |---|---|---|
@@ -1765,7 +1765,7 @@ The headline `crossed_stacks_without_removal_counters_fabricate` (`CounterConfli
 ### N4. GenericSpace and the queue discipline
 
 `GenericSpace<S, D>` (`spaces/generic.rs:557-560`) is the native space agent of the family whose outer store is `S` and whose inner collection is `D`.
-The runtime installs the family agent `FamilyAgent`, and `native_agent` returns it (`reified/system_processes.rs:83`).
+The runtime installs the family agent `FamilyAgent`, and `native_agent` returns it (`reified/system_processes.rs:87`).
 The family agent reads the config of a space once and runs the `GenericSpace` of the family that the config names (`spaces/families.rs:344-354`, `535-626`).
 Two traits separate the parts of a family:
 
@@ -2060,7 +2060,7 @@ Figure N4 shows the states of one queue collection.
 ### N5. Routing and scope
 
 The reducer evaluates a channel, removes its bundle, and then routes it.
-`classify_channel` (`reified/route.rs:102-136`) gives the channel one [routing class](glossary.md#routing-class), and `route` maps the class to a space:
+`classify_channel` (`reified/route.rs:126-160`) gives the channel one [routing class](glossary.md#routing-class), and `route` maps the class to a space:
 
 ```rust
 /// Routes a channel (P4 design C.1).
@@ -2100,10 +2100,10 @@ pub fn route(ctx: &SpaceCtx, channel: &Par) -> Result<Route, SpaceError> {
 Two more rules complete the routing:
 
 - **R6.** A space operation builds its produce and consume identities on the data channel $`D(\mathit{sid}, k)`$. So the identities equal what reaches storage.
-- **R7.** `RoutingExecution` (`reified/execution.rs:113-130`) routes the replies of the system processes, which bypass the reducer. It applies R1 to R4 with no use context, because a system process has no lexical context. A reply to a space name runs on its space, and its fires dispatch through the reducer.
+- **R7.** `RoutingExecution` (`reified/execution.rs:113-131`) routes the replies of the system processes, which bypass the reducer. It applies R1 to R4 with no use context, because a system process has no lexical context. A reply to a space name runs on its space, and its fires dispatch through the reducer.
 
 A channel of an ordinary program routes to the default space, and the hooks then make the baseline call with identical arguments.
-The headline `ordinary_channels_route_default` (`SpaceRefs.v:746`) and the regression suites of the [verification dossier](verification.md#8-regression-checks-for-ordinary-execution) check this property.
+The headline `ordinary_channels_route_default` (`SpaceRefs.v:842`) and the regression suites of the [verification dossier](verification.md#8-regression-checks-for-ordinary-execution) check this property.
 Mergeable-channel detection runs on the final routed channel, and it never classifies a Reified channel as mergeable (consensus checklist item 19).
 
 Figure N5 shows the decision.
@@ -2112,7 +2112,7 @@ Figure N5 shows the decision.
 
 *Figure N5. Source: [diagrams/12-routing-decision.puml](diagrams/12-routing-decision.puml), rendered by [diagrams/render.sh](diagrams/render.sh).*
 
-**Space references.** `classify_space_ref` (`reified/scope.rs:106-129`) gives the value of `use s`, of `new x : s`, and of `getSpaceAgent!?(s)` one meaning, by the five rules of the [space reference](glossary.md#space-reference).
+**Space references.** `classify_space_ref` (`reified/scope.rs:141-180`) gives the value of `use s`, of `new x : s`, and of `getSpaceAgent!?(s)` one meaning, by the five rules of the [space reference](glossary.md#space-reference).
 A native space needs a bare handle id or a writable bundle of one ([decision 34](decision-register.md#decision-34), item A22).
 A user agent fails closed with `AgentSpacesUnavailable` until P8.
 
@@ -2129,7 +2129,7 @@ EVAL-USE(space, body, env, rand):              ▷ reducer_hooks.rs, eval_use an
 ```
 
 The field `space_ctx` is immutable, and `with_metering_child` copies it into parallel branches.
-A body that the reducer stores for later evaluation under a use context gets the USE tuple of the context around it (`reified/scope.rs:134-142`).
+A body that the reducer stores for later evaluation under a use context gets the USE tuple of the context around it (`reified/scope.rs:185-193`).
 So a parked receive body runs in its context when it fires, as a lexical closure does.
 
 The USE tuple is one term, so the reducer evaluates it with the random state of the body. So the wrapper changes no random state.
@@ -2149,10 +2149,10 @@ EVAL-NEWSPACE(annotations, new, env, rand):    ▷ reducer_hooks.rs, eval_new_sp
 ```
 
 The annotations evaluate in the environment outside the `new`, as the [syntax contract](syntax-contract.md#scopes-and-binding-order) states.
-Inside a use context, a plain `new` without annotations also stamps every plain binder with the space of the context (`reified/reducer_hooks.rs:596-622`).
+Inside a use context, a plain `new` without annotations also stamps every plain binder with the space of the context (`reified/reducer_hooks.rs:663-711`).
 The stamp keeps the 32 random bytes of the baseline name as the tail, so the random draws do not change ([decision I-3](decision-register.md#i-3)).
 
-**The send hook.** `reified_produce` (`reified/reducer_hooks.rs:362-380`) is hook H3, with the same signature as the baseline `produce`.
+**The send hook.** `reified_produce` (`reified/reducer_hooks.rs:429-447`) is hook H3, with the same signature as the baseline `produce`.
 
 ```text
 REIFIED-PRODUCE(chan, data, persistent, α):    ▷ reducer_hooks.rs, reified_produce and route_send
@@ -2175,7 +2175,7 @@ REIFIED-PRODUCE(chan, data, persistent, α):    ▷ reducer_hooks.rs, reified_pr
 A handle call keeps its trailing PARAMS tuple, which `HANDLE_OP` reads.
 The queue discipline takes no send params, so a named param on a queue fails with `UnknownParam` and no suggestion.
 
-**The receive hook.** `reified_consume` (`reified/reducer_hooks.rs:482-559`) takes the parameters of the baseline `consume`.
+**The receive hook.** `reified_consume` (`reified/reducer_hooks.rs:549-626`) takes the parameters of the baseline `consume`.
 
 ```text
 REIFIED-CONSUME(binds, body, persistent, peek, guard, α, α_intro):
@@ -2198,7 +2198,7 @@ A join with a user agent fails with `AgentSpacesUnavailable`, and every other mi
 The fast path classifies without an allocation, so an ordinary receive costs no extra work.
 
 **The refresh of derived flags.** The evaluation and the substitution of the baseline keep a stale `connective_used` flag on a tuple, a list, or a map ([decision I-20](decision-register.md#i-20)).
-So before each strict decode, the hooks compute again the flags that the encoder derives from the children, and they change no value (`reified/reducer_hooks.rs:1473-1493`).
+So before each strict decode, the hooks compute again the flags that the encoder derives from the children, and they change no value (`reified/reducer_hooks.rs:1565-1585`).
 Hook H4 refreshes a QUERY tuple the same way before it fails closed with `QuerySpecUnsupported`.
 
 **Examples.** The first program puts a forged channel into a queue space with `use`.
@@ -2303,7 +2303,7 @@ Native play and a bound native replay runtime run the same space entry, so nativ
 The runtime holds no cache, so nothing in it survives a reset.
 The host runtime holds one `SpaceStoreHandle` for the host, which the substrate requires ([S10](#s10-limits)).
 
-**The dispatch of fires.** `dispatch_space_outcome` (`reified/reducer_hooks.rs:767-823`) runs the continuations that a space operation fired.
+**The dispatch of fires.** `dispatch_space_outcome` (`reified/reducer_hooks.rs:856-912`) runs the continuations that a space operation fired.
 
 ```text
 DISPATCH-SPACE-OUTCOME(fires, reissue, then):  ▷ reducer_hooks.rs, dispatch_space_outcome
@@ -2413,12 +2413,14 @@ The reply is a branch because a dispatch ends the participant that makes it (see
 The reply and the fired bodies are parallel processes, as in the equivalent Rholang program `ch!(msg) | ret!(Nil)` after the commit.
 
 **Persistent sends.** The reducer never cancels the re-produce of a persistent send, so a call with `!!` could repeat forever.
-So a persistent send to an op channel that takes calls, or to a handle, aborts the deploy before the call ([decision 32](decision-register.md#decision-32), item A21):
+So a persistent send to an op channel that takes calls, or to a handle, aborts the deploy before the call ([decision 32](decision-register.md#decision-32), item A21).
+P8 adds the matcher and body capabilities of user agents to the rule (P8 design v2, item A13):
 
 ```rust
-/// A persistent send (`!!`) aborts on every op that takes calls and on every handle (A21).
-/// The runtime never cancels the re-produce of a persistent send, so a call could repeat
-/// forever. `channel` is the channel after the unbundling of `eval_send`.
+/// A persistent send (`!!`) aborts on every op that takes calls and on every handle (A21),
+/// and on every matcher and body capability of a translated receive (P8, design v2 A13). The
+/// runtime never cancels the re-produce of a persistent send, so a call could repeat forever.
+/// `channel` is the channel after the unbundling of `eval_send`.
 pub fn check_persistent_send(channel: &Par, persistent: bool) -> Result<(), ReifiedReduceError> {
     if !persistent {
         return Ok(());
@@ -2429,14 +2431,17 @@ pub fn check_persistent_send(channel: &Par, persistent: bool) -> Result<(), Reif
         }
         Some(ReifiedId::Op(op)) if is_call_op(op) => Err(ReifiedReduceError::PersistentOpCall),
         Some(ReifiedId::Handle(_)) => Err(ReifiedReduceError::PersistentHandleCall),
+        Some(ReifiedId::Matcher(..) | ReifiedId::Body(..)) => {
+            Err(ReifiedReduceError::PersistentCapabilityCall)
+        }
         _ => Ok(()),
     }
 }
 ```
 
-The factory ops are `0x00` to `0x20`, and the other ops that take calls are `0x21` to `0x25` and `0x30` to `0x32` (`reified/system_channels.rs:103`, `107`).
+The factory ops are `0x00` to `0x20`, and the other ops that take calls are `0x21` to `0x25` and `0x30` to `0x32` (`reified/system_channels.rs:104`, `108`).
 
-**`getSpaceAgent` and `assertEqual`.** `getSpaceAgent!(ret, s)` classifies `s` as a space reference (`reified/system_processes.rs:227-265`).
+**`getSpaceAgent` and `assertEqual`.** `getSpaceAgent!(ret, s)` classifies `s` as a space reference (`reified/system_processes.rs:259-297`).
 For a native space, it reads the config record in a read-only space intent. It then replies with the capability of the factory of the family ([decision 9.4](decision-register.md#decision-9-4)).
 That capability equals the value that the URN of the factory binds, so the FIPS check `getSpaceAgent(space_1) == HMB` holds.
 `assertEqual!(ret, a, b)` replies `true` when the sorted values of `a` and `b` are equal, and `false` otherwise ([decision 33](decision-register.md#decision-33)).
@@ -2460,7 +2465,7 @@ The substrate errors map explicitly, never through the text of `RSpaceError` (re
 - `SpaceTxnError::ReplayDivergence` becomes `SpaceError::ReplayDivergence`, which keeps its own code.
 - Every other variant becomes `SpaceError::Substrate`, for example `UnlockedChannel`, `NestedTransaction`, `ParentOrderReused`, and the 32-bit `CounterOverflow` of the produce counter.
 
-*Table N8.1. The abort codes of the reducer hooks (`reified/errors.rs:15-55`).*
+*Table N8.1. The abort codes of the reducer hooks (`reified/errors.rs:15-62`).*
 
 | Code | Trigger |
 |---|---|
@@ -2471,10 +2476,11 @@ The substrate errors map explicitly, never through the text of `RSpaceError` (re
 | `PersistentFactoryCall` | A persistent send to a factory op, `0x00` to `0x20`. |
 | `PersistentHandleCall` | A persistent send to a handle. |
 | `PersistentOpCall` | A persistent send to another op that takes calls. |
+| `PersistentCapabilityCall` | A persistent send to a matcher capability `X` or a body capability `B` of a user agent (P8, item A13). |
 | `AgentSpacesUnavailable` | A space reference that names a user agent, a send or receive on an agent-tagged name, or a `consume` call with user-agent matchers, until P8. |
 | `CrossSpaceJoin` | A join whose binds route to more than one space, or to a space and the default space. |
 | `OrderedJoinUnsupported` | Retired in P5 wave W3 ([decision 29](decision-register.md#decision-29)). A join whose binds route to one native space runs on the join engine (N12), and the code stays commented out in `reified/errors.rs`. |
-| `EmptySpaceRef`, `HandleNotWritable`, `NotASpaceRef` | A space reference of `use` or of `new x : s` that names no space. |
+| `EmptySpaceRef`, `HandleNotWritable`, `NotASpaceRef` | A space reference of `use` or of `new x : s` that names no space. Since P8, `HandleNotWritable` also covers the reference of a user agent under a bundle without the write flag, which a call cannot reach (item AG-4). |
 
 *Table N8.2. The abort codes of the space operations (`spaces/errors.rs:20-193`).*
 
@@ -2660,7 +2666,7 @@ The registration reads the family dispatch (`spaces/factory/urn.rs:203`).
 A factory row is registered exactly when its family has an arm.
 So no manual step can register a family without an agent or forget a wired family.
 
-`definitions` installs the four P4 processes, then the factory of each registered P5 family in family-index order, then the factory of each registered alias (`reified/system_processes.rs:96-157`).
+`definitions` installs the four P4 processes, then the factory of each registered P5 family in family-index order, then the factory of each registered alias (`reified/system_processes.rs:101-172`).
 The VectorDB factories and the processes of P6 come next, and the HashSet factories of P7 come last.
 An alias has the channel, the arity, the body reference and the handler of its family. So the second install of a shared channel changes nothing.
 
@@ -2789,8 +2795,8 @@ An allocation is one job over $`[C(\mathit{sid}), A(\mathit{sid})]`$: the family
 `AllocCx` then takes $`A(\mathit{sid}) = n`$ and puts the next value (`spaces/generic.rs:2778-2826`).
 An allocation that fails stages nothing, and every read and copy is reserved before it is made.
 
-The reducer runs one allocation job for each distinct space of the plain binders of a `new` inside `use s` (F11, `reified/reducer_hooks.rs:643-688`).
-Each job takes the cost authority of the process that evaluates the `new`, as its call `s!gensym()` would (`reified/reducer_hooks.rs:694-721`).
+The reducer runs one allocation job for each distinct space of the plain binders of a `new` inside `use s` (F11, `reified/reducer_hooks.rs:732-777`).
+Each job takes the cost authority of the process that evaluates the `new`, as its call `s!gensym()` would (`reified/reducer_hooks.rs:783-810`).
 So each allocation is paid by its caller (P4 design B.7), and the handle method `gensym` runs a job with the authority of its call.
 A store without an allocator answers `Baseline`, and the binders keep the names that HEAD draws.
 
@@ -2824,8 +2830,8 @@ Every read, copy, comparison and allocation of the layer is reserved before it i
 
 #### N11.8 Receive queries and allocation jobs in the hooks
 
-Hook H4 fails only on a malformed QUERY tuple, and a query routes the inner channel of its tuple (`reified/reducer_hooks.rs:845-856`, `reified/reducer_hooks.rs:885-899`).
-The fast path of a receive admits no marker tuple, so a QUERY tuple never becomes a channel of the host (`reified/reducer_hooks.rs:872-874`).
+Hook H4 fails only on a malformed QUERY tuple, and a query routes the inner channel of its tuple (`reified/reducer_hooks.rs:934-945`, `reified/reducer_hooks.rs:974-988`).
+The fast path of a receive admits no marker tuple, so a QUERY tuple never becomes a channel of the host (`reified/reducer_hooks.rs:961-963`).
 
 ```text
 REIFIED-PRODUCE: Space(n,k) → remove the PARAMS tuple from data; named ← SPACE-PARAMS(params)   ▷ positional: PositionalParamsUnsupported
@@ -2943,8 +2949,8 @@ A program never issues a settle job, and the reducer issues a join only through 
 | `PendingProduce` (`spaces/agent.rs:244-256`) | One owed second send: its collection, its record with the envelope, and its persistence. |
 | `SpaceAgent::prepare_join` (`spaces/agent.rs:480-484`) | Stages a join: the classification, the scope, and the engine. |
 
-The receive hook routes a receive with two or more binds on one native space to `SpaceOp::Join` (`reified/reducer_hooks.rs:953-981`).
-Any other mix of routes fails with `AgentSpacesUnavailable` or `CrossSpaceJoin` (`reified/reducer_hooks.rs:1011-1035`).
+The receive hook routes a receive with two or more binds on one native space to `SpaceOp::Join` (`reified/reducer_hooks.rs:1042-1070`).
+Any other mix of routes fails with `AgentSpacesUnavailable` or `CrossSpaceJoin` (`reified/reducer_hooks.rs:1100-1127`).
 
 #### N12.2 Classification and the scope
 
@@ -3793,7 +3799,7 @@ That delete names an id that the mirror never received, and ChromaDB accepts it 
 
 #### N16.3 Recorded embeddings
 
-`rho:vectordb:embed` turns texts into vectors with the embedder of the node (`rholang/src/rust/interpreter/reified/system_processes.rs:363-379`).
+`rho:vectordb:embed` turns texts into vectors with the embedder of the node (`rholang/src/rust/interpreter/reified/system_processes.rs:395-411`).
 The model can differ between nodes, so the vector of a text is never a function of consensus state.
 The dispatcher therefore records the whole reply of each call on the produce event of the reply, a failure reply included.
 Replay produces the recorded reply and asks no embedder, and Figure N16.3 shows both runs.
@@ -3805,7 +3811,7 @@ A program then sends the vector with `embedding=`, and from then on the vector i
 
 #### N16.4 The advisory query
 
-`rho:vectordb:ann` asks the mirror of the node for the records of a channel that are nearest to a query (`rholang/src/rust/interpreter/reified/system_processes.rs:453-479`).
+`rho:vectordb:ann` asks the mirror of the node for the records of a channel that are nearest to a query (`rholang/src/rust/interpreter/reified/system_processes.rs:485-511`).
 Its checks read consensus state, so play and replay both make them ([decision 67](decision-register.md#decision-67)).
 In native execution each check is a journaled operation, and a replay that skipped one would fail its certification with an incomplete journal.
 Only the answers of the services are recorded: the embedding of a text query, the neighbours and the watermark.

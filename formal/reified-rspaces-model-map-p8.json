@@ -1,0 +1,127 @@
+{
+  "schema": "reified-rspaces-model-map/2",
+  "phase": "P8",
+  "title": "P8: the spaces that user agents implement (design v2, plan decision 77). Step 1 (W1 and W5): the use-context of an agent and the write rule of an agent reference (SpaceRefs.v A1), the matcher state codec, the matcher process and the sink.",
+  "design": "P8 design v2 (.reified-rspaces-work/p8/design-v2.md), sections 3 and 7. The headline ids are the ids of the P8 phase of formal/reified-rspaces-invariant-map.json. The agent routes of route (AG-1) re-prove the P4 headlines route_total_deterministic and route_rules, so the P4 map holds route, agent_parts and UseKind.",
+  "code_base": "The items are in the P8 commits of this repository. The line numbers are informative. The checker finds each item by its scope and name.",
+  "checker": "scripts/verify-reified/check-model-map.py",
+  "formal_files": {
+    "rocq": [
+      "formal/rocq/reified_rspaces/theories/SpaceRefs.v"
+    ],
+    "tla": []
+  },
+  "headlines": {
+    "A1": {
+      "kind": "rocq",
+      "name": "agent_ref_requires_write_flag",
+      "file": "formal/rocq/reified_rspaces/theories/SpaceRefs.v",
+      "statement": "A use block enters the context of a user agent exactly when the evaluated reference has a call channel under the bundle rule of eval_send; under a bundle without the write flag it fails with HandleNotWritable."
+    }
+  },
+  "items": [
+    {
+      "item": "call_channel",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/scope.rs",
+      "kind": "fn",
+      "name": "call_channel",
+      "line": 170,
+      "role": "The call channel of an agent under the bundle rule of eval_send (AG-4).",
+      "rocq": [
+        "call_channel"
+      ],
+      "tla": [],
+      "covers": [
+        "A1"
+      ]
+    },
+    {
+      "item": "ReducerCore::space_ref",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
+      "scope": "ReducerCore",
+      "kind": "fn",
+      "name": "space_ref",
+      "line": 390,
+      "role": "Evaluate and classify a space reference; an agent reference must have a call channel (AG-4).",
+      "rocq": [
+        "enter_use",
+        "call_channel"
+      ],
+      "tla": [],
+      "covers": [
+        "A1"
+      ]
+    },
+    {
+      "item": "ReducerCore::eval_use",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
+      "scope": "ReducerCore",
+      "kind": "fn",
+      "name": "eval_use",
+      "line": 275,
+      "role": "use s { P }: the write rule of an agent reference; the context of an agent until step 4 fails closed.",
+      "rocq": [
+        "enter_use"
+      ],
+      "tla": [],
+      "covers": [
+        "A1"
+      ]
+    },
+    {
+      "item": "MatcherState",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/user_agent.rs",
+      "kind": "struct",
+      "name": "MatcherState",
+      "line": 83,
+      "role": "The canonical state of a matcher capability (TR-5).",
+      "rocq": [],
+      "tla": [],
+      "covers": [],
+      "unmodeled": "AgentTranslation.v (P8 step 3, design v2 section 13) models the matcher state (matcher_state_roundtrip) and the matcher process (matcher_sound_complete, guard_fold_sound)."
+    },
+    {
+      "item": "matcher_state_of",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/user_agent.rs",
+      "kind": "fn",
+      "name": "matcher_state_of",
+      "line": 227,
+      "role": "The state of a bare uppercase X id (MO-2).",
+      "rocq": [],
+      "tla": [],
+      "covers": [],
+      "unmodeled": "AgentTranslation.v (P8 step 3, design v2 section 13) models the matcher state (matcher_state_roundtrip) and the matcher process (matcher_sound_complete, guard_fold_sound)."
+    },
+    {
+      "item": "MatcherProcess",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/user_agent.rs",
+      "kind": "struct",
+      "name": "MatcherProcess",
+      "line": 307,
+      "role": "The process MATCHER_OP (MO-1 to MO-4).",
+      "rocq": [],
+      "tla": [],
+      "covers": [],
+      "unmodeled": "AgentTranslation.v (P8 step 3, design v2 section 13) models the matcher state (matcher_state_roundtrip) and the matcher process (matcher_sound_complete, guard_fold_sound)."
+    },
+    {
+      "item": "sink",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/user_agent.rs",
+      "kind": "fn",
+      "name": "sink",
+      "line": 459,
+      "role": "The process SINK_OP (SK-1): it drops every message.",
+      "rocq": [],
+      "tla": [],
+      "covers": [],
+      "unmodeled": "The sink has no effect, so no model state changes; its arity and remainder are pinned by the definition tests."
+    }
+  ]
+}

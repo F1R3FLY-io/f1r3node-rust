@@ -15,7 +15,7 @@ use crypto::rust::hash::blake2b512_random::Blake2b512Random;
 use models::rhoapi::tagged_continuation::TaggedCont;
 use models::rhoapi::{BindPattern, Bundle, ListParWithRandom, Par, TaggedContinuation};
 use models::rust::space_factory_urn::{SpaceFactoryUrn, HASHMAP_BAG_ALIAS, PATHMAP_BAG_ALIAS};
-use models::rust::utils::{new_bundle_par, new_gbytearray_par};
+use models::rust::utils::{new_bundle_par, new_gbytearray_par, new_wildcard_var};
 use prost::Message;
 use reified_strategies::{gbool, gstring};
 use rholang::rust::interpreter::accounting::costs::Cost;
@@ -31,7 +31,7 @@ use rholang::rust::interpreter::reified::runtime::unavailable;
 use rholang::rust::interpreter::reified::scope::{classify_space_ref, SpaceRef};
 use rholang::rust::interpreter::reified::system_channels::{
     body_ref, SystemChannel, ASSERT_EQUAL_PROCESS, BODY_REF_BASE, GET_SPACE_AGENT_PROCESS,
-    HANDLE_OP_PROCESS, HASHMAP_QUEUE_FACTORY, P4_SYSTEM_CHANNELS, P6_PROCESSES,
+    HANDLE_OP_PROCESS, HASHMAP_QUEUE_FACTORY, P4_SYSTEM_CHANNELS, P6_PROCESSES, P8_PROCESSES,
 };
 use rholang::rust::interpreter::reified::system_processes::definitions;
 use rholang::rust::interpreter::rho_runtime::{RhoRuntime, RhoRuntimeImpl};
@@ -424,6 +424,13 @@ const P6_PROCESS_PINS: [(&str, u8, i32, i64); 3] = [
     ("rho:vectordb:ann", 0x25, 5, 237),
 ];
 
+/// The processes of P8, after the factories of P7: `(urn, op, arity, body ref)` (design v2
+/// MO-1, plan decision 77 U1). The sink has the arity 0 and a wildcard remainder.
+const P8_PROCESS_PINS: [(&str, u8, i32, i64); 2] = [
+    ("rho:reified:internal:matcherOp", 0x31, 2, 249),
+    ("rho:reified:internal:sinkOp", 0x32, 0, 250),
+];
+
 /// The system channels of the registered families of P6, in the order of the definitions.
 fn registered_p6_channels() -> Vec<SystemChannel> {
     registered_p6_families()
@@ -503,6 +510,7 @@ async fn space_private_channels_unique() {
         .chain(p6.iter())
         .chain(P6_PROCESSES.iter())
         .chain(p7.iter())
+        .chain(P8_PROCESSES.iter())
     {
         assert_eq!(
             urn_map.get(channel.urn),
@@ -522,6 +530,7 @@ async fn space_private_channels_unique() {
         .chain(p6.iter())
         .chain(P6_PROCESSES.iter())
         .chain(p7.iter())
+        .chain(P8_PROCESSES.iter())
         .map(|channel| channel.urn)
         .collect();
     let mut owners: BTreeMap<Vec<u8>, &str> = BTreeMap::new();
@@ -609,9 +618,11 @@ async fn space_private_channels_body_refs_disjoint() {
     expected.extend(registered_p6_pins().into_iter().map(|(.., body)| body));
     expected.extend(P6_PROCESS_PINS.into_iter().map(|(.., body)| body));
     expected.extend(registered_p7_pins().into_iter().map(|(.., body)| body));
+    expected.extend(P8_PROCESS_PINS.into_iter().map(|(.., body)| body));
     assert_eq!(
         refs, expected,
-        "the P4 body refs are 200 + op, and the registered P5, P6 and P7 rows follow"
+        "the P4 body refs are 200 + op, and the registered P5, P6 and P7 rows and the P8 \
+         processes follow"
     );
     for (definition, channel) in defined.iter().zip(P4_SYSTEM_CHANNELS) {
         assert_eq!(definition.body_ref, body_ref(channel.op));
@@ -1427,7 +1438,8 @@ async fn space_system_ops_get_space_agent_not_native() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn space_system_ops_arity_and_body_refs_stable() {
     // The four processes of P4 first, then the registered rows of P5 in the order of the table,
-    // then the registered rows of P6, then the processes of P6, then the registered rows of P7.
+    // then the registered rows of P6, then the processes of P6, then the registered rows of P7,
+    // then the processes of P8.
     let mut pinned = vec![
         ("rho:space:hashmap:queue", 0x01_u8, 2, 201),
         ("rho:space:getSpaceAgent", 0x21, 2, 233),
@@ -1438,6 +1450,7 @@ async fn space_system_ops_arity_and_body_refs_stable() {
     pinned.extend(registered_p6_pins());
     pinned.extend(P6_PROCESS_PINS);
     pinned.extend(registered_p7_pins());
+    pinned.extend(P8_PROCESS_PINS);
     let defined = definitions(&unavailable());
     assert_eq!(defined.len(), pinned.len());
     for (definition, (urn, op, arity, body)) in defined.iter().zip(pinned) {
@@ -1448,7 +1461,16 @@ async fn space_system_ops_arity_and_body_refs_stable() {
         );
         assert_eq!(definition.arity, arity, "{urn}");
         assert_eq!(definition.body_ref, body, "{urn}");
-        assert_eq!(definition.remainder, None, "{urn} has a fixed arity");
+        // Changed by P8 step 1: the sink takes a reply of any arity (design v2 TS-2).
+        // assert_eq!(definition.remainder, None, "{urn} has a fixed arity");
+        match urn {
+            "rho:reified:internal:sinkOp" => assert_eq!(
+                definition.remainder,
+                Some(new_wildcard_var()),
+                "{urn} takes any arity"
+            ),
+            _ => assert_eq!(definition.remainder, None, "{urn} has a fixed arity"),
+        }
         assert_eq!(
             definition.to_urn_map(),
             (

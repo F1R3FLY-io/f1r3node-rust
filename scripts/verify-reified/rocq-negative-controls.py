@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Rocq negative controls for the Reified RSpaces P1, P2, P4, P5 and P6 models.
+"""Rocq negative controls for the Reified RSpaces P1, P2, P4 to P8 models.
 
 Each control mutates one rule in a scratch copy of a module
 (formal/rocq/reified_rspaces/theories). The mutation changes one definition,
@@ -90,6 +90,19 @@ Decision 47 (SpaceRefs.v) has two controls: a host runtime that rejects space
 jobs in native play, as decision 46 did, and a native replay runtime that runs
 space jobs before its environment binds it. The control of decision 46 is
 retired with its headline.
+
+P8 step 1 (SpaceRefs.v, design v2 AG-1 to AG-4) has four controls. Each
+reverts one rule of the routes and use-contexts of user agents:
+  sr-agent-route-drops-parts         an agent-tagged channel routes without
+                                     the parts (A, raw) of its tag (R4)
+  sr-forged-ignores-agent-context    a forged channel in the use block of an
+                                     agent routes to the default space (R5)
+  sr-agent-ignores-write-flag        a use block enters the context of an
+                                     agent that a call cannot reach (AG-4)
+  sr-call-channel-ignores-write-flag a bundle without the write flag gives
+                                     its body as the call channel (AG-4)
+The P8 change of the use-context also updates the texts of the P4 controls
+sr-forged-ignores-context and sr-space-name-takes-context.
 
 Decision 42 (AgentReadCoverage.v) has five controls. Each reverts one part of
 the metering rule: a step that reads before it reserves, a fire that does not
@@ -838,16 +851,24 @@ CONTROLS = (
      "  | Some (RHandle _), false => SRErr HandleNotWritable",
      "  | Some (RHandle n), false => SROk (SNative n)",
      ("classify_space_ref_total_deterministic", "handle_requires_write_flag")),
+    # Changed by P8 step 1: the use-context names a native space or an agent
+    # (AG-2), so the R5 arm of a native context has a new text. The P4 find
+    # and replace texts were "    | CForged, Some t => space_route (t_native t) c"
+    # and "    | CForged, Some t => RouteOk RDefault".
     ("sr-forged-ignores-context", "SpaceRefs",
      "a forged channel routes to the default space inside a use block (R5)",
-     "    | CForged, Some t => space_route (t_native t) c",
-     "    | CForged, Some t => RouteOk RDefault",
+     "    | CForged, Some (mkTarget _ (UKNative n)) => space_route n c",
+     "    | CForged, Some (mkTarget _ (UKNative n)) => RouteOk RDefault",
      ("route_total_deterministic", "route_rules")),
+    # Changed by P8 step 1: the native space of a context is in its kind
+    # (AG-2). The P4 replace text read the field t_native, which no longer
+    # exists: "    | CSpaceName n, Some t => space_route (t_native t) c\n"
+    # "    | CSpaceName n, None => space_route n c".
     ("sr-space-name-takes-context", "SpaceRefs",
      "a space name routes to the space of the use-context (R3)",
      "    | CSpaceName n, _ => space_route n c",
-     "    | CSpaceName n, Some t => space_route (t_native t) c\n"
-     "    | CSpaceName n, None => space_route n c",
+     "    | CSpaceName n, Some (mkTarget _ (UKNative m)) => space_route m c\n"
+     "    | CSpaceName n, _ => space_route n c",
      ("route_total_deterministic", "route_rules", "space_name_route_ignores_ctx")),
     ("sr-wrapper-drops-context", "SpaceRefs",
      "a stored body is not wrapped, so it runs without its context",
@@ -2084,6 +2105,27 @@ CONTROLS = (
      "        | TBadArgument => match validate_factory f q pos named with "
      "POk _ => G3Theory TBadArgument | PErr err => G3Params err end",
      ("theory_gate_validated",)),
+    # ── P8 step 1: SpaceRefs.v, the routes and use-contexts of user agents (design v2 AG-1 to AG-4) ──
+    ("sr-agent-route-drops-parts", "SpaceRefs",
+     "an agent-tagged channel routes to an agent without the parts of its tag (R4)",
+     "        match agent_parts c with Some (a, r) => RouteOk (RAgent a r) | None => RouteErr end",
+     "        RouteOk (RAgent empty_par c)",
+     ("route_total_deterministic", "route_rules")),
+    ("sr-forged-ignores-agent-context", "SpaceRefs",
+     "a forged channel inside the use block of an agent routes to the default space (R5, AG-1)",
+     "    | CForged, Some (mkTarget s UKAgent) => RouteOk (RAgent s c)",
+     "    | CForged, Some (mkTarget s UKAgent) => RouteOk RDefault",
+     ("route_total_deterministic", "route_rules")),
+    ("sr-agent-ignores-write-flag", "SpaceRefs",
+     "a use block enters the context of an agent whose reference has no call channel (AG-4)",
+     "        | None => UseFailed (UseRef HandleNotWritable)",
+     "        | None => Entered (mkTarget v UKAgent)",
+     ("use_wrapper_restores_ctx", "agent_ref_requires_write_flag")),
+    ("sr-call-channel-ignores-write-flag", "SpaceRefs",
+     "the call channel of a bundle without the write flag is its body (AG-4)",
+     "  | Some (mkBundle (Some body) true _) => Some body\n  | Some _ => None",
+     "  | Some (mkBundle (Some body) _ _) => Some body\n  | Some _ => None",
+     ("use_wrapper_restores_ctx", "agent_ref_requires_write_flag")),
 )
 
 DECLARATION = re.compile(

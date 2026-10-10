@@ -775,7 +775,25 @@
           ],
           "step": "footprint",
           "proves": "Accounting and host-work code match HEAD. From decision 47, the accounting module may hold the approved accessor space_store of the native replay session.",
-          "from": "d47"
+          "from": "d47",
+          "until": "p7"
+        },
+        {
+          "kind": "footprint",
+          "policy": "@milestone",
+          "mode": "approved_edits",
+          "paths": [
+            "rholang/src/rust/interpreter/accounting/**",
+            "rholang/src/rust/interpreter/host_work.rs",
+            "models/src/rust/host_work.rs",
+            "rspace++/src/rspace/rspace/accounting.rs"
+          ],
+          "no_new_files": [
+            "rholang/src/rust/interpreter/accounting/**"
+          ],
+          "step": "footprint",
+          "proves": "Accounting and host-work code match HEAD. From decision 47, the accounting module may hold the approved accessor space_store of the native replay session. From decision 78, the accounting tests may also hold the v6 host-work limits of the replay in the test of schedule-independent replay charges.",
+          "from": "p8"
         }
       ]
     },
@@ -1227,7 +1245,7 @@
     {
       "number": 21,
       "id": "protected-runtime-files",
-      "text": "`contract_call.rs`, `dispatch.rs`, `ispace_impl.rs`, and the cost-accounting module match HEAD byte for byte, except the accessor `space_store` of the native replay session that decision 47 approves.",
+      "text": "`contract_call.rs`, `dispatch.rs`, `ispace_impl.rs`, and the cost-accounting module match HEAD byte for byte, except the accessor `space_store` of the native replay session that decision 47 approves and the v6 host-work limits of one native replay test that decision 78 approves.",
       "checks": [
         {
           "kind": "footprint",
@@ -1261,7 +1279,25 @@
           ],
           "step": "footprint",
           "proves": "The four protected paths match HEAD. From decision 47, the accounting module may hold the approved accessor space_store of the native replay session.",
-          "from": "d47"
+          "from": "d47",
+          "until": "p7"
+        },
+        {
+          "kind": "footprint",
+          "policy": "@milestone",
+          "mode": "approved_edits",
+          "paths": [
+            "rholang/src/rust/interpreter/contract_call.rs",
+            "rholang/src/rust/interpreter/dispatch.rs",
+            "rspace++/src/rspace/rspace/ispace_impl.rs",
+            "rholang/src/rust/interpreter/accounting/**"
+          ],
+          "no_new_files": [
+            "rholang/src/rust/interpreter/accounting/**"
+          ],
+          "step": "footprint",
+          "proves": "The four protected paths match HEAD. From decision 47, the accounting module may hold the approved accessor space_store of the native replay session. From decision 78, the accounting tests may also hold the v6 host-work limits of the replay in the test of schedule-independent replay charges.",
+          "from": "p8"
         }
       ]
     },

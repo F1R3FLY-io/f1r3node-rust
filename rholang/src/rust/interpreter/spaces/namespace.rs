@@ -283,6 +283,28 @@ pub fn name_id(space: NativeSpace, tail: NameTail) -> Vec<u8> {
 /// `E0‖op`: a 2-byte op id.
 pub fn op_channel(op: u8) -> Vec<u8> { vec![REIFIED_TAG, op] }
 
+/// `E0‖X‖state`: the matcher capability of one bind of a translated receive (P8, design v2
+/// TR-5). The translation mints only the uppercase (durable) form, and `state` is the canonical
+/// encoding of the matcher state (`reified::user_agent::MatcherState`), which has more than
+/// [`SID_LEN`] bytes.
+pub fn matcher_channel(state: &[u8]) -> Vec<u8> {
+    let mut id = Vec::with_capacity(2 + state.len());
+    id.push(REIFIED_TAG);
+    id.push(Kind::Matcher as u8);
+    id.extend_from_slice(state);
+    id
+}
+
+/// `E0‖B‖tag`: the body capability of a translated receive (P8, design v2 TR-6). The
+/// translation mints only the uppercase (durable) form.
+pub fn body_channel(tag: &[u8; SID_LEN]) -> Vec<u8> {
+    let mut id = Vec::with_capacity(SPACE_ID_PREFIX_LEN);
+    id.push(REIFIED_TAG);
+    id.push(Kind::Body as u8);
+    id.extend_from_slice(tag);
+    id
+}
+
 /// A decoded Reified id. Each slice borrows from the decoded id.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ReifiedId<'a> {

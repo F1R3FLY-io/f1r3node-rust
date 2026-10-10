@@ -55,7 +55,7 @@ use crate::rust::interpreter::reified::costs::ScanMeter;
 use crate::rust::interpreter::reified::errors::ReifiedReduceError;
 use crate::rust::interpreter::reified::route::{classify_channel, ChannelClass, Route};
 use crate::rust::interpreter::reified::scope::{
-    classify_space_ref, wrap_body, SpaceRef, UseTarget,
+    call_channel, classify_space_ref, wrap_body, SpaceRef, UseKind, UseTarget,
 };
 use crate::rust::interpreter::reified::seq;
 use crate::rust::interpreter::reified::system_channels::{
@@ -262,8 +262,16 @@ impl ReducerCore {
         })
     }
 
-    /// `use s { P }`: evaluates `P` with the use-context of the native space `s`. `P` gets the
-    /// random state of the tuple, so the tuple is random-transparent (P4 design C.2).
+    /// `use s { P }`: evaluates `P` with the use-context of the space `s`. `P` gets the random
+    /// state of the tuple, so the tuple is random-transparent (P4 design C.2).
+    ///
+    /// P8 (design v2 AG-2, AG-4): a native space must be live (DG-1). The reference of a user
+    /// agent must have a call channel under the bundle rule of `eval_send` (`call_channel`), or
+    /// the block fails with `HandleNotWritable`. A user agent has no liveness check. Until the
+    /// translation of `new` lands (P8 step 4), the block of a user agent then fails closed with
+    /// `AgentSpacesUnavailable`, so a program never runs a partial translation. The routes and
+    /// the context of an agent (`UseKind::Agent`) are in place, and the tests of steps 1 to 3
+    /// set the context directly.
     async fn eval_use(
         &self,
         block: UseBlock,
@@ -272,10 +280,23 @@ impl ReducerCore {
         authority: &CostAuthority,
     ) -> Result<(), InterpreterError> {
         let UseBlock { space, body } = block;
-        let (space, native) = self.native_space_ref(&space, env)?;
-        self.reified.check_live_space(native)?;
+        // Changed by P8 step 1 (design v2 AG-2): a `use` block on a user agent enters its context.
+        // let (space, native) = self.native_space_ref(&space, env)?;
+        // self.reified.check_live_space(native)?;
+        // let mut scoped = self.clone();
+        // scoped.space_ctx = Some(Arc::new(UseTarget { space, native }));
+        let (space, kind) = match self.space_ref(&space, env)? {
+            (space, SpaceRef::Native(native)) => {
+                self.reified.check_live_space(native)?;
+                (space, UseKind::Native(native))
+            }
+            // P8 step 4 replaces this arm with `(space, UseKind::Agent)`.
+            (_, SpaceRef::Agent(_)) => {
+                return Err(ReifiedReduceError::AgentSpacesUnavailable.into())
+            }
+        };
         let mut scoped = self.clone();
-        scoped.space_ctx = Some(Arc::new(UseTarget { space, native }));
+        scoped.space_ctx = Some(Arc::new(UseTarget { space, kind }));
         scoped
             .eval_with_authority(body, env, rand, authority.clone())
             .await
@@ -301,12 +322,32 @@ impl ReducerCore {
         let NewSpace { annotations, new } = new_space;
         self.metering
             .reserve_reduction(new_bindings_cost(i64::from(new.bind_count)))?;
-        let context = self.context_space();
+        // Changed by P8 step 1: a binder of a user agent fails closed until the translation of
+        // `new` (design v2 W4, P8 step 4). An annotation of an agent passes the write rule of
+        // AG-4 first, and a binder without an annotation takes the context.
+        // let context = self.context_space();
+        // let mut spaces = Vec::with_capacity(annotations.len());
+        // for annotation in &annotations {
+        //     spaces.push(match annotation {
+        //         Some(reference) => Some(self.native_space_ref(reference, env)?.1),
+        //         None => context,
+        //     });
+        // }
+        let context = self.space_ctx.as_deref().map(|target| target.kind);
         let mut spaces = Vec::with_capacity(annotations.len());
         for annotation in &annotations {
-            spaces.push(match annotation {
-                Some(reference) => Some(self.native_space_ref(reference, env)?.1),
-                None => context,
+            spaces.push(match (annotation, context) {
+                (Some(reference), _) => match self.space_ref(reference, env)? {
+                    (_, SpaceRef::Native(native)) => Some(native),
+                    (_, SpaceRef::Agent(_)) => {
+                        return Err(ReifiedReduceError::AgentSpacesUnavailable.into())
+                    }
+                },
+                (None, Some(UseKind::Native(native))) => Some(native),
+                (None, Some(UseKind::Agent)) => {
+                    return Err(ReifiedReduceError::AgentSpacesUnavailable.into())
+                }
+                (None, None) => None,
             });
         }
         let bound = self
@@ -324,26 +365,52 @@ impl ReducerCore {
             .await
     }
 
+    // Replaced by `space_ref` in P8 step 1 (design v2 AG-2, AG-4): a user agent is a space
+    // reference too.
+    // /// Evaluates a space reference as `unbundle_receive` evaluates a source, and classifies it
+    // /// (P4 design C.2). A space that a user agent implements fails closed until P8.
+    // fn native_space_ref(
+    //     &self,
+    //     reference: &Par,
+    //     env: &Env<Par>,
+    // ) -> Result<(Par, NativeSpace), InterpreterError> {
+    //     let evaluated = self.eval_expr(reference, env)?;
+    //     let space = self.substitute.substitute_and_charge(&evaluated, 0, env)?;
+    //     match classify_space_ref(&space) {
+    //         Ok(SpaceRef::Native(native)) => Ok((space, native)),
+    //         Ok(SpaceRef::Agent(_)) => Err(ReifiedReduceError::AgentSpacesUnavailable.into()),
+    //         Err(error) => Err(ReifiedReduceError::from(error).into()),
+    //     }
+    // }
+
     /// Evaluates a space reference as `unbundle_receive` evaluates a source, and classifies it
-    /// (P4 design C.2). A space that a user agent implements fails closed until P8.
-    fn native_space_ref(
+    /// (P4 design C.2). A user agent must pass the write rule of `eval_send` (P8, design v2
+    /// AG-4): its reference must have a call channel (`call_channel`), or the reference fails
+    /// with `HandleNotWritable`. The result holds the evaluated reference and what it names.
+    fn space_ref(
         &self,
         reference: &Par,
         env: &Env<Par>,
-    ) -> Result<(Par, NativeSpace), InterpreterError> {
+    ) -> Result<(Par, SpaceRef), InterpreterError> {
         let evaluated = self.eval_expr(reference, env)?;
         let space = self.substitute.substitute_and_charge(&evaluated, 0, env)?;
         match classify_space_ref(&space) {
-            Ok(SpaceRef::Native(native)) => Ok((space, native)),
-            Ok(SpaceRef::Agent(_)) => Err(ReifiedReduceError::AgentSpacesUnavailable.into()),
+            Ok(SpaceRef::Native(native)) => Ok((space, SpaceRef::Native(native))),
+            Ok(SpaceRef::Agent(agent)) => match call_channel(&agent) {
+                Ok(_) => Ok((space, SpaceRef::Agent(agent))),
+                Err(error) => Err(ReifiedReduceError::from(error).into()),
+            },
             Err(error) => Err(ReifiedReduceError::from(error).into()),
         }
     }
 
-    /// The native space of the use-context, or `None` outside every `use` block.
-    fn context_space(&self) -> Option<NativeSpace> {
-        self.space_ctx.as_ref().map(|target| target.native)
-    }
+    // Disabled by P8 step 1 (design v2 AG-2): the callers match the kind of the context
+    // (`UseKind`), because the context of a user agent has no native space and fails closed
+    // until the translation of `new` (P8 step 4). No caller remains.
+    // /// The native space of the use-context, or `None` outside every `use` block.
+    // fn context_space(&self) -> Option<NativeSpace> {
+    //     self.space_ctx.as_ref().map(|target| target.native)
+    // }
 
     /// Hook H3: the produce of `eval_send` (P4 design C.3, readiness review §4, P5 design v3
     /// A.8).
@@ -386,7 +453,7 @@ impl ReducerCore {
         self.reified.check_live(channel)?;
         match route {
             Route::Space { space, .. } => self.reified.check_live_space(*space),
-            Route::Default | Route::Agent => Ok(()),
+            Route::Default | Route::Agent { .. } => Ok(()),
         }
     }
 
@@ -459,7 +526,7 @@ impl ReducerCore {
                     reissued_ord: None,
                 }))
             }
-            Route::Agent => Err(ReifiedReduceError::AgentSpacesUnavailable.into()),
+            Route::Agent { .. } => Err(ReifiedReduceError::AgentSpacesUnavailable.into()),
         }
     }
 
@@ -603,20 +670,42 @@ impl ReducerCore {
         Ready<Result<Env<Par>, InterpreterError>>,
         Pin<Box<dyn Future<Output = Result<Env<Par>, InterpreterError>> + std::marker::Send + 'a>>,
     > {
-        match self.context_space() {
+        // Changed by P8 step 1 (design v2 AG-2): the context names a native space or an agent.
+        // A `new` in the `use` block of an agent fails closed until the translation of `new`
+        // (W4, P8 step 4).
+        // match self.context_space() {
+        //     None => Either::Left(std::future::ready(super::allocate_new_bindings(
+        //         new,
+        //         env,
+        //         rand,
+        //         &self.urn_map,
+        //     ))),
+        //     Some(space) => Either::Right(Box::pin(self.allocate_in_spaces(
+        //         native_agent(),
+        //         new,
+        //         env,
+        //         rand,
+        //         BinderSpaces::All(space),
+        //         authority,
+        //     ))),
+        // }
+        match self.space_ctx.as_deref().map(|target| target.kind) {
             None => Either::Left(std::future::ready(super::allocate_new_bindings(
                 new,
                 env,
                 rand,
                 &self.urn_map,
             ))),
-            Some(space) => Either::Right(Box::pin(self.allocate_in_spaces(
+            Some(UseKind::Native(space)) => Either::Right(Box::pin(self.allocate_in_spaces(
                 native_agent(),
                 new,
                 env,
                 rand,
                 BinderSpaces::All(space),
                 authority,
+            ))),
+            Some(UseKind::Agent) => Either::Left(std::future::ready(Err(
+                ReifiedReduceError::AgentSpacesUnavailable.into(),
             ))),
         }
     }
@@ -939,7 +1028,7 @@ fn single_bind_route(bind: RoutedBind) -> Result<ReceiveRoute, InterpreterError>
             query,
         }),
         RoutedBind {
-            route: Route::Agent,
+            route: Route::Agent { .. },
             ..
         } => Err(ReifiedReduceError::AgentSpacesUnavailable.into()),
     }
@@ -989,7 +1078,7 @@ fn join_bind(bind: RoutedBind) -> Option<JoinBind> {
             pattern: bind.pattern,
             query: bind.query,
         }),
-        Route::Default | Route::Agent => None,
+        Route::Default | Route::Agent { .. } => None,
     }
 }
 
@@ -997,7 +1086,7 @@ fn join_bind(bind: RoutedBind) -> Option<JoinBind> {
 fn one_space(routed: &[RoutedBind]) -> Option<NativeSpace> {
     let first = match routed.first().map(|bind| &bind.route) {
         Some(Route::Space { space, .. }) => *space,
-        Some(Route::Default | Route::Agent) | None => return None,
+        Some(Route::Default | Route::Agent { .. }) | None => return None,
     };
     routed
         .iter()
@@ -1028,7 +1117,10 @@ fn join_error(routes: Vec<&Route>) -> ReifiedReduceError {
     //     (false, true) => ReifiedReduceError::AgentSpacesUnavailable,
     //     (false, false) => ReifiedReduceError::CrossSpaceJoin,
     // }
-    match routes.iter().any(|route| matches!(route, Route::Agent)) {
+    match routes
+        .iter()
+        .any(|route| matches!(route, Route::Agent { .. }))
+    {
         true => ReifiedReduceError::AgentSpacesUnavailable,
         false => ReifiedReduceError::CrossSpaceJoin,
     }
@@ -1747,7 +1839,7 @@ mod tests {
         let mut core = reducer.clone();
         core.space_ctx = Some(Arc::new(UseTarget {
             space: handle(space),
-            native: space,
+            kind: UseKind::Native(space),
         }));
         core
     }
@@ -3390,7 +3482,7 @@ mod tests {
                 Target::Failed(ReifiedReduceError::QuerySpecUnsupported.into())
             }
             (Ok(Route::Space { space, key }), query) => Target::Space(space, key, channel, query),
-            (Ok(Route::Agent), _) => {
+            (Ok(Route::Agent { .. }), _) => {
                 Target::Failed(ReifiedReduceError::AgentSpacesUnavailable.into())
             }
             (Err(error), _) => Target::Failed(error.into()),

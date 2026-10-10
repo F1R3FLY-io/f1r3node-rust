@@ -59,7 +59,7 @@ use models::rust::space_factory_urn::{
     SpaceFactoryConstructor, SpaceFactoryUrn, SpaceInner, SpaceOuter, SpaceQualifier,
     FACTORY_FAMILY_COUNT, HASHMAP_BAG_ALIAS, PATHMAP_BAG_ALIAS, SPACE_URN_PREFIX,
 };
-use models::rust::utils::{new_bundle_par, new_freevar_par, new_gbytearray_par};
+use models::rust::utils::{new_bundle_par, new_freevar_par, new_gbytearray_par, new_gstring_par};
 use proptest::array::uniform32;
 use proptest::collection::vec;
 use proptest::prelude::*;
@@ -82,9 +82,11 @@ use rholang::rust::interpreter::reified::costs::{ReissueCause, ScanMeter, FIRE_R
 use rholang::rust::interpreter::reified::errors::ReifiedReduceError;
 use rholang::rust::interpreter::reified::factory::{handle_continuation, handle_pattern};
 use rholang::rust::interpreter::reified::handle::typed_error;
-use rholang::rust::interpreter::reified::route::{classify_channel, route, ChannelClass, Route};
+use rholang::rust::interpreter::reified::route::{
+    agent_parts, classify_channel, route, ChannelClass, Route,
+};
 use rholang::rust::interpreter::reified::scope::{
-    classify_space_ref, wrap_body, SpaceCtx, SpaceRef, SpaceRefError, UseTarget,
+    classify_space_ref, wrap_body, SpaceCtx, SpaceRef, SpaceRefError, UseKind, UseTarget,
 };
 use rholang::rust::interpreter::reified::system_channels::{
     body_ref, check_persistent_send, handle_of, op_of, HASHMAP_QUEUE_FACTORY, P4_SYSTEM_CHANNELS,
@@ -526,12 +528,44 @@ fn named_ops() -> Vec<u8> {
 fn use_ctx(space: NativeSpace) -> SpaceCtx {
     Some(Arc::new(UseTarget {
         space: gprivate(namespace::handle_channel(space)),
-        native: space,
+        // Changed by P8 step 1 (design v2 AG-2): the context names a native space or an agent.
+        // native: space,
+        kind: UseKind::Native(space),
     }))
 }
 
+/// The use-context of the user agent `agent` (P8, design v2 AG-2).
+fn agent_ctx(agent: Par) -> SpaceCtx {
+    Some(Arc::new(UseTarget {
+        space: agent,
+        kind: UseKind::Agent,
+    }))
+}
+
+/// A reference of a user agent: a string value, bare or under a bundle with the write flag.
+fn arb_agent_ref() -> BoxedStrategy<Par> {
+    (0u8..4, any::<bool>())
+        .prop_map(|(index, bundled)| {
+            let agent = new_gstring_par(format!("agent-{index}"), Vec::new(), false);
+            match bundled {
+                true => new_bundle_par(agent, true, true),
+                false => agent,
+            }
+        })
+        .boxed()
+}
+
+// Changed by P8 step 1: a context can name a user agent.
+// fn arb_ctx() -> BoxedStrategy<SpaceCtx> {
+//     prop_oneof![Just(None), arb_space().prop_map(use_ctx)].boxed()
+// }
 fn arb_ctx() -> BoxedStrategy<SpaceCtx> {
-    prop_oneof![Just(None), arb_space().prop_map(use_ctx)].boxed()
+    prop_oneof![
+        Just(None),
+        arb_space().prop_map(use_ctx),
+        arb_agent_ref().prop_map(agent_ctx)
+    ]
+    .boxed()
 }
 
 /// `kind_byte_injective`: each kind and durability has one KIND byte. The ephemeral byte is
@@ -6142,10 +6176,26 @@ fn expected_route(class: ChannelClass, channel: &Par, ctx: &SpaceCtx) -> Route {
             _,
         ) => Route::Default,
         (ChannelClass::SpaceName(space), _) => Route::Space { space, key: key() },
-        (ChannelClass::AgentTagged, _) => Route::Agent,
-        (ChannelClass::Forged, Some(target)) => Route::Space {
-            space: target.native,
-            key: key(),
+        // Changed by P8 step 1 (design v2 AG-1): R4 carries the parts of the tag, and R5 routes
+        // to the agent of an agent context.
+        // (ChannelClass::AgentTagged, _) => Route::Agent,
+        // (ChannelClass::Forged, Some(target)) => Route::Space {
+        //     space: target.native,
+        //     key: key(),
+        // },
+        (ChannelClass::AgentTagged, _) => {
+            let (agent, raw) = agent_parts(channel).expect("an agent-tagged channel has parts");
+            Route::Agent {
+                agent: agent.clone(),
+                raw: raw.clone(),
+            }
+        }
+        (ChannelClass::Forged, Some(target)) => match target.kind {
+            UseKind::Native(space) => Route::Space { space, key: key() },
+            UseKind::Agent => Route::Agent {
+                agent: target.space.clone(),
+                raw: channel.clone(),
+            },
         },
         (ChannelClass::Forged, None) => Route::Default,
     }
@@ -6371,8 +6421,9 @@ fn prop_route_total() {
 
 /// `route_rules`: R1 to R5. System channels, default objects, other unforgeable names and
 /// storage ids route to the default space. A space name routes to its space, and an
-/// agent-tagged name to the agent. A forged channel routes to the context space, or to the
-/// default space without a context.
+/// agent-tagged name to the agent of its tag with the raw channel of its tag. A forged channel
+/// routes to the context space, to the context agent with the forged channel as its raw channel
+/// (P8), or to the default space without a context.
 #[test]
 fn prop_route_rules() {
     check(
@@ -6570,7 +6621,9 @@ async fn use_wrapper_restores_ctx_case(
 ) -> Result<(), TestCaseError> {
     let target = UseTarget {
         space: gprivate(namespace::handle_channel(RIG_SPACE)),
-        native: RIG_SPACE,
+        // Changed by P8 step 1 (design v2 AG-2).
+        // native: RIG_SPACE,
+        kind: UseKind::Native(RIG_SPACE),
     };
     prop_assert_eq!(wrap_body(&None, body.clone()), body.clone());
     let wrapped = wrap_body(&Some(Arc::new(target.clone())), body.clone());

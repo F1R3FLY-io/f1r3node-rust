@@ -122,7 +122,8 @@ impl ExecutionBackend for RoutingExecution {
                 .produce_in_space(space, key, channel, data, persistent)
                 .await
                 .map_err(backend_error),
-            Ok(Route::Agent) => Err(backend_error(
+            // P8 step 2 replaces this arm with R7A (design v2 W7).
+            Ok(Route::Agent { .. }) => Err(backend_error(
                 ReifiedReduceError::AgentSpacesUnavailable.into(),
             )),
             Err(error) => Err(backend_error(error.into())),
