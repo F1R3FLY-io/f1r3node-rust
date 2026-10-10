@@ -888,7 +888,11 @@ async fn pattern_enforcement_qualifiers_fail_closed() {
     for family in SpaceFactoryUrn::all().filter(|family| constructor_schema(*family).is_some()) {
         // Changed by P7 step 1 (design v3 QT-1): `temp` creates a space for one deploy.
         // for qualifier in [SpaceQualifier::Temp, SpaceQualifier::Seq] {
-        for qualifier in [SpaceQualifier::Seq] {
+        // Changed by P7 step 6: a loop over `seq` alone has one element, which clippy rejects
+        // (single_element_loop), so the qualifier is a binding.
+        // for qualifier in [SpaceQualifier::Seq] {
+        {
+            let qualifier = SpaceQualifier::Seq;
             let ctor = new_elist_par(
                 vec![gstring(qualifier.as_str())],
                 Vec::new(),
@@ -915,7 +919,11 @@ async fn pattern_enforcement_qualifiers_fail_closed() {
         let urn = row.family().to_string();
         // Changed by P7 step 1 (design v3 QT-1): `temp` creates a space for one deploy.
         // for qualifier in ["temp", "seq"] {
-        for qualifier in ["seq"] {
+        // Changed by P7 step 6: a loop over `seq` alone has one element, which clippy rejects
+        // (single_element_loop), so the qualifier is a binding.
+        // for qualifier in ["seq"] {
+        {
+            let qualifier = "seq";
             let mut ctors = vec![row.constructor.replace("default", qualifier)];
             let without_params = format!(r#""{qualifier}""#);
             if !ctors.contains(&without_params) {
