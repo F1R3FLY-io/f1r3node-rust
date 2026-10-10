@@ -14,6 +14,7 @@ use std::sync::Arc;
 
 use casper::rust::api::block_api::BlockAPI;
 use casper::rust::api::pending_deploys::{PendingDeploysSnapshot, PENDING_DEPLOYS_MAX_RESULTS};
+use casper::rust::casper::MultiParentCasper;
 use casper::rust::engine::engine_cell::EngineCell;
 use casper::rust::engine::engine_with_casper::EngineWithCasper;
 use casper::rust::engine::multi_parent_casper::MultiParentCasperImpl;
@@ -439,4 +440,113 @@ async fn an_expired_deploy_in_the_rejected_buffer_is_not_reported() {
         !sigs.contains(&expired.sig),
         "an expired rejected deploy can never land, so it is not pending"
     );
+}
+
+fn seed_undecodable_record(node: &TestNode) -> Vec<u8> {
+    let damaged_key = node
+        .casper
+        .deploy_storage
+        .lock()
+        .store
+        .encode_key(&vec![7u8; 64])
+        .expect("damaged key");
+    node.casper
+        .deploy_storage
+        .lock()
+        .store
+        .raw_store()
+        .put_one(damaged_key.clone(), vec![0xff, 0x01])
+        .expect("seed damaged storage record");
+    node.casper
+        .rejected_deploy_buffer
+        .lock()
+        .expect("buffer lock")
+        .store
+        .raw_store()
+        .put_one(damaged_key.clone(), vec![0xff, 0x01])
+        .expect("seed damaged buffer record");
+    damaged_key
+}
+
+/// An undecodable record in either local pool does not fail the pending
+/// snapshot or the pending-deploy check. Valid deploys in both pools are
+/// still reported.
+#[tokio::test]
+async fn undecodable_records_do_not_hide_valid_pending_deploys() {
+    let ctx = TestContext::new().await;
+    let nodes = TestNode::create_network(ctx.genesis.clone(), 1, None, None, None, None)
+        .await
+        .unwrap();
+    let engine_cell = create_engine_cell(&nodes[0]).await;
+
+    let fresh = construct_deploy::basic_deploy_data(11, None, None).expect("fresh");
+    let rejected =
+        construct_deploy::basic_deploy_data(12, Some(construct_deploy::DEFAULT_SEC2.clone()), None)
+            .expect("rejected");
+    nodes[0]
+        .casper
+        .deploy_storage
+        .lock()
+        .add(vec![fresh.clone()])
+        .expect("add fresh deploy");
+    nodes[0]
+        .casper
+        .rejected_deploy_buffer
+        .lock()
+        .expect("buffer lock")
+        .add(vec![rejected.clone()])
+        .expect("add rejected deploy");
+    let damaged_key = seed_undecodable_record(&nodes[0]);
+
+    assert!(nodes[0]
+        .casper
+        .has_pending_deploys_in_storage()
+        .await
+        .expect("pending-deploy check"));
+    let snapshot = BlockAPI::list_pending_deploys(&engine_cell, None)
+        .await
+        .expect("snapshot");
+
+    let by_sig: HashMap<_, _> = snapshot
+        .deploys
+        .iter()
+        .map(|(d, r)| (d.sig.clone(), *r))
+        .collect();
+    assert_eq!(
+        by_sig,
+        HashMap::from([(fresh.sig.clone(), false), (rejected.sig.clone(), true)])
+    );
+    assert_eq!(
+        nodes[0]
+            .casper
+            .deploy_storage
+            .lock()
+            .store
+            .raw_store()
+            .get_one(&damaged_key)
+            .expect("raw read"),
+        None
+    );
+}
+
+/// When only an undecodable record remains, the pending-deploy check
+/// answers `false` instead of failing.
+#[tokio::test]
+async fn pending_check_is_false_when_only_undecodable_records_remain() {
+    let ctx = TestContext::new().await;
+    let nodes = TestNode::create_network(ctx.genesis.clone(), 1, None, None, None, None)
+        .await
+        .unwrap();
+    let engine_cell = create_engine_cell(&nodes[0]).await;
+    seed_undecodable_record(&nodes[0]);
+
+    assert!(!nodes[0]
+        .casper
+        .has_pending_deploys_in_storage()
+        .await
+        .expect("pending-deploy check"));
+    let snapshot = BlockAPI::list_pending_deploys(&engine_cell, None)
+        .await
+        .expect("snapshot");
+    assert!(snapshot.deploys.is_empty());
 }

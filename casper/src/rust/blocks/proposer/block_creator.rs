@@ -4900,6 +4900,83 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn prepare_user_deploys_selects_valid_deploys_past_undecodable_records() {
+        use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
+
+        let mut kvm = InMemoryStoreManager::new();
+        let deploy_storage = Arc::new(parking_lot::Mutex::new(
+            KeyValueDeployStorage::new(&mut kvm)
+                .await
+                .expect("deploy storage"),
+        ));
+        let rejected_deploy_buffer = Arc::new(Mutex::new(
+            KeyValueRejectedDeployBuffer::new(&mut kvm)
+                .await
+                .expect("rejected deploy buffer"),
+        ));
+        let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
+            .await
+            .expect("block store");
+        let mut snapshot =
+            crate::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
+        snapshot.on_chain_state.shard_conf.deploy_lifespan = 50;
+        let valid = construct_deploy::basic_deploy_data(141, None, Some("test".to_string()))
+            .expect("deploy");
+        deploy_storage
+            .lock()
+            .add(vec![valid.clone()])
+            .expect("seed deploy storage");
+        let damaged_key = deploy_storage
+            .lock()
+            .store
+            .encode_key(&vec![7u8; 64])
+            .expect("damaged key");
+        for name in ["deploy_storage", "rejected_deploy_buffer"] {
+            kvm.store(name.to_string())
+                .await
+                .expect("raw store")
+                .put_one(damaged_key.clone(), vec![0xff, 0x01])
+                .expect("seed damaged record");
+        }
+
+        let prepared = prepare_user_deploys(
+            &snapshot,
+            20,
+            valid.data.time_stamp,
+            deploy_storage,
+            rejected_deploy_buffer,
+            &block_store,
+            true,
+            true,
+        )
+        .await
+        .expect("prepare deploys");
+
+        assert_eq!(
+            prepared
+                .deploys
+                .iter()
+                .map(|deploy| deploy.sig.clone())
+                .collect::<Vec<_>>(),
+            vec![valid.sig]
+        );
+        for name in [
+            "deploy_storage_quarantine",
+            "rejected_deploy_buffer_quarantine",
+        ] {
+            assert_eq!(
+                kvm.store(name.to_string())
+                    .await
+                    .expect("quarantine store")
+                    .get_one(&damaged_key)
+                    .expect("quarantine read"),
+                Some(vec![0xff, 0x01]),
+                "{name}"
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn ordinary_storage_selection_uses_ordinary_throughput_cap() {
         let mut kvm = InMemoryStoreManager::new();
         let deploy_storage = Arc::new(parking_lot::Mutex::new(

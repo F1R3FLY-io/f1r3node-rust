@@ -8,26 +8,46 @@
 // Mirrors KeyValueDeployStorage in shape and storage backing.
 
 use std::collections::HashSet;
+use std::sync::Arc;
 
 use crypto::rust::signatures::signed::Signed;
 use models::rust::casper::protocol::casper_message::DeployData;
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
-use shared::rust::store::key_value_store::KvStoreError;
+use shared::rust::store::key_value_store::{KeyValueStore, KvStoreError};
 use shared::rust::store::key_value_typed_store::KeyValueTypedStore;
 use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
 use shared::rust::ByteString;
 
+use super::deploy_record_quarantine::DeployRecordQuarantine;
+
+pub const REJECTED_DEPLOY_BUFFER_DB: &str = "rejected_deploy_buffer";
+pub const REJECTED_DEPLOY_BUFFER_QUARANTINE_DB: &str = "rejected_deploy_buffer_quarantine";
+
 #[derive(Clone)]
 pub struct KeyValueRejectedDeployBuffer {
     pub store: KeyValueTypedStoreImpl<ByteString, Signed<DeployData>>,
+    quarantine: DeployRecordQuarantine,
 }
 
 impl KeyValueRejectedDeployBuffer {
     pub async fn new(kvm: &mut impl KeyValueStoreManager) -> Result<Self, KvStoreError> {
-        let buffer_kv_store = kvm.store("rejected_deploy_buffer".to_string()).await?;
-        let buffer_db: KeyValueTypedStoreImpl<ByteString, Signed<DeployData>> =
-            KeyValueTypedStoreImpl::new(buffer_kv_store);
-        Ok(Self { store: buffer_db })
+        let buffer_kv_store = kvm.store(REJECTED_DEPLOY_BUFFER_DB.to_string()).await?;
+        let quarantine_kv_store = kvm
+            .store(REJECTED_DEPLOY_BUFFER_QUARANTINE_DB.to_string())
+            .await?;
+        Self::from_stores(buffer_kv_store, quarantine_kv_store)
+    }
+
+    pub fn from_stores(
+        store: Arc<dyn KeyValueStore>,
+        quarantine: Arc<dyn KeyValueStore>,
+    ) -> Result<Self, KvStoreError> {
+        let buffer = Self {
+            store: KeyValueTypedStoreImpl::new(store),
+            quarantine: DeployRecordQuarantine::new(REJECTED_DEPLOY_BUFFER_DB, quarantine),
+        };
+        buffer.quarantine.restore_readable(&buffer.store)?;
+        Ok(buffer)
     }
 
     pub fn add(&mut self, deploys: Vec<Signed<DeployData>>) -> Result<(), KvStoreError> {
@@ -77,7 +97,7 @@ impl KeyValueRejectedDeployBuffer {
     }
 
     pub fn read_all(&self) -> Result<HashSet<Signed<DeployData>>, KvStoreError> {
-        self.store.to_map().map(|map| map.into_values().collect())
+        self.quarantine.read_all(&self.store)
     }
 
     pub fn non_empty(&self) -> Result<bool, KvStoreError> { self.store.non_empty() }

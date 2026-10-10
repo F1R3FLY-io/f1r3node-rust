@@ -414,24 +414,13 @@ pub async fn key_value_deploy_storage_from_dyn(
     block_storage::rust::deploy::key_value_deploy_storage::KeyValueDeployStorage,
     shared::rust::store::key_value_store::KvStoreError,
 > {
-    use block_storage::rust::deploy::key_value_deploy_storage::KeyValueDeployStorage;
-    use crypto::rust::signatures::signed::Signed;
-    use models::rust::casper::protocol::casper_message::DeployData;
-    use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
-    use shared::rust::ByteString;
+    use block_storage::rust::deploy::key_value_deploy_storage::{
+        KeyValueDeployStorage, DEPLOY_STORAGE_DB, DEPLOY_STORAGE_QUARANTINE_DB,
+    };
 
-    let deploy_storage_kv_store = kvm.store("deploy_storage".to_string()).await.map_err(|e| {
-        shared::rust::store::key_value_store::KvStoreError::IoError(format!(
-            "Failed to get deploy_storage store: {:?}",
-            e
-        ))
-    })?;
-    let deploy_storage_db: KeyValueTypedStoreImpl<ByteString, Signed<DeployData>> =
-        KeyValueTypedStoreImpl::new(deploy_storage_kv_store);
-
-    Ok(KeyValueDeployStorage {
-        store: deploy_storage_db,
-    })
+    let deploy_storage_kv_store = store_from_dyn(kvm, DEPLOY_STORAGE_DB).await?;
+    let quarantine_kv_store = store_from_dyn(kvm, DEPLOY_STORAGE_QUARANTINE_DB).await?;
+    KeyValueDeployStorage::from_stores(deploy_storage_kv_store, quarantine_kv_store)
 }
 
 pub async fn key_value_rejected_deploy_buffer_from_dyn(
@@ -440,25 +429,29 @@ pub async fn key_value_rejected_deploy_buffer_from_dyn(
     block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer,
     shared::rust::store::key_value_store::KvStoreError,
 > {
-    use block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer;
-    use crypto::rust::signatures::signed::Signed;
-    use models::rust::casper::protocol::casper_message::DeployData;
-    use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
-    use shared::rust::ByteString;
+    use block_storage::rust::deploy::key_value_rejected_deploy_buffer::{
+        KeyValueRejectedDeployBuffer, REJECTED_DEPLOY_BUFFER_DB,
+        REJECTED_DEPLOY_BUFFER_QUARANTINE_DB,
+    };
 
-    let buffer_kv_store = kvm
-        .store("rejected_deploy_buffer".to_string())
-        .await
-        .map_err(|e| {
-            shared::rust::store::key_value_store::KvStoreError::IoError(format!(
-                "Failed to get rejected_deploy_buffer store: {:?}",
-                e
-            ))
-        })?;
-    let buffer_db: KeyValueTypedStoreImpl<ByteString, Signed<DeployData>> =
-        KeyValueTypedStoreImpl::new(buffer_kv_store);
+    let buffer_kv_store = store_from_dyn(kvm, REJECTED_DEPLOY_BUFFER_DB).await?;
+    let quarantine_kv_store = store_from_dyn(kvm, REJECTED_DEPLOY_BUFFER_QUARANTINE_DB).await?;
+    KeyValueRejectedDeployBuffer::from_stores(buffer_kv_store, quarantine_kv_store)
+}
 
-    Ok(KeyValueRejectedDeployBuffer { store: buffer_db })
+async fn store_from_dyn(
+    kvm: &mut dyn KeyValueStoreManager,
+    name: &str,
+) -> Result<
+    Arc<dyn shared::rust::store::key_value_store::KeyValueStore>,
+    shared::rust::store::key_value_store::KvStoreError,
+> {
+    kvm.store(name.to_string()).await.map_err(|e| {
+        shared::rust::store::key_value_store::KvStoreError::IoError(format!(
+            "Failed to get {} store: {:?}",
+            name, e
+        ))
+    })
 }
 
 pub async fn casper_buffer_storage_from_dyn(
