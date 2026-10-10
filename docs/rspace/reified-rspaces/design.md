@@ -2100,21 +2100,22 @@ pub fn route(ctx: &SpaceCtx, channel: &Par) -> Result<Route, SpaceError> {
 Two more rules complete the routing:
 
 - **R6.** A space operation builds its produce and consume identities on the data channel $`D(\mathit{sid}, k)`$. So the identities equal what reaches storage.
-- **R7.** `RoutingExecution` (`reified/execution.rs:113-131`) routes the replies of the system processes, which bypass the reducer. It applies R1 to R4 with no use context, because a system process has no lexical context. A reply to a space name runs on its space, and its fires dispatch through the reducer.
+- **R7.** `RoutingExecution` (`reified/execution.rs:175-200`) routes the replies of the system processes, which bypass the reducer. It applies R1 to R4 with no use context, because a system process has no lexical context. A reply to a space name runs on its space, and its fires dispatch through the reducer.
+- **R7A.** Since P8 step 2, the backend also recognizes exactly one bundle with both flags around an agent-tagged tuple (`r7_route`, `reified/execution.rs:139-154`). The translation of `new` binds an agent-minted name to that bundle. So the reply of a system process to the name becomes the call on its agent. Every other bundle stays in the default space, as in the baseline. Headline `r7_agent_reply_bundle_exact` (`SpaceRefs.v:895`) states the rule.
 
 A channel of an ordinary program routes to the default space, and the hooks then make the baseline call with identical arguments.
-The headline `ordinary_channels_route_default` (`SpaceRefs.v:842`) and the regression suites of the [verification dossier](verification.md#8-regression-checks-for-ordinary-execution) check this property.
+The headline `ordinary_channels_route_default` (`SpaceRefs.v:929`) and the regression suites of the [verification dossier](verification.md#8-regression-checks-for-ordinary-execution) check this property.
 Mergeable-channel detection runs on the final routed channel, and it never classifies a Reified channel as mergeable (consensus checklist item 19).
 
 Figure N5 shows the decision.
 
-![Routing decision as an activity. The reducer removes the bundle of the channel and classifies it. A sole GPrivate with an id of 1 or 2 bytes is System. A decoded id of KIND C, H, X or B is DefaultObject. A decoded id of KIND D, I, A or S is Storage. A decoded id of KIND N is SpaceName with its native space. Any other sole unforgeable is Unforgeable. A tuple whose head is AGENT_TAG is AgentTagged. Every other channel is Forged. Rule R1 sends System, DefaultObject and Unforgeable to the default space, R2 sends Storage to the default space, R3 sends a space name to the collection key(c) of its own space in every context, R4 sends an agent-tagged name to the user agent, which fails closed with AgentSpacesUnavailable until P8, and R5 sends a forged channel to the collection key(c) of the use context, or to the default space without one. The default route makes the baseline call with identical arguments, and a space route builds the identity on D(sid, k) (R6) and runs one space intent. The R7 backend routes the replies of system processes with the same rules and no use context.](diagrams/12-routing-decision.svg)
+![Routing decision as an activity. The reducer removes the bundle of the channel and classifies it. A sole GPrivate with an id of 1 or 2 bytes is System. A decoded id of KIND C, H, X or B is DefaultObject. A decoded id of KIND D, I, A or S is Storage. A decoded id of KIND N is SpaceName with its native space. Any other sole unforgeable is Unforgeable. A tuple whose head is AGENT_TAG is AgentTagged. Every other channel is Forged. Rule R1 sends System, DefaultObject and Unforgeable to the default space, R2 sends Storage to the default space, R3 sends a space name to the collection key(c) of its own space in every context, R4 sends an agent-tagged name to the user agent: since P8 step 2 a send there becomes the call on the agent, and a receive there fails closed with AgentSpacesUnavailable until P8 step 3. R5 sends a forged channel to the collection key(c) of the use context, or to the default space without one. The default route makes the baseline call with identical arguments, and a space route builds the identity on D(sid, k) (R6) and runs one space intent. The R7 backend routes the replies of system processes with the same rules and no use context, and the bundle with both flags of an agent-minted name reaches its agent (R7A).](diagrams/12-routing-decision.svg)
 
 *Figure N5. Source: [diagrams/12-routing-decision.puml](diagrams/12-routing-decision.puml), rendered by [diagrams/render.sh](diagrams/render.sh).*
 
 **Space references.** `classify_space_ref` (`reified/scope.rs:141-180`) gives the value of `use s`, of `new x : s`, and of `getSpaceAgent!?(s)` one meaning, by the five rules of the [space reference](glossary.md#space-reference).
 A native space needs a bare handle id or a writable bundle of one ([decision 34](decision-register.md#decision-34), item A22).
-A user agent fails closed with `AgentSpacesUnavailable` until P8.
+The reference of a user agent takes the write rule of `eval_send` ([decision 77](decision-register.md#decision-77), item AG-4). Then it fails closed with `AgentSpacesUnavailable` until P8 step 4 adds the translation of `new`.
 
 **The use context.** `use s { P }` evaluates `P` with the [use context](glossary.md#use-context) of the native space `s`.
 
@@ -2124,7 +2125,7 @@ EVAL-USE(space, body, env, rand):              ▷ reducer_hooks.rs, eval_use an
     case CLASSIFY-SPACE-REF(s) of
         Native(n): child ← a copy of the reducer with space_ctx = (s, n)
                    child evaluates body with env and rand     ▷ rand is not split
-        Agent(_):  fail AgentSpacesUnavailable                  ▷ P8
+        Agent(_):  fail AgentSpacesUnavailable                  ▷ after the write rule, until P8 step 4
         error e:   fail e                                       ▷ EmptySpaceRef, HandleNotWritable, NotASpaceRef
 ```
 
@@ -2149,33 +2150,54 @@ EVAL-NEWSPACE(annotations, new, env, rand):    ▷ reducer_hooks.rs, eval_new_sp
 ```
 
 The annotations evaluate in the environment outside the `new`, as the [syntax contract](syntax-contract.md#scopes-and-binding-order) states.
-Inside a use context, a plain `new` without annotations also stamps every plain binder with the space of the context (`reified/reducer_hooks.rs:663-711`).
+Inside a use context, a plain `new` without annotations also stamps every plain binder with the space of the context (`reified/reducer_hooks.rs:724-772`).
 The stamp keeps the 32 random bytes of the baseline name as the tail, so the random draws do not change ([decision I-3](decision-register.md#i-3)).
 
-**The send hook.** `reified_produce` (`reified/reducer_hooks.rs:429-447`) is hook H3, with the same signature as the baseline `produce`.
+**The send hook.** `reified_produce` (`reified/reducer_hooks.rs:432-450`) is hook H3, with the same signature as the baseline `produce`.
 
 ```text
 REIFIED-PRODUCE(chan, data, persistent, α):    ▷ reducer_hooks.rs, reified_produce and route_send
-    params ← TRAILING-PARAMS(data)                 ▷ the refresh of I-20, then the strict decoder: Malformed
-    case ROUTE(space_ctx, chan) of
-        Default:
-            CHECK-PERSISTENT-SEND(chan, persistent)  ▷ item A21
-            if chan is a factory op:   reject positional params, data ← PACK(data)
-            else if chan is a handle:  reject positional params
-            else if params ≠ none:     fail ParamsUnsupported
-            produce(chan, data, persistent, α)         ▷ the baseline call
-        Space(n, k):
-            require params = none                      ▷ PositionalParamsUnsupported, UnknownParam
-            SPACE-OP(Produce(n, k, chan, data, persistent, α))
-        Agent:
-            fail AgentSpacesUnavailable
+    ctx ← space_ctx;  scanned ← false
+    loop:
+        params ← TRAILING-PARAMS(data)             ▷ the refresh of I-20, then the strict decoder: Malformed
+        route ← ROUTE(ctx, chan)
+        if route = Default: CHECK-PERSISTENT-SEND(chan, persistent)   ▷ item A21
+        CHECK-ROUTE-LIVE(chan, route)              ▷ DG-1
+        if a seq space is live and not scanned: SEQ-SCAN(chan, data)  ▷ SQ-2
+        case route of
+            Default:
+                if chan is a factory op:   reject positional params, data ← PACK(data)
+                else if chan is a handle:  reject positional params
+                else if params ≠ none:     fail ParamsUnsupported
+                return produce(chan, data, persistent, α)    ▷ the baseline call
+            Space(n, k):
+                require params = none                  ▷ PositionalParamsUnsupported, UnknownParam
+                return SPACE-OP(Produce(n, k, chan, data, persistent, α))
+            Agent(A, raw):                             ▷ P8 step 2, TS-1 to TS-3
+                if a seq space is live: SEQ-SCAN(chan, [raw])            ▷ item A5
+                if persistent: fail PersistentSendOnAgentSpace
+                if params ≠ none: fail ParamsUnsupportedOnAgentSpace
+                chan ← CALL-CHANNEL(A)                 ▷ the bundle rule of eval_send: HandleNotWritable
+                data ← ([sink, "produce", raw, [d₁, …, d_k]], Xlate(R).split_byte(1), the authority of data)
+                persistent ← false;  ctx ← none;  scanned ← true    ▷ the call is an ordinary send (AG-4)
 ```
+
+A send on a space that a user agent implements becomes the method call `A′!(sink, "produce", raw, [d₁, …, d_k])` of the Agents FIPS ([decision 77](decision-register.md#decision-77), item TS-1).
+`A′` is the call channel of the agent reference, `sink` is the write-only bundle of `SINK_OP`, and the list holds the data in order.
+The call datum keeps the authority of the send.
+Its random state is $`\mathrm{Xlate}(R).\mathrm{split\_byte}(1)`$, where $`R`$ is the random state of the send datum.
+
+The loop routes the call as an ordinary send with no use context.
+R1 sends it to the default space, and R4 sends it to an inner agent.
+The tag of an inner agent is a strict subterm of the tag of its outer agent, so the loop ends.
+A call round skips the Seq scan.
+Its data hold only the sink, the method name, `raw` and the data that the first round scanned.
 
 `PACK` turns the arguments of a factory call into `[ret, [ctor…]]`, so every factory has the fixed arity 2 ([decision I-18](decision-register.md#i-18)).
 A handle call keeps its trailing PARAMS tuple, which `HANDLE_OP` reads.
 The queue discipline takes no send params, so a named param on a queue fails with `UnknownParam` and no suggestion.
 
-**The receive hook.** `reified_consume` (`reified/reducer_hooks.rs:549-626`) takes the parameters of the baseline `consume`.
+**The receive hook.** `reified_consume` (`reified/reducer_hooks.rs:610-687`) takes the parameters of the baseline `consume`.
 
 ```text
 REIFIED-CONSUME(binds, body, persistent, peek, guard, α, α_intro):
@@ -2198,7 +2220,7 @@ A join with a user agent fails with `AgentSpacesUnavailable`, and every other mi
 The fast path classifies without an allocation, so an ordinary receive costs no extra work.
 
 **The refresh of derived flags.** The evaluation and the substitution of the baseline keep a stale `connective_used` flag on a tuple, a list, or a map ([decision I-20](decision-register.md#i-20)).
-So before each strict decode, the hooks compute again the flags that the encoder derives from the children, and they change no value (`reified/reducer_hooks.rs:1565-1585`).
+So before each strict decode, the hooks compute again the flags that the encoder derives from the children, and they change no value (`reified/reducer_hooks.rs:1626-1646`).
 Hook H4 refreshes a QUERY tuple the same way before it fails closed with `QuerySpecUnsupported`.
 
 **Examples.** The first program puts a forged channel into a queue space with `use`.
@@ -2303,7 +2325,7 @@ Native play and a bound native replay runtime run the same space entry, so nativ
 The runtime holds no cache, so nothing in it survives a reset.
 The host runtime holds one `SpaceStoreHandle` for the host, which the substrate requires ([S10](#s10-limits)).
 
-**The dispatch of fires.** `dispatch_space_outcome` (`reified/reducer_hooks.rs:856-912`) runs the continuations that a space operation fired.
+**The dispatch of fires.** `dispatch_space_outcome` (`reified/reducer_hooks.rs:917-973`) runs the continuations that a space operation fired.
 
 ```text
 DISPATCH-SPACE-OUTCOME(fires, reissue, then):  ▷ reducer_hooks.rs, dispatch_space_outcome
@@ -2465,7 +2487,7 @@ The substrate errors map explicitly, never through the text of `RSpaceError` (re
 - `SpaceTxnError::ReplayDivergence` becomes `SpaceError::ReplayDivergence`, which keeps its own code.
 - Every other variant becomes `SpaceError::Substrate`, for example `UnlockedChannel`, `NestedTransaction`, `ParentOrderReused`, and the 32-bit `CounterOverflow` of the produce counter.
 
-*Table N8.1. The abort codes of the reducer hooks (`reified/errors.rs:15-62`).*
+*Table N8.1. The abort codes of the reducer hooks (`reified/errors.rs:15-68`).*
 
 | Code | Trigger |
 |---|---|
@@ -2477,7 +2499,9 @@ The substrate errors map explicitly, never through the text of `RSpaceError` (re
 | `PersistentHandleCall` | A persistent send to a handle. |
 | `PersistentOpCall` | A persistent send to another op that takes calls. |
 | `PersistentCapabilityCall` | A persistent send to a matcher capability `X` or a body capability `B` of a user agent (P8, item A13). |
-| `AgentSpacesUnavailable` | A space reference that names a user agent, a send or receive on an agent-tagged name, or a `consume` call with user-agent matchers, until P8. |
+| `AgentSpacesUnavailable` | A space reference that names a user agent (until P8 step 4), a receive on an agent-tagged name (until P8 step 3), or a `consume` call with user-agent matchers (until P8 step 3). Since P8 step 2, a send on an agent-tagged name becomes the call on the agent. |
+| `PersistentSendOnAgentSpace` | A persistent send `!!` on a space that a user agent implements, in the reducer or as the reply of a system process (P8, items TS-3 and R7A-1). |
+| `ParamsUnsupportedOnAgentSpace` | A send with a trailing PARAMS tuple on a space that a user agent implements (P8, item TS-3). |
 | `CrossSpaceJoin` | A join whose binds route to more than one space, or to a space and the default space. |
 | `OrderedJoinUnsupported` | Retired in P5 wave W3 ([decision 29](decision-register.md#decision-29)). A join whose binds route to one native space runs on the join engine (N12), and the code stays commented out in `reified/errors.rs`. |
 | `EmptySpaceRef`, `HandleNotWritable`, `NotASpaceRef` | A space reference of `use` or of `new x : s` that names no space. Since P8, `HandleNotWritable` also covers the reference of a user agent under a bundle without the write flag, which a call cannot reach (item AG-4). |
@@ -2795,8 +2819,8 @@ An allocation is one job over $`[C(\mathit{sid}), A(\mathit{sid})]`$: the family
 `AllocCx` then takes $`A(\mathit{sid}) = n`$ and puts the next value (`spaces/generic.rs:2778-2826`).
 An allocation that fails stages nothing, and every read and copy is reserved before it is made.
 
-The reducer runs one allocation job for each distinct space of the plain binders of a `new` inside `use s` (F11, `reified/reducer_hooks.rs:732-777`).
-Each job takes the cost authority of the process that evaluates the `new`, as its call `s!gensym()` would (`reified/reducer_hooks.rs:783-810`).
+The reducer runs one allocation job for each distinct space of the plain binders of a `new` inside `use s` (F11, `reified/reducer_hooks.rs:793-838`).
+Each job takes the cost authority of the process that evaluates the `new`, as its call `s!gensym()` would (`reified/reducer_hooks.rs:844-871`).
 So each allocation is paid by its caller (P4 design B.7), and the handle method `gensym` runs a job with the authority of its call.
 A store without an allocator answers `Baseline`, and the binders keep the names that HEAD draws.
 
@@ -2830,8 +2854,8 @@ Every read, copy, comparison and allocation of the layer is reserved before it i
 
 #### N11.8 Receive queries and allocation jobs in the hooks
 
-Hook H4 fails only on a malformed QUERY tuple, and a query routes the inner channel of its tuple (`reified/reducer_hooks.rs:934-945`, `reified/reducer_hooks.rs:974-988`).
-The fast path of a receive admits no marker tuple, so a QUERY tuple never becomes a channel of the host (`reified/reducer_hooks.rs:961-963`).
+Hook H4 fails only on a malformed QUERY tuple, and a query routes the inner channel of its tuple (`reified/reducer_hooks.rs:995-1006`, `reified/reducer_hooks.rs:1035-1049`).
+The fast path of a receive admits no marker tuple, so a QUERY tuple never becomes a channel of the host (`reified/reducer_hooks.rs:1022-1024`).
 
 ```text
 REIFIED-PRODUCE: Space(n,k) → remove the PARAMS tuple from data; named ← SPACE-PARAMS(params)   ▷ positional: PositionalParamsUnsupported
@@ -2949,8 +2973,8 @@ A program never issues a settle job, and the reducer issues a join only through 
 | `PendingProduce` (`spaces/agent.rs:244-256`) | One owed second send: its collection, its record with the envelope, and its persistence. |
 | `SpaceAgent::prepare_join` (`spaces/agent.rs:480-484`) | Stages a join: the classification, the scope, and the engine. |
 
-The receive hook routes a receive with two or more binds on one native space to `SpaceOp::Join` (`reified/reducer_hooks.rs:1042-1070`).
-Any other mix of routes fails with `AgentSpacesUnavailable` or `CrossSpaceJoin` (`reified/reducer_hooks.rs:1100-1127`).
+The receive hook routes a receive with two or more binds on one native space to `SpaceOp::Join` (`reified/reducer_hooks.rs:1103-1131`).
+Any other mix of routes fails with `AgentSpacesUnavailable` or `CrossSpaceJoin` (`reified/reducer_hooks.rs:1161-1188`).
 
 #### N12.2 Classification and the scope
 

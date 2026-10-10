@@ -8706,13 +8706,13 @@
       ]
     },
     "P8": {
-      "title": "P8: the spaces that user agents implement (design v2, plan decision 77). Step 1 (W1 and W5): the routes and use-contexts of user agents and the write rule of an agent reference (SpaceRefs.v A1), the matcher state codec, the matcher process and the sink.",
+      "title": "P8: the spaces that user agents implement (design v2, plan decision 77). Step 1 (W1 and W5): the routes and use-contexts of user agents and the write rule of an agent reference (SpaceRefs.v A1), the matcher state codec, the matcher process and the sink. Step 2 (W2 and W7): the call of a send on an agent space and the R7 replies to agent-minted names (SpaceRefs.v A2).",
       "design": "P8 design v2 (.reified-rspaces-work/p8/design-v2.md), sections 3 (AG-1 to AG-4) and 7 (MO-1 to MO-4, SK-1, A13). A# are Rocq headlines. The routing properties of P4 (prop_route_total, prop_route_rules, prop_space_name_route_ignores_ctx) now draw contexts of user agents too, so they witness the agent arms of route_total_deterministic and route_rules. witness_tests lists the deterministic tests of the write rule and of the matcher process. The matcher state codec has its headline in AgentTranslation.v (P8 step 3).",
       "test_status": "required",
       "test_files": [
         "rholang/tests/reified_p8_props.rs"
       ],
-      "expected_properties": 1,
+      "expected_properties": 2,
       "formal": {
         "A1": {
           "kind": "rocq",
@@ -8721,6 +8721,15 @@
           "statement": "A use block enters the context of a user agent exactly when the evaluated reference has a call channel under the bundle rule of eval_send; under a bundle without the write flag it fails with HandleNotWritable.",
           "tests": [
             "prop_agent_ref_requires_write_flag"
+          ]
+        },
+        "A2": {
+          "kind": "rocq",
+          "name": "r7_agent_reply_bundle_exact",
+          "file": "formal/rocq/reified_rspaces/theories/SpaceRefs.v",
+          "statement": "For every single bundle, the R7 backend makes the call on a user agent exactly when the bundle has both flags and its body is an agent-tagged tuple, with the agent and the raw channel of the tuple; every other bundle routes to the default space, as in HEAD (R7A-1).",
+          "tests": [
+            "prop_r7_agent_reply_bundle_exact"
           ]
         }
       },
@@ -8731,6 +8740,14 @@
           "file": "rholang/tests/reified_p8_props.rs",
           "covers": [
             "A1"
+          ]
+        },
+        {
+          "number": 2,
+          "test": "prop_r7_agent_reply_bundle_exact",
+          "file": "rholang/tests/reified_p8_props.rs",
+          "covers": [
+            "A2"
           ]
         }
       ],
@@ -8749,6 +8766,22 @@
           "rule": "AG-4 (call_channel)",
           "covers": [
             "A1"
+          ]
+        },
+        {
+          "test": "reducer_space_routing_r7_agent_replies_make_the_call",
+          "file": "rholang/src/rust/interpreter/reified/execution.rs",
+          "rule": "R7A-1 (the R7 backend: tagged tuples, bundles with each flag pair, a persistent reply)",
+          "covers": [
+            "A2"
+          ]
+        },
+        {
+          "test": "user_agent_reply_reaches_the_agent",
+          "file": "rholang/tests/reified_user_agents.rs",
+          "rule": "R7A-1 (assertEqual replies in native execution, certified by native replay)",
+          "covers": [
+            "A2"
           ]
         }
       ]

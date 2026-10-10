@@ -6,30 +6,38 @@
 //! R1 to R4 and no use-context, because a system process has no lexical context.
 //!
 //! * A space name (R3) runs the produce on its native space and dispatches the fires.
-//! * An agent-tagged name (R4) fails closed until P8.
+// Changed by P8 step 2 (design v2 R7A-1): agent routes make the call of TS-1.
+// //! * An agent-tagged name (R4) fails closed until P8.
+//! * An agent-tagged name (R4), and exactly one bundle with both flags around one (R7A-1), make
+//!   the call of TS-1 on the agent, which the backend produces again, so R1 and R4 route it.
 //! * Every other channel goes to the wrapped space unchanged.
 //!
-//! The backend does not unbundle a channel and does not pack a factory call. Consumes, joins,
-//! the replay flag and produce updates go to the wrapped space unchanged.
+//! Apart from R7A-1, the backend does not unbundle a channel. It does not pack a factory call.
+//! Consumes, joins, the replay flag and produce updates go to the wrapped space unchanged.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, OnceLock, Weak};
 
 use async_trait::async_trait;
-use models::rhoapi::{BindPattern, ListParWithRandom, Par, TaggedContinuation};
+use models::rhoapi::{BindPattern, Bundle, ListParWithRandom, Par, TaggedContinuation};
+use models::rust::rholang::implicits::single_bundle;
 use rspace_plus_plus::rspace::errors::RSpaceError;
 use rspace_plus_plus::rspace::trace::event::Produce;
 
+use super::costs::ScanMeter;
 use super::errors::ReifiedReduceError;
-use super::route::{route, Route};
+use super::route::{agent_parts, route, Route};
 use super::runtime::ReifiedRuntime;
 use super::system_processes::native_agent;
+use super::{seq, user_agent};
+use crate::rust::interpreter::deterministic_reduction;
 use crate::rust::interpreter::errors::InterpreterError;
 use crate::rust::interpreter::execution_space::{
     ConsumeResult, ExecutionBackend, ExecutionSpace, ProduceResult,
 };
 use crate::rust::interpreter::reduce::ReducerCore;
 use crate::rust::interpreter::spaces::agent::{OpOrigin, ProduceOp, SpaceOp};
+use crate::rust::interpreter::spaces::errors::SpaceError;
 use crate::rust::interpreter::spaces::namespace::{CollectionKey, NativeSpace};
 
 /// The execution space of the system processes (R7). [`wrap`] makes it.
@@ -89,6 +97,60 @@ impl RoutingExecution {
         reducer.dispatch_space_outcome(outcome, None).await?;
         Ok(None)
     }
+
+    /// R7A-1 (P8 design v2): the produce of a system process on a space that the user agent
+    /// `agent` implements becomes the call of TS-1. The data and `raw` are Seq-scanned first,
+    /// and a persistent produce aborts. The backend produces the call itself, so R1 sends it to
+    /// the default space and R4 to an inner agent.
+    async fn produce_agent_call(
+        &self,
+        channel: &Par,
+        agent: Par,
+        raw: Par,
+        data: ListParWithRandom,
+        persistent: bool,
+    ) -> Result<ProduceResult, RSpaceError> {
+        let meter = ScanMeter::new(
+            deterministic_reduction::current().and_then(|context| context.host_work_budget()),
+        );
+        let seq = self.runtime.seq_spaces();
+        if !seq.is_empty() {
+            seq::check_send(channel, &data.pars, &seq, &meter)
+                .and_then(|()| seq::check_send(channel, std::slice::from_ref(&raw), &seq, &meter))
+                .map_err(|error| backend_error(error.into()))?;
+        }
+        if persistent {
+            return Err(backend_error(
+                ReifiedReduceError::PersistentSendOnAgentSpace.into(),
+            ));
+        }
+        let (call, call_data) =
+            user_agent::produce_call(&agent, raw, data, &meter).map_err(backend_error)?;
+        self.produce(call, call_data, false).await
+    }
+}
+
+/// The route of the produce of a system process (rule R7, P8 design v2 R7A-1). The backend
+/// routes with no use-context, and it does not unbundle a channel, with one exception: exactly
+/// one bundle with both flags around an agent-tagged tuple routes to the agent of the tuple.
+/// The translation of `new` binds an agent-minted name to that bundle, so the reply of a system
+/// process to the name reaches its agent. No channel of HEAD has this shape, because the tag is
+/// unforgeable. Every other bundle routes to the default space, as in HEAD.
+pub fn r7_route(channel: &Par) -> Result<Route, SpaceError> {
+    match single_bundle(channel) {
+        Some(Bundle {
+            body: Some(body),
+            write_flag: true,
+            read_flag: true,
+        }) => match agent_parts(&body) {
+            Some((agent, raw)) => Ok(Route::Agent {
+                agent: agent.clone(),
+                raw: raw.clone(),
+            }),
+            None => route(&None, channel),
+        },
+        Some(Bundle { .. }) | None => route(&None, channel),
+    }
 }
 
 /// The error of a routed produce as the backend returns it. A phlo failure and a host-work
@@ -116,16 +178,23 @@ impl ExecutionBackend for RoutingExecution {
         data: ListParWithRandom,
         persistent: bool,
     ) -> Result<ProduceResult, RSpaceError> {
-        match route(&None, &channel) {
+        // Changed by P8 step 2 (design v2 R7A-1): r7_route also recognizes the bundle of an
+        // agent-minted name.
+        // match route(&None, &channel) {
+        match r7_route(&channel) {
             Ok(Route::Default) => self.inner.produce(channel, data, persistent).await,
             Ok(Route::Space { space, key }) => self
                 .produce_in_space(space, key, channel, data, persistent)
                 .await
                 .map_err(backend_error),
-            // P8 step 2 replaces this arm with R7A (design v2 W7).
-            Ok(Route::Agent { .. }) => Err(backend_error(
-                ReifiedReduceError::AgentSpacesUnavailable.into(),
-            )),
+            // Changed by P8 step 2 (design v2 R7A-1): the reply becomes a call on the agent.
+            // Ok(Route::Agent { .. }) => Err(backend_error(
+            //     ReifiedReduceError::AgentSpacesUnavailable.into(),
+            // )),
+            Ok(Route::Agent { agent, raw }) => {
+                self.produce_agent_call(&channel, agent, raw, data, persistent)
+                    .await
+            }
             Err(error) => Err(backend_error(error.into())),
         }
     }
@@ -154,8 +223,8 @@ mod tests {
     use models::rhoapi::{CostAuthority, ParWithRandom, Send as SendProcess};
     use models::rust::space_factory_urn::SpaceFactoryUrn;
     use models::rust::utils::{
-        new_boundvar_par, new_bundle_par, new_etuple_par, new_freevar_par, new_gint_par,
-        new_gstring_par,
+        new_boundvar_par, new_bundle_par, new_elist_par, new_etuple_par, new_freevar_par,
+        new_gint_par, new_gstring_par,
     };
     use rspace_plus_plus::rspace::rspace::RSpace;
     use rspace_plus_plus::rspace::rspace_interface::ISpace;
@@ -480,25 +549,89 @@ mod tests {
         assert!(detached.host.get_data(&missing).await.is_empty());
     }
 
-    /// R4: a reply on an agent-tagged name fails closed until P8.
+    // Changed by P8 step 2 (design v2 R7A-1): a reply on an agent-tagged name makes the call
+    // of TS-1 (the test below).
+    // /// R4: a reply on an agent-tagged name fails closed until P8.
+    // #[tokio::test]
+    // async fn reducer_space_routing_r7_rejects_agent_tagged_replies() {
+    //     let fixture = detached().await;
+    //     let tagged = new_etuple_par(vec![
+    //         namespace::gprivate(namespace::op_channel(AGENT_TAG)),
+    //         string("agent"),
+    //         int(1),
+    //     ]);
+    //     assert_eq!(
+    //         code(
+    //             fixture
+    //                 .backend
+    //                 .produce(tagged.clone(), datum(vec![int(1)]), false)
+    //                 .await
+    //         ),
+    //         Some("AgentSpacesUnavailable".to_string())
+    //     );
+    //     assert!(fixture.host.get_data(&tagged).await.is_empty());
+    // }
+
+    /// R4 and R7A-1 (P8 step 2): a reply on an agent-tagged name, or on the bundle with both
+    /// flags that `new` binds to such a name, becomes the call `A'!(sink, "produce", raw, [d…])`
+    /// with the random state `Xlate.derive(R).split_byte(1)`. A bundle with one flag or none
+    /// keeps the route of HEAD: the datum stays on the bundle in the default space. A persistent
+    /// reply aborts.
     #[tokio::test]
-    async fn reducer_space_routing_r7_rejects_agent_tagged_replies() {
-        let fixture = detached().await;
+    async fn reducer_space_routing_r7_agent_replies_make_the_call() {
         let tagged = new_etuple_par(vec![
             namespace::gprivate(namespace::op_channel(AGENT_TAG)),
             string("agent"),
             int(1),
         ]);
+        let call = vec![
+            user_agent::sink_channel(),
+            string("produce"),
+            int(1),
+            new_elist_par(vec![int(7)], Vec::new(), false, None, Vec::new(), false),
+        ];
+        for channel in [tagged.clone(), new_bundle_par(tagged.clone(), true, true)] {
+            let fixture = detached().await;
+            fixture
+                .backend
+                .produce(channel.clone(), datum(vec![int(7)]), false)
+                .await
+                .expect("the call is produced");
+            assert_eq!(stored(&fixture.host, &string("agent")).await, vec![
+                call.clone()
+            ]);
+            let produced = fixture.host.get_data(&string("agent")).await;
+            assert_eq!(
+                produced[0].a.random_state,
+                namespace::RandomPurpose::Xlate
+                    .derive(&Blake2b512Random::create_from_bytes(b"reply"))
+                    .split_byte(user_agent::SEND_CALL_BRANCH)
+                    .to_bytes()
+            );
+            assert!(fixture.host.get_data(&channel).await.is_empty());
+        }
+        for (write, read) in [(true, false), (false, true), (false, false)] {
+            let fixture = detached().await;
+            let bundle = new_bundle_par(tagged.clone(), write, read);
+            fixture
+                .backend
+                .produce(bundle.clone(), datum(vec![int(7)]), false)
+                .await
+                .expect("the datum is stored");
+            assert_eq!(stored(&fixture.host, &bundle).await, vec![vec![int(7)]]);
+            assert!(fixture.host.get_data(&string("agent")).await.is_empty());
+        }
+        let fixture = detached().await;
         assert_eq!(
             code(
                 fixture
                     .backend
-                    .produce(tagged.clone(), datum(vec![int(1)]), false)
+                    .produce(tagged.clone(), datum(vec![int(7)]), true)
                     .await
             ),
-            Some("AgentSpacesUnavailable".to_string())
+            Some("PersistentSendOnAgentSpace".to_string())
         );
-        assert!(fixture.host.get_data(&tagged).await.is_empty());
+        assert!(fixture.host.get_data(&string("agent")).await.is_empty());
     }
 
     /// Without a reducer in the cell, a reply on a space name fails before the operation runs,

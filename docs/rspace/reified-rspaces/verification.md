@@ -1514,16 +1514,16 @@ SpaceRefs.v models the classification of space references, the routing rules R1 
 
 | Id | Theorem | Statement | Property tests |
 |---|---|---|---|
-| Q38 | `classify_space_ref_total_deterministic` (`SpaceRefs.v:509`) | Every space reference meets exactly one of the five rules of `classify_space_ref`. | `prop_classify_space_ref_total` |
-| Q39 | `handle_requires_write_flag` (`SpaceRefs.v:540`) | A reference names a native space only as a bare handle or as a writable bundle of one. | `prop_handle_requires_write_flag` |
-| Q40 | `reified_non_handle_not_a_space_ref` (`SpaceRefs.v:571`) | A Reified id that is not a handle is `NotASpaceRef`, never an agent. | `prop_reified_non_handle_not_a_space_ref` |
-| Q41 | `route_total_deterministic` (`SpaceRefs.v:714`) | A route fails only on the key, and it depends on the context only through its native space. | `prop_route_total` |
-| Q42 | `route_rules` (`SpaceRefs.v:749`) | The routing rules R1 to R5. | `prop_route_rules` |
-| Q43 | `space_name_route_ignores_ctx` (`SpaceRefs.v:777`) | A space name routes to its own space under every context. | `prop_space_name_route_ignores_ctx` |
-| Q44 | `r7_route_ignores_ctx` (`SpaceRefs.v:820`) | The R7 backend agrees with the reducer on every channel that is not forged. | `prop_r7_route_ignores_ctx` |
-| Q45 | `ordinary_channels_route_default` (`SpaceRefs.v:842`) | The channels of an ordinary program route to the default space, and the fast path is exact. | `prop_ordinary_channels_route_default` |
-| Q46 | `use_wrapper_restores_ctx` (`SpaceRefs.v:982`) | A body that the reducer stores under a context runs in that context when it fires. | `prop_use_wrapper_restores_ctx` |
-| Q47 | `handle_dispatch_total` (`SpaceRefs.v:1179`) | The handle process drops a call on a non-handle, aborts on a dangling handle, and replies only on a reply name. | `prop_handle_dispatch_total` |
+| Q38 | `classify_space_ref_total_deterministic` (`SpaceRefs.v:520`) | Every space reference meets exactly one of the five rules of `classify_space_ref`. | `prop_classify_space_ref_total` |
+| Q39 | `handle_requires_write_flag` (`SpaceRefs.v:551`) | A reference names a native space only as a bare handle or as a writable bundle of one. | `prop_handle_requires_write_flag` |
+| Q40 | `reified_non_handle_not_a_space_ref` (`SpaceRefs.v:582`) | A Reified id that is not a handle is `NotASpaceRef`, never an agent. | `prop_reified_non_handle_not_a_space_ref` |
+| Q41 | `route_total_deterministic` (`SpaceRefs.v:725`) | A route fails only on the key, and it depends on the context only through its native space. | `prop_route_total` |
+| Q42 | `route_rules` (`SpaceRefs.v:760`) | The routing rules R1 to R5. | `prop_route_rules` |
+| Q43 | `space_name_route_ignores_ctx` (`SpaceRefs.v:788`) | A space name routes to its own space under every context. | `prop_space_name_route_ignores_ctx` |
+| Q44 | `r7_route_ignores_ctx` (`SpaceRefs.v:869`) | The R7 backend agrees with the reducer on every channel that is not forged. | `prop_r7_route_ignores_ctx` |
+| Q45 | `ordinary_channels_route_default` (`SpaceRefs.v:929`) | The channels of an ordinary program route to the default space, and the fast path is exact. | `prop_ordinary_channels_route_default` |
+| Q46 | `use_wrapper_restores_ctx` (`SpaceRefs.v:1069`) | A body that the reducer stores under a context runs in that context when it fires. | `prop_use_wrapper_restores_ctx` |
+| Q47 | `handle_dispatch_total` (`SpaceRefs.v:1266`) | The handle process drops a call on a non-handle, aborts on a dangling handle, and replies only on a reply name. | `prop_handle_dispatch_total` |
 
 #### 11.3.7 Headlines of SpaceFactory.v
 
@@ -1747,9 +1747,9 @@ The 3 properties of `rholang/tests/reified_legacy_charges.rs` (section [11.14](#
 
 | Test | Location | Covers |
 |---|---|---|
-| `reified_marker_flags_change_derived_flags_only` | `reified/reducer_hooks.rs:2158` | Q56 |
-| `reified_marker_flags_use_body_with_connective_send_is_canonical` | `reified/reducer_hooks.rs:1923` | Q57 |
-| `reified_marker_flags_variable_bound_to_connective_is_canonical` | `reified/reducer_hooks.rs:1973` | Q58 |
+| `reified_marker_flags_change_derived_flags_only` | `reified/reducer_hooks.rs:2239` | Q56 |
+| `reified_marker_flags_use_body_with_connective_send_is_canonical` | `reified/reducer_hooks.rs:2004` | Q57 |
+| `reified_marker_flags_variable_bound_to_connective_is_canonical` | `reified/reducer_hooks.rs:2054` | Q58 |
 | `space_already_exists_aborts` | `reified/factory.rs:202` | Q55 |
 | `persistent_sends_abort_on_every_call_op_and_every_handle` | `reified/system_channels.rs:819` | Q54 |
 | `forged_channels_route_to_the_context_space` | `reified/route.rs:345` | Q42 |
@@ -2590,7 +2590,7 @@ The 20 Rocq negative controls fail inside their expected lemmas, and the 6 contr
 
 ### 12.9 The receive queries and the allocation jobs
 
-`query_source_routes_inner_channel` (`SpaceRefs.v:1515`) states the route of a receive query.
+`query_source_routes_inner_channel` (`SpaceRefs.v:1602`) states the route of a receive query.
 `prop_query_bind_routes_inner_channel` (the hooks) and `prop_query_source_routes_inner_channel` (`rholang/tests/reified_hooks_p5.rs`) test it.
 `rholang/tests/reified_hooks_p5.rs` holds 9 tests and 1 property, and the five Rocq negative controls fail inside the headline.
 The test `reducer_space_routing_allocation_jobs_give_index_names` checks that each allocation job stamps the authority of the process that evaluates the `new` on the allocator record.
@@ -5291,7 +5291,7 @@ The factory process takes the model from the budget of its runtime (`ReifiedRunt
 ### 28.2 The send rule
 
 `check_send` scans the data of a send for seq names (`rholang/src/rust/interpreter/reified/seq.rs:77-101`).
-`route_send` calls it after the checks of A21 and DG-1, before any mutation, and only while the evaluation holds a seq space (`rholang/src/rust/interpreter/reified/reducer_hooks.rs:476-482`).
+`route_send` calls it after the checks of A21 and DG-1, before any mutation, and only while the evaluation holds a seq space (`rholang/src/rust/interpreter/reified/reducer_hooks.rs:497-502`).
 The scan walks a work list and destructures every field of every type of the `Par` tree, the cost signatures included.
 So a new field of the protobuf schema is a compile error until the scan handles it.
 

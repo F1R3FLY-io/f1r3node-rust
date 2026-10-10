@@ -1019,6 +1019,14 @@ mod tests {
                     new_bundle_par(channel.channel(), true, false)
                 )
             );
+            // P8 step 2 (design v2 TS-2): the return channel of a call is the URN value of
+            // the sink.
+            if channel.op == SINK_OP {
+                assert_eq!(
+                    definition.to_urn_map().1,
+                    super::super::user_agent::sink_channel()
+                );
+            }
         }
         let rows: Vec<SystemChannel> = P5_SYSTEM_CHANNELS
             .iter()

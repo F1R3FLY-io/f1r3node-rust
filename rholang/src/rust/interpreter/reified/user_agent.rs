@@ -18,6 +18,9 @@
 //! * [`sink`]: the internal op `SINK_OP` (SK-1). The produce and consume calls of a translation
 //!   use it as their return channel, because no caller waits for their replies. It takes a
 //!   message of any arity and drops it.
+//! * [`produce_call`]: the call `A'!(sink, "produce", raw, [d1, …, dk])` of a send on a space
+//!   that an agent implements (P8 step 2, TS-1). The reducer hooks build it for a send, and the
+//!   R7 backend builds it for the reply of a system process to an agent-minted name (R7A-1).
 //!
 //! # Matcher states
 //!
@@ -50,26 +53,31 @@
 //! section 11, decision 40). The decode of a matcher state reserves the bytes of the id first
 //! (MO-2).
 
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
+use crypto::rust::hash::blake2b512_random::Blake2b512Random;
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::{BindPattern, EList, Expr, ListParWithRandom, Par, TaggedContinuation, Var};
-use models::rust::utils::{new_gbool_par, union};
+use models::rust::utils::{new_bundle_par, new_gbool_par, new_gstring_par, union};
 use prost::Message;
 use rspace_plus_plus::rspace::errors::RSpaceError;
 use shared::rust::clone_backing;
 
 use super::costs::ScanMeter;
+use super::errors::ReifiedReduceError;
 use super::factory::ContractArgs;
 use super::handle::{is_reply_name, map_par, sole_list, tuple_par};
 use super::runtime::ReifiedRuntime;
+use super::scope::call_channel;
 use super::system_channels::{MATCHER_OP_PROCESS, SINK_OP_PROCESS};
 use crate::rust::interpreter::contract_call::ContractCall;
 use crate::rust::interpreter::deterministic_reduction;
 use crate::rust::interpreter::errors::{illegal_argument_error, InterpreterError};
 use crate::rust::interpreter::spaces::errors::SpaceError;
 use crate::rust::interpreter::spaces::matching::SpaceMatcher;
-use crate::rust::interpreter::spaces::namespace::{self, Durability, ReifiedId, SID_LEN};
+use crate::rust::interpreter::spaces::namespace::{
+    self, Durability, RandomPurpose, ReifiedId, SID_LEN, SINK_OP,
+};
 use crate::rust::interpreter::spaces::record::{expr_par, sole_expr};
 
 /// The version of the encoding of a matcher state.
@@ -463,9 +471,71 @@ pub async fn sink(contract_args: ContractArgs) -> Result<Vec<Par>, InterpreterEr
     }
 }
 
+/// The branch of the derivation tree under `base = Xlate.derive(R)` that the call of a send
+/// takes (design v2 TS-1).
+pub const SEND_CALL_BRANCH: u8 = 1;
+
+/// The return channel of the calls of a translation (design v2 TS-2): the write-only bundle
+/// `bundle+{[0xE0, SINK_OP]}`, the value of the URN of `SINK_OP`.
+static SINK: LazyLock<Par> = LazyLock::new(|| {
+    new_bundle_par(
+        namespace::gprivate(namespace::op_channel(SINK_OP)),
+        true,
+        false,
+    )
+});
+
+/// The method name of the call of a send.
+static PRODUCE_METHOD: LazyLock<Par> =
+    LazyLock::new(|| new_gstring_par("produce".to_string(), Vec::new(), false));
+
+/// The return channel of the calls of a translation (design v2 TS-2).
+pub fn sink_channel() -> Par { SINK.clone() }
+
+/// The call of a send on a space that the user agent `agent` implements (design v2 TS-1, AG-4
+/// and R7A-1): `A'!(sink, "produce", raw, [d1, …, dk])`.
+///
+/// * `A'` is the call channel of `agent` under the bundle rule of `eval_send`. A reference
+///   without the write flag gives `HandleNotWritable`.
+/// * `[d1, …, dk]` holds the data of the send in order, with the bit sets that the reducer
+///   derives for a packed argument list.
+/// * The call datum takes the random state `base.split_byte(1)` with `base = Xlate.derive(R)`,
+///   where `R` is the random state of the send datum. It keeps the authority of the send datum.
+///
+/// The copy of the agent, the derived random state and the two constants are reserved before
+/// they are made (design v2 A6).
+pub fn produce_call(
+    agent: &Par,
+    raw: Par,
+    data: ListParWithRandom,
+    meter: &ScanMeter,
+) -> Result<(Par, ListParWithRandom), InterpreterError> {
+    meter.reserve_copy(agent)?;
+    let channel = call_channel(agent).map_err(ReifiedReduceError::from)?;
+    let ListParWithRandom {
+        pars,
+        random_state,
+        cost_authority,
+        cost_stack,
+    } = data;
+    let call = RandomPurpose::Xlate
+        .derive(&Blake2b512Random::from_bytes(&random_state))
+        .split_byte(SEND_CALL_BRANCH);
+    meter.random_bytes(&call)?;
+    let sink = meter.copy(&*SINK)?;
+    let method = meter.copy(&*PRODUCE_METHOD)?;
+    Ok((channel, ListParWithRandom {
+        pars: vec![sink, method, raw, list_par(pars, None)],
+        random_state: call.to_bytes(),
+        cost_authority,
+        cost_stack,
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use models::rhoapi::var::VarInstance;
+    use models::rhoapi::CostAuthority;
     use models::rust::utils::{
         new_boundvar_par, new_bundle_par, new_freevar_par, new_freevar_var, new_gint_par,
         new_wildcard_var,
@@ -848,5 +918,106 @@ mod tests {
                 var_instance: Some(VarInstance::FreeVar(1))
             })
         ));
+    }
+
+    /// A datum of the data `pars` with the random state of `seed` and the authority
+    /// `authority`.
+    fn send_datum(
+        pars: Vec<Par>,
+        seed: &[u8],
+        authority: Option<CostAuthority>,
+    ) -> ListParWithRandom {
+        ListParWithRandom {
+            pars,
+            random_state: Blake2b512Random::create_from_bytes(seed).to_bytes(),
+            cost_authority: authority,
+            cost_stack: None,
+        }
+    }
+
+    /// The message of a failed call.
+    fn call_code(error: InterpreterError) -> String {
+        match error {
+            InterpreterError::ReduceError(message) => message,
+            other => format!("{other:?}"),
+        }
+    }
+
+    /// TS-1 (P8 step 2): the call of a send holds the sink, the method, `raw` and one list of
+    /// the data in order. Its random state is `Xlate.derive(R).split_byte(1)`, it keeps the
+    /// authority of the send, and the list takes the bit sets of its elements.
+    #[test]
+    fn produce_call_builds_the_call_of_a_send() {
+        let bound = new_boundvar_par(0, vec![1], true);
+        let data = send_datum(
+            vec![int(7), bound.clone()],
+            b"send",
+            Some(CostAuthority::default()),
+        );
+        let (channel, call) =
+            produce_call(&string("agent"), int(1), data, &unmetered()).expect("a call");
+        assert_eq!(channel, string("agent"));
+        let expected_list = list_par(vec![int(7), bound], None);
+        assert_eq!(expected_list.locally_free, vec![1]);
+        assert!(expected_list.connective_used);
+        assert_eq!(call.pars, vec![
+            sink_channel(),
+            string("produce"),
+            int(1),
+            expected_list
+        ]);
+        assert_eq!(
+            call.random_state,
+            RandomPurpose::Xlate
+                .derive(&Blake2b512Random::create_from_bytes(b"send"))
+                .split_byte(SEND_CALL_BRANCH)
+                .to_bytes()
+        );
+        assert_eq!(call.cost_authority, Some(CostAuthority::default()));
+        assert_eq!(call.cost_stack, None);
+    }
+
+    /// AG-4 (P8 step 2): the call channel follows the bundle rule of `eval_send`. A bundle with
+    /// the write flag gives its body, and a bundle without it, or without a body, aborts with
+    /// `HandleNotWritable` before any work.
+    #[test]
+    fn produce_call_follows_the_bundle_rule() {
+        let agent = string("agent");
+        for (reference, expected) in [
+            (
+                new_bundle_par(agent.clone(), true, false),
+                Some(agent.clone()),
+            ),
+            (
+                new_bundle_par(agent.clone(), true, true),
+                Some(agent.clone()),
+            ),
+            (new_bundle_par(agent.clone(), false, true), None),
+            (new_bundle_par(agent.clone(), false, false), None),
+        ] {
+            let result = produce_call(
+                &reference,
+                int(1),
+                send_datum(vec![int(2)], b"send", None),
+                &unmetered(),
+            );
+            match (result, expected) {
+                (Ok((channel, _)), Some(expected)) => assert_eq!(channel, expected),
+                (Err(error), None) => assert!(
+                    call_code(error).starts_with("reified:HandleNotWritable: "),
+                    "{reference:?}"
+                ),
+                (other, expected) => panic!("{reference:?} gave {other:?}, not {expected:?}"),
+            }
+        }
+    }
+
+    /// The sink is the write-only bundle of the op channel `[0xE0, SINK_OP]` (TS-2).
+    #[test]
+    fn sink_channel_is_the_write_only_op_channel() {
+        assert_eq!(
+            sink_channel(),
+            new_bundle_par(namespace::gprivate(vec![REIFIED_TAG, SINK_OP]), true, false)
+        );
     }
 }

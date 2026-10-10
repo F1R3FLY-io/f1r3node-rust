@@ -112,7 +112,7 @@ A program that names one of them fails with the baseline error `No value set for
 ### 3.1 The call
 
 A factory call is a send on the factory capability: `hmq!(ret, a1, …, an)`.
-The send hook packs the arguments after `ret` into one list, so the factory receives `[ret, [a1, …, an]]` (`reified/reducer_hooks.rs:1186-1226`).
+The send hook packs the arguments after `ret` into one list, so the factory receives `[ret, [a1, …, an]]` (`reified/reducer_hooks.rs:1247-1287`).
 So every factory has the fixed arity 2, and a constructor can have any number of elements.
 The params section of the call stays in the list as its last element.
 
@@ -273,7 +273,7 @@ So the reply and the fired bodies are parallel processes, as in the equivalent R
 
 **`consume`.** The method accepts only the matchers of user agents, which P8 adds ([decision 34](decision-register.md#decision-34), item A9).
 It checks the arrow, the pairs, the body, and the matchers, in this order (`reified/handle.rs:448-487`).
-A call that passes every check aborts with `AgentSpacesUnavailable` until P8.
+A call that passes every check aborts with `AgentSpacesUnavailable` until P8 step 3.
 
 ## 6. Replies
 
@@ -398,6 +398,8 @@ Table 10 lists the aborts that a call can cause, and section [N8 of the design](
 |---|---|---|
 | `PersistentFactoryCall`, `PersistentOpCall`, `PersistentHandleCall` | Every call | A persistent send `!!` |
 | `PersistentCapabilityCall` | A matcher or a body capability of a user agent (P8) | A persistent send `!!` |
+| `PersistentSendOnAgentSpace` | Every send on a space that a user agent implements (P8 step 2) | A persistent send `!!`, or the persistent reply of a system process to an agent-minted name |
+| `ParamsUnsupportedOnAgentSpace` | Every send on a space that a user agent implements (P8 step 2) | A params section |
 | `ParamsUnsupported` | `getSpaceAgent`, `assertEqual` | A params section |
 | `Malformed` | Every call with params | A params section that is not canonical after the refresh of [I-20](decision-register.md#i-20) |
 | `PositionalParamsUnsupported` | A factory, a handle | A positional param |
@@ -411,7 +413,7 @@ Table 10 lists the aborts that a call can cause, and section [N8 of the design](
 | `SeqConcurrent` | `produce` | The call uses a channel of a seq space whose last use is not an ancestor of the call (rule QF-15). The message names the space id. |
 | `PayloadNotEmpty` | `produce`, and every send | The message of a send to a collection of a HashSet space is not empty ([specification 2.7](specification.md#27-hashset), rule HS-2). |
 | `PatternNotEmpty` | Every receive | A bind on a collection of a HashSet space has a pattern, a binder or a remainder (rule HS-3). |
-| `AgentSpacesUnavailable` | `consume` | Matchers of user agents, until P8 |
+| `AgentSpacesUnavailable` | `consume` | Matchers of user agents, until P8 step 3 |
 | `Inconsistent` | Every call that reads a space | A record that is not well formed |
 | `CounterOverflow` | `produce` | A counter at its greatest value |
 

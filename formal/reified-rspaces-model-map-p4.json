@@ -2426,8 +2426,8 @@
       "scope": "RoutingExecution",
       "kind": "fn",
       "name": "produce",
-      "line": 112,
-      "role": "route(&None, channel): no context.",
+      "line": 175,
+      "role": "r7_route(channel): no context (P8 step 2 adds R7A-1 for the bundle of an agent-minted name).",
       "rocq": [
         "r7_produce",
         "r7_of"

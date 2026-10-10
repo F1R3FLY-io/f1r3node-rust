@@ -53,7 +53,7 @@ use rholang::rust::interpreter::reified::costs::ScanMeter;
 use rholang::rust::interpreter::reified::runtime::unavailable;
 use rholang::rust::interpreter::reified::system_channels::{
     SystemChannel, P4_SYSTEM_CHANNELS, P5_SYSTEM_CHANNELS, P6_PROCESSES, P6_SYSTEM_CHANNELS,
-    P7_SYSTEM_CHANNELS,
+    P7_SYSTEM_CHANNELS, P8_PROCESSES,
 };
 use rholang::rust::interpreter::reified::system_processes::definitions;
 use rholang::rust::interpreter::rho_runtime::RhoRuntime;
@@ -526,7 +526,9 @@ async fn space_factory_families_registered() {
     }
     // The definitions: the four of P4, then the registered families of P5 in family-index
     // order, then the registered aliases, then the registered families of P6 in family-index
-    // order, then the processes of P6 (`rho:lang:vector`), then the registered families of P7.
+    // order, then the processes of P6 (`rho:lang:vector`), then the registered families of P7,
+    // then the internal ops of P8 (`MATCHER_OP` and `SINK_OP`, plan decision 77).
+    // Changed by P8 step 2: P8 step 1 appended the internal ops of P8 to the definitions.
     let expected: Vec<(String, i64)> = P4_SYSTEM_CHANNELS
         .iter()
         .copied()
@@ -535,6 +537,7 @@ async fn space_factory_families_registered() {
         .chain(registered_p6_families().map(|(_, channel)| channel))
         .chain(P6_PROCESSES)
         .chain(registered_p7_families().map(|(_, channel)| channel))
+        .chain(P8_PROCESSES)
         .map(|channel| (channel.urn.to_string(), channel.body_ref()))
         .collect();
     let defined: Vec<(String, i64)> = definitions(&unavailable())
@@ -1385,14 +1388,27 @@ fn prop_registered_families_complete() {
                 })
                 .map(|channel| (channel.urn.to_string(), channel.body_ref())),
         );
+        // Changed by P8 step 2: P8 step 1 appended the internal ops of P8 to the definitions.
+        expected.extend(
+            P8_PROCESSES
+                .iter()
+                .map(|channel| (channel.urn.to_string(), channel.body_ref())),
+        );
         prop_assert_eq!(&defined, &expected);
         // Changed by P7 step 3: the P7 factories follow the processes of P6.
         // let factories = &defined[P4_SYSTEM_CHANNELS.len()..defined.len() - P6_PROCESSES.len()];
+        // Changed by P8 step 2: the internal ops of P8 follow the P7 factories.
+        // let p7 = registered_p7_families().count();
+        // let p6_processes = defined.len() - p7 - P6_PROCESSES.len();
+        // let factories = defined[P4_SYSTEM_CHANNELS.len()..p6_processes]
+        //     .iter()
+        //     .chain(defined[defined.len() - p7..].iter());
         let p7 = registered_p7_families().count();
-        let p6_processes = defined.len() - p7 - P6_PROCESSES.len();
+        let p7_end = defined.len() - P8_PROCESSES.len();
+        let p6_processes = p7_end - p7 - P6_PROCESSES.len();
         let factories = defined[P4_SYSTEM_CHANNELS.len()..p6_processes]
             .iter()
-            .chain(defined[defined.len() - p7..].iter());
+            .chain(defined[p7_end - p7..p7_end].iter());
         for (urn, body) in factories {
             let named = SpaceFactoryUrn::parse(urn).map_err(|error| {
                 TestCaseError::fail(format!("{urn} is not a factory URN: {error}"))

@@ -53,15 +53,15 @@ use crate::rust::interpreter::env::Env;
 use crate::rust::interpreter::errors::InterpreterError;
 use crate::rust::interpreter::reified::costs::ScanMeter;
 use crate::rust::interpreter::reified::errors::ReifiedReduceError;
-use crate::rust::interpreter::reified::route::{classify_channel, ChannelClass, Route};
+use crate::rust::interpreter::reified::route::{self, classify_channel, ChannelClass, Route};
 use crate::rust::interpreter::reified::scope::{
-    call_channel, classify_space_ref, wrap_body, SpaceRef, UseKind, UseTarget,
+    call_channel, classify_space_ref, wrap_body, SpaceCtx, SpaceRef, UseKind, UseTarget,
 };
-use crate::rust::interpreter::reified::seq;
 use crate::rust::interpreter::reified::system_channels::{
     check_persistent_send, handle_of, is_factory_op, op_of, packs_arguments,
 };
 use crate::rust::interpreter::reified::system_processes::native_agent;
+use crate::rust::interpreter::reified::{seq, user_agent};
 use crate::rust::interpreter::spaces::agent::{
     AllocOp, ConsumeOp, JoinBind, JoinOp, OpOrigin, ProduceOp, QueryParams, SpaceAgent, SpaceFire,
     SpaceOp, SpaceOutcome, SpaceReissue,
@@ -425,7 +425,10 @@ impl ReducerCore {
     /// 4. On a native space, the produce runs with `space_op`. Its named params go to the agent
     ///    in `ProduceOp::params` (`space_params`), and the PARAMS tuple leaves the datum.
     ///    Positional params abort.
-    /// 5. A space that a user agent implements fails closed until P8.
+    // Changed by P8 step 2 (design v2 TS-1 to TS-3): a send on an agent space is translated.
+    // /// 5. A space that a user agent implements fails closed until P8.
+    /// 5. On a space that a user agent implements, the send becomes a call on the agent, which
+    ///    routes as an ordinary send with no use-context (`route_send`).
     pub(super) fn reified_produce<'a>(
         &'a self,
         chan: Par,
@@ -457,29 +460,82 @@ impl ReducerCore {
         }
     }
 
+    /// Routes one send (P4 design C.3; P8 design v2 TS-1 to TS-3).
+    ///
+    /// A send on a space that a user agent implements becomes the call
+    /// `A'!(sink, "produce", raw, [d1, …, dk])` of [`user_agent::produce_call`]. The checks of
+    /// TS-3 come first: the PARAMS tuple, the route, DG-1, the Seq scan of the data and of `raw`,
+    /// `!!` and params. The call is an ordinary send with no use-context (AG-4), so the next
+    /// round of the loop routes it: R1 sends it to the default space, and R4 to an inner agent.
+    /// The tag of an inner agent is a strict subterm of the tag of its outer agent, so the loop
+    /// ends. A call round skips the Seq scan: its data hold only the sink, the method name, `raw`
+    /// and the data that the first round scanned, and no call channel is a handle, so the scan
+    /// has no exemption for the call.
     fn route_send(
         &self,
         chan: Par,
-        mut data: ListParWithRandom,
+        // Changed by P8 step 2: the loop rebinds the send of each round.
+        // mut data: ListParWithRandom,
+        data: ListParWithRandom,
         persistent: bool,
         authority: CostAuthority,
     ) -> Result<SendRoute, InterpreterError> {
-        let params = trailing_params(&mut data.pars)?;
-        let route = self.route_channel(&chan)?;
-        // A21 judges the form of the send, so it comes before the liveness check of DG-1.
-        if matches!(route, Route::Default) {
-            check_persistent_send(&chan, persistent)?;
-        }
-        self.check_route_live(&chan, &route)?;
-        // SQ-2 (P7): while the evaluation holds a `seq` space, a send whose data holds one of
-        // its names aborts before any mutation.
         let seq = self.reified.seq_spaces();
-        if !seq.is_empty() {
-            let meter = ScanMeter::new(
-                deterministic_reduction::current().and_then(|context| context.host_work_budget()),
-            );
-            seq::check_send(&chan, &data.pars, &seq, &meter)?;
+        let mut ctx = &self.space_ctx;
+        let (mut chan, mut data, mut persistent) = (chan, data, persistent);
+        let mut scanned = false;
+        loop {
+            let params = trailing_params(&mut data.pars)?;
+            // Changed by P8 step 2: a call routes with no use-context (AG-4).
+            // let route = self.route_channel(&chan)?;
+            let route = route::route(ctx, &chan)?;
+            // A21 judges the form of the send, so it comes before the liveness check of DG-1.
+            if matches!(route, Route::Default) {
+                check_persistent_send(&chan, persistent)?;
+            }
+            self.check_route_live(&chan, &route)?;
+            // SQ-2 (P7): while the evaluation holds a `seq` space, a send whose data holds one
+            // of its names aborts before any mutation.
+            if !seq.is_empty() && !scanned {
+                let meter = send_meter();
+                seq::check_send(&chan, &data.pars, &seq, &meter)?;
+            }
+            match route {
+                Route::Agent { agent, raw } => {
+                    let meter = send_meter();
+                    // A5: the scan also covers the raw channel, which the call carries as data.
+                    if !seq.is_empty() {
+                        seq::check_send(&chan, std::slice::from_ref(&raw), &seq, &meter)?;
+                    }
+                    if persistent {
+                        return Err(ReifiedReduceError::PersistentSendOnAgentSpace.into());
+                    }
+                    if params.is_some() {
+                        return Err(ReifiedReduceError::ParamsUnsupportedOnAgentSpace.into());
+                    }
+                    let (call, call_data) = user_agent::produce_call(&agent, raw, data, &meter)?;
+                    ctx = &NO_CONTEXT;
+                    (chan, data, persistent) = (call, call_data, false);
+                    scanned = true;
+                }
+                route => {
+                    return self
+                        .route_send_off_agent(route, chan, data, persistent, params, authority)
+                }
+            }
         }
+    }
+
+    /// The route of a send to the default space or to a native space (P4 design C.3).
+    fn route_send_off_agent(
+        &self,
+        route: Route,
+        chan: Par,
+        mut data: ListParWithRandom,
+        persistent: bool,
+        params: Option<SendParams>,
+        authority: CostAuthority,
+    ) -> Result<SendRoute, InterpreterError> {
         match route {
             Route::Default => {
                 // Moved by P7 step 1 before the liveness check of DG-1 (above).
@@ -526,7 +582,12 @@ impl ReducerCore {
                     reissued_ord: None,
                 }))
             }
-            Route::Agent { .. } => Err(ReifiedReduceError::AgentSpacesUnavailable.into()),
+            // Changed by P8 step 2: route_send turns an agent route into a call (TS-1) before
+            // it calls this function.
+            // Route::Agent { .. } => Err(ReifiedReduceError::AgentSpacesUnavailable.into()),
+            Route::Agent { .. } => Err(InterpreterError::BugFoundError(
+                "an agent route reached the route of a native send".to_string(),
+            )),
         }
     }
 
@@ -1633,6 +1694,16 @@ fn refreshed_marker_par(par: &Par, marker: Marker) -> Cow<'_, Par> {
 
 /// Hook H3, step 1: refreshes a trailing PARAMS tuple in place and decodes it. The data of a send
 /// without a PARAMS tuple keeps its bytes.
+/// No use-context: the context of a call on a user agent (P8, design v2 AG-4).
+static NO_CONTEXT: SpaceCtx = None;
+
+/// The scan meter of a send, on the host-work budget of the reduction context.
+fn send_meter() -> ScanMeter {
+    ScanMeter::new(
+        deterministic_reduction::current().and_then(|context| context.host_work_budget()),
+    )
+}
+
 fn trailing_params(data: &mut [Par]) -> Result<Option<SendParams>, InterpreterError> {
     if let Some(last) = data.last_mut() {
         if matches!(sole_marker_tuple(last), Some((Marker::Params, _))) {
@@ -1832,6 +1903,16 @@ mod tests {
             body: Some(par),
             random_state: rand(b"body").to_bytes(),
         }
+    }
+
+    /// The reducer with the use-context of the user agent `agent` (P8).
+    fn agent_scoped(reducer: &ReducerCore, agent: Par) -> ReducerCore {
+        let mut core = reducer.clone();
+        core.space_ctx = Some(Arc::new(UseTarget {
+            space: agent,
+            kind: UseKind::Agent,
+        }));
+        core
     }
 
     /// The reducer with the use-context of `space`.
@@ -2617,24 +2698,178 @@ mod tests {
         assert!(hosted.host.get_data(&name).await.is_empty());
     }
 
-    /// An agent-tagged name fails closed in a send, a receive and a join until P8.
-    #[tokio::test]
-    async fn reducer_space_routing_agent_names_fail_closed() {
-        let fixture = detached().await;
-        let tagged = new_etuple_par(vec![
+    /// `(AGENT_TAG, agent, raw)`: the tuple of an agent-minted name.
+    fn agent_tagged(agent: Par, raw: Par) -> Par {
+        new_etuple_par(vec![
             namespace::gprivate(namespace::op_channel(AGENT_TAG)),
-            string("agent"),
+            agent,
+            raw,
+        ])
+    }
+
+    /// The method name `"produce"` of a call.
+    fn produce_method() -> Par { string("produce") }
+
+    /// The random state of the call of a send whose datum has the random state `random`
+    /// (design v2 TS-1): `Xlate.derive(random).split_byte(1)`.
+    fn call_random(random: &Blake2b512Random) -> Blake2b512Random {
+        namespace::RandomPurpose::Xlate
+            .derive(random)
+            .split_byte(user_agent::SEND_CALL_BRANCH)
+    }
+
+    /// P8 step 2 (design v2 TS-1, AG-4): a send on an agent-tagged name becomes the call
+    /// `A'!(sink, "produce", raw, [d…])`, which routes as an ordinary send with no use-context.
+    /// The call datum takes the derived random state and keeps the authority of the send. A
+    /// call on an agent whose reference is itself an agent-minted name is a send on that name,
+    /// so it becomes a call on the inner agent in turn.
+    #[tokio::test]
+    async fn reducer_space_routing_agent_send_makes_the_call() {
+        let fixture = detached().await;
+        let sink = user_agent::sink_channel();
+        let tagged = agent_tagged(string("agent"), int(1));
+        fixture
+            .reducer
+            .reified_produce(
+                tagged.clone(),
+                datum(vec![int(7), int(8)]),
+                false,
+                authority(),
+            )
+            .await
+            .expect("the call is produced");
+        assert_eq!(stored(&fixture.host, &string("agent")).await, vec![vec![
+            sink.clone(),
+            produce_method(),
+            int(1),
+            list(vec![int(7), int(8)]),
+        ]]);
+        let call = fixture.host.get_data(&string("agent")).await;
+        assert_eq!(
+            call[0].a.random_state,
+            call_random(&rand(b"datum")).to_bytes()
+        );
+        assert!(fixture.host.get_data(&tagged).await.is_empty());
+
+        let outer = agent_tagged(
+            new_bundle_par(agent_tagged(string("inner"), int(5)), true, true),
+            int(9),
+        );
+        fixture
+            .reducer
+            .reified_produce(outer, datum(vec![int(3)]), false, authority())
+            .await
+            .expect("the calls are produced");
+        let first = list(vec![int(3)]);
+        assert_eq!(stored(&fixture.host, &string("inner")).await, vec![vec![
+            sink.clone(),
+            produce_method(),
+            int(5),
+            list(vec![sink.clone(), produce_method(), int(9), first]),
+        ]]);
+        let inner = fixture.host.get_data(&string("inner")).await;
+        assert_eq!(
+            inner[0].a.random_state,
+            call_random(&call_random(&rand(b"datum"))).to_bytes()
+        );
+    }
+
+    /// P8 step 2 (design v2 AG-1, AG-4): under the use-context of an agent, a send on a forged
+    /// channel becomes a call on the agent with the channel as `raw`, and a send on a space
+    /// name of a native space keeps its own space (R3).
+    #[tokio::test]
+    async fn reducer_space_routing_agent_context_send_makes_the_call() {
+        let fixture = detached().await;
+        let core = agent_scoped(
+            &fixture.reducer,
+            new_bundle_par(string("agent"), true, false),
+        );
+        core.reified_produce(string("x"), datum(vec![int(2)]), false, authority())
+            .await
+            .expect("the call is produced");
+        assert_eq!(stored(&fixture.host, &string("agent")).await, vec![vec![
+            user_agent::sink_channel(),
+            produce_method(),
+            string("x"),
+            list(vec![int(2)]),
+        ]]);
+        assert!(fixture.host.get_data(&string("x")).await.is_empty());
+    }
+
+    /// P8 step 2 (design v2 TS-3): the checks of a send on an agent space, in their order. A
+    /// malformed PARAMS tuple fails first, then `!!`, then params, then the write rule of the
+    /// call (AG-4). No check stores a datum.
+    #[tokio::test]
+    async fn reducer_space_routing_agent_send_checks() {
+        let fixture = detached().await;
+        let tagged = agent_tagged(string("agent"), int(1));
+        let params = send_params(vec![SendParam::Named("k".to_string(), int(2))])
+            .expect("named params encode")
+            .expect("one named param");
+        let malformed = new_etuple_par(vec![
+            namespace::gprivate(namespace::op_channel(Marker::Params as u8)),
             int(1),
         ]);
+        let cases = [
+            (vec![int(1), malformed.clone()], true, "Malformed"),
+            (vec![int(1)], true, "PersistentSendOnAgentSpace"),
+            (
+                vec![int(1), params.clone()],
+                true,
+                "PersistentSendOnAgentSpace",
+            ),
+            (vec![int(1), params], false, "ParamsUnsupportedOnAgentSpace"),
+        ];
+        for (data, persistent, error) in cases {
+            assert_eq!(
+                code(
+                    fixture
+                        .reducer
+                        .reified_produce(tagged.clone(), datum(data), persistent, authority())
+                        .await
+                ),
+                expected(error)
+            );
+        }
+        let read_only = agent_tagged(new_bundle_par(string("agent"), false, true), int(1));
         assert_eq!(
             code(
                 fixture
                     .reducer
-                    .reified_produce(tagged.clone(), datum(vec![int(1)]), false, authority())
+                    .reified_produce(read_only, datum(vec![int(1)]), false, authority())
                     .await
             ),
-            expected("AgentSpacesUnavailable")
+            expected("HandleNotWritable")
         );
+        assert!(fixture.host.get_data(&string("agent")).await.is_empty());
+        assert!(fixture.host.get_data(&tagged).await.is_empty());
+    }
+
+    // Changed by P8 step 2: a send on an agent-tagged name makes the call (the three tests
+    // above). Receives and joins stay fail-closed until step 3.
+    // /// An agent-tagged name fails closed in a send, a receive and a join until P8.
+    // #[tokio::test]
+    // async fn reducer_space_routing_agent_names_fail_closed() {
+    //     let fixture = detached().await;
+    //     let tagged = new_etuple_par(vec![
+    //         namespace::gprivate(namespace::op_channel(AGENT_TAG)),
+    //         string("agent"),
+    //         int(1),
+    //     ]);
+    //     assert_eq!(
+    //         code(
+    //             fixture
+    //                 .reducer
+    //                 .reified_produce(tagged.clone(), datum(vec![int(1)]), false, authority())
+    //                 .await
+    //         ),
+    //         expected("AgentSpacesUnavailable")
+    //     );
+    /// An agent-tagged name fails closed in a receive and a join until P8 step 3.
+    #[tokio::test]
+    async fn reducer_space_routing_agent_receives_fail_closed() {
+        let fixture = detached().await;
+        let tagged = agent_tagged(string("agent"), int(1));
         for channels in [
             vec![tagged.clone()],
             vec![tagged.clone(), private(1)],

@@ -104,6 +104,15 @@ reverts one rule of the routes and use-contexts of user agents:
 The P8 change of the use-context also updates the texts of the P4 controls
 sr-forged-ignores-context and sr-space-name-takes-context.
 
+P8 step 2 (SpaceRefs.v, design v2 R7A-1) has three controls. Each reverts
+one part of the R7 rule for the replies of system processes:
+  sr-r7a-ignores-read-flag           a write-only bundle around an
+                                     agent-tagged tuple calls the agent
+  sr-r7a-skips-agent-check           a bundle with both flags calls an agent
+                                     without the agent tag at its head
+  sr-r7a-dropped                     the bundle of an agent-minted name goes
+                                     to the default space
+
 Decision 42 (AgentReadCoverage.v) has five controls. Each reverts one part of
 the metering rule: a step that reads before it reserves, a fire that does not
 prepay the decode of its continuation, an operation that does not prepay the
@@ -2126,6 +2135,23 @@ CONTROLS = (
      "  | Some (mkBundle (Some body) true _) => Some body\n  | Some _ => None",
      "  | Some (mkBundle (Some body) _ _) => Some body\n  | Some _ => None",
      ("use_wrapper_restores_ctx", "agent_ref_requires_write_flag")),
+    # ── P8 step 2: SpaceRefs.v, R7A (design v2 R7A-1) ──
+    ("sr-r7a-ignores-read-flag", "SpaceRefs",
+     "the R7 backend calls the agent of a write-only bundle (R7A-1)",
+     "    | Some (mkBundle (Some body) true true) =>\n        if is_agent_tagged body",
+     "    | Some (mkBundle (Some body) true _) =>\n        if is_agent_tagged body",
+     ("r7_agent_reply_bundle_exact",)),
+    ("sr-r7a-skips-agent-check", "SpaceRefs",
+     "the R7 backend calls an agent for a bundle whose body has no agent tag (R7A-1)",
+     "        if is_agent_tagged body then agent_parts body else None",
+     "        agent_parts body",
+     ("r7_agent_reply_bundle_exact",)),
+    ("sr-r7a-dropped", "SpaceRefs",
+     "the R7 backend sends the bundle of an agent-minted name to the default space (R7A-1)",
+     "    match r7_agent_bundle c with\n    | Some (a, raw) => R7Agent a raw\n"
+     "    | None => r7_of (route None c)\n    end.",
+     "    r7_of (route None c).",
+     ("r7_route_ignores_ctx", "r7_agent_reply_bundle_exact")),
 )
 
 DECLARATION = re.compile(

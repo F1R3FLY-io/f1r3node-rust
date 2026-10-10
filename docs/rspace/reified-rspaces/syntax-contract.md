@@ -502,17 +502,17 @@ The table lists each construct that P4 rejects, with its code and the phase that
 | A query `~` on the default space, or on a discipline without query params | `for (y <- @"x" ~ 5) { Nil }` | `QuerySpecUnsupported` | P5 for the priority queue, P6 for VectorDB |
 | A theory reference in a factory constructor | `hmq!?(free Nat())` | `TheoryUnavailable` in P4 to P6 | P7 step 4: a builtin name without arguments gives the space its theory ([specification 5](specification.md#5-theories)). A builtin with arguments fails with `BadConstructorArgument`, and another name fails with `UnknownTheory` |
 | The qualifier `"seq"` in legacy execution | `hmq!?("seq")` in a legacy deploy | `QualifierUnavailable` | None: legacy execution keeps this abort. P7 steps 1 and 2 give `"temp"` and `"seq"` their meaning in native execution ([specification 4.2](specification.md#42-temp) and [4.3](specification.md#43-seq)) |
-| A space reference that names a user agent | `use @"space" { @"x"!(1) }` | `AgentSpacesUnavailable` | P8 |
-| A send or a receive on a name of a user agent | None in P4, because only a user agent makes such a name | `AgentSpacesUnavailable` | P8 |
-| The handle method `consume` | `h!(ret, "consume", pairs, "<-", body)` | `AgentSpacesUnavailable`, or a typed reply | P8 |
+| A space reference that names a user agent | `use @"space" { @"x"!(1) }` | `AgentSpacesUnavailable` | P8 step 4 |
+| A receive on a name of a user agent | None in P4, because only a user agent makes such a name | `AgentSpacesUnavailable` | P8 step 3. Since P8 step 2, a send on such a name becomes the method call `A!(sink, "produce", raw, [d…])` on its agent ([decision 77](decision-register.md#decision-77), item TS-1) |
+| The handle method `consume` | `h!(ret, "consume", pairs, "<-", body)` | `AgentSpacesUnavailable`, or a typed reply | P8 step 3 |
 | A join with a channel of a queue space | `for (@a <- x & @b <- y) { Nil }`, with `x` and `y` in one queue space | `OrderedJoinUnsupported` in P4 only | P5: wave W3 runs the join on the join engine ([specification 3.8](specification.md#38-joins)) |
 | A join over two spaces, or over a space and the default space | `for (@a <- x & @b <- @"y") { Nil }`, with `x` in a space | `CrossSpaceJoin` | None: the plan keeps this abort |
 | A factory of a family that is not registered yet, or its FIPS alias | ``new f(`rho:space:pathmap:bag`) in { Nil }`` | The baseline error `No value set for <urn>` | P5 wave W3 for PathMap, P6 for VectorDB, P7 for HashSet |
 
-A query routes the inner channel of its QUERY tuple (`reified/reducer_hooks.rs:974-988`).
+A query routes the inner channel of its QUERY tuple (`reified/reducer_hooks.rs:1035-1049`).
 The inner channel takes the read rule of a receive source, with the same error text.
-A query on the default space fails with `QuerySpecUnsupported` (`reified/reducer_hooks.rs:1005-1035`).
-On a native space, the agent checks the query against the query params of the discipline. Hook H4 fails only on a malformed QUERY tuple (`reified/reducer_hooks.rs:934-945`).
+A query on the default space fails with `QuerySpecUnsupported` (`reified/reducer_hooks.rs:1066-1096`).
+On a native space, the agent checks the query against the query params of the discipline. Hook H4 fails only on a malformed QUERY tuple (`reified/reducer_hooks.rs:995-1006`).
 A reference that names no space aborts with `EmptySpaceRef`, `HandleNotWritable`, or `NotASpaceRef` in every phase.
 
 Since P8, the reference of a user agent under a bundle without the write flag also aborts with `HandleNotWritable`, because a call cannot reach it.

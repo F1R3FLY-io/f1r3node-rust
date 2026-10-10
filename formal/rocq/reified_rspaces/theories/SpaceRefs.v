@@ -23,7 +23,9 @@
    a use-context names a native space or an agent, a forged channel under
    the context of an agent routes to that agent, and a use block enters
    the context of an agent only when the bundle rule of eval_send gives
-   the reference a call channel.
+   the reference a call channel. P8 step 2 adds R7A: the R7 backend makes
+   the call on the agent for the reply of a system process to an
+   agent-tagged name, or to the bundle with both flags around one.
 
    Sources
    - Design: the P4 design report C.1 (routing), C.2 (space references and
@@ -62,10 +64,12 @@
                             canonical_inner_channel_bytes)
    route                    rholang/src/rust/interpreter/reified/route.rs:
                             173-225, 230-232 (R1 to R5, and route_channel)
-   r7_produce               rholang/src/rust/interpreter/reified/execution.rs:
-                            113-131 (produce routes with no context)
+   r7_produce, r7_of        rholang/src/rust/interpreter/reified/execution.rs:
+                            175-200 (produce routes with no context)
+   r7_agent_bundle          rholang/src/rust/interpreter/reified/execution.rs:
+                            139-154 (r7_route, R7A-1)
    routes_to_default_       rholang/src/rust/interpreter/reified/
-     without_context        reducer_hooks.rs:934-939
+     without_context        reducer_hooks.rs:995-1000
    classify_space_ref, unbundle
                             rholang/src/rust/interpreter/reified/scope.rs:
                             141-180
@@ -109,20 +113,20 @@
                             models/src/rust/reified/encoding.rs:346-356,
                             369-374 (marker_of, sole_marker_tuple)
    decode_source, h4_passes rholang/src/rust/interpreter/reified/
-                            reducer_hooks.rs:919-930 (reject_query_source),
+                            reducer_hooks.rs:980-991 (reject_query_source),
                             models/src/rust/reified/encoding.rs:841-848
                             (decode_query_source)
    takes_fast_path          rholang/src/rust/interpreter/reified/
-                            reducer_hooks.rs:961-963
+                            reducer_hooks.rs:1022-1024
    read_channel             rholang/src/rust/interpreter/reified/
-                            reducer_hooks.rs:978-986 (readable_channel)
+                            reducer_hooks.rs:1039-1047 (readable_channel)
    read_bind, route_bind    rholang/src/rust/interpreter/reified/
-                            reducer_hooks.rs:959-973, 629-649 (query_bind,
+                            reducer_hooks.rs:1020-1034, 690-710 (query_bind,
                             route_receive)
    single_target            rholang/src/rust/interpreter/reified/
-                            reducer_hooks.rs:990-1020 (single_bind_route)
+                            reducer_hooks.rs:1051-1081 (single_bind_route)
    receive_one              rholang/src/rust/interpreter/reified/
-                            reducer_hooks.rs:548-625 (reified_consume)
+                            reducer_hooks.rs:609-686 (reified_consume)
 
    ─────────────────────────────────────────────────────────────────────────
    Abstraction
@@ -169,7 +173,10 @@
     6. space_name_route_ignores_ctx       a space name routes to its space
                                           under every context
     7. r7_route_ignores_ctx               R7 agrees with the reducer on every
-                                          channel that is not forged
+                                          channel that is not forged, and
+                                          sends a forged one to the default
+                                          space, except the bundle of an
+                                          agent-minted name (R7A)
     8. ordinary_channels_route_default    the channels of an ordinary
                                           program route to the default space
     9. use_wrapper_restores_ctx           a stored body runs in its context
@@ -186,6 +193,10 @@
                                           user agent only when the reference
                                           has a call channel under the bundle
                                           rule of eval_send (P8, AG-4)
+   14. r7_agent_reply_bundle_exact        the R7 backend calls the agent for
+                                          exactly the bundle with both flags
+                                          around an agent-tagged tuple (P8,
+                                          R7A-1)
 
    No Axiom, Parameter, Admitted, admit, Abort or Conjecture. Section
    variables are parameters of the closed theorems. The file imports only
@@ -789,43 +800,119 @@ Section Routing.
       rewrite Hl. reflexivity.
   Qed.
 
-  (* The R7 backend (rholang/src/rust/interpreter/reified/execution.rs:119):
-     the produce of a system process routes with no context. *)
+  (* The R7 backend (rholang/src/rust/interpreter/reified/execution.rs,
+     produce and r7_route): the produce of a system process routes with no
+     context. Changed by P8 step 2 (design v2 R7A-1): an agent route makes
+     the call of TS-1 on the agent, so the constructor carries the agent and
+     the raw channel. The P4 constructor was `| R7AgentFail`. *)
   Inductive r7_action : Type :=
   | R7Inner
   | R7Space : native_space -> bytes -> r7_action
-  | R7AgentFail
+  | R7Agent : par -> par -> r7_action
   | R7KeyFail.
 
-  Definition r7_produce (c : par) : r7_action :=
-    match route None c with
-    | RouteOk RDefault => R7Inner
-    | RouteOk (RSpace n k) => R7Space n k
-    | RouteOk (RAgent _ _) => R7AgentFail
-    | RouteErr => R7KeyFail
+  (* R7A-1: exactly one bundle with both flags around an agent-tagged
+     tuple names the agent of the tuple. The translation of `new` binds an
+     agent-minted name to that bundle. The Rust agent_parts checks the tag
+     at the head, as is_agent_tagged does here. *)
+  Definition r7_agent_bundle (c : par) : option (par * par) :=
+    match single_bundle c with
+    | Some (mkBundle (Some body) true true) =>
+        if is_agent_tagged body then agent_parts body else None
+    | _ => None
     end.
 
   Definition r7_of (r : route_result) : r7_action :=
     match r with
     | RouteOk RDefault => R7Inner
     | RouteOk (RSpace n k) => R7Space n k
-    | RouteOk (RAgent _ _) => R7AgentFail
+    | RouteOk (RAgent a raw) => R7Agent a raw
     | RouteErr => R7KeyFail
     end.
+
+  (* Changed by P8 step 2 (design v2 R7A-1): the bundle of an agent-minted
+     name comes first, and every other channel keeps its route with no
+     context. The P4 definition matched `route None c` with the arms of
+     r7_of, and its agent arm gave R7AgentFail. *)
+  Definition r7_produce (c : par) : r7_action :=
+    match r7_agent_bundle c with
+    | Some (a, raw) => R7Agent a raw
+    | None => r7_of (route None c)
+    end.
+
+  (* A bundle is a forged channel: it holds no unforgeable name and no
+     expression. *)
+  Lemma single_bundle_forged :
+    forall c b, single_bundle c = Some b -> classify_channel c = CForged.
+  Proof.
+    intros c b H. apply single_bundle_shape in H as [k [lf [cu ->]]].
+    unfold classify_channel, is_agent_tagged, sole_expr.
+    destruct k; reflexivity.
+  Qed.
+
+  Lemma r7_agent_bundle_forged :
+    forall c p, r7_agent_bundle c = Some p -> classify_channel c = CForged.
+  Proof.
+    intros c p H. unfold r7_agent_bundle in H.
+    destruct (single_bundle c) as [b |] eqn:Eb; [| discriminate H].
+    exact (single_bundle_forged c b Eb).
+  Qed.
 
   (* Headline 7. The R7 backend takes no context. On every channel that is
      not forged it acts on the route that the reducer computes under any
      context, so the reply of a system process to a space name reaches
-     the same space. A forged channel goes to the wrapped space. *)
+     the same space, and the reply to an agent-tagged name reaches the
+     agent. A forged channel goes to the wrapped space, except the bundle
+     of an agent-minted name, which reaches its agent (P8 step 2, R7A-1).
+     The P4 form of the second conjunct was
+     `classify_channel c = CForged -> r7_produce c = R7Inner`. *)
   Theorem r7_route_ignores_ctx :
     forall c,
       (forall cx, classify_channel c <> CForged -> r7_produce c = r7_of (route cx c)) /\
-      (classify_channel c = CForged -> r7_produce c = R7Inner).
+      (classify_channel c = CForged ->
+       r7_produce c = match r7_agent_bundle c with
+                      | Some (a, raw) => R7Agent a raw
+                      | None => R7Inner
+                      end).
   Proof.
     intros c. split.
-    - intros cx Hc. unfold r7_produce, route. destruct (classify_channel c); try reflexivity.
-      contradiction Hc; reflexivity.
-    - intros Hc. unfold r7_produce, route. rewrite Hc. reflexivity.
+    - intros cx Hc. unfold r7_produce.
+      destruct (r7_agent_bundle c) as [p |] eqn:Ea.
+      + contradiction Hc. exact (r7_agent_bundle_forged c p Ea).
+      + unfold route. destruct (classify_channel c); try reflexivity.
+        contradiction Hc; reflexivity.
+    - intros Hc. unfold r7_produce.
+      destruct (r7_agent_bundle c) as [[a raw] |]; [reflexivity |].
+      unfold route. rewrite Hc. reflexivity.
+  Qed.
+
+  (* Headline 14. R7A-1 (P8 design v2): for every single bundle, the
+     backend makes the call on an agent exactly when the bundle has both
+     flags and its body is an agent-tagged tuple, the form that the
+     translation of `new` binds to an agent-minted name. The call goes to
+     the agent of the tuple with its raw channel. Every other bundle keeps
+     the route of HEAD: the default space. *)
+  Theorem r7_agent_reply_bundle_exact :
+    forall body w rd k lf cu,
+      r7_produce (mkPar 0 0 k [] [] [mkBundle body w rd] lf cu) =
+        match body with
+        | Some t =>
+            if w && rd && is_agent_tagged t then
+              match agent_parts t with Some (a, raw) => R7Agent a raw | None => R7Inner end
+            else R7Inner
+        | None => R7Inner
+        end.
+  Proof.
+    intros body w rd k lf cu.
+    assert (Hb : classify_channel (mkPar 0 0 k [] [] [mkBundle body w rd] lf cu) = CForged).
+    { apply (single_bundle_forged _ (mkBundle body w rd)). reflexivity. }
+    unfold r7_produce, r7_agent_bundle. cbn [single_bundle].
+    destruct body as [t |];
+      [destruct w, rd; cbn [andb] | unfold route; rewrite Hb; reflexivity];
+      try (unfold route; rewrite Hb; reflexivity).
+    destruct (is_agent_tagged t) eqn:Et.
+    - destruct (agent_tagged_parts t Et) as [a [raw Ep]]. rewrite Ep. reflexivity.
+    - unfold route. rewrite Hb. reflexivity.
   Qed.
 
   (* The ids that an ordinary program can name: byte names have one byte,
@@ -1565,3 +1652,4 @@ Print Assumptions handle_dispatch_total.
 Print Assumptions native_execution_runs_spaces.
 Print Assumptions query_source_routes_inner_channel.
 Print Assumptions agent_ref_requires_write_flag.
+Print Assumptions r7_agent_reply_bundle_exact.

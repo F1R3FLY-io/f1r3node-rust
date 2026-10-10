@@ -848,7 +848,9 @@ new spaceAgent(`rho:space:getSpaceAgent`), equal(`rho:assert:assertEqual`) in {
             ("use-list", "use @[1, 2] { Nil }"),
             ("use-plain", "new u in { use u { Nil } }"),
             ("annotation", r#"new x : @"user agent" in { x!(1) }"#),
-            ("tagged-send", "@(*tag, 1, 2)!(3)"),
+            // Changed by P8 step 2 (design v2 TS-1): a send on an agent-tagged name makes the
+            // call on the agent (rholang/tests/reified_user_agents.rs).
+            // ("tagged-send", "@(*tag, 1, 2)!(3)"),
             ("tagged-receive", "for (@v <- @(*tag, 1, 2)) { Nil }"),
             (
                 "tagged-join",

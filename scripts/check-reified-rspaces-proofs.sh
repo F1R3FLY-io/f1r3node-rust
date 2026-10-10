@@ -54,7 +54,7 @@
 # A missing tool is a FAIL, never a SKIP.
 #
 # Environment:
-#   RRS_EXPECTED_CLOSED  total closed headlines (default 288: 23 for P1 with
+#   RRS_EXPECTED_CLOSED  total closed headlines (default 289: 23 for P1 with
 #                        H23 of decision 36, the 15 headlines of Encoding.v
 #                        for P2 and I-20, 67 for the six P4 modules with
 #                        the native headline of decision 46 in SpaceRefs.v,
@@ -95,8 +95,10 @@
 #                        for P7 step 4: the 6 headlines of
 #                        TheoryAdmission.v, theory_refusal_is_guard_refusal
 #                        of Match.v and theory_gate_validated of
-#                        SpaceFactory.v, and 1 for P8 step 1:
-#                        agent_ref_requires_write_flag of SpaceRefs.v)
+#                        SpaceFactory.v, 1 for P8 step 1:
+#                        agent_ref_requires_write_flag of SpaceRefs.v, and
+#                        1 for P8 step 2: r7_agent_reply_bundle_exact of
+#                        SpaceRefs.v)
 #   RRS_SANDBOX=1        the job runs inside the verifier scope: no
 #                        systemd-run, logs under $RRS_SCRATCH/logs
 #   RRS_SCRATCH          scratch root (default <repo>/target/verification/
@@ -115,7 +117,7 @@ if [[ "${RRS_SANDBOX:-}" == "1" ]]; then
 else
   LOG_DIR="$ROOT/target/verification/reified-rspaces/logs/proofs"
 fi
-EXPECTED_CLOSED="${RRS_EXPECTED_CLOSED:-288}"
+EXPECTED_CLOSED="${RRS_EXPECTED_CLOSED:-289}"
 RRS_MEMORY_MAX="${RRS_MEMORY_MAX:-6G}"
 RRS_CPU_QUOTA="${RRS_CPU_QUOTA:-400%}"
 
@@ -129,7 +131,7 @@ declare -A EXPECTED_PER_MODULE=(
   [RecordEnvelope]=11
   [CounterConflict]=16
   [HeadOnlyDisciplines]=20
-  [SpaceRefs]=13
+  [SpaceRefs]=14
   [SpaceFactory]=15
   [AgentReadCoverage]=9
   [LegacyCharges]=2

@@ -1,8 +1,8 @@
 {
   "schema": "reified-rspaces-model-map/2",
   "phase": "P8",
-  "title": "P8: the spaces that user agents implement (design v2, plan decision 77). Step 1 (W1 and W5): the use-context of an agent and the write rule of an agent reference (SpaceRefs.v A1), the matcher state codec, the matcher process and the sink.",
-  "design": "P8 design v2 (.reified-rspaces-work/p8/design-v2.md), sections 3 and 7. The headline ids are the ids of the P8 phase of formal/reified-rspaces-invariant-map.json. The agent routes of route (AG-1) re-prove the P4 headlines route_total_deterministic and route_rules, so the P4 map holds route, agent_parts and UseKind.",
+  "title": "P8: the spaces that user agents implement (design v2, plan decision 77). Step 1 (W1 and W5): the use-context of an agent and the write rule of an agent reference (SpaceRefs.v A1), the matcher state codec, the matcher process and the sink. Step 2 (W2 and W7): the call of a send on an agent space (TS-1 to TS-3) and the R7 replies to agent-minted names (SpaceRefs.v A2).",
+  "design": "P8 design v2 (.reified-rspaces-work/p8/design-v2.md), sections 3, 4, 7 and 9. The headline ids are the ids of the P8 phase of formal/reified-rspaces-invariant-map.json. The agent routes of route (AG-1) re-prove the P4 headlines route_total_deterministic and route_rules, so the P4 map holds route, agent_parts and UseKind.",
   "code_base": "The items are in the P8 commits of this repository. The line numbers are informative. The checker finds each item by its scope and name.",
   "checker": "scripts/verify-reified/check-model-map.py",
   "formal_files": {
@@ -17,6 +17,12 @@
       "name": "agent_ref_requires_write_flag",
       "file": "formal/rocq/reified_rspaces/theories/SpaceRefs.v",
       "statement": "A use block enters the context of a user agent exactly when the evaluated reference has a call channel under the bundle rule of eval_send; under a bundle without the write flag it fails with HandleNotWritable."
+    },
+    "A2": {
+      "kind": "rocq",
+      "name": "r7_agent_reply_bundle_exact",
+      "file": "formal/rocq/reified_rspaces/theories/SpaceRefs.v",
+      "statement": "For every single bundle, the R7 backend makes the call on a user agent exactly when the bundle has both flags and its body is an agent-tagged tuple, with the agent and the raw channel of the tuple; every other bundle routes to the default space, as in HEAD (R7A-1)."
     }
   },
   "items": [
@@ -122,6 +128,67 @@
       "tla": [],
       "covers": [],
       "unmodeled": "The sink has no effect, so no model state changes; its arity and remainder are pinned by the definition tests."
+    },
+    {
+      "item": "r7_route",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/execution.rs",
+      "kind": "fn",
+      "name": "r7_route",
+      "line": 139,
+      "role": "The route of the produce of a system process: no context, and the bundle with both flags of an agent-minted name routes to its agent (R7A-1).",
+      "rocq": [
+        "r7_agent_bundle",
+        "r7_produce"
+      ],
+      "tla": [],
+      "covers": [
+        "A2"
+      ]
+    },
+    {
+      "item": "RoutingExecution::produce_agent_call",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/execution.rs",
+      "scope": "RoutingExecution",
+      "kind": "fn",
+      "name": "produce_agent_call",
+      "line": 105,
+      "role": "R7A-1: the Seq scan of the data and of raw, the persistent check, and the call of TS-1, produced again through the backend.",
+      "rocq": [
+        "r7_produce"
+      ],
+      "tla": [],
+      "covers": [
+        "A2"
+      ]
+    },
+    {
+      "item": "produce_call",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/user_agent.rs",
+      "kind": "fn",
+      "name": "produce_call",
+      "line": 507,
+      "role": "The call A'!(sink, \"produce\", raw, [d...]) of a send on an agent space (TS-1, AG-4).",
+      "rocq": [],
+      "tla": [],
+      "covers": [],
+      "unmodeled": "AgentSpaces.tla (P8 step 6, design v2 section 13) models the calls of a translation (RoutingIsolation, ReplayEquivalence). SpaceRefs.v models the route of the call (route with no context, AG-4)."
+    },
+    {
+      "item": "ReducerCore::route_send",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
+      "scope": "ReducerCore",
+      "kind": "fn",
+      "name": "route_send",
+      "line": 474,
+      "role": "T_send: the checks of TS-3, then the call routes as an ordinary send with no use-context (AG-4).",
+      "rocq": [],
+      "tla": [],
+      "covers": [],
+      "unmodeled": "AgentSpaces.tla (P8 step 6, design v2 section 13) models the calls of a translation (RoutingIsolation, ReplayEquivalence). SpaceRefs.v models the route of the call (route with no context, AG-4)."
     }
   ]
 }

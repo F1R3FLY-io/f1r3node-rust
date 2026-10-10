@@ -154,10 +154,10 @@ A program that uses no Reified syntax and holds no space name must route every c
 | R1 | A byte name, an op channel, a config, handle, matcher, or body id, or an ordinary unforgeable name | The default space |
 | R2 | A storage channel: a data, path-index, allocator, or counter id | The default space |
 | R3 | A [space name](glossary.md#space-name) of the space $`s`$ | The collection $`\mathrm{key}(c)`$ of $`s`$, in every [use context](glossary.md#use-context) |
-| R4 | A name of a user agent | The user agent, which fails closed until P8 |
+| R4 | A name of a user agent | The user agent. Since P8 step 2 a send becomes the call `A!(sink, "produce", raw, [d…])` on the agent, and a receive fails closed until P8 step 3 |
 | R5 | Any other channel, such as `@"jobs"` | The collection $`\mathrm{key}(c)`$ of the space of the use context, or the default space without a use context |
 | R6 | A channel that routes to a collection of a native space | The operation uses the data channel $`D(\mathit{sid}, k)`$ of the collection |
-| R7 | The reply channel of a system process | The rules R1 to R5 without a use context |
+| R7 | The reply channel of a system process | The rules R1 to R5 without a use context. Since P8 step 2, the bundle with both flags of a name of a user agent also routes to its agent (R7A) |
 
 ### 1.5 Families
 
@@ -301,7 +301,7 @@ This covers the names of its lock keys, the config and the shape of an Array spa
 It also covers the copy and the decode of $`A(\mathit{sid})`$, each comparison, and the buffer of the indices.
 In native execution, an allocation job runs as every space job does ([section 8](#8-native-execution), [decision 47](decision-register.md#decision-47)).
 
-**Rule AL-8: authority.** An allocation job takes the cost authority of the process that asks for the names (`rholang/src/rust/interpreter/reified/reducer_hooks.rs:783-810`).
+**Rule AL-8: authority.** An allocation job takes the cost authority of the process that asks for the names (`rholang/src/rust/interpreter/reified/reducer_hooks.rs:844-871`).
 That process evaluates the `new`, or it calls the handle method `gensym`.
 So each allocation is paid by its caller, and the allocator record that the job puts carries that authority (P4 design B.7).
 
@@ -826,14 +826,14 @@ A re-issued element takes its FIFO place in its level, and a re-entered waiter k
 
 ### 3.7 Receive queries
 
-**Rule RQ-1: inner channel.** A receive bind with a QUERY tuple as its source reads from the inner channel of the query (`rholang/src/rust/interpreter/reified/reducer_hooks.rs:974-988`).
+**Rule RQ-1: inner channel.** A receive bind with a QUERY tuple as its source reads from the inner channel of the query (`rholang/src/rust/interpreter/reified/reducer_hooks.rs:1035-1049`).
 The inner channel takes the read rule of a receive source.
 
-**Rule RQ-2: route.** The route of the inner channel decides (`rholang/src/rust/interpreter/reified/reducer_hooks.rs:1005-1035`).
+**Rule RQ-2: route.** The route of the inner channel decides (`rholang/src/rust/interpreter/reified/reducer_hooks.rs:1066-1096`).
 A native space gets the payload and the named params in its consume, and its discipline checks them before the bump.
 The default space fails with `QuerySpecUnsupported`, and a user agent fails closed until P8.
 
-**Rule RQ-3: no host channel.** A QUERY tuple never becomes a channel of the host (`rholang/src/rust/interpreter/reified/reducer_hooks.rs:961-963`).
+**Rule RQ-3: no host channel.** A QUERY tuple never becomes a channel of the host (`rholang/src/rust/interpreter/reified/reducer_hooks.rs:1022-1024`).
 
 ### 3.8 Joins
 
@@ -846,7 +846,7 @@ For a collection $`c`$, $`m_W(c)`$ is the number of positions of $`W`$ on $`c`$.
 **Rule JN-1: route.** A receive with two or more binds whose channels all route to one native space is a join of that space.
 The join keeps its binds in the order of the receive, each with its query (rule RQ-1).
 A join with channels of two spaces, or of a space and the default space, must abort with `CrossSpaceJoin`.
-A join with a channel of a user agent must abort with `AgentSpacesUnavailable` until P8.
+A join with a channel of a user agent must abort with `AgentSpacesUnavailable` until P8 step 3.
 
 **Rule JN-2: checks and scope.** A join checks the key of each bind with the outer store and the query of each bind with the discipline, before it stages anything.
 The [join scope](glossary.md#join-scope) of an operation is the closure of its collections under the join groups of their data channels.
@@ -1257,6 +1257,9 @@ Phase P7 replaced the code `TheoryUnavailable` of a theory in a constructor with
 The code stays for an identity that names no checker of this build (Rule TH-3).
 Phase P8 replaces the code `AgentSpacesUnavailable` with the rules of spaces that user agents implement.
 
+Since P8 step 2, a send on a space of a user agent becomes a method call on the agent.
+Items TS-1 to TS-3 and R7A-1 of [decision 77](decision-register.md#decision-77) define the call.
+
 ## 7. Conformance
 
 Table 9 maps each rule to the formal evidence and to the tests that check it.
@@ -1273,7 +1276,7 @@ A Rocq theorem shows the file and the line of its statement, and a TLA+ invarian
 | SM-4, SM-5 | `storage_id_injective` (`Namespace.v:732`), `space_and_collection_counters_distinct` (`Namespace.v:789`) | `space_meta_channels_counters`, `space_queue_events_namespaced` |
 | SM-8 | The P1 headlines of the substrate, which section [4 of the dossier](verification.md#4-rocq-models) lists | `space_queue_observer_parity`, `reified_p4_smoke_hashmap_queue_play_and_replay` |
 | SM-9 | `queue_plan_permutation_invariant` (`HeadOnlyDisciplines.v:1552`) | `prop_queue_plan_permutation_invariant`, `space_queue_ord_survives_restart` |
-| SM-10 | `route_rules` (`SpaceRefs.v:749`), `space_name_route_ignores_ctx` (`SpaceRefs.v:777`), `ordinary_channels_route_default` (`SpaceRefs.v:842`) | `prop_route_rules`, `reducer_space_routing_ordinary_unchanged` |
+| SM-10 | `route_rules` (`SpaceRefs.v:760`), `space_name_route_ignores_ctx` (`SpaceRefs.v:788`), `ordinary_channels_route_default` (`SpaceRefs.v:929`) | `prop_route_rules`, `reducer_space_routing_ordinary_unchanged` |
 | HM-1, HM-2 | `canon_respects_par_eq` (`Namespace.v:1043`) | `prop_canonical_inner_bytes_respects_par_eq` |
 | HM-4 | `name_id_routes_to_sid` (`Namespace.v:1003`) | `prop_name_id_routes_to_sid`, `space_handle_methods_gensym` |
 | OC-1, OC-3 | `queue_ord_fresh` (`HeadOnlyDisciplines.v:1046`) | `prop_queue_ord_fresh`, `space_queue_counter_bump_shape` |
@@ -1353,7 +1356,7 @@ A Rocq theorem shows the file and the line of its statement, and a TLA+ invarian
 | CL-2, CL-3 | `cell_capacity_one` (`CellDiscipline.v:672`) | `space_disciplines_cell_every_operation_bumps_counter`, `space_disciplines_cell_branch_writes_race_on_the_counter` |
 | CL-4 | `cell_restore_never_occupied` (`CellDiscipline.v:858`) | `prop_cell_restore_never_occupied` |
 | CL-5 | `cell_reentry_as_fresh` (`CellDiscipline.v:889`) | `prop_cell_reentry_as_fresh` |
-| RQ-1 to RQ-3 | `query_source_routes_inner_channel` (`SpaceRefs.v:1515`) | `prop_query_bind_routes_inner_channel`, `prop_query_source_routes_inner_channel` |
+| RQ-1 to RQ-3 | `query_source_routes_inner_channel` (`SpaceRefs.v:1602`) | `prop_query_bind_routes_inner_channel`, `prop_query_source_routes_inner_channel` |
 | SK-1 | `stack_head_is_max_ord` (`StackDiscipline.v:556`), `stack_head_blocks` (`StackDiscipline.v:1348`) | `prop_stack_head_is_max_ord` |
 | SK-2 | `stack_reentry_at_lifo_place` (`StackDiscipline.v:1444`), `stack_reissue_keeps_ord` (`StackDiscipline.v:1576`), the TLA+ invariant `ReissueKeepsOrd` (V14) | `prop_stack_reissue_keeps_ord_any_schedule` |
 | SK-3, SK-4 | `stack_produce_preserves_inv` (`StackDiscipline.v:1043`), `stack_settle_keeps_unspent_records` (`StackDiscipline.v:2151`), `stack_peek_restore_needs_no_settle` (`StackDiscipline.v:1405`), the TLA+ invariants `StackNoPendingMatch` (V12) and `NoRecordLost` (V13) | `prop_stack_no_pending_match_any_schedule` |

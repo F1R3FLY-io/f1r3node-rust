@@ -13,10 +13,14 @@
 '      test that holds.
 '   3. route maps the class to a route by the rules R1 to R5.
 '   4. A default route makes the baseline call. A space route builds the
-'      identity on the data channel (R6) and runs one space intent. An agent
-'      route fails closed until P8.
+'      identity on the data channel (R6) and runs one space intent. On an
+'      agent route, a send becomes the call A'!(sink, "produce", raw, [d...])
+'      on the agent, which routes again with no use context (P8 step 2), and
+'      a receive fails closed until P8 step 3.
 '   5. A note at the top gives the R7 backend, which routes the replies of
-'      system processes with the same rules and no use context.
+'      system processes with the same rules and no use context. Since P8
+'      step 2, the bundle with both flags of an agent-minted name routes to
+'      its agent (R7A).
 '
 ' Colors come from concept-colors.iuml (aliases of the shared palette).
 ' Render: ./render.sh 12-routing-decision.puml   Check: ./render.sh --check
@@ -43,6 +47,8 @@ note right
   the reducer. The R7 backend routes them with
   these rules and no use context, so a forged
   reply channel goes to the default space.
+  **R7A** (P8 step 2): the bundle with both flags
+  around an agent-tagged tuple routes to its agent.
 end note
 partition "classify_channel(c): the first test that holds" {
   if (a sole GPrivate with an id of 1 or 2 bytes?) then (yes)
@@ -89,7 +95,13 @@ case (native space)
   :R6: the identity uses the data channel <latex>D(\mathit{sid}, k)</latex>
   one space intent runs the operation; <<$rrs_agent>>
 case (user agent)
-  :AgentSpacesUnavailable until P8; <<$rrs_reject>>
+  if (a send?) then (yes)
+    :a send becomes the call <latex>A'</latex>!(sink, "produce", raw, [d…])
+    on the agent, which routes again with no use context
+    (R1 or R4, P8 step 2); <<$rrs_name>>
+  else (a receive)
+    :AgentSpacesUnavailable until P8 step 3; <<$rrs_reject>>
+  endif
 endswitch
 stop
 

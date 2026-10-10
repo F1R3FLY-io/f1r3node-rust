@@ -38,6 +38,12 @@ pub enum ReifiedReduceError {
     /// A space that a user agent implements (P8).
     #[error("spaces that user agents implement are not available")]
     AgentSpacesUnavailable,
+    /// A persistent send on a space that a user agent implements (P8, design v2 TS-3).
+    #[error("a persistent send on a space that a user agent implements aborts")]
+    PersistentSendOnAgentSpace,
+    /// A send with params on a space that a user agent implements (P8, design v2 TS-3).
+    #[error("a send on a space that a user agent implements takes no params")]
+    ParamsUnsupportedOnAgentSpace,
     /// A join whose channels route to more than one space, or to a space and the default
     /// space.
     #[error("a join reads from more than one space")]
@@ -75,6 +81,8 @@ impl ReifiedReduceError {
             ReifiedReduceError::PersistentOpCall => "PersistentOpCall",
             ReifiedReduceError::PersistentCapabilityCall => "PersistentCapabilityCall",
             ReifiedReduceError::AgentSpacesUnavailable => "AgentSpacesUnavailable",
+            ReifiedReduceError::PersistentSendOnAgentSpace => "PersistentSendOnAgentSpace",
+            ReifiedReduceError::ParamsUnsupportedOnAgentSpace => "ParamsUnsupportedOnAgentSpace",
             ReifiedReduceError::CrossSpaceJoin => "CrossSpaceJoin",
             // Disabled by decision 29 with its variant (P5c).
             // ReifiedReduceError::OrderedJoinUnsupported => "OrderedJoinUnsupported",
@@ -113,6 +121,8 @@ mod tests {
             ReifiedReduceError::PersistentOpCall,
             ReifiedReduceError::PersistentCapabilityCall,
             ReifiedReduceError::AgentSpacesUnavailable,
+            ReifiedReduceError::PersistentSendOnAgentSpace,
+            ReifiedReduceError::ParamsUnsupportedOnAgentSpace,
             ReifiedReduceError::CrossSpaceJoin,
             // Disabled by decision 29 with its variant (P5c).
             // ReifiedReduceError::OrderedJoinUnsupported,
