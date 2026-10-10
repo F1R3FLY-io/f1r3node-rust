@@ -4259,6 +4259,33 @@ mod tests {
     }
 
     #[test]
+    fn small_non_leader_backlog_keeps_the_base_fallback_cap() {
+        let mut snapshot =
+            crate::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
+        snapshot
+            .on_chain_state
+            .shard_conf
+            .max_user_deploys_per_block = 128;
+
+        for count in [1, 5, NON_LEADER_FALLBACK_ORDINARY_DEPLOY_CAP] {
+            let fallback = fresh_admission_fallback(
+                &snapshot,
+                true,
+                DeployInclusionStaleness::default(),
+                FreshLocalDeployStats {
+                    count,
+                    oldest_age_millis: 7_467,
+                },
+                lag(25, 22),
+            );
+            assert_eq!(
+                fallback.cap, NON_LEADER_FALLBACK_ORDINARY_DEPLOY_CAP,
+                "backlog {count}"
+            );
+        }
+    }
+
+    #[test]
     fn finality_backpressure_holds_the_non_leader_cap_whatever_the_backlog() {
         let mut snapshot =
             crate::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
