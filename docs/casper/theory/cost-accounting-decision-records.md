@@ -13026,3 +13026,109 @@ commit for D-F2a and D-F2b ("One commit (Recommended)").
   per role) walks data that the produce introduction already measured.
 
 **Cross-refs.** DR-76, DR-94, DR-110, DR-117. Phase D (`ofp-2-cap-phase-d`).
+
+## DR-121 — Names that a receive body creates are dynamic for the funding analysis
+
+**Status.** Implemented 2026-10-09 for G1-3 of epic 8946 (leaf
+`ofp-1-lexical-authority`). The user approved it on 2026-10-09: "Implement it
+if it is necessary for cost-accounting." It is necessary. Without it, the
+pre-execution funding check attributes demand to names that the reducer never
+allocates. DR-119 and DR-120 stay reserved.
+
+**Context.**
+
+- The pre-execution funding check (DR-64) resolves the names that a deploy
+  binds with `new` (`lexical.rs`). Then it analyzes the deploy's demand
+  (`delta_sigma.rs`).
+- The reducer runs a receive body with `Blake2b512Random::merge` of the
+  continuation's randomness and the randomness of every matched datum
+  (`dispatch.rs:61-77`). A `new` in the body allocates its names from a split
+  of that merged state.
+- The resolver gave a receive body the split of the receive's own randomness.
+  That rule does not read the datum, so the resolver claimed names that the
+  reducer does not allocate. The analyzer then attributed the demand of a
+  region signed with such a name to a lane that the runtime never uses.
+
+**Decision.**
+
+1. The resolver does not resolve the names that a receive body creates, at any
+   depth inside the body. A `new` there adds holes to the scope stack, so the
+   signatures that name its binders stay bound levels.
+2. The analyzer maps a bound level to `DynamicAuthority` (`signature_lane` in
+   `delta_sigma.rs`). Under DR-64 item 2, unprovable demand contributes no
+   known demand, and the offer is capped.
+3. Names bound outside the receive keep their resolved values inside the body.
+   The reducer substitutes them into the continuation before the COMM, so they
+   do not depend on the datum.
+4. The recursive oracle gets a flag `resolve_receive_bodies`. With the flag
+   set, the oracle is HEAD's resolver. Without it, the oracle follows this
+   record. The parity tests of DR-67 use the second form.
+
+**Why the rule is sound.**
+
+- Two different data give two different merged states. A collision-free
+  allocation gives two different states two different names. So no rule that
+  reads only the continuation can give the binder its name for every datum.
+- The analyzer therefore must not claim any name for such a binder. A bound
+  level makes the claim impossible, and the dynamic classification keeps the
+  check conservative.
+
+**Verification.**
+
+- Rocq `ReceiveBodyNames.v` imports `StackSafeLexicalResolver.v` and uses no
+  axiom.
+  - `receive_body_names_depend_on_datum`: if the merge separates data and the
+    allocation is collision-free, two different data give the body two
+    different names.
+  - `no_datum_independent_rule_is_sound` and `parent_split_rule_is_refuted`: a
+    rule that reads only the continuation disagrees with the reducer on one of
+    two different data. The second theorem instantiates the first with the
+    rule of G1-2.
+  - `witness_parent_split_rule_is_refuted` and
+    `two_datum_witness_refutes_parent_split`: a concrete instance without
+    premises. The reducer gives the data 1 and 2 the names 93 and 155, and the
+    rule of G1-2 claims 0.
+  - `receive_bodies_allocate_nothing`: with receive bodies unresolved, the
+    one-pass resolver handles a receive body as a substitution. It allocates
+    no name, and it puts the outer names into the body.
+  - `machine_refines_one_pass_resolver` of `StackSafeLexicalResolver.v` holds
+    for both values of `resolve_receive_bodies`. So it also covers the
+    machine of this record, in which the flag is off.
+    `dynamic_machine_refines_one_pass_resolver` is that instance.
+  - `dynamic_machine_leaves_receive_body_names_bound` and
+    `parent_split_machine_names_receive_body_binders` run the machine on one
+    receive body. With the flag off, the signature keeps its bound level. With
+    the flag on, the machine claims the name 157.
+  - The proof gate passes in cost-accounting mode: 280 modules and 3181
+    closed assumption queries. Each of the 9 registered theorems of the
+    module is closed under the global context.
+- Rust tests in `lexical/native_names_tests.rs`:
+  - `funding_resolver_names_match_native_allocation` runs one program in the
+    reducer, where each `new` sends its name to an observation channel. It
+    compares each name that the resolver claims with the name that the reducer
+    sent. It covers these cases:
+    - a URN binding
+    - a nested `new`
+    - a `new` in a match case
+    - a `new` in a receive body (a delayed activation)
+    - an outer name inside the receive body.
+
+    It also checks that the analyzer reports `DynamicAuthority` for the
+    program.
+  - The test went in first, against the committed resolver of G1-2. It
+    failed at the assertion for the receive body: the resolver claimed a
+    private name for the binder `received` instead of a bound level. The
+    assertions for the URN binding, the nested `new`, the match case and the
+    outer name inside the receive body passed. After the fix, the test passes.
+  - `head_resolver_claimed_another_name_for_a_receive_body` shows that HEAD's
+    resolver claimed a name that the reducer does not allocate.
+- Suites:
+  - rholang and rspace++ pass 4151 of 4151, with the 2 new tests. The parity
+    tests of DR-67 run the oracle with `resolve_receive_bodies` off.
+  - The rholang doctests pass. `cargo fmt --check` and
+    `cargo clippy --workspace --all-targets -- -D warnings` pass.
+  - No production code calls the resolver yet, so the Casper suite does not
+    apply.
+
+**Cross-refs.** DR-64, DR-67. Leaves `ofp-1-lexical-authority` and
+`ofp-1-stack-safe-lexical`.

@@ -509,6 +509,7 @@ theories/CanonicalAuthorityWitness.v
 theories/IntroductionMeasurementReuse.v
 theories/StackSafeDemandWalk.v
 theories/StackSafeLexicalResolver.v
+theories/ReceiveBodyNames.v
 theories/RuntimeAuthorityScope.v
 theories/StackTransferConservation.v
 theories/OrderedStackMaterialization.v

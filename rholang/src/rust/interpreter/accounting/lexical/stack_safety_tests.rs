@@ -8,7 +8,9 @@
 //! every bound name of a resolved `new` into the whole body, and the machine
 //! rewrites only the signatures that the funding analysis reads. So the
 //! parity check compares the signatures of every walked position, the
-//! analyzer's results on both outputs, and the first error.
+//! analyzer's results on both outputs, and the first error. Since G1-3
+//! (DR-121) the oracle runs with receive bodies unresolved, the rule of the
+//! machine.
 
 use std::collections::{BTreeMap, HashMap};
 
@@ -347,7 +349,8 @@ fn resolver_parity(
     label: &str,
 ) -> Parity {
     let machine = resolve_lexical_names_for_funding(program, rand.clone(), urn_map);
-    let recursive = resolve_lexical_names_for_funding_recursive(program, rand.clone(), urn_map);
+    let recursive =
+        resolve_lexical_names_for_funding_recursive(program, rand.clone(), urn_map, false);
     let budget = unlimited_budget();
     let metered =
         resolve_lexical_names_for_funding_metered(program, rand.clone(), urn_map, &budget);
@@ -529,7 +532,8 @@ fn machine_does_not_substitute_positions_that_the_analyzer_does_not_read() {
     let rand = Blake2b512Random::create_from_bytes(b"wildcard pattern");
     let machine = resolve_lexical_names_for_funding(&program, rand.clone(), &HashMap::new())
         .expect("the machine resolves the program");
-    let head = resolve_lexical_names_for_funding_recursive(&program, rand.clone(), &HashMap::new());
+    let head =
+        resolve_lexical_names_for_funding_recursive(&program, rand.clone(), &HashMap::new(), true);
     assert!(
         matches!(
             &head,
@@ -600,8 +604,9 @@ fn machine_follows_the_reducer_schedule_beside_a_resolved_dequotation() {
     };
     let machine = resolve_lexical_names_for_funding(&program, rand.clone(), &HashMap::new())
         .expect("the machine resolves the program");
-    let recursive = resolve_lexical_names_for_funding_recursive(&program, rand, &HashMap::new())
-        .expect("the recursive resolver resolves the program");
+    let recursive =
+        resolve_lexical_names_for_funding_recursive(&program, rand, &HashMap::new(), true)
+            .expect("the recursive resolver resolves the program");
     assert_eq!(signature_of_y(&machine), expected);
     assert_ne!(
         signature_of_y(&recursive),

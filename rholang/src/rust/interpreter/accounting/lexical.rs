@@ -72,7 +72,8 @@ pub fn resolve_lexical_names_for_funding_metered(
 /// The randomness of a position. `Some` marks a position where the reducer
 /// evaluates the term with the deploy's own randomness, so the resolver
 /// allocates the names of a `new` there. `None` marks a position that the
-/// resolver does not resolve: send data, and every term below them.
+/// resolver does not resolve: send data, receive bodies (G1-3, DR-121), and
+/// every term below them.
 type Position = Option<Blake2b512Random>;
 
 /// One task of the resolver's work stack. The resolver pops one task at a time.
@@ -300,8 +301,10 @@ pub(crate) fn dismantle(pars: Vec<Par>) {
 /// `if`, bundles and signed terms. It keeps a stack of binders. A `new` in a
 /// resolving position binds the names that the reducer allocates. Every other
 /// binder is a hole, so its references stay bound levels and the analyzer
-/// treats them as dynamic authority. The machine copies the fields that it
-/// does not walk and rewrites only cost signatures.
+/// treats them as dynamic authority. A receive body is not a resolving
+/// position (DR-121): the reducer runs it with randomness that depends on the
+/// matched datum. The machine copies the fields that it does not walk and
+/// rewrites only cost signatures.
 struct FundingResolver<'u, 'h> {
     urn_map: &'u HashMap<String, Par>,
     host: Option<&'h HostWorkBudget>,
@@ -470,7 +473,13 @@ impl<'u, 'h> FundingResolver<'u, 'h> {
             }
         }
         for receive in &par.receives {
-            let body_position = split(index)?;
+            // Changed by G1-3 (DR-121): the reducer runs a receive body with the
+            // merge of the continuation's randomness and the randomness of each
+            // matched datum (`dispatch.rs`). The names that the body creates
+            // depend on the datum, so the resolver leaves them unresolved, and
+            // the analyzer treats their bound levels as dynamic authority.
+            // let body_position = split(index)?;
+            let body_position: Position = None;
             let binders = usize::try_from(receive.bind_count).unwrap_or(0);
             ordered.push(Task::BindSignatures(&receive.binds));
             ordered.push(Task::Holes(binders));
@@ -997,9 +1006,16 @@ fn resolve_receive(
     rand: Blake2b512Random,
     urn_map: &HashMap<String, Par>,
     substitute: &Substitute,
+    resolve_receive_bodies: bool,
 ) -> Result<Receive, InterpreterError> {
     if let Some(body) = receive.body.take() {
-        receive.body = Some(resolve_par(body, rand, urn_map, substitute)?);
+        receive.body = Some(resolve_par(
+            body,
+            rand,
+            urn_map,
+            substitute,
+            resolve_receive_bodies,
+        )?);
     }
     Ok(receive)
 }
@@ -1012,6 +1028,7 @@ fn resolve_par(
     rand: Blake2b512Random,
     urn_map: &HashMap<String, Par>,
     substitute: &Substitute,
+    resolve_receive_bodies: bool,
 ) -> Result<Par, InterpreterError> {
     let term_count = evaluation_terms(&par).len();
     if term_count > i16::MAX as usize {
@@ -1025,7 +1042,18 @@ fn resolve_par(
 
     for receive in &mut par.receives {
         let term_rand = evaluation_random(&rand, index, term_count)?;
-        *receive = resolve_receive(receive.clone(), term_rand, urn_map, substitute)?;
+        // Changed by G1-3 (DR-121): the oracle models HEAD's rule and the rule
+        // of DR-121, which leaves the names of a receive body unresolved.
+        // *receive = resolve_receive(receive.clone(), term_rand, urn_map, substitute)?;
+        if resolve_receive_bodies {
+            *receive = resolve_receive(
+                receive.clone(),
+                term_rand,
+                urn_map,
+                substitute,
+                resolve_receive_bodies,
+            )?;
+        }
         index += 1;
     }
 
@@ -1036,7 +1064,13 @@ fn resolve_par(
             InterpreterError::UndefinedRequiredProtobufFieldError("New.p".to_string())
         })?;
         let substituted = substitute.substitute_no_sort(body, 0, &env)?;
-        new.p = Some(resolve_par(substituted, term_rand, urn_map, substitute)?);
+        new.p = Some(resolve_par(
+            substituted,
+            term_rand,
+            urn_map,
+            substitute,
+            resolve_receive_bodies,
+        )?);
         index += 1;
     }
 
@@ -1044,7 +1078,13 @@ fn resolve_par(
         let term_rand = evaluation_random(&rand, index, term_count)?;
         for case in &mut mat.cases {
             if let Some(source) = case.source.take() {
-                case.source = Some(resolve_par(source, term_rand.clone(), urn_map, substitute)?);
+                case.source = Some(resolve_par(
+                    source,
+                    term_rand.clone(),
+                    urn_map,
+                    substitute,
+                    resolve_receive_bodies,
+                )?);
             }
         }
         index += 1;
@@ -1058,10 +1098,17 @@ fn resolve_par(
                 term_rand.clone(),
                 urn_map,
                 substitute,
+                resolve_receive_bodies,
             )?);
         }
         if let Some(if_false) = conditional.if_false.take() {
-            conditional.if_false = Some(resolve_par(if_false, term_rand, urn_map, substitute)?);
+            conditional.if_false = Some(resolve_par(
+                if_false,
+                term_rand,
+                urn_map,
+                substitute,
+                resolve_receive_bodies,
+            )?);
         }
         index += 1;
     }
@@ -1069,7 +1116,13 @@ fn resolve_par(
     for bundle in &mut par.bundles {
         let term_rand = evaluation_random(&rand, index, term_count)?;
         if let Some(body) = bundle.body.take() {
-            bundle.body = Some(resolve_par(body, term_rand, urn_map, substitute)?);
+            bundle.body = Some(resolve_par(
+                body,
+                term_rand,
+                urn_map,
+                substitute,
+                resolve_receive_bodies,
+            )?);
         }
         index += 1;
     }
@@ -1088,7 +1141,13 @@ fn resolve_par(
     for signed in &mut par.cost_signed_terms {
         let term_rand = evaluation_random(&rand, index, term_count)?;
         if let Some(body) = signed.body.take() {
-            signed.body = Some(resolve_par(body, term_rand, urn_map, substitute)?);
+            signed.body = Some(resolve_par(
+                body,
+                term_rand,
+                urn_map,
+                substitute,
+                resolve_receive_bodies,
+            )?);
         }
         index += 1;
     }
@@ -1102,21 +1161,33 @@ fn resolve_par(
     Ok(par)
 }
 
-/// The recursive resolver of HEAD `17e07307f`, kept as the test oracle.
+/// The recursive resolver of HEAD `17e07307f`, kept as the test oracle. With
+/// `resolve_receive_bodies` set it is HEAD's resolver. Without it, it leaves
+/// the names that a receive body creates unresolved (DR-121).
 #[cfg(test)]
 pub(crate) fn resolve_lexical_names_for_funding_recursive(
     program: &Par,
     rand: Blake2b512Random,
     urn_map: &HashMap<String, Par>,
+    resolve_receive_bodies: bool,
 ) -> Result<Par, InterpreterError> {
     let substitute = Substitute {
         metering: MeteredMachine::new(RuntimeBudget::new(Cost::unsafe_max())),
     };
-    resolve_par(program.clone(), rand, urn_map, &substitute)
+    resolve_par(
+        program.clone(),
+        rand,
+        urn_map,
+        &substitute,
+        resolve_receive_bodies,
+    )
 }
 
 #[cfg(test)]
 mod stack_safety_tests;
+
+#[cfg(test)]
+mod native_names_tests;
 
 #[cfg(test)]
 mod tests {
