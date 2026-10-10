@@ -1124,7 +1124,9 @@ impl TestNode {
             sigs: vec![],
         };
         let shard_conf = CasperShardConf {
-            fault_tolerance_threshold: 0.0,
+            // Matches the configured shard. At 0.0 two disjoint half-stake
+            // cliques can certify incompatible blocks without equivocating.
+            fault_tolerance_threshold: 0.1,
             shard_name: shard_id.clone(),
             parent_shard_id: "".to_string(),
             finalization_rate,
