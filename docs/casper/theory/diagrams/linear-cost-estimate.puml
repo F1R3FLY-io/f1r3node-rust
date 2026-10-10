@@ -1,0 +1,144 @@
+' The linear pre-execution cost estimate of one offered deploy.
+' One linear analysis runs before execution. It estimates the full cost
+' (COMMs plus introduction, transfer and trace bytes) for every signature
+' lane and resource class, and it decides whether the estimate is complete
+' (rules X1 to X8 and the on-chain payer condition). A complete estimate
+' holds exactly its cost plus the fee (P1 acceptance step 2, DR-64). An
+' incomplete estimate holds up to the signed limit (the P1 margin rule).
+' Settlement charges the measured use directly, with no floor, under the
+' guard of DR-65 item 5.
+'
+' Source of truth: docs/casper/theory/cost-accounting-impl/linear-cost-estimate.md
+' Palette: inputs = supply blue · resolver and analysis = process lilac ·
+'   estimate = delta orange · holds and supply check = gate teal ·
+'   execution = pool green · settlement = note green ·
+'   charged user failure = note amber · rejection = red ·
+'   decisions = control amber · design notes = indigo note
+' The legend also defines every name and symbol that the labels use,
+' so the diagram reads on its own.
+' Render:  ./render.sh linear-cost-estimate.puml
+
+@startuml linear-cost-estimate
+!include palette.iuml
+$ca_base_skin()
+skinparam ArrowColor $ca_neutral
+skinparam ActivityBorderColor #333333
+skinparam ActivityDiamondBackgroundColor $ca_control
+skinparam ActivityDiamondBorderColor #333333
+skinparam PartitionBackgroundColor #FAFAFA
+title The linear pre-execution cost estimate of one offered deploy
+
+start
+partition "1 · Inputs (the producer and every validator)" {
+  :signed offered envelope: term, signers,\nfunding sources, phloLimit and phloPrice; <<$ca_supply>>
+  :adopted schedule with the weights <latex>w_k</latex>,\noffered URN map, consensus host-work limits,\nwallet snapshot at <latex>R_0</latex>; <<$ca_supply>>
+}
+partition "2 · Resolver" {
+  :resolve the names of the deploy from the envelope seed\n(metered, linear, stack-safe)\nholes inside receive bodies (DR-121); <<$ca_process>>
+}
+partition "3 · One linear analysis, two outputs" {
+  :give every level a binder kind:\nfresh, fresh hole, URN, injection,\nreceive pattern, match pattern; <<$ca_process>>
+  :size every send and receive from representative values\n(data after evaluation, poison for received values)\nand fill the channel tables <latex>M</latex>, <latex>T</latex>, <latex>\mathrm{TR}</latex>; <<$ca_process>>
+  :count COMMs and introduction, transfer and trace bytes\nfor every region of every participant:\n<latex>V(s,k)</latex>, with maxima at branches and joins as multisets; <<$ca_process>>
+  :<latex>B = \sum_{s}\sum_{k} w_k\,u(s)\,V(s,k)</latex>; <<$ca_delta>>
+  floating note right $ca_note_indigo
+    **What the estimate cannot see:** stored contracts that
+    the deploy triggers, data from stored state, persistent or
+    recursive processes, *x, method calls in process position,
+    peeks. Each makes the estimate incomplete, and the
+    margin rule of P1 covers it.
+  end note
+  if (do rules X1 to X8 and the\non-chain payer condition hold?) then (yes)
+    :output: the estimate is complete\nno dynamic logic can add cost; <<$ca_process>>
+  else (no)
+    :output: the estimate is incomplete\nthe margin rule of P1 covers the unseen cost; <<$ca_process>>
+  endif
+}
+partition "4 · Holds and the supply check at R0" {
+  if (<latex>B > \mathrm{phloLimit}</latex> ?) then (yes)
+    :reject before execution\nno effect · no charge; <<$ca_rejectfill>>
+    stop
+  else (no)
+  endif
+  if (is the estimate complete?) then (yes)
+    :hold <latex>H = B \cdot \mathrm{phloPrice} + 1</latex>\nmeter bound <latex>B</latex>, source Certificate\n(P1 acceptance step 2, DR-64); <<$ca_gate>>
+  else (no)
+    :hold <latex>H = \mathrm{phloLimit} \cdot \mathrm{phloPrice} + 1</latex>\nmeter bound phloLimit, source SignedLimit\n(P1 margin rule, DR-64); <<$ca_gate>>
+  endif
+  :place the known demand per lane and class on eligible sources,\nthen fill the remainder <latex>R = (\mathrm{phloLimit} - B) \cdot \mathrm{phloPrice}</latex>\nin canonical custody order (no remainder when complete); <<$ca_gate>>
+  if (do the holds fit the balances,\nthe caps and the total exposure at <latex>R_0</latex> ?) then (no)
+    :reject before execution: "insufficient phlogiston"\nno effect · no charge; <<$ca_rejectfill>>
+    stop
+  else (yes)
+  endif
+}
+partition "5 · Execution in a fresh offered runtime" {
+  :execute the deploy under the meter bound; <<$ca_pool>>
+  if (meter outcome?) then (within the bound)
+  elseif (signed limit exhausted\n(incomplete estimate)) then
+    :classified user failure (DR-113): roll back,\ncharge the billable work and the fee; <<$ca_note_amber>>
+    stop
+  elseif (total use above <latex>B</latex>\n(complete estimate)) then
+    :certificate failure: an analyzer defect\nreject, no charge; <<$ca_rejectfill>>
+    stop
+  else (host-work limit)
+    :platform failure\nreject, no charge; <<$ca_rejectfill>>
+    stop
+  endif
+}
+partition "6 · Settlement and the guard" {
+  :select the debits for the measured use\ncapacity of each purse: its signed caps and\n<latex>\mathrm{balance}(p) - \sum_{j>i} \mathrm{hold}_j(p)</latex>; <<$ca_gate>>
+  floating note right $ca_note_indigo
+    **Several offers per block (G2):** the capacity cap applies
+    on the success path and on the rollback path.
+    **Installer purses (G3):** a short installer purse follows
+    the interim rule B5, which rejects the triggering deploy
+    with no charge.
+  end note
+  if (guard of DR-65 item 5 for every purse p that member i debits\nor that carries a later hold:\n<latex>\mathrm{balance}_{\mathrm{after}}(p) - \mathrm{debit}_i(p) \geq \sum_{j>i} \mathrm{hold}_j(p)</latex> ?) then (yes)
+    :settle: charge the measured use plus the fee\nhold = debit · refund implicit · no settlement floor; <<$ca_note_green>>
+  else (no)
+    :charged user failure: roll back to the execution root,\npay the billable work and the fee from the restored balance; <<$ca_note_amber>>
+  endif
+}
+stop
+
+legend bottom
+  |= colour |= meaning |
+  |<$ca_supply>| signed input and consensus inputs |
+  |<$ca_process>| resolver and linear analysis |
+  |<$ca_delta>| the estimate in phlo |
+  |<$ca_gate>| holds, placement and the supply check |
+  |<$ca_pool>| execution under the meter bound |
+  |<$ca_note_green>| settlement |
+  |<$ca_note_amber>| charged user failure |
+  |<$ca_rejectfill>| rejection with no charge |
+  |<$ca_control>| decision |
+  |<$ca_note_indigo>| design note |
+
+  |= name |= meaning |
+  | P1 | the paper "Cost-Accounted Rho Calculus" by L. G. Meredith, publications revision 0bf7817 |
+  | DR-n | decision record n: DR-64 (the funding check before execution), DR-65 (same-block offers that share a purse), DR-113 (exhaustion of the signed limit), DR-121 (names that a receive body creates) |
+  | G2, G3 | several offered deploys in one block, and installer funding of a stored continuation |
+  | B5 | the interim rule of 2026-10-10 for an installer purse that cannot pay |
+  | X1 to X8 | the completeness rules of the analysis |
+  | COMM | the event in which a receive meets one datum for each of its binds |
+  | URN | a uniform resource name that a new binds to a system channel |
+  | *x | a dequotation, which runs the process that the name x quotes |
+  | phloLimit, phloPrice | the signed phlo limit and the signed phlo price of the envelope |
+  | <latex>R_0</latex> | the authenticated state root that the deploy funds from |
+  | <latex>s</latex>, <latex>k</latex> | a signature lane, and a resource class: compute, introduction, transfer or trace |
+  | <latex>V(s,k)</latex> | the raw count of lane s and class k, without units |
+  | <latex>w_k</latex>, <latex>u(s)</latex> | the weight of class k, and the units of lane s |
+  | <latex>M</latex>, <latex>T</latex>, <latex>\mathrm{TR}</latex> | the channel tables: largest datum message, largest transfer and largest trace on a channel |
+  | <latex>B</latex> | the estimate in phlo |
+  | <latex>H</latex>, <latex>R</latex> | the total hold, and the remainder of an incomplete estimate |
+  | Certificate, SignedLimit | the bound sources of the meter: the estimate, or the signed limit |
+  | <latex>p</latex>, <latex>i</latex>, <latex>j</latex> | a purse, the member that settles, and a later member of the same block |
+  | <latex>\mathrm{hold}_j(p)</latex> | the hold of member j on purse p |
+  | <latex>\mathrm{debit}_i(p)</latex> | the debit of member i on purse p, with the fee included |
+  | <latex>\mathrm{balance}_{\mathrm{after}}(p)</latex> | the balance of p at the settlement root of member i |
+  | <latex>\mathrm{balance}(p)</latex> | the balance of p that the selection reads |
+endlegend
+
+@enduml
