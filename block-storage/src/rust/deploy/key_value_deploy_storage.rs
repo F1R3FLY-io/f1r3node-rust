@@ -1,6 +1,7 @@
 // See block-storage/src/main/scala/coop/rchain/blockstorage/deploy/KeyValueDeployStorage.scala
 
 use std::collections::HashSet;
+use std::marker::PhantomData;
 
 use crypto::rust::signatures::signed::Signed;
 use models::rust::casper::protocol::casper_message::DeployData;
@@ -10,19 +11,44 @@ use shared::rust::store::key_value_typed_store::KeyValueTypedStore;
 use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
 use shared::rust::ByteString;
 
-#[derive(Clone)]
-pub struct KeyValueDeployStorage {
-    pub store: KeyValueTypedStoreImpl<ByteString, Signed<DeployData>>,
+pub trait DeployStoreName {
+    const NAME: &'static str;
 }
 
-impl KeyValueDeployStorage {
+#[derive(Clone)]
+pub struct DeployStorageName;
+
+impl DeployStoreName for DeployStorageName {
+    const NAME: &'static str = "deploy_storage";
+}
+
+#[derive(Clone)]
+pub struct RejectedDeployBufferName;
+
+impl DeployStoreName for RejectedDeployBufferName {
+    const NAME: &'static str = "rejected_deploy_buffer";
+}
+
+#[derive(Clone)]
+pub struct KeyValueDeployStore<N: DeployStoreName> {
+    store: KeyValueTypedStoreImpl<ByteString, Signed<DeployData>>,
+    _name: PhantomData<N>,
+}
+
+pub type KeyValueDeployStorage = KeyValueDeployStore<DeployStorageName>;
+pub type KeyValueRejectedDeployBuffer = KeyValueDeployStore<RejectedDeployBufferName>;
+
+impl<N: DeployStoreName> KeyValueDeployStore<N> {
     pub async fn new(kvm: &mut impl KeyValueStoreManager) -> Result<Self, KvStoreError> {
-        let deploy_storage_kv_store = kvm.store("deploy_storage".to_string()).await?;
-        let deploy_storage_db: KeyValueTypedStoreImpl<ByteString, Signed<DeployData>> =
-            KeyValueTypedStoreImpl::new(deploy_storage_kv_store);
-        Ok(Self {
-            store: deploy_storage_db,
-        })
+        let kv_store = kvm.store(N::NAME.to_string()).await?;
+        Ok(Self::from_store(KeyValueTypedStoreImpl::new(kv_store)))
+    }
+
+    pub fn from_store(store: KeyValueTypedStoreImpl<ByteString, Signed<DeployData>>) -> Self {
+        Self {
+            store,
+            _name: PhantomData,
+        }
     }
 
     pub fn add(&mut self, deploys: Vec<Signed<DeployData>>) -> Result<(), KvStoreError> {
@@ -48,6 +74,12 @@ impl KeyValueDeployStorage {
             .into_iter()
             .next()
             .unwrap_or(false))
+    }
+
+    pub fn get_by_sig(&self, sig: &[u8]) -> Result<Option<Signed<DeployData>>, KvStoreError> {
+        let key: ByteString = sig.to_vec();
+        let results = self.store.get(&vec![key])?;
+        Ok(results.into_iter().next().flatten())
     }
 
     pub fn remove(&mut self, deploys: Vec<Signed<DeployData>>) -> Result<(), KvStoreError> {
@@ -150,12 +182,20 @@ mod tests {
         assert_eq!(storage.read_all().unwrap().len(), 1);
     }
 
+    #[tokio::test]
+    async fn the_two_stores_open_separate_lmdb_stores() {
+        let mut kvm = InMemoryStoreManager::new();
+        let mut storage = KeyValueDeployStorage::new(&mut kvm).await.unwrap();
+        let buffer = KeyValueRejectedDeployBuffer::new(&mut kvm).await.unwrap();
+        storage.add(vec![deploy(1)]).unwrap();
+        assert!(storage.non_empty().unwrap());
+        assert!(!buffer.non_empty().unwrap());
+    }
+
     #[test]
     fn add_if_absent_is_atomic_across_storage_handles() {
         let store: Arc<dyn KeyValueStore> = Arc::new(InMemoryKeyValueStore::new());
-        let storage = KeyValueDeployStorage {
-            store: KeyValueTypedStoreImpl::new(store),
-        };
+        let storage = KeyValueDeployStorage::from_store(KeyValueTypedStoreImpl::new(store));
         let deploy = Signed::create(
             DeployData {
                 term: "Nil".to_string(),

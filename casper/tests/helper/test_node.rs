@@ -1138,7 +1138,7 @@ impl TestNode {
             max_parent_depth: max_parent_depth.unwrap_or(30),
             synchrony_constraint_threshold: synchrony_constraint_threshold as f32,
             height_constraint_threshold: i64::MAX,
-            // Validators will try to put deploy in a block only for next `deployLifespan` blocks.
+            // Validators will try to put deploy in a block only for next `deploy_lifespan` blocks.
             // Required to enable protection from re-submitting duplicate deploys
             deploy_lifespan: deploy_lifespan.unwrap_or(50),
             casper_version: 1,

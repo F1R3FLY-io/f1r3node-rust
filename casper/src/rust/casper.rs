@@ -483,7 +483,7 @@ pub struct CasperShardConf {
     pub max_parent_depth: i32,
     pub synchrony_constraint_threshold: f32,
     pub height_constraint_threshold: i64,
-    // Validators will try to put deploy in a block only for next `deployLifespan` blocks.
+    // Validators will try to put deploy in a block only for next `deploy_lifespan` blocks.
     // Required to enable protection from re-submitting duplicate deploys
     pub deploy_lifespan: i64,
     /// Wall-clock ceiling on user-deploy execution per proposed block

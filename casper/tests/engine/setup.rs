@@ -290,18 +290,15 @@ impl TestFixture {
         ));
         let deploy_storage_typed_store =
             KeyValueTypedStoreImpl::<ByteString, Signed<DeployData>>::new(deploy_storage_store);
-        let deploy_storage = KeyValueDeployStorage {
-            store: deploy_storage_typed_store,
-        };
+        let deploy_storage = KeyValueDeployStorage::from_store(deploy_storage_typed_store);
 
         // Rejected-deploy buffer: mirrors the deploy storage shape with its own backing store.
         let rejected_buffer_store = Arc::new(MockKeyValueStore::new());
         let rejected_buffer_typed_store =
             KeyValueTypedStoreImpl::<ByteString, Signed<DeployData>>::new(rejected_buffer_store);
-        let rejected_deploy_buffer =
-            Arc::new(std::sync::Mutex::new(KeyValueRejectedDeployBuffer {
-                store: rejected_buffer_typed_store,
-            }));
+        let rejected_deploy_buffer = Arc::new(std::sync::Mutex::new(
+            KeyValueRejectedDeployBuffer::from_store(rejected_buffer_typed_store),
+        ));
 
         // Scala: implicit val estimator = Estimator[Task](Estimator.UnlimitedParents, None)
         let estimator = Estimator::apply();
