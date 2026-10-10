@@ -166,6 +166,28 @@ pub const FINALITY_LAG_SOFT_BACKPRESSURE_BLOCKS: i64 = 4;
 pub const FINALITY_LAG_HARD_BACKPRESSURE_BLOCKS: i64 = 8;
 const _: () =
     assert!(FINALITY_LAG_SOFT_BACKPRESSURE_BLOCKS < FINALITY_LAG_HARD_BACKPRESSURE_BLOCKS);
+const FINALITY_STALL_PROPOSALS: u32 = 2;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct FinalityProgress {
+    last_finalized_block: Option<i64>,
+    unadvanced_proposals: u32,
+}
+
+impl FinalityProgress {
+    pub fn observe(&mut self, last_finalized_block: i64) -> bool {
+        match self.last_finalized_block {
+            Some(previous) if last_finalized_block <= previous => {
+                self.unadvanced_proposals = self.unadvanced_proposals.saturating_add(1);
+            }
+            _ => {
+                self.last_finalized_block = Some(last_finalized_block);
+                self.unadvanced_proposals = 0;
+            }
+        }
+        self.unadvanced_proposals >= FINALITY_STALL_PROPOSALS
+    }
+}
 
 /// C15 / Smell-4: extract the deploy-signature pretty-print prefix
 /// used in operator-facing log messages. Previously inlined as
@@ -4344,6 +4366,24 @@ mod tests {
 
         assert!(recovery.allowed);
         assert_eq!(recovery.cap, NON_LEADER_FALLBACK_ORDINARY_DEPLOY_CAP);
+    }
+
+    #[test]
+    fn finality_progress_reports_a_stall_after_two_proposals_without_an_lfb_advance() {
+        let mut fresh = FinalityProgress::default();
+        assert!(!fresh.observe(10), "a first observation is never a stall");
+
+        let mut progress = FinalityProgress::default();
+        assert!(!progress.observe(10));
+        assert!(!progress.observe(10), "one proposal without an advance");
+        assert!(progress.observe(10), "two proposals without an advance");
+        assert!(
+            progress.observe(10),
+            "the stall holds while the LFB does not move"
+        );
+        assert!(!progress.observe(11), "the first advance clears the stall");
+        assert!(!progress.observe(11));
+        assert!(progress.observe(11));
     }
 
     #[test]
