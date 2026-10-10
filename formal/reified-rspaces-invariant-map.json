@@ -8670,6 +8670,38 @@
           "covers": [
             "V18"
           ]
+        },
+        {
+          "test": "pattern_enforcement_temp_rows",
+          "file": "rholang/tests/reified_pattern_enforcement.rs",
+          "rule": "F17 of decision 39: the temp rows of N3 on the 26 wired families, with the sweep check after each deploy",
+          "covers": [
+            "V1"
+          ]
+        },
+        {
+          "test": "pattern_enforcement_seq_rows",
+          "file": "rholang/tests/reified_pattern_enforcement.rs",
+          "rule": "F17 of decision 39: the seq rows of N3 on the 26 wired families; each channel is used in one causal chain of a handle produce and a receive",
+          "covers": [
+            "V4"
+          ]
+        },
+        {
+          "test": "pattern_enforcement_hashset_rows",
+          "file": "rholang/tests/reified_pattern_enforcement.rs",
+          "rule": "HS-2 and HS-3 on the six HashSet families: a unit is taken, a payload and a pattern abort",
+          "covers": [
+            "V9"
+          ]
+        },
+        {
+          "test": "pattern_enforcement_native_unsupported_pairs_reject",
+          "file": "rholang/tests/reified_pattern_enforcement.rs",
+          "rule": "QT-1 and QT-4 in native execution: HashSet with default or temp, and VectorDB with temp or seq and a mirror, fail before any space exists",
+          "covers": [
+            "V6"
+          ]
         }
       ]
     }

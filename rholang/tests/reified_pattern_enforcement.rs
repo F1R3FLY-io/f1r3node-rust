@@ -27,13 +27,29 @@
 //!   in the family agent with `FamilyUnavailable`.
 //! * The six HashSet families (P7 step 3, HS-6) with a qualifier other than `seq`: their factory
 //!   refuses `default` and `temp` with `BadConstructorArgument`. Legacy execution also refuses
-//!   `seq` (QT-5), so these suites create no HashSet space. The HashSet rows of the matrix run in
-//!   native execution (step 6 of P7).
+//!   `seq` (QT-5), so the legacy rows create no HashSet space. The HashSet rows of the matrix run
+//!   in native execution (below).
 //!
-//! **Qualifiers.** These suites run in legacy execution, which refuses the `seq` qualifier with
+//! **Qualifiers.** The rows above run in legacy execution, which refuses the `seq` qualifier with
 //! `QualifierUnavailable` on every factory of this wave, before the gates of the params (P7,
-//! design v3 QT-5). P7 step 1 makes `temp` available (F17 of decision 39 puts its rows of the
-//! matrix in P7).
+//! design v3 QT-5).
+//!
+//! **The native rows of P7 (design v3 section 10, A7; F17 of decision 39).** A `temp` or `seq`
+//! space lives for one deploy, so each of these rows runs in one native deploy that certifies
+//! through its committed evidence, and it reads its result from the event log and the replies:
+//!
+//! * `pattern_enforcement_temp_rows`: on the 26 wired families, a pattern for 42 never receives
+//!   43 in a `temp` space, in both source orders, and the log shows the record and the waiter on
+//!   the channels of their name with no COMM. A pattern for 42 receives 42.
+//! * `pattern_enforcement_seq_rows`: the same in a `seq` space, with a handle `produce` before
+//!   each receive (SQ-3). The names of a seq space are never sent, so the row reads its
+//!   collections from the journal and compares its COMMs with the row without its negative part.
+//! * `pattern_enforcement_hashset_rows`: on the six HashSet families, a unit is taken by an empty
+//!   receive, a send of 43 fails with `PayloadNotEmpty`, and a receive for 42 with
+//!   `PatternNotEmpty`.
+//! * `pattern_enforcement_native_unsupported_pairs_reject`: a HashSet family with `default` or
+//!   `temp` fails with `BadConstructorArgument`, and a VectorDB family with `temp` or `seq` and a
+//!   mirror with `InvalidParam`, before any space exists.
 //!
 //! The property `prop_pattern_enforcement_any_wired_family` restates `PatternEnforcement` (V2 of
 //! `GenericRSpace.tla`) and `wildcard_matcher_degenerate` (`Match.v`) end to end through Rholang:
@@ -60,17 +76,23 @@ use rholang::rust::interpreter::spaces::factory::constructor::{Execution, Factor
 use rholang::rust::interpreter::spaces::factory::defaults::constructor_schema;
 use rholang::rust::interpreter::spaces::factory::urn::registered_channel;
 use rholang::rust::interpreter::spaces::families::{send_params, Family, FamilyAgent};
-use rholang::rust::interpreter::spaces::namespace::{self, Durability, NativeSpace, SID_LEN};
+use rholang::rust::interpreter::spaces::namespace::{
+    self, Durability, NativeSpace, ReifiedId, SID_LEN,
+};
 use rholang::rust::interpreter::spaces::record;
 use rholang::rust::interpreter::spaces::types::config::SpaceConfig;
 use rholang::rust::interpreter::spaces::types::qualifier::SpaceQualifier as ConfigQualifier;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::hashing::stable_hash_provider::hash;
 use rspace_plus_plus::rspace::rspace_interface::ISpace;
-use rspace_plus_plus::rspace::trace::event::Event;
+use rspace_plus_plus::rspace::trace::event::{Event, IOEvent};
 use support::agent::{budget, creation, env_over, play, run, send_on};
 use support::props::{check, runtime_config, tokio_runtime};
-use support::session::{comms_on, data_channel, with_space, Injections, Session};
+use support::native::{
+    assert_reproduces, certify, footprint_channels, is_space_row, native_play, Played, AMPLE_LIMIT,
+    OUT,
+};
+use support::session::{comms_on, data_channel, error_codes, with_space, Injections, Session};
 
 // ─── Families and programs ───────────────────────────────────────────────────────────────────
 
@@ -1193,3 +1215,383 @@ async fn pattern_enforcement_pathmap_cell() { check_pathmap_row(PATHMAP_ROWS[4])
 /// orders, with sends and receives without a priority.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn pattern_enforcement_pathmap_priorityqueue() { check_pathmap_row(PATHMAP_ROWS[5]).await; }
+
+// ─── P7: the native rows of `temp`, `seq` and HashSet (design v3 section 10, A7) ─────────────
+
+// A `temp` or `seq` space lives for one deploy, so each row runs in one native deploy. A row
+// reads its result from the event log and from the values on the public channel `OUT` of the
+// native harness. Each deploy certifies through its committed evidence, and the sweep leaves no
+// volatile channel. The rows of `seq` make their uses of each channel in one causal chain
+// (SQ-3): a handle `produce`, then a receive.
+
+/// The phlo limit of the native rows, as in the Seq suite.
+const NATIVE_LIMIT: u64 = 20 * AMPLE_LIMIT;
+
+/// Every wired row of the matrix: the rows of the HashMap, Array and Vector stores, then the
+/// PathMap rows.
+fn wired_rows() -> Vec<Row> { ROWS.into_iter().chain(PATHMAP_ROWS).collect() }
+
+/// The constructor of `row` with the qualifier `qualifier`.
+fn qualified(row: Row, qualifier: &str) -> String { row.constructor.replace("default", qualifier) }
+
+/// The channels that the operations on the name `name` of `space` store on: the data channel of
+/// its collection, and for a PathMap space also the index channel of its prefix, where its
+/// waiters park.
+fn stored_channels(row: Row, space: NativeSpace, name: &Par) -> Vec<Par> {
+    match row.outer {
+        SpaceOuter::PathMap => {
+            let (data, index) = path_channels(space, name);
+            vec![data, index]
+        }
+        _ => vec![data_channel(space, name)],
+    }
+}
+
+/// The produce, consume and COMM events of `log` on the channels with the hashes `hashes`. A
+/// COMM counts when its consume or one of its produces is on such a channel.
+fn events_on(log: &[Event], hashes: &[Blake2b256Hash]) -> (usize, usize, usize) {
+    let on = |key: &Blake2b256Hash| hashes.contains(key);
+    log.iter()
+        .fold((0, 0, 0), |(produces, consumes, comms), event| match event {
+            Event::IoEvent(IOEvent::Produce(produce)) if on(&produce.channel_hash) => {
+                (produces + 1, consumes, comms)
+            }
+            Event::IoEvent(IOEvent::Consume(consume))
+                if consume.channel_hashes.iter().any(on) =>
+            {
+                (produces, consumes + 1, comms)
+            }
+            Event::Comm(comm)
+                if comm.consume.channel_hashes.iter().any(on)
+                    || comm.produces.iter().any(|produce| on(&produce.channel_hash)) =>
+            {
+                (produces, consumes, comms + 1)
+            }
+            Event::IoEvent(_) | Event::Comm(_) => (produces, consumes, comms),
+        })
+}
+
+/// The values on `OUT` of `played` whose first element is the string `label`: the other
+/// elements of each list.
+fn labelled(played: &Played, label: &str) -> Vec<Vec<Par>> {
+    played
+        .out
+        .iter()
+        .filter_map(|pars| match pars.as_slice() {
+            [value] => {
+                let elements = list_elements(value);
+                match elements.split_first() {
+                    Some((head, rest)) if *head == gstring(label) => Some(rest.to_vec()),
+                    _ => None,
+                }
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// Plays `term` natively, checks that the sweep leaves no volatile channel, and certifies it.
+async fn play_native(label: &str, term: &str) -> Played {
+    let played = native_play(term, NATIVE_LIMIT).await;
+    assert!(
+        played.residue.is_empty(),
+        "{label}: the sweep leaves no volatile channel: {:?}",
+        played.residue
+    );
+    let certification = certify(&played, term, NATIVE_LIMIT).await;
+    assert_reproduces(label, &played, &certification);
+    played
+}
+
+/// The deploy of a `temp` row of `urn` with the constructor `ctor`. On `a` the send comes first
+/// in the source, and on `b` the receive. A pattern for 42 never receives 43 on either name, and
+/// a pattern for 42 receives 42 on `c`. The handle and the names `a` and `b` go to `OUT`.
+fn temp_row_program(urn: &str, ctor: &str) -> String {
+    format!(
+        r#"new factory(`{urn}`) in {{
+  for (space <- factory!?({ctor})) {{
+    for (a <- space!?("gensym"); b <- space!?("gensym"); c <- space!?("gensym")) {{
+      @"{OUT}"!(["stash", *space, *a, *b]) |
+      a!(43) | for (@42 <- a) {{ @"{OUT}"!(["negative", 42]) }} |
+      for (@42 <- b) {{ @"{OUT}"!(["negative", 42]) }} | b!(43) |
+      for (@42 <- c) {{ @"{OUT}"!(["positive", 42]) }} | c!(42)
+    }}
+  }}
+}}"#
+    )
+}
+
+/// The `temp` rows of N3 (F17 of decision 39): on every wired family, a pattern for 42 never
+/// receives 43 in a `temp` space, in both source orders, and a pattern for 42 receives 42. The
+/// log shows that the record 43 and the waiter for 42 were stored on the channels of their name,
+/// and that no COMM touched these channels.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn pattern_enforcement_temp_rows() {
+    for row in wired_rows() {
+        let urn = row.family().to_string();
+        let label = format!("temp {urn}");
+        let played = play_native(&label, &temp_row_program(&urn, &qualified(row, "temp"))).await;
+        assert!(
+            played.result.errors.is_empty(),
+            "{label}: {:?}",
+            played.result.errors
+        );
+        assert!(
+            labelled(&played, "negative").is_empty(),
+            "{label}: a pattern for 42 never receives 43"
+        );
+        assert_eq!(
+            labelled(&played, "positive"),
+            vec![vec![gint(42)]],
+            "{label}: a pattern for 42 receives 42"
+        );
+        let stash = labelled(&played, "stash");
+        let [entry] = stash.as_slice() else {
+            panic!("{label}: one stash entry: {stash:?}");
+        };
+        let [handle, a, b] = entry.as_slice() else {
+            panic!("{label}: the stash holds the handle and two names");
+        };
+        let space = support::session::native(handle);
+        assert_eq!(space.durability, Durability::Ephemeral, "{label}");
+        for (name, par) in [("a", a), ("b", b)] {
+            let hashes: Vec<Blake2b256Hash> =
+                stored_channels(row, space, par).iter().map(hash).collect();
+            let (produces, consumes, comms) = events_on(&played.log, &hashes);
+            assert_eq!(comms, 0, "{label}: no COMM touches the collection of {name}");
+            assert!(
+                produces >= 1 && consumes >= 1,
+                "{label}: the record 43 and the waiter for 42 are stored on {name} \
+                 ({produces} produces, {consumes} consumes)"
+            );
+        }
+    }
+}
+
+/// The positive part of a `seq` row: a handle `produce` of 42 on `c`, then a receive for 42.
+fn seq_positive() -> String {
+    format!(r#"{{ space!?("produce", *c, [42]); for (@42 <- c) {{ @"{OUT}"!(["positive", 42]) }} }}"#)
+}
+
+/// The negative part of a `seq` row: a handle `produce` of 43 on `a`, then a receive for 42.
+fn seq_negative() -> String {
+    format!(r#"{{ space!?("produce", *a, [43]); for (@42 <- a) {{ @"{OUT}"!(["negative", 42]) }} }}"#)
+}
+
+/// The deploy of a `seq` row of `urn` with the constructor `ctor`, which runs `body` over the
+/// names `a` and `c`. The handle goes to `OUT`, because the send rule exempts the handle of a seq
+/// space (SQ-2).
+fn seq_row_program(urn: &str, ctor: &str, body: &str) -> String {
+    format!(
+        r#"new factory(`{urn}`) in {{
+  for (space <- factory!?({ctor})) {{
+    @"{OUT}"!(["handle", *space]) |
+    for (a <- space!?("gensym"); c <- space!?("gensym")) {{ {body} }}
+  }}
+}}"#
+    )
+}
+
+/// The produce, consume and COMM events of a `seq` row on the data and index channels of its
+/// space, which the row reads from its handle.
+fn seq_row_events(label: &str, played: &Played) -> (usize, usize, usize) {
+    let handles = labelled(played, "handle");
+    let [entry] = handles.as_slice() else {
+        panic!("{label}: one handle: {handles:?}");
+    };
+    let space = support::session::native(entry.first().expect("the handle"));
+    assert_eq!(space.durability, Durability::Ephemeral, "{label}");
+    events_on(&played.log, &stored_hashes_of(played, space))
+}
+
+/// The hashes of the data and index channels of `space` that the space rows of `played` lock.
+fn stored_hashes_of(played: &Played, space: NativeSpace) -> Vec<Blake2b256Hash> {
+    let recording = played
+        .result
+        .native_budget_recording
+        .as_ref()
+        .expect("native play records its budget");
+    let journal = played
+        .result
+        .native_operation_recording
+        .as_deref()
+        .expect("native play records its operations");
+    let mut hashes: Vec<Blake2b256Hash> = journal
+        .iter()
+        .filter(|row| is_space_row(recording, row))
+        .flat_map(footprint_channels)
+        .filter(|channel| {
+            matches!(
+                namespace::reified_id_of(channel),
+                Some(ReifiedId::Data(of, _) | ReifiedId::PathIndex(of, _)) if of == space
+            )
+        })
+        .map(|channel| hash(&channel))
+        .collect();
+    hashes.sort_by_key(|key| key.bytes());
+    hashes.dedup();
+    hashes
+}
+
+/// The `seq` rows of N3 (F17 of decision 39): on every wired family, a pattern for 42 never
+/// receives 43 in a `seq` space, and a pattern for 42 receives 42. The names of a seq space are
+/// never sent (SQ-1), so the row reads the collections of its space from the journal. The row
+/// with its negative part makes as many COMMs on them as the row without it, so the negative
+/// part fires nothing. A PathMap fire makes three COMMs (the delivery through the marker and the
+/// retire COMMs of the record and of the root marker, F4), so the row compares counts with this
+/// baseline and does not fix them. The negative part stores its record and its waiter.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn pattern_enforcement_seq_rows() {
+    for row in wired_rows() {
+        let urn = row.family().to_string();
+        let label = format!("seq {urn}");
+        let ctor = qualified(row, "seq");
+        let baseline = play_native(
+            &format!("{label} positive part"),
+            &seq_row_program(&urn, &ctor, &seq_positive()),
+        )
+        .await;
+        let (base_produces, base_consumes, base_comms) =
+            seq_row_events(&format!("{label} positive part"), &baseline);
+        assert!(base_comms >= 1, "{label}: the fire of 42 makes a COMM");
+        let played = play_native(
+            &label,
+            &seq_row_program(&urn, &ctor, &format!("{} | {}", seq_negative(), seq_positive())),
+        )
+        .await;
+        assert!(
+            played.result.errors.is_empty(),
+            "{label}: {:?}",
+            played.result.errors
+        );
+        assert!(
+            labelled(&played, "negative").is_empty(),
+            "{label}: a pattern for 42 never receives 43"
+        );
+        assert_eq!(
+            labelled(&played, "positive"),
+            vec![vec![gint(42)]],
+            "{label}: a pattern for 42 receives 42"
+        );
+        let (produces, consumes, comms) = seq_row_events(&label, &played);
+        assert_eq!(
+            comms, base_comms,
+            "{label}: the negative part makes no COMM on the collections of the space"
+        );
+        assert!(
+            produces > base_produces && consumes > base_consumes,
+            "{label}: the record 43 and the waiter for 42 are stored \
+             ({produces} produces and {consumes} consumes, \
+             {base_produces} and {base_consumes} without the negative part)"
+        );
+    }
+}
+
+/// The inner collections of the six HashSet families.
+const HASHSET_INNERS: [&str; 6] = ["bag", "queue", "stack", "set", "cell", "priorityqueue"];
+
+/// A deploy that creates a `seq` space of the family `hashset:inner`, draws its name `x`, and
+/// runs `body`.
+fn hashset_row_program(inner: &str, body: &str) -> String {
+    format!(
+        r#"new factory(`rho:space:hashset:{inner}`) in {{
+  for (space <- factory!?("seq")) {{
+    for (x <- space!?("gensym")) {{ {body} }}
+  }}
+}}"#
+    )
+}
+
+/// The HashSet rows of N3 (design v3 HS-2, HS-3): a HashSet collection holds units only. On
+/// each family, a unit that the handle adds is taken by an empty receive, a send of 43 aborts with
+/// `PayloadNotEmpty`, and a receive for 42 aborts with `PatternNotEmpty`, so no pattern of a
+/// value ever meets a stored value.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn pattern_enforcement_hashset_rows() {
+    for inner in HASHSET_INNERS {
+        let label = format!("hashset:{inner} unit");
+        let played = play_native(
+            &label,
+            &hashset_row_program(
+                inner,
+                &format!(
+                    r#"space!?("produce", *x, []); for ( <- x) {{ @"{OUT}"!(["positive", 0]) }}"#
+                ),
+            ),
+        )
+        .await;
+        assert!(
+            played.result.errors.is_empty(),
+            "{label}: {:?}",
+            played.result.errors
+        );
+        assert_eq!(labelled(&played, "positive"), vec![vec![gint(0)]], "{label}");
+        for (case, body, code) in [
+            ("a payload", "x!(43)".to_string(), "PayloadNotEmpty"),
+            (
+                "a pattern",
+                format!(r#"for (@42 <- x) {{ @"{OUT}"!(["negative", 42]) }}"#),
+                "PatternNotEmpty",
+            ),
+        ] {
+            let label = format!("hashset:{inner} {case}");
+            let played = play_native(&label, &hashset_row_program(inner, &body)).await;
+            assert_eq!(
+                error_codes(&played.result.errors),
+                vec![code.to_string()],
+                "{label}"
+            );
+            assert!(labelled(&played, "negative").is_empty(), "{label}");
+        }
+    }
+}
+
+/// The unsupported pairs of P7 in native execution (design v3 QT-1 and QT-4): a HashSet family
+/// with `default` or `temp` fails with `BadConstructorArgument`, and a VectorDB family with
+/// `temp` or `seq` and a mirror fails with `InvalidParam`. Each deploy fails before any space
+/// exists, so it leaves no space channel and runs no body.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn pattern_enforcement_native_unsupported_pairs_reject() {
+    let mut pairs: Vec<(String, String, &str)> = Vec::new();
+    for inner in HASHSET_INNERS {
+        for qualifier in ["default", "temp"] {
+            pairs.push((
+                format!("rho:space:hashset:{inner}"),
+                format!(r#""{qualifier}""#),
+                "BadConstructorArgument",
+            ));
+        }
+    }
+    for urn in ["rho:space:hashmap:vectordb", "rho:space:vector:vectordb"] {
+        for qualifier in ["temp", "seq"] {
+            pairs.push((
+                urn.to_string(),
+                format!(r#""{qualifier}"; capacity=4, dimensions=2, mirror="chroma""#),
+                "InvalidParam",
+            ));
+        }
+    }
+    for (urn, ctor, code) in pairs {
+        let label = format!("{urn} {ctor}");
+        let played = play_native(
+            &label,
+            &format!(
+                r#"new factory(`{urn}`) in {{
+  for (space <- factory!?({ctor})) {{ @"{OUT}"!(["created", 0]) }}
+}}"#
+            ),
+        )
+        .await;
+        assert_eq!(
+            error_codes(&played.result.errors),
+            vec![code.to_string()],
+            "{label}"
+        );
+        assert!(labelled(&played, "created").is_empty(), "{label}");
+        assert!(
+            played.durable.is_empty(),
+            "{label}: no space channel stays: {:?}",
+            played.durable
+        );
+    }
+}

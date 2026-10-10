@@ -5721,7 +5721,7 @@ The rules hold by the design of the earlier phases, and step 5 tests them across
 | Rule | Statement | Tests |
 |---|---|---|
 | RH-1 | No Reified state outlives an evaluation, so each operation reads `C(sid)` and its records through the metered view. The first touch after a restart reads the keys and values of a warm touch and pays the same. | `space_lazy_attach`, `space_attach_warm_cold_cost_equal`, `prop_attach_warm_cold_cost_equal`, `space_restart_rehydrate_three_processes` |
-| RH-2 | No derived state exists to fork or to clear, and the volatile registry lives for one evaluation. A reset restores the state of its root. | `space_checkpoint_reset` |
+| RH-2 | No derived state exists to fork or to clear, and the [volatile registry](glossary.md#volatile-registry) lives for one evaluation. A reset restores the state of its root. | `space_checkpoint_reset` |
 | RH-3 | The rule of decision 47 stays: a view load is charged by its key and its value, the same on a hit and a miss. | `space_attach_cost`, `reducer_attach_costs` |
 | RH-4 | A cold and a warm attach have equal cost vectors, and the tests pin two of them. | `space_attach_cost`, `reducer_attach_costs` |
 

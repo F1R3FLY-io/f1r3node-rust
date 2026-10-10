@@ -4222,22 +4222,66 @@ mod tests {
 
     // ── P7: the volatile sweep at each root entry ──────────────────────────────────────────────
 
-    /// The volatile channels with records or waiting continuations in the hot store of `host`.
+    // Changed by P7 step 6: `to_map` makes a row only for a channel that holds data, so this
+    // check could not see a volatile channel with waiting continuations alone or with join
+    // entries alone (the finding of P7 step 5, dossier section 31.3). The check now reads every
+    // map of a hot-store snapshot.
+    //
+    // /// The volatile channels with records or waiting continuations in the hot store of `host`.
+    // async fn volatile_channels<S>(host: &S) -> Vec<Par>
+    // where
+    //     S: ISpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>,
+    // {
+    //     use crate::rust::interpreter::spaces::ephemeral::ephemeral_space;
+    //
+    //     host.to_map()
+    //         .await
+    //         .into_iter()
+    //         .filter(|(_, row)| !row.data.is_empty() || !row.wks.is_empty())
+    //         .flat_map(|(channels, _)| channels)
+    //         .filter(|channel| {
+    //             namespace::sole_gprivate_id(channel).is_some_and(|id| ephemeral_space(id).is_some())
+    //         })
+    //         .collect()
+    // }
+
+    /// The volatile channels with records, waiting continuations or join entries in the hot
+    /// store of `host`. The soft checkpoint takes the event log of `host`, so a test calls this
+    /// check only after it no longer needs that log.
     async fn volatile_channels<S>(host: &S) -> Vec<Par>
     where
         S: ISpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>,
     {
         use crate::rust::interpreter::spaces::ephemeral::ephemeral_space;
 
-        host.to_map()
-            .await
-            .into_iter()
-            .filter(|(_, row)| !row.data.is_empty() || !row.wks.is_empty())
-            .flat_map(|(channels, _)| channels)
-            .filter(|channel| {
-                namespace::sole_gprivate_id(channel).is_some_and(|id| ephemeral_space(id).is_some())
-            })
-            .collect()
+        let state = host.create_soft_checkpoint().await.cache_snapshot;
+        let mut channels: Vec<Par> = Vec::new();
+        for shard in state.data.iter() {
+            for (channel, data) in shard.iter() {
+                if !data.is_empty() {
+                    channels.push(channel.clone());
+                }
+            }
+        }
+        for shard in state.continuations.iter() {
+            for (group, waiters) in shard.iter() {
+                if !waiters.is_empty() {
+                    channels.extend(group.iter().cloned());
+                }
+            }
+        }
+        for shard in state.joins.iter() {
+            for (channel, joins) in shard.iter() {
+                if !joins.is_empty() {
+                    channels.push(channel.clone());
+                    channels.extend(joins.iter().flatten().cloned());
+                }
+            }
+        }
+        channels.retain(|channel| {
+            namespace::sole_gprivate_id(channel).is_some_and(|id| ephemeral_space(id).is_some())
+        });
+        channels
     }
 
     /// The root entries of the reducer that P7 sweeps at (VR-4).
@@ -4381,14 +4425,29 @@ mod tests {
     }
 
     /// P7 (VR-3): only a call with no reduction context starts a root evaluation. A nested call
-    /// neither resets the book of the ephemeral spaces nor sweeps.
+    /// neither resets the book of the ephemeral spaces nor sweeps: a `temp` space that the book
+    /// holds stays live across a nested call (the control of the mutant `reset-not-guarded`).
     #[tokio::test]
     async fn reified_sweep_root_predicate_excludes_nested_calls() {
+        use crate::rust::interpreter::spaces::types::qualifier::SpaceQualifier;
+
         let fixture = hosted().await;
         let reducer: &ReducerCore = &fixture.reducer;
         assert!(reducer.begin_root_evaluation(), "a call outside a reduction is a root");
-        let nested = in_root(reducer, async { reducer.begin_root_evaluation() }).await;
+        let space = NativeSpace {
+            sid: [0x7E; namespace::SID_LEN],
+            durability: namespace::Durability::Ephemeral,
+        };
+        let (nested, live) = in_root(reducer, async {
+            reducer
+                .reified
+                .record_ephemeral_space(space, SpaceQualifier::Temp);
+            let nested = reducer.begin_root_evaluation();
+            (nested, reducer.reified.check_live_space(space))
+        })
+        .await;
         assert!(!nested, "a call inside a reduction is no root");
+        assert_eq!(live, Ok(()), "a nested call keeps the book of the root evaluation");
     }
 
     /// With a host runtime, the hooks run the operations of a space name on its collection. A

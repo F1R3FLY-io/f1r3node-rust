@@ -108,12 +108,12 @@ The [decision register](decision-register.md) records the decisions that fix the
 | [Matcher](#matcher) | 2 | [Vehicle](#vehicle) | 2 |
 | [Merge](#merge) | 1 | [Verification recipe](#verification-recipe) | 2 |
 | [Metered view read](#metered-view-read) | 2 | [Volatile channel](#volatile-channel) | 2 |
-| [Mirror](#mirror) | 2 | [Waiter](#waiter) | 2 |
-| [Mirror journal](#mirror-journal) | 2 | [Watermark](#watermark) | 2 |
-| [Mirror writer](#mirror-writer) | 2 | [Widest kind](#widest-kind) | 2 |
-| [Model map](#model-map) | 2 | [Witness test](#witness-test) | 2 |
-| [Name](#name) | 1 | [Write skew](#write-skew) | 2 |
-| [Namespace tag](#namespace-tag) | 2 |  |  |
+| [Mirror](#mirror) | 2 | [Volatile registry](#volatile-registry) | 2 |
+| [Mirror journal](#mirror-journal) | 2 | [Waiter](#waiter) | 2 |
+| [Mirror writer](#mirror-writer) | 2 | [Watermark](#watermark) | 2 |
+| [Model map](#model-map) | 2 | [Widest kind](#widest-kind) | 2 |
+| [Name](#name) | 1 | [Witness test](#witness-test) | 2 |
+| [Namespace tag](#namespace-tag) | 2 | [Write skew](#write-skew) | 2 |
 
 ## Part 1: background terms
 
@@ -1041,6 +1041,17 @@ Since decision 45, a peek fire removes its stored non-persistent records as the 
 A volatile channel is a storage channel with a lowercase KIND.
 It belongs to a temp or a seq space, and it exists only in the hot store during one deploy ([decision I-4](decision-register.md#i-4)).
 Its operations still create events and accounting observations, so they are charged and replay pairs them.
+
+### Volatile registry
+
+The volatile registry is the book that one root evaluation keeps in memory (design v3 of P7, rule VR-1).
+It records the temp and seq spaces that the evaluation created and the volatile channels that its space transactions locked.
+It also holds the [seq claim](#seq-claim) of each used channel of a seq space.
+The registry is not consensus state: each root evaluation starts with an empty registry, and a nested call of the reducer keeps it.
+The sweep removes the channels of the registry, and the dangling checks of temp spaces read it.
+
+**Preferred usage.** Use "volatile registry" for the book of a root evaluation, as the code does (`VolatileRegistry`).
+Earlier texts also call it "the book of the root evaluation".
 
 ### Sweep
 

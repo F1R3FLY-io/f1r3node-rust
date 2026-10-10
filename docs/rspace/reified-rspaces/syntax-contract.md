@@ -342,6 +342,7 @@ The [agent API](agent-api.md#10-aborts) gives the errors of each call, and the [
 
 The reducer gives a meaning to a marker tuple only in its recognized position ([decision 22](decision-register.md#decision-22)).
 In phase P4, three constructs have a meaning at run time: `use` blocks, space annotations, and params.
+Later phases add the qualifiers, the HashSet collections and the queries of the sections below.
 Every other construct fails closed with a deterministic code, until the phase that adds it ([decision 34](decision-register.md#decision-34), item A9).
 A failure at run time aborts the deploy with `InterpreterError::ReduceError` and the text `reified:<Code>: <message>`.
 The [design](design.md#n5-routing-and-scope) gives the algorithms, and the [specification](specification.md) gives the behavior of a space.
@@ -433,6 +434,24 @@ The VectorDB factories of P6 take these constructor params ([specification VD-1]
 A send to a VectorDB collection takes the named param `embedding`, a list of numbers of the dimensions of the space.
 Without it, a payload that is one non-empty list of numbers is the vector of the record ([decision 66](decision-register.md#decision-66)).
 A vector of another length fails with `DimensionMismatch`, and an element that is not finite fails with `NonFiniteValue`.
+
+### Qualifiers at run time
+
+The qualifier of a factory constructor sets the lifetime and the concurrency of the new space ([specification 4](specification.md#4-qualifiers)).
+Phase P7 gives `"temp"` and `"seq"` their meaning in native execution, and the table lists their rules and failures.
+
+| Construct | Meaning | Failure |
+|---|---|---|
+| `F!?("default", …)`, `F!?()` | A durable space: its ids use the uppercase KINDs, and every checkpoint keeps it (QF-1, QF-2). | None |
+| `F!?("temp", …)` | A space for one deploy: its ids use the lowercase KINDs, and the sweep removes it at the end of the deploy (QF-5 to QF-8). | `InvalidParam` on `mirror` (QF-10) |
+| `F!?("seq", …)` | A temp space whose channels are linear (QF-11 to QF-18). | `QualifierUnavailable` in legacy execution, `InvalidParam` on `mirror` |
+| A send whose data holds a name of a live seq space | None: a seq name is never sent. The handle and the channel argument of a handle `produce` are exempt (QF-14). | `SeqSent`, which names the space id |
+| A use of a seq channel that does not descend from its last use | None: each channel of a seq space is used by one sequential process (QF-15). | `SeqConcurrent`, which names the space id |
+| A send or a receive on a name of a temp space after its deploy | None: the space is gone (QF-9). | `DanglingName`, which names the space id |
+| A handle call, `use h`, or `new x : h` on a temp space after its deploy | None: the space is gone (QF-9). | `DanglingHandle`, which names the space id |
+
+The suites `rholang/tests/reified_temp_seq.rs`, `reified_seq.rs`, `reified_rehydrate.rs` and `reified_pattern_enforcement.rs` run the rows.
+They run in native execution and certify each deploy by native replay, except the row of legacy execution.
 
 ### HashSet collections at run time
 

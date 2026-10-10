@@ -1291,14 +1291,14 @@ A Rocq theorem shows the file and the line of its statement, and a TLA+ invarian
 | QF-1, QF-4 | `qualifier_matrix` (`SpaceFactory.v:383`) | `prop_qualifier_matrix`, `space_urn_factory_qualifier_support_matrix` |
 | QF-2 | The TLA+ invariant `DurableSurvivesRestart` (U7), `view_charge_cache_independent` (`EventCorrelation.v:8773`) | `prop_handle_survives_checkpoint_reset`, `reified_handle_persisted_restart_replay`, `prop_attach_warm_cold_cost_equal`, `space_lazy_attach`, `space_checkpoint_reset`, `space_attach_warm_cold_cost_equal`, `space_restart_rehydrate_three_processes` |
 | QF-3 | The TLA+ invariant `HandleCallsMergeLikeContracts` (U8) | `space_intents_for_two_sids_in_one_frontier_run_in_separate_tasks`, `reified_handle_cross_block_merge_no_conflict` |
-| QF-5, QF-6 | `qualifier_matrix` (`SpaceFactory.v:383`), `ephemeral_durable_disjoint` (`Namespace.v:867`) | `reducer_qualifier_matrix`, `space_temp_replay_equal_hashmap` to `space_temp_replay_equal_vector`, `reified_factory_ephemeral_staging` |
+| QF-5, QF-6 | `qualifier_matrix` (`SpaceFactory.v:383`), `ephemeral_durable_disjoint` (`Namespace.v:867`) | `reducer_qualifier_matrix`, `space_temp_replay_equal_hashmap` to `space_temp_replay_equal_vector`, `reified_factory_ephemeral_staging`, `pattern_enforcement_temp_rows` |
 | QF-7 | The P1 headlines of the substrate | `reified_ephemeral_cost_charged` |
 | QF-8 | `sweep_complete` (`VolatileSweep.v:1714`), `sweep_exact` (`VolatileSweep.v:894`), `sweep_root_neutral` (`VolatileSweep.v:1266`) | `prop_sweep_complete`, `space_temp_swept_at_deploy_end`, `space_temp_join_swept`, `space_temp_failed_deploy_reverts`, `space_temp_many_volatile_keys_export`, `reified_sweep_runs_at_each_entry_point_of_the_reducer`, `reified_sweep_runs_at_each_entry_point_native` |
 | QF-9 | `dead_ephemeral_dangling` (`VolatileSweep.v:1759`) | `prop_dead_ephemeral_dangling`, `reified_ephemeral_dangling_next_deploy`, `reified_ephemeral_dangling_charge_is_fixed`, `reducer_dangling_handle` |
-| QF-10 | The gate 9 model `check_mirror` of `SpaceFactory.v` | `mirror_temp_never_mirrored`, `reducer_qualifier_matrix` |
-| QF-11 | `qualifier_matrix` (`SpaceFactory.v:383`), the TLA+ invariant `QualifierSupport` (V6) | `prop_seq_qualifier_support`, `reducer_qualifier_matrix`, `pattern_enforcement_qualifiers_fail_closed` |
+| QF-10 | The gate 9 model `check_mirror` of `SpaceFactory.v` | `mirror_temp_never_mirrored`, `reducer_qualifier_matrix`, `pattern_enforcement_native_unsupported_pairs_reject` |
+| QF-11 | `qualifier_matrix` (`SpaceFactory.v:383`), the TLA+ invariant `QualifierSupport` (V6) | `prop_seq_qualifier_support`, `reducer_qualifier_matrix`, `pattern_enforcement_qualifiers_fail_closed`, `pattern_enforcement_seq_rows` |
 | QF-13, QF-14 | `seq_name_iff` (`Namespace.v:1150`), the TLA+ invariant `SeqNotSent` (V5) | `prop_seq_scan_finds_every_seq_name`, `reducer_seq_payload` |
-| QF-15, QF-16, QF-17 | The TLA+ invariants `SeqExclusive` (V4) and `ClaimTracksLastUse` (V8) | `prop_seq_claim_chain`, `reducer_seq_atomic_guard` |
+| QF-15, QF-16, QF-17 | The TLA+ invariants `SeqExclusive` (V4) and `ClaimTracksLastUse` (V8) | `prop_seq_claim_chain`, `reducer_seq_atomic_guard`, `pattern_enforcement_seq_rows` |
 | QF-18 | The TLA+ invariant `SeqExclusive` (V4) | `reducer_seq_atomic_guard` |
 | FA-1 | `registered_families_complete` (`SpaceFactory.v:1444`) | `prop_registered_families_complete`, `space_factory_families_registered` |
 | FA-2 | `space_match_is_injected_match` (`Match.v:642`) | `space_families_dispatch_by_config_reserves_one_comparison_per_arm`, `space_family_dispatch_by_config` |
@@ -1338,10 +1338,10 @@ A Rocq theorem shows the file and the line of its statement, and a TLA+ invarian
 | PS-9 | `token_ord_reentry` (`PathMapPrefix.v:3126`) | `the_token_is_the_space_counter_and_the_counter_of_every_path` |
 | PS-10 | `prefix_contact_anchored` (`PathMapPrefix.v:1948`), the TLA+ invariant `MergeDetectsPrefixContact` (V25) | `the_path_channels_are_storage_channels_of_the_space` |
 | HS-1 | `hashmap_get_put_other` (`HashMapStore.v:256`) | `space_hashset_keys_channels_and_names_are_those_of_the_hashmap_store` |
-| HS-2, HS-3 | `hashset_unit_rules` (`HashMapStore.v:378`) | `prop_hashset_unit_rules`, `reified_hashset_payload_not_empty`, `reified_hashset_pattern_not_empty`, `reified_hashset_guards`, `space_engine_hashset_families_take_units_only`, `space_hashset_accepts_exactly_the_empty_payload`, `space_hashset_accepts_exactly_the_empty_pattern_list` |
+| HS-2, HS-3 | `hashset_unit_rules` (`HashMapStore.v:378`) | `prop_hashset_unit_rules`, `reified_hashset_payload_not_empty`, `reified_hashset_pattern_not_empty`, `reified_hashset_guards`, `space_engine_hashset_families_take_units_only`, `space_hashset_accepts_exactly_the_empty_payload`, `space_hashset_accepts_exactly_the_empty_pattern_list`, `pattern_enforcement_hashset_rows` |
 | HS-4 | None | `reified_hashset_joins`, `reified_hashset_pattern_not_empty` |
 | HS-5 | `hashset_unit_rules` (`HashMapStore.v:378`) | `reified_hashset_unit_sends`, `reified_hashset_disciplines`, `reified_hashset_head_order`, `space_engine_hashset_families_take_units_only` |
-| HS-6 | `qualifier_matrix` (`SpaceFactory.v:383`), the TLA+ invariant `QualifierSupport` (V6) | `reified_hashset_seq_only`, `reified_hashset_absent_unit_waits`, `reducer_qualifier_matrix`, `reified_factory_hashset_takes_only_seq_in_native_execution` |
+| HS-6 | `qualifier_matrix` (`SpaceFactory.v:383`), the TLA+ invariant `QualifierSupport` (V6) | `reified_hashset_seq_only`, `reified_hashset_absent_unit_waits`, `reducer_qualifier_matrix`, `reified_factory_hashset_takes_only_seq_in_native_execution`, `pattern_enforcement_native_unsupported_pairs_reject` |
 | HS-7 | `registered_families_complete` (`SpaceFactory.v:1444`) | `reified_hashset_factory_params`, `space_factory_families_registered`, `p7_system_channels_have_the_table_values` |
 | BG-1 | `bag_visit_order_canonical` (`DataCollection.v:243`), `waiter_visit_order_canonical` (`ContinuationCollection.v:337`) | `prop_bag_visit_order_canonical`, `prop_bag_waiter_visit_order_canonical` |
 | BG-2, BG-3 | `bag_consume_first_spatial_match` (`DataCollection.v:445`), `guard_once_greedy_like_head` (`Match.v:685`) | `prop_bag_consume_first_spatial_match`, `prop_engine_guard_checked_once_as_the_host_checks_it` |
