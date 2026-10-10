@@ -755,13 +755,7 @@ mod tests {
 
         let register = DeployLifecycle::default();
         let terminalized = register
-            .observe(
-                &dag,
-                &block_store,
-                Some(&b),
-                10,
-                Some(10),
-            )
+            .observe(&dag, &block_store, Some(&b), 10, Some(10))
             .await
             .expect("observe b");
         assert!(
@@ -779,13 +773,7 @@ mod tests {
             .expect("adopt b");
         let dag = dag_storage.get_representation().expect("dag");
         let terminalized = register
-            .observe(
-                &dag,
-                &block_store,
-                Some(&c),
-                10,
-                Some(10),
-            )
+            .observe(&dag, &block_store, Some(&c), 10, Some(10))
             .await
             .expect("observe c");
         assert_eq!(
@@ -822,13 +810,7 @@ mod tests {
         );
 
         let terminalized = DeployLifecycle::default()
-            .observe(
-                &dag,
-                &block_store,
-                Some(&c),
-                10,
-                Some(10),
-            )
+            .observe(&dag, &block_store, Some(&c), 10, Some(10))
             .await
             .expect("observe c");
         assert!(
@@ -870,13 +852,7 @@ mod tests {
         let dag = dag_storage.get_representation().expect("dag");
         let register = DeployLifecycle::default();
         let armed = register
-            .observe(
-                &dag,
-                &block_store,
-                Some(&b),
-                1,
-                Some(1),
-            )
+            .observe(&dag, &block_store, Some(&b), 1, Some(1))
             .await
             .expect("observe b");
         assert!(armed.is_empty(), "no verdict before a covering adoption");
@@ -887,13 +863,7 @@ mod tests {
         adopt(&dag_storage, &d.block_hash).await;
         let dag = dag_storage.get_representation().expect("dag");
         let terminalized = register
-            .observe(
-                &dag,
-                &block_store,
-                Some(&c),
-                1,
-                Some(1),
-            )
+            .observe(&dag, &block_store, Some(&c), 1, Some(1))
             .await
             .expect("observe after adoption");
 
@@ -1080,13 +1050,7 @@ mod tests {
         let dag = dag_storage.get_representation().expect("dag");
         let register = DeployLifecycle::default();
         let terminalized = register
-            .observe(
-                &dag,
-                &block_store,
-                Some(&w2),
-                1,
-                Some(1),
-            )
+            .observe(&dag, &block_store, Some(&w2), 1, Some(1))
             .await
             .expect("a horizon crossing must not error block admission");
         assert_eq!(
@@ -1112,13 +1076,7 @@ mod tests {
         adopt(&dag_storage, &w3.block_hash).await;
         let dag = dag_storage.get_representation().expect("dag");
         let terminalized = register
-            .observe(
-                &dag,
-                &block_store,
-                Some(&w3),
-                1,
-                Some(1),
-            )
+            .observe(&dag, &block_store, Some(&w3), 1, Some(1))
             .await
             .expect("later observations must not re-error");
         assert!(terminalized.is_empty());
@@ -1141,13 +1099,7 @@ mod tests {
         adopt(&dag_storage, &w4.block_hash).await;
         let dag = dag_storage.get_representation().expect("dag");
         let terminalized = register
-            .observe(
-                &dag,
-                &block_store,
-                Some(&w4),
-                1,
-                Some(1),
-            )
+            .observe(&dag, &block_store, Some(&w4), 1, Some(1))
             .await
             .expect("observe w4");
         assert_eq!(terminalized, vec![sig_blocked.clone()]);

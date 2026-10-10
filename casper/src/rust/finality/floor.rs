@@ -47,7 +47,6 @@ pub struct Floor {
     pub block_number: i64,
 }
 
-
 /// Per-block introduced-sig memo shared across the containment checks of
 /// one derivation (the same settled segments are re-walked per candidate).
 pub(crate) type IntroducedSigsMemo = HashMap<BlockHash, HashSet<Bytes>>;
