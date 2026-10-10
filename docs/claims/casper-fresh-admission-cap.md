@@ -60,7 +60,9 @@ The first change let the cap follow the backlog without backpressure. A local `t
 - `ProductionBlockCreator` keeps one `FinalityProgress` for the life of the node. It passes the tracker through `create_with_progress`. The node builds the proposer once at startup.
 - `create` passes a fresh tracker, so its stall signal is always false. Only tests call `create`.
 
-**S8. Cap source.** The admission policy reports why it chose each cap: `ordinary_cap_source` for the ordinary cap and `in_scope_recovery_cap_source` for the in-scope recovery cap. The values are normal, base, backlog, soft-backlog, soft-stalled, stale, and hard. Both go to gauges (`block-creator.deploy-admission.cap-source` and `block-creator.deploy-admission.in-scope-recovery-cap-source`) and to the admission log lines.
+**S8. Cap source.** The admission policy reports why it chose each cap: `ordinary_cap_source` for the ordinary cap and `in_scope_recovery_cap_source` for the in-scope recovery cap. The values are normal, base, backlog, soft-backlog, soft-stalled, stale, and hard.
+- Both sources go to gauges (`block-creator.deploy-admission.cap-source` and `block-creator.deploy-admission.in-scope-recovery-cap-source`) and to the admission log lines.
+- Each ordinary-cap decision adds one to the counter `block-creator.deploy-admission.cap-source.<source>`. The soak harness reads counters and histograms, not gauges, so these counters carry the per-phase evidence (CLAIM-CASPER-STAGE-METRICS-001).
 
 ## Seam premises (documented, not proven)
 
@@ -100,7 +102,8 @@ The first change let the cap follow the backlog without backpressure. A local `t
 5. Soak evidence: run a pre-flight and a soak on the hotfix branch. Compare them with soak 37875034099 (10 of 50 failed) and the master soak 37996403003. **Open.** Compare these values:
    - the high-phase inclusion p95
    - the `block-creator.ordinary-deploys.deferred` counts
-   - the cap-source gauges, especially the time in the hard tier
+   - the cap-source counters for each phase, especially the hard and soft-stalled counts
+   - the propose step and carrier-prune histograms
    - the merge rejections
    - the `test_load` failure rate.
 6. Record the evidence in `docs/casper/cbc-evidence/` for `block_creator.rs` and `proposer.rs` and cite this claim id. **Open, after the soak.** The maintainer decides acceptance.

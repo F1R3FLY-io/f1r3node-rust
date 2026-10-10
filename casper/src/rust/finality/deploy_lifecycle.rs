@@ -284,6 +284,22 @@ pub struct DeployLifecycle {
     schedule: parking_lot::Mutex<Schedule>,
 }
 
+fn record_observe_timing(observe_ms: u128, prune_ms: Option<u128>) {
+    use crate::rust::metrics_constants::{
+        CASPER_METRICS_SOURCE, DEPLOY_LIFECYCLE_CARRIER_PRUNE_TIME_METRIC,
+        DEPLOY_LIFECYCLE_OBSERVE_TIME_METRIC,
+    };
+    metrics::histogram!(DEPLOY_LIFECYCLE_OBSERVE_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
+        .record(observe_ms as f64 / 1000.0);
+    if let Some(prune_ms) = prune_ms {
+        metrics::histogram!(
+            DEPLOY_LIFECYCLE_CARRIER_PRUNE_TIME_METRIC,
+            "source" => CASPER_METRICS_SOURCE
+        )
+        .record(prune_ms as f64 / 1000.0);
+    }
+}
+
 impl DeployLifecycle {
     /// Arm every persisted open sig for evaluation at the next observed
     /// block (threshold 0 crosses immediately). Verdicts only get MORE
@@ -412,6 +428,7 @@ impl DeployLifecycle {
         }
         let evaluate_ms = evaluate_start.elapsed().as_millis();
         let total_ms = observe_start.elapsed().as_millis();
+        record_observe_timing(total_ms, floor_advanced.then_some(prune_ms));
         if total_ms >= 1_000 {
             tracing::warn!(
                 target: "f1r3fly.casper.lifecycle.timing",
@@ -1490,6 +1507,45 @@ mod tests {
             matches!(err, CasperError::BlockNotHeld(ref h, _) if *h == absent.block_hash),
             "the refusal must carry the missing block typed; got: {}",
             err
+        );
+    }
+}
+
+#[cfg(test)]
+mod stage_metric_tests {
+    use metrics_util::debugging::{DebugValue, DebuggingRecorder};
+
+    use super::*;
+    use crate::rust::metrics_constants::{
+        DEPLOY_LIFECYCLE_CARRIER_PRUNE_TIME_METRIC, DEPLOY_LIFECYCLE_OBSERVE_TIME_METRIC,
+    };
+
+    #[test]
+    fn an_observe_records_its_time_and_the_carrier_prune_only_when_it_ran() {
+        let recorder = DebuggingRecorder::new();
+        let snapshotter = recorder.snapshotter();
+        let _guard = metrics::set_default_local_recorder(&recorder);
+
+        record_observe_timing(2_500, Some(2_000));
+        record_observe_timing(40, None);
+
+        let mut samples: std::collections::HashMap<String, Vec<f64>> =
+            std::collections::HashMap::new();
+        for (key, (_, _, value)) in snapshotter.snapshot().into_hashmap() {
+            if let DebugValue::Histogram(s) = value {
+                samples
+                    .entry(key.key().name().to_owned())
+                    .or_default()
+                    .extend(s.iter().map(|v| v.into_inner()));
+            }
+        }
+        assert_eq!(
+            samples.get(DEPLOY_LIFECYCLE_OBSERVE_TIME_METRIC),
+            Some(&vec![2.5, 0.04])
+        );
+        assert_eq!(
+            samples.get(DEPLOY_LIFECYCLE_CARRIER_PRUNE_TIME_METRIC),
+            Some(&vec![2.0])
         );
     }
 }

@@ -2636,6 +2636,25 @@ fn metric_bool(value: bool) -> f64 {
     }
 }
 
+fn record_cap_source(source: OrdinaryCapSource) {
+    use crate::rust::metrics_constants::{
+        BLOCK_CREATOR_CAP_SOURCE_BACKLOG_METRIC, BLOCK_CREATOR_CAP_SOURCE_BASE_METRIC,
+        BLOCK_CREATOR_CAP_SOURCE_HARD_METRIC, BLOCK_CREATOR_CAP_SOURCE_NORMAL_METRIC,
+        BLOCK_CREATOR_CAP_SOURCE_SOFT_BACKLOG_METRIC, BLOCK_CREATOR_CAP_SOURCE_SOFT_STALLED_METRIC,
+        BLOCK_CREATOR_CAP_SOURCE_STALE_METRIC, CASPER_METRICS_SOURCE,
+    };
+    let name = match source {
+        OrdinaryCapSource::Normal => BLOCK_CREATOR_CAP_SOURCE_NORMAL_METRIC,
+        OrdinaryCapSource::Base => BLOCK_CREATOR_CAP_SOURCE_BASE_METRIC,
+        OrdinaryCapSource::Backlog => BLOCK_CREATOR_CAP_SOURCE_BACKLOG_METRIC,
+        OrdinaryCapSource::SoftBacklog => BLOCK_CREATOR_CAP_SOURCE_SOFT_BACKLOG_METRIC,
+        OrdinaryCapSource::SoftStalled => BLOCK_CREATOR_CAP_SOURCE_SOFT_STALLED_METRIC,
+        OrdinaryCapSource::Stale => BLOCK_CREATOR_CAP_SOURCE_STALE_METRIC,
+        OrdinaryCapSource::Hard => BLOCK_CREATOR_CAP_SOURCE_HARD_METRIC,
+    };
+    metrics::counter!(name, "source" => CASPER_METRICS_SOURCE).increment(1);
+}
+
 fn record_deploy_admission_metrics(
     fresh_local_stats: FreshLocalDeployStats,
     in_scope_local_stats: InScopeLocalDeployStats,
@@ -2768,6 +2787,7 @@ fn record_deploy_admission_metrics(
         "source" => CASPER_METRICS_SOURCE
     )
     .set(admission_policy.ordinary_cap_source.code());
+    record_cap_source(admission_policy.ordinary_cap_source);
     metrics::gauge!(
         BLOCK_CREATOR_DEPLOY_ADMISSION_IN_SCOPE_RECOVERY_CAP_SOURCE_METRIC,
         "source" => CASPER_METRICS_SOURCE
@@ -7391,6 +7411,27 @@ mod stage_metric_tests {
             }
         }
         values
+    }
+
+    #[test]
+    fn each_ordinary_cap_decision_is_counted_under_its_source() {
+        use crate::rust::metrics_constants::{
+            BLOCK_CREATOR_CAP_SOURCE_HARD_METRIC, BLOCK_CREATOR_CAP_SOURCE_SOFT_BACKLOG_METRIC,
+            BLOCK_CREATOR_CAP_SOURCE_SOFT_STALLED_METRIC,
+        };
+        let recorder = DebuggingRecorder::new();
+        let snapshotter = recorder.snapshotter();
+        let _guard = metrics::set_default_local_recorder(&recorder);
+
+        record_cap_source(OrdinaryCapSource::Hard);
+        record_cap_source(OrdinaryCapSource::Hard);
+        record_cap_source(OrdinaryCapSource::SoftBacklog);
+
+        let recorded = take(&snapshotter);
+        let count = |name: &str| recorded.get(name).map_or(0, |v| v.0);
+        assert_eq!(count(BLOCK_CREATOR_CAP_SOURCE_HARD_METRIC), 2);
+        assert_eq!(count(BLOCK_CREATOR_CAP_SOURCE_SOFT_BACKLOG_METRIC), 1);
+        assert_eq!(count(BLOCK_CREATOR_CAP_SOURCE_SOFT_STALLED_METRIC), 0);
     }
 
     #[test]

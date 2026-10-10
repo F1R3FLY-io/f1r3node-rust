@@ -359,6 +359,21 @@ pub const BLOCK_CREATOR_DEPLOY_ADMISSION_CAP_SOURCE_METRIC: &str =
     "block-creator.deploy-admission.cap-source";
 pub const BLOCK_CREATOR_DEPLOY_ADMISSION_IN_SCOPE_RECOVERY_CAP_SOURCE_METRIC: &str =
     "block-creator.deploy-admission.in-scope-recovery-cap-source";
+// Counters: one ordinary-cap decision per admission, by cap source (CLAIM-CASPER-STAGE-METRICS-001).
+pub const BLOCK_CREATOR_CAP_SOURCE_NORMAL_METRIC: &str =
+    "block-creator.deploy-admission.cap-source.normal";
+pub const BLOCK_CREATOR_CAP_SOURCE_BASE_METRIC: &str =
+    "block-creator.deploy-admission.cap-source.base";
+pub const BLOCK_CREATOR_CAP_SOURCE_BACKLOG_METRIC: &str =
+    "block-creator.deploy-admission.cap-source.backlog";
+pub const BLOCK_CREATOR_CAP_SOURCE_SOFT_BACKLOG_METRIC: &str =
+    "block-creator.deploy-admission.cap-source.soft-backlog";
+pub const BLOCK_CREATOR_CAP_SOURCE_SOFT_STALLED_METRIC: &str =
+    "block-creator.deploy-admission.cap-source.soft-stalled";
+pub const BLOCK_CREATOR_CAP_SOURCE_STALE_METRIC: &str =
+    "block-creator.deploy-admission.cap-source.stale";
+pub const BLOCK_CREATOR_CAP_SOURCE_HARD_METRIC: &str =
+    "block-creator.deploy-admission.cap-source.hard";
 pub const BLOCK_CREATOR_DEPLOY_ADMISSION_DAG_TIP_METRIC: &str =
     "block-creator.deploy-admission.dag-tip";
 pub const BLOCK_CREATOR_DEPLOY_ADMISSION_LFB_METRIC: &str =
@@ -490,3 +505,14 @@ pub const CREATE_CHECKPOINT_SPAN: &str = "create-checkpoint";
 pub const REPLAY_SYSTEM_DEPLOY_SPAN: &str = "replay-system-deploy";
 pub const COMPUTE_MAX_CLIQUE_WEIGHT_SPAN: &str = "compute-max-clique-weight";
 pub const NORMALIZED_FAULT_TOLERANCE_SPAN: &str = "normalized-fault-tolerance";
+
+// Issue #24 proposal and lifecycle stage metrics (CLAIM-CASPER-STAGE-METRICS-001).
+// Histograms in seconds: the four steps of one proposal.
+pub const PROPOSER_CONSTRAINTS_TIME_METRIC: &str = "proposer.constraints.time";
+pub const PROPOSER_CREATE_TIME_METRIC: &str = "proposer.create.time";
+pub const PROPOSER_VALIDATE_TIME_METRIC: &str = "proposer.validate.time";
+pub const PROPOSER_EFFECT_TIME_METRIC: &str = "proposer.effect.time";
+// Histograms in seconds: one deploy-lifecycle observe, and the carrier prune
+// inside it when the adopted floor advances.
+pub const DEPLOY_LIFECYCLE_OBSERVE_TIME_METRIC: &str = "deploy-lifecycle.observe.time";
+pub const DEPLOY_LIFECYCLE_CARRIER_PRUNE_TIME_METRIC: &str = "deploy-lifecycle.carrier-prune.time";

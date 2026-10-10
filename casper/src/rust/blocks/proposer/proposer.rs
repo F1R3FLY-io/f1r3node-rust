@@ -583,6 +583,18 @@ where
 const PROPOSE_STALL_WARN_MS: u128 = 5_000;
 
 fn record_propose_steps(constraints_ms: u128, create_ms: u128, validate_ms: u128, effect_ms: u128) {
+    use crate::rust::metrics_constants::{
+        CASPER_METRICS_SOURCE, PROPOSER_CONSTRAINTS_TIME_METRIC, PROPOSER_CREATE_TIME_METRIC,
+        PROPOSER_EFFECT_TIME_METRIC, PROPOSER_VALIDATE_TIME_METRIC,
+    };
+    for (name, ms) in [
+        (PROPOSER_CONSTRAINTS_TIME_METRIC, constraints_ms),
+        (PROPOSER_CREATE_TIME_METRIC, create_ms),
+        (PROPOSER_VALIDATE_TIME_METRIC, validate_ms),
+        (PROPOSER_EFFECT_TIME_METRIC, effect_ms),
+    ] {
+        metrics::histogram!(name, "source" => CASPER_METRICS_SOURCE).record(ms as f64 / 1000.0);
+    }
     tracing::info!(
         target: "f1r3fly.propose.timing",
         "Propose step timing: constraints_ms={}, create_ms={}, validate_ms={}, effect_ms={}",
@@ -875,5 +887,46 @@ impl<T: TransportLayer + Send + Sync + 'static> ProposeEffectHandler
         self.event_publisher
             .publish(created_event(block))
             .map_err(Into::into)
+    }
+}
+
+#[cfg(test)]
+mod stage_metric_tests {
+    use metrics_util::debugging::{DebugValue, DebuggingRecorder};
+
+    use super::*;
+    use crate::rust::metrics_constants::{
+        PROPOSER_CONSTRAINTS_TIME_METRIC, PROPOSER_CREATE_TIME_METRIC, PROPOSER_EFFECT_TIME_METRIC,
+        PROPOSER_VALIDATE_TIME_METRIC,
+    };
+
+    #[test]
+    fn each_propose_step_records_one_sample_in_seconds() {
+        let recorder = DebuggingRecorder::new();
+        let snapshotter = recorder.snapshotter();
+        let _guard = metrics::set_default_local_recorder(&recorder);
+
+        record_propose_steps(5, 1_500, 250, 11_000);
+
+        let mut samples: std::collections::HashMap<String, Vec<f64>> =
+            std::collections::HashMap::new();
+        for (key, (_, _, value)) in snapshotter.snapshot().into_hashmap() {
+            if let DebugValue::Histogram(s) = value {
+                samples
+                    .entry(key.key().name().to_owned())
+                    .or_default()
+                    .extend(s.iter().map(|v| v.into_inner()));
+            }
+        }
+        assert_eq!(
+            samples.get(PROPOSER_CONSTRAINTS_TIME_METRIC),
+            Some(&vec![0.005])
+        );
+        assert_eq!(samples.get(PROPOSER_CREATE_TIME_METRIC), Some(&vec![1.5]));
+        assert_eq!(
+            samples.get(PROPOSER_VALIDATE_TIME_METRIC),
+            Some(&vec![0.25])
+        );
+        assert_eq!(samples.get(PROPOSER_EFFECT_TIME_METRIC), Some(&vec![11.0]));
     }
 }
