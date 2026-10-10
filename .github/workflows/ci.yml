@@ -459,6 +459,26 @@ jobs:
         shell: bash -euo pipefail {0}
         run: scripts/test-repin-system-integration.sh
 
+      - name: Verify ephemeral runner run tagging
+        shell: bash -euo pipefail {0}
+        run: bash .github/scripts/test-ephemeral-run-tagging.sh
+
+      - name: Verify CI runner reclaim
+        shell: bash -euo pipefail {0}
+        run: bash .github/scripts/test-ci-runner-reclaim.sh
+
+      - name: Verify OCI runner reaper Function
+        shell: bash -euo pipefail {0}
+        run: bash oci/runner-reaper/test-handler.sh
+
+      - name: Verify OCI spend alert Function
+        shell: bash -euo pipefail {0}
+        run: bash oci/spend-alert/test-handler.sh
+
+      - name: Verify OCI Function deploy scripts
+        shell: bash -euo pipefail {0}
+        run: bash scripts/oci/test-fn-deploy.sh
+
       - name: Verify release evidence
         shell: bash -euo pipefail {0}
         run: .github/scripts/test-release-evidence.sh
@@ -755,7 +775,7 @@ jobs:
     name: Test (casper ${{ matrix.partition }}/2)
     needs: [build_base, static_checks]
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
