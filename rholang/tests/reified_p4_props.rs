@@ -7894,7 +7894,10 @@ async fn dangling_deterministic_error_case(
             // )]);
             prop_assert_eq!(node.values("rrs-p4-agent").await, vec![typed_error(
                 SpaceReplyCode::DanglingHandle,
-                vec![("spaceId", new_gbytearray_par(sid.to_vec(), Vec::new(), false))]
+                vec![(
+                    "spaceId",
+                    new_gbytearray_par(sid.to_vec(), Vec::new(), false)
+                )]
             )]);
         }
         results.push((played.codes(), played.result.cost.value));

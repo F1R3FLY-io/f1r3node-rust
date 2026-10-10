@@ -4441,10 +4441,9 @@ mod tests {
                 SpaceOp::Produce(send_on(&name, 1, false)),
                 SpaceError::DanglingName { space: SPACE.sid },
             ),
-            (
-                SpaceOp::Produce(send(1)),
-                SpaceError::DanglingHandle { space: SPACE.sid },
-            ),
+            (SpaceOp::Produce(send(1)), SpaceError::DanglingHandle {
+                space: SPACE.sid,
+            }),
             (
                 SpaceOp::Consume(receive_on(&name, "w", any())),
                 SpaceError::DanglingName { space: SPACE.sid },

@@ -349,10 +349,10 @@ fn typed(code: SpaceReplyCode) -> Par { typed_error(code, Vec::new()) }
 /// The typed reply `DanglingHandle` of `getSpaceAgent` for the space `space`: its detail map names
 /// the space id (P7, design v3 DG-3).
 fn dangling(space: NativeSpace) -> Par {
-    typed_error(
-        SpaceReplyCode::DanglingHandle,
-        vec![("spaceId", new_gbytearray_par(space.sid.to_vec(), Vec::new(), false))],
-    )
+    typed_error(SpaceReplyCode::DanglingHandle, vec![(
+        "spaceId",
+        new_gbytearray_par(space.sid.to_vec(), Vec::new(), false),
+    )])
 }
 
 /// The system processes of P5 (P5 design v3, A.7, A.8 and A.10) as `(urn, op, arity, body

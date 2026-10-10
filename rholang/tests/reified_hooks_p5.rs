@@ -963,10 +963,12 @@ async fn native_replay(
 #[tokio::test]
 async fn hooks_new_in_use_native_play_and_replay_agree() {
     let played = native_play(NATIVE_NEW_IN_USE).await;
-    assert_eq!(played.result.errors, vec![InterpreterError::ReduceError(format!(
-        "reified:DanglingHandle: the space {} of this handle does not exist",
-        "5a".repeat(32)
-    ))]);
+    assert_eq!(played.result.errors, vec![InterpreterError::ReduceError(
+        format!(
+            "reified:DanglingHandle: the space {} of this handle does not exist",
+            "5a".repeat(32)
+        )
+    )]);
     assert_eq!(
         played.space_channels, 0,
         "native play stored no record on a channel of a space"

@@ -140,10 +140,10 @@ use super::agent::{
     SpaceEnv, SpaceOp, SpaceOutcome, SpaceReissue,
 };
 use super::counter::CounterChannels;
-use super::ephemeral::{ClaimRole, SeqClaims};
 use super::disciplines::priority_queue::{receive_lane, send_level, Lane, Level};
 use super::disciplines::scan::{retire_class_on, retire_continuation, same_class};
 use super::disciplines::vectordb::{self, Flight, ListFire, Mode, VdbConfig};
+use super::ephemeral::{ClaimRole, SeqClaims};
 use super::errors::SpaceError;
 use super::generic::{
     self, operation_ord, peek_set, peek_set_all, receive_candidate, Admission, CollectionTxn, Cx,
@@ -727,7 +727,8 @@ fn own_claims(
 ) -> Result<Option<SeqClaims>, SpaceError> {
     let meter = &env.meter;
     let internal = matches!(op, SpaceOp::Settle(_)) || env.origin == OpOrigin::Internal;
-    let Some(mut claims) = SeqClaims::open(&env.volatile, op.space(), config.qualifier, internal, meter)?
+    let Some(mut claims) =
+        SeqClaims::open(&env.volatile, op.space(), config.qualifier, internal, meter)?
     else {
         return Ok(None);
     };
@@ -744,9 +745,12 @@ fn own_claims(
         SpaceOp::Consume(_) | SpaceOp::Join(_) => {
             for key in &scope.own {
                 let index = scope.index_of_key(key, meter)?;
-                let collection = scope.collections.get(index).ok_or(SpaceError::Inconsistent(
-                    "a collection is outside its join scope",
-                ))?;
+                let collection = scope
+                    .collections
+                    .get(index)
+                    .ok_or(SpaceError::Inconsistent(
+                        "a collection is outside its join scope",
+                    ))?;
                 claims.claim(&collection.data, ClaimRole::Waiter, meter)?;
             }
         }

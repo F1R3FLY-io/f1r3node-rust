@@ -220,7 +220,11 @@ impl ReducerCore {
         if !root {
             return (result, summary);
         }
-        match self.reified.sweep_volatile(&self.reduction_coordinator).await {
+        match self
+            .reified
+            .sweep_volatile(&self.reduction_coordinator)
+            .await
+        {
             Ok(()) => (result, summary),
             Err(sweep) => (
                 result.and(Err(sweep)),
@@ -4249,9 +4253,7 @@ mod tests {
     /// store of `host`. The soft checkpoint takes the event log of `host`, so a test calls this
     /// check only after it no longer needs that log.
     async fn volatile_channels<S>(host: &S) -> Vec<Par>
-    where
-        S: ISpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>,
-    {
+    where S: ISpace<Par, BindPattern, ListParWithRandom, TaggedContinuation> {
         use crate::rust::interpreter::spaces::ephemeral::ephemeral_space;
 
         let state = host.create_soft_checkpoint().await.cache_snapshot;
@@ -4411,10 +4413,9 @@ mod tests {
                     format!("{played:?}"),
                     "{entry:?}: the reporting replay gives the result of the play"
                 );
-                runtime
-                    .check_replay_data()
-                    .await
-                    .unwrap_or_else(|error| panic!("{entry:?}: the replay leaves events: {error:?}"));
+                runtime.check_replay_data().await.unwrap_or_else(|error| {
+                    panic!("{entry:?}: the replay leaves events: {error:?}")
+                });
                 assert_eq!(
                     volatile_channels(&reporting).await,
                     Vec::<Par>::new(),
@@ -4433,7 +4434,10 @@ mod tests {
 
         let fixture = hosted().await;
         let reducer: &ReducerCore = &fixture.reducer;
-        assert!(reducer.begin_root_evaluation(), "a call outside a reduction is a root");
+        assert!(
+            reducer.begin_root_evaluation(),
+            "a call outside a reduction is a root"
+        );
         let space = NativeSpace {
             sid: [0x7E; namespace::SID_LEN],
             durability: namespace::Durability::Ephemeral,
@@ -4447,7 +4451,11 @@ mod tests {
         })
         .await;
         assert!(!nested, "a call inside a reduction is no root");
-        assert_eq!(live, Ok(()), "a nested call keeps the book of the root evaluation");
+        assert_eq!(
+            live,
+            Ok(()),
+            "a nested call keeps the book of the root evaluation"
+        );
     }
 
     /// With a host runtime, the hooks run the operations of a space name on its collection. A

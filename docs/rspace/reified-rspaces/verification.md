@@ -1734,8 +1734,8 @@ The 3 properties of `rholang/tests/reified_legacy_charges.rs` (section [11.14](#
 | Metering | `prop_agent_reservation_cut_rejects_without_effect` to `prop_agent_reserves_its_own_work_beyond_the_matcher` (3) | `reified_p4_props.rs:4551-4667` | Q59 to Q61, Q64 to Q66 |
 | References and routing | `prop_classify_space_ref_total` to `prop_use_wrapper_restores_ctx` (9) | `reified_p4_props.rs:6258-6546` | Q38 to Q46 |
 | Factories | `prop_family_index_bijective` to `prop_space_already_exists_is_deterministic_abort` (8) | `reified_p4_props.rs:6785-7197` | Q48 to Q55 |
-| TLA+ invariants | `prop_queue_no_pending_match_any_schedule` to `prop_handle_calls_merge_like_contracts` (8) | `reified_p4_props.rs:7463-8039` | U1 to U8, and U12 |
-| Leaf extras | `prop_handle_dispatch_total`, `prop_get_space_agent_returns_family_capability`, `prop_qualifier_parse_roundtrip`, `prop_prepare_commit_atomic` (4) | `reified_p4_props.rs:8448-8721` | Q47 to Q51, Q55 |
+| TLA+ invariants | `prop_queue_no_pending_match_any_schedule` to `prop_handle_calls_merge_like_contracts` (8) | `reified_p4_props.rs:7463-8042` | U1 to U8, and U12 |
+| Leaf extras | `prop_handle_dispatch_total`, `prop_get_space_agent_returns_family_capability`, `prop_qualifier_parse_roundtrip`, `prop_prepare_commit_atomic` (4) | `reified_p4_props.rs:8451-8724` | Q47 to Q51, Q55 |
 | Re-entry (decision 43) | `prop_queue_reissue_keeps_first_round_ord` to `prop_queue_persistent_reissue_charged_once` (8) | `reified_p4_props.rs:3805-4387` | Q68 to Q77, U1 to U3, and U9 to U12 |
 | Peek re-store (decision 45) | `prop_queue_restore_realizes_plan` (1) | `reified_p4_props.rs:4739` | Q78 |
 | Legacy charges (decision 45, Option P) | `prop_legacy_charges_equal_charging_rspace`, `prop_legacy_chain_log_is_host_order`, `prop_legacy_replay_stops_with_play` (3) | `reified_legacy_charges.rs:173-783` | Q79 and Q80, U13 for the last two |
@@ -1746,9 +1746,9 @@ The 3 properties of `rholang/tests/reified_legacy_charges.rs` (section [11.14](#
 
 | Test | Location | Covers |
 |---|---|---|
-| `reified_marker_flags_change_derived_flags_only` | `reified/reducer_hooks.rs:2062` | Q56 |
-| `reified_marker_flags_use_body_with_connective_send_is_canonical` | `reified/reducer_hooks.rs:1827` | Q57 |
-| `reified_marker_flags_variable_bound_to_connective_is_canonical` | `reified/reducer_hooks.rs:1877` | Q58 |
+| `reified_marker_flags_change_derived_flags_only` | `reified/reducer_hooks.rs:2066` | Q56 |
+| `reified_marker_flags_use_body_with_connective_send_is_canonical` | `reified/reducer_hooks.rs:1831` | Q57 |
+| `reified_marker_flags_variable_bound_to_connective_is_canonical` | `reified/reducer_hooks.rs:1881` | Q58 |
 | `space_already_exists_aborts` | `reified/factory.rs:202` | Q55 |
 | `persistent_sends_abort_on_every_call_op_and_every_handle` | `reified/system_channels.rs:788` | Q54 |
 | `forged_channels_route_to_the_context_space` | `reified/route.rs:283` | Q42 |
@@ -1946,9 +1946,9 @@ The mutant of decision 46, `sr-native-play-runs-spaces`, is retired with its hea
 | `reified_native_play_runs_a_space_deploy` | `reified_native_fail_closed.rs:338` | A native play of a factory call runs without an error and stores the records of the config and of the space counter (Q67). |
 | `reified_native_replay_reproduces_a_space_deploy` | `reified_native_fail_closed.rs:384` | The native replay environment replays the play journal: no error, a complete journal, the phlo usage of play, equal authority events and byte observations, and the post-state root of play (Q67). |
 | `reified_native_host_program_plays_and_replays_unchanged` | `reified_native_fail_closed.rs:412` | A program without spaces plays and replays natively without an error, with a complete journal, equal usage and the post-state root of play (Q67). |
-| `native_replay_runtime_fails_closed` | `reified/runtime.rs:710` | A native replay runtime that is not bound yet fails every space entry with `RuntimeUnavailable`. |
-| `native_replay_runtime_binds_once_and_resets_its_scope` | `reified/runtime.rs:728` | The environment binds a native replay runtime once, and its evaluation scope resets the committed parents of its store. |
-| `host_runtime_is_available_outside_native_execution` | `reified/runtime.rs:767` | A host runtime runs space jobs when its budget runs no native deploy. |
+| `native_replay_runtime_fails_closed` | `reified/runtime.rs:716` | A native replay runtime that is not bound yet fails every space entry with `RuntimeUnavailable`. |
+| `native_replay_runtime_binds_once_and_resets_its_scope` | `reified/runtime.rs:734` | The environment binds a native replay runtime once, and its evaluation scope resets the committed parents of its store. |
+| `host_runtime_is_available_outside_native_execution` | `reified/runtime.rs:773` | A host runtime runs space jobs when its budget runs no native deploy. |
 
 **The hazard of decision 46.** A run of the suite with the guard of `ReifiedRuntime::host` removed and without a native backend (`target/verification/reified-rspaces/d46/mutant-no-native-guard.log`) shows why decision 46 failed closed.
 Native play then ran the space operation without an error, and native replay failed with `native replay has incomplete operations`.
@@ -2387,19 +2387,19 @@ So the golden pins the one comparison of the family check.
 
 | Test | Location | What it checks |
 |---|---|---|
-| `space_engine_staged_kinds_stay_one_byte` | `generic.rs:5351` | A staged kind is one byte, so the reserved staged list of a head-only plan keeps its size. |
-| `space_engine_checks_params_and_queries_before_the_bump` | `generic.rs:5358` | An unknown key, a query that the discipline does not take, and a rejected value fail before the bump. The counter and the log stay unchanged. |
-| `space_engine_plans_see_the_round_counter_and_the_operation` | `generic.rs:5444` | A plan sees the counter value of its round (`Cx::bumped`), and each settle hook sees its operation (`OpView`). |
-| `space_engine_capacity_abort_stages_nothing` | `generic.rs:5494` | A store or a park on a full side fails with `CellOccupied`, and the transaction applies nothing. |
-| `space_engine_group_fire_lines_up_and_dispatches_its_prefix` | `generic.rs:5529` | A fire over `[D; 3]` that binds one result removes three records and dispatches one result. A group that does not line up stages nothing. |
-| `space_engine_retire_and_lift_fire_without_dispatch` | `generic.rs:5593` | A retirement and a lift remove their records and dispatch nothing. |
-| `space_engine_outcome_dispatches_the_prefix_of_a_group_fire` | `generic.rs:5645` | The outcome keeps the prefix of a prefix fire and rejects a missing or extra count. |
-| `space_engine_staged_list_growth_is_reserved_before_it_grows` | `generic.rs:6118` | A list at its capacity reserves the doubled buffer before it grows. A budget that is one operation short rejects the growth and leaves the list unchanged. |
-| `space_engine_operation_ord_without_a_counter_is_zero` | `generic.rs:6166` | Without a counter every order is 0, and a re-issued order other than 0 is `Inconsistent`. |
-| `space_engine_allocation_without_an_allocator_is_baseline` | `generic.rs:6187` | An allocation in a HashMap space is `Baseline` and logs nothing, and a missing config is `DanglingHandle`. |
-| `space_engine_allocator_store_creates_and_allocates_its_names` | `generic.rs:6213` | A store with an allocator stages its creation record and allocates names through the take and the put of the allocator. |
-| `space_engine_family_agent_runs_a_queue_as_its_own_agent_does` | `generic.rs:6257` | The family agent gives the fires, events, records, waiters and host work of the queue agent. |
-| `space_engine_family_agent_rejects_a_family_that_is_not_wired` | `generic.rs:6447` | An operation, an allocation and a creation of a family that is not wired fail with `FamilyUnavailable` and log nothing. |
+| `space_engine_staged_kinds_stay_one_byte` | `generic.rs:5350` | A staged kind is one byte, so the reserved staged list of a head-only plan keeps its size. |
+| `space_engine_checks_params_and_queries_before_the_bump` | `generic.rs:5357` | An unknown key, a query that the discipline does not take, and a rejected value fail before the bump. The counter and the log stay unchanged. |
+| `space_engine_plans_see_the_round_counter_and_the_operation` | `generic.rs:5443` | A plan sees the counter value of its round (`Cx::bumped`), and each settle hook sees its operation (`OpView`). |
+| `space_engine_capacity_abort_stages_nothing` | `generic.rs:5493` | A store or a park on a full side fails with `CellOccupied`, and the transaction applies nothing. |
+| `space_engine_group_fire_lines_up_and_dispatches_its_prefix` | `generic.rs:5528` | A fire over `[D; 3]` that binds one result removes three records and dispatches one result. A group that does not line up stages nothing. |
+| `space_engine_retire_and_lift_fire_without_dispatch` | `generic.rs:5592` | A retirement and a lift remove their records and dispatch nothing. |
+| `space_engine_outcome_dispatches_the_prefix_of_a_group_fire` | `generic.rs:5644` | The outcome keeps the prefix of a prefix fire and rejects a missing or extra count. |
+| `space_engine_staged_list_growth_is_reserved_before_it_grows` | `generic.rs:6117` | A list at its capacity reserves the doubled buffer before it grows. A budget that is one operation short rejects the growth and leaves the list unchanged. |
+| `space_engine_operation_ord_without_a_counter_is_zero` | `generic.rs:6165` | Without a counter every order is 0, and a re-issued order other than 0 is `Inconsistent`. |
+| `space_engine_allocation_without_an_allocator_is_baseline` | `generic.rs:6186` | An allocation in a HashMap space is `Baseline` and logs nothing, and a missing config is `DanglingHandle`. |
+| `space_engine_allocator_store_creates_and_allocates_its_names` | `generic.rs:6212` | A store with an allocator stages its creation record and allocates names through the take and the put of the allocator. |
+| `space_engine_family_agent_runs_a_queue_as_its_own_agent_does` | `generic.rs:6256` | The family agent gives the fires, events, records, waiters and host work of the queue agent. |
+| `space_engine_family_agent_rejects_a_family_that_is_not_wired` | `generic.rs:6446` | An operation, an allocation and a creation of a family that is not wired fail with `FamilyUnavailable` and log nothing. |
 | `space_families_wire_exactly_the_listed_families` | `families.rs:687` | Only the wired families have an agent and param schemas, and each family takes the schemas of its discipline. |
 | `space_families_dispatch_by_config_reserves_one_comparison_per_arm` | `families.rs:872` | Each arm that the dispatch tries reserves one comparison of the names of the config and of the arm. The arm of `hashmap:queue` comes first, so it reserves what the P4 agent reserves. |
 | `space_order_primitives_reserve_the_restated_formula` | `space_store_handle.rs:3910` | Each primitive of the space order reserves what `MeteredOrder` of the branch reserves. Both orders run the one `canonical_order`. |
@@ -2965,7 +2965,7 @@ Each property runs 64 cases with the fixed P5 seed.
 
 **The store seams.**
 The record methods of `JoinSource` ([design N12.11](design.md#n1211-the-seam-of-a-store)) must leave the keyed engine unchanged, and two tests check this.
-`space_join_engine_reserved_types_keep_their_sizes` pins the sizes of the ten types that the engine reserves by size (`rholang/src/rust/interpreter/spaces/join.rs:5758-5780`).
+`space_join_engine_reserved_types_keep_their_sizes` pins the sizes of the ten types that the engine reserves by size (`rholang/src/rust/interpreter/spaces/join.rs:5762-5784`).
 `join_seams_keyed_differential` runs 80 programs with the fixed P5 seed over a metered recording host (`rholang/tests/reified_join_props.rs:4622-4687`).
 For each program, it hashes the results, the legacy charges, the phlo, the events, the lock keys, the staged operations and the root.
 It also hashes the host-work usage at every begin, staged operation and commit.
@@ -3446,8 +3446,8 @@ A second send keeps its record bytes, so it keeps its embedding and its id.
 ### 15.4 The join engine
 
 `JoinWindow::Similarity` is the window shape of the VectorDB discipline.
-Each position on a VectorDB collection sees its own eligible records in its own selection order (`similarity_bind`, `join.rs:3399-3467`).
-The engine has its own list paths: OFFER-LIST (`join.rs:3879-3939`), RECEIVE-LIST (`join.rs:4214-4323`) and the list cascade (`join.rs:4429-4464`, `4506-4596`).
+Each position on a VectorDB collection sees its own eligible records in its own selection order (`similarity_bind`, `join.rs:3403-3471`).
+The engine has its own list paths: OFFER-LIST (`join.rs:3883-3943`), RECEIVE-LIST (`join.rs:4218-4327`) and the list cascade (`join.rs:4433-4468`, `4510-4600`).
 A join with a list-mode bind fails with `ListModeInJoin` before any staging (`join.rs:464`).
 A PathMap space has no VectorDB family, so the PathMap source fails closed on the similarity window.
 
@@ -5135,7 +5135,7 @@ These entries are `inj`, `inj_with_observation` and `inj_with_host_work` (`rhola
 
 `ReifiedRuntime::sweep_volatile` returns at once when the registry holds no channel, so ordinary execution does not change (VR-5).
 Otherwise it takes the boundary guard of the reduction coordinator and calls `SpaceTxnHost::sweep_volatile` on the locked channels (VR-6).
-The code is at `rholang/src/rust/interpreter/reified/runtime.rs:170-188`.
+The code is at `rholang/src/rust/interpreter/reified/runtime.rs:172-190`.
 A sweep failure becomes `BugFoundError` with the failure class `Platform` (VR-8).
 Volatile ids are unique to one deploy (I-19), so the pre-state and the post-state of a deploy hold none (VR-10).
 A swept key becomes a delete of an absent key, which leaves the root unchanged (headline H15).
@@ -5290,7 +5290,7 @@ The factory process takes the model from the budget of its runtime (`ReifiedRunt
 ### 28.2 The send rule
 
 `check_send` scans the data of a send for seq names (`rholang/src/rust/interpreter/reified/seq.rs:77-101`).
-`route_send` calls it after the checks of A21 and DG-1, before any mutation, and only while the evaluation holds a seq space (`rholang/src/rust/interpreter/reified/reducer_hooks.rs:405-411`).
+`route_send` calls it after the checks of A21 and DG-1, before any mutation, and only while the evaluation holds a seq space (`rholang/src/rust/interpreter/reified/reducer_hooks.rs:409-415`).
 The scan walks a work list and destructures every field of every type of the `Par` tree, the cost signatures included.
 So a new field of the protobuf schema is a compile error until the scan handles it.
 
@@ -5301,7 +5301,7 @@ A name of another seq space in that argument is still sent, and so is the messag
 
 ### 28.3 The claims
 
-`SeqClaims` holds the claims of one program job on one seq space (`rholang/src/rust/interpreter/spaces/ephemeral.rs:205-274`).
+`SeqClaims` holds the claims of one program job on one seq space (`rholang/src/rust/interpreter/spaces/ephemeral.rs:207-276`).
 The book of the root evaluation stores one claim for each used channel: the participant path of its last use.
 A job claims a channel when the channel has no claim or its claim is a prefix of the participant path of the job.
 Otherwise the deploy aborts with `SeqConcurrent`, and the error names the space id.

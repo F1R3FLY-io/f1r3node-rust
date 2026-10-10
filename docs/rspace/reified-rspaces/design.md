@@ -2149,10 +2149,10 @@ EVAL-NEWSPACE(annotations, new, env, rand):    ▷ reducer_hooks.rs, eval_new_sp
 ```
 
 The annotations evaluate in the environment outside the `new`, as the [syntax contract](syntax-contract.md#scopes-and-binding-order) states.
-Inside a use context, a plain `new` without annotations also stamps every plain binder with the space of the context (`reified/reducer_hooks.rs:592-618`).
+Inside a use context, a plain `new` without annotations also stamps every plain binder with the space of the context (`reified/reducer_hooks.rs:596-622`).
 The stamp keeps the 32 random bytes of the baseline name as the tail, so the random draws do not change ([decision I-3](decision-register.md#i-3)).
 
-**The send hook.** `reified_produce` (`reified/reducer_hooks.rs:358-376`) is hook H3, with the same signature as the baseline `produce`.
+**The send hook.** `reified_produce` (`reified/reducer_hooks.rs:362-380`) is hook H3, with the same signature as the baseline `produce`.
 
 ```text
 REIFIED-PRODUCE(chan, data, persistent, α):    ▷ reducer_hooks.rs, reified_produce and route_send
@@ -2175,7 +2175,7 @@ REIFIED-PRODUCE(chan, data, persistent, α):    ▷ reducer_hooks.rs, reified_pr
 A handle call keeps its trailing PARAMS tuple, which `HANDLE_OP` reads.
 The queue discipline takes no send params, so a named param on a queue fails with `UnknownParam` and no suggestion.
 
-**The receive hook.** `reified_consume` (`reified/reducer_hooks.rs:478-555`) takes the parameters of the baseline `consume`.
+**The receive hook.** `reified_consume` (`reified/reducer_hooks.rs:482-559`) takes the parameters of the baseline `consume`.
 
 ```text
 REIFIED-CONSUME(binds, body, persistent, peek, guard, α, α_intro):
@@ -2198,7 +2198,7 @@ A join with a user agent fails with `AgentSpacesUnavailable`, and every other mi
 The fast path classifies without an allocation, so an ordinary receive costs no extra work.
 
 **The refresh of derived flags.** The evaluation and the substitution of the baseline keep a stale `connective_used` flag on a tuple, a list, or a map ([decision I-20](decision-register.md#i-20)).
-So before each strict decode, the hooks compute again the flags that the encoder derives from the children, and they change no value (`reified/reducer_hooks.rs:1469-1489`).
+So before each strict decode, the hooks compute again the flags that the encoder derives from the children, and they change no value (`reified/reducer_hooks.rs:1473-1493`).
 Hook H4 refreshes a QUERY tuple the same way before it fails closed with `QuerySpecUnsupported`.
 
 **Examples.** The first program puts a forged channel into a queue space with `use`.
@@ -2296,14 +2296,14 @@ Without a budget, the meter accepts every charge and skips every walk, as `reser
 | `Detached` | `unavailable`, in `ReducerCore::new` and `DebruijnInterpreter::new` | fails with `RuntimeUnavailable` |
 | `NativeReplay` | `native_replay`, in the native replay environment, which binds it to the store of its native replay session with `bind_native_replay` | runs one space intent over the native backend of the session once bound, and fails with `RuntimeUnavailable` before ([decision 47](decision-register.md#decision-47)) |
 
-Every space entry point checks the runtime first (`ReifiedRuntime::host` and `ensure_available`, `reified/runtime.rs:192-209, 213`).
+Every space entry point checks the runtime first (`ReifiedRuntime::host` and `ensure_available`, `reified/runtime.rs:194-211, 215`).
 `run_op`, `create_space`, and `read_config` check it before `submit_space`, so a failing check takes no operation order and makes no observer call.
 Native play and a bound native replay runtime run the same space entry, so native replay reproduces play (`SpaceRefs.v`, `native_execution_runs_spaces`).
 [Decision 46](decision-register.md#decision-46) made both modes reject a space deploy before any space work, and decision 47 replaces that rule.
 The runtime holds no cache, so nothing in it survives a reset.
 The host runtime holds one `SpaceStoreHandle` for the host, which the substrate requires ([S10](#s10-limits)).
 
-**The dispatch of fires.** `dispatch_space_outcome` (`reified/reducer_hooks.rs:763-819`) runs the continuations that a space operation fired.
+**The dispatch of fires.** `dispatch_space_outcome` (`reified/reducer_hooks.rs:767-823`) runs the continuations that a space operation fired.
 
 ```text
 DISPATCH-SPACE-OUTCOME(fires, reissue, then):  ▷ reducer_hooks.rs, dispatch_space_outcome
@@ -2789,8 +2789,8 @@ An allocation is one job over $`[C(\mathit{sid}), A(\mathit{sid})]`$: the family
 `AllocCx` then takes $`A(\mathit{sid}) = n`$ and puts the next value (`spaces/generic.rs:2778-2826`).
 An allocation that fails stages nothing, and every read and copy is reserved before it is made.
 
-The reducer runs one allocation job for each distinct space of the plain binders of a `new` inside `use s` (F11, `reified/reducer_hooks.rs:639-684`).
-Each job takes the cost authority of the process that evaluates the `new`, as its call `s!gensym()` would (`reified/reducer_hooks.rs:690-717`).
+The reducer runs one allocation job for each distinct space of the plain binders of a `new` inside `use s` (F11, `reified/reducer_hooks.rs:643-688`).
+Each job takes the cost authority of the process that evaluates the `new`, as its call `s!gensym()` would (`reified/reducer_hooks.rs:694-721`).
 So each allocation is paid by its caller (P4 design B.7), and the handle method `gensym` runs a job with the authority of its call.
 A store without an allocator answers `Baseline`, and the binders keep the names that HEAD draws.
 
@@ -2824,8 +2824,8 @@ Every read, copy, comparison and allocation of the layer is reserved before it i
 
 #### N11.8 Receive queries and allocation jobs in the hooks
 
-Hook H4 fails only on a malformed QUERY tuple, and a query routes the inner channel of its tuple (`reified/reducer_hooks.rs:841-852`, `reified/reducer_hooks.rs:881-895`).
-The fast path of a receive admits no marker tuple, so a QUERY tuple never becomes a channel of the host (`reified/reducer_hooks.rs:868-870`).
+Hook H4 fails only on a malformed QUERY tuple, and a query routes the inner channel of its tuple (`reified/reducer_hooks.rs:845-856`, `reified/reducer_hooks.rs:885-899`).
+The fast path of a receive admits no marker tuple, so a QUERY tuple never becomes a channel of the host (`reified/reducer_hooks.rs:872-874`).
 
 ```text
 REIFIED-PRODUCE: Space(n,k) → remove the PARAMS tuple from data; named ← SPACE-PARAMS(params)   ▷ positional: PositionalParamsUnsupported
@@ -2943,8 +2943,8 @@ A program never issues a settle job, and the reducer issues a join only through 
 | `PendingProduce` (`spaces/agent.rs:244-256`) | One owed second send: its collection, its record with the envelope, and its persistence. |
 | `SpaceAgent::prepare_join` (`spaces/agent.rs:480-484`) | Stages a join: the classification, the scope, and the engine. |
 
-The receive hook routes a receive with two or more binds on one native space to `SpaceOp::Join` (`reified/reducer_hooks.rs:949-977`).
-Any other mix of routes fails with `AgentSpacesUnavailable` or `CrossSpaceJoin` (`reified/reducer_hooks.rs:1007-1031`).
+The receive hook routes a receive with two or more binds on one native space to `SpaceOp::Join` (`reified/reducer_hooks.rs:953-981`).
+Any other mix of routes fails with `AgentSpacesUnavailable` or `CrossSpaceJoin` (`reified/reducer_hooks.rs:1011-1035`).
 
 #### N12.2 Classification and the scope
 
@@ -3030,8 +3030,8 @@ Both searches reserve each envelope decode, each payload decode, each match and 
 
 #### N12.4 The transaction
 
-`run_join` runs the engine in one plan of the transaction (`spaces/join.rs:669-756`).
-`Engine::run` follows RUN-JOIN (`spaces/join.rs:2681-2768`).
+`run_join` runs the engine in one plan of the transaction (`spaces/join.rs:669-760`).
+`Engine::run` follows RUN-JOIN (`spaces/join.rs:2685-2772`).
 Figure N12.4 shows one transaction, from the classification to the commit.
 
 ```text
@@ -3056,12 +3056,12 @@ TOUCH(c):                                        ▷ join.rs, Engine::touch
   if the discipline has a counter and c is not bumped yet: bump S(sid, c) once, before its first staging
 ```
 
-OFFER offers the element in flight to the waiters of its collection, in the order of the source (`spaces/join.rs:3713-3871`).
+OFFER offers the element in flight to the waiters of its collection, in the order of the source (`spaces/join.rs:3717-3875`).
 A head that refuses stores the element, and on the other shapes a refusal moves on to the next waiter.
-RECEIVE parks the waiter at its places, unless it is the head of each head-only collection and its search and guard pass (`spaces/join.rs:4013-4206`).
+RECEIVE parks the waiter at its places, unless it is the head of each head-only collection and its search and guard pass (`spaces/join.rs:4017-4210`).
 A receive with one bind on a set keeps its class fire over $`[D; n]`$.
 A join with two or more binds fires one consume over its group.
-PARK checks the capacity of each cell collection before it stages anything (`spaces/join.rs:4348-4378`).
+PARK checks the capacity of each cell collection before it stages anything (`spaces/join.rs:4352-4382`).
 
 ![Activity diagram of one transaction of the join engine. PREPARE begins over the own collections of the operation and reads the config once. CLASSIFY sends an operation that no join reaches to the driver of its collection, whose reservations equal the P4 join check. Otherwise JOIN-SCOPE checks each bind and closes the collections under their join groups, and a transaction that does not cover the scope is dropped before any staging and begun once again over the lock keys of the scope. RUN-JOIN bumps each own collection once and takes the orders, or the carried orders of decision 43. A settle job puts its pending second sends on the work stack and marks every collection dirty. Another operation runs the settle before the plan when its discipline cascades, which is the queue, the stack, the cell, the priority queue and the set, and not the bag. A stopped transaction or a full fire count commits and re-issues the operation. Otherwise the plan offers the datum or receives the waiter, with the windows, the greedy search and one guard check, and a peek fire pushes its second sends. DRAIN-AND-CASCADE then loops while a second send is owed or a waiter of a dirty collection can fire: a full count stops it and carries the rest, a second send is popped and offered in receipt order with its own identity, and otherwise NEXT-FIRE picks the head, the oldest lane head or the first set waiter of the least dirty collection, and LIFT-AND-REOFFER lifts the first non-persistent bound record with K_lift, keyed by the counter and the step or by the source hash on a set, offers it to the waiter, and retires the bound set classes. COMMIT re-issues one settle job with the pending sends, the dirty seeds and the resume when the transaction stopped with owed work, and otherwise re-issues the operation only when its element is still in flight.](diagrams/26-join-engine.svg)
 
@@ -3070,7 +3070,7 @@ PARK checks the capacity of each cell collection before it stages anything (`spa
 #### N12.5 Rule E in joins: the second sends
 
 A peek fire removes each non-persistent stored record that it binds, as a host COMM does ([decision 45](decision-register.md#decision-45)).
-The same transaction sends each such record again through OFFER, with its identity and its own authority (`spaces/join.rs:3594-3635`).
+The same transaction sends each such record again through OFFER, with its identity and its own authority (`spaces/join.rs:3598-3639`).
 
 ```text
 PUSH-SECOND-SENDS(σ, x at p?):                   ▷ join.rs, second_sends; the results in receipt order
@@ -3088,7 +3088,7 @@ A second send registers the authority of its record (`Introduction::for_record`)
 
 A fire can make another waiter of the scope fireable ([decision 50](decision-register.md#decision-50)).
 A head-only collection can get a new head, or a set class can move to a new place.
-DRAIN-AND-CASCADE fires each such waiter in the same transaction (`spaces/join.rs:4467-4499`).
+DRAIN-AND-CASCADE fires each such waiter in the same transaction (`spaces/join.rs:4471-4503`).
 
 ```text
 DRAIN-AND-CASCADE():                             ▷ join.rs, drain_and_cascade
@@ -3121,7 +3121,7 @@ LIFT-AND-REOFFER(W, σ):                          ▷ join.rs, lift_and_reoffer
   if the fire count says Reissue(cause): stop with cause   ▷ a stored divergent pair (A10)
 ```
 
-A collection with a counter keys `K_lift` by the counter value of the transaction and the step, as the settle of a stack does (`spaces/join.rs:4712-4764`).
+A collection with a counter keys `K_lift` by the counter value of the transaction and the step, as the settle of a stack does (`spaces/join.rs:4716-4768`).
 A set has no counter, so its `K_lift` is keyed by the source hash of the lifted record, as `K_retire` is.
 So every lift of a set has an identity of its own, also when a re-issue repeats the random state and the step.
 
@@ -3144,13 +3144,13 @@ So their fires commute (`cascade_order_independent`).
 Strict confluence fails for a priority queue, which has two lanes for each collection, and for a set, which has many waiters for each collection.
 So NEXT-FIRE fixes an order: the oldest lane head of a priority queue, and the DR-75 order of the union for a set.
 
-RETIRE-SET-BINDS runs after every fire of a waiter that does not peek, on the consume side, on the produce side, and in the cascade (`spaces/join.rs:2254-2288`).
+RETIRE-SET-BINDS runs after every fire of a waiter that does not peek, on the consume side, on the produce side, and in the cascade (`spaces/join.rs:2258-2292`).
 It retires the other non-persistent stored members of each bound set class with single-channel `K_retire` COMMs, in canonical order.
 A peek retires nothing, and a bag has no classes, so the step does nothing there.
 
 #### N12.7 Stop, re-issue and the settle job
 
-`commit` decides the re-issue of the transaction (`spaces/join.rs:4769-4831`).
+`commit` decides the re-issue of the transaction (`spaces/join.rs:4773-4835`).
 A divergent own element does not stop the transaction: the element stays in flight, and the drain fires the other owed pairs.
 Only the fire cap and a stored divergent pair of the cascade stop a transaction.
 A stored divergent pair then fires once in each settle job (A10).
@@ -3233,9 +3233,9 @@ A fire removes the join entries of its group when no waiter of the group is left
 
 #### N12.11 The seam of a store
 
-The engine reaches the discipline, the windows and the records of a store through the trait `JoinSource` (`spaces/join.rs:885-1201`).
-`KeyedSource` implements it for the keyed stores HashMap, Array and Vector (`spaces/join.rs:1536-2247`).
-Its offer order and its cascade order for a set merge the canonical orders of the groups of a collection by source hash (`spaces/join.rs:2312-2391`).
+The engine reaches the discipline, the windows and the records of a store through the trait `JoinSource` (`spaces/join.rs:889-1205`).
+`KeyedSource` implements it for the keyed stores HashMap, Array and Vector (`spaces/join.rs:1540-2251`).
+Its offer order and its cascade order for a set merge the canonical orders of the groups of a collection by source hash (`spaces/join.rs:2316-2395`).
 
 The keyed source holds the records and the waiters of a collection on one data channel.
 The PathMap store keeps its waiters and markers on index channels and its records on data channels.
@@ -3446,9 +3446,9 @@ Phase P7 enables the temp and seq qualifiers, so P7 runs the sweep of native rep
 | Step | Code | Rule |
 |---|---|---|
 | W1, the accessor | `accounting/native_runtime/checked_operations/trace/replay/session/execution.rs:39-66` | `Session::space_store` returns a `ParSpaceStore` over `NativeSpaceHost`. Its resolver asks the budget for the introduction authority, as `NativeExecution` does for a host operation. |
-| W2, the bound state | `reified/runtime.rs:68-73`, `reified/runtime.rs:239-256` | The mode `NativeReplay` holds a slot that the environment binds once, with the store and the budget. An unbound slot fails with `RuntimeUnavailable`. |
+| W2, the bound state | `reified/runtime.rs:68-73`, `reified/runtime.rs:241-258` | The mode `NativeReplay` holds a slot that the environment binds once, with the store and the budget. An unbound slot fails with `RuntimeUnavailable`. |
 | W3, the bind call | `rho_runtime.rs:1918-1934` | `create_native_replay_env` binds the runtime right after it builds the session. |
-| N1, native play | `reified/runtime.rs:192-209` | `ReifiedRuntime::host` no longer fails for a native budget. The guard of decision 46 stays in a comment that gives the reason. |
+| N1, native play | `reified/runtime.rs:194-211` | `ReifiedRuntime::host` no longer fails for a native budget. The guard of decision 46 stays in a comment that gives the reason. |
 
 [Table N6.1](#n6-scheduling) gives the three modes of the runtime.
 `NativeReplayEnvironment::restore` keeps the same store across evaluations, so `begin_evaluation_scope` forwards to the bound store (FR-5').
@@ -3682,7 +3682,7 @@ The theorem `vdb_no_pending_match` (S22) proves that no parked waiter without a 
 
 A VectorDB collection that a join reaches runs on the join engine ([N12](#n12-wave-w3-of-p5-joins-of-one-space)).
 The discipline names the window shape `JoinWindow::Similarity`, so each bind of a join sees its own eligible records in its own order.
-`Engine::similarity_bind` searches them for a single-mode bind, and a bind without a query reads the canonical order (`rholang/src/rust/interpreter/spaces/join.rs:3399-3467`).
+`Engine::similarity_bind` searches them for a single-mode bind, and a bind without a query reads the canonical order (`rholang/src/rust/interpreter/spaces/join.rs:3403-3471`).
 A receive with one bind on a joined collection takes the list paths of the engine in list mode.
 
 A multi-bind join with a bind in list mode fails with `ListModeInJoin`, because a list is one value of one bind (`rholang/src/rust/interpreter/spaces/join.rs:412-471`).

@@ -87,11 +87,11 @@ use rspace_plus_plus::rspace::hashing::stable_hash_provider::hash;
 use rspace_plus_plus::rspace::rspace_interface::ISpace;
 use rspace_plus_plus::rspace::trace::event::{Event, IOEvent};
 use support::agent::{budget, creation, env_over, play, run, send_on};
-use support::props::{check, runtime_config, tokio_runtime};
 use support::native::{
     assert_reproduces, certify, footprint_channels, is_space_row, native_play, Played, AMPLE_LIMIT,
     OUT,
 };
+use support::props::{check, runtime_config, tokio_runtime};
 use support::session::{comms_on, data_channel, error_codes, with_space, Injections, Session};
 
 // ─── Families and programs ───────────────────────────────────────────────────────────────────
@@ -1251,24 +1251,27 @@ fn stored_channels(row: Row, space: NativeSpace, name: &Par) -> Vec<Par> {
 /// COMM counts when its consume or one of its produces is on such a channel.
 fn events_on(log: &[Event], hashes: &[Blake2b256Hash]) -> (usize, usize, usize) {
     let on = |key: &Blake2b256Hash| hashes.contains(key);
-    log.iter()
-        .fold((0, 0, 0), |(produces, consumes, comms), event| match event {
+    log.iter().fold(
+        (0, 0, 0),
+        |(produces, consumes, comms), event| match event {
             Event::IoEvent(IOEvent::Produce(produce)) if on(&produce.channel_hash) => {
                 (produces + 1, consumes, comms)
             }
-            Event::IoEvent(IOEvent::Consume(consume))
-                if consume.channel_hashes.iter().any(on) =>
-            {
+            Event::IoEvent(IOEvent::Consume(consume)) if consume.channel_hashes.iter().any(on) => {
                 (produces, consumes + 1, comms)
             }
             Event::Comm(comm)
                 if comm.consume.channel_hashes.iter().any(on)
-                    || comm.produces.iter().any(|produce| on(&produce.channel_hash)) =>
+                    || comm
+                        .produces
+                        .iter()
+                        .any(|produce| on(&produce.channel_hash)) =>
             {
                 (produces, consumes, comms + 1)
             }
             Event::IoEvent(_) | Event::Comm(_) => (produces, consumes, comms),
-        })
+        },
+    )
 }
 
 /// The values on `OUT` of `played` whose first element is the string `label`: the other
@@ -1358,7 +1361,10 @@ async fn pattern_enforcement_temp_rows() {
             let hashes: Vec<Blake2b256Hash> =
                 stored_channels(row, space, par).iter().map(hash).collect();
             let (produces, consumes, comms) = events_on(&played.log, &hashes);
-            assert_eq!(comms, 0, "{label}: no COMM touches the collection of {name}");
+            assert_eq!(
+                comms, 0,
+                "{label}: no COMM touches the collection of {name}"
+            );
             assert!(
                 produces >= 1 && consumes >= 1,
                 "{label}: the record 43 and the waiter for 42 are stored on {name} \
@@ -1370,12 +1376,16 @@ async fn pattern_enforcement_temp_rows() {
 
 /// The positive part of a `seq` row: a handle `produce` of 42 on `c`, then a receive for 42.
 fn seq_positive() -> String {
-    format!(r#"{{ space!?("produce", *c, [42]); for (@42 <- c) {{ @"{OUT}"!(["positive", 42]) }} }}"#)
+    format!(
+        r#"{{ space!?("produce", *c, [42]); for (@42 <- c) {{ @"{OUT}"!(["positive", 42]) }} }}"#
+    )
 }
 
 /// The negative part of a `seq` row: a handle `produce` of 43 on `a`, then a receive for 42.
 fn seq_negative() -> String {
-    format!(r#"{{ space!?("produce", *a, [43]); for (@42 <- a) {{ @"{OUT}"!(["negative", 42]) }} }}"#)
+    format!(
+        r#"{{ space!?("produce", *a, [43]); for (@42 <- a) {{ @"{OUT}"!(["negative", 42]) }} }}"#
+    )
 }
 
 /// The deploy of a `seq` row of `urn` with the constructor `ctor`, which runs `body` over the
@@ -1456,7 +1466,11 @@ async fn pattern_enforcement_seq_rows() {
         assert!(base_comms >= 1, "{label}: the fire of 42 makes a COMM");
         let played = play_native(
             &label,
-            &seq_row_program(&urn, &ctor, &format!("{} | {}", seq_negative(), seq_positive())),
+            &seq_row_program(
+                &urn,
+                &ctor,
+                &format!("{} | {}", seq_negative(), seq_positive()),
+            ),
         )
         .await;
         assert!(
@@ -1525,7 +1539,11 @@ async fn pattern_enforcement_hashset_rows() {
             "{label}: {:?}",
             played.result.errors
         );
-        assert_eq!(labelled(&played, "positive"), vec![vec![gint(0)]], "{label}");
+        assert_eq!(
+            labelled(&played, "positive"),
+            vec![vec![gint(0)]],
+            "{label}"
+        );
         for (case, body, code) in [
             ("a payload", "x!(43)".to_string(), "PayloadNotEmpty"),
             (

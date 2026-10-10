@@ -152,7 +152,9 @@ impl VolatileRegistry {
     fn claim_count(&self) -> usize { self.state().claims.len() }
 
     /// The claim of the channel with the id `id`.
-    fn claim_of(&self, id: &[u8]) -> Option<Vec<PathSegment>> { self.state().claims.get(id).cloned() }
+    fn claim_of(&self, id: &[u8]) -> Option<Vec<PathSegment>> {
+        self.state().claims.get(id).cloned()
+    }
 
     /// Sets the claim of each channel of `ids` to `path`.
     fn store_claims(&self, ids: BTreeSet<Vec<u8>>, path: &[PathSegment]) {
@@ -366,10 +368,15 @@ mod tests {
             path: order.into(),
         };
         operation_context::scope(order, async {
-            let claims =
-                SeqClaims::open(registry, space, SpaceQualifier::Seq, false, &ScanMeter::new(None))
-                    .expect("a seq job opens its claims")
-                    .expect("a program job on a seq space claims");
+            let claims = SeqClaims::open(
+                registry,
+                space,
+                SpaceQualifier::Seq,
+                false,
+                &ScanMeter::new(None),
+            )
+            .expect("a seq job opens its claims")
+            .expect("a program job on a seq space claims");
             body(claims)
         })
         .await
@@ -399,8 +406,15 @@ mod tests {
                 "a program operation on a seq space runs without an operation order"
             ))
         ));
-        let opened = job(&registry, seq, &[(0, 1), (4, 2)], |claims| claims.path.clone()).await;
-        assert_eq!(opened, vec![(0, 1), (4, 2)], "the participant path of the job");
+        let opened = job(&registry, seq, &[(0, 1), (4, 2)], |claims| {
+            claims.path.clone()
+        })
+        .await;
+        assert_eq!(
+            opened,
+            vec![(0, 1), (4, 2)],
+            "the participant path of the job"
+        );
     }
 
     #[tokio::test]
@@ -410,28 +424,50 @@ mod tests {
         let x = data(seq, 1);
         let id = sole_gprivate_id(&x).expect("an id").to_vec();
         let meter = ScanMeter::new(None);
-        let used = |mut claims: SeqClaims| claims.claim(&x, ClaimRole::Data, &meter).map(|_| claims);
+        let used =
+            |mut claims: SeqClaims| claims.claim(&x, ClaimRole::Data, &meter).map(|_| claims);
         // A job that fails or drops its transaction stores no claim (SQ-4).
-        job(&registry, seq, &[(0, 1)], |claims| used(claims).expect("a first use")).await;
-        assert_eq!(registry.claim_of(&id), None, "a pending claim is not stored");
+        job(&registry, seq, &[(0, 1)], |claims| {
+            used(claims).expect("a first use")
+        })
+        .await;
+        assert_eq!(
+            registry.claim_of(&id),
+            None,
+            "a pending claim is not stored"
+        );
         // A job stores its claims after its commit succeeded.
-        job(&registry, seq, &[(0, 1)], |claims| used(claims).expect("a first use").store()).await;
+        job(&registry, seq, &[(0, 1)], |claims| {
+            used(claims).expect("a first use").store()
+        })
+        .await;
         assert_eq!(registry.claim_of(&id), Some(vec![(0, 1)]));
         // The same participant and its descendants use x again.
         for path in [vec![(0, 1)], vec![(0, 1), (2, 3)]] {
-            job(&registry, seq, &path, |claims| used(claims).expect("a descendant")).await;
-        }
-        job(&registry, seq, &[(0, 1), (2, 3)], |claims| used(claims).expect("a child").store())
+            job(&registry, seq, &path, |claims| {
+                used(claims).expect("a descendant")
+            })
             .await;
+        }
+        job(&registry, seq, &[(0, 1), (2, 3)], |claims| {
+            used(claims).expect("a child").store()
+        })
+        .await;
         assert_eq!(registry.claim_of(&id), Some(vec![(0, 1), (2, 3)]));
         // A sibling, the parent and an unrelated participant are concurrent.
         for path in [vec![(0, 1), (2, 4)], vec![(0, 1)], vec![(0, 2)], vec![]] {
             let refused = job(&registry, seq, &path, |claims| used(claims).err()).await;
-            assert_eq!(refused, Some(SpaceError::SeqConcurrent { space: seq.sid }), "{path:?}");
+            assert_eq!(
+                refused,
+                Some(SpaceError::SeqConcurrent { space: seq.sid }),
+                "{path:?}"
+            );
         }
         // Another channel of the space has its own claim (decision 73).
         job(&registry, seq, &[(0, 2)], |mut claims| {
-            claims.claim(&data(seq, 2), ClaimRole::Data, &meter).expect("another channel");
+            claims
+                .claim(&data(seq, 2), ClaimRole::Data, &meter)
+                .expect("another channel");
             claims.store();
         })
         .await;
@@ -451,20 +487,32 @@ mod tests {
             for (channel, role) in [
                 (gprivate(namespace::config_channel(seq)), ClaimRole::Waiter),
                 (gprivate(namespace::space_counter(seq)), ClaimRole::Waiter),
-                (gprivate(namespace::collection_counter(seq, &key(&[1]))), ClaimRole::Data),
+                (
+                    gprivate(namespace::collection_counter(seq, &key(&[1]))),
+                    ClaimRole::Data,
+                ),
                 (gprivate(namespace::allocator_channel(seq)), ClaimRole::Data),
                 (gprivate(namespace::handle_channel(seq)), ClaimRole::Waiter),
-                (gprivate(namespace::name_id(seq, NameTail::Random([1; 32]))), ClaimRole::Data),
+                (
+                    gprivate(namespace::name_id(seq, NameTail::Random([1; 32]))),
+                    ClaimRole::Data,
+                ),
                 (index.clone(), ClaimRole::Data),
                 (data(other, 1), ClaimRole::Data),
                 (data(durable, 1), ClaimRole::Data),
                 (Par::default(), ClaimRole::Waiter),
             ] {
-                claims.claim(&channel, role, &meter).expect("nothing to claim");
+                claims
+                    .claim(&channel, role, &meter)
+                    .expect("nothing to claim");
             }
             assert!(claims.pending.is_empty(), "{:?}", claims.pending);
-            claims.claim(&index, ClaimRole::Waiter, &meter).expect("a waiter on a prefix");
-            claims.claim(&data(seq, 1), ClaimRole::Data, &meter).expect("a data channel");
+            claims
+                .claim(&index, ClaimRole::Waiter, &meter)
+                .expect("a waiter on a prefix");
+            claims
+                .claim(&data(seq, 1), ClaimRole::Data, &meter)
+                .expect("a data channel");
             claims.pending.len()
         })
         .await;
@@ -481,7 +529,10 @@ mod tests {
         assert!(registry.is_live(&temp.sid));
         assert_eq!(registry.qualifier(&temp.sid), Some(SpaceQualifier::Temp));
         assert_eq!(registry.take_channels().len(), 1);
-        assert!(registry.is_live(&temp.sid), "taking the channels keeps the spaces");
+        assert!(
+            registry.is_live(&temp.sid),
+            "taking the channels keeps the spaces"
+        );
         registry.record_locked(&[gprivate(namespace::config_channel(temp))]);
         registry.clear();
         assert!(!registry.is_live(&temp.sid));

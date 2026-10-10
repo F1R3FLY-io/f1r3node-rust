@@ -54,9 +54,9 @@ use models::rhoapi::g_unforgeable::UnfInstance;
 use models::rhoapi::{
     Bundle, Connective, ConnectiveBody, CostSignature, CostSignatureCompound, CostSignedTerm,
     CostStack, EAnd, EDiv, EEq, EGt, EGte, EList, ELt, ELte, EMap, EMatches, EMethod, EMinus,
-    EMinusMinus, EMod, EMult, ENeg, ENeq, ENot, EOr, EPathMap, EPercentPercent, EPlus,
-    EPlusPlus, ESet, ETuple, EVar, EZipper, Expr, GPrivate, GUnforgeable, If, KeyValuePair, Match,
-    MatchCase, New, Par, Receive, ReceiveBind, Send,
+    EMinusMinus, EMod, EMult, ENeg, ENeq, ENot, EOr, EPathMap, EPercentPercent, EPlus, EPlusPlus,
+    ESet, ETuple, EVar, EZipper, Expr, GPrivate, GUnforgeable, If, KeyValuePair, Match, MatchCase,
+    New, Par, Receive, ReceiveBind, Send,
 };
 use rspace_plus_plus::rspace::errors::RSpaceError;
 
@@ -630,7 +630,12 @@ mod tests {
         let seq = space(1, Durability::Ephemeral);
         for (index, data) in hidden(name(seq, 7)).into_iter().enumerate() {
             assert_eq!(
-                check_send(&string("out"), &[int(0), data], &seq_of(&[seq]), &unmetered()),
+                check_send(
+                    &string("out"),
+                    &[int(0), data],
+                    &seq_of(&[seq]),
+                    &unmetered()
+                ),
                 Err(SpaceError::SeqSent { space: seq.sid }),
                 "place {index}"
             );
@@ -663,7 +668,12 @@ mod tests {
         }
         // With no seq space nothing is scanned, so a seq name of an ended space passes.
         assert_eq!(
-            check_send(&string("out"), &[name(seq, 7)], &BTreeSet::new(), &unmetered()),
+            check_send(
+                &string("out"),
+                &[name(seq, 7)],
+                &BTreeSet::new(),
+                &unmetered()
+            ),
             Ok(())
         );
     }
@@ -676,7 +686,12 @@ mod tests {
         let x = name(seq, 7);
         let op = gprivate(namespace::op_channel(HANDLE_OP));
         // The forwarder hop: HANDLE_OP!(h, args).
-        let args = list(vec![string("r"), string("produce"), x.clone(), list(vec![])]);
+        let args = list(vec![
+            string("r"),
+            string("produce"),
+            x.clone(),
+            list(vec![]),
+        ]);
         assert_eq!(
             check_send(&op, &[handle(seq), args.clone()], &spaces, &unmetered()),
             Ok(())
@@ -689,7 +704,12 @@ mod tests {
         // The channel argument of S's own produce may hold names of S.
         let call = |ch: Par, msg: Par| vec![string("r"), string("produce"), ch, msg];
         assert_eq!(
-            check_send(&handle(seq), &call(x.clone(), list(vec![])), &spaces, &unmetered()),
+            check_send(
+                &handle(seq),
+                &call(x.clone(), list(vec![])),
+                &spaces,
+                &unmetered()
+            ),
             Ok(())
         );
         // The message is scanned in full.
@@ -704,7 +724,12 @@ mod tests {
         );
         // A name of another seq space in the channel argument is sent.
         assert_eq!(
-            check_send(&handle(seq), &call(name(other, 2), list(vec![])), &spaces, &unmetered()),
+            check_send(
+                &handle(seq),
+                &call(name(other, 2), list(vec![])),
+                &spaces,
+                &unmetered()
+            ),
             Err(SpaceError::SeqSent { space: other.sid })
         );
         // Only the method produce exempts its channel argument.
@@ -719,7 +744,12 @@ mod tests {
         );
         // The handle of another space exempts nothing.
         assert_eq!(
-            check_send(&handle(other), &call(x.clone(), list(vec![])), &spaces, &unmetered()),
+            check_send(
+                &handle(other),
+                &call(x.clone(), list(vec![])),
+                &spaces,
+                &unmetered()
+            ),
             Err(SpaceError::SeqSent { space: seq.sid })
         );
         // The return name of a call is scanned.
@@ -747,7 +777,13 @@ mod tests {
             ScanMeter::new(Some(HostWorkBudget::new(limits)))
         };
         // 64 lists, each a Par node and an Expr node, and the innermost Par and its Expr.
-        assert!(check_send(&string("out"), &[deep.clone()], &seq_of(&[seq]), &budget(130)).is_ok());
+        assert!(check_send(
+            &string("out"),
+            &[deep.clone()],
+            &seq_of(&[seq]),
+            &budget(130)
+        )
+        .is_ok());
         assert!(matches!(
             check_send(&string("out"), &[deep], &seq_of(&[seq]), &budget(129)),
             Err(SpaceError::Host(RSpaceError::HostWorkRejected))

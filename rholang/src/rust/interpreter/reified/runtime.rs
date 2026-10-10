@@ -133,7 +133,9 @@ impl ReifiedRuntime {
         match space.durability {
             namespace::Durability::Durable => Ok(()),
             namespace::Durability::Ephemeral if self.volatile.is_live(&space.sid) => Ok(()),
-            namespace::Durability::Ephemeral => Err(SpaceError::DanglingHandle { space: space.sid }),
+            namespace::Durability::Ephemeral => {
+                Err(SpaceError::DanglingHandle { space: space.sid })
+            }
         }
     }
 
@@ -664,7 +666,11 @@ mod tests {
         };
         for result in [
             runtime
-                .run_op(Arc::clone(&agent), produce_op(Par::default()), OpOrigin::Program)
+                .run_op(
+                    Arc::clone(&agent),
+                    produce_op(Par::default()),
+                    OpOrigin::Program,
+                )
                 .await
                 .map(|_| ()),
             runtime

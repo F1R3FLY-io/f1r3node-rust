@@ -3974,7 +3974,10 @@ async fn space_joins_native_play_commits_as_legacy() {
         SpaceOp::Produce(send.clone()),
         settle_after(&send, &[&ch("c")], Vec::new(), None),
     ] {
-        match unbound.run_op(Arc::new(FamilyAgent), op.clone(), OpOrigin::Program).await {
+        match unbound
+            .run_op(Arc::new(FamilyAgent), op.clone(), OpOrigin::Program)
+            .await
+        {
             Err(InterpreterError::ReduceError(message)) => assert!(
                 message.starts_with("reified:RuntimeUnavailable: "),
                 "{message}: {op:?}"

@@ -163,9 +163,9 @@
    bump, bump_all (P5c)     rholang/src/rust/interpreter/spaces/counter.rs:
                             165-245 (bump, as in exec), one for each
                             collection of the group: Engine::touch and
-                            Engine::touch_all of spaces/join.rs:2621-2665
+                            Engine::touch_all of spaces/join.rs:2625-2669
                             (TOUCH, joins plan 4.3)
-   jstep, exec_join,        the join step: spaces/join.rs:2681-2768
+   jstep, exec_join,        the join step: spaces/join.rs:2685-2772
    run_jsteps, join_bumps   (Engine::run: TOUCH of each own collection,
    (P5c)                    then the settle before the plan and the plan),
                             1913-1925 (touch_all of the distinct
@@ -179,7 +179,7 @@
                             K_retire COMMs of RETIRE-CLASS (scan.rs:794-809,
                             819-879) and of RETIRE-SET-BINDS in a join
                             (rholang/src/rust/interpreter/spaces/join.rs:
-                            2254-2288)
+                            2258-2292)
    set_view (W3)            the class view of a set: one representative of
                             each class in the canonical order of DR-75
                             (decision 41), a parameter of headline 14
@@ -190,10 +190,10 @@
                             FINISH, spaces/pathmap/join.rs:2766-2787 (a bag
                             or a set bumps S(sid) once when the transaction
                             changed the state), and the shared bump of the
-                            engine, spaces/join.rs:2621-2650 (once in a
+                            engine, spaces/join.rs:2625-2654 (once in a
                             transaction)
    peffect, pstep_changes   the changed flag of a transaction: spaces/
-   (P5e)                    join.rs:3699-3701 (a store that is not a
+   (P5e)                    join.rs:3703-3705 (a store that is not a
                             restore), 3333-3341 (an offer fire), 3581-3583
                             and 3625-3628 (the fires of a receive), 3738-
                             3739 (a park), 3832-3834 (a cascade fire), and

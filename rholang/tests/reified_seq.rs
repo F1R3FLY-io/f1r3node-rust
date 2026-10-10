@@ -26,7 +26,9 @@ use models::rhoapi::{
     Par, Receive, ReceiveBind, Send,
 };
 use models::rust::host_work::{HostWorkLimit, HostWorkLimits};
-use models::rust::space_factory_urn::{SpaceFactoryUrn, SpaceOuter, SpaceQualifier as UrnQualifier};
+use models::rust::space_factory_urn::{
+    SpaceFactoryUrn, SpaceOuter, SpaceQualifier as UrnQualifier,
+};
 use models::rust::utils::{new_gint_par, new_gstring_par};
 use proptest::prelude::{any, prop_oneof, Just, Strategy};
 use proptest::test_runner::TestCaseError;
@@ -85,11 +87,7 @@ fn cap_host_work() -> HostWorkBudget {
 }
 
 /// [`play_and_certify`] with the host-work budget that `host` makes for play and for replay.
-async fn play_and_certify_with(
-    label: &str,
-    term: &str,
-    host: fn() -> HostWorkBudget,
-) -> Played {
+async fn play_and_certify_with(label: &str, term: &str, host: fn() -> HostWorkBudget) -> Played {
     let played = native_play_with(term, SEQ_LIMIT, host()).await;
     assert!(
         played.result.native_budget_recording.is_some(),
@@ -139,7 +137,10 @@ async fn reducer_seq_payload() {
     ] {
         let played = play_and_certify(label, &seq_program(urn, body)).await;
         assert_eq!(codes(&played), only("SeqSent"), "{label}");
-        assert_eq!(played.root, empty.root, "{label}: a rejected send changes no state");
+        assert_eq!(
+            played.root, empty.root,
+            "{label}: a rejected send changes no state"
+        );
     }
     // The handle of a seq space is not a name, and the channel argument of the space's own
     // produce and the forwarder hop are exempt, so a sync produce runs.
@@ -152,9 +153,16 @@ async fn reducer_seq_payload() {
         ),
     )
     .await;
-    assert!(played.result.errors.is_empty(), "{:?}", played.result.errors);
     assert!(
-        played.outputs.iter().any(|output| output.contains("\"got\"")),
+        played.result.errors.is_empty(),
+        "{:?}",
+        played.result.errors
+    );
+    assert!(
+        played
+            .outputs
+            .iter()
+            .any(|output| output.contains("\"got\"")),
         "{:?}",
         played.outputs
     );
@@ -198,7 +206,11 @@ for (@a <- x) { for (@b <- x) { out!(["chain", a, b]) } }"#,
             ),
         )
         .await;
-        assert!(played.result.errors.is_empty(), "{urn}: {:?}", played.result.errors);
+        assert!(
+            played.result.errors.is_empty(),
+            "{urn}: {:?}",
+            played.result.errors
+        );
         assert!(
             played
                 .outputs
@@ -223,7 +235,11 @@ for (_ <- S!?("gensym")) { out!(["gensym", 2]) }"#,
         ),
     )
     .await;
-    assert!(played.result.errors.is_empty(), "{:?}", played.result.errors);
+    assert!(
+        played.result.errors.is_empty(),
+        "{:?}",
+        played.result.errors
+    );
     assert_eq!(played.out.len(), 6, "{:?}", played.outputs);
     // A join of two channels, each used by the chain before it.
     let played = play_and_certify(
@@ -235,8 +251,15 @@ for (@a <- x & @b <- y) { out!(["join", a, b]) }"#,
         ),
     )
     .await;
-    assert!(played.result.errors.is_empty(), "{:?}", played.result.errors);
-    assert!(played.outputs.iter().any(|output| output.contains("\"join\"")));
+    assert!(
+        played.result.errors.is_empty(),
+        "{:?}",
+        played.result.errors
+    );
+    assert!(played
+        .outputs
+        .iter()
+        .any(|output| output.contains("\"join\"")));
     // (v) A re-issue at the round cap. The persistent receive fires 64 times in its first
     // transaction, then the runtime re-issues it for the last record. The first body uses x
     // again, a descendant of the receive. The re-issue is internal, so it uses nothing, although
@@ -250,8 +273,15 @@ for (@a <- x & @b <- y) { out!(["join", a, b]) }"#,
   loop!(1)
 }"#;
     let played = play_and_certify_with("round cap", &seq_program(queue, body), cap_host_work).await;
-    assert!(played.result.errors.is_empty(), "{:?}", played.result.errors);
-    assert!(played.outputs.iter().any(|output| output.contains("\"again\"")));
+    assert!(
+        played.result.errors.is_empty(),
+        "{:?}",
+        played.result.errors
+    );
+    assert!(played
+        .outputs
+        .iter()
+        .any(|output| output.contains("\"again\"")));
 }
 
 // ─── Properties ──────────────────────────────────────────────────────────────────────────────────
@@ -284,10 +314,14 @@ fn prop_seq_qualifier_support() {
             let result = FactoryConstructor::validate_in(family, &ctor, execution);
             if let Ok(validated) = &result {
                 if family.outer == SpaceOuter::HashSet && validated.qualifier != UrnQualifier::Seq {
-                    return Err(TestCaseError::fail(format!("{family}: a HashSet space without seq")));
+                    return Err(TestCaseError::fail(format!(
+                        "{family}: a HashSet space without seq"
+                    )));
                 }
                 if validated.qualifier == UrnQualifier::Seq && !native {
-                    return Err(TestCaseError::fail(format!("{family}: seq in legacy execution")));
+                    return Err(TestCaseError::fail(format!(
+                        "{family}: seq in legacy execution"
+                    )));
                 }
             }
             if constructor_schema(family).is_some() {
@@ -335,13 +369,21 @@ fn render(shape: &Shape, context: Option<u8>, sends: &mut Vec<Option<u8>>) -> St
             format!(r#"@"{}"!({index})"#, use_label(index))
         }
         Shape::Use(space, children) => {
-            let body: Vec<String> =
-                children.iter().map(|child| render(child, Some(*space), sends)).collect();
-            format!("use {} {{ {} }}", ["sa", "sb"][usize::from(*space)], body.join(" | "))
+            let body: Vec<String> = children
+                .iter()
+                .map(|child| render(child, Some(*space), sends))
+                .collect();
+            format!(
+                "use {} {{ {} }}",
+                ["sa", "sb"][usize::from(*space)],
+                body.join(" | ")
+            )
         }
         Shape::Par(children) => {
-            let parts: Vec<String> =
-                children.iter().map(|child| render(child, context, sends)).collect();
+            let parts: Vec<String> = children
+                .iter()
+                .map(|child| render(child, context, sends))
+                .collect();
             format!("{{ {} }}", parts.join(" | "))
         }
     }
@@ -413,7 +455,6 @@ fn prop_use_context_is_lexical() {
     });
 }
 
-
 /// One generated use: a channel (0 or 1) and the participant path of the job that uses it, and
 /// whether the job fails after its claims.
 #[derive(Clone, Debug)]
@@ -426,11 +467,12 @@ struct Use {
 fn uses() -> impl Strategy<Value = Vec<Use>> {
     let segment = (0u64..3, 0u64..3);
     let path = proptest::collection::vec(segment, 0..4);
-    let one = (0u8..2, path, proptest::bool::weighted(0.2)).prop_map(|(channel, path, fails)| Use {
-        channel,
-        path,
-        fails,
-    });
+    let one =
+        (0u8..2, path, proptest::bool::weighted(0.2)).prop_map(|(channel, path, fails)| Use {
+            channel,
+            path,
+            fails,
+        });
     proptest::collection::vec(one, 1..24)
 }
 
@@ -506,7 +548,9 @@ fn prop_seq_claim_chain() {
             }
             for chain in admitted.values() {
                 if chain.windows(2).any(|pair| !pair[1].starts_with(&pair[0])) {
-                    return Err(TestCaseError::fail(format!("not one prefix chain: {chain:?}")));
+                    return Err(TestCaseError::fail(format!(
+                        "not one prefix chain: {chain:?}"
+                    )));
                 }
             }
             Ok(())
@@ -571,13 +615,17 @@ impl Tree {
             durability: Durability::Ephemeral,
         };
         match self {
-            Tree::Leaf(Id::Seq) => gprivate(namespace::name_id(ephemeral(LIVE), NameTail::Index(1))),
-            Tree::Leaf(Id::Ended) => {
-                gprivate(namespace::name_id(ephemeral(ENDED), NameTail::Random([4; 32])))
+            Tree::Leaf(Id::Seq) => {
+                gprivate(namespace::name_id(ephemeral(LIVE), NameTail::Index(1)))
             }
-            Tree::Leaf(Id::Temp) => {
-                gprivate(namespace::name_id(ephemeral([3; SID_LEN]), NameTail::Index(2)))
-            }
+            Tree::Leaf(Id::Ended) => gprivate(namespace::name_id(
+                ephemeral(ENDED),
+                NameTail::Random([4; 32]),
+            )),
+            Tree::Leaf(Id::Temp) => gprivate(namespace::name_id(
+                ephemeral([3; SID_LEN]),
+                NameTail::Index(2),
+            )),
             Tree::Leaf(Id::Durable) => gprivate(namespace::name_id(
                 NativeSpace {
                     sid: LIVE,
@@ -680,8 +728,12 @@ fn trees() -> impl Strategy<Value = Tree> {
         prop_oneof![
             proptest::collection::vec(inner.clone(), 0..4).prop_map(Tree::List),
             proptest::collection::vec(inner.clone(), 0..4).prop_map(Tree::Tuple),
-            inner.clone().prop_map(|tree| Tree::MapValue(Box::new(tree))),
-            inner.clone().prop_map(|tree| Tree::SendData(Box::new(tree))),
+            inner
+                .clone()
+                .prop_map(|tree| Tree::MapValue(Box::new(tree))),
+            inner
+                .clone()
+                .prop_map(|tree| Tree::SendData(Box::new(tree))),
             inner.clone().prop_map(|tree| Tree::Bundle(Box::new(tree))),
             inner.clone().prop_map(|tree| Tree::Pattern(Box::new(tree))),
             inner.clone().prop_map(|tree| Tree::Guard(Box::new(tree))),

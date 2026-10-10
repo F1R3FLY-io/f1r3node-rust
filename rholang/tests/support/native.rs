@@ -452,9 +452,10 @@ fn space_durability(channel: &Par) -> Option<Durability> {
         | ReifiedId::Allocator(space)
         | ReifiedId::Handle(space)
         | ReifiedId::Name(space, _) => Some(space.durability),
-        ReifiedId::Op(_) | ReifiedId::Matcher(..) | ReifiedId::Body(..) | ReifiedId::Reserved(..) => {
-            None
-        }
+        ReifiedId::Op(_)
+        | ReifiedId::Matcher(..)
+        | ReifiedId::Body(..)
+        | ReifiedId::Reserved(..) => None,
     }
 }
 

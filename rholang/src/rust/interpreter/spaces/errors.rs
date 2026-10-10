@@ -534,7 +534,8 @@ mod tests {
         assert_eq!(
             InterpreterError::from(SpaceError::QualifierUnavailable("seq".to_string())),
             InterpreterError::ReduceError(
-                "reified:QualifierUnavailable: the seq qualifier needs native execution".to_string()
+                "reified:QualifierUnavailable: the seq qualifier needs native execution"
+                    .to_string()
             )
         );
     }

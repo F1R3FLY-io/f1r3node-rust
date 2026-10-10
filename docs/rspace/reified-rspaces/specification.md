@@ -301,7 +301,7 @@ This covers the names of its lock keys, the config and the shape of an Array spa
 It also covers the copy and the decode of $`A(\mathit{sid})`$, each comparison, and the buffer of the indices.
 In native execution, an allocation job runs as every space job does ([section 8](#8-native-execution), [decision 47](decision-register.md#decision-47)).
 
-**Rule AL-8: authority.** An allocation job takes the cost authority of the process that asks for the names (`rholang/src/rust/interpreter/reified/reducer_hooks.rs:690-717`).
+**Rule AL-8: authority.** An allocation job takes the cost authority of the process that asks for the names (`rholang/src/rust/interpreter/reified/reducer_hooks.rs:694-721`).
 That process evaluates the `new`, or it calls the handle method `gensym`.
 So each allocation is paid by its caller, and the allocator record that the job puts carries that authority (P4 design B.7).
 
@@ -826,14 +826,14 @@ A re-issued element takes its FIFO place in its level, and a re-entered waiter k
 
 ### 3.7 Receive queries
 
-**Rule RQ-1: inner channel.** A receive bind with a QUERY tuple as its source reads from the inner channel of the query (`rholang/src/rust/interpreter/reified/reducer_hooks.rs:881-895`).
+**Rule RQ-1: inner channel.** A receive bind with a QUERY tuple as its source reads from the inner channel of the query (`rholang/src/rust/interpreter/reified/reducer_hooks.rs:885-899`).
 The inner channel takes the read rule of a receive source.
 
-**Rule RQ-2: route.** The route of the inner channel decides (`rholang/src/rust/interpreter/reified/reducer_hooks.rs:912-942`).
+**Rule RQ-2: route.** The route of the inner channel decides (`rholang/src/rust/interpreter/reified/reducer_hooks.rs:916-946`).
 A native space gets the payload and the named params in its consume, and its discipline checks them before the bump.
 The default space fails with `QuerySpecUnsupported`, and a user agent fails closed until P8.
 
-**Rule RQ-3: no host channel.** A QUERY tuple never becomes a channel of the host (`rholang/src/rust/interpreter/reified/reducer_hooks.rs:868-870`).
+**Rule RQ-3: no host channel.** A QUERY tuple never becomes a channel of the host (`rholang/src/rust/interpreter/reified/reducer_hooks.rs:872-874`).
 
 ### 3.8 Joins
 
@@ -1537,7 +1537,7 @@ The computation has no meter, no error path and no wait, so it never changes the
 The start of each root evaluation drops a journal that no result settled (`rholang/src/rust/interpreter/reified/runtime.rs:102-118`).
 So an exploratory evaluation never publishes, and its writes never reach the next deploy.
 
-**Rule MR-3: publication (M1).** A final evaluation result with no errors publishes the journal as one batch for each collection, and every other result drops it (`rholang/src/rust/interpreter/reified/runtime.rs:313-318`, [decision 66](decision-register.md#decision-66)).
+**Rule MR-3: publication (M1).** A final evaluation result with no errors publishes the journal as one batch for each collection, and every other result drops it (`rholang/src/rust/interpreter/reified/runtime.rs:315-320`, [decision 66](decision-register.md#decision-66)).
 The two settle points are `rholang/src/rust/interpreter/interpreter.rs:257` for play and `rholang/src/rust/interpreter/rho_runtime.rs:1808` for native replay.
 Native replay publishes to the mirror of the node that replays, so a validator keeps its mirror current from the blocks that it certifies.
 A node that plays and then certifies one deploy publishes its batch twice, and the upserts by id make the second publication change nothing.

@@ -268,10 +268,10 @@ async fn get_space_agent(
 /// The typed reply `DanglingHandle` of `getSpaceAgent` for the missing space `space` (A22). The
 /// detail map names the space id under the key of the config map (DG-3).
 fn dangling_reply(space: SpaceId) -> Par {
-    typed_error(
-        SpaceReplyCode::DanglingHandle,
-        vec![("spaceId", expr_par(ExprInstance::GByteArray(space.to_vec())))],
-    )
+    typed_error(SpaceReplyCode::DanglingHandle, vec![(
+        "spaceId",
+        expr_par(ExprInstance::GByteArray(space.to_vec())),
+    )])
 }
 
 /// Reads the config map of `space` as `ReifiedRuntime::read_config` does: one read-only
@@ -1185,9 +1185,7 @@ mod tests {
         )
         .await
         .expect("a dangling handle gets a typed reply");
-        assert_eq!(reply, vec![dangling_reply(
-            space_of(b"never created").sid
-        )]);
+        assert_eq!(reply, vec![dangling_reply(space_of(b"never created").sid)]);
         assert_eq!(fixture.data(&ret).await, vec![reply]);
     }
 

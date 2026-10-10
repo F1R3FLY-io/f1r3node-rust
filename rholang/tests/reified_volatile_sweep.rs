@@ -40,7 +40,11 @@ fn without_space() -> String { format!("{ORDINARY} |\nnew factory in {{ Nil }}")
 /// Plays `term` natively and certifies it.
 async fn play_and_certify(label: &str, term: &str) -> Played {
     let played = native_play(term, AMPLE_LIMIT).await;
-    assert!(played.result.errors.is_empty(), "{label}: {:?}", played.result.errors);
+    assert!(
+        played.result.errors.is_empty(),
+        "{label}: {:?}",
+        played.result.errors
+    );
     assert!(
         played.residue.is_empty(),
         "{label}: the sweep leaves no volatile channel: {:?}",
@@ -63,6 +67,9 @@ async fn reified_volatile_sweep_skips_ordinary_channels() {
         "the sweep leaves the ordinary channels of the deploy without the space"
     );
     let durable = play_and_certify("default space", &with_space("default")).await;
-    assert!(!durable.durable.is_empty(), "the control keeps durable space state");
+    assert!(
+        !durable.durable.is_empty(),
+        "the control keeps durable space state"
+    );
     assert_ne!(durable.root, plain.root, "the control reaches another root");
 }

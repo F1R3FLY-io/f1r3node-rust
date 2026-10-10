@@ -171,7 +171,11 @@ async fn space_temp_swept_at_deploy_end() {
         for inner in Inner::ALL {
             let label = format!("{}:{}", outer.name(), inner.name());
             let durable = native_play(&program_with(outer, inner, "default"), AMPLE_LIMIT).await;
-            assert!(durable.result.errors.is_empty(), "{label}: {:?}", durable.result.errors);
+            assert!(
+                durable.result.errors.is_empty(),
+                "{label}: {:?}",
+                durable.result.errors
+            );
             assert!(
                 !durable.durable.is_empty(),
                 "{label}: the default program leaves records or waiters"
@@ -196,7 +200,11 @@ async fn space_temp_join_swept() {
         r#"for (@p <- a & @q <- b) { out!(["join", p, q]) } | a!(1) | out!(["parked", 0])"#,
     );
     let played = play_and_certify("temp join", &term).await;
-    assert!(played.result.errors.is_empty(), "{:?}", played.result.errors);
+    assert!(
+        played.result.errors.is_empty(),
+        "{:?}",
+        played.result.errors
+    );
     assert!(delivers(&played, "parked"));
     assert!(!delivers(&played, "join"), "the join waits for b");
 }
@@ -231,7 +239,11 @@ async fn space_temp_many_volatile_keys_export() {
     );
     let term = space_program("rho:space:hashmap:bag", r#""temp""#, &body);
     let played = play_and_certify("many volatile keys", &term).await;
-    assert!(played.result.errors.is_empty(), "{:?}", played.result.errors);
+    assert!(
+        played.result.errors.is_empty(),
+        "{:?}",
+        played.result.errors
+    );
     assert!(delivers(&played, "stored"));
 }
 
@@ -275,7 +287,13 @@ async fn stashed_space(chain: &NativeChain) -> SpaceId {
 }
 
 /// Plays `term` on `chain` and checks that it fails with the one code `code` and names `sid`.
-async fn expect_dangling(chain: &mut NativeChain, term: &str, label: &str, code: &str, sid: SpaceId) {
+async fn expect_dangling(
+    chain: &mut NativeChain,
+    term: &str,
+    label: &str,
+    code: &str,
+    sid: SpaceId,
+) {
     let played = chain_play(chain, term, label).await;
     assert_eq!(
         error_codes(&played.result.errors),
@@ -296,7 +314,11 @@ async fn expect_dangling(chain: &mut NativeChain, term: &str, label: &str, code:
 async fn reified_ephemeral_dangling_next_deploy() {
     let mut chain = NativeChain::new().await;
     let created = chain_play(&mut chain, &creation(2), "create").await;
-    assert!(created.result.errors.is_empty(), "{:?}", created.result.errors);
+    assert!(
+        created.result.errors.is_empty(),
+        "{:?}",
+        created.result.errors
+    );
     let sid = stashed_space(&chain).await;
     let peek = format!(r#"for (handle, name <<- @"{STASH}")"#);
     for (label, body, code) in [
@@ -312,7 +334,11 @@ async fn reified_ephemeral_dangling_next_deploy() {
             "DanglingHandle",
         ),
         ("use", "{ use handle { Nil } }", "DanglingHandle"),
-        ("new in the space", "{ new y : handle in { Nil } }", "DanglingHandle"),
+        (
+            "new in the space",
+            "{ new y : handle in { Nil } }",
+            "DanglingHandle",
+        ),
     ] {
         expect_dangling(&mut chain, &format!("{peek} {body}"), label, code, sid).await;
     }
@@ -330,7 +356,11 @@ async fn reified_ephemeral_dangling_next_deploy() {
 }}"#
     );
     let played = chain_play(&mut chain, &agent, "getSpaceAgent").await;
-    assert!(played.result.errors.is_empty(), "{:?}", played.result.errors);
+    assert!(
+        played.result.errors.is_empty(),
+        "{:?}",
+        played.result.errors
+    );
     let replies = chain.values(REPLY).await;
     let [reply] = replies.as_slice() else {
         panic!("one reply: {replies:?}");
@@ -373,11 +403,14 @@ async fn reified_ephemeral_dangling_charge_is_fixed() {
 
 /// The produce, consume and COMM events of `log`.
 fn event_counts(log: &[Event]) -> (usize, usize, usize) {
-    log.iter().fold((0, 0, 0), |(produces, consumes, comms), event| match event {
-        Event::IoEvent(IOEvent::Produce(_)) => (produces + 1, consumes, comms),
-        Event::IoEvent(IOEvent::Consume(_)) => (produces, consumes + 1, comms),
-        Event::Comm(_) => (produces, consumes, comms + 1),
-    })
+    log.iter().fold(
+        (0, 0, 0),
+        |(produces, consumes, comms), event| match event {
+            Event::IoEvent(IOEvent::Produce(_)) => (produces + 1, consumes, comms),
+            Event::IoEvent(IOEvent::Consume(_)) => (produces, consumes + 1, comms),
+            Event::Comm(_) => (produces, consumes, comms + 1),
+        },
+    )
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -408,7 +441,10 @@ async fn reified_sweep_runs_at_each_entry_point_native() {
     let term = program_with(Outer::HashMap, Inner::Queue, "temp");
     play_and_certify("native play and replay", &term).await;
     let chain = NativeChain::new().await;
-    chain.explore(&term).await.expect("the exploratory evaluation succeeds");
+    chain
+        .explore(&term)
+        .await
+        .expect("the exploratory evaluation succeeds");
     assert!(chain.residue().await.is_empty(), "RhoRuntime::inj sweeps");
 }
 
@@ -418,9 +454,10 @@ async fn reified_sweep_runs_at_each_entry_point_native() {
 fn constructor(family: SpaceFactoryUrn, qualifier: &str, extra: Vec<SendParam>) -> Par {
     let mut params = extra;
     match (family.outer, family.inner) {
-        (SpaceOuter::Array, _) => {
-            params.push(SendParam::Named("size".to_string(), new_gint_par(8, Vec::new(), false)))
-        }
+        (SpaceOuter::Array, _) => params.push(SendParam::Named(
+            "size".to_string(),
+            new_gint_par(8, Vec::new(), false),
+        )),
         (_, SpaceInner::VectorDb) => {
             params.push(SendParam::Named(
                 "capacity".to_string(),
@@ -497,8 +534,9 @@ fn reducer_qualifier_matrix() {
             ("temp", SpaceQualifier::Temp),
             ("seq", SpaceQualifier::Seq),
         ] {
-            let validated = FactoryConstructor::validate(family, &constructor(family, qualifier, Vec::new()))
-                .unwrap_or_else(|error| panic!("{family} {qualifier}: {error:?}"));
+            let validated =
+                FactoryConstructor::validate(family, &constructor(family, qualifier, Vec::new()))
+                    .unwrap_or_else(|error| panic!("{family} {qualifier}: {error:?}"));
             assert_eq!(validated.qualifier, expected, "{family}");
         }
         // QT-5: legacy execution refuses `seq` before the params, and accepts the others.
@@ -565,11 +603,16 @@ async fn reified_handle_qualifier_method_temp_seq() {
 }}"#
         );
         let played = play_and_certify(&format!("qualifier method {qualifier}"), &term).await;
-        assert!(played.result.errors.is_empty(), "{:?}", played.result.errors);
-        assert_eq!(
-            played.out,
-            vec![vec![new_gstring_par(qualifier.to_string(), Vec::new(), false)]]
+        assert!(
+            played.result.errors.is_empty(),
+            "{:?}",
+            played.result.errors
         );
+        assert_eq!(played.out, vec![vec![new_gstring_par(
+            qualifier.to_string(),
+            Vec::new(),
+            false
+        )]]);
     }
 }
 
@@ -629,10 +672,18 @@ async fn reified_fips_example_temp_pathmap() {
 }}"#
     );
     let played = play_and_certify("FIPS example", &term).await;
-    assert!(played.result.errors.is_empty(), "{:?}", played.result.errors);
+    assert!(
+        played.result.errors.is_empty(),
+        "{:?}",
+        played.result.errors
+    );
     let int = |value: i64| new_gint_par(value, Vec::new(), false);
     let yes = new_gbool_par(true, Vec::new(), false);
-    assert_eq!(labelled(&played, "join"), vec![vec![int(1), int(2), int(3)]]);
+    assert_eq!(labelled(&played, "join"), vec![vec![
+        int(1),
+        int(2),
+        int(3)
+    ]]);
     assert_eq!(labelled(&played, "forged"), vec![vec![int(5)]]);
     assert_eq!(labelled(&played, "agents"), vec![vec![yes.clone(), yes]]);
     let inside = labelled(&played, "inside");
@@ -642,7 +693,10 @@ async fn reified_fips_example_temp_pathmap() {
         labelled(&played, "outside"),
         "the handles name the same spaces inside and outside the new block"
     );
-    assert!(!played.durable.is_empty(), "the default space keeps the record of x_4");
+    assert!(
+        !played.durable.is_empty(),
+        "the default space keeps the record of x_4"
+    );
 }
 
 // ─── Property ──────────────────────────────────────────────────────────────────────────────────
@@ -721,8 +775,7 @@ fn prop_sweep_complete() {
                     played.residue
                 )));
             }
-            let certification =
-                certify_with(&played, &term, AMPLE_LIMIT, sweep_host_work()).await;
+            let certification = certify_with(&played, &term, AMPLE_LIMIT, sweep_host_work()).await;
             assert_reproduces(&format!("{case:?}"), &played, &certification);
             Ok(())
         })
