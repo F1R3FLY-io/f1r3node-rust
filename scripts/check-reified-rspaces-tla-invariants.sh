@@ -53,6 +53,12 @@
 # seq name; gate 3 creates a HashSet space only with seq and a seq space
 # only in native execution; and the use context of each participant is its
 # lexical context).
+# P8 step 6: AgentSpaces.tla (the spaces of user agents: under every
+# context the names of a space route to that space and system channels to
+# the default space, a join runs on one space or aborts with CrossSpaceJoin,
+# a reference names a space under at most one writable bundle, the replay of
+# the call log gives the state of the agent, the body of a linear receive
+# runs at most once, and the reference agent keeps no pending match).
 #
 # The gate copies the TLA+ directory into a scratch directory and checks it
 # there. Legs:
@@ -145,6 +151,7 @@ SAFE_CONFIGS=(
   "VectorDb MC_VectorDb_Plain.cfg"
   "ChromaMirror MC_ChromaMirror.cfg"
   "SpaceCoordination MC_SpaceCoordination.cfg"
+  "AgentSpaces MC_AgentSpaces.cfg"
 )
 # <module> <config> <the one invariant that it must refute>
 UNSAFE_CONFIGS=(
@@ -221,6 +228,8 @@ UNSAFE_CONFIGS=(
   "SpaceCoordination SeqScanSkippedUnsafe.cfg SeqNotSent"
   "SpaceCoordination QualifierSupportUnsafe.cfg QualifierSupport"
   "SpaceCoordination UseBalanceUnsafe.cfg UseBalance"
+  "AgentSpaces SystemRouteUnsafe.cfg SystemChannelsDefault"
+  "AgentSpaces FaultyAgentUnsafe.cfg NoMatchRemains"
 )
 # <name>|<module>|<config>|<length>|<expected outcome>|<marker in the violated formula>
 APALACHE_CHECKS=(

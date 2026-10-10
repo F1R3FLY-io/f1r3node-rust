@@ -1,0 +1,87 @@
+' 04 User-agent translation: inside a use block of a user agent, a new, a send
+' and a receive become calls on the agent, and the agent serves the receive
+' through its matcher capability and its body capability.
+'
+' Source of Figure 2 in ../agent-api.md (section 12). The figure restates the
+' hooks reified_new, route_send_from and agent_consume of
+' rholang/src/rust/interpreter/reified/reducer_hooks.rs, translate_new,
+' produce_call, translate_receive and MatcherProcess of
+' reified/user_agent.rs, and the methods of the reference agent
+' examples/reified_rspaces/agent_hashmap_bag.rho (P8 design v2, plan
+' decision 77). It adds no new fact.
+'
+' Reading order, from the top to the bottom:
+'   1. T_new: the gensym call, the reply of a raw name, and the resume
+'      receive that binds the agent-minted name.
+'   2. T_send: the produce call, and the agent stores the message.
+'   3. T_recv: the persistent matcher receive, the body receive, and the
+'      consume call.
+'   4. The agent asks the matcher, which replies the env of the bind.
+'   5. The agent sends the env to the body capability, and the body runs.
+'
+' Colors come from concept-colors.iuml (aliases of the shared palette).
+' Render: ./render.sh 04-user-agent-translation.puml   Check: ./render.sh --check
+
+@startuml 04-user-agent-translation
+!include ../../../casper/theory/diagrams/palette.iuml
+!include concept-colors.iuml
+$ca_base_skin()
+skinparam sequence {
+  ArrowColor $rrs_relation
+  LifeLineBorderColor $rrs_relation
+  ParticipantBorderColor $rrs_relation
+  ActorBorderColor $rrs_relation
+  GroupBorderColor $rrs_relation
+  DividerBorderColor $rrs_relation
+  DividerBackgroundColor $ca_note_grey
+}
+skinparam NoteBorderColor $rrs_relation
+skinparam LegendBorderColor $rrs_relation
+skinparam LegendBackgroundColor $ca_note_grey
+title Translation of a use block of a user agent A: new, send and receive
+autonumber
+
+participant "Deploy\nuse A { new x in {\n  x!(1) | for (@v <- x) { P } } }" as DEPLOY $rrs_host
+participant "Reducer\nwith the P8 hooks" as RED $rrs_host
+participant "Default space\nand event log" as HOST $rrs_host
+participant "User agent A\n(a Rholang program)" as AGENT $rrs_agent
+participant "Matcher capability\nX(m) and MATCHER_OP" as MOP $rrs_name
+participant "Body capability\nB(b)" as BODY $rrs_name
+
+== T_new: new x in the context of A ==
+DEPLOY -[$rrs_flow]> RED : new x in { ... } inside use A
+RED -[$rrs_relation]> RED : draw the names of HEAD\nsubstitute the body and wrap it in USE(A)\nreply name r = GPrivate(base.split_byte(5)\n  .split_short(0).next()), base = Xlate(R')
+RED -[$rrs_flow]> HOST : produce A!(r, "gensym")\nand the resume receive on r
+HOST -[$rrs_flow]> AGENT : COMM: the method gensym
+AGENT -[$rrs_flow]> HOST : produce a fresh name raw on r
+HOST -[$rrs_flow]> RED : COMM with the resume receive:\nx = bundle{(AGENT_TAG, A, raw)}
+
+== T_send: x!(1) ==
+RED -[$rrs_relation]> RED : route x: AgentTagged (R4), the agent A and raw
+RED -[$rrs_flow]> HOST : produce A!(sink, "produce", raw, [1])
+HOST -[$rrs_flow]> AGENT : COMM: the method produce
+AGENT -[$rrs_effect]> AGENT : store (raw, [1]) and offer it\nto the stored consumes: none
+
+== T_recv: for (@v <- x) { P } ==
+RED -[$rrs_relation]> RED : route x: the agent A and raw (TR-1)\nthe state of m: the pattern [@v], no guard
+RED -[$rrs_effect]> HOST : persistent receive on X(m): MATCHER_OP!(m, args)\nreceive on B(b), linear for <-, body USE(A, P)
+RED -[$rrs_flow]> HOST : produce A!(sink, "consume",\n[(bundle+{m}, raw)], "<-", bundle+{b})
+HOST -[$rrs_flow]> AGENT : COMM: the method consume
+AGENT -[$rrs_flow]> MOP : m!(ret, [1]) for the stored message
+MOP -[$rrs_relation]> MOP : the forwarder of m calls MATCHER_OP\ndecode the state of m, match [1]\nagainst [@v], check the guard
+MOP -[$rrs_flow]> AGENT : (true, {"0": 1}) on ret
+AGENT -[$rrs_effect]> AGENT : remove the message (the arrow <-)
+AGENT -[$rrs_flow]> BODY : b!({"0": 1})
+BODY -[$rrs_flow]> DEPLOY : P runs in the context of A with v = 1
+
+legend bottom
+**Concept colors**
+|<$rrs_host>       | baseline machinery: deploy, reducer, default space |
+|<$rrs_agent>      | the user agent, a program of the user |
+|<$rrs_name>       | capabilities that the translation builds |
+**Arrows**
+|<$rrs_flow>       | call or return |
+|<$rrs_effect>     | effect on a state |
+|<$rrs_relation>   | internal step |
+endlegend
+@enduml

@@ -126,6 +126,7 @@ The minimal-footprint revision (M-1 to M-5) overrides the target architecture of
 | [Decision 76](#decision-76) | The P8 design process | 2026-10-09 | In force |
 | [Decision 77](#decision-77) | P8 design v2, the URNs of the internal ops, the space-view clause | 2026-10-10 | In force |
 | [Decision 78](#decision-78) | One native replay test runs at the v6 host-work limits | 2026-10-10 | In force. Implemented in P8 step 1 |
+| [Decision 79](#decision-79) | The conformance kit keeps the v6 host-work limits | 2026-10-10 | In force. Implemented in P8 step 5 |
 | [M-1](#m-1) | Counter meta-channels and merge check #1 | 2026-10-04 | In force, scope widened by decision 31 |
 | [M-2](#m-2) | Space-owned record envelope | 2026-10-04 | In force |
 | [M-3](#m-3) | Charging through the accounting observer | 2026-10-04 | In force, revised 2026-10-04 |
@@ -2225,6 +2226,38 @@ The evaluation adds 47,397,527 in both cases.
 The two installs take about 0.19 % of the v6 limit of 268,435,456 VerificationBytes.
 The footprint policy `p8` approves the edit, and checklist items 11 and 21 name it from the milestone `p8`.
 
+### <a id="decision-79"></a>Decision 79: The conformance kit keeps the v6 host-work limits
+
+| Field | Value |
+|---|---|
+| Date | 2026-10-10 |
+| Status | In force. Implemented in P8 step 5 |
+| Amends | None |
+| Related | [Decision 77](#decision-77), [Decision 78](#decision-78), [host work](glossary.md#host-work), [conformance kit](glossary.md#conformance-kit) |
+
+**Statement.**
+
+- Every deploy of the conformance kit plays natively and certifies by native replay at the v6 host-work limits.
+- The persistent case of the kit drains one stored message at the consume, and then fires on one later send in each deploy.
+- Chapter 21 states the structural cost of an agent space, and not the replay costs of this tree.
+
+**User's words.** "Keep the limits for now, I am repairing the replay costs but it isn't complete yet".
+
+**Reason.**
+
+- Native replay charges much more host work than native play for programs with stored contracts.
+- One call of a small stored contract costs 1.0 M VerificationBytes in play and 62.6 M in replay. The limit is 268.4 M.
+- Play charges nothing for the size of a stored continuation. Replay charges a first load and an amount for each call that grow with it.
+- The reference agent makes few calls for each operation, so every step of the kit certifies at the v6 limits.
+- One case does not: a persistent consume that drains two stored messages in one deploy needs 282.1 M in replay, and 20.7 M in play.
+
+**Rejected alternatives.**
+
+- Certify the reference agent at a larger test budget. Production certifies at the v6 limits, so the kit would pass at a budget that production does not have.
+- Merge the newer commits of the cost-accounting branch first. Their effect on these costs is not known, and the merge is a large step before P8 completes.
+
+**Evidence.** The measurement is a progress note of the finding M-47-1 (pgmcp 10816).
+
 ## Minimal-footprint revision: M-1 to M-5
 
 On 2026-10-04 the user asked to "only modify what is required for reified rspaces and certainly not touch casper unless it is absolutely required … that was the purpose of the realignment".
@@ -2620,6 +2653,8 @@ One rule for play and replay makes a native space deploy fail in play, and nativ
 - A pure-`Par` `match` was rejected, because `eval_match` is unmetered.
 - Forwarders need no dispatcher change.
 - A wrapper agent can pass its matchers to a native handle, which decodes them from the id.
+
+**Amendment (2026-10-10, P8 design v2 MO-1, [decision 77](#decision-77)).** The forwarder of a matcher calls `MATCHER_OP!(m, args)` with `args = [ret, proc]`, so the op has the arity 2, as `HANDLE_OP` takes `(this, args)`. The plan wrote the call as `OP_MATCHER!(m, ret, proc)`.
 
 ### <a id="i-16"></a>I-16: No multi-channel join in synthesized machinery
 

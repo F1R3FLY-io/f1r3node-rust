@@ -1,7 +1,7 @@
 {
   "schema": "reified-rspaces-model-map/2",
   "phase": "P8",
-  "title": "P8: the spaces that user agents implement (design v2, plan decision 77). Step 1 (W1 and W5): the use-context of an agent and the write rule of an agent reference (SpaceRefs.v A1), the matcher state codec, the matcher process and the sink. Step 2 (W2 and W7): the call of a send on an agent space (TS-1 to TS-3) and the R7 replies to agent-minted names (SpaceRefs.v A2). Step 3 (W3 and W6): the translation of a receive (AgentTranslation.v A3 to A8) and the native consume of a handle. Step 4 (W4): the translation of `new`: the agent-minted names (SpaceRefs.v A9) and the resume term (AgentTranslation.v A10).",
+  "title": "P8: the spaces that user agents implement (design v2, plan decision 77). Step 1 (W1 and W5): the use-context of an agent and the write rule of an agent reference (SpaceRefs.v A1), the matcher state codec, the matcher process and the sink. Step 2 (W2 and W7): the call of a send on an agent space (TS-1 to TS-3) and the R7 replies to agent-minted names (SpaceRefs.v A2). Step 3 (W3 and W6): the translation of a receive (AgentTranslation.v A3 to A8) and the native consume of a handle. Step 4 (W4): the translation of `new`: the agent-minted names (SpaceRefs.v A9) and the resume term (AgentTranslation.v A10). Step 6 (W9): AgentSpaces.tla, the model of routing under agent contexts, joins, references, replay, the body receive and the reference agent (A11 to A17).",
   "design": "P8 design v2 (.reified-rspaces-work/p8/design-v2.md), sections 3, 4, 7 and 9. The headline ids are the ids of the P8 phase of formal/reified-rspaces-invariant-map.json. The agent routes of route (AG-1) re-prove the P4 headlines route_total_deterministic and route_rules, so the P4 map holds route, agent_parts and UseKind. The agent arms of single_target (P8 step 3, TR-1 and TR-2) re-prove the P5 headline query_source_routes_inner_channel, so the P5 map holds single_bind_route.",
   "code_base": "The items are in the P8 commits of this repository. The line numbers are informative. The checker finds each item by its scope and name.",
   "checker": "scripts/verify-reified/check-model-map.py",
@@ -10,7 +10,9 @@
       "formal/rocq/reified_rspaces/theories/SpaceRefs.v",
       "formal/rocq/reified_rspaces/theories/AgentTranslation.v"
     ],
-    "tla": []
+    "tla": [
+      "formal/tlaplus/reified_rspaces/AgentSpaces.tla"
+    ]
   },
   "headlines": {
     "A1": {
@@ -72,6 +74,48 @@
       "name": "resume_binds_innermost",
       "file": "formal/rocq/reified_rspaces/theories/AgentTranslation.v",
       "statement": "The resume term of a translated new binds every binder of the new in its order: each target evaluates to the bound name of its binder or to the agent-minted name of the reply of its rank, and BoundVar(k - 1 - j) reads binder j after the match, as in a native new (TN-3)."
+    },
+    "A11": {
+      "kind": "tla",
+      "name": "RoutingIsolation",
+      "file": "formal/tlaplus/reified_rspaces/AgentSpaces.tla",
+      "statement": "Under every use-context, also the context of an agent, a name of a native space routes to that space and an agent-minted name routes to its agent, so no call of an agent carries a name of another space (R3, R4)."
+    },
+    "A12": {
+      "kind": "tla",
+      "name": "SystemChannelsDefault",
+      "file": "formal/tlaplus/reified_rspaces/AgentSpaces.tla",
+      "statement": "Under every use-context, also the context of an agent, system channels, default objects and other unforgeable names route to the default space, so no call of an agent carries one (R1)."
+    },
+    "A13": {
+      "kind": "tla",
+      "name": "JoinSameSpace",
+      "file": "formal/tlaplus/reified_rspaces/AgentSpaces.tla",
+      "statement": "A receive aborts with CrossSpaceJoin exactly when its binds route to two spaces, and a receive whose binds route to one space runs on that space (TR-1)."
+    },
+    "A14": {
+      "kind": "tla",
+      "name": "HandleUnwrapExact",
+      "file": "formal/tlaplus/reified_rspaces/AgentSpaces.tla",
+      "statement": "A space reference names a space exactly when it is bare or under one bundle with the write flag, and the space is the unwrapped reference (AG-4)."
+    },
+    "A15": {
+      "kind": "tla",
+      "name": "ReplayEquivalence",
+      "file": "formal/tlaplus/reified_rspaces/AgentSpaces.tla",
+      "statement": "Each call and each send of an agent is an ordinary event of the default space, so the replay of the call log gives the state of the agent, its sends and the runs of each body, also for an agent that breaks its obligations."
+    },
+    "A16": {
+      "kind": "tla",
+      "name": "BodyAtMostOnceLinear",
+      "file": "formal/tlaplus/reified_rspaces/AgentSpaces.tla",
+      "statement": "The body receive of a translated receive is persistent only for <=, so the body of a linear receive runs at most once, also when the agent sends to it again (TR-6, ASO-2)."
+    },
+    "A17": {
+      "kind": "tla",
+      "name": "NoMatchRemains",
+      "file": "formal/tlaplus/reified_rspaces/AgentSpaces.tla",
+      "statement": "The reference agent keeps no stored consume whose matchers accept distinct stored messages after a method completes (ASO-1); a faulty agent that stores a consume without a try breaks it."
     }
   },
   "items": [
@@ -86,9 +130,12 @@
       "rocq": [
         "call_channel"
       ],
-      "tla": [],
+      "tla": [
+        "Classify"
+      ],
       "covers": [
-        "A1"
+        "A1",
+        "A14"
       ]
     },
     {
@@ -104,9 +151,12 @@
         "enter_use",
         "call_channel"
       ],
-      "tla": [],
+      "tla": [
+        "Classify"
+      ],
       "covers": [
-        "A1"
+        "A1",
+        "A14"
       ]
     },
     {
@@ -121,9 +171,12 @@
       "rocq": [
         "enter_use"
       ],
-      "tla": [],
+      "tla": [
+        "Classify"
+      ],
       "covers": [
-        "A1"
+        "A1",
+        "A14"
       ]
     },
     {
@@ -170,17 +223,21 @@
       "kind": "struct",
       "name": "MatcherProcess",
       "line": 307,
-      "role": "The process MATCHER_OP (MO-1 to MO-4).",
+      "role": "The process MATCHER_OP (MO-1 to MO-4). The model AgentSpaces.tla states the obligation ASO-1 of the reference agent (NoMatchRemains) over the answers of the matchers (Accepts, Find); the algorithm of the agent is the Rholang example examples/reified_rspaces/agent_hashmap_bag.rho.",
       "rocq": [
         "matcher_reply",
         "guard_ok",
         "placeholders",
         "env_of"
       ],
-      "tla": [],
+      "tla": [
+        "Accepts",
+        "Find"
+      ],
       "covers": [
         "A7",
-        "A6"
+        "A6",
+        "A17"
       ]
     },
     {
@@ -239,9 +296,13 @@
       "line": 507,
       "role": "The call A'!(sink, \"produce\", raw, [d...]) of a send on an agent space (TS-1, AG-4).",
       "rocq": [],
-      "tla": [],
-      "covers": [],
-      "unmodeled": "AgentSpaces.tla (P8 step 6, design v2 section 13) models the calls of a translation (RoutingIsolation, ReplayEquivalence). SpaceRefs.v models the route of the call (route with no context, AG-4)."
+      "tla": [
+        "Send"
+      ],
+      "covers": [
+        "A11",
+        "A15"
+      ]
     },
     {
       "item": "ReducerCore::route_send",
@@ -267,9 +328,15 @@
       "line": 518,
       "role": "The send loop of route_send from a given use-context: T_send turns an agent route into the call, which routes with no use-context (TS-1 to TS-3, AG-4). The call of a translated receive enters it with no use-context and with its data scanned (TR-7).",
       "rocq": [],
-      "tla": [],
-      "covers": [],
-      "unmodeled": "AgentSpaces.tla (P8 step 6, design v2 section 13) models the calls of a translation (RoutingIsolation, ReplayEquivalence). SpaceRefs.v models the route of the call (route with no context, AG-4)."
+      "tla": [
+        "Send",
+        "Route",
+        "Raw"
+      ],
+      "covers": [
+        "A11",
+        "A12"
+      ]
     },
     {
       "item": "ReducerCore::dispatch_send",
@@ -300,12 +367,16 @@
         "body_binding",
         "matcher_id"
       ],
-      "tla": [],
+      "tla": [
+        "Receive"
+      ],
       "covers": [
         "A3",
         "A4",
         "A5",
-        "A8"
+        "A8",
+        "A16",
+        "A15"
       ]
     },
     {
@@ -431,9 +502,15 @@
       "line": 754,
       "role": "T_recv in the reducer: the Seq scan of the raw channels, the matcher receives, the body receive, and last the call on the agent (TR-7).",
       "rocq": [],
-      "tla": [],
-      "covers": [],
-      "unmodeled": "AgentTranslation.v models the terms that translate_receive builds (A3 to A8). AgentSpaces.tla (P8 step 6, design v2 section 13) models the order of the receives and the call (RoutingIsolation, ReplayEquivalence)."
+      "tla": [
+        "Receive",
+        "JoinOutcome"
+      ],
+      "covers": [
+        "A13",
+        "A16",
+        "A15"
+      ]
     },
     {
       "item": "one_agent",
@@ -444,9 +521,12 @@
       "line": 1298,
       "role": "TR-1: the one agent of a join whose channels all route to one user agent, by the equality of sorted references (AG-3), with each read reserved.",
       "rocq": [],
-      "tla": [],
-      "covers": [],
-      "unmodeled": "AgentSpaces.tla (P8 step 6, design v2 section 13) models the join rule of TR-1 (JoinSameSpace); reducer_space_routing_agent_join_and_mixes checks each mix."
+      "tla": [
+        "JoinOutcome"
+      ],
+      "covers": [
+        "A13"
+      ]
     },
     {
       "item": "agent_bind",
@@ -457,9 +537,14 @@
       "line": 1321,
       "role": "The bind of a translated receive: the pattern and the raw channel of a bind that routes to a user agent.",
       "rocq": [],
-      "tla": [],
-      "covers": [],
-      "unmodeled": "A projection of a route of the model (RAgent a raw) into the bind that translate_receive takes; AgentTranslation.v models the translation of the binds."
+      "tla": [
+        "Raw",
+        "Receive"
+      ],
+      "covers": [
+        "A11",
+        "A13"
+      ]
     },
     {
       "item": "ReducerCore::reified_new",

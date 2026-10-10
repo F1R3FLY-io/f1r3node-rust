@@ -8706,14 +8706,15 @@
       ]
     },
     "P8": {
-      "title": "P8: the spaces that user agents implement (design v2, plan decision 77). Step 1 (W1 and W5): the routes and use-contexts of user agents and the write rule of an agent reference (SpaceRefs.v A1), the matcher state codec, the matcher process and the sink. Step 2 (W2 and W7): the call of a send on an agent space and the R7 replies to agent-minted names (SpaceRefs.v A2). Step 3 (W3 and W6): the translation of a receive (AgentTranslation.v A3 to A8) and the native consume of a handle. Step 4 (W4): the translation of `new`: the agent-minted names (SpaceRefs.v A9) and the resume term (AgentTranslation.v A10).",
-      "design": "P8 design v2 (.reified-rspaces-work/p8/design-v2.md), sections 3 (AG-1 to AG-4) and 7 (MO-1 to MO-4, SK-1, A13). A# are Rocq headlines. The routing properties of P4 (prop_route_total, prop_route_rules, prop_space_name_route_ignores_ctx) now draw contexts of user agents too, so they witness the agent arms of route_total_deterministic and route_rules. witness_tests lists the deterministic tests of the write rule and of the matcher process. The matcher state codec has its headline in AgentTranslation.v (P8 step 3). Step 3 maps the headlines of AgentTranslation.v: pure properties in reified_p8_props.rs and native properties in reified_user_agents.rs. Step 4 maps tag_untag_id (A9) and resume_binds_innermost (A10) to pure properties in reified_p8_props.rs; the second one runs the substitution of the reducer.",
+      "title": "P8: the spaces that user agents implement (design v2, plan decision 77). Step 1 (W1 and W5): the routes and use-contexts of user agents and the write rule of an agent reference (SpaceRefs.v A1), the matcher state codec, the matcher process and the sink. Step 2 (W2 and W7): the call of a send on an agent space and the R7 replies to agent-minted names (SpaceRefs.v A2). Step 3 (W3 and W6): the translation of a receive (AgentTranslation.v A3 to A8) and the native consume of a handle. Step 4 (W4): the translation of `new`: the agent-minted names (SpaceRefs.v A9) and the resume term (AgentTranslation.v A10). Step 6 (W9): the model of agent spaces, AgentSpaces.tla: RoutingIsolation and SystemChannelsDefault (A11, A12), JoinSameSpace (A13), HandleUnwrapExact (A14), ReplayEquivalence (A15), BodyAtMostOnceLinear (A16) and NoMatchRemains (A17).",
+      "design": "P8 design v2 (.reified-rspaces-work/p8/design-v2.md), sections 3 (AG-1 to AG-4) and 7 (MO-1 to MO-4, SK-1, A13). A# are Rocq headlines. The routing properties of P4 (prop_route_total, prop_route_rules, prop_space_name_route_ignores_ctx) now draw contexts of user agents too, so they witness the agent arms of route_total_deterministic and route_rules. witness_tests lists the deterministic tests of the write rule and of the matcher process. The matcher state codec has its headline in AgentTranslation.v (P8 step 3). Step 3 maps the headlines of AgentTranslation.v: pure properties in reified_p8_props.rs and native properties in reified_user_agents.rs. Step 4 maps tag_untag_id (A9) and resume_binds_innermost (A10) to pure properties in reified_p8_props.rs; the second one runs the substitution of the reducer. Step 6 (W9, section 13): the native properties of A13, A15 and A16 are in reified_user_agents.rs, and the property of A17 runs the reference agent of examples/reified_rspaces/agent_hashmap_bag.rho in the conformance kit reified_agent_conformance.rs, whose cases are the witness tests of A17.",
       "test_status": "required",
       "test_files": [
         "rholang/tests/reified_p8_props.rs",
-        "rholang/tests/reified_user_agents.rs"
+        "rholang/tests/reified_user_agents.rs",
+        "rholang/tests/reified_agent_conformance.rs"
       ],
-      "expected_properties": 11,
+      "expected_properties": 17,
       "formal": {
         "A1": {
           "kind": "rocq",
@@ -8805,6 +8806,69 @@
           "tests": [
             "prop_resume_binds_innermost"
           ]
+        },
+        "A11": {
+          "kind": "tla",
+          "name": "RoutingIsolation",
+          "file": "formal/tlaplus/reified_rspaces/AgentSpaces.tla",
+          "statement": "Under every use-context, also the context of an agent, a name of a native space routes to that space and an agent-minted name routes to its agent, so no call of an agent carries a name of another space (R3, R4).",
+          "tests": [
+            "prop_routes_follow_the_owner_of_the_channel"
+          ]
+        },
+        "A12": {
+          "kind": "tla",
+          "name": "SystemChannelsDefault",
+          "file": "formal/tlaplus/reified_rspaces/AgentSpaces.tla",
+          "statement": "Under every use-context, also the context of an agent, system channels, default objects and other unforgeable names route to the default space, so no call of an agent carries one (R1).",
+          "tests": [
+            "prop_routes_follow_the_owner_of_the_channel"
+          ]
+        },
+        "A13": {
+          "kind": "tla",
+          "name": "JoinSameSpace",
+          "file": "formal/tlaplus/reified_rspaces/AgentSpaces.tla",
+          "statement": "A receive aborts with CrossSpaceJoin exactly when its binds route to two spaces, and a receive whose binds route to one space runs on that space (TR-1).",
+          "tests": [
+            "prop_receive_joins_one_space"
+          ]
+        },
+        "A14": {
+          "kind": "tla",
+          "name": "HandleUnwrapExact",
+          "file": "formal/tlaplus/reified_rspaces/AgentSpaces.tla",
+          "statement": "A space reference names a space exactly when it is bare or under one bundle with the write flag, and the space is the unwrapped reference (AG-4).",
+          "tests": [
+            "prop_space_ref_unwraps_one_bundle"
+          ]
+        },
+        "A15": {
+          "kind": "tla",
+          "name": "ReplayEquivalence",
+          "file": "formal/tlaplus/reified_rspaces/AgentSpaces.tla",
+          "statement": "Each call and each send of an agent is an ordinary event of the default space, so the replay of the call log gives the state of the agent, its sends and the runs of each body, also for an agent that breaks its obligations.",
+          "tests": [
+            "prop_agent_space_replay_reproduces_play"
+          ]
+        },
+        "A16": {
+          "kind": "tla",
+          "name": "BodyAtMostOnceLinear",
+          "file": "formal/tlaplus/reified_rspaces/AgentSpaces.tla",
+          "statement": "The body receive of a translated receive is persistent only for <=, so the body of a linear receive runs at most once, also when the agent sends to it again (TR-6, ASO-2).",
+          "tests": [
+            "prop_linear_body_runs_at_most_once"
+          ]
+        },
+        "A17": {
+          "kind": "tla",
+          "name": "NoMatchRemains",
+          "file": "formal/tlaplus/reified_rspaces/AgentSpaces.tla",
+          "statement": "The reference agent keeps no stored consume whose matchers accept distinct stored messages after a method completes (ASO-1); a faulty agent that stores a consume without a try breaks it.",
+          "tests": [
+            "prop_reference_agent_keeps_no_pending_match"
+          ]
         }
       },
       "properties": [
@@ -8894,6 +8958,55 @@
           "file": "rholang/tests/reified_p8_props.rs",
           "covers": [
             "A10"
+          ]
+        },
+        {
+          "number": 12,
+          "test": "prop_routes_follow_the_owner_of_the_channel",
+          "file": "rholang/tests/reified_p8_props.rs",
+          "covers": [
+            "A11",
+            "A12"
+          ]
+        },
+        {
+          "number": 13,
+          "test": "prop_receive_joins_one_space",
+          "file": "rholang/tests/reified_user_agents.rs",
+          "covers": [
+            "A13"
+          ]
+        },
+        {
+          "number": 14,
+          "test": "prop_space_ref_unwraps_one_bundle",
+          "file": "rholang/tests/reified_p8_props.rs",
+          "covers": [
+            "A14"
+          ]
+        },
+        {
+          "number": 15,
+          "test": "prop_agent_space_replay_reproduces_play",
+          "file": "rholang/tests/reified_user_agents.rs",
+          "covers": [
+            "A15"
+          ]
+        },
+        {
+          "number": 16,
+          "test": "prop_linear_body_runs_at_most_once",
+          "file": "rholang/tests/reified_user_agents.rs",
+          "covers": [
+            "A16"
+          ]
+        },
+        {
+          "number": 17,
+          "test": "prop_reference_agent_keeps_no_pending_match",
+          "file": "rholang/tests/reified_agent_conformance.rs",
+          "covers": [
+            "A17"
           ]
         }
       ],
@@ -9013,6 +9126,30 @@
           "covers": [
             "A1",
             "A9"
+          ]
+        },
+        {
+          "test": "conformance_no_pending_match_after_each_step",
+          "file": "rholang/tests/reified_agent_conformance.rs",
+          "rule": "ASO-1 (of two waiting receives, each send fires exactly one)",
+          "covers": [
+            "A17"
+          ]
+        },
+        {
+          "test": "conformance_rejects_an_agent_that_leaves_a_match_pending",
+          "file": "rholang/tests/reified_agent_conformance.rs",
+          "rule": "the negative control of the kit: a faulty agent that stores each receive leaves the round trip pending",
+          "covers": [
+            "A17"
+          ]
+        },
+        {
+          "test": "conformance_persistent_consume_drains",
+          "file": "rholang/tests/reified_agent_conformance.rs",
+          "rule": "ASO-1 for <= (a persistent receive takes the stored message, stays, and takes each later message)",
+          "covers": [
+            "A17"
           ]
         }
       ]

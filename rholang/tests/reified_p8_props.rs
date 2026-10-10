@@ -13,7 +13,13 @@
 // rholang/tests/reified_user_agents.rs. Step 4 maps tag_untag_id (A9): an agent-minted name
 // routes to its agent with its raw channel, and resume_binds_innermost (A10): the resume term
 // of a translated `new`, run with the substitution of the reducer, binds every binder in its
-// order.
+// order. Step 6 maps invariants of formal/tlaplus/reified_rspaces/AgentSpaces.tla:
+// RoutingIsolation (A11) and SystemChannelsDefault (A12), whose property routes every class of
+// channel under every use-context, and HandleUnwrapExact (A14), whose property classifies
+// references with zero, one or two bundles. The native properties of JoinSameSpace (A13),
+// ReplayEquivalence (A15) and BodyAtMostOnceLinear (A16) are in
+// rholang/tests/reified_user_agents.rs, and the property of NoMatchRemains (A17) is in
+// rholang/tests/reified_agent_conformance.rs.
 
 use std::sync::Arc;
 
@@ -47,8 +53,8 @@ use rholang::rust::interpreter::reified::user_agent::{
     translate_receive, AgentBind, AgentBinder, MatcherState, ReceiveTranslation, REPLY_NAME_BRANCH,
 };
 use rholang::rust::interpreter::spaces::namespace::{
-    gprivate, handle_channel, Durability, NativeSpace, RandomPurpose, AGENT_TAG, REIFIED_TAG,
-    SID_LEN,
+    gprivate, handle_channel, name_id, Durability, NameTail, NativeSpace, RandomPurpose, AGENT_TAG,
+    REIFIED_TAG, SID_LEN,
 };
 use rholang::rust::interpreter::substitute::{Substitute, SubstituteTrait};
 
@@ -879,4 +885,208 @@ fn prop_resume_binds_innermost() {
         }
         Err(TestCaseError::fail("the resume has no match"))
     });
+}
+
+// ─── Step 6: the properties of AgentSpaces.tla ─────────────────────────────────────────────────
+
+/// A channel of one routing class (route.rs, AgentSpaces.tla). The variants box their values,
+/// so the variants have one size.
+#[derive(Clone, Debug)]
+enum RoutedChannel {
+    /// A system channel: a private name of one or two bytes.
+    System(Vec<u8>),
+    /// A default object: the handle of a native space.
+    Handle(Box<NativeSpace>),
+    /// An unforgeable name of 32 bytes. A Reified id has 2 or at least 34 bytes.
+    Unforgeable(Box<[u8; SID_LEN]>),
+    /// A name of a native space, with a random tail.
+    SpaceName(Box<(NativeSpace, [u8; SID_LEN])>),
+    /// The agent-tagged tuple of an agent-minted name.
+    Minted { agent: Box<Par>, raw: Box<Par> },
+    /// A forged channel: a string or an integer.
+    Forged(Box<Par>),
+}
+
+fn arb_native_space() -> BoxedStrategy<NativeSpace> {
+    (any::<[u8; SID_LEN]>(), prop_oneof![
+        Just(Durability::Durable),
+        Just(Durability::Ephemeral)
+    ])
+        .prop_map(|(sid, durability)| NativeSpace { sid, durability })
+        .boxed()
+}
+
+fn arb_forged() -> BoxedStrategy<Par> {
+    prop_oneof![
+        "[a-z]{1,8}".prop_map(|text| new_gstring_par(text, Vec::new(), false)),
+        any::<i64>().prop_map(|value| new_gint_par(value, Vec::new(), false)),
+    ]
+    .boxed()
+}
+
+fn arb_routed_channel() -> BoxedStrategy<RoutedChannel> {
+    prop_oneof![
+        prop::collection::vec(any::<u8>(), 1..3).prop_map(RoutedChannel::System),
+        arb_native_space().prop_map(|space| RoutedChannel::Handle(Box::new(space))),
+        any::<[u8; SID_LEN]>().prop_map(|id| RoutedChannel::Unforgeable(Box::new(id))),
+        (arb_native_space(), any::<[u8; SID_LEN]>())
+            .prop_map(|named| RoutedChannel::SpaceName(Box::new(named))),
+        (arb_agent_value(), arb_form(), arb_agent_value()).prop_map(|(value, form, raw)| {
+            RoutedChannel::Minted {
+                agent: Box::new(reference(&value, &form)),
+                raw: Box::new(raw),
+            }
+        }),
+        arb_forged().prop_map(|channel| RoutedChannel::Forged(Box::new(channel))),
+    ]
+    .boxed()
+}
+
+/// The channel `Par` of a routed channel.
+fn routed_channel_par(channel: &RoutedChannel) -> Par {
+    match channel {
+        RoutedChannel::System(id) => gprivate(id.clone()),
+        RoutedChannel::Handle(space) => gprivate(handle_channel(**space)),
+        RoutedChannel::Unforgeable(id) => gprivate(id.to_vec()),
+        RoutedChannel::SpaceName(named) => gprivate(name_id(named.0, NameTail::Random(named.1))),
+        RoutedChannel::Minted { agent, raw } => agent_tagged(agent, raw),
+        RoutedChannel::Forged(channel) => (**channel).clone(),
+    }
+}
+
+/// `RoutingIsolation` and `SystemChannelsDefault` (AgentSpaces.tla, A11 and A12): under every
+/// use-context, also the context of an agent, a channel routes to its owner. System channels,
+/// handles and other unforgeable names route to the default space (R1). The name of a native
+/// space routes to that space (R3), and an agent-tagged tuple routes to its agent with its raw
+/// channel (R4), so no name of one space reaches another space. Only a forged channel takes
+/// the space of the context (R5).
+#[test]
+fn prop_routes_follow_the_owner_of_the_channel() {
+    check(
+        pure_config(),
+        (arb_routed_channel(), arb_agent_value()),
+        |(channel, context_agent)| {
+            let par = routed_channel_par(&channel);
+            for context in contexts(&context_agent) {
+                let routed = route(&context, &par);
+                match &channel {
+                    RoutedChannel::System(_)
+                    | RoutedChannel::Handle(_)
+                    | RoutedChannel::Unforgeable(_) => {
+                        prop_assert_eq!(routed, Ok(Route::Default));
+                    }
+                    RoutedChannel::SpaceName(named) => match routed {
+                        Ok(Route::Space { space, .. }) => prop_assert_eq!(space, named.0),
+                        other => {
+                            return Err(TestCaseError::fail(format!(
+                                "a space name routes to {other:?}"
+                            )))
+                        }
+                    },
+                    RoutedChannel::Minted { agent, raw } => {
+                        prop_assert_eq!(
+                            routed,
+                            Ok(Route::Agent {
+                                agent: (**agent).clone(),
+                                raw: (**raw).clone(),
+                            })
+                        );
+                    }
+                    RoutedChannel::Forged(_) => match context.as_deref() {
+                        None => prop_assert_eq!(routed, Ok(Route::Default)),
+                        Some(UseTarget {
+                            kind: UseKind::Native(native),
+                            ..
+                        }) => match routed {
+                            Ok(Route::Space { space, .. }) => prop_assert_eq!(space, *native),
+                            other => {
+                                return Err(TestCaseError::fail(format!(
+                                    "a forged channel under a native context routes to {other:?}"
+                                )))
+                            }
+                        },
+                        Some(UseTarget {
+                            space,
+                            kind: UseKind::Agent,
+                        }) => prop_assert_eq!(
+                            routed,
+                            Ok(Route::Agent {
+                                agent: space.clone(),
+                                raw: par.clone(),
+                            })
+                        ),
+                    },
+                }
+            }
+            Ok(())
+        },
+    );
+}
+
+/// The base of a generated space reference: the handle of a native space or an agent value.
+#[derive(Clone, Debug)]
+enum RefBase {
+    Handle(Box<NativeSpace>),
+    Agent(Box<Par>),
+}
+
+/// `HandleUnwrapExact` (AgentSpaces.tla, A14): a reference names a space exactly when it is
+/// bare or under one bundle with the write flag, and the space is the unwrapped reference. A
+/// handle, bare or under a bundle with the write flag, is its native space, and under a bundle
+/// without the write flag it is `HandleNotWritable`. An agent reference keeps its bundle, and
+/// its call channel is the reference without one bundle, which needs the write flag. A second
+/// bundle is never removed: a handle under two bundles is an agent whose call channel is the
+/// inner bundle.
+#[test]
+fn prop_space_ref_unwraps_one_bundle() {
+    check(
+        pure_config(),
+        (
+            prop_oneof![
+                arb_native_space().prop_map(|space| RefBase::Handle(Box::new(space))),
+                arb_agent_value().prop_map(|value| RefBase::Agent(Box::new(value))),
+            ],
+            prop::collection::vec((any::<bool>(), any::<bool>()), 0..3),
+        ),
+        |(base, layers)| {
+            let base_par = match &base {
+                RefBase::Handle(space) => gprivate(handle_channel(**space)),
+                RefBase::Agent(value) => (**value).clone(),
+            };
+            // The layers are outermost first: wrap the innermost first.
+            let reference = layers
+                .iter()
+                .rev()
+                .fold(base_par.clone(), |inner, (write, read)| {
+                    new_bundle_par(inner, *write, *read)
+                });
+            let classified = classify_space_ref(&reference);
+            match (layers.as_slice(), &base) {
+                ([], RefBase::Handle(space)) => {
+                    prop_assert_eq!(classified, Ok(SpaceRef::Native(**space)))
+                }
+                ([(true, _)], RefBase::Handle(space)) => {
+                    prop_assert_eq!(classified, Ok(SpaceRef::Native(**space)))
+                }
+                ([(false, _)], RefBase::Handle(_)) => {
+                    prop_assert_eq!(classified, Err(SpaceRefError::HandleNotWritable))
+                }
+                _ => {
+                    prop_assert_eq!(classified, Ok(SpaceRef::Agent(reference.clone())));
+                    let expected = match layers.as_slice() {
+                        [] => Ok(base_par.clone()),
+                        [(true, _), inner @ ..] => Ok(inner
+                            .iter()
+                            .rev()
+                            .fold(base_par.clone(), |body, (write, read)| {
+                                new_bundle_par(body, *write, *read)
+                            })),
+                        [(false, _), ..] => Err(SpaceRefError::HandleNotWritable),
+                    };
+                    prop_assert_eq!(call_channel(&reference), expected);
+                }
+            }
+            Ok(())
+        },
+    );
 }

@@ -1449,10 +1449,18 @@ A Rocq theorem shows the file and the line of its statement, and a TLA+ invarian
 | MR-5 | the TLA+ invariant `ReconciledEqualsFinalizedView` (W11), the TLA+ invariant `WatermarkHonest` (W12) | `prop_mirror_reconcile_repairs_the_finalized_view`, `prop_mirror_reconciler_watermarks_follow_finished_repairs`, `mirror_reconcile_removes_orphans`, `mirror_reconcile_repairs_a_dirty_collection` |
 | MR-6 | None | `mirror_restart_rescans_reports`, `mirror_reconciler_follows_the_finalized_blocks` |
 | MR-7 | None | `vectordb_services_default_to_unavailable` |
+| AG-1 to AG-4 | `agent_ref_requires_write_flag` (`SpaceRefs.v:1146`), the TLA+ invariants `RoutingIsolation` (A11), `SystemChannelsDefault` (A12) and `HandleUnwrapExact` (A14) | `prop_agent_ref_requires_write_flag`, `prop_routes_follow_the_owner_of_the_channel`, `prop_space_ref_unwraps_one_bundle`, `agent_reference_not_writable_rejected`, `agent_use_and_new_follow_the_write_rule` |
+| TS-1 to TS-3, R7A-1 | `r7_agent_reply_bundle_exact` (`SpaceRefs.v:898`) | `prop_r7_agent_reply_bundle_exact`, `user_agent_send_calls_the_agent`, `user_agent_reply_reaches_the_agent`, `agent_xlate_bang_bang_rejected`, `user_agent_errors_params` |
+| TR-1 to TR-8 | `offsets_partition` (`AgentTranslation.v:226`), `env_keys_disjoint_union` (`AgentTranslation.v:324`), `body_equivalence` (`AgentTranslation.v:401`), `guard_fold_sound` (`AgentTranslation.v:596`), `matcher_sound_complete` (`AgentTranslation.v:650`), `matcher_state_roundtrip` (`AgentTranslation.v:783`), the TLA+ invariants `JoinSameSpace` (A13) and `BodyAtMostOnceLinear` (A16) | `prop_body_equivalence`, `prop_matcher_sound_complete`, `prop_guard_fold_sound`, `prop_receive_joins_one_space`, `prop_linear_body_runs_at_most_once`, `agent_xlate_join_two_matchers`, `agent_xlate_guard_span_rejected`, `agent_xlate_cross_space_join_rejected`, `user_agent_errors_query`, `user_agent_errors_pattern_too_deep` |
+| HC-1 to HC-3 | `matcher_state_roundtrip` (`AgentTranslation.v:783`) | `agent_wrapper_forwards_to_native`, `space_handle_methods_consume_rejects_foreign_matcher` |
+| TN-1 to TN-5 | `tag_untag_id` (`SpaceRefs.v:947`), `resume_binds_innermost` (`AgentTranslation.v:914`) | `prop_tag_untag_id`, `prop_resume_binds_innermost`, `user_agent_new_binding_order_matches_native`, `agent_gensym_calls_have_distinct_states`, `agent_never_replies_pending_replay_equal` |
+| ASO-1 to ASO-3 | The TLA+ invariants `NoMatchRemains` (A17) and `ReplayEquivalence` (A15) | `prop_reference_agent_keeps_no_pending_match`, `prop_agent_space_replay_reproduces_play`, and the cases of the conformance kit `rholang/tests/reified_agent_conformance.rs` |
 
 No model states the rules OC-4, QD-8, AL-6, AL-8, PP-3, PP-4 and JN-1, because they are checks of limits, of input or of fail-closed rules.
 Their tests show each abort.
 Rule JN-4 holds by construction, because a normalized receive carries one `persistent` flag and one `peek` flag for all its binds.
+The rows AG, TS, TR, HC and TN give the items of [decision 77](decision-register.md#decision-77) that section [6](#6-constructs-that-fail-closed) states.
+The obligations ASO-1 to ASO-3 belong to the author of an agent ([agent API 12.3](agent-api.md#123-the-obligations-of-the-agent)), and their row gives the evidence of the reference agent.
 
 ## 8. Native execution
 

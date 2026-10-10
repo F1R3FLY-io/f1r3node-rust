@@ -7245,7 +7245,7 @@
       ]
     },
     "p8": {
-      "description": "Phase P8, the spaces that user agents implement (design v2, plan decision 77). It extends campaign and restates the edits and the new files of p7, as p7 restates p6. Step 1 (W1 and W5: the routes and use-contexts of user agents, the write rule of an agent reference, the matcher state codec, the matcher process and the sink) edits only campaign files. Its new files are the user-agent module, the P8 property suite and the P8 model map. Step 1 also holds the edit of decision 78 in the accounting tests: the test of schedule-independent replay charges runs its replay at the v6 host-work limits. Step 2 (W2 and W7: the call of a send on an agent space and the R7 replies to agent-minted names) edits only campaign files, and its new file is the native suite of user agents. Step 3 (W3 and W6: the translation of a receive and the native consume of a handle) edits only campaign files, and its new file is the Rocq module AgentTranslation.v. Step 4 (W4: the translation of `new`) changes the hot file reduce.rs as design v2 section 16 approves: the body of eval_new becomes one hook call `self.reified_new(new, env, rand, authority).await`, which replaces the P5d line that called reified_allocate. Its other edits are in campaign files. Step 5 (W8: the reference agent and the conformance kit) edits only campaign files. Its new files are the reference agent example, the manifest of the examples and the conformance kit.",
+      "description": "Phase P8, the spaces that user agents implement (design v2, plan decision 77). It extends campaign and restates the edits and the new files of p7, as p7 restates p6. Step 1 (W1 and W5: the routes and use-contexts of user agents, the write rule of an agent reference, the matcher state codec, the matcher process and the sink) edits only campaign files. Its new files are the user-agent module, the P8 property suite and the P8 model map. Step 1 also holds the edit of decision 78 in the accounting tests: the test of schedule-independent replay charges runs its replay at the v6 host-work limits. Step 2 (W2 and W7: the call of a send on an agent space and the R7 replies to agent-minted names) edits only campaign files, and its new file is the native suite of user agents. Step 3 (W3 and W6: the translation of a receive and the native consume of a handle) edits only campaign files, and its new file is the Rocq module AgentTranslation.v. Step 4 (W4: the translation of `new`) changes the hot file reduce.rs as design v2 section 16 approves: the body of eval_new becomes one hook call `self.reified_new(new, env, rand, authority).await`, which replaces the P5d line that called reified_allocate. Its other edits are in campaign files. Step 5 (W8: the reference agent and the conformance kit) edits only campaign files. Its new files are the reference agent example, the manifest of the examples and the conformance kit. Step 6 (W9: the model of agent spaces and the documents) edits only campaign files. Its new files are the TLA+ module AgentSpaces.tla with its three configurations, and diagram 04 with its source.",
       "extends": "campaign",
       "unchanged": [
         "**"
@@ -8556,6 +8556,8 @@
         "docs/rspace/reified-rspaces/diagrams/02-namespace-bytes.svg",
         "docs/rspace/reified-rspaces/diagrams/03-native-handle-lifecycle.puml",
         "docs/rspace/reified-rspaces/diagrams/03-native-handle-lifecycle.svg",
+        "docs/rspace/reified-rspaces/diagrams/04-user-agent-translation.puml",
+        "docs/rspace/reified-rspaces/diagrams/04-user-agent-translation.svg",
         "docs/rspace/reified-rspaces/diagrams/05-head-only-queue.puml",
         "docs/rspace/reified-rspaces/diagrams/05-head-only-queue.svg",
         "docs/rspace/reified-rspaces/diagrams/06-space-txn-commit.puml",
@@ -8672,6 +8674,7 @@
         "formal/rocq/reified_rspaces/theories/VolatileSweep.v",
         "formal/sage/reified_rspaces/similarity_metrics.sage",
         "formal/tlaplus/reified_rspaces/AcceptUnpairedUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/AgentSpaces.tla",
         "formal/tlaplus/reified_rspaces/AnnChecksOnlyInPlayUnsafe.cfg",
         "formal/tlaplus/reified_rspaces/BeginScopeKeepsJournalUnsafe.cfg",
         "formal/tlaplus/reified_rspaces/BlockingPublishUnsafe.cfg",
@@ -8682,6 +8685,7 @@
         "formal/tlaplus/reified_rspaces/CounterDroppedUnsafe.cfg",
         "formal/tlaplus/reified_rspaces/DoublePairUnsafe.cfg",
         "formal/tlaplus/reified_rspaces/DoublePairUnsafe_IndStep_Apalache.cfg",
+        "formal/tlaplus/reified_rspaces/FaultyAgentUnsafe.cfg",
         "formal/tlaplus/reified_rspaces/GenericRSpace.tla",
         "formal/tlaplus/reified_rspaces/HeadOnIncomingOnlyUnsafe.cfg",
         "formal/tlaplus/reified_rspaces/HeadOnlyDiscipline.tla",
@@ -8699,6 +8703,7 @@
         "formal/tlaplus/reified_rspaces/LazyTouchUnsafe.cfg",
         "formal/tlaplus/reified_rspaces/LegacyPreAfterObserveUnsafe.cfg",
         "formal/tlaplus/reified_rspaces/LegacyTailDroppedUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/MC_AgentSpaces.cfg",
         "formal/tlaplus/reified_rspaces/MC_CheckpointReplay.cfg",
         "formal/tlaplus/reified_rspaces/MC_CheckpointReplay_IndBase_Apalache.cfg",
         "formal/tlaplus/reified_rspaces/MC_CheckpointReplay_IndStep_Apalache.cfg",
@@ -8791,6 +8796,7 @@
         "formal/tlaplus/reified_rspaces/StackReentryAtTopUnsafe.cfg",
         "formal/tlaplus/reified_rspaces/StagingDivergenceUnsafe.cfg",
         "formal/tlaplus/reified_rspaces/StoredRecordTwiceUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/SystemRouteUnsafe.cfg",
         "formal/tlaplus/reified_rspaces/TamperedOutcomeUnsafe.cfg",
         "formal/tlaplus/reified_rspaces/TxnLockCoverage.tla",
         "formal/tlaplus/reified_rspaces/UncoveredChannelUnsafe.cfg",

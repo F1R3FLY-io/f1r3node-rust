@@ -27,6 +27,7 @@
 //! | `conformance_repeated_channel_needs_distinct_data` | A join over one channel twice needs two distinct messages. |
 //! | `conformance_no_pending_match_after_each_step` | ASO-1: of two waiting receives, each send fires exactly one. |
 //! | `conformance_rejects_an_agent_that_leaves_a_match_pending` | Negative control: a faulty agent whose `consume` only stores the receive leaves the round trip pending, and the kit fails at that step. |
+//! | `prop_reference_agent_keeps_no_pending_match` | `NoMatchRemains` (AgentSpaces.tla, A17): after each step of a generated scenario, the outputs of the reference agent equal those of the model of its algorithm, so no match stays pending (ASO-1). |
 //! | `reference_agent_example_runs` | The example program runs: its demo join gives the sum 3 on `agentHashmapBag.demo`. |
 
 #[path = "support/mod.rs"]
@@ -35,8 +36,11 @@ mod support;
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::{EList, Expr, Par};
 use models::rust::utils::{new_elist_par, new_gint_par, new_gstring_par};
+use proptest::prelude::*;
+use proptest::test_runner::TestCaseError;
 use rholang::rust::interpreter::reified::route::agent_parts;
 use support::native::{assert_reproduces, certify, host_work, NativeChain, AMPLE_LIMIT};
+use support::props::{check, runtime_config, tokio_runtime};
 use support::session::Injections;
 
 // ─── The agents under test ────────────────────────────────────────────────────────────────────
@@ -491,4 +495,162 @@ async fn reference_agent_example_runs() {
     assert_eq!(chain.values("agentHashmapBag.demo").await, vec![vec![int(
         3
     )]]);
+}
+
+// ─── The property of AgentSpaces.tla ─────────────────────────────────────────────────────────────
+
+/// The arrows of a generated receive.
+const ARROWS: [&str; 3] = ["<-", "<<-", "<="];
+
+/// One step of a generated scenario on the name `x` of the reference agent: a send of a value,
+/// or a receive whose pattern takes any value or only 1, with an arrow.
+#[derive(Clone, Copy, Debug)]
+enum Step {
+    Send(i64),
+    Receive { only_one: bool, arrow: usize },
+}
+
+/// The model of the reference agent on one channel (AgentSpaces.tla, the contracts offer and
+/// drain of the example): the stored values and the stored receives, both in insertion order,
+/// and the output `[step, value]` of each fire.
+#[derive(Clone, Debug, Default)]
+struct BagModel {
+    values: Vec<i64>,
+    receives: Vec<(i64, bool, usize)>,
+    outputs: Vec<(i64, i64)>,
+}
+
+impl BagModel {
+    fn accepts(only_one: bool, value: i64) -> bool { !only_one || value == 1 }
+
+    /// The position of the first stored value that a receive accepts, in insertion order.
+    fn first(&self, only_one: bool) -> Option<usize> {
+        self.values
+            .iter()
+            .position(|value| Self::accepts(only_one, *value))
+    }
+
+    /// Runs the step with the label `index` and returns its number of fires.
+    fn run(&mut self, index: i64, step: Step) -> usize {
+        let before = self.outputs.len();
+        match step {
+            // offer: the stored receives get the value in insertion order, and a peek keeps it
+            // for the next receive.
+            Step::Send(value) => {
+                self.values.push(value);
+                let mut k = 0;
+                while k < self.receives.len() {
+                    let (label, only_one, arrow) = self.receives[k];
+                    let Some(j) = self.first(only_one) else {
+                        k += 1;
+                        continue;
+                    };
+                    self.outputs.push((label, self.values[j]));
+                    match ARROWS[arrow] {
+                        "<<-" => {
+                            self.receives.remove(k);
+                        }
+                        "<-" => {
+                            self.values.remove(j);
+                            self.receives.remove(k);
+                            break;
+                        }
+                        _ => {
+                            self.values.remove(j);
+                            break;
+                        }
+                    }
+                }
+            }
+            // drain: the receive fires at once on the stored values, a persistent one again,
+            // or it is stored.
+            Step::Receive { only_one, arrow } => loop {
+                let Some(j) = self.first(only_one) else {
+                    self.receives.push((index, only_one, arrow));
+                    break;
+                };
+                self.outputs.push((index, self.values[j]));
+                match ARROWS[arrow] {
+                    "<<-" => break,
+                    "<-" => {
+                        self.values.remove(j);
+                        break;
+                    }
+                    _ => {
+                        self.values.remove(j);
+                    }
+                }
+            },
+        }
+        self.outputs.len() - before
+    }
+}
+
+fn arb_step() -> BoxedStrategy<Step> {
+    prop_oneof![
+        (1i64..3).prop_map(Step::Send),
+        (any::<bool>(), 0usize..3).prop_map(|(only_one, arrow)| Step::Receive { only_one, arrow }),
+    ]
+    .boxed()
+}
+
+/// A scenario of two to five steps in which each step fires at most once: at the v6 limits,
+/// native replay certifies about one fire of a Rholang agent in one deploy (decision 79).
+fn arb_scenario() -> BoxedStrategy<Vec<Step>> {
+    prop::collection::vec(arb_step(), 2..6)
+        .prop_filter("each step fires at most once (decision 79)", |steps| {
+            let mut model = BagModel::default();
+            steps.iter().enumerate().all(|(index, step)| {
+                model.run(i64::try_from(index).expect("a short scenario"), *step) <= 1
+            })
+        })
+        .boxed()
+}
+
+/// The Rholang process of the step with the label `index` on the name `x`.
+fn step_body(index: i64, step: Step) -> String {
+    match step {
+        Step::Send(value) => format!("@x!({value})"),
+        Step::Receive {
+            only_one: true,
+            arrow,
+        } => format!(
+            "for (@1 {} @x) {{ @\"rrs-native-out\"!([{index}, 1]) }}",
+            ARROWS[arrow]
+        ),
+        Step::Receive {
+            only_one: false,
+            arrow,
+        } => format!(
+            "for (@v {} @x) {{ @\"rrs-native-out\"!([{index}, v]) }}",
+            ARROWS[arrow]
+        ),
+    }
+}
+
+/// `NoMatchRemains` (AgentSpaces.tla, A17): after each step of a generated scenario on the
+/// reference agent, the outputs equal those of the model of its algorithm, which keeps no
+/// stored receive with a stored value that it accepts. So no match stays pending in the agent
+/// (ASO-1). Each step is a deploy that plays at the v6 limits and certifies by native replay.
+#[test]
+fn prop_reference_agent_keeps_no_pending_match() {
+    check(runtime_config(), arb_scenario(), |steps| {
+        tokio_runtime().block_on(scenario_case(steps))
+    });
+}
+
+async fn scenario_case(steps: Vec<Step>) -> Result<(), TestCaseError> {
+    let mut kit = Kit::start(&reference_agent(), "generated scenario").await;
+    let mut model = BagModel::default();
+    for (index, step) in steps.into_iter().enumerate() {
+        let index = i64::try_from(index).expect("a short scenario");
+        model.run(index, step);
+        let expected = model
+            .outputs
+            .iter()
+            .map(|(label, value)| list(vec![int(*label), int(*value)]))
+            .collect();
+        kit.expect(&step_body(index, step), expected).await;
+    }
+    Ok(())
 }

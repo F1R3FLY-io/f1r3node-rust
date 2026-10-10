@@ -31,6 +31,9 @@
 //! | `prop_body_equivalence` | `body_equivalence` (AgentTranslation.v, A5): for generated binds and data, the translated receive binds what a native receive binds. |
 //! | `prop_matcher_sound_complete` | `matcher_sound_complete` (A7): the matcher of `[a, b]` accepts a generated list exactly when a native receive fires, with the same values. |
 //! | `prop_guard_fold_sound` | `guard_fold_sound` (A6): a guard over one bind of a join goes to that matcher, and the join fires exactly when a native guarded join fires. |
+//! | `prop_receive_joins_one_space` | `JoinSameSpace` (AgentSpaces.tla, A13, step 6): a receive of two binds aborts with `CrossSpaceJoin` exactly when its channels route to two spaces. |
+//! | `prop_agent_space_replay_reproduces_play` | `ReplayEquivalence` (A15, step 6): native replay reproduces the play of each generated program on an agent space, for an agent that serves it, never answers, or forwards its calls. |
+//! | `prop_linear_body_runs_at_most_once` | `BodyAtMostOnceLinear` (A16, step 6): an agent that sends the env map to a body several times runs a linear body once and a persistent body each time. |
 
 #[path = "support/mod.rs"]
 mod support;
@@ -1033,5 +1036,197 @@ for (@x <- @"na" & @y <- @"nb" where {guarded} > {bound}) {{ @"rrs-native-out"!(
     };
     prop_assert_eq!(side_values(&values, "native"), expected.clone());
     prop_assert_eq!(side_values(&values, "agent"), expected);
+    Ok(())
+}
+
+// ─── Native properties of AgentSpaces.tla (step 6) ───────────────────────────────────────────────
+
+/// The kind of a channel of a generated join: a forged channel, an agent-tagged name of the
+/// agent `agent` or of the agent `other`, or a name of a native space.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum JoinKind {
+    Forged,
+    AgentA,
+    AgentB,
+    Native,
+}
+
+fn arb_join_kind() -> BoxedStrategy<JoinKind> {
+    prop_oneof![
+        Just(JoinKind::Forged),
+        Just(JoinKind::AgentA),
+        Just(JoinKind::AgentB),
+        Just(JoinKind::Native),
+    ]
+    .boxed()
+}
+
+/// The space that a channel of `kind` routes to, inside a use block of `agent` when `in_use`.
+fn join_space(kind: JoinKind, in_use: bool) -> &'static str {
+    match (kind, in_use) {
+        (JoinKind::Forged, false) => "default",
+        (JoinKind::Forged, true) | (JoinKind::AgentA, _) => "agent",
+        (JoinKind::AgentB, _) => "other",
+        (JoinKind::Native, _) => "native",
+    }
+}
+
+/// The channel of `kind` with the index `index`, as Rholang source.
+fn join_channel(kind: JoinKind, index: usize) -> String {
+    match kind {
+        JoinKind::Forged => format!(r#"@"rrs-p8-join-f{index}""#),
+        JoinKind::AgentA => format!(r#"@(*tag, *agent, "a{index}")"#),
+        JoinKind::AgentB => format!(r#"@(*tag, *other, "b{index}")"#),
+        JoinKind::Native => format!("n{index}"),
+    }
+}
+
+/// `JoinSameSpace` (AgentSpaces.tla, A13): a receive of two binds aborts with `CrossSpaceJoin`
+/// exactly when its channels route to two spaces. Two channels of one space give a receive of
+/// that space: a join of the default space or of a native space, or the translation of one user
+/// agent. A forged channel takes the space of its use block.
+#[test]
+fn prop_receive_joins_one_space() {
+    check(
+        runtime_config(),
+        (arb_join_kind(), arb_join_kind(), any::<bool>()),
+        |(first, second, in_use)| tokio_runtime().block_on(join_case(first, second, in_use)),
+    );
+}
+
+async fn join_case(first: JoinKind, second: JoinKind, in_use: bool) -> Result<(), TestCaseError> {
+    let receive = format!(
+        r#"for (@a <- {} & @b <- {}) {{ @"rrs-native-out"!([a, b]) }}"#,
+        join_channel(first, 1),
+        join_channel(second, 2)
+    );
+    let scoped = match in_use {
+        true => format!("use agent {{ {receive} }}"),
+        false => receive,
+    };
+    let term = program(
+        &["agent", "other", "factory(`rho:space:hashmap:bag`)"],
+        &format!(
+            r#"for (h <- factory!?("default")) {{
+  for (n1 <- h!?("gensym")) {{ for (n2 <- h!?("gensym")) {{ {scoped} }} }}
+}}"#
+        ),
+    );
+    let (played, _) = play_and_certify("join of one space", &term).await;
+    match join_space(first, in_use) == join_space(second, in_use) {
+        true => prop_assert!(
+            played.result.errors.is_empty(),
+            "{:?}",
+            played.result.errors
+        ),
+        false => prop_assert_eq!(codes(&played), only("CrossSpaceJoin")),
+    }
+    Ok(())
+}
+
+/// The agent of a generated program: the memory agent, an agent that never answers, or an agent
+/// that forwards each send to the public output.
+#[derive(Clone, Copy, Debug)]
+enum AgentKind {
+    Memory,
+    Silent,
+    Forwarding,
+}
+
+/// One operation of a generated program on the agent-tagged channel `c{chan}`.
+#[derive(Clone, Copy, Debug)]
+enum AgentOp {
+    Send { chan: u8, value: i64 },
+    Receive { chan: u8 },
+}
+
+fn arb_agent_op() -> BoxedStrategy<AgentOp> {
+    prop_oneof![
+        (0u8..2, -3i64..4).prop_map(|(chan, value)| AgentOp::Send { chan, value }),
+        (0u8..2).prop_map(|chan| AgentOp::Receive { chan }),
+    ]
+    .boxed()
+}
+
+/// The contract of an agent of `kind` on `agent`.
+fn agent_code(kind: AgentKind) -> String {
+    match kind {
+        AgentKind::Memory => memory_agent().to_string(),
+        AgentKind::Silent => r#"for (_, @"produce", @raw, @msg <= agent) { Nil } |
+for (_, @"consume", @pairs, @arrow, body <= agent) { Nil }"#
+            .to_string(),
+        AgentKind::Forwarding => forwarding_agent("agent"),
+    }
+}
+
+/// `ReplayEquivalence` (AgentSpaces.tla, A15): each call and each send of an agent space is an
+/// ordinary event of the default space, so native replay reproduces the play of each generated
+/// program: its errors, its complete journal, its phlo, its authority events, its byte
+/// observations and its post-state root. The agent serves the space, never answers, or
+/// forwards its calls, so the property does not depend on the obligations of the agent.
+#[test]
+fn prop_agent_space_replay_reproduces_play() {
+    check(
+        runtime_config(),
+        (
+            prop_oneof![
+                Just(AgentKind::Memory),
+                Just(AgentKind::Silent),
+                Just(AgentKind::Forwarding),
+            ],
+            prop::collection::vec(arb_agent_op(), 1..4),
+        ),
+        |(kind, ops)| tokio_runtime().block_on(replay_case(kind, ops)),
+    );
+}
+
+async fn replay_case(kind: AgentKind, ops: Vec<AgentOp>) -> Result<(), TestCaseError> {
+    let mut processes = vec![agent_code(kind)];
+    processes.extend(ops.iter().map(|op| match op {
+        AgentOp::Send { chan, value } => format!(r#"@(*tag, *agent, "c{chan}")!({value})"#),
+        AgentOp::Receive { chan } => format!(
+            r#"for (@v <- @(*tag, *agent, "c{chan}")) {{ @"rrs-native-out"!(["got", v]) }}"#
+        ),
+    }));
+    // play_and_certify asserts that native replay reproduces the play.
+    played_values(
+        "agent replay",
+        &program(&["agent"], &processes.join(" |\n")),
+    )
+    .await?;
+    Ok(())
+}
+
+/// `BodyAtMostOnceLinear` (AgentSpaces.tla, A16): an agent that sends the env map to the body
+/// capability of a receive `sends` times runs the body once for a linear receive (`<-` or
+/// `<<-`) and `sends` times for a persistent one (`<=`). The body receive of the translation is
+/// persistent only for `<=` (TR-6), so a second send to a linear body parks.
+#[test]
+fn prop_linear_body_runs_at_most_once() {
+    check(
+        runtime_config(),
+        (1usize..4, 0usize..3),
+        |(sends, arrow)| tokio_runtime().block_on(body_runs_case(sends, arrow)),
+    );
+}
+
+async fn body_runs_case(sends: usize, arrow: usize) -> Result<(), TestCaseError> {
+    let arrow = ["<-", "<<-", "<="][arrow];
+    let repeated = vec!["body!(env)"; sends].join(" | ");
+    let term = program(
+        &["agent"],
+        &format!(
+            r#"for (_, @"consume", @[(m, c)], @kind, body <= agent) {{
+  new ret in {{ @m!(*ret, [7]) | for (@(true, env) <- ret) {{ {repeated} }} }}
+}} |
+for (@v {arrow} @(*tag, *agent, "chan")) {{ @"rrs-native-out"!(v) }}"#
+        ),
+    );
+    let values = played_values("linear body", &term).await?;
+    let runs = match arrow {
+        "<=" => sends,
+        _ => 1,
+    };
+    prop_assert_eq!(values, vec![int(7); runs]);
     Ok(())
 }

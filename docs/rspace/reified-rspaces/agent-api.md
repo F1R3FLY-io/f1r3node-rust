@@ -23,6 +23,7 @@ The [decision register](decision-register.md) is normative. Where this document 
 - [9. assertEqual](#9-assertequal)
 - [10. Aborts](#10-aborts)
 - [11. Limits of P4](#11-limits-of-p4)
+- [12. User agent-backed spaces](#12-user-agent-backed-spaces)
 - [References](#references)
 
 ## Terms
@@ -467,6 +468,67 @@ Table 10 lists the aborts that a call can cause, and section [N8 of the design](
 - The method `consume` had no effect until P8 step 3, which adds the translation of receives on user agents.
 - `getSpaceAgent` has no alias in P4. P5 adds the alias ([decision 34](decision-register.md#decision-34), item A15).
 - A reply on a forged reply name goes to the default space, so a reply name should come from `new`.
+
+## 12. User agent-backed spaces
+
+A program can use an agent that it writes as a space, as the FIPS allows ([decision 77](decision-register.md#decision-77)).
+The program names the agent in a `use` block or in an annotation `new x : a`, as it names a native space.
+The node translates each operation on the space into a call on the agent, and the agent serves the call with its own Rholang code.
+Figure 2 shows the translation of a `new`, a send and a receive.
+[Chapter 21](../../rholang/21-reified-spaces.md#writing-your-own-space) explains how to write an agent, with the reference agent and the conformance kit.
+
+### 12.1 The calls
+
+*Table 11. The calls of the translation on the agent `A` (design v2 TS-1, TR-7 and TN-4).*
+
+| Operation of the program | Call on `A` | Other effects of the translation |
+|---|---|---|
+| `new x` in the context of `A`, or `new x : A` | `A!(r, "gensym")` for each agent binder, with a private reply name `r` | The node draws the names of HEAD first. A resume receive on `r` binds `x` to the [agent-minted name](glossary.md#agent-minted-name) of the reply. |
+| `c!(d…)` on an agent-minted name of `A`, or on a forged channel `c` in the context of `A` | `A!(sink, "produce", raw, [d…])` | None. |
+| `for (p_1 <- c_1 & … & p_n <- c_n) P`, with every `c_i` on `A` | `A!(sink, "consume", [(m_1, raw_1), …], arrow, b)` | One persistent matcher receive for each bind, and the body receive. The body receive is linear for `"<-"` and `"<<-"` and persistent for `"<="`. |
+
+The value `A` of a call is the call channel: the agent reference without one bundle with the write flag.
+The raw channel `raw` is the raw part of an agent-minted name, or the forged channel itself.
+The return channel `sink` is the write bundle of the sink process of Table 2b, which absorbs any reply.
+Each `m_i` is the write bundle of the matcher capability of bind `i`, and `b` is the write bundle of the body capability.
+Table 10 lists the aborts of these operations, from `PersistentSendOnAgentSpace` to `CrossSpaceJoin`.
+
+### 12.2 The protocol
+
+The agent replies to each `gensym` call with one fresh name on its reply name.
+It stores the message of a `produce` call, or it fires a stored consume with it.
+For a `consume` call, it tests stored messages with the matcher of each bind through the call `m!(ret, proc)` of section 2.
+When every bind has a match, the agent sends the union of the maps `env` to the body capability with `b!(env)`.
+The arrow `"<-"` removes the chosen messages, `"<<-"` keeps them, and `"<="` keeps the consume.
+
+### 12.3 The obligations of the agent
+
+The node does not check the behavior of an agent.
+The author of an agent keeps three obligations (design v2 section 10):
+
+- **ASO-1.** After each method completes, no stored consume and stored messages exist such that every matcher of the consume accepts its message.
+- **ASO-2.** For the arrows `"<-"` and `"<<-"`, the agent sends to the body capability at most once.
+- **ASO-3.** The agent replies to each `gensym` call exactly once, with a fresh name.
+
+An agent that breaks an obligation breaks the semantics of its space, but never consensus.
+Each call and each send of the agent is an ordinary event of the default space.
+So every node charges it and replays it in the same way.
+The node also bounds two effects of a faulty agent.
+The body receive of a linear receive takes one send, so a second send parks and the body runs at most once.
+A second reply to a `gensym` call parks on the reply name, because the resume receive takes one reply.
+
+### 12.4 Trust and cost
+
+The agent sends the values of a receive to the body capability.
+So a program trusts the agent to send the values that the matchers gave.
+A native handle accepts only the matcher capabilities of a translation ([section 5](#5-handle-methods)), but an agent calls the matchers that a consume brings.
+So an agent that waits for a matcher reply while it holds its state stops when a matcher never answers.
+Each operation on an agent space costs ordinary COMMs, and each matcher call costs three of them: the call, the forwarder hop and the reply.
+The call `getSpaceAgent` on an agent space replies `NotANativeSpace` ([section 8](#8-getspaceagent)).
+
+![Translation of a use block of a user agent A as a sequence. The deploy runs use A { new x in { x!(1) | for (@v <- x) { P } } }. For the new, the reducer draws the names of HEAD, substitutes the body and wraps it in USE(A), and computes the reply name r from base.split_byte(5).split_short(0). It produces A!(r, "gensym") and the resume receive on r. The agent replies a fresh name raw on r, and the resume receive binds x to bundle{(AGENT_TAG, A, raw)}. For the send x!(1), the reducer routes x by R4 to the agent A with raw and produces A!(sink, "produce", raw, [1]); the agent stores (raw, [1]) and offers it to its stored consumes, of which there are none. For the receive for (@v <- x) { P }, the reducer routes x to A, builds the matcher state with the pattern [@v] and no guard, puts a persistent receive on X(m) that forwards to MATCHER_OP and a receive on B(b) that is linear for the arrow <- and holds the body USE(A, P), and produces A!(sink, "consume", [(bundle+{m}, raw)], "<-", bundle+{b}). The agent calls m!(ret, [1]) for the stored message. The forwarder of m calls MATCHER_OP, which decodes the state of m, matches [1] against [@v] and checks the guard, and replies (true, {"0": 1}) on ret. The agent removes the message for the arrow <- and sends b!({"0": 1}), and P runs in the context of A with v = 1.](diagrams/04-user-agent-translation.svg)
+
+*Figure 2. Source: [diagrams/04-user-agent-translation.puml](diagrams/04-user-agent-translation.puml), rendered by [diagrams/render.sh](diagrams/render.sh).*
 
 ## References
 

@@ -6014,6 +6014,163 @@ To run the checks of step 6, do these steps from the repository root:
 4. Run `python3 scripts/verify-reified/check-invariant-map.py --phase P7`.
 5. Run the gate scripts of section 32.5.
 
+## 33. Phase P8: the spaces of user agents
+
+Phase P8 implements user agent-backed spaces ([decision 77](decision-register.md#decision-77), design v2).
+A program names a user agent in a `use` block or in an annotation `new x : a`.
+The node then translates the names, sends and receives of the space into calls on the agent.
+The phase has six steps:
+
+1. Step 1 (W1, W5): the routes and use-contexts of user agents, and the write rule of an agent reference. It also adds the matcher state codec, `MATCHER_OP` and the sink.
+2. Step 2 (W2, W7): the call of a send, and the R7 replies to agent-minted names.
+3. Step 3 (W3, W6): the translation of a receive, and the native `consume` of a handle.
+4. Step 4 (W4): the translation of `new`.
+5. Step 5 (W8): the reference agent and the conformance kit.
+6. Step 6 (W9): the model `AgentSpaces.tla`, the maps and the documents.
+
+### 33.1 The headlines
+
+*Table 177. The headlines of phase P8 and their property tests.*
+
+| Id | Headline | Statement | Property tests |
+|---|---|---|---|
+| A1 | `agent_ref_requires_write_flag` (`SpaceRefs.v:1146`) | A use block enters the context of an agent only when the reference has a call channel under the bundle rule of `eval_send` (AG-4). | `prop_agent_ref_requires_write_flag` |
+| A2 | `r7_agent_reply_bundle_exact` (`SpaceRefs.v:898`) | The R7 backend calls the agent for exactly the bundle with both flags around an agent-tagged tuple (R7A-1). | `prop_r7_agent_reply_bundle_exact` |
+| A3 | `offsets_partition` (`AgentTranslation.v:226`) | The binder ranges of the binds partition the binder positions of the receive (TR-3). | `prop_offsets_partition` |
+| A4 | `env_keys_disjoint_union` (`AgentTranslation.v:324`) | The env keys of the binds are disjoint, and their union is the key set of the body pattern (MO-3, TR-6). | `prop_env_keys_disjoint_union` |
+| A5 | `body_equivalence` (`AgentTranslation.v:401`) | The body receive binds the values that the native receive binds, in binder order (TR-6). | `prop_body_equivalence` |
+| A6 | `guard_fold_sound` (`AgentTranslation.v:596`) | A guard over one bind goes to that matcher, and the join fires exactly when the native guarded join fires (TR-4). | `prop_guard_placement`, `prop_guard_fold_sound` |
+| A7 | `matcher_sound_complete` (`AgentTranslation.v:650`) | A matcher replies exactly on a spatial match with a passing guard (MO-3). | `prop_matcher_sound_complete` |
+| A8 | `matcher_state_roundtrip` (`AgentTranslation.v:783`) | The codec of a matcher state is exact (TR-5, MO-2). | `prop_matcher_state_roundtrip` |
+| A9 | `tag_untag_id` (`SpaceRefs.v:947`) | An agent-minted name unbundles to its tuple, which routes to its agent with its raw channel under every context (TN-3). | `prop_tag_untag_id` |
+| A10 | `resume_binds_innermost` (`AgentTranslation.v:914`) | The resume term of a translated `new` binds every binder in its order (TN-3). | `prop_resume_binds_innermost` |
+| A11 | `RoutingIsolation` (`AgentSpaces.tla`) | Under every context, the names of a space route to that space, and no call of an agent carries a name of another space. | `prop_routes_follow_the_owner_of_the_channel` |
+| A12 | `SystemChannelsDefault` (`AgentSpaces.tla`) | Under every context, system channels, default objects and unforgeable names route to the default space. | `prop_routes_follow_the_owner_of_the_channel` |
+| A13 | `JoinSameSpace` (`AgentSpaces.tla`) | A receive aborts with `CrossSpaceJoin` exactly when its binds route to two spaces. | `prop_receive_joins_one_space` |
+| A14 | `HandleUnwrapExact` (`AgentSpaces.tla`) | A reference names a space exactly when it is bare or under one bundle with the write flag. | `prop_space_ref_unwraps_one_bundle` |
+| A15 | `ReplayEquivalence` (`AgentSpaces.tla`) | The replay of the call log gives the state of the agent, its sends and the runs of each body. | `prop_agent_space_replay_reproduces_play` |
+| A16 | `BodyAtMostOnceLinear` (`AgentSpaces.tla`) | The body of a linear receive runs at most once, also when the agent sends to it again. | `prop_linear_body_runs_at_most_once` |
+| A17 | `NoMatchRemains` (`AgentSpaces.tla`) | The reference agent keeps no stored consume whose matchers accept distinct stored messages (ASO-1). | `prop_reference_agent_keeps_no_pending_match` |
+
+The invariant map `formal/reified-rspaces-invariant-map.json` maps the 17 headlines to 17 properties.
+The model map `formal/reified-rspaces-model-map-p8.json` maps the Rust items of the phase to the headlines.
+The Rocq gate counts 297 closed headlines, with the three of `SpaceRefs.v` and the seven of `AgentTranslation.v` of this phase.
+
+### 33.2 The model of agent spaces
+
+`AgentSpaces.tla` models routing under agent contexts, joins, space references, the reference agent, the body receives and replay.
+Its dynamic part runs the operations that route to the agent A1.
+They are sends, receives with one or two binds, and repeated sends of a misbehaving agent to a body.
+The agent runs the algorithm of the reference agent, in the operators `Offer`, `Drain` and `Find`.
+Each consume call opens a body receive, which is linear for `"<-"` and `"<<-"` and persistent for `"<="`.
+Replay folds the operator `Apply` over the call log, from the initial state of the agent.
+
+*Table 178. The configurations of `AgentSpaces.tla`.*
+
+| Configuration | Constants | Result |
+|---|---|---|
+| `MC_AgentSpaces.cfg` | `SystemRoutesDefault = TRUE`, `AgentTriesStored = TRUE`, `MaxSteps = 3` | The seven invariants hold on 277,945 distinct states, at the depth 4. |
+| `SystemRouteUnsafe.cfg` | `SystemRoutesDefault = FALSE` | It refutes exactly `SystemChannelsDefault`. Without that invariant, the others hold on 2,367,673 distinct states. |
+| `FaultyAgentUnsafe.cfg` | `AgentTriesStored = FALSE` | It refutes exactly `NoMatchRemains`, at the depth 3. Without that invariant, `ReplayEquivalence` and the others hold on 277,945 distinct states. |
+
+The faulty agent stores each consume without a try on the stored messages.
+So it breaks the semantics of its space, while replay still gives the state of play.
+The model has no Apalache configuration, because this dossier claims no inductive invariant for it.
+
+### 33.3 The negative controls
+
+*Table 179. The Rocq negative controls of phase P8 (`scripts/verify-reified/rocq-negative-controls.py`).*
+
+| Control | Module | Mutation | Expected failures |
+|---|---|---|---|
+| `sr-agent-route-drops-parts` | `SpaceRefs.v` | An agent-tagged channel routes to an agent without the parts of its tag (R4). | `route_total_deterministic`, `route_rules` |
+| `sr-forged-ignores-agent-context` | `SpaceRefs.v` | A forged channel inside the use block of an agent routes to the default space (R5, AG-1). | `route_total_deterministic`, `route_rules` |
+| `sr-agent-ignores-write-flag` | `SpaceRefs.v` | A use block enters the context of an agent whose reference has no call channel (AG-4). | `use_wrapper_restores_ctx`, `agent_ref_requires_write_flag` |
+| `sr-call-channel-ignores-write-flag` | `SpaceRefs.v` | The call channel of a bundle without the write flag is its body (AG-4). | `use_wrapper_restores_ctx`, `agent_ref_requires_write_flag` |
+| `sr-r7a-ignores-read-flag` | `SpaceRefs.v` | The R7 backend calls the agent of a write-only bundle (R7A-1). | `r7_agent_reply_bundle_exact` |
+| `sr-r7a-skips-agent-check` | `SpaceRefs.v` | The R7 backend calls an agent for a bundle whose body has no agent tag (R7A-1). | `r7_agent_reply_bundle_exact` |
+| `sr-r7a-dropped` | `SpaceRefs.v` | The R7 backend sends the bundle of an agent-minted name to the default space (R7A-1). | `r7_route_ignores_ctx`, `r7_agent_reply_bundle_exact` |
+| `at-offsets-skip-count` | `AgentTranslation.v` | The offset of a bind does not add the free count of the bind before it (TR-3). | `offsets_from_nth`, `offsets_partition` |
+| `at-env-key-off-by-one` | `AgentTranslation.v` | The env of a bind starts one key after the offset of the bind (MO-3). | `env_of_keys` and five later lemmas, up to `body_equivalence` |
+| `at-guard-wrong-bind` | `AgentTranslation.v` | A guard with one owner bind goes to bind 0 (TR-4). | `place_guard_owner`, `guard_fold_sound` |
+| `at-matcher-skips-guard` | `AgentTranslation.v` | The matcher replies the env without the guard check (MO-3). | `matcher_sound_complete` |
+| `at-decoder-not-strict` | `AgentTranslation.v` | The decoder of a matcher state accepts bytes that are not the encoding of the state (MO-2). | `matcher_state_roundtrip` |
+| `at-body-binds-wrong-key` | `AgentTranslation.v` | The body binds the binder g to the value at the key g + 1 (TR-6). | `body_equivalence` |
+| `sr-query-agent-drops-query` | `SpaceRefs.v` | A receive with a query on a user agent is translated and drops the query (TR-2). | `query_source_routes_inner_channel` |
+| `at-resume-order-reversed` | `AgentTranslation.v` | The agent binder of rank i reads `BoundVar(i)` instead of `BoundVar(m - 1 - i)` (TN-3). | `targets_from_eval`, `resume_binds_innermost` |
+| `sr-minted-name-write-only` | `SpaceRefs.v` | An agent-minted name is a bundle without the read flag (TN-3). | `tag_untag_id` |
+
+The two Unsafe configurations of Table 178 are the controls of the model.
+The conformance kit has its own control: a faulty agent that the kit rejects at the exact step (section [33.5](#335-the-reference-agent-and-the-conformance-kit)).
+
+### 33.4 The native suites
+
+*Table 180. The tests of phase P8.*
+
+| File | Tests | Content |
+|---|---|---|
+| `rholang/tests/reified_p8_props.rs` | 10 properties | The pure properties of A1 to A4, A6, A8 to A12 and A14. |
+| `rholang/tests/reified_user_agents.rs` | 26 tests, 6 of them properties | The translation of each operation in native play with native replay certification, the error codes, the decode limit of TR-5, and the properties of A5 to A7, A13, A15 and A16. |
+| `rholang/tests/reified_agent_conformance.rs` | 11 tests, 1 of them a property | The conformance kit, its negative control, the run of the example, and the property of A17. |
+| The library tests of `reified/user_agent.rs` | 13 | The matcher state codec, the matcher process and its metering, the sink, and the call of a send. |
+| The P8 library tests of `reified/reducer_hooks.rs` | 12 | The calls of a send, a receive and a `new`, the joins and mixes, the guard placement, the arrows, and the fail-closed cases. |
+
+Every native test plays at the v6 host-work limits and certifies through its committed evidence, as proposer self-certification and validator replay do.
+
+### 33.5 The reference agent and the conformance kit
+
+The reference agent `examples/reified_rspaces/agent_hashmap_bag.rho` is an agent of the Agents FIPS.
+[Chapter 21](../../rholang/21-reified-spaces.md#writing-your-own-space) explains its code, and section 12 of the [agent API](agent-api.md#12-user-agent-backed-spaces) states its protocol.
+The conformance kit runs eight cases against the reference agent and against a wrapper over a native handle.
+Each case is a sequence of deploys, and the kit compares all outputs after each deploy.
+So a match that stays pending after a step fails the case (ASO-1).
+
+The negative control is a faulty agent whose `consume` stores each receive without a try.
+The kit fails at the step that leaves its match pending.
+
+### 33.6 The FIPS clauses of user agents
+
+Table 181 gives the rows of the clauses of user agents for the FIPS matrix of P10 ([FIPS-RRS](#ref-fips-rrs)).
+The FIPS writes a matcher reply as `None` or `Some(env)`. The node writes it as `(false, Nil)` or `(true, env)`, the Rholang form of an optional value.
+
+*Table 181. The FIPS clauses of user agent-backed spaces, with the lines of `Reifying RSpaces.md`.*
+
+| Clause | Lines | Code | Formal evidence | Tests | Documents |
+|---|---|---|---|---|---|
+| After `produce` or `consume` completes, no data matches a waiting continuation, in any generalization. | 98 to 108 | The reference agent | The TLA+ invariant `NoMatchRemains` (A17) | `prop_reference_agent_keeps_no_pending_match`, the conformance kit | [Agent API 12.3](agent-api.md#123-the-obligations-of-the-agent) (ASO-1) |
+| Any agent that implements the correct behavioral type can be used as an RSpace. | 111 | The agent hooks of `reified/reducer_hooks.rs` and the translations of `reified/user_agent.rs` | A3 to A17 | `rholang/tests/reified_user_agents.rs`, the conformance kit | [Agent API 12](agent-api.md#12-user-agent-backed-spaces) |
+| Any RSpace can be reified into an agent. | 111 | The handle methods of `reified/handle.rs`, with `consume` of W6 | `matcher_state_roundtrip` (A8) | `agent_wrapper_forwards_to_native`, the native wrapper of the kit | [Agent API 5](agent-api.md#5-handle-methods) |
+| The constructor of an agent takes a qualifier, a theory and more arguments, and it may abort. | 116 to 122 | User code: the node translates no constructor. The reference agent takes the qualifier `"default"` and no theory. | None | `reference_agent_example_runs` | [Chapter 21](../../rholang/21-reified-spaces.md#writing-your-own-space) |
+| `gensym` returns a name. | 124 to 126 | `translate_new` | `tag_untag_id` (A9), `resume_binds_innermost` (A10) | `user_agent_new_binding_order_matches_native`, `agent_gensym_calls_have_distinct_states` | Agent API 12.1 |
+| `produce(channel, process)` implements a send. | 128 to 131 | `produce_call` | The TLA+ invariant `RoutingIsolation` (A11) | `user_agent_send_calls_the_agent`, `produce_call_builds_the_call_of_a_send` | Agent API 12.1 |
+| `consume(listMatcherChannel, arrowType, body)` implements a receive on a join, with matchers that return `None` or `Some(env)`. | 132 to 143 | `translate_receive`, `MatcherProcess` | A3 to A8, the TLA+ invariants `JoinSameSpace` (A13) and `BodyAtMostOnceLinear` (A16) | `user_agent_produce_consume_roundtrip`, `prop_matcher_sound_complete`, `prop_body_equivalence` | Agent API 2 and 12.2 |
+| Developers can also write their own spaces. | 151 | `examples/reified_rspaces/agent_hashmap_bag.rho` | None | The conformance kit | [Chapter 21](../../rholang/21-reified-spaces.md#writing-your-own-space) |
+
+### 33.7 Measurements
+
+**The decode limit of a matcher state.** The state of a matcher holds the pattern of its bind, and prost decodes at most 100 levels of nesting.
+A pattern of 30 nested lists aborts with `AgentPatternTooDeep`, and a pattern of 29 nested lists translates (`user_agent_errors_pattern_too_deep`).
+In the debug profile, a tokio worker overflows its stack at 36 nested lists for a native receive.
+For an agent receive, it overflows at 40. This limit is older than P8.
+
+**The replay cost of an agent.** Native replay charges much more host work than native play for programs with stored contracts ([decision 79](decision-register.md#decision-79)).
+One call of a small stored contract costs 1.0 M VerificationBytes in play and 62.6 M in replay, and the v6 limit is 268.4 M.
+The reference agent makes few calls for each operation, so every step of the kit certifies at the v6 limits.
+
+A persistent consume that drains two stored messages in one deploy needs 282.1 M in replay.
+So the kit fires such a consume on one stored message in each deploy.
+The property of A17 generates only scenarios in which each step fires at most once, for the same reason.
+
+### 33.8 Running the checks
+
+To run the checks of phase P8, do these steps from the repository root:
+
+1. Run `cargo test -p rholang --test reified_p8_props --test reified_user_agents --test reified_agent_conformance`.
+2. Run `cargo test -p rholang --lib reified`.
+3. Run `python3 scripts/verify-reified/check-invariant-map.py --phase P8`.
+4. Run `python3 scripts/verify-reified/check-model-map.py --map formal/reified-rspaces-model-map-p8.json`.
+5. Run `scripts/check-reified-rspaces-proofs.sh` and `scripts/check-reified-rspaces-tla-invariants.sh`.
+
 ## References
 
 <a id="ref-ch00"></a>[CH00] K. Claessen and J. Hughes, "QuickCheck: a lightweight tool for random testing of Haskell programs," in *Proceedings of the Fifth ACM SIGPLAN International Conference on Functional Programming (ICFP 2000)*, ACM, 2000, pp. 268–279. [doi:10.1145/351240.351266](https://doi.org/10.1145/351240.351266)
@@ -6021,6 +6178,8 @@ To run the checks of step 6, do these steps from the repository root:
 <a id="ref-ch88"></a>[CH88] T. Coquand and G. Huet, "The calculus of constructions," *Information and Computation*, vol. 76, no. 2–3, pp. 95–120, 1988. [doi:10.1016/0890-5401(88)90005-3](https://doi.org/10.1016/0890-5401(88)90005-3)
 
 <a id="ref-dls78"></a>[DLS78] R. A. DeMillo, R. J. Lipton, and F. G. Sayward, "Hints on test data selection: help for the practicing programmer," *Computer*, vol. 11, no. 4, pp. 34–41, 1978. [doi:10.1109/C-M.1978.218136](https://doi.org/10.1109/C-M.1978.218136)
+
+<a id="ref-fips-rrs"></a>[FIPS-RRS] M. Stay and L. G. Meredith, "Reifying RSpaces," F1r3fly Improvement Proposal, 2025-09-26. [FIPS repository, approved/2025-09-26-Reifying-RSpaces](https://github.com/F1R3FLY-io/FIPS/blob/main/approved/2025-09-26-Reifying-RSpaces/Reifying%20RSpaces.md)
 
 <a id="ref-kkt19"></a>[KKT19] I. Konnov, J. Kukovec, and T.-H. Tran, "TLA+ model checking made symbolic," *Proceedings of the ACM on Programming Languages*, vol. 3, no. OOPSLA, pp. 1–30, 2019. [doi:10.1145/3360549](https://doi.org/10.1145/3360549)
 

@@ -15,64 +15,67 @@ The [decision register](decision-register.md) records the decisions that fix the
 
 | Term | Part | Term | Part |
 |---|---|---|---|
-| [Acceptance category](#acceptance-category) | 2 | [Native backend](#native-backend) | 2 |
-| [Accounting observer](#accounting-observer) | 1 | [Native play](#native-play) | 2 |
-| [Admission verdict](#admission-verdict) | 2 | [Native replay](#native-replay) | 2 |
-| [Advisory query](#advisory-query) | 2 | [Native space](#native-space) | 2 |
-| [Agent](#agent) | 1 | [Negative control](#negative-control) | 2 |
+| [Acceptance category](#acceptance-category) | 2 | [Namespace tag](#namespace-tag) | 2 |
+| [Accounting observer](#accounting-observer) | 1 | [Native backend](#native-backend) | 2 |
+| [Admission verdict](#admission-verdict) | 2 | [Native play](#native-play) | 2 |
+| [Advisory query](#advisory-query) | 2 | [Native replay](#native-replay) | 2 |
+| [Agent](#agent) | 1 | [Native space](#native-space) | 2 |
+| [Agent route](#agent-route) | 2 | [Negative control](#negative-control) | 2 |
 | [Agent-minted name](#agent-minted-name) | 2 | [Net write](#net-write) | 2 |
 | [Allocation job](#allocation-job) | 2 | [Op channel](#op-channel) | 2 |
 | [Allocator](#allocator) | 2 | [Operation order](#operation-order) | 2 |
 | [Binding](#binding) | 2 | [Outcome](#outcome) | 2 |
 | [Block](#block) | 1 | [Outer store](#outer-store) | 2 |
-| [Body channel](#body-channel) | 2 | [Pairing](#pairing) | 2 |
-| [Bundle](#bundle) | 1 | [Par](#par) | 1 |
-| [Canonical form](#canonical-form) | 2 | [Param rule](#param-rule) | 2 |
-| [Canonical group](#canonical-group) | 2 | [Path](#path) | 2 |
-| [Canonical order](#canonical-order) | 2 | [Path marker](#path-marker) | 2 |
-| [Capacity](#capacity) | 2 | [Pattern](#pattern) | 1 |
-| [Cascade](#cascade) | 2 | [Peek](#peek) | 1 |
-| [Cell](#cell) | 2 | [Persistent](#persistent) | 1 |
-| [Channel](#channel) | 1 | [pgmcp](#pgmcp) | 1 |
-| [Checkpoint](#checkpoint) | 1 | [Phlo](#phlo) | 1 |
-| [Class fire](#class-fire) | 2 | [Play](#play) | 1 |
-| [Class key](#class-key) | 2 | [Prefix atomicity](#prefix-atomicity) | 2 |
-| [Collection](#collection) | 2 | [Prefix source](#prefix-source) | 2 |
-| [Collection counter](#collection-counter) | 2 | [Process](#process) | 1 |
-| [Collection key](#collection-key) | 2 | [Produce counter](#produce-counter) | 2 |
-| [COMM event](#comm-event) | 1 | [Property-based test](#property-based-test) | 1 |
-| [Config record](#config-record) | 2 | [Qualifier](#qualifier) | 2 |
-| [Consensus-preservation checklist](#consensus-preservation-checklist) | 2 | [Random state](#random-state) | 1 |
-| [Conservative extension](#conservative-extension) | 2 | [Re-issue](#re-issue) | 2 |
-| [Constructor schema](#constructor-schema) | 2 | [Re-offer](#re-offer) | 2 |
-| [Continuation](#continuation) | 1 | [Re-rooting](#re-rooting) | 2 |
-| [Counter meta-channel](#counter-meta-channel) | 2 | [Re-store](#re-store) | 2 |
-| [Crossed stacks](#crossed-stacks) | 2 | [Receive](#receive) | 1 |
-| [Datum](#datum) | 1 | [Recognized position](#recognized-position) | 2 |
-| [Deploy](#deploy) | 1 | [Reconciler](#reconciler) | 2 |
-| [Dirty collection](#dirty-collection) | 2 | [Record envelope](#record-envelope) | 2 |
-| [Dyadic number](#dyadic-number) | 2 | [Record id](#record-id) | 2 |
-| [Eligible set](#eligible-set) | 2 | [Recorded process](#recorded-process) | 2 |
-| [Embedding](#embedding) | 2 | [Reduction participant](#reduction-participant) | 2 |
-| [Epoch closure](#epoch-closure) | 2 | [Registered family](#registered-family) | 2 |
-| [Evaluation scope](#evaluation-scope) | 2 | [Regression corpus](#regression-corpus) | 2 |
-| [Event log](#event-log) | 1 | [Reified RSpace](#reified-rspace) | 2 |
-| [Exact cut](#exact-cut) | 2 | [Replay](#replay) | 1 |
-| [Exact value](#exact-value) | 2 | [Reporting](#reporting) | 1 |
-| [F1r3lang](#f1r3lang) | 1 | [Representative](#representative) | 2 |
-| [Factory](#factory) | 2 | [Retention](#retention) | 2 |
-| [Factory capability](#factory-capability) | 2 | [Rholang](#rholang) | 1 |
-| [Factory row](#factory-row) | 2 | [Rocq](#rocq) | 1 |
-| [FIPS](#fips) | 1 | [Rounding to nearest](#rounding-to-nearest) | 2 |
-| [Fire count](#fire-count) | 2 | [Routing class](#routing-class) | 2 |
-| [Fire round](#fire-round) | 2 | [RSpace](#rspace) | 1 |
-| [First admitting waiter](#first-admitting-waiter) | 2 | [Scan discipline](#scan-discipline) | 2 |
-| [Footprint policy](#footprint-policy) | 2 | [Scan driver](#scan-driver) | 2 |
-| [Frontend](#frontend) | 1 | [Second send](#second-send) | 2 |
-| [Gate](#gate) | 2 | [Selection order](#selection-order) | 2 |
-| [getSpaceAgent](#getspaceagent) | 2 | [Send](#send) | 1 |
-| [Handle](#handle) | 2 | [Seq claim](#seq-claim) | 2 |
-| [Handle capability](#handle-capability) | 2 | [Settle](#settle) | 2 |
+| [Body capability](#body-capability) | 2 | [Pairing](#pairing) | 2 |
+| [Body channel](#body-channel) | 2 | [Par](#par) | 1 |
+| [Bundle](#bundle) | 1 | [Param rule](#param-rule) | 2 |
+| [Canonical form](#canonical-form) | 2 | [Path](#path) | 2 |
+| [Canonical group](#canonical-group) | 2 | [Path marker](#path-marker) | 2 |
+| [Canonical order](#canonical-order) | 2 | [Pattern](#pattern) | 1 |
+| [Capacity](#capacity) | 2 | [Peek](#peek) | 1 |
+| [Cascade](#cascade) | 2 | [Persistent](#persistent) | 1 |
+| [Cell](#cell) | 2 | [pgmcp](#pgmcp) | 1 |
+| [Channel](#channel) | 1 | [Phlo](#phlo) | 1 |
+| [Checkpoint](#checkpoint) | 1 | [Play](#play) | 1 |
+| [Class fire](#class-fire) | 2 | [Prefix atomicity](#prefix-atomicity) | 2 |
+| [Class key](#class-key) | 2 | [Prefix source](#prefix-source) | 2 |
+| [Collection](#collection) | 2 | [Process](#process) | 1 |
+| [Collection counter](#collection-counter) | 2 | [Produce counter](#produce-counter) | 2 |
+| [Collection key](#collection-key) | 2 | [Property-based test](#property-based-test) | 1 |
+| [COMM event](#comm-event) | 1 | [Qualifier](#qualifier) | 2 |
+| [Config record](#config-record) | 2 | [Random state](#random-state) | 1 |
+| [Conformance kit](#conformance-kit) | 2 | [Re-issue](#re-issue) | 2 |
+| [Consensus-preservation checklist](#consensus-preservation-checklist) | 2 | [Re-offer](#re-offer) | 2 |
+| [Conservative extension](#conservative-extension) | 2 | [Re-rooting](#re-rooting) | 2 |
+| [Constructor schema](#constructor-schema) | 2 | [Re-store](#re-store) | 2 |
+| [Continuation](#continuation) | 1 | [Receive](#receive) | 1 |
+| [Counter meta-channel](#counter-meta-channel) | 2 | [Recognized position](#recognized-position) | 2 |
+| [Crossed stacks](#crossed-stacks) | 2 | [Reconciler](#reconciler) | 2 |
+| [Datum](#datum) | 1 | [Record envelope](#record-envelope) | 2 |
+| [Deploy](#deploy) | 1 | [Record id](#record-id) | 2 |
+| [Dirty collection](#dirty-collection) | 2 | [Recorded process](#recorded-process) | 2 |
+| [Dyadic number](#dyadic-number) | 2 | [Reduction participant](#reduction-participant) | 2 |
+| [Eligible set](#eligible-set) | 2 | [Reference agent](#reference-agent) | 2 |
+| [Embedding](#embedding) | 2 | [Registered family](#registered-family) | 2 |
+| [Epoch closure](#epoch-closure) | 2 | [Regression corpus](#regression-corpus) | 2 |
+| [Evaluation scope](#evaluation-scope) | 2 | [Reified RSpace](#reified-rspace) | 2 |
+| [Event log](#event-log) | 1 | [Replay](#replay) | 1 |
+| [Exact cut](#exact-cut) | 2 | [Reporting](#reporting) | 1 |
+| [Exact value](#exact-value) | 2 | [Representative](#representative) | 2 |
+| [F1r3lang](#f1r3lang) | 1 | [Retention](#retention) | 2 |
+| [Factory](#factory) | 2 | [Rholang](#rholang) | 1 |
+| [Factory capability](#factory-capability) | 2 | [Rocq](#rocq) | 1 |
+| [Factory row](#factory-row) | 2 | [Rounding to nearest](#rounding-to-nearest) | 2 |
+| [FIPS](#fips) | 1 | [Routing class](#routing-class) | 2 |
+| [Fire count](#fire-count) | 2 | [RSpace](#rspace) | 1 |
+| [Fire round](#fire-round) | 2 | [Scan discipline](#scan-discipline) | 2 |
+| [First admitting waiter](#first-admitting-waiter) | 2 | [Scan driver](#scan-driver) | 2 |
+| [Footprint policy](#footprint-policy) | 2 | [Second send](#second-send) | 2 |
+| [Frontend](#frontend) | 1 | [Selection order](#selection-order) | 2 |
+| [Gate](#gate) | 2 | [Send](#send) | 1 |
+| [getSpaceAgent](#getspaceagent) | 2 | [Seq claim](#seq-claim) | 2 |
+| [Handle](#handle) | 2 | [Settle](#settle) | 2 |
+| [Handle capability](#handle-capability) | 2 | [Sink](#sink) | 2 |
 | [Head record](#head-record) | 2 | [Space](#space) | 2 |
 | [Head waiter](#head-waiter) | 2 | [Space agent](#space-agent) | 2 |
 | [Head-only matching](#head-only-matching) | 2 | [Space counter](#space-counter) | 2 |
@@ -107,14 +110,14 @@ The [decision register](decision-register.md) records the decisions that fix the
 | [Marker](#marker) | 2 | [VectorDB collection](#vectordb-collection) | 2 |
 | [Marker tuple](#marker-tuple) | 2 | [Vehicle](#vehicle) | 2 |
 | [Matcher](#matcher) | 2 | [Verification recipe](#verification-recipe) | 2 |
-| [Merge](#merge) | 1 | [Volatile channel](#volatile-channel) | 2 |
-| [Metered view read](#metered-view-read) | 2 | [Volatile registry](#volatile-registry) | 2 |
-| [Mirror](#mirror) | 2 | [Waiter](#waiter) | 2 |
-| [Mirror journal](#mirror-journal) | 2 | [Watermark](#watermark) | 2 |
-| [Mirror writer](#mirror-writer) | 2 | [Widest kind](#widest-kind) | 2 |
-| [Model map](#model-map) | 2 | [Witness test](#witness-test) | 2 |
-| [Name](#name) | 1 | [Write skew](#write-skew) | 2 |
-| [Namespace tag](#namespace-tag) | 2 |  |  |
+| [Matcher capability](#matcher-capability) | 2 | [Volatile channel](#volatile-channel) | 2 |
+| [Merge](#merge) | 1 | [Volatile registry](#volatile-registry) | 2 |
+| [Metered view read](#metered-view-read) | 2 | [Waiter](#waiter) | 2 |
+| [Mirror](#mirror) | 2 | [Watermark](#watermark) | 2 |
+| [Mirror journal](#mirror-journal) | 2 | [Widest kind](#widest-kind) | 2 |
+| [Mirror writer](#mirror-writer) | 2 | [Witness test](#witness-test) | 2 |
+| [Model map](#model-map) | 2 | [Write skew](#write-skew) | 2 |
+| [Name](#name) | 1 |  |  |
 
 ## Part 1: background terms
 
@@ -739,6 +742,43 @@ A persistent single-channel receive on the matcher forwards each test to the int
 A body channel is a channel with KIND B that holds the original continuation of a receive on a user agent-backed space ([decision I-15](decision-register.md#i-15)).
 A single-channel receive with a map pattern waits on it.
 When the agent sends a map of bound values to the body channel, the original process runs with those values.
+
+### Agent route
+
+An agent route is the route of a channel to a user agent ([decision 77](decision-register.md#decision-77), item AG-1).
+It holds the agent reference and the raw channel that the agent sees.
+The routing rule R4 gives it for an [agent-minted name](#agent-minted-name).
+Rule R5 gives it for a forged channel inside a `use` block of the agent.
+The call channel of the route is the agent reference without one bundle with the write flag (item AG-4).
+
+### Matcher capability
+
+A matcher capability is the write bundle `bundle+{m}` of a [matcher](#matcher) that the translation of a receive gives to the agent.
+The agent tests a stored message with the call `m!(ret, proc)`, and the matcher replies `(true, env)` or `(false, Nil)` on `ret`.
+The bundle lets the agent call the matcher, but not receive on it.
+
+### Body capability
+
+A body capability is the write bundle `bundle+{b}` of a [body channel](#body-channel) that the translation of a receive gives to the agent.
+The agent sends the union of the maps `env` of the binds to it, and the original body then runs with those values.
+The body receive is linear for the arrows `"<-"` and `"<<-"`, so the body of such a receive runs at most once.
+
+### Sink
+
+The sink is the internal process `SINK_OP` on the op channel `[0xE0, 0x32]` ([decision 77](decision-register.md#decision-77), item SK-1).
+It takes a message of any arity and does nothing.
+Its write bundle is the return channel of each `produce` and `consume` call on a user agent, so a reply of the agent never parks.
+
+### Reference agent
+
+The reference agent is the example `examples/reified_rspaces/agent_hashmap_bag.rho`. It is an agent of the Agents FIPS whose instances are spaces with HashMap channels and bag collections.
+It keeps the obligations ASO-1 to ASO-3, and [chapter 21](../../rholang/21-reified-spaces.md#writing-your-own-space) explains its code.
+
+### Conformance kit
+
+The conformance kit is the test suite `rholang/tests/reified_agent_conformance.rs`, which checks a user agent through programs that use the agent as a space.
+It runs each case as a sequence of deploys and compares all outputs after each deploy, so a match that stays pending fails the case.
+A faulty agent is its negative control ([decision 79](decision-register.md#decision-79)).
 
 ### Marker
 
