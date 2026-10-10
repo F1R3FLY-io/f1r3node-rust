@@ -1232,8 +1232,30 @@ Limits of this profile:
 - The tests run about 10 s each. They are legacy tests, not v6 tests, and not a production node.
 - Inclusive times overlap, so the shares do not add up.
 - Much of the `reduce` time is genesis.
-- The HEAD profiles and the offered-deploy profile are not available yet. Each report run ended before its call-graph section. The watched run reached the 16 GiB memory cap of this host's verification profile and then stopped.
+- The HEAD profiles follow in the next paragraph.
 - The raw reports are local artifacts and are not in the repository.
+
+**Profiles of HEAD.** [M] AMD uProf recorded T1 and T3 on HEAD `17e07307f` on 2026-10-09, with the same host and pinning. It also recorded the offered test T4, `a_third_signer_inserts_a_version_after_a_merge_with_a_writers_branch`, on HEAD. The report step of each HEAD profile needed 27 to 29 gigabytes of memory, so it ran under a cap of 32 gibibytes. The HEAD profile of T2 was not finished when this section was written.
+
+| Inclusive share of work | T1, dev | T1, HEAD | T3, dev | T3, HEAD | T4, HEAD (offered) |
+|---|---|---|---|---|---|
+| Work, sampled CPU minus rayon idle spin | 9.30 s | 11.19 s | 9.12 s | 10.50 s | 19.07 s |
+| Merge index, `block_index::new` | 10.5 % | 10.2 % | 7.8 % | 7.0 % | 2.9 % |
+| `compute_parents_post_state` | 1.2 % | — | 1.8 % | 1.4 % | — |
+| `dag_merger::merge` | 1.1 % | — | 1.6 % | 1.0 % | — |
+| Replay, `replay_compute_state` | 5.4 % | 4.6 % | 7.5 % | 6.1 % | 8.7 % |
+| Producer self-replay, `certify_offered_draft` | — | — | — | — | 7.2 % |
+| Play, `compute_deploys_checkpoint` | 3.4 % | 2.7 % | 4.9 % | 3.7 % | — |
+| Rholang reduction (dev `DebruijnInterpreter`, HEAD `ReducerCore`) | 34.2 % | 23.9 % | 27.9 % | 21.1 % | 34.0 % |
+| RSpace produce and consume | 10.2 % | 7.6 % | 7.8 % | 7.6 % | 8.7 % |
+
+A dash means that the report does not list the function. Either the function is below the report's cutoff of 400 entries, or it does not run on that path.
+
+What the HEAD profiles show: [M][I]
+- The merge takes about the same share of work on HEAD as on dev. In the offered-deploy test its share is smaller.
+- HEAD does 15 to 20 % more work than dev on the two legacy tests. The extra work is outside the merge.
+- In the offered-deploy test, replay and the producer's self-replay together take about 16 % of the work.
+- These are short tests. They do not decide E4, the performance claim, for a loaded network. The three-validator v6 soak that §9.3 lists is still needed.
 
 **August soak, GitHub Actions run 33099406770.** [M] One merge call took 2.16 s on average. The settled-signature probes took 92 % of it. The walk depth grew with the finalization lag, which deepened the lag further (`docs/claims/settled-effect-probe-equivalence.md:27-33`). Dev then batched the probes in `c9aff7732`, which HEAD contains.
 
@@ -1267,7 +1289,7 @@ No design touches the rayon idle spin, 58 to 63 % of sampled CPU. [M] Order-then
 
 | ID | Measurement |
 |---|---|
-| M1 | AMD uProf reports for HEAD tests T1 to T3 and for the offered test T4, `a_third_signer_inserts_a_version_after_a_merge_with_a_writers_branch`, one at a time |
+| M1 | AMD uProf reports for HEAD tests T1 to T3 and for the offered test T4, `a_third_signer_inserts_a_version_after_a_merge_with_a_writers_branch`, one at a time. Done for T1, T3 and T4 (§9.1). The T2 report was in progress when this section was written. |
 | M2 | A three-validator v6 soak with the stage histograms (`metrics_constants.rs:125-165`) and lock counters, against a dev legacy soak |
 | M3 | Validation time with and without the checkpoint and replay stages |
 | M4 | Executions per deploy (play, self-replay, replays), and executions of deploys that a merge later rejects |
