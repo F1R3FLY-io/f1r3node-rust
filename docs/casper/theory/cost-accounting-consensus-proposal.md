@@ -573,6 +573,21 @@ An option derives the rule from the deploy formats of the blocks in scope. It re
 - **Rocq.** `V6MergeOrder.v`, `V6MergeLedger.v` and `V6MergeOrderedPass.v` must prove order independence, conflict freedom, ledger validity, termination and fast-equals-slow. `CursorLinearity.v` and `CostCursorBuckets.v` cover the cursor arguments. Negative controls include an arrival-order tie-break and a missing claim check. Two more cover a set collapse that hides a duplicate and a sign-only repair that stalls on a negative base.
 - **TLA+.** `V6MergeSerialization.tla` must check three validators with permuted arrival orders. Ten failing configurations must each refute one named invariant. `CursorDuplicateDetection.tla`, `FeeCursorBranchMerge.tla` and `FeeCursorCells.tla` cover the cursors and the lock fix.
 
+**Same-signer sibling blocks: open for discussion.** [C][P][I] This is decision D-7, same-signer siblings, in §11.
+
+- **The situation.** Two sibling blocks can each hold a fully funded offered deploy from the same signer. Each block settles its deploy against that signer's cost cursor at the same revision. The merge then sees two settlements that write the same cursor cells, so the two branches conflict.
+- **What the interim rule does.** The ordered pass keeps the branch that comes first in the order $`K`$ and rejects the other branch.
+  - The owner's node proposes the rejected deploy again, inside the deploy's validity window. This is the owner-only recovery of DR-116, the decision record on offered recovery.
+  - The deploy then runs on the merged state and settles from the cursor that the winner left.
+  - A rejected deploy that had failed leaves without a charge.
+- **What P1 says.** Deployments with the same signature "are serialized by the linear proof" (P1:360-363). In sequence, the second deployment is accepted only if the pool still covers it (P1:2245-2269). So when the purse covers both deployments, P1 lets both succeed. Keep-one delays one of them, and it can drop a failed one without a charge.
+- **Why both cannot simply survive.** A payer group is the set of payers that share one cost cursor.
+  - For a payer group with several payers, the next cursor position depends on the allocation of the first settlement. The second settlement was planned from the old position. A merge cannot plan it again without executing it again.
+  - For a single-payer group, both deployments could survive, but only with a redesigned cursor. It needs an additive revision counter and a position cell that the merge does not consume.
+  - That redesign changes the cursor transition rules and the duplicate-detection argument. It revises at least six TLA+ models and three Rocq modules, and it takes about 3 to 5 engineer-weeks.
+- **Under order-then-execute.** Both deployments execute in the canonical order, so the question disappears.
+- **The question for discussion.** Accept keep-one until order-then-execute exists, or invest in the cursor redesign now.
+
 ### 4.5 The cost-cursor lock fix (bug 11004, planned DR-119)
 
 **Status: designed, and accepted by the third independent check. Not started.** It lands after the v6 merge rule.
@@ -1215,7 +1230,7 @@ These questions arise from the design. Each answer can change §7. [I]
 
 ### 9.1 Measured data and their limits
 
-**Profile of two legacy multi-parent tests on dev.** [M] AMD uProf recorded hotspot profiles of dev `93e38575e` on 2026-10-09. The host was one AMD Ryzen Threadripper PRO 5975WX, pinned to 16 hardware threads. T1 is `hash_set_casper_should_compute_identical_post_states_across_validators_for_merge_blocks`. T3 is `a_co_witnessed_sibling_fork_must_adjudicate_and_advance`. The profiling plan also names the legacy test T2, `multi_parent_casper_should_allow_bonding`, and this section reports no profile of it. Rayon is the thread-pool library of the node, and its idle threads spin. "Work" is sampled CPU time minus that rayon idle spin.
+**Profile of two legacy multi-parent tests on dev.** [M] AMD uProf recorded hotspot profiles of dev `93e38575e` on 2026-10-09. The host was one AMD Ryzen Threadripper PRO 5975WX, pinned to 16 hardware threads. T1 is `hash_set_casper_should_compute_identical_post_states_across_validators_for_merge_blocks`. T3 is `a_co_witnessed_sibling_fork_must_adjudicate_and_advance`. The profiling plan also names the legacy test T2, `multi_parent_casper_should_allow_bonding`. Its profiles follow the HEAD table below. Rayon is the thread-pool library of the node, and its idle threads spin. "Work" is sampled CPU time minus that rayon idle spin.
 
 | Inclusive share of work | T1 (work 9.30 s) | T3 (work 9.12 s) |
 |---|---|---|
@@ -1235,7 +1250,7 @@ Limits of this profile:
 - The HEAD profiles follow in the next paragraph.
 - The raw reports are local artifacts and are not in the repository.
 
-**Profiles of HEAD.** [M] AMD uProf recorded T1 and T3 on HEAD `17e07307f` on 2026-10-09, with the same host and pinning. It also recorded the offered test T4, `a_third_signer_inserts_a_version_after_a_merge_with_a_writers_branch`, on HEAD. The report step of each HEAD profile needed 27 to 29 gigabytes of memory, so it ran under a cap of 32 gibibytes. The HEAD profile of T2 was not finished when this section was written.
+**Profiles of HEAD.** [M] AMD uProf recorded T1 and T3 on HEAD `17e07307f` on 2026-10-09, with the same host and pinning. It also recorded the offered test T4, `a_third_signer_inserts_a_version_after_a_merge_with_a_writers_branch`, on HEAD. The report step of each HEAD profile needed 27 to 29 gigabytes of memory, so it ran under a cap of 32 gibibytes. The profiles of T2 finished later, and the paragraph after the table gives them.
 
 | Inclusive share of work | T1, dev | T1, HEAD | T3, dev | T3, HEAD | T4, HEAD (offered) |
 |---|---|---|---|---|---|
@@ -1251,9 +1266,11 @@ Limits of this profile:
 
 A dash means that the report does not list the function. Either the function is below the report's cutoff of 400 entries, or it does not run on that path.
 
+**T2 on dev and on HEAD.** [M] Work grew from 10.24 s on dev to 12.64 s on HEAD. The merge index took 11.6 % of work on dev and 10.8 % on HEAD. Replay took 5.3 % and 5.2 %, play took 2.3 % and 1.9 %, and Rholang reduction took 35.5 % and 24.2 %.
+
 What the HEAD profiles show: [M][I]
 - The merge takes about the same share of work on HEAD as on dev. In the offered-deploy test its share is smaller.
-- HEAD does 15 to 20 % more work than dev on the two legacy tests. The extra work is outside the merge.
+- HEAD does 15 to 23 % more work than dev on the three legacy tests. The extra work is outside the merge.
 - In the offered-deploy test, replay and the producer's self-replay together take about 16 % of the work.
 - These are short tests. They do not decide E4, the performance claim, for a loaded network. The three-validator v6 soak that §9.3 lists is still needed.
 
@@ -1289,7 +1306,7 @@ No design touches the rayon idle spin, 58 to 63 % of sampled CPU. [M] Order-then
 
 | ID | Measurement |
 |---|---|
-| M1 | AMD uProf reports for HEAD tests T1 to T3 and for the offered test T4, `a_third_signer_inserts_a_version_after_a_merge_with_a_writers_branch`, one at a time. Done for T1, T3 and T4 (§9.1). The T2 report was in progress when this section was written. |
+| M1 | AMD uProf reports for HEAD tests T1 to T3 and for the offered test T4, `a_third_signer_inserts_a_version_after_a_merge_with_a_writers_branch`, one at a time. Done for T1 to T4 (§9.1). |
 | M2 | A three-validator v6 soak with the stage histograms (`metrics_constants.rs:125-165`) and lock counters, against a dev legacy soak |
 | M3 | Validation time with and without the checkpoint and replay stages |
 | M4 | Executions per deploy (play, self-replay, replays), and executions of deploys that a merge later rejects |
@@ -1346,7 +1363,7 @@ These decisions belong to the user, Greg and the Casper team. Each row gives the
 | D-4 | Where acceptance binds in (c) | A: at execution, as P1 states. A2: A, plus a filter that counts the unexecuted demand of the past cone (§7.4). B: derived in-flight holds at inclusion. | A2. No hold crosses a block. The user must confirm that holds inside one block are exempt from the no-escrow rule (§7.6). | A: jointly overcommitted envelopes can fill blocks and then fail at no cost (P1:2208-2212, §7.4). A2: concurrent blocks can still overcommit a purse. B: a reservation table that the user's no-escrow rule forbids (`funding-settlement-design-review.md:171-176`). |
 | D-5 | "Simultaneous arrival" in a DAG | A: only inside one block (DR-65). B: concurrent sibling blocks too. | A | A: alternatives in concurrent blocks resolve by the canonical order. B rejects many honest pairs. |
 | D-6 | User alternatives | A: funding, slots and branches inside a deployment. B: a new envelope-level alternative group. | A. "D6 deferred" was an agent's default, not the user's decision. D6 was the label of this decision in the v6 merge-rule design report. | A: a user cannot rank the alternatives that the same user submits separately. B: not in the papers, size M, and a new consensus encoding. |
-| D-7 | Two fully funded same-signer siblings under (a) | A: keep one, the current default. B: redesign the cursor so that both survive. | A while (a) is an interim. Under (c), both execute in order. | A departs from P1:360-363. B is size M, and Phase 3 makes it unnecessary. |
+| D-7 | Two fully funded same-signer siblings under (a). §4.4 gives the full analysis. | A: keep one, the current default. B: redesign the cursor so that both survive. | A while (a) is an interim. Under (c), both execute in order. | A departs from P1:360-363. B is size M, and Phase 3 makes it unnecessary. |
 | D-8 | The validator-set source under (c) | A: epoch-attested state (P1:3036-3043). B: a validator registry in consensus, outside RSpace. | A, with the lag of Q-3 | A: a new bond waits up to the lag. B: a new protocol element. P1 says that slashing, minting and stake-weighted voting are expressible as Rholang contracts (P1:3777-3780). |
 | D-9 | Ownership | A: a new epic, owned with the Casper team. B: extend epic 8946. C: the Casper team alone. | A | B: the fixed exclusions of epic 8946 forbid consensus, finality and merge changes. C: the cost-accounting invariants lose their owner. |
 
