@@ -2748,10 +2748,10 @@ The rejection alone is not monotone in $`L`$, because a byte vector is encoded o
 So the search compares the usages too.
 
 **The pattern-enforcement matrix (N3).**
-For each wired row, a pattern for 42 never receives 43 in either order (`rholang/tests/reified_pattern_enforcement.rs:320-368`).
+For each wired row, a pattern for 42 never receives 43 in either order (`rholang/tests/reified_pattern_enforcement.rs:342-390`).
 A pattern for 42 receives 42 on a fresh name.
-The unsupported pairs fail at every layer: the URN, the registration, the constructor, the agent and a Rholang deploy (`rholang/tests/reified_pattern_enforcement.rs:663-854`).
-The qualifiers `temp` and `seq` give `QualifierUnavailable` until P7 (F17), and for an Array family this error comes before `MissingParam` (`rholang/tests/reified_pattern_enforcement.rs:865-918`).
+The unsupported pairs fail at every layer: the URN, the registration, the constructor, the agent and a Rholang deploy (`rholang/tests/reified_pattern_enforcement.rs:685-876`).
+The qualifiers `temp` and `seq` give `QualifierUnavailable` until P7 (F17), and for an Array family this error comes before `MissingParam` (`rholang/tests/reified_pattern_enforcement.rs:887-948`).
 
 *Table 78. The pattern-enforcement matrix after the joins of wave W3.*
 
@@ -2773,15 +2773,15 @@ The joins batch extends both suites to the 18 wired families and to the joins.
 They check the canonical iteration of set views, of the priority-queue order, of the Array and Vector rows and of join groups.
 They also inject the serialization failure into the set and the priority queue, and `prop_candidate_serialize_failure_cut_is_exact` now covers both.
 
-`reified_pattern_enforcement.rs` adds 12 rows (`rholang/tests/reified_pattern_enforcement.rs:398-470`).
+`reified_pattern_enforcement.rs` adds 12 rows (`rholang/tests/reified_pattern_enforcement.rs:420-492`).
 They are the set and the priority queue of `hashmap`, and the bag, stack, set, cell and priority queue of `array` and `vector`.
-Three join rows check that `for (@42 <- a & @y <- b)` never receives the record 43 of `a`, in both orders (`rholang/tests/reified_pattern_enforcement.rs:503-589`).
+Three join rows check that `for (@42 <- a & @y <- b)` never receives the record 43 of `a`, in both orders (`rholang/tests/reified_pattern_enforcement.rs:525-611`).
 The rows use the queue, the bag and the set of `hashmap`, and the records and the join waiter stay.
 A join for 42 on two fresh names receives 42.
 Now `reified_determinism.rs` holds 13 tests and 3 properties, and `reified_pattern_enforcement.rs` holds 23 tests and 1 property.
 
 **Phase 2 of the PathMap engine.**
-`reified_pattern_enforcement.rs` adds the six rows `pattern_enforcement_pathmap_*` (`rholang/tests/reified_pattern_enforcement.rs:1115-1195`).
+`reified_pattern_enforcement.rs` adds the six rows `pattern_enforcement_pathmap_*` (`rholang/tests/reified_pattern_enforcement.rs:1145-1225`).
 A name of a PathMap space is the path of one element, so its record stays on the data channel of that path.
 The waiter for 42 stays on the index channel of the name, and no COMM touches these channels or the root index channel $`I(\varepsilon)`$.
 The token orders every operation of the space, so the orders of a counted discipline run across the two names.
