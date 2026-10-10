@@ -91,7 +91,7 @@ curl http://localhost:40403/api/status
   "nativeTokenSymbol": "F1R3",
   "nativeTokenDecimals": 8,
   "lastFinalizedBlockNumber": 28,
-  "isValidator": false,
+  "isValidator": true,
   "isReadOnly": false,
   "isReady": true,
   "currentEpoch": 2,
@@ -113,7 +113,7 @@ curl http://localhost:40403/api/status
 | `nativeTokenSymbol` | string | Token ticker symbol |
 | `nativeTokenDecimals` | int | Decimal places (dust per token = 10^decimals) |
 | `lastFinalizedBlockNumber` | int | LFB block number. `-1` if casper not yet initialized |
-| `isValidator` | bool | `true` if the node can propose blocks |
+| `isValidator` | bool | `true` if the node has a configured validator key; this does not confirm current bond status |
 | `isReadOnly` | bool | `true` if running in read-only mode |
 | `isReady` | bool | `true` after engine enters Running state |
 | `currentEpoch` | int | `lastFinalizedBlockNumber / epochLength` |

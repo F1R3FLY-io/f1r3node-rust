@@ -78,6 +78,7 @@ pub struct DeployGrpcServiceV1Impl {
     native_token_name: String,
     native_token_symbol: String,
     native_token_decimals: u32,
+    has_validator_key: bool,
     is_node_read_only: bool,
     engine_cell: EngineCell,
     block_report_api: BlockReportAPI,
@@ -101,6 +102,7 @@ impl DeployGrpcServiceV1Impl {
         native_token_name: String,
         native_token_symbol: String,
         native_token_decimals: u32,
+        has_validator_key: bool,
         is_node_read_only: bool,
         engine_cell: EngineCell,
         block_report_api: BlockReportAPI,
@@ -122,6 +124,7 @@ impl DeployGrpcServiceV1Impl {
             native_token_name,
             native_token_symbol,
             native_token_decimals,
+            has_validator_key,
             is_node_read_only,
             engine_cell,
             block_report_api,
@@ -1062,7 +1065,6 @@ impl DeployService for DeployGrpcServiceV1Impl {
             Err(_) => -1,
         };
 
-        let is_validator = self.trigger_propose_f.is_some();
         let is_ready = self.is_ready.load(Ordering::Relaxed);
         let current_epoch = if self.epoch_length > 0 && lfb_number >= 0 {
             lfb_number / self.epoch_length as i64
@@ -1093,7 +1095,7 @@ impl DeployService for DeployGrpcServiceV1Impl {
             native_token_symbol: self.native_token_symbol.clone(),
             native_token_decimals: self.native_token_decimals,
             last_finalized_block_number: lfb_number,
-            is_validator,
+            is_validator: self.has_validator_key,
             is_read_only: self.is_node_read_only,
             is_ready,
             current_epoch,
@@ -1167,6 +1169,7 @@ mod tests {
             "F1R3".to_string(),
             "F1R3".to_string(),
             8,
+            false,
             true,
             EngineCell::init(),
             BlockReportAPI::new(

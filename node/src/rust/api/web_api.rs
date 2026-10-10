@@ -223,6 +223,7 @@ pub struct WebApiImpl {
     native_token_name: String,
     native_token_symbol: String,
     native_token_decimals: u32,
+    has_validator_key: bool,
     is_node_read_only: bool,
     engine_cell: Arc<EngineCell>,
     block_report_api: BlockReportAPI,
@@ -246,6 +247,7 @@ impl WebApiImpl {
         native_token_name: String,
         native_token_symbol: String,
         native_token_decimals: u32,
+        has_validator_key: bool,
         is_node_read_only: bool,
         block_report_api: BlockReportAPI,
         transfer_unforgeable: models::rhoapi::Par,
@@ -267,6 +269,7 @@ impl WebApiImpl {
             native_token_name,
             native_token_symbol,
             native_token_decimals,
+            has_validator_key,
             is_node_read_only,
             engine_cell,
             block_report_api,
@@ -424,7 +427,6 @@ impl WebApi for WebApiImpl {
             );
         }
 
-        let is_validator = self.trigger_propose_f.is_some();
         let is_ready = self.is_ready.load(Ordering::Relaxed);
 
         // Advertise the floor admission and validity actually enforce — the
@@ -455,7 +457,7 @@ impl WebApi for WebApiImpl {
             native_token_symbol: self.native_token_symbol.clone(),
             native_token_decimals: self.native_token_decimals,
             last_finalized_block_number: lfb_number,
-            is_validator,
+            is_validator: self.has_validator_key,
             is_read_only: self.is_node_read_only,
             is_ready,
             current_epoch,
@@ -1440,7 +1442,7 @@ pub struct ApiStatus {
     /// Block number of the last finalized block. -1 if casper not yet initialized.
     #[serde(rename = "lastFinalizedBlockNumber")]
     pub last_finalized_block_number: i64,
-    /// Whether this node is a validator (can propose blocks).
+    /// Whether this node has a configured validator key.
     #[serde(rename = "isValidator")]
     pub is_validator: bool,
     /// Whether this node is running in read-only mode.
