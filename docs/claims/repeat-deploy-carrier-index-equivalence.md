@@ -74,6 +74,16 @@ Pruning must preserve C2 for all later validation calls.
 
 A stale or repeated prune request must not remove a required carrier.
 
+A prune walk writes the carrier table in chunks of at most `PRUNE_WRITE_CHUNK` (1024) rows. It records its cutoff (`last-prune`) only after every chunk is written.
+
+A walk that fails part way leaves the stride open, so the next walk finishes the same prune. A partial prune removes only entries below the cutoff, so it preserves C2.
+
+Tests in `carrier_index.rs` (PR #695, 2026-10-10):
+
+- `a_prune_walk_writes_the_carrier_table_in_a_bounded_number_of_batches`
+- `a_prune_walk_writes_no_batch_larger_than_the_write_chunk`
+- `a_prune_that_fails_part_way_is_finished_by_the_next_walk`. A mutation that writes `last-prune` before the data fails this test.
+
 ### C5 — Verdict equivalence
 
 For each generated DAG, candidate block, expiration window, and storage-availability pattern:
