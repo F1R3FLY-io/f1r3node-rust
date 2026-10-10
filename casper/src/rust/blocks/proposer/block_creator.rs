@@ -4347,6 +4347,54 @@ mod tests {
     }
 
     #[test]
+    fn deploy_inclusion_leader_keeps_the_normal_cap_whatever_the_fallback_backlog() {
+        let mut snapshot =
+            crate::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
+        snapshot
+            .on_chain_state
+            .shard_conf
+            .max_user_deploys_per_block = 128;
+        let fallback = fresh_admission_fallback(
+            &snapshot,
+            true,
+            DeployInclusionStaleness::default(),
+            FreshLocalDeployStats {
+                count: 26,
+                oldest_age_millis: 7_467,
+            },
+            lag(25, 22),
+        );
+        assert_eq!(fallback.cap, 26);
+
+        let policy_at = |finality_lag| {
+            ordinary_admission_policy(
+                &snapshot,
+                false,
+                true,
+                true,
+                true,
+                fallback,
+                FreshAdmissionFallback::default(),
+                DeployInclusionStaleness::default(),
+                finality_lag,
+            )
+        };
+
+        let unloaded = policy_at(lag(25, 22));
+        assert!(unloaded.allow_ordinary);
+        assert!(!unloaded.fallback);
+        assert_eq!(unloaded.ordinary_cap, 128);
+        assert_eq!(
+            policy_at(lag(29, 25)).ordinary_cap,
+            NON_LEADER_FALLBACK_ORDINARY_DEPLOY_CAP
+        );
+        assert_eq!(
+            policy_at(lag(29, 21)).ordinary_cap,
+            NON_LEADER_FALLBACK_MIN_ORDINARY_DEPLOY_CAP
+        );
+    }
+
+    #[test]
     fn finality_backpressure_holds_the_non_leader_cap_whatever_the_backlog() {
         let mut snapshot =
             crate::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
