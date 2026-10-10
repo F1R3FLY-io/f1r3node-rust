@@ -83,7 +83,10 @@ pub(crate) fn admit_deploy<T: TransportLayer + Send + Sync>(
     }
 
     // Create normalizer environment from deploy
-    let normalizer_env = normalizer_env_from_deploy(&deploy);
+    let normalizer_env = match normalizer_env_from_deploy(&deploy) {
+        Ok(env) => env,
+        Err(error) => return Ok(Either::Left(DeployError::parsing_error(error.to_string()))),
+    };
     let parse_started_at = std::time::Instant::now();
 
     // Try to parse the deploy term

@@ -3735,6 +3735,7 @@ fn not_future_deploy(current_block_number: i64, deploy_data: &DeployData) -> boo
 
 #[cfg(test)]
 mod tests {
+    use crypto::rust::signatures::secp256k1::Secp256k1;
     use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
 
     use super::*;
@@ -5566,14 +5567,21 @@ mod tests {
             .duration_since(SystemTime::UNIX_EPOCH)
             .expect("time")
             .as_millis() as i64;
-        let mut expired = construct_deploy::source_deploy_now(
+        let mut expired_data = construct_deploy::source_deploy_now(
             "@expired-buffer!(0)".to_string(),
             None,
             Some(10),
             Some("test".to_string()),
         )
-        .expect("expired deploy");
-        expired.data.expiration_timestamp = Some(now - 1);
+        .expect("expired deploy")
+        .data;
+        expired_data.expiration_timestamp = Some(now - 1);
+        let expired = Signed::create(
+            expired_data,
+            Box::new(Secp256k1),
+            construct_deploy::DEFAULT_SEC.clone(),
+        )
+        .expect("sign expired deploy");
         let old = construct_deploy::source_deploy_now(
             "@old-buffer!(0)".to_string(),
             None,
@@ -5655,14 +5663,21 @@ mod tests {
             .duration_since(SystemTime::UNIX_EPOCH)
             .expect("time")
             .as_millis() as i64;
-        let mut expired = construct_deploy::source_deploy_now(
+        let mut expired_data = construct_deploy::source_deploy_now(
             "@expired-purge!(0)".to_string(),
             None,
             Some(10),
             Some("test".to_string()),
         )
-        .expect("expired deploy");
-        expired.data.expiration_timestamp = Some(now - 1);
+        .expect("expired deploy")
+        .data;
+        expired_data.expiration_timestamp = Some(now - 1);
+        let expired = Signed::create(
+            expired_data,
+            Box::new(Secp256k1),
+            construct_deploy::DEFAULT_SEC.clone(),
+        )
+        .expect("sign expired deploy");
         deploy_storage
             .lock()
             .add(vec![expired.clone()])
