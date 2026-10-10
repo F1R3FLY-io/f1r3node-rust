@@ -1,7 +1,7 @@
 {
   "schema": "reified-rspaces-model-map/2",
   "phase": "P8",
-  "title": "P8: the spaces that user agents implement (design v2, plan decision 77). Step 1 (W1 and W5): the use-context of an agent and the write rule of an agent reference (SpaceRefs.v A1), the matcher state codec, the matcher process and the sink. Step 2 (W2 and W7): the call of a send on an agent space (TS-1 to TS-3) and the R7 replies to agent-minted names (SpaceRefs.v A2). Step 3 (W3 and W6): the translation of a receive (AgentTranslation.v A3 to A8) and the native consume of a handle.",
+  "title": "P8: the spaces that user agents implement (design v2, plan decision 77). Step 1 (W1 and W5): the use-context of an agent and the write rule of an agent reference (SpaceRefs.v A1), the matcher state codec, the matcher process and the sink. Step 2 (W2 and W7): the call of a send on an agent space (TS-1 to TS-3) and the R7 replies to agent-minted names (SpaceRefs.v A2). Step 3 (W3 and W6): the translation of a receive (AgentTranslation.v A3 to A8) and the native consume of a handle. Step 4 (W4): the translation of `new`: the agent-minted names (SpaceRefs.v A9) and the resume term (AgentTranslation.v A10).",
   "design": "P8 design v2 (.reified-rspaces-work/p8/design-v2.md), sections 3, 4, 7 and 9. The headline ids are the ids of the P8 phase of formal/reified-rspaces-invariant-map.json. The agent routes of route (AG-1) re-prove the P4 headlines route_total_deterministic and route_rules, so the P4 map holds route, agent_parts and UseKind. The agent arms of single_target (P8 step 3, TR-1 and TR-2) re-prove the P5 headline query_source_routes_inner_channel, so the P5 map holds single_bind_route.",
   "code_base": "The items are in the P8 commits of this repository. The line numbers are informative. The checker finds each item by its scope and name.",
   "checker": "scripts/verify-reified/check-model-map.py",
@@ -60,6 +60,18 @@
       "name": "matcher_state_roundtrip",
       "file": "formal/rocq/reified_rspaces/theories/AgentTranslation.v",
       "statement": "The codec of a matcher state is exact: a consistent state decodes from its encoding and from its matcher id, a decoded state re-encodes to the same bytes, and the encoding is injective (TR-5, MO-2)."
+    },
+    "A9": {
+      "kind": "rocq",
+      "name": "tag_untag_id",
+      "file": "formal/rocq/reified_rspaces/theories/SpaceRefs.v",
+      "statement": "An agent-minted name is one bundle with both flags around the agent-tagged tuple of its agent and its raw channel: both bundle rules give the tuple, the tuple routes to its agent with its raw channel under every context (R4), and the R7 backend reads the same parts from the name (R7A-1) (TN-3)."
+    },
+    "A10": {
+      "kind": "rocq",
+      "name": "resume_binds_innermost",
+      "file": "formal/rocq/reified_rspaces/theories/AgentTranslation.v",
+      "statement": "The resume term of a translated new binds every binder of the new in its order: each target evaluates to the bound name of its binder or to the agent-minted name of the reply of its rank, and BoundVar(k - 1 - j) reads binder j after the match, as in a native new (TN-3)."
     }
   },
   "items": [
@@ -104,8 +116,8 @@
       "scope": "ReducerCore",
       "kind": "fn",
       "name": "eval_use",
-      "line": 275,
-      "role": "use s { P }: the write rule of an agent reference; the context of an agent until step 4 fails closed.",
+      "line": 281,
+      "role": "use s { P }: the write rule of an agent reference, and from step 4 the context of the agent (AG-2).",
       "rocq": [
         "enter_use"
       ],
@@ -448,6 +460,111 @@
       "tla": [],
       "covers": [],
       "unmodeled": "A projection of a route of the model (RAgent a raw) into the bind that translate_receive takes; AgentTranslation.v models the translation of the binds."
+    },
+    {
+      "item": "ReducerCore::reified_new",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
+      "scope": "ReducerCore",
+      "kind": "fn",
+      "name": "reified_new",
+      "line": 893,
+      "role": "The hook of eval_new: in the context of an agent every plain binder is an agent binder and the new runs T_new; every other new allocates as before (W4, section 16).",
+      "rocq": [
+        "binder",
+        "agents"
+      ],
+      "tla": [],
+      "covers": [
+        "A10"
+      ]
+    },
+    {
+      "item": "ReducerCore::agent_new",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
+      "scope": "ReducerCore",
+      "kind": "fn",
+      "name": "agent_new",
+      "line": 942,
+      "role": "T_new: the draws of HEAD and the native allocation jobs (TN-1), P_closed in the wrapper of the context (TN-3), and the synthesized Par with no use-context (TN-4).",
+      "rocq": [
+        "targets",
+        "resume_env",
+        "match_env"
+      ],
+      "tla": [],
+      "covers": [
+        "A10"
+      ]
+    },
+    {
+      "item": "ReducerCore::eval_new_space",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
+      "scope": "ReducerCore",
+      "kind": "fn",
+      "name": "eval_new_space",
+      "line": 327,
+      "role": "new x : s in P: an annotation or a context of a user agent makes an agent binder, and a new with agent binders runs T_new (W4).",
+      "rocq": [
+        "binder"
+      ],
+      "tla": [],
+      "covers": [
+        "A10"
+      ]
+    },
+    {
+      "item": "translate_new",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/user_agent.rs",
+      "kind": "fn",
+      "name": "translate_new",
+      "line": 1272,
+      "role": "T_new: the reply names (TN-2), the resume term (TN-3) and the gensym calls (TN-4).",
+      "rocq": [
+        "targets_from",
+        "targets",
+        "eval_target",
+        "resume_env",
+        "expected_from"
+      ],
+      "tla": [],
+      "covers": [
+        "A10"
+      ]
+    },
+    {
+      "item": "agent_minted_name",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/user_agent.rs",
+      "kind": "fn",
+      "name": "agent_minted_name",
+      "line": 1220,
+      "role": "The agent-minted name bundle{(AGENT_TAG, A, raw)} of a reply (TN-3).",
+      "rocq": [
+        "agent_minted_name",
+        "agent_tuple"
+      ],
+      "tla": [],
+      "covers": [
+        "A9",
+        "A10"
+      ]
+    },
+    {
+      "item": "levels_below",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/user_agent.rs",
+      "kind": "fn",
+      "name": "levels_below",
+      "line": 1246,
+      "role": "The bit set of the binder levels below a count: the locally_free set of a resume receive.",
+      "rocq": [],
+      "tla": [],
+      "covers": [],
+      "unmodeled": "The models read no locally_free set (SpaceRefs.v, AgentTranslation.v); prop_resume_binds_innermost runs the substitution of the reducer, which recomputes the bit sets."
     }
   ]
 }

@@ -664,11 +664,13 @@ new out in {
         );
         // Annotations that name no native space fail closed.
         for (label, source, code) in [
-            (
-                "agent",
-                r#"new x : @"agent" in { Nil }"#,
-                "AgentSpacesUnavailable",
-            ),
+            // Changed by P8 step 4 (design v2 W4): an annotation of a user agent makes an agent
+            // binder, which the translation of `new` binds (rholang/tests/reified_user_agents.rs).
+            // (
+            //     "agent",
+            //     r#"new x : @"agent" in { Nil }"#,
+            //     "AgentSpacesUnavailable",
+            // ),
             ("name", "new x : a in { Nil }", "NotASpaceRef"),
             ("nil", "new x : @Nil in { Nil }", "EmptySpaceRef"),
         ] {
@@ -847,22 +849,25 @@ new spaceAgent(`rho:space:getSpaceAgent`), equal(`rho:assert:assertEqual`) in {
         // agent-tagged name is translated (rholang/tests/reified_user_agents.rs), and a join of
         // an agent-tagged name and a default channel is a CrossSpaceJoin.
         for (label, body, code) in [
-            (
-                "use-string",
-                r#"use @"user agent" { @"x"!(1) }"#,
-                "AgentSpacesUnavailable",
-            ),
-            ("use-list", "use @[1, 2] { Nil }", "AgentSpacesUnavailable"),
-            (
-                "use-plain",
-                "new u in { use u { Nil } }",
-                "AgentSpacesUnavailable",
-            ),
-            (
-                "annotation",
-                r#"new x : @"user agent" in { x!(1) }"#,
-                "AgentSpacesUnavailable",
-            ),
+            // Changed by P8 step 4 (design v2 AG-2, W4): a `use` block on a user agent enters
+            // its context, and an annotation of an agent makes an agent binder. The native suite
+            // rholang/tests/reified_user_agents.rs runs these programs.
+            // (
+            //     "use-string",
+            //     r#"use @"user agent" { @"x"!(1) }"#,
+            //     "AgentSpacesUnavailable",
+            // ),
+            // ("use-list", "use @[1, 2] { Nil }", "AgentSpacesUnavailable"),
+            // (
+            //     "use-plain",
+            //     "new u in { use u { Nil } }",
+            //     "AgentSpacesUnavailable",
+            // ),
+            // (
+            //     "annotation",
+            //     r#"new x : @"user agent" in { x!(1) }"#,
+            //     "AgentSpacesUnavailable",
+            // ),
             // Changed by P8 step 2 (design v2 TS-1): a send on an agent-tagged name makes the
             // call on the agent (rholang/tests/reified_user_agents.rs).
             // ("tagged-send", "@(*tag, 1, 2)!(3)"),
@@ -1023,24 +1028,27 @@ mod reducer_handle_unwrap {
     async fn reducer_handle_unwrap_agent_classification() {
         let mut session = Session::new().await;
         session.setup().await;
-        // A value that is not a Reified id is a space of a user agent: P8 implements it, so P4
-        // fails closed. getSpaceAgent classifies the same values the same way.
+        // A value that is not a Reified id is a space of a user agent, and getSpaceAgent
+        // classifies the same values the same way.
         let references = [
             ("string", r#"@"user agent""#, r#""user agent""#),
             ("list", "@[1]", "[1]"),
             ("par", "@{1 | 2}", "1 | 2"),
             ("plain", "plain", "*plain"),
         ];
-        for (label, name, _) in references {
-            session
-                .fail_with(
-                    &with_space(&format!("new plain in {{ use {name} {{ @\"x\"!(1) }} }}")),
-                    &format!("rrs-p4-agent-class-{label}"),
-                    &Injections::new(),
-                    &["AgentSpacesUnavailable"],
-                )
-                .await;
-        }
+        // Changed by P8 step 4 (design v2 AG-2): a `use` block on a user agent enters its
+        // context, so these blocks no longer fail closed. rholang/tests/reified_user_agents.rs
+        // runs `use` blocks of agents natively.
+        // for (label, name, _) in references {
+        //     session
+        //         .fail_with(
+        //             &with_space(&format!("new plain in {{ use {name} {{ @\"x\"!(1) }} }}")),
+        //             &format!("rrs-p4-agent-class-{label}"),
+        //             &Injections::new(),
+        //             &["AgentSpacesUnavailable"],
+        //         )
+        //         .await;
+        // }
         let mut body = String::from("new plain, spaceAgent(`rho:space:getSpaceAgent`) in {\n");
         for (label, _, value) in references {
             body.push_str(&format!(
@@ -1117,9 +1125,10 @@ new n : bare in { n!(4) | @"rrs-n"!(*n) }
     /// P8 step 1 (design v2 AG-4): a call on a user agent is an ordinary send, so the reference
     /// of an agent follows the bundle rule of `eval_send`. `use` and an annotation of `new`
     /// reject a reference under a bundle without the write flag with `HandleNotWritable`, the
-    /// code of P4 that P8 generalizes. A reference with a call channel passes the rule. Its
-    /// `use` block and its annotation then fail closed with `AgentSpacesUnavailable` until the
-    /// translation of `new` lands (P8 step 4).
+    /// code of P4 that P8 generalizes. A reference with a call channel passes the rule. From P8
+    /// step 4 its `use` block and its annotation translate, and the native test
+    /// `agent_use_and_new_follow_the_write_rule` (rholang/tests/reified_user_agents.rs) checks
+    /// them.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn reducer_agent_reference_write_rule() {
         let mut session = Session::new().await;
@@ -1135,17 +1144,19 @@ new n : bare in { n!(4) | @"rrs-n"!(*n) }
                 r#"@{bundle0{"user agent"}}"#,
                 "HandleNotWritable",
             ),
-            (
-                "write-only",
-                r#"@{bundle+{"user agent"}}"#,
-                "AgentSpacesUnavailable",
-            ),
-            (
-                "read-write",
-                r#"@{bundle{"user agent"}}"#,
-                "AgentSpacesUnavailable",
-            ),
-            ("plain", r#"@"user agent""#, "AgentSpacesUnavailable"),
+            // Changed by P8 step 4 (design v2 AG-2, W4): these references pass the write rule,
+            // and their `use` blocks and annotations translate (reified_user_agents.rs).
+            // (
+            //     "write-only",
+            //     r#"@{bundle+{"user agent"}}"#,
+            //     "AgentSpacesUnavailable",
+            // ),
+            // (
+            //     "read-write",
+            //     r#"@{bundle{"user agent"}}"#,
+            //     "AgentSpacesUnavailable",
+            // ),
+            // ("plain", r#"@"user agent""#, "AgentSpacesUnavailable"),
         ] {
             for (form, body) in [
                 ("use", format!("use {reference} {{ Nil }}")),

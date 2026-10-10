@@ -61,14 +61,18 @@ use crate::rust::interpreter::reified::system_channels::{
     check_persistent_send, handle_of, is_factory_op, op_of, packs_arguments,
 };
 use crate::rust::interpreter::reified::system_processes::native_agent;
-use crate::rust::interpreter::reified::user_agent::{AgentBind, ReceiveTranslation};
+use crate::rust::interpreter::reified::user_agent::{
+    AgentBind, AgentBinder, NewTranslation, ReceiveTranslation,
+};
 use crate::rust::interpreter::reified::{seq, user_agent};
 use crate::rust::interpreter::spaces::agent::{
     AllocOp, ConsumeOp, JoinBind, JoinOp, OpOrigin, ProduceOp, QueryParams, SpaceAgent, SpaceFire,
     SpaceOp, SpaceOutcome, SpaceReissue,
 };
 use crate::rust::interpreter::spaces::errors::SpaceError;
-use crate::rust::interpreter::spaces::namespace::{self, CollectionKey, NameTail, NativeSpace};
+use crate::rust::interpreter::spaces::namespace::{
+    self, CollectionKey, NameTail, NativeSpace, RandomPurpose,
+};
 use crate::rust::interpreter::{deterministic_reduction, unwrap_option_safe};
 
 /// A boxed reducer future, as `produce`, `consume` and `dispatch` return it.
@@ -271,11 +275,9 @@ impl ReducerCore {
     ///
     /// P8 (design v2 AG-2, AG-4): a native space must be live (DG-1). The reference of a user
     /// agent must have a call channel under the bundle rule of `eval_send` (`call_channel`), or
-    /// the block fails with `HandleNotWritable`. A user agent has no liveness check. Until the
-    /// translation of `new` lands (P8 step 4), the block of a user agent then fails closed with
-    /// `AgentSpacesUnavailable`, so a program never runs a partial translation. The routes and
-    /// the context of an agent (`UseKind::Agent`) are in place, and the tests of steps 1 to 3
-    /// set the context directly.
+    /// the block fails with `HandleNotWritable`. A user agent has no liveness check, and the
+    /// block enters its context (`UseKind::Agent`), whose routes translate the sends, the
+    /// receives and the `new`s of `P`.
     async fn eval_use(
         &self,
         block: UseBlock,
@@ -294,10 +296,12 @@ impl ReducerCore {
                 self.reified.check_live_space(native)?;
                 (space, UseKind::Native(native))
             }
-            // P8 step 4 replaces this arm with `(space, UseKind::Agent)`.
-            (_, SpaceRef::Agent(_)) => {
-                return Err(ReifiedReduceError::AgentSpacesUnavailable.into())
-            }
+            // Changed by P8 step 4 (design v2 AG-2, W4): the translation of `new` is in place, so
+            // a `use` block on a user agent enters its context.
+            // (_, SpaceRef::Agent(_)) => {
+            //     return Err(ReifiedReduceError::AgentSpacesUnavailable.into())
+            // }
+            (space, SpaceRef::Agent(_)) => (space, UseKind::Agent),
         };
         let mut scoped = self.clone();
         scoped.space_ctx = Some(Arc::new(UseTarget { space, kind }));
@@ -316,6 +320,10 @@ impl ReducerCore {
     ///    distinct space of the binders (`allocate_in_spaces`), and move each binder into its
     ///    space.
     /// 4. Evaluate `P` with the remaining random state.
+    ///
+    /// P8 (design v2 W4): a binder whose annotation, or whose use-context without an annotation,
+    /// names a user agent is an agent binder. A `new` with agent binders runs the translation
+    /// T_new (`agent_new`) instead of steps 3 and 4.
     async fn eval_new_space(
         &self,
         new_space: NewSpace,
@@ -337,22 +345,57 @@ impl ReducerCore {
         //         None => context,
         //     });
         // }
-        let context = self.space_ctx.as_deref().map(|target| target.kind);
+        // Changed by P8 step 4 (design v2 W4): an annotation or a context of a user agent makes
+        // an agent binder, which the translation of `new` binds.
+        // let context = self.space_ctx.as_deref().map(|target| target.kind);
+        // let mut spaces = Vec::with_capacity(annotations.len());
+        // for annotation in &annotations {
+        //     spaces.push(match (annotation, context) {
+        //         (Some(reference), _) => match self.space_ref(reference, env)? {
+        //             (_, SpaceRef::Native(native)) => Some(native),
+        //             (_, SpaceRef::Agent(_)) => {
+        //                 return Err(ReifiedReduceError::AgentSpacesUnavailable.into())
+        //             }
+        //         },
+        //         (None, Some(UseKind::Native(native))) => Some(native),
+        //         (None, Some(UseKind::Agent)) => {
+        //             return Err(ReifiedReduceError::AgentSpacesUnavailable.into())
+        //         }
+        //         (None, None) => None,
+        //     });
+        // }
+        let context = self.space_ctx.as_deref();
         let mut spaces = Vec::with_capacity(annotations.len());
+        let mut agents = Vec::with_capacity(annotations.len());
         for annotation in &annotations {
-            spaces.push(match (annotation, context) {
+            let (space, agent) = match (annotation, context) {
                 (Some(reference), _) => match self.space_ref(reference, env)? {
-                    (_, SpaceRef::Native(native)) => Some(native),
-                    (_, SpaceRef::Agent(_)) => {
-                        return Err(ReifiedReduceError::AgentSpacesUnavailable.into())
-                    }
+                    (_, SpaceRef::Native(native)) => (Some(native), None),
+                    (space, SpaceRef::Agent(_)) => (None, Some(space)),
                 },
-                (None, Some(UseKind::Native(native))) => Some(native),
-                (None, Some(UseKind::Agent)) => {
-                    return Err(ReifiedReduceError::AgentSpacesUnavailable.into())
-                }
-                (None, None) => None,
-            });
+                (
+                    None,
+                    Some(UseTarget {
+                        kind: UseKind::Native(native),
+                        ..
+                    }),
+                ) => (Some(*native), None),
+                (
+                    None,
+                    Some(UseTarget {
+                        space,
+                        kind: UseKind::Agent,
+                    }),
+                ) => (None, Some(send_meter().copy(space)?)),
+                (None, None) => (None, None),
+            };
+            spaces.push(space);
+            agents.push(agent);
+        }
+        if agents.iter().any(Option::is_some) {
+            return self
+                .agent_new(&new, env, rand, &spaces, agents, authority)
+                .await;
         }
         let bound = self
             .allocate_in_spaces(
@@ -841,6 +884,110 @@ impl ReducerCore {
         }
     }
 
+    /// Hook of `eval_new` (P8, design v2 W4 and section 16): the names of a `new` without
+    /// annotations, then its body. Inside the use-context of a user agent, every plain binder
+    /// is an agent binder, and the `new` runs the translation T_new (`agent_new`). Every other
+    /// `new` allocates its names (`reified_allocate`) and evaluates `P` with the random state
+    /// after the draws, as `eval_new` did. Only the translation is boxed, so the evaluation
+    /// future of an ordinary `new` keeps its layout.
+    pub(super) async fn reified_new(
+        &self,
+        new: &New,
+        env: Env<Par>,
+        mut rand: Blake2b512Random,
+        authority: &CostAuthority,
+    ) -> Result<(), InterpreterError> {
+        if let Some(UseTarget {
+            space,
+            kind: UseKind::Agent,
+        }) = self.space_ctx.as_deref()
+        {
+            let binders = plain_binders(new)?;
+            let meter = send_meter();
+            meter.reserve_buffer::<Option<Par>>(binders)?;
+            let mut agents = Vec::with_capacity(binders);
+            for _ in 0..binders {
+                agents.push(Some(meter.copy(space)?));
+            }
+            let spaces = vec![None; binders];
+            return Box::pin(self.agent_new(new, &env, rand, &spaces, agents, authority)).await;
+        }
+        let bound = self
+            .reified_allocate(new, &env, &mut rand, authority)
+            .await?;
+        self.eval_with_authority(
+            unwrap_option_safe(new.p.clone())?,
+            &bound,
+            rand,
+            authority.clone(),
+        )
+        .await
+    }
+
+    /// T_new (P8, design v2 W4, TN-1 to TN-5): a `new` with agent binders. `spaces` holds the
+    /// native space of each plain binder or `None`, and `agents` holds the reference of the
+    /// agent of each plain binder or `None`. A binder has at most one of the two.
+    ///
+    /// 1. TN-1: allocate every name with the draws of HEAD, and run the allocation jobs of the
+    ///    native spaces (`allocate_in_spaces`). Native and default names equal the names of
+    ///    HEAD, and the names that HEAD drew for agent binders stay unused.
+    /// 2. TN-3: `P_closed` is `P` with its outer variables substituted, in the environment
+    ///    shifted by the binders, and it gets the wrapper of the use-context of the `new`.
+    /// 3. TN-2 and TN-4: the translation (`user_agent::translate_new`) builds the calls
+    ///    `A'!(r_a, "gensym")` and the resume term under `base = Xlate.derive(R′)`, with `R′` the
+    ///    random state after the draws.
+    /// 4. The synthesized `Par` is evaluated with no use-context, with the state
+    ///    `base.split_byte(7)` and the authority of the `new`. Each call and the resume term are
+    ///    terms of their own, so each gets its own random state and reduction participant.
+    async fn agent_new(
+        &self,
+        new: &New,
+        env: &Env<Par>,
+        mut rand: Blake2b512Random,
+        spaces: &[Option<NativeSpace>],
+        agents: Vec<Option<Par>>,
+        authority: &CostAuthority,
+    ) -> Result<(), InterpreterError> {
+        let bound = self
+            .allocate_in_spaces(
+                native_agent(),
+                new,
+                env,
+                &mut rand,
+                BinderSpaces::Each(spaces),
+                authority,
+            )
+            .await?;
+        let binders: Vec<AgentBinder> = agents
+            .into_iter()
+            .enumerate()
+            .filter_map(|(index, agent)| agent.map(|agent| AgentBinder { index, agent }))
+            .collect();
+        let bind_count = usize::try_from(new.bind_count).map_err(|_| {
+            InterpreterError::ReduceError("new binding count cannot be negative".to_string())
+        })?;
+        let body = unwrap_option_safe(new.p.clone())?;
+        let closed = self
+            .substitute
+            .substitute_and_charge(&body, 0, &env.shift(new.bind_count))?;
+        let closed = wrap_body(&self.space_ctx, closed);
+        let base = RandomPurpose::Xlate.derive(&rand);
+        let NewTranslation { par, random } = user_agent::translate_new(
+            &bound,
+            env.level,
+            bind_count,
+            &binders,
+            closed,
+            &base,
+            &send_meter(),
+        )?;
+        let mut unscoped = self.clone();
+        unscoped.space_ctx = None;
+        unscoped
+            .eval_with_authority(par, &Env::new(), random, authority.clone())
+            .await
+    }
+
     /// The names of `eval_new` (P4 design C.3, P5 design v3 A.10). It takes the parameters of
     /// `allocate_new_bindings` without the URN map of the reducer. Outside a use-context the
     /// result is the result of `allocate_new_bindings`, and no job runs. Inside a use-context,
@@ -863,7 +1010,7 @@ impl ReducerCore {
         Pin<Box<dyn Future<Output = Result<Env<Par>, InterpreterError>> + std::marker::Send + 'a>>,
     > {
         // Changed by P8 step 1 (design v2 AG-2): the context names a native space or an agent.
-        // A `new` in the `use` block of an agent fails closed until the translation of `new`
+        // A `new` in the `use` block of an agent runs the translation of `new` in `reified_new`
         // (W4, P8 step 4).
         // match self.context_space() {
         //     None => Either::Left(std::future::ready(super::allocate_new_bindings(
@@ -896,9 +1043,16 @@ impl ReducerCore {
                 BinderSpaces::All(space),
                 authority,
             ))),
-            Some(UseKind::Agent) => Either::Left(std::future::ready(Err(
-                ReifiedReduceError::AgentSpacesUnavailable.into(),
-            ))),
+            // Changed by P8 step 4 (design v2 W4): `reified_new` runs the translation of `new` in
+            // the context of an agent, so no caller reaches this arm.
+            // Some(UseKind::Agent) => Either::Left(std::future::ready(Err(
+            //     ReifiedReduceError::AgentSpacesUnavailable.into(),
+            // ))),
+            Some(UseKind::Agent) => {
+                Either::Left(std::future::ready(Err(InterpreterError::BugFoundError(
+                    "reified_allocate runs in the context of a user agent".to_string(),
+                ))))
+            }
         }
     }
 
@@ -2252,8 +2406,9 @@ mod tests {
     /// A variable child bound to the connective value `Int` leaves the derived flags stale in
     /// each hook position. Each hook recognizes the canonical construct: the USE and NEWSPACE
     /// tuples decode, and PARAMS and QUERY fail with their own codes, not with `Malformed`. The
-    /// NEWSPACE tuple reaches the allocation job of its space, which fails closed on the
-    /// detached runtime (P5d, F11).
+    /// NEWSPACE tuple of a native space reaches the allocation job of its space, which fails
+    /// closed on the detached runtime (P5d, F11). The NEWSPACE tuple whose annotation is bound to
+    /// `Int` names a user agent, and its translation makes the gensym call (P8 step 4).
     #[tokio::test]
     async fn reified_marker_flags_variable_bound_to_connective_is_canonical() {
         let fixture = detached().await;
@@ -2354,15 +2509,27 @@ mod tests {
         let tuple = sole_tuple(&annotation_process);
         assert!(decode_process_tuple(tuple).is_err());
         assert!(decode_process_tuple(&refreshed_tuple(tuple)).is_ok());
-        assert_eq!(
-            code(
-                fixture
-                    .reducer
-                    .eval_marker(tuple, &Env::new(), rand(b"new"), &authority())
-                    .await
-            ),
-            expected("AgentSpacesUnavailable")
-        );
+        // Changed by P8 step 4 (design v2 W4): an annotation bound to `Int` names a user agent,
+        // so the translation of `new` makes its gensym call on the agent.
+        // assert_eq!(
+        //     code(
+        //         fixture
+        //             .reducer
+        //             .eval_marker(tuple, &Env::new(), rand(b"new"), &authority())
+        //             .await
+        //     ),
+        //     expected("AgentSpacesUnavailable")
+        // );
+        fixture
+            .reducer
+            .eval_marker(tuple, &Env::new(), rand(b"new"), &authority())
+            .await
+            .expect("the translated new evaluates");
+        let calls = stored(&fixture.host, &value).await;
+        let [call] = calls.as_slice() else {
+            panic!("one gensym call on the agent, not {calls:?}");
+        };
+        assert_eq!(call[1], string("gensym"));
 
         let params = send_params(vec![SendParam::Named("k".to_string(), bound(0))])
             .expect("named params build")
@@ -3659,7 +3826,8 @@ mod tests {
 
     /// `use s` takes a bare or writable handle, and evaluates its body in the context of the
     /// space. Every other reference fails closed with the code of `classify_space_ref`, and a
-    /// value that is not a Reified id is a user agent (P8).
+    /// value that is not a Reified id is a user agent (P8). From P8 step 4 the block of an agent
+    /// evaluates its body in the context of the agent.
     #[tokio::test]
     async fn reducer_handle_unwrap_use_classifies_its_space() {
         let fixture = detached().await;
@@ -3680,7 +3848,9 @@ mod tests {
                 namespace::gprivate(namespace::op_channel(0x01)),
                 "NotASpaceRef",
             ),
-            (string("agent"), "AgentSpacesUnavailable"),
+            // Changed by P8 step 4 (design v2 AG-2): a `use` block on a user agent enters its
+            // context, so its body runs (below).
+            // (string("agent"), "AgentSpacesUnavailable"),
             (handle(space), "RuntimeUnavailable"),
             (
                 new_bundle_par(handle(space), true, false),
@@ -3698,6 +3868,28 @@ mod tests {
                 expected(result)
             );
         }
+        assert!(fixture.host.get_data(&forged).await.is_empty());
+        // P8 step 4 (design v2 AG-2, TS-1): the block of a user agent enters its context, so the
+        // forged channel of the body routes to the agent, and the send becomes the call
+        // `"agent"!(sink, "produce", "rrs-4c-use", [1])`.
+        fixture
+            .reducer
+            .eval_marker(
+                &use_block(string("agent"), use_body.clone()),
+                &Env::new(),
+                rand(b"use"),
+                &authority(),
+            )
+            .await
+            .expect("the block of an agent evaluates its body");
+        let calls = stored(&fixture.host, &string("agent")).await;
+        let [call] = calls.as_slice() else {
+            panic!("one call on the agent, not {calls:?}");
+        };
+        assert_eq!(call[0], user_agent::sink_channel());
+        assert_eq!(call[1], produce_method());
+        assert_eq!(call[2], forged);
+        assert_eq!(list_items(&call[3]), [int(1)]);
         assert!(fixture.host.get_data(&forged).await.is_empty());
         let x = private(16);
         fixture
@@ -3798,7 +3990,10 @@ mod tests {
         let detached = detached().await;
         let rejected = private(21);
         for (annotation, failure) in [
-            (string("agent"), "AgentSpacesUnavailable"),
+            // Changed by P8 step 4 (design v2 W4): an annotation of a user agent makes an agent
+            // binder, which the translation of `new` binds
+            // (`reducer_space_routing_agent_new_makes_the_calls`).
+            // (string("agent"), "AgentSpacesUnavailable"),
             (Par::default(), "EmptySpaceRef"),
             (
                 new_bundle_par(handle(annotated), false, true),
@@ -3838,6 +4033,190 @@ mod tests {
             expected("DanglingHandle")
         );
         assert!(fixture.host.get_data(&rejected).await.is_empty());
+    }
+
+    /// The tuple of `ps` with the derived bit sets of the reducer: the union of the
+    /// `locally_free` sets and the disjunction of the `connective_used` flags of its elements.
+    fn derived_tuple(ps: Vec<Par>) -> Par {
+        let locally_free = ps.iter().fold(Vec::new(), |bits, par| {
+            models::rust::utils::union(bits, par.locally_free.clone())
+        });
+        let connective_used = ps.iter().any(|par| par.connective_used);
+        Par {
+            exprs: vec![models::rust::utils::new_etuple_expr(
+                ps,
+                locally_free.clone(),
+                connective_used,
+            )],
+            locally_free,
+            connective_used,
+            ..Par::default()
+        }
+    }
+
+    /// The reply name `r_a` of the agent binder `a` of a translated `new` under `base` (design
+    /// v2 TN-2): `GPrivate(base.split_byte(5).split_short(a).next())`.
+    fn reply_name(base: &Blake2b512Random, binder: i16) -> Par {
+        namespace::gprivate(
+            base.split_byte(user_agent::REPLY_NAME_BRANCH)
+                .split_short(binder)
+                .next()
+                .into_iter()
+                .map(|byte| byte as u8)
+                .collect(),
+        )
+    }
+
+    /// The one waiting continuation on `channel`: its patterns, its body and its persistence.
+    async fn sole_waiter(host: &ParRSpace, channel: &Par) -> (Vec<Par>, i32, Par, bool) {
+        let waiting = host.get_waiting_continuations(vec![channel.clone()]).await;
+        let [waiter] = waiting.as_slice() else {
+            panic!("one waiter on the channel, not {waiting:?}");
+        };
+        let [bind] = waiter.patterns.as_slice() else {
+            panic!("a waiter of one bind");
+        };
+        match &waiter.continuation.tagged_cont {
+            Some(TaggedCont::ParBody(ParWithRandom {
+                body: Some(body), ..
+            })) => (
+                bind.patterns.clone(),
+                bind.free_count,
+                body.clone(),
+                waiter.persist,
+            ),
+            other => panic!("the waiter holds {other:?}"),
+        }
+    }
+
+    /// P8 step 4 (design v2 W4, TN-1 to TN-4): a `new` with agent binders draws every name of
+    /// HEAD, makes one call `A'!(r_a, "gensym")` for each agent binder, and parks the resume
+    /// term. A default binder keeps the name of HEAD (TN-1), each reply name derives from
+    /// `base.split_byte(5).split_short(a)` (TN-2), and the resume receives nest in the order of
+    /// the agent binders. Their match binds each binder, in its order, to its agent-minted name
+    /// or to the name of HEAD, and runs the body after the substitution of its outer variables
+    /// and in the wrapper of its context (TN-3).
+    #[tokio::test]
+    async fn reducer_space_routing_agent_new_makes_the_calls() {
+        let fixture = detached().await;
+        let agent = string("agent");
+        let out = private(23);
+        // `new x : "agent", y in { out!(x, y) }`: binder 0 is an agent binder, binder 1 keeps
+        // the name of HEAD.
+        let annotated = new_space(
+            New {
+                bind_count: 2,
+                p: Some(send(out.clone(), vec![bound(1), bound(0)])),
+                uri: Vec::new(),
+                injections: BTreeMap::new(),
+                locally_free: Vec::new(),
+            },
+            vec![Some(agent.clone()), None],
+        )
+        .expect("a NEWSPACE tuple builds");
+        fixture
+            .reducer
+            .eval_marker(&annotated, &Env::new(), rand(b"agent new"), &authority())
+            .await
+            .expect("the translated new evaluates");
+        let mut draws = rand(b"agent new");
+        next_tail(&mut draws);
+        let second = next_tail(&mut draws);
+        let base = namespace::RandomPurpose::Xlate.derive(&draws);
+        let reply = reply_name(&base, 0);
+        assert_eq!(stored(&fixture.host, &agent).await, vec![vec![
+            reply.clone(),
+            string("gensym")
+        ]]);
+        let (patterns, free_count, resume, persistent) = sole_waiter(&fixture.host, &reply).await;
+        assert_eq!(patterns, vec![new_freevar_par(0, Vec::new())]);
+        assert_eq!(free_count, 1);
+        assert!(!persistent);
+        let [matched] = resume.matches.as_slice() else {
+            panic!("the resume body is one match, not {resume:?}");
+        };
+        assert_eq!(
+            matched.target,
+            Some(derived_tuple(vec![
+                user_agent::agent_minted_name(agent.clone(), bound(0)),
+                namespace::gprivate(second.to_vec()),
+            ]))
+        );
+        let [case] = matched.cases.as_slice() else {
+            panic!("one case");
+        };
+        assert_eq!(
+            case.pattern,
+            Some(derived_tuple(vec![
+                new_freevar_par(0, Vec::new()),
+                new_freevar_par(1, Vec::new()),
+            ]))
+        );
+        assert_eq!(case.free_count, 2);
+        assert_eq!(
+            case.source,
+            Some(send(out.clone(), vec![bound(1), bound(0)]))
+        );
+        assert!(fixture.host.get_data(&out).await.is_empty());
+
+        // `new x, y in { out!(x, y) }` in the context of the agent: both binders are agent
+        // binders. Each gets a call, and the resume receives nest in binder order, so `v_0` is
+        // `BoundVar(1)` and `v_1` is `BoundVar(0)` inside them. The body keeps the wrapper of the
+        // context.
+        let fixture = detached().await;
+        let new = New {
+            bind_count: 2,
+            p: Some(send(out.clone(), vec![bound(1), bound(0)])),
+            uri: Vec::new(),
+            injections: BTreeMap::new(),
+            locally_free: Vec::new(),
+        };
+        let core = agent_scoped(&fixture.reducer, agent.clone());
+        core.reified_new(&new, Env::new(), rand(b"agent context new"), &authority())
+            .await
+            .expect("the translated new evaluates");
+        let mut draws = rand(b"agent context new");
+        next_tail(&mut draws);
+        next_tail(&mut draws);
+        let base = namespace::RandomPurpose::Xlate.derive(&draws);
+        let replies = [reply_name(&base, 0), reply_name(&base, 1)];
+        let mut calls = stored(&fixture.host, &agent).await;
+        calls.sort_by_cached_key(|call| format!("{call:?}"));
+        let mut expected = vec![vec![replies[0].clone(), string("gensym")], vec![
+            replies[1].clone(),
+            string("gensym"),
+        ]];
+        expected.sort_by_cached_key(|call| format!("{call:?}"));
+        assert_eq!(calls, expected);
+        let (_, _, inner, _) = sole_waiter(&fixture.host, &replies[0]).await;
+        assert!(fixture
+            .host
+            .get_waiting_continuations(vec![replies[1].clone()])
+            .await
+            .is_empty());
+        let [nested] = inner.receives.as_slice() else {
+            panic!("the first resume receive holds the second, not {inner:?}");
+        };
+        assert_eq!(nested.binds[0].source, Some(replies[1].clone()));
+        assert_eq!(nested.locally_free, create_bit_vector(&[0]));
+        let resume = nested.body.as_ref().expect("a resume body");
+        let [matched] = resume.matches.as_slice() else {
+            panic!("the innermost resume body is one match");
+        };
+        assert_eq!(
+            matched.target,
+            Some(derived_tuple(vec![
+                user_agent::agent_minted_name(agent.clone(), bound(1)),
+                user_agent::agent_minted_name(agent.clone(), bound(0)),
+            ]))
+        );
+        assert_eq!(
+            matched.cases[0].source,
+            Some(wrap_body(
+                &core.space_ctx,
+                send(out.clone(), vec![bound(1), bound(0)])
+            ))
+        );
     }
 
     // ── H4 and the routing of query sources ────────────────────────────────────────────────────

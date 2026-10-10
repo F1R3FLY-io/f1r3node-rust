@@ -1239,15 +1239,17 @@ async fn reified_factory_p4_gates_fail_closed() {
         );
         assert!(deploy.residue.is_empty(), "{urn}");
     }
-    // A space that a user agent implements is not available until P8.
-    session
-        .fail_with(
-            r#"use @"user agent" { @"x"!(1) }"#,
-            "rrs-p4-gate-agent",
-            &Injections::new(),
-            &["AgentSpacesUnavailable"],
-        )
-        .await;
+    // Changed by P8 step 4 (design v2 AG-2): a `use` block on a user agent enters its context,
+    // so the block no longer fails closed. rholang/tests/reified_user_agents.rs runs the spaces
+    // of user agents natively.
+    // session
+    //     .fail_with(
+    //         r#"use @"user agent" { @"x"!(1) }"#,
+    //         "rrs-p4-gate-agent",
+    //         &Injections::new(),
+    //         &["AgentSpacesUnavailable"],
+    //     )
+    //     .await;
     assert!(session.space_data_channels().await.is_empty());
 }
 

@@ -14,14 +14,18 @@
    values of the native receive, that the guard placement of TR-4 keeps the
    guard check of the native receive, that the matcher op replies exactly
    on a spatial match with a passing guard, and that the codec of a
-   matcher state is exact.
+   matcher state is exact. A `new` with binders of user agents (P8 step 4)
+   becomes one gensym call per agent binder and a resume term, and the
+   module proves that the resume term binds every binder of the `new` in
+   its order (resume_binds_innermost).
 
    Sources
    - P8 design v2 (plan decision 77): TR-3 (offsets), TR-4 (the guard
      placement), TR-5 (the matcher state and its id), TR-6 (the body
      capability), MO-2 and MO-3 (the matcher op), HC-2 and HC-3 (the
      native consume), F6 to F8 and F20 (facts checked in code).
-   - Code: the tree of P8 step 3. The line numbers below are the line
+   - P8 design v2 TN-1 to TN-4 (the translation of `new`, P8 step 4).
+   - Code: the tree of P8 step 4. The line numbers below are the line
      numbers of that tree.
 
    ─────────────────────────────────────────────────────────────────────────
@@ -29,34 +33,49 @@
    ─────────────────────────────────────────────────────────────────────────
    offsets_from, offsets, total
                             rholang/src/rust/interpreter/reified/
-                            user_agent.rs:936-946 (offsets_of, TR-3)
+                            user_agent.rs:942-952 (offsets_of, TR-3)
    owner_from, owner        rholang/src/rust/interpreter/reified/
-                            user_agent.rs:950-955 (owner_of)
+                            user_agent.rs:956-961 (owner_of)
    position, index_owners, place_guard
                             rholang/src/rust/interpreter/reified/
-                            user_agent.rs:962-987 (place_guard, TR-4)
+                            user_agent.rs:968-993 (place_guard, TR-4)
    indices                  rholang/src/rust/interpreter/reified/
-                            user_agent.rs:634-657, 663-799, 803-932
+                            user_agent.rs:640-663, 669-805, 809-938
                             (guard_indices, guard_par, guard_expr)
    env_of                   rholang/src/rust/interpreter/reified/
-                            user_agent.rs:462-480 (env_reply, MO-3)
+                            user_agent.rs:468-486 (env_reply, MO-3)
    union_env, body_binding  rholang/src/rust/interpreter/reified/
-                            user_agent.rs:994-1016 (body_pattern, TR-6);
+                            user_agent.rs:1000-1022 (body_pattern, TR-6);
                             rholang/src/rust/interpreter/reified/
                             handle.rs:697-725 (env_forwarder, HC-3)
    placeholders, guard_ok   rholang/src/rust/interpreter/reified/
-                            user_agent.rs:422-457 (guard_passes)
+                            user_agent.rs:428-463 (guard_passes)
    matcher_reply            rholang/src/rust/interpreter/reified/
-                            user_agent.rs:357-385, 388-414
+                            user_agent.rs:363-391, 394-420
                             (MatcherProcess::call and answer, MO-3)
    to_sp, from_sp, consistent, encode, decode
                             rholang/src/rust/interpreter/reified/
-                            user_agent.rs:147-167, 171-206, 211-223,
-                            229-240 (MatcherState::to_par, from_par,
+                            user_agent.rs:153-173, 177-212, 217-229,
+                            235-246 (MatcherState::to_par, from_par,
                             encode and decode, TR-5, MO-2)
    matcher_id, state_of_id  rholang/src/rust/interpreter/reified/
-                            user_agent.rs:253-258 (matcher_state_of),
-                            1082-1196 (translate_receive builds the id)
+                            user_agent.rs:259-264 (matcher_state_of),
+                            1088-1202 (translate_receive builds the id)
+   binder, agents           rholang/src/rust/interpreter/reified/
+                            reducer_hooks.rs:893-925, 942-989
+                            (reified_new and agent_new: the agent
+                            binders of a new, TN-1)
+   targets_from, targets, tag
+                            rholang/src/rust/interpreter/reified/
+                            user_agent.rs:1272-1389 (translate_new, TN-2
+                            to TN-4), 1220-1227 (agent_minted_name)
+   resume_env, eval_target  the nested resume receives of translate_new
+                            and the match of reduce.rs eval_match, whose
+                            target the substitution evaluates
+   match_env                reduce.rs eval_match (add_to_env pushes the
+                            case bindings in order) and util/mod.rs
+                            allocate_new_bindings (a native new pushes its
+                            names in binder order)
 
    ─────────────────────────────────────────────────────────────────────────
    Abstraction
@@ -87,6 +106,8 @@
     5. matcher_sound_complete   the matcher replies exactly on a spatial
                                 match with a passing guard
     6. matcher_state_roundtrip  the codec of a matcher state is exact
+    7. resume_binds_innermost   the resume term of a translated new binds
+                                every binder in its order (P8 step 4)
 
    No Axiom, Parameter, Admitted, admit, Abort or Conjecture. Section
    variables are parameters of the closed theorems. The file imports only
@@ -791,9 +812,128 @@ Section Codec.
   Qed.
 End Codec.
 
+(* ── 7. The resume term of a translated new (TN-3) ─────────────────────── *)
+
+Section Resume.
+  (* Values, and the agent-minted name of a reply raw of the agent a: the
+     bundle with both flags around (AGENT_TAG, a, raw). SpaceRefs.v proves
+     that R4 routes it back to a and raw (tag_untag_id). *)
+  Variable V : Type.
+  Variable tag : V -> V -> V.
+
+  (* A binder of the new: an agent binder of the agent a, or a binder whose
+     name the allocation gives (the name of HEAD, of a native space, or the
+     value of a URI). *)
+  Inductive binder : Type := BAgent (a : V) | BValue (v : V).
+
+  (* An element of the target tuple of the resume match, as translate_new
+     builds it: a bound name, or the agent-minted name of BoundVar(n) of the
+     nested receives. *)
+  Inductive target : Type := TVal (v : V) | TTag (a : V) (n : nat).
+
+  Fixpoint agents (bs : list binder) : nat :=
+    match bs with
+    | [] => 0
+    | BAgent _ :: rest => S (agents rest)
+    | BValue _ :: rest => agents rest
+    end.
+
+  (* translate_new: inside the m nested receives, the reply of the agent
+     binder of rank i is BoundVar(m - 1 - i). *)
+  Fixpoint targets_from (m i : nat) (bs : list binder) : list target :=
+    match bs with
+    | [] => []
+    | BAgent a :: rest => TTag a (m - 1 - i) :: targets_from m (S i) rest
+    | BValue v :: rest => TVal v :: targets_from m i rest
+    end.
+
+  Definition targets (bs : list binder) : list target := targets_from (agents bs) 0 bs.
+
+  (* The value of a target in an environment of the receives, whose index 0
+     is the innermost binder. *)
+  Definition eval_target (env : list V) (t : target) : option V :=
+    match t with
+    | TVal v => Some v
+    | TTag a n => option_map (tag a) (nth_error env n)
+    end.
+
+  (* The receives bind the replies rs in the order of the agent binders, the
+     outermost first, so the environment of the innermost body is rev rs. *)
+  Definition resume_env (rs : list V) : list V := rev rs.
+
+  (* The value of each binder after the resume: its bound name, or the
+     agent-minted name of the reply of its rank. *)
+  Fixpoint expected_from (i : nat) (bs : list binder) (rs : list V) : list (option V) :=
+    match bs with
+    | [] => []
+    | BAgent a :: rest => option_map (tag a) (nth_error rs i) :: expected_from (S i) rest rs
+    | BValue v :: rest => Some v :: expected_from i rest rs
+    end.
+
+  (* The match pushes its bindings in order (add_to_env of eval_match), and
+     allocate_new_bindings pushes the names of a native new in binder order.
+     So in both environments BoundVar(k - 1 - j) reads binder j. *)
+  Definition match_env (values : list V) : list V := rev values.
+
+  Lemma nth_error_rev_index :
+    forall (l : list V) n, n < length l -> nth_error (rev l) n = nth_error l (length l - S n).
+  Proof.
+    intros l n Hn. destruct l as [| x rest]; [cbn in Hn; lia |].
+    rewrite (nth_error_nth' (rev (x :: rest)) x) by (rewrite length_rev; exact Hn).
+    rewrite (nth_error_nth' (x :: rest) x) by lia.
+    rewrite rev_nth by exact Hn. reflexivity.
+  Qed.
+
+  Lemma targets_from_eval :
+    forall bs m i rs,
+      length rs = m -> i + agents bs = m ->
+      map (eval_target (resume_env rs)) (targets_from m i bs) = expected_from i bs rs.
+  Proof.
+    induction bs as [| b rest IH]; intros m i rs Hlen Hcount; [reflexivity |].
+    destruct b as [a | v]; cbn [targets_from expected_from map agents] in *.
+    - cbn [eval_target]. unfold resume_env.
+      rewrite nth_error_rev_index by (rewrite Hlen; lia).
+      replace (length rs - S (m - 1 - i)) with i by lia.
+      f_equal. apply IH; lia.
+    - cbn [eval_target]. f_equal. apply IH; lia.
+  Qed.
+
+  Lemma expected_from_length : forall bs i rs, length (expected_from i bs rs) = length bs.
+  Proof.
+    induction bs as [| b rest IH]; intros i rs; [reflexivity |].
+    destruct b; cbn [expected_from length]; rewrite IH; reflexivity.
+  Qed.
+
+  (* Headline 7 (P8 step 4, design v2 TN-3). The resume term binds every
+     binder of the new, in its order. Inside the nested receives, which bind
+     one reply per agent binder in the order of the agent binders, the target
+     of each binder evaluates to its bound name, or to the agent-minted name
+     of the reply of its rank. The match then pushes the values in binder
+     order, so BoundVar(k - 1 - j) reads binder j, as in the environment of a
+     native new. *)
+  Theorem resume_binds_innermost :
+    forall bs rs,
+      length rs = agents bs ->
+      map (eval_target (resume_env rs)) (targets bs) = expected_from 0 bs rs /\
+      (forall values,
+         map Some values = expected_from 0 bs rs ->
+         forall j, j < length bs ->
+           nth_error (match_env values) (length bs - 1 - j) = nth_error values j).
+  Proof.
+    intros bs rs Hlen. split.
+    - unfold targets. apply targets_from_eval; [exact Hlen | lia].
+    - intros values Hvalues j Hj.
+      assert (Hl : length values = length bs).
+      { rewrite <- (length_map Some values), Hvalues. apply expected_from_length. }
+      unfold match_env. rewrite nth_error_rev_index by lia.
+      f_equal. lia.
+  Qed.
+End Resume.
+
 Print Assumptions offsets_partition.
 Print Assumptions env_keys_disjoint_union.
 Print Assumptions body_equivalence.
 Print Assumptions guard_fold_sound.
 Print Assumptions matcher_sound_complete.
 Print Assumptions matcher_state_roundtrip.
+Print Assumptions resume_binds_innermost.

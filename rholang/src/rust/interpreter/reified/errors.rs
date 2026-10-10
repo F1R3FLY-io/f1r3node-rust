@@ -35,9 +35,12 @@ pub enum ReifiedReduceError {
     /// receive (P8, design v2 A13), as A21 aborts one to a handle.
     #[error("a persistent send to a Reified capability aborts")]
     PersistentCapabilityCall,
-    /// A space that a user agent implements (P8).
-    #[error("spaces that user agents implement are not available")]
-    AgentSpacesUnavailable,
+    // Disabled by P8 step 4 (design v2 W2 to W4): the translations of a send, a receive and a
+    // `new` on a space that a user agent implements are in place, and a `use` block on an agent
+    // enters its context, so no route raises this variant.
+    // /// A space that a user agent implements (P8).
+    // #[error("spaces that user agents implement are not available")]
+    // AgentSpacesUnavailable,
     /// A persistent send on a space that a user agent implements (P8, design v2 TS-3).
     #[error("a persistent send on a space that a user agent implements aborts")]
     PersistentSendOnAgentSpace,
@@ -91,7 +94,8 @@ impl ReifiedReduceError {
             ReifiedReduceError::PersistentHandleCall => "PersistentHandleCall",
             ReifiedReduceError::PersistentOpCall => "PersistentOpCall",
             ReifiedReduceError::PersistentCapabilityCall => "PersistentCapabilityCall",
-            ReifiedReduceError::AgentSpacesUnavailable => "AgentSpacesUnavailable",
+            // Disabled by P8 step 4 with its variant.
+            // ReifiedReduceError::AgentSpacesUnavailable => "AgentSpacesUnavailable",
             ReifiedReduceError::PersistentSendOnAgentSpace => "PersistentSendOnAgentSpace",
             ReifiedReduceError::ParamsUnsupportedOnAgentSpace => "ParamsUnsupportedOnAgentSpace",
             ReifiedReduceError::QuerySpecUnsupportedOnAgentSpace => {
@@ -136,7 +140,8 @@ mod tests {
             ReifiedReduceError::PersistentHandleCall,
             ReifiedReduceError::PersistentOpCall,
             ReifiedReduceError::PersistentCapabilityCall,
-            ReifiedReduceError::AgentSpacesUnavailable,
+            // Disabled by P8 step 4 with its variant.
+            // ReifiedReduceError::AgentSpacesUnavailable,
             ReifiedReduceError::PersistentSendOnAgentSpace,
             ReifiedReduceError::ParamsUnsupportedOnAgentSpace,
             ReifiedReduceError::QuerySpecUnsupportedOnAgentSpace,

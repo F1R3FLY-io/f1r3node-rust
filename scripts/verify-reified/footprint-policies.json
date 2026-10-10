@@ -7245,7 +7245,7 @@
       ]
     },
     "p8": {
-      "description": "Phase P8, the spaces that user agents implement (design v2, plan decision 77). It extends campaign and restates the edits and the new files of p7, as p7 restates p6. Step 1 (W1 and W5: the routes and use-contexts of user agents, the write rule of an agent reference, the matcher state codec, the matcher process and the sink) edits only campaign files. Its new files are the user-agent module, the P8 property suite and the P8 model map. Step 1 also holds the edit of decision 78 in the accounting tests: the test of schedule-independent replay charges runs its replay at the v6 host-work limits. Step 2 (W2 and W7: the call of a send on an agent space and the R7 replies to agent-minted names) edits only campaign files, and its new file is the native suite of user agents. Step 3 (W3 and W6: the translation of a receive and the native consume of a handle) edits only campaign files, and its new file is the Rocq module AgentTranslation.v.",
+      "description": "Phase P8, the spaces that user agents implement (design v2, plan decision 77). It extends campaign and restates the edits and the new files of p7, as p7 restates p6. Step 1 (W1 and W5: the routes and use-contexts of user agents, the write rule of an agent reference, the matcher state codec, the matcher process and the sink) edits only campaign files. Its new files are the user-agent module, the P8 property suite and the P8 model map. Step 1 also holds the edit of decision 78 in the accounting tests: the test of schedule-independent replay charges runs its replay at the v6 host-work limits. Step 2 (W2 and W7: the call of a send on an agent space and the R7 replies to agent-minted names) edits only campaign files, and its new file is the native suite of user agents. Step 3 (W3 and W6: the translation of a receive and the native consume of a handle) edits only campaign files, and its new file is the Rocq module AgentTranslation.v. Step 4 (W4: the translation of `new`) changes the hot file reduce.rs as design v2 section 16 approves: the body of eval_new becomes one hook call `self.reified_new(new, env, rand, authority).await`, which replaces the P5d line that called reified_allocate. Its other edits are in campaign files.",
       "extends": "campaign",
       "unchanged": [
         "**"
@@ -7380,10 +7380,6 @@
             [
               "        self.consume(",
               "        self.reified_consume("
-            ],
-            [
-              "        match allocate_new_bindings(new, &env, &mut rand, &self.urn_map) {",
-              "        match self.reified_allocate(new, &env, &mut rand, authority).await {"
             ]
           ],
           "replaced_blocks": [
@@ -7456,6 +7452,51 @@
                 "            .await;",
                 "        self.end_root_evaluation(root, result).await",
                 "    }"
+              ]
+            ],
+            [
+              [
+                "    async fn eval_new(",
+                "        &self,",
+                "        new: &New,",
+                "        env: Env<Par>,",
+                "        mut rand: Blake2b512Random,",
+                "        authority: &CostAuthority,",
+                "    ) -> Result<(), InterpreterError> {",
+                "        // D3 (DR-9, OD-3): `new` (name allocation) is a non-COMM structural",
+                "        // reduction — DIAGNOSTIC only (metered for fidelity, 0 toward the",
+                "        // consensus consumed cost). §7.4 re-pins 9→8 precisely because the",
+                "        // `new` no longer counts toward the per-COMM consensus cost.",
+                "        self.metering",
+                "            .reserve_reduction(new_bindings_cost(new.bind_count as i64))?;",
+                "        match allocate_new_bindings(new, &env, &mut rand, &self.urn_map) {",
+                "            Ok(env) => {",
+                "                self.eval_with_authority(",
+                "                    unwrap_option_safe(new.p.clone())?,",
+                "                    &env,",
+                "                    rand,",
+                "                    authority.clone(),",
+                "                )",
+                "                .await",
+                "            }",
+                "            Err(e) => Err(e),",
+                "        }"
+              ],
+              [
+                "    async fn eval_new(",
+                "        &self,",
+                "        new: &New,",
+                "        env: Env<Par>,",
+                "        rand: Blake2b512Random,",
+                "        authority: &CostAuthority,",
+                "    ) -> Result<(), InterpreterError> {",
+                "        // D3 (DR-9, OD-3): `new` (name allocation) is a non-COMM structural",
+                "        // reduction — DIAGNOSTIC only (metered for fidelity, 0 toward the",
+                "        // consensus consumed cost). §7.4 re-pins 9→8 precisely because the",
+                "        // `new` no longer counts toward the per-COMM consensus cost.",
+                "        self.metering",
+                "            .reserve_reduction(new_bindings_cost(new.bind_count as i64))?;",
+                "        self.reified_new(new, env, rand, authority).await"
               ]
             ]
           ]

@@ -3,11 +3,12 @@
 // The property tests have the names that formal/reified-rspaces-invariant-map.json maps to
 // the headlines E7-E12 of formal/rocq/reified_rspaces/theories/Encoding.v. Each fixture is a
 // Par that the models builders build, and the reducer evaluates it with `inj`. Every
-// recognized construct fails closed with a typed `reified:<Code>:` error. No space reference
-// of a fixture names a native space. So a USE or NEWSPACE construct fails with the code of its
-// first space reference (P4 design C.2 and C.3). The empty Par gives `EmptySpaceRef`. Every
-// other value gives `AgentSpacesUnavailable`, because agent spaces arrive in P8. Before the
-// strict decode, the hooks recompute the flags that the encoder derives (I-20). Two tests
+// recognized construct fails closed with a typed `reified:<Code>:` error, or it translates. No
+// space reference of a fixture names a native space (P4 design C.2 and C.3). The empty Par
+// gives `EmptySpaceRef`. Every other value names a user agent, and from P8 step 4 the construct
+// translates: a USE block runs its body in the context of the agent, and a NEWSPACE tuple with
+// an agent annotation makes a gensym call and parks its resume term (`hook_outcome`). Before
+// the strict decode, the hooks recompute the flags that the encoder derives (I-20). Two tests
 // check consensus checklist items 18 and 19 for P2.
 
 #[path = "../../models/tests/support/reified_strategies.rs"]
@@ -155,6 +156,8 @@ struct Outcome {
     produces: usize,
     consumes: usize,
     comms: usize,
+    /// The number of channels of the widest join of the hot store, or 0 without a join.
+    widest_join: usize,
 }
 
 impl Outcome {
@@ -255,12 +258,25 @@ async fn evaluate_with(
         .err()
         .map(|error| error_text(&error));
     let checkpoint = harness.space.create_soft_checkpoint().await;
+    let widest_join = checkpoint
+        .cache_snapshot
+        .joins
+        .iter()
+        .flat_map(|shard| {
+            shard
+                .iter()
+                .flat_map(|(_, joins)| joins.iter().map(Vec::len))
+                .collect::<Vec<_>>()
+        })
+        .max()
+        .unwrap_or(0);
     let mut outcome = Outcome {
         error,
         store: store_entries(&checkpoint.cache_snapshot),
         produces: 0,
         consumes: 0,
         comms: 0,
+        widest_join,
     };
     for event in &checkpoint.log {
         match event {
@@ -440,9 +456,11 @@ fn process(tuple: ETuple) -> Par { push_process_expr(Par::default(), tuple) }
 
 /// The typed error of a USE or NEWSPACE hook for a reference without components.
 const EMPTY_SPACE_REF: &str = "reified:EmptySpaceRef: the space reference is empty";
-/// The typed error of a USE or NEWSPACE hook for a space of a user agent (P8).
-const AGENT_SPACES_UNAVAILABLE: &str =
-    "reified:AgentSpacesUnavailable: spaces that user agents implement are not available";
+// Disabled by P8 step 4 (design v2 AG-2, W4): a USE or NEWSPACE construct of a user agent
+// translates, so no hook raises this error (`hook_outcome`).
+// /// The typed error of a USE or NEWSPACE hook for a space of a user agent (P8).
+// const AGENT_SPACES_UNAVAILABLE: &str =
+//     "reified:AgentSpacesUnavailable: spaces that user agents implement are not available";
 
 /// True when `par` holds no process and no expression. The bit sets do not count.
 fn is_empty_par(par: &Par) -> bool {
@@ -453,24 +471,97 @@ fn is_empty_par(par: &Par) -> bool {
     } == Par::default()
 }
 
-/// The error of the P4 hook H2 for a USE or NEWSPACE construct whose space references name no
-/// native space (P4 design C.2 and C.3). The hook classifies the space of a USE, or the
-/// annotations of a NEWSPACE in binder order, and the first reference fails closed. A fixture
-/// holds no bundle and no Reified id. So the empty `Par` is `EmptySpaceRef`, and every other
-/// value is a space of a user agent. Evaluation keeps each component of a reference, so the
-/// classification of the evaluated reference is the classification of the fixture.
-fn space_ref_error(construct: &ReifiedConstruct) -> Option<&'static str> {
-    let reference = match construct {
-        ReifiedConstruct::Use(block) => &block.space,
-        ReifiedConstruct::NewSpace(new_space) => new_space.annotations.iter().flatten().next()?,
-        ReifiedConstruct::Params(_) | ReifiedConstruct::Query(_) | ReifiedConstruct::Free(_) => {
-            return None
+// Replaced by `hook_outcome` in P8 step 4 (design v2 AG-2, W4): the constructs of user agents
+// translate instead of failing closed.
+// /// The error of the P4 hook H2 for a USE or NEWSPACE construct whose space references name no
+// /// native space (P4 design C.2 and C.3). The hook classifies the space of a USE, or the
+// /// annotations of a NEWSPACE in binder order, and the first reference fails closed. A fixture
+// /// holds no bundle and no Reified id. So the empty `Par` is `EmptySpaceRef`, and every other
+// /// value is a space of a user agent. Evaluation keeps each component of a reference, so the
+// /// classification of the evaluated reference is the classification of the fixture.
+// fn space_ref_error(construct: &ReifiedConstruct) -> Option<&'static str> {
+//     let reference = match construct {
+//         ReifiedConstruct::Use(block) => &block.space,
+//         ReifiedConstruct::NewSpace(new_space) => new_space.annotations.iter().flatten().next()?,
+//         ReifiedConstruct::Params(_) | ReifiedConstruct::Query(_) | ReifiedConstruct::Free(_) => {
+//             return None
+//         }
+//     };
+//     Some(match is_empty_par(reference) {
+//         true => EMPTY_SPACE_REF,
+//         false => AGENT_SPACES_UNAVAILABLE,
+//     })
+// }
+
+/// What the P4 hook H2 does with a USE or NEWSPACE construct whose space references name no
+/// native space (P4 design C.2 and C.3, P8 design v2 AG-2 and W4).
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum HookOutcome {
+    /// The construct fails with this error before any effect: an empty reference, or a URI
+    /// binder of a translated `new` that the URN map of the harness does not hold.
+    Failed(String),
+    /// Every reference names a user agent, and the construct translates (P8 step 4). A USE
+    /// block runs its body in the context of the agent, so each send of the body becomes a call
+    /// or reaches the default space, and the evaluation is quiet exactly when the body has no
+    /// send. A NEWSPACE tuple with an agent annotation makes a gensym call and parks its resume
+    /// term, so it is never quiet.
+    Translated { quiet: bool },
+}
+
+/// The outcome of the hook for `construct`, or `None` for a construct of another position or a
+/// NEWSPACE tuple without an annotation. The hook evaluates the space of a USE, or every
+/// annotation of a NEWSPACE in binder order, before any effect. A fixture holds no bundle and no
+/// Reified id. So the empty `Par` is `EmptySpaceRef`, and every other value names a user agent,
+/// whose reference passes the write rule. Evaluation keeps each component of a reference, so the
+/// classification of the evaluated reference is the classification of the fixture. The bodies
+/// of the fixtures are ground: their only effects are sends. A translated `new` draws its names
+/// as HEAD does first (TN-1), and the harness has no URN map, so its first URI binder fails with
+/// the error of HEAD.
+fn hook_outcome(construct: &ReifiedConstruct) -> Option<HookOutcome> {
+    match construct {
+        ReifiedConstruct::Use(block) => Some(match is_empty_par(&block.space) {
+            true => HookOutcome::Failed(EMPTY_SPACE_REF.to_string()),
+            false => HookOutcome::Translated {
+                quiet: block.body.sends.is_empty(),
+            },
+        }),
+        ReifiedConstruct::NewSpace(new_space) => {
+            let mut annotations = new_space.annotations.iter().flatten().peekable();
+            annotations.peek()?;
+            Some(
+                match (annotations.any(is_empty_par), new_space.new.uri.first()) {
+                    (true, _) => HookOutcome::Failed(EMPTY_SPACE_REF.to_string()),
+                    (false, Some(urn)) => HookOutcome::Failed(format!(
+                        "BugFoundError({:?})",
+                        format!(
+                            "No value set for {urn}. This is a bug in the normalizer or on the \
+                             path from it."
+                        )
+                    )),
+                    (false, None) => HookOutcome::Translated { quiet: false },
+                },
+            )
         }
-    };
-    Some(match is_empty_par(reference) {
-        true => EMPTY_SPACE_REF,
-        false => AGENT_SPACES_UNAVAILABLE,
-    })
+        ReifiedConstruct::Params(_) | ReifiedConstruct::Query(_) | ReifiedConstruct::Free(_) => {
+            None
+        }
+    }
+}
+
+/// Checks `outcome` against the outcome `expected` of the hook.
+fn check_hook_outcome(outcome: &Outcome, expected: &HookOutcome) -> Result<(), TestCaseError> {
+    match expected {
+        HookOutcome::Failed(error) => {
+            prop_assert_eq!(outcome.error.as_deref(), Some(error.as_str()));
+            prop_assert!(outcome.store.is_empty());
+        }
+        HookOutcome::Translated { quiet } => {
+            prop_assert_eq!(&outcome.error, &None);
+            prop_assert_eq!(outcome.is_quiet(), *quiet, "{:?}", outcome);
+            prop_assert!(outcome.widest_join < 2);
+        }
+    }
+    Ok(())
 }
 
 /// A tuple `Par` with a marker head and the canonical flags of its elements.
@@ -545,18 +636,23 @@ async fn check_recognized_in_place(construct: &ReifiedConstruct) -> Result<(), T
                 decode_process_tuple(&tuple_of(&par)).map(ReifiedConstruct::from),
                 Ok(construct.clone())
             );
-            // The hook evaluates the reference fields of this construct, so the error is the
-            // error of its own first space reference.
-            let expected = space_ref_error(construct);
+            // Changed by P8 step 4 (design v2 AG-2, W4): the hook evaluates the reference fields
+            // of this construct, and an empty reference fails closed while a user agent
+            // translates (`hook_outcome`).
+            // let expected = space_ref_error(construct);
+            // prop_assert!(expected.is_some());
+            let expected = hook_outcome(construct);
             prop_assert!(expected.is_some());
+            let expected = expected.expect("a USE or NEWSPACE construct has an outcome");
             for program in [
                 par.clone(),
                 new_par(1, par.clone()),
                 bundle_par(par.clone()),
             ] {
                 let outcome = evaluate(program).await;
-                prop_assert_eq!(outcome.error.as_deref(), expected);
-                prop_assert!(outcome.store.is_empty());
+                // prop_assert_eq!(outcome.error.as_deref(), expected);
+                // prop_assert!(outcome.store.is_empty());
+                check_hook_outcome(&outcome, &expected)?;
             }
         }
         ReifiedConstruct::Params(params) => {
@@ -688,7 +784,12 @@ async fn check_forged(forged: ETuple) -> Result<(), TestCaseError> {
             let canonical =
                 encode(&construct).map_err(|error| TestCaseError::fail(error.to_string()))?;
             prop_assert_eq!(&canonical, &tuple_expr(refreshed.clone()));
-            prop_assert_eq!(outcome.error.as_deref(), space_ref_error(&construct));
+            // Changed by P8 step 4 (design v2 AG-2, W4): see `hook_outcome`.
+            // prop_assert_eq!(outcome.error.as_deref(), space_ref_error(&construct));
+            match hook_outcome(&construct) {
+                Some(expected) => check_hook_outcome(&outcome, &expected)?,
+                None => prop_assert_eq!(&outcome.error, &None),
+            }
             prop_assert_eq!(&outcome, &evaluate(position_par(&construct)).await);
         }
         (Marker::Use | Marker::NewSpace, Err(_)) => {
@@ -1272,9 +1373,33 @@ fn reified_decode_commutes_with_substitution() {
         send(gstring("rrs-p2-h3-c"), vec![gint(0)]),
     );
     let outcome = runtime.block_on(evaluate(stored));
+    // Changed by P8 step 4 (design v2 AG-2, TS-1): the space of the recognized USE is an
+    // ordinary name, so the block runs its body in the context of that agent, and the send on
+    // the forged channel `1` becomes the call on the agent.
     // The space of the recognized USE is an ordinary name, so the hook fails closed at the
     // agent gate (P8).
-    assert_eq!(outcome.code(), Some("AgentSpacesUnavailable"));
+    // assert_eq!(outcome.code(), Some("AgentSpacesUnavailable"));
+    assert_eq!(outcome.error, None);
+    assert_eq!(
+        (outcome.produces, outcome.consumes, outcome.comms),
+        (3, 2, 2)
+    );
+    assert!(data_channels(&outcome).contains(&private_name(vec![6; 32]).encode_to_vec()));
+}
+
+/// The channels of the data entries of the store of `outcome`, in their prost bytes.
+fn data_channels(outcome: &Outcome) -> Vec<Vec<u8>> {
+    outcome
+        .store
+        .iter()
+        .filter(|entry| entry.first() == Some(&b'D'))
+        .map(|entry| {
+            let mut length = [0u8; 8];
+            length.copy_from_slice(&entry[1..9]);
+            let length = usize::try_from(u64::from_le_bytes(length)).expect("a small entry");
+            entry[9..9 + length].to_vec()
+        })
+        .collect()
 }
 
 // ── E12 ────────────────────────────────────────────────────────────────────
@@ -1359,10 +1484,13 @@ fn reified_plan_nil_encoding_counterexample() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn reified_hook_errors_are_typed() {
     let channel = gstring("rrs-p2-hooks");
+    // Changed by P8 step 4 (design v2 AG-2, W4): the space of `sample_use` and the annotation
+    // of `sample_new_space` are ordinary names, so the constructs translate
+    // (`reified_hook_agent_constructs_translate`).
     // The space of `sample_use` and the annotation of `sample_new_space` are ordinary names.
     let cases = [
-        (sample_use(), AGENT_SPACES_UNAVAILABLE),
-        (sample_new_space(), AGENT_SPACES_UNAVAILABLE),
+        // (sample_use(), AGENT_SPACES_UNAVAILABLE),
+        // (sample_new_space(), AGENT_SPACES_UNAVAILABLE),
         (
             marker_tuple(Marker::Use, vec![gint(1)]),
             "reified:Malformed: the USE tuple has 2 elements instead of 3",
@@ -1558,6 +1686,32 @@ fn lexical_resolver_fails_closed_on_reified_pars() {
     }
 }
 
+/// P8 step 4 (design v2 AG-2, TS-1, W4): the space of `sample_use` and the annotation of
+/// `sample_new_space` are ordinary names, so both constructs translate without an error. The
+/// USE body sends on the forged channel `1`, which becomes one call on the agent. The NEWSPACE
+/// tuple makes one gensym call and parks its resume term.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn reified_hook_agent_constructs_translate() {
+    let outcome = evaluate(sample_use()).await;
+    assert_eq!(outcome.error, None);
+    assert_eq!(
+        (outcome.produces, outcome.consumes, outcome.comms),
+        (1, 0, 0)
+    );
+    assert_eq!(data_channels(&outcome), vec![
+        private_name(vec![3; 32]).encode_to_vec()
+    ]);
+    let outcome = evaluate(sample_new_space()).await;
+    assert_eq!(outcome.error, None);
+    assert_eq!(
+        (outcome.produces, outcome.consumes, outcome.comms),
+        (1, 1, 0)
+    );
+    assert_eq!(data_channels(&outcome), vec![
+        private_name(vec![4; 32]).encode_to_vec()
+    ]);
+}
+
 // ── HEAD empty-state inputs ────────────────────────────────────────────────
 
 /// The inputs of both HEAD empty-state tests hold no marker: the registry bootstrap term and
@@ -1594,10 +1748,12 @@ async fn reified_p2_synthesizes_no_join() {
     let query = sample_query();
     let malformed_query = marker_tuple(Marker::Query, vec![gint(1), list(vec![gint(2)])]);
     let programs = [
-        sample_use(),
-        sample_new_space(),
+        // Changed by P8 step 4 (design v2 AG-2, W4): these constructs name user agents, so they
+        // translate instead of failing closed (checked below).
+        // sample_use(),
+        // sample_new_space(),
         marker_tuple(Marker::Use, vec![gint(1)]),
-        new_par(1, sample_use()),
+        // new_par(1, sample_use()),
         send(left.clone(), vec![gint(1), sample_params()]),
         persistent_send(left.clone(), vec![sample_params()]),
         receive(query.clone(), vec![wildcard()], 0, Par::default(), false),
@@ -1630,6 +1786,12 @@ async fn reified_p2_synthesizes_no_join() {
         );
         assert!(outcome.is_quiet(), "{outcome:?}");
     }
+    // P8 step 4: the constructs of user agents translate with single-channel receives (I-16).
+    for program in [sample_use(), sample_new_space(), new_par(1, sample_use())] {
+        let outcome = evaluate(program).await;
+        assert_eq!(outcome.error, None, "{outcome:?}");
+        assert!(outcome.widest_join < 2, "{outcome:?}");
+    }
     let control = join(
         vec![
             (left.clone(), vec![wildcard()], 0),
@@ -1643,6 +1805,7 @@ async fn reified_p2_synthesizes_no_join() {
     assert_eq!(outcome.error, None);
     assert_eq!(outcome.consumes, 1);
     assert!(!outcome.store.is_empty());
+    assert_eq!(outcome.widest_join, 2);
 }
 
 /// Item 19 at P2: neither a marker tuple nor a 0xE0 name is a mergeable channel. A tuple

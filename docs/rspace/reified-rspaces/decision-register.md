@@ -2704,7 +2704,7 @@ A second creation of the same `sid` aborts with `SpaceAlreadyExists`.
 **Reason.**
 
 - A P2 finding: the evaluation and the substitution of the baseline keep the flag `connective_used` of a tuple, a list, or a map. They keep it also when the children of the container change.
-- The evaluation keeps the flags at `rholang/src/rust/interpreter/reduce.rs:3130-3152`, `3154-3175`, and `3135-3155`.
+- The evaluation keeps the flags at `rholang/src/rust/interpreter/reduce.rs:3119-3141`, `3143-3164`, and `3135-3155`.
 - The substitution keeps them at `rholang/src/rust/interpreter/substitute.rs:1342-1363`, `1365-1384`, and `1405-1428`.
 - Ordinary data can use connectives, as in `x!(Int)`. Without the refresh, a legal `use` body could fail closed as `NonCanonical`.
 - Only the top level of a marker tuple can hold a stale flag, so the refresh costs time linear in the width of the tuple.

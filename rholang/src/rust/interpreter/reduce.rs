@@ -1638,7 +1638,7 @@ impl ReducerCore {
         &self,
         new: &New,
         env: Env<Par>,
-        mut rand: Blake2b512Random,
+        rand: Blake2b512Random,
         authority: &CostAuthority,
     ) -> Result<(), InterpreterError> {
         // D3 (DR-9, OD-3): `new` (name allocation) is a non-COMM structural
@@ -1647,18 +1647,7 @@ impl ReducerCore {
         // `new` no longer counts toward the per-COMM consensus cost.
         self.metering
             .reserve_reduction(new_bindings_cost(new.bind_count as i64))?;
-        match self.reified_allocate(new, &env, &mut rand, authority).await {
-            Ok(env) => {
-                self.eval_with_authority(
-                    unwrap_option_safe(new.p.clone())?,
-                    &env,
-                    rand,
-                    authority.clone(),
-                )
-                .await
-            }
-            Err(e) => Err(e),
-        }
+        self.reified_new(new, env, rand, authority).await
     }
 
     fn unbundle_receive(&self, rb: &ReceiveBind, env: &Env<Par>) -> Result<Par, InterpreterError> {

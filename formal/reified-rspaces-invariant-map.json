@@ -8706,14 +8706,14 @@
       ]
     },
     "P8": {
-      "title": "P8: the spaces that user agents implement (design v2, plan decision 77). Step 1 (W1 and W5): the routes and use-contexts of user agents and the write rule of an agent reference (SpaceRefs.v A1), the matcher state codec, the matcher process and the sink. Step 2 (W2 and W7): the call of a send on an agent space and the R7 replies to agent-minted names (SpaceRefs.v A2). Step 3 (W3 and W6): the translation of a receive (AgentTranslation.v A3 to A8) and the native consume of a handle.",
-      "design": "P8 design v2 (.reified-rspaces-work/p8/design-v2.md), sections 3 (AG-1 to AG-4) and 7 (MO-1 to MO-4, SK-1, A13). A# are Rocq headlines. The routing properties of P4 (prop_route_total, prop_route_rules, prop_space_name_route_ignores_ctx) now draw contexts of user agents too, so they witness the agent arms of route_total_deterministic and route_rules. witness_tests lists the deterministic tests of the write rule and of the matcher process. The matcher state codec has its headline in AgentTranslation.v (P8 step 3). Step 3 maps the headlines of AgentTranslation.v: pure properties in reified_p8_props.rs and native properties in reified_user_agents.rs.",
+      "title": "P8: the spaces that user agents implement (design v2, plan decision 77). Step 1 (W1 and W5): the routes and use-contexts of user agents and the write rule of an agent reference (SpaceRefs.v A1), the matcher state codec, the matcher process and the sink. Step 2 (W2 and W7): the call of a send on an agent space and the R7 replies to agent-minted names (SpaceRefs.v A2). Step 3 (W3 and W6): the translation of a receive (AgentTranslation.v A3 to A8) and the native consume of a handle. Step 4 (W4): the translation of `new`: the agent-minted names (SpaceRefs.v A9) and the resume term (AgentTranslation.v A10).",
+      "design": "P8 design v2 (.reified-rspaces-work/p8/design-v2.md), sections 3 (AG-1 to AG-4) and 7 (MO-1 to MO-4, SK-1, A13). A# are Rocq headlines. The routing properties of P4 (prop_route_total, prop_route_rules, prop_space_name_route_ignores_ctx) now draw contexts of user agents too, so they witness the agent arms of route_total_deterministic and route_rules. witness_tests lists the deterministic tests of the write rule and of the matcher process. The matcher state codec has its headline in AgentTranslation.v (P8 step 3). Step 3 maps the headlines of AgentTranslation.v: pure properties in reified_p8_props.rs and native properties in reified_user_agents.rs. Step 4 maps tag_untag_id (A9) and resume_binds_innermost (A10) to pure properties in reified_p8_props.rs; the second one runs the substitution of the reducer.",
       "test_status": "required",
       "test_files": [
         "rholang/tests/reified_p8_props.rs",
         "rholang/tests/reified_user_agents.rs"
       ],
-      "expected_properties": 9,
+      "expected_properties": 11,
       "formal": {
         "A1": {
           "kind": "rocq",
@@ -8786,6 +8786,24 @@
           "statement": "The codec of a matcher state is exact: a consistent state decodes from its encoding and from its matcher id, a decoded state re-encodes to the same bytes, and the encoding is injective (TR-5, MO-2).",
           "tests": [
             "prop_matcher_state_roundtrip"
+          ]
+        },
+        "A9": {
+          "kind": "rocq",
+          "name": "tag_untag_id",
+          "file": "formal/rocq/reified_rspaces/theories/SpaceRefs.v",
+          "statement": "An agent-minted name is one bundle with both flags around the agent-tagged tuple of its agent and its raw channel: the write rule of eval_send and the read rule of unbundle_receive both give the tuple, the tuple routes to its agent with its raw channel under every context (R4), and the R7 backend reads the same agent and raw channel from the name (R7A-1), whatever the bit sets are (TN-3).",
+          "tests": [
+            "prop_tag_untag_id"
+          ]
+        },
+        "A10": {
+          "kind": "rocq",
+          "name": "resume_binds_innermost",
+          "file": "formal/rocq/reified_rspaces/theories/AgentTranslation.v",
+          "statement": "The resume term of a translated new binds every binder of the new in its order: inside the nested receives, which bind one reply per agent binder in agent-binder order, each target evaluates to the bound name of its binder or to the agent-minted name of the reply of its rank, and the match pushes the values so that BoundVar(k - 1 - j) reads binder j, as in a native new (TN-3).",
+          "tests": [
+            "prop_resume_binds_innermost"
           ]
         }
       },
@@ -8860,6 +8878,22 @@
           "file": "rholang/tests/reified_p8_props.rs",
           "covers": [
             "A8"
+          ]
+        },
+        {
+          "number": 10,
+          "test": "prop_tag_untag_id",
+          "file": "rholang/tests/reified_p8_props.rs",
+          "covers": [
+            "A9"
+          ]
+        },
+        {
+          "number": 11,
+          "test": "prop_resume_binds_innermost",
+          "file": "rholang/tests/reified_p8_props.rs",
+          "covers": [
+            "A10"
           ]
         }
       ],
@@ -8945,6 +8979,40 @@
           "rule": "TR-4 (the owner bind of a guard, outer indices, AgentGuardSpansJoin)",
           "covers": [
             "A6"
+          ]
+        },
+        {
+          "test": "reducer_space_routing_agent_new_makes_the_calls",
+          "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
+          "rule": "TN-1 to TN-4 (the draws of HEAD, the reply names, the calls and the nesting of the resume receives)",
+          "covers": [
+            "A10"
+          ]
+        },
+        {
+          "test": "user_agent_new_binding_order_matches_native",
+          "file": "rholang/tests/reified_user_agents.rs",
+          "rule": "TN-1, TN-3 (the same body with native binders and with agent binders gives the same values)",
+          "covers": [
+            "A10"
+          ]
+        },
+        {
+          "test": "agent_gensym_calls_have_distinct_states",
+          "file": "rholang/tests/reified_user_agents.rs",
+          "rule": "TN-3, TN-4 (two agent binders get two distinct agent-minted names of one agent)",
+          "covers": [
+            "A9",
+            "A10"
+          ]
+        },
+        {
+          "test": "agent_use_and_new_follow_the_write_rule",
+          "file": "rholang/tests/reified_user_agents.rs",
+          "rule": "AG-4 (use and an annotation of new in native execution)",
+          "covers": [
+            "A1",
+            "A9"
           ]
         }
       ]

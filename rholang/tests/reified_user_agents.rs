@@ -1,10 +1,10 @@
 //! The spaces that user agents implement (P8, plan decision 77, design v2).
 //!
 //! Every deploy plays natively at the v6 limits and certifies through its committed evidence,
-//! as proposer self-certification and validator replay do (`support::native`). The translation
-//! of `new` arrives in P8 step 4, so these programs name agent-minted names with the agent tag,
-//! which the tests inject as `rho:rrs:test:tag`. A program cannot forge the tag: it is the
-//! unforgeable name `GPrivate([0xE0, 0xFF])`.
+//! as proposer self-certification and validator replay do (`support::native`). The programs of
+//! steps 2 and 3 name agent-minted names with the agent tag, which the tests inject as
+//! `rho:rrs:test:tag`. A program cannot forge the tag: it is the unforgeable name
+//! `GPrivate([0xE0, 0xFF])`. From step 4, the translation of `new` mints these names.
 //!
 //! | Test | Property |
 //! |---|---|
@@ -23,8 +23,11 @@
 //! | `user_agent_errors_query` | TR-2 (step 3): a query on an agent space aborts with `QuerySpecUnsupportedOnAgentSpace`. |
 //! | `user_agent_errors_pattern_too_deep` | TR-5 (step 3): a pattern whose matcher state is nested deeper than the decode limit of prost aborts with `AgentPatternTooDeep`. The boundary is exact: 30 nested lists abort, and 29 translate. A pattern of three nested lists fires. |
 //! | `agent_wrapper_forwards_to_native` | W6 (step 3): an agent that forwards its calls to a native handle serves the space through the native receive. |
-//! | `agent_never_replies_pending_replay_equal` | TN-5 (step 3): a silent agent leaves the receive pending, and native replay reproduces the play. |
-//! | `reified_p8_synthesizes_no_join` | Consensus checklist item 18 and I-16 (step 3): every consume and COMM of a translated receive names one channel, and the post-state holds no join of two channels. An ordinary join is the control. |
+//! | `agent_never_replies_pending_replay_equal` | TN-5 (steps 3 and 4): a silent agent leaves the receive pending, and the resume term of a `new` parked, and native replay reproduces the play. |
+//! | `user_agent_new_binding_order_matches_native` | TN-1, TN-3 (step 4): the binders of a `new` keep their order: the same body with binders of a native space and with binders of a user agent gives the same values. |
+//! | `agent_gensym_calls_have_distinct_states` | TN-4 (step 4): the gensym calls have distinct random states, so an agent that mints with `new` gives two binders two distinct names. |
+//! | `agent_use_and_new_follow_the_write_rule` | AG-4 (step 4): `use` and an annotation reject a reference without the write flag with `HandleNotWritable`, and every other reference routes the names of a `new` to the agent. |
+//! | `reified_p8_synthesizes_no_join` | Consensus checklist item 18 and I-16 (steps 3 and 4): every consume and COMM of a translated receive or `new` names one channel, and the post-state holds no join of two channels. An ordinary join is the control. |
 //! | `prop_body_equivalence` | `body_equivalence` (AgentTranslation.v, A5): for generated binds and data, the translated receive binds what a native receive binds. |
 //! | `prop_matcher_sound_complete` | `matcher_sound_complete` (A7): the matcher of `[a, b]` accepts a generated list exactly when a native receive fires, with the same values. |
 //! | `prop_guard_fold_sound` | `guard_fold_sound` (A6): a guard over one bind of a join goes to that matcher, and the join fires exactly when a native guarded join fires. |
@@ -41,6 +44,7 @@ use models::rust::utils::{
 };
 use proptest::prelude::*;
 use proptest::test_runner::TestCaseError;
+use rholang::rust::interpreter::reified::route::agent_parts;
 use rholang::rust::interpreter::spaces::namespace::{
     gprivate, op_channel, AGENT_TAG, REIFIED_TAG, SINK_OP,
 };
@@ -298,9 +302,11 @@ for (S <- factory!?("seq")) {{
 /// A minimal agent on the name `agent` that keeps each message on a private channel per raw
 /// channel. A consume of one bind asks its matcher about the first message of its channel, and
 /// a consume of two binds asks both matchers and joins the two env maps. On `(true, env)` the
-/// agent sends the env map to the body capability. The agent never replies to the sink.
+/// agent sends the env map to the body capability. The agent never replies to the sink. A
+/// `gensym` call gets a fresh name of the agent, which `new` mints (P8 step 4).
 fn memory_agent() -> &'static str {
     r#"new stored in {
+  for (ret, @"gensym" <= agent) { new raw in { ret!(*raw) } } |
   for (_, @"produce", @raw, @msg <= agent) { @(*stored, raw)!(msg) } |
   for (_, @"consume", @[(m, c)], @arrow, body <= agent) {
     for (@msg <- @(*stored, c)) {
@@ -539,6 +545,169 @@ for (@x <- @(*tag, *agent, "chan")) { @"rrs-native-out"!(x) }"#,
         played.result.errors
     );
     assert!(forwarded(&played).is_empty());
+    // TN-5 (P8 step 4): the agent never answers a `gensym` call either, so the resume term of
+    // the `new` stays parked and its body never runs.
+    let term = program(
+        &["agent"],
+        r#"for (_, @"produce", @raw, @msg <= agent) { Nil } |
+for (_, @"consume", @pairs, @arrow, body <= agent) { Nil } |
+new out in { use agent { new x in { out!(1) } } | for (@v <- out) { @"rrs-native-out"!(v) } }"#,
+    );
+    let (played, _) = play_and_certify("silent agent new", &term).await;
+    assert!(
+        played.result.errors.is_empty(),
+        "{:?}",
+        played.result.errors
+    );
+    assert!(forwarded(&played).is_empty());
+}
+
+// ─── T_new: names of agent spaces (step 4) ───────────────────────────────────────────────────────
+
+/// A deploy with the memory agent on `agent`, and the processes `body`, which run after the
+/// factory of `rho:space:hashmap:queue` replies the native space `h`.
+fn with_agent_and_space(body: &str) -> String {
+    program(
+        &["agent", "factory(`rho:space:hashmap:queue`)"],
+        &format!(
+            "{} |\nfor (h <- factory!?(\"default\")) {{\n{body}\n}}",
+            memory_agent()
+        ),
+    )
+}
+
+/// The agent and the raw channel of the agent-minted name `name`: the read-write bundle of an
+/// agent-tagged tuple.
+fn minted_parts(name: &Par) -> Option<(Par, Par)> {
+    match name.bundles.as_slice() {
+        [bundle] if bundle.write_flag && bundle.read_flag => bundle
+            .body
+            .as_ref()
+            .and_then(agent_parts)
+            .map(|(agent, raw)| (agent.clone(), raw.clone())),
+        _ => None,
+    }
+}
+
+/// TN-1 and TN-3 (design v2): the binders of a `new` keep their order. The same body runs with
+/// two binders of a native space around a default binder, and with two binders of a user agent
+/// around it. Each binder is a name of its own, and a send and a receive on each name meet, so
+/// both programs give the same values.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn user_agent_new_binding_order_matches_native() {
+    let body = |space: &str| {
+        format!(
+            r#"new a : {space}, n, b : {space} in {{
+  a!(1) | b!(2) | n!(3) |
+  for (@v <- b) {{ @"rrs-native-out"!(["b", v]) }} |
+  for (@v <- a) {{ @"rrs-native-out"!(["a", v]) }} |
+  for (@v <- n) {{ @"rrs-native-out"!(["n", v]) }}
+}}"#
+        )
+    };
+    let mut outputs = Vec::with_capacity(2);
+    for (label, space) in [("native binders", "h"), ("agent binders", "agent")] {
+        let (played, _) = play_and_certify(label, &with_agent_and_space(&body(space))).await;
+        assert!(
+            played.result.errors.is_empty(),
+            "{label}: {:?}",
+            played.result.errors
+        );
+        outputs.push(forwarded(&played));
+    }
+    let expected = vec![
+        list(vec![string("a"), int(1)]),
+        list(vec![string("b"), int(2)]),
+        list(vec![string("n"), int(3)]),
+    ];
+    assert_eq!(outputs[0], expected);
+    assert_eq!(outputs[1], expected);
+}
+
+/// TN-4 (design v2): each call `A'!(r_a, "gensym")` is a term of its own, so the calls have
+/// distinct random states. The memory agent mints each name with `new`, whose name comes from
+/// the random state of the call, so two binders get two distinct names of the agent. A send
+/// and a receive on a minted name meet through the agent.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn agent_gensym_calls_have_distinct_states() {
+    let term = with_memory_agent(
+        r#"new out in {
+  use agent { new a, b in { out!([*a, *b]) | a!(5) | for (@v <- a) { out!(v) } } } |
+  for (@v <= out) { @"rrs-native-out"!(v) }
+}"#,
+    );
+    let (played, _) = play_and_certify("gensym states", &term).await;
+    assert!(
+        played.result.errors.is_empty(),
+        "{:?}",
+        played.result.errors
+    );
+    let values = forwarded(&played);
+    assert!(values.contains(&int(5)), "{values:?}");
+    let names = values
+        .iter()
+        .find_map(|value| match value.exprs.as_slice() {
+            [Expr {
+                expr_instance: Some(ExprInstance::EListBody(EList { ps, .. })),
+            }] if ps.len() == 2 => Some(ps.clone()),
+            _ => None,
+        })
+        .expect("the names of the binders reach the output");
+    let parts: Vec<(Par, Par)> = names
+        .iter()
+        .map(|name| minted_parts(name).expect("an agent-minted name"))
+        .collect();
+    assert_eq!(parts[0].0, parts[1].0, "both names belong to one agent");
+    assert_ne!(
+        parts[0].1, parts[1].1,
+        "the agent minted two distinct names"
+    );
+}
+
+/// AG-4 (design v2): a `use` block and an annotation take the write rule of `eval_send`. A
+/// reference under a bundle without the write flag aborts with `HandleNotWritable`. Every other
+/// reference names the agent, and a name of a `new` in its context, or with its annotation,
+/// routes to the agent.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn agent_use_and_new_follow_the_write_rule() {
+    for (label, reference, failure) in [
+        ("read-only", "@{bundle-{*agent}}", Some("HandleNotWritable")),
+        ("no flag", "@{bundle0{*agent}}", Some("HandleNotWritable")),
+        ("write-only", "@{bundle+{*agent}}", None),
+        ("read-write", "@{bundle{*agent}}", None),
+        ("plain", "agent", None),
+    ] {
+        for (form, body) in [
+            (
+                "use",
+                format!("use {reference} {{ new y in {{ y!(2) | for (@v <- y) {{ out!(v) }} }} }}"),
+            ),
+            (
+                "annotation",
+                format!("new y : {reference} in {{ y!(2) | for (@v <- y) {{ out!(v) }} }}"),
+            ),
+        ] {
+            let term = with_memory_agent(&format!(
+                "new out in {{\n{body} |\nfor (@v <= out) {{ @\"rrs-native-out\"!(v) }}\n}}"
+            ));
+            let label = format!("{label} {form}");
+            let (played, _) = play_and_certify(&label, &term).await;
+            match failure {
+                Some(code) => {
+                    assert_eq!(codes(&played), only(code), "{label}");
+                    assert!(forwarded(&played).is_empty(), "{label}");
+                }
+                None => {
+                    assert!(
+                        played.result.errors.is_empty(),
+                        "{label}: {:?}",
+                        played.result.errors
+                    );
+                    assert_eq!(forwarded(&played), vec![int(2)], "{label}");
+                }
+            }
+        }
+    }
 }
 
 /// The channels that the events of `played` name. Panics when a consume or a COMM names two or
@@ -589,11 +758,13 @@ fn join_widths(played: &Played, channel: &Blake2b256Hash) -> Vec<usize> {
         .collect()
 }
 
-/// Consensus checklist item 18 at P8 step 3 (I-16, design v2 TR-8): the translation of a
-/// receive uses no join of two channels. Each matcher receive and the body receive name one
-/// channel, and the call is a send. The programs park translated receives on a silent agent
-/// (one bind, a join of two binds, a guard, the arrows `<=` and `<<-`), fire one through the
-/// memory agent, and run one on a native handle through a wrapper agent. Every consume and COMM
+/// Consensus checklist item 18 at P8 (I-16, design v2 TR-8): the translations of a receive and
+/// of a `new` use no join of two channels. Each matcher receive, the body receive and each
+/// resume receive name one channel, and the calls are sends. The programs park translated
+/// receives on a silent agent (one bind, a join of two binds, a guard, the arrows `<=` and
+/// `<<-`), fire one through the memory agent, and run one on a native handle through a wrapper
+/// agent. Two programs translate a `new` of two binders: its resume term stays parked on the
+/// silent agent, and it fires through the memory agent (P8 step 4). Every consume and COMM
 /// names one channel, and the post-state holds no join of two channels. An ordinary join is the
 /// control: the check sees its join.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -645,6 +816,22 @@ for (_, @"consume", @pairs, @arrow, body <= agent) { Nil }"#;
             with_memory_agent(
                 r#"@(*tag, *agent, "chan")!(1) |
 for (@x <- @(*tag, *agent, "chan")) { @"rrs-native-out"!(x) }"#,
+            ),
+        ),
+        (
+            "rrs-p8-no-join-new-parked",
+            program(
+                &["agent"],
+                &format!("{silent} |\nuse agent {{ new x, y in {{ x!(1) }} }}"),
+            ),
+        ),
+        (
+            "rrs-p8-no-join-new-fired",
+            with_memory_agent(
+                r#"new out in {
+  use agent { new x, y in { x!(1) | for (@v <- x) { out!(v) } } } |
+  for (@v <- out) { @"rrs-native-out"!(v) }
+}"#,
             ),
         ),
         (

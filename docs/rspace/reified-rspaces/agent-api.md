@@ -126,12 +126,16 @@ When every bind has a match, the agent sends the union of the maps to the body c
 
 Then the body of the receive runs with those values, as the body of a native receive does.
 
+The translation of a `new` calls `A!(r, "gensym")` for each binder of the agent `A` (P8 step 4).
+The agent replies one raw name on the reply name `r`, and the binder gets the agent-minted name of that raw name.
+The sends and the receives on an agent-minted name then become the calls `produce` and `consume` on the agent.
+
 ## 3. Factories
 
 ### 3.1 The call
 
 A factory call is a send on the factory capability: `hmq!(ret, a1, …, an)`.
-The send hook packs the arguments after `ret` into one list, so the factory receives `[ret, [a1, …, an]]` (`reified/reducer_hooks.rs:1448-1488`).
+The send hook packs the arguments after `ret` into one list, so the factory receives `[ret, [a1, …, an]]` (`reified/reducer_hooks.rs:1602-1642`).
 So every factory has the fixed arity 2, and a constructor can have any number of elements.
 The params section of the call stays in the list as its last element.
 

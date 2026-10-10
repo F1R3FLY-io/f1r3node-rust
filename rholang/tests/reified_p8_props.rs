@@ -10,33 +10,47 @@
 // runtime: offsets_partition (A3), env_keys_disjoint_union (A4), the placement part of
 // guard_fold_sound (A6) and matcher_state_roundtrip (A8). The native properties of
 // body_equivalence (A5), guard_fold_sound (A6) and matcher_sound_complete (A7) are in
-// rholang/tests/reified_user_agents.rs.
+// rholang/tests/reified_user_agents.rs. Step 4 maps tag_untag_id (A9): an agent-minted name
+// routes to its agent with its raw channel, and resume_binds_innermost (A10): the resume term
+// of a translated `new`, run with the substitution of the reducer, binds every binder in its
+// order.
+
+use std::sync::Arc;
 
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::var::VarInstance;
 use models::rhoapi::{
-    BindPattern, Bundle, CostAuthority, EAnd, EEq, EVar, Expr, Par, ParWithRandom, Var,
+    BindPattern, Bundle, CostAuthority, EAnd, EEq, ETuple, EVar, Expr, Par, ParWithRandom, Send,
+    Var,
 };
 use models::rust::utils::{
     new_boundvar_par, new_bundle_par, new_etuple_par, new_freevar_par, new_gint_par,
-    new_gstring_par,
+    new_gstring_par, union,
 };
 use proptest::prelude::*;
 use proptest::test_runner::{Config as ProptestConfig, RngSeed, TestCaseError, TestRunner};
+use rholang::rust::interpreter::accounting::costs::Cost;
+use rholang::rust::interpreter::accounting::RuntimeBudget;
+use rholang::rust::interpreter::env::Env;
 use rholang::rust::interpreter::errors::InterpreterError;
+use rholang::rust::interpreter::metering::MeteredMachine;
 use rholang::rust::interpreter::reified::costs::ScanMeter;
 use rholang::rust::interpreter::reified::errors::ReifiedReduceError;
 use rholang::rust::interpreter::reified::execution::r7_route;
 use rholang::rust::interpreter::reified::route::{route, Route};
 use rholang::rust::interpreter::reified::scope::{
-    call_channel, classify_space_ref, SpaceRef, SpaceRefError, UseKind, UseTarget,
+    call_channel, classify_space_ref, SpaceCtx, SpaceRef, SpaceRefError, UseKind, UseTarget,
 };
 use rholang::rust::interpreter::reified::user_agent::{
-    guard_indices, matcher_state_of, place_guard, translate_receive, AgentBind, MatcherState,
-    ReceiveTranslation,
+    agent_minted_name, guard_indices, matcher_state_of, place_guard, translate_new,
+    translate_receive, AgentBind, AgentBinder, MatcherState, ReceiveTranslation, REPLY_NAME_BRANCH,
 };
-use rholang::rust::interpreter::spaces::namespace::{gprivate, AGENT_TAG, REIFIED_TAG};
+use rholang::rust::interpreter::spaces::namespace::{
+    gprivate, handle_channel, Durability, NativeSpace, RandomPurpose, AGENT_TAG, REIFIED_TAG,
+    SID_LEN,
+};
+use rholang::rust::interpreter::substitute::{Substitute, SubstituteTrait};
 
 /// The seed of every property of this file, so a run is reproducible.
 const PROPERTY_SEED: u64 = 0x0E0D_2026_1010_0008;
@@ -582,4 +596,287 @@ fn prop_matcher_state_roundtrip() {
             Ok(())
         },
     );
+}
+
+/// The use-contexts of a route: none, the context of a native space, and the context of a user
+/// agent.
+fn contexts(agent: &Par) -> Vec<SpaceCtx> {
+    let space = NativeSpace {
+        sid: [7; SID_LEN],
+        durability: Durability::Durable,
+    };
+    vec![
+        None,
+        Some(Arc::new(UseTarget {
+            space: gprivate(handle_channel(space)),
+            kind: UseKind::Native(space),
+        })),
+        Some(Arc::new(UseTarget {
+            space: agent.clone(),
+            kind: UseKind::Agent,
+        })),
+    ]
+}
+
+/// `tag_untag_id` (AgentTranslation.v, A9, P8 step 4): the agent-minted name of a raw channel
+/// is a bundle with both flags around the agent-tagged tuple of the agent and the raw channel
+/// (design v2 TN-3). The write rule of `eval_send` and the read rule of `unbundle_receive` both
+/// give the tuple, and R4 routes the tuple to its agent with its raw channel under every
+/// use-context, also inside the context of another agent.
+#[test]
+fn prop_tag_untag_id() {
+    check(
+        pure_config(),
+        (
+            arb_agent_value(),
+            arb_form(),
+            arb_agent_value(),
+            arb_agent_value(),
+        ),
+        |(value, form, raw, other)| {
+            let agent = reference(&value, &form);
+            let name = agent_minted_name(agent.clone(), raw.clone());
+            let [bundle] = name.bundles.as_slice() else {
+                return Err(TestCaseError::fail("an agent-minted name is one bundle"));
+            };
+            prop_assert!(bundle.write_flag && bundle.read_flag);
+            let tuple = bundle.body.clone().expect("a bundle body");
+            for context in contexts(&other) {
+                match route(&context, &tuple) {
+                    Ok(Route::Agent {
+                        agent: routed,
+                        raw: routed_raw,
+                    }) => {
+                        prop_assert_eq!(&routed, &agent);
+                        prop_assert_eq!(&routed_raw, &raw);
+                    }
+                    other => {
+                        return Err(TestCaseError::fail(format!(
+                            "the tuple of an agent-minted name routes to {other:?}"
+                        )))
+                    }
+                }
+            }
+            Ok(())
+        },
+    );
+}
+
+/// The substitution of the reducer, with an unlimited budget.
+fn substitution() -> Substitute {
+    Substitute {
+        metering: MeteredMachine::new(RuntimeBudget::new(Cost::unsafe_max())),
+    }
+}
+
+/// `par` after the substitution of `env`, sorted, as `substitute_and_charge` gives it.
+fn substituted(par: &Par, env: &Env<Par>) -> Par {
+    substitution()
+        .substitute(par.clone(), 0, env)
+        .expect("the substitution succeeds")
+}
+
+/// The send of `data` on `chan`, with the bit sets of its data.
+fn send_par(chan: Par, data: Vec<Par>) -> Par {
+    let locally_free = data.iter().fold(Vec::new(), |bits, par| {
+        union(bits, par.locally_free.clone())
+    });
+    Par::default()
+        .with_sends(vec![Send {
+            chan: Some(chan),
+            data,
+            persistent: false,
+            locally_free: locally_free.clone(),
+            connective_used: false,
+        }])
+        .with_locally_free(locally_free)
+}
+
+/// The reply name `r_a` of the agent binder `a` of a translated `new` under `base` (design v2
+/// TN-2): `GPrivate(base.split_byte(5).split_short(a).next())`.
+fn reply_name(base: &Blake2b512Random, binder: i16) -> Par {
+    gprivate(
+        base.split_byte(REPLY_NAME_BRANCH)
+            .split_short(binder)
+            .next()
+            .into_iter()
+            .map(|byte| byte as u8)
+            .collect(),
+    )
+}
+
+/// One generated `new`: its plain binders and URI binders, the agent binders among the plain
+/// binders, and the reference of their agent.
+#[derive(Clone, Debug)]
+struct NewCase {
+    plain: usize,
+    uris: usize,
+    agents: Vec<bool>,
+    agent: Par,
+}
+
+fn arb_new_case() -> BoxedStrategy<NewCase> {
+    (
+        1usize..=3,
+        0usize..=1,
+        prop::collection::vec(any::<bool>(), 3),
+        (arb_agent_value(), any::<bool>()),
+    )
+        .prop_map(|(plain, uris, mut agents, (value, bundled))| {
+            agents.truncate(plain);
+            if !agents.iter().any(|agent| *agent) {
+                agents[plain - 1] = true;
+            }
+            let agent = match bundled {
+                true => new_bundle_par(value, true, false),
+                false => value,
+            };
+            NewCase {
+                plain,
+                uris,
+                agents,
+                agent,
+            }
+        })
+        .boxed()
+}
+
+/// `resume_binds_innermost` (AgentTranslation.v, A10, P8 step 4, design v2 TN-3): the resume
+/// term of a translated `new` binds every binder of the `new`, in its order. The property builds
+/// the translation of a generated `new` whose body sends its binders, and runs the resume with
+/// the substitution of the reducer: the nested receives bind the replies in the order of the
+/// agent binders, and the match binds the binders. The body then sends, in binder order, the
+/// agent-minted name of each reply for an agent binder and the bound name for every other
+/// binder. The calls name the reply names of TN-2 on the call channel of the agent (TN-4).
+#[test]
+fn prop_resume_binds_innermost() {
+    let out = gprivate(vec![30; SID_LEN]);
+    check(pure_config(), arb_new_case(), |case| {
+        let bind_count = case.plain + case.uris;
+        let outer = Env::new()
+            .put(new_gint_par(100, Vec::new(), false))
+            .put(new_gint_par(101, Vec::new(), false));
+        let mut bound_env = outer.clone();
+        let mut values = Vec::with_capacity(bind_count);
+        for binder in 0..bind_count {
+            let value = gprivate(vec![
+                40 + u8::try_from(binder).expect("a small new");
+                SID_LEN
+            ]);
+            bound_env = bound_env.put(value.clone());
+            values.push(value);
+        }
+        let binders: Vec<AgentBinder> = case
+            .agents
+            .iter()
+            .enumerate()
+            .filter(|(_, agent)| **agent)
+            .map(|(index, _)| AgentBinder {
+                index,
+                agent: case.agent.clone(),
+            })
+            .collect();
+        let body = send_par(
+            out.clone(),
+            (0..bind_count)
+                .rev()
+                .map(|level| {
+                    new_boundvar_par(
+                        i32::try_from(level).expect("a small new"),
+                        Vec::new(),
+                        false,
+                    )
+                })
+                .collect(),
+        );
+        let base =
+            RandomPurpose::Xlate.derive(&Blake2b512Random::create_from_bytes(b"rrs-p8-resume"));
+        let translation = translate_new(
+            &bound_env,
+            outer.level,
+            bind_count,
+            &binders,
+            body,
+            &base,
+            &ScanMeter::new(None),
+        )
+        .expect("the translation builds");
+        let replies: Vec<Par> = binders
+            .iter()
+            .map(|binder| reply_name(&base, i16::try_from(binder.index).expect("a small new")))
+            .collect();
+        let raws: Vec<Par> = (0..binders.len())
+            .map(|rank| {
+                new_gint_par(
+                    500 + i64::try_from(rank).expect("a small new"),
+                    Vec::new(),
+                    false,
+                )
+            })
+            .collect();
+        // TN-4: one call for each agent binder, on the call channel of the agent.
+        let channel = call_channel(&case.agent).expect("a writable agent reference");
+        prop_assert_eq!(translation.par.sends.len(), binders.len());
+        for (call, reply) in translation.par.sends.iter().zip(&replies) {
+            prop_assert_eq!(call.chan.as_ref(), Some(&channel));
+            prop_assert_eq!(&call.data, &vec![
+                reply.clone(),
+                new_gstring_par("gensym".to_string(), Vec::new(), false)
+            ]);
+        }
+        // TN-3: the receives nest in the order of the agent binders.
+        let [resume] = translation.par.receives.as_slice() else {
+            return Err(TestCaseError::fail("one resume receive"));
+        };
+        let mut receive = resume.clone();
+        let mut replied = Env::new();
+        for (rank, reply) in replies.iter().enumerate() {
+            prop_assert_eq!(receive.binds[0].source.as_ref(), Some(reply));
+            replied = replied.put(raws[rank].clone());
+            let inner = receive.body.clone().expect("a resume body");
+            if rank + 1 < replies.len() {
+                let [next] = inner.receives.as_slice() else {
+                    return Err(TestCaseError::fail("a resume receive nests the next"));
+                };
+                receive = next.clone();
+                continue;
+            }
+            let [matched] = inner.matches.as_slice() else {
+                return Err(TestCaseError::fail("the innermost body is one match"));
+            };
+            let target = substituted(matched.target.as_ref().expect("a target"), &replied);
+            let bindings: Vec<Par> = match target.exprs.as_slice() {
+                [Expr {
+                    expr_instance: Some(ExprInstance::ETupleBody(ETuple { ps, .. })),
+                }] => ps.clone(),
+                other => return Err(TestCaseError::fail(format!("the target is {other:?}"))),
+            };
+            let mut expected = Vec::with_capacity(bind_count);
+            let mut next_rank = 0;
+            for (binder, value) in values.iter().enumerate() {
+                match case.agents.get(binder) {
+                    Some(true) => {
+                        expected.push(substituted(
+                            &agent_minted_name(case.agent.clone(), raws[next_rank].clone()),
+                            &Env::new(),
+                        ));
+                        next_rank += 1;
+                    }
+                    Some(false) | None => expected.push(substituted(value, &Env::new())),
+                }
+            }
+            prop_assert_eq!(&bindings, &expected);
+            let source = matched.cases[0].source.as_ref().expect("a case body");
+            let mut matched_env = replied.clone();
+            for binding in &bindings {
+                matched_env = matched_env.put(binding.clone());
+            }
+            prop_assert_eq!(
+                substituted(source, &matched_env),
+                substituted(&send_par(out.clone(), expected), &Env::new())
+            );
+            return Ok(());
+        }
+        Err(TestCaseError::fail("the resume has no match"))
+    });
 }

@@ -675,11 +675,19 @@ mod tests {
             backend_error(InterpreterError::HostWorkRejected),
             RSpaceError::HostWorkRejected
         );
+        // Changed by P8 step 4: `AgentSpacesUnavailable` is retired, so another code of the
+        // hooks shows the rule.
+        // assert_eq!(
+        //     code::<()>(Err(backend_error(
+        //         ReifiedReduceError::AgentSpacesUnavailable.into()
+        //     ))),
+        //     Some("AgentSpacesUnavailable".to_string())
+        // );
         assert_eq!(
             code::<()>(Err(backend_error(
-                ReifiedReduceError::AgentSpacesUnavailable.into()
+                ReifiedReduceError::CrossSpaceJoin.into()
             ))),
-            Some("AgentSpacesUnavailable".to_string())
+            Some("CrossSpaceJoin".to_string())
         );
     }
 }

@@ -131,6 +131,13 @@ translation of a receive:
   sr-query-agent-drops-query         a receive with a query on a user agent
                                      is translated and drops the query (TR-2)
 
+P8 step 4 (design v2 TN-3) has two controls. Each reverts one rule of the
+translation of `new`:
+  at-resume-order-reversed           the agent binder of rank i reads
+                                     BoundVar(i) inside the receives
+  sr-minted-name-write-only          an agent-minted name is a bundle without
+                                     the read flag
+
 Decision 42 (AgentReadCoverage.v) has five controls. Each reverts one part of
 the metering rule: a step that reads before it reserves, a fire that does not
 prepay the decode of its continuation, an operation that does not prepay the
@@ -2208,6 +2215,17 @@ CONTROLS = (
      "    | BindOk _ (Some _) (RAgent _ _) => TFail RQuerySpecUnsupportedOnAgent",
      "    | BindOk _ (Some _) (RAgent a raw) => TAgent a raw",
      ("query_source_routes_inner_channel",)),
+    # ── P8 step 4: the translation of `new` (design v2 TN-3) ──
+    ("at-resume-order-reversed", "AgentTranslation",
+     "the agent binder of rank i reads BoundVar(i) instead of BoundVar(m - 1 - i) (TN-3)",
+     "    | BAgent a :: rest => TTag a (m - 1 - i) :: targets_from m (S i) rest",
+     "    | BAgent a :: rest => TTag a i :: targets_from m (S i) rest",
+     ("targets_from_eval", "resume_binds_innermost")),
+    ("sr-minted-name-write-only", "SpaceRefs",
+     "an agent-minted name is a bundle without the read flag (TN-3)",
+     "    mkPar 0 0 0 [] [] [mkBundle (Some (agent_tuple a raw lf cu)) true true] blf bcu.",
+     "    mkPar 0 0 0 [] [] [mkBundle (Some (agent_tuple a raw lf cu)) true false] blf bcu.",
+     ("tag_untag_id",)),
 )
 
 DECLARATION = re.compile(

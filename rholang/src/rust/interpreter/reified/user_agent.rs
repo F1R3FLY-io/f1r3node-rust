@@ -26,6 +26,10 @@
 //!   receive for each bind, the body capability with its receive, and the call
 //!   `A'!(sink, "consume", [(bundle+{m_i}, raw_i)…], arrow, bundle+{b})`. [`guard_indices`]
 //!   and [`place_guard`] give the guard to the bind that owns its binders (TR-4).
+//! * [`translate_new`]: the translation T_new of a `new` with binders of user agents (P8 step
+//!   4, TN-1 to TN-4). It builds one call `A'!(r_a, "gensym")` for each agent binder and the
+//!   resume term that binds every binder of the `new` when the agents reply. An agent binder
+//!   gets the agent-minted name `bundle{(AGENT_TAG, A, raw)}` of the reply ([`agent_minted_name`]).
 //!
 //! # Matcher states
 //!
@@ -90,6 +94,7 @@ use super::scope::call_channel;
 use super::system_channels::{MATCHER_OP_PROCESS, SINK_OP_PROCESS};
 use crate::rust::interpreter::contract_call::ContractCall;
 use crate::rust::interpreter::deterministic_reduction;
+use crate::rust::interpreter::env::Env;
 use crate::rust::interpreter::errors::{illegal_argument_error, InterpreterError};
 use crate::rust::interpreter::spaces::errors::SpaceError;
 use crate::rust::interpreter::spaces::matching::SpaceMatcher;
@@ -97,6 +102,7 @@ use crate::rust::interpreter::spaces::namespace::{
     self, Durability, RandomPurpose, ReifiedId, SID_LEN, SINK_OP,
 };
 use crate::rust::interpreter::spaces::record::{expr_par, sole_expr};
+use crate::rust::interpreter::util::prepend_bundle;
 
 /// The version of the encoding of a matcher state.
 pub const MATCHER_STATE_VERSION: i64 = 1;
@@ -1193,6 +1199,193 @@ pub fn translate_receive(
         call_channel,
         call,
     })
+}
+
+/// The branch of the reply names of a translated `new` (design v2 TN-2):
+/// `base.split_byte(5).split_short(a).next()` for the plain binder `a`.
+pub const REPLY_NAME_BRANCH: u8 = 5;
+
+/// The branch of the synthesized `Par` of a translated `new` (design v2 TN-4, refinement V1 of
+/// decision 77): `base.split_byte(7)`.
+pub const NEW_PAR_BRANCH: u8 = 7;
+
+/// The method name of the call of a `new`.
+static GENSYM_METHOD: LazyLock<Par> =
+    LazyLock::new(|| new_gstring_par("gensym".to_string(), Vec::new(), false));
+
+/// The agent-minted name `raw` of the user agent `agent` (design v2 TN-3): the read-write
+/// bundle `bundle{(AGENT_TAG, agent, raw)}`. A pattern cannot open the bundle. The write rule of
+/// `eval_send` and the read rule of `unbundle_receive` both give the agent-tagged tuple, which
+/// R4 routes to `agent` with the channel `raw`.
+pub fn agent_minted_name(agent: Par, raw: Par) -> Par {
+    let tag = namespace::gprivate(namespace::op_channel(namespace::AGENT_TAG));
+    prepend_bundle(Par::default(), Bundle {
+        body: Some(tuple_par(vec![tag, agent, raw])),
+        write_flag: true,
+        read_flag: true,
+    })
+}
+
+/// One binder of a `new` that a user agent implements (design v2 TN-1): the index `a` of the
+/// binder among the plain binders, and the reference of its agent.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AgentBinder {
+    pub index: usize,
+    pub agent: Par,
+}
+
+/// The translation of a `new` with agent binders (design v2 W4): the synthesized `Par`
+/// `{ resume | A'_0!(r_0, "gensym") | … }` and its random state `base.split_byte(7)`.
+#[derive(Clone, Debug)]
+pub struct NewTranslation {
+    pub par: Par,
+    pub random: Blake2b512Random,
+}
+
+/// The bit set of the binder levels below `count`.
+fn levels_below(count: usize) -> Vec<u8> {
+    match count {
+        0 => Vec::new(),
+        _ => create_bit_vector(&(0..count).collect::<Vec<usize>>()),
+    }
+}
+
+/// The translation of a `new` whose agent binders are `binders`, in the order of their indices
+/// (design v2 W4, TN-1 to TN-4). `bound` is the environment after the draws of HEAD and the
+/// allocation jobs of the native spaces, and `level` is the level of the environment outside
+/// the `new`, so binder `j` is at the level `level + j`. `body` is `P_closed`: the body after
+/// the substitution of its outer variables and the wrapper of its use-context, whose free
+/// variables are the `bind_count` binders. `base` is `Xlate.derive(R′)` of the random state
+/// `R′` after the draws.
+///
+/// * TN-2: agent binder `a` gets the reply name `r_a = GPrivate(base.split_byte(5)
+///   .split_short(a).next())`.
+/// * TN-3: the resume term `for(@v_0 <- r_0) { … for(@v_{m−1} <- r_{m−1}) { match (T_0, …) {
+///   (x_0, …) => P_closed } } }` binds every binder of the `new`, in its order. For the agent
+///   binder `j` of rank `i`, `T_j` is the agent-minted name of `v_i`, which is `BoundVar(m − 1 −
+///   i)` inside the receives. Every other `T_j` is the name that `bound` holds: the name of
+///   HEAD, of a native space, or the value of a URI.
+/// * TN-4: one call `A'_a!(r_a, "gensym")` on the call channel of each agent, and the resume
+///   term, in one `Par` with the state `base.split_byte(7)`.
+///
+/// Every copy and every random draw is reserved before it is made.
+pub fn translate_new(
+    bound: &Env<Par>,
+    level: i32,
+    bind_count: usize,
+    binders: &[AgentBinder],
+    body: Par,
+    base: &Blake2b512Random,
+    meter: &ScanMeter,
+) -> Result<NewTranslation, InterpreterError> {
+    let count = binders.len();
+    let ordered = binders.windows(2).all(|pair| pair[0].index < pair[1].index);
+    match (count, ordered, binders.last()) {
+        (0, _, _) | (_, false, _) => {
+            return Err(InterpreterError::BugFoundError(
+                "a new translation needs agent binders in index order".to_string(),
+            ))
+        }
+        (_, true, Some(last)) if last.index >= bind_count => {
+            return Err(InterpreterError::BugFoundError(
+                "an agent binder of a new is not one of its binders".to_string(),
+            ))
+        }
+        (_, true, _) => {}
+    }
+    let replies = base.split_byte(REPLY_NAME_BRANCH);
+    meter.reserve_buffer::<Par>(count)?;
+    let mut reply_names = Vec::with_capacity(count);
+    for binder in binders {
+        let short = i16::try_from(binder.index)
+            .map_err(|_| SpaceError::Inconsistent("a binder index does not fit a short split"))?;
+        let random = replies.split_short(short);
+        meter.random_bytes(&random)?;
+        reply_names.push(namespace::gprivate(output_bytes(random).to_vec()));
+    }
+    meter.reserve_buffer::<Par>(bind_count)?;
+    let mut targets = Vec::with_capacity(bind_count);
+    let mut next = binders.iter().enumerate().peekable();
+    for binder in 0..bind_count {
+        match next.peek() {
+            Some(&(rank, agent_binder)) if agent_binder.index == binder => {
+                let variable = i32::try_from(count - 1 - rank)
+                    .map_err(|_| SpaceError::Inconsistent("a binder level does not fit"))?;
+                meter.reserve_copy(&agent_binder.agent)?;
+                targets.push(agent_minted_name(
+                    agent_binder.agent.clone(),
+                    new_boundvar_par(variable, Vec::new(), false),
+                ));
+                next.next();
+            }
+            Some(_) | None => {
+                let at = i32::try_from(binder)
+                    .ok()
+                    .and_then(|binder| level.checked_add(binder))
+                    .ok_or(SpaceError::Inconsistent("a binder level does not fit"))?;
+                let value = bound.env_map.get(&at).ok_or_else(|| {
+                    InterpreterError::BugFoundError("a binder of a new has no value".to_string())
+                })?;
+                targets.push(meter.copy(value)?);
+            }
+        }
+    }
+    let free_count = i32::try_from(bind_count)
+        .map_err(|_| SpaceError::Inconsistent("the binder count does not fit"))?;
+    meter.reserve_buffer::<Par>(bind_count)?;
+    let mut variables = Vec::with_capacity(bind_count);
+    for binder in 0..free_count {
+        variables.push(new_freevar_par(binder, Vec::new()));
+    }
+    let pattern = tuple_par(variables);
+    let target = tuple_par(targets);
+    let resume = Match {
+        locally_free: target.locally_free.clone(),
+        connective_used: target.connective_used || body.connective_used,
+        target: Some(target),
+        cases: vec![MatchCase {
+            pattern: Some(pattern),
+            source: Some(body),
+            free_count,
+            guard: None,
+        }],
+    };
+    let mut inner = Par::default().prepend_match(resume);
+    for (rank, reply) in reply_names.iter().enumerate().rev() {
+        meter.reserve_copy(reply)?;
+        let connective_used = inner.connective_used;
+        inner = Par::default().prepend_receive(Receive {
+            binds: vec![ReceiveBind {
+                patterns: vec![new_freevar_par(0, Vec::new())],
+                source: Some(reply.clone()),
+                remainder: None,
+                free_count: 1,
+                cost_signature: None,
+            }],
+            body: Some(inner),
+            persistent: false,
+            peek: false,
+            bind_count: 1,
+            locally_free: levels_below(rank),
+            connective_used,
+            condition: None,
+        });
+    }
+    let mut par = inner;
+    for (binder, reply) in binders.iter().zip(reply_names).rev() {
+        meter.reserve_copy(&binder.agent)?;
+        let channel = call_channel(&binder.agent).map_err(ReifiedReduceError::from)?;
+        par = par.prepend_send(Send {
+            chan: Some(channel),
+            data: vec![reply, meter.copy(&*GENSYM_METHOD)?],
+            persistent: false,
+            locally_free: Vec::new(),
+            connective_used: false,
+        });
+    }
+    let random = base.split_byte(NEW_PAR_BRANCH);
+    meter.random_bytes(&random)?;
+    Ok(NewTranslation { par, random })
 }
 
 #[cfg(test)]

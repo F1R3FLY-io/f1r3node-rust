@@ -69,22 +69,20 @@
    r7_agent_bundle          rholang/src/rust/interpreter/reified/execution.rs:
                             139-154 (r7_route, R7A-1)
    routes_to_default_       rholang/src/rust/interpreter/reified/
-     without_context        reducer_hooks.rs:1141-1146
+     without_context        reducer_hooks.rs:1295-1300
    classify_space_ref, unbundle
                             rholang/src/rust/interpreter/reified/scope.rs:
                             141-180
    wrap_body                rholang/src/rust/interpreter/reified/scope.rs:
                             185-193
    enter_use, fire_step     rholang/src/rust/interpreter/reified/
-                            reducer_hooks.rs:250-267, 279-307, 394-409
+                            reducer_hooks.rs:254-271, 281-311, 437-452
                             (eval_marker, eval_use, space_ref),
                             rholang/src/rust/interpreter/dispatch.rs:62-71
                             (a fired body runs on the root reducer).
-                            enter_use models the target of P8: until the
-                            translation of `new` lands (P8 step 4),
-                            eval_use applies the write rule to an agent
-                            and then fails closed with
-                            AgentSpacesUnavailable
+                            enter_use models eval_use of P8 step 4: a
+                            reference of a user agent passes the write
+                            rule and enters the context of the agent
    use_kind, target, ctx_key
                             rholang/src/rust/interpreter/reified/scope.rs:
                             34-59 (UseKind, UseTarget and its native)
@@ -113,20 +111,20 @@
                             models/src/rust/reified/encoding.rs:346-356,
                             369-374 (marker_of, sole_marker_tuple)
    decode_source, h4_passes rholang/src/rust/interpreter/reified/
-                            reducer_hooks.rs:1126-1137 (reject_query_source),
+                            reducer_hooks.rs:1280-1291 (reject_query_source),
                             models/src/rust/reified/encoding.rs:841-848
                             (decode_query_source)
    takes_fast_path          rholang/src/rust/interpreter/reified/
-                            reducer_hooks.rs:1153-1155
+                            reducer_hooks.rs:1307-1309
    read_channel             rholang/src/rust/interpreter/reified/
-                            reducer_hooks.rs:1185-1193 (readable_channel)
+                            reducer_hooks.rs:1339-1347 (readable_channel)
    read_bind, route_bind    rholang/src/rust/interpreter/reified/
-                            reducer_hooks.rs:1166-1180, 822-842 (query_bind,
+                            reducer_hooks.rs:1320-1334, 865-885 (query_bind,
                             route_receive)
    single_target            rholang/src/rust/interpreter/reified/
-                            reducer_hooks.rs:1198-1243 (single_bind_route)
+                            reducer_hooks.rs:1352-1397 (single_bind_route)
    receive_one              rholang/src/rust/interpreter/reified/
-                            reducer_hooks.rs:658-745 (reified_consume)
+                            reducer_hooks.rs:701-788 (reified_consume)
 
    ─────────────────────────────────────────────────────────────────────────
    Abstraction
@@ -197,6 +195,11 @@
                                           exactly the bundle with both flags
                                           around an agent-tagged tuple (P8,
                                           R7A-1)
+   15. tag_untag_id                       an agent-minted name unbundles to
+                                          its agent-tagged tuple, which routes
+                                          to its agent with its raw channel
+                                          under every context (P8 step 4,
+                                          TN-3)
 
    No Axiom, Parameter, Admitted, admit, Abort or Conjecture. Section
    variables are parameters of the closed theorems. The file imports only
@@ -913,6 +916,51 @@ Section Routing.
     destruct (is_agent_tagged t) eqn:Et.
     - destruct (agent_tagged_parts t Et) as [a [raw Ep]]. rewrite Ep. reflexivity.
     - unfold route. rewrite Hb. reflexivity.
+  Qed.
+
+  (* The agent-tagged tuple (AGENT_TAG, a, raw) with the bit sets lf and cu,
+     and the agent-minted name around it: the bundle with both flags that
+     the translation of `new` binds (user_agent.rs agent_minted_name, P8
+     step 4, design v2 TN-3). *)
+  Definition agent_tuple (a raw : par) (lf : list nat) (cu : bool) : par :=
+    mkPar 0 0 0 [ETuple [gprivate [reified_tag; agent_tag]; a; raw]] [] [] lf cu.
+
+  Definition agent_minted_name (a raw : par) (lf : list nat) (cu : bool)
+             (blf : list nat) (bcu : bool) : par :=
+    mkPar 0 0 0 [] [] [mkBundle (Some (agent_tuple a raw lf cu)) true true] blf bcu.
+
+  Lemma agent_tuple_tagged : forall a raw lf cu, is_agent_tagged (agent_tuple a raw lf cu) = true.
+  Proof.
+    intros a raw lf cu. unfold is_agent_tagged, agent_tuple. cbn [sole_expr].
+    cbn [sole_gprivate_id sole_unforgeable gprivate]. unfold bytes_eqb.
+    destruct (list_eq_dec Nat.eq_dec [reified_tag; agent_tag] [reified_tag; agent_tag])
+      as [_ | Hne]; [reflexivity | contradiction Hne; reflexivity].
+  Qed.
+
+  (* Headline 15 (P8 step 4, design v2 TN-3). An agent-minted name is one
+     bundle with both flags around the agent-tagged tuple of its agent and
+     its raw channel. So the write rule of eval_send and the read rule of
+     unbundle_receive both give the tuple, the tuple routes to its agent
+     with its raw channel under every context (R4), and the R7 backend reads
+     the same agent and raw channel from the name (R7A-1). The bit sets of
+     the tuple and of the name do not matter. *)
+  Theorem tag_untag_id :
+    forall a raw lf cu blf bcu cx,
+      single_bundle (agent_minted_name a raw lf cu blf bcu) =
+        Some (mkBundle (Some (agent_tuple a raw lf cu)) true true) /\
+      classify_channel (agent_tuple a raw lf cu) = CAgentTagged /\
+      route cx (agent_tuple a raw lf cu) = RouteOk (RAgent a raw) /\
+      r7_produce (agent_minted_name a raw lf cu blf bcu) = R7Agent a raw.
+  Proof.
+    intros a raw lf cu blf bcu cx.
+    pose proof (agent_tuple_tagged a raw lf cu) as Ht.
+    assert (Hc : classify_channel (agent_tuple a raw lf cu) = CAgentTagged).
+    { unfold classify_channel. replace (sole_unforgeable (agent_tuple a raw lf cu)) with
+        (@None unf) by reflexivity. rewrite Ht. reflexivity. }
+    split; [reflexivity |]. split; [exact Hc |]. split.
+    - unfold route. rewrite Hc. reflexivity.
+    - unfold r7_produce, r7_agent_bundle, agent_minted_name. cbn [single_bundle].
+      rewrite Ht. reflexivity.
   Qed.
 
   (* The ids that an ordinary program can name: byte names have one byte,
@@ -1668,3 +1716,4 @@ Print Assumptions native_execution_runs_spaces.
 Print Assumptions query_source_routes_inner_channel.
 Print Assumptions agent_ref_requires_write_flag.
 Print Assumptions r7_agent_reply_bundle_exact.
+Print Assumptions tag_untag_id.
