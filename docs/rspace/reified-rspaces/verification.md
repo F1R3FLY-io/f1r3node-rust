@@ -1720,7 +1720,7 @@ The TLA+ controls of P4 are the four Unsafe configurations of Table 37 and the t
 The 78 properties of `rholang/tests/reified_p4_props.rs` run the real code of P4.
 A pure property and a property over the in-memory agent run 64 cases.
 A property that evaluates deploys on a Rholang runtime runs 16 cases.
-Every configuration fixes the seed `0x0E0D_2026_1005_4E71` and sets `failure_persistence: None`, and the runtime configuration limits the shrink to 64 iterations (`reified_p4_props.rs:155-180`).
+Every configuration fixes the seed `0x0E0D_2026_1005_4E71` and sets `failure_persistence: None`, and the runtime configuration limits the shrink to 64 iterations (`reified_p4_props.rs:156-181`).
 So a run has the same cases on every host, and it writes nothing to the source tree.
 The 3 properties of `rholang/tests/reified_legacy_charges.rs` (section [11.14](#1114-legacy-charges-of-decision-45)) run 64 cases each, with the seed `0x0E0D_2026_1006_0045`.
 
@@ -1728,17 +1728,17 @@ The 3 properties of `rholang/tests/reified_legacy_charges.rs` (section [11.14](#
 
 | Group | Properties | Location | Covers |
 |---|---|---|---|
-| Namespace | `prop_kind_byte_injective` to `prop_canonical_inner_bytes_respects_par_eq` (11) | `reified_p4_props.rs:572-966` | Q1 to Q11 |
-| Record envelopes | `prop_datum_envelope_roundtrip` to `prop_envelope_unknown_version_rejected` (8) | `reified_p4_props.rs:1459-1794` | Q12 to Q19 |
-| Counters | `prop_check1_restatement_matches_merger` (`reified_p4_props.rs:2127`) and `prop_queue_writes_race_on_counter` to `prop_counter_free_peek_admits_write_skew` (8) | `reified_p4_props.rs:5513-5937` | Q20 to Q28 |
-| Queue | `prop_queue_candidates_head_only` to `prop_legacy_scan_breaks_head_blocks` (9) | `reified_p4_props.rs:3076-3525` | Q29 to Q37, Q62 and Q63 for `prop_queue_plan_permutation_invariant`, and U10 for `prop_queue_loop_bounded` |
-| Metering | `prop_agent_reservation_cut_rejects_without_effect` to `prop_agent_reserves_its_own_work_beyond_the_matcher` (3) | `reified_p4_props.rs:4585-4701` | Q59 to Q61, Q64 to Q66 |
-| References and routing | `prop_classify_space_ref_total` to `prop_use_wrapper_restores_ctx` (9) | `reified_p4_props.rs:6308-6597` | Q38 to Q46 |
-| Factories | `prop_family_index_bijective` to `prop_space_already_exists_is_deterministic_abort` (8) | `reified_p4_props.rs:6838-7250` | Q48 to Q55 |
-| TLA+ invariants | `prop_queue_no_pending_match_any_schedule` to `prop_handle_calls_merge_like_contracts` (8) | `reified_p4_props.rs:7516-8095` | U1 to U8, and U12 |
-| Leaf extras | `prop_handle_dispatch_total`, `prop_get_space_agent_returns_family_capability`, `prop_qualifier_parse_roundtrip`, `prop_prepare_commit_atomic` (4) | `reified_p4_props.rs:8504-8777` | Q47 to Q51, Q55 |
-| Re-entry (decision 43) | `prop_queue_reissue_keeps_first_round_ord` to `prop_queue_persistent_reissue_charged_once` (8) | `reified_p4_props.rs:3839-4421` | Q68 to Q77, U1 to U3, and U9 to U12 |
-| Peek re-store (decision 45) | `prop_queue_restore_realizes_plan` (1) | `reified_p4_props.rs:4773` | Q78 |
+| Namespace | `prop_kind_byte_injective` to `prop_canonical_inner_bytes_respects_par_eq` (11) | `reified_p4_props.rs:573-967` | Q1 to Q11 |
+| Record envelopes | `prop_datum_envelope_roundtrip` to `prop_envelope_unknown_version_rejected` (8) | `reified_p4_props.rs:1460-1795` | Q12 to Q19 |
+| Counters | `prop_check1_restatement_matches_merger` (`reified_p4_props.rs:2128`) and `prop_queue_writes_race_on_counter` to `prop_counter_free_peek_admits_write_skew` (8) | `reified_p4_props.rs:5514-5938` | Q20 to Q28 |
+| Queue | `prop_queue_candidates_head_only` to `prop_legacy_scan_breaks_head_blocks` (9) | `reified_p4_props.rs:3077-3526` | Q29 to Q37, Q62 and Q63 for `prop_queue_plan_permutation_invariant`, and U10 for `prop_queue_loop_bounded` |
+| Metering | `prop_agent_reservation_cut_rejects_without_effect` to `prop_agent_reserves_its_own_work_beyond_the_matcher` (3) | `reified_p4_props.rs:4586-4702` | Q59 to Q61, Q64 to Q66 |
+| References and routing | `prop_classify_space_ref_total` to `prop_use_wrapper_restores_ctx` (9) | `reified_p4_props.rs:6318-6607` | Q38 to Q46 |
+| Factories | `prop_family_index_bijective` to `prop_space_already_exists_is_deterministic_abort` (8) | `reified_p4_props.rs:6848-7260` | Q48 to Q55 |
+| TLA+ invariants | `prop_queue_no_pending_match_any_schedule` to `prop_handle_calls_merge_like_contracts` (8) | `reified_p4_props.rs:7526-8105` | U1 to U8, and U12 |
+| Leaf extras | `prop_handle_dispatch_total`, `prop_get_space_agent_returns_family_capability`, `prop_qualifier_parse_roundtrip`, `prop_prepare_commit_atomic` (4) | `reified_p4_props.rs:8560-8843` | Q47 to Q51, Q55 |
+| Re-entry (decision 43) | `prop_queue_reissue_keeps_first_round_ord` to `prop_queue_persistent_reissue_charged_once` (8) | `reified_p4_props.rs:3840-4422` | Q68 to Q77, U1 to U3, and U9 to U12 |
+| Peek re-store (decision 45) | `prop_queue_restore_realizes_plan` (1) | `reified_p4_props.rs:4774` | Q78 |
 | Legacy charges (decision 45, Option P) | `prop_legacy_charges_equal_charging_rspace`, `prop_legacy_chain_log_is_host_order`, `prop_legacy_replay_stops_with_play` (3) | `reified_legacy_charges.rs:173-783` | Q79 and Q80, U13 for the last two |
 | Native execution | `reified_native_play_runs_a_space_deploy`, `reified_native_replay_reproduces_a_space_deploy`, `reified_native_host_program_plays_and_replays_unchanged` (3) | `reified_native_fail_closed.rs:338-412` | Q67 |
 | I-20 | `marker_forging_grants_no_capability` (`reified_marker_recognition.rs:660`), `reified_encoding_roundtrip` (`reified_encoding.rs:158`), `reified_decode_commutes_with_substitution` (`reified_marker_recognition.rs:1188`) (3) | Two test files of P2 | Q56 to Q58 |
@@ -1747,9 +1747,9 @@ The 3 properties of `rholang/tests/reified_legacy_charges.rs` (section [11.14](#
 
 | Test | Location | Covers |
 |---|---|---|
-| `reified_marker_flags_change_derived_flags_only` | `reified/reducer_hooks.rs:2239` | Q56 |
-| `reified_marker_flags_use_body_with_connective_send_is_canonical` | `reified/reducer_hooks.rs:2004` | Q57 |
-| `reified_marker_flags_variable_bound_to_connective_is_canonical` | `reified/reducer_hooks.rs:2054` | Q58 |
+| `reified_marker_flags_change_derived_flags_only` | `reified/reducer_hooks.rs:2443` | Q56 |
+| `reified_marker_flags_use_body_with_connective_send_is_canonical` | `reified/reducer_hooks.rs:2208` | Q57 |
+| `reified_marker_flags_variable_bound_to_connective_is_canonical` | `reified/reducer_hooks.rs:2258` | Q58 |
 | `space_already_exists_aborts` | `reified/factory.rs:202` | Q55 |
 | `persistent_sends_abort_on_every_call_op_and_every_handle` | `reified/system_channels.rs:819` | Q54 |
 | `forged_channels_route_to_the_context_space` | `reified/route.rs:345` | Q42 |
@@ -1899,11 +1899,11 @@ The properties run 64 cases each with the seed of section [11.6](#116-property-b
 
 | Test | Location | What it checks |
 |---|---|---|
-| `prop_agent_reservation_cut_rejects_without_effect` | `reified_p4_props.rs:4585` | The exact usage of an operation commits. One unit less in any charged dimension fails with `HostWorkRejected`, logs no event, and leaves the collection unchanged (Q59 to Q61, Q66). |
-| `prop_agent_charge_independent_of_unread_payloads` | `reified_p4_props.rs:4636` | Padding of up to 4 KiB on the entries that an operation does not meet leaves its usage unchanged (Q64). |
-| `prop_agent_reserves_its_own_work_beyond_the_matcher` | `reified_p4_props.rs:4701` | A forwarding meter records the reservations of the matcher, and the agent reserves more in each charged dimension (Q65). |
-| `prop_queue_plan_permutation_invariant` | `reified_p4_props.rs:3474` | Two list orders of one collection give equal usage in every dimension (Q62, Q63). |
-| `prop_queue_candidates_head_only` | `reified_p4_props.rs:3076` | A counting matcher bounds the matcher calls, because no charge counts them now, and the usage of `SearchCandidates` is zero. |
+| `prop_agent_reservation_cut_rejects_without_effect` | `reified_p4_props.rs:4586` | The exact usage of an operation commits. One unit less in any charged dimension fails with `HostWorkRejected`, logs no event, and leaves the collection unchanged (Q59 to Q61, Q66). |
+| `prop_agent_charge_independent_of_unread_payloads` | `reified_p4_props.rs:4637` | Padding of up to 4 KiB on the entries that an operation does not meet leaves its usage unchanged (Q64). |
+| `prop_agent_reserves_its_own_work_beyond_the_matcher` | `reified_p4_props.rs:4702` | A forwarding meter records the reservations of the matcher, and the agent reserves more in each charged dimension (Q65). |
+| `prop_queue_plan_permutation_invariant` | `reified_p4_props.rs:3475` | Two list orders of one collection give equal usage in every dimension (Q62, Q63). |
+| `prop_queue_candidates_head_only` | `reified_p4_props.rs:3077` | A counting matcher bounds the matcher calls, because no charge counts them now, and the usage of `SearchCandidates` is zero. |
 | `scan_meter_maps_amounts_to_the_branch_dimensions` | `reified/costs.rs:358` | A reservation charges VerificationOperations, VerificationBytes, and SearchStateBytes, and no other dimension. |
 | `scan_meter_accepts_exact_credit_and_rejects_each_smaller_dimension` | `reified/costs.rs:432` | The exact credit suffices, and one unit less in any dimension rejects. |
 | `scan_meter_copy_equals_clone_backing_copy_and_cleanup` | `reified/costs.rs:461` | A reserved copy charges the triple of the copy walk of the branch (Q59). |
@@ -2043,15 +2043,15 @@ The properties run 64 cases each with the seed of section [11.6](#116-property-b
 | `space_queue_reissue_reenters_ahead_of_younger_records` | `reified_queue.rs:1114` | In a deploy, a body of the first round sends a younger datum, and the second round re-enters ahead of it and fires the head waiter. |
 | `space_queue_reissue_keeps_one_produce_identity` | `reified_queue.rs:1163` | A capped persistent send has one introduction row for its one identity, and every observed event has its row. |
 | `space_queue_divergent_pair_exhausts_phlo` | `reified_queue.rs:1270` | A divergent pair repeats one produce identity and one COMM, and the counter bumps of its rounds spend the phlo. |
-| `prop_queue_loop_bounded` | `reified_p4_props.rs:3365` | A re-issue carries the first order exactly when the operation is persistent (Q74). |
-| `prop_queue_reissue_keeps_first_round_ord` | `reified_p4_props.rs:3839` | In runs with re-entries between other operations, every re-issue keeps the first order of a persistent element, every step bumps the counter once, and $`\mathrm{wf}'`$ holds (Q68, Q69). |
-| `prop_queue_shadow_invariant_with_inflight` | `reified_p4_props.rs:3888` | After every step of a run with re-entries SHADOW holds, and a step with no persistent element in flight leaves no pending match (Q70, Q71). |
-| `prop_queue_fifo_with_reentries` | `reified_p4_props.rs:3930` | In runs with re-entries, the records that are not persistent leave in increasing order, each older than every such record that stays (Q72). |
-| `prop_queue_nonpersistent_reissue_fresh_ord` | `reified_p4_props.rs:3990` | A send that fires 64 or more peek waiters re-issues unchanged, and its re-entry stores at most its record at the order of its new bump (Q77). |
-| `prop_queue_reentry_head_blocks` | `reified_p4_props.rs:4153` | A re-entry behind an older head of its side fires nothing and rests at its kept order, and a fire meets the head of the other side (Q73, Q74). |
-| `prop_queue_reentry_permutation_invariant` | `reified_p4_props.rs:4236` | Two list orders of one collection give the same re-entry: outcomes, events, entries, and host work (Q75). |
-| `prop_fresh_ord_reissue_loses_first_round_place` | `reified_p4_props.rs:4335` | The kept order re-enters ahead of a younger datum and fires the persistent waiter again, and a fresh order rests behind it and fires nothing (Q76). |
-| `prop_queue_persistent_reissue_charged_once` | `reified_p4_props.rs:4421` | On a runtime, a persistent send or receive that re-issues has one data-channel identity and one introduction row, and it rests at its first order (Q69). |
+| `prop_queue_loop_bounded` | `reified_p4_props.rs:3366` | A re-issue carries the first order exactly when the operation is persistent (Q74). |
+| `prop_queue_reissue_keeps_first_round_ord` | `reified_p4_props.rs:3840` | In runs with re-entries between other operations, every re-issue keeps the first order of a persistent element, every step bumps the counter once, and $`\mathrm{wf}'`$ holds (Q68, Q69). |
+| `prop_queue_shadow_invariant_with_inflight` | `reified_p4_props.rs:3889` | After every step of a run with re-entries SHADOW holds, and a step with no persistent element in flight leaves no pending match (Q70, Q71). |
+| `prop_queue_fifo_with_reentries` | `reified_p4_props.rs:3931` | In runs with re-entries, the records that are not persistent leave in increasing order, each older than every such record that stays (Q72). |
+| `prop_queue_nonpersistent_reissue_fresh_ord` | `reified_p4_props.rs:3991` | A send that fires 64 or more peek waiters re-issues unchanged, and its re-entry stores at most its record at the order of its new bump (Q77). |
+| `prop_queue_reentry_head_blocks` | `reified_p4_props.rs:4154` | A re-entry behind an older head of its side fires nothing and rests at its kept order, and a fire meets the head of the other side (Q73, Q74). |
+| `prop_queue_reentry_permutation_invariant` | `reified_p4_props.rs:4237` | Two list orders of one collection give the same re-entry: outcomes, events, entries, and host work (Q75). |
+| `prop_fresh_ord_reissue_loses_first_round_place` | `reified_p4_props.rs:4336` | The kept order re-enters ahead of a younger datum and fires the persistent waiter again, and a fresh order rests behind it and fires nothing (Q76). |
+| `prop_queue_persistent_reissue_charged_once` | `reified_p4_props.rs:4422` | On a runtime, a persistent send or receive that re-issues has one data-channel identity and one introduction row, and it rests at its first order (Q69). |
 
 Each property must fail when the rule that it checks is broken.
 The script `.reified-rspaces-work/d43/run_mutants.py` applies five mutants to `spaces/generic.rs`, runs the unit tests of the agent and the P4 properties, and restores the file.
@@ -2135,7 +2135,7 @@ The three mutants of decision 45 in `EventCorrelation.v` are in Table 12: `ec-pe
 | `space_queue_peek_restore_registers_the_record_authority` | `spaces/generic.rs:3739` | The re-store registers the authority of the record, and the peek registers its own. |
 | `space_queue_peek_of_a_persistent_record_restores_nothing` | `spaces/generic.rs:3779` | A peek of a persistent record removes nothing and stores nothing again. |
 | `space_queue_observer_parity` | `reified_queue.rs:1336` | In deploys, the space events of each queue step equal the host events of the same program, the re-store after a peek included. |
-| `prop_queue_restore_realizes_plan` | `reified_p4_props.rs:4773` | Over runs that peek often, a peek keeps the records, its receipt keeps the persist flag, and the re-store follows the COMM with the identity of the record (Q78). |
+| `prop_queue_restore_realizes_plan` | `reified_p4_props.rs:4774` | Over runs that peek often, a peek keeps the records, its receipt keeps the persist flag, and the re-store follows the COMM with the identity of the record (Q78). |
 
 The script `.reified-rspaces-work/d45/run_mutants.py` applies three mutants to `spaces/generic.rs`, runs the unit tests of the agent and the property `prop_queue_restore_realizes_plan`, and restores the file.
 Each mutant made at least one of its expected tests fail (`target/verification/reified-rspaces/d45/mutants.log`).
@@ -2590,7 +2590,7 @@ The 20 Rocq negative controls fail inside their expected lemmas, and the 6 contr
 
 ### 12.9 The receive queries and the allocation jobs
 
-`query_source_routes_inner_channel` (`SpaceRefs.v:1602`) states the route of a receive query.
+`query_source_routes_inner_channel` (`SpaceRefs.v:1617`) states the route of a receive query.
 `prop_query_bind_routes_inner_channel` (the hooks) and `prop_query_source_routes_inner_channel` (`rholang/tests/reified_hooks_p5.rs`) test it.
 `rholang/tests/reified_hooks_p5.rs` holds 9 tests and 1 property, and the five Rocq negative controls fail inside the headline.
 The test `reducer_space_routing_allocation_jobs_give_index_names` checks that each allocation job stamps the authority of the process that evaluates the `new` on the allocator record.
@@ -5128,7 +5128,7 @@ The registry holds the ephemeral spaces that the current root evaluation created
 `SpaceEnv::begin` records each lock key with an ephemeral KIND before the transaction opens (VR-2).
 The factory job records a new `temp` space after its commit and before its reply, so each holder of the handle comes after the record.
 
-`ReducerCore::begin_root_evaluation` starts a root evaluation only when no reduction context exists (VR-3, `rholang/src/rust/interpreter/reified/reducer_hooks.rs:191-197`).
+`ReducerCore::begin_root_evaluation` starts a root evaluation only when no reduction context exists (VR-3, `rholang/src/rust/interpreter/reified/reducer_hooks.rs:195-201`).
 A root call clears the registry, the mirror journal and the parent tracker.
 A nested call clears nothing and sweeps nothing.
 The three root entries of `reduce.rs` call `end_root_evaluation` after the evaluation, on the `Ok` and the `Err` path (VR-4, VR-8).
@@ -5291,7 +5291,7 @@ The factory process takes the model from the budget of its runtime (`ReifiedRunt
 ### 28.2 The send rule
 
 `check_send` scans the data of a send for seq names (`rholang/src/rust/interpreter/reified/seq.rs:77-101`).
-`route_send` calls it after the checks of A21 and DG-1, before any mutation, and only while the evaluation holds a seq space (`rholang/src/rust/interpreter/reified/reducer_hooks.rs:497-502`).
+`route_send` calls it after the checks of A21 and DG-1, before any mutation, and only while the evaluation holds a seq space (`rholang/src/rust/interpreter/reified/reducer_hooks.rs:544-549`).
 The scan walks a work list and destructures every field of every type of the `Par` tree, the cost signatures included.
 So a new field of the protobuf schema is a compile error until the scan handles it.
 

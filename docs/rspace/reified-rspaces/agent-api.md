@@ -107,12 +107,31 @@ Three rules hold for every process of Table 2 and Table 2a:
 The URNs of the other 31 families and the two FIPS aliases have no binding in P4.
 A program that names one of them fails with the baseline error `No value set for <urn>`, before any space operation.
 
+*Table 2b. The internal processes of P8 (`reified/system_channels.rs:493-517`).*
+
+| URN | Op channel | Arity | Body reference | Call | Reply |
+|---|---|---|---|---|---|
+| `rho:reified:internal:matcherOp` | `[0xE0, 0x31]` | 2 | 249 | `(m, [ret, proc])`, from the forwarder of a matcher capability | `(true, env)` or `(false, Nil)` on `ret` |
+| `rho:reified:internal:sinkOp` | `[0xE0, 0x32]` | 0 and a remainder | 250 | Any message, as the return channel of a translated call | None |
+
+Both processes serve the spaces that user agents implement ([decision 77](decision-register.md#decision-77)).
+The rules of the persistent call and of params hold for them, and the sink takes a message of any arity (item SK-1).
+
+The translation of a receive gives the agent one matcher capability `bundle+{m}` for each bind and one body capability `bundle+{b}` ([design N5](design.md#n5-routing-and-scope)).
+The agent tests a stored message with the call `m!(ret, proc)`, where `proc` is the list of the values of the message.
+The matcher process matches the elements of `proc` against the patterns of the bind of `m`, with the matcher of the host.
+Then it checks the guard of `m`.
+The reply `(true, env)` maps the decimal global position of each binder of the bind to its value, and `(false, Nil)` means no match.
+When every bind has a match, the agent sends the union of the maps to the body capability with `b!(env)`.
+
+Then the body of the receive runs with those values, as the body of a native receive does.
+
 ## 3. Factories
 
 ### 3.1 The call
 
 A factory call is a send on the factory capability: `hmq!(ret, a1, …, an)`.
-The send hook packs the arguments after `ret` into one list, so the factory receives `[ret, [a1, …, an]]` (`reified/reducer_hooks.rs:1247-1287`).
+The send hook packs the arguments after `ret` into one list, so the factory receives `[ret, [a1, …, an]]` (`reified/reducer_hooks.rs:1448-1488`).
 So every factory has the fixed arity 2, and a constructor can have any number of elements.
 The params section of the call stays in the list as its last element.
 
@@ -192,7 +211,7 @@ So a program that binds the URN `rho:reified:internal:handleOp` gains no capabil
 
 ### 4.3 The steps of a call
 
-`HANDLE_OP` processes a call `(this, message)` in this order (`reified/handle.rs:221-371`):
+`HANDLE_OP` processes a call `(this, message)` in this order (`reified/handle.rs:233-385`):
 
 1. When `this` is not a bare handle id, the process drops the call.
 2. The process reads the config record in a read-only space intent, which commits nothing. A missing record aborts with `DanglingHandle`, also when the message is malformed.
@@ -213,7 +232,7 @@ So a program that binds the URN `rho:reified:internal:handleOp` gains no capabil
 - The second element is not exactly one string.
 - The first element is not a reply name, by the name rule below.
 
-**The name rule.** A value is a reply name when it is exactly one unforgeable name, or exactly one bundle with the write flag (`reified/handle.rs:182-191`).
+**The name rule.** A value is a reply name when it is exactly one unforgeable name, or exactly one bundle with the write flag (`reified/handle.rs:194-203`).
 A typed reply goes only to a reply name, so the process never sends a reply on a forged channel.
 A dropped message changes no space, but the COMMs of the forwarder and of `HANDLE_OP` stay in the log with their charges.
 
@@ -241,9 +260,9 @@ The arity counts the arguments after `ret` and the method name.
 | `qualifier` | `h!(ret, "qualifier")` | 0 | None | The qualifier of the space: `"default"`, `"temp"` or `"seq"` | None |
 | `config` | `h!(ret, "config")` | 0 | None | The config map of the space | None |
 | `produce` | `h!(ret, "produce", ch, msg)` | 2 | `persistent`: a Boolean, `false` when absent, and the send params of the discipline | `Nil`, after the operation | One produce on the collection of `ch` |
-| `consume` | `h!(ret, "consume", pairs, arrow, body)` | 3 | None | None in P4: a typed reply or an abort | None |
+| `consume` | `h!(ret, "consume", pairs, arrow, body)` | 3 | None | `Nil`, after the operation | One consume on the collection of the channel of one pair, or one join over the collections of two or more pairs |
 
-**`gensym`.** The method runs one allocation job with the random state and the cost authority of the call (`reified/handle.rs:344-371`).
+**`gensym`.** The method runs one allocation job with the random state and the cost authority of the call (`reified/handle.rs:358-385`).
 An Array or a Vector space gives its next index name $`N(\mathit{sid} \Vert \mathrm{u64\_be}(i))`$ ([specification AL-2](specification.md#24-the-allocator-of-array-and-vector-spaces)).
 Every other store answers `Baseline`, and the method gives the random-tail name of the store.
 
@@ -256,7 +275,7 @@ The record holds the identity of a theory as bytes, and the reply shows it as th
 For example, `config.get("outer")` gives `"hashmap"`, and `config.get("theory")` gives `Nil` for a space without a theory.
 
 **`produce`.** The method removes `persistent` and passes the other named params to the agent of the space, which checks their values before the bump.
-The method runs one collection operation on the space of the handle, as a send does (`reified/handle.rs:402-444`).
+The method runs one collection operation on the space of the handle, as a send does (`reified/handle.rs:416-458`).
 The key of `ch` names the collection by rule HM-1 of the specification, also when `ch` is a name of another space.
 The record gets the elements of the list `msg` as its payload, and the random state and the cost authority of the call.
 
@@ -271,9 +290,26 @@ The reply runs as the last branch of the operation, in a reduction participant o
 A dispatch ends the participant that makes it, so the reply cannot follow the fires in that participant ([design N6](design.md#n6-scheduling)).
 So the reply and the fired bodies are parallel processes, as in the equivalent Rholang program.
 
-**`consume`.** The method accepts only the matchers of user agents, which P8 adds ([decision 34](decision-register.md#decision-34), item A9).
-It checks the arrow, the pairs, the body, and the matchers, in this order (`reified/handle.rs:448-487`).
-A call that passes every check aborts with `AgentSpacesUnavailable` until P8 step 3.
+**`consume`.** The method runs a receive that the translation of a receive on a user agent describes ([decision 77](decision-register.md#decision-77), items HC-1 to HC-3).
+So a wrapper agent can forward the calls of its translations to a native space.
+The call is `h!(ret, "consume", pairs, arrow, body)`, where `body` is the body capability.
+`pairs` is the list $`[(m_0, c_0), \ldots, (m_{n-1}, c_{n-1})]`$ of the matcher capability and the channel of each bind.
+The method makes these checks in this order (`reified/handle.rs:504-641`):
+
+1. The arrow is `"<-"`, `"<="`, or `"<<-"` (`InvalidArrow`).
+2. `pairs` is a non-empty list of tuples with two elements, and `body` is a body id of KIND B, bare or under one bundle (`BadArgument`).
+3. The state of each matcher decodes strictly from a bare id of KIND X (`ForeignMatcher`, with the index of the first foreign matcher).
+4. The states describe one receive (`MatcherSetMismatch`). They have one receive tag, the bind index $`i`$ at pair $`i`$, $`n`$ binds, one total, the offsets in order, and at most one guard.
+5. Each channel $`c_i`$ takes the read rule of the baseline receive (`BadArgument` with `"pairs"`).
+
+Then one pair runs one consume on the collection of $`c_0`$, and two or more pairs run one join on the space.
+The patterns are the patterns of the states, and the guard is the guard of the one state that has a guard.
+The arrow gives the persistence and the peek of the receive.
+The body of the receive sends the map $`\{\texttt{"g"}: v_g \mid g < \mathrm{total}\}`$ of the bound values to the body capability, with the random state of the call.
+So the body capability gets the map that the matcher process would give the agent.
+A matcher state that no translation built cannot reach the space, because the decode accepts exactly the image of the encoder ([decision 77](decision-register.md#decision-77), point C).
+
+The method replies `Nil` as the last branch of the operation, as `produce` does.
 
 ## 6. Replies
 
@@ -290,20 +326,20 @@ For this reason, the code builds each reply value in canonical form, with the bi
 
 A typed reply is the reply of a call with a protocol error ([decision 34](decision-register.md#decision-34), item A23).
 The call does not abort, and the deploy continues.
-The reply is one datum, the tuple of three elements that `typed_error` builds (`reified/handle.rs:194-204`):
+The reply is one datum, the tuple of three elements that `typed_error` builds (`reified/handle.rs:206-216`):
 
 ```text
 ("rho:space:error", code, detail)
 ```
 
 - The first element is the string `"rho:space:error"` (`SPACE_ERROR_REPLY_TAG`).
-- The second element is the code as a string, one of the eleven codes of Table 6.
+- The second element is the code as a string, one of the twelve codes of Table 6.
 - The third element is the detail map. Its keys are strings, and the map has the canonical order of `ParMap`.
 
 A typed reply of `HANDLE_OP` holds the key `"method"`, with the method name of the call as a string.
 A typed reply of `getSpaceAgent` has the empty detail map `{}`.
 
-*Table 6. The codes of typed replies and their detail maps (`spaces/errors.rs:309-321`).*
+*Table 6. The codes of typed replies and their detail maps (`spaces/errors.rs:309-324`).*
 
 | Code | Process | Trigger | Detail map |
 |---|---|---|---|
@@ -312,7 +348,8 @@ A typed reply of `getSpaceAgent` has the empty detail map `{}`.
 | `BadArgument` | `HANDLE_OP` | An argument has a wrong form. Table 7 gives each value of `"argument"`. | `{"argument": String, "method": String}` |
 | `UnknownParam` | `HANDLE_OP` | A named param is outside the schema of the method. The first unknown key in bytewise order counts. | `{"method": String, "param": String, "suggestion": String or Nil}` |
 | `InvalidArrow` | `HANDLE_OP` | The arrow of `consume` is not `"<-"`, `"<="`, or `"<<-"`. | `{"method": String}` |
-| `ForeignMatcher` | `HANDLE_OP` | A matcher of `consume` is not a matcher id of KIND X, bare or under one bundle. | `{"index": Int, "method": String}` |
+| `ForeignMatcher` | `HANDLE_OP` | A matcher of `consume` is not a matcher id of KIND X, bare or under one bundle, whose state decodes strictly. | `{"index": Int, "method": String}` |
+| `MatcherSetMismatch` | `HANDLE_OP` | The matcher states of `consume` do not describe one receive: two receive tags, a bind index out of place, another count of binds, another total, a gap in the offsets, or two guards. | `{"method": String}` |
 | `DanglingHandle` | `getSpaceAgent` | The space of the handle has no config record, or it is a temp space of an ended deploy. | `{"spaceId": ByteArray}` |
 | `NotANativeSpace` | `getSpaceAgent` | The reference is a value that no Reified id names, so a user agent would implement it. | `{}` |
 | `NotASpaceRef` | `getSpaceAgent` | The reference is a Reified id that is not a handle, for example a space name or a factory capability. | `{}` |
@@ -326,7 +363,7 @@ The values of the detail keys have these meanings:
 - `"param"` is the unknown key exactly as the call gave it.
 - `"index"` is the position of the first foreign matcher in `pairs`, from 0.
 
-*Table 7. The values of `"argument"` in a `BadArgument` reply (`reified/handle.rs:402-487`).*
+*Table 7. The values of `"argument"` in a `BadArgument` reply (`reified/handle.rs:416-694`).*
 
 | `"argument"` | Method | Trigger |
 |---|---|---|
@@ -334,7 +371,7 @@ The values of the detail keys have these meanings:
 | `"ch"` | `produce` | `ch` is a bundle without the write flag. |
 | `"msg"` | `produce` | `msg` is not a list, or it is a list with a remainder. |
 | `"persistent"` | `produce` | The value of the param `persistent` is not a Boolean. |
-| `"pairs"` | `consume` | `pairs` is not a non-empty list of tuples with two elements. |
+| `"pairs"` | `consume` | `pairs` is not a non-empty list of tuples with two elements, or a channel of a pair is a bundle without the read flag. |
 | `"body"` | `consume` | `body` is not a body id of KIND B, bare or under one bundle. |
 
 *Table 8. Examples of typed replies from the test suites.*
@@ -413,14 +450,17 @@ Table 10 lists the aborts that a call can cause, and section [N8 of the design](
 | `SeqConcurrent` | `produce` | The call uses a channel of a seq space whose last use is not an ancestor of the call (rule QF-15). The message names the space id. |
 | `PayloadNotEmpty` | `produce`, and every send | The message of a send to a collection of a HashSet space is not empty ([specification 2.7](specification.md#27-hashset), rule HS-2). |
 | `PatternNotEmpty` | Every receive | A bind on a collection of a HashSet space has a pattern, a binder or a remainder (rule HS-3). |
-| `AgentSpacesUnavailable` | `consume` | Matchers of user agents, until P8 step 3 |
+| `QuerySpecUnsupportedOnAgentSpace` | Every receive on a space that a user agent implements (P8 step 3) | A query section |
+| `AgentGuardSpansJoin` | Every receive on a space that a user agent implements (P8 step 3) | A guard that reads the binders of two or more binds |
+| `AgentPatternTooDeep` | Every receive on a space that a user agent implements (P8 step 3) | A matcher state that is nested deeper than the decode limit of 100 |
+| `CrossSpaceJoin` | Every receive | A join whose channels route to two or more spaces, to a space and the default space, or to a user agent and another target |
 | `Inconsistent` | Every call that reads a space | A record that is not well formed |
 | `CounterOverflow` | `produce` | A counter at its greatest value |
 
 ## 11. Limits of P4
 
 - Only the family `hashmap:queue` has a factory, and P5 and P6 add the other families.
-- The method `consume` has no effect until P8, which adds the matchers of user agents.
+- The method `consume` had no effect until P8 step 3, which adds the translation of receives on user agents.
 - `getSpaceAgent` has no alias in P4. P5 adds the alias ([decision 34](decision-register.md#decision-34), item A15).
 - A reply on a forged reply name goes to the default space, so a reply name should come from `new`.
 

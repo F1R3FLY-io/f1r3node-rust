@@ -154,7 +154,7 @@ A program that uses no Reified syntax and holds no space name must route every c
 | R1 | A byte name, an op channel, a config, handle, matcher, or body id, or an ordinary unforgeable name | The default space |
 | R2 | A storage channel: a data, path-index, allocator, or counter id | The default space |
 | R3 | A [space name](glossary.md#space-name) of the space $`s`$ | The collection $`\mathrm{key}(c)`$ of $`s`$, in every [use context](glossary.md#use-context) |
-| R4 | A name of a user agent | The user agent. Since P8 step 2 a send becomes the call `A!(sink, "produce", raw, [d…])` on the agent, and a receive fails closed until P8 step 3 |
+| R4 | A name of a user agent | The user agent. Since P8 step 2 a send becomes the call `A!(sink, "produce", raw, [d…])` on the agent. Since P8 step 3 a receive whose channels all route to the agent becomes its matcher receives, its body receive, and the call `A!(sink, "consume", pairs, arrow, b)` on the agent |
 | R5 | Any other channel, such as `@"jobs"` | The collection $`\mathrm{key}(c)`$ of the space of the use context, or the default space without a use context |
 | R6 | A channel that routes to a collection of a native space | The operation uses the data channel $`D(\mathit{sid}, k)`$ of the collection |
 | R7 | The reply channel of a system process | The rules R1 to R5 without a use context. Since P8 step 2, the bundle with both flags of a name of a user agent also routes to its agent (R7A) |
@@ -301,7 +301,7 @@ This covers the names of its lock keys, the config and the shape of an Array spa
 It also covers the copy and the decode of $`A(\mathit{sid})`$, each comparison, and the buffer of the indices.
 In native execution, an allocation job runs as every space job does ([section 8](#8-native-execution), [decision 47](decision-register.md#decision-47)).
 
-**Rule AL-8: authority.** An allocation job takes the cost authority of the process that asks for the names (`rholang/src/rust/interpreter/reified/reducer_hooks.rs:844-871`).
+**Rule AL-8: authority.** An allocation job takes the cost authority of the process that asks for the names (`rholang/src/rust/interpreter/reified/reducer_hooks.rs:975-1002`).
 That process evaluates the `new`, or it calls the handle method `gensym`.
 So each allocation is paid by its caller, and the allocator record that the job puts carries that authority (P4 design B.7).
 
@@ -826,14 +826,14 @@ A re-issued element takes its FIFO place in its level, and a re-entered waiter k
 
 ### 3.7 Receive queries
 
-**Rule RQ-1: inner channel.** A receive bind with a QUERY tuple as its source reads from the inner channel of the query (`rholang/src/rust/interpreter/reified/reducer_hooks.rs:1035-1049`).
+**Rule RQ-1: inner channel.** A receive bind with a QUERY tuple as its source reads from the inner channel of the query (`rholang/src/rust/interpreter/reified/reducer_hooks.rs:1166-1180`).
 The inner channel takes the read rule of a receive source.
 
-**Rule RQ-2: route.** The route of the inner channel decides (`rholang/src/rust/interpreter/reified/reducer_hooks.rs:1066-1096`).
+**Rule RQ-2: route.** The route of the inner channel decides (`rholang/src/rust/interpreter/reified/reducer_hooks.rs:1198-1243`).
 A native space gets the payload and the named params in its consume, and its discipline checks them before the bump.
-The default space fails with `QuerySpecUnsupported`, and a user agent fails closed until P8.
+The default space fails with `QuerySpecUnsupported`, and a user agent fails with `QuerySpecUnsupportedOnAgentSpace` ([decision 77](decision-register.md#decision-77), item TR-2).
 
-**Rule RQ-3: no host channel.** A QUERY tuple never becomes a channel of the host (`rholang/src/rust/interpreter/reified/reducer_hooks.rs:1022-1024`).
+**Rule RQ-3: no host channel.** A QUERY tuple never becomes a channel of the host (`rholang/src/rust/interpreter/reified/reducer_hooks.rs:1153-1155`).
 
 ### 3.8 Joins
 
@@ -845,8 +845,8 @@ For a collection $`c`$, $`m_W(c)`$ is the number of positions of $`W`$ on $`c`$.
 
 **Rule JN-1: route.** A receive with two or more binds whose channels all route to one native space is a join of that space.
 The join keeps its binds in the order of the receive, each with its query (rule RQ-1).
-A join with channels of two spaces, or of a space and the default space, must abort with `CrossSpaceJoin`.
-A join with a channel of a user agent must abort with `AgentSpacesUnavailable` until P8 step 3.
+A join must abort with `CrossSpaceJoin` when its channels name two spaces, a space and the default space, or an agent and another target.
+A join whose channels all route to one user agent is the translation of section [6](#6-constructs-that-fail-closed).
 
 **Rule JN-2: checks and scope.** A join checks the key of each bind with the outer store and the query of each bind with the discipline, before it stages anything.
 The [join scope](glossary.md#join-scope) of an operation is the closure of its collections under the join groups of their data channels.
@@ -1260,6 +1260,19 @@ Phase P8 replaces the code `AgentSpacesUnavailable` with the rules of spaces tha
 Since P8 step 2, a send on a space of a user agent becomes a method call on the agent.
 Items TS-1 to TS-3 and R7A-1 of [decision 77](decision-register.md#decision-77) define the call.
 
+Since P8 step 3, a receive on a space of a user agent becomes a translation, which items TR-1 to TR-8 of decision 77 define.
+These rules hold:
+
+1. **One agent.** The channels of every bind must route to one agent, whose references are equal sorted `Par`s. A mix of targets must abort with `CrossSpaceJoin`, and a query must abort with `QuerySpecUnsupportedOnAgentSpace`.
+2. **One guard owner.** The guard goes to the one bind that owns the binders that it reads, or to bind 0 when it reads none. A guard that reads the binders of two or more binds must abort with `AgentGuardSpansJoin`.
+3. **Self-describing matchers.** The id of the matcher of bind $`i`$ holds the canonical state of the bind. A state that prost cannot decode must abort with `AgentPatternTooDeep` before any receive.
+4. **The call comes last.** The matcher receives and the body receive come first, and the call `A!(sink, "consume", pairs, arrow, b)` comes last, because only the call can fire.
+5. **Body equivalence.** The body capability binds one map from the global position of each binder to its value. So the body binds the values that the native receive binds.
+
+A native handle runs the receive that the matchers of one translation describe (items HC-1 to HC-3).
+It replies `MatcherSetMismatch` when the matchers do not describe one receive.
+The [agent API](agent-api.md#5-handle-methods) gives the checks of the handle method `consume`.
+
 ## 7. Conformance
 
 Table 9 maps each rule to the formal evidence and to the tests that check it.
@@ -1356,7 +1369,7 @@ A Rocq theorem shows the file and the line of its statement, and a TLA+ invarian
 | CL-2, CL-3 | `cell_capacity_one` (`CellDiscipline.v:672`) | `space_disciplines_cell_every_operation_bumps_counter`, `space_disciplines_cell_branch_writes_race_on_the_counter` |
 | CL-4 | `cell_restore_never_occupied` (`CellDiscipline.v:858`) | `prop_cell_restore_never_occupied` |
 | CL-5 | `cell_reentry_as_fresh` (`CellDiscipline.v:889`) | `prop_cell_reentry_as_fresh` |
-| RQ-1 to RQ-3 | `query_source_routes_inner_channel` (`SpaceRefs.v:1602`) | `prop_query_bind_routes_inner_channel`, `prop_query_source_routes_inner_channel` |
+| RQ-1 to RQ-3 | `query_source_routes_inner_channel` (`SpaceRefs.v:1617`) | `prop_query_bind_routes_inner_channel`, `prop_query_source_routes_inner_channel` |
 | SK-1 | `stack_head_is_max_ord` (`StackDiscipline.v:556`), `stack_head_blocks` (`StackDiscipline.v:1348`) | `prop_stack_head_is_max_ord` |
 | SK-2 | `stack_reentry_at_lifo_place` (`StackDiscipline.v:1444`), `stack_reissue_keeps_ord` (`StackDiscipline.v:1576`), the TLA+ invariant `ReissueKeepsOrd` (V14) | `prop_stack_reissue_keeps_ord_any_schedule` |
 | SK-3, SK-4 | `stack_produce_preserves_inv` (`StackDiscipline.v:1043`), `stack_settle_keeps_unspent_records` (`StackDiscipline.v:2151`), `stack_peek_restore_needs_no_settle` (`StackDiscipline.v:1405`), the TLA+ invariants `StackNoPendingMatch` (V12) and `NoRecordLost` (V13) | `prop_stack_no_pending_match_any_schedule` |
@@ -1514,7 +1527,7 @@ A failure reply is recorded too.
 Replay produces the recorded reply and asks no embedder and no mirror, so two nodes with other services compute the same state.
 Both processes run in native execution ([decision 68](decision-register.md#decision-68)).
 
-**Rule SP-6: the `config` reply of a mirrored space.** The reply of `space!?("config")` holds one more entry for a space with a mirror (`rholang/src/rust/interpreter/reified/handle.rs:507-547`).
+**Rule SP-6: the `config` reply of a mirrored space.** The reply of `space!?("config")` holds one more entry for a space with a mirror (`rholang/src/rust/interpreter/reified/handle.rs:745-785`).
 The entry `"mirror"` is the map `{"backend": "chroma", "collection": c}`.
 Here `c` is `rrs-` and the lowercase hex of the first 16 bytes of the space id.
 The stored config record does not change, so the name of the collection is never consensus state.

@@ -44,6 +44,17 @@ pub enum ReifiedReduceError {
     /// A send with params on a space that a user agent implements (P8, design v2 TS-3).
     #[error("a send on a space that a user agent implements takes no params")]
     ParamsUnsupportedOnAgentSpace,
+    /// A receive with a query on a space that a user agent implements (P8, design v2 TR-2).
+    #[error("a receive on a space that a user agent implements takes no query")]
+    QuerySpecUnsupportedOnAgentSpace,
+    /// A guard whose variables lie in two or more binds of a receive on a space that a user
+    /// agent implements (P8, design v2 TR-4).
+    #[error("the guard of a receive on a user agent reads the binders of two binds")]
+    AgentGuardSpansJoin,
+    /// A matcher state that prost cannot decode, because it is nested deeper than the recursion
+    /// limit (P8, design v2 TR-5).
+    #[error("the pattern of a receive on a user agent is nested too deeply")]
+    AgentPatternTooDeep,
     /// A join whose channels route to more than one space, or to a space and the default
     /// space.
     #[error("a join reads from more than one space")]
@@ -83,6 +94,11 @@ impl ReifiedReduceError {
             ReifiedReduceError::AgentSpacesUnavailable => "AgentSpacesUnavailable",
             ReifiedReduceError::PersistentSendOnAgentSpace => "PersistentSendOnAgentSpace",
             ReifiedReduceError::ParamsUnsupportedOnAgentSpace => "ParamsUnsupportedOnAgentSpace",
+            ReifiedReduceError::QuerySpecUnsupportedOnAgentSpace => {
+                "QuerySpecUnsupportedOnAgentSpace"
+            }
+            ReifiedReduceError::AgentGuardSpansJoin => "AgentGuardSpansJoin",
+            ReifiedReduceError::AgentPatternTooDeep => "AgentPatternTooDeep",
             ReifiedReduceError::CrossSpaceJoin => "CrossSpaceJoin",
             // Disabled by decision 29 with its variant (P5c).
             // ReifiedReduceError::OrderedJoinUnsupported => "OrderedJoinUnsupported",
@@ -123,6 +139,9 @@ mod tests {
             ReifiedReduceError::AgentSpacesUnavailable,
             ReifiedReduceError::PersistentSendOnAgentSpace,
             ReifiedReduceError::ParamsUnsupportedOnAgentSpace,
+            ReifiedReduceError::QuerySpecUnsupportedOnAgentSpace,
+            ReifiedReduceError::AgentGuardSpansJoin,
+            ReifiedReduceError::AgentPatternTooDeep,
             ReifiedReduceError::CrossSpaceJoin,
             // Disabled by decision 29 with its variant (P5c).
             // ReifiedReduceError::OrderedJoinUnsupported,

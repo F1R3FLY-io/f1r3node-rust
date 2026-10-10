@@ -175,6 +175,12 @@
         "test_checkers",
         "test_closure"
       ]
+    },
+    "reified-user-agents": {
+      "recipe": "reified",
+      "family": "RF1",
+      "package": "rholang",
+      "target": "reified_user_agents"
     }
   },
   "items": [
@@ -1149,6 +1155,15 @@
           "from": "p5",
           "owner": "P5",
           "proves": "After join programs on a queue and a set, every join entry of two or more channels is the group of a parked join of the program, as a host join persists (I-16). The K_lift of the queue cascade, the K_retire of the set, the counter bumps and the second sends add no join entry."
+        },
+        {
+          "kind": "rust_test",
+          "file": "rholang/tests/reified_user_agents.rs",
+          "test": "reified_p8_synthesizes_no_join",
+          "step": "reified-user-agents",
+          "from": "p8",
+          "owner": "P8",
+          "proves": "A translated receive of P8 step 3 names one channel in each consume and COMM: one bind, a join of two binds, a guard, the arrows <= and <<-, a fired receive, and a receive that a wrapper agent runs on a native handle. The post-state holds no join of two channels. An ordinary join is the control."
         }
       ]
     },

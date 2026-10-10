@@ -843,18 +843,36 @@ new spaceAgent(`rho:space:getSpaceAgent`), equal(`rho:assert:assertEqual`) in {
             injected("tag"),
             namespace::gprivate(vec![REIFIED_TAG, AGENT_TAG]),
         )]);
-        for (label, body) in [
-            ("use-string", r#"use @"user agent" { @"x"!(1) }"#),
-            ("use-list", "use @[1, 2] { Nil }"),
-            ("use-plain", "new u in { use u { Nil } }"),
-            ("annotation", r#"new x : @"user agent" in { x!(1) }"#),
+        // Changed by P8 step 3 (design v2 TR-1): each case names its code. A receive on an
+        // agent-tagged name is translated (rholang/tests/reified_user_agents.rs), and a join of
+        // an agent-tagged name and a default channel is a CrossSpaceJoin.
+        for (label, body, code) in [
+            (
+                "use-string",
+                r#"use @"user agent" { @"x"!(1) }"#,
+                "AgentSpacesUnavailable",
+            ),
+            ("use-list", "use @[1, 2] { Nil }", "AgentSpacesUnavailable"),
+            (
+                "use-plain",
+                "new u in { use u { Nil } }",
+                "AgentSpacesUnavailable",
+            ),
+            (
+                "annotation",
+                r#"new x : @"user agent" in { x!(1) }"#,
+                "AgentSpacesUnavailable",
+            ),
             // Changed by P8 step 2 (design v2 TS-1): a send on an agent-tagged name makes the
             // call on the agent (rholang/tests/reified_user_agents.rs).
             // ("tagged-send", "@(*tag, 1, 2)!(3)"),
-            ("tagged-receive", "for (@v <- @(*tag, 1, 2)) { Nil }"),
+            // Changed by P8 step 3 (design v2 W3): a receive on an agent-tagged name is
+            // translated.
+            // ("tagged-receive", "for (@v <- @(*tag, 1, 2)) { Nil }"),
             (
                 "tagged-join",
                 r#"for (@v <- @(*tag, 1, 2) & @w <- @"host") { Nil }"#,
+                "CrossSpaceJoin",
             ),
         ] {
             session
@@ -866,7 +884,7 @@ new spaceAgent(`rho:space:getSpaceAgent`), equal(`rho:assert:assertEqual`) in {
                     ),
                     &format!("rrs-p4-agent-{label}"),
                     &injections,
-                    &["AgentSpacesUnavailable"],
+                    &[code],
                 )
                 .await;
         }

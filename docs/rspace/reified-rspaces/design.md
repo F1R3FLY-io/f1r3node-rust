@@ -2109,7 +2109,7 @@ Mergeable-channel detection runs on the final routed channel, and it never class
 
 Figure N5 shows the decision.
 
-![Routing decision as an activity. The reducer removes the bundle of the channel and classifies it. A sole GPrivate with an id of 1 or 2 bytes is System. A decoded id of KIND C, H, X or B is DefaultObject. A decoded id of KIND D, I, A or S is Storage. A decoded id of KIND N is SpaceName with its native space. Any other sole unforgeable is Unforgeable. A tuple whose head is AGENT_TAG is AgentTagged. Every other channel is Forged. Rule R1 sends System, DefaultObject and Unforgeable to the default space, R2 sends Storage to the default space, R3 sends a space name to the collection key(c) of its own space in every context, R4 sends an agent-tagged name to the user agent: since P8 step 2 a send there becomes the call on the agent, and a receive there fails closed with AgentSpacesUnavailable until P8 step 3. R5 sends a forged channel to the collection key(c) of the use context, or to the default space without one. The default route makes the baseline call with identical arguments, and a space route builds the identity on D(sid, k) (R6) and runs one space intent. The R7 backend routes the replies of system processes with the same rules and no use context, and the bundle with both flags of an agent-minted name reaches its agent (R7A).](diagrams/12-routing-decision.svg)
+![Routing decision as an activity. The reducer removes the bundle of the channel and classifies it. A sole GPrivate with an id of 1 or 2 bytes is System. A decoded id of KIND C, H, X or B is DefaultObject. A decoded id of KIND D, I, A or S is Storage. A decoded id of KIND N is SpaceName with its native space. Any other sole unforgeable is Unforgeable. A tuple whose head is AGENT_TAG is AgentTagged. Every other channel is Forged. Rule R1 sends System, DefaultObject and Unforgeable to the default space, R2 sends Storage to the default space, R3 sends a space name to the collection key(c) of its own space in every context, R4 sends an agent-tagged name to the user agent: since P8 step 2 a send there becomes the call on the agent. Since P8 step 3 a receive whose binds all route to the agent, with no query, becomes T_recv: one persistent matcher receive for each bind, the body receive, and last the call A'!(sink, "consume", pairs, arrow, bundle+{b}) on the agent. A mix of targets fails with CrossSpaceJoin, and a query fails with QuerySpecUnsupportedOnAgentSpace. R5 sends a forged channel to the collection key(c) of the use context, or to the default space without one. The default route makes the baseline call with identical arguments, and a space route builds the identity on D(sid, k) (R6) and runs one space intent. The R7 backend routes the replies of system processes with the same rules and no use context, and the bundle with both flags of an agent-minted name reaches its agent (R7A).](diagrams/12-routing-decision.svg)
 
 *Figure N5. Source: [diagrams/12-routing-decision.puml](diagrams/12-routing-decision.puml), rendered by [diagrams/render.sh](diagrams/render.sh).*
 
@@ -2150,10 +2150,10 @@ EVAL-NEWSPACE(annotations, new, env, rand):    ▷ reducer_hooks.rs, eval_new_sp
 ```
 
 The annotations evaluate in the environment outside the `new`, as the [syntax contract](syntax-contract.md#scopes-and-binding-order) states.
-Inside a use context, a plain `new` without annotations also stamps every plain binder with the space of the context (`reified/reducer_hooks.rs:724-772`).
+Inside a use context, a plain `new` without annotations also stamps every plain binder with the space of the context (`reified/reducer_hooks.rs:855-903`).
 The stamp keeps the 32 random bytes of the baseline name as the tail, so the random draws do not change ([decision I-3](decision-register.md#i-3)).
 
-**The send hook.** `reified_produce` (`reified/reducer_hooks.rs:432-450`) is hook H3, with the same signature as the baseline `produce`.
+**The send hook.** `reified_produce` (`reified/reducer_hooks.rs:436-460`) is hook H3, with the same signature as the baseline `produce`.
 
 ```text
 REIFIED-PRODUCE(chan, data, persistent, α):    ▷ reducer_hooks.rs, reified_produce and route_send
@@ -2197,7 +2197,7 @@ Its data hold only the sink, the method name, `raw` and the data that the first 
 A handle call keeps its trailing PARAMS tuple, which `HANDLE_OP` reads.
 The queue discipline takes no send params, so a named param on a queue fails with `UnknownParam` and no suggestion.
 
-**The receive hook.** `reified_consume` (`reified/reducer_hooks.rs:610-687`) takes the parameters of the baseline `consume`.
+**The receive hook.** `reified_consume` (`reified/reducer_hooks.rs:658-745`) takes the parameters of the baseline `consume`.
 
 ```text
 REIFIED-CONSUME(binds, body, persistent, peek, guard, α, α_intro):
@@ -2207,20 +2207,68 @@ REIFIED-CONSUME(binds, body, persistent, peek, guard, α, α_intro):
     routes ← [ROUTE(space_ctx, c) for each bind (pattern, c)]
     if every route is Default: consume(binds, body, …)  ▷ the identity holds the wrapped body
     if there is exactly one bind:
-        Space(n, k) → SPACE-OP(Consume(n, k, c, pattern, body, persistent, peek, guard, α, α_intro))
-        Agent      → fail AgentSpacesUnavailable
+        Space(n, k)   → SPACE-OP(Consume(n, k, c, pattern, body, persistent, peek, guard, α, α_intro))
+        Agent(A, raw) → T-RECV(A, [(pattern, raw)], body, persistent, peek, guard, α, α_intro)
     if every route is Space(n, ·) of one space n:
         SPACE-OP(Join(n, the binds in bind order with their queries, body, persistent, peek, guard, α, α_intro))
-    fail JOIN-ERROR(routes)    ▷ AgentSpacesUnavailable or CrossSpaceJoin
+    if every route is Agent(A, ·) of one agent A:      ▷ TR-1: equal sorted references (AG-3)
+        T-RECV(A, the binds (pattern_i, raw_i) in bind order, body, persistent, peek, guard, α, α_intro)
+    fail CrossSpaceJoin
 ```
 
+A query on a route of a user agent fails with `QuerySpecUnsupportedOnAgentSpace` (item TR-2), before any translation.
 A join whose binds all route to one native space runs on the join engine since P5 wave W3 ([decision 29](decision-register.md#decision-29), [N12](#n12-wave-w3-of-p5-joins-of-one-space)).
 Until then it failed with `OrderedJoinUnsupported`.
-A join with a user agent fails with `AgentSpacesUnavailable`, and every other mixed join fails with `CrossSpaceJoin`.
+Since P8 step 3, a join whose binds all route to one user agent is translated, and every other mixed join fails with `CrossSpaceJoin`.
+Two routes name one agent when their references are equal as sorted `Par`s, and each comparison reserves the reads of both references first (`one_agent`).
 The fast path classifies without an allocation, so an ordinary receive costs no extra work.
 
+**The translation of a receive.** `agent_consume` (`reified/reducer_hooks.rs:747-818`) runs T_recv of [decision 77](decision-register.md#decision-77), items TR-1 to TR-8.
+`translate_receive` (`reified/user_agent.rs:1065-1196`) builds the terms, and $`\mathrm{base} = \mathrm{Xlate}(R)`$, where $`R`$ is the random state of the receive body.
+
+```text
+T-RECV(A, binds, body, persistent, peek, guard, α, α_intro):   ▷ agent_consume, translate_receive
+    if a seq space is live: SEQ-SCAN(A, [raw_i]) for each bind      ▷ item A5
+    arrow ← "<=" if persistent, "<<-" if peek, else "<-"
+    (off, total) ← OFFSETS(f_0, …, f_{n−1})                          ▷ TR-3: off_0 = 0, off_{i+1} = off_i + f_i
+    owner ← PLACE-GUARD(GUARD-INDICES(guard), off)                   ▷ TR-4: AgentGuardSpansJoin
+    tag ← base.split_byte(2).next()
+    for each bind i in bind order:
+        state_i ← (version, tag, i, off_i, total, n, pattern_i, guard if i = owner else Nil)
+        if DECODE(prost(state_i)) = none: fail AgentPatternTooDeep  ▷ TR-5
+        m_i ← GPrivate(E0 ‖ X ‖ prost(state_i))
+        consume([([...@args], m_i)], MATCHER_OP!(m_i, args), persistent = true)
+            ▷ random state base.split_byte(6).split_short(i), continuation authority none, α_intro
+    b ← GPrivate(E0 ‖ B ‖ base.split_byte(3).next())                 ▷ TR-6
+    consume([([{"0": FreeVar(0), …, "total−1": FreeVar(total−1)}], b)], body, persistent = (arrow = "<="), α, α_intro)
+    call ← [sink, "consume", [(bundle+{m_0}, raw_0), …], arrow, bundle+{b}]
+            ▷ random state base.split_byte(4), authority α_intro; CALL-CHANNEL(A): HandleNotWritable
+    return the send of call on CALL-CHANNEL(A), routed with no use context   ▷ TR-7: the call comes last
+```
+
+The receives come first, and the call comes last.
+The receives are on fresh capability ids, so they fire nothing.
+The call can fire, and a fire ends the reduction participant that makes it ([N6](#n6-scheduling)).
+The call routes as an ordinary send with no use context, as the call of a send does.
+R1 sends it to the default space, and R4 sends it to an inner agent.
+
+The guard goes to the one bind that owns its binders.
+`guard_indices` (`reified/user_agent.rs:629-657`) walks the guard and collects each free `BoundVar` index, and it reserves each visit, as the Seq scan does.
+It reads no `locally_free` set.
+An index $`k < \mathrm{total}`$ reads the binder at the position $`p = \mathrm{total} - 1 - k`$, which the bind $`i`$ with $`\mathrm{off}_i \le p < \mathrm{off}_{i+1}`$ owns.
+An index from $`\mathrm{total}`$ on is outer and unbound, as in a native receive.
+
+`place_guard` (`reified/user_agent.rs:957-987`) gives the guard to the one owner, or to bind 0 when there is no owner.
+Two or more owners fail with `AgentGuardSpansJoin`.
+
+The body receive binds one map, whose key $`\texttt{"g"}`$ holds the value of the binder at the global position $`g`$.
+So the values of the body bind in binder order, as the values of the native receive do (headline `body_equivalence`, `AgentTranslation.v`).
+The matcher op replies this map when every pattern of its bind matches and the guard holds ([agent API](agent-api.md#2-system-processes)).
+A native handle that receives the call runs the receive that the matchers describe (item HC-1).
+So a wrapper agent can forward the call to a native space.
+
 **The refresh of derived flags.** The evaluation and the substitution of the baseline keep a stale `connective_used` flag on a tuple, a list, or a map ([decision I-20](decision-register.md#i-20)).
-So before each strict decode, the hooks compute again the flags that the encoder derives from the children, and they change no value (`reified/reducer_hooks.rs:1626-1646`).
+So before each strict decode, the hooks compute again the flags that the encoder derives from the children, and they change no value (`reified/reducer_hooks.rs:1827-1847`).
 Hook H4 refreshes a QUERY tuple the same way before it fails closed with `QuerySpecUnsupported`.
 
 **Examples.** The first program puts a forged channel into a queue space with `use`.
@@ -2325,7 +2373,7 @@ Native play and a bound native replay runtime run the same space entry, so nativ
 The runtime holds no cache, so nothing in it survives a reset.
 The host runtime holds one `SpaceStoreHandle` for the host, which the substrate requires ([S10](#s10-limits)).
 
-**The dispatch of fires.** `dispatch_space_outcome` (`reified/reducer_hooks.rs:917-973`) runs the continuations that a space operation fired.
+**The dispatch of fires.** `dispatch_space_outcome` (`reified/reducer_hooks.rs:1048-1104`) runs the continuations that a space operation fired.
 
 ```text
 DISPATCH-SPACE-OUTCOME(fires, reissue, then):  ▷ reducer_hooks.rs, dispatch_space_outcome
@@ -2407,7 +2455,7 @@ Its pattern `[...@args]` binds the whole call as one list, and its body `[0xE0, 
 It has no guard and no cost authority, so each call is paid by its caller.
 It is a single-channel receive, so it adds no pre-state join, and handle calls merge like contract calls (consensus checklist item 18, [decision I-16](decision-register.md#i-16)).
 
-**`HANDLE_OP`.** The internal operation `HANDLE_OP` on the op channel $`[\mathtt{0xE0}, \mathtt{0x30}]`$ runs each call (`reified/handle.rs:221-371`).
+**`HANDLE_OP`.** The internal operation `HANDLE_OP` on the op channel $`[\mathtt{0xE0}, \mathtt{0x30}]`$ runs each call (`reified/handle.rs:233-385`).
 
 ```text
 HANDLE-OP(this, message):                      ▷ reified/handle.rs, HandleProcess::call and run
@@ -2487,7 +2535,7 @@ The substrate errors map explicitly, never through the text of `RSpaceError` (re
 - `SpaceTxnError::ReplayDivergence` becomes `SpaceError::ReplayDivergence`, which keeps its own code.
 - Every other variant becomes `SpaceError::Substrate`, for example `UnlockedChannel`, `NestedTransaction`, `ParentOrderReused`, and the 32-bit `CounterOverflow` of the produce counter.
 
-*Table N8.1. The abort codes of the reducer hooks (`reified/errors.rs:15-68`).*
+*Table N8.1. The abort codes of the reducer hooks (`reified/errors.rs:15-79`).*
 
 | Code | Trigger |
 |---|---|
@@ -2499,10 +2547,13 @@ The substrate errors map explicitly, never through the text of `RSpaceError` (re
 | `PersistentHandleCall` | A persistent send to a handle. |
 | `PersistentOpCall` | A persistent send to another op that takes calls. |
 | `PersistentCapabilityCall` | A persistent send to a matcher capability `X` or a body capability `B` of a user agent (P8, item A13). |
-| `AgentSpacesUnavailable` | A space reference that names a user agent (until P8 step 4), a receive on an agent-tagged name (until P8 step 3), or a `consume` call with user-agent matchers (until P8 step 3). Since P8 step 2, a send on an agent-tagged name becomes the call on the agent. |
+| `AgentSpacesUnavailable` | A space reference that names a user agent, until P8 step 4. Until P8 step 3, also a receive on an agent-tagged name and a `consume` call with user-agent matchers. Since P8 step 2, a send on an agent-tagged name becomes the call on the agent, and since P8 step 3, a receive on it becomes the translation T_recv. |
 | `PersistentSendOnAgentSpace` | A persistent send `!!` on a space that a user agent implements, in the reducer or as the reply of a system process (P8, items TS-3 and R7A-1). |
 | `ParamsUnsupportedOnAgentSpace` | A send with a trailing PARAMS tuple on a space that a user agent implements (P8, item TS-3). |
-| `CrossSpaceJoin` | A join whose binds route to more than one space, or to a space and the default space. |
+| `QuerySpecUnsupportedOnAgentSpace` | A receive with a QUERY source on a space that a user agent implements (P8, item TR-2). |
+| `AgentGuardSpansJoin` | A receive on a space that a user agent implements whose guard reads the binders of two or more binds (P8, item TR-4). |
+| `AgentPatternTooDeep` | A receive on a space that a user agent implements whose matcher state prost cannot decode, because it is nested deeper than the recursion limit of 100 (P8, item TR-5). |
+| `CrossSpaceJoin` | A join whose binds route to more than one space, to a space and the default space, or to a user agent and another target. A join whose binds all route to one user agent is translated (P8, item TR-1). |
 | `OrderedJoinUnsupported` | Retired in P5 wave W3 ([decision 29](decision-register.md#decision-29)). A join whose binds route to one native space runs on the join engine (N12), and the code stays commented out in `reified/errors.rs`. |
 | `EmptySpaceRef`, `HandleNotWritable`, `NotASpaceRef` | A space reference of `use` or of `new x : s` that names no space. Since P8, `HandleNotWritable` also covers the reference of a user agent under a bundle without the write flag, which a call cannot reach (item AG-4). |
 
@@ -2819,8 +2870,8 @@ An allocation is one job over $`[C(\mathit{sid}), A(\mathit{sid})]`$: the family
 `AllocCx` then takes $`A(\mathit{sid}) = n`$ and puts the next value (`spaces/generic.rs:2778-2826`).
 An allocation that fails stages nothing, and every read and copy is reserved before it is made.
 
-The reducer runs one allocation job for each distinct space of the plain binders of a `new` inside `use s` (F11, `reified/reducer_hooks.rs:793-838`).
-Each job takes the cost authority of the process that evaluates the `new`, as its call `s!gensym()` would (`reified/reducer_hooks.rs:844-871`).
+The reducer runs one allocation job for each distinct space of the plain binders of a `new` inside `use s` (F11, `reified/reducer_hooks.rs:924-969`).
+Each job takes the cost authority of the process that evaluates the `new`, as its call `s!gensym()` would (`reified/reducer_hooks.rs:975-1002`).
 So each allocation is paid by its caller (P4 design B.7), and the handle method `gensym` runs a job with the authority of its call.
 A store without an allocator answers `Baseline`, and the binders keep the names that HEAD draws.
 
@@ -2854,8 +2905,8 @@ Every read, copy, comparison and allocation of the layer is reserved before it i
 
 #### N11.8 Receive queries and allocation jobs in the hooks
 
-Hook H4 fails only on a malformed QUERY tuple, and a query routes the inner channel of its tuple (`reified/reducer_hooks.rs:995-1006`, `reified/reducer_hooks.rs:1035-1049`).
-The fast path of a receive admits no marker tuple, so a QUERY tuple never becomes a channel of the host (`reified/reducer_hooks.rs:1022-1024`).
+Hook H4 fails only on a malformed QUERY tuple, and a query routes the inner channel of its tuple (`reified/reducer_hooks.rs:1126-1137`, `reified/reducer_hooks.rs:1166-1180`).
+The fast path of a receive admits no marker tuple, so a QUERY tuple never becomes a channel of the host (`reified/reducer_hooks.rs:1153-1155`).
 
 ```text
 REIFIED-PRODUCE: Space(n,k) → remove the PARAMS tuple from data; named ← SPACE-PARAMS(params)   ▷ positional: PositionalParamsUnsupported
@@ -2863,8 +2914,10 @@ REIFIED-PRODUCE: Space(n,k) → remove the PARAMS tuple from data; named ← SPA
 REIFIED-CONSUME: fast path only when no use context and every channel routes to the default space and is no marker tuple
                  each bind: (c, q) ← QUERY-BIND(source)   ▷ a QUERY tuple gives its inner channel under the read rule, and its query
                             r ← ROUTE(space_ctx, c)
-                 one bind: Default with q → QuerySpecUnsupported, Space → Consume with q, Agent → AgentSpacesUnavailable
-                 a join: all Default → consume, or QuerySpecUnsupported when a bind has a query, else JOIN-ERROR
+                 one bind: Default with q → QuerySpecUnsupported, Space → Consume with q,
+                           Agent → T-RECV, or QuerySpecUnsupportedOnAgentSpace with q          ▷ since P8 step 3
+                 a join: all Default → consume, or QuerySpecUnsupported when a bind has a query,
+                         one native space → Join, one user agent → T-RECV, else CrossSpaceJoin
 ALLOCATE-IN-SPACES(agent, new, env, rand, spaces, α):    ▷ reducer_hooks.rs, allocate_in_spaces (F11)
     env′ ← allocate_new_bindings(new, env, rand)          ▷ HEAD's draws
     one group per distinct space of the plain binders, in the order of the first binder
@@ -2973,8 +3026,9 @@ A program never issues a settle job, and the reducer issues a join only through 
 | `PendingProduce` (`spaces/agent.rs:244-256`) | One owed second send: its collection, its record with the envelope, and its persistence. |
 | `SpaceAgent::prepare_join` (`spaces/agent.rs:480-484`) | Stages a join: the classification, the scope, and the engine. |
 
-The receive hook routes a receive with two or more binds on one native space to `SpaceOp::Join` (`reified/reducer_hooks.rs:1103-1131`).
-Any other mix of routes fails with `AgentSpacesUnavailable` or `CrossSpaceJoin` (`reified/reducer_hooks.rs:1161-1188`).
+The receive hook routes a receive with two or more binds on one native space to `SpaceOp::Join` (`reified/reducer_hooks.rs:1252-1292`).
+Since P8 step 3, a join whose binds all route to one user agent becomes the translation T_recv (`reified/reducer_hooks.rs:1294-1317`).
+Any other mix of routes fails with `CrossSpaceJoin`.
 
 #### N12.2 Classification and the scope
 

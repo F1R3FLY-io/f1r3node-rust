@@ -7245,7 +7245,7 @@
       ]
     },
     "p8": {
-      "description": "Phase P8, the spaces that user agents implement (design v2, plan decision 77). It extends campaign and restates the edits and the new files of p7, as p7 restates p6. Step 1 (W1 and W5: the routes and use-contexts of user agents, the write rule of an agent reference, the matcher state codec, the matcher process and the sink) edits only campaign files. Its new files are the user-agent module, the P8 property suite and the P8 model map. Step 1 also holds the edit of decision 78 in the accounting tests: the test of schedule-independent replay charges runs its replay at the v6 host-work limits. Step 2 (W2 and W7: the call of a send on an agent space and the R7 replies to agent-minted names) edits only campaign files, and its new file is the native suite of user agents.",
+      "description": "Phase P8, the spaces that user agents implement (design v2, plan decision 77). It extends campaign and restates the edits and the new files of p7, as p7 restates p6. Step 1 (W1 and W5: the routes and use-contexts of user agents, the write rule of an agent reference, the matcher state codec, the matcher process and the sink) edits only campaign files. Its new files are the user-agent module, the P8 property suite and the P8 model map. Step 1 also holds the edit of decision 78 in the accounting tests: the test of schedule-independent replay charges runs its replay at the v6 host-work limits. Step 2 (W2 and W7: the call of a send on an agent space and the R7 replies to agent-minted names) edits only campaign files, and its new file is the native suite of user agents. Step 3 (W3 and W6: the translation of a receive and the native consume of a handle) edits only campaign files, and its new file is the Rocq module AgentTranslation.v.",
       "extends": "campaign",
       "unchanged": [
         "**"
@@ -8599,6 +8599,7 @@
         "formal/rocq/reified_rspaces/Makefile",
         "formal/rocq/reified_rspaces/_CoqProject",
         "formal/rocq/reified_rspaces/theories/AgentReadCoverage.v",
+        "formal/rocq/reified_rspaces/theories/AgentTranslation.v",
         "formal/rocq/reified_rspaces/theories/CellDiscipline.v",
         "formal/rocq/reified_rspaces/theories/ContinuationCollection.v",
         "formal/rocq/reified_rspaces/theories/CounterConflict.v",

@@ -19,7 +19,7 @@
 //! | `qualifier` | none                     | none                           | the qualifier of the config |
 //! | `config`    | none                     | none                           | the config map             |
 //! | `produce`   | `ch`, `msg`              | `persistent`, the send schema  | `Nil`, after the operation |
-//! | `consume`   | `pairs`, `arrow`, `body` | none                           | none: P8 runs it (abort)   |
+//! | `consume`   | `pairs`, `arrow`, `body` | none                           | `Nil`, after the operation |
 //!
 //! The checks of a method run in this order: positional params (abort, as the send hook does),
 //! the method name (`UnknownMethod`), the argument count (`BadArgument`), the named params
@@ -32,8 +32,9 @@
 //! their values (P5b). Its fires, its re-issue and its reply `Nil` are the branches of the
 //! outcome, and the reply is the last branch: a dispatch ends the reduction participant that
 //! makes it, so the participant cannot send the reply after a fire. `consume` accepts only
-//! matchers of user agents, so it ends with a typed error or with the abort
-//! `AgentSpacesUnavailable` until P8 (A9).
+//! the matchers that the translation of one receive on a user agent built (P8, design v2
+//! HC-1 to HC-3). It runs that receive on the space, as a consume for one pair or as a join,
+//! and its body sends the env map of the receive to the body capability.
 
 use std::collections::BTreeMap;
 use std::future::Future;
@@ -41,24 +42,35 @@ use std::pin::Pin;
 use std::sync::{Arc, Weak};
 
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
+use models::create_bit_vector;
 use models::rhoapi::expr::ExprInstance;
-use models::rhoapi::{Bundle, EList, ETuple, Expr, ListParWithRandom, Par};
+use models::rhoapi::{
+    Bundle, EList, ETuple, Expr, ListParWithRandom, Par, ParWithRandom, Send as SendProcess,
+};
 use models::rust::par_map::ParMap;
 use models::rust::par_map_type_mapper::ParMapTypeMapper;
 use models::rust::reified::encoding::{split_trailing_params, SendParams};
 use models::rust::rholang::implicits::single_bundle;
-use models::rust::utils::{new_gint_par, union};
+use models::rust::utils::{new_boundvar_par, new_bundle_par, new_gint_par, union};
+use rspace_plus_plus::rspace::errors::RSpaceError;
 
-use super::errors::ReifiedReduceError;
+use super::costs::ScanMeter;
+// Disabled by P8 step 3: the consume method no longer fails closed with a reducer code, so the
+// library code of this module raises none.
+// use super::errors::ReifiedReduceError;
 use super::factory::ContractArgs;
 use super::runtime::ReifiedRuntime;
 use super::system_channels::{handle_of, HANDLE_OP_PROCESS};
+use super::user_agent::{matcher_state_of, MatcherState};
 use super::vectordb_services::collection_name;
 use crate::rust::interpreter::contract_call::ContractCall;
+use crate::rust::interpreter::deterministic_reduction;
 use crate::rust::interpreter::dispatch::{DispatchType, RhoDispatch};
 use crate::rust::interpreter::errors::{illegal_argument_error, InterpreterError};
 use crate::rust::interpreter::reduce::ReducerCore;
-use crate::rust::interpreter::spaces::agent::{AllocOp, ProduceOp, SpaceAgent, SpaceOp};
+use crate::rust::interpreter::spaces::agent::{
+    AllocOp, ConsumeOp, JoinBind, JoinOp, ProduceOp, SpaceAgent, SpaceOp,
+};
 use crate::rust::interpreter::spaces::errors::{SpaceError, SpaceReplyCode, SPACE_ERROR_REPLY_TAG};
 use crate::rust::interpreter::spaces::factory::constructor::family_of;
 use crate::rust::interpreter::spaces::factory::defaults::{suggestion, MIRROR_PARAM};
@@ -328,7 +340,9 @@ impl HandleProcess {
                 config_reply(space, config_map, config).map(MethodEffect::Reply)
             }
             HandleMethod::Produce => produce_method(space, call, &method, &args, named),
-            HandleMethod::Consume => consume_method(&method, &args).map(MethodEffect::Reply),
+            // Changed by P8 step 3 (design v2 W6): the method runs the translated receive.
+            // HandleMethod::Consume => consume_method(&method, &args).map(MethodEffect::Reply),
+            HandleMethod::Consume => consume_method(space, call, &method, &args),
         }
     }
 
@@ -443,47 +457,271 @@ fn produce_method(
     Ok(MethodEffect::Operation(SpaceOp::Produce(op)))
 }
 
-/// `consume(pairs, arrow, body)`: the shape checks of a consume whose matchers are user-agent
-/// matchers (P8). A message that passes them aborts with `AgentSpacesUnavailable`.
-fn consume_method(method: &str, args: &[Par]) -> Result<Par, InterpreterError> {
+// Replaced by P8 step 3 (design v2 W6, HC-1 to HC-3): a native handle runs the receive that
+// the matchers of a translation describe.
+// /// `consume(pairs, arrow, body)`: the shape checks of a consume whose matchers are user-agent
+// /// matchers (P8). A message that passes them aborts with `AgentSpacesUnavailable`.
+// fn consume_method(method: &str, args: &[Par]) -> Result<Par, InterpreterError> {
+//     let [pairs, arrow, body] = args else {
+//         return Ok(bad_argument(method, "arguments"));
+//     };
+//     if !sole_string(arrow).is_some_and(|arrow| CONSUME_ARROWS.contains(&arrow)) {
+//         return Ok(method_error(
+//             SpaceReplyCode::InvalidArrow,
+//             method,
+//             Vec::new(),
+//         ));
+//     }
+//     let matchers = match sole_list(pairs) {
+//         Some(pairs) if !pairs.is_empty() => pairs
+//             .iter()
+//             .map(|pair| match sole_tuple(pair) {
+//                 Some([matcher, _channel]) => Some(matcher),
+//                 Some(_) | None => None,
+//             })
+//             .collect::<Option<Vec<&Par>>>(),
+//         Some(_) | None => None,
+//     };
+//     let Some(matchers) = matchers else {
+//         return Ok(bad_argument(method, "pairs"));
+//     };
+//     if !matches!(capability_id(body), Some(ReifiedId::Body(..))) {
+//         return Ok(bad_argument(method, "body"));
+//     }
+//     if let Some(index) = matchers
+//         .iter()
+//         .position(|matcher| !matches!(capability_id(matcher), Some(ReifiedId::Matcher(..))))
+//     {
+//         let index = i64::try_from(index).map_err(|_| {
+//             InterpreterError::BugFoundError("a matcher index does not fit in i64".to_string())
+//         })?;
+//         return Ok(method_error(SpaceReplyCode::ForeignMatcher, method, vec![
+//             ("index", new_gint_par(index, Vec::new(), false)),
+//         ]));
+//     }
+//     Err(ReifiedReduceError::AgentSpacesUnavailable.into())
+// }
+/// `consume(pairs, arrow, body)` (P8, design v2 W6, HC-1 to HC-3): the receive that the
+/// matchers of a translation describe, run on this space. Each pair is `(m_i, c_i)`: the
+/// matcher capability of bind `i` and its channel. `body` is the body capability.
+///
+/// 1. The shape: the arrow (`InvalidArrow`), the pairs, the body capability, and the matcher
+///    ids (`ForeignMatcher` for an id that is not a matcher).
+/// 2. MO-2: each matcher state decodes strictly, from a bare uppercase `X` id. A state that no
+///    translation built is `ForeignMatcher`.
+/// 3. HC-2: the states describe one receive: one receive tag, the bind index `i` at pair `i`,
+///    `n` binds, one total, the offsets of TR-3, and at most one guard. Otherwise
+///    `MatcherSetMismatch`.
+/// 4. Each `c_i` takes the read rule of HEAD.
+/// 5. HC-3: one pair runs a consume and two or more a join. The guard is the guard of its state,
+///    in the coordinates of the whole receive, which the join engine checks once over every
+///    bind. The body sends the env map of TR-6 to the body capability:
+///    `bundle+{b}!({"g": BoundVar(total - 1 - g)})`, with the random state of the call.
+///
+/// The handle replies `Nil` as the last branch of the operation.
+fn consume_method(
+    space: NativeSpace,
+    call: &ListParWithRandom,
+    method: &str,
+    args: &[Par],
+) -> Result<MethodEffect, InterpreterError> {
     let [pairs, arrow, body] = args else {
-        return Ok(bad_argument(method, "arguments"));
+        return Ok(MethodEffect::Reply(bad_argument(method, "arguments")));
     };
-    if !sole_string(arrow).is_some_and(|arrow| CONSUME_ARROWS.contains(&arrow)) {
-        return Ok(method_error(
+    let Some(arrow) = sole_string(arrow).filter(|arrow| CONSUME_ARROWS.contains(arrow)) else {
+        return Ok(MethodEffect::Reply(method_error(
             SpaceReplyCode::InvalidArrow,
             method,
             Vec::new(),
-        ));
-    }
-    let matchers = match sole_list(pairs) {
+        )));
+    };
+    let pairs = match sole_list(pairs) {
         Some(pairs) if !pairs.is_empty() => pairs
             .iter()
             .map(|pair| match sole_tuple(pair) {
-                Some([matcher, _channel]) => Some(matcher),
+                Some([matcher, channel]) => Some((matcher, channel)),
                 Some(_) | None => None,
             })
-            .collect::<Option<Vec<&Par>>>(),
+            .collect::<Option<Vec<(&Par, &Par)>>>(),
         Some(_) | None => None,
     };
-    let Some(matchers) = matchers else {
-        return Ok(bad_argument(method, "pairs"));
+    let Some(pairs) = pairs else {
+        return Ok(MethodEffect::Reply(bad_argument(method, "pairs")));
     };
-    if !matches!(capability_id(body), Some(ReifiedId::Body(..))) {
-        return Ok(bad_argument(method, "body"));
+    let Some(body_id) = capability_par(body)
+        .filter(|id| matches!(namespace::reified_id_of(id), Some(ReifiedId::Body(..))))
+    else {
+        return Ok(MethodEffect::Reply(bad_argument(method, "body")));
+    };
+    let meter = ScanMeter::new(
+        deterministic_reduction::current().and_then(|context| context.host_work_budget()),
+    );
+    let mut states = Vec::with_capacity(pairs.len());
+    meter.reserve_buffer::<MatcherState>(pairs.len())?;
+    for (index, (matcher, _)) in pairs.iter().enumerate() {
+        let state = match capability_par(matcher) {
+            Some(id) => matcher_state_of(id, &meter)?,
+            None => None,
+        };
+        match state {
+            Some(state) => states.push(state),
+            None => {
+                let index = i64::try_from(index).map_err(|_| {
+                    InterpreterError::BugFoundError(
+                        "a matcher index does not fit in i64".to_string(),
+                    )
+                })?;
+                return Ok(MethodEffect::Reply(method_error(
+                    SpaceReplyCode::ForeignMatcher,
+                    method,
+                    vec![("index", new_gint_par(index, Vec::new(), false))],
+                )));
+            }
+        }
     }
-    if let Some(index) = matchers
-        .iter()
-        .position(|matcher| !matches!(capability_id(matcher), Some(ReifiedId::Matcher(..))))
-    {
-        let index = i64::try_from(index).map_err(|_| {
-            InterpreterError::BugFoundError("a matcher index does not fit in i64".to_string())
-        })?;
-        return Ok(method_error(SpaceReplyCode::ForeignMatcher, method, vec![
-            ("index", new_gint_par(index, Vec::new(), false)),
-        ]));
+    if !describes_one_receive(&states) {
+        return Ok(MethodEffect::Reply(method_error(
+            SpaceReplyCode::MatcherSetMismatch,
+            method,
+            Vec::new(),
+        )));
     }
-    Err(ReifiedReduceError::AgentSpacesUnavailable.into())
+    let mut channels = Vec::with_capacity(pairs.len());
+    for (_, channel) in &pairs {
+        match readable_channel(channel) {
+            Some(channel) => channels.push(channel),
+            None => return Ok(MethodEffect::Reply(bad_argument(method, "pairs"))),
+        }
+    }
+    let total = states.first().map(|state| state.total).unwrap_or(0);
+    let continuation = ParWithRandom {
+        body: Some(env_forwarder(body_id, total, &meter)?),
+        random_state: call.random_state.clone(),
+    };
+    let authority = call.cost_authority.clone().unwrap_or_default();
+    let guard = states.iter_mut().find_map(|state| state.guard.take());
+    let (persistent, peek) = (arrow == "<=", arrow == "<<-");
+    let mut binds = Vec::with_capacity(states.len());
+    for (state, channel) in states.into_iter().zip(channels) {
+        binds.push(JoinBind {
+            key: CollectionKey::of_channel(&channel)?,
+            channel,
+            pattern: state.pattern,
+            query: None,
+        });
+    }
+    let op = match <[JoinBind; 1]>::try_from(binds) {
+        Ok([bind]) => SpaceOp::Consume(ConsumeOp {
+            space,
+            key: bind.key,
+            channel: bind.channel,
+            pattern: bind.pattern,
+            body: continuation,
+            persistent,
+            peek,
+            guard,
+            query: None,
+            authority: authority.clone(),
+            introduction_authority: authority,
+            reissued_ord: None,
+        }),
+        Err(binds) => SpaceOp::Join(JoinOp {
+            space,
+            binds,
+            body: continuation,
+            persistent,
+            peek,
+            guard,
+            authority: authority.clone(),
+            introduction_authority: authority,
+            reissued_ords: None,
+        }),
+    };
+    Ok(MethodEffect::Operation(op))
+}
+
+/// The bare id of a capability: the body of one bundle, or the value itself. It copies
+/// nothing, so a matcher id is reserved by its decode before any copy.
+fn capability_par(capability: &Par) -> Option<&Par> {
+    match sole_bundle(capability) {
+        Some(Bundle { body, .. }) => body.as_ref(),
+        None => Some(capability),
+    }
+}
+
+/// True when the matcher states describe one translated receive (design v2 HC-2): one receive
+/// tag, the bind index `i` at position `i`, `n` binds, one total, the offsets of TR-3 that end
+/// at the total, and at most one guard.
+fn describes_one_receive(states: &[MatcherState]) -> bool {
+    let Some(first) = states.first() else {
+        return false;
+    };
+    let mut next_offset = 0u32;
+    let mut guards = 0usize;
+    for (index, state) in states.iter().enumerate() {
+        let consistent = state.receive_tag == first.receive_tag
+            && usize::try_from(state.bind).is_ok_and(|bind| bind == index)
+            && usize::try_from(state.binds).is_ok_and(|binds| binds == states.len())
+            && state.total == first.total
+            && state.offset == next_offset;
+        let Some(free) = state.free_count() else {
+            return false;
+        };
+        match (consistent, next_offset.checked_add(free)) {
+            (true, Some(next)) => next_offset = next,
+            (true, None) | (false, _) => return false,
+        }
+        guards += usize::from(state.guard.is_some());
+    }
+    next_offset == first.total && guards <= 1
+}
+
+/// The read rule of HEAD for a channel of a handle `consume`: a bundle with the read flag gives
+/// its body, a bundle without it gives `None`, and a value that is no bundle is its own channel.
+fn readable_channel(ch: &Par) -> Option<Par> {
+    match single_bundle(ch) {
+        Some(Bundle {
+            body: Some(body),
+            read_flag: true,
+            ..
+        }) => Some(body),
+        Some(Bundle { .. }) => None,
+        None => Some(ch.clone()),
+    }
+}
+
+/// The body of a native receive that a translation describes (design v2 HC-3): the send of the
+/// env map `{"g": BoundVar(total - 1 - g) | g < total}` to `bundle+{b}`. When the receive fires,
+/// `BoundVar(total - 1 - g)` holds the value of the binder at the global position `g`, so the
+/// body capability gets the env map of TR-6. Each key, entry and insertion is reserved first.
+fn env_forwarder(body_id: &Par, total: u32, meter: &ScanMeter) -> Result<Par, InterpreterError> {
+    let count = usize::try_from(total).map_err(|_| RSpaceError::HostWorkRejected)?;
+    let mut pairs = meter.buffer::<(Par, Par)>(count)?;
+    for position in 0..total {
+        let key = position.to_string();
+        meter.charge(1, key.len(), key.len())?;
+        meter.reserve_buffer::<Par>(2)?;
+        meter.ordered_lookup(pairs.len(), key.len())?;
+        let level = total - 1 - position;
+        let index = i32::try_from(level)
+            .map_err(|_| SpaceError::Inconsistent("a binder level does not fit"))?;
+        let bound = create_bit_vector(&[usize::try_from(level)
+            .map_err(|_| SpaceError::Inconsistent("a binder level does not fit"))?]);
+        pairs.push((string_par(&key), new_boundvar_par(index, bound, false)));
+    }
+    meter.tree_growth::<Par, Par>(0, pairs.len())?;
+    meter.reserve_copy(body_id)?;
+    let env = map_par(pairs);
+    let locally_free = env.locally_free.clone();
+    Ok(Par::default()
+        .with_sends(vec![SendProcess {
+            chan: Some(new_bundle_par(body_id.clone(), true, false)),
+            data: vec![env],
+            persistent: false,
+            locally_free: locally_free.clone(),
+            connective_used: false,
+        }])
+        .with_locally_free(locally_free))
 }
 
 /// The reducer of the runtime, from the reducer cell of the dispatcher.
@@ -574,16 +812,19 @@ fn writable_channel(ch: &Par) -> Option<Par> {
     }
 }
 
-/// The Reified id of a capability: a bare id, or an id under one bundle.
-fn capability_id(capability: &Par) -> Option<ReifiedId<'_>> {
-    match sole_bundle(capability) {
-        Some(Bundle {
-            body: Some(body), ..
-        }) => namespace::reified_id_of(body),
-        Some(Bundle { body: None, .. }) => None,
-        None => namespace::reified_id_of(capability),
-    }
-}
+// Disabled by P8 step 3: consume_method reads the bare id of a capability with capability_par,
+// which keeps the reference for the strict decode of a matcher state, so this function has no
+// caller.
+// /// The Reified id of a capability: a bare id, or an id under one bundle.
+// fn capability_id(capability: &Par) -> Option<ReifiedId<'_>> {
+//     match sole_bundle(capability) {
+//         Some(Bundle {
+//             body: Some(body), ..
+//         }) => namespace::reified_id_of(body),
+//         Some(Bundle { body: None, .. }) => None,
+//         None => namespace::reified_id_of(capability),
+//     }
+// }
 
 /// A `Par` that holds exactly one string.
 fn string_par(value: &str) -> Par {
@@ -956,11 +1197,11 @@ pub(crate) mod alloc_harness {
 
 #[cfg(test)]
 mod tests {
-    use models::rhoapi::Send as SendProcess;
+    use models::rhoapi::{BindPattern, Send as SendProcess};
     use models::rust::reified::builders;
     use models::rust::reified::params::SendParam;
     use models::rust::space_factory_urn::SpaceFactoryUrn;
-    use models::rust::utils::{new_bundle_par, new_elist_par, new_gbool_par};
+    use models::rust::utils::{new_bundle_par, new_elist_par, new_freevar_par, new_gbool_par};
     use rspace_plus_plus::rspace::rspace_interface::ISpace;
     use rspace_plus_plus::rspace::trace::event::{Event, IOEvent, Produce};
 
@@ -1528,6 +1769,52 @@ mod tests {
         assert!(fixture.data(&reply_name(20)).await.is_empty());
     }
 
+    /// The bare matcher id of a translation state of one bind with the pattern `[x]`.
+    fn translation_matcher_id(
+        tag: u8,
+        bind: u32,
+        offset: u32,
+        (total, binds): (u32, u32),
+        guard: Option<Par>,
+    ) -> Par {
+        let state = MatcherState {
+            receive_tag: [tag; namespace::SID_LEN],
+            bind,
+            offset,
+            total,
+            binds,
+            pattern: BindPattern {
+                patterns: vec![new_freevar_par(0, Vec::new())],
+                remainder: None,
+                free_count: 1,
+            },
+            guard,
+        };
+        let bytes = state
+            .encode(&ScanMeter::new(None))
+            .expect("a translation state encodes");
+        namespace::gprivate(namespace::matcher_channel(&bytes))
+    }
+
+    /// The matcher capability `bundle+{m}` of a translation state.
+    fn translation_matcher(
+        tag: u8,
+        bind: u32,
+        offset: u32,
+        shape: (u32, u32),
+        guard: Option<Par>,
+    ) -> Par {
+        new_bundle_par(
+            translation_matcher_id(tag, bind, offset, shape, guard),
+            true,
+            false,
+        )
+    }
+
+    /// The shape checks of `consume` (P8 design v2 W6): the arrow, the pairs, the body, and the
+    /// matchers. An id that is no matcher, an `X` id whose state no translation built, and a
+    /// lowercase `x` id are foreign. Matchers that do not describe one receive are a
+    /// `MatcherSetMismatch` (HC-2), and a channel without the read flag is a bad argument.
     #[tokio::test]
     async fn space_handle_methods_consume_rejects_foreign_matcher() {
         let fixture = Fixture::new().await;
@@ -1535,7 +1822,7 @@ mod tests {
             .create(b"consume")
             .await
             .expect("the factory creates the space");
-        let matcher = new_bundle_par(capability(b'X', 7), true, false);
+        let matcher = translation_matcher(1, 0, 0, (1, 1), None);
         let body = new_bundle_par(capability(b'B', 8), true, false);
         let channel = string("ch");
         let pair = |matcher: Par| tuple(vec![matcher, channel.clone()]);
@@ -1552,7 +1839,23 @@ mod tests {
                 int(index),
             )])
         };
+        let mismatch = expected_error(SpaceReplyCode::MatcherSetMismatch, "consume", Vec::new());
         let invalid_arrow = expected_error(SpaceReplyCode::InvalidArrow, "consume", Vec::new());
+        let lowercase = {
+            let id = translation_matcher_id(1, 0, 0, (1, 1), None);
+            let mut bytes = namespace::sole_gprivate_id(&id)
+                .expect("a matcher id")
+                .to_vec();
+            bytes[1] |= 0x20;
+            new_bundle_par(namespace::gprivate(bytes), true, false)
+        };
+        let two = |first: Par, second: Par| {
+            vec![
+                list(vec![pair(first), pair(second)]),
+                arrow.clone(),
+                body.clone(),
+            ]
+        };
         let cases = [
             (
                 vec![list(vec![pair(matcher.clone())]), arrow.clone()],
@@ -1615,6 +1918,71 @@ mod tests {
                 ],
                 foreign(0),
             ),
+            (
+                vec![
+                    list(vec![pair(new_bundle_par(capability(b'X', 9), true, false))]),
+                    arrow.clone(),
+                    body.clone(),
+                ],
+                foreign(0),
+            ),
+            (
+                vec![list(vec![pair(lowercase)]), arrow.clone(), body.clone()],
+                foreign(0),
+            ),
+            (
+                two(
+                    translation_matcher(1, 0, 0, (1, 1), None),
+                    translation_matcher(1, 0, 0, (1, 1), None),
+                ),
+                mismatch.clone(),
+            ),
+            (
+                two(
+                    translation_matcher(1, 0, 0, (2, 2), None),
+                    translation_matcher(2, 1, 1, (2, 2), None),
+                ),
+                mismatch.clone(),
+            ),
+            (
+                two(
+                    translation_matcher(1, 1, 1, (2, 2), None),
+                    translation_matcher(1, 0, 0, (2, 2), None),
+                ),
+                mismatch.clone(),
+            ),
+            (
+                two(
+                    translation_matcher(1, 0, 0, (2, 2), None),
+                    translation_matcher(1, 1, 0, (2, 2), None),
+                ),
+                mismatch.clone(),
+            ),
+            (
+                two(
+                    translation_matcher(1, 0, 0, (3, 2), None),
+                    translation_matcher(1, 1, 1, (3, 2), None),
+                ),
+                mismatch.clone(),
+            ),
+            (
+                two(
+                    translation_matcher(1, 0, 0, (2, 2), Some(Par::default())),
+                    translation_matcher(1, 1, 1, (2, 2), Some(Par::default())),
+                ),
+                mismatch,
+            ),
+            (
+                vec![
+                    list(vec![tuple(vec![
+                        matcher.clone(),
+                        new_bundle_par(channel.clone(), true, false),
+                    ])]),
+                    arrow.clone(),
+                    body.clone(),
+                ],
+                argument("pairs"),
+            ),
         ];
         for (index, (arguments, expected)) in cases.into_iter().enumerate() {
             let ret = reply_name(u8::try_from(index).expect("a small index"));
@@ -1625,26 +1993,217 @@ mod tests {
                 .expect("a typed reply");
             assert_eq!(reply, vec![expected], "case {index}");
         }
-        for arrow in CONSUME_ARROWS {
-            let message = vec![
-                reply_name(30),
-                string("consume"),
-                list(vec![pair(matcher.clone()), pair(capability(b'X', 9))]),
-                string(arrow),
-                body.clone(),
-            ];
-            match reply_of(&fixture, space, message, b"agents").await {
-                Err(InterpreterError::ReduceError(error)) => {
-                    assert!(
-                        error.starts_with("reified:AgentSpacesUnavailable: "),
-                        "{error}"
-                    );
-                }
-                other => panic!("a consume with agent matchers returned {other:?}"),
-            }
-        }
-        assert!(fixture.data(&reply_name(30)).await.is_empty());
     }
+
+    /// HC-1 to HC-3 (P8 design v2 W6): a native handle runs the receive that translation
+    /// matchers describe. One pair parks a consume and two pairs a join. When the receive
+    /// fires, its body sends the env map `{"g": v_g}` to the body capability, and the handle
+    /// replies `Nil`.
+    #[tokio::test]
+    async fn space_handle_methods_consume_runs_the_receive() {
+        let reduction = Reduction::new().await;
+        let contract = reduction.contract();
+        let agent = native_agent();
+        let factory = FactoryProcess::new(
+            SpaceFactoryUrn::HASHMAP_QUEUE,
+            Arc::clone(&reduction.runtime),
+            Arc::clone(&agent),
+        );
+        let handle = HandleProcess::new(Arc::clone(&reduction.runtime), agent);
+        let space = space_of(b"agents");
+        let one = capability(b'B', 1);
+        let both = capability(b'B', 2);
+        let message = |ret: u8, method: &str, mut args: Vec<Par>| {
+            let mut message = vec![reply_name(ret), string(method)];
+            message.append(&mut args);
+            call(vec![this(space), list(message)], method.as_bytes())
+        };
+        // A fire ends the participant that makes it (F16), so each produce that can fire runs
+        // in a reduction of its own.
+        let setup = reduction
+            .reduce(async {
+                let mut replies = vec![
+                    factory
+                        .call(
+                            &contract,
+                            call(vec![reply_name(0), list(Vec::new())], b"agents"),
+                        )
+                        .await,
+                ];
+                for call in [
+                    message(1, "consume", vec![
+                        list(vec![tuple(vec![
+                            translation_matcher(1, 0, 0, (1, 1), None),
+                            string("ch"),
+                        ])]),
+                        string("<-"),
+                        new_bundle_par(one.clone(), true, false),
+                    ]),
+                    message(2, "consume", vec![
+                        list(vec![
+                            tuple(vec![
+                                translation_matcher(2, 0, 0, (2, 2), None),
+                                string("a"),
+                            ]),
+                            tuple(vec![
+                                translation_matcher(2, 1, 1, (2, 2), None),
+                                string("b"),
+                            ]),
+                        ]),
+                        string("<-"),
+                        new_bundle_par(both.clone(), true, false),
+                    ]),
+                    message(3, "produce", vec![string("a"), list(vec![int(1)])]),
+                ] {
+                    replies.push(handle.call(&contract, call).await);
+                }
+                replies
+            })
+            .await;
+        let mut setup = setup.into_iter();
+        setup
+            .next()
+            .expect("the factory reply")
+            .expect("the factory creates the space");
+        for reply in setup {
+            assert_eq!(reply, Ok(vec![Par::default()]));
+        }
+        for call in [
+            message(4, "produce", vec![string("ch"), list(vec![int(7)])]),
+            message(5, "produce", vec![string("b"), list(vec![int(2)])]),
+        ] {
+            let reply = reduction.reduce(handle.call(&contract, call)).await;
+            assert_eq!(reply, Ok(vec![Par::default()]));
+        }
+        assert_eq!(reduction.data(&one).await, vec![vec![map_par(vec![(
+            string("0"),
+            int(7)
+        )])]]);
+        assert_eq!(reduction.data(&both).await, vec![vec![map_par(vec![
+            (string("0"), int(1)),
+            (string("1"), int(2)),
+        ])]]);
+    }
+
+    // Replaced by P8 step 3 (design v2 W6): the test below builds translation states, and the
+    // consume with matchers of a translation runs (space_handle_methods_consume_runs_the_receive).
+    // #[tokio::test]
+    // async fn space_handle_methods_consume_rejects_foreign_matcher() {
+    //     let fixture = Fixture::new().await;
+    //     let space = fixture
+    //         .create(b"consume")
+    //         .await
+    //         .expect("the factory creates the space");
+    //     let matcher = new_bundle_par(capability(b'X', 7), true, false);
+    //     let body = new_bundle_par(capability(b'B', 8), true, false);
+    //     let channel = string("ch");
+    //     let pair = |matcher: Par| tuple(vec![matcher, channel.clone()]);
+    //     let arrow = string("<-");
+    //     let argument = |name: &str| {
+    //         expected_error(SpaceReplyCode::BadArgument, "consume", vec![(
+    //             "argument",
+    //             string(name),
+    //         )])
+    //     };
+    //     let foreign = |index: i64| {
+    //         expected_error(SpaceReplyCode::ForeignMatcher, "consume", vec![(
+    //             "index",
+    //             int(index),
+    //         )])
+    //     };
+    //     let invalid_arrow = expected_error(SpaceReplyCode::InvalidArrow, "consume", Vec::new());
+    //     let cases = [
+    //         (
+    //             vec![list(vec![pair(matcher.clone())]), arrow.clone()],
+    //             argument("arguments"),
+    //         ),
+    //         (
+    //             vec![
+    //                 list(vec![pair(matcher.clone())]),
+    //                 string("<~"),
+    //                 body.clone(),
+    //             ],
+    //             invalid_arrow.clone(),
+    //         ),
+    //         (
+    //             vec![list(vec![pair(matcher.clone())]), int(1), body.clone()],
+    //             invalid_arrow,
+    //         ),
+    //         (vec![int(1), arrow.clone(), body.clone()], argument("pairs")),
+    //         (
+    //             vec![list(Vec::new()), arrow.clone(), body.clone()],
+    //             argument("pairs"),
+    //         ),
+    //         (
+    //             vec![
+    //                 list(vec![tuple(vec![matcher.clone()])]),
+    //                 arrow.clone(),
+    //                 body.clone(),
+    //             ],
+    //             argument("pairs"),
+    //         ),
+    //         (
+    //             vec![
+    //                 list(vec![list(vec![matcher.clone(), channel.clone()])]),
+    //                 arrow.clone(),
+    //                 body.clone(),
+    //             ],
+    //             argument("pairs"),
+    //         ),
+    //         (
+    //             vec![
+    //                 list(vec![pair(matcher.clone())]),
+    //                 arrow.clone(),
+    //                 string("body"),
+    //             ],
+    //             argument("body"),
+    //         ),
+    //         (
+    //             vec![
+    //                 list(vec![pair(matcher.clone()), pair(string("m"))]),
+    //                 arrow.clone(),
+    //                 body.clone(),
+    //             ],
+    //             foreign(1),
+    //         ),
+    //         (
+    //             vec![
+    //                 list(vec![pair(handle_capability(space))]),
+    //                 string("<<-"),
+    //                 body.clone(),
+    //             ],
+    //             foreign(0),
+    //         ),
+    //     ];
+    //     for (index, (arguments, expected)) in cases.into_iter().enumerate() {
+    //         let ret = reply_name(u8::try_from(index).expect("a small index"));
+    //         let mut message = vec![ret.clone(), string("consume")];
+    //         message.extend(arguments);
+    //         let reply = reply_of(&fixture, space, message, b"consume")
+    //             .await
+    //             .expect("a typed reply");
+    //         assert_eq!(reply, vec![expected], "case {index}");
+    //     }
+    //     for arrow in CONSUME_ARROWS {
+    //         let message = vec![
+    //             reply_name(30),
+    //             string("consume"),
+    //             list(vec![pair(matcher.clone()), pair(capability(b'X', 9))]),
+    //             string(arrow),
+    //             body.clone(),
+    //         ];
+    //         match reply_of(&fixture, space, message, b"agents").await {
+    //             Err(InterpreterError::ReduceError(error)) => {
+    //                 assert!(
+    //                     error.starts_with("reified:AgentSpacesUnavailable: "),
+    //                     "{error}"
+    //                 );
+    //             }
+    //             other => panic!("a consume with agent matchers returned {other:?}"),
+    //         }
+    //     }
+    //     assert!(fixture.data(&reply_name(30)).await.is_empty());
+    // }
 
     #[tokio::test]
     async fn space_handle_methods_produce() {

@@ -61,6 +61,7 @@ use crate::rust::interpreter::reified::system_channels::{
     check_persistent_send, handle_of, is_factory_op, op_of, packs_arguments,
 };
 use crate::rust::interpreter::reified::system_processes::native_agent;
+use crate::rust::interpreter::reified::user_agent::{AgentBind, ReceiveTranslation};
 use crate::rust::interpreter::reified::{seq, user_agent};
 use crate::rust::interpreter::spaces::agent::{
     AllocOp, ConsumeOp, JoinBind, JoinOp, OpOrigin, ProduceOp, QueryParams, SpaceAgent, SpaceFire,
@@ -114,6 +115,9 @@ enum ReceiveRoute {
         space: NativeSpace,
         binds: Vec<JoinBind>,
     },
+    /// A receive whose channels all route to one user agent (P8, design v2 TR-1), with its binds
+    /// in bind order. The reducer translates it (T_recv).
+    Agent { agent: Par, binds: Vec<AgentBind> },
 }
 
 /// A bind of a receive after its source is read and its channel is routed.
@@ -438,14 +442,39 @@ impl ReducerCore {
     ) -> Pin<
         Box<dyn Future<Output = Result<DispatchType, InterpreterError>> + std::marker::Send + 'a>,
     > {
+        // Changed by P8 step 3: the dispatch of a routed send is shared with the call of a
+        // translated receive (`dispatch_send`).
+        // match self.route_send(chan, data, persistent, introduction_authority) {
+        //     Ok(SendRoute::Host {
+        //         chan,
+        //         data,
+        //         authority,
+        //     }) => self.produce(chan, data, persistent, authority),
+        //     Ok(SendRoute::Space(op)) => Box::pin(self.space_op(SpaceOp::Produce(op), None)),
+        //     Err(error) => Box::pin(std::future::ready(Err(error))),
+        // }
         match self.route_send(chan, data, persistent, introduction_authority) {
-            Ok(SendRoute::Host {
+            Ok(route) => self.dispatch_send(route, persistent),
+            Err(error) => Box::pin(std::future::ready(Err(error))),
+        }
+    }
+
+    /// The operation of a routed send: the HEAD produce on the default space, or a produce on a
+    /// collection of a native space.
+    fn dispatch_send<'a>(
+        &'a self,
+        route: SendRoute,
+        persistent: bool,
+    ) -> Pin<
+        Box<dyn Future<Output = Result<DispatchType, InterpreterError>> + std::marker::Send + 'a>,
+    > {
+        match route {
+            SendRoute::Host {
                 chan,
                 data,
                 authority,
-            }) => self.produce(chan, data, persistent, authority),
-            Ok(SendRoute::Space(op)) => Box::pin(self.space_op(SpaceOp::Produce(op), None)),
-            Err(error) => Box::pin(std::future::ready(Err(error))),
+            } => self.produce(chan, data, persistent, authority),
+            SendRoute::Space(op) => Box::pin(self.space_op(SpaceOp::Produce(op), None)),
         }
     }
 
@@ -480,10 +509,28 @@ impl ReducerCore {
         persistent: bool,
         authority: CostAuthority,
     ) -> Result<SendRoute, InterpreterError> {
+        self.route_send_from(&self.space_ctx, chan, data, persistent, authority, false)
+    }
+
+    /// The loop of `route_send` from the use-context `context`. `scanned` is true for a call
+    /// whose data the caller has scanned already (P8 step 3: the call of a translated receive,
+    /// whose raw channels the translation scanned).
+    fn route_send_from(
+        &self,
+        context: &SpaceCtx,
+        chan: Par,
+        data: ListParWithRandom,
+        persistent: bool,
+        authority: CostAuthority,
+        scanned: bool,
+    ) -> Result<SendRoute, InterpreterError> {
         let seq = self.reified.seq_spaces();
-        let mut ctx = &self.space_ctx;
+        // Changed by P8 step 3: the loop starts from the given context and scan state.
+        // let mut ctx = &self.space_ctx;
+        let mut ctx = context;
         let (mut chan, mut data, mut persistent) = (chan, data, persistent);
-        let mut scanned = false;
+        // let mut scanned = false;
+        let mut scanned = scanned;
         loop {
             let params = trailing_params(&mut data.pars)?;
             // Changed by P8 step 2: a call routes with no use-context (AG-4).
@@ -605,7 +652,8 @@ impl ReducerCore {
     ///   The agent checks the query against the schema of its discipline.
     /// * Two or more channels on one native space: a join with `space_op`, with the query of each
     ///   bind (P5c, decision 29). The join engine runs it.
-    /// * A channel of a user agent: `AgentSpacesUnavailable`.
+    /// * Every channel on one user agent: the translation T_recv (P8, design v2 TR-1 to TR-7) in
+    ///   `agent_consume`, or `QuerySpecUnsupportedOnAgentSpace` when a bind has a query.
     /// * Every other join: `CrossSpaceJoin`.
     pub(in crate::rust::interpreter) fn reified_consume<'a>(
         &'a self,
@@ -682,8 +730,91 @@ impl ReducerCore {
                 }),
                 None,
             )),
+            Ok(ReceiveRoute::Agent { agent, binds }) => Box::pin(self.agent_consume(
+                agent,
+                binds,
+                body,
+                persistent,
+                peek,
+                guard,
+                authority,
+                introduction_authority,
+            )),
             Err(error) => Box::pin(std::future::ready(Err(error))),
         }
+    }
+
+    /// T_recv (P8, design v2 W3): a receive on a space that the user agent `agent` implements.
+    /// The raw channels are scanned for seq names first (A5). Then the receive makes, in this
+    /// order, one persistent matcher receive for each bind, the body receive, and the call on
+    /// the agent (TR-7). The receives are on fresh capability ids, so they fire nothing, and the
+    /// call, which can fire, comes last: a fire ends the participant (F16). The call routes as
+    /// an ordinary send with no use-context, and the translation scanned its data.
+    #[allow(clippy::too_many_arguments)]
+    async fn agent_consume(
+        &self,
+        agent: Par,
+        binds: Vec<AgentBind>,
+        body: ParWithRandom,
+        persistent: bool,
+        peek: bool,
+        guard: Option<Par>,
+        authority: CostAuthority,
+        introduction_authority: CostAuthority,
+    ) -> Result<DispatchType, InterpreterError> {
+        let meter = send_meter();
+        let seq = self.reified.seq_spaces();
+        if !seq.is_empty() {
+            for bind in &binds {
+                seq::check_send(&agent, std::slice::from_ref(&bind.raw), &seq, &meter)?;
+            }
+        }
+        let ReceiveTranslation {
+            matchers,
+            body,
+            call_channel,
+            call,
+        } = user_agent::translate_receive(
+            &agent,
+            binds,
+            body,
+            persistent,
+            peek,
+            guard,
+            &introduction_authority,
+            &meter,
+        )?;
+        for matcher in matchers {
+            self.consume(
+                vec![(matcher.pattern, matcher.channel)],
+                matcher.continuation,
+                matcher.persistent,
+                false,
+                None,
+                CostAuthority::default(),
+                introduction_authority.clone(),
+            )
+            .await?;
+        }
+        self.consume(
+            vec![(body.pattern, body.channel)],
+            body.continuation,
+            body.persistent,
+            false,
+            None,
+            authority,
+            introduction_authority.clone(),
+        )
+        .await?;
+        let route = self.route_send_from(
+            &NO_CONTEXT,
+            call_channel,
+            call,
+            false,
+            introduction_authority,
+            true,
+        )?;
+        self.dispatch_send(route, false).await
     }
 
     /// Reads the source of each bind (`query_bind`) and routes its channel, in bind order. Then
@@ -1062,7 +1193,8 @@ fn readable_channel(channel: Par) -> Result<Par, InterpreterError> {
 }
 
 /// The target of a receive with one bind. A query on the default space has no meaning, so it
-/// fails with `QuerySpecUnsupported`, and a channel of a user agent fails closed until P8.
+/// fails with `QuerySpecUnsupported`. A bind on a user agent is translated (P8, design v2 TR-1),
+/// and a query on it fails with `QuerySpecUnsupportedOnAgentSpace` (TR-2).
 fn single_bind_route(bind: RoutedBind) -> Result<ReceiveRoute, InterpreterError> {
     match bind {
         RoutedBind {
@@ -1088,18 +1220,35 @@ fn single_bind_route(bind: RoutedBind) -> Result<ReceiveRoute, InterpreterError>
             pattern,
             query,
         }),
+        // Changed by P8 step 3 (design v2 TR-1, TR-2): a bind on a user agent is translated.
+        // RoutedBind {
+        //     route: Route::Agent { .. },
+        //     ..
+        // } => Err(ReifiedReduceError::AgentSpacesUnavailable.into()),
         RoutedBind {
+            pattern,
+            channel: _,
+            query: None,
+            route: Route::Agent { agent, raw },
+        } => Ok(ReceiveRoute::Agent {
+            agent,
+            binds: vec![AgentBind { pattern, raw }],
+        }),
+        RoutedBind {
+            query: Some(_),
             route: Route::Agent { .. },
             ..
-        } => Err(ReifiedReduceError::AgentSpacesUnavailable.into()),
+        } => Err(ReifiedReduceError::QuerySpecUnsupportedOnAgentSpace.into()),
     }
 }
 
 /// The target of a receive with any number of binds other than one. When every channel routes
 /// to the default space, the receive is the HEAD consume, or `QuerySpecUnsupported` when a bind
 /// has a query. When every channel routes to one native space, the receive is a join of that
-/// space, with the query of each bind (P5c, decision 29). Any other join fails with
-/// `join_error`.
+/// space, with the query of each bind (P5c, decision 29). When every channel routes to one user
+/// agent, the receive is translated (P8, design v2 TR-1), or it fails with
+/// `QuerySpecUnsupportedOnAgentSpace` when a bind has a query (TR-2). Every other join fails
+/// with `CrossSpaceJoin`.
 fn join_route(routed: Vec<RoutedBind>) -> Result<ReceiveRoute, InterpreterError> {
     match (
         routed
@@ -1125,8 +1274,57 @@ fn join_route(routed: Vec<RoutedBind>) -> Result<ReceiveRoute, InterpreterError>
                     )),
                 }
             }
-            None => Err(join_error(routed.iter().map(|bind| &bind.route).collect()).into()),
+            // Changed by P8 step 3 (design v2 TR-1, TR-2): a join whose channels all route to
+            // one user agent is translated, and a query on it aborts.
+            // None => Err(join_error(routed.iter().map(|bind| &bind.route).collect()).into()),
+            None => match one_agent(&routed, &send_meter())? {
+                Some(_) if routed.iter().any(|bind| bind.query.is_some()) => {
+                    Err(ReifiedReduceError::QuerySpecUnsupportedOnAgentSpace.into())
+                }
+                Some(agent) => Ok(ReceiveRoute::Agent {
+                    agent,
+                    binds: routed.into_iter().filter_map(agent_bind).collect(),
+                }),
+                None => Err(ReifiedReduceError::CrossSpaceJoin.into()),
+            },
         },
+    }
+}
+
+/// The agent of a join whose channels all route to one user agent, or `None` (P8, design v2
+/// TR-1). Two routes name one agent when their references are equal (AG-3). The references
+/// come from substituted terms, which are sorted, so the comparison is the comparison of sorted
+/// `Par`s. Each comparison reserves the reads of both references first.
+fn one_agent(routed: &[RoutedBind], meter: &ScanMeter) -> Result<Option<Par>, SpaceError> {
+    let first = match routed.first().map(|bind| &bind.route) {
+        Some(Route::Agent { agent, .. }) => agent,
+        Some(Route::Default | Route::Space { .. }) | None => return Ok(None),
+    };
+    for bind in &routed[1..] {
+        match &bind.route {
+            Route::Agent { agent, .. } => {
+                meter.inspect(first)?;
+                meter.inspect(agent)?;
+                if agent != first {
+                    return Ok(None);
+                }
+            }
+            Route::Default | Route::Space { .. } => return Ok(None),
+        }
+    }
+    meter.reserve_copy(first)?;
+    Ok(Some(first.clone()))
+}
+
+/// The bind of a translated receive of a bind that routes to a user agent, or `None` for
+/// another route.
+fn agent_bind(bind: RoutedBind) -> Option<AgentBind> {
+    match bind.route {
+        Route::Agent { raw, .. } => Some(AgentBind {
+            pattern: bind.pattern,
+            raw,
+        }),
+        Route::Default | Route::Space { .. } => None,
     }
 }
 
@@ -1155,37 +1353,40 @@ fn one_space(routed: &[RoutedBind]) -> Option<NativeSpace> {
         .then_some(first)
 }
 
-/// The error of a join with two or more binds whose channels neither all route to the default
-/// space nor all route to one native space: a channel of a user agent fails closed until P8,
-/// and every other mix is a `CrossSpaceJoin`.
-fn join_error(routes: Vec<&Route>) -> ReifiedReduceError {
-    // Disabled by decision 29: same-space joins run in the join engine (P5c). `join_route`
-    // sends a join on one native space there, so this function sees only the other mixes.
-    // let first = match routes.first() {
-    //     Some(Route::Space { space, .. }) => Some(*space),
-    //     _ => None,
-    // };
-    // let one_space = first.is_some_and(|first| {
-    //     routes
-    //         .iter()
-    //         .all(|route| matches!(route, Route::Space { space, .. } if *space == first))
-    // });
-    // match (
-    //     one_space,
-    //     routes.iter().any(|route| matches!(route, Route::Agent)),
-    // ) {
-    //     (true, _) => ReifiedReduceError::OrderedJoinUnsupported,
-    //     (false, true) => ReifiedReduceError::AgentSpacesUnavailable,
-    //     (false, false) => ReifiedReduceError::CrossSpaceJoin,
-    // }
-    match routes
-        .iter()
-        .any(|route| matches!(route, Route::Agent { .. }))
-    {
-        true => ReifiedReduceError::AgentSpacesUnavailable,
-        false => ReifiedReduceError::CrossSpaceJoin,
-    }
-}
+// Disabled by P8 step 3 (design v2 TR-1): a join whose channels all route to one user agent is
+// translated, so every other mix of routes is a CrossSpaceJoin, a channel of a user agent
+// included. join_route raises CrossSpaceJoin itself, and this function has no caller.
+// /// The error of a join with two or more binds whose channels neither all route to the default
+// /// space nor all route to one native space: a channel of a user agent fails closed until P8,
+// /// and every other mix is a `CrossSpaceJoin`.
+// fn join_error(routes: Vec<&Route>) -> ReifiedReduceError {
+//     // Disabled by decision 29: same-space joins run in the join engine (P5c). `join_route`
+//     // sends a join on one native space there, so this function sees only the other mixes.
+//     // let first = match routes.first() {
+//     //     Some(Route::Space { space, .. }) => Some(*space),
+//     //     _ => None,
+//     // };
+//     // let one_space = first.is_some_and(|first| {
+//     //     routes
+//     //         .iter()
+//     //         .all(|route| matches!(route, Route::Space { space, .. } if *space == first))
+//     // });
+//     // match (
+//     //     one_space,
+//     //     routes.iter().any(|route| matches!(route, Route::Agent)),
+//     // ) {
+//     //     (true, _) => ReifiedReduceError::OrderedJoinUnsupported,
+//     //     (false, true) => ReifiedReduceError::AgentSpacesUnavailable,
+//     //     (false, false) => ReifiedReduceError::CrossSpaceJoin,
+//     // }
+//     match routes
+//         .iter()
+//         .any(|route| matches!(route, Route::Agent { .. }))
+//     {
+//         true => ReifiedReduceError::AgentSpacesUnavailable,
+//         false => ReifiedReduceError::CrossSpaceJoin,
+//     }
+// }
 
 /// The params of a send on a factory or a handle can be named only.
 fn reject_positional(params: Option<&SendParams>) -> Result<(), InterpreterError> {
@@ -1717,9 +1918,10 @@ fn trailing_params(data: &mut [Par]) -> Result<Option<SendParams>, InterpreterEr
 mod tests {
     use std::collections::{BTreeMap, HashMap};
 
+    use models::create_bit_vector;
     use models::rhoapi::connective::ConnectiveInstance;
     use models::rhoapi::tagged_continuation::TaggedCont;
-    use models::rhoapi::{Connective, Receive, ReceiveBind, Send as SendProcess};
+    use models::rhoapi::{Connective, EEq, Receive, ReceiveBind, Send as SendProcess};
     use models::rust::reified::builders::{
         new_space, push_process_expr, query_spec, send_params, use_block,
     };
@@ -1747,13 +1949,15 @@ mod tests {
     use crate::rust::interpreter::matcher::r#match::Matcher;
     use crate::rust::interpreter::reduce::DebruijnInterpreter;
     use crate::rust::interpreter::reified::costs::ReissueCause;
+    use crate::rust::interpreter::reified::factory::handle_pattern;
     use crate::rust::interpreter::reified::route::route;
     use crate::rust::interpreter::reified::runtime::native_replay;
     use crate::rust::interpreter::reified::scope::SpaceCtx;
+    use crate::rust::interpreter::reified::system_channels::MATCHER_OP_PROCESS;
     use crate::rust::interpreter::rho_runtime::{create_rho_runtime, RhoISpace};
     use crate::rust::interpreter::spaces::agent::SpaceCreation;
     use crate::rust::interpreter::spaces::namespace::{
-        Durability, AGENT_TAG, GET_SPACE_AGENT, HANDLE_OP, SID_LEN,
+        Durability, ReifiedId, AGENT_TAG, GET_SPACE_AGENT, HANDLE_OP, SID_LEN,
     };
     use crate::rust::interpreter::spaces::record::unwrap_datum;
     use crate::rust::interpreter::spaces::types::config::SpaceConfig;
@@ -2865,36 +3069,336 @@ mod tests {
     //         ),
     //         expected("AgentSpacesUnavailable")
     //     );
-    /// An agent-tagged name fails closed in a receive and a join until P8 step 3.
+    /// The elements of a `Par` that holds exactly one list.
+    fn list_items(par: &Par) -> &[Par] {
+        match par.exprs.as_slice() {
+            [Expr {
+                expr_instance: Some(ExprInstance::EListBody(EList { ps, .. })),
+            }] => ps,
+            other => panic!("the Par holds {other:?} instead of one list"),
+        }
+    }
+
+    /// The body of a one-bundle `Par`.
+    fn bundle_body(par: &Par) -> &Par {
+        match par.bundles.as_slice() {
+            [Bundle {
+                body: Some(body), ..
+            }] => body,
+            other => panic!("the Par holds {other:?} instead of one bundle"),
+        }
+    }
+
+    /// A receive with the binds `binds` (one free variable each), the body `Nil`, the
+    /// arrow flags `persistent` and `peek`, and the guard `guard`.
+    async fn agent_receive(
+        core: &ReducerCore,
+        channels: Vec<Par>,
+        (persistent, peek): (bool, bool),
+        guard: Option<Par>,
+    ) -> Result<DispatchType, InterpreterError> {
+        core.reified_consume(
+            channels.into_iter().map(bind).collect(),
+            body(Par::default()),
+            persistent,
+            peek,
+            guard,
+            authority(),
+            authority(),
+        )
+        .await
+    }
+
+    /// The parts of the call of a translated receive on the string agent `agent`: the matcher
+    /// capabilities with their raw channels, the arrow and the body capability.
+    async fn receive_call(host: &ParRSpace, agent: &str) -> (Vec<(Par, Par)>, Par, Par) {
+        let calls = stored(host, &string(agent)).await;
+        let [call] = calls.as_slice() else {
+            panic!("the agent got {} calls", calls.len());
+        };
+        let [sink, method, pairs, arrow, body] = call.as_slice() else {
+            panic!("a call has five values: {call:?}");
+        };
+        assert_eq!(*sink, user_agent::sink_channel());
+        assert_eq!(*method, string("consume"));
+        let pairs = list_items(pairs)
+            .iter()
+            .map(|pair| match sole_tuple(pair).ps.as_slice() {
+                [matcher, raw] => (bundle_body(matcher).clone(), raw.clone()),
+                other => panic!("a pair has two values: {other:?}"),
+            })
+            .collect();
+        (pairs, arrow.clone(), bundle_body(body).clone())
+    }
+
+    /// P8 step 3 (design v2 TR-3 to TR-7): a receive on an agent-tagged name makes one
+    /// persistent matcher receive, the body receive, and then the call
+    /// `A'!(sink, "consume", [(bundle+{m}, raw)], "<-", bundle+{b})`. The matcher id holds the
+    /// state of the bind, its receive forwards each call to `MATCHER_OP`, and the body receive
+    /// binds the env map and keeps the body and its random state.
     #[tokio::test]
-    async fn reducer_space_routing_agent_receives_fail_closed() {
+    async fn reducer_space_routing_agent_receive_makes_the_call() {
         let fixture = detached().await;
-        let tagged = agent_tagged(string("agent"), int(1));
+        agent_receive(
+            &fixture.reducer,
+            vec![agent_tagged(string("agent"), int(1))],
+            (false, false),
+            None,
+        )
+        .await
+        .expect("the receive is translated");
+        let (pairs, arrow, body_id) = receive_call(&fixture.host, "agent").await;
+        assert_eq!(arrow, string("<-"));
+        let [(matcher, raw)] = pairs.as_slice() else {
+            panic!("one bind gives one pair");
+        };
+        assert_eq!(*raw, int(1));
+        let meter = ScanMeter::new(None);
+        let state = user_agent::matcher_state_of(matcher, &meter)
+            .expect("the decode runs")
+            .expect("a translation state");
+        let base = namespace::RandomPurpose::Xlate
+            .derive(&Blake2b512Random::from_bytes(&rand(b"body").to_bytes()));
+        let mut tag = base.split_byte(user_agent::RECEIVE_TAG_BRANCH);
+        let expected_tag: Vec<u8> = tag.next().into_iter().map(|byte| byte as u8).collect();
+        assert_eq!(state.receive_tag.to_vec(), expected_tag);
+        assert_eq!(
+            (state.bind, state.offset, state.total, state.binds),
+            (0, 0, 1, 1)
+        );
+        assert_eq!(state.pattern, bind(Par::default()).0);
+        assert_eq!(state.guard, None);
+        let matchers = fixture
+            .host
+            .get_waiting_continuations(vec![matcher.clone()])
+            .await;
+        let [waiter] = matchers.as_slice() else {
+            panic!("one matcher receive");
+        };
+        assert!(waiter.persist);
+        assert_eq!(waiter.patterns, vec![handle_pattern()]);
+        match &waiter.continuation.tagged_cont {
+            Some(TaggedCont::ParBody(ParWithRandom { body, random_state })) => {
+                let send = &body.as_ref().expect("a forwarder body").sends[0];
+                assert_eq!(send.chan, Some(MATCHER_OP_PROCESS.channel()));
+                assert_eq!(send.data[0], *matcher);
+                assert_eq!(
+                    *random_state,
+                    base.split_byte(user_agent::MATCHER_CONTINUATION_BRANCH)
+                        .split_short(0)
+                        .to_bytes()
+                );
+            }
+            other => panic!("the matcher continuation is {other:?}"),
+        }
+        assert!(matches!(
+            namespace::reified_id_of(&body_id),
+            Some(ReifiedId::Body(..))
+        ));
+        let bodies = fixture
+            .host
+            .get_waiting_continuations(vec![body_id.clone()])
+            .await;
+        let [waiter] = bodies.as_slice() else {
+            panic!("one body receive");
+        };
+        assert!(!waiter.persist);
+        assert_eq!(waiter.patterns[0].free_count, 1);
+        match &waiter.continuation.tagged_cont {
+            Some(TaggedCont::ParBody(continuation)) => {
+                assert_eq!(*continuation, body(Par::default()));
+            }
+            other => panic!("the body continuation is {other:?}"),
+        }
+    }
+
+    /// P8 step 3 (design v2 TR-1, TR-3): a join of two channels of one agent is one call with
+    /// two pairs, whose states give the offsets 0 and 1 of 2 binders. Every other mix of routes
+    /// is a `CrossSpaceJoin`, two agents included, and stores nothing on the agents.
+    #[tokio::test]
+    async fn reducer_space_routing_agent_join_and_mixes() {
+        let fixture = detached().await;
+        agent_receive(
+            &fixture.reducer,
+            vec![
+                agent_tagged(string("agent"), int(1)),
+                agent_tagged(string("agent"), int(2)),
+            ],
+            (false, false),
+            None,
+        )
+        .await
+        .expect("the join is translated");
+        let (pairs, _, _) = receive_call(&fixture.host, "agent").await;
+        let meter = ScanMeter::new(None);
+        let states: Vec<_> = pairs
+            .iter()
+            .map(|(matcher, _)| {
+                user_agent::matcher_state_of(matcher, &meter)
+                    .expect("the decode runs")
+                    .expect("a translation state")
+            })
+            .collect();
+        assert_eq!(
+            states
+                .iter()
+                .map(|state| (state.bind, state.offset, state.total, state.binds))
+                .collect::<Vec<_>>(),
+            vec![(0, 0, 2, 2), (1, 1, 2, 2)]
+        );
+        assert_eq!(states[0].receive_tag, states[1].receive_tag);
+        assert_eq!(
+            pairs.iter().map(|(_, raw)| raw.clone()).collect::<Vec<_>>(),
+            vec![int(1), int(2)]
+        );
         for channels in [
-            vec![tagged.clone()],
-            vec![tagged.clone(), private(1)],
-            vec![space_name(native(8), [2; 32]), tagged.clone()],
+            vec![agent_tagged(string("other"), int(1)), private(1)],
+            vec![
+                space_name(native(8), [2; 32]),
+                agent_tagged(string("other"), int(1)),
+            ],
+            vec![
+                agent_tagged(string("other"), int(1)),
+                agent_tagged(string("third"), int(1)),
+            ],
         ] {
             assert_eq!(
-                code(
-                    fixture
-                        .reducer
-                        .reified_consume(
-                            channels.into_iter().map(bind).collect(),
-                            body(Par::default()),
-                            false,
-                            false,
-                            None,
-                            authority(),
-                            authority(),
-                        )
-                        .await
-                ),
-                expected("AgentSpacesUnavailable")
+                code(agent_receive(&fixture.reducer, channels, (false, false), None).await),
+                expected("CrossSpaceJoin")
             );
         }
-        assert!(fixture.host.get_data(&tagged).await.is_empty());
+        assert!(stored(&fixture.host, &string("other")).await.is_empty());
+        assert!(stored(&fixture.host, &string("third")).await.is_empty());
     }
+
+    /// `BoundVar(index)` with its locally-free set.
+    fn guard_var(index: i32) -> Par {
+        new_boundvar_par(
+            index,
+            create_bit_vector(&[usize::try_from(index).expect("an index")]),
+            false,
+        )
+    }
+
+    /// The guard `left == right`.
+    fn guard_eq(left: Par, right: Par) -> Par {
+        Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::EEqBody(EEq {
+                p1: Some(left),
+                p2: Some(right),
+            })),
+        }])
+    }
+
+    /// P8 step 3 (design v2 TR-4): with two binds of one binder each, `BoundVar(0)` reads the
+    /// binder of bind 1 and `BoundVar(1)` the binder of bind 0. The guard goes to the one bind
+    /// that owns its binders, a guard with only an outer index goes to bind 0, and a guard over
+    /// both binds aborts with `AgentGuardSpansJoin`.
+    #[tokio::test]
+    async fn reducer_space_routing_agent_guard_placement() {
+        let channels = || {
+            vec![
+                agent_tagged(string("agent"), int(1)),
+                agent_tagged(string("agent"), int(2)),
+            ]
+        };
+        for (guard, owner) in [
+            (guard_eq(guard_var(0), int(1)), 1),
+            (guard_eq(guard_var(1), int(1)), 0),
+            (guard_eq(guard_var(5), int(1)), 0),
+            (guard_eq(int(1), int(1)), 0),
+        ] {
+            let fixture = detached().await;
+            agent_receive(
+                &fixture.reducer,
+                channels(),
+                (false, false),
+                Some(guard.clone()),
+            )
+            .await
+            .expect("the guarded join is translated");
+            let (pairs, _, _) = receive_call(&fixture.host, "agent").await;
+            let meter = ScanMeter::new(None);
+            for (index, (matcher, _)) in pairs.iter().enumerate() {
+                let state = user_agent::matcher_state_of(matcher, &meter)
+                    .expect("the decode runs")
+                    .expect("a translation state");
+                let expected_guard = (index == owner).then(|| guard.clone());
+                assert_eq!(state.guard, expected_guard, "bind {index}");
+            }
+        }
+        let fixture = detached().await;
+        assert_eq!(
+            code(
+                agent_receive(
+                    &fixture.reducer,
+                    channels(),
+                    (false, false),
+                    Some(guard_eq(guard_var(0), guard_var(1))),
+                )
+                .await
+            ),
+            expected("AgentGuardSpansJoin")
+        );
+        assert!(stored(&fixture.host, &string("agent")).await.is_empty());
+    }
+
+    /// P8 step 3 (design v2 TR-6, TR-7): `<=` makes a persistent body receive and the arrow
+    /// `"<="`, and `<<-` the arrow `"<<-"` with a linear body receive.
+    #[tokio::test]
+    async fn reducer_space_routing_agent_receive_arrows() {
+        for ((persistent, peek), arrow, persistent_body) in
+            [((true, false), "<=", true), ((false, true), "<<-", false)]
+        {
+            let fixture = detached().await;
+            agent_receive(
+                &fixture.reducer,
+                vec![agent_tagged(string("agent"), int(1))],
+                (persistent, peek),
+                None,
+            )
+            .await
+            .expect("the receive is translated");
+            let (_, call_arrow, body_id) = receive_call(&fixture.host, "agent").await;
+            assert_eq!(call_arrow, string(arrow));
+            let bodies = fixture.host.get_waiting_continuations(vec![body_id]).await;
+            assert_eq!(bodies.len(), 1);
+            assert_eq!(bodies[0].persist, persistent_body, "{arrow}");
+        }
+    }
+
+    // Changed by P8 step 3 (design v2 TR-1 to TR-7): a receive on an agent-tagged name is
+    // translated (the tests below), and every mixed join is a CrossSpaceJoin.
+    // /// An agent-tagged name fails closed in a receive and a join until P8 step 3.
+    // #[tokio::test]
+    // async fn reducer_space_routing_agent_receives_fail_closed() {
+    //     let fixture = detached().await;
+    //     let tagged = agent_tagged(string("agent"), int(1));
+    //     for channels in [
+    //         vec![tagged.clone()],
+    //         vec![tagged.clone(), private(1)],
+    //         vec![space_name(native(8), [2; 32]), tagged.clone()],
+    //     ] {
+    //         assert_eq!(
+    //             code(
+    //                 fixture
+    //                     .reducer
+    //                     .reified_consume(
+    //                         channels.into_iter().map(bind).collect(),
+    //                         body(Par::default()),
+    //                         false,
+    //                         false,
+    //                         None,
+    //                         authority(),
+    //                         authority(),
+    //                     )
+    //                     .await
+    //             ),
+    //             expected("AgentSpacesUnavailable")
+    //         );
+    //     }
+    //     assert!(fixture.host.get_data(&tagged).await.is_empty());
+    // }
 
     // ── Receives ───────────────────────────────────────────────────────────────────────────────
 
@@ -3534,12 +4038,14 @@ mod tests {
             string("agent"),
             int(1),
         ]);
+        // Changed by P8 step 3 (design v2 TR-2): a query on an agent route aborts with its own
+        // code. The P4 code was AgentSpacesUnavailable.
         assert_eq!(
             code(route_one(
                 reducer,
                 query_source(tagged, payload.clone(), &named)
             )),
-            expected("AgentSpacesUnavailable")
+            expected("QuerySpecUnsupportedOnAgentSpace")
         );
         let mut stale = on_name.clone();
         stale.connective_used = !stale.connective_used;
@@ -3690,6 +4196,8 @@ mod tests {
         Host(Vec<(BindPattern, Par)>),
         Space(NativeSpace, CollectionKey, Par, Option<QueryParams>),
         Join(NativeSpace, Vec<JoinBind>),
+        // P8 step 3: a receive on a user agent is translated.
+        Agent(Par, Vec<AgentBind>),
         Failed(InterpreterError),
     }
 
@@ -3704,6 +4212,7 @@ mod tests {
                 ..
             }) => Target::Space(space, key, channel, query),
             Ok(ReceiveRoute::Join { space, binds }) => Target::Join(space, binds),
+            Ok(ReceiveRoute::Agent { agent, binds }) => Target::Agent(agent, binds),
             Err(error) => Target::Failed(error),
         }
     }
@@ -3717,8 +4226,17 @@ mod tests {
                 Target::Failed(ReifiedReduceError::QuerySpecUnsupported.into())
             }
             (Ok(Route::Space { space, key }), query) => Target::Space(space, key, channel, query),
-            (Ok(Route::Agent { .. }), _) => {
-                Target::Failed(ReifiedReduceError::AgentSpacesUnavailable.into())
+            // Changed by P8 step 3 (design v2 TR-1, TR-2): a bind on a user agent is
+            // translated, and a query on it aborts.
+            // (Ok(Route::Agent { .. }), _) => {
+            //     Target::Failed(ReifiedReduceError::AgentSpacesUnavailable.into())
+            // }
+            (Ok(Route::Agent { agent, raw }), None) => {
+                let (pattern, _) = bind(channel);
+                Target::Agent(agent, vec![AgentBind { pattern, raw }])
+            }
+            (Ok(Route::Agent { .. }), Some(_)) => {
+                Target::Failed(ReifiedReduceError::QuerySpecUnsupportedOnAgentSpace.into())
             }
             (Err(error), _) => Target::Failed(error.into()),
         }

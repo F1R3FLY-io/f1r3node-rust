@@ -4,7 +4,7 @@
 //! RSpaces.md`, lines 109 to 151). The reducer translates each operation on a name of such a
 //! space into a method call `A!(return, "method", args…)`, the call shape of the Agents FIPS. A
 //! translated receive gives the agent one matcher capability for each bind and one body
-//! capability. This module holds the parts of P8 step 1 that the later steps use:
+//! capability. This module holds the parts of the translation:
 //!
 //! * [`MatcherState`]: the pattern, the guard and the binder coordinates of one bind. The id
 //!   `E0‖X‖state` of a matcher capability holds the canonical encoding of its state (TR-5), so
@@ -21,6 +21,11 @@
 //! * [`produce_call`]: the call `A'!(sink, "produce", raw, [d1, …, dk])` of a send on a space
 //!   that an agent implements (P8 step 2, TS-1). The reducer hooks build it for a send, and the
 //!   R7 backend builds it for the reply of a system process to an agent-minted name (R7A-1).
+//! * [`translate_receive`]: the translation T_recv of a receive on a space that an agent
+//!   implements (P8 step 3, TR-3 to TR-7). It builds one matcher capability with its persistent
+//!   receive for each bind, the body capability with its receive, and the call
+//!   `A'!(sink, "consume", [(bundle+{m_i}, raw_i)…], arrow, bundle+{b})`. [`guard_indices`]
+//!   and [`place_guard`] give the guard to the bind that owns its binders (TR-4).
 //!
 //! # Matcher states
 //!
@@ -53,19 +58,32 @@
 //! section 11, decision 40). The decode of a matcher state reserves the bytes of the id first
 //! (MO-2).
 
+use std::collections::BTreeSet;
+use std::mem::size_of;
 use std::sync::{Arc, LazyLock};
 
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
+use models::create_bit_vector;
+use models::rhoapi::connective::ConnectiveInstance;
 use models::rhoapi::expr::ExprInstance;
-use models::rhoapi::{BindPattern, EList, Expr, ListParWithRandom, Par, TaggedContinuation, Var};
-use models::rust::utils::{new_bundle_par, new_gbool_par, new_gstring_par, union};
+use models::rhoapi::var::VarInstance;
+use models::rhoapi::{
+    BindPattern, Bundle, Connective, ConnectiveBody, CostAuthority, CostSignedTerm, EAnd, EDiv,
+    EEq, EGt, EGte, EList, ELt, ELte, EMap, EMatches, EMethod, EMinus, EMinusMinus, EMod, EMult,
+    ENeg, ENeq, ENot, EOr, EPathMap, EPercentPercent, EPlus, EPlusPlus, ESet, ETuple, EVar,
+    EZipper, Expr, If, KeyValuePair, ListParWithRandom, Match, MatchCase, New, Par, ParWithRandom,
+    Receive, ReceiveBind, Send, TaggedContinuation, Var,
+};
+use models::rust::utils::{
+    new_boundvar_par, new_bundle_par, new_freevar_par, new_gbool_par, new_gstring_par, union,
+};
 use prost::Message;
 use rspace_plus_plus::rspace::errors::RSpaceError;
 use shared::rust::clone_backing;
 
 use super::costs::ScanMeter;
 use super::errors::ReifiedReduceError;
-use super::factory::ContractArgs;
+use super::factory::{handle_pattern, ContractArgs};
 use super::handle::{is_reply_name, map_par, sole_list, tuple_par};
 use super::runtime::ReifiedRuntime;
 use super::scope::call_channel;
@@ -532,16 +550,664 @@ pub fn produce_call(
     }))
 }
 
+/// The branch of the receive tag of a translated receive (design v2 TR-5):
+/// `base.split_byte(2).next()`.
+pub const RECEIVE_TAG_BRANCH: u8 = 2;
+
+/// The branch of the body id of a translated receive (TR-6): `base.split_byte(3).next()`.
+pub const BODY_ID_BRANCH: u8 = 3;
+
+/// The branch of the call of a translated receive (TR-7): `base.split_byte(4)`.
+pub const RECEIVE_CALL_BRANCH: u8 = 4;
+
+/// The branch of the matcher continuations of a translated receive (TR-5):
+/// `base.split_byte(6).split_short(i)`.
+pub const MATCHER_CONTINUATION_BRANCH: u8 = 6;
+
+/// The method name of the call of a receive.
+static CONSUME_METHOD: LazyLock<Par> =
+    LazyLock::new(|| new_gstring_par("consume".to_string(), Vec::new(), false));
+
+/// The 32 bytes of the next output of `random`.
+fn output_bytes(mut random: Blake2b512Random) -> [u8; SID_LEN] {
+    let mut bytes = [0u8; SID_LEN];
+    for (byte, value) in bytes.iter_mut().zip(random.next()) {
+        *byte = value as u8;
+    }
+    bytes
+}
+
+/// A node of the work list of the guard walk, with the number of binders of the guard that the
+/// node lies under.
+enum GuardNode<'a> {
+    Par(&'a Par, u32),
+    Expr(&'a Expr, u32),
+}
+
+/// The work list of one guard walk. Each push reserves the `SearchStateBytes` of its entry.
+struct GuardWork<'a, 'm> {
+    nodes: Vec<GuardNode<'a>>,
+    meter: &'m ScanMeter,
+}
+
+impl<'a> GuardWork<'a, '_> {
+    fn push(&mut self, node: GuardNode<'a>) -> Result<(), SpaceError> {
+        self.meter.charge(0, 0, size_of::<GuardNode<'_>>())?;
+        self.nodes
+            .try_reserve(1)
+            .map_err(|_| RSpaceError::HostWorkRejected)?;
+        self.nodes.push(node);
+        Ok(())
+    }
+
+    fn par(&mut self, par: &'a Par, depth: u32) -> Result<(), SpaceError> {
+        self.push(GuardNode::Par(par, depth))
+    }
+
+    fn optional(&mut self, par: &'a Option<Par>, depth: u32) -> Result<(), SpaceError> {
+        match par {
+            Some(par) => self.par(par, depth),
+            None => Ok(()),
+        }
+    }
+
+    fn pars(&mut self, pars: &'a [Par], depth: u32) -> Result<(), SpaceError> {
+        pars.iter().try_for_each(|par| self.par(par, depth))
+    }
+}
+
+/// The depth under `count` more binders.
+fn deeper(depth: u32, count: i32) -> Result<u32, SpaceError> {
+    u32::try_from(count)
+        .ok()
+        .and_then(|count| depth.checked_add(count))
+        .ok_or(SpaceError::Inconsistent(
+            "a binder count of a guard does not fit",
+        ))
+}
+
+/// The free `BoundVar` indices of `guard` (design v2 TR-4). A `BoundVar(k)` under `d` binders
+/// of the guard is free when `k >= d`, and then it names the index `k - d` of the scope of the
+/// guard: the binders of the receive, then the outer binders. The walk tracks the binders of
+/// nested receives, news and match cases, reads no `locally_free` set (A4), and reserves each
+/// visit, as the Seq scan does.
+pub fn guard_indices(guard: &Par, meter: &ScanMeter) -> Result<BTreeSet<u32>, SpaceError> {
+    let mut indices = BTreeSet::new();
+    let mut work = GuardWork {
+        nodes: Vec::new(),
+        meter,
+    };
+    work.par(guard, 0)?;
+    while let Some(node) = work.nodes.pop() {
+        meter.charge(1, 0, 0)?;
+        let free = match node {
+            GuardNode::Par(par, depth) => {
+                guard_par(par, depth, &mut work)?;
+                None
+            }
+            GuardNode::Expr(expr, depth) => guard_expr(expr, depth, &mut work)?,
+        };
+        if let Some(index) = free {
+            meter.ordered_lookup(indices.len(), size_of::<u32>())?;
+            meter.tree_growth::<u32, ()>(indices.len(), 1)?;
+            indices.insert(index);
+        }
+    }
+    Ok(indices)
+}
+
+/// Adds every child of `par`, under `depth` binders of the guard, to the work list. A receive
+/// binds `bind_count` names for its body and its condition, a `new` binds `bind_count` names
+/// for its process, and a match case binds `free_count` names for its body and its guard.
+/// Patterns, sources and every other child stay at `depth`.
+fn guard_par<'a>(par: &'a Par, depth: u32, work: &mut GuardWork<'a, '_>) -> Result<(), SpaceError> {
+    let Par {
+        sends,
+        receives,
+        news,
+        exprs,
+        matches,
+        unforgeables: _,
+        bundles,
+        connectives,
+        conditionals,
+        locally_free: _,
+        connective_used: _,
+        cost_signed_terms,
+        cost_stacks: _,
+    } = par;
+    for send in sends {
+        let Send {
+            chan,
+            data,
+            persistent: _,
+            locally_free: _,
+            connective_used: _,
+        } = send;
+        work.optional(chan, depth)?;
+        work.pars(data, depth)?;
+    }
+    for receive in receives {
+        let Receive {
+            binds,
+            body,
+            persistent: _,
+            peek: _,
+            bind_count,
+            locally_free: _,
+            connective_used: _,
+            condition,
+        } = receive;
+        for bind in binds {
+            let ReceiveBind {
+                patterns,
+                source,
+                remainder: _,
+                free_count: _,
+                cost_signature: _,
+            } = bind;
+            work.pars(patterns, depth)?;
+            work.optional(source, depth)?;
+        }
+        let inner = deeper(depth, *bind_count)?;
+        work.optional(body, inner)?;
+        work.optional(condition, inner)?;
+    }
+    for new in news {
+        let New {
+            bind_count,
+            p,
+            uri: _,
+            injections,
+            locally_free: _,
+        } = new;
+        work.optional(p, deeper(depth, *bind_count)?)?;
+        for injected in injections.values() {
+            work.par(injected, depth)?;
+        }
+    }
+    for expr in exprs {
+        work.push(GuardNode::Expr(expr, depth))?;
+    }
+    for matched in matches {
+        let Match {
+            target,
+            cases,
+            locally_free: _,
+            connective_used: _,
+        } = matched;
+        work.optional(target, depth)?;
+        for case in cases {
+            let MatchCase {
+                pattern,
+                source,
+                free_count,
+                guard,
+            } = case;
+            work.optional(pattern, depth)?;
+            let inner = deeper(depth, *free_count)?;
+            work.optional(source, inner)?;
+            work.optional(guard, inner)?;
+        }
+    }
+    for bundle in bundles {
+        let Bundle {
+            body,
+            write_flag: _,
+            read_flag: _,
+        } = bundle;
+        work.optional(body, depth)?;
+    }
+    for connective in connectives {
+        let Connective {
+            connective_instance,
+        } = connective;
+        match connective_instance {
+            Some(ConnectiveInstance::ConnAndBody(ConnectiveBody { ps }))
+            | Some(ConnectiveInstance::ConnOrBody(ConnectiveBody { ps })) => {
+                work.pars(ps, depth)?
+            }
+            Some(ConnectiveInstance::ConnNotBody(negated)) => work.par(negated, depth)?,
+            Some(
+                ConnectiveInstance::VarRefBody(_)
+                | ConnectiveInstance::ConnBool(_)
+                | ConnectiveInstance::ConnInt(_)
+                | ConnectiveInstance::ConnString(_)
+                | ConnectiveInstance::ConnUri(_)
+                | ConnectiveInstance::ConnByteArray(_),
+            )
+            | None => {}
+        }
+    }
+    for conditional in conditionals {
+        let If {
+            condition,
+            if_true,
+            if_false,
+            locally_free: _,
+            connective_used: _,
+        } = conditional;
+        work.optional(condition, depth)?;
+        work.optional(if_true, depth)?;
+        work.optional(if_false, depth)?;
+    }
+    for term in cost_signed_terms {
+        let CostSignedTerm { body, signature: _ } = term;
+        work.optional(body, depth)?;
+    }
+    Ok(())
+}
+
+/// Adds every child of `expr` to the work list, and returns the index that `expr` names when
+/// it is a free `BoundVar`.
+fn guard_expr<'a>(
+    expr: &'a Expr,
+    depth: u32,
+    work: &mut GuardWork<'a, '_>,
+) -> Result<Option<u32>, SpaceError> {
+    let Expr { expr_instance } = expr;
+    match expr_instance {
+        Some(ExprInstance::EVarBody(EVar {
+            v:
+                Some(Var {
+                    var_instance: Some(VarInstance::BoundVar(index)),
+                }),
+        })) => Ok(u32::try_from(*index)
+            .ok()
+            .and_then(|index| index.checked_sub(depth))),
+        Some(ExprInstance::EVarBody(EVar { v: _ })) => Ok(None),
+        Some(
+            ExprInstance::GBool(_)
+            | ExprInstance::GInt(_)
+            | ExprInstance::GString(_)
+            | ExprInstance::GUri(_)
+            | ExprInstance::GByteArray(_)
+            | ExprInstance::GDouble(_)
+            | ExprInstance::GBigInt(_)
+            | ExprInstance::GBigRat(_)
+            | ExprInstance::GFixedPoint(_)
+            | ExprInstance::GFloat32(_),
+        )
+        | None => Ok(None),
+        Some(ExprInstance::ENotBody(ENot { p }) | ExprInstance::ENegBody(ENeg { p })) => {
+            work.optional(p, depth)?;
+            Ok(None)
+        }
+        Some(
+            ExprInstance::EMultBody(EMult { p1, p2 })
+            | ExprInstance::EDivBody(EDiv { p1, p2 })
+            | ExprInstance::EPlusBody(EPlus { p1, p2 })
+            | ExprInstance::EMinusBody(EMinus { p1, p2 })
+            | ExprInstance::ELtBody(ELt { p1, p2 })
+            | ExprInstance::ELteBody(ELte { p1, p2 })
+            | ExprInstance::EGtBody(EGt { p1, p2 })
+            | ExprInstance::EGteBody(EGte { p1, p2 })
+            | ExprInstance::EEqBody(EEq { p1, p2 })
+            | ExprInstance::ENeqBody(ENeq { p1, p2 })
+            | ExprInstance::EAndBody(EAnd { p1, p2 })
+            | ExprInstance::EOrBody(EOr { p1, p2 })
+            | ExprInstance::EPercentPercentBody(EPercentPercent { p1, p2 })
+            | ExprInstance::EPlusPlusBody(EPlusPlus { p1, p2 })
+            | ExprInstance::EMinusMinusBody(EMinusMinus { p1, p2 })
+            | ExprInstance::EModBody(EMod { p1, p2 }),
+        ) => {
+            work.optional(p1, depth)?;
+            work.optional(p2, depth)?;
+            Ok(None)
+        }
+        Some(ExprInstance::EListBody(EList {
+            ps,
+            locally_free: _,
+            connective_used: _,
+            remainder: _,
+        }))
+        | Some(ExprInstance::ETupleBody(ETuple {
+            ps,
+            locally_free: _,
+            connective_used: _,
+        }))
+        | Some(ExprInstance::ESetBody(ESet {
+            ps,
+            locally_free: _,
+            connective_used: _,
+            remainder: _,
+        }))
+        | Some(ExprInstance::EPathmapBody(EPathMap {
+            ps,
+            locally_free: _,
+            connective_used: _,
+            remainder: _,
+        })) => {
+            work.pars(ps, depth)?;
+            Ok(None)
+        }
+        Some(ExprInstance::EMapBody(EMap {
+            kvs,
+            locally_free: _,
+            connective_used: _,
+            remainder: _,
+        })) => {
+            for pair in kvs {
+                let KeyValuePair { key, value } = pair;
+                work.optional(key, depth)?;
+                work.optional(value, depth)?;
+            }
+            Ok(None)
+        }
+        Some(ExprInstance::EMethodBody(EMethod {
+            method_name: _,
+            target,
+            arguments,
+            locally_free: _,
+            connective_used: _,
+        })) => {
+            work.optional(target, depth)?;
+            work.pars(arguments, depth)?;
+            Ok(None)
+        }
+        Some(ExprInstance::EZipperBody(EZipper {
+            pathmap,
+            current_path: _,
+            is_write_zipper: _,
+            locally_free: _,
+            connective_used: _,
+        })) => {
+            if let Some(EPathMap {
+                ps,
+                locally_free: _,
+                connective_used: _,
+                remainder: _,
+            }) = pathmap
+            {
+                work.pars(ps, depth)?;
+            }
+            Ok(None)
+        }
+        Some(ExprInstance::EMatchesBody(EMatches { target, pattern })) => {
+            work.optional(target, depth)?;
+            work.optional(pattern, depth)?;
+            Ok(None)
+        }
+    }
+}
+
+/// The offsets `off_i` of the binds with the free counts `counts`, and their total (design v2
+/// TR-3): `off_0 = 0`, `off_(i+1) = off_i + f_i`, `total = off_n`.
+fn offsets_of(counts: &[u32]) -> Result<(Vec<u32>, u32), SpaceError> {
+    let mut offsets = Vec::with_capacity(counts.len());
+    let mut next = 0u32;
+    for count in counts {
+        offsets.push(next);
+        next = next.checked_add(*count).ok_or(SpaceError::Inconsistent(
+            "the binders of a receive overflow",
+        ))?;
+    }
+    Ok((offsets, next))
+}
+
+/// The bind that owns the global binder position `position`: the bind `i` with
+/// `off_i <= position < off_i + f_i`.
+fn owner_of(position: u32, offsets: &[u32], counts: &[u32]) -> Option<usize> {
+    offsets
+        .iter()
+        .zip(counts)
+        .position(|(offset, count)| *offset <= position && position - *offset < *count)
+}
+
+/// The bind that takes the guard of a receive (design v2 TR-4). Each free index `k` below
+/// `total` reads the binder at the position `total - 1 - k`, which one bind owns. The one owner
+/// of every such index takes the guard, bind 0 takes a guard with no such index, and two or
+/// more owners abort with `AgentGuardSpansJoin`. An index from `total` on is outer and unbound,
+/// as in a native receive (F7).
+pub fn place_guard(
+    indices: &BTreeSet<u32>,
+    counts: &[u32],
+    meter: &ScanMeter,
+) -> Result<usize, InterpreterError> {
+    let (offsets, total) = offsets_of(counts)?;
+    let mut owner = None;
+    for index in indices {
+        meter.charge(1, 0, 0)?;
+        let Some(position) = index
+            .checked_add(1)
+            .and_then(|next| total.checked_sub(next))
+        else {
+            continue;
+        };
+        let bind = owner_of(position, &offsets, counts).ok_or(SpaceError::Inconsistent(
+            "a binder position of a receive has no bind",
+        ))?;
+        match owner {
+            None => owner = Some(bind),
+            Some(first) if first == bind => {}
+            Some(_) => return Err(ReifiedReduceError::AgentGuardSpansJoin.into()),
+        }
+    }
+    Ok(owner.unwrap_or(0))
+}
+
+/// The pattern of the body receive of a translated receive with `total` binders (design v2
+/// TR-6): one map `{"g": FreeVar(g) | g < total}`. The key of a binder is the minimal decimal
+/// string of its global position, as the matcher op writes it, and `FreeVar(g)` sits at the key
+/// `"g"`, so the body binds its values in binder order. Each key, entry and insertion is
+/// reserved before it is made, as `env_reply` reserves its map.
+fn body_pattern(total: u32, meter: &ScanMeter) -> Result<BindPattern, SpaceError> {
+    let count = usize::try_from(total).map_err(|_| RSpaceError::HostWorkRejected)?;
+    let mut pairs = meter.buffer::<(Par, Par)>(count)?;
+    for position in 0..total {
+        let key = position.to_string();
+        meter.charge(1, key.len(), key.len())?;
+        meter.reserve_buffer::<Par>(2)?;
+        meter.ordered_lookup(pairs.len(), key.len())?;
+        let index = i32::try_from(position)
+            .map_err(|_| SpaceError::Inconsistent("a binder position does not fit"))?;
+        pairs.push((
+            expr_par(ExprInstance::GString(key)),
+            new_freevar_par(index, Vec::new()),
+        ));
+    }
+    meter.tree_growth::<Par, Par>(0, pairs.len())?;
+    Ok(BindPattern {
+        patterns: vec![map_par(pairs)],
+        remainder: None,
+        free_count: i32::try_from(total)
+            .map_err(|_| SpaceError::Inconsistent("the binder count does not fit"))?,
+    })
+}
+
+/// The forwarder of the matcher capability `matcher` (design v2 TR-5): the body
+/// `[0xE0, MATCHER_OP]!(m, args)`, where `args` is the list that the remainder of the matcher
+/// receive binds. It has the shape of the forwarder of a handle.
+fn matcher_forwarder(matcher: &Par) -> Par {
+    let args_bound = create_bit_vector(&[0]);
+    Par::default()
+        .with_sends(vec![Send {
+            chan: Some(MATCHER_OP_PROCESS.channel()),
+            data: vec![
+                matcher.clone(),
+                new_boundvar_par(0, args_bound.clone(), false),
+            ],
+            persistent: false,
+            locally_free: args_bound.clone(),
+            connective_used: false,
+        }])
+        .with_locally_free(args_bound)
+}
+
+/// A bind of a receive on a space that a user agent implements: its pattern and the raw channel
+/// of the agent.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AgentBind {
+    pub pattern: BindPattern,
+    pub raw: Par,
+}
+
+/// One receive that a translation makes on the default space.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TranslatedReceive {
+    pub pattern: BindPattern,
+    pub channel: Par,
+    pub continuation: ParWithRandom,
+    pub persistent: bool,
+}
+
+/// The operations of a translated receive, in the order of TR-7: one persistent matcher receive
+/// for each bind, the body receive, and the call on the agent, which comes last because only it
+/// can fire.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ReceiveTranslation {
+    pub matchers: Vec<TranslatedReceive>,
+    pub body: TranslatedReceive,
+    pub call_channel: Par,
+    pub call: ListParWithRandom,
+}
+
+/// The translation of a receive on a space that the user agent `agent` implements (design v2
+/// W3, TR-3 to TR-7). `binds` are the binds of the receive in bind order, `body` is the body
+/// after the wrapper of its use-context, with the random state `R` of the receive, and `base` is
+/// `Xlate.derive(R)`.
+///
+/// * TR-3: the offsets of the binds and their total.
+/// * TR-4: the guard goes to the bind that owns its binders (`place_guard`).
+/// * TR-5: the matcher capability `m_i = E0‖X‖state_i` of each bind, with its persistent
+///   receive `[...@args]` and its forwarder, with the state `base.split_byte(6).split_short(i)`.
+///   A state that prost cannot decode aborts with `AgentPatternTooDeep`.
+/// * TR-6: the body capability `b = E0‖B‖base.split_byte(3).next()`, whose receive binds the
+///   env map and runs the body. It is persistent only for `<=`.
+/// * TR-7: the call `A'!(sink, "consume", [(bundle+{m_i}, raw_i)…], arrow, bundle+{b})` with
+///   the state `base.split_byte(4)` and the introduction authority of the receive.
+///
+/// The caller scans every `raw_i` for seq names first (A5).
+#[allow(clippy::too_many_arguments)]
+pub fn translate_receive(
+    agent: &Par,
+    binds: Vec<AgentBind>,
+    body: ParWithRandom,
+    persistent: bool,
+    peek: bool,
+    guard: Option<Par>,
+    introduction_authority: &CostAuthority,
+    meter: &ScanMeter,
+) -> Result<ReceiveTranslation, InterpreterError> {
+    let arrow = match (persistent, peek) {
+        (false, false) => "<-",
+        (true, false) => "<=",
+        (false, true) => "<<-",
+        (true, true) => {
+            return Err(InterpreterError::BugFoundError(
+                "a receive is persistent and a peek".to_string(),
+            ))
+        }
+    };
+    let counts = binds
+        .iter()
+        .map(|bind| u32::try_from(bind.pattern.free_count))
+        .collect::<Result<Vec<u32>, _>>()
+        .map_err(|_| SpaceError::Inconsistent("a bind has a negative free count"))?;
+    let (offsets, total) = offsets_of(&counts)?;
+    let bind_count = u32::try_from(binds.len())
+        .map_err(|_| SpaceError::Inconsistent("a receive has too many binds"))?;
+    let base = RandomPurpose::Xlate.derive(&Blake2b512Random::from_bytes(&body.random_state));
+    let tag_random = base.split_byte(RECEIVE_TAG_BRANCH);
+    meter.random_bytes(&tag_random)?;
+    let receive_tag = output_bytes(tag_random);
+    let owner = match &guard {
+        Some(condition) => place_guard(&guard_indices(condition, meter)?, &counts, meter)?,
+        None => 0,
+    };
+    let mut guard = guard;
+    let mut matchers = Vec::with_capacity(binds.len());
+    let mut pairs = Vec::with_capacity(binds.len());
+    meter.reserve_buffer::<TranslatedReceive>(binds.len())?;
+    meter.reserve_buffer::<Par>(binds.len())?;
+    let continuations = base.split_byte(MATCHER_CONTINUATION_BRANCH);
+    for (index, (bind, offset)) in binds.into_iter().zip(offsets).enumerate() {
+        let AgentBind { pattern, raw } = bind;
+        let state = MatcherState {
+            receive_tag,
+            bind: u32::try_from(index)
+                .map_err(|_| SpaceError::Inconsistent("a bind index does not fit"))?,
+            offset,
+            total,
+            binds: bind_count,
+            pattern,
+            guard: match index == owner {
+                true => guard.take(),
+                false => None,
+            },
+        };
+        let bytes = state.encode(meter)?;
+        if MatcherState::decode(&bytes, meter)?.is_none() {
+            return Err(ReifiedReduceError::AgentPatternTooDeep.into());
+        }
+        meter.reserve_buffer::<u8>(bytes.len() + 2)?;
+        let matcher = namespace::gprivate(namespace::matcher_channel(&bytes));
+        let short = i16::try_from(index)
+            .map_err(|_| SpaceError::Inconsistent("a bind index does not fit a short split"))?;
+        let continuation_random = continuations.split_short(short);
+        meter.random_bytes(&continuation_random)?;
+        meter.reserve_copy(&matcher)?;
+        let forwarder = matcher_forwarder(&matcher);
+        meter.reserve_copy(&matcher)?;
+        let capability = new_bundle_par(matcher.clone(), true, false);
+        matchers.push(TranslatedReceive {
+            pattern: handle_pattern(),
+            channel: matcher,
+            continuation: ParWithRandom {
+                body: Some(forwarder),
+                random_state: continuation_random.to_bytes(),
+            },
+            persistent: true,
+        });
+        pairs.push(tuple_par(vec![capability, raw]));
+    }
+    let body_random = base.split_byte(BODY_ID_BRANCH);
+    meter.random_bytes(&body_random)?;
+    let body_capability = namespace::gprivate(namespace::body_channel(&output_bytes(body_random)));
+    let body_receive = TranslatedReceive {
+        pattern: body_pattern(total, meter)?,
+        channel: body_capability.clone(),
+        continuation: body,
+        persistent,
+    };
+    meter.reserve_copy(agent)?;
+    let call_channel = call_channel(agent).map_err(ReifiedReduceError::from)?;
+    let call_random = base.split_byte(RECEIVE_CALL_BRANCH);
+    meter.random_bytes(&call_random)?;
+    let call = ListParWithRandom {
+        pars: vec![
+            meter.copy(&*SINK)?,
+            meter.copy(&*CONSUME_METHOD)?,
+            list_par(pairs, None),
+            new_gstring_par(arrow.to_string(), Vec::new(), false),
+            new_bundle_par(body_capability, true, false),
+        ],
+        random_state: call_random.to_bytes(),
+        cost_authority: (!introduction_authority.regions.is_empty())
+            .then(|| introduction_authority.clone()),
+        cost_stack: None,
+    };
+    Ok(ReceiveTranslation {
+        matchers,
+        body: body_receive,
+        call_channel,
+        call,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use models::rhoapi::var::VarInstance;
     use models::rhoapi::CostAuthority;
+    use models::rust::cost_protocol_limits::offered_funded_v6_host_work_limits;
+    use models::rust::host_work::{HostWorkDimension, HostWorkUsage};
     use models::rust::utils::{
         new_boundvar_par, new_bundle_par, new_freevar_par, new_freevar_var, new_gint_par,
         new_wildcard_var,
     };
 
     use super::*;
+    use crate::rust::interpreter::host_work::HostWorkBudget;
     use crate::rust::interpreter::reified::runtime::unavailable;
     use crate::rust::interpreter::reified::system_processes::harness::{
         call, int, list, reply_name, string, Fixture,
@@ -834,6 +1500,166 @@ mod tests {
             .await
             .expect("a reply");
         assert_eq!(reply, vec![refusal()]);
+    }
+
+    /// The usage of every dimension of `host_work`.
+    fn usage_of(host_work: &HostWorkBudget) -> Vec<HostWorkUsage> {
+        HostWorkDimension::ALL
+            .into_iter()
+            .map(|dimension| host_work.usage(dimension))
+            .collect()
+    }
+
+    /// How the reference charges the match and the guard of one bind.
+    #[derive(Clone, Copy, PartialEq)]
+    enum MatchCalls {
+        /// The metered methods that a native receive calls for one bind
+        /// (`rspace++/src/rspace/replay_rspace/native_candidate/metered.rs`).
+        Metered,
+        /// The unmetered methods `get` and `check_commit`: the negative control.
+        Unmetered,
+    }
+
+    /// The reply of the matcher op to the values `elements` under `state`, and its host work,
+    /// rebuilt from the calls of a native receive and the reservations of the op itself (MO-4):
+    /// the copy of the shared matcher handle, the copy of the values, the guard environment of
+    /// TR-4, and the reply map.
+    fn reference(
+        fixture: &Fixture,
+        state: &MatcherState,
+        elements: &[Par],
+        calls: MatchCalls,
+    ) -> (Par, Vec<HostWorkUsage>) {
+        let host_work = HostWorkBudget::new(offered_funded_v6_host_work_limits());
+        let meter = ScanMeter::new(Some(host_work.clone()));
+        let env = fixture
+            .runtime
+            .space_env(Some(host_work.clone()))
+            .expect("the fixture has a host");
+        let matcher = env.store.matcher();
+        meter.shared(1).expect("the handle copy fits");
+        let data = ListParWithRandom {
+            pars: meter.copy_slice(elements).expect("the copy fits"),
+            random_state: Vec::new(),
+            cost_authority: None,
+            cost_stack: None,
+        };
+        let matched = match calls {
+            MatchCalls::Metered => matcher
+                .get_metered(&state.pattern, &data, &meter)
+                .expect("the match fits"),
+            MatchCalls::Unmetered => matcher.get(&state.pattern, &data),
+        };
+        let Some(matched) = matched else {
+            return (refusal(), usage_of(&host_work));
+        };
+        let admitted = match &state.guard {
+            None => true,
+            Some(guard) => {
+                let free = state.free_count().expect("a consistent state");
+                let placeholders = |count: u32| {
+                    let count = usize::try_from(count).expect("a small receive");
+                    let mut pars = meter.buffer::<Par>(count).expect("the buffer fits");
+                    pars.resize(count, Par::default());
+                    ListParWithRandom {
+                        pars,
+                        random_state: Vec::new(),
+                        cost_authority: None,
+                        cost_stack: None,
+                    }
+                };
+                let continuation = TaggedContinuation {
+                    tagged_cont: None,
+                    guard: Some(meter.copy(guard).expect("the copy fits")),
+                    cost_authority: None,
+                };
+                let bindings = [
+                    placeholders(state.offset),
+                    meter.copy(&matched).expect("the copy fits"),
+                    placeholders(state.total - state.offset - free),
+                ];
+                let mut references = meter
+                    .buffer::<&ListParWithRandom>(bindings.len())
+                    .expect("the buffer fits");
+                references.extend(bindings.iter());
+                match calls {
+                    MatchCalls::Metered => matcher
+                        .check_commit_metered(&continuation, &references, &meter)
+                        .expect("the guard fits"),
+                    MatchCalls::Unmetered => matcher.check_commit(&continuation, &bindings),
+                }
+            }
+        };
+        let reply = match admitted {
+            true => env_reply(state, matched.pars, &meter).expect("the reply fits"),
+            false => refusal(),
+        };
+        (reply, usage_of(&host_work))
+    }
+
+    /// I-15 and MO-4: the matcher op meters its match and its guard with the metered methods
+    /// of the injected matcher, the methods that a native receive calls for one bind. So the
+    /// host work of the op is the host work of those calls plus the reservations of the op
+    /// itself, in every dimension: the op matches nothing without its meter and meters no match
+    /// twice. The cases cover a match, a structured match, a mismatch after a partial match, a
+    /// wrong count of values, and a guard that passes and one that refuses. A reference with the
+    /// unmetered methods charges less wherever the match does work, so the comparison can fail.
+    #[tokio::test]
+    async fn agent_matcher_metering_equals_host() {
+        let fixture = Fixture::new().await;
+        let op = MatcherProcess::new(Arc::clone(&fixture.runtime));
+        let pair = list_par(vec![free(0), free(1)], None);
+        let cases = [
+            (state(&[1], 0, vec![free(0)], None), vec![int(9)], true),
+            (
+                state(&[1, 2], 1, vec![pair.clone()], None),
+                vec![list(vec![int(4), string("b")])],
+                true,
+            ),
+            (
+                state(&[1], 0, vec![list_par(vec![free(0), int(1)], None)], None),
+                vec![list(vec![int(4), int(2)])],
+                false,
+            ),
+            (
+                state(&[1], 0, vec![free(0)], None),
+                vec![int(1), int(2)],
+                false,
+            ),
+            (
+                state(&[2, 1, 3], 1, vec![free(0)], Some(greater_than_five(2, 6))),
+                vec![int(9)],
+                true,
+            ),
+            (
+                state(&[2, 1, 3], 1, vec![free(0)], Some(greater_than_five(2, 6))),
+                vec![int(3)],
+                false,
+            ),
+        ];
+        for (index, (state, elements, matches)) in cases.into_iter().enumerate() {
+            let host_work = HostWorkBudget::new(offered_funded_v6_host_work_limits());
+            let meter = ScanMeter::new(Some(host_work.clone()));
+            let reply = op
+                .answer(&state, &list(elements.clone()), &meter)
+                .expect("the op fits the budget");
+            let used = usage_of(&host_work);
+            let (expected, host) = reference(&fixture, &state, &elements, MatchCalls::Metered);
+            assert_eq!(reply, expected, "case {index}");
+            assert_eq!(reply != refusal(), matches, "case {index}");
+            assert_eq!(used, host, "case {index}: the op and the host calls differ");
+            assert!(
+                host_work.usage(HostWorkDimension::VerificationBytes) > HostWorkUsage::ZERO,
+                "case {index}"
+            );
+            let (_, unmetered) = reference(&fixture, &state, &elements, MatchCalls::Unmetered);
+            if index != 3 {
+                assert_ne!(
+                    used, unmetered,
+                    "case {index}: the control charges the match"
+                );
+            }
+        }
     }
 
     #[tokio::test]

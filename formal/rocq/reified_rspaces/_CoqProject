@@ -3,7 +3,8 @@
 # charges, P5 wave W2: the engine, the bag, cell and stack disciplines, the
 # Array and Vector stores, the PathMap paths and the P5 families, P5 wave
 # W3: the joins of one space and the PathMap engine, P6: the exact
-# similarity decisions of the VectorDB family, P7: the theory seam)
+# similarity decisions of the VectorDB family, P7: the theory seam, P8: the
+# translation of receives on spaces that user agents implement)
 #
 # Mechanizes the P1 headlines of the Reified RSpaces campaign for the
 # SpaceTxnHost / SpaceStoreHandle / SpaceTxn substrate in rspace++. The
@@ -162,6 +163,15 @@
 #                     binary metrics, the selection order with the kappa
 #                     tie-break and its negative control, and the Qc and Z
 #                     instances that discharge the hypotheses.
+#   AgentTranslation  P8 step 3 (6 headlines): the translation of a receive
+#                     on a space that a user agent implements. The offsets
+#                     of the binds partition the binder positions, the env
+#                     keys of the binds are disjoint and cover them, the
+#                     body binds the values of the native receive, the
+#                     guard of its owner bind equals the native guard, the
+#                     matcher replies exactly on a spatial match with a
+#                     passing guard, and the codec of a matcher state is
+#                     exact.
 #
 # Each module is standalone and imports only the Rocq standard library. A
 # verifier compiles each file alone with `coqc -q -noglob` and no -Q or -R
@@ -202,3 +212,4 @@ theories/Similarity.v
 theories/VectorDbDiscipline.v
 theories/VectorOps.v
 theories/TheoryAdmission.v
+theories/AgentTranslation.v

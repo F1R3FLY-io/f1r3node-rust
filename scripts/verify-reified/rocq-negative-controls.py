@@ -113,6 +113,24 @@ one part of the R7 rule for the replies of system processes:
   sr-r7a-dropped                     the bundle of an agent-minted name goes
                                      to the default space
 
+P8 step 3 (AgentTranslation.v, design v2 TR-3 to TR-6, MO-2, MO-3, and
+SpaceRefs.v, TR-2) has seven controls. Each reverts one rule of the
+translation of a receive:
+  at-offsets-skip-count              an offset does not add the free count of
+                                     the bind before it (TR-3)
+  at-env-key-off-by-one              the env keys of a bind start one after
+                                     its offset (MO-3)
+  at-guard-wrong-bind                a guard with one owner goes to bind 0
+                                     (TR-4)
+  at-matcher-skips-guard             the matcher replies without the guard
+                                     check (MO-3)
+  at-decoder-not-strict              the state decoder drops the byte-equal
+                                     re-encode (MO-2)
+  at-body-binds-wrong-key            the body binds binder g to key g + 1
+                                     (TR-6)
+  sr-query-agent-drops-query         a receive with a query on a user agent
+                                     is translated and drops the query (TR-2)
+
 Decision 42 (AgentReadCoverage.v) has five controls. Each reverts one part of
 the metering rule: a step that reads before it reserves, a fire that does not
 prepay the decode of its continuation, an operation that does not prepay the
@@ -2152,6 +2170,44 @@ CONTROLS = (
      "    | None => r7_of (route None c)\n    end.",
      "    r7_of (route None c).",
      ("r7_route_ignores_ctx", "r7_agent_reply_bundle_exact")),
+    # ── P8 step 3: AgentTranslation.v (design v2 TR-3 to TR-6, MO-2, MO-3) ──
+    ("at-offsets-skip-count", "AgentTranslation",
+     "the offset of a bind does not add the free count of the bind before it (TR-3)",
+     "  | f :: rest => o :: offsets_from (o + f) rest",
+     "  | f :: rest => o :: offsets_from o rest",
+     ("offsets_from_nth", "offsets_partition")),
+    ("at-env-key-off-by-one", "AgentTranslation",
+     "the env of a bind starts one key after the offset of the bind (MO-3)",
+     "  combine (seq o (length vs)) vs.",
+     "  combine (seq (S o) (length vs)) vs.",
+     ("env_of_keys", "union_from_keys", "lookup_seq_combine", "union_from_lookup",
+      "env_keys_disjoint_union", "body_equivalence")),
+    ("at-guard-wrong-bind", "AgentTranslation",
+     "a guard with one owner bind goes to bind 0 (TR-4)",
+     "  | [i] => PlaceAt i",
+     "  | [i] => PlaceAt 0",
+     ("place_guard_owner", "guard_fold_sound")),
+    ("at-matcher-skips-guard", "AgentTranslation",
+     "the matcher replies the env without the guard check (MO-3)",
+     "    | Some vs => if guard_ok s vs then Some (env_of value (m_offset s) vs) else None",
+     "    | Some vs => Some (env_of value (m_offset s) vs)",
+     ("matcher_sound_complete",)),
+    ("at-decoder-not-strict", "AgentTranslation",
+     "the decoder of a matcher state accepts bytes that are not the encoding of the state (MO-2)",
+     "        | Some s => if consistent s && bytes_eqb (encode s) b then Some s else None",
+     "        | Some s => if consistent s then Some s else None",
+     ("matcher_state_roundtrip",)),
+    ("at-body-binds-wrong-key", "AgentTranslation",
+     "the body binds the binder g to the value at the key g + 1 (TR-6)",
+     "    map (fun g => lookup g env) (seq 0 t).",
+     "    map (fun g => lookup g env) (seq 1 t).",
+     ("body_equivalence",)),
+    # ── P8 step 3: SpaceRefs.v, the receive of a user agent (design v2 TR-2) ──
+    ("sr-query-agent-drops-query", "SpaceRefs",
+     "a receive with a query on a user agent is translated and drops the query (TR-2)",
+     "    | BindOk _ (Some _) (RAgent _ _) => TFail RQuerySpecUnsupportedOnAgent",
+     "    | BindOk _ (Some _) (RAgent a raw) => TAgent a raw",
+     ("query_source_routes_inner_channel",)),
 )
 
 DECLARATION = re.compile(

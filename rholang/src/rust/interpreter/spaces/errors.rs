@@ -318,11 +318,16 @@ pub enum SpaceReplyCode {
     NotASpaceRef,
     EmptySpaceRef,
     HandleNotWritable,
+    /// The matcher capabilities of a handle `consume` do not describe one receive (P8, design
+    /// v2 HC-2).
+    MatcherSetMismatch,
 }
 
 impl SpaceReplyCode {
     /// Every reply code.
-    pub const ALL: [SpaceReplyCode; 11] = [
+    // Changed by P8 step 3: MatcherSetMismatch (HC-2) is the twelfth code.
+    // pub const ALL: [SpaceReplyCode; 11] = [
+    pub const ALL: [SpaceReplyCode; 12] = [
         SpaceReplyCode::MalformedMessage,
         SpaceReplyCode::UnknownMethod,
         SpaceReplyCode::BadArgument,
@@ -334,6 +339,7 @@ impl SpaceReplyCode {
         SpaceReplyCode::NotASpaceRef,
         SpaceReplyCode::EmptySpaceRef,
         SpaceReplyCode::HandleNotWritable,
+        SpaceReplyCode::MatcherSetMismatch,
     ];
 
     /// The code string of the reply.
@@ -350,6 +356,7 @@ impl SpaceReplyCode {
             SpaceReplyCode::NotASpaceRef => "NotASpaceRef",
             SpaceReplyCode::EmptySpaceRef => "EmptySpaceRef",
             SpaceReplyCode::HandleNotWritable => "HandleNotWritable",
+            SpaceReplyCode::MatcherSetMismatch => "MatcherSetMismatch",
         }
     }
 }

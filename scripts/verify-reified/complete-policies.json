@@ -2166,7 +2166,7 @@
       ]
     },
     "p8": {
-      "description": "Phase P8, the spaces that user agents implement (design v2, plan decision 77). Step 1 (W1 and W5) adds the routes of user agents with the agent reference and the raw channel (AG-1), the use-context of a native space or an agent (AG-2), the write rule of an agent reference under the bundle rule of eval_send (AG-4, the generalized HandleNotWritable), the abort of a persistent send to a matcher or body capability (A13), the canonical matcher state with its strict codec (TR-5), the matcher and body ids of the namespace, the matcher process (MO-1 to MO-4) and the sink (SK-1) with their URN-bound definitions after the factories of P7 (U1). Step 2 (W2 and W7) adds the call of a send on an agent space (TS-1 to TS-3, AG-4), its sink channel (TS-2), and the R7 replies to agent-minted names (R7A-1).",
+      "description": "Phase P8, the spaces that user agents implement (design v2, plan decision 77). Step 1 (W1 and W5) adds the routes of user agents with the agent reference and the raw channel (AG-1), the use-context of a native space or an agent (AG-2), the write rule of an agent reference under the bundle rule of eval_send (AG-4, the generalized HandleNotWritable), the abort of a persistent send to a matcher or body capability (A13), the canonical matcher state with its strict codec (TR-5), the matcher and body ids of the namespace, the matcher process (MO-1 to MO-4) and the sink (SK-1) with their URN-bound definitions after the factories of P7 (U1). Step 2 (W2 and W7) adds the call of a send on an agent space (TS-1 to TS-3, AG-4), its sink channel (TS-2), and the R7 replies to agent-minted names (R7A-1). Step 3 (W3 and W6) adds the translation of a receive (TR-1 to TR-7: guard walk and placement, matcher and body capabilities, the call), the native consume of a handle (HC-1 to HC-3), and the codes QuerySpecUnsupportedOnAgentSpace, AgentGuardSpansJoin, AgentPatternTooDeep and the reply code MatcherSetMismatch.",
       "sources": [
         "rholang/src/rust/interpreter/reified/user_agent.rs",
         "rholang/src/rust/interpreter/reified/route.rs",
@@ -2176,7 +2176,9 @@
         "rholang/src/rust/interpreter/reified/errors.rs",
         "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
         "rholang/src/rust/interpreter/spaces/namespace.rs",
-        "rholang/src/rust/interpreter/reified/execution.rs"
+        "rholang/src/rust/interpreter/reified/execution.rs",
+        "rholang/src/rust/interpreter/reified/handle.rs",
+        "rholang/src/rust/interpreter/spaces/errors.rs"
       ],
       "entry_points": [
         {
@@ -2238,6 +2240,26 @@
         {
           "file": "rholang/src/rust/interpreter/reified/execution.rs",
           "pattern": "pub fn r7_route(channel: &Par) -> Result<Route, SpaceError> {"
+        },
+        {
+          "file": "rholang/src/rust/interpreter/reified/user_agent.rs",
+          "pattern": "pub fn translate_receive("
+        },
+        {
+          "file": "rholang/src/rust/interpreter/reified/user_agent.rs",
+          "pattern": "pub fn place_guard("
+        },
+        {
+          "file": "rholang/src/rust/interpreter/reified/user_agent.rs",
+          "pattern": "pub fn guard_indices(guard: &Par, meter: &ScanMeter) -> Result<BTreeSet<u32>, SpaceError> {"
+        },
+        {
+          "file": "rholang/src/rust/interpreter/reified/handle.rs",
+          "pattern": "fn describes_one_receive(states: &[MatcherState]) -> bool {"
+        },
+        {
+          "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
+          "pattern": "async fn agent_consume("
         }
       ],
       "tests": [
@@ -2251,7 +2273,9 @@
         "rholang/tests/reified_factory.rs",
         "rholang/tests/reified_p4_props.rs",
         "rholang/src/rust/interpreter/reified/execution.rs",
-        "rholang/tests/reified_user_agents.rs"
+        "rholang/tests/reified_user_agents.rs",
+        "rholang/src/rust/interpreter/reified/handle.rs",
+        "rholang/tests/reified_handle.rs"
       ],
       "property_files": [
         "rholang/tests/reified_p8_props.rs"

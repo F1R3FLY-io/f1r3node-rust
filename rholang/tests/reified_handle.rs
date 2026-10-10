@@ -16,16 +16,19 @@ mod reified_strategies;
 use std::collections::{BTreeSet, HashMap};
 
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
-use models::rhoapi::{ListParWithRandom, Par};
+use models::rhoapi::{BindPattern, ListParWithRandom, Par};
+use models::rust::utils::new_freevar_par;
 use reified_strategies::{gint, gstring};
 use rholang::rust::interpreter::accounting::costs::Cost;
 use rholang::rust::interpreter::accounting::Sig;
 use rholang::rust::interpreter::errors::InterpreterError;
 use rholang::rust::interpreter::interpreter::EvaluateResult;
+use rholang::rust::interpreter::reified::costs::ScanMeter;
 use rholang::rust::interpreter::reified::handle::typed_error;
 use rholang::rust::interpreter::reified::route::{classify_channel, ChannelClass};
 use rholang::rust::interpreter::reified::scope::{classify_space_ref, SpaceRef};
 use rholang::rust::interpreter::reified::system_channels::HANDLE_OP_PROCESS;
+use rholang::rust::interpreter::reified::user_agent::MatcherState;
 use rholang::rust::interpreter::rho_runtime::{RhoRuntime, RhoRuntimeImpl};
 use rholang::rust::interpreter::spaces::errors::SpaceReplyCode;
 use rholang::rust::interpreter::spaces::namespace::{
@@ -511,9 +514,17 @@ for (@config <- queue!?("config")) {
 async fn space_handle_methods_consume_rejects_foreign_matcher() {
     let mut session = Session::new().await;
     session.setup().await;
+    // Changed by P8 step 3 (design v2 W6): a handle accepts only the matchers that a
+    // translation built, so the injected matcher holds a translation state, and the fabricated
+    // X id of P4 is a foreign matcher.
+    // let injections = Injections::from([
+    //     (injected("body"), fabricated_id(Kind::Body, 0x0B)),
+    //     (injected("matcher"), fabricated_id(Kind::Matcher, 0x0C)),
+    // ]);
     let injections = Injections::from([
         (injected("body"), fabricated_id(Kind::Body, 0x0B)),
-        (injected("matcher"), fabricated_id(Kind::Matcher, 0x0C)),
+        (injected("matcher"), translation_matcher_id()),
+        (injected("fabricated"), fabricated_id(Kind::Matcher, 0x0C)),
     ]);
     let cases = [
         (
@@ -557,11 +568,33 @@ async fn space_handle_methods_consume_rejects_foreign_matcher() {
                 gint(1),
             )]),
         ),
+        (
+            "fabricated",
+            r#""consume", [(*fabricated, *a)], "<-", *body"#,
+            method_error(SpaceReplyCode::ForeignMatcher, "consume", vec![(
+                "index",
+                gint(0),
+            )]),
+        ),
+        // P8 step 3 (design v2 W6): a consume with the matcher of a translation runs on the
+        // space and replies Nil.
+        (
+            "translation",
+            r#""consume", [(*matcher, *a)], "<-", *body"#,
+            Par::default(),
+        ),
     ];
+    // Changed by P8 step 3: the source also binds the fabricated matcher id.
+    // let mut source = format!(
+    //     "new body(`{}`), matcher(`{}`), plain in {{\n",
+    //     injected("body"),
+    //     injected("matcher")
+    // );
     let mut source = format!(
-        "new body(`{}`), matcher(`{}`), plain in {{\n",
+        "new body(`{}`), matcher(`{}`), fabricated(`{}`), plain in {{\n",
         injected("body"),
-        injected("matcher")
+        injected("matcher"),
+        injected("fabricated")
     );
     let mut body = String::new();
     for (label, arguments, _) in &cases {
@@ -582,21 +615,44 @@ async fn space_handle_methods_consume_rejects_foreign_matcher() {
             "consume({arguments})"
         );
     }
-    // When every matcher is a user-agent matcher, the call needs P8 and aborts.
-    let source = format!(
-        "new body(`{}`), matcher(`{}`) in {{\n{}\n}}",
-        injected("body"),
-        injected("matcher"),
-        with_space(
-            r#"for (@reply <- queue!?("consume", [(*matcher, *a)], "<-", *body)) { @"rrs-agent-only"!(reply) }"#
-        )
-    );
-    session
-        .fail_with(&source, "rrs-p4-consume-agent-only", &injections, &[
-            "AgentSpacesUnavailable",
-        ])
-        .await;
-    assert!(session.values("rrs-agent-only").await.is_empty());
+    // Changed by P8 step 3 (design v2 W6): a consume with the matcher of a translation runs
+    // (the case "translation" above). P4 aborted it with AgentSpacesUnavailable.
+    // let source = format!(
+    //     "new body(`{}`), matcher(`{}`) in {{\n{}\n}}",
+    //     injected("body"),
+    //     injected("matcher"),
+    //     with_space(
+    //         r#"for (@reply <- queue!?("consume", [(*matcher, *a)], "<-", *body)) { @"rrs-agent-only"!(reply) }"#
+    //     )
+    // );
+    // session
+    //     .fail_with(&source, "rrs-p4-consume-agent-only", &injections, &[
+    //         "AgentSpacesUnavailable",
+    //     ])
+    //     .await;
+    // assert!(session.values("rrs-agent-only").await.is_empty());
+}
+
+/// The bare id of the matcher capability of a translation state of one bind with the pattern
+/// `[x]` (P8 step 3).
+fn translation_matcher_id() -> Par {
+    let state = MatcherState {
+        receive_tag: [0x0C; SID_LEN],
+        bind: 0,
+        offset: 0,
+        total: 1,
+        binds: 1,
+        pattern: BindPattern {
+            patterns: vec![new_freevar_par(0, Vec::new())],
+            remainder: None,
+            free_count: 1,
+        },
+        guard: None,
+    };
+    let bytes = state
+        .encode(&ScanMeter::new(None))
+        .expect("a translation state encodes");
+    namespace::gprivate(namespace::matcher_channel(&bytes))
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

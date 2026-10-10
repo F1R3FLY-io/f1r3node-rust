@@ -69,14 +69,14 @@
    r7_agent_bundle          rholang/src/rust/interpreter/reified/execution.rs:
                             139-154 (r7_route, R7A-1)
    routes_to_default_       rholang/src/rust/interpreter/reified/
-     without_context        reducer_hooks.rs:995-1000
+     without_context        reducer_hooks.rs:1141-1146
    classify_space_ref, unbundle
                             rholang/src/rust/interpreter/reified/scope.rs:
                             141-180
    wrap_body                rholang/src/rust/interpreter/reified/scope.rs:
                             185-193
    enter_use, fire_step     rholang/src/rust/interpreter/reified/
-                            reducer_hooks.rs:246-263, 275-303, 390-405
+                            reducer_hooks.rs:250-267, 279-307, 394-409
                             (eval_marker, eval_use, space_ref),
                             rholang/src/rust/interpreter/dispatch.rs:62-71
                             (a fired body runs on the root reducer).
@@ -95,13 +95,13 @@
    handle_of                rholang/src/rust/interpreter/reified/
                             system_channels.rs:96-101
    parse_message            rholang/src/rust/interpreter/reified/handle.rs:
-                            139-168, 182-191, 642-678, 680-685, 687-692,
-                            694-703, 712-717 (ParsedMessage::parse,
+                            151-180, 194-203, 883-919, 921-926, 928-933,
+                            935-944, 953-958 (ParsedMessage::parse,
                             is_reply_name and the sole readers)
    method_of, arity         rholang/src/rust/interpreter/reified/handle.rs:
-                            92-101, 104-110
+                            104-113, 116-122
    call, run                rholang/src/rust/interpreter/reified/handle.rs:
-                            221-276, 278-333
+                            233-288, 290-347
    ensure_available, space_entry
                             rholang/src/rust/interpreter/reified/runtime.rs
                             (ReifiedRuntime::host, ensure_available, and
@@ -113,20 +113,20 @@
                             models/src/rust/reified/encoding.rs:346-356,
                             369-374 (marker_of, sole_marker_tuple)
    decode_source, h4_passes rholang/src/rust/interpreter/reified/
-                            reducer_hooks.rs:980-991 (reject_query_source),
+                            reducer_hooks.rs:1126-1137 (reject_query_source),
                             models/src/rust/reified/encoding.rs:841-848
                             (decode_query_source)
    takes_fast_path          rholang/src/rust/interpreter/reified/
-                            reducer_hooks.rs:1022-1024
+                            reducer_hooks.rs:1153-1155
    read_channel             rholang/src/rust/interpreter/reified/
-                            reducer_hooks.rs:1039-1047 (readable_channel)
+                            reducer_hooks.rs:1185-1193 (readable_channel)
    read_bind, route_bind    rholang/src/rust/interpreter/reified/
-                            reducer_hooks.rs:1020-1034, 690-710 (query_bind,
+                            reducer_hooks.rs:1166-1180, 822-842 (query_bind,
                             route_receive)
    single_target            rholang/src/rust/interpreter/reified/
-                            reducer_hooks.rs:1051-1081 (single_bind_route)
+                            reducer_hooks.rs:1198-1243 (single_bind_route)
    receive_one              rholang/src/rust/interpreter/reified/
-                            reducer_hooks.rs:609-686 (reified_consume)
+                            reducer_hooks.rs:658-745 (reified_consume)
 
    ─────────────────────────────────────────────────────────────────────────
    Abstraction
@@ -1516,7 +1516,12 @@ Section Queries.
     end.
 
   Inductive recv_error : Type :=
-  | RMalformed | RNotReadable | RNoBody | RKey | RQuerySpecUnsupported | RAgentSpaces.
+  | RMalformed | RNotReadable | RNoBody | RKey | RQuerySpecUnsupported
+  (* Changed by P8 step 3 (design v2 TR-1, TR-2): a receive on a user agent is
+     translated, and a query on it fails with QuerySpecUnsupportedOnAgentSpace,
+     so no receive fails with AgentSpacesUnavailable.
+  | RAgentSpaces *)
+  | RQuerySpecUnsupportedOnAgent.
 
   Inductive bind_read : Type :=
   | BindOk : par -> option query -> route_t -> bind_read
@@ -1539,9 +1544,12 @@ Section Queries.
         end
     end.
 
+  (* TAgent a raw: the translation T_recv of a receive on the user agent a
+     with the raw channel raw (P8 step 3, ReceiveRoute::Agent). *)
   Inductive recv_target : Type :=
   | THost : par -> recv_target
   | TSpace : native_space -> bytes -> par -> option query -> recv_target
+  | TAgent : par -> par -> recv_target
   | TFail : recv_error -> recv_target.
 
   (* single_bind_route. *)
@@ -1551,7 +1559,11 @@ Section Queries.
     | BindOk ch None RDefault => THost ch
     | BindOk _ (Some _) RDefault => TFail RQuerySpecUnsupported
     | BindOk ch q (RSpace n k) => TSpace n k ch q
-    | BindOk _ _ (RAgent _ _) => TFail RAgentSpaces
+    (* Changed by P8 step 3 (design v2 TR-1, TR-2): a bind on a user agent is
+       translated, and a query on it fails.
+    | BindOk _ _ (RAgent _ _) => TFail RAgentSpaces *)
+    | BindOk _ None (RAgent a raw) => TAgent a raw
+    | BindOk _ (Some _) (RAgent _ _) => TFail RQuerySpecUnsupportedOnAgent
     end.
 
   (* reified_consume for one bind: the fast path outside every use block, and
@@ -1581,7 +1593,10 @@ Section Queries.
         match route canon cx ch with
         | RouteOk RDefault => TFail RQuerySpecUnsupported
         | RouteOk (RSpace n k) => TSpace n k ch (Some q)
-        | RouteOk (RAgent _ _) => TFail RAgentSpaces
+        (* Changed by P8 step 3 (design v2 TR-2): a query on a user agent fails
+           with QuerySpecUnsupportedOnAgentSpace.
+        | RouteOk (RAgent _ _) => TFail RAgentSpaces *)
+        | RouteOk (RAgent _ _) => TFail RQuerySpecUnsupportedOnAgent
         | RouteErr => TFail RKey
         end
     | NotReadable => TFail RNotReadable
@@ -1597,7 +1612,7 @@ Section Queries.
      - the receive applies the read rule of HEAD to the inner channel, and the
        route of the inner channel decides under every context: a native space
        gets the query, the default space fails with QuerySpecUnsupported, and
-       a user agent fails closed;
+       a user agent fails with QuerySpecUnsupportedOnAgentSpace (P8 step 3);
      - a source without a QUERY tuple keeps the receive of P4. *)
   Theorem query_source_routes_inner_channel :
     forall cx c,

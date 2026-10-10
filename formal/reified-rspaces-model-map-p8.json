@@ -1,13 +1,14 @@
 {
   "schema": "reified-rspaces-model-map/2",
   "phase": "P8",
-  "title": "P8: the spaces that user agents implement (design v2, plan decision 77). Step 1 (W1 and W5): the use-context of an agent and the write rule of an agent reference (SpaceRefs.v A1), the matcher state codec, the matcher process and the sink. Step 2 (W2 and W7): the call of a send on an agent space (TS-1 to TS-3) and the R7 replies to agent-minted names (SpaceRefs.v A2).",
-  "design": "P8 design v2 (.reified-rspaces-work/p8/design-v2.md), sections 3, 4, 7 and 9. The headline ids are the ids of the P8 phase of formal/reified-rspaces-invariant-map.json. The agent routes of route (AG-1) re-prove the P4 headlines route_total_deterministic and route_rules, so the P4 map holds route, agent_parts and UseKind.",
+  "title": "P8: the spaces that user agents implement (design v2, plan decision 77). Step 1 (W1 and W5): the use-context of an agent and the write rule of an agent reference (SpaceRefs.v A1), the matcher state codec, the matcher process and the sink. Step 2 (W2 and W7): the call of a send on an agent space (TS-1 to TS-3) and the R7 replies to agent-minted names (SpaceRefs.v A2). Step 3 (W3 and W6): the translation of a receive (AgentTranslation.v A3 to A8) and the native consume of a handle.",
+  "design": "P8 design v2 (.reified-rspaces-work/p8/design-v2.md), sections 3, 4, 7 and 9. The headline ids are the ids of the P8 phase of formal/reified-rspaces-invariant-map.json. The agent routes of route (AG-1) re-prove the P4 headlines route_total_deterministic and route_rules, so the P4 map holds route, agent_parts and UseKind. The agent arms of single_target (P8 step 3, TR-1 and TR-2) re-prove the P5 headline query_source_routes_inner_channel, so the P5 map holds single_bind_route.",
   "code_base": "The items are in the P8 commits of this repository. The line numbers are informative. The checker finds each item by its scope and name.",
   "checker": "scripts/verify-reified/check-model-map.py",
   "formal_files": {
     "rocq": [
-      "formal/rocq/reified_rspaces/theories/SpaceRefs.v"
+      "formal/rocq/reified_rspaces/theories/SpaceRefs.v",
+      "formal/rocq/reified_rspaces/theories/AgentTranslation.v"
     ],
     "tla": []
   },
@@ -23,6 +24,42 @@
       "name": "r7_agent_reply_bundle_exact",
       "file": "formal/rocq/reified_rspaces/theories/SpaceRefs.v",
       "statement": "For every single bundle, the R7 backend makes the call on a user agent exactly when the bundle has both flags and its body is an agent-tagged tuple, with the agent and the raw channel of the tuple; every other bundle routes to the default space, as in HEAD (R7A-1)."
+    },
+    "A3": {
+      "kind": "rocq",
+      "name": "offsets_partition",
+      "file": "formal/rocq/reified_rspaces/theories/AgentTranslation.v",
+      "statement": "The ranges [off_i, off_i + f_i) of the binds of a translated receive partition the binder positions [0, total): every position below total has exactly one owner bind (TR-3)."
+    },
+    "A4": {
+      "kind": "rocq",
+      "name": "env_keys_disjoint_union",
+      "file": "formal/rocq/reified_rspaces/theories/AgentTranslation.v",
+      "statement": "The env keys of the binds of a translated receive are disjoint, and their union is the key set {0, ..., total - 1} of the map pattern of the body receive (MO-3, TR-6)."
+    },
+    "A5": {
+      "kind": "rocq",
+      "name": "body_equivalence",
+      "file": "formal/rocq/reified_rspaces/theories/AgentTranslation.v",
+      "statement": "The body receive binds, in binder order, exactly the values that the native receive binds: the matched values of every bind in bind order (TR-6)."
+    },
+    "A6": {
+      "kind": "rocq",
+      "name": "guard_fold_sound",
+      "file": "formal/rocq/reified_rspaces/theories/AgentTranslation.v",
+      "statement": "The guard of the owner bind of TR-4, over the placeholders of that bind, has the value of the native guard over the values of every bind, so the matcher filters as the native guard check does."
+    },
+    "A7": {
+      "kind": "rocq",
+      "name": "matcher_sound_complete",
+      "file": "formal/rocq/reified_rspaces/theories/AgentTranslation.v",
+      "statement": "The matcher op replies (true, env) exactly when the spatial match of the injected matcher succeeds and the guard of the bind passes, and env maps the global position of each binder of the bind to its value (MO-3)."
+    },
+    "A8": {
+      "kind": "rocq",
+      "name": "matcher_state_roundtrip",
+      "file": "formal/rocq/reified_rspaces/theories/AgentTranslation.v",
+      "statement": "The codec of a matcher state is exact: a consistent state decodes from its encoding and from its matcher id, a decoded state re-encodes to the same bytes, and the encoding is injective (TR-5, MO-2)."
     }
   },
   "items": [
@@ -85,10 +122,17 @@
       "name": "MatcherState",
       "line": 83,
       "role": "The canonical state of a matcher capability (TR-5).",
-      "rocq": [],
+      "rocq": [
+        "to_sp",
+        "from_sp",
+        "consistent",
+        "encode",
+        "decode"
+      ],
       "tla": [],
-      "covers": [],
-      "unmodeled": "AgentTranslation.v (P8 step 3, design v2 section 13) models the matcher state (matcher_state_roundtrip) and the matcher process (matcher_sound_complete, guard_fold_sound)."
+      "covers": [
+        "A8"
+      ]
     },
     {
       "item": "matcher_state_of",
@@ -98,10 +142,14 @@
       "name": "matcher_state_of",
       "line": 227,
       "role": "The state of a bare uppercase X id (MO-2).",
-      "rocq": [],
+      "rocq": [
+        "state_of_id",
+        "matcher_id"
+      ],
       "tla": [],
-      "covers": [],
-      "unmodeled": "AgentTranslation.v (P8 step 3, design v2 section 13) models the matcher state (matcher_state_roundtrip) and the matcher process (matcher_sound_complete, guard_fold_sound)."
+      "covers": [
+        "A8"
+      ]
     },
     {
       "item": "MatcherProcess",
@@ -111,10 +159,17 @@
       "name": "MatcherProcess",
       "line": 307,
       "role": "The process MATCHER_OP (MO-1 to MO-4).",
-      "rocq": [],
+      "rocq": [
+        "matcher_reply",
+        "guard_ok",
+        "placeholders",
+        "env_of"
+      ],
       "tla": [],
-      "covers": [],
-      "unmodeled": "AgentTranslation.v (P8 step 3, design v2 section 13) models the matcher state (matcher_state_roundtrip) and the matcher process (matcher_sound_complete, guard_fold_sound)."
+      "covers": [
+        "A7",
+        "A6"
+      ]
     },
     {
       "item": "sink",
@@ -189,6 +244,210 @@
       "tla": [],
       "covers": [],
       "unmodeled": "AgentSpaces.tla (P8 step 6, design v2 section 13) models the calls of a translation (RoutingIsolation, ReplayEquivalence). SpaceRefs.v models the route of the call (route with no context, AG-4)."
+    },
+    {
+      "item": "ReducerCore::route_send_from",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
+      "scope": "ReducerCore",
+      "kind": "fn",
+      "name": "route_send_from",
+      "line": 518,
+      "role": "The send loop of route_send from a given use-context: T_send turns an agent route into the call, which routes with no use-context (TS-1 to TS-3, AG-4). The call of a translated receive enters it with no use-context and with its data scanned (TR-7).",
+      "rocq": [],
+      "tla": [],
+      "covers": [],
+      "unmodeled": "AgentSpaces.tla (P8 step 6, design v2 section 13) models the calls of a translation (RoutingIsolation, ReplayEquivalence). SpaceRefs.v models the route of the call (route with no context, AG-4)."
+    },
+    {
+      "item": "ReducerCore::dispatch_send",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
+      "scope": "ReducerCore",
+      "kind": "fn",
+      "name": "dispatch_send",
+      "line": 464,
+      "role": "The operation of a routed send: the HEAD produce on the default space, or a produce on a collection of a native space.",
+      "rocq": [],
+      "tla": [],
+      "covers": [],
+      "unmodeled": "A dispatch of a route that route_send_from computed: the HEAD produce or the space operation of the route, which the P4 and P5 maps model."
+    },
+    {
+      "item": "translate_receive",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/user_agent.rs",
+      "kind": "fn",
+      "name": "translate_receive",
+      "line": 1077,
+      "role": "T_recv: the matcher receives, the body receive and the call of a receive on an agent space (TR-3 to TR-7).",
+      "rocq": [
+        "offsets",
+        "env_of",
+        "union_env",
+        "body_binding",
+        "matcher_id"
+      ],
+      "tla": [],
+      "covers": [
+        "A3",
+        "A4",
+        "A5",
+        "A8"
+      ]
+    },
+    {
+      "item": "offsets_of",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/user_agent.rs",
+      "kind": "fn",
+      "name": "offsets_of",
+      "line": 931,
+      "role": "The offsets and the total of the binds (TR-3).",
+      "rocq": [
+        "offsets_from",
+        "offsets",
+        "total"
+      ],
+      "tla": [],
+      "covers": [
+        "A3"
+      ]
+    },
+    {
+      "item": "place_guard",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/user_agent.rs",
+      "kind": "fn",
+      "name": "place_guard",
+      "line": 957,
+      "role": "The owner bind of a guard (TR-4).",
+      "rocq": [
+        "position",
+        "index_owners",
+        "place_guard",
+        "owner"
+      ],
+      "tla": [],
+      "covers": [
+        "A6"
+      ]
+    },
+    {
+      "item": "guard_indices",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/user_agent.rs",
+      "kind": "fn",
+      "name": "guard_indices",
+      "line": 629,
+      "role": "The free BoundVar indices of a guard by a charged walk with binder depth (TR-4).",
+      "rocq": [],
+      "tla": [],
+      "covers": [],
+      "unmodeled": "AgentTranslation.v takes the indices of a guard as the section function indices; prop_guard_placement checks the walk against the BoundVars of generated guards."
+    },
+    {
+      "item": "body_pattern",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/user_agent.rs",
+      "kind": "fn",
+      "name": "body_pattern",
+      "line": 989,
+      "role": "The map pattern {\"g\": FreeVar(g)} of the body receive (TR-6).",
+      "rocq": [
+        "body_binding"
+      ],
+      "tla": [],
+      "covers": [
+        "A4",
+        "A5"
+      ]
+    },
+    {
+      "item": "env_forwarder",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/handle.rs",
+      "kind": "fn",
+      "name": "env_forwarder",
+      "line": 696,
+      "role": "The body of a native consume that a translation describes: the env map to the body capability (HC-3).",
+      "rocq": [
+        "union_env",
+        "body_binding"
+      ],
+      "tla": [],
+      "covers": [
+        "A5"
+      ]
+    },
+    {
+      "item": "consume_method",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/handle.rs",
+      "kind": "fn",
+      "name": "consume_method",
+      "line": 521,
+      "role": "The handle method consume: strict matcher decode, HC-2, the read rule, and the native consume or join (W6).",
+      "rocq": [
+        "state_of_id"
+      ],
+      "tla": [],
+      "covers": [
+        "A8"
+      ]
+    },
+    {
+      "item": "describes_one_receive",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/handle.rs",
+      "kind": "fn",
+      "name": "describes_one_receive",
+      "line": 654,
+      "role": "HC-2: the matcher states describe one receive.",
+      "rocq": [],
+      "tla": [],
+      "covers": [],
+      "unmodeled": "AgentSpaces.tla (P8 step 6, design v2 section 13) models the handle consume of a wrapper agent; the handle tests check each mismatch case of HC-2."
+    },
+    {
+      "item": "ReducerCore::agent_consume",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
+      "scope": "ReducerCore",
+      "kind": "fn",
+      "name": "agent_consume",
+      "line": 754,
+      "role": "T_recv in the reducer: the Seq scan of the raw channels, the matcher receives, the body receive, and last the call on the agent (TR-7).",
+      "rocq": [],
+      "tla": [],
+      "covers": [],
+      "unmodeled": "AgentTranslation.v models the terms that translate_receive builds (A3 to A8). AgentSpaces.tla (P8 step 6, design v2 section 13) models the order of the receives and the call (RoutingIsolation, ReplayEquivalence)."
+    },
+    {
+      "item": "one_agent",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
+      "kind": "fn",
+      "name": "one_agent",
+      "line": 1298,
+      "role": "TR-1: the one agent of a join whose channels all route to one user agent, by the equality of sorted references (AG-3), with each read reserved.",
+      "rocq": [],
+      "tla": [],
+      "covers": [],
+      "unmodeled": "AgentSpaces.tla (P8 step 6, design v2 section 13) models the join rule of TR-1 (JoinSameSpace); reducer_space_routing_agent_join_and_mixes checks each mix."
+    },
+    {
+      "item": "agent_bind",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
+      "kind": "fn",
+      "name": "agent_bind",
+      "line": 1321,
+      "role": "The bind of a translated receive: the pattern and the raw channel of a bind that routes to a user agent.",
+      "rocq": [],
+      "tla": [],
+      "covers": [],
+      "unmodeled": "A projection of a route of the model (RAgent a raw) into the bind that translate_receive takes; AgentTranslation.v models the translation of the binds."
     }
   ]
 }

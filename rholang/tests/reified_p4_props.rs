@@ -91,6 +91,7 @@ use rholang::rust::interpreter::reified::scope::{
 use rholang::rust::interpreter::reified::system_channels::{
     body_ref, check_persistent_send, handle_of, op_of, HASHMAP_QUEUE_FACTORY, P4_SYSTEM_CHANNELS,
 };
+use rholang::rust::interpreter::reified::user_agent::MatcherState;
 use rholang::rust::interpreter::rho_runtime::{RhoRuntime, RhoRuntimeImpl};
 use rholang::rust::interpreter::spaces::agent::{
     run_op, ConsumeOp, ProduceOp, SpaceAgent, SpaceCreation, SpaceEnv, SpaceOp, SpaceOutcome,
@@ -6279,6 +6280,15 @@ impl Node {
             .collect()
     }
 
+    /// The number of waiters on the collection `name` in `space` (P8 step 3).
+    async fn waiter_count(&self, space: NativeSpace, name: &Par) -> usize {
+        let key = CollectionKey::of_channel(name).expect("a channel has a key");
+        self.play
+            .get_continuations(vec![gprivate(namespace::data_channel(space, &key))])
+            .await
+            .len()
+    }
+
     /// The pars of the data on the public channel `channel`, without a check of their count.
     async fn data_of(&self, channel: &Par) -> Vec<Vec<Par>> {
         self.play
@@ -8225,6 +8235,8 @@ enum ArgKind {
     Arrow,
     BadArrow,
     MatcherPairs,
+    // P8 step 3: an X id whose bytes no translation built.
+    FabricatedPairs,
     ForeignPairs,
     EmptyPairs,
     BodyId,
@@ -8260,9 +8272,36 @@ enum DispatchOutcome {
     Qualifier,
     Config,
     Stored,
+    // P8 step 3 (design v2 W6): a consume with the matcher of a translation parks a waiter and
+    // replies Nil.
+    Parked,
 }
 
 const DISPATCH_CHANNEL: &str = "rrs-p4-dispatch";
+
+/// The channel of the pairs of a consume.
+const CONSUME_CHANNEL: &str = "c";
+
+/// The bare matcher id of a translation state of one bind with the pattern `[x]` (P8 step 3).
+fn translation_matcher_id() -> Par {
+    let state = MatcherState {
+        receive_tag: [0x0C; SID_LEN],
+        bind: 0,
+        offset: 0,
+        total: 1,
+        binds: 1,
+        pattern: BindPattern {
+            patterns: vec![new_freevar_par(0, Vec::new())],
+            remainder: None,
+            free_count: 1,
+        },
+        guard: None,
+    };
+    let bytes = state
+        .encode(&ScanMeter::new(None))
+        .expect("a translation state encodes");
+    gprivate(namespace::matcher_channel(&bytes))
+}
 
 fn arg_par(arg: ArgKind) -> Par {
     match arg {
@@ -8272,9 +8311,19 @@ fn arg_par(arg: ArgKind) -> Par {
         ArgKind::Number => gint(5),
         ArgKind::Arrow => gstring("<-"),
         ArgKind::BadArrow => gstring("->"),
+        // Changed by P8 step 3 (design v2 W6): the matcher of the pairs holds a translation
+        // state, so a handle runs the consume. The P4 id is now FabricatedPairs.
+        // ArgKind::MatcherPairs => list(vec![tuple(vec![
+        //     gprivate(kind_id(Kind::Matcher, Durability::Durable, &[7; 32])),
+        //     gstring("c"),
+        // ])]),
         ArgKind::MatcherPairs => list(vec![tuple(vec![
+            translation_matcher_id(),
+            gstring(CONSUME_CHANNEL),
+        ])]),
+        ArgKind::FabricatedPairs => list(vec![tuple(vec![
             gprivate(kind_id(Kind::Matcher, Durability::Durable, &[7; 32])),
-            gstring("c"),
+            gstring(CONSUME_CHANNEL),
         ])]),
         ArgKind::ForeignPairs => list(vec![tuple(vec![gint(1), gstring("c")])]),
         ArgKind::EmptyPairs => list(Vec::new()),
@@ -8375,6 +8424,7 @@ fn expected_dispatch(this: ThisKind, message: &MessageSpec) -> DispatchOutcome {
             let lists = [
                 ArgKind::Payload,
                 ArgKind::MatcherPairs,
+                ArgKind::FabricatedPairs,
                 ArgKind::ForeignPairs,
                 ArgKind::EmptyPairs,
             ];
@@ -8389,13 +8439,17 @@ fn expected_dispatch(this: ThisKind, message: &MessageSpec) -> DispatchOutcome {
                 (false, true, _) => DispatchOutcome::Stored,
             }
         }
+        // Changed by P8 step 3 (design v2 W6): the matchers of a translation run the consume.
+        // The P4 model aborted them with AgentSpacesUnavailable.
         ("consume", [pairs, arrow, body]) => match (*arrow, *pairs, *body) {
-            (ArgKind::Arrow, ArgKind::MatcherPairs | ArgKind::ForeignPairs, ArgKind::BodyId) => {
-                match *pairs {
-                    ArgKind::MatcherPairs => DispatchOutcome::Abort("AgentSpacesUnavailable"),
-                    _ => DispatchOutcome::Typed("ForeignMatcher"),
-                }
-            }
+            (
+                ArgKind::Arrow,
+                ArgKind::MatcherPairs | ArgKind::FabricatedPairs | ArgKind::ForeignPairs,
+                ArgKind::BodyId,
+            ) => match *pairs {
+                ArgKind::MatcherPairs => DispatchOutcome::Parked,
+                _ => DispatchOutcome::Typed("ForeignMatcher"),
+            },
             (ArgKind::Arrow, _, _) => DispatchOutcome::Typed("BadArgument"),
             _ => DispatchOutcome::Typed("InvalidArrow"),
         },
@@ -8414,6 +8468,7 @@ fn arb_args(method: Option<&'static str>) -> BoxedStrategy<Vec<ArgKind>> {
         ArgKind::Arrow,
         ArgKind::BadArrow,
         ArgKind::MatcherPairs,
+        ArgKind::FabricatedPairs,
         ArgKind::ForeignPairs,
         ArgKind::EmptyPairs,
         ArgKind::BodyId,
@@ -8440,6 +8495,7 @@ fn arb_args(method: Option<&'static str>) -> BoxedStrategy<Vec<ArgKind>> {
         Some("consume") => {
             let pairs = prop_oneof![
                 2 => Just(ArgKind::MatcherPairs),
+                1 => Just(ArgKind::FabricatedPairs),
                 2 => Just(ArgKind::ForeignPairs),
                 1 => Just(ArgKind::EmptyPairs),
                 1 => Just(ArgKind::Payload),
@@ -8563,6 +8619,7 @@ async fn handle_dispatch_total_case(
             (MESSAGE_URI.to_string(), message_par(message, &ret)),
         ];
         let records_before = node.payloads(space, &gstring(DISPATCH_CHANNEL)).await.len();
+        let waiters_before = node.waiter_count(space, &gstring(CONSUME_CHANNEL)).await;
         let deployed = node
             .deploy(&DeploySpec::new(
                 program,
@@ -8634,6 +8691,15 @@ async fn handle_dispatch_total_case(
                                 context
                             );
                         }
+                    }
+                    DispatchOutcome::Parked => {
+                        prop_assert_eq!(reply, &Par::default(), "{}", context);
+                        prop_assert_eq!(
+                            node.waiter_count(space, &gstring(CONSUME_CHANNEL)).await,
+                            waiters_before + 1,
+                            "{}",
+                            context
+                        );
                     }
                     DispatchOutcome::Dropped | DispatchOutcome::Abort(_) => {}
                 }

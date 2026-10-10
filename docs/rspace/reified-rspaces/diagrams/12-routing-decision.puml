@@ -15,8 +15,12 @@
 '   4. A default route makes the baseline call. A space route builds the
 '      identity on the data channel (R6) and runs one space intent. On an
 '      agent route, a send becomes the call A'!(sink, "produce", raw, [d...])
-'      on the agent, which routes again with no use context (P8 step 2), and
-'      a receive fails closed until P8 step 3.
+'      on the agent, which routes again with no use context (P8 step 2). A
+'      receive whose binds all route to one agent becomes the translation
+'      T_recv (P8 step 3): one persistent matcher receive for each bind, the
+'      body receive, and last the call A'!(sink, "consume", pairs, arrow, b)
+'      on the agent. A mix of targets fails with CrossSpaceJoin, and a query
+'      fails with QuerySpecUnsupportedOnAgentSpace.
 '   5. A note at the top gives the R7 backend, which routes the replies of
 '      system processes with the same rules and no use context. Since P8
 '      step 2, the bundle with both flags of an agent-minted name routes to
@@ -100,7 +104,15 @@ case (user agent)
     on the agent, which routes again with no use context
     (R1 or R4, P8 step 2); <<$rrs_name>>
   else (a receive)
-    :AgentSpacesUnavailable until P8 step 3; <<$rrs_reject>>
+    if (every bind routes to the agent A, with no query?) then (yes)
+      :T_recv (P8 step 3): one persistent matcher receive
+      for each bind, the body receive, and last the call
+      <latex>A'</latex>!(sink, "consume", pairs, arrow, bundle+{b})
+      on the agent, which routes again with no use context; <<$rrs_name>>
+    else (no)
+      :CrossSpaceJoin for a mix of targets,
+      QuerySpecUnsupportedOnAgentSpace for a query; <<$rrs_reject>>
+    endif
   endif
 endswitch
 stop

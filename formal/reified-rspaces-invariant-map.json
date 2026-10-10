@@ -2865,7 +2865,7 @@
           "kind": "rocq",
           "name": "query_source_routes_inner_channel",
           "file": "formal/rocq/reified_rspaces/theories/SpaceRefs.v",
-          "statement": "A receive whose source is a QUERY tuple reads from the inner channel of the query under the read rule of a receive source. The default space refuses a query with QuerySpecUnsupported, and a QUERY tuple never becomes a host channel.",
+          "statement": "A receive whose source is a QUERY tuple reads from the inner channel of the query under the read rule of a receive source. The default space refuses a query with QuerySpecUnsupported, a user agent refuses it with QuerySpecUnsupportedOnAgentSpace (P8 step 3), and a QUERY tuple never becomes a host channel.",
           "tests": [
             "prop_query_bind_routes_inner_channel",
             "prop_query_source_routes_inner_channel"
@@ -8706,13 +8706,14 @@
       ]
     },
     "P8": {
-      "title": "P8: the spaces that user agents implement (design v2, plan decision 77). Step 1 (W1 and W5): the routes and use-contexts of user agents and the write rule of an agent reference (SpaceRefs.v A1), the matcher state codec, the matcher process and the sink. Step 2 (W2 and W7): the call of a send on an agent space and the R7 replies to agent-minted names (SpaceRefs.v A2).",
-      "design": "P8 design v2 (.reified-rspaces-work/p8/design-v2.md), sections 3 (AG-1 to AG-4) and 7 (MO-1 to MO-4, SK-1, A13). A# are Rocq headlines. The routing properties of P4 (prop_route_total, prop_route_rules, prop_space_name_route_ignores_ctx) now draw contexts of user agents too, so they witness the agent arms of route_total_deterministic and route_rules. witness_tests lists the deterministic tests of the write rule and of the matcher process. The matcher state codec has its headline in AgentTranslation.v (P8 step 3).",
+      "title": "P8: the spaces that user agents implement (design v2, plan decision 77). Step 1 (W1 and W5): the routes and use-contexts of user agents and the write rule of an agent reference (SpaceRefs.v A1), the matcher state codec, the matcher process and the sink. Step 2 (W2 and W7): the call of a send on an agent space and the R7 replies to agent-minted names (SpaceRefs.v A2). Step 3 (W3 and W6): the translation of a receive (AgentTranslation.v A3 to A8) and the native consume of a handle.",
+      "design": "P8 design v2 (.reified-rspaces-work/p8/design-v2.md), sections 3 (AG-1 to AG-4) and 7 (MO-1 to MO-4, SK-1, A13). A# are Rocq headlines. The routing properties of P4 (prop_route_total, prop_route_rules, prop_space_name_route_ignores_ctx) now draw contexts of user agents too, so they witness the agent arms of route_total_deterministic and route_rules. witness_tests lists the deterministic tests of the write rule and of the matcher process. The matcher state codec has its headline in AgentTranslation.v (P8 step 3). Step 3 maps the headlines of AgentTranslation.v: pure properties in reified_p8_props.rs and native properties in reified_user_agents.rs.",
       "test_status": "required",
       "test_files": [
-        "rholang/tests/reified_p8_props.rs"
+        "rholang/tests/reified_p8_props.rs",
+        "rholang/tests/reified_user_agents.rs"
       ],
-      "expected_properties": 2,
+      "expected_properties": 9,
       "formal": {
         "A1": {
           "kind": "rocq",
@@ -8731,6 +8732,61 @@
           "tests": [
             "prop_r7_agent_reply_bundle_exact"
           ]
+        },
+        "A3": {
+          "kind": "rocq",
+          "name": "offsets_partition",
+          "file": "formal/rocq/reified_rspaces/theories/AgentTranslation.v",
+          "statement": "The ranges [off_i, off_i + f_i) of the binds of a translated receive partition the binder positions [0, total): every position below total has exactly one owner bind (TR-3).",
+          "tests": [
+            "prop_offsets_partition"
+          ]
+        },
+        "A4": {
+          "kind": "rocq",
+          "name": "env_keys_disjoint_union",
+          "file": "formal/rocq/reified_rspaces/theories/AgentTranslation.v",
+          "statement": "The env keys of the binds of a translated receive are disjoint, and their union is the key set {0, ..., total - 1} of the map pattern of the body receive (MO-3, TR-6).",
+          "tests": [
+            "prop_env_keys_disjoint_union"
+          ]
+        },
+        "A5": {
+          "kind": "rocq",
+          "name": "body_equivalence",
+          "file": "formal/rocq/reified_rspaces/theories/AgentTranslation.v",
+          "statement": "The body receive binds, in binder order, exactly the values that the native receive binds: the matched values of every bind in bind order (TR-6).",
+          "tests": [
+            "prop_body_equivalence"
+          ]
+        },
+        "A6": {
+          "kind": "rocq",
+          "name": "guard_fold_sound",
+          "file": "formal/rocq/reified_rspaces/theories/AgentTranslation.v",
+          "statement": "The guard of the owner bind of TR-4, over the placeholders of that bind, has the value of the native guard over the values of every bind, so the matcher filters as the native guard check does.",
+          "tests": [
+            "prop_guard_placement",
+            "prop_guard_fold_sound"
+          ]
+        },
+        "A7": {
+          "kind": "rocq",
+          "name": "matcher_sound_complete",
+          "file": "formal/rocq/reified_rspaces/theories/AgentTranslation.v",
+          "statement": "The matcher op replies (true, env) exactly when the spatial match of the injected matcher succeeds and the guard of the bind passes, and env maps the global position of each binder of the bind to its value (MO-3).",
+          "tests": [
+            "prop_matcher_sound_complete"
+          ]
+        },
+        "A8": {
+          "kind": "rocq",
+          "name": "matcher_state_roundtrip",
+          "file": "formal/rocq/reified_rspaces/theories/AgentTranslation.v",
+          "statement": "The codec of a matcher state is exact: a consistent state decodes from its encoding and from its matcher id, a decoded state re-encodes to the same bytes, and the encoding is injective (TR-5, MO-2).",
+          "tests": [
+            "prop_matcher_state_roundtrip"
+          ]
         }
       },
       "properties": [
@@ -8748,6 +8804,62 @@
           "file": "rholang/tests/reified_p8_props.rs",
           "covers": [
             "A2"
+          ]
+        },
+        {
+          "number": 3,
+          "test": "prop_offsets_partition",
+          "file": "rholang/tests/reified_p8_props.rs",
+          "covers": [
+            "A3"
+          ]
+        },
+        {
+          "number": 4,
+          "test": "prop_env_keys_disjoint_union",
+          "file": "rholang/tests/reified_p8_props.rs",
+          "covers": [
+            "A4"
+          ]
+        },
+        {
+          "number": 5,
+          "test": "prop_body_equivalence",
+          "file": "rholang/tests/reified_user_agents.rs",
+          "covers": [
+            "A5"
+          ]
+        },
+        {
+          "number": 6,
+          "test": "prop_guard_placement",
+          "file": "rholang/tests/reified_p8_props.rs",
+          "covers": [
+            "A6"
+          ]
+        },
+        {
+          "number": 7,
+          "test": "prop_guard_fold_sound",
+          "file": "rholang/tests/reified_user_agents.rs",
+          "covers": [
+            "A6"
+          ]
+        },
+        {
+          "number": 8,
+          "test": "prop_matcher_sound_complete",
+          "file": "rholang/tests/reified_user_agents.rs",
+          "covers": [
+            "A7"
+          ]
+        },
+        {
+          "number": 9,
+          "test": "prop_matcher_state_roundtrip",
+          "file": "rholang/tests/reified_p8_props.rs",
+          "covers": [
+            "A8"
           ]
         }
       ],
@@ -8782,6 +8894,57 @@
           "rule": "R7A-1 (assertEqual replies in native execution, certified by native replay)",
           "covers": [
             "A2"
+          ]
+        },
+        {
+          "test": "user_agent_produce_consume_roundtrip",
+          "file": "rholang/tests/reified_user_agents.rs",
+          "rule": "TR-1 to TR-7 (a memory agent serves a send and a receive)",
+          "covers": [
+            "A5",
+            "A7"
+          ]
+        },
+        {
+          "test": "agent_xlate_body_equivalence_vs_native",
+          "file": "rholang/tests/reified_user_agents.rs",
+          "rule": "TR-6 (list remainder and map pattern equal to native)",
+          "covers": [
+            "A5"
+          ]
+        },
+        {
+          "test": "agent_xlate_join_two_matchers",
+          "file": "rholang/tests/reified_user_agents.rs",
+          "rule": "TR-3, TR-7 (two matchers, joined env maps)",
+          "covers": [
+            "A3",
+            "A4"
+          ]
+        },
+        {
+          "test": "agent_xlate_guard_single_bind",
+          "file": "rholang/tests/reified_user_agents.rs",
+          "rule": "TR-4, MO-3 (the guard of one bind)",
+          "covers": [
+            "A6",
+            "A7"
+          ]
+        },
+        {
+          "test": "agent_wrapper_forwards_to_native",
+          "file": "rholang/tests/reified_user_agents.rs",
+          "rule": "W6, HC-1 to HC-3 (a native handle runs the translated receive)",
+          "covers": [
+            "A5"
+          ]
+        },
+        {
+          "test": "reducer_space_routing_agent_guard_placement",
+          "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
+          "rule": "TR-4 (the owner bind of a guard, outer indices, AgentGuardSpansJoin)",
+          "covers": [
+            "A6"
           ]
         }
       ]
