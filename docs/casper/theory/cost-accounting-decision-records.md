@@ -4187,6 +4187,110 @@ worklist fold equals the recursive fold. Differential property tests compare
 each port with the recursive reference, which stays as a `#[cfg(test)]`
 oracle.
 
+**Implementation note 1: the analyzer walks (G1-1, 2026-10-09).** Leaf
+`ofp-1-stack-safe-analyzer`. The user approved the backport on 2026-10-09
+("Backport the relevant changes").
+
+- **Source of the code.** The F1R3Lang integration wrote iterative versions of
+  the analyzer walks in merge `29b729551` on branch
+  `integration/f1r3lang-cost-accounted-rho-20261005`. This branch copies the
+  non-test changes of that merge to `delta_sigma.rs` verbatim.
+  - A cherry-pick is not possible, because the merge changes 3,637 files.
+  - The test edits of the merge stay out. They need the iterative `Par` drop
+    and the `par_from_default!` macro of F1R3Lang, which this branch does not
+    have. The 2,048-level test of the merge stays out for the same reason.
+  - A paragraph of the module documentation cites the source. The recursive
+    oracle and the declaration of the new test file are at the end of the
+    file. F1R3Lang did not change these regions, so its next merge of this
+    branch meets identical walk text.
+- **The four walks.**
+  - `signed_demand_par` keeps a work stack of `DemandTask` values and a value
+    stack of `SignedDemand` values. The tasks `Combine`, `Alternative` and
+    `SignedFinish` fold a child into its parent after the child finishes.
+  - `collect` and `has_bound_level` inside `static_authority_signatures` keep
+    depth-first worklists in the order of the recursion.
+  - `demand_by_sig_into` keeps a work stack of `LaneTask` values and a value
+    stack of lane maps. The helper `branch_demand_by_sig` is gone.
+  - A `ScopeLink` is one entry of a parent-linked arena: the index of the
+    enclosing link and the lane of the region. The arena holds the enclosing
+    signed regions. It replaces the copy of the region list at each level
+    (`scopes.to_vec()`).
+  - The arena never removes a link, so the index of a task always denotes the
+    same chain. The decision text names a push/pop scope stack. The arena
+    gives the same chains without a pop.
+- **The oracle.** The recursive walks of HEAD `17e07307f` stay at the end of
+  `delta_sigma.rs`, in the `#[cfg(test)]` module `recursive_oracle`. Only their
+  visibility differs from HEAD.
+- **Equal results.** The machine visits the items of a node in the order of the
+  recursion. So it makes the same `reject` calls in the same order and keeps
+  the same first rejection reason. Three differences in the code do not change
+  a result:
+  - A `match` without a source skips the combination with an empty demand.
+    `SignedDemand::combine` returns its left operand for an empty demand.
+  - The chain walk adds lanes from the inner region outward. The recursion
+    added them from the outer region inward. Lane bumps commute.
+  - `demand_by_sig_into` calls `region_sig` for all sends and receives of a
+    node before it visits the receive bodies. The lane map is equal for a pure
+    callback. The function has no production caller.
+- **Limits.**
+  - The walks are stack-safe, but not linear. An introduction still adds one
+    unit to each enclosing signed region, as the recursion did. So the work is
+    proportional to the introductions times the signed nesting depth.
+  - The canonical form of a signature (`sort_signature` and the
+    `ParSortMatcher`) and prost encoding still recurse over the depth of a
+    quoted signature. The iterative sorter and the generated traits of
+    F1R3Lang cover them. They are general interpreter work.
+- **Verification.**
+  - Rocq `StackSafeDemandWalk.v` uses the standard library only and no axiom.
+    - `demand_compile_run_equivalence` instantiates `compile_run_equivalence`
+      of `StackSafePDA.v`: the post-order program of the machine, run on a
+      value stack, pushes the value of the recursion. It holds for every
+      interpretation of the demand algebra. So it covers every field of
+      `SignedDemand`, the first rejection reason included.
+    - `lazy_run_runs_the_flattened_program` shows that the work stack, which
+      expands one task at a time, runs exactly that program.
+      `iterative_walk_refines_recursion` combines the two results.
+    - `iterative_walk_steps_are_linear` bounds the steps by three per syntax
+      node.
+    - `arena_push_extends_chain`, `arena_append_preserves_chain` and
+      `arena_push_preserves_order` show that the arena represents the
+      persistent scope chains of the model.
+    - `bump_lanes_reverse` shows that the direction of the chain walk does not
+      change the lane counts.
+    - `collect_worklist_refines_recursion` shows that the worklist of
+      `collect` returns the value or the first error of its recursion.
+    - Two proved negative controls break the refinement.
+      `skipped_scope_pop_breaks_the_refinement` uses a machine that does not
+      pop the scope after a signed region.
+      `reordered_visit_breaks_the_refinement` uses a machine that visits the
+      items of a node in reverse order.
+    - The proof gate passes in cost-accounting mode: 278 modules and 3161
+      closed assumption queries. Each of the 16 registered theorems of the
+      module is closed under the global context.
+  - Rust tests in `delta_sigma/stack_safety_tests.rs`:
+    - a 256-case property test that compares each walk with the oracle: the
+      `SignedDemand` value with its first rejection reason, the signature map
+      or its first error, and the per-lane map.
+    - the same comparison on every program of the repository corpus that the
+      normalizer accepts. The parser panics on `select`
+      (`rholang/examples/old/*/Cell2.rho`), so the test counts a panic as a
+      rejection.
+    - a test of the first rejection reason when two reasons compete.
+    - a test of a `match` without sources and an `if` without branches.
+    - a term nested 100,000 levels deep. The walks run on a 256 KiB thread and
+      agree with the oracle, which runs on a 1 GiB thread. The test builds and
+      dismantles the term iteratively, because prost's drop recurses.
+  - Suites:
+    - rholang and rspace++ pass 4140 of 4140, with the 5 new tests. The first
+      run failed the corpus test, because the parser panicked on `select`.
+    - A clippy fix then split one test helper. The 51 `delta_sigma` tests pass
+      again.
+    - The rholang doctests pass. `cargo fmt --check` and
+      `cargo clippy --workspace --all-targets -- -D warnings` pass.
+    - Only tests, `oslf.rs` and `resource_logic.rs` call the changed walks.
+      Nothing calls those two modules in production, so the Casper suite does
+      not apply.
+
 **Cross-refs.** DR-64. Leaves `ofp-1-stack-safe-analyzer`,
 `ofp-1-stack-safe-lexical`, and `ofp-1-stack-safe-signatures`.
 

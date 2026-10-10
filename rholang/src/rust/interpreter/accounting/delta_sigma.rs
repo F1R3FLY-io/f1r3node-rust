@@ -59,13 +59,27 @@
 //! each raw `Σ_s` from the signature's canonical SystemVault balance and
 //! available located stacks, then feeds the integer projection into this module
 //! as a `BTreeMap<SigKey, i64>`.
+//!
+//! ## Stack safety (G1-1, DR-67)
+//!
+//! The walks `signed_demand_par`, `collect` and `has_bound_level` (inside
+//! [`static_authority_signatures`]) and `demand_by_sig_into` use explicit work
+//! stacks and value stacks, so their stack depth does not grow with the
+//! nesting depth of a deploy. A parent-linked scope arena (`ScopeLink`) holds
+//! the enclosing signed regions. The non-test code of these walks is a
+//! verbatim backport of merge `29b729551` on branch
+//! `integration/f1r3lang-cost-accounted-rho-20261005`, where the F1R3Lang
+//! integration wrote it. The recursive walks that it replaced stay at the end
+//! of this file as the `#[cfg(test)]` oracle `recursive_oracle`.
 
 use std::collections::BTreeMap;
 
 use models::rhoapi::cost_signature::Value as CostSignatureValue;
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::var::VarInstance;
-use models::rhoapi::{CostSignature, Par};
+use models::rhoapi::{
+    Bundle, CostSignature, CostSignedTerm, CostStack, If, Match, New, Par, Receive, Send,
+};
 use models::rust::rholang::sorter::cost_accounting_sorter::sort_signature;
 use prost::Message;
 
@@ -190,7 +204,7 @@ impl DemandEntry {
 /// explicit `CostSignedTerm` or signed receive clause. Explicit nested regions
 /// retain their own canonical lanes.
 pub fn demand(desugared: &Par, deploy_sig: &Sig) -> DemandEntry {
-    let analysis = signed_demand_par(desugared, deploy_sig.lane_hash(), &[], true);
+    let analysis = signed_demand_par(desugared, deploy_sig.lane_hash(), true);
     DemandEntry {
         certified_upper_bound: analysis.lanes.values().fold(0i64, |total, entry| {
             total.saturating_add(entry.certified_upper_bound)
@@ -253,31 +267,57 @@ impl SignedDemand {
     }
 }
 
-fn add_scope_demand(result: &mut SignedDemand, deploy_key: SigKey, scopes: &[Option<SigKey>]) {
-    if scopes.is_empty() {
+#[derive(Clone, Copy)]
+struct ScopeLink {
+    parent: Option<usize>,
+    lane: Option<SigKey>,
+}
+
+fn add_scope_demand(
+    result: &mut SignedDemand,
+    deploy_key: SigKey,
+    scopes: &[ScopeLink],
+    scope: Option<usize>,
+) {
+    if scope.is_none() {
         result.add_lane(deploy_key);
     } else {
-        for lane in scopes.iter().flatten() {
-            result.add_lane(*lane);
+        let mut current = scope;
+        while let Some(index) = current {
+            let link = scopes[index];
+            if let Some(lane) = link.lane {
+                result.add_lane(lane);
+            }
+            current = link.parent;
         }
     }
     result.has_introduction = true;
 }
 
-fn add_scope_transfer(result: &mut SignedDemand, deploy_key: SigKey, scopes: &[Option<SigKey>]) {
-    if scopes.is_empty() {
+fn add_scope_transfer(
+    result: &mut SignedDemand,
+    deploy_key: SigKey,
+    scopes: &[ScopeLink],
+    scope: Option<usize>,
+) {
+    if scope.is_none() {
         bump_lane(
             &mut result.transfer_lanes,
             deploy_key,
             DemandEntry::ZERO.plus_one(),
         );
     } else {
-        for lane in scopes.iter().flatten() {
-            bump_lane(
-                &mut result.transfer_lanes,
-                *lane,
-                DemandEntry::ZERO.plus_one(),
-            );
+        let mut current = scope;
+        while let Some(index) = current {
+            let link = scopes[index];
+            if let Some(lane) = link.lane {
+                bump_lane(
+                    &mut result.transfer_lanes,
+                    lane,
+                    DemandEntry::ZERO.plus_one(),
+                );
+            }
+            current = link.parent;
         }
     }
 }
@@ -293,207 +333,275 @@ fn signature_lane(signature: &CostSignature) -> Result<Option<SigKey>, Unprovabl
         })
 }
 
-fn signed_demand_par(
-    par: &Par,
-    deploy_key: SigKey,
-    scopes: &[Option<SigKey>],
-    execution_position: bool,
-) -> SignedDemand {
-    let mut result = SignedDemand::default();
+enum DemandTask<'a> {
+    Visit(&'a Par, Option<usize>, bool),
+    Signed(&'a CostSignedTerm, Option<usize>),
+    SignedFinish(Option<SigKey>),
+    Stack(&'a CostStack, Option<usize>),
+    Send(&'a Send, Option<usize>),
+    Receive(&'a Receive, Option<usize>),
+    New(&'a New, Option<usize>, bool),
+    Match(&'a Match, Option<usize>, bool),
+    Conditional(&'a If, Option<usize>, bool),
+    Bundle(&'a Bundle, Option<usize>, bool),
+    ScanUnknown(&'a Par),
+    Empty,
+    Combine,
+    Alternative,
+}
 
-    for term in &par.cost_signed_terms {
-        let scope = match term.signature.as_ref().map(signature_lane) {
-            Some(Ok(scope)) => Some(scope),
-            Some(Err(reason)) => {
-                result.reject(reason);
-                None
+fn signed_demand_par(par: &Par, deploy_key: SigKey, execution_position: bool) -> SignedDemand {
+    let mut scopes = Vec::<ScopeLink>::new();
+    let mut work = vec![DemandTask::Visit(par, None, execution_position)];
+    let mut values = Vec::<SignedDemand>::new();
+    while let Some(task) = work.pop() {
+        match task {
+            DemandTask::Visit(par, scope, execution) => {
+                values.push(SignedDemand::default());
+                let mut ordered = Vec::new();
+                for term in &par.cost_signed_terms {
+                    ordered.push(DemandTask::Signed(term, scope));
+                }
+                if execution {
+                    for stack in &par.cost_stacks {
+                        ordered.push(DemandTask::Stack(stack, scope));
+                    }
+                }
+                for send in &par.sends {
+                    ordered.push(DemandTask::Send(send, scope));
+                }
+                for receive in &par.receives {
+                    ordered.push(DemandTask::Receive(receive, scope));
+                }
+                for new in &par.news {
+                    ordered.push(DemandTask::New(new, scope, execution));
+                }
+                for mat in &par.matches {
+                    ordered.push(DemandTask::Match(mat, scope, execution));
+                }
+                for conditional in &par.conditionals {
+                    ordered.push(DemandTask::Conditional(conditional, scope, execution));
+                }
+                for bundle in &par.bundles {
+                    ordered.push(DemandTask::Bundle(bundle, scope, execution));
+                }
+                if execution {
+                    ordered.push(DemandTask::ScanUnknown(par));
+                }
+                work.extend(ordered.into_iter().rev());
             }
-            None => {
-                result.reject(UnprovableDemand::UnsupportedSyntax);
-                None
-            }
-        };
-        match term.body.as_ref() {
-            Some(body) => {
-                if let Some(scope) = scope {
-                    let mut nested_scopes = scopes.to_vec();
-                    nested_scopes.push(scope);
-                    let mut body_demand = signed_demand_par(body, deploy_key, &nested_scopes, true);
-                    if !body_demand.has_introduction {
-                        if let Some(lane) = scope {
-                            body_demand.add_lane(lane);
+            DemandTask::Signed(term, scope) => {
+                let resolved = match term.signature.as_ref().map(signature_lane) {
+                    Some(Ok(lane)) => Some(lane),
+                    Some(Err(reason)) => {
+                        values.last_mut().expect("parent demand").reject(reason);
+                        None
+                    }
+                    None => {
+                        values
+                            .last_mut()
+                            .expect("parent demand")
+                            .reject(UnprovableDemand::UnsupportedSyntax);
+                        None
+                    }
+                };
+                match term.body.as_ref() {
+                    Some(body) => {
+                        if let Some(lane) = resolved {
+                            let nested = scopes.len();
+                            scopes.push(ScopeLink {
+                                parent: scope,
+                                lane,
+                            });
+                            work.push(DemandTask::SignedFinish(lane));
+                            work.push(DemandTask::Visit(body, Some(nested), true));
                         }
                     }
-                    result = result.combine(body_demand);
+                    None => values
+                        .last_mut()
+                        .expect("parent demand")
+                        .reject(UnprovableDemand::UnsupportedSyntax),
                 }
             }
-            None => result.reject(UnprovableDemand::UnsupportedSyntax),
-        }
-    }
-
-    if execution_position {
-        for stack in &par.cost_stacks {
-            if stack.cells.is_empty() {
-                result.reject(UnprovableDemand::UnsupportedSyntax);
-                continue;
+            DemandTask::SignedFinish(lane) => {
+                let mut child = values.pop().expect("signed body demand");
+                if !child.has_introduction {
+                    if let Some(lane) = lane {
+                        child.add_lane(lane);
+                    }
+                }
+                let parent = values.pop().expect("signed parent demand");
+                values.push(parent.combine(child));
             }
-            for cell in &stack.cells {
-                match signature_lane(cell) {
-                    Ok(Some(lane)) => {
-                        add_scope_demand(&mut result, deploy_key, scopes);
-                        add_scope_transfer(&mut result, deploy_key, scopes);
-                        let amount = result.guaranteed_supply.get(&lane);
-                        match amount.checked_add(1) {
-                            Some(amount) => {
-                                result.guaranteed_supply.0.insert(lane, amount);
+            DemandTask::Stack(stack, scope) => {
+                let result = values.last_mut().expect("stack parent demand");
+                if stack.cells.is_empty() {
+                    result.reject(UnprovableDemand::UnsupportedSyntax);
+                    continue;
+                }
+                for cell in &stack.cells {
+                    match signature_lane(cell) {
+                        Ok(Some(lane)) => {
+                            add_scope_demand(result, deploy_key, &scopes, scope);
+                            add_scope_transfer(result, deploy_key, &scopes, scope);
+                            let amount = result.guaranteed_supply.get(&lane);
+                            match amount.checked_add(1) {
+                                Some(amount) => {
+                                    result.guaranteed_supply.0.insert(lane, amount);
+                                }
+                                None => result.reject(UnprovableDemand::UnsupportedSyntax),
                             }
+                        }
+                        Ok(None) => result.reject(UnprovableDemand::UnsupportedSyntax),
+                        Err(UnprovableDemand::DynamicAuthority) => {
+                            add_scope_demand(result, deploy_key, &scopes, scope);
+                            add_scope_transfer(result, deploy_key, &scopes, scope);
+                        }
+                        Err(reason) => result.reject(reason),
+                    }
+                }
+            }
+            DemandTask::Send(send, scope) => {
+                let result = values.last_mut().expect("send parent demand");
+                add_scope_demand(result, deploy_key, &scopes, scope);
+                if send.persistent {
+                    result.reject(UnprovableDemand::UnboundedControlFlow);
+                }
+                for datum in send.data.iter().rev() {
+                    work.push(DemandTask::Combine);
+                    work.push(DemandTask::Visit(datum, None, false));
+                }
+            }
+            DemandTask::Receive(receive, scope) => {
+                let result = values.last_mut().expect("receive parent demand");
+                let signed_binds = receive
+                    .binds
+                    .iter()
+                    .filter(|bind| bind.cost_signature.is_some())
+                    .count();
+                if scope.is_some() {
+                    add_scope_demand(result, deploy_key, &scopes, scope);
+                }
+                if signed_binds == 0 {
+                    if scope.is_none() {
+                        add_scope_demand(result, deploy_key, &scopes, scope);
+                    }
+                } else if signed_binds == receive.binds.len() {
+                    for bind in &receive.binds {
+                        match bind.cost_signature.as_ref().map(signature_lane) {
+                            Some(Ok(Some(lane))) => result.add_lane(lane),
+                            Some(Ok(None)) => {}
+                            Some(Err(reason)) => result.reject(reason),
                             None => result.reject(UnprovableDemand::UnsupportedSyntax),
                         }
                     }
-                    Ok(None) => result.reject(UnprovableDemand::UnsupportedSyntax),
-                    Err(UnprovableDemand::DynamicAuthority) => {
-                        add_scope_demand(&mut result, deploy_key, scopes);
-                        add_scope_transfer(&mut result, deploy_key, scopes);
+                } else {
+                    result.reject(UnprovableDemand::UnsupportedSyntax);
+                }
+                result.has_introduction = true;
+                if receive.persistent {
+                    result.reject(UnprovableDemand::UnboundedControlFlow);
+                }
+                if let Some(body) = receive.body.as_ref() {
+                    work.push(DemandTask::Combine);
+                    work.push(DemandTask::Visit(body, None, true));
+                }
+            }
+            DemandTask::New(new, scope, execution) => {
+                if let Some(body) = new.p.as_ref() {
+                    work.push(DemandTask::Combine);
+                    work.push(DemandTask::Visit(body, scope, execution));
+                }
+            }
+            DemandTask::Match(mat, scope, execution) => {
+                let mut ordered = Vec::new();
+                for source in mat.cases.iter().filter_map(|case| case.source.as_ref()) {
+                    if !ordered.is_empty() {
+                        ordered.push(DemandTask::Visit(source, scope, execution));
+                        ordered.push(DemandTask::Alternative);
+                    } else {
+                        ordered.push(DemandTask::Visit(source, scope, execution));
                     }
-                    Err(reason) => result.reject(reason),
+                }
+                if !ordered.is_empty() {
+                    ordered.push(DemandTask::Combine);
+                    work.extend(ordered.into_iter().rev());
                 }
             }
-        }
-    }
-
-    for send in &par.sends {
-        add_scope_demand(&mut result, deploy_key, scopes);
-        if send.persistent {
-            result.reject(UnprovableDemand::UnboundedControlFlow);
-        }
-        for datum in &send.data {
-            result = result.combine(signed_demand_par(datum, deploy_key, &[], false));
-        }
-    }
-
-    for receive in &par.receives {
-        let signed_binds = receive
-            .binds
-            .iter()
-            .filter(|bind| bind.cost_signature.is_some())
-            .count();
-        if !scopes.is_empty() {
-            add_scope_demand(&mut result, deploy_key, scopes);
-        }
-        if signed_binds == 0 {
-            if scopes.is_empty() {
-                add_scope_demand(&mut result, deploy_key, scopes);
-            }
-        } else if signed_binds == receive.binds.len() {
-            for bind in &receive.binds {
-                match bind.cost_signature.as_ref().map(signature_lane) {
-                    Some(Ok(Some(lane))) => result.add_lane(lane),
-                    Some(Ok(None)) => {}
-                    Some(Err(reason)) => result.reject(reason),
-                    None => result.reject(UnprovableDemand::UnsupportedSyntax),
+            DemandTask::Conditional(conditional, scope, execution) => {
+                work.push(DemandTask::Combine);
+                work.push(DemandTask::Alternative);
+                match conditional.if_false.as_ref() {
+                    Some(branch) => work.push(DemandTask::Visit(branch, scope, execution)),
+                    None => work.push(DemandTask::Empty),
+                }
+                match conditional.if_true.as_ref() {
+                    Some(branch) => work.push(DemandTask::Visit(branch, scope, execution)),
+                    None => work.push(DemandTask::Empty),
                 }
             }
-        } else {
-            result.reject(UnprovableDemand::UnsupportedSyntax);
-        }
-        result.has_introduction = true;
-        if receive.persistent {
-            result.reject(UnprovableDemand::UnboundedControlFlow);
-        }
-        if let Some(body) = receive.body.as_ref() {
-            result = result.combine(signed_demand_par(body, deploy_key, &[], true));
-        }
-    }
-
-    for new in &par.news {
-        if let Some(body) = new.p.as_ref() {
-            result = result.combine(signed_demand_par(
-                body,
-                deploy_key,
-                scopes,
-                execution_position,
-            ));
-        }
-    }
-
-    for mat in &par.matches {
-        let mut cases = mat.cases.iter().filter_map(|case| case.source.as_ref());
-        let mut branches = cases
-            .next()
-            .map(|source| signed_demand_par(source, deploy_key, scopes, execution_position))
-            .unwrap_or_default();
-        for source in cases {
-            branches = branches.alternative(signed_demand_par(
-                source,
-                deploy_key,
-                scopes,
-                execution_position,
-            ));
-        }
-        result = result.combine(branches);
-    }
-
-    for conditional in &par.conditionals {
-        let if_true = conditional
-            .if_true
-            .as_ref()
-            .map(|branch| signed_demand_par(branch, deploy_key, scopes, execution_position))
-            .unwrap_or_default();
-        let if_false = conditional
-            .if_false
-            .as_ref()
-            .map(|branch| signed_demand_par(branch, deploy_key, scopes, execution_position))
-            .unwrap_or_default();
-        result = result.combine(if_true.alternative(if_false));
-    }
-
-    for bundle in &par.bundles {
-        if let Some(body) = bundle.body.as_ref() {
-            result = result.combine(signed_demand_par(
-                body,
-                deploy_key,
-                scopes,
-                execution_position,
-            ));
-        }
-    }
-
-    if execution_position {
-        for expr in &par.exprs {
-            if let Some(ExprInstance::EVarBody(evar)) = &expr.expr_instance {
-                if let Some(var) = &evar.v {
-                    if matches!(
-                        var.var_instance,
-                        Some(VarInstance::BoundVar(_)) | Some(VarInstance::FreeVar(_))
-                    ) {
-                        result.reject(UnprovableDemand::RecursiveDequotation);
+            DemandTask::Bundle(bundle, scope, execution) => {
+                if let Some(body) = bundle.body.as_ref() {
+                    work.push(DemandTask::Combine);
+                    work.push(DemandTask::Visit(body, scope, execution));
+                }
+            }
+            DemandTask::ScanUnknown(par) => {
+                let result = values.last_mut().expect("expression parent demand");
+                for expr in &par.exprs {
+                    if let Some(ExprInstance::EVarBody(evar)) = &expr.expr_instance {
+                        if let Some(var) = &evar.v {
+                            if matches!(
+                                var.var_instance,
+                                Some(VarInstance::BoundVar(_)) | Some(VarInstance::FreeVar(_))
+                            ) {
+                                result.reject(UnprovableDemand::RecursiveDequotation);
+                            }
+                        }
                     }
                 }
             }
+            DemandTask::Empty => values.push(SignedDemand::default()),
+            DemandTask::Combine => {
+                let child = values.pop().expect("child demand");
+                let parent = values.pop().expect("parent demand");
+                values.push(parent.combine(child));
+            }
+            DemandTask::Alternative => {
+                let right = values.pop().expect("right branch demand");
+                let left = values.pop().expect("left branch demand");
+                values.push(left.alternative(right));
+            }
         }
     }
-
-    result
+    values.pop().expect("root demand")
 }
 
 pub fn static_authority_signatures(
     par: &Par,
 ) -> Result<BTreeMap<SigKey, CostSignature>, AuthorityError> {
     fn has_bound_level(signature: &CostSignature) -> Result<bool, AuthorityError> {
-        match signature.value.as_ref() {
-            Some(CostSignatureValue::BoundLevel(_)) => Ok(true),
-            Some(CostSignatureValue::Compound(compound)) if compound.elements.len() >= 2 => {
-                let mut dynamic = false;
-                for element in &compound.elements {
-                    dynamic |= has_bound_level(element)?;
+        let mut work = vec![signature];
+        let mut dynamic = false;
+        while let Some(current) = work.pop() {
+            match current.value.as_ref() {
+                Some(CostSignatureValue::BoundLevel(_)) => dynamic = true,
+                Some(CostSignatureValue::Compound(compound)) if compound.elements.len() >= 2 => {
+                    work.extend(compound.elements.iter().rev());
                 }
-                Ok(dynamic)
+                Some(CostSignatureValue::Compound(_)) => {
+                    return Err(AuthorityError::MalformedCompound)
+                }
+                Some(CostSignatureValue::Unit(false)) => {
+                    return Err(AuthorityError::NonCanonicalSignature)
+                }
+                Some(_) => {
+                    canonical_cost_signature(current)?;
+                }
+                None => return Err(AuthorityError::MissingSignature),
             }
-            Some(CostSignatureValue::Compound(_)) => Err(AuthorityError::MalformedCompound),
-            Some(CostSignatureValue::Unit(false)) => Err(AuthorityError::NonCanonicalSignature),
-            Some(_) => canonical_cost_signature(signature).map(|_| false),
-            None => Err(AuthorityError::MissingSignature),
         }
+        Ok(dynamic)
     }
 
     fn insert(
@@ -522,68 +630,90 @@ pub fn static_authority_signatures(
         }
     }
 
+    enum CollectTask<'a> {
+        Par(&'a Par),
+        RequiredSignature(Option<&'a CostSignature>),
+        RequiredBody(Option<&'a Par>),
+        Stack(&'a CostStack),
+    }
+
     fn collect(
         par: &Par,
         signatures: &mut BTreeMap<SigKey, CostSignature>,
     ) -> Result<(), AuthorityError> {
-        for term in &par.cost_signed_terms {
-            insert(
-                signatures,
-                term.signature
-                    .as_ref()
-                    .ok_or(AuthorityError::MissingSignature)?,
-            )?;
-            collect(
-                term.body.as_ref().ok_or(AuthorityError::MissingAuthority)?,
-                signatures,
-            )?;
-        }
-        for stack in &par.cost_stacks {
-            if stack.cells.is_empty() {
-                return Err(AuthorityError::MissingSignature);
-            }
-            for cell in &stack.cells {
-                insert(signatures, cell)?;
-            }
-        }
-        for send in &par.sends {
-            for datum in &send.data {
-                collect(datum, signatures)?;
-            }
-        }
-        for receive in &par.receives {
-            for bind in &receive.binds {
-                if let Some(signature) = &bind.cost_signature {
-                    insert(signatures, signature)?;
+        let mut work = vec![CollectTask::Par(par)];
+        while let Some(task) = work.pop() {
+            match task {
+                CollectTask::Par(par) => {
+                    let mut ordered = Vec::new();
+                    for term in &par.cost_signed_terms {
+                        ordered.push(CollectTask::RequiredSignature(term.signature.as_ref()));
+                        ordered.push(CollectTask::RequiredBody(term.body.as_ref()));
+                    }
+                    for stack in &par.cost_stacks {
+                        ordered.push(CollectTask::Stack(stack));
+                    }
+                    for send in &par.sends {
+                        for datum in &send.data {
+                            ordered.push(CollectTask::Par(datum));
+                        }
+                    }
+                    for receive in &par.receives {
+                        for bind in &receive.binds {
+                            if let Some(signature) = &bind.cost_signature {
+                                ordered.push(CollectTask::RequiredSignature(Some(signature)));
+                            }
+                        }
+                        if let Some(body) = &receive.body {
+                            ordered.push(CollectTask::Par(body));
+                        }
+                    }
+                    for new in &par.news {
+                        if let Some(body) = &new.p {
+                            ordered.push(CollectTask::Par(body));
+                        }
+                    }
+                    for mat in &par.matches {
+                        for case in &mat.cases {
+                            if let Some(source) = &case.source {
+                                ordered.push(CollectTask::Par(source));
+                            }
+                        }
+                    }
+                    for conditional in &par.conditionals {
+                        if let Some(branch) = &conditional.if_true {
+                            ordered.push(CollectTask::Par(branch));
+                        }
+                        if let Some(branch) = &conditional.if_false {
+                            ordered.push(CollectTask::Par(branch));
+                        }
+                    }
+                    for bundle in &par.bundles {
+                        if let Some(body) = &bundle.body {
+                            ordered.push(CollectTask::Par(body));
+                        }
+                    }
+                    work.extend(ordered.into_iter().rev());
                 }
-            }
-            if let Some(body) = &receive.body {
-                collect(body, signatures)?;
-            }
-        }
-        for new in &par.news {
-            if let Some(body) = &new.p {
-                collect(body, signatures)?;
-            }
-        }
-        for mat in &par.matches {
-            for case in &mat.cases {
-                if let Some(source) = &case.source {
-                    collect(source, signatures)?;
+                CollectTask::RequiredSignature(signature) => {
+                    insert(
+                        signatures,
+                        signature.ok_or(AuthorityError::MissingSignature)?,
+                    )?;
                 }
-            }
-        }
-        for conditional in &par.conditionals {
-            if let Some(branch) = &conditional.if_true {
-                collect(branch, signatures)?;
-            }
-            if let Some(branch) = &conditional.if_false {
-                collect(branch, signatures)?;
-            }
-        }
-        for bundle in &par.bundles {
-            if let Some(body) = &bundle.body {
-                collect(body, signatures)?;
+                CollectTask::RequiredBody(body) => {
+                    work.push(CollectTask::Par(
+                        body.ok_or(AuthorityError::MissingAuthority)?,
+                    ));
+                }
+                CollectTask::Stack(stack) => {
+                    if stack.cells.is_empty() {
+                        return Err(AuthorityError::MissingSignature);
+                    }
+                    for cell in &stack.cells {
+                        insert(signatures, cell)?;
+                    }
+                }
             }
         }
         Ok(())
@@ -595,7 +725,7 @@ pub fn static_authority_signatures(
 }
 
 pub fn demand_bound(desugared: &Par, deploy_sig: &Sig) -> DemandBound<SigKey> {
-    let analysis = signed_demand_par(desugared, deploy_sig.lane_hash(), &[], true);
+    let analysis = signed_demand_par(desugared, deploy_sig.lane_hash(), true);
     if let Some(reason) = analysis.unprovable {
         return DemandBound::Unprovable(reason);
     }
@@ -641,7 +771,7 @@ pub fn static_authority_plan(
         Ok(resources)
     }
 
-    let analysis = signed_demand_par(desugared, deploy_sig.lane_hash(), &[], true);
+    let analysis = signed_demand_par(desugared, deploy_sig.lane_hash(), true);
     if let Some(reason) = analysis.unprovable {
         return Err(reason);
     }
@@ -718,109 +848,132 @@ fn add_lane_demands(
     }
 }
 
-fn branch_demand_by_sig(
-    par: &Par,
-    envelope_key: SigKey,
-    region_sig: &dyn Fn(&Par) -> Option<SigKey>,
-) -> BTreeMap<SigKey, DemandEntry> {
-    let mut branch = BTreeMap::new();
-    demand_by_sig_into(par, envelope_key, region_sig, &mut branch);
-    branch
+enum LaneTask<'a> {
+    Visit(&'a Par),
+    Child(&'a Par),
+    Match(&'a Match),
+    Conditional(&'a If),
+    Empty,
+    Combine,
+    Alternative,
 }
 
-/// The per-lane walk. Mirrors [`demand_par`] node-for-node (identical RECURSED vs
-/// NOT-recursed discipline) so summing the lanes reproduces [`demand`]'s count;
-/// the ONLY addition is the per-COMM lane attribution via `region_sig`.
 fn demand_by_sig_into(
     par: &Par,
     envelope_key: SigKey,
     region_sig: &dyn Fn(&Par) -> Option<SigKey>,
     acc: &mut BTreeMap<SigKey, DemandEntry>,
 ) {
-    // Sends: one potential participant each, attributed by the send channel.
-    for send in &par.sends {
-        let lane = send
-            .chan
-            .as_ref()
-            .and_then(|channel| region_sig(channel))
-            .unwrap_or(envelope_key);
-        let mut entry = DemandEntry::ZERO.plus_one();
-        entry.unknown = send.persistent;
-        bump_lane(acc, lane, entry);
-    }
-    // Receives: one potential participant each, attributed by the first bind's
-    // source lane. A persistent receive makes that lane unprovable.
-    for receive in &par.receives {
-        let lane = receive
-            .binds
-            .first()
-            .and_then(|bind| bind.source.as_ref())
-            .and_then(|source| region_sig(source))
-            .unwrap_or(envelope_key);
-        let mut entry = DemandEntry::ZERO.plus_one();
-        entry.unknown = receive.persistent;
-        bump_lane(acc, lane, entry);
-        if let Some(body) = &receive.body {
-            demand_by_sig_into(body, envelope_key, region_sig, acc);
-        }
-    }
-    // new / match / if / bundle: process positions recursed, no COMM node (D3).
-    for new in &par.news {
-        if let Some(body) = &new.p {
-            demand_by_sig_into(body, envelope_key, region_sig, acc);
-        }
-    }
-    for mat in &par.matches {
-        let mut alternatives = BTreeMap::new();
-        for case in &mat.cases {
-            if let Some(source) = &case.source {
-                merge_alternative_lanes(
-                    &mut alternatives,
-                    branch_demand_by_sig(source, envelope_key, region_sig),
-                );
-            }
-        }
-        add_lane_demands(acc, alternatives);
-    }
-    for conditional in &par.conditionals {
-        let mut alternatives = BTreeMap::new();
-        if let Some(if_true) = &conditional.if_true {
-            merge_alternative_lanes(
-                &mut alternatives,
-                branch_demand_by_sig(if_true, envelope_key, region_sig),
-            );
-        }
-        if let Some(if_false) = &conditional.if_false {
-            merge_alternative_lanes(
-                &mut alternatives,
-                branch_demand_by_sig(if_false, envelope_key, region_sig),
-            );
-        }
-        add_lane_demands(acc, alternatives);
-    }
-    for bundle in &par.bundles {
-        if let Some(body) = &bundle.body {
-            demand_by_sig_into(body, envelope_key, region_sig, acc);
-        }
-    }
-    // Un-inlined `*x` dequotation in process position ⇒ the Thm 20 over-
-    // approximation (`unknown`), attributed to the envelope lane (it is not on a
-    // signer channel).
-    for expr in &par.exprs {
-        if let Some(ExprInstance::EVarBody(evar)) = &expr.expr_instance {
-            if let Some(var) = &evar.v {
-                match &var.var_instance {
-                    Some(VarInstance::BoundVar(_)) | Some(VarInstance::FreeVar(_)) => {
-                        bump_lane(acc, envelope_key, DemandEntry {
-                            certified_upper_bound: 0,
-                            unknown: true,
-                        });
+    let mut work = vec![LaneTask::Visit(par)];
+    let mut values = Vec::<BTreeMap<SigKey, DemandEntry>>::new();
+    while let Some(task) = work.pop() {
+        match task {
+            LaneTask::Visit(par) => {
+                let mut local = BTreeMap::new();
+                for send in &par.sends {
+                    let lane = send
+                        .chan
+                        .as_ref()
+                        .and_then(|channel| region_sig(channel))
+                        .unwrap_or(envelope_key);
+                    let mut entry = DemandEntry::ZERO.plus_one();
+                    entry.unknown = send.persistent;
+                    bump_lane(&mut local, lane, entry);
+                }
+                for receive in &par.receives {
+                    let lane = receive
+                        .binds
+                        .first()
+                        .and_then(|bind| bind.source.as_ref())
+                        .and_then(|source| region_sig(source))
+                        .unwrap_or(envelope_key);
+                    let mut entry = DemandEntry::ZERO.plus_one();
+                    entry.unknown = receive.persistent;
+                    bump_lane(&mut local, lane, entry);
+                }
+                for expr in &par.exprs {
+                    if let Some(ExprInstance::EVarBody(evar)) = &expr.expr_instance {
+                        if let Some(var) = &evar.v {
+                            if matches!(
+                                var.var_instance,
+                                Some(VarInstance::BoundVar(_)) | Some(VarInstance::FreeVar(_))
+                            ) {
+                                bump_lane(&mut local, envelope_key, DemandEntry {
+                                    certified_upper_bound: 0,
+                                    unknown: true,
+                                });
+                            }
+                        }
                     }
-                    _ => {}
+                }
+                values.push(local);
+                let mut ordered = Vec::new();
+                for receive in &par.receives {
+                    if let Some(body) = &receive.body {
+                        ordered.push(LaneTask::Child(body));
+                    }
+                }
+                for new in &par.news {
+                    if let Some(body) = &new.p {
+                        ordered.push(LaneTask::Child(body));
+                    }
+                }
+                for mat in &par.matches {
+                    ordered.push(LaneTask::Match(mat));
+                }
+                for conditional in &par.conditionals {
+                    ordered.push(LaneTask::Conditional(conditional));
+                }
+                for bundle in &par.bundles {
+                    if let Some(body) = &bundle.body {
+                        ordered.push(LaneTask::Child(body));
+                    }
+                }
+                work.extend(ordered.into_iter().rev());
+            }
+            LaneTask::Child(child) => {
+                work.push(LaneTask::Combine);
+                work.push(LaneTask::Visit(child));
+            }
+            LaneTask::Match(mat) => {
+                let mut ordered = Vec::new();
+                for source in mat.cases.iter().filter_map(|case| case.source.as_ref()) {
+                    if !ordered.is_empty() {
+                        ordered.push(LaneTask::Visit(source));
+                        ordered.push(LaneTask::Alternative);
+                    } else {
+                        ordered.push(LaneTask::Visit(source));
+                    }
+                }
+                if !ordered.is_empty() {
+                    ordered.push(LaneTask::Combine);
+                    work.extend(ordered.into_iter().rev());
                 }
             }
+            LaneTask::Conditional(conditional) => {
+                work.push(LaneTask::Combine);
+                work.push(LaneTask::Alternative);
+                match conditional.if_false.as_ref() {
+                    Some(branch) => work.push(LaneTask::Visit(branch)),
+                    None => work.push(LaneTask::Empty),
+                }
+                match conditional.if_true.as_ref() {
+                    Some(branch) => work.push(LaneTask::Visit(branch)),
+                    None => work.push(LaneTask::Empty),
+                }
+            }
+            LaneTask::Empty => values.push(BTreeMap::new()),
+            LaneTask::Combine => {
+                let child = values.pop().expect("child lane demand");
+                add_lane_demands(values.last_mut().expect("parent lane demand"), child);
+            }
+            LaneTask::Alternative => {
+                let right = values.pop().expect("right branch demand");
+                merge_alternative_lanes(values.last_mut().expect("left branch demand"), right);
+            }
         }
     }
+    add_lane_demands(acc, values.pop().expect("root lane demand"));
 }
 
 /// §7.4 desugaring boundary for the funding analysis. The §7.4 semantic count
@@ -2005,3 +2158,470 @@ mod kani_funding {
         assert!(!is_funded(&analysis, supply));
     }
 }
+
+// Disabled in production by G1-1 (DR-67 implementation note, 2026-10-09).
+// These are the recursive walks of HEAD `17e07307f`, unchanged except for
+// their visibility. The iterative walks above replaced them, because the
+// depth of this recursion grows with the nesting depth of an untrusted
+// deploy, and the pre-execution funding check runs the analyzer on every
+// incoming deploy. They stay as the reference oracle of the parity tests in
+// `delta_sigma/stack_safety_tests.rs`.
+#[cfg(test)]
+mod recursive_oracle {
+    use super::*;
+
+    fn add_scope_demand(result: &mut SignedDemand, deploy_key: SigKey, scopes: &[Option<SigKey>]) {
+        if scopes.is_empty() {
+            result.add_lane(deploy_key);
+        } else {
+            for lane in scopes.iter().flatten() {
+                result.add_lane(*lane);
+            }
+        }
+        result.has_introduction = true;
+    }
+
+    fn add_scope_transfer(
+        result: &mut SignedDemand,
+        deploy_key: SigKey,
+        scopes: &[Option<SigKey>],
+    ) {
+        if scopes.is_empty() {
+            bump_lane(
+                &mut result.transfer_lanes,
+                deploy_key,
+                DemandEntry::ZERO.plus_one(),
+            );
+        } else {
+            for lane in scopes.iter().flatten() {
+                bump_lane(
+                    &mut result.transfer_lanes,
+                    *lane,
+                    DemandEntry::ZERO.plus_one(),
+                );
+            }
+        }
+    }
+
+    pub(super) fn signed_demand_par(
+        par: &Par,
+        deploy_key: SigKey,
+        scopes: &[Option<SigKey>],
+        execution_position: bool,
+    ) -> SignedDemand {
+        let mut result = SignedDemand::default();
+
+        for term in &par.cost_signed_terms {
+            let scope = match term.signature.as_ref().map(signature_lane) {
+                Some(Ok(scope)) => Some(scope),
+                Some(Err(reason)) => {
+                    result.reject(reason);
+                    None
+                }
+                None => {
+                    result.reject(UnprovableDemand::UnsupportedSyntax);
+                    None
+                }
+            };
+            match term.body.as_ref() {
+                Some(body) => {
+                    if let Some(scope) = scope {
+                        let mut nested_scopes = scopes.to_vec();
+                        nested_scopes.push(scope);
+                        let mut body_demand =
+                            signed_demand_par(body, deploy_key, &nested_scopes, true);
+                        if !body_demand.has_introduction {
+                            if let Some(lane) = scope {
+                                body_demand.add_lane(lane);
+                            }
+                        }
+                        result = result.combine(body_demand);
+                    }
+                }
+                None => result.reject(UnprovableDemand::UnsupportedSyntax),
+            }
+        }
+
+        if execution_position {
+            for stack in &par.cost_stacks {
+                if stack.cells.is_empty() {
+                    result.reject(UnprovableDemand::UnsupportedSyntax);
+                    continue;
+                }
+                for cell in &stack.cells {
+                    match signature_lane(cell) {
+                        Ok(Some(lane)) => {
+                            add_scope_demand(&mut result, deploy_key, scopes);
+                            add_scope_transfer(&mut result, deploy_key, scopes);
+                            let amount = result.guaranteed_supply.get(&lane);
+                            match amount.checked_add(1) {
+                                Some(amount) => {
+                                    result.guaranteed_supply.0.insert(lane, amount);
+                                }
+                                None => result.reject(UnprovableDemand::UnsupportedSyntax),
+                            }
+                        }
+                        Ok(None) => result.reject(UnprovableDemand::UnsupportedSyntax),
+                        Err(UnprovableDemand::DynamicAuthority) => {
+                            add_scope_demand(&mut result, deploy_key, scopes);
+                            add_scope_transfer(&mut result, deploy_key, scopes);
+                        }
+                        Err(reason) => result.reject(reason),
+                    }
+                }
+            }
+        }
+
+        for send in &par.sends {
+            add_scope_demand(&mut result, deploy_key, scopes);
+            if send.persistent {
+                result.reject(UnprovableDemand::UnboundedControlFlow);
+            }
+            for datum in &send.data {
+                result = result.combine(signed_demand_par(datum, deploy_key, &[], false));
+            }
+        }
+
+        for receive in &par.receives {
+            let signed_binds = receive
+                .binds
+                .iter()
+                .filter(|bind| bind.cost_signature.is_some())
+                .count();
+            if !scopes.is_empty() {
+                add_scope_demand(&mut result, deploy_key, scopes);
+            }
+            if signed_binds == 0 {
+                if scopes.is_empty() {
+                    add_scope_demand(&mut result, deploy_key, scopes);
+                }
+            } else if signed_binds == receive.binds.len() {
+                for bind in &receive.binds {
+                    match bind.cost_signature.as_ref().map(signature_lane) {
+                        Some(Ok(Some(lane))) => result.add_lane(lane),
+                        Some(Ok(None)) => {}
+                        Some(Err(reason)) => result.reject(reason),
+                        None => result.reject(UnprovableDemand::UnsupportedSyntax),
+                    }
+                }
+            } else {
+                result.reject(UnprovableDemand::UnsupportedSyntax);
+            }
+            result.has_introduction = true;
+            if receive.persistent {
+                result.reject(UnprovableDemand::UnboundedControlFlow);
+            }
+            if let Some(body) = receive.body.as_ref() {
+                result = result.combine(signed_demand_par(body, deploy_key, &[], true));
+            }
+        }
+
+        for new in &par.news {
+            if let Some(body) = new.p.as_ref() {
+                result = result.combine(signed_demand_par(
+                    body,
+                    deploy_key,
+                    scopes,
+                    execution_position,
+                ));
+            }
+        }
+
+        for mat in &par.matches {
+            let mut cases = mat.cases.iter().filter_map(|case| case.source.as_ref());
+            let mut branches = cases
+                .next()
+                .map(|source| signed_demand_par(source, deploy_key, scopes, execution_position))
+                .unwrap_or_default();
+            for source in cases {
+                branches = branches.alternative(signed_demand_par(
+                    source,
+                    deploy_key,
+                    scopes,
+                    execution_position,
+                ));
+            }
+            result = result.combine(branches);
+        }
+
+        for conditional in &par.conditionals {
+            let if_true = conditional
+                .if_true
+                .as_ref()
+                .map(|branch| signed_demand_par(branch, deploy_key, scopes, execution_position))
+                .unwrap_or_default();
+            let if_false = conditional
+                .if_false
+                .as_ref()
+                .map(|branch| signed_demand_par(branch, deploy_key, scopes, execution_position))
+                .unwrap_or_default();
+            result = result.combine(if_true.alternative(if_false));
+        }
+
+        for bundle in &par.bundles {
+            if let Some(body) = bundle.body.as_ref() {
+                result = result.combine(signed_demand_par(
+                    body,
+                    deploy_key,
+                    scopes,
+                    execution_position,
+                ));
+            }
+        }
+
+        if execution_position {
+            for expr in &par.exprs {
+                if let Some(ExprInstance::EVarBody(evar)) = &expr.expr_instance {
+                    if let Some(var) = &evar.v {
+                        if matches!(
+                            var.var_instance,
+                            Some(VarInstance::BoundVar(_)) | Some(VarInstance::FreeVar(_))
+                        ) {
+                            result.reject(UnprovableDemand::RecursiveDequotation);
+                        }
+                    }
+                }
+            }
+        }
+
+        result
+    }
+
+    pub(super) fn static_authority_signatures(
+        par: &Par,
+    ) -> Result<BTreeMap<SigKey, CostSignature>, AuthorityError> {
+        fn has_bound_level(signature: &CostSignature) -> Result<bool, AuthorityError> {
+            match signature.value.as_ref() {
+                Some(CostSignatureValue::BoundLevel(_)) => Ok(true),
+                Some(CostSignatureValue::Compound(compound)) if compound.elements.len() >= 2 => {
+                    let mut dynamic = false;
+                    for element in &compound.elements {
+                        dynamic |= has_bound_level(element)?;
+                    }
+                    Ok(dynamic)
+                }
+                Some(CostSignatureValue::Compound(_)) => Err(AuthorityError::MalformedCompound),
+                Some(CostSignatureValue::Unit(false)) => Err(AuthorityError::NonCanonicalSignature),
+                Some(_) => canonical_cost_signature(signature).map(|_| false),
+                None => Err(AuthorityError::MissingSignature),
+            }
+        }
+
+        fn insert(
+            signatures: &mut BTreeMap<SigKey, CostSignature>,
+            signature: &CostSignature,
+        ) -> Result<(), AuthorityError> {
+            if has_bound_level(signature)? {
+                if sort_signature(signature).term != *signature {
+                    return Err(AuthorityError::NonCanonicalSignature);
+                }
+                return Ok(());
+            }
+            let signature = canonical_cost_signature(signature)?;
+            let runtime_signature = cost_signature_to_sig(&signature)?;
+            if runtime_signature == Sig::Unit {
+                return Ok(());
+            }
+            let key = runtime_signature.lane_hash();
+            match signatures.get(&key) {
+                Some(existing) if existing != &signature => {
+                    Err(AuthorityError::EventSignatureConflict)
+                }
+                Some(_) => Ok(()),
+                None => {
+                    signatures.insert(key, signature);
+                    Ok(())
+                }
+            }
+        }
+
+        fn collect(
+            par: &Par,
+            signatures: &mut BTreeMap<SigKey, CostSignature>,
+        ) -> Result<(), AuthorityError> {
+            for term in &par.cost_signed_terms {
+                insert(
+                    signatures,
+                    term.signature
+                        .as_ref()
+                        .ok_or(AuthorityError::MissingSignature)?,
+                )?;
+                collect(
+                    term.body.as_ref().ok_or(AuthorityError::MissingAuthority)?,
+                    signatures,
+                )?;
+            }
+            for stack in &par.cost_stacks {
+                if stack.cells.is_empty() {
+                    return Err(AuthorityError::MissingSignature);
+                }
+                for cell in &stack.cells {
+                    insert(signatures, cell)?;
+                }
+            }
+            for send in &par.sends {
+                for datum in &send.data {
+                    collect(datum, signatures)?;
+                }
+            }
+            for receive in &par.receives {
+                for bind in &receive.binds {
+                    if let Some(signature) = &bind.cost_signature {
+                        insert(signatures, signature)?;
+                    }
+                }
+                if let Some(body) = &receive.body {
+                    collect(body, signatures)?;
+                }
+            }
+            for new in &par.news {
+                if let Some(body) = &new.p {
+                    collect(body, signatures)?;
+                }
+            }
+            for mat in &par.matches {
+                for case in &mat.cases {
+                    if let Some(source) = &case.source {
+                        collect(source, signatures)?;
+                    }
+                }
+            }
+            for conditional in &par.conditionals {
+                if let Some(branch) = &conditional.if_true {
+                    collect(branch, signatures)?;
+                }
+                if let Some(branch) = &conditional.if_false {
+                    collect(branch, signatures)?;
+                }
+            }
+            for bundle in &par.bundles {
+                if let Some(body) = &bundle.body {
+                    collect(body, signatures)?;
+                }
+            }
+            Ok(())
+        }
+
+        let mut signatures = BTreeMap::new();
+        collect(par, &mut signatures)?;
+        Ok(signatures)
+    }
+
+    pub(super) fn demand_by_sig(
+        desugared: &Par,
+        envelope_key: SigKey,
+        region_sig: &dyn Fn(&Par) -> Option<SigKey>,
+    ) -> BTreeMap<SigKey, DemandEntry> {
+        let mut acc: BTreeMap<SigKey, DemandEntry> = BTreeMap::new();
+        demand_by_sig_into(desugared, envelope_key, region_sig, &mut acc);
+        acc
+    }
+
+    fn branch_demand_by_sig(
+        par: &Par,
+        envelope_key: SigKey,
+        region_sig: &dyn Fn(&Par) -> Option<SigKey>,
+    ) -> BTreeMap<SigKey, DemandEntry> {
+        let mut branch = BTreeMap::new();
+        demand_by_sig_into(par, envelope_key, region_sig, &mut branch);
+        branch
+    }
+
+    /// The per-lane walk. Mirrors [`demand_par`] node-for-node (identical RECURSED vs
+    /// NOT-recursed discipline) so summing the lanes reproduces [`demand`]'s count;
+    /// the ONLY addition is the per-COMM lane attribution via `region_sig`.
+    fn demand_by_sig_into(
+        par: &Par,
+        envelope_key: SigKey,
+        region_sig: &dyn Fn(&Par) -> Option<SigKey>,
+        acc: &mut BTreeMap<SigKey, DemandEntry>,
+    ) {
+        // Sends: one potential participant each, attributed by the send channel.
+        for send in &par.sends {
+            let lane = send
+                .chan
+                .as_ref()
+                .and_then(|channel| region_sig(channel))
+                .unwrap_or(envelope_key);
+            let mut entry = DemandEntry::ZERO.plus_one();
+            entry.unknown = send.persistent;
+            bump_lane(acc, lane, entry);
+        }
+        // Receives: one potential participant each, attributed by the first bind's
+        // source lane. A persistent receive makes that lane unprovable.
+        for receive in &par.receives {
+            let lane = receive
+                .binds
+                .first()
+                .and_then(|bind| bind.source.as_ref())
+                .and_then(|source| region_sig(source))
+                .unwrap_or(envelope_key);
+            let mut entry = DemandEntry::ZERO.plus_one();
+            entry.unknown = receive.persistent;
+            bump_lane(acc, lane, entry);
+            if let Some(body) = &receive.body {
+                demand_by_sig_into(body, envelope_key, region_sig, acc);
+            }
+        }
+        // new / match / if / bundle: process positions recursed, no COMM node (D3).
+        for new in &par.news {
+            if let Some(body) = &new.p {
+                demand_by_sig_into(body, envelope_key, region_sig, acc);
+            }
+        }
+        for mat in &par.matches {
+            let mut alternatives = BTreeMap::new();
+            for case in &mat.cases {
+                if let Some(source) = &case.source {
+                    merge_alternative_lanes(
+                        &mut alternatives,
+                        branch_demand_by_sig(source, envelope_key, region_sig),
+                    );
+                }
+            }
+            add_lane_demands(acc, alternatives);
+        }
+        for conditional in &par.conditionals {
+            let mut alternatives = BTreeMap::new();
+            if let Some(if_true) = &conditional.if_true {
+                merge_alternative_lanes(
+                    &mut alternatives,
+                    branch_demand_by_sig(if_true, envelope_key, region_sig),
+                );
+            }
+            if let Some(if_false) = &conditional.if_false {
+                merge_alternative_lanes(
+                    &mut alternatives,
+                    branch_demand_by_sig(if_false, envelope_key, region_sig),
+                );
+            }
+            add_lane_demands(acc, alternatives);
+        }
+        for bundle in &par.bundles {
+            if let Some(body) = &bundle.body {
+                demand_by_sig_into(body, envelope_key, region_sig, acc);
+            }
+        }
+        // Un-inlined `*x` dequotation in process position ⇒ the Thm 20 over-
+        // approximation (`unknown`), attributed to the envelope lane (it is not on a
+        // signer channel).
+        for expr in &par.exprs {
+            if let Some(ExprInstance::EVarBody(evar)) = &expr.expr_instance {
+                if let Some(var) = &evar.v {
+                    match &var.var_instance {
+                        Some(VarInstance::BoundVar(_)) | Some(VarInstance::FreeVar(_)) => {
+                            bump_lane(acc, envelope_key, DemandEntry {
+                                certified_upper_bound: 0,
+                                unknown: true,
+                            });
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod stack_safety_tests;
