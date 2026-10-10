@@ -4322,6 +4322,31 @@ mod tests {
     }
 
     #[test]
+    fn in_scope_recovery_cap_does_not_follow_the_in_scope_backlog() {
+        let mut snapshot =
+            crate::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
+        snapshot
+            .on_chain_state
+            .shard_conf
+            .max_user_deploys_per_block = 128;
+
+        let recovery = in_scope_recovery_fallback(
+            &snapshot,
+            true,
+            DeployInclusionStaleness::default(),
+            InScopeLocalDeployStats {
+                count: 26,
+                oldest_age_millis: 7_467,
+                stranded_count: 26,
+            },
+            lag(25, 22),
+        );
+
+        assert!(recovery.allowed);
+        assert_eq!(recovery.cap, NON_LEADER_FALLBACK_ORDINARY_DEPLOY_CAP);
+    }
+
+    #[test]
     fn finality_backpressure_holds_the_non_leader_cap_whatever_the_backlog() {
         let mut snapshot =
             crate::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
