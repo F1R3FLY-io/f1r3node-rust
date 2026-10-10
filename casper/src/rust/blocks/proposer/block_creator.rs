@@ -2393,10 +2393,13 @@ fn adaptive_normal_ordinary_deploy_cap(
         || (stale_in_scope_work && deploy_inclusion_staleness.signature_stale)
     {
         NON_LEADER_FALLBACK_MIN_ORDINARY_DEPLOY_CAP
-    } else if finality_lag_stats.lag >= FINALITY_LAG_SOFT_BACKPRESSURE_BLOCKS
-        || (stale_in_scope_work && deploy_inclusion_staleness.stale)
+    } else if (stale_in_scope_work && deploy_inclusion_staleness.stale)
+        || (finality_lag_stats.lag >= FINALITY_LAG_SOFT_BACKPRESSURE_BLOCKS
+            && finality_lag_stats.stalled)
     {
         NON_LEADER_FALLBACK_ORDINARY_DEPLOY_CAP
+    } else if finality_lag_stats.lag >= FINALITY_LAG_SOFT_BACKPRESSURE_BLOCKS {
+        SOFT_BACKPRESSURE_MAX_ORDINARY_DEPLOY_CAP
     } else {
         normal_cap
     };
@@ -4445,7 +4448,7 @@ mod tests {
         assert!(!unloaded.fallback);
         assert_eq!(unloaded.ordinary_cap, 128);
         assert_eq!(
-            policy_at(lag(29, 25)).ordinary_cap,
+            policy_at(stalled_lag(29, 25)).ordinary_cap,
             NON_LEADER_FALLBACK_ORDINARY_DEPLOY_CAP
         );
         assert_eq!(
@@ -4481,6 +4484,60 @@ mod tests {
         assert!(large.backpressure);
         assert_eq!(cap_for(12).cap, 12);
         assert_eq!(cap_for(5).cap, NON_LEADER_FALLBACK_ORDINARY_DEPLOY_CAP);
+    }
+
+    #[test]
+    fn soft_backpressure_gives_the_leader_16_while_the_lfb_advances_and_8_while_it_is_stalled() {
+        let mut snapshot =
+            crate::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
+        snapshot
+            .on_chain_state
+            .shard_conf
+            .max_user_deploys_per_block = 128;
+        let leader_cap = |stale_in_scope_work, staleness, finality_lag| {
+            adaptive_normal_ordinary_deploy_cap(
+                &snapshot,
+                stale_in_scope_work,
+                staleness,
+                finality_lag,
+            )
+        };
+
+        let advancing = leader_cap(false, DeployInclusionStaleness::default(), lag(29, 25));
+        assert_eq!(advancing, (SOFT_BACKPRESSURE_MAX_ORDINARY_DEPLOY_CAP, true));
+        assert_eq!(
+            leader_cap(
+                false,
+                DeployInclusionStaleness::default(),
+                stalled_lag(29, 25)
+            ),
+            (NON_LEADER_FALLBACK_ORDINARY_DEPLOY_CAP, true)
+        );
+        assert_eq!(
+            leader_cap(
+                true,
+                DeployInclusionStaleness {
+                    stale: true,
+                    ..DeployInclusionStaleness::default()
+                },
+                lag(29, 25)
+            ),
+            (NON_LEADER_FALLBACK_ORDINARY_DEPLOY_CAP, true),
+            "stale in-scope work still clamps the leader to 8"
+        );
+        assert_eq!(
+            leader_cap(
+                true,
+                DeployInclusionStaleness {
+                    stale: true,
+                    signature_stale: true,
+                    ..DeployInclusionStaleness::default()
+                },
+                lag(29, 25)
+            ),
+            (NON_LEADER_FALLBACK_MIN_ORDINARY_DEPLOY_CAP, true),
+            "signature-stale in-scope work still clamps the leader to 4"
+        );
     }
 
     #[test]
