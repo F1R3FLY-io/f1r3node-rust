@@ -4286,6 +4286,42 @@ mod tests {
     }
 
     #[test]
+    fn age_escalation_still_raises_the_non_leader_cap_above_a_smaller_backlog() {
+        let mut snapshot =
+            crate::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
+        snapshot
+            .on_chain_state
+            .shard_conf
+            .max_user_deploys_per_block = 128;
+        let cap_for = |count: usize, oldest_age_millis: i64| {
+            fresh_admission_fallback(
+                &snapshot,
+                true,
+                DeployInclusionStaleness::default(),
+                FreshLocalDeployStats {
+                    count,
+                    oldest_age_millis,
+                },
+                lag(25, 22),
+            )
+            .cap
+        };
+
+        assert_eq!(
+            cap_for(3, FRESH_DEPLOY_ESCALATED_ADMISSION_DELAY_MILLIS),
+            NON_LEADER_FALLBACK_MEDIUM_ORDINARY_DEPLOY_CAP
+        );
+        assert_eq!(
+            cap_for(20, FRESH_DEPLOY_ESCALATED_ADMISSION_DELAY_MILLIS),
+            20
+        );
+        assert_eq!(
+            cap_for(3, FRESH_DEPLOY_MAX_ESCALATED_ADMISSION_DELAY_MILLIS),
+            NON_LEADER_FALLBACK_MAX_ORDINARY_DEPLOY_CAP
+        );
+    }
+
+    #[test]
     fn finality_backpressure_holds_the_non_leader_cap_whatever_the_backlog() {
         let mut snapshot =
             crate::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
