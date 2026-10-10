@@ -186,7 +186,7 @@ async fn run_block_creator_create_memory_profile() {
     let (runtime_manager, _) = RuntimeManager::create_with_history(
         rspace_store,
         mergeable_store,
-        std::sync::Arc::new(Genesis::default_mergeable_tags()),
+        Genesis::default_mergeable_tags_arc(),
         ExternalServices::noop(),
     );
 
@@ -221,6 +221,8 @@ async fn run_block_creator_create_memory_profile() {
         native_token_name: "F1R3CAP".to_string(),
         native_token_symbol: "F1R3".to_string(),
         native_token_decimals: 8,
+        fs_bundle: Vec::new(),
+        consensus_fs_snapshot_cadence: None,
     };
     let parent = Genesis::create_genesis_block(&runtime_manager, &genesis)
         .await
@@ -433,7 +435,7 @@ async fn run_block_creator_phase_split_memory_profile() {
     let (runtime_manager, _) = RuntimeManager::create_with_history(
         rspace_store,
         mergeable_store,
-        std::sync::Arc::new(Genesis::default_mergeable_tags()),
+        Genesis::default_mergeable_tags_arc(),
         ExternalServices::noop(),
     );
 
@@ -468,6 +470,8 @@ async fn run_block_creator_phase_split_memory_profile() {
         native_token_name: "F1R3CAP".to_string(),
         native_token_symbol: "F1R3".to_string(),
         native_token_decimals: 8,
+        fs_bundle: Vec::new(),
+        consensus_fs_snapshot_cadence: None,
     };
     let parent = Genesis::create_genesis_block(&runtime_manager, &genesis)
         .await

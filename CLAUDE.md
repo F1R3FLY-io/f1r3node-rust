@@ -97,6 +97,7 @@ docker compose -f docker/shard.yml up
 
 ### Rust Guidelines
 - **No comments** unless explicitly requested by user
+- **Rust and bash only for new work.** Do not add Python, Ruby, or other languages. Legacy Python remains in the z3 witnesses under `formal/` and in a few inline `python3` calls in older scripts. It leaves when that code is next touched. One scoped exception stays: `scripts/bench/extend-issue24-metrics.py` and its test. They edit and verify the external system-integration harness's own Python module, and they run only where that harness runs.
 - Zero-cost abstractions, proper ownership
 - Async/await with Tokio runtime
 - Error handling: `eyre` for application errors, `thiserror` for library errors
@@ -185,6 +186,13 @@ Both settings take effect at the next session start.
 - Do NOT include Claude Code attribution footer or emoji
 - Do NOT include Co-Authored-By lines
 - Keep commit messages clean and professional
+- Every commit author and `Co-authored-by` trailer must be ratified. GitHub lists each co-author email that maps to an account in the contributors graph.
+- An email is ratified when it authored a commit in the base branch history. Only accepted pull requests reach that history. A `Co-authored-by` trailer never ratifies an email.
+- The CI `Static Checks` job checks every commit author and co-author. A pull request cannot ratify its own identities.
+- The `.githooks/commit-msg` hook checks co-authors only, so a first-time contributor can commit locally. Both reject `Claude-Session` trailers.
+- An outside contributor's own commits in their own pull request pass. Maintainer review decides their acceptance. Only a human account gets this exemption. A bot or app account does not.
+- `.github/denied-identities.txt` lists identities that are always rejected, even when the history ratifies them. It blocks `@anthropic.com`. CI reads it from the base branch.
+- Turn off the co-author attribution setting in your Claude Code `settings.json`.
 
 ### Branch Strategy
 - `master` is the default branch and release line. Maintainers promote `dev` to `master`.

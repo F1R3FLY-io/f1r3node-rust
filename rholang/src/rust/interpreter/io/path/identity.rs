@@ -43,6 +43,7 @@ use std::sync::{Arc, RwLock};
 
 use super::descend::{fstat_dev_inode, open_dir};
 use super::{io_msg_scrub, QuarantineError};
+use crate::rust::interpreter::io::errors::poison_abort;
 
 /// A canonicalized on-disk root + its captured `(dev, inode)`
 /// identity.
@@ -143,20 +144,55 @@ impl Root {
 /// `PathBuf::from("/@bundle/example")` and
 /// `PathBuf::from("/@bundle/./example")` are DIFFERENT keys and will
 /// not cross-lookup.  Callers must supply the exact registered form.
-/// Later waves that register logical→on-disk mappings (Shape-A)
-/// normalize upstream; direct users of `register` / `get` are on
-/// the hook for consistency.
+/// Later slices that register logical→on-disk mappings (Shape-A
+/// `register_with_remap`) normalize upstream; direct users of
+/// `register` / `get` are on the hook for consistency.
 ///
 /// # Thread safety
 ///
-/// Thread-safe via an internal `RwLock`.  Reads (frequent,
-/// per-syscall) don't contend; writes (rare, boot-time only) take
-/// the write lock briefly.  `Clone` shares the backing map
-/// (`Arc`-cloned), so a registry handed to a reducer clone stays
-/// coherent with the manager's copy.
+/// Thread-safe.  Reads (frequent, per-syscall) don't contend;
+/// writes (rare, boot-time only) take a write lock briefly.
+/// Every guard acquisition routes through `poison_abort` per
+/// DD-FailClosedOnInvariantBreak.
+///
+/// # Two-layer indirection (`Arc<RwLock<Arc<RwLock<Inner>>>>`)
+///
+/// The nested-Arc layout is load-bearing for the
+/// `RuntimeManager` broadcast pattern.  `Clone` copies the OUTER
+/// `Arc<RwLock<_>>` slot; [`share_from`](Self::share_from)
+/// atomically swaps the INNER `Arc<RwLock<Inner>>` inside the
+/// slot so:
+///
+///   1. **Reducer-clone visibility**: `create_rho_runtime` clones
+///      the enclosing `FileHandleTable` (which owns a registry
+///      clone) to hand a copy to the reducer BEFORE the boot
+///      pipeline installs the manager-shared registry via
+///      `share_from`.  Both clones share the OUTER slot, so
+///      swapping the inner Arc is visible through both.  A
+///      field-replacement design would only update the runtime's
+///      outer field — the reducer's earlier clone would keep
+///      its own disjoint inner and never see boot-time
+///      registrations.  Handler paths through the reducer's
+///      clone would resolve against an empty backing → every
+///      Shape A `/@bundle/...` `canonRoot` would fall through
+///      to `NotFound` at open time.
+///   2. **Late-registration propagation**: after `share_from`,
+///      ALL handles (manager, runtime, reducer's clone, any
+///      future clone) point at the SAME inner Arc.  A subsequent
+///      `register` on the manager writes to the inner Arc's map
+///      — visible everywhere.
 #[derive(Debug, Default, Clone)]
 pub struct RootIdentityRegistry {
-    inner: Arc<RwLock<Inner>>,
+    slot: Arc<RwLock<Arc<RwLock<Inner>>>>,
+    /// X-6c M-04 test-harness opt-out for the Consensus-mode gate.
+    /// Shared across clones via `Arc<AtomicBool>` so a single
+    /// `set_test_permissive(true)` on the manager-held handle is
+    /// visible to every clone a reducer may have taken earlier —
+    /// mirrors `slot`'s reducer-clone-visibility discipline.
+    /// Default `false` (production safety); test harnesses that
+    /// construct raw-tempdir Consensus caps flip it on.  Production
+    /// code MUST NOT enable this.
+    test_permissive: Arc<std::sync::atomic::AtomicBool>,
 }
 
 #[derive(Debug, Default)]
@@ -176,30 +212,301 @@ impl RootIdentityRegistry {
     ///
     /// [`get`]: RootIdentityRegistry::get
     pub fn register(&self, logical: PathBuf, root: Root) {
-        // TODO: replace `.unwrap()` with `poison_abort` from
-        // `io::errors` when that helper lands (deferred from
-        // Wave 0 PR 0.1).  A poisoned lock here means a boot-time
-        // writer panicked; propagating the panic is the correct
-        // behavior, but `poison_abort` will make the message
-        // consistent with the rest of the io tree.
-        let mut guard = self.inner.write().unwrap();
+        let backing = self.current_backing();
+        let mut guard = poison_abort(backing.write(), "RootIdentityRegistry.inner");
         guard.entries.insert(logical, root);
     }
 
     /// Look up the [`Root`] for a logical path.  Returns `None`
     /// for unregistered logicals.
     pub fn get(&self, logical: &Path) -> Option<Root> {
-        let guard = self.inner.read().unwrap();
+        let backing = self.current_backing();
+        let guard = poison_abort(backing.read(), "RootIdentityRegistry.inner");
         guard.entries.get(logical).cloned()
+    }
+
+    /// Handler-pattern convenience: look up `logical` and return
+    /// `(on_disk_root, expected_root_id)` such that the handler
+    /// can pass `on_disk_root` to [`super::descend::safe_descend_verified`]
+    /// and `expected_root_id` as its identity argument.  Falls
+    /// through to `(logical.to_path_buf(), None)` for unregistered
+    /// logical roots — matches the pre-Shape-A behavior where the
+    /// handler treated the caller-supplied path as the on-disk
+    /// path directly and skipped the H-5 identity check.
+    ///
+    /// # Shape-A gating (yet to land)
+    ///
+    /// This ungated variant is safe for Oracular callers (where
+    /// the test harness or an off-ledger integration constructs a
+    /// cap over an arbitrary host path).  Consensus callers under
+    /// Shape A must reject unregistered logicals — a `None` return
+    /// then means the boot registration failed or the cap is
+    /// misconfigured.  A gated `resolve_or_identity_gated_for_consensus`
+    /// variant will land with the handler slice that first needs
+    /// Consensus-cap gating (observation / mutation families).
+    pub fn resolve_or_identity(&self, logical: &Path) -> (PathBuf, Option<(u64, u64)>) {
+        match self.get(logical) {
+            Some(r) => (r.path().to_path_buf(), Some(r.identity())),
+            None => (logical.to_path_buf(), None),
+        }
+    }
+
+    /// X-6c M-04 test-harness opt-out: when `true`, the Consensus
+    /// branch of [`resolve_or_identity_gated_for_consensus`] falls
+    /// through to `Ok((logical, None))` instead of erroring on an
+    /// unregistered logical root.  Used by test harnesses that
+    /// construct raw-tempdir Consensus caps without a boot
+    /// registration pass.
+    ///
+    /// Production code MUST NOT enable this — bypassing the gate
+    /// silently disables `safe_descend_verified`'s identity check
+    /// (the entire H-5 rename-and-recreate defense).
+    pub fn set_test_permissive(&self, permissive: bool) {
+        self.test_permissive
+            .store(permissive, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Read the test-permissive flag.  Introspection helper for
+    /// the gated resolver and for tests that assert the flag's
+    /// state.
+    pub fn is_test_permissive(&self) -> bool {
+        self.test_permissive
+            .load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// X-6c M-04 (Consensus-fs Shape A gating): gated variant of
+    /// [`resolve_or_identity`] that refuses dispatch when a
+    /// Consensus-mode cap targets an unregistered logical root.
+    ///
+    /// Under Consensus-fs Shape A, every Consensus cap's canonRoot
+    /// is `/@bundle/<X>` and boot registration populates the
+    /// registry with matching mappings.  A Consensus resolve that
+    /// returns `None` therefore means the boot registration path
+    /// failed (bug), the cap carries a non-Shape-A root
+    /// (misconfiguration), or a test constructed a Consensus cap
+    /// without registering it (test-harness bug).  In all cases,
+    /// falling through with `expected_root_id: None` would silently
+    /// disable the identity check inside `safe_descend_verified` —
+    /// the very defense the Consensus mode relies on.  Refusing at
+    /// this gate makes the failure loud.
+    ///
+    /// Returns:
+    ///   * `Ok((on_disk_root, Some(identity)))` on registered
+    ///     logical.
+    ///   * `Ok((logical, None))` on Oracular + unregistered (safe
+    ///     fall-through to pre-Shape-A behavior).
+    ///   * `Ok((logical, None))` on Consensus + unregistered when
+    ///     [`is_test_permissive`] returns true (test opt-out).
+    ///   * `Err((FSERR_UNSUPPORTED, msg))` on Consensus +
+    ///     unregistered with the test-permissive flag off (the
+    ///     production safety stance).
+    pub fn resolve_or_identity_gated_for_consensus(
+        &self,
+        logical: &Path,
+        cmode: super::super::ConsensusMode,
+    ) -> Result<(PathBuf, Option<(u64, u64)>), (super::super::errors::FserrCode, String)> {
+        match self.get(logical) {
+            Some(r) => Ok((r.path().to_path_buf(), Some(r.identity()))),
+            None => match cmode {
+                super::super::ConsensusMode::Consensus => {
+                    if self.is_test_permissive() {
+                        Ok((logical.to_path_buf(), None))
+                    } else {
+                        Err((
+                            super::super::errors::FSERR_UNSUPPORTED,
+                            format!(
+                                "M-04: Consensus-mode cap targets unregistered logical root \
+                                 {logical:?}.  Under Consensus-fs Shape A every Consensus \
+                                 cap's canonRoot must be boot-registered in the \
+                                 RootIdentityRegistry; falling through with \
+                                 expected_root_id=None would silently disable \
+                                 safe_descend's identity check.  Fix: register the cap's \
+                                 canonRoot at boot (see \
+                                 fs_genesis::register_consensus_bundle_roots), or use \
+                                 Oracular mode for unregistered paths."
+                            ),
+                        ))
+                    }
+                }
+                _ => Ok((logical.to_path_buf(), None)),
+            },
+        }
+    }
+
+    /// Consensus-fs Shape A: given a WAL entry's `path` (the
+    /// `canonicalize_lexical(&root, &rel)` joined form the leader
+    /// recorded), find the longest registered logical prefix, strip
+    /// it, and rejoin the remainder to that registration's on-disk
+    /// root.  Falls through to the entry-path unchanged when no
+    /// registered logical prefix matches — preserves pre-Shape-A
+    /// behavior for legacy callers whose WAL entries carry absolute
+    /// on-disk paths.
+    ///
+    /// # Longest-prefix discipline
+    ///
+    /// A single bundle may register both `/@bundle` (for flat File
+    /// entries) and `/@bundle/cfg` (for a nested File / Dir).  A
+    /// WAL entry with path `/@bundle/cfg/theme` MUST resolve against
+    /// `/@bundle/cfg` (the specific registration), not `/@bundle`
+    /// (the broader one) — else the applier would write to
+    /// `<broad_on_disk>/cfg/theme` instead of `<nested_on_disk>/theme`.
+    /// `Path::starts_with` is component-based, so a `/@bundle`
+    /// registration does NOT falsely match `/@bundle-other`.
+    ///
+    /// # Applier semantics
+    ///
+    /// This is what the (future) `apply_wal_slice_after_fetch`
+    /// should call for every entry.path (and Rename/CopyFile
+    /// extra_path) before handing to the syscall step.
+    pub fn resolve_wal_entry_path(&self, entry_path: &Path) -> PathBuf {
+        let backing = self.current_backing();
+        let guard = poison_abort(backing.read(), "RootIdentityRegistry.inner");
+        let mut best: Option<(&PathBuf, &Root)> = None;
+        for (logical, root) in guard.entries.iter() {
+            if entry_path.starts_with(logical) {
+                let is_better = match best {
+                    None => true,
+                    Some((cur_logical, _)) => {
+                        logical.components().count() > cur_logical.components().count()
+                    }
+                };
+                if is_better {
+                    best = Some((logical, root));
+                }
+            }
+        }
+        match best {
+            Some((logical, root)) => {
+                let rel = entry_path
+                    .strip_prefix(logical)
+                    .expect("starts_with matched above; strip_prefix must succeed");
+                root.path().join(rel)
+            }
+            None => entry_path.to_path_buf(),
+        }
+    }
+
+    /// Consensus-fs Shape A / S-1 hardening: same longest-prefix
+    /// logic as [`resolve_wal_entry_path`](Self::resolve_wal_entry_path),
+    /// but returns the decomposed `(on_disk_root, rel_from_root,
+    /// expected_root_id)` triple the TOCTOU-safe applier hands to
+    /// `safe_descend_verified` / `*at` syscalls.  Falls through to
+    /// `(entry_path.parent(), entry_path.file_name(), None)` for
+    /// unregistered legacy paths — preserves pre-Shape-A behavior
+    /// for callers whose WAL entries carry absolute on-disk paths
+    /// that were never registered.
+    ///
+    /// # Fall-through split rationale
+    ///
+    /// Unregistered legacy paths carry no identity (`None`) and
+    /// lose the H-5 rename-and-recreate defense — matching pre-S-1
+    /// behavior, since the pre-S-1 applier's `std::fs::*` calls
+    /// had no defense at all.  The parent/basename split still
+    /// closes the deeper-component TOCTOU by handing safe_descend
+    /// a single-component rel.  Callers that need identity
+    /// verification MUST register the logical root at boot via
+    /// [`register`](Self::register).
+    pub fn resolve_wal_entry_root_rel(
+        &self,
+        entry_path: &Path,
+    ) -> (PathBuf, PathBuf, Option<(u64, u64)>) {
+        let backing = self.current_backing();
+        let guard = poison_abort(backing.read(), "RootIdentityRegistry.inner");
+        let mut best: Option<(&PathBuf, &Root)> = None;
+        for (logical, root) in guard.entries.iter() {
+            if entry_path.starts_with(logical) {
+                let is_better = match best {
+                    None => true,
+                    Some((cur_logical, _)) => {
+                        logical.components().count() > cur_logical.components().count()
+                    }
+                };
+                if is_better {
+                    best = Some((logical, root));
+                }
+            }
+        }
+        match best {
+            Some((logical, root)) => {
+                let rel = entry_path
+                    .strip_prefix(logical)
+                    .expect("starts_with matched above; strip_prefix must succeed")
+                    .to_path_buf();
+                (root.path().to_path_buf(), rel, Some(root.identity()))
+            }
+            None => {
+                let parent = entry_path
+                    .parent()
+                    .map(Path::to_path_buf)
+                    .unwrap_or_else(|| PathBuf::from("/"));
+                let rel = entry_path
+                    .file_name()
+                    .map(PathBuf::from)
+                    .unwrap_or_default();
+                (parent, rel, None)
+            }
+        }
     }
 
     /// Count of registered roots.  Diagnostics only.
     pub fn len(&self) -> usize {
-        let guard = self.inner.read().unwrap();
+        let backing = self.current_backing();
+        let guard = poison_abort(backing.read(), "RootIdentityRegistry.inner");
         guard.entries.len()
     }
 
     pub fn is_empty(&self) -> bool { self.len() == 0 }
+
+    /// Atomically point `self`'s backing at `other`'s backing so
+    /// subsequent reads and writes through `self` (and every
+    /// clone that shares `self`'s outer slot Arc) route through
+    /// `other`'s inner map.
+    ///
+    /// See the struct-level "Two-layer indirection" section for
+    /// the load-bearing rationale (reducer-clone visibility +
+    /// late-registration propagation).
+    ///
+    /// # Compact behavior
+    ///
+    /// A subsequent `register` on EITHER `self` or `other` writes
+    /// to the shared inner map — after `share_from`, they are
+    /// semantically the same registry backing.  Calling
+    /// `share_from` a second time with a DIFFERENT `other`
+    /// atomically swaps to the new inner (the prior inner is
+    /// dropped when its last owning Arc goes away).
+    ///
+    /// # Serialize with `register` at the boot pipeline
+    ///
+    /// `share_from` and a concurrent `register` on affected
+    /// handles produce a lost-update on the losing side:
+    /// `register` snapshots the current inner Arc via
+    /// `current_backing`, `share_from` swaps the slot to a
+    /// different inner, `register`'s write lands in the ORPHANED
+    /// inner (dropped once its refcount reaches zero), and a
+    /// subsequent `get` reads the NEW inner and misses the
+    /// registration.
+    ///
+    /// The boot pipeline MUST serialize the two: register on the
+    /// manager, then broadcast via `share_from`, THEN begin per-
+    /// syscall reads through the shared handles.  All production
+    /// call sites do this by construction (boot is a single-
+    /// threaded phase); the caveat is here for anyone writing
+    /// tests or a future refactor that reorders the boot phases.
+    /// Structural enforcement (widening `register`'s lock to
+    /// contend with `share_from`) is possible but would slow the
+    /// hot path for a race that can't fire under intended usage.
+    pub fn share_from(&self, other: &RootIdentityRegistry) {
+        let src = poison_abort(other.slot.read(), "RootIdentityRegistry.slot").clone();
+        *poison_abort(self.slot.write(), "RootIdentityRegistry.slot") = src;
+    }
+
+    /// Snapshot the current backing (`Arc<RwLock<Inner>>`) —
+    /// after `share_from`, this reflects the shared inner.  The
+    /// returned Arc lets the caller take a further guard without
+    /// re-touching the outer slot on every access.
+    fn current_backing(&self) -> Arc<RwLock<Inner>> {
+        poison_abort(self.slot.read(), "RootIdentityRegistry.slot").clone()
+    }
 }
 
 #[cfg(test)]
@@ -399,5 +706,363 @@ mod tests {
             reg_b.get(&logical).is_some(),
             "clone must see registration made via original"
         );
+    }
+
+    // --- share_from --------------------------------------------------
+
+    /// `share_from` makes the shared registry's registrations
+    /// visible on the receiver.  Basic sanity: register on A,
+    /// share B ← A, verify B.get sees the registration.
+    #[test]
+    fn share_from_exposes_shared_registrations_on_receiver() {
+        let tmp = TempDir::new().unwrap();
+        let root = Root::capture(tmp.path()).unwrap();
+
+        let manager = RootIdentityRegistry::new();
+        let logical = PathBuf::from("/@bundle/shared");
+        manager.register(logical.clone(), root.clone());
+
+        let runtime = RootIdentityRegistry::new();
+        assert!(
+            runtime.get(&logical).is_none(),
+            "pre-share: runtime is empty"
+        );
+
+        runtime.share_from(&manager);
+        assert!(
+            runtime.get(&logical).is_some(),
+            "post-share: runtime sees the manager's registration"
+        );
+    }
+
+    /// The load-bearing test: `share_from` propagates LATE
+    /// registrations to prior-cloned handles.  This is the exact
+    /// PB-M-14 canary regression the two-layer indirection fixes.
+    ///
+    /// Setup mirrors the production sequence:
+    ///   1. `manager` created.
+    ///   2. `reducer_clone` cloned FROM the runtime's post-share
+    ///      handle (which shares the manager's inner via
+    ///      `share_from`).
+    ///   3. Manager registers AFTER share_from.
+    ///   4. reducer_clone MUST see the registration.
+    ///
+    /// A pre-fix single-layer design would have every
+    /// `.clone()` produce a disjoint inner map — the reducer
+    /// clone captured at step 2 would never see the step-3
+    /// registration.
+    #[test]
+    fn share_from_late_registration_propagates_to_prior_clones() {
+        let tmp = TempDir::new().unwrap();
+        let root = Root::capture(tmp.path()).unwrap();
+
+        // Step 1: manager is created (empty).
+        let manager = RootIdentityRegistry::new();
+
+        // Step 2: a runtime is created and given the manager's
+        // backing via share_from.  A downstream consumer (the
+        // "reducer") captures a clone of the runtime's handle.
+        let runtime = RootIdentityRegistry::new();
+        runtime.share_from(&manager);
+        let reducer_clone = runtime.clone();
+
+        // Step 3: the manager registers a Root (this happens
+        // AFTER the reducer_clone was captured).
+        let logical = PathBuf::from("/@bundle/late");
+        manager.register(logical.clone(), root.clone());
+
+        // Step 4: the reducer_clone MUST see the manager's
+        // late registration.  A single-layer design would fail
+        // this — reducer_clone would hold a captured-empty
+        // inner.
+        assert!(
+            reducer_clone.get(&logical).is_some(),
+            "late registration on the manager MUST propagate to \
+             a reducer clone captured after share_from"
+        );
+    }
+
+    /// After `share_from`, writes to EITHER side land in the
+    /// same shared backing.  Pins the "share_from unifies both
+    /// endpoints" semantic (not just a one-way copy).
+    #[test]
+    fn share_from_is_bidirectional_after_swap() {
+        let tmp = TempDir::new().unwrap();
+        let root = Root::capture(tmp.path()).unwrap();
+
+        let a = RootIdentityRegistry::new();
+        let b = RootIdentityRegistry::new();
+        b.share_from(&a);
+
+        // Register through `b` (the receiver).
+        let logical_b = PathBuf::from("/@bundle/from-b");
+        b.register(logical_b.clone(), root.clone());
+        assert!(a.get(&logical_b).is_some(), "a must see b's registration");
+
+        // Register through `a` (the source).
+        let logical_a = PathBuf::from("/@bundle/from-a");
+        a.register(logical_a.clone(), root.clone());
+        assert!(b.get(&logical_a).is_some(), "b must see a's registration");
+    }
+
+    /// A second `share_from` with a DIFFERENT source atomically
+    /// swaps the backing — subsequent reads see the new source's
+    /// entries, not the old.
+    #[test]
+    fn share_from_replaces_prior_backing() {
+        let tmp = TempDir::new().unwrap();
+        let root = Root::capture(tmp.path()).unwrap();
+
+        let source_a = RootIdentityRegistry::new();
+        source_a.register(PathBuf::from("/@bundle/a-key"), root.clone());
+
+        let source_b = RootIdentityRegistry::new();
+        source_b.register(PathBuf::from("/@bundle/b-key"), root.clone());
+
+        let receiver = RootIdentityRegistry::new();
+        receiver.share_from(&source_a);
+        assert!(receiver.get(Path::new("/@bundle/a-key")).is_some());
+        assert!(receiver.get(Path::new("/@bundle/b-key")).is_none());
+
+        // Swap the backing.
+        receiver.share_from(&source_b);
+        assert!(
+            receiver.get(Path::new("/@bundle/a-key")).is_none(),
+            "post-swap: prior backing's entries are gone"
+        );
+        assert!(receiver.get(Path::new("/@bundle/b-key")).is_some());
+    }
+
+    /// `share_from(&self)` on the same registry is a no-op (self-
+    /// share).  Pins that a defensive `handles.share_root_registry
+    /// (handles.root_registry())` at the boot pipeline doesn't
+    /// accidentally destroy state.
+    #[test]
+    fn share_from_self_is_noop() {
+        let tmp = TempDir::new().unwrap();
+        let root = Root::capture(tmp.path()).unwrap();
+        let reg = RootIdentityRegistry::new();
+        let logical = PathBuf::from("/@bundle/self-share");
+        reg.register(logical.clone(), root);
+
+        reg.share_from(&reg);
+        assert!(reg.get(&logical).is_some());
+    }
+
+    // --- test_permissive + Consensus-gated resolve ----------------
+
+    #[test]
+    fn test_permissive_default_is_false() {
+        let reg = RootIdentityRegistry::new();
+        assert!(!reg.is_test_permissive());
+    }
+
+    #[test]
+    fn set_test_permissive_round_trips() {
+        let reg = RootIdentityRegistry::new();
+        reg.set_test_permissive(true);
+        assert!(reg.is_test_permissive());
+        reg.set_test_permissive(false);
+        assert!(!reg.is_test_permissive());
+    }
+
+    #[test]
+    fn test_permissive_clones_share_flag() {
+        // LOAD-BEARING: Clone shares `Arc<AtomicBool>`, matching
+        // the two-layer-indirection discipline — a reducer that
+        // Clone'd the registry before boot's test-harness flip
+        // still sees the flip.
+        let reg_a = RootIdentityRegistry::new();
+        let reg_b = reg_a.clone();
+        reg_a.set_test_permissive(true);
+        assert!(reg_b.is_test_permissive());
+    }
+
+    #[test]
+    fn resolve_gated_registered_logical_returns_on_disk_and_identity() {
+        let tmp = TempDir::new().unwrap();
+        let root = Root::capture(tmp.path()).unwrap();
+        let reg = RootIdentityRegistry::new();
+        let logical = PathBuf::from("/@bundle/data");
+        reg.register(logical.clone(), root.clone());
+        let (on_disk, id) = reg
+            .resolve_or_identity_gated_for_consensus(
+                &logical,
+                crate::rust::interpreter::io::ConsensusMode::Consensus,
+            )
+            .expect("registered Consensus resolve must succeed");
+        assert_eq!(on_disk, root.path());
+        assert_eq!(id, Some(root.identity()));
+    }
+
+    #[test]
+    fn resolve_gated_oracular_unregistered_falls_through() {
+        let reg = RootIdentityRegistry::new();
+        let logical = Path::new("/some/non/registered/path");
+        let (on_disk, id) = reg
+            .resolve_or_identity_gated_for_consensus(
+                logical,
+                crate::rust::interpreter::io::ConsensusMode::Oracular,
+            )
+            .expect("Oracular + unregistered must fall through");
+        assert_eq!(on_disk, logical);
+        assert!(id.is_none());
+    }
+
+    #[test]
+    fn resolve_gated_consensus_unregistered_errors_fsrr_unsupported() {
+        // LOAD-BEARING: the whole point of the gate is to refuse
+        // a Consensus-mode Shape-A cap whose canonRoot the boot
+        // pipeline forgot to register.
+        let reg = RootIdentityRegistry::new();
+        let logical = Path::new("/@bundle/unregistered");
+        let err = reg
+            .resolve_or_identity_gated_for_consensus(
+                logical,
+                crate::rust::interpreter::io::ConsensusMode::Consensus,
+            )
+            .expect_err("Consensus + unregistered must error");
+        assert_eq!(
+            err.0,
+            crate::rust::interpreter::io::errors::FSERR_UNSUPPORTED
+        );
+        assert!(err.1.contains("M-04"), "error msg must cite M-04");
+    }
+
+    #[test]
+    fn resolve_gated_consensus_unregistered_with_test_permissive_falls_through() {
+        // LOAD-BEARING: test-harness opt-out produces the Oracular
+        // fall-through shape so test shards built on raw tempdirs
+        // can exercise Consensus caps without boot registration.
+        let reg = RootIdentityRegistry::new();
+        reg.set_test_permissive(true);
+        let logical = Path::new("/@bundle/test-only");
+        let (on_disk, id) = reg
+            .resolve_or_identity_gated_for_consensus(
+                logical,
+                crate::rust::interpreter::io::ConsensusMode::Consensus,
+            )
+            .expect("test-permissive must allow fall-through");
+        assert_eq!(on_disk, logical);
+        assert!(id.is_none());
+    }
+
+    // --- resolve_wal_entry_path / resolve_wal_entry_root_rel -----
+
+    /// Shortest-registered + nested-registered combo pins the
+    /// longest-prefix discipline: a path with the deeper logical
+    /// prefix MUST resolve against the deeper registration.
+    #[test]
+    fn resolve_wal_entry_path_prefers_longest_prefix() {
+        let tmp = TempDir::new().unwrap();
+        let broad_dir = tmp.path().join("broad");
+        let nested_dir = tmp.path().join("nested");
+        fs::create_dir(&broad_dir).unwrap();
+        fs::create_dir(&nested_dir).unwrap();
+        let broad = Root::capture(&broad_dir).unwrap();
+        let nested = Root::capture(&nested_dir).unwrap();
+        let reg = RootIdentityRegistry::new();
+        reg.register(PathBuf::from("/@bundle"), broad);
+        reg.register(PathBuf::from("/@bundle/cfg"), nested.clone());
+        let out = reg.resolve_wal_entry_path(Path::new("/@bundle/cfg/theme"));
+        // LOAD-BEARING: must rewrite via the nested registration's
+        // on-disk root, NOT the broad one.  Otherwise the applier
+        // would write to <broad_on_disk>/cfg/theme instead of
+        // <nested_on_disk>/theme.
+        assert_eq!(out, nested.path().join("theme"));
+    }
+
+    #[test]
+    fn resolve_wal_entry_path_unregistered_falls_through() {
+        let reg = RootIdentityRegistry::new();
+        let entry = Path::new("/legacy/absolute/path");
+        assert_eq!(reg.resolve_wal_entry_path(entry), entry);
+    }
+
+    #[test]
+    fn resolve_wal_entry_path_component_based_matching_rejects_prefix_collision() {
+        // LOAD-BEARING: `starts_with` is component-based, so
+        // registering `/@bundle` must NOT match `/@bundle-other`.
+        let tmp = TempDir::new().unwrap();
+        let root = Root::capture(tmp.path()).unwrap();
+        let reg = RootIdentityRegistry::new();
+        reg.register(PathBuf::from("/@bundle"), root.clone());
+        let collide = Path::new("/@bundle-other/file");
+        assert_eq!(
+            reg.resolve_wal_entry_path(collide),
+            collide,
+            "/@bundle-other must NOT match /@bundle registration"
+        );
+    }
+
+    #[test]
+    fn resolve_wal_entry_path_exact_root_match_rejoins_empty_rel() {
+        let tmp = TempDir::new().unwrap();
+        let root = Root::capture(tmp.path()).unwrap();
+        let reg = RootIdentityRegistry::new();
+        let logical = PathBuf::from("/@bundle/exact");
+        reg.register(logical.clone(), root.clone());
+        // The exact-root case: entry_path == logical → strip to
+        // empty → join(empty) == root path.
+        assert_eq!(reg.resolve_wal_entry_path(&logical), root.path());
+    }
+
+    #[test]
+    fn resolve_wal_entry_root_rel_decomposes_registered_entry() {
+        let tmp = TempDir::new().unwrap();
+        let nested_dir = tmp.path().join("nested");
+        fs::create_dir(&nested_dir).unwrap();
+        let nested = Root::capture(&nested_dir).unwrap();
+        let reg = RootIdentityRegistry::new();
+        reg.register(PathBuf::from("/@bundle/cfg"), nested.clone());
+        let (on_disk_root, rel, id) =
+            reg.resolve_wal_entry_root_rel(Path::new("/@bundle/cfg/sub/theme"));
+        assert_eq!(on_disk_root, nested.path());
+        assert_eq!(rel, PathBuf::from("sub/theme"));
+        assert_eq!(id, Some(nested.identity()));
+    }
+
+    #[test]
+    fn resolve_wal_entry_root_rel_unregistered_splits_parent_basename() {
+        // LOAD-BEARING: for an unregistered absolute path, the
+        // decomposition returns (parent, basename, None) so the
+        // applier can still hand `safe_descend` a single-component
+        // rel.  Lose the identity check (None), keep the deeper-
+        // component TOCTOU closure.
+        let reg = RootIdentityRegistry::new();
+        let (root, rel, id) = reg.resolve_wal_entry_root_rel(Path::new("/legacy/dir/file.bin"));
+        assert_eq!(root, PathBuf::from("/legacy/dir"));
+        assert_eq!(rel, PathBuf::from("file.bin"));
+        assert!(id.is_none());
+    }
+
+    #[test]
+    fn resolve_wal_entry_root_rel_prefers_longest_prefix() {
+        let tmp = TempDir::new().unwrap();
+        let broad_dir = tmp.path().join("broad");
+        let nested_dir = tmp.path().join("nested");
+        fs::create_dir(&broad_dir).unwrap();
+        fs::create_dir(&nested_dir).unwrap();
+        let broad = Root::capture(&broad_dir).unwrap();
+        let nested = Root::capture(&nested_dir).unwrap();
+        let reg = RootIdentityRegistry::new();
+        reg.register(PathBuf::from("/@bundle"), broad);
+        reg.register(PathBuf::from("/@bundle/cfg"), nested.clone());
+        let (on_disk_root, rel, id) =
+            reg.resolve_wal_entry_root_rel(Path::new("/@bundle/cfg/sub/theme"));
+        assert_eq!(on_disk_root, nested.path());
+        assert_eq!(rel, PathBuf::from("sub/theme"));
+        assert_eq!(id, Some(nested.identity()));
+    }
+
+    #[test]
+    fn resolve_wal_entry_root_rel_root_only_path_returns_empty_basename() {
+        // Degenerate: entry = `/` → parent = None → fall back to `/`,
+        // file_name = None → empty rel.  Must not panic.
+        let reg = RootIdentityRegistry::new();
+        let (root, rel, id) = reg.resolve_wal_entry_root_rel(Path::new("/"));
+        assert_eq!(root, PathBuf::from("/"));
+        assert_eq!(rel, PathBuf::new());
+        assert!(id.is_none());
     }
 }

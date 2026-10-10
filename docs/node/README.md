@@ -62,6 +62,8 @@ main()
 - `dev` -- Dev mode, deployer private key
 - `openai` -- LLM integration settings
 
+`peers-discovery.heartbeat-failure-threshold` controls consecutive failed heartbeats and failed outbound connection attempts. The default is 3. A successful heartbeat or connection attempt resets its respective failure count. Heartbeats use `cleanup-interval`. Connection attempts use `lookup-interval`.
+
 ### CLI Flag Overrides
 
 The following flags override HOCON configuration at startup. CLI flags always take precedence.
@@ -238,11 +240,17 @@ API responses from `explore-deploy`, `data-at-name-by-block-hash`, `registry`, a
 | **Primitives** | | |
 | Boolean | `ExprBool` | `{"ExprBool": {"data": true}}` |
 | Integer | `ExprInt` | `{"ExprInt": {"data": 42}}` |
+| Unsigned 64-bit integer | `ExprUint64` | `{"ExprUint64": {"data": 42}}` |
+| Signed 32-bit integer | `ExprInt32` | `{"ExprInt32": {"data": -42}}` |
+| Unsigned 32-bit integer | `ExprUint32` | `{"ExprUint32": {"data": 42}}` |
+| Unsigned 16-bit integer | `ExprUint16` | `{"ExprUint16": {"data": 42}}` |
+| Unsigned 8-bit integer | `ExprUint8` | `{"ExprUint8": {"data": 42}}` |
 | String | `ExprString` | `{"ExprString": {"data": "hello"}}` |
 | URI | `ExprUri` | `{"ExprUri": {"data": "rho:io:stdout"}}` |
 | Bytes | `ExprBytes` | `{"ExprBytes": {"data": "0a1b2c"}}` |
 | **Extended numerics** | | |
 | Float (f64) | `ExprFloat` | `{"ExprFloat": {"data": 3.14}}` |
+| Float32 (f32) | `ExprFloat32` | `{"ExprFloat32": {"data": 2.5}}` |
 | BigInt | `ExprBigInt` | `{"ExprBigInt": {"data": "12345678901234567890"}}` |
 | BigRational | `ExprBigRat` | `{"ExprBigRat": {"numerator": "1", "denominator": "3"}}` |
 | FixedPoint | `ExprFixedPoint` | `{"ExprFixedPoint": {"value": "31415", "scale": 4}}` |
@@ -274,6 +282,8 @@ API responses from `explore-deploy`, `data-at-name-by-block-hash`, `registry`, a
 
 - **No silent drops**: every Rholang type has a representation. Unknown future types render as `ExprUnknown` with a type name — never silently disappear from responses.
 - **Map keys**: any RhoExpr can be a map key. Primitives use natural string representation; complex types are serialized to JSON strings.
+- **Sized integer map keys**: a key of type `UInt64`, `Int32`, `UInt32`, `UInt16` or `UInt8` has its type suffix, for example `"5u64"` or `"5u8"`. An `Int` key has no suffix (`"5"`). Keys of different integer types therefore stay separate.
+- **64-bit integers in JSON**: `ExprInt` and `ExprUint64` values are JSON numbers. A JavaScript `Number` holds integers exactly only up to 2^53, so a client in JavaScript must use a parser with 64-bit integer support to read larger values exactly.
 - **Extended numerics**: `BigInt`, `BigRat`, and `FixedPoint` are represented as decimal strings (not binary) for client readability. `Float` is IEEE 754 f64.
 - **Process-level constructs** (sends, receives, new bindings) are represented as `ExprUnknown { type_name: "Process" }` rather than full AST serialization. These are rarely returned by data queries.
 - **Deploy not found**: returns HTTP 404 (not 400) so clients can distinguish "not yet in block" from "invalid request."
@@ -406,14 +416,48 @@ Structured logging uses the `tracing` crate. The subscriber is initialised from 
 ### Configuration (`logging { }` in HOCON)
 
 | Key | Default | Values |
-|---|---|---|
+| --- | --- | --- |
 | `filter` | `"info"` | Any `EnvFilter` expression, e.g. `"info,f1r3fly.casper=debug"` |
 | `format` | `"json"` | `"json"` (structured, for aggregators) · `"pretty"` (human-readable, for terminals) |
-| `sink` | `"stdout"` | `"stdout"` · `"file"` · `"both"` |
-| `file.rotation` | `"daily"` | `"never"` · `"hourly"` · `"daily"` |
-| `file.retention` | `14` | Number of rotated files to keep; `0` = unlimited |
+| `sink` | `"stdout"` | `"stdout"`, `"file"`, or development-only `"both"` |
+| `file.rotation` | `"daily"` | `"never"`, `"hourly"`, or `"daily"` |
+| `file.retention` | `14` | Maximum archive count. `0` removes only the count limit. |
+| `file.max-file-size-bytes` | `104857600` | Positive bytes per file, default 100 MiB. |
+| `file.max-total-size-bytes` | `2147483648` | Positive directory bytes, default 2 GiB. Must be at least the per-file limit. |
 
-When `sink` includes `"file"`, logs are written to `<data-dir>/logs/node.log`. The `logs/` subdirectory is created automatically. In Docker the data dir is `/var/lib/rnode`, so log files land at `/var/lib/rnode/logs/node.log`.
+The file sink writes to `<data-dir>/logs/node.log`. In Docker, the path is `/var/lib/rnode/logs/node.log`.
+The byte limits apply to every rotation mode and retention count.
+The writer removes the oldest managed archive before another write would exceed the directory budget.
+The byte budget counts unrelated regular files but does not permit their removal.
+Startup can remove oversized managed logs when an operator reduces the byte limits.
+
+### Deployment policy
+
+Use one log sink for each deployment.
+The repository Compose commands select `--log-sink=stdout` before the `run` subcommand.
+This root option overrides `logging.sink` in a mounted configuration.
+The container stores node output with the `json-file` driver, `max-size: 100m`, and `max-file: "3"`.
+The CI port overlays inherit these caps from their base Compose files.
+
+Use `both` only for development.
+This setting duplicates each event in the node file and container output.
+The duplicate output doubles disk use for the same retained event history before the independent retention limits apply.
+Both outputs still need their own storage limits.
+
+To select the bounded file sink, put the root option before `run`:
+
+```bash
+node --log-sink=file run
+```
+
+The repository guard runs through `cargo test --locked -p supply-chain` in the existing Lint job.
+The guard resolves YAML anchors and merge keys, inspects node services, and checks the two supported CI overlay combinations.
+The guard refuses missing caps, invalid limits, dual sinks, and unmodeled logging overrides.
+Any new Compose include, service extension, or logging tag needs an explicit inspection rule.
+
+The configured container limits do not prove an exact host disk bound.
+Large events, filesystem allocation, metadata, and Docker behavior can change actual storage use.
+The soak guardian and live deployment checks remain separate requirements.
 
 ### Precedence (highest wins)
 

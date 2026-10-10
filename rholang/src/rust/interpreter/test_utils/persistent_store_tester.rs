@@ -47,7 +47,7 @@ where T: ISpace<Par, BindPattern, ListParWithRandom, TaggedContinuation> {
 pub async fn create_test_runtime_with_genesis_contracts() -> RhoRuntimeImpl {
     let mut kvm = InMemoryStoreManager::new();
     let store = kvm.r_space_stores().await.unwrap();
-    let runtime = create_runtime_from_kv_store(
+    create_runtime_from_kv_store(
         store,
         Arc::new(HashMap::new()),
         true,
@@ -55,7 +55,6 @@ pub async fn create_test_runtime_with_genesis_contracts() -> RhoRuntimeImpl {
         Arc::new(Box::new(Matcher)),
         ExternalServices::noop(),
     )
-    .await;
-
-    runtime
+    .await
+    .unwrap()
 }

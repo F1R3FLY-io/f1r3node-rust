@@ -14,6 +14,9 @@ use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
 
 use crate::rust::util::doubly_linked_dag_operations::BlockDependencyDag;
 
+pub const CASPER_BUFFER_PARK_TIME_METRIC: &str = "casper.buffer.park.time";
+const CASPER_BUFFER_METRICS_SOURCE: &str = "f1r3fly.casper.casper-buffer";
+
 /**
  * @param parentsStore - persistent map {hash -> parents set}
  * @param blockDependencyDag - in-memory dependency DAG, recreated from parentsStore on node startup
@@ -24,6 +27,8 @@ pub struct CasperBufferKeyValueStorage {
     block_dependency_dag: Arc<Mutex<BlockDependencyDag>>,
     first_seen_ms: Arc<dashmap::DashMap<BlockHashSerde, u64>>,
     last_prune_ms: Arc<AtomicU64>,
+    released: Arc<Mutex<HashSet<BlockHashSerde>>>,
+    release_scans: Arc<AtomicU64>,
     state_lock: Arc<RwLock<()>>,
 }
 
@@ -56,6 +61,8 @@ impl CasperBufferKeyValueStorage {
             block_dependency_dag: Arc::new(Mutex::new(in_mem_store)),
             first_seen_ms: Arc::new(dashmap::DashMap::new()),
             last_prune_ms: Arc::new(AtomicU64::new(0)),
+            released: Arc::new(Mutex::new(HashSet::new())),
+            release_scans: Arc::new(AtomicU64::new(0)),
             state_lock: Arc::new(RwLock::new(())),
         })
     }
@@ -71,7 +78,7 @@ impl CasperBufferKeyValueStorage {
         self.state_lock.write().unwrap_or_else(|e| e.into_inner())
     }
 
-    fn add_relation_unlocked(
+    pub(crate) fn add_relation_unlocked(
         &self,
         parent: BlockHashSerde,
         child: BlockHashSerde,
@@ -95,6 +102,14 @@ impl CasperBufferKeyValueStorage {
     /// half of the (dag.insert, buffer.remove) pair under a shared
     /// critical section.
     pub(crate) fn remove_unlocked(&self, hash: BlockHashSerde) -> Result<(), KvStoreError> {
+        self.remove_unlocked_recording(hash, true)
+    }
+
+    fn remove_unlocked_recording(
+        &self,
+        hash: BlockHashSerde,
+        record_release: bool,
+    ) -> Result<(), KvStoreError> {
         let (_hashes_affected, hashes_removed, orphaned_hashes, affected_parent_maps) = {
             let mut dag = self
                 .block_dependency_dag
@@ -116,6 +131,19 @@ impl CasperBufferKeyValueStorage {
             (affected, removed, orphaned, affected_maps)
         };
         self.first_seen_ms.remove(&hash);
+        self.released
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .extend(hashes_removed.iter().cloned());
+        if record_release {
+            let now_ms = Self::now_millis();
+            for released in &hashes_removed {
+                if let Some(parked_at) = self.first_seen_ms.get(released) {
+                    metrics::histogram!(CASPER_BUFFER_PARK_TIME_METRIC, "source" => CASPER_BUFFER_METRICS_SOURCE)
+                        .record(now_ms.saturating_sub(*parked_at) as f64 / 1000.0);
+                }
+            }
+        }
 
         // Process each affected hash
         let changes = affected_parent_maps;
@@ -142,11 +170,23 @@ impl CasperBufferKeyValueStorage {
         self.add_relation_unlocked(parent, child)
     }
 
+    pub fn take_released(&self) -> Vec<BlockHashSerde> {
+        std::mem::take(&mut *self.released.lock().unwrap_or_else(|e| e.into_inner()))
+            .into_iter()
+            .collect()
+    }
+
+    pub fn count_release_scan(&self) -> u64 { self.release_scans.fetch_add(1, Ordering::Relaxed) }
+
     pub fn put_pendant(&self, block: BlockHashSerde) -> Result<(), KvStoreError> {
         let _guard = self.write_guard();
+        self.put_pendant_unlocked(block)
+    }
+
+    pub(crate) fn put_pendant_unlocked(&self, block: BlockHashSerde) -> Result<(), KvStoreError> {
         let temp_block = BlockHashSerde(prost::bytes::Bytes::from_static(b"tempblock"));
         self.add_relation_unlocked(temp_block.clone(), block)?;
-        self.remove_unlocked(temp_block)?;
+        self.remove_unlocked_recording(temp_block, false)?;
         Ok(())
     }
 

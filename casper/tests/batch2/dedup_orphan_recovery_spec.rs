@@ -72,7 +72,7 @@ async fn dedup_orphan_lands_in_rejected_deploy_buffer() {
     let (rm, _) = RuntimeManager::create_with_history(
         rspace_store,
         mergeable_store,
-        std::sync::Arc::new(Genesis::default_mergeable_tags()),
+        Genesis::default_mergeable_tags_arc(),
         ExternalServices::noop(),
     );
 

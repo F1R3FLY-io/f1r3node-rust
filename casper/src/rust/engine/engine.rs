@@ -14,7 +14,6 @@ use comm::rust::peer_node::PeerNode;
 use comm::rust::rp::connect::ConnectionsCell;
 use comm::rust::rp::rp_conf::RPConf;
 use comm::rust::transport::transport_layer::{Blob, TransportLayer};
-use models::rust::block_hash::BlockHash;
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::{
     ApprovedBlock, BlockMessage, CasperMessage, MergeableEntryResponse, NoApprovedBlockAvailable,
@@ -26,6 +25,7 @@ use shared::rust::shared::f1r3fly_event::F1r3flyEvent;
 use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
 use tokio::sync::mpsc;
 
+use crate::rust::blocks::block_processor::{BlockQueueItem, InFlightBlocks};
 use crate::rust::casper::{CasperShardConf, MultiParentCasper};
 use crate::rust::engine::block_retriever::BlockRetriever;
 use crate::rust::engine::engine_cell::EngineCell;
@@ -198,11 +198,8 @@ pub async fn send_no_approved_block_available<T: TransportLayer + Send + Sync + 
 // NOTE: Changed to use trait object (dyn MultiParentCasper) instead of generic T
 // based on discussion with Steven for TestFixture compatibility
 pub async fn transition_to_running<U: TransportLayer + Send + Sync + Clone + 'static>(
-    block_processing_queue_tx: mpsc::Sender<(
-        Arc<dyn MultiParentCasper + Send + Sync>,
-        BlockMessage,
-    )>,
-    blocks_in_processing: Arc<DashSet<BlockHash>>,
+    block_processing_queue_tx: mpsc::Sender<BlockQueueItem>,
+    blocks_in_processing: Arc<InFlightBlocks>,
     casper: Arc<dyn MultiParentCasper + Send + Sync>,
     approved_block: ApprovedBlock,
     the_init: Arc<
@@ -212,6 +209,23 @@ pub async fn transition_to_running<U: TransportLayer + Send + Sync + Clone + 'st
     transport: Arc<U>,
     conf: RPConf,
     block_retriever: BlockRetriever<U>,
+    // Phase 7b-1: optional snapshot chunk-fetch context.  When
+    // `Some`, the running engine's packet dispatch routes
+    // snapshot-related CasperMessage variants to the sync driver
+    // + server handlers.  `None` disables snapshot sync (observer
+    // nodes without an `fs_snapshot_writer`, test harnesses that
+    // don't wire the boot pipeline).  Installed via
+    // `Running::install_snapshot_chunk_context` after construction
+    // + before `engine_cell.set` so no CasperMessage reaches a
+    // half-wired Running.
+    snapshot_chunk_ctx: Option<crate::rust::engine::running::SnapshotChunkContext>,
+    // Phase 7b-2: optional WAL payload-fetch context.  Same
+    // install-before-publish shape as `snapshot_chunk_ctx`.  Tick-
+    // loop spawn + `tick_stop` population are a follow-up slice
+    // (requires threading `recovery_context` / `ConnectionsCell`
+    // through this function to feed `wal_payload_sync::
+    // spawn_periodic_tick`).
+    wal_payload_ctx: Option<crate::rust::engine::running::WalPayloadContext>,
     engine_cell: &EngineCell,
     event_log: &F1r3flyEvents,
     state_items_tx: Option<
@@ -236,7 +250,7 @@ pub async fn transition_to_running<U: TransportLayer + Send + Sync + Clone + 'st
     let block_hash_string =
         PrettyPrinter::build_string_no_limit(&approved_block.candidate.block.block_hash);
 
-    let running = Running::new(
+    let running = Arc::new(Running::new(
         block_processing_queue_tx,
         blocks_in_processing,
         casper,
@@ -247,9 +261,21 @@ pub async fn transition_to_running<U: TransportLayer + Send + Sync + Clone + 'st
         conf,
         block_retriever,
         state_items_tx,
-    );
+    ));
 
-    engine_cell.set(Arc::new(running)).await;
+    // Install contexts BEFORE publishing the engine so the very
+    // first incoming CasperMessage is dispatched under the full
+    // wiring (avoids a race window where messages arrive before
+    // the context install).  Install-once per OnceLock — a second
+    // call silently no-ops.
+    if let Some(ctx) = snapshot_chunk_ctx {
+        running.install_snapshot_chunk_context(ctx);
+    }
+    if let Some(ctx) = wal_payload_ctx {
+        running.install_wal_payload_context(ctx);
+    }
+
+    engine_cell.set(running).await;
 
     if let Err(e) = event_log.publish(F1r3flyEvent::entered_running_state(block_hash_string)) {
         tracing::error!(
@@ -276,11 +302,8 @@ pub async fn transition_to_running<U: TransportLayer + Send + Sync + Clone + 'st
 // NOTE: Parameter types adapted to match GenesisValidator changes (Arc wrappers, trait objects)
 // based on discussion with Steven for TestFixture compatibility
 pub async fn transition_to_initializing<U: TransportLayer + Send + Sync + Clone + 'static>(
-    block_processing_queue_tx: &mpsc::Sender<(
-        Arc<dyn MultiParentCasper + Send + Sync>,
-        BlockMessage,
-    )>,
-    blocks_in_processing: &Arc<DashSet<BlockHash>>,
+    block_processing_queue_tx: &mpsc::Sender<BlockQueueItem>,
+    blocks_in_processing: &Arc<InFlightBlocks>,
     casper_shard_conf: &CasperShardConf,
     validator_id: &Option<ValidatorIdentity>,
     init: Arc<
@@ -357,4 +380,3 @@ pub async fn transition_to_initializing<U: TransportLayer + Send + Sync + Clone 
 
     Ok(())
 }
-use dashmap::DashSet;

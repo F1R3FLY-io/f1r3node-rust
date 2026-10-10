@@ -32,6 +32,7 @@ use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::Bond;
 use models::rust::validator::Validator;
 use prost::bytes::Bytes;
+use shared::rust::dag::observation_work::{sort_by_metered, NoopWork, WorkKind, WorkMeter};
 use shared::rust::store::key_value_store::MissingBlockContext;
 
 use crate::rust::errors::CasperError;
@@ -99,18 +100,29 @@ fn state_parent_of(meta: &BlockMetadata) -> Result<Option<BlockHash>, CasperErro
 /// recursion would report a storage failure, and both become verdicts against
 /// whoever proposed the block. Naming the missing block lets the caller fetch
 /// it and retry.
-fn held_meta(
+fn held_meta_metered<W: WorkMeter>(
+    meter: &W,
     dag: &KeyValueDagRepresentation,
     hash: &BlockHash,
 ) -> Result<BlockMetadata, CasperError> {
-    dag.lookup(hash).map_err(CasperError::from)?.ok_or_else(|| {
-        CasperError::BlockNotHeld(hash.clone(), MissingBlockContext::new("floor held_meta"))
-    })
+    meter.step(WorkKind::Traversal)?;
+    meter.allocate(4, 256)?;
+    dag.lookup_metered(meter, hash)
+        .map_err(CasperError::from)?
+        .ok_or_else(|| {
+            CasperError::BlockNotHeld(hash.clone(), MissingBlockContext::new("floor held_meta"))
+        })
 }
 
 /// The block number of a block a walk needs, or [`CasperError::BlockNotHeld`].
-fn held_number(dag: &KeyValueDagRepresentation, hash: &BlockHash) -> Result<i64, CasperError> {
-    Ok(held_meta(dag, hash)?.block_number)
+fn held_number_metered<W: WorkMeter>(
+    meter: &W,
+    dag: &KeyValueDagRepresentation,
+    hash: &BlockHash,
+) -> Result<i64, CasperError> {
+    meter.step(WorkKind::Traversal)?;
+    meter.allocate(4, 256)?;
+    Ok(held_meta_metered(meter, dag, hash)?.block_number)
 }
 
 /// The outcome of walking two state lineages toward each other. Truncation is
@@ -134,20 +146,34 @@ pub(crate) enum StateLineage {
 /// The walk is deliberately unbounded. A depth cap would be a node-local limit
 /// on a value every node must derive identically, so two nodes with different
 /// caps could return different verdicts; the depth is only reported.
+#[cfg(test)]
 fn state_lineage_meet(
     dag: &KeyValueDagRepresentation,
     a: &BlockHash,
     b: &BlockHash,
 ) -> Result<StateLineage, CasperError> {
+    state_lineage_meet_metered(&NoopWork, dag, a, b)
+}
+
+fn state_lineage_meet_metered<W: WorkMeter>(
+    meter: &W,
+    dag: &KeyValueDagRepresentation,
+    a: &BlockHash,
+    b: &BlockHash,
+) -> Result<StateLineage, CasperError> {
+    meter.step(WorkKind::Traversal)?;
+    meter.allocate(4, 256)?;
     let mut a = a.clone();
     let mut b = b.clone();
     let mut steps: usize = 0;
     loop {
+        meter.step(WorkKind::Traversal)?;
+        meter.allocate(4, 256)?;
         if a == b {
             return Ok(StateLineage::Meet(a));
         }
-        let meta_a = held_meta(dag, &a)?;
-        let meta_b = held_meta(dag, &b)?;
+        let meta_a = held_meta_metered(meter, dag, &a)?;
+        let meta_b = held_meta_metered(meter, dag, &b)?;
         if meta_a.block_number > meta_b.block_number {
             match state_parent_of(&meta_a)? {
                 Some(parent) => a = parent,
@@ -180,12 +206,16 @@ fn state_lineage_meet(
 /// The sigs a single block's construction step introduces into its state:
 /// non-failed fresh executions plus chains its merge applied from scope.
 /// Reads the block body; an absent body is refused, never guessed.
-fn introduced_sigs<'m>(
+fn introduced_sigs_metered<'m, W: WorkMeter>(
+    meter: &W,
     block_store: &KeyValueBlockStore,
     hash: &BlockHash,
     memo: &'m mut IntroducedSigsMemo,
 ) -> Result<&'m HashSet<Bytes>, CasperError> {
+    meter.step(WorkKind::Traversal)?;
+    meter.allocate(4, 256)?;
     if !memo.contains_key(hash) {
+        meter.charge(WorkKind::Allocation, 1, meter.body_bytes())?;
         let block = block_store.get(hash)?.ok_or_else(|| {
             CasperError::Other(format!(
                 "state containment: lineage block {} is absent from the block \
@@ -195,11 +225,17 @@ fn introduced_sigs<'m>(
         })?;
         let mut sigs: HashSet<Bytes> = HashSet::new();
         for pd in &block.body.deploys {
+            meter.step(WorkKind::Signature)?;
+            meter.step(WorkKind::Traversal)?;
+            meter.allocate(4, 256)?;
             if !pd.is_failed {
                 sigs.insert(pd.deploy.sig.clone());
             }
         }
         for sig in &block.body.applied_from_scope {
+            meter.step(WorkKind::Signature)?;
+            meter.step(WorkKind::Traversal)?;
+            meter.allocate(4, 256)?;
             sigs.insert(sig.clone());
         }
         memo.insert(hash.clone(), sigs);
@@ -208,18 +244,27 @@ fn introduced_sigs<'m>(
 }
 
 /// The sigs introduced on `from`'s state lineage STRICTLY above `meet`.
-fn segment_introduced_sigs(
+fn segment_introduced_sigs_metered<W: WorkMeter>(
+    meter: &W,
     dag: &KeyValueDagRepresentation,
     block_store: &KeyValueBlockStore,
     from: &BlockHash,
     meet: &BlockHash,
     memo: &mut IntroducedSigsMemo,
 ) -> Result<HashSet<Bytes>, CasperError> {
+    meter.step(WorkKind::Traversal)?;
+    meter.allocate(4, 256)?;
     let mut sigs: HashSet<Bytes> = HashSet::new();
     let mut cur = from.clone();
     while cur != *meet {
-        sigs.extend(introduced_sigs(block_store, &cur, memo)?.iter().cloned());
-        let meta = held_meta(dag, &cur)?;
+        meter.step(WorkKind::Traversal)?;
+        meter.allocate(4, 256)?;
+        for sig in introduced_sigs_metered(meter, block_store, &cur, memo)? {
+            meter.step(WorkKind::Signature)?;
+            meter.allocate(2, 128)?;
+            sigs.insert(sig.clone());
+        }
+        let meta = held_meta_metered(meter, dag, &cur)?;
         cur = state_parent_of(&meta)?.ok_or_else(|| {
             CasperError::Other(format!(
                 "state containment: lineage of {} reached a root without \
@@ -251,11 +296,25 @@ pub(crate) fn state_contains(
     x: &Floor,
     memo: &mut IntroducedSigsMemo,
 ) -> Result<bool, CasperError> {
+    state_contains_metered(&NoopWork, dag, block_store, cand, x, memo)
+}
+
+pub(crate) fn state_contains_metered<W: WorkMeter>(
+    meter: &W,
+    dag: &KeyValueDagRepresentation,
+    block_store: &KeyValueBlockStore,
+    cand: &Floor,
+    x: &Floor,
+    memo: &mut IntroducedSigsMemo,
+) -> Result<bool, CasperError> {
+    meter.step(WorkKind::Traversal)?;
+    meter.allocate(4, 256)?;
     if cand.hash == x.hash {
         trace_containment(cand, x, "same-block", None, 0, &[]);
         return Ok(true);
     }
-    let StateLineage::Meet(meet) = state_lineage_meet(dag, &cand.hash, &x.hash)? else {
+    let StateLineage::Meet(meet) = state_lineage_meet_metered(meter, dag, &cand.hash, &x.hash)?
+    else {
         trace_containment(cand, x, "disconnected-lineages", None, 0, &[]);
         return Ok(false);
     };
@@ -263,13 +322,18 @@ pub(crate) fn state_contains(
         trace_containment(cand, x, "on-lineage", Some(&meet), 0, &[]);
         return Ok(true);
     }
-    let settled = segment_introduced_sigs(dag, block_store, &x.hash, &meet, memo)?;
+    let settled = segment_introduced_sigs_metered(meter, dag, block_store, &x.hash, &meet, memo)?;
     if settled.is_empty() {
         trace_containment(cand, x, "no-settled-content", Some(&meet), 0, &[]);
         return Ok(true);
     }
-    let carried = segment_introduced_sigs(dag, block_store, &cand.hash, &meet, memo)?;
-    let missing = settled.difference(&carried).count();
+    let carried =
+        segment_introduced_sigs_metered(meter, dag, block_store, &cand.hash, &meet, memo)?;
+    let mut missing = 0;
+    for sig in &settled {
+        meter.step(WorkKind::Signature)?;
+        missing += usize::from(!carried.contains(sig));
+    }
     if missing == 0 {
         trace_containment(cand, x, "contained", Some(&meet), 0, &[]);
         Ok(true)
@@ -406,17 +470,23 @@ fn hold_for(error: CasperError, ftt: FtThreshold) -> Result<FloorOfView, CasperE
 
 /// The tips whose floor and frontier this node can resolve. Run only after a
 /// derivation reported absence, to attribute it to the tips responsible.
-async fn decidable_tips(
+async fn decidable_tips_metered<W: WorkMeter>(
+    meter: &W,
     dag: &KeyValueDagRepresentation,
     block_store: &KeyValueBlockStore,
     tips: &[BlockHash],
     live_snapshot: &BTreeMap<Validator, BlockHash>,
     ftt: FtThreshold,
 ) -> Result<Vec<BlockHash>, CasperError> {
+    meter.allocate(tips.len(), 2048)?;
+    meter.step(WorkKind::Traversal)?;
+    meter.allocate(4, 256)?;
     let mut decidable: Vec<BlockHash> = Vec::with_capacity(tips.len());
     for tip in tips {
-        let undecidable = match floor_of_block(dag, block_store, tip, ftt).await {
-            Ok(_) => match parent_frontier(dag, tip, live_snapshot, ftt).await {
+        meter.step(WorkKind::Traversal)?;
+        meter.allocate(4, 256)?;
+        let undecidable = match floor_of_block_metered(meter, dag, block_store, tip, ftt).await {
+            Ok(_) => match parent_frontier_metered(meter, dag, tip, live_snapshot, ftt).await {
                 Ok(_) => None,
                 Err(CasperError::BlockNotHeld(missing, _)) => Some(missing),
                 Err(other) => return Err(other),
@@ -450,6 +520,18 @@ pub async fn floor_of_view(
     current: &Floor,
     ftt: FtThreshold,
 ) -> Result<FloorOfView, CasperError> {
+    floor_of_view_metered(&NoopWork, dag, block_store, current, ftt).await
+}
+
+pub async fn floor_of_view_metered<W: WorkMeter>(
+    meter: &W,
+    dag: &KeyValueDagRepresentation,
+    block_store: &KeyValueBlockStore,
+    current: &Floor,
+    ftt: FtThreshold,
+) -> Result<FloorOfView, CasperError> {
+    meter.step(WorkKind::Traversal)?;
+    meter.allocate(4, 256)?;
     // A latest-message slot whose held target the validator never signed
     // is a seed — the newly-bonded genesis placeholder — not testimony,
     // and it must not drag a height-0 tip into this derivation. A slot
@@ -460,8 +542,10 @@ pub async fn floor_of_view(
     let mut testimony: Vec<(Validator, BlockHash)> = Vec::new();
     let mut tips: Vec<BlockHash> = Vec::new();
     for (validator, hash) in dag.latest_message_hashes() {
+        meter.step(WorkKind::Traversal)?;
+        meter.allocate(4, 256)?;
         let Some(metadata) = dag
-            .own_testimony(&validator, &hash)
+            .own_testimony_metered(meter, &validator, &hash)
             .map_err(CasperError::from)?
         else {
             tracing::debug!(
@@ -479,28 +563,49 @@ pub async fn floor_of_view(
         }
         testimony.push((validator, hash));
     }
-    tips.sort();
-    tips.dedup();
+    sort_by_metered(meter, &mut tips, Ord::cmp)?;
+    if W::ENABLED {
+        let mut kept = 0;
+        for index in 0..tips.len() {
+            meter.step(WorkKind::Traversal)?;
+            if kept == 0 || tips[index] != tips[kept - 1] {
+                tips.swap(index, kept);
+                kept += 1;
+            }
+        }
+        tips.truncate(kept);
+    } else {
+        tips.dedup();
+    }
     if tips.is_empty() {
         return Ok(FloorOfView::NoAdvance);
     }
-    let live_snapshot: BTreeMap<Validator, BlockHash> = testimony.into_iter().collect();
+    let mut live_snapshot = BTreeMap::new();
+    for (validator, hash) in testimony {
+        meter.step(WorkKind::Traversal)?;
+        live_snapshot.insert(validator, hash);
+    }
 
     // Absence means one tip cannot be judged, so find which and abstain it
     // rather than the cycle. Probing only on failure keeps the healthy path to
     // one resolution per tip: `parent_frontier` caches nothing, and its cost
     // grows with the tip-to-frontier distance.
-    let derived = match finalized_floor(dag, block_store, &tips, &live_snapshot, ftt).await {
+    let derived = match finalized_floor_metered(meter, dag, block_store, &tips, &live_snapshot, ftt)
+        .await
+    {
         Ok(derived) => derived,
         Err(CasperError::BlockNotHeld(missing, _)) => {
-            let decidable = decidable_tips(dag, block_store, &tips, &live_snapshot, ftt).await?;
+            let decidable =
+                decidable_tips_metered(meter, dag, block_store, &tips, &live_snapshot, ftt).await?;
             if decidable.is_empty() {
                 return Ok(FloorOfView::NoAdvance);
             }
             if decidable.len() == tips.len() {
                 return Ok(FloorOfView::AbsenceHold { missing });
             }
-            match finalized_floor(dag, block_store, &decidable, &live_snapshot, ftt).await {
+            match finalized_floor_metered(meter, dag, block_store, &decidable, &live_snapshot, ftt)
+                .await
+            {
                 Ok(derived) => derived,
                 Err(error) => return hold_for(error, ftt),
             }
@@ -511,7 +616,7 @@ pub async fn floor_of_view(
         return Ok(FloorOfView::NoAdvance);
     }
     let mut memo = IntroducedSigsMemo::new();
-    match state_contains(dag, block_store, &derived, current, &mut memo) {
+    match state_contains_metered(meter, dag, block_store, &derived, current, &mut memo) {
         Ok(true) => Ok(FloorOfView::Advance(derived)),
         Ok(false) => {
             // A refused floor that descends from the current LFB is settled
@@ -551,12 +656,24 @@ pub async fn fork_choice_floor<'a>(
     approved: BlockMetadata,
     ftt: FtThreshold,
 ) -> Result<BlockMetadata, CasperError> {
+    fork_choice_floor_metered(&NoopWork, dag, block_store, latest_messages, approved, ftt).await
+}
+
+pub async fn fork_choice_floor_metered<'a, W: WorkMeter>(
+    meter: &W,
+    dag: &KeyValueDagRepresentation,
+    block_store: &KeyValueBlockStore,
+    latest_messages: impl IntoIterator<Item = &'a BlockHash>,
+    approved: BlockMetadata,
+    ftt: FtThreshold,
+) -> Result<BlockMetadata, CasperError> {
     if ftt.num <= 0 {
         return Ok(approved);
     }
     let mut highest: Option<Floor> = None;
     for hash in latest_messages {
-        match floor_of_block(dag, block_store, hash, ftt).await {
+        meter.step(WorkKind::Traversal)?;
+        match floor_of_block_metered(meter, dag, block_store, hash, ftt).await {
             Ok(floor)
                 if highest
                     .as_ref()
@@ -576,8 +693,10 @@ pub async fn fork_choice_floor<'a>(
             ),
         }
     }
+    meter.step(WorkKind::Traversal)?;
     match highest {
         Some(floor) if floor.block_number > approved.block_number => {
+            meter.lookup()?;
             Ok(dag.lookup_unsafe(&floor.hash)?)
         }
         _ => Ok(approved),
@@ -645,8 +764,28 @@ pub async fn finalized_floor(
     latest_messages: &BTreeMap<Validator, BlockHash>,
     ftt: FtThreshold,
 ) -> Result<Floor, CasperError> {
-    let (floor, _settled) =
-        finalized_floor_with_candidates(dag, block_store, parents, latest_messages, ftt).await?;
+    finalized_floor_metered(&NoopWork, dag, block_store, parents, latest_messages, ftt).await
+}
+
+pub async fn finalized_floor_metered<W: WorkMeter>(
+    meter: &W,
+    dag: &KeyValueDagRepresentation,
+    block_store: &KeyValueBlockStore,
+    parents: &[BlockHash],
+    latest_messages: &BTreeMap<Validator, BlockHash>,
+    ftt: FtThreshold,
+) -> Result<Floor, CasperError> {
+    meter.step(WorkKind::Traversal)?;
+    meter.allocate(4, 256)?;
+    let (floor, _settled) = finalized_floor_with_candidates_metered(
+        meter,
+        dag,
+        block_store,
+        parents,
+        latest_messages,
+        ftt,
+    )
+    .await?;
     Ok(floor)
 }
 
@@ -661,11 +800,36 @@ pub async fn finalized_floor_with_candidates(
     latest_messages: &BTreeMap<Validator, BlockHash>,
     ftt: FtThreshold,
 ) -> Result<(Floor, Vec<Floor>), CasperError> {
+    finalized_floor_with_candidates_metered(
+        &NoopWork,
+        dag,
+        block_store,
+        parents,
+        latest_messages,
+        ftt,
+    )
+    .await
+}
+
+pub async fn finalized_floor_with_candidates_metered<W: WorkMeter>(
+    meter: &W,
+    dag: &KeyValueDagRepresentation,
+    block_store: &KeyValueBlockStore,
+    parents: &[BlockHash],
+    latest_messages: &BTreeMap<Validator, BlockHash>,
+    ftt: FtThreshold,
+) -> Result<(Floor, Vec<Floor>), CasperError> {
+    meter.allocate(parents.len(), 2048)?;
+    meter.step(WorkKind::Traversal)?;
+    meter.allocate(4, 256)?;
     let mut inherited: Vec<Floor> = Vec::with_capacity(parents.len());
     for parent in parents {
-        inherited.push(floor_of_block(dag, block_store, parent, ftt).await?);
+        meter.step(WorkKind::Traversal)?;
+        meter.allocate(4, 256)?;
+        inherited.push(floor_of_block_metered(meter, dag, block_store, parent, ftt).await?);
     }
-    let (floor, _main_parent_frontier) = derive_floor(
+    let (floor, _main_parent_frontier) = derive_floor_metered(
+        meter,
         dag,
         block_store,
         parents,
@@ -676,7 +840,17 @@ pub async fn finalized_floor_with_candidates(
     .await?;
     let mut settled: Vec<Floor> = Vec::with_capacity(inherited.len() + 1);
     for f in inherited.into_iter().chain(std::iter::once(floor.clone())) {
-        if !settled.iter().any(|s| s.hash == f.hash) {
+        meter.step(WorkKind::Traversal)?;
+        meter.allocate(4, 256)?;
+        let mut present = false;
+        for settled_floor in &settled {
+            meter.step(WorkKind::Traversal)?;
+            if settled_floor.hash == f.hash {
+                present = true;
+                break;
+            }
+        }
+        if !present {
             settled.push(f);
         }
     }
@@ -693,6 +867,7 @@ pub async fn finalized_floor_with_candidates(
 /// the block's OWN frontier `parent_frontier(B, just(B))`, a pure function of the
 /// block. `floor_of_block` persists it so later merges resolve their frontiers
 /// by an O(advance) up-walk from the cached pivot instead of an O(Δ) down-walk.
+#[cfg(test)]
 async fn derive_floor(
     dag: &KeyValueDagRepresentation,
     block_store: &KeyValueBlockStore,
@@ -701,6 +876,31 @@ async fn derive_floor(
     ftt: FtThreshold,
     inherited: Vec<Floor>,
 ) -> Result<(Floor, Floor), CasperError> {
+    derive_floor_metered(
+        &NoopWork,
+        dag,
+        block_store,
+        parents,
+        latest_messages,
+        ftt,
+        inherited,
+    )
+    .await
+}
+
+async fn derive_floor_metered<W: WorkMeter>(
+    meter: &W,
+    dag: &KeyValueDagRepresentation,
+    block_store: &KeyValueBlockStore,
+    parents: &[BlockHash],
+    latest_messages: &BTreeMap<Validator, BlockHash>,
+    ftt: FtThreshold,
+    inherited: Vec<Floor>,
+) -> Result<(Floor, Floor), CasperError> {
+    meter.allocate(inherited.len(), 2048)?;
+    meter.allocate(parents.len(), 2048)?;
+    meter.step(WorkKind::Traversal)?;
+    meter.allocate(4, 256)?;
     if parents.is_empty() {
         return Err(CasperError::Other(
             "finalized_floor requires a non-empty parent set; genesis pre-state comes from config"
@@ -713,7 +913,9 @@ async fn derive_floor(
     let inherited_max = candidates.iter().map(|f| f.block_number).max();
     let mut frontiers: Vec<Floor> = Vec::with_capacity(parents.len());
     for parent in parents {
-        frontiers.push(parent_frontier(dag, parent, latest_messages, ftt).await?);
+        meter.step(WorkKind::Traversal)?;
+        meter.allocate(4, 256)?;
+        frontiers.push(parent_frontier_metered(meter, dag, parent, latest_messages, ftt).await?);
     }
     // parents[0] is the main parent; its frontier over this snapshot is F(B).
     let main_parent_frontier = frontiers[0].clone();
@@ -762,59 +964,76 @@ async fn derive_floor(
     // sound (no finalized cut common to all parents), that is a genuinely
     // incompatible finalized fork and is surfaced as an error, never papered
     // over.
-    let mut ordered: Vec<&Floor> = candidates.iter().collect();
-    ordered.sort_by(|a, b| {
+    meter.allocate(candidates.len(), std::mem::size_of::<&Floor>())?;
+    let mut ordered = Vec::with_capacity(candidates.len());
+    for candidate in &candidates {
+        meter.step(WorkKind::Traversal)?;
+        ordered.push(candidate);
+    }
+    sort_by_metered(meter, &mut ordered, |a, b| {
         b.block_number
             .cmp(&a.block_number)
             .then_with(|| b.hash.cmp(&a.hash))
-    });
+    })?;
 
     let mut chosen: Option<Floor> = None;
     let mut memo = IntroducedSigsMemo::new();
     'cands: for cand in ordered {
+        meter.step(WorkKind::Traversal)?;
+        meter.allocate(4, 256)?;
         for other in &inherited_floors {
+            meter.step(WorkKind::Traversal)?;
+            meter.allocate(4, 256)?;
             if other.hash == cand.hash {
                 continue;
             }
-            let sound_with_other = if state_contains(dag, block_store, cand, other, &mut memo)? {
-                true
-            } else if !dag.is_dag_ancestor(&other.hash, &cand.hash)? {
-                // `other` is NOT in `cand`'s DAG past, so its chains are
-                // expected back as this merge's diffs, with the merge-time
-                // settled-rejection tripwire guarding the re-application.
-                // (That expectation is weaker than it reads since the base
-                // became the main parent — see the CAVEAT above.) Sound ONLY when
-                // `cand` is a pure cut — it introduces no sigs of its own
-                // relative to its meet with `other`. A competing branch
-                // with content of its own must never become the settled
-                // position: its content can be exactly what the canonical
-                // chain rejected, and every future canonical floor would
-                // then be refused against it (the floor deadlocks instead
-                // of advancing — observed when the reproduction's eraser R
-                // slipped in as a floor through the join block's parents).
-                let mut re_merged = false;
-                for parent in parents {
-                    if dag.is_dag_ancestor(&other.hash, parent)?
-                        && dag.is_dag_ancestor(&cand.hash, parent)?
-                    {
-                        re_merged = true;
-                        break;
-                    }
-                }
-                if re_merged {
-                    match state_lineage_meet(dag, &cand.hash, &other.hash)? {
-                        StateLineage::Meet(meet) => {
-                            segment_introduced_sigs(dag, block_store, &cand.hash, &meet, &mut memo)?
-                                .is_empty()
+            let sound_with_other =
+                if state_contains_metered(meter, dag, block_store, cand, other, &mut memo)? {
+                    true
+                } else if !dag.is_dag_ancestor_metered(meter, &other.hash, &cand.hash)? {
+                    // `other` is NOT in `cand`'s DAG past, so its chains are
+                    // expected back as this merge's diffs, with the merge-time
+                    // settled-rejection tripwire guarding the re-application.
+                    // (That expectation is weaker than it reads since the base
+                    // became the main parent — see the CAVEAT above.) Sound ONLY when
+                    // `cand` is a pure cut — it introduces no sigs of its own
+                    // relative to its meet with `other`. A competing branch
+                    // with content of its own must never become the settled
+                    // position: its content can be exactly what the canonical
+                    // chain rejected, and every future canonical floor would
+                    // then be refused against it (the floor deadlocks instead
+                    // of advancing — observed when the reproduction's eraser R
+                    // slipped in as a floor through the join block's parents).
+                    let mut re_merged = false;
+                    for parent in parents {
+                        meter.step(WorkKind::Traversal)?;
+                        meter.allocate(4, 256)?;
+                        if dag.is_dag_ancestor_metered(meter, &other.hash, parent)?
+                            && dag.is_dag_ancestor_metered(meter, &cand.hash, parent)?
+                        {
+                            re_merged = true;
+                            break;
                         }
-                        StateLineage::Disconnected => false,
+                    }
+                    if re_merged {
+                        match state_lineage_meet_metered(meter, dag, &cand.hash, &other.hash)? {
+                            StateLineage::Meet(meet) => segment_introduced_sigs_metered(
+                                meter,
+                                dag,
+                                block_store,
+                                &cand.hash,
+                                &meet,
+                                &mut memo,
+                            )?
+                            .is_empty(),
+                            StateLineage::Disconnected => false,
+                        }
+                    } else {
+                        false
                     }
                 } else {
                     false
-                }
-            } else {
-                false
-            };
+                };
             if !sound_with_other {
                 tracing::debug!(
                     target: "f1r3.trace.floor",
@@ -891,14 +1110,28 @@ pub async fn floor_of_block(
     block_hash: &BlockHash,
     ftt: FtThreshold,
 ) -> Result<Floor, CasperError> {
+    floor_of_block_metered(&NoopWork, dag, block_store, block_hash, ftt).await
+}
+
+pub async fn floor_of_block_metered<W: WorkMeter>(
+    meter: &W,
+    dag: &KeyValueDagRepresentation,
+    block_store: &KeyValueBlockStore,
+    block_hash: &BlockHash,
+    ftt: FtThreshold,
+) -> Result<Floor, CasperError> {
+    meter.step(WorkKind::Traversal)?;
+    meter.allocate(4, 256)?;
     let mut stack: Vec<BlockHash> = vec![block_hash.clone()];
     while let Some(current) = stack.last().cloned() {
+        meter.step(WorkKind::Traversal)?;
+        meter.allocate(4, 256)?;
         if dag.get_cached_floor(&current)?.is_some() {
             stack.pop();
             continue;
         }
 
-        let metadata = held_meta(dag, &current)?;
+        let metadata = held_meta_metered(meter, dag, &current)?;
         if metadata.parents.is_empty() {
             dag.put_cached_floor(current.clone(), current.clone())?;
             stack.pop();
@@ -907,31 +1140,41 @@ pub async fn floor_of_block(
 
         let mut missing: Vec<BlockHash> = Vec::new();
         for parent in &metadata.parents {
+            meter.step(WorkKind::Traversal)?;
+            meter.allocate(4, 256)?;
             if dag.get_cached_floor(parent)?.is_none() {
                 missing.push(parent.clone());
             }
         }
         if !missing.is_empty() {
+            meter.allocate(missing.len(), 128)?;
             stack.extend(missing);
             continue;
         }
 
         let mut inherited: Vec<Floor> = Vec::with_capacity(metadata.parents.len());
         for parent in &metadata.parents {
+            meter.step(WorkKind::Traversal)?;
+            meter.allocate(4, 256)?;
             let hash = dag.get_cached_floor(parent)?.expect(
                 "parent floor must be cached: the missing set was empty for this stack entry",
             );
             inherited.push(Floor {
-                block_number: held_number(dag, &hash)?,
+                block_number: held_number_metered(meter, dag, &hash)?,
                 hash,
             });
         }
-        let latest_messages: BTreeMap<Validator, BlockHash> = metadata
-            .justifications
-            .iter()
-            .map(|j| (j.validator.clone(), j.latest_block_hash.clone()))
-            .collect();
-        let (floor, frontier) = derive_floor(
+        meter.allocate(metadata.justifications.len(), 256)?;
+        let mut latest_messages = BTreeMap::new();
+        for justification in &metadata.justifications {
+            meter.step(WorkKind::Traversal)?;
+            latest_messages.insert(
+                justification.validator.clone(),
+                justification.latest_block_hash.clone(),
+            );
+        }
+        let (floor, frontier) = derive_floor_metered(
+            meter,
             dag,
             block_store,
             &metadata.parents,
@@ -960,7 +1203,7 @@ pub async fn floor_of_block(
         .get_cached_floor(block_hash)?
         .expect("floor must be cached: the resolution stack drained for this block");
     Ok(Floor {
-        block_number: held_number(dag, &hash)?,
+        block_number: held_number_metered(meter, dag, &hash)?,
         hash,
     })
 }
@@ -988,15 +1231,29 @@ pub async fn floor_of_block(
 ///   fails), or the pivot no longer finalizes over the larger snapshot (L-SNAP's
 ///   premise fails): the original top-down walk from `parent`, one oracle call
 ///   per step down to the first finalized block (or genesis).
+#[cfg(test)]
 pub(crate) async fn parent_frontier(
     dag: &KeyValueDagRepresentation,
     parent: &BlockHash,
     latest_messages: &BTreeMap<Validator, BlockHash>,
     ftt: FtThreshold,
 ) -> Result<Floor, CasperError> {
+    parent_frontier_metered(&NoopWork, dag, parent, latest_messages, ftt).await
+}
+
+pub(crate) async fn parent_frontier_metered<W: WorkMeter>(
+    meter: &W,
+    dag: &KeyValueDagRepresentation,
+    parent: &BlockHash,
+    latest_messages: &BTreeMap<Validator, BlockHash>,
+    ftt: FtThreshold,
+) -> Result<Floor, CasperError> {
+    meter.step(WorkKind::Traversal)?;
+    meter.allocate(4, 256)?;
     if let Some(pivot_hash) = dag.get_cached_frontier(parent)? {
         if let Some(frontier) =
-            incremental_frontier(dag, parent, &pivot_hash, latest_messages, ftt).await?
+            incremental_frontier_metered(meter, dag, parent, &pivot_hash, latest_messages, ftt)
+                .await?
         {
             metrics::counter!(
                 crate::rust::metrics_constants::FLOOR_FRONTIER_CACHE_HIT_METRIC,
@@ -1011,7 +1268,7 @@ pub(crate) async fn parent_frontier(
         "source" => crate::rust::metrics_constants::CASPER_METRICS_SOURCE
     )
     .increment(1);
-    cold_parent_frontier(dag, parent, latest_messages, ftt).await
+    cold_parent_frontier_metered(meter, dag, parent, latest_messages, ftt).await
 }
 
 /// Warm frontier: resolve `parent`'s frontier over the (larger) `latest_messages`
@@ -1019,6 +1276,7 @@ pub(crate) async fn parent_frontier(
 /// `Ok(None)` when a determinism guard trips, signalling the caller to fall back
 /// to the cold walk (which yields the identical result); the cache thus never
 /// changes the derived frontier, only the work done to find it.
+#[cfg(test)]
 async fn incremental_frontier(
     dag: &KeyValueDagRepresentation,
     parent: &BlockHash,
@@ -1026,14 +1284,27 @@ async fn incremental_frontier(
     latest_messages: &BTreeMap<Validator, BlockHash>,
     ftt: FtThreshold,
 ) -> Result<Option<Floor>, CasperError> {
-    let pivot_number = held_number(dag, pivot_hash)?;
+    incremental_frontier_metered(&NoopWork, dag, parent, pivot_hash, latest_messages, ftt).await
+}
+
+async fn incremental_frontier_metered<W: WorkMeter>(
+    meter: &W,
+    dag: &KeyValueDagRepresentation,
+    parent: &BlockHash,
+    pivot_hash: &BlockHash,
+    latest_messages: &BTreeMap<Validator, BlockHash>,
+    ftt: FtThreshold,
+) -> Result<Option<Floor>, CasperError> {
+    meter.step(WorkKind::Traversal)?;
+    meter.allocate(4, 256)?;
+    let pivot_number = held_number_metered(meter, dag, pivot_hash)?;
 
     // Collect the spine band [parent .. pivot] with cheap `main_parent` hops
     // (NO oracle calls). `spine[0]` = parent (top); the tail descends the main
     // spine down to the block reached at the pivot's height.
     let mut spine: Vec<BlockHash> = Vec::new();
     spine.push(parent.clone());
-    spine.extend(dag.main_parent_chain(parent.clone(), pivot_number)?);
+    spine.extend(dag.main_parent_chain_metered(meter, parent.clone(), pivot_number)?);
     // The pivot must be exactly the bottom of the band; otherwise it is not on
     // `parent`'s main spine (a fork at equal height) — fall back to cold.
     match spine.last() {
@@ -1046,9 +1317,13 @@ async fn incremental_frontier(
     // need not be downward-closed and the up-walk could disagree with the cold
     // walk. This is O(band) cheap metadata reads — bounded by the floor-distance
     // backstop — and never an oracle call.
-    let pivot_committee = CliqueOracle::get_corresponding_weight_map(pivot_hash, dag).await?;
+    let pivot_committee =
+        CliqueOracle::get_corresponding_weight_map_metered(meter, pivot_hash, dag).await?;
     for block in &spine {
-        let committee = CliqueOracle::get_corresponding_weight_map(block, dag).await?;
+        meter.step(WorkKind::Traversal)?;
+        meter.allocate(4, 256)?;
+        let committee =
+            CliqueOracle::get_corresponding_weight_map_metered(meter, block, dag).await?;
         if committee != pivot_committee {
             metrics::counter!(
                 crate::rust::metrics_constants::FLOOR_INCREMENTAL_GUARD_FALLBACK_METRIC,
@@ -1066,8 +1341,15 @@ async fn incremental_frontier(
     let mut oracle_calls: u64 = 1;
     // A9 exact ≥-semantics (floor path): the pivot must still be witnessed-
     // finalized over the larger snapshot. `strict=false` ⇒ (2q−S)/S ≥ θ.
-    let pivot_finalized =
-        CliqueOracle::ft_witnessed_exact(pivot_hash, dag, latest_messages, ftt, false).await?;
+    let pivot_finalized = CliqueOracle::ft_witnessed_exact_metered(
+        meter,
+        pivot_hash,
+        dag,
+        latest_messages,
+        ftt,
+        false,
+    )
+    .await?;
     if !pivot_finalized {
         metrics::counter!(
             crate::rust::metrics_constants::FLOOR_INCREMENTAL_GUARD_FALLBACK_METRIC,
@@ -1085,14 +1367,23 @@ async fn incremental_frontier(
     let mut best_number = pivot_number;
     let mut advance: u64 = 0;
     for candidate in spine[..spine.len() - 1].iter().rev() {
+        meter.step(WorkKind::Traversal)?;
+        meter.allocate(4, 256)?;
         // A9 exact ≥-semantics (floor path): advance while each block stays
         // witnessed-finalized over the snapshot.
-        let finalized =
-            CliqueOracle::ft_witnessed_exact(candidate, dag, latest_messages, ftt, false).await?;
+        let finalized = CliqueOracle::ft_witnessed_exact_metered(
+            meter,
+            candidate,
+            dag,
+            latest_messages,
+            ftt,
+            false,
+        )
+        .await?;
         oracle_calls += 1;
         if finalized {
             best_hash = candidate.clone();
-            best_number = held_number(dag, candidate)?;
+            best_number = held_number_metered(meter, dag, candidate)?;
             advance += 1;
         } else {
             break;
@@ -1126,32 +1417,54 @@ async fn incremental_frontier(
 /// step, returning the first witnessed-finalized block (or genesis). Used on a
 /// cache miss or when a warm-path determinism guard trips; also the genesis
 /// terminator. Always terminates — main-parent chains end at genesis.
+#[cfg(test)]
 async fn cold_parent_frontier(
     dag: &KeyValueDagRepresentation,
     parent: &BlockHash,
     latest_messages: &BTreeMap<Validator, BlockHash>,
     ftt: FtThreshold,
 ) -> Result<Floor, CasperError> {
+    cold_parent_frontier_metered(&NoopWork, dag, parent, latest_messages, ftt).await
+}
+
+async fn cold_parent_frontier_metered<W: WorkMeter>(
+    meter: &W,
+    dag: &KeyValueDagRepresentation,
+    parent: &BlockHash,
+    latest_messages: &BTreeMap<Validator, BlockHash>,
+    ftt: FtThreshold,
+) -> Result<Floor, CasperError> {
+    meter.step(WorkKind::Traversal)?;
+    meter.allocate(4, 256)?;
     let mut current = parent.clone();
     let mut walked: usize = 0;
     let mut oracle_calls: u64 = 0;
     loop {
+        meter.step(WorkKind::Traversal)?;
+        meter.allocate(4, 256)?;
         // A9 exact ≥-semantics (floor path): first witnessed-finalized block down
         // the main-parent chain is the frontier.
-        let finalized =
-            CliqueOracle::ft_witnessed_exact(&current, dag, latest_messages, ftt, false).await?;
+        let finalized = CliqueOracle::ft_witnessed_exact_metered(
+            meter,
+            &current,
+            dag,
+            latest_messages,
+            ftt,
+            false,
+        )
+        .await?;
         oracle_calls += 1;
         tracing::debug!(
             target: "f1r3.trace.floor_walk",
             parent = %PrettyPrinter::build_string_bytes(parent),
             current = %PrettyPrinter::build_string_bytes(&current),
-            current_number = held_number(dag, &current)?,
+            current_number = held_number_metered(meter, dag, &current)?,
             finalized,
             walked,
             "floor walk step"
         );
         if finalized {
-            let block_number = held_number(dag, &current)?;
+            let block_number = held_number_metered(meter, dag, &current)?;
             metrics::counter!(
                 crate::rust::metrics_constants::FLOOR_WALK_ORACLE_CALLS_METRIC,
                 "source" => crate::rust::metrics_constants::CASPER_METRICS_SOURCE
@@ -1184,7 +1497,7 @@ async fn cold_parent_frontier(
             }
             None => {
                 // No main parent: `current` is genesis, finalized by definition.
-                let block_number = held_number(dag, &current)?;
+                let block_number = held_number_metered(meter, dag, &current)?;
                 metrics::counter!(
                     crate::rust::metrics_constants::FLOOR_WALK_ORACLE_CALLS_METRIC,
                     "source" => crate::rust::metrics_constants::CASPER_METRICS_SOURCE
@@ -2024,13 +2337,15 @@ mod frontier_determinism_tests {
         assert!(state_contains(&dag, &store, &at(&t, 3), &at(&e, 0), &mut memo).unwrap());
     }
 
-    /// R-COMM: the certifying committee is `bonds_of(floor(B))`. The oracle
-    /// reads it from the target's MAIN PARENT, so a bonding deploy landing on
-    /// one side of a fork gives the branches different electorates and each
-    /// clears the threshold alone.
+    /// R-COMM: the certifying committee is `bonds_of(floor(B))`, and the bonds a
+    /// block carries ARE that set — `Validate::bonds_cache_from_floor` rejects any
+    /// other. The oracle must therefore read the target's own committee: a block
+    /// whose floor has advanced past a bonding deploy and its pre-bond main parent
+    /// carry different electorates, so certifying against the parent's lets each
+    /// side of a fork clear the threshold under a committee no validity rule
+    /// checked.
     #[tokio::test]
-    #[ignore = "red on dev pending #459 (committee read from the main parent)"]
-    async fn sibling_branches_are_certified_under_one_committee() {
+    async fn the_certifying_committee_is_the_target_s_own_bonds() {
         let v = val();
         let joiner = Bytes::from(vec![0x07u8; 65]);
         let (floor, pre, plain, bonded, above) = (h(0), h(1), h(2), h(3), h(4));
@@ -2055,9 +2370,6 @@ mod frontier_determinism_tests {
                 (&joiner, 400),
             ]),
         ]);
-        dag.put_cached_floor(plain.clone(), floor.clone()).unwrap();
-        dag.put_cached_floor(above.clone(), floor.clone()).unwrap();
-
         let committee_of = |target: &Bytes| {
             let target = target.clone();
             let dag = &dag;
@@ -2067,22 +2379,123 @@ mod frontier_determinism_tests {
                     .expect("committee")
             }
         };
-        let on_plain: i64 = committee_of(&plain).await.values().sum();
-        let on_above: i64 = committee_of(&above).await.values().sum();
-        let at_floor: i64 = dag
-            .lookup(&floor)
-            .unwrap()
-            .expect("floor metadata")
-            .weight_map
-            .values()
-            .sum();
+        let own_bonds_of = |target: &Bytes| {
+            dag.lookup(target)
+                .unwrap()
+                .expect("metadata")
+                .weight_map
+                .into_iter()
+                .collect::<HashMap<_, _>>()
+        };
 
+        // `bonded`'s floor has advanced past the bond its parent predates, so
+        // the two carry different committees and the read is discriminating.
+        assert_ne!(own_bonds_of(&bonded), own_bonds_of(&pre));
         assert_eq!(
-            (on_plain, on_above),
-            (at_floor, at_floor),
-            "two blocks sharing a floor must be certified under that floor's \
-             committee; judging each branch under its own bonds lets both sides \
-             of a fork finalize independently"
+            committee_of(&bonded).await,
+            own_bonds_of(&bonded),
+            "the certifying committee must be the target's own bonds, which \
+             bonds_cache_from_floor pins to its floor; reading the parent's \
+             judges the block under a committee no validity rule checked"
+        );
+        assert_eq!(committee_of(&plain).await, own_bonds_of(&plain));
+        assert_eq!(committee_of(&floor).await, own_bonds_of(&floor));
+    }
+
+    /// The TODO deleted from `get_corresponding_weight_map` justified the
+    /// main-parent read by claiming a newly bonded validator's latest message is
+    /// pinned to the block carrying its bonding deploy, so stake that never spoke
+    /// rode in behind that parent-linked map. This node does not seed the slot that
+    /// way: the sentinel is the GENESIS hash, and `participating_weight_map` drops a
+    /// genesis-slot validator that genesis neither sent nor bonded. Reading the
+    /// target's own bonds therefore admits the bond to the committee without
+    /// admitting un-testified stake to the certifying weight.
+    ///
+    /// The asserted quantity is `ft_witnessed`'s own denominator: it sums
+    /// `participating_weight_map` into `total_stake` before any agreement work
+    /// (`clique_oracle.rs`, `ft_witnessed_exact`). Pinning the participating total
+    /// pins what fault tolerance is computed over, without a full FT fixture.
+    #[tokio::test]
+    async fn a_bonded_joiner_that_has_not_spoken_stays_out_of_the_certifying_weight() {
+        let v = val();
+        let joiner = Bytes::from(vec![0x07u8; 65]);
+        let (floor, pre, plain, bonded) = (h(0), h(1), h(2), h(3));
+
+        let weighted = |hash: &Bytes, parents: Vec<Bytes>, num: i64, bonds: &[(&Bytes, i64)]| {
+            let mut meta = md(hash.clone(), parents, num, &v);
+            meta.weight_map = bonds
+                .iter()
+                .map(|(validator, stake)| ((*validator).clone(), *stake))
+                .collect();
+            meta
+        };
+
+        // `floor` is the height-zero block, so it serves as the genesis the
+        // newly-bonded sentinel points at. The bond lands on one sibling only.
+        let dag = build_dag(vec![
+            weighted(&floor, vec![], 0, &[(&v, 100)]),
+            weighted(&pre, vec![floor.clone()], 1, &[(&v, 100)]),
+            weighted(&plain, vec![pre.clone()], 2, &[(&v, 100)]),
+            weighted(&bonded, vec![pre.clone()], 2, &[(&v, 100), (&joiner, 400)]),
+        ]);
+
+        let bonded_committee = CliqueOracle::get_corresponding_weight_map(&bonded, &dag)
+            .await
+            .expect("committee");
+        assert_eq!(
+            bonded_committee.get(&joiner),
+            Some(&400),
+            "the bond belongs to the target's own committee"
+        );
+
+        // Bonded, never heard from: the slot carries the genesis hash.
+        let mut unheard: BTreeMap<Bytes, Bytes> = BTreeMap::new();
+        unheard.insert(v.clone(), bonded.clone());
+        unheard.insert(joiner.clone(), floor.clone());
+
+        let participating =
+            CliqueOracle::participating_weight_map(bonded_committee.clone(), &dag, &unheard)
+                .expect("participating");
+        assert!(
+            !participating.contains_key(&joiner),
+            "a genesis-slot validator that genesis neither sent nor bonded must not \
+             participate; counting it would let stake that never testified into the \
+             threshold the oracle measures against"
+        );
+        assert_eq!(
+            participating.values().sum::<i64>(),
+            100,
+            "the certifying weight is the stake that has actually spoken"
+        );
+
+        // The sibling without the bond is judged over the same participating stake,
+        // so the bond does not hand one branch of the fork a larger electorate
+        // before the joiner speaks.
+        let plain_committee = CliqueOracle::get_corresponding_weight_map(&plain, &dag)
+            .await
+            .expect("committee");
+        assert!(!plain_committee.contains_key(&joiner));
+        let plain_participating =
+            CliqueOracle::participating_weight_map(plain_committee, &dag, &unheard)
+                .expect("participating");
+        assert_eq!(
+            plain_participating.values().sum::<i64>(),
+            participating.values().sum::<i64>(),
+            "both siblings certify over the same participating stake until the \
+             joiner produces a message"
+        );
+
+        // Once the joiner has produced a message its slot leaves genesis and the
+        // stake counts.
+        let mut heard = unheard.clone();
+        heard.insert(joiner.clone(), bonded.clone());
+        let after = CliqueOracle::participating_weight_map(bonded_committee, &dag, &heard)
+            .expect("participating");
+        assert_eq!(after.get(&joiner), Some(&400));
+        assert_eq!(
+            after.values().sum::<i64>(),
+            500,
+            "the joiner's stake joins the certifying weight once it has spoken"
         );
     }
 
@@ -2914,8 +3327,16 @@ mod frontier_determinism_tests {
         }];
 
         let mut blocks = vec![
-            md_wm(floor_block.clone(), vec![], 9, &vb, committee),
-            md_wm(target.clone(), vec![floor_block.clone()], 10, &va, vec![]),
+            md_wm(floor_block.clone(), vec![], 9, &vb, committee.clone()),
+            // Every block carries the committee of its own floor, which
+            // `bonds_cache_from_floor` pins — the target included.
+            md_wm(
+                target.clone(),
+                vec![floor_block.clone()],
+                10,
+                &va,
+                committee,
+            ),
             la_meta,
             lb_meta,
         ];

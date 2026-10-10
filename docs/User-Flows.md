@@ -1,7 +1,7 @@
 ---
 doc_type: user_flows
 version: "1.0"
-last_updated: 2026-08-13
+last_updated: 2026-09-30
 ---
 
 # User Flows
@@ -44,7 +44,83 @@ Use the persona name in each flow's `Personas:` field.
 
 ## Core Workflows
 
-<!-- Created flows are inserted above the "Planned Flows" section below. -->
+### FLOW-002: Operate a node through resource faults
+
+**Status:** Complete
+**Implemented in:** EPIC-020
+**Related Stories:** US-009
+**Related Flows:**
+**Personas:** Node operator
+**Integration Tests:**
+
+**Journey:** Configure limits -> Observe a resource fault -> Inspect bounded errors -> Confirm recovery -> Verify storage limits
+
+**Steps:**
+1. **Configure limits** - Configure the node log budget, one deployment sink, and container log caps before deployment.
+2. **Observe a resource fault** - Detect descriptor exhaustion or accept failures during node operation.
+3. **Inspect bounded errors** - Inspect error delivery, retry spacing, limited error logs, and suppressed-count summaries.
+4. **Confirm recovery** - Release exhausted resources and confirm that the listener accepts a new connection without persistent error backoff.
+5. **Verify storage limits** - Check file retention and container log budgets during sustained load.
+
+**Key Interactions:**
+- The listener preserves accept errors for its consumer while limiting retry frequency.
+- A successful accept resets the error backoff without delaying the next ordinary accept.
+- Consumer closure stops the listener and cancels unfinished handshakes.
+- File retention and container log caps prevent unbounded deployment log storage.
+- The soak guardian stops work when a node or container log exceeds its budget.
+
+**Success Metrics:**
+- Error retry delay doubles from 10 ms to a maximum of one second, subject to the documented timer rounding.
+- The listener emits at most one accept-error ERROR line per second and a suppressed-count summary after each minute with continuing errors.
+- The controlled Linux fault test observes one to six accept errors and less than 1,024 log bytes during 500 ms.
+- After descriptor release, the controlled test reaches the new connection's handshake timeout within two seconds without another accept error.
+- The node file sink keeps each log file at or below 100 MiB and its log directory at or below 2 GiB.
+- Each required deployment selects one node log sink, and each container log is capped at three files of 100 MiB.
+- The soak guardian stops the run when a node log directory or a container log exceeds its budget.
+
+**Verification Boundary:**
+
+This flow describes required operator behavior, not a completed live deployment exercise.
+TASK-020-1 has [source-bound hosted transport evidence](work-logs/evidence/task-020-1-hosted-20260930-01/report.json).
+
+The regression file is `comm/src/rust/transport/f1r3fly_server_resource_tests.rs`.
+The controlled recovery test reaches handshake timeout. It does not establish successful authenticated peer communication.
+
+TASK-020-2 has [local file-budget verification](work-logs/archived/EPIC-020/task-020-2-byte-bounded-logging-20260930.md).
+The file sink defaults to 100 MiB per file and 2 GiB across its log directory.
+
+TASK-020-3 has [local deployment checks](work-logs/archived/EPIC-020/task-020-3-deployment-log-caps-20260930.md) for single sinks and container caps.
+The external single-sink correction merged into system-integration `dev` through PR #146 at `ccd717195`.
+TASK-020-4 added guardian enforcement of the node log directory and the container log budgets in PR #622, accepted on 2026-10-05. EPIC-020 was archived on 2026-10-06.
+Integration-test references remain empty until actual deployment tests exist. No generated specification is treated as executed evidence.
+
+---
+
+
+### FLOW-001: Verify Casper harness evidence
+
+**Status:** In Progress
+**Implemented in:** EPIC-017
+**Related Stories:** US-006
+**Related Flows:** None
+**Personas:** release engineer
+**Integration Tests:** None
+
+**Journey:** Pin inputs -> Run controls -> Run isolated fixtures -> Audit claims
+
+**Steps:**
+1. **Pin inputs** - Record exact source, executable, fixture, and configuration identities.
+2. **Run controls** - Check the clean model and each named negative control.
+3. **Run isolated fixtures** - Exercise the real driver with controlled processes and retain all outcomes.
+4. **Audit claims** - Check claim identities, source digests, phase evidence, and remaining gaps.
+
+**Key Interactions:**
+- A changed manifest cannot resume an existing run.
+- A terminal transition cannot admit another workload.
+- Incomplete evidence cannot produce a passing soak verdict.
+
+**Success Metrics:**
+- Every registered invocation has a matching exit record.
 
 ---
 

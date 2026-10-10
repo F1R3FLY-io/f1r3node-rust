@@ -14,7 +14,6 @@ use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use comm::rust::rp::connect::ConnectionsCell;
 use comm::rust::rp::rp_conf::RPConf;
 use comm::rust::transport::transport_layer::TransportLayer;
-use dashmap::DashSet;
 use models::rust::block_hash::{BlockHash, BlockHashSerde};
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::{ApprovedBlock, BlockMessage, CasperMessage};
@@ -67,9 +66,8 @@ pub struct CasperLaunchImpl<T: TransportLayer + Send + Sync + Clone + 'static> {
     casper_shard_conf: CasperShardConf,
 
     // Explicit parameters from Scala (in same order as Scala signature)
-    block_processing_queue_tx:
-        mpsc::Sender<(Arc<dyn MultiParentCasper + Send + Sync>, BlockMessage)>,
-    blocks_in_processing: Arc<DashSet<BlockHash>>,
+    block_processing_queue_tx: mpsc::Sender<BlockQueueItem>,
+    blocks_in_processing: Arc<InFlightBlocks>,
     propose_f_opt: Option<Arc<crate::rust::ProposeFunction>>,
     conf: CasperConf,
     trim_state: bool,
@@ -83,7 +81,9 @@ pub struct CasperLaunchImpl<T: TransportLayer + Send + Sync + Clone + 'static> {
     >,
 }
 
-use crate::rust::blocks::block_processor::MAX_BLOCKS_IN_PROCESSING;
+use crate::rust::blocks::block_processor::{
+    mark_in_flight, BlockQueueItem, InFlightBlocks, InFlightMark, MAX_BLOCKS_IN_PROCESSING,
+};
 
 impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
     /// Helper method to create MultiParentCasper instance
@@ -132,11 +132,8 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
         runtime_manager: Arc<RuntimeManager>,
         estimator: Estimator,
         // Explicit parameters (matching Scala signature order)
-        block_processing_queue_tx: mpsc::Sender<(
-            Arc<dyn MultiParentCasper + Send + Sync>,
-            BlockMessage,
-        )>,
-        blocks_in_processing: Arc<DashSet<BlockHash>>,
+        block_processing_queue_tx: mpsc::Sender<BlockQueueItem>,
+        blocks_in_processing: Arc<InFlightBlocks>,
         propose_f_opt: Option<Arc<crate::rust::ProposeFunction>>,
         conf: CasperConf,
         trim_state: bool,
@@ -258,11 +255,8 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             casper_buffer_storage: &CasperBufferKeyValueStorage,
             block_store: &KeyValueBlockStore,
             block_retriever: &BlockRetriever<T>,
-            blocks_in_processing: &Arc<DashSet<BlockHash>>,
-            block_processing_queue_tx: &mpsc::Sender<(
-                Arc<dyn MultiParentCasper + Send + Sync>,
-                BlockMessage,
-            )>,
+            blocks_in_processing: &Arc<InFlightBlocks>,
+            block_processing_queue_tx: &mpsc::Sender<BlockQueueItem>,
         ) -> Result<(), CasperError> {
             let pendants = casper_buffer_storage.get_pendants();
 
@@ -337,29 +331,30 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
 
                     // Send block to processing queue for validation and addition to DAG
                     let block_hash = block.block_hash.clone();
-                    if !blocks_in_processing.insert(block_hash.clone()) {
-                        tracing::debug!(
-                            "Skipping pendant {} enqueue because it is already queued/in-processing",
-                            PrettyPrinter::build_string_bytes(&block_hash)
-                        );
-                        continue;
-                    }
-                    let max_in_flight = MAX_BLOCKS_IN_PROCESSING;
-                    if blocks_in_processing.len() > max_in_flight {
-                        blocks_in_processing.remove(&block_hash);
-                        block_retriever.note_local_backpressure_drop(&block_hash, "launch-pendant");
-                        tracing::warn!(
-                            "Skipping pendant {} enqueue because in-flight block cap {} is reached",
-                            PrettyPrinter::build_string_bytes(&block_hash),
-                            max_in_flight
-                        );
-                        continue;
-                    }
+                    let guard = match mark_in_flight(blocks_in_processing, block_hash.clone()) {
+                        InFlightMark::Marked(guard) => guard,
+                        InFlightMark::AlreadyInFlight => {
+                            tracing::debug!(
+                                "Skipping pendant {} enqueue because it is already queued/in-processing",
+                                PrettyPrinter::build_string_bytes(&block_hash)
+                            );
+                            continue;
+                        }
+                        InFlightMark::CapReached => {
+                            block_retriever
+                                .note_local_backpressure_drop(&block_hash, "launch-pendant");
+                            tracing::warn!(
+                                "Skipping pendant {} enqueue because in-flight block cap {} is reached",
+                                PrettyPrinter::build_string_bytes(&block_hash),
+                                MAX_BLOCKS_IN_PROCESSING
+                            );
+                            continue;
+                        }
+                    };
                     block_processing_queue_tx
-                        .send((casper.clone(), block))
+                        .send((casper.clone(), block, guard))
                         .await
                         .map_err(|e| {
-                            blocks_in_processing.remove(&block_hash);
                             CasperError::Other(format!("Failed to send block to queue: {}", e))
                         })?;
                     // Acknowledge only after successful enqueue so dropped blocks do not
@@ -438,6 +433,108 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
         // Direct-to-running path: emit init metrics that are otherwise produced in Initializing.
         record_direct_to_running_init_metrics();
 
+        // Phase 7b-1: build the snapshot chunk-fetch context if
+        // this node has an `fs_snapshot_writer`.  On observer
+        // nodes or misconfigured deployments the builder returns
+        // `None` and snapshot dispatch stays disabled.  When
+        // `Some`, spawn the periodic tick loop that drives
+        // outbound snapshot-chunk requests.  The `JoinHandle` is
+        // intentionally dropped — the task lives for the lifetime
+        // of the running engine (process shutdown ends it).
+        let snapshot_chunk_ctx = {
+            let ctx = crate::rust::engine::snapshot_chunk_sync::build_snapshot_chunk_context(
+                &self.runtime_manager,
+            )
+            .await;
+            if let Some(ref ctx) = ctx {
+                let _tick_handle = crate::rust::engine::snapshot_chunk_sync::spawn_periodic_tick(
+                    std::sync::Arc::clone(&ctx.sync_driver),
+                    self.transport_layer.clone(),
+                    self.rp_conf_ask.clone(),
+                    self.connections_cell.clone(),
+                );
+            }
+            ctx
+        };
+
+        // Phase 7b-2: build the WAL payload-fetch context from
+        // the shared `RuntimeManager.payload_store` slot.  Spawn
+        // the periodic tick loop and attach its stop handle to
+        // the context — the block-processing catch-up detector
+        // (or shutdown orchestrator) can later call
+        // `tick_stop.stop()` for a graceful exit at the next
+        // select boundary.  See
+        // [`WalPayloadContext::from_runtime_manager`] for the
+        // production vs. test-harness fallback discipline.
+        let wal_payload_ctx = {
+            let mut ctx = crate::rust::engine::running::WalPayloadContext::from_runtime_manager(
+                &self.runtime_manager,
+            )
+            .await;
+            let tick = crate::rust::engine::wal_payload_sync::spawn_periodic_tick(
+                std::sync::Arc::clone(&ctx.sync_driver),
+                self.transport_layer.clone(),
+                self.rp_conf_ask.clone(),
+                self.connections_cell.clone(),
+            );
+            ctx.tick_stop = Some(tick.stop);
+            // JoinHandle intentionally dropped: the task either lives
+            // for the process lifetime or exits cleanly when
+            // `tick_stop.stop()` fires.  Preferring graceful stop to
+            // `JoinHandle::abort` lets the current in-flight
+            // `driver.tick(...)` finish before exit.
+            drop(tick.join_handle);
+            Some(ctx)
+        };
+
+        // Phase 7b-2 boot wire-in: install a completion sink on
+        // the snapshot chunk driver + spawn the subscriber that
+        // decodes each completed snapshot and drives the WAL
+        // payload fetch + applier (slice 5.130).  Only wired when
+        // BOTH contexts are Some — otherwise there's no fetch
+        // driver or snapshot dir to drive against.
+        //
+        // `allowed_roots` is empty for now (follow-up slice will
+        // thread the operator's consensus-static roots via
+        // `RuntimeManager::consensus_static_roots` when that API
+        // lands).  Empty vector skips the applier's `allowed_roots`
+        // validation — same behavior as pre-Shape-A applies.
+        //
+        // `payload_lookup` is cloned from the WAL payload context's
+        // own lookup — Tier 1 reducer uses the local
+        // `DirectoryPayloadStore` (or `InMemoryPayloadStore`
+        // fallback) to short-circuit peer fetches for hashes the
+        // joiner already has.
+        if let (Some(snap_ctx), Some(wal_ctx)) =
+            (snapshot_chunk_ctx.as_ref(), wal_payload_ctx.as_ref())
+        {
+            let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<
+                crate::rust::engine::snapshot_chunk_sync::SnapshotCompletion,
+            >();
+            snap_ctx.sync_driver.install_completion_sink(tx);
+            // Share the manager's `RootIdentityRegistry` into the
+            // subscriber via `.clone()` — the two-layer indirection
+            // means Clone shares the outer slot, so any post-spawn
+            // `register(logical, root)` on the manager is visible
+            // through this handle.  Empty today pending node::setup
+            // wiring that populates the registry from the operator's
+            // fs bundle; empty falls through to pre-Shape-A behavior.
+            let registry = self.runtime_manager.root_registry.clone();
+            let allowed_roots = self.runtime_manager.consensus_static_roots().await;
+            let _subscriber_handle =
+                crate::rust::engine::wal_apply_boot::spawn_boot_apply_subscriber(
+                    rx,
+                    std::sync::Arc::clone(&wal_ctx.sync_driver),
+                    snap_ctx.snapshot_dir.clone(),
+                    registry,
+                    allowed_roots,
+                    Some(std::sync::Arc::clone(&wal_ctx.payload_lookup)),
+                );
+            // JoinHandle intentionally dropped — the subscriber
+            // exits naturally when the completion-sink sender is
+            // dropped (snapshot driver teardown at process shutdown).
+        }
+
         // Scala equivalent: Engine.transitionToRunning[F](...)
         transition_to_running(
             self.block_processing_queue_tx.clone(),
@@ -449,6 +546,8 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             self.transport_layer.clone(),
             self.rp_conf_ask.clone(),
             self.block_retriever.clone(),
+            snapshot_chunk_ctx,
+            wal_payload_ctx,
             &self.engine_cell,
             &self.event_publisher,
             self.state_items_tx.clone(),

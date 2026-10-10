@@ -5,8 +5,9 @@
 # says "SECURITY: do not remove" above the `needs: await_approval` that gates
 # untrusted fork code, but a comment does not stop a delete — this does.
 #
-# Wired into ci.yml's `lint` job rather than `build_base` on purpose: `Lint` is a
-# required status check on both rulesets, so a violation blocks the merge. A job
+# Wired into ci.yml's `static_checks` job rather than `build_base` on purpose:
+# Static Checks is a required status check (through the temporary `Lint` result
+# job until the rulesets name it), so a violation blocks the merge. A job
 # that only fails upstream can surface as `skipped`, which required-check
 # evaluation may treat as satisfied.
 #
@@ -78,18 +79,21 @@ for job in launch_ephemeral_runners build_docker_image; do
 	fi
 done
 
-# 2. Credential concentration. Exactly one job in the reusable pipeline may hold
-#    credentials, and it must be the launch job — the only one that checks out
-#    solely the pinned system-integration SHA and never the code under test.
-cred_jobs="$(scan_jobs "$PIPELINE" | awk '$3 == 1 || $4 == 1 { print $1 }')"
-cred_count="$(printf '%s' "$cred_jobs" | grep -c . || true)"
-if [ "$cred_count" = "1" ] && [ "$cred_jobs" = "launch_ephemeral_runners" ]; then
-	ok "credentials confined to launch_ephemeral_runners"
+# 2. Credential concentration. Only jobs that check out solely the pinned
+#    system-integration SHA, and never the code under test, may hold
+#    credentials. Two qualify: launch_ephemeral_runners creates the VMs and
+#    reclaim_ephemeral_runners terminates the ones no job consumed. The list is
+#    closed by name — a new credential-bearing job is a deliberate decision, so
+#    adding one means editing this line and saying why it qualifies.
+CRED_JOBS_ALLOWED="launch_ephemeral_runners reclaim_ephemeral_runners"
+cred_jobs="$(scan_jobs "$PIPELINE" | awk '$3 == 1 || $4 == 1 { print $1 }' | sort | tr '\n' ' ')"
+cred_expected="$(printf '%s\n' $CRED_JOBS_ALLOWED | sort | tr '\n' ' ')"
+if [ "$cred_jobs" = "$cred_expected" ]; then
+	ok "credentials confined to $CRED_JOBS_ALLOWED"
 else
 	# Flattened to one line: a GitHub error annotation captures only its first
 	# line, so a multi-line job list would hide every name after the first.
-	cred_list="$(printf '%s' "$cred_jobs" | tr '\n' ' ')"
-	err "expected exactly one credential-bearing job (launch_ephemeral_runners) in $PIPELINE, found: ${cred_list:-none}"
+	err "expected credential-bearing jobs ($CRED_JOBS_ALLOWED) in $PIPELINE, found: ${cred_jobs:-none}"
 fi
 
 # 3. Environment scoping. Any job anywhere that reads OCI or GitHub App
@@ -150,7 +154,9 @@ puts "workflow concurrency must replace superseded PR and exact-merge runs" unle
 pipeline = jobs.fetch("pipeline", {})
 pipeline_concurrency = pipeline.fetch("concurrency", {})
 expected_pipeline_group = "ci-heavy-${{ github.event_name == 'workflow_dispatch' && inputs.target_sha != '' && format('exact-{0}', inputs.target_sha) || (github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.ref) }}"
-expected_pipeline_cancel = "${{ !startsWith(github.ref, 'refs/tags/') }}"
+# A merge group is excluded: the queue reads a cancelled required check as a
+# failure and ejects the group's pull requests.
+expected_pipeline_cancel = "${{ github.event_name != 'merge_group' && !startsWith(github.ref, 'refs/tags/') }}"
 puts "heavy pipeline must use a PR-or-ref queue" unless normalized(pipeline_concurrency["group"]) == normalized(expected_pipeline_group)
 puts "heavy branch and PR work must replace obsolete heads without cancelling version tags" unless normalized(pipeline_concurrency["cancel-in-progress"]) == normalized(expected_pipeline_cancel)
 
@@ -248,7 +254,7 @@ fi
 #    must agree with the reaper — checked below — but absence is no longer a
 #    violation for the soak.
 ocid_required=".github/workflows/ci-runner-reaper.yml"
-ocid_optional=".github/workflows/merge-recovery-soak.yml"
+ocid_optional=".github/workflows/merge-recovery-soak.yml .github/workflows/ci-runner-reclaim.yml"
 ocid_values=""
 for ocid_file in $ocid_optional; do
 	ocid_found="$(grep -hoE 'CI_RUNNER_COMPARTMENT_OCID:[[:space:]]*"ocid1\.compartment\.[A-Za-z0-9._-]+"' \

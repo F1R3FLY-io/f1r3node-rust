@@ -1,12 +1,30 @@
 mod abort_spec;
 mod accounting;
+mod fileio_bounds_large_spec;
+mod fileio_bounds_spec;
+mod fileio_edge_cases_spec;
+mod fileio_lifecycle_spec;
+mod fileio_native_spec;
+mod fileio_quarantine_spec;
+mod fileio_replay_spec;
+mod fileio_stream_spec;
+mod cli_smoke_spec;
 mod crypto_channels_spec;
 mod demo_verification;
 mod deploy_data_spec;
 mod external_services;
+mod fs_native_urn_filter_spec;
+mod fs_next_fd_seed_spec;
+// `fs_wal_spec` is NOT re-exported here — it uses `#[path = "fs_wal/*.rs"]`
+// submodules whose relative paths only resolve when `fs_wal_spec` is the
+// crate root (standalone integration binary at `rholang/tests/fs_wal_spec.rs`).
+// Including it as a submodule of this `mod` binary double-nests the path
+// and breaks the lookup.  Cargo picks the standalone binary up
+// automatically; `cargo test -p rholang --test fs_wal_spec` runs it.
 mod getsubtrie_spec;
 mod interpreter_spec;
 mod matcher;
+mod mergeable_channels_spec;
 mod numeric_types_spec;
 mod rholang_numeric_eval_spec;
 mod reduce_spec;

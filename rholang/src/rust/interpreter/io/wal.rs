@@ -81,12 +81,13 @@ const _: () = assert!(
 
 crate::register_consensus_constant!(order = 1, name = MAX_WAL_ENTRIES, u64_be);
 
-/// Opaque marker returned by `Wal::begin_deploy` and consumed by
-/// `Wal::take_deploy_entries_insertion_order` (both in a subsequent slice).
-/// Records the WAL length at the deploy boundary so post-deploy
-/// drain covers exactly the entries this deploy contributed.  Also
-/// usable by soft-checkpoint machinery as a snapshot point to
-/// truncate back to on revert.
+/// Opaque marker returned by [`Wal::begin_deploy`] and consumed
+/// by [`Wal::take_deploy_entries_insertion_order`] or
+/// [`Wal::take_deploy_entries_in_log_order`].  Records the WAL
+/// length at the deploy boundary so post-deploy drain covers
+/// exactly the entries this deploy contributed.  Also usable by
+/// soft-checkpoint machinery as a snapshot point to truncate
+/// back to on revert.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WalMark {
     pub(crate) len: usize,
@@ -376,6 +377,78 @@ impl PayloadRef {
     }
 }
 
+/// Serving-side persistence hook.  A leader validator's
+/// `journal_write` calls `persist(bytes)` after computing
+/// `PayloadRef::hash(bytes)` so the bytes are stashed content-
+/// addressed on disk; joining validators later request them via
+/// the peer-fetch sub-protocol and the server side reads them
+/// back via a matching `PayloadLookup` impl.
+///
+/// # Design placement
+///
+/// The trait is intentionally minimal — one method, sync (writes
+/// are small and infrequent relative to Rholang execution) — and
+/// lives in **this crate** so the fs-write handlers (Wave 4) can
+/// call it without a `casper`-crate dependency.  The concrete
+/// impl (`DirectoryPayloadStore`) lives in `casper` because it's
+/// paired with the reader half `PayloadLookup`, both consumed by
+/// the wire-message dispatch.
+///
+/// # Fail-open discipline
+///
+/// Errors are stringified — the caller side just logs (not a
+/// hard failure).  A joiner-side fetch protocol will find the
+/// bytes on other peers, and hard-failing here would abort the
+/// deploy for a defense-in-depth backup hop.
+pub trait PayloadPersistence: Send + Sync + std::fmt::Debug {
+    /// Persist `bytes` content-addressed under `Blake2b256(bytes)`.
+    /// Returns the computed hash so the caller can echo it into
+    /// the WAL entry.  Idempotent — a second call with the same
+    /// bytes is a no-op (or an overwrite with identical content).
+    fn persist(&self, bytes: &[u8]) -> Result<[u8; 32], String>;
+}
+
+/// Serving-side "payload source" recorder — the second tier of
+/// the joiner-side payload-fetch chain.  A leader validator's
+/// `journal_write` (and the symmetric follower-side replay-branch
+/// call) invokes `record(payload_hash, &deploy_sig)` after
+/// computing the write's content hash, so a persistent
+/// `payload_hash → deploy_sig` index accumulates alongside the
+/// WAL.  On boot, a joiner's reducer consults this index to
+/// translate an unresolved WAL `payload_hash` into a source
+/// `ProcessedDeploy` that can be re-executed to reproduce the
+/// requested bytes — closing the gap the local `PayloadLookup`
+/// leaves for first-time joiners with empty payload stores.
+///
+/// # Chaining
+///
+/// `payload_hash → deploy_sig` (this trait) chains through the
+/// existing `deploy_sig → block_hash` map (block-storage's
+/// `deploy_index`, populated as an atomic side-effect of block
+/// insertion) → block bytes → `ProcessedDeploy` → deploy replay
+/// → the requested payload bytes.
+///
+/// # Design placement
+///
+/// The trait is intentionally minimal — one method, sync — and
+/// lives in **this crate** so the fs-write handlers can call it
+/// without a `casper`-crate dependency.  The concrete impl
+/// (`BlockStorageBackedRecorder`) lives in `casper` because it
+/// wraps the block-storage's `payload_source_index` typed store.
+///
+/// # Fail-open discipline
+///
+/// Errors are stringified.  `journal_write` logs at warn on `Err`
+/// and continues — a failure here is a defense-in-depth backup
+/// hop, the joiner still has the local `PayloadLookup` plus
+/// peer fetch to fall through to.
+pub trait PayloadSourceRecorder: Send + Sync + std::fmt::Debug {
+    /// Record that `payload_hash` was produced by the deploy
+    /// identified by `deploy_sig`.  Idempotent by content;
+    /// last-writer-wins on the `(payload_hash → deploy_sig)` key.
+    fn record(&self, payload_hash: [u8; 32], deploy_sig: &[u8]) -> Result<(), String>;
+}
+
 // Compile-time witness that `Wal: Send + Sync`.  Hoisted to module
 // scope (rather than a `#[test]`) so every `cargo build` catches
 // a regression, not only `cargo test`.  A refactor that broke
@@ -384,6 +457,23 @@ impl PayloadRef {
 const _WAL_IS_SEND_SYNC: fn() = || {
     fn assert_send_sync<T: Send + Sync>() {}
     assert_send_sync::<Wal>();
+};
+
+// Compile-time witnesses that both payload traits are dyn-safe
+// AND their `dyn` forms are `Send + Sync`.  Handler-side
+// plumbing stores these as `Arc<dyn PayloadPersistence>` /
+// `Arc<dyn PayloadSourceRecorder>` and hands clones into
+// `spawn_blocking` closures across the tokio runtime; a refactor
+// that broke dyn-safety (e.g., by adding a generic method) or
+// dropped either bound would fail this static check at build
+// time instead of at some unrelated Arc-clone-into-spawn site.
+const _PAYLOAD_PERSISTENCE_IS_DYN_SEND_SYNC: fn() = || {
+    fn assert_send_sync<T: Send + Sync + ?Sized>() {}
+    assert_send_sync::<dyn PayloadPersistence>();
+};
+const _PAYLOAD_SOURCE_RECORDER_IS_DYN_SEND_SYNC: fn() = || {
+    fn assert_send_sync<T: Send + Sync + ?Sized>() {}
+    assert_send_sync::<dyn PayloadSourceRecorder>();
 };
 
 /// Per-runtime append-only WAL buffer.  Cloneable (shares the
@@ -462,12 +552,13 @@ impl Wal {
         self.append_with_ack(entry, [0u8; 32])
     }
 
-    /// Append an entry with its ack-channel hash for later log-
-    /// order-based drain (subsequent slice).  The hash comes from
-    /// `stable_hash_provider::hash(ack_par)` on the handler side.
-    /// A sentinel `[0u8; 32]` disables log-order matching for
-    /// that entry (falls back to insertion order in the eventual
-    /// `take_deploy_entries_in_log_order` walk).
+    /// Append an entry with its ack-channel hash for the
+    /// log-order-based drain in
+    /// [`Self::take_deploy_entries_in_log_order`].  The hash
+    /// comes from `stable_hash_provider::hash(ack_par)` on the
+    /// handler side.  A sentinel `[0u8; 32]` disables log-order
+    /// matching for that entry (the walk routes it through the
+    /// unmatched-at-end tail in insertion order).
     ///
     /// Returns `Err(())` if appending would exceed
     /// `MAX_WAL_ENTRIES`.
@@ -567,9 +658,12 @@ impl Wal {
 
     /// Per-deploy boundary marker.  Called at the top of a deploy
     /// before user code runs.  Paired with
-    /// `take_deploy_entries_insertion_order` (or the yet-to-land
-    /// `take_deploy_entries_in_log_order`) which drains exactly
-    /// the entries this deploy contributed, letting a downstream
+    /// [`Self::take_deploy_entries_insertion_order`] (scheduler-
+    /// order, for tests + soft-checkpoint machinery) or
+    /// [`Self::take_deploy_entries_in_log_order`] (consensus-safe
+    /// log order, for callers hashing the drained Vec into a
+    /// consensus commitment), either of which drains exactly the
+    /// entries this deploy contributed and lets a downstream
     /// slice attach a deploy's WAL contributions to its
     /// `ProcessedDeploy` (either via a proto-schema extension or
     /// via an out-of-band side-map keyed by deploy signature).
@@ -590,19 +684,13 @@ impl Wal {
     /// The name has an `_insertion_order` suffix — deliberately
     /// search-hostile — because callers that will hash the
     /// returned Vec into a **consensus commitment** (e.g., a
-    /// snapshot root) MUST use `take_deploy_entries_in_log_order`
-    /// (subsequent slice) instead.  Log order re-orders by the
-    /// canonical `deploy_log` event sequence and is deterministic
-    /// across validators; insertion order reflects `Par`
-    /// scheduling on this run and is safe only for non-consensus
-    /// consumers (tests, soft-checkpoint machinery).
-    ///
-    /// This slice ships only the insertion-order variant because
-    /// the log-order path depends on `stable_hash_provider` /
-    /// `deploy_log` types that haven't been ported yet.  The
-    /// suffix is the machinery that keeps a future consensus
-    /// consumer from casually grabbing this method and getting
-    /// silent non-determinism.
+    /// snapshot root) MUST use
+    /// [`take_deploy_entries_in_log_order`](Self::take_deploy_entries_in_log_order)
+    /// instead.  Log order re-orders by the canonical
+    /// `deploy_log` event sequence and is deterministic across
+    /// validators; insertion order reflects `Par` scheduling on
+    /// this run and is safe only for non-consensus consumers
+    /// (tests, soft-checkpoint machinery).
     pub fn take_deploy_entries_insertion_order(&self, mark: WalMark) -> Vec<WalEntry> {
         let mut guard = poison_abort(self.inner.write(), "Wal");
         if mark.len >= guard.entries.len() {
@@ -612,6 +700,115 @@ impl Wal {
         // aligned with the (now-shorter) entries Vec.
         let _ = guard.ack_hashes.split_off(mark.len);
         guard.entries.split_off(mark.len)
+    }
+
+    /// Drain entries appended after `mark` **in log order** —
+    /// the consensus-safe variant.  Walks the deploy's
+    /// `produce_channel_hashes` (Blake2b256 of each ack-channel
+    /// Par, extracted from the deploy's event log in order) and
+    /// emits each matching entry from the ack-hash sidecar.
+    ///
+    /// # Why log order is consensus-safe
+    ///
+    /// The WAL buffer's insertion order reflects `Par`
+    /// scheduling, which is tokio-work-stealing non-deterministic:
+    /// two runs of the same deploy populate `entries` in
+    /// different orders → non-deterministic WAL root.
+    ///
+    /// `deploy_log`'s Produce events are canonical per block
+    /// (frozen when the leader publishes the block; followers
+    /// consume the same log verbatim during replay), so a drain
+    /// re-ordered by log-order is byte-identical across
+    /// validators AND across re-executions on the same validator
+    /// regardless of `Par` scheduling.
+    ///
+    /// # Match discipline
+    ///
+    /// For each hash in `produce_channel_hashes`, finds the
+    /// FIRST drained entry whose sidecar hash matches, emits it
+    /// into the output (removing it from further consideration),
+    /// and continues.  Duplicate ack hashes shouldn't occur
+    /// (fresh unforgeables), but if they do, first-wins mirrors
+    /// insertion order within the duplicate group — later
+    /// duplicates land in the unmatched-at-end tail below in
+    /// insertion order.
+    ///
+    /// # Defense in depth: unmatched entries appended at end
+    ///
+    /// Drained entries whose sidecar hash never appears in
+    /// `produce_channel_hashes` (e.g., sentinel `[0u8; 32]` from
+    /// a legacy `append` call, or a future-refactor gap) are
+    /// appended at the end of the output in insertion order so
+    /// NOTHING is silently dropped.  This matters for the
+    /// snapshot-root hash: a lost entry would decouple the
+    /// consensus commitment from the on-disk effects it
+    /// certifies, re-opening the pre-H-R3 non-determinism
+    /// surface via a different mechanism.
+    ///
+    /// # Caller contract
+    ///
+    /// `produce_channel_hashes` is the Blake2b256 of each ack-
+    /// channel Par as it appears in the deploy's event log, in
+    /// log order.  The caller (handler-dispatch layer in Wave 4)
+    /// extracts these from `stable_hash_provider::hash(ack_par)`
+    /// against the deploy_log's Produce stream.  This method
+    /// takes raw bytes to keep `wal.rs` free of
+    /// `rspace_plus_plus` / log-type dependencies.
+    pub fn take_deploy_entries_in_log_order(
+        &self,
+        mark: WalMark,
+        produce_channel_hashes: &[[u8; 32]],
+    ) -> Vec<WalEntry> {
+        let mut guard = poison_abort(self.inner.write(), "Wal");
+        if mark.len >= guard.entries.len() {
+            return Vec::new();
+        }
+        // Fail-hard BEFORE mutating: the alignment invariant is
+        // consensus-critical, and splitting ONE vec before
+        // observing the mismatch would leave the WAL in a
+        // partially-drained state if the panic were caught
+        // (test harnesses, catch_unwind).  Pre-split assert
+        // fails before any mutation lands.
+        assert_eq!(
+            guard.entries.len(),
+            guard.ack_hashes.len(),
+            "Wal invariant: entries and ack_hashes must be index-aligned pre-drain"
+        );
+        let drained_entries: Vec<WalEntry> = guard.entries.split_off(mark.len);
+        let drained_acks: Vec<[u8; 32]> = guard.ack_hashes.split_off(mark.len);
+        drop(guard);
+        // Build ack_hash → drained-index map for O(1) lookup.
+        // First-wins on duplicate ack hashes (shouldn't occur
+        // for fresh unforgeables; first-wins mirrors insertion
+        // order within the duplicate group — later duplicates
+        // land in the unmatched-at-end tail below).
+        let mut index_by_ack: std::collections::HashMap<[u8; 32], usize> =
+            std::collections::HashMap::with_capacity(drained_acks.len());
+        for (i, h) in drained_acks.iter().enumerate() {
+            index_by_ack.entry(*h).or_insert(i);
+        }
+        // Wrap drained entries in `Option` so matched entries
+        // can be moved (via `.take()`) into the output without
+        // cloning.  The `Option::is_some` check doubles as the
+        // emitted-tracker from the prior design — no separate
+        // Vec<bool> needed.
+        let mut matched: Vec<Option<WalEntry>> = drained_entries.into_iter().map(Some).collect();
+        let mut ordered: Vec<WalEntry> = Vec::with_capacity(matched.len());
+        for h in produce_channel_hashes {
+            if let Some(&i) = index_by_ack.get(h) {
+                if let Some(e) = matched[i].take() {
+                    ordered.push(e);
+                }
+            }
+        }
+        // Defense in depth: entries not matched by the log walk
+        // (sentinel ack, future-refactor gap, or later-duplicate
+        // ack) get appended at the end in insertion order so
+        // NOTHING is silently dropped.
+        for slot in matched.into_iter().flatten() {
+            ordered.push(slot);
+        }
+        ordered
     }
 
     /// Replace the entry matching `ack_hash` with `new_entry`.
@@ -1341,5 +1538,265 @@ mod tests {
         assert!(!wal.update_outcome_by_ack_hash(ack_hash(0xAA), WalOutcome::Failure { code: 1 }));
         assert!(!wal.update_partial_write_by_ack_hash(ack_hash(0xBB), b"late"));
         assert!(!wal.update_last_entry_by_ack_hash(ack_hash(0xAA), mk_entry(99)));
+    }
+
+    // --- PayloadPersistence + PayloadSourceRecorder ----------------
+
+    use std::sync::{Arc, Mutex};
+
+    /// In-memory `PayloadPersistence` fake for exercising the
+    /// trait shape.  Records every `persist` call's bytes so tests
+    /// can assert the call happened and the hash matches.
+    #[derive(Debug, Default)]
+    struct MockPersistence {
+        seen: Mutex<Vec<(Vec<u8>, [u8; 32])>>,
+    }
+
+    impl PayloadPersistence for MockPersistence {
+        fn persist(&self, bytes: &[u8]) -> Result<[u8; 32], String> {
+            let hash = match PayloadRef::hash(bytes) {
+                PayloadRef::Hash(h) => h,
+                _ => unreachable!("PayloadRef::hash always yields Hash"),
+            };
+            self.seen.lock().unwrap().push((bytes.to_vec(), hash));
+            Ok(hash)
+        }
+    }
+
+    /// Round-trip a `PayloadPersistence` impl through an
+    /// `Arc<dyn PayloadPersistence>` and confirm:
+    ///   - The trait is dyn-safe (compilation of the `Arc<dyn ...>`
+    ///     construction).
+    ///   - `persist(bytes)` returns the same hash as
+    ///     `PayloadRef::hash(bytes)` — pins the "content-addressed
+    ///     under `Blake2b256(bytes)`" contract.
+    ///   - Idempotence: two calls with the same bytes return the
+    ///     same hash.
+    #[test]
+    fn payload_persistence_dyn_roundtrip() {
+        let mock: Arc<dyn PayloadPersistence> = Arc::new(MockPersistence::default());
+        let bytes = b"consensus-payload";
+        let h1 = mock.persist(bytes).expect("persist ok");
+        let h2 = mock.persist(bytes).expect("persist ok (idempotent)");
+        assert_eq!(h1, h2);
+        let expected = match PayloadRef::hash(bytes) {
+            PayloadRef::Hash(h) => h,
+            _ => unreachable!(),
+        };
+        assert_eq!(h1, expected);
+    }
+
+    /// A `PayloadPersistence` impl that returns `Err(_)` (peer
+    /// storage backend unavailable, disk full, etc.).  Pins the
+    /// stringified-error contract — callers translate to a log-at-
+    /// warn, don't hard-abort the deploy.
+    #[test]
+    fn payload_persistence_err_shape() {
+        #[derive(Debug)]
+        struct AlwaysFails;
+        impl PayloadPersistence for AlwaysFails {
+            fn persist(&self, _bytes: &[u8]) -> Result<[u8; 32], String> {
+                Err("backend unavailable".to_string())
+            }
+        }
+        let boxed: Box<dyn PayloadPersistence> = Box::new(AlwaysFails);
+        match boxed.persist(b"anything") {
+            Err(msg) => assert!(msg.contains("backend")),
+            Ok(_) => panic!("AlwaysFails must return Err"),
+        }
+    }
+
+    /// In-memory `PayloadSourceRecorder` fake — records every
+    /// `record` call for later assertions.
+    #[derive(Debug, Default)]
+    struct MockRecorder {
+        seen: Mutex<Vec<([u8; 32], Vec<u8>)>>,
+    }
+
+    impl PayloadSourceRecorder for MockRecorder {
+        fn record(&self, payload_hash: [u8; 32], deploy_sig: &[u8]) -> Result<(), String> {
+            self.seen
+                .lock()
+                .unwrap()
+                .push((payload_hash, deploy_sig.to_vec()));
+            Ok(())
+        }
+    }
+
+    /// `PayloadSourceRecorder` round-trip: two distinct records
+    /// under a shared `Arc<dyn ...>` handle both land in the
+    /// mock's log, in order.  Pins dyn-safety + the `(hash,
+    /// deploy_sig)` argument order.
+    #[test]
+    fn payload_source_recorder_dyn_roundtrip() {
+        let mock = Arc::new(MockRecorder::default());
+        let handle: Arc<dyn PayloadSourceRecorder> = mock.clone();
+        handle.record([0xAAu8; 32], b"deploy-sig-1").unwrap();
+        handle.record([0xBBu8; 32], b"deploy-sig-2").unwrap();
+        let log = mock.seen.lock().unwrap();
+        assert_eq!(log.len(), 2);
+        assert_eq!(log[0], ([0xAAu8; 32], b"deploy-sig-1".to_vec()));
+        assert_eq!(log[1], ([0xBBu8; 32], b"deploy-sig-2".to_vec()));
+    }
+
+    /// A `PayloadSourceRecorder` impl that returns `Err(_)` — pins
+    /// the stringified-error contract for the log-at-warn caller
+    /// path, symmetric with `payload_persistence_err_shape`.  The
+    /// index backend being down (or any other transient failure)
+    /// MUST NOT hard-abort the deploy — the joiner's fetch chain
+    /// falls through to `PayloadLookup` and peer fetch.
+    #[test]
+    fn payload_source_recorder_err_shape() {
+        #[derive(Debug)]
+        struct AlwaysFails;
+        impl PayloadSourceRecorder for AlwaysFails {
+            fn record(&self, _payload_hash: [u8; 32], _deploy_sig: &[u8]) -> Result<(), String> {
+                Err("index backend down".to_string())
+            }
+        }
+        let boxed: Box<dyn PayloadSourceRecorder> = Box::new(AlwaysFails);
+        match boxed.record([0; 32], b"sig") {
+            Err(msg) => assert!(msg.contains("backend")),
+            Ok(()) => panic!("AlwaysFails must return Err"),
+        }
+    }
+
+    // --- take_deploy_entries_in_log_order -------------------------
+    //
+    // Pins the H-R3 determinism contract: emission is driven by
+    // the consensus-canonical `produce_channel_hashes` sequence,
+    // NOT by insertion order.  Load-bearing because the WAL root
+    // is a consensus commitment — a scheduler-dependent drain
+    // would fork validators under `Par` parallelism.
+
+    /// LOAD-BEARING: log order wins over insertion order.
+    /// Append entries A, B, C in insertion order [1, 2, 3] but
+    /// supply log hashes in reversed order [3, 2, 1] — the drain
+    /// must emit entries whose `length` fields are [3, 2, 1].
+    #[test]
+    fn take_deploy_entries_in_log_order_reorders_by_log() {
+        let wal = Wal::new();
+        let mark = wal.begin_deploy();
+        wal.append_with_ack(mk_entry(1), [0xA1; 32]).unwrap();
+        wal.append_with_ack(mk_entry(2), [0xA2; 32]).unwrap();
+        wal.append_with_ack(mk_entry(3), [0xA3; 32]).unwrap();
+        let log = [[0xA3; 32], [0xA2; 32], [0xA1; 32]];
+        let drained = wal.take_deploy_entries_in_log_order(mark, &log);
+        let lens: Vec<_> = drained.iter().map(|e| e.length.unwrap()).collect();
+        assert_eq!(lens, vec![3, 2, 1], "log order must drive emission order");
+        // Buffer drained.
+        assert!(wal.is_empty());
+    }
+
+    /// LOAD-BEARING defense-in-depth: entries whose ack-hash
+    /// isn't in the log get appended at the end in insertion
+    /// order — NOTHING is silently dropped (the consensus
+    /// commitment would otherwise decouple from on-disk
+    /// effects).
+    #[test]
+    fn take_deploy_entries_in_log_order_appends_unmatched_at_end() {
+        let wal = Wal::new();
+        let mark = wal.begin_deploy();
+        // Entry 1 has a log-matched hash; entry 2 has the
+        // sentinel `[0u8; 32]` (legacy append path); entry 3
+        // has a log-matched hash.
+        wal.append_with_ack(mk_entry(1), [0xA1; 32]).unwrap();
+        wal.append(mk_entry(2)).unwrap(); // sentinel ack
+        wal.append_with_ack(mk_entry(3), [0xA3; 32]).unwrap();
+        let log = [[0xA3; 32], [0xA1; 32]]; // omits sentinel
+        let drained = wal.take_deploy_entries_in_log_order(mark, &log);
+        let lens: Vec<_> = drained.iter().map(|e| e.length.unwrap()).collect();
+        assert_eq!(
+            lens,
+            vec![3, 1, 2],
+            "log-matched entries first in log order; unmatched (entry 2) appended at end"
+        );
+    }
+
+    /// Hash appears in log but not in WAL → silently skipped
+    /// (nothing to emit for that hash).  Hash appears in both →
+    /// emitted.
+    #[test]
+    fn take_deploy_entries_in_log_order_skips_log_hashes_without_wal_entries() {
+        let wal = Wal::new();
+        let mark = wal.begin_deploy();
+        wal.append_with_ack(mk_entry(1), [0xA1; 32]).unwrap();
+        // Log mentions [0xA1, 0xA9, 0xA2] but only 0xA1 is in
+        // the WAL.
+        let log = [[0xA1; 32], [0xA9; 32], [0xA2; 32]];
+        let drained = wal.take_deploy_entries_in_log_order(mark, &log);
+        let lens: Vec<_> = drained.iter().map(|e| e.length.unwrap()).collect();
+        assert_eq!(lens, vec![1]);
+    }
+
+    /// `mark` at-or-past current length → empty drain, buffer
+    /// untouched.  Matches `take_deploy_entries_insertion_order`
+    /// behavior for the same edge.
+    #[test]
+    fn take_deploy_entries_in_log_order_mark_at_or_past_len_returns_empty() {
+        let wal = Wal::new();
+        wal.append_with_ack(mk_entry(1), [0xA1; 32]).unwrap();
+        let mark = wal.snapshot_mark(); // == current len
+        let drained = wal.take_deploy_entries_in_log_order(mark, &[[0xA1; 32]]);
+        assert!(drained.is_empty());
+        assert_eq!(
+            wal.len(),
+            1,
+            "buffer must be untouched when mark is past len"
+        );
+    }
+
+    /// Duplicate ack-hashes in the WAL get first-wins semantics
+    /// — the first-indexed matching entry is emitted, later
+    /// duplicates land in the unmatched-at-end tail.  Shouldn't
+    /// occur for fresh unforgeables but pin the deterministic
+    /// outcome anyway.
+    #[test]
+    fn take_deploy_entries_in_log_order_duplicate_ack_hashes_first_wins() {
+        let wal = Wal::new();
+        let mark = wal.begin_deploy();
+        wal.append_with_ack(mk_entry(1), [0xDD; 32]).unwrap();
+        wal.append_with_ack(mk_entry(2), [0xDD; 32]).unwrap(); // dup
+        let log = [[0xDD; 32]];
+        let drained = wal.take_deploy_entries_in_log_order(mark, &log);
+        let lens: Vec<_> = drained.iter().map(|e| e.length.unwrap()).collect();
+        // Entry 1 wins the log match; entry 2 falls through to
+        // the unmatched-at-end branch.
+        assert_eq!(lens, vec![1, 2]);
+    }
+
+    /// Buffer stays bounded across deploys: a successful drain
+    /// removes the entries + their ack-hash sidecar entries, so
+    /// a subsequent `len()` matches the pre-deploy mark.
+    #[test]
+    fn take_deploy_entries_in_log_order_drains_the_buffer() {
+        let wal = Wal::new();
+        wal.append_with_ack(mk_entry(0), [0x00; 32]).unwrap();
+        let mark = wal.begin_deploy(); // mark after entry 0
+        wal.append_with_ack(mk_entry(1), [0xA1; 32]).unwrap();
+        wal.append_with_ack(mk_entry(2), [0xA2; 32]).unwrap();
+        let log = [[0xA1; 32], [0xA2; 32]];
+        let drained = wal.take_deploy_entries_in_log_order(mark, &log);
+        assert_eq!(drained.len(), 2);
+        assert_eq!(wal.len(), 1, "pre-deploy entry survives, deploy's drained");
+        // Snapshot of what's left: just entry 0.
+        let remaining = wal.snapshot();
+        assert_eq!(remaining[0].length.unwrap(), 0);
+    }
+
+    /// Empty `produce_channel_hashes` — nothing matches the log,
+    /// so every drained entry falls through to the
+    /// unmatched-at-end tail in insertion order.  Pins that an
+    /// empty log doesn't drop entries (it's just a less-ordered
+    /// variant of `_insertion_order`).
+    #[test]
+    fn take_deploy_entries_in_log_order_empty_log_falls_back_to_insertion() {
+        let wal = Wal::new();
+        let mark = wal.begin_deploy();
+        wal.append_with_ack(mk_entry(1), [0xA1; 32]).unwrap();
+        wal.append_with_ack(mk_entry(2), [0xA2; 32]).unwrap();
+        let drained = wal.take_deploy_entries_in_log_order(mark, &[]);
+        let lens: Vec<_> = drained.iter().map(|e| e.length.unwrap()).collect();
+        assert_eq!(lens, vec![1, 2]);
     }
 }

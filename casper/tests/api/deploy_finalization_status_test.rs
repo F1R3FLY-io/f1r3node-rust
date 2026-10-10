@@ -53,6 +53,7 @@ impl TestContext {
 
 async fn create_engine_cell(node: &TestNode) -> EngineCell {
     let casper_for_engine = Arc::new(MultiParentCasperImpl {
+        observer: std::sync::OnceLock::new(),
         divergence_monitor: node.casper.divergence_monitor.clone(),
         block_retriever: node.casper.block_retriever.clone(),
         event_publisher: node.casper.event_publisher.clone(),

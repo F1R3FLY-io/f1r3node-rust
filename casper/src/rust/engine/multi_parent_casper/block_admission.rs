@@ -53,6 +53,19 @@ pub(crate) fn admit_buffer_contains<T: TransportLayer + Send + Sync>(
     this.casper_buffer_storage.contains(&block_hash_serde)
 }
 
+pub(crate) fn admit_buffer_waits_on_dependency<T: TransportLayer + Send + Sync>(
+    this: &MultiParentCasperImpl<T>,
+    hash: &BlockHash,
+) -> bool {
+    this.casper_buffer_storage
+        .get_parents(&BlockHashSerde(hash.clone()))
+        .is_some_and(|parents| {
+            parents
+                .iter()
+                .any(|parent| !admit_dag_contains(this, &BlockHash::from(parent.0.clone())))
+        })
+}
+
 pub(crate) fn admit_get_approved_block<T: TransportLayer + Send + Sync>(
     this: &MultiParentCasperImpl<T>,
 ) -> Result<&BlockMessage, CasperError> {

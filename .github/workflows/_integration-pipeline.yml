@@ -45,7 +45,7 @@ env:
   # MUST be kept identical to .github/oci-validation.env (the Full OCI
   # Validation workflow sources that file) — bump both in the same commit,
   # via `just repin-system-integration <sha>`.
-  SYSTEM_INTEGRATION_REF: e3c4e14189f0c6ced2e9674487fcbdeffd93141b
+  SYSTEM_INTEGRATION_REF: f106a341c7fd9fb9a82c1f18669fa5a9d708e21c
   # Pinned OCI CLI installer (release tag + sha256) and CLI version. The
   # install.sh checksum fails closed if the tag is ever moved; OCI_CLI_VERSION
   # pins what the installer pulls from PyPI (without it the installer floats to
@@ -202,10 +202,8 @@ jobs:
         run: echo "Ephemeral launch approved for this run; proceeding to OCI launch."
 
   # Launch ephemeral OCI VMs that will pick up the integration-tests matrix
-  # jobs. Runs in parallel with build_docker_image so the ~1-minute launch
-  # overhead overlaps with the ~7-minute Docker build. Each VM boots from a
-  # baked image, registers as a GitHub Actions runner with
-  # f1r3fly-rust-ci-ephemeral labels, picks up exactly one matrix job, then
+  # jobs. Each VM boots from a baked image, registers as a GitHub Actions runner
+  # under this run's own run-<id> label, picks up exactly one matrix job, then
   # self-terminates. Lifecycle: see F1R3FLY-io/system-integration ci/oci-runners/.
   #
   # This is the only job that handles secrets. It checks out ONLY the trusted
@@ -217,9 +215,12 @@ jobs:
   # SECURITY: do not remove that `needs:` — it is the only thing sequencing the
   # OCI credentials behind maintainer approval now that the environment is
   # declared one job upstream.
+  # `needs: build_docker_image` costs ~1 minute of overlap and stops a run that
+  # cannot use VMs from creating them: the tenancy rejects ~45% of launches at
+  # its creation throttle, so those six VMs are budget another run needed.
   launch_ephemeral_runners:
     name: Launch Ephemeral Runners
-    needs: await_approval
+    needs: [await_approval, build_docker_image]
     runs-on: ubuntu-latest
     environment: oci-credentials
     # Serializes real OCI VM creation across every heavy run in the repository:
@@ -232,7 +233,7 @@ jobs:
     # Residual risk, accepted: GitHub keeps only ONE pending entry per group, so
     # if three launchers contend within that ~1-minute window, the middle one is
     # cancelled. Recovery is a manual re-run of the affected job — there is no
-    # silent data loss, but the PR shows a cancelled Heavy Pipeline rather than
+    # silent data loss, but the PR shows a cancelled Integration Pipeline rather than
     # a failure, so check for cancelled runs before assuming a pipeline was
     # never triggered.
     concurrency:
@@ -339,6 +340,9 @@ jobs:
           # Register ephemeral runners on the base repo (where the run executes).
           GH_REPO: ${{ github.repository }}
           SUPPRESS_LABEL_WARNING: "True"
+          # launch-runner.sh appends the name of each VM that OCI accepted.
+          # The tag step below reads it, also after a failed or cancelled launch.
+          RUNNER_NAMES_FILE: ${{ runner.temp }}/ephemeral-runner-names
         run: |
           cd system-integration/ci/oci-runners
           # Launch in parallel; each script exits as soon as the OCI launch
@@ -350,8 +354,15 @@ jobs:
           # daily instance-creation quota is shared tenancy-wide, and the
           # previous 20-VM layout (5 identical slots per arch×provider)
           # exhausted it under normal PR traffic.
+          # run-$GITHUB_RUN_ID replaces the shared pool label so only this run's
+          # jobs match these VMs (#337). The launcher rejects an override that
+          # keeps the shared label, and requires one pool label — run-<id> is it.
+          # Keep these in step with the `runs-on` matrices below.
           pids=()
-          for _ in $(seq 1 4); do ./launch-runner.sh amd64 & pids+=($!); done
+          for _ in $(seq 1 4); do
+            RUNNER_LABELS="self-hosted,linux,x64,oracle-cloud,run-$GITHUB_RUN_ID" \
+              ./launch-runner.sh amd64 & pids+=($!)
+          done
           # arm64 runs its two legs SEQUENTIALLY (subprocess queues after
           # docker), so the runner serving the second leg idles longer than
           # the cloud-init idle watchdog's 2700s default — run 33208755550
@@ -360,7 +371,11 @@ jobs:
           # the observed docker-leg duration with margin. The launcher knob
           # exists from system-integration pin <pending 2026-08-28 repin>;
           # older launchers ignore the variable, so this is safe either way.
-          for _ in $(seq 1 2); do RUNNER_IDLE_TIMEOUT_SECS=7200 ./launch-runner.sh arm64 & pids+=($!); done
+          for _ in $(seq 1 2); do
+            RUNNER_IDLE_TIMEOUT_SECS=7200 \
+              RUNNER_LABELS="self-hosted,linux,arm64,oracle-cloud,run-$GITHUB_RUN_ID" \
+              ./launch-runner.sh arm64 & pids+=($!)
+          done
           failed=0
           for pid in "${pids[@]}"; do
             if ! wait "$pid"; then
@@ -372,6 +387,77 @@ jobs:
             exit 1
           fi
           echo "All 6 ephemeral runner VMs submitted."
+
+      # Tags every VM this run created with github-run-id and github-run-key
+      # (run id and attempt, the key merge-recovery-soak.yml also uses), so the
+      # end-of-run cleanup can find the VMs of this run without GitHub runner
+      # registrations (EPIC-022). always(): a failed or cancelled launch can
+      # still have created VMs. Same read-modify-write and retry as the soak
+      # self-tag step, because --freeform-tags replaces the whole map. A VM
+      # left untagged is not an error here: the reaper still removes it.
+      # .github/scripts/test-ephemeral-run-tagging.sh runs this block.
+      - name: Tag launched VMs with this run
+        if: always()
+        shell: bash -e {0}
+        env:
+          RUNNER_NAMES_FILE: ${{ runner.temp }}/ephemeral-runner-names
+        run: |
+          if [ ! -s "$RUNNER_NAMES_FILE" ]; then
+            echo "No VM was launched; nothing to tag."
+            exit 0
+          fi
+          . system-integration/ci/oci-runners/state.env
+          run_key="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          pending=""
+          while read -r name; do
+            if [[ "$name" =~ ^ci-eph-[A-Za-z0-9._-]+$ ]]; then
+              pending="$pending $name"
+            else
+              echo "::warning::skip unexpected runner name: $name"
+            fi
+          done < "$RUNNER_NAMES_FILE"
+          # One compartment list per round resolves every pending name, so
+          # the step makes at most 6 list calls, however many VMs launched.
+          for round in 1 2 3 4 5 6; do
+            [ -n "$pending" ] || break
+            [ "$round" -eq 1 ] || sleep 10
+            listing="$(oci compute instance list -c "$COMP" --region "$REGION" --all --output json 2>/dev/null || true)"
+            still=""
+            for name in $pending; do
+              iid="$(jq -r --arg n "$name" \
+                'first((.data // [])[] | select(."display-name" == $n and ."lifecycle-state" != "TERMINATED") | .id) // empty' \
+                <<< "${listing:-{\}}" 2>/dev/null || true)"
+              case "$iid" in
+                ocid1.instance.*) ;;
+                *) still="$still $name"; continue ;;
+              esac
+              if ! existing="$(oci compute instance get --instance-id "$iid" --region "$REGION" \
+                   --query 'data."freeform-tags"' --raw-output 2>/dev/null)"; then
+                still="$still $name"
+                continue
+              fi
+              case "$existing" in ''|null) existing='{}' ;; esac
+              if ! jq -e 'type == "object"' <<<"$existing" >/dev/null 2>&1; then
+                still="$still $name"
+                continue
+              fi
+              merged="$(jq -cn --argjson cur "$existing" --arg id "$GITHUB_RUN_ID" --arg key "$run_key" \
+                '$cur + {"github-run-id": $id, "github-run-key": $key}')"
+              if oci compute instance update --instance-id "$iid" --region "$REGION" \
+                   --force --freeform-tags "$merged" >/dev/null 2>&1; then
+                echo "Tagged $name with github-run-key=$run_key"
+              else
+                still="$still $name"
+              fi
+            done
+            pending="$still"
+          done
+          untagged=0
+          for name in $pending; do
+            echo "::warning::could not tag $name; the reaper removes it after its age limit"
+            untagged=$((untagged + 1))
+          done
+          echo "tag step finished with $untagged untagged VM(s)"
 
       - name: Remove OCI credentials
         if: always()
@@ -408,8 +494,8 @@ jobs:
                   self-hosted,
                   linux,
                   x64,
-                  f1r3fly-rust-ci-ephemeral,
                   oracle-cloud,
+                  "run-${{ github.run_id }}",
                 ],
             }
           - {
@@ -420,8 +506,8 @@ jobs:
                   self-hosted,
                   linux,
                   x64,
-                  f1r3fly-rust-ci-ephemeral,
                   oracle-cloud,
+                  "run-${{ github.run_id }}",
                 ],
             }
           - {
@@ -432,8 +518,8 @@ jobs:
                   self-hosted,
                   linux,
                   arm64,
-                  f1r3fly-rust-ci-ephemeral,
                   oracle-cloud,
+                  "run-${{ github.run_id }}",
                 ],
             }
           - {
@@ -444,8 +530,8 @@ jobs:
                   self-hosted,
                   linux,
                   arm64,
-                  f1r3fly-rust-ci-ephemeral,
                   oracle-cloud,
+                  "run-${{ github.run_id }}",
                 ],
             }
     steps:
@@ -580,8 +666,8 @@ jobs:
                   self-hosted,
                   linux,
                   x64,
-                  f1r3fly-rust-ci-ephemeral,
                   oracle-cloud,
+                  "run-${{ github.run_id }}",
                 ],
             }
           - {
@@ -592,8 +678,8 @@ jobs:
                   self-hosted,
                   linux,
                   x64,
-                  f1r3fly-rust-ci-ephemeral,
                   oracle-cloud,
+                  "run-${{ github.run_id }}",
                 ],
             }
     steps:
@@ -665,6 +751,170 @@ jobs:
           name: ucc-logs-${{ matrix.arch }}-${{ matrix.provider }}-run${{ github.run_id }}-attempt${{ github.run_attempt }}
           path: system-integration/integration-tests/
           retention-days: 7
+
+  # Terminates VMs whose job never arrived — cancelled run, early failure,
+  # over-provision — instead of leaving them to the watchdog (2700s, 7200s on
+  # arm64) or the reaper, whose cron is throttled to ~5h spacing here.
+  # `always()` runs on cancellation too, which is the case that strands VMs.
+  # A runner's name equals its instance display name, so this run's runners name
+  # this run's VMs; one that never registered is still the reaper's job.
+  reclaim_ephemeral_runners:
+    name: Reclaim Ephemeral Runners
+    needs: [launch_ephemeral_runners, integration_tests, ucc_tests]
+    if: always() && needs.launch_ephemeral_runners.result != 'skipped'
+    runs-on: ubuntu-latest
+    environment: oci-credentials
+    permissions:
+      contents: read
+    timeout-minutes: 15
+    steps:
+      - name: Clone system-integration
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          repository: F1R3FLY-io/system-integration
+          ref: ${{ env.SYSTEM_INTEGRATION_REF }}
+          path: system-integration
+          persist-credentials: false
+
+      - name: Install OCI CLI (pinned, checksum-verified)
+        shell: bash -ex {0}
+        run: |
+          curl -fsSL --retry 5 --retry-delay 10 "$OCI_CLI_INSTALLER_URL" -o /tmp/oci-install.sh
+          echo "$OCI_CLI_INSTALLER_SHA256  /tmp/oci-install.sh" | sha256sum -c -
+          bash /tmp/oci-install.sh \
+            --accept-all-defaults --install-dir /opt/oci-cli --exec-dir /usr/local/bin \
+            --oci-cli-version "$OCI_CLI_VERSION" \
+            --verify-checksum "$OCI_CLI_INSTALLER_PY_SHA256"
+          oci --version
+
+      - name: Configure OCI auth from secrets
+        shell: bash -e {0} # no -x: never trace the multi-line private key
+        env:
+          OCI_TENANCY_OCID: ${{ secrets.OCI_TENANCY_OCID }}
+          OCI_USER_OCID: ${{ secrets.OCI_USER_OCID }}
+          OCI_REGION: ${{ secrets.OCI_REGION }}
+          OCI_FINGERPRINT: ${{ secrets.OCI_FINGERPRINT }}
+          OCI_PRIVATE_KEY: ${{ secrets.OCI_PRIVATE_KEY }}
+        run: |
+          mkdir -p ~/.oci
+          printf '%s\n' "$OCI_PRIVATE_KEY" > ~/.oci/oci_api_key.pem
+          chmod 600 ~/.oci/oci_api_key.pem
+          cat > ~/.oci/config <<EOF
+          [DEFAULT]
+          user=$OCI_USER_OCID
+          fingerprint=$OCI_FINGERPRINT
+          tenancy=$OCI_TENANCY_OCID
+          region=$OCI_REGION
+          key_file=$HOME/.oci/oci_api_key.pem
+          EOF
+          chmod 600 ~/.oci/config
+          oci iam region list >/dev/null && echo "OCI auth OK"
+
+      - name: Create runner-management token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ vars.CI_GITHUB_APP_ID }}
+          private-key: ${{ secrets.CI_GITHUB_APP_PRIVATE_KEY }}
+          permission-administration: write
+
+      - name: Terminate this run's remaining VMs
+        shell: bash -e {0}
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          . system-integration/ci/oci-runners/state.env
+
+          list_runners() {
+            gh api "repos/$GH_REPO/actions/runners" --paginate \
+              --jq ".runners[] | select(any(.labels[]; .name == \"run-$GITHUB_RUN_ID\")) | \"\(.id)\t\(.name)\t\(.busy)\""
+          }
+
+          # VMs of this attempt, found by the tags of the launch job. This also
+          # finds a VM that never registered with GitHub (EPIC-022).
+          list_tagged() {
+            oci compute instance list -c "$COMP" --region "$REGION" --all --output json 2>/dev/null |
+              jq -r --arg id "$GITHUB_RUN_ID" --arg key "${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" '
+                (.data // [])[]
+                | select(."lifecycle-state" != "TERMINATED" and ."lifecycle-state" != "TERMINATING")
+                | select(."display-name" | test("^ci-eph-[A-Za-z0-9._-]+$"))
+                | select((."freeform-tags"["github-run-id"] // "") == $id)
+                | select((."freeform-tags"["github-run-key"] // "") == $key)
+                | "\(.id)\t\(."display-name")"' || true
+          }
+
+          # An empty list can mean the VMs are still registering, not that there
+          # is nothing to reclaim; a partly rejected launch left one behind that
+          # way. Re-check before concluding, unless the tags already name VMs.
+          runners="$(list_runners)"
+          tagged="$(list_tagged)"
+          for _ in 1 2 3 4 5 6; do
+            [ -z "$runners" ] && [ -z "$tagged" ] || break
+            sleep 30
+            runners="$(list_runners)"
+            tagged="$(list_tagged)"
+          done
+
+          failures=0
+          handled=""
+          if [ -z "$runners" ]; then
+            echo "No runners registered for run $GITHUB_RUN_ID."
+          fi
+          while IFS=$'\t' read -r id name busy; do
+            [ -n "$name" ] || continue
+            echo "=== $name (runner $id, busy=$busy)"
+
+            ocid="$(oci compute instance list -c "$COMP" --region "$REGION" --all \
+              --query "data[?\"display-name\"=='$name' && \"lifecycle-state\"!='TERMINATED'].id | [0]" \
+              --raw-output 2>/dev/null || true)"
+
+            if [ -n "$ocid" ] && [ "$ocid" != "null" ]; then
+              handled="$handled $ocid "
+              if oci compute instance terminate --instance-id "$ocid" --force --region "$REGION"; then
+                echo "  terminated $ocid"
+              else
+                echo "  ::warning::could not terminate $ocid"
+                failures=$((failures + 1))
+              fi
+            else
+              echo "  no live instance; already gone"
+            fi
+
+            if gh api -X DELETE "repos/$GH_REPO/actions/runners/$id" >/dev/null 2>&1; then
+              echo "  deregistered runner $id"
+            else
+              # A runner mid-job refuses deletion; the reaper sweeps the entry later.
+              echo "  ::warning::could not deregister runner $id (busy=$busy)"
+              failures=$((failures + 1))
+            fi
+          done <<< "$runners"
+
+          # Tagged VMs that the loop above did not reach, for example a VM that
+          # never registered. The handled list skips every VM the loop already
+          # tried: OCI can still report a just-terminated VM as RUNNING, and a
+          # failed attempt is already counted in failures.
+          tagged="$(list_tagged)"
+          while IFS=$'\t' read -r ocid name; do
+            [ -n "$ocid" ] || continue
+            case "$handled" in *" $ocid "*) continue ;; esac
+            echo "=== $name (tagged, not reclaimed through its runner)"
+            if oci compute instance terminate --instance-id "$ocid" --force --region "$REGION"; then
+              echo "  terminated $ocid"
+            else
+              echo "  ::warning::could not terminate $ocid"
+              failures=$((failures + 1))
+            fi
+          done <<< "$tagged"
+
+          echo "reclaim finished with $failures problem(s)"
+
+      - name: Remove OCI credentials
+        if: always()
+        shell: bash -e {0}
+        run: |
+          shred -fu ~/.oci/oci_api_key.pem 2>/dev/null || true
+          rm -rf ~/.oci
 
   # Smoke test: single-node docker-compose standalone deployment.
   smoke_docker_standalone:
