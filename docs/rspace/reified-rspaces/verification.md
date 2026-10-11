@@ -6171,6 +6171,113 @@ To run the checks of phase P8, do these steps from the repository root:
 4. Run `python3 scripts/verify-reified/check-model-map.py --map formal/reified-rspaces-model-map-p8.json`.
 5. Run `scripts/check-reified-rspaces-proofs.sh` and `scripts/check-reified-rspaces-tla-invariants.sh`.
 
+### 33.9 The full gate set
+
+The gate set ran on the candidate `17fb2ad05`, the commit of step 6.
+Every leg ran on that commit, so the formal results and the test results hold for one tree.
+
+*Table 182. The legs of the full gate set of P8.*
+
+| Leg | Check | Result |
+|---|---|---|
+| Format and lint | `cargo fmt --all -- --check`, and `cargo clippy` with `-D warnings` in the three configurations of Table 138 | pass |
+| G1 | `cargo check --workspace --all-targets`, and `cargo check -p node --all-targets --features rholang/chromadb` | 0 warnings |
+| G2 to G6 | The `rholang` library and the 52 suites `rholang/tests/reified_*.rs` | 3,406 passed, 0 failed, 3 ignored |
+| G2 to G6 | Every `rspace_plus_plus` test | 853 passed, 0 failed, 7 ignored |
+| G2 to G6 | The `models` suites `reified_encoding` and `space_factory_urn` | 17 passed, 0 failed |
+| G7 | I-14: the two empty-state-hash tests of `casper` | 2 passed |
+| G8 | `scripts/check-reified-rspaces-proofs.sh` | `PASS=125 FAIL=0 SKIP=0`, 297 closed headlines, 441 negative checks |
+| G9 | `scripts/check-reified-rspaces-tla-invariants.sh` with 4 TLC workers | `PASS=462 FAIL=0 SKIP=0`. The largest model check explores 44,207,717 distinct states. |
+| G10 to G15 | The 38 checkers of the phase | 38 of 38 pass before and after the mutant harnesses. |
+| G16 | The protected paths against the base `4d67b5ccc` | Only the accessor of [decision 47](decision-register.md#decision-47) and the test edit of [decision 78](decision-register.md#decision-78) differ. No file is untracked under the protected paths, and Reified code holds no `0xF3`. |
+| G17 | The release tests of each crate | Table 183 |
+| Release builds | `cargo build --release -p node`, without and with `rholang/chromadb` | Both succeed, in 177 s and 412 s. |
+| Z3 | The three scripts of `formal/z3/reified_rspaces` | 12, 10 and 17 checks pass. |
+| Sage and receipt | `similarity_metrics.sage` and `numeric_reference_receipt.py` | 182 of 182 cases agree, 200 random cases satisfy the metric laws, and the reference vectors are unchanged. |
+| Mutants | The five harnesses of P6 and `p7-mutants.py` | Table 184 |
+| Live leg | `scripts/verify-reified/chroma-live.sh` with the pinned server | 3 passed |
+
+G17 and the release builds ran in an export of the tree under `target/`, with their own target directory.
+A sha256 manifest showed that each of the 5,039 tracked files of the export equals its file in the worktree.
+
+*Table 183. The release tests of each crate (G17).*
+
+| Crate | Passed | Failed | Ignored | Seconds |
+|---|---|---|---|---|
+| `rspace++`, in the gate | 657 | 1 | 7 | 137 |
+| `rspace++`, first full re-run | 852 | 1 | 7 | 159 |
+| `rspace++`, second full re-run | 853 | 0 | 7 | 21 |
+| `rholang` | 4,289 | 0 | 6 | 1,307 |
+| `casper` | 1,505 | 3 | 14 | 1,394 |
+| `models` | 466 | 0 | 0 | 49 |
+| `crypto` | 121 | 0 | 0 | 17 |
+| `shared` | 142 | 0 | 0 | 20 |
+| `graphz` | 48 | 0 | 0 | 6 |
+| `block-storage` | 165 | 0 | 0 | 19 |
+| `comm` | 401 | 0 | 0 | 64 |
+| `node` | 260 | 0 | 0 | 274 |
+| Total, with the second full re-run of `rspace++` | 8,250 | 3 | 27 | |
+
+The three failures of `casper` are the three failures of the base `4d67b5ccc` that section [26.2](#262-the-release-regression) lists, with the same panic sites and values.
+The `rholang` crate has 72 more release tests than in P7, and every one of them passes.
+Section 33.10 explains the failure of `rspace++` and the two re-runs.
+
+*Table 184. The mutant harnesses in the gate set.*
+
+| Harness | Mutants | Fail tests | Stale | Seconds |
+|---|---|---|---|---|
+| `tensor-mutants.py` | 6 | 6 | 0 | 483 |
+| `vectordb-mutants.py` | 14 | 14 | 0 | 1,632 |
+| `vector-ops-mutants.py` | 8 | 8 | 0 | 616 |
+| `vectordb-services-mutants.py` | 12 | 12 | 0 | 1,653 |
+| `mirror-mutants.py` | 34 | 34 | 0 | 3,459 |
+| `p7-mutants.py` | 11 | 11 | 0 | 885 |
+
+Each harness restored its sources.
+After the gate set, the worktree held only the uncommitted `Cargo.toml` and `Cargo.lock`.
+
+### 33.10 A gate finding: a wall-clock bound of the base
+
+In the gate, one release test of `rspace++` failed.
+The test `soft_checkpoint_cost_does_not_scale_with_accumulated_store_size` measures the mean time of a soft checkpoint with 100 and with 10,000 stored records (`rspace++/tests/concurrent_rspace_test.rs:377-432`).
+It requires that the ratio of the two times is less than 8.
+In the binary of `rspace++/tests/mod.rs`, the gate measured 69.7 µs and 682.6 µs, which is a ratio of 9.8.
+In the same run and on the same build, the test passed in its own binary, `rspace++/tests/concurrent_rspace_test.rs`.
+`cargo test` stops at the first binary that fails, so the 195 tests of 8 later binaries did not run in the gate.
+
+The test and the code that it measures are the same as in the base `4d67b5ccc` and in P7.
+P8 changes no file of `rspace++`, and the build inputs of `rspace++` have the same hashes as in the export of P7.
+Since the base, the campaign adds only new files and one-line `mod` declarations to `rspace++`.
+The files `hot_store.rs`, `tests/mod.rs` and `tests/concurrent_rspace_test.rs` are unchanged.
+The release leg of `rspace++` passed in P7 (Table 175).
+
+The first hypothesis was that the load on the host slowed one measurement, and that the checkpoint did not become slower.
+During the re-runs, the tests of another session in another worktree kept the load average between 12 and 28 on the 64 cores.
+The second hypothesis was that a compile in the same `systemd-run` scope just before the tests causes the slow measurement.
+Table 185 gives the 22 runs of the test that print their times, all on the build of the gate.
+Arms A and B of the table refute the second hypothesis: both arms pass, and one run of arm B has a ratio of 4.2.
+
+*Table 185. The runs of the wall-clock test on the build of the gate.*
+
+| Run | Runs | Failed | Ratio | Time with 10,000 records |
+|---|---|---|---|---|
+| The gate: `cargo test --release` after the compile | 1 | 1 | 9.8 | 682.6 µs |
+| The test alone, as a direct call of the binary | 10 | 0 | 0.3 to 1.0 | 68.3 µs to 70.2 µs |
+| The binary of `tests/mod.rs`, as a direct call | 3 | 0 | 1.0 to 1.3 | 70.1 µs to 88.4 µs |
+| The first full re-run: `cargo test --release --no-fail-fast` after a compile | 1 | 1 | 8.3 | 580.5 µs |
+| `cargo test --release --test mod` with no compile | 3 | 0 | 1.0 | 69.5 µs to 74.3 µs |
+| Arm A: compile and test in one scope | 2 | 0 | 0.9 to 1.0 | 69.0 µs to 79.2 µs |
+| Arm B: compile in one scope, and test in another scope | 2 | 0 | 1.0 to 4.2 | 71.0 µs to 282.4 µs |
+
+The second full re-run had no compile before it, and it passed all 853 tests in 21 s.
+The test harness captures the output of a test that passes, so that run shows no times.
+
+On one build, the ratio goes from 0.3 to 9.8, and a single slow measurement of either store size causes the spread.
+In run 4 of the direct calls, the store with 100 records took 252.6 µs, so the ratio fell to 0.3.
+So the bound of 8 depends on the load of the host, not on the code of the candidate.
+The test belongs to the base, and the campaign does not change it ([decision 70](decision-register.md#decision-70)).
+Table 183 counts the second full re-run, and it also gives the two runs that failed.
+
 ## References
 
 <a id="ref-ch00"></a>[CH00] K. Claessen and J. Hughes, "QuickCheck: a lightweight tool for random testing of Haskell programs," in *Proceedings of the Fifth ACM SIGPLAN International Conference on Functional Programming (ICFP 2000)*, ACM, 2000, pp. 268–279. [doi:10.1145/351240.351266](https://doi.org/10.1145/351240.351266)
