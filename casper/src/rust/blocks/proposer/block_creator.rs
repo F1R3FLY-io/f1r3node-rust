@@ -76,6 +76,8 @@ struct DeployAdmissionPolicy {
     reserve_tail: bool,
     fallback: bool,
     backpressure: bool,
+    ordinary_cap_source: OrdinaryCapSource,
+    in_scope_recovery_cap_source: OrdinaryCapSource,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -117,10 +119,49 @@ struct DeployInclusionStaleness {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum OrdinaryCapSource {
+    Normal,
+    #[default]
+    Base,
+    Backlog,
+    SoftBacklog,
+    SoftStalled,
+    Stale,
+    Hard,
+}
+
+impl OrdinaryCapSource {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Normal => "normal",
+            Self::Base => "base",
+            Self::Backlog => "backlog",
+            Self::SoftBacklog => "soft-backlog",
+            Self::SoftStalled => "soft-stalled",
+            Self::Stale => "stale",
+            Self::Hard => "hard",
+        }
+    }
+
+    fn code(self) -> f64 {
+        match self {
+            Self::Normal => 0.0,
+            Self::Base => 1.0,
+            Self::Backlog => 2.0,
+            Self::SoftBacklog => 3.0,
+            Self::SoftStalled => 4.0,
+            Self::Stale => 5.0,
+            Self::Hard => 6.0,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct FreshAdmissionFallback {
     allowed: bool,
     cap: usize,
     backpressure: bool,
+    source: OrdinaryCapSource,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -138,6 +179,7 @@ struct FinalityLagStats {
     dag_tip: i64,
     last_finalized_block: i64,
     lag: i64,
+    stalled: bool,
 }
 
 /// C15 / Smell-2: was previously a zero-arg `fn -> bool` returning a
@@ -156,6 +198,7 @@ const NON_LEADER_FALLBACK_ORDINARY_DEPLOY_CAP: usize = 8;
 const NON_LEADER_FALLBACK_MIN_ORDINARY_DEPLOY_CAP: usize = 4;
 const NON_LEADER_FALLBACK_MEDIUM_ORDINARY_DEPLOY_CAP: usize = 16;
 const NON_LEADER_FALLBACK_MAX_ORDINARY_DEPLOY_CAP: usize = 32;
+const SOFT_BACKPRESSURE_MAX_ORDINARY_DEPLOY_CAP: usize = 16;
 const DEPLOY_INCLUSION_LEASE_BLOCKS: i64 = 3;
 const DEPLOY_INCLUSION_LEASE_MILLIS: i64 = 30_000;
 const FRESH_DEPLOY_MAX_ADMISSION_DELAY_MILLIS: i64 = 60_000;
@@ -166,6 +209,28 @@ pub const FINALITY_LAG_SOFT_BACKPRESSURE_BLOCKS: i64 = 4;
 pub const FINALITY_LAG_HARD_BACKPRESSURE_BLOCKS: i64 = 8;
 const _: () =
     assert!(FINALITY_LAG_SOFT_BACKPRESSURE_BLOCKS < FINALITY_LAG_HARD_BACKPRESSURE_BLOCKS);
+const FINALITY_STALL_PROPOSALS: u32 = 2;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct FinalityProgress {
+    last_finalized_block: Option<i64>,
+    unadvanced_proposals: u32,
+}
+
+impl FinalityProgress {
+    pub fn observe(&mut self, last_finalized_block: i64) -> bool {
+        match self.last_finalized_block {
+            Some(previous) if last_finalized_block <= previous => {
+                self.unadvanced_proposals = self.unadvanced_proposals.saturating_add(1);
+            }
+            _ => {
+                self.last_finalized_block = Some(last_finalized_block);
+                self.unadvanced_proposals = 0;
+            }
+        }
+        self.unadvanced_proposals >= FINALITY_STALL_PROPOSALS
+    }
+}
 
 /// C15 / Smell-4: extract the deploy-signature pretty-print prefix
 /// used in operator-facing log messages. Previously inlined as
@@ -433,6 +498,8 @@ pub async fn prepare_user_deploys(
             reserve_tail: true,
             fallback: false,
             backpressure: false,
+            ordinary_cap_source: OrdinaryCapSource::Normal,
+            in_scope_recovery_cap_source: OrdinaryCapSource::Base,
         },
         floor_ctx.as_ref(),
     )
@@ -2312,6 +2379,16 @@ fn rejected_buffer_has_recoverable_deploys(
         .any(|deploy| !canonical_won.contains(&deploy.sig)))
 }
 
+fn with_finality_progress(
+    finality_lag_stats: FinalityLagStats,
+    finality_progress: &mut FinalityProgress,
+) -> FinalityLagStats {
+    FinalityLagStats {
+        stalled: finality_progress.observe(finality_lag_stats.last_finalized_block),
+        ..finality_lag_stats
+    }
+}
+
 fn finality_lag_stats(
     casper_snapshot: &CasperSnapshot,
     block_store: &KeyValueBlockStore,
@@ -2325,6 +2402,7 @@ fn finality_lag_stats(
         dag_tip,
         last_finalized_block,
         lag: dag_tip.saturating_sub(last_finalized_block).max(0),
+        stalled: false,
     })
 }
 
@@ -2364,19 +2442,49 @@ fn adaptive_normal_ordinary_deploy_cap(
     if normal_cap == 0 {
         return (0, false);
     }
-    let cap = if finality_lag_stats.lag >= FINALITY_LAG_HARD_BACKPRESSURE_BLOCKS
-        || (stale_in_scope_work && deploy_inclusion_staleness.signature_stale)
-    {
-        NON_LEADER_FALLBACK_MIN_ORDINARY_DEPLOY_CAP
-    } else if finality_lag_stats.lag >= FINALITY_LAG_SOFT_BACKPRESSURE_BLOCKS
-        || (stale_in_scope_work && deploy_inclusion_staleness.stale)
-    {
-        NON_LEADER_FALLBACK_ORDINARY_DEPLOY_CAP
-    } else {
-        normal_cap
-    };
+    let (cap, _) = normal_cap_clamp(
+        stale_in_scope_work,
+        deploy_inclusion_staleness,
+        finality_lag_stats,
+    );
     let effective = normal_cap.min(cap);
     (effective, effective < normal_cap)
+}
+
+fn normal_cap_clamp(
+    stale_in_scope_work: bool,
+    deploy_inclusion_staleness: DeployInclusionStaleness,
+    finality_lag_stats: FinalityLagStats,
+) -> (usize, OrdinaryCapSource) {
+    let soft = finality_lag_stats.lag >= FINALITY_LAG_SOFT_BACKPRESSURE_BLOCKS;
+    if finality_lag_stats.lag >= FINALITY_LAG_HARD_BACKPRESSURE_BLOCKS {
+        (
+            NON_LEADER_FALLBACK_MIN_ORDINARY_DEPLOY_CAP,
+            OrdinaryCapSource::Hard,
+        )
+    } else if stale_in_scope_work && deploy_inclusion_staleness.signature_stale {
+        (
+            NON_LEADER_FALLBACK_MIN_ORDINARY_DEPLOY_CAP,
+            OrdinaryCapSource::Stale,
+        )
+    } else if stale_in_scope_work && deploy_inclusion_staleness.stale {
+        (
+            NON_LEADER_FALLBACK_ORDINARY_DEPLOY_CAP,
+            OrdinaryCapSource::Stale,
+        )
+    } else if soft && finality_lag_stats.stalled {
+        (
+            NON_LEADER_FALLBACK_ORDINARY_DEPLOY_CAP,
+            OrdinaryCapSource::SoftStalled,
+        )
+    } else if soft {
+        (
+            SOFT_BACKPRESSURE_MAX_ORDINARY_DEPLOY_CAP,
+            OrdinaryCapSource::SoftBacklog,
+        )
+    } else {
+        (usize::MAX, OrdinaryCapSource::Normal)
+    }
 }
 
 fn fresh_admission_fallback(
@@ -2389,15 +2497,43 @@ fn fresh_admission_fallback(
     if fresh_local_stats.count == 0 {
         return FreshAdmissionFallback::default();
     }
-    let (cap, backpressure) = adaptive_fallback_ordinary_deploy_cap(
+    let (mut cap, backpressure) = adaptive_fallback_ordinary_deploy_cap(
         casper_snapshot,
         fresh_local_stats,
         finality_lag_stats,
     );
+    let base_cap = cap;
+    let backlog_bound = if !backpressure {
+        Some(NON_LEADER_FALLBACK_MAX_ORDINARY_DEPLOY_CAP)
+    } else if finality_lag_stats.lag < FINALITY_LAG_HARD_BACKPRESSURE_BLOCKS
+        && !finality_lag_stats.stalled
+    {
+        Some(SOFT_BACKPRESSURE_MAX_ORDINARY_DEPLOY_CAP)
+    } else {
+        None
+    };
+    if let Some(bound) = backlog_bound {
+        let backlog_cap = fresh_local_stats
+            .count
+            .min(bound)
+            .min(normal_ordinary_deploy_cap(casper_snapshot));
+        cap = cap.max(backlog_cap);
+    }
     FreshAdmissionFallback {
         allowed: cap > 0,
         cap,
         backpressure,
+        source: if finality_lag_stats.lag >= FINALITY_LAG_HARD_BACKPRESSURE_BLOCKS {
+            OrdinaryCapSource::Hard
+        } else if backpressure && finality_lag_stats.stalled {
+            OrdinaryCapSource::SoftStalled
+        } else if cap > base_cap && backpressure {
+            OrdinaryCapSource::SoftBacklog
+        } else if cap > base_cap {
+            OrdinaryCapSource::Backlog
+        } else {
+            OrdinaryCapSource::Base
+        },
     }
 }
 
@@ -2431,6 +2567,13 @@ fn in_scope_recovery_fallback(
         allowed: cap > 0,
         cap,
         backpressure,
+        source: if finality_lag_stats.lag >= FINALITY_LAG_HARD_BACKPRESSURE_BLOCKS {
+            OrdinaryCapSource::Hard
+        } else if backpressure && finality_lag_stats.stalled {
+            OrdinaryCapSource::SoftStalled
+        } else {
+            OrdinaryCapSource::Base
+        },
     }
 }
 
@@ -2462,6 +2605,8 @@ fn ordinary_admission_policy(
             reserve_tail: false,
             fallback: fallback.allowed || in_scope_recovery.allowed,
             backpressure: fallback.backpressure || in_scope_recovery.backpressure,
+            ordinary_cap_source: fallback.source,
+            in_scope_recovery_cap_source: in_scope_recovery.source,
         };
     }
 
@@ -2473,6 +2618,13 @@ fn ordinary_admission_policy(
         reserve_tail: !normal_backpressure,
         fallback: in_scope_recovery.allowed,
         backpressure: normal_backpressure || in_scope_recovery.backpressure,
+        ordinary_cap_source: normal_cap_clamp(
+            stale_in_scope_work,
+            deploy_inclusion_staleness,
+            finality_lag_stats,
+        )
+        .1,
+        in_scope_recovery_cap_source: in_scope_recovery.source,
     }
 }
 
@@ -2482,6 +2634,25 @@ fn metric_bool(value: bool) -> f64 {
     } else {
         0.0
     }
+}
+
+fn record_cap_source(source: OrdinaryCapSource) {
+    use crate::rust::metrics_constants::{
+        BLOCK_CREATOR_CAP_SOURCE_BACKLOG_METRIC, BLOCK_CREATOR_CAP_SOURCE_BASE_METRIC,
+        BLOCK_CREATOR_CAP_SOURCE_HARD_METRIC, BLOCK_CREATOR_CAP_SOURCE_NORMAL_METRIC,
+        BLOCK_CREATOR_CAP_SOURCE_SOFT_BACKLOG_METRIC, BLOCK_CREATOR_CAP_SOURCE_SOFT_STALLED_METRIC,
+        BLOCK_CREATOR_CAP_SOURCE_STALE_METRIC, CASPER_METRICS_SOURCE,
+    };
+    let name = match source {
+        OrdinaryCapSource::Normal => BLOCK_CREATOR_CAP_SOURCE_NORMAL_METRIC,
+        OrdinaryCapSource::Base => BLOCK_CREATOR_CAP_SOURCE_BASE_METRIC,
+        OrdinaryCapSource::Backlog => BLOCK_CREATOR_CAP_SOURCE_BACKLOG_METRIC,
+        OrdinaryCapSource::SoftBacklog => BLOCK_CREATOR_CAP_SOURCE_SOFT_BACKLOG_METRIC,
+        OrdinaryCapSource::SoftStalled => BLOCK_CREATOR_CAP_SOURCE_SOFT_STALLED_METRIC,
+        OrdinaryCapSource::Stale => BLOCK_CREATOR_CAP_SOURCE_STALE_METRIC,
+        OrdinaryCapSource::Hard => BLOCK_CREATOR_CAP_SOURCE_HARD_METRIC,
+    };
+    metrics::counter!(name, "source" => CASPER_METRICS_SOURCE).increment(1);
 }
 
 fn record_deploy_admission_metrics(
@@ -2498,12 +2669,14 @@ fn record_deploy_admission_metrics(
         BLOCK_CREATOR_DEPLOY_ADMISSION_BACKPRESSURE_METRIC,
         BLOCK_CREATOR_DEPLOY_ADMISSION_BLOCK_TIME_STALE_METRIC,
         BLOCK_CREATOR_DEPLOY_ADMISSION_BYTE_CAP_HIT_METRIC,
+        BLOCK_CREATOR_DEPLOY_ADMISSION_CAP_SOURCE_METRIC,
         BLOCK_CREATOR_DEPLOY_ADMISSION_DAG_TIP_METRIC,
         BLOCK_CREATOR_DEPLOY_ADMISSION_DEFERRED_USER_BYTES_METRIC,
         BLOCK_CREATOR_DEPLOY_ADMISSION_FALLBACK_CAP_METRIC,
         BLOCK_CREATOR_DEPLOY_ADMISSION_FALLBACK_ENABLED_METRIC,
         BLOCK_CREATOR_DEPLOY_ADMISSION_FRESH_LOCAL_METRIC,
         BLOCK_CREATOR_DEPLOY_ADMISSION_IN_SCOPE_LOCAL_METRIC,
+        BLOCK_CREATOR_DEPLOY_ADMISSION_IN_SCOPE_RECOVERY_CAP_SOURCE_METRIC,
         BLOCK_CREATOR_DEPLOY_ADMISSION_LFB_LAG_METRIC, BLOCK_CREATOR_DEPLOY_ADMISSION_LFB_METRIC,
         BLOCK_CREATOR_DEPLOY_ADMISSION_MISSING_PROGRESS_METADATA_METRIC,
         BLOCK_CREATOR_DEPLOY_ADMISSION_OLDEST_FRESH_AGE_MS_METRIC,
@@ -2610,6 +2783,17 @@ fn record_deploy_admission_metrics(
     )
     .set(metric_bool(admission_policy.backpressure));
     metrics::gauge!(
+        BLOCK_CREATOR_DEPLOY_ADMISSION_CAP_SOURCE_METRIC,
+        "source" => CASPER_METRICS_SOURCE
+    )
+    .set(admission_policy.ordinary_cap_source.code());
+    record_cap_source(admission_policy.ordinary_cap_source);
+    metrics::gauge!(
+        BLOCK_CREATOR_DEPLOY_ADMISSION_IN_SCOPE_RECOVERY_CAP_SOURCE_METRIC,
+        "source" => CASPER_METRICS_SOURCE
+    )
+    .set(admission_policy.in_scope_recovery_cap_source.code());
+    metrics::gauge!(
         BLOCK_CREATOR_DEPLOY_ADMISSION_DAG_TIP_METRIC,
         "source" => CASPER_METRICS_SOURCE
     )
@@ -2651,6 +2835,9 @@ fn record_deploy_admission_metrics(
     .set(metric_bool(inclusion_staleness.missing_deploy_metadata));
 }
 
+/// Creates a block without cross-proposal finality progress: the stall
+/// signal is always false. Production proposes through
+/// `create_with_progress` with a persistent `FinalityProgress`.
 pub async fn create(
     casper_snapshot: &CasperSnapshot,
     validator_identity: &ValidatorIdentity,
@@ -2660,6 +2847,31 @@ pub async fn create(
     runtime_manager: &RuntimeManager,
     block_store: &mut KeyValueBlockStore,
     selection: super::proposer::DeploySelection,
+) -> Result<BlockCreatorResult, CasperError> {
+    create_with_progress(
+        casper_snapshot,
+        validator_identity,
+        dummy_deploy_opt,
+        deploy_storage,
+        rejected_deploy_buffer,
+        runtime_manager,
+        block_store,
+        selection,
+        &mut FinalityProgress::default(),
+    )
+    .await
+}
+
+pub async fn create_with_progress(
+    casper_snapshot: &CasperSnapshot,
+    validator_identity: &ValidatorIdentity,
+    dummy_deploy_opt: Option<(PrivateKey, String)>,
+    deploy_storage: Arc<parking_lot::Mutex<KeyValueDeployStorage>>,
+    rejected_deploy_buffer: Arc<Mutex<block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer>>,
+    runtime_manager: &RuntimeManager,
+    block_store: &mut KeyValueBlockStore,
+    selection: super::proposer::DeploySelection,
+    finality_progress: &mut FinalityProgress,
 ) -> Result<BlockCreatorResult, CasperError> {
     let allow_empty_blocks = selection.allows_empty();
     use crate::rust::metrics_constants::{
@@ -2763,7 +2975,10 @@ pub async fn create(
             .unwrap_or(true);
         let inclusion_staleness =
             deploy_inclusion_progress_staleness(&inclusion_progress, next_block_num, now_millis);
-        let finality_lag_stats = finality_lag_stats(casper_snapshot, block_store)?;
+        let finality_lag_stats = with_finality_progress(
+            finality_lag_stats(casper_snapshot, block_store)?,
+            finality_progress,
+        );
         let fresh_local_stats = fresh_local_deploy_stats(
             casper_snapshot,
             next_block_num,
@@ -2840,7 +3055,7 @@ pub async fn create(
         {
             tracing::info!(
                 target: "f1r3fly.casper.recovery",
-                "Ordinary user deploy fallback enabled for block #{}: cap={}, fresh_local={}, oldest_fresh_age_ms={}, in_scope_local={}, stranded_in_scope={}, oldest_in_scope_age_ms={}, inclusion_progress_stale={}, signature_stale={}, lfb_lag={}, backpressure={}",
+                "Ordinary user deploy fallback enabled for block #{}: cap={}, fresh_local={}, oldest_fresh_age_ms={}, in_scope_local={}, stranded_in_scope={}, oldest_in_scope_age_ms={}, inclusion_progress_stale={}, signature_stale={}, lfb_lag={}, backpressure={}, cap_source={}",
                 next_block_num,
                 admission_policy.ordinary_cap,
                 fresh_local_stats.count,
@@ -2851,13 +3066,14 @@ pub async fn create(
                 inclusion_staleness.stale,
                 inclusion_staleness.signature_stale,
                 finality_lag_stats.lag,
-                admission_policy.backpressure
+                admission_policy.backpressure,
+                admission_policy.ordinary_cap_source.as_str()
             );
         }
         if admission_policy.allow_in_scope_recovery {
             tracing::info!(
                 target: "f1r3fly.casper.recovery",
-                "In-scope deploy recovery enabled for block #{}: cap={}, in_scope_local={}, stranded_in_scope={}, oldest_in_scope_age_ms={}, inclusion_progress_stale={}, signature_stale={}, lfb_lag={}, backpressure={}",
+                "In-scope deploy recovery enabled for block #{}: cap={}, in_scope_local={}, stranded_in_scope={}, oldest_in_scope_age_ms={}, inclusion_progress_stale={}, signature_stale={}, lfb_lag={}, backpressure={}, cap_source={}",
                 next_block_num,
                 admission_policy.in_scope_recovery_cap,
                 in_scope_local_stats.count,
@@ -2866,7 +3082,8 @@ pub async fn create(
                 inclusion_staleness.stale,
                 inclusion_staleness.signature_stale,
                 finality_lag_stats.lag,
-                admission_policy.backpressure
+                admission_policy.backpressure,
+                admission_policy.in_scope_recovery_cap_source.as_str()
             );
         }
         if user_work_in_flight && admission_policy.allow_ordinary && allow_deploy_inclusion {
@@ -3571,6 +3788,7 @@ mod tests {
             allowed,
             cap,
             backpressure: false,
+            source: OrdinaryCapSource::Base,
         }
     }
 
@@ -3579,6 +3797,14 @@ mod tests {
             dag_tip,
             last_finalized_block,
             lag: dag_tip.saturating_sub(last_finalized_block).max(0),
+            stalled: false,
+        }
+    }
+
+    fn stalled_lag(dag_tip: i64, last_finalized_block: i64) -> FinalityLagStats {
+        FinalityLagStats {
+            stalled: true,
+            ..lag(dag_tip, last_finalized_block)
         }
     }
 
@@ -4171,7 +4397,7 @@ mod tests {
                 count: 10,
                 oldest_age_millis: FRESH_DEPLOY_MAX_ESCALATED_ADMISSION_DELAY_MILLIS,
             },
-            lag(10, 6),
+            stalled_lag(10, 6),
         );
         assert_eq!(soft.cap, NON_LEADER_FALLBACK_ORDINARY_DEPLOY_CAP);
         assert!(soft.backpressure);
@@ -4185,6 +4411,581 @@ mod tests {
                 oldest_age_millis: FRESH_DEPLOY_MAX_ESCALATED_ADMISSION_DELAY_MILLIS,
             },
             lag(10, 2),
+        );
+        assert_eq!(hard.cap, NON_LEADER_FALLBACK_MIN_ORDINARY_DEPLOY_CAP);
+        assert!(hard.backpressure);
+    }
+
+    #[test]
+    fn non_leader_fresh_admission_cap_follows_its_backlog_without_backpressure() {
+        let mut snapshot =
+            crate::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
+        snapshot
+            .on_chain_state
+            .shard_conf
+            .max_user_deploys_per_block = 128;
+
+        let fallback = fresh_admission_fallback(
+            &snapshot,
+            true,
+            DeployInclusionStaleness::default(),
+            FreshLocalDeployStats {
+                count: 26,
+                oldest_age_millis: 7_467,
+            },
+            lag(25, 22),
+        );
+
+        assert!(fallback.allowed);
+        assert_eq!(fallback.cap, 26);
+        assert!(!fallback.backpressure);
+    }
+
+    #[test]
+    fn non_leader_fresh_admission_cap_is_bounded_by_the_fallback_maximum_and_the_shard_cap() {
+        let mut snapshot =
+            crate::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
+        snapshot
+            .on_chain_state
+            .shard_conf
+            .max_user_deploys_per_block = 128;
+        let large_backlog = FreshLocalDeployStats {
+            count: 50,
+            oldest_age_millis: 7_467,
+        };
+
+        let fallback = fresh_admission_fallback(
+            &snapshot,
+            true,
+            DeployInclusionStaleness::default(),
+            large_backlog,
+            lag(25, 22),
+        );
+        assert_eq!(fallback.cap, NON_LEADER_FALLBACK_MAX_ORDINARY_DEPLOY_CAP);
+
+        snapshot
+            .on_chain_state
+            .shard_conf
+            .max_user_deploys_per_block = 20;
+        let fallback = fresh_admission_fallback(
+            &snapshot,
+            true,
+            DeployInclusionStaleness::default(),
+            large_backlog,
+            lag(25, 22),
+        );
+        assert_eq!(fallback.cap, 20);
+    }
+
+    #[test]
+    fn small_non_leader_backlog_keeps_the_base_fallback_cap() {
+        let mut snapshot =
+            crate::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
+        snapshot
+            .on_chain_state
+            .shard_conf
+            .max_user_deploys_per_block = 128;
+
+        for count in [1, 5, NON_LEADER_FALLBACK_ORDINARY_DEPLOY_CAP] {
+            let fallback = fresh_admission_fallback(
+                &snapshot,
+                true,
+                DeployInclusionStaleness::default(),
+                FreshLocalDeployStats {
+                    count,
+                    oldest_age_millis: 7_467,
+                },
+                lag(25, 22),
+            );
+            assert_eq!(
+                fallback.cap, NON_LEADER_FALLBACK_ORDINARY_DEPLOY_CAP,
+                "backlog {count}"
+            );
+        }
+    }
+
+    #[test]
+    fn age_escalation_still_raises_the_non_leader_cap_above_a_smaller_backlog() {
+        let mut snapshot =
+            crate::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
+        snapshot
+            .on_chain_state
+            .shard_conf
+            .max_user_deploys_per_block = 128;
+        let cap_for = |count: usize, oldest_age_millis: i64| {
+            fresh_admission_fallback(
+                &snapshot,
+                true,
+                DeployInclusionStaleness::default(),
+                FreshLocalDeployStats {
+                    count,
+                    oldest_age_millis,
+                },
+                lag(25, 22),
+            )
+            .cap
+        };
+
+        assert_eq!(
+            cap_for(3, FRESH_DEPLOY_ESCALATED_ADMISSION_DELAY_MILLIS),
+            NON_LEADER_FALLBACK_MEDIUM_ORDINARY_DEPLOY_CAP
+        );
+        assert_eq!(
+            cap_for(20, FRESH_DEPLOY_ESCALATED_ADMISSION_DELAY_MILLIS),
+            20
+        );
+        assert_eq!(
+            cap_for(3, FRESH_DEPLOY_MAX_ESCALATED_ADMISSION_DELAY_MILLIS),
+            NON_LEADER_FALLBACK_MAX_ORDINARY_DEPLOY_CAP
+        );
+    }
+
+    #[test]
+    fn in_scope_recovery_cap_does_not_follow_the_in_scope_backlog() {
+        let mut snapshot =
+            crate::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
+        snapshot
+            .on_chain_state
+            .shard_conf
+            .max_user_deploys_per_block = 128;
+
+        let recovery = in_scope_recovery_fallback(
+            &snapshot,
+            true,
+            DeployInclusionStaleness::default(),
+            InScopeLocalDeployStats {
+                count: 26,
+                oldest_age_millis: 7_467,
+                stranded_count: 26,
+            },
+            lag(25, 22),
+        );
+
+        assert!(recovery.allowed);
+        assert_eq!(recovery.cap, NON_LEADER_FALLBACK_ORDINARY_DEPLOY_CAP);
+    }
+
+    #[test]
+    fn finality_progress_reports_a_stall_after_two_proposals_without_an_lfb_advance() {
+        let mut fresh = FinalityProgress::default();
+        assert!(!fresh.observe(10), "a first observation is never a stall");
+
+        let mut progress = FinalityProgress::default();
+        assert!(!progress.observe(10));
+        assert!(!progress.observe(10), "one proposal without an advance");
+        assert!(progress.observe(10), "two proposals without an advance");
+        assert!(
+            progress.observe(10),
+            "the stall holds while the LFB does not move"
+        );
+        assert!(!progress.observe(11), "the first advance clears the stall");
+        assert!(!progress.observe(11));
+        assert!(progress.observe(11));
+    }
+
+    #[test]
+    fn deploy_inclusion_leader_keeps_the_normal_cap_whatever_the_fallback_backlog() {
+        let mut snapshot =
+            crate::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
+        snapshot
+            .on_chain_state
+            .shard_conf
+            .max_user_deploys_per_block = 128;
+        let fallback = fresh_admission_fallback(
+            &snapshot,
+            true,
+            DeployInclusionStaleness::default(),
+            FreshLocalDeployStats {
+                count: 26,
+                oldest_age_millis: 7_467,
+            },
+            lag(25, 22),
+        );
+        assert_eq!(fallback.cap, 26);
+
+        let policy_at = |finality_lag| {
+            ordinary_admission_policy(
+                &snapshot,
+                false,
+                true,
+                true,
+                true,
+                fallback,
+                FreshAdmissionFallback::default(),
+                DeployInclusionStaleness::default(),
+                finality_lag,
+            )
+        };
+
+        let unloaded = policy_at(lag(25, 22));
+        assert!(unloaded.allow_ordinary);
+        assert!(!unloaded.fallback);
+        assert_eq!(unloaded.ordinary_cap, 128);
+        assert_eq!(
+            policy_at(stalled_lag(29, 25)).ordinary_cap,
+            NON_LEADER_FALLBACK_ORDINARY_DEPLOY_CAP
+        );
+        assert_eq!(
+            policy_at(lag(29, 21)).ordinary_cap,
+            NON_LEADER_FALLBACK_MIN_ORDINARY_DEPLOY_CAP
+        );
+    }
+
+    #[test]
+    fn soft_backpressure_with_an_advancing_lfb_lets_the_non_leader_cap_follow_its_backlog_up_to_16()
+    {
+        let mut snapshot =
+            crate::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
+        snapshot
+            .on_chain_state
+            .shard_conf
+            .max_user_deploys_per_block = 128;
+        let cap_for = |count| {
+            fresh_admission_fallback(
+                &snapshot,
+                true,
+                DeployInclusionStaleness::default(),
+                FreshLocalDeployStats {
+                    count,
+                    oldest_age_millis: 6_000,
+                },
+                lag(30, 26),
+            )
+        };
+
+        let large = cap_for(20);
+        assert_eq!(large.cap, 16);
+        assert!(large.backpressure);
+        assert_eq!(cap_for(12).cap, 12);
+        assert_eq!(cap_for(5).cap, NON_LEADER_FALLBACK_ORDINARY_DEPLOY_CAP);
+    }
+
+    #[test]
+    fn soft_backpressure_gives_the_leader_16_while_the_lfb_advances_and_8_while_it_is_stalled() {
+        let mut snapshot =
+            crate::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
+        snapshot
+            .on_chain_state
+            .shard_conf
+            .max_user_deploys_per_block = 128;
+        let leader_cap = |stale_in_scope_work, staleness, finality_lag| {
+            adaptive_normal_ordinary_deploy_cap(
+                &snapshot,
+                stale_in_scope_work,
+                staleness,
+                finality_lag,
+            )
+        };
+
+        let advancing = leader_cap(false, DeployInclusionStaleness::default(), lag(29, 25));
+        assert_eq!(advancing, (SOFT_BACKPRESSURE_MAX_ORDINARY_DEPLOY_CAP, true));
+        assert_eq!(
+            leader_cap(
+                false,
+                DeployInclusionStaleness::default(),
+                stalled_lag(29, 25)
+            ),
+            (NON_LEADER_FALLBACK_ORDINARY_DEPLOY_CAP, true)
+        );
+        assert_eq!(
+            leader_cap(
+                true,
+                DeployInclusionStaleness {
+                    stale: true,
+                    ..DeployInclusionStaleness::default()
+                },
+                lag(29, 25)
+            ),
+            (NON_LEADER_FALLBACK_ORDINARY_DEPLOY_CAP, true),
+            "stale in-scope work still clamps the leader to 8"
+        );
+        assert_eq!(
+            leader_cap(
+                true,
+                DeployInclusionStaleness {
+                    stale: true,
+                    signature_stale: true,
+                    ..DeployInclusionStaleness::default()
+                },
+                lag(29, 25)
+            ),
+            (NON_LEADER_FALLBACK_MIN_ORDINARY_DEPLOY_CAP, true),
+            "signature-stale in-scope work still clamps the leader to 4"
+        );
+    }
+
+    #[test]
+    fn a_proposers_lag_stats_report_a_stall_after_two_proposals_at_the_same_lfb() {
+        let mut progress = FinalityProgress::default();
+        let observed: Vec<bool> = [lag(30, 26), lag(31, 26), lag(32, 26), lag(33, 27)]
+            .into_iter()
+            .map(|stats| with_finality_progress(stats, &mut progress).stalled)
+            .collect();
+        assert_eq!(observed, vec![false, false, true, false]);
+
+        let stats = with_finality_progress(lag(34, 27), &mut progress);
+        assert_eq!(stats.lag, 7, "progress does not change the lag");
+    }
+
+    #[test]
+    fn the_admission_policy_reports_the_source_of_its_ordinary_cap() {
+        let mut snapshot =
+            crate::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
+        snapshot
+            .on_chain_state
+            .shard_conf
+            .max_user_deploys_per_block = 128;
+        let non_leader_source = |count, finality_lag| {
+            let fallback = fresh_admission_fallback(
+                &snapshot,
+                true,
+                DeployInclusionStaleness::default(),
+                FreshLocalDeployStats {
+                    count,
+                    oldest_age_millis: 6_000,
+                },
+                finality_lag,
+            );
+            ordinary_admission_policy(
+                &snapshot,
+                false,
+                true,
+                true,
+                false,
+                fallback,
+                FreshAdmissionFallback::default(),
+                DeployInclusionStaleness::default(),
+                finality_lag,
+            )
+            .ordinary_cap_source
+        };
+        assert_eq!(non_leader_source(5, lag(25, 22)), OrdinaryCapSource::Base);
+        assert_eq!(
+            non_leader_source(20, lag(25, 22)),
+            OrdinaryCapSource::Backlog
+        );
+        assert_eq!(
+            non_leader_source(20, lag(30, 26)),
+            OrdinaryCapSource::SoftBacklog
+        );
+        assert_eq!(
+            non_leader_source(20, stalled_lag(30, 26)),
+            OrdinaryCapSource::SoftStalled
+        );
+        assert_eq!(non_leader_source(20, lag(40, 32)), OrdinaryCapSource::Hard);
+
+        let leader_source = |stale_in_scope_work, staleness, finality_lag| {
+            ordinary_admission_policy(
+                &snapshot,
+                false,
+                true,
+                stale_in_scope_work,
+                true,
+                FreshAdmissionFallback::default(),
+                FreshAdmissionFallback::default(),
+                staleness,
+                finality_lag,
+            )
+            .ordinary_cap_source
+        };
+        let fresh = DeployInclusionStaleness::default();
+        assert_eq!(
+            leader_source(false, fresh, lag(25, 22)),
+            OrdinaryCapSource::Normal
+        );
+        assert_eq!(
+            leader_source(false, fresh, lag(30, 26)),
+            OrdinaryCapSource::SoftBacklog
+        );
+        assert_eq!(
+            leader_source(false, fresh, stalled_lag(30, 26)),
+            OrdinaryCapSource::SoftStalled
+        );
+        assert_eq!(
+            leader_source(
+                true,
+                DeployInclusionStaleness {
+                    stale: true,
+                    ..DeployInclusionStaleness::default()
+                },
+                lag(25, 22)
+            ),
+            OrdinaryCapSource::Stale
+        );
+        assert_eq!(
+            leader_source(false, fresh, lag(40, 32)),
+            OrdinaryCapSource::Hard
+        );
+    }
+
+    #[test]
+    fn the_admission_policy_reports_the_in_scope_recovery_cap_source_separately() {
+        let mut snapshot =
+            crate::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
+        snapshot
+            .on_chain_state
+            .shard_conf
+            .max_user_deploys_per_block = 128;
+        let stranded = InScopeLocalDeployStats {
+            count: 20,
+            oldest_age_millis: FRESH_DEPLOY_MAX_ADMISSION_DELAY_MILLIS,
+            stranded_count: 3,
+        };
+        let policy_at = |finality_lag| {
+            let recovery = in_scope_recovery_fallback(
+                &snapshot,
+                true,
+                DeployInclusionStaleness::default(),
+                stranded,
+                finality_lag,
+            );
+            assert!(recovery.allowed);
+            ordinary_admission_policy(
+                &snapshot,
+                false,
+                true,
+                true,
+                false,
+                FreshAdmissionFallback::default(),
+                recovery,
+                DeployInclusionStaleness::default(),
+                finality_lag,
+            )
+        };
+
+        let hard = policy_at(lag(40, 32));
+        assert_eq!(hard.in_scope_recovery_cap_source, OrdinaryCapSource::Hard);
+        assert_eq!(
+            hard.in_scope_recovery_cap,
+            NON_LEADER_FALLBACK_MIN_ORDINARY_DEPLOY_CAP
+        );
+        assert_eq!(
+            policy_at(stalled_lag(30, 26)).in_scope_recovery_cap_source,
+            OrdinaryCapSource::SoftStalled
+        );
+        assert_eq!(
+            policy_at(lag(25, 22)).in_scope_recovery_cap_source,
+            OrdinaryCapSource::Base
+        );
+    }
+
+    #[test]
+    fn the_soft_backpressure_backlog_cap_is_never_above_the_shard_cap() {
+        for shard_cap in [10_usize, 5] {
+            let mut snapshot =
+                crate::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
+            snapshot
+                .on_chain_state
+                .shard_conf
+                .max_user_deploys_per_block = shard_cap as u32;
+
+            let non_leader = fresh_admission_fallback(
+                &snapshot,
+                true,
+                DeployInclusionStaleness::default(),
+                FreshLocalDeployStats {
+                    count: 20,
+                    oldest_age_millis: 6_000,
+                },
+                lag(30, 26),
+            );
+            assert_eq!(non_leader.cap, shard_cap);
+
+            let (leader_cap, _) = adaptive_normal_ordinary_deploy_cap(
+                &snapshot,
+                false,
+                DeployInclusionStaleness::default(),
+                lag(30, 26),
+            );
+            assert_eq!(leader_cap, shard_cap);
+        }
+    }
+
+    #[test]
+    fn hard_finality_backpressure_gives_cap_4_on_every_path_whatever_the_backlog_or_progress() {
+        let mut snapshot =
+            crate::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
+        snapshot
+            .on_chain_state
+            .shard_conf
+            .max_user_deploys_per_block = 128;
+        let backlog = FreshLocalDeployStats {
+            count: 30,
+            oldest_age_millis: FRESH_DEPLOY_MAX_ESCALATED_ADMISSION_DELAY_MILLIS,
+        };
+
+        for finality_lag in [lag(40, 32), stalled_lag(40, 32)] {
+            let non_leader = fresh_admission_fallback(
+                &snapshot,
+                true,
+                DeployInclusionStaleness::default(),
+                backlog,
+                finality_lag,
+            );
+            assert_eq!(non_leader.cap, NON_LEADER_FALLBACK_MIN_ORDINARY_DEPLOY_CAP);
+            assert!(non_leader.backpressure);
+
+            let recovery = in_scope_recovery_fallback(
+                &snapshot,
+                true,
+                DeployInclusionStaleness::default(),
+                InScopeLocalDeployStats {
+                    count: 30,
+                    oldest_age_millis: FRESH_DEPLOY_MAX_ESCALATED_ADMISSION_DELAY_MILLIS,
+                    stranded_count: 1,
+                },
+                finality_lag,
+            );
+            assert_eq!(recovery.cap, NON_LEADER_FALLBACK_MIN_ORDINARY_DEPLOY_CAP);
+
+            let leader = ordinary_admission_policy(
+                &snapshot,
+                false,
+                true,
+                true,
+                true,
+                non_leader,
+                FreshAdmissionFallback::default(),
+                DeployInclusionStaleness::default(),
+                finality_lag,
+            );
+            assert!(!leader.fallback);
+            assert_eq!(
+                leader.ordinary_cap,
+                NON_LEADER_FALLBACK_MIN_ORDINARY_DEPLOY_CAP
+            );
+        }
+    }
+
+    #[test]
+    fn a_stalled_lfb_under_backpressure_holds_the_non_leader_cap_whatever_the_backlog() {
+        let mut snapshot =
+            crate::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
+        snapshot
+            .on_chain_state
+            .shard_conf
+            .max_user_deploys_per_block = 128;
+        let backlog = FreshLocalDeployStats {
+            count: 26,
+            oldest_age_millis: 11_367,
+        };
+
+        let soft = fresh_admission_fallback(
+            &snapshot,
+            true,
+            DeployInclusionStaleness::default(),
+            backlog,
+            stalled_lag(29, 25),
+        );
+        assert_eq!(soft.cap, NON_LEADER_FALLBACK_ORDINARY_DEPLOY_CAP);
+        assert!(soft.backpressure);
+
+        let hard = fresh_admission_fallback(
+            &snapshot,
+            true,
+            DeployInclusionStaleness::default(),
+            backlog,
+            lag(29, 21),
         );
         assert_eq!(hard.cap, NON_LEADER_FALLBACK_MIN_ORDINARY_DEPLOY_CAP);
         assert!(hard.backpressure);
@@ -5018,6 +5819,8 @@ mod tests {
                 reserve_tail: false,
                 fallback: false,
                 backpressure: false,
+                ordinary_cap_source: OrdinaryCapSource::Normal,
+                in_scope_recovery_cap_source: OrdinaryCapSource::Base,
             },
             None,
         )
@@ -5091,6 +5894,8 @@ mod tests {
                 reserve_tail: false,
                 fallback: true,
                 backpressure: false,
+                ordinary_cap_source: OrdinaryCapSource::Normal,
+                in_scope_recovery_cap_source: OrdinaryCapSource::Base,
             },
             None,
         )
@@ -5191,6 +5996,8 @@ mod tests {
                 reserve_tail: false,
                 fallback: true,
                 backpressure: false,
+                ordinary_cap_source: OrdinaryCapSource::Normal,
+                in_scope_recovery_cap_source: OrdinaryCapSource::Base,
             },
             None,
         )
@@ -5279,6 +6086,8 @@ mod tests {
                 reserve_tail: false,
                 fallback: true,
                 backpressure: true,
+                ordinary_cap_source: OrdinaryCapSource::Normal,
+                in_scope_recovery_cap_source: OrdinaryCapSource::Base,
             },
             None,
         )
@@ -5383,6 +6192,8 @@ mod tests {
                 reserve_tail: false,
                 fallback: true,
                 backpressure: true,
+                ordinary_cap_source: OrdinaryCapSource::Normal,
+                in_scope_recovery_cap_source: OrdinaryCapSource::Base,
             },
             None,
         )
@@ -5487,6 +6298,8 @@ mod tests {
                 reserve_tail: false,
                 fallback: true,
                 backpressure: true,
+                ordinary_cap_source: OrdinaryCapSource::Normal,
+                in_scope_recovery_cap_source: OrdinaryCapSource::Base,
             },
             None,
         )
@@ -5598,6 +6411,8 @@ mod tests {
                 reserve_tail: false,
                 fallback: true,
                 backpressure: false,
+                ordinary_cap_source: OrdinaryCapSource::Normal,
+                in_scope_recovery_cap_source: OrdinaryCapSource::Base,
             },
             None,
         )
@@ -5688,6 +6503,8 @@ mod tests {
                 reserve_tail: false,
                 fallback: true,
                 backpressure: true,
+                ordinary_cap_source: OrdinaryCapSource::Normal,
+                in_scope_recovery_cap_source: OrdinaryCapSource::Base,
             },
             None,
         )
@@ -6594,6 +7411,27 @@ mod stage_metric_tests {
             }
         }
         values
+    }
+
+    #[test]
+    fn each_ordinary_cap_decision_is_counted_under_its_source() {
+        use crate::rust::metrics_constants::{
+            BLOCK_CREATOR_CAP_SOURCE_HARD_METRIC, BLOCK_CREATOR_CAP_SOURCE_SOFT_BACKLOG_METRIC,
+            BLOCK_CREATOR_CAP_SOURCE_SOFT_STALLED_METRIC,
+        };
+        let recorder = DebuggingRecorder::new();
+        let snapshotter = recorder.snapshotter();
+        let _guard = metrics::set_default_local_recorder(&recorder);
+
+        record_cap_source(OrdinaryCapSource::Hard);
+        record_cap_source(OrdinaryCapSource::Hard);
+        record_cap_source(OrdinaryCapSource::SoftBacklog);
+
+        let recorded = take(&snapshotter);
+        let count = |name: &str| recorded.get(name).map_or(0, |v| v.0);
+        assert_eq!(count(BLOCK_CREATOR_CAP_SOURCE_HARD_METRIC), 2);
+        assert_eq!(count(BLOCK_CREATOR_CAP_SOURCE_SOFT_BACKLOG_METRIC), 1);
+        assert_eq!(count(BLOCK_CREATOR_CAP_SOURCE_SOFT_STALLED_METRIC), 0);
     }
 
     #[test]

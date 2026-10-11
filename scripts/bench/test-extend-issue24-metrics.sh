@@ -34,6 +34,12 @@ cmp "$tmp/once.py" "$tmp/metrics.py"
 
 for metric in \
     dag_merge_relation_items \
+    proposer_create_time \
+    proposer_effect_time \
+    deploy_lifecycle_observe_time \
+    deploy_lifecycle_carrier_prune_time \
+    block_creator_deploy_admission_cap_source_soft_stalled \
+    block_creator_deploy_admission_cap_source_hard \
     finalizer_run_time \
     finalizer_api_lfb_time \
     deploy_selection_age_time \

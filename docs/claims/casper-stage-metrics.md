@@ -6,7 +6,8 @@ artifacts:
   - casper/src/rust/engine/multi_parent_casper/finalization_runner.rs   # finalizer run, rerun, and timeout metrics
   - casper/src/rust/engine/multi_parent_casper/dispatch.rs              # API-triggered LFB computation metrics
   - casper/src/rust/blocks/proposer/block_creator.rs                    # admission deferral, empty-block skip, deploy age metrics
-  - casper/src/rust/blocks/proposer/proposer.rs                         # tagged with this claim; no change planned
+  - casper/src/rust/blocks/proposer/proposer.rs                         # propose step histograms
+  - casper/src/rust/finality/deploy_lifecycle.rs                        # observe and carrier-prune histograms
   - node/src/rust/instances/heartbeat_proposer.rs                       # heartbeat wake and proposal metrics
   - casper/src/rust/metrics_constants.rs                                # metric names
 status: pending
@@ -43,11 +44,15 @@ TASK-021-13 adds counters and histograms for both phases. They cover the deploy 
 - `block-creator.ordinary-deploys.deferred` adds the number of ordinary candidates that the selection leaves out.
 - `finalizer.run.timeouts` adds one for each run that the 15 s backstop abandons.
 - `finalizer.api-lfb.overlaps` adds one for each API computation that starts while a background run is in progress.
+- `block-creator.deploy-admission.cap-source.<source>` adds one for each admission decision, under the source of its ordinary cap. The sources are normal, base, backlog, soft-backlog, soft-stalled, stale, and hard.
+- `proposer.constraints.time`, `proposer.create.time`, `proposer.validate.time`, and `proposer.effect.time` each record one value in seconds for each proposal.
+- `deploy-lifecycle.observe.time` records one value in seconds for each observed block. `deploy-lifecycle.carrier-prune.time` records one value only when the adopted floor advanced, because only then does the observe call the carrier prune.
 
 **S4. Preserved properties.** The metrics do not change the properties of these existing claims on the same files:
 - CLAIM-CASPER-NODE-OBSERVATION-003 and -005 (`dispatch.rs`, `finalization_runner.rs`)
 - the heartbeat proposal amplification bound (`heartbeat_proposer.rs`)
 - the retry packaging record of `block_creator.rs`
+- CLAIM-CASPER-FRESH-ADMISSION-CAP-001 (`block_creator.rs`, `proposer.rs`)
 
 ## Seam premises (documented, not proven)
 
@@ -60,4 +65,5 @@ TASK-021-13 adds counters and histograms for both phases. They cover the deploy 
 2. S3: each metric has a test with a `DebuggingRecorder`. The test asserts the counter value or the histogram sample for a known event. **Done 2026-10-07** (commits e9e80f8bd and the empty-block build counter): 11 tests in finalization_runner.rs, block_creator.rs, and heartbeat_proposer.rs. Each test failed on the missing metric before its change and passed after it.
 3. S1 and S2: the review of the diff shows that each change adds metric calls only. The existing tests of each artifact pass without change. **Done 2026-10-07:** the diff adds metric calls, metric constants, and tests. The one restructure moves the queued-run loop of the finalizer into `drive_finalizer_runs`, with the same timeout, logs, and rerun rule. `cargo test --release -p casper -p node` passed: 1,896 tests, 0 failures, 21 ignored.
 4. S4: the existing tests of the named claims pass without change. **Done 2026-10-07:** the same run includes the heartbeat decision tests and the finalizer divergence tests, and all pass.
-5. Record the evidence in `docs/casper/cbc-evidence/` for each changed `cbc=mandatory` artifact and cite this claim id. **Open, after the soak.** The records of `dispatch.rs` (discharged), `heartbeat_proposer.rs` (discharged), and `block_creator.rs` (waived) pin the old file digests. New records for the four changed files supersede them.
+5. S3 for the proposal and lifecycle metrics (PR #695): each metric has a test with a `DebuggingRecorder`. **Done 2026-10-10:** `each_ordinary_cap_decision_is_counted_under_its_source` (`block_creator.rs`), `each_propose_step_records_one_sample_in_seconds` (`proposer.rs`), and `an_observe_records_its_time_and_the_carrier_prune_only_when_it_ran` (`deploy_lifecycle.rs`). Each test failed on the missing metric before its change and passed after it. `scripts/bench/extend-issue24-metrics.sh` adds the names, so the soak reports them for each phase.
+6. Record the evidence in `docs/casper/cbc-evidence/` for each changed `cbc=mandatory` artifact and cite this claim id. **Open, after the soak.** The records of `dispatch.rs` (discharged), `heartbeat_proposer.rs` (discharged), and `block_creator.rs` (waived) pin the old file digests. New records for the four changed files supersede them.
