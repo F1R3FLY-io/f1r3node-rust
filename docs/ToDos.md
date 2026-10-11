@@ -1,7 +1,7 @@
 ---
 doc_type: todos
 version: "1.1"
-last_updated: 2026-10-06
+last_updated: 2026-10-10
 mr_status:
   ready: false
   target_branch: master
@@ -68,6 +68,116 @@ mr_status:
 ## Active Epics
 
 <!-- Epics are ordered by priority. Work on the highest priority epic first. -->
+
+---
+
+### EPIC-024: Spike: Tokio and LMDB Disk Access, and Detection of Delayed Writes
+
+```yaml
+---
+epic_id: EPIC-024
+title: "Spike: Tokio and LMDB Disk Access, and Detection of Delayed Writes"
+status: pending
+priority: p1
+user_story: null
+issues:
+  - https://github.com/F1R3FLY-io/f1r3node-rust/issues/24
+blocked_by: []
+created_at: 2026-10-10
+updated_at: 2026-10-10
+claimed_by: null
+claimed_at: null
+branch: docs/tokio-lmdb-disk-spike
+pr_base_branch: dev
+origin: "On 2026-10-10, after PR #695 merged, the user asked if the LMDB disk interface can ensure real-time access. The answer was no. The user asked for a spike to investigate Tokio, LMDB, and disk optimization, and the detection of delayed writes."
+execution_contract:
+  base_branch: dev
+  scope: "Investigate only. Measure where LMDB disk time goes on the propose and validate paths, and add the detection of delayed writes. Change the storage configuration only after a measurement shows a disk problem."
+  git_policy: "Do not merge, push, or create a PR without separate user authorization. Commits require /quick-commit consent. Branch creation belongs to the user."
+  oci_policy: "Use OCI only through a user-run pre-flight and soak."
+findings:
+  real_time: "The LMDB layer gives no latency bound for a read or a write. It has no timeout or deadline on a transaction, no reader or writer priority, no dedicated I/O thread pool, and no mlock or madvise. A read that misses the page cache blocks on a page fault for as long as the disk takes."
+  durability: "rspace++/src/rspace/shared/env_cache.rs:55 opens each environment with map_size, max_dbs, and max_readers(2048) only. It sets no NO_SYNC, NO_META_SYNC, MAP_ASYNC, or WRITE_MAP. Each write_txn commit therefore waits for an fsync, and the commit time follows the disk sync time."
+  concurrency: "shared/src/rust/store/lmdb_key_value_store.rs:10 removed the old mutex. Read transactions run in parallel under LMDB MVCC. The LMDB writer lock serializes all write transactions of one environment."
+  tokio: "in_blocking (lmdb_key_value_store.rs:24) runs each store operation in tokio::task::block_in_place on a multi-thread runtime. Other tasks keep running, but the wait is not shorter. On a current-thread runtime the operation runs inline and blocks the runtime."
+  tokio_scheduling: |
+    Tokio (1.53.1 in Cargo.lock) is a cooperative scheduler. It gives no real-time guarantee:
+    - No preemption, no task priority, and no deadline. A task holds its worker thread until it reaches an .await that yields.
+    - The coop budget (128 operations) forces a yield only at Tokio resources. CPU work such as Rholang evaluation, hashing, and a synchronous LMDB call is not budgeted.
+    - Tasks in the local queue of a blocked worker wait until another worker steals them. The LIFO slot of a worker cannot be stolen, so the task in it waits for that worker.
+    - block_in_place hands the other tasks of the worker to a new thread. That keeps the runtime moving, but it costs a thread handoff on each store call.
+    - The spawn_blocking pool has up to 512 threads by default and an unbounded queue with no priority.
+    - Timers have 1 ms resolution, and the workers drive them. When all workers are busy, timers fire late. tokio::time::timeout cannot stop a synchronous LMDB call. It acts only at the next .await.
+    - Worker threads have normal OS priority. The node sets no real-time scheduling class and no CPU affinity.
+  tokio_runtime_config: |
+    - node/src/main.rs:48 builds one multi-thread runtime for the node. TOKIO_WORKER_THREADS can set the worker count (issue #43). Otherwise Tokio uses available_parallelism(). No other runtime option is set.
+    - node/src/rust/runtime/servers_instances.rs:276 runs the HTTP API on a dedicated 4-worker runtime, and line 310 runs the admin HTTP API on a dedicated current-thread runtime. This isolates the API servers from the main runtime. On the admin runtime, in_blocking runs store calls inline.
+    - The node records no Tokio runtime metrics. It records no worker busy time, no queue depth, no poll-time histogram, and no scheduling delay. Some of these metrics need --cfg tokio_unstable. Check which ones Tokio 1.53 makes stable.
+  separation: "A stage histogram such as proposer.create.time includes the time a task waits for a worker. A slow stage can come from the disk, from the CPU, or from the scheduler. The spike must measure each part separately before it attributes a delay to the disk."
+  load_control: "PR #695 controls load above the storage layer. A slow disk shows as LFB lag, and the admission caps reduce deploy intake: 16 under soft backpressure while the LFB advances, 8 while it stalls, and 4 at lag 8 or more."
+  existing_metrics: "The stage histograms measure whole stages, not single LMDB operations: proposer.constraints.time, proposer.create.time, proposer.validate.time, proposer.effect.time, deploy-lifecycle.observe.time, and deploy-lifecycle.carrier-prune.time. The slow lifecycle-observe warning reports rebuild_ms and prune_ms."
+  prior_evidence: "The issue #24 analysis found that the checkpoint fsync is about 1 percent of the cost. Do not assume that the disk is the bottleneck."
+  carrier_prune_history: |
+    The carrier-index prune stall shows how one write pattern can block every proposer:
+    - Before: prune_below committed one LMDB transaction for each changed row. Inside deploy_lifecycle.observe_block this stalled every proposer for 10 to 19 s at each prune stride.
+    - 0ed7d82ff: writes the changed rows in 2 transactions (one delete, one put). last-prune is written after the row writes.
+    - c11d302b9: splits the 2 batches into chunks of PRUNE_WRITE_CHUNK (1024) rows. The test a_prune_walk_writes_no_batch_larger_than_the_write_chunk bounds the batch size.
+    - 37dfffef5: adds fail_puts and the test a_prune_that_fails_part_way_is_finished_by_the_next_walk. A walk that fails part way leaves last-prune unchanged, so the next walk does the prune again. The commit amends C4 of CLAIM-FINALITY-002.
+  baseline_soak: "Weekend-60h soak run 38076682321 on master 761cc0d59 (dispatched 2026-10-10) records the stage histograms after PR #695. Use it as the baseline for this spike."
+tasks:
+  - id: TASK-024-1
+    title: "List the LMDB write paths that run on the propose, validate, and finalization paths"
+    status: pending
+    priority: p1
+    claimed_by: null
+    blocked_by: []
+    acceptance:
+      - "A table lists each store that these paths write, the caller, the transaction size, and the runtime context (block_in_place, current-thread inline, or blocking thread)."
+      - "The table marks each write that runs while a lock that a proposer needs is held, as the carrier prune did."
+  - id: TASK-024-2
+    title: "Detect delayed writes"
+    status: pending
+    priority: p1
+    claimed_by: null
+    blocked_by: []
+    acceptance:
+      - "A histogram records the commit time of each LMDB write transaction, labeled by store."
+      - "A histogram records the wait for the LMDB writer lock, separate from the commit time."
+      - "A warning with the store name and the times is logged when one commit is slower than a set threshold."
+      - "A test with a slow store double proves the warning and the histograms. The soak harness scrapes the new histograms (scripts/bench/extend-issue24-metrics.sh)."
+  - id: TASK-024-5
+    title: "Detect Tokio scheduling delay separately from disk delay"
+    status: pending
+    priority: p1
+    claimed_by: null
+    blocked_by: []
+    acceptance:
+      - "A periodic probe task on the main runtime records how late each wake-up is, as a scheduling-delay histogram."
+      - "The node exports the stable Tokio runtime metrics that apply: worker busy time, global queue depth, blocking queue depth, and alive tasks. The record states which useful metrics need --cfg tokio_unstable and what that flag costs."
+      - "A test with a task that blocks a worker proves that the probe reports the delay."
+      - "The soak harness scrapes the new metrics, so that TASK-024-3 can split each stage time into disk, CPU, and scheduling parts."
+  - id: TASK-024-3
+    title: "Measure the LMDB commit times on a local SSD and in a user-run OCI soak"
+    status: pending
+    priority: p1
+    claimed_by: null
+    blocked_by: [TASK-024-2, TASK-024-5]
+    acceptance:
+      - "A local test_load run and a user-run soak give the commit-time distribution for each store."
+      - "The result states which part of the proposer.*.time and deploy-lifecycle.*.time values comes from LMDB commits, compared with soak 38076682321."
+  - id: TASK-024-4
+    title: "Decide on storage optimizations from the measurements"
+    status: pending
+    priority: p2
+    claimed_by: null
+    blocked_by: [TASK-024-3]
+    acceptance:
+      - "A decision record evaluates each option against the measurements: a dedicated writer thread or spawn_blocking, larger or fewer write batches, NO_META_SYNC or other sync flags, and read-ahead settings."
+      - "The record also evaluates the Tokio options: a dedicated runtime or thread pool for consensus work (as the HTTP API already has), the worker count, explicit yield points in long CPU work, and an OS thread priority for the proposer."
+      - "Each option that reduces durability states the crash-recovery result before a maintainer accepts it."
+      - "No option changes code unless TASK-024-3 shows a disk cause."
+---
+```
 
 ---
 
