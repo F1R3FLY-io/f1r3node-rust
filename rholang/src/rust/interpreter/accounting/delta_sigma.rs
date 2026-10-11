@@ -1,5 +1,5 @@
 //! Per-signature demand analyzer `Δ_s` and supply closure `Σ_s`. This is the
-//! pure, linear-time structural proof producer for cost-accounted Rho
+//! pure structural proof producer for cost-accounted Rho
 //! (Definitions 17–19 and Theorem 20 of `cost-accounted-rho.tex`). Native
 //! `CostSignedTerm` regions survive normalization, substitution, storage, and
 //! replay, so the analysis maintains the complete stack of enclosing authority
@@ -54,11 +54,16 @@
 //!
 //! ## Purity
 //!
-//! This module is PURE and linear-time: it operates on `Par` + `Sig` + integer
-//! supply maps only — no RSpace, no async, no I/O. The native gate constructs
-//! each raw `Σ_s` from the signature's canonical SystemVault balance and
-//! available located stacks, then feeds the integer projection into this module
-//! as a `BTreeMap<SigKey, i64>`.
+//! This module is PURE: it operates on `Par` + `Sig` + integer supply maps
+//! only — no RSpace, no async, no I/O. Corrected by G1-4a (DR-122, arbitration
+//! H1): its work is not linear in the term. Each send or receive walks its whole
+//! chain of enclosing signed scopes, and each combine copies the lane map of a
+//! child and the supply of its parent, so the work grows with the term plus its
+//! region links and merged map entries. The estimate of `estimate.rs` counts
+//! that work and charges it to the host-work budget before it calls the plan.
+//! The native gate constructs each raw `Σ_s` from the signature's canonical
+//! SystemVault balance and available located stacks, then feeds the integer
+//! projection into this module as a `BTreeMap<SigKey, i64>`.
 //!
 //! ## Stack safety (G1-1, DR-67)
 //!
@@ -192,8 +197,10 @@ impl DemandEntry {
 /// bound plus an `unknown` flag set when the structural proof cannot establish a
 /// finite bound (Theorem 20).
 ///
-/// Linear time in the size of the AST: a single structural pass, O(1) work per
-/// node, no normalization or fixpoint.
+/// A single structural pass with no normalization or fixpoint. Corrected by
+/// G1-4a (DR-122, arbitration H1): the pass is not linear in the AST. Each
+/// introduction walks its chain of enclosing signed scopes, and each combine
+/// copies maps, so the work grows with the region links and the merged entries.
 ///
 /// Counted nodes are `Send` and `Receive`; they are potential participants, not
 /// runtime `Comm` events. `New`, `Match`, and `If` are recursed but do not add a
@@ -2625,3 +2632,5 @@ mod recursive_oracle {
 
 #[cfg(test)]
 mod stack_safety_tests;
+
+pub mod estimate;

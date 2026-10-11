@@ -2,7 +2,7 @@
 
 **Status.**
 
-- The user adopted this design on 2026-10-10. No code implements it yet.
+- The user adopted this design on 2026-10-10. Step G1-4a implements the analysis (DR-122). No production path calls it yet.
 - pgmcp is the work tracker of this effort. Epic 8946 is its work item "Complete offered-funded production cost-accounting integration".
 - G1, the funding check before execution, is a work item of epic 8946. Two implementation steps of G1 build this design. Step G1-4a adds the analysis to the `rholang` crate. Step G1-4b adds the check to the `casper` crate.
 - This document is the reference for the amended linear cost estimate.
@@ -276,7 +276,7 @@ The funding signature comes from the signers of the envelope (`runtime.rs:165`).
 - The completeness of the estimate. An incomplete estimate also reports the first rule that failed.
 - The static signature of every lane, which the obligations need.
 
-The planned interface of step G1-4a follows. The names are planned, and no code exists yet.
+Step G1-4a implements this interface in `rholang/src/rust/interpreter/accounting/delta_sigma/estimate.rs` (DR-122). Its public types follow.
 
 ```rust
 pub enum IncompleteReason {
@@ -290,6 +290,7 @@ pub enum IncompleteReason {
     PeekOrStack,
     MethodInProcessPosition,
     DataEvaluation,
+    UnsizedValue,
 }
 
 pub enum Completeness {
@@ -303,17 +304,24 @@ pub struct CostEstimate {
     pub signatures: BTreeMap<SigKey, CostSignature>,
     pub completeness: Completeness,
 }
-
-pub fn linear_cost_estimate(
-    resolved: &Par,
-    funding: &Sig,
-    schedule: &PhloScheduleV1<'_>,
-    urn_map: &HashMap<String, Par>,
-    host: &HostWorkBudget,
-) -> Result<CostEstimate, InterpreterError> {
-    todo!("step G1-4a")
-}
 ```
+
+The two entry points have these signatures.
+
+```text
+linear_cost_estimate(resolved: &Par, funding: &Sig, schedule: &PhloScheduleV1,
+                     evaluator: &ReducerCore, host: &HostWorkBudget)
+    -> Result<CostEstimate, InterpreterError>
+
+estimate_offered_term(term: &str, normalizer_env: HashMap<String, Par>,
+                      rand: Blake2b512Random, funding: &Sig, schedule: &PhloScheduleV1,
+                      evaluator: &ReducerCore, host: &HostWorkBudget)
+    -> Result<CostEstimate, InterpreterError>
+```
+
+- The evaluator replaces the URN map of the first plan. The analysis reads the URN map of the evaluator. It evaluates with a copy whose two meters are one fresh unlimited machine, so the budget of the runtime stays untouched.
+- `estimate_offered_term` parses the term with the host-work charge of replay and resolves its names with the metered resolver. Then it estimates the resolved term and drops both terms without recursion.
+- `UnsizedValue` marks a value that is nested above the sizing bound of 256 message levels, or a size that has no static value. Every recursive function of the reducer that sizes a value stays within that bound.
 
 The field `quantities` holds the raw counts $`V(s,k)`$, keyed by the lane key and the class index. The field `bound_phlo` holds $`B`$. An error means that the host-work budget ran out, and the check then rejects the deploy with no charge (Section 6.3).
 
@@ -343,7 +351,7 @@ The estimate is complete only if rules X1 to X8 and the on-chain payer condition
 | X1 | `static_authority_plan` of the resolved term and the funding signature returns `Ok`. | It excludes persistent sends and receives, `*x` in process position and dynamic authority (`delta_sigma.rs:756-799`). With X8, every receive then fires at most once and consumes one datum per bind. |
 | X2 | At every execution position, every send and receive channel is a bound level of kind fresh or fresh hole. | A public, URN or injected channel can reach a stored contract or stored data. The body of a stored contract runs with an empty authority and charges the deploy lane (`reduce.rs:382-406`). |
 | X3 | A level of kind fresh or fresh hole occurs only as such a channel or in a cost signature. | A name that never escapes cannot be held by stored state. This escape analysis supports the transfer bound. |
-| X4 | Send data are closed: their free-variable set (`locally_free`) is empty. The analysis sizes them after the reducer's evaluation (Section 5.6). | Data sizes then do not depend on the run. Quoted processes in data stay allowed, because X2 and X8 apply to execution positions only. |
+| X4 | Send data are closed: their free-variable set (`locally_free`) is empty. Every form in them has a known work limit, and the analysis sizes them after the reducer's evaluation (Section 5.6, DR-122). | Data sizes then do not depend on the run, and the analysis charges their evaluation before it runs. Quoted processes in data stay allowed, because X2 and X8 apply to execution positions only. |
 | X5 | Receive patterns have no free variable of an outer level. | Pattern sizes then do not depend on the run. |
 | X6 | A receive-pattern or match-pattern level occurs only in `if` conditions and match targets of its own body. It never occurs inside a nested introduced value. | Received values then only choose branches, and branches take the maximum (P1:2193-2197). The poison check of Section 5.6 enforces this rule. |
 | X7 | No bind is a peek, and the term has no cost stack. | A peeked datum can be delivered more than once. A cost stack brings retained acquisition. |
@@ -430,7 +438,12 @@ The compute row takes the count of `static_authority_plan`. For each participant
 The analysis computes every byte size from a representative value. It builds the value with the reducer's own functions and measures it with prost. [C][I]
 
 1. **The sizing environment.** It has one entry for every level. Fresh and fresh-hole levels get a private name with a 32-byte identity. URN and injection levels get their values. Pattern levels get a poison marker.
-2. **Send data.** The analysis runs the reducer's `eval_expr` on each datum, under the host-work budget. Then it substitutes and measures the result, as `eval_send` does (`reduce.rs:1467-1474`). Evaluation matters because operators such as the interpolation `%%` change the size of a closed datum (`reduce.rs:3215`, `:8173-8192`). If evaluation fails, the estimate is incomplete.
+2. **Send data.** The analysis runs the reducer's `eval_expr` on each datum. Then it substitutes and measures the result, as `eval_send` does (`reduce.rs:1467-1474`). Evaluation matters because operators such as the interpolation `%%` change the size of a closed datum (`reduce.rs:3215`, `:8173-8192`). If evaluation fails, the estimate is incomplete.
+   - **Narrowed rule X4 (DR-122).** The analysis evaluates data with unlimited meters. A form without a known work limit could do unbounded work there before any charge. So the analysis first walks the expression tree of each datum, without recursion.
+   - **Allowed forms.** The analysis evaluates only the forms that have a known work limit. These forms are literals, collections, fixed-width arithmetic, comparisons and Boolean operators. They also include `++` on strings, byte arrays and lists, and `%%` with a literal map. The map must have string keys, and each value must be a string, an integer, a Boolean or a URI.
+   - **The charge comes first.** The analysis charges the work limit of a datum to the host-work budget before it evaluates the datum. In the limit, $`b`$ is the length bound of the datum plus the output growth of all forms, and $`h`$ is its height. The forms together cost $`b \cdot (h + 1) \cdot (\lceil \log_2 (b + 2) \rceil + 1)`$, and the logarithmic factor pays for sorting. For a template of $`n`$ bytes and $`K`$ keys of at most $`k`$ bytes, a `%%` also costs its loop work $`n \cdot (n + K \cdot (k + 3))`$.
+   - **The output bound of `%%`.** A placeholder in the template has at least 3 bytes, so the template has at most $`\lfloor n / 3 \rfloor`$ placeholders. A string or URI value has its own length. An integer has at most 20 bytes, and a Boolean has at most 5 bytes. If the longest value has $`v`$ bytes, the output has at most $`n + \lfloor n / 3 \rfloor \cdot v + 16`$ bytes. The 16 bytes cover the framing of the new string. Without this bound, a short template with a long value would allocate a string that no meter counts.
+   - **Other forms.** The analysis never evaluates a datum with another form. Examples are `matches`, method calls, PathMaps, zippers, big-number arithmetic and set difference. The participant of that datum has no size, with the reason `DataEvaluation`, and the estimate is incomplete. Channels go through the same walk.
 3. **Patterns and guards.** The analysis substitutes them at depth 1, as the reducer does (`reduce.rs:1581`, `:1596`).
 4. **Receive bodies.** The analysis substitutes a receive body at depth 0 in the environment shifted by the bind count of the receive, as the reducer does (`reduce.rs:1632-1636`).
 5. **The poison check.** A substituted introduced value that contains poison makes the estimate incomplete (rule X6). Each substitution uses its own environment. The bound levels of a receive stay unsubstituted variables inside its own body, so they are never poison there. Branching on the pattern variable of a receive therefore stays allowed.
@@ -468,7 +481,7 @@ The running time of the analysis has three parts. [C][I] Let $`N`$ be the number
 
   Each table is an array indexed by a binder identity, which pass 1 assigns when it enters a `new`. So each table access takes constant time.
 - **Regions and merges.** The reused plan walks the whole chain of enclosing scopes for each participant (`delta_sigma.rs:276-295`). It therefore does one step for each region link. Each combine step adds the lane map of a child into its parent and copies the supply multiset (`delta_sigma.rs:230-246`, `authority.rs:1773-1787`). Pass 2 shares that merge cost, and each seal costs one step for each region link. In the worst case these costs grow with $`N`$ times the nesting depth of signed scopes, plus $`N`$ times the number of lanes.
-- **The sizing.** Pass 1 sizes every participant with the substitution functions of the reducer (Section 5.6). The reducer substitutes the whole body of a receive when the receive runs (`reduce.rs:1632-1636`). So the body of a nested receive is sized again at each enclosing level. This work is proportional to the size of the term plus the introduction bytes that the estimate counts. The native meter charges the same bytes during execution, because it measures the same substitutions.
+- **The sizing.** Pass 1 sizes every participant with the substitution functions of the reducer (Section 5.6). The reducer substitutes the whole body of a receive when the receive runs (`reduce.rs:1632-1636`). So the body of a nested receive is sized again at each enclosing level. Each substitution also copies the whole sizing environment at each binder of the substituted term, because `Env::shift` clones its map (`substitute.rs:686`, `:728`, `:769`). So the sizing work grows with the substituted bytes, plus the environment size times the binders of each substituted term (DR-122). The native meter charges the same bytes during execution, because it measures the same substitutions.
 
 For a typical deploy the nesting depth and the number of lanes are small, so the total stays close to linear in $`N`$. A hostile deploy can make the region, merge and sizing costs large. So one linear pre-pass counts each of these costs, and the analysis charges it to the host-work budget before the work runs. A deploy that exceeds the budget is rejected before execution with no charge (Section 6.3). Both walks use explicit work stacks, so their stack depth does not grow with the nesting depth of the term (DR-67).
 
@@ -1050,7 +1063,7 @@ The rules also make the estimate incomplete for these constructs.
 - Cost stacks.
 - Public, URN and injected channels, at every depth.
 - Signatures that name a received value or a name created in a receive body (DR-121).
-- Data whose evaluation fails.
+- Data whose evaluation fails, or that use a form without a known work limit (DR-122).
 - Sources that are on-chain private-name payers.
 
 Most real deploys call stored contracts, such as a registry lookup or a vault transfer. So most real deploys get an incomplete estimate and hold their whole signed limit. [I]

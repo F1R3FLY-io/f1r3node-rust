@@ -13630,3 +13630,268 @@ allocates. DR-119 and DR-120 stay reserved.
 
 **Cross-refs.** DR-64, DR-67. Leaves `ofp-1-lexical-authority` and
 `ofp-1-stack-safe-lexical`.
+
+## DR-122 — The linear pre-execution cost estimate (G1-4a)
+
+**Status.** Implemented 2026-10-11 for step G1-4a of gap G1 of epic 8946. It
+follows [the linear cost estimate design](cost-accounting-impl/linear-cost-estimate.md)
+and the binding amendments of 2026-10-11 to implementation map v5. The user
+adopted the design on 2026-10-10. The user decided that *linear* in the name
+of the estimate refers to the linear resource proof of the cost-accounting
+papers (decision U2). Under the same decision, the analysis keeps the exact
+sizes of the reducer's own functions and meters every part. No production
+path calls the analysis yet. Step G1-4b adds the check that uses it.
+
+**Context.**
+
+- P1 asks the validator to compute the demand of a deployment "**Before**
+  executing any part of the deployment" (P1:2191). DR-64 asks for the known
+  demand of every lane from the envelope and the original root only.
+- Design section 5 specifies one analysis with two outputs: the raw counts
+  $`V(s,k)`$ with the estimate $`B`$, and the completeness of the estimate
+  under rules X1 to X8.
+- The independent check of the map (arbitration H1 and H2) found two metering
+  gaps. The reused plan, the region chains and the seals do more than linear
+  work. The evaluation of data had no work limit for `matches`, method calls,
+  big-number arithmetic and `%%`. Both ran before any charge.
+
+**Decision.**
+
+1. **The interface.** `delta_sigma::estimate::linear_cost_estimate` takes the
+   resolved term, the funding signature, the schedule, an evaluator and the
+   host-work budget. It returns a `CostEstimate`: the raw counts keyed by lane
+   and schedule class, `bound_phlo`, the canonical signature of every counted
+   lane, and the completeness with the first failed rule.
+   `estimate_offered_term` parses with the host-work charge of replay, resolves
+   with the metered funding resolver, estimates, and drops both terms with an
+   iterative teardown. The evaluator replaces the design's URN map (map gap
+   fill G-1). The analysis reads its URN map and evaluates with a copy whose
+   metering and substitution meters are one fresh unlimited machine
+   (arbitration M1). It debug-asserts that no reduction session is active.
+2. **Four walks, each on a heap work stack (DR-67).**
+   - The metering pre-pass computes four metrics of every `Par` and
+     `CostSignature` once, bottom-up (arbitration M4). They are the message
+     height, a length bound, the variable count and the number of environment
+     copies. The pre-pass also counts the work of the plan and of the vector
+     fold.
+   - `static_authority_plan` decides rule X1 and gives the compute row when X1
+     holds.
+   - Pass 1 gives every de Bruijn level a binder kind (design section 5.2). It
+     checks rules X2 to X8 and sizes every send and receive. It also emits the
+     post-order program of the vector fold, which is the program
+     `compile_term` of `StackSafeDemandWalk.v`.
+   - Pass 2 runs that program on a value stack. A merge moves the smaller map
+     into the larger one.
+3. **Exact sizes.** Pass 1 evaluates, substitutes and measures every value
+   with the reducer's own functions (`eval_expr`, `substitute_and_measure`,
+   `substitute_no_sort_and_measure`). The sizing environment has one entry
+   for every level:
+   - a private name with a 32-byte identity for a fresh level
+   - the bound value for a URN or injection level
+   - a poison marker for a pattern level
+
+   A substituted introduced value that contains the marker breaks rule X6.
+   Seal lengths come from running totals of region field lengths per scope,
+   so no seal is built (arbitration H1). G1-4a moves the length formulas of
+   `byte_accounting.rs` into six helpers: `datum_bytes`,
+   `continuation_bytes`, `produce_introduction_bytes`,
+   `consume_introduction_bytes`, `datum_transfer_bytes` and
+   `comm_trace_bytes`. The reducer's charge functions call these helpers, so
+   the estimate and the meter share the formulas.
+4. **Narrowed rule X4 (arbitration H2).** The analysis evaluates a datum only
+   when every form in it has a known work limit. These forms are literals,
+   collections, fixed-width arithmetic, comparisons and boolean operators.
+   They also include `++` on strings, byte arrays and lists, and `%%` with a
+   literal map. The map must have string keys and string, integer, boolean or
+   URI values. The analysis walks each datum first without recursion, and it
+   charges the limit before the evaluation:
+   - In the limit, $`b`$ is the length bound of the datum plus the output
+     growth of all forms, and $`h`$ is its height. The forms together cost
+     $`b \cdot (h + 1) \cdot (\lceil \log_2 (b + 2) \rceil + 1)`$, and the
+     logarithmic factor pays for sorting.
+   - For a template of $`n`$ bytes and $`K`$ keys of at most $`k`$ bytes, a
+     `%%` also costs its loop work $`n \cdot (n + K \cdot (k + 3))`$.
+   - If $`v`$ bounds the rendered length of each value, the output of a `%%`
+     has at most $`n + \lfloor n / 3 \rfloor \cdot v + 16`$ bytes. A
+     placeholder has at least 3 bytes, and the 16 bytes cover the framing of
+     the new string. This output bound is a gap fill. Without it, a short
+     template with a long value would allocate an unmetered string.
+   - Any other form (`matches`, method calls, PathMap, zipper, big-number
+     arithmetic, set difference) leaves the participant unsized with reason
+     `DataEvaluation`, and the estimate is incomplete. Channels go through
+     the same walk.
+   - The runtime evaluates the same forms without a host-work limit
+     (`reduce.rs:1467-1474`). That gap belongs to the interpreter owners, and
+     G1-4a does not change evaluation code.
+5. **Metering of every walk (arbitration H1).** The analysis charges each
+   count before its walk runs:
+   - The pre-pass charges two structural items for each subterm.
+   - The analysis charges the plan its steps, its region links
+     (`chain_links`) and its map entries (`merge_entries`). At a node $`v`$
+     with signed depth $`d`$, $`n_{\mathrm{io}}`$ is the number of sends and
+     receives, and $`n_{\mathrm{bind}}`$ is the number of signed binds. If
+     $`v`$ is at an execution position, $`n_{\mathrm{cell}}`$ is its number of
+     stack cells, and otherwise it is zero. The node has
+     $`(d + 1)(n_{\mathrm{io}} + 2 n_{\mathrm{cell}}) + n_{\mathrm{bind}}`$
+     region links.
+   - A combine at a child touches the lanes of the child and of the enclosing
+     scopes and the supply of the parent. The subtree count $`c(v)`$ adds the
+     signed scopes, signed binds and stack cells in the plan subtree of
+     $`v`$, and one for each node. Each item and each child of $`v`$ then
+     costs $`2(d + 1) + 2c(v) + 4`$ map entries, and each child $`w`$ adds
+     $`3c(w)`$. The formula of arbitration H1 counts each node once and
+     misses wide nodes with large supplies, so the implemented count is
+     larger. On a chain of nested receives the count grows with the square of
+     the depth. The 100,000-level term of the stack-safety tests requests
+     330,008,400,008 map entries.
+   - The analysis charges the vector fold the program length, the region
+     links again and four times the map entries.
+   - The analysis charges each sizing call before it runs. Its bindings are
+     the environment size, once for the call, as
+     `Substitute::reserve_host_work` charges it (`substitute.rs:77-100`), and
+     once more for each environment copy. `Env::shift` copies the whole
+     environment at each binder of the substituted term (`substitute.rs:686`,
+     `:690`, `:728`, `:769`, `:782`). These binders are receive bodies and
+     conditions, `new` bodies, and match case sources and guards. Its bytes
+     are the input bound, the output bound, the bytes of each environment
+     copy and the marker scan. Evaluation is charged as item 4 states.
+   - The work of nested receive bodies is therefore metered, also where it
+     grows with the square of the nesting depth.
+   - An exhausted budget returns `HostWorkRejected`, and the check rejects the
+     deploy with no charge.
+6. **Stack safety (arbitration M4).** For a value $`x`$, $`h(x)`$ is its
+   message height, and $`h_{\mathrm{env}}`$ is the largest message height in
+   the sizing environment. The value reaches a recursive function of the
+   reducer only when $`h(x) + h_{\mathrm{env}} + 8 \le 256`$. The constant 8
+   is a margin, and 256 is the depth bound of `SorterMeter::enter`. A higher
+   value has no size, with the new reason `UnsizedValue`, and the estimate is
+   incomplete. Pass 1 runs on one explicit stack segment of 64 MiB
+   (`stacker::grow`). A test sizes a datum at the bound on a 256 KiB thread
+   in a debug build.
+7. **Known demand of an incomplete estimate (design section 6.2, map gap fill
+   G-4).** A participant without a size or with a dynamic region contributes
+   nothing. A participant on a channel that is not fresh contributes no
+   transfer and no trace. When rule X1 fails, the compute row is the count of
+   the vector fold. Otherwise it is the plan's count, which also counts
+   participants in data and one unit for each empty signed body.
+8. **The scope of rule X3.** A fresh level may occur only as a channel and in
+   a cost signature. The analysis checks guards, match targets, match patterns
+   and guards, conditions and the top-level expressions of execution
+   positions. Data and patterns are closed by rules X4 and X5.
+9. **The client sizing rule (design section 14).** Clients sign a phlo limit at
+   least as large as the estimate. The estimate is a pure function of the
+   envelope and of public consensus inputs, so a client can compute it before
+   signing.
+10. **Linearity (decision U2).** The work of the analysis grows with the term
+    plus its region links, its merged map entries and its sized bytes. The
+    environment copies of its substitutions add to that work. It is not
+    linear in the term in the worst case, and the host-work budget bounds it.
+    The comments of `delta_sigma.rs` that called the plan linear-time with
+    constant work per node are corrected.
+
+**Why the rules are sound.** Design section 11 gives the argument, and
+`ClosedDemandBound.v` mechanizes it. Every process that runs is a subterm at an
+execution position and runs at most once (X1, X8). Every partner of a COMM is a
+participant of the deploy (X2, X3, collision freedom and unique deploys). Each
+participant joins at most one COMM (X1, X7). Every introduced value has its
+estimated size (X4 to X6 and the exact sizing). The charge of one COMM is at
+most the contributions of its participants, and the branch maximum dominates
+every selection.
+
+**Findings outside G1-4a.**
+
+- The normalizer rejects a join with two binds on one channel
+  (`ReceiveOnSameChannelsError`). The estimate still counts such a join as a
+  multiset, and a test builds one in code.
+- Uniform signing wraps the continuation of a signed receive in a signed term
+  with an empty body. The plan therefore counts one more compute unit for it.
+  Directly nested signed terms collapse into one scope with a compound
+  signature.
+- `Env::shift` copies the whole environment at each binder of a substitution.
+  The runtime charges the environment size once for each substitution call
+  (`substitute.rs:77-100`), so its copies at nested binders have no
+  host-work charge. That gap belongs to the interpreter owners.
+
+**Verification.**
+
+- Rocq, with no axiom:
+  - `ClosedDemandBound.v`: `complete_estimate_sound` with
+    `branch_max_dominates`, `closed_intro_bound`, `closed_comm_bound`,
+    `closed_transfer_bound`, `closed_trace_bound`,
+    `merged_authority_charges_less`, `fresh_unescaped_no_foreign_match` (with
+    a witness of its hypotheses) and `units_applied_once`.
+  - Twelve proved negative controls in `ClosedDemandBound.v` give a run above
+    the estimate. They cover these cases:
+    - a public channel, a persistent receive and a peek
+    - a received value in data, and a datum sized before evaluation
+    - a received value in a nested introduction
+    - a method call in process position
+    - the minimum over branches
+    - an introduction charged to signed-bind regions
+    - units applied twice
+    - a repeated join channel counted as a set
+    - lane membership instead of region multiplicity
+  - `EstimateDemandWalk.v`: the vector algebra instantiates the walk section
+    of `StackSafeDemandWalk.v` (`vector_program_equals_recursion`,
+    `vector_walk_refines_recursion`). The merge order does not matter
+    (`swapped_vector_run_equals_run`). The program length is linear in the
+    term (`vector_program_length_is_linear`). The control
+    `swapped_trace_run_breaks_the_refinement` shows that the swap needs a
+    commuting combine.
+  - `EstimateBinderKinds.v`: `kinds_channels_fresh`, `kinds_no_escape`,
+    `kinds_poison_free_introductions` and
+    `full_environment_matches_runtime_free_levels`, with the controls
+    `nc_uri_as_fresh_in_receive_body` and `nc_poison_flags_own_levels`.
+  - The proof gate with `COST_ACCOUNTING_ONLY=1` passes with 288 modules and
+    3284 closed assumption queries. The 39 new queries cover the three new
+    modules.
+- Rust tests in `delta_sigma/estimate/`:
+  - `tests.rs`:
+    - the named programs of design sections 10 and 12
+    - a generated program for each rule X1 to X8 and for `DataEvaluation`, in
+      32 cases with random contexts
+    - the narrowed evaluation: a long `%%` template and a nested `%%` chain
+      are rejected for host work, and a shallow chain stays complete
+    - a costly `matches` and a chain of big-integer multiplications, which
+      stay unsized
+    - exact seal and introduction lengths against the reducer's charge
+      functions
+    - the emitted program and the host-work charges of each shape, with one
+      environment copy charged for each binder of a sized term
+    - the exact-charge test of every charged dimension: the exact budget
+      gives the same estimate, and one unit less rejects
+    - the counted witness of the raw counts, and the iterative teardown
+  - `stack_safety_tests.rs`:
+    - parity of the work-stack passes with the recursive oracle on 256
+      generated programs and on the Rholang corpus
+    - the binder count of pass 1 against the resolver's count at every
+      visited node of the corpus (a test-only hook in `lexical.rs`)
+    - a term nested 100,000 deep on a 256 KiB stack, through the passes and
+      the public entry
+    - the oracle on a term above the sizing bound, and the sizing bound on a
+      small debug stack
+    - the rejection of the environment copies of a `new` of 100,000 names
+      under the offered limits
+    - a guard that the generated programs reach both analyses
+  - `runtime_tests.rs`:
+    - measured at most estimated for every lane and class, and usage at most
+      $`B`$, under the native meter
+    - twelve named programs and 48 generated complete programs
+    - a guard that most generated programs reach the runtime with a complete
+      estimate
+    - the budget, cost log, event log and evaluation counters of the runtime,
+      unchanged by the estimate
+- Negative control of the copy charge: with the environment size charged once
+  per call only, the copy test sees no growth with the outer names. The wide
+  term is then rejected for bytes, not for bindings.
+- Suites:
+  - rholang and rspace++ pass 4192 of 4192 in release, with 13 skipped. The
+    G1-3 baseline was 4151 of 4151, and G1-4a adds 41 tests.
+  - The 100,000-level test runs for about 266 s in release with an unlimited
+    budget. The environment copies of its sized receive bodies take most of
+    that time.
+  - `cargo fmt --check`, the workspace doctests and
+    `cargo clippy --workspace --all-targets -- -D warnings` pass on the
+    commit tree.
+
+**Cross-refs.** DR-64, DR-65, DR-67, DR-101, DR-113, DR-118, DR-121.

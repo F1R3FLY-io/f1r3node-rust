@@ -136,14 +136,41 @@ pub(crate) fn consume_introduction_identity_metered(
     domain_identity_metered(CONSUME_INTRODUCTION_DOMAIN, &source.hash.0, meter)
 }
 
+/// Added by G1-4a (DR-122): the introduction bytes of a produce whose channel
+/// and datum have the given prost lengths. `produce_introduction_charge` and
+/// `produce_introduction_charge_premeasured` charge this sum.
+pub(crate) fn produce_introduction_bytes(
+    channel: u64,
+    datum: u64,
+) -> Result<u64, ByteAccountingError> {
+    channel
+        .checked_add(datum)
+        .and_then(|bytes| bytes.checked_add(HASH_BYTES.checked_mul(2)?))
+        .ok_or(ByteAccountingError::Overflow)
+}
+
+/// Added by G1-4a (DR-122): the introduction bytes of a consume whose
+/// channels and patterns have `binds` prost bytes in total and whose
+/// continuation has `continuation` bytes.
+pub(crate) fn consume_introduction_bytes(
+    binds: u64,
+    continuation: u64,
+    channels: usize,
+) -> Result<u64, ByteAccountingError> {
+    checked_sum([binds, continuation, event_storage_bytes(channels)?])
+}
+
 pub fn produce_introduction_charge(
     channel: &Par,
     data: &ListParWithRandom,
 ) -> Result<ByteCharge, ByteAccountingError> {
-    let introduction_bytes = message_bytes(channel)?
-        .checked_add(message_bytes(data)?)
-        .and_then(|bytes| bytes.checked_add(HASH_BYTES.checked_mul(2)?))
-        .ok_or(ByteAccountingError::Overflow)?;
+    // Changed by G1-4a (DR-122): the sum moved to `produce_introduction_bytes`.
+    // let introduction_bytes = message_bytes(channel)?
+    //     .checked_add(message_bytes(data)?)
+    //     .and_then(|bytes| bytes.checked_add(HASH_BYTES.checked_mul(2)?))
+    //     .ok_or(ByteAccountingError::Overflow)?;
+    let introduction_bytes =
+        produce_introduction_bytes(message_bytes(channel)?, message_bytes(data)?)?;
     Ok(ByteCharge {
         introduction_bytes,
         ..ByteCharge::default()
@@ -155,11 +182,17 @@ pub fn consume_introduction_charge(
     patterns: &[BindPattern],
     continuation: &TaggedContinuation,
 ) -> Result<ByteCharge, ByteAccountingError> {
-    let introduction_bytes = sum_message_bytes(channels)?
+    // Changed by G1-4a (DR-122): the sum moved to `consume_introduction_bytes`.
+    // let introduction_bytes = sum_message_bytes(channels)?
+    //     .checked_add(sum_message_bytes(patterns)?)
+    //     .and_then(|bytes| bytes.checked_add(message_bytes(continuation).ok()?))
+    //     .and_then(|bytes| bytes.checked_add(event_storage_bytes(channels.len()).ok()?))
+    //     .ok_or(ByteAccountingError::Overflow)?;
+    let binds = sum_message_bytes(channels)?
         .checked_add(sum_message_bytes(patterns)?)
-        .and_then(|bytes| bytes.checked_add(message_bytes(continuation).ok()?))
-        .and_then(|bytes| bytes.checked_add(event_storage_bytes(channels.len()).ok()?))
         .ok_or(ByteAccountingError::Overflow)?;
+    let introduction_bytes =
+        consume_introduction_bytes(binds, message_bytes(continuation)?, channels.len())?;
     Ok(ByteCharge {
         introduction_bytes,
         ..ByteCharge::default()
@@ -202,15 +235,18 @@ fn bytes_field_bytes(tag: u32, bytes: &[u8]) -> Result<u64, ByteAccountingError>
     )
 }
 
-fn optional_message_field_bytes<M: Message>(
-    tag: u32,
-    message: Option<&M>,
-) -> Result<u64, ByteAccountingError> {
-    message.map_or(Ok(0), |message| {
-        u64::try_from(prost::encoding::message::encoded_len(tag, message))
-            .map_err(|_| ByteAccountingError::Overflow)
-    })
-}
+// Disabled by G1-4a (DR-122): its two callers frame the measured seal and
+// stack lengths through `datum_bytes` and `continuation_bytes` now, which
+// give the same lengths (the D-F2 property tests compare them with prost).
+// fn optional_message_field_bytes<M: Message>(
+//     tag: u32,
+//     message: Option<&M>,
+// ) -> Result<u64, ByteAccountingError> {
+//     message.map_or(Ok(0), |message| {
+//         u64::try_from(prost::encoding::message::encoded_len(tag, message))
+//             .map_err(|_| ByteAccountingError::Overflow)
+//     })
+// }
 
 /// Added by D-F2 (DR-118): the prost length of `ParWithRandom { body:
 /// Some(b), random_state }` when `b` has `body` bytes.
@@ -224,6 +260,43 @@ pub(crate) fn par_with_random_bytes(
     ])
 }
 
+/// Added by G1-4a (DR-122): the prost length of a `ListParWithRandom` from
+/// the framed length of its `pars`, its random state and the lengths of its
+/// seal and its stack. A `None` length is an absent field.
+pub(crate) fn datum_bytes(
+    pars: u64,
+    random_state: &[u8],
+    authority: Option<u64>,
+    stack: Option<u64>,
+) -> Result<u64, ByteAccountingError> {
+    checked_sum([
+        pars,
+        bytes_field_bytes(2, random_state)?,
+        authority.map_or(Ok(0), |len| message_field_bytes(3, len))?,
+        stack.map_or(Ok(0), |len| message_field_bytes(4, len))?,
+    ])
+}
+
+/// Added by G1-4a (DR-122): the prost length of a `TaggedContinuation` with
+/// a `ParBody` of `body` bytes, an optional guard and an optional seal.
+pub(crate) fn continuation_bytes(
+    body: u64,
+    guard: Option<u64>,
+    authority: Option<u64>,
+) -> Result<u64, ByteAccountingError> {
+    checked_sum([
+        message_field_bytes(1, body)?,
+        guard.map_or(Ok(0), |guard| message_field_bytes(3, guard))?,
+        authority.map_or(Ok(0), |len| message_field_bytes(4, len))?,
+    ])
+}
+
+fn optional_message_len<M: Message>(
+    message: Option<&M>,
+) -> Result<Option<u64>, ByteAccountingError> {
+    message.map(|message| message_bytes(message)).transpose()
+}
+
 /// Added by D-F2 (DR-118): `produce_introduction_charge` with the framed
 /// length of `data.pars` measured by the reducer. It reads the channel, the
 /// random state, the seal and the stack.
@@ -232,19 +305,28 @@ pub fn produce_introduction_charge_premeasured(
     data: &ListParWithRandom,
     pars: u64,
 ) -> Result<ByteCharge, ByteAccountingError> {
-    let data_bytes = checked_sum([
+    // Changed by G1-4a (DR-122): the sums moved to `datum_bytes` and
+    // `produce_introduction_bytes`, which the pre-execution estimate shares.
+    // let data_bytes = checked_sum([
+    //     pars,
+    //     bytes_field_bytes(2, &data.random_state)?,
+    //     optional_message_field_bytes(3, data.cost_authority.as_ref())?,
+    //     optional_message_field_bytes(4, data.cost_stack.as_ref())?,
+    // ])?;
+    // let introduction_bytes = checked_sum([
+    //     message_bytes(channel)?,
+    //     data_bytes,
+    //     HASH_BYTES
+    //         .checked_mul(2)
+    //         .ok_or(ByteAccountingError::Overflow)?,
+    // ])?;
+    let data_bytes = datum_bytes(
         pars,
-        bytes_field_bytes(2, &data.random_state)?,
-        optional_message_field_bytes(3, data.cost_authority.as_ref())?,
-        optional_message_field_bytes(4, data.cost_stack.as_ref())?,
-    ])?;
-    let introduction_bytes = checked_sum([
-        message_bytes(channel)?,
-        data_bytes,
-        HASH_BYTES
-            .checked_mul(2)
-            .ok_or(ByteAccountingError::Overflow)?,
-    ])?;
+        &data.random_state,
+        optional_message_len(data.cost_authority.as_ref())?,
+        optional_message_len(data.cost_stack.as_ref())?,
+    )?;
+    let introduction_bytes = produce_introduction_bytes(message_bytes(channel)?, data_bytes)?;
     Ok(ByteCharge {
         introduction_bytes,
         ..ByteCharge::default()
@@ -276,41 +358,79 @@ pub fn consume_introduction_charge_premeasured(
     if !consume_premeasurement_applies(continuation, guard) {
         return Ok(None);
     }
-    let continuation_bytes = checked_sum([
-        message_field_bytes(1, body)?,
-        guard.map_or(Ok(0), |guard| message_field_bytes(3, guard))?,
-        optional_message_field_bytes(4, continuation.cost_authority.as_ref())?,
-    ])?;
-    let introduction_bytes = checked_sum([
-        sum_message_bytes(channels)?,
-        sum_message_bytes(patterns)?,
-        continuation_bytes,
-        event_storage_bytes(channels.len())?,
-    ])?;
+    // Changed by G1-4a (DR-122): the sums moved to `continuation_bytes` and
+    // `consume_introduction_bytes`, which the pre-execution estimate shares.
+    // let continuation_bytes = checked_sum([
+    //     message_field_bytes(1, body)?,
+    //     guard.map_or(Ok(0), |guard| message_field_bytes(3, guard))?,
+    //     optional_message_field_bytes(4, continuation.cost_authority.as_ref())?,
+    // ])?;
+    // let introduction_bytes = checked_sum([
+    //     sum_message_bytes(channels)?,
+    //     sum_message_bytes(patterns)?,
+    //     continuation_bytes,
+    //     event_storage_bytes(channels.len())?,
+    // ])?;
+    let continuation = continuation_bytes(
+        body,
+        guard,
+        optional_message_len(continuation.cost_authority.as_ref())?,
+    )?;
+    let binds = sum_message_bytes(channels)?
+        .checked_add(sum_message_bytes(patterns)?)
+        .ok_or(ByteAccountingError::Overflow)?;
+    let introduction_bytes = consume_introduction_bytes(binds, continuation, channels.len())?;
     Ok(Some(ByteCharge {
         introduction_bytes,
         ..ByteCharge::default()
     }))
 }
 
-pub fn comm_charge(
-    comm: &COMM,
-    data: &[(&ListParWithRandom, bool)],
-) -> Result<ByteCharge, ByteAccountingError> {
-    let transfer_bytes = data.iter().try_fold(0_u64, |total, (datum, _)| {
-        total
-            .checked_add(message_bytes(*datum)?)
-            .ok_or(ByteAccountingError::Overflow)
-    })?;
-    let channel_count = comm.consume.channel_hashes.len();
-    let trace_bytes = event_storage_bytes(channel_count)?
+/// Added by G1-4a (DR-122): the transfer bytes of one datum that a COMM
+/// delivers, its prost length.
+pub fn datum_transfer_bytes(datum: &ListParWithRandom) -> Result<u64, ByteAccountingError> {
+    message_bytes(datum)
+}
+
+/// Added by G1-4a (DR-122): the trace bytes of a COMM whose consume has
+/// `channels` channels, `32 + 96 * channels`.
+pub fn comm_trace_bytes(channels: usize) -> Result<u64, ByteAccountingError> {
+    event_storage_bytes(channels)?
         .checked_add(
-            u64::try_from(channel_count)
+            u64::try_from(channels)
                 .map_err(|_| ByteAccountingError::Overflow)?
                 .checked_mul(event_storage_bytes(1)?)
                 .ok_or(ByteAccountingError::Overflow)?,
         )
-        .ok_or(ByteAccountingError::Overflow)?;
+        .ok_or(ByteAccountingError::Overflow)
+}
+
+pub fn comm_charge(
+    comm: &COMM,
+    data: &[(&ListParWithRandom, bool)],
+) -> Result<ByteCharge, ByteAccountingError> {
+    // Changed by G1-4a (DR-122): both sums moved to `datum_transfer_bytes`
+    // and `comm_trace_bytes`, which the pre-execution estimate shares.
+    // let transfer_bytes = data.iter().try_fold(0_u64, |total, (datum, _)| {
+    //     total
+    //         .checked_add(message_bytes(*datum)?)
+    //         .ok_or(ByteAccountingError::Overflow)
+    // })?;
+    // let channel_count = comm.consume.channel_hashes.len();
+    // let trace_bytes = event_storage_bytes(channel_count)?
+    //     .checked_add(
+    //         u64::try_from(channel_count)
+    //             .map_err(|_| ByteAccountingError::Overflow)?
+    //             .checked_mul(event_storage_bytes(1)?)
+    //             .ok_or(ByteAccountingError::Overflow)?,
+    //     )
+    //     .ok_or(ByteAccountingError::Overflow)?;
+    let transfer_bytes = data.iter().try_fold(0_u64, |total, (datum, _)| {
+        total
+            .checked_add(datum_transfer_bytes(datum)?)
+            .ok_or(ByteAccountingError::Overflow)
+    })?;
+    let trace_bytes = comm_trace_bytes(comm.consume.channel_hashes.len())?;
     Ok(ByteCharge {
         introduction_bytes: 0,
         transfer_bytes,

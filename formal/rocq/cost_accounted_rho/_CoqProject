@@ -515,6 +515,9 @@ theories/V6MergeLedger.v
 theories/V6MergeOrder.v
 theories/V6MergeOrderedPass.v
 theories/CostCursorBuckets.v
+theories/EstimateDemandWalk.v
+theories/EstimateBinderKinds.v
+theories/ClosedDemandBound.v
 theories/RuntimeAuthorityScope.v
 theories/StackTransferConservation.v
 theories/OrderedStackMaterialization.v

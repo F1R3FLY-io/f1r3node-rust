@@ -320,6 +320,10 @@ struct FundingResolver<'u, 'h> {
     pars: Vec<Par>,
     /// Resolved signatures that wait for the rebuild of their node.
     signatures: Vec<CostSignature>,
+    /// Added by G1-4a (DR-122), test only: the address of each visited node
+    /// and the number of binders in scope there.
+    #[cfg(test)]
+    levels: Vec<(usize, usize)>,
 }
 
 impl<'u, 'h> FundingResolver<'u, 'h> {
@@ -334,6 +338,8 @@ impl<'u, 'h> FundingResolver<'u, 'h> {
             resolved_news: 0,
             pars: Vec::new(),
             signatures: Vec::new(),
+            #[cfg(test)]
+            levels: Vec::new(),
         }
     }
 
@@ -442,6 +448,9 @@ impl<'u, 'h> FundingResolver<'u, 'h> {
         position: Position,
         work: &mut Vec<Task<'a>>,
     ) -> Result<(), InterpreterError> {
+        #[cfg(test)]
+        self.levels
+            .push((par as *const Par as usize, self.bindings.len()));
         let mut ordered = Vec::with_capacity(scheduled_tasks(par));
         self.charge(HostWorkDimension::StructuralItems, ordered.capacity())?;
         let terms = match position.as_ref() {
@@ -1159,6 +1168,27 @@ fn resolve_par(
         ));
     }
     Ok(par)
+}
+
+/// Added by G1-4a (DR-122), test only: the resolver's binder count at each node
+/// that it visits, keyed by the node's address in `program`. The level test of
+/// the estimate compares it with the binder kinds of pass 1.
+#[cfg(test)]
+pub(crate) fn resolver_levels(
+    program: &Par,
+    rand: Blake2b512Random,
+    urn_map: &HashMap<String, Par>,
+) -> Result<Vec<(usize, usize)>, InterpreterError> {
+    let mut resolver = FundingResolver::new(urn_map, None);
+    let mut work = vec![Task::Visit(program, Some(rand))];
+    while let Some(task) = work.pop() {
+        if let Err(error) = resolver.step(task, &mut work) {
+            dismantle(std::mem::take(&mut resolver.pars));
+            return Err(error);
+        }
+    }
+    dismantle(std::mem::take(&mut resolver.pars));
+    Ok(resolver.levels)
 }
 
 /// The recursive resolver of HEAD `17e07307f`, kept as the test oracle. With
