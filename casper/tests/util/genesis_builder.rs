@@ -77,6 +77,11 @@ use std::sync::atomic::{AtomicU64, Ordering};
 static CACHE_ACCESSES: AtomicU64 = AtomicU64::new(0);
 static CACHE_MISSES: AtomicU64 = AtomicU64::new(0);
 
+/// Added by step F0 of gap G1 (user decision C1): the balance of each funded
+/// vault of an offered genesis. It covers the hold of an offer that holds its
+/// whole signed limit, the limit times the price plus the fee.
+pub const OFFERED_TEST_VAULT_BALANCE: u64 = 1_000_000_000_000;
+
 pub struct GenesisBuilder {
     vaults: Option<Vec<Vault>>,
     resource_policy: Option<PhloGenesisPolicy>,
@@ -95,7 +100,8 @@ impl GenesisBuilder {
 
     /// Added by DR-116 (gap G6): a builder for a genesis with the offered-funded
     /// v6 resource policy, header version 6 and minimum phlo price 1. Every
-    /// deploy on such a chain is an offered envelope.
+    /// deploy on such a chain is an offered envelope. Step F0 of gap G1 gives
+    /// each funded vault `OFFERED_TEST_VAULT_BALANCE`.
     pub fn offered_v6() -> Self {
         Self {
             vaults: None,
@@ -292,6 +298,11 @@ impl GenesisBuilder {
         if self.offered_v6 {
             parameters.2.version = 6;
             parameters.2.proof_of_stake.min_phlo_price = 1;
+            for vault in parameters.2.vaults.iter_mut() {
+                if vault.initial_balance > 0 {
+                    vault.initial_balance = OFFERED_TEST_VAULT_BALANCE;
+                }
+            }
         }
         CACHE_ACCESSES.fetch_add(1, Ordering::SeqCst);
 
@@ -429,5 +440,55 @@ impl GenesisContext {
             .iter()
             .map(|(_, pk)| pk.clone())
             .collect()
+    }
+}
+
+/// Added by step F0 of gap G1: the funded vaults of an offered genesis.
+#[cfg(test)]
+mod offered_vault_tests {
+    use casper::rust::util::rholang::costacc::vault_payer::balance_query_source;
+    use rholang::rust::interpreter::rho_type::RhoNumber;
+
+    use super::*;
+    use crate::helper::test_node::TestNode;
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn offered_genesis_funds_genesis_vaults_and_keeps_validator_vaults_empty() {
+        let genesis = GenesisBuilder::offered_v6()
+            .build_genesis_with_parameters(None)
+            .await
+            .expect("offered v6 genesis builds");
+        let node = TestNode::standalone(genesis.clone())
+            .await
+            .expect("a standalone node starts on the offered genesis");
+        let root = genesis.genesis_block.body.state.post_state_hash.clone();
+        let offered_balance =
+            i64::try_from(OFFERED_TEST_VAULT_BALANCE).expect("the offered balance fits in i64");
+        let funded = genesis
+            .genesis_vaults
+            .iter()
+            .map(|(_, public)| (public, offered_balance));
+        let validators = genesis
+            .validator_key_pairs
+            .iter()
+            .map(|(_, public)| (public, 0));
+        for (public, expected) in funded.chain(validators) {
+            let address =
+                VaultAddress::from_public_key(public).expect("a genesis key forms a vault address");
+            let (observed, _) = node
+                .runtime_manager
+                .play_exploratory_deploy(balance_query_source(&address), &root, None)
+                .await
+                .expect("the balance query runs on the genesis root");
+            let [balance] = observed.as_slice() else {
+                panic!("the balance query returns one value, got {observed:?}");
+            };
+            assert_eq!(
+                RhoNumber::unapply(balance),
+                Some(expected),
+                "vault {} at genesis",
+                address.to_base58()
+            );
+        }
     }
 }

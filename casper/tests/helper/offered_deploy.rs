@@ -45,7 +45,7 @@ use rholang::rust::interpreter::accounting::{principal_ground_v61, SignatureChan
 pub const TEST_SHARD: &str = "root";
 
 /// The phlo limit that each offer signs. It covers the test terms with a wide
-/// margin, and a genesis vault funds it.
+/// margin, and a genesis vault funds it (F0: offered test vaults hold 10^12).
 const OFFER_PHLO_LIMIT: u64 = 100_000_000;
 
 /// The source cap of each offer, in atomic REV.
