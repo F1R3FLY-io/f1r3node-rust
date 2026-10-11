@@ -340,6 +340,9 @@ if ! [[ "$LOG_PROBE_SECONDS" =~ ^[1-4]$ ]]; then
 	printf 'SOAK_LOG_PROBE_SECONDS must be an integer from 1 through 4\n' >&2
 	exit 2
 fi
+# A failed log probe during work is a breach only when the next probe also
+# fails. Admission checks before work still refuse on one failure.
+LOG_PROBE_FAILURES_FOR_BREACH=2
 NODE_LOG_DIR=/var/lib/rnode/logs
 # Where harness sessions leave their compose and genesis files (the
 # `test-*` sweep below), and where the runner keeps _diag and _work. Both are
@@ -519,7 +522,7 @@ log_container_running() {
 # is skipped. A missing node log directory counts as 0: a node on the stdout
 # sink writes no file log. Call it through log_budget_probe.
 log_budget_sample() {
-	local ids cid inspected owner path suffix bytes total container_mb node_mb
+	local ids cid inspected owner path suffix bytes total container_mb node_mb exec_out exec_err
 	ids="$(docker ps -q --no-trunc --filter "label=io.f1r3fly.soak.owner=$SOAK_WRITER_OWNER" 2>/dev/null)" || {
 		printf 'log probe unavailable: docker ps\n' >&2
 		return 1
@@ -559,11 +562,12 @@ log_budget_sample() {
 			container_mb="$(((total + 1048575) / 1048576))"
 		fi
 		if [ "$NODE_LOG_BUDGET_MB" -gt 0 ]; then
-			bytes="$(docker exec "$cid" sh -c 'if [ -d "$1" ]; then du -sb "$1"; else printf "0\t%s\n" "$1"; fi' sh "$NODE_LOG_DIR" 2>/dev/null |
-				awk 'NR == 1 && $1 ~ /^[0-9]+$/ { print $1 }')"
+			exec_out="$(docker exec "$cid" sh -c 'if [ -d "$1" ]; then du -sb "$1"; else printf "0\t%s\n" "$1"; fi' sh "$NODE_LOG_DIR" 2>&1)"
+			bytes="$(printf '%s\n' "$exec_out" | awk 'NF >= 2 && $1 ~ /^[0-9]+$/ { print $1; exit }')"
 			if ! [[ "$bytes" =~ ^[0-9]{1,18}$ ]]; then
 				log_container_running "$cid" || continue
-				printf 'log probe unavailable: node log directory of %s\n' "${cid:0:12}" >&2
+				exec_err="$(printf '%s\n' "$exec_out" | awk 'NF { print; exit }' | tr -cd '[:print:]' | cut -c1-160)"
+				printf 'log probe unavailable: node log directory of %s%s\n' "${cid:0:12}" "${exec_err:+ (docker exec: $exec_err)}" >&2
 				return 1
 			fi
 			node_mb="$(((bytes + 1048575) / 1048576))"
@@ -1678,6 +1682,7 @@ if { [ "$HOST_FREE_FLOOR_MB" -gt 0 ] && [ -r /proc/meminfo ]; } || [ "$DISK_FREE
 		log_sample_n=0
 		container_log_over=0
 		node_log_over=0
+		log_probe_failures=0
 		# The disk floor rule for one log probe: a sample over the budget is a
 		# strike, and three consecutive strikes or one sample at two times the
 		# budget is a breach. The comparison avoids doubling a 64-bit budget.
@@ -1734,21 +1739,33 @@ if { [ "$HOST_FREE_FLOOR_MB" -gt 0 ] && [ -r /proc/meminfo ]; } || [ "$DISK_FREE
 			# Every LOG_PROBE_EVERY samples (15s by default): each log probe is
 			# a Docker round trip for each owned container.
 			if log_budgets_enabled && [ $((log_sample_n % LOG_PROBE_EVERY)) -eq 0 ]; then
+				# One failed probe is a warning. The harness reads every node log
+				# through docker exec at test teardown, and a probe exec can fail
+				# in that window (soak 38076682321). Two consecutive failed
+				# probes are a breach.
 				if ! log_sample="$(log_budget_probe 2>"$OUTPUT_DIR/.log-probe-error")"; then
 					log_reason="$(head -1 "$OUTPUT_DIR/.log-probe-error" 2>/dev/null)"
-					publish_record "$HOST_GUARDIAN_BREACH" printf 'The log guardian probe is unavailable during execution (%s). Workload termination is unconfirmed.\n' \
-						"${log_reason:-log probe unavailable}"
-					stop_node_writers -q kill || true
-					guardian_stamp_health_tag breach na "log probe unavailable"
-					exit 0
-				fi
-				read -r container_worst container_mb < <(printf '%s\n' "$log_sample" |
-					awk '$2 ~ /^[0-9]+$/ && ($2 + 0 > max + 0 || id == "") { max = $2; id = $1 } END { print (id == "" ? "- -" : id " " max) }')
-				read -r node_worst node_mb < <(printf '%s\n' "$log_sample" |
-					awk '$3 ~ /^[0-9]+$/ && ($3 + 0 > max + 0 || id == "") { max = $3; id = $1 } END { print (id == "" ? "- -" : id " " max) }')
-				if guardian_log_breached 'container log' "$CONTAINER_LOG_BUDGET_MB" "$container_worst" "$container_mb" container_log_over ||
-					guardian_log_breached 'node log directory' "$NODE_LOG_BUDGET_MB" "$node_worst" "$node_mb" node_log_over; then
-					exit 0
+					log_probe_failures=$((log_probe_failures + 1))
+					if [ "$log_probe_failures" -lt "$LOG_PROBE_FAILURES_FOR_BREACH" ]; then
+						printf 'log guardian: probe unavailable (%s); consecutive failed probes %s of %s\n' \
+							"${log_reason:-log probe unavailable}" "$log_probe_failures" "$LOG_PROBE_FAILURES_FOR_BREACH" >&2
+					else
+						publish_record "$HOST_GUARDIAN_BREACH" printf 'The log guardian probe is unavailable during execution (%s; consecutive failed probes %s). Workload termination is unconfirmed.\n' \
+							"${log_reason:-log probe unavailable}" "$log_probe_failures"
+						stop_node_writers -q kill || true
+						guardian_stamp_health_tag breach na "log probe unavailable"
+						exit 0
+					fi
+				else
+					log_probe_failures=0
+					read -r container_worst container_mb < <(printf '%s\n' "$log_sample" |
+						awk '$2 ~ /^[0-9]+$/ && ($2 + 0 > max + 0 || id == "") { max = $2; id = $1 } END { print (id == "" ? "- -" : id " " max) }')
+					read -r node_worst node_mb < <(printf '%s\n' "$log_sample" |
+						awk '$3 ~ /^[0-9]+$/ && ($3 + 0 > max + 0 || id == "") { max = $3; id = $1 } END { print (id == "" ? "- -" : id " " max) }')
+					if guardian_log_breached 'container log' "$CONTAINER_LOG_BUDGET_MB" "$container_worst" "$container_mb" container_log_over ||
+						guardian_log_breached 'node log directory' "$NODE_LOG_BUDGET_MB" "$node_worst" "$node_mb" node_log_over; then
+						exit 0
+					fi
 				fi
 				guardian_record_progress || exit 1
 			fi

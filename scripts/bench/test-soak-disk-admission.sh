@@ -57,6 +57,7 @@
 #   log-budget-range      SOAK_CONTAINER_LOG_BUDGET_MB above the 64-bit maximum -> configuration rejected, exit 2
 #   log-descriptor-exhaustion a writer at its descriptor limit keeps appending -> the probes sample, breach
 #   log-probe-vanished    the container stops between docker ps and docker inspect -> skipped, one iteration
+#   log-probe-transient-active one node log exec fails during the iteration -> warning, one iteration
 #   log-rotated-unreadable a rotated container log exists but cannot be read  -> breach, log probe unavailable
 #
 # Usage: test-soak-disk-admission.sh [--scenario NAME] [source-directory] [evidence-directory]
@@ -83,7 +84,7 @@ SCENARIOS=(band missing-boundary missing-after-hygiene malformed-boundary missin
     cleanup-error-image cleanup-error-builder cleanup-partial cleanup-sufficient
     log-within-budget log-container-soft log-container-hard log-node-soft log-probe-missing-active
     log-probe-missing-boundary log-sudo-fallback log-budget-disabled log-budget-range log-descriptor-exhaustion
-    log-probe-vanished log-rotated-unreadable)
+    log-probe-vanished log-probe-transient-active log-rotated-unreadable)
 
 SCENARIO="${SOAK_DISK_TEST_SCENARIO:-}"
 if [[ "${1:-}" == --scenario ]]; then
@@ -256,6 +257,12 @@ if [[ "${1:-}" == inspect && "${3:-}" == *LogPath* && "${4:-}" == "$owned_id" ]]
     printf '%s /case/clog/json.log\n' "${SOAK_WRITER_OWNER:?}"
     exit 0
 fi
+if [[ "${SOAK_DISK_TEST_SCENARIO:-band}" == log-probe-transient-active && -s /case/evidence/workload-started.txt &&
+    "${1:-}" == exec && "${2:-}" == "$owned_id" ]] && mkdir /case/evidence/exec-fault 2>/dev/null; then
+    printf 'exec-failed-once\n' >>/case/evidence/log-probe-faults.txt
+    printf 'Error response from daemon: fixture exec contention\n' >&2
+    exit 1
+fi
 if [[ "${1:-}" == exec && "${2:-}" == "$owned_id" ]]; then
     printf '%s\t/var/lib/rnode/logs\n' "$(cat /case/node-log-bytes)"
     exit 0
@@ -417,6 +424,18 @@ case "${SOAK_DISK_TEST_SCENARIO:-band}" in
     log-container-hard) truncate -s 900M /case/clog/json.log && sleep 25 ;;
     log-node-soft) printf '%s\n' 3145728000 >/case/node-log-bytes && sleep 25 ;;
     log-probe-missing-active) sleep 25 ;;
+    log-probe-transient-active)
+        for _ in $(seq 1 300); do
+            [[ ! -d /case/evidence/exec-fault ]] || break
+            sleep 0.05
+        done
+        execs="$(grep -c "^exec " /case/evidence/docker-commands.txt 2>/dev/null || true)"
+        for _ in $(seq 1 300); do
+            seen="$(grep -c "^exec " /case/evidence/docker-commands.txt 2>/dev/null || true)"
+            ((${seen:-0} > ${execs:-0})) && break
+            sleep 0.05
+        done
+        ;;
     log-probe-vanished)
         for _ in $(seq 1 500); do
             [[ ! -d /case/evidence/vanish-closed ]] || break
@@ -803,7 +822,7 @@ SH
         log_inspects="${log_inspects:-0}"
         log_execs="${log_execs:-0}"
         case "$SCENARIO" in
-        log-within-budget | log-sudo-fallback | log-budget-disabled | log-probe-vanished)
+        log-within-budget | log-sudo-fallback | log-budget-disabled | log-probe-vanished | log-probe-transient-active)
             if [[ "$SCENARIO" == log-budget-disabled ]]; then
                 if [[ "$log_inspects" != 0 || "$log_execs" != 0 ]]; then
                     printf 'FAIL: A disabled log budget still ran its probes.\n' >&2
@@ -816,6 +835,16 @@ SH
             if [[ "$SCENARIO" == log-probe-vanished ]] && ! grep -Fxq inspect-vanished evidence/log-probe-faults.txt; then
                 printf 'ERROR: The fixture did not remove the container between the listing and its probe.\n' >&2
                 exit 2
+            fi
+            if [[ "$SCENARIO" == log-probe-transient-active ]]; then
+                if ! grep -Fxq exec-failed-once evidence/log-probe-faults.txt; then
+                    printf 'ERROR: The fixture did not fail one node log exec.\n' >&2
+                    exit 2
+                fi
+                if ! grep -Fq 'log guardian: probe unavailable (log probe unavailable: node log directory of 000000000000 (docker exec: Error response from daemon: fixture exec contention)); consecutive failed probes 1 of 2' evidence/driver.log; then
+                    printf 'FAIL: The driver did not warn about one failed log probe with the docker exec error.\n' >&2
+                    exit 1
+                fi
             fi
             if [[ "$SCENARIO" == log-sudo-fallback ]] &&
                 { ! grep -Fxq stat-refused evidence/log-probe-faults.txt ||
@@ -849,11 +878,11 @@ SH
         case "$SCENARIO" in
         log-probe-missing-active)
             [[ -s evidence/log-probe-faults.txt ]] || exit 2
-            expected='The log guardian probe is unavailable during execution (log probe unavailable: docker inspect'
+            expected='The log guardian probe is unavailable during execution (log probe unavailable: docker inspect 000000000000; consecutive failed probes 2)'
             ;;
         log-rotated-unreadable)
             grep -Fxq rotated-refused evidence/log-probe-faults.txt || exit 2
-            expected='The log guardian probe is unavailable during execution (log probe unavailable: container log of 000000000000'
+            expected='The log guardian probe is unavailable during execution (log probe unavailable: container log of 000000000000; consecutive failed probes 2)'
             ;;
         log-node-soft) expected='The log guardian detected the node log directory of container 000000000000 at 3000 MiB over budget 2560 MiB (consecutive samples 3).' ;;
         log-container-soft) expected='The log guardian detected the container log of container 000000000000 at 450 MiB over budget 400 MiB (consecutive samples 3).' ;;
