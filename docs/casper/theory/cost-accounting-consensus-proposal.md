@@ -49,7 +49,7 @@
 | (a), (b), (c), (c)+(b), (d1), (d5) | The candidate designs. "(a)+(b)" in §11 combines (a) and (b). | §1.4 |
 | Epic 8946, bug 11004 | Two items in pgmcp, the work tracker of this effort: the epic "Complete offered-funded production cost-accounting integration", and the global cost-cursor lock bug | §2.1, §2.4 |
 | G1, G2, G3, G6, G9 | Gap labels of epic 8946. G1: the funding check before execution. G2: several offers per block. G3: installer funding. G6: the recovery of offered envelopes. G9: the v6 merge rule. | §2.1 |
-| DR-*n* | Decision record *n*. DR-119 and DR-120 are the planned records of the cost-cursor lock fix and of the interim v6 merge rule. | §12.3 |
+| DR-*n* | Decision record *n*. DR-119 and DR-120 are the records of the cost-cursor lock fix and of the interim v6 merge rule. | §12.3 |
 | Class I, class S, class D | The three conflict classes under cost accounting: independent, same purse, and shared data | §2.4 |
 | F1 to F8 | The eight fast-path conditions of the v6 merge rule | §4.4 |
 | C1 to C10 | The ten changes that an independent arbiter required of an earlier version of the v6 merge-rule design | §4.4 |
@@ -113,7 +113,7 @@
 | `rholang_merging_logic.rs` | `rholang/src/rust/interpreter/merging/rholang_merging_logic.rs` |
 | `DeterministicParallelReduction.v` | `formal/rocq/cost_accounted_rho/theories/DeterministicParallelReduction.v` |
 
-"DR-*n*" names record *n* of the [decision records](cost-accounting-decision-records.md). Each decision record gets a short description at its first use, and §12.3 lists them all. Two numbers are planned for work in progress. DR-119 will record the cost-cursor lock fix (§4.5). DR-120 will record the interim merge rule for cost-accounted (v6) shards (§4.4).
+"DR-*n*" names record *n* of the [decision records](cost-accounting-decision-records.md). Each decision record gets a short description at its first use, and §12.3 lists them all. Two of them are new. DR-119 records the cost-cursor lock fix (§4.5). DR-120 records the interim merge rule for cost-accounted (v6) shards (§4.4).
 
 **Status markers.** Each item of §4 carries a dated status line. The orchestrator, the agent session that coordinates this work, updates these lines. §5 reports the finished review of the earlier branch.
 
@@ -215,7 +215,7 @@ This section defines the cost-accounting, Casper and merge terms. The summary in
 | Purse | A token stack located at a channel name. Only processes that hold the name can draw on it. P1 calls it a located resource stack. In the code, one purse is one physical custody key of SystemVault. | P1:575-583, DR-65 (same-block offers that share a purse) |
 | Funding slot | An unforgeable channel that a contract creates as a funding surface. "Anyone who deposits tokens" on the slot pays for its continuation. | P1:1557-1587 |
 | Demand $`\Delta_s`$ | The number of $`s`$-signed layers that a deployment can force, over its whole call graph. | P1:2002-2027 |
-| Linear resource proof | The inequality $`\Sigma_s \geq \Delta_s`$ for every signature $`s`$ of a deployment. Each token is used exactly once. | P1:2047-2058, 2318-2326 |
+| Linear resource proof | The inequality $`\Sigma_s \geq \Delta_s`$ for every signature $`s`$ of a deployment. Each token is used exactly once. Here *linear* refers to linear logic. | P1:2047-2058, 2318-2326 |
 | Acceptance, the gate | The validator computes the demand before any execution, compares it with the supply, and then accepts or rejects. | P1:2188-2213 |
 | Hold | The part of a purse that acceptance commits to one deployment until settlement. Other deployments cannot use it. | P1:2301-2302, DR-64 (the funding check before execution) |
 | Settlement | The step after execution that charges the measured use, transfers the fee and refunds the unused hold. | P1:2132-2136, DR-38 (reserve and settle as one native step), DR-64 |
@@ -279,8 +279,8 @@ Epic 8946 is the epic "Complete offered-funded production cost-accounting integr
 | G2 | Several offered deploys in one block | DR-65 |
 | G3 | Installer funding of a stored continuation | DR-68 (an installer-signed continuation draws on the installer's purse) |
 | G6 | Recovery of rejected offered envelopes | DR-116 (recovery carries offered envelopes) |
-| v6 merge rule | The interim merge rule for v6 shards. Its gap label is G9. | planned DR-120 |
-| Cost-cursor lock fix | The fix of the global cost-cursor lock bug, pgmcp bug 11004 (§2.4) | planned DR-119 |
+| v6 merge rule | The interim merge rule for v6 shards. Its gap label is G9. | DR-120 |
+| Cost-cursor lock fix | The fix of the global cost-cursor lock bug, pgmcp bug 11004 (§2.4) | DR-119 |
 
 ### 2.2 The acceptance protocol of P1
 
@@ -416,7 +416,7 @@ This section describes the code at HEAD on a v6 shard. Legacy shards run the sam
 
 ## 4. What is being implemented now
 
-**Status on 2026-10-10: designed, checked and approved.** The user approved the designs of all five items on 2026-10-10. The preparatory steps of G1 are committed. The v6 merge rule is being implemented. The other items are not started. The orchestrator updates this section.
+**Status on 2026-10-10: designed, checked and approved.** The user approved the designs of all five items on 2026-10-10. The preparatory steps of G1 are committed. The v6 merge rule and the cost-cursor lock fix are committed. The full-cost analysis of G1 comes next. G2 and G3 are not started. The orchestrator updates this section.
 
 The user directed the lane to "Implement what you can, cleanly, without a lot of changes to casper". The five items below follow that rule. Each one changes Casper only at a v6 seam or in cost-accounting code.
 
@@ -430,7 +430,7 @@ Two ownership boundaries apply to this work.
 **Status: approved on 2026-10-10 after two independent checks. The preparatory steps G1-1 to G1-3 are committed. The full-cost analysis comes next.** The design document is [the linear pre-execution cost estimate](cost-accounting-impl/linear-cost-estimate.md).
 
 - **Problem.** The offered path executes the candidate and checks the funding afterwards (`runtime.rs:480-539`). [C] P1 requires the check "**Before** executing any part of the deployment" (P1:2191). [P]
-- **Change.** Before execution, the producer and every validator compute the known demand $`\Delta^{\mathrm{known}}_s`$ of each signature lane $`s`$ from the envelope and $`R_0`$. A signature lane is the part of the demand that one signature pays. The known demand counts communications plus introduction, transfer and trace bytes, in one linear pass. The same pass decides whether the estimate is complete, which means that no dynamic logic can add cost. A complete estimate is held exactly, plus the fee, and no remainder is held. For an incomplete estimate, a construct that the analysis cannot prove contributes 0, and the unprovable remainder $`R`$ is held in full. Here $`\mathrm{phloLimit}`$ and $`\mathrm{phloPrice}`$ are the signed phlo limit and the signed phlo price of the envelope:
+- **Change.** Before execution, the producer and every validator compute the known demand $`\Delta^{\mathrm{known}}_s`$ of each signature lane $`s`$ from the envelope and $`R_0`$. A signature lane is the part of the demand that one signature pays. The known demand counts communications plus introduction, transfer and trace bytes. One analysis computes it as the demand side of the linear resource proof. The same pass decides whether the estimate is complete, which means that no dynamic logic can add cost. A complete estimate is held exactly, plus the fee, and no remainder is held. For an incomplete estimate, a construct that the analysis cannot prove contributes 0, and the unprovable remainder $`R`$ is held in full. Here $`\mathrm{phloLimit}`$ and $`\mathrm{phloPrice}`$ are the signed phlo limit and the signed phlo price of the envelope:
 
 ```math
 R \;=\; \Bigl(\mathrm{phloLimit} - \sum_{s} \Delta^{\mathrm{known}}_s\Bigr) \cdot \mathrm{phloPrice}.
@@ -479,9 +479,9 @@ R \;=\; \Bigl(\mathrm{phloLimit} - \sum_{s} \Delta^{\mathrm{known}}_s\Bigr) \cdo
   - User syntax can still create spelled, quoted and held-name signatures. So G3 funds only seals whose signature locates a key wallet, and only seals that existed at $`R_0`$. This narrows DR-68, and the user approved it on 2026-10-10.
 - **Casper footprint.** Cost-accounting code only. No dev Casper file changes.
 
-### 4.4 The interim v6 merge rule (planned DR-120)
+### 4.4 The interim v6 merge rule (DR-120)
 
-**Status: design v4 resolves every finding of the third independent check. The user approved it on 2026-10-10, and the implementation is in progress.**
+**Status: implemented and committed as `b496df9d8` on 2026-10-10.** Design v4 resolves every finding of the third independent check, and the user approved it on 2026-10-10.
 
 **Purpose.** v6 shards merge until the architecture of §7 exists. The rule replaces dev's option search on v6 shards only. Legacy shards run dev's merger byte for byte. [I]
 
@@ -556,17 +556,17 @@ Design v3 resolves C1 to C10. A third independent check accepted v3 with the cha
 | MEDIUM-4 | MEDIUM | Thirteen Casper specs now run on an offered v6 genesis. They test the v6 rule, so the test plan must predict their outcomes. |
 | LOW-1 to LOW-11 | LOW | Precision fixes. One matters to Casper readers: a fail-closed trip during validation is recorded as an invalid transaction, which is slashable. Valid parents cannot cause it. |
 
-**Casper footprint.** Design v4 estimates about 89 to 97 added and 13 to 14 removed lines in four dev files, plus a new module. [C][I]
+**Casper footprint.** The committed rule adds 104 lines and removes 13 in four dev files, plus a new module. [C]
 
 | Dev file | Lines | Change |
 |---|---|---|
-| `interpreter_util.rs` | about +26 / −1 | rule selection from the deploy formats, fast-path dispatch, the merge call |
-| `dag_merger.rs` | about +60 to +68 / −10 to −11 | `merge_with_rule`, a wrapper that keeps dev's signature, and crate visibility for two helpers |
-| `conflict_set_merger.rs` | +2 / −2 | crate visibility for `compare_branches` and `branch_losses` |
+| `interpreter_util.rs` | +26 / −1 | rule selection from the deploy formats, fast-path dispatch, the merge call |
+| `dag_merger.rs` | +69 / −10 | `merge_with_rule`, a wrapper that keeps dev's signature, and crate visibility for two helpers |
+| `conflict_set_merger.rs` | +8 / −2 | crate visibility for `compare_branches` and `branch_losses`. The formatter wraps each of the two signatures onto four lines. |
 | `casper/src/rust/util/rholang/costacc/mod.rs` | +1 | register the new module |
-| new `costacc/v6_merge/` | about 860, tests about 650 | the rule |
+| new `costacc/v6_merge/` | 1,527 lines, tests 2,599 lines | the rule |
 
-The rule from the deploy formats removes three dev files from an earlier variant, which read a shard flag. System-only v6 merges use dev's merger, because they hold no offered user deploy.
+The rule from the deploy formats removes three dev files from an earlier variant, which read a shard flag. System-only v6 merges use dev's merger, because they hold no offered user deploy. One cost remains on legacy shards: the rule reads the scope blocks before it selects dev's merger.
 
 **Verification plan.**
 - **Rocq.** `V6MergeOrder.v`, `V6MergeLedger.v` and `V6MergeOrderedPass.v` must prove order independence, conflict freedom, ledger validity, termination and fast-equals-slow. `CursorLinearity.v` and `CostCursorBuckets.v` cover the cursor arguments. Negative controls include an arrival-order tie-break and a missing claim check. Two more cover a set collapse that hides a duplicate and a sign-only repair that stalls on a negative base.
@@ -587,9 +587,9 @@ The rule from the deploy formats removes three dev files from an earlier variant
 - **Under order-then-execute.** Both deployments execute in the canonical order, so the question disappears.
 - **The question for discussion.** Accept keep-one until order-then-execute exists, or invest in the cursor redesign now.
 
-### 4.5 The cost-cursor lock fix (bug 11004, planned DR-119)
+### 4.5 The cost-cursor lock fix (bug 11004, DR-119)
 
-**Status: designed, accepted by the third independent check, and approved on 2026-10-10. Its implementation starts when the v6 merge rule is complete.**
+**Status: implemented and committed as `7ab849b56` on 2026-10-10.** The only Casper file that it changes is `SystemVault.rho`, with 88 lines added and 18 removed. Each replaced line stays as a comment that states its reason.
 
 - **Problem.** `SystemVault.rho:52` declares one lock, and `:56` produces it once. `ensureCostCursor` consumes it on every call (`SystemVault.rho:145-167`). Every charged settlement therefore writes one shared channel. [C] P1 requires that "RSpace is never locked by a single deployment" (P1:333-334). [P]
 - **Effect.** Any two charged offered siblings conflict in a merge. A test relies on this fact today (`offered_funded_api_test.rs:1858-1861`). [C]
@@ -605,8 +605,8 @@ The rule from the deploy formats removes three dev files from an earlier variant
 | G1 | DR-64 | none after the code motion of G2, cost-accounting code only | yes | approved, preparatory steps committed |
 | G2 | DR-65 | `runtime.rs`, `runtime_manager.rs`, `replay_runtime.rs`, `block_creator.rs`, `errors.rs` | yes | approved, not started |
 | G3 | DR-68 | none, cost-accounting code only | yes | approved, not started |
-| v6 merge rule | DR-120 (planned) | 4 dev files, about +89 to +97 / −13 to −14 lines, one new module | yes, by deploy format | approved, implementation in progress |
-| Cost-cursor lock fix | DR-119 (planned) | `SystemVault.rho`, cost-cursor code only | called on v6 only | approved, not started |
+| v6 merge rule | DR-120 | 4 dev files, +104 / −13 lines, one new module | yes, by deploy format | committed (`b496df9d8`) |
+| Cost-cursor lock fix | DR-119 | `SystemVault.rho`, cost-cursor code only | called on v6 only | committed (`7ab849b56`) |
 
 ---
 
@@ -1357,7 +1357,7 @@ These decisions belong to the user, Greg and the Casper team. Each row gives the
 |---|---|---|---|---|
 | D-0 | What does Greg mean? | Q1: does "keep accepting blocks" mean that consensus accepts a block before it executes it? Q2: does E1 count merge code that no longer runs, or the removal of after-the-fact trace analysis? Q3: who picks the winner among alternatives that a user submits separately, the canonical order or that submitting user? | Ask Greg first. | If Q1 is yes, only (c) among the designs of §6.9 meets E3. If Q1 is no, (b) is enough. If Q2 counts lines, (a) is enough for E1. If Q3 is "the submitting user", no paper mechanism exists (option B of D-6). |
 | D-1 | The target for v6 shards | A: (c)+(b). B: (a)+(b), the v6 merge rule with the parallel batch executor. C: (a) alone. | A. It meets E1 to E4. It is XL and changes Casper's core. | B leaves E3 unmet and E1, E2 partial, and E4 marginal. C also leaves (ii) and (iii) unmet. |
-| D-2 | The interim merge before (c) | A: the v6 merge rule with C1 to C10, then the lock fix. B: no interim rule. C: the lock fix alone on dev's resolver. | A. The user chose "implement what you can, cleanly". | A is thrown away on v6 at Phase 3: about 860 plus 650 lines and the models. B: until Phase 3, the global cost-cursor lock bug keeps rejecting every charged offer outside the main parent in v6 merges. C: groups collapse on shared mergeable channels (`conflict_set_merger.rs:900-912`). |
+| D-2 | The interim merge before (c) | A: the v6 merge rule with C1 to C10, then the lock fix. B: no interim rule. C: the lock fix alone on dev's resolver. | A. The user chose "implement what you can, cleanly". | A is thrown away on v6 at Phase 3: about 1,530 plus 2,600 lines and the models. B: until Phase 3, the global cost-cursor lock bug keeps rejecting every charged offer outside the main parent in v6 merges. C: groups collapse on shared mergeable channels (`conflict_set_merger.rs:900-912`). |
 | D-3 | The execution point and the order rule in (c) | A: execute only the finalized prefix. B: execute optimistically on the fork-choice chain, with rollback. Order rule: main-chain epochs, or height then hash. | A first, with main-chain epochs (§7.5). | A: results wait for finality. B: rollback complexity. Height then hash over finality batches diverges between nodes. |
 | D-4 | Where acceptance binds in (c) | A: at execution, as P1 states. A2: A, plus a filter that counts the unexecuted demand of the past cone (§7.4). B: derived in-flight holds at inclusion. | A2. No hold crosses a block. The user must confirm that holds inside one block are exempt from the no-escrow rule (§7.6). | A: jointly overcommitted envelopes can fill blocks and then fail at no cost (P1:2208-2212, §7.4). A2: concurrent blocks can still overcommit a purse. B: a reservation table that the user's no-escrow rule forbids (`funding-settlement-design-review.md:171-176`). |
 | D-5 | "Simultaneous arrival" in a DAG | A: only inside one block (DR-65). B: concurrent sibling blocks too. | A | A: alternatives in concurrent blocks resolve by the canonical order. B rejects many honest pairs. |
@@ -1417,7 +1417,8 @@ The linear-logic reading of acceptance in P1:2318-2326 rests on [Girard 1987]. T
   - DR-116: recovery carries offered envelopes
   - DR-117: each COMM authority region is validated once
   - DR-118: an introduction reuses the reducer's measurement of its value
-  - DR-119 and DR-120: planned records of the cost-cursor lock fix and of the interim v6 merge rule
+  - DR-119: one creation lock for each bucket replaces the global cost-cursor lock
+  - DR-120: the interim v6 merge rule, a fast path or one ordered pass
   - DR-121: names that a receive body creates are dynamic for the funding analysis
 - [Conformance catalog](cost-accounting-conformance-properties.md): the rows CA-P-171 and CA-P-172 (§5).
 - [Merge-algebra dossier](merge-algebra/merge-algebra-specification.md): the determinism contract of dev's merger.

@@ -11,6 +11,7 @@
 
 - Code: HEAD, the commit `3e7af80e0` of the branch `feature/cost-accounted-rho`. A citation `file.rs:a-b` names lines a to b of that file at HEAD.
 - Paper: P1, the paper *Cost-Accounted Rho Calculus* by L. G. Meredith, at publications revision `0bf7817`. A citation P1:a-b names lines a to b of its source file.
+- Paper: P2, the paper *Continued Interactive GSLTs and the Cost Endofunctor* by L. G. Meredith, at the same revision. A GSLT is a graph-structured lambda theory (P2:97). A citation P2:a-b names lines a to b of its source file.
 - Evidence tags: [C] code, [P] paper, [D] decision record, [I] inference.
 
 ## Contents
@@ -39,7 +40,9 @@
 
 Cost-accounted Rholang charges every deploy in phlo, the cost unit of Rholang. In protocol version 6, every user deploy is an *offered deploy*. Its signed envelope carries a phlo limit, a phlo price and a list of funding sources. P1 requires the validator to compute the demand of a deployment "**Before** executing any part of the deployment" (P1:2191).
 
-This document specifies how the node computes that demand. One linear analysis runs before execution, and it has two outputs.
+This document specifies how the node computes that demand. The demand is one side of the *linear resource proof* of P1 and P2. That proof is a derivation in linear logic. It shows that the available tokens cover every interaction of the deploy, and it uses each token exactly once (P1:2047-2058, P2:1477-1481). The word *linear* in the name of this estimate refers to that proof. Section 5.8 states the running time of the analysis.
+
+One analysis runs before execution, and it has two outputs.
 
 1. **The estimate.** It gives the full cost of the deploy as raw counts, one count for each signature lane and each resource class. A *signature lane* is the part of the cost that one signature pays. The four *resource classes* are compute, introduction bytes, transfer bytes and trace bytes.
 2. **Completeness.** The analysis also decides whether its estimate covers all cost. The estimate is *complete* when no dynamic logic can add cost. Eight rules, X1 to X8, state this condition so that every validator checks it in the same way.
@@ -67,6 +70,7 @@ This section defines the names, terms and symbols that later sections use.
 | Name | Meaning | Source |
 |---|---|---|
 | P1 | The paper *Cost-Accounted Rho Calculus* by L. G. Meredith, at publications revision `0bf7817` | `publications/cost-accounting/cost-accounted-rho.tex` |
+| P2 | The paper *Continued Interactive GSLTs and the Cost Endofunctor* by L. G. Meredith, at publications revision `0bf7817`. It restates the linear proof of P1 one level up and adds local proofs per purse. | `publications/cost-accounting-as-monad/continued-gslt-cost-v2.tex` |
 | Greg | L. G. Meredith, the author of P1 and of the companion cost-accounting papers | The proposal, §1.2 |
 | Greg's expectations | The four expectations that the user relayed from Greg: less merge logic, user alternatives, block acceptance without run-to-completion, and performance | The proposal, §1.2 |
 | Casper | The consensus protocol of F1R3node and the crate that implements it | `casper/` |
@@ -75,7 +79,7 @@ This section defines the names, terms and symbols that later sections use.
 | G1, G2, G3 | Work items of epic 8946. G1 is the funding check before execution (DR-64). G2 allows several offered deploys in one block (DR-65). G3 is installer funding of a stored continuation (DR-68). | The proposal, §2.1 |
 | G1-4a, G1-4b | The two implementation steps of G1 that build this design: the analysis and the check | This document |
 | G1-5 | A planned step that added a settlement floor. The user dropped it on 2026-10-10. | Section 16 |
-| B1, B3, B5, C1, C2 | Labels of user decisions of 2026-10-10 on G1, G2 and G3. Section 16 states each one. | Section 16 |
+| B1, B3, B5, C1, C2, U3 | Labels of user decisions of 2026-10-10 and 2026-10-11 on G1, G2 and G3. Section 16 states each one. | Section 16 |
 | X1 to X8 | The eight completeness rules of the analysis | Section 5.3 |
 
 ### 2.2 Runtime and funding terms
@@ -83,6 +87,7 @@ This section defines the names, terms and symbols that later sections use.
 | Term | Meaning | Source |
 |---|---|---|
 | Phlo | The cost unit of Rholang. It gates every deploy behind a token balance of a signature. | P1:145-147 |
+| Linear resource proof | The proof that the token supply of every signature covers its demand, with each token used exactly once. Here *linear* refers to linear logic. | P1:2047-2058, P2:1477-1481 |
 | Offered deploy, envelope | A user deploy in the protocol-6 format. Its signed envelope holds the term, the signers, the funding sources, the signed phlo limit and the signed phlo price. | `offered.rs:11-21` |
 | $`\mathrm{phloLimit}`$, $`\mathrm{phloPrice}`$ | The signed phlo limit and the signed phlo price of the envelope | DR-64 |
 | SystemVault | The genesis contract that holds the purses | `SystemVault.rho` |
@@ -148,6 +153,7 @@ This section defines the names, terms and symbols that later sections use.
 | $`B`$ | The estimate in phlo: the sum of the known demands |
 | $`H`$ | The total hold of one offer, in atomic units |
 | $`R`$ | The remainder that an incomplete estimate holds beyond its known demand |
+| $`N`$ | The number of nodes of the resolved term, used for running times (Section 5.8) |
 
 ---
 
@@ -170,7 +176,7 @@ The diagram has six partitions. Each step below describes one partition.
 
 ## 4. What P1, the decision records and the code require
 
-### 4.1 What P1 requires
+### 4.1 What P1 and P2 require
 
 P1 states six requirements that the estimate must meet. [P] Acceptance step 2 refers to the abstract syntax tree (AST) of a deployment.
 
@@ -183,11 +189,17 @@ P1 states six requirements that the estimate must meet. [P] Acceptance step 2 re
 
    Acceptance needs the token supply $`\Sigma_c`$ of the client to satisfy $`\Sigma_c \geq \Delta_c^{\max}(D)`$. After execution, the refund is $`\Delta_c^{\max}(D) - \kappa`$, where $`\kappa`$ is the number of tokens that the run forced (P1:2148-2151).
 3. **A margin for unknown demand.** Unresolvable dequotation terms "contribute an “unknown” demand, and the validator rejects unless the supply exceeds the known lower bound plus a configurable safety margin" (P1:2077-2080).
-4. **Linear time.** "For a deployment whose call graph is statically known (no higher-order channel passing, no recursive dequotation chains), the funding proof obligation ... is decidable in time linear in the size of the deployment's AST" (P1:2062-2066).
+4. **Linear time for the token demand.** "For a deployment whose call graph is statically known (no higher-order channel passing, no recursive dequotation chains), the funding proof obligation ... is decidable in time linear in the size of the deployment's AST" (P1:2062-2066). Its proof sketch computes $`\Delta_s`$ "by a single pass over the AST, incrementing a counter at each" signed node of $`s`$ (P1:2070-2072). The estimate of this design counts more than signed nodes. Each participant pays for every region that it carries, as the native meter charges, and the estimate adds the byte tariff. Section 5.8 states what that costs.
 5. **Commitment.** "Once accepted, those resources are committed and unavailable to other deployments." (P1:2301-2302).
 6. **No partial funding.** "The token stack must supply *all* of these or *none* of them. Partial supply leads to partial execution, which is the vulnerability." (P1:1990-1992). P1 calls under-funding "a correctness failure" and over-funding "merely an inefficiency" (P1:2111-2125).
 
 A rejected deployment gets the error "insufficient phlogiston" (P1:2210). P1 counts tokens, one for each signed layer that a run forces. It assigns no byte tariff. The byte tariff of the node is "a native F1R3node safety refinement" (`vault-backed-byte-accounting.md:17-18`). This design extends the demand of P1 to that refinement, as the user directed on 2026-10-10 (Section 16).
+
+P2 restates the linear proof one level up, for its cost endofunctor. [P] Three of its points apply to this design.
+
+- **The static fragment.** "For the data-*independent* fragment the rho-era guarantee lifts verbatim: the consumption is fixed and the linear proof bounds it" (P2:1496-1498). A complete estimate is this case.
+- **Branches that data choose.** The proof must either become dependent on the data "or fall back to a *conservative* static bound, the worst case over branches, which is sound but may over-charge" (P2:1498-1503). The estimate takes the conservative bound, with maxima at branches (Section 5.5).
+- **One local proof per purse.** Located purses decompose the obligation "into *one local linear proof per purse*" (P2:1514). Local proofs compose into a proof of global sufficiency when the purses partition the interactions (P2:1520-1527). The holds of Section 6 are these local proofs: each source covers the demand that it holds.
 
 ### 4.2 What the decision records require
 
@@ -447,13 +459,18 @@ The counted witness of the check takes the raw counts $`V(s,k)`$. Its weighted u
 
 ### 5.8 Cost of the analysis
 
-The analysis is linear in the size of the resolved term. [I]
+The running time of the analysis has three parts. [C][I] Let $`N`$ be the number of nodes of the resolved term. A *region link* is one participant paired with one region that it carries.
 
-- **Pass 1** walks the term once. It assigns binder kinds, checks the rules, collects the participants with their region multisets, and sizes every participant. It also fills the table $`M`$.
-- **Between the passes**, one loop over the receives fills $`T`$ and $`\mathrm{TR}`$. Its work is linear in the number of binds.
-- **Pass 2** folds the term once into the vector $`V`$, with sums and maxima.
+- **The walks.** Each walk visits every node or bind once.
+  - **Pass 1** walks the term once. It assigns binder kinds, checks the rules, collects the participants with their region multisets, and sizes every participant. It also fills the table $`M`$.
+  - **Between the passes**, one loop over the receives fills $`T`$ and $`\mathrm{TR}`$. Its work is linear in the number of binds.
+  - **Pass 2** folds the term once into the vector $`V`$, with sums and maxima.
 
-Each table is an array indexed by a binder identity, which pass 1 assigns when it enters a `new`. So each table access takes constant time. The evaluation and sizing work is bounded by the host-work budget. Both walks use explicit work stacks, so their stack depth does not grow with the nesting depth of the term (DR-67).
+  Each table is an array indexed by a binder identity, which pass 1 assigns when it enters a `new`. So each table access takes constant time.
+- **Regions and merges.** The reused plan walks the whole chain of enclosing scopes for each participant (`delta_sigma.rs:276-295`). It therefore does one step for each region link. Each combine step adds the lane map of a child into its parent and copies the supply multiset (`delta_sigma.rs:230-246`, `authority.rs:1773-1787`). Pass 2 shares that merge cost, and each seal costs one step for each region link. In the worst case these costs grow with $`N`$ times the nesting depth of signed scopes, plus $`N`$ times the number of lanes.
+- **The sizing.** Pass 1 sizes every participant with the substitution functions of the reducer (Section 5.6). The reducer substitutes the whole body of a receive when the receive runs (`reduce.rs:1632-1636`). So the body of a nested receive is sized again at each enclosing level. This work is proportional to the size of the term plus the introduction bytes that the estimate counts. The native meter charges the same bytes during execution, because it measures the same substitutions.
+
+For a typical deploy the nesting depth and the number of lanes are small, so the total stays close to linear in $`N`$. A hostile deploy can make the region, merge and sizing costs large. So one linear pre-pass counts each of these costs, and the analysis charges it to the host-work budget before the work runs. A deploy that exceeds the budget is rejected before execution with no charge (Section 6.3). Both walks use explicit work stacks, so their stack depth does not grow with the nesting depth of the term (DR-67).
 
 ---
 
@@ -607,7 +624,7 @@ Without the cap, the selection could draw a purse that a later member holds. A r
 2. **Step.** Assume that the balance at $`R_{i-1}`$ is at least $`\sum_{j \geq i} \mathrm{hold}_j(p)`$. Member $`i`$ debits at most $`\mathrm{cap}_i(p)`$ on either path. So the balance after member $`i`$ is at least $`\sum_{j > i} \mathrm{hold}_j(p)`$.
 3. **Rollback fits.** On the rollback path, the capacity is at least $`\mathrm{hold}_i(p)`$. For a complete estimate, the placement of the check then dominates the rollback charge.
 
-A single offer per block (G1) needs no change, because it has no later members.
+A single offer per block (G1) has no later members. It keeps the capacity of the selection of today, the balance of each purse at $`R_0`$, as the user decided on 2026-10-11 (Section 16). The guard then separates a deploy that spends funds it needs from a placement that never fit. The cap above applies from step G2-2 on, on both paths.
 
 ### 8.5 Installer purses
 
@@ -782,8 +799,13 @@ Settlement charges the measured use. The guard protects the later holds of the b
 
 ```text
 ⟨settle under the guard⟩ ≡
-  capacity(p) ← min(signed caps, balance(p) − Σ_{j>i} hold_j(p))     -- 0 later holds in G1
+  if one offer per block (G1):                                        -- user decision U3
+    capacity(p) ← min(signed caps, balance of p at R_0)
+  else (G2-2 on):
+    capacity(p) ← min(signed caps, balance(p) − Σ_{j>i} hold_j(p))    -- Section 8.4
   debits ← select_phlo_funding_family(measured obligations, capacity)
+  if no placement exists:
+    reject with no charge                                             -- Section 14
   for every purse p that member i debits or that carries a later hold:
     guard(p) ← balance_after(p) − debit_i(p) ≥ Σ_{j>i} hold_j(p)     -- DR-65 item 5
   if every guard(p) holds:
@@ -1080,7 +1102,7 @@ The meter keeps the total of all $`\delta_\theta`$ at or below $`\mathrm{phloLim
 
 ## 16. Decision history
 
-The user made these decisions on 2026-10-10. Times are in coordinated universal time (UTC). The quotations are the user's words or the user's selected answers, verbatim.
+The user made these decisions on 2026-10-10, and the last one on 2026-10-11. Times are in coordinated universal time (UTC). The quotations are the user's words or the user's selected answers, verbatim.
 
 | Time | Decision |
 |---|---|
@@ -1091,6 +1113,8 @@ The user made these decisions on 2026-10-10. Times are in coordinated universal 
 | 16:26 | **Bytes in the linear solver.** "If you can linearly solve byte estimates up front like you can with COMMs, then include those estimates in the linear solver!" |
 | 16:34 | **Occam's razor, bounded by the publications and Greg's expectations.** "Occam's Razor must still satisfy the publication documents about cost-accounting and Greg's expectations, that is why it only strips away what is unnecessary -- it does not mean oversimplify to the point of error in expectations." |
 | 17:03 | **The adopted design.** The user answered "Approve (Recommended)" to this proposal. One linear analysis estimates communications plus bytes. A complete estimate holds exactly its cost, as P1 and DR-64 require. An incomplete estimate holds up to its signed limit, by the margin rule of P1. Settlement charges the measured use directly, with no floor, so step G1-5 is dropped. The guard covers the charge plus the fee, and the later holds within a block, so B3 is no longer needed. |
+| 20:22 | **The meaning of "linear solver".** "By linear solver, I mean the linear proof documented by the cost-accounting publications, [`publications/cost-accounting/cost-accounted-rho.tex`] and [`publications/cost-accounting-as-monad/continued-gslt-cost-v2.tex`], not that it can be solved in linear time." The brackets mark two paths shortened to their repository-relative form. Section 1 says what *linear* means in the name of this estimate. Section 4.1 adds the requirements of P2, and Section 5.8 states the running time. |
+| 00:09 on 2026-10-11 | **U3, the capacity of the selection in G1.** The user chose "Balance at R0 (Recommended)". With one offer per block, the selection after execution caps each source by its balance at $`R_0`$, as today. The guard then separates a self-drain from a placement that never fit. The cap of Section 8.4 applies from step G2-2 on (Sections 8.4 and 9). |
 
 A second independent check of the design followed on the same day. Its corrections are part of this document.
 
@@ -1108,9 +1132,10 @@ A second independent check of the design followed on the same day. Its correctio
 
 ## 17. References
 
-**Governing paper.**
+**Governing papers.**
 
-- P1: L. G. Meredith, *Cost-Accounted Rho Calculus*, publications revision `0bf7817`, file `cost-accounting/cost-accounted-rho.tex`. Cited definitions: `def:token-demand` (P1:2002-2027), `thm:decidability` and its proof sketch (P1:2060-2080), `def:conservative-demand` (P1:2138-2152), the acceptance protocol (P1:2182-2213), uniform signing (P1:1251-1271) and the commitment (P1:2299-2304). [Source on GitHub](https://github.com/F1R3FLY-io/publications/blob/main/cost-accounting/cost-accounted-rho.tex).
+- P1: L. G. Meredith, *Cost-Accounted Rho Calculus*, publications revision `0bf7817`, file `cost-accounting/cost-accounted-rho.tex`. Cited definitions: `def:token-demand` (P1:2002-2027), `def:funding-proof` (P1:2047-2058), `thm:decidability` and its proof sketch (P1:2060-2080), `def:conservative-demand` (P1:2138-2152), the acceptance protocol (P1:2182-2213), uniform signing (P1:1251-1271) and the commitment (P1:2299-2304). [Source on GitHub](https://github.com/F1R3FLY-io/publications/blob/main/cost-accounting/cost-accounted-rho.tex).
+- P2: L. G. Meredith, *Continued Interactive GSLTs and the Cost Endofunctor*, publications revision `0bf7817`, file `cost-accounting-as-monad/continued-gslt-cost-v2.tex`. Cited parts: the linear proof (P2:1477-1481), data-dependent interaction (P2:1496-1506), located purses (P2:1510-1518) and `prop:local-suff` (P2:1520-1527). [Source on GitHub](https://github.com/F1R3FLY-io/publications/blob/0bf7817/cost-accounting-as-monad/continued-gslt-cost-v2.tex).
 
 **External works.** Each link resolves the digital object identifier (DOI) of the work.
 
