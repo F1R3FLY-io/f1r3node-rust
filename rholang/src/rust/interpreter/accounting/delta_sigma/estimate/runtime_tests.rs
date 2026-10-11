@@ -178,6 +178,9 @@ fn block_on<T>(future: impl std::future::Future<Output = T>) -> T {
 /// join, a branch on a received value, the join and the interpolation of
 /// §10.3 and §10.4, nested scopes and a dequoted name. The normalizer rejects
 /// a join with a repeated channel, so `tests.rs` builds that join in code.
+/// The G1-4a fix adds a guard on the received value (review M-1), a nested
+/// guard on the pattern of the enclosing receive, and the quote of a closed
+/// process and of a resolved name (review H-1).
 #[test]
 fn named_complete_programs_bound_their_measurement() {
     let programs = [
@@ -193,6 +196,10 @@ fn named_complete_programs_bound_their_measurement() {
         "new x in { x!(0) | for (@n <- x) { *x } }",
         "new x, y in { x!([1, \"a\"] ++ [2]) | for (@n <- x) { y!(\"a\" ++ \"b\") | for (@m <- y) { Nil } } }",
         "new x in { {% {% {% x!(0) | for (@n <- x) { Nil } %}[ a ] %}[ b ] %}[ c ] }",
+        "new x in { x!(5) | for (@n <- x where n > 3) { Nil } }",
+        "new x, y in { x!(1) | for (@n <- x) { y!(2) | for (@m <- y where m > n) { Nil } } }",
+        r#"new y in { {% y!(0) | for (_ <- y) { Nil } %}[ #"AAAA" ] }"#,
+        "new y in { {% y!(0) | for (_ <- y) { Nil } %}[ #*y ] }",
     ];
     block_on(async {
         for (index, source) in programs.iter().enumerate() {
@@ -202,6 +209,22 @@ fn named_complete_programs_bound_their_measurement() {
             assert_eq!(estimate.completeness, Completeness::Complete, "{source}");
         }
     });
+}
+
+/// Reviews M-5 and LOW 2: the guard of a nested receive names a URN level
+/// outside the enclosing receive. The body substitution of the enclosing
+/// receive gives that level its value. Before the fix the estimate was
+/// complete, and the run measured 4 introduction bytes more than its
+/// estimate. The estimate is now incomplete.
+#[test]
+fn a_nested_guard_on_a_urn_level_is_incomplete() {
+    let source = "new x, y, out(`rho:io:stdout`) in { x!(1) | y!(2) | for (@n <- x) { for (@m <- y where m == *out) { Nil } } }";
+    let estimate = block_on(assert_measured_within_estimate(source, &[40; 8]))
+        .expect("the program compiles and resolves");
+    assert_eq!(
+        estimate.completeness,
+        Completeness::Incomplete(IncompleteReason::UnsizedValue)
+    );
 }
 
 proptest! {

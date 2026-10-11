@@ -349,7 +349,7 @@ The estimate is complete only if rules X1 to X8 and the on-chain payer condition
 
 | Rule | Condition | Reason |
 |---|---|---|
-| X1 | `static_authority_plan` of the resolved term and the funding signature returns `Ok`. | It excludes persistent sends and receives, `*x` in process position and dynamic authority (`delta_sigma.rs:756-799`). With X8, every receive then fires at most once and consumes one datum per bind. |
+| X1 | `static_authority_plan` of the resolved term and the funding signature returns `Ok`. | It excludes persistent sends and receives, `*x` in process position and dynamic authority (`delta_sigma.rs:756-799`). A cost signature whose quoted or named process still holds a variable is dynamic authority too. The reducer substitutes inside the quote (DR-122 item 11). With X8, every receive then fires at most once and consumes one datum per bind. |
 | X2 | At every execution position, every send and receive channel is a bound level of kind fresh or fresh hole. | A public, URN or injected channel can reach a stored contract or stored data. The body of a stored contract runs with an empty authority and charges the deploy lane (`reduce.rs:382-406`). |
 | X3 | A level of kind fresh or fresh hole occurs only as such a channel or in a cost signature. | A name that never escapes cannot be held by stored state. This escape analysis supports the transfer bound. |
 | X4 | Send data are closed: their free-variable set (`locally_free`) is empty. Every form in them has a known work limit, and the analysis sizes them after the reducer's evaluation (Section 5.6, DR-122). | Data sizes then do not depend on the run, and the analysis charges their evaluation before it runs. Quoted processes in data stay allowed, because X2 and X8 apply to execution positions only. |
@@ -432,7 +432,7 @@ V(\mathtt{match}\ e\ \{ P_1, \ldots, P_\ell \}) &= V(P_1) \sqcup \cdots \sqcup V
 
 A bundle in process position has the vector of its body. The raw count of the deploy is $`V(s,k) = V(P)(s,k)`$ for the resolved term $`P`$.
 
-The compute row takes the count of `static_authority_plan`. For each participant, that walk adds one count for every region link and one for every signed bind (`delta_sigma.rs:276-295`, `:489-497`). It also adds one count for each signed term whose body has no send or receive (`:426-435`). That extra count only raises the estimate, so the formula above is a lower bound of the compute row.
+The compute row takes the count of `static_authority_plan`. For each participant, that walk adds one count for every region link and one for every signed bind (`delta_sigma.rs:276-295`, `:489-497`). It also adds one count for each signed term whose body has no send or receive (`:426-435`). It counts the signed layers inside sent data too, because P1 `def:token-demand` makes them demand (P1:2002-2027). That extra count only raises the estimate, so the formula above is a lower bound of the compute row. `PlanComputeDominates.v` proves this bound for every lane (DR-122 item 7).
 
 ### 5.6 Exact sizes from representative values
 
@@ -442,20 +442,20 @@ The analysis computes every byte size from a representative value. It builds the
 2. **Send data.** The analysis runs the reducer's `eval_expr` on each datum. Then it substitutes and measures the result, as `eval_send` does (`reduce.rs:1467-1474`). Evaluation matters because operators such as the interpolation `%%` change the size of a closed datum (`reduce.rs:3215`, `:8173-8192`). If evaluation fails, the estimate is incomplete.
    - **Narrowed rule X4 (DR-122).** The analysis evaluates data with unlimited meters. A form without a known work limit could do unbounded work there before any charge. So the analysis first walks the expression tree of each datum, without recursion.
    - **Allowed forms.** The analysis evaluates only the forms that have a known work limit. These forms are literals, collections, fixed-width arithmetic, comparisons and Boolean operators. They also include `++` on strings, byte arrays and lists, and `%%` with a literal map. The map must have string keys, and each value must be a string, an integer, a Boolean or a URI.
-   - **The charge comes first.** The analysis charges the work limit of a datum to the host-work budget before it evaluates the datum. In the limit, $`z`$ is the length bound of the datum plus the output growth of all forms. The height of the datum is $`h`$. The forms together cost $`z \cdot (h + 1) \cdot (\lceil \log_2 (z + 2) \rceil + 1)`$, and the logarithmic factor pays for sorting. For a template of $`t`$ bytes and $`K`$ keys of at most $`g`$ bytes, a `%%` also costs its loop work $`t \cdot (t + K \cdot (g + 3))`$.
+   - **The charge comes first.** The analysis charges the work limit of a datum to the host-work budget before it evaluates the datum. In the limit, $`z`$ is the exact prost length of the datum plus the output growth of all forms. The height of the datum is $`h`$. The forms together cost $`z \cdot f`$. The factor is $`f = (h + 1) \cdot (\lceil \log_2 (z + 2) \rceil + 1)`$ when the datum holds a set, a map or a comparison, because only those forms sort. Otherwise $`f = 1`$, so a list of 100,000 integers fits the offered limits (DR-122 item 4). For a template of $`t`$ bytes and $`K`$ keys of at most $`g`$ bytes, a `%%` also costs its loop work $`t \cdot (t + K \cdot (g + 3))`$.
    - **The output bound of `%%`.** A placeholder in the template has at least 3 bytes, so the template has at most $`\lfloor t / 3 \rfloor`$ placeholders. A string or URI value has its own length. An integer has at most 20 bytes, and a Boolean has at most 5 bytes. If the longest value has $`a`$ bytes, the output has at most $`t + \lfloor t / 3 \rfloor \cdot a + 16`$ bytes. The 16 bytes cover the framing of the new string. Without this bound, a short template with a long value would allocate a string that no meter counts.
    - **Other forms.** The analysis never evaluates a datum with another form. Examples are `matches`, method calls, PathMaps, zippers, big-number arithmetic and set difference. The participant of that datum has no size, with the reason `DataEvaluation`, and the estimate is incomplete. Channels go through the same walk.
-3. **Patterns and guards.** The analysis substitutes them at depth 1, as the reducer does (`reduce.rs:1581`, `:1596`).
+3. **Patterns and guards.** The analysis substitutes them at depth 1, as the reducer does (`reduce.rs:1581`, `:1596`). The normalizer builds a guard in the scope of the receive's binders. So rule X3 reads the guard at the base of the bind count, and a guard on the received value stays complete (DR-122 item 8). The reducer stores a nested guard after the body substitution of the nearest enclosing receive, which gives the levels outside that receive their values. So a guard that names a URN, injection or unknown level makes the estimate incomplete. In a complete estimate the stored guard keeps its variables, and the sizing at depth 1 is exact (DR-122 item 8).
 4. **Receive bodies.** The analysis substitutes a receive body at depth 0 in the environment shifted by the bind count of the receive, as the reducer does (`reduce.rs:1632-1636`).
 5. **The poison check.** A substituted introduced value that contains poison makes the estimate incomplete (rule X6). Each substitution uses its own environment. The bound levels of a receive stay unsubstituted variables inside its own body, so they are never poison there. Branching on the pattern variable of a receive therefore stays allowed.
 
-The sizes are exact, because every sized field has a length that does not depend on run-time values.
+Each size of a participant is the size that the run stores. Every sized field has a length that does not depend on run-time values. The raw counts are upper bounds. The tables and the branches take maxima, and a merge of regions only shrinks a seal (DR-122 item 3).
 
 - A private name has a 32-byte identity (`blake2b512_random.rs:169-178`).
 - A region identity is a 32-byte Blake2b-256 hash (`authority.rs:404-424`).
 - A serialized random state always has 536 bytes (`blake2b512_random.rs:248-286`, `blake2b512_block.rs:334-342`).
 - Literal values appear in the term, so their sizes are known.
-- A full environment makes each `locally_free` field equal to the one at run time.
+- A full environment makes each `locally_free` field equal to the one at run time. One case needs care. The funding resolver substitutes a signature at shift 0, and the reducer substitutes a receive body or a datum under the shift of its binders. That substitution keeps a prefix of each `locally_free`, which the resolver had cleared. So outside a resolving position, the resolver leaves a signature unchanged when its quoted or named process has a free level. The lane of that signature is dynamic (DR-122 item 11).
 
 One effect can only shrink a value: the runtime can merge two regions of a seal (Section 5.4). So each estimated size is equal to or larger than the size at run time.
 
@@ -483,6 +483,13 @@ The running time of the analysis has three parts. [C][I] Let $`N`$ be the number
   Each table is an array indexed by a binder identity, which pass 1 assigns when it enters a `new`. So each table access takes constant time.
 - **Regions and merges.** The reused plan walks the whole chain of enclosing scopes for each participant (`delta_sigma.rs:276-295`). It therefore does one step for each region link. Each combine step adds the lane map of a child into its parent and copies the supply multiset (`delta_sigma.rs:230-246`, `authority.rs:1773-1787`). Pass 2 shares that merge cost, and each seal costs one step for each region link. In the worst case these costs grow with $`N`$ times the nesting depth of signed scopes, plus $`N`$ times the number of lanes.
 - **The sizing.** Pass 1 sizes every participant with the substitution functions of the reducer (Section 5.6). The reducer substitutes the whole body of a receive when the receive runs (`reduce.rs:1632-1636`). So the body of a nested receive is sized again at each enclosing level. Each substitution also copies the whole sizing environment at each binder of the substituted term, because `Env::shift` clones its map (`substitute.rs:686`, `:728`, `:769`). So the sizing work grows with the substituted bytes, plus the environment size times the binders of each substituted term (DR-122). The native meter charges the same bytes during execution, because it measures the same substitutions.
+
+The G1-4a fix sets each charge to the work that the walk does (DR-122 item 5).
+
+- A combine costs the lanes that it merges and the supply of its parent, not the nodes of the merged subtree. So 30,000 parallel sends and a match with 2,000 cases fit the offered limits (DR-122 item 5).
+- The vector fold charges three walks of each region link (DR-122 item 5). Its merges cost $`L \cdot (\lceil \log_2 (L + 2) \rceil + 1)`$ for $`L`$ region links, because a merge moves the smaller map into the larger one (DR-122 item 5).
+- An environment copy costs the capacity of the environment map, because `Env::shift` clones every bucket and `pop` never shrinks the map (DR-122 item 5).
+- A sorted substitution pays a logarithmic factor on its output. Each scan of a node pays its width (DR-122 item 5).
 
 For a typical deploy the nesting depth and the number of lanes are small, so the total stays close to linear in $`N`$. A hostile deploy can make the region, merge and sizing costs large. So one linear pre-pass counts each of these costs, and the analysis charges it to the host-work budget before the work runs. A deploy that exceeds the budget is rejected before execution with no charge (Section 6.3). Both walks use explicit work stacks, so their stack depth does not grow with the nesting depth of the term (DR-67).
 
@@ -1015,11 +1022,12 @@ The argument quantifies over every order of matching, and COMM matching does int
 
 The verification follows the bar of this branch: formal models with negative controls, one property test for each invariant, tests and documentation. Every Rocq module is axiom-free and ends with `Print Assumptions`. [I]
 
-**Rocq modules (planned).**
+**Rocq modules.** G1-4a, G1-4b and the G1-4a fix implement these modules (DR-122, DR-123).
 
 - `ClosedDemandBound.v` proves the theorem of Section 11 as `complete_estimate_sound`. It quantifies over every trace of the nondeterministic matching relation. It models authorities as region multisets. Its lemmas are `closed_comm_bound`, `closed_intro_bound`, `closed_transfer_bound`, `closed_trace_bound`, `branch_max_dominates`, `fresh_unescaped_no_foreign_match` and `units_applied_once`.
 - `EstimateDemandWalk.v` instantiates the generic walk section of `StackSafeDemandWalk.v` (`:409-424`). It covers the vector pass only, because the walk term has no binders.
-- `EstimateBinderKinds.v` models the binder analysis over de Bruijn terms with the six kinds. Its lemmas are `kinds_channels_fresh`, `kinds_no_escape`, `kinds_poison_free_introductions` and `full_environment_matches_runtime_free_levels`.
+- `EstimateBinderKinds.v` models the binder analysis over de Bruijn terms with the six kinds. Its lemmas are `kinds_channels_fresh`, `kinds_no_escape`, `kinds_poison_free_introductions` and `full_environment_matches_runtime_free_levels`. It reads a receive guard at the base of the bind count (DR-122 item 8). It models signatures, and `static_signature_names_one_lane` shows that a static signature has one value in every run (DR-122 item 11). `keep_until_compose` models the `locally_free` prefix of Section 5.6. Every outer level of a checked guard has a pattern kind (`checked_guard_levels_are_patterns`, DR-122 item 8).
+- `PlanComputeDominates.v` proves that the compute row of the plan is at least the row of the vector for every lane (`plan_compute_dominates_vector`). So the plan's row bounds the realized compute (`plan_bounds_realized_compute`, DR-122 item 7).
 - `BoundKindSoundness.v` proves that the check never treats an incomplete estimate as complete, and that a rollback after an overrun has no effect.
 - The guard lemmas of DR-65 are `group_holds_prevent_overdraft`, `held_capacity_guard_preserves_later_holds` and `group_decision_permutation_invariant`. They are restated for settlement without a floor, with the capacity cap of Section 8.4 on both paths.
 
@@ -1037,6 +1045,13 @@ The verification follows the bar of this branch: formal models with negative con
 - A URI level treated as fresh inside a receive body.
 - A poison check that flags the bound levels of a receive inside its own body.
 - A rollback charge without the capacity cap. It must break `held_capacity_guard_preserves_later_holds`.
+- A guard check at base 0, which rejects a guard on the received value (DR-122 item 8).
+- The rule that calls every quote static, which gives the quote of a matched variable two values in two runs (DR-122 item 11).
+- A resolution at shift 0 followed by a substitution under a positive shift, which loses the `locally_free` prefix of the reducer (DR-122 item 11).
+- A plan that drops the seal regions of the participants, which stays below the realized compute (DR-122 item 7).
+- A guard rule without the value-kind check. The stored form of a nested guard on a URN level is then larger than its sizing (DR-122 item 8).
+
+**Limits of the formal statements (DR-122).** `complete_estimate_sound` takes the conclusions of rules X1 to X8 as premises. They are the selection of a run, the sub-multiset of its COMMs and the sizes of its participants. So it mechanizes Lemmas 5 and 6 of Section 11, and Lemmas 1 to 4 rest on the code checks and the Rust tests. `fresh_unescaped_no_foreign_match` takes collision freedom and unique deploys as hypotheses, with a witness. Each negative control of `ClosedDemandBound.v` drops a premise of the model, and none runs a rule check of the code. The models read free indices as lists, as the code reads `locally_free`. They do not model expressions or the hash of a signature into a lane.
 
 **Rust tests.**
 
@@ -1054,6 +1069,13 @@ The verification follows the bar of this branch: formal models with negative con
 - A self-drain becomes a charged user failure, and the receipts of producer and validators agree.
 - A property test of feasibility. Assume that the realized use is at most the estimate for every lane and class, and that balances do not change. Then the post-execution selection succeeds. The capacity is the balance in G1, and the balance minus later holds in G2.
 - The 64-source test passes under the committed caps.
+- The tests of the G1-4a fix:
+  - the four `#P` forms of DR-122 item 11, and the quote of a resolved name in a receive body
+  - `#P` signatures in the generated programs
+  - 30,000 parallel sends, a match with 2,000 cases and a list of 100,000 elements under the offered limits
+  - guards on received values, and guards that name a URN level
+  - a signature of 1,000 levels on a small stack
+  - the capacity charge, a live reduction session and an unpriced lane
 
 ---
 
@@ -1073,6 +1095,8 @@ The rules also make the estimate incomplete for these constructs.
 - Cost stacks.
 - Public, URN and injected channels, at every depth.
 - Signatures that name a received value or a name created in a receive body (DR-121).
+- Signatures whose quoted process still holds a variable, and quotes of a name inside a receive body or a datum (DR-122 item 11).
+- Guards that name a URN, injection or unknown level (DR-122 item 8).
 - Data whose evaluation fails, or that use a form without a known work limit (DR-122).
 - Sources that are on-chain private-name payers.
 
@@ -1150,6 +1174,15 @@ A second independent check of the design followed on the same day. Its correctio
 - The guard is DR-65 item 5 exactly, and its scope includes installer purses (Section 8.3).
 - An installer shortfall follows B5 (Section 8.5).
 - The client rule covers incomplete estimates with several sources (Section 14).
+
+An independent review of the G1-4a commit followed on 2026-10-11. The G1-4a fix corrects the implementation and this document. DR-122 names each finding.
+
+- Signatures with a variable are dynamic (Section 5.3). Outside a resolving position, the resolver leaves a quote with a free level unchanged (Section 5.6).
+- The merge, fold and copy charges follow the work of each walk (Section 5.8).
+- An evaluation pays the sort factor only for sets, maps and comparisons (Section 5.6).
+- A guard is read in the scope of the receive's binders (Section 5.6).
+- A guard that names a URN, injection or unknown level makes the estimate incomplete (Section 5.6).
+- The compute row stays the plan's row, and a proof relates it to the vector's row (Sections 5.5 and 12).
 
 ---
 

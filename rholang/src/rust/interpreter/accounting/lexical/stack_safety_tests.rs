@@ -10,7 +10,11 @@
 //! parity check compares the signatures of every walked position, the
 //! analyzer's results on both outputs, and the first error. Since G1-3
 //! (DR-121) the oracle runs with receive bodies unresolved, the rule of the
-//! machine.
+//! machine. Since the G1-4a fix (DR-122 item 11), the machine also leaves a
+//! signature unchanged outside a resolving position when its quoted or named
+//! process has a free level. The generated programs and the corpus have no
+//! such quote, and `a_quoted_name_resolves_only_in_a_resolving_position`
+//! tests the rule.
 
 use std::collections::{BTreeMap, HashMap};
 
@@ -18,7 +22,8 @@ use crypto::rust::hash::blake2b512_random::Blake2b512Random;
 use models::rhoapi::cost_signature::Value as CostSignatureValue;
 use models::rhoapi::g_unforgeable::UnfInstance;
 use models::rhoapi::{
-    CostSignature, CostSignedTerm, GPrivate, GUnforgeable, New, Par, ReceiveBind,
+    CostSignature, CostSignatureCompound, CostSignedTerm, GPrivate, GUnforgeable, New, Par,
+    ReceiveBind,
 };
 use models::rust::host_work::{
     HostWorkDimension, HostWorkLimit, HostWorkLimits, HostWorkReservationError,
@@ -45,6 +50,12 @@ const SMALL_STACK_BYTES: usize = 256 * 1024;
 /// nested program and drops it. The dev normalizer recurses four frames per
 /// nesting level (`normalize_ann_proc`, `normalize_p_new`, `normalize_p_par`),
 /// and in a debug build 128 levels overflow the 8 MiB test stack there.
+///
+/// Extended by the G1-4a fix: this thread is necessary only until the
+/// normalizer pushdown machine of feature/mettail (commit 07853de05) merges
+/// into this branch. That machine normalizes without recursion. After that
+/// merge, the test returns to the default test stack for the parse and the
+/// drop, and this constant and `on_normalizer_stack` are no longer necessary.
 const NORMALIZER_STACK_BYTES: usize = 64 * 1024 * 1024;
 
 fn private_name(tag: u8) -> Par {
@@ -1134,4 +1145,128 @@ fn resolver_walks_a_term_nested_one_hundred_thousand_deep_on_a_small_stack() {
     let resolved = resolved.expect("the resolver accepts the term");
     dismantle_on_small_stack(vec![program, resolved]);
     assert_eq!(same, Some(true), "ground signatures resolve to themselves");
+}
+
+// ── The free-level scan of a signature (G1-4a fix, DR-122 item 11) ─────────
+
+/// The recursive form of `FundingResolver::quotes_a_free_level`.
+fn quotes_a_free_level_recursively(signature: &CostSignature) -> bool {
+    match signature.value.as_ref() {
+        Some(CostSignatureValue::Compound(compound)) => compound
+            .elements
+            .iter()
+            .any(quotes_a_free_level_recursively),
+        Some(CostSignatureValue::Quote(par)) | Some(CostSignatureValue::Name(par)) => {
+            par.locally_free.iter().any(|free| *free != 0)
+        }
+        Some(
+            CostSignatureValue::Ground(_)
+            | CostSignatureValue::BoundLevel(_)
+            | CostSignatureValue::Unit(_),
+        )
+        | None => false,
+    }
+}
+
+/// Every signature form, with quoted and named processes whose
+/// `locally_free` holds free levels or none, inside nested compounds.
+fn arb_free_level_signature() -> impl Strategy<Value = CostSignature> {
+    let process = prop::collection::vec(0u8..2, 0..4).prop_map(|locally_free| Par {
+        locally_free,
+        ..Par::default()
+    });
+    let signature = |value: CostSignatureValue| CostSignature { value: Some(value) };
+    let leaf = prop_oneof![
+        (0u8..4).prop_map(move |tag| signature(CostSignatureValue::Ground(vec![tag]))),
+        Just(signature(CostSignatureValue::Unit(true))),
+        (0i32..3).prop_map(move |level| signature(CostSignatureValue::BoundLevel(level))),
+        process
+            .clone()
+            .prop_map(move |par| signature(CostSignatureValue::Quote(par))),
+        process.prop_map(move |par| signature(CostSignatureValue::Name(par))),
+        Just(CostSignature { value: None }),
+    ];
+    leaf.prop_recursive(4, 32, 3, move |inner| {
+        prop::collection::vec(inner, 0..4).prop_map(move |elements| {
+            signature(CostSignatureValue::Compound(CostSignatureCompound {
+                elements,
+            }))
+        })
+    })
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(512))]
+
+    /// The work-list scan for a quoted free level gives the answer of the
+    /// recursive oracle on every generated signature.
+    #[test]
+    fn the_free_level_scan_matches_the_recursive_oracle(signature in arb_free_level_signature()) {
+        let urn_map = HashMap::new();
+        let resolver = FundingResolver::new(&urn_map, None);
+        prop_assert_eq!(
+            resolver.quotes_a_free_level(&signature).expect("an unmetered scan"),
+            quotes_a_free_level_recursively(&signature)
+        );
+    }
+}
+
+/// The scan finishes on compounds nested 100,000 deep on a 256 KiB stack. It
+/// finds the free level of the innermost quote, and it finds none above a
+/// closed quote. The signatures drop through the iterative teardown.
+#[test]
+fn the_free_level_scan_runs_a_signature_nested_one_hundred_thousand_deep_on_a_small_stack() {
+    let deep = |locally_free: Vec<u8>| {
+        let mut signature = CostSignature {
+            value: Some(CostSignatureValue::Quote(Par {
+                locally_free,
+                ..Par::default()
+            })),
+        };
+        for tag in 0..DEEP_NESTING {
+            signature = CostSignature {
+                value: Some(CostSignatureValue::Compound(CostSignatureCompound {
+                    elements: vec![
+                        CostSignature {
+                            value: Some(CostSignatureValue::Ground(vec![(tag % 251) as u8])),
+                        },
+                        signature,
+                    ],
+                })),
+            };
+        }
+        signature
+    };
+    for (locally_free, expected) in [(vec![0, 1], true), (vec![0], false)] {
+        let signature = deep(locally_free);
+        let found = std::thread::scope(|scope| {
+            std::thread::Builder::new()
+                .name("free-level-scan".to_string())
+                .stack_size(SMALL_STACK_BYTES)
+                .spawn_scoped(scope, || {
+                    let urn_map = HashMap::new();
+                    FundingResolver::new(&urn_map, None)
+                        .quotes_a_free_level(&signature)
+                        .expect("an unmetered scan")
+                })
+                .expect("spawn the scan thread")
+                .join()
+                .expect("the scan stays within a small stack")
+        });
+        let par = Par {
+            cost_signed_terms: vec![CostSignedTerm {
+                body: None,
+                signature: Some(signature),
+            }],
+            ..Par::default()
+        };
+        std::thread::Builder::new()
+            .name("free-level-teardown".to_string())
+            .stack_size(SMALL_STACK_BYTES)
+            .spawn(move || dismantle(vec![par]))
+            .expect("spawn the teardown thread")
+            .join()
+            .expect("the iterative teardown stays within a small stack");
+        assert_eq!(found, expected);
+    }
 }

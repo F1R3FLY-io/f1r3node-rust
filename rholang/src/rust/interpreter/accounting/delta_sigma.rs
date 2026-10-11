@@ -330,6 +330,11 @@ fn add_scope_transfer(
 }
 
 fn signature_lane(signature: &CostSignature) -> Result<Option<SigKey>, UnprovableDemand> {
+    // Added by the G1-4a fix (review H-1): a signature that still holds a
+    // variable names another lane at run time.
+    if estimate::signature_holds_variable(signature) {
+        return Err(UnprovableDemand::DynamicAuthority);
+    }
     cost_signature_to_sig(signature)
         .map(|signature| (signature != Sig::Unit).then(|| signature.lane_hash()))
         .map_err(|error| match error {

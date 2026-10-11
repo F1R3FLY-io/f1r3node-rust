@@ -850,17 +850,26 @@ fn dimension_index(dimension: HostWorkDimension) -> usize {
 }
 
 /// The chain walks of the plan and of the fold visit one region link for
-/// each enclosing scope of each send: the authority-node charge is twice
-/// the sends times the depth plus one.
+/// each enclosing scope of each send. The plan walks each link once. The
+/// fold charges three walks of each link, because `contribute` can walk the
+/// chain of a receive three times (review LOW 3). The authority-node charge
+/// is therefore four times the sends times the depth plus one.
 #[test]
 fn chain_links_are_charged_for_each_enclosing_scope() {
     for (depth, sends) in [(4usize, 3usize), (8, 3), (8, 6)] {
         let par = signed_tower(depth, sends);
         let usages = usages_of(&par);
         let links = u64::try_from(sends * (depth + 1)).expect("a small count");
+        // Changed by the G1-4a fix (review LOW 3): the fold charges three
+        // walks of each link.
+        // assert_eq!(
+        //     usages[dimension_index(HostWorkDimension::AuthorityNodes)],
+        //     2 * links,
+        //     "depth {depth}, sends {sends}"
+        // );
         assert_eq!(
             usages[dimension_index(HostWorkDimension::AuthorityNodes)],
-            2 * links,
+            4 * links,
             "depth {depth}, sends {sends}"
         );
         dismantle_term(par);
@@ -909,7 +918,9 @@ fn nested_receive_bodies_are_charged_for_each_substitution() {
 /// `Env::shift` copies the whole environment at each binder of a substituted
 /// term. One more `new` inside a sized receive body adds one copy, so the
 /// binding charge grows by the environment size, which holds every outer
-/// name. The `new` itself binds one more level.
+/// name. The `new` itself binds one more level. Changed by the G1-4a fix
+/// (review M-4): a copy costs the capacity of the environment map, which is
+/// at least its length, so the difference is at least the 32 added names.
 #[test]
 fn each_environment_copy_of_a_sizing_substitution_is_charged() {
     let program = |outer: usize, nested: usize| {
@@ -940,7 +951,14 @@ fn each_environment_copy_of_a_sizing_substitution_is_charged() {
         one - none
     };
     let (small, large) = (copy(4), copy(36));
-    assert_eq!(large - small, 32, "each copy holds every outer name");
+    // Changed by the G1-4a fix (review M-4): the copy charge is the capacity
+    // of the map, and `environment_copies_are_charged_the_capacity_of_the_map`
+    // checks its exact value.
+    // assert_eq!(large - small, 32, "each copy holds every outer name");
+    assert!(
+        large - small >= 32,
+        "each copy holds every outer name: {small} and {large}"
+    );
 }
 
 /// For every charged dimension, a budget equal to the charge gives the same
@@ -1163,4 +1181,408 @@ fn dismantle_drops_terms_nested_through_every_field_on_a_small_stack() {
         .expect("spawn the teardown thread")
         .join()
         .expect("the iterative teardown stays within a small stack");
+}
+
+// ── The fixes of the G1-4a review (H-1, H-2, H-3, M-1, M-2, M-4) ───────────
+
+fn integer(value: i64) -> Par {
+    Par::default().with_exprs(vec![Expr {
+        expr_instance: Some(ExprInstance::GInt(value)),
+    }])
+}
+
+/// The body of the outermost `new` of a resolved skeleton, which a test
+/// widens in code.
+fn new_body(par: &mut Par) -> &mut Par {
+    par.news
+        .first_mut()
+        .and_then(|new| new.p.as_mut())
+        .expect("a `new` with a body")
+}
+
+fn offered_limits() -> HostWorkBudget {
+    HostWorkBudget::new(models::rust::cost_protocol_limits::offered_funded_v6_host_work_limits())
+}
+
+fn estimate_par(par: &Par, host: &HostWorkBudget) -> Result<CostEstimate, InterpreterError> {
+    let reducer = evaluator(HashMap::new());
+    linear_cost_estimate(par, &funding(), &schedule([1; 4]), &reducer, host)
+}
+
+/// Review H-1: a `#P` signature whose process still holds a variable names
+/// another lane at run time, because the reducer substitutes inside the
+/// quote. Its lane is dynamic. The five forms are a matched variable, a
+/// received variable, the dereference of a fresh hole, a received variable
+/// in the signature of a bind, and the dereference of a resolved name in a
+/// receive body, which the resolver leaves unchanged.
+#[test]
+fn a_quoted_signature_with_a_variable_is_dynamic() {
+    let text = "A".repeat(10_000);
+    let programs = [
+        [
+            r#"new y in { match ""#,
+            &text,
+            r#"" { s => { {% y!(0) | for (_ <- y) { Nil } %}[ #s ] } } }"#,
+        ]
+        .concat(),
+        "new x, y in { x!(0) | for (@n <- x) { {% y!(0) | for (_ <- y) { Nil } %}[ #n ] } }"
+            .to_string(),
+        "new x in { x!(0) | for (@n <- x) { new z in { {% z!(0) | for (_ <- z) { Nil } %}[ #*z ] } } }"
+            .to_string(),
+        "new x, y in { x!(0) | y!(1) | for (@n <- x) { for ({% @a <- y %}[ #n ]) { Nil } } }"
+            .to_string(),
+        "new x, y in { x!(0) | for (@n <- x) { {% y!(0) | for (_ <- y) { Nil } %}[ #*y ] } }"
+            .to_string(),
+    ];
+    for source in &programs {
+        assert_eq!(
+            estimate(source).completeness,
+            Completeness::Incomplete(IncompleteReason::StaticPlan(
+                UnprovableDemand::DynamicAuthority
+            )),
+            "{}",
+            &source[..source.len().min(120)]
+        );
+    }
+}
+
+/// Review H-1, the control: the quote of a closed process and the
+/// dereference of a name that the resolver binds keep static lanes.
+#[test]
+fn a_quoted_signature_without_a_variable_is_static() {
+    let closed = estimate(r#"new y in { {% y!(0) | for (_ <- y) { Nil } %}[ #"AAAA" ] }"#);
+    assert_eq!(closed.completeness, Completeness::Complete);
+    assert_eq!(counts(&closed, lane(r#"#"AAAA""#))[0], 2);
+    let resolved_name = estimate("new y in { {% y!(0) | for (_ <- y) { Nil } %}[ #*y ] }");
+    assert_eq!(resolved_name.completeness, Completeness::Complete);
+    assert!(
+        resolved_name
+            .signatures
+            .keys()
+            .any(|lane| *lane != deploy_lane()),
+        "the resolved name has a static lane"
+    );
+}
+
+/// Review H-1 in the plan: `signature_lane` makes a signature that holds a
+/// variable dynamic authority, and a ground signature at the same position
+/// stays static.
+#[test]
+fn the_plan_treats_a_quoted_signature_with_a_variable_as_dynamic() {
+    let source = |signature: &str| {
+        format!("new x, y in {{ x!(0) | for (@n <- x) {{ {{% y!(0) %}}[ {signature} ] }} }}")
+    };
+    let dynamic = resolved(&source("#n"), &HashMap::new());
+    let ground = resolved(&source("s"), &HashMap::new());
+    let plans = (
+        static_authority_plan(&dynamic, &funding()).err(),
+        static_authority_plan(&ground, &funding()).err(),
+    );
+    dismantle_term(dynamic);
+    dismantle_term(ground);
+    assert_eq!(plans, (Some(UnprovableDemand::DynamicAuthority), None));
+}
+
+/// Review H-2: 30,000 parallel sends on one fresh name fit the offered
+/// host-work limits. A combine costs the lanes that it merges, not the
+/// nodes of the merged subtree.
+#[test]
+fn thirty_thousand_parallel_sends_fit_the_offered_limits() {
+    let mut par = resolved("new x in { x!(0) }", &HashMap::new());
+    let body = new_body(&mut par);
+    let send = body.sends.pop().expect("one send");
+    body.sends = (0..30_000i64)
+        .map(|value| Send {
+            data: vec![integer(value)],
+            ..send.clone()
+        })
+        .collect();
+    let host = offered_limits();
+    let estimate = estimate_par(&par, &host);
+    dismantle_term(par);
+    let estimate = estimate.expect("the offered limits admit 30,000 parallel sends");
+    assert_eq!(estimate.completeness, Completeness::Complete);
+    assert_eq!(counts(&estimate, deploy_lane())[0], 30_000);
+}
+
+/// Review H-2: a match with 2,000 cases fits the offered host-work limits.
+#[test]
+fn a_two_thousand_case_match_fits_the_offered_limits() {
+    let mut par = resolved(
+        "new x in { match 7 { 0 => { x!(0) } _ => { Nil } } }",
+        &HashMap::new(),
+    );
+    let body = new_body(&mut par);
+    let matched = body.matches.first_mut().expect("one match");
+    let first = matched.cases.first().cloned().expect("a first case");
+    matched.cases = (0..2_000i64)
+        .map(|value| {
+            let mut case = first.clone();
+            case.pattern = Some(integer(value));
+            if let Some(send) = case
+                .source
+                .as_mut()
+                .and_then(|source| source.sends.first_mut())
+            {
+                send.data = vec![integer(value)];
+            }
+            case
+        })
+        .collect();
+    let host = offered_limits();
+    let estimate = estimate_par(&par, &host);
+    dismantle_term(par);
+    let estimate = estimate.expect("the offered limits admit a match with 2,000 cases");
+    assert_eq!(estimate.completeness, Completeness::Complete);
+    assert_eq!(
+        counts(&estimate, deploy_lane())[0],
+        1,
+        "one case runs, so the branch maximum is one send"
+    );
+}
+
+/// Review H-3: a list of 100,000 integers fits the offered host-work limits.
+/// Its evaluation is bounded by its exact length, because the evaluation of
+/// a list sorts nothing.
+#[test]
+fn a_list_of_one_hundred_thousand_elements_fits_the_offered_limits() {
+    let mut par = resolved(
+        "new x in { x!([0]) | for (@l <- x) { Nil } }",
+        &HashMap::new(),
+    );
+    let body = new_body(&mut par);
+    let datum = body
+        .sends
+        .first_mut()
+        .and_then(|send| send.data.first_mut())
+        .and_then(|datum| datum.exprs.first_mut())
+        .and_then(|expr| expr.expr_instance.as_mut());
+    let Some(ExprInstance::EListBody(list)) = datum else {
+        panic!("the skeleton sends one list");
+    };
+    list.ps = (0..100_000i64).map(integer).collect();
+    let host = offered_limits();
+    let estimate = estimate_par(&par, &host);
+    dismantle_term(par);
+    let estimate = estimate.expect("the offered limits admit a list of 100,000 elements");
+    assert_eq!(estimate.completeness, Completeness::Complete);
+}
+
+/// Review M-1: the normalizer builds a receive guard in the scope of the
+/// receive's binders, so the check of rule X3 skips those binders. A guard
+/// on the received values is complete. A guard that names a fresh name lets
+/// the name escape.
+#[test]
+fn a_receive_guard_on_the_received_values_is_complete() {
+    for source in [
+        "new x in { x!(5) | for (@n <- x where n > 3) { Nil } }",
+        "new x, y in { x!(5) | y!(2) | for (@n <- x & @m <- y where n > m) { Nil } }",
+    ] {
+        assert_eq!(
+            estimate(source).completeness,
+            Completeness::Complete,
+            "{source}"
+        );
+    }
+    assert_eq!(
+        estimate("new x, y in { x!(5) | for (@n <- x where *y == n) { Nil } }").completeness,
+        Completeness::Incomplete(IncompleteReason::EscapingName)
+    );
+}
+
+/// Reviews M-5 and LOW 2: the body substitution of an enclosing receive gives
+/// a URN level of a nested guard its value, which the guard sizing does not
+/// see. So a guard that names a URN level has no size, also outside every
+/// receive. A pattern level from outside the nearest enclosing receive
+/// reaches the marker scan of that receive's body. A guard on the pattern of
+/// the nearest enclosing receive stays complete.
+#[test]
+fn a_guard_that_names_a_urn_level_has_no_size() {
+    let with_stdout = |source: &str| {
+        estimate_with(source, [1; 4], stdout_urn_map(), &unlimited())
+            .expect("the estimate runs")
+            .completeness
+    };
+    for source in [
+        "new x, y, out(`rho:io:stdout`) in { x!(1) | y!(2) | for (@n <- x) { for (@m <- y where m == *out) { Nil } } }",
+        "new y, out(`rho:io:stdout`) in { y!(2) | for (@m <- y where m == *out) { Nil } }",
+    ] {
+        assert_eq!(
+            with_stdout(source),
+            Completeness::Incomplete(IncompleteReason::UnsizedValue),
+            "{source}"
+        );
+    }
+    assert_eq!(
+        estimate(
+            r#"new x, y, z in { z!("A") | x!(1) | for (@k <- z) { for (@n <- x) { y!(2) | for (@m <- y where m == k) { Nil } } } }"#
+        )
+        .completeness,
+        Completeness::Incomplete(IncompleteReason::ReceivedValueInIntroduction)
+    );
+    assert_eq!(
+        estimate(
+            "new x, y in { x!(1) | for (@n <- x) { y!(2) | for (@m <- y where m > n) { Nil } } }"
+        )
+        .completeness,
+        Completeness::Complete
+    );
+}
+
+/// Review M-2: a signature taller than the sizing bound never reaches the
+/// recursive canonicalization of the plan. The estimate is incomplete with
+/// the reason `UnsizedValue` and returns no deep signature. The estimate and
+/// the term drop on a thread with a 256 KiB stack.
+#[test]
+fn a_deep_quoted_signature_is_unsized_on_a_small_stack() {
+    let mut quoted = integer(7);
+    for _ in 0..1_000 {
+        quoted = Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::EListBody(models::rhoapi::EList {
+                ps: vec![quoted],
+                ..Default::default()
+            })),
+        }]);
+    }
+    let mut par = resolved("new y in { {% y!(0) %}[ s ] }", &HashMap::new());
+    new_body(&mut par)
+        .cost_signed_terms
+        .first_mut()
+        .expect("one signed term")
+        .signature = Some(CostSignature {
+        value: Some(CostSignatureValue::Quote(quoted)),
+    });
+    let reducer = evaluator(HashMap::new());
+    let outcome = std::thread::scope(|scope| {
+        std::thread::Builder::new()
+            .name("estimate-deep-signature".to_string())
+            .stack_size(256 * 1024)
+            .spawn_scoped(scope, || {
+                let estimate = linear_cost_estimate(
+                    &par,
+                    &funding(),
+                    &schedule([1; 4]),
+                    &reducer,
+                    &unlimited(),
+                )
+                .expect("the estimate runs");
+                let quoted = estimate
+                    .signatures
+                    .values()
+                    .filter(|signature| {
+                        matches!(signature.value, Some(CostSignatureValue::Quote(_)))
+                    })
+                    .count();
+                (estimate.completeness, quoted)
+            })
+            .expect("spawn the deep-signature thread")
+            .join()
+            .expect("the estimate stays within a small stack")
+    });
+    std::thread::Builder::new()
+        .name("estimate-deep-signature-teardown".to_string())
+        .stack_size(256 * 1024)
+        .spawn(move || dismantle_term(par))
+        .expect("spawn the teardown thread")
+        .join()
+        .expect("the iterative teardown stays within a small stack");
+    assert_eq!(
+        outcome,
+        (Completeness::Incomplete(IncompleteReason::UnsizedValue), 0)
+    );
+}
+
+/// Review M-4: `pop` never shrinks the environment map, and `Env::shift`
+/// clones every bucket of it. A substitution is therefore charged the
+/// capacity of the map for the call and for each copy, not its length.
+#[test]
+fn environment_copies_are_charged_the_capacity_of_the_map() {
+    let reducer = evaluator(HashMap::new());
+    let core = isolated_evaluator(&reducer);
+    let host = unlimited();
+    let mut estimator = Estimator::new(&funding(), &core, &host).expect("an estimator");
+    estimator
+        .push_holes(1_000, BinderKind::ReceivePattern)
+        .expect("the holes are bound");
+    estimator.pop(999).expect("the holes are popped");
+    let capacity = u64::try_from(estimator.env.env_map.capacity()).expect("a small capacity");
+    assert_eq!(estimator.env.env_map.len(), 1);
+    assert!(capacity >= 1_000, "pop keeps the capacity: {capacity}");
+    let before = host.usage(HostWorkDimension::SubstitutionBindings).get();
+    estimator
+        .charge_substitution(
+            Metrics {
+                height: 1,
+                weight: 10,
+                vars: 0,
+                shifts: 3,
+            },
+            false,
+        )
+        .expect("an unlimited budget admits the charge");
+    assert_eq!(
+        host.usage(HostWorkDimension::SubstitutionBindings).get() - before,
+        4 * capacity,
+        "the call and three copies each cost the capacity"
+    );
+}
+
+/// Review LOW 1: inside a live reduction session the estimate returns an
+/// error in every build, because the reducer's host-work reservations would
+/// charge that session.
+#[test]
+fn the_estimate_rejects_a_live_reduction_session() {
+    let par = resolved(
+        "new x in { x!(0) | for (@n <- x) { Nil } }",
+        &HashMap::new(),
+    );
+    let reducer = evaluator(HashMap::new());
+    let result = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("a test runtime")
+        .block_on(crate::rust::interpreter::deterministic_reduction::root(
+            reducer.space.clone(),
+            reducer.metering.budget(),
+            reducer.reduction_coordinator.clone(),
+            async {
+                linear_cost_estimate(&par, &funding(), &schedule([1; 4]), &reducer, &unlimited())
+            },
+        ));
+    dismantle_term(par);
+    assert!(
+        matches!(result, Err(InterpreterError::BugFoundError(_))),
+        "{result:?}"
+    );
+}
+
+/// Review LOW 6: a funding signature without a cost signature, here a
+/// threshold, leaves the deploy lane without units. The counts of that lane
+/// drop out and the estimate is incomplete, instead of an error.
+#[test]
+fn an_unpriced_deploy_lane_makes_the_estimate_incomplete() {
+    let par = resolved(
+        "new x in { x!(0) | for (@n <- x) { Nil } }",
+        &HashMap::new(),
+    );
+    let reducer = evaluator(HashMap::new());
+    let threshold = Sig::Threshold {
+        threshold: 1,
+        members: vec![Sig::Ground(vec![9, 9, 9, 9])],
+    };
+    let estimate =
+        linear_cost_estimate(&par, &threshold, &schedule([1; 4]), &reducer, &unlimited());
+    dismantle_term(par);
+    let estimate = estimate.expect("an unpriced lane is not an error");
+    assert_eq!(
+        estimate.completeness,
+        Completeness::Incomplete(IncompleteReason::UnsizedValue)
+    );
+    assert!(
+        estimate
+            .quantities
+            .keys()
+            .all(|(lane, _)| *lane != threshold.lane_hash()),
+        "the unpriced deploy lane has no count"
+    );
 }

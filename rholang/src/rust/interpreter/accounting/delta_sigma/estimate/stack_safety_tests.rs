@@ -8,9 +8,14 @@
 use std::collections::{BTreeMap, HashMap};
 
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
+use models::rhoapi::connective::ConnectiveInstance;
+use models::rhoapi::cost_signature::Value as CostSignatureValue;
 use models::rhoapi::expr::ExprInstance;
-use models::rhoapi::var::VarInstance;
-use models::rhoapi::{EVar, Expr, New, Par, Receive, ReceiveBind, Send, Var};
+use models::rhoapi::var::{VarInstance, WildcardMsg};
+use models::rhoapi::{
+    Connective, CostSignature, CostSignatureCompound, CostSignedTerm, CostStack, EList, EMap, EVar,
+    Expr, KeyValuePair, New, Par, Receive, ReceiveBind, Send, Var, VarRef,
+};
 use models::rust::host_work::{HostWorkDimension, HostWorkLimit, HostWorkLimits};
 use proptest::prelude::*;
 
@@ -61,6 +66,28 @@ pub(super) enum Generated {
     Method,
     Urn,
     SignedByNew(Vec<Generated>),
+    /// Added by the G1-4a fix (review H-1): a signed scope whose signature
+    /// is the quote `#P`.
+    SignedQuote(QuoteSignature, Vec<Generated>),
+}
+
+/// Added by the G1-4a fix (review H-1): the process of a generated `#P`
+/// signature. A literal and the dereference of a name that the resolver
+/// binds are static. The innermost received value and the dereference of a
+/// fresh hole still hold a variable, so their lanes are dynamic.
+#[derive(Clone, Debug)]
+pub(super) enum QuoteSignature {
+    Literal(i64),
+    Received,
+    Channel(u8),
+}
+
+fn arb_quote_signature() -> impl Strategy<Value = QuoteSignature> {
+    prop_oneof![
+        2 => (0i64..50).prop_map(QuoteSignature::Literal),
+        1 => Just(QuoteSignature::Received),
+        2 => (0u8..4).prop_map(QuoteSignature::Channel),
+    ]
 }
 
 fn arb_datum(complete: bool) -> impl Strategy<Value = GeneratedDatum> {
@@ -103,6 +130,8 @@ fn arb_item(complete: bool) -> impl Strategy<Value = Generated> {
             1 => (body.clone(), body.clone()).prop_map(|(left, right)| Generated::Branch(left, right)),
             1 => (body.clone(), body.clone()).prop_map(|(left, right)| Generated::Match(left, right)),
             1 => body.clone().prop_map(Generated::New),
+            1 => (arb_quote_signature(), body.clone())
+                .prop_map(|(signature, body)| Generated::SignedQuote(signature, body)),
             incomplete => body.prop_map(Generated::SignedByNew),
         ]
     })
@@ -275,6 +304,19 @@ fn render_item(
             out.push_str(&format!("new {name} in {{ {{% "));
             render_list(body, names, received, counter, out);
             out.push_str(&format!(" %}}[ {name} ] }}"));
+        }
+        Generated::SignedQuote(signature, body) => {
+            let quoted = match signature {
+                QuoteSignature::Literal(value) => value.to_string(),
+                QuoteSignature::Received => match received.last() {
+                    Some(name) => name.clone(),
+                    None => "7".to_string(),
+                },
+                QuoteSignature::Channel(index) => format!("*{}", channel(names, *index)),
+            };
+            out.push_str("{% ");
+            render_list(body, names, received, counter, out);
+            out.push_str(&format!(" %}}[ #{quoted} ]"));
         }
     }
 }
@@ -777,4 +819,272 @@ fn generated_programs_reach_both_analyses() {
     );
     assert!(complete >= 8, "only {complete} complete estimates");
     assert!(incomplete >= 8, "only {incomplete} incomplete estimates");
+}
+
+// ── The variable scan of a signature (review H-1) ──────────────────────────
+
+fn scanned_variable(instance: VarInstance) -> Par {
+    Par::default().with_exprs(vec![Expr {
+        expr_instance: Some(ExprInstance::EVarBody(EVar {
+            v: Some(Var {
+                var_instance: Some(instance),
+            }),
+        })),
+    }])
+}
+
+fn scanned_integer(value: i64) -> Par {
+    Par::default().with_exprs(vec![Expr {
+        expr_instance: Some(ExprInstance::GInt(value)),
+    }])
+}
+
+fn scanned_signature(value: CostSignatureValue) -> CostSignature {
+    CostSignature { value: Some(value) }
+}
+
+/// A list of one integer, open with a remainder when `open` holds.
+fn scanned_list(open: bool) -> Par {
+    Par::default().with_exprs(vec![Expr {
+        expr_instance: Some(ExprInstance::EListBody(EList {
+            ps: vec![scanned_integer(1)],
+            remainder: open.then_some(Var {
+                var_instance: Some(VarInstance::FreeVar(0)),
+            }),
+            ..Default::default()
+        })),
+    }])
+}
+
+/// A map of one entry, open with a remainder when `open` holds.
+fn scanned_map(open: bool) -> Par {
+    Par::default().with_exprs(vec![Expr {
+        expr_instance: Some(ExprInstance::EMapBody(EMap {
+            kvs: vec![KeyValuePair {
+                key: Some(scanned_integer(1)),
+                value: Some(scanned_integer(2)),
+            }],
+            remainder: open.then_some(Var {
+                var_instance: Some(VarInstance::FreeVar(0)),
+            }),
+            ..Default::default()
+        })),
+    }])
+}
+
+/// A receive on an integer channel whose bind holds `pattern`, a remainder
+/// when `open` holds, and the bind signature `signature`.
+fn scanned_receive(pattern: Par, open: bool, signature: Option<CostSignature>) -> Par {
+    Par::default().with_receives(vec![Receive {
+        binds: vec![ReceiveBind {
+            patterns: vec![pattern],
+            source: Some(scanned_integer(3)),
+            remainder: open.then_some(Var {
+                var_instance: Some(VarInstance::FreeVar(0)),
+            }),
+            free_count: 0,
+            cost_signature: signature,
+        }],
+        body: Some(Par::default()),
+        ..Default::default()
+    }])
+}
+
+/// One leaf process of a scanned signature: closed, or holding one kind of
+/// variable. The kinds are a bound or free variable, a wildcard, a variable
+/// reference, and the remainder of a list, a map or a bind.
+fn arb_scanned_leaf() -> impl Strategy<Value = Par> {
+    prop_oneof![
+        3 => Just(Par::default()),
+        3 => (0i64..4).prop_map(scanned_integer),
+        1 => (0i32..3).prop_map(|level| scanned_variable(VarInstance::BoundVar(level))),
+        1 => (0i32..3).prop_map(|level| scanned_variable(VarInstance::FreeVar(level))),
+        1 => Just(scanned_variable(VarInstance::Wildcard(WildcardMsg {}))),
+        1 => Just(Par::default().with_connectives(vec![Connective {
+            connective_instance: Some(ConnectiveInstance::VarRefBody(VarRef { index: 0, depth: 1 })),
+        }])),
+        2 => any::<bool>().prop_map(scanned_list),
+        2 => any::<bool>().prop_map(scanned_map),
+        2 => any::<bool>().prop_map(|open| scanned_receive(Par::default(), open, None)),
+    ]
+}
+
+/// Every signature form, with `Quote` and `Name` atoms around processes
+/// that nest further signatures: in a signed term, in a token stack, in the
+/// data of a send and in the signature of a bind.
+fn arb_scanned_signature() -> impl Strategy<Value = CostSignature> {
+    let leaf = prop_oneof![
+        2 => (0u8..4).prop_map(|tag| scanned_signature(CostSignatureValue::Ground(vec![tag]))),
+        1 => Just(scanned_signature(CostSignatureValue::Unit(true))),
+        1 => (0i32..3).prop_map(|level| scanned_signature(CostSignatureValue::BoundLevel(level))),
+        3 => arb_scanned_leaf().prop_map(|par| scanned_signature(CostSignatureValue::Quote(par))),
+        2 => arb_scanned_leaf().prop_map(|par| scanned_signature(CostSignatureValue::Name(par))),
+    ];
+    leaf.prop_recursive(4, 48, 3, |inner| {
+        prop_oneof![
+            2 => prop::collection::vec(inner.clone(), 0..3).prop_map(|elements| {
+                scanned_signature(CostSignatureValue::Compound(CostSignatureCompound { elements }))
+            }),
+            2 => (inner.clone(), arb_scanned_leaf()).prop_map(|(signature, body)| {
+                scanned_signature(CostSignatureValue::Quote(Par {
+                    cost_signed_terms: vec![CostSignedTerm {
+                        body: Some(body),
+                        signature: Some(signature),
+                    }],
+                    ..Default::default()
+                }))
+            }),
+            1 => inner.clone().prop_map(|signature| {
+                scanned_signature(CostSignatureValue::Name(Par {
+                    cost_stacks: vec![CostStack {
+                        cells: vec![signature],
+                    }],
+                    ..Default::default()
+                }))
+            }),
+            1 => (inner.clone(), arb_scanned_leaf()).prop_map(|(signature, datum)| {
+                let signed = Par {
+                    cost_signed_terms: vec![CostSignedTerm {
+                        body: None,
+                        signature: Some(signature),
+                    }],
+                    ..Default::default()
+                };
+                scanned_signature(CostSignatureValue::Quote(Par::default().with_sends(vec![Send {
+                    chan: Some(scanned_integer(4)),
+                    data: vec![datum, signed],
+                    persistent: false,
+                    locally_free: Vec::new(),
+                    connective_used: false,
+                }])))
+            }),
+            1 => (inner, arb_scanned_leaf()).prop_map(|(signature, pattern)| {
+                scanned_signature(CostSignatureValue::Quote(scanned_receive(
+                    pattern,
+                    false,
+                    Some(signature),
+                )))
+            }),
+        ]
+    })
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(512))]
+
+    /// Review H-1: the work-stack scan of a signature for a variable gives the
+    /// answer of the recursive oracle on every generated signature.
+    #[test]
+    fn the_variable_scan_matches_the_recursive_oracle(signature in arb_scanned_signature()) {
+        prop_assert_eq!(
+            signature_holds_variable(&signature),
+            super::recursive_oracle::signature_holds_variable(&signature)
+        );
+    }
+}
+
+/// The parity property of the variable scan is not vacuous: the generated
+/// signatures hold a variable in many cases and none in many others.
+#[test]
+fn generated_scanned_signatures_reach_both_answers() {
+    use proptest::strategy::ValueTree;
+    use proptest::test_runner::TestRunner;
+
+    let mut runner = TestRunner::deterministic();
+    let strategy = arb_scanned_signature();
+    let mut holding = 0usize;
+    for _ in 0..256 {
+        let signature = strategy
+            .new_tree(&mut runner)
+            .expect("a generated signature")
+            .current();
+        if signature_holds_variable(&signature) {
+            holding += 1;
+        }
+    }
+    assert!(
+        (32..=224).contains(&holding),
+        "{holding} of 256 generated signatures hold a variable"
+    );
+}
+
+/// A signature nested `depth` levels deep: each level quotes a signed term
+/// whose signature is the next level. The innermost signature is `bottom`.
+/// The loop builds it from the inside out, so construction never recurses.
+fn deep_signature(depth: usize, bottom: CostSignature) -> CostSignature {
+    let mut signature = bottom;
+    for _ in 0..depth {
+        signature = scanned_signature(CostSignatureValue::Quote(Par {
+            cost_signed_terms: vec![CostSignedTerm {
+                body: None,
+                signature: Some(signature),
+            }],
+            ..Default::default()
+        }));
+    }
+    signature
+}
+
+/// Review H-1 and DR-67: the scan finishes on a signature nested 100,000
+/// levels deep on a 256 KiB stack. It finds a variable at the bottom and
+/// reports none above a ground bottom. The recursive oracle agrees at a depth
+/// whose recursion fits its large stack. Each signature is dropped through
+/// `dismantle_term`.
+#[test]
+fn the_variable_scan_runs_a_signature_nested_one_hundred_thousand_deep_on_a_small_stack() {
+    let variable = || scanned_signature(CostSignatureValue::BoundLevel(0));
+    let ground = || scanned_signature(CostSignatureValue::Ground(vec![1]));
+    let dismantle_signature = |signature: CostSignature| {
+        std::thread::Builder::new()
+            .name("scan-teardown".to_string())
+            .stack_size(SMALL_STACK_BYTES)
+            .spawn(move || {
+                dismantle_term(Par {
+                    cost_signed_terms: vec![CostSignedTerm {
+                        body: None,
+                        signature: Some(signature),
+                    }],
+                    ..Default::default()
+                })
+            })
+            .expect("spawn the teardown thread")
+            .join()
+            .expect("the iterative teardown stays within a small stack");
+    };
+    for (bottom, expected) in [(variable(), true), (ground(), false)] {
+        let deep = deep_signature(DEEP_NESTING, bottom.clone());
+        let oracle_input = deep_signature(ORACLE_NESTING, bottom);
+        let (scanned, oracle_scanned, oracle) = std::thread::scope(|scope| {
+            let scanned = std::thread::Builder::new()
+                .name("scan-small-stack".to_string())
+                .stack_size(SMALL_STACK_BYTES)
+                .spawn_scoped(scope, || signature_holds_variable(&deep))
+                .expect("spawn the scan thread")
+                .join()
+                .expect("the scan stays within a small stack");
+            let oracle_scanned = std::thread::Builder::new()
+                .name("scan-oracle-input".to_string())
+                .stack_size(SMALL_STACK_BYTES)
+                .spawn_scoped(scope, || signature_holds_variable(&oracle_input))
+                .expect("spawn the scan thread")
+                .join()
+                .expect("the scan stays within a small stack");
+            let oracle = std::thread::Builder::new()
+                .name("scan-oracle".to_string())
+                .stack_size(ORACLE_STACK_BYTES)
+                .spawn_scoped(scope, || {
+                    super::recursive_oracle::signature_holds_variable(&oracle_input)
+                })
+                .expect("spawn the oracle thread")
+                .join()
+                .expect("the oracle runs on a large stack");
+            (scanned, oracle_scanned, oracle)
+        });
+        dismantle_signature(deep);
+        dismantle_signature(oracle_input);
+        assert_eq!(
+            (scanned, oracle_scanned, oracle),
+            (expected, expected, expected)
+        );
+    }
 }

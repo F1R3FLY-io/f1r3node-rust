@@ -162,10 +162,18 @@ pub fn linear_cost_estimate(
     evaluator: &ReducerCore,
     host: &HostWorkBudget,
 ) -> Result<CostEstimate, InterpreterError> {
-    debug_assert!(
-        deterministic_reduction::current().is_none(),
-        "the pre-execution estimate runs outside a reduction session"
-    );
+    // Changed by the G1-4a fix (review LOW 1): a live reduction session is an
+    // error in every build, because the reducer's host-work reservations
+    // would charge that session.
+    // debug_assert!(
+    //     deterministic_reduction::current().is_none(),
+    //     "the pre-execution estimate runs outside a reduction session"
+    // );
+    if deterministic_reduction::current().is_some() {
+        return Err(InterpreterError::BugFoundError(
+            "the pre-execution estimate must run outside a reduction session".to_string(),
+        ));
+    }
     let rules = NativePhloRules::resolve(schedule)
         .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
     let core = isolated_evaluator(evaluator);
@@ -173,13 +181,28 @@ pub fn linear_cost_estimate(
         let mut estimator = Estimator::new(funding, &core, host)?;
         let counts = estimator.measure(resolved)?;
         estimator.charge_plan(&counts)?;
-        let plan = static_authority_plan(resolved, funding);
+        // Changed by the G1-4a fix (review M-2): the plan and the static
+        // signature list canonicalize every signature recursively, so they
+        // run only when no signature is taller than the sizing bound.
+        // let plan = static_authority_plan(resolved, funding);
+        let shallow = estimator.signatures_fit();
+        let plan = match shallow {
+            true => Some(static_authority_plan(resolved, funding)),
+            false => {
+                estimator.violate(IncompleteReason::UnsizedValue);
+                None
+            }
+        };
         estimator.walk(resolved)?;
         let tables = estimator.tables()?;
         estimator.charge_fold(&counts)?;
         let vector = estimator.run(&tables)?;
         estimator.charge_signatures(&counts)?;
-        let static_signatures = static_authority_signatures(resolved).ok();
+        // let static_signatures = static_authority_signatures(resolved).ok();
+        let static_signatures = match shallow {
+            true => static_authority_signatures(resolved).ok(),
+            false => None,
+        };
         estimator.assemble(plan, vector, static_signatures, &rules, schedule)
     })
 }
@@ -459,89 +482,131 @@ fn par_parts<'a>(par: &'a Par, children: &mut Vec<(u32, Subterm<'a>)>) -> Metric
     own
 }
 
+/// The operand slots of one expression in field order, each with its message
+/// offset: 3 for an operand, and 4 for a map entry or a zipper element, which
+/// sit one message deeper. An empty optional slot is `None`. The pre-pass,
+/// the freshness check, the evaluation bound and the teardown read the forms
+/// through exhaustive matches, so a new form reaches all of them (review
+/// cleanup).
+fn expr_operands(expr: &Expr) -> Vec<(u32, Option<&Par>)> {
+    fn pair<'a>(left: &'a Option<Par>, right: &'a Option<Par>) -> Vec<(u32, Option<&'a Par>)> {
+        vec![(3, left.as_ref()), (3, right.as_ref())]
+    }
+    fn each(offset: u32, pars: &[Par]) -> Vec<(u32, Option<&Par>)> {
+        pars.iter().map(|par| (offset, Some(par))).collect()
+    }
+    let Some(instance) = expr.expr_instance.as_ref() else {
+        return Vec::new();
+    };
+    match instance {
+        ExprInstance::GBool(_)
+        | ExprInstance::GInt(_)
+        | ExprInstance::GString(_)
+        | ExprInstance::GUri(_)
+        | ExprInstance::GByteArray(_)
+        | ExprInstance::GDouble(_)
+        | ExprInstance::GBigInt(_)
+        | ExprInstance::GBigRat(_)
+        | ExprInstance::GFixedPoint(_)
+        | ExprInstance::GUint64(_)
+        | ExprInstance::GFloat32(_)
+        | ExprInstance::GInt32(_)
+        | ExprInstance::GUint32(_)
+        | ExprInstance::GUint16(_)
+        | ExprInstance::GUint8(_)
+        | ExprInstance::EVarBody(_) => Vec::new(),
+        ExprInstance::ENotBody(body) => vec![(3, body.p.as_ref())],
+        ExprInstance::ENegBody(body) => vec![(3, body.p.as_ref())],
+        ExprInstance::EMultBody(body) => pair(&body.p1, &body.p2),
+        ExprInstance::EDivBody(body) => pair(&body.p1, &body.p2),
+        ExprInstance::EModBody(body) => pair(&body.p1, &body.p2),
+        ExprInstance::EPlusBody(body) => pair(&body.p1, &body.p2),
+        ExprInstance::EMinusBody(body) => pair(&body.p1, &body.p2),
+        ExprInstance::ELtBody(body) => pair(&body.p1, &body.p2),
+        ExprInstance::ELteBody(body) => pair(&body.p1, &body.p2),
+        ExprInstance::EGtBody(body) => pair(&body.p1, &body.p2),
+        ExprInstance::EGteBody(body) => pair(&body.p1, &body.p2),
+        ExprInstance::EEqBody(body) => pair(&body.p1, &body.p2),
+        ExprInstance::ENeqBody(body) => pair(&body.p1, &body.p2),
+        ExprInstance::EAndBody(body) => pair(&body.p1, &body.p2),
+        ExprInstance::EOrBody(body) => pair(&body.p1, &body.p2),
+        ExprInstance::EPercentPercentBody(body) => pair(&body.p1, &body.p2),
+        ExprInstance::EPlusPlusBody(body) => pair(&body.p1, &body.p2),
+        ExprInstance::EMinusMinusBody(body) => pair(&body.p1, &body.p2),
+        ExprInstance::EMatchesBody(body) => pair(&body.target, &body.pattern),
+        ExprInstance::EListBody(list) => each(3, &list.ps),
+        ExprInstance::ETupleBody(tuple) => each(3, &tuple.ps),
+        ExprInstance::ESetBody(set) => each(3, &set.ps),
+        ExprInstance::EMapBody(map) => {
+            let mut slots = Vec::with_capacity(map.kvs.len().saturating_mul(2));
+            for entry in &map.kvs {
+                slots.push((4, entry.key.as_ref()));
+                slots.push((4, entry.value.as_ref()));
+            }
+            slots
+        }
+        ExprInstance::EMethodBody(method) => {
+            let mut slots = Vec::with_capacity(method.arguments.len().saturating_add(1));
+            slots.push((3, method.target.as_ref()));
+            slots.extend(method.arguments.iter().map(|argument| (3, Some(argument))));
+            slots
+        }
+        ExprInstance::EPathmapBody(pathmap) => each(3, &pathmap.ps),
+        ExprInstance::EZipperBody(zipper) => zipper
+            .pathmap
+            .as_ref()
+            .map_or_else(Vec::new, |pathmap| each(4, &pathmap.ps)),
+    }
+}
+
+/// The metrics of one expression up to its operands, which go to `children`
+/// from the shared operand slots.
 fn expr_parts<'a>(expr: &'a Expr, own: &mut Metrics, children: &mut Vec<(u32, Subterm<'a>)>) {
     let add = |own: &mut Metrics, bytes: usize| {
         own.weight = own.weight.saturating_add(byte_count(bytes));
     };
-    let mut operands = |left: &'a Option<Par>, right: &'a Option<Par>| {
-        push_pars(children, 3, left.iter().chain(right.iter()));
+    let open = |own: &mut Metrics, remainder: bool| {
+        own.vars = own.vars.saturating_add(u64::from(remainder));
     };
-    match expr.expr_instance.as_ref() {
-        Some(ExprInstance::GString(text)) | Some(ExprInstance::GUri(text)) => add(own, text.len()),
-        Some(ExprInstance::GByteArray(bytes)) | Some(ExprInstance::GBigInt(bytes)) => {
-            add(own, bytes.len())
-        }
-        Some(ExprInstance::GBigRat(rational)) => add(
+    children.extend(
+        expr_operands(expr)
+            .into_iter()
+            .filter_map(|(offset, par)| par.map(|par| (offset, Subterm::Par(par)))),
+    );
+    let Some(instance) = expr.expr_instance.as_ref() else {
+        return;
+    };
+    match instance {
+        ExprInstance::GString(text) | ExprInstance::GUri(text) => add(own, text.len()),
+        ExprInstance::GByteArray(bytes) | ExprInstance::GBigInt(bytes) => add(own, bytes.len()),
+        ExprInstance::GBigRat(rational) => add(
             own,
             rational.numerator.len() + rational.denominator.len() + NODE_BYTES as usize,
         ),
-        Some(ExprInstance::GFixedPoint(fixed)) => {
-            add(own, fixed.unscaled.len() + NODE_BYTES as usize)
-        }
-        Some(ExprInstance::ENotBody(body)) => operands(&body.p, &None),
-        Some(ExprInstance::ENegBody(body)) => operands(&body.p, &None),
-        Some(ExprInstance::EMultBody(body)) => operands(&body.p1, &body.p2),
-        Some(ExprInstance::EDivBody(body)) => operands(&body.p1, &body.p2),
-        Some(ExprInstance::EModBody(body)) => operands(&body.p1, &body.p2),
-        Some(ExprInstance::EPlusBody(body)) => operands(&body.p1, &body.p2),
-        Some(ExprInstance::EMinusBody(body)) => operands(&body.p1, &body.p2),
-        Some(ExprInstance::ELtBody(body)) => operands(&body.p1, &body.p2),
-        Some(ExprInstance::ELteBody(body)) => operands(&body.p1, &body.p2),
-        Some(ExprInstance::EGtBody(body)) => operands(&body.p1, &body.p2),
-        Some(ExprInstance::EGteBody(body)) => operands(&body.p1, &body.p2),
-        Some(ExprInstance::EEqBody(body)) => operands(&body.p1, &body.p2),
-        Some(ExprInstance::ENeqBody(body)) => operands(&body.p1, &body.p2),
-        Some(ExprInstance::EAndBody(body)) => operands(&body.p1, &body.p2),
-        Some(ExprInstance::EOrBody(body)) => operands(&body.p1, &body.p2),
-        Some(ExprInstance::EPercentPercentBody(body)) => operands(&body.p1, &body.p2),
-        Some(ExprInstance::EPlusPlusBody(body)) => operands(&body.p1, &body.p2),
-        Some(ExprInstance::EMinusMinusBody(body)) => operands(&body.p1, &body.p2),
-        Some(ExprInstance::EMatchesBody(body)) => operands(&body.target, &body.pattern),
-        Some(ExprInstance::EVarBody(_)) => own.vars = own.vars.saturating_add(1),
-        Some(ExprInstance::EListBody(list)) => {
+        ExprInstance::GFixedPoint(fixed) => add(own, fixed.unscaled.len() + NODE_BYTES as usize),
+        ExprInstance::EVarBody(_) => open(own, true),
+        ExprInstance::EListBody(list) => {
             add(own, list.locally_free.len());
-            push_pars(children, 3, list.ps.iter());
-            if list.remainder.is_some() {
-                own.vars = own.vars.saturating_add(1);
-            }
+            open(own, list.remainder.is_some());
         }
-        Some(ExprInstance::ETupleBody(tuple)) => {
-            add(own, tuple.locally_free.len());
-            push_pars(children, 3, tuple.ps.iter());
-        }
-        Some(ExprInstance::ESetBody(set)) => {
+        ExprInstance::ETupleBody(tuple) => add(own, tuple.locally_free.len()),
+        ExprInstance::ESetBody(set) => {
             add(own, set.locally_free.len());
-            push_pars(children, 3, set.ps.iter());
-            if set.remainder.is_some() {
-                own.vars = own.vars.saturating_add(1);
-            }
+            open(own, set.remainder.is_some());
         }
-        Some(ExprInstance::EMapBody(map)) => {
+        ExprInstance::EMapBody(map) => {
             add(own, map.locally_free.len());
-            for pair in &map.kvs {
-                add(own, NODE_BYTES as usize);
-                push_pars(children, 4, pair.key.iter().chain(pair.value.iter()));
-            }
-            if map.remainder.is_some() {
-                own.vars = own.vars.saturating_add(1);
-            }
+            add(own, map.kvs.len().saturating_mul(NODE_BYTES as usize));
+            open(own, map.remainder.is_some());
         }
-        Some(ExprInstance::EMethodBody(method)) => {
-            add(own, method.method_name.len() + method.locally_free.len());
-            push_pars(
-                children,
-                3,
-                method.target.iter().chain(method.arguments.iter()),
-            );
+        ExprInstance::EMethodBody(method) => {
+            add(own, method.method_name.len() + method.locally_free.len())
         }
-        Some(ExprInstance::EPathmapBody(pathmap)) => {
+        ExprInstance::EPathmapBody(pathmap) => {
             add(own, pathmap.locally_free.len());
-            push_pars(children, 3, pathmap.ps.iter());
-            if pathmap.remainder.is_some() {
-                own.vars = own.vars.saturating_add(1);
-            }
+            open(own, pathmap.remainder.is_some());
         }
-        Some(ExprInstance::EZipperBody(zipper)) => {
+        ExprInstance::EZipperBody(zipper) => {
             add(
                 own,
                 zipper.current_path.iter().map(Vec::len).sum::<usize>()
@@ -550,13 +615,37 @@ fn expr_parts<'a>(expr: &'a Expr, own: &mut Metrics, children: &mut Vec<(u32, Su
             );
             if let Some(pathmap) = zipper.pathmap.as_ref() {
                 add(own, pathmap.locally_free.len());
-                push_pars(children, 4, pathmap.ps.iter());
-                if pathmap.remainder.is_some() {
-                    own.vars = own.vars.saturating_add(1);
-                }
+                open(own, pathmap.remainder.is_some());
             }
         }
-        Some(_) | None => {}
+        ExprInstance::GBool(_)
+        | ExprInstance::GInt(_)
+        | ExprInstance::GDouble(_)
+        | ExprInstance::GUint64(_)
+        | ExprInstance::GFloat32(_)
+        | ExprInstance::GInt32(_)
+        | ExprInstance::GUint32(_)
+        | ExprInstance::GUint16(_)
+        | ExprInstance::GUint8(_)
+        | ExprInstance::ENotBody(_)
+        | ExprInstance::ENegBody(_)
+        | ExprInstance::EMultBody(_)
+        | ExprInstance::EDivBody(_)
+        | ExprInstance::EModBody(_)
+        | ExprInstance::EPlusBody(_)
+        | ExprInstance::EMinusBody(_)
+        | ExprInstance::ELtBody(_)
+        | ExprInstance::ELteBody(_)
+        | ExprInstance::EGtBody(_)
+        | ExprInstance::EGteBody(_)
+        | ExprInstance::EEqBody(_)
+        | ExprInstance::ENeqBody(_)
+        | ExprInstance::EAndBody(_)
+        | ExprInstance::EOrBody(_)
+        | ExprInstance::EPercentPercentBody(_)
+        | ExprInstance::EPlusPlusBody(_)
+        | ExprInstance::EMinusMinusBody(_)
+        | ExprInstance::EMatchesBody(_) => {}
     }
 }
 
@@ -610,17 +699,29 @@ fn measure_subterm(
     let mut work = vec![Step::Enter(root)];
     let mut children = Vec::new();
     while let Some(step) = work.pop() {
-        reserve(host, HostWorkDimension::StructuralItems, 1)?;
+        // Changed by the G1-4a fix (review LOW 3): each step scans the whole
+        // width of its node, so it charges that width.
+        // reserve(host, HostWorkDimension::StructuralItems, 1)?;
         match step {
             Step::Enter(subterm) => {
                 work.push(Step::Exit(subterm));
                 children.clear();
                 subterm_parts(subterm, &mut children);
+                reserve(
+                    host,
+                    HostWorkDimension::StructuralItems,
+                    scan_width(subterm, &children),
+                )?;
                 work.extend(children.drain(..).map(|(_, child)| Step::Enter(child)));
             }
             Step::Exit(subterm) => {
                 children.clear();
                 let mut metrics = subterm_parts(subterm, &mut children);
+                reserve(
+                    host,
+                    HostWorkDimension::StructuralItems,
+                    scan_width(subterm, &children),
+                )?;
                 for (offset, child) in children.drain(..) {
                     metrics.absorb(offset, measures.get(child));
                 }
@@ -629,6 +730,25 @@ fn measure_subterm(
         }
     }
     Ok(measures.get(root))
+}
+
+/// Added by the G1-4a fix (review H-1): whether a signature still holds a
+/// variable, anywhere inside it and inside the processes of its `Quote` and
+/// `Name` atoms. A variable is an `EVar`, a remainder, a variable reference
+/// or a `BoundLevel`, as `subterm_parts` counts them. Substitution replaces
+/// such a variable at run time, so the lane of the signature is not static.
+/// The scan uses a heap work stack and stops at the first variable.
+pub(crate) fn signature_holds_variable(signature: &CostSignature) -> bool {
+    let mut work = vec![Subterm::Signature(signature)];
+    let mut children = Vec::new();
+    while let Some(subterm) = work.pop() {
+        children.clear();
+        if subterm_parts(subterm, &mut children).vars > 0 {
+            return true;
+        }
+        work.extend(children.drain(..).map(|(_, child)| child));
+    }
+    false
 }
 
 /// Which marker a sized value contains: a received or matched value
@@ -662,17 +782,48 @@ fn find_marker(root: &Par, host: &HostWorkBudget) -> Result<Option<Marker>, Inte
     let mut work = vec![Subterm::Par(root)];
     let mut children = Vec::new();
     while let Some(subterm) = work.pop() {
-        reserve(host, HostWorkDimension::StructuralItems, 1)?;
+        // Changed by the G1-4a fix (review LOW 3): the step charges the width
+        // that it scans.
+        // reserve(host, HostWorkDimension::StructuralItems, 1)?;
+        children.clear();
+        subterm_parts(subterm, &mut children);
+        reserve(
+            host,
+            HostWorkDimension::StructuralItems,
+            scan_width(subterm, &children),
+        )?;
         if let Subterm::Par(par) = subterm {
             if let Some(marker) = par.unforgeables.iter().find_map(marker_of) {
                 return Ok(Some(marker));
             }
         }
-        children.clear();
-        subterm_parts(subterm, &mut children);
         work.extend(children.drain(..).map(|(_, child)| child));
     }
     Ok(None)
+}
+
+/// Added by the G1-4a fix (review LOW 3): the items that one scan of a node
+/// reads: the node, its top-level items and its nested children.
+fn scan_width(subterm: Subterm<'_>, children: &[(u32, Subterm<'_>)]) -> u64 {
+    let items = match subterm {
+        Subterm::Par(par) => {
+            par.sends.len()
+                + par.receives.len()
+                + par.news.len()
+                + par.exprs.len()
+                + par.matches.len()
+                + par.unforgeables.len()
+                + par.bundles.len()
+                + par.connectives.len()
+                + par.conditionals.len()
+                + par.cost_signed_terms.len()
+                + par.cost_stacks.len()
+        }
+        Subterm::Signature(_) => 0,
+    };
+    byte_count(items)
+        .saturating_add(byte_count(children.len()))
+        .saturating_add(1)
 }
 
 /// The work of the reused plan, of `static_authority_signatures` and of the
@@ -704,7 +855,7 @@ fn count_plan_work(
         Exit(&'a Par, u64, bool),
     }
     let mut counts = WorkCounts::default();
-    let mut subtree = HashMap::<usize, u64>::new();
+    let mut subtree = HashMap::<usize, (u64, u64)>::new();
     let mut work = vec![Step::Enter(root, 0, true)];
     let mut children = Vec::new();
     let signature_bytes = |signature: &CostSignature| {
@@ -766,33 +917,76 @@ fn count_plan_work(
                         }),
                 );
             }
+            // Changed by the G1-4a fix (review H-2): a combine touches the
+            // lanes of the child, which its signed scopes and signed binds
+            // bound, and the supply of the node, which its stack cells bound.
+            // The count no longer adds one entry for every node of a subtree,
+            // so a wide term costs its width, not its width times its size.
+            // A case of a match or a branch of an `if` is merged twice: into
+            // its alternative, and then, inside the alternative, into the
+            // node. Each merge reads the lane map and the transfer map. So a
+            // child pays four entries for each of its lanes and for the
+            // deploy lane. The replaced lines follow.
+            // Step::Exit(par, depth, execution) => {
+            //     children.clear();
+            //     plan_children(par, depth, execution, &mut children);
+            //     let nested = children.iter().fold(0u64, |total, (child, _, _)| {
+            //         total.saturating_add(
+            //             subtree
+            //                 .get(&(*child as *const Par as usize))
+            //                 .copied()
+            //                 .unwrap_or(0),
+            //         )
+            //     });
+            //     let own = byte_count(par.cost_signed_terms.len())
+            //         .saturating_add(signed_binds(par))
+            //         .saturating_add(stack_cells(par))
+            //         .saturating_add(1);
+            //     let entries = own.saturating_add(nested);
+            //     subtree.insert(par as *const Par as usize, entries);
+            //     let base = depth
+            //         .saturating_add(1)
+            //         .saturating_mul(2)
+            //         .saturating_add(entries.saturating_mul(2))
+            //         .saturating_add(4);
+            //     let edges = plan_items(par, execution).saturating_add(byte_count(children.len()));
+            //     counts.merge_entries = counts
+            //         .merge_entries
+            //         .saturating_add(edges.saturating_mul(base))
+            //         .saturating_add(nested.saturating_mul(3));
+            // }
             Step::Exit(par, depth, execution) => {
                 children.clear();
                 plan_children(par, depth, execution, &mut children);
-                let nested = children.iter().fold(0u64, |total, (child, _, _)| {
-                    total.saturating_add(
-                        subtree
-                            .get(&(*child as *const Par as usize))
-                            .copied()
-                            .unwrap_or(0),
-                    )
-                });
-                let own = byte_count(par.cost_signed_terms.len())
+                let mut lanes_below = 0u64;
+                let mut cells_below = 0u64;
+                let mut child_lanes = 0u64;
+                for (child, _, _) in &children {
+                    let (lanes, cells) = subtree
+                        .get(&(*child as *const Par as usize))
+                        .copied()
+                        .unwrap_or((0, 0));
+                    lanes_below = lanes_below.saturating_add(lanes);
+                    cells_below = cells_below.saturating_add(cells);
+                    child_lanes = child_lanes.saturating_add(lanes.saturating_add(1));
+                }
+                let lanes = byte_count(par.cost_signed_terms.len())
                     .saturating_add(signed_binds(par))
-                    .saturating_add(stack_cells(par))
-                    .saturating_add(1);
-                let entries = own.saturating_add(nested);
-                subtree.insert(par as *const Par as usize, entries);
+                    .saturating_add(lanes_below);
+                let cells = stack_cells(par).saturating_add(cells_below);
+                subtree.insert(par as *const Par as usize, (lanes, cells));
+                let items = plan_items(par, execution);
+                let edges = items.saturating_add(byte_count(children.len()));
                 let base = depth
                     .saturating_add(1)
                     .saturating_mul(2)
-                    .saturating_add(entries.saturating_mul(2))
+                    .saturating_add(cells.saturating_mul(2))
                     .saturating_add(4);
-                let edges = plan_items(par, execution).saturating_add(byte_count(children.len()));
                 counts.merge_entries = counts
                     .merge_entries
                     .saturating_add(edges.saturating_mul(base))
-                    .saturating_add(nested.saturating_mul(3));
+                    .saturating_add(child_lanes.saturating_mul(4))
+                    .saturating_add(items.saturating_mul(2));
             }
         }
     }
@@ -1128,15 +1322,31 @@ impl<'e> Estimator<'e> {
         self.charge(HostWorkDimension::VerificationBytes, counts.signature_bytes)
     }
 
+    /// The charge of the vector fold. Changed by the G1-4a fix:
+    /// - `contribute` walks the chain of a receive up to three times (review
+    ///   LOW 3).
+    /// - The fold's maps hold lane entries, at most one for each region link.
+    ///   A merge moves the smaller map into the larger, so each entry moves at
+    ///   most a logarithmic number of times (review H-2).
     pub(crate) fn charge_fold(&self, counts: &WorkCounts) -> Result<(), InterpreterError> {
         self.charge(
             HostWorkDimension::StructuralItems,
             byte_count(self.program.len()),
         )?;
-        self.charge(HostWorkDimension::AuthorityNodes, counts.chain_links)?;
+        // self.charge(HostWorkDimension::AuthorityNodes, counts.chain_links)?;
+        // self.charge(
+        //     HostWorkDimension::VerificationOperations,
+        //     counts.merge_entries.saturating_mul(4),
+        // )
+        self.charge(
+            HostWorkDimension::AuthorityNodes,
+            counts.chain_links.saturating_mul(3),
+        )?;
         self.charge(
             HostWorkDimension::VerificationOperations,
-            counts.merge_entries.saturating_mul(4),
+            counts
+                .chain_links
+                .saturating_mul(log2_ceil(counts.chain_links.saturating_add(2)).saturating_add(1)),
         )
     }
 
@@ -1275,63 +1485,96 @@ impl<'e> Estimator<'e> {
     /// True when a free index of `locally_free` above `shift` names a fresh
     /// level (rule X3).
     fn names_fresh(&self, locally_free: &[u8], shift: usize) -> bool {
+        self.names_kind(locally_free, shift, |kind| {
+            matches!(kind, BinderKind::Fresh | BinderKind::FreshHole)
+        })
+    }
+
+    /// Added by the G1-4a fix: true when a free index of `locally_free` above
+    /// `shift` names a level whose kind passes `test`. `names_fresh` used the
+    /// same scan for the fresh kinds before the fix.
+    fn names_kind(
+        &self,
+        locally_free: &[u8],
+        shift: usize,
+        test: impl Fn(BinderKind) -> bool,
+    ) -> bool {
         locally_free
             .iter()
             .enumerate()
             .filter(|(_, free)| **free != 0)
             .any(|(index, _)| {
-                matches!(
-                    self.binder(index, shift).map(|binder| binder.kind),
-                    Some(BinderKind::Fresh | BinderKind::FreshHole)
-                )
+                self.binder(index, shift)
+                    .is_some_and(|binder| test(binder.kind))
             })
     }
 
+    /// True when the expression names a fresh level through an operand, its
+    /// collection or a bound variable (rule X3). The operands come from the
+    /// shared operand slots.
     fn expr_names_fresh(&self, expr: &Expr) -> bool {
-        let pars = |left: &Option<Par>, right: &Option<Par>| {
-            left.iter()
-                .chain(right.iter())
-                .any(|par| self.names_fresh(&par.locally_free, 0))
+        let operands = || {
+            expr_operands(expr)
+                .into_iter()
+                .any(|(_, par)| par.is_some_and(|par| self.names_fresh(&par.locally_free, 0)))
         };
-        match expr.expr_instance.as_ref() {
-            Some(ExprInstance::ENotBody(body)) => pars(&body.p, &None),
-            Some(ExprInstance::ENegBody(body)) => pars(&body.p, &None),
-            Some(ExprInstance::EMultBody(body)) => pars(&body.p1, &body.p2),
-            Some(ExprInstance::EDivBody(body)) => pars(&body.p1, &body.p2),
-            Some(ExprInstance::EModBody(body)) => pars(&body.p1, &body.p2),
-            Some(ExprInstance::EPlusBody(body)) => pars(&body.p1, &body.p2),
-            Some(ExprInstance::EMinusBody(body)) => pars(&body.p1, &body.p2),
-            Some(ExprInstance::ELtBody(body)) => pars(&body.p1, &body.p2),
-            Some(ExprInstance::ELteBody(body)) => pars(&body.p1, &body.p2),
-            Some(ExprInstance::EGtBody(body)) => pars(&body.p1, &body.p2),
-            Some(ExprInstance::EGteBody(body)) => pars(&body.p1, &body.p2),
-            Some(ExprInstance::EEqBody(body)) => pars(&body.p1, &body.p2),
-            Some(ExprInstance::ENeqBody(body)) => pars(&body.p1, &body.p2),
-            Some(ExprInstance::EAndBody(body)) => pars(&body.p1, &body.p2),
-            Some(ExprInstance::EOrBody(body)) => pars(&body.p1, &body.p2),
-            Some(ExprInstance::EPercentPercentBody(body)) => pars(&body.p1, &body.p2),
-            Some(ExprInstance::EPlusPlusBody(body)) => pars(&body.p1, &body.p2),
-            Some(ExprInstance::EMinusMinusBody(body)) => pars(&body.p1, &body.p2),
-            Some(ExprInstance::EMatchesBody(body)) => pars(&body.target, &body.pattern),
-            Some(ExprInstance::EVarBody(EVar {
+        let Some(instance) = expr.expr_instance.as_ref() else {
+            return false;
+        };
+        match instance {
+            ExprInstance::EVarBody(EVar {
                 v:
                     Some(Var {
                         var_instance: Some(VarInstance::BoundVar(level)),
                     }),
-            })) => usize::try_from(*level).is_ok_and(|level| {
+            }) => usize::try_from(*level).is_ok_and(|level| {
                 matches!(
                     self.binder(level, 0).map(|binder| binder.kind),
                     Some(BinderKind::Fresh | BinderKind::FreshHole)
                 )
             }),
-            Some(ExprInstance::EListBody(list)) => self.names_fresh(&list.locally_free, 0),
-            Some(ExprInstance::ETupleBody(tuple)) => self.names_fresh(&tuple.locally_free, 0),
-            Some(ExprInstance::ESetBody(set)) => self.names_fresh(&set.locally_free, 0),
-            Some(ExprInstance::EMapBody(map)) => self.names_fresh(&map.locally_free, 0),
-            Some(ExprInstance::EMethodBody(method)) => self.names_fresh(&method.locally_free, 0),
-            Some(ExprInstance::EPathmapBody(pathmap)) => self.names_fresh(&pathmap.locally_free, 0),
-            Some(ExprInstance::EZipperBody(zipper)) => self.names_fresh(&zipper.locally_free, 0),
-            Some(_) | None => false,
+            ExprInstance::EListBody(list) => self.names_fresh(&list.locally_free, 0),
+            ExprInstance::ETupleBody(tuple) => self.names_fresh(&tuple.locally_free, 0),
+            ExprInstance::ESetBody(set) => self.names_fresh(&set.locally_free, 0),
+            ExprInstance::EMapBody(map) => self.names_fresh(&map.locally_free, 0),
+            ExprInstance::EMethodBody(method) => self.names_fresh(&method.locally_free, 0),
+            ExprInstance::EPathmapBody(pathmap) => self.names_fresh(&pathmap.locally_free, 0),
+            ExprInstance::EZipperBody(zipper) => self.names_fresh(&zipper.locally_free, 0),
+            ExprInstance::GBool(_)
+            | ExprInstance::GInt(_)
+            | ExprInstance::GString(_)
+            | ExprInstance::GUri(_)
+            | ExprInstance::GByteArray(_)
+            | ExprInstance::GDouble(_)
+            | ExprInstance::GBigInt(_)
+            | ExprInstance::GBigRat(_)
+            | ExprInstance::GFixedPoint(_)
+            | ExprInstance::GUint64(_)
+            | ExprInstance::GFloat32(_)
+            | ExprInstance::GInt32(_)
+            | ExprInstance::GUint32(_)
+            | ExprInstance::GUint16(_)
+            | ExprInstance::GUint8(_)
+            | ExprInstance::EVarBody(_)
+            | ExprInstance::ENotBody(_)
+            | ExprInstance::ENegBody(_)
+            | ExprInstance::EMultBody(_)
+            | ExprInstance::EDivBody(_)
+            | ExprInstance::EModBody(_)
+            | ExprInstance::EPlusBody(_)
+            | ExprInstance::EMinusBody(_)
+            | ExprInstance::ELtBody(_)
+            | ExprInstance::ELteBody(_)
+            | ExprInstance::EGtBody(_)
+            | ExprInstance::EGteBody(_)
+            | ExprInstance::EEqBody(_)
+            | ExprInstance::ENeqBody(_)
+            | ExprInstance::EAndBody(_)
+            | ExprInstance::EOrBody(_)
+            | ExprInstance::EPercentPercentBody(_)
+            | ExprInstance::EPlusPlusBody(_)
+            | ExprInstance::EMinusMinusBody(_)
+            | ExprInstance::EMatchesBody(_) => operands(),
         }
     }
 
@@ -1345,26 +1588,42 @@ impl<'e> Estimator<'e> {
         })
     }
 
-    /// The charge of one substitution, before it runs. Its bindings are the
-    /// environment size once, as `Substitute::reserve_host_work` charges it
-    /// (`substitute.rs:77-100`), and once more for each environment copy of
-    /// the term. Its bytes are the input bound, the output bound, in which
-    /// each variable can become the largest value of the environment, and the
-    /// bytes of each environment copy. The marker scan and the measurement read
-    /// the output once more.
-    fn charge_substitution(&self, metrics: Metrics) -> Result<(), InterpreterError> {
+    /// The charge of one substitution, before it runs.
+    /// - Its bindings are the capacity of the environment map once, for the
+    ///   call, and once more for each environment copy of the term. A copy
+    ///   clones every bucket of the map, and `pop` never shrinks the map
+    ///   (review M-4).
+    /// - Its bytes are the input bound, the output bound, in which each
+    ///   variable can become the largest value of the environment, and the
+    ///   bytes of each environment copy. The marker scan and the measurement
+    ///   read the output once more.
+    /// - A sorted substitution also pays a logarithmic factor on its output
+    ///   for the sort (review LOW 4).
+    fn charge_substitution(&self, metrics: Metrics, sorted: bool) -> Result<(), InterpreterError> {
+        // Changed by the G1-4a fix (review M-4): the copies cost the capacity
+        // of the map, not its length.
+        // self.charge(
+        //     HostWorkDimension::SubstitutionBindings,
+        //     byte_count(self.env.env_map.len()).saturating_mul(metrics.shifts.saturating_add(1)),
+        // )?;
+        let buckets = byte_count(self.env.env_map.capacity().max(self.env.env_map.len()));
         self.charge(
             HostWorkDimension::SubstitutionBindings,
-            byte_count(self.env.env_map.len()).saturating_mul(metrics.shifts.saturating_add(1)),
+            buckets.saturating_mul(metrics.shifts.saturating_add(1)),
         )?;
         let output = metrics
             .weight
             .saturating_add(metrics.vars.saturating_mul(self.env_weight));
+        let sort = match sorted {
+            true => output.saturating_mul(log2_ceil(output.saturating_add(2))),
+            false => 0,
+        };
         self.charge(
             HostWorkDimension::SubstitutionBytes,
             metrics
                 .weight
                 .saturating_add(output.saturating_mul(2))
+                .saturating_add(sort)
                 .saturating_add(metrics.shifts.saturating_mul(self.env_bytes)),
         )
     }
@@ -1381,10 +1640,19 @@ impl<'e> Estimator<'e> {
             Err(reason) => return Ok(Err(reason)),
         };
         let input = metrics.unwrap_or_default();
-        self.charge_substitution(Metrics {
-            weight: input.weight.max(output),
-            ..input
-        })?;
+        // Changed by the G1-4a fix (review H-3): the substitution reads the
+        // evaluated value, whose exact bound is `output`.
+        // self.charge_substitution(Metrics {
+        //     weight: input.weight.max(output),
+        //     ..input
+        // })?;
+        self.charge_substitution(
+            Metrics {
+                weight: output,
+                ..input
+            },
+            true,
+        )?;
         let Ok((substituted, _)) = self
             .core
             .substitute
@@ -1410,10 +1678,11 @@ impl<'e> Estimator<'e> {
     /// `root` when every evaluated form has a known work limit, and `None`
     /// otherwise. Literals, collections, fixed-width arithmetic, comparisons,
     /// boolean operators, `++` on strings, byte arrays and lists, and `%%`
-    /// with a literal map have one. A `%%` costs `n * (n + K * (k + 3))` for a
-    /// template of `n` bytes and `K` keys of at most `k` bytes, plus its
-    /// output bound. The other forms cost their input and output bytes times
-    /// the height, times a logarithmic factor for sorting.
+    /// with a literal map have one. A `%%` costs `t * (t + K * (g + 3))` for a
+    /// template of `t` bytes and `K` keys of at most `g` bytes, plus its
+    /// output bound. The other forms cost their exact input bytes plus their
+    /// output growth. A datum with a set, a map or a comparison also pays its
+    /// height plus one, times a logarithmic factor for sorting.
     pub(crate) fn evaluation_bound(
         &self,
         root: &Par,
@@ -1432,6 +1701,7 @@ impl<'e> Estimator<'e> {
         let mut calls = 0u64;
         let mut growth = 0u64;
         let mut loops = 0u64;
+        let mut sorted = false;
         while let Some(step) = work.pop() {
             self.charge(HostWorkDimension::StructuralItems, 1)?;
             match step {
@@ -1441,6 +1711,19 @@ impl<'e> Estimator<'e> {
                 }
                 Step::Expr(expr) => {
                     calls = calls.saturating_add(1);
+                    sorted |= matches!(
+                        expr.expr_instance,
+                        Some(
+                            ExprInstance::ESetBody(_)
+                                | ExprInstance::EMapBody(_)
+                                | ExprInstance::ELtBody(_)
+                                | ExprInstance::ELteBody(_)
+                                | ExprInstance::EGtBody(_)
+                                | ExprInstance::EGteBody(_)
+                                | ExprInstance::EEqBody(_)
+                                | ExprInstance::ENeqBody(_)
+                        )
+                    );
                     let Some(operands) = evaluated_operands(expr) else {
                         return Ok(None);
                     };
@@ -1484,14 +1767,30 @@ impl<'e> Estimator<'e> {
                 }
             }
         }
-        let output = metrics
-            .weight
-            .saturating_add(values.last().map_or(0, |value| value.growth));
-        let bytes = metrics.weight.saturating_add(growth);
-        let work = bytes
-            .saturating_mul(u64::from(metrics.height).saturating_add(1))
-            .saturating_mul(log2_ceil(bytes.saturating_add(2)).saturating_add(1))
-            .saturating_add(loops);
+        // Changed by the G1-4a fix (review H-3): the length is the exact
+        // prost length, which the sizing bound keeps stack-safe, and only a
+        // datum with a set, a map or a comparison pays the height and the
+        // logarithmic factor of sorting and comparing. The replaced lines
+        // follow.
+        // let output = metrics
+        //     .weight
+        //     .saturating_add(values.last().map_or(0, |value| value.growth));
+        // let bytes = metrics.weight.saturating_add(growth);
+        // let work = bytes
+        //     .saturating_mul(u64::from(metrics.height).saturating_add(1))
+        //     .saturating_mul(log2_ceil(bytes.saturating_add(2)).saturating_add(1))
+        //     .saturating_add(loops);
+        self.charge(HostWorkDimension::VerificationBytes, metrics.weight)?;
+        let exact = byte_count(root.encoded_len());
+        let output = exact.saturating_add(values.last().map_or(0, |value| value.growth));
+        let bytes = exact.saturating_add(growth);
+        let factor = match sorted {
+            true => u64::from(metrics.height)
+                .saturating_add(1)
+                .saturating_mul(log2_ceil(bytes.saturating_add(2)).saturating_add(1)),
+            false => 1,
+        };
+        let work = bytes.saturating_mul(factor).saturating_add(loops);
         Ok(Some(EvaluationBound {
             calls,
             work,
@@ -1525,10 +1824,19 @@ impl<'e> Estimator<'e> {
             Err(reason) => return Ok(Err(reason)),
         };
         let input = metrics.unwrap_or_default();
-        self.charge_substitution(Metrics {
-            weight: input.weight.max(output),
-            ..input
-        })?;
+        // Changed by the G1-4a fix (review H-3): the substitution reads the
+        // evaluated value, whose exact bound is `output`.
+        // self.charge_substitution(Metrics {
+        //     weight: input.weight.max(output),
+        //     ..input
+        // })?;
+        self.charge_substitution(
+            Metrics {
+                weight: output,
+                ..input
+            },
+            true,
+        )?;
         match self
             .core
             .substitute
@@ -1590,7 +1898,7 @@ impl<'e> Estimator<'e> {
             if !self.fits(metrics) {
                 return Ok(Err(IncompleteReason::UnsizedValue));
             }
-            self.charge_substitution(metrics.unwrap_or_default())?;
+            self.charge_substitution(metrics.unwrap_or_default(), true)?;
             let Ok(substituted) = self
                 .core
                 .substitute
@@ -1621,7 +1929,7 @@ impl<'e> Estimator<'e> {
         if !self.fits(metrics) {
             return Ok(Err(IncompleteReason::UnsizedValue));
         }
-        self.charge_substitution(metrics.unwrap_or_default())?;
+        self.charge_substitution(metrics.unwrap_or_default(), depth != 0)?;
         let shift = i32::try_from(shift).map_err(|_| InterpreterError::HostWorkRejected)?;
         self.env.shift += shift;
         let substituted = if depth == 0 {
@@ -1675,6 +1983,19 @@ impl<'e> Estimator<'e> {
             };
             binds = sum;
         }
+        // The reducer stores a guard after two substitutions. The body
+        // substitution of the nearest enclosing receive replaces the levels
+        // outside that receive. Then `eval_receive` substitutes at depth 1,
+        // which replaces no bound variable. In a complete estimate, no
+        // substitution reaches an outer level of a guard. Each such level is a
+        // pattern level inside the nearest enclosing receive, or anywhere when
+        // no receive encloses the guard. Rule X3 excludes the fresh levels,
+        // `receive` excludes the URN, injection and unknown levels, and the
+        // marker scan of the enclosing body excludes the pattern levels from
+        // farther out. So the stored guard keeps its variables, and this
+        // sizing at depth 1 is its size. Its marker scan can find a marker only through a
+        // variable reference of depth 1, and it stays for that case (review
+        // LOW 2).
         let guard = match receive.condition.as_ref() {
             Some(condition) if condition != &Par::default() => {
                 match self.substituted_length(condition, 1, 0)? {
@@ -1703,8 +2024,38 @@ impl<'e> Estimator<'e> {
         Ok(introduction.map_err(|_| IncompleteReason::UnsizedValue))
     }
 
-    fn lane_of(&mut self, signature: &CostSignature) -> Lane {
-        match cost_signature_to_sig(signature) {
+    /// The lane of a signature. Changed by the G1-4a fix:
+    /// - A signature taller than the sizing bound never reaches the recursive
+    ///   conversions. Its lane is dynamic, with the reason `UnsizedValue`
+    ///   (review M-2).
+    /// - A signature that still holds a variable names another lane at run
+    ///   time, so its lane is dynamic too (review H-1).
+    /// - The conversion, the canonical form and its later clone are charged
+    ///   before they run (review LOW 3).
+    fn lane_of(&mut self, signature: &CostSignature) -> Result<Lane, InterpreterError> {
+        let metrics = match self.measures.signature(signature) {
+            Some(metrics)
+                if metrics.height.saturating_add(WRAPPER_MARGIN) <= SIZING_HEIGHT_LIMIT =>
+            {
+                metrics
+            }
+            Some(_) | None => {
+                self.violate(IncompleteReason::UnsizedValue);
+                return Ok(Lane::Dynamic);
+            }
+        };
+        if metrics.vars > 0 {
+            self.violate(IncompleteReason::StaticPlan(
+                UnprovableDemand::DynamicAuthority,
+            ));
+            return Ok(Lane::Dynamic);
+        }
+        self.charge(
+            HostWorkDimension::VerificationBytes,
+            metrics.weight.saturating_mul(2),
+        )?;
+        self.charge(HostWorkDimension::StructuralBytes, metrics.weight)?;
+        Ok(match cost_signature_to_sig(signature) {
             Ok(Sig::Unit) => Lane::Unit,
             Ok(sig) => {
                 let key = sig.lane_hash();
@@ -1714,7 +2065,17 @@ impl<'e> Estimator<'e> {
                 Lane::Static(key)
             }
             Err(_) => Lane::Dynamic,
-        }
+        })
+    }
+
+    /// Added by the G1-4a fix (review M-2): whether every signature of the
+    /// term fits the sizing bound, so the recursive canonicalization of the
+    /// plan stays within it.
+    pub(crate) fn signatures_fit(&self) -> bool {
+        self.measures
+            .signatures
+            .values()
+            .all(|metrics| metrics.height.saturating_add(WRAPPER_MARGIN) <= SIZING_HEIGHT_LIMIT)
     }
 
     fn region_bytes(
@@ -1746,7 +2107,7 @@ impl<'e> Estimator<'e> {
         self.charge(HostWorkDimension::StructuralItems, 1)?;
         let (lane, region) = match term.signature.as_ref() {
             Some(signature) => {
-                let lane = self.lane_of(signature);
+                let lane = self.lane_of(signature)?;
                 (lane, self.region_bytes(signature, lane, 0)?)
             }
             None => (Lane::Dynamic, None),
@@ -1817,7 +2178,7 @@ impl<'e> Estimator<'e> {
         let mut bind_seal = Some(0u64);
         for (index, bind) in receive.binds.iter().enumerate() {
             if let Some(signature) = bind.cost_signature.as_ref() {
-                let lane = self.lane_of(signature);
+                let lane = self.lane_of(signature)?;
                 let discriminator = u32::try_from(index + 1).unwrap_or(u32::MAX);
                 let region = self.region_bytes(signature, lane, discriminator)?;
                 bind_seal =
@@ -1835,8 +2196,29 @@ impl<'e> Estimator<'e> {
                 .and_then(|chain| bind_seal.and_then(|binds| chain.checked_add(binds))),
         };
         if let Some(condition) = receive.condition.as_ref() {
-            if self.names_fresh(&condition.locally_free, 0) {
+            // Changed by the G1-4a fix (review M-1): the normalizer builds the
+            // guard in the body scope, so its indices start above the binders
+            // of the receive.
+            // if self.names_fresh(&condition.locally_free, 0) {
+            let binders = usize::try_from(receive.bind_count).unwrap_or(0);
+            if self.names_fresh(&condition.locally_free, binders) {
                 self.violate(IncompleteReason::EscapingName);
+            }
+            // Added by the G1-4a fix (reviews M-5 and LOW 2): the body
+            // substitution of an enclosing receive replaces each level of a
+            // nested guard that lies outside that receive, and the reducer
+            // stores the result. A URN, injection or unknown level there takes
+            // its value, which the guard sizing at depth 1 does not see. So a
+            // guard that names such a level has no size. A pattern level from
+            // outside the nearest enclosing receive reaches the marker scan of
+            // that receive's body instead (rule X6).
+            if self.names_kind(&condition.locally_free, binders, |kind| {
+                matches!(
+                    kind,
+                    BinderKind::Urn | BinderKind::Injection | BinderKind::Unknown
+                )
+            }) {
+                self.violate(IncompleteReason::UnsizedValue);
             }
         }
         let introduction = match self.size_receive(receive, seal)? {
@@ -2309,18 +2691,22 @@ impl<'e> Estimator<'e> {
 
     /// The estimate from the plan, the vector and the static signatures
     /// (design §5.5 and §5.7). The compute row is the plan's count when rule
-    /// X1 holds, and the vector's count otherwise.
+    /// X1 holds, and the vector's count otherwise. Changed by the G1-4a fix:
+    /// `plan` is `None` when a signature is taller than the sizing bound and
+    /// the plan did not run (review M-2), and a counted lane without a
+    /// signature has no units, so its counts drop out and the estimate is
+    /// incomplete (review LOW 6).
     pub(crate) fn assemble(
         &self,
-        plan: Result<super::StaticAuthorityPlan, UnprovableDemand>,
+        plan: Option<Result<super::StaticAuthorityPlan, UnprovableDemand>>,
         vector: Vector,
         static_signatures: Option<BTreeMap<SigKey, CostSignature>>,
         rules: &NativePhloRules,
         schedule: &PhloScheduleV1<'_>,
     ) -> Result<CostEstimate, InterpreterError> {
         let mut rows: BTreeMap<SigKey, [u64; 4]> = vector.into_iter().collect();
-        let completeness = match &plan {
-            Ok(plan) => {
+        let mut completeness = match &plan {
+            Some(Ok(plan)) => {
                 for counts in rows.values_mut() {
                     counts[COMPUTE] = 0;
                 }
@@ -2332,7 +2718,14 @@ impl<'e> Estimator<'e> {
                     None => Completeness::Complete,
                 }
             }
-            Err(reason) => Completeness::Incomplete(IncompleteReason::StaticPlan(reason.clone())),
+            Some(Err(reason)) => {
+                Completeness::Incomplete(IncompleteReason::StaticPlan(reason.clone()))
+            }
+            None => Completeness::Incomplete(
+                self.reason
+                    .clone()
+                    .unwrap_or(IncompleteReason::UnsizedValue),
+            ),
         };
         let mut signatures = static_signatures.unwrap_or_default();
         for (lane, signature) in &self.lanes {
@@ -2342,6 +2735,19 @@ impl<'e> Estimator<'e> {
             signatures
                 .entry(self.deploy_key)
                 .or_insert_with(|| signature.clone());
+        }
+        let unpriced = rows
+            .keys()
+            .filter(|lane| !signatures.contains_key(*lane))
+            .copied()
+            .collect::<Vec<_>>();
+        if !unpriced.is_empty() {
+            for lane in &unpriced {
+                rows.remove(lane);
+            }
+            if completeness == Completeness::Complete {
+                completeness = Completeness::Incomplete(IncompleteReason::UnsizedValue);
+            }
         }
         let mut quantities = BTreeMap::new();
         let mut bound_phlo = Some(0u64);
@@ -2510,11 +2916,10 @@ fn single_expression(par: &Par) -> bool {
 }
 
 /// The `Par` operands that `eval_expr_to_expr` evaluates for one expression
-/// form, or `None` for a form without a known work limit (arbitration H2).
+/// form, or `None` for a form without a known work limit (arbitration H2) or
+/// with an empty operand slot. The operands come from the shared operand
+/// slots.
 fn evaluated_operands(expr: &Expr) -> Option<Vec<&Par>> {
-    fn pair<'a>(left: &'a Option<Par>, right: &'a Option<Par>) -> Option<Vec<&'a Par>> {
-        Some(vec![left.as_ref()?, right.as_ref()?])
-    }
     match expr.expr_instance.as_ref()? {
         ExprInstance::GBool(_)
         | ExprInstance::GInt(_)
@@ -2531,33 +2936,31 @@ fn evaluated_operands(expr: &Expr) -> Option<Vec<&Par>> {
         | ExprInstance::GUint32(_)
         | ExprInstance::GUint16(_)
         | ExprInstance::GUint8(_)
-        | ExprInstance::EVarBody(_) => Some(Vec::new()),
-        ExprInstance::ENotBody(body) => Some(vec![body.p.as_ref()?]),
-        ExprInstance::ENegBody(body) => Some(vec![body.p.as_ref()?]),
-        ExprInstance::EMultBody(body) => pair(&body.p1, &body.p2),
-        ExprInstance::EDivBody(body) => pair(&body.p1, &body.p2),
-        ExprInstance::EModBody(body) => pair(&body.p1, &body.p2),
-        ExprInstance::EPlusBody(body) => pair(&body.p1, &body.p2),
-        ExprInstance::EMinusBody(body) => pair(&body.p1, &body.p2),
-        ExprInstance::ELtBody(body) => pair(&body.p1, &body.p2),
-        ExprInstance::ELteBody(body) => pair(&body.p1, &body.p2),
-        ExprInstance::EGtBody(body) => pair(&body.p1, &body.p2),
-        ExprInstance::EGteBody(body) => pair(&body.p1, &body.p2),
-        ExprInstance::EEqBody(body) => pair(&body.p1, &body.p2),
-        ExprInstance::ENeqBody(body) => pair(&body.p1, &body.p2),
-        ExprInstance::EAndBody(body) => pair(&body.p1, &body.p2),
-        ExprInstance::EOrBody(body) => pair(&body.p1, &body.p2),
-        ExprInstance::EPlusPlusBody(body) => pair(&body.p1, &body.p2),
-        ExprInstance::EPercentPercentBody(body) => pair(&body.p1, &body.p2),
-        ExprInstance::EListBody(list) => Some(list.ps.iter().collect()),
-        ExprInstance::ETupleBody(tuple) => Some(tuple.ps.iter().collect()),
-        ExprInstance::ESetBody(set) => Some(set.ps.iter().collect()),
-        ExprInstance::EMapBody(map) => map
-            .kvs
-            .iter()
-            .map(|pair| Some([pair.key.as_ref()?, pair.value.as_ref()?]))
-            .collect::<Option<Vec<_>>>()
-            .map(|pairs| pairs.into_iter().flatten().collect()),
+        | ExprInstance::EVarBody(_)
+        | ExprInstance::ENotBody(_)
+        | ExprInstance::ENegBody(_)
+        | ExprInstance::EMultBody(_)
+        | ExprInstance::EDivBody(_)
+        | ExprInstance::EModBody(_)
+        | ExprInstance::EPlusBody(_)
+        | ExprInstance::EMinusBody(_)
+        | ExprInstance::ELtBody(_)
+        | ExprInstance::ELteBody(_)
+        | ExprInstance::EGtBody(_)
+        | ExprInstance::EGteBody(_)
+        | ExprInstance::EEqBody(_)
+        | ExprInstance::ENeqBody(_)
+        | ExprInstance::EAndBody(_)
+        | ExprInstance::EOrBody(_)
+        | ExprInstance::EPlusPlusBody(_)
+        | ExprInstance::EPercentPercentBody(_)
+        | ExprInstance::EListBody(_)
+        | ExprInstance::ETupleBody(_)
+        | ExprInstance::ESetBody(_)
+        | ExprInstance::EMapBody(_) => expr_operands(expr)
+            .into_iter()
+            .map(|(_, par)| par)
+            .collect(),
         ExprInstance::EMethodBody(_)
         | ExprInstance::EPathmapBody(_)
         | ExprInstance::EZipperBody(_)
@@ -2719,12 +3122,17 @@ fn literal(par: &Par) -> Option<&ExprInstance> {
     }
 }
 
-/// Drops a term without recursion. The derived drop of prost recurses once
+/// Drops a term without recursion. The work is in `dismantle_terms`.
+pub fn dismantle_term(par: Par) { dismantle_terms(vec![par]); }
+
+/// Drops terms without recursion. The derived drop of prost recurses once
 /// per nesting level, so each node first moves every nested `Par` and
 /// `CostSignature` to a heap work list: process positions, expressions,
-/// patterns, conditions, connectives, injections and signatures.
-pub fn dismantle_term(par: Par) {
-    let mut pars = vec![par];
+/// patterns, conditions, connectives, injections and signatures. It is the
+/// one teardown of the crate's accounting walks (review cleanup), and the
+/// funding resolver uses it too.
+pub fn dismantle_terms(pars: Vec<Par>) {
+    let mut pars = pars;
     let mut signatures: Vec<CostSignature> = Vec::new();
     loop {
         if let Some(mut par) = pars.pop() {
@@ -2764,7 +3172,15 @@ pub fn dismantle_term(par: Par) {
                     Some(ConnectiveInstance::ConnAndBody(body))
                     | Some(ConnectiveInstance::ConnOrBody(body)) => pars.extend(body.ps),
                     Some(ConnectiveInstance::ConnNotBody(body)) => pars.push(body),
-                    Some(_) | None => {}
+                    Some(
+                        ConnectiveInstance::VarRefBody(_)
+                        | ConnectiveInstance::ConnBool(_)
+                        | ConnectiveInstance::ConnInt(_)
+                        | ConnectiveInstance::ConnString(_)
+                        | ConnectiveInstance::ConnUri(_)
+                        | ConnectiveInstance::ConnByteArray(_),
+                    )
+                    | None => {}
                 }
             }
             for mut conditional in par.conditionals.drain(..) {
@@ -2787,7 +3203,12 @@ pub fn dismantle_term(par: Par) {
                 Some(CostSignatureValue::Compound(compound)) => {
                     signatures.extend(compound.elements)
                 }
-                Some(_) | None => {}
+                Some(
+                    CostSignatureValue::Ground(_)
+                    | CostSignatureValue::BoundLevel(_)
+                    | CostSignatureValue::Unit(_),
+                )
+                | None => {}
             }
         } else {
             break;
@@ -2795,6 +3216,8 @@ pub fn dismantle_term(par: Par) {
     }
 }
 
+/// Moves the operands of one owned expression to the teardown work list. The
+/// match is exhaustive, like `expr_operands`, so a new form reaches both.
 fn take_expr_pars(expr: Expr, pars: &mut Vec<Par>) {
     let mut both = |left: Option<Par>, right: Option<Par>| {
         pars.extend(left);
@@ -2837,7 +3260,25 @@ fn take_expr_pars(expr: Expr, pars: &mut Vec<Par>) {
         Some(ExprInstance::EZipperBody(zipper)) => {
             pars.extend(zipper.pathmap.into_iter().flat_map(|pathmap| pathmap.ps))
         }
-        Some(_) | None => {}
+        Some(
+            ExprInstance::GBool(_)
+            | ExprInstance::GInt(_)
+            | ExprInstance::GString(_)
+            | ExprInstance::GUri(_)
+            | ExprInstance::GByteArray(_)
+            | ExprInstance::GDouble(_)
+            | ExprInstance::GBigInt(_)
+            | ExprInstance::GBigRat(_)
+            | ExprInstance::GFixedPoint(_)
+            | ExprInstance::GUint64(_)
+            | ExprInstance::GFloat32(_)
+            | ExprInstance::GInt32(_)
+            | ExprInstance::GUint32(_)
+            | ExprInstance::GUint16(_)
+            | ExprInstance::GUint8(_)
+            | ExprInstance::EVarBody(_),
+        )
+        | None => {}
     }
 }
 

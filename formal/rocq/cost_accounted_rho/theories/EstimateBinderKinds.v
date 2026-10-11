@@ -9,7 +9,9 @@
    - A term is a tree of parallel parts, a new with simple names and URIs, a
      send on an index with the free indices of its data, a receive on an index
      with its bind count, the free indices of its guard and its body, a match
-     with one case and a fallback, and an if.
+     with one case and a fallback, and an if. The normalizer builds a guard
+     in the scope of the receive's binders (G1-4a fix, review M-1), so a
+     guard index below the bind count names one of the receive's own levels.
    - A kind is fresh, fresh hole, URN, injection, receive pattern or match
      pattern. A URN or an injection kind names its value. A new pushes its
      simple names first and then one level for each URI, in the order of
@@ -25,14 +27,31 @@
    2. [kinds_no_escape]: under the checks, no fresh level occurs in a guard,
       a match target or a condition, and data have no free level (rules X3
       and X4).
-   3. [kinds_poison_free_introductions]: under the checks, the guard and the
-      substituted body of every receive name no pattern level (rule X6). The
+   3. [kinds_poison_free_introductions]: under the checks, the substituted
+      body of every receive names no outer pattern level (rule X6). The
       receive's own levels stay variables inside its body, so a branch on its
-      own value stays allowed.
+      own value stays allowed. A guard may name a pattern level, see 7.
    4. [full_environment_matches_runtime_free_levels]: the representative
       environment of the estimate, with a fresh name for each fresh level and
       the bound value for each URN or injection level, gives every value
       without a pattern level the size of every run.
+   5. [static_signature_names_one_lane] (G1-4a fix, review H-1): a signature
+      that the estimate calls static holds no variable, so every run
+      evaluates it to the same signature, and its lane is the lane of every
+      run.
+   6. [keep_until_compose]: two substitutions keep the locally_free entries
+      of the smaller shift. A quote that the resolver leaves unchanged
+      therefore gets the reducer's bytes from the analysis's substitution.
+   7. [checked_guard_levels_are_patterns] (G1-4a fix, reviews M-5 and LOW
+      2): under the checks, every outer level of a guard has a pattern kind.
+      The reducer stores a guard after the body substitution of the nearest
+      enclosing receive, which replaces the levels outside that receive, and
+      after a substitution at depth 1, which replaces no variable. The check
+      of the enclosing receive's body rejects a pattern level from outside
+      that receive, because the free indices of the body include those of
+      the guard. So no stored guard of a checked term takes a value, and the
+      estimate sizes it with its variables. Before the fix the check read
+      pattern kinds in the guard, which the code never checked.
 
    Negative controls.
    - [nc_uri_as_fresh_in_receive_body]: a kind machine that makes every level
@@ -40,7 +59,28 @@
      and the run sends on the URN value, not on a name.
    - [nc_poison_flags_own_levels]: a poison check that reads the receive's own
      levels in its body rejects a branch on the received value, although its
-     size does not depend on the run. *)
+     size does not depend on the run.
+   - [nc_guard_base_zero_flags_own_level] (review M-1): a guard check at base
+     0 rejects a guard on the received value. The check at base bind count
+     accepts it, and it still rejects a guard that names a fresh level.
+   - [nc_quote_with_variable_is_not_static] (review H-1): the rule before the
+     fix calls the quote of a matched variable static, and two runs evaluate
+     it to two signatures.
+   - [nc_shift_zero_resolution_loses_stored_entries] (review H-1): a
+     resolution at shift 0 followed by a substitution under a positive shift
+     keeps no locally_free entry, but the reducer's substitution of the
+     original keeps some. A resolved quote in a receive body would store
+     other bytes than the run, so the resolver leaves it unchanged.
+   - [nc_guard_with_urn_level_is_sized_too_small] (reviews M-5 and LOW 2): a
+     check without the value-kind rule accepts a nested guard that names a
+     URN level outside the enclosing receive. The body substitution of that
+     receive gives the level the URN value, so the stored guard is larger
+     than its sizing with variables.
+
+   Limits (review M-5). The model reads the free indices of a guard and of a
+   quoted process as lists, as the code reads `locally_free`. It does not
+   model expressions, the copy of fields, or the hashing of a signature into a
+   lane. Rust tests cover those parts. *)
 
 From Stdlib Require Import Arith.PeanoNat Lists.List Bool Lia.
 Import ListNotations.
@@ -62,6 +102,14 @@ Definition fresh_kind (k : kind) : bool :=
 Definition pattern_kind (k : kind) : bool :=
   match k with
   | RecvPat | MatchPat => true
+  | _ => false
+  end.
+
+(** A kind whose level the reducer binds to a value that the analysis knows:
+    a URN or an injection (G1-4a fix, reviews M-5 and LOW 2). *)
+Definition value_kind (k : kind) : bool :=
+  match k with
+  | Urn _ | Injection _ => true
   | _ => false
   end.
 
@@ -125,14 +173,22 @@ Fixpoint fv (t : tm) : list nat :=
   | TPar first second => fv first ++ fv second
   | TNew simple uris body => shift_down (simple + length uris) (fv body)
   | TSend chan data => chan :: data
-  | TRecv chan binds guard body => chan :: guard ++ shift_down binds (fv body)
+  (* Changed by the G1-4a fix (review M-1): the guard is in the body scope.
+  | TRecv chan binds guard body => chan :: guard ++ shift_down binds (fv body) *)
+  | TRecv chan binds guard body =>
+      chan :: shift_down binds guard ++ shift_down binds (fv body)
   | TMatch target binds case rest => target ++ shift_down binds (fv case) ++ fv rest
   | TIf cond yes no => cond ++ fv yes ++ fv no
   end.
 
 (** The checks of pass 1. A receive body is substituted with the environment
     shifted by its bind count, so its own levels stay variables, and only an
-    outer pattern level in it is poison. *)
+    outer pattern level in it is poison. The guard is read at the same base
+    (G1-4a fix, review M-1). A guard names no fresh level (rule X3) and no
+    URN or injection level (G1-4a fix, reviews M-5 and LOW 2). Before the
+    fix, the second guard clause read pattern kinds, which the code never
+    checked:
+      avoids pattern_kind env binds guard *)
 Fixpoint check (env : list kind) (resolving : bool) (t : tm) : bool :=
   match t with
   | TNil => true
@@ -140,7 +196,8 @@ Fixpoint check (env : list kind) (resolving : bool) (t : tm) : bool :=
   | TNew simple uris body => check (new_kinds resolving simple uris ++ env) resolving body
   | TSend chan data => channel_ok env chan && closed data
   | TRecv chan binds guard body =>
-      channel_ok env chan && avoids fresh_kind env 0 guard && avoids pattern_kind env 0 guard &&
+      channel_ok env chan && avoids fresh_kind env binds guard &&
+      avoids value_kind env binds guard &&
       avoids pattern_kind env binds (fv body) &&
       check (repeat RecvPat binds ++ env) false body
   | TMatch target binds case rest =>
@@ -267,7 +324,8 @@ Fixpoint expressions_unescaped (env : list kind) (resolving : bool) (t : tm) : P
   | TNew simple uris body => expressions_unescaped (new_kinds resolving simple uris ++ env) resolving body
   | TSend _ data => data = []
   | TRecv _ binds guard body =>
-      no_fresh_level env 0 guard /\ expressions_unescaped (repeat RecvPat binds ++ env) false body
+      no_fresh_level env binds guard /\
+      expressions_unescaped (repeat RecvPat binds ++ env) false body
   | TMatch target binds case rest =>
       no_fresh_level env 0 target /\
       expressions_unescaped (repeat MatchPat binds ++ env) resolving case /\
@@ -324,8 +382,8 @@ Fixpoint introductions_poison_free (env : list kind) (resolving : bool) (t : tm)
   | TNew simple uris body =>
       introductions_poison_free (new_kinds resolving simple uris ++ env) resolving body
   | TSend _ data => data = []
-  | TRecv _ binds guard body =>
-      no_pattern_level env 0 guard /\ no_pattern_level env binds (fv body) /\
+  | TRecv _ binds _ body =>
+      no_pattern_level env binds (fv body) /\
       introductions_poison_free (repeat RecvPat binds ++ env) false body
   | TMatch _ binds case rest =>
       introductions_poison_free (repeat MatchPat binds ++ env) resolving case /\
@@ -348,9 +406,6 @@ Proof.
   - apply andb_true_iff in checked. destruct checked as [_ data_closed].
     destruct data; [reflexivity | discriminate].
   - repeat (apply andb_true_iff in checked; destruct checked as [checked ?]).
-    split.
-    { intros i k inside found.
-      exact (avoids_sound pattern_kind env 0 guard ltac:(assumption) i k inside found). }
     split.
     { intros i k inside found.
       exact (avoids_sound pattern_kind env binds (fv body) ltac:(assumption) i k inside found). }
@@ -476,7 +531,8 @@ Fixpoint check_holes (env : list kind) (resolving : bool) (t : tm) : bool :=
   | TNew simple uris body => check_holes (hole_kinds resolving simple uris ++ env) resolving body
   | TSend chan data => channel_ok env chan && closed data
   | TRecv chan binds guard body =>
-      channel_ok env chan && avoids fresh_kind env 0 guard && avoids pattern_kind env 0 guard &&
+      channel_ok env chan && avoids fresh_kind env binds guard &&
+      avoids value_kind env binds guard &&
       avoids pattern_kind env binds (fv body) &&
       check_holes (repeat RecvPat binds ++ env) false body
   | TMatch target binds case rest =>
@@ -512,7 +568,8 @@ Fixpoint check_own_levels (env : list kind) (resolving : bool) (t : tm) : bool :
   | TNew simple uris body => check_own_levels (new_kinds resolving simple uris ++ env) resolving body
   | TSend chan data => channel_ok env chan && closed data
   | TRecv chan binds guard body =>
-      channel_ok env chan && avoids fresh_kind env 0 guard && avoids pattern_kind env 0 guard &&
+      channel_ok env chan && avoids fresh_kind env binds guard &&
+      avoids value_kind env binds guard &&
       avoids pattern_kind (repeat RecvPat binds ++ env) 0 (fv body) &&
       check_own_levels (repeat RecvPat binds ++ env) false body
   | TMatch target binds case rest =>
@@ -539,6 +596,166 @@ Proof.
   intros urn_size injection_size vals aligned. reflexivity.
 Qed.
 
+(** * Rule X3 on a guard (review M-1) *)
+
+(** `new x in { x!(5) | for (@n <- x where n > 3) { Nil } }` under the `new`
+    of `x`: the guard names level 0, the receive's own level. *)
+Definition guard_witness : tm := TRecv 0 1 [0] TNil.
+
+(** `new x in { x!(5) | for (@n <- x where *x == n) { Nil } }`: the guard
+    names level 1, which is `x` under the receive's binder. *)
+Definition escape_witness : tm := TRecv 0 1 [1] TNil.
+
+(** The guard check before the G1-4a fix read the guard at base 0. *)
+Definition guard_ok_base_zero (env : list kind) (guard : list nat) : bool :=
+  avoids fresh_kind env 0 guard && avoids pattern_kind env 0 guard.
+
+Theorem nc_guard_base_zero_flags_own_level :
+  check [Fresh] true guard_witness = true /\
+  guard_ok_base_zero [Fresh] [0] = false /\
+  check [Fresh] true escape_witness = false /\
+  outer_kind [Fresh] 1 1 = Some Fresh.
+Proof. repeat split; reflexivity. Qed.
+
+(** * Guard levels (reviews M-5 and LOW 2) *)
+
+Theorem checked_guard_levels_are_patterns : forall env resolving chan binds guard body,
+  check env resolving (TRecv chan binds guard body) = true ->
+  forall i k, In i guard -> outer_kind env binds i = Some k -> pattern_kind k = true.
+Proof.
+  intros env resolving chan binds guard body checked i k inside found.
+  simpl in checked.
+  apply andb_true_iff in checked. destruct checked as [checked _].
+  apply andb_true_iff in checked. destruct checked as [checked _].
+  apply andb_true_iff in checked. destruct checked as [checked value_ok].
+  apply andb_true_iff in checked. destruct checked as [_ fresh_ok].
+  pose proof (avoids_sound fresh_kind env binds guard fresh_ok i k inside found) as not_fresh.
+  pose proof (avoids_sound value_kind env binds guard value_ok i k inside found) as not_value.
+  destruct k; simpl in not_fresh, not_value |- *; try discriminate; reflexivity.
+Qed.
+
+(** The check without the value-kind rule of a guard. *)
+Fixpoint check_without_value_rule (env : list kind) (resolving : bool) (t : tm) : bool :=
+  match t with
+  | TNil => true
+  | TPar first second =>
+      check_without_value_rule env resolving first && check_without_value_rule env resolving second
+  | TNew simple uris body =>
+      check_without_value_rule (new_kinds resolving simple uris ++ env) resolving body
+  | TSend chan data => channel_ok env chan && closed data
+  | TRecv chan binds guard body =>
+      channel_ok env chan && avoids fresh_kind env binds guard &&
+      avoids pattern_kind env binds (fv body) &&
+      check_without_value_rule (repeat RecvPat binds ++ env) false body
+  | TMatch target binds case rest =>
+      avoids fresh_kind env 0 target &&
+      check_without_value_rule (repeat MatchPat binds ++ env) resolving case &&
+      check_without_value_rule env resolving rest
+  | TIf cond yes no =>
+      avoids fresh_kind env 0 cond && check_without_value_rule env resolving yes &&
+      check_without_value_rule env resolving no
+  end.
+
+(** `new x, out(rho:io:stdout) in { for (@n <- x) { for (@m <- x where m ==
+    *out) { Nil } } }`, under the `new`: level 0 is `x` and level 1 is the URN
+    level. In the inner guard, index 0 is `m`, index 1 is `n`, index 2 is `x`
+    and index 3 is the URN level. *)
+Definition urn_guard_witness : tm := TRecv 0 1 [] (TRecv 1 1 [0; 3] TNil).
+
+(** The body substitution of the outer receive keeps the indices below 2 in
+    the inner guard, its own level and the outer receive's level, and it
+    replaces index 3 with the value of the URN level. With a URN value of 38
+    bytes, the stored guard has 39 bytes, and its sizing with variables has
+    2. *)
+Theorem nc_guard_with_urn_level_is_sized_too_small :
+  check_without_value_rule [Fresh; Urn 7] true urn_guard_witness = true /\
+  check [Fresh; Urn 7] true urn_guard_witness = false /\
+  substituted_size (fun _ => 38) (fun _ => 0) [VName 0; VUrn 7] 2 [0; 3] = 39 /\
+  substituted_size (fun _ => 38) (fun _ => 0) [VName 0; VUrn 7] 4 [0; 3] = 2.
+Proof. repeat split; reflexivity. Qed.
+
+(** * Signatures (review H-1) *)
+
+(** A cost signature as the analysis reads it, after the funding resolver: a
+    ground atom, the quote of a process with the free indices that the
+    process still holds, or a bound level that the resolver left. *)
+Inductive sig : Type :=
+| SigGround : nat -> sig
+| SigQuote : nat -> list nat -> sig
+| SigLevel : nat -> sig.
+
+(** The signature that a run evaluates. The reducer substitutes each free
+    index of the signature with the value that the run binds there. *)
+Inductive evaluated_sig : Type :=
+| EvGround : nat -> evaluated_sig
+| EvQuote : nat -> list (option value) -> evaluated_sig
+| EvName : option value -> evaluated_sig.
+
+Definition evaluate_sig (vals : list value) (s : sig) : evaluated_sig :=
+  match s with
+  | SigGround g => EvGround g
+  | SigQuote process free => EvQuote process (map (nth_error vals) free)
+  | SigLevel i => EvName (nth_error vals i)
+  end.
+
+(** The rule of the estimate after the G1-4a fix: a signature is static only
+    when it holds no variable. *)
+Definition static_sig (s : sig) : bool :=
+  match s with
+  | SigGround _ => true
+  | SigQuote _ free => closed free
+  | SigLevel _ => false
+  end.
+
+Theorem static_signature_names_one_lane : forall s vals vals',
+  static_sig s = true -> evaluate_sig vals s = evaluate_sig vals' s.
+Proof.
+  intros [g | process [| i free] | i] vals vals' static; simpl in static |- *;
+    try reflexivity; discriminate.
+Qed.
+
+(** The rule before the fix: every signature but a bound level is static. *)
+Definition static_sig_before (s : sig) : bool :=
+  match s with
+  | SigLevel _ => false
+  | SigGround _ | SigQuote _ _ => true
+  end.
+
+(** `match "A" { s => { {% ... %}[ #s ] } }`: the quote names the match level
+    0. *)
+Definition quote_witness : sig := SigQuote 0 [0].
+
+Theorem nc_quote_with_variable_is_not_static :
+  static_sig_before quote_witness = true /\ static_sig quote_witness = false /\
+  consistent [MatchPat] [VData 1] /\ consistent [MatchPat] [VData 2] /\
+  evaluate_sig [VData 1] quote_witness <> evaluate_sig [VData 2] quote_witness.
+Proof.
+  split; [reflexivity |]. split; [reflexivity |].
+  split; [repeat constructor |]. split; [repeat constructor |].
+  simpl. discriminate.
+Qed.
+
+(** * The stored bytes of a resolved quote (review H-1) *)
+
+(** [set_bits_until] of substitute.rs: a substitution under [shift] binders
+    keeps the first [shift] entries of a locally_free vector. *)
+Definition keep_until (shift : nat) (free : list nat) : list nat := firstn shift free.
+
+Lemma keep_until_compose : forall a b free,
+  keep_until a (keep_until b free) = keep_until (Nat.min a b) free.
+Proof. intros a b free. unfold keep_until. apply firstn_firstn. Qed.
+
+Theorem nc_shift_zero_resolution_loses_stored_entries : forall shift free,
+  0 < shift -> free <> [] ->
+  keep_until shift (keep_until 0 free) = [] /\ keep_until shift free <> [].
+Proof.
+  intros shift free positive nonempty. unfold keep_until. split.
+  - simpl. apply firstn_nil.
+  - destruct shift as [| shift]; [lia |].
+    destruct free as [| entry free]; [contradiction |].
+    simpl. discriminate.
+Qed.
+
 Print Assumptions consistent_lookup.
 Print Assumptions kinds_channels_fresh.
 Print Assumptions kinds_no_escape.
@@ -547,3 +764,10 @@ Print Assumptions representative_agrees.
 Print Assumptions full_environment_matches_runtime_free_levels.
 Print Assumptions nc_uri_as_fresh_in_receive_body.
 Print Assumptions nc_poison_flags_own_levels.
+Print Assumptions nc_guard_base_zero_flags_own_level.
+Print Assumptions static_signature_names_one_lane.
+Print Assumptions nc_quote_with_variable_is_not_static.
+Print Assumptions keep_until_compose.
+Print Assumptions nc_shift_zero_resolution_loses_stored_entries.
+Print Assumptions checked_guard_levels_are_patterns.
+Print Assumptions nc_guard_with_urn_level_is_sized_too_small.

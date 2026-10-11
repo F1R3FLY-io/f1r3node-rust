@@ -519,6 +519,7 @@ theories/EstimateDemandWalk.v
 theories/EstimateBinderKinds.v
 theories/ClosedDemandBound.v
 theories/BoundKindSoundness.v
+theories/PlanComputeDominates.v
 theories/RuntimeAuthorityScope.v
 theories/StackTransferConservation.v
 theories/OrderedStackMaterialization.v

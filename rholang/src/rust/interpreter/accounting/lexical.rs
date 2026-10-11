@@ -81,12 +81,20 @@ enum Task<'a> {
     /// Check the term count of a node, then schedule its children and its
     /// rebuild in the reducer's term order.
     Visit(&'a Par, Position),
+    // Changed by the G1-4a fix (review H-1): each signature task also tells
+    // whether its scope is a resolving position. See `resolve_signature`.
+    // /// Resolve the signatures of a receive's binds in the receive's scope.
+    // BindSignatures(&'a [ReceiveBind]),
+    // /// Resolve the signature of a signed term in its scope.
+    // Signature(&'a CostSignature),
+    // /// Resolve the cells of a token stack in its scope.
+    // Cells(&'a CostStack),
     /// Resolve the signatures of a receive's binds in the receive's scope.
-    BindSignatures(&'a [ReceiveBind]),
+    BindSignatures(&'a [ReceiveBind], bool),
     /// Resolve the signature of a signed term in its scope.
-    Signature(&'a CostSignature),
+    Signature(&'a CostSignature, bool),
     /// Resolve the cells of a token stack in its scope.
-    Cells(&'a CostStack),
+    Cells(&'a CostStack, bool),
     /// Push binders that the resolver leaves unresolved: the variables of a
     /// receive pattern or a match case.
     Holes(usize),
@@ -260,39 +268,46 @@ fn merge_into(rebuilt: &mut Par, value: Par) {
     rebuilt.connective_used |= connective_used;
 }
 
-/// Drops rebuilt terms without recursion. The derived drop of prost recurses
-/// once per nesting level, so each node first moves the children that the
-/// resolver walks to a heap work list. The resolver calls it on its partial
-/// results when it stops with an error.
-pub(crate) fn dismantle(pars: Vec<Par>) {
-    let mut pending = pars;
-    while let Some(mut par) = pending.pop() {
-        for term in par.cost_signed_terms.drain(..) {
-            pending.extend(term.body);
-        }
-        for mut send in par.sends.drain(..) {
-            pending.append(&mut send.data);
-        }
-        for mut receive in par.receives.drain(..) {
-            pending.extend(receive.body.take());
-        }
-        for mut new in par.news.drain(..) {
-            pending.extend(new.p.take());
-        }
-        for mut matched in par.matches.drain(..) {
-            for case in matched.cases.drain(..) {
-                pending.extend(case.source);
-            }
-        }
-        for mut conditional in par.conditionals.drain(..) {
-            pending.extend(conditional.if_true.take());
-            pending.extend(conditional.if_false.take());
-        }
-        for mut bundle in par.bundles.drain(..) {
-            pending.extend(bundle.body.take());
-        }
-    }
-}
+/// Drops rebuilt terms without recursion. The resolver calls it on its partial
+/// results when it stops with an error. The work is in the one complete
+/// teardown, `dismantle_terms`.
+pub(crate) fn dismantle(pars: Vec<Par>) { super::delta_sigma::estimate::dismantle_terms(pars); }
+
+// Disabled by the G1-4a fix (review cleanup: keep one complete teardown).
+// This walk moved only the children that the resolver walks. It missed send
+// channels, receive patterns, sources, conditions and bind signatures, match
+// targets, patterns and guards, `if` conditions, `new` injections,
+// expressions, connectives and signatures, so a deep term in one of those
+// positions still dropped recursively. `dismantle_terms` covers them all.
+// pub(crate) fn dismantle(pars: Vec<Par>) {
+//     let mut pending = pars;
+//     while let Some(mut par) = pending.pop() {
+//         for term in par.cost_signed_terms.drain(..) {
+//             pending.extend(term.body);
+//         }
+//         for mut send in par.sends.drain(..) {
+//             pending.append(&mut send.data);
+//         }
+//         for mut receive in par.receives.drain(..) {
+//             pending.extend(receive.body.take());
+//         }
+//         for mut new in par.news.drain(..) {
+//             pending.extend(new.p.take());
+//         }
+//         for mut matched in par.matches.drain(..) {
+//             for case in matched.cases.drain(..) {
+//                 pending.extend(case.source);
+//             }
+//         }
+//         for mut conditional in par.conditionals.drain(..) {
+//             pending.extend(conditional.if_true.take());
+//             pending.extend(conditional.if_false.take());
+//         }
+//         for mut bundle in par.bundles.drain(..) {
+//             pending.extend(bundle.body.take());
+//         }
+//     }
+// }
 
 /// G1-2 (DR-67): the funding resolver as a specialized stack-safe machine.
 ///
@@ -393,24 +408,24 @@ impl<'u, 'h> FundingResolver<'u, 'h> {
         self.charge(HostWorkDimension::StructuralItems, 1)?;
         match task {
             Task::Visit(par, position) => self.visit(par, position, work),
-            Task::BindSignatures(binds) => {
+            Task::BindSignatures(binds, resolving) => {
                 for bind in binds {
                     if let Some(signature) = bind.cost_signature.as_ref() {
-                        let resolved = self.resolve_signature(signature)?;
+                        let resolved = self.resolve_signature(signature, resolving)?;
                         self.signatures.push(resolved);
                     }
                 }
                 Ok(())
             }
-            Task::Signature(signature) => {
-                let resolved = self.resolve_signature(signature)?;
+            Task::Signature(signature, resolving) => {
+                let resolved = self.resolve_signature(signature, resolving)?;
                 self.signatures.push(resolved);
                 Ok(())
             }
-            Task::Cells(stack) => {
+            Task::Cells(stack, resolving) => {
                 self.signatures.reserve(stack.cells.len());
                 for cell in &stack.cells {
-                    let resolved = self.resolve_signature(cell)?;
+                    let resolved = self.resolve_signature(cell, resolving)?;
                     self.signatures.push(resolved);
                 }
                 Ok(())
@@ -474,6 +489,7 @@ impl<'u, 'h> FundingResolver<'u, 'h> {
                 None => Ok(None),
             }
         };
+        let resolving = position.is_some();
 
         let mut index = par.sends.len();
         for send in &par.sends {
@@ -490,7 +506,7 @@ impl<'u, 'h> FundingResolver<'u, 'h> {
             // let body_position = split(index)?;
             let body_position: Position = None;
             let binders = usize::try_from(receive.bind_count).unwrap_or(0);
-            ordered.push(Task::BindSignatures(&receive.binds));
+            ordered.push(Task::BindSignatures(&receive.binds, resolving));
             ordered.push(Task::Holes(binders));
             if let Some(body) = receive.body.as_ref() {
                 ordered.push(Task::Visit(body, body_position));
@@ -550,7 +566,7 @@ impl<'u, 'h> FundingResolver<'u, 'h> {
         for signed in &par.cost_signed_terms {
             let body_position = split(index)?;
             if let Some(signature) = signed.signature.as_ref() {
-                ordered.push(Task::Signature(signature));
+                ordered.push(Task::Signature(signature, resolving));
             }
             if let Some(body) = signed.body.as_ref() {
                 ordered.push(Task::Visit(body, body_position));
@@ -558,7 +574,7 @@ impl<'u, 'h> FundingResolver<'u, 'h> {
             index += 1;
         }
         for stack in &par.cost_stacks {
-            ordered.push(Task::Cells(stack));
+            ordered.push(Task::Cells(stack, resolving));
         }
         index += par.cost_stacks.len();
         if position.is_some() && index != terms {
@@ -699,11 +715,24 @@ impl<'u, 'h> FundingResolver<'u, 'h> {
     /// it. Elsewhere it left the signature unchanged. This resolver does the
     /// same, with an environment that holds only the bindings that the
     /// signature can reference, so a lookup does not depend on the depth.
+    ///
+    /// Changed by the G1-4a fix (review H-1): outside a resolving position, a
+    /// signature whose quoted or named process has a free level stays
+    /// unchanged. The reducer substitutes a receive body or a datum before it
+    /// evaluates the signatures in it. Under the binders of that term, the
+    /// substitution keeps the first `shift` entries of each `locally_free`.
+    /// This substitution runs at shift 0 and clears them, so the stored bytes
+    /// would differ from the reducer's. The unchanged signature still holds
+    /// its variable, and the analysis treats its lane as dynamic.
     fn resolve_signature(
         &self,
         signature: &CostSignature,
+        resolving: bool,
     ) -> Result<CostSignature, InterpreterError> {
         if self.resolved_news == 0 {
+            return self.copy(signature);
+        }
+        if !resolving && self.quotes_a_free_level(signature)? {
             return self.copy(signature);
         }
         let env = self.signature_env(signature)?;
@@ -715,6 +744,35 @@ impl<'u, 'h> FundingResolver<'u, 'h> {
             }
             None => self.substitute.substitute_cost_signature(owned, 0, &env),
         }
+    }
+
+    /// Added by the G1-4a fix (review H-1): whether a quoted or named process
+    /// of the signature has a free level. The scan uses a heap work list and
+    /// charges one structural item for each signature node and each scanned
+    /// `locally_free` entry, as `signature_env` does.
+    fn quotes_a_free_level(&self, signature: &CostSignature) -> Result<bool, InterpreterError> {
+        let mut pending = vec![signature];
+        while let Some(current) = pending.pop() {
+            self.charge(HostWorkDimension::StructuralItems, 1)?;
+            match current.value.as_ref() {
+                Some(CostSignatureValue::Compound(compound)) => {
+                    pending.extend(compound.elements.iter());
+                }
+                Some(CostSignatureValue::Quote(par)) | Some(CostSignatureValue::Name(par)) => {
+                    self.charge(HostWorkDimension::StructuralItems, par.locally_free.len())?;
+                    if par.locally_free.iter().any(|free| *free != 0) {
+                        return Ok(true);
+                    }
+                }
+                Some(
+                    CostSignatureValue::Ground(_)
+                    | CostSignatureValue::BoundLevel(_)
+                    | CostSignatureValue::Unit(_),
+                )
+                | None => {}
+            }
+        }
+        Ok(false)
     }
 
     /// The environment of one signature: the resolved bindings of its bound
@@ -1266,6 +1324,45 @@ mod tests {
             body.cost_stacks[0].cells[1].value,
             Some(Value::Name(expected))
         );
+    }
+
+    /// Added by the G1-4a fix (review H-1): the quote of a resolved name
+    /// resolves in a resolving position. In a receive body it stays
+    /// unchanged, because the reducer substitutes the body under the shift
+    /// of the receive's binders before it evaluates the signature.
+    #[test]
+    fn a_quoted_name_resolves_only_in_a_resolving_position() {
+        let program = Compiler::source_to_adt(
+            "new x in { {% Nil %}[ #*x ] | for (@n <- x) { {% Nil %}[ #*x ] } }",
+        )
+        .expect("the program compiles");
+        let resolved = resolve_lexical_names_for_funding(
+            &program,
+            Blake2b512Random::create_from_bytes(b"quoted name"),
+            &HashMap::new(),
+        )
+        .expect("the program resolves");
+        let inner_signature = |par: &Par| {
+            par.news[0]
+                .p
+                .as_ref()
+                .and_then(|body| body.receives[0].body.as_ref())
+                .and_then(|body| body.cost_signed_terms[0].signature.clone())
+                .expect("a signature in the receive body")
+        };
+        let body = resolved.news[0].p.as_ref().expect("the body of the new");
+        let outer = body.cost_signed_terms[0]
+            .signature
+            .clone()
+            .expect("a signature in the body of the new");
+        match outer.value {
+            Some(Value::Quote(quoted)) => {
+                assert_eq!(quoted.unforgeables.len(), 1, "the quote of the name");
+                assert!(quoted.exprs.is_empty(), "no variable is left");
+            }
+            other => panic!("the outer signature is a quote: {other:?}"),
+        }
+        assert_eq!(inner_signature(&resolved), inner_signature(&program));
     }
 
     #[test]
