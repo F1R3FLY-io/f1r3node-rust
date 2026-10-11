@@ -311,6 +311,22 @@ pub struct DeployLifecycle {
     schedule: parking_lot::Mutex<Schedule>,
 }
 
+fn record_observe_timing(observe_ms: u128, prune_ms: Option<u128>) {
+    use crate::rust::metrics_constants::{
+        CASPER_METRICS_SOURCE, DEPLOY_LIFECYCLE_CARRIER_PRUNE_TIME_METRIC,
+        DEPLOY_LIFECYCLE_OBSERVE_TIME_METRIC,
+    };
+    metrics::histogram!(DEPLOY_LIFECYCLE_OBSERVE_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
+        .record(observe_ms as f64 / 1000.0);
+    if let Some(prune_ms) = prune_ms {
+        metrics::histogram!(
+            DEPLOY_LIFECYCLE_CARRIER_PRUNE_TIME_METRIC,
+            "source" => CASPER_METRICS_SOURCE
+        )
+        .record(prune_ms as f64 / 1000.0);
+    }
+}
+
 impl DeployLifecycle {
     /// Arm every persisted open sig for evaluation at the next observed
     /// block (threshold 0 crosses immediately). Verdicts only get MORE
@@ -350,13 +366,19 @@ impl DeployLifecycle {
             .block_number_unsafe(&adopted_hash)
             .map_err(CasperError::from)?;
 
+        let observe_start = std::time::Instant::now();
         let mut schedule = self.schedule.lock();
+        let lock_wait_ms = observe_start.elapsed().as_millis();
+        let mut rebuild_ms = 0;
         if !schedule.rebuilt {
             drop(schedule);
+            let rebuild_start = std::time::Instant::now();
             self.rebuild_schedule(dag)?;
+            rebuild_ms = rebuild_start.elapsed().as_millis();
             schedule = self.schedule.lock();
         }
 
+        let mut prune_ms = 0;
         // Monotone: adoption is monotone per node, so the memoized FALSE
         // answers in `checked` stay valid across advances.
         let clock_advanced = match &schedule.adopted_lfb {
@@ -369,12 +391,14 @@ impl DeployLifecycle {
                 hash: adopted_hash,
                 block_number: adopted_number,
             });
-            // Entries this far below the floor sit below every future scan
-            // window (earliest = maxParent + 1 − lifespan, parents above the
-            // floor). Retention only — never consensus input.
+            // Entries this far below the clock sit below every future scan
+            // window (earliest = maxParent + 1 − lifespan). Retention only —
+            // never consensus input.
+            let prune_start = std::time::Instant::now();
             if let Err(e) = dag.prune_carriers_below(prune_below) {
                 tracing::warn!("carrier-index prune failed (retention only): {}", e);
             }
+            prune_ms = prune_start.elapsed().as_millis();
         }
 
         let mut due: HashSet<Bytes> = HashSet::new();
@@ -396,6 +420,7 @@ impl DeployLifecycle {
             .range(..=floor_height)
             .map(|(k, _)| *k)
             .collect();
+        let crossed_floor_key_count = crossed_floor.len();
         for key in crossed_floor {
             if let Some(sigs) = schedule.floor_thresholds.remove(&key) {
                 due.extend(sigs);
@@ -404,6 +429,8 @@ impl DeployLifecycle {
 
         let mut due: Vec<Bytes> = due.into_iter().collect();
         due.sort();
+        let due_count = due.len();
+        let evaluate_start = std::time::Instant::now();
         let mut terminalized: Vec<Bytes> = Vec::new();
         for sig in due {
             evaluate(
@@ -415,6 +442,24 @@ impl DeployLifecycle {
                 citability_horizon,
                 &mut terminalized,
             )?;
+        }
+        let evaluate_ms = evaluate_start.elapsed().as_millis();
+        let total_ms = observe_start.elapsed().as_millis();
+        record_observe_timing(total_ms, clock_advanced.then_some(prune_ms));
+        if total_ms >= 1_000 {
+            tracing::warn!(
+                target: "f1r3fly.casper.lifecycle.timing",
+                "Lifecycle observe slow: block_number={:?}, lock_wait_ms={}, rebuild_ms={}, prune_ms={}, due={}, crossed_floor_keys={}, evaluate_ms={}, terminalized={}, total_ms={}",
+                touched.map(|b| b.body.state.block_number),
+                lock_wait_ms,
+                rebuild_ms,
+                prune_ms,
+                due_count,
+                crossed_floor_key_count,
+                evaluate_ms,
+                terminalized.len(),
+                total_ms
+            );
         }
         Ok(terminalized)
     }
@@ -1390,6 +1435,45 @@ mod tests {
             matches!(err, CasperError::BlockNotHeld(ref h, _) if *h == absent.block_hash),
             "the refusal must carry the missing block typed; got: {}",
             err
+        );
+    }
+}
+
+#[cfg(test)]
+mod stage_metric_tests {
+    use metrics_util::debugging::{DebugValue, DebuggingRecorder};
+
+    use super::*;
+    use crate::rust::metrics_constants::{
+        DEPLOY_LIFECYCLE_CARRIER_PRUNE_TIME_METRIC, DEPLOY_LIFECYCLE_OBSERVE_TIME_METRIC,
+    };
+
+    #[test]
+    fn an_observe_records_its_time_and_the_carrier_prune_only_when_it_ran() {
+        let recorder = DebuggingRecorder::new();
+        let snapshotter = recorder.snapshotter();
+        let _guard = metrics::set_default_local_recorder(&recorder);
+
+        record_observe_timing(2_500, Some(2_000));
+        record_observe_timing(40, None);
+
+        let mut samples: std::collections::HashMap<String, Vec<f64>> =
+            std::collections::HashMap::new();
+        for (key, (_, _, value)) in snapshotter.snapshot().into_hashmap() {
+            if let DebugValue::Histogram(s) = value {
+                samples
+                    .entry(key.key().name().to_owned())
+                    .or_default()
+                    .extend(s.iter().map(|v| v.into_inner()));
+            }
+        }
+        assert_eq!(
+            samples.get(DEPLOY_LIFECYCLE_OBSERVE_TIME_METRIC),
+            Some(&vec![2.5, 0.04])
+        );
+        assert_eq!(
+            samples.get(DEPLOY_LIFECYCLE_CARRIER_PRUNE_TIME_METRIC),
+            Some(&vec![2.0])
         );
     }
 }
