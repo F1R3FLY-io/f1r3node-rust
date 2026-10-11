@@ -921,8 +921,24 @@ fn nested_receive_bodies_are_charged_for_each_substitution() {
 /// name. The `new` itself binds one more level. Changed by the G1-4a fix
 /// (review M-4): a copy costs the capacity of the environment map, which is
 /// at least its length, so the difference is at least the 32 added names.
+/// Changed by the second G1-4a fix (re-review HIGH-1): a copy costs the fixed
+/// bucket count of the map, which the pre-pass sizes from the peak binder
+/// count. A sibling `new` of eight names fixes the peak at the outer names
+/// plus eight, so each nested `new` adds that bucket count plus its own
+/// binding.
 #[test]
 fn each_environment_copy_of_a_sizing_substitution_is_charged() {
+    // let program = |outer: usize, nested: usize| {
+    //     let names = (0..outer)
+    //         .map(|index| format!("a{index}"))
+    //         .collect::<Vec<_>>()
+    //         .join(", ");
+    //     let mut body = String::from("Nil");
+    //     for index in 0..nested {
+    //         body = format!("new b{index} in {{ {body} }}");
+    //     }
+    //     format!("new {names} in {{ new x in {{ x!(0) | for (@n <- x) {{ {body} }} }} }}")
+    // };
     let program = |outer: usize, nested: usize| {
         let names = (0..outer)
             .map(|index| format!("a{index}"))
@@ -932,7 +948,9 @@ fn each_environment_copy_of_a_sizing_substitution_is_charged() {
         for index in 0..nested {
             body = format!("new b{index} in {{ {body} }}");
         }
-        format!("new {names} in {{ new x in {{ x!(0) | for (@n <- x) {{ {body} }} }} }}")
+        format!(
+            "new {names} in {{ new c0, c1, c2, c3, c4, c5, c6, c7 in {{ Nil }} | new x in {{ x!(0) | for (@n <- x) {{ {body} }} }} }}"
+        )
     };
     let index = dimension_index(HostWorkDimension::SubstitutionBindings);
     let bindings = |outer: usize, nested: usize| {
@@ -955,10 +973,20 @@ fn each_environment_copy_of_a_sizing_substitution_is_charged() {
     // of the map, and `environment_copies_are_charged_the_capacity_of_the_map`
     // checks its exact value.
     // assert_eq!(large - small, 32, "each copy holds every outer name");
-    assert!(
-        large - small >= 32,
-        "each copy holds every outer name: {small} and {large}"
-    );
+    // Changed by the second G1-4a fix (re-review HIGH-1): the exact charge
+    // follows from the peak binder count.
+    // assert!(
+    //     large - small >= 32,
+    //     "each copy holds every outer name: {small} and {large}"
+    // );
+    for (outer, copy) in [(4usize, small), (36, large)] {
+        let peak = outer + 8;
+        assert_eq!(
+            copy,
+            environment_buckets(2 * peak + 2) + 1,
+            "{outer} outer names"
+        );
+    }
 }
 
 /// For every charged dimension, a budget equal to the charge gives the same
@@ -1492,22 +1520,105 @@ fn a_deep_quoted_signature_is_unsized_on_a_small_stack() {
     );
 }
 
-/// Review M-4: `pop` never shrinks the environment map, and `Env::shift`
-/// clones every bucket of it. A substitution is therefore charged the
-/// capacity of the map for the call and for each copy, not its length.
+// Disabled by the second G1-4a fix (re-review HIGH-1): the charge no longer
+// reads the capacity of the live map, which depends on the hash seed and on
+// the group width after removals.
+// `environment_copies_are_charged_the_fixed_bucket_count` replaces it.
+// /// Review M-4: `pop` never shrinks the environment map, and `Env::shift`
+// /// clones every bucket of it. A substitution is therefore charged the
+// /// capacity of the map for the call and for each copy, not its length.
+// #[test]
+// fn environment_copies_are_charged_the_capacity_of_the_map() {
+//     let reducer = evaluator(HashMap::new());
+//     let core = isolated_evaluator(&reducer);
+//     let host = unlimited();
+//     let mut estimator = Estimator::new(&funding(), &core, &host).expect("an estimator");
+//     estimator
+//         .push_holes(1_000, BinderKind::ReceivePattern)
+//         .expect("the holes are bound");
+//     estimator.pop(999).expect("the holes are popped");
+//     let capacity = u64::try_from(estimator.env.env_map.capacity()).expect("a small capacity");
+//     assert_eq!(estimator.env.env_map.len(), 1);
+//     assert!(capacity >= 1_000, "pop keeps the capacity: {capacity}");
+//     let before = host.usage(HostWorkDimension::SubstitutionBindings).get();
+//     estimator
+//         .charge_substitution(
+//             Metrics {
+//                 height: 1,
+//                 weight: 10,
+//                 vars: 0,
+//                 shifts: 3,
+//             },
+//             false,
+//         )
+//         .expect("an unlimited budget admits the charge");
+//     assert_eq!(
+//         host.usage(HostWorkDimension::SubstitutionBindings).get() - before,
+//         4 * capacity,
+//         "the call and three copies each cost the capacity"
+//     );
+// }
+
+/// The capacity that `bucket_mask_to_capacity` of hashbrown gives a table of
+/// `buckets` buckets.
+fn table_capacity(buckets: u64) -> usize {
+    let mask = usize::try_from(buckets).expect("a small bucket count") - 1;
+    match mask {
+        0..=7 => mask,
+        _ => (mask + 1) / 8 * 7,
+    }
+}
+
+/// Re-review HIGH-1: `environment_buckets` gives the bucket count of the
+/// standard map for every capacity that the pre-pass requests, so the fixed
+/// charge is the work of a copy. A change of the standard map makes this test
+/// fail.
 #[test]
-fn environment_copies_are_charged_the_capacity_of_the_map() {
+fn environment_buckets_follow_the_standard_map() {
+    for capacity in (1..=300).chain([1_000, 2_002, 4_096, 100_002, 200_002]) {
+        let map = HashMap::<i32, Par>::with_capacity(capacity);
+        assert_eq!(
+            map.capacity(),
+            table_capacity(environment_buckets(capacity)),
+            "capacity {capacity}"
+        );
+    }
+}
+
+/// Re-review HIGH-1: the environment map is sized once from the peak binder
+/// count. Pushes and pops never grow it, and a substitution costs the fixed
+/// bucket count for the call and for each copy, whatever the removals left.
+#[test]
+fn environment_copies_are_charged_the_fixed_bucket_count() {
     let reducer = evaluator(HashMap::new());
     let core = isolated_evaluator(&reducer);
     let host = unlimited();
     let mut estimator = Estimator::new(&funding(), &core, &host).expect("an estimator");
+    estimator.size_environment(1_000).expect("the map is sized");
+    let sized = estimator.env.env_map.capacity();
+    let buckets = environment_buckets(2_002);
+    for round in 0..64usize {
+        let count = 1 + (round * 37) % 1_000;
+        estimator
+            .push_holes(count, BinderKind::ReceivePattern)
+            .expect("the holes are bound");
+        let keep = count / 3;
+        estimator.pop(count - keep).expect("the holes are popped");
+        estimator.pop(keep).expect("the rest is popped");
+        assert!(
+            estimator.env.env_map.capacity() <= sized,
+            "the map never grows: {} above {sized}",
+            estimator.env.env_map.capacity()
+        );
+    }
     estimator
         .push_holes(1_000, BinderKind::ReceivePattern)
-        .expect("the holes are bound");
+        .expect("the peak is bound");
+    assert!(
+        estimator.push_holes(1, BinderKind::ReceivePattern).is_err(),
+        "the walk cannot pass the peak of the pre-pass"
+    );
     estimator.pop(999).expect("the holes are popped");
-    let capacity = u64::try_from(estimator.env.env_map.capacity()).expect("a small capacity");
-    assert_eq!(estimator.env.env_map.len(), 1);
-    assert!(capacity >= 1_000, "pop keeps the capacity: {capacity}");
     let before = host.usage(HostWorkDimension::SubstitutionBindings).get();
     estimator
         .charge_substitution(
@@ -1522,8 +1633,112 @@ fn environment_copies_are_charged_the_capacity_of_the_map() {
         .expect("an unlimited budget admits the charge");
     assert_eq!(
         host.usage(HostWorkDimension::SubstitutionBindings).get() - before,
-        4 * capacity,
-        "the call and three copies each cost the capacity"
+        4 * buckets,
+        "the call and three copies each cost the fixed bucket count"
+    );
+}
+
+/// A program with 64 outer names and 40 receives of up to 12 binders, each
+/// with a nested `new`, so pass 1 pushes and pops many binders.
+fn churning_program() -> String {
+    let names = (0..64)
+        .map(|index| format!("a{index}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let mut parts = Vec::with_capacity(81);
+    for index in 0..40usize {
+        let channel = index % 64;
+        let patterns = (0..1 + index % 12)
+            .map(|position| format!("@p{position}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let data = (0..1 + index % 12)
+            .map(|position| position.to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
+        parts.push(format!("a{channel}!({data})"));
+        parts.push(format!(
+            "for ({patterns} <- a{channel}) {{ new c in {{ c!({index}) | for (@q <- c) {{ Nil }} }} }}"
+        ));
+    }
+    parts.push("Nil".to_string());
+    format!("new {names} in {{ {} }}", parts.join(" | "))
+}
+
+/// Re-review HIGH-1: each estimate creates its maps with a fresh random hash
+/// seed. A program with 64 outer names and many removals gets the same usage
+/// in every host-work dimension in every run.
+#[test]
+fn the_charges_do_not_depend_on_the_hash_seed() {
+    let source = churning_program();
+    let urn_map = HashMap::new();
+    let par = resolved(&source, &urn_map);
+    let reducer = evaluator(urn_map);
+    let usages = (0..32)
+        .map(|_| {
+            let host = unlimited();
+            let estimate =
+                linear_cost_estimate(&par, &funding(), &schedule([1; 4]), &reducer, &host)
+                    .expect("the estimate runs");
+            (estimate, host.usages().into_array())
+        })
+        .collect::<Vec<_>>();
+    dismantle_term(par);
+    let (first_estimate, first_usage) = &usages[0];
+    assert_eq!(first_estimate.completeness, Completeness::Complete);
+    assert!(
+        first_usage[dimension_index(HostWorkDimension::SubstitutionBindings)].get() > 0,
+        "the program charges environment copies"
+    );
+    for (estimate, usage) in &usages[1..] {
+        assert_eq!(estimate, first_estimate);
+        assert_eq!(usage, first_usage);
+    }
+}
+
+/// Re-review MEDIUM-1: at each nesting level the reducer copies or scans the
+/// subtree of each compound expression. A string nested in 60 lists is
+/// charged at least 60 times its length, and the same string in one list
+/// much less.
+#[test]
+fn a_deeply_nested_list_is_charged_for_the_copies_of_each_level() {
+    let text = "A".repeat(10_000);
+    let charge = |depth: usize| {
+        let mut datum = Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::GString(text.clone())),
+        }]);
+        for _ in 0..depth {
+            datum = Par::default().with_exprs(vec![Expr {
+                expr_instance: Some(ExprInstance::EListBody(models::rhoapi::EList {
+                    ps: vec![datum],
+                    ..Default::default()
+                })),
+            }]);
+        }
+        let mut par = resolved(
+            "new x in { x!([0]) | for (@l <- x) { Nil } }",
+            &HashMap::new(),
+        );
+        new_body(&mut par).sends.first_mut().expect("one send").data = vec![datum];
+        let host = unlimited();
+        let estimate = estimate_par(&par, &host);
+        dismantle_term(par);
+        assert_eq!(
+            estimate.expect("the estimate runs").completeness,
+            Completeness::Complete,
+            "{depth} lists"
+        );
+        host.usage(HostWorkDimension::PrimitiveInputBytes).get()
+    };
+    let length = u64::try_from(text.len()).expect("a small length");
+    let (shallow, deep) = (charge(1), charge(60));
+    assert!(
+        deep >= 60 * length,
+        "60 levels cost at least 60 copies: {deep}"
+    );
+    assert!(
+        shallow < 10 * length,
+        "one level costs a few copies: {shallow}"
     );
 }
 

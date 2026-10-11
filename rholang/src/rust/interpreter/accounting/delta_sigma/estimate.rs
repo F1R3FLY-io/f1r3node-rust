@@ -127,6 +127,15 @@ const SIGNATURE_LEAF_HEIGHT: u32 = 3;
 /// of the reducer: substitution, evaluation, sorting, measurement and drop.
 /// It is the depth bound of `SorterMeter::enter`.
 pub(crate) const SIZING_HEIGHT_LIMIT: u32 = 256;
+
+/// Added by the second G1-4a fix (re-review MEDIUM-1): the copies or scans of
+/// the subtree of a compound expression at one nesting level of `eval_expr`.
+/// The evaluation builds the new value, `update_locally_free_par` clones each
+/// element (`reduce.rs:3496`), `reserve_host_primitive` measures the
+/// expression (`reduce.rs:288-302`, `:2261`), and a binary operator clones
+/// its operand (`reduce.rs:3339`).
+const EVALUATION_COPIES: u64 = 4;
+
 /// The wrapper messages around a sized value: the datum, the continuation,
 /// the random state and the seal.
 const WRAPPER_MARGIN: u32 = 8;
@@ -843,6 +852,11 @@ pub(crate) struct WorkCounts {
     pub(crate) merge_entries: u64,
     /// The length bound of the signatures that the plan canonicalizes.
     pub(crate) signature_bytes: u64,
+    /// Added by the second G1-4a fix (re-review HIGH-1): an upper bound of the
+    /// binders that pass 1 holds at once. The walk visits every position of
+    /// pass 1 and adds the binders of each `new`, receive body and match case
+    /// as pass 1 does, so the bound is at least the peak of pass 1.
+    pub(crate) peak_binders: usize,
 }
 
 fn count_plan_work(
@@ -850,13 +864,20 @@ fn count_plan_work(
     measures: &Measures,
     host: &HostWorkBudget,
 ) -> Result<WorkCounts, InterpreterError> {
+    // Changed by the second G1-4a fix (re-review HIGH-1): a step also carries
+    // the binders that pass 1 holds at its node.
+    // enum Step<'a> {
+    //     Enter(&'a Par, u64, bool),
+    //     Exit(&'a Par, u64, bool),
+    // }
     enum Step<'a> {
-        Enter(&'a Par, u64, bool),
+        Enter(&'a Par, u64, bool, usize),
         Exit(&'a Par, u64, bool),
     }
     let mut counts = WorkCounts::default();
     let mut subtree = HashMap::<usize, (u64, u64)>::new();
-    let mut work = vec![Step::Enter(root, 0, true)];
+    // let mut work = vec![Step::Enter(root, 0, true)];
+    let mut work = vec![Step::Enter(root, 0, true, 0)];
     let mut children = Vec::new();
     let signature_bytes = |signature: &CostSignature| {
         measures
@@ -866,9 +887,15 @@ fn count_plan_work(
     while let Some(step) = work.pop() {
         reserve(host, HostWorkDimension::StructuralItems, 1)?;
         match step {
-            Step::Enter(par, depth, execution) => {
+            Step::Enter(par, depth, execution, binders) => {
                 children.clear();
                 plan_children(par, depth, execution, &mut children);
+                counts.peak_binders = counts.peak_binders.max(binders);
+                for new in &par.news {
+                    counts.peak_binders = counts
+                        .peak_binders
+                        .max(binders.saturating_add(new_levels(new)));
+                }
                 let links = depth.saturating_add(1);
                 let binds = signed_binds(par);
                 let cells = stack_cells(par);
@@ -909,13 +936,23 @@ fn count_plan_work(
                     }
                 }
                 work.push(Step::Exit(par, depth, execution));
-                work.extend(
-                    children
-                        .drain(..)
-                        .map(|(child, child_depth, child_execution)| {
-                            Step::Enter(child, child_depth, child_execution)
-                        }),
-                );
+                // work.extend(
+                //     children
+                //         .drain(..)
+                //         .map(|(child, child_depth, child_execution)| {
+                //             Step::Enter(child, child_depth, child_execution)
+                //         }),
+                // );
+                work.extend(children.drain(..).map(
+                    |(child, child_depth, child_execution, levels)| {
+                        Step::Enter(
+                            child,
+                            child_depth,
+                            child_execution,
+                            binders.saturating_add(levels),
+                        )
+                    },
+                ));
             }
             // Changed by the G1-4a fix (review H-2): a combine touches the
             // lanes of the child, which its signed scopes and signed binds
@@ -961,7 +998,7 @@ fn count_plan_work(
                 let mut lanes_below = 0u64;
                 let mut cells_below = 0u64;
                 let mut child_lanes = 0u64;
-                for (child, _, _) in &children {
+                for (child, _, _, _) in &children {
                     let (lanes, cells) = subtree
                         .get(&(*child as *const Par as usize))
                         .copied()
@@ -994,38 +1031,49 @@ fn count_plan_work(
 }
 
 /// The children that `signed_demand_par` visits, with the signed depth and
-/// the execution flag that it gives each of them.
+/// the execution flag that it gives each of them. Changed by the second
+/// G1-4a fix (re-review HIGH-1): each child also carries the binders that
+/// pass 1 pushes before it visits the child. A receive body adds the bind
+/// count, a `new` body its levels and a match case its free count.
 fn plan_children<'a>(
     par: &'a Par,
     depth: u64,
     execution: bool,
-    out: &mut Vec<(&'a Par, u64, bool)>,
+    out: &mut Vec<(&'a Par, u64, bool, usize)>,
 ) {
+    let count = |value: i32| usize::try_from(value).unwrap_or(0);
     for signed in &par.cost_signed_terms {
         out.extend(
             signed
                 .body
                 .iter()
-                .map(|body| (body, depth.saturating_add(1), true)),
+                .map(|body| (body, depth.saturating_add(1), true, 0)),
         );
     }
     for send in &par.sends {
-        out.extend(send.data.iter().map(|datum| (datum, 0, false)));
+        out.extend(send.data.iter().map(|datum| (datum, 0, false, 0)));
     }
     for receive in &par.receives {
-        out.extend(receive.body.iter().map(|body| (body, 0, true)));
+        out.extend(
+            receive
+                .body
+                .iter()
+                .map(|body| (body, 0, true, count(receive.bind_count))),
+        );
     }
     for new in &par.news {
-        out.extend(new.p.iter().map(|body| (body, depth, execution)));
+        out.extend(
+            new.p
+                .iter()
+                .map(|body| (body, depth, execution, new_levels(new))),
+        );
     }
     for matched in &par.matches {
-        out.extend(
-            matched
-                .cases
-                .iter()
-                .filter_map(|case| case.source.as_ref())
-                .map(|source| (source, depth, execution)),
-        );
+        out.extend(matched.cases.iter().filter_map(|case| {
+            case.source
+                .as_ref()
+                .map(|source| (source, depth, execution, count(case.free_count)))
+        }));
     }
     for conditional in &par.conditionals {
         out.extend(
@@ -1033,12 +1081,39 @@ fn plan_children<'a>(
                 .if_true
                 .iter()
                 .chain(conditional.if_false.iter())
-                .map(|branch| (branch, depth, execution)),
+                .map(|branch| (branch, depth, execution, 0)),
         );
     }
     for bundle in &par.bundles {
-        out.extend(bundle.body.iter().map(|body| (body, depth, execution)));
+        out.extend(bundle.body.iter().map(|body| (body, depth, execution, 0)));
     }
+}
+
+/// Added by the second G1-4a fix (re-review HIGH-1): the levels that
+/// `push_new` binds for a `new`, the simple names and one level for each URI.
+fn new_levels(new: &New) -> usize {
+    let count = usize::try_from(new.bind_count).unwrap_or(0);
+    count.max(new.uri.len())
+}
+
+/// Added by the second G1-4a fix (re-review HIGH-1): the bucket count of a
+/// hashbrown table sized for `capacity` entries of the environment map,
+/// after `capacity_to_buckets` of hashbrown 0.16. An entry holds a `Par`, so
+/// it is much larger than a control group, and the small-table minimum that
+/// depends on the group width does not apply. The charge reads this pure
+/// function, never the capacity of the live map.
+fn environment_buckets(capacity: usize) -> u64 {
+    let buckets = match capacity {
+        0..=3 => 4,
+        4..=7 => 8,
+        8..=14 => 16,
+        _ => capacity
+            .saturating_mul(8)
+            .checked_div(7)
+            .and_then(usize::checked_next_power_of_two)
+            .unwrap_or(usize::MAX),
+    };
+    byte_count(buckets)
 }
 
 fn plan_items(par: &Par, execution: bool) -> u64 {
@@ -1207,6 +1282,11 @@ pub(crate) struct Estimator<'e> {
     deploy_seal: Option<u64>,
     binders: Vec<Binder>,
     env: Env<Par>,
+    /// Added by the second G1-4a fix (re-review HIGH-1): the peak binder count
+    /// of the pre-pass, and the bucket count of the environment map, which
+    /// `size_environment` sizes once from that peak.
+    peak_binders: usize,
+    env_buckets: u64,
     /// The largest height and length of a value in the sizing environment.
     env_height: u32,
     env_weight: u64,
@@ -1224,6 +1304,10 @@ pub(crate) struct Estimator<'e> {
     pub(crate) reason: Option<IncompleteReason>,
     #[cfg(test)]
     pub(crate) levels: Vec<(usize, usize)>,
+    /// Added by the second G1-4a fix, test only: the most binders that pass 1
+    /// held at once.
+    #[cfg(test)]
+    pub(crate) observed_peak: usize,
 }
 
 enum Task<'a> {
@@ -1274,6 +1358,8 @@ impl<'e> Estimator<'e> {
             deploy_seal,
             binders: Vec::new(),
             env: Env::new(),
+            peak_binders: 0,
+            env_buckets: environment_buckets(2),
             env_height: 0,
             env_weight: 0,
             env_bytes: 0,
@@ -1287,6 +1373,8 @@ impl<'e> Estimator<'e> {
             reason: None,
             #[cfg(test)]
             levels: Vec::new(),
+            #[cfg(test)]
+            observed_peak: 0,
         };
         estimator.fresh_weight = estimator.note_env_value(&fresh_name(0))?;
         estimator.poison_weight =
@@ -1309,7 +1397,40 @@ impl<'e> Estimator<'e> {
     /// plan and of the vector fold.
     pub(crate) fn measure(&mut self, root: &Par) -> Result<WorkCounts, InterpreterError> {
         measure_subterm(Subterm::Par(root), &mut self.measures, self.host)?;
-        count_plan_work(root, &self.measures, self.host)
+        // Changed by the second G1-4a fix (re-review HIGH-1): the pre-pass also
+        // sizes the environment map from the peak binder count.
+        // count_plan_work(root, &self.measures, self.host)
+        let counts = count_plan_work(root, &self.measures, self.host)?;
+        self.size_environment(counts.peak_binders)?;
+        Ok(counts)
+    }
+
+    /// Added by the second G1-4a fix (re-review HIGH-1): sizes the empty
+    /// environment map once for the whole walk, with room for twice the peak
+    /// binder count. A table that runs out of room then rehashes in place,
+    /// because it holds at most half of its capacity, so its bucket count
+    /// never changes. The capacity of a table after removals depends on the
+    /// hash seed and on the group width of the processor, so the charge of a
+    /// copy reads the fixed bucket count instead, a pure function of the term.
+    /// The slots are charged as bindings before the allocation.
+    pub(crate) fn size_environment(&mut self, peak: usize) -> Result<(), InterpreterError> {
+        if !self.binders.is_empty() || self.env.level != 0 {
+            return Err(InterpreterError::BugFoundError(
+                "the estimate sized an environment that holds binders".to_string(),
+            ));
+        }
+        let capacity = peak.saturating_mul(2).saturating_add(2);
+        self.charge(
+            HostWorkDimension::SubstitutionBindings,
+            byte_count(capacity),
+        )?;
+        let mut map = HashMap::new();
+        map.try_reserve(capacity)
+            .map_err(|_| InterpreterError::HostWorkRejected)?;
+        self.env.env_map = map;
+        self.peak_binders = peak;
+        self.env_buckets = environment_buckets(capacity);
+        Ok(())
     }
 
     pub(crate) fn charge_plan(&self, counts: &WorkCounts) -> Result<(), InterpreterError> {
@@ -1376,11 +1497,23 @@ impl<'e> Estimator<'e> {
             }
             _ => 0,
         };
+        // Added by the second G1-4a fix (re-review HIGH-1): the walk stays
+        // within the peak that sized the environment map, so the map never
+        // grows.
+        if self.binders.len() >= self.peak_binders {
+            return Err(InterpreterError::BugFoundError(
+                "the estimate holds more binders than its pre-pass counted".to_string(),
+            ));
+        }
         self.binders.push(Binder {
             kind,
             serial,
             weight,
         });
+        #[cfg(test)]
+        {
+            self.observed_peak = self.observed_peak.max(self.binders.len());
+        }
         self.env_bytes = self.env_bytes.saturating_add(weight);
         self.env
             .push(value)
@@ -1589,10 +1722,10 @@ impl<'e> Estimator<'e> {
     }
 
     /// The charge of one substitution, before it runs.
-    /// - Its bindings are the capacity of the environment map once, for the
-    ///   call, and once more for each environment copy of the term. A copy
-    ///   clones every bucket of the map, and `pop` never shrinks the map
-    ///   (review M-4).
+    /// - Its bindings are the bucket count of the environment map once, for
+    ///   the call, and once more for each environment copy of the term. A
+    ///   copy clones every bucket of the map (review M-4). The bucket count is
+    ///   fixed for the whole walk (re-review HIGH-1).
     /// - Its bytes are the input bound, the output bound, in which each
     ///   variable can become the largest value of the environment, and the
     ///   bytes of each environment copy. The marker scan and the measurement
@@ -1606,7 +1739,12 @@ impl<'e> Estimator<'e> {
         //     HostWorkDimension::SubstitutionBindings,
         //     byte_count(self.env.env_map.len()).saturating_mul(metrics.shifts.saturating_add(1)),
         // )?;
-        let buckets = byte_count(self.env.env_map.capacity().max(self.env.env_map.len()));
+        // Changed by the second G1-4a fix (re-review HIGH-1): the capacity of
+        // the live map depends on the hash seed and on the group width after
+        // removals, so two nodes could charge differently. The charge reads
+        // the fixed bucket count of the map that `size_environment` sized.
+        // let buckets = byte_count(self.env.env_map.capacity().max(self.env.env_map.len()));
+        let buckets = self.env_buckets;
         self.charge(
             HostWorkDimension::SubstitutionBindings,
             buckets.saturating_mul(metrics.shifts.saturating_add(1)),
@@ -1680,37 +1818,55 @@ impl<'e> Estimator<'e> {
     /// boolean operators, `++` on strings, byte arrays and lists, and `%%`
     /// with a literal map have one. A `%%` costs `t * (t + K * (g + 3))` for a
     /// template of `t` bytes and `K` keys of at most `g` bytes, plus its
-    /// output bound. The other forms cost their exact input bytes plus their
-    /// output growth. A datum with a set, a map or a comparison also pays its
-    /// height plus one, times a logarithmic factor for sorting.
+    /// output bound.
+    ///
+    /// Changed by the second G1-4a fix (re-review MEDIUM-1): at each nesting
+    /// level of compound expressions, the reducer copies or scans the whole
+    /// subtree of each expression up to `EVALUATION_COPIES` times. The
+    /// expressions of one level have disjoint subtrees, so each level costs
+    /// at most that many copies of the exact input bytes plus the output
+    /// growth. The levels are the nesting depth plus one for the leaves. A
+    /// datum with a set, a map or a comparison also pays its height plus one,
+    /// times a logarithmic factor for sorting.
     pub(crate) fn evaluation_bound(
         &self,
         root: &Par,
     ) -> Result<Option<EvaluationBound>, InterpreterError> {
+        // Changed by the second G1-4a fix (re-review MEDIUM-1): a `Par` and an
+        // `Expr` step carry their nesting depth of compound expressions.
+        // enum Step<'a> {
+        //     Par(&'a Par),
+        //     Expr(&'a Expr),
+        //     ParDone(&'a Par),
+        //     ExprDone(&'a Expr),
+        // }
         enum Step<'a> {
-            Par(&'a Par),
-            Expr(&'a Expr),
+            Par(&'a Par, u64),
+            Expr(&'a Expr, u64),
             ParDone(&'a Par),
             ExprDone(&'a Expr),
         }
         let Some(metrics) = self.measures.par(root) else {
             return Ok(None);
         };
-        let mut work = vec![Step::Par(root)];
+        // let mut work = vec![Step::Par(root)];
+        let mut work = vec![Step::Par(root, 0)];
         let mut values: Vec<Evaluated> = Vec::new();
         let mut calls = 0u64;
         let mut growth = 0u64;
         let mut loops = 0u64;
         let mut sorted = false;
+        let mut nesting = 0u64;
         while let Some(step) = work.pop() {
             self.charge(HostWorkDimension::StructuralItems, 1)?;
             match step {
-                Step::Par(par) => {
+                Step::Par(par, depth) => {
                     work.push(Step::ParDone(par));
-                    work.extend(par.exprs.iter().rev().map(Step::Expr));
+                    work.extend(par.exprs.iter().rev().map(|expr| Step::Expr(expr, depth)));
                 }
-                Step::Expr(expr) => {
+                Step::Expr(expr, depth) => {
                     calls = calls.saturating_add(1);
+                    nesting = nesting.max(depth);
                     sorted |= matches!(
                         expr.expr_instance,
                         Some(
@@ -1728,7 +1884,12 @@ impl<'e> Estimator<'e> {
                         return Ok(None);
                     };
                     work.push(Step::ExprDone(expr));
-                    work.extend(operands.into_iter().rev().map(Step::Par));
+                    work.extend(
+                        operands
+                            .into_iter()
+                            .rev()
+                            .map(|operand| Step::Par(operand, depth.saturating_add(1))),
+                    );
                 }
                 Step::ParDone(par) => {
                     let start = values.len().checked_sub(par.exprs.len()).ok_or_else(|| {
@@ -1784,13 +1945,26 @@ impl<'e> Estimator<'e> {
         let exact = byte_count(root.encoded_len());
         let output = exact.saturating_add(values.last().map_or(0, |value| value.growth));
         let bytes = exact.saturating_add(growth);
-        let factor = match sorted {
+        // Changed by the second G1-4a fix (re-review MEDIUM-1): the copies of
+        // each nesting level are charged, and the sort factor of the sorting
+        // forms adds to them.
+        // let factor = match sorted {
+        //     true => u64::from(metrics.height)
+        //         .saturating_add(1)
+        //         .saturating_mul(log2_ceil(bytes.saturating_add(2)).saturating_add(1)),
+        //     false => 1,
+        // };
+        // let work = bytes.saturating_mul(factor).saturating_add(loops);
+        let copies = nesting.saturating_add(1).saturating_mul(EVALUATION_COPIES);
+        let sort = match sorted {
             true => u64::from(metrics.height)
                 .saturating_add(1)
                 .saturating_mul(log2_ceil(bytes.saturating_add(2)).saturating_add(1)),
-            false => 1,
+            false => 0,
         };
-        let work = bytes.saturating_mul(factor).saturating_add(loops);
+        let work = bytes
+            .saturating_mul(copies.saturating_add(sort))
+            .saturating_add(loops);
         Ok(Some(EvaluationBound {
             calls,
             work,

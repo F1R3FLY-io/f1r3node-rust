@@ -19,7 +19,7 @@ use models::rhoapi::{
 use models::rust::host_work::{HostWorkDimension, HostWorkLimit, HostWorkLimits};
 use proptest::prelude::*;
 
-use super::recursive_oracle::{analyze, analyze_iteratively, estimator_levels};
+use super::recursive_oracle::{analyze, analyze_iteratively, estimator_levels, peak_binders};
 use super::tests::{evaluator, funding, runtime_urn_map, schedule, stdout_urn_map, unlimited};
 use super::*;
 use crate::rust::interpreter::accounting::lexical::{
@@ -57,6 +57,9 @@ pub(super) enum Generated {
         body: Vec<Generated>,
         persistent: bool,
         peek: bool,
+        /// Added by the second G1-4a fix (re-review LOW 2): the `where` guard
+        /// of the receipt.
+        guard: Option<GuardShape>,
     },
     Signed(u8, Vec<Generated>),
     Branch(Vec<Generated>, Vec<Generated>),
@@ -69,6 +72,29 @@ pub(super) enum Generated {
     /// Added by the G1-4a fix (review H-1): a signed scope whose signature
     /// is the quote `#P`.
     SignedQuote(QuoteSignature, Vec<Generated>),
+    /// Added by the second G1-4a fix (re-review LOW 2): a bundle in process
+    /// position.
+    Bundle(Vec<Generated>),
+}
+
+/// Added by the second G1-4a fix (re-review LOW 2): the guard of a generated
+/// receive. It compares the receive's first variable with a literal, with
+/// the innermost variable of an enclosing receive, or with the URN that the
+/// program binds at its top.
+#[derive(Clone, Debug)]
+pub(super) enum GuardShape {
+    Own(i64),
+    Enclosing,
+    Urn,
+}
+
+fn arb_guard() -> impl Strategy<Value = Option<GuardShape>> {
+    prop_oneof![
+        6 => Just(None),
+        2 => (0i64..5).prop_map(|value| Some(GuardShape::Own(value))),
+        1 => Just(Some(GuardShape::Enclosing)),
+        1 => Just(Some(GuardShape::Urn)),
+    ]
 }
 
 /// Added by the G1-4a fix (review H-1): the process of a generated `#P`
@@ -119,12 +145,14 @@ fn arb_item(complete: bool) -> impl Strategy<Value = Generated> {
                 body.clone(),
                 prop::bool::weighted(if complete { 0.0 } else { 0.1 }),
                 prop::bool::weighted(if complete { 0.0 } else { 0.1 }),
+                arb_guard(),
             )
-                .prop_map(|(binds, body, persistent, peek)| Generated::Receive {
+                .prop_map(|(binds, body, persistent, peek, guard)| Generated::Receive {
                     binds,
                     body,
                     persistent,
                     peek,
+                    guard,
                 }),
             2 => (0u8..3, body.clone()).prop_map(|(signature, body)| Generated::Signed(signature, body)),
             1 => (body.clone(), body.clone()).prop_map(|(left, right)| Generated::Branch(left, right)),
@@ -132,6 +160,7 @@ fn arb_item(complete: bool) -> impl Strategy<Value = Generated> {
             1 => body.clone().prop_map(Generated::New),
             1 => (arb_quote_signature(), body.clone())
                 .prop_map(|(signature, body)| Generated::SignedQuote(signature, body)),
+            1 => body.clone().prop_map(Generated::Bundle),
             incomplete => body.prop_map(Generated::SignedByNew),
         ]
     })
@@ -143,9 +172,12 @@ pub(super) fn arb_program(complete: bool) -> impl Strategy<Value = Vec<Generated
 
 /// Renders a program as Rholang. Channels are the names of the enclosing
 /// `new` terms, signatures are unbound names, and a branch tests the
-/// innermost received value, or `true` outside every receive.
+/// innermost received value, or `true` outside every receive. Changed by the
+/// second G1-4a fix (re-review LOW 2): the top `new` also binds the URN
+/// `out`, which a generated guard can name.
 pub(super) fn render(program: &[Generated]) -> String {
-    let mut out = String::from("new x0, x1, x2 in { ");
+    // let mut out = String::from("new x0, x1, x2 in { ");
+    let mut out = String::from("new x0, x1, x2, out(`rho:io:stdout`) in { ");
     let mut names = vec!["x0".to_string(), "x1".to_string(), "x2".to_string()];
     let mut received = Vec::new();
     let mut counter = 0usize;
@@ -219,6 +251,7 @@ fn render_item(
             body,
             persistent,
             peek,
+            guard,
         } => {
             let arrow = match (persistent, peek) {
                 (true, _) => "<=",
@@ -248,6 +281,21 @@ fn render_item(
                     _ => out.push_str(&format!("@{variable} {arrow} {source}")),
                 }
                 bound.push(variable);
+            }
+            if let (Some(guard), Some(own)) = (guard, bound.first()) {
+                let other = match guard {
+                    GuardShape::Own(value) => value.to_string(),
+                    GuardShape::Enclosing => match received.last() {
+                        Some(name) => name.clone(),
+                        None => "0".to_string(),
+                    },
+                    GuardShape::Urn => "*out".to_string(),
+                };
+                let operator = match guard {
+                    GuardShape::Own(_) => ">",
+                    GuardShape::Enclosing | GuardShape::Urn => "==",
+                };
+                out.push_str(&format!(" where {own} {operator} {other}"));
             }
             out.push_str(") { ");
             let depth = received.len();
@@ -304,6 +352,11 @@ fn render_item(
             out.push_str(&format!("new {name} in {{ {{% "));
             render_list(body, names, received, counter, out);
             out.push_str(&format!(" %}}[ {name} ] }}"));
+        }
+        Generated::Bundle(body) => {
+            out.push_str("bundle+ { ");
+            render_list(body, names, received, counter, out);
+            out.push_str(" }");
         }
         Generated::SignedQuote(signature, body) => {
             let quoted = match signature {
@@ -1086,5 +1139,131 @@ fn the_variable_scan_runs_a_signature_nested_one_hundred_thousand_deep_on_a_smal
             (scanned, oracle_scanned, oracle),
             (expected, expected, expected)
         );
+    }
+}
+
+// ── The peak binder count (re-review HIGH-1) ───────────────────────────────
+
+/// Re-review HIGH-1: the peak binder count of the pre-pass bounds the
+/// binders that pass 1 holds at once, on generated programs and on the
+/// corpus, so the environment map never grows. On a term whose positions
+/// all belong to pass 1, the two counts are equal.
+#[test]
+fn the_peak_binder_count_bounds_pass_one() {
+    let urn_map = runtime_urn_map();
+    let reducer = evaluator(urn_map.clone());
+    let mut checked = 0usize;
+    let sources = sample_programs(false, 64)
+        .into_iter()
+        .chain(corpus_sources().into_iter().map(|(_, source)| source));
+    for source in sources {
+        let Some(program) = compile(&source) else {
+            continue;
+        };
+        let resolved = resolve_lexical_names_for_funding(
+            &program,
+            Blake2b512Random::create_from_bytes(b"peak binders"),
+            &urn_map,
+        );
+        dismantle_term(program);
+        let Ok(resolved) = resolved else {
+            continue;
+        };
+        let (peak, observed) =
+            peak_binders(&resolved, &funding(), &reducer).expect("pass 1 walks the program");
+        dismantle_term(resolved);
+        assert!(observed <= peak, "{observed} above {peak}: {source}");
+        checked += 1;
+    }
+    assert!(checked >= 80, "only {checked} programs were checked");
+    let par = deep_term(1_000);
+    let counts = peak_binders(&par, &funding(), &reducer).expect("pass 1 walks the deep term");
+    dismantle_term(par);
+    assert_eq!(counts, (1_000, 1_000));
+}
+
+// ── The compute row of the plan (re-review MEDIUM-2) ───────────────────────
+
+/// Checks that the compute count of the plan is at least the compute count
+/// of the vector for every lane where rule X1 holds. It returns whether the
+/// program reached that comparison with a positive compute count.
+fn assert_plan_dominates(
+    source: &str,
+    urn_map: &HashMap<String, Par>,
+) -> Result<bool, TestCaseError> {
+    let Some(program) = compile(source) else {
+        return Ok(false);
+    };
+    let resolved = resolve_lexical_names_for_funding(
+        &program,
+        Blake2b512Random::create_from_bytes(b"plan dominance"),
+        urn_map,
+    );
+    dismantle_term(program);
+    let Ok(resolved) = resolved else {
+        return Ok(false);
+    };
+    let reducer = evaluator(urn_map.clone());
+    let analysis = analyze_iteratively(
+        &resolved,
+        &funding(),
+        &schedule([1; 4]),
+        &reducer,
+        &unlimited(),
+    );
+    let plan = static_authority_plan(&resolved, &funding());
+    dismantle_term(resolved);
+    let analysis = analysis.map_err(|error| TestCaseError::fail(format!("{source}: {error}")))?;
+    let Ok(plan) = plan else {
+        return Ok(false);
+    };
+    for (lane, counts) in &analysis.vector {
+        let planned = plan.demand.0.get(lane).copied().unwrap_or(0);
+        prop_assert!(
+            planned >= counts[0],
+            "{}: lane {:?} plan {} below vector {}",
+            source,
+            &lane[..4],
+            planned,
+            counts[0]
+        );
+    }
+    Ok(analysis.vector.values().any(|counts| counts[0] > 0))
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(256))]
+
+    /// Re-review MEDIUM-2: where rule X1 holds, the compute count of the plan
+    /// is at least the compute count of the vector for every lane, on every
+    /// generated program of both profiles.
+    #[test]
+    fn the_plan_compute_row_dominates_the_vector_row(program in arb_program(false)) {
+        assert_plan_dominates(&render(&program), &stdout_urn_map())?;
+    }
+}
+
+/// Re-review MEDIUM-2: the dominance holds on the corpus, and the property
+/// is not vacuous: many generated programs reach the comparison with a
+/// positive compute count.
+#[test]
+fn the_plan_compute_row_dominates_on_the_corpus() {
+    let urn_map = stdout_urn_map();
+    let reached = sample_programs(false, 64)
+        .iter()
+        .chain(sample_programs(true, 32).iter())
+        .filter(|source| {
+            assert_plan_dominates(source, &urn_map)
+                .unwrap_or_else(|error| panic!("dominance: {error}"))
+        })
+        .count();
+    assert!(
+        reached >= 24,
+        "only {reached} of 96 programs reached the comparison"
+    );
+    let runtime = runtime_urn_map();
+    for (path, source) in corpus_sources() {
+        assert_plan_dominates(&source, &runtime)
+            .unwrap_or_else(|error| panic!("dominance on {}: {error}", path.display()));
     }
 }

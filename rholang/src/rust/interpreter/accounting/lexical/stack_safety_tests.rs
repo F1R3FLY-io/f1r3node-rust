@@ -12,9 +12,9 @@
 //! (DR-121) the oracle runs with receive bodies unresolved, the rule of the
 //! machine. Since the G1-4a fix (DR-122 item 11), the machine also leaves a
 //! signature unchanged outside a resolving position when its quoted or named
-//! process has a free level. The generated programs and the corpus have no
-//! such quote, and `a_quoted_name_resolves_only_in_a_resolving_position`
-//! tests the rule.
+//! process has a free level. Since the second G1-4a fix (re-review LOW 1),
+//! the generated programs put such quotes inside receive bodies, `#*x` and
+//! `#v`, and the oracle follows the same rule.
 
 use std::collections::{BTreeMap, HashMap};
 
@@ -88,6 +88,13 @@ enum SigShape {
     Ground(u8),
     /// A compound of a name in scope and a ground signature.
     Pair(u8, u8),
+    /// Added by the second G1-4a fix (re-review LOW 1): `#*x` for a name in
+    /// scope, inside a receive body, and a ground signature elsewhere.
+    QuoteName(u8),
+    /// Added by the second G1-4a fix (re-review LOW 1): `#v` for the innermost
+    /// process variable, inside a receive body, and a ground signature
+    /// elsewhere.
+    QuoteVariable,
 }
 
 #[derive(Clone, Debug)]
@@ -108,6 +115,12 @@ enum Shape {
     },
     /// `for (x <- @"in") { P }`.
     Receive(Box<Shape>),
+    /// Added by the second G1-4a fix (re-review LOW 1): `for (@v <- @"in") {
+    /// P }`, which binds a process variable.
+    ReceiveValue(Box<Shape>),
+    /// Added by the second G1-4a fix (re-review LOW 1): `for (@v <- @"in") {
+    /// {% P %}[ #*x ] | {% Nil %}[ #v ] }`, with `x` a name in scope.
+    QuotesInReceive(u8, Box<Shape>),
     /// `match 7 { y => P _ => Q }`: the first case binds a process variable.
     Match(Box<Shape>, Box<Shape>),
     If(Box<Shape>, Box<Shape>),
@@ -123,6 +136,8 @@ fn arb_sig() -> impl Strategy<Value = SigShape> {
         4 => any::<u8>().prop_map(SigShape::Scoped),
         2 => (0u8..4).prop_map(SigShape::Ground),
         1 => (any::<u8>(), 0u8..4).prop_map(|(name, ground)| SigShape::Pair(name, ground)),
+        2 => any::<u8>().prop_map(SigShape::QuoteName),
+        1 => Just(SigShape::QuoteVariable),
     ]
 }
 
@@ -150,6 +165,11 @@ fn arb_shape() -> impl Strategy<Value = Shape> {
             inner
                 .clone()
                 .prop_map(|body| Shape::Receive(Box::new(body))),
+            inner
+                .clone()
+                .prop_map(|body| Shape::ReceiveValue(Box::new(body))),
+            (any::<u8>(), inner.clone())
+                .prop_map(|(name, body)| Shape::QuotesInReceive(name, Box::new(body))),
             (inner.clone(), inner.clone())
                 .prop_map(|(left, right)| Shape::Match(Box::new(left), Box::new(right))),
             (inner.clone(), inner.clone())
@@ -160,10 +180,14 @@ fn arb_shape() -> impl Strategy<Value = Shape> {
     })
 }
 
-/// A name in scope and whether a receive binds it.
+/// A name in scope and whether a receive binds it. Added by the second G1-4a
+/// fix (re-review LOW 1): the process variables in scope, and the number of
+/// enclosing receive bodies.
 struct Scope {
     names: Vec<(String, bool)>,
     fresh: usize,
+    variables: Vec<String>,
+    receive_depth: usize,
 }
 
 impl Scope {
@@ -185,6 +209,14 @@ fn render_sig(sig: &SigShape, scope: &Scope) -> String {
         SigShape::Scoped(index) => scope.pick(*index),
         SigShape::Ground(tag) => format!("g{tag}"),
         SigShape::Pair(index, tag) => format!("{} (*) g{tag}", scope.pick(*index)),
+        SigShape::QuoteName(index) => match (scope.receive_depth, scope.names.len()) {
+            (0, _) | (_, 0) => "g1".to_string(),
+            _ => format!("#*{}", scope.pick(*index)),
+        },
+        SigShape::QuoteVariable => match (scope.receive_depth, scope.variables.last()) {
+            (0, _) | (_, None) => "g2".to_string(),
+            (_, Some(variable)) => format!("#{variable}"),
+        },
     }
 }
 
@@ -241,14 +273,44 @@ fn render(shape: &Shape, scope: &mut Scope, out: &mut String) {
             let name = scope.fresh("x");
             out.push_str(&format!("for ({name} <- @\"in\") {{ "));
             scope.names.push((name, true));
+            scope.receive_depth += 1;
             render(body, scope, out);
+            scope.receive_depth -= 1;
             scope.names.pop();
+            out.push_str(" }");
+        }
+        Shape::ReceiveValue(body) => {
+            let variable = scope.fresh("v");
+            out.push_str(&format!("for (@{variable} <- @\"in\") {{ "));
+            scope.variables.push(variable);
+            scope.receive_depth += 1;
+            render(body, scope, out);
+            scope.receive_depth -= 1;
+            scope.variables.pop();
+            out.push_str(" }");
+        }
+        Shape::QuotesInReceive(name, body) => {
+            let variable = scope.fresh("v");
+            out.push_str(&format!("for (@{variable} <- @\"in\") {{ "));
+            scope.variables.push(variable.clone());
+            scope.receive_depth += 1;
+            out.push_str("{% ");
+            render(body, scope, out);
+            let quoted = match scope.names.len() {
+                0 => "g3".to_string(),
+                _ => format!("#*{}", scope.pick(*name)),
+            };
+            out.push_str(&format!(" %}}[ {quoted} ] | {{% Nil %}}[ #{variable} ]"));
+            scope.receive_depth -= 1;
+            scope.variables.pop();
             out.push_str(" }");
         }
         Shape::Match(left, right) => {
             let variable = scope.fresh("y");
             out.push_str(&format!("match 7 {{ {variable} => {{ "));
+            scope.variables.push(variable);
             render(left, scope, out);
+            scope.variables.pop();
             out.push_str(" } _ => { ");
             render(right, scope, out);
             out.push_str(" } }");
@@ -291,6 +353,8 @@ fn source_of(shape: &Shape) -> String {
     let mut scope = Scope {
         names: Vec::new(),
         fresh: 0,
+        variables: Vec::new(),
+        receive_depth: 0,
     };
     let mut out = String::new();
     render(shape, &mut scope, &mut out);
@@ -1269,4 +1333,31 @@ fn the_free_level_scan_runs_a_signature_nested_one_hundred_thousand_deep_on_a_sm
             .expect("the iterative teardown stays within a small stack");
         assert_eq!(found, expected);
     }
+}
+
+/// Added by the second G1-4a fix (re-review LOW 1): the parity property
+/// reaches the quotes with a free level inside receive bodies. Many
+/// generated programs hold `#*x` or `#v`.
+#[test]
+fn generated_programs_hold_quotes_inside_receive_bodies() {
+    use proptest::strategy::ValueTree;
+    use proptest::test_runner::TestRunner;
+
+    let mut runner = TestRunner::deterministic();
+    let strategy = arb_shape();
+    let mut quoting = 0usize;
+    for _ in 0..256 {
+        let shape = strategy
+            .new_tree(&mut runner)
+            .expect("a generated shape")
+            .current();
+        let source = source_of(&shape);
+        if source.contains("[ #") {
+            quoting += 1;
+        }
+    }
+    assert!(
+        quoting >= 32,
+        "only {quoting} of 256 generated programs hold a quote with a free level"
+    );
 }

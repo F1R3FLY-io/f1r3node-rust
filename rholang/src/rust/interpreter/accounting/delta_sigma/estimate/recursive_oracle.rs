@@ -400,3 +400,23 @@ fn expr_holds_variable(expr: &Expr) -> bool {
         | None => false,
     }
 }
+
+/// Added by the second G1-4a fix (re-review HIGH-1): the peak binder count
+/// of the pre-pass on `program`, and the most binders that pass 1 held at
+/// once.
+pub(super) fn peak_binders(
+    program: &Par,
+    funding: &Sig,
+    evaluator: &ReducerCore,
+) -> Result<(usize, usize), InterpreterError> {
+    let core = isolated_evaluator(evaluator);
+    let host = HostWorkBudget::new(models::rust::host_work::HostWorkLimits::uniform(
+        models::rust::host_work::HostWorkLimit::new(u64::MAX),
+    ));
+    stacker::grow(SIZING_STACK_BYTES, || {
+        let mut estimator = Estimator::new(funding, &core, &host)?;
+        let counts = estimator.measure(program)?;
+        estimator.walk(program)?;
+        Ok((counts.peak_binders, estimator.observed_peak))
+    })
+}

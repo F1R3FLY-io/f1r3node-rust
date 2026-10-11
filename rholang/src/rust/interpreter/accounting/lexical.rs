@@ -1251,7 +1251,10 @@ pub(crate) fn resolver_levels(
 
 /// The recursive resolver of HEAD `17e07307f`, kept as the test oracle. With
 /// `resolve_receive_bodies` set it is HEAD's resolver. Without it, it leaves
-/// the names that a receive body creates unresolved (DR-121).
+/// the names that a receive body creates unresolved (DR-121). Changed by the
+/// second G1-4a fix (re-review LOW 1): without it, the oracle also follows
+/// the rule of `resolve_signature` for a quote with a free level outside a
+/// resolving position.
 #[cfg(test)]
 pub(crate) fn resolve_lexical_names_for_funding_recursive(
     program: &Par,
@@ -1262,13 +1265,131 @@ pub(crate) fn resolve_lexical_names_for_funding_recursive(
     let substitute = Substitute {
         metering: MeteredMachine::new(RuntimeBudget::new(Cost::unsafe_max())),
     };
-    resolve_par(
+    // resolve_par(
+    //     program.clone(),
+    //     rand,
+    //     urn_map,
+    //     &substitute,
+    //     resolve_receive_bodies,
+    // )
+    let mut resolved = resolve_par(
         program.clone(),
         rand,
         urn_map,
         &substitute,
         resolve_receive_bodies,
-    )
+    )?;
+    if !resolve_receive_bodies {
+        keep_unresolvable_quotes(program, &mut resolved, true);
+    }
+    Ok(resolved)
+}
+
+/// Added by the second G1-4a fix (re-review LOW 1): the oracle form of the
+/// rule of `resolve_signature`. Outside a resolving position, a receive body
+/// or a datum, a signature whose quoted or named process has a free level
+/// keeps the form of the program. The recursion visits `program` and
+/// `resolved` in step, because the substitution of resolved names keeps the
+/// shape of every walked position.
+#[cfg(test)]
+fn keep_unresolvable_quotes(program: &Par, resolved: &mut Par, resolving: bool) {
+    fn quotes_a_free_level(signature: &CostSignature) -> bool {
+        match signature.value.as_ref() {
+            Some(CostSignatureValue::Compound(compound)) => {
+                compound.elements.iter().any(quotes_a_free_level)
+            }
+            Some(CostSignatureValue::Quote(par)) | Some(CostSignatureValue::Name(par)) => {
+                par.locally_free.iter().any(|free| *free != 0)
+            }
+            Some(
+                CostSignatureValue::Ground(_)
+                | CostSignatureValue::BoundLevel(_)
+                | CostSignatureValue::Unit(_),
+            )
+            | None => false,
+        }
+    }
+    let keep = |original: &CostSignature, result: &mut CostSignature| {
+        if !resolving && quotes_a_free_level(original) {
+            *result = original.clone();
+        }
+    };
+    for (send, target) in program.sends.iter().zip(resolved.sends.iter_mut()) {
+        for (datum, datum_target) in send.data.iter().zip(target.data.iter_mut()) {
+            keep_unresolvable_quotes(datum, datum_target, false);
+        }
+    }
+    for (receive, target) in program.receives.iter().zip(resolved.receives.iter_mut()) {
+        for (bind, bind_target) in receive.binds.iter().zip(target.binds.iter_mut()) {
+            if let (Some(original), Some(result)) = (
+                bind.cost_signature.as_ref(),
+                bind_target.cost_signature.as_mut(),
+            ) {
+                keep(original, result);
+            }
+        }
+        if let (Some(body), Some(body_target)) = (receive.body.as_ref(), target.body.as_mut()) {
+            keep_unresolvable_quotes(body, body_target, false);
+        }
+    }
+    for (new, target) in program.news.iter().zip(resolved.news.iter_mut()) {
+        if let (Some(body), Some(body_target)) = (new.p.as_ref(), target.p.as_mut()) {
+            keep_unresolvable_quotes(body, body_target, resolving);
+        }
+    }
+    for (matched, target) in program.matches.iter().zip(resolved.matches.iter_mut()) {
+        for (case, case_target) in matched.cases.iter().zip(target.cases.iter_mut()) {
+            if let (Some(source), Some(source_target)) =
+                (case.source.as_ref(), case_target.source.as_mut())
+            {
+                keep_unresolvable_quotes(source, source_target, resolving);
+            }
+        }
+    }
+    for (conditional, target) in program
+        .conditionals
+        .iter()
+        .zip(resolved.conditionals.iter_mut())
+    {
+        if let (Some(branch), Some(branch_target)) =
+            (conditional.if_true.as_ref(), target.if_true.as_mut())
+        {
+            keep_unresolvable_quotes(branch, branch_target, resolving);
+        }
+        if let (Some(branch), Some(branch_target)) =
+            (conditional.if_false.as_ref(), target.if_false.as_mut())
+        {
+            keep_unresolvable_quotes(branch, branch_target, resolving);
+        }
+    }
+    for (bundle, target) in program.bundles.iter().zip(resolved.bundles.iter_mut()) {
+        if let (Some(body), Some(body_target)) = (bundle.body.as_ref(), target.body.as_mut()) {
+            keep_unresolvable_quotes(body, body_target, resolving);
+        }
+    }
+    for (signed, target) in program
+        .cost_signed_terms
+        .iter()
+        .zip(resolved.cost_signed_terms.iter_mut())
+    {
+        if let (Some(original), Some(result)) =
+            (signed.signature.as_ref(), target.signature.as_mut())
+        {
+            keep(original, result);
+        }
+        if let (Some(body), Some(body_target)) = (signed.body.as_ref(), target.body.as_mut()) {
+            keep_unresolvable_quotes(body, body_target, resolving);
+        }
+    }
+    for (stack, target) in program
+        .cost_stacks
+        .iter()
+        .zip(resolved.cost_stacks.iter_mut())
+    {
+        for (cell, cell_target) in stack.cells.iter().zip(target.cells.iter_mut()) {
+            keep(cell, cell_target);
+        }
+    }
 }
 
 #[cfg(test)]

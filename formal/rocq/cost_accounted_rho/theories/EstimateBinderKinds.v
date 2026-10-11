@@ -44,13 +44,13 @@
       therefore gets the reducer's bytes from the analysis's substitution.
    7. [checked_guard_levels_are_patterns] (G1-4a fix, reviews M-5 and LOW
       2): under the checks, every outer level of a guard has a pattern kind.
-      The reducer stores a guard after the body substitution of the nearest
-      enclosing receive, which replaces the levels outside that receive, and
-      after a substitution at depth 1, which replaces no variable. The check
-      of the enclosing receive's body rejects a pattern level from outside
-      that receive, because the free indices of the body include those of
-      the guard. So no stored guard of a checked term takes a value, and the
-      estimate sizes it with its variables. Before the fix the check read
+      The theorem proves only this property of kinds (second G1-4a fix,
+      re-review MEDIUM-2). It does not model the two substitutions of a
+      stored guard: the body substitution of the nearest enclosing receive,
+      which replaces the levels outside that receive, and the substitution
+      at depth 1, which replaces no variable. DR-122 item 8 gives the
+      argument that a stored guard of a complete estimate keeps its
+      variables, and Rust tests check it. Before the fix the check read
       pattern kinds in the guard, which the code never checked.
 
    Negative controls.
@@ -77,10 +77,20 @@
      receive gives the level the URN value, so the stored guard is larger
      than its sizing with variables.
 
-   Limits (review M-5). The model reads the free indices of a guard and of a
-   quoted process as lists, as the code reads `locally_free`. It does not
-   model expressions, the copy of fields, or the hashing of a signature into a
-   lane. Rust tests cover those parts. *)
+   Limits (review M-5, corrected by the second G1-4a fix for re-review
+   MEDIUM-2).
+   - The model reads the free indices of a guard as a list, as the code
+     reads the `locally_free` of a guard.
+   - For a quoted or named process of a signature, the code does not read
+     `locally_free`, because the resolver clears it in the quotes that it
+     substitutes. The code counts the variables of the syntax tree instead:
+     each `EVar`, remainder, variable reference and `BoundLevel`
+     (`signature_holds_variable` and the pre-pass in estimate.rs). The list
+     of [SigQuote] stands for those variables.
+   - Most negative controls check facts of lists or fixed numbers. None of
+     them runs a rule check of the code.
+   - The model does not model expressions, the copy of fields, or the
+     hashing of a signature into a lane. Rust tests cover those parts. *)
 
 From Stdlib Require Import Arith.PeanoNat Lists.List Bool Lia.
 Import ListNotations.

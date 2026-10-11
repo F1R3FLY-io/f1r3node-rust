@@ -442,7 +442,7 @@ The analysis computes every byte size from a representative value. It builds the
 2. **Send data.** The analysis runs the reducer's `eval_expr` on each datum. Then it substitutes and measures the result, as `eval_send` does (`reduce.rs:1467-1474`). Evaluation matters because operators such as the interpolation `%%` change the size of a closed datum (`reduce.rs:3215`, `:8173-8192`). If evaluation fails, the estimate is incomplete.
    - **Narrowed rule X4 (DR-122).** The analysis evaluates data with unlimited meters. A form without a known work limit could do unbounded work there before any charge. So the analysis first walks the expression tree of each datum, without recursion.
    - **Allowed forms.** The analysis evaluates only the forms that have a known work limit. These forms are literals, collections, fixed-width arithmetic, comparisons and Boolean operators. They also include `++` on strings, byte arrays and lists, and `%%` with a literal map. The map must have string keys, and each value must be a string, an integer, a Boolean or a URI.
-   - **The charge comes first.** The analysis charges the work limit of a datum to the host-work budget before it evaluates the datum. In the limit, $`z`$ is the exact prost length of the datum plus the output growth of all forms. The height of the datum is $`h`$. The forms together cost $`z \cdot f`$. The factor is $`f = (h + 1) \cdot (\lceil \log_2 (z + 2) \rceil + 1)`$ when the datum holds a set, a map or a comparison, because only those forms sort. Otherwise $`f = 1`$, so a list of 100,000 integers fits the offered limits (DR-122 item 4). For a template of $`t`$ bytes and $`K`$ keys of at most $`g`$ bytes, a `%%` also costs its loop work $`t \cdot (t + K \cdot (g + 3))`$.
+   - **The charge comes first.** The analysis charges the work limit of a datum to the host-work budget before it evaluates the datum. In the limit, $`z`$ is the exact prost length of the datum plus the output growth of all forms. The height of the datum is $`h`$, and $`n`$ is the nesting depth of its compound expressions. At each nesting level the reducer copies or scans the subtree of each compound expression up to $`c = 4`$ times. The expressions of one level have disjoint subtrees. So the levels cost at most $`z \cdot c \cdot (n + 1)`$. A datum with a set, a map or a comparison also pays $`z \cdot (h + 1) \cdot (\lceil \log_2 (z + 2) \rceil + 1)`$, because only those forms sort. A flat list of 100,000 integers fits the offered limits. A string under 60 nested lists pays at least 60 times its length (DR-122 item 4). For a template of $`t`$ bytes and $`K`$ keys of at most $`g`$ bytes, a `%%` also costs its loop work $`t \cdot (t + K \cdot (g + 3))`$.
    - **The output bound of `%%`.** A placeholder in the template has at least 3 bytes, so the template has at most $`\lfloor t / 3 \rfloor`$ placeholders. A string or URI value has its own length. An integer has at most 20 bytes, and a Boolean has at most 5 bytes. If the longest value has $`a`$ bytes, the output has at most $`t + \lfloor t / 3 \rfloor \cdot a + 16`$ bytes. The 16 bytes cover the framing of the new string. Without this bound, a short template with a long value would allocate a string that no meter counts.
    - **Other forms.** The analysis never evaluates a datum with another form. Examples are `matches`, method calls, PathMaps, zippers, big-number arithmetic and set difference. The participant of that datum has no size, with the reason `DataEvaluation`, and the estimate is incomplete. Channels go through the same walk.
 3. **Patterns and guards.** The analysis substitutes them at depth 1, as the reducer does (`reduce.rs:1581`, `:1596`). The normalizer builds a guard in the scope of the receive's binders. So rule X3 reads the guard at the base of the bind count, and a guard on the received value stays complete (DR-122 item 8). The reducer stores a nested guard after the body substitution of the nearest enclosing receive, which gives the levels outside that receive their values. So a guard that names a URN, injection or unknown level makes the estimate incomplete. In a complete estimate the stored guard keeps its variables, and the sizing at depth 1 is exact (DR-122 item 8).
@@ -486,9 +486,9 @@ The running time of the analysis has three parts. [C][I] Let $`N`$ be the number
 
 The G1-4a fix sets each charge to the work that the walk does (DR-122 item 5).
 
-- A combine costs the lanes that it merges and the supply of its parent, not the nodes of the merged subtree. So 30,000 parallel sends and a match with 2,000 cases fit the offered limits (DR-122 item 5).
+- A combine costs the lanes that it merges and the supply of its parent, not the nodes of the merged subtree. Each item of a node costs 2 more entries. So 30,000 parallel sends and a match with 2,000 cases fit the offered limits (DR-122 item 5).
 - The vector fold charges three walks of each region link (DR-122 item 5). Its merges cost $`L \cdot (\lceil \log_2 (L + 2) \rceil + 1)`$ for $`L`$ region links, because a merge moves the smaller map into the larger one (DR-122 item 5).
-- An environment copy costs the capacity of the environment map, because `Env::shift` clones every bucket and `pop` never shrinks the map (DR-122 item 5).
+- An environment copy costs the bucket count of the environment map, because `Env::shift` clones every bucket. The pre-pass sizes the map once with room for twice the peak binder count, so the bucket count never changes. The charge is then a pure function of the term, and it does not depend on the hash seed or the processor (DR-122 item 5).
 - A sorted substitution pays a logarithmic factor on its output. Each scan of a node pays its width (DR-122 item 5).
 
 For a typical deploy the nesting depth and the number of lanes are small, so the total stays close to linear in $`N`$. A hostile deploy can make the region, merge and sizing costs large. So one linear pre-pass counts each of these costs, and the analysis charges it to the host-work budget before the work runs. A deploy that exceeds the budget is rejected before execution with no charge (Section 6.3). Both walks use explicit work stacks, so their stack depth does not grow with the nesting depth of the term (DR-67).
@@ -1051,7 +1051,7 @@ The verification follows the bar of this branch: formal models with negative con
 - A plan that drops the seal regions of the participants, which stays below the realized compute (DR-122 item 7).
 - A guard rule without the value-kind check. The stored form of a nested guard on a URN level is then larger than its sizing (DR-122 item 8).
 
-**Limits of the formal statements (DR-122).** `complete_estimate_sound` takes the conclusions of rules X1 to X8 as premises. They are the selection of a run, the sub-multiset of its COMMs and the sizes of its participants. So it mechanizes Lemmas 5 and 6 of Section 11, and Lemmas 1 to 4 rest on the code checks and the Rust tests. `fresh_unescaped_no_foreign_match` takes collision freedom and unique deploys as hypotheses, with a witness. Each negative control of `ClosedDemandBound.v` drops a premise of the model, and none runs a rule check of the code. The models read free indices as lists, as the code reads `locally_free`. They do not model expressions or the hash of a signature into a lane.
+**Limits of the formal statements (DR-122).** `complete_estimate_sound` takes the conclusions of rules X1 to X8 as premises. They are the selection of a run, the sub-multiset of its COMMs and the sizes of its participants. So it mechanizes Lemmas 5 and 6 of Section 11, and Lemmas 1 to 4 rest on the code checks and the Rust tests. `fresh_unescaped_no_foreign_match` takes collision freedom and unique deploys as hypotheses, with a witness. Each negative control of `ClosedDemandBound.v` drops a premise of the model, and none runs a rule check of the code. The models read the free indices of a guard as a list, as the code reads its `locally_free`. For a quoted process of a signature, the code counts the variables of the syntax tree. The list of the model stands for those variables. `PlanComputeDominates.v` defines `own_count` as the vector's count. So its theorem shows only that counts of zero or more keep a sum or a maximum at least as large. It does not follow the chain walk, the deploy lane or the unit lanes, and a Rust property test checks the dominance on the code. `checked_guard_levels_are_patterns` proves only the property of kinds, not the two substitutions of a stored guard. Most negative controls check facts of lists or fixed numbers. The models do not model expressions or the hash of a signature into a lane (DR-122).
 
 **Rust tests.**
 
@@ -1076,6 +1076,14 @@ The verification follows the bar of this branch: formal models with negative con
   - guards on received values, and guards that name a URN level
   - a signature of 1,000 levels on a small stack
   - the capacity charge, a live reduction session and an unpriced lane
+- The tests of the second G1-4a fix:
+  - equal usage in every dimension in 32 runs with fresh hash seeds, on a program with 64 outer names and many removals
+  - the bucket count of the standard map, and a map that never grows beyond its sized room
+  - a string under 60 nested lists, charged at least 60 times its length
+  - the plan's compute count at least the vector's on generated programs and on the corpus
+  - the peak binder count of the pre-pass at least the peak of pass 1
+  - `where` guards and bundles in the generated programs
+  - quotes with a free level inside receive bodies in the generated programs of the resolver
 
 ---
 
@@ -1183,6 +1191,12 @@ An independent review of the G1-4a commit followed on 2026-10-11. The G1-4a fix 
 - A guard is read in the scope of the receive's binders (Section 5.6).
 - A guard that names a URN, injection or unknown level makes the estimate incomplete (Section 5.6).
 - The compute row stays the plan's row, and a proof relates it to the vector's row (Sections 5.5 and 12).
+
+A second independent review followed on 2026-10-11, and a second fix commit resolves it. DR-122 names each re-review finding.
+
+- The charge of an environment copy reads a fixed bucket count. It does not depend on the hash seed or the processor (Section 5.8).
+- An evaluation pays the copies at each nesting level of its compound expressions (Section 5.6).
+- The limits of the formal statements are stated without overclaims (Section 12).
 
 ---
 

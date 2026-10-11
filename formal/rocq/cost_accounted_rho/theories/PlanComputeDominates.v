@@ -39,10 +39,26 @@
      the data layers and the empty bodies, and not the seal regions of the
      participants, stays below the realized compute of a run.
 
-   Limits. The model takes the data layers and the empty bodies as given
-   lists. It does not model how the plan finds them in the syntax. Rust tests
-   compare the plan with the estimate on generated programs. No axiom is
-   used. *)
+   Limits (second G1-4a fix, re-review MEDIUM-2).
+   - [own_count] is defined as the vector's compute contribution of a
+     participant, so [own_count_is_compute] holds by reflexivity, and
+     [plan_compute_dominates_vector] shows only that the data layers and the
+     empty bodies, which are counts of zero or more, keep a sum or a maximum
+     at least as large.
+   - The model does not follow the plan's walk of the chain of enclosing
+     scopes (delta_sigma.rs:283-302), the deploy lane outside every scope,
+     the receive with signed binds outside every scope, which has no deploy
+     lane (delta_sigma.rs:487-516), or the unit lanes.
+   - The model takes the data layers and the empty bodies as given lists. It
+     does not model how the plan finds them in the syntax.
+   - A Rust property test covers the code itself. On generated programs and
+     on the corpus, wherever rule X1 holds, the plan's compute count is at
+     least the vector's for every lane. The tests are
+     the_plan_compute_row_dominates_the_vector_row and
+     the_plan_compute_row_dominates_on_the_corpus in
+     estimate/stack_safety_tests.rs.
+
+   No axiom is used. *)
 
 From Stdlib Require Import Arith.PeanoNat Lists.List Sorting.Permutation Lia.
 Import ListNotations.
