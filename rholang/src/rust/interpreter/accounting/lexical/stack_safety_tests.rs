@@ -41,6 +41,12 @@ const DEEP_NESTING: usize = 100_000;
 /// The stack of the thread that runs the resolver on a deep term.
 const SMALL_STACK_BYTES: usize = 256 * 1024;
 
+/// Added by the G1-4a hygiene commit: the stack of the thread that parses a
+/// nested program and drops it. The dev normalizer recurses four frames per
+/// nesting level (`normalize_ann_proc`, `normalize_p_new`, `normalize_p_par`),
+/// and in a debug build 128 levels overflow the 8 MiB test stack there.
+const NORMALIZER_STACK_BYTES: usize = 64 * 1024 * 1024;
+
 fn private_name(tag: u8) -> Par {
     Par::default().with_unforgeables(vec![GUnforgeable {
         unf_instance: Some(UnfInstance::GPrivateBody(GPrivate { id: vec![tag; 32] })),
@@ -678,6 +684,20 @@ fn nested_new_source(depth: usize) -> String {
     source
 }
 
+/// Added by the G1-4a hygiene commit: runs `task` on a thread with the
+/// normalizer's stack, for the parse of a nested program and for its drop.
+fn on_normalizer_stack<T: std::marker::Send>(task: impl FnOnce() -> T + std::marker::Send) -> T {
+    std::thread::scope(|scope| {
+        std::thread::Builder::new()
+            .name("lexical-normalizer".to_string())
+            .stack_size(NORMALIZER_STACK_BYTES)
+            .spawn_scoped(scope, task)
+            .expect("spawn the normalizer thread")
+            .join()
+            .expect("the normalizer stays within its stack")
+    })
+}
+
 fn usages_of(program: &Par) -> Vec<u64> {
     let budget = unlimited_budget();
     resolve_lexical_names_for_funding_metered(
@@ -703,9 +723,18 @@ fn charged_work_is_linear_in_the_nesting_depth() {
     let usages = depths
         .iter()
         .map(|depth| {
+            // Changed by the G1-4a hygiene commit: the parse and the drop of the
+            // parsed program run on the normalizer's stack, and the resolver's
+            // measurement stays on the test stack.
+            // let program =
+            //     Compiler::source_to_adt(&nested_new_source(*depth)).expect("nested program");
+            // usages_of(&program)
+            let source = nested_new_source(*depth);
             let program =
-                Compiler::source_to_adt(&nested_new_source(*depth)).expect("nested program");
-            usages_of(&program)
+                on_normalizer_stack(|| Compiler::source_to_adt(&source).expect("nested program"));
+            let usage = usages_of(&program);
+            on_normalizer_stack(move || drop(program));
+            usage
         })
         .collect::<Vec<_>>();
     for (position, dimension) in HostWorkDimension::ALL.iter().enumerate() {

@@ -2842,9 +2842,11 @@ fn searched_signer(
 }
 
 /// DR-119 (bug 11004): the genesis of `offered_v6_genesis` with a genesis vault
-/// of 9,000,000 for each signer in `signers`. The signers follow the default
-/// keys in `genesis_vaults`. A genesis vault avoids a funding deploy, because
-/// a deploy that creates a vault exceeds the committed host-work budget.
+/// for each signer in `signers`. `GenesisBuilder::offered_v6` raises each of
+/// these vaults to `OFFERED_TEST_VAULT_BALANCE`, 10^12 (step F0 of gap G1).
+/// The signers follow the default keys in `genesis_vaults`. A genesis vault
+/// avoids a funding deploy, because a deploy that creates a vault exceeds the
+/// committed host-work budget.
 async fn offered_v6_genesis_with_signers(
     validators: usize,
     signers: &[(
