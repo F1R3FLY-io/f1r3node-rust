@@ -514,6 +514,7 @@ theories/CursorLinearity.v
 theories/V6MergeLedger.v
 theories/V6MergeOrder.v
 theories/V6MergeOrderedPass.v
+theories/CostCursorBuckets.v
 theories/RuntimeAuthorityScope.v
 theories/StackTransferConservation.v
 theories/OrderedStackMaterialization.v

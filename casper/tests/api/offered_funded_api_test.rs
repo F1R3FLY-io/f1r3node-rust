@@ -1285,13 +1285,29 @@ async fn another_signer_inserts_a_version_after_a_version_insert() {
 // Re-enabled by DR-116: gap G6 lands offered recovery for a multi-parent merge.
 // #[ignore = "needs gap G6 (offered recovery for a multi-parent merge); see DR-101"]
 async fn a_third_signer_inserts_a_version_after_a_merge_with_a_writers_branch() {
-    let genesis = offered_v6_genesis(4).await;
+    // Changed by DR-119 (bug 11004): the two siblings are the first uses of two
+    // cohorts, so their creation buckets must differ. The extra vault keys are
+    // random per run, and two of them share a bucket in about 1.6% of runs.
+    // DEFAULT_SEC2 is the Registry's system key, so the API refuses its offers.
+    // The first writer is DEFAULT_SEC. The second writer is a searched key with
+    // a genesis vault, and its buckets differ from those of DEFAULT_SEC.
+    // let genesis = offered_v6_genesis(4).await;
+    let default_buckets = owner_cursor_buckets(&casper::rust::util::construct_deploy::DEFAULT_PUB);
+    let searched_writer = searched_signer("dr-119-version-writer", |buckets| {
+        buckets
+            .iter()
+            .all(|bucket| !default_buckets.contains(bucket))
+    });
+    let genesis = offered_v6_genesis_with_signers(4, std::slice::from_ref(&searched_writer)).await;
     let mut nodes = TestNode::create_network(genesis.clone(), 3, None, None, None, None)
         .await
         .unwrap();
-    let first = genesis.genesis_vaults[2].clone();
-    let second = genesis.genesis_vaults[3].clone();
-    let third = genesis.genesis_vaults[0].clone();
+    // let first = genesis.genesis_vaults[2].clone();
+    // let second = genesis.genesis_vaults[3].clone();
+    // let third = genesis.genesis_vaults[0].clone();
+    let first = genesis.genesis_vaults[0].clone();
+    let second = searched_writer;
+    let third = genesis.genesis_vaults[2].clone();
     let mut siblings = Vec::with_capacity(2);
     for (index, (writer, term)) in [
         (&first, version_insert("first")),
@@ -1329,6 +1345,25 @@ async fn a_third_signer_inserts_a_version_after_a_merge_with_a_writers_branch() 
     .await
     .expect("the third insert is funded by its own signer");
     assert_eq!(merged.header.parents_hash_list.len(), 2);
+    // Added by DR-119 (bug 11004): before DR-119 the global cost-cursor lock made
+    // the two siblings conflict, and the merge rejected one of them.
+    assert!(
+        merged.body.rejected_deploys.is_empty(),
+        "both siblings survive the merge"
+    );
+    let main_parent = &merged.header.parents_hash_list[0];
+    for block in &siblings {
+        let id = block.body.deploys[0].identity_bytes();
+        assert!(
+            block.block_hash == *main_parent
+                || merged
+                    .body
+                    .applied_from_scope
+                    .iter()
+                    .any(|sig| sig.as_ref() == id),
+            "the merge keeps each sibling's deploy, in the main parent or from the scope"
+        );
+    }
     let published = nodes[0]
         .runtime_manager
         .get_data(
@@ -1659,9 +1694,13 @@ async fn a_failed_offered_deploy_keeps_its_charge_when_its_block_is_a_merged_bra
     }
 }
 
-/// DR-115 (bug 10986): the base sibling settles an offered deploy of another
+/// DR-115 (bug 10986): the base sibling settles an offered deploy of the same
 /// payer. A failed offered deploy of the merged branch is then charged in the
 /// merged state or rejected with a record. It is never dropped.
+///
+/// Changed by DR-119 (bug 11004): before DR-119 the sibling paid for another
+/// payer, and the global cost-cursor lock made the two settlements conflict.
+/// Now the two settlements of one cohort conflict on its cost cursor.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_failed_offered_deploy_in_a_conflicting_merged_branch_is_rejected_not_dropped() {
     let genesis = offered_v6_genesis(3).await;
@@ -1680,14 +1719,21 @@ async fn a_failed_offered_deploy_in_a_conflicting_merged_branch_is_rejected_not_
     )
     .await;
     assert!(failed.body.deploys[0].is_failed());
+    // Changed by DR-119 (bug 11004): the sibling pays for the same cohort.
+    // let (sibling, sibling_id) = offered_block(
+    //     &mut nodes,
+    //     1,
+    //     owner_direct_offer(
+    //         &genesis.genesis_vaults[0],
+    //         2,
+    //         "new x in { x!(0) }".to_string(),
+    //     ),
+    // )
+    // .await;
     let (sibling, sibling_id) = offered_block(
         &mut nodes,
         1,
-        owner_direct_offer(
-            &genesis.genesis_vaults[0],
-            2,
-            "new x in { x!(0) }".to_string(),
-        ),
+        owner_direct_offer(&payer, 2, "new x in { x!(0) }".to_string()),
     )
     .await;
     assert!(!sibling.body.deploys[0].is_failed());
@@ -1746,8 +1792,18 @@ async fn a_failed_offered_deploy_in_a_conflicting_merged_branch_is_rejected_not_
         .unwrap()
         .expect("the failed deploy carries a settlement receipt");
     let balance = vault_balance(&nodes[2..], &merged.state, &payer_vault).await;
-    let charged = u128::from(balance) + receipt.rev_spent == u128::from(initial);
-    let untouched = balance == initial;
+    // Changed by DR-119 (bug 11004): the base sibling's own charge to the payer
+    // stays in the merged state.
+    // let charged = u128::from(balance) + receipt.rev_spent == u128::from(initial);
+    // let untouched = balance == initial;
+    let sibling_receipt =
+        BlockAPI::find_offered_settlement_receipt(&nodes[2].engine_cell, &sibling_id)
+            .await
+            .unwrap()
+            .expect("the sibling carries a settlement receipt");
+    let after_sibling = u128::from(initial) - sibling_receipt.rev_spent;
+    let charged = u128::from(balance) + receipt.rev_spent == after_sibling;
+    let untouched = u128::from(balance) == after_sibling;
     let rejected = merged
         .rejected_user
         .iter()
@@ -1855,10 +1911,13 @@ fn buffered_envelope_ids(node: &TestNode) -> Vec<Vec<u8>> {
         .collect()
 }
 
-/// DR-116 (gap G6): two offered siblings conflict through the global cost
-/// cursor lock (bug 11004), so the merge rejects node 0's offer. Node 0 owns the
-/// rejected carrier. It accepts the merge block and buffers the envelope. Before
-/// DR-116 it marked the honest block invalid.
+/// DR-116 (gap G6): two offered siblings of one cohort conflict on its cost
+/// cursor, so the merge rejects node 0's offer. Node 0 owns the rejected
+/// carrier. It accepts the merge block and buffers the envelope. Before DR-116
+/// it marked the honest block invalid.
+///
+/// Changed by DR-119 (bug 11004): before DR-119 the siblings had two signers,
+/// and the global cost-cursor lock made them conflict.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_owner_accepts_a_merge_that_rejects_its_own_offer() {
     let genesis = offered_v6_genesis(3).await;
@@ -1876,11 +1935,22 @@ async fn an_owner_accepts_a_merge_that_rejects_its_own_offer() {
         ),
     )
     .await;
+    // Changed by DR-119 (bug 11004): the second sibling has the same signer.
+    // let (second, _) = offered_block(
+    //     &mut nodes,
+    //     1,
+    //     owner_direct_offer(
+    //         &genesis.genesis_vaults[0],
+    //         2,
+    //         "new y in { y!(0) }".to_string(),
+    //     ),
+    // )
+    // .await;
     let (second, _) = offered_block(
         &mut nodes,
         1,
         owner_direct_offer(
-            &genesis.genesis_vaults[0],
+            &genesis.genesis_vaults[2],
             2,
             "new y in { y!(0) }".to_string(),
         ),
@@ -1926,9 +1996,16 @@ async fn an_owner_accepts_a_merge_that_rejects_its_own_offer() {
 }
 
 /// Stages a merge that rejects a failed offered deploy of node 0: block A holds
-/// the failed deploy, and the base sibling B settles another payer's offer.
-/// Returns the nodes, A, the failed deploy's identity, the merge block and the
-/// payer's genesis balance. No node has processed the merge block yet.
+/// the failed deploy, and the base sibling B settles another offer of the same
+/// payer. Returns the nodes, A, the failed deploy's identity, the merge block and
+/// the payer's balance after B's own charge. No node has processed the merge
+/// block yet.
+///
+/// Changed by DR-119 (bug 11004): before DR-119 B paid for another payer, and the
+/// global cost-cursor lock made the two settlements conflict. Now the two
+/// settlements of one cohort conflict on its cost cursor, so B pays for the same
+/// payer, and the helper returns the balance after B's charge instead of the
+/// genesis balance.
 async fn rejected_failed_offer_merge() -> (
     Vec<TestNode>,
     models::rust::casper::protocol::casper_message::BlockMessage,
@@ -1956,14 +2033,21 @@ async fn rejected_failed_offer_merge() -> (
     )
     .await;
     assert!(failed.body.deploys[0].is_failed());
-    let (sibling, _) = offered_block(
+    // Changed by DR-119 (bug 11004): the base sibling pays for the same payer.
+    // let (sibling, _) = offered_block(
+    //     &mut nodes,
+    //     1,
+    //     owner_direct_offer(
+    //         &genesis.genesis_vaults[0],
+    //         2,
+    //         "new x in { x!(0) }".to_string(),
+    //     ),
+    // )
+    // .await;
+    let (sibling, sibling_id) = offered_block(
         &mut nodes,
         1,
-        owner_direct_offer(
-            &genesis.genesis_vaults[0],
-            2,
-            "new x in { x!(0) }".to_string(),
-        ),
+        owner_direct_offer(&payer, 2, "new x in { x!(0) }".to_string()),
     )
     .await;
     for node in nodes.iter_mut() {
@@ -1986,7 +2070,18 @@ async fn rejected_failed_offer_merge() -> (
         }),
         "staging precondition: the merge rejects the failed offered deploy"
     );
-    (nodes, failed, id, merge, initial)
+    // Added by DR-119 (bug 11004): the payer's balance after B's own charge.
+    let sibling_receipt =
+        BlockAPI::find_offered_settlement_receipt(&nodes[2].engine_cell, &sibling_id)
+            .await
+            .expect("the receipt query succeeds")
+            .expect("the sibling carries a settlement receipt");
+    let after_sibling = u64::try_from(u128::from(initial) - sibling_receipt.rev_spent)
+        .expect("the sibling's charge fits the payer's balance");
+    // Changed by DR-119 (bug 11004): the balance after B's charge replaces the
+    // genesis balance.
+    // (nodes, failed, id, merge, initial)
+    (nodes, failed, id, merge, after_sibling)
 }
 
 /// DR-116 (gap G6): a failed offered deploy that a merge rejects is final, as a
@@ -1994,7 +2089,10 @@ async fn rejected_failed_offer_merge() -> (
 /// and the merged state does not charge the payer.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_rejected_failed_offered_deploy_is_not_recovered() {
-    let (mut nodes, _failed, id, merge, initial) = rejected_failed_offer_merge().await;
+    // Changed by DR-119 (bug 11004): the helper returns the payer's balance after
+    // the base sibling's own charge.
+    // let (mut nodes, _failed, id, merge, initial) = rejected_failed_offer_merge().await;
+    let (mut nodes, _failed, id, merge, after_sibling) = rejected_failed_offer_merge().await;
     for node in nodes.iter_mut() {
         assert!(
             matches!(
@@ -2011,7 +2109,9 @@ async fn a_rejected_failed_offered_deploy_is_not_recovered() {
         VaultAddress::from_public_key(&offered_v6_genesis(3).await.genesis_vaults[2].1).unwrap();
     assert_eq!(
         vault_balance(&nodes, &merge.body.state.pre_state_hash, &payer).await,
-        initial,
+        // Changed by DR-119 (bug 11004): see the helper.
+        // initial,
+        after_sibling,
         "the merged state does not charge the rejected failed deploy"
     );
     assert!(!merge
@@ -2669,5 +2769,406 @@ async fn scope_copy_of_a_base_offer_takes_the_slow_path() {
         u128::from(balance) + receipt.rev_spent,
         u128::from(initial),
         "the merged state charges the payer exactly once"
+    );
+}
+
+/// DR-119 (bug 11004): the SystemVault creation bucket of a cursor scope: the
+/// first byte of keccak256 over the protobuf encoding of the scope's ByteArray
+/// (`SystemVault.rho` `ensureCostCursor`, `reduce.rs:3707-3754`).
+fn cost_cursor_bucket(scope: &[u8; 32]) -> u8 {
+    let encoded = rholang::rust::interpreter::rho_type::RhoByteArray::create_par(scope.to_vec())
+        .encode_to_vec();
+    crypto::rust::hash::keccak256::Keccak256::hash(encoded)[0]
+}
+
+/// DR-119 (bug 11004): the resource scope and the fee scope of an owner's
+/// owner-direct cohort. The two policy contexts are the hashes of
+/// `policy_snapshot.rs:131-147`. A drift there breaks the staging
+/// preconditions below.
+fn owner_cursor_scopes(owner: &crypto::rust::public_key::PublicKey) -> [[u8; 32]; 2] {
+    use crypto::rust::hash::blake2b256::Blake2b256;
+    use rholang::rust::interpreter::accounting::monetary_allocation::monetary_scope_for_custodies;
+
+    let signature = CostSignature {
+        value: Some(Value::Ground(principal_ground_v61(&owner.bytes))),
+    };
+    let custody = vault_payer(&signature)
+        .expect("a principal signature has a vault payer")
+        .custody_key;
+    let context = |label: &[u8]| -> [u8; 32] {
+        Blake2b256::hash(label.to_vec())
+            .try_into()
+            .expect("a Blake2b-256 digest has 32 bytes")
+    };
+    [
+        context(
+            b"f1r3node:monetary-resource:canonical-family-lexicographic-minimax:v1:SystemVault:General",
+        ),
+        context(b"f1r3node:monetary-fee:rotating-capped-max-min:v1:SystemVault:General"),
+    ]
+    .map(|policy| monetary_scope_for_custodies(&policy, std::iter::once(&custody)))
+}
+
+fn owner_cursor_buckets(owner: &crypto::rust::public_key::PublicKey) -> [u8; 2] {
+    owner_cursor_scopes(owner).map(|scope| cost_cursor_bucket(&scope))
+}
+
+/// DR-119 (bug 11004): the first key of the chain
+/// Blake2b256("{label}-{counter}") whose cohort buckets satisfy `accept`. The
+/// chain does not depend on the run, so the bucket relation that a test needs
+/// holds in every run. The genesis keys do not give this: DEFAULT_SEC2 is the
+/// Registry's system key, so the API refuses its offers, and the extra vault
+/// keys are random per run.
+fn searched_signer(
+    label: &str,
+    accept: impl Fn(&[u8; 2]) -> bool,
+) -> (
+    crypto::rust::private_key::PrivateKey,
+    crypto::rust::public_key::PublicKey,
+) {
+    use crypto::rust::hash::blake2b256::Blake2b256;
+    use crypto::rust::signatures::signatures_alg::SignaturesAlg;
+
+    (0u32..65_536)
+        .map(|counter| {
+            let secret = crypto::rust::private_key::PrivateKey::from_bytes(&Blake2b256::hash(
+                format!("{label}-{counter}").into_bytes(),
+            ));
+            let public = Secp256k1.to_public(&secret);
+            (secret, public)
+        })
+        .find(|(_, public)| accept(&owner_cursor_buckets(public)))
+        .expect("the key chain holds a key with the wanted buckets")
+}
+
+/// DR-119 (bug 11004): the genesis of `offered_v6_genesis` with a genesis vault
+/// of 9,000,000 for each signer in `signers`. The signers follow the default
+/// keys in `genesis_vaults`. A genesis vault avoids a funding deploy, because
+/// a deploy that creates a vault exceeds the committed host-work budget.
+async fn offered_v6_genesis_with_signers(
+    validators: usize,
+    signers: &[(
+        crypto::rust::private_key::PrivateKey,
+        crypto::rust::public_key::PublicKey,
+    )],
+) -> crate::util::genesis_builder::GenesisContext {
+    let mut parameters =
+        GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(validators));
+    for signer in signers {
+        parameters
+            .2
+            .vaults
+            .push(casper::rust::genesis::contracts::vault::Vault {
+                vault_address: VaultAddress::from_public_key(&signer.1)
+                    .expect("a signer key forms a vault address"),
+                initial_balance: 9_000_000,
+            });
+        parameters.1.push(signer.clone());
+    }
+    GenesisBuilder::offered_v6()
+        .build_genesis_with_parameters(Some(parameters))
+        .await
+        .expect("offered v6 genesis builds")
+}
+
+/// DR-119 (bug 11004): the first offers of two cohorts in sibling blocks. Both
+/// settlements create their cursors, and their four scopes fall in four
+/// distinct creation buckets, so the merge keeps both siblings. Before DR-119
+/// the global cost-cursor lock made them conflict. The two signers are
+/// searched keys with genesis vaults.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn first_use_cursors_in_distinct_buckets_compose() {
+    let first = searched_signer("dr-119-distinct-first", |buckets| buckets[0] != buckets[1]);
+    let first_buckets = owner_cursor_buckets(&first.1);
+    let second = searched_signer("dr-119-distinct-second", |buckets| {
+        buckets[0] != buckets[1] && buckets.iter().all(|bucket| !first_buckets.contains(bucket))
+    });
+    let buckets: std::collections::BTreeSet<u8> = first_buckets
+        .into_iter()
+        .chain(owner_cursor_buckets(&second.1))
+        .collect();
+    assert_eq!(
+        buckets.len(),
+        4,
+        "staging precondition: four distinct buckets"
+    );
+    let genesis = offered_v6_genesis_with_signers(3, &[first.clone(), second.clone()]).await;
+    let mut nodes = TestNode::create_network(genesis.clone(), 3, None, None, None, None)
+        .await
+        .expect("the test network starts");
+    let (first_block, first_id) = offered_block(
+        &mut nodes,
+        0,
+        owner_direct_offer(&first, 1, "new x in { x!(0) }".to_string()),
+    )
+    .await;
+    let (second_block, second_id) = offered_block(
+        &mut nodes,
+        1,
+        owner_direct_offer(&second, 2, "new y in { y!(1) }".to_string()),
+    )
+    .await;
+    for node in nodes.iter_mut() {
+        for block in [&first_block, &second_block] {
+            assert!(matches!(
+                node.process_block(block.clone())
+                    .await
+                    .expect("the node processes the block"),
+                Either::Right(_)
+            ));
+        }
+    }
+    let merged = merge_on(&nodes[2], vec![first_block, second_block]).await;
+    assert!(
+        merged.rejected_user.is_empty(),
+        "the merge keeps both first uses"
+    );
+    assert!(merged
+        .applied_from_scope
+        .contains(&prost::bytes::Bytes::from(second_id.clone())));
+    for (owner, id) in [(&first, &first_id), (&second, &second_id)] {
+        let vault =
+            VaultAddress::from_public_key(&owner.1).expect("the owner key forms a vault address");
+        let initial = vault_balance(
+            &nodes,
+            &genesis.genesis_block.body.state.post_state_hash,
+            &vault,
+        )
+        .await;
+        let receipt = BlockAPI::find_offered_settlement_receipt(&nodes[2].engine_cell, id)
+            .await
+            .expect("the receipt query succeeds")
+            .expect("the offer carries a settlement receipt");
+        let balance = vault_balance(&nodes[2..], &merged.state, &vault).await;
+        assert_eq!(
+            u128::from(balance) + receipt.rev_spent,
+            u128::from(initial),
+            "the merged state charges each payer once"
+        );
+    }
+}
+
+/// DR-119 (bug 11004): the first offers of two cohorts whose scopes share a
+/// creation bucket. Both first uses take the one creation lock of that bucket,
+/// so the two settlements conflict, and the merge keeps the base's first use.
+/// The two signers are searched keys with genesis vaults.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn first_use_cursors_in_one_bucket_keep_one() {
+    let base_signer = searched_signer("dr-119-shared-first", |_| true);
+    let base_buckets = owner_cursor_buckets(&base_signer.1);
+    let rival = searched_signer("dr-119-shared-second", |buckets| {
+        buckets.iter().any(|bucket| base_buckets.contains(bucket))
+    });
+    let genesis = offered_v6_genesis_with_signers(3, &[base_signer.clone(), rival.clone()]).await;
+    let mut nodes = TestNode::create_network(genesis.clone(), 3, None, None, None, None)
+        .await
+        .expect("the test network starts");
+    let (base_block, base_id) = offered_block(
+        &mut nodes,
+        0,
+        owner_direct_offer(&base_signer, 2, "new x in { x!(0) }".to_string()),
+    )
+    .await;
+    let (rival_block, rival_id) = offered_block(
+        &mut nodes,
+        1,
+        owner_direct_offer(&rival, 3, "new y in { y!(1) }".to_string()),
+    )
+    .await;
+    for block in [&base_block, &rival_block] {
+        assert_eq!(
+            block.header.parents_hash_list,
+            vec![genesis.genesis_block.block_hash.clone()],
+            "staging precondition: both first uses build on genesis"
+        );
+    }
+    for node in nodes.iter_mut() {
+        for block in [&base_block, &rival_block] {
+            assert!(matches!(
+                node.process_block(block.clone())
+                    .await
+                    .expect("the node processes the block"),
+                Either::Right(_)
+            ));
+        }
+    }
+    let merged = merge_on(&nodes[2], vec![base_block, rival_block]).await;
+    let rejected: Vec<&[u8]> = merged
+        .rejected_user
+        .iter()
+        .map(|record| record.sig.as_ref())
+        .filter(|sig| *sig == base_id.as_slice() || *sig == rival_id.as_slice())
+        .collect();
+    assert_eq!(
+        rejected,
+        vec![rival_id.as_slice()],
+        "the merge keeps the base's first use and rejects the scope's"
+    );
+}
+
+/// DR-119 (bug 11004) and DR-120 (gap G9): three signers' offers in three
+/// sibling blocks. Earlier blocks settle one offer of each signer, so every
+/// cursor exists before the siblings, and the lookups take no lock. The three
+/// settlements touch disjoint cells, so the merge composes the scope without
+/// a rejection (P1:356-359). By L5 the fast path and the ordered pass compose
+/// the same state, and the unit tests check the path itself. The third signer
+/// is a searched key with a genesis vault. The proposer selects one offered
+/// deploy for each block, so each warm-up offer has its own block.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn three_signers_compose_on_the_v6_fast_path() {
+    let searched = searched_signer("dr-119-third-signer", |_| true);
+    let genesis = offered_v6_genesis_with_signers(3, std::slice::from_ref(&searched)).await;
+    let mut nodes = TestNode::create_network(genesis.clone(), 3, None, None, None, None)
+        .await
+        .expect("the test network starts");
+    let signers = [
+        genesis.genesis_vaults[0].clone(),
+        genesis.genesis_vaults[2].clone(),
+        searched,
+    ];
+    let mut warmup = None;
+    for (index, signer) in signers.iter().enumerate() {
+        let (block, _) = propose_offer(
+            &mut nodes,
+            owner_direct_offer(signer, index as i64 + 1, "new x in { x!(0) }".to_string()),
+        )
+        .await
+        .expect("each warm-up offer is funded");
+        warmup = Some(block);
+    }
+    let warmup = warmup.expect("the warm-up proposes one block for each signer");
+    let mut siblings = Vec::with_capacity(3);
+    let mut ids = Vec::with_capacity(3);
+    for (index, signer) in signers.iter().enumerate() {
+        let (block, id) = offered_block(
+            &mut nodes,
+            index,
+            owner_direct_offer(signer, index as i64 + 11, "new y in { y!(1) }".to_string()),
+        )
+        .await;
+        assert_eq!(block.header.parents_hash_list, vec![warmup
+            .block_hash
+            .clone()]);
+        siblings.push(block);
+        ids.push(id);
+    }
+    for node in nodes.iter_mut() {
+        for block in &siblings {
+            assert!(matches!(
+                node.process_block(block.clone())
+                    .await
+                    .expect("the node processes the block"),
+                Either::Right(_)
+            ));
+        }
+    }
+    // Node 2's validator holds 5 of the 9 bonded units, so every node finalizes
+    // node 2's sibling when it processes it. That sibling is the main parent, so
+    // the base holds the floor (F1) and the fast path can run.
+    let parents = vec![
+        siblings[2].clone(),
+        siblings[0].clone(),
+        siblings[1].clone(),
+    ];
+    let merged = merge_on(&nodes[0], parents).await;
+    assert_eq!(
+        merged.merge_base,
+        Some(siblings[2].block_hash.clone()),
+        "staging precondition: the main parent is the base"
+    );
+    assert!(
+        merged.rejected_user.is_empty(),
+        "the three signers' settlements compose"
+    );
+    for id in &ids[..2] {
+        assert!(
+            merged
+                .applied_from_scope
+                .contains(&prost::bytes::Bytes::from(id.clone())),
+            "the merge applies every scope sibling"
+        );
+    }
+    for (signer, id) in signers.iter().zip(&ids) {
+        let vault =
+            VaultAddress::from_public_key(&signer.1).expect("the signer key forms a vault address");
+        let before = vault_balance(&nodes, &warmup.body.state.post_state_hash, &vault).await;
+        let receipt = BlockAPI::find_offered_settlement_receipt(&nodes[0].engine_cell, id)
+            .await
+            .expect("the receipt query succeeds")
+            .expect("the offer carries a settlement receipt");
+        let after = vault_balance(&nodes, &merged.state, &vault).await;
+        assert_eq!(
+            u128::from(after) + receipt.rev_spent,
+            u128::from(before),
+            "the merged state charges each signer once"
+        );
+    }
+}
+
+/// DR-119 (bug 11004): a failed offer of the DEFAULT_SEC cohort in a merged
+/// branch, beside a sibling that settles the first offer of another signer.
+/// Both settlements are first uses, and the other signer is a searched key
+/// with a genesis vault whose buckets differ from those of DEFAULT_SEC. So the
+/// settlements do not conflict, and the failed deploy's charge survives in the
+/// merged state. Before DR-119 the global cost-cursor lock made the two
+/// settlements conflict.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_failed_offer_charge_survives_beside_another_signer() {
+    let default_buckets = owner_cursor_buckets(&casper::rust::util::construct_deploy::DEFAULT_PUB);
+    let other = searched_signer("dr-119-failed-offer-neighbour", |buckets| {
+        buckets
+            .iter()
+            .all(|bucket| !default_buckets.contains(bucket))
+    });
+    let genesis = offered_v6_genesis_with_signers(3, std::slice::from_ref(&other)).await;
+    let mut nodes = TestNode::create_network(genesis.clone(), 3, None, None, None, None)
+        .await
+        .expect("the test network starts");
+    let payer = genesis.genesis_vaults[0].clone();
+    let payer_vault =
+        VaultAddress::from_public_key(&payer.1).expect("the payer key forms a vault address");
+    let initial = vault_balance(
+        &nodes,
+        &genesis.genesis_block.body.state.post_state_hash,
+        &payer_vault,
+    )
+    .await;
+    let (failed, failed_id) = offered_block(
+        &mut nodes,
+        0,
+        owner_direct_offer(&payer, 1, FAILING_AFTER_A_COMM.to_string()),
+    )
+    .await;
+    assert!(failed.body.deploys[0].is_failed());
+    let (sibling, _) = offered_block(
+        &mut nodes,
+        1,
+        owner_direct_offer(&other, 2, "new x in { x!(0) }".to_string()),
+    )
+    .await;
+    for node in nodes.iter_mut() {
+        for block in [&failed, &sibling] {
+            assert!(matches!(
+                node.process_block(block.clone())
+                    .await
+                    .expect("the node processes the block"),
+                Either::Right(_)
+            ));
+        }
+    }
+    let merged = merge_on(&nodes[2], vec![sibling, failed]).await;
+    assert!(
+        merged.rejected_user.is_empty(),
+        "the merge keeps the failed offer's branch"
+    );
+    let receipt = BlockAPI::find_offered_settlement_receipt(&nodes[2].engine_cell, &failed_id)
+        .await
+        .expect("the receipt query succeeds")
+        .expect("the failed deploy carries a settlement receipt");
+    let balance = vault_balance(&nodes[2..], &merged.state, &payer_vault).await;
+    assert_eq!(
+        u128::from(balance) + receipt.rev_spent,
+        u128::from(initial),
+        "the merged state keeps the failed deploy's charge"
     );
 }

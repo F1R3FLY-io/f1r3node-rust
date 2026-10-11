@@ -275,21 +275,23 @@ async fn stage_floor_covered_reinstatement() -> (
     // loser's chain via SCOPE (not spine inheritance).
     // Changed by DR-116 (gap G6): N1 carries no offer. Under bug 11004 any two
     // offered siblings conflict, so a spacer offer in N1 makes X reject the loser.
-    // let _n1 = nodes[2]
-    //     .add_block_from_deploys(std::slice::from_ref(
-    //         &construct_deploy::basic_deploy_data(
-    //             100,
-    //             Some(construct_deploy::DEFAULT_SEC2.clone()),
-    //             Some(shard_id.clone()),
-    //         )
-    //         .expect("neutral spacer"),
-    //     ))
-    //     .await
-    //     .expect("neutral branch N1 on nodes[2]");
+    // Restored by DR-119 (bug 11004): the spacer's cohort shares no cost-cursor
+    // lock with the contenders' cohort, so N1 carries dev's spacer again.
     let _n1 = nodes[2]
-        .add_block_from_deploys(&[])
+        .add_block_from_deploys(std::slice::from_ref(
+            &construct_deploy::basic_deploy_data(
+                100,
+                Some(construct_deploy::DEFAULT_SEC2.clone()),
+                Some(shard_id.clone()),
+            )
+            .expect("neutral spacer"),
+        ))
         .await
         .expect("neutral branch N1 on nodes[2]");
+    // let _n1 = nodes[2]
+    //     .add_block_from_deploys(&[])
+    //     .await
+    //     .expect("neutral branch N1 on nodes[2]");
 
     // Contenders: both consume the seed (genuine conflict) and both write
     // a witness cell whose datum records which contender's execution is

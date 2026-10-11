@@ -422,3 +422,51 @@ proptest! {
         prop_assert_eq!(fee, monetary_scope_for_custodies(&native_fee_policy_context(), keys.iter()));
     }
 }
+
+/// DR-119 (bug 11004): the SystemVault creation bucket of a cursor scope. It is
+/// the first byte of keccak256 over `scope.toByteArray()`, the protobuf encoding
+/// of the scope's ByteArray (reduce.rs:3707-3754). The settlement passes the
+/// scope as that ByteArray (vault_cost_deploy.rs:369-384).
+fn cost_cursor_bucket(scope: &[u8; 32]) -> u8 {
+    use prost::Message;
+    let encoded = rholang::rust::interpreter::rho_type::RhoByteArray::create_par(scope.to_vec())
+        .encode_to_vec();
+    crypto::rust::hash::keccak256::Keccak256::hash(encoded)[0]
+}
+
+/// DR-119: the restore precondition of the dev tests that settle the
+/// DEFAULT_SEC and DEFAULT_SEC2 cohorts in sibling blocks. Their four cursor
+/// scopes (the resource scope and the fee scope of each owner-direct cohort)
+/// fall in four distinct buckets, so two concurrent first uses never share a
+/// creation lock.
+#[test]
+fn default_cohort_cursor_scopes_fall_in_distinct_buckets() {
+    use crypto::rust::signatures::secp256k1::Secp256k1;
+    use crypto::rust::signatures::signatures_alg::SignaturesAlg;
+    use models::rhoapi::cost_signature::Value;
+    use rholang::rust::interpreter::accounting::principal_ground_v61;
+
+    use crate::rust::util::construct_deploy::{DEFAULT_SEC, DEFAULT_SEC2};
+    use crate::rust::util::rholang::costacc::vault_payer::vault_payer;
+
+    let mut buckets = Vec::with_capacity(4);
+    for secret in [&*DEFAULT_SEC, &*DEFAULT_SEC2] {
+        let public = Secp256k1.to_public(secret);
+        let signature = CostSignature {
+            value: Some(Value::Ground(principal_ground_v61(&public.bytes))),
+        };
+        let custody = vault_payer(&signature)
+            .expect("a principal signature has a vault payer")
+            .custody_key;
+        for context in [resource_policy_context(), native_fee_policy_context()] {
+            let scope = monetary_scope_for_custodies(&context, std::iter::once(&custody));
+            buckets.push(cost_cursor_bucket(&scope));
+        }
+    }
+    let distinct: std::collections::BTreeSet<u8> = buckets.iter().copied().collect();
+    assert_eq!(
+        distinct.len(),
+        buckets.len(),
+        "two default cohort scopes share a creation bucket: {buckets:?}"
+    );
+}

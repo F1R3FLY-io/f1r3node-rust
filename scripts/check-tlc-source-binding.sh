@@ -29,6 +29,29 @@ if (( ${#merge_identity_owner[@]} != 23 )); then
   exit 1
 fi
 
+# DR-119 (bug 11004): every configuration of the two cost-cursor models has its
+# own well-formed TLC identity.
+declare -A cursor_identity_owner=()
+for config in "$merge_dir"/FeeCursorBranchMerge*.cfg "$merge_dir"/FeeCursorCells*.cfg; do
+  case "$(basename "$config")" in
+    FeeCursorBranchMerge*) cursor_module="$merge_dir/FeeCursorBranchMerge.tla" ;;
+    *) cursor_module="$merge_dir/FeeCursorCells.tla" ;;
+  esac
+  cursor_hash="$(tlc_source_hash "$config" "$cursor_module")"
+  cursor_identity="$(tlc_recovery_identity "$cursor_hash")"
+  [[ "$cursor_hash" =~ ^[0-9a-f]{64}$ ]]
+  [[ "$cursor_identity" =~ ^[0-9a-f]{64}$ ]]
+  if [[ -n "${cursor_identity_owner[$cursor_identity]:-}" ]]; then
+    echo "error: $(basename "$config") shares a TLC identity with ${cursor_identity_owner[$cursor_identity]}" >&2
+    exit 1
+  fi
+  cursor_identity_owner[$cursor_identity]="$(basename "$config")"
+done
+if (( ${#cursor_identity_owner[@]} != 13 )); then
+  echo "error: expected 13 cost-cursor TLC configurations, found ${#cursor_identity_owner[@]}" >&2
+  exit 1
+fi
+
 config="$ROOT/formal/tlaplus/uptime/MC_UptimeEnvelopeDominance.cfg"
 module="$ROOT/formal/tlaplus/uptime/UptimeEnvelopeDominance.tla"
 source_hash="$(tlc_source_hash "$config" "$module")"

@@ -49,11 +49,27 @@ in {
        @(_, Either)   <- EitherCh &
        TreeHashMap    <- TreeHashMapCh) {
     // Each invocation of the SystemVault contract uses a different mint.
-    new mintCh, vaultMapStore, costCursorMapStore, costCursorNamespace, costCursorLock, initVault in {
+    // Changed by DR-119 (bug 11004): two names follow initVault, so every earlier name
+    // keeps its value. costCursorLock stays declared and is no longer produced.
+    // new mintCh, vaultMapStore, costCursorMapStore, costCursorNamespace, costCursorLock, initVault in {
+    new mintCh, vaultMapStore, costCursorMapStore, costCursorNamespace, costCursorLock, initVault,
+        costCursorBucketLock, seedCostCursorBuckets in {
       // Initializes the vaultMapStore.
       TreeHashMap!("init", 2, *vaultMapStore) |
       TreeHashMap!("init", 2, *costCursorMapStore) |
-      costCursorLock!() |
+      // Changed by DR-119 (bug 11004): one global lock serialized every cursor-bearing
+      // settlement, so the settlements of different payers always conflicted.
+      // costCursorLock!() |
+      // Added by DR-119: one creation lock per first byte of a scope's keccak256 hash,
+      // keyed 0 to 255. The cursor map has depth 2, so a TreeHashMap leaf is the first two
+      // bytes of that hash, and one leaf has one bucket.
+      contract seedCostCursorBuckets(@bucket) = {
+        if (bucket < 256) {
+          @(*costCursorBucketLock, bucket)!() |
+          seedCostCursorBuckets!(bucket + 1)
+        }
+      } |
+      seedCostCursorBuckets!(0) |
       for (@vaultMap <- vaultMapStore & @costCursorMap <- costCursorMapStore) {
         // Called from VaultsGenerator:
         //   SystemVault!("init", *ret)
@@ -142,24 +158,70 @@ in {
               }
             }
           } |
+          // Changed by DR-119 (bug 11004): the old body took the global lock on every call,
+          // so two settlements of different scopes consumed one datum and always conflicted.
+          // contract ensureCostCursor(@scope, retCh) = {
+          //   for (<- costCursorLock) {
+          //     new existsCh in {
+          //       TreeHashMap!("get", costCursorMap, scope, *existsCh) |
+          //       for (@exists <- existsCh) {
+          //         if (exists == Nil) {
+          //           new setCh in {
+          //             TreeHashMap!("set", costCursorMap, scope, true, *setCh) |
+          //             for (_ <- setCh) {
+          //               @(scope, "revision", *costCursorNamespace)!(0) |
+          //               @(scope, "position", *costCursorNamespace)!(0) |
+          //               costCursorLock!() |
+          //               retCh!(true)
+          //             }
+          //           }
+          //         } else {
+          //           costCursorLock!() |
+          //           retCh!(Nil)
+          //         }
+          //       }
+          //     }
+          //   }
+          // } |
+          // Added by DR-119: an existing cursor needs no lock, because the TreeHashMap lookup
+          // only peeks. A first use takes the creation lock of its bucket with a plain receive
+          // and checks again before it creates the two cells.
           contract ensureCostCursor(@scope, retCh) = {
-            for (<- costCursorLock) {
-              new existsCh in {
-                TreeHashMap!("get", costCursorMap, scope, *existsCh) |
-                for (@exists <- existsCh) {
-                  if (exists == Nil) {
-                    new setCh in {
-                      TreeHashMap!("set", costCursorMap, scope, true, *setCh) |
-                      for (_ <- setCh) {
-                        @(scope, "revision", *costCursorNamespace)!(0) |
-                        @(scope, "position", *costCursorNamespace)!(0) |
-                        costCursorLock!() |
-                        retCh!(true)
+            new existsCh in {
+              TreeHashMap!("get", costCursorMap, scope, *existsCh) |
+              for (@exists <- existsCh) {
+                if (exists != Nil) {
+                  retCh!(Nil)
+                } else {
+                  new hashCh, keccak256Hash(`rho:crypto:keccak256Hash`) in {
+                    keccak256Hash!(scope.toByteArray(), *hashCh) |
+                    for (@hash <- hashCh) {
+                      match hash.nth(0) {
+                        bucket => {
+                          for (<- @(*costCursorBucketLock, bucket)) {
+                            new recheckCh in {
+                              TreeHashMap!("get", costCursorMap, scope, *recheckCh) |
+                              for (@again <- recheckCh) {
+                                if (again == Nil) {
+                                  new setCh in {
+                                    TreeHashMap!("set", costCursorMap, scope, true, *setCh) |
+                                    for (_ <- setCh) {
+                                      @(scope, "revision", *costCursorNamespace)!(0) |
+                                      @(scope, "position", *costCursorNamespace)!(0) |
+                                      @(*costCursorBucketLock, bucket)!() |
+                                      retCh!(true)
+                                    }
+                                  }
+                                } else {
+                                  @(*costCursorBucketLock, bucket)!() |
+                                  retCh!(Nil)
+                                }
+                              }
+                            }
+                          }
+                        }
                       }
                     }
-                  } else {
-                    costCursorLock!() |
-                    retCh!(Nil)
                   }
                 }
               }
@@ -276,9 +338,16 @@ in {
               ((resourceScope, _, resourceExpectedRevision, resourceExpectedPosition, resourceNextRevision, resourceNextPosition),
                (feeScope, _, feeExpectedRevision, feeExpectedPosition, feeNextRevision, feeNextPosition)) => {
                 new resourceReady, feeReady in {
+                  // Changed by DR-119 (bug 11004): the two scopes are ensured one after the
+                  // other, so a lock-free lookup never reads a leaf that the other ensure is
+                  // still creating (Registry.rho:113).
+                  // ensureCostCursor!(resourceScope, *resourceReady) |
+                  // ensureCostCursor!(feeScope, *feeReady) |
+                  // for (_ <- resourceReady & _ <- feeReady) {
                   ensureCostCursor!(resourceScope, *resourceReady) |
+                  for (_ <- resourceReady) {
                   ensureCostCursor!(feeScope, *feeReady) |
-                  for (_ <- resourceReady & _ <- feeReady) {
+                  for (_ <- feeReady) {
                     for (@resourceRevision <- @(resourceScope, "revision", *costCursorNamespace) &
                          @resourcePosition <- @(resourceScope, "position", *costCursorNamespace) &
                          @feeRevision <- @(feeScope, "revision", *costCursorNamespace) &
@@ -310,6 +379,7 @@ in {
                         }
                       }
                     }
+                  }
                   }
                 }
               }

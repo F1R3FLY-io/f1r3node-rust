@@ -13036,6 +13036,217 @@ commit for D-F2a and D-F2b ("One commit (Recommended)").
 
 **Cross-refs.** DR-76, DR-94, DR-110, DR-117. Phase D (`ofp-2-cap-phase-d`).
 
+## DR-119 — Cost cursors take a creation lock per bucket, and an existing cursor takes no lock (bug 11004)
+
+**Status.** Implemented 2026-10-10 for bug 11004 of epic 8946, as design v4
+of `G9 and bug 11004` specifies (commit C2). The user approved it on
+2026-10-10 together with DR-120: "Go with option 1 [build the merge rule, then
+the lock fix, with the Casper edits listed] so long as these changes are
+necessary, directly related to cost-accounting and not just nice-to-haves, and
+don't change much of Casper."
+
+**Context.**
+
+- Each settlement of an offered deploy moves two cost cursors of its cohort:
+  the resource cursor and the fee cursor (`applyCostWithTwoCursors` in
+  `SystemVault.rho`). `ensureCostCursor` creates a cursor at its first use.
+- Before this record, `ensureCostCursor` consumed one global lock datum on
+  every call, also for a cursor that existed (`SystemVault.rho:52,56,145-167`
+  at commit b496df9d8). So every two cursor-bearing settlements consumed one
+  base datum.
+- The race check of the merge (`merging_logic.rs:290-331`) then made every two
+  sibling offered blocks conflict, and the merge kept only one of them.
+- P1 says that the results of different signatures draw from disjoint pools
+  and cannot conflict (P1:356-359). P1 also says that throughput grows with
+  the number of non-conflicting token supplies (P1:336-342).
+- The epic excludes any global funding lock. E2E-037 requires that
+  independent exact effects survive a merge.
+- The global lock had a purpose. The cursor map is a TreeHashMap of depth 2
+  (`SystemVault.rho:59`). One leaf of the map holds the keys whose keccak256
+  hashes share their first two bytes (`Registry.rho:85-91,130-139`).
+- Two sibling first uses of different scopes in one new leaf each produce
+  their own leaf datum. No merge check sees the duplicate. The merged leaf
+  then holds two maps, and a later lookup can miss an existing cursor. So the
+  creations in one leaf must stay serialized.
+- `FeeCursorBranchMerge.tla` at HEAD did not model the lock. Its invariant
+  `IndependentScopesSurvive` held in the model and failed in the code.
+
+**Decision.**
+
+1. **No lock for an existing cursor.** `ensureCostCursor` first looks the
+   scope up in the cursor map. The TreeHashMap lookup only peeks at the map
+   nodes (`nodeGet`, `Registry.rho:79-83`). The race check counts no peeked datum,
+   because a peek goes to `produces_peeked` and not to `produces_consumed`
+   (`event_log_index.rs`). A settlement on an existing cursor therefore
+   consumes only the revision cell and the position cell of its own scope.
+2. **One creation lock per bucket.** The bucket of a scope is the first byte
+   of keccak256(`scope.toByteArray()`), the hash that the TreeHashMap uses.
+   SystemVault seeds 256 lock datums `@(*costCursorBucketLock, b)`, one for
+   each $`b \in \{0, \dots, 255\}`$, when it starts (`SystemVault.rho:66-72`).
+   A leaf is the first two bytes of the hash, so each leaf lies in one bucket.
+3. **First use.** When the lookup finds no cursor, `ensureCostCursor` takes
+   the lock of the scope's bucket with a plain receive. Under the lock it looks
+   the scope up again, because the first lookup can be stale. It creates the
+   map entry and the two cells only when the second lookup also finds no
+   cursor. Then it releases the lock (`SystemVault.rho:189-229`).
+4. **One ensure after the other.** `applyCostWithTwoCursors` ensures its
+   resource scope first and its fee scope second (`SystemVault.rho:347-350`).
+   A creation makes a new leaf with the value 0 before it writes the entry. A
+   lookup that reads that 0 fails on `0.get` (`Registry.rho:113`). In
+   sequence, no lookup of a settlement reads a leaf that the same settlement
+   still creates.
+5. **The old lines stay as comments.** The two new names follow `initVault`,
+   so every earlier name of the `new` keeps its value. The global lock name
+   stays declared for the same reason. Each replaced line stays in the file as
+   a comment with its reason.
+
+**The conflict rule.** Two settlements that start from one state conflict
+exactly when one of these conditions holds:
+
+- They share a cursor scope. Two settlements on one existing cursor consume
+  its revision cell. Two first uses of one scope consume the lock of its
+  bucket.
+- A first use on each side falls in one bucket. The two settlements then
+  consume one lock datum.
+
+A lookup of an existing cursor conflicts with nothing. This holds also when
+the other settlement creates a cursor in the same leaf. The interior nodes of
+the TreeHashMap are bitmaps that the merge combines with `BitmaskOr`
+(`docs/casper/README.md`, section "Mergeable Channels"). So two creations in
+different buckets also compose on the interior nodes that they share.
+
+**Why the rule is sound.** Each law below is a theorem of
+`CostCursorBuckets.v`, and the TLA+ models check it on bounded scenarios.
+
+- B1: one leaf lies in one bucket (`same_leaf_same_bucket`). So two creations
+  in one leaf take one lock, and a merge keeps at most one of them
+  (`kept_creations_distinct_leaves`). The merged map never holds two datums
+  for one leaf.
+- L6: settlements on the existing cursors of distinct scopes claim disjoint
+  datums (`existing_scopes_disjoint_claims`), so they survive together
+  (`independent_existing_scopes_survive`). Two settlements on one existing
+  cursor conflict (`same_scope_existing_settlements_conflict`).
+- The check under the lock is necessary. A creation that trusts a stale
+  lookup duplicates the cells of a scope that another worker created in
+  between. `FeeCursorCellsCreateOnStaleReadUnsafe.cfg` shows this
+  counterexample.
+
+**Shared buckets.** Two cohorts with random scopes share a bucket with a
+probability of about $`4/256`$, because each cohort has two scopes. A cohort
+creates its two cursors once, at its first settlement. A shared bucket
+therefore needs two concurrent first settlements. It costs one deferral of one
+of them, and the owner re-proposes the deferred deploy (DR-120).
+
+**Casper footprint.** C2 changes one Casper source file,
+`casper/src/main/resources/SystemVault.rho` (+88 / −18 lines, with the old
+lines kept as comments). It changes no other Casper source file. The test
+changes are in cost-accounting test files, among them the `costacc` unit tests
+of `policy_snapshot`. The two restorations of dev lines below are the only
+exception.
+
+**Test migration.** Several offered tests took their conflicts from the
+global lock. They now take them from a shared cohort cursor:
+
+- `an_owner_accepts_a_merge_that_rejects_its_own_offer`: both siblings have
+  one signer.
+- `a_failed_offered_deploy_in_a_conflicting_merged_branch_is_rejected_not_dropped`
+  and the users of `rejected_failed_offer_merge`: the sibling pays for the
+  same cohort. The expected balance includes the charge of the sibling.
+- `a_third_signer_inserts_a_version_after_a_merge_with_a_writers_branch` now
+  asserts that both siblings survive. Its writers are DEFAULT_SEC and a
+  searched key whose buckets differ from those of DEFAULT_SEC.
+- `verdict_convergence_spec.rs` and `exactly_once_spec.rs` get dev's lines
+  back: the S marker and the N1 spacer. The restore precondition holds. The
+  four scopes of the DEFAULT_SEC and DEFAULT_SEC2 cohorts fall in four
+  distinct buckets (`default_cohort_cursor_scopes_fall_in_distinct_buckets`).
+
+Two facts shaped the API tests:
+
+- DEFAULT_SEC2 is the private key of the Registry's standard deploy
+  (`REGISTRY_PK`). The API refuses an offer that a system key signs, so no API
+  test can sign with DEFAULT_SEC2. The batch2 specs add their deploys without
+  the API, so they can.
+- The extra genesis vault keys are random in each process. A test that needs a
+  bucket relation therefore searches a deterministic key chain and gives the
+  found key its own genesis vault. A funding deploy is no alternative. It must
+  create the vault first, because a transfer to a missing vault leaves its
+  deposit orphaned. Under the committed caps, that deploy exceeded the
+  host-work budget for verification operations.
+
+**E2E-037.** The E2E-037 row claims that independent exact effects survive a
+merge. Before this record, the global lock broke that claim for every two
+cursor-bearing settlements. Now the claim holds for settlements on different
+scopes, except for two first uses in one bucket. The row cites this record.
+
+**Verification.**
+
+- Rocq, axiom-free: `CostCursorBuckets.v` proves B1, L6 and the conflict on a
+  shared leaf. Four proved negative controls cover the global lock, a missing
+  creation lock (twice) and a bucket from the raw scope bytes. All ten
+  theorems are closed under the global context. The proof gate passes in
+  cost-accounting mode: 285 modules and 3245 closed assumption
+  queries.
+- TLA+, through `scripts/lib/tlc-run.sh`:
+  - `FeeCursorBranchMerge` in bucket mode checks CursorCellUnique,
+    WholeEffectAccounting, IndependentScopesSurviveRefined, SameScopeKeepsOne,
+    ValidatorAgreement, NoPhantomEffects and MapLeafUnique
+    (18,432 distinct states).
+  - `FeeCursorBranchMergeGlobalLockUnsafe` violates
+    IndependentScopesSurviveRefined. `FeeCursorBranchMergeNoCreationLockUnsafe`
+    and `FeeCursorBranchMergeBucketCoarseningUnsafe` violate MapLeafUnique.
+    The Empty, Money and Order controls still violate their invariants.
+  - `FeeCursorCells` with the lock-free lookup passes (3,568 distinct
+    states). `FeeCursorCellsCreateOnStaleReadUnsafe` violates
+    ExactlyOnePairPerInitializedScope, and the four earlier controls still
+    violate their invariants.
+  - The configurations are registered in
+    `scripts/check-cost-accounted-rho-tla-invariants.sh` and
+    `scripts/check-tlc-source-binding.sh`.
+- Rust:
+  - `settlement_conflict_iff_same_scope_or_same_bucket_first_use` plays two
+    settlements from one state in 256 generated cases. Dev's conflict check
+    on their event logs agrees with the conflict rule in every case. The cases
+    cover seven kinds, among them a first use in the leaf of an existing
+    cursor. The tally of one run, as no conflict and conflict per kind, is
+    `[[42, 0], [29, 0], [0, 40], [0, 35], [0, 27], [41, 1], [41, 0]]`.
+  - Against the SystemVault of commit b496df9d8, the same property test
+    fails. Its shrunk counterexample is a first use beside an existing cursor
+    of the other side, and the two settlements conflict on the global lock. So
+    the test detects the global lock.
+  - `offered_funded_api_test.rs`: `first_use_cursors_in_distinct_buckets_compose`,
+    `first_use_cursors_in_one_bucket_keep_one`,
+    `three_signers_compose_on_the_v6_fast_path` and
+    `a_failed_offer_charge_survives_beside_another_signer`. The last two are
+    the two API tests that DR-120 deferred to this record. The three-signer
+    merge takes the v6 fast path.
+- Suites:
+  - On casper, block-storage and the node HTTP handlers, the provisional caps
+    pass 1984 of 1988, with the same four known failures as for DR-120.
+  - The committed caps pass 1981 of 1988. Six failures are the known ones of
+    DR-116 and DR-117. The seventh,
+    `initializing_spec::make_transition_to_running_once_approved_block_received`,
+    counted seven transport requests instead of five under load. It passed in
+    the three other full runs of this record and in three isolated runs.
+  - The 13 offered-genesis specs, all 33 offered API tests, the 33 v6 merge
+    tests and the unchanged dev suites pass: `multi_parent_casper_merge_spec`,
+    `compute_parents_post_state_regression_spec`, `finalized_protection_spec`,
+    `registry_key_merge` and `floor_fork_reproduction_spec`.
+  - `precharge_report_shape_spec` passes, so the transfer channel that
+    `transfer_unforgeable` derives from SystemVault keeps its value.
+  - C2 changes no rholang or rspace++ code.
+  - `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D
+    warnings`, the workspace doctests and the documentation syntax gate pass.
+
+**Side finding, not in scope.** When the merge base falls back to the floor,
+the settled-sig probe still walks the lineage of the main parent
+(`interpreter_util.rs:1871-1882`). The dedup step then drops the main parent's
+own chain as settled, although the floor's state does not hold it. The deploy
+is neither applied nor rejected. A three-sibling merge in which the floor is
+another sibling shows this. The code belongs to dev's floor fallback, and this
+record does not change it.
+
+**Cross-refs.** DR-15, DR-101, DR-115, DR-116, DR-120, E2E-037, P1. Bug 11004.
+
 ## DR-120 — The interim v6 merge rule: compose a conflict-free scope, else one ordered pass (gap G9)
 
 **Status.** Implemented 2026-10-10 for gap G9 of epic 8946 (leaf
