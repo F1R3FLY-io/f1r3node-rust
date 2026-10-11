@@ -9113,6 +9113,3521 @@
         "test-vectors/reified-queue-parity-v1.json",
         "test-vectors/reified-syntax-corpus-v1.json"
       ]
+    },
+    "p9": {
+      "description": "Phase P9, consensus integration (design v2, plan decision 80). It extends campaign and restates the edits and the new files of p8. Step 0 adds the backport of the DR-119 fix of bug 11004 from feature/cost-accounted-rho, commit 7ab849b56 (plan decision 81): the bucket locks of SystemVault.rho and their policy snapshot tests, the only approved casper/src change, and the new Rocq module and TLA configurations of that commit.",
+      "extends": "campaign",
+      "unchanged": [
+        "**"
+      ],
+      "edits": [
+        {
+          "path": "rspace++/src/rspace/mod.rs",
+          "added_lines": [
+            "pub mod space_store_handle;"
+          ]
+        },
+        {
+          "path": "rspace++/src/rspace/rspace.rs",
+          "added_lines": [
+            "mod space_play;"
+          ]
+        },
+        {
+          "path": "rspace++/src/rspace/replay_rspace.rs",
+          "added_lines": [
+            "mod space_replay;"
+          ]
+        },
+        {
+          "path": "rspace++/src/rspace/reporting_rspace.rs",
+          "replaced_lines": [
+            [
+              "    replay_rspace: ReplayRSpace<C, P, A, K>,",
+              "    pub(crate) replay_rspace: ReplayRSpace<C, P, A, K>,"
+            ]
+          ]
+        },
+        {
+          "path": "scripts/audit/check-rocq-line-refs.sh",
+          "replaced_lines": [
+            [
+              "    \"${REPO}/formal/rocq/validator/theories\"",
+              "    \"${REPO}/formal/rocq/reified_rspaces/theories\""
+            ]
+          ],
+          "added_lines": [
+            "    # 2026-10-04: the validator tree no longer exists. Its entry now names the Reified RSpaces theories."
+          ]
+        },
+        {
+          "path": "rholang/src/rust/interpreter/util/mod.rs",
+          "replaced_blocks": [
+            [
+              [
+                "",
+                "pub fn evaluation_terms(par: &Par) -> Vec<GeneratedMessage> {"
+              ],
+              [
+                "",
+                "/// True when the reducer evaluates `expr` as a term of its process `Par`: a variable, a",
+                "/// method call, or a USE or NEWSPACE marker tuple (Reified RSpaces hook H1).",
+                "pub fn is_evaluated_process_expr(expr: &Expr) -> bool {",
+                "    match &expr.expr_instance {",
+                "        Some(ExprInstance::EVarBody(_)) | Some(ExprInstance::EMethodBody(_)) => true,",
+                "        Some(ExprInstance::ETupleBody(tuple)) => {",
+                "            models::rust::reified::encoding::is_process_marker_tuple(tuple)",
+                "        }",
+                "        _ => false,",
+                "    }",
+                "}",
+                "",
+                "pub fn evaluation_terms(par: &Par) -> Vec<GeneratedMessage> {"
+              ]
+            ],
+            [
+              [
+                "            .iter()",
+                "            .filter(|expr| {",
+                "                matches!(",
+                "                    expr.expr_instance,",
+                "                    Some(ExprInstance::EVarBody(_)) | Some(ExprInstance::EMethodBody(_))",
+                "                )",
+                "            })"
+              ],
+              [
+                "            .iter()",
+                "            .filter(|expr| is_evaluated_process_expr(expr))"
+              ]
+            ],
+            [
+              [
+                "            .into_iter()",
+                "            .filter(|expr| {",
+                "                matches!(",
+                "                    expr.expr_instance,",
+                "                    Some(ExprInstance::EVarBody(_)) | Some(ExprInstance::EMethodBody(_))",
+                "                )",
+                "            })"
+              ],
+              [
+                "            .into_iter()",
+                "            .filter(|expr| is_evaluated_process_expr(expr))"
+              ]
+            ]
+          ]
+        },
+        {
+          "path": "models/src/rust/mod.rs",
+          "added_lines": [
+            "pub mod reified;",
+            "pub mod space_factory_urn;"
+          ]
+        },
+        {
+          "path": "rholang/src/rust/interpreter/mod.rs",
+          "added_lines": [
+            "pub mod reified;",
+            "pub mod spaces;",
+            "pub mod tensor;"
+          ]
+        },
+        {
+          "path": "rholang/src/rust/interpreter/reduce.rs",
+          "added_lines": [
+            "                    ExprInstance::ETupleBody(t) => self.eval_marker(t, env, rand, authority).await,",
+            "        reified_hooks::reject_query_source(&subst)?;",
+            "    pub(crate) space_ctx: super::reified::scope::SpaceCtx,",
+            "    pub(crate) reified: Arc<super::reified::runtime::ReifiedRuntime>,",
+            "            space_ctx: Default::default(),",
+            "            reified: super::reified::runtime::unavailable(),"
+          ],
+          "replaced_lines": [
+            [
+              "        self.produce(",
+              "        self.reified_produce("
+            ],
+            [
+              "        self.consume(",
+              "        self.reified_consume("
+            ]
+          ],
+          "replaced_blocks": [
+            [
+              [
+                "#[cfg(test)]",
+                "#[path = \"reduce_economic_failure_tests.rs\"]"
+              ],
+              [
+                "#[path = \"reified/reducer_hooks.rs\"]",
+                "mod reified_hooks;",
+                "",
+                "#[cfg(test)]",
+                "#[path = \"reduce_economic_failure_tests.rs\"]"
+              ]
+            ],
+            [
+              [
+                "    pub async fn inj(&self, par: Par, rand: Blake2b512Random) -> Result<(), InterpreterError> {",
+                "        self.eval(par, &Env::new(), rand).await",
+                "    }"
+              ],
+              [
+                "    pub async fn inj(&self, par: Par, rand: Blake2b512Random) -> Result<(), InterpreterError> {",
+                "        let root = self.begin_root_evaluation();",
+                "        let result = self.eval(par, &Env::new(), rand).await;",
+                "        self.end_root_evaluation(root, result).await",
+                "    }"
+              ]
+            ],
+            [
+              [
+                "        let env = Env::new();",
+                "        let (result, summary, errors) = StackGrowingFuture {"
+              ],
+              [
+                "        let env = Env::new();",
+                "        let root = self.begin_root_evaluation();",
+                "        let (result, summary, errors) = StackGrowingFuture {"
+              ]
+            ],
+            [
+              [
+                "        .await;",
+                "        (self.finish_detached_errors(result, errors), summary)",
+                "    }"
+              ],
+              [
+                "        .await;",
+                "        let result = self.finish_detached_errors(result, errors);",
+                "        self.end_root_evaluation_observed(root, result, summary)",
+                "            .await",
+                "    }"
+              ]
+            ],
+            [
+              [
+                "        host_work: HostWorkBudget,",
+                "    ) -> Result<(), InterpreterError> {",
+                "        self.eval_with_host_work(par, &Env::new(), rand, host_work)",
+                "            .await",
+                "    }"
+              ],
+              [
+                "        host_work: HostWorkBudget,",
+                "    ) -> Result<(), InterpreterError> {",
+                "        let root = self.begin_root_evaluation();",
+                "        let result = self",
+                "            .eval_with_host_work(par, &Env::new(), rand, host_work)",
+                "            .await;",
+                "        self.end_root_evaluation(root, result).await",
+                "    }"
+              ]
+            ],
+            [
+              [
+                "    async fn eval_new(",
+                "        &self,",
+                "        new: &New,",
+                "        env: Env<Par>,",
+                "        mut rand: Blake2b512Random,",
+                "        authority: &CostAuthority,",
+                "    ) -> Result<(), InterpreterError> {",
+                "        // D3 (DR-9, OD-3): `new` (name allocation) is a non-COMM structural",
+                "        // reduction — DIAGNOSTIC only (metered for fidelity, 0 toward the",
+                "        // consensus consumed cost). §7.4 re-pins 9→8 precisely because the",
+                "        // `new` no longer counts toward the per-COMM consensus cost.",
+                "        self.metering",
+                "            .reserve_reduction(new_bindings_cost(new.bind_count as i64))?;",
+                "        match allocate_new_bindings(new, &env, &mut rand, &self.urn_map) {",
+                "            Ok(env) => {",
+                "                self.eval_with_authority(",
+                "                    unwrap_option_safe(new.p.clone())?,",
+                "                    &env,",
+                "                    rand,",
+                "                    authority.clone(),",
+                "                )",
+                "                .await",
+                "            }",
+                "            Err(e) => Err(e),",
+                "        }"
+              ],
+              [
+                "    async fn eval_new(",
+                "        &self,",
+                "        new: &New,",
+                "        env: Env<Par>,",
+                "        rand: Blake2b512Random,",
+                "        authority: &CostAuthority,",
+                "    ) -> Result<(), InterpreterError> {",
+                "        // D3 (DR-9, OD-3): `new` (name allocation) is a non-COMM structural",
+                "        // reduction — DIAGNOSTIC only (metered for fidelity, 0 toward the",
+                "        // consensus consumed cost). §7.4 re-pins 9→8 precisely because the",
+                "        // `new` no longer counts toward the per-COMM consensus cost.",
+                "        self.metering",
+                "            .reserve_reduction(new_bindings_cost(new.bind_count as i64))?;",
+                "        self.reified_new(new, env, rand, authority).await"
+              ]
+            ]
+          ]
+        },
+        {
+          "path": "rholang/src/rust/interpreter/deterministic_reduction.rs",
+          "added_lines": [
+            "#[path = \"reified/schedule.rs\"]",
+            "pub(crate) mod reified_schedule;",
+            "    Space(reified_schedule::SpaceIntent),",
+            "    Space(OperationOrder, reified_schedule::SpaceDelivery),",
+            "            Self::Space(space) => Completion::Space(order, space.reject(error)),",
+            "            Self::Space(order, _) => order,",
+            "            Self::Space(_, delivery) => delivery.deliver(),",
+            "            Intent::Space(space) => space.extend_footprint(&mut footprint, &self.budget),",
+            "            Intent::Space(space) => space.execute(self, order).await,"
+          ],
+          "replaced_lines": [
+            [
+              "    async fn enter_boundary(&self) -> OwnedRwLockWriteGuard<()> {",
+              "    pub(crate) async fn enter_boundary(&self) -> OwnedRwLockWriteGuard<()> {"
+            ]
+          ]
+        },
+        {
+          "path": "rholang/src/rust/interpreter/rho_runtime.rs",
+          "added_lines": [
+            "use rspace_plus_plus::rspace::space_store_handle::SpaceTxnHost;",
+            "use super::reified;",
+            "    reified_runtime: Arc<reified::runtime::ReifiedRuntime>,",
+            "        space_ctx: Default::default(),",
+            "        reified: reified_runtime,",
+            "    let native_space_runtime = reified::runtime::native_replay();",
+            "    reified::system_processes::register(extra_system_processes, &native_space_runtime);",
+            "        native_space_runtime,",
+            "    let space_runtime = reified::runtime::for_host(rspace.clone(), cost.clone());",
+            "    reified::system_processes::register(extra_system_processes, &space_runtime);",
+            "        space_runtime,",
+            "    native_space_runtime.bind_native_replay(session.space_store(cost.clone())?, cost.clone())?;",
+            "        self.reducer.reified.settle_mirror_journal(&result);"
+          ],
+          "added_line_counts": [
+            [
+              "        + SpaceTxnHost<Par, BindPattern, ListParWithRandom, TaggedContinuation>",
+              6
+            ]
+          ],
+          "replaced_lines": [
+            [
+              "        rspace.clone(),",
+              "        reified::execution::wrap(rspace.clone(), &reified_runtime, &reducer_cell),"
+            ]
+          ]
+        },
+        {
+          "path": "Cargo.toml",
+          "replaced_blocks": [
+            [
+              [
+                "debug = true",
+                ""
+              ],
+              [
+                "debug = true",
+                "",
+                "[patch.\"https://github.com/F1R3FLY-io/rholang-rs\"]",
+                "rholang-parser = { path = \"../rholang-rs-reified-rspaces/rholang-parser\" }",
+                ""
+              ]
+            ]
+          ]
+        },
+        {
+          "path": "Cargo.lock",
+          "replaced_blocks": [
+            [
+              [
+                "name = \"rholang-parser\"",
+                "version = \"0.1.0\"",
+                "source = \"git+https://github.com/F1R3FLY-io/rholang-rs?rev=02cef80d32214ecdac3ee7d3b91c3786a34174d5#02cef80d32214ecdac3ee7d3b91c3786a34174d5\""
+              ],
+              [
+                "name = \"rholang-parser\"",
+                "version = \"0.1.0\""
+              ]
+            ],
+            [
+              [
+                "name = \"rholang-tree-sitter\"",
+                "version = \"0.1.2\"",
+                "source = \"git+https://github.com/F1R3FLY-io/rholang-rs?rev=02cef80d32214ecdac3ee7d3b91c3786a34174d5#02cef80d32214ecdac3ee7d3b91c3786a34174d5\""
+              ],
+              [
+                "name = \"rholang-tree-sitter\"",
+                "version = \"0.1.2\""
+              ]
+            ],
+            [
+              [
+                "name = \"rholang-tree-sitter-proc-macro\"",
+                "version = \"0.1.2\"",
+                "source = \"git+https://github.com/F1R3FLY-io/rholang-rs?rev=02cef80d32214ecdac3ee7d3b91c3786a34174d5#02cef80d32214ecdac3ee7d3b91c3786a34174d5\""
+              ],
+              [
+                "name = \"rholang-tree-sitter-proc-macro\"",
+                "version = \"0.1.2\""
+              ]
+            ]
+          ]
+        },
+        {
+          "path": "rholang/src/rust/interpreter/compiler/normalize.rs",
+          "added_line_counts": [
+            [
+              "            params,",
+              2
+            ]
+          ],
+          "replaced_blocks": [
+            [
+              [
+                "            normalize_p_send(channel, send_type, inputs, input, _env, parser)"
+              ],
+              [
+                "            normalize_p_send(",
+                "                channel,",
+                "                send_type,",
+                "                inputs,",
+                "                params.as_ref(),",
+                "                input,",
+                "                _env,",
+                "                parser,",
+                "            )"
+              ]
+            ],
+            [
+              [
+                "            normalize_p_send_sync(channel, inputs, cont, &proc.span, input, _env, parser)"
+              ],
+              [
+                "            normalize_p_send_sync(",
+                "                channel,",
+                "                inputs,",
+                "                params.as_ref(),",
+                "                cont,",
+                "                &proc.span,",
+                "                input,",
+                "                _env,",
+                "                parser,",
+                "            )"
+              ]
+            ],
+            [
+              [
+                "            normalize_p_new(decls, proc, input, _env, parser)"
+              ],
+              [
+                "            normalize_p_new(decls, proc, input, _env, parser)",
+                "        }",
+                "",
+                "        // UseBlock - handle the Reified RSpaces `use s { P }` block",
+                "        Proc::UseBlock { space, proc } => {",
+                "            use crate::rust::interpreter::compiler::normalizer::processes::p_use_block_normalizer::normalize_p_use_block;",
+                "            normalize_p_use_block(space, proc, input, _env, parser)",
+                "        }",
+                "",
+                "        // FreeTheory - handle the Reified RSpaces theory reference `free Th(args)`",
+                "        Proc::FreeTheory { name, args } => {",
+                "            use crate::rust::interpreter::compiler::normalizer::processes::p_free_theory_normalizer::normalize_p_free_theory;",
+                "            normalize_p_free_theory(name, args, input, _env, parser)"
+              ]
+            ]
+          ]
+        },
+        {
+          "path": "rholang/src/rust/interpreter/compiler/normalizer/processes/mod.rs",
+          "added_lines": [
+            "pub mod p_free_theory_normalizer;",
+            "pub mod p_use_block_normalizer;",
+            "pub mod reified_syntax;"
+          ]
+        },
+        {
+          "path": "rholang/src/rust/interpreter/compiler/normalizer/processes/p_input_normalizer.rs",
+          "added_lines": [
+            "                                        space: None,",
+            "                                            params.as_deref(),",
+            "            bind_queries: Vec<Option<&'ast rholang_parser::ast::QuerySpec<'ast>>>,"
+          ],
+          "added_line_counts": [
+            [
+              "            query_spec: None,",
+              6
+            ]
+          ],
+          "replaced_lines": [
+            [
+              "                Bind::Linear { lhs, rhs } => {",
+              "                Bind::Linear { lhs, rhs, .. } => {"
+            ],
+            [
+              "            for (name, signature) in sources {",
+              "            for ((name, signature), query) in sources.into_iter().zip(bind_queries) {"
+            ]
+          ],
+          "replaced_blocks": [
+            [
+              [
+                "                        Bind::Linear { lhs, rhs } | Bind::Signed { lhs, rhs, .. } => {"
+              ],
+              [
+                "                        Bind::Linear { lhs, rhs, .. } | Bind::Signed { lhs, rhs, .. } => {",
+                "                            check_query_source(bind)?;"
+              ]
+            ],
+            [
+              [
+                "                                    let rhs = Source::Simple { name: *name };",
+                "                                    list_linear_bind.push(match signature {",
+                "                                        Some(sig) => Bind::Signed { lhs, rhs, sig },",
+                "                                        None => Bind::Linear { lhs, rhs },"
+              ],
+              [
+                "                                    let rhs = Source::Simple { name: *name };",
+                "                                    list_linear_bind.push(match signature {",
+                "                                        Some(sig) => Bind::Signed { lhs, rhs, sig },",
+                "                                        None => Bind::Linear {",
+                "                                            lhs,",
+                "                                            rhs,",
+                "                                            query_spec: None,",
+                "                                        },"
+              ]
+            ],
+            [
+              [
+                "                                Source::SendReceive { name, inputs, .. } => {"
+              ],
+              [
+                "                                Source::SendReceive {",
+                "                                    name,",
+                "                                    inputs,",
+                "                                    params,",
+                "                                } => {"
+              ]
+            ],
+            [
+              [
+                "                                    };",
+                "                                    list_linear_bind.push(match signature {",
+                "                                        Some(sig) => Bind::Signed { lhs, rhs, sig },",
+                "                                        None => Bind::Linear { lhs, rhs },"
+              ],
+              [
+                "                                    };",
+                "                                    list_linear_bind.push(match signature {",
+                "                                        Some(sig) => Bind::Signed { lhs, rhs, sig },",
+                "                                        None => Bind::Linear {",
+                "                                            lhs,",
+                "                                            rhs,",
+                "                                            query_spec: None,",
+                "                                        },"
+              ]
+            ],
+            [
+              [
+                "                                        proc: parser.ast_builder().alloc_send(",
+                "                                            rholang_parser::ast::SendType::Single,"
+              ],
+              [
+                "                                        proc: alloc_desugared_send(",
+                "                                            parser,"
+              ]
+            ],
+            [
+              [
+                "        let processed_sources = process_sources(sources, input.clone(), env, parser)?;"
+              ],
+              [
+                "        let bind_queries = flat_receipts.iter().map(|bind| bind.query_spec()).collect();",
+                "        let processed_sources = process_sources(sources, bind_queries, input.clone(), env, parser)?;"
+              ]
+            ],
+            [
+              [
+                "use crate::rust::interpreter::compiler::normalizer::name_normalize_matcher::normalize_name;"
+              ],
+              [
+                "use crate::rust::interpreter::compiler::normalizer::name_normalize_matcher::normalize_name;",
+                "use crate::rust::interpreter::compiler::normalizer::processes::reified_syntax::{",
+                "    alloc_desugared_send, check_query_source, normalize_bind_source,",
+                "};"
+              ]
+            ],
+            [
+              [
+                "                current_known_free = updated_known_free;"
+              ],
+              [
+                "                current_known_free = updated_known_free;",
+                "                let (par, query_known_free) = normalize_bind_source(",
+                "                    par,",
+                "                    query,",
+                "                    &input.bound_map_chain,",
+                "                    current_known_free,",
+                "                    env,",
+                "                    parser,",
+                "                )?;",
+                "                current_known_free = query_known_free;"
+              ]
+            ]
+          ]
+        },
+        {
+          "path": "rholang/src/rust/interpreter/compiler/normalizer/processes/p_let_normalizer.rs",
+          "added_lines": [
+            "                    space: None,"
+          ],
+          "added_line_counts": [
+            [
+              "                    query_spec: None,",
+              2
+            ]
+          ]
+        },
+        {
+          "path": "rholang/src/rust/interpreter/compiler/normalizer/processes/p_match_normalizer.rs",
+          "added_line_counts": [
+            [
+              "            query_spec: None,",
+              2
+            ]
+          ]
+        },
+        {
+          "path": "rholang/src/rust/interpreter/compiler/normalizer/processes/p_new_normalizer.rs",
+          "added_line_counts": [
+            [
+              "                space: None,",
+              8
+            ]
+          ],
+          "replaced_lines": [
+            [
+              "            NameDecl { id, uri: None } => Ok((",
+              "            NameDecl { id, uri: None, .. } => Ok(("
+            ],
+            [
+              "            free_map: input.free_map.clone(),",
+              "            free_map: annotations_free_map,"
+            ],
+            [
+              "        par: prepend_new(input.par.clone(), result_new),",
+              "        par,"
+            ]
+          ],
+          "replaced_blocks": [
+            [
+              [
+                "            NameDecl { id, uri: Some(urn) } => Ok(("
+              ],
+              [
+                "            NameDecl {",
+                "                id, uri: Some(urn), ..",
+                "            } => Ok(("
+              ]
+            ],
+            [
+              [
+                "use crate::rust::interpreter::compiler::normalize::{normalize_ann_proc, VarSort};"
+              ],
+              [
+                "use crate::rust::interpreter::compiler::normalize::{normalize_ann_proc, VarSort};",
+                "use crate::rust::interpreter::compiler::normalizer::processes::reified_syntax::{",
+                "    normalize_space_annotations, push_space_annotated_new,",
+                "};"
+              ]
+            ],
+            [
+              [
+                "    let new_count: usize = new_env.get_count() - input.bound_map_chain.get_count();",
+                ""
+              ],
+              [
+                "    let new_count: usize = new_env.get_count() - input.bound_map_chain.get_count();",
+                "",
+                "    let (space_annotations, annotations_free_map) = normalize_space_annotations(",
+                "        decls,",
+                "        &input.bound_map_chain,",
+                "        input.free_map.clone(),",
+                "        env,",
+                "        parser,",
+                "    )?;",
+                ""
+              ]
+            ],
+            [
+              [
+                "    };",
+                ""
+              ],
+              [
+                "    };",
+                "",
+                "    let par = match space_annotations {",
+                "        Some(annotations) => push_space_annotated_new(input.par.clone(), result_new, annotations)?,",
+                "        None => prepend_new(input.par.clone(), result_new),",
+                "    };",
+                ""
+              ]
+            ]
+          ]
+        },
+        {
+          "path": "rholang/src/rust/interpreter/compiler/normalizer/processes/p_send_normalizer.rs",
+          "added_lines": [
+            "use crate::rust::interpreter::compiler::normalizer::processes::reified_syntax::normalize_send_params;",
+            "    params: Option<&'ast HyperparamList<'ast>>,"
+          ],
+          "replaced_lines": [
+            [
+              "use rholang_parser::ast::{Name, SendType};",
+              "use rholang_parser::ast::{HyperparamList, Name, SendType};"
+            ]
+          ],
+          "replaced_blocks": [
+            [
+              [
+                "        acc.3 = acc.3 || proc_match_result.par.connective_used;"
+              ],
+              [
+                "        acc.3 = acc.3 || proc_match_result.par.connective_used;",
+                "    }",
+                "",
+                "    let (trailing_params, params_free_map) =",
+                "        normalize_send_params(params, &input.bound_map_chain, acc.1.free_map, env, parser)?;",
+                "    acc.1.free_map = params_free_map;",
+                "    if let Some(params_par) = trailing_params {",
+                "        acc.2 = union(acc.2, params_par.locally_free.clone());",
+                "        acc.3 = acc.3 || params_par.connective_used;",
+                "        acc.0.push(params_par);"
+              ]
+            ]
+          ]
+        },
+        {
+          "path": "rholang/src/rust/interpreter/compiler/normalizer/processes/p_send_sync_normalizer.rs",
+          "added_lines": [
+            "use crate::rust::interpreter::compiler::normalizer::processes::reified_syntax::alloc_desugared_send;",
+            "    params: Option<&'ast HyperparamList<'ast>>,",
+            "            query_spec: None,",
+            "        space: None,"
+          ],
+          "replaced_lines": [
+            [
+              "use rholang_parser::ast::{AnnProc, Bind, Id, Name, SendType, SyncSendCont};",
+              "use rholang_parser::ast::{AnnProc, Bind, HyperparamList, Id, Name, SyncSendCont};"
+            ]
+          ],
+          "replaced_blocks": [
+            [
+              [
+                "            proc: parser",
+                "                .ast_builder()",
+                "                .alloc_send(SendType::Single, *channel, &listproc),"
+              ],
+              [
+                "            proc: alloc_desugared_send(parser, *channel, &listproc, params),"
+              ]
+            ],
+            [
+              [
+                "        let result =",
+                "            normalize_p_send_sync(&channel, &messages, &cont, &span, inputs(), &env, &parser);"
+              ],
+              [
+                "        let result = normalize_p_send_sync(",
+                "            &channel,",
+                "            &messages,",
+                "            None,",
+                "            &cont,",
+                "            &span,",
+                "            inputs(),",
+                "            &env,",
+                "            &parser,",
+                "        );"
+              ]
+            ]
+          ]
+        },
+        {
+          "path": "rholang/src/rust/interpreter/compiler/normalizer/processes/p_var_ref_normalizer.rs",
+          "added_lines": [
+            "            query_spec: None,"
+          ]
+        },
+        {
+          "path": "rholang/src/rust/interpreter/test_utils/par_builder_util.rs",
+          "added_lines": [
+            "            space: None,"
+          ],
+          "replaced_blocks": [
+            [
+              [
+                "                Var::Id(id) => NameDecl { id, uri: None },"
+              ],
+              [
+                "                Var::Id(id) => NameDecl {",
+                "                    id,",
+                "                    space: None,",
+                "                    uri: None,",
+                "                },"
+              ]
+            ],
+            [
+              [
+                "                    },"
+              ],
+              [
+                "                    },",
+                "                    space: None,"
+              ]
+            ]
+          ]
+        },
+        {
+          "path": "rspace++/src/rspace/replay_rspace/native_session.rs",
+          "added_lines": [
+            "pub mod space;"
+          ]
+        },
+        {
+          "path": "rholang/src/rust/interpreter/accounting/native_runtime/checked_operations/trace/replay/session/execution.rs",
+          "replaced_blocks": [
+            [
+              [
+                "use rspace_plus_plus::rspace::errors::RSpaceError;",
+                "use rspace_plus_plus::rspace::trace::event::Produce;"
+              ],
+              [
+                "use rspace_plus_plus::rspace::errors::RSpaceError;",
+                "use rspace_plus_plus::rspace::replay_rspace::native_session::space::NativeSpaceHost;",
+                "use rspace_plus_plus::rspace::rspace_interface::RSpaceOperationSource;",
+                "use rspace_plus_plus::rspace::space_store_handle::SpaceStoreHandle;",
+                "use rspace_plus_plus::rspace::trace::event::Produce;"
+              ]
+            ],
+            [
+              [
+                "};",
+                ""
+              ],
+              [
+                "};",
+                "use crate::rust::interpreter::spaces::agent::ParSpaceStore;",
+                ""
+              ]
+            ],
+            [
+              [
+                "        }))",
+                "    }"
+              ],
+              [
+                "        }))",
+                "    }",
+                "",
+                "    /// The space store of this session for the Reified RSpaces runtime of native replay",
+                "    /// (decision 47). A space operation gets its introduction authority from `budget`, as",
+                "    /// `NativeExecution` gives one to a host operation.",
+                "    pub(crate) fn space_store(",
+                "        self: &Arc<Self>,",
+                "        budget: RuntimeBudget,",
+                "    ) -> Result<ParSpaceStore, RSpaceError> {",
+                "        let host = NativeSpaceHost::new(",
+                "            Arc::clone(self),",
+                "            |session: &Self| &session.inner,",
+                "            Arc::new(move |source: RSpaceOperationSource<'_>| {",
+                "                let (identity, kind) = match source {",
+                "                    RSpaceOperationSource::Produce(produce) => (",
+                "                        produce_introduction_identity(produce),",
+                "                        AuthorityByteEventKind::ProduceIntroduction,",
+                "                    ),",
+                "                    RSpaceOperationSource::Consume(consume) => (",
+                "                        consume_introduction_identity(consume),",
+                "                        AuthorityByteEventKind::ConsumeIntroduction,",
+                "                    ),",
+                "                };",
+                "                budget",
+                "                    .introduction_authority(identity, kind)",
+                "                    .map_err(Into::into)",
+                "            }),",
+                "        )?;",
+                "        Ok(SpaceStoreHandle::new(host))",
+                "    }"
+              ]
+            ]
+          ]
+        },
+        {
+          "path": "rholang/src/rust/interpreter/system_processes.rs",
+          "added_lines": [
+            "        crate::rust::interpreter::reified::system_channels::EMBED_BODY_REF,",
+            "        crate::rust::interpreter::reified::system_channels::ANN_BODY_REF,"
+          ]
+        },
+        {
+          "path": "node/src/rust/runtime/setup.rs",
+          "replaced_blocks": [
+            [
+              [
+                "",
+                "    // Clone trigger_propose_f_opt before passing to api_servers since we'll use it later for web_api, admin_web_api, and return value"
+              ],
+              [
+                "",
+                "    // The mirror reconciler of the Reified VectorDB spaces (P6 step 7c, decision 61). It reads the",
+                "    // finalized state through read-only calls and writes only the ChromaDB mirror of the node.",
+                "    {",
+                "        use rholang::rust::interpreter::reified::mirror_reconciler::{spawn, ClosureState};",
+                "        use rholang::rust::interpreter::rho_runtime::RhoRuntime;",
+                "        use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;",
+                "",
+                "        let blocks = block_store.clone();",
+                "        let runtimes = runtime_manager.clone();",
+                "        spawn(",
+                "            &event_publisher,",
+                "            Arc::new(ClosureState::new(",
+                "                move |hash: Vec<u8>| {",
+                "                    let block = blocks.get(&BlockHash::from(hash));",
+                "                    async move {",
+                "                        block.map_err(|error| error.to_string()).map(|block| {",
+                "                            block.map(|block| {",
+                "                                Blake2b256Hash::from_bytes_prost(&block.body.state.post_state_hash)",
+                "                            })",
+                "                        })",
+                "                    }",
+                "                },",
+                "                move |root: Blake2b256Hash| {",
+                "                    let runtimes = runtimes.clone();",
+                "                    async move {",
+                "                        let mut runtime = runtimes",
+                "                            .spawn_runtime()",
+                "                            .await",
+                "                            .map_err(|error| error.to_string())?;",
+                "                        runtime",
+                "                            .reset(&root)",
+                "                            .await",
+                "                            .map_err(|error| error.to_string())?;",
+                "                        Ok(runtime)",
+                "                    }",
+                "                },",
+                "            )),",
+                "        );",
+                "    }",
+                "",
+                "    // Clone trigger_propose_f_opt before passing to api_servers since we'll use it later for web_api, admin_web_api, and return value"
+              ]
+            ]
+          ]
+        },
+        {
+          "path": "docker/shard.yml",
+          "replaced_blocks": [
+            [
+              [
+                "    - f1r3fly",
+                "  environment:",
+                "    - OPENAI_ENABLED=${OPENAI_ENABLED:-false}",
+                "    # Limit glibc arena proliferation and return freed heap pages faster."
+              ],
+              [
+                "    - f1r3fly",
+                "  # A map, so each node merges it with its own CHROMA_DATABASE.",
+                "  environment: &rnode-environment",
+                "    OPENAI_ENABLED: ${OPENAI_ENABLED:-false}",
+                "    # Limit glibc arena proliferation and return freed heap pages faster."
+              ]
+            ],
+            [
+              [
+                "    # Limit glibc arena proliferation and return freed heap pages faster.",
+                "    - MALLOC_ARENA_MAX=2",
+                "    - MALLOC_TRIM_THRESHOLD_=131072",
+                "    - MALLOC_MMAP_THRESHOLD_=131072",
+                "    # Passed only when set, so logging.filter in the node config applies by default."
+              ],
+              [
+                "    # Limit glibc arena proliferation and return freed heap pages faster.",
+                "    MALLOC_ARENA_MAX: \"2\"",
+                "    MALLOC_TRIM_THRESHOLD_: \"131072\"",
+                "    MALLOC_MMAP_THRESHOLD_: \"131072\"",
+                "    # Passed only when set, so logging.filter in the node config applies by default."
+              ]
+            ],
+            [
+              [
+                "    # Passed only when set, so logging.filter in the node config applies by default.",
+                "    - RUST_LOG",
+                "  logging:"
+              ],
+              [
+                "    # Passed only when set, so logging.filter in the node config applies by default.",
+                "    RUST_LOG:",
+                "    # The ChromaDB server of the mirror of the Reified VectorDB spaces (profile chromadb).",
+                "    # A node built without the chromadb feature ignores it.",
+                "    CHROMA_ENDPOINT: ${CHROMA_ENDPOINT:-http://chroma-db:8000}",
+                "  logging:"
+              ]
+            ],
+            [
+              [
+                "    container_name: ${BOOTSTRAP_HOST:-rnode.bootstrap}",
+                "    command:"
+              ],
+              [
+                "    container_name: ${BOOTSTRAP_HOST:-rnode.bootstrap}",
+                "    environment:",
+                "      <<: *rnode-environment",
+                "      # Each node keeps its own mirror database.",
+                "      CHROMA_DATABASE: rnode-bootstrap",
+                "    command:"
+              ]
+            ],
+            [
+              [
+                "    profiles: [\"chromadb\"]",
+                "    image: chromadb/chroma",
+                "    networks: [f1r3fly]"
+              ],
+              [
+                "    profiles: [\"chromadb\"]",
+                "    # Pinned by digest (server 1.0.0), so the mirror and its live tests run one server version.",
+                "    image: chromadb/chroma@sha256:1e0b73a187a28757c572acba508c46f48c9e8b0acaf5c20e6d95cdedce1acdf6",
+                "    networks: [f1r3fly]"
+              ]
+            ],
+            [
+              [
+                "    container_name: ${VALIDATOR1_HOST:-rnode.validator1}",
+                "    command:"
+              ],
+              [
+                "    container_name: ${VALIDATOR1_HOST:-rnode.validator1}",
+                "    environment:",
+                "      <<: *rnode-environment",
+                "      # Each node keeps its own mirror database.",
+                "      CHROMA_DATABASE: rnode-validator1",
+                "    command:"
+              ]
+            ],
+            [
+              [
+                "    container_name: ${VALIDATOR2_HOST:-rnode.validator2}",
+                "    command:"
+              ],
+              [
+                "    container_name: ${VALIDATOR2_HOST:-rnode.validator2}",
+                "    environment:",
+                "      <<: *rnode-environment",
+                "      # Each node keeps its own mirror database.",
+                "      CHROMA_DATABASE: rnode-validator2",
+                "    command:"
+              ]
+            ],
+            [
+              [
+                "    container_name: ${VALIDATOR3_HOST:-rnode.validator3}",
+                "    command:"
+              ],
+              [
+                "    container_name: ${VALIDATOR3_HOST:-rnode.validator3}",
+                "    environment:",
+                "      <<: *rnode-environment",
+                "      # Each node keeps its own mirror database.",
+                "      CHROMA_DATABASE: rnode-validator3",
+                "    command:"
+              ]
+            ],
+            [
+              [
+                "    container_name: ${READONLY_HOST:-rnode.readonly}",
+                "    command:"
+              ],
+              [
+                "    container_name: ${READONLY_HOST:-rnode.readonly}",
+                "    environment:",
+                "      <<: *rnode-environment",
+                "      # Each node keeps its own mirror database.",
+                "      CHROMA_DATABASE: rnode-readonly",
+                "    command:"
+              ]
+            ]
+          ]
+        },
+        {
+          "path": "rholang/src/rust/interpreter/interpreter.rs",
+          "added_lines": [
+            "        reducer.reified.settle_mirror_journal(&evaluation_result);"
+          ]
+        },
+        {
+          "path": "docs/rholang/chromadb.md",
+          "replaced_blocks": [
+            [
+              [
+                "  deleteEntries!(\"foo\", [ \"doc1\" ], *retCh) |",
+                "  for(@res <- retCh) {",
+                "      stdout!(res)",
+                "  }",
+                "}",
+                "```"
+              ],
+              [
+                "  deleteEntries!(\"foo\", [ \"doc1\" ], *retCh) |",
+                "  for(@res <- retCh) {",
+                "      stdout!(res)",
+                "  }",
+                "}",
+                "```",
+                "",
+                "## ChromaDB as the search backend of Reified VectorDB spaces",
+                "",
+                "Phase P6 of Reified RSpaces adds the VectorDB spaces `rho:space:hashmap:vectordb` and `rho:space:vector:vectordb`.",
+                "A VectorDB space can keep a copy of its records in ChromaDB, its mirror, and answer advisory queries from it.",
+                "This section explains how the mirror works and how to run a node with it.",
+                "The rules are in the [Reified RSpaces specification](../rspace/reified-rspaces/specification.md#10-the-chromadb-mirror), and the [design](../rspace/reified-rspaces/design.md#n16-phase-p6-the-chromadb-search-backend) explains the code.",
+                "",
+                "The mirror differs from the `rho:chroma:*` channels above in one main point: it never decides a consensus result.",
+                "The exact engine of the space selects every record that a receive takes, and the mirror only gives hints.",
+                "So a node with a stale mirror, or with no mirror, computes the same state as every other node.",
+                "",
+                "### The three layers",
+                "",
+                "A VectorDB space has three layers:",
+                "",
+                "1. The frontend: the factory, the sends with the param `embedding`, and the receives with similarity queries.",
+                "2. RSpace: the store of the consensus records, with the state root, replay, merges and LFS.",
+                "3. ChromaDB: an optional mirror of the records on each node, which answers the advisory query `rho:vectordb:ann`.",
+                "",
+                "A space has a mirror when its factory call names `mirror = \"chroma\"`.",
+                "The space must have the default qualifier and a metric that ChromaDB indexes: `cosine`, `dot` or `euclidean`.",
+                "",
+                "### Embeddings and advisory queries",
+                "",
+                "Two system processes connect a program to the services of a node.",
+                "Each one takes the reply channel first and replies `[true, …]` or `[false, code, detail]`.",
+                "A call with send params aborts the deploy with `ParamsUnsupported`, and a persistent call aborts it with `PersistentOpCall`.",
+                "",
+                "- `rho:vectordb:embed` embeds one text, or a list of at most 64 texts with at most 64 KiB of text. It replies `[true, vector, model]`, or `[true, [vector…], model]` for a list. The model of a node is `all-MiniLM-L6-v2`, with 384 dimensions.",
+                "- `rho:vectordb:ann` takes a mirrored space, a channel of the space, a query and the options `{\"k\": k}`. It replies `[true, ids, distances, watermark]`: the ids of at most $`k`$ nearest records, their distances, and the last finalized block that the mirror reflects.",
+                "",
+                "The failure codes of `embed` are `BadArgument`, `EmbeddingRateLimited`, `EmbeddingUnavailable` and `NonFiniteEmbedding`.",
+                "The failure codes of `ann` are `NotAVectorDbSpace`, `MirrorDisabled`, `DimensionMismatch`, `BadArgument`, `InvalidOption` and `MirrorUnavailable`.",
+                "A text query of `ann` can also fail with the codes of the embedder.",
+                "",
+                "Both processes are recorded processes.",
+                "The node records each reply, a failure reply included, and replay produces the recorded reply without a call to the embedder or the mirror.",
+                "Before it produces the reply, replay makes the checks of `ann` against consensus state, as play does.",
+                "Both processes run in native execution.",
+                "",
+                "An id of `ann` is the 32-byte hash of the source produce of a record.",
+                "A program passes the ids to a receive with the query param `ids=`.",
+                "The exact engine then keeps only the stored records whose id is among them.",
+                "A stale id names no record, so it selects nothing.",
+                "The exact order of the query decides among the other records, and not the order of the mirror.",
+                "",
+                "### Example",
+                "",
+                "The mirror receives the records of a deploy only after the deploy succeeds.",
+                "So the example stores the records in one deploy, and it queries them in a later deploy.",
+                "The first deploy makes a space with a mirror, takes a name of the space, and stores three vectors under it.",
+                "",
+                "```rholang",
+                "new vdb(`rho:space:hashmap:vectordb`) in {",
+                "  for (m <- vdb!?(\"default\"; capacity=4, dimensions=2, mirror=\"chroma\")) {",
+                "    for (mn <- m!?(\"gensym\")) {",
+                "      @\"my-space\"!(*m) | @\"my-name\"!(*mn) |",
+                "      mn!([1.0, 0.0]) | mn!([0.0, 1.0]) | mn!([1.0, 1.0])",
+                "    }",
+                "  }",
+                "}",
+                "```",
+                "",
+                "The second deploy asks the mirror for the three nearest records, and then it lets the exact engine select among them.",
+                "",
+                "```rholang",
+                "new ann(`rho:vectordb:ann`) in {",
+                "  for (m <<- @\"my-space\") { for (mn <<- @\"my-name\") {",
+                "    for (@r <- ann!?(*m, *mn, [1.0, 0.0], {\"k\": 3})) {",
+                "      match r {",
+                "        [true, ids, _, _] => { for (@x <- mn ~ ([1.0, 0.0]; ids=ids, k=3)) { @\"result\"!(x) } }",
+                "        [false, code, _]  => { @\"result\"!(code) }",
+                "      }",
+                "    }",
+                "  } }",
+                "}",
+                "```",
+                "",
+                "The receive binds the list of the selected vectors, in the exact order of the query.",
+                "",
+                "### How the mirror stays current",
+                "",
+                "The mirror follows the finalized state of the space through four steps:",
+                "",
+                "1. **Journal.** After each committed transaction, the node computes its net writes. A new record that stays is an upsert, and a removed record is a delete. A peek writes nothing.",
+                "2. **Publication.** A deploy whose final result has no errors publishes its journal to the writer of the node. A failed deploy publishes nothing.",
+                "3. **Writer.** One task applies the batches in order, from a queue of 1,024 batches, with up to 3 attempts. A publication never waits: a full queue or a failed batch marks its collection dirty.",
+                "4. **Reconciler.** On each finalized block, the reconciler repairs each collection that is dirty or older than the block. It sets each registered channel to the records of the finalized state, and then it sets the watermark of the collection.",
+                "",
+                "A node that replays a block publishes the deploys of the block to its own mirror.",
+                "The mirror reflects the finalized blocks, and `ann` reports the watermark of that view.",
+                "After an LFS bootstrap, the records of a channel that the node never journaled are absent until the channel changes.",
+                "After a restart, the dirty marks of the writer are lost, so a failed batch is repaired when its channels change again.",
+                "",
+                "### Running a node with the mirror",
+                "",
+                "To run a node with the mirror, do these steps:",
+                "",
+                "1. Build the node with the `chromadb` feature of the rholang crate: `cargo build -p node --release --features rholang/chromadb`.",
+                "2. Start a ChromaDB server of the pinned image: `docker compose -f docker/shard.yml --profile chromadb up`.",
+                "3. Set `CHROMA_ENDPOINT` for each node. `docker/shard.yml` sets it to `http://chroma-db:8000`.",
+                "4. Give each node its own `CHROMA_DATABASE`, so that no node writes the mirror of another node.",
+                "",
+                "The node makes its database on the first call.",
+                "Each collection of a space is named `rrs-` and the lowercase hex of the first 16 bytes of the space id.",
+                "The reply of `space!?(\"config\")` reports it under the key `mirror`.",
+                "A node without the feature, or without an endpoint, has no mirror: its publications drop, and `ann` replies `MirrorUnavailable`.",
+                "",
+                "The repository tests the backend against a real server with `bash scripts/verify-reified/chroma-live.sh`.",
+                "The script starts a disposable server of the pinned image, and it gives each run a new database."
+              ]
+            ]
+          ]
+        },
+        {
+          "path": "docs/rholang/10-system-channels.md",
+          "replaced_blocks": [
+            [
+              [
+                "## Channel Summary"
+              ],
+              [
+                "## Reified RSpaces: vectors and the VectorDB services",
+                "",
+                "The VectorDB family of [Reified RSpaces](../rspace/reified-rspaces/README.md) adds three system processes.",
+                "Each one takes the reply channel first and replies `[true, …]`, or `[false, code, detail]` with a fixed detail text.",
+                "So `!?` and `try … catch` read a reply.",
+                "A call with send params aborts the deploy with `ParamsUnsupported`, and a persistent call `!!` aborts it with `PersistentOpCall`.",
+                "The [Reified RSpaces specification](../rspace/reified-rspaces/specification.md#9-system-processes-of-the-vectordb-family) states the rules.",
+                "",
+                "### `rho:lang:vector` (call `vec!(ret, op, x…)`)",
+                "",
+                "Exact vector arithmetic. The operation `op` is `\"add\"`, `\"scale\"`, `\"dot\"`, `\"norm\"` or `\"distance\"`.",
+                "",
+                "```rho",
+                "new vec(`rho:lang:vector`), stdout(`rho:io:stdout`) in {",
+                "  for (@r <- vec!?(\"dot\", [1, 2], [3, 4])) {",
+                "    stdout!(r)   // [true, 11]",
+                "  }",
+                "}",
+                "```",
+                "",
+                "`add`, `scale` and `dot` compute exactly and reply in the widest kind of their inputs.",
+                "Integers give an integer, a big rational or a fixed point gives a big rational, and a float gives an `f64`.",
+                "The `f64` is one rounding of the exact value, so `dot` rounds its exact sum once.",
+                "`norm` and `distance` reply the correctly rounded `f64` of the root of an exact square.",
+                "The failure codes are `UnknownMethod`, `BadArgument`, `NotAVector`, `NotANumber`, `NonFiniteValue`, `MalformedNumber`, `DimensionMismatch` and `ValueOutOfRange`.",
+                "",
+                "### `rho:vectordb:embed` (arity 2)",
+                "",
+                "Embeds one text, or a list of at most 64 texts with at most 64 KiB of text, with the embedding model of the node.",
+                "",
+                "```rho",
+                "new embed(`rho:vectordb:embed`), stdout(`rho:io:stdout`) in {",
+                "  for (@r <- embed!?(\"a short text\")) {",
+                "    stdout!(r)   // [true, vector, \"all-MiniLM-L6-v2\"], or [false, code, detail]",
+                "  }",
+                "}",
+                "```",
+                "",
+                "A vector is a list of 384 `Float32` values.",
+                "The failure codes are `BadArgument`, `EmbeddingRateLimited`, `EmbeddingUnavailable` and `NonFiniteEmbedding`.",
+                "The process is recorded: the node records each reply, and replay produces the recorded reply without a call to the model.",
+                "",
+                "### `rho:vectordb:ann` (arity 5)",
+                "",
+                "Asks the ChromaDB mirror of the node for the records of a channel of a VectorDB space that are nearest to a query.",
+                "The arguments are the reply channel, the space, the channel, the query (a vector or a text) and the options `{\"k\": k}`.",
+                "",
+                "```rho",
+                "new ann(`rho:vectordb:ann`), stdout(`rho:io:stdout`) in {",
+                "  for (@space <<- @\"my-space\") { for (@name <<- @\"my-name\") {",
+                "    for (@r <- ann!?(space, name, [1, 0], {\"k\": 3})) {",
+                "      stdout!(r)   // [true, ids, distances, watermark], or [false, code, detail]",
+                "    }",
+                "  } }",
+                "}",
+                "```",
+                "",
+                "The ids are hints for the query param `ids` of a receive, and the exact engine of the space decides.",
+                "The failure codes are `NotAVectorDbSpace`, `MirrorDisabled`, `DimensionMismatch`, `BadArgument`, `InvalidOption` and `MirrorUnavailable`.",
+                "A text query can also fail with the codes of `embed`.",
+                "Like `embed`, the process is recorded. Replay also makes the checks of the call against consensus state, as play does.",
+                "See [ChromaDB Integration](chromadb.md#chromadb-as-the-search-backend-of-reified-vectordb-spaces) for the mirror.",
+                "",
+                "## Channel Summary"
+              ]
+            ],
+            [
+              [
+                "| `rho:ollama:models` | 1 | AI | No |"
+              ],
+              [
+                "| `rho:ollama:models` | 1 | AI | No |",
+                "| `rho:lang:vector` | varies | Reified | Yes |",
+                "| `rho:vectordb:embed` | 2 | Reified | Recorded |",
+                "| `rho:vectordb:ann` | 5 | Reified | Recorded |"
+              ]
+            ]
+          ]
+        },
+        {
+          "path": "rholang/src/rust/interpreter/accounting/native_runtime/checked_operations/trace/replay/session/execution/tests.rs",
+          "replaced_blocks": [
+            [
+              [
+                "    let operations = budget.native_operation_recording().unwrap().unwrap();",
+                "    let log = play.create_soft_checkpoint().await.log;",
+                "    let host = priced_config(limit, weights, funding.price).host_work();"
+              ],
+              [
+                "    let operations = budget.native_operation_recording().unwrap().unwrap();",
+                "    let log = play.create_soft_checkpoint().await.log;",
+                "    // Changed by P8 step 1 (decision 78): the replay runs at the v6 host-work limits of",
+                "    // certification. Native replay reserves host work for each installed system process, and",
+                "    // the 100 M test budget had no room left for the two P8 processes.",
+                "    // let host = priced_config(limit, weights, funding.price).host_work();",
+                "    let host = HostWorkBudget::new(",
+                "        models::rust::cost_protocol_limits::offered_funded_v6_host_work_limits(),",
+                "    );"
+              ]
+            ]
+          ]
+        },
+        {
+          "path": "casper/src/main/resources/SystemVault.rho",
+          "replaced_blocks": [
+            [
+              [
+                "       @(_, AuthKey)  <- AuthKeyCh &",
+                "       @(_, Either)   <- EitherCh &",
+                "       TreeHashMap    <- TreeHashMapCh) {",
+                "    // Each invocation of the SystemVault contract uses a different mint.",
+                "    new mintCh, vaultMapStore, costCursorMapStore, costCursorNamespace, costCursorLock, initVault in {",
+                "      // Initializes the vaultMapStore.",
+                "      TreeHashMap!(\"init\", 2, *vaultMapStore) |",
+                "      TreeHashMap!(\"init\", 2, *costCursorMapStore) |",
+                "      costCursorLock!() |",
+                "      for (@vaultMap <- vaultMapStore & @costCursorMap <- costCursorMapStore) {",
+                "        // Called from VaultsGenerator:",
+                "        //   SystemVault!(\"init\", *ret)",
+                "        new initContinue in {"
+              ],
+              [
+                "       @(_, AuthKey)  <- AuthKeyCh &",
+                "       @(_, Either)   <- EitherCh &",
+                "       TreeHashMap    <- TreeHashMapCh) {",
+                "    // Each invocation of the SystemVault contract uses a different mint.",
+                "    // Changed by DR-119 (bug 11004): two names follow initVault, so every earlier name",
+                "    // keeps its value. costCursorLock stays declared and is no longer produced.",
+                "    // new mintCh, vaultMapStore, costCursorMapStore, costCursorNamespace, costCursorLock, initVault in {",
+                "    new mintCh, vaultMapStore, costCursorMapStore, costCursorNamespace, costCursorLock, initVault,",
+                "        costCursorBucketLock, seedCostCursorBuckets in {",
+                "      // Initializes the vaultMapStore.",
+                "      TreeHashMap!(\"init\", 2, *vaultMapStore) |",
+                "      TreeHashMap!(\"init\", 2, *costCursorMapStore) |",
+                "      // Changed by DR-119 (bug 11004): one global lock serialized every cursor-bearing",
+                "      // settlement, so the settlements of different payers always conflicted.",
+                "      // costCursorLock!() |",
+                "      // Added by DR-119: one creation lock per first byte of a scope's keccak256 hash,",
+                "      // keyed 0 to 255. The cursor map has depth 2, so a TreeHashMap leaf is the first two",
+                "      // bytes of that hash, and one leaf has one bucket.",
+                "      contract seedCostCursorBuckets(@bucket) = {",
+                "        if (bucket < 256) {",
+                "          @(*costCursorBucketLock, bucket)!() |",
+                "          seedCostCursorBuckets!(bucket + 1)",
+                "        }",
+                "      } |",
+                "      seedCostCursorBuckets!(0) |",
+                "      for (@vaultMap <- vaultMapStore & @costCursorMap <- costCursorMapStore) {",
+                "        // Called from VaultsGenerator:",
+                "        //   SystemVault!(\"init\", *ret)",
+                "        new initContinue in {"
+              ]
+            ],
+            [
+              [
+                "                }",
+                "              }",
+                "            }",
+                "          } |",
+                "          contract ensureCostCursor(@scope, retCh) = {",
+                "            for (<- costCursorLock) {",
+                "              new existsCh in {",
+                "                TreeHashMap!(\"get\", costCursorMap, scope, *existsCh) |",
+                "                for (@exists <- existsCh) {",
+                "                  if (exists == Nil) {",
+                "                    new setCh in {",
+                "                      TreeHashMap!(\"set\", costCursorMap, scope, true, *setCh) |",
+                "                      for (_ <- setCh) {",
+                "                        @(scope, \"revision\", *costCursorNamespace)!(0) |",
+                "                        @(scope, \"position\", *costCursorNamespace)!(0) |",
+                "                        costCursorLock!() |",
+                "                        retCh!(true)",
+                "                      }",
+                "                    }",
+                "                  } else {",
+                "                    costCursorLock!() |",
+                "                    retCh!(Nil)",
+                "                  }",
+                "                }",
+                "              }",
+                "            }"
+              ],
+              [
+                "                }",
+                "              }",
+                "            }",
+                "          } |",
+                "          // Changed by DR-119 (bug 11004): the old body took the global lock on every call,",
+                "          // so two settlements of different scopes consumed one datum and always conflicted.",
+                "          // contract ensureCostCursor(@scope, retCh) = {",
+                "          //   for (<- costCursorLock) {",
+                "          //     new existsCh in {",
+                "          //       TreeHashMap!(\"get\", costCursorMap, scope, *existsCh) |",
+                "          //       for (@exists <- existsCh) {",
+                "          //         if (exists == Nil) {",
+                "          //           new setCh in {",
+                "          //             TreeHashMap!(\"set\", costCursorMap, scope, true, *setCh) |",
+                "          //             for (_ <- setCh) {",
+                "          //               @(scope, \"revision\", *costCursorNamespace)!(0) |",
+                "          //               @(scope, \"position\", *costCursorNamespace)!(0) |",
+                "          //               costCursorLock!() |",
+                "          //               retCh!(true)",
+                "          //             }",
+                "          //           }",
+                "          //         } else {",
+                "          //           costCursorLock!() |",
+                "          //           retCh!(Nil)",
+                "          //         }",
+                "          //       }",
+                "          //     }",
+                "          //   }",
+                "          // } |",
+                "          // Added by DR-119: an existing cursor needs no lock, because the TreeHashMap lookup",
+                "          // only peeks. A first use takes the creation lock of its bucket with a plain receive",
+                "          // and checks again before it creates the two cells.",
+                "          contract ensureCostCursor(@scope, retCh) = {",
+                "            new existsCh in {",
+                "              TreeHashMap!(\"get\", costCursorMap, scope, *existsCh) |",
+                "              for (@exists <- existsCh) {",
+                "                if (exists != Nil) {",
+                "                  retCh!(Nil)",
+                "                } else {",
+                "                  new hashCh, keccak256Hash(`rho:crypto:keccak256Hash`) in {",
+                "                    keccak256Hash!(scope.toByteArray(), *hashCh) |",
+                "                    for (@hash <- hashCh) {",
+                "                      match hash.nth(0) {",
+                "                        bucket => {",
+                "                          for (<- @(*costCursorBucketLock, bucket)) {",
+                "                            new recheckCh in {",
+                "                              TreeHashMap!(\"get\", costCursorMap, scope, *recheckCh) |",
+                "                              for (@again <- recheckCh) {",
+                "                                if (again == Nil) {",
+                "                                  new setCh in {",
+                "                                    TreeHashMap!(\"set\", costCursorMap, scope, true, *setCh) |",
+                "                                    for (_ <- setCh) {",
+                "                                      @(scope, \"revision\", *costCursorNamespace)!(0) |",
+                "                                      @(scope, \"position\", *costCursorNamespace)!(0) |",
+                "                                      @(*costCursorBucketLock, bucket)!() |",
+                "                                      retCh!(true)",
+                "                                    }",
+                "                                  }",
+                "                                } else {",
+                "                                  @(*costCursorBucketLock, bucket)!() |",
+                "                                  retCh!(Nil)",
+                "                                }",
+                "                              }",
+                "                            }",
+                "                          }",
+                "                        }",
+                "                      }",
+                "                    }",
+                "                  }",
+                "                }",
+                "              }",
+                "            }"
+              ]
+            ],
+            [
+              [
+                "            match (resourceCursor, feeCursor) {",
+                "              ((resourceScope, _, resourceExpectedRevision, resourceExpectedPosition, resourceNextRevision, resourceNextPosition),",
+                "               (feeScope, _, feeExpectedRevision, feeExpectedPosition, feeNextRevision, feeNextPosition)) => {",
+                "                new resourceReady, feeReady in {",
+                "                  ensureCostCursor!(resourceScope, *resourceReady) |",
+                "                  ensureCostCursor!(feeScope, *feeReady) |",
+                "                  for (_ <- resourceReady & _ <- feeReady) {",
+                "                    for (@resourceRevision <- @(resourceScope, \"revision\", *costCursorNamespace) &",
+                "                         @resourcePosition <- @(resourceScope, \"position\", *costCursorNamespace) &",
+                "                         @feeRevision <- @(feeScope, \"revision\", *costCursorNamespace) &",
+                "                         @feePosition <- @(feeScope, \"position\", *costCursorNamespace)) {"
+              ],
+              [
+                "            match (resourceCursor, feeCursor) {",
+                "              ((resourceScope, _, resourceExpectedRevision, resourceExpectedPosition, resourceNextRevision, resourceNextPosition),",
+                "               (feeScope, _, feeExpectedRevision, feeExpectedPosition, feeNextRevision, feeNextPosition)) => {",
+                "                new resourceReady, feeReady in {",
+                "                  // Changed by DR-119 (bug 11004): the two scopes are ensured one after the",
+                "                  // other, so a lock-free lookup never reads a leaf that the other ensure is",
+                "                  // still creating (Registry.rho:113).",
+                "                  // ensureCostCursor!(resourceScope, *resourceReady) |",
+                "                  // ensureCostCursor!(feeScope, *feeReady) |",
+                "                  // for (_ <- resourceReady & _ <- feeReady) {",
+                "                  ensureCostCursor!(resourceScope, *resourceReady) |",
+                "                  for (_ <- resourceReady) {",
+                "                  ensureCostCursor!(feeScope, *feeReady) |",
+                "                  for (_ <- feeReady) {",
+                "                    for (@resourceRevision <- @(resourceScope, \"revision\", *costCursorNamespace) &",
+                "                         @resourcePosition <- @(resourceScope, \"position\", *costCursorNamespace) &",
+                "                         @feeRevision <- @(feeScope, \"revision\", *costCursorNamespace) &",
+                "                         @feePosition <- @(feeScope, \"position\", *costCursorNamespace)) {"
+              ]
+            ],
+            [
+              [
+                "                                   (false, \"Stale funding cursor transition\"))",
+                "                        }",
+                "                      }",
+                "                    }",
+                "                  }",
+                "                }",
+                "              }",
+                "              _ => { retCh!((false, \"Invalid funding cursor pair\")) }"
+              ],
+              [
+                "                                   (false, \"Stale funding cursor transition\"))",
+                "                        }",
+                "                      }",
+                "                    }",
+                "                  }",
+                "                  }",
+                "                }",
+                "              }",
+                "              _ => { retCh!((false, \"Invalid funding cursor pair\")) }"
+              ]
+            ]
+          ]
+        },
+        {
+          "path": "casper/src/rust/util/rholang/costacc/direct_wallet_funding/policy_snapshot/tests.rs",
+          "replaced_blocks": [
+            [
+              [
+                "        prop_assert_eq!(fee, monetary_scope_for_custodies(&native_fee_policy_context(), keys.iter()));",
+                "    }",
+                "}",
+                ""
+              ],
+              [
+                "        prop_assert_eq!(fee, monetary_scope_for_custodies(&native_fee_policy_context(), keys.iter()));",
+                "    }",
+                "}",
+                "",
+                "/// DR-119 (bug 11004): the SystemVault creation bucket of a cursor scope. It is",
+                "/// the first byte of keccak256 over `scope.toByteArray()`, the protobuf encoding",
+                "/// of the scope's ByteArray (reduce.rs:3707-3754). The settlement passes the",
+                "/// scope as that ByteArray (vault_cost_deploy.rs:369-384).",
+                "fn cost_cursor_bucket(scope: &[u8; 32]) -> u8 {",
+                "    use prost::Message;",
+                "    let encoded = rholang::rust::interpreter::rho_type::RhoByteArray::create_par(scope.to_vec())",
+                "        .encode_to_vec();",
+                "    crypto::rust::hash::keccak256::Keccak256::hash(encoded)[0]",
+                "}",
+                "",
+                "/// DR-119: the restore precondition of the dev tests that settle the",
+                "/// DEFAULT_SEC and DEFAULT_SEC2 cohorts in sibling blocks. Their four cursor",
+                "/// scopes (the resource scope and the fee scope of each owner-direct cohort)",
+                "/// fall in four distinct buckets, so two concurrent first uses never share a",
+                "/// creation lock.",
+                "#[test]",
+                "fn default_cohort_cursor_scopes_fall_in_distinct_buckets() {",
+                "    use crypto::rust::signatures::secp256k1::Secp256k1;",
+                "    use crypto::rust::signatures::signatures_alg::SignaturesAlg;",
+                "    use models::rhoapi::cost_signature::Value;",
+                "    use rholang::rust::interpreter::accounting::principal_ground_v61;",
+                "",
+                "    use crate::rust::util::construct_deploy::{DEFAULT_SEC, DEFAULT_SEC2};",
+                "    use crate::rust::util::rholang::costacc::vault_payer::vault_payer;",
+                "",
+                "    let mut buckets = Vec::with_capacity(4);",
+                "    for secret in [&*DEFAULT_SEC, &*DEFAULT_SEC2] {",
+                "        let public = Secp256k1.to_public(secret);",
+                "        let signature = CostSignature {",
+                "            value: Some(Value::Ground(principal_ground_v61(&public.bytes))),",
+                "        };",
+                "        let custody = vault_payer(&signature)",
+                "            .expect(\"a principal signature has a vault payer\")",
+                "            .custody_key;",
+                "        for context in [resource_policy_context(), native_fee_policy_context()] {",
+                "            let scope = monetary_scope_for_custodies(&context, std::iter::once(&custody));",
+                "            buckets.push(cost_cursor_bucket(&scope));",
+                "        }",
+                "    }",
+                "    let distinct: std::collections::BTreeSet<u8> = buckets.iter().copied().collect();",
+                "    assert_eq!(",
+                "        distinct.len(),",
+                "        buckets.len(),",
+                "        \"two default cohort scopes share a creation bucket: {buckets:?}\"",
+                "    );",
+                "}",
+                ""
+              ]
+            ]
+          ]
+        },
+        {
+          "path": "casper/tests/util/rholang/cost_vault_settlement_test.rs",
+          "replaced_blocks": [
+            [
+              [
+                "    .unwrap();",
+                "}",
+                ""
+              ],
+              [
+                "    .unwrap();",
+                "}",
+                "",
+                "// Added by DR-119 (bug 11004): two settlements that start from one state",
+                "// conflict exactly when they share a cursor scope, or when a first use on each",
+                "// side falls in one creation bucket.",
+                "",
+                "/// The keccak256 hash that `ensureCostCursor` in `SystemVault.rho` and the",
+                "/// cursor TreeHashMap compute for a scope. The input is `scope.toByteArray()`,",
+                "/// the protobuf encoding of the scope's ByteArray.",
+                "fn cost_cursor_hash(scope: &[u8; 32]) -> Vec<u8> {",
+                "    use prost::Message;",
+                "    let encoded = rholang::rust::interpreter::rho_type::RhoByteArray::create_par(scope.to_vec())",
+                "        .encode_to_vec();",
+                "    crypto::rust::hash::keccak256::Keccak256::hash(encoded)",
+                "}",
+                "",
+                "/// The creation bucket of a scope: the first byte of its hash.",
+                "fn cost_cursor_bucket(scope: &[u8; 32]) -> u8 { cost_cursor_hash(scope)[0] }",
+                "",
+                "/// The TreeHashMap leaf of a scope. The cursor map has depth 2, so a leaf is",
+                "/// the first two bytes of the hash (`Registry.rho`, `TreeHashMap`).",
+                "fn cost_cursor_leaf(scope: &[u8; 32]) -> [u8; 2] {",
+                "    let hash = cost_cursor_hash(scope);",
+                "    [hash[0], hash[1]]",
+                "}",
+                "",
+                "fn rehash(scope: &[u8; 32]) -> [u8; 32] {",
+                "    crypto::rust::hash::blake2b256::Blake2b256::hash(scope.to_vec())",
+                "        .try_into()",
+                "        .expect(\"a Blake2b-256 digest has 32 bytes\")",
+                "}",
+                "",
+                "fn any_scope(_: &[u8; 32]) -> bool { true }",
+                "",
+                "/// The first scope in the rehash chain of `seed` that satisfies `want` and",
+                "/// differs from every scope in `avoid`.",
+                "fn retarget(seed: [u8; 32], want: impl Fn(&[u8; 32]) -> bool, avoid: &[[u8; 32]]) -> [u8; 32] {",
+                "    let mut scope = seed;",
+                "    while !want(&scope) || avoid.contains(&scope) {",
+                "        scope = rehash(&scope);",
+                "    }",
+                "    scope",
+                "}",
+                "",
+                "/// The two cursor scopes of one settlement.",
+                "#[derive(Clone, Copy, Debug, PartialEq, Eq)]",
+                "struct CursorScopes {",
+                "    resource: [u8; 32],",
+                "    fee: [u8; 32],",
+                "}",
+                "",
+                "impl CursorScopes {",
+                "    fn both(&self) -> [[u8; 32]; 2] { [self.resource, self.fee] }",
+                "}",
+                "",
+                "/// The number of case kinds that `build_case` generates.",
+                "const CONFLICT_CASE_KINDS: usize = 7;",
+                "",
+                "/// Two settlements that start from one state, the scopes whose cursors exist",
+                "/// in that state, and the kind that `build_case` built.",
+                "#[derive(Clone, Debug)]",
+                "struct ConflictCase {",
+                "    kind: u8,",
+                "    first: CursorScopes,",
+                "    second: CursorScopes,",
+                "    existing: std::collections::BTreeSet<[u8; 32]>,",
+                "}",
+                "",
+                "/// The rule of DR-119. A shared scope conflicts on its cursor cells. Two first",
+                "/// uses in one bucket conflict on the creation lock of the bucket. The lookup",
+                "/// of an existing cursor only peeks, so it takes no lock.",
+                "fn expected_conflict(case: &ConflictCase) -> bool {",
+                "    let shared = case",
+                "        .first",
+                "        .both()",
+                "        .iter()",
+                "        .any(|scope| case.second.both().contains(scope));",
+                "    let first_use_buckets = |scopes: &CursorScopes| -> std::collections::BTreeSet<u8> {",
+                "        scopes",
+                "            .both()",
+                "            .iter()",
+                "            .filter(|scope| !case.existing.contains(*scope))",
+                "            .map(cost_cursor_bucket)",
+                "            .collect()",
+                "    };",
+                "    shared || !first_use_buckets(&case.first).is_disjoint(&first_use_buckets(&case.second))",
+                "}",
+                "",
+                "/// Builds a case of one of seven kinds from four seeds:",
+                "///",
+                "/// 0. Distinct scopes whose cursors exist.",
+                "/// 1. First uses in distinct buckets.",
+                "/// 2. First uses in one bucket.",
+                "/// 3. A shared scope whose cursor exists.",
+                "/// 4. A shared first use.",
+                "/// 5. A first use in the bucket of an existing cursor of the other side.",
+                "/// 6. A first use in the leaf of an existing cursor of the other side.",
+                "///",
+                "/// Bit 0 of `pairing` selects the scope of the first settlement that the",
+                "/// second settlement meets. Bit 1 selects the slot that holds it there.",
+                "fn build_case(seeds: [[u8; 32]; 4], kind: u8, pairing: u8) -> ConflictCase {",
+                "    let [a, b, c, d] = seeds;",
+                "    let first = CursorScopes {",
+                "        resource: a,",
+                "        fee: retarget(b, any_scope, &[a]),",
+                "    };",
+                "    let chosen = match pairing & 1 {",
+                "        0 => first.resource,",
+                "        _ => first.fee,",
+                "    };",
+                "    let second_with = |scope: [u8; 32], seed: [u8; 32]| {",
+                "        let other = retarget(seed, any_scope, &[scope, first.resource, first.fee]);",
+                "        match pairing & 2 {",
+                "            0 => CursorScopes {",
+                "                resource: scope,",
+                "                fee: other,",
+                "            },",
+                "            _ => CursorScopes {",
+                "                resource: other,",
+                "                fee: scope,",
+                "            },",
+                "        }",
+                "    };",
+                "    let taken = first.both().map(|scope| cost_cursor_bucket(&scope));",
+                "    let (second, existing) = match kind {",
+                "        0 => {",
+                "            let resource = retarget(c, any_scope, &first.both());",
+                "            let fee = retarget(d, any_scope, &[first.resource, first.fee, resource]);",
+                "            let second = CursorScopes { resource, fee };",
+                "            (second, [first.both(), second.both()].concat())",
+                "        }",
+                "        1 => {",
+                "            let free = |scope: &[u8; 32]| !taken.contains(&cost_cursor_bucket(scope));",
+                "            let resource = retarget(c, free, &first.both());",
+                "            let fee = retarget(d, free, &[first.resource, first.fee, resource]);",
+                "            (CursorScopes { resource, fee }, Vec::new())",
+                "        }",
+                "        2 | 5 => {",
+                "            let bucket = cost_cursor_bucket(&chosen);",
+                "            let neighbour = retarget(",
+                "                c,",
+                "                |scope| cost_cursor_bucket(scope) == bucket,",
+                "                &first.both(),",
+                "            );",
+                "            let existing = match kind {",
+                "                2 => Vec::new(),",
+                "                _ => vec![chosen],",
+                "            };",
+                "            (second_with(neighbour, d), existing)",
+                "        }",
+                "        3 => {",
+                "            let second = second_with(chosen, c);",
+                "            (second, [first.both(), second.both()].concat())",
+                "        }",
+                "        4 => (second_with(chosen, c), Vec::new()),",
+                "        _ => {",
+                "            let leaf = cost_cursor_leaf(&chosen);",
+                "            let neighbour = retarget(c, |scope| cost_cursor_leaf(scope) == leaf, &first.both());",
+                "            (second_with(neighbour, d), vec![chosen])",
+                "        }",
+                "    };",
+                "    ConflictCase {",
+                "        kind,",
+                "        first,",
+                "        second,",
+                "        existing: existing.into_iter().collect(),",
+                "    }",
+                "}",
+                "",
+                "fn conflict_case() -> impl proptest::strategy::Strategy<Value = ConflictCase> {",
+                "    use proptest::prelude::*;",
+                "    let kinds = u8::try_from(CONFLICT_CASE_KINDS).expect(\"the kind count fits in a byte\");",
+                "    (any::<[[u8; 32]; 4]>(), 0..kinds, 0u8..4)",
+                "        .prop_map(|(seeds, kind, pairing)| build_case(seeds, kind, pairing))",
+                "}",
+                "",
+                "/// The settlements that create the existing cursors before the two",
+                "/// settlements under test. They take the existing scopes two at a time. A",
+                "/// single remaining scope pairs with a filler scope that no settlement under",
+                "/// test touches.",
+                "fn setup_scopes(case: &ConflictCase) -> Vec<CursorScopes> {",
+                "    let existing: Vec<[u8; 32]> = case.existing.iter().copied().collect();",
+                "    let mut avoid = Vec::with_capacity(4 + existing.len());",
+                "    avoid.extend(case.first.both());",
+                "    avoid.extend(case.second.both());",
+                "    avoid.extend(existing.iter().copied());",
+                "    existing",
+                "        .chunks(2)",
+                "        .map(|scopes| match scopes {",
+                "            [resource, fee] => CursorScopes {",
+                "                resource: *resource,",
+                "                fee: *fee,",
+                "            },",
+                "            [single] => CursorScopes {",
+                "                resource: *single,",
+                "                fee: retarget(rehash(single), any_scope, &avoid),",
+                "            },",
+                "            _ => panic!(\"chunks(2) yields one or two scopes\"),",
+                "        })",
+                "        .collect()",
+                "}",
+                "",
+                "/// A settlement of `scopes`. It expects each cursor at revision 0, or at",
+                "/// revision 1 when the cursor exists. `salt` gives each settlement its own",
+                "/// reservation and random state.",
+                "fn settlement(",
+                "    payer: &VaultAddress,",
+                "    recipient: &VaultAddress,",
+                "    scopes: &CursorScopes,",
+                "    existing: &std::collections::BTreeSet<[u8; 32]>,",
+                "    salt: u8,",
+                ") -> ApplyPhloCostDeploy {",
+                "    let count = NonZeroUsize::new(2).expect(\"two is not zero\");",
+                "    let expected = |scope: &[u8; 32]| match existing.contains(scope) {",
+                "        true => MonetaryCursor::new(1, 1, count).expect(\"a cursor at revision 1\"),",
+                "        false => MonetaryCursor::new(0, 0, count).expect(\"a cursor at revision 0\"),",
+                "    };",
+                "    ApplyPhloCostDeploy::new(",
+                "        ApplyCostDeploy::new(",
+                "            [salt; 32],",
+                "            vec![VaultAllocation::new(payer.to_base58(), 5).expect(\"an allocation\")],",
+                "            vec![VaultSettlement::new(payer.to_base58(), 2, 1).expect(\"a settlement\")],",
+                "            recipient.to_base58(),",
+                "            Blake2b512Random::create_from_bytes(&[salt, 0x19]),",
+                "        )",
+                "        .expect(\"a cost deploy\"),",
+                "        Some(",
+                "            MonetaryCursorTransition::new(scopes.resource, expected(&scopes.resource), 1, count)",
+                "                .expect(\"a resource transition\"),",
+                "        ),",
+                "        Some(",
+                "            MonetaryCursorTransition::new(scopes.fee, expected(&scopes.fee), 1, count)",
+                "                .expect(\"a fee transition\"),",
+                "        ),",
+                "        count,",
+                "    )",
+                "    .expect(\"a phlo cost deploy\")",
+                "}",
+                "",
+                "/// Plays `request` from `root`. Returns the post-state and the event-log index",
+                "/// of the settlement, built as `block_index::new` builds it for a system",
+                "/// deploy.",
+                "async fn play_indexed(",
+                "    manager: &RuntimeManager,",
+                "    runtime: &mut RuntimeOps,",
+                "    root: &StateHash,",
+                "    request: &mut ApplyPhloCostDeploy,",
+                ") -> (",
+                "    StateHash,",
+                "    rspace_plus_plus::rspace::merger::event_log_index::EventLogIndex,",
+                ") {",
+                "    use models::rust::casper::protocol::casper_message::ProcessedSystemDeploy;",
+                "    use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;",
+                "",
+                "    let SystemDeployResult::PlaySucceeded {",
+                "        state_hash,",
+                "        processed_system_deploy,",
+                "        mergeable_channels,",
+                "        ..",
+                "    } = runtime",
+                "        .play_system_deploy(root, request)",
+                "        .await",
+                "        .expect(\"the settlement plays\")",
+                "    else {",
+                "        panic!(\"the settlement fails\");",
+                "    };",
+                "    let ProcessedSystemDeploy::Succeeded { event_list, .. } = processed_system_deploy else {",
+                "        panic!(\"a succeeded settlement records a succeeded system deploy\");",
+                "    };",
+                "    let pre_state = Blake2b256Hash::from_bytes_prost(root);",
+                "    let diff = manager",
+                "        .convert_number_channels_to_diff(vec![mergeable_channels], &pre_state)",
+                "        .expect(\"the number channels convert\")",
+                "        .pop()",
+                "        .expect(\"one diff for one settlement\");",
+                "    let index = casper::rust::merging::block_index::create_event_log_index(",
+                "        &event_list,",
+                "        manager.history_repo.clone(),",
+                "        &pre_state,",
+                "        diff,",
+                "    );",
+                "    (state_hash, index)",
+                "}",
+                "",
+                "/// Creates the existing cursors, plays both settlements from the resulting",
+                "/// state, and returns the verdict of dev's conflict test on the two logs.",
+                "async fn observe_conflict(",
+                "    manager: &RuntimeManager,",
+                "    runtime: &tokio::sync::Mutex<RuntimeOps>,",
+                "    genesis_root: &StateHash,",
+                "    parties: &[(VaultAddress, VaultAddress); 2],",
+                "    case: &ConflictCase,",
+                ") -> bool {",
+                "    let mut runtime = runtime.lock().await;",
+                "    let mut root = genesis_root.clone();",
+                "    let fresh = std::collections::BTreeSet::new();",
+                "    let [(first_payer, first_recipient), (second_payer, second_recipient)] = parties;",
+                "    for (index, setup) in setup_scopes(case).iter().enumerate() {",
+                "        let salt = 0x40 + u8::try_from(index).expect(\"at most two setup settlements\");",
+                "        let mut request = settlement(first_payer, first_recipient, setup, &fresh, salt);",
+                "        root = play_indexed(manager, &mut runtime, &root, &mut request)",
+                "            .await",
+                "            .0;",
+                "    }",
+                "    let mut first_request = settlement(",
+                "        first_payer,",
+                "        first_recipient,",
+                "        &case.first,",
+                "        &case.existing,",
+                "        0x11,",
+                "    );",
+                "    let (_, first) = play_indexed(manager, &mut runtime, &root, &mut first_request).await;",
+                "    let mut second_request = settlement(",
+                "        second_payer,",
+                "        second_recipient,",
+                "        &case.second,",
+                "        &case.existing,",
+                "        0x22,",
+                "    );",
+                "    let (_, second) = play_indexed(manager, &mut runtime, &root, &mut second_request).await;",
+                "    rspace_plus_plus::rspace::merger::merging_logic::are_conflicting(&first, &second)",
+                "}",
+                "",
+                "/// DR-119 (bug 11004): dev's conflict test on two settlement event logs agrees",
+                "/// with the bucket rule in 256 generated cases. The payers are the DEFAULT_SEC",
+                "/// and DEFAULT_SEC2 vaults. The recipients are two other genesis vaults, so no",
+                "/// settlement creates a vault. A tally of the verdicts per kind shows that",
+                "/// every kind ran.",
+                "#[tokio::test(flavor = \"multi_thread\", worker_threads = 2)]",
+                "async fn settlement_conflict_iff_same_scope_or_same_bucket_first_use() {",
+                "    with_runtime_manager(|manager, genesis, block| async move {",
+                "        let genesis_root = block.body.state.post_state_hash;",
+                "        let vault = |index: usize| {",
+                "            VaultAddress::from_public_key(&genesis.genesis_vaults[index].1)",
+                "                .expect(\"a genesis key forms a vault address\")",
+                "        };",
+                "        let parties = [(vault(0), vault(2)), (vault(1), vault(3))];",
+                "        let runtime = tokio::sync::Mutex::new(RuntimeOps::new(",
+                "            manager.spawn_runtime().await.expect(\"a runtime spawns\"),",
+                "        ));",
+                "        let handle = tokio::runtime::Handle::current();",
+                "        let tally = std::sync::Mutex::new([[0u32; 2]; CONFLICT_CASE_KINDS]);",
+                "        let mut runner = proptest::test_runner::TestRunner::new(proptest::test_runner::Config {",
+                "            cases: 256,",
+                "            failure_persistence: None,",
+                "            max_shrink_iters: 64,",
+                "            ..proptest::test_runner::Config::default()",
+                "        });",
+                "        runner",
+                "            .run(&conflict_case(), |case| {",
+                "                let observed = tokio::task::block_in_place(|| {",
+                "                    handle.block_on(observe_conflict(",
+                "                        &manager,",
+                "                        &runtime,",
+                "                        &genesis_root,",
+                "                        &parties,",
+                "                        &case,",
+                "                    ))",
+                "                });",
+                "                tally.lock().expect(\"the tally lock is not poisoned\")[usize::from(case.kind)]",
+                "                    [usize::from(observed)] += 1;",
+                "                proptest::prop_assert_eq!(observed, expected_conflict(&case), \"case: {:?}\", case);",
+                "                Ok(())",
+                "            })",
+                "            .expect(\"settlements conflict exactly by the DR-119 rule\");",
+                "        let tally = tally.into_inner().expect(\"the tally lock is not poisoned\");",
+                "        println!(\"DR-119 verdicts per kind as [no conflict, conflict]: {tally:?}\");",
+                "        for (kind, verdicts) in tally.iter().enumerate() {",
+                "            assert!(",
+                "                verdicts.iter().sum::<u32>() > 0,",
+                "                \"case kind {kind} never ran: {tally:?}\"",
+                "            );",
+                "        }",
+                "    })",
+                "    .await",
+                "    .expect(\"the runtime manager runs\");",
+                "}",
+                ""
+              ]
+            ]
+          ]
+        },
+        {
+          "path": "docs/casper/theory/cost-accounted-rho-verification.md",
+          "replaced_blocks": [
+            [
+              [
+                "This article presents a machine-checked proof of that claim, mechanized",
+                "in **Rocq 9.1.1** across 261 modules and 95,576 lines of development, and",
+                "complements it with a **TLA+** finite-state model verified by TLC. The required"
+              ],
+              [
+                "This article presents a machine-checked proof of that claim, mechanized",
+                "in **Rocq 9.1.1** across 262 modules and 95,821 lines of development, and",
+                "complements it with a **TLA+** finite-state model verified by TLC. The required"
+              ]
+            ],
+            [
+              [
+                "`replication_encoding_forward_barb_sound`).",
+                "All 5,016 `Qed.`/`Defined.` proof terms belong to the current source inventory.",
+                "Source counts alone do not establish that an aggregate verification run passed."
+              ],
+              [
+                "`replication_encoding_forward_barb_sound`).",
+                "All 5,028 `Qed.`/`Defined.` proof terms belong to the current source inventory.",
+                "Source counts alone do not establish that an aggregate verification run passed."
+              ]
+            ],
+            [
+              [
+                "   discharge the paper's five reduction rules (Section 5). The",
+                "   development spans 261 modules and 95,576 lines, with 5,016 `Qed.` or",
+                "   `Defined.` proof obligations and zero `Admitted` / `admit` /"
+              ],
+              [
+                "   discharge the paper's five reduction rules (Section 5). The",
+                "   development spans 262 modules and 95,821 lines, with 5,028 `Qed.` or",
+                "   `Defined.` proof obligations and zero `Admitted` / `admit` /"
+              ]
+            ],
+            [
+              [
+                "|--------------------------------------------------|------------------------------------------------------------|",
+                "| Rocq source files                                | 261 modules                                                |",
+                "| Total lines of Rocq                              | 95,576                                                     |",
+                "| Proven lemmas and theorems (`Qed.` / `Defined.`) | 5,016                                                      |",
+                "| `Admitted` / `admit`                             | **0**                                                      |"
+              ],
+              [
+                "|--------------------------------------------------|------------------------------------------------------------|",
+                "| Rocq source files                                | 262 modules                                                |",
+                "| Total lines of Rocq                              | 95,821                                                     |",
+                "| Proven lemmas and theorems (`Qed.` / `Defined.`) | 5,028                                                      |",
+                "| `Admitted` / `admit`                             | **0**                                                      |"
+              ]
+            ],
+            [
+              [
+                "",
+                "The foundational 32-module subgraph of the 261-module formalization",
+                "(`formal/rocq/cost_accounted_rho/theories`) organizes into **seven dependency"
+              ],
+              [
+                "",
+                "The foundational 32-module subgraph of the 262-module formalization",
+                "(`formal/rocq/cost_accounted_rho/theories`) organizes into **seven dependency"
+              ]
+            ],
+            [
+              [
+                "",
+                "![Dependency graph of the foundational cost-accounted-rho proof subgraph. The graph shows 32 foundational Rocq modules in seven dependency tiers. The current 261-module catalog also includes native syntax, GSLT interfaces, authority, settlement, admission, spatial and modal checks, and refinement modules. The repository's _CoqProject lists every module.](diagrams/module-dependency-graph.svg)",
+                ""
+              ],
+              [
+                "",
+                "![Dependency graph of the foundational cost-accounted-rho proof subgraph. The graph shows 32 foundational Rocq modules in seven dependency tiers. The current 262-module catalog also includes native syntax, GSLT interfaces, authority, settlement, admission, spatial and modal checks, and refinement modules. The repository's _CoqProject lists every module.](diagrams/module-dependency-graph.svg)",
+                ""
+              ]
+            ]
+          ]
+        },
+        {
+          "path": "docs/casper/theory/cost-accounting-decision-records.md",
+          "replaced_blocks": [
+            [
+              [
+                "**Cross-refs.** DR-92. Leaf `ofp-2-cap-d-b2-nested-encode-charge`.",
+                ""
+              ],
+              [
+                "**Cross-refs.** DR-92. Leaf `ofp-2-cap-d-b2-nested-encode-charge`.",
+                "",
+                "## DR-119 — Cost cursors take a creation lock per bucket, and an existing cursor takes no lock (bug 11004)",
+                "",
+                "**Backport.** The branch feature/reified-rspaces carries this record and its code as a backport of commit `7ab849b56` (Reified decision 81, 2026-10-11). The records DR-94 to DR-118 and DR-120 that it cites are not in this tree. They arrive with the next merge of feature/cost-accounted-rho. Its line citations follow this tree.",
+                "",
+                "**Status.** Implemented 2026-10-10 for bug 11004 of epic 8946, as design v4",
+                "of `G9 and bug 11004` specifies (commit C2). The user approved it on",
+                "2026-10-10 together with DR-120: \"Go with option 1 [build the merge rule, then",
+                "the lock fix, with the Casper edits listed] so long as these changes are",
+                "necessary, directly related to cost-accounting and not just nice-to-haves, and",
+                "don't change much of Casper.\"",
+                "",
+                "**Context.**",
+                "",
+                "- Each settlement of an offered deploy moves two cost cursors of its cohort:",
+                "  the resource cursor and the fee cursor (`applyCostWithTwoCursors` in",
+                "  `SystemVault.rho`). `ensureCostCursor` creates a cursor at its first use.",
+                "- Before this record, `ensureCostCursor` consumed one global lock datum on",
+                "  every call, also for a cursor that existed (`SystemVault.rho:52,56,145-167`",
+                "  at commit b496df9d8). So every two cursor-bearing settlements consumed one",
+                "  base datum.",
+                "- The race check of the merge (`merging_logic.rs:290-331`) then made every two",
+                "  sibling offered blocks conflict, and the merge kept only one of them.",
+                "- P1 says that the results of different signatures draw from disjoint pools",
+                "  and cannot conflict (P1:356-359). P1 also says that throughput grows with",
+                "  the number of non-conflicting token supplies (P1:336-342).",
+                "- The epic excludes any global funding lock. E2E-037 requires that",
+                "  independent exact effects survive a merge.",
+                "- The global lock had a purpose. The cursor map is a TreeHashMap of depth 2",
+                "  (`SystemVault.rho:59`). One leaf of the map holds the keys whose keccak256",
+                "  hashes share their first two bytes (`Registry.rho:85-91,130-139`).",
+                "- Two sibling first uses of different scopes in one new leaf each produce",
+                "  their own leaf datum. No merge check sees the duplicate. The merged leaf",
+                "  then holds two maps, and a later lookup can miss an existing cursor. So the",
+                "  creations in one leaf must stay serialized.",
+                "- `FeeCursorBranchMerge.tla` at HEAD did not model the lock. Its invariant",
+                "  `IndependentScopesSurvive` held in the model and failed in the code.",
+                "",
+                "**Decision.**",
+                "",
+                "1. **No lock for an existing cursor.** `ensureCostCursor` first looks the",
+                "   scope up in the cursor map. The TreeHashMap lookup only peeks at the map",
+                "   nodes (`nodeGet`, `Registry.rho:79-83`). The race check counts no peeked datum,",
+                "   because a peek goes to `produces_peeked` and not to `produces_consumed`",
+                "   (`event_log_index.rs`). A settlement on an existing cursor therefore",
+                "   consumes only the revision cell and the position cell of its own scope.",
+                "2. **One creation lock per bucket.** The bucket of a scope is the first byte",
+                "   of keccak256(`scope.toByteArray()`), the hash that the TreeHashMap uses.",
+                "   SystemVault seeds 256 lock datums `@(*costCursorBucketLock, b)`, one for",
+                "   each $`b \\in \\{0, \\dots, 255\\}`$, when it starts (`SystemVault.rho:66-72`).",
+                "   A leaf is the first two bytes of the hash, so each leaf lies in one bucket.",
+                "3. **First use.** When the lookup finds no cursor, `ensureCostCursor` takes",
+                "   the lock of the scope's bucket with a plain receive. Under the lock it looks",
+                "   the scope up again, because the first lookup can be stale. It creates the",
+                "   map entry and the two cells only when the second lookup also finds no",
+                "   cursor. Then it releases the lock (`SystemVault.rho:189-229`).",
+                "4. **One ensure after the other.** `applyCostWithTwoCursors` ensures its",
+                "   resource scope first and its fee scope second (`SystemVault.rho:347-350`).",
+                "   A creation makes a new leaf with the value 0 before it writes the entry. A",
+                "   lookup that reads that 0 fails on `0.get` (`Registry.rho:113`). In",
+                "   sequence, no lookup of a settlement reads a leaf that the same settlement",
+                "   still creates.",
+                "5. **The old lines stay as comments.** The two new names follow `initVault`,",
+                "   so every earlier name of the `new` keeps its value. The global lock name",
+                "   stays declared for the same reason. Each replaced line stays in the file as",
+                "   a comment with its reason.",
+                "",
+                "**The conflict rule.** Two settlements that start from one state conflict",
+                "exactly when one of these conditions holds:",
+                "",
+                "- They share a cursor scope. Two settlements on one existing cursor consume",
+                "  its revision cell. Two first uses of one scope consume the lock of its",
+                "  bucket.",
+                "- A first use on each side falls in one bucket. The two settlements then",
+                "  consume one lock datum.",
+                "",
+                "A lookup of an existing cursor conflicts with nothing. This holds also when",
+                "the other settlement creates a cursor in the same leaf. The interior nodes of",
+                "the TreeHashMap are bitmaps that the merge combines with `BitmaskOr`",
+                "(`docs/casper/README.md`, section \"Mergeable Channels\"). So two creations in",
+                "different buckets also compose on the interior nodes that they share.",
+                "",
+                "**Why the rule is sound.** Each law below is a theorem of",
+                "`CostCursorBuckets.v`, and the TLA+ models check it on bounded scenarios.",
+                "",
+                "- B1: one leaf lies in one bucket (`same_leaf_same_bucket`). So two creations",
+                "  in one leaf take one lock, and a merge keeps at most one of them",
+                "  (`kept_creations_distinct_leaves`). The merged map never holds two datums",
+                "  for one leaf.",
+                "- L6: settlements on the existing cursors of distinct scopes claim disjoint",
+                "  datums (`existing_scopes_disjoint_claims`), so they survive together",
+                "  (`independent_existing_scopes_survive`). Two settlements on one existing",
+                "  cursor conflict (`same_scope_existing_settlements_conflict`).",
+                "- The check under the lock is necessary. A creation that trusts a stale",
+                "  lookup duplicates the cells of a scope that another worker created in",
+                "  between. `FeeCursorCellsCreateOnStaleReadUnsafe.cfg` shows this",
+                "  counterexample.",
+                "",
+                "**Shared buckets.** Two cohorts with random scopes share a bucket with a",
+                "probability of about $`4/256`$, because each cohort has two scopes. A cohort",
+                "creates its two cursors once, at its first settlement. A shared bucket",
+                "therefore needs two concurrent first settlements. It costs one deferral of one",
+                "of them, and the owner re-proposes the deferred deploy (DR-120).",
+                "",
+                "**Casper footprint.** C2 changes one Casper source file,",
+                "`casper/src/main/resources/SystemVault.rho` (+88 / −18 lines, with the old",
+                "lines kept as comments). It changes no other Casper source file. The test",
+                "changes are in cost-accounting test files, among them the `costacc` unit tests",
+                "of `policy_snapshot`. The two restorations of dev lines below are the only",
+                "exception.",
+                "",
+                "**Test migration.** Several offered tests took their conflicts from the",
+                "global lock. They now take them from a shared cohort cursor:",
+                "",
+                "- `an_owner_accepts_a_merge_that_rejects_its_own_offer`: both siblings have",
+                "  one signer.",
+                "- `a_failed_offered_deploy_in_a_conflicting_merged_branch_is_rejected_not_dropped`",
+                "  and the users of `rejected_failed_offer_merge`: the sibling pays for the",
+                "  same cohort. The expected balance includes the charge of the sibling.",
+                "- `a_third_signer_inserts_a_version_after_a_merge_with_a_writers_branch` now",
+                "  asserts that both siblings survive. Its writers are DEFAULT_SEC and a",
+                "  searched key whose buckets differ from those of DEFAULT_SEC.",
+                "- `verdict_convergence_spec.rs` and `exactly_once_spec.rs` get dev's lines",
+                "  back: the S marker and the N1 spacer. The restore precondition holds. The",
+                "  four scopes of the DEFAULT_SEC and DEFAULT_SEC2 cohorts fall in four",
+                "  distinct buckets (`default_cohort_cursor_scopes_fall_in_distinct_buckets`).",
+                "",
+                "Two facts shaped the API tests:",
+                "",
+                "- DEFAULT_SEC2 is the private key of the Registry's standard deploy",
+                "  (`REGISTRY_PK`). The API refuses an offer that a system key signs, so no API",
+                "  test can sign with DEFAULT_SEC2. The batch2 specs add their deploys without",
+                "  the API, so they can.",
+                "- The extra genesis vault keys are random in each process. A test that needs a",
+                "  bucket relation therefore searches a deterministic key chain and gives the",
+                "  found key its own genesis vault. A funding deploy is no alternative. It must",
+                "  create the vault first, because a transfer to a missing vault leaves its",
+                "  deposit orphaned. Under the committed caps, that deploy exceeded the",
+                "  host-work budget for verification operations.",
+                "",
+                "**E2E-037.** The E2E-037 row claims that independent exact effects survive a",
+                "merge. Before this record, the global lock broke that claim for every two",
+                "cursor-bearing settlements. Now the claim holds for settlements on different",
+                "scopes, except for two first uses in one bucket. The row cites this record.",
+                "",
+                "**Verification.**",
+                "",
+                "- Rocq, axiom-free: `CostCursorBuckets.v` proves B1, L6 and the conflict on a",
+                "  shared leaf. Four proved negative controls cover the global lock, a missing",
+                "  creation lock (twice) and a bucket from the raw scope bytes. All ten",
+                "  theorems are closed under the global context. The proof gate passes in",
+                "  cost-accounting mode: 285 modules and 3245 closed assumption",
+                "  queries.",
+                "- TLA+, through `scripts/lib/tlc-run.sh`:",
+                "  - `FeeCursorBranchMerge` in bucket mode checks CursorCellUnique,",
+                "    WholeEffectAccounting, IndependentScopesSurviveRefined, SameScopeKeepsOne,",
+                "    ValidatorAgreement, NoPhantomEffects and MapLeafUnique",
+                "    (18,432 distinct states).",
+                "  - `FeeCursorBranchMergeGlobalLockUnsafe` violates",
+                "    IndependentScopesSurviveRefined. `FeeCursorBranchMergeNoCreationLockUnsafe`",
+                "    and `FeeCursorBranchMergeBucketCoarseningUnsafe` violate MapLeafUnique.",
+                "    The Empty, Money and Order controls still violate their invariants.",
+                "  - `FeeCursorCells` with the lock-free lookup passes (3,568 distinct",
+                "    states). `FeeCursorCellsCreateOnStaleReadUnsafe` violates",
+                "    ExactlyOnePairPerInitializedScope, and the four earlier controls still",
+                "    violate their invariants.",
+                "  - The configurations are registered in",
+                "    `scripts/check-cost-accounted-rho-tla-invariants.sh` and",
+                "    `scripts/check-tlc-source-binding.sh`.",
+                "- Rust:",
+                "  - `settlement_conflict_iff_same_scope_or_same_bucket_first_use` plays two",
+                "    settlements from one state in 256 generated cases. Dev's conflict check",
+                "    on their event logs agrees with the conflict rule in every case. The cases",
+                "    cover seven kinds, among them a first use in the leaf of an existing",
+                "    cursor. The tally of one run, as no conflict and conflict per kind, is",
+                "    `[[42, 0], [29, 0], [0, 40], [0, 35], [0, 27], [41, 1], [41, 0]]`.",
+                "  - Against the SystemVault of commit b496df9d8, the same property test",
+                "    fails. Its shrunk counterexample is a first use beside an existing cursor",
+                "    of the other side, and the two settlements conflict on the global lock. So",
+                "    the test detects the global lock.",
+                "  - `offered_funded_api_test.rs`: `first_use_cursors_in_distinct_buckets_compose`,",
+                "    `first_use_cursors_in_one_bucket_keep_one`,",
+                "    `three_signers_compose_on_the_v6_fast_path` and",
+                "    `a_failed_offer_charge_survives_beside_another_signer`. The last two are",
+                "    the two API tests that DR-120 deferred to this record. The three-signer",
+                "    merge takes the v6 fast path.",
+                "- Suites:",
+                "  - On casper, block-storage and the node HTTP handlers, the provisional caps",
+                "    pass 1984 of 1988, with the same four known failures as for DR-120.",
+                "  - The committed caps pass 1981 of 1988. Six failures are the known ones of",
+                "    DR-116 and DR-117. The seventh,",
+                "    `initializing_spec::make_transition_to_running_once_approved_block_received`,",
+                "    counted seven transport requests instead of five under load. It passed in",
+                "    the three other full runs of this record and in three isolated runs.",
+                "  - The 13 offered-genesis specs, all 33 offered API tests, the 33 v6 merge",
+                "    tests and the unchanged dev suites pass: `multi_parent_casper_merge_spec`,",
+                "    `compute_parents_post_state_regression_spec`, `finalized_protection_spec`,",
+                "    `registry_key_merge` and `floor_fork_reproduction_spec`.",
+                "  - `precharge_report_shape_spec` passes, so the transfer channel that",
+                "    `transfer_unforgeable` derives from SystemVault keeps its value.",
+                "  - C2 changes no rholang or rspace++ code.",
+                "  - `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D",
+                "    warnings`, the workspace doctests and the documentation syntax gate pass.",
+                "",
+                "**Side finding, not in scope.** When the merge base falls back to the floor,",
+                "the settled-sig probe still walks the lineage of the main parent",
+                "(`interpreter_util.rs:1855-1866`). The dedup step then drops the main parent's",
+                "own chain as settled, although the floor's state does not hold it. The deploy",
+                "is neither applied nor rejected. A three-sibling merge in which the floor is",
+                "another sibling shows this. The code belongs to dev's floor fallback, and this",
+                "record does not change it.",
+                "",
+                "**Cross-refs.** DR-15, DR-101, DR-115, DR-116, DR-120, E2E-037, P1. Bug 11004.",
+                "",
+                ""
+              ]
+            ]
+          ]
+        },
+        {
+          "path": "docs/casper/theory/cost-accounting-executable-conformance-matrix.md",
+          "replaced_blocks": [
+            [
+              [
+                "| E2E-036B | A restored node evaluates lifecycle rows only after it materializes exact adopted-floor provenance. | Casper startup derives the adopted floor before schedule rebuild. TLA⁺, Loom, and Rust checks cover the ordering. An unsafe control permits terminalization before floor readiness and violates the required invariant. | Focused verification complete |",
+                "| E2E-037 | Merge neither duplicates nor drops settlement removals or residual cells. | Located-stack pops are recorded as RSpace removal events and indexed in state change; SystemVault settlement leaves only mergeable exact balance deltas, not a singleton reservation datum. Exact rejection propagates only through byte-identical ordinary datum/continuation dependencies and transitively closes; independent exact effects survive, while only legacy witnesses use conservative block-lineage expansion. Immutable copy-on-write merge, `SettlementMergeVisibility.tla`, `EffectCausalClosure.tla`, Rocq, Loom, and same-payer sibling tests cover visibility and aggregation. | Verified complete |",
+                "| E2E-038 | Mixed authority-accounting semantics cannot validate the same certificate. | Protocol version 8 and domain-separated certificate/witness IDs cover stack reservations and physical draws; replay rejects version, proof, root, or presentation mismatch. | Verified complete |"
+              ],
+              [
+                "| E2E-036B | A restored node evaluates lifecycle rows only after it materializes exact adopted-floor provenance. | Casper startup derives the adopted floor before schedule rebuild. TLA⁺, Loom, and Rust checks cover the ordering. An unsafe control permits terminalization before floor readiness and violates the required invariant. | Focused verification complete |",
+                "| E2E-037 | Merge neither duplicates nor drops settlement removals or residual cells. | Located-stack pops are recorded as RSpace removal events and indexed in state change; SystemVault settlement leaves only mergeable exact balance deltas, not a singleton reservation datum. Exact rejection propagates only through byte-identical ordinary datum/continuation dependencies and transitively closes; independent exact effects survive, while only legacy witnesses use conservative block-lineage expansion. Immutable copy-on-write merge, `SettlementMergeVisibility.tla`, `EffectCausalClosure.tla`, Rocq, Loom, and same-payer sibling tests cover visibility and aggregation. DR-119 removes the global cost-cursor lock, which made every two cursor-bearing settlements conflict. Settlements on different cursor scopes now survive together, unless two first uses share a creation bucket (`settlement_conflict_iff_same_scope_or_same_bucket_first_use`). | Verified complete |",
+                "| E2E-038 | Mixed authority-accounting semantics cannot validate the same certificate. | Protocol version 8 and domain-separated certificate/witness IDs cover stack reservations and physical draws; replay rejects version, proof, root, or presentation mismatch. | Verified complete |"
+              ]
+            ]
+          ]
+        },
+        {
+          "path": "docs/casper/theory/cost-accounting-impl/rotating-monetary-allocation.md",
+          "replaced_blocks": [
+            [
+              [
+                "| `WholeEffectAccounting` | Rejection removes the losing cursor changes and monetary effects together. |",
+                "| `IndependentScopesSurvive` | Disjoint scopes and purses retain both effects. |",
+                "| `SameScopeKeepsOne` | Competing fresh branch plans retain exactly one complete effect. |"
+              ],
+              [
+                "| `WholeEffectAccounting` | Rejection removes the losing cursor changes and monetary effects together. |",
+                "| `IndependentScopesSurvive` | Disjoint scopes and purses retain both effects. DR-119 replaces this invariant with `IndependentScopesSurviveRefined` (see \"Creation buckets\"). |",
+                "| `SameScopeKeepsOne` | Competing fresh branch plans retain exactly one complete effect. |"
+              ]
+            ],
+            [
+              [
+                "That comparison exposed a separate [numeric accounting metadata defect](numeric-merge-authority-preservation.md).",
+                ""
+              ],
+              [
+                "That comparison exposed a separate [numeric accounting metadata defect](numeric-merge-authority-preservation.md).",
+                "",
+                "### Creation buckets (DR-119)",
+                "",
+                "Before [DR-119](../cost-accounting-decision-records.md), `ensureCostCursor` took one global lock on every call.",
+                "The model above did not include that lock.",
+                "So `IndependentScopesSurvive` held in the model, but the code made every two cursor-bearing settlements conflict on the lock.",
+                "",
+                "DR-119 replaces the global lock with two rules:",
+                "",
+                "- A settlement on an existing cursor takes no lock, because the TreeHashMap lookup only peeks.",
+                "- A first use takes the lock of its bucket, the first byte of keccak256(`scope.toByteArray()`).",
+                "",
+                "The cursor map is a TreeHashMap of depth 2, so a leaf is the first two bytes of the same hash.",
+                "One leaf therefore lies in one bucket, and two creations in one leaf take one lock.",
+                "",
+                "`FeeCursorBranchMerge.tla` now models the lock rule with `LockMode` (\"global\", \"bucket\" or \"none\").",
+                "`BucketsRespectLeaves` states that one leaf has one bucket.",
+                "The merge keeps an effect only when its claimed base datums do not intersect the claims that it already kept, as the race rule does.",
+                "",
+                "| Model invariant (DR-119) | Requirement |",
+                "| --- | --- |",
+                "| `IndependentScopesSurviveRefined` | Disjoint scopes retain both effects, unless two first uses share a creation bucket. It replaces `IndependentScopesSurvive`. |",
+                "| `MapLeafUnique` | A merge never keeps two first uses of different scopes in one TreeHashMap leaf. |",
+                "",
+                "The safe configuration in bucket mode passes with 18,432 distinct states.",
+                "Three new controls violate their invariants.",
+                "The global lock violates `IndependentScopesSurviveRefined`.",
+                "No creation lock, and buckets that split a leaf, violate `MapLeafUnique`.",
+                "The empty-cell control now runs without a creation lock, because a bucket lock also orders two first uses of one scope.",
+                "",
+                "`FeeCursorCells.tla` adds the lock-free lookup as the `Peek` action, enabled by `FastPath`.",
+                "A creation after a lookup that found no cursor must check again under the lock.",
+                "The control `FeeCursorCellsCreateOnStaleReadUnsafe` skips that check and violates `ExactlyOnePairPerInitializedScope`.",
+                "The safe configuration passes with 3,568 distinct states.",
+                "",
+                "`CostCursorBuckets.v` proves the same rules over an abstract hash.",
+                "The property test `settlement_conflict_iff_same_scope_or_same_bucket_first_use` compares dev's conflict test on real settlement logs with the rule in 256 cases.",
+                ""
+              ]
+            ]
+          ]
+        },
+        {
+          "path": "formal/rocq/cost_accounted_rho/PROOF_ARTIFACTS.md",
+          "replaced_blocks": [
+            [
+              [
+                "- Native finite located OSLF refinement: `CostAccountedRho.CAOSLFSpatialModal`, whose headline theorems prove exact linear use, no contraction or weakening, copyable/relevant discipline behavior, exact graded post-state, surface isolation, spatial commutativity, compositional local sufficiency, conservative-bound soundness, refusal to treat an upper bound as a modal event, and exclusion of candidate-created funding. `GSLTOSLFCapstone.oslf_spatial_modal_logic_sound` connects these results to the existing GSLT and funding capstone.",
+                ""
+              ],
+              [
+                "- Native finite located OSLF refinement: `CostAccountedRho.CAOSLFSpatialModal`, whose headline theorems prove exact linear use, no contraction or weakening, copyable/relevant discipline behavior, exact graded post-state, surface isolation, spatial commutativity, compositional local sufficiency, conservative-bound soundness, refusal to treat an upper bound as a modal event, and exclusion of candidate-created funding. `GSLTOSLFCapstone.oslf_spatial_modal_logic_sound` connects these results to the existing GSLT and funding capstone.",
+                "- Cost-cursor creation buckets (bug 11004, DR-119): `CostAccountedRho.CostCursorBuckets` models the cursor locks of `SystemVault.rho` over an abstract hash. A settlement consumes base datums by its lock rule, and the merge keeps settlements whose claims do not intersect. The bucket of a scope is the first byte of its hash, and its TreeHashMap leaf is the first two bytes. One leaf therefore has one bucket (`same_leaf_same_bucket`), so two kept first uses never create one leaf (`kept_creations_distinct_leaves`). Settlements on the existing cursors of distinct scopes claim disjoint datums (`existing_scopes_disjoint_claims`) and survive together (`independent_existing_scopes_survive`). Two settlements on one existing cursor conflict (`same_scope_existing_settlements_conflict`), and two first uses in one leaf conflict on their bucket lock (`bucket_rule_detects_the_shared_leaf`). Four proved negative controls cover three alternatives. The global lock makes every two settlements conflict (`nc_global_lock_conflicts_distinct_scopes`). Without a creation lock, two first uses in one leaf survive together (`nc_no_creation_lock_two_leaf_datums`, `nc_no_creation_lock_witness`). A bucket from the raw scope bytes splits a leaf (`nc_scope_byte_bucket_splits_leaf`).",
+                ""
+              ]
+            ]
+          ]
+        },
+        {
+          "path": "formal/rocq/cost_accounted_rho/_CoqProject",
+          "replaced_blocks": [
+            [
+              [
+                "theories/QuoteExactOutput.v",
+                ""
+              ],
+              [
+                "theories/QuoteExactOutput.v",
+                "theories/CostCursorBuckets.v",
+                ""
+              ]
+            ]
+          ]
+        },
+        {
+          "path": "formal/tlaplus/cost_accounted_rho/FeeCursorBranchMerge.cfg",
+          "replaced_blocks": [
+            [
+              [
+                "  CanonicalOrder = TRUE",
+                "CHECK_DEADLOCK FALSE",
+                "INVARIANTS"
+              ],
+              [
+                "  CanonicalOrder = TRUE",
+                "  LockMode = \"bucket\"",
+                "  BucketsRespectLeaves = TRUE",
+                "CHECK_DEADLOCK FALSE",
+                "\\* Changed by DR-119 (bug 11004): IndependentScopesSurvive never held for the",
+                "\\* global lock. The refined property excludes two first uses in one bucket.",
+                "\\* INVARIANTS",
+                "\\*   CursorCellUnique",
+                "\\*   WholeEffectAccounting",
+                "\\*   IndependentScopesSurvive",
+                "\\*   SameScopeKeepsOne",
+                "\\*   ValidatorAgreement",
+                "\\*   NoPhantomEffects",
+                "INVARIANTS"
+              ]
+            ],
+            [
+              [
+                "  WholeEffectAccounting",
+                "  IndependentScopesSurvive",
+                "  SameScopeKeepsOne"
+              ],
+              [
+                "  WholeEffectAccounting",
+                "  IndependentScopesSurviveRefined",
+                "  SameScopeKeepsOne"
+              ]
+            ],
+            [
+              [
+                "  NoPhantomEffects",
+                ""
+              ],
+              [
+                "  NoPhantomEffects",
+                "  MapLeafUnique",
+                ""
+              ]
+            ]
+          ]
+        },
+        {
+          "path": "formal/tlaplus/cost_accounted_rho/FeeCursorBranchMerge.tla",
+          "replaced_blocks": [
+            [
+              [
+                "",
+                "CONSTANTS GuardEmptyCells, KeepRejectedMoney, CanonicalOrder",
+                "Effects == {1, 2}"
+              ],
+              [
+                "",
+                "\\* Changed by DR-119 (bug 11004): the model also covers the creation-lock rule",
+                "\\* of SystemVault. LockMode \"global\" is the lock that every settlement took",
+                "\\* before DR-119. \"bucket\" is DR-119: an existing cursor takes no lock, and a",
+                "\\* first use takes the lock of its bucket. \"none\" is a control without any",
+                "\\* creation lock. BucketsRespectLeaves states that one TreeHashMap leaf has one",
+                "\\* bucket; DR-119 derives both from the scope's keccak256 hash.",
+                "\\* CONSTANTS GuardEmptyCells, KeepRejectedMoney, CanonicalOrder",
+                "CONSTANTS GuardEmptyCells, KeepRejectedMoney, CanonicalOrder,",
+                "          LockMode, BucketsRespectLeaves",
+                "ASSUME /\\ LockMode \\in {\"global\", \"bucket\", \"none\"}",
+                "       /\\ BucketsRespectLeaves \\in BOOLEAN",
+                "Effects == {1, 2}"
+              ]
+            ],
+            [
+              [
+                "Scopes == {1, 2}",
+                "",
+                "VARIABLES existed, selected, nextPosition, priority, prepared, pending, kept, charged",
+                "vars == <<existed, selected, nextPosition, priority, prepared, pending, kept, charged>>",
+                ""
+              ],
+              [
+                "Scopes == {1, 2}",
+                "Leaves == {1, 2}",
+                "Buckets == {1, 2}",
+                "",
+                "\\* VARIABLES existed, selected, nextPosition, priority, prepared, pending, kept, charged",
+                "\\* vars == <<existed, selected, nextPosition, priority, prepared, pending, kept, charged>>",
+                "VARIABLES existed, selected, nextPosition, priority, prepared, pending, kept, charged,",
+                "          leafOf, bucketOf",
+                "vars == <<existed, selected, nextPosition, priority, prepared, pending, kept, charged,",
+                "          leafOf, bucketOf>>",
+                "",
+                "\\* A bucket map respects the leaves when two scopes in one leaf share a bucket.",
+                "RespectsLeaves(leaves, buckets) ==",
+                "    \\A s, t \\in Scopes : leaves[s] = leaves[t] => buckets[s] = buckets[t]",
+                ""
+              ]
+            ],
+            [
+              [
+                "        /\\ priority \\in {<<1, 2>>, <<2, 1>>}",
+                "        /\\ prepared = {}"
+              ],
+              [
+                "        /\\ priority \\in {<<1, 2>>, <<2, 1>>}",
+                "        /\\ leafOf \\in [Scopes -> Leaves]",
+                "        /\\ bucketOf \\in {b \\in [Scopes -> Buckets] :",
+                "                           BucketsRespectLeaves => RespectsLeaves(leafOf, b)}",
+                "        /\\ prepared = {}"
+              ]
+            ],
+            [
+              [
+                "              /\\ prepared' = prepared \\cup {e}",
+                "              /\\ UNCHANGED <<existed, selected, nextPosition, priority, pending, kept, charged>>",
+                ""
+              ],
+              [
+                "              /\\ prepared' = prepared \\cup {e}",
+                "              /\\ UNCHANGED <<existed, selected, nextPosition, priority, pending, kept, charged,",
+                "                             leafOf, bucketOf>>",
+                ""
+              ]
+            ],
+            [
+              [
+                "",
+                "MergeOne(v, e) =="
+              ],
+              [
+                "",
+                "\\* The base datums that an effect's settlement consumes. A first use creates",
+                "\\* its cells and consumes them inside its own deployment.",
+                "Cells(s) == {<<\"revision\", s>>, <<\"position\", s>>}",
+                "Claims(e) ==",
+                "    LET s == selected[e]",
+                "        cells == IF existed[s] THEN Cells(s) ELSE {}",
+                "    IN CASE LockMode = \"global\" -> {<<\"lock\", 0>>} \\cup cells",
+                "         [] LockMode = \"bucket\" -> IF existed[s] THEN cells ELSE {<<\"bucket\", bucketOf[s]>>}",
+                "         [] LockMode = \"none\" -> cells",
+                "KeptClaims(v) == UNION {Claims(k) : k \\in kept[v]}",
+                "",
+                "\\* The race rule: a merge keeps an effect only when its claims are disjoint",
+                "\\* from the claims of the effects that it already kept.",
+                "MergeOne(v, e) =="
+              ]
+            ],
+            [
+              [
+                "    /\\ LET fresh == Writers(v, selected[e]) = {}",
+                "           accept == fresh \\/ (~existed[selected[e]] /\\ ~GuardEmptyCells)",
+                "       IN /\\ kept' = [kept EXCEPT ![v] = IF accept THEN @ \\cup {e} ELSE @]"
+              ],
+              [
+                "    /\\ LET fresh == Writers(v, selected[e]) = {}",
+                "           cellsAccepted == fresh \\/ (~existed[selected[e]] /\\ ~GuardEmptyCells)",
+                "           claimsAccepted == Claims(e) \\cap KeptClaims(v) = {}",
+                "           accept == cellsAccepted /\\ claimsAccepted",
+                "       IN /\\ kept' = [kept EXCEPT ![v] = IF accept THEN @ \\cup {e} ELSE @]"
+              ]
+            ],
+            [
+              [
+                "    /\\ pending' = [pending EXCEPT ![v] = @ \\ {e}]",
+                "    /\\ UNCHANGED <<existed, selected, nextPosition, priority, prepared>>",
+                ""
+              ],
+              [
+                "    /\\ pending' = [pending EXCEPT ![v] = @ \\ {e}]",
+                "    /\\ UNCHANGED <<existed, selected, nextPosition, priority, prepared, leafOf, bucketOf>>",
+                ""
+              ]
+            ],
+            [
+              [
+                "",
+                "IndependentScopesSurvive == selected[1] # selected[2] =>",
+                "    (\\A v \\in Validators : Done(v) => kept[v] = Effects)",
+                ""
+              ],
+              [
+                "",
+                "\\* Changed by DR-119: this property never held for the code before DR-119,",
+                "\\* because the global lock made every two settlements conflict. Under DR-119",
+                "\\* two first uses that share a bucket still conflict, so the property holds",
+                "\\* only without such a shared bucket (IndependentScopesSurviveRefined).",
+                "\\* IndependentScopesSurvive == selected[1] # selected[2] =>",
+                "\\*     (\\A v \\in Validators : Done(v) => kept[v] = Effects)",
+                "SharedCreationBucket ==",
+                "    /\\ ~existed[selected[1]]",
+                "    /\\ ~existed[selected[2]]",
+                "    /\\ bucketOf[selected[1]] = bucketOf[selected[2]]",
+                "IndependentScopesSurviveRefined ==",
+                "    (selected[1] # selected[2] /\\ ~SharedCreationBucket) =>",
+                "        (\\A v \\in Validators : Done(v) => kept[v] = Effects)",
+                ""
+              ]
+            ],
+            [
+              [
+                "",
+                "====================================================================="
+              ],
+              [
+                "",
+                "\\* Added by DR-119: a merge never keeps two first uses of different scopes in",
+                "\\* one TreeHashMap leaf. Their setters would leave two datums on the leaf,",
+                "\\* because the merge does not see the race on a bitmask-tagged leaf.",
+                "CreatedScopes(v, l) ==",
+                "    {selected[e] : e \\in {k \\in kept[v] : ~existed[selected[k]] /\\ leafOf[selected[k]] = l}}",
+                "MapLeafUnique == \\A v \\in Validators, l \\in Leaves : Cardinality(CreatedScopes(v, l)) <= 1",
+                "",
+                "====================================================================="
+              ]
+            ]
+          ]
+        },
+        {
+          "path": "formal/tlaplus/cost_accounted_rho/FeeCursorBranchMergeEmptyUnsafe.cfg",
+          "replaced_blocks": [
+            [
+              [
+                "  CanonicalOrder = TRUE",
+                "CHECK_DEADLOCK FALSE"
+              ],
+              [
+                "  CanonicalOrder = TRUE",
+                "  \\* Changed by DR-119: a bucket lock also orders two first uses of one scope,",
+                "  \\* so the control runs without a creation lock to isolate the empty-cell guard.",
+                "  LockMode = \"none\"",
+                "  BucketsRespectLeaves = TRUE",
+                "CHECK_DEADLOCK FALSE"
+              ]
+            ]
+          ]
+        },
+        {
+          "path": "formal/tlaplus/cost_accounted_rho/FeeCursorBranchMergeMoneyUnsafe.cfg",
+          "replaced_blocks": [
+            [
+              [
+                "  CanonicalOrder = TRUE",
+                "CHECK_DEADLOCK FALSE"
+              ],
+              [
+                "  CanonicalOrder = TRUE",
+                "  LockMode = \"bucket\"",
+                "  BucketsRespectLeaves = TRUE",
+                "CHECK_DEADLOCK FALSE"
+              ]
+            ]
+          ]
+        },
+        {
+          "path": "formal/tlaplus/cost_accounted_rho/FeeCursorBranchMergeOrderUnsafe.cfg",
+          "replaced_blocks": [
+            [
+              [
+                "  CanonicalOrder = FALSE",
+                "CHECK_DEADLOCK FALSE"
+              ],
+              [
+                "  CanonicalOrder = FALSE",
+                "  LockMode = \"bucket\"",
+                "  BucketsRespectLeaves = TRUE",
+                "CHECK_DEADLOCK FALSE"
+              ]
+            ]
+          ]
+        },
+        {
+          "path": "formal/tlaplus/cost_accounted_rho/FeeCursorCells.cfg",
+          "replaced_blocks": [
+            [
+              [
+                "    PublishPosition = TRUE",
+                "SPECIFICATION Spec"
+              ],
+              [
+                "    PublishPosition = TRUE",
+                "    FastPath = TRUE",
+                "SPECIFICATION Spec"
+              ]
+            ]
+          ]
+        },
+        {
+          "path": "formal/tlaplus/cost_accounted_rho/FeeCursorCells.tla",
+          "replaced_blocks": [
+            [
+              [
+                "",
+                "CONSTANTS Workers, Scopes, RecheckInitialization, CheckRevision,",
+                "          RestoreActual, PublishPosition",
+                "ASSUME /\\ Workers # {} /\\ IsFiniteSet(Workers)"
+              ],
+              [
+                "",
+                "\\* Changed by DR-119 (bug 11004): FastPath adds the lock-free lookup of",
+                "\\* ensureCostCursor, which runs before the locked creation of a cursor.",
+                "\\* CONSTANTS Workers, Scopes, RecheckInitialization, CheckRevision,",
+                "\\*           RestoreActual, PublishPosition",
+                "CONSTANTS Workers, Scopes, RecheckInitialization, CheckRevision,",
+                "          RestoreActual, PublishPosition, FastPath",
+                "ASSUME /\\ Workers # {} /\\ IsFiniteSet(Workers)"
+              ]
+            ],
+            [
+              [
+                "       /\\ RestoreActual \\in BOOLEAN /\\ PublishPosition \\in BOOLEAN",
+                ""
+              ],
+              [
+                "       /\\ RestoreActual \\in BOOLEAN /\\ PublishPosition \\in BOOLEAN",
+                "       /\\ FastPath \\in BOOLEAN",
+                ""
+              ]
+            ],
+            [
+              [
+                "",
+                "Initialize(w) ==",
+                "    /\\ phase[w] = \"new\"",
+                "    /\\ LET create == ~marker[selected[w]] \\/ ~RecheckInitialization"
+              ],
+              [
+                "",
+                "\\* Added by DR-119: the lock-free lookup. A worker whose scope already has a",
+                "\\* cursor goes to \"waiting\" with no lock and no creation. A worker that finds",
+                "\\* no cursor goes on to the locked creation.",
+                "Peek(w) ==",
+                "    /\\ FastPath",
+                "    /\\ phase[w] = \"new\"",
+                "    /\\ phase' = [phase EXCEPT ![w] = IF marker[selected[w]] THEN \"waiting\" ELSE \"absent\"]",
+                "    /\\ UNCHANGED <<selected, nextPosition, marker, revisionCells, positionCells,",
+                "                    logical, fees, held, payload, emitRevision, emitPosition>>",
+                "",
+                "\\* Changed by DR-119: the creation runs under the lock of the scope's bucket.",
+                "\\* After a lookup that found no cursor, the lookup can be stale, so the",
+                "\\* creation checks again under the lock (RecheckInitialization).",
+                "\\* Initialize(w) ==",
+                "\\*     /\\ phase[w] = \"new\"",
+                "Initialize(w) ==",
+                "    /\\ phase[w] = IF FastPath THEN \"absent\" ELSE \"new\"",
+                "    /\\ LET create == ~marker[selected[w]] \\/ ~RecheckInitialization"
+              ]
+            ],
+            [
+              [
+                "",
+                "Next == (\\E w \\in Workers : Initialize(w) \\/ Acquire(w) \\/ Finish(w)",
+                "                            \\/ PublishRevision(w) \\/ PublishCursorPosition(w))"
+              ],
+              [
+                "",
+                "Next == (\\E w \\in Workers : Peek(w) \\/ Initialize(w) \\/ Acquire(w) \\/ Finish(w)",
+                "                            \\/ PublishRevision(w) \\/ PublishCursorPosition(w))"
+              ]
+            ]
+          ]
+        },
+        {
+          "path": "formal/tlaplus/cost_accounted_rho/FeeCursorCellsInitializeUnsafe.cfg",
+          "replaced_blocks": [
+            [
+              [
+                "    PublishPosition = TRUE",
+                "SPECIFICATION Spec"
+              ],
+              [
+                "    PublishPosition = TRUE",
+                "    FastPath = FALSE",
+                "SPECIFICATION Spec"
+              ]
+            ]
+          ]
+        },
+        {
+          "path": "formal/tlaplus/cost_accounted_rho/FeeCursorCellsPositionUnsafe.cfg",
+          "replaced_blocks": [
+            [
+              [
+                "    PublishPosition = FALSE",
+                "SPECIFICATION Spec"
+              ],
+              [
+                "    PublishPosition = FALSE",
+                "    FastPath = TRUE",
+                "SPECIFICATION Spec"
+              ]
+            ]
+          ]
+        },
+        {
+          "path": "formal/tlaplus/cost_accounted_rho/FeeCursorCellsRestoreUnsafe.cfg",
+          "replaced_blocks": [
+            [
+              [
+                "    PublishPosition = TRUE",
+                "SPECIFICATION Spec"
+              ],
+              [
+                "    PublishPosition = TRUE",
+                "    FastPath = TRUE",
+                "SPECIFICATION Spec"
+              ]
+            ]
+          ]
+        },
+        {
+          "path": "formal/tlaplus/cost_accounted_rho/FeeCursorCellsRevisionUnsafe.cfg",
+          "replaced_blocks": [
+            [
+              [
+                "    PublishPosition = TRUE",
+                "SPECIFICATION Spec"
+              ],
+              [
+                "    PublishPosition = TRUE",
+                "    FastPath = TRUE",
+                "SPECIFICATION Spec"
+              ]
+            ]
+          ]
+        },
+        {
+          "path": "scripts/check-cost-accounted-rho-proofs.sh",
+          "replaced_blocks": [
+            [
+              [
+                "From CostAccountedRho Require Import StateImportRetry.",
+                "From CostAccountedRho Require OfferedOnlyActivation GenesisVersionAdoption NativePathDeltaCodec MeteredComparison NativeCandidateDigestCache CandidateSourceOrder ObservationReadCoverage IncrementalTreeBacking OrderedLookupBound NativeSharedReads DetachedPathCompaction NativePathTrie AggregatedAcquisitionDemand CandidateReadCoverage ReplayAuthorityPrepareCoverage ResultBackingCoverage NativeDuplicatePrefilter FreeMapExtraction WalkerBlockCharge NestedEncodeCost.",
+                "From CostAccountedRho Require Import RotatingMonetaryAllocation."
+              ],
+              [
+                "From CostAccountedRho Require Import StateImportRetry.",
+                "From CostAccountedRho Require OfferedOnlyActivation GenesisVersionAdoption NativePathDeltaCodec MeteredComparison NativeCandidateDigestCache CandidateSourceOrder ObservationReadCoverage IncrementalTreeBacking OrderedLookupBound NativeSharedReads DetachedPathCompaction NativePathTrie AggregatedAcquisitionDemand CandidateReadCoverage ReplayAuthorityPrepareCoverage ResultBackingCoverage NativeDuplicatePrefilter FreeMapExtraction WalkerBlockCharge NestedEncodeCost CostCursorBuckets.",
+                "From CostAccountedRho Require Import RotatingMonetaryAllocation."
+              ]
+            ],
+            [
+              [
+                "Print Assumptions NestedEncodeCost.deep_chain_example.",
+                "Quit."
+              ],
+              [
+                "Print Assumptions NestedEncodeCost.deep_chain_example.",
+                "Print Assumptions CostCursorBuckets.same_leaf_same_bucket.",
+                "Print Assumptions CostCursorBuckets.kept_creations_distinct_leaves.",
+                "Print Assumptions CostCursorBuckets.existing_scopes_disjoint_claims.",
+                "Print Assumptions CostCursorBuckets.independent_existing_scopes_survive.",
+                "Print Assumptions CostCursorBuckets.same_scope_existing_settlements_conflict.",
+                "Print Assumptions CostCursorBuckets.bucket_rule_detects_the_shared_leaf.",
+                "Print Assumptions CostCursorBuckets.nc_global_lock_conflicts_distinct_scopes.",
+                "Print Assumptions CostCursorBuckets.nc_no_creation_lock_two_leaf_datums.",
+                "Print Assumptions CostCursorBuckets.nc_no_creation_lock_witness.",
+                "Print Assumptions CostCursorBuckets.nc_scope_byte_bucket_splits_leaf.",
+                "Quit."
+              ]
+            ]
+          ]
+        },
+        {
+          "path": "scripts/check-cost-accounted-rho-tla-invariants.sh",
+          "replaced_blocks": [
+            [
+              [
+                "EXPECTED_REFUTATION_INVARIANT[FeeCursorCellsRevisionUnsafe]=EveryFeeHasOneRevision",
+                "EXPECTED_REFUTATION_WRAPPER[FundingCursorCellsSequentialUnsafe]=FundingCursorCells"
+              ],
+              [
+                "EXPECTED_REFUTATION_INVARIANT[FeeCursorCellsRevisionUnsafe]=EveryFeeHasOneRevision",
+                "# DR-119 (bug 11004): a creation after the lock-free lookup must check again",
+                "# under the bucket lock.",
+                "EXPECTED_REFUTATION_WRAPPER[FeeCursorCellsCreateOnStaleReadUnsafe]=FeeCursorCells",
+                "EXPECTED_REFUTATION_INVARIANT[FeeCursorCellsCreateOnStaleReadUnsafe]=ExactlyOnePairPerInitializedScope",
+                "EXPECTED_REFUTATION_WRAPPER[FundingCursorCellsSequentialUnsafe]=FundingCursorCells"
+              ]
+            ],
+            [
+              [
+                "EXPECTED_REFUTATION_INVARIANT[FeeCursorBranchMergeOrderUnsafe]=ValidatorAgreement",
+                "EXPECTED_REFUTATION_INVARIANT[FeeObligationBoundaryMultipliedUnsafe]=FeeMatchesIndependentObligation"
+              ],
+              [
+                "EXPECTED_REFUTATION_INVARIANT[FeeCursorBranchMergeOrderUnsafe]=ValidatorAgreement",
+                "# DR-119 (bug 11004): the global lock makes independent scopes conflict. No",
+                "# creation lock, or buckets that split a leaf, let one leaf receive two datums.",
+                "EXPECTED_REFUTATION_WRAPPER[FeeCursorBranchMergeGlobalLockUnsafe]=FeeCursorBranchMerge",
+                "EXPECTED_REFUTATION_INVARIANT[FeeCursorBranchMergeGlobalLockUnsafe]=IndependentScopesSurviveRefined",
+                "EXPECTED_REFUTATION_WRAPPER[FeeCursorBranchMergeNoCreationLockUnsafe]=FeeCursorBranchMerge",
+                "EXPECTED_REFUTATION_INVARIANT[FeeCursorBranchMergeNoCreationLockUnsafe]=MapLeafUnique",
+                "EXPECTED_REFUTATION_WRAPPER[FeeCursorBranchMergeBucketCoarseningUnsafe]=FeeCursorBranchMerge",
+                "EXPECTED_REFUTATION_INVARIANT[FeeCursorBranchMergeBucketCoarseningUnsafe]=MapLeafUnique",
+                "EXPECTED_REFUTATION_INVARIANT[FeeObligationBoundaryMultipliedUnsafe]=FeeMatchesIndependentObligation"
+              ]
+            ]
+          ]
+        },
+        {
+          "path": "scripts/check-tlc-source-binding.sh",
+          "replaced_blocks": [
+            [
+              [
+                "",
+                "echo \"TLC source-binding regression passed.\""
+              ],
+              [
+                "",
+                "# DR-119 (bug 11004): every configuration of the two cost-cursor models has its",
+                "# own well-formed TLC identity.",
+                "cursor_dir=\"$ROOT/formal/tlaplus/cost_accounted_rho\"",
+                "declare -A cursor_identity_owner=()",
+                "for config in \"$cursor_dir\"/FeeCursorBranchMerge*.cfg \"$cursor_dir\"/FeeCursorCells*.cfg; do",
+                "  case \"$(basename \"$config\")\" in",
+                "    FeeCursorBranchMerge*) cursor_module=\"$cursor_dir/FeeCursorBranchMerge.tla\" ;;",
+                "    *) cursor_module=\"$cursor_dir/FeeCursorCells.tla\" ;;",
+                "  esac",
+                "  cursor_hash=\"$(tlc_source_hash \"$config\" \"$cursor_module\")\"",
+                "  cursor_identity=\"$(tlc_recovery_identity \"$cursor_hash\")\"",
+                "  [[ \"$cursor_hash\" =~ ^[0-9a-f]{64}$ ]]",
+                "  [[ \"$cursor_identity\" =~ ^[0-9a-f]{64}$ ]]",
+                "  if [[ -n \"${cursor_identity_owner[$cursor_identity]:-}\" ]]; then",
+                "    echo \"error: $(basename \"$config\") shares a TLC identity with ${cursor_identity_owner[$cursor_identity]}\" >&2",
+                "    exit 1",
+                "  fi",
+                "  cursor_identity_owner[$cursor_identity]=\"$(basename \"$config\")\"",
+                "done",
+                "if (( ${#cursor_identity_owner[@]} != 13 )); then",
+                "  echo \"error: expected 13 cost-cursor TLC configurations, found ${#cursor_identity_owner[@]}\" >&2",
+                "  exit 1",
+                "fi",
+                "",
+                "echo \"TLC source-binding regression passed.\""
+              ]
+            ]
+          ]
+        }
+      ],
+      "allowed_new_files": [
+        "docs/rholang/21-reified-spaces.md",
+        "docs/rspace/reified-rspaces/README.md",
+        "docs/rspace/reified-rspaces/agent-api.md",
+        "docs/rspace/reified-rspaces/decision-register.md",
+        "docs/rspace/reified-rspaces/design-record/2026-08-15-design-ledger.md",
+        "docs/rspace/reified-rspaces/design-record/README.md",
+        "docs/rspace/reified-rspaces/design.md",
+        "docs/rspace/reified-rspaces/diagrams/01-substrate-components.puml",
+        "docs/rspace/reified-rspaces/diagrams/01-substrate-components.svg",
+        "docs/rspace/reified-rspaces/diagrams/02-namespace-bytes.puml",
+        "docs/rspace/reified-rspaces/diagrams/02-namespace-bytes.svg",
+        "docs/rspace/reified-rspaces/diagrams/03-native-handle-lifecycle.puml",
+        "docs/rspace/reified-rspaces/diagrams/03-native-handle-lifecycle.svg",
+        "docs/rspace/reified-rspaces/diagrams/04-user-agent-translation.puml",
+        "docs/rspace/reified-rspaces/diagrams/04-user-agent-translation.svg",
+        "docs/rspace/reified-rspaces/diagrams/05-head-only-queue.puml",
+        "docs/rspace/reified-rspaces/diagrams/05-head-only-queue.svg",
+        "docs/rspace/reified-rspaces/diagrams/06-space-txn-commit.puml",
+        "docs/rspace/reified-rspaces/diagrams/06-space-txn-commit.svg",
+        "docs/rspace/reified-rspaces/diagrams/06a-space-txn-lifecycle.puml",
+        "docs/rspace/reified-rspaces/diagrams/06a-space-txn-lifecycle.svg",
+        "docs/rspace/reified-rspaces/diagrams/07-checkpoint-replay-sweep.puml",
+        "docs/rspace/reified-rspaces/diagrams/07-checkpoint-replay-sweep.svg",
+        "docs/rspace/reified-rspaces/diagrams/07a-restart-lazy-attach.puml",
+        "docs/rspace/reified-rspaces/diagrams/07a-restart-lazy-attach.svg",
+        "docs/rspace/reified-rspaces/diagrams/08-counter-conflict-merge.puml",
+        "docs/rspace/reified-rspaces/diagrams/08-counter-conflict-merge.svg",
+        "docs/rspace/reified-rspaces/diagrams/09-pathmap-delivery.puml",
+        "docs/rspace/reified-rspaces/diagrams/09-pathmap-delivery.svg",
+        "docs/rspace/reified-rspaces/diagrams/10-theory-admission.puml",
+        "docs/rspace/reified-rspaces/diagrams/10-theory-admission.svg",
+        "docs/rspace/reified-rspaces/diagrams/11-record-envelope.puml",
+        "docs/rspace/reified-rspaces/diagrams/11-record-envelope.svg",
+        "docs/rspace/reified-rspaces/diagrams/12-routing-decision.puml",
+        "docs/rspace/reified-rspaces/diagrams/12-routing-decision.svg",
+        "docs/rspace/reified-rspaces/diagrams/13-verification-pipeline.puml",
+        "docs/rspace/reified-rspaces/diagrams/13-verification-pipeline.svg",
+        "docs/rspace/reified-rspaces/diagrams/15-syntax-normalization.puml",
+        "docs/rspace/reified-rspaces/diagrams/15-syntax-normalization.svg",
+        "docs/rspace/reified-rspaces/diagrams/16-space-replay-out-of-phlo.puml",
+        "docs/rspace/reified-rspaces/diagrams/16-space-replay-out-of-phlo.svg",
+        "docs/rspace/reified-rspaces/diagrams/17-legacy-charge-chain.puml",
+        "docs/rspace/reified-rspaces/diagrams/17-legacy-charge-chain.svg",
+        "docs/rspace/reified-rspaces/diagrams/18-scan-driver.puml",
+        "docs/rspace/reified-rspaces/diagrams/18-scan-driver.svg",
+        "docs/rspace/reified-rspaces/diagrams/19-pathmap-keys.puml",
+        "docs/rspace/reified-rspaces/diagrams/19-pathmap-keys.svg",
+        "docs/rspace/reified-rspaces/diagrams/20-pathmap-reroot.puml",
+        "docs/rspace/reified-rspaces/diagrams/20-pathmap-reroot.svg",
+        "docs/rspace/reified-rspaces/diagrams/21-transaction-fire-count.puml",
+        "docs/rspace/reified-rspaces/diagrams/21-transaction-fire-count.svg",
+        "docs/rspace/reified-rspaces/diagrams/22-allocation-job.puml",
+        "docs/rspace/reified-rspaces/diagrams/22-allocation-job.svg",
+        "docs/rspace/reified-rspaces/diagrams/23-crossed-stacks-merge.puml",
+        "docs/rspace/reified-rspaces/diagrams/23-crossed-stacks-merge.svg",
+        "docs/rspace/reified-rspaces/diagrams/24-set-class-fire.puml",
+        "docs/rspace/reified-rspaces/diagrams/24-set-class-fire.svg",
+        "docs/rspace/reified-rspaces/diagrams/25-priority-queue-lanes.puml",
+        "docs/rspace/reified-rspaces/diagrams/25-priority-queue-lanes.svg",
+        "docs/rspace/reified-rspaces/diagrams/26-join-engine.puml",
+        "docs/rspace/reified-rspaces/diagrams/26-join-engine.svg",
+        "docs/rspace/reified-rspaces/diagrams/27-pathmap-prefix-source.puml",
+        "docs/rspace/reified-rspaces/diagrams/27-pathmap-prefix-source.svg",
+        "docs/rspace/reified-rspaces/diagrams/28-vectordb-selection.puml",
+        "docs/rspace/reified-rspaces/diagrams/28-vectordb-selection.svg",
+        "docs/rspace/reified-rspaces/diagrams/29-vectordb-list-cascade.puml",
+        "docs/rspace/reified-rspaces/diagrams/29-vectordb-list-cascade.svg",
+        "docs/rspace/reified-rspaces/diagrams/30-mirror-journal-reconciler.puml",
+        "docs/rspace/reified-rspaces/diagrams/30-mirror-journal-reconciler.svg",
+        "docs/rspace/reified-rspaces/diagrams/31-recorded-embeddings.puml",
+        "docs/rspace/reified-rspaces/diagrams/31-recorded-embeddings.svg",
+        "docs/rspace/reified-rspaces/diagrams/32-advisory-query.puml",
+        "docs/rspace/reified-rspaces/diagrams/32-advisory-query.svg",
+        "docs/rspace/reified-rspaces/diagrams/33-number-model.puml",
+        "docs/rspace/reified-rspaces/diagrams/33-number-model.svg",
+        "docs/rspace/reified-rspaces/diagrams/concept-colors.iuml",
+        "docs/rspace/reified-rspaces/diagrams/fonts.lock",
+        "docs/rspace/reified-rspaces/diagrams/render.sh",
+        "docs/rspace/reified-rspaces/f1r3lang-integration.md",
+        "docs/rspace/reified-rspaces/findings/native-execution-cost-accounting.md",
+        "docs/rspace/reified-rspaces/findings/space-legacy-storage-charges.md",
+        "docs/rspace/reified-rspaces/findings/space-replay-out-of-phlo.md",
+        "docs/rspace/reified-rspaces/glossary.md",
+        "docs/rspace/reified-rspaces/pathmap-prefix-delivery.md",
+        "docs/rspace/reified-rspaces/specification.md",
+        "docs/rspace/reified-rspaces/syntax-contract.md",
+        "docs/rspace/reified-rspaces/theory-seam.md",
+        "docs/rspace/reified-rspaces/verification.md",
+        "examples/reified_rspaces/MANIFEST.toml",
+        "examples/reified_rspaces/agent_hashmap_bag.rho",
+        "formal/reified-rspaces-invariant-map.json",
+        "formal/reified-rspaces-model-map-d47.json",
+        "formal/reified-rspaces-model-map-p4.json",
+        "formal/reified-rspaces-model-map-p5.json",
+        "formal/reified-rspaces-model-map-p6.json",
+        "formal/reified-rspaces-model-map-p7.json",
+        "formal/reified-rspaces-model-map-p8.json",
+        "formal/reified-rspaces-model-map.json",
+        "formal/rocq/reified_rspaces/Makefile",
+        "formal/rocq/reified_rspaces/_CoqProject",
+        "formal/rocq/reified_rspaces/theories/AgentReadCoverage.v",
+        "formal/rocq/reified_rspaces/theories/AgentTranslation.v",
+        "formal/rocq/reified_rspaces/theories/CellDiscipline.v",
+        "formal/rocq/reified_rspaces/theories/ContinuationCollection.v",
+        "formal/rocq/reified_rspaces/theories/CounterConflict.v",
+        "formal/rocq/reified_rspaces/theories/DataCollection.v",
+        "formal/rocq/reified_rspaces/theories/Encoding.v",
+        "formal/rocq/reified_rspaces/theories/EventCorrelation.v",
+        "formal/rocq/reified_rspaces/theories/GenericRSpace.v",
+        "formal/rocq/reified_rspaces/theories/HashMapStore.v",
+        "formal/rocq/reified_rspaces/theories/HeadOnlyDisciplines.v",
+        "formal/rocq/reified_rspaces/theories/JoinCascade.v",
+        "formal/rocq/reified_rspaces/theories/LegacyCharges.v",
+        "formal/rocq/reified_rspaces/theories/Match.v",
+        "formal/rocq/reified_rspaces/theories/Namespace.v",
+        "formal/rocq/reified_rspaces/theories/OuterStorage.v",
+        "formal/rocq/reified_rspaces/theories/PathMapPrefix.v",
+        "formal/rocq/reified_rspaces/theories/PriorityQueue.v",
+        "formal/rocq/reified_rspaces/theories/RecordEnvelope.v",
+        "formal/rocq/reified_rspaces/theories/SetDiscipline.v",
+        "formal/rocq/reified_rspaces/theories/Similarity.v",
+        "formal/rocq/reified_rspaces/theories/SpaceFactory.v",
+        "formal/rocq/reified_rspaces/theories/SpaceRefs.v",
+        "formal/rocq/reified_rspaces/theories/StackDiscipline.v",
+        "formal/rocq/reified_rspaces/theories/TheoryAdmission.v",
+        "formal/rocq/reified_rspaces/theories/VectorDbDiscipline.v",
+        "formal/rocq/reified_rspaces/theories/VectorOps.v",
+        "formal/rocq/reified_rspaces/theories/VectorStore.v",
+        "formal/rocq/reified_rspaces/theories/VolatileSweep.v",
+        "formal/sage/reified_rspaces/similarity_metrics.sage",
+        "formal/tlaplus/reified_rspaces/AcceptUnpairedUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/AgentSpaces.tla",
+        "formal/tlaplus/reified_rspaces/AnnChecksOnlyInPlayUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/BeginScopeKeepsJournalUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/BlockingPublishUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/CellNoCapacityUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/CheckpointReplay.tla",
+        "formal/tlaplus/reified_rspaces/ChromaMirror.tla",
+        "formal/tlaplus/reified_rspaces/CounterConflict.tla",
+        "formal/tlaplus/reified_rspaces/CounterDroppedUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/DoublePairUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/DoublePairUnsafe_IndStep_Apalache.cfg",
+        "formal/tlaplus/reified_rspaces/FaultyAgentUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/GenericRSpace.tla",
+        "formal/tlaplus/reified_rspaces/HeadOnIncomingOnlyUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/HeadOnlyDiscipline.tla",
+        "formal/tlaplus/reified_rspaces/HeadOnlyScanUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/HeadOnlyScanUnsafe_IndStep_Apalache.cfg",
+        "formal/tlaplus/reified_rspaces/IncomingTwiceUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/JoinCascade.tla",
+        "formal/tlaplus/reified_rspaces/JoinDescriptorUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/JoinDescriptorUnsafe_IndStep_Apalache.cfg",
+        "formal/tlaplus/reified_rspaces/JoinPerPhaseCountUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/JoinReissueFreshOrdsUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/JoinResidueUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/JoinResidueUnsafe_IndStep_Apalache.cfg",
+        "formal/tlaplus/reified_rspaces/LazyAllocatorUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/LazyTouchUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/LegacyPreAfterObserveUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/LegacyTailDroppedUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/MC_AgentSpaces.cfg",
+        "formal/tlaplus/reified_rspaces/MC_CheckpointReplay.cfg",
+        "formal/tlaplus/reified_rspaces/MC_CheckpointReplay_IndBase_Apalache.cfg",
+        "formal/tlaplus/reified_rspaces/MC_CheckpointReplay_IndStep_Apalache.cfg",
+        "formal/tlaplus/reified_rspaces/MC_CheckpointReplay_Legacy.cfg",
+        "formal/tlaplus/reified_rspaces/MC_CheckpointReplay_Legacy_IndBase_Apalache.cfg",
+        "formal/tlaplus/reified_rspaces/MC_CheckpointReplay_Legacy_IndStep_Apalache.cfg",
+        "formal/tlaplus/reified_rspaces/MC_CheckpointReplay_Legacy_TwoBlock.cfg",
+        "formal/tlaplus/reified_rspaces/MC_CheckpointReplay_Peek.cfg",
+        "formal/tlaplus/reified_rspaces/MC_CheckpointReplay_TwoBlock.cfg",
+        "formal/tlaplus/reified_rspaces/MC_ChromaMirror.cfg",
+        "formal/tlaplus/reified_rspaces/MC_CounterConflict.cfg",
+        "formal/tlaplus/reified_rspaces/MC_CounterConflict_Allocator.cfg",
+        "formal/tlaplus/reified_rspaces/MC_CounterConflict_Stacks.cfg",
+        "formal/tlaplus/reified_rspaces/MC_GenericRSpace_Bag.cfg",
+        "formal/tlaplus/reified_rspaces/MC_GenericRSpace_Cell.cfg",
+        "formal/tlaplus/reified_rspaces/MC_GenericRSpace_Set.cfg",
+        "formal/tlaplus/reified_rspaces/MC_HeadOnlyDiscipline.cfg",
+        "formal/tlaplus/reified_rspaces/MC_HeadOnlyDiscipline_IndBase_Apalache.cfg",
+        "formal/tlaplus/reified_rspaces/MC_HeadOnlyDiscipline_IndStep_Apalache.cfg",
+        "formal/tlaplus/reified_rspaces/MC_HeadOnlyDiscipline_Reissue.cfg",
+        "formal/tlaplus/reified_rspaces/MC_HeadOnlyDiscipline_Reissue_IndBase_Apalache.cfg",
+        "formal/tlaplus/reified_rspaces/MC_HeadOnlyDiscipline_Reissue_IndStep_Apalache.cfg",
+        "formal/tlaplus/reified_rspaces/MC_JoinCascade_Bag.cfg",
+        "formal/tlaplus/reified_rspaces/MC_JoinCascade_Queue.cfg",
+        "formal/tlaplus/reified_rspaces/MC_JoinCascade_Set.cfg",
+        "formal/tlaplus/reified_rspaces/MC_JoinCascade_Stack.cfg",
+        "formal/tlaplus/reified_rspaces/MC_NativeHandles.cfg",
+        "formal/tlaplus/reified_rspaces/MC_NativeHandles_IndBase_Apalache.cfg",
+        "formal/tlaplus/reified_rspaces/MC_NativeHandles_IndStep_Apalache.cfg",
+        "formal/tlaplus/reified_rspaces/MC_NativeReplay_Outcome.cfg",
+        "formal/tlaplus/reified_rspaces/MC_NativeReplay_Schedule.cfg",
+        "formal/tlaplus/reified_rspaces/MC_NativeReplay_Schedule_NativeKey.cfg",
+        "formal/tlaplus/reified_rspaces/MC_PathMapPrefix.cfg",
+        "formal/tlaplus/reified_rspaces/MC_PathMapPrefix_Merge.cfg",
+        "formal/tlaplus/reified_rspaces/MC_PathMapPrefix_Peek.cfg",
+        "formal/tlaplus/reified_rspaces/MC_PriorityQueue.cfg",
+        "formal/tlaplus/reified_rspaces/MC_PriorityQueue_Deep.cfg",
+        "formal/tlaplus/reified_rspaces/MC_SpaceCoordination.cfg",
+        "formal/tlaplus/reified_rspaces/MC_StackDiscipline.cfg",
+        "formal/tlaplus/reified_rspaces/MC_TxnLockCoverage.cfg",
+        "formal/tlaplus/reified_rspaces/MC_TxnLockCoverage_IndBase_Apalache.cfg",
+        "formal/tlaplus/reified_rspaces/MC_TxnLockCoverage_IndStep_Apalache.cfg",
+        "formal/tlaplus/reified_rspaces/MC_VectorDb_List.cfg",
+        "formal/tlaplus/reified_rspaces/MC_VectorDb_Persist.cfg",
+        "formal/tlaplus/reified_rspaces/MC_VectorDb_Plain.cfg",
+        "formal/tlaplus/reified_rspaces/MirrorWriteInTxnUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/NativeHandles.tla",
+        "formal/tlaplus/reified_rspaces/NativeReplay.tla",
+        "formal/tlaplus/reified_rspaces/NoInvalidateUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/NoLiftUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/NoSetCascadeUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/NoSpaceKeyUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/NonPersistentFirstOrdUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/OrphansKeptUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/PathMapExactPathOnlyUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/PathMapMarkerNotRestoredUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/PathMapNoRetireUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/PathMapPrefix.tla",
+        "formal/tlaplus/reified_rspaces/PeekCounterFreeUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/PeekNoRestoreUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/PeekPersistUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/PlainRestoreUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/PqAnyOrderUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/PqNoSettleUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/PqPerPhaseCountUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/PqPlanOpensAtCapUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/PqReentryAtHeadUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/PriorityQueue.tla",
+        "formal/tlaplus/reified_rspaces/PublishFailedDeployUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/QualifierSupportUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/ReentryAtHeadUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/ReissueFreshOrdUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/RemovalCounterFreeUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/RestoreDroppedUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/RestoreNoReofferUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/RestoreOpAuthorityUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/RetainPeekUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/RootIgnoresVolatileUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/RuleEUpsertUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/SeqGuardToctouUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/SeqScanSkippedUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/SetNoProduceRetireUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/SetRetireOneUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/SpaceCoordination.tla",
+        "formal/tlaplus/reified_rspaces/SpaceWideIndexUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/StackDiscipline.tla",
+        "formal/tlaplus/reified_rspaces/StackNoSettleUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/StackPerPhaseCountUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/StackPlanOpensAtCapUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/StackReentryAtTopUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/StagingDivergenceUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/StoredRecordTwiceUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/SystemRouteUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/TamperedOutcomeUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/TxnLockCoverage.tla",
+        "formal/tlaplus/reified_rspaces/UncoveredChannelUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/UncoveredChannelUnsafe_IndStep_Apalache.cfg",
+        "formal/tlaplus/reified_rspaces/UnjoinedChannelUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/UnjoinedChannelUnsafe_IndStep_Apalache.cfg",
+        "formal/tlaplus/reified_rspaces/UnrecordedAdvisoryUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/UseBalanceUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/UuidUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/VdbDropOwedUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/VdbNoCascadeUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/VdbNoRetireUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/VdbParkOnlyWhileEmptyUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/VdbUncountedCascadeUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/VectorDb.tla",
+        "formal/tlaplus/reified_rspaces/WaitUnderLocksUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/WatermarkAfterFailureUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/WildcardUnsafe.cfg",
+        "formal/z3/reified_rspaces/metric_algebra.py",
+        "formal/z3/reified_rspaces/squared_form_cosine.py",
+        "formal/z3/reified_rspaces/topk_tiebreak_total_order.py",
+        "models/src/rust/reified/builders.rs",
+        "models/src/rust/reified/encoding.rs",
+        "models/src/rust/reified/mod.rs",
+        "models/src/rust/reified/params.rs",
+        "models/src/rust/reified/query_spec.rs",
+        "models/src/rust/reified/validation.rs",
+        "models/src/rust/space_factory_urn.rs",
+        "models/tests/reified_encoding.rs",
+        "models/tests/space_factory_urn.rs",
+        "models/tests/support/reified_strategies.rs",
+        "rholang/src/rust/interpreter/compiler/normalizer/processes/p_free_theory_normalizer.rs",
+        "rholang/src/rust/interpreter/compiler/normalizer/processes/p_use_block_normalizer.rs",
+        "rholang/src/rust/interpreter/compiler/normalizer/processes/reified_syntax.rs",
+        "rholang/src/rust/interpreter/reified/costs.rs",
+        "rholang/src/rust/interpreter/reified/errors.rs",
+        "rholang/src/rust/interpreter/reified/execution.rs",
+        "rholang/src/rust/interpreter/reified/factory.rs",
+        "rholang/src/rust/interpreter/reified/handle.rs",
+        "rholang/src/rust/interpreter/reified/legacy_charges.rs",
+        "rholang/src/rust/interpreter/reified/mirror_reconciler.rs",
+        "rholang/src/rust/interpreter/reified/mod.rs",
+        "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
+        "rholang/src/rust/interpreter/reified/route.rs",
+        "rholang/src/rust/interpreter/reified/runtime.rs",
+        "rholang/src/rust/interpreter/reified/schedule.rs",
+        "rholang/src/rust/interpreter/reified/scope.rs",
+        "rholang/src/rust/interpreter/reified/seq.rs",
+        "rholang/src/rust/interpreter/reified/system_channels.rs",
+        "rholang/src/rust/interpreter/reified/system_processes.rs",
+        "rholang/src/rust/interpreter/reified/user_agent.rs",
+        "rholang/src/rust/interpreter/reified/vectordb_services.rs",
+        "rholang/src/rust/interpreter/spaces/agent.rs",
+        "rholang/src/rust/interpreter/spaces/allocator.rs",
+        "rholang/src/rust/interpreter/spaces/counter.rs",
+        "rholang/src/rust/interpreter/spaces/disciplines/bag.rs",
+        "rholang/src/rust/interpreter/spaces/disciplines/cell.rs",
+        "rholang/src/rust/interpreter/spaces/disciplines/mod.rs",
+        "rholang/src/rust/interpreter/spaces/disciplines/priority_queue.rs",
+        "rholang/src/rust/interpreter/spaces/disciplines/queue.rs",
+        "rholang/src/rust/interpreter/spaces/disciplines/scan.rs",
+        "rholang/src/rust/interpreter/spaces/disciplines/set.rs",
+        "rholang/src/rust/interpreter/spaces/disciplines/stack.rs",
+        "rholang/src/rust/interpreter/spaces/disciplines/vectordb.rs",
+        "rholang/src/rust/interpreter/spaces/ephemeral.rs",
+        "rholang/src/rust/interpreter/spaces/errors.rs",
+        "rholang/src/rust/interpreter/spaces/factory/constructor.rs",
+        "rholang/src/rust/interpreter/spaces/factory/defaults.rs",
+        "rholang/src/rust/interpreter/spaces/factory/mod.rs",
+        "rholang/src/rust/interpreter/spaces/factory/urn.rs",
+        "rholang/src/rust/interpreter/spaces/families.rs",
+        "rholang/src/rust/interpreter/spaces/generic.rs",
+        "rholang/src/rust/interpreter/spaces/join.rs",
+        "rholang/src/rust/interpreter/spaces/matching.rs",
+        "rholang/src/rust/interpreter/spaces/mirror.rs",
+        "rholang/src/rust/interpreter/spaces/mod.rs",
+        "rholang/src/rust/interpreter/spaces/namespace.rs",
+        "rholang/src/rust/interpreter/spaces/outer/array.rs",
+        "rholang/src/rust/interpreter/spaces/outer/hashmap.rs",
+        "rholang/src/rust/interpreter/spaces/outer/hashset.rs",
+        "rholang/src/rust/interpreter/spaces/outer/mod.rs",
+        "rholang/src/rust/interpreter/spaces/outer/pathmap.rs",
+        "rholang/src/rust/interpreter/spaces/outer/vector.rs",
+        "rholang/src/rust/interpreter/spaces/pathmap/adapter.rs",
+        "rholang/src/rust/interpreter/spaces/pathmap/delivery.rs",
+        "rholang/src/rust/interpreter/spaces/pathmap/join.rs",
+        "rholang/src/rust/interpreter/spaces/pathmap/markers.rs",
+        "rholang/src/rust/interpreter/spaces/pathmap/mod.rs",
+        "rholang/src/rust/interpreter/spaces/pathmap/path_codec.rs",
+        "rholang/src/rust/interpreter/spaces/pathmap/reroot.rs",
+        "rholang/src/rust/interpreter/spaces/record.rs",
+        "rholang/src/rust/interpreter/spaces/settle.rs",
+        "rholang/src/rust/interpreter/spaces/theory/builtin.rs",
+        "rholang/src/rust/interpreter/spaces/theory/identity.rs",
+        "rholang/src/rust/interpreter/spaces/theory/mod.rs",
+        "rholang/src/rust/interpreter/spaces/theory/tests.rs",
+        "rholang/src/rust/interpreter/spaces/types/config.rs",
+        "rholang/src/rust/interpreter/spaces/types/id.rs",
+        "rholang/src/rust/interpreter/spaces/types/mod.rs",
+        "rholang/src/rust/interpreter/spaces/types/qualifier.rs",
+        "rholang/src/rust/interpreter/tensor/costs.rs",
+        "rholang/src/rust/interpreter/tensor/exact.rs",
+        "rholang/src/rust/interpreter/tensor/mod.rs",
+        "rholang/src/rust/interpreter/tensor/num.rs",
+        "rholang/src/rust/interpreter/tensor/ops.rs",
+        "rholang/tests/reified_agent_conformance.rs",
+        "rholang/tests/reified_array_vector.rs",
+        "rholang/tests/reified_bag.rs",
+        "rholang/tests/reified_cell.rs",
+        "rholang/tests/reified_determinism.rs",
+        "rholang/tests/reified_engine_props.rs",
+        "rholang/tests/reified_factory.rs",
+        "rholang/tests/reified_families.rs",
+        "rholang/tests/reified_handle.rs",
+        "rholang/tests/reified_hashset.rs",
+        "rholang/tests/reified_hooks_p5.rs",
+        "rholang/tests/reified_join_props.rs",
+        "rholang/tests/reified_joins.rs",
+        "rholang/tests/reified_legacy_charges.rs",
+        "rholang/tests/reified_marker_recognition.rs",
+        "rholang/tests/reified_merge.rs",
+        "rholang/tests/reified_merge_p5.rs",
+        "rholang/tests/reified_native_fail_closed.rs",
+        "rholang/tests/reified_native_spaces.rs",
+        "rholang/tests/reified_ordinary_regression.rs",
+        "rholang/tests/reified_p4_props.rs",
+        "rholang/tests/reified_p4_smoke.rs",
+        "rholang/tests/reified_p5_harness.rs",
+        "rholang/tests/reified_p8_props.rs",
+        "rholang/tests/reified_pathmap.rs",
+        "rholang/tests/reified_pattern_enforcement.rs",
+        "rholang/tests/reified_priority_queue.rs",
+        "rholang/tests/reified_queue.rs",
+        "rholang/tests/reified_queue_parity.rs",
+        "rholang/tests/reified_queue_replay.rs",
+        "rholang/tests/reified_queue_restart.rs",
+        "rholang/tests/reified_queue_source.rs",
+        "rholang/tests/reified_rehydrate.rs",
+        "rholang/tests/reified_restart_rehydrate.rs",
+        "rholang/tests/reified_routing.rs",
+        "rholang/tests/reified_seq.rs",
+        "rholang/tests/reified_set.rs",
+        "rholang/tests/reified_source_normalization.rs",
+        "rholang/tests/reified_space_store_handle_par.rs",
+        "rholang/tests/reified_space_txn_host_bounds.rs",
+        "rholang/tests/reified_stack.rs",
+        "rholang/tests/reified_syntax_corpus.rs",
+        "rholang/tests/reified_syntax_identifiers.rs",
+        "rholang/tests/reified_syntax_normalize.rs",
+        "rholang/tests/reified_temp_seq.rs",
+        "rholang/tests/reified_theory.rs",
+        "rholang/tests/reified_user_agents.rs",
+        "rholang/tests/reified_vector_ops.rs",
+        "rholang/tests/reified_vectordb.rs",
+        "rholang/tests/reified_vectordb_chroma.rs",
+        "rholang/tests/reified_vectordb_chroma_live.rs",
+        "rholang/tests/reified_volatile_sweep.rs",
+        "rholang/tests/support/agent.rs",
+        "rholang/tests/support/backends.rs",
+        "rholang/tests/support/family_programs.rs",
+        "rholang/tests/support/legacy.rs",
+        "rholang/tests/support/mod.rs",
+        "rholang/tests/support/native.rs",
+        "rholang/tests/support/props.rs",
+        "rholang/tests/support/session.rs",
+        "rspace++/src/rspace/replay_rspace/native_session/space.rs",
+        "rspace++/src/rspace/replay_rspace/space_replay.rs",
+        "rspace++/src/rspace/rspace/space_play.rs",
+        "rspace++/src/rspace/space_store_handle.rs",
+        "rspace++/tests/legacy_golden_corpus.rs",
+        "rspace++/tests/reified_space_store_handle.rs",
+        "rspace++/tests/reified_space_store_handle/support.rs",
+        "rspace++/tests/reified_space_store_handle_props.rs",
+        "scripts/check-reified-rspaces-patch-gate.sh",
+        "scripts/check-reified-rspaces-proofs.sh",
+        "scripts/check-reified-rspaces-tla-invariants.sh",
+        "scripts/verify-reified/apalache-expect.sh",
+        "scripts/verify-reified/check-closure.py",
+        "scripts/verify-reified/check-complete.py",
+        "scripts/verify-reified/check-consensus-checklist.py",
+        "scripts/verify-reified/check-footprint.py",
+        "scripts/verify-reified/check-invariant-map.py",
+        "scripts/verify-reified/check-model-map.py",
+        "scripts/verify-reified/chroma-live.sh",
+        "scripts/verify-reified/closure-policies.json",
+        "scripts/verify-reified/complete-policies.json",
+        "scripts/verify-reified/consensus-checklist.json",
+        "scripts/verify-reified/doc_lint.py",
+        "scripts/verify-reified/footprint-policies.json",
+        "scripts/verify-reified/merge-ordinary-capture.py",
+        "scripts/verify-reified/merge-queue-parity-capture.py",
+        "scripts/verify-reified/mirror-mutants.py",
+        "scripts/verify-reified/numeric_reference_receipt.py",
+        "scripts/verify-reified/p7-mutants.py",
+        "scripts/verify-reified/rocq-negative-controls.py",
+        "scripts/verify-reified/run-checker-tests.py",
+        "scripts/verify-reified/rust_citations.py",
+        "scripts/verify-reified/tensor-mutants.py",
+        "scripts/verify-reified/tests/fixtures/doc_lint/citation-doi/fail/doc.md.txt",
+        "scripts/verify-reified/tests/fixtures/doc_lint/citation-doi/pass/doc.md.txt",
+        "scripts/verify-reified/tests/fixtures/doc_lint/citation-key/fail/doc.md.txt",
+        "scripts/verify-reified/tests/fixtures/doc_lint/citation-key/pass/doc.md.txt",
+        "scripts/verify-reified/tests/fixtures/doc_lint/diagram-orphan/fail/diagrams/01-sample.puml",
+        "scripts/verify-reified/tests/fixtures/doc_lint/diagram-orphan/fail/diagrams/01-sample.svg",
+        "scripts/verify-reified/tests/fixtures/doc_lint/diagram-orphan/fail/diagrams/02-unused.puml",
+        "scripts/verify-reified/tests/fixtures/doc_lint/diagram-orphan/fail/doc.md.txt",
+        "scripts/verify-reified/tests/fixtures/doc_lint/diagram-orphan/fail/palette.iuml",
+        "scripts/verify-reified/tests/fixtures/doc_lint/diagram-orphan/pass/diagrams/01-sample.puml",
+        "scripts/verify-reified/tests/fixtures/doc_lint/diagram-orphan/pass/diagrams/01-sample.svg",
+        "scripts/verify-reified/tests/fixtures/doc_lint/diagram-orphan/pass/doc.md.txt",
+        "scripts/verify-reified/tests/fixtures/doc_lint/diagram-orphan/pass/palette.iuml",
+        "scripts/verify-reified/tests/fixtures/doc_lint/diagram-palette/fail/diagrams/01-sample.puml",
+        "scripts/verify-reified/tests/fixtures/doc_lint/diagram-palette/fail/diagrams/01-sample.svg",
+        "scripts/verify-reified/tests/fixtures/doc_lint/diagram-palette/fail/diagrams/02-uncolored.puml",
+        "scripts/verify-reified/tests/fixtures/doc_lint/diagram-palette/fail/diagrams/02-uncolored.svg",
+        "scripts/verify-reified/tests/fixtures/doc_lint/diagram-palette/fail/doc.md.txt",
+        "scripts/verify-reified/tests/fixtures/doc_lint/diagram-palette/fail/palette.iuml",
+        "scripts/verify-reified/tests/fixtures/doc_lint/diagram-palette/pass/diagrams/01-sample.puml",
+        "scripts/verify-reified/tests/fixtures/doc_lint/diagram-palette/pass/diagrams/01-sample.svg",
+        "scripts/verify-reified/tests/fixtures/doc_lint/diagram-palette/pass/doc.md.txt",
+        "scripts/verify-reified/tests/fixtures/doc_lint/diagram-palette/pass/palette.iuml",
+        "scripts/verify-reified/tests/fixtures/doc_lint/diagram-render/fail-latex/diagrams/01-sample.puml",
+        "scripts/verify-reified/tests/fixtures/doc_lint/diagram-render/fail-latex/doc.md.txt",
+        "scripts/verify-reified/tests/fixtures/doc_lint/diagram-render/fail-latex/palette.iuml",
+        "scripts/verify-reified/tests/fixtures/doc_lint/diagram-render/fail/diagrams/01-sample.puml",
+        "scripts/verify-reified/tests/fixtures/doc_lint/diagram-render/fail/doc.md.txt",
+        "scripts/verify-reified/tests/fixtures/doc_lint/diagram-render/fail/palette.iuml",
+        "scripts/verify-reified/tests/fixtures/doc_lint/diagram-render/pass/diagrams/01-sample.puml",
+        "scripts/verify-reified/tests/fixtures/doc_lint/diagram-render/pass/doc.md.txt",
+        "scripts/verify-reified/tests/fixtures/doc_lint/diagram-render/pass/palette.iuml",
+        "scripts/verify-reified/tests/fixtures/doc_lint/diagram-source/fail/diagrams/01-sample.svg",
+        "scripts/verify-reified/tests/fixtures/doc_lint/diagram-source/fail/doc.md.txt",
+        "scripts/verify-reified/tests/fixtures/doc_lint/diagram-source/fail/palette.iuml",
+        "scripts/verify-reified/tests/fixtures/doc_lint/diagram-source/pass/diagrams/01-sample.puml",
+        "scripts/verify-reified/tests/fixtures/doc_lint/diagram-source/pass/diagrams/01-sample.svg",
+        "scripts/verify-reified/tests/fixtures/doc_lint/diagram-source/pass/doc.md.txt",
+        "scripts/verify-reified/tests/fixtures/doc_lint/diagram-source/pass/palette.iuml",
+        "scripts/verify-reified/tests/fixtures/doc_lint/glossary-anchor/fail/doc.md.txt",
+        "scripts/verify-reified/tests/fixtures/doc_lint/glossary-anchor/fail/glossary.md",
+        "scripts/verify-reified/tests/fixtures/doc_lint/glossary-anchor/pass/doc.md.txt",
+        "scripts/verify-reified/tests/fixtures/doc_lint/glossary-anchor/pass/glossary.md",
+        "scripts/verify-reified/tests/fixtures/doc_lint/link/fail/doc.md.txt",
+        "scripts/verify-reified/tests/fixtures/doc_lint/link/fail/target.md",
+        "scripts/verify-reified/tests/fixtures/doc_lint/link/pass/doc.md.txt",
+        "scripts/verify-reified/tests/fixtures/doc_lint/link/pass/target.md",
+        "scripts/verify-reified/tests/fixtures/doc_lint/markdown-fence/fail/doc.md.txt",
+        "scripts/verify-reified/tests/fixtures/doc_lint/markdown-fence/pass/doc.md.txt",
+        "scripts/verify-reified/tests/fixtures/doc_lint/math-abut/fail/doc.md.txt",
+        "scripts/verify-reified/tests/fixtures/doc_lint/math-abut/pass/doc.md.txt",
+        "scripts/verify-reified/tests/fixtures/doc_lint/math-delimiter/fail/doc.md.txt",
+        "scripts/verify-reified/tests/fixtures/doc_lint/math-delimiter/pass/doc.md.txt",
+        "scripts/verify-reified/tests/fixtures/doc_lint/math-undelimited/fail/doc.md.txt",
+        "scripts/verify-reified/tests/fixtures/doc_lint/math-undelimited/pass/doc.md.txt",
+        "scripts/verify-reified/tests/fixtures/doc_lint/mermaid/fail/doc.md.txt",
+        "scripts/verify-reified/tests/fixtures/doc_lint/mermaid/pass/doc.md.txt",
+        "scripts/verify-reified/tests/fixtures/doc_lint/placement/fail/docroot/Bad_Name.md",
+        "scripts/verify-reified/tests/fixtures/doc_lint/placement/fail/docroot/README.md",
+        "scripts/verify-reified/tests/fixtures/doc_lint/placement/fail/docroot/diagrams/06A-upper-letter.puml",
+        "scripts/verify-reified/tests/fixtures/doc_lint/placement/fail/docroot/diagrams/06A-upper-letter.svg",
+        "scripts/verify-reified/tests/fixtures/doc_lint/placement/fail/docroot/diagrams/Sample.puml",
+        "scripts/verify-reified/tests/fixtures/doc_lint/placement/fail/docroot/diagrams/Sample.svg",
+        "scripts/verify-reified/tests/fixtures/doc_lint/placement/fail/docroot/diagrams/notes.txt",
+        "scripts/verify-reified/tests/fixtures/doc_lint/placement/fail/palette.iuml",
+        "scripts/verify-reified/tests/fixtures/doc_lint/placement/pass/docroot/README.md",
+        "scripts/verify-reified/tests/fixtures/doc_lint/placement/pass/docroot/diagrams/06a-sub-figure.puml",
+        "scripts/verify-reified/tests/fixtures/doc_lint/placement/pass/docroot/diagrams/06a-sub-figure.svg",
+        "scripts/verify-reified/tests/fixtures/doc_lint/placement/pass/docroot/diagrams/fonts.lock",
+        "scripts/verify-reified/tests/fixtures/doc_lint/placement/pass/docroot/guide.md",
+        "scripts/verify-reified/tests/fixtures/doc_lint/placement/pass/palette.iuml",
+        "scripts/verify-reified/tests/fixtures/doc_lint/rocq-cite/fail/doc.md.txt",
+        "scripts/verify-reified/tests/fixtures/doc_lint/rocq-cite/fail/theories/Sample.v",
+        "scripts/verify-reified/tests/fixtures/doc_lint/rocq-cite/pass/doc.md.txt",
+        "scripts/verify-reified/tests/fixtures/doc_lint/rocq-cite/pass/theories/Sample.v",
+        "scripts/verify-reified/tests/fixtures/doc_lint/rust-cite/fail/doc.md.txt",
+        "scripts/verify-reified/tests/fixtures/doc_lint/rust-cite/fail/src/rust_cite_fixture.rs",
+        "scripts/verify-reified/tests/fixtures/doc_lint/rust-cite/pass/doc.md.txt",
+        "scripts/verify-reified/tests/fixtures/doc_lint/rust-cite/pass/src/rust_cite_fixture.rs",
+        "scripts/verify-reified/tests/fixtures/doc_lint/snippet-corpus/fail-missing-corpus/doc.md.txt",
+        "scripts/verify-reified/tests/fixtures/doc_lint/snippet-corpus/fail-missing-corpus/test-vectors/reified-syntax-corpus-v1.json",
+        "scripts/verify-reified/tests/fixtures/doc_lint/snippet-corpus/fail/doc.md.txt",
+        "scripts/verify-reified/tests/fixtures/doc_lint/snippet-corpus/fail/examples/reified_rspaces/MANIFEST.toml",
+        "scripts/verify-reified/tests/fixtures/doc_lint/snippet-corpus/fail/test-vectors/reified-syntax-corpus-v1.json",
+        "scripts/verify-reified/tests/fixtures/doc_lint/snippet-corpus/pass/doc.md.txt",
+        "scripts/verify-reified/tests/fixtures/doc_lint/snippet-corpus/pass/examples/reified_rspaces/MANIFEST.toml",
+        "scripts/verify-reified/tests/fixtures/doc_lint/snippet-corpus/pass/test-vectors/reified-syntax-corpus-v1.json",
+        "scripts/verify-reified/tests/fixtures/doc_lint/ste-contraction/fail/doc.md.txt",
+        "scripts/verify-reified/tests/fixtures/doc_lint/ste-contraction/pass/doc.md.txt",
+        "scripts/verify-reified/tests/fixtures/doc_lint/ste-paragraph-length/fail/doc.md.txt",
+        "scripts/verify-reified/tests/fixtures/doc_lint/ste-paragraph-length/pass/doc.md.txt",
+        "scripts/verify-reified/tests/fixtures/doc_lint/ste-procedure-length/fail/doc.md.txt",
+        "scripts/verify-reified/tests/fixtures/doc_lint/ste-procedure-length/pass/doc.md.txt",
+        "scripts/verify-reified/tests/fixtures/doc_lint/ste-semicolon/fail/doc.md.txt",
+        "scripts/verify-reified/tests/fixtures/doc_lint/ste-semicolon/pass/doc.md.txt",
+        "scripts/verify-reified/tests/fixtures/doc_lint/ste-sentence-length/fail/doc.md.txt",
+        "scripts/verify-reified/tests/fixtures/doc_lint/ste-sentence-length/pass/doc.md.txt",
+        "scripts/verify-reified/tests/fixtures/patch-gate/parser-override.toml",
+        "scripts/verify-reified/tests/test_checkers.py",
+        "scripts/verify-reified/tests/test_closure.py",
+        "scripts/verify-reified/tests/test_doc_lint.py",
+        "scripts/verify-reified/tlc-expect-violation.sh",
+        "scripts/verify-reified/vector-ops-mutants.py",
+        "scripts/verify-reified/vectordb-mutants.py",
+        "scripts/verify-reified/vectordb-services-mutants.py",
+        "test-vectors/head-file-digests-4d67b5ccc.json",
+        "test-vectors/head-file-digests-6f7a80da3.json",
+        "test-vectors/legacy-golden-corpus-v1.json",
+        "test-vectors/numeric-reference-v1.json",
+        "test-vectors/ordinary-execution-v1.json",
+        "test-vectors/ordinary-float-forms-v1.json",
+        "test-vectors/ordinary-source-normalization-v1.json",
+        "test-vectors/protobuf-schema-head-4d67b5ccc.json",
+        "test-vectors/protobuf-schema-head-6f7a80da3.json",
+        "test-vectors/reified-join-seams-v1.json",
+        "test-vectors/reified-queue-parity-v1.json",
+        "test-vectors/reified-syntax-corpus-v1.json",
+        "formal/rocq/cost_accounted_rho/theories/CostCursorBuckets.v",
+        "formal/tlaplus/cost_accounted_rho/FeeCursorBranchMergeBucketCoarseningUnsafe.cfg",
+        "formal/tlaplus/cost_accounted_rho/FeeCursorBranchMergeGlobalLockUnsafe.cfg",
+        "formal/tlaplus/cost_accounted_rho/FeeCursorBranchMergeNoCreationLockUnsafe.cfg",
+        "formal/tlaplus/cost_accounted_rho/FeeCursorCellsCreateOnStaleReadUnsafe.cfg"
+      ]
     }
   }
 }

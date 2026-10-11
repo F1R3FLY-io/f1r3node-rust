@@ -613,7 +613,38 @@
             "models/src/main/protobuf/**"
           ],
           "step": "footprint",
+          "proves": "The event schema and the converter match HEAD.",
+          "until": "p8"
+        },
+        {
+          "kind": "footprint",
+          "policy": "@milestone",
+          "mode": "byte_identical",
+          "paths": [
+            "models/src/main/protobuf/**",
+            "models/build.rs",
+            "casper/src/rust/util/event_converter.rs"
+          ],
+          "no_new_files": [
+            "models/src/main/protobuf/**"
+          ],
+          "from": "p9",
+          "step": "footprint",
           "proves": "The event schema and the converter match HEAD."
+        },
+        {
+          "kind": "footprint",
+          "policy": "@milestone",
+          "mode": "approved_edits",
+          "paths": [
+            "casper/src/**"
+          ],
+          "no_new_files": [
+            "casper/src/**"
+          ],
+          "from": "p9",
+          "step": "footprint",
+          "proves": "casper/src gains no file and matches HEAD, except the DR-119 backport of decision 81: the bucket locks of SystemVault.rho and their policy snapshot tests."
         }
       ]
     },

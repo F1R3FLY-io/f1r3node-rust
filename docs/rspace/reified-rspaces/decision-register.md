@@ -65,7 +65,7 @@ The minimal-footprint revision (M-1 to M-5) overrides the target architecture of
 | [Decision 15](#decision-15) | Empty-state hash fixture | 2026-10-04 | Fixture commit superseded by decision 18 |
 | [Decision 16](#decision-16) | Tracker dispositions | 2026-10-04 | In force |
 | [Decision 17](#decision-17) | Runtime space registration postponed | 2026-10-04 | In force |
-| [Decision 18](#decision-18) | Marker-tagged tuples | 2026-10-04 | In force |
+| [Decision 18](#decision-18) | Marker-tagged tuples | 2026-10-04 | In force. [Decision 81](#decision-81) approves one `casper/src` exception |
 | [Decision 19](#decision-19) | P1 substrate | 2026-10-04 | In force, amended by decisions 30 and 36 |
 | [Decision 20](#decision-20) | Tracker leftovers of TRI-1 | 2026-10-04 | In force |
 | [Decision 21](#decision-21) | Corrected encoding table | 2026-10-04 | In force |
@@ -127,6 +127,8 @@ The minimal-footprint revision (M-1 to M-5) overrides the target architecture of
 | [Decision 77](#decision-77) | P8 design v2, the URNs of the internal ops, the space-view clause | 2026-10-10 | In force |
 | [Decision 78](#decision-78) | One native replay test runs at the v6 host-work limits | 2026-10-10 | In force. Implemented in P8 step 1 |
 | [Decision 79](#decision-79) | The conformance kit keeps the v6 host-work limits | 2026-10-10 | In force. Implemented in P8 step 5 |
+| [Decision 80](#decision-80) | The P9 design process | 2026-10-11 | In force |
+| [Decision 81](#decision-81) | Backport the DR-119 fix of bug 11004 | 2026-10-11 | In force. Implemented in P9 step 0 |
 | [M-1](#m-1) | Counter meta-channels and merge check #1 | 2026-10-04 | In force, scope widened by decision 31 |
 | [M-2](#m-2) | Space-owned record envelope | 2026-10-04 | In force |
 | [M-3](#m-3) | Charging through the accounting observer | 2026-10-04 | In force, revised 2026-10-04 |
@@ -551,7 +553,7 @@ The four proposals follow the words and the reason.
 | Field | Value |
 |---|---|
 | Date | 2026-10-04 |
-| Status | In force |
+| Status | In force. [Decision 81](#decision-81) approves one `casper/src` exception: the backport of the DR-119 fix of bug 11004 |
 | Supersedes | The ledger K15 protobuf fields `Par.use_blocks = 15`, `New.space_types = 6`, `Send.params = 8`, `ReceiveBind.query_spec = 6`, and `Expr.e_free_body = 38` |
 | Changes | The fixture parts of [decision 6](#decision-6), [decision 15](#decision-15), and [I-14](#i-14) |
 | Related | [Decision 21](#decision-21), [marker tuple](glossary.md#marker-tuple), [recognized position](glossary.md#recognized-position) |
@@ -2257,6 +2259,62 @@ The footprint policy `p8` approves the edit, and checklist items 11 and 21 name 
 - Merge the newer commits of the cost-accounting branch first. Their effect on these costs is not known, and the merge is a large step before P8 completes.
 
 **Evidence.** The measurement is a progress note of the finding M-47-1 (pgmcp 10816).
+
+### <a id="decision-80"></a>Decision 80: The P9 design process
+
+| Field | Value |
+|---|---|
+| Date | 2026-10-11 |
+| Status | In force |
+| Related | [Decision 47](#decision-47), [decision 65](#decision-65), [decision 72](#decision-72), [decision 76](#decision-76), [M-5](#m-5) |
+
+**Statement.**
+
+- The main session drafts the design of P9 against the current code.
+- P9 is the consensus integration: the replay and the merge of spaces across blocks, and the event coverage of space writes.
+- P9 also adds the suites N1, N2, N4, N7 and N9.
+- Its other parts are the export and the import of space state, and the ledger of the legacy tests.
+- One fresh read-only Plan agent arbitrates the draft.
+- The main session verifies its findings in code and presents the result to the user before any P9 code.
+
+**User's words.** "Me + review agent (Recommended)".
+
+**Reason.** The same process produced the approved designs of decision 47, P6, P7 and P8.
+
+### <a id="decision-81"></a>Decision 81: Backport the DR-119 fix of bug 11004
+
+| Field | Value |
+|---|---|
+| Date | 2026-10-11 |
+| Status | In force. Implemented in P9 step 0 |
+| Amends | [Decision 18](#decision-18): one approved exception to "no `casper/src` change" |
+| Related | [Decision 70](#decision-70), [decision 80](#decision-80), [M-1](#m-1) |
+
+**Statement.**
+
+- The branch carries the fix of bug 11004 from feature/cost-accounted-rho, commit `7ab849b56` (DR-119 of that branch).
+- `SystemVault.rho` takes one creation lock for each bucket of a cursor scope, and an existing cost cursor takes no lock.
+- Settlements on different cursor scopes then compose in a merge. Before the fix, every two paid offered settlements conflicted on one global lock.
+- The files of that commit that this tree holds unchanged since the base `4d67b5ccc` are ported byte for byte.
+- These files are `SystemVault.rho`, the policy snapshot and settlement tests, a design note, the Rocq module `CostCursorBuckets.v` and the TLA models of the cost cursors.
+- The drifted files are adapted: `_CoqProject`, `PROOF_ARTIFACTS.md`, the three gate scripts, the scale claims, the conformance matrix and the decision records.
+- The commit's changes to two `batch2` specs and to the offered API tests are not ported. They depend on test code that this tree does not hold.
+- The footprint policy `p9`, the completeness phase `p9` and item 8 of the consensus checklist allow exactly these changes.
+
+**User's words.** "Can you backport the fixes to Bug 11004 from feature/cost-accounted-rho?", and then "Backport DR-119 (Recommended)".
+
+**Reason.**
+
+- Without the fix, two sibling blocks with paid offered deploys always conflict in the vault, whatever their spaces do.
+- The N4 suite of P9 can then test the merge of two sibling blocks with spaces at the Casper level, with different payers.
+- That is the only Casper-level check of [M-1](#m-1). The ported files are identical to the branch, so the next merge of that branch keeps them.
+
+**Rejected alternatives.**
+
+- Keep N4 without the fix. The merge rows of spaces would stay only in the runtime rig.
+- Merge all of feature/cost-accounted-rho first. That merge holds 541 commits, among them replay-cost work that its owner calls not complete.
+
+**Evidence.** The policy snapshot and settlement tests, the cost-accounting Rocq and TLA legs of the new artifacts, the full `casper` suite and I-14 (verification.md, section 34).
 
 ## Minimal-footprint revision: M-1 to M-5
 

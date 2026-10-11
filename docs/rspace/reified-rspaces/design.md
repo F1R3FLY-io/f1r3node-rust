@@ -1231,12 +1231,12 @@ Table S8 maps the checklist items to the reason and to the gate that shows it.
 | 1 | The COMM produce sort is unchanged. | The substrate builds every COMM with `COMM::new`, and `trace/` is frozen. | R1, footprint `p1`, legacy golden corpus |
 | 2 | The host never retains peeked or matched-persistent data. | The host code is unchanged. Since [decision 45](decision-register.md#decision-45), spaces do not retain peeked records either. | R2, the six HEAD peek tests |
 | 3 | Joins stay greedy, and `Match` is unchanged. | The matcher modules are frozen. | R3, footprint `p1` |
-| 4 | No production EventCoverage exists. | `casper/src` is frozen. The substrate correlates events only inside its own commit. | Footprint `p1` |
+| 4 | No production EventCoverage exists. | `casper/src` is frozen. The substrate correlates events only inside its own commit. From P9, only the DR-119 backport of [decision 81](decision-register.md#decision-81) changes `casper/src`, in `SystemVault.rho`. | Footprint `p1` |
 | 5 | Leaf, serializer, and event-struct formats are unchanged, and host structs too. | `internal.rs`, `serializers/`, and `trace/` are frozen. | R4, R5, footprint `p1` |
 | 6 | The derived bincode of `Datum`, `WaitingContinuation`, and `Produce` is unchanged. | `internal.rs` and `trace/` are frozen. | Legacy golden corpus |
 | 7 | Produce and consume identities are unchanged. | The substrate uses only `Produce::create` and `Consume::create`. | Legacy golden corpus |
 | 8 | Event proto bytes are unchanged. | The protobuf files are frozen. | R5 |
-| 9 | The merger is unchanged. | `merger/` and `casper/src` are frozen. | Footprint `p1` |
+| 9 | The merger is unchanged. | `merger/` and `casper/src` are frozen. From P9, only the DR-119 backport of [decision 81](decision-register.md#decision-81) changes `casper/src`, in `SystemVault.rho`. | Footprint `p1` |
 | 10 | Host replay acceptance is unchanged. | `replay_rspace.rs` gains one `mod` line only. | R9, `space_store_handle_host_replay_accepts_txn_play_log` |
 | 11 | Cost and host-work accounting are unchanged in P1. | The accounting module is frozen, and the substrate drives the existing observer. | R6 |
 | 12 | The dedup identity of the hot store is unchanged. | `hot_store.rs` is frozen, and the view copies the identity word for word. | `view_put_continuation_deduplicates_by_debug_identity`, footprint `p1` |

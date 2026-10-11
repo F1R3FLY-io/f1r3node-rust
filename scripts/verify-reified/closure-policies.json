@@ -693,7 +693,7 @@
         "--quiet"
       ],
       "expected_exit": 1,
-      "cited_total": 132,
+      "cited_total": 134,
       "mismatches": [
         "✗ docs/casper/theory/cost-accounting-decision-records.md:662  PoS.rhox:460-464 — none of the identifiers named on this line (active) occur in the cited range",
         "✗ docs/casper/theory/cost-accounting-impl/d3-replace-phlo-with-tokens.md:62  validate.rs:1530-1535 — none of the identifiers named on this line (DeployData::validate_phlo Validate::phlo_price min_phlo_price) occur in the cited range",

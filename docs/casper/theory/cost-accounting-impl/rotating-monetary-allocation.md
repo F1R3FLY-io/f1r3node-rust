@@ -499,7 +499,7 @@ The log is `fee-branch-model.log`.
 | --- | --- |
 | `CursorCellUnique` | The numeric-cell guard retains at most one writer per shared scope, including first use. |
 | `WholeEffectAccounting` | Rejection removes the losing cursor changes and monetary effects together. |
-| `IndependentScopesSurvive` | Disjoint scopes and purses retain both effects. |
+| `IndependentScopesSurvive` | Disjoint scopes and purses retain both effects. DR-119 replaces this invariant with `IndependentScopesSurviveRefined` (see "Creation buckets"). |
 | `SameScopeKeepsOne` | Competing fresh branch plans retain exactly one complete effect. |
 | `ValidatorAgreement` | Reordered inputs produce identical merged roots and effect decisions. |
 | `NoPhantomEffects` | Every retained effect belongs to the prepared input set. |
@@ -517,6 +517,43 @@ It checked reversed merge inputs, retained balances, cursor fields, and equality
 The log is `fee-merge-state-correspondence.log`.
 This result does not establish equivalence between direct execution and survivor-only merging.
 That comparison exposed a separate [numeric accounting metadata defect](numeric-merge-authority-preservation.md).
+
+### Creation buckets (DR-119)
+
+Before [DR-119](../cost-accounting-decision-records.md), `ensureCostCursor` took one global lock on every call.
+The model above did not include that lock.
+So `IndependentScopesSurvive` held in the model, but the code made every two cursor-bearing settlements conflict on the lock.
+
+DR-119 replaces the global lock with two rules:
+
+- A settlement on an existing cursor takes no lock, because the TreeHashMap lookup only peeks.
+- A first use takes the lock of its bucket, the first byte of keccak256(`scope.toByteArray()`).
+
+The cursor map is a TreeHashMap of depth 2, so a leaf is the first two bytes of the same hash.
+One leaf therefore lies in one bucket, and two creations in one leaf take one lock.
+
+`FeeCursorBranchMerge.tla` now models the lock rule with `LockMode` ("global", "bucket" or "none").
+`BucketsRespectLeaves` states that one leaf has one bucket.
+The merge keeps an effect only when its claimed base datums do not intersect the claims that it already kept, as the race rule does.
+
+| Model invariant (DR-119) | Requirement |
+| --- | --- |
+| `IndependentScopesSurviveRefined` | Disjoint scopes retain both effects, unless two first uses share a creation bucket. It replaces `IndependentScopesSurvive`. |
+| `MapLeafUnique` | A merge never keeps two first uses of different scopes in one TreeHashMap leaf. |
+
+The safe configuration in bucket mode passes with 18,432 distinct states.
+Three new controls violate their invariants.
+The global lock violates `IndependentScopesSurviveRefined`.
+No creation lock, and buckets that split a leaf, violate `MapLeafUnique`.
+The empty-cell control now runs without a creation lock, because a bucket lock also orders two first uses of one scope.
+
+`FeeCursorCells.tla` adds the lock-free lookup as the `Peek` action, enabled by `FastPath`.
+A creation after a lookup that found no cursor must check again under the lock.
+The control `FeeCursorCellsCreateOnStaleReadUnsafe` skips that check and violates `ExactlyOnePairPerInitializedScope`.
+The safe configuration passes with 3,568 distinct states.
+
+`CostCursorBuckets.v` proves the same rules over an abstract hash.
+The property test `settlement_conflict_iff_same_scope_or_same_bucket_first_use` compares dev's conflict test on real settlement logs with the rule in 256 cases.
 
 ## Verification and correspondence limits
 

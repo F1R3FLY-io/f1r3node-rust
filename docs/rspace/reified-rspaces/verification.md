@@ -6278,6 +6278,67 @@ So the bound of 8 depends on the load of the host, not on the code of the candid
 The test belongs to the base, and the campaign does not change it ([decision 70](decision-register.md#decision-70)).
 Table 183 counts the second full re-run, and it also gives the two runs that failed.
 
+## 34. Phase P9: consensus integration
+
+Phase P9 tests spaces where consensus meets them ([decision 80](decision-register.md#decision-80), design v2).
+Its subjects are the replay and the merge of spaces across blocks, the event coverage of space writes, and Casper's proposal, validation and merge.
+The phase adds no Reified production code.
+It has nine steps:
+
+1. Step 0: the backport of the DR-119 fix of bug 11004 ([decision 81](decision-register.md#decision-81)).
+2. Step 1: the probes of N4, the inventory of the legacy tests, and the shared test support.
+3. Step 2: N1, N9, the merge of spaces across blocks, and the event coverage.
+4. Step 3: N2 and the replay of spaces across blocks.
+5. Step 4: the export and the import of space state.
+6. Step 5: N4, the suite of Casper's proposal, validation and merge.
+7. Step 6: N7, the loom models.
+8. Step 7: the ledger of the legacy tests.
+9. Step 8: the formal models, the maps, the documents and the full gate set.
+
+### 34.1 Step 0: the DR-119 backport
+
+Before the backport, `SystemVault.rho` took one global lock for every settlement that moves a cost cursor.
+A paid offered deploy always moves a cursor, so two sibling blocks with paid offered deploys always conflicted in the vault.
+The fix of feature/cost-accounted-rho, commit `7ab849b56` (DR-119 of that branch), takes one creation lock for each bucket of a cursor scope.
+An existing cursor takes no lock, so settlements on different scopes compose in a merge.
+N4 needs this fix to merge two sibling blocks with spaces at the Casper level.
+
+*Table 186. The files of the backport.*
+
+| Group | Files | Treatment |
+|---|---|---|
+| The fix | `casper/src/main/resources/SystemVault.rho` | Byte-identical to `7ab849b56` |
+| Tests | `policy_snapshot/tests.rs`, `cost_vault_settlement_test.rs` | Byte-identical. They add one test each. |
+| Formal models | `CostCursorBuckets.v`, and the 15 TLA files of `FeeCursorBranchMerge` and `FeeCursorCells` | Byte-identical |
+| Design note | `cost-accounting-impl/rotating-monetary-allocation.md` | Byte-identical |
+| Gate scripts | `check-cost-accounted-rho-proofs.sh`, `check-cost-accounted-rho-tla-invariants.sh`, `check-tlc-source-binding.sh` | Adapted: the module in the `Require` line, its 10 headline queries, the 4 refuted controls, and the identity check of the 13 cursor configurations |
+| Documents | `_CoqProject`, `PROOF_ARTIFACTS.md`, the 8 scale claims of `cost-accounted-rho-verification.md`, the row E2E-037, and the record DR-119 | Adapted. The scale claims are 262 modules, 95,821 lines and 5,028 proof terms. |
+| Not ported | Two `batch2` specs, and `offered_funded_api_test.rs` | The `batch2` changes undo a workaround that this tree never received. The offered API tests depend on test code of DR-115 and DR-120. |
+
+The 20 byte-identical files equal their versions at `7ab849b56` by a byte comparison.
+They had no change between the base `4d67b5ccc` and the parent of `7ab849b56`.
+No later commit of that branch amends DR-119.
+
+*Table 187. The gates of step 0.*
+
+| Gate | Result |
+|---|---|
+| `cargo test -p casper --lib policy_snapshot` | 9 passed, 0 failed |
+| `COST_ACCOUNTING_ONLY=1 scripts/check-cost-accounted-rho-proofs.sh` | Passed: 262 modules, 2,900 closed assumption queries |
+| `scripts/check-cost-accounted-rho-tla-invariants.sh --filter FeeCursor` | 25 passed, 0 failed, and 20 expected refutations |
+| `cargo test --release -p casper --no-fail-fast` | 1,507 passed, 3 failed, 14 ignored |
+| The footprint policy `p9`, the completeness phase `p9`, and the consensus checklist at the milestones `p8` and `p9` | 0 violations, 0 findings and 0 failures |
+
+The three failures of `casper` are the failures of the base that section [26.2](#262-the-release-regression) lists.
+The release suite holds the two new tests, and both I-14 tests pass with their unchanged constants.
+The 256-case property of the settlement tests ran in the release suite, because its debug run was too slow.
+
+The step has three findings:
+
+1. The script `check-tlc-source-binding.sh` fails in this tree before the new block, because `formal/tlaplus/uptime` is absent since the base `4d67b5ccc`. The new cursor block, run alone, finds 13 configurations with 13 distinct identities. The rest of the script belongs to its owner ([decision 70](decision-register.md#decision-70)).
+2. The record DR-119 cited `interpreter_util.rs:1871-1882`, the lines of the branch. In this tree the same lines are `interpreter_util.rs:1855-1866`, and the record now cites them.
+3. The audit `check-source-line-refs.sh` now checks 134 cited lines, not 132. The two new citations are in the record DR-119, and both match their source. The closure policy expects 134.
+
 ## References
 
 <a id="ref-ch00"></a>[CH00] K. Claessen and J. Hughes, "QuickCheck: a lightweight tool for random testing of Haskell programs," in *Proceedings of the Fifth ACM SIGPLAN International Conference on Functional Programming (ICFP 2000)*, ACM, 2000, pp. 268–279. [doi:10.1145/351240.351266](https://doi.org/10.1145/351240.351266)

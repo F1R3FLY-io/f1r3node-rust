@@ -2309,6 +2309,25 @@
       "property_files": [
         "rholang/tests/reified_p8_props.rs"
       ]
+    },
+    "p9": {
+      "description": "Phase P9, consensus integration (design v2, plan decision 80). P9 adds no Reified production code. Step 0 backports the DR-119 fix of bug 11004 from feature/cost-accounted-rho, commit 7ab849b56 (plan decision 81): SystemVault.rho takes one creation lock per bucket of a cursor scope, and an existing cost cursor takes no lock. The step ports the policy snapshot tests and the settlement tests of that commit.",
+      "sources": [
+        "casper/src/main/resources/SystemVault.rho"
+      ],
+      "entry_points": [
+        {
+          "file": "casper/src/main/resources/SystemVault.rho",
+          "pattern": "contract seedCostCursorBuckets(@bucket) = {"
+        }
+      ],
+      "tests": [
+        "casper/src/rust/util/rholang/costacc/direct_wallet_funding/policy_snapshot/tests.rs",
+        "casper/tests/util/rholang/cost_vault_settlement_test.rs"
+      ],
+      "property_files": [
+        "casper/tests/util/rholang/cost_vault_settlement_test.rs"
+      ]
     }
   }
 }
