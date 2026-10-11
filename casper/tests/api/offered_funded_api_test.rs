@@ -3174,3 +3174,9 @@ async fn a_failed_offer_charge_survives_beside_another_signer() {
         "the merged state keeps the failed deploy's charge"
     );
 }
+
+// Added by G1-6 (DR-124): the admission tests of the live check before
+// execution. The module is declared here and not in `api/mod.rs`, so the step
+// changes no Casper file that the branch shares with dev.
+#[path = "offered_admission_api_test.rs"]
+mod offered_admission_api_test;

@@ -74,7 +74,7 @@ fn holds_offered_deploy(block: &BlockMessage) -> bool {
 /// decision of 2026-10-10). Formats do not mix on a valid chain: v6
 /// validation rejects a block with a legacy user deploy
 /// (validation_dispatcher.rs:76-82,124-130), and legacy replay refuses an
-/// offered term (offered_block.rs:775-779). The parents are read first,
+/// offered term (offered_block.rs:779-783). The parents are read first,
 /// from memory. The scope blocks are read only when no parent decides, in
 /// sorted order, so a block that this node does not hold fails identically on
 /// every node.

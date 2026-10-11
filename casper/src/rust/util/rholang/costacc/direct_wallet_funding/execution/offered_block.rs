@@ -82,7 +82,6 @@ impl CertifiedOfferedDraft {
 }
 
 impl RuntimeOps {
-    #[allow(clippy::needless_return)]
     pub(crate) async fn compute_offered_envelope_state(
         &mut self,
         start_hash: &StateHash,
@@ -218,12 +217,15 @@ impl RuntimeOps {
                     })?),
                 )
                 .map_err(|error| CasperError::RuntimeError(error.to_string()))?;
+            // Changed by G1-6 (DR-124): the attempt runs the check before
+            // execution with the wallet snapshot at R0.
             let attempt = manager
                 .evaluate_native_offered(
                     &prepared,
                     envelope,
                     &selected,
                     limits,
+                    &snapshot,
                     NativeFundedExecutionContext {
                         block_data: block_data.clone(),
                         invalid_blocks: invalid_blocks.clone(),
@@ -371,11 +373,11 @@ impl RuntimeOps {
                 "offered system continuation unexpectedly evaluated another user".to_string(),
             ));
         }
-        return Ok((
+        Ok((
             post_root,
             vec![(ProcessedUserDeploy::Offered(candidate.processed), mergeable)],
             systems,
-        ));
+        ))
     }
 }
 
@@ -580,12 +582,15 @@ impl RuntimeManager {
                 ),
             )
             .map_err(|error| CasperError::RuntimeError(error.to_string()))?;
+        // Changed by G1-6 (DR-124): the witness replay runs the check before
+        // execution with the wallet snapshot at R0, as play does.
         let witness = self
             .replay_native_offered_witness(
                 &prepared,
                 processed,
                 adopted,
                 &schedule,
+                &snapshot,
                 NativeFundedExecutionContext {
                     block_data: block_data.clone(),
                     // Changed by DR-102: certify borrows the block context.
@@ -755,7 +760,6 @@ impl RuntimeManager {
             .await
     }
 
-    #[allow(clippy::needless_return)]
     pub(crate) async fn replay_offered_envelope_state(
         &self,
         start_hash: &StateHash,
@@ -897,6 +901,6 @@ impl RuntimeManager {
                 budget.usages(),
             );
         }
-        return Ok(post_root.to_bytes_prost());
+        Ok(post_root.to_bytes_prost())
     }
 }

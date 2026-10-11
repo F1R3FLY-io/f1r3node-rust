@@ -1,8 +1,8 @@
 ' Today's execute-then-merge pipeline on a protocol-6 (v6) shard, at
 ' feature/cost-accounted-rho 17e07307f (dev 93e38575e merged). Each step
 ' carries the file:line of the code that performs it. The lines of runtime.rs,
-' runtime_manager.rs and offered_block.rs follow a later commit that moved
-' code with no behavior change.
+' runtime_manager.rs and offered_block.rs follow later commits: one moved
+' code with no behavior change, and one added the check before execution.
 '
 ' The diagram marks the two places where run-to-completion lives (the block
 ' play and the validator replay before acceptance) and the two places where
@@ -52,9 +52,9 @@ note over P, M $ca_note_red
   a deploy until it has merged the parents' post-states.
 end note
 P -> R : compute_state_envelopes\n(runtime.rs:327-392)
-R -> R : execute the single envelope\n(offered_block.rs:221-234), then fund\nand settle it (offered_block.rs:258-278)
-R -> R : producer self-replay of the same envelope\n(offered_block.rs:313-321)
-R -> R : system deploys, CloseBlock\n(offered_block.rs:359-368)
+R -> R : execute the single envelope\n(offered_block.rs:222-236), then fund\nand settle it (offered_block.rs:260-280)
+R -> R : producer self-replay of the same envelope\n(offered_block.rs:315-323)
+R -> R : system deploys, CloseBlock\n(offered_block.rs:361-370)
 note right of R $ca_note_red
   **Run-to-completion.** A v6 block holds one envelope
   (runtime.rs:346). A second envelope is an error
@@ -103,7 +103,7 @@ legend bottom
   | DAG | the directed acyclic graph of blocks |
   | LFB | the last finalized block |
   | floor | the highest ancestor that the clique oracle certifies as finalized |
-  | file.rs:a-b | lines a to b of a source file at HEAD. The lines of runtime.rs, runtime_manager.rs and offered_block.rs follow a later commit that moved code with no behavior change. |
+  | file.rs:a-b | lines a to b of a source file at HEAD. The lines of runtime.rs, runtime_manager.rs and offered_block.rs follow later commits that moved code and added the check before execution. |
 endlegend
 
 @enduml

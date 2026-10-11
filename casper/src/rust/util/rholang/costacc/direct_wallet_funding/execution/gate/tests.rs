@@ -4,7 +4,7 @@
 //! tests cover the edges, the settlement limits (arbitration M3) and the
 //! host-work rejection of the analysis.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 
 use models::rhoapi::cost_signature::Value as CostSignatureValue;
@@ -1185,4 +1185,128 @@ fn a_lane_signature_deeper_than_the_sorter_bound_is_rejected() {
         matches!(rejected, Err(OfferedGateRejection::Invalid(_))),
         "{rejected:?}"
     );
+}
+
+// ── The client lanes (G1-6, DR-124) ────────────────────────────────────────
+
+/// The decision of `case` after the restriction of its estimate to `client`.
+fn decide_restricted(
+    case: &Case,
+    client: &BTreeSet<[u8; 32]>,
+) -> Result<OfferedGate, OfferedGateRejection> {
+    let onchain = signed_only(case);
+    with_instance(case, &onchain, |estimate, terms, funding| {
+        let host = unlimited();
+        let restricted = estimate
+            .clone()
+            .retain_client_lanes(client, terms.schedule.descriptor(), &host)
+            .map_err(|error| analysis_rejection(error, &host))?;
+        decide(&restricted, false, terms, funding, limits(), &host)
+    })
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(256))]
+
+    /// When every lane is a client lane, the restriction changes no decision.
+    #[test]
+    fn client_lanes_keep_every_decision(case in arb_case(3)) {
+        let lanes = (0..LANES)
+            .map(|tag| lane(tag as u8 + 1).key)
+            .collect::<BTreeSet<_>>();
+        prop_assert_eq!(
+            decide_restricted(&case, &lanes),
+            decide_case(&case, &signed_only(&case))
+        );
+    }
+
+    /// A lane outside the client lanes leaves the holds. B counts the client
+    /// lane only. With a counted foreign lane, an accepted offer holds its
+    /// signed limit under `SignedLimit`, and a complete estimate becomes
+    /// incomplete with the reason `ForeignLane`.
+    #[test]
+    fn a_foreign_lane_leaves_the_holds(case in arb_case(3)) {
+        let client = BTreeSet::from([lane(1).key]);
+        let foreign = case.counts.iter().any(|(lane, _, _)| *lane == 1);
+        let client_bound = case
+            .counts
+            .iter()
+            .filter(|(lane, _, _)| *lane == 0)
+            .map(|(_, _, count)| *count)
+            .sum::<u64>();
+        if let Ok(gate) = decide_restricted(&case, &client) {
+            prop_assert_eq!(gate.estimate_phlo(), client_bound);
+            if foreign {
+                prop_assert_eq!(gate.bound_source(), NativeBoundSource::SignedLimit);
+                prop_assert_eq!(
+                    gate.total_hold(),
+                    u128::from(case.limit()) * u128::from(case.price) + 1
+                );
+                if case.complete {
+                    prop_assert_eq!(
+                        gate.kind(),
+                        &OfferedEstimateKind::Incomplete(IncompleteReason::ForeignLane)
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// The client lanes are the deploy lane and the lanes of the located sources.
+/// The set charges its work before it builds the set.
+#[test]
+fn the_client_lanes_are_the_deploy_lane_and_the_located_sources() {
+    let host = unlimited();
+    let lanes =
+        client_lane_set([1; 32], vec![[2; 32], [1; 32], [3; 32]], &host).expect("a small set");
+    assert_eq!(lanes, BTreeSet::from([[1; 32], [2; 32], [3; 32]]));
+    assert_eq!(
+        host.usage(HostWorkDimension::VerificationOperations).get(),
+        4
+    );
+    let tiny = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(1)));
+    assert_eq!(
+        client_lane_set([1; 32], vec![[2; 32]], &tiny),
+        Err(OfferedGateRejection::HostWork)
+    );
+}
+
+/// The loophole control of DR-124. A source that permits only some classes of
+/// a client lane does not make that lane foreign: the class without an
+/// eligible source still rejects the offer before execution. Only a lane at
+/// whose purse no source is located leaves the holds.
+#[test]
+fn restricting_class_permissions_does_not_exclude_a_client_lane() {
+    let case = Case {
+        price: 2,
+        counts: vec![(0, 0, 1), (1, 1, 1)],
+        extra: 3,
+        complete: true,
+        sources: vec![SourceCase {
+            capacity: 40,
+            hold_cap: 40,
+            debit_cap: 40,
+            fee: true,
+            permits: vec![true, false],
+        }],
+        custody: vec![1],
+        total_exposure: 40,
+        cursors: (0, 0),
+    };
+    assert_eq!(
+        decide_restricted(&case, &BTreeSet::from([lane(1).key, lane(2).key])),
+        Err(OfferedGateRejection::InsufficientPhlogiston(
+            InsufficientCause::NoPlacement
+        ))
+    );
+    let gate = decide_restricted(&case, &BTreeSet::from([lane(1).key]))
+        .expect("the foreign lane leaves the holds");
+    assert_eq!(
+        gate.kind(),
+        &OfferedEstimateKind::Incomplete(IncompleteReason::ForeignLane)
+    );
+    assert_eq!(gate.estimate_phlo(), 1);
+    assert_eq!(gate.bound_source(), NativeBoundSource::SignedLimit);
+    assert_eq!(gate.total_hold(), u128::from(case.limit()) * 2 + 1);
 }

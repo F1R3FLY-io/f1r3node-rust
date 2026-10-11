@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use models::rust::block_hash::BlockHash;
+use models::rust::cost_protocol_limits::offered_funded_v6_host_work_limits;
 use models::rust::deploy_envelope::{DeployEnvelope, DeployEnvelopeRef};
 use models::rust::phlo_grant_creation::VerifiedGrantCreationV1;
 use models::rust::phlo_intent::PhloConversionCompositionV2;
@@ -20,7 +21,7 @@ use rholang::rust::interpreter::system_processes::BlockData;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::trace::event::Event;
 
-use super::CheckedDirectWalletPolicy;
+use super::{CheckedDirectWalletPolicy, DirectWalletPolicySnapshot};
 use crate::rust::errors::CasperError;
 use crate::rust::rholang::runtime::RuntimeOps;
 use crate::rust::util::rholang::acceptance::{
@@ -30,10 +31,15 @@ use crate::rust::util::rholang::acceptance::{
 use crate::rust::util::rholang::costacc::genesis_resource_policy::{
     AdoptedResourcePolicy, CompatibleAcquisitionTerms,
 };
+#[cfg(any(test, feature = "test-utils"))]
+use crate::rust::util::rholang::costacc::offered_acceptance::{
+    OfferedCheckRecord, OfferedCheckRole, OfferedUsageKind,
+};
 use crate::rust::util::rholang::costacc::offered_grants::{
     offered_grant_issue_call_limits, offered_grant_transition_limits,
 };
 use crate::rust::util::rholang::costacc::prepaid_receipts::PrepaidStackCaptureLimits;
+use crate::rust::util::rholang::costacc::production_limits::offered_funded_v6_production_limits;
 use crate::rust::util::rholang::costacc::supply::PurseStack;
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 
@@ -63,9 +69,15 @@ pub struct NativeOfferedAttempt<'preflight, 'a> {
     replay_log: Arc<[Event]>,
     grant_issuances: Vec<VerifiedGrantCreationV1>,
     grant_issue_log: Arc<[Event]>,
+    /// Added by G1-6 (DR-124): the check before execution. Its resource bound
+    /// and bound source bind every later control of the attempt.
+    gate: OfferedGate,
 }
 
 impl<'preflight, 'a> NativeOfferedAttempt<'preflight, 'a> {
+    /// Added by G1-6 (DR-124).
+    pub fn gate(&self) -> &OfferedGate { &self.gate }
+
     pub fn evaluation(&self) -> &EvaluateResult { &self.evaluation }
 
     pub fn replay_log(&self) -> &[Event] { &self.replay_log }
@@ -275,12 +287,136 @@ impl CheckedDirectWalletPolicy<'_, OfferedFundedDeploy> {
 }
 
 impl RuntimeManager {
+    /// Added by G1-6 (DR-124): the check before execution of one offered
+    /// deploy (design §6). Play and every replay call it with the same inputs
+    /// before any runtime entry. A rejection has no effect and no charge
+    /// (P1:2210-2212). Play turns it into the typed candidate rejection of
+    /// DR-72, and replay turns it into a replay failure of the block.
+    fn check_offered_before_execution(
+        &self,
+        input: OfferedGateInput<'_>,
+    ) -> Result<OfferedGate, CasperError> {
+        #[cfg(any(test, feature = "test-utils"))]
+        match self.offered_check_hook(input.envelope.identity().as_bytes()) {
+            Some(OfferedUsageKind::SkipCheckHook) => {
+                return Ok(OfferedGate::unchecked_signed_limit(
+                    input.prepared.phlo_limit,
+                ));
+            }
+            Some(OfferedUsageKind::ZeroEstimateHook) => {
+                return gate::gate_offered_candidate_without_counts(input)
+                    .map_err(|rejection| CasperError::RuntimeError(rejection.to_string()));
+            }
+            _ => {}
+        }
+        gate_offered_candidate(input)
+            .map_err(|rejection| CasperError::RuntimeError(rejection.to_string()))
+    }
+
+    /// Added by G1-6 (DR-124): a correctness failure under the bound source
+    /// `Certificate` (design §7 and §9). The offer is rejected with no charge.
+    /// The failure means an analyzer defect, so the node logs it.
+    fn report_certificate_correctness_failure(
+        &self,
+        envelope_identity: &[u8],
+        funding_root: &[u8],
+        gate: &OfferedGate,
+        detail: &str,
+    ) {
+        tracing::error!(
+            target: "f1r3fly.cost_accounting.correctness",
+            deploy = %hex::encode(envelope_identity),
+            funding_root = %hex::encode(funding_root),
+            estimate = gate.estimate_phlo(),
+            resource_bound = gate.resource_bound(),
+            detail,
+            "correctness failure: an offer under the bound source Certificate failed after execution"
+        );
+        #[cfg(any(test, feature = "test-utils"))]
+        self.record_offered_budget_usage(
+            OfferedUsageKind::CertificateCorrectnessFailure,
+            envelope_identity,
+            funding_root,
+            models::rust::host_work::HostWorkUsages::default(),
+        );
+    }
+
+    /// Added by G1-6 (DR-124), test only: the check hook that a test set on
+    /// this node for the deploy.
+    #[cfg(any(test, feature = "test-utils"))]
+    fn offered_check_hook(&self, deploy_id: &[u8]) -> Option<OfferedUsageKind> {
+        self.offered_budget_usages()
+            .into_iter()
+            .find_map(|record| match record.kind {
+                OfferedUsageKind::SkipCheckHook | OfferedUsageKind::ZeroEstimateHook
+                    if record.deploy_id == deploy_id =>
+                {
+                    Some(record.kind)
+                }
+                _ => None,
+            })
+    }
+
+    /// Added by G1-6 (DR-124), test only: records the decision of one check.
+    #[cfg(any(test, feature = "test-utils"))]
+    fn record_offered_check(
+        &self,
+        role: OfferedCheckRole,
+        envelope: &DeployEnvelope,
+        funding_root: &[u8],
+        gate: Option<&OfferedGate>,
+    ) {
+        let record = match gate {
+            Some(gate) => OfferedCheckRecord::Accepted {
+                complete: matches!(gate.kind(), OfferedEstimateKind::Complete),
+                estimate: gate.estimate_phlo(),
+                resource_bound: gate.resource_bound(),
+                bound_source: gate.bound_source(),
+                total_hold: gate.total_hold(),
+            },
+            None => OfferedCheckRecord::Rejected,
+        };
+        self.record_offered_budget_usage(
+            OfferedUsageKind::Check(role, record),
+            envelope.identity().as_bytes(),
+            funding_root,
+            models::rust::host_work::HostWorkUsages::default(),
+        );
+    }
+
+    /// Added by G1-6 (DR-124), test only: a hook of this node. The node skips
+    /// the check for the deploy and binds the signed limit, as every live site
+    /// did before G1-6. Other nodes still run the check.
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn skip_offered_check_for_tests(&self, deploy_id: &[u8]) {
+        self.record_offered_budget_usage(
+            OfferedUsageKind::SkipCheckHook,
+            deploy_id,
+            &[],
+            models::rust::host_work::HostWorkUsages::default(),
+        );
+    }
+
+    /// Added by G1-6 (DR-124), test only: a hook of this node. The check of
+    /// the deploy sees its estimate without counts, so a complete offer runs
+    /// under the certified bound 0 and passes it.
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn remove_offered_estimate_counts_for_tests(&self, deploy_id: &[u8]) {
+        self.record_offered_budget_usage(
+            OfferedUsageKind::ZeroEstimateHook,
+            deploy_id,
+            &[],
+            models::rust::host_work::HostWorkUsages::default(),
+        );
+    }
+
     pub async fn evaluate_native_offered<'preflight, 'a>(
         &self,
         prepared: &'preflight PreparedOfferedCandidate<'a>,
         envelope: &DeployEnvelope,
         selected: &CompatibleAcquisitionTerms<'_, '_>,
         limits: OfferedCandidateLimits,
+        snapshot: &DirectWalletPolicySnapshot<'_, OfferedFundedDeploy>,
         context: NativeFundedExecutionContext,
     ) -> Result<NativeOfferedAttempt<'preflight, 'a>, CasperError> {
         let DeployEnvelopeRef::OfferedFunded(signed) = envelope.view() else {
@@ -325,6 +461,33 @@ impl RuntimeManager {
         }
         let schedule = PhloScheduleBinding::new(selected.schedule(), PhloGenesisPolicy::LIMITS)
             .map_err(|error| CasperError::RuntimeError(error.to_string()))?;
+        // Changed by G1-6 (DR-124): the play runtime is spawned before the
+        // controls, so the check reads the URN map of the runtime that executes
+        // the offer (design §6.4). The check runs before any runtime entry.
+        let host_work = context.host_work.clone();
+        let mut runtime = RuntimeOps::new(
+            self.spawn_offered_play_runtime(offered_grant_issue_call_limits(), host_work.clone())
+                .await?,
+        );
+        let gate = self.check_offered_before_execution(OfferedGateInput {
+            envelope,
+            prepared,
+            selected_terms: selected.bytes(),
+            schedule: &schedule,
+            minimum_price: selected.adopted().genesis().minimum_price(),
+            snapshot,
+            evaluator: &runtime.runtime.reducer,
+            limits: offered_funded_v6_production_limits().family,
+            host_limits: offered_funded_v6_host_work_limits(),
+        });
+        #[cfg(any(test, feature = "test-utils"))]
+        self.record_offered_check(
+            OfferedCheckRole::Play,
+            envelope,
+            &prepared.funding_root,
+            gate.as_ref().ok(),
+        );
+        let gate = gate?;
         let signed_controls = PhloControlsBinding::new(
             &prepared.intent.base.controls,
             limits.funding.base.controls(),
@@ -343,14 +506,24 @@ impl RuntimeManager {
             },
             view.terms(),
             schedule.schedule(),
-            prepared.phlo_limit,
+            // Changed by G1-6 (DR-124): the bound is the resource bound of the
+            // check.
+            // prepared.phlo_limit,
+            gate.resource_bound(),
         )
         .map_err(|error| CasperError::RuntimeError(error.to_string()))?;
-        // DR-113: the bound of an offer is its signed limit.
-        let contract = selected
-            .adopted()
-            .bind_execution_contract(checked.controls(), &schedule, rholang::rust::interpreter::accounting::native_phlo_rules::NativeBoundSource::SignedLimit)?;
-        let host_work = context.host_work.clone();
+        // Changed by G1-6 (DR-124): the contract binds the bound source of the
+        // check (DR-124 amends DR-113 item 6).
+        // // DR-113: the bound of an offer is its signed limit.
+        // let contract = selected
+        //     .adopted()
+        //     .bind_execution_contract(checked.controls(), &schedule, rholang::rust::interpreter::accounting::native_phlo_rules::NativeBoundSource::SignedLimit)?;
+        // let host_work = context.host_work.clone();
+        let contract = selected.adopted().bind_execution_contract(
+            checked.controls(),
+            &schedule,
+            gate.bound_source(),
+        )?;
         // Changed by DR-114: play records external-service replies within a
         // room, and the play runtime calls the node's services.
         // let config = NativeRuntimeConfig::new(contract, context.trace, context.host_work);
@@ -360,10 +533,11 @@ impl RuntimeManager {
         // );
         let config = NativeRuntimeConfig::new(contract, context.trace, context.host_work)
             .with_record_room(native_record_room());
-        let mut runtime = RuntimeOps::new(
-            self.spawn_offered_play_runtime(offered_grant_issue_call_limits(), host_work.clone())
-                .await?,
-        );
+        // Changed by G1-6 (DR-124): the spawn moved above the controls.
+        // let mut runtime = RuntimeOps::new(
+        //     self.spawn_offered_play_runtime(offered_grant_issue_call_limits(), host_work.clone())
+        //         .await?,
+        // );
         let block_data = context.block_data.clone();
         runtime.runtime.set_block_data(context.block_data).await;
         runtime
@@ -381,6 +555,13 @@ impl RuntimeManager {
             &runtime.runtime.get_root().await.bytes(),
         )?;
         let checkpoint = runtime.runtime.create_soft_checkpoint().await;
+        #[cfg(any(test, feature = "test-utils"))]
+        self.record_offered_budget_usage(
+            OfferedUsageKind::PlayRuntimeEntry,
+            envelope.identity().as_bytes(),
+            &prepared.funding_root,
+            models::rust::host_work::HostWorkUsages::default(),
+        );
         let evaluation = match runtime.evaluate_native_envelope(envelope, config).await {
             Ok(evaluation) => evaluation,
             Err(error) => {
@@ -445,6 +626,7 @@ impl RuntimeManager {
             replay_log,
             grant_issuances,
             grant_issue_log,
+            gate,
         })
     }
 

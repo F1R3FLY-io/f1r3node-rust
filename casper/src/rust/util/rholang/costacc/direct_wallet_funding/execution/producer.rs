@@ -20,6 +20,7 @@ use rholang::rust::interpreter::accounting::authority::{
     reserve_authority_signature_tree, AuthorityBornStack, AuthorityStackBirth,
 };
 use rholang::rust::interpreter::accounting::economic_failure::classify_errors;
+use rholang::rust::interpreter::accounting::native_phlo_rules::NativeBoundSource;
 use rholang::rust::interpreter::accounting::phlo_controls::{
     check_offered_phlo_controls, PhloControlsBinding, PhloFundingTerms, PhloOffer,
     PhloScheduleBinding,
@@ -799,13 +800,20 @@ impl NativeOfferedAttempt<'_, '_> {
             },
             view.terms(),
             schedule.schedule(),
-            self.preflight.phlo_limit,
+            // Changed by G1-6 (DR-124): the bound is the resource bound of the
+            // check before execution.
+            // self.preflight.phlo_limit,
+            self.gate.resource_bound(),
         )
         .map_err(invalid)?;
         let controls = checked.controls();
-        // DR-113: the bound of an offer is its signed limit.
+        // Changed by G1-6 (DR-124): the rebind takes the bound source of the
+        // check (DR-124 amends DR-113 item 6).
+        // // DR-113: the bound of an offer is its signed limit.
+        // self.adopted
+        //     .bind_execution_contract(controls, &schedule, rholang::rust::interpreter::accounting::native_phlo_rules::NativeBoundSource::SignedLimit)?;
         self.adopted
-            .bind_execution_contract(controls, &schedule, rholang::rust::interpreter::accounting::native_phlo_rules::NativeBoundSource::SignedLimit)?;
+            .bind_execution_contract(controls, &schedule, self.gate.bound_source())?;
         let measured = self
             .adopted
             .native_rules()
@@ -941,6 +949,21 @@ impl NativeOfferedAttempt<'_, '_> {
             .economic_failures
             .union(classify_errors(&self.evaluation.errors, Some(budget)).map_err(invalid)?);
         if !summary.permits_retained_charge() {
+            // Added by G1-6 (DR-124): a run that passes its certified bound is
+            // a correctness failure (design §9). It is rejected with no charge.
+            if let (NativeBoundSource::Certificate, true) = (
+                self.gate.bound_source(),
+                summary.contains(
+                    rholang::rust::interpreter::accounting::phlo_execution::PhloFailure::Certificate,
+                ),
+            ) {
+                manager.report_certificate_correctness_failure(
+                    &self.preflight.envelope_identity,
+                    &self.preflight.funding_root,
+                    &self.gate,
+                    "the run passed its certified bound",
+                );
+            }
             return Err(invalid("native offered execution has non-user failure"));
         }
         let failure_class = if summary
@@ -1015,14 +1038,40 @@ impl NativeOfferedAttempt<'_, '_> {
                 }
             }
         }
-        let family_selection = select_rooted_native_family(
-            snapshot,
-            &obligations,
-            &self.evaluation.authority_events,
-            &self.evaluation.authority_byte_events,
-            limits,
-            budget,
-        )?;
+        // Changed by G1-6 (DR-124): a selection that fails after execution
+        // under the bound source `Certificate` is a correctness failure
+        // (design §7, arbitration LOW 6). It is rejected with no charge.
+        // let family_selection = select_rooted_native_family(
+        //     snapshot,
+        //     &obligations,
+        //     &self.evaluation.authority_events,
+        //     &self.evaluation.authority_byte_events,
+        //     limits,
+        //     budget,
+        // )?;
+        let family_selection = match (
+            select_rooted_native_family(
+                snapshot,
+                &obligations,
+                &self.evaluation.authority_events,
+                &self.evaluation.authority_byte_events,
+                limits,
+                budget,
+            ),
+            self.gate.bound_source(),
+        ) {
+            (Ok(selection), _) => selection,
+            (Err(error), NativeBoundSource::Certificate) => {
+                manager.report_certificate_correctness_failure(
+                    &self.preflight.envelope_identity,
+                    &self.preflight.funding_root,
+                    &self.gate,
+                    &format!("the selection after execution failed: {error}"),
+                );
+                return Err(error);
+            }
+            (Err(error), NativeBoundSource::SignedLimit) => return Err(error),
+        };
         let sources = &family_selection.sources;
         let eligible = &family_selection.eligible;
         let selected = &family_selection.selected;

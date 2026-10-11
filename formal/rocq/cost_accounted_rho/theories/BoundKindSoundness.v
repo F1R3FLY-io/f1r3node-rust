@@ -15,7 +15,14 @@
 
    The module reuses the bound source, the guard of the execution contract
    and the unbilled certificate failure of SignedLimitExhaustion. Four
-   negative controls refute plausible wrong rules. *)
+   negative controls refute plausible wrong rules.
+
+   G1-6 (DR-124) adds the client lanes: the check holds only the demand of
+   the lanes whose purses a source of the envelope is located at. A certified
+   estimate has demand on client lanes only, a foreign lane with demand makes
+   the estimate incomplete, and the limit test reads the client's demand. A
+   fifth negative control keeps an estimate with a foreign lane complete, and
+   its run passes the certified bound unpaid. *)
 
 From Stdlib Require Import Arith.PeanoNat Bool.Bool Lists.List Lia.
 From CostAccountedRho Require Import SignedPhloControls SignedLimitExhaustion.
@@ -300,6 +307,195 @@ Proof.
   split; [reflexivity|]. split; reflexivity.
 Qed.
 
+(** * Client lanes (G1-6, DR-124)
+
+    The check holds only the client's demand. P1's acceptance protocol checks
+    the client's demand and supply only (P1:2191-2200), and a layer signed by
+    another signature adds nothing to the client's demand (P1:2002-2027). A
+    lane is a client lane when a source of the envelope is located at the
+    purse of the lane. The model gives each lane of an estimate that flag and
+    its known demand in phlo. The restriction keeps the client lanes, and a
+    foreign lane with known demand makes the estimate incomplete. The model
+    does not cover how the code decides the flag (the lane key of each
+    payer), the classes of a lane, or the placement of the holds. *)
+
+Record lane_demand := {
+  located : bool;
+  lane_phlo : nat;
+}.
+
+Record lane_estimate := {
+  lanes_analysis_complete : bool;
+  lanes_onchain_payer : bool;
+  lane_demands : list lane_demand;
+}.
+
+(** The known demand of the client lanes. *)
+Fixpoint client_phlo (lanes : list lane_demand) : nat :=
+  match lanes with
+  | [] => 0
+  | lane :: rest => (if located lane then lane_phlo lane else 0) + client_phlo rest
+  end.
+
+(** The known demand of every lane. *)
+Fixpoint total_phlo (lanes : list lane_demand) : nat :=
+  match lanes with
+  | [] => 0
+  | lane :: rest => lane_phlo lane + total_phlo rest
+  end.
+
+(** Whether a foreign lane has known demand. *)
+Fixpoint foreign_demand (lanes : list lane_demand) : bool :=
+  match lanes with
+  | [] => false
+  | lane :: rest => (negb (located lane) && (0 <? lane_phlo lane)) || foreign_demand rest
+  end.
+
+(** The restriction of DR-124: the estimate of the client lanes. *)
+Definition restrict (e : lane_estimate) : estimate :=
+  {| analysis_complete := lanes_analysis_complete e && negb (foreign_demand (lane_demands e));
+     onchain_payer := lanes_onchain_payer e;
+     estimate_phlo := client_phlo (lane_demands e) |}.
+
+(** The check of DR-124: the check of design section 6 on the restriction. *)
+Definition check_client (e : lane_estimate) (o : offer) : decision :=
+  check (restrict e) o.
+
+Lemma foreign_demand_false_iff : forall lanes,
+  foreign_demand lanes = false <->
+  Forall (fun lane => located lane = true \/ lane_phlo lane = 0) lanes.
+Proof.
+  induction lanes as [|lane rest IH]; simpl.
+  - split; intros; [constructor | reflexivity].
+  - rewrite orb_false_iff, Forall_cons_iff, <- IH.
+    split; intros [head tail]; split; try exact tail.
+    + apply andb_false_iff in head. destruct head as [located_lane | idle].
+      * left. apply negb_false_iff. exact located_lane.
+      * right. apply Nat.ltb_ge in idle. lia.
+    + apply andb_false_iff. destruct head as [located_lane | idle].
+      * left. rewrite located_lane. reflexivity.
+      * right. apply Nat.ltb_ge. lia.
+Qed.
+
+Lemma client_phlo_of_client_lanes : forall lanes,
+  Forall (fun lane => located lane = true) lanes -> client_phlo lanes = total_phlo lanes.
+Proof.
+  induction lanes as [|lane rest IH]; intros client; simpl; [reflexivity|].
+  apply Forall_cons_iff in client. destruct client as [head tail].
+  rewrite head, (IH tail). reflexivity.
+Qed.
+
+(** A certified estimate has known demand on client lanes only. *)
+Theorem certified_estimate_has_only_client_lanes : forall e o bound hold,
+  check_client e o = Bind CertificateSource bound hold ->
+  Forall (fun lane => located lane = true \/ lane_phlo lane = 0) (lane_demands e).
+Proof.
+  intros e o bound hold checked.
+  pose proof (classification_conservative (restrict e) o bound hold checked) as completed.
+  unfold complete, restrict in completed. simpl in completed.
+  apply andb_true_iff in completed. destruct completed as [analysed _].
+  apply andb_true_iff in analysed. destruct analysed as [_ no_foreign].
+  apply negb_true_iff in no_foreign.
+  apply foreign_demand_false_iff. exact no_foreign.
+Qed.
+
+(** A foreign lane with known demand forces the incomplete classification. *)
+Theorem foreign_lane_forces_incomplete : forall e,
+  (exists lane, In lane (lane_demands e) /\ located lane = false /\ 0 < lane_phlo lane) ->
+  complete (restrict e) = false.
+Proof.
+  intros e [lane [member [foreign positive]]].
+  assert (counted : foreign_demand (lane_demands e) = true).
+  { destruct (foreign_demand (lane_demands e)) eqn:demand; [reflexivity|].
+    apply foreign_demand_false_iff in demand. rewrite Forall_forall in demand.
+    destruct (demand lane member) as [located_lane | idle]; [congruence | lia]. }
+  unfold complete, restrict. simpl. rewrite counted. simpl.
+  destruct (lanes_analysis_complete e); reflexivity.
+Qed.
+
+Theorem foreign_lane_is_never_certified : forall e o bound hold,
+  (exists lane, In lane (lane_demands e) /\ located lane = false /\ 0 < lane_phlo lane) ->
+  check_client e o <> Bind CertificateSource bound hold.
+Proof.
+  intros e o bound hold foreign checked.
+  pose proof (classification_conservative (restrict e) o bound hold checked) as completed.
+  rewrite (foreign_lane_forces_incomplete e foreign) in completed. discriminate.
+Qed.
+
+(** With a foreign lane, an offer whose client demand fits its limit holds
+    the signed limit under SignedLimit. *)
+Theorem foreign_lane_holds_the_signed_limit : forall e o,
+  (exists lane, In lane (lane_demands e) /\ located lane = false /\ 0 < lane_phlo lane) ->
+  client_phlo (lane_demands e) <= offer_limit o ->
+  check_client e o = Bind SignedLimitSource (offer_limit o) (offer_limit o * offer_price o + 1).
+Proof.
+  intros e o foreign within. unfold check_client.
+  apply incomplete_hold_is_full_limit.
+  - exact (foreign_lane_forces_incomplete e foreign).
+  - exact within.
+Qed.
+
+(** The limit test compares the signed limit with the client's demand. *)
+Theorem limit_test_uses_client_demand : forall e o,
+  check_client e o = Reject <-> offer_limit o < client_phlo (lane_demands e).
+Proof.
+  intros e o. unfold check_client, check.
+  change (estimate_phlo (restrict e)) with (client_phlo (lane_demands e)).
+  destruct (offer_limit o <? client_phlo (lane_demands e)) eqn:above.
+  - apply Nat.ltb_lt in above. split; [intros _; exact above | reflexivity].
+  - apply Nat.ltb_ge in above. split; [|intro; lia].
+    destruct (complete (restrict e)); discriminate.
+Qed.
+
+(** For an estimate whose lanes are all client lanes, the restriction
+    changes nothing. *)
+Theorem client_lanes_keep_the_check : forall e o,
+  Forall (fun lane => located lane = true) (lane_demands e) ->
+  check_client e o =
+    check {| analysis_complete := lanes_analysis_complete e;
+             onchain_payer := lanes_onchain_payer e;
+             estimate_phlo := total_phlo (lane_demands e) |} o.
+Proof.
+  intros e o client.
+  assert (no_foreign : foreign_demand (lane_demands e) = false).
+  { apply foreign_demand_false_iff. eapply Forall_impl; [|exact client].
+    intros lane located_lane. left. exact located_lane. }
+  unfold check_client, restrict. rewrite no_foreign, andb_true_r.
+  rewrite (client_phlo_of_client_lanes (lane_demands e) client). reflexivity.
+Qed.
+
+(** N5 (G1-6, DR-124): a restriction that removes a foreign lane with known
+    demand but keeps the estimate complete. The check then certifies the
+    client's demand alone. The foreign work runs in the deployment, so the
+    run passes that certified bound and pays nothing. The restriction of
+    DR-124 makes the estimate incomplete, so the run fits the signed limit
+    and settlement charges it. *)
+Definition restrict_ignoring_foreign_lanes (e : lane_estimate) : estimate :=
+  {| analysis_complete := lanes_analysis_complete e;
+     onchain_payer := lanes_onchain_payer e;
+     estimate_phlo := client_phlo (lane_demands e) |}.
+
+Definition foreign_lane_estimate : lane_estimate :=
+  {| lanes_analysis_complete := true;
+     lanes_onchain_payer := false;
+     lane_demands := [{| located := true; lane_phlo := 1 |};
+                      {| located := false; lane_phlo := 5 |}] |}.
+
+Definition foreign_lane_offer : offer := {| offer_limit := 10; offer_price := 1 |}.
+
+Definition foreign_lane_run : run :=
+  {| pre_balance := 100; post_balance := 100; run_usage := 6 |}.
+
+Theorem nc_foreign_lane_as_complete_breaks_the_bound :
+  check (restrict_ignoring_foreign_lanes foreign_lane_estimate) foreign_lane_offer =
+    Bind CertificateSource 1 2 /\
+  snd (outcome CertificateSource 1 (offer_price foreign_lane_offer) foreign_lane_run) = 0 /\
+  check_client foreign_lane_estimate foreign_lane_offer = Bind SignedLimitSource 10 11 /\
+  snd (outcome SignedLimitSource 10 (offer_price foreign_lane_offer) foreign_lane_run) = 7.
+Proof.
+  split; [reflexivity|]. split; [reflexivity|]. split; reflexivity.
+Qed.
+
 Print Assumptions classification_conservative.
 Print Assumptions onchain_payer_is_never_certified.
 Print Assumptions estimate_above_limit_rejected.
@@ -315,3 +511,12 @@ Print Assumptions nc_incomplete_as_complete_leaves_recursive_work_unpaid.
 Print Assumptions nc_partial_remainder_holds_less_than_the_limit.
 Print Assumptions nc_bound_above_the_limit_fails_the_guard.
 Print Assumptions nc_ignoring_the_onchain_payer_certifies_it.
+Print Assumptions foreign_demand_false_iff.
+Print Assumptions client_phlo_of_client_lanes.
+Print Assumptions certified_estimate_has_only_client_lanes.
+Print Assumptions foreign_lane_forces_incomplete.
+Print Assumptions foreign_lane_is_never_certified.
+Print Assumptions foreign_lane_holds_the_signed_limit.
+Print Assumptions limit_test_uses_client_demand.
+Print Assumptions client_lanes_keep_the_check.
+Print Assumptions nc_foreign_lane_as_complete_breaks_the_bound.

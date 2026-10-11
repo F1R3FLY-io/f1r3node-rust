@@ -3994,6 +3994,12 @@ to 5. It amends the wording of items 4 and 6 and of the verification
 obligation (design section 8.6). The rejection text for holds that do not fit
 is "insufficient phlogiston" (P1:2210).
 
+**Amendment (DR-124, 2026-10-11).** DR-124 makes the check live in play and
+in every replay. The check holds only the client's demand, as P1's acceptance
+protocol does (P1:2191-2200). That demand is the demand of the client lanes,
+the lanes at whose purses a source of the envelope is located. The demand of
+every other lane leaves the holds, and the estimate is then incomplete.
+
 **Cross-refs.** P1 `def:funding-proof`, `thm:decidability`,
 `def:conservative-demand`, `sec:acceptance-protocol`. DR-65, DR-67, DR-68.
 Epic 8946 leaves `ofp-1-admission-inputs`, `ofp-2-bound-analyzer`, and
@@ -12124,7 +12130,13 @@ comes before DR-114 ("DR-64, then the ban removal").
   provisional caps pass 1936 of 1940. All failures are the known ones of
   DR-116.
 
-**Cross-refs.** DR-64, DR-72, DR-102, DR-114, DR-115.
+**Amendment (DR-124, 2026-10-11).** Item 6 no longer holds. Every live
+contract now binds the bound source of the check before execution. A complete
+estimate binds `Certificate` with the bound $`B`$, and an incomplete estimate
+binds `SignedLimit` with the signed limit. The three family paths with no
+caller keep `Certificate`.
+
+**Cross-refs.** DR-64, DR-72, DR-102, DR-114, DR-115, DR-124.
 `cost-accounting-impl/economic-failure-policy-decisions.md`.
 
 ## DR-114 — Native funded execution records and replays external-service replies
@@ -13361,7 +13373,7 @@ don't change much of Casper." Two more user decisions of 2026-10-10 apply:
    that the store lacks fails the same way on every node.
    - Formats do not mix on a valid chain. v6 validation rejects a block with
      a legacy user deploy (`validation_dispatcher.rs:76-82,124-130`), and
-     legacy replay refuses an offered term (`offered_block.rs:775-779`).
+     legacy replay refuses an offered term (`offered_block.rs:779-783`).
      So the rule needs no fail-closed format check.
    - The genesis block has no parents and stores its deploys in the legacy
      format on every shard (`genesis.rs:280-284`), so it is exempt.
@@ -14236,7 +14248,19 @@ lane in every run.
     `cargo clippy --workspace --all-targets -- -D warnings` pass on the
     commit tree.
 
-**Cross-refs.** DR-64, DR-65, DR-67, DR-101, DR-113, DR-118, DR-121.
+**Amendment (DR-124, 2026-10-11).**
+
+- The estimate has a new incomplete reason, `ForeignLane`. The check of step
+  G1-6 sets it when a lane outside the client lanes has known demand.
+- `CostEstimate::retain_client_lanes` keeps the client lanes. It computes
+  $`B`$ for them with the formula of the analysis, weight times units times
+  count. It charges its walk to the host-work budget before the walk.
+- The plan and the counts of the analysis do not change.
+- Review finding M-3 now affects the counts only. A layer such as
+  `{% Nil %}[alice]` inside send data still counts. Its lane leaves the holds
+  when no source is located at the purse of `alice`.
+
+**Cross-refs.** DR-64, DR-65, DR-67, DR-101, DR-113, DR-118, DR-121, DR-124.
 
 ## DR-123 — The check before execution of an offered deploy (G1-4b)
 
@@ -14443,4 +14467,242 @@ restores its pre-state and pays nothing.
     `cargo clippy --workspace --all-targets -- -D warnings` pass on the
     commit tree.
 
-**Cross-refs.** DR-5, DR-64, DR-65, DR-102, DR-113, DR-122.
+**Amendment (DR-124, 2026-10-11).**
+
+- Step G1-6 makes the check live in play and in every replay.
+- The check holds only the client's demand. Before item 3 decides the kind,
+  the check removes every lane at whose purse no source of the envelope is
+  located. Such a lane with counts makes the estimate incomplete with the
+  reason `ForeignLane`.
+- $`B`$ in items 4, 5 and 7 counts the client lanes only. Item 7 places the
+  known demand of the client lanes exactly as before.
+
+**Cross-refs.** DR-5, DR-64, DR-65, DR-102, DR-113, DR-122, DR-124.
+
+## DR-124 — The live check holds only the client's demand (G1-6)
+
+**Status.** Implemented 2026-10-11 for step G1-6 of gap G1 of epic 8946. It
+makes the check of DR-123 live in play and in every replay. It amends DR-113
+item 6, DR-122 and DR-123. It records the user decision of 2026-10-11 "Hold
+only the client's $`\Delta_c`$ (Recommended)" and its basis in P1 and P2.
+
+**Context.**
+
+- P1 asks for the check "**Before** executing any part of the deployment"
+  (P1:2191). A rejection changes no state and consumes no tokens
+  (P1:2210-2212). DR-123 built the check, but no production path called it.
+- The first live run made one passing test fail:
+  `offered_replay_usage_is_identical_across_roles`. Its installer signs a
+  funding slot `[entry -o slot]` inside a stored continuation.
+- The check placed the demand of the lanes `entry` and `slot` on the
+  installer's sources. No source can be located at those purses. The names
+  come from the deploy identity, and that identity commits to the sources.
+  So the check rejected an offer that P1 presents as deployable
+  (P1:1534-1630).
+- The user decided to hold only the client's own demand, as P1's acceptance
+  protocol does. The user added that the rule must stay true to the
+  cost-accounting papers and to the semantics of their syntax.
+
+**Decision.**
+
+1. **Live sites.** Play (`evaluate_native_offered`) and the witness replay of
+   every role (`replay_native_offered_witness`) run the check before any
+   runtime entry. Each first spawns the offered runtime, so the check reads
+   the URN map of that runtime. The replay spawn moves above the controls
+   (map gap fill G-8). Both read the wallet snapshot at $`R_0`$,
+   `offered_funded_v6_production_limits().family` and the consensus
+   host-work limits. The attempt keeps the result of the check.
+2. **The bound and its source.** Five live sites bind the resource bound and
+   the bound source of the check. They are play, the producer rebind, the
+   replay rebind, the replay runtime configuration and the replay evidence.
+   This amends DR-113 item 6, which bound every live contract with
+   `SignedLimit`. A complete estimate binds `Certificate` with the bound
+   $`B`$. An incomplete estimate binds `SignedLimit` with the signed limit.
+3. **Rejection.** A rejection of the check becomes a runtime error with the
+   text of the check. Play maps it to the typed candidate rejection of DR-72,
+   which quarantines the envelope. Replay fails the block. In both cases the
+   runtime is never entered, no state changes and no tokens are consumed.
+4. **Client lanes (the user decision).** A lane is a *client lane* when a
+   source of the envelope is located at the purse of the lane. The supply
+   channel of the lane's signature then equals the custody location of the
+   source. That location is the supply channel of the signature of the
+   source's payer (`supply_reader.rs`). The lane key is a digest of the same
+   channel (`Sig::lane_hash`), so the check compares lane keys.
+   - The deploy lane is always a client lane.
+   - Class permissions do not decide whether a lane is a client lane. A
+     client cannot drop the demand of its own lane by restricting them.
+   - A lane that is not a client lane is a *foreign lane*.
+5. **The holds.** The check keeps the known demand of the client lanes and
+   removes every foreign lane (`CostEstimate::retain_client_lanes`). A removed
+   lane with counts makes the estimate incomplete with the new reason
+   `ForeignLane`. The client then holds its signed limit under the margin rule
+   of P1. $`B`$ in the check counts the client lanes only. The limit test, the
+   remainder and the certified bound read that value.
+6. **What stays.** Client lanes are placed exactly as in DR-123. A class of a
+   client lane without an eligible source still rejects before execution with
+   "insufficient phlogiston". Foreign work that executes in the deployment is
+   token-gated by G3 (DR-68). Until G3, settlement keeps its behavior for that
+   work. A complete estimate has demand on client lanes only, so the
+   soundness of the certified bound does not change.
+7. **Correctness failures.** The producer logs a correctness failure when a
+   run passes its certified bound (design section 9). It also logs one when a
+   `Certificate` offer fails the selection after execution (arbitration
+   LOW 6). The log target is `f1r3fly.cost_accounting.correctness`. Both
+   offers are rejected with no charge.
+8. **Test hooks.** These hooks exist only in builds with the feature
+   `test-utils`. The per-node recorder of `offered_acceptance.rs` keeps records
+   of runtime entries, check decisions, correctness failures and URN-map
+   comparisons. It also carries
+   two hooks of one node: skip the check, and remove the counts of the
+   estimate. No production build contains them.
+9. **The 64-source test.** Under item 4 its lane `payer` is a foreign lane.
+   Its sources are the purses of principal keys, and they only permit that
+   lane. The test passes, with a hold of its signed limit under `SignedLimit`.
+   It no longer holds the exact estimate.
+
+**Basis in P1 and P2.** The user decision of 2026-10-11 adopts the reading
+of the acceptance protocol.
+
+- The acceptance protocol computes and checks the client's demand only: "the
+  exact demand $`\Delta_c(D)`$ ... If $`\Sigma_c \geq \Delta_c^{\max}`$, the
+  deployment is accepted" (P1:2191-2200).
+- `def:token-demand` lets $`\Delta_c`$ count only the layers signed by
+  $`c`$ (P1:2002-2027). It recurses through receive bodies, but a layer
+  signed by another signature adds nothing to $`\Delta_c`$. A layer that the
+  client signs inside a stored receive body still counts. Rule X1 makes a
+  persistent receive incomplete, so the signed limit covers it.
+- `def:sugar-uniform` gives a signed receive and its continuation one
+  signature each (P1:1251-1271). `def:sugar-lollipop` gives
+  $`\{\mathtt{for}(y \leftarrow x)\{P\}\}_{s_1 \multimap s_2}`$ the meaning
+  $`\{\mathtt{for}(y \leftarrow x)\{\{P\}_{s_2}\}\}_{s_1}`$. Signature
+  $`s_1`$ "authorizes and funds the communication", and $`s_2`$ "authorizes
+  and funds the continuation" (P1:1273-1315). "Neither party can impose costs
+  on the other beyond what the sugar makes explicit" (P1:1313-1314). Compound
+  signatures compose (P1:1317-1327).
+- Funding slots: "Anyone who knows the channel can deposit tokens there. The
+  linear proof at acceptance time checks whether tokens are present on the
+  funding slot, not who deposited them" (P1:1553-1555). And "the
+  continuation runs once the slot is funded" (P1:1584-1586). The check of a
+  slot's tokens belongs to the deployment in which the continuation runs.
+- P2 decomposes the linear proof into "one local linear proof per purse"
+  (P2:1514), and local proofs compose (`prop:local-suff`, P2:1520-1527). The
+  client's purses are the envelope's sources. Each other purse has its own
+  local proof when its surface executes.
+- The earlier design applied `def:funding-proof`, which covers every
+  signature, at acceptance (P1:2047-2058).
+- Consequence for review finding M-3 of DR-122: a deploy whose send data
+  carry `{% Nil %}[alice]` needs no source for `alice`. The compute count of
+  the plan stays as `def:token-demand` defines it. Only the holding changes.
+
+**Region attribution in the code.** The code attributes regions as the papers
+do. The outer receive of the installer is unsigned, so its introduction opens
+a region of the deploy that runs it (`reduce.rs:1520-1531`). That
+introduction is the installer's demand, and the check holds it. The
+normalizer desugars `[entry -o slot]` as `def:sugar-lollipop` states
+(`normalizer/cost_accounting/desugar.rs:66-85`). So the communication belongs
+to `entry`, and the continuation belongs to `slot`. A fired body runs with an
+empty authority, and its unsigned work charges the deploy that triggers it
+(DR-101). Design section 13 records how that charge differs from uniform
+signing.
+
+**Why the check stays sound.** `BoundKindSoundness.v` proves the decision
+rules over estimates with client and foreign lanes:
+
+- A certified estimate has demand on client lanes only
+  (`certified_estimate_has_only_client_lanes`).
+- A foreign lane with demand forces an incomplete estimate
+  (`foreign_lane_forces_incomplete`, `foreign_lane_is_never_certified`), and
+  the offer holds its signed limit (`foreign_lane_holds_the_signed_limit`).
+- The limit test reads the client's demand (`limit_test_uses_client_demand`).
+  An estimate with client lanes only keeps its decision
+  (`client_lanes_keep_the_check`).
+- A negative control keeps an estimate with a foreign lane complete. The
+  check then certifies the client's demand alone, and a run that does the
+  foreign work passes that bound and pays nothing
+  (`nc_foreign_lane_as_complete_breaks_the_bound`).
+
+**Verification.**
+
+- Rocq, with no axiom:
+  - `BoundKindSoundness.v` gains lanes with a located flag, the restriction
+    to client lanes and the check over it. It proves
+    `foreign_demand_false_iff`, `client_phlo_of_client_lanes`,
+    `certified_estimate_has_only_client_lanes`,
+    `foreign_lane_forces_incomplete`, `foreign_lane_is_never_certified`,
+    `foreign_lane_holds_the_signed_limit`, `limit_test_uses_client_demand`
+    and `client_lanes_keep_the_check`.
+  - A fifth proved negative control,
+    `nc_foreign_lane_as_complete_breaks_the_bound`, keeps an estimate with a
+    foreign lane complete. A run that does the foreign work then passes the
+    certified bound and pays nothing.
+  - The proof gate with `COST_ACCOUNTING_ONLY=1` passes with 290 modules
+    and 3325 closed assumption queries. The 9 new queries cover the new
+    theorems, lemmas and control.
+- Rust tests in `delta_sigma/estimate/tests.rs`:
+  - a property test of 64 cases: the restriction to every counted lane keeps
+    the estimate, $`B`$ included
+  - a property test of 64 cases: the metered units equal the units, with one
+    structural item for each signature node
+  - a foreign lane leaves the estimate and makes a complete estimate
+    incomplete with `ForeignLane`
+  - an earlier reason stays first, and client lanes keep completeness
+  - a client lane without a static signature is rejected, after the charge
+- Rust tests in `direct_wallet_funding/execution/gate/tests.rs`:
+  - a property test of 256 cases: with every lane a client lane, the
+    restriction changes no decision
+  - a property test of 256 cases: a foreign lane leaves the holds, and a
+    counted foreign lane gives the hold of the signed limit
+  - the client lanes are the deploy lane and the lanes of the located
+    sources, and the set charges its work first
+  - the loophole control: restricted class permissions do not make a client
+    lane foreign
+- `casper/tests/api/offered_admission_api_test.rs`, 12 tests on networks of
+  one to three nodes:
+  - an underfunded offer never enters the runtime and pays no fee
+  - a complete offer holds its estimate under `Certificate`, and an
+    incomplete offer holds its limit under `SignedLimit`
+  - an estimate above the signed limit rejects, and a limit equal to the
+    estimate is accepted
+  - a forced overrun of a certified bound rejects with no charge and logs a
+    correctness failure
+  - validators reject the block of a producer that skips the check
+  - play, replay and the native replay environment share one URN map
+  - existing outcomes keep their class under incomplete estimates
+  - a funding-slot installer passes the check and holds its signed limit
+  - a send of `{% Nil %}[alice]` needs no source for `alice`
+  - a client-lane class without an eligible source rejects before execution
+  - restricted class permissions do not exclude a client lane
+  - a lane that a source only permits is a foreign lane
+- Suites:
+  - casper (nextest, release, 8 test threads): 1792 of 1796 tests pass with
+    the provisional caps, and 1790 of 1796 with the committed caps. 14 tests
+    are skipped.
+  - The failures are the known failures: 4 with the provisional caps and 6
+    with the committed caps. Each fails at its earlier assertion with its
+    earlier message.
+  - With the provisional caps,
+    `offered_replay_usage_is_identical_across_roles` passes again. Its
+    installer passes the check.
+  - With the provisional caps, the gateway call test passes its installer
+    step. It still fails at its call step with `NoNewDeploys`, as before
+    G1-6. A diagnostic run showed that the cause is now the check. The
+    estimate of the call is incomplete, so the call holds
+    $`250000 \cdot 2 + 1 = 500001`$ atomic units. The private entry and slot
+    purses are on-chain purses, which take no part of the remainder (DR-123,
+    map gap fill G-5). The gateway purse has a cap of 300,000, so 200,001
+    atomic units fit no source. Step G3 meets this rejection first.
+  - With the committed caps, both gateway tests fail at their funding step,
+    as before G1-6.
+  - The dense variant of the 64-source test passes the check. Its lane
+    `payer` is foreign, so it holds its signed limit. With the committed caps
+    it executes and is then rejected with no charge, because its metered live
+    read exceeds the host-work budget. With the provisional caps it is
+    accepted, which is the known failure of that test.
+  - rholang and rspace++ pass 4223 of 4223 in release, with 13 skipped.
+  - `cargo fmt --check`, the workspace doctests and
+    `cargo clippy --workspace --all-targets -- -D warnings` pass on the
+    commit tree.
+
+**Cross-refs.** DR-64, DR-68, DR-72, DR-101, DR-102, DR-113, DR-122, DR-123.
+Design sections 5.3, 6, 7, 9 and 16 of
+[the linear cost estimate](cost-accounting-impl/linear-cost-estimate.md).

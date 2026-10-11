@@ -3,7 +3,7 @@
 //! the narrowed evaluation of arbitration H2, the metering of arbitration H1,
 //! the exactness of the arithmetic sizes, and the single application of units.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
@@ -1800,4 +1800,166 @@ fn an_unpriced_deploy_lane_makes_the_estimate_incomplete() {
             .all(|(lane, _)| *lane != threshold.lane_hash()),
         "the unpriced deploy lane has no count"
     );
+}
+
+// ── The client lanes (G1-6, DR-124) ────────────────────────────────────────
+
+/// The lanes of an estimate with counts.
+fn counted_lanes(estimate: &CostEstimate) -> BTreeSet<SigKey> {
+    estimate.quantities.keys().map(|(lane, _)| *lane).collect()
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(64))]
+
+    /// Retaining every counted lane keeps the estimate, B included. The
+    /// restriction computes B with the formula of the analysis, so units are
+    /// applied once on both paths.
+    #[test]
+    fn retaining_every_lane_keeps_the_estimate(
+        core in 0u8..3,
+        context in any::<u8>(),
+        filler in any::<u8>(),
+        weights in proptest::array::uniform4(1u64..9),
+    ) {
+        let core = match core {
+            0 => "new x in { x!(0) | for (@n <- x) { Nil } }",
+            1 => "{% new x in { x!(0) | for (@n <- x) { Nil } } %}[ a (*) b ]",
+            _ => r#"new x in { @"public"!(0) | for (@n <- x) { Nil } }"#,
+        };
+        let estimate = estimate_with(&wrap(core, context, filler), weights, HashMap::new(), &unlimited())
+            .expect("the estimate runs");
+        let lanes = counted_lanes(&estimate);
+        let retained = estimate
+            .clone()
+            .retain_client_lanes(&lanes, &schedule(weights), &unlimited())
+            .expect("the restriction runs");
+        prop_assert_eq!(retained.quantities, estimate.quantities);
+        prop_assert_eq!(retained.bound_phlo, estimate.bound_phlo);
+        prop_assert_eq!(retained.completeness, estimate.completeness);
+    }
+
+    /// The metered units equal the units, and the walk charges one
+    /// structural item for each signature node.
+    #[test]
+    fn the_metered_units_equal_the_units(leaves in proptest::collection::vec(0u8..4, 1..12)) {
+        let elements = leaves
+            .iter()
+            .map(|leaf| match leaf {
+                0 => ground("g"),
+                1 => CostSignature { value: Some(CostSignatureValue::Unit(true)) },
+                2 => CostSignature { value: Some(CostSignatureValue::Quote(Par::default())) },
+                _ => CostSignature { value: Some(CostSignatureValue::Name(private(3))) },
+            })
+            .collect::<Vec<_>>();
+        let compound = CostSignature {
+            value: Some(CostSignatureValue::Compound(models::rhoapi::CostSignatureCompound {
+                elements,
+            })),
+        };
+        let host = unlimited();
+        prop_assert_eq!(
+            signature_units_metered(&compound, &host).expect("an unlimited walk"),
+            signature_units(&compound)
+        );
+        prop_assert_eq!(
+            host.usage(HostWorkDimension::StructuralItems).get(),
+            u64::try_from(leaves.len() + 1).expect("a small count")
+        );
+    }
+}
+
+/// A lane that is not a client lane leaves the estimate. B keeps only the
+/// client part, and the complete estimate becomes incomplete with the reason
+/// `ForeignLane` (DR-124).
+#[test]
+fn a_foreign_lane_leaves_the_estimate_and_makes_it_incomplete() {
+    let estimate = estimate(
+        "{% new x in { x!(0) | for (@n <- x) { Nil } } %}[ alice ] | \
+         new y in { y!(0) | for (@m <- y) { Nil } }",
+    );
+    assert_eq!(estimate.completeness, Completeness::Complete);
+    let client = BTreeSet::from([deploy_lane()]);
+    let deploy = counts(&estimate, deploy_lane());
+    assert!(deploy.iter().sum::<u64>() > 0);
+    assert!(counts(&estimate, lane("alice")).iter().sum::<u64>() > 0);
+    let retained = estimate
+        .retain_client_lanes(&client, &schedule([1; 4]), &unlimited())
+        .expect("the restriction runs");
+    assert_eq!(
+        retained.completeness,
+        Completeness::Incomplete(IncompleteReason::ForeignLane)
+    );
+    assert_eq!(counted_lanes(&retained), client);
+    assert_eq!(counts(&retained, deploy_lane()), deploy);
+    assert_eq!(retained.bound_phlo, deploy.iter().sum::<u64>());
+    assert!(retained.signatures.keys().all(|lane| client.contains(lane)));
+}
+
+/// An earlier rule stays the reason of an incomplete estimate, and an
+/// estimate without a foreign lane keeps its completeness.
+#[test]
+fn an_earlier_reason_stays_first_and_client_lanes_keep_completeness() {
+    let incomplete =
+        estimate(r#"{% new x in { x!(0) | for (@n <- x) { Nil } } %}[ alice ] | @"public"!(0)"#);
+    assert_eq!(
+        incomplete.completeness,
+        Completeness::Incomplete(IncompleteReason::NonFreshChannel)
+    );
+    let retained = incomplete
+        .retain_client_lanes(
+            &BTreeSet::from([deploy_lane()]),
+            &schedule([1; 4]),
+            &unlimited(),
+        )
+        .expect("the restriction runs");
+    assert_eq!(
+        retained.completeness,
+        Completeness::Incomplete(IncompleteReason::NonFreshChannel)
+    );
+    let complete = estimate("new x in { x!(0) | for (@n <- x) { Nil } }");
+    let retained = complete
+        .clone()
+        .retain_client_lanes(
+            &BTreeSet::from([deploy_lane(), lane("unused")]),
+            &schedule([1; 4]),
+            &unlimited(),
+        )
+        .expect("the restriction runs");
+    assert_eq!(retained, complete);
+}
+
+/// A client lane without a static signature is a malformed estimate, and the
+/// restriction charges its walk before the walk.
+#[test]
+fn the_restriction_rejects_a_malformed_estimate_and_charges_first() {
+    let malformed = CostEstimate {
+        quantities: BTreeMap::from([((deploy_lane(), 0), 1)]),
+        bound_phlo: 1,
+        signatures: BTreeMap::new(),
+        completeness: Completeness::Complete,
+    };
+    assert!(matches!(
+        malformed.retain_client_lanes(
+            &BTreeSet::from([deploy_lane()]),
+            &schedule([1; 4]),
+            &unlimited()
+        ),
+        Err(InterpreterError::ReduceError(_))
+    ));
+    let estimate = estimate("new x in { x!(0) | for (@n <- x) { Nil } }");
+    let mut limits = HostWorkLimits::uniform(HostWorkLimit::new(u64::MAX));
+    limits.set(
+        HostWorkDimension::VerificationOperations,
+        HostWorkLimit::new(0),
+    );
+    let exhausted = HostWorkBudget::new(limits);
+    assert!(matches!(
+        estimate.retain_client_lanes(
+            &BTreeSet::from([deploy_lane()]),
+            &schedule([1; 4]),
+            &exhausted
+        ),
+        Err(InterpreterError::HostWorkRejected)
+    ));
 }

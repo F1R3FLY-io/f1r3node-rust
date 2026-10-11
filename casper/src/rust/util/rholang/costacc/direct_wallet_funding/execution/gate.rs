@@ -2,8 +2,12 @@
 //! §6). It turns the linear cost estimate of DR-122 and the wallet snapshot at
 //! R0 into holds, a resource bound and a bound source, or into a rejection
 //! before any runtime entry, with no state change and no charge.
+//!
+//! G1-6 (DR-124) makes the check live in play and replay, and the check holds
+//! only the client's demand: the demand of the client lanes, whose purses the
+//! envelope's sources are located at (P1:2191-2200).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::mem::size_of;
 use std::num::NonZeroUsize;
 
@@ -54,6 +58,7 @@ pub enum OfferedEstimateKind {
 /// The outcome of the check: the estimate B in phlo, the resource bound and
 /// its source, and the holds at R0 in canonical custody order. The holds are
 /// fit checks and move no funds (DR-5, design §8.1). Only the gate builds it.
+/// Since G1-6 (DR-124), B counts the client lanes only.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OfferedGate {
     kind: OfferedEstimateKind,
@@ -82,6 +87,22 @@ impl OfferedGate {
         self.holds
             .iter()
             .fold(0u128, |total, (_, hold)| total.saturating_add(*hold))
+    }
+
+    /// Added by G1-6 (DR-124), test only: the binding of every live site
+    /// before the check went live, the signed limit under `SignedLimit` with
+    /// no hold and no estimate. The per-node hook that skips the check uses
+    /// it, so a test can show that validators reject the block of a producer
+    /// that skips the check.
+    #[cfg(any(test, feature = "test-utils"))]
+    pub(crate) fn unchecked_signed_limit(limit: u64) -> Self {
+        Self {
+            kind: OfferedEstimateKind::Incomplete(IncompleteReason::UnsizedValue),
+            estimate_phlo: 0,
+            resource_bound: limit,
+            bound_source: NativeBoundSource::SignedLimit,
+            holds: Vec::new(),
+        }
     }
 }
 
@@ -146,9 +167,54 @@ pub struct OfferedGateInput<'a> {
 pub fn gate_offered_candidate(
     input: OfferedGateInput<'_>,
 ) -> Result<OfferedGate, OfferedGateRejection> {
+    check_with_estimate(input, std::convert::identity)
+}
+
+/// Added by G1-6 (DR-124), test only: the check of an estimate whose counts
+/// and B are removed and whose completeness stays. A complete offer then
+/// holds the fee alone and runs under the certified bound 0, so its run
+/// passes the bound. This is the analyzer defect of design §7.
+#[cfg(any(test, feature = "test-utils"))]
+pub(crate) fn gate_offered_candidate_without_counts(
+    input: OfferedGateInput<'_>,
+) -> Result<OfferedGate, OfferedGateRejection> {
+    check_with_estimate(input, |estimate| CostEstimate {
+        quantities: BTreeMap::new(),
+        bound_phlo: 0,
+        ..estimate
+    })
+}
+
+fn check_with_estimate(
+    input: OfferedGateInput<'_>,
+    hook: impl FnOnce(CostEstimate) -> CostEstimate,
+) -> Result<OfferedGate, OfferedGateRejection> {
     let host = HostWorkBudget::new(input.host_limits);
-    let estimate = run_estimate(input.envelope, input.schedule, input.evaluator, &host)?;
+    let DeployEnvelopeRef::OfferedFunded(signed) = input.envelope.view() else {
+        return Err(OfferedGateRejection::Invalid(
+            "the check needs an offered envelope".to_string(),
+        ));
+    };
+    let funding_signature = funding_sig(signed);
+    let estimate = hook(run_estimate(
+        input.envelope,
+        &funding_signature,
+        input.schedule,
+        input.evaluator,
+        &host,
+    )?);
     let funding = GateFunding::from_snapshot(input.snapshot, &host)?;
+    // Added by G1-6 (DR-124): the check holds only the client's demand
+    // (P1:2191-2200). The demand of every other lane leaves the estimate, and
+    // the estimate is then incomplete.
+    let client = client_lane_set(
+        funding_signature.lane_hash(),
+        source_lanes(input.snapshot)?,
+        &host,
+    )?;
+    let estimate = estimate
+        .retain_client_lanes(&client, input.schedule.descriptor(), &host)
+        .map_err(|error| analysis_rejection(error, &host))?;
     let onchain = !input
         .snapshot
         .wallets()
@@ -197,26 +263,96 @@ fn host_work_or(
 /// ⟨read the inputs⟩, ⟨resolve the names of the deploy⟩ and ⟨run the linear
 /// analysis⟩: the term, its normalizer environment and its seed come from the
 /// envelope, and the funding signature from its signers (`runtime.rs:152`).
+// Changed by G1-6 (DR-124): the caller derives the funding signature once,
+// because the client lanes need its lane too.
+// fn run_estimate(
+//     envelope: &DeployEnvelope,
+//     schedule: &PhloScheduleBinding<'_>,
+//     evaluator: &ReducerCore,
+//     host: &HostWorkBudget,
+// ) -> Result<CostEstimate, OfferedGateRejection> {
+//     let DeployEnvelopeRef::OfferedFunded(signed) = envelope.view() else {
+//         return Err(OfferedGateRejection::Invalid(
+//             "the check needs an offered envelope".to_string(),
+//         ));
+//     };
+//     estimate_term(
+//         &envelope.body().term,
+//         normalizer_env_from_envelope(envelope),
+//         Tools::user_envelope_rng(envelope),
+//         &funding_sig(signed),
+//         schedule,
+//         evaluator,
+//         host,
+//     )
+// }
 fn run_estimate(
     envelope: &DeployEnvelope,
+    funding: &Sig,
     schedule: &PhloScheduleBinding<'_>,
     evaluator: &ReducerCore,
     host: &HostWorkBudget,
 ) -> Result<CostEstimate, OfferedGateRejection> {
-    let DeployEnvelopeRef::OfferedFunded(signed) = envelope.view() else {
-        return Err(OfferedGateRejection::Invalid(
-            "the check needs an offered envelope".to_string(),
-        ));
-    };
     estimate_term(
         &envelope.body().term,
         normalizer_env_from_envelope(envelope),
         Tools::user_envelope_rng(envelope),
-        &funding_sig(signed),
+        funding,
         schedule,
         evaluator,
         host,
     )
+}
+
+/// Added by G1-6 (DR-124): the lane of each signed source. A source is
+/// located at the purse of its payer: the supply channel of the payer's
+/// signature is its custody location (`supply_reader.rs`). `Sig::lane_hash`
+/// digests that supply channel, so the payer's `lane_key` names the location.
+pub(super) fn source_lanes(
+    snapshot: &DirectWalletPolicySnapshot<'_, OfferedFundedDeploy>,
+) -> Result<Vec<[u8; 32]>, OfferedGateRejection> {
+    let authorization = snapshot.wallets().authorization();
+    let sources = &authorization.record().sources;
+    let mut lanes = Vec::with_capacity(sources.len());
+    for source in sources {
+        let custody: [u8; 32] = source.custody().try_into().map_err(|_| {
+            OfferedGateRejection::Invalid("a custody key is not 32 bytes".to_string())
+        })?;
+        let payer = authorization.payers().get(&custody).ok_or_else(|| {
+            OfferedGateRejection::Invalid("a signed source has no payer".to_string())
+        })?;
+        lanes.push(payer.lane_key);
+    }
+    Ok(lanes)
+}
+
+/// Added by G1-6 (DR-124): the client lanes. A lane is a client lane when a
+/// source of the envelope is located at the purse of the lane, that is, when
+/// the supply channel of the lane's signature equals the custody location of
+/// the source. The deploy lane is always a client lane. Class permissions do
+/// not decide whether a lane is a client lane, so a client cannot drop the
+/// demand of its own lane by restricting them.
+pub(super) fn client_lane_set(
+    deploy_lane: [u8; 32],
+    source_lanes: Vec<[u8; 32]>,
+    host: &HostWorkBudget,
+) -> Result<BTreeSet<[u8; 32]>, OfferedGateRejection> {
+    let count = source_lanes
+        .len()
+        .checked_add(1)
+        .ok_or(OfferedGateRejection::HostWork)?;
+    reserve(host, HostWorkDimension::VerificationOperations, count)?;
+    reserve(
+        host,
+        HostWorkDimension::SearchStateBytes,
+        count
+            .checked_mul(size_of::<[u8; 32]>())
+            .ok_or(OfferedGateRejection::HostWork)?,
+    )?;
+    let mut lanes = BTreeSet::new();
+    lanes.insert(deploy_lane);
+    lanes.extend(source_lanes);
+    Ok(lanes)
 }
 
 /// The estimate of one term (`estimate_offered_term`, DR-122).

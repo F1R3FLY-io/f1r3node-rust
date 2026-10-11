@@ -5,7 +5,7 @@
 | Status | Proposal for discussion with the Casper team. Not ratified. |
 | Date | 2026-10-09 |
 | Audience | The Casper team of F1R3FLY, the user (the developer who directs this work), and Greg (L. G. Meredith), the author of the cost-accounting papers |
-| Code basis | Branch `feature/cost-accounted-rho` at `17e07307f`. It contains `dev`, the integration branch of the F1R3node repository, at `93e38575e`. The line citations of `runtime.rs`, `runtime_manager.rs` and `offered_block.rs` follow a later commit that moved the single-offer play and replay code with no behavior change. |
+| Code basis | Branch `feature/cost-accounted-rho` at `17e07307f`. It contains `dev`, the integration branch of the F1R3node repository, at `93e38575e`. The line citations of `runtime.rs`, `runtime_manager.rs` and `offered_block.rs` follow later commits. One moved the single-offer play and replay code with no behavior change, and the live check before execution then added lines to `offered_block.rs`. |
 | Paper basis | The F1R3FLY publications repository at revision `0bf7817` |
 | Authority | The [ratification status ledger](../design/cost-accounting-ratification-status.md) applies. An implementation record does not ratify a Casper change. |
 
@@ -381,8 +381,8 @@ This section describes the code at HEAD on a v6 shard. Legacy shards run the sam
 ### 3.3 Play and run-to-completion
 
 1. `compute_state_envelopes` (`runtime.rs:327-392`) accepts exactly one envelope (`runtime.rs:346`). A second envelope is an error (`runtime.rs:364-373`). [C]
-2. The offered path executes first (`offered_block.rs:221-234`). It funds and settles the candidate afterwards (`offered_block.rs:258-278`). DR-64 records the same fact: the static analysis existed, "but no production path called them". [C]
-3. The producer replays its own candidate before it publishes (`offered_block.rs:313-321`). It then runs the system deploys (`offered_block.rs:359-368`). [C]
+2. The offered path executes first (`offered_block.rs:222-236`). It funds and settles the candidate afterwards (`offered_block.rs:260-280`). DR-64 records the same fact: the static analysis existed, "but no production path called them". [C]
+3. The producer replays its own candidate before it publishes (`offered_block.rs:315-323`). It then runs the system deploys (`offered_block.rs:361-370`). [C]
 4. The legacy loop plays each deploy to termination before the next one (`runtime.rs:455-476`). A play budget can defer the remaining deploys to a later proposal (`runtime.rs:455-457`). [C]
 
 ### 3.4 Validation and replay
@@ -390,7 +390,7 @@ This section describes the code at HEAD on a v6 shard. Legacy shards run the sam
 1. `run_validation_steps` (`validation_dispatcher.rs:84-334`) checks the block summary (`:99-118`) and the offered-only rule (`:124-130`). It then runs the checkpoint step. [C]
 2. The checkpoint step recomputes the merge from the block's own justifications (`interpreter_util.rs:418-433`). It compares the pre-state (`:461-470`), the rejected records (`:471-518`) and the state facts (`:519-532`). Then it replays the block (`:538-545`). [C]
 3. A node replays one block at a time. The `ReplayLock` is a semaphore with one permit (`runtime_manager.rs:198-205`). The wait for it has its own metric (`runtime_manager.rs:1226-1229`). [C]
-4. Offered replay requires "one isolated user candidate" (`offered_block.rs:780-784`). [C]
+4. Offered replay requires "one isolated user candidate" (`offered_block.rs:784-788`). [C]
 5. After validation, every block gets a merge index when the shard allows more than one parent (`validation_dispatcher.rs:340-375`). The guard is at `:345`. [C]
 
 ### 3.5 Finality
@@ -407,7 +407,7 @@ This section describes the code at HEAD on a v6 shard. Legacy shards run the sam
 | Proposal | Play waits for the merge of the parents | `interpreter_util.rs:930-940` |
 | Validation | Acceptance waits for the merge recomputation and the replay | `interpreter_util.rs:400-555` |
 | Replay | One replay at a time on each node | `runtime_manager.rs:198-205` |
-| Producer | The producer replays its own candidate | `offered_block.rs:313-321` |
+| Producer | The producer replays its own candidate | `offered_block.rs:315-323` |
 | Native frontier | One conflict component for each native frontier inside one deploy | `deterministic_reduction.rs:1068-1072, 1120-1122` |
 | After validation | A merge index for every block | `validation_dispatcher.rs:340-375` |
 
@@ -417,7 +417,7 @@ This section describes the code at HEAD on a v6 shard. Legacy shards run the sam
 
 ## 4. What is being implemented now
 
-**Status on 2026-10-10: designed, checked and approved.** The user approved the designs of all five items on 2026-10-10. The preparatory steps of G1 are committed. The v6 merge rule and the cost-cursor lock fix are committed. The full-cost analysis of G1 comes next. G2 and G3 are not started. The orchestrator updates this section.
+**Status on 2026-10-10: designed, checked and approved.** The user approved the designs of all five items on 2026-10-10. The preparatory steps of G1 are committed. The v6 merge rule and the cost-cursor lock fix are committed. The check of G1 is live in play and in every replay (§4.1). G2 and G3 are not started. The orchestrator updates this section.
 
 The user directed the lane to "Implement what you can, cleanly, without a lot of changes to casper". The five items below follow that rule. Each one changes Casper only at a v6 seam or in cost-accounting code.
 
@@ -428,9 +428,9 @@ Two ownership boundaries apply to this work.
 
 ### 4.1 G1: the funding check before execution (DR-64)
 
-**Status: approved on 2026-10-10 after two independent checks. The preparatory steps G1-1 to G1-3 are committed. The full-cost analysis comes next.** The design document is [the linear pre-execution cost estimate](cost-accounting-impl/linear-cost-estimate.md).
+**Status: approved on 2026-10-10 after two independent checks. The preparatory steps G1-1 to G1-3, the analysis, the check and the live check are committed. The check runs before execution in play and in every replay.** The design document is [the linear pre-execution cost estimate](cost-accounting-impl/linear-cost-estimate.md).
 
-- **Problem.** The offered path executes the candidate and checks the funding afterwards (`offered_block.rs:221-278`). [C] P1 requires the check "**Before** executing any part of the deployment" (P1:2191). [P]
+- **Problem.** The offered path executes the candidate and checks the funding afterwards (`offered_block.rs:222-280`). [C] P1 requires the check "**Before** executing any part of the deployment" (P1:2191). [P]
 - **Change.** Before execution, the producer and every validator compute the known demand $`\Delta^{\mathrm{known}}_s`$ of each signature lane $`s`$ from the envelope and $`R_0`$. A signature lane is the part of the demand that one signature pays. The known demand counts communications plus introduction, transfer and trace bytes. One analysis computes it as the demand side of the linear resource proof. The same pass decides whether the estimate is complete, which means that no dynamic logic can add cost. A complete estimate is held exactly, plus the fee, and no remainder is held. For an incomplete estimate, a construct that the analysis cannot prove contributes 0, and the unprovable remainder $`R`$ is held in full. Here $`\mathrm{phloLimit}`$ and $`\mathrm{phloPrice}`$ are the signed phlo limit and the signed phlo price of the envelope:
 
 ```math
@@ -438,7 +438,8 @@ R \;=\; \Bigl(\mathrm{phloLimit} - \sum_{s} \Delta^{\mathrm{known}}_s\Bigr) \cdo
 ```
 
 - **Rejection.** If the holds do not fit the supply at $`R_0`$, the candidate never enters the runtime. The rejection has no effect and no charge (DR-64 decision 5).
-- **Casper footprint.** None for the check itself. The user moved the code motion of G2 ahead of the live check. That step moves the single-offer play and replay code out of `runtime.rs` and `runtime_manager.rs` into cost-accounting code. Then the check lives entirely in cost-accounting code: the analysis, a new gate module and the offered execution path (`execution.rs:272-443`). Settlement keeps charging the measured use directly, so no hold floor is added. No message format changes. Legacy shards are unchanged.
+- **Only the client's demand.** The check holds only the client's demand, because P1's acceptance protocol checks only that demand (P1:2191-2200). A lane counts for the client when a source of the envelope is located at the purse of the lane. The demand of every other lane leaves the holds and makes the estimate incomplete. An example is the continuation of a funding slot, which deposits on the slot fund when it runs (P1:1534-1630). The user decided this rule on 2026-10-11, and DR-124 (the live check of the client's demand) records it.
+- **Casper footprint.** None for the check itself. The user moved the code motion of G2 ahead of the live check. That step moves the single-offer play and replay code out of `runtime.rs` and `runtime_manager.rs` into cost-accounting code. Then the check lives entirely in cost-accounting code: the analysis, a new gate module and the offered execution path (`execution.rs:413-631`). Settlement keeps charging the measured use directly, so no hold floor is added. No message format changes. Legacy shards are unchanged.
 - **Analyzers.** The check uses the static demand analyzer (`delta_sigma.rs`) and the lexical name resolver (`lexical.rs`). Both recurse today, so a deeply nested deploy could overflow a node's stack. The F1R3Lang branches already have iterative versions of the analyzer's four walks (merge commit `29b729551`). The lane backports them verbatim, with a citation. No branch makes the resolver metered, linear or stack-safe. The lane therefore adds those three properties itself, in the style of the stack-safe pushdown automata (PDAs) of `feature/mettail`.
 - **A defect in the resolver.** The resolver gives a name created inside a receive body the parent's randomness (`lexical.rs:53-56`). The runtime builds that name from the received data (`dispatch.rs:63-79`). Such names must count as dynamic demand, so the held limit covers them. Step G1-3 fixed this defect, and DR-121 (names that a receive body creates are dynamic) records the fix. [C]
 - **Effect on clients.** [I]
@@ -457,7 +458,7 @@ R \;=\; \Bigl(\mathrm{phloLimit} - \sum_{s} \Delta^{\mathrm{known}}_s\Bigr) \cdo
 
 **Status: approved on 2026-10-10. Not started.**
 
-- **Problem.** A block holds at most one offer (`block_creator.rs:1910-1916`). Replay requires one isolated candidate (`offered_block.rs:780-784`). [C]
+- **Problem.** A block holds at most one offer (`block_creator.rs:1910-1916`). Replay requires one isolated candidate (`offered_block.rs:784-788`). [C]
 - **Change.** A block holds several offers in canonical order. Member $`i`$ funds from $`R_0`$ and executes from $`R_{i-1}`$, the root after member $`i - 1`$. Members that share a purse form one group. Let $`\mathrm{hold}_m(p)`$ be the hold of member $`m`$ on purse $`p`$, and let $`\mathrm{supply}_{R_0}(p)`$ be the balance of $`p`$ at $`R_0`$. If one purse $`p`$ of a group $`G`$ has $`\sum_{m \in G} \mathrm{hold}_m(p) > \mathrm{supply}_{R_0}(p)`$, every member of $`G`$ is rejected. This is P1's simultaneous-arrival rule (P1:2271-2287). A held-capacity guard keeps the holds of later members available.
 - **Design choice.** The member loop is built as an ordered batch-executor API. The parallel executor of §7.10 can then parallelize it, and the executor of §7.6 can feed it finalized blocks. [I]
 - **Casper footprint.** A refactor first moves the single-offer play code out of `runtime.rs` into a new cost-accounting module. That step changes about −230 and +25 lines in `runtime.rs`. Then `runtime_manager.rs` (about 40 lines), `replay_runtime.rs` (about 10), `block_creator.rs` (about 45) and `errors.rs` (about 10) change. All changes sit behind the v6 seam.
@@ -768,8 +769,8 @@ Each gap has a name. GAP-E1 to GAP-E4 are the gaps against the expectations E1 t
 - P1 is explicit for RSpace and for one validator. "Blocks" is Greg's extension (§2.5).
 
 **Code at HEAD.** [C]
-- A v6 block plays one envelope (`runtime.rs:346`), and the producer replays it (`offered_block.rs:313-321`).
-- More than one envelope is an error (`runtime.rs:364-373`, `offered_block.rs:780-784`).
+- A v6 block plays one envelope (`runtime.rs:346`), and the producer replays it (`offered_block.rs:315-323`).
+- More than one envelope is an error (`runtime.rs:364-373`, `offered_block.rs:784-788`).
 - The legacy loop plays each deploy to termination (`runtime.rs:455-476`).
 - Validators merge and replay a block before they accept it (`interpreter_util.rs:400-555`).
 - A node replays one block at a time (`runtime_manager.rs:198-205, 1226-1229`).

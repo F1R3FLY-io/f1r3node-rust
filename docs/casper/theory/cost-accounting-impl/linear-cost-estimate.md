@@ -5,12 +5,13 @@
 - The user adopted this design on 2026-10-10.
 - pgmcp is the work tracker of this effort. Epic 8946 is its work item "Complete offered-funded production cost-accounting integration".
 - G1, the funding check before execution, is a work item of epic 8946. Two implementation steps of G1 build this design. Step G1-4a adds the analysis to the `rholang` crate. Step G1-4b adds the check to the `casper` crate.
-- Step G1-4a implements the analysis, as decision record DR-122 (the linear cost estimate) records. Step G1-4b implements the check, as DR-123 (the check before execution) records. No production path calls either yet.
+- Step G1-4a implements the analysis, as decision record DR-122 (the linear cost estimate) records. Step G1-4b implements the check, as DR-123 (the check before execution) records.
+- Step G1-6 makes the check live in play and in every replay, as DR-124 (the live check of the client's demand) records. Since step G1-6, the check reserves only the client's demand (Section 6).
 - This document is the reference for the amended linear cost estimate.
 
 **Basis.**
 
-- Code: HEAD, the commit `3e7af80e0` of the branch `feature/cost-accounted-rho`. A citation `file.rs:a-b` names lines a to b of that file at HEAD. The citations of `runtime.rs` and `direct_wallet_funding.rs` follow a later commit that moved code with no behavior change.
+- Code: HEAD, the commit `3e7af80e0` of the branch `feature/cost-accounted-rho`. A citation `file.rs:a-b` names lines a to b of that file at HEAD. The citations of `runtime.rs` and `direct_wallet_funding.rs` follow a later commit that moved code with no behavior change. The citation of the offered `replay.rs` follows the commit of step G1-6.
 - Paper: P1, the paper *Cost-Accounted Rho Calculus* by L. G. Meredith, at publications revision `0bf7817`. A citation P1:a-b names lines a to b of its source file.
 - Paper: P2, the paper *Continued Interactive GSLTs and the Cost Endofunctor* by L. G. Meredith, at the same revision. A GSLT is a graph-structured lambda theory (P2:97). A citation P2:a-b names lines a to b of its source file.
 - Evidence tags: [C] code, [P] paper, [D] decision record, [I] inference.
@@ -55,6 +56,7 @@ Before execution, the check reserves funds on the funding sources. Each reservat
 - **Complete estimate.** The deploy holds exactly the estimated cost, times the phlo price, plus the fee. The fee is one atomic unit, the smallest unit of the token that the funding sources hold. This rule follows acceptance step 2 of P1 and decision record DR-64 (the funding check before execution).
 - **Incomplete estimate.** The deploy holds its whole signed limit, times the phlo price, plus the fee. This rule is the margin rule of P1. DR-64 uses the signed limit as the margin.
 - **Rejection.** The check rejects the deploy before execution if the holds do not fit the balances, or if the estimate exceeds the signed limit. Such a rejection has no effect and no charge.
+- **Only the client's demand.** The check holds only the demand that the sources of the envelope fund. The demand of another party stays out of the holds, because that party funds it when its work runs. The estimate is then incomplete (Section 6, DR-124).
 
 After execution, *settlement* charges the measured use directly. There is no settlement floor. So refunds stay implicit, and offered state roots stay as they are today. A guard protects the funds that the block still needs. The guard is item 5 of DR-65 (same-block offers that share a purse).
 
@@ -107,6 +109,8 @@ This section defines the names, terms and symbols that later sections use.
 | Funding signature | The signature that the signers of the envelope form. It pays for the work that no explicit signature covers. | `runtime.rs:152` |
 | Signature lane | The part of the demand that one signature pays. Its key is the lane hash of the signature. | `delta_sigma.rs:92-104` |
 | Deploy lane | The lane of the funding signature | `reduce.rs:1423-1441` |
+| Client lane | A lane at whose purse a source of the envelope is located. The purse of that source then belongs to the signature of the lane. The deploy lane is always a client lane. | DR-124 |
+| Foreign lane | A lane that is not a client lane. Its demand stays out of the holds (Section 6). | DR-124 |
 | Region | One signed scope at run time. It has an instance identity, which is a Blake2b-256 hash, and a signature. | `authority.rs:404-424` |
 | Authority | The set of regions that a send or a receive carries. The runtime merges regions that have equal instance identities. | `authority.rs:452-475` |
 | Seal | The authority that a stored datum or continuation keeps for its later COMM | `reduce.rs:740-744` |
@@ -160,7 +164,7 @@ This section defines the names, terms and symbols that later sections use.
 
 ## 3. The flow at a glance
 
-![Activity diagram of the linear pre-execution cost estimate of one offered deploy, in six partitions. Partition 1 holds the inputs. The producer and every validator read the signed envelope and four consensus inputs. These are the schedule with its weights, the URN map, the host-work limits and the wallet snapshot at R0. In partition 2, the metered resolver binds the names of the deploy from the envelope seed. Partition 3 is the linear analysis. It gives every level a binder kind and sizes every send and receive. It counts COMMs and bytes for every region, with maxima at branches and joins as multisets. Then it computes the estimate B. Its decision asks whether rules X1 to X8 and the on-chain payer condition hold. The answer is its second output: the estimate is complete or incomplete. Partition 4 is the supply check at R0. If B exceeds phloLimit, the check rejects before execution with no effect and no charge. A complete estimate holds B times phloPrice plus 1 under the Certificate bound B. An incomplete estimate holds phloLimit times phloPrice plus 1 under the SignedLimit bound. The check places the known demand per lane and class, and it fills any remainder in custody order. If the holds do not fit, it rejects with the text insufficient phlogiston and no charge. Partition 5 is the execution. Use within the bound goes on to settlement. Exhaustion of the signed limit is a classified user failure that charges the billable work and the fee. A total use above B is a certificate failure with no charge. A host-work limit rejects with no charge. Partition 6 is settlement under the guard of DR-65 item 5. For each purse p in scope, the balance after execution minus the debit of member i must cover the holds of the later members j. If the guard holds, settlement charges the measured use plus the fee, with hold equal to debit. If it fails, the member is a charged user failure. Notes list what the estimate cannot see, the capacity cap of several offers per block and the interim rule B5. A legend explains the colours and defines every name.](../diagrams/linear-cost-estimate.svg)
+![Activity diagram of the linear pre-execution cost estimate of one offered deploy, in six partitions. Partition 1 holds the inputs. The producer and every validator read the signed envelope and four consensus inputs. These are the schedule with its weights, the URN map, the host-work limits and the wallet snapshot at R0. In partition 2, the metered resolver binds the names of the deploy from the envelope seed. Partition 3 is the linear analysis. It gives every level a binder kind and sizes every send and receive. It counts COMMs and bytes for every region, with maxima at branches and joins as multisets. Then it computes the estimate B. Its decision asks whether rules X1 to X8 and the on-chain payer condition hold. The answer is its second output: the estimate is complete or incomplete. Partition 4 is the supply check at R0. First the check keeps the client lanes. It drops the demand of each foreign lane, and a dropped lane with counts makes the estimate incomplete. B then counts the client lanes only. If B exceeds phloLimit, the check rejects before execution with no effect and no charge. A complete estimate holds B times phloPrice plus 1 under the Certificate bound B. An incomplete estimate holds phloLimit times phloPrice plus 1 under the SignedLimit bound. The check places the known demand of each client lane and class, and it fills any remainder in custody order. If the holds do not fit, it rejects with the text insufficient phlogiston and no charge. Partition 5 is the execution. Use within the bound goes on to settlement. Exhaustion of the signed limit is a classified user failure that charges the billable work and the fee. A total use above B is a certificate failure with no charge. A host-work limit rejects with no charge. Partition 6 is settlement under the guard of DR-65 item 5. For each purse p in scope, the balance after execution minus the debit of member i must cover the holds of the later members j. If the guard holds, settlement charges the measured use plus the fee, with hold equal to debit. If it fails, the member is a charged user failure. Notes list what the estimate cannot see, the capacity cap of several offers per block and the interim rule B5. A legend explains the colours and defines every name.](../diagrams/linear-cost-estimate.svg)
 
 *Source: [`../diagrams/linear-cost-estimate.puml`](../diagrams/linear-cost-estimate.puml). Render it with `./render.sh linear-cost-estimate.puml` in `docs/casper/theory/diagrams/`.*
 
@@ -169,7 +173,7 @@ The diagram has six partitions. Each step below describes one partition.
 1. **Inputs.** The producer and every validator read the signed envelope and four consensus inputs. The inputs are the adopted schedule, the offered URN map, the consensus host-work limits and the wallet snapshot at $`R_0`$.
 2. **Resolver.** The metered resolver binds the names that the reducer allocates when it runs the deploy (`lexical.rs:63-70`).
 3. **Linear analysis.** One analysis computes the estimate and decides whether the estimate is complete (Section 5).
-4. **Holds and the supply check.** The check rejects an estimate above the signed limit. Then it places the holds at $`R_0`$, or it rejects the deploy (Section 6).
+4. **Holds and the supply check.** The check keeps the client lanes and drops the demand of every foreign lane (DR-124). It rejects an estimate above the signed limit. Then it places the holds at $`R_0`$, or it rejects the deploy (Section 6).
 5. **Execution.** The deploy runs under the estimate when the estimate is complete, and under the signed limit otherwise (Section 7).
 6. **Settlement and the guard.** Settlement charges the measured use and the fee. The guard makes a member that spends needed funds a charged user failure (Section 8).
 
@@ -345,7 +349,7 @@ A `new` pushes its simple names first. Then it pushes one level for each URI, in
 
 ### 5.3 Completeness rules
 
-The estimate is complete only if rules X1 to X8 and the on-chain payer condition all hold. The analysis checks every rule against binder kinds, never against values. [C][I]
+The estimate is complete only if rules X1 to X8, the on-chain payer condition and the client-lane condition all hold. The analysis checks every rule against binder kinds, never against values. [C][I]
 
 | Rule | Condition | Reason |
 |---|---|---|
@@ -359,6 +363,8 @@ The estimate is complete only if rules X1 to X8 and the on-chain payer condition
 | X8 | No method call (`EMethodBody`) is among the top-level expressions of a term at an execution position. | The reducer runs the result of a method as a process with the current authority (`util/mod.rs:136-145`, `reduce.rs:1380-1390`). The existing walk checks only `EVarBody` (`delta_sigma.rs:549-563`). |
 
 **On-chain payer condition.** If any signed source is an on-chain private-name payer, the estimate is incomplete. A source is an on-chain payer when no signer and no grant witnesses it (`direct_wallet_funding.rs:283-298`). Eligibility for such a purse needs an observed private-name authority (`family_selection.rs:50-67`), and rules X2 to X4 forbid a program that holds a stored private name.
+
+**Client-lane condition.** Since step G1-6, the check removes the demand of every foreign lane before it decides the kind of the estimate (DR-124). A removed lane with counts makes the estimate incomplete with the reason `ForeignLane`. The analysis itself still counts every lane. Section 6 states the rule and its basis in P1 and P2.
 
 ### 5.4 Participants and their regions
 
@@ -497,6 +503,18 @@ For a typical deploy the nesting depth and the number of lanes are small, so the
 
 ## 6. How the check uses the estimate
 
+**Only the client's demand.** Since step G1-6, the check holds only the client's demand $`\Delta_c`$, as the user decided on 2026-10-11 (Section 16). [P][D] Before the rules below, the check keeps the known demand of the client lanes and removes every foreign lane (`CostEstimate::retain_client_lanes`, DR-124). A removed lane with counts makes the estimate incomplete with the reason `ForeignLane`. In the rest of this section, $`B`$ counts the client lanes only. The papers give this rule.
+
+- **The acceptance protocol.** It computes and checks the client's demand only: "the exact demand $`\Delta_c(D)`$ ... If $`\Sigma_c \geq \Delta_c^{\max}`$, the deployment is accepted" (P1:2191-2200).
+- **The token demand.** $`\Delta_c`$ counts only the layers that $`c`$ signs (P1:2002-2027). It recurses through receive bodies, but a layer that another signature signs adds nothing to $`\Delta_c`$. A layer that the client signs inside a stored receive body still counts. Rule X1 makes a persistent receive incomplete, so the signed limit covers it.
+- **The signing sugar.** Uniform signing gives a signed receive and its continuation one signed layer each (P1:1251-1271). The lollipop `{for(y <- x){P}}[s1 -o s2]` means `{for(y <- x){ {P}[s2] }}[s1]`. Then s1 "authorizes and funds the communication", and s2 "authorizes and funds the continuation" (P1:1273-1315). "Neither party can impose costs on the other beyond what the sugar makes explicit" (P1:1313-1314). Compound signatures compose (P1:1317-1327).
+- **Funding slots.** "Anyone who knows the channel can deposit tokens there. The linear proof at acceptance time checks whether tokens are present on the funding slot, not who deposited them" (P1:1553-1555). And "the continuation runs once the slot is funded" (P1:1584-1586). So the check of a slot's tokens belongs to the deployment in which the continuation runs.
+- **Located purses.** P2 decomposes the linear proof into one local proof per purse (P2:1514), and local proofs compose (P2:1520-1527). The purses of the client are the sources of the envelope. Each other purse has its own local proof when its surface executes.
+
+The code attributes regions as the papers do. An unsigned receive of the deploy opens a region of the deploy that runs it (`reduce.rs:1520-1531`), so its introduction is the client's demand. The normalizer desugars the lollipop as P1 defines it (`normalizer/cost_accounting/desugar.rs:66-85`). A fired body runs with an empty authority, and its unsigned work charges the deploy that triggers it (DR-101, Section 13). An earlier draft of this design applied `def:funding-proof`, which covers every signature, at acceptance (P1:2047-2058).
+
+A class of a client lane without an eligible source still rejects the offer (Section 6.3). Class permissions do not decide whether a lane is a client lane. So a client cannot drop the demand of its own lane by restricting them. Work of a foreign lane that runs in the deployment is token-gated by G3 (DR-68). Until G3, settlement keeps its behavior for that work (Section 7).
+
 ### 6.1 A complete estimate
 
 A complete estimate holds exactly its cost. [D][I] The total hold is:
@@ -526,11 +544,12 @@ H \;=\; \mathrm{phloLimit} \cdot \mathrm{phloPrice} + 1,
 R \;=\; (\mathrm{phloLimit} - B) \cdot \mathrm{phloPrice}.
 ```
 
-For an incomplete estimate, $`B`$ counts only the parts that the analysis can see. A part that it cannot see contributes 0, as DR-64 item 2 requires. Three kinds of part contribute 0.
+For an incomplete estimate, $`B`$ counts only the parts that the analysis can see. A part that it cannot see contributes 0, as DR-64 item 2 requires. Four kinds of part contribute 0.
 
 - A participant whose value contains poison or fails to evaluate.
 - The transfer and trace terms of a participant on a channel that is not fresh.
 - The participants of a region whose signature is dynamic (DR-121).
+- The demand of a foreign lane, which the check removes (DR-124).
 
 The check places the holds in two steps.
 
@@ -555,7 +574,7 @@ In each case, the deploy is rejected "without executing any part of the deployme
 
 Every validator recomputes the whole decision. [C][D]
 
-- **Inputs.** The decision is a pure function of the five inputs of Section 5.1 and of the wallet snapshot at $`R_0`$. The snapshot depends on the block time through its grant checks.
+- **Inputs.** The decision is a pure function of the five inputs of Section 5.1 and of the wallet snapshot at $`R_0`$. The snapshot depends on the block time through its grant checks. The client lanes come from the sources of that snapshot.
 - **Host work.** The check meters its work on its own host-work budget, with the consensus limits. Play and replay create that budget at the same point, just before evaluation. So the outcome does not depend on earlier work (DR-102, acceptance work on its own budget).
 - **URN maps.** Play and replay build the URN map with the same constructor and the same inputs (`rho_runtime.rs:1997-1999`, `:2065-2068`). External services do not change the map.
 
@@ -565,7 +584,7 @@ Three checks detect a difference between the producer and a validator:
 2. The budget evidence stores the bound source of the contract (DR-113 item 5, DRs:11988-11991).
 3. With several offers per block, validators recompute the guard outcomes (DR-65 item 6).
 
-Replay also compares the encoded funding case byte for byte (`replay.rs:432-438`). That case now carries holds equal to debits.
+Replay also compares the encoded funding case byte for byte (`replay.rs:445-451`). That case now carries holds equal to debits.
 
 ---
 
@@ -579,9 +598,10 @@ The meter enforces the bound that the check chose. The table lists every outcome
 | Total usage passes $`B`$ | `Certificate` | Certificate failure | Reject, no charge. It means an analyzer defect, which DR-64 classifies as a correctness failure (DRs:3962-3964, DRs:12010). |
 | One lane and class pass their estimate, but the total stays within $`B`$ | `Certificate` | No meter event | Settlement charges the use when eligible sources have balance. Otherwise settlement is infeasible, and the deploy is rejected with no charge. Both cases mean an analyzer defect. |
 | Usage passes $`\mathrm{phloLimit}`$ | `SignedLimit` | Classified user failure | Roll back, charge the billable usage times the price plus 1, and publish as failed (DRs:12009) |
+| Work of a foreign lane runs within the bound | `SignedLimit` | Normal | G3 token-gates this work (DR-68). Until G3, settlement keeps its behavior: a source that permits the lane pays, or the deploy is rejected with no charge (DR-124). |
 | A host-work limit | Either | Platform failure | Reject, no charge (DRs:12012) |
 
-The billable usage is the fresh usage that the run drew before it failed (`phlo_execution.rs:559-564`).
+The billable usage is the fresh usage that the run drew before it failed (`phlo_execution.rs:559-564`). The producer logs each correctness failure under `Certificate`: a total usage above $`B`$, and a selection that fails after execution (DR-124).
 
 ---
 
@@ -674,6 +694,7 @@ This section presents the check as one top-level chunk built from named chunks, 
   ⟨read the inputs⟩
   ⟨resolve the names of the deploy⟩
   ⟨run the linear analysis⟩
+  ⟨keep the client lanes⟩
   ⟨reject an estimate above the signed limit⟩
   ⟨place the holds or reject⟩
   ⟨execute under the bound⟩
@@ -784,6 +805,16 @@ The known demand applies the weights and the units once. The raw counts stay unw
 ⟨compute the estimate⟩ ≡
   for each lane s: known[s] ← Σ over classes k of w[k] · u(s) · V[s][k]
   B ← Σ over lanes s of known[s]
+```
+
+The check holds only the client's demand (Section 6, DR-124). A source is located at the purse of its payer, and the deploy lane is always a client lane. Class permissions play no part in this chunk.
+
+```text
+⟨keep the client lanes⟩ ≡
+  client ← {deploy lane} ∪ {lane of the payer of each source}       -- DR-124
+  remove every lane outside client from V and from the signatures
+  if a removed lane has counts and complete: complete ← false (ForeignLane)
+  B ← Σ over client lanes s of known[s]
 ```
 
 The signed limit caps what the client authorizes. An estimate above it cannot be held.
@@ -1028,7 +1059,7 @@ The verification follows the bar of this branch: formal models with negative con
 - `EstimateDemandWalk.v` instantiates the generic walk section of `StackSafeDemandWalk.v` (`:409-424`). It covers the vector pass only, because the walk term has no binders.
 - `EstimateBinderKinds.v` models the binder analysis over de Bruijn terms with the six kinds. Its lemmas are `kinds_channels_fresh`, `kinds_no_escape`, `kinds_poison_free_introductions` and `full_environment_matches_runtime_free_levels`. It reads a receive guard at the base of the bind count (DR-122 item 8). It models signatures, and `static_signature_names_one_lane` shows that a static signature has one value in every run (DR-122 item 11). `keep_until_compose` models the `locally_free` prefix of Section 5.6. Every outer level of a checked guard has a pattern kind (`checked_guard_levels_are_patterns`, DR-122 item 8).
 - `PlanComputeDominates.v` proves that the compute row of the plan is at least the row of the vector for every lane (`plan_compute_dominates_vector`). So the plan's row bounds the realized compute (`plan_bounds_realized_compute`, DR-122 item 7).
-- `BoundKindSoundness.v` proves that the check never treats an incomplete estimate as complete, and that a rollback after an overrun has no effect.
+- `BoundKindSoundness.v` proves that the check never treats an incomplete estimate as complete, and that a rollback after an overrun has no effect. Step G1-6 extends it to client and foreign lanes (DR-124). A certified estimate has demand on client lanes only (`certified_estimate_has_only_client_lanes`). A foreign lane with demand forces an incomplete estimate and a hold of the signed limit (`foreign_lane_forces_incomplete`, `foreign_lane_holds_the_signed_limit`). The limit test reads the client's demand (`limit_test_uses_client_demand`). A negative control keeps an estimate with a foreign lane complete, and its run passes the certified bound unpaid.
 - The guard lemmas of DR-65 are `group_holds_prevent_overdraft`, `held_capacity_guard_preserves_later_holds` and `group_decision_permutation_invariant`. They are restated for settlement without a floor, with the capacity cap of Section 8.4 on both paths.
 
 **Negative controls.** Each control is a deliberately broken variant that a witness must refute.
@@ -1069,6 +1100,17 @@ The verification follows the bar of this branch: formal models with negative con
 - A self-drain becomes a charged user failure, and the receipts of producer and validators agree.
 - A property test of feasibility. Assume that the realized use is at most the estimate for every lane and class, and that balances do not change. Then the post-execution selection succeeds. The capacity is the balance in G1, and the balance minus later holds in G2.
 - The 64-source test passes under the committed caps.
+- The tests of step G1-6 (DR-124):
+  - an offer whose holds do not fit never enters the runtime, pays no fee and gets "insufficient phlogiston"
+  - the hold of a complete and of an incomplete estimate, with one decision and one receipt across the producer and every validator
+  - an estimate above the signed limit, at the exact boundary
+  - a forced overrun of a certified bound, rejected with no charge and logged as a correctness failure
+  - validators reject the block of a producer that skips the check
+  - the URN maps of the play, replay and native replay environments are equal
+  - a funding-slot installer passes the check and holds its signed limit
+  - a send of `{% Nil %}[alice]` needs no source for `alice`
+  - a class of a client lane without an eligible source rejects before execution, and restricting class permissions keeps a client lane
+  - a lane that a source only permits is a foreign lane
 - The tests of the G1-4a fix:
   - the four `#P` forms of DR-122 item 11, and the quote of a resolved name in a receive body
   - `#P` signatures in the generated programs
@@ -1148,7 +1190,8 @@ The meter keeps the total of all $`\delta_\theta`$ at or below $`\mathrm{phloLim
 
 - **DR-64.** This design implements DR-64. A complete estimate holds its exact demand, as the verification obligation of DR-64 states. Section 8.6 amends the wording of items 4 and 6.
 - **DR-65.** The guard is item 5 of DR-65, unchanged. The capacity cap of Section 8.4 implements the commitment of DR-65 when several offers share a block. It does not change the guard.
-- **DR-113.** A complete estimate binds `Certificate`. An incomplete estimate binds `SignedLimit`, as every live contract does today.
+- **DR-113.** A complete estimate binds `Certificate`. An incomplete estimate binds `SignedLimit`. DR-124 amends item 6 of DR-113, so every live contract binds the bound source of the check.
+- **DR-124.** The check is live in play and in every replay, and it holds only the client's demand (Section 6).
 - **The proposal, §4.1.** The proposal states the incomplete case and the remainder $`R`$. This document adds the complete case. It replaces the hold floor of the earlier design with the guard of Section 8.3.
 - **[Byte accounting](vault-backed-byte-accounting.md).** That document defines the byte tariff. This document estimates the same tariff before execution.
 - **[Pre-execution acceptance diagram](../diagrams/offered-preexecution-acceptance.puml).** That diagram of DR-64 shows the incomplete case. The diagram of Section 3 shows both cases.
@@ -1157,7 +1200,7 @@ The meter keeps the total of all $`\delta_\theta`$ at or below $`\mathrm{phloLim
 
 ## 16. Decision history
 
-The user made these decisions on 2026-10-10, and the last one on 2026-10-11. Times are in coordinated universal time (UTC). The quotations are the user's words or the user's selected answers, verbatim.
+The user made these decisions on 2026-10-10, and the last two on 2026-10-11. Times are in coordinated universal time (UTC). The quotations are the user's words or the user's selected answers, verbatim.
 
 | Time | Decision |
 |---|---|
@@ -1170,6 +1213,7 @@ The user made these decisions on 2026-10-10, and the last one on 2026-10-11. Tim
 | 17:03 | **The adopted design.** The user answered "Approve (Recommended)" to this proposal. One linear analysis estimates communications plus bytes. A complete estimate holds exactly its cost, as P1 and DR-64 require. An incomplete estimate holds up to its signed limit, by the margin rule of P1. Settlement charges the measured use directly, with no floor, so step G1-5 is dropped. The guard covers the charge plus the fee, and the later holds within a block, so B3 is no longer needed. |
 | 20:22 | **The meaning of "linear solver".** "By linear solver, I mean the linear proof documented by the cost-accounting publications, [`publications/cost-accounting/cost-accounted-rho.tex`] and [`publications/cost-accounting-as-monad/continued-gslt-cost-v2.tex`], not that it can be solved in linear time." The brackets mark two paths shortened to their repository-relative form. Section 1 says what *linear* means in the name of this estimate. Section 4.1 adds the requirements of P2, and Section 5.8 states the running time. |
 | 00:09 on 2026-10-11 | **U3, the capacity of the selection in G1.** The user chose "Balance at R0 (Recommended)". With one offer per block, the selection after execution caps each source by its balance at $`R_0`$, as today. The guard then separates a self-drain from a placement that never fit. The cap of Section 8.4 applies from step G2-2 on (Sections 8.4 and 9). |
+| Later on 2026-10-11 | **Hold only the client's demand.** The user chose "Hold only the client's $`\Delta_c`$ (Recommended)". The check holds the demand of the client lanes only, as P1's acceptance protocol does (P1:2191-2200). A foreign lane leaves the holds and makes the estimate incomplete. The user added: "So long as you stay true to Greg's publications about cost-accounting and its new syntax semantics." Section 6 states the basis in P1 and P2, and DR-124 records the decision. |
 
 A second independent check of the design followed on the same day. Its corrections are part of this document.
 
@@ -1204,7 +1248,7 @@ A second independent review followed on 2026-10-11, and a second fix commit reso
 
 **Governing papers.**
 
-- P1: L. G. Meredith, *Cost-Accounted Rho Calculus*, publications revision `0bf7817`, file `cost-accounting/cost-accounted-rho.tex`. Cited definitions: `def:token-demand` (P1:2002-2027), `def:funding-proof` (P1:2047-2058), `thm:decidability` and its proof sketch (P1:2060-2080), `def:conservative-demand` (P1:2138-2152), the acceptance protocol (P1:2182-2213), uniform signing (P1:1251-1271) and the commitment (P1:2299-2304). [Source on GitHub](https://github.com/F1R3FLY-io/publications/blob/main/cost-accounting/cost-accounted-rho.tex).
+- P1: L. G. Meredith, *Cost-Accounted Rho Calculus*, publications revision `0bf7817`, file `cost-accounting/cost-accounted-rho.tex`. Cited definitions: `def:token-demand` (P1:2002-2027), `def:funding-proof` (P1:2047-2058), `thm:decidability` and its proof sketch (P1:2060-2080), `def:conservative-demand` (P1:2138-2152), the acceptance protocol (P1:2182-2213), uniform signing (P1:1251-1271) and the commitment (P1:2299-2304). Also cited: the linear transfer of authority (P1:1273-1315), its composability (P1:1317-1327) and funding slots (P1:1534-1630). [Source on GitHub](https://github.com/F1R3FLY-io/publications/blob/main/cost-accounting/cost-accounted-rho.tex).
 - P2: L. G. Meredith, *Continued Interactive GSLTs and the Cost Endofunctor*, publications revision `0bf7817`, file `cost-accounting-as-monad/continued-gslt-cost-v2.tex`. Cited parts: the linear proof (P2:1477-1481), data-dependent interaction (P2:1496-1506), located purses (P2:1510-1518) and `prop:local-suff` (P2:1520-1527). [Source on GitHub](https://github.com/F1R3FLY-io/publications/blob/0bf7817/cost-accounting-as-monad/continued-gslt-cost-v2.tex).
 
 **External works.** Each link resolves the digital object identifier (DOI) of the work.
@@ -1214,7 +1258,7 @@ A second independent review followed on 2026-10-11, and a second fix commit reso
 
 **Repository documents.**
 
-- [Decision records](../cost-accounting-decision-records.md): DR-5, DR-64, DR-65, DR-67, DR-68, DR-101, DR-102, DR-113, DR-118, DR-121.
+- [Decision records](../cost-accounting-decision-records.md): DR-5, DR-64, DR-65, DR-67, DR-68, DR-101, DR-102, DR-113, DR-118, DR-121, DR-122, DR-123, DR-124.
 - [The proposal](../cost-accounting-consensus-proposal.md), §1.2, §2.1, §3.6 and §4.1.
 - [Vault-backed byte accounting](vault-backed-byte-accounting.md): the byte tariff.
 - [Host-work budget](../host-work-budget.md): the budget of deterministic node work.

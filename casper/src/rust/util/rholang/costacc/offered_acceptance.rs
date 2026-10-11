@@ -63,7 +63,10 @@ pub(crate) fn offered_replay_context_copy_bytes(
 }
 
 #[cfg(any(test, feature = "test-utils"))]
-pub use recorder::{OfferedBudgetRecorder, OfferedBudgetUsage, OfferedUsageKind};
+pub use recorder::{
+    OfferedBudgetRecorder, OfferedBudgetUsage, OfferedCheckRecord, OfferedCheckRole,
+    OfferedUsageKind,
+};
 
 #[cfg(any(test, feature = "test-utils"))]
 mod recorder {
@@ -79,6 +82,52 @@ mod recorder {
         ProducerMergeableExecution,
         ValidatorReplay,
         ValidatorAcceptance,
+        /// Added by G1-6 (DR-124): an offered play enters its runtime. The
+        /// play records it just before execution.
+        PlayRuntimeEntry,
+        /// Added by G1-6 (DR-124): an offered replay enters its runtime. The
+        /// replay records it just before evaluation.
+        ReplayRuntimeEntry,
+        /// Added by G1-6 (DR-124): the decision of one check before execution.
+        Check(OfferedCheckRole, OfferedCheckRecord),
+        /// Added by G1-6 (DR-124): a correctness failure under the bound
+        /// source `Certificate` (design §9). The producer also logs it.
+        CertificateCorrectnessFailure,
+        /// Added by G1-6 (DR-124): whether the URN map of the native replay
+        /// environment equals the URN map that the replay check read.
+        ReplayUrnMap {
+            matches_check: bool,
+        },
+        /// Added by G1-6 (DR-124), a test hook of one node: the node skips the
+        /// check for the deploy and binds the signed limit, as before G1-6.
+        SkipCheckHook,
+        /// Added by G1-6 (DR-124), a test hook of one node: the check of the
+        /// deploy sees an estimate without counts. A complete offer then runs
+        /// under the certified bound 0 and passes it.
+        ZeroEstimateHook,
+    }
+
+    /// Added by G1-6 (DR-124): the path that ran a check before execution.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum OfferedCheckRole {
+        Play,
+        Replay,
+    }
+
+    /// Added by G1-6 (DR-124): the decision of one check. An accepted offer
+    /// keeps the kind of its estimate, B, the resource bound, the bound source
+    /// and the total hold.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum OfferedCheckRecord {
+        Accepted {
+            complete: bool,
+            estimate: u64,
+            resource_bound: u64,
+            bound_source:
+                rholang::rust::interpreter::accounting::native_phlo_rules::NativeBoundSource,
+            total_hold: u128,
+        },
+        Rejected,
     }
 
     /// The final usage of one budget in one completed attempt.

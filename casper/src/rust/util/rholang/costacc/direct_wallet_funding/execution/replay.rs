@@ -5,7 +5,9 @@ use std::sync::Arc;
 use models::rhoapi::Par;
 use models::rust::casper::protocol::casper_message::Event as CasperEvent;
 use models::rust::casper::protocol::offered_processed_deploy::OfferedProcessedDeploy;
-use models::rust::cost_protocol_limits::offered_funded_v6_limits;
+use models::rust::cost_protocol_limits::{
+    offered_funded_v6_host_work_limits, offered_funded_v6_limits,
+};
 use models::rust::deploy_envelope::{DeployEnvelope, DeployEnvelopeRef};
 use models::rust::host_work::{HostWorkDimension, HostWorkUnits};
 use models::rust::native_cost_evidence::{NativeCostEvidenceV1, NativeCostFailureClass};
@@ -56,6 +58,7 @@ use super::settlement::{
 use super::{
     select_rooted_native_family, CheckedDirectWalletPolicy, NativeFundedAttempt,
     NativeFundedExecutionContext, NativeOfferedAttempt, NativeOfferedProductionLimits,
+    OfferedGateInput,
 };
 use crate::rust::errors::CasperError;
 use crate::rust::rholang::runtime::RuntimeOps;
@@ -66,6 +69,8 @@ use crate::rust::util::rholang::acceptance::{
 };
 use crate::rust::util::rholang::costacc::direct_wallet_funding::DirectWalletPolicySnapshot;
 use crate::rust::util::rholang::costacc::genesis_resource_policy::AdoptedResourcePolicy;
+#[cfg(any(test, feature = "test-utils"))]
+use crate::rust::util::rholang::costacc::offered_acceptance::{OfferedCheckRole, OfferedUsageKind};
 use crate::rust::util::rholang::costacc::offered_context::OfferedSettlementContext;
 use crate::rust::util::rholang::costacc::offered_evidence::{
     decode_committed_runtime_recording, encode_measured_funding_case,
@@ -80,7 +85,9 @@ use crate::rust::util::rholang::costacc::prepaid_receipts::{
     PrepaidReceiptChange, PrepaidReceiptLimits, PrepaidStackCaptureLimits,
     PreparedNativeRetainedReceipts,
 };
-use crate::rust::util::rholang::costacc::production_limits::offered_funded_v6_replay_limits;
+use crate::rust::util::rholang::costacc::production_limits::{
+    offered_funded_v6_production_limits, offered_funded_v6_replay_limits,
+};
 use crate::rust::util::rholang::costacc::supply::PurseStack;
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 use crate::rust::util::rholang::tools::Tools;
@@ -174,12 +181,18 @@ impl<'preflight, 'a> NativeOfferedAttempt<'preflight, 'a> {
             },
             signed_view.terms(),
             schedule.schedule(),
-            self.preflight.phlo_limit,
+            // Changed by G1-6 (DR-124): the bound is the resource bound of the
+            // check that the witness replay ran.
+            // self.preflight.phlo_limit,
+            self.gate.resource_bound(),
         )
         .map_err(invalid)?;
         let controls = offered_controls.controls();
-        // DR-113: the bound of an offer is its signed limit.
-        adopted.bind_execution_contract(controls, &schedule, rholang::rust::interpreter::accounting::native_phlo_rules::NativeBoundSource::SignedLimit)?;
+        // Changed by G1-6 (DR-124): the rebind takes the bound source of the
+        // check (DR-124 amends DR-113 item 6).
+        // // DR-113: the bound of an offer is its signed limit.
+        // adopted.bind_execution_contract(controls, &schedule, rholang::rust::interpreter::accounting::native_phlo_rules::NativeBoundSource::SignedLimit)?;
+        adopted.bind_execution_contract(controls, &schedule, self.gate.bound_source())?;
         let measured = adopted
             .native_rules()
             .measure(
@@ -1336,12 +1349,14 @@ impl RuntimeManager {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn replay_native_offered_witness<'preflight, 'a>(
         &self,
         prepared: &'preflight PreparedOfferedCandidate<'a>,
         processed: &OfferedProcessedDeploy,
         adopted: &AdoptedResourcePolicy,
         schedule: &PhloScheduleBinding<'_>,
+        snapshot: &DirectWalletPolicySnapshot<'_, OfferedFundedDeploy>,
         context: NativeFundedExecutionContext,
         candidate_limits: OfferedCandidateLimits,
         recording_limits: NativeRecordingWireLimits,
@@ -1404,6 +1419,33 @@ impl RuntimeManager {
             &prepared.envelope_identity,
             processed.envelope().identity().as_bytes(),
         )?;
+        // Changed by G1-6 (DR-124, map gap fill G-8): the offered runtime is
+        // spawned before the controls, so the check reads its URN map. Nothing
+        // reads the runtime before the grant collection below, and the replay
+        // environment keeps its own budget and merge tracker.
+        let mut runtime = RuntimeOps::new(
+            self.spawn_offered_runtime(offered_grant_issue_call_limits(), host.clone())
+                .await?,
+        );
+        let gate = self.check_offered_before_execution(OfferedGateInput {
+            envelope: processed.envelope(),
+            prepared,
+            selected_terms: selected.bytes(),
+            schedule,
+            minimum_price: adopted.genesis().minimum_price(),
+            snapshot,
+            evaluator: &runtime.runtime.reducer,
+            limits: offered_funded_v6_production_limits().family,
+            host_limits: offered_funded_v6_host_work_limits(),
+        });
+        #[cfg(any(test, feature = "test-utils"))]
+        self.record_offered_check(
+            OfferedCheckRole::Replay,
+            processed.envelope(),
+            &prepared.funding_root,
+            gate.as_ref().ok(),
+        );
+        let gate = gate?;
         let signed_controls = PhloControlsBinding::new(
             &prepared.intent.base.controls,
             candidate_limits.funding.base.controls(),
@@ -1420,11 +1462,18 @@ impl RuntimeManager {
             },
             view.terms(),
             schedule.schedule(),
-            prepared.phlo_limit,
+            // Changed by G1-6 (DR-124): the bound is the resource bound of the
+            // check.
+            // prepared.phlo_limit,
+            gate.resource_bound(),
         )
         .map_err(invalid)?;
-        // DR-113: the bound of an offer is its signed limit.
-        let contract = adopted.bind_execution_contract(checked.controls(), schedule, rholang::rust::interpreter::accounting::native_phlo_rules::NativeBoundSource::SignedLimit)?;
+        // Changed by G1-6 (DR-124): the replay runtime configuration binds the
+        // bound source of the check (DR-124 amends DR-113 item 6).
+        // // DR-113: the bound of an offer is its signed limit.
+        // let contract = adopted.bind_execution_contract(checked.controls(), schedule, rholang::rust::interpreter::accounting::native_phlo_rules::NativeBoundSource::SignedLimit)?;
+        let contract =
+            adopted.bind_execution_contract(checked.controls(), schedule, gate.bound_source())?;
         let config = NativeRuntimeConfig::new(contract, context.trace, context.host_work.clone());
         let (recording, operations) =
             decode_committed_runtime_recording(&evidence, recording_limits, &host)?;
@@ -1441,8 +1490,12 @@ impl RuntimeManager {
         )?;
         let identity = prepared.envelope_identity;
         // DR-113: replay classifies a denial with the source that play uses.
+        // Changed by G1-6 (DR-124): the replay evidence binds the bound source
+        // of the check, which play also binds.
+        // let trace = adopted
+        //     .bind_execution_contract(checked.controls(), schedule, rholang::rust::interpreter::accounting::native_phlo_rules::NativeBoundSource::SignedLimit)?
         let trace = adopted
-            .bind_execution_contract(checked.controls(), schedule, rholang::rust::interpreter::accounting::native_phlo_rules::NativeBoundSource::SignedLimit)?
+            .bind_execution_contract(checked.controls(), schedule, gate.bound_source())?
             .check_operation_journal(
                 identity,
                 &recording,
@@ -1481,11 +1534,27 @@ impl RuntimeManager {
             ExternalServices::noop(),
         )
         .await?;
+        #[cfg(any(test, feature = "test-utils"))]
+        self.record_offered_budget_usage(
+            OfferedUsageKind::ReplayUrnMap {
+                matches_check: replay.urn_map() == runtime.runtime.reducer.urn_map.as_ref(),
+            },
+            processed.identity_bytes(),
+            &prepared.funding_root,
+            models::rust::host_work::HostWorkUsages::default(),
+        );
         *replay.block_data.write().await = context.block_data.clone();
         replay
             .set_invalid_blocks(context.invalid_blocks.clone())
             .await;
         *replay.deploy_data.write().await = DeployData::from_envelope(processed.envelope());
+        #[cfg(any(test, feature = "test-utils"))]
+        self.record_offered_budget_usage(
+            OfferedUsageKind::ReplayRuntimeEntry,
+            processed.identity_bytes(),
+            &prepared.funding_root,
+            models::rust::host_work::HostWorkUsages::default(),
+        );
         let evaluation = replay
             .evaluate(parsed, Tools::user_envelope_rng(processed.envelope()))
             .await?;
@@ -1507,10 +1576,12 @@ impl RuntimeManager {
         }
         let exported = replay.export().await?;
         let root = settlement_root(before, exported.root().clone(), user_failure);
-        let mut runtime = RuntimeOps::new(
-            self.spawn_offered_runtime(offered_grant_issue_call_limits(), host.clone())
-                .await?,
-        );
+        // Changed by G1-6 (DR-124): the replay reuses the runtime that it
+        // spawned before the check.
+        // let mut runtime = RuntimeOps::new(
+        //     self.spawn_offered_runtime(offered_grant_issue_call_limits(), host.clone())
+        //         .await?,
+        // );
         runtime
             .runtime
             .set_block_data(context.block_data.clone())
@@ -1591,6 +1662,7 @@ impl RuntimeManager {
             replay_log: events,
             grant_issuances,
             grant_issue_log: Arc::from(grant_log),
+            gate,
         })
     }
 

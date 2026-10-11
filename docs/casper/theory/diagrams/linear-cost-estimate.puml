@@ -6,7 +6,9 @@
 ' holds exactly its cost plus the fee (P1 acceptance step 2, DR-64). An
 ' incomplete estimate holds up to the signed limit (the P1 margin rule).
 ' Settlement charges the measured use directly, with no floor, under the
-' guard of DR-65 item 5.
+' guard of DR-65 item 5. Since step G1-6 (DR-124), the check keeps only the
+' client lanes: the demand of every foreign lane leaves the holds and makes
+' the estimate incomplete.
 '
 ' Source of truth: docs/casper/theory/cost-accounting-impl/linear-cost-estimate.md
 ' Palette: inputs = supply blue · resolver and analysis = process lilac ·
@@ -55,6 +57,7 @@ partition "3 · One linear analysis, two outputs" {
   endif
 }
 partition "4 · Holds and the supply check at R0" {
+  :keep the client lanes (DR-124): drop the demand of each foreign lane,\na dropped lane with counts makes the estimate incomplete,\n<latex>B</latex> counts the client lanes only; <<$ca_gate>>
   if (<latex>B > \mathrm{phloLimit}</latex> ?) then (yes)
     :reject before execution\nno effect · no charge; <<$ca_rejectfill>>
     stop
@@ -65,7 +68,7 @@ partition "4 · Holds and the supply check at R0" {
   else (no)
     :hold <latex>H = \mathrm{phloLimit} \cdot \mathrm{phloPrice} + 1</latex>\nmeter bound phloLimit, source SignedLimit\n(P1 margin rule, DR-64); <<$ca_gate>>
   endif
-  :place the known demand per lane and class on eligible sources,\nthen fill the remainder <latex>R = (\mathrm{phloLimit} - B) \cdot \mathrm{phloPrice}</latex>\nin canonical custody order (no remainder when complete); <<$ca_gate>>
+  :place the known demand of each client lane and class on eligible sources,\nthen fill the remainder <latex>R = (\mathrm{phloLimit} - B) \cdot \mathrm{phloPrice}</latex>\nin canonical custody order (no remainder when complete); <<$ca_gate>>
   if (do the holds fit the balances,\nthe caps and the total exposure at <latex>R_0</latex> ?) then (no)
     :reject before execution: "insufficient phlogiston"\nno effect · no charge; <<$ca_rejectfill>>
     stop
@@ -118,7 +121,8 @@ legend bottom
 
   |= name |= meaning |
   | P1 | the paper "Cost-Accounted Rho Calculus" by L. G. Meredith, publications revision 0bf7817 |
-  | DR-n | decision record n: DR-64 (the funding check before execution), DR-65 (same-block offers that share a purse), DR-113 (exhaustion of the signed limit), DR-121 (names that a receive body creates) |
+  | DR-n | decision record n: DR-64 (the funding check before execution), DR-65 (same-block offers that share a purse), DR-113 (exhaustion of the signed limit), DR-121 (names that a receive body creates), DR-124 (the live check of the client's demand) |
+  | client lane, foreign lane | a lane at whose purse a source of the envelope is located, and any other lane |
   | G2, G3 | several offered deploys in one block, and installer funding of a stored continuation |
   | B5 | the interim rule of 2026-10-10 for an installer purse that cannot pay |
   | X1 to X8 | the completeness rules of the analysis |

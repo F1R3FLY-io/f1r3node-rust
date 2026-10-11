@@ -23,7 +23,7 @@
 //! (arbitration H2), and only values whose message height fits the sizing
 //! bound reach a recursive function of the reducer.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
 use models::rhoapi::connective::ConnectiveInstance;
@@ -96,6 +96,11 @@ pub enum IncompleteReason {
     /// A value is nested above the sizing bound, or a size has no static
     /// value.
     UnsizedValue,
+    /// Added by G1-6 (DR-124): a lane outside the client lanes has known
+    /// demand. The check holds only the client's demand (P1:2191-2200), so
+    /// that demand leaves the estimate. The check of step G1-6 sets this
+    /// reason.
+    ForeignLane,
 }
 
 /// Whether the estimate covers all cost of the deploy (design §5.3).
@@ -114,6 +119,88 @@ pub struct CostEstimate {
     pub bound_phlo: u64,
     pub signatures: BTreeMap<SigKey, CostSignature>,
     pub completeness: Completeness,
+}
+
+impl CostEstimate {
+    /// Added by G1-6 (DR-124): the estimate of the client lanes alone. P1's
+    /// acceptance protocol checks the client's demand only (P1:2191-2200),
+    /// and a layer signed by another signature adds nothing to that demand
+    /// (P1:2002-2027). The check gives the client lanes. Every other lane
+    /// leaves the estimate, and B counts the kept lanes with the formula of
+    /// the analysis: weight times units times count, with an overflow that
+    /// gives `u64::MAX`. An estimate that loses a counted lane is incomplete
+    /// with the reason `ForeignLane`, unless an earlier rule already made it
+    /// incomplete. The walk charges one verification operation for each
+    /// count and each signature, and one structural item for each node of a
+    /// kept signature.
+    pub fn retain_client_lanes(
+        self,
+        client: &BTreeSet<SigKey>,
+        schedule: &PhloScheduleV1<'_>,
+        host: &HostWorkBudget,
+    ) -> Result<CostEstimate, InterpreterError> {
+        let CostEstimate {
+            quantities,
+            mut signatures,
+            completeness,
+            ..
+        } = self;
+        reserve(
+            host,
+            HostWorkDimension::VerificationOperations,
+            byte_count(quantities.len()).saturating_add(byte_count(signatures.len())),
+        )?;
+        signatures.retain(|lane, _| client.contains(lane));
+        let mut units = BTreeMap::new();
+        for (lane, signature) in &signatures {
+            units.insert(*lane, signature_units_metered(signature, host)?);
+        }
+        let mut kept = BTreeMap::new();
+        let mut foreign = false;
+        let mut bound_phlo = Some(0u64);
+        for ((lane, class), count) in quantities {
+            let lane_units = match (client.contains(&lane), units.get(&lane)) {
+                (false, _) => {
+                    foreign = true;
+                    continue;
+                }
+                (true, None) => {
+                    return Err(InterpreterError::ReduceError(
+                        "the estimate counted a lane without a static signature".to_string(),
+                    ))
+                }
+                (true, Some(lane_units)) => lane_units,
+            };
+            let weight = schedule
+                .classes
+                .get(class)
+                .map(|class| class.weight)
+                .ok_or_else(|| {
+                    InterpreterError::ReduceError(
+                        "the schedule has no class for a counted quantity".to_string(),
+                    )
+                })?;
+            bound_phlo = bound_phlo.and_then(|bound| {
+                weight
+                    .checked_mul(*lane_units)
+                    .and_then(|amount| amount.checked_mul(count))
+                    .and_then(|amount| bound.checked_add(amount))
+            });
+            kept.insert((lane, class), count);
+        }
+        let completeness = match (completeness, foreign) {
+            (Completeness::Complete, true) => {
+                Completeness::Incomplete(IncompleteReason::ForeignLane)
+            }
+            (completeness, _) => completeness,
+        };
+        Ok(CostEstimate {
+            quantities: kept,
+            bound_phlo: bound_phlo.unwrap_or(u64::MAX),
+            signatures,
+            completeness,
+        })
+    }
 }
 
 /// The per-message length bound of the pre-pass: a key, a length prefix and
@@ -3011,6 +3098,30 @@ pub(crate) fn signature_units(signature: &CostSignature) -> u64 {
         }
     }
     units
+}
+
+/// Added by G1-6 (DR-124): `signature_units` with one structural item charged
+/// for each signature node before the walk reads it. The walk uses a heap
+/// stack, as `signature_units` does (DR-67).
+pub(crate) fn signature_units_metered(
+    signature: &CostSignature,
+    host: &HostWorkBudget,
+) -> Result<u64, InterpreterError> {
+    let mut pending = vec![signature];
+    let mut units = 0u64;
+    while let Some(current) = pending.pop() {
+        reserve(host, HostWorkDimension::StructuralItems, 1)?;
+        match current.value.as_ref() {
+            Some(CostSignatureValue::Ground(_))
+            | Some(CostSignatureValue::Name(_))
+            | Some(CostSignatureValue::Quote(_)) => units = units.saturating_add(1),
+            Some(CostSignatureValue::Compound(compound)) => {
+                pending.extend(compound.elements.iter())
+            }
+            Some(CostSignatureValue::Unit(_)) | Some(CostSignatureValue::BoundLevel(_)) | None => {}
+        }
+    }
+    Ok(units)
 }
 
 /// The field length of the region of `signature` inside a `CostAuthority`,
