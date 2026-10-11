@@ -58,6 +58,7 @@
 #   log-descriptor-exhaustion a writer at its descriptor limit keeps appending -> the probes sample, breach
 #   log-probe-vanished    the container stops between docker ps and docker inspect -> skipped, one iteration
 #   log-probe-transient-active one node log exec fails during the iteration -> warning, one iteration
+#   log-probe-exec-nonzero-active node log exec prints a partial du size and an error, exits 1 -> breach
 #   log-rotated-unreadable a rotated container log exists but cannot be read  -> breach, log probe unavailable
 #
 # Usage: test-soak-disk-admission.sh [--scenario NAME] [source-directory] [evidence-directory]
@@ -84,7 +85,7 @@ SCENARIOS=(band missing-boundary missing-after-hygiene malformed-boundary missin
     cleanup-error-image cleanup-error-builder cleanup-partial cleanup-sufficient
     log-within-budget log-container-soft log-container-hard log-node-soft log-probe-missing-active
     log-probe-missing-boundary log-sudo-fallback log-budget-disabled log-budget-range log-descriptor-exhaustion
-    log-probe-vanished log-probe-transient-active log-rotated-unreadable)
+    log-probe-vanished log-probe-transient-active log-probe-exec-nonzero-active log-rotated-unreadable)
 
 SCENARIO="${SOAK_DISK_TEST_SCENARIO:-}"
 if [[ "${1:-}" == --scenario ]]; then
@@ -263,6 +264,13 @@ if [[ "${SOAK_DISK_TEST_SCENARIO:-band}" == log-probe-transient-active && -s /ca
     printf 'Error response from daemon: fixture exec contention\n' >&2
     exit 1
 fi
+if [[ "${SOAK_DISK_TEST_SCENARIO:-band}" == log-probe-exec-nonzero-active && -s /case/evidence/workload-started.txt &&
+    "${1:-}" == exec && "${2:-}" == "$owned_id" ]]; then
+    printf 'exec-nonzero\n' >>/case/evidence/log-probe-faults.txt
+    printf '4096\t/var/lib/rnode/logs\n'
+    printf '%s\n' "2048 du: cannot read directory '/var/lib/rnode/logs/locked': Permission denied" >&2
+    exit 1
+fi
 if [[ "${1:-}" == exec && "${2:-}" == "$owned_id" ]]; then
     printf '%s\t/var/lib/rnode/logs\n' "$(cat /case/node-log-bytes)"
     exit 0
@@ -423,7 +431,7 @@ case "${SOAK_DISK_TEST_SCENARIO:-band}" in
     log-container-soft) truncate -s 450M /case/clog/json.log && sleep 25 ;;
     log-container-hard) truncate -s 900M /case/clog/json.log && sleep 25 ;;
     log-node-soft) printf '%s\n' 3145728000 >/case/node-log-bytes && sleep 25 ;;
-    log-probe-missing-active) sleep 25 ;;
+    log-probe-missing-active | log-probe-exec-nonzero-active) sleep 25 ;;
     log-probe-transient-active)
         for _ in $(seq 1 300); do
             [[ ! -d /case/evidence/exec-fault ]] || break
@@ -841,7 +849,7 @@ SH
                     printf 'ERROR: The fixture did not fail one node log exec.\n' >&2
                     exit 2
                 fi
-                if ! grep -Fq 'log guardian: probe unavailable (log probe unavailable: node log directory of 000000000000 (docker exec: Error response from daemon: fixture exec contention)); consecutive failed probes 1 of 2' evidence/driver.log; then
+                if ! grep -Fq 'log guardian: probe unavailable (log probe unavailable: node log directory of 000000000000 (docker exec exit 1: Error response from daemon: fixture exec contention)); consecutive failed probes 1 of 2' evidence/driver.log; then
                     printf 'FAIL: The driver did not warn about one failed log probe with the docker exec error.\n' >&2
                     exit 1
                 fi
@@ -879,6 +887,10 @@ SH
         log-probe-missing-active)
             [[ -s evidence/log-probe-faults.txt ]] || exit 2
             expected='The log guardian probe is unavailable during execution (log probe unavailable: docker inspect 000000000000; consecutive failed probes 2)'
+            ;;
+        log-probe-exec-nonzero-active)
+            grep -Fxq exec-nonzero evidence/log-probe-faults.txt || exit 2
+            expected="The log guardian probe is unavailable during execution (log probe unavailable: node log directory of 000000000000 (docker exec exit 1: 2048 du: cannot read directory '/var/lib/rnode/logs/locked': Permission denied); consecutive failed probes 2)"
             ;;
         log-rotated-unreadable)
             grep -Fxq rotated-refused evidence/log-probe-faults.txt || exit 2

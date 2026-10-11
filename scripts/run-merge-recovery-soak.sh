@@ -522,7 +522,7 @@ log_container_running() {
 # is skipped. A missing node log directory counts as 0: a node on the stdout
 # sink writes no file log. Call it through log_budget_probe.
 log_budget_sample() {
-	local ids cid inspected owner path suffix bytes total container_mb node_mb exec_out exec_err
+	local ids cid inspected owner path suffix bytes total container_mb node_mb exec_out exec_err exec_err_file exec_status
 	ids="$(docker ps -q --no-trunc --filter "label=io.f1r3fly.soak.owner=$SOAK_WRITER_OWNER" 2>/dev/null)" || {
 		printf 'log probe unavailable: docker ps\n' >&2
 		return 1
@@ -562,12 +562,31 @@ log_budget_sample() {
 			container_mb="$(((total + 1048575) / 1048576))"
 		fi
 		if [ "$NODE_LOG_BUDGET_MB" -gt 0 ]; then
-			exec_out="$(docker exec "$cid" sh -c 'if [ -d "$1" ]; then du -sb "$1"; else printf "0\t%s\n" "$1"; fi' sh "$NODE_LOG_DIR" 2>&1)"
-			bytes="$(printf '%s\n' "$exec_out" | awk 'NF >= 2 && $1 ~ /^[0-9]+$/ { print $1; exit }')"
+			# stdout and stderr are kept apart. Only a zero exit status with
+			# exactly one "<bytes>\t<directory>" line is a sample. A nonzero
+			# status is a failure even when du printed a partial size.
+			exec_err_file="$(mktemp)" || {
+				printf 'log probe unavailable: node log directory of %s (mktemp)\n' "${cid:0:12}" >&2
+				return 1
+			}
+			exec_status=0
+			exec_out="$(docker exec "$cid" sh -c 'if [ -d "$1" ]; then du -sb "$1"; else printf "0\t%s\n" "$1"; fi' sh "$NODE_LOG_DIR" 2>"$exec_err_file")" ||
+				exec_status=$?
+			exec_err="$(awk 'NF { print; exit }' "$exec_err_file" 2>/dev/null | tr -cd '[:print:]' | cut -c1-160)"
+			rm -f "$exec_err_file"
+			bytes=""
+			if [ "$exec_status" -eq 0 ]; then
+				bytes="$(printf '%s\n' "$exec_out" | awk -F '\t' -v dir="$NODE_LOG_DIR" \
+					'NR == 1 && NF == 2 && $1 ~ /^[0-9]+$/ && $2 == dir { size = $1 } END { if (NR == 1 && size != "") print size }')"
+			fi
 			if ! [[ "$bytes" =~ ^[0-9]{1,18}$ ]]; then
 				log_container_running "$cid" || continue
-				exec_err="$(printf '%s\n' "$exec_out" | awk 'NF { print; exit }' | tr -cd '[:print:]' | cut -c1-160)"
-				printf 'log probe unavailable: node log directory of %s%s\n' "${cid:0:12}" "${exec_err:+ (docker exec: $exec_err)}" >&2
+				if [ "$exec_status" -ne 0 ]; then
+					printf 'log probe unavailable: node log directory of %s (docker exec exit %s%s)\n' \
+						"${cid:0:12}" "$exec_status" "${exec_err:+: $exec_err}" >&2
+				else
+					printf 'log probe unavailable: node log directory of %s (unexpected du output)\n' "${cid:0:12}" >&2
+				fi
 				return 1
 			fi
 			node_mb="$(((bytes + 1048575) / 1048576))"
