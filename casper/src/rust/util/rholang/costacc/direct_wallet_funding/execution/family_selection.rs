@@ -6,6 +6,7 @@ use models::rhoapi::cost_signature::Value as CostSignatureValue;
 use models::rhoapi::CostSignature;
 use models::rust::host_work::{HostWorkDimension, HostWorkUnits};
 use models::rust::phlo_resource::PhloAuthorityNode;
+use models::rust::phlo_source::PhloSourcePolicyV1;
 use models::rust::signed_phlo_deploy::OfferedFundedDeploy;
 use rholang::rust::interpreter::accounting::authority::{
     authority_funding_signatures_for_events_with_host_work, cost_signature_to_sig,
@@ -63,6 +64,58 @@ fn verified_onchain_authority(
     match signature {
         rholang::rust::interpreter::accounting::Sig::Ground(bytes) => Ok(bytes),
         _ => Err(invalid("on-chain private-name authority is not grounded")),
+    }
+}
+
+/// Added by G1-4b (DR-123): how a source shows the authority of the resources
+/// that it funds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum SourceAuthority<'b> {
+    /// A source of the signed record. Its permissions alone decide.
+    Signed,
+    /// An on-chain purse whose private-name authority the run observed. A
+    /// resource also needs that ground authority.
+    Observed(&'b [u8]),
+    /// An on-chain purse before execution. No run has observed its authority,
+    /// so it funds the fee only (map gap fill G-5).
+    Unobserved,
+}
+
+/// Added by G1-4b (DR-123): the permission test of
+/// `select_rooted_native_family`, which the gate shares. A resource key needs
+/// a signed permission equal to its wire key, and an on-chain purse also
+/// needs its observed ground authority. Each permission costs one
+/// verification operation.
+pub(super) fn source_permits(
+    key: &PhloObligationKey<'_>,
+    signed: &PhloSourcePolicyV1<'_>,
+    authority: SourceAuthority<'_>,
+    limits: NativeOfferedFamilyLimits,
+    budget: &HostWorkBudget,
+) -> Result<bool, CasperError> {
+    match key {
+        PhloObligationKey::Fee => Ok(signed.fee_permitted()),
+        PhloObligationKey::Resource(resource) | PhloObligationKey::RetainedResource(resource) => {
+            let observed = match authority {
+                SourceAuthority::Signed => None,
+                SourceAuthority::Observed(bytes) => Some(bytes),
+                SourceAuthority::Unobserved => return Ok(false),
+            };
+            let wire = resource
+                .wire_key(limits.measured.settlement.matching.execution)
+                .map_err(invalid)?;
+            let mut allowed = false;
+            for permission in signed.resources() {
+                reserve(budget, HostWorkDimension::VerificationOperations, 1)?;
+                if permission == &wire
+                    && observed
+                        .is_none_or(|bytes| wire.authority == [PhloAuthorityNode::Ground(bytes)])
+                {
+                    allowed = true;
+                }
+            }
+            Ok(allowed)
+        }
     }
 }
 
@@ -160,29 +213,38 @@ pub(crate) fn select_rooted_native_family<'a>(
         let mut row = Vec::new();
         row.try_reserve_exact(columns)
             .map_err(|_| invalid("native funding eligibility row allocation failed"))?;
+        // Changed by G1-4b (DR-123): the permission test moved to
+        // `source_permits`, which the gate shares. The replaced lines follow.
+        // for key in obligations.keys() {
+        //     let permitted = match key {
+        //         PhloObligationKey::Fee => signed.fee_permitted(),
+        //         PhloObligationKey::Resource(resource)
+        //         | PhloObligationKey::RetainedResource(resource) => {
+        //             let wire = resource
+        //                 .wire_key(limits.measured.settlement.matching.execution)
+        //                 .map_err(invalid)?;
+        //             let mut allowed = false;
+        //             for permission in signed.resources() {
+        //                 reserve(budget, HostWorkDimension::VerificationOperations, 1)?;
+        //                 if permission == &wire
+        //                     && onchain_authority.as_ref().is_none_or(|bytes| {
+        //                         wire.authority == [PhloAuthorityNode::Ground(bytes.as_slice())]
+        //                     })
+        //                 {
+        //                     allowed = true;
+        //                 }
+        //             }
+        //             allowed
+        //         }
+        //     };
+        //     row.push(permitted);
+        // }
+        let authority = match onchain_authority.as_deref() {
+            Some(bytes) => SourceAuthority::Observed(bytes),
+            None => SourceAuthority::Signed,
+        };
         for key in obligations.keys() {
-            let permitted = match key {
-                PhloObligationKey::Fee => signed.fee_permitted(),
-                PhloObligationKey::Resource(resource)
-                | PhloObligationKey::RetainedResource(resource) => {
-                    let wire = resource
-                        .wire_key(limits.measured.settlement.matching.execution)
-                        .map_err(invalid)?;
-                    let mut allowed = false;
-                    for permission in signed.resources() {
-                        reserve(budget, HostWorkDimension::VerificationOperations, 1)?;
-                        if permission == &wire
-                            && onchain_authority.as_ref().is_none_or(|bytes| {
-                                wire.authority == [PhloAuthorityNode::Ground(bytes.as_slice())]
-                            })
-                        {
-                            allowed = true;
-                        }
-                    }
-                    allowed
-                }
-            };
-            row.push(permitted);
+            row.push(source_permits(key, signed, authority, limits, budget)?);
         }
         eligible.push(row);
     }
@@ -265,6 +327,122 @@ mod tests {
                 verified_onchain_authority(&payer, &observed).is_ok(),
                 should_accept
             );
+        }
+    }
+
+    /// Added by G1-4b (DR-123): the permission test that
+    /// `select_rooted_native_family` computed inline before the refactor,
+    /// kept as the oracle of `source_permits`.
+    fn inline_permission(
+        key: &PhloObligationKey<'_>,
+        signed: &PhloSourcePolicyV1<'_>,
+        onchain_authority: Option<&Vec<u8>>,
+        limits: NativeOfferedFamilyLimits,
+        budget: &HostWorkBudget,
+    ) -> Result<bool, CasperError> {
+        Ok(match key {
+            PhloObligationKey::Fee => signed.fee_permitted(),
+            PhloObligationKey::Resource(resource)
+            | PhloObligationKey::RetainedResource(resource) => {
+                let wire = resource
+                    .wire_key(limits.measured.settlement.matching.execution)
+                    .map_err(invalid)?;
+                let mut allowed = false;
+                for permission in signed.resources() {
+                    reserve(budget, HostWorkDimension::VerificationOperations, 1)?;
+                    if permission == &wire
+                        && onchain_authority.is_none_or(|bytes| {
+                            wire.authority == [PhloAuthorityNode::Ground(bytes.as_slice())]
+                        })
+                    {
+                        allowed = true;
+                    }
+                }
+                allowed
+            }
+        })
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig::with_cases(256))]
+
+        /// Added by G1-4b (DR-123): `source_permits` decides every key as the
+        /// inline test did, with the same host-work charge, for signed
+        /// sources and for on-chain purses with an observed authority. An
+        /// on-chain purse without an observed authority funds the fee only.
+        #[test]
+        fn source_permits_decides_as_the_inline_test_did(
+            permitted in proptest::collection::btree_set((0u8..3, 0usize..3), 0..5),
+            asked in (0u8..3, 0usize..3),
+            kind in 0u8..3,
+            fee in proptest::prelude::any::<bool>(),
+            observed in proptest::option::of(0u8..3),
+        ) {
+            use models::rust::host_work::{HostWorkLimit, HostWorkLimits};
+            use models::rust::phlo_source::PhloSourceLimits;
+            use models::rust::phlo_wire::PhloWireLimits;
+            use rholang::rust::interpreter::accounting::phlo_execution::{
+                PhloResource, PhloSourceConsent,
+            };
+            use rholang::rust::interpreter::accounting::{Sig, SignatureChannel};
+
+            use crate::rust::util::rholang::costacc::production_limits::offered_funded_v6_production_limits;
+
+            let limits = offered_funded_v6_production_limits().family;
+            let terms = b"selected terms".to_vec();
+            let authorities = (0u8..3).map(|tag| Sig::Ground(vec![tag + 1; 4])).collect::<Vec<_>>();
+            let locations = authorities
+                .iter()
+                .map(|authority| SignatureChannel::from_sig(authority).par.encode_to_vec())
+                .collect::<Vec<_>>();
+            let resource = |(tag, class): (u8, usize)| PhloResource {
+                location: &locations[usize::from(tag)],
+                class,
+                acquisition_terms: &terms,
+                authority: &authorities[usize::from(tag)],
+            };
+            let permissions = permitted.iter().copied().map(resource).collect::<Vec<_>>();
+            let custody = [5u8; 32];
+            let signed = PhloSourceConsent {
+                custody: &custody,
+                hold_cap: 10,
+                debit_cap: 10,
+                fee_permitted: fee,
+                resources: &permissions,
+            }
+            .wire_policy(limits.measured.settlement.matching.execution, PhloSourceLimits {
+                wire: PhloWireLimits {
+                    total_bytes: 1_048_576,
+                    field_bytes: 524_288,
+                },
+                resource_permissions: 16,
+                authority_nodes: 65_536,
+            })
+            .expect("the source policy encodes");
+            let key = match kind {
+                0 => PhloObligationKey::Fee,
+                1 => PhloObligationKey::Resource(resource(asked)),
+                _ => PhloObligationKey::RetainedResource(resource(asked)),
+            };
+            let observed = observed.map(|tag| vec![tag + 1; 4]);
+            let budget = || HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(u64::MAX)));
+            let (refactored, inline) = (budget(), budget());
+            let authority = match observed.as_ref() {
+                Some(bytes) => SourceAuthority::Observed(bytes),
+                None => SourceAuthority::Signed,
+            };
+            let decided = source_permits(&key, &signed, authority, limits, &refactored)
+                .expect("the refactored test decides");
+            let expected = inline_permission(&key, &signed, observed.as_ref(), limits, &inline)
+                .expect("the inline test decides");
+            proptest::prop_assert_eq!(decided, expected);
+            proptest::prop_assert_eq!(
+                refactored.usages().into_array().map(|usage| usage.get()),
+                inline.usages().into_array().map(|usage| usage.get())
+            );
+            let before_execution = source_permits(&key, &signed, SourceAuthority::Unobserved, limits, &budget())
+                .expect("the pre-execution test decides");
+            proptest::prop_assert_eq!(before_execution, kind == 0 && fee);
         }
     }
 }

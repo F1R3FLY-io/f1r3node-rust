@@ -2,9 +2,10 @@
 
 **Status.**
 
-- The user adopted this design on 2026-10-10. Step G1-4a implements the analysis (DR-122). No production path calls it yet.
+- The user adopted this design on 2026-10-10.
 - pgmcp is the work tracker of this effort. Epic 8946 is its work item "Complete offered-funded production cost-accounting integration".
 - G1, the funding check before execution, is a work item of epic 8946. Two implementation steps of G1 build this design. Step G1-4a adds the analysis to the `rholang` crate. Step G1-4b adds the check to the `casper` crate.
+- Step G1-4a implements the analysis, as decision record DR-122 (the linear cost estimate) records. Step G1-4b implements the check, as DR-123 (the check before execution) records. No production path calls either yet.
 - This document is the reference for the amended linear cost estimate.
 
 **Basis.**
@@ -323,7 +324,7 @@ estimate_offered_term(term: &str, normalizer_env: HashMap<String, Par>,
 - `estimate_offered_term` parses the term with the host-work charge of replay and resolves its names with the metered resolver. Then it estimates the resolved term and drops both terms without recursion.
 - `UnsizedValue` marks a value that is nested above the sizing bound of 256 message levels, or a size that has no static value. Every recursive function of the reducer that sizes a value stays within that bound.
 
-The field `quantities` holds the raw counts $`V(s,k)`$, keyed by the lane key and the class index. The field `bound_phlo` holds $`B`$. An error means that the host-work budget ran out, and the check then rejects the deploy with no charge (Section 6.3).
+The field `quantities` holds the raw counts $`V(s,k)`$, keyed by the lane key and the class index. The field `bound_phlo` holds $`B`$. An error means that the host-work budget ran out or that the term does not parse or normalize. The check then rejects the deploy with no charge (Section 6.3).
 
 ### 5.2 Execution positions and binder kinds
 
@@ -441,8 +442,8 @@ The analysis computes every byte size from a representative value. It builds the
 2. **Send data.** The analysis runs the reducer's `eval_expr` on each datum. Then it substitutes and measures the result, as `eval_send` does (`reduce.rs:1467-1474`). Evaluation matters because operators such as the interpolation `%%` change the size of a closed datum (`reduce.rs:3215`, `:8173-8192`). If evaluation fails, the estimate is incomplete.
    - **Narrowed rule X4 (DR-122).** The analysis evaluates data with unlimited meters. A form without a known work limit could do unbounded work there before any charge. So the analysis first walks the expression tree of each datum, without recursion.
    - **Allowed forms.** The analysis evaluates only the forms that have a known work limit. These forms are literals, collections, fixed-width arithmetic, comparisons and Boolean operators. They also include `++` on strings, byte arrays and lists, and `%%` with a literal map. The map must have string keys, and each value must be a string, an integer, a Boolean or a URI.
-   - **The charge comes first.** The analysis charges the work limit of a datum to the host-work budget before it evaluates the datum. In the limit, $`b`$ is the length bound of the datum plus the output growth of all forms, and $`h`$ is its height. The forms together cost $`b \cdot (h + 1) \cdot (\lceil \log_2 (b + 2) \rceil + 1)`$, and the logarithmic factor pays for sorting. For a template of $`n`$ bytes and $`K`$ keys of at most $`k`$ bytes, a `%%` also costs its loop work $`n \cdot (n + K \cdot (k + 3))`$.
-   - **The output bound of `%%`.** A placeholder in the template has at least 3 bytes, so the template has at most $`\lfloor n / 3 \rfloor`$ placeholders. A string or URI value has its own length. An integer has at most 20 bytes, and a Boolean has at most 5 bytes. If the longest value has $`v`$ bytes, the output has at most $`n + \lfloor n / 3 \rfloor \cdot v + 16`$ bytes. The 16 bytes cover the framing of the new string. Without this bound, a short template with a long value would allocate a string that no meter counts.
+   - **The charge comes first.** The analysis charges the work limit of a datum to the host-work budget before it evaluates the datum. In the limit, $`z`$ is the length bound of the datum plus the output growth of all forms. The height of the datum is $`h`$. The forms together cost $`z \cdot (h + 1) \cdot (\lceil \log_2 (z + 2) \rceil + 1)`$, and the logarithmic factor pays for sorting. For a template of $`t`$ bytes and $`K`$ keys of at most $`g`$ bytes, a `%%` also costs its loop work $`t \cdot (t + K \cdot (g + 3))`$.
+   - **The output bound of `%%`.** A placeholder in the template has at least 3 bytes, so the template has at most $`\lfloor t / 3 \rfloor`$ placeholders. A string or URI value has its own length. An integer has at most 20 bytes, and a Boolean has at most 5 bytes. If the longest value has $`a`$ bytes, the output has at most $`t + \lfloor t / 3 \rfloor \cdot a + 16`$ bytes. The 16 bytes cover the framing of the new string. Without this bound, a short template with a long value would allocate a string that no meter counts.
    - **Other forms.** The analysis never evaluates a datum with another form. Examples are `matches`, method calls, PathMaps, zippers, big-number arithmetic and set difference. The participant of that datum has no size, with the reason `DataEvaluation`, and the estimate is incomplete. Channels go through the same walk.
 3. **Patterns and guards.** The analysis substitutes them at depth 1, as the reducer does (`reduce.rs:1581`, `:1596`).
 4. **Receive bodies.** The analysis substitutes a receive body at depth 0 in the environment shifted by the bind count of the receive, as the reducer does (`reduce.rs:1632-1636`).
@@ -504,6 +505,8 @@ The check reuses existing interfaces.
 3. `project_phlo_obligations` turns the witness into obligations for each lane and class, plus the fee (`obligations.rs:213`).
 4. `select_phlo_funding_family` places the obligations on the eligible sources at $`R_0`$, with one requirement (`family_policy.rs:426`).
 
+The permissions of the signed record decide which sources are eligible. Before execution, an on-chain purse is eligible for the fee only, because no run has shown its authority yet (DR-123).
+
 The meter then runs under the bound $`B`$ with the bound source `Certificate`.
 
 ### 6.2 An incomplete estimate
@@ -525,17 +528,19 @@ For an incomplete estimate, $`B`$ counts only the parts that the analysis can se
 The check places the holds in two steps.
 
 1. It places the known demand for each lane and class on the eligible sources. It uses steps 1 to 4 of Section 6.1 under the bound $`\mathrm{phloLimit}`$. The fee goes on a fee-permitted source.
-2. It fills the remainder $`R`$ over the sources in canonical custody order. Each source takes at most its balance, its hold cap and its debit cap, minus what step 1 placed on it.
+2. It fills the remainder $`R`$ over the sources in canonical custody order, which is ascending custody. Each source takes at most its balance, its hold cap and its debit cap, minus what step 1 placed on it. An on-chain purse takes no part of the remainder (DR-123).
 
 The meter then runs under the bound $`\mathrm{phloLimit}`$ with the bound source `SignedLimit`. Supply counts SystemVault balances only. Prepaid phlo inventory does not count yet (an adopted gap fill of 2026-10-10).
 
 ### 6.3 Rejections before execution
 
-The check rejects the deploy before any runtime entry in three cases. [P][C]
+The check rejects the deploy before any runtime entry in five cases. [P][C]
 
 1. **The estimate exceeds the signed limit**, that is, $`B > \mathrm{phloLimit}`$. The existing bound check already rejects a bound above the limit (`phlo_bounds.rs:42-43`).
 2. **The holds do not fit.** The selection finds no placement, a remainder is left, or the holds exceed the total exposure. The rejection text is "insufficient phlogiston" (P1:2210).
-3. **The host-work budget runs out** in the resolver, the analysis or the selection (DRs:12012).
+3. **The host-work budget runs out** in the parser, the resolver, the analysis or the selection (DRs:12012).
+4. **The witness exceeds the settlement limits.** The witness of the estimate or its obligations exceed the limits that settlement checks after execution. Settlement would then reject the offer with no charge after all the work, so the check rejects it before the work runs (DR-123).
+5. **The term does not parse or normalize.** No analysis exists for such a term (DR-122).
 
 In each case, the deploy is rejected "without executing any part of the deployment. No state change occurs. No tokens are consumed." (P1:2210-2212).
 
@@ -543,7 +548,7 @@ In each case, the deploy is rejected "without executing any part of the deployme
 
 Every validator recomputes the whole decision. [C][D]
 
-- **Inputs.** The decision is a pure function of the five inputs of Section 5.1 and of the wallet snapshot at $`R_0`$.
+- **Inputs.** The decision is a pure function of the five inputs of Section 5.1 and of the wallet snapshot at $`R_0`$. The snapshot depends on the block time through its grant checks.
 - **Host work.** The check meters its work on its own host-work budget, with the consensus limits. Play and replay create that budget at the same point, just before evaluation. So the outcome does not depend on earlier work (DR-102, acceptance work on its own budget).
 - **URN maps.** Play and replay build the URN map with the same constructor and the same inputs (`rho_runtime.rs:1997-1999`, `:2065-2068`). External services do not change the map.
 
@@ -785,12 +790,17 @@ The placement differs only in the remainder. A complete estimate has no remainde
 
 ```text
 ⟨place the holds or reject⟩ ≡
+  bound ← B if complete, else phloLimit
+  witness ← counted witness of V, checked under bound with the settlement limits
+  if the witness or its obligations exceed the settlement limits:
+    reject(envelope), no charge                                       -- DR-123
+  eligible ← the permissions of the record, and an on-chain purse pays the fee only
   known_holds ← select_phlo_funding_family(obligations(V) · phloPrice and the fee, snapshot)
   if complete:
     holds, bound ← known_holds, (B, Certificate)
   else:
     R ← (phloLimit − B) · phloPrice
-    holds ← known_holds plus R filled in custody order,
+    holds ← known_holds plus R filled over the signed sources in custody order,
             each source up to min(balance, hold cap, debit cap) minus known_holds
     bound ← (phloLimit, SignedLimit)
   if no placement, R is not fully placed, or Σ holds > total exposure:

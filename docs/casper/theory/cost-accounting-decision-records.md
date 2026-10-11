@@ -3989,6 +3989,11 @@ safety of the newly reachable analyzer.
 exhaustion of the signed limit is a classified user failure. No certified
 bound and no hold exist yet, so every live contract binds the signed limit.
 
+**Amendment (DR-123, 2026-10-11).** DR-123 implements the check of items 3
+to 5. It amends the wording of items 4 and 6 and of the verification
+obligation (design section 8.6). The rejection text for holds that do not fit
+is "insufficient phlogiston" (P1:2210).
+
 **Cross-refs.** P1 `def:funding-proof`, `thm:decidability`,
 `def:conservative-demand`, `sec:acceptance-protocol`. DR-65, DR-67, DR-68.
 Epic 8946 leaves `ofp-1-admission-inputs`, `ofp-2-bound-analyzer`, and
@@ -13895,3 +13900,197 @@ every selection.
     commit tree.
 
 **Cross-refs.** DR-64, DR-65, DR-67, DR-101, DR-113, DR-118, DR-121.
+
+## DR-123 — The check before execution of an offered deploy (G1-4b)
+
+**Status.** Implemented 2026-10-11 for step G1-4b of gap G1 of epic 8946. It
+follows section 6 of
+[the linear cost estimate design](cost-accounting-impl/linear-cost-estimate.md)
+and the binding amendments of 2026-10-11 to implementation map v5. No
+production path calls the check yet. Step G1-6 makes it live in play and
+replay.
+
+**Context.**
+
+- P1 rejects an underfunded deployment "with an 'insufficient phlogiston'
+  error" before execution, with no state change and no tokens consumed
+  (P1:2208-2212). Supply covers all of a hold or none of it (P1:1990-1992).
+- DR-64 items 3 to 5 ask for holds of the known demand and of the complete
+  remainder at $`R_0`$. When the holds do not fit, the offer is rejected
+  with no effect. DR-122 gives the estimate $`B`$ and its completeness.
+- The arbitration of the map adds four rules. A witness above the settlement
+  limits rejects (M3). On-chain purses fund the fee only before execution
+  (LOW 5). The check reads the production limits of the family (LOW 8), and
+  the block time is an input through the grant checks (LOW 10).
+
+**Decision.**
+
+1. **The interface.** `gate_offered_candidate` takes an `OfferedGateInput`:
+   - the envelope, the prepared candidate, the selected schedule and its
+     bytes, and the adopted minimum price
+   - the wallet snapshot at $`R_0`$, which depends on the block time through
+     its grant checks (arbitration LOW 10)
+   - the reducer of the offered runtime, for its URN map (DR-122)
+   - `offered_funded_v6_production_limits().family` (arbitration LOW 8)
+   - `offered_funded_v6_host_work_limits()`, from which each call builds its
+     own budget (DR-102)
+
+   It returns an `OfferedGate` or an `OfferedGateRejection`. The gate holds
+   the kind of the estimate, $`B`$, the resource bound, the bound source and
+   the hold of each purse in canonical custody order. Only the check builds
+   it.
+2. **The estimate.** The term, its normalizer environment and its seed come
+   from the envelope, and the funding signature comes from its signers
+   (`runtime.rs:165`). `estimate_offered_term` gives the estimate. A
+   host-work error of the parser, the resolver or the analysis is the
+   rejection `HostWork` (design section 6.3 item 3). Any other error means
+   that the term does not parse or normalize, and the rejection is `Invalid`.
+3. **The kind.** An estimate is complete only when the analysis is complete
+   and no signed source is an on-chain payer. Design section 5.3 and review
+   LOW 5 state this rule. Otherwise the reason is the first failed rule of
+   the analysis, or `OnChainPayer`. The check decides the kind before it
+   chooses the bound.
+4. **The limit.** An estimate above the signed limit is the rejection
+   `EstimateAboveLimit` (design section 6.3 item 1).
+5. **The witness and the obligations (design section 6.1).**
+   - The raw counts fill a counted witness whose required and fresh
+     resources are those counts. Each resource has the key of the measured
+     path: the encoded supply channel of the lane's authority, the schedule
+     class, the selected schedule bytes and the authority as a `Sig`.
+   - The check converts each lane signature with the metered conversions of
+     `born_resource` (`producer.rs`). Their sorter stops at 256 nesting
+     levels. A deeper signature rejects the offer, so the check never
+     recurses past that bound (DR-67).
+   - The signed controls check the bound, which is $`B`$ for a complete
+     estimate and $`\mathrm{phloLimit}`$ for an incomplete one.
+   - `check_counted_phlo_execution` checks the witness with the settlement
+     limits. A witness or an obligation set above those limits is the
+     rejection `SettlementLimits`, before execution and with no charge
+     (arbitration M3). There is no `WitnessLimit` reason.
+   - The projection gives one obligation for each lane and class, of
+     $`w_k \cdot u(s) \cdot V(s,k) \cdot \mathrm{phloPrice}`$, plus the fee of
+     one atomic unit.
+6. **The eligibility.** The permission test of `select_rooted_native_family`
+   moves to `source_permits`, which the check shares. The refactor keeps
+   every decision and every host-work charge. Before execution, an on-chain
+   purse funds the fee only, because no run has shown its authority (map
+   gap fill G-5). That rule is conservative: after execution the run can
+   show the authority (arbitration LOW 5).
+7. **The holds (design sections 6.1 and 6.2).**
+   - `select_phlo_funding_family` places the known demand and the fee with
+     one requirement and the canonical cursors. The capacities come from the
+     snapshot: the balance at $`R_0`$, the hold cap and the debit cap.
+   - An incomplete estimate also holds the remainder
+     $`R = (\mathrm{phloLimit} - B) \cdot \mathrm{phloPrice}`$. The remainder
+     fills the signed sources in canonical custody order, which is ascending
+     custody. Each source takes at most its balance, its hold cap and its
+     debit cap, minus its known hold.
+   - An on-chain purse takes no part of the remainder. Design section 6.2
+     now states this rule.
+   - The holds fit completely or the offer is rejected. The rejection text
+     starts with "insufficient phlogiston" (P1:2210). The causes are
+     `NoPlacement`, `RemainderLeft` and `ExposureExceeded`.
+   - Supply counts SystemVault balances only.
+8. **Holds are fit checks.** The holds move no funds (DR-5). Settlement
+   debits the measured use, so each hold equals its debit after execution
+   and the unused part never leaves the purse (design section 8.1).
+9. **The amended wording of DR-64 (design section 8.6).**
+   - **Item 4.** A hold is the fit check at $`R_0`$. A complete estimate
+     holds its cost plus the fee. An incomplete estimate holds the known
+     demand of each lane and class, plus the complete remainder.
+   - **Item 6.** SystemVault reserves the measured debit. The refund is
+     implicit: the unused part never leaves the purse.
+   - **Obligation.** "A dynamic offer holds up to the limit and gets the rest
+     back" now means that the rest never leaves the purse.
+   - **Rejection text.** The rejection for holds that do not fit is
+     "insufficient phlogiston" (P1:2210). It replaces "insufficient
+     certified funding".
+10. **Exhaustion inside the analysis.** The analysis meters its walks
+    (DR-122 item 5) and can exhaust a host-work dimension. The check maps
+    that exhaustion to the rejection `HostWork`, with no charge. Measured
+    under `offered_funded_v6_host_work_limits()` on the deep term of the
+    stack-safety tests (one `new`, one send and one receive per level):
+    - Up to 620 levels, the estimate fits.
+    - From 621 levels on, the charge of the environment copies exhausts the
+      substitution bytes, $`2^{28}`$.
+    - From 5,703 levels on, the merge count of the plan alone exhausts the
+      verification operations, $`2^{30}`$, before the plan runs.
+
+    The review of G1-4a changes both counts (H-2 and M-4). The test of this
+    mapping therefore narrows only the verification operations.
+
+**Why the check is sound.** `BoundKindSoundness.v` proves that the check binds
+`Certificate` only for a complete estimate. It never binds `Certificate` for
+an offer with an on-chain payer. It rejects an estimate above the limit and holds exactly
+$`B \cdot \mathrm{phloPrice} + 1`$ or $`\mathrm{phloLimit} \cdot \mathrm{phloPrice} + 1`$.
+Every bound that it binds passes the guard of the execution contract. The
+remainder fill is complete or rejects. A run that passes a certified bound
+restores its pre-state and pays nothing.
+
+**Verification.**
+
+- Rocq, with no axiom:
+  - `BoundKindSoundness.v`: `classification_conservative`,
+    `onchain_payer_is_never_certified`, `estimate_above_limit_rejected`,
+    `complete_hold_is_exact`, `incomplete_hold_is_full_limit`,
+    `bound_is_admissible`, `custody_fill_complete_or_reject` (from
+    `fill_parts_within_rooms`, `fill_conserves` and `fill_unplaced_iff`) and
+    `overrun_rollback_effect_free`, which reuses `SignedLimitExhaustion.v`.
+  - Four proved negative controls refute these wrong rules:
+    - an incomplete estimate treated as complete, where a recursive run
+      passes the certified bound and pays nothing
+    - a partial remainder hold, against P1:1990-1992
+    - a check without the limit test, whose bound the guard refuses
+    - a check that ignores the on-chain payer
+  - `EndToEndAuthority.v`: `left_branch_fits_held_limit` and
+    `right_branch_fits_held_limit` extend the two branch lemmas to the
+    remainder. `remainder_hold_completes_limit` and
+    `implicit_refund_never_leaves_purse`, with its pointwise form, extend
+    `pointwise_refund_is_unused_reservation`.
+  - The proof gate with `COST_ACCOUNTING_ONLY=1` passes with 289 modules and
+    3304 closed assumption queries. The 20 new queries cover the new module
+    and the five new theorems.
+- Rust tests in `direct_wallet_funding/execution/gate/tests.rs`, with one
+  property test of 256 cases for each invariant:
+  - the total hold, $`B \cdot \mathrm{phloPrice} + 1`$ or
+    $`\mathrm{phloLimit} \cdot \mathrm{phloPrice} + 1`$
+  - the placement: known demand and the fee on eligible sources, exact cover
+    of every obligation, and the remainder in canonical custody order
+  - the caps of each source and the total exposure
+  - a brute-force oracle: the check rejects exactly when an exhaustive search
+    finds no fit
+  - determinism, also after earlier use of a budget
+  - feasibility: realized use at most the estimate settles at $`R_0`$
+  - the on-chain rule, and `Certificate` only for a complete estimate
+  - a guard that the generated instances reach acceptance, rejection and
+    placed remainders
+- Unit tests:
+  - an estimate above the limit
+  - the holds of a worked complete and incomplete estimate
+  - a remainder short by one atomic unit, and a total above the exposure
+  - the rejection text
+  - a witness above the settlement limits
+  - a deep chain that exhausts the analysis
+  - the host-work and syntax errors of the parse
+  - a real complete estimate whose witness passes the bound $`B`$
+  - a lane signature deeper than the sorter's bound of 256 levels, which
+    rejects the offer without recursion
+  - a shallow lane signature, whose metered location equals the location of
+    the measured path
+- `family_selection.rs`: a property test of 256 cases shows that
+  `source_permits` decides every key as the inline test did, with the same
+  host-work charge.
+- Mutation controls: a partial remainder, an on-chain purse that takes the
+  remainder, and an on-chain offer classified complete each fail the tests.
+- Suites:
+  - casper (nextest, release, 8 test threads): 1776 of 1780 tests pass with
+    the provisional caps, and 1774 of 1780 with the committed caps. 14 tests
+    are skipped.
+  - The failures are the known failures: 4 with the provisional caps and 6
+    with the committed caps.
+  - rholang and rspace++ pass 4192 of 4192 in release, with 13 skipped.
+  - `cargo fmt --check`, the workspace doctests and
+    `cargo clippy --workspace --all-targets -- -D warnings` pass on the
+    commit tree.
+
+**Cross-refs.** DR-5, DR-64, DR-65, DR-102, DR-113, DR-122.

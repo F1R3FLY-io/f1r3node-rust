@@ -204,6 +204,12 @@ pub use producer::{
 mod family_selection;
 pub(crate) use family_selection::select_rooted_native_family;
 
+mod gate;
+pub use gate::{
+    gate_offered_candidate, InsufficientCause, OfferedEstimateKind, OfferedGate, OfferedGateInput,
+    OfferedGateRejection,
+};
+
 /// Added by DR-114: the bytes of external-service replies that one offered
 /// play may record. The replay telemetry and the clone-byte check of the
 /// deploy log count a record three times, and the replay evidence counts it

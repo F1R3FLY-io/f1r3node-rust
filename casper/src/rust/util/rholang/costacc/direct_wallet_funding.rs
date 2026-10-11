@@ -40,12 +40,14 @@ pub use settlement::{
 
 mod execution;
 pub use execution::{
-    NativeAttemptSettlementInput, NativeAttemptSettlementLimits, NativeCapturedSettlement,
-    NativeFundedAttempt, NativeFundedExecutionContext, NativeFundedReplayInput,
-    NativeFundedReplayLimits, NativeFundedSettlement, NativeGrantIssuanceInput,
-    NativeGrantSettlementInput, NativeOfferedAttempt, NativeOfferedCandidateResult,
-    NativeOfferedFamilyLimits, NativeOfferedPreparedResult, NativeOfferedProductionLimits,
-    NativeScopedOfferedResult, PendingReplayedNativeSettlement, ReplayedNativeFundedUser,
+    gate_offered_candidate, InsufficientCause, NativeAttemptSettlementInput,
+    NativeAttemptSettlementLimits, NativeCapturedSettlement, NativeFundedAttempt,
+    NativeFundedExecutionContext, NativeFundedReplayInput, NativeFundedReplayLimits,
+    NativeFundedSettlement, NativeGrantIssuanceInput, NativeGrantSettlementInput,
+    NativeOfferedAttempt, NativeOfferedCandidateResult, NativeOfferedFamilyLimits,
+    NativeOfferedPreparedResult, NativeOfferedProductionLimits, NativeScopedOfferedResult,
+    OfferedEstimateKind, OfferedGate, OfferedGateInput, OfferedGateRejection,
+    PendingReplayedNativeSettlement, ReplayedNativeFundedUser,
 };
 
 #[derive(Clone, Copy, Debug)]
