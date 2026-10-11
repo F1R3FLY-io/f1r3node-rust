@@ -720,7 +720,30 @@ pub const FS_NATIVE_URN_SUFFIXES: &[&str] = &[
     "entriesStreamOpen",
     "entriesStreamNext",
     "entriesStreamClose",
+    "bulkApply",
 ];
+
+pub const BULK_IMPORT_LOGICAL_NAME: &str = "bulk-import";
+
+pub const BULK_MAX_STAGE_BLOCKS: i64 = 1000;
+
+pub fn bulk_import_root_literal(bundle: &[BundleEntry]) -> String {
+    bundle
+        .iter()
+        .find(|e| {
+            e.logical_name == BULK_IMPORT_LOGICAL_NAME
+                && e.kind == BundleEntryKind::Dir
+                && e.consensus_mode == BundleConsensusMode::Consensus
+                && e.mode == "r"
+        })
+        .map(|e| format!("\"{BUNDLE_ROOT_PREFIX}/{}\"", e.logical_name))
+        .unwrap_or_else(|| "Nil".to_string())
+}
+
+pub fn bulkio_versioned_uri(pk: &PublicKey) -> String {
+    let pk_hex = hex::encode(pk.bytes.clone());
+    format!("rho:serve:1.0.0:{pk_hex}:bulkio:1.0.0")
+}
 /// Deterministically derive the secp256k1 signature the composed
 /// FsGenesis source needs for the `rs!(...)` call.  Matches
 /// RegistrySigGen::derive_from's `to_sign` construction and hashing.
@@ -876,6 +899,9 @@ pub fn compose_fs_genesis_source(
     let stdin_body = lib_body(embedded_rho::STDIN);
     let stdout_body = lib_body(embedded_rho::STDOUT);
     let fs_body = lib_body(embedded_rho::FS);
+    let bulk_body = lib_body(embedded_rho::BULK_IO);
+    let bulk_root = bulk_import_root_literal(bundle);
+    let bulk_max = BULK_MAX_STAGE_BLOCKS;
 
     let nonce = FS_NONCE;
 
@@ -970,6 +996,9 @@ new
   fsLockSequential(`rho:io:fs:native:1.0.0/lockSequential`),
   fsReleaseLock(`rho:io:fs:native:1.0.0/releaseLock`),
   fsReleaseAllForHolder(`rho:io:fs:native:1.0.0/releaseAllForHolder`),
+  fsBulkApply(`rho:io:fs:native:1.0.0/bulkApply`),
+  BulkIo, bulkStateP, bulkWithContext, bulkAllAgree, bulkAgreeLoop, bulkIsHex32,
+  bulkInsertVerRet,
   rs(`rho:registry:insertSigned:secp256k1`),
   uriOut,
   // PB-B-3 (2026-08-24): Versioned Registry publication.  `v1Api`
@@ -1001,6 +1030,8 @@ in {{
   {stdout_body}
   |
   {fs_body}
+  |
+  {bulk_body}
   |
   // CRIT-2 fix (2026-08-06): snapshot-cadence commitment.  Binds
   // cadence to a fresh unforgeable name and immediately consumes
@@ -1070,6 +1101,10 @@ in {{
   for (@alloc <- Allocator!?()) {{
     v1Api!("insertVersion", "serve", "buffer", "1.0.0", alloc, *allocInsertVerRet) |
     for (@_ <- allocInsertVerRet) {{ Nil }}
+  }} |
+  for (@bulkIo <- BulkIo!?({bulk_root}, {bulk_max})) {{
+    v1Api!("insertVersion", "serve", "bulkio", "1.0.0", bulkIo, *bulkInsertVerRet) |
+    for (@_ <- bulkInsertVerRet) {{ Nil }}
   }}
 }}
 "#
@@ -1392,6 +1427,7 @@ mod tests {
             "entriesStreamOpen",
             "entriesStreamNext",
             "entriesStreamClose",
+            "bulkApply",
         ];
         assert_eq!(
             FS_NATIVE_URN_SUFFIXES, expected,
@@ -1582,7 +1618,7 @@ mod tests {
             acc
         });
         // Byte-identity with fileio canonical as of slice 5.16 port.
-        const EXPECTED: &str = "79859563b508d3a04812c2c8fb62c76fe6ddd3bcbcdc66f98d99d8836d21103e";
+        const EXPECTED: &str = "5b860652a550739c897a0e073e616b9a06df5707afe82a12d9723ad8082aa12a";
         assert_eq!(
             hex, EXPECTED,
             "compose_fs_genesis_source() hash changed.  If intentional \
@@ -1707,6 +1743,7 @@ mod tests {
             ("lockSequential", 5), // (fd, holder, cmode, wait, ack)
             ("releaseLock", 3), // (lockId, holder, ack)
             ("releaseAllForHolder", 2), // (holder, ack)
+            ("bulkApply", 7), // (root, stageId, namespace, resultRoot, baseRoot, cmode, ack)
         ];
 
         // Every FS_HANDLERS entry must have a golden-table row with
@@ -2433,7 +2470,7 @@ mod tests {
         //     compose_fs_genesis_source_golden_hex_with_non_empty_bundle
         // ONLY when intentionally hard-forking the Genesis composition
         // OR the bundle format (both are hard-fork surfaces).
-        const EXPECTED: &str = "a6005130b0ce4db99e83de7341fa823e7e00baeab2ea79b121d1a579a7d8a4b5";
+        const EXPECTED: &str = "68fbe519193f23b85d03fd96c9099fb942f074ac3981743c16a9b6d20ba82c87";
         assert_eq!(
             hex, EXPECTED,
             "compose_fs_genesis_source() hash for non-empty bundle changed. \
@@ -2514,7 +2551,7 @@ mod tests {
         //     compose_fs_genesis_source_golden_hex_with_sort_tie_bundle
         // ONLY when intentionally hard-forking Genesis composition
         // OR bundle format.
-        const EXPECTED: &str = "5d93da4727878944b726a3e08bd3f7434deb0241efb80d07d7ed6baff9cc4497";
+        const EXPECTED: &str = "927bcb5fab8648fecfaaf933676b991081fed01d0cb40f752e6487c437992c47";
         assert_eq!(
             hex, EXPECTED,
             "compose_fs_genesis_source() hash for sort-tie bundle changed. \

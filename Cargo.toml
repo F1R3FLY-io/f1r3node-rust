@@ -5,6 +5,7 @@ members = [
 	"rspace++",
 	"rholang",
 	"rholang/fileio-test-fixtures",
+	"bulk-io",
 	"rho-pure-eval",
 	"shared",
 	"node",

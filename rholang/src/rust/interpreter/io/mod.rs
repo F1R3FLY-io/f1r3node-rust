@@ -6,6 +6,7 @@
 // legacy sites outside io/ are not part of this discipline.
 #![warn(clippy::undocumented_unsafe_blocks)]
 
+pub mod bulk;
 pub mod consensus_constants;
 pub mod consensus_fingerprint;
 pub mod costs;

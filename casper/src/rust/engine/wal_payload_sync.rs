@@ -503,7 +503,7 @@ where
     let mut seen: HashSet<[u8; 32]> = HashSet::new();
     let mut stats = EnumerateStats::default();
     for entry in wal_slice {
-        if entry.op.is_observation_only() {
+        if !entry.op.fetches_payload_bytes() {
             continue;
         }
         let Some(PayloadRef::Hash(h)) = entry.payload_ref else {
@@ -615,7 +615,7 @@ pub async fn apply_wal_slice_after_fetch(
     {
         let mut seen: HashSet<[u8; 32]> = HashSet::new();
         for entry in &wal {
-            if entry.op.is_observation_only() {
+            if !entry.op.fetches_payload_bytes() {
                 continue;
             }
             if let Some(PayloadRef::Hash(h)) = entry.payload_ref {
@@ -674,7 +674,7 @@ pub async fn apply_wal_slice_after_fetch(
     let mut sidecar: HashMap<[u8; 32], Vec<u8>> = HashMap::new();
     let mut seen: HashSet<[u8; 32]> = HashSet::new();
     for entry in &wal {
-        if entry.op.is_observation_only() {
+        if !entry.op.fetches_payload_bytes() {
             continue;
         }
         let Some(PayloadRef::Hash(h)) = entry.payload_ref else {

@@ -36,6 +36,7 @@
 //
 // Family: [`HandlerFamily::Mutation`](super::super::handler_trait::family::HandlerFamily::Mutation).
 
+pub mod fs_bulk_apply;
 pub mod fs_chmod;
 pub mod fs_chown;
 pub mod fs_copy_file;

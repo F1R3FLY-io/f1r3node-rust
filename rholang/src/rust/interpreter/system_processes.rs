@@ -359,6 +359,8 @@ impl FixedChannels {
     /// First two-endpoint mutation handler on dev (slice 4.26).
     pub fn fs_rename() -> Par { byte_name(55) }
 
+    pub fn fs_bulk_apply() -> Par { byte_name(69) }
+
     /// `rho:io:fs:native:1.0.0/chown` — path-based chown via
     /// `safe_descend_verified` + `fchownat` (AT_SYMLINK_NOFOLLOW).
     /// NON-verifying mutation; Consensus caps rejected at
@@ -538,6 +540,8 @@ impl BodyRefs {
 
     /// `rho:io:fs:native:1.0.0/rename` body-ref (slice 4.26).
     pub const FS_RENAME: i64 = 55;
+
+    pub const FS_BULK_APPLY: i64 = 69;
 
     /// `rho:io:fs:native:1.0.0/chown` body-ref (slice 4.27).
     pub const FS_CHOWN: i64 = 60;
@@ -2567,8 +2571,9 @@ mod body_refs_fs_tests {
             ("FS_WRITE", BodyRefs::FS_WRITE),
             ("FS_WRITE_AT", BodyRefs::FS_WRITE_AT),
             ("FS_REMOVE_DIR", BodyRefs::FS_REMOVE_DIR),
+            ("FS_BULK_APPLY", BodyRefs::FS_BULK_APPLY),
         ];
-        const EXPECTED_FS_BODY_REF_COUNT: usize = 28;
+        const EXPECTED_FS_BODY_REF_COUNT: usize = 29;
         assert_eq!(
             ENUMERATED_FS_BODY_REFS.len(),
             EXPECTED_FS_BODY_REF_COUNT,

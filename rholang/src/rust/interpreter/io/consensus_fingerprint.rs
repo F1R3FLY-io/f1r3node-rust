@@ -458,7 +458,7 @@ mod tests {
         // (Consensus-observable: divergent caps fork at the
         //  `FSERR_QUOTA_EXCEEDED` boundary — a validator with a
         //  lower cap rejects a 32-MiB write that another accepts.)
-        const EXPECTED_FOR_CURRENT: &str = "7133cf8a9b60f538";
+        const EXPECTED_FOR_CURRENT: &str = "dd40a754542ccc54";
         assert_eq!(
             fp, EXPECTED_FOR_CURRENT,
             "fingerprint changed — a `register_consensus_constant!` \

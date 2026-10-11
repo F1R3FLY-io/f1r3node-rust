@@ -1,0 +1,28 @@
+[package]
+name = "bulk-io"
+version = "0.1.0"
+edition = "2021"
+description = "Bulk import and export for the F1R3Node shard"
+
+[lib]
+name = "bulk_io"
+path = "src/lib.rs"
+
+[[bin]]
+name = "bulk-io"
+path = "src/main.rs"
+
+[dependencies]
+rholang = { path = "../rholang" }
+casper = { path = "../casper" }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+eyre = { workspace = true }
+clap = { workspace = true }
+hex = { workspace = true }
+csv = "1.4"
+reqwest = { workspace = true, features = ["blocking"] }
+
+[dev-dependencies]
+tempfile = { workspace = true }

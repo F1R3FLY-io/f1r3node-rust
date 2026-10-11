@@ -1,0 +1,403 @@
+// BulkIo.rho — two-phase bulk update coordinator.
+//
+// A bulk update moves a large external dataset into the consensus
+// filesystem as one committed tree.  The slow work (fetch, verify,
+// transform) runs outside consensus on every validator.  This agent
+// records the intent (stage), collects each validator's computed
+// result root (attest), and swaps the staged tree into place (commit)
+// through the private `fsBulkApply` native.
+//
+// Composed into FsGenesis (`casper::genesis::contracts::fs_genesis`)
+// because `fsBulkApply` is a `rho:io:fs:native:*` URN, which resolves
+// only in genesis deploys.  Deploys reach the published cap at
+// `rho:serve:1.0.0:<FS_GENERATOR_PUB_KEY_HEX>:bulkio:1.0.0`.
+//
+// ## Conservative policy
+//
+//   - Only an active bonded validator can stage, attest, commit or
+//     abort.  Any deployer can call status, root and expire.
+//   - A commit needs an attestation from EVERY active validator, and
+//     every recorded attestation must name the same result root.  A
+//     follower that cannot reproduce the swap would otherwise diverge
+//     from the leader and reject the block.
+//   - One pending stage per namespace.  The commit also requires the
+//     namespace's current root to equal the root recorded at staging.
+//   - A stage lapses after at most `maxStageBlocks` blocks.
+//   - The import root is mounted read-only for ordinary deploys, so
+//     the bulk path is the only writer.
+//
+// ## Methods (replies are [true, value] or [false, code, message])
+//
+//   constructor(importRoot, maxStageBlocks)
+//   stage(deployerId, spec)       spec: {"stageId", "namespace",
+//                                        "sourceRoot", "manifestHash",
+//                                        "transform", "sources",
+//                                        "expiresIn"}
+//   attest(deployerId, stageId, resultRoot)
+//   commit(deployerId, stageId)
+//   abort(deployerId, stageId)
+//   expire(stageId)
+//   status(stageId)
+//   root(namespace)
+
+new BulkIo, bulkStateP, bulkWithContext, bulkAllAgree, bulkAgreeLoop, bulkIsHex32 in {
+
+  contract bulkIsHex32(@s, ret) = {
+    match s {
+      str /\ String => {
+        if (str.length() == 64) {
+          ret!(str.hexToBytes().bytesToHex() == str)
+        } else {
+          ret!(false)
+        }
+      }
+      _ => ret!(false)
+    }
+  } |
+
+  contract bulkWithContext(deployerId, ret) = {
+    new rl(`rho:registry:lookup`), getBlockData(`rho:block:data`),
+        deployerIdOps(`rho:system:deployerId:ops`),
+        posCh, bdCh, pkCh, avCh in {
+      rl!(`rho:system:pos`, *posCh) |
+      getBlockData!(*bdCh) |
+      deployerIdOps!("pubKeyBytes", *deployerId, *pkCh) |
+      for (@(_, pos) <- posCh & @blockNumber, _, _ <- bdCh & @pk <- pkCh) {
+        @pos!("getActiveValidators", *avCh) |
+        for (@active <- avCh) {
+          ret!((blockNumber, pk, active))
+        }
+      }
+    }
+  } |
+
+  contract bulkAgreeLoop(@items, @root, ret) = {
+    match items {
+      [] => ret!(true)
+      [head ...tail] => {
+        if (head == root) {
+          bulkAgreeLoop!(tail, root, *ret)
+        } else {
+          ret!(false)
+        }
+      }
+    }
+  } |
+
+  contract bulkAllAgree(@active, @atts, ret) = {
+    match active.toList() {
+      [] => ret!((false, "no active validators"))
+      validators => {
+        match atts.get(validators.nth(0)) {
+          Nil => ret!((false, "attestation missing from an active validator"))
+          root => {
+            new namedCh, attCh, pairsCh, valuesCh in {
+              contract namedCh(@vs, @acc, r) = {
+                match vs {
+                  [] => r!(acc)
+                  [v ...rest] => namedCh!(rest, acc ++ [atts.get(v)], *r)
+                }
+              } |
+              namedCh!(validators, [], *attCh) |
+              contract pairsCh(@ps, @acc, r) = {
+                match ps {
+                  [] => r!(acc)
+                  [(_, value) ...rest] => pairsCh!(rest, acc ++ [value], *r)
+                }
+              } |
+              pairsCh!(atts.toList(), [], *valuesCh) |
+              for (@named <- attCh & @values <- valuesCh) {
+                new okNamedCh, okValuesCh in {
+                  bulkAgreeLoop!(named, root, *okNamedCh) |
+                  bulkAgreeLoop!(values, root, *okValuesCh) |
+                  for (@okNamed <- okNamedCh & @okValues <- okValuesCh) {
+                    if (okNamed and okValues) {
+                      ret!((true, root))
+                    } else {
+                      ret!((false, "attestations missing or in conflict"))
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  } |
+
+  agent BulkIo {
+    constructor(@importRoot, @maxStageBlocks) {
+      @[*private, *bulkStateP]!({
+        "importRoot": importRoot,
+        "maxStageBlocks": maxStageBlocks,
+        "stages": {},
+        "pending": {},
+        "roots": {}
+      })
+    } |
+
+    method stage(@deployerId, @spec) {
+      match spec {
+        {"stageId": sid /\ String, "namespace": ns /\ String,
+         "sourceRoot": src /\ String, "manifestHash": mh /\ String,
+         "transform": tr /\ String, "sources": sources,
+         "expiresIn": exp /\ Int ..._} => {
+          new sidOk, srcOk, mhOk, ctxCh in {
+            bulkIsHex32!(sid, *sidOk) |
+            bulkIsHex32!(src, *srcOk) |
+            bulkIsHex32!(mh, *mhOk) |
+            for (@a <- sidOk & @b <- srcOk & @c <- mhOk) {
+              if (not (a and b and c)) {
+                return!([false, "FSERR_BAD_ARG", "stageId, sourceRoot and manifestHash must be 64 lowercase hex characters"])
+              } else if (ns.length() == 0 or ns.length() > 512) {
+                return!([false, "FSERR_BAD_ARG", "namespace length out of range"])
+              } else {
+                bulkWithContext!(deployerId, *ctxCh) |
+                for (@(blockNumber, pk, active) <- ctxCh) {
+                  for (@st <- @[*private, *bulkStateP]) {
+                    if (st.get("importRoot") == Nil) {
+                      @[*private, *bulkStateP]!(st) |
+                      return!([false, "FSERR_UNSUPPORTED", "bulk import is not provisioned on this shard"])
+                    } else if (not active.contains(pk)) {
+                      @[*private, *bulkStateP]!(st) |
+                      return!([false, "FSERR_PERM", "only an active validator can stage"])
+                    } else if (st.get("stages").contains(sid)) {
+                      @[*private, *bulkStateP]!(st) |
+                      return!([false, "FSERR_ALREADY_EXISTS", "stage id already used"])
+                    } else if (st.get("pending").contains(ns)) {
+                      @[*private, *bulkStateP]!(st) |
+                      return!([false, "FSERR_BUSY", "namespace has a pending stage"])
+                    } else if (exp < 1 or exp > st.get("maxStageBlocks")) {
+                      @[*private, *bulkStateP]!(st) |
+                      return!([false, "FSERR_BAD_ARG", "expiresIn out of range"])
+                    } else {
+                      match st.get("roots").getOrElse(ns, "0000000000000000000000000000000000000000000000000000000000000000") {
+                        base => {
+                          match {
+                            "namespace": ns, "sourceRoot": src, "manifestHash": mh,
+                            "transform": tr, "sources": sources, "base": base,
+                            "publisher": pk, "stagedAt": blockNumber,
+                            "expiresAt": blockNumber + exp, "attestations": {},
+                            "status": "staged"
+                          } {
+                            record => {
+                              @[*private, *bulkStateP]!(st
+                                .set("stages", st.get("stages").set(sid, record))
+                                .set("pending", st.get("pending").set(ns, sid))) |
+                              return!([true, record])
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+        _ => return!([false, "FSERR_BAD_ARG", "spec is missing a required field or has a wrong type"])
+      }
+    } |
+
+    method attest(@deployerId, @sid, @resultRoot) {
+      new okCh, ctxCh in {
+        bulkIsHex32!(resultRoot, *okCh) |
+        for (@ok <- okCh) {
+          if (not ok) {
+            return!([false, "FSERR_BAD_ARG", "resultRoot must be 64 lowercase hex characters"])
+          } else {
+            bulkWithContext!(deployerId, *ctxCh) |
+            for (@(blockNumber, pk, active) <- ctxCh) {
+              for (@st <- @[*private, *bulkStateP]) {
+                match st.get("stages").get(sid) {
+                  Nil => {
+                    @[*private, *bulkStateP]!(st) |
+                    return!([false, "FSERR_NOT_FOUND", "unknown stage"])
+                  }
+                  record => {
+                    if (record.get("status") != "staged") {
+                      @[*private, *bulkStateP]!(st) |
+                      return!([false, "FSERR_BUSY", "stage is not open for attestation"])
+                    } else if (blockNumber > record.get("expiresAt")) {
+                      @[*private, *bulkStateP]!(st) |
+                      return!([false, "FSERR_CANCELLED", "stage has expired"])
+                    } else if (not active.contains(pk)) {
+                      @[*private, *bulkStateP]!(st) |
+                      return!([false, "FSERR_PERM", "only an active validator can attest"])
+                    } else if (record.get("attestations").contains(pk)) {
+                      @[*private, *bulkStateP]!(st) |
+                      return!([false, "FSERR_ALREADY_EXISTS", "validator already attested"])
+                    } else {
+                      match record.set("attestations", record.get("attestations").set(pk, resultRoot)) {
+                        updated => {
+                          @[*private, *bulkStateP]!(st.set("stages", st.get("stages").set(sid, updated))) |
+                          return!([true, updated.get("attestations").size()])
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    } |
+
+    method commit(@deployerId, @sid) {
+      new ctxCh, agreeCh, ackCh in {
+        bulkWithContext!(deployerId, *ctxCh) |
+        for (@(blockNumber, pk, active) <- ctxCh) {
+          for (@st <- @[*private, *bulkStateP]) {
+            match st.get("stages").get(sid) {
+              Nil => {
+                @[*private, *bulkStateP]!(st) |
+                return!([false, "FSERR_NOT_FOUND", "unknown stage"])
+              }
+              record => {
+                match record.get("namespace") {
+                  ns => {
+                    if (record.get("status") != "staged") {
+                      @[*private, *bulkStateP]!(st) |
+                      return!([false, "FSERR_BUSY", "stage is not open for commit"])
+                    } else if (blockNumber > record.get("expiresAt")) {
+                      @[*private, *bulkStateP]!(st) |
+                      return!([false, "FSERR_CANCELLED", "stage has expired"])
+                    } else if (not active.contains(pk)) {
+                      @[*private, *bulkStateP]!(st) |
+                      return!([false, "FSERR_PERM", "only an active validator can commit"])
+                    } else if (st.get("roots").getOrElse(ns, "0000000000000000000000000000000000000000000000000000000000000000") != record.get("base")) {
+                      @[*private, *bulkStateP]!(st) |
+                      return!([false, "FSERR_BUSY", "namespace root changed since staging"])
+                    } else {
+                      bulkAllAgree!(active, record.get("attestations"), *agreeCh) |
+                      for (@agreement <- agreeCh) {
+                        match agreement {
+                          (false, reason) => {
+                            @[*private, *bulkStateP]!(st) |
+                            return!([false, "FSERR_BUSY", reason])
+                          }
+                          (true, resultRoot) => {
+                            fsBulkApply!(st.get("importRoot"), sid, ns, resultRoot, record.get("base"), "consensus", *ackCh) |
+                            for (@reply <- ackCh) {
+                              match reply {
+                                [true, _] => {
+                                  match record.set("status", "committed").set("result", resultRoot).set("committedAt", blockNumber) {
+                                    done => {
+                                      @[*private, *bulkStateP]!(st
+                                        .set("stages", st.get("stages").set(sid, done))
+                                        .set("pending", st.get("pending").delete(ns))
+                                        .set("roots", st.get("roots").set(ns, resultRoot))) |
+                                      return!([true, resultRoot])
+                                    }
+                                  }
+                                }
+                                _ => {
+                                  match record.set("status", "failed").set("failure", reply) {
+                                    failed => {
+                                      @[*private, *bulkStateP]!(st
+                                        .set("stages", st.get("stages").set(sid, failed))
+                                        .set("pending", st.get("pending").delete(ns))) |
+                                      return!([false, "FSERR_IO", reply])
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    } |
+
+    method abort(@deployerId, @sid) {
+      new ctxCh in {
+        bulkWithContext!(deployerId, *ctxCh) |
+        for (@(_, pk, _) <- ctxCh) {
+          for (@st <- @[*private, *bulkStateP]) {
+            match st.get("stages").get(sid) {
+              Nil => {
+                @[*private, *bulkStateP]!(st) |
+                return!([false, "FSERR_NOT_FOUND", "unknown stage"])
+              }
+              record => {
+                if (record.get("status") != "staged") {
+                  @[*private, *bulkStateP]!(st) |
+                  return!([false, "FSERR_BUSY", "stage is not open"])
+                } else if (record.get("publisher") != pk) {
+                  @[*private, *bulkStateP]!(st) |
+                  return!([false, "FSERR_PERM", "only the publisher can abort"])
+                } else {
+                  @[*private, *bulkStateP]!(st
+                    .set("stages", st.get("stages").set(sid, record.set("status", "aborted")))
+                    .set("pending", st.get("pending").delete(record.get("namespace")))) |
+                  return!([true, "aborted"])
+                }
+              }
+            }
+          }
+        }
+      }
+    } |
+
+    method expire(@sid) {
+      new getBlockData(`rho:block:data`), bdCh in {
+        getBlockData!(*bdCh) |
+        for (@blockNumber, _, _ <- bdCh) {
+          for (@st <- @[*private, *bulkStateP]) {
+            match st.get("stages").get(sid) {
+              Nil => {
+                @[*private, *bulkStateP]!(st) |
+                return!([false, "FSERR_NOT_FOUND", "unknown stage"])
+              }
+              record => {
+                if (record.get("status") != "staged") {
+                  @[*private, *bulkStateP]!(st) |
+                  return!([false, "FSERR_BUSY", "stage is not open"])
+                } else if (blockNumber <= record.get("expiresAt")) {
+                  @[*private, *bulkStateP]!(st) |
+                  return!([false, "FSERR_BUSY", "stage has not expired"])
+                } else {
+                  @[*private, *bulkStateP]!(st
+                    .set("stages", st.get("stages").set(sid, record.set("status", "expired")))
+                    .set("pending", st.get("pending").delete(record.get("namespace")))) |
+                  return!([true, "expired"])
+                }
+              }
+            }
+          }
+        }
+      }
+    } |
+
+    method status(@sid) {
+      for (@st <<- @[*private, *bulkStateP]) {
+        match st.get("stages").get(sid) {
+          Nil => return!([false, "FSERR_NOT_FOUND", "unknown stage"])
+          record => return!([true, record])
+        }
+      }
+    } |
+
+    method root(@ns) {
+      for (@st <<- @[*private, *bulkStateP]) {
+        return!([true, st.get("roots").getOrElse(ns, "0000000000000000000000000000000000000000000000000000000000000000")])
+      }
+    } |
+
+    default(...@args) {
+      match args {
+        [*ret, ..._] => ret!([false, "FSERR_UNSUPPORTED", "unknown BulkIo method"])
+      }
+    }
+  }
+}

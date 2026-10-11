@@ -136,6 +136,8 @@ pub fn fs_release_all_for_holder_cost() -> Cost {
 
 pub fn fs_rename_cost() -> Cost { Cost::create(FS_PATH_MUTATION_CONST, "fs_rename") }
 
+pub fn fs_bulk_apply_cost() -> Cost { Cost::create(FS_PATH_MUTATION_CONST, "fs_bulk_apply") }
+
 pub fn fs_copy_file_cost() -> Cost { Cost::create(FS_PATH_MUTATION_CONST, "fs_copy_file") }
 
 pub fn fs_remove_file_cost() -> Cost { Cost::create(FS_PATH_MUTATION_CONST, "fs_remove_file") }

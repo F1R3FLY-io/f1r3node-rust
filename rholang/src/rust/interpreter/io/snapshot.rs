@@ -158,7 +158,8 @@ use super::wal::{PayloadRef, WalEntry, WalOp, WalOutcome, MAX_WAL_ENTRIES};
 ///   4: added `WalOp::EntriesStreamNext` at tag 15
 ///   5: (skipped in fileio; contiguity guard here)
 ///   6: added `WalOp::Exists` at tag 16 (post-Consensus-ban-lift)
-pub const SNAPSHOT_FORMAT_VERSION: u8 = 6;
+///   7: added `WalOp::BulkApply` at tag 17 (bulk import commit)
+pub const SNAPSHOT_FORMAT_VERSION: u8 = 7;
 
 crate::register_consensus_constant!(order = 15, name = SNAPSHOT_FORMAT_VERSION, u8_raw);
 
@@ -342,6 +343,7 @@ fn op_tag(op: WalOp) -> u8 {
         WalOp::EntriesStreamNext => 15,
         // Exists at tag 16 (version 6, post-Consensus-ban-lift).
         WalOp::Exists => 16,
+        WalOp::BulkApply => 17,
     }
 }
 
@@ -687,6 +689,7 @@ fn decode_op_tag(bytes: &[u8], cursor: &mut usize) -> Result<WalOp, SnapshotErro
         14 => Ok(WalOp::Size),
         15 => Ok(WalOp::EntriesStreamNext),
         16 => Ok(WalOp::Exists),
+        17 => Ok(WalOp::BulkApply),
         _ => Err(SnapshotError::MalformedBlob {
             offset: *cursor - 1,
             message: format!("unknown op tag {tag}"),
@@ -2343,8 +2346,8 @@ mod tests {
     /// The fingerprint fold catches drift at peering; this test
     /// catches it before the binary even ships.
     #[test]
-    fn snapshot_format_version_pinned_at_6() {
-        assert_eq!(SNAPSHOT_FORMAT_VERSION, 6);
+    fn snapshot_format_version_pinned_at_7() {
+        assert_eq!(SNAPSHOT_FORMAT_VERSION, 7);
     }
 
     /// Empty WAL slice encodes to `[6, 0, 0, 0, 0]` — version byte
@@ -2379,6 +2382,7 @@ mod tests {
             (WalOp::Size, 14),
             (WalOp::EntriesStreamNext, 15),
             (WalOp::Exists, 16),
+            (WalOp::BulkApply, 17),
         ] {
             assert_eq!(op_tag(op), expected, "op_tag({op:?}) drifted");
         }
@@ -2406,6 +2410,7 @@ mod tests {
             WalOp::Size,
             WalOp::EntriesStreamNext,
             WalOp::Exists,
+            WalOp::BulkApply,
         ];
         let tags: Vec<u8> = all.iter().map(|&o| op_tag(o)).collect();
         let mut sorted = tags.clone();
@@ -2664,7 +2669,7 @@ mod tests {
         //   cargo test -p rholang --lib -- \
         //     wal_root_pinned_for_known_entries_golden_hex --nocapture
         // and update; anchor the roll to a coordinated fleet upgrade.
-        const EXPECTED: &str = "311f801a5d9cee1bc306cdac23a240fb8fcd1f797ed6d1b8c8bbfbc71c71553a";
+        const EXPECTED: &str = "4671dbc803e460d40c2cdbdbffc70d886d3aaac4cb3a22aae13522939f63d108";
         assert_eq!(
             hex, EXPECTED,
             "WAL root drifted for the known 2-entry fixture — encoding \
@@ -2808,6 +2813,7 @@ mod tests {
             WalOp::Size,
             WalOp::EntriesStreamNext,
             WalOp::Exists,
+            WalOp::BulkApply,
         ] {
             let entry = WalEntry {
                 op,
@@ -2874,15 +2880,15 @@ mod tests {
         }
     }
 
-    /// Wire tag 17 (past the current tail of 16) is also invalid.
+    /// Wire tag 18 (past the current tail of 17) is also invalid.
     #[test]
     fn decode_op_tag_past_tail_returns_malformed_blob() {
-        let bytes = vec![SNAPSHOT_FORMAT_VERSION, 0, 0, 0, 1, 17];
+        let bytes = vec![SNAPSHOT_FORMAT_VERSION, 0, 0, 0, 1, 18];
         match decode_wal_slice(&bytes) {
             Err(SnapshotError::MalformedBlob { message, .. }) => {
-                assert!(message.contains("unknown op tag 17"), "got {message:?}");
+                assert!(message.contains("unknown op tag 18"), "got {message:?}");
             }
-            other => panic!("expected MalformedBlob for tag 17, got {other:?}"),
+            other => panic!("expected MalformedBlob for tag 18, got {other:?}"),
         }
     }
 

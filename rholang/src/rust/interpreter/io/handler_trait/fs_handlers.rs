@@ -205,7 +205,7 @@ pub static FS_HANDLERS: [FsHandlerEntry] = [..];
 ///   - 4.37: +1 (`fs_release_all_for_holder`, LOCK 4/4).  Count = 25.
 ///   - 4.38: +1 (`fs_write`, FIRST LENGTH-PARAMETERIZED MUTATION).  Count = 26.
 ///   - 4.39: +1 (`fs_write_at`, MUTATION 8/8 — MIGRATION COMPLETE).  Count = 27.
-pub const EXPECTED_MIGRATED_HANDLER_COUNT: usize = 27;
+pub const EXPECTED_MIGRATED_HANDLER_COUNT: usize = 28;
 
 /// Expected count of trait-registered handlers whose
 /// `<H as FsHandler>::VERIFYING == true`.  Verifying handlers
@@ -233,7 +233,7 @@ pub const EXPECTED_MIGRATED_HANDLER_COUNT: usize = 27;
 ///
 /// Trait-exempt verifying handler (NOT in FS_HANDLERS): `fs_remove_dir`
 /// (see `handler_trait::fs_handler` module docstring).
-pub const EXPECTED_VERIFYING_HANDLER_COUNT: usize = 14;
+pub const EXPECTED_VERIFYING_HANDLER_COUNT: usize = 15;
 
 /// Expected count of trait-registered handlers per
 /// [`HandlerFamily`](super::family::HandlerFamily).  Variant order
@@ -261,7 +261,7 @@ pub const EXPECTED_VERIFYING_HANDLER_COUNT: usize = 14;
 /// handler's `family: HandlerFamily::...` field was set wrong at
 /// registration time.
 pub const EXPECTED_PER_FAMILY_HANDLER_COUNTS: [(super::family::HandlerFamily, usize); 5] = [
-    (super::family::HandlerFamily::Mutation, 8),
+    (super::family::HandlerFamily::Mutation, 9),
     (super::family::HandlerFamily::Observation, 9),
     (super::family::HandlerFamily::Stream, 3),
     (super::family::HandlerFamily::Lock, 4),
@@ -296,7 +296,7 @@ pub const EXPECTED_PER_FAMILY_HANDLER_COUNTS: [(super::family::HandlerFamily, us
 /// journaling differently; a mis-labeled flip changes the
 /// replay-side effect ordering.
 pub const EXPECTED_PER_FAMILY_VERIFYING_COUNTS: [(super::family::HandlerFamily, usize); 5] = [
-    (super::family::HandlerFamily::Mutation, 7),
+    (super::family::HandlerFamily::Mutation, 8),
     (super::family::HandlerFamily::Observation, 7),
     (super::family::HandlerFamily::Stream, 0),
     (super::family::HandlerFamily::Lock, 0),
@@ -357,27 +357,28 @@ mod tests {
         /// the migration-complete target (27 handlers, fs_remove_dir
         /// trait-exempt).
         const EXPECTED_REGISTERED_HANDLER_NAMES: &[&str] = &[
-            "fs_quarantine",             // slice 4.12
-            "fs_close",                  // slice 4.13
-            "fs_flush",                  // slice 4.14
-            "fs_tell",                   // slice 4.15
-            "fs_seek",                   // slice 4.16 (first verifying)
-            "fs_size",                   // slice 4.17
-            "fs_exists",                 // slice 4.18
-            "fs_stat",                   // slice 4.19
-            "fs_read",                   // slice 4.20 (first length-parameterized)
-            "fs_read_at",                // slice 4.21
-            "fs_entries_stream_close",   // slice 4.22 (first stream)
-            "fs_truncate",               // slice 4.24 (first mutation)
-            "fs_chmod",                  // slice 4.25 (first path-mutation)
-            "fs_rename",                 // slice 4.26 (first two-endpoint mutation)
-            "fs_chown",                  // slice 4.27 (non-verifying mutation)
-            "fs_remove_file",            // slice 4.28 (first lock-gated mutation)
-            "fs_entries_stream_open",    // slice 4.29
-            "fs_entries_stream_next",    // slice 4.30 (first post_reply_supplement)
-            "fs_entries",                // slice 4.31 (observation 9/9)
-            "fs_open",                   // slice 4.32 (lifecycle 3/3)
-            "fs_copy_file",              // slice 4.33
+            "fs_quarantine",           // slice 4.12
+            "fs_close",                // slice 4.13
+            "fs_flush",                // slice 4.14
+            "fs_tell",                 // slice 4.15
+            "fs_seek",                 // slice 4.16 (first verifying)
+            "fs_size",                 // slice 4.17
+            "fs_exists",               // slice 4.18
+            "fs_stat",                 // slice 4.19
+            "fs_read",                 // slice 4.20 (first length-parameterized)
+            "fs_read_at",              // slice 4.21
+            "fs_entries_stream_close", // slice 4.22 (first stream)
+            "fs_truncate",             // slice 4.24 (first mutation)
+            "fs_chmod",                // slice 4.25 (first path-mutation)
+            "fs_rename",               // slice 4.26 (first two-endpoint mutation)
+            "fs_chown",                // slice 4.27 (non-verifying mutation)
+            "fs_remove_file",          // slice 4.28 (first lock-gated mutation)
+            "fs_entries_stream_open",  // slice 4.29
+            "fs_entries_stream_next",  // slice 4.30 (first post_reply_supplement)
+            "fs_entries",              // slice 4.31 (observation 9/9)
+            "fs_open",                 // slice 4.32 (lifecycle 3/3)
+            "fs_copy_file",            // slice 4.33
+            "fs_bulk_apply",
             "fs_lock_range",             // slice 4.34 (first lock)
             "fs_lock_sequential",        // slice 4.35
             "fs_release_lock",           // slice 4.36
@@ -652,6 +653,7 @@ mod tests {
             "fs_write",
             "fs_write_at",
             "fs_copy_file",
+            "fs_bulk_apply",
         ];
         assert_eq!(
             EXPECTED_VERIFYING_NAMES.len(),

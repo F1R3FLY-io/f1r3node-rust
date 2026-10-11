@@ -682,6 +682,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "bulk-io"
+version = "0.1.0"
+dependencies = [
+ "casper",
+ "clap",
+ "csv",
+ "eyre",
+ "hex",
+ "reqwest 0.12.28",
+ "rholang",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.19",
+]
+
+[[package]]
 name = "bumpalo"
 version = "3.20.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4942,6 +4959,7 @@ dependencies = [
  "base64 0.22.1",
  "bytes",
  "encoding_rs",
+ "futures-channel",
  "futures-core",
  "futures-util",
  "h2 0.4.16",

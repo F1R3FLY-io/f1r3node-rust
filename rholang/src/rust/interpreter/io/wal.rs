@@ -298,12 +298,13 @@ pub enum WalOp {
     /// on Consensus caps only.  The Bool value is inside the
     /// hashed reply.
     Exists = 15,
+    BulkApply = 16,
 }
 
 /// Total variant count of `WalOp`.  Registered in `CONSENSUS_FOLD`
 /// so any add/remove is a fingerprint-hex roll.  Bump this + the
 /// golden hex if a variant is added.
-pub const WAL_OP_VARIANTS: usize = 16;
+pub const WAL_OP_VARIANTS: usize = 17;
 
 crate::register_consensus_constant!(order = 3, name = WAL_OP_VARIANTS, u64_be);
 
@@ -330,6 +331,10 @@ impl WalOp {
                 | WalOp::EntriesStreamNext
                 | WalOp::Exists
         )
+    }
+
+    pub const fn fetches_payload_bytes(self) -> bool {
+        !self.is_observation_only() && !matches!(self, WalOp::BulkApply)
     }
 }
 
@@ -993,6 +998,7 @@ mod tests {
             (WalOp::Size, 13),
             (WalOp::EntriesStreamNext, 14),
             (WalOp::Exists, 15),
+            (WalOp::BulkApply, 16),
         ] {
             assert_eq!(
                 variant as u8, expected,
@@ -1034,10 +1040,10 @@ mod tests {
     #[test]
     fn wal_op_variants_matches_authoritative_count() {
         // Authoritative count comes from `wal_op_discriminants_pinned`'s
-        // table (16 rows).  Duplicated deliberately: a new variant
+        // table (17 rows).  Duplicated deliberately: a new variant
         // requires updating both this count AND the discriminant table
         // — a single-side edit trips one of these two tests, not both.
-        assert_eq!(WAL_OP_VARIANTS, 16);
+        assert_eq!(WAL_OP_VARIANTS, 17);
     }
 
     #[test]
@@ -1073,6 +1079,7 @@ mod tests {
             (WalOp::Size, true),
             (WalOp::EntriesStreamNext, true),
             (WalOp::Exists, true),
+            (WalOp::BulkApply, false),
         ] {
             assert_eq!(
                 variant.is_observation_only(),

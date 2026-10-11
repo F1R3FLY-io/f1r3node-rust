@@ -189,6 +189,38 @@ pub async fn journal_path_mutation_two_via_table(
         .map(|()| true)
 }
 
+#[allow(clippy::result_unit_err)]
+pub async fn journal_bulk_apply_via_table(
+    handles: &FileHandleTable,
+    cmode: ConsensusMode,
+    staging_canon_path: PathBuf,
+    target_canon_path: PathBuf,
+    result_root: [u8; 32],
+    ack: &Par,
+) -> Result<bool, ()> {
+    if cmode != ConsensusMode::Consensus {
+        return Ok(false);
+    }
+    handles
+        .wal
+        .append_with_ack(
+            WalEntry {
+                op: WalOp::BulkApply,
+                path: staging_canon_path,
+                extra_path: Some(target_canon_path),
+                offset: None,
+                length: None,
+                payload_ref: Some(PayloadRef::Hash(result_root)),
+                mode_bits: None,
+                owner: None,
+                group: None,
+                outcome: WalOutcome::Success,
+            },
+            ack_channel_hash(ack),
+        )
+        .map(|()| true)
+}
+
 /// Reserve a `WalOp::Write` (or `WalOp::WriteAt` when `offset` is
 /// `Some`) entry for an fd-based write.  Fd-based cmode lookup —
 /// the shadow handle carries `cmode`; we read it via `with_mut`.

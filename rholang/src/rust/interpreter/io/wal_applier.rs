@@ -820,6 +820,57 @@ where
             | WalOp::Size
             | WalOp::EntriesStreamNext
             | WalOp::Exists => {}
+            WalOp::BulkApply => {
+                let extra = entry
+                    .extra_path
+                    .as_ref()
+                    .ok_or(ApplierError::MissingExtraPath {
+                        entry_index: i,
+                        op: entry.op,
+                    })?;
+                let expected = match &entry.payload_ref {
+                    Some(PayloadRef::Hash(h)) => *h,
+                    Some(PayloadRef::DeployRef { .. }) => {
+                        return Err(ApplierError::UnsupportedPayloadRef { entry_index: i })
+                    }
+                    None => {
+                        return Err(ApplierError::MissingPayloadRef {
+                            entry_index: i,
+                            op: entry.op,
+                        })
+                    }
+                };
+                if !allowed_roots.is_empty() {
+                    check_path_allowed(i, &entry.path, allowed_roots)?;
+                    check_path_allowed(i, extra, allowed_roots)?;
+                }
+                let staged = path_map(&entry.path);
+                let staging = staged.root.join(&staged.rel);
+                let resolved_target = path_map(extra);
+                let target = resolved_target.root.join(&resolved_target.rel);
+                let retired =
+                    bulk_retired_for(&staging).ok_or_else(|| ApplierError::IoFailure {
+                        entry_index: i,
+                        op: entry.op,
+                        path: staging.clone(),
+                        message: "staging path is not under an import root".into(),
+                    })?;
+                let base =
+                    super::bulk::current_root(&target).map_err(|e| ApplierError::IoFailure {
+                        entry_index: i,
+                        op: entry.op,
+                        path: target.clone(),
+                        message: e.to_string(),
+                    })?;
+                super::bulk::swap_in(&staging, &target, &retired, &expected, &base).map_err(
+                    |e| ApplierError::IoFailure {
+                        entry_index: i,
+                        op: entry.op,
+                        path: staging.clone(),
+                        message: format!("bulk tree not materialized or invalid: {e}"),
+                    },
+                )?;
+            }
             WalOp::Chmod => {
                 let bits = entry
                     .mode_bits
@@ -1007,6 +1058,19 @@ where
         }
     }
     Ok(())
+}
+
+fn bulk_retired_for(staging: &Path) -> Option<PathBuf> {
+    let stage_id = staging.file_name()?.to_str()?;
+    let staging_dir = staging.parent()?;
+    let control = staging_dir.parent()?;
+    let import_root = control.parent()?;
+    if staging_dir.file_name()? != super::bulk::STAGING_DIR
+        || control.file_name()? != super::bulk::CONTROL_DIR
+    {
+        return None;
+    }
+    Some(super::bulk::retired_path(import_root, stage_id))
 }
 
 /// Common prologue for every op: check `allowed_roots` on the

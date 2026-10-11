@@ -32,3 +32,4 @@ pub const BUFFER: &str = include_str!("../../../main/resources/Buffer.rho");
 pub const STDIN: &str = include_str!("../../../main/resources/Stdin.rho");
 pub const STDOUT: &str = include_str!("../../../main/resources/Stdout.rho");
 pub const FS: &str = include_str!("../../../main/resources/Fs.rho");
+pub const BULK_IO: &str = include_str!("../../../main/resources/BulkIo.rho");
