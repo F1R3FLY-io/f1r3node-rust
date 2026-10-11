@@ -196,7 +196,7 @@ fn host_work_or(
 
 /// ⟨read the inputs⟩, ⟨resolve the names of the deploy⟩ and ⟨run the linear
 /// analysis⟩: the term, its normalizer environment and its seed come from the
-/// envelope, and the funding signature from its signers (`runtime.rs:165`).
+/// envelope, and the funding signature from its signers (`runtime.rs:152`).
 fn run_estimate(
     envelope: &DeployEnvelope,
     schedule: &PhloScheduleBinding<'_>,

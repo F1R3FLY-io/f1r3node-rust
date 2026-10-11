@@ -55,8 +55,8 @@ package "3. v6-only machinery" as V6 $ca_pkg_green {
 }
 
 package "4. Cost-accounting modules, designed, not yet implemented" as CA {
-  component "[L] G1 DR-64 check\nbefore execution\nruntime.rs:359-640\nexecution.rs:272" as G1 $ca_gate
-  component "[L] G2 ordered batch\nof offers\nblock_creator.rs:1847-1929\nruntime_manager.rs:1737-1741" as G2 $ca_gate
+  component "[L] G1 DR-64 check\nbefore execution\noffered_block.rs:86-379\nexecution.rs:272" as G1 $ca_gate
+  component "[L] G2 ordered batch\nof offers\nblock_creator.rs:1847-1929\noffered_block.rs:780-784" as G2 $ca_gate
   component "[L] G3 installer funding\nfamily_selection.rs:163-186" as G3 $ca_gate
   component "[L] Cost-cursor lock fix\npgmcp bug 11004\nSystemVault.rho:52-167" as R11004 $ca_gate
   component "[M] v6 merge rule DR-120\ninterpreter_util.rs, dag_merger.rs\nretired on v6 at Phase 3" as G9 $ca_surface

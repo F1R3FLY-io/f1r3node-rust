@@ -1,6 +1,8 @@
 ' Today's execute-then-merge pipeline on a protocol-6 (v6) shard, at
 ' feature/cost-accounted-rho 17e07307f (dev 93e38575e merged). Each step
-' carries the file:line of the code that performs it.
+' carries the file:line of the code that performs it. The lines of runtime.rs,
+' runtime_manager.rs and offered_block.rs follow a later commit that moved
+' code with no behavior change.
 '
 ' The diagram marks the two places where run-to-completion lives (the block
 ' play and the validator replay before acceptance) and the two places where
@@ -34,7 +36,7 @@ autonumber
 actor       "User\n(signer)"                                    as U  $ca_supply
 participant "Proposer\nblock_creator.rs"                        as P  $ca_control
 participant "Merge\ninterpreter_util.rs\ndag_merger.rs\nconflict_set_merger.rs" as M $ca_surface
-participant "Play runtime\nrholang/runtime.rs"                  as R  $ca_pool
+participant "Play runtime\nrholang/runtime.rs\noffered_block.rs"  as R  $ca_pool
 participant "Validator\nvalidation_dispatcher.rs\ninterpreter_util.rs" as V $ca_capability
 participant "Replay\nruntime_manager.rs"                        as RP $ca_pool
 participant "Finalizer\nfinalization_runner.rs\nclique_oracle.rs" as F $ca_capability
@@ -49,15 +51,15 @@ note over P, M $ca_note_red
   **Merge before execution.** The proposer cannot run
   a deploy until it has merged the parents' post-states.
 end note
-P -> R : compute_state_envelopes\n(runtime.rs:340-669)
-R -> R : execute the single envelope\n(runtime.rs:480-493), then fund\nand settle it (runtime.rs:519-539)
-R -> R : producer self-replay of the same envelope\n(runtime.rs:574-582)
-R -> R : system deploys, CloseBlock\n(runtime.rs:620-629)
+P -> R : compute_state_envelopes\n(runtime.rs:327-392)
+R -> R : execute the single envelope\n(offered_block.rs:221-234), then fund\nand settle it (offered_block.rs:258-278)
+R -> R : producer self-replay of the same envelope\n(offered_block.rs:313-321)
+R -> R : system deploys, CloseBlock\n(offered_block.rs:359-368)
 note right of R $ca_note_red
   **Run-to-completion.** A v6 block holds one envelope
-  (runtime.rs:359). A second envelope is an error
-  (runtime.rs:641-650). The legacy loop plays each
-  deploy to termination (runtime.rs:732-753).
+  (runtime.rs:346). A second envelope is an error
+  (runtime.rs:364-373). The legacy loop plays each
+  deploy to termination (runtime.rs:455-476).
 end note
 R --> P : post-state root, processed deploy
 P -[$ca_instantiate]> V : broadcast the signed block
@@ -68,7 +70,7 @@ V -> M : recompute the merge from the block's parents\n(interpreter_util.rs:423-
 M --> V : computed pre-state, records, state facts
 V -> V : compare pre-state, rejected records and\nstate facts (interpreter_util.rs:461-532)
 V -> RP : replay_block (interpreter_util.rs:538-545)
-RP -> RP : wait for the one-permit ReplayLock\n(runtime_manager.rs:211-218, 1264-1267)
+RP -> RP : wait for the one-permit ReplayLock\n(runtime_manager.rs:198-205, 1226-1229)
 RP -> RP : replay the envelope and system deploys\nto termination
 RP --> V : replayed post-state equals the block's?
 note over V, RP $ca_note_red
@@ -101,7 +103,7 @@ legend bottom
   | DAG | the directed acyclic graph of blocks |
   | LFB | the last finalized block |
   | floor | the highest ancestor that the clique oracle certifies as finalized |
-  | file.rs:a-b | lines a to b of a source file at HEAD |
+  | file.rs:a-b | lines a to b of a source file at HEAD. The lines of runtime.rs, runtime_manager.rs and offered_block.rs follow a later commit that moved code with no behavior change. |
 endlegend
 
 @enduml

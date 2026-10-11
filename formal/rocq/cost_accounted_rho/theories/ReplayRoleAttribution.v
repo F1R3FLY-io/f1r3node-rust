@@ -48,12 +48,16 @@
    No axiom, parameter or admission is used. Section variables are
    universally quantified when the sections close.
 
-   Rust correspondence: casper/src/rust/util/rholang/runtime_manager.rs
-   (certify_offered_draft owns the replay budget and charges the context
-   copy; the validator path charges its acceptance budget), casper/src/rust/
-   rholang/runtime.rs (the producer's acceptance budget and the certified
-   mergeable map), casper/src/rust/util/rholang/costacc/offered_acceptance.rs
-   (OfferedAcceptanceBudget and its limits). *)
+   Rust correspondence: casper/src/rust/util/rholang/costacc/
+   direct_wallet_funding/execution/offered_block.rs. There,
+   certify_offered_draft owns the replay budget and charges the context
+   copy. The validator path, replay_offered_envelope_state, charges its
+   acceptance budget. The producer path, compute_offered_envelope_state,
+   creates the producer's acceptance budget and returns the certified
+   mergeable map. Step G2-1 moved this code from runtime_manager.rs and
+   runtime.rs with no behavior change.
+   casper/src/rust/util/rholang/costacc/offered_acceptance.rs holds
+   OfferedAcceptanceBudget and its limits. *)
 
 From Stdlib Require Import Lists.List Arith.PeanoNat Bool Lia.
 Import ListNotations.

@@ -4120,6 +4120,72 @@ property test.
 `ofp-3-funding-groups`, `ofp-4-held-capacity-guard`, and
 `ofp-5-replay-groups`.
 
+**Implementation note 1: the code motion (G2-1, 2026-10-11).** The user
+decided to move the code first. Then the live check (G1-6) and the ordered
+batch (G2-2) change no Casper file that the branch shares with `dev`. G2-1
+moves the single-offer play and replay code and changes no behavior.
+
+- **The new module.** The file
+  `casper/src/rust/util/rholang/costacc/direct_wallet_funding/execution/offered_block.rs`
+  holds the moved code. `execution.rs` declares it and re-exports
+  `CertifiedOfferedDraft` to the crate.
+- **The moved blocks.**
+  - The body of the play branch of `compute_state_envelopes` is now
+    `RuntimeOps::compute_offered_envelope_state`. It takes the arguments of
+    `compute_state_envelopes`, with the envelope in place of the candidates.
+  - The body of the replay branch of
+    `replay_compute_state_envelopes_with_policy` is now
+    `RuntimeManager::replay_offered_envelope_state`. It takes the arguments
+    of its caller.
+  - `certify_offered_draft` with its DR-102 comment and
+    `replay_offered_system_continuation` moved from `runtime_manager.rs`.
+  - `CertifiedOfferedDraft` and its impl moved with certify. Its fields are
+    private, and certify builds it with a struct literal.
+- **The old sites.** Each moved block leaves exactly one pointer comment
+  (user decision U1). No commented-out copy stays. The two branch heads stay
+  in `runtime.rs` and `runtime_manager.rs`, and each head calls its new
+  function.
+- **The other edits.**
+  - Four helpers are now `pub(crate)`: `offered_candidate_rejection`,
+    `reserve_presentation_copy`, `offered_event_clone_bytes` and
+    `save_mergeable_channels_metered`. Their tests stay in place.
+  - The replay branch wrote the private field `offered_budget_recorder`
+    twice. It now calls `record_offered_budget_usage`, which passes the same
+    arguments to the same recorder.
+  - The imports that became unused are removed. `acceptance.rs` imports
+    `CertifiedOfferedDraft` from its new path.
+  - Both branch bodies end with `return`, and `clippy::needless_return`
+    rejects that at the end of a function. The two new functions allow the
+    lint, so the moved text stays unchanged.
+- **Evidence that the move is exact.** A script removed white space and
+  trailing commas from each moved block. It found each block verbatim in the
+  new module, with the two recorder calls as the only token edits. rustfmt
+  joined some lines of the two branch bodies, which lost one indentation
+  level.
+- **Lines of the shared files.** `runtime.rs` changes by +12 and −289 lines.
+  `runtime_manager.rs` changes by +28 and −554 lines.
+- **Citations.** The documents cite the moved code in `offered_block.rs`.
+  The removed imports and blocks move the later lines of both shared files.
+  The new re-export moves the later lines of `direct_wallet_funding.rs`. This
+  commit refreshes the citations of all these lines. The refresh covers the
+  consensus proposal, three of its diagrams and the design of the linear cost
+  estimate. It also covers DR-111, DR-120, DR-123, two code comments and the
+  note of `ReplayRoleAttribution.v`. The proposal, the design and two
+  diagrams state that these citations follow a later commit than their code
+  basis. The note adds four lines to the Rocq development, so the
+  verification document now states 111,811 lines.
+- **Audit coverage.** The source-line audit
+  (`scripts/audit/check-source-line-refs.sh`) does not check `offered_block.rs`
+  yet, because its allow-list does not name the file.
+- **Verification.** No test is new, because no behavior changes.
+  `cargo fmt --check`, workspace clippy with `-D warnings` and the workspace
+  doctests pass. The casper suite passes 1776 of 1780 tests with the
+  provisional caps and 1774 of 1780 with the committed caps. Every failure is
+  a known failure and fails at the same assertion as before. The proof gate
+  (`COST_ACCOUNTING_ONLY=1`) and the documentation syntax gate pass. The
+  source-line audit reports the same 57 older mismatches of 502 citations
+  before and after.
+
 ## DR-66 — Protocol-6 test genesis is activated, and the legacy meter is retired
 
 **Status.** Adopted 2026-10-03 as decision D3 of epic 8946, by the user
@@ -11653,7 +11719,7 @@ name starts them.
 | `models/src/rust/sorted_par_map.rs:42`, `:43` | an owned key and its value | the hash and the comparison or move of the key, and the move of the value | block inspection three times, block inspection | every map construction |
 | `models/src/rust/sorted_par_map.rs:59`, `:60` | a sorted key and its value | the hash and the comparison or move, and the copies into the table | block inspection three times, two block copies | every map construction |
 | `casper/src/rust/util/rholang/costacc/direct_wallet_funding/execution/producer.rs:385`, `:387` (`resource_equal_metered`) | the two borrowed authorities | the reads of `==` (decision 6) | block inspection | each retained-resource comparison |
-| `casper/src/rust/util/rholang/runtime_manager.rs:356` (`reserve_presentation_copy`) | the authority presentations | copy (decision 7) | block slice copy | each offered certificate with presentations |
+| `casper/src/rust/util/rholang/runtime_manager.rs:318` (`reserve_presentation_copy`) | the authority presentations | copy (decision 7) | block slice copy | each offered certificate with presentations |
 
 **Comparison with the per-level charge.** The comparison of DR-110 applies
 to the copies of the sorter. A copy and cleanup of a 32-byte vector charges 328 VerificationBytes and 160
@@ -13295,7 +13361,7 @@ don't change much of Casper." Two more user decisions of 2026-10-10 apply:
    that the store lacks fails the same way on every node.
    - Formats do not mix on a valid chain. v6 validation rejects a block with
      a legacy user deploy (`validation_dispatcher.rs:76-82,124-130`), and
-     legacy replay refuses an offered term (`runtime_manager.rs:1732-1736`).
+     legacy replay refuses an offered term (`offered_block.rs:775-779`).
      So the rule needs no fail-closed format check.
    - The genesis block has no parents and stores its deploys in the legacy
      format on every shard (`genesis.rs:280-284`), so it is exempt.
@@ -14127,7 +14193,7 @@ replay.
    it.
 2. **The estimate.** The term, its normalizer environment and its seed come
    from the envelope, and the funding signature comes from its signers
-   (`runtime.rs:165`). `estimate_offered_term` gives the estimate. A
+   (`runtime.rs:152`). `estimate_offered_term` gives the estimate. A
    host-work error of the parser, the resolver or the analysis is the
    rejection `HostWork` (design section 6.3 item 3). Any other error means
    that the term does not parse or normalize, and the rejection is `Invalid`.

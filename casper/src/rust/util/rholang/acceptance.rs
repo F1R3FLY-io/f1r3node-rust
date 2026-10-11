@@ -13,11 +13,11 @@ use rholang::rust::interpreter::accounting::monetary_allocation::MonetaryCursor;
 // Changed by DR-102: the publication comparison takes the producer's acceptance budget.
 // use rholang::rust::interpreter::host_work::HostWorkBudget;
 use crate::rust::errors::CasperError;
+use crate::rust::util::rholang::costacc::direct_wallet_funding::CertifiedOfferedDraft;
 use crate::rust::util::rholang::costacc::genesis_resource_policy::{
     AdoptedResourcePolicy, CompatibleAcquisitionTerms, OFFERED_PRODUCTION_READY,
 };
 use crate::rust::util::rholang::costacc::offered_acceptance::OfferedAcceptanceBudget;
-use crate::rust::util::rholang::runtime_manager::CertifiedOfferedDraft;
 
 const FIXED_FEE_REV: u128 = 1;
 

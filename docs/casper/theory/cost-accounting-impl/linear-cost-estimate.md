@@ -10,7 +10,7 @@
 
 **Basis.**
 
-- Code: HEAD, the commit `3e7af80e0` of the branch `feature/cost-accounted-rho`. A citation `file.rs:a-b` names lines a to b of that file at HEAD.
+- Code: HEAD, the commit `3e7af80e0` of the branch `feature/cost-accounted-rho`. A citation `file.rs:a-b` names lines a to b of that file at HEAD. The citations of `runtime.rs` and `direct_wallet_funding.rs` follow a later commit that moved code with no behavior change.
 - Paper: P1, the paper *Cost-Accounted Rho Calculus* by L. G. Meredith, at publications revision `0bf7817`. A citation P1:a-b names lines a to b of its source file.
 - Paper: P2, the paper *Continued Interactive GSLTs and the Cost Endofunctor* by L. G. Meredith, at the same revision. A GSLT is a graph-structured lambda theory (P2:97). A citation P2:a-b names lines a to b of its source file.
 - Evidence tags: [C] code, [P] paper, [D] decision record, [I] inference.
@@ -104,7 +104,7 @@ This section defines the names, terms and symbols that later sections use.
 | Member | One offered deploy of a block, in canonical order. Member $`i`$ funds from $`R_0`$ and executes from $`R_{i-1}`$, the root after member $`i - 1`$. | DR-65 |
 | Signature | A name that pays for communications. P1 treats signatures as channel names. | P1:203-206 |
 | Signed term | A term $`\{P\}_s`$ whose communications the signature $`s`$ pays | P1:218-222 |
-| Funding signature | The signature that the signers of the envelope form. It pays for the work that no explicit signature covers. | `runtime.rs:165` |
+| Funding signature | The signature that the signers of the envelope form. It pays for the work that no explicit signature covers. | `runtime.rs:152` |
 | Signature lane | The part of the demand that one signature pays. Its key is the lane hash of the signature. | `delta_sigma.rs:92-104` |
 | Deploy lane | The lane of the funding signature | `reduce.rs:1423-1441` |
 | Region | One signed scope at run time. It has an instance identity, which is a Blake2b-256 hash, and a signature. | `authority.rs:404-424` |
@@ -265,13 +265,13 @@ This design adds the three byte classes and the completeness decision to that wa
 
 The analysis is a pure function of five inputs. [C]
 
-1. The envelope term with its normalizer environment (`runtime.rs:167-175`).
+1. The envelope term with its normalizer environment (`runtime.rs:154-162`).
 2. The seed that the envelope identity gives (`tools.rs:20-27`).
 3. The adopted schedule, which gives the weights $`w_k`$.
 4. The offered URN map (`rho_runtime.rs:1997-1999`, `:2065-2068`).
 5. The consensus host-work limits.
 
-The funding signature comes from the signers of the envelope (`runtime.rs:165`). The analysis has three outputs.
+The funding signature comes from the signers of the envelope (`runtime.rs:152`). The analysis has three outputs.
 
 - The raw counts $`V(s,k)`$, the known demands $`\Delta^{\mathrm{known}}_s`$ and the estimate $`B`$.
 - The completeness of the estimate. An incomplete estimate also reports the first rule that failed.
@@ -358,7 +358,7 @@ The estimate is complete only if rules X1 to X8 and the on-chain payer condition
 | X7 | No bind is a peek, and the term has no cost stack. | A peeked datum can be delivered more than once. A cost stack brings retained acquisition. |
 | X8 | No method call (`EMethodBody`) is among the top-level expressions of a term at an execution position. | The reducer runs the result of a method as a process with the current authority (`util/mod.rs:136-145`, `reduce.rs:1380-1390`). The existing walk checks only `EVarBody` (`delta_sigma.rs:549-563`). |
 
-**On-chain payer condition.** If any signed source is an on-chain private-name payer, the estimate is incomplete. A source is an on-chain payer when no signer and no grant witnesses it (`direct_wallet_funding.rs:282-297`). Eligibility for such a purse needs an observed private-name authority (`family_selection.rs:50-67`), and rules X2 to X4 forbid a program that holds a stored private name.
+**On-chain payer condition.** If any signed source is an on-chain private-name payer, the estimate is incomplete. A source is an on-chain payer when no signer and no grant witnesses it (`direct_wallet_funding.rs:283-298`). Eligibility for such a purse needs an observed private-name authority (`family_selection.rs:50-67`), and rules X2 to X4 forbid a program that holds a stored private name.
 
 ### 5.4 Participants and their regions
 
@@ -686,7 +686,7 @@ The inputs are pure values. The producer and every validator read the same value
 ⟨read the inputs⟩ ≡
   term, env ← envelope.body.term, normalizer_env_from_envelope(envelope)
   seed      ← user_envelope_rng(envelope)                      -- tools.rs:20-27
-  funding   ← funding_sig(signers of envelope)                 -- runtime.rs:165
+  funding   ← funding_sig(signers of envelope)                 -- runtime.rs:152
   w         ← weights of the adopted schedule
   urn_map   ← offered URN map                                  -- rho_runtime.rs:1997-1999
   host      ← new host-work budget with the consensus limits

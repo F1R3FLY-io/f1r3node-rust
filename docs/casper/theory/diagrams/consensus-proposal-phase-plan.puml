@@ -57,7 +57,7 @@ fork again
 end fork
 :**Prerequisite fix:** settlement log-channel continuations
 are unmetered and unbounded today (SystemVault.rho:551-571,
-runtime.rs:1724-1736). Meter and bound them first.; <<$ca_process>>
+runtime.rs:1447-1459). Meter and bound them first.; <<$ca_process>>
 if (**Decisions D-0 to D-9** by the user, Greg
 and the Casper team. Does "keep accepting blocks"
 mean acceptance before execution?) then (no: D-1 option B)
@@ -109,7 +109,7 @@ legend bottom
   | D-0 to D-9 | the open decisions of the proposal (§11) |
   | D-1 option A, option B | A: order-then-execute with the parallel executor. B: the v6 merge rule with the parallel executor. |
   | S, M, L, XL | relative sizes: small, medium, large, extra large |
-  | HEAD 17e07307f | the commit of feature/cost-accounted-rho at which this status holds |
+  | HEAD 17e07307f | the commit of feature/cost-accounted-rho at which this status holds. The runtime.rs lines follow a later commit that moved code with no behavior change. |
   | v6 | protocol version 6, with cost accounting |
   | soak | a long load test of a network of validators |
   | A/A calibration | two runs of the same build that measure the noise |

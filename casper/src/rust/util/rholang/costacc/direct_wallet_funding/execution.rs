@@ -520,6 +520,9 @@ pub use replay::{
     ReplayedNativeFundedUser,
 };
 
+mod offered_block;
+pub(crate) use offered_block::CertifiedOfferedDraft;
+
 #[cfg(test)]
 mod tests {
     use proptest::prelude::*;

@@ -39,6 +39,7 @@ pub use settlement::{
 };
 
 mod execution;
+pub(crate) use execution::CertifiedOfferedDraft;
 pub use execution::{
     gate_offered_candidate, InsufficientCause, NativeAttemptSettlementInput,
     NativeAttemptSettlementLimits, NativeCapturedSettlement, NativeFundedAttempt,
