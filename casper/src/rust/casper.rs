@@ -100,6 +100,8 @@ pub trait Casper {
 
     fn buffer_contains(&self, hash: &BlockHash) -> bool;
 
+    fn buffer_waits_on_dependency(&self, hash: &BlockHash) -> bool { self.buffer_contains(hash) }
+
     fn get_approved_block(&self) -> Result<&BlockMessage, CasperError>;
 
     fn deploy(

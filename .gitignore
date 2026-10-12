@@ -134,4 +134,6 @@ docs/discoveries/*.md
 .pi/
 graphify-out/
 /graphify-out
+docs/work-logs/*.md
 docs/handoffs/
+docs/tdd-plans/

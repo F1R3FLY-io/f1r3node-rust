@@ -24,9 +24,9 @@ use crate::rust::interpreter::io::response;
 /// preserved across the migration — no consensus-observable
 /// change.
 ///
-/// The framework layer (yet to land, slice 4.6) will branch on the
-/// variant when it needs to distinguish success from failure
-/// without decoding the Par (currently only for review
+/// The framework layer (slice 4.6) branches on the variant when
+/// it needs to distinguish success from failure without decoding
+/// the Par (currently only for review
 /// readability; a future surface could use it for WAL Failure
 /// journaling drift-checks, metrics, etc.).
 pub enum HandlerReply {

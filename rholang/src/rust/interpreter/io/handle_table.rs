@@ -1016,6 +1016,21 @@ impl FileHandleTable {
         let mut buf = [0u8; 8];
         buf.copy_from_slice(&hash[..8]);
         let hi = u64::from_be_bytes(buf);
+        // Mask bit 63 so the watermark stays in `[0, i64::MAX]`.
+        // Fd values traverse the Rholang boundary as GInt (i64)
+        // and `response::Fd::try_from(u64)` rejects values outside
+        // `[0, i64::MAX]`.  Pre-fix, a state hash whose first byte
+        // had bit 7 set would produce a watermark >= 2^63; the
+        // first `insert()` after reset would then allocate an fd
+        // that fails `Fd::try_from`, surfacing as
+        // `FSERR_QUOTA_EXCEEDED "allocator produced out-of-range
+        // fd"` on every single fs_open — breaking
+        // `fileio_dir_spec::dir_openfile_child_readn_roundtrip`,
+        // `fileio_file_spec::file_cursor_size_and_readn_on_read_only`,
+        // `fileio_file_spec::file_truncate_write_mode_roundtrip`,
+        // and ~50% of other end-to-end fs tests whose genesis root
+        // hash happens to have bit 7 set in byte 0.
+        let hi = hi & 0x7FFF_FFFF_FFFF_FFFF;
         // Mask off the low headroom bits so a full runtime
         // lifetime cannot overflow into the next watermark's
         // range.
@@ -1784,10 +1799,14 @@ mod tests {
             0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
         ];
         table.seed_next_fd_from_state_hash(&hash);
-        // hi = u64::MAX (all 8 leading bytes are 0xFF).
-        // watermark = u64::MAX & !((1 << 20) - 1) = u64::MAX ^ 0xFFFFF = 0xFFFF_FFFF_FFF0_0000.
-        // seed_next_fd_watermark stores watermark + 1 = 0xFFFF_FFFF_FFF0_0001.
-        assert_eq!(table.snapshot_next_fd(), 0xFFFF_FFFF_FFF0_0001);
+        // hi (raw) = u64::MAX (all 8 leading bytes are 0xFF).
+        // Bit-63 mask (slice-5.78 follow-up on PR #669): keep the
+        // watermark in `[0, i64::MAX]` so the Fd GInt contract holds
+        // on every allocated fd.  hi = u64::MAX & 0x7FFF_FFFF_FFFF_FFFF
+        // = 0x7FFF_FFFF_FFFF_FFFF.
+        // Headroom mask: hi & !((1 << 20) - 1) = 0x7FFF_FFFF_FFF0_0000.
+        // seed_next_fd_watermark stores watermark + 1 = 0x7FFF_FFFF_FFF0_0001.
+        assert_eq!(table.snapshot_next_fd(), 0x7FFF_FFFF_FFF0_0001);
     }
 
     /// `truncate_to` closes every fd allocated past the snapshot.

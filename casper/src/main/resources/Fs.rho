@@ -1,0 +1,517 @@
+// Fs.rho — File I/O FIP §The Fs agent.
+//
+// Top-level entry point.  Provisioned at genesis with a static bundle
+// mapping logical names to
+//   (canonRoot, rel, mode, kind, consensusMode)
+// tuples (5-ary as of slice 26); the powerbox delegates the resulting
+// Fs cap to deploys.  Deploys open files/dirs by their logical name,
+// never by absolute host path.
+//
+// ## Delivered methods
+//
+//   constructor(stdinFd, stdoutFd, stderrFd, bMap)
+//                                              — stash stdio fds + bundle
+//   openFile(name, options)  → [true, fileCap] — look up + mode-cap + open (fresh mint)
+//   openDir(name, options)   → [true, dirCap]  — look up + mode-cap + open (fresh mint)
+//   stdin()   → [true, stdinCap]               — mint fresh Stdin(fd)
+//   stdout()  → [true, stdoutCap]              — mint fresh Stdout(stdoutFd)
+//   stderr()  → [true, stderrCap]              — mint fresh Stdout(stderrFd)
+//   default(...@args)                           — mandatory catch-all
+//
+// Constructor arity/order is a coordination contract with the genesis
+// wiring in `casper::genesis::contracts::fs_genesis`; do not change
+// without updating StandardDeploys.
+//
+// ## Publication
+//
+// A single Fs instance is composed with the other library agents into
+// FsGenesis (`casper/src/rust/genesis/contracts/fs_genesis.rs`), which
+// runs at genesis and publishes the resulting `bundle+{*fs}` at the
+// registry URI derived from `FS_GENERATOR_PK`.  Deploys reach the Fs
+// via `getFS(rho:id:<hash>)`.  The canonical spec URI
+// `rho:io:fs:1.0.0` is also wired via `insertVersion` (PB-B-3 landed
+// 2026-08-24 — see MVP simplification #4 in the fs_genesis docstring).
+// MVP simplification #1 there notes the shared-Fs model — all deploys
+// look up the same handle.  Per-principal delegation is a candidate
+// design (post-A8-M-2 narrowing of PB-M-1) rather than a scheduled
+// slice; shards may ship shared-Fs permanently or roll their own
+// delegation mechanism.
+//
+// ## Stdio (slice 18 — spec §842-844, §867, §1085, §1114)
+//
+// Each `stdin()` / `stdout()` / `stderr()` call mints a FRESH Stdin
+// (or Stdout) capability wrapping the fd the powerbox handed us at
+// construction.  Two calls on the same Fs return DISTINCT caps —
+// this matches spec §1085 ("a distinct Stdin cap obtained from
+// Fs.stdin() later can still read") and §1114 ("A fresh Fs!stdout()
+// call after close returns a new Stdout cap that CAN still write").
+// Caching would break those clauses: a well-meaning `close()` would
+// permanently disable stdio for the rest of the Fs's life.
+//
+// Cross-Fs isolation (spec §867) holds trivially: Alice's Fs holds
+// its own `*private` cells with its own fd values; Bob's Fs holds
+// its own.  Any minted Stdin / Stdout has a fresh `*private` scope
+// on each `!?`, so the per-instance state cells inside Stdin.rho /
+// Stdout.rho are disjoint even when two agents wrap the same fd.
+// Closing Alice's cap doesn't affect Bob's.  NB: under the shared-Fs
+// MVP (see §Publication above), all deploys hold the SAME Fs, so the
+// "fresh cap after close" guarantee is per-cap-instance only — the
+// underlying fd is shared across every deploy on the validator.
+// Isolation would return to per-deploy scope if per-principal
+// delegation ships, but post-A8-M-2 narrowing that shape is a
+// candidate rather than a scheduled slice.
+//
+// Ambient-authority note: Stdin and Stdout are module-level agents.
+// The genesis wiring (see `casper::genesis::contracts::fs_genesis`)
+// MUST NOT export `Stdin` / `Stdout` to deploy scope — only `Fs` and
+// its bundle+ interface.  Otherwise a deploy could bypass
+// `Fs.stdin()` with a raw `Stdin!?(0)`.
+//
+// Trust boundary: the constructor accepts fds as unchecked Pars.
+// Genesis is responsible for supplying Int fds and a Map bMap; Fs
+// treats them as opaque data and forwards to Stdin/Stdout mints
+// (which likewise trust their fd) and to bMap lookups (which
+// tolerate empty/missing entries via `.contains`).
+//
+// ## Fresh-mint semantics (slice 27)
+//
+// Every `openFile(name, options)` / `openDir(name, options)` returns
+// a FRESH agent handle with an independent cursor and independent
+// lifecycle — regardless of whether the same `(name, options)` pair
+// was opened earlier on this Fs.  Slice 17 memoized handles per
+// `(canonicalPath, resolvedMode)`; slice 27 (2026-08-04) reverted that
+// on POSIX-semantics grounds: two `openFile(same-name, same-mode)`
+// calls MUST yield distinct `File` agents with independent read/
+// write positions, otherwise Alice's `read` would silently advance
+// Bob's cursor.  Shared byte-level coordination is Phase 8's job
+// (range locks), not Fs-level cap memoization.
+//
+// The `openFile` / `openDir` methods therefore invoke
+// `openFileImpl` / `openDirImpl` (defined by Dir.rho and shared with
+// nested Dir.openFile/openDir call sites) directly — no cache lookup,
+// no cache-set on the success path.  This mirrors the slice-18 stdio
+// design: each stdio method mints fresh, so its close doesn't
+// invalidate subsequent calls.
+//
+// ## Bundle shape
+//
+// Each bundle entry is a 5-tuple `(canonRoot, rel, provisionedMode,
+// kind, consensusMode)`:
+//   canonRoot         — absolute directory (validated at load time to
+//                       be absolute and symlink-free per spec §1269)
+//   rel               — path within canonRoot; joinRel(subPath="", rel)
+//                       used by openFileImpl / openDirImpl produces the
+//                       full relative segment
+//   provisionedMode   — max attenuation ("r" / "rw" for dirs; any file
+//                       mode from spec §File modes for files)
+//   kind              — "file" or "dir"
+//   consensusMode     — "oracular" or "consensus" (slice 26).  Derived
+//                       from the operator's config bucket
+//                       (`oracle-static-*` vs `consensus-static-*`)
+//                       and threaded through into the File/Dir
+//                       constructor's state cell.  File/Dir chown/
+//                       stat/entries pass it to the native handler,
+//                       which short-circuits `chown` on consensus and
+//                       omits host-transient fields from stat/entries
+//                       records.
+//
+// The genesis wiring slice (19) converts the config-block shape
+// `{"path": "...", "mode": "...", "consensusMode": "..."}` into these
+// tuples before minting Fs (see casper/src/rust/genesis/contracts/
+// fs_genesis.rs::format_bundle_for_rholang).
+//
+// ## Options handling
+//
+// `options` is a Map (spec §848).  Rholang has no lightweight `x /\
+// Map` type predicate, so this MVP uses structural patterns:
+//   `{}`                          → no options, default mode "r"
+//   `{"mode": modeVal ..._}`      → mode explicitly set
+//   `{_ : _ ..._}`                → non-empty Map without "mode" → default
+//   any other shape               → FSERR_BAD_ARG "options must be a Map"
+// Additional options like `create`, `exclusive`, `path` (spec §855-861)
+// are accepted (captured in the wildcard remainder) but ignored in this
+// slice.
+//
+// ## Mode-cap logic (spec §847)
+//
+// A downgrade succeeds; an upgrade → FSERR_UNSUPPORTED.  Mirrors
+// Dir.openFile / Dir.openDir:
+//   - Request `"r"` is always allowed.
+//   - Any other requested mode requires provisioned `"rw"` (or the
+//     analogous write-capable dir mode).
+//
+// ## Known limitation — narrow-provisioned mode-cap (m-16-5)
+//
+// The "r" always-allowed rule means a `"w"`-only provisioned entry
+// would still grant `"r"` reads — technically wider than spec §847's
+// strict "capped at provisioned" reading.  Matches the pre-existing
+// Dir.openFile behavior.
+//
+// ## m-16-6 fix (2026-08-06, M-6 rev-2)
+//
+// Pre-fix, the File openFile cap check was `provisioned == "rw"`.
+// But `CONFIG_FILE_MODES = {"r", "r+", "w", "w+", "a", "a+"}` —
+// no `"rw"` — so File entries could NEVER be provisioned as
+// `"rw"`, and every non-`"r"` file open through `Fs.openFile`
+// unconditionally returned `FSERR_UNSUPPORTED` in production.
+// The pre-existing tests only passed because they hand-craft a
+// fake bundle with a File entry provisioned as `"rw"` — a shape
+// no HOCON- or CLI-parsed bundle can produce.  A real deployment
+// with `oracle-static-files { "cfg" = { path = ..., mode = "r+" }}`
+// followed by `Fs.openFile("cfg", {"mode": "w"})` returned
+// `FSERR_UNSUPPORTED` with `"requested mode exceeds provisioned
+// attenuation"` — even though the operator granted write access.
+//
+// Post-fix cap check: `provisioned == "r"` rejects non-`"r"`
+// requests; any other provisioned mode (`r+`, `w`, `w+`, `a`,
+// `a+`, and the non-spec but still-accepted `rw`) allows the
+// request through.  Matches the File.rho write-capable-mode
+// pattern already used at every internal method gate
+// (writeChars, writeLines, chmod, chown, truncate, etc.).
+//
+// The requested-mode arm retains `"rw"` as an accepted request
+// even though it is not in the spec's File modes table — the
+// native mode parser (mode.rs::parse_open_mode) accepts `"rw"`
+// as an alias for POSIX `"r+"` (ReadWrite + require-exist).
+// The spec/impl drift on `"rw"` vs `"r+"` is tracked as a
+// separate cleanup; retaining `"rw"` as a valid request
+// preserves existing caller code and matches native semantics.
+//
+// ## Map pattern-match ordering assumption
+//
+// `{"mode": modeVal ..._}` extracts the `"mode"` key from a Map
+// regardless of insertion order.  Rholang's current tuplespace Map
+// implementation supports keyed extraction independent of order; if
+// that ever changes, this pattern would silently stop matching Maps
+// where `"mode"` isn't the first key.  Add an ordering-independent
+// probe (`.contains` + `.get`) here if the guarantee is ever weakened.
+//
+// ## Not-in-bundle
+//
+// `openFile("nope", ...)` and `openDir("nope", ...)` both fail with
+// `[false, "FSERR_UNSUPPORTED", "logical name not in static bundle"]`
+// per spec §846.
+
+// ## Ambient-authority off switch (2026-09-03)
+//
+// Module-level cell `fsRevokedP` holds the one-way revoke flag,
+// shared across every Fs instance minted from this composed source.
+// Initialized to `false` at composition-time.  `Fs.revoke()` flips
+// it to `true` atomically (linear consume + rewrite in the same
+// reduction step).  Every public method reads it non-linearly
+// (`<<-`) at entry and returns `[false, "FSERR_REVOKED", ...]` if
+// set.
+//
+// Post-revoke, any Fs instance (including instances minted AFTER
+// revoke) has all methods returning FSERR_REVOKED — the mint
+// itself doesn't fail (Rholang agent constructors have no
+// mint-error return channel), but the resulting cap is inert.
+// Previously-minted File/Dir caps are unaffected — they are
+// independent agents.  See FIP §Revocation for the normative
+// semantics (SEC-1(A): revoke does NOT cascade to previously-
+// minted caps).
+new Fs, fsBundleP,
+    fsStdinFdP, fsStdoutFdP, fsStderrFdP, fsRevokedP in {
+
+  // Composition-time init (RH-A5-11 note): this send lands
+  // synchronously with the rest of the outer `new` body during
+  // genesis composition — no deploy can reach `Fs.revoke()` /
+  // any method before genesis commits, and all peek-reads
+  // (`<<-`) block naturally until the value is present.  There
+  // is no cross-deploy window during which `fsRevokedP` could
+  // observe as empty.
+  @[*fsRevokedP]!(false) |
+
+  agent Fs {
+    // -- constructor(stdinFd, stdoutFd, stderrFd, bMap) -----------
+    //
+    // Powerbox provides the three stdio fds and the static bundle at
+    // mint time.  Fds are stashed unchanged; each stdio method mints
+    // a fresh Stdin / Stdout on demand (spec §1085 / §1114 require
+    // fresh-cap-after-close).
+    constructor(@stdinFd, @stdoutFd, @stderrFd, @bMap) {
+      @[*private, *fsBundleP]!(bMap) |
+      @[*private, *fsStdinFdP]!(stdinFd) |
+      @[*private, *fsStdoutFdP]!(stdoutFd) |
+      @[*private, *fsStderrFdP]!(stderrFd)
+    } |
+
+    // -- stdin() / stdout() / stderr() ----------------------------
+    //
+    // Fresh-mint per call.  Two calls on the same Fs return DISTINCT
+    // caps; closing one does not affect any subsequent call.  Fd
+    // cell is read non-linearly so unbounded parallel calls are safe.
+    //
+    // ## Consensus discipline — stdio is INTRINSICALLY ORACULAR
+    //
+    // The Stdin / Stdout constructors take a fd only, no `cmode`
+    // argument (see Stdin.rho / Stdout.rho docstrings for full
+    // rationale).  Consensus-mode deploys are structurally still
+    // able to call `Fs.stdin()` / `Fs.stdout()` / `Fs.stderr()` —
+    // there is no runtime gate here — but any bytes read from
+    // stdin or side-effects observed via stdout MUST NOT flow into
+    // consensus-observable tuplespace state.  A deploy that routes
+    // stdin bytes into consensus state will diverge across nodes
+    // and fail consensus with a state-root mismatch.  This is a
+    // deploy-author invariant, consistent with the treatment of
+    // oracular file reads.
+    method stdin() {
+      for (@revoked <<- @[*fsRevokedP]) {
+        match revoked {
+          true  => return!([false, "FSERR_REVOKED", "Fs has been revoked"])
+          false => {
+            for (@fd <<- @[*private, *fsStdinFdP]) {
+              for (@cap <- Stdin!?(fd)) {
+                return!([true, cap])
+              }
+            }
+          }
+        }
+      }
+    } |
+
+    method stdout() {
+      for (@revoked <<- @[*fsRevokedP]) {
+        match revoked {
+          true  => return!([false, "FSERR_REVOKED", "Fs has been revoked"])
+          false => {
+            for (@fd <<- @[*private, *fsStdoutFdP]) {
+              for (@cap <- Stdout!?(fd)) {
+                return!([true, cap])
+              }
+            }
+          }
+        }
+      }
+    } |
+
+    method stderr() {
+      for (@revoked <<- @[*fsRevokedP]) {
+        match revoked {
+          true  => return!([false, "FSERR_REVOKED", "Fs has been revoked"])
+          false => {
+            for (@fd <<- @[*private, *fsStderrFdP]) {
+              for (@cap <- Stdout!?(fd)) {
+                return!([true, cap])
+              }
+            }
+          }
+        }
+      }
+    } |
+
+    // -- openFile(name, options) -----------------------------------
+    //
+    // Slice 27: fresh-mint per call — every invocation invokes
+    // `openFileImpl` directly (no cache lookup).  Two calls with the
+    // same `(name, options)` yield DISTINCT File agents with
+    // independent cursors; closing one has no effect on the other.
+    method openFile(@name, @options) {
+      // Revoke gate — see module-level docstring.  Non-linear read
+      // so unbounded parallel calls are safe; module-cell has one
+      // Bool value written at composition-time and only advanced
+      // to `true` by revoke().
+      for (@revoked <<- @[*fsRevokedP]) {
+        match revoked {
+          true  => return!([false, "FSERR_REVOKED", "Fs has been revoked"])
+          false => {
+      match name {
+        n /\ String => {
+          new modeCh in {
+            // M-22 (2026-09-04, RH-A5-3): type-guard `mode` at
+            // extraction (`{"mode": v /\ String ..._}`) so a non-
+            // String value under the `mode` key doesn't collapse
+            // through the outer `Nil` sentinel and produce the
+            // misleading "options must be a Map" error.  Distinct
+            // arms below produce distinct sentinels.
+            match options {
+              {} => modeCh!("r")
+              {"mode": v /\ String ..._} => modeCh!(v)
+              {"mode": _ ..._} => modeCh!(
+                (false, "FSERR_BAD_ARG", "mode must be a String"))
+              {_ : _ ..._} => modeCh!("r")
+              _ => modeCh!(Nil)
+            } |
+            for (@requestedMode <- modeCh) {
+              match requestedMode {
+                Nil => return!(
+                  [false, "FSERR_BAD_ARG", "options must be a Map"])
+                (false, code, msg) => return!([false, code, msg])
+                m /\ String => {
+                  for (@bMap <<- @[*private, *fsBundleP]) {
+                    match bMap.contains(n) {
+                      false => return!(
+                        [false, "FSERR_UNSUPPORTED",
+                         "logical name not in static bundle"])
+                      true => {
+                        match bMap.get(n) {
+                          (canonRoot, rel, provisioned, "file", cmode) => {
+                            match m {
+                              "r" => openFileImpl!(
+                                canonRoot, "", rel, "r", cmode, *File, *return)
+                              // M-12 (2026-09-04): the `"rw"` alias
+                              // was removed from the file-mode
+                              // disjunction; callers who previously
+                              // wrote `"rw"` migrate to `"r+"`.  Spec
+                              // §File modes enumerates exactly 8
+                              // forms (r/w/a/r+/w+/wx/w+x/a+).
+                              "w" \/ "w+" \/ "wx" \/ "w+x" \/ "a" \/ "a+" \/ "r+" => {
+                                // m-16-6 fix (2026-08-06, M-6 rev-2):
+                                // write-capable cap check.  Only "r"
+                                // provisioned rejects; every other
+                                // file mode (r+, w, w+, a, a+, wx,
+                                // w+x) grants write.
+                                match provisioned {
+                                  "r" => return!(
+                                    [false, "FSERR_UNSUPPORTED",
+                                     "requested mode exceeds provisioned attenuation"])
+                                  _ => openFileImpl!(
+                                    canonRoot, "", rel, m, cmode, *File, *return)
+                                }
+                              }
+                              _ => return!(
+                                [false, "FSERR_BAD_ARG", "unknown file mode"])
+                            }
+                          }
+                          (_, _, _, "dir", _) => return!(
+                            [false, "FSERR_BAD_ARG",
+                             "logical name is a directory; use openDir"])
+                          _ => return!(
+                            [false, "FSERR_UNSUPPORTED",
+                             "logical name malformed"])
+                        }
+                      }
+                    }
+                  }
+                }
+                _ => return!(
+                  [false, "FSERR_BAD_ARG", "mode must be a String"])
+              }
+            }
+          }
+        }
+        _ => return!(
+          [false, "FSERR_BAD_ARG", "name must be a String"])
+      }
+          }
+        }
+      }
+    } |
+
+    // -- openDir(name, options) ------------------------------------
+    //
+    // Slice 27: fresh-mint per call — same rationale as openFile.
+    method openDir(@name, @options) {
+      // Revoke gate — see module-level docstring.
+      for (@revoked <<- @[*fsRevokedP]) {
+        match revoked {
+          true  => return!([false, "FSERR_REVOKED", "Fs has been revoked"])
+          false => {
+      match name {
+        n /\ String => {
+          new modeCh in {
+            // M-10 A5-RH-A5-1 (2026-09-04): reject `path: true`
+            // explicitly.  Full mkdir-p implementation deferred to
+            // a follow-up.  Same guard lives at Dir.rho::openDir
+            // for the nested path.
+            // M-22 (2026-09-04, RH-A5-3): see Fs.openFile above for
+            // the type-guard rationale.
+            match options {
+              {"path": true ..._} => return!(
+                [false, "FSERR_UNSUPPORTED", "path=true not yet implemented"])
+              {} => modeCh!("r")
+              {"mode": v /\ String ..._} => modeCh!(v)
+              {"mode": _ ..._} => modeCh!(
+                (false, "FSERR_BAD_ARG", "mode must be a String"))
+              {_ : _ ..._} => modeCh!("r")
+              _ => modeCh!(Nil)
+            } |
+            for (@requestedMode <- modeCh) {
+              match requestedMode {
+                Nil => return!(
+                  [false, "FSERR_BAD_ARG", "options must be a Map"])
+                (false, code, msg) => return!([false, code, msg])
+                m /\ String => {
+                  for (@bMap <<- @[*private, *fsBundleP]) {
+                    match bMap.contains(n) {
+                      false => return!(
+                        [false, "FSERR_UNSUPPORTED",
+                         "logical name not in static bundle"])
+                      true => {
+                        match bMap.get(n) {
+                          (canonRoot, rel, provisioned, "dir", cmode) => {
+                            match m {
+                              "r" => openDirImpl!(
+                                canonRoot, "", rel, "r", cmode, *File, *return)
+                              "rw" => {
+                                match provisioned {
+                                  "rw" => openDirImpl!(
+                                    canonRoot, "", rel, m, cmode, *File, *return)
+                                  _ => return!(
+                                    [false, "FSERR_UNSUPPORTED",
+                                     "requested mode exceeds provisioned attenuation"])
+                                }
+                              }
+                              _ => return!(
+                                [false, "FSERR_BAD_ARG",
+                                 "dir mode must be \"r\" or \"rw\""])
+                            }
+                          }
+                          (_, _, _, "file", _) => return!(
+                            [false, "FSERR_BAD_ARG",
+                             "logical name is a file; use openFile"])
+                          _ => return!(
+                            [false, "FSERR_UNSUPPORTED",
+                             "logical name malformed"])
+                        }
+                      }
+                    }
+                  }
+                }
+                _ => return!(
+                  [false, "FSERR_BAD_ARG", "mode must be a String"])
+              }
+            }
+          }
+        }
+        _ => return!(
+          [false, "FSERR_BAD_ARG", "name must be a String"])
+      }
+          }
+        }
+      }
+    } |
+
+    // -- revoke() -------------------------------------------------
+    //
+    // Ambient-authority off switch.  Flips the module-level
+    // `fsRevokedP` cell to `true` atomically via linear consume +
+    // rewrite in the same reduction step.  Idempotent: a second
+    // revoke() call also returns [true] (the linear receive
+    // consumes whatever value is in the cell, and the rewrite
+    // always sets `true`).
+    //
+    // Post-revoke, every openFile/openDir/stdin/stdout/stderr call
+    // on any Fs instance (including instances minted AFTER revoke)
+    // returns [false, "FSERR_REVOKED", ...].  Previously-minted
+    // File/Dir caps are unaffected.  See spec §Revocation.
+    //
+    // Any Fs cap holder can call revoke().  The ocap design
+    // assumes the powerbox is the intended caller during the
+    // genesis handoff window.
+    method revoke() {
+      for (@_current <- @[*fsRevokedP]) {
+        @[*fsRevokedP]!(true) |
+        return!([true])
+      }
+    } |
+
+    // -- Default arm ----------------------------------------------
+    default(...@args) {
+      match args {
+        [*ret, ..._] => ret!([false, "FSERR_UNSUPPORTED",
+          "unknown method or not implemented in this slice"])
+      }
+    }
+  }
+}

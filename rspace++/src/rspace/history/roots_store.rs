@@ -26,6 +26,14 @@ pub trait RootsStore: Send + Sync {
     fn contains_root(&self, key: &Blake2b256Hash) -> Result<bool, RootError>;
 }
 
+pub fn root_record_kvs(root: &Blake2b256Hash) -> Vec<(ByteBuffer, ByteBuffer)> {
+    let root_bytes = root.bytes().to_vec();
+    vec![
+        (root_bytes.clone(), "tag".as_bytes().to_vec()),
+        ("current-root".as_bytes().to_vec(), root_bytes),
+    ]
+}
+
 pub struct RootsStoreInstances;
 
 impl RootsStoreInstances {
@@ -68,11 +76,7 @@ impl RootsStoreInstances {
             }
 
             fn record_root(&self, key: &Blake2b256Hash) -> Result<(), RootError> {
-                let tag: ByteBuffer = "tag".as_bytes().to_vec();
-                let current_root_name: ByteBuffer = "current-root".as_bytes().to_vec();
-                let key_bytes = key.bytes();
-
-                self.put(vec![(key_bytes.to_vec(), tag), (current_root_name, key_bytes.to_vec())])?;
+                self.put(root_record_kvs(key))?;
 
                 Ok(())
             }

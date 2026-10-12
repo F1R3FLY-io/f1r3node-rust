@@ -1,0 +1,969 @@
+// Dir.rho — File I/O FIP §Dir agent library (MVP slice).
+//
+// The Dir agent wraps a canonical filesystem root path plus an
+// accumulated relative sub-path with a Rholang-side interface for
+// listing / metadata / composition.  Users receive Dir handles from
+// the shipped `Fs` agent (`Fs.rho`) via `Fs.openDir` / bundle lookup.
+//
+// ## Delivered methods
+//
+//   - `stat(rel)` — record for the file/dir at `root/subPath/rel`
+//   - `exists(rel)` — Bool
+//   - `openFile(rel, options)` — quarantine + open + mint a File agent
+//   - `openDir(rel, options)`  — mint a nested Dir agent
+//   - `removeFile(rel)`, `removeDir(rel, options)`, `rename`,
+//     `copyFile`, `chmod`, `chown` — mutation methods, rw-gated
+//   - `default(...@args)` — FSERR_UNSUPPORTED
+//
+// ## State layout — sandbox safety
+//
+//   @[*private, *rootP]  — (canonRoot, subPath, mode, FileCtorCh)
+//   @[*private, *cmodeP] — "oracular" | "consensus" (slice 26)
+//
+// `canonRoot` is IMMUTABLE from the initial ctor call: it is the boot-
+// canonicalized sandbox root and never changes for any Dir minted from
+// the root Dir chain.  `subPath` accumulates the relative path from
+// `canonRoot` to this Dir's logical directory.  `""` for the root Dir;
+// each `openDir(rel, ...)` produces a child Dir with `subPath ++ "/" ++
+// rel` (or just `rel` when the parent's subPath is empty).
+//
+// `cmodeP` (slice 26) is a separate cell so the existing 4-arity
+// `rootP` state pattern doesn't have to fan out into every
+// `match params` site (~15 in Dir.rho, ~24 in File.rho).  Only the
+// methods that need to route consensus-mode into native dispatch —
+// `stat`, `entries`, `chown`, and the openFile/openDir mint paths —
+// peek the cell.  `cmode` is a persistent non-linear receive
+// (`<<-`) so unbounded parallel reads are safe.  The value is set
+// once at constructor time and never rewritten (a child Dir inherits
+// its parent's `cmode`; there is no in-band re-attenuation).
+//
+// This closes the sandbox-escape vector from the prior slice: previously
+// `openDir` composed a new `canonRoot = canonRoot ++ "/" ++ rel` and
+// passed that as the (trusted) root to Phase 1 natives, letting a `..`
+// in `rel` escape the sandbox.  Now `canonRoot` is always the trusted
+// original, and Phase 1's `safe_descend(canonRoot, subPath ++ "/" ++
+// rel)` walks the FULL accumulated path — any `..` at any level is
+// rejected by `safe_descend`'s `Component::ParentDir => EscapesRoot`
+// arm.
+//
+// ## Mode attenuation (spec §Dir)
+//
+// Directory modes are `"r"` (read-only) or `"rw"` (read/write).
+//   Dir mode "r"  → File modes {"r"};  openDir "r"
+//   Dir mode "rw" → File modes {"r", "r+", "w", "w+", "a", "a+",
+//                                "wx", "w+x"};  openDir "r" or "rw"
+// A downgrade is fine; an upgrade returns FSERR_UNSUPPORTED.
+//
+// ## Reply shape asymmetry — `removeDir` is the 4-elem exception
+//
+// M-25 (2026-09-04, RH-A5-6): every method in this file returns a
+// 3-element `[false, code, msg]` on failure EXCEPT `removeDir`,
+// which returns a 4-element `[false, code, msg, nDeletedBeforeError]`.
+// The trailing count is per DD-RemoveDirReplyShape (2026-09-03) —
+// unified per-entry-count reply across `removeDir`'s non-recursive,
+// recursive-Oracular, and recursive-Consensus paths.  Callers
+// writing a uniform Dir-error handler pattern-match on
+// `[false, code, msg]` will fall through on `removeDir`'s reply
+// and must include a specific `[false, code, msg, count]` arm.
+// A future slice may promote the 4-element shape across all Dir
+// mutation methods for uniformity; the FIP §Dir.removeDir reply
+// shape section is the canonical description.
+
+new Dir, rootP, cmodeP in {
+
+  agent Dir {
+    // M-26-2 review fix: validate `cmode` at mint time.  See File.rho's
+    // matching constructor.  A malformed cmode causes rootP to hold a
+    // REVOKED sentinel so every subsequent method's `match params`
+    // falls into its FSERR_IO arm.
+    constructor(@canonRoot, @subPath, @mode, @cmode, @FileCtorCh) {
+      match cmode {
+        "oracular" \/ "consensus" => {
+          @[*private, *rootP]!((canonRoot, subPath, mode, FileCtorCh)) |
+          @[*private, *cmodeP]!(cmode)
+        }
+        _ => {
+          @[*private, *rootP]!("REVOKED") |
+          @[*private, *cmodeP]!("consensus")
+        }
+      }
+    } |
+
+    // -- stat(rel) --------------------------------------------------
+    // Slice 26: peeks the persistent `cmodeP` cell and forwards the
+    // consensus mode string to `fsStat` — the native handler uses
+    // this to decide whether to omit host-transient fields
+    // (mtime/ctime/atime/owner/group).
+    method stat(@rel) {
+      match rel {
+        r /\ String => {
+          for (@params <<- @[*private, *rootP]; @cmode <<- @[*private, *cmodeP]) {
+            match params {
+              (canonRoot, subPath, _mode, _fileCtor) => {
+                new joinedCh in {
+                  joinRel!(subPath, r, *joinedCh) |
+                  for (@joined <- joinedCh) {
+                    new retCh in {
+                      fsStat!(canonRoot, joined, cmode, *retCh) |
+                      for (@reply <- retCh) { return!(reply) }
+                    }
+                  }
+                }
+              }
+              _ => return!([false, "FSERR_IO", "root params malformed"])
+            }
+          }
+        }
+        _ => return!([false, "FSERR_BAD_ARG", "rel must be a String"])
+      }
+    } |
+
+    // -- entries() --------------------------------------------------
+    //
+    // Returns [true, EntryStream] — a Stream whose elements are per-
+    // entry record Maps (see spec §Dir > Listing).  Read op; allowed
+    // on both "r" and "rw" Dirs.
+    //
+    // Backing native is the per-fd streaming primitive:
+    // `entriesStreamOpen(root, rel, cmode, ack)` allocates a stream fd
+    // and `entriesStreamNext(streamFd, ack)` yields one entry per call
+    // (or a 2-element `[false, "EOS"]` terminator).  The producer
+    // wrapper below adapts the 2-element EOS into the 3-element
+    // `[false, "EOS", msg]` shape the Stream producer contract
+    // expects (Stream.rho §next()).  Callers see the standard
+    // §Stream.next() / .chunk(n) / .fold(...) surface unchanged.
+    //
+    // Streaming-backing slice Step 5 (2026-08-25 pickup): swapped
+    // from the prior bulk `fs_entries` list-materialization backing.
+    // The bulk backing was subject to the `MAX_ENTRIES = 65_536` cap
+    // in the native handler; the streaming primitive is uncapped
+    // (one entry per Next call, no per-open list materialization).
+    // Same caller-facing Stream API — no Dir.rho consumer changes.
+    //
+    // Fd lifecycle: `entriesStreamClose` is called from the producer
+    // wrapper on EOS AND on every error branch (including the
+    // defensive malformed-reply arm) so the dir fd is released
+    // promptly.  A consumer that drops the Stream before EOS (via
+    // `Stream.close()` or by dropping the cap entirely) currently
+    // leaks the fd within the runtime lifetime: `DirHandleTable::
+    // close_all_for_deploy` exists at the Rust layer but is NOT
+    // wired into `WalDeployScope::Drop` (Step 5 review-fixup —
+    // deployed-end sweep is a separately deferred item in the
+    // Deferred items catalog).  The current mitigations are the
+    // per-runtime `MAX_OPEN_FDS = 1024` cap and per-block runtime
+    // respawn via `RuntimeManager::spawn_runtime` — both of which
+    // bound the leak to a single block's worth of Rholang activity.
+    //
+    // Root-Dir limitation carried over from the bulk backing: with
+    // subPath == "", `entriesStreamOpen` with empty rel triggers
+    // safe_descend's "empty relative path" rejection.  Root-Dir
+    // listing is deferred to a native tweak (accept empty rel as
+    // "list root itself").
+    method entries() {
+      for (@params <<- @[*private, *rootP]; @cmode <<- @[*private, *cmodeP]) {
+        match params {
+          (canonRoot, subPath, _mode, _fileCtor) => {
+            new openRetCh in {
+              fsEntriesStreamOpen!(canonRoot, subPath, cmode, *openRetCh) |
+              for (@openReply <- openRetCh) {
+                match openReply {
+                  [true, streamFd] => {
+                    new entryProducer, entryBuilder in {
+                      // Producer wrapper: each `next()` from the
+                      // Stream drives one `entriesStreamNext`.  Reply
+                      // adaptation:
+                      //   [true, entry]        → [true, entry]
+                      //   [false, "EOS"]       → [false, "EOS", "..."]
+                      //     (2-element native terminator → 3-element
+                      //      Stream producer terminator).  The EOS
+                      //      shape is pinned by
+                      //      `handlers.rs::fs_entries_stream_next`'s
+                      //      terminator branch as strictly 2-element —
+                      //      a future native-side change that emits
+                      //      `[false, "EOS", msg]` (3-element) would
+                      //      silently route through the malformed arm
+                      //      below.  Load-bearing coupling; any
+                      //      handler-side EOS-shape change requires
+                      //      updating this match arm.
+                      //   [false, code, msg]   → close fd, forward.
+                      //   _ (malformed)        → close fd, forward
+                      //                          FSERR_IO.  Defensive;
+                      //                          the native cannot
+                      //                          currently reach this
+                      //                          arm, but the close
+                      //                          keeps fd-lifecycle
+                      //                          invariants intact if
+                      //                          it ever does.
+                      contract entryProducer(rc) = {
+                        new nextRetCh in {
+                          fsEntriesStreamNext!(streamFd, *nextRetCh) |
+                          for (@nextReply <- nextRetCh) {
+                            match nextReply {
+                              [true, entry] => rc!([true, entry])
+                              [false, "EOS"] => {
+                                new closeRetCh in {
+                                  fsEntriesStreamClose!(streamFd, *closeRetCh) |
+                                  for (@_ <- closeRetCh) {
+                                    rc!([false, "EOS", "no more entries"])
+                                  }
+                                }
+                              }
+                              [false, code, msg] => {
+                                new closeRetCh in {
+                                  fsEntriesStreamClose!(streamFd, *closeRetCh) |
+                                  for (@_ <- closeRetCh) {
+                                    rc!([false, code, msg])
+                                  }
+                                }
+                              }
+                              _ => {
+                                new closeRetCh in {
+                                  fsEntriesStreamClose!(streamFd, *closeRetCh) |
+                                  for (@_ <- closeRetCh) {
+                                    rc!([false, "FSERR_IO",
+                                      "entriesStreamNext returned malformed reply"])
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      } |
+                      contract entryBuilder(@vals, rc) = {
+                        // EntryStream chunk container is List of records
+                        // per spec §337 — identity build.
+                        rc!([true, vals])
+                      } |
+                      for (@stream <- Stream!?(*entryProducer, *entryBuilder)) {
+                        return!([true, stream])
+                      }
+                    }
+                  }
+                  _ => return!(openReply)
+                }
+              }
+            }
+          }
+          _ => return!([false, "FSERR_IO", "root params malformed"])
+        }
+      }
+    } |
+
+    // -- exists(rel) ------------------------------------------------
+    //
+    // Consensus ban-lift (2026-09-04): the B1 slice (2026-09-03) had
+    // banned Consensus dispatch at the Rholang layer because the
+    // native `fs_exists` URN's arity-3 shape carried no cmode signal
+    // for Phase-5 re-execute + verify to gate on.  This slice bumps
+    // the URN arity 3 → 4 (adding cmode), threads cmode into the
+    // fsExists! call below, and mirrors fs_stat's Phase-5 verify in
+    // the native handler.  Callers under Consensus now get an
+    // authoritatively-verified `[true, Bool]` reply; a divergent
+    // follower FS trips `FSERR_CONSENSUS_DIVERGENCE` instead of
+    // silently returning a leader-lie.
+    method exists(@rel) {
+      match rel {
+        r /\ String => {
+          for (@params <<- @[*private, *rootP]; @cmode <<- @[*private, *cmodeP]) {
+            match params {
+              (canonRoot, subPath, _mode, _fileCtor) => {
+                new joinedCh in {
+                  joinRel!(subPath, r, *joinedCh) |
+                  for (@joined <- joinedCh) {
+                    new retCh in {
+                      fsExists!(canonRoot, joined, cmode, *retCh) |
+                      for (@reply <- retCh) { return!(reply) }
+                    }
+                  }
+                }
+              }
+              _ => return!([false, "FSERR_IO", "root params malformed"])
+            }
+          }
+        }
+        _ => return!([false, "FSERR_BAD_ARG", "rel must be a String"])
+      }
+    } |
+
+    // -- openFile(rel, mode) ----------------------------------------
+    //
+    // Mode-attenuates monotonically against the Dir's own mode.
+    // Slice 26: peeks `cmodeP` and threads consensusMode into
+    // openFileImpl so the minted File inherits the parent Dir's mode.
+    // B4 (2026-09-03): spec §Dir > Composition requires options-map
+    // signatures (matches `Fs.openFile`/`openDir` shape).  Prior
+    // shape took positional `@mode`; changed to `@options` with
+    // extraction pattern mirroring `Fs.openFile` at Fs.rho:305-330.
+    method openFile(@rel, @options) {
+      match rel {
+        r /\ String => {
+          new modeCh in {
+            // M-22 (2026-09-04, RH-A5-3): type-guard mode value.
+            match options {
+              {} => modeCh!("r")
+              {"mode": v /\ String ..._} => modeCh!(v)
+              {"mode": _ ..._} => modeCh!(
+                (false, "FSERR_BAD_ARG", "mode must be a String"))
+              {_ : _ ..._} => modeCh!("r")
+              _ => modeCh!(Nil)
+            } |
+            for (@requestedMode <- modeCh) {
+              match requestedMode {
+                Nil => return!([false, "FSERR_BAD_ARG", "options must be a Map"])
+                (false, code, msg) => return!([false, code, msg])
+                m /\ String => {
+                  for (@params <<- @[*private, *rootP]; @cmode <<- @[*private, *cmodeP]) {
+                    match params {
+                      (canonRoot, subPath, dirMode, fileCtor) => {
+                        // Mode whitelist via \/ disjunction — patterns
+                        // match if m equals any of the alternatives.
+                        match m {
+                          "r" => openFileImpl!(canonRoot, subPath, r, "r", cmode, fileCtor, *return)
+                          // M-12 (2026-09-04): `"rw"` removed from
+                          // file-mode disjunction; callers migrate to
+                          // `"r+"`.  Spec §File modes lists 8 forms.
+                          "w" \/ "w+" \/ "wx" \/ "w+x" \/ "a" \/ "a+" \/ "r+" => {
+                            match dirMode {
+                              "rw" => openFileImpl!(canonRoot, subPath, r, m, cmode, fileCtor, *return)
+                              _ => return!([false, "FSERR_UNSUPPORTED",
+                                "requested mode exceeds Dir attenuation"])
+                            }
+                          }
+                          _ => return!([false, "FSERR_BAD_ARG", "unknown file mode"])
+                        }
+                      }
+                      _ => return!([false, "FSERR_IO", "root params malformed"])
+                    }
+                  }
+                }
+                _ => return!([false, "FSERR_BAD_ARG", "mode must be a String"])
+              }
+            }
+          }
+        }
+        _ => return!([false, "FSERR_BAD_ARG", "rel must be a String"])
+      }
+    } |
+
+    // -- openDir(rel, options) --------------------------------------
+    //
+    // B4 (2026-09-03): options-map signature per spec §Dir >
+    // Composition — supports `mode` and `path` (path: true enables
+    // `mkdir -p`-style ancestor creation per spec §Options, requires
+    // "rw" Dir mode).  Prior shape took bare `@mode` positional.
+    //
+    // Mints a nested Dir sharing this Dir's immutable canonRoot, with
+    // subPath extended by `rel`.  Validated at mint time via fsStat
+    // (M-2): a rel that escapes the sandbox (`..`) or names a non-
+    // existent / non-directory path fails eagerly rather than yielding
+    // a broken handle whose every method later errors.
+    //
+    // `options.path: true` is currently accepted but unimplemented —
+    // returns FSERR_UNSUPPORTED because `openDirImpl` doesn't do
+    // mkdir -p yet.  Ships stub so callers can migrate to the
+    // options-map shape without needing path=true to work.
+    method openDir(@rel, @options) {
+      match rel {
+        r /\ String => {
+          match options {
+            m /\ Map => {
+              // A5-RH-A5-1 fix (2026-09-04): extract options.get("path")
+              // and reject `path: true` with FSERR_UNSUPPORTED.
+              // Pre-fix, `path: true` was silently dropped by the
+              // `{"mode": modeVal ..._}` remainder pattern; a caller
+              // writing `dir!("openDir", "subdir", {"path": true})`
+              // got an ordinary openDir on an existing subdir and a
+              // misleading FSERR_BAD_ARG on a missing one.  Full
+              // implementation (mkdir -p) is deferred; explicit
+              // rejection lets callers know the feature isn't ready.
+              match options.get("path") {
+                true => return!([false, "FSERR_UNSUPPORTED", "path=true not yet implemented"])
+                _ => {
+                  new modeCh in {
+                    match options.get("mode") {
+                      Nil          => modeCh!("r")   // default
+                      s /\ String  => modeCh!(s)
+                      _            => modeCh!(Nil)   // signal bad type
+                    } |
+                    for (@requestedMode <- modeCh) {
+                      match requestedMode {
+                        Nil => return!([false, "FSERR_BAD_ARG", "mode must be a String"])
+                        m /\ String => {
+                          for (@params <<- @[*private, *rootP]; @cmode <<- @[*private, *cmodeP]) {
+                            match params {
+                              (canonRoot, subPath, dirMode, fileCtor) => {
+                                match m {
+                                  "r" => openDirImpl!(canonRoot, subPath, r, "r", cmode, fileCtor, *return)
+                                  "rw" => {
+                                    match dirMode {
+                                      "rw" => openDirImpl!(canonRoot, subPath, r, m, cmode, fileCtor, *return)
+                                      _ => return!([false, "FSERR_UNSUPPORTED",
+                                        "requested mode exceeds Dir attenuation"])
+                                    }
+                                  }
+                                  _ => return!([false, "FSERR_BAD_ARG",
+                                    "dir mode must be \"r\" or \"rw\""])
+                                }
+                              }
+                              _ => return!([false, "FSERR_IO", "root params malformed"])
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+            _ => return!([false, "FSERR_BAD_ARG", "options must be a Map"])
+          }
+        }
+        _ => return!([false, "FSERR_BAD_ARG", "rel must be a String"])
+      }
+    } |
+
+    // -- removeFile(rel) --------------------------------------------
+    method removeFile(@rel) {
+      match rel {
+        r /\ String => {
+          // H-29-3 lift (2026-08-26): Consensus caps now supported —
+          // fs_remove_file journals a RemoveFile WAL entry pre-
+          // syscall, symmetric on leader and follower.  Forward
+          // cmode to the native and let it dispatch.
+          for (@params <<- @[*private, *rootP]; @cmode <<- @[*private, *cmodeP]) {
+            match params {
+              (canonRoot, subPath, dirMode, _fileCtor) => {
+                match dirMode {
+                  "rw" => {
+                    new joinedCh in {
+                      joinRel!(subPath, r, *joinedCh) |
+                      for (@joined <- joinedCh) {
+                        new retCh in {
+                          fsRemoveFile!(canonRoot, joined, cmode, *retCh) |
+                          for (@reply <- retCh) { return!(reply) }
+                        }
+                      }
+                    }
+                  }
+                  _ => return!([false, "FSERR_UNSUPPORTED",
+                    "removeFile requires \"rw\" Dir mode"])
+                }
+              }
+              _ => return!([false, "FSERR_IO", "root params malformed"])
+            }
+          }
+        }
+        _ => return!([false, "FSERR_BAD_ARG", "rel must be a String"])
+      }
+    } |
+
+    // -- removeDir(rel, options) ------------------------------------
+    //
+    // B4 (2026-09-03): options-map signature per spec §Dir >
+    // Mutation — supports `recursive: Bool` (default `false`).  Prior
+    // shape took bare `@recursive` positional.
+    method removeDir(@rel, @options) {
+      match rel {
+        r /\ String => {
+          new recursiveCh in {
+            // M-22 (2026-09-04, RH-A5-3): type-guard `recursive`
+            // value.  A `{"recursive": Nil}` (or any non-Bool value
+            // at the key) now returns the accurate "recursive must
+            // be a Bool" error instead of collapsing through the
+            // Nil sentinel and producing the misleading "options
+            // must be a Map" reply.
+            match options {
+              {} => recursiveCh!(false)
+              {"recursive": v /\ Bool ..._} => recursiveCh!(v)
+              {"recursive": _ ..._} => recursiveCh!(
+                (false, "FSERR_BAD_ARG", "recursive must be a Bool", 0))
+              {_ : _ ..._} => recursiveCh!(false)
+              _ => recursiveCh!(Nil)
+            } |
+            for (@recursive <- recursiveCh) {
+              match recursive {
+                Nil => return!([false, "FSERR_BAD_ARG", "options must be a Map", 0])
+                (false, code, msg, count) => return!([false, code, msg, count])
+                b /\ Bool => {
+              // DD-RemoveDirReplyShape (2026-09-03): unified per-entry-
+              // count reply.  Every removeDir code path (non-recursive,
+              // recursive Oracular, recursive Consensus) returns
+              // `[true, nDeleted]` on success and
+              // `[false, code, msg, nDeletedBeforeError]` on failure
+              // at the Rholang boundary.
+              //
+              // Consensus recursive additionally carries a per-entry
+              // manifest at the native layer for follower re-execution
+              // (R5(b) reply protocol): native returns
+              //   `[true, nDeleted, [[path, kind], ...]]`
+              //   `[false, code, msg, nDeleted, [[path, kind], ...]]`
+              // This method truncates the reply to the first 2 (success)
+              // or 4 (failure) elements before forwarding upward, so
+              // callers see a uniform shape regardless of cmode +
+              // recursive.
+              //
+              // Prior H-29-3-lift shape (surfaced the manifest at the
+              // Rholang boundary) was superseded by the unified
+              // `[true, nDeleted]` shape — see FIP §Dir.removeDir.
+                  for (@params <<- @[*private, *rootP]; @cmode <<- @[*private, *cmodeP]) {
+                    match params {
+                      (canonRoot, subPath, dirMode, _fileCtor) => {
+                        match dirMode {
+                          "rw" => {
+                            new joinedCh in {
+                              joinRel!(subPath, r, *joinedCh) |
+                              for (@joined <- joinedCh) {
+                                new retCh in {
+                                  fsRemoveDir!(canonRoot, joined, b, cmode, *retCh) |
+                                  for (@reply <- retCh) {
+                                    // Unwrap the 5-element Consensus recursive
+                                    // replies to the 4-element uniform failure
+                                    // shape (or 2-element uniform success).
+                                    match reply {
+                                      [true, n /\ Int, _manifest] => return!([true, n])
+                                      [false, code, msg, n /\ Int, _manifest] =>
+                                        return!([false, code, msg, n])
+                                      _ => return!(reply)
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                          _ => return!([false, "FSERR_UNSUPPORTED",
+                            "removeDir requires \"rw\" Dir mode", 0])
+                        }
+                      }
+                      _ => return!([false, "FSERR_IO", "root params malformed", 0])
+                    }
+                  }
+                }
+                _ => return!([false, "FSERR_BAD_ARG", "recursive must be a Bool", 0])
+              }
+            }
+          }
+        }
+        _ => return!([false, "FSERR_BAD_ARG", "rel must be a String", 0])
+      }
+    } |
+
+    // -- rename(from, to) -------------------------------------------
+    method rename(@from, @to) {
+      match from {
+        f /\ String => {
+          match to {
+            t /\ String => {
+              // H-29-3 lift (2026-08-26): Consensus caps now supported.
+              for (@params <<- @[*private, *rootP]; @cmode <<- @[*private, *cmodeP]) {
+                match params {
+                  (canonRoot, subPath, dirMode, _fileCtor) => {
+                    match dirMode {
+                      "rw" => {
+                        new jFromCh, jToCh in {
+                          joinRel!(subPath, f, *jFromCh) |
+                          joinRel!(subPath, t, *jToCh) |
+                          for (@jFrom <- jFromCh; @jTo <- jToCh) {
+                            new retCh in {
+                              // Phase 1 fs_rename signature:
+                              // (fromRootCanon, fromRel, toRootCanon, toRel, cmode, ack)
+                              fsRename!(canonRoot, jFrom, canonRoot, jTo, cmode, *retCh) |
+                              for (@reply <- retCh) { return!(reply) }
+                            }
+                          }
+                        }
+                      }
+                      _ => return!([false, "FSERR_UNSUPPORTED",
+                        "rename requires \"rw\" Dir mode"])
+                    }
+                  }
+                  _ => return!([false, "FSERR_IO", "root params malformed"])
+                }
+              }
+            }
+            _ => return!([false, "FSERR_BAD_ARG", "to must be a String"])
+          }
+        }
+        _ => return!([false, "FSERR_BAD_ARG", "from must be a String"])
+      }
+    } |
+
+    // -- copyFile(from, to) -----------------------------------------
+    method copyFile(@from, @to) {
+      match from {
+        f /\ String => {
+          match to {
+            t /\ String => {
+              // H-29-3 lift (2026-08-26): Consensus caps now supported.
+              for (@params <<- @[*private, *rootP]; @cmode <<- @[*private, *cmodeP]) {
+                match params {
+                  (canonRoot, subPath, dirMode, _fileCtor) => {
+                    match dirMode {
+                      "rw" => {
+                        new jFromCh, jToCh in {
+                          joinRel!(subPath, f, *jFromCh) |
+                          joinRel!(subPath, t, *jToCh) |
+                          for (@jFrom <- jFromCh; @jTo <- jToCh) {
+                            new retCh in {
+                              fsCopyFile!(canonRoot, jFrom, canonRoot, jTo, cmode, *retCh) |
+                              for (@reply <- retCh) { return!(reply) }
+                            }
+                          }
+                        }
+                      }
+                      _ => return!([false, "FSERR_UNSUPPORTED",
+                        "copyFile requires \"rw\" Dir mode"])
+                    }
+                  }
+                  _ => return!([false, "FSERR_IO", "root params malformed"])
+                }
+              }
+            }
+            _ => return!([false, "FSERR_BAD_ARG", "to must be a String"])
+          }
+        }
+        _ => return!([false, "FSERR_BAD_ARG", "from must be a String"])
+      }
+    } |
+
+    // -- chmod(rel, mode) -------------------------------------------
+    // Mode-consistency fix (2026-09-04): input is Int mode bits (see
+    // File.chmod for rationale); range [0, 0o7777].
+    method chmod(@rel, @mode) {
+      match rel {
+        r /\ String => {
+          match mode {
+            m /\ Int => {
+              match m < 0 or m > 4095 {
+                true => return!([false, "FSERR_BAD_ARG",
+                  "mode must be an Int in [0, 0o7777]"])
+                false => {
+                  // H-29-3 lift (2026-08-26): Consensus caps now supported.
+                  for (@params <<- @[*private, *rootP]; @cmode <<- @[*private, *cmodeP]) {
+                    match params {
+                      (canonRoot, subPath, dirMode, _fileCtor) => {
+                        match dirMode {
+                          "rw" => {
+                            new joinedCh in {
+                              joinRel!(subPath, r, *joinedCh) |
+                              for (@joined <- joinedCh) {
+                                new retCh in {
+                                  fsChmod!(canonRoot, joined, m, cmode, *retCh) |
+                                  for (@reply <- retCh) { return!(reply) }
+                                }
+                              }
+                            }
+                          }
+                          _ => return!([false, "FSERR_UNSUPPORTED",
+                            "chmod requires \"rw\" Dir mode"])
+                        }
+                      }
+                      _ => return!([false, "FSERR_IO", "root params malformed"])
+                    }
+                  }
+                }
+              }
+            }
+            _ => return!([false, "FSERR_BAD_ARG", "mode must be an Int"])
+          }
+        }
+        _ => return!([false, "FSERR_BAD_ARG", "rel must be a String"])
+      }
+    } |
+
+    // -- chown(rel, owner, group) -----------------------------------
+    method chown(@rel, @owner, @group) {
+      match rel {
+        r /\ String => {
+          new ownerOk, groupOk in {
+                match owner {
+                  s /\ String => {
+                    match s {
+                      "" => ownerOk!([false, "FSERR_BAD_ARG",
+                        "owner must be non-empty or Nil"])
+                      _  => ownerOk!([true, s])
+                    }
+                  }
+                  Nil => ownerOk!([true, Nil])
+                  _ => ownerOk!([false, "FSERR_BAD_ARG",
+                    "owner must be String or Nil"])
+                } |
+                match group {
+                  s /\ String => {
+                    match s {
+                      "" => groupOk!([false, "FSERR_BAD_ARG",
+                        "group must be non-empty or Nil"])
+                      _  => groupOk!([true, s])
+                    }
+                  }
+                  Nil => groupOk!([true, Nil])
+                  _ => groupOk!([false, "FSERR_BAD_ARG",
+                    "group must be String or Nil"])
+                } |
+                for (@ov <- ownerOk; @gv <- groupOk) {
+                  match [ov, gv] {
+                    [[true, o], [true, g]] => {
+                      for (@params <<- @[*private, *rootP]; @cmode <<- @[*private, *cmodeP]) {
+                        match params {
+                          (canonRoot, subPath, dirMode, _fileCtor) => {
+                            match dirMode {
+                              "rw" => {
+                                new joinedCh in {
+                                  joinRel!(subPath, r, *joinedCh) |
+                                  for (@joined <- joinedCh) {
+                                    new retCh in {
+                                      fsChown!(canonRoot, joined, o, g, cmode, *retCh) |
+                                      for (@reply <- retCh) { return!(reply) }
+                                    }
+                                  }
+                                }
+                              }
+                              _ => return!([false, "FSERR_UNSUPPORTED",
+                                "chown requires \"rw\" Dir mode"])
+                            }
+                          }
+                          _ => return!([false, "FSERR_IO", "root params malformed"])
+                        }
+                      }
+                    }
+                    [[false, _, _], _]  => return!(ov)
+                    [_, [false, _, _]]  => return!(gv)
+                    _ => return!([false, "FSERR_IO", "chown validation malformed"])
+                  }
+                }
+              }
+        }
+        _ => return!([false, "FSERR_BAD_ARG", "rel must be a String"])
+      }
+    } |
+
+    // -- Default arm -----------------------------------------------
+
+    default(...@args) {
+      match args {
+        [*ret, ..._] => ret!([false, "FSERR_UNSUPPORTED", "unknown method"])
+      }
+    }
+  } |
+
+  // ==================================================================
+  // Module-level helpers.
+  // ==================================================================
+
+  // joinRel — compose two segments of a relative path.  Callers may
+  // pass an empty subPath (for the root Dir), in which case the result
+  // is just the second segment; safe_descend rejects an empty rel with
+  // QuarantineError::Empty, so this pattern must not produce "" or a
+  // leading "/".
+  contract joinRel(@subPath, @rel, ret) = {
+    match subPath {
+      "" => ret!(rel)
+      _  => ret!(subPath ++ "/" ++ rel)
+    }
+  } |
+
+  contract openFileImpl(@canonRoot, @subPath, @rel, @mode, @cmode, @fileCtor, ret) = {
+    // H-27-2 review fix: validate `cmode` BEFORE issuing `fsOpen` so a
+    // bad cmode doesn't allocate a kernel fd that the REVOKED-state
+    // File constructor would then leak (File.close short-circuits on
+    // `state = "closed"` without dispatching fsClose).  Rejects
+    // unknown/typo/non-String cmode with FSERR_BAD_ARG at the mint
+    // boundary — matches the fail-closed posture of `resolve_cmode`
+    // in the native handlers (C-26-F1 review fix).
+    match cmode {
+      "oracular" \/ "consensus" => openFileImplInner!(
+        canonRoot, subPath, rel, mode, cmode, fileCtor, *ret)
+      _ => ret!(
+        [false, "FSERR_BAD_ARG",
+         "cmode must be String \"oracular\" or \"consensus\""])
+    }
+  } |
+
+  // Extracted body from openFileImpl so the cmode validation above
+  // can guard the entire mint pipeline (stat + open + agent-mint).
+  // Signature/behavior identical to the pre-slice-27-review `openFileImpl`.
+  contract openFileImplInner(@canonRoot, @subPath, @rel, @mode, @cmode, @fileCtor, ret) = {
+    new joinedCh in {
+      joinRel!(subPath, rel, *joinedCh) |
+      for (@joined <- joinedCh) {
+        // Stat-verify before opening (plan §294): if the target exists
+        // and is a directory, reject with FSERR_BAD_ARG rather than
+        // trying to open it as a file.  fsOpen would fail with EISDIR
+        // on a directory in most modes, but the error mapping is
+        // inconsistent across create/exclusive modes and Phase 1 native
+        // implementations differ; short-circuiting here yields a stable
+        // spec-defined error.
+        //
+        // If stat fails for any reason (not-found, permission, etc.),
+        // we pass through to fsOpen — for creation modes (w/w+/wx/w+x/
+        // a/a+) the target may legitimately not exist yet, and fsOpen
+        // handles the create/exclusive semantics.  For read/rw modes
+        // fsOpen will re-surface the appropriate error (FSERR_NOTFOUND,
+        // etc.).
+        //
+        // Racy against a directory being created between stat and open;
+        // the alternative (bind fd first, fstat inode) requires a
+        // native we don't have.  A future slice could add a
+        // `fs_open_if_not_dir` primitive to close the race.
+        //
+        // Slice 26: the mint-time `fsStat` uses the CAP's `cmode` so
+        // the record shape is consistent — a consensus cap's mint
+        // never leaks host-transient fields through the mint-path
+        // stat check.
+        new statRetCh in {
+          fsStat!(canonRoot, joined, cmode, *statRetCh) |
+          for (@statReply <- statRetCh) {
+            new statOk in {
+              match statReply {
+                [true, rec] => {
+                  match rec.get("kind") {
+                    "dir" => statOk!([false, "FSERR_BAD_ARG",
+                      "target is a directory; use openDir"])
+                    _     => statOk!([true, Nil])
+                  }
+                }
+                _ => statOk!([true, Nil])   // stat failed; let fsOpen handle it
+              } |
+              for (@decision <- statOk) {
+                match decision {
+                  [false, code, msg] => ret!([false, code, msg])
+                  [true, _] => {
+                    new openRetCh in {
+                      // Slice 29 (PB-M-14): fsOpen takes the cap's
+                      // `cmode` so the native handler can stash it
+                      // in the FileHandle for subsequent WAL
+                      // journaling on mutating ops (fs_write,
+                      // fs_write_at, fs_truncate).
+                      fsOpen!(canonRoot, joined, mode, cmode, *openRetCh) |
+                      for (@openReply <- openRetCh) {
+                        match openReply {
+                          [true, fd] => {
+                            // File carries (fd, canonRoot, joined, mode,
+                            // cmode) — its chmod/chown/... methods
+                            // dispatch to fs_* with a real rel (B-3 fix)
+                            // and forward `cmode` to `fsChown` (slice
+                            // 26) so chown short-circuits on consensus
+                            // caps.
+                            new fileCh in {
+                              @fileCtor!(*fileCh, fd, canonRoot, joined, mode, cmode) |
+                              for (@fileHandle <- fileCh) {
+                                ret!([true, fileHandle])
+                              }
+                            }
+                          }
+                          _ => ret!(openReply)
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  } |
+
+  // openDirImpl — mints a nested Dir agent for openDir.
+  //
+  // Validates at mint time via fsStat (M-2): if the composed path is
+  // absent, non-directory, or escapes the sandbox (safe_descend rejects
+  // `..`), the caller receives the underlying error instead of a
+  // handle that later fails on every method.
+  contract openDirImpl(@canonRoot, @subPath, @rel, @mode, @cmode, @fileCtor, ret) = {
+    // H-27-2 review fix mirror: cmode validation before we call
+    // `fsStat`/mint.  Dir mint doesn't allocate a kernel fd so there
+    // is no fd-leak vector here, but the fail-closed posture is
+    // consistent with openFileImpl and prevents a bogus-cmode Dir
+    // from being minted (which would then REVOKE its own state
+    // per the M-26-2 Dir constructor validation).
+    match cmode {
+      "oracular" \/ "consensus" => openDirImplInner!(
+        canonRoot, subPath, rel, mode, cmode, fileCtor, *ret)
+      _ => ret!(
+        [false, "FSERR_BAD_ARG",
+         "cmode must be String \"oracular\" or \"consensus\""])
+    }
+  } |
+
+  contract openDirImplInner(@canonRoot, @subPath, @rel, @mode, @cmode, @fileCtor, ret) = {
+    new joinedCh in {
+      joinRel!(subPath, rel, *joinedCh) |
+      for (@joined <- joinedCh) {
+        match joined {
+          // CRIT-1 fix (2026-08-06): root-Dir mint via `Fs.openDir`
+          // carries `subPath=""` and `rel=""` (post-H-P7-8 Dir bundle
+          // emit shape at `fs_genesis.rs::format_bundle_for_rholang`
+          // — Dir entries stay `(canon_path, "")` so the sandbox root
+          // is the provisioned path itself, not its parent).  joinRel
+          // of two empty strings yields `""`, and Phase 1's
+          // `safe_descend(root, "")` short-circuits to
+          // `QuarantineError::Empty` → every populated Dir bundle
+          // entry would cascade to
+          // `[false, "FSERR_BAD_ARG", "empty relative path"]`
+          // silently.  Skip the mint-time fsStat verify in this
+          // specific case: boot validation (`node/src/rust/
+          // configuration/boot_validation.rs::validate_provisioning_
+          // boot`, slice 23) has already confirmed the root exists,
+          // is a directory (KindMismatch check), is not a symlink
+          // (IsSymlink check), and holds no hard-linked children
+          // (HardLinked walker), so mint-time verification is
+          // redundant for the root.  Nested `Dir.openDir("child")`
+          // still runs the fsStat verify because joined is non-empty
+          // (`"child"` or `"parent/child"`).
+          "" => {
+            // Slice 26: child (root) Dir inherits parent's `cmode`.
+            // Even though this is the "root" mint, we still pass
+            // `cmode` through the Dir constructor for consistency
+            // with the nested-mint path — same shape either way.
+            new dirCh in {
+              Dir!(*dirCh, canonRoot, joined, mode, cmode, fileCtor) |
+              for (@dirHandle <- dirCh) {
+                ret!([true, dirHandle])
+              }
+            }
+          }
+          _ => {
+            new statRetCh in {
+              fsStat!(canonRoot, joined, cmode, *statRetCh) |
+              for (@statReply <- statRetCh) {
+                match statReply {
+                  [true, rec] => {
+                    // Verify the path is actually a directory.  Reading
+                    // `rec.get("kind")` returns Nil on absent key rather
+                    // than raising — a malformed stat record therefore
+                    // routes through the non-"dir" arm as FSERR_BAD_ARG
+                    // rather than escaping the mint.
+                    match rec.get("kind") {
+                      "dir" => {
+                        // Slice 26: child Dir inherits parent's `cmode`.
+                        new dirCh in {
+                          Dir!(*dirCh, canonRoot, joined, mode, cmode, fileCtor) |
+                          for (@dirHandle <- dirCh) {
+                            ret!([true, dirHandle])
+                          }
+                        }
+                      }
+                      _ => ret!([false, "FSERR_BAD_ARG",
+                        "path exists but is not a directory"])
+                    }
+                  }
+                  _ => ret!(statReply)
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  // parseRwxToBits + parseRwxLoop RETIRED 2026-09-04: the mode-
+  // consistency migration switched File.chmod and Dir.chmod to take
+  // Int mode-bits directly (matching stat.mode's Int emission).  No
+  // in-tree callers of the rwx-string parser remain.  A shard that
+  // needs human-friendly rwx-string authoring can define a caller-
+  // side helper — the deliberate split between machine-parseable
+  // wire (Int) and human-friendly authoring (String) lives at the
+  // caller boundary, not inside the shipped Rholang libs.
+}

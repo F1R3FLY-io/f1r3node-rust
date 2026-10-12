@@ -205,4 +205,39 @@ jq -e '
   and (.failures | any(. == "host protection breach aborted the soak"))
 ' "$TMP/breach-checkpoint-report/verdict.json" >/dev/null
 
+# A long soak's summary.json outgrows MAX_ARG_STRLEN (128 KB on Linux), the
+# cap on a single argv entry. Passing it with --argjson "$(cat ...)" made jq
+# exit 126 "Argument list too long" and lost the final report of a 49-iteration
+# run. Every JSON input must reach jq through --slurpfile, including the
+# baseline (a previous weekly-summary.json embeds the same large passive block).
+ARG_STRLEN_LIMIT=131072
+mkdir -p "$TMP/large" "$TMP/large-report" "$TMP/large-baselined-report"
+jq --argjson n 4000 '
+	.iterations = 49
+	| .tracked_metrics = ([range(0; $n)]
+		| map({key: "metric_\(.)", value: {samples: [range(0; 8)], unit: "ms"}})
+		| from_entries)' \
+	"$TMP/passing/summary.json" >"$TMP/large/summary.json"
+[ "$(wc -c <"$TMP/large/summary.json")" -gt "$ARG_STRLEN_LIMIT" ] || {
+	echo "large summary fixture must exceed MAX_ARG_STRLEN to exercise the regression" >&2
+	exit 1
+}
+SOAK_DIR="$TMP/large" OUT_DIR="$TMP/large-report" RUN_ID=6 RUN_ATTEMPT=1 \
+	SOAK_KIND=daily DURATION_SECONDS=1800 WINDOW_SECONDS=79200 RETRY_ATTEMPT=0 \
+	"$ROOT/scripts/bench/aggregate-perf-report.sh"
+jq -e '.verdict == "pass" and .bootstrap == true' \
+	"$TMP/large-report/verdict.json" >/dev/null
+jq -e '.passive.iterations == 49 and (.passive.tracked_metrics | length) == 4000' \
+	"$TMP/large-report/weekly-summary.json" >/dev/null
+grep -q '^## Verdict: PASS' "$TMP/large-report/perf-report.md"
+[ "$(wc -c <"$TMP/large-report/weekly-summary.json")" -gt "$ARG_STRLEN_LIMIT" ]
+SOAK_DIR="$TMP/large" OUT_DIR="$TMP/large-baselined-report" RUN_ID=7 RUN_ATTEMPT=1 \
+	SOAK_KIND=daily DURATION_SECONDS=1800 WINDOW_SECONDS=79200 RETRY_ATTEMPT=0 \
+	BASELINE_JSON="$TMP/large-report/weekly-summary.json" \
+	"$ROOT/scripts/bench/aggregate-perf-report.sh"
+jq -e '.verdict == "pass" and .bootstrap == false and .baseline_run.run_id == "6"' \
+	"$TMP/large-baselined-report/verdict.json" >/dev/null
+grep -q '| iterations | 49 | 49 |' "$TMP/large-baselined-report/perf-report.md"
+[ ! -e "$TMP/large-baselined-report/.null.json" ]
+
 printf 'soak report verdict tests passed\n'

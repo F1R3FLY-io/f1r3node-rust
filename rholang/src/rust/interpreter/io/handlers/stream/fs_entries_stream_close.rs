@@ -110,8 +110,8 @@ impl FsHandler for FsEntriesStreamCloseHandler {
 }
 
 /// `#[distributed_slice(FS_HANDLERS)]` registration — populated at
-/// link time, consumed by the yet-to-land `rho_runtime.rs` wiring
-/// that walks `FS_HANDLERS.iter()`.
+/// link time, consumed by `rho_runtime::fs_handlers_to_definitions`
+/// (slice 5.31) which walks `FS_HANDLERS.iter()`.
 #[distributed_slice(FS_HANDLERS)]
 static FS_ENTRIES_STREAM_CLOSE_ENTRY: FsHandlerEntry = FsHandlerEntry {
     name: <FsEntriesStreamCloseHandler as FsHandler>::NAME,

@@ -160,9 +160,9 @@ impl FsHandler for FsQuarantineHandler {
 }
 
 /// `#[distributed_slice(FS_HANDLERS)]` registration — populated at
-/// link time, consumed by the yet-to-land `rho_runtime.rs` wiring
-/// that walks `FS_HANDLERS.iter()`.  The dispatcher fn-pointer
-/// forwards through
+/// link time, consumed by `rho_runtime::fs_handlers_to_definitions`
+/// (slice 5.31) which walks `FS_HANDLERS.iter()`.  The dispatcher
+/// fn-pointer forwards through
 /// [`dispatch_via_trait_owned`](super::super::super::handler_trait::dispatch::dispatch_via_trait_owned).
 #[distributed_slice(FS_HANDLERS)]
 static FS_QUARANTINE_ENTRY: FsHandlerEntry = FsHandlerEntry {
