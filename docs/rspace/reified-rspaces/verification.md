@@ -2670,22 +2670,22 @@ The four new Rocq negative controls fail inside their expected declarations.
 
 At the end of wave W2, `rholang/tests/reified_merge_p5.rs` held 8 tests and 5 properties.
 The tests compute the merge as `dag_merger.rs` does, and each race test also strips the counter events, after which the branches merge.
-Two `new` blocks inside `use` of one Array or Vector space race on the allocator `A(sid)` (`rholang/tests/reified_merge_p5.rs:930-991`).
-The tests of items 18 and 19 of the consensus checklist are at `rholang/tests/reified_merge_p5.rs:1161-1300`.
-The test of item 18 for the joins of P5c is at `rholang/tests/reified_merge_p5.rs:2152-2235`.
+Two `new` blocks inside `use` of one Array or Vector space race on the allocator `A(sid)` (`rholang/tests/reified_merge_p5.rs:822-883`).
+The tests of items 18 and 19 of the consensus checklist are at `rholang/tests/reified_merge_p5.rs:1053-1192`.
+The test of item 18 for the joins of P5c is at `rholang/tests/reified_merge_p5.rs:2044-2127`.
 
 Wave W3 extends these checks to the set, the priority queue and the joins, and it adds 8 tests and 2 properties.
 So `reified_merge_p5.rs` now holds 16 tests and 7 properties.
 A set has no counter, so its merges follow the HEAD checks of its records.
-Writes to one set merge, and the merged view is the view of each serial order (F25, `rholang/tests/reified_merge_p5.rs:1857-1896`).
-Two branches that each retire one stored member of a set race in check #1 on the produce of that member (F24, `rholang/tests/reified_merge_p5.rs:1898-1936`).
+Writes to one set merge, and the merged view is the view of each serial order (F25, `rholang/tests/reified_merge_p5.rs:1749-1788`).
+Two branches that each retire one stored member of a set race in check #1 on the produce of that member (F24, `rholang/tests/reified_merge_p5.rs:1790-1828`).
 
-Two dequeues of one priority queue race on its counter and on the head record that both take (`rholang/tests/reified_merge_p5.rs:1940-1981`).
-A peek of a priority queue races with a send and with a dequeue on the counter alone (`rholang/tests/reified_merge_p5.rs:1983-2012`).
+Two dequeues of one priority queue race on its counter and on the head record that both take (`rholang/tests/reified_merge_p5.rs:1832-1873`).
+A peek of a priority queue races with a send and with a dequeue on the counter alone (`rholang/tests/reified_merge_p5.rs:1875-1904`).
 The merge index counts no consume of a peek COMM, so without the counter events each of these pairs merges.
-A join races on the counter of each of its collections, and it merges with operations on other collections (`rholang/tests/reified_merge_p5.rs:2024-2074`).
-A bag join has no counter, and it meets a send on one of its collections as a potential COMM in check #2 (`rholang/tests/reified_merge_p5.rs:2076-2104`).
-The properties `prop_set_retirements_race` and `prop_unordered_set_writes_commute` run 16 cases each (`rholang/tests/reified_merge_p5.rs:2239-2311`).
+A join races on the counter of each of its collections, and it merges with operations on other collections (`rholang/tests/reified_merge_p5.rs:1916-1966`).
+A bag join has no counter, and it meets a send on one of its collections as a potential COMM in check #2 (`rholang/tests/reified_merge_p5.rs:1968-1996`).
+The properties `prop_set_retirements_race` and `prop_unordered_set_writes_commute` run 16 cases each (`rholang/tests/reified_merge_p5.rs:2131-2203`).
 
 Phase 2 of the PathMap engine adds headline 15, `pathmap_token_race`, to `CounterConflict.v` (R129).
 Two deploys from one pre-state that each run a PathMap step that bumps the token race in check #1 on $`S(\mathit{sid})`$.
@@ -2693,9 +2693,9 @@ A step bumps the token when its discipline is ordered, or when its transaction c
 The predicate `pstep_changes` of the model is the `changed` rule of the engine, with the class retire of a set added.
 Its two new negative controls fail inside `exec_pmap_consumes_token` and `store_changes`.
 
-The test `space_collection_conflicts_pathmap_token_race` checks that two writes to disjoint paths of one bag space race on the token (`rholang/tests/reified_merge_p5.rs:2375-2416`).
+The test `space_collection_conflicts_pathmap_token_race` checks that two writes to disjoint paths of one bag space race on the token (`rholang/tests/reified_merge_p5.rs:2267-2308`).
 A bag branch that only peeks bumps no token, so it merges with a write, and a peek of a queue races with a write.
-The property `prop_pathmap_token_race` generates pairs of sends and peeks on the bag and the queue (`rholang/tests/reified_merge_p5.rs:2457-2517`).
+The property `prop_pathmap_token_race` generates pairs of sends and peeks on the bag and the queue (`rholang/tests/reified_merge_p5.rs:2349-2409`).
 Two branches race exactly when both bump the token, and the same logs without the token events merge.
 So `reified_merge_p5.rs` now holds 17 tests and 8 properties.
 
@@ -6338,6 +6338,94 @@ The step has three findings:
 1. The script `check-tlc-source-binding.sh` fails in this tree before the new block, because `formal/tlaplus/uptime` is absent since the base `4d67b5ccc`. The new cursor block, run alone, finds 13 configurations with 13 distinct identities. The rest of the script belongs to its owner ([decision 70](decision-register.md#decision-70)).
 2. The record DR-119 cited `interpreter_util.rs:1871-1882`, the lines of the branch. In this tree the same lines are `interpreter_util.rs:1855-1866`, and the record now cites them.
 3. The audit `check-source-line-refs.sh` now checks 134 cited lines, not 132. The two new citations are in the record DR-119, and both match their source. The closure policy expects 134.
+
+### 34.2 Step 1: the probes, the legacy inventory and the shared support
+
+Step 1 measures the facts that the designs of N4 and of the native suites need.
+The probes are temporary test files, and the step does not commit them.
+The step also moves the merge functions of the merge suites into the shared support, and it lists the tests of the legacy stack.
+
+#### 34.2.1 The host work of one family in one deploy
+
+The first part of probe R1 runs at the runtime level.
+It plays each of the 24 family programs natively, at the phlo limit 8,000,000, and it certifies each play by native replay.
+Each play and each replay has its own budget at the v6 host-work limits.
+The fraction in Table 188 is the largest ratio of usage to limit over the 16 dimensions of host work.
+In every row, that dimension is `VerificationBytes`.
+
+*Table 188. The host work of one family program in one deploy, at the v6 limits.*
+
+| Program | Play fraction | Replay fraction | Certified |
+|---|---|---|---|
+| The 6 `hashmap` families | 0.219 to 0.337 | 0.672 to 0.815 | All |
+| The 6 `pathmap` families | 0.336 to 0.487 | 0.766 to 0.975 | All |
+| The 6 `array` families | 0.309 to 0.443 | 0.790 to 0.950 | All |
+| The 6 `vector` families | 0.287 to 0.421 | 0.762 to 0.921 | All |
+| Two families in one deploy (`hashmap:bag` and `hashmap:queue`) | 0.546 | The replay reaches the limit | No |
+| Four families in one deploy | Native play fails before a budget recording | None | No |
+
+So a block deploy holds one family program at most.
+Replay charges 2 to 3 times the host work of play, as [decision 79](decision-register.md#decision-79) records.
+N4 therefore puts one family program, or a lighter program, in each deploy.
+For the reference agent, the measurement of decision 79 applies.
+Every step of the conformance kit fits the v6 limits, except a persistent consume that drains two stored messages in one deploy.
+
+#### 34.2.2 The probes at the Casper level
+
+The Casper probes run on the offered v6 genesis of the N4 support (`casper/tests/reified/support.rs`).
+Each offer has the phlo limit 2,000,000, the exposure 5,000,000 and a time stamp from the clock.
+The queue creation program creates a `hashmap:queue` space, stores three records and parks one waiter.
+It keeps the handle and two names of the space on a public channel.
+The touch program peeks at that channel and reads the config of the space.
+Then it takes one record, sends a new record and fires the waiter.
+
+*Table 189. The Casper probes of step 1.*
+
+| Probe | Flow | Result |
+|---|---|---|
+| R1, second part | Node 0 proposes block A with the queue creation of payer 0. Node 1 accepts A. Node 1 and then node 0 try a touch deploy of payer 0. | Node 1 proposes nothing (`NoNewDeploys`). Node 0 proposes block B on A, and node 1 accepts B. |
+| R2 | Node 0 proposes A. Node 1 proposes an empty block from genesis. Node 2 merges both, and node 0 then proposes a touch block. | The main parent of the merge block is the empty block. The merge rejects no deploy, and every node accepts the merge block and the touch block. |
+| R6 | A space row of the journal of A gains a channel of a later host row. The predecessors are derived again, and the block is signed again. | Node 1 rejects the block in about 2 seconds, with "native replay epoch is closed". Both nodes then accept the original block. |
+| R7 | After A, payer 2 offers four deploys to node 0. | A deploy that uses only its own records, and a send beside the stored record of payer 0, each get a block. A peek or a take of a record of payer 0 is quarantined. |
+| R8a | Two payers with distinct cursor buckets each create a space in sibling blocks from genesis. Node 2 merges the siblings. | The merge rejects no deploy, and every node accepts the merge block. |
+| R8b | As R8a, with one payer for both siblings. | The merge rejects one sibling. Node 0 then rejects the merge block. |
+
+The probes show three facts of Casper.
+[Decision 82](decision-register.md#decision-82) adapts N4 to them, and no Casper file changes.
+
+1. The leader rule. While a parent branch holds unfinalized user deploys, only the sender of the newest such block includes offered deploys (`block_creator.rs:2254-2299, 2674-2714, 3067-3072`). Another proposer takes a fallback that counts only legacy deploys (`block_creator.rs:2338-2405`). So node 1 proposes nothing in R1.
+2. The funding rule. A deploy that peeks or takes a record that another payer funded has no feasible signed assignment (`family_selection.rs:218`). The proposer quarantines it, as R7 shows.
+3. Gap G6. The siblings of one payer conflict on its cost cursor, and the merge rejects one of them. The node that owns the rejected copy's block then fails with "offered-funded recovery requires an envelope buffer" (`interpreter_util.rs:2156`). DR-116 of feature/cost-accounted-rho closes this gap after the base.
+
+#### 34.2.3 The shared support
+
+The merge functions of `reified_merge_p5.rs` moved to `rholang/tests/support/merge.rs`, so that the P9 suites use the same code.
+They are the merge index, the merged root, the readers of records and joins, and the two log filters.
+The suite `reified_merge_p5` passes 29 tests before and after the move.
+
+The step adds two parts that step 2 uses first:
+
+- `support/coverage.rs` checks the merge-level event coverage of one deploy (design v2, amendment A4).
+- `support/native.rs` gives each native play its pre-state root and the hashed keys of its hot-store snapshot. It also holds the helper `run_twice_assert_canonical_equal` of N9.
+
+#### 34.2.4 The inventory of the legacy tests
+
+The script `scripts/verify-reified/legacy-test-inventory.py` reads the legacy checkout.
+It lists each test function that the commit range `5c0363d9..ff479042` adds.
+A test is identified by its file, its module path in the file and its name.
+The output is `test-vectors/legacy-test-inventory-ff479042.json`, with 1,181 tests in 73 files.
+Of these tests, 891 are `#[test]` functions, 8 are `#[tokio::test]` functions and 282 are property tests.
+The ledger of step 7 maps each of these tests to a port, a retarget or a drop with a named successor.
+
+*Table 190. The gates of step 1.*
+
+| Gate | Result |
+|---|---|
+| `cargo test --release -p rholang --test reified_merge_p5` | 29 passed, 0 failed |
+| `cargo clippy -p rholang --test reified_merge_p5 -- -D warnings` | No warning |
+| `rustfmt --check` of the changed test files | No difference |
+| The 40 checkers of the campaign: the footprint policy `p9`, the consensus checklist, the completeness phases, the maps and the document lint | 40 passed |
+| I-14: the two empty-state-hash tests of `runtime_spec.rs` in release | 2 passed, 0 failed |
 
 ## References
 

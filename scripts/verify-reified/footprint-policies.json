@@ -9115,7 +9115,7 @@
       ]
     },
     "p9": {
-      "description": "Phase P9, consensus integration (design v2, plan decision 80). It extends campaign and restates the edits and the new files of p8. Step 0 adds the backport of the DR-119 fix of bug 11004 from feature/cost-accounted-rho, commit 7ab849b56 (plan decision 81): the bucket locks of SystemVault.rho and their policy snapshot tests, the only approved casper/src change, and the new Rocq module and TLA configurations of that commit.",
+      "description": "Phase P9, consensus integration (design v2, plan decision 80). It extends campaign and restates the edits and the new files of p8. Step 0 adds the backport of the DR-119 fix of bug 11004 from feature/cost-accounted-rho, commit 7ab849b56 (plan decision 81): the bucket locks of SystemVault.rho and their policy snapshot tests, the only approved casper/src change, and the new Rocq module and TLA configurations of that commit. Step 1 adds the shared merge and coverage support of the rholang suites, the legacy test inventory and its script, the N4 support files, and the test-port ledger checker.",
       "extends": "campaign",
       "unchanged": [
         "**"
@@ -12626,7 +12626,14 @@
         "formal/tlaplus/cost_accounted_rho/FeeCursorBranchMergeBucketCoarseningUnsafe.cfg",
         "formal/tlaplus/cost_accounted_rho/FeeCursorBranchMergeGlobalLockUnsafe.cfg",
         "formal/tlaplus/cost_accounted_rho/FeeCursorBranchMergeNoCreationLockUnsafe.cfg",
-        "formal/tlaplus/cost_accounted_rho/FeeCursorCellsCreateOnStaleReadUnsafe.cfg"
+        "formal/tlaplus/cost_accounted_rho/FeeCursorCellsCreateOnStaleReadUnsafe.cfg",
+        "rholang/tests/support/merge.rs",
+        "rholang/tests/support/coverage.rs",
+        "scripts/verify-reified/legacy-test-inventory.py",
+        "test-vectors/legacy-test-inventory-ff479042.json",
+        "casper/tests/reified/mod.rs",
+        "casper/tests/reified/support.rs",
+        "scripts/verify-reified/check-test-port-ledger.py"
       ]
     }
   }

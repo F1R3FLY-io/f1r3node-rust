@@ -128,7 +128,8 @@ The minimal-footprint revision (M-1 to M-5) overrides the target architecture of
 | [Decision 78](#decision-78) | One native replay test runs at the v6 host-work limits | 2026-10-10 | In force. Implemented in P8 step 1 |
 | [Decision 79](#decision-79) | The conformance kit keeps the v6 host-work limits | 2026-10-10 | In force. Implemented in P8 step 5 |
 | [Decision 80](#decision-80) | The P9 design process | 2026-10-11 | In force |
-| [Decision 81](#decision-81) | Backport the DR-119 fix of bug 11004 | 2026-10-11 | In force. Implemented in P9 step 0 |
+| [Decision 81](#decision-81) | Backport the DR-119 fix of bug 11004 | 2026-10-11 | In force. Implemented in P9 step 0. [Decision 82](#decision-82) amends its effect on N4 |
+| [Decision 82](#decision-82) | N4 fits three facts of Casper | 2026-10-11 | In force |
 | [M-1](#m-1) | Counter meta-channels and merge check #1 | 2026-10-04 | In force, scope widened by decision 31 |
 | [M-2](#m-2) | Space-owned record envelope | 2026-10-04 | In force |
 | [M-3](#m-3) | Charging through the accounting observer | 2026-10-04 | In force, revised 2026-10-04 |
@@ -2286,7 +2287,7 @@ The footprint policy `p8` approves the edit, and checklist items 11 and 21 name 
 | Field | Value |
 |---|---|
 | Date | 2026-10-11 |
-| Status | In force. Implemented in P9 step 0 |
+| Status | In force. Implemented in P9 step 0. [Decision 82](#decision-82) amends its effect on N4 |
 | Amends | [Decision 18](#decision-18): one approved exception to "no `casper/src` change" |
 | Related | [Decision 70](#decision-70), [decision 80](#decision-80), [M-1](#m-1) |
 
@@ -2308,6 +2309,7 @@ The footprint policy `p8` approves the edit, and checklist items 11 and 21 name 
 - Without the fix, two sibling blocks with paid offered deploys always conflict in the vault, whatever their spaces do.
 - The N4 suite of P9 can then test the merge of two sibling blocks with spaces at the Casper level, with different payers.
 - That is the only Casper-level check of [M-1](#m-1). The ported files are identical to the branch, so the next merge of that branch keeps them.
+  *Amended by [decision 82](#decision-82) (2026-10-11): two payers cannot share the records of one space, so N4 tests two payers that each use their own spaces. N4 has no Casper-level check of M-1.*
 
 **Rejected alternatives.**
 
@@ -2315,6 +2317,44 @@ The footprint policy `p8` approves the edit, and checklist items 11 and 21 name 
 - Merge all of feature/cost-accounted-rho first. That merge holds 541 commits, among them replay-cost work that its owner calls not complete.
 
 **Evidence.** The policy snapshot and settlement tests, the cost-accounting Rocq and TLA legs of the new artifacts, the full `casper` suite and I-14 (verification.md, section 34).
+
+### <a id="decision-82"></a>Decision 82: N4 fits three facts of Casper
+
+| Field | Value |
+|---|---|
+| Date | 2026-10-11 |
+| Status | In force |
+| Amends | Section 8 of the P9 design v2 (alternating proposers), and the effect of [decision 81](#decision-81) on N4 (two payers on one space) |
+| Related | [Decision 70](#decision-70), [decision 80](#decision-80), [M-1](#m-1) |
+
+**Statement.**
+
+- Node 0 proposes every block of the space chain of `n4_space_chain_propose_validate`. The other nodes validate each block.
+- `n4_concurrent_space_blocks_agree` forks two sibling blocks from genesis. Two payers with distinct cursor buckets each create and use their own spaces.
+- In that test, every node validates the merge block, and the merge rejects no deploy.
+- N4 has no Casper-level row in which two siblings race on one space counter.
+- The rholang merge suites and the models `CounterConflict.v` and `CounterConflict.tla` cover the guard of [M-1](#m-1).
+- The campaign changes no Casper file for these facts.
+
+**User's words.** "Adjust N4 (Recommended)".
+
+**Reason.** The probes of P9 step 1 found three facts of Casper (verification.md, section 34.2).
+
+1. The leader rule. While a parent branch holds unfinalized user deploys, only the sender of the newest such block includes offered deploys. Another proposer takes a fallback that counts only legacy deploys, so it proposes nothing.
+2. The funding rule. A deploy that peeks or takes a record that another payer funded has no feasible signed assignment. The proposer quarantines it.
+3. Gap G6. Two sibling offers of one payer conflict on its cost cursor, and the merge rejects one. The node that owns the rejected copy's block then fails to validate the merge block.
+
+So proposers cannot alternate, and two payers cannot share the records of one space.
+The siblings of one payer conflict in the vault and break validation in this tree.
+DR-116 of feature/cost-accounted-rho closes gap G6 after the base `4d67b5ccc`.
+
+**Rejected alternatives.**
+
+- Backport DR-116 and add a counter row with one payer. The cost cursor of that payer also conflicts, so the row cannot show that the space counter alone causes the rejection. The backport is a second Casper exception.
+- Merge the latest feature/cost-accounted-rho first. The merge brings DR-116 and every other change since the base, and the counter row keeps the same confound.
+- Finalize each space block before another node proposes. N4 then depends on Casper's finality, which the campaign does not test ([decision 70](#decision-70)).
+
+**Evidence.** The probes R1, R2, R6, R7 and R8 of P9 step 1 (verification.md, section 34.2).
 
 ## Minimal-footprint revision: M-1 to M-5
 

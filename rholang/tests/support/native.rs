@@ -22,6 +22,7 @@ use models::rhoapi::{BindPattern, ListParWithRandom, Par, TaggedContinuation};
 use models::rust::cost_protocol_limits::{
     offered_funded_v6_host_work_limits, offered_funded_v6_limits,
 };
+use models::rust::host_work::HostWorkUsages;
 use models::rust::phlo_schedule::{PhloGenesisPolicy, PhloScheduleV1};
 use models::rust::phlo_wire::PhloWireLimits;
 use models::rust::utils::new_gstring_par;
@@ -55,6 +56,7 @@ use rholang::rust::interpreter::rho_runtime::{
 };
 use rholang::rust::interpreter::spaces::namespace::{self, Durability, ReifiedId};
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+use rspace_plus_plus::rspace::hashing::stable_hash_provider::{hash, hash_from_vec};
 use rspace_plus_plus::rspace::hot_store::HotStoreState;
 use rspace_plus_plus::rspace::rspace::RSpace;
 use rspace_plus_plus::rspace::rspace_interface::ISpace;
@@ -296,6 +298,11 @@ pub struct Played {
     /// The normalizer env of the play: the ids that the test injects through `rho:rrs:test:*`
     /// URNs (P7). Native replay normalizes the term with the same env.
     pub injections: Injections,
+    /// The root before the play: the last checkpoint root of the runtime (P9).
+    pub pre_root: Blake2b256Hash,
+    /// The hashed keys of the hot-store snapshot after the play, without the installed maps:
+    /// the candidates of the merge-level coverage check (P9 design v2, amendment A4).
+    pub snapshot_keys: SnapshotKeys,
 }
 
 /// Plays `term` as a native deploy whose phlo limit is `limit`, on a fresh runtime.
@@ -347,6 +354,7 @@ async fn play_on(
     random: Blake2b512Random,
     injections: Injections,
 ) -> Played {
+    let pre_root = runtime.get_root().await;
     let result = runtime
         .evaluate_with_native_phlo(
             term,
@@ -363,6 +371,7 @@ async fn play_on(
     let out = out_values_of(runtime).await;
     let residue = hot_store_residue(&soft.cache_snapshot, Durability::Ephemeral);
     let durable = hot_store_residue(&soft.cache_snapshot, Durability::Durable);
+    let snapshot_keys = snapshot_keys(&soft.cache_snapshot);
     let root = runtime.create_checkpoint().await.root;
     Played {
         result,
@@ -375,6 +384,8 @@ async fn play_on(
         residue,
         durable,
         injections,
+        pre_root,
+        snapshot_keys,
     }
 }
 
@@ -407,6 +418,38 @@ async fn play_on(
 
 /// A snapshot of every map of a hot store: data, waiting continuations and join entries.
 pub type HotState = HotStoreState<Par, BindPattern, ListParWithRandom, TaggedContinuation>;
+
+/// The hashed keys of the data, continuation and join maps of a hot-store snapshot, sorted and
+/// without duplicates. The installed maps are left out (`hot_store.rs`, `HotStoreState`): the
+/// installed contracts change only at bootstrap (P9 design v2, amendment A4).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SnapshotKeys {
+    /// The hashes of the channels of the data map (`hash(channel)`).
+    pub data: Vec<Blake2b256Hash>,
+    /// The hashes of the channel groups of the continuation map (`hash_from_vec(channels)`).
+    pub continuations: Vec<Blake2b256Hash>,
+    /// The hashes of the channels of the join map (`hash(channel)`).
+    pub joins: Vec<Blake2b256Hash>,
+}
+
+/// The [`SnapshotKeys`] of the hot-store snapshot `state`.
+pub fn snapshot_keys(state: &HotState) -> SnapshotKeys {
+    let mut keys = SnapshotKeys::default();
+    for shard in state.data.iter() {
+        keys.data.extend(shard.keys().map(hash));
+    }
+    for shard in state.continuations.iter() {
+        keys.continuations.extend(shard.keys().map(hash_from_vec));
+    }
+    for shard in state.joins.iter() {
+        keys.joins.extend(shard.keys().map(hash));
+    }
+    for list in [&mut keys.data, &mut keys.continuations, &mut keys.joins] {
+        list.sort();
+        list.dedup();
+    }
+    keys
+}
 
 /// The space-scoped channels of the durability `durability` that hold records, waiting
 /// continuations or join entries in the hot-store snapshot `state`, sorted by their Debug form
@@ -725,6 +768,75 @@ pub fn evidence_bytes(played: &Played) -> (Vec<u8>, Vec<u8>) {
     let journal_bytes = encode_native_operation_journal(journal, &recording.paths, wire, &encoder)
         .expect("the operation journal fits the v6 evidence wire");
     (budget_bytes, journal_bytes)
+}
+
+/// What two runs of one operation set must share, for each deploy (N9).
+#[derive(Debug, PartialEq, Eq)]
+pub struct CanonicalDeploy {
+    /// The post-state root of the deploy.
+    pub root: Blake2b256Hash,
+    /// The values on the public channel [`OUT`] after the deploy.
+    pub outputs: Vec<String>,
+    /// The event log of the deploy.
+    pub log: Vec<Event>,
+    /// The bytes of the budget recording and of the operation journal in the evidence.
+    pub evidence: (Vec<u8>, Vec<u8>),
+    /// The phlo usage of native play.
+    pub phlo: Option<u64>,
+    /// The host work of the play in each dimension.
+    pub host_work: HostWorkUsages,
+}
+
+/// Plays the deploys `terms` one after another on a fresh native chain, the deploy `i` with the
+/// random state of the label `{label}-{i}` and the phlo limit `limit`, and returns the
+/// [`CanonicalDeploy`] of each deploy.
+pub async fn canonical_run(label: &str, terms: &[&str], limit: u64) -> Vec<CanonicalDeploy> {
+    let mut chain = NativeChain::new().await;
+    let mut run = Vec::with_capacity(terms.len());
+    for (index, term) in terms.iter().enumerate() {
+        let host = host_work();
+        let played = chain
+            .play_with(
+                term,
+                &format!("{label}-{index}"),
+                limit,
+                host.clone(),
+                Injections::new(),
+            )
+            .await;
+        assert!(
+            played.result.errors.is_empty(),
+            "{label}-{index}: native play fails: {:?}",
+            played.result.errors
+        );
+        run.push(CanonicalDeploy {
+            root: played.root.clone(),
+            outputs: played.outputs.clone(),
+            log: played.log.clone(),
+            evidence: evidence_bytes(&played),
+            phlo: played.result.native_phlo_usage,
+            host_work: host.usages(),
+        });
+    }
+    run
+}
+
+/// N9 (`run_twice_assert_canonical_equal`): plays the deploys `terms` in two fresh native
+/// runtimes and asserts that both runs give the same roots, outputs, event logs, evidence bytes,
+/// phlo usage and host work for each deploy. Every deploy must log events.
+pub async fn run_twice_assert_canonical_equal(label: &str, terms: &[&str], limit: u64) {
+    let first = canonical_run(label, terms, limit).await;
+    let second = canonical_run(label, terms, limit).await;
+    for (index, deploy) in first.iter().enumerate() {
+        assert!(
+            !deploy.log.is_empty(),
+            "{label}-{index}: the deploy logs events"
+        );
+    }
+    assert_eq!(
+        first, second,
+        "{label}: two fresh native runtimes give the same canonical run"
+    );
 }
 
 /// The budget recording and the operation journal that a validator decodes from the evidence

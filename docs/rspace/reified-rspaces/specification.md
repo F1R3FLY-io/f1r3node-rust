@@ -290,7 +290,7 @@ So the identities of each job are new, also when a cyclic allocator takes a valu
 
 **Rule AL-5: races.** Two branches that allocate from one space consume one produce of $`A(\mathit{sid})`$.
 So merge check #1 sees their race, and a merge never hands one index to both branches (`NoDuplicateIndex`).
-Two `new` blocks inside `use` of one Array or Vector space race in the same way (`rholang/tests/reified_merge_p5.rs:930-991`).
+Two `new` blocks inside `use` of one Array or Vector space race in the same way (`rholang/tests/reified_merge_p5.rs:822-883`).
 
 **Rule AL-6: other stores.** A HashMap or PathMap space has no allocator.
 Its allocation job answers `Baseline`: it reads the config, commits nothing, and charges no phlo.
@@ -672,7 +672,7 @@ The second send has the identity of the record and registers the cost authority 
 **Rule BG-6: peek waiters.** A send that fires a peek waiter keeps its datum in flight and offers it to the next waiter ([decision 30](decision-register.md#decision-30)).
 
 **Rule BG-7: no counter.** A bag has no counter. Every record and every waiter has the order 0, so a re-issued element keeps its record and its identity ([decision 43](decision-register.md#decision-43)).
-So two branches that write one bag merge, as on a host channel (`rholang/tests/reified_merge_p5.rs:700-755`).
+So two branches that write one bag merge, as on a host channel (`rholang/tests/reified_merge_p5.rs:592-647`).
 
 **Rule BG-8: bounds.** One transaction makes at most `FIRE_ROUND_CAP` fires, the fires of a peek re-store included ([decision I-21](decision-register.md#i-21)).
 A divergent pair or the cap re-issues the element in flight, and every read and copy is reserved before it is made ([decision 42](decision-register.md#decision-42)).
@@ -690,7 +690,7 @@ Only an element that does not fire is stored or parked, so a receive can fire th
 
 **Rule CL-3: counter.** Every operation that commits bumps the counter of the collection once ([decision 31](decision-register.md#decision-31)).
 Two branches that operate on one cell race under merge check #1, so a merge never puts two records into one cell.
-A cell operation that fails with `CellOccupied` fails its deploy, and the merge leaves a failed deploy out (`rholang/tests/reified_merge_p5.rs:759-807`).
+A cell operation that fails with `CellOccupied` fails its deploy, and the merge leaves a failed deploy out (`rholang/tests/reified_merge_p5.rs:651-699`).
 
 **Rule CL-4: peeks.** A consume-side peek removes a non-persistent record, and the same transaction stores the record again with its identity (Rule E).
 The fire left the record slot empty, so the re-store is never `CellOccupied`.
