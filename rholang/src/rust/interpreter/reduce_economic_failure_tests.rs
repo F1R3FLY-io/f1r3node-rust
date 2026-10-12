@@ -484,3 +484,105 @@ async fn cost_signed_term_and_stack_accept_exact_credit_and_reject_each_shorter_
         }
     }
 }
+
+// ── Unknown methods (DR-125, bug 11008) ────────────────────────────────────
+
+/// Added by DR-125: the error of a call of `method`, which the method table
+/// lacks. The reducer does not inspect the receiver, so the type is generic.
+fn unknown_method(method: &str) -> InterpreterError {
+    InterpreterError::MethodNotDefined {
+        method: method.to_string(),
+        other_type: "any type".to_string(),
+    }
+}
+
+/// Added by DR-125: a call of a method that the method table lacks, in
+/// process position (the first site, `eval_expr`), is the user failure
+/// `MethodNotDefined`. The summary holds the user class alone, so it permits
+/// the retained charge.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_unknown_method_in_process_position_is_a_user_failure() {
+    with_runtime("unknown-method-process-", |mut runtime| async move {
+        let result = runtime
+            .evaluate_with_term("{}.xxx()")
+            .await
+            .expect("the evaluation completes");
+        assert_eq!(result.errors, vec![unknown_method("xxx")]);
+        assert_eq!(
+            result.economic_failures,
+            EvaluationFailureSummary::single(PhloFailure::User)
+        );
+        assert!(result.economic_failures.permits_retained_charge());
+    })
+    .await;
+}
+
+/// Added by DR-125: a call of a method that the method table lacks, as an
+/// operand (the second site, `eval_expr_to_expr`), is the same user failure.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_unknown_method_in_an_operand_is_a_user_failure() {
+    with_runtime("unknown-method-operand-", |mut runtime| async move {
+        let result = runtime
+            .evaluate_with_term("@\"r\"!(1 + {}.xxx())")
+            .await
+            .expect("the evaluation completes");
+        assert_eq!(result.errors, vec![unknown_method("xxx")]);
+        assert_eq!(
+            result.economic_failures,
+            EvaluationFailureSummary::single(PhloFailure::User)
+        );
+        assert!(result.economic_failures.permits_retained_charge());
+    })
+    .await;
+}
+
+/// Added by DR-125: a property test with a fixed seed. For method names that
+/// the method table lacks, both sites raise `MethodNotDefined` for the name,
+/// and the summary is the user class alone. The names have a prefix that no
+/// keyword and no table method has, and the test checks that the table lacks
+/// each name.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn unknown_method_names_are_user_failures_at_both_sites() {
+    use proptest::strategy::{Strategy, ValueTree};
+    use proptest::test_runner::{Config, RngAlgorithm, TestRng, TestRunner};
+
+    let (_, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let table = reducer.method_table();
+    let strategy = proptest::string::string_regex("unknown[A-Z][a-zA-Z0-9]{0,8}")
+        .expect("the name pattern compiles");
+    let mut runner = TestRunner::new_with_rng(
+        Config::with_cases(16),
+        TestRng::from_seed(RngAlgorithm::ChaCha, &[11u8; 32]),
+    );
+    let mut names = Vec::with_capacity(16);
+    for _ in 0..16 {
+        let name = strategy
+            .new_tree(&mut runner)
+            .expect("the strategy produces a name")
+            .current();
+        assert!(!table.contains_key(&name), "the table lacks {name}");
+        names.push(name);
+    }
+    with_runtime("unknown-method-names-", |mut runtime| async move {
+        for name in names {
+            for term in [
+                format!("{{}}.{name}()"),
+                format!("@\"r\"!(1 + {{}}.{name}())"),
+            ] {
+                let result = runtime
+                    .evaluate_with_term(&term)
+                    .await
+                    .expect("the evaluation completes");
+                assert_eq!(result.errors, vec![unknown_method(&name)], "{term}");
+                assert_eq!(
+                    result.economic_failures,
+                    EvaluationFailureSummary::single(PhloFailure::User),
+                    "{term}"
+                );
+            }
+        }
+    })
+    .await;
+}

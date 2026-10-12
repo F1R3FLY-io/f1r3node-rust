@@ -2203,10 +2203,18 @@ impl ReducerCore {
                 let result_par = match self.method_table().get(&emethod.method_name) {
                     Some(_method) => _method.apply(evaled_target, evaled_args, env)?,
                     None => {
-                        return Err(InterpreterError::ReduceError(format!(
-                            "Unimplemented method: {}",
-                            emethod.method_name
-                        )));
+                        // Changed by DR-125 (bug 11008): a method that the
+                        // table lacks is the user failure MethodNotDefined.
+                        // The reducer does not inspect the receiver to name
+                        // its type, so the error adds no unmetered host work.
+                        // return Err(InterpreterError::ReduceError(format!(
+                        //     "Unimplemented method: {}",
+                        //     emethod.method_name
+                        // )));
+                        return Err(InterpreterError::MethodNotDefined {
+                            method: emethod.method_name.clone(),
+                            other_type: "any type".to_string(),
+                        });
                     }
                 };
 
@@ -3624,10 +3632,17 @@ impl ReducerCore {
                             method_function.apply(evaled_target, evaled_args, env)?
                         }
                         None => {
-                            return Err(InterpreterError::ReduceError(format!(
-                                "Unimplemented method: {:?}",
-                                method_name
-                            )));
+                            // Changed by DR-125 (bug 11008): a method that the
+                            // table lacks is the user failure MethodNotDefined,
+                            // as at the call site in process position.
+                            // return Err(InterpreterError::ReduceError(format!(
+                            //     "Unimplemented method: {:?}",
+                            //     method_name
+                            // )));
+                            return Err(InterpreterError::MethodNotDefined {
+                                method: method_name.clone(),
+                                other_type: "any type".to_string(),
+                            });
                         }
                     };
 

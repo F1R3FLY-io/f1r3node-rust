@@ -2208,6 +2208,70 @@ async fn signed_limit_exhaustion_is_published_as_a_charged_user_failure() {
     );
 }
 
+/// Added by DR-125 (bug 11008): a call of a method that the method table
+/// lacks is a classified user failure (`MethodNotDefined`). The deploy is
+/// published as failed and charged, every validator holds the same receipt,
+/// and the user's write rolls back. The cases call the method at the top
+/// level and after a COMM.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_unknown_method_is_published_as_a_charged_user_failure() {
+    const WRITTEN: &str = "unknown-method-written";
+    let genesis = offered_v6_genesis(3).await;
+    let mut nodes = TestNode::create_network(genesis.clone(), 3, None, None, None, None)
+        .await
+        .expect("a three-node network starts");
+    let payer = genesis.genesis_vaults[2].clone();
+    let payer_vault = VaultAddress::from_public_key(&payer.1).expect("a payer vault address");
+    let cases = [
+        format!("@\"{WRITTEN}\"!(1) | {{}}.xxx()"),
+        format!("new ack in {{ @\"{WRITTEN}\"!(1) | ack!(0) | for (_ <- ack) {{ {{}}.xxx() }} }}"),
+    ];
+    let mut root = genesis.genesis_block.body.state.post_state_hash.clone();
+    for (index, term) in cases.into_iter().enumerate() {
+        let initial = vault_balance(&nodes, &root, &payer_vault).await;
+        let offer = owner_direct_offer(
+            &payer,
+            i64::try_from(index + 1).expect("a small timestamp"),
+            term,
+        );
+        let (block, id) = offered_block(&mut nodes, 0, offer).await;
+        assert!(
+            block.body.deploys[0].is_failed(),
+            "case {index}: the deploy is published as failed"
+        );
+        let receipt = accepted_everywhere_with_one_receipt(&mut nodes, &block, &id).await;
+        assert!(
+            receipt.rev_spent > 0,
+            "case {index}: the failure is charged"
+        );
+        assert_eq!(
+            receipt.rev_spent,
+            u128::from(receipt.fresh_phlo) * u128::from(receipt.phlo_price) + receipt.fee_rev,
+            "case {index}: the charge is the billable work and the fee"
+        );
+        root = block.body.state.post_state_hash.clone();
+        let balance = vault_balance(&nodes, &root, &payer_vault).await;
+        assert_eq!(
+            u128::from(balance) + receipt.rev_spent,
+            u128::from(initial),
+            "case {index}: the payer pays rev_spent"
+        );
+        let (written, _) = nodes[0]
+            .runtime_manager
+            .play_exploratory_deploy(
+                format!("new return in {{ for (@value <<- @\"{WRITTEN}\") {{ return!(value) }} }}"),
+                &root,
+                None,
+            )
+            .await
+            .expect("the exploratory read runs");
+        assert!(
+            written.is_empty(),
+            "case {index}: the user's write rolls back: {written:?}"
+        );
+    }
+}
+
 /// DR-114: every node accepts `block`, and every node holds the same
 /// settlement receipt for `id`. Returns that receipt.
 async fn accepted_everywhere_with_one_receipt(

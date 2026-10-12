@@ -12748,6 +12748,12 @@ Dev and legacy chains are byte-identical.
 rejected failed offered deploy is final: its owner buffers nothing, and the
 rejection removes an earlier buffer entry with the same identity.
 
+**Amendment (DR-125, 2026-10-12).** The note on bug 11008 above rests on a
+wrong premise. `{}.xxx()` never raised `MethodNotDefined`. The reducer raised
+`ReduceError("Unimplemented method: xxx")`, which is Unclassified. DR-125
+raises `MethodNotDefined`, a user failure, so such a deploy is now a charged
+user failure. The text above stays as the record of that time.
+
 **Cross-refs.** DR-57, DR-64, DR-66, DR-69, DR-101, DR-113, DR-114. E2E-052,
 CA-P-203, TM-CA-193, UC-CA-184. Bugs 10986, 11004 and 11008.
 
@@ -14913,3 +14919,117 @@ verification follows this list.
 **Cross-refs.** DR-64, DR-68, DR-72, DR-101, DR-102, DR-113, DR-122, DR-123.
 Design sections 5.3, 6, 7, 9 and 16 of
 [the linear cost estimate](cost-accounting-impl/linear-cost-estimate.md).
+
+## DR-125 — A call of an unknown method is a classified user failure (bug 11008)
+
+**Status.** Implemented 2026-10-12 for bug 11008 of epic 8946. The user chose
+"Reuse MethodNotDefined (Recommended)", option B of the root-cause plan.
+
+**Context.**
+
+- Bug 11008 reported that native offered execution rejects `{}.xxx()` as a
+  non-user failure. The producer then rejects the offer with "native offered
+  execution has non-user failure" and charges nothing. So the work is free,
+  although a user failure pays its billable work and fee (DR-113).
+- The report named the wrong cause. `{}.xxx()` never raised
+  `MethodNotDefined`. The method table of the reducer has no `xxx`, so the
+  reducer raised `ReduceError("Unimplemented method: xxx")`.
+- Two sites raised it: the call in process position (`eval_expr`) and the
+  call in an operand (`eval_expr_to_expr`).
+- The classifier maps `ReduceError` to Unclassified on purpose, because the
+  variant has many causes. Classification follows the variant, never the
+  message (economic-failure-policy-decisions.md).
+- `MethodNotDefined` was raised only when a known method met a receiver of the
+  wrong type, such as `1.nth(0)`.
+- `1 + "a"` takes another path. It raises `OperatorExpectedError`, a user
+  failure, and is already charged (DR-115).
+- A failing-first probe confirmed the cause at HEAD 88f4176db. The proposer
+  rejected the offer with "native offered execution has non-user failure".
+
+**Decision.**
+
+1. At both sites, the reducer raises the existing user variant
+   `MethodNotDefined { method, other_type: "any type" }`. The old
+   `ReduceError` lines stay as comments.
+2. The reducer does not inspect or copy the receiver to name its type, because
+   that work would be unmetered host work.
+3. `economic_failure.rs`, `errors.rs` and the HTTP mapping do not change.
+   `MethodNotDefined` is already a user failure (`economic_failure.rs:112`).
+   It is already in the same HTTP 422 arm as `ReduceError`
+   (`node/src/rust/web/shared_handlers.rs:409-410`).
+4. The negative control stays: `ReduceError` remains Unclassified
+   (`economic_failure/tests.rs`).
+
+**Consensus notes.**
+
+- Play and replay classify identically. Both run the same reducer, and every
+  check calls the same pure `classify_errors`. Replay compares the class with
+  the committed `failure_class`.
+- Metering and host work do not change. The method-call charge precedes the
+  lookup, and the classifier reserves one operation per error for either
+  variant.
+- The error text is not consensus-visible. The evidence carries only the
+  failure class.
+- Protocol 6 is unreleased and activates with the branch binary (DR-66), so
+  version skew is not a concern.
+- A mixed failure still blocks publication.
+
+**Other user-caused ReduceError sites.** They stay Unclassified, and this
+record does not change them. Examples in `reduce.rs`:
+
+- division by zero and modulo by zero
+- an index out of bounds, and arithmetic overflow
+- a send on a channel that is not writeable
+- `nth` on a value that is not a list or a tuple
+- a method call on an expression that is not singular
+- the two errors of `eval_single_expr`
+
+**Formal models.** No formal file changes. `EconomicFailureSummary.v` models
+the four failure classes. It takes the mapping from error variants to classes
+as given.
+
+**Verification.**
+
+- A failing-first probe tested the root cause before the fix. The probe
+  `an_unknown_method_is_published_as_a_charged_user_failure` in
+  `casper/tests/api/offered_funded_api_test.rs` ran at HEAD 88f4176db.
+  - Hypothesis: the proposer rejects `{}.xxx()` as a non-user failure and
+    charges nothing.
+  - Result: confirmed. The proposer created no block, and it recorded the
+    rejection "native offered execution has non-user failure".
+- After the fix, the probe passes on three validators. It calls the unknown
+  method at the top level and after a COMM.
+  - The proposer publishes each deploy as failed, and every validator holds
+    the same receipt.
+  - The charge is the billable work and the fee. The payer pays exactly that
+    charge, and the write of the deploy rolls back.
+- Rholang tests in `reduce_economic_failure_tests.rs`:
+  - one unit test for each site. Each test asserts the error
+    `MethodNotDefined`, the user class alone and the retained charge.
+  - a property test with a fixed seed. It generates 16 method names, checks
+    that the method table lacks each name, and checks both sites for each
+    name.
+- The negative control in `economic_failure/tests.rs` still passes.
+  `ReduceError` stays Unclassified.
+- Suites:
+  - casper (nextest, release, 8 test threads): 1806 of 1810 tests pass with
+    the provisional caps, and 1804 of 1810 with the committed caps. 14 tests
+    are skipped.
+  - The failures are the known failures: 4 with the provisional caps and 6
+    with the committed caps. Each failure set equals the G1-7 baseline test
+    by test, with the same messages.
+  - The two I6 tests keep their known messages.
+    `replay_should_match_in_case_of_user_execution_error` calls `{}.xxx()`
+    in one branch. It still fails at `interpreter_util_test.rs:2014` with a
+    cost of 236560 against the expected 300000.
+    `compute_state_should_capture_rholang_parsing_errors_and_charge_for_parsing`
+    still fails at `runtime_manager_test.rs:780`.
+  - rholang and rspace++ pass 4228 of 4228 in release, with 13 skipped.
+  - `cargo fmt --check`, the workspace doctests and
+    `cargo clippy --workspace --all-targets -- -D warnings` pass on the
+    commit tree.
+
+**Cross-refs.** DR-66, DR-113, DR-114, DR-115. Bug 11008.
+[The economic failure observation](cost-accounting-impl/economic-failure-observation.md)
+and
+[the economic failure policy decisions](cost-accounting-impl/economic-failure-policy-decisions.md).
