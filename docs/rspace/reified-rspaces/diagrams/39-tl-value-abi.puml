@@ -1,0 +1,91 @@
+' ============================================================================
+' 39 The tensor value ABI: four Rholang forms and the TL tensors they encode.
+'
+' Source of Figure TL19 in ../tensor-logic/syntax.md (section 3.3). The
+' figure restates the forms V0 to V3 of that section with one example each.
+' It adds no new fact.
+'
+' Reading order:
+'   1. Each row maps one Rholang value (left) to one TL tensor (right).
+'   2. V0 is a number, V1 a rectangular nested list, V2 a relation as a set
+'      of tuples of atoms, and V3 a map keyed by atoms.
+'   3. The notes give the two rules that keep the encoding unambiguous.
+'
+' Colors come from concept-colors.iuml (aliases of the shared palette).
+' Render: ./render.sh 39-tl-value-abi.puml   Check: ./render.sh --check
+
+@startuml 39-tl-value-abi
+!include ../../../casper/theory/diagrams/palette.iuml
+!include concept-colors.iuml
+$ca_base_skin()
+skinparam ArrowColor $rrs_relation
+skinparam ArrowThickness 1.3
+skinparam RectangleBorderColor $rrs_relation
+skinparam NoteBorderColor $rrs_relation
+skinparam LegendBorderColor $rrs_relation
+skinparam LegendBackgroundColor $ca_note_grey
+skinparam nodesep 30
+skinparam ranksep 60
+left to right direction
+title The tensor value ABI (forms V0 to V3)
+
+rectangle R3 $rrs_storage [
+**V3. Keyed**
+an EMap from an atom or a tuple of atoms to V0 or V1
+{"Alice": [0.1, 0.9]}
+]
+rectangle T3 $rrs_tl_engine [
+**Mixed dimensions** Sym × Pos(2)
+E["Alice", 0] is the double nearest to 0.1,
+as an exact dyadic number (floats enter exactly)
+]
+
+rectangle R2 $rrs_storage [
+**V2. Relation**
+an ESet or an EList of ETuples of atoms
+Set(("Alice", "Bob"), ("Bob", "Charlie"))
+]
+rectangle T2 $rrs_tl_engine [
+**A Boolean tensor** over Sym × Sym
+R("Alice", "Bob") = 1, R("Bob", "Charlie") = 1,
+every other pair 0
+]
+
+rectangle R1 $rrs_storage [
+**V1. Dense**
+a rectangular nested EList
+[[1, 2], [3, 4]]
+]
+rectangle T1 $rrs_tl_engine [
+**Positional dimensions** Pos(2) × Pos(2)
+T[0, 1] = 2, T[1, 0] = 3
+]
+
+rectangle R0 $rrs_storage [
+**V0. Number**
+a number of any kind of decision 54,
+for example the GInt 42
+]
+rectangle T0 $rrs_tl_engine [
+**A tensor of rank 0**
+the value 42
+]
+
+R0 -[$rrs_flow]-> T0
+R1 -[$rrs_flow]-> T1
+R2 -[$rrs_flow]-> T2
+R3 -[$rrs_flow]-> T3
+
+note as RULES
+  **Two rules keep the encoding unambiguous**
+  A tuple is never a dense element: dense elements are numbers or lists.
+  A name in tensors must be a TL identifier and must not shadow a reserved name
+  (ReservedName).
+end note
+
+legend bottom
+**Concept colors**
+|<$rrs_storage>   | a Rholang value, as it travels in a param or a datum |
+|<$rrs_tl_engine> | the tensor that the TL engine decodes |
+endlegend
+@enduml

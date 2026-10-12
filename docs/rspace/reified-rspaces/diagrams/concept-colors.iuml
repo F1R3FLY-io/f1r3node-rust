@@ -73,3 +73,17 @@
 ' The checker of a theory (P7 step 4): compiled-in code of the build that
 ' decides values, as a system process is, so it shares the system color.
 !$rrs_checker = $rrs_system
+
+' TensorLogic (the P12 design in ../tensor-logic/): the TL engine decodes,
+' normalizes, checks and evaluates TL terms. It is compiled-in code that
+' decides values, as the checker of a theory is, so it shares its color.
+!$rrs_tl_engine = $rrs_checker
+
+' TensorLogic terms: the FLT terms, the GSLT and its grammar, and the
+' reflected terms. They are syntax, so they share the syntax color.
+!$rrs_tl_term = $rrs_syntax
+
+' F1r3lang and the host-work meter: code of other owners that the TL design
+' calls and never changes, so they share the host color.
+!$rrs_f1r3lang = $rrs_host
+!$rrs_meter = $rrs_host

@@ -1,0 +1,84 @@
+' ============================================================================
+' 49 A TL-0 score query in native play and in native replay.
+'
+' Source of Figure TL15 in ../tensor-logic/integration.md (section 2). The
+' figure restates the query flow of section 2.2 of that document and the
+' determinism argument of section 8. It adds no new fact.
+'
+' Reading order:
+'   1. The deploy sends a receive whose query group holds a tl:Score term.
+'   2. The VectorDB agent parses the query, and the TL engine decodes,
+'      normalizes and checks the term once.
+'   3. For each record in canonical order, the engine evaluates the score.
+'      A record whose score is undefined is not eligible.
+'   4. The agent orders the eligible records by the score and the tie key,
+'      then fires or parks, as for a built-in metric.
+'   5. Native replay repeats the same steps with the same reservations and
+'      reaches the same COMM.
+'
+' Colors come from concept-colors.iuml (aliases of the shared palette).
+' Render: ./render.sh 49-tl-score-query.puml   Check: ./render.sh --check
+
+@startuml 49-tl-score-query
+!include ../../../casper/theory/diagrams/palette.iuml
+!include concept-colors.iuml
+$ca_base_skin()
+skinparam sequence {
+  ArrowColor $rrs_relation
+  LifeLineBorderColor $rrs_relation
+  ParticipantBorderColor $rrs_relation
+  ActorBorderColor $rrs_relation
+  GroupBorderColor $rrs_relation
+  DividerBorderColor $rrs_relation
+  DividerBackgroundColor $ca_note_grey
+}
+skinparam NoteBorderColor $rrs_relation
+skinparam LegendBorderColor $rrs_relation
+skinparam LegendBackgroundColor $ca_note_grey
+title A TL-0 score query (integration 2)
+autonumber
+
+participant "Deploy" as DEPLOY $rrs_host
+participant "VectorDB agent" as AGENT $rrs_agent
+participant "TL engine" as ENGINE $rrs_tl_engine
+participant "Host-work meter\nof the deploy" as METER $rrs_meter
+database "RSpace\n(the collection)" as RSPACE $rrs_storage
+
+== Native play on the proposer ==
+DEPLOY -> AGENT : for (@r <- @"docs" ~ (q; score = tl:Score{...},\n  tensors = {"W": w}, k = 2)) { ... }
+AGENT -> AGENT : parse_query: score, tensors, precision\n(ConflictingParams, RadiusNeedsDistance, QueryNeedsVector)
+AGENT -> ENGINE : decode, normalize and check the score\nunder Emb : [Sym, D], q : [D] and the shapes of tensors
+ENGINE -> METER : reserve each phase before it runs
+ENGINE --> AGENT : the checked NF: record-local, no recursion
+loop each record r of the collection, in canonical order
+  AGENT -> RSPACE : read r (reserved first)
+  AGENT -> ENGINE : <latex>s(r) = [\![\mathit{score}]\!]_{x \mapsto r}</latex>
+  ENGINE -> METER : reserve each step (decision 40)
+  ENGINE --> AGENT : s(r), or ⊥: then r is not eligible
+end
+AGENT -> AGENT : <latex>E = \{ r : s(r) \ne \bot,\ s(r) \ge \tau,\ \mathrm{id}(r) \in \mathit{ids} \}</latex>\nordered by s (highest first), then by the tie key κ
+alt a record, or a list, that the pattern binds
+  AGENT -> RSPACE : COMM over [D] or [D; m]
+else none
+  AGENT -> RSPACE : park the waiter, with the query\n(and the reflected score term) in its policy slot
+end
+
+== Native replay on a validator ==
+DEPLOY -> AGENT : the same receive, from the same block
+AGENT -> ENGINE : the same decode, normalization and check
+ENGINE -> METER : the same reservations, in the same order
+AGENT -> RSPACE : the same COMM, paired with the trace
+note over AGENT, METER
+  TL evaluation is a pure function of the term, the params,
+  the records and the precision, so play and replay reserve
+  the same host work and reach the same state.
+end note
+
+legend bottom
+**Concept colors**
+|<$rrs_host>      | the deploy and the meter: code that the design calls |
+|<$rrs_agent>     | the VectorDB agent |
+|<$rrs_tl_engine> | the TL engine |
+|<$rrs_storage>   | consensus state in RSpace |
+endlegend
+@enduml

@@ -1,0 +1,74 @@
+' ============================================================================
+' 44 The Ziv loop of a correctly rounded function.
+'
+' Source of Figure TL9 in ../tensor-logic/dynamic-semantics.md (section 3.3).
+' The figure restates CR of that section (Ziv 1991). It adds no new fact.
+'
+' Reading order:
+'   1. The exact cases return their rounding at once, with no loop.
+'   2. Each round reserves its work, then encloses f(x) in a rigorous dyadic
+'      interval at the working width w.
+'   3. If both ends round to one p-bit value, that value is RN_p(f(x)).
+'   4. Otherwise the width doubles, up to the cap 4p + 128. An input that the
+'      cap cannot decide fails with PrecisionExhausted.
+'
+' Colors come from concept-colors.iuml (aliases of the shared palette).
+' Render: ./render.sh 44-tl-ziv-loop.puml   Check: ./render.sh --check
+
+@startuml 44-tl-ziv-loop
+!include ../../../casper/theory/diagrams/palette.iuml
+!include concept-colors.iuml
+$ca_base_skin()
+skinparam ArrowColor $rrs_relation
+skinparam ActivityBorderColor $rrs_relation
+skinparam ActivityDiamondBorderColor $rrs_relation
+skinparam ActivityDiamondBackgroundColor $ca_note_amber
+skinparam PartitionBorderColor $rrs_relation
+skinparam NoteBorderColor $rrs_relation
+skinparam LegendBorderColor $rrs_relation
+skinparam LegendBackgroundColor $ca_note_grey
+title The Ziv loop: CR(f, x, p, meter)
+
+start
+:a CR function f, an exact input x,
+and the precision p in [8, 256]; <<$rrs_tl_term>>
+if (an exact case? for example <latex>e^{0} = 1</latex> or <latex>\sigma(0) = 1/2</latex>) then (yes)
+  :return <latex>\mathrm{RN}_p(\mathrm{exact}(f, x))</latex>; <<$rrs_effect>>
+  stop
+else (no)
+endif
+:<latex>w \leftarrow p + 32</latex> (32 guard bits); <<$rrs_tl_engine>>
+repeat
+  :reserve STEP-COST(f, x, w) on the meter
+  (decision 40: reserve before the work); <<$rrs_meter>>
+  if (the reservation fits the budget?) then (no)
+    :HostWorkRejected; <<$rrs_reject>>
+    stop
+  else (yes)
+  endif
+  :enclose: <latex>[lo, hi] \ni f(x)</latex>, a rigorous dyadic
+  interval at the working width w; <<$rrs_tl_engine>>
+  if (<latex>\mathrm{RN}_p(lo) = \mathrm{RN}_p(hi)</latex>?) then (yes)
+    :return <latex>\mathrm{RN}_p(lo) = \mathrm{RN}_p(f(x))</latex>
+    (the rounding is monotone); <<$rrs_effect>>
+    stop
+  else (no)
+  endif
+  if (<latex>w = 4p + 128</latex>?) then (yes)
+    :PrecisionExhausted; <<$rrs_reject>>
+    stop
+  else (no)
+  endif
+  :<latex>w \leftarrow \min(2w, 4p + 128)</latex>
+  (for p = 64: 96, 192, 384); <<$rrs_tl_engine>>
+repeat while (next round)
+
+legend bottom
+**Concept colors**
+|<$rrs_tl_term>   | the input |
+|<$rrs_tl_engine> | a step of the loop |
+|<$rrs_meter>     | a reservation on the host-work meter |
+|<$rrs_effect>    | the correctly rounded result |
+|<$rrs_reject>    | a typed failure |
+endlegend
+@enduml

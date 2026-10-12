@@ -1,0 +1,60 @@
+' ============================================================================
+' 45 The semi-naive iteration of a Boolean monotone component (class R2).
+'
+' Source of Figure TL11 in ../tensor-logic/dynamic-semantics.md (section 5.5).
+' The figure restates SEMI-NAIVE of that section (Bancilhon and Ramakrishnan
+' 1986). It adds no new fact.
+'
+' Reading order:
+'   1. R and the delta start with the facts and the non-recursive rules.
+'   2. Each round evaluates the rules with at least one atom from the delta,
+'      in canonical order, and reserves the work of each join first.
+'   3. The new delta is the derived tuples that are not in R, and R grows.
+'   4. An empty delta ends the loop: R is the least fixpoint.
+'
+' Colors come from concept-colors.iuml (aliases of the shared palette).
+' Render: ./render.sh 45-tl-semi-naive.puml   Check: ./render.sh --check
+
+@startuml 45-tl-semi-naive
+!include ../../../casper/theory/diagrams/palette.iuml
+!include concept-colors.iuml
+$ca_base_skin()
+skinparam ArrowColor $rrs_relation
+skinparam ActivityBorderColor $rrs_relation
+skinparam ActivityDiamondBorderColor $rrs_relation
+skinparam ActivityDiamondBackgroundColor $ca_note_amber
+skinparam PartitionBorderColor $rrs_relation
+skinparam NoteBorderColor $rrs_relation
+skinparam LegendBorderColor $rrs_relation
+skinparam LegendBackgroundColor $ca_note_grey
+title The semi-naive iteration: SEMI-NAIVE(C)
+
+start
+:a component C of class R2, in one stratum; <<$rrs_tl_term>>
+:<latex>R \leftarrow \Delta \leftarrow</latex> the facts and the
+non-recursive rules of C; <<$rrs_tl_engine>>
+while (<latex>\Delta \neq \emptyset</latex>?) is (yes)
+  :reserve the work of each join
+  before it runs; <<$rrs_meter>>
+  :<latex>N \leftarrow</latex> the rules of C, evaluated with
+  at least one atom from <latex>\Delta</latex>, in canonical order; <<$rrs_tl_engine>>
+  :<latex>\Delta \leftarrow N \setminus R</latex>
+  <latex>R \leftarrow R \cup \Delta</latex>; <<$rrs_tl_engine>>
+endwhile (no)
+:R is the least fixpoint of C
+(Knaster and Tarski); <<$rrs_effect>>
+note right
+  A round never derives a fact from old facts
+  only, so the number of rounds is at most the
+  number of possible derived tuples.
+end note
+stop
+
+legend bottom
+**Concept colors**
+|<$rrs_tl_term>   | the component |
+|<$rrs_tl_engine> | a step of the iteration |
+|<$rrs_meter>     | a reservation on the host-work meter |
+|<$rrs_effect>    | the result |
+endlegend
+@enduml

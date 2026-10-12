@@ -1,0 +1,49 @@
+' ============================================================================
+' 37 The grammar of TensorLogic, part 1: entry points, statements and the
+'    functional layer, as railroad diagrams.
+'
+' Source of Figure TL3 in ../tensor-logic/syntax.md (section 2.1). The rules
+' restate the EBNF of that section one to one. They add no new fact.
+'
+' Reading order:
+'   1. Program, Score and Check are the entry points: the FLT categories
+'      tl:Program, tl:Score and tl:Check.
+'   2. A statement is an equation, a rule, a fact, a query, a declaration,
+'      or a new, let or brace block.
+'   3. Def, Params, Lambda and Body are the functional layer of let.
+'
+' Colors come from concept-colors.iuml (aliases of the shared palette).
+' Render: ./render.sh 37-tl-grammar-statements.puml   Check: ./render.sh --check
+
+@startebnf 37-tl-grammar-statements
+!include ../../../casper/theory/diagrams/palette.iuml
+!include concept-colors.iuml
+<style>
+element {
+  ebnf {
+    LineColor $rrs_relation
+    FontColor $ca_neutral
+    BackGroundColor $rrs_tl_term
+  }
+}
+</style>
+title TensorLogic grammar, part 1: entry points, statements and let
+Program = Stmt, {"|", Stmt};
+Score = Expr | "let", Def, "in", "{", Score, "}";
+Check = Expr | "let", Def, "in", "{", Check, "}" | Ident, ":", Shape, "in", "{", Check, "}";
+Stmt = Equation | Rule | Fact | Query | Decl | "new", Ident, {",", Ident}, "in", "{", Program, "}" | "let", Def, "in", "{", Program, "}" | "{", Program, "}";
+Equation = Lhs, ProjOp, (Expr | ElemList);
+ProjOp = "=" | "+=" | "max=" | "min=" | "avg=" | "maj=";
+Lhs = Ident | Ident, "[", [LhsIx, {",", LhsIx}], "]" | Ident, "(", [LhsIx, {",", LhsIx}], ")";
+LhsIx = Ix, ["."];
+Rule = Lhs, "<-", Expr, {",", Expr};
+Fact = Lhs;
+Query = Lhs, "?";
+Decl = Ident, ":", Shape;
+Shape = ["bool"], "[", [Dim, {",", Dim}], "]";
+Dim = Ix | "sym";
+Def = Ident, "(", [Params], ")", "=", Body | Ident, "=", Lambda | Ident, OpSym, Ident, "=", Body | Ident, "=", Expr;
+Params = Ident, {",", Ident};
+Lambda = Ident, "=>", Body | "(", [Params], ")", "=>", Body;
+Body = Expr | "{", Expr, "}";
+@endebnf

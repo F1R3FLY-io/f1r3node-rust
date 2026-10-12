@@ -1,0 +1,84 @@
+' ============================================================================
+' 52 TL admission theories: the three points of the theory seam.
+'
+' Source of Figure TL18 in ../tensor-logic/integration.md (section 6). The
+' figure restates that section, tensor-logic/gslt.md section 10, decision 74
+' and the theory seam (theory-seam.md, sections 7 to 9). It adds no new fact.
+'
+' Reading order:
+'   1. At creation, the factory resolves the identity of the TensorCheck
+'      theory and stores it as compact bytes in the config of the space.
+'   2. At a send, each value is checked before any staging, and a verdict
+'      other than Proven aborts the deploy.
+'   3. At a match, each stored datum is checked again in the COMM, and a
+'      verdict other than Proven makes it ineligible.
+'   4. Every check reserves its work before it reads the value.
+'
+' Colors come from concept-colors.iuml (aliases of the shared palette).
+' Render: ./render.sh 52-tl-admission.puml   Check: ./render.sh --check
+
+@startuml 52-tl-admission
+!include ../../../casper/theory/diagrams/palette.iuml
+!include concept-colors.iuml
+$ca_base_skin()
+skinparam sequence {
+  ArrowColor $rrs_relation
+  LifeLineBorderColor $rrs_relation
+  ParticipantBorderColor $rrs_relation
+  ActorBorderColor $rrs_relation
+  GroupBorderColor $rrs_relation
+  DividerBorderColor $rrs_relation
+  DividerBackgroundColor $ca_note_grey
+}
+skinparam NoteBorderColor $rrs_relation
+skinparam LegendBorderColor $rrs_relation
+skinparam LegendBackgroundColor $ca_note_grey
+title TL admission theories (integration 6)
+autonumber
+
+participant "Deploy" as DEPLOY $rrs_host
+participant "Factory and\nspace agent" as AGENT $rrs_agent
+participant "Theory seam" as SEAM $rrs_checker
+participant "TL engine" as ENGINE $rrs_tl_engine
+database "RSpace" as RSPACE $rrs_storage
+
+== At creation ==
+DEPLOY -> AGENT : Factory!?(free TensorCheck(tl,\n  tl:Check{ v : [D] in { min[d](v[d] >= 0) } }, 64))
+AGENT -> SEAM : resolve the identity of the theory
+SEAM -> ENGINE : normalize the check term, and hash its NF
+ENGINE --> SEAM : <latex>h = \mathrm{Blake2b256}(\mathrm{bytes}(\mathrm{NF}))</latex>
+SEAM --> AGENT : the identity, with theoremId "tl:check:" || hex(h)
+AGENT -> RSPACE : the config C(sid) with the compact identity bytes,\nand the content record <latex>\mathtt{E0} \Vert \mathtt{T} \Vert h</latex> (open question K8)
+
+== At a send ==
+DEPLOY -> AGENT : space!(v)
+AGENT -> RSPACE : read the identity from the config
+AGENT -> ENGINE : check v, after the reservation of the work
+alt ok = 1
+  ENGINE --> AGENT : Proven
+  AGENT -> RSPACE : stage and commit the send
+else ok = 0, a value that does not decode, a limit or PrecisionExhausted
+  ENGINE --> AGENT : Refuted or Undetermined
+  AGENT -[$rrs_fail]-> DEPLOY : abort before any staging (fail closed)
+end
+
+== At a match ==
+AGENT -> ENGINE : check each stored datum again, in the COMM
+alt Proven
+  AGENT -> RSPACE : the datum stays eligible
+else Refuted or Undetermined
+  AGENT -> AGENT : the datum is ineligible, as after a guard rejection
+end
+note over SEAM, ENGINE
+  A check is a pure function of the identity, the value and the budget,
+  so play, replay and a later attach give the same verdicts.
+end note
+
+legend bottom
+**Concept colors**
+|<$rrs_host>      | the deploy |
+|<$rrs_agent>     | the factory and the space agent |
+|<$rrs_checker>   | the theory seam and the TL engine |
+|<$rrs_storage>   | consensus state in RSpace |
+endlegend
+@enduml

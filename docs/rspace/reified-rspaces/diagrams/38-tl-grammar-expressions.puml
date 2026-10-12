@@ -1,0 +1,56 @@
+' ============================================================================
+' 38 The grammar of TensorLogic, part 2: expressions and index expressions,
+'    as railroad diagrams.
+'
+' Source of Figure TL4 in ../tensor-logic/syntax.md (section 2.1). The rules
+' restate the EBNF of that section one to one. They add no new fact.
+'
+' Reading order:
+'   1. The expression rules go from the loosest level (or) to the tightest
+'      (Post and Atom), as the precedence table of syntax 2.2 lists them.
+'   2. In Term, a bare Power after a Term is the join by juxtaposition.
+'   3. Sub is an index or a numpy slice. The index expressions Ix are affine
+'      terms with constant multipliers, divisors and moduli, and a leading
+'      star marks a virtual index.
+'   4. FnKw, AggKw and NormKw list the reserved built-in names.
+'
+' Colors come from concept-colors.iuml (aliases of the shared palette).
+' Render: ./render.sh 38-tl-grammar-expressions.puml   Check: ./render.sh --check
+
+@startebnf 38-tl-grammar-expressions
+!include ../../../casper/theory/diagrams/palette.iuml
+!include concept-colors.iuml
+<style>
+element {
+  ebnf {
+    LineColor $rrs_relation
+    FontColor $ca_neutral
+    BackGroundColor $rrs_tl_term
+  }
+}
+</style>
+title TensorLogic grammar, part 2: expressions and index expressions
+Expr = Conj, {"or", Conj};
+Conj = Neg, {"and", Neg};
+Neg = "not", Neg | Cmp;
+Cmp = UOp, [CmpOp, UOp];
+CmpOp = "==" | "!=" | "<" | "<=" | ">" | ">=";
+UOp = Add, {OpSym, Add};
+Add = Term, {("+" | "-"), Term};
+Term = Unary, {("*" | "/" | "%" | "@"), Unary | Power};
+Unary = ("-" | "+"), Unary | Power;
+Power = Post, ["**", Unary];
+Post = Atom, {"[", [Sub, {",", Sub}], "]" | ".", "T"};
+Atom = Ident | Numeral | String | "(", Expr, ")" | Ident, "(", [Arg, {",", Arg}], ")" | FnKw, "(", [Arg, {",", Arg}], ")" | AggKw, "[", Ident, {",", Ident}, "]", "(", Expr, ")" | NormKw, "[", Ident, "]", "(", Expr, [",", Expr], ")";
+Arg = Expr | ElemList | Ident, "=", (Expr | ElemList);
+Sub = Ix | [Ix], ":", [Ix], [":", [Ix]];
+ElemList = "[", [Elem, {",", Elem}], "]";
+Elem = Expr | ElemList;
+AggKw = "sum" | "max" | "min" | "avg" | "maj";
+NormKw = "softmax" | "lnorm";
+FnKw = "step" | "relu" | "abs" | "sign" | "min" | "max" | "clamp" | "hardsig" | "exp" | "log" | "sqrt" | "rsqrt" | "tanh" | "sin" | "cos" | "sig" | "sigmoid" | "softmax" | "lnorm" | "concat" | "sum" | "transpose" | "einsum";
+Ix = IxTerm, {("+" | "-"), IxTerm};
+IxTerm = IxUnary, {("*" | "/" | "%"), IxUnary};
+IxUnary = "-", IxUnary | IxAtom;
+IxAtom = ["*"], Ident | Numeral | String | "(", Ix, ")";
+@endebnf

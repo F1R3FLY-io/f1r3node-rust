@@ -1,0 +1,106 @@
+' ============================================================================
+' 41 The scope rule on the Gaussian kernel of the paper.
+'
+' Source of Figure TL6 in ../tensor-logic/static-semantics.md (section 3).
+' The figure applies the rule of section 3.2 of that document to
+' K[q, i] = exp(-(Xq[q, j] - Xs[i, j]) ** 2 / Var) (Domingos 2025, p. 11).
+' It adds no new fact.
+'
+' Reading order:
+'   1. The tree is the parse of the right side, from the call of exp at the
+'      root down to the two accesses that hold the index j.
+'   2. Candidate nodes (products and call arguments) have the color of the
+'      TL engine. The base of ** is not a candidate.
+'   3. scope(j) is the deepest candidate that holds both occurrences of j:
+'      the product node. The sum over j sits there, outside the square.
+'   4. The spine extends from exp(...) to the product and stops there, because
+'      the product has two factors that are not constant. scope(j) is on the
+'      spine, so the operator of the equation (sum) aggregates j there.
+'
+' Colors come from concept-colors.iuml (aliases of the shared palette).
+' Render: ./render.sh 41-tl-scope-rule.puml   Check: ./render.sh --check
+
+@startuml 41-tl-scope-rule
+!include ../../../casper/theory/diagrams/palette.iuml
+!include concept-colors.iuml
+$ca_base_skin()
+skinparam ArrowColor $rrs_relation
+skinparam ArrowThickness 1.2
+skinparam RectangleBorderColor $rrs_relation
+skinparam NoteBorderColor $rrs_relation
+skinparam LegendBorderColor $rrs_relation
+skinparam LegendBackgroundColor $ca_note_grey
+skinparam ranksep 35
+skinparam rectangle<<scope>> {
+  BorderColor $rrs_effect
+  BorderThickness 3
+}
+hide stereotype
+title The scope rule on K[q, i] = exp(-(Xq[q, j] - Xs[i, j]) ** 2 / Var)
+
+rectangle ROOT $rrs_tl_engine [
+**exp(…)**, the root of the right side
+a candidate: the root counts
+as a call argument
+]
+rectangle PROD <<scope>> $rrs_tl_engine [
+**the argument of exp**: the product
+(-(…) ** 2) · recip(Var)
+a candidate, and **scope(j)**:
+the sum over j sits here
+<latex>\exp\big(-\sum_{j} (Xq_{qj} - Xs_{ij})^{2} / \mathit{Var}\big)</latex>
+]
+rectangle NEG $rrs_tl_term [
+**unary minus**
+not a candidate
+]
+rectangle POW $rrs_tl_term [
+<b>the power</b> (…) ~*~* 2
+a constant exponent, and
+its base is not a candidate
+]
+rectangle DIFF $rrs_tl_term [
+**the base**: Xq[q, j] - Xs[i, j]
+not a candidate
+]
+rectangle XQ $rrs_storage [
+**Xq[q, j]**
+an occurrence of j
+]
+rectangle XS $rrs_storage [
+**Xs[i, j]**
+an occurrence of j
+]
+rectangle RECIP $rrs_tl_engine [
+**the argument of recip**
+a candidate (the reciprocal of /)
+]
+rectangle VAR $rrs_storage [
+**Var**
+]
+
+ROOT --> PROD
+PROD --> NEG
+PROD --> RECIP
+NEG --> POW
+POW --> DIFF
+DIFF --> XQ
+DIFF --> XS
+RECIP --> VAR
+
+note right of PROD
+  The spine extends from exp(…) to this product
+  and stops here: the product has two factors
+  that are not constant. scope(j) is on the
+  spine, so the operator of the equation,
+  sum, aggregates j here.
+end note
+
+legend bottom
+**Concept colors**
+|<$rrs_tl_engine> | a candidate node of the scope rule |
+|<$rrs_effect>    | the bold border of scope(j): the deepest candidate that holds every occurrence of j |
+|<$rrs_tl_term>   | a node that is not a candidate |
+|<$rrs_storage>   | an access to an input tensor |
+endlegend
+@enduml

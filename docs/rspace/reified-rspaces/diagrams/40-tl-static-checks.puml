@@ -1,0 +1,109 @@
+' ============================================================================
+' 40 The static checks of TensorLogic, in the order of the pipeline.
+'
+' Source of Figure TL5 in ../tensor-logic/static-semantics.md. The figure
+' restates sections 2 to 11 of that document and the phases of
+' tensor-logic/gslt.md section 5.1. It adds no new fact.
+'
+' Reading order:
+'   1. RESOLVE checks the names and the signatures of the calls.
+'   2. ELABORATE checks the broadcasting and the matrix products of the
+'      positional sugar while it rewrites them into the core.
+'   3. SCOPE places every implicit projection by the scope rule.
+'   4. CHECK works on the normal form: shapes and kinds, constant arguments,
+'      safety, accumulation, recursion classes, record-locality of scores,
+'      the demand bound and the static limits.
+'   5. Each check fails closed with a typed code (the red exits).
+'
+' Colors come from concept-colors.iuml (aliases of the shared palette).
+' Render: ./render.sh 40-tl-static-checks.puml   Check: ./render.sh --check
+
+@startuml 40-tl-static-checks
+!include ../../../casper/theory/diagrams/palette.iuml
+!include concept-colors.iuml
+$ca_base_skin()
+skinparam ArrowColor $rrs_relation
+skinparam ActivityBorderColor $rrs_relation
+skinparam ActivityDiamondBorderColor $rrs_relation
+skinparam ActivityDiamondBackgroundColor $ca_note_amber
+skinparam PartitionBorderColor $rrs_relation
+skinparam NoteBorderColor $rrs_relation
+skinparam LegendBorderColor $rrs_relation
+skinparam LegendBackgroundColor $ca_note_grey
+title The static checks of TensorLogic
+
+start
+:the decoded term and the signature
+of the inputs (names, kinds, shapes); <<$rrs_tl_term>>
+partition "RESOLVE" {
+  if (every name resolves, and every call\nmatches its signature?) then (no)
+    :UnknownTensor, UnknownFunction,
+    AmbiguousName or ArityMismatch; <<$rrs_reject>>
+    stop
+  else (yes)
+  endif
+}
+partition "ELABORATE" {
+  if (the positional operators broadcast,\nand every @ has matching inner sizes?) then (no)
+    :BroadcastMismatch, MatmulMismatch,
+    RankUnknown or AxisOutOfRange; <<$rrs_reject>>
+    stop
+  else (yes)
+  endif
+}
+partition "SCOPE" {
+  :place every implicit projection
+  at the deepest candidate that holds
+  every occurrence of its index (the scope rule); <<$rrs_tl_engine>>
+}
+partition "CHECK (on the normal form)" {
+  if (shapes and kinds unify, and every\nindex has a finite domain?) then (no)
+    :ShapeMismatch, IndexUnbounded
+    or LhsNegative; <<$rrs_reject>>
+    stop
+  else (yes)
+  endif
+  if (temperatures, axes, slice bounds\nand permutations are constant?) then (no)
+    :NotConstant or TemperatureNegative; <<$rrs_reject>>
+    stop
+  else (yes)
+  endif
+  if (rules are safe, and facts are ground?) then (no)
+    :UnsafeVariable or NonGroundFact; <<$rrs_reject>>
+    stop
+  else (yes)
+  endif
+  if (the statements of each tensor agree\non kind, rank and operator?) then (no)
+    :AccumulationMismatch, InputRedefined
+    or PrivateQuery; <<$rrs_reject>>
+    stop
+  else (yes)
+  endif
+  if (each component is R0, R1 or R2,\nand negation is stratified?) then (no)
+    :UnguardedRecursion, NotStratified,
+    VirtualIndexMisuse or ScoreRecursive; <<$rrs_reject>>
+    stop
+  else (yes)
+  endif
+  if (a score is record-local?) then (no)
+    :ScoreNotRecordLocal; <<$rrs_reject>>
+    stop
+  else (yes, or not a score)
+  endif
+  :compute the demand bound B; <<$rrs_tl_engine>>
+  if (the term and its tensors stay\nwithin the static limits?) then (no)
+    :TensorTooLarge or PrecisionOutOfRange; <<$rrs_reject>>
+    stop
+  else (yes)
+  endif
+}
+:evaluation (dynamic semantics 5); <<$rrs_tl_engine>>
+stop
+
+legend bottom
+**Concept colors**
+|<$rrs_tl_term>   | the TL term |
+|<$rrs_tl_engine> | a step of the TL engine |
+|<$rrs_reject>    | a typed failure: the check fails closed |
+endlegend
+@enduml

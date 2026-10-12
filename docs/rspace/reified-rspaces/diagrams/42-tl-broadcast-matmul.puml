@@ -1,0 +1,88 @@
+' ============================================================================
+' 42 The elaboration of the positional operators: broadcasting and @.
+'
+' Source of Figure TL7 in ../tensor-logic/static-semantics.md (section 4).
+' The figure restates the broadcasting rules of numpy and the cases of
+' numpy.matmul that sections 4.1 and 4.2 of that document state. It adds no
+' new fact.
+'
+' Reading order:
+'   1. An elementwise operator aligns the two shapes from the right, pads the
+'      shorter one with ones, and compares each axis.
+'   2. The matrix product @ first handles the one-dimensional cases, then
+'      multiplies the last two axes and broadcasts the leading axes.
+'   3. Both branches give an index-form term with a fresh index for each
+'      result axis, or exit with a typed code that names the shapes.
+'
+' Colors come from concept-colors.iuml (aliases of the shared palette).
+' Render: ./render.sh 42-tl-broadcast-matmul.puml   Check: ./render.sh --check
+
+@startuml 42-tl-broadcast-matmul
+!include ../../../casper/theory/diagrams/palette.iuml
+!include concept-colors.iuml
+$ca_base_skin()
+skinparam ArrowColor $rrs_relation
+skinparam ActivityBorderColor $rrs_relation
+skinparam ActivityDiamondBorderColor $rrs_relation
+skinparam ActivityDiamondBackgroundColor $ca_note_amber
+skinparam PartitionBorderColor $rrs_relation
+skinparam NoteBorderColor $rrs_relation
+skinparam LegendBorderColor $rrs_relation
+skinparam LegendBackgroundColor $ca_note_grey
+title The elaboration of the positional operators (numpy rules)
+
+start
+:a positional operator with operand
+shapes a and b (ranks from the signature); <<$rrs_tl_term>>
+if (the operator is @?) then (no: an elementwise operator)
+  partition "Broadcasting (static semantics 4.1)" {
+    :align the shapes from the right, and pad
+    the shorter shape on the left with ones; <<$rrs_tl_engine>>
+    while (an axis k is left?) is (yes)
+      if (<latex>a_k = b_k</latex>, or <latex>a_k = 1</latex>, or <latex>b_k = 1</latex>?) then (yes)
+        :the result size is <latex>\max(a_k, b_k)</latex>,
+        and a size 0 against 1 gives 0; <<$rrs_tl_engine>>
+      else (no)
+        :BroadcastMismatch, naming both
+        shapes and the negative axis; <<$rrs_reject>>
+        stop
+      endif
+    endwhile (no)
+    :a fresh index for each result axis
+    an operand axis of size 1 reads its only element; <<$rrs_tl_engine>>
+  }
+else (yes)
+  partition "Matrix product (static semantics 4.2)" {
+    if (an operand is a scalar?) then (yes)
+      :MatmulMismatch; <<$rrs_reject>>
+      stop
+    else (no)
+    endif
+    if (both operands are 1-D?) then (yes)
+      :the inner product <latex>\sum_{j} A[j]\, B[j]</latex>; <<$rrs_tl_engine>>
+    else (no)
+      :a 1-D first operand gets a leading axis of size 1,
+      which the result drops again
+      a 1-D second operand gets a trailing axis of size 1; <<$rrs_tl_engine>>
+      if (the inner sizes of the last two axes match?) then (yes)
+        :the last two axes multiply:
+        <latex>C[\ldots, i, l] = \sum_{j} A[\ldots, i, j]\, B[\ldots, j, l]</latex>
+        the leading axes broadcast as above; <<$rrs_tl_engine>>
+      else (no)
+        :MatmulMismatch, naming the inner sizes; <<$rrs_reject>>
+        stop
+      endif
+    endif
+  }
+endif
+:an index-form term of the core,
+with an explicit sum over the inner axis; <<$rrs_tl_term>>
+stop
+
+legend bottom
+**Concept colors**
+|<$rrs_tl_term>   | a TL term: the sugar in, the core out |
+|<$rrs_tl_engine> | a step of ELABORATE |
+|<$rrs_reject>    | a typed failure |
+endlegend
+@enduml

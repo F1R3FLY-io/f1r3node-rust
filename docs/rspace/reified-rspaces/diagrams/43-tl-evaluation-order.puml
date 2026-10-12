@@ -1,0 +1,71 @@
+' ============================================================================
+' 43 The evaluation order of a TensorLogic program.
+'
+' Source of Figure TL10 in ../tensor-logic/dynamic-semantics.md (section 5.2).
+' The figure restates EVALUATE of that section and the recursion classes of
+' static-semantics.md section 7. It adds no new fact.
+'
+' Reading order:
+'   1. The evaluator keeps only the query slice: the statements that the
+'      queries need.
+'   2. It evaluates the strongly connected components of the slice in
+'      topological order, so every tensor that a component reads is final.
+'   3. Each component runs by its class: R0 once, R1 by its guard index in
+'      ascending order, R2 by semi-naive iteration, stratum by stratum.
+'   4. The outputs are encoded in the value ABI, and each element is
+'      reserved before it is written.
+'
+' Colors come from concept-colors.iuml (aliases of the shared palette).
+' Render: ./render.sh 43-tl-evaluation-order.puml   Check: ./render.sh --check
+
+@startuml 43-tl-evaluation-order
+!include ../../../casper/theory/diagrams/palette.iuml
+!include concept-colors.iuml
+$ca_base_skin()
+skinparam ArrowColor $rrs_relation
+skinparam ActivityBorderColor $rrs_relation
+skinparam ActivityDiamondBorderColor $rrs_relation
+skinparam ActivityDiamondBackgroundColor $ca_note_amber
+skinparam PartitionBorderColor $rrs_relation
+skinparam NoteBorderColor $rrs_relation
+skinparam LegendBorderColor $rrs_relation
+skinparam LegendBackgroundColor $ca_note_grey
+title The evaluation order of a TensorLogic program (EVALUATE)
+
+start
+:the checked normal form, the inputs
+and the precision p; <<$rrs_tl_term>>
+:the query slice: the statements
+that the queries need (section 6); <<$rrs_tl_engine>>
+:the strongly connected components of the slice,
+in topological order; <<$rrs_tl_engine>>
+while (a component C is left?) is (yes)
+  switch (the class of C)
+  case (R0: no cycle)
+    :evaluate each statement of C once; <<$rrs_tl_engine>>
+  case (R1: index-guarded)
+    :for g in the domain of the guard, ascending:
+    evaluate the statements of C at g
+    every read is at a value below g, so it is final; <<$rrs_tl_engine>>
+    note right
+      A virtual dimension keeps only the
+      slices g and g + 1, with the backing
+      reserved once.
+    end note
+  case (R2: Boolean monotone)
+    :SEMI-NAIVE(C), stratum by stratum
+    (Figure TL11); <<$rrs_tl_engine>>
+  endswitch
+endwhile (no)
+:encode the query outputs in the value ABI,
+and reserve each element before it is written; <<$rrs_meter>>
+:the outputs; <<$rrs_tl_term>>
+stop
+
+legend bottom
+**Concept colors**
+|<$rrs_tl_term>   | TL terms and values |
+|<$rrs_tl_engine> | a step of EVALUATE |
+|<$rrs_meter>     | a reservation on the host-work meter |
+endlegend
+@enduml

@@ -1,0 +1,149 @@
+' ============================================================================
+' 35 TensorLogic from end to end: the components from the FLT text to RSpace.
+'
+' Source of Figure TL1 in ../tensor-logic/README.md. The figure restates the
+' design of tensor-logic/gslt.md (sections 6 to 10) and of
+' tensor-logic/integration.md (sections 1 to 6). It adds no new fact.
+'
+' Reading order:
+'   1. A Rholang 1.4 deploy holds TL terms as FLTs, such as tl:Score{...}.
+'   2. The registry publishes the TL module, and rho:mettail:install installs
+'      it, computes its fingerprint F and binds the handle tl.
+'   3. F1r3lang lexes and parses each FLT body with the installed language,
+'      and reflects the term to a Par whose tags carry F.
+'   4. The reducer passes the reflected term as a value: in a VectorDB query,
+'      as an argument of rho:lang:vector, or in free TensorCheck(...).
+'   5. The TL engine decodes, normalizes, checks and evaluates the term, and
+'      it reserves host work on the meter before each step.
+'   6. The VectorDB agent commits its COMMs to RSpace, and the theory seam
+'      stores the identity of a TensorCheck theory in the config of a space.
+'
+' Colors come from concept-colors.iuml (aliases of the shared palette).
+' Render: ./render.sh 35-tl-components.puml   Check: ./render.sh --check
+
+@startuml 35-tl-components
+!include ../../../casper/theory/diagrams/palette.iuml
+!include concept-colors.iuml
+$ca_base_skin()
+skinparam ArrowColor $rrs_relation
+skinparam ArrowThickness 1.3
+skinparam PackageBorderColor $rrs_relation
+skinparam ComponentBorderColor $rrs_relation
+skinparam DatabaseBorderColor $rrs_relation
+skinparam NoteBorderColor $rrs_relation
+skinparam LegendBorderColor $rrs_relation
+skinparam LegendBackgroundColor $ca_note_grey
+skinparam nodesep 40
+skinparam ranksep 50
+title TensorLogic from end to end (the P12 design)
+
+package "Rholang 1.4 deploy" as DEPLOY $rrs_tl_term {
+  component FLT $rrs_tl_term [
+  **TL terms as FLTs**
+  tl:Score{ Emb[x, d] q[d] }
+  tl:Program{ Y[i] = relu(W[i, j] X[j]) | Y? }
+  tl:Check{ v : [D] in { min[d](v[d] >= 0) } }
+  ]
+}
+
+package "F1r3lang (mettail-rust, owned by F1r3lang)" as F1R3LANG $rrs_f1r3lang {
+  component REGISTRY $rrs_f1r3lang [
+  **Versioned Registry**
+  rho:lib:1.0.0:<publisher>:tensorlogic:1.0.0
+  ]
+  component INSTALL $rrs_f1r3lang [
+  **rho:mettail:install**
+  computes the fingerprint <latex>\mathcal{F}_{TL}</latex>
+  and binds the handle tl
+  ]
+  component FRONTEND $rrs_f1r3lang [
+  **FLT lexer and guest parser**
+  the four TL tokens and the GSLT grammar
+  ]
+  component REFLECT $rrs_f1r3lang [
+  **Reflection**
+  EList[GPrivate("mettail.term.F.C"), ^gnd or ^nog, children]
+  ]
+}
+
+package "Reducer and Reified runtime (this repository)" as RUNTIME $rrs_agent {
+  component REDUCER $rrs_host [
+  **Reducer**
+  the term is a value inside the
+  QUERY and PARAMS tuples (decision 18)
+  ]
+  component AGENT $rrs_agent [
+  **VectorDB agent** (TL-0 and TL-3)
+  the keys score, tensors and precision
+  ]
+  component VEC $rrs_system [
+  **rho:lang:vector** [0xE0, 0x23]
+  eval, normalize, check, demand
+  ]
+  component SEAM $rrs_checker [
+  **Theory seam**
+  free TensorCheck(tl, check, p)
+  ]
+}
+
+package "TL engine (native and metered)" as ENGINE $rrs_tl_engine {
+  component DECODE $rrs_tl_engine [
+  **DECODE**
+  parse_reflected_tag and the
+  allow-list of fingerprints
+  ]
+  component NORMALIZE $rrs_tl_engine [
+  **NORMALIZE**
+  RESOLVE, INLINE, ELABORATE,
+  SCOPE and CANON
+  ]
+  component CHECK $rrs_tl_engine [
+  **CHECK**
+  shapes, the scope rule, safety,
+  recursion classes, the demand bound B
+  ]
+  component EVAL $rrs_tl_engine [
+  **EVALUATE**
+  exact rationals, correctly rounded
+  functions, semi-naive iteration
+  ]
+}
+
+component METER $rrs_meter [
+**Host-work meter** of the deploy
+a reservation before each step (decision 40)
+]
+
+database RSPACE $rrs_storage [
+**RSpace**
+records and COMMs, the config C(sid),
+the content record <latex>\mathtt{E0} \Vert \mathtt{T} \Vert h</latex>
+]
+
+REGISTRY --> INSTALL : the module source
+INSTALL --> FRONTEND : the installed language
+FLT --> FRONTEND : the FLT body
+FRONTEND --> REFLECT : the parsed term
+REFLECT --> REDUCER : a reflected Par
+REDUCER --> AGENT : a score query
+REDUCER --> VEC : vec!?("eval", ...)
+REDUCER --> SEAM : a factory call or a send
+AGENT --> DECODE
+VEC --> DECODE
+SEAM --> DECODE
+DECODE --> NORMALIZE
+NORMALIZE --> CHECK
+CHECK --> EVAL
+EVAL -[$rrs_flow]-> METER : every phase reserves first
+AGENT -[$rrs_effect]-> RSPACE : COMM
+SEAM -[$rrs_effect]-> RSPACE : identity bytes and KIND T
+
+legend bottom
+**Concept colors**
+|<$rrs_tl_term>  | TL terms: FLTs and their reflection |
+|<$rrs_f1r3lang> | F1r3lang, the reducer and the meter: code that the design calls and never changes |
+|<$rrs_agent>    | the space agent |
+|<$rrs_tl_engine> | the TL engine, the capability and the theory checker: compiled-in code that decides values |
+|<$rrs_storage>  | consensus state in RSpace |
+endlegend
+@enduml

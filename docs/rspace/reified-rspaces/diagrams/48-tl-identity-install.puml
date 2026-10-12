@@ -1,0 +1,105 @@
+' ============================================================================
+' 48 The installation and the content identity of TensorLogic.
+'
+' Source of Figure TL14 in ../tensor-logic/gslt.md (section 8). The figure
+' restates sections 8 and 10 of that document and decision 74. It adds no
+' new fact.
+'
+' Reading order:
+'   1. A node release ships the TL module source and the allow-list of
+'      fingerprints that the TL engine pins.
+'   2. The Versioned Registry publishes the module, and a program installs
+'      it with rho:mettail:install, which computes the fingerprint F and
+'      binds the handle tl.
+'   3. FLT terms written with tl reflect to Par values whose tags carry F,
+'      and the TL engine accepts a term only when F is in its allow-list.
+'   4. A TensorCheck theory stores its identity as compact bytes in the
+'      config of a space, and its normal form as a content record (KIND T).
+'
+' Colors come from concept-colors.iuml (aliases of the shared palette).
+' Render: ./render.sh 48-tl-identity-install.puml   Check: ./render.sh --check
+
+@startuml 48-tl-identity-install
+!include ../../../casper/theory/diagrams/palette.iuml
+!include concept-colors.iuml
+$ca_base_skin()
+skinparam ArrowColor $rrs_relation
+skinparam ArrowThickness 1.3
+skinparam PackageBorderColor $rrs_relation
+skinparam ComponentBorderColor $rrs_relation
+skinparam DatabaseBorderColor $rrs_relation
+skinparam ArtifactBorderColor $rrs_relation
+skinparam NoteBorderColor $rrs_relation
+skinparam LegendBorderColor $rrs_relation
+skinparam LegendBackgroundColor $ca_note_grey
+skinparam nodesep 40
+skinparam ranksep 50
+title The installation and the content identity of TensorLogic
+
+package "Node release" as RELEASE $rrs_tl_engine {
+  artifact MODULE $rrs_tl_term [
+  **TensorLogicGSLT** module source
+  (GSLT 2)
+  ]
+  component ALLOW $rrs_tl_engine [
+  **Allow-list** of the TL engine
+  the pinned fingerprints <latex>\mathcal{F}_{TL}</latex>
+  a test recomputes <latex>\mathcal{F}_{TL}</latex> from the source
+  ]
+}
+
+package "F1r3lang" as F1R3LANG $rrs_f1r3lang {
+  component REGISTRY $rrs_f1r3lang [
+  **Versioned Registry**
+  rho:lib:1.0.0:<publisher>:tensorlogic:1.0.0
+  ]
+  component INSTALL $rrs_f1r3lang [
+  **rho:mettail:install**
+  F = "mettail-langdef-v2:" followed by
+  the BLAKE3 hash of the canonical definition
+  returns the opaque handle tl
+  ]
+  component REFLECT $rrs_f1r3lang [
+  **Reflected terms**
+  tags GPrivate("mettail.term.F.C")
+  ]
+}
+
+package "Consensus state" as STATE $rrs_storage {
+  database CONFIG $rrs_storage [
+  **Config record C(sid)** of a space
+  the compact identity bytes (decision 74):
+  version, languageFingerprint, category,
+  theoremId = "tl:check:" || hex(h),
+  checkerAbi = "rrs:tensorlogic:v1",
+  limitProfile, args = [h, p]
+  ]
+  database CONTENT $rrs_storage [
+  **Content record** <latex>\mathtt{E0} \Vert \mathtt{T} \Vert h</latex>
+  the canonical bytes of the reflected NF
+  <latex>h = \mathrm{Blake2b256}(\mathrm{bytes}(\mathrm{NF}))</latex>
+  ]
+}
+
+MODULE --> REGISTRY : published as a library
+REGISTRY --> INSTALL : looked up and installed
+INSTALL --> REFLECT : the handle tl writes tl:Cat{...}
+REFLECT --> ALLOW : is F allowed?
+ALLOW -[$rrs_fail]-> REFLECT : no: UnknownTensorLanguage
+ALLOW -[$rrs_effect]-> CONFIG : TensorCheck at creation
+ALLOW -[$rrs_effect]-> CONTENT : the NF of the check term
+
+note bottom of ALLOW
+  A minor version adds constructors and gets a new
+  allowed fingerprint, shipped with a node release.
+  A major version gets a new checker ABI.
+end note
+
+legend bottom
+**Concept colors**
+|<$rrs_tl_term>   | the TL module source |
+|<$rrs_tl_engine> | the node release and the TL engine |
+|<$rrs_f1r3lang>  | F1r3lang |
+|<$rrs_storage>   | consensus state |
+endlegend
+@enduml

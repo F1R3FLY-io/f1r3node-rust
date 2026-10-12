@@ -1,0 +1,85 @@
+' ============================================================================
+' 36 One join and one projection: the matrix product of two small tensors.
+'
+' Source of Figure TL2 in ../tensor-logic/concepts.md (section 3). The figure
+' restates the join and the projection of the paper (Domingos 2025, p. 5)
+' on the numbers U = [[1, 2], [3, 4]] and V = [[5, 6], [7, 8]]. It adds no
+' new fact.
+'
+' Reading order:
+'   1. U has the indices a and b, and V has the indices b and c.
+'   2. The join multiplies U and V where the shared index b agrees, and it
+'      keeps every index: a tensor with the indices a, b and c.
+'   3. The projection onto a and c sums over b. The result is U V.
+'   4. The equation W[a, c] = U[a, b] V[b, c] writes both steps. For two
+'      Boolean relations, the step function after the sum gives their
+'      composition.
+'
+' Colors come from concept-colors.iuml (aliases of the shared palette).
+' Render: ./render.sh 36-tl-join-projection.puml   Check: ./render.sh --check
+
+@startuml 36-tl-join-projection
+!include ../../../casper/theory/diagrams/palette.iuml
+!include concept-colors.iuml
+$ca_base_skin()
+skinparam ArrowColor $rrs_relation
+skinparam ArrowThickness 1.3
+skinparam RectangleBorderColor $rrs_relation
+skinparam NoteBorderColor $rrs_relation
+skinparam LegendBorderColor $rrs_relation
+skinparam LegendBackgroundColor $ca_note_grey
+skinparam nodesep 50
+skinparam ranksep 45
+title One join and one projection: W[a, c] = U[a, b] V[b, c]
+
+rectangle U $rrs_storage [
+**U[a, b]**
+|= |= b = 0 |= b = 1 |
+|= a = 0 | 1 | 2 |
+|= a = 1 | 3 | 4 |
+]
+
+rectangle V $rrs_storage [
+**V[b, c]**
+|= |= c = 0 |= c = 1 |
+|= b = 0 | 5 | 6 |
+|= b = 1 | 7 | 8 |
+]
+
+rectangle JOIN $rrs_tl_engine [
+**Join** <latex>(U \bowtie V)_{abc} = U_{ab} \, V_{bc}</latex>
+|= a |= b |= c |= value |
+| 0 | 0 | 0 | 1 · 5 = 5 |
+| 0 | 0 | 1 | 1 · 6 = 6 |
+| 0 | 1 | 0 | 2 · 7 = 14 |
+| 0 | 1 | 1 | 2 · 8 = 16 |
+| 1 | 0 | 0 | 3 · 5 = 15 |
+| 1 | 0 | 1 | 3 · 6 = 18 |
+| 1 | 1 | 0 | 4 · 7 = 28 |
+| 1 | 1 | 1 | 4 · 8 = 32 |
+]
+
+rectangle PROJ $rrs_tl_engine [
+**Projection onto a and c** <latex>\pi^{+}_{ac}(T)(a, c) = \sum_{b} T(a, b, c)</latex>
+|= |= c = 0 |= c = 1 |
+|= a = 0 | 5 + 14 = 19 | 6 + 16 = 22 |
+|= a = 1 | 15 + 28 = 43 | 18 + 32 = 50 |
+]
+
+U -[$rrs_flow]-> JOIN : the factor U
+V -[$rrs_flow]-> JOIN : the factor V
+JOIN -[$rrs_effect]-> PROJ : sum over b, the index\nthat the left side does not name
+
+note right of PROJ
+  The result is the matrix product U V.
+  For Boolean relations, the step function H
+  after the sum gives their composition:
+  Grandparent(x, z) <- Parent(x, y), Parent(y, z)
+end note
+
+legend bottom
+**Concept colors**
+|<$rrs_storage>   | input tensors |
+|<$rrs_tl_engine> | the steps of the TL engine |
+endlegend
+@enduml

@@ -1,0 +1,72 @@
+' ============================================================================
+' 51 Rules set at a time (TL-2b): one snapshot, one eval, the derived facts.
+'
+' Source of Figure TL17 in ../tensor-logic/integration.md (section 4). The
+' figure restates TL-2b of that section and the example of
+' tensor-logic/syntax.md section 4.17. It adds no new fact.
+'
+' Reading order:
+'   1. The deploy reads one snapshot of a relation: a peek of a cell, or a
+'      list read of a VectorDB collection of facts.
+'   2. It calls eval with a tl:Program of rules, and the snapshot as one
+'      tensor in the value ABI (form V2).
+'   3. The TL engine checks safety and stratification, then runs the
+'      semi-naive iteration until no new fact appears.
+'   4. The reply holds the derived facts of the queries, which the deploy
+'      can send to a space.
+'
+' Colors come from concept-colors.iuml (aliases of the shared palette).
+' Render: ./render.sh 51-tl-set-at-a-time.puml   Check: ./render.sh --check
+
+@startuml 51-tl-set-at-a-time
+!include ../../../casper/theory/diagrams/palette.iuml
+!include concept-colors.iuml
+$ca_base_skin()
+skinparam sequence {
+  ArrowColor $rrs_relation
+  LifeLineBorderColor $rrs_relation
+  ParticipantBorderColor $rrs_relation
+  ActorBorderColor $rrs_relation
+  GroupBorderColor $rrs_relation
+  DividerBorderColor $rrs_relation
+  DividerBackgroundColor $ca_note_grey
+}
+skinparam NoteBorderColor $rrs_relation
+skinparam LegendBorderColor $rrs_relation
+skinparam LegendBackgroundColor $ca_note_grey
+title Rules set at a time: TL-2b (integration 4)
+autonumber
+
+participant "Deploy" as DEPLOY $rrs_host
+database "RSpace\n(the cell kb)" as RSPACE $rrs_storage
+participant "rho:lang:vector\n[0xE0, 0x23]" as VEC $rrs_system
+participant "TL engine" as ENGINE $rrs_tl_engine
+
+DEPLOY -> RSPACE : for (@kb <<- @"kb") { ... }
+RSPACE --> DEPLOY : one snapshot of the relation:\nSet(("Alice", "Bob"), ("Bob", "Charlie"))
+DEPLOY -> VEC : vec!?("eval", tl:Program{\n  Ancestor(x, y) <- Parent(x, y) |\n  Ancestor(x, z) <- Ancestor(x, y), Parent(y, z) |\n  Ancestor("Alice", x)? }, {"Parent": kb}, {})
+VEC -> ENGINE : the program and the relation (form V2)
+ENGINE -> ENGINE : CHECK: every rule is safe, and negation is stratified
+ENGINE -> ENGINE : <latex>R \leftarrow \Delta \leftarrow</latex> the facts and the non-recursive rules
+loop while <latex>\Delta \neq \emptyset</latex> (reserving each join first)
+  ENGINE -> ENGINE : <latex>N \leftarrow</latex> the rules with an atom from <latex>\Delta</latex>
+  ENGINE -> ENGINE : <latex>\Delta \leftarrow N \setminus R,\ R \leftarrow R \cup \Delta</latex>
+end
+ENGINE --> VEC : Ancestor("Alice", x): x = "Bob" and x = "Charlie"
+VEC --> DEPLOY : [true, {the query: Set("Bob", "Charlie")}]\n(the slice, in the value ABI)
+opt keep the derived facts
+  DEPLOY -> RSPACE : send each derived fact to a space
+end
+note over RSPACE, VEC
+  A list-mode bind cannot sit in a join (ListModeInJoin),
+  so one deploy reads one snapshot (open question K9).
+end note
+
+legend bottom
+**Concept colors**
+|<$rrs_host>      | the deploy |
+|<$rrs_storage>   | consensus state in RSpace |
+|<$rrs_system>    | the capability |
+|<$rrs_tl_engine> | the TL engine |
+endlegend
+@enduml

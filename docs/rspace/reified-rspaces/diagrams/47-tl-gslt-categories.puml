@@ -1,0 +1,259 @@
+' ============================================================================
+' 47 The categories and constructors of the TensorLogic GSLT.
+'
+' Source of Figure TL12 in ../tensor-logic/gslt.md (section 2). The classes
+' restate the Types and Terms of the TL module of that section, and the
+' notes restate the rewrites of section 3. They add no new fact.
+'
+' Reading order:
+'   1. Program, Score and Check are the entry categories. A Program is a bag
+'      of statements.
+'   2. Stmt lists the statement constructors. Italic constructors are
+'      derived (sugar), and the notes name the core forms they rewrite to.
+'   3. The expression categories form a chain from Expr (the loosest level)
+'      to Atom (the tightest), as the precedence table of syntax 2.2 lists.
+'   4. Index expressions form the chain Ix, IxTerm, IxUnary and IxAtom.
+'   5. Four token categories carry the text of the source as a String.
+'
+' Colors come from concept-colors.iuml (aliases of the shared palette).
+' Render: ./render.sh 47-tl-gslt-categories.puml   Check: ./render.sh --check
+
+@startuml 47-tl-gslt-categories
+!include ../../../casper/theory/diagrams/palette.iuml
+!include concept-colors.iuml
+$ca_base_skin()
+skinparam ArrowColor $rrs_relation
+skinparam ClassBorderColor $rrs_relation
+skinparam ClassBackgroundColor $rrs_tl_term
+skinparam ClassHeaderBackgroundColor $rrs_tl_term
+skinparam PackageBorderColor $rrs_relation
+skinparam NoteBorderColor $rrs_relation
+skinparam LegendBorderColor $rrs_relation
+skinparam LegendBackgroundColor $ca_note_grey
+skinparam ClassAttributeIconSize 0
+hide circle
+hide empty members
+skinparam nodesep 25
+skinparam ranksep 40
+title The TensorLogic GSLT: categories and constructors
+
+package "Entry categories" {
+  class Program {
+    PComp(ss : HashBag(Stmt))
+  }
+  class Score {
+    ScExpr(e)
+    ScLet(d, s)
+  }
+  class Check {
+    CkExpr(e)
+    CkLet(d, c)
+    CkDecl(v, s, c)
+  }
+}
+
+package "Statements" {
+  class Stmt {
+    SEq(l, o, e)
+    SDef(l, o, v)
+    SFact(h)
+    SQuery(h)
+    SDecl(t, s)
+    SNew(ns, p)
+    SLet(d, p)
+    SGroup(p)
+    //SRule(h, b)//
+  }
+  class Conjs <<sugar>> {
+    //ConjOne(e)//
+    //ConjMore(e, r)//
+  }
+  class ProjOp {
+    OpSum, OpMax, OpMin, OpAvg, OpMaj
+    //OpAcc//
+  }
+  class Lhs {
+    LBare(t)
+    LNum(t, ix)
+    LBool(t, ix)
+  }
+  class LhsIx {
+    XPlain(i)
+    //XNorm(i)//
+  }
+  class Shape {
+    ShNum(ds)
+    ShBool(ds)
+  }
+  class Dim {
+    DIx(i)
+    {method} DSym
+  }
+}
+
+package "The functional layer (sugar, inlined)" {
+  class Def <<sugar>> {
+    //DFun, DLam, DOp, DConst//
+  }
+  class Lam <<sugar>> {
+    //LamOne, LamMany//
+  }
+  class Body <<sugar>> {
+    //BExpr, BBrace//
+  }
+}
+
+package "Expressions, from the loosest level to the tightest" {
+  class Expr {
+    EOfConj(c)
+    //EOr(a, b)//
+  }
+  class Conj {
+    COfNeg(n)
+    //EAnd(a, b)//
+  }
+  class Neg {
+    NOfCmp(c)
+    //ENot(n)//
+  }
+  class Cmp {
+    CmOfU(u)
+    //ECmp(a, o, b)//
+  }
+  class UOp {
+    UOfAdd(a)
+    //EUser(a, o, b)//
+  }
+  class Add {
+    EAdd, ESub, AOfTerm
+  }
+  class Term {
+    EJuxt(a, b): the join
+    {method} EMul, EDiv, EMod, TOfU
+    //EMatMul(a, b)//
+  }
+  class Unary {
+    ENeg, EPos, UOfP
+  }
+  class Power {
+    EPow(b, e)
+    POfPost(p)
+  }
+  class Post {
+    EIdx(p, ss)
+    PofA(a)
+    //ET(p)//
+  }
+  class Atom {
+    {method} AName, ANum, AStr, AParen
+    AApp(f, as), ACall(f, as)
+    AProj(o, js, e)
+    ANorm(o, k, e), ANormArg(o, k, e, a)
+  }
+  class Arg {
+    ArgE, ArgL, ArgKw, ArgKwL
+  }
+  class ElemList {
+    LList(es)
+  }
+}
+
+package "Indices" {
+  class Sub {
+    SubIx(i)
+    {method} the twelve slice forms
+  }
+  class Ix {
+    IxAdd, IxSub, IxOfT
+  }
+  class IxTerm {
+    IxMul, IxDiv, IxMod, IxOfU
+  }
+  class IxUnary {
+    IxNeg, IxOfA
+  }
+  class IxAtom {
+    IxVar, IxVirt, IxNum, IxStr, IxPar
+  }
+}
+
+package "Keywords" {
+  class FnKw {
+    16 core functions, such as FStep and FSig
+    //FSigmoid, FSoftmax, FLnorm, FConcat,//
+    //FSum, FTranspose, FEinsum//
+  }
+  class AggKw {
+    KSum, KMax, KMin, KAvg, KMaj
+  }
+  class NormKw {
+    KSoftmax, KLnorm
+  }
+}
+
+package "Tokens (carrier String)" {
+  class Ident <<token>> $rrs_f1r3lang
+  class Numeral <<token>> $rrs_f1r3lang
+  class Text <<token>> $rrs_f1r3lang
+  class OpSym <<token>> $rrs_f1r3lang
+}
+
+Program o-- "1..*" Stmt
+Score --> Expr
+Check --> Expr
+Check --> Shape
+Stmt --> Lhs
+Stmt --> ProjOp
+Stmt --> Expr
+Stmt --> ElemList
+Stmt --> Conjs
+Stmt --> Def
+Lhs --> LhsIx
+LhsIx --> Ix
+Shape --> Dim
+Dim --> Ix
+Def --> Lam
+Def --> Body
+Expr --> Conj
+Conj --> Neg
+Neg --> Cmp
+Cmp --> UOp
+UOp --> Add
+Add --> Term
+Term --> Unary
+Unary --> Power
+Power --> Post
+Post --> Atom
+Post --> Sub
+Atom --> Arg
+Atom --> FnKw
+Atom --> AggKw
+Atom --> NormKw
+Arg --> ElemList
+Sub --> Ix
+Ix --> IxTerm
+IxTerm --> IxUnary
+IxUnary --> IxAtom
+
+note right of Stmt
+  **Installed rewrites (class I)**
+  S1: OpAcc rewrites to OpSum.
+  S2: SRule rewrites to SEq, after RuleFold
+  joins the literals of the rule.
+end note
+
+note right of Atom
+  **Native rewrites (class N)**
+  S3 to S6: comparisons and logic become step.
+  S7: sigmoid becomes sig. S8: XNorm becomes ANorm.
+  S11 to S19: EMatMul, ET and the positional calls
+  become EJuxt, EIdx, AProj and ANorm.
+end note
+
+legend bottom
+**Reading**
+|<$rrs_tl_term>  | a category of the GSLT, listing its constructors |
+|<$rrs_f1r3lang> | a token category, lexed by F1r3lang |
+| //italic// | a derived constructor (sugar), absent from the normal form |
+endlegend
+@enduml

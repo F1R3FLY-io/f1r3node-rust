@@ -1,0 +1,82 @@
+' ============================================================================
+' 53 The diagnostic codes of TensorLogic, grouped by the phase that raises
+'    them.
+'
+' Source of Figure TL8 in ../tensor-logic/static-semantics.md (section 12).
+' The map restates the table of that section. It adds no new fact.
+'
+' Reading order:
+'   1. The root names the codes. The right side holds the phases before
+'      the normal form exists: decode, lexical and Unicode, resolution.
+'   2. The left side holds elaboration, checking and evaluation.
+'   3. Every code fails closed. NotNfc is a warning: the term is normalized.
+'
+' Colors come from concept-colors.iuml (aliases of the shared palette).
+' Render: ./render.sh 53-tl-error-codes.puml   Check: ./render.sh --check
+
+@startmindmap 53-tl-error-codes
+!include ../../../casper/theory/diagrams/palette.iuml
+!include concept-colors.iuml
+<style>
+mindmapDiagram {
+  node {
+    LineColor $rrs_relation
+    FontColor $ca_neutral
+  }
+  arrow {
+    LineColor $rrs_relation
+  }
+}
+</style>
+title The diagnostic codes of TensorLogic, by phase
+*[$rrs_tl_term] TL diagnostic codes
+**[$rrs_tl_engine] Decode
+***[$rrs_reject]:NotATensorTerm
+UnknownTensorLanguage;
+**[$rrs_tl_engine] Lexical and Unicode
+***[$rrs_reject]:NotNfc (a warning)
+ConfusableIdentifier
+MixedScriptIdentifier
+NonAsciiOperator
+LiteralKind
+LiteralRange;
+**[$rrs_tl_engine] Resolution
+***[$rrs_reject]:UnknownTensor
+UnknownFunction
+AmbiguousName
+ReservedName
+BinderClash
+OperatorMix
+ArityMismatch;
+left side
+**[$rrs_tl_engine] Elaboration
+***[$rrs_reject]:MixedStyle
+BroadcastMismatch
+MatmulMismatch
+AxisOutOfRange
+AxisRequired
+EinsumSpec
+EinsumEllipsis
+SliceOutOfRange
+RankUnknown;
+**[$rrs_tl_engine] Checking
+***[$rrs_reject]:ShapeMismatch, IndexUnbounded
+LhsNegative, NegativeIndexConstant
+NotBoolean, UnsafeVariable, NonGroundFact
+AccumulationMismatch, InputRedefined, PrivateQuery
+NotStratified, UnguardedRecursion, VirtualIndexMisuse
+ScoreNotRecordLocal, ScoreRecursive, NoQuery
+InlineTooLarge, TensorTooLarge, PrecisionOutOfRange
+TemperatureNegative, NotConstant;
+**[$rrs_tl_engine] Evaluation
+***[$rrs_reject]:Undefined (an output element is ⊥)
+PrecisionExhausted
+NonFiniteValue, NotANumber, MalformedNumber
+DimensionMismatch, ValueOutOfRange
+HostWorkRejected;
+legend bottom
+**Concept colors**
+|<$rrs_tl_engine> | a phase of the TL engine |
+|<$rrs_reject>    | the codes of the phase: each fails closed |
+endlegend
+@endmindmap

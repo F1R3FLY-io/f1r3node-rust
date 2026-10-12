@@ -27,7 +27,8 @@ This README is the index and the reading order of the documents.
 4. Read the [design](design.md), the [PathMap delivery](pathmap-prefix-delivery.md), and the theory seam for the structure of the implementation.
 5. Read the security, performance, and verification documents and the FIPS matrix for the evidence.
 6. Read the F1r3lang integration document for the merge path of phase P12.
-7. Read the [design record](design-record/README.md) last, as history of the early design.
+7. Read the [TensorLogic design](tensor-logic/README.md) for the tensor language that P12 installs.
+8. Read the [design record](design-record/README.md) last, as history of the early design.
 
 ## Documents
 
@@ -50,6 +51,15 @@ A document that a later phase writes shows the phase as "planned in Pn" and name
 | `security.md` | Capability checks, private channels, input validation, query limits, failure atomicity, and a threat model. | Planned in P10 (`rrs-perf-docs-final-spec-design-security`). |
 | `performance.md` | Benchmarks of the space operations against frozen baselines, with any regressions. | Planned in P10 (`rrs-perf-docs-final-benchmarks`). |
 | [f1r3lang-integration.md](f1r3lang-integration.md) | The F1r3lang merge: the theory seam after the merge, installed theories, guard composition, and the Rholang 1.4 productions. | The theory part is written in P7 step 4. P12 extends it after the readiness signal (`rrs-doc-theory-seam`). |
+| [tensor-logic/README.md](tensor-logic/README.md) | The TensorLogic design for P12: the design in five points, the reading order, the findings of the design pass and the binding decisions. | A proposal for P12, written in P9. The grammar waits for the approval of the user ([decision 64](decision-register.md#decision-64)), and P12 waits for the readiness signal SIG-F ([decision 65](decision-register.md#decision-65)). |
+| [tensor-logic/concepts.md](tensor-logic/concepts.md) | The terms of TensorLogic: tensors, indices, joins, projections, rules, normalization, exact numbers, reflection and fragments. | A proposal for P12, written in P9. P12 waits for the readiness signal SIG-F ([decision 65](decision-register.md#decision-65)). |
+| [tensor-logic/syntax.md](tensor-logic/syntax.md) | The lexical rules, the grammar, the precedence, the ambiguity rules, the embedding in Rholang 1.4, the value ABI and worked examples. | A proposal for P12, written in P9. P12 waits for the readiness signal SIG-F ([decision 65](decision-register.md#decision-65)). |
+| [tensor-logic/static-semantics.md](tensor-logic/static-semantics.md) | Sorts, shape inference, typing rules, call signatures, the scope rule, broadcasting, safety, recursion classes, record-locality, the demand bound and the diagnostics. | A proposal for P12, written in P9. P12 waits for the readiness signal SIG-F ([decision 65](decision-register.md#decision-65)). |
+| [tensor-logic/dynamic-semantics.md](tensor-logic/dynamic-semantics.md) | The denotation, the built-in functions, the correctly rounded functions, exact arithmetic, the evaluation algorithm, determinism and consensus state. | A proposal for P12, written in P9. P12 waits for the readiness signal SIG-F ([decision 65](decision-register.md#decision-65)). |
+| [tensor-logic/gslt.md](tensor-logic/gslt.md) | The TensorLogic module in the definition language of F1r3lang, the sugar rewrites, the normal form, reflection, identity, the capability and admission theories. | A proposal for P12, written in P9. P12 waits for the readiness signal SIG-F ([decision 65](decision-register.md#decision-65)). |
+| [tensor-logic/integration.md](tensor-logic/integration.md) | Score queries, programs through `rho:lang:vector`, rules, embedding reasoning, admission theories, `where` guards, replay, merges, costs and errors. | A proposal for P12, written in P9. P12 waits for the readiness signal SIG-F ([decision 65](decision-register.md#decision-65)). |
+| [tensor-logic/verification-plan.md](tensor-logic/verification-plan.md) | The models, proofs, negative controls, properties and tests that P12 must deliver, in the six acceptance categories. | A proposal for P12, written in P9. P12 waits for the readiness signal SIG-F ([decision 65](decision-register.md#decision-65)). |
+| [tensor-logic/design-rationale.md](tensor-logic/design-rationale.md) | The review of the legacy support, the rejected alternatives, the open questions K0 to K16, the missing facilities of F1r3lang, the work order and the changes to the P6 study. | A proposal for P12, written in P9. The open questions wait for the answers of the user. |
 | [findings/space-replay-out-of-phlo.md](findings/space-replay-out-of-phlo.md) | A finding of P4: a deploy that ran out of phlo inside a space transaction replayed to a different error and cost. It holds the reproduction, the mechanism, the fix as built, and two related observations about the host code. | Written. Fixed by [decision 36](decision-register.md#decision-36) on 2026-10-05. Two questions stay open for their owners. |
 | [findings/space-legacy-storage-charges.md](findings/space-legacy-storage-charges.md) | A finding of decision 45: in a legacy deploy, a space operation paid no storage charge, while its equivalent host program paid them. It holds the mechanism, a measurement, the reach in block processing, and the fix. | Written. Fixed by Option P of [decision 45](decision-register.md#decision-45) on 2026-10-06. |
 | [findings/native-execution-cost-accounting.md](findings/native-execution-cost-accounting.md) | Five items of decision 47 for the cost-accounting owner: an untyped class of space errors, a session charge that depends on the thread count, two readers for host continuations, a lost wake-up of the host path under a forged journal, and the verification bytes of native replay. | Written. The space instance of the lost wake-up is fixed by commit `c6cb371ba`. The other items stay open for their owner. |
@@ -107,6 +117,26 @@ Update `fonts.lock`, render every diagram again, and review the images.
 | 33 | [The number model](diagrams/33-number-model.svg) (activity) | Drawn in P6 step 8e |
 | 34 | [The process harnesses of P9](diagrams/34-p9-process-harnesses.svg) (sequence) | Drawn in P9 step 8 |
 | 34a | [The blocks of the N4 merge with an empty sibling](diagrams/34a-n4-merge-dag.svg) (component), a sub-figure of figure 34 | Drawn in P9 step 8 |
+| 35 | [TensorLogic from end to end](diagrams/35-tl-components.svg) (component) | Drawn in P9 for the TensorLogic design of P12 |
+| 36 | [One join and one projection](diagrams/36-tl-join-projection.svg) (component) | Drawn in P9 for the TensorLogic design of P12 |
+| 37 | [The TensorLogic grammar, part 1: entry points, statements and let](diagrams/37-tl-grammar-statements.svg) (railroad) | Drawn in P9 for the TensorLogic design of P12 |
+| 38 | [The TensorLogic grammar, part 2: expressions and index expressions](diagrams/38-tl-grammar-expressions.svg) (railroad) | Drawn in P9 for the TensorLogic design of P12 |
+| 39 | [The tensor value ABI](diagrams/39-tl-value-abi.svg) (component) | Drawn in P9 for the TensorLogic design of P12 |
+| 40 | [The static checks of TensorLogic](diagrams/40-tl-static-checks.svg) (activity) | Drawn in P9 for the TensorLogic design of P12 |
+| 41 | [The scope rule on the Gaussian kernel](diagrams/41-tl-scope-rule.svg) (tree) | Drawn in P9 for the TensorLogic design of P12 |
+| 42 | [The elaboration of the positional operators](diagrams/42-tl-broadcast-matmul.svg) (activity) | Drawn in P9 for the TensorLogic design of P12 |
+| 43 | [The evaluation order of a TensorLogic program](diagrams/43-tl-evaluation-order.svg) (activity) | Drawn in P9 for the TensorLogic design of P12 |
+| 44 | [The Ziv loop of a correctly rounded function](diagrams/44-tl-ziv-loop.svg) (activity) | Drawn in P9 for the TensorLogic design of P12 |
+| 45 | [The semi-naive iteration](diagrams/45-tl-semi-naive.svg) (activity) | Drawn in P9 for the TensorLogic design of P12 |
+| 46 | [The normalization pipeline of TensorLogic](diagrams/46-tl-normalization-pipeline.svg) (activity) | Drawn in P9 for the TensorLogic design of P12 |
+| 47 | [The categories and constructors of the TensorLogic GSLT](diagrams/47-tl-gslt-categories.svg) (class) | Drawn in P9 for the TensorLogic design of P12 |
+| 48 | [The installation and the content identity of TensorLogic](diagrams/48-tl-identity-install.svg) (component) | Drawn in P9 for the TensorLogic design of P12 |
+| 49 | [A TL-0 score query](diagrams/49-tl-score-query.svg) (sequence) | Drawn in P9 for the TensorLogic design of P12 |
+| 50 | [An eval call of rho:lang:vector](diagrams/50-tl-vector-eval.svg) (sequence) | Drawn in P9 for the TensorLogic design of P12 |
+| 51 | [Rules set at a time](diagrams/51-tl-set-at-a-time.svg) (sequence) | Drawn in P9 for the TensorLogic design of P12 |
+| 52 | [TL admission theories](diagrams/52-tl-admission.svg) (sequence) | Drawn in P9 for the TensorLogic design of P12 |
+| 53 | [The diagnostic codes of TensorLogic](diagrams/53-tl-error-codes.svg) (mind map) | Drawn in P9 for the TensorLogic design of P12 |
+| 54 | [The verification pipeline of TensorLogic](diagrams/54-tl-verification-pipeline.svg) (component) | Drawn in P9 for the TensorLogic design of P12 |
 
 ## Campaign phases
 
@@ -128,7 +158,7 @@ P3 runs in parallel in the parser worktree.
 | P9 | Consensus integration |
 | P10 | Formal verification, the documents, the examples, the benchmarks, and the FIPS matrix |
 | P11 | Full gates, the parser revision pin, and the unchanged-fixture gate |
-| P12 | The F1r3lang merge, only after the readiness signal of the user |
+| P12 | The F1r3lang merge, only after the readiness signal of the user, and the TensorLogic language of the [TensorLogic design](tensor-logic/README.md) |
 
 ### Status of phase P4
 

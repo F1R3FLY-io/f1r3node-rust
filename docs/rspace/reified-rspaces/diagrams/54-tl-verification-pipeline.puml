@@ -1,0 +1,186 @@
+' ============================================================================
+' 54 The verification pipeline of TensorLogic (the P12 plan).
+'
+' Source of Figure TL20 in ../tensor-logic/verification-plan.md. The figure
+' restates the legs of sections 1 to 6 of that document and the six
+' acceptance categories of the campaign. It adds no new fact.
+'
+' Reading order:
+'   1. Sources: the code, the module, the models, the scripts, the map and
+'      the documents.
+'   2. Checks: each source feeds the check that reads it.
+'   3. Gates: the scripts and commands that run the checks.
+'   4. Categories: each gate gives evidence of one or more of the six
+'      acceptance categories.
+'
+' Colors come from concept-colors.iuml (aliases of the shared palette).
+' Render: ./render.sh 54-tl-verification-pipeline.puml   Check: ./render.sh --check
+
+@startuml 54-tl-verification-pipeline
+!include ../../../casper/theory/diagrams/palette.iuml
+!include concept-colors.iuml
+' The local colors of diagram 13 (the verification pipeline of P1), so that
+' both pipelines read alike.
+!$v_code = $rrs_substrate
+!$v_model = $ca_process
+!$v_map = $ca_capability
+!$v_doc = $ca_surface
+!$v_check = $ca_gate
+!$v_control = $rrs_reject
+!$v_gate = $ca_control
+!$v_category = $ca_delta
+$ca_base_skin()
+skinparam ArrowColor $rrs_relation
+skinparam ArrowThickness 1.2
+skinparam PackageBorderColor $rrs_relation
+skinparam ComponentBorderColor $rrs_relation
+skinparam ArtifactBorderColor $rrs_relation
+skinparam NoteBorderColor $rrs_relation
+skinparam LegendBorderColor $rrs_relation
+skinparam LegendBackgroundColor $ca_note_grey
+skinparam nodesep 18
+skinparam ranksep 70
+left to right direction
+title The verification pipeline of TensorLogic (P12)
+
+package "Sources" as SOURCES {
+  artifact CODE $v_code [
+  TL engine code
+  rholang/src/rust/interpreter/tensor/tl/
+  ]
+  artifact MODULE $v_code [
+  TensorLogicGSLT module source
+  ]
+  artifact ROCQ $v_model [
+  TensorLogic.v and TensorGSLT.v
+  ]
+  artifact TLA $v_model [
+  VectorDb.tla with the score
+  configurations
+  ]
+  artifact SCRIPTS $v_model [
+  Z3 and Sage scripts
+  tl_sugar.trs
+  ]
+  artifact MAP $v_map [
+  the invariant map
+  ]
+  artifact DOCS $v_doc [
+  tensor-logic/*.md and
+  the diagrams 35 to 54
+  ]
+}
+
+package "Checks" as CHECKS {
+  component KERNEL $v_check [
+  Rocq kernel check
+  with closed assumptions
+  ]
+  component TLC $v_check [
+  TLC: the safe configuration,
+  and the Unsafe one must fail
+  ]
+  component SMT $v_check [
+  Z3, Sage, TTT2 and CSI
+  ]
+  component PROPS $v_check [
+  property tests, 64 cases each
+  ]
+  component SUITES $v_check [
+  the tl_ suites, native play
+  and native replay
+  ]
+  component MUTANTS $v_control [
+  mutants that must fail
+  ]
+  component DOCCHECK $v_check [
+  the document lint and the
+  diagram render check
+  ]
+}
+
+package "Gates" as GATES {
+  component GPROOF $v_gate [
+  check-reified-rspaces-proofs.sh
+  ]
+  component GTLA $v_gate [
+  check-reified-rspaces-tla-invariants.sh
+  ]
+  component GLEGS $v_gate [
+  the Z3, Sage and rewriting legs
+  (a missing tool fails)
+  ]
+  component GCARGO $v_gate [
+  cargo test and the checkers
+  ]
+  component GDOC $v_gate [
+  doc_lint.py and render.sh
+  ]
+}
+
+package "Acceptance categories" as CATEGORIES {
+  component MODELED $v_category [
+  modeled
+  ]
+  component VERIFIED $v_category [
+  verified, with negative controls
+  ]
+  component INVARIANTS $v_category [
+  invariants as properties
+  ]
+  component COMPLETE $v_category [
+  complete
+  ]
+  component TESTED $v_category [
+  tested
+  ]
+  component DOCUMENTED $v_category [
+  documented
+  ]
+}
+
+ROCQ --> KERNEL
+TLA --> TLC
+SCRIPTS --> SMT
+CODE --> PROPS
+CODE --> SUITES
+CODE --> MUTANTS
+MODULE --> SUITES
+MAP --> PROPS
+DOCS --> DOCCHECK
+
+KERNEL -[$rrs_flow]-> GPROOF
+MUTANTS -[$rrs_flow]-> GPROOF
+TLC -[$rrs_flow]-> GTLA
+SMT -[$rrs_flow]-> GLEGS
+PROPS -[$rrs_flow]-> GCARGO
+SUITES -[$rrs_flow]-> GCARGO
+MUTANTS -[$rrs_flow]-> GCARGO
+DOCCHECK -[$rrs_flow]-> GDOC
+
+GPROOF -[$rrs_effect]-> MODELED
+GTLA -[$rrs_effect]-> MODELED
+GPROOF -[$rrs_effect]-> VERIFIED
+GTLA -[$rrs_effect]-> VERIFIED
+GLEGS -[$rrs_effect]-> VERIFIED
+GCARGO -[$rrs_effect]-> INVARIANTS
+GCARGO -[$rrs_effect]-> COMPLETE
+GCARGO -[$rrs_effect]-> TESTED
+GDOC -[$rrs_effect]-> DOCUMENTED
+
+legend bottom
+**Concept colors**
+|<$v_code>     | TL code and the module source |
+|<$v_model>    | formal models and scripts (Rocq, TLA+, Z3, Sage, rewriting) |
+|<$v_map>      | the invariant map |
+|<$v_doc>      | documents and diagram sources |
+|<$v_check>    | check that must pass |
+|<$v_control>  | negative control: check that must fail |
+|<$v_gate>     | local gate on a development host |
+|<$v_category> | acceptance category |
+**Arrows**
+|<$rrs_relation> | the check reads the source |
+|<$rrs_flow>     | the gate runs the check |
+|<$rrs_effect>   | the gate gives evidence of the category |
+endlegend
+@enduml

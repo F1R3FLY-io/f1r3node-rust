@@ -1,0 +1,97 @@
+' ============================================================================
+' 46 The normalization pipeline of TensorLogic, with the exit of each phase.
+'
+' Source of Figure TL13 in ../tensor-logic/gslt.md (section 5.1). The figure
+' restates NORMALIZE of that section and the decoder of section 6. It adds
+' no new fact.
+'
+' Reading order:
+'   1. DECODE checks the reflected term against the TL module and its
+'      fingerprint.
+'   2. RESOLVE, INLINE, ELABORATE, SCOPE and CANON run in this order. Each
+'      phase is a function of its input.
+'   3. The result is the unique normal form, which the static checks receive.
+'
+' Colors come from concept-colors.iuml (aliases of the shared palette).
+' Render: ./render.sh 46-tl-normalization-pipeline.puml   Check: ./render.sh --check
+
+@startuml 46-tl-normalization-pipeline
+!include ../../../casper/theory/diagrams/palette.iuml
+!include concept-colors.iuml
+$ca_base_skin()
+skinparam ArrowColor $rrs_relation
+skinparam ActivityBorderColor $rrs_relation
+skinparam ActivityDiamondBorderColor $rrs_relation
+skinparam ActivityDiamondBackgroundColor $ca_note_amber
+skinparam PartitionBorderColor $rrs_relation
+skinparam NoteBorderColor $rrs_relation
+skinparam LegendBorderColor $rrs_relation
+skinparam LegendBackgroundColor $ca_note_grey
+title The normalization pipeline: NORMALIZE(t, sig)
+
+start
+:a reflected term t and a signature sig; <<$rrs_tl_term>>
+partition "DECODE (GSLT 6)" {
+  if (every tag splits with parse_reflected_tag, and every\narity, sort and leaf is one of the TL module?) then (no)
+    :NotATensorTerm; <<$rrs_reject>>
+    stop
+  else (yes)
+  endif
+  if (the fingerprint is in the allow-list?) then (no)
+    :UnknownTensorLanguage; <<$rrs_reject>>
+    stop
+  else (yes)
+  endif
+}
+partition "RESOLVE" {
+  :check the token texts: NFC, primes, UTS 39,
+  the suffixes of numerals and the operators.
+  Bind the names and the scopes, and check
+  the call signatures; <<$rrs_tl_engine>>
+  note right
+    exits: LiteralKind, ConfusableIdentifier,
+    MixedScriptIdentifier, NonAsciiOperator,
+    UnknownTensor, AmbiguousName, ArityMismatch
+  end note
+}
+partition "INLINE" {
+  :expand the let definitions in definition order
+  (no recursion, so the expansion ends); <<$rrs_tl_engine>>
+  note right
+    exit: InlineTooLarge
+  end note
+}
+partition "ELABORATE" {
+  :rewrite S1 to S8 and S11 to S21 into the core,
+  innermost first, with the ranks of sig; <<$rrs_tl_engine>>
+  note right
+    exits: BroadcastMismatch, MatmulMismatch,
+    RankUnknown, AxisRequired, EinsumSpec
+  end note
+}
+partition "SCOPE" {
+  :S9: make every implicit projection explicit
+  (the scope rule); <<$rrs_tl_engine>>
+}
+partition "CANON" {
+  :fold the exact constants, and remove the
+  parentheses that the precedence makes redundant; <<$rrs_tl_engine>>
+  :sort the commutative nodes by keys that do not
+  depend on names, refine the bound variables by
+  color, and break a residual tie by the exhaustive
+  minimum, within the static limits; <<$rrs_tl_engine>>
+  :rename to _0, _1, ... in order of first
+  occurrence, and sort the statements; <<$rrs_tl_engine>>
+}
+:the normal form NF(t): equal for every t' that
+equals t under E_TL; <<$rrs_tl_term>>
+:the static checks (Figure TL5); <<$rrs_tl_engine>>
+stop
+
+legend bottom
+**Concept colors**
+|<$rrs_tl_term>   | TL terms |
+|<$rrs_tl_engine> | a phase of the TL engine |
+|<$rrs_reject>    | a typed failure |
+endlegend
+@enduml
