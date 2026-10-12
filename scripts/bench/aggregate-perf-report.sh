@@ -255,6 +255,9 @@ jq -n \
         # A segment whose shard never starts writes no metrics.json and so is
         # missing from $segs. The run state counts every failed segment.
         segments_failed: ($passive.bench_failures // 0),
+        # Every segment the driver started, with or without metrics. The driver
+        # never retries a segment, so attempted counts each segment once.
+        segments_attempted: ([($passive.bench_segments // 0), ($segs | length)] | max),
         p50_ms: ($ok | map(.latency.p50_ms) | median),
         p95_ms: ($ok | map(.latency.p95_ms) | median),
         throughput: ($ok | map(.observed_throughput) | median),
@@ -490,7 +493,7 @@ jq -r \
   "",
   "| metric | this week | last week |",
   "|---|---|---|",
-  "| segments ok | \(.active.segments_ok)/\(.active.segments_total)\(if (.active.segments_failed // 0) > 0 then " (\(.active.segments_failed) failed)" else "" end) | \($ba.segments_ok | fmt)/\($ba.segments_total | fmt) |",
+  "| segments ok | \(.active.segments_ok)/\(.active.segments_attempted // .active.segments_total)\(if (.active.segments_failed // 0) > 0 then " (\(.active.segments_failed) failed)" else "" end) | \($ba.segments_ok | fmt)/\(($ba.segments_attempted // $ba.segments_total) | fmt) |",
   "| p50 latency (ms) | \(.active.p50_ms | fmt) | \($ba.p50_ms | fmt) |",
   "| p95 latency (ms) | \(.active.p95_ms | fmt) | \($ba.p95_ms | fmt) |",
   "| throughput (deploys/s) | \(.active.throughput | fmt) | \($ba.throughput | fmt) |",

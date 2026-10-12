@@ -16,7 +16,7 @@ printf 'BOOTSTRAP_PRIVATE_KEY=fixture\n' >"$TMP/repo/docker/.env"
 cat >"$TMP/bin/docker" <<'SH'
 #!/usr/bin/env bash
 case " $* " in
-	*" up -d "*)
+	*" up "*)
 		echo ' Container grafana  Creating'
 		echo 'Error response from daemon: Conflict. The container name "/grafana" is already in use by container "fixture".'
 		exit 1

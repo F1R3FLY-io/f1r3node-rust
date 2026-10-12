@@ -176,6 +176,7 @@ jq -e '
   .active.segments_total == 1
   and .active.segments_ok == 1
   and .active.segments_failed == 0
+  and .active.segments_attempted == 1
   and (.active.segments | length) == 1
   and .active.segments[0].offset_seconds == 60
   and .passive.cpu_peak_core_grid_pct == {"validator1": {"all": 55.5}, "bootstrap": {"all": 12}}
@@ -196,10 +197,11 @@ jq -e '
   .active.segments_total == 1
   and .active.segments_ok == 1
   and .active.segments_failed == 2
+  and .active.segments_attempted == 3
 ' "$TMP/bench-failed-report/weekly-summary.json" >/dev/null
 jq -e '.warnings | any(. == "2 active benchmark segment(s) failed")' \
 	"$TMP/bench-failed-report/verdict.json" >/dev/null
-grep -Fq '| segments ok | 1/1 (2 failed) |' "$TMP/bench-failed-report/perf-report.md"
+grep -Fq '| segments ok | 1/3 (2 failed) |' "$TMP/bench-failed-report/perf-report.md"
 
 # Every bench segment failed before it wrote metrics: the all-failed warning
 # must fire, as it does when failed segments did write metrics.
@@ -211,6 +213,8 @@ SOAK_DIR="$TMP/bench-all-failed" OUT_DIR="$TMP/bench-all-failed-report" RUN_ID=1
 	"$ROOT/scripts/bench/aggregate-perf-report.sh"
 jq -e '.warnings | any(. == "all active benchmark segments failed")' \
 	"$TMP/bench-all-failed-report/verdict.json" >/dev/null
+jq -e '.active.segments_attempted == 2 and .active.segments_ok == 0' \
+	"$TMP/bench-all-failed-report/weekly-summary.json" >/dev/null
 
 mkdir -p "$TMP/breach" "$TMP/breach-report"
 cp "$TMP/passing/summary.json" "$TMP/breach/summary.json"
