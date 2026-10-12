@@ -303,9 +303,6 @@ in {{
 /// would fail with ENOTEMPTY — verifies the recursive walker is
 /// actually invoked.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "triage posture: fs_remove_dir is a FSERR_UNSUPPORTED stub \
-            (slice 5.44).  Un-ignore when the real DD-RemoveDirReplyShape \
-            handler lands as a future Wave 4 slice."]
 async fn dir_remove_dir_recursive_wipes_subtree() {
     let dir = tempfile::tempdir().expect("tempdir");
     let root = std::fs::canonicalize(dir.path()).expect("canonicalize");
@@ -387,9 +384,6 @@ in {{
 /// observable from the reply Par.  Same 3-entry subtree as the
 /// Oracular version above; only `BundleConsensusMode` differs.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "triage posture: fs_remove_dir is a FSERR_UNSUPPORTED stub \
-            (slice 5.44).  Un-ignore when the real DD-RemoveDirReplyShape \
-            handler lands as a future Wave 4 slice."]
 async fn dir_remove_dir_recursive_consensus_truncates_manifest_upward() {
     let dir = tempfile::tempdir().expect("tempdir");
     let root = std::fs::canonicalize(dir.path()).expect("canonicalize");

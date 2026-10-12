@@ -172,33 +172,33 @@ fail_if(!pull_request_trigger.fetch("types", []).include?("edited"), "CI must re
 fail_if(ci_trigger.dig("workflow_dispatch", "inputs", "target_sha", "default") != "", "CI dispatch must accept an optional exact target SHA")
 fail_if(ci_trigger.dig("workflow_dispatch", "inputs", "top_pull_request", "default") != "", "CI dispatch must accept an optional top pull request")
 build_base = ci.dig("jobs", "build_base")
-fail_if(build_base.dig("outputs", "TARGET_SHA") != "${{ steps.target.outputs.target_sha }}", "Build Base must export the validated target SHA")
-fail_if(build_base.dig("outputs", "MERGE_BASE_SHA") != "${{ steps.target.outputs.merge_base_sha }}", "Build Base must export the synthetic base SHA")
-fail_if(build_base.dig("outputs", "RUN_HEAVY") != "${{ steps.target.outputs.run_heavy }}", "Build Base must export the Heavy Pipeline decision")
+fail_if(build_base.dig("outputs", "TARGET_SHA") != "${{ steps.target.outputs.target_sha }}", "Resolve Target must export the validated target SHA")
+fail_if(build_base.dig("outputs", "MERGE_BASE_SHA") != "${{ steps.target.outputs.merge_base_sha }}", "Resolve Target must export the synthetic base SHA")
+fail_if(build_base.dig("outputs", "RUN_HEAVY") != "${{ steps.target.outputs.run_heavy }}", "Resolve Target must export the Integration Pipeline decision")
 build_steps = build_base.fetch("steps")
 target_step = build_steps.find { |step| step["id"] == "target" }
 target_body = target_step&.dig("run").to_s
 fail_if(!target_body.include?('compare/${base}...${merge_base}'), "CI must verify synthetic base ancestry")
-fail_if(target_body.include?("stack-children"), "an open child pull request must not bypass protected-branch Heavy Pipeline")
+fail_if(target_body.include?("stack-children"), "an open child pull request must not bypass protected-branch Integration Pipeline")
 target_upload = build_steps.find { |step| step["name"] == "Upload exact target evidence" }
 fail_if(target_upload&.dig("uses").to_s !~ /\Aactions\/upload-artifact@[0-9a-f]{40}\z/, "CI target evidence upload must use a full action SHA")
 pipeline = ci.dig("jobs", "pipeline")
-fail_if(pipeline["if"] != "needs.build_base.outputs.RUN_HEAVY == 'true'", "Heavy Pipeline must use the validated stack decision")
-fail_if(pipeline.dig("with", "checkout_ref") != "${{ needs.build_base.outputs.TARGET_SHA }}", "Heavy Pipeline must check out the validated target SHA")
+fail_if(pipeline["if"] != "needs.build_base.outputs.RUN_HEAVY == 'true'", "Integration Pipeline must use the validated stack decision")
+fail_if(pipeline.dig("with", "checkout_ref") != "${{ needs.build_base.outputs.TARGET_SHA }}", "Integration Pipeline must check out the validated target SHA")
 ci_text = File.read(ci_path)
 fail_if(!ci_text.include?("merge_commit_sha"), "CI must validate the current pull request synthetic merge")
-fail_if(!ci_text.include?('run_heavy=$run_heavy'), "CI must persist the Heavy Pipeline decision")
+fail_if(!ci_text.include?('run_heavy=$run_heavy'), "CI must persist the Integration Pipeline decision")
 fail_if(!ci_text.include?("ci-target-${{ github.run_attempt }}"), "CI must upload attempt-specific target evidence")
-%w[lint deny markdown_link_check test].each do |job_name|
+%w[static_checks script_tests soak_harness_tests deny markdown_link_check test].each do |job_name|
   checkout = ci.dig("jobs", job_name, "steps").find { |step| step["name"] == "Checkout" }
   fail_if(checkout&.dig("with", "ref") != "${{ needs.build_base.outputs.TARGET_SHA }}", "#{job_name} must check out the validated target SHA")
 end
-lint_steps = ci.dig("jobs", "lint", "steps")
-fail_if(lint_steps.none? { |step| step["run"].to_s.include?("test-pre-push-hook.sh") }, "Lint must test pre-push hook behavior")
-fail_if(lint_steps.none? { |step| step["run"].to_s.include?("test-ci-stack-gate.sh") }, "Lint must run CI stack gate tests")
+script_steps = ci.dig("jobs", "script_tests", "steps")
+fail_if(script_steps.none? { |step| step["run"].to_s.include?("test-pre-push-hook.sh") }, "Script Tests must test pre-push hook behavior")
+fail_if(script_steps.none? { |step| step["run"].to_s.include?("test-ci-stack-gate.sh") }, "Script Tests must run CI stack gate tests")
 %w[integration_tests_amd64 integration_tests_arm64].each do |job_name|
   condition = ci.dig("jobs", job_name, "if").to_s
-  fail_if(!condition.include?("needs.pipeline.result != 'skipped'"), "#{job_name} must fail closed when Heavy Pipeline runs")
+  fail_if(!condition.include?("needs.pipeline.result != 'skipped'"), "#{job_name} must fail closed when Integration Pipeline runs")
 end
 link_condition = ci.dig("jobs", "markdown_link_check", "if").to_s
 fail_if(!link_condition.include?("github.event_name != 'pull_request'"), "Markdown link checks must run outside pull requests")
@@ -228,7 +228,7 @@ fail_if(!train_text.include?("release-train.sh validate-stack"), "deployment tra
 fail_if(!train_text.include?("release-train.sh validate-top-merge"), "deployment train must verify the top synthetic merge")
 fail_if(!train_text.include?("release-train.sh validate-version"), "deployment train must verify the source version with release-train.sh")
 fail_if(!train_text.include?("release-train.sh plan-ci"), "deployment train must plan CI evidence with release-train.sh")
-fail_if(!train_text.include?("release-train.sh validate-ci-evidence"), "deployment train must validate exact CI target and Heavy Pipeline evidence")
+fail_if(!train_text.include?("release-train.sh validate-ci-evidence"), "deployment train must validate exact CI target and Integration Pipeline evidence")
 fail_if(train_text.scan("release-train.sh validate-stack").length != 2, "deployment train must validate the full stack before and after CI")
 fail_if(!train_text.include?("release-train.sh validate-current-stack"), "deployment train must compare the post-CI stack record")
 fail_if(!train_text.include?(".stack.members[].pull_request"), "deployment train must refresh every stack member after CI")
