@@ -29,10 +29,17 @@ BENCH_RATE="${BENCH_RATE:-2}"
 SEGMENT_INDEX="${SEGMENT_INDEX:-0}"
 SOAK_STARTED_AT="${SOAK_STARTED_AT:-$(date +%s)}"
 READY_TIMEOUT="${READY_TIMEOUT:-420}"
-HTTP_PORT=40413
+# validator1 HTTP (container 40403) after the ci-ports.shard.yml remap.
+HTTP_PORT=14413
 
 SHARD_YML="$NODE_REPO_DIR/docker/shard.yml"
 [ -f "$SHARD_YML" ] || { echo "missing $SHARD_YML" >&2; exit 2; }
+# shard.yml publishes 40400-40455, inside the kernel ephemeral range, where an
+# outbound connection on the soak runner can already hold the port (soak
+# 38184406100 bench segments 11 and 13). The CI override moves every host
+# port below the ephemeral floor; container ports do not change.
+PORTS_YML="$NODE_REPO_DIR/docker/ci-ports.shard.yml"
+[ -f "$PORTS_YML" ] || { echo "missing $PORTS_YML" >&2; exit 2; }
 command -v jq >/dev/null || { echo "jq not found" >&2; exit 2; }
 
 # latency-benchmark.sh needs a funded deployer. Default to the shard's own
@@ -52,7 +59,7 @@ fi
 export DEPLOYER_KEY
 
 mkdir -p "$OUT_DIR"
-COMPOSE=(docker compose -f "$SHARD_YML" -p soak-bench)
+COMPOSE=(docker compose -f "$SHARD_YML" -f "$PORTS_YML" -p soak-bench)
 SAMPLER_PID=""
 
 cleanup() {
@@ -113,6 +120,7 @@ SAMPLER_PID=$!
 BENCH_OUT="$OUT_DIR/bench"
 DURATION="$BENCH_DURATION" DEPLOYS_PER_SEC="$BENCH_RATE" OUT_DIR="$BENCH_OUT" \
   "$SCRIPT_DIR/latency-benchmark.sh" --apply \
+  --http-port "$HTTP_PORT" \
   --duration "$BENCH_DURATION" --rate "$BENCH_RATE" --out-dir "$BENCH_OUT" \
   > "$OUT_DIR/bench.log" 2>&1
 BENCH_STATUS=$?
