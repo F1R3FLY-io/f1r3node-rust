@@ -1,7 +1,7 @@
 ---
 doc_type: todos
 version: "1.1"
-last_updated: 2026-10-06
+last_updated: 2026-10-11
 mr_status:
   ready: false
   target_branch: master
@@ -2732,9 +2732,10 @@ title: "Test Net (Continuously Running Shards)"
 status: in_progress
 claimed_by: claude-session-dfac55a4
 claimed_at: 2026-10-06T16:14:22Z
-priority: p2
+priority: p1
 user_story: US-010
 blocked_by: [EPIC-013]
+blocked_by_note: "2026-10-11: only the first stable promotion through EPIC-013 Phase 4 blocks the first shard. The design, the tooling, TASK-014-7, and TASK-014-8 can be implemented now. Enabling TASK-014-7 and TASK-014-8 waits for TASK-014-5, as for TASK-014-6."
 created_at: 2026-08-19
 branch: ci/testnet-deployment
 design_intent:
@@ -2744,6 +2745,10 @@ design_intent:
   shard_composition: "Mixed-release shards: Anchors run earlier releases and soaking nodes run the test net candidate, so the soak-in tests cross-version compatibility."
   consensus_scope: "One consensus/SMR model per test net. Today: the CBC Casper test net. Each model from the consensus-neutral boundary roadmap (feature/consensus-neutral-boundary) gets its own test net."
   incompatible_release: "A test net candidate that cannot interoperate with its shard starts a new shard with a fresh genesis in the same test net. Old shards run until a retirement policy removes them."
+  candidate_selection: "Proposed 2026-10-11 (release-process Section 10): the Friday scheduled slot soaks the newest eligible master canary in candidate artifact mode. With no eligible canary, it runs a source-mode soak as evidence only."
+  first_shard: "Proposed 2026-10-11: the test net waits for the first stable release under the new process. Its digest seeds all three Anchors. The next test net candidate is the first soaking node."
+  slot_queue: "Proposed 2026-10-11: one soaking node per shard. When the slot frees, only the newest waiting test net candidate enrolls. Older waiting candidates and same-version candidates of a promoted release become superseded."
+  candidate_lifecycle: "Proposed 2026-10-11: release-process Section 12.2 lists the candidate states and the gate document of each state."
 tasks:
   - id: TASK-014-1
     title: "Design the test net (topology, lifecycle, upgrade path)"
@@ -2795,6 +2800,26 @@ tasks:
       - "soak-in.yml enrolls a test net candidate after its 60h stability soak passes, instead of after stable publication"
       - "The promotion controller starts after the Shard soak-in completes, not after the 60h stability soak"
       - "The Shard soak-in publishes Section 8.1 gate evidence, and release.yml holds promotion until that gate passes"
+  - id: TASK-014-7
+    title: "Friday slot soaks the newest master canary in candidate artifact mode"
+    status: pending
+    blocked_by: [TASK-014-5]
+    acceptance:
+      - "The Friday scheduled slot of merge-recovery-soak.yml selects the newest standard canary whose tag target is reachable from master, with valid release-evidence.json and a release-eligible source version"
+      - "The slot runs the 60h stability soak in candidate artifact mode on that canary"
+      - "With no eligible canary, the slot runs a source-mode soak on master that cannot write test-net-candidate.json"
+      - "Full OCI validation and the required slashing suite start for the selected canary when the soak starts"
+      - "A fixture test covers the newest-canary choice, an unreachable tag, missing evidence, and the source-mode fallback"
+  - id: TASK-014-8
+    title: "Candidate lifecycle and soaking slot queue in soak-in.yml"
+    status: pending
+    blocked_by: [TASK-014-5, TASK-014-3]
+    acceptance:
+      - "soak-in.yml enrolls a test net candidate only when the soaking slot is free and full OCI validation and the slashing suite passed on its exact digest"
+      - "When the slot frees, only the newest waiting test net candidate enrolls, and each older waiting candidate is recorded as superseded"
+      - "A stable promotion marks each other candidate with the same target version as superseded"
+      - "Each state in release-process Section 12.2 is recorded in a gate document on the canary prerelease"
+      - "A fixture test covers a busy slot, two waiting candidates, and a same-version candidate after promotion"
 ---
 ```
 

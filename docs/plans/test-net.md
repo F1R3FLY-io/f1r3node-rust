@@ -1,9 +1,9 @@
 # Test Net Design (EPIC-014)
 
-- **Status:** Draft for review, 2026-10-06
+- **Status:** Draft for review, 2026-10-06. Updated 2026-10-11 with candidate selection, the first shard, and the soaking slot queue
 - **Task:** TASK-014-1 in `docs/ToDos.md`
 - **User story:** US-010 in `docs/UserStories.md`
-- **Governing text:** `docs/release-process.md` Section 12 and the proposed Section 12.1 amendment (pending ratification as TASK-014-5)
+- **Governing text:** `docs/release-process.md` Section 12 and the proposed Section 12.1 amendment, Section 12.2, and the Section 10 candidate selection (pending ratification as TASK-014-5)
 - **Terms:** [Test net](../Glossary.md#test-net), [Test net candidate](../Glossary.md#test-net-candidate), [Shard soak-in](../Glossary.md#shard-soak-in), [Anchor](../Glossary.md#anchor), [60h stability soak](../Glossary.md#60h-stability-soak)
 
 ## 1. Scope
@@ -28,6 +28,8 @@ These rules come from Section 12.1. This design does not reopen them.
 ## 3. Topology
 
 **Proposed:** The first shard has four bonded validators on two VMs. Three validators are Anchors. One validator slot holds the soaking node. A bootstrap node and a read-only observer complete the shard.
+
+**First shard:** The test net starts after the first stable release under the new process. That stable digest runs all three Anchors, with a fresh genesis. The next test net candidate is the first soaking node (release-process Section 12.1).
 
 ```mermaid
 flowchart LR
@@ -74,9 +76,13 @@ stateDiagram-v2
 
 A shard holds one soaking node at a time. A weekly release cadence and a soak period of five days or less fit this limit.
 
+A test net candidate that arrives while the soaking slot is busy waits in a queue. When the slot frees, only the newest waiting candidate enrolls, and each older waiting candidate becomes superseded (release-process Sections 12.1 and 12.2).
+
 When a soaking node becomes an Anchor, the oldest Anchor unbonds and stops. The shard keeps four validators. Each promotion thus moves the release mix forward by one release.
 
 ## 5. Enrollment flow
+
+The Friday scheduled slot of the 60h stability soak selects the newest eligible `master` canary and runs it in candidate artifact mode (release-process Section 10). Full OCI validation and the required slashing suite run at the same time. `soak-in.yml` enrolls the test net candidate only after both gates pass and the soaking slot is free.
 
 ```mermaid
 sequenceDiagram
@@ -127,7 +133,7 @@ The compatibility check decides between joining a shard and starting a new shard
 | 3 | Test net composition | One shard, four validators, three Anchors, one soaking slot, one observer | Lowest cost that still mixes releases and tolerates one fault |
 | 4 | Compatibility check | Declared incompatibility, plus a 200-block observer replay for undeclared candidates (Section 6) | Keeps a regression from receiving a fresh shard |
 | 5 | Retirement policy | A shard retires 14 days after a newer shard holds three Anchors. A shard open to partners gives 30 days notice | Keeps one current shard and gives partners time to move |
-| 6 | Other gates before test net entry | Full OCI validation and the required slashing suite must pass before enrollment | A candidate that fails a gate cannot become stable, so test net time on that candidate has no value |
+| 6 | Other gates before test net entry | Full OCI validation and the required slashing suite must pass before enrollment. They run during the 60h stability soak (release-process Section 12.1) | A candidate that fails a gate cannot become stable, so test net time on that candidate has no value |
 
 The proposed Anchor promotion criteria in row 2 are:
 
@@ -199,10 +205,12 @@ These items block the first `--apply` (TASK-014-2):
 2. Validator keys reach the nodes as command-line arguments from `.env.remote`. Section 10 needs the keys in OCI Vault.
 3. `deploy.sh` ships only the testbed compose files and key set. It must ship the test net compose files, the slot file, and the Anchor 3 and soaking-slot keys.
 4. No workflow publishes `shard-soak-in-evidence.json` yet (TASK-014-3).
+5. The Friday scheduled slot builds `master` from source. It must select the newest eligible `master` canary and run candidate artifact mode (TASK-014-7).
+6. No stable release exists under the new process. The first shard needs one to seed its Anchors (EPIC-013 Phase 4).
 
 The remaining steps are:
 
 1. A maintainer reviews this record and the proposed values.
 2. A maintainer ratifies Section 12.1 (TASK-014-5).
-3. TASK-014-2 closes the four blockers and runs the first `--apply` with maintainer approval.
+3. TASK-014-2 closes the six blockers and runs the first `--apply` with maintainer approval.
 4. After the test net runs, a maintainer sets the repository variable `RELEASE_SHARD_SOAK_IN_GATE` to `enforced`. A variable change has no review gate, so the maintainer records the change and its reason in EPIC-014.
