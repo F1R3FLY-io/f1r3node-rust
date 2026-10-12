@@ -42,14 +42,18 @@ flowchart LR
         A3[Anchor 3]
         S[Soaking slot: test net candidate]
         R[Read-only observer]
+        P[(Prometheus)]
     end
     B --- A1
     B --- A2
     B --- A3
     B --- S
     B --- R
-    R --> P[(Prometheus and soak dashboard)]
+    P -. scrapes all six nodes .-> R
+    P --> E[Shard soak-in evidence and soak dashboard summary]
 ```
+
+VM B also runs Prometheus. Section 8 defines its scrape targets, retention, and access.
 
 Four validators let the shard tolerate one faulty validator under the usual Byzantine bound of n ≥ 3f + 1. The soaking node is that tolerated fault. A test net candidate that misbehaves cannot stop the three Anchors from finalizing blocks.
 
@@ -149,7 +153,19 @@ The numeric thresholds in row 2 are first values. The first four weeks of operat
 
 An idle shard produces almost no evidence. **Proposed:** A low, constant deploy load runs against the shard, at about 10 percent of the dev integration soak rate. The load generator reuses the soak harness drivers.
 
-The read-only observer exports metrics to Prometheus. The existing soak dashboard and the OCI Notifications topic receive the Shard soak-in status and its alerts.
+**Proposed metrics store:** A self-hosted Prometheus container runs on VM B. It reuses the rule file and the Grafana dashboards in `docker/monitoring/` (see `docker/prometheus-grafana.md`). No account or external service is necessary.
+
+The test net needs its own scrape file. The existing `docker/monitoring/prometheus.yml` finds nodes by Docker DNS names on one host, and those names do not resolve across two VMs.
+
+- **Targets:** Each node already exports Prometheus metrics on its HTTP API port (`prometheus = true` in `docker/conf/default.conf`). Prometheus scrapes all six nodes on both VMs at static private VCN addresses. A host exporter or cAdvisor supplies VM memory and restart data.
+- **Retention:** At least 10 days, which is two 5-day soak periods. Data lives on the VM B block volume.
+- **Access:** Prometheus has no public port. Operators reach it through the operator network only. Partners never reach it (TASK-014-4).
+- **Images:** The Prometheus image is pinned by digest. `docker/monitoring.yml` uses `:latest` tags, so the test net compose file must not copy those tags.
+- **Grafana:** Optional, for operators only. If it runs, its admin password comes from OCI Vault. The `admin/admin` default in `docker/monitoring.yml` is for local use only.
+
+`soak-in.yml` evaluates the Anchor criteria (Section 7) with Prometheus queries at the end of the soak period. Prometheus is the only time-series store for the test net.
+
+The soak dashboard is a static GitHub Pages site that `soak-dashboard-pages.yml` builds from report artifacts. It does not read Prometheus. `soak-in.yml` publishes a Shard soak-in summary to it, as the soaks publish their reports. The OCI Notifications topic receives the Shard soak-in status and its alerts.
 
 ## 9. Evidence
 
@@ -159,7 +175,7 @@ The Shard soak-in publishes one gate document to the canary prerelease, in the S
 - `path`: `joined` or `new_shard`
 - `compatibility_check` result and replay window
 - `soak_period_seconds` and `completed`
-- The result of each Anchor criterion
+- The result of each Anchor criterion, with the Prometheus query, the time range, and the measured value
 - `anchor_promoted`
 
 The promotion controller checks this document as it checks other gate documents. A document whose run does not match fails the gate.
@@ -168,6 +184,7 @@ The promotion controller checks this document as it checks other gate documents.
 
 - Validator private keys live in OCI Vault, as for the soak scheduler. Keys never appear in artifacts, logs, or evidence.
 - Each shard uses its own VCN and security list. Only the protocol and discovery ports are public. SSH access is limited to the operator network.
+- The HTTP API ports that export metrics and the Prometheus port are not public. Prometheus scrapes the nodes over the VCN.
 - The deploy workflow uses short-lived credentials from the `release-credentials` environment.
 - TASK-014-4 opens read-only observer endpoints to partners. Partners never receive validator access.
 
@@ -207,10 +224,11 @@ These items block the first `--apply` (TASK-014-2):
 4. No workflow publishes `shard-soak-in-evidence.json` yet (TASK-014-3).
 5. The Friday scheduled slot builds `master` from source. It must select the newest eligible `master` canary and run candidate artifact mode (TASK-014-7).
 6. No stable release exists under the new process. The first shard needs one to seed its Anchors (EPIC-013 Phase 4).
+7. The test net compose files and `deploy.sh` ship no metrics store. VM B needs the Prometheus service, its scrape targets for both VMs, a block volume for retention, and no public port.
 
 The remaining steps are:
 
 1. A maintainer reviews this record and the proposed values.
 2. A maintainer ratifies Section 12.1 (TASK-014-5).
-3. TASK-014-2 closes the six blockers and runs the first `--apply` with maintainer approval.
+3. TASK-014-2 closes the seven blockers and runs the first `--apply` with maintainer approval.
 4. After the test net runs, a maintainer sets the repository variable `RELEASE_SHARD_SOAK_IN_GATE` to `enforced`. A variable change has no review gate, so the maintainer records the change and its reason in EPIC-014.
