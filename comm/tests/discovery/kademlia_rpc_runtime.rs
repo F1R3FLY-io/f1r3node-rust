@@ -199,9 +199,18 @@ impl TestLookupHandler {
 
 /// Get free port
 pub async fn get_free_port() -> Result<u16, std::io::Error> {
-    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let listener = TcpListener::bind("0.0.0.0:0").await?;
     let port = listener.local_addr()?.port();
     Ok(port)
+}
+
+const SETUP_ATTEMPTS: usize = 5;
+
+fn address_in_use(error: &CommError) -> bool {
+    matches!(error, CommError::InternalCommunicationError(message)
+        if ["Address already in use", "(os error 48)", "(os error 98)"]
+            .iter()
+            .any(|marker| message.contains(marker)))
 }
 
 /// Simplified two nodes test result
@@ -222,35 +231,48 @@ where
     F: FnOnce(GrpcKademliaRPC, PeerNode, PeerNode) -> Fut,
     Fut: std::future::Future<Output = T>,
 {
-    // Create two environments
-    let port1 = get_free_port()
-        .await
-        .map_err(|e| CommError::InternalCommunicationError(e.to_string()))?;
-    let port2 = get_free_port()
-        .await
-        .map_err(|e| CommError::InternalCommunicationError(e.to_string()))?;
-
-    let env1 = runtime.create_environment(port1);
-    let env2 = runtime.create_environment(port2);
-
-    let local = env1.peer.clone();
-    let remote = env2.peer.clone();
-
     // Use provided handlers or create defaults
     let ping_handler = ping_handler.unwrap_or_default();
     let lookup_handler = lookup_handler.unwrap_or_default();
 
+    // Pick fresh ports again when another process takes the probed port
+    let mut attempt = 1;
+    let (env1, local, remote, mut remote_server) = loop {
+        let port1 = get_free_port()
+            .await
+            .map_err(|e| CommError::InternalCommunicationError(e.to_string()))?;
+        let port2 = get_free_port()
+            .await
+            .map_err(|e| CommError::InternalCommunicationError(e.to_string()))?;
+
+        let env1 = runtime.create_environment(port1);
+        let env2 = runtime.create_environment(port2);
+
+        let local = env1.peer.clone();
+        let remote = env2.peer.clone();
+
+        // Create and start remote RPC server
+        match runtime
+            .create_kademlia_rpc_server(
+                &env2,
+                ping_handler.to_handler(remote.clone()),
+                lookup_handler.to_handler(remote.clone()),
+            )
+            .await
+        {
+            Ok(server) => break (env1, local, remote, server),
+            Err(error) if address_in_use(&error) && attempt < SETUP_ATTEMPTS => {
+                eprintln!(
+                    "kademlia test setup attempt {attempt}/{SETUP_ATTEMPTS}: port {port2} is in use; retrying with fresh ports"
+                );
+                attempt += 1;
+            }
+            Err(error) => return Err(error),
+        }
+    };
+
     // Create local RPC client
     let local_rpc = runtime.create_kademlia_rpc(&env1);
-
-    // Create and start remote RPC server
-    let mut remote_server = runtime
-        .create_kademlia_rpc_server(
-            &env2,
-            ping_handler.to_handler(remote.clone()),
-            lookup_handler.to_handler(remote.clone()),
-        )
-        .await?;
 
     // Give the server a moment to start
     tokio::time::sleep(Duration::from_millis(100)).await;

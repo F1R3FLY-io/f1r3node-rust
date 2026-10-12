@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "claim": "CLAIM-CASPER-SOAK-004",
+  "model": "formal/tlaplus/casper_soak/profiles/recovery/Recovery.tla",
+  "scope": "bounded-recovery-classification-only",
+  "construction": "not-applicable",
+  "bounds": { "scenarios": 2, "observations_per_scenario": 3 },
+  "assumptions": [
+    "Three sample slots represent source occurrence A, another observation of A, and independent occurrence B.",
+    "Both occurrences may share a deploy signature but retain distinct source identities.",
+    "Pause acknowledgment abstracts a correlated observed-state receipt and its deadline.",
+    "All other identity fields, state measurements, receipts, and qualification artifacts are valid.",
+    "Independent product failures are outside this abstraction.",
+    "The model does not establish a node occurrence schema, retry authorization, or unbounded liveness."
+  ],
+  "positive_control": {
+    "configuration": "MC_Recovery.cfg",
+    "expected_exit": 0,
+    "properties": ["LaneLabelsPreserved", "OccurrenceCountsPreserved", "PauseCoverageAcknowledged"]
+  },
+  "negative_controls": [
+    { "configuration": "MC_Recovery_lane_unsafe.cfg", "expected_exit": 12, "property": "LaneLabelsPreserved", "knob": "ConflateRecoveryLanes", "fixture": "recovery_lane_mismatch" },
+    { "configuration": "MC_Recovery_occurrence_unsafe.cfg", "expected_exit": 12, "property": "OccurrenceCountsPreserved", "knob": "CollapseOccurrenceIdentity", "fixture": "recovery_occurrence_counts" },
+    { "configuration": "MC_Recovery_pause_unsafe.cfg", "expected_exit": 12, "property": "PauseCoverageAcknowledged", "knob": "AssumePauseApplied", "fixture": "recovery_pause_unacknowledged" }
+  ]
+}

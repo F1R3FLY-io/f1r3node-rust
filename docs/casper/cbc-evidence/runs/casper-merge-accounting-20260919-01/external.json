@@ -1,0 +1,29 @@
+{
+ "schema_version": 2,
+ "package": "casper-merge-accounting-20260919-01",
+ "task": "TASK-017-14",
+ "recorded_on": "2026-10-03",
+ "store": {
+  "kind": "github-release",
+  "repository": "F1R3FLY-io/f1r3node-rust",
+  "tag": "cbc-evidence-epic-017"
+ },
+ "assets": [
+  {
+   "asset": "casper-merge-accounting-20260919-01.external.tar.gz",
+   "sha256": "cfe999c21ceb9b109e8781d993f34defd77f6905108dee6e50aea560193b24b6",
+   "bytes": 1828848,
+   "members": 30,
+   "bundle_created": "2026-10-03",
+   "inner_manifest": "external-manifest.json"
+  },
+  {
+   "asset": "casper-merge-accounting-20260919-01.metadata.tar.gz",
+   "sha256": "fd9c40bce0168499f12dcfe48389ad9d23eefe650a07822dec5fe456826cbf05",
+   "bytes": 3301,
+   "members": 3,
+   "bundle_created": "2026-10-03",
+   "inner_manifest": "external-manifest.json"
+  }
+ ]
+}

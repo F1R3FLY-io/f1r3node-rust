@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "claim": "CLAIM-CASPER-SOAK-008",
+  "model": "formal/tlaplus/casper_soak/profiles/carrier_index/CarrierIndex.tla",
+  "scope": "bounded-carrier-profile-classification-only",
+  "construction": "not-applicable",
+  "bounds": {"scenarios": 2, "observations_per_scenario": 3},
+  "assumptions": [
+    "Each scenario abstracts one index/reference pair with three observation steps.",
+    "Matched inputs abstract equal candidate, DAG, signature, scan window, availability, watermark, retention boundary, and identity domain.",
+    "Engagement abstracts receipts that identify both requested traversal paths.",
+    "Known counters abstract valid required work measurements. Observed zero represents a known value, not a physical work bound.",
+    "Auxiliary observations and fault receipts are valid. Independent product failures are absent.",
+    "Executable fixtures separately check identities, artifact capture, faults, malformed evidence, and failure retention.",
+    "The model does not execute a node or prove carrier-index equivalence."
+  ],
+  "positive_control": {
+    "configuration": "MC_CarrierIndex.cfg",
+    "expected_exit": 0,
+    "properties": ["PathEngagementObserved", "CarrierInputsMatched", "MissingCountersUnknown"]
+  },
+  "negative_controls": [
+    {"configuration": "MC_CarrierIndex_path_unsafe.cfg", "expected_exit": 12, "property": "PathEngagementObserved", "knob": "AssumeIndexEngaged", "fixture": "carrier_path_unobserved"},
+    {"configuration": "MC_CarrierIndex_window_unsafe.cfg", "expected_exit": 12, "property": "CarrierInputsMatched", "knob": "CompareDifferentWindows", "fixture": "carrier_window_mismatch"},
+    {"configuration": "MC_CarrierIndex_counter_unsafe.cfg", "expected_exit": 12, "property": "MissingCountersUnknown", "knob": "ZeroMissingCounters", "fixture": "carrier_counter_missing"}
+  ]
+}

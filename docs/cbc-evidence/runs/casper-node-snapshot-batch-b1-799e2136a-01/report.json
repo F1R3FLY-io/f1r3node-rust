@@ -1,0 +1,99 @@
+{
+  "schema_version": 1,
+  "claim_id": "CLAIM-CASPER-NODE-OBSERVATION-002",
+  "scope": "batch-b1-bounded-detached-capture",
+  "status": "local-tests-passed-claim-pending",
+  "branch_base": "6940a5beb4aa806d3d75f6df3be9f238512fcc2f",
+  "execution_base": "799e2136adc6e0100b289945d9a5a6851e81c91f",
+  "working_tree": true,
+  "source_inventory": [
+    {
+      "sha256": "21e2be153718f4a8f97b50bd8de3597d0d3bcb798e3272470f2a844f1da051e4",
+      "path": "shared/src/rust/store/soak_snapshot.rs"
+    },
+    {
+      "sha256": "9ef7432549747779c39b2d352f85e613b3c187b898aec40f3a79e34c483c9ca7",
+      "path": "shared/src/rust/store/mod.rs"
+    },
+    {
+      "sha256": "217447815479ac6777b04eda444766622ad8ab0a308b660e07d9016700e1b292",
+      "path": "shared/tests/soak_snapshot.rs"
+    },
+    {
+      "sha256": "9dd87a1f4cfd0a4aa802d72cdfe09bf2a14cb9c4e363ada22b10e9b4d89e7043",
+      "path": "block-storage/src/rust/dag/soak_snapshot.rs"
+    },
+    {
+      "sha256": "e63a84c51e1c42c0c4d7e80bd4bcd59b125aee513456fccf9661762b48f945e9",
+      "path": "block-storage/src/rust/dag/mod.rs"
+    },
+    {
+      "sha256": "47037e0240c0d66a113fb10c2656bed6fd9ccc4e5becc569c6191114c8387389",
+      "path": "block-storage/src/rust/dag/block_dag_key_value_storage.rs"
+    },
+    {
+      "sha256": "88fb49234bded3d383cd1a2d15cc0a00e11e2c18165cc87cf2b7d447fb2f3eda",
+      "path": "block-storage/src/rust/dag/block_metadata_store.rs"
+    },
+    {
+      "sha256": "0a18883f8ab162c3c68044d77a6d938fed7e075a4b0476b04642555f6d925fb7",
+      "path": "block-storage/src/rust/key_value_block_store.rs"
+    },
+    {
+      "sha256": "4c070564190e86cc6c0ee9720b0550038b5ce448bd1da5ceb91d0c856dd131c8",
+      "path": "block-storage/tests/soak_snapshot.rs"
+    }
+  ],
+  "specification_at_execution": {
+    "path": "docs/claims/casper-node-authority-snapshot.md",
+    "commit": null,
+    "sha256": "0a903c524a3e3e3b598fddd6ec149e578fb18f396199cd0ab5741faa87df6121"
+  },
+  "tags_added": [
+    "shared/src/rust/store/soak_snapshot.rs cbc=mandatory cbc-weight=high",
+    "shared/tests/soak_snapshot.rs cbc=mandatory cbc-weight=high",
+    "block-storage/src/rust/dag/soak_snapshot.rs cbc=mandatory cbc-weight=high",
+    "block-storage/tests/soak_snapshot.rs cbc=mandatory cbc-weight=high"
+  ],
+  "dependency_change": false,
+  "lockfile_change": false,
+  "storage_format_change": false,
+  "production_write_path_change": false,
+  "native": {
+    "platform": "linux/x86_64",
+    "commands": [
+      "cargo test -p shared -p block-storage",
+      "cargo clippy -p shared -p block-storage --all-targets -- -D warnings",
+      "cargo fmt --check -p shared -p block-storage"
+    ],
+    "test_exit": 0,
+    "clippy_exit": 0,
+    "fmt_exit": 0,
+    "suites": {
+      "shared::lib": 102,
+      "shared::tests/soak_snapshot": 11,
+      "block-storage::lib": 68,
+      "block-storage::tests/atomic_buffer_dag_transition": 8,
+      "block-storage::tests/block_dag_storage_test": 38,
+      "block-storage::tests/carrier_index_property_test": 1,
+      "block-storage::tests/loom_equivocations_tracker": 2,
+      "block-storage::tests/loom_frontier_floor_cache": 1,
+      "block-storage::tests/mod": 38,
+      "block-storage::tests/soak_snapshot": 14
+    },
+    "failed": 0,
+    "ignored": 0
+  },
+  "lmdb_rules_exercised": [
+    "read transaction identity equals last committed identity at open and at validation",
+    "one read transaction per thread per environment; a second same-thread open fails",
+    "a value changed and restored still advances the environment transaction identity",
+    "writes from another thread during capture are detected at validation"
+  ],
+  "isolated": {
+    "executed": false,
+    "reason": "no container run was requested for Batch B1"
+  },
+  "live_node_qualified": false,
+  "claim_acceptance": false
+}

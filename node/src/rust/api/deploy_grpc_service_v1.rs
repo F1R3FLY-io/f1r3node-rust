@@ -154,11 +154,11 @@ impl DeployGrpcServiceV1Impl {
         };
 
         // Cached when available, replayed only when the reporter is idle:
-        // block_report refuses rather than queues, so this never adds to the
-        // load it would be competing with.
+        // block_report_if_idle refuses rather than queues, so this never adds
+        // to the load it would be competing with.
         match self
             .block_report_api
-            .block_report(block_hash_bytes, false)
+            .block_report_if_idle(block_hash_bytes)
             .await
         {
             Ok(report) => {

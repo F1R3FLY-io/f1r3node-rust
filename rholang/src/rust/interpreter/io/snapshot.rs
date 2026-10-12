@@ -586,7 +586,8 @@ fn hex_short(bytes: &[u8; 32]) -> String {
 
 /// Decode canonical WAL bytes back to a `Vec<WalEntry>`.
 /// Symmetric inverse of [`encode_wal_slice`]; used by joiners
-/// applying a snapshot to a fresh tree (yet-to-land wal_applier).
+/// applying a snapshot to a fresh tree (see
+/// [`super::wal_applier`]).
 ///
 /// # Version handling
 ///
@@ -1758,8 +1759,8 @@ impl ManifestEntry {
                     let hex = value.trim_matches('"');
                     // secp256k1 sigs are DER-ish, variable length (~70-72
                     // bytes typical).  Accept any even-length hex that
-                    // decodes cleanly; length validation lives in the
-                    // (yet-to-land) verify_with_pubkey.
+                    // decodes cleanly; length validation lives in
+                    // `verify_with_pubkey`.
                     if hex.len() % 2 != 0 {
                         return Err(format!("sig hex length must be even; got {}", hex.len()));
                     }
@@ -1847,9 +1848,8 @@ impl ManifestEntry {
     /// Return a copy of `self` with the `sig` field populated
     /// by signing [`sign_bytes`] with `sk_bytes` (a 32-byte
     /// secp256k1 secret key).  The caller is responsible for
-    /// invoking this before writing to the manifest; the
-    /// (yet-to-land) higher-level writer wraps the two-step
-    /// (sign + append).
+    /// invoking this before writing to the manifest;
+    /// [`SnapshotWriter`] wraps the two-step (sign + append).
     ///
     /// # Signature determinism depends on the Secp256k1 strategy
     ///
@@ -3810,14 +3810,14 @@ mod tests {
     ///
     /// # H-4 coordination cost
     ///
-    /// The (yet-to-land) H-4 signing slice will sign
-    /// [`ManifestEntry::to_line`]'s output byte-for-byte.  Any
-    /// change that trips this test would invalidate EVERY
+    /// H-4 signing ([`sign_bytes`] + [`verify_with_pubkey`])
+    /// signs [`ManifestEntry::to_line`]'s output byte-for-byte.
+    /// Any change that trips this test would invalidate EVERY
     /// existing signature on the network — a coordinated
     /// fleet-wide upgrade, not a local refactor.  Peers
     /// producing differently-ordered JSON would produce
     /// signatures over different bytes and fail
-    /// verify_with_pubkey on every joiner.
+    /// [`verify_with_pubkey`] on every joiner.
     #[test]
     fn manifest_data_entry_to_line_layout_pinned() {
         let entry = ManifestEntry {

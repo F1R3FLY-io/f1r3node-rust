@@ -327,69 +327,220 @@ pub async fn get_results(
             .expect("phase label mutex is never poisoned") = name;
     };
 
-    let body =
-        async {
-            let mut genesis_builder = GenesisBuilder::new();
-            let genesis = genesis_builder
-                .build_genesis_with_parameters(Some(genesis_parameters))
-                .await
-                .map_err(|e| {
-                    InterpreterError::BugFoundError(format!("Failed to build genesis: {:?}", e))
-                })?;
+    // Clone the Consensus fs_bundle entries BEFORE `genesis_parameters`
+    // moves into `build_genesis_with_parameters`.  They're needed later to
+    // register the on-disk roots in the runtime's RootIdentityRegistry
+    // (Dir entries) and to stage files into a per-test subdir with the
+    // logical name on disk (File entries).
+    let consensus_dir_entries: Vec<(String, std::path::PathBuf)> = genesis_parameters
+        .2
+        .fs_bundle
+        .iter()
+        .filter(|e| {
+            e.consensus_mode
+                == casper::rust::genesis::contracts::fs_genesis::BundleConsensusMode::Consensus
+                && e.kind == casper::rust::genesis::contracts::fs_genesis::BundleEntryKind::Dir
+        })
+        .map(|e| (e.logical_name.clone(), e.canon_path.clone()))
+        .collect();
+    let consensus_file_entries: Vec<(String, std::path::PathBuf)> = genesis_parameters
+        .2
+        .fs_bundle
+        .iter()
+        .filter(|e| {
+            e.consensus_mode
+                == casper::rust::genesis::contracts::fs_genesis::BundleConsensusMode::Consensus
+                && e.kind == casper::rust::genesis::contracts::fs_genesis::BundleEntryKind::File
+        })
+        .map(|e| (e.logical_name.clone(), e.canon_path.clone()))
+        .collect();
 
-            // Run the suite against the GENESIS post-state (registry, ListOps, PoS, vaults, …), not a
-            // fresh empty scope. Otherwise the RhoSpec framework — whose `testSuite` contracts are gated
-            // on `rho:lang:listOps` (RhoSpecContract.rho) — never installs, no assertions are collected,
-            // and every genesis spec passes VACUOUSLY. Open the same shared RSpace scope genesis was
-            // written into and reset the runtime to the genesis root below.
-            set_phase("store-open");
-            let mut kvs_manager =
-                mk_test_rnode_store_manager_shared(genesis.rspace_scope_id.clone());
-            let r_store = kvs_manager.r_space_stores().await.map_err(|e| {
-                InterpreterError::BugFoundError(format!("Failed to create RSpaceStore: {}", e))
+    // Per-call Consensus File staging dir.  Mirrors fileio's
+    // `casper/tests/helper/test_node.rs::project_bundle_per_validator`:
+    // Consensus File entries emit `(canon_root, logical_file_name)` where
+    // `logical_file_name` is a Rholang-visible bundle key, NOT the
+    // on-disk file name.  Production boot stages the file into a per-
+    // validator subdir under its logical name; the test harness mirrors
+    // that pattern with a per-test staging dir so `safe_descend_verified
+    // (<staging>, <logical_file_name>)` finds the file.
+    //
+    // Kept at `get_results` scope (outside the `body` async block) so
+    // the `TempDir` outlives every reference the registry holds into
+    // it.  `None` if there are no Consensus File entries.
+    let consensus_file_staging: Option<tempfile::TempDir> = if consensus_file_entries.is_empty() {
+        None
+    } else {
+        match tempfile::tempdir() {
+            Ok(td) => Some(td),
+            Err(e) => {
+                return Err(InterpreterError::BugFoundError(format!(
+                    "Failed to create Consensus File staging dir: {:?}",
+                    e
+                )));
+            }
+        }
+    };
+
+    let body = async {
+        let mut genesis_builder = GenesisBuilder::new();
+        let genesis = genesis_builder
+            .build_genesis_with_parameters(Some(genesis_parameters))
+            .await
+            .map_err(|e| {
+                InterpreterError::BugFoundError(format!("Failed to build genesis: {:?}", e))
             })?;
 
-            // NOTE: In Scala, RSpacePlusPlus_RhoTypes.create() calls Rust via JNA, where Matcher
-            // is created automatically (see rspace++/libs/rspace_rhotypes/src/lib.rs).
-            // In pure Rust code (without JNA), we must create the Matcher explicitly here,
-            // as RSpace::create(stores, matcher) requires it as a parameter.
-            let matcher = Arc::new(Box::new(Matcher)
-                as Box<dyn Match<BindPattern, ListParWithRandom, TaggedContinuation>>);
+        // Run the suite against the GENESIS post-state (registry, ListOps, PoS, vaults, …), not a
+        // fresh empty scope. Otherwise the RhoSpec framework — whose `testSuite` contracts are gated
+        // on `rho:lang:listOps` (RhoSpecContract.rho) — never installs, no assertions are collected,
+        // and every genesis spec passes VACUOUSLY. Open the same shared RSpace scope genesis was
+        // written into and reset the runtime to the genesis root below.
+        set_phase("store-open");
+        let mut kvs_manager = mk_test_rnode_store_manager_shared(genesis.rspace_scope_id.clone());
+        let r_store = kvs_manager.r_space_stores().await.map_err(|e| {
+            InterpreterError::BugFoundError(format!("Failed to create RSpaceStore: {}", e))
+        })?;
 
-            let mut additional_system_processes =
-                test_framework_contracts(test_result_collector.clone());
+        // NOTE: In Scala, RSpacePlusPlus_RhoTypes.create() calls Rust via JNA, where Matcher
+        // is created automatically (see rspace++/libs/rspace_rhotypes/src/lib.rs).
+        // In pure Rust code (without JNA), we must create the Matcher explicitly here,
+        // as RSpace::create(stores, matcher) requires it as a parameter.
+        let matcher =
+            Arc::new(Box::new(Matcher)
+                as Box<
+                    dyn Match<BindPattern, ListParWithRandom, TaggedContinuation>,
+                >);
 
-            set_phase("runtime-create");
-            let mut runtime = create_runtime_from_kv_store(
-                r_store,
-                Genesis::default_mergeable_tags_arc(),
-                true,
-                &mut additional_system_processes,
-                matcher,
-                rholang::rust::interpreter::external_services::ExternalServices::noop(),
-            )
-            .await
-            .unwrap();
+        let mut additional_system_processes =
+            test_framework_contracts(test_result_collector.clone());
 
-            // Position the runtime at the genesis post-state so the standard library / registry
-            // (rho:lang:listOps, rho:system:pos, rho:vault:*, …) resolve for the test suite.
-            set_phase("genesis-reset");
-            runtime
-                .reset(&Blake2b256Hash::from_bytes_prost(
-                    &genesis.genesis_block.body.state.post_state_hash,
-                ))
-                .await?;
+        set_phase("runtime-create");
+        let mut runtime = create_runtime_from_kv_store(
+            r_store,
+            Genesis::default_mergeable_tags_arc(),
+            true,
+            &mut additional_system_processes,
+            matcher,
+            rholang::rust::interpreter::external_services::ExternalServices::noop(),
+        )
+        .await
+        .unwrap();
 
-            println!("Starting tests from {}", test_object.path);
+        // Register Consensus-mode fs_bundle entries into the runtime's
+        // RootIdentityRegistry so Consensus-cap tests resolve the
+        // `/@bundle/<logical>` path emitted by `format_bundle_for_rholang`
+        // back to the operator-supplied on-disk root.  Production boot
+        // does this via `node::setup::create_casper_infrastructure`'s
+        // `register_consensus_bundle_roots`; the test harness mirrors
+        // that pattern here.
+        //
+        // Dir entries: the Rholang-visible `canonRoot` is
+        // `/@bundle/<logical_name>` and the handler's `rel` is the leaf
+        // (empty for the Dir itself, or a child name).  Register
+        // `/@bundle/<logical_name>` → `Root::capture(canon_path)`.
+        //
+        // File entries: the Rholang-visible `canonRoot` is
+        // `/@bundle` (bare logical name) or `/@bundle/<parent-segments>`
+        // (nested), and the handler's `rel` is the logical file name
+        // — NOT the on-disk file name.  Stage the file into the per-
+        // test `consensus_file_staging` dir under its logical name
+        // (mirrors fileio's `project_bundle_per_validator` from
+        // `casper/tests/helper/test_node.rs`), then register
+        // `/@bundle[/<parent-segments>]` → that staging subdir.
+        {
+            use casper::rust::genesis::contracts::fs_genesis::BUNDLE_ROOT_PREFIX;
+            use rholang::rust::interpreter::io::path::identity::Root;
+            for (logical_name, canon_path) in &consensus_dir_entries {
+                let logical =
+                    std::path::PathBuf::from(format!("{BUNDLE_ROOT_PREFIX}/{logical_name}"));
+                let captured = match Root::capture(canon_path) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        return Err(InterpreterError::BugFoundError(format!(
+                            "Failed to capture Consensus Dir bundle root {:?}: {:?}",
+                            canon_path, e
+                        )));
+                    }
+                };
+                runtime.fs_handles.root_registry.register(logical, captured);
+            }
 
-            set_phase("rhospec-install");
-            let runtime = setup_runtime(runtime, other_libs).await?;
+            if let Some(staging) = consensus_file_staging.as_ref() {
+                let staging_root = staging.path();
+                use std::collections::BTreeMap;
+                use std::path::PathBuf;
+                // Dedupe by on-disk staging root so a bundle with
+                // two bare-logical File entries only registers
+                // `/@bundle` → `<staging>` once.
+                let mut registrations: BTreeMap<PathBuf, PathBuf> = BTreeMap::new();
+                for (logical_name, canon_path) in &consensus_file_entries {
+                    let on_disk_target = staging_root.join(logical_name);
+                    if let Some(parent) = on_disk_target.parent() {
+                        if let Err(e) = std::fs::create_dir_all(parent) {
+                            return Err(InterpreterError::BugFoundError(format!(
+                                "Failed to create Consensus File staging parent dir \
+                                     {:?} for logical {:?}: {:?}",
+                                parent, logical_name, e
+                            )));
+                        }
+                    }
+                    if let Err(e) = std::fs::copy(canon_path, &on_disk_target) {
+                        return Err(InterpreterError::BugFoundError(format!(
+                            "Failed to stage Consensus File {:?} -> {:?}: {:?}",
+                            canon_path, on_disk_target, e
+                        )));
+                    }
+                    // Compute the (logical_root, on_disk_root)
+                    // split that matches `format_bundle_for_rholang`.
+                    let logical_path = std::path::Path::new(logical_name);
+                    let parent_rel = logical_path.parent().and_then(|p| p.to_str()).unwrap_or("");
+                    let (logical_root, on_disk_root) = if parent_rel.is_empty() {
+                        (
+                            PathBuf::from(BUNDLE_ROOT_PREFIX),
+                            staging_root.to_path_buf(),
+                        )
+                    } else {
+                        (
+                            PathBuf::from(format!("{BUNDLE_ROOT_PREFIX}/{parent_rel}")),
+                            staging_root.join(parent_rel),
+                        )
+                    };
+                    registrations.insert(logical_root, on_disk_root);
+                }
+                for (logical, on_disk) in registrations {
+                    let captured = match Root::capture(&on_disk) {
+                        Ok(r) => r,
+                        Err(e) => {
+                            return Err(InterpreterError::BugFoundError(format!(
+                                "Failed to capture Consensus File staging root {:?}: {:?}",
+                                on_disk, e
+                            )));
+                        }
+                    };
+                    runtime.fs_handles.root_registry.register(logical, captured);
+                }
+            }
+        }
 
-            let rand = Blake2b512Random::create_from_length(128).split_short(1);
+        // Position the runtime at the genesis post-state so the standard library / registry
+        // (rho:lang:listOps, rho:system:pos, rho:vault:*, …) resolve for the test suite.
+        set_phase("genesis-reset");
+        runtime
+            .reset(&Blake2b256Hash::from_bytes_prost(
+                &genesis.genesis_block.body.state.post_state_hash,
+            ))
+            .await?;
 
-            set_phase("eval-test-source");
-            TestUtil::eval_source(test_object, &runtime, rand).await
-        };
+        println!("Starting tests from {}", test_object.path);
+
+        set_phase("rhospec-install");
+        let runtime = setup_runtime(runtime, other_libs).await?;
+
+        let rand = Blake2b512Random::create_from_length(128).split_short(1);
+
+        set_phase("eval-test-source");
+        TestUtil::eval_source(test_object, &runtime, rand).await
+    };
 
     match tokio::time::timeout(execution_timeout, body).await {
         Ok(result) => result?,

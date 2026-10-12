@@ -1,0 +1,48 @@
+# CbC Evidence: .github/workflows/merge-recovery-soak.yml
+
+**Status:** Pending. The bounded model result does not discharge the full harness/profile claim.
+
+- [CLAIM-CASPER-SOAK-001](../claims/casper-soak-harness.md)
+
+The evidence package contains partial results only. No node correctness claim or construction proof belongs to this scope.
+
+```json
+{
+  "artifact": {
+    "path": ".github/workflows/merge-recovery-soak.yml",
+    "commit": "cc7e84b482887f0647277ccbacd6f65ae3cf749d",
+    "id": "github-workflows-merge-recovery-soak-yml",
+    "sha256": "1eae728e3f73ff9086296225ce5b900efdb469a66b1a8b1af784f580cdaf1a76"
+  },
+  "claim": "docs/claims/casper-soak-harness.md",
+  "claim_ids": [
+    "CLAIM-CASPER-SOAK-001"
+  ],
+  "claim_digests": {
+    "docs/claims/casper-soak-harness.md": "636bdd0681096a3fb054a88f114641e4b23812001bff02d873dce5f6d52aa4c5"
+  },
+  "adapter": "embedded",
+  "status": "pending",
+  "scope": "harness-and-profiles-only",
+  "evidence": {
+    "kind": "partial-verification",
+    "ref": "docs/casper/cbc-evidence/runs/casper-harness-controls-20260916-01/report.json",
+    "sha256": "b192d4c2152081f3d47c26fa951a98d14d96aaeeed74d55818c14457134346c7",
+    "counterexample": null,
+    "detail": "Bounded lifecycle controls and runner unit tests pass. Driver/profile bindings, shared CI integration, and soaks remain pending."
+  },
+  "tiers": {
+    "refutation": "pending",
+    "construction": "not-applicable",
+    "construction_assumptions": null,
+    "binding": "pending"
+  },
+  "phase_status": {
+    "pre_pr216_merge": "pending",
+    "post_pr216_merge": "blocked"
+  },
+  "scaffold_base_commit": "cc7e84b482887f0647277ccbacd6f65ae3cf749d",
+  "waiver": null,
+  "verified_at": null
+}
+```

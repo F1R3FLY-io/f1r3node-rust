@@ -1,0 +1,21 @@
+{
+ "schema_version": 2,
+ "package": "casper-prerequisite-application-20260917-01",
+ "task": "TASK-017-14",
+ "recorded_on": "2026-10-03",
+ "store": {
+  "kind": "github-release",
+  "repository": "F1R3FLY-io/f1r3node-rust",
+  "tag": "cbc-evidence-epic-017"
+ },
+ "assets": [
+  {
+   "asset": "casper-prerequisite-application-20260917-01.external.tar.gz",
+   "sha256": "78eea68341bb24f90a799c4c1d8d5af4100ce064f856321c19f8737f65d31249",
+   "bytes": 75754,
+   "members": 408,
+   "bundle_created": "2026-09-19",
+   "inner_manifest": "external-manifest.json"
+  }
+ ]
+}

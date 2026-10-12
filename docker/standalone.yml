@@ -18,10 +18,13 @@ services:
       - f1r3fly-standalone
     container_name: ${STANDALONE_HOST:-rnode.standalone}
     command:
+      - --log-sink=stdout
       - run
       - -s
       - --host=${STANDALONE_HOST:-rnode.standalone}
-      - --validator-private-key=${STANDALONE_PRIVATE_KEY:?STANDALONE_PRIVATE_KEY must be set}
+      - >-
+        --validator-private-key=${STANDALONE_PRIVATE_KEY:?STANDALONE_PRIVATE_KEY
+        must be set}
       - --allow-private-addresses
       - --native-token-name=${NATIVE_TOKEN_NAME:-F1R3CAP}
       - --native-token-symbol=${NATIVE_TOKEN_SYMBOL:-F1R3}
@@ -40,7 +43,8 @@ services:
       - ./genesis/standalone-bonds.txt:/var/lib/rnode/genesis/bonds.txt
     environment:
       - OPENAI_ENABLED=${OPENAI_ENABLED:-false}
-      # Passed only when set, so logging.filter in the node config applies by default.
+      # Passed only when set, so logging.filter in the node config
+      # applies by default.
       - RUST_LOG
     logging:
       driver: json-file

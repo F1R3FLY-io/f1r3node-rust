@@ -1,0 +1,2490 @@
+{
+  "schema_version": 1,
+  "claim_ids": [
+    "CLAIM-CASPER-NODE-OBSERVATION-001",
+    "CLAIM-CASPER-NODE-OBSERVATION-002"
+  ],
+  "scope": "task-019-4-combined-b11-cycle-03",
+  "status": "pending-acceptance",
+  "blocked_on": [
+    "Named maintainer review of every applicability decision and conditional proof assumption.",
+    "Named maintainer assessment of finite Rust correspondence and acceptance of both claims."
+  ],
+  "execution_base": "38e57604187feab97cb45f000f95270b12a9f8bf",
+  "working_tree": true,
+  "inventory_matches_execution_base": false,
+  "source_inventory": [
+    {
+      "path": ".github/workflows/slashing-tests.yml",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-001"
+      ],
+      "claim_files": [
+        "docs/claims/casper-node-observation.md"
+      ],
+      "mandatory": true,
+      "sha256": "915af218194a292ec2c227c5b3e28b396b76eff7a0586fdf7c4fe87febe0eb15",
+      "matches_execution_base": true
+    },
+    {
+      "path": "block-storage/src/rust/dag/block_dag_key_value_storage.rs",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-002"
+      ],
+      "claim_files": [
+        "docs/claims/casper-node-authority-snapshot.md"
+      ],
+      "mandatory": true,
+      "sha256": "7bfd28ef62b84ee912a1c2979bd77d6f1f3d804c6cb5d6c9549f9f86ddf43bc2",
+      "matches_execution_base": true
+    },
+    {
+      "path": "block-storage/src/rust/dag/block_metadata_store.rs",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-002"
+      ],
+      "claim_files": [
+        "docs/claims/casper-node-authority-snapshot.md"
+      ],
+      "mandatory": false,
+      "sha256": "7123b1940cc8a7bbb07cd728a4e765112cde7a090c5515fff7748cbb8a1515fa",
+      "matches_execution_base": true
+    },
+    {
+      "path": "block-storage/src/rust/dag/mod.rs",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-002"
+      ],
+      "claim_files": [
+        "docs/claims/casper-node-authority-snapshot.md"
+      ],
+      "mandatory": false,
+      "sha256": "e63a84c51e1c42c0c4d7e80bd4bcd59b125aee513456fccf9661762b48f945e9",
+      "matches_execution_base": true
+    },
+    {
+      "path": "block-storage/src/rust/dag/soak_snapshot.rs",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-002"
+      ],
+      "claim_files": [
+        "docs/claims/casper-node-authority-snapshot.md"
+      ],
+      "mandatory": true,
+      "sha256": "48e640a9eac4337bd24e3c80cb6a12ca0e956aa998ec27d8e64829574de69cf4",
+      "matches_execution_base": true
+    },
+    {
+      "path": "block-storage/src/rust/dag/soak_snapshot/canonical_wire_tests.rs",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-002"
+      ],
+      "claim_files": [
+        "docs/claims/casper-node-authority-snapshot.md"
+      ],
+      "mandatory": true,
+      "sha256": "9e42bfe805b48ef3f9a89f69f006353f3cfe884f256149ed567c0d65ef65666b",
+      "matches_execution_base": true
+    },
+    {
+      "path": "block-storage/src/rust/key_value_block_store.rs",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-002"
+      ],
+      "claim_files": [
+        "docs/claims/casper-node-authority-snapshot.md"
+      ],
+      "mandatory": false,
+      "sha256": "a10d2251ebcb78cfd2f770cd0bb57fc2f47538ad29a86d7226e5894dff8b728c",
+      "matches_execution_base": true
+    },
+    {
+      "path": "block-storage/tests/soak_snapshot.rs",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-002"
+      ],
+      "claim_files": [
+        "docs/claims/casper-node-authority-snapshot.md"
+      ],
+      "mandatory": true,
+      "sha256": "1f3cd9fc1fe00e45ba8bb6d7f78c1fd396ca82b0895d762b3cd3074e986c6893",
+      "matches_execution_base": true
+    },
+    {
+      "path": "formal/rocq/node_observation/README.md",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-001",
+        "CLAIM-CASPER-NODE-OBSERVATION-002"
+      ],
+      "claim_files": [
+        "docs/claims/casper-node-observation.md",
+        "docs/claims/casper-node-authority-snapshot.md"
+      ],
+      "mandatory": true,
+      "sha256": "9e918ede61519de3c35ca0b36800248525c2bad661acc4eb21ba1fec0e6c9f04",
+      "matches_execution_base": true
+    },
+    {
+      "path": "formal/rocq/node_observation/_CoqProject",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-001",
+        "CLAIM-CASPER-NODE-OBSERVATION-002"
+      ],
+      "claim_files": [
+        "docs/claims/casper-node-observation.md",
+        "docs/claims/casper-node-authority-snapshot.md"
+      ],
+      "mandatory": true,
+      "sha256": "6b57a589493d3592b4416375c398087a044db54ce256d3e2ec9f9f060fe637ca",
+      "matches_execution_base": true
+    },
+    {
+      "path": "formal/rocq/node_observation/b11/README.md",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-002"
+      ],
+      "claim_files": [
+        "docs/claims/casper-node-authority-snapshot.md"
+      ],
+      "mandatory": true,
+      "sha256": "8294da1cfd3fb116e1a5a41f10a83a50b560142a873307480f770d65d1b8081f",
+      "matches_execution_base": true
+    },
+    {
+      "path": "formal/rocq/node_observation/b11/_CoqProject",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-002"
+      ],
+      "claim_files": [
+        "docs/claims/casper-node-authority-snapshot.md"
+      ],
+      "mandatory": true,
+      "sha256": "643a1e089f4c18d781a69fa7fbcf39a7ac67a1273ff7f84f075b8fe8fce47745",
+      "matches_execution_base": true
+    },
+    {
+      "path": "formal/rocq/node_observation/b11/theories/MainTheorem.v",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-002"
+      ],
+      "claim_files": [
+        "docs/claims/casper-node-authority-snapshot.md"
+      ],
+      "mandatory": true,
+      "sha256": "22056d9e91c198ad3243f81f2cb3dc3e217f1682f8f08262fad187300dee9b0e",
+      "matches_execution_base": true
+    },
+    {
+      "path": "formal/rocq/node_observation/b11/theories/Schema.v",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-002"
+      ],
+      "claim_files": [
+        "docs/claims/casper-node-authority-snapshot.md"
+      ],
+      "mandatory": true,
+      "sha256": "815aa2a765a18e46f5094a51f07cd192b828975bf51b32202a987995160b2041",
+      "matches_execution_base": true
+    },
+    {
+      "path": "formal/rocq/node_observation/b11/theories/Wire.v",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-002"
+      ],
+      "claim_files": [
+        "docs/claims/casper-node-authority-snapshot.md"
+      ],
+      "mandatory": true,
+      "sha256": "04d2a06c47f7b76cbc42bb7a6db0f0f42ae248fad8050f844f6056de9808e671",
+      "matches_execution_base": true
+    },
+    {
+      "path": "formal/rocq/node_observation/theories/BoundedCapture.v",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-002"
+      ],
+      "claim_files": [
+        "docs/claims/casper-node-authority-snapshot.md"
+      ],
+      "mandatory": true,
+      "sha256": "a2cb0858ece3634ce364cd0b92af6e5e6b908e8df968855e3d84e4d7f66c54a2",
+      "matches_execution_base": true
+    },
+    {
+      "path": "formal/rocq/node_observation/theories/CaptureIntegrity.v",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-002"
+      ],
+      "claim_files": [
+        "docs/claims/casper-node-authority-snapshot.md"
+      ],
+      "mandatory": true,
+      "sha256": "15535469528f58f1110be6f6a73b4b5912c6a446b9b3416d412d0cdce657463c",
+      "matches_execution_base": true
+    },
+    {
+      "path": "formal/rocq/node_observation/theories/InterfaceSafety.v",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-001",
+        "CLAIM-CASPER-NODE-OBSERVATION-002"
+      ],
+      "claim_files": [
+        "docs/claims/casper-node-observation.md",
+        "docs/claims/casper-node-authority-snapshot.md"
+      ],
+      "mandatory": true,
+      "sha256": "b505168faf10d49b501d4ee0bc57d1032185f729513ae5b2c54c55943f9c7dd5",
+      "matches_execution_base": true
+    },
+    {
+      "path": "formal/rocq/node_observation/theories/MainTheorem.v",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-001",
+        "CLAIM-CASPER-NODE-OBSERVATION-002"
+      ],
+      "claim_files": [
+        "docs/claims/casper-node-observation.md",
+        "docs/claims/casper-node-authority-snapshot.md"
+      ],
+      "mandatory": true,
+      "sha256": "5d356d683cb9ebb55d0a80bd205f07c2cfcf203d15d3ae14322c828a44e87140",
+      "matches_execution_base": true
+    },
+    {
+      "path": "formal/rocq/node_observation/theories/ObserverSession.v",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-001"
+      ],
+      "claim_files": [
+        "docs/claims/casper-node-observation.md"
+      ],
+      "mandatory": true,
+      "sha256": "83040ea7cbc77e72655704ef87f04f600b1da107c64c69be822786e7770b9550",
+      "matches_execution_base": true
+    },
+    {
+      "path": "formal/tlaplus/node_observation/BoundedCapture.tla",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-002"
+      ],
+      "claim_files": [
+        "docs/claims/casper-node-authority-snapshot.md"
+      ],
+      "mandatory": true,
+      "sha256": "6a4108143aefdcc9f59670160bffe527f37348a2c417053ae12a4fc7fcce0948",
+      "matches_execution_base": true
+    },
+    {
+      "path": "formal/tlaplus/node_observation/MC_BoundedCapture.cfg",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-002"
+      ],
+      "claim_files": [
+        "docs/claims/casper-node-authority-snapshot.md"
+      ],
+      "mandatory": true,
+      "sha256": "396718266cab3e27f01affa6e82836aaad98dc6adff6f0df3209206d8894e6ff",
+      "matches_execution_base": true
+    },
+    {
+      "path": "formal/tlaplus/node_observation/MC_BoundedCapture.tla",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-002"
+      ],
+      "claim_files": [
+        "docs/claims/casper-node-authority-snapshot.md"
+      ],
+      "mandatory": true,
+      "sha256": "f3ec133279c1cb0c628277c33d187ee0d8f1dad9984a218b4006f83acf16e8d7",
+      "matches_execution_base": true
+    },
+    {
+      "path": "formal/tlaplus/node_observation/MC_BoundedCapture_admission_unsafe.cfg",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-002"
+      ],
+      "claim_files": [
+        "docs/claims/casper-node-authority-snapshot.md"
+      ],
+      "mandatory": true,
+      "sha256": "8b142e9af11a06c13d3b71f90426d13716dd0b36c208fe60f97c6efb49a3e66f",
+      "matches_execution_base": true
+    },
+    {
+      "path": "formal/tlaplus/node_observation/MC_BoundedCapture_admission_unsafe.tla",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-002"
+      ],
+      "claim_files": [
+        "docs/claims/casper-node-authority-snapshot.md"
+      ],
+      "mandatory": true,
+      "sha256": "68b3d3a02b40633d54577a280a1dfaa9600811a99502520dd7f27529df4cd57f",
+      "matches_execution_base": true
+    },
+    {
+      "path": "formal/tlaplus/node_observation/MC_BoundedCapture_bytes_unsafe.cfg",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-002"
+      ],
+      "claim_files": [
+        "docs/claims/casper-node-authority-snapshot.md"
+      ],
+      "mandatory": true,
+      "sha256": "3ee939c1f8cef5ea420fbfbc8626f0a029d8534f3a83980952aec297eac9206e",
+      "matches_execution_base": true
+    },
+    {
+      "path": "formal/tlaplus/node_observation/MC_BoundedCapture_bytes_unsafe.tla",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-002"
+      ],
+      "claim_files": [
+        "docs/claims/casper-node-authority-snapshot.md"
+      ],
+      "mandatory": true,
+      "sha256": "fbedc4b24bd2aacebe23a70f4880c2d11405bac3eb30b9844061ed32b9f32904",
+      "matches_execution_base": true
+    },
+    {
+      "path": "formal/tlaplus/node_observation/MC_BoundedCapture_deadline_unsafe.cfg",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-002"
+      ],
+      "claim_files": [
+        "docs/claims/casper-node-authority-snapshot.md"
+      ],
+      "mandatory": true,
+      "sha256": "01fb2af77d7cd7872fff3bb598fb2c11abc632a64c3d52a8da7f97a837545e58",
+      "matches_execution_base": true
+    },
+    {
+      "path": "formal/tlaplus/node_observation/MC_BoundedCapture_deadline_unsafe.tla",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-002"
+      ],
+      "claim_files": [
+        "docs/claims/casper-node-authority-snapshot.md"
+      ],
+      "mandatory": true,
+      "sha256": "103f4523b3719ff9bd4d6c9974d4632ae75f21aef62a5fb483e2b58384b15828",
+      "matches_execution_base": true
+    },
+    {
+      "path": "formal/tlaplus/node_observation/MC_BoundedCapture_generation_unsafe.cfg",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-002"
+      ],
+      "claim_files": [
+        "docs/claims/casper-node-authority-snapshot.md"
+      ],
+      "mandatory": true,
+      "sha256": "00a59b451cbb6e699b6d94b461b2396491ccab8d88c2160d0734de18efe715b9",
+      "matches_execution_base": true
+    },
+    {
+      "path": "formal/tlaplus/node_observation/MC_BoundedCapture_generation_unsafe.tla",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-002"
+      ],
+      "claim_files": [
+        "docs/claims/casper-node-authority-snapshot.md"
+      ],
+      "mandatory": true,
+      "sha256": "517277c25f209e5468b27b3ee5bc77b0860cd0b54b3a3532be07580d95df54ed",
+      "matches_execution_base": true
+    },
+    {
+      "path": "formal/tlaplus/node_observation/MC_BoundedCapture_incomplete_unsafe.cfg",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-002"
+      ],
+      "claim_files": [
+        "docs/claims/casper-node-authority-snapshot.md"
+      ],
+      "mandatory": true,
+      "sha256": "d126cf86466d7f82cd9364b29ba81648bebc230c223c6f39a9d4489eea126a96",
+      "matches_execution_base": true
+    },
+    {
+      "path": "formal/tlaplus/node_observation/MC_BoundedCapture_incomplete_unsafe.tla",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-002"
+      ],
+      "claim_files": [
+        "docs/claims/casper-node-authority-snapshot.md"
+      ],
+      "mandatory": true,
+      "sha256": "6c441cffbbcf5bada625c71c5aaf8d399fb50095054c1001b5b2321ec0a47ea2",
+      "matches_execution_base": true
+    },
+    {
+      "path": "formal/tlaplus/node_observation/MC_BoundedCapture_open_unsafe.cfg",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-002"
+      ],
+      "claim_files": [
+        "docs/claims/casper-node-authority-snapshot.md"
+      ],
+      "mandatory": true,
+      "sha256": "e0b96edbfba4685dd975c7825fba77db3186488c8a2b0ad8b182d984116111bd",
+      "matches_execution_base": true
+    },
+    {
+      "path": "formal/tlaplus/node_observation/MC_BoundedCapture_open_unsafe.tla",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-002"
+      ],
+      "claim_files": [
+        "docs/claims/casper-node-authority-snapshot.md"
+      ],
+      "mandatory": true,
+      "sha256": "8a13a17ead44d6f24501080456680d49a2ee09b6fc5f8ab110a5fffd9d73785a",
+      "matches_execution_base": true
+    },
+    {
+      "path": "formal/tlaplus/node_observation/MC_BoundedCapture_order_unsafe.cfg",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-002"
+      ],
+      "claim_files": [
+        "docs/claims/casper-node-authority-snapshot.md"
+      ],
+      "mandatory": true,
+      "sha256": "e1d7d12a93e502a1f42988e6b4c87526721782b68f1ea93115bfdee270378f2e",
+      "matches_execution_base": true
+    },
+    {
+      "path": "formal/tlaplus/node_observation/MC_BoundedCapture_order_unsafe.tla",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-002"
+      ],
+      "claim_files": [
+        "docs/claims/casper-node-authority-snapshot.md"
+      ],
+      "mandatory": true,
+      "sha256": "927ca1030b336b9b20110ac3517e4004ab892143c0b306c93124baa98d47e114",
+      "matches_execution_base": true
+    },
+    {
+      "path": "formal/tlaplus/node_observation/MC_BoundedCapture_release_unsafe.cfg",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-002"
+      ],
+      "claim_files": [
+        "docs/claims/casper-node-authority-snapshot.md"
+      ],
+      "mandatory": true,
+      "sha256": "a66ecbdb4c1b7b3f198fc5f187b7b3935b4754fc2ec5effea9f3f2cc5dbd531f",
+      "matches_execution_base": true
+    },
+    {
+      "path": "formal/tlaplus/node_observation/MC_BoundedCapture_release_unsafe.tla",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-002"
+      ],
+      "claim_files": [
+        "docs/claims/casper-node-authority-snapshot.md"
+      ],
+      "mandatory": true,
+      "sha256": "5562f8111e0b9d164b20367e73b15aef0bcd25838bb6f5ebc2c9a19f4baa1db4",
+      "matches_execution_base": true
+    },
+    {
+      "path": "formal/tlaplus/node_observation/MC_BoundedCapture_validation_unsafe.cfg",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-002"
+      ],
+      "claim_files": [
+        "docs/claims/casper-node-authority-snapshot.md"
+      ],
+      "mandatory": true,
+      "sha256": "8c14e18002986cc43b543894efebd34f763238d72de1dee405fd96d09b82475b",
+      "matches_execution_base": true
+    },
+    {
+      "path": "formal/tlaplus/node_observation/MC_BoundedCapture_validation_unsafe.tla",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-002"
+      ],
+      "claim_files": [
+        "docs/claims/casper-node-authority-snapshot.md"
+      ],
+      "mandatory": true,
+      "sha256": "b1e1570e9496a330ea881560d032cab82c71aa6b80e4e7517b2513dcc20d94ca",
+      "matches_execution_base": true
+    },
+    {
+      "path": "formal/tlaplus/node_observation/MC_BoundedCapture_write_unsafe.cfg",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-002"
+      ],
+      "claim_files": [
+        "docs/claims/casper-node-authority-snapshot.md"
+      ],
+      "mandatory": true,
+      "sha256": "0818d4e1db55235576535127d955398799174e4f3df6deeae84765cd63bf1867",
+      "matches_execution_base": true
+    },
+    {
+      "path": "formal/tlaplus/node_observation/MC_BoundedCapture_write_unsafe.tla",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-002"
+      ],
+      "claim_files": [
+        "docs/claims/casper-node-authority-snapshot.md"
+      ],
+      "mandatory": true,
+      "sha256": "d19d344d015fa93470d6d27e6e663cc6869126587ce162469e8c41194e141a00",
+      "matches_execution_base": true
+    },
+    {
+      "path": "formal/tlaplus/node_observation/MC_ObserverSession.cfg",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-001"
+      ],
+      "claim_files": [
+        "docs/claims/casper-node-observation.md"
+      ],
+      "mandatory": true,
+      "sha256": "4e71ad2f75be0b45cedd6391bcef3b3807f4bb7aab50b5e5fef0f25d67d2c7a7",
+      "matches_execution_base": true
+    },
+    {
+      "path": "formal/tlaplus/node_observation/MC_ObserverSession.tla",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-001"
+      ],
+      "claim_files": [
+        "docs/claims/casper-node-observation.md"
+      ],
+      "mandatory": true,
+      "sha256": "1dbb4ff655594466bab3382402a3bb22631aaa6abb74c79d52ddf211e9006176",
+      "matches_execution_base": true
+    },
+    {
+      "path": "formal/tlaplus/node_observation/MC_ObserverSession_budget_unsafe.cfg",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-001"
+      ],
+      "claim_files": [
+        "docs/claims/casper-node-observation.md"
+      ],
+      "mandatory": true,
+      "sha256": "987c3e4dcc45fdf059d56c78b8e507f1ab3364158303640de08ead4da21743cc",
+      "matches_execution_base": true
+    },
+    {
+      "path": "formal/tlaplus/node_observation/MC_ObserverSession_budget_unsafe.tla",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-001"
+      ],
+      "claim_files": [
+        "docs/claims/casper-node-observation.md"
+      ],
+      "mandatory": true,
+      "sha256": "871106f33930940102bec72fbac69ea28182ff8d12cd7771ffecd63d48135292",
+      "matches_execution_base": true
+    },
+    {
+      "path": "formal/tlaplus/node_observation/MC_ObserverSession_challenge_unsafe.cfg",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-001"
+      ],
+      "claim_files": [
+        "docs/claims/casper-node-observation.md"
+      ],
+      "mandatory": true,
+      "sha256": "0c5bc05e0f39dec8dc3ddb2bdd59fa50c7574d2c66021c033db92ad2ccda6085",
+      "matches_execution_base": true
+    },
+    {
+      "path": "formal/tlaplus/node_observation/MC_ObserverSession_challenge_unsafe.tla",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-001"
+      ],
+      "claim_files": [
+        "docs/claims/casper-node-observation.md"
+      ],
+      "mandatory": true,
+      "sha256": "a3d7fe9a6e4aad45ac2acaf595e876c99c1fd09b6a5b23c34c327f0352b9398a",
+      "matches_execution_base": true
+    },
+    {
+      "path": "formal/tlaplus/node_observation/MC_ObserverSession_deadline_unsafe.cfg",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-001"
+      ],
+      "claim_files": [
+        "docs/claims/casper-node-observation.md"
+      ],
+      "mandatory": true,
+      "sha256": "dfdfe1958d35e0ea854637f423fdb8324d722bba1411d2af1c4d06d036be0f08",
+      "matches_execution_base": true
+    },
+    {
+      "path": "formal/tlaplus/node_observation/MC_ObserverSession_deadline_unsafe.tla",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-001"
+      ],
+      "claim_files": [
+        "docs/claims/casper-node-observation.md"
+      ],
+      "mandatory": true,
+      "sha256": "223e56f2fc65419efb7a611cd95ec084ab866db80c9ed7e20284877af033ecaf",
+      "matches_execution_base": true
+    },
+    {
+      "path": "formal/tlaplus/node_observation/MC_ObserverSession_frame_unsafe.cfg",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-001"
+      ],
+      "claim_files": [
+        "docs/claims/casper-node-observation.md"
+      ],
+      "mandatory": true,
+      "sha256": "3383df6c84ce482158bb402a76e10bd29ad7dbdcc488238c8e26b115e3cd737d",
+      "matches_execution_base": true
+    },
+    {
+      "path": "formal/tlaplus/node_observation/MC_ObserverSession_frame_unsafe.tla",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-001"
+      ],
+      "claim_files": [
+        "docs/claims/casper-node-observation.md"
+      ],
+      "mandatory": true,
+      "sha256": "68ddde1e42dd197959c36b57ff4a9db37555c230e4333cb7599814cb42071b8e",
+      "matches_execution_base": true
+    },
+    {
+      "path": "formal/tlaplus/node_observation/MC_ObserverSession_freshness_pre_fix.cfg",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-001"
+      ],
+      "claim_files": [
+        "docs/claims/casper-node-observation.md"
+      ],
+      "mandatory": true,
+      "sha256": "f5a58a030f8f75cea9fb99949c367781611570e9c658140ae2ae72e6dc4992e0",
+      "matches_execution_base": true
+    },
+    {
+      "path": "formal/tlaplus/node_observation/MC_ObserverSession_freshness_pre_fix.tla",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-001"
+      ],
+      "claim_files": [
+        "docs/claims/casper-node-observation.md"
+      ],
+      "mandatory": true,
+      "sha256": "8e4f178283c13927692b012c8285f1c7da931927503d459882f02ef1b481f0f8",
+      "matches_execution_base": true
+    },
+    {
+      "path": "formal/tlaplus/node_observation/MC_ObserverSession_identity_unsafe.cfg",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-001"
+      ],
+      "claim_files": [
+        "docs/claims/casper-node-observation.md"
+      ],
+      "mandatory": true,
+      "sha256": "88a91a691356a5e37315e925bd3dd1b5877d1fee9327df61980d7060050a8c27",
+      "matches_execution_base": true
+    },
+    {
+      "path": "formal/tlaplus/node_observation/MC_ObserverSession_identity_unsafe.tla",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-001"
+      ],
+      "claim_files": [
+        "docs/claims/casper-node-observation.md"
+      ],
+      "mandatory": true,
+      "sha256": "29b73831fabf68d38db3b330a5d5d56448ec84f9af42fcf00ae952c7db62ed9b",
+      "matches_execution_base": true
+    },
+    {
+      "path": "formal/tlaplus/node_observation/MC_ObserverSession_repeat_unsafe.cfg",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-001"
+      ],
+      "claim_files": [
+        "docs/claims/casper-node-observation.md"
+      ],
+      "mandatory": true,
+      "sha256": "7f4760e0bbd56c5d528b71639ed86f4ac63c10987298dc7ee5231b03edd2c127",
+      "matches_execution_base": true
+    },
+    {
+      "path": "formal/tlaplus/node_observation/MC_ObserverSession_repeat_unsafe.tla",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-001"
+      ],
+      "claim_files": [
+        "docs/claims/casper-node-observation.md"
+      ],
+      "mandatory": true,
+      "sha256": "ab2efae7826cbcbb9c41f748d452e88d747983049e695390f6f9febf29dd19c4",
+      "matches_execution_base": true
+    },
+    {
+      "path": "formal/tlaplus/node_observation/ObserverSession.tla",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-001"
+      ],
+      "claim_files": [
+        "docs/claims/casper-node-observation.md"
+      ],
+      "mandatory": true,
+      "sha256": "af6ddf2f6e48eb5084f0f63a0db076ff77310dd8341ba24cc7732de936e0e6d5",
+      "matches_execution_base": true
+    },
+    {
+      "path": "formal/tlaplus/node_observation/README.md",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-001",
+        "CLAIM-CASPER-NODE-OBSERVATION-002"
+      ],
+      "claim_files": [
+        "docs/claims/casper-node-observation.md",
+        "docs/claims/casper-node-authority-snapshot.md"
+      ],
+      "mandatory": true,
+      "sha256": "5eb501d6391faca947399b6b689d0b1229ceaa8cb068113504ea533a1b349ba5",
+      "matches_execution_base": false
+    },
+    {
+      "path": "formal/tlaplus/node_observation/bindings.json",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-001",
+        "CLAIM-CASPER-NODE-OBSERVATION-002"
+      ],
+      "claim_files": [
+        "docs/claims/casper-node-observation.md",
+        "docs/claims/casper-node-authority-snapshot.md"
+      ],
+      "mandatory": true,
+      "sha256": "e7e493f1b6be711deb795ce1e092ca52b4feb7ff3eaacdeab8ce570b96bd4a83",
+      "matches_execution_base": false
+    },
+    {
+      "path": "formal/tlaplus/node_observation/verification-plan.json",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-001",
+        "CLAIM-CASPER-NODE-OBSERVATION-002"
+      ],
+      "claim_files": [
+        "docs/claims/casper-node-observation.md",
+        "docs/claims/casper-node-authority-snapshot.md"
+      ],
+      "mandatory": true,
+      "sha256": "0da58d7c5c4f17a9cb26995508db51d5fb152c89a54c8ce252c24972149a883a",
+      "matches_execution_base": true
+    },
+    {
+      "path": "node/src/rust/configuration/commandline/config_mapper.rs",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-001"
+      ],
+      "claim_files": [
+        "docs/claims/casper-node-observation.md"
+      ],
+      "mandatory": false,
+      "sha256": "a98c91ec5d9571e363fb1a619bd71fb2e4341f252ad58b5707f4c3eff5eb246d",
+      "matches_execution_base": true
+    },
+    {
+      "path": "node/src/rust/configuration/commandline/options.rs",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-001"
+      ],
+      "claim_files": [
+        "docs/claims/casper-node-observation.md"
+      ],
+      "mandatory": false,
+      "sha256": "82ade24cf0692646abb7027a2119138d72f359f909900d86ebcb2ada5659cc6b",
+      "matches_execution_base": true
+    },
+    {
+      "path": "node/src/rust/configuration/mod.rs",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-001"
+      ],
+      "claim_files": [
+        "docs/claims/casper-node-observation.md"
+      ],
+      "mandatory": false,
+      "sha256": "5693c79ab4c22e9e2db0789bd431469402eead825b760e75cc4d6c82b0f08559",
+      "matches_execution_base": true
+    },
+    {
+      "path": "node/src/rust/configuration/model.rs",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-001"
+      ],
+      "claim_files": [
+        "docs/claims/casper-node-observation.md"
+      ],
+      "mandatory": false,
+      "sha256": "d8a535de8232f11b927168c32c7480202776f884ae37d0ae23b38d4e2a70ea34",
+      "matches_execution_base": true
+    },
+    {
+      "path": "node/src/rust/diagnostics/tests.rs",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-001"
+      ],
+      "claim_files": [
+        "docs/claims/casper-node-observation.md"
+      ],
+      "mandatory": false,
+      "sha256": "3d4f27d59b161457a588305fda368b9b82173c2dcddda375b841aae6888abdfc",
+      "matches_execution_base": true
+    },
+    {
+      "path": "node/src/rust/mod.rs",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-001"
+      ],
+      "claim_files": [
+        "docs/claims/casper-node-observation.md"
+      ],
+      "mandatory": false,
+      "sha256": "d646e91b1b330e262234bc2bf7e2352432826ebe43f424f71c0bccf021c7c0b6",
+      "matches_execution_base": true
+    },
+    {
+      "path": "node/src/rust/runtime/node_runtime.rs",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-001"
+      ],
+      "claim_files": [
+        "docs/claims/casper-node-observation.md"
+      ],
+      "mandatory": false,
+      "sha256": "6dcdc9bad2e6d1487cf8a705f2e8b31360bf103ba8cad08d0209468290ae5441",
+      "matches_execution_base": true
+    },
+    {
+      "path": "node/src/rust/soak_observer.rs",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-001"
+      ],
+      "claim_files": [
+        "docs/claims/casper-node-observation.md"
+      ],
+      "mandatory": true,
+      "sha256": "a93055b51c618c6b1a4d0505831603f2c5acb21b9fab9234ff62f03f2aa321e1",
+      "matches_execution_base": true
+    },
+    {
+      "path": "node/tests/soak_observer.rs",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-001"
+      ],
+      "claim_files": [
+        "docs/claims/casper-node-observation.md"
+      ],
+      "mandatory": true,
+      "sha256": "02dd274e7ca07a08cbd91938b28c43c2da0146816831911e78b4de68adce8dc1",
+      "matches_execution_base": true
+    },
+    {
+      "path": "scripts/ci/check-formal-invariants.sh",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-001",
+        "CLAIM-CASPER-NODE-OBSERVATION-002"
+      ],
+      "claim_files": [
+        "docs/claims/casper-node-observation.md",
+        "docs/claims/casper-node-authority-snapshot.md"
+      ],
+      "mandatory": true,
+      "sha256": "cd1261a9ae66708a3434f9cab41ce12439ccee0e46bd087bb7e430585a28d747",
+      "matches_execution_base": true
+    },
+    {
+      "path": "scripts/ci/check-node-canonical-wire.sh",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-002"
+      ],
+      "claim_files": [
+        "docs/claims/casper-node-authority-snapshot.md"
+      ],
+      "mandatory": true,
+      "sha256": "b6200e5fb80c2265aa96fc556305d691e39ca5d7a1bc2513ce4937fdfddebe36",
+      "matches_execution_base": true
+    },
+    {
+      "path": "scripts/ci/check-node-observation-bindings.sh",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-001",
+        "CLAIM-CASPER-NODE-OBSERVATION-002"
+      ],
+      "claim_files": [
+        "docs/claims/casper-node-observation.md",
+        "docs/claims/casper-node-authority-snapshot.md"
+      ],
+      "mandatory": true,
+      "sha256": "8cbf5dfcdc843f91d01b7a89ccc96f4fa56f5ae6c61ded2eabeaf92edd3183f2",
+      "matches_execution_base": true
+    },
+    {
+      "path": "scripts/ci/check-tla-invariants.sh",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-001",
+        "CLAIM-CASPER-NODE-OBSERVATION-002"
+      ],
+      "claim_files": [
+        "docs/claims/casper-node-observation.md",
+        "docs/claims/casper-node-authority-snapshot.md"
+      ],
+      "mandatory": true,
+      "sha256": "e40fbd47334c7a86d07919909232ce5716ebbeb6aa867a695ae6ecae3a36d6bd",
+      "matches_execution_base": true
+    },
+    {
+      "path": "scripts/ci/test-check-node-observation-bindings.sh",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-001",
+        "CLAIM-CASPER-NODE-OBSERVATION-002"
+      ],
+      "claim_files": [
+        "docs/claims/casper-node-observation.md",
+        "docs/claims/casper-node-authority-snapshot.md"
+      ],
+      "mandatory": true,
+      "sha256": "1841a3861695d32b89f511624af3f4057faed3f82422ed6389230c7fbdc60fa7",
+      "matches_execution_base": true
+    },
+    {
+      "path": "scripts/ci/test-check-tla-invariants.sh",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-001",
+        "CLAIM-CASPER-NODE-OBSERVATION-002"
+      ],
+      "claim_files": [
+        "docs/claims/casper-node-observation.md",
+        "docs/claims/casper-node-authority-snapshot.md"
+      ],
+      "mandatory": true,
+      "sha256": "d95437ab2d4cdf003b21213fc382771941b00fe36ac2f442f4d9279425dcd726",
+      "matches_execution_base": true
+    },
+    {
+      "path": "shared/src/rust/store/mod.rs",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-002"
+      ],
+      "claim_files": [
+        "docs/claims/casper-node-authority-snapshot.md"
+      ],
+      "mandatory": false,
+      "sha256": "9ef7432549747779c39b2d352f85e613b3c187b898aec40f3a79e34c483c9ca7",
+      "matches_execution_base": true
+    },
+    {
+      "path": "shared/src/rust/store/soak_snapshot.rs",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-002"
+      ],
+      "claim_files": [
+        "docs/claims/casper-node-authority-snapshot.md"
+      ],
+      "mandatory": true,
+      "sha256": "f05dae229436bf0ea1a7d1f083fdeacc5cbdf1eb11bbd9f619ec853ca723596f",
+      "matches_execution_base": true
+    },
+    {
+      "path": "shared/tests/soak_snapshot.rs",
+      "claims": [
+        "CLAIM-CASPER-NODE-OBSERVATION-002"
+      ],
+      "claim_files": [
+        "docs/claims/casper-node-authority-snapshot.md"
+      ],
+      "mandatory": true,
+      "sha256": "4ae3aa408e7de7adf032da424cac7d33d356eb285933a1ed6e840d102cc12880",
+      "matches_execution_base": true
+    }
+  ],
+  "specifications": {
+    "docs/claims/casper-node-authority-snapshot.md": "3130ca377c849facee112379fa656b34f63ab8858f01f3f8f2a6c5447a72c807",
+    "docs/claims/casper-node-observation.md": "d02013bb25aac9d9d16795651cbcbacd2227eae3873661f0258c6b6bd35ff2c6"
+  },
+  "execution_source_binding": {
+    "input_entries": 1116,
+    "execution_inputs_match_base": true,
+    "current_differences": [
+      {
+        "path": "docs/claims/casper-node-observation.md",
+        "execution_sha256": "b523d3053b7e7f7fa1f3819d00a0fb34dca29f3c46c2a959a796005f4b36a750",
+        "current_sha256": "d02013bb25aac9d9d16795651cbcbacd2227eae3873661f0258c6b6bd35ff2c6"
+      },
+      {
+        "path": "docs/claims/casper-node-authority-snapshot.md",
+        "execution_sha256": "66d326f786885a3c68c1966902fd2b895f0f95b2fad67e5e2756676420a7e766",
+        "current_sha256": "3130ca377c849facee112379fa656b34f63ab8858f01f3f8f2a6c5447a72c807"
+      },
+      {
+        "path": "formal/tlaplus/node_observation/bindings.json",
+        "execution_sha256": "99b9797e830b3cf170e6507ce19719f66faa0cc1dd8ba1ad650665e2a81a154d",
+        "current_sha256": "e7e493f1b6be711deb795ce1e092ca52b4feb7ff3eaacdeab8ce570b96bd4a83"
+      },
+      {
+        "path": "formal/tlaplus/node_observation/README.md",
+        "execution_sha256": "e1cd860a1a187abd8bc760a79559de0212f76cbdad5b8315b6f3ee5aea8f85ba",
+        "current_sha256": "5eb501d6391faca947399b6b689d0b1229ceaa8cb068113504ea533a1b349ba5"
+      }
+    ],
+    "all_other_inputs_match": true,
+    "current_manifest": "current-inputs.sha256",
+    "execution_manifest": "hosted-bindings/inputs.sha256",
+    "note": "The four differences contain evidence metadata and prose. Tested Rust, proof, model, and driver files are unchanged."
+  },
+  "refutation": {
+    "tool": "TLC 2.19",
+    "jar_sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88",
+    "host_java": "OpenJDK 26.0.2.1 on macOS ARM64",
+    "gate_exit": 0,
+    "positive_configurations_clean": 16,
+    "expected_violations": 88,
+    "hosted_positive_configurations_clean": 31,
+    "node_positive_states": {
+      "MC_ObserverSession": 689,
+      "MC_BoundedCapture": 10066
+    },
+    "node_controls": 17,
+    "node_configurations": [
+      {
+        "module": "MC_ObserverSession",
+        "configuration": "MC_ObserverSession.cfg",
+        "expected_exit": 0,
+        "invariant": null
+      },
+      {
+        "module": "MC_ObserverSession_challenge_unsafe",
+        "configuration": "MC_ObserverSession_challenge_unsafe.cfg",
+        "expected_exit": 12,
+        "invariant": "FreshChallenge"
+      },
+      {
+        "module": "MC_ObserverSession_identity_unsafe",
+        "configuration": "MC_ObserverSession_identity_unsafe.cfg",
+        "expected_exit": 12,
+        "invariant": "BoundIdentity"
+      },
+      {
+        "module": "MC_ObserverSession_frame_unsafe",
+        "configuration": "MC_ObserverSession_frame_unsafe.cfg",
+        "expected_exit": 12,
+        "invariant": "BoundFrame"
+      },
+      {
+        "module": "MC_ObserverSession_deadline_unsafe",
+        "configuration": "MC_ObserverSession_deadline_unsafe.cfg",
+        "expected_exit": 12,
+        "invariant": "BoundDeadline"
+      },
+      {
+        "module": "MC_ObserverSession_repeat_unsafe",
+        "configuration": "MC_ObserverSession_repeat_unsafe.cfg",
+        "expected_exit": 12,
+        "invariant": "OneRequest"
+      },
+      {
+        "module": "MC_ObserverSession_budget_unsafe",
+        "configuration": "MC_ObserverSession_budget_unsafe.cfg",
+        "expected_exit": 12,
+        "invariant": "SessionBudget"
+      },
+      {
+        "module": "MC_BoundedCapture",
+        "configuration": "MC_BoundedCapture.cfg",
+        "expected_exit": 0,
+        "invariant": null
+      },
+      {
+        "module": "MC_BoundedCapture_admission_unsafe",
+        "configuration": "MC_BoundedCapture_admission_unsafe.cfg",
+        "expected_exit": 12,
+        "invariant": "ValidAdmission"
+      },
+      {
+        "module": "MC_BoundedCapture_deadline_unsafe",
+        "configuration": "MC_BoundedCapture_deadline_unsafe.cfg",
+        "expected_exit": 12,
+        "invariant": "BoundLockWait"
+      },
+      {
+        "module": "MC_BoundedCapture_order_unsafe",
+        "configuration": "MC_BoundedCapture_order_unsafe.cfg",
+        "expected_exit": 12,
+        "invariant": "GuardOrder"
+      },
+      {
+        "module": "MC_BoundedCapture_open_unsafe",
+        "configuration": "MC_BoundedCapture_open_unsafe.cfg",
+        "expected_exit": 12,
+        "invariant": "OpenIdentity"
+      },
+      {
+        "module": "MC_BoundedCapture_validation_unsafe",
+        "configuration": "MC_BoundedCapture_validation_unsafe.cfg",
+        "expected_exit": 12,
+        "invariant": "ValidatedIdentity"
+      },
+      {
+        "module": "MC_BoundedCapture_generation_unsafe",
+        "configuration": "MC_BoundedCapture_generation_unsafe.cfg",
+        "expected_exit": 12,
+        "invariant": "GenerationStable"
+      },
+      {
+        "module": "MC_BoundedCapture_incomplete_unsafe",
+        "configuration": "MC_BoundedCapture_incomplete_unsafe.cfg",
+        "expected_exit": 12,
+        "invariant": "CompleteRows"
+      },
+      {
+        "module": "MC_BoundedCapture_bytes_unsafe",
+        "configuration": "MC_BoundedCapture_bytes_unsafe.cfg",
+        "expected_exit": 12,
+        "invariant": "BoundBytes"
+      },
+      {
+        "module": "MC_BoundedCapture_release_unsafe",
+        "configuration": "MC_BoundedCapture_release_unsafe.cfg",
+        "expected_exit": 12,
+        "invariant": "Detached"
+      },
+      {
+        "module": "MC_BoundedCapture_write_unsafe",
+        "configuration": "MC_BoundedCapture_write_unsafe.cfg",
+        "expected_exit": 12,
+        "invariant": "ReadOnly"
+      },
+      {
+        "module": "MC_ObserverSession_freshness_pre_fix",
+        "configuration": "MC_ObserverSession_freshness_pre_fix.cfg",
+        "expected_exit": 12,
+        "invariant": "FreshChallenges"
+      }
+    ],
+    "every_control_exit_12_with_named_invariant": true,
+    "fixture_exit": 0,
+    "fixture_controls": 88,
+    "setup_failures": [
+      "The first attempt used an unavailable Java environment.",
+      "The second attempt could not open the local Java socket in the sandbox.",
+      "The successful attempt used a clean export and permitted local socket access."
+    ]
+  },
+  "construction": {
+    "projects": [
+      "formal/rocq/node_observation",
+      "formal/rocq/node_observation/b11"
+    ],
+    "local_rocq": "9.1.1",
+    "hosted_rocq": "9.2",
+    "exported_theorems": 33,
+    "closed_assumption_sets": 33,
+    "closed_assumption_sets_all_projects": 44,
+    "coqchk_ok": true,
+    "theorems": [
+      {
+        "name": "NodeObservation.MainTheorem.observer_challenges_unique",
+        "assumptions": "Closed under the global context"
+      },
+      {
+        "name": "NodeObservation.MainTheorem.observer_replay_refused",
+        "assumptions": "Closed under the global context"
+      },
+      {
+        "name": "NodeObservation.MainTheorem.observer_counter_exhaustion_refused",
+        "assumptions": "Closed under the global context"
+      },
+      {
+        "name": "NodeObservation.MainTheorem.observer_checked_allocation_valid",
+        "assumptions": "Closed under the global context"
+      },
+      {
+        "name": "NodeObservation.MainTheorem.observer_cross_incarnation_distinct",
+        "assumptions": "Closed under the global context"
+      },
+      {
+        "name": "NodeObservation.MainTheorem.observer_qualified_replay_refused",
+        "assumptions": "Closed under the global context"
+      },
+      {
+        "name": "NodeObservation.MainTheorem.capture_no_interference",
+        "assumptions": "Closed under the global context"
+      },
+      {
+        "name": "NodeObservation.MainTheorem.capture_generation_stable",
+        "assumptions": "Closed under the global context"
+      },
+      {
+        "name": "NodeObservation.MainTheorem.capture_budget_bounded",
+        "assumptions": "Closed under the global context"
+      },
+      {
+        "name": "NodeObservation.MainTheorem.capture_overflow_fails_limit",
+        "assumptions": "Closed under the global context"
+      },
+      {
+        "name": "NodeObservation.MainTheorem.capture_prefix_roundtrip",
+        "assumptions": "Closed under the global context"
+      },
+      {
+        "name": "NodeObservation.MainTheorem.capture_prefix_sound",
+        "assumptions": "Closed under the global context"
+      },
+      {
+        "name": "NodeObservation.MainTheorem.capture_guard_order",
+        "assumptions": "Closed under the global context"
+      },
+      {
+        "name": "NodeObservation.MainTheorem.capture_detached",
+        "assumptions": "Closed under the global context"
+      },
+      {
+        "name": "NodeObservation.MainTheorem.observer_path_admission",
+        "assumptions": "Closed under the global context"
+      },
+      {
+        "name": "NodeObservation.MainTheorem.observer_peer_admission",
+        "assumptions": "Closed under the global context"
+      },
+      {
+        "name": "NodeObservation.MainTheorem.observer_cleanup_preserves_replacement",
+        "assumptions": "Closed under the global context"
+      },
+      {
+        "name": "NodeObservation.MainTheorem.observer_shutdown_before_exit",
+        "assumptions": "Closed under the global context"
+      },
+      {
+        "name": "NodeObservation.MainTheorem.observer_write_before_deadline",
+        "assumptions": "Closed under the global context"
+      },
+      {
+        "name": "NodeObservation.MainTheorem.capture_lock_deadline",
+        "assumptions": "Closed under the global context"
+      },
+      {
+        "name": "NodeObservation.MainTheorem.capture_complete_metadata",
+        "assumptions": "Closed under the global context"
+      },
+      {
+        "name": "NodeObservation.MainTheorem.capture_complete_requested_bodies",
+        "assumptions": "Closed under the global context"
+      },
+      {
+        "name": "NodeObservation.MainTheorem.capture_canonical_record_injective",
+        "assumptions": "Closed under the global context"
+      },
+      {
+        "name": "NodeObservation.MainTheorem.capture_scratch_preserves_production",
+        "assumptions": "Closed under the global context"
+      },
+      {
+        "name": "NodeObservation.MainTheorem.capture_scratch_preserves_sibling",
+        "assumptions": "Closed under the global context"
+      },
+      {
+        "name": "NodeObservationB11.MainTheorem.canonical_integer_roundtrip",
+        "assumptions": "Closed under the global context"
+      },
+      {
+        "name": "NodeObservationB11.MainTheorem.canonical_metadata_roundtrip",
+        "assumptions": "Closed under the global context"
+      },
+      {
+        "name": "NodeObservationB11.MainTheorem.canonical_snapshot_roundtrip",
+        "assumptions": "Closed under the global context"
+      },
+      {
+        "name": "NodeObservationB11.MainTheorem.canonical_metadata_injective",
+        "assumptions": "Closed under the global context"
+      },
+      {
+        "name": "NodeObservationB11.MainTheorem.canonical_snapshot_injective",
+        "assumptions": "Closed under the global context"
+      },
+      {
+        "name": "NodeObservationB11.MainTheorem.canonical_ordered_parents_preserved",
+        "assumptions": "Closed under the global context"
+      },
+      {
+        "name": "NodeObservationB11.MainTheorem.canonical_availability_distinct",
+        "assumptions": "Closed under the global context"
+      },
+      {
+        "name": "NodeObservationB11.MainTheorem.canonical_collection_permutation",
+        "assumptions": "Closed under the global context"
+      }
+    ],
+    "formal_fixture_exit": 0,
+    "formal_fixture_refusal_controls": 47,
+    "boundary_correspondence": "formal/rocq/node_observation/README.md#boundary-correspondence",
+    "note": "Closed assumption sets exclude admitted axioms. Theorem premises and documented runtime assumptions still apply."
+  },
+  "binding": {
+    "driver": "scripts/ci/check-node-observation-bindings.sh",
+    "driver_exit": 0,
+    "hosted_architecture": "x86_64-unknown-linux-gnu",
+    "native_architecture": "aarch64-unknown-linux-gnu",
+    "compiler": "rustc 1.95.0-nightly (6efa357bf 2026-02-08)\nbinary: rustc\ncommit-hash: 6efa357bff60d192688e02de0c78cae24a7f3a55\ncommit-date: 2026-02-08\nhost: x86_64-unknown-linux-gnu\nrelease: 1.95.0-nightly\nLLVM version: 22.1.0",
+    "test_executions_per_driver": 334,
+    "driver_tests": 332,
+    "b11_export_tests": 2,
+    "ignored_helpers": 1,
+    "ignored_helper_note": "The cross-process parent invokes the ignored helper.",
+    "suites": {
+      "node_library": 261,
+      "observer_integration": 20,
+      "block_capture": 28,
+      "block_library_selected": 4,
+      "shared_capture": 19
+    },
+    "bisimilarity_oracles": [
+      {
+        "source": "block-storage/tests/soak_snapshot.rs",
+        "name": "capture_outcomes_match_the_bounded_capture_oracle",
+        "scenarios": 14,
+        "result": "pass"
+      },
+      {
+        "source": "node/tests/soak_observer.rs",
+        "name": "session_sequences_match_an_independent_event_oracle",
+        "result": "pass"
+      }
+    ],
+    "strip_equivalence": {
+      "result": "pass",
+      "fixture": "scripts/ci/test-check-node-observation-bindings.sh",
+      "rejection_controls": 12,
+      "normalization": "Only zero array entry sizes become the ELF pointer width.",
+      "checks": [
+        "Allocated-section metadata",
+        "Program segments",
+        "Section-content hashes"
+      ],
+      "controls": [
+        "bytes.text",
+        "bytes.preinit_array",
+        "bytes.init_array",
+        "bytes.fini_array",
+        "flags",
+        "size",
+        "alignment",
+        "entry-size",
+        "non-array-entry-size",
+        "program-flags",
+        "entry-point",
+        "nobits-size"
+      ]
+    },
+    "canonical_wire": {
+      "result": "pass",
+      "production_cases": 75,
+      "rejection_controls": 6,
+      "snapshot_fields": 20,
+      "metadata_fields": 12,
+      "cases_manifest_sha256": "739a686dd622f8482e170633a0195f2bc7750dc0adec1717e60996ad7991be44",
+      "cases": [
+        {
+          "file": "Case000.v",
+          "name": "base",
+          "wire_sha256": "d521d12d058b4c45139b820b1c497e3e60c61b8ccc9b931c5302017b05db088e",
+          "proof_sha256": "1f218d89cfbdd10a49e26b0ac352323324bf7e252c34e07457c08cd6011ea552"
+        },
+        {
+          "file": "Case001.v",
+          "name": "schema",
+          "wire_sha256": "d4c9b427fbb6f1af2ba0c3ee5eab20a7fdaf6cffe50d4381aa0122a21d09ec46",
+          "proof_sha256": "b987455705dd325c5d031a7f12bd7a727fe8f50b5e175caf2b5fda60af16cbd5"
+        },
+        {
+          "file": "Case002.v",
+          "name": "scope",
+          "wire_sha256": "892c94d572dc1961809a94f6c2331bbfe623faa395004d03ea374744193080f8",
+          "proof_sha256": "25e4ffb0c3a0e1fa8d17bce981c80031b88614521453febe77f2670f378cbbd2"
+        },
+        {
+          "file": "Case003.v",
+          "name": "read.max_value_bytes",
+          "wire_sha256": "409fc22b274833953c994712d7f98f200ba27ab2fefdebda441e7a238b421d9e",
+          "proof_sha256": "2529a6e83a9d984f010121ea6a07246b50514ec0bcabe382511a5b4d25fa09e3"
+        },
+        {
+          "file": "Case004.v",
+          "name": "read.max_total_bytes",
+          "wire_sha256": "3df06e34a73859785e01cf65a8f0e92121e9ec205e16890bebf24378999af378",
+          "proof_sha256": "39b9f20ba37821b0946f57f8237f58d8e16a562c463504fa89914787be773bf8"
+        },
+        {
+          "file": "Case005.v",
+          "name": "read.max_records",
+          "wire_sha256": "fabd930081973984eed2ffde9c8122bcd63abf6812db12a76a971f1f0b836201",
+          "proof_sha256": "98d7fb73a4f645686654b2ff1bd836cd9acabc52ec6a7ecc44c9140abd22f5da"
+        },
+        {
+          "file": "Case006.v",
+          "name": "read.max_operations",
+          "wire_sha256": "7fc24c115e00764a59a5e4d18f616e27b18419e4bc09a7453dc210c413aa8ba8",
+          "proof_sha256": "1015a32dfcd92a722ffd827bb6934c6beb625f21e9107f933f2267ee09aba329"
+        },
+        {
+          "file": "Case007.v",
+          "name": "block_decode.max_compressed_bytes",
+          "wire_sha256": "83375068d189198dfbbfc41f255221c7dd41dd21e49dcb8a7c1f60731dbbf4f3",
+          "proof_sha256": "d526db57c8e95e0149b3854a4a7bfc7030072b819eed2e463dd1eea62b687110"
+        },
+        {
+          "file": "Case008.v",
+          "name": "block_decode.max_decompressed_bytes",
+          "wire_sha256": "08ac51dadb38b463371cb4e85c1dcddc59ef98dba147151b610287f77dd987b6",
+          "proof_sha256": "35c0f580f09248b44a2c03f71b9298b1ad4e7835d4ffbb639d942bfbb67f0fba"
+        },
+        {
+          "file": "Case009.v",
+          "name": "block_decode.max_expansion_ratio",
+          "wire_sha256": "6b180f31e33141946c02c640c11ad31117b129bbb73e98c64e5c2aeba6f66cc5",
+          "proof_sha256": "3924d0d82408d471b28730aae1c9a27b9b056c8a4290bc4f94b0c7782be36541"
+        },
+        {
+          "file": "Case010.v",
+          "name": "max_blocks",
+          "wire_sha256": "5c0dfd631d2b10c878d30d3cc1173ba32948b2d8135396142f1c49cb5bf91973",
+          "proof_sha256": "b45d725d72d9e09041c5944b95c44d25cb20a3ac09ad82e863d7d711facf6f2f"
+        },
+        {
+          "file": "Case011.v",
+          "name": "max_validators",
+          "wire_sha256": "f436ba40bff298cd4399573aef4e42a892d595fa3b8963c675e5a72d8764ef1b",
+          "proof_sha256": "86ddc53e3231955035e89c495d21fe08c6cdee5a353f5a450a6ef1c70f565eed"
+        },
+        {
+          "file": "Case012.v",
+          "name": "max_edges",
+          "wire_sha256": "9c967ded740fbc2f6e8e44922bad22eb20001a76c03f564f8fe3c6ecf3450c39",
+          "proof_sha256": "31b7004398f581701602be0ac46532581d23262351c00242f28659514eec97d0"
+        },
+        {
+          "file": "Case013.v",
+          "name": "max_work",
+          "wire_sha256": "38d51f57ee1f12be3097b7fb9583839bc92dcfa366995b5c89b1bdf05b9c7bc0",
+          "proof_sha256": "973055a61772f6dad927929e6c9e4720efe30a5122ff4e8d1b0390508feea6a6"
+        },
+        {
+          "file": "Case014.v",
+          "name": "duration_seconds",
+          "wire_sha256": "6bcd12f0b859def222a29c981ac738e1961836f46c5cdee670a80bf09432e6b3",
+          "proof_sha256": "eef6aabcbc871812596f4a35eb8486881da155de0c9dc2d5433bdcdd4d0effb7"
+        },
+        {
+          "file": "Case015.v",
+          "name": "duration_nanos",
+          "wire_sha256": "b97ac9860b58fa46f7dcbd0cdd7986d41fc289a3b9f0b2502eca78e3dcc2d657",
+          "proof_sha256": "d7459ac5c9ce86c96d500a0a9d756b1bf0c173b040ab2a2377738937237cfdac"
+        },
+        {
+          "file": "Case016.v",
+          "name": "usage_bytes",
+          "wire_sha256": "3e695b416929a118d050600527dfce89ba6b4200b84738d7dfecde447ac425e2",
+          "proof_sha256": "a613729708fe6a27e3891feb139c9f4ee71a4f4eefd326d74f3b0ef9fd067272"
+        },
+        {
+          "file": "Case017.v",
+          "name": "usage_records",
+          "wire_sha256": "d799283e026ef6ab01b6abedf5dfb1399421bc8b5eb5252c4fab072507763c42",
+          "proof_sha256": "1b497afcd684e35a52dfdf1914058e9380b2ccf9ffaf210bbd57b973ebc46801"
+        },
+        {
+          "file": "Case018.v",
+          "name": "usage_operations",
+          "wire_sha256": "a48c5c1f33f8e764cc35fd526c9aa9faca9bd8d3ae6a0acf92fa4683ed41b1e2",
+          "proof_sha256": "5117bd8f98a42f76912e1a625e333804b339c3c6a472600db78e477a9d553b58"
+        },
+        {
+          "file": "Case019.v",
+          "name": "coverage_held",
+          "wire_sha256": "1560d9ac33fdf05ed05f68d6b32ecd051338f7d688f569b206e64927aacc9f6d",
+          "proof_sha256": "32561a70957c47bca45403e7ee748536fdaa7feb66d8a47108277a7956260068"
+        },
+        {
+          "file": "Case020.v",
+          "name": "coverage_complete",
+          "wire_sha256": "55a1ff767315a84acce5240a5ce255ced33189d2c62b947e1b244480ca9e5712",
+          "proof_sha256": "291ff7fc2a75900e90eade0871ef1b15f0e1c4008e844f5e5183610774c8c069"
+        },
+        {
+          "file": "Case021.v",
+          "name": "coverage_requested",
+          "wire_sha256": "87372770593c96eb02724a78f589fdd6d2845d3526b6229cef02170ebafdd05a",
+          "proof_sha256": "11704b8a49e9b74d5c9201bf69fd4b1f29317e2dcbec5076064e450bfb71d044"
+        },
+        {
+          "file": "Case022.v",
+          "name": "generation",
+          "wire_sha256": "f6f337f38ef04f30bf8ce9a977cfdce950af306a266137e207037b9af044f78f",
+          "proof_sha256": "7b5714c4ad42f1c60f52fae2880f7d5d0325cfad94ce1691e9992bda1e3f5bad"
+        },
+        {
+          "file": "Case023.v",
+          "name": "transaction_environment",
+          "wire_sha256": "14c52d7d6b801da0269e023c9fb1b20398ec590966f62930e7422095c1c5e3d0",
+          "proof_sha256": "c8fca9102bdb89a66872d81c8008bc91fe878bf68567023ae7d11decfa310343"
+        },
+        {
+          "file": "Case024.v",
+          "name": "transaction_before",
+          "wire_sha256": "7a0235821318a2457f47dca8a292e24a194ed5bc4e7ca03c3ebc567068d66cc3",
+          "proof_sha256": "6b6fb5d795f3d8b453a34134521b8222fe972fe1c3b0fcd96034a7fba06afd63"
+        },
+        {
+          "file": "Case025.v",
+          "name": "transaction_open",
+          "wire_sha256": "6cd47ad2ecee5d6b5de9713fbbb0542f7e1dc55e56f70c4a2ffaa0ca284c5bf9",
+          "proof_sha256": "847ed277d86486b6af74fb57dc5f50ef487d6a1174e4e5803bfb92f67093f53d"
+        },
+        {
+          "file": "Case026.v",
+          "name": "transaction_after",
+          "wire_sha256": "f3c5d059109f7808dc38d04c700b3e9d65fcf4198e999c902c50dccfcf1dca79",
+          "proof_sha256": "914e45831287a8d53ef59f2ef450b2e82187fb842dd1e3207c2457c4c2626377"
+        },
+        {
+          "file": "Case027.v",
+          "name": "transaction_order",
+          "wire_sha256": "bb1fe0d79f5e562915eb90e7e66ac830e15d01fc25aab862de37dac57aa18ec2",
+          "proof_sha256": "38df71abb4d46f20f740a217195ebef2d44245280810d9995c83a772a5b5cbfc"
+        },
+        {
+          "file": "Case028.v",
+          "name": "transactions",
+          "wire_sha256": "cf68609619797b159d83312f73ef820dc32c3abf1168ece8f665f9409f9adf8b",
+          "proof_sha256": "96dae753e3e58f72f12e0487b295d9bc09d47ce505581b5178d2621fa416c2e7"
+        },
+        {
+          "file": "Case029.v",
+          "name": "dag_set",
+          "wire_sha256": "f782a40da65e6551b4ffdb68f044a9fe2628c266804f97720a2f8474b72998a1",
+          "proof_sha256": "908dbf693390ad248c4a15bd055fdf2763ddae80141dae16f45048328e2baa78"
+        },
+        {
+          "file": "Case030.v",
+          "name": "child_map",
+          "wire_sha256": "b8d71a42e094ec20ce58a187d804bb9be9cc97c7febe3a47b285da37eeace45a",
+          "proof_sha256": "95876ab1f074c4c4f8b794366cff6ebb7ac7e6774eb5e3caa066d088f11ceb0e"
+        },
+        {
+          "file": "Case031.v",
+          "name": "height_map",
+          "wire_sha256": "91cf64645b9ce385378073573a6319553c736751d1e2e78f412d7f4fa8cc6849",
+          "proof_sha256": "416173eae7676136fb04c92c3395897124772c6ec06dee103eb5bd1823b76ded"
+        },
+        {
+          "file": "Case032.v",
+          "name": "block_number_map",
+          "wire_sha256": "c3b93504f856554e2569580cf4e6961774e0ecd3651e3293c0b43a40d62c1c33",
+          "proof_sha256": "0b4c43d111e1523f64d8c82304572899cde46a11d8fc9498e6c1500d32bd1584"
+        },
+        {
+          "file": "Case033.v",
+          "name": "main_parent_map",
+          "wire_sha256": "38db1e3c223b9993738ca1160c0928597fa3cee98810cd51a8a326fc79b1a2b3",
+          "proof_sha256": "bd8c1c2fa4e933e91b36862c9ff68dbd666e0bbcd967d4ec834e2ff1ed8d7be2"
+        },
+        {
+          "file": "Case034.v",
+          "name": "self_justification_map",
+          "wire_sha256": "48281b4fc085dde9e16df5a8ab1946fba35ed3fd07cc5524fd1c7c814d9919e5",
+          "proof_sha256": "fe5ca7c24c37962a057fc8cea14a16bf54f7246611cc303b1e02a3927e321b57"
+        },
+        {
+          "file": "Case035.v",
+          "name": "finalized_block_set",
+          "wire_sha256": "fa79e5b0244c156bb22324e13ec6501fd85a8a5b3534916a32d973a2e5c8cd47",
+          "proof_sha256": "85e9f1c66c2e9b2a9156eb047de93b66e1f30d37aa44bdac032d07de1734627a"
+        },
+        {
+          "file": "Case036.v",
+          "name": "latest_messages",
+          "wire_sha256": "f29fe9a691c52d7567899c33c3874a6da7a60777a174d8b5e061c3f3a82256a2",
+          "proof_sha256": "8a850f1393f78bc6fd839f23e6986a756d97a552f0b1010ee1d4f5b5addee5b1"
+        },
+        {
+          "file": "Case037.v",
+          "name": "invalid_blocks",
+          "wire_sha256": "4200749b525d07fae93d8eb32a85040ddaad80d0d68a93c3298f775f346fd66e",
+          "proof_sha256": "032316b2370bb6a0c0589790e9b31c1f5d4f0299c927d46297f700fa7cd0bf0d"
+        },
+        {
+          "file": "Case038.v",
+          "name": "blocks",
+          "wire_sha256": "bb3a3153d54a1c5c60d79af52c71149f15d83e4a6dac399d1b27de0641f599d9",
+          "proof_sha256": "9839c1e59cec81754852dde39b8777227236d105aabb2a835d38a5b46164fa3e"
+        },
+        {
+          "file": "Case039.v",
+          "name": "bodies",
+          "wire_sha256": "c5eeaf50770b16a32d82b95cb8775c415b8da83723fc9852690e0088b77a6f18",
+          "proof_sha256": "4270a812e1a38d219ee24356722a212a9125efaf0bc1f2eaac13d4fa85776198"
+        },
+        {
+          "file": "Case040.v",
+          "name": "last_finalized_none",
+          "wire_sha256": "2d9c913e907deac3b48287f21c919605665d4bc3e943768469aac4452cd45770",
+          "proof_sha256": "37d782d4b725b728a1d74d52cd87dafd0d0c020a1708e61328b9a3ed1d702db0"
+        },
+        {
+          "file": "Case041.v",
+          "name": "last_finalized_height",
+          "wire_sha256": "d38c865c11008c2607802cc47d059a21eaa66d82aff53eac2c67987f97c28e59",
+          "proof_sha256": "cac18ec2a4d75face57e54f83b7bca6e8e79b6725a4dda766f6276f525e83125"
+        },
+        {
+          "file": "Case042.v",
+          "name": "floor_present_empty",
+          "wire_sha256": "b9a60c3f2f57c404af6740b86d1aee4666321ff6775be12b331209cf3d43d0a3",
+          "proof_sha256": "e6c36fa3e0392f700da946e31895571436f28c12d263e1a938b31b2263125d7d"
+        },
+        {
+          "file": "Case043.v",
+          "name": "frontier_absent",
+          "wire_sha256": "7371d591b4a7c49c0e08e03c2b04f5205bf75b08220df46fdb69a978e8b396f6",
+          "proof_sha256": "6af92afb099c8525ba1b2b676767a575d0c65eb23a247f020fed9f9143b96839"
+        },
+        {
+          "file": "Case044.v",
+          "name": "body_not_held",
+          "wire_sha256": "38ee9f0fe54efb1a411241023149d9ba298966a7444c4afda2c611d99ae796b9",
+          "proof_sha256": "6dbb31d97047277aa21cd1c28a23dc4f754c91c04e05bd58fca8d1e15285024f"
+        },
+        {
+          "file": "Case045.v",
+          "name": "body_empty",
+          "wire_sha256": "996b11ee0e97a143abdbb086f4897dbbeb45331ecfe00420a621a9559dcd1548",
+          "proof_sha256": "e54e10671f5e33e15713fc72978736caf44325598627a17ffde48a48a9a92ba7"
+        },
+        {
+          "file": "Case046.v",
+          "name": "block_hash_false",
+          "wire_sha256": "c18279d02ee84e2d66e9e24eaa1236f9c00c16c4eadc491b48e98793100ec911",
+          "proof_sha256": "655b2a05eda15b05e04b18f70e58404c73ed1cf2a220291a36fd70c0f2dd93e4"
+        },
+        {
+          "file": "Case047.v",
+          "name": "block_hash_true",
+          "wire_sha256": "a69f935234907513e4b001fbc4fa72b834bb7f03da2e4564623ad6fcd74eb794",
+          "proof_sha256": "21ff0c2cca63f3f369b0ebdda2d2a8d04cd255b14f15f946da256eccf4a0a8d6"
+        },
+        {
+          "file": "Case048.v",
+          "name": "parents_order_false",
+          "wire_sha256": "0ec162a9c9227e168753f850bb523b3f673ae94209f43f4918b636aa653876ef",
+          "proof_sha256": "ada195629c8da3a19131bc36229d7652bf24a87abbd980e39da1519fdd7daa5c"
+        },
+        {
+          "file": "Case049.v",
+          "name": "parents_order_true",
+          "wire_sha256": "9b19599c3c0781b45c67ce84fca51521a2354430acc125acfc9541e16e82b24f",
+          "proof_sha256": "436fb58ddded3ce56005aa746f3dfbfdeebb049910c781496c6c7546e6e3a49e"
+        },
+        {
+          "file": "Case050.v",
+          "name": "parents_count_false",
+          "wire_sha256": "4f90f2d18749f3e171e91eaa5ca799f970e7f49e26e07f3603d3218585d60067",
+          "proof_sha256": "97e3e0e67435e33f3f4c7898f9501493619e03c61aaad682f041b998428e6fc0"
+        },
+        {
+          "file": "Case051.v",
+          "name": "parents_count_true",
+          "wire_sha256": "e0e9b096ade8b315f3ba57b6a6be1180c7b2a12fcae314b15613f1028d7f2337",
+          "proof_sha256": "80009e7ae573836d526c642c69dce71797418758294472db881ef58d984d2afe"
+        },
+        {
+          "file": "Case052.v",
+          "name": "sender_false",
+          "wire_sha256": "248a7a2482a930b12d39247fcd73abe0a26d2fed67069a1c62cf9c175e4b81da",
+          "proof_sha256": "96698cf10410b0fda9ddf4fa2a5b836c8c6f0740f15e1f6eebfcaae2bb244efa"
+        },
+        {
+          "file": "Case053.v",
+          "name": "sender_true",
+          "wire_sha256": "ddfac1ae5f4281d8b67042227e639e886c3ee08a2c5053234da6e3e1df58c0e0",
+          "proof_sha256": "99a4c9942e1fe42d824ab1e184ce04736e8f082404c43f255395311aef522282"
+        },
+        {
+          "file": "Case054.v",
+          "name": "justifications_order_false",
+          "wire_sha256": "9a67fd2555803cb7118c7b75a0ccdb48976ddd9e095dd2e1d0c2e1d7e23178aa",
+          "proof_sha256": "d6538564280a63dfbb17b96212df2acf9f96a60ce6e06a30c10e1c1f35ce7a61"
+        },
+        {
+          "file": "Case055.v",
+          "name": "justifications_order_true",
+          "wire_sha256": "a033a1de30a2e58237d3b38caa2eab84ec780db2eb6037bd3ac475a6eccdef93",
+          "proof_sha256": "5ebfe7ec64a6085e20af5059601c734dec203e023229f219fab6f4ac4cd87247"
+        },
+        {
+          "file": "Case056.v",
+          "name": "justifications_count_false",
+          "wire_sha256": "97b3d79a7cb03293d70da5acce1251541f9002354c9bf674a63927bd9b1ed106",
+          "proof_sha256": "6546f1e640282c5205a7b76706f214b71ee7cf0f4bf20a873f307cc0fa510da8"
+        },
+        {
+          "file": "Case057.v",
+          "name": "justifications_count_true",
+          "wire_sha256": "7b37a82dd905efd01a78fad3bb203589696451650216a8e68b876b700d97d0ee",
+          "proof_sha256": "214e55d650f7e68d70c8a7f68e296bda6e792259924d0eb328094c70b7f59c37"
+        },
+        {
+          "file": "Case058.v",
+          "name": "weights_false",
+          "wire_sha256": "67b5ba8e11ac108567573d101a8ec5dedfd603971be48891f85e0fe4a7a74df3",
+          "proof_sha256": "f558872ca23cc17265aa6503d80acefb40112d49dce2248a4c0cb775375f1a3e"
+        },
+        {
+          "file": "Case059.v",
+          "name": "weights_true",
+          "wire_sha256": "9c1fee028ef20b7e9106683ad9205f7007253b571046f1a38d9a6fe728a43feb",
+          "proof_sha256": "3a6b0833b87293ff009856485e124f361421f25fba44373e3c592f7012f2a15b"
+        },
+        {
+          "file": "Case060.v",
+          "name": "block_number_false",
+          "wire_sha256": "bb2ab458be8d4acef1b23db9598ec7f52a8dd9a99239f3d84196174912f54106",
+          "proof_sha256": "c68d98df6047b0d5720b4641e8724d74d1d1181404b7413a9f7bd9a91d147e67"
+        },
+        {
+          "file": "Case061.v",
+          "name": "block_number_true",
+          "wire_sha256": "bf167bd635f476c68176174a50207dd5d379ca4db2f56a1338339ac21d1b1266",
+          "proof_sha256": "abba6c1fb4ea5f25a92bb3e250029dcf044bac8cf3a1b458887d64b6d4c9c0ae"
+        },
+        {
+          "file": "Case062.v",
+          "name": "sequence_number_false",
+          "wire_sha256": "c01a416fdb59b27cf49a404491cab15a45156b8ee33a18c341cfacd4bc511d52",
+          "proof_sha256": "5aca176ed9dd3e910efaf22c798cf60fe46e7e42739d353cb67c4a5ca84b1900"
+        },
+        {
+          "file": "Case063.v",
+          "name": "sequence_number_true",
+          "wire_sha256": "234dc3d5e9d8093b071f1153c2596a069cec8d3e11271b559392845d7b61d191",
+          "proof_sha256": "000bf8e123215bad4a9382ae0d064b1c2d01df744f5836a3f2bf249e297211be"
+        },
+        {
+          "file": "Case064.v",
+          "name": "invalid_false",
+          "wire_sha256": "845f6f064a0cd26317e62cad17d96fce7a629cbff6d534a96eb0cafe87616b78",
+          "proof_sha256": "47735bcdfd4379dfa4052b68f618f18b7be05370d4562ba7ace447d3b8d5df05"
+        },
+        {
+          "file": "Case065.v",
+          "name": "invalid_true",
+          "wire_sha256": "70ed19e934a3fb956ba1a75963dc34d6d5b6d6ea5dce703a6df142b2a797dddb",
+          "proof_sha256": "b31db0f9fc474db427d89fe033f6aee9ea06de38776f3cb06098a6298a1508d0"
+        },
+        {
+          "file": "Case066.v",
+          "name": "directly_finalized_false",
+          "wire_sha256": "4aeec04e843c3ee85a4449f6fbf1b88fb172716791546fac132b4c887033a91f",
+          "proof_sha256": "1a4543924619a21f947c22bb4a4b331349220512670f602c31c6db333e4f9675"
+        },
+        {
+          "file": "Case067.v",
+          "name": "directly_finalized_true",
+          "wire_sha256": "704bc12ab11972ce0fb80448b7f2e308c8fa03d01cc74e4665d3e53b639bc64d",
+          "proof_sha256": "7251091958b9859a1bf39257d44984c8742c65cc1c0fb0017e1d729066a203ad"
+        },
+        {
+          "file": "Case068.v",
+          "name": "finalized_false",
+          "wire_sha256": "c74ffe60f14a704806413b1caf00512db665597febf47c87b82ec7ed940a7f8a",
+          "proof_sha256": "2a56bae509ab0c615378739118a75960c180278cb1a72082c74b48a8125be5bc"
+        },
+        {
+          "file": "Case069.v",
+          "name": "finalized_true",
+          "wire_sha256": "f0533d20117f3690882aa4e59b82f6fd26c5c1bb1a920cd06cf239c95fb29b95",
+          "proof_sha256": "0e36bbf149972268bf97647a933c11cc254699258b236b5b53993c6a3ab32c0b"
+        },
+        {
+          "file": "Case070.v",
+          "name": "float_bits_false",
+          "wire_sha256": "e32d9f22a8c5c70d6f64f89119e0f65a2e5e89bf55f2b3e7539caaa225ec2146",
+          "proof_sha256": "007678f24113cf42724e889411225973232ac2d4db876ab91b995ad19e230b12"
+        },
+        {
+          "file": "Case071.v",
+          "name": "float_bits_true",
+          "wire_sha256": "8b8277143690d1f82ab7da9c1044e26af5969ac653d4a49e9115843d18e3eb39",
+          "proof_sha256": "b0faf330a80b2525f5470a5d6c8c97bb05a6c3b6ff572db5f572a83c92f45248"
+        },
+        {
+          "file": "Case072.v",
+          "name": "merge_base_false",
+          "wire_sha256": "267894bf9f08132f1739c69305cc8ded24c64f7f1dad5031221104ee7978640f",
+          "proof_sha256": "5e4f85ab3cd77367edb98dbb36719fd1877bbeb110352fdb5d7057f853aa85ef"
+        },
+        {
+          "file": "Case073.v",
+          "name": "merge_base_true",
+          "wire_sha256": "b69624e8814624e941db5f74349e00af169df1e07eee21f1b8d8b12bf12273e9",
+          "proof_sha256": "743b0ecb973c3ee47a621be232e118542c73c99d6cdbf1463fda49d12d977667"
+        },
+        {
+          "file": "Case074.v",
+          "name": "work",
+          "wire_sha256": "584021ba3156c373cb5237e2667c8345dada998c6848b1962b43985a86f22bdf",
+          "proof_sha256": "5078a26ac5fbd2493313eed991ff6cea85798ee0d04f2b64bcf9f544d7c8b8bc"
+        }
+      ],
+      "rejection_names": [
+        "reject_endianness",
+        "reject_tag",
+        "reject_omitted_field",
+        "reject_truncated_work",
+        "reject_trailing_byte",
+        "reject_coverage_flag"
+      ],
+      "universal_rust_refinement": false,
+      "scope": "Universal byte-model proofs and finite executable Rust correspondence."
+    },
+    "kani": {
+      "executed": true,
+      "exit": 0,
+      "harnesses_verified": 8,
+      "failures": 0,
+      "kani": "0.67.0",
+      "cbmc": "6.8.0",
+      "architecture": "aarch64-unknown-linux-gnu",
+      "usize_bits": 64,
+      "compiler": "rustc 1.93.0-nightly (53732d5e0 2025-11-20)\nbinary: rustc\ncommit-hash: 53732d5e076329a62f71d3c6901886ce8a71e812\ncommit-date: 2025-11-20\nhost: aarch64-unknown-linux-gnu\nrelease: 1.93.0-nightly\nLLVM version: 21.1.5",
+      "toolchain": "nightly-2025-11-21",
+      "command": "cargo kani -p shared -p block-storage --lib --harness kani_proofs --output-format terse",
+      "environment": {
+        "CARGO_HOME": "/work/cargo",
+        "CARGO_NET_OFFLINE": "true",
+        "RUSTFLAGS": "--cfg target_feature=\"aes\" --cfg target_feature=\"neon\" -Aexplicit_builtin_cfgs_in_flags"
+      },
+      "default_verification_checks_retained": true,
+      "container_image": "sha256:2a8ea477f175fb4a9d63e03891aa378d1940a4db7c70b473396d738000d87920",
+      "source_manifest": "native-bindings/inputs.sha256",
+      "source_manifest_entries": 1116,
+      "container_source_check": "kani/kani-worktree-check.log",
+      "harnesses": [
+        {
+          "source": "shared/src/rust/store/soak_snapshot.rs",
+          "name": "check_limit_is_the_comparison",
+          "verified": true,
+          "evidence": "docs/cbc-evidence/runs/casper-node-claim-gate-38e576041-01/report.json",
+          "assumptions": [],
+          "domain": "All target usize values for observed length and limit.",
+          "source_sha256": "f05dae229436bf0ea1a7d1f083fdeacc5cbdf1eb11bbd9f619ec853ca723596f",
+          "result": "success"
+        },
+        {
+          "source": "shared/src/rust/store/soak_snapshot.rs",
+          "name": "charge_record_never_exceeds_limits_and_fails_atomically",
+          "verified": true,
+          "evidence": "docs/cbc-evidence/runs/casper-node-claim-gate-38e576041-01/report.json",
+          "assumptions": [
+            "Initial record count and byte usage do not exceed their limits."
+          ],
+          "domain": "Symbolic limits, usage, and raw length across target usize values.",
+          "source_sha256": "f05dae229436bf0ea1a7d1f083fdeacc5cbdf1eb11bbd9f619ec853ca723596f",
+          "result": "success"
+        },
+        {
+          "source": "shared/src/rust/store/soak_snapshot.rs",
+          "name": "charge_operation_never_exceeds_limit_and_fails_atomically",
+          "verified": true,
+          "evidence": "docs/cbc-evidence/runs/casper-node-claim-gate-38e576041-01/report.json",
+          "assumptions": [
+            "Initial operation count does not exceed its limit."
+          ],
+          "domain": "Symbolic limits and usage across target usize values.",
+          "source_sha256": "f05dae229436bf0ea1a7d1f083fdeacc5cbdf1eb11bbd9f619ec853ca723596f",
+          "result": "success"
+        },
+        {
+          "source": "block-storage/src/rust/key_value_block_store.rs",
+          "name": "decode_limits_validate_iff_all_positive",
+          "verified": true,
+          "evidence": "docs/cbc-evidence/runs/casper-node-claim-gate-38e576041-01/report.json",
+          "assumptions": [],
+          "domain": "Symbolic compressed, decompressed, and expansion limits across target usize values.",
+          "source_sha256": "a10d2251ebcb78cfd2f770cd0bb57fc2f47538ad29a86d7226e5894dff8b728c",
+          "result": "success"
+        },
+        {
+          "source": "shared/src/rust/store/soak_snapshot.rs",
+          "name": "length_prefix_roundtrip",
+          "verified": true,
+          "evidence": "docs/cbc-evidence/runs/casper-node-claim-gate-38e576041-01/report.json",
+          "unwind": 10,
+          "assumptions": [
+            "Payload length is at most four bytes."
+          ],
+          "domain": "Symbolic four-byte payload and permitted symbolic length.",
+          "source_sha256": "f05dae229436bf0ea1a7d1f083fdeacc5cbdf1eb11bbd9f619ec853ca723596f",
+          "result": "success"
+        },
+        {
+          "source": "shared/src/rust/store/soak_snapshot.rs",
+          "name": "length_prefix_accepts_only_exact_declaration",
+          "verified": true,
+          "evidence": "docs/cbc-evidence/runs/casper-node-claim-gate-38e576041-01/report.json",
+          "unwind": 14,
+          "assumptions": [],
+          "domain": "Every twelve-byte raw value, with an eight-byte length prefix.",
+          "source_sha256": "f05dae229436bf0ea1a7d1f083fdeacc5cbdf1eb11bbd9f619ec853ca723596f",
+          "result": "success"
+        },
+        {
+          "source": "shared/src/rust/store/soak_snapshot.rs",
+          "name": "short_raw_is_rejected",
+          "verified": true,
+          "evidence": "docs/cbc-evidence/runs/casper-node-claim-gate-38e576041-01/report.json",
+          "assumptions": [
+            "Raw length is less than eight bytes."
+          ],
+          "domain": "Symbolic length and a zero-filled eight-byte backing array.",
+          "source_sha256": "f05dae229436bf0ea1a7d1f083fdeacc5cbdf1eb11bbd9f619ec853ca723596f",
+          "result": "success"
+        },
+        {
+          "source": "block-storage/src/rust/key_value_block_store.rs",
+          "name": "compressed_input_preflight_is_exact",
+          "verified": true,
+          "evidence": "docs/cbc-evidence/runs/casper-node-claim-gate-38e576041-01/report.json",
+          "assumptions": [],
+          "domain": "Symbolic compressed length and all decode limits across target usize values.",
+          "source_sha256": "a10d2251ebcb78cfd2f770cd0bb57fc2f47538ad29a86d7226e5894dff8b728c",
+          "result": "success"
+        }
+      ],
+      "setup_attempts_retained": [
+        "kani/kani.log",
+        "kani/kani-02.log",
+        "kani/kani-03.log",
+        "kani/kani-04.log"
+      ],
+      "successful_log": "kani/kani-05.log",
+      "limits": [
+        "Prefix proofs use the recorded finite payload bounds.",
+        "Public decoding, arbitrary allocation sizes, and complete observer behavior require separate evidence.",
+        "AES and NEON configuration permits ARM64 dependency compilation without disabling verifier checks."
+      ]
+    }
+  },
+  "hosted_execution": {
+    "run_id": 35906410283,
+    "attempt": 1,
+    "head_sha": "38e57604187feab97cb45f000f95270b12a9f8bf",
+    "url": "https://github.com/F1R3FLY-io/f1r3node-rust/actions/runs/35906410283",
+    "jobs": [
+      {
+        "name": "TLA+ invariant check",
+        "databaseId": 107335114623,
+        "status": "completed",
+        "conclusion": "success",
+        "startedAt": "2026-09-23T19:00:49Z",
+        "completedAt": "2026-09-23T19:14:52Z",
+        "url": "https://github.com/F1R3FLY-io/f1r3node-rust/actions/runs/35906410283/job/107335114623"
+      },
+      {
+        "name": "Node observation binding tests",
+        "databaseId": 107335114726,
+        "status": "completed",
+        "conclusion": "success",
+        "startedAt": "2026-09-23T19:00:50Z",
+        "completedAt": "2026-09-23T19:11:33Z",
+        "url": "https://github.com/F1R3FLY-io/f1r3node-rust/actions/runs/35906410283/job/107335114726"
+      },
+      {
+        "name": "Rocq construction and node wire correspondence",
+        "databaseId": 107339249414,
+        "status": "completed",
+        "conclusion": "success",
+        "startedAt": "2026-09-23T19:11:36Z",
+        "completedAt": "2026-09-23T19:20:19Z",
+        "url": "https://github.com/F1R3FLY-io/f1r3node-rust/actions/runs/35906410283/job/107339249414"
+      },
+      {
+        "name": "Formal verification gate",
+        "databaseId": 107342572215,
+        "status": "completed",
+        "conclusion": "success",
+        "startedAt": "2026-09-23T19:20:22Z",
+        "completedAt": "2026-09-23T19:20:48Z",
+        "url": "https://github.com/F1R3FLY-io/f1r3node-rust/actions/runs/35906410283/job/107342572215"
+      }
+    ],
+    "artifacts": [
+      {
+        "id": 10772155915,
+        "name": "node-observation-35906410283-1",
+        "digest": "sha256:861d4c4c953a8574c8574ce3bbfdbafe0def06bd8fd44aa13b01d64612c9b932",
+        "size_in_bytes": 365632,
+        "expired": false
+      },
+      {
+        "id": 10771647761,
+        "name": "node-wire-correspondence-35906410283-1",
+        "digest": "sha256:89bcf6671ece768d31a6c47b362569ff69a97612df197e1fe6adee3cf13dbf7f",
+        "size_in_bytes": 4508708,
+        "expired": false
+      }
+    ],
+    "scope": "The four listed verification jobs passed. This report makes no claim about unrelated workflow jobs."
+  },
+  "records": {
+    "refreshed": 60,
+    "created": 8,
+    "created_paths": [
+      "docs/cbc-evidence/block-storage-src-rust-dag-soak-snapshot-canonical-wire-tests-rs.md",
+      "docs/cbc-evidence/formal-rocq-node-observation-b11-README-md.md",
+      "docs/cbc-evidence/formal-rocq-node-observation-b11-CoqProject.md",
+      "docs/cbc-evidence/formal-rocq-node-observation-b11-theories-MainTheorem-v.md",
+      "docs/cbc-evidence/formal-rocq-node-observation-b11-theories-Schema-v.md",
+      "docs/cbc-evidence/formal-rocq-node-observation-b11-theories-Wire-v.md",
+      "docs/cbc-evidence/scripts-ci-check-node-canonical-wire-sh.md",
+      "docs/cbc-evidence/scripts-ci-test-check-node-observation-bindings-sh.md"
+    ],
+    "node_records": 68,
+    "primary_governance_records_preserved": 2,
+    "node_registration_views": [
+      {
+        "artifact": ".github/workflows/slashing-tests.yml",
+        "sha256": "915af218194a292ec2c227c5b3e28b396b76eff7a0586fdf7c4fe87febe0eb15",
+        "claim_ids": [
+          "CLAIM-CASPER-NODE-OBSERVATION-001"
+        ],
+        "claim_digests": {
+          "docs/claims/casper-node-observation.md": "d02013bb25aac9d9d16795651cbcbacd2227eae3873661f0258c6b6bd35ff2c6"
+        },
+        "status": "pending",
+        "primary_record": "docs/cbc-evidence/github-workflows-slashing-tests-yml.md",
+        "primary_record_sha256": "492996ea026af83840ad106f759eacb3f0d77baa345c7220dcbe805272255e6b",
+        "scope": "node-registration-only",
+        "evidence": [
+          "hosted-tla.log",
+          "hosted-rocq.log",
+          "hosted-bindings.log"
+        ]
+      },
+      {
+        "artifact": "scripts/ci/check-tla-invariants.sh",
+        "sha256": "e40fbd47334c7a86d07919909232ce5716ebbeb6aa867a695ae6ecae3a36d6bd",
+        "claim_ids": [
+          "CLAIM-CASPER-NODE-OBSERVATION-001",
+          "CLAIM-CASPER-NODE-OBSERVATION-002"
+        ],
+        "claim_digests": {
+          "docs/claims/casper-node-observation.md": "d02013bb25aac9d9d16795651cbcbacd2227eae3873661f0258c6b6bd35ff2c6",
+          "docs/claims/casper-node-authority-snapshot.md": "3130ca377c849facee112379fa656b34f63ab8858f01f3f8f2a6c5447a72c807"
+        },
+        "status": "pending",
+        "primary_record": "docs/cbc-evidence/scripts-ci-check-tla-invariants-sh.md",
+        "primary_record_sha256": "5fe4c4a0e9de7d303e017f121c270ef3df11a00d8d70a7d40e131bc6fafcca59",
+        "scope": "node-registration-only",
+        "evidence": [
+          "hosted-tla.log",
+          "hosted-rocq.log",
+          "hosted-bindings.log"
+        ]
+      }
+    ],
+    "previous_records": [
+      {
+        "artifact": "block-storage/src/rust/dag/block_dag_key_value_storage.rs",
+        "path": "docs/cbc-evidence/block-storage-src-rust-dag-block-dag-key-value-storage-rs.md",
+        "sha256": "c90d29ad3a318a72708a9a5070178c89a755839c22e2c7a0295ba7cdc1c46abe",
+        "archive_member": "previous-records/block-storage-src-rust-dag-block-dag-key-value-storage-rs.md"
+      },
+      {
+        "artifact": "block-storage/src/rust/dag/soak_snapshot.rs",
+        "path": "docs/cbc-evidence/block-storage-src-rust-dag-soak-snapshot-rs.md",
+        "sha256": "11058aa9a91871e144e31d488db8c84c7882aa9003dc0269f12d1a5741eebd86",
+        "archive_member": "previous-records/block-storage-src-rust-dag-soak-snapshot-rs.md"
+      },
+      {
+        "artifact": "block-storage/tests/soak_snapshot.rs",
+        "path": "docs/cbc-evidence/block-storage-tests-soak-snapshot-rs.md",
+        "sha256": "200a5e70af4ff12cd5589716f32a5686344913b515725d413d83020f8d5ddef1",
+        "archive_member": "previous-records/block-storage-tests-soak-snapshot-rs.md"
+      },
+      {
+        "artifact": "formal/rocq/node_observation/README.md",
+        "path": "docs/cbc-evidence/formal-rocq-node-observation-README-md.md",
+        "sha256": "d543e50a20c993f4215c748f63b7541301d4feda764b9277b0d2afbe009b42e7",
+        "archive_member": "previous-records/formal-rocq-node-observation-README-md.md"
+      },
+      {
+        "artifact": "formal/rocq/node_observation/_CoqProject",
+        "path": "docs/cbc-evidence/formal-rocq-node-observation-CoqProject.md",
+        "sha256": "9e947fb04f831df52e577c3b427e739635c5b90210cce8d8e42bbef485224163",
+        "archive_member": "previous-records/formal-rocq-node-observation-CoqProject.md"
+      },
+      {
+        "artifact": "formal/rocq/node_observation/theories/BoundedCapture.v",
+        "path": "docs/cbc-evidence/formal-rocq-node-observation-theories-BoundedCapture-v.md",
+        "sha256": "a5c6317105bbc95e2888f9cb7c89e0f03df74ca86d43024c8d32f9ff81ab4aa1",
+        "archive_member": "previous-records/formal-rocq-node-observation-theories-BoundedCapture-v.md"
+      },
+      {
+        "artifact": "formal/rocq/node_observation/theories/CaptureIntegrity.v",
+        "path": "docs/cbc-evidence/formal-rocq-node-observation-theories-CaptureIntegrity-v.md",
+        "sha256": "c40bc97d066e217639fb1955c0544d52846942ec92636ef006f2c2a9ff90c21b",
+        "archive_member": "previous-records/formal-rocq-node-observation-theories-CaptureIntegrity-v.md"
+      },
+      {
+        "artifact": "formal/rocq/node_observation/theories/InterfaceSafety.v",
+        "path": "docs/cbc-evidence/formal-rocq-node-observation-theories-InterfaceSafety-v.md",
+        "sha256": "14062522afa00438a9d2c6245225ef5270bc95cd8fc0f43d65dd340bf126a0e3",
+        "archive_member": "previous-records/formal-rocq-node-observation-theories-InterfaceSafety-v.md"
+      },
+      {
+        "artifact": "formal/rocq/node_observation/theories/MainTheorem.v",
+        "path": "docs/cbc-evidence/formal-rocq-node-observation-theories-MainTheorem-v.md",
+        "sha256": "26c987c73d03dadf4ed24420048cb0e86829cf447987d9403c5275f69ea4c2cb",
+        "archive_member": "previous-records/formal-rocq-node-observation-theories-MainTheorem-v.md"
+      },
+      {
+        "artifact": "formal/rocq/node_observation/theories/ObserverSession.v",
+        "path": "docs/cbc-evidence/formal-rocq-node-observation-theories-ObserverSession-v.md",
+        "sha256": "da46ede0f54aa741dafe8a090094b09149a5c3a8616098a0fee9efcfe42b14b8",
+        "archive_member": "previous-records/formal-rocq-node-observation-theories-ObserverSession-v.md"
+      },
+      {
+        "artifact": "formal/tlaplus/node_observation/BoundedCapture.tla",
+        "path": "docs/cbc-evidence/formal-tlaplus-node-observation-BoundedCapture-tla.md",
+        "sha256": "966d1bc43f51c78b2bc411a4c41e2f3cc9bfcc6182fd63d930667b33212fa325",
+        "archive_member": "previous-records/formal-tlaplus-node-observation-BoundedCapture-tla.md"
+      },
+      {
+        "artifact": "formal/tlaplus/node_observation/MC_BoundedCapture.cfg",
+        "path": "docs/cbc-evidence/formal-tlaplus-node-observation-MC-BoundedCapture-cfg.md",
+        "sha256": "c1336adf2a954eb1d8649e0adbc135735391d74e62d226f2d030abdc52267abf",
+        "archive_member": "previous-records/formal-tlaplus-node-observation-MC-BoundedCapture-cfg.md"
+      },
+      {
+        "artifact": "formal/tlaplus/node_observation/MC_BoundedCapture.tla",
+        "path": "docs/cbc-evidence/formal-tlaplus-node-observation-MC-BoundedCapture-tla.md",
+        "sha256": "dfb8fbd8aa0a27a5ccd6ca31957069c2f2304e7ede9c229ace180b85fb1d4e93",
+        "archive_member": "previous-records/formal-tlaplus-node-observation-MC-BoundedCapture-tla.md"
+      },
+      {
+        "artifact": "formal/tlaplus/node_observation/MC_BoundedCapture_admission_unsafe.cfg",
+        "path": "docs/cbc-evidence/formal-tlaplus-node-observation-MC-BoundedCapture-admission-unsafe-cfg.md",
+        "sha256": "814519c89635e867ab9c7c6ae333136db6e55b4de24fe8ec4c1d8e7c6d850b37",
+        "archive_member": "previous-records/formal-tlaplus-node-observation-MC-BoundedCapture-admission-unsafe-cfg.md"
+      },
+      {
+        "artifact": "formal/tlaplus/node_observation/MC_BoundedCapture_admission_unsafe.tla",
+        "path": "docs/cbc-evidence/formal-tlaplus-node-observation-MC-BoundedCapture-admission-unsafe-tla.md",
+        "sha256": "638702dfab8e6ca6b2d287704408ec7564ea620a23632e5a32f9e2def5a8b881",
+        "archive_member": "previous-records/formal-tlaplus-node-observation-MC-BoundedCapture-admission-unsafe-tla.md"
+      },
+      {
+        "artifact": "formal/tlaplus/node_observation/MC_BoundedCapture_bytes_unsafe.cfg",
+        "path": "docs/cbc-evidence/formal-tlaplus-node-observation-MC-BoundedCapture-bytes-unsafe-cfg.md",
+        "sha256": "8a7896d560aa4cbadf28a8942f3117f759f26e3d9bf6cdcdf2b5d65fff559911",
+        "archive_member": "previous-records/formal-tlaplus-node-observation-MC-BoundedCapture-bytes-unsafe-cfg.md"
+      },
+      {
+        "artifact": "formal/tlaplus/node_observation/MC_BoundedCapture_bytes_unsafe.tla",
+        "path": "docs/cbc-evidence/formal-tlaplus-node-observation-MC-BoundedCapture-bytes-unsafe-tla.md",
+        "sha256": "ac06ae1c6691cb0b4427684c531172379c4fa9b3aa4626ad3dd84600ca5a3b2d",
+        "archive_member": "previous-records/formal-tlaplus-node-observation-MC-BoundedCapture-bytes-unsafe-tla.md"
+      },
+      {
+        "artifact": "formal/tlaplus/node_observation/MC_BoundedCapture_deadline_unsafe.cfg",
+        "path": "docs/cbc-evidence/formal-tlaplus-node-observation-MC-BoundedCapture-deadline-unsafe-cfg.md",
+        "sha256": "d86579ff6e8492dac0bb11b0af8220d5b261aef234357a3e7270d5e8aa652cbd",
+        "archive_member": "previous-records/formal-tlaplus-node-observation-MC-BoundedCapture-deadline-unsafe-cfg.md"
+      },
+      {
+        "artifact": "formal/tlaplus/node_observation/MC_BoundedCapture_deadline_unsafe.tla",
+        "path": "docs/cbc-evidence/formal-tlaplus-node-observation-MC-BoundedCapture-deadline-unsafe-tla.md",
+        "sha256": "a0f829d5595fbb4a7e1a79beb88dea001c51ef510b53e288df3f89acbfcf6160",
+        "archive_member": "previous-records/formal-tlaplus-node-observation-MC-BoundedCapture-deadline-unsafe-tla.md"
+      },
+      {
+        "artifact": "formal/tlaplus/node_observation/MC_BoundedCapture_generation_unsafe.cfg",
+        "path": "docs/cbc-evidence/formal-tlaplus-node-observation-MC-BoundedCapture-generation-unsafe-cfg.md",
+        "sha256": "4d397f6cbe04843de374a5d423acb1715db0624e5e271bb8632e3fc73224ba3d",
+        "archive_member": "previous-records/formal-tlaplus-node-observation-MC-BoundedCapture-generation-unsafe-cfg.md"
+      },
+      {
+        "artifact": "formal/tlaplus/node_observation/MC_BoundedCapture_generation_unsafe.tla",
+        "path": "docs/cbc-evidence/formal-tlaplus-node-observation-MC-BoundedCapture-generation-unsafe-tla.md",
+        "sha256": "0857b02882d1edfce603914842e29a21028d975783756cf21227189bfeb8dd87",
+        "archive_member": "previous-records/formal-tlaplus-node-observation-MC-BoundedCapture-generation-unsafe-tla.md"
+      },
+      {
+        "artifact": "formal/tlaplus/node_observation/MC_BoundedCapture_incomplete_unsafe.cfg",
+        "path": "docs/cbc-evidence/formal-tlaplus-node-observation-MC-BoundedCapture-incomplete-unsafe-cfg.md",
+        "sha256": "d78c61cf7846199b47bb3f614769d0270e9f55f83be30876d7e2d2599d5ce40f",
+        "archive_member": "previous-records/formal-tlaplus-node-observation-MC-BoundedCapture-incomplete-unsafe-cfg.md"
+      },
+      {
+        "artifact": "formal/tlaplus/node_observation/MC_BoundedCapture_incomplete_unsafe.tla",
+        "path": "docs/cbc-evidence/formal-tlaplus-node-observation-MC-BoundedCapture-incomplete-unsafe-tla.md",
+        "sha256": "d6b8eee695d419fda33722dd9c2426261b2098dbaabcccf2123b96f6fc15083a",
+        "archive_member": "previous-records/formal-tlaplus-node-observation-MC-BoundedCapture-incomplete-unsafe-tla.md"
+      },
+      {
+        "artifact": "formal/tlaplus/node_observation/MC_BoundedCapture_open_unsafe.cfg",
+        "path": "docs/cbc-evidence/formal-tlaplus-node-observation-MC-BoundedCapture-open-unsafe-cfg.md",
+        "sha256": "423b8d1f7f74da1dec833086084c4bbd36d114b50c45255b2b70af03d7899dfe",
+        "archive_member": "previous-records/formal-tlaplus-node-observation-MC-BoundedCapture-open-unsafe-cfg.md"
+      },
+      {
+        "artifact": "formal/tlaplus/node_observation/MC_BoundedCapture_open_unsafe.tla",
+        "path": "docs/cbc-evidence/formal-tlaplus-node-observation-MC-BoundedCapture-open-unsafe-tla.md",
+        "sha256": "2ad46b5da7b050f7a1df0d6fb130406b914e697f5538a7e830d3a0d161682d2e",
+        "archive_member": "previous-records/formal-tlaplus-node-observation-MC-BoundedCapture-open-unsafe-tla.md"
+      },
+      {
+        "artifact": "formal/tlaplus/node_observation/MC_BoundedCapture_order_unsafe.cfg",
+        "path": "docs/cbc-evidence/formal-tlaplus-node-observation-MC-BoundedCapture-order-unsafe-cfg.md",
+        "sha256": "0c7b98a6352730b2c91bae64e3a6567e8dcb975cfdc26418636b2e00da2980c9",
+        "archive_member": "previous-records/formal-tlaplus-node-observation-MC-BoundedCapture-order-unsafe-cfg.md"
+      },
+      {
+        "artifact": "formal/tlaplus/node_observation/MC_BoundedCapture_order_unsafe.tla",
+        "path": "docs/cbc-evidence/formal-tlaplus-node-observation-MC-BoundedCapture-order-unsafe-tla.md",
+        "sha256": "02083ea8ed28fcd24ae018764cd170921fc5bf3fd3a62a096d516b9d2adc3224",
+        "archive_member": "previous-records/formal-tlaplus-node-observation-MC-BoundedCapture-order-unsafe-tla.md"
+      },
+      {
+        "artifact": "formal/tlaplus/node_observation/MC_BoundedCapture_release_unsafe.cfg",
+        "path": "docs/cbc-evidence/formal-tlaplus-node-observation-MC-BoundedCapture-release-unsafe-cfg.md",
+        "sha256": "8956ad30e0787a5d1c11712c45bd82b0022aaef00e92bf69ee116f70e469a7c5",
+        "archive_member": "previous-records/formal-tlaplus-node-observation-MC-BoundedCapture-release-unsafe-cfg.md"
+      },
+      {
+        "artifact": "formal/tlaplus/node_observation/MC_BoundedCapture_release_unsafe.tla",
+        "path": "docs/cbc-evidence/formal-tlaplus-node-observation-MC-BoundedCapture-release-unsafe-tla.md",
+        "sha256": "6c072c882944678ff3ea48bdf1c529fd55fb3471117b38e93fbcdddcce9ae75d",
+        "archive_member": "previous-records/formal-tlaplus-node-observation-MC-BoundedCapture-release-unsafe-tla.md"
+      },
+      {
+        "artifact": "formal/tlaplus/node_observation/MC_BoundedCapture_validation_unsafe.cfg",
+        "path": "docs/cbc-evidence/formal-tlaplus-node-observation-MC-BoundedCapture-validation-unsafe-cfg.md",
+        "sha256": "37ff8779695a11bf1680219c0a356272523df302ff9d868877ad171563392d96",
+        "archive_member": "previous-records/formal-tlaplus-node-observation-MC-BoundedCapture-validation-unsafe-cfg.md"
+      },
+      {
+        "artifact": "formal/tlaplus/node_observation/MC_BoundedCapture_validation_unsafe.tla",
+        "path": "docs/cbc-evidence/formal-tlaplus-node-observation-MC-BoundedCapture-validation-unsafe-tla.md",
+        "sha256": "5709b0592d3ecbecb48fdfd3b48ebd0f9eccbd71fe9f85a3dd3d41cdaa325531",
+        "archive_member": "previous-records/formal-tlaplus-node-observation-MC-BoundedCapture-validation-unsafe-tla.md"
+      },
+      {
+        "artifact": "formal/tlaplus/node_observation/MC_BoundedCapture_write_unsafe.cfg",
+        "path": "docs/cbc-evidence/formal-tlaplus-node-observation-MC-BoundedCapture-write-unsafe-cfg.md",
+        "sha256": "485232580f200b566d251a177ddfd517e1ada1c01eca2a145f238e122e6fba45",
+        "archive_member": "previous-records/formal-tlaplus-node-observation-MC-BoundedCapture-write-unsafe-cfg.md"
+      },
+      {
+        "artifact": "formal/tlaplus/node_observation/MC_BoundedCapture_write_unsafe.tla",
+        "path": "docs/cbc-evidence/formal-tlaplus-node-observation-MC-BoundedCapture-write-unsafe-tla.md",
+        "sha256": "4fa56f5e953f00feca32b18ddc1a0b040a83634c8daacdac63ccc49f648cde06",
+        "archive_member": "previous-records/formal-tlaplus-node-observation-MC-BoundedCapture-write-unsafe-tla.md"
+      },
+      {
+        "artifact": "formal/tlaplus/node_observation/MC_ObserverSession.cfg",
+        "path": "docs/cbc-evidence/formal-tlaplus-node-observation-MC-ObserverSession-cfg.md",
+        "sha256": "b180a09781e956ffd461c387e776d545cafd86433fe9a51a162914e3510b0ed4",
+        "archive_member": "previous-records/formal-tlaplus-node-observation-MC-ObserverSession-cfg.md"
+      },
+      {
+        "artifact": "formal/tlaplus/node_observation/MC_ObserverSession.tla",
+        "path": "docs/cbc-evidence/formal-tlaplus-node-observation-MC-ObserverSession-tla.md",
+        "sha256": "b8a2722a39c57f2522b5306b95a766b13859ece03e09909bfb303ddf9d9674a3",
+        "archive_member": "previous-records/formal-tlaplus-node-observation-MC-ObserverSession-tla.md"
+      },
+      {
+        "artifact": "formal/tlaplus/node_observation/MC_ObserverSession_budget_unsafe.cfg",
+        "path": "docs/cbc-evidence/formal-tlaplus-node-observation-MC-ObserverSession-budget-unsafe-cfg.md",
+        "sha256": "d435d28cff3c4d28fa0f8a664079247d46209cc33285ec839ee996f9ae375e90",
+        "archive_member": "previous-records/formal-tlaplus-node-observation-MC-ObserverSession-budget-unsafe-cfg.md"
+      },
+      {
+        "artifact": "formal/tlaplus/node_observation/MC_ObserverSession_budget_unsafe.tla",
+        "path": "docs/cbc-evidence/formal-tlaplus-node-observation-MC-ObserverSession-budget-unsafe-tla.md",
+        "sha256": "888c393898af2eb6b51c1819d4b1bf852608e63c943f650fa18be7194c850e77",
+        "archive_member": "previous-records/formal-tlaplus-node-observation-MC-ObserverSession-budget-unsafe-tla.md"
+      },
+      {
+        "artifact": "formal/tlaplus/node_observation/MC_ObserverSession_challenge_unsafe.cfg",
+        "path": "docs/cbc-evidence/formal-tlaplus-node-observation-MC-ObserverSession-challenge-unsafe-cfg.md",
+        "sha256": "7548fff36a6841006299165c26d851d5c15a8c5a536642d8c7d2e06023a966c1",
+        "archive_member": "previous-records/formal-tlaplus-node-observation-MC-ObserverSession-challenge-unsafe-cfg.md"
+      },
+      {
+        "artifact": "formal/tlaplus/node_observation/MC_ObserverSession_challenge_unsafe.tla",
+        "path": "docs/cbc-evidence/formal-tlaplus-node-observation-MC-ObserverSession-challenge-unsafe-tla.md",
+        "sha256": "d41f0557b3f914d76eed78de73e7238f60baca2402d0f575b457083d6ad1f229",
+        "archive_member": "previous-records/formal-tlaplus-node-observation-MC-ObserverSession-challenge-unsafe-tla.md"
+      },
+      {
+        "artifact": "formal/tlaplus/node_observation/MC_ObserverSession_deadline_unsafe.cfg",
+        "path": "docs/cbc-evidence/formal-tlaplus-node-observation-MC-ObserverSession-deadline-unsafe-cfg.md",
+        "sha256": "c90d7309c634e728af8591ddb5801fd345444753c87c5833286803bd0680671d",
+        "archive_member": "previous-records/formal-tlaplus-node-observation-MC-ObserverSession-deadline-unsafe-cfg.md"
+      },
+      {
+        "artifact": "formal/tlaplus/node_observation/MC_ObserverSession_deadline_unsafe.tla",
+        "path": "docs/cbc-evidence/formal-tlaplus-node-observation-MC-ObserverSession-deadline-unsafe-tla.md",
+        "sha256": "b72011ef70e513c91a2aaf8145974805b012cd8b86b0dcf82956b72e1e6b833b",
+        "archive_member": "previous-records/formal-tlaplus-node-observation-MC-ObserverSession-deadline-unsafe-tla.md"
+      },
+      {
+        "artifact": "formal/tlaplus/node_observation/MC_ObserverSession_frame_unsafe.cfg",
+        "path": "docs/cbc-evidence/formal-tlaplus-node-observation-MC-ObserverSession-frame-unsafe-cfg.md",
+        "sha256": "b5db79a8ef44c11b0c073220cafbe4805612e8a066aaf5642a3b590d47f14620",
+        "archive_member": "previous-records/formal-tlaplus-node-observation-MC-ObserverSession-frame-unsafe-cfg.md"
+      },
+      {
+        "artifact": "formal/tlaplus/node_observation/MC_ObserverSession_frame_unsafe.tla",
+        "path": "docs/cbc-evidence/formal-tlaplus-node-observation-MC-ObserverSession-frame-unsafe-tla.md",
+        "sha256": "cf34e82f09f3be7cea76ea90bfd26992e9380d7e60be2db5106ae5691fe4ee33",
+        "archive_member": "previous-records/formal-tlaplus-node-observation-MC-ObserverSession-frame-unsafe-tla.md"
+      },
+      {
+        "artifact": "formal/tlaplus/node_observation/MC_ObserverSession_freshness_pre_fix.cfg",
+        "path": "docs/cbc-evidence/formal-tlaplus-node-observation-MC-ObserverSession-freshness-pre-fix-cfg.md",
+        "sha256": "b509b43c42c154d8450a7e28adc5aeae05c8e6f203f5d05d9b8a61804895ea3e",
+        "archive_member": "previous-records/formal-tlaplus-node-observation-MC-ObserverSession-freshness-pre-fix-cfg.md"
+      },
+      {
+        "artifact": "formal/tlaplus/node_observation/MC_ObserverSession_freshness_pre_fix.tla",
+        "path": "docs/cbc-evidence/formal-tlaplus-node-observation-MC-ObserverSession-freshness-pre-fix-tla.md",
+        "sha256": "ebd41afc63f426ff3f29659c7e6aba79c90692b084dc9879ca8937e0af93a3d5",
+        "archive_member": "previous-records/formal-tlaplus-node-observation-MC-ObserverSession-freshness-pre-fix-tla.md"
+      },
+      {
+        "artifact": "formal/tlaplus/node_observation/MC_ObserverSession_identity_unsafe.cfg",
+        "path": "docs/cbc-evidence/formal-tlaplus-node-observation-MC-ObserverSession-identity-unsafe-cfg.md",
+        "sha256": "4709f3f2b6e501ea5cc12a8fec0ab829a3ec64effddb7b914502e73f9e960cad",
+        "archive_member": "previous-records/formal-tlaplus-node-observation-MC-ObserverSession-identity-unsafe-cfg.md"
+      },
+      {
+        "artifact": "formal/tlaplus/node_observation/MC_ObserverSession_identity_unsafe.tla",
+        "path": "docs/cbc-evidence/formal-tlaplus-node-observation-MC-ObserverSession-identity-unsafe-tla.md",
+        "sha256": "f5f7825a2d37f5225a3a9b3a2c2a135ec2747a2a64d8d5ccd9aba55e81c87eef",
+        "archive_member": "previous-records/formal-tlaplus-node-observation-MC-ObserverSession-identity-unsafe-tla.md"
+      },
+      {
+        "artifact": "formal/tlaplus/node_observation/MC_ObserverSession_repeat_unsafe.cfg",
+        "path": "docs/cbc-evidence/formal-tlaplus-node-observation-MC-ObserverSession-repeat-unsafe-cfg.md",
+        "sha256": "85798672c0ac2a03c5e04ef6a07e1dee2fe32d43acba10c26a6c3d3f136aa0b3",
+        "archive_member": "previous-records/formal-tlaplus-node-observation-MC-ObserverSession-repeat-unsafe-cfg.md"
+      },
+      {
+        "artifact": "formal/tlaplus/node_observation/MC_ObserverSession_repeat_unsafe.tla",
+        "path": "docs/cbc-evidence/formal-tlaplus-node-observation-MC-ObserverSession-repeat-unsafe-tla.md",
+        "sha256": "c0c7d11ae4c34f1a5b7d23fdcdffffa400ad3a93bf75d98f5942fe051d0194f3",
+        "archive_member": "previous-records/formal-tlaplus-node-observation-MC-ObserverSession-repeat-unsafe-tla.md"
+      },
+      {
+        "artifact": "formal/tlaplus/node_observation/ObserverSession.tla",
+        "path": "docs/cbc-evidence/formal-tlaplus-node-observation-ObserverSession-tla.md",
+        "sha256": "e69ef63dc098774f8b7432fabfe6c77c3442279fa95cfd73b79035272d61512c",
+        "archive_member": "previous-records/formal-tlaplus-node-observation-ObserverSession-tla.md"
+      },
+      {
+        "artifact": "formal/tlaplus/node_observation/README.md",
+        "path": "docs/cbc-evidence/formal-tlaplus-node-observation-README-md.md",
+        "sha256": "db29e40d1589c926c67cd5f45c8c7297ca998fd128b6d6d90cb6dc222a715da0",
+        "archive_member": "previous-records/formal-tlaplus-node-observation-README-md.md"
+      },
+      {
+        "artifact": "formal/tlaplus/node_observation/bindings.json",
+        "path": "docs/cbc-evidence/formal-tlaplus-node-observation-bindings-json.md",
+        "sha256": "534fbac7ca39322fb49c81a5f1c89a4eff917f243667a30f2227016b52d3a452",
+        "archive_member": "previous-records/formal-tlaplus-node-observation-bindings-json.md"
+      },
+      {
+        "artifact": "formal/tlaplus/node_observation/verification-plan.json",
+        "path": "docs/cbc-evidence/formal-tlaplus-node-observation-verification-plan-json.md",
+        "sha256": "7f4c68e9a7ef04a983d1585906ac90032d22a43b24fcae5779403655fdfdc615",
+        "archive_member": "previous-records/formal-tlaplus-node-observation-verification-plan-json.md"
+      },
+      {
+        "artifact": "node/src/rust/soak_observer.rs",
+        "path": "docs/cbc-evidence/node-src-rust-soak-observer-rs.md",
+        "sha256": "5be2ee6a2d316a54f9f55348f92e12e6ef475dd008af522dfd59a7c6e909055e",
+        "archive_member": "previous-records/node-src-rust-soak-observer-rs.md"
+      },
+      {
+        "artifact": "node/tests/soak_observer.rs",
+        "path": "docs/cbc-evidence/node-tests-soak-observer-rs.md",
+        "sha256": "0c211a6fda572573a0b70227747e7978d033e6922eda143da1496b547b05b41a",
+        "archive_member": "previous-records/node-tests-soak-observer-rs.md"
+      },
+      {
+        "artifact": "scripts/ci/check-formal-invariants.sh",
+        "path": "docs/cbc-evidence/scripts-ci-check-formal-invariants-sh.md",
+        "sha256": "686ae226ff2b05714d804b1b921ecf97b9c9d1687dbf46a4ef94aa5ecf7af46d",
+        "archive_member": "previous-records/scripts-ci-check-formal-invariants-sh.md"
+      },
+      {
+        "artifact": "scripts/ci/check-node-observation-bindings.sh",
+        "path": "docs/cbc-evidence/scripts-ci-check-node-observation-bindings-sh.md",
+        "sha256": "6d1061d1edce811df35af8beb8a98458424fec7590cfa4262dc1ac2f032bfc53",
+        "archive_member": "previous-records/scripts-ci-check-node-observation-bindings-sh.md"
+      },
+      {
+        "artifact": "scripts/ci/test-check-tla-invariants.sh",
+        "path": "docs/cbc-evidence/scripts-ci-test-check-tla-invariants-sh.md",
+        "sha256": "9ca345757e82045c6d4b4108c0cb91797b23969e9cd89a7863b48cf7da774881",
+        "archive_member": "previous-records/scripts-ci-test-check-tla-invariants-sh.md"
+      },
+      {
+        "artifact": "shared/src/rust/store/soak_snapshot.rs",
+        "path": "docs/cbc-evidence/shared-src-rust-store-soak-snapshot-rs.md",
+        "sha256": "25382386e1ae09453dd76b0ae6abb978b16230bd4a9a6d108015108e7888bf9b",
+        "archive_member": "previous-records/shared-src-rust-store-soak-snapshot-rs.md"
+      },
+      {
+        "artifact": "shared/tests/soak_snapshot.rs",
+        "path": "docs/cbc-evidence/shared-tests-soak-snapshot-rs.md",
+        "sha256": "7c763609d678d0f36d5a171837890c4950726f5111fa1ccae459a942945183bf",
+        "archive_member": "previous-records/shared-tests-soak-snapshot-rs.md"
+      }
+    ]
+  },
+  "strict_audit": {
+    "tool": "cbc.sh discharge --strict --files <81-path inventory> --json",
+    "exit_before_refresh": 4,
+    "mandatory_items": 70,
+    "expected_exit_after_refresh": 4,
+    "expected_pending_after_refresh": 70,
+    "note": "The driver checks record status. validation.json separately checks artifact, claim, and report digests."
+  },
+  "bulk_evidence": {
+    "path": "target/node-evidence-38e576041/verification-logs.tar.gz",
+    "sha256": "ea7e92384fbc683e2381ce0ceb7b3f2407e3b8bd175112022205acb625f2ab9a",
+    "size_bytes": 2853604,
+    "storage": "Ignored local archive. Hosted artifacts are also identified above.",
+    "member_manifest": "bulk-files.sha256"
+  },
+  "applicability_review": "formal/tlaplus/node_observation/README.md#applicability-per-property",
+  "proposed_reviewer": "jltatbeach",
+  "claim_acceptance": false,
+  "created_at": "2026-09-23T19:32:03.404878+00:00"
+}

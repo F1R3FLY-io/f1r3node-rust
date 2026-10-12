@@ -1,0 +1,212 @@
+{
+  "schema_version": 1,
+  "task": "TASK-017-12",
+  "scope": "hosted-campaign-control-verification",
+  "review_date": "2026-09-21",
+  "source_head_revision": "8adaa235c44cf55f93f5f236de21ae943bd0e1cc",
+  "source_binding": "All 46 unique source hashes match the current checkout and both hosted manifests.",
+  "hosted_event": "pull_request",
+  "checkout_scope": "GitHub pull-request checkout; source equality verified by retained manifests.",
+  "verification": "passed",
+  "claim_discharge": "pending",
+  "binding": "pending",
+  "soak": "pending",
+  "run": {
+    "id": 35643918016,
+    "html_url": "https://github.com/F1R3FLY-io/f1r3node-rust/actions/runs/35643918016",
+    "head_sha": "8adaa235c44cf55f93f5f236de21ae943bd0e1cc",
+    "run_attempt": 1,
+    "event": "pull_request",
+    "path": ".github/workflows/casper-campaign-control.yml",
+    "status": "completed",
+    "conclusion": "success",
+    "created_at": "2026-09-21T19:17:45Z",
+    "updated_at": "2026-09-21T19:19:07Z"
+  },
+  "artifact": {
+    "id": 10659635615,
+    "name": "casper-campaign-control",
+    "size_in_bytes": 370083,
+    "digest": "sha256:da039493a49f81da6a93556e8c86c79e3dcddc675ea8e87a2e46b86e26a16c80",
+    "archive_download_url": "https://api.github.com/repos/F1R3FLY-io/f1r3node-rust/actions/artifacts/10659635615/zip",
+    "expired": false,
+    "expires_at": "2026-10-21T19:18:56Z"
+  },
+  "archive_digest_verified": true,
+  "archive_size_verified": true,
+  "source_manifests_equal": true,
+  "source_digests": {
+    ".cargo/config.toml": "da7e626941c437575405e8eade493a1994483236d0f775c39800b2b2e93f230f",
+    ".github/workflows/casper-campaign-control.yml": "109a71c33f50577dc42daa7a8800504a8df7c0bb81ef844c8fd97e7c533a7541",
+    ".github/workflows/merge-recovery-soak.yml": "4ae6cf3dd11b122123e9dff529dbc788f616be129e5e457b47594259c09c2e7b",
+    "Cargo.lock": "cd89db867ef7750731daf1b9c6ff1d7742f72a348072525247ba218cc7e78eaf",
+    "Cargo.toml": "7c5397136932d04c6e72a04a593249dea347a0f13c4cbd2d7e04c7d6a69f9e88",
+    "docs/claims/casper-campaign-execution.md": "8014cdb6d99964e38175f2b1500f8d3ed3d0425ed50b8c33f367702dec4636f2",
+    "docs/claims/casper-campaign-reservation.md": "8f040e6d0f514575e9d832ba05b9cd4e46f9b5a1947cf1c31cadd1cf3d049f4d",
+    "docs/claims/casper-soak-campaign.md": "b5d3853a19c5bb4bf019f10d89297a5938c145c0597376c2a203c793b194bb92",
+    "formal/tlaplus/casper_soak/campaign/CampaignControl.tla": "94f3f56c28e2a5c2aa83eadace203f56566d24225a55ae74b94e7781480494db",
+    "formal/tlaplus/casper_soak/campaign/MC_CampaignControl.cfg": "3f399c7dd3ea24c0d49a931a84fccf8e000b8ece3a6dc4673284c485f9d13410",
+    "formal/tlaplus/casper_soak/campaign/MC_CampaignControl_approval_unsafe.cfg": "8d29aab00eb2cce597e8e0a89b6197dab07751018c1aebdcc406694c779e41b3",
+    "formal/tlaplus/casper_soak/campaign/MC_CampaignControl_reservation_unsafe.cfg": "3811c385fc87275c7ec991500c93c44f14d0e45059c1a6275c6c2475d5997abf",
+    "formal/tlaplus/casper_soak/campaign/MC_CampaignControl_schedule_unsafe.cfg": "dd9c34708467c54e5f6fe3322018b44eb21ae6e7bd554d82cbb0380dc0140635",
+    "formal/tlaplus/casper_soak/campaign/MC_CampaignControl_termination_unsafe.cfg": "d4ed0110bfe38e86049b1c5677475f9ce1534951818746851500de9e6ce023ff",
+    "formal/tlaplus/casper_soak/campaign/README.md": "cff9e0738b9860517cfc72b7c02e7fc77b17cee345fa61a552c57d347c9d0013",
+    "formal/tlaplus/casper_soak/campaign/verification-plan.jsonc": "92facc5f197cbe8b9525503b6c174be556ea34529481250c6d9d8db9969f2c90",
+    "rust-toolchain.toml": "cef5cc010fbd237ab34a4d07129372406e11ff8595c2efc1126d9c93e039aed4",
+    "scripts/casper-soak/Cargo.toml": "0389290c18cb725d108ce3709018f92d9f04fdf84a62eb97d905c53874f43139",
+    "scripts/casper-soak/campaign-bootstrap.sh": "c0724db2eb037e9207a04c8d4bfb687fdf47c79af18c468d08a4f4e9d11c9d10",
+    "scripts/casper-soak/campaign-control.sh": "c8ea2765ec519d29e4e4c9b9743d06be31839dcb69419b2ea44c1a67a2d378ef",
+    "scripts/casper-soak/campaign-finish.sh": "046de2b4899bdc157bf93af54dfad63c500cfadc527ea4551e2f1ccf5f80ced3",
+    "scripts/casper-soak/campaign-host-guard.sh": "da2137160392aa51269d42112becae441cd878715a20bb7782e6dc6f9377fbfa",
+    "scripts/casper-soak/campaign-host.sh": "e5632f7603716d120090f5df7558bd532ab1ce0d229131675d6dccf54e260514",
+    "scripts/casper-soak/campaign-job.sh": "2713e3cb52a629cfdf1e4701d09a6cad92c44b1af6d457bd2ef95ec26b02d818",
+    "scripts/casper-soak/campaign.sh": "fe59c48c0bef62de97fea04bc22fc4e42e32aec265f30b1fd7930f390b9de0a7",
+    "scripts/casper-soak/check-campaign-control.sh": "74a33f12fe18bc03f7ffb937df1d0953158f1ce3301bb90ff55d18ff2c83fe55",
+    "scripts/casper-soak/check-campaign-reservation.sh": "1f01d7fe1ba9adfa5d1a657d7993ffa259349b7a6638ef607f9ad335a9100666",
+    "scripts/casper-soak/src/bin/casper-campaign-control.rs": "6da8579c041af7abd105240e694d361386202c9eeb044d2ef3c343fc9a898f67",
+    "scripts/casper-soak/src/bin/casper-campaign-models.rs": "c1b825ef51102de1331825c887366396ca4ccde31e83acdf7db8f561713b4bc6",
+    "scripts/casper-soak/src/bin/casper-campaign-reservation.rs": "e4dddfadbb59809be991522ebc5360226b17248487016045e30489ff4990a778",
+    "scripts/casper-soak/src/bin/casper-campaign-supervisor.rs": "33015a2fd6765f55301ac04540f842eb3cdb59ace9c53b09b8c19a9773b7305e",
+    "scripts/casper-soak/src/campaign_control/mod.rs": "667ad9420f0961a7452809edbfe2117386e76d1cfc06c03cac47e40716fb6e04",
+    "scripts/casper-soak/src/campaign_control/models.rs": "4585ecbf0d3bfc4777c9bba1b3c1521028b233552c723ff0a145d55df10de3a7",
+    "scripts/casper-soak/src/campaign_control/operations.rs": "fafb39a03f44d14bb410da22a358b1e9cecb5cfd87cd6b49b8198a602d1c591e",
+    "scripts/casper-soak/src/campaign_control/results.rs": "19b2115ae7f64b38a97e2e708d692d4de52b03b08bcae00897916a1297ace7f8",
+    "scripts/casper-soak/src/campaign_control/transport.rs": "e0b8843bb7d9fe2f0e1580441ba6e89c09a21bdabaa52c21c9b97e7fc0530f64",
+    "scripts/casper-soak/src/lib.rs": "a70f76a28de8ef8010eb7f8876b5e947ce94bf35752bbd70b086983383ee7a8f",
+    "scripts/casper-soak/src/models.rs": "99e3f736aa9e753b73edced77049ab206f993d612870bb1d866f6d5c0655983f",
+    "scripts/casper-soak/supervisor/Dockerfile": "fa53d7ee32a5c7e5aafea06da9abbe1bc5f625286d68cfc65a4f46e45cdd09b8",
+    "scripts/casper-soak/supervisor/func.yaml": "af6e76a6348418e91c8193b2474858b3b70f00a21860b163a4d73e14116239d7",
+    "scripts/casper-soak/supervisor/start.sh": "9f38b5c0336b10f68db8cdd3f0432e0e2fbb71db9292a1d51ac40fbe3680a6b3",
+    "scripts/casper-soak/test-campaign-control.sh": "388df7432af1bd2679d5035d604a45ee3e22bd7f69da850bf5ce6d3cf3b0ce90",
+    "scripts/casper-soak/test-campaign.sh": "c9432c74cbf592b4e1e608b90b7bbedc12cbc6e4428232fb19e44d428bd0375f",
+    "scripts/casper-soak/tests/campaign_control.rs": "879a684d79f0f414818126e9eb7483365e931c5bc459bc41ea990ab013ca6aed",
+    "scripts/casper-soak/tests/campaign_models.rs": "582d352dff1e054cd8269b576b9a9e07d81b77f5e4c4399076b54845eee8e41a",
+    "scripts/casper-soak/tests/campaign_reservation.rs": "405b2f6f4c4b332e3d3d9da4801b1cb43242def27582f682f93686c44f4e0d20"
+  },
+  "claim_digests": {
+    "docs/claims/casper-campaign-execution.md": "8014cdb6d99964e38175f2b1500f8d3ed3d0425ed50b8c33f367702dec4636f2",
+    "docs/claims/casper-campaign-reservation.md": "8f040e6d0f514575e9d832ba05b9cd4e46f9b5a1947cf1c31cadd1cf3d049f4d",
+    "docs/claims/casper-soak-campaign.md": "b5d3853a19c5bb4bf019f10d89297a5938c145c0597376c2a203c793b194bb92"
+  },
+  "checks": {
+    "planner": 115,
+    "controller": 22,
+    "supervisor": 2,
+    "model_regressions": 3,
+    "native_linux_reservation": 16,
+    "rust_total": 43,
+    "reservation_helper_ignored": 1,
+    "models": [
+      {
+        "configuration": "MC_CampaignControl.cfg",
+        "exit": 0,
+        "expected_exit": 0,
+        "expected_property": null,
+        "log": "MC_CampaignControl.cfg.log",
+        "log_sha256": "700615220e344e426d94ad0ba1aac996f8c9f1715a6244cba5612714ff607c86",
+        "outcome": "passed"
+      },
+      {
+        "configuration": "MC_CampaignControl_approval_unsafe.cfg",
+        "exit": 12,
+        "expected_exit": 12,
+        "expected_property": "AuthorizedLaunch",
+        "log": "MC_CampaignControl_approval_unsafe.cfg.log",
+        "log_sha256": "87becbaf6ff25dbf2525feec07712522566b3e3a88ba943efd743b0516228fa6",
+        "outcome": "passed"
+      },
+      {
+        "configuration": "MC_CampaignControl_reservation_unsafe.cfg",
+        "exit": 12,
+        "expected_exit": 12,
+        "expected_property": "OneSubmission",
+        "log": "MC_CampaignControl_reservation_unsafe.cfg.log",
+        "log_sha256": "985b94e99295160129165c1a9416e322964d776769248e9c5f994879ea2fc6b2",
+        "outcome": "passed"
+      },
+      {
+        "configuration": "MC_CampaignControl_schedule_unsafe.cfg",
+        "exit": 12,
+        "expected_exit": 12,
+        "expected_property": "ScheduledLaunch",
+        "log": "MC_CampaignControl_schedule_unsafe.cfg.log",
+        "log_sha256": "246691d39e52f65c068985a1c8bb825ffc3da281672806d2d641d5babfe88cb0",
+        "outcome": "passed"
+      },
+      {
+        "configuration": "MC_CampaignControl_termination_unsafe.cfg",
+        "exit": 12,
+        "expected_exit": 12,
+        "expected_property": "ConfirmedCleanup",
+        "log": "MC_CampaignControl_termination_unsafe.cfg.log",
+        "log_sha256": "4ba6e5f5a1172c7df2cbc276c33c7ec2960b205a14a90460beebfc3cf67957b1",
+        "outcome": "passed"
+      }
+    ]
+  },
+  "verifier": {
+    "tlc_sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88",
+    "binary_sha256": "000bdab6c71bdae098955155193e599c084d586e3f0e04cbe711bfb273346681",
+    "runner_sha256": "4585ecbf0d3bfc4777c9bba1b3c1521028b233552c723ff0a145d55df10de3a7",
+    "seed": 1,
+    "workers": 1,
+    "heap_limit_mb": 512,
+    "timeout_seconds": 120,
+    "kill_grace_seconds": 5
+  },
+  "retained_file_digests": {
+    "source-before.sha256": "36e33477c43cbe5ef2f6d89fd1f9000ab108aa2e73038d3e10ca3c2bed03bf97",
+    "source-after.sha256": "36e33477c43cbe5ef2f6d89fd1f9000ab108aa2e73038d3e10ca3c2bed03bf97",
+    "report.json": "ae450749d93ac3a63ef4e2bf68141d1b4d1c115897bbb92c793852a20616db2e",
+    "fixtures/report.json": "f5fb081d373c4abc1eb758ec4c8a0d75ba338bcbbd4fc00b8b51359d89d042d8",
+    "fixtures/rust.log": "74612960f4729cfb17551026ac0bd9ab481ef002168e560eb23a6992f2475d78",
+    "reservations/report.json": "aa2c303068354e93e06840b6d1d5096ed0089d3b642d7f3c18363662fd9d8610",
+    "reservations/tests.txt": "ce98b0e8192cfcd6ab953ceaa2a4b2eb7a9e4eff90dc39c635f5de8476757c95",
+    "regressions.txt": "a52866477ca12dd811c8aebfd0bd48cdd986d911cb6b6775f97dfe563d62b971",
+    "planner.txt": "71b2e52ca6f2682d15f419cbec516e202c5c792362db9c63e705d82f633adb90",
+    "models/report.json": "669d269c9a39d51853c4ee0bd88ea3546e7091556e3dcf5ffcd59c584e674ba3",
+    "tools.txt": "2a8465255cf73cbcf319a7a742c52b7e169f2851dfa94894cac9b06015d4fc88"
+  },
+  "prior_attempts": [
+    {
+      "run_id": 35632310010,
+      "head_sha": "ee468f5db3fa007ecde9b104eda545a544f1354a",
+      "conclusion": "failure",
+      "url": "https://github.com/F1R3FLY-io/f1r3node-rust/actions/runs/35632310010"
+    }
+  ],
+  "strict_claim_audit": {
+    "exit_code": 4,
+    "scope": "CLAIM-CASPER-SOAK-001 through CLAIM-CASPER-SOAK-008",
+    "campaign_claims_in_registry": false,
+    "report_sha256": "91daece32a69ea84c5cbd68fc13c4d17933cc8cd1b5e5c07d43763590ec0ca1e"
+  },
+  "credential_review": {
+    "variables": [
+      "GITHUB_TOKEN",
+      "GITHUB_PERSONAL_ACCESS_TOKEN"
+    ],
+    "same_value_in_process": true,
+    "explicit_selection_tested": true,
+    "repository_role_endpoint_status": 403,
+    "repository_role_endpoint_required_permission": "metadata=read",
+    "repository_metadata_reports_admin": true,
+    "secret_values_retained": false
+  },
+  "prerequisite_review": {
+    "dev_revision": "6940a5beb4aa806d3d75f6df3be9f238512fcc2f",
+    "pr447_head_at_review": "566a21223830eb6594467615eb45fe3e4ccb3c2e",
+    "pr447_merged": false,
+    "batch_b1": "Implemented with unresolved findings and pending acceptance.",
+    "batch_b2_and_c": "Separate implementation approval remains required by the node plan."
+  },
+  "deployment_qualification": false,
+  "live_adapter_qualification": false,
+  "preflight": "not-run",
+  "baselines": "not-run",
+  "bulk_evidence": "target/task-017-12-hosted-20260921-01",
+  "node_launches": 0,
+  "cloud_launches": 0,
+  "remote_writes": 0,
+  "retention": "The authenticated GitHub artifact expires on its recorded date. Keep the local archive until durable external retention is verified."
+}

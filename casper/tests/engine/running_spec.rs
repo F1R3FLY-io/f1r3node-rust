@@ -560,7 +560,7 @@ mod tests {
 
         let mut rx = fixture.block_processing_queue_rx.lock().await;
         let mut enqueued = 0usize;
-        while let Ok((_, block)) = rx.try_recv() {
+        while let Ok((_, block, _)) = rx.try_recv() {
             if block.block_hash == signed_block.block_hash {
                 enqueued += 1;
             }

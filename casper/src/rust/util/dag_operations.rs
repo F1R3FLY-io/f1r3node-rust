@@ -6,6 +6,7 @@ use std::collections::{BTreeSet, HashMap};
 use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
 use models::rust::block_hash::BlockHash;
 use models::rust::block_metadata::BlockMetadata;
+use shared::rust::dag::observation_work::{NoopWork, WorkKind, WorkMeter};
 use shared::rust::store::key_value_store::KvStoreError;
 
 pub struct DagOperations;
@@ -27,16 +28,20 @@ impl Ord for ReverseOrderedBlockMetadata {
 }
 
 impl DagOperations {
-    fn metadata_from_cache_or_dag(
+    fn metadata_from_cache_or_dag<W: WorkMeter>(
+        meter: &W,
         metadata_cache: &mut HashMap<BlockHash, BlockMetadata>,
         block_hash: &BlockHash,
         dag: &KeyValueDagRepresentation,
     ) -> Result<BlockMetadata, KvStoreError> {
         if let Some(metadata) = metadata_cache.get(block_hash) {
+            meter.step(WorkKind::Traversal)?;
             return Ok(metadata.clone());
         }
 
+        meter.lookup()?;
         let metadata = dag.lookup_unsafe(block_hash)?;
+        meter.allocate(1, std::mem::size_of::<BlockMetadata>())?;
         metadata_cache.insert(block_hash.clone(), metadata.clone());
         Ok(metadata)
     }
@@ -55,6 +60,15 @@ impl DagOperations {
         dag: &KeyValueDagRepresentation,
         floor: &BlockMetadata,
     ) -> Result<BlockMetadata, KvStoreError> {
+        Self::lowest_universal_common_ancestor_many_metered(&NoopWork, blocks, dag, floor).await
+    }
+
+    pub async fn lowest_universal_common_ancestor_many_metered<W: WorkMeter>(
+        meter: &W,
+        blocks: &[BlockMetadata],
+        dag: &KeyValueDagRepresentation,
+        floor: &BlockMetadata,
+    ) -> Result<BlockMetadata, KvStoreError> {
         if blocks.is_empty() {
             return Err(KvStoreError::InvalidArgument(
                 "Cannot compute LUCA for an empty block set".to_string(),
@@ -65,6 +79,7 @@ impl DagOperations {
             return Ok(blocks[0].clone());
         }
 
+        meter.allocate(blocks.len(), 2 * std::mem::size_of::<BlockMetadata>())?;
         let mut current: BTreeSet<ReverseOrderedBlockMetadata> = BTreeSet::new();
         let mut metadata_cache: HashMap<BlockHash, BlockMetadata> = HashMap::new();
 
@@ -74,6 +89,7 @@ impl DagOperations {
         }
 
         loop {
+            meter.step(WorkKind::Traversal)?;
             if current.len() == 1 {
                 break current;
             }
@@ -104,7 +120,7 @@ impl DagOperations {
 
             for parent_hash in &head.parents {
                 let parent =
-                    Self::metadata_from_cache_or_dag(&mut metadata_cache, parent_hash, dag)?;
+                    Self::metadata_from_cache_or_dag(meter, &mut metadata_cache, parent_hash, dag)?;
                 next.insert(ReverseOrderedBlockMetadata(parent));
             }
 

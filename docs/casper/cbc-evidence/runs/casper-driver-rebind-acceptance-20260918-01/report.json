@@ -1,0 +1,168 @@
+{
+  "schema_version": 1,
+  "status": "accepted-bounded-binding",
+  "claim_ids": [
+    "CLAIM-CASPER-SOAK-001"
+  ],
+  "claim_discharge": "discharged",
+  "phase": "pre_pr216_merge",
+  "base_commit": "f9273621c8887947b56d0093a71486338312138e",
+  "verified_at": "2026-09-18T20:44:50Z",
+  "source_digests": {
+    ".cargo/config.toml": "da7e626941c437575405e8eade493a1994483236d0f775c39800b2b2e93f230f",
+    ".gitattributes": "7d5e6379eee7c14aaff9a6125a8857d851e1b48f97791f417ea2d4daca458307",
+    ".github/workflows/merge-recovery-soak.yml": "38f2cf89278bdff9b9e74ba900726267b27d5cc6b1dab16c8fec919bbe84330b",
+    ".github/workflows/slashing-tests.yml": "b040baafa3723c789aa762fef0e925702504e1a70c7a0a47ccc2d2a39b25c336",
+    "Cargo.lock": "318659f6c97ee6030ac0b128b6e2ba0a6a86e07314c2761ecd73052830bb0c4e",
+    "Cargo.toml": "7c5397136932d04c6e72a04a593249dea347a0f13c4cbd2d7e04c7d6a69f9e88",
+    "docs/claims/casper-soak-authority-finality.md": "9340a152acec453ce2acf2e68b5238e06e4201476d036e2e883213560549e4f4",
+    "docs/claims/casper-soak-carrier-index.md": "ee343e9803a78f6c0474d891221b6ca1c0c62aed0d2e149f76a40798ed9eb4fa",
+    "docs/claims/casper-soak-harness.md": "51a863feac95f73d06aab10b45ef05ff01b07d5ebb91d1a4fb4879f5776c0134",
+    "docs/claims/casper-soak-merge-accounting.md": "a7da25a59d8528b962ff934a34c352237b052da6648cb93816fc2c649d23feb2",
+    "docs/claims/casper-soak-publication.md": "f894b0908290bafa98ff3ed7e17cbe47a8ff3d01844fe139f0b56a41f74c55a7",
+    "docs/claims/casper-soak-recovery.md": "3b38680bbf99b7156609b3b05c2e21590fbecd5149a006def590e4e49895ce6d",
+    "docs/claims/casper-soak-slashing.md": "85cb7ef05662ca42a1c6b9d34fd836fb483b1de326a655529badbf12cbcc478d",
+    "docs/claims/casper-soak-version-phlo.md": "629c0b87f8e1bf6e72914209f0b25462ee1026a2a9d1c112c65811fef0b08007",
+    "docs/work-logs/casper-driver-source-rebind.md": "4eedc24276b12150c3fe77ff2271f33b80678c94e50d2c1a86525eb948d86450",
+    "formal/tlaplus/casper_soak/CasperSoakHarness.tla": "e08ce354f1e09b9f0873e6f730e509c4be6b394acc0bce7ff5ef53805d91b0c4",
+    "formal/tlaplus/casper_soak/MC_CasperSoakHarness.cfg": "cc4438b578ccc5c898897e7b66b7472253d2532093f8a5338bf8d924002e197b",
+    "formal/tlaplus/casper_soak/MC_CasperSoakHarness_cleanup_unsafe.cfg": "94510f73bec2b328dc9ccebe5d0d97b6ef3af93570991dfee557a37c3ba5a3a0",
+    "formal/tlaplus/casper_soak/MC_CasperSoakHarness_control_unsafe.cfg": "4fcf3c1b1b609a7a557a28da8daa7e908911a669d51bbb4abb1affeb5f2f90d9",
+    "formal/tlaplus/casper_soak/MC_CasperSoakHarness_evidence_unsafe.cfg": "08524a7d33f9f1fe35e6a070fd3e1257319223868af006854bc596314f12e4a4",
+    "formal/tlaplus/casper_soak/MC_CasperSoakHarness_failure_unsafe.cfg": "a8dcf9479e5087738f503ac87c5b425e0c3dbca339924ce56fa7806e8446718a",
+    "formal/tlaplus/casper_soak/MC_CasperSoakHarness_identity_unsafe.cfg": "25c5689dee8138b46406741b6f4a74ed41dddc2c43824c810c7670bc9af3186e",
+    "formal/tlaplus/casper_soak/MC_CasperSoakHarness_merge_unsafe.cfg": "f71a9822b0499a7a115e20c30076da785e997fa636ca0605adc54ee6003ac9f1",
+    "formal/tlaplus/casper_soak/MC_CasperSoakHarness_policy_unsafe.cfg": "f051c46dbdcb9ba8854043ac84bb74866f42b3c73aaa387fa9962ac212c1c131",
+    "formal/tlaplus/casper_soak/MC_CasperSoakHarness_resume_unsafe.cfg": "fa2f527570a3687de48dcac826538e3aa6a9edb2332d5051a936fa34c3c4ca63",
+    "formal/tlaplus/casper_soak/MC_CasperSoakHarness_samples_unsafe.cfg": "6937418bcfafd33557d27359f34e5e53e78fcfd68b43e68bfb3617d86cb6022b",
+    "formal/tlaplus/casper_soak/MC_CasperSoakHarness_stop_unsafe.cfg": "5d7947fadd81556a4cfea4f4dae3a9cf3893dc3b360889c3938aff047a0c5f4b",
+    "formal/tlaplus/casper_soak/verification-plan.jsonc": "e99926eb159b53e4fcc847c1aac7c70780f57f83a11beb8afc3f0a81bf2218b5",
+    "rust-toolchain.toml": "cef5cc010fbd237ab34a4d07129372406e11ff8595c2efc1126d9c93e039aed4",
+    "scripts/bench/casper-soak.sh": "19b6e0c9ff481428955c68631fc1224ec2506502d01a3c3f1bf6634d8a64f353",
+    "scripts/bench/collect-soak-metrics.sh": "6a04b8aa2b3335012eba6b66793b784c28fbedfd5160844c27e0d8abf01e7554",
+    "scripts/bench/fixtures/casper-lifecycle-executor.sh": "a2af2205b89c03b7ab503ca5c312e9b2300040540781ada37c33c849a3b94704",
+    "scripts/bench/run-bench-segment.sh": "735c0eed6e7db8edb2ca910f40c2058a146b386aec28e817d2ad795c70888813",
+    "scripts/bench/soak-disk-test.Dockerfile": "c1d9fa2aa3c6040b61af81c8cbabfd54576d17666e6b8f98873f962c208f8be7",
+    "scripts/bench/soak-metrics.json": "d4a71e7996dc0b0a74fcfc339f5164121c246db7c2f4e27114b7ea80c2edfef7",
+    "scripts/bench/test-run-merge-recovery-soak.sh": "c5089c13fa8cf127cae071a515409e8d23c45c3441f2d973563e379d6406a030",
+    "scripts/bench/test-soak-disk-admission.sh": "c11c1bb9d13a4c334e2e46862e45de849dbe8ff76491209bc7d01e07c873dcc1",
+    "scripts/bench/write-soak-summary.sh": "4ae6cf85bddd0f1e96a7b50da1db7e1033952d40244f697ab584846b857ff3e1",
+    "scripts/casper-soak/Cargo.toml": "f6082e839d8bb20e5b2988a9ed92ffe5d1cd79a0e578e10d68582593ea3d13cb",
+    "scripts/casper-soak/src/bin/casper-authority-finality.rs": "93caa3d4c8909d8c8befe4ec3a1b551ca470d75fe39bf14ba7a45100310d1718",
+    "scripts/casper-soak/src/bin/casper-publication.rs": "2f0e7767e52c0d9decdf1572ddfb38ae41849088aadeed643e7d6ec9b02fb687",
+    "scripts/casper-soak/src/bin/casper-recovery.rs": "636bd7304910cda4dc400a1903f168ee324171574c7f7f9a7269332c75125d65",
+    "scripts/casper-soak/src/bin/check-casper-bindings.rs": "73f02925700815dddaecd3a5353b4a5a161cb77955ada1f06b76626dcb1e6c0a",
+    "scripts/casper-soak/src/bin/check-casper-claims.rs": "3a5f28efc587b0306a9b49eb6b7e5e97be74cd91e405520e9cf63d923d5c1e55",
+    "scripts/casper-soak/src/host_control.rs": "fb6dafc47a5df2073c4ca618ddf81c4a292229b20e5b08a1f0cfeae306e185bb",
+    "scripts/casper-soak/src/lib.rs": "a70f76a28de8ef8010eb7f8876b5e947ce94bf35752bbd70b086983383ee7a8f",
+    "scripts/casper-soak/src/main.rs": "23d092ca695cde2aa3a78b242c13435c2f1cf73ac3532b8a0a96688b441696e8",
+    "scripts/casper-soak/src/manifest.rs": "d9606d542cfb9bc058f691196244ae2e6055e6c84c02b5c2581ee07e70c03000",
+    "scripts/casper-soak/src/models.rs": "99e3f736aa9e753b73edced77049ab206f993d612870bb1d866f6d5c0655983f",
+    "scripts/casper-soak/src/profiles/authority_finality.rs": "18a1a18cebe632dc5f87483784e08a00c11f3870116f3a3b54766bbf68c45e47",
+    "scripts/casper-soak/src/profiles/publication.rs": "23fda6085a32c86ac69108ee437a92af92cc4a298bf6ecbd66e60454896c078b",
+    "scripts/casper-soak/src/profiles/recovery.rs": "9bfa28120b773ac9e55b181d6f4d5c9f40e7b06ef5f86d5c5c41055d57b1e84e",
+    "scripts/casper-soak/src/runtime.rs": "7fd98a56a01d42af70d2c0a988da27a9ef35b861c1d164663d75ac675743f85a",
+    "scripts/casper-soak/task-complete.sh": "89245a31460c48bf066e58c1329538baa57791ced13a01c4761aa2c62afdb912",
+    "scripts/casper-soak/tests/authority_finality.rs": "a9c67d88729fa43ebef6b65ce112d223752f35d4395b702139dc19cd71e8f2c8",
+    "scripts/casper-soak/tests/bindings.rs": "c2d593f6c6a9ddb5c9f5aa769d6f8b884256a5cecef4fc30afdec3bb0c50eab5",
+    "scripts/casper-soak/tests/claims.rs": "8813eba982f56f4fd45e339e61f5ee4b70c29e67bc28b1b2e85c0633b5eeb7d2",
+    "scripts/casper-soak/tests/driver.rs": "8e4bc9c2b58f0613a164b48caeb1dd74c1d6c480d58af5c5dfaf3fe426c73fa5",
+    "scripts/casper-soak/tests/interruption.rs": "1e7d64c7392fabf43e1a1e2d2ba7c77297694b7c893e0827d69103fe7a52f006",
+    "scripts/casper-soak/tests/manifest.rs": "0a7d2add0978931c2656cb667690f5d959487c4f2afbe3f0545ee00021b575b0",
+    "scripts/casper-soak/tests/models.rs": "b495e3705c1d38f3c74cea761e69b4f462d32c4fe62921e43e76f461faa36e60",
+    "scripts/casper-soak/tests/publication.rs": "20ed2f8529300192d87c4fc88922b35e28ba1ffbfd5622fc59cf8943dfb07dd6",
+    "scripts/casper-soak/tests/recovery.rs": "2e388804a7edbdbdb7ac3e68705810ce14b79e7b925afd6d46cb6520b1bad6bf",
+    "scripts/ci/check-casper-soak-bindings.sh": "31644fc2f64f3b03625412fdc00825a88cabde54d042776ea6ae3bea2c9deccc",
+    "scripts/ci/check-casper-soak-models.sh": "2fdebbbd283fa26cb6a69f90ad651971db1d3f6c694ef39b9c21ab476e2c5342",
+    "scripts/ci/check-tla-invariants.sh": "41849481aeafbf7b98ec690fc44d209139c8b1749cd99e8de43ebb5ffc876baf",
+    "scripts/run-merge-recovery-soak.sh": "dbc71f8ee9e8cd3ec0f68af3588094f5c9577193cc0f004654ebab49d5b44049"
+  },
+  "claim_digests": {
+    "docs/claims/casper-soak-harness.md": "51a863feac95f73d06aab10b45ef05ff01b07d5ebb91d1a4fb4879f5776c0134"
+  },
+  "tiers": {
+    "refutation": "bounded-safety-pass",
+    "construction": "not-applicable",
+    "binding": "passed"
+  },
+  "scope": "bounded-harness-only",
+  "soak": "pending",
+  "waiver": null,
+  "approval": {
+    "response": "approved",
+    "scope": "Repaired bounded H01-H10 binding review only",
+    "recorded_at": "2026-09-18T20:34:51Z",
+    "reviewed_report": {
+      "ref": "docs/casper/cbc-evidence/runs/casper-driver-rebind-20260918-01/report.json",
+      "sha256": "0a4a23bba01053c5674c487ca7dded80d573c25eb2f0c51904d6c3096f67e581"
+    }
+  },
+  "reviewed_verification": {
+    "shared_existing": 22,
+    "host_control_unprivileged": 7,
+    "host_control_ignored_root_only": 1,
+    "host_control_root": 8,
+    "disk_scenarios": 42,
+    "profile_regressions": 21,
+    "registered_cases": 48,
+    "driver_invocations": 91,
+    "matched_exits": true
+  },
+  "refutation": {
+    "clean_distinct_states": 43424,
+    "clean_generated_states": 66208,
+    "negative_controls": 10
+  },
+  "previous_ledgers": {
+    "ref": "docs/casper/cbc-evidence/runs/casper-driver-rebind-20260918-01/previous.tar.gz",
+    "sha256": "690412e55d4e43d92980f9ba069237e1136d89730375dde24ab5724c4eeb1084",
+    "count": 37
+  },
+  "support_changes": [
+    {
+      "path": "scripts/ci/check-casper-soak-bindings.sh",
+      "reviewed_sha256": "39652b782a2474c82ec7f1678c185f3adcbc0388426cc65d45c85dc74e6904bf",
+      "accepted_sha256": "31644fc2f64f3b03625412fdc00825a88cabde54d042776ea6ae3bea2c9deccc",
+      "reason": "Copy the declared disk-test artifact into the isolated source-audit package. Driver behavior and assertions are unchanged."
+    },
+    {
+      "path": "scripts/casper-soak/src/host_control.rs",
+      "reviewed_sha256": "126969ad1aa4b638523e4368b5ad5c9c162b54b46a7d082ee85f678b4c8ae87e",
+      "accepted_sha256": "fb6dafc47a5df2073c4ca618ddf81c4a292229b20e5b08a1f0cfeae306e185bb",
+      "reason": "Require a child readiness receipt in the test fixture before observing its owner marker or OOM setting. Production code outside cfg(test) is byte-identical.",
+      "production_region_sha256": "004c5375a4fdab89a75bb6cf0f10747d583aee50e6cdcf0b35713fc635e89013"
+    }
+  ],
+  "metadata_changes": [
+    "docs/claims/casper-soak-harness.md",
+    "docs/work-logs/casper-driver-source-rebind.md"
+  ],
+  "acceptance_state_checks": "validation.json",
+  "node_execution": false,
+  "policy_activation": false,
+  "limits": [
+    "The initial OOM failure has logs but no complete source snapshot.",
+    "The marker regression uses an extracted function and controlled exit receipt.",
+    "The PID fixture does not force numeric PID reuse.",
+    "Host language-server checks exclude Linux-only code. Linux compilation and execution are retained separately.",
+    "The owner scan is not an atomic inventory of future processes.",
+    "B44 and inherited containment limits remain unresolved.",
+    "No hosted workflow or live node campaign ran."
+  ],
+  "acceptance_state_failure": {
+    "result": "retained",
+    "suite": "host-control",
+    "test": "oom_preference_uses_the_pinned_process_directory",
+    "observed": "0 instead of 1000",
+    "diagnostic": {
+      "samples": 1000,
+      "owner_marker_missing_immediately": 28,
+      "owner_marker_visible_after_delay": 28
+    },
+    "fixture_recheck": {
+      "unprivileged_repetitions": 50,
+      "tests_per_repetition": 7,
+      "root_tests": 8
+    }
+  }
+}

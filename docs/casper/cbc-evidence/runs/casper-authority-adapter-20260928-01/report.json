@@ -1,0 +1,130 @@
+{
+  "schema_version": 1,
+  "task": "TASK-017-12",
+  "status": "local-verification-passed-live-adapter-incomplete",
+  "claim_ids": [
+    "CLAIM-CASPER-AUTHORITY-CLIENT-001",
+    "CLAIM-CASPER-AUTHORITY-ADAPTER-001"
+  ],
+  "source_head_revision": "66c21f26eeceac6027ad618cd96df07482a864c2",
+  "working_tree": true,
+  "branch": "formal/soak-casper-consensus",
+  "source_digests": {
+    "scripts/casper-soak/src/authority_mapping.rs": "924368389ea7c341dcea8aae021384f95ab1c9ec6bdda6251aced31cb17e909f",
+    "scripts/casper-soak/src/authority_observer.rs": "afdcfea29a14f5d007a72cfa66ce37e040607999c4bda60402c92683fc061744",
+    "scripts/casper-soak/src/bin/casper-authority-observe.rs": "3b64e0c68dd46f410fcd98716decc99032aaf416c2a95912fa3343cd3a46572f",
+    "scripts/casper-soak/process_faults.py": "c1e66e1054b1868555366de7a4330ba58e4adbb506c8058bc6da143aa361eba3",
+    "scripts/casper-soak/tests/authority_mapping.rs": "98a31c69949eae51f9913f65ea7700b128dcd5d3e3c437e72bbce098e9fdaa59",
+    "scripts/casper-soak/tests/authority_observer.rs": "90d99e1650586e72f49fbc6fefd3834b0be951e07d2afca4e33f6abe637677af",
+    "scripts/casper-soak/tests/test_process_faults.py": "774fc10e1f082ec90c52f01eedf48920f3e809177a68aed7f6efe33fdb90b434",
+    "scripts/casper-soak/check-authority-adapter.sh": "ea2cd3e89d37827a518eea4c1b65e2a81faa59b885b1b92ef28e4b6b353337a9",
+    "scripts/casper-soak/src/lib.rs": "a70f76a28de8ef8010eb7f8876b5e947ce94bf35752bbd70b086983383ee7a8f",
+    "scripts/casper-soak/src/manifest.rs": "d9606d542cfb9bc058f691196244ae2e6055e6c84c02b5c2581ee07e70c03000",
+    "scripts/casper-soak/Cargo.toml": "0389290c18cb725d108ce3709018f92d9f04fdf84a62eb97d905c53874f43139",
+    ".github/workflows/casper-authority-adapter.yml": "b83051db1848ef2839ae9fc7bb6084c1484f069f3ea3b676b138cd4f032d2ea9",
+    "docs/claims/casper-authority-adapter.md": "5d13e8d1bd319566fe682bd8e02a32d4b16992222203dfdb1184fc38d3f921b0",
+    "docs/claims/casper-authority-observer-client.md": "04d8f77c611fd94a1ea7ee0a658720a099ec9777b385a299e1e240646fea8c80",
+    "Cargo.lock": "9da684952a74e56706dfd0fcc9165a02e05529443d963f5040aec61b2a6a0f75",
+    "rust-toolchain.toml": "cef5cc010fbd237ab34a4d07129372406e11ff8595c2efc1126d9c93e039aed4",
+    ".cargo/config.toml": "da7e626941c437575405e8eade493a1994483236d0f775c39800b2b2e93f230f",
+    "scripts/casper-soak/src/profiles/authority_finality.rs": "18a1a18cebe632dc5f87483784e08a00c11f3870116f3a3b54766bbf68c45e47",
+    "scripts/casper-soak/tests/authority_finality.rs": "a9c67d88729fa43ebef6b65ce112d223752f35d4395b702139dc19cd71e8f2c8",
+    "casper/src/rust/soak_observer/evaluation.rs": "3834185fb6dbcebecf6a676af46bc49d6c7ca8abe1052a53ef10a5115cfdb56f",
+    ".gitattributes": "8fe402df8e5dc4f3540f70516917b87f0b4565ec11618bbffa24f7089e085ee8"
+  },
+  "checks": {
+    "isolated_linux_client": {
+      "passed": 9,
+      "failed": 0
+    },
+    "isolated_linux_mapping": {
+      "passed": 8,
+      "failed": 0
+    },
+    "isolated_linux_process_receipts": {
+      "passed": 10,
+      "failed": 0
+    },
+    "native_client": {
+      "passed": 4,
+      "failed": 0
+    },
+    "native_mapping": {
+      "passed": 8,
+      "failed": 0
+    },
+    "native_existing_authority_profile": {
+      "passed": 7,
+      "failed": 0
+    },
+    "binary32_sample_count": 20000,
+    "native_process_receipts": "skipped: Linux required",
+    "linux_clippy": "passed",
+    "native_all_targets_clippy": "passed",
+    "workflow_security": "passed",
+    "rustfmt": "passed",
+    "shell_syntax": "passed",
+    "ste_claims": "passed",
+    "artifact_audit": {
+      "exit_code": 4,
+      "pending": 9,
+      "missing": 0
+    },
+    "strict_claim_audit": {
+      "exit_code": 4,
+      "claim001": "pending",
+      "claims002_through008": "discharged"
+    }
+  },
+  "log_digests": {
+    "target/task-017-12-authority-adapter-20260928/gate/report.json": "277c878e536a729aaff1efa7d9073251e90ba39dfe57a007ba865d4564c5c506",
+    "target/task-017-12-authority-adapter-20260928/gate/rust-tests.txt": "90aaf667771a3389d12ab4c31f31bb3a80149ab8bf5b6411cf67ed3e3080376e",
+    "target/task-017-12-authority-adapter-20260928/gate/process-tests.txt": "ecfe190b5caa086c7b6dab6bdd1c8cd83ca7d2ea10ab058c1387fc3f5407bf6e",
+    "target/task-017-12-authority-adapter-20260928/gate/clippy.txt": "149fd3eb6a29ffcd04c96a123b4b0d573b3b24fed5677085cf9b5f85ba08b3cd",
+    "target/task-017-12-authority-adapter-20260928/gate/source-before.sha256": "30985fe0fa831ebdfaca00db56fc691776dd531a75df45d0ab1fa9f6e43043f1",
+    "target/task-017-12-authority-adapter-20260928/gate/source-after.sha256": "30985fe0fa831ebdfaca00db56fc691776dd531a75df45d0ab1fa9f6e43043f1",
+    "target/task-017-12-authority-adapter-20260928/native-tests.log": "1e2dae7a3778948993ab02aac9786b0258629d92283dd94da347fe3f9860ef37",
+    "target/task-017-12-authority-adapter-20260928/native-tests-final.log": "60d6dc66ec3ac10d4da0ec3652e9ad25515504a38d5cdeb348215a70edcedc52",
+    "target/task-017-12-authority-adapter-20260928/native-clippy.log": "35f64e39ce75301e0bf0c77eb3347d670f21c5c6c427fcfe452f605ca451f95b",
+    "target/task-017-12-authority-adapter-20260928/native-process-tests.log": "1492c21a9918cd363ec02bdf86ab7c847347060a25fb1b0e68e2538d38b722e0",
+    "target/task-017-12-authority-adapter-20260928/linux-tests.log": "8ac0fc6920592bc397a745a75e5587b2c11a520334a0671865fa6733e0396dfc",
+    "target/task-017-12-authority-adapter-20260928/linux-process-tests.log": "571019440a82efb23415dda42fda09383b07fdee5b2ac519621112790d301275",
+    "target/task-017-12-authority-adapter-20260928/workflow-security.log": "58aaa9d3aa8ec252a7e93ba60dea09172058b7c4e30e5a36e54a8b57657424ab",
+    "target/task-017-12-authority-adapter-20260928/ste-claims.json": "de35dfab665e543dde02d576486475d3be9c7999ac284608786f5d999fe6bc9b",
+    "target/task-017-12-authority-adapter-20260928/pr436.json": "3a3470307303225de63683caf73664fc46256e8e980e986befb759cd8bb87e89",
+    "target/task-017-12-authority-adapter-20260928/pr447.json": "4979bb8edbccea6df7f015b979c91f35bf46b53842bd2ff3b0b614eb9371ebe8",
+    "target/task-017-12-authority-adapter-20260928/native-clippy-final.log": "2461b00c8697c4189b2de92ca6fb05b5d72273c78a0a47b1ce4e83ccca077b70",
+    "target/task-017-12-authority-adapter-20260928/artifact-audit-final.json": "12347eb631bb99784c588acd9ef54c42d555322c520561ec115451ad91f7680c",
+    "target/task-017-12-authority-adapter-20260928/claims-audit.json": "91daece32a69ea84c5cbd68fc13c4d17933cc8cd1b5e5c07d43763590ec0ca1e"
+  },
+  "linux_environment": {
+    "image": "sha256:1696356fe6e6a15941983171fa4ca663b1f53686d3840f6787aca0b10ec5edc6",
+    "network": "none",
+    "architecture": "aarch64",
+    "repository_mount": "read-only"
+  },
+  "implementation": [
+    "The observer client retains mapped observations and preserves raw evidence when mapping fails.",
+    "Numeric mapping preserves binary32 bits and uses exact fractions within the supported schema.",
+    "Exact oracle witnesses, persisted state, detached floor results, and work counters remain separate.",
+    "The owned subprocess recorder observes process state, predecessor exit, and replacement capture identity.",
+    "The adapter workflow runs controlled Linux tests and retains a stable source inventory."
+  ],
+  "limitations": [
+    "The authority profile still rejects live inputs. The implementation is not a qualified executable scenario.",
+    "Paired fork-choice observations and captured display-projection inputs remain node dependencies.",
+    "Executable fixtures, applied input identities, and exact traversal measurements remain incomplete.",
+    "Process tests use controlled child processes and fixture capture records, not the integration provider or a blockchain node.",
+    "The recorder supports owned subprocesses. Docker and adopted handles are unsupported.",
+    "Provider timing qualification and capture provenance acceptance remain pending.",
+    "Campaign services, candidate qualification, source-bound acceptance, preflight, and baselines remain outstanding.",
+    "The new workflow has no hosted run."
+  ],
+  "qualification": "pending",
+  "profile_verdict": "blocked",
+  "soak_verdict": "non_passing",
+  "node_launch_count": 0,
+  "cloud_launch_count": 0,
+  "claim_status_changed": false,
+  "profile_contract_changed": false
+}

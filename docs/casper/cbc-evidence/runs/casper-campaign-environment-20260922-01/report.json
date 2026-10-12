@@ -1,0 +1,121 @@
+{
+  "schema_version": 1,
+  "task": "TASK-017-12",
+  "scope": "github-campaign-environment-configuration",
+  "review_date": "2026-09-22",
+  "authorization": {
+    "source": "user-message",
+    "request": "create the casper-campaign using the json preparation"
+  },
+  "environment_request_path": "target/task-017-12-hosted-58e952c6f/environment-request.json",
+  "branch_policy_request_path": "target/task-017-12-hosted-58e952c6f/branch-policy-request.json",
+  "environment": {
+    "can_admins_bypass": false,
+    "created_at": "2026-09-22T17:45:09Z",
+    "deployment_branch_policy": {
+      "custom_branch_policies": true,
+      "protected_branches": false
+    },
+    "html_url": "https://github.com/F1R3FLY-io/f1r3node-rust/deployments/activity_log?environments_filter=casper-campaign",
+    "id": 22500101516,
+    "name": "casper-campaign",
+    "protection_rules": [
+      {
+        "prevent_self_review": true,
+        "reviewers": [
+          {
+            "id": 76650,
+            "login": "leithaus",
+            "type": "User"
+          },
+          {
+            "id": 857592,
+            "login": "metaweta",
+            "type": "User"
+          },
+          {
+            "id": 60404443,
+            "login": "spreston8",
+            "type": "User"
+          },
+          {
+            "id": 93545754,
+            "login": "jltatbeach",
+            "type": "User"
+          },
+          {
+            "id": 516519,
+            "login": "dylon",
+            "type": "User"
+          },
+          {
+            "id": 1573697,
+            "login": "jeffrey-l-turner",
+            "type": "User"
+          }
+        ],
+        "type": "required_reviewers",
+        "wait_timer": null
+      },
+      {
+        "prevent_self_review": null,
+        "reviewers": [],
+        "type": "branch_policy",
+        "wait_timer": null
+      }
+    ],
+    "updated_at": "2026-09-22T17:45:09Z"
+  },
+  "branch_policies": {
+    "total_count": 1,
+    "branch_policies": [
+      {
+        "id": 60724033,
+        "node_id": "MDE2OkdhdGVCcmFuY2hQb2xpY3k2MDcyNDAzMw==",
+        "name": "formal/soak-casper-consensus",
+        "type": "branch"
+      }
+    ]
+  },
+  "operations": [
+    {
+      "method": "PUT",
+      "resource": "environments/casper-campaign",
+      "credential_selection": "GITHUB_TOKEN",
+      "outcome": "rejected",
+      "http_status": 403
+    },
+    {
+      "method": "PUT",
+      "resource": "environments/casper-campaign",
+      "credential_selection": "GITHUB_PERSONAL_ACCESS_TOKEN",
+      "outcome": "succeeded"
+    },
+    {
+      "method": "POST",
+      "resource": "environments/casper-campaign/deployment-branch-policies",
+      "credential_selection": "GITHUB_PERSONAL_ACCESS_TOKEN",
+      "outcome": "succeeded"
+    }
+  ],
+  "readback_verified": true,
+  "claim_discharge": "pending",
+  "deployment_qualification": false,
+  "workflow_dispatched": false,
+  "node_launches": 0,
+  "cloud_launches": 0,
+  "successful_remote_writes": 2,
+  "credential_values_retained": false,
+  "verified_settings": [
+    "reviewer-identities",
+    "self-review-prevention",
+    "administrator-bypass-disabled",
+    "no-wait-timer",
+    "custom-branch-policy",
+    "exact-single-branch"
+  ],
+  "request_digests": {
+    "environment-request.json": "5381f35c7d59d05161f15a1a2c8583f23a4799709de30c5478a2de822715e7bd",
+    "branch-policy-request.json": "e7b3681aa2eacd291111d7d58e98d2faa8b40cb3d1cd1ee611bf50c489a69ddc"
+  }
+}

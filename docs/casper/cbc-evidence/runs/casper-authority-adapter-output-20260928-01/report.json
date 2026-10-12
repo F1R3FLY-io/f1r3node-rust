@@ -1,0 +1,60 @@
+{
+  "schema_version": 1,
+  "task": "TASK-017-12",
+  "status": "controlled-verification-passed",
+  "claim_ids": [
+    "CLAIM-CASPER-AUTHORITY-ADAPTER-001"
+  ],
+  "source_head_revision": "1ea62331f60a2c1f6bc21e116892090c85baf217",
+  "working_tree": true,
+  "branch": "formal/soak-casper-consensus",
+  "source_digests": {
+    "scripts/casper-soak/src/authority_mapping.rs": "924368389ea7c341dcea8aae021384f95ab1c9ec6bdda6251aced31cb17e909f",
+    "scripts/casper-soak/src/authority_observer.rs": "9c475f185cbd829d37fbb33fa408358564a2500ea9582ff234f6c51bf9a72d6f",
+    "scripts/casper-soak/src/bin/casper-authority-observe.rs": "3b64e0c68dd46f410fcd98716decc99032aaf416c2a95912fa3343cd3a46572f",
+    "scripts/casper-soak/process_faults.py": "c1e66e1054b1868555366de7a4330ba58e4adbb506c8058bc6da143aa361eba3",
+    "scripts/casper-soak/tests/authority_mapping.rs": "98a31c69949eae51f9913f65ea7700b128dcd5d3e3c437e72bbce098e9fdaa59",
+    "scripts/casper-soak/tests/authority_observer.rs": "90d99e1650586e72f49fbc6fefd3834b0be951e07d2afca4e33f6abe637677af",
+    "scripts/casper-soak/tests/test_process_faults.py": "774fc10e1f082ec90c52f01eedf48920f3e809177a68aed7f6efe33fdb90b434",
+    "scripts/casper-soak/check-authority-adapter.sh": "b194538a802740f18a3d77c811ddda36b9321deefb2851b6b99111e7fdfbb4b0",
+    "scripts/casper-soak/src/lib.rs": "a70f76a28de8ef8010eb7f8876b5e947ce94bf35752bbd70b086983383ee7a8f",
+    "scripts/casper-soak/src/manifest.rs": "d9606d542cfb9bc058f691196244ae2e6055e6c84c02b5c2581ee07e70c03000",
+    "scripts/casper-soak/Cargo.toml": "7282d2a9c1ebb41148ef08d73f2ff35923d1d372923618fee1584585e82c48d3",
+    ".github/workflows/casper-authority-adapter.yml": "53194d04ac731664d1952f846e30f6373feff49b8d902e7e2b4a52892c456ba4",
+    "docs/claims/casper-authority-adapter.md": "5d13e8d1bd319566fe682bd8e02a32d4b16992222203dfdb1184fc38d3f921b0",
+    "docs/claims/casper-authority-observer-client.md": "04d8f77c611fd94a1ea7ee0a658720a099ec9777b385a299e1e240646fea8c80",
+    "Cargo.lock": "740562169c25bcdaa0bbc822caa97053966dba8ac9319e7dcfc16d860c7a4ff2",
+    "rust-toolchain.toml": "cef5cc010fbd237ab34a4d07129372406e11ff8595c2efc1126d9c93e039aed4",
+    ".cargo/config.toml": "da7e626941c437575405e8eade493a1994483236d0f775c39800b2b2e93f230f"
+  },
+  "checks": {
+    "missing_parent_output": "passed",
+    "output_permissions": "0700",
+    "existing_output_exit_code": 2,
+    "dangling_symlink_exit_code": 2,
+    "linux_mapping_tests_passed": 8,
+    "linux_observer_tests_passed": 9,
+    "linux_process_tests_passed": 10,
+    "linux_clippy": "passed",
+    "shell_syntax": "passed",
+    "source_inventory_unchanged": true
+  },
+  "log_digests": {
+    "docs/casper/cbc-evidence/runs/casper-authority-adapter-output-20260928-01/source-before.sha256": "2f0d78bd7efc4f5c3b0352dba854bc03574f042da45430da94b12f123e3da2e3",
+    "docs/casper/cbc-evidence/runs/casper-authority-adapter-output-20260928-01/source-after.sha256": "2f0d78bd7efc4f5c3b0352dba854bc03574f042da45430da94b12f123e3da2e3",
+    "target/task-017-12-adapter-output-20260928/retained-logs/gate-report.json": "277c878e536a729aaff1efa7d9073251e90ba39dfe57a007ba865d4564c5c506",
+    "target/task-017-12-adapter-output-20260928/retained-logs/rust-tests.txt": "16ad76a8af6ff322b30b2ab2eb0a3ed10c44ed1ef52858b8218144b127eebb79",
+    "target/task-017-12-adapter-output-20260928/retained-logs/process-tests.txt": "e402b5761c632adcd4223ae15a5d39dac1a4400a41df86ca695affc9398b2247",
+    "target/task-017-12-adapter-output-20260928/retained-logs/clippy.txt": "acd885a60e1e171366e557fe01106a3eb3fe703fbfa107f1c1ca6d0379e8711e",
+    "target/task-017-12-adapter-output-20260928/retained-logs/output-checks.json": "7d8906c30edb1c4ad33a12803ef1825e75e9d9d024715ad2a771b9e9cb2d680b"
+  },
+  "linux_environment": {
+    "image": "sha256:1696356fe6e6a15941983171fa4ca663b1f53686d3840f6787aca0b10ec5edc6",
+    "network": "none",
+    "repository_mount": "read-only"
+  },
+  "qualification": "pending",
+  "soak_verdict": "non_passing",
+  "node_launch_count": 0,
+  "cloud_launch_count": 0
+}

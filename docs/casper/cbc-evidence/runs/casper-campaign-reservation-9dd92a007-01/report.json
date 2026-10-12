@@ -1,0 +1,154 @@
+{
+  "schema_version": 1,
+  "scope": "local-baseline-reservation-store",
+  "status": "local-tests-passed-claim-pending",
+  "execution_base": "9dd92a007b74047a03fa8b96135d6599e7575faf",
+  "working_tree": true,
+  "branch": "formal/soak-casper-consensus",
+  "claim_id": "CLAIM-CASPER-CAMPAIGN-002",
+  "specification": {
+    "path": "docs/claims/casper-campaign-reservation.md",
+    "sha256": "4b5f7f23e8bda071056d83ab5878171214ebeccfe465e9aa88b8881eb30f9c0a"
+  },
+  "source_inventory": [
+    {
+      "sha256": "e4dddfadbb59809be991522ebc5360226b17248487016045e30489ff4990a778",
+      "path": "scripts/casper-soak/src/bin/casper-campaign-reservation.rs"
+    },
+    {
+      "sha256": "fa3c6b293c79bf19ee1c5ae30a149d8de0370e35158cfeec38f44665a2a5d810",
+      "path": "scripts/casper-soak/tests/campaign_reservation.rs"
+    },
+    {
+      "sha256": "a70f76a28de8ef8010eb7f8876b5e947ce94bf35752bbd70b086983383ee7a8f",
+      "path": "scripts/casper-soak/src/lib.rs"
+    },
+    {
+      "sha256": "933e9cd7d05e763fea581d53f255ddba08fe3737c2046d3bbe6e996a06859aa9",
+      "path": "scripts/casper-soak/src/host_control.rs"
+    },
+    {
+      "sha256": "f6082e839d8bb20e5b2988a9ed92ffe5d1cd79a0e578e10d68582593ea3d13cb",
+      "path": "scripts/casper-soak/Cargo.toml"
+    },
+    {
+      "sha256": "7c5397136932d04c6e72a04a593249dea347a0f13c4cbd2d7e04c7d6a69f9e88",
+      "path": "Cargo.toml"
+    },
+    {
+      "sha256": "318659f6c97ee6030ac0b128b6e2ba0a6a86e07314c2761ecd73052830bb0c4e",
+      "path": "Cargo.lock"
+    },
+    {
+      "sha256": "da7e626941c437575405e8eade493a1994483236d0f775c39800b2b2e93f230f",
+      "path": ".cargo/config.toml"
+    },
+    {
+      "sha256": "cef5cc010fbd237ab34a4d07129372406e11ff8595c2efc1126d9c93e039aed4",
+      "path": "rust-toolchain.toml"
+    },
+    {
+      "sha256": "03b470653bbd8aa8b0311f97cde4bb38a390614157abd40509ff895511d51950",
+      "path": "scripts/casper-soak/campaign.sh"
+    },
+    {
+      "sha256": "95534b4e8d9592995a23a7aae0055ab4b1fe2b6628315b5acde032ffe0ebe75e",
+      "path": "scripts/casper-soak/test-campaign.sh"
+    },
+    {
+      "sha256": "46807d26da6011c3643f376cdd620b1085c1553a08cc37d173df649d12ec044a",
+      "path": ".github/workflows/merge-recovery-soak.yml"
+    },
+    {
+      "sha256": "4b5f7f23e8bda071056d83ab5878171214ebeccfe465e9aa88b8881eb30f9c0a",
+      "path": "docs/claims/casper-campaign-reservation.md"
+    }
+  ],
+  "bulk_evidence": "target/task-017-12/reservation-controls-9dd92a007-WAZfBH",
+  "evidence_kind": "synthetic_fixture",
+  "binary_sha256": "df7e9f07e08ac298eccbd39d5f4fad4b27206b4797b09264638d594356d6ac0b",
+  "test_binary_sha256": "d9eb4eca4d66eaf0fce69ee779bb8b27f69f548bdf1ea59a08c94acca331d6d6",
+  "tests": {
+    "native": {
+      "passed": 16,
+      "ignored_helper": 1,
+      "helper_invoked_by_parent": true,
+      "exit_code": 0
+    },
+    "isolated": {
+      "passed": 16,
+      "ignored_helper": 1,
+      "helper_invoked_by_parent": true,
+      "exit_code": 0
+    },
+    "existing_campaign": {
+      "checks": 115,
+      "exit_code": 0
+    },
+    "isolated_host_control": {
+      "passed": 7,
+      "ignored_root_only_test": 1,
+      "exit_code": 0
+    }
+  },
+  "retained_attempts": {
+    "missing_implementation_red": 101,
+    "first_implementation_compile": 101,
+    "initial_corrected_suite": {
+      "passed": 15,
+      "exit_code": 0
+    },
+    "whole_crate_native": {
+      "exit_code": 101,
+      "reason": "four_existing_process_tests_require_container_before_process_creation",
+      "full_suite_pass": false
+    }
+  },
+  "isolation": {
+    "image": "sha256:44b6008a19654137f07fa8fac072904612f480b201be2fb01dc9d372344bc6af",
+    "architecture": "arm64",
+    "host_binaries_reused": true,
+    "independent_rebuild": false,
+    "network": "none",
+    "read_only_root": true,
+    "uid": 65534,
+    "capabilities": [],
+    "no_new_privileges": true,
+    "memory_bytes": 536870912,
+    "cpus": 2,
+    "pids": 128,
+    "tmp_bytes": 134217728,
+    "exit_code": 0,
+    "oom_killed": false,
+    "removed": true
+  },
+  "checks": {
+    "format": 0,
+    "clippy": 0,
+    "lsp": {
+      "implementation": "confirmed-clean",
+      "tests": "timed-out",
+      "complete": false
+    }
+  },
+  "limits": {
+    "slots": 3,
+    "input_bytes": 4096,
+    "store": "trusted-local-filesystem",
+    "global_accounting": false,
+    "approval_authentication": false,
+    "workflow_integration": false,
+    "instance_lifetime_enforcement": false,
+    "power_loss_test": false,
+    "cloud_api_failure_test": false,
+    "root_only_fixture_run": false
+  },
+  "node_launch_count": 0,
+  "cloud_launch_count": 0,
+  "execution_enabled": false,
+  "proof_execution": false,
+  "hosted_verification": false,
+  "claim_discharge": "pending",
+  "live_adapters_qualified": false,
+  "task_complete": false
+}

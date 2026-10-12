@@ -1,0 +1,110 @@
+{
+  "schema_version": 1,
+  "claim_id": "CLAIM-CASPER-NODE-OBSERVATION-001",
+  "scope": "batch-a-runtime-shutdown-correction",
+  "status": "local-tests-passed-claim-pending",
+  "execution_base": "d021a1d53686098fc8719564c29160a1ad21bb04",
+  "working_tree": true,
+  "source_inventory": [
+    {
+      "sha256": "f6f87b910641bf46ef6efa03ad4e72383a6a1868921bff68147cf4db3254365a",
+      "path": "node/src/rust/soak_observer.rs"
+    },
+    {
+      "sha256": "d646e91b1b330e262234bc2bf7e2352432826ebe43f424f71c0bccf021c7c0b6",
+      "path": "node/src/rust/mod.rs"
+    },
+    {
+      "sha256": "d8a535de8232f11b927168c32c7480202776f884ae37d0ae23b38d4e2a70ea34",
+      "path": "node/src/rust/configuration/model.rs"
+    },
+    {
+      "sha256": "82ade24cf0692646abb7027a2119138d72f359f909900d86ebcb2ada5659cc6b",
+      "path": "node/src/rust/configuration/commandline/options.rs"
+    },
+    {
+      "sha256": "a98c91ec5d9571e363fb1a619bd71fb2e4341f252ad58b5707f4c3eff5eb246d",
+      "path": "node/src/rust/configuration/commandline/config_mapper.rs"
+    },
+    {
+      "sha256": "5693c79ab4c22e9e2db0789bd431469402eead825b760e75cc4d6c82b0f08559",
+      "path": "node/src/rust/configuration/mod.rs"
+    },
+    {
+      "sha256": "6dcdc9bad2e6d1487cf8a705f2e8b31360bf103ba8cad08d0209468290ae5441",
+      "path": "node/src/rust/runtime/node_runtime.rs"
+    },
+    {
+      "sha256": "3d4f27d59b161457a588305fda368b9b82173c2dcddda375b841aae6888abdfc",
+      "path": "node/src/rust/diagnostics/tests.rs"
+    },
+    {
+      "sha256": "bf1f166f79eb5f4e282472bc5e37fd5e2c52cab9d19a2b36f1b4acfa86c545cc",
+      "path": "node/tests/soak_observer.rs"
+    }
+  ],
+  "specification_at_execution": {
+    "path": "docs/claims/casper-node-observation.md",
+    "commit": "d021a1d53686098fc8719564c29160a1ad21bb04",
+    "sha256": "2789f1d27536b64bbe62839f09b1063fc2d1e5cef75a2dafcb21d35a39dc562f"
+  },
+  "current_specification": {
+    "path": "docs/claims/casper-node-observation.md",
+    "sha256": "4f0e8b4e8f5fa7a5e55383f2d767d1dedece8cab5450e977d5e96d590141a7e1",
+    "updated_after_execution": true
+  },
+  "bulk_evidence": "target/node-observer-shutdown-d021a1d53-Q2avgR",
+  "previous_report": "docs/cbc-evidence/runs/casper-node-observer-batch-a-877cea722-01/report.json",
+  "defect": "The inner process exit bypassed observer cleanup on node-program completion.",
+  "correction": "Return the node-program result before the outer observer cleanup and process exit.",
+  "regression": {
+    "name": "runtime_source_returns_before_observer_cleanup_and_exit",
+    "kind": "source-binding-not-end-to-end-node-shutdown",
+    "red_exit": 101,
+    "green_exit": 0,
+    "red_source_retained": true,
+    "red_executable_retained": true
+  },
+  "native": {
+    "command": "cargo test --locked --release -p node --lib --test soak_observer",
+    "exit": 0,
+    "library_passed": 255,
+    "interface_passed": 18,
+    "top_level_ignored": 1,
+    "ignored_helper_invoked_by_parent": true,
+    "executable_sha256": "350425ce0f4d74b591802d14b85e9be36f072d8db68a52eb123a92d3960aba4f"
+  },
+  "isolated": {
+    "platform": "linux/arm64",
+    "image_id": "sha256:2ff15859fe20fb533b1b170f7ca101dd573a2223a2457729352bd3ee5856d40a",
+    "interface_passed": 18,
+    "exit": 0,
+    "host_built_executable": true,
+    "independent_rebuild": false,
+    "network": "none",
+    "root_user": false,
+    "read_only": true,
+    "memory_bytes": 536870912,
+    "cpus": 2,
+    "pids_limit": 64,
+    "oom_killed": false,
+    "container_removed": true
+  },
+  "formatting": {
+    "command": "cargo fmt --all -- --check",
+    "exit": 0
+  },
+  "clippy": {
+    "command": "cargo clippy --locked --release -p node --all-targets -- -D warnings",
+    "exit": 0
+  },
+  "proof_execution": false,
+  "hosted_verification": false,
+  "claim_discharge": "pending",
+  "end_to_end_node_shutdown_test": false,
+  "live_adapters_qualified": false,
+  "node_launch_count": 0,
+  "cloud_launch_count": 0,
+  "batch_b_implementation": false,
+  "task_complete": false
+}

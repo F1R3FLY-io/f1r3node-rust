@@ -1,0 +1,149 @@
+{
+  "schema_version": 1,
+  "task": "TASK-017-12",
+  "scope": "controlled-node-interface-mapping-and-live-snapshot",
+  "baseline_revision": "25ddb7779f9e0342bd0ca712804fc530bf6464a9",
+  "status": "controlled_verification_passed_live_qualification_pending",
+  "sources": {
+    "scripts/casper-soak/src/authority_mapping.rs": "a43281ff65e88ff071c8e619eadf97f6e647380c62cf5d382d0e736b13529736",
+    "scripts/casper-soak/src/authority_live.rs": "e63d620db4586c96b48b8ed6b643bedfcefb372c64275ccb4ad90c6fc9f3b125",
+    "scripts/casper-soak/tests/authority_mapping.rs": "565dc792118f6c1932b3fe30212743b15be713fd7cb89741d56bb8879dd221f7",
+    "scripts/casper-soak/tests/authority_live.rs": "dca1c888fb35799626c413b833ce695dd908dfc2dd30c2d3df4556f4947e9476",
+    "docs/claims/casper-authority-adapter.md": "09346ab99a44f3c9c3735b34b97dfe433330bdf9b67f1e3ffa8dd8f5a9390b19",
+    "docs/claims/casper-authority-live-executor.md": "71894bfb29abab60eae0f81432a4c4aa1fa3bdb83a730830f28b2cca91da5d5e"
+  },
+  "implementation": [
+    "separate display and oracle digests with paired input-summary validation",
+    "paired evaluator heads with nested digest and mode validation",
+    "retained named fork-choice work paths and captured display metadata",
+    "live snapshots select their member evaluator's captured head"
+  ],
+  "verification": {
+    "linux": {
+      "tests": {
+        "authority_mapping": 13,
+        "authority_observer": 9,
+        "authority_live": 13
+      },
+      "passed": 35,
+      "ignored_fixture_helpers": 2,
+      "driver_exit": 0,
+      "clippy_exit": 0,
+      "source_before_after_equal": true,
+      "profile_test_opt_level": 1,
+      "test_threads": 1,
+      "image": "batch-e-linux-tools:20260930",
+      "image_sha256": "e5e29946203c6df580a5ee41f6d61ef4f1a906394465b75bcdb72af0db390099",
+      "platform": "linux/arm64",
+      "rustc": "1.95.0-nightly (6efa357bf 2026-02-08)",
+      "isolation": {
+        "network": "none",
+        "read_only_root": true,
+        "user": "1001:1001",
+        "capabilities": "none",
+        "no_new_privileges": true,
+        "memory_bytes": 2147483648,
+        "cpus": 2,
+        "pids": 256,
+        "tmpfs_bytes": 805306368,
+        "tmpfs_executable": true
+      },
+      "trusted_cache": "task0194-build-20260922"
+    },
+    "host_profile": {
+      "authority_finality": 12,
+      "ignored_fixture_helpers": 1,
+      "exit": 0
+    },
+    "distinct_selected_tests": 47,
+    "lsp": {
+      "confirmed_clean": 2,
+      "inconclusive": 2,
+      "diagnostics": 0
+    },
+    "rustfmt": "passed",
+    "construction": "pending",
+    "machine_checked_refinement": false
+  },
+  "controls": {
+    "mapping_red": {
+      "exit": 101,
+      "passed": 9,
+      "failed": 4
+    },
+    "live_red": {
+      "path": "target/task-017-12-node-interface-20261001/linux-red-04/tests.log",
+      "exit": 101,
+      "passed": 12,
+      "failed": 1,
+      "ignored": 2,
+      "failure": "live_snapshot_selects_its_own_captured_evaluator_head"
+    },
+    "retained_preparation_failures": [
+      "login shell omitted Rust from PATH",
+      "unoptimized parallel fixture hashing exceeded observer deadlines",
+      "non-executable temporary filesystem refused fixture driver execution"
+    ],
+    "preparation_failures_are_not_behavioral_refutations": true
+  },
+  "security_review": {
+    "alert": 41,
+    "rule": "rust/hard-coded-cryptographic-value",
+    "analysis_id": 1871610769,
+    "analysis_revision": "25ddb7779f9e0342bd0ca712804fc530bf6464a9",
+    "source_line": 769,
+    "trace": "counter zero to formatted capture correlation argument",
+    "assessment": "false_positive_pending_maintainer_review",
+    "reason": "The counter is a retry discriminator. The capture helper hashes the execution digest, operation, phase, and attempt into a request identifier. It does not use the counter as a cryptographic key, IV, or entropy source.",
+    "normal_launcher_entropy": "32 operating-system random bytes from /dev/urandom",
+    "direct_execution_limit": "Caller-supplied nonce freshness is not globally enforced. Controlled checks cover distinct retained execution envelopes and reject reuse of nonempty output directories.",
+    "retry_review": "Each retry increments capture_attempt within the same bound execution and operation. This assessment is static, not a measured retry-fault qualification.",
+    "remote_alert_dismissed": false
+  },
+  "candidate_review": {
+    "candidates": [
+      {
+        "id": "dev-amd64",
+        "node_revision": "6940a5beb4aa806d3d75f6df3be9f238512fcc2f",
+        "workload": null,
+        "admission": "blocked"
+      },
+      {
+        "id": "dev-arm64",
+        "node_revision": "6940a5beb4aa806d3d75f6df3be9f238512fcc2f",
+        "workload": null,
+        "admission": "blocked"
+      }
+    ],
+    "harness_revision": "1f749aa831f54f2c5b3a7c79be27581c89e55f46"
+  },
+  "activation_review": {
+    "github_environment": "casper-campaign",
+    "observed_variable_names": [],
+    "config_activation": "absent"
+  },
+  "retained_outputs": {
+    "target/task-017-12-node-interface-20261001/source-final.tar": "36d0578a338ef6fe71eb3ba2c9d15b4e6d7137ae17eb9f24bb8953439a042182",
+    "target/task-017-12-node-interface-20261001/linux-final/tests.log": "bcff5f02959d7084382a2433778a16901b5ca760b6477cff9be754169a5cf723",
+    "target/task-017-12-node-interface-20261001/linux-final/clippy.log": "6a1a924da39055de59eea455789732d0c1165c91f46e3ecba770e9570401e7b9",
+    "target/task-017-12-node-interface-20261001/codeql-alert-41-trace.json": "b82b8bc43011154219b803fe1b15c61da80c36fde1724c0acc45830d10b6e75b",
+    "target/task-017-12-node-interface-20261001/profile-final.log": "dae926502a22fa4f92e8f32316e3fa6f1f4c9c781fc6714f3d25a0258c5abcf5"
+  },
+  "remaining": [
+    "source-bound maintainer acceptance",
+    "observer-capable immutable candidate and executable workload pins",
+    "candidate block histories and captured input exports",
+    "live provider and exact traversal qualification",
+    "Docker fault receipts",
+    "authoritative OCI object and independent supervisor activation",
+    "passing preflight followed by full approved baseline runs"
+  ],
+  "exclusions": {
+    "blockchain_node_qualification": false,
+    "cloud_dispatches": 0,
+    "infrastructure_deployments": 0,
+    "git_mutations_by_this_agent": 0,
+    "task_completed": false,
+    "claim_discharge": false
+  }
+}

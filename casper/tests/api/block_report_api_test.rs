@@ -1,15 +1,20 @@
 use std::sync::Arc;
+use std::time::Duration;
 
+use async_trait::async_trait;
 use casper::rust::api::block_report_api::{BlockReportAPI, BlockReportError};
 use casper::rust::engine::engine_cell::EngineCell;
 use casper::rust::report_store::CompressedBlockEventInfoStore;
-use casper::rust::reporting_casper::NoopReportingCasper;
+use casper::rust::reporting_casper::{NoopReportingCasper, ReplayResult, ReportingCasper};
 use casper::rust::safety_oracle::CliqueOracleImpl;
 use models::casper::BlockEventInfo;
 use models::rust::block_implicits::get_random_block_default;
+use models::rust::casper::protocol::casper_message::BlockMessage;
 use prost::bytes::Bytes;
 use rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore;
 use shared::rust::store::key_value_typed_store::KeyValueTypedStore;
+use tokio::sync::Notify;
+use tokio::time::timeout;
 
 use crate::engine::setup::TestFixture;
 
@@ -140,4 +145,68 @@ async fn an_unavailable_pre_state_refuses_the_replay() {
         result,
         Err(BlockReportError::StateUnavailable(hash)) if hash == block.block_hash
     ));
+}
+
+struct GatedReportingCasper {
+    started: Arc<Notify>,
+    release: Arc<Notify>,
+}
+
+#[async_trait]
+impl ReportingCasper for GatedReportingCasper {
+    async fn trace(&self, _block: &BlockMessage) -> Result<ReplayResult, String> {
+        self.started.notify_one();
+        self.release.notified().await;
+        Err("replay released by the test".to_string())
+    }
+}
+
+#[tokio::test]
+async fn an_enrichment_read_does_not_wait_for_a_replay_in_flight() {
+    let fixture = TestFixture::new().await;
+    let TestFixture {
+        engine,
+        block_store,
+        genesis,
+        ..
+    } = fixture;
+    let engine_cell = EngineCell::init();
+    engine_cell.set(Arc::new(engine)).await;
+
+    block_store
+        .put(genesis.block_hash.clone(), &genesis)
+        .expect("Failed to put genesis block");
+
+    let started = Arc::new(Notify::new());
+    let release = Arc::new(Notify::new());
+    let api = BlockReportAPI::new(
+        Arc::new(GatedReportingCasper {
+            started: started.clone(),
+            release: release.clone(),
+        }),
+        report_store(),
+        engine_cell,
+        block_store,
+        CliqueOracleImpl,
+        false,
+    );
+
+    let replaying_api = api.clone();
+    let replay_hash = genesis.block_hash.clone();
+    let replay = tokio::spawn(async move { replaying_api.block_report(replay_hash, true).await });
+    timeout(Duration::from_secs(30), started.notified())
+        .await
+        .expect("the explicit report should start replaying");
+
+    let read = timeout(
+        Duration::from_secs(5),
+        api.block_report_if_idle(genesis.block_hash.clone()),
+    )
+    .await
+    .expect("an enrichment read must not queue behind a replay in flight");
+    assert!(matches!(read, Err(BlockReportError::Busy)));
+
+    release.notify_one();
+    let replayed = replay.await.expect("replay task should not panic");
+    assert!(matches!(replayed, Err(BlockReportError::ReplayFailed(_))));
 }

@@ -15,7 +15,8 @@
 
 services:
   boot:
-    image: ${F1R3FLY_IMAGE:-us-sanjose-1.ocir.io/axd0qezqa9z3/f1r3fly-rust:latest}
+    image: >-
+      ${F1R3FLY_IMAGE:-us-sanjose-1.ocir.io/axd0qezqa9z3/f1r3fly-rust:latest}
     user: root
     restart: always
     container_name: rnode.bootstrap
@@ -25,7 +26,8 @@ services:
       - MALLOC_ARENA_MAX=2
       - MALLOC_TRIM_THRESHOLD_=131072
       - MALLOC_MMAP_THRESHOLD_=131072
-      # Passed only when set, so logging.filter in the node config applies by default.
+      # Passed only when set, so logging.filter in the node config
+      # applies by default.
       - RUST_LOG
     logging:
       driver: json-file
@@ -33,6 +35,7 @@ services:
         max-size: 100m
         max-file: "3"
     command:
+      - --log-sink=stdout
       - run
       - --host=${BOOTSTRAP_HOST}
       - --bootstrap=rnode://${BOOTSTRAP_NODE_ID}@${BOOTSTRAP_HOST}?protocol=40400&discovery=40404

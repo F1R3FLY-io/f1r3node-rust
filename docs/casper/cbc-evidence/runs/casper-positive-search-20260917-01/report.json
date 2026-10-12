@@ -1,0 +1,1663 @@
+{
+  "schema_version": 1,
+  "task": "TASK-017-4",
+  "cycle": "H10-positive-search",
+  "status": "partial-binding-pass",
+  "claim_id": "CLAIM-CASPER-SOAK-001",
+  "phase": "pre_pr216_merge",
+  "base_revision": "4204340b0d573e14df9b224ae43e0c0aea083136",
+  "construction": "not-applicable",
+  "construction_assumptions": null,
+  "evidence_kind": "synthetic_fixture",
+  "starting_tree": "five modified documentation files from the previous cycle",
+  "node_executed": false,
+  "claim_discharged": false,
+  "source_manifest": "source-manifest.json",
+  "source_manifest_sha256": "c552d6df891d60b72cc6b6f91b3b80b6ee5939db63c0b0dee232d034cf892d20",
+  "implementation_patch": "implementation.patch.txt",
+  "implementation_patch_sha256": "2bac2c3c20fce5df06edbcd660d3b0fe889a8cc26688703e56215131db84e823",
+  "phases": {
+    "red": {
+      "phase": "red",
+      "exit_code": 1,
+      "seconds": 8.502,
+      "image_id": "sha256:dc81b270cbde51da56ddc700548c7f1b476b610ae71c96b155dc4e944f83ef64",
+      "command": "bash scripts/ci/test-check-tla-invariants.sh",
+      "source_sha256": {
+        "scripts/ci/check-tla-invariants.sh": "5ad5058f26280a0f90730f6b8c14c40c5326ca0d2fc0dcf9c7ba8018be0397c8",
+        "scripts/ci/test-check-tla-invariants.sh": "d6df6ca72cba8a94bf8f2513f779f0fea40a5aae94d26c7b3851c9809cbe62bb",
+        "scripts/ci/check-formal-invariants.sh": "84e75616a60f671c1be36b85a4678f97c1c3ea1f8f08396e1281bcfa0e8f2876",
+        ".github/workflows/slashing-tests.yml": "be6741fcad7ac67437bb43ccc247d433e1f32f5ad73109d615564843f4f45207"
+      },
+      "jar_sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88"
+    },
+    "green": {
+      "phase": "green",
+      "exit_code": 0,
+      "seconds": 11.157,
+      "image_id": "sha256:dc81b270cbde51da56ddc700548c7f1b476b610ae71c96b155dc4e944f83ef64",
+      "command": "bash scripts/ci/test-check-tla-invariants.sh",
+      "source_sha256": {
+        "scripts/ci/check-tla-invariants.sh": "8b72bf9f0190b8b15b71d0e3da6af5af07ac8d811b923f402bc2952bc716cd7c",
+        "scripts/ci/test-check-tla-invariants.sh": "d6df6ca72cba8a94bf8f2513f779f0fea40a5aae94d26c7b3851c9809cbe62bb",
+        "scripts/ci/check-formal-invariants.sh": "84e75616a60f671c1be36b85a4678f97c1c3ea1f8f08396e1281bcfa0e8f2876",
+        ".github/workflows/slashing-tests.yml": "be6741fcad7ac67437bb43ccc247d433e1f32f5ad73109d615564843f4f45207"
+      },
+      "jar_sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88"
+    },
+    "tlc": {
+      "phase": "tlc",
+      "exit_code": 0,
+      "seconds": 67.696,
+      "image_id": "sha256:dc81b270cbde51da56ddc700548c7f1b476b610ae71c96b155dc4e944f83ef64",
+      "command": "bash scripts/ci/check-tla-invariants.sh --soak-pr",
+      "source_sha256": {
+        "scripts/ci/check-tla-invariants.sh": "8b72bf9f0190b8b15b71d0e3da6af5af07ac8d811b923f402bc2952bc716cd7c",
+        "scripts/ci/test-check-tla-invariants.sh": "d6df6ca72cba8a94bf8f2513f779f0fea40a5aae94d26c7b3851c9809cbe62bb",
+        "scripts/ci/check-formal-invariants.sh": "84e75616a60f671c1be36b85a4678f97c1c3ea1f8f08396e1281bcfa0e8f2876",
+        ".github/workflows/slashing-tests.yml": "be6741fcad7ac67437bb43ccc247d433e1f32f5ad73109d615564843f4f45207"
+      },
+      "jar_sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88"
+    }
+  },
+  "fixture": {
+    "new_rejection_case": "incomplete",
+    "new_positive_rejection_cases": 1,
+    "negative_acceptance_controls": 61,
+    "negative_rejection_cases": 21,
+    "registered_areas": 3,
+    "red_reason": "The production gate accepted a positive configuration with exit zero and no completed-search marker.",
+    "green_requirement": "A positive configuration requires exit zero and the exact completed-search marker."
+  },
+  "shared_tlc": {
+    "positive_configurations": 13,
+    "negative_configurations": 61,
+    "workers": 2,
+    "heap_limit_mb": 384,
+    "timeout_seconds_per_configuration": 120,
+    "container_memory_mb": 768,
+    "container_cpus": 2,
+    "network": "none",
+    "host_mounts": 0,
+    "uid": 65534,
+    "results": [
+      {
+        "configuration": "carrier_index/MC_CarrierIndex",
+        "expected_invariant": null,
+        "exit_code": 0,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": true,
+        "trace": false,
+        "seed": "-5693034736586675659",
+        "fingerprint_index": 82,
+        "states_generated": 1713,
+        "distinct_states": 222,
+        "transcript": "tlc/transcripts/tlc-carrier_index-MC_CarrierIndex.txt"
+      },
+      {
+        "configuration": "carrier_index/MC_CarrierIndex_dag_first_pre_fix",
+        "expected_invariant": "IndexCompleteForWindow",
+        "exit_code": 12,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": false,
+        "trace": true,
+        "seed": "-6606991869016389607",
+        "fingerprint_index": 127,
+        "states_generated": 11,
+        "distinct_states": 9,
+        "transcript": "tlc/transcripts/tlc-carrier_index-MC_CarrierIndex_dag_first_pre_fix.txt"
+      },
+      {
+        "configuration": "carrier_index/MC_CarrierIndex_read_failure_pre_fix",
+        "expected_invariant": "AbsenceProofSound",
+        "exit_code": 12,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": false,
+        "trace": true,
+        "seed": "8015508444281881838",
+        "fingerprint_index": 123,
+        "states_generated": 114,
+        "distinct_states": 42,
+        "transcript": "tlc/transcripts/tlc-carrier_index-MC_CarrierIndex_read_failure_pre_fix.txt"
+      },
+      {
+        "configuration": "deploy_storage/MC_DeployStorageBound",
+        "expected_invariant": null,
+        "exit_code": 0,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": true,
+        "trace": false,
+        "seed": "655286072745782128",
+        "fingerprint_index": 40,
+        "states_generated": 443,
+        "distinct_states": 237,
+        "transcript": "tlc/transcripts/tlc-deploy_storage-MC_DeployStorageBound.txt"
+      },
+      {
+        "configuration": "deploy_storage/MC_DeployStorageBound_unmetered_pre_fix",
+        "expected_invariant": "RetainedWithinPhlo",
+        "exit_code": 12,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": false,
+        "trace": true,
+        "seed": "4095869768814172827",
+        "fingerprint_index": 91,
+        "states_generated": 67,
+        "distinct_states": 40,
+        "transcript": "tlc/transcripts/tlc-deploy_storage-MC_DeployStorageBound_unmetered_pre_fix.txt"
+      },
+      {
+        "configuration": "replay_liveness/MC_ReplayHotLoop",
+        "expected_invariant": null,
+        "exit_code": 0,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": true,
+        "trace": false,
+        "seed": "-7649135883472309323",
+        "fingerprint_index": 10,
+        "states_generated": 10,
+        "distinct_states": 9,
+        "transcript": "tlc/transcripts/tlc-replay_liveness-MC_ReplayHotLoop.txt"
+      },
+      {
+        "configuration": "soak_disk/MC_MetricBaseline",
+        "expected_invariant": null,
+        "exit_code": 0,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": true,
+        "trace": false,
+        "seed": "1176797501262751479",
+        "fingerprint_index": 77,
+        "states_generated": 2,
+        "distinct_states": 2,
+        "transcript": "tlc/transcripts/tlc-soak_disk-MC_MetricBaseline.txt"
+      },
+      {
+        "configuration": "soak_disk/MC_MetricBaseline_available",
+        "expected_invariant": null,
+        "exit_code": 0,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": true,
+        "trace": false,
+        "seed": "6965353138676208146",
+        "fingerprint_index": 105,
+        "states_generated": 2,
+        "distinct_states": 2,
+        "transcript": "tlc/transcripts/tlc-soak_disk-MC_MetricBaseline_available.txt"
+      },
+      {
+        "configuration": "soak_disk/MC_MetricBaseline_zero_pre_fix",
+        "expected_invariant": "MissingBaselineUnavailable",
+        "exit_code": 12,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": false,
+        "trace": true,
+        "seed": "8894996782834946031",
+        "fingerprint_index": 118,
+        "states_generated": 2,
+        "distinct_states": 2,
+        "transcript": "tlc/transcripts/tlc-soak_disk-MC_MetricBaseline_zero_pre_fix.txt"
+      },
+      {
+        "configuration": "soak_disk/MC_MetricMonotonicity",
+        "expected_invariant": null,
+        "exit_code": 0,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": true,
+        "trace": false,
+        "seed": "5748596437031584762",
+        "fingerprint_index": 82,
+        "states_generated": 15,
+        "distinct_states": 15,
+        "transcript": "tlc/transcripts/tlc-soak_disk-MC_MetricMonotonicity.txt"
+      },
+      {
+        "configuration": "soak_disk/MC_MetricMonotonicity_unchecked_pre_fix",
+        "expected_invariant": "DecreasingSamplesUnavailable",
+        "exit_code": 12,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": false,
+        "trace": true,
+        "seed": "-5690105468321796484",
+        "fingerprint_index": 79,
+        "states_generated": 10,
+        "distinct_states": 10,
+        "transcript": "tlc/transcripts/tlc-soak_disk-MC_MetricMonotonicity_unchecked_pre_fix.txt"
+      },
+      {
+        "configuration": "soak_disk/MC_MetricSampleValidity",
+        "expected_invariant": null,
+        "exit_code": 0,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": true,
+        "trace": false,
+        "seed": "6566385365737633493",
+        "fingerprint_index": 25,
+        "states_generated": 11,
+        "distinct_states": 11,
+        "transcript": "tlc/transcripts/tlc-soak_disk-MC_MetricSampleValidity.txt"
+      },
+      {
+        "configuration": "soak_disk/MC_MetricSampleValidity_unchecked_pre_fix",
+        "expected_invariant": "InvalidSamplesRejected",
+        "exit_code": 12,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": false,
+        "trace": true,
+        "seed": "-6612100088775421316",
+        "fingerprint_index": 79,
+        "states_generated": 8,
+        "distinct_states": 8,
+        "transcript": "tlc/transcripts/tlc-soak_disk-MC_MetricSampleValidity_unchecked_pre_fix.txt"
+      },
+      {
+        "configuration": "soak_disk/MC_MetricSummary",
+        "expected_invariant": null,
+        "exit_code": 0,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": true,
+        "trace": false,
+        "seed": "6398103134578952190",
+        "fingerprint_index": 58,
+        "states_generated": 3,
+        "distinct_states": 3,
+        "transcript": "tlc/transcripts/tlc-soak_disk-MC_MetricSummary.txt"
+      },
+      {
+        "configuration": "soak_disk/MC_MetricSummary_omitted_pre_fix",
+        "expected_invariant": "CollectedRequiredPublished",
+        "exit_code": 12,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": false,
+        "trace": true,
+        "seed": "-2939774189799130982",
+        "fingerprint_index": 113,
+        "states_generated": 3,
+        "distinct_states": 3,
+        "transcript": "tlc/transcripts/tlc-soak_disk-MC_MetricSummary_omitted_pre_fix.txt"
+      },
+      {
+        "configuration": "soak_disk/MC_ReserveBound",
+        "expected_invariant": null,
+        "exit_code": 0,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": true,
+        "trace": false,
+        "seed": "5519398052115175137",
+        "fingerprint_index": 61,
+        "states_generated": 11,
+        "distinct_states": 8,
+        "transcript": "tlc/transcripts/tlc-soak_disk-MC_ReserveBound.txt"
+      },
+      {
+        "configuration": "soak_disk/MC_ReserveBound_unbounded_pre_fix",
+        "expected_invariant": "OperatingReserveHeld",
+        "exit_code": 12,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": false,
+        "trace": true,
+        "seed": "2663208745830527502",
+        "fingerprint_index": 63,
+        "states_generated": 20,
+        "distinct_states": 15,
+        "transcript": "tlc/transcripts/tlc-soak_disk-MC_ReserveBound_unbounded_pre_fix.txt"
+      },
+      {
+        "configuration": "soak_disk/MC_RetentionReserve",
+        "expected_invariant": null,
+        "exit_code": 0,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": true,
+        "trace": false,
+        "seed": "5422842110238857198",
+        "fingerprint_index": 32,
+        "states_generated": 6,
+        "distinct_states": 5,
+        "transcript": "tlc/transcripts/tlc-soak_disk-MC_RetentionReserve.txt"
+      },
+      {
+        "configuration": "soak_disk/MC_RetentionReserve_unskipped_pre_fix",
+        "expected_invariant": "ReserveHeld",
+        "exit_code": 12,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": false,
+        "trace": true,
+        "seed": "-6839950031206418786",
+        "fingerprint_index": 13,
+        "states_generated": 5,
+        "distinct_states": 5,
+        "transcript": "tlc/transcripts/tlc-soak_disk-MC_RetentionReserve_unskipped_pre_fix.txt"
+      },
+      {
+        "configuration": "soak_disk/MC_SoakDiskAdmission",
+        "expected_invariant": null,
+        "exit_code": 0,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": true,
+        "trace": false,
+        "seed": "-8186242781416836291",
+        "fingerprint_index": 7,
+        "states_generated": 82186,
+        "distinct_states": 52528,
+        "transcript": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskAdmission.txt"
+      },
+      {
+        "configuration": "soak_disk/MC_SoakDiskAdmission_age_only_pre_fix",
+        "expected_invariant": "UnownedSessionPreserved",
+        "exit_code": 12,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": false,
+        "trace": true,
+        "seed": "3870893844816302606",
+        "fingerprint_index": 33,
+        "states_generated": 14626,
+        "distinct_states": 9180,
+        "transcript": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskAdmission_age_only_pre_fix.txt"
+      },
+      {
+        "configuration": "soak_disk/MC_SoakDiskAdmission_attribute_first_pre_fix",
+        "expected_invariant": "AttributionRequiresRecord",
+        "exit_code": 12,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": false,
+        "trace": true,
+        "seed": "-8077986808606426468",
+        "fingerprint_index": 51,
+        "states_generated": 4311,
+        "distinct_states": 2370,
+        "transcript": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskAdmission_attribute_first_pre_fix.txt"
+      },
+      {
+        "configuration": "soak_disk/MC_SoakDiskAdmission_benchmark_band_pre_fix",
+        "expected_invariant": "BenchmarkRequiresBand",
+        "exit_code": 12,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": false,
+        "trace": true,
+        "seed": "5883078261760228887",
+        "fingerprint_index": 45,
+        "states_generated": 1987,
+        "distinct_states": 1352,
+        "transcript": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskAdmission_benchmark_band_pre_fix.txt"
+      },
+      {
+        "configuration": "soak_disk/MC_SoakDiskAdmission_floor_only_pre_fix",
+        "expected_invariant": "AdmissionRequiresBand",
+        "exit_code": 12,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": false,
+        "trace": true,
+        "seed": "-8030508824796673649",
+        "fingerprint_index": 15,
+        "states_generated": 35426,
+        "distinct_states": 21580,
+        "transcript": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskAdmission_floor_only_pre_fix.txt"
+      },
+      {
+        "configuration": "soak_disk/MC_SoakDiskAdmission_global_prune_pre_fix",
+        "expected_invariant": "UnownedDockerResourcesPreserved",
+        "exit_code": 12,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": false,
+        "trace": true,
+        "seed": "-3261475677252891184",
+        "fingerprint_index": 111,
+        "states_generated": 14494,
+        "distinct_states": 9051,
+        "transcript": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskAdmission_global_prune_pre_fix.txt"
+      },
+      {
+        "configuration": "soak_disk/MC_SoakDiskAdmission_ignore_errors_pre_fix",
+        "expected_invariant": "CleanupFailurePreventsAdmission",
+        "exit_code": 12,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": false,
+        "trace": true,
+        "seed": "-4226332136712777258",
+        "fingerprint_index": 45,
+        "states_generated": 44301,
+        "distinct_states": 24769,
+        "transcript": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskAdmission_ignore_errors_pre_fix.txt"
+      },
+      {
+        "configuration": "soak_disk/MC_SoakDiskAdmission_in_place_pre_fix",
+        "expected_invariant": "VisibleImpliesComplete",
+        "exit_code": 12,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": false,
+        "trace": true,
+        "seed": "1911501866083936561",
+        "fingerprint_index": 3,
+        "states_generated": 1985,
+        "distinct_states": 1329,
+        "transcript": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskAdmission_in_place_pre_fix.txt"
+      },
+      {
+        "configuration": "soak_disk/MC_SoakDiskAdmission_iteration_only_pre_fix",
+        "expected_invariant": "BenchmarkMonitorDeathObserved",
+        "exit_code": 12,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": false,
+        "trace": true,
+        "seed": "8542289489462286070",
+        "fingerprint_index": 118,
+        "states_generated": 2059,
+        "distinct_states": 1384,
+        "transcript": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskAdmission_iteration_only_pre_fix.txt"
+      },
+      {
+        "configuration": "soak_disk/MC_SoakDiskAdmission_late_guardian_pre_fix",
+        "expected_invariant": "BenchmarkBreachObserved",
+        "exit_code": 12,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": false,
+        "trace": true,
+        "seed": "9166502247121654232",
+        "fingerprint_index": 19,
+        "states_generated": 1957,
+        "distinct_states": 1330,
+        "transcript": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskAdmission_late_guardian_pre_fix.txt"
+      },
+      {
+        "configuration": "soak_disk/MC_SoakDiskAdmission_missing_sample_pre_fix",
+        "expected_invariant": "AdmissionRequiresSample",
+        "exit_code": 12,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": false,
+        "trace": true,
+        "seed": "705905583578157402",
+        "fingerprint_index": 24,
+        "states_generated": 16793,
+        "distinct_states": 10980,
+        "transcript": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskAdmission_missing_sample_pre_fix.txt"
+      },
+      {
+        "configuration": "soak_disk/MC_SoakDiskAdmission_numeric_prefix_pre_fix",
+        "expected_invariant": "AdmissionRequiresValidSample",
+        "exit_code": 12,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": false,
+        "trace": true,
+        "seed": "-462466104316511377",
+        "fingerprint_index": 93,
+        "states_generated": 17052,
+        "distinct_states": 11138,
+        "transcript": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskAdmission_numeric_prefix_pre_fix.txt"
+      },
+      {
+        "configuration": "soak_disk/MC_SoakDiskAdmission_pathname_pre_fix",
+        "expected_invariant": "UntrustedRecordPreventsAdmission",
+        "exit_code": 12,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": false,
+        "trace": true,
+        "seed": "-7196826390239024794",
+        "fingerprint_index": 111,
+        "states_generated": 1920,
+        "distinct_states": 1305,
+        "transcript": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskAdmission_pathname_pre_fix.txt"
+      },
+      {
+        "configuration": "soak_disk/MC_SoakDiskAdmission_retained_breach_pre_fix",
+        "expected_invariant": "RetainedBreachPreventsBenchmark",
+        "exit_code": 12,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": false,
+        "trace": true,
+        "seed": "4555370723195602319",
+        "fingerprint_index": 49,
+        "states_generated": 2078,
+        "distinct_states": 1386,
+        "transcript": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskAdmission_retained_breach_pre_fix.txt"
+      },
+      {
+        "configuration": "soak_disk/MC_SoakDiskAdmission_unbounded_hygiene_pre_fix",
+        "expected_invariant": "HygieneWithinBudget",
+        "exit_code": 12,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": false,
+        "trace": true,
+        "seed": "6146737745797958628",
+        "fingerprint_index": 97,
+        "states_generated": 19206,
+        "distinct_states": 12627,
+        "transcript": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskAdmission_unbounded_hygiene_pre_fix.txt"
+      },
+      {
+        "configuration": "soak_disk/MC_SoakDiskAdmission_unchecked_guardian_pre_fix",
+        "expected_invariant": "AdmissionRequiresGuardian",
+        "exit_code": 12,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": false,
+        "trace": true,
+        "seed": "-8564193144081152052",
+        "fingerprint_index": 67,
+        "states_generated": 4906,
+        "distinct_states": 2681,
+        "transcript": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskAdmission_unchecked_guardian_pre_fix.txt"
+      },
+      {
+        "configuration": "soak_disk/MC_SoakDiskAdmission_unchecked_monitor_pre_fix",
+        "expected_invariant": "MonitorDeathPreventsAdmission",
+        "exit_code": 12,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": false,
+        "trace": true,
+        "seed": "-5888046405128286832",
+        "fingerprint_index": 27,
+        "states_generated": 5107,
+        "distinct_states": 2720,
+        "transcript": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskAdmission_unchecked_monitor_pre_fix.txt"
+      },
+      {
+        "configuration": "soak_disk/MC_SoakDiskAdmission_unchecked_placement_pre_fix",
+        "expected_invariant": "UnverifiedPlacementPreventsAdmission",
+        "exit_code": 12,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": false,
+        "trace": true,
+        "seed": "-8365367717773796028",
+        "fingerprint_index": 8,
+        "states_generated": 1774,
+        "distinct_states": 1248,
+        "transcript": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskAdmission_unchecked_placement_pre_fix.txt"
+      },
+      {
+        "configuration": "soak_disk/MC_SoakDiskAdmission_unchecked_producer_pre_fix",
+        "expected_invariant": "FailedProducerPreservesRecord",
+        "exit_code": 12,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": false,
+        "trace": true,
+        "seed": "-3177835152848121727",
+        "fingerprint_index": 128,
+        "states_generated": 5010,
+        "distinct_states": 2629,
+        "transcript": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskAdmission_unchecked_producer_pre_fix.txt"
+      },
+      {
+        "configuration": "soak_disk/MC_SoakDiskAdmission_unchecked_progress_pre_fix",
+        "expected_invariant": "StaleProgressPreventsAdmission",
+        "exit_code": 12,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": false,
+        "trace": true,
+        "seed": "-8253443304272579860",
+        "fingerprint_index": 63,
+        "states_generated": 4810,
+        "distinct_states": 2608,
+        "transcript": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskAdmission_unchecked_progress_pre_fix.txt"
+      },
+      {
+        "configuration": "soak_disk/MC_SoakDiskAdmission_unchecked_range_pre_fix",
+        "expected_invariant": "AdmissionRequiresValidDiskSettings",
+        "exit_code": 12,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": false,
+        "trace": true,
+        "seed": "3174737389516199641",
+        "fingerprint_index": 52,
+        "states_generated": 973,
+        "distinct_states": 848,
+        "transcript": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskAdmission_unchecked_range_pre_fix.txt"
+      },
+      {
+        "configuration": "soak_disk/MC_SoakDiskAdmission_unrecorded_benchmark_pre_fix",
+        "expected_invariant": "BenchmarkCrashRequiresRefusal",
+        "exit_code": 12,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": false,
+        "trace": true,
+        "seed": "-8002796916827979472",
+        "fingerprint_index": 65,
+        "states_generated": 2236,
+        "distinct_states": 1473,
+        "transcript": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskAdmission_unrecorded_benchmark_pre_fix.txt"
+      },
+      {
+        "configuration": "soak_disk/MC_SoakDiskAdmission_unrecorded_pre_fix",
+        "expected_invariant": "CrashRequiresRefusal",
+        "exit_code": 12,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": false,
+        "trace": true,
+        "seed": "-7583331571508460724",
+        "fingerprint_index": 24,
+        "states_generated": 2361,
+        "distinct_states": 1560,
+        "transcript": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskAdmission_unrecorded_pre_fix.txt"
+      },
+      {
+        "configuration": "soak_disk/MC_SoakDiskAdmission_unwatched_breach_pre_fix",
+        "expected_invariant": "BenchmarkCancellationObserved",
+        "exit_code": 12,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": false,
+        "trace": true,
+        "seed": "-673146113246211209",
+        "fingerprint_index": 77,
+        "states_generated": 2005,
+        "distinct_states": 1380,
+        "transcript": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskAdmission_unwatched_breach_pre_fix.txt"
+      },
+      {
+        "configuration": "soak_disk/MC_SoakDiskAdmission_unwatched_death_pre_fix",
+        "expected_invariant": "BenchmarkCancellationObserved",
+        "exit_code": 12,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": false,
+        "trace": true,
+        "seed": "-663256474548104187",
+        "fingerprint_index": 92,
+        "states_generated": 1967,
+        "distinct_states": 1352,
+        "transcript": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskAdmission_unwatched_death_pre_fix.txt"
+      },
+      {
+        "configuration": "soak_disk/MC_SoakDiskGuardian",
+        "expected_invariant": null,
+        "exit_code": 0,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": true,
+        "trace": false,
+        "seed": "6351590061056851406",
+        "fingerprint_index": 49,
+        "states_generated": 404952,
+        "distinct_states": 217788,
+        "transcript": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskGuardian.txt"
+      },
+      {
+        "configuration": "soak_disk/MC_SoakDiskGuardian_alive_only_pre_fix",
+        "expected_invariant": "StaleGuardianRequiresInterrupt",
+        "exit_code": 12,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": false,
+        "trace": true,
+        "seed": "-8414451437405890791",
+        "fingerprint_index": 23,
+        "states_generated": 196,
+        "distinct_states": 196,
+        "transcript": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskGuardian_alive_only_pre_fix.txt"
+      },
+      {
+        "configuration": "soak_disk/MC_SoakDiskGuardian_blocking_pre_fix",
+        "expected_invariant": "ShutdownIndependentOfSync",
+        "exit_code": 12,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": false,
+        "trace": true,
+        "seed": "8250399030586012769",
+        "fingerprint_index": 16,
+        "states_generated": 496,
+        "distinct_states": 472,
+        "transcript": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskGuardian_blocking_pre_fix.txt"
+      },
+      {
+        "configuration": "soak_disk/MC_SoakDiskGuardian_cleared_breach_pre_fix",
+        "expected_invariant": "RetainedBreachStopsRestart",
+        "exit_code": 12,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": false,
+        "trace": true,
+        "seed": "603313124143575177",
+        "fingerprint_index": 104,
+        "states_generated": 11580,
+        "distinct_states": 8368,
+        "transcript": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskGuardian_cleared_breach_pre_fix.txt"
+      },
+      {
+        "configuration": "soak_disk/MC_SoakDiskGuardian_client_only_pre_fix",
+        "expected_invariant": "ExitStopsWriters",
+        "exit_code": 12,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": false,
+        "trace": true,
+        "seed": "-7617220324966484648",
+        "fingerprint_index": 110,
+        "states_generated": 182,
+        "distinct_states": 182,
+        "transcript": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskGuardian_client_only_pre_fix.txt"
+      },
+      {
+        "configuration": "soak_disk/MC_SoakDiskGuardian_drain_first_pre_fix",
+        "expected_invariant": "DrainRequiresOwnedStop",
+        "exit_code": 12,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": false,
+        "trace": true,
+        "seed": "-4269347159227217458",
+        "fingerprint_index": 103,
+        "states_generated": 3718,
+        "distinct_states": 3448,
+        "transcript": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskGuardian_drain_first_pre_fix.txt"
+      },
+      {
+        "configuration": "soak_disk/MC_SoakDiskGuardian_host_pattern_only_pre_fix",
+        "expected_invariant": "UnownedHostWritersPreserved",
+        "exit_code": 12,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": false,
+        "trace": true,
+        "seed": "4768510033018351981",
+        "fingerprint_index": 66,
+        "states_generated": 182,
+        "distinct_states": 182,
+        "transcript": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskGuardian_host_pattern_only_pre_fix.txt"
+      },
+      {
+        "configuration": "soak_disk/MC_SoakDiskGuardian_ignored_pre_fix",
+        "expected_invariant": "FailedStopRetained",
+        "exit_code": 12,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": false,
+        "trace": true,
+        "seed": "7947892259532496228",
+        "fingerprint_index": 101,
+        "states_generated": 184,
+        "distinct_states": 184,
+        "transcript": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskGuardian_ignored_pre_fix.txt"
+      },
+      {
+        "configuration": "soak_disk/MC_SoakDiskGuardian_name_only_pre_fix",
+        "expected_invariant": "UnownedWritersPreserved",
+        "exit_code": 12,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": false,
+        "trace": true,
+        "seed": "4383667597658753602",
+        "fingerprint_index": 63,
+        "states_generated": 182,
+        "distinct_states": 182,
+        "transcript": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskGuardian_name_only_pre_fix.txt"
+      },
+      {
+        "configuration": "soak_disk/MC_SoakDiskGuardian_oom_pattern_only_pre_fix",
+        "expected_invariant": "UnownedPreferencesPreserved",
+        "exit_code": 12,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": false,
+        "trace": true,
+        "seed": "8190631147220735590",
+        "fingerprint_index": 52,
+        "states_generated": 106,
+        "distinct_states": 106,
+        "transcript": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskGuardian_oom_pattern_only_pre_fix.txt"
+      },
+      {
+        "configuration": "soak_disk/MC_SoakDiskGuardian_parent_group_pre_fix",
+        "expected_invariant": "CrashStopsOwnedWriters",
+        "exit_code": 12,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": false,
+        "trace": true,
+        "seed": "3964646420475248599",
+        "fingerprint_index": 15,
+        "states_generated": 186,
+        "distinct_states": 186,
+        "transcript": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskGuardian_parent_group_pre_fix.txt"
+      },
+      {
+        "configuration": "soak_disk/MC_SoakDiskGuardian_parent_only_pre_fix",
+        "expected_invariant": "UntrustedControlPreventsRelease",
+        "exit_code": 12,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": false,
+        "trace": true,
+        "seed": "-207189930795148393",
+        "fingerprint_index": 88,
+        "states_generated": 54,
+        "distinct_states": 54,
+        "transcript": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskGuardian_parent_only_pre_fix.txt"
+      },
+      {
+        "configuration": "soak_disk/MC_SoakDiskGuardian_per_root_deadline_pre_fix",
+        "expected_invariant": "AttributionWithinBudget",
+        "exit_code": 12,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": false,
+        "trace": true,
+        "seed": "8215141075526220058",
+        "fingerprint_index": 80,
+        "states_generated": 3022,
+        "distinct_states": 2938,
+        "transcript": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskGuardian_per_root_deadline_pre_fix.txt"
+      },
+      {
+        "configuration": "soak_disk/MC_SoakDiskGuardian_periodic_name_pre_fix",
+        "expected_invariant": "UnownedContainerPreferencesPreserved",
+        "exit_code": 12,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": false,
+        "trace": true,
+        "seed": "-5623780094991218936",
+        "fingerprint_index": 96,
+        "states_generated": 106,
+        "distinct_states": 106,
+        "transcript": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskGuardian_periodic_name_pre_fix.txt"
+      },
+      {
+        "configuration": "soak_disk/MC_SoakDiskGuardian_rate_exceeds_floor_pre_fix",
+        "expected_invariant": "NoOverrun",
+        "exit_code": 12,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": false,
+        "trace": true,
+        "seed": "3426120671339428981",
+        "fingerprint_index": 100,
+        "states_generated": 1091,
+        "distinct_states": 1055,
+        "transcript": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskGuardian_rate_exceeds_floor_pre_fix.txt"
+      },
+      {
+        "configuration": "soak_disk/MC_SoakDiskGuardian_start_first_pre_fix",
+        "expected_invariant": "UnavailableQueryPreventsRelease",
+        "exit_code": 12,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": false,
+        "trace": true,
+        "seed": "1063894567047673078",
+        "fingerprint_index": 122,
+        "states_generated": 52,
+        "distinct_states": 52,
+        "transcript": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskGuardian_start_first_pre_fix.txt"
+      },
+      {
+        "configuration": "soak_disk/MC_SoakDiskGuardian_startup_only_pre_fix",
+        "expected_invariant": "DeadMonitorRequiresInterrupt",
+        "exit_code": 12,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": false,
+        "trace": true,
+        "seed": "-7192672076369942737",
+        "fingerprint_index": 54,
+        "states_generated": 223,
+        "distinct_states": 221,
+        "transcript": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskGuardian_startup_only_pre_fix.txt"
+      },
+      {
+        "configuration": "soak_disk/MC_SoakDiskGuardian_stop_first_pre_fix",
+        "expected_invariant": "StopRequiresRecord",
+        "exit_code": 12,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": false,
+        "trace": true,
+        "seed": "-604895226157432055",
+        "fingerprint_index": 68,
+        "states_generated": 1694,
+        "distinct_states": 1658,
+        "transcript": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskGuardian_stop_first_pre_fix.txt"
+      },
+      {
+        "configuration": "soak_disk/MC_SoakDiskGuardian_unavailable_sample_pre_fix",
+        "expected_invariant": "InvalidSampleRequiresInterrupt",
+        "exit_code": 12,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": false,
+        "trace": true,
+        "seed": "-7729549485584931238",
+        "fingerprint_index": 54,
+        "states_generated": 547,
+        "distinct_states": 521,
+        "transcript": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskGuardian_unavailable_sample_pre_fix.txt"
+      },
+      {
+        "configuration": "soak_disk/MC_SoakDiskGuardian_unbounded_pre_fix",
+        "expected_invariant": "ResponseWithinDeadline",
+        "exit_code": 12,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": false,
+        "trace": true,
+        "seed": "-1846189708005007436",
+        "fingerprint_index": 42,
+        "states_generated": 20830,
+        "distinct_states": 12773,
+        "transcript": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskGuardian_unbounded_pre_fix.txt"
+      },
+      {
+        "configuration": "soak_disk/MC_SoakDiskGuardian_unbounded_probe_pre_fix",
+        "expected_invariant": "ProbeWithinDeadline",
+        "exit_code": 12,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": false,
+        "trace": true,
+        "seed": "-2402798922945276086",
+        "fingerprint_index": 64,
+        "states_generated": 1080,
+        "distinct_states": 1044,
+        "transcript": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskGuardian_unbounded_probe_pre_fix.txt"
+      },
+      {
+        "configuration": "soak_disk/MC_SoakDiskGuardian_unbounded_stop_pre_fix",
+        "expected_invariant": "StopWithinBudget",
+        "exit_code": 12,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": false,
+        "trace": true,
+        "seed": "-6835740615926778063",
+        "fingerprint_index": 20,
+        "states_generated": 3022,
+        "distinct_states": 2936,
+        "transcript": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskGuardian_unbounded_stop_pre_fix.txt"
+      },
+      {
+        "configuration": "soak_disk/MC_SoakDiskGuardian_unconditional_pre_fix",
+        "expected_invariant": "HandledExitHasNoExtraStop",
+        "exit_code": 12,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": false,
+        "trace": true,
+        "seed": "-3163950157644200315",
+        "fingerprint_index": 8,
+        "states_generated": 482,
+        "distinct_states": 458,
+        "transcript": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskGuardian_unconditional_pre_fix.txt"
+      },
+      {
+        "configuration": "soak_disk/MC_SoakDiskGuardian_unconfirmed_stop_pre_fix",
+        "expected_invariant": "NoOverrun",
+        "exit_code": 12,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": false,
+        "trace": true,
+        "seed": "-3047323701854881866",
+        "fingerprint_index": 116,
+        "states_generated": 34061,
+        "distinct_states": 19433,
+        "transcript": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskGuardian_unconfirmed_stop_pre_fix.txt"
+      },
+      {
+        "configuration": "soak_disk/MC_SoakDiskGuardian_unmanaged_pre_fix",
+        "expected_invariant": "ControllerLossStopsOwnedWriters",
+        "exit_code": 12,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": false,
+        "trace": true,
+        "seed": "6564372386386324320",
+        "fingerprint_index": 32,
+        "states_generated": 188,
+        "distinct_states": 188,
+        "transcript": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskGuardian_unmanaged_pre_fix.txt"
+      },
+      {
+        "configuration": "soak_disk/MC_SoakDiskGuardian_unwatched_pre_fix",
+        "expected_invariant": "DeadGuardianRequiresInterrupt",
+        "exit_code": 12,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": false,
+        "trace": true,
+        "seed": "7648608416921731352",
+        "fingerprint_index": 49,
+        "states_generated": 230,
+        "distinct_states": 226,
+        "transcript": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskGuardian_unwatched_pre_fix.txt"
+      },
+      {
+        "configuration": "soak_disk/MC_SoakStorageBudget",
+        "expected_invariant": null,
+        "exit_code": 0,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": true,
+        "trace": false,
+        "seed": "7807811992036866365",
+        "fingerprint_index": 59,
+        "states_generated": 38485,
+        "distinct_states": 5616,
+        "transcript": "tlc/transcripts/tlc-soak_disk-MC_SoakStorageBudget.txt"
+      },
+      {
+        "configuration": "soak_disk/MC_SoakStorageBudget_uncapped_blocks_pre_fix",
+        "expected_invariant": "WithinBudget",
+        "exit_code": 12,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": false,
+        "trace": true,
+        "seed": "-3232842325039610024",
+        "fingerprint_index": 121,
+        "states_generated": 2597,
+        "distinct_states": 602,
+        "transcript": "tlc/transcripts/tlc-soak_disk-MC_SoakStorageBudget_uncapped_blocks_pre_fix.txt"
+      },
+      {
+        "configuration": "soak_disk/MC_SoakStorageBudget_uncapped_history_pre_fix",
+        "expected_invariant": "WithinBudget",
+        "exit_code": 12,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": false,
+        "trace": true,
+        "seed": "3983231967074668704",
+        "fingerprint_index": 96,
+        "states_generated": 4108,
+        "distinct_states": 814,
+        "transcript": "tlc/transcripts/tlc-soak_disk-MC_SoakStorageBudget_uncapped_history_pre_fix.txt"
+      },
+      {
+        "configuration": "soak_disk/MC_SoakStorageBudget_uncapped_logs_pre_fix",
+        "expected_invariant": "WithinBudget",
+        "exit_code": 12,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": false,
+        "trace": true,
+        "seed": "3198324516742223892",
+        "fingerprint_index": 23,
+        "states_generated": 2176,
+        "distinct_states": 627,
+        "transcript": "tlc/transcripts/tlc-soak_disk-MC_SoakStorageBudget_uncapped_logs_pre_fix.txt"
+      }
+    ]
+  },
+  "casper_model": {
+    "formal_green_exit": 0,
+    "formal_red_exit": 12,
+    "expected_violation": "ControlVerdictExact",
+    "seed": 1,
+    "report": "casper-model/report.json.txt",
+    "log_filename_mapping": "Append .txt to the original filenames.",
+    "model_sha256": "e08ce354f1e09b9f0873e6f730e509c4be6b394acc0bce7ff5ef53805d91b0c4"
+  },
+  "casper_runner_tests": 12,
+  "cbc_gate_exit_code": 4,
+  "limits": [
+    "Contradictory completion and error markers, or multiple invariant violations, still require classifier hardening.",
+    "Shared registration of Casper controls remains pending.",
+    "The trace format check does not establish model-to-driver refinement.",
+    "No profile or node-soak result belongs to this cycle."
+  ],
+  "artifacts": [
+    {
+      "path": "red/report.json",
+      "original_sha256": "bc86f84a01da7623ed445e1bf5442ff640ce0656faaa4623852d6fc6cf698ae5",
+      "retained_sha256": "bc86f84a01da7623ed445e1bf5442ff640ce0656faaa4623852d6fc6cf698ae5"
+    },
+    {
+      "path": "red/evidence/run.txt",
+      "original_sha256": "1bc2c1d1e0e49056b95480efefab8b643d784de2e8c26ee9725b437581c56145",
+      "retained_sha256": "1bc2c1d1e0e49056b95480efefab8b643d784de2e8c26ee9725b437581c56145"
+    },
+    {
+      "path": "red/evidence/exit.txt",
+      "original_sha256": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865",
+      "retained_sha256": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865"
+    },
+    {
+      "path": "red/evidence/java.txt",
+      "original_sha256": "f0fb2ea137bdfd9cb2f91512c9965c1b8f62f449e3eab260d75f1aa9b47181e1",
+      "retained_sha256": "f0fb2ea137bdfd9cb2f91512c9965c1b8f62f449e3eab260d75f1aa9b47181e1"
+    },
+    {
+      "path": "red/evidence/bash.txt",
+      "original_sha256": "d37bf540847d877c350b9f65bde8fe1fe07f560fbba67b522c7f91628fd7e408",
+      "retained_sha256": "d37bf540847d877c350b9f65bde8fe1fe07f560fbba67b522c7f91628fd7e408"
+    },
+    {
+      "path": "red/sources/.github/workflows/slashing-tests.yml.txt",
+      "original_sha256": "be6741fcad7ac67437bb43ccc247d433e1f32f5ad73109d615564843f4f45207",
+      "retained_sha256": "be6741fcad7ac67437bb43ccc247d433e1f32f5ad73109d615564843f4f45207"
+    },
+    {
+      "path": "red/sources/scripts/ci/check-formal-invariants.sh.txt",
+      "original_sha256": "84e75616a60f671c1be36b85a4678f97c1c3ea1f8f08396e1281bcfa0e8f2876",
+      "retained_sha256": "84e75616a60f671c1be36b85a4678f97c1c3ea1f8f08396e1281bcfa0e8f2876"
+    },
+    {
+      "path": "red/sources/scripts/ci/check-tla-invariants.sh.txt",
+      "original_sha256": "5ad5058f26280a0f90730f6b8c14c40c5326ca0d2fc0dcf9c7ba8018be0397c8",
+      "retained_sha256": "5ad5058f26280a0f90730f6b8c14c40c5326ca0d2fc0dcf9c7ba8018be0397c8"
+    },
+    {
+      "path": "red/sources/scripts/ci/test-check-tla-invariants.sh.txt",
+      "original_sha256": "d6df6ca72cba8a94bf8f2513f779f0fea40a5aae94d26c7b3851c9809cbe62bb",
+      "retained_sha256": "d6df6ca72cba8a94bf8f2513f779f0fea40a5aae94d26c7b3851c9809cbe62bb"
+    },
+    {
+      "path": "green/report.json",
+      "original_sha256": "3d4f843a6f995f859c5a2134d8b7d085b7229b0e354ccfa00430951d9caf1d48",
+      "retained_sha256": "3d4f843a6f995f859c5a2134d8b7d085b7229b0e354ccfa00430951d9caf1d48"
+    },
+    {
+      "path": "green/evidence/run.txt",
+      "original_sha256": "8366d4c68f6fa026bc5324fa4c9e17b38f9e3ec6d8cce709ee4fae04eeec154f",
+      "retained_sha256": "8366d4c68f6fa026bc5324fa4c9e17b38f9e3ec6d8cce709ee4fae04eeec154f"
+    },
+    {
+      "path": "green/evidence/exit.txt",
+      "original_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "retained_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "path": "green/evidence/java.txt",
+      "original_sha256": "f0fb2ea137bdfd9cb2f91512c9965c1b8f62f449e3eab260d75f1aa9b47181e1",
+      "retained_sha256": "f0fb2ea137bdfd9cb2f91512c9965c1b8f62f449e3eab260d75f1aa9b47181e1"
+    },
+    {
+      "path": "green/evidence/bash.txt",
+      "original_sha256": "d37bf540847d877c350b9f65bde8fe1fe07f560fbba67b522c7f91628fd7e408",
+      "retained_sha256": "d37bf540847d877c350b9f65bde8fe1fe07f560fbba67b522c7f91628fd7e408"
+    },
+    {
+      "path": "green/sources/.github/workflows/slashing-tests.yml.txt",
+      "original_sha256": "be6741fcad7ac67437bb43ccc247d433e1f32f5ad73109d615564843f4f45207",
+      "retained_sha256": "be6741fcad7ac67437bb43ccc247d433e1f32f5ad73109d615564843f4f45207"
+    },
+    {
+      "path": "green/sources/scripts/ci/check-formal-invariants.sh.txt",
+      "original_sha256": "84e75616a60f671c1be36b85a4678f97c1c3ea1f8f08396e1281bcfa0e8f2876",
+      "retained_sha256": "84e75616a60f671c1be36b85a4678f97c1c3ea1f8f08396e1281bcfa0e8f2876"
+    },
+    {
+      "path": "green/sources/scripts/ci/check-tla-invariants.sh.txt",
+      "original_sha256": "8b72bf9f0190b8b15b71d0e3da6af5af07ac8d811b923f402bc2952bc716cd7c",
+      "retained_sha256": "8b72bf9f0190b8b15b71d0e3da6af5af07ac8d811b923f402bc2952bc716cd7c"
+    },
+    {
+      "path": "green/sources/scripts/ci/test-check-tla-invariants.sh.txt",
+      "original_sha256": "d6df6ca72cba8a94bf8f2513f779f0fea40a5aae94d26c7b3851c9809cbe62bb",
+      "retained_sha256": "d6df6ca72cba8a94bf8f2513f779f0fea40a5aae94d26c7b3851c9809cbe62bb"
+    },
+    {
+      "path": "tlc/report.json",
+      "original_sha256": "7ac5e47aa70f53bbf01fd1a81d6cecf8d994377835acc7378211e61916a30884",
+      "retained_sha256": "7ac5e47aa70f53bbf01fd1a81d6cecf8d994377835acc7378211e61916a30884"
+    },
+    {
+      "path": "tlc/evidence/run.txt",
+      "original_sha256": "c2355332ab37345d257deed96c3e58b8d03e099111e9d6faeac0e1c43a0df517",
+      "retained_sha256": "c2355332ab37345d257deed96c3e58b8d03e099111e9d6faeac0e1c43a0df517"
+    },
+    {
+      "path": "tlc/evidence/exit.txt",
+      "original_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "retained_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "path": "tlc/evidence/java.txt",
+      "original_sha256": "f0fb2ea137bdfd9cb2f91512c9965c1b8f62f449e3eab260d75f1aa9b47181e1",
+      "retained_sha256": "f0fb2ea137bdfd9cb2f91512c9965c1b8f62f449e3eab260d75f1aa9b47181e1"
+    },
+    {
+      "path": "tlc/evidence/bash.txt",
+      "original_sha256": "d37bf540847d877c350b9f65bde8fe1fe07f560fbba67b522c7f91628fd7e408",
+      "retained_sha256": "d37bf540847d877c350b9f65bde8fe1fe07f560fbba67b522c7f91628fd7e408"
+    },
+    {
+      "path": "tlc/sources/.github/workflows/slashing-tests.yml.txt",
+      "original_sha256": "be6741fcad7ac67437bb43ccc247d433e1f32f5ad73109d615564843f4f45207",
+      "retained_sha256": "be6741fcad7ac67437bb43ccc247d433e1f32f5ad73109d615564843f4f45207"
+    },
+    {
+      "path": "tlc/sources/scripts/ci/check-formal-invariants.sh.txt",
+      "original_sha256": "84e75616a60f671c1be36b85a4678f97c1c3ea1f8f08396e1281bcfa0e8f2876",
+      "retained_sha256": "84e75616a60f671c1be36b85a4678f97c1c3ea1f8f08396e1281bcfa0e8f2876"
+    },
+    {
+      "path": "tlc/sources/scripts/ci/check-tla-invariants.sh.txt",
+      "original_sha256": "8b72bf9f0190b8b15b71d0e3da6af5af07ac8d811b923f402bc2952bc716cd7c",
+      "retained_sha256": "8b72bf9f0190b8b15b71d0e3da6af5af07ac8d811b923f402bc2952bc716cd7c"
+    },
+    {
+      "path": "tlc/sources/scripts/ci/test-check-tla-invariants.sh.txt",
+      "original_sha256": "d6df6ca72cba8a94bf8f2513f779f0fea40a5aae94d26c7b3851c9809cbe62bb",
+      "retained_sha256": "d6df6ca72cba8a94bf8f2513f779f0fea40a5aae94d26c7b3851c9809cbe62bb"
+    },
+    {
+      "path": "tlc/transcripts/tlc-carrier_index-MC_CarrierIndex.txt",
+      "original_sha256": "2d92e1ebf75d702f24e30992e403d35c29cf647d2f6063e3cdc1f4ddab826e97",
+      "retained_sha256": "2d92e1ebf75d702f24e30992e403d35c29cf647d2f6063e3cdc1f4ddab826e97"
+    },
+    {
+      "path": "tlc/transcripts/tlc-carrier_index-MC_CarrierIndex_dag_first_pre_fix.txt",
+      "original_sha256": "75372122c26c4d06714192fca110bae3eada3429476f78bc91ea3a7a7ccc244e",
+      "retained_sha256": "75372122c26c4d06714192fca110bae3eada3429476f78bc91ea3a7a7ccc244e"
+    },
+    {
+      "path": "tlc/transcripts/tlc-carrier_index-MC_CarrierIndex_read_failure_pre_fix.txt",
+      "original_sha256": "845c792897e04706317450c6440f3a7bf41c5d29e7d2f2cf8a30313d705e9414",
+      "retained_sha256": "845c792897e04706317450c6440f3a7bf41c5d29e7d2f2cf8a30313d705e9414"
+    },
+    {
+      "path": "tlc/transcripts/tlc-deploy_storage-MC_DeployStorageBound.txt",
+      "original_sha256": "b6fe5345a2997240d8160fd2e3f5b757283d610df169afe2a9634211ea4d6313",
+      "retained_sha256": "b6fe5345a2997240d8160fd2e3f5b757283d610df169afe2a9634211ea4d6313"
+    },
+    {
+      "path": "tlc/transcripts/tlc-deploy_storage-MC_DeployStorageBound_unmetered_pre_fix.txt",
+      "original_sha256": "c522588187f0c3ea125ffa6f7f58413e44953a8d217fbf98f58d5f0e9bddc6a3",
+      "retained_sha256": "c522588187f0c3ea125ffa6f7f58413e44953a8d217fbf98f58d5f0e9bddc6a3"
+    },
+    {
+      "path": "tlc/transcripts/tlc-replay_liveness-MC_ReplayHotLoop.txt",
+      "original_sha256": "d9b1bcd810c6ecf719f84f53ea1b47019301a2b3d757e1b0c319ac525d0e0b92",
+      "retained_sha256": "d9b1bcd810c6ecf719f84f53ea1b47019301a2b3d757e1b0c319ac525d0e0b92"
+    },
+    {
+      "path": "tlc/transcripts/tlc-soak_disk-MC_MetricBaseline.txt",
+      "original_sha256": "c5e569e5addd6bad8c5c386c6f59cd3202f21630e0d76958ad2f8e50747b20ad",
+      "retained_sha256": "c5e569e5addd6bad8c5c386c6f59cd3202f21630e0d76958ad2f8e50747b20ad"
+    },
+    {
+      "path": "tlc/transcripts/tlc-soak_disk-MC_MetricBaseline_available.txt",
+      "original_sha256": "2d983fd9e81a915916067f82391c1f4ab83c80d14e52926b41cdabf4466ce058",
+      "retained_sha256": "2d983fd9e81a915916067f82391c1f4ab83c80d14e52926b41cdabf4466ce058"
+    },
+    {
+      "path": "tlc/transcripts/tlc-soak_disk-MC_MetricBaseline_zero_pre_fix.txt",
+      "original_sha256": "6e959bfc7335a6d9426c0e7cda0209277720a4096553d848751dfd5967cdd426",
+      "retained_sha256": "6e959bfc7335a6d9426c0e7cda0209277720a4096553d848751dfd5967cdd426"
+    },
+    {
+      "path": "tlc/transcripts/tlc-soak_disk-MC_MetricMonotonicity.txt",
+      "original_sha256": "9fb474150855ada6d05d14dc0e77a268b9737d12209ceccfb448cf21622c5838",
+      "retained_sha256": "9fb474150855ada6d05d14dc0e77a268b9737d12209ceccfb448cf21622c5838"
+    },
+    {
+      "path": "tlc/transcripts/tlc-soak_disk-MC_MetricMonotonicity_unchecked_pre_fix.txt",
+      "original_sha256": "bef67f856ec35d12104d69806233f8430e07db5e87ed58b31953cdaefc84985c",
+      "retained_sha256": "bef67f856ec35d12104d69806233f8430e07db5e87ed58b31953cdaefc84985c"
+    },
+    {
+      "path": "tlc/transcripts/tlc-soak_disk-MC_MetricSampleValidity.txt",
+      "original_sha256": "10fa608d3abe1527a9bc4163cd8c9eca0e7482087a12476c15116908e9195019",
+      "retained_sha256": "10fa608d3abe1527a9bc4163cd8c9eca0e7482087a12476c15116908e9195019"
+    },
+    {
+      "path": "tlc/transcripts/tlc-soak_disk-MC_MetricSampleValidity_unchecked_pre_fix.txt",
+      "original_sha256": "fd44002d7c2a355434dc025e6a366219ef3ef70fef99f71db9a3d61a588418d2",
+      "retained_sha256": "fd44002d7c2a355434dc025e6a366219ef3ef70fef99f71db9a3d61a588418d2"
+    },
+    {
+      "path": "tlc/transcripts/tlc-soak_disk-MC_MetricSummary.txt",
+      "original_sha256": "a988e4be75069e4b440828b794e05e3b1b04ba91387d4a834d3b67f70f652546",
+      "retained_sha256": "a988e4be75069e4b440828b794e05e3b1b04ba91387d4a834d3b67f70f652546"
+    },
+    {
+      "path": "tlc/transcripts/tlc-soak_disk-MC_MetricSummary_omitted_pre_fix.txt",
+      "original_sha256": "d00d51887a87466e6520707e691e91dbd95b2f51d0753e61130b108b8b252fb8",
+      "retained_sha256": "d00d51887a87466e6520707e691e91dbd95b2f51d0753e61130b108b8b252fb8"
+    },
+    {
+      "path": "tlc/transcripts/tlc-soak_disk-MC_ReserveBound.txt",
+      "original_sha256": "587f27fedae7c23dccd3bcd6cfbba2ab07152bb2db0defb94cec889c52d6cd4e",
+      "retained_sha256": "587f27fedae7c23dccd3bcd6cfbba2ab07152bb2db0defb94cec889c52d6cd4e"
+    },
+    {
+      "path": "tlc/transcripts/tlc-soak_disk-MC_ReserveBound_unbounded_pre_fix.txt",
+      "original_sha256": "1213d79a2efaad792333a3601ed5a2ef14228f90f7896b59120577f43b6d82eb",
+      "retained_sha256": "1213d79a2efaad792333a3601ed5a2ef14228f90f7896b59120577f43b6d82eb"
+    },
+    {
+      "path": "tlc/transcripts/tlc-soak_disk-MC_RetentionReserve.txt",
+      "original_sha256": "4561c785b6ca7a095c74f9281aa5eeb44a7d994f9e0af15cfbd160d4feb4f3d4",
+      "retained_sha256": "4561c785b6ca7a095c74f9281aa5eeb44a7d994f9e0af15cfbd160d4feb4f3d4"
+    },
+    {
+      "path": "tlc/transcripts/tlc-soak_disk-MC_RetentionReserve_unskipped_pre_fix.txt",
+      "original_sha256": "578729acc7f1d5689f309ed9874e3a79918e48f75819d6df6d97bf25d6981bde",
+      "retained_sha256": "578729acc7f1d5689f309ed9874e3a79918e48f75819d6df6d97bf25d6981bde"
+    },
+    {
+      "path": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskAdmission.txt",
+      "original_sha256": "c544c4c2ca7a24004af9a81df6ffac9b9bc8d29edd46ae0b2be49ce0e3fede0a",
+      "retained_sha256": "c544c4c2ca7a24004af9a81df6ffac9b9bc8d29edd46ae0b2be49ce0e3fede0a"
+    },
+    {
+      "path": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskAdmission_age_only_pre_fix.txt",
+      "original_sha256": "eea88192d45ea2dedc03f74cc090aeac5784ec7f46d640e022626496052e65fd",
+      "retained_sha256": "eea88192d45ea2dedc03f74cc090aeac5784ec7f46d640e022626496052e65fd"
+    },
+    {
+      "path": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskAdmission_attribute_first_pre_fix.txt",
+      "original_sha256": "e1e644c2bc2d2b0501e7cde1dae75b1b2dcf11cfefcc14902cfa54d8b51b01ab",
+      "retained_sha256": "e1e644c2bc2d2b0501e7cde1dae75b1b2dcf11cfefcc14902cfa54d8b51b01ab"
+    },
+    {
+      "path": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskAdmission_benchmark_band_pre_fix.txt",
+      "original_sha256": "85aba90f0f0abb7fbd835cd5c902f3296bc5f1a6d466b7d50c7095fedeca9f28",
+      "retained_sha256": "85aba90f0f0abb7fbd835cd5c902f3296bc5f1a6d466b7d50c7095fedeca9f28"
+    },
+    {
+      "path": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskAdmission_floor_only_pre_fix.txt",
+      "original_sha256": "95d6caa2319fcd7a277c23baef879f17ab8ee2a265425f31761fe69eea433137",
+      "retained_sha256": "95d6caa2319fcd7a277c23baef879f17ab8ee2a265425f31761fe69eea433137"
+    },
+    {
+      "path": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskAdmission_global_prune_pre_fix.txt",
+      "original_sha256": "ca08503abfbfc85bc67e532a939686c8917bc6adf5196bee5f58f8f3355a4fed",
+      "retained_sha256": "ca08503abfbfc85bc67e532a939686c8917bc6adf5196bee5f58f8f3355a4fed"
+    },
+    {
+      "path": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskAdmission_ignore_errors_pre_fix.txt",
+      "original_sha256": "ec75633d5884476e12917461dc9d0bb487cba288840b72487a5550c28a7d2c96",
+      "retained_sha256": "ec75633d5884476e12917461dc9d0bb487cba288840b72487a5550c28a7d2c96"
+    },
+    {
+      "path": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskAdmission_in_place_pre_fix.txt",
+      "original_sha256": "7e94898054f58ee58a6398c7c830c696eaca83b92a44871b3edc5de98ad94e45",
+      "retained_sha256": "7e94898054f58ee58a6398c7c830c696eaca83b92a44871b3edc5de98ad94e45"
+    },
+    {
+      "path": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskAdmission_iteration_only_pre_fix.txt",
+      "original_sha256": "c3e210cc6462cc6b72d0f7c5279b9fd6a559017b728fe7ddbabaab3958e8fd50",
+      "retained_sha256": "c3e210cc6462cc6b72d0f7c5279b9fd6a559017b728fe7ddbabaab3958e8fd50"
+    },
+    {
+      "path": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskAdmission_late_guardian_pre_fix.txt",
+      "original_sha256": "589be317c980380cb02401e9568e06e1e674911d2a4bde443bde46a3491e5611",
+      "retained_sha256": "589be317c980380cb02401e9568e06e1e674911d2a4bde443bde46a3491e5611"
+    },
+    {
+      "path": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskAdmission_missing_sample_pre_fix.txt",
+      "original_sha256": "a32d89badad5f719b01f45bd452dfbfb1fb4b43a70ef10ff3c1b8cb93cbb5f6c",
+      "retained_sha256": "a32d89badad5f719b01f45bd452dfbfb1fb4b43a70ef10ff3c1b8cb93cbb5f6c"
+    },
+    {
+      "path": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskAdmission_numeric_prefix_pre_fix.txt",
+      "original_sha256": "5208539b3800bf869d3ac0122b2a9069713267f2a3a24d04c0c750f61635f83a",
+      "retained_sha256": "5208539b3800bf869d3ac0122b2a9069713267f2a3a24d04c0c750f61635f83a"
+    },
+    {
+      "path": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskAdmission_pathname_pre_fix.txt",
+      "original_sha256": "9a089fe06a0b531186fc1be1479e03561e719c41b76bafc589473b01769bbe96",
+      "retained_sha256": "9a089fe06a0b531186fc1be1479e03561e719c41b76bafc589473b01769bbe96"
+    },
+    {
+      "path": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskAdmission_retained_breach_pre_fix.txt",
+      "original_sha256": "1c327f9e45e2db6f0f139e5067e4ebc560b241a82ea0bff97cc9b50041925522",
+      "retained_sha256": "1c327f9e45e2db6f0f139e5067e4ebc560b241a82ea0bff97cc9b50041925522"
+    },
+    {
+      "path": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskAdmission_unbounded_hygiene_pre_fix.txt",
+      "original_sha256": "dfc47877bbfe8bc9e90e11536fd3256800733f3d4d4141ddbd9f9c40c155c523",
+      "retained_sha256": "dfc47877bbfe8bc9e90e11536fd3256800733f3d4d4141ddbd9f9c40c155c523"
+    },
+    {
+      "path": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskAdmission_unchecked_guardian_pre_fix.txt",
+      "original_sha256": "bc8f717da8b070356193174fc0f36ae5215e1e30878e1e833dc560ee91293ded",
+      "retained_sha256": "bc8f717da8b070356193174fc0f36ae5215e1e30878e1e833dc560ee91293ded"
+    },
+    {
+      "path": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskAdmission_unchecked_monitor_pre_fix.txt",
+      "original_sha256": "08b94c2d7b23b984591f29bec4aac4afd2e642bb51b761995e35d3570e3bd48e",
+      "retained_sha256": "08b94c2d7b23b984591f29bec4aac4afd2e642bb51b761995e35d3570e3bd48e"
+    },
+    {
+      "path": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskAdmission_unchecked_placement_pre_fix.txt",
+      "original_sha256": "3a8f0a73a4b908b770bb28fe5e056d9c654bb9eb50b2b808432394bfbab9254b",
+      "retained_sha256": "3a8f0a73a4b908b770bb28fe5e056d9c654bb9eb50b2b808432394bfbab9254b"
+    },
+    {
+      "path": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskAdmission_unchecked_producer_pre_fix.txt",
+      "original_sha256": "e4003e507960363eadee5185bc2c9f9a74562e7507dc32d5309897932b0d1fd6",
+      "retained_sha256": "e4003e507960363eadee5185bc2c9f9a74562e7507dc32d5309897932b0d1fd6"
+    },
+    {
+      "path": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskAdmission_unchecked_progress_pre_fix.txt",
+      "original_sha256": "c11c9d6c62201fdd13ad300c8e1462e3c033cc44f617e7c549aac2eb1d882040",
+      "retained_sha256": "c11c9d6c62201fdd13ad300c8e1462e3c033cc44f617e7c549aac2eb1d882040"
+    },
+    {
+      "path": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskAdmission_unchecked_range_pre_fix.txt",
+      "original_sha256": "64a2997fbdbfb194acd183c437b0873764ea47a6bb9dbf8a96e9ae6c2a5a8503",
+      "retained_sha256": "64a2997fbdbfb194acd183c437b0873764ea47a6bb9dbf8a96e9ae6c2a5a8503"
+    },
+    {
+      "path": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskAdmission_unrecorded_benchmark_pre_fix.txt",
+      "original_sha256": "63259ce335b232bf441729ca9fd167515fef983cedf770a2eba388329a5de547",
+      "retained_sha256": "63259ce335b232bf441729ca9fd167515fef983cedf770a2eba388329a5de547"
+    },
+    {
+      "path": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskAdmission_unrecorded_pre_fix.txt",
+      "original_sha256": "b7253d31fef6be9861c9840f6457df237f6e7598a3686f1ad46f028843dff51d",
+      "retained_sha256": "b7253d31fef6be9861c9840f6457df237f6e7598a3686f1ad46f028843dff51d"
+    },
+    {
+      "path": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskAdmission_unwatched_breach_pre_fix.txt",
+      "original_sha256": "c52a4c5284276b21f57d80e9389af9eaf2db28be66da753007b8bc506a877748",
+      "retained_sha256": "c52a4c5284276b21f57d80e9389af9eaf2db28be66da753007b8bc506a877748"
+    },
+    {
+      "path": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskAdmission_unwatched_death_pre_fix.txt",
+      "original_sha256": "4bfe38edd72cbfa92f365232a34558cc51506146d2ec0190685e0297277dcb9a",
+      "retained_sha256": "4bfe38edd72cbfa92f365232a34558cc51506146d2ec0190685e0297277dcb9a"
+    },
+    {
+      "path": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskGuardian.txt",
+      "original_sha256": "fe3468c4c19046c9ef4c095870aa1d5f3f5b7872f1d71658820c3f1331ce3232",
+      "retained_sha256": "fe3468c4c19046c9ef4c095870aa1d5f3f5b7872f1d71658820c3f1331ce3232"
+    },
+    {
+      "path": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskGuardian_alive_only_pre_fix.txt",
+      "original_sha256": "f7668294f611286db20b111c76f8aead2c27ed049590cf2998dc0493a59d27f9",
+      "retained_sha256": "f7668294f611286db20b111c76f8aead2c27ed049590cf2998dc0493a59d27f9"
+    },
+    {
+      "path": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskGuardian_blocking_pre_fix.txt",
+      "original_sha256": "2261953c77158c7bf2a1a072d46ebd07f286590dc62628999e791a1b79358d2a",
+      "retained_sha256": "2261953c77158c7bf2a1a072d46ebd07f286590dc62628999e791a1b79358d2a"
+    },
+    {
+      "path": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskGuardian_cleared_breach_pre_fix.txt",
+      "original_sha256": "418439d951a336f204c1a317953da4218efd20871641eba58968754e1a1b7346",
+      "retained_sha256": "418439d951a336f204c1a317953da4218efd20871641eba58968754e1a1b7346"
+    },
+    {
+      "path": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskGuardian_client_only_pre_fix.txt",
+      "original_sha256": "8e24385b3890cb6abcdfa43e617a2bcb542de886b7179a70abe8bf994126c857",
+      "retained_sha256": "8e24385b3890cb6abcdfa43e617a2bcb542de886b7179a70abe8bf994126c857"
+    },
+    {
+      "path": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskGuardian_drain_first_pre_fix.txt",
+      "original_sha256": "5577d89f94b4ea906dc3eb52410b96832fabd7747beebce4caad646eee0ce259",
+      "retained_sha256": "5577d89f94b4ea906dc3eb52410b96832fabd7747beebce4caad646eee0ce259"
+    },
+    {
+      "path": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskGuardian_host_pattern_only_pre_fix.txt",
+      "original_sha256": "cb66dc60755d7357b790c409c2c819279cc272488d1bc5dddd5cbdb553703141",
+      "retained_sha256": "cb66dc60755d7357b790c409c2c819279cc272488d1bc5dddd5cbdb553703141"
+    },
+    {
+      "path": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskGuardian_ignored_pre_fix.txt",
+      "original_sha256": "0ed5b59c51cf02606dbf2009293fad014092f28101ded1438e751b8825659d0b",
+      "retained_sha256": "0ed5b59c51cf02606dbf2009293fad014092f28101ded1438e751b8825659d0b"
+    },
+    {
+      "path": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskGuardian_name_only_pre_fix.txt",
+      "original_sha256": "1ad89f9758ea8e41700493371c27930565d2c0523aef5b43fcecc9dec66eb96c",
+      "retained_sha256": "1ad89f9758ea8e41700493371c27930565d2c0523aef5b43fcecc9dec66eb96c"
+    },
+    {
+      "path": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskGuardian_oom_pattern_only_pre_fix.txt",
+      "original_sha256": "4cd9d85728f77bad1a0a87bc47b37aec937431ec83cbf632105d5d174867e776",
+      "retained_sha256": "4cd9d85728f77bad1a0a87bc47b37aec937431ec83cbf632105d5d174867e776"
+    },
+    {
+      "path": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskGuardian_parent_group_pre_fix.txt",
+      "original_sha256": "3197f2bfcf2638d24c27c7631dc0a56c38caa06cfda8ecc0d444ee33a89022d8",
+      "retained_sha256": "3197f2bfcf2638d24c27c7631dc0a56c38caa06cfda8ecc0d444ee33a89022d8"
+    },
+    {
+      "path": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskGuardian_parent_only_pre_fix.txt",
+      "original_sha256": "46e0b32b77cd0c49c7b6d709a629b8b6d301c13da6989dc0975e00d44be765dd",
+      "retained_sha256": "46e0b32b77cd0c49c7b6d709a629b8b6d301c13da6989dc0975e00d44be765dd"
+    },
+    {
+      "path": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskGuardian_per_root_deadline_pre_fix.txt",
+      "original_sha256": "76cef1d9b15967b21abedd9f4f4b30c95882604138e524ff01ecd7cc7abedc0d",
+      "retained_sha256": "76cef1d9b15967b21abedd9f4f4b30c95882604138e524ff01ecd7cc7abedc0d"
+    },
+    {
+      "path": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskGuardian_periodic_name_pre_fix.txt",
+      "original_sha256": "1cd4c8c370df426a7a13532550d9fd67c4c9844f68095d32897114c53381004a",
+      "retained_sha256": "1cd4c8c370df426a7a13532550d9fd67c4c9844f68095d32897114c53381004a"
+    },
+    {
+      "path": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskGuardian_rate_exceeds_floor_pre_fix.txt",
+      "original_sha256": "fa3ab4208f8a461c21a2804734b517aa923843b214e4e9977a3fc78526c2295a",
+      "retained_sha256": "fa3ab4208f8a461c21a2804734b517aa923843b214e4e9977a3fc78526c2295a"
+    },
+    {
+      "path": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskGuardian_start_first_pre_fix.txt",
+      "original_sha256": "df9a7279cb23e72a036ebb3750b4a65c249a6c7fb14e4cfac2e2ce2d163da639",
+      "retained_sha256": "df9a7279cb23e72a036ebb3750b4a65c249a6c7fb14e4cfac2e2ce2d163da639"
+    },
+    {
+      "path": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskGuardian_startup_only_pre_fix.txt",
+      "original_sha256": "dc0a1a2dbce80e1727d70cebe3018890edac840fb3195ecf9325c671781d8cc4",
+      "retained_sha256": "dc0a1a2dbce80e1727d70cebe3018890edac840fb3195ecf9325c671781d8cc4"
+    },
+    {
+      "path": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskGuardian_stop_first_pre_fix.txt",
+      "original_sha256": "193a130995fb136293fda2181dce6eb522580cc8285cbfeefb215a80db9d802c",
+      "retained_sha256": "193a130995fb136293fda2181dce6eb522580cc8285cbfeefb215a80db9d802c"
+    },
+    {
+      "path": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskGuardian_unavailable_sample_pre_fix.txt",
+      "original_sha256": "89fdecdbddc369d90924a878ba43084976c004ca53217787ab45457eaa9664f1",
+      "retained_sha256": "89fdecdbddc369d90924a878ba43084976c004ca53217787ab45457eaa9664f1"
+    },
+    {
+      "path": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskGuardian_unbounded_pre_fix.txt",
+      "original_sha256": "024e1a12d1cda027c72c66ad5106dbe9b96aa0639b1b4bc09dba31c8312585f6",
+      "retained_sha256": "024e1a12d1cda027c72c66ad5106dbe9b96aa0639b1b4bc09dba31c8312585f6"
+    },
+    {
+      "path": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskGuardian_unbounded_probe_pre_fix.txt",
+      "original_sha256": "4537fe47a90c333fd2b77d570e8a482dfeae5a6b611f704c3ed51803cb9e21b6",
+      "retained_sha256": "4537fe47a90c333fd2b77d570e8a482dfeae5a6b611f704c3ed51803cb9e21b6"
+    },
+    {
+      "path": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskGuardian_unbounded_stop_pre_fix.txt",
+      "original_sha256": "bed999b3408affbfe091e377668541a2328d959bb97de5099b0966b7c9ee3307",
+      "retained_sha256": "bed999b3408affbfe091e377668541a2328d959bb97de5099b0966b7c9ee3307"
+    },
+    {
+      "path": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskGuardian_unconditional_pre_fix.txt",
+      "original_sha256": "0751c2a25e212ed01076c58ad4c719fb433811678f476e828c26928ea4b73a35",
+      "retained_sha256": "0751c2a25e212ed01076c58ad4c719fb433811678f476e828c26928ea4b73a35"
+    },
+    {
+      "path": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskGuardian_unconfirmed_stop_pre_fix.txt",
+      "original_sha256": "90c7c58aa1aab536854248204d4494da3cff0ad374b9caf45068e13d22af28f1",
+      "retained_sha256": "90c7c58aa1aab536854248204d4494da3cff0ad374b9caf45068e13d22af28f1"
+    },
+    {
+      "path": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskGuardian_unmanaged_pre_fix.txt",
+      "original_sha256": "f7f8117d29b0e5ea8bc984e0ec0d77021fdff7514560551941a0611fe9694e43",
+      "retained_sha256": "f7f8117d29b0e5ea8bc984e0ec0d77021fdff7514560551941a0611fe9694e43"
+    },
+    {
+      "path": "tlc/transcripts/tlc-soak_disk-MC_SoakDiskGuardian_unwatched_pre_fix.txt",
+      "original_sha256": "57adc3f6d43089a7c3b4ae0b846335018590ed017c8edb39263e3ac0c464119e",
+      "retained_sha256": "57adc3f6d43089a7c3b4ae0b846335018590ed017c8edb39263e3ac0c464119e"
+    },
+    {
+      "path": "tlc/transcripts/tlc-soak_disk-MC_SoakStorageBudget.txt",
+      "original_sha256": "c7d10ddefcb7dcfcd76aaa71aecbe630a594b3e16b29c3dac0694ba70c02f467",
+      "retained_sha256": "c7d10ddefcb7dcfcd76aaa71aecbe630a594b3e16b29c3dac0694ba70c02f467"
+    },
+    {
+      "path": "tlc/transcripts/tlc-soak_disk-MC_SoakStorageBudget_uncapped_blocks_pre_fix.txt",
+      "original_sha256": "9b9b80a70f69ad5016626f327c9dda98d24f4a9fde43abe72c328e7368b03714",
+      "retained_sha256": "9b9b80a70f69ad5016626f327c9dda98d24f4a9fde43abe72c328e7368b03714"
+    },
+    {
+      "path": "tlc/transcripts/tlc-soak_disk-MC_SoakStorageBudget_uncapped_history_pre_fix.txt",
+      "original_sha256": "09523cfae67d963547e2eea7ee2417992f2302969759c0db06ce2002a5dc138e",
+      "retained_sha256": "09523cfae67d963547e2eea7ee2417992f2302969759c0db06ce2002a5dc138e"
+    },
+    {
+      "path": "tlc/transcripts/tlc-soak_disk-MC_SoakStorageBudget_uncapped_logs_pre_fix.txt",
+      "original_sha256": "9b7ef583c0461d2735acb45526a9dd6f5538a7431f9033929039c94c12560e46",
+      "retained_sha256": "9b7ef583c0461d2735acb45526a9dd6f5538a7431f9033929039c94c12560e46"
+    },
+    {
+      "path": "red/incomplete-search.txt",
+      "original_sha256": "c7bca0c28240018a60d40463e2ef63cf2b16cb2953d7145da97d254b2a2b0cac",
+      "retained_sha256": "c7bca0c28240018a60d40463e2ef63cf2b16cb2953d7145da97d254b2a2b0cac"
+    },
+    {
+      "path": "casper-model/MC_CasperSoakHarness.log.txt",
+      "original_sha256": "d604836fdf0589d07a2104c108a5b6f2f549edc7ec926e75c845f5ca9db84441",
+      "retained_sha256": "0c788c5a3adcf2afea06654063f5902e975031cc549771fdb61d8281dcbf3acf"
+    },
+    {
+      "path": "casper-model/MC_CasperSoakHarness_cleanup_unsafe.log.txt",
+      "original_sha256": "92518e9b5343d039758a901789bc756eb745dcfc60aec20b7589d47df8a0aadc",
+      "retained_sha256": "3098f4c8b00dcfbf50ba41942a200377a06734d122462fd7257d1b1b62acfd15"
+    },
+    {
+      "path": "casper-model/MC_CasperSoakHarness_control_unsafe.log.txt",
+      "original_sha256": "bcfb65d6908a4bd7d6c6453e31af1c9e474cd58184af054803f6db53ca7022ab",
+      "retained_sha256": "1206263dc272f0e46c152c719624f6b84b0aad03515b837f597791b7c6d8d84a"
+    },
+    {
+      "path": "casper-model/MC_CasperSoakHarness_evidence_unsafe.log.txt",
+      "original_sha256": "fb7e49212900fc0ae42ee2a272fc2e10f8263105b3ee0e0c2d5b9e26a377e646",
+      "retained_sha256": "868b3534c5fc4a92c58033fb58872009322276641f19bf89721da6a968bd00d8"
+    },
+    {
+      "path": "casper-model/MC_CasperSoakHarness_failure_unsafe.log.txt",
+      "original_sha256": "6196ee54bbdd64b84d32ec7a5cbd9af34a849c106be00bd87a51790d49872e36",
+      "retained_sha256": "935fc368bc8ff2218e7cc48233a0db491f403f722a8ab49da3287371ca1d5320"
+    },
+    {
+      "path": "casper-model/MC_CasperSoakHarness_identity_unsafe.log.txt",
+      "original_sha256": "a2673cace5f2f75f5ec9b22140e1320eed5ba04e8f315cdae56cc43824386df3",
+      "retained_sha256": "8f4bf0f5ea367a077d12c760136883e6e86e6c2e28f31b876bb71c5cf397652e"
+    },
+    {
+      "path": "casper-model/MC_CasperSoakHarness_merge_unsafe.log.txt",
+      "original_sha256": "b96c0442ddc5159b85d4343d1512338753eea6965f5828ecf0c3b9241cce25e5",
+      "retained_sha256": "8e703fe9608910a0beb914eed0a62e2bec052d3bc428988eee7d79439500af50"
+    },
+    {
+      "path": "casper-model/MC_CasperSoakHarness_policy_unsafe.log.txt",
+      "original_sha256": "2279589b2c2b4376e8c07f1c1f4f0349324ba348e6dde5ab642df4f90cfefa8a",
+      "retained_sha256": "27e5d4b2aa903a77bfe8657bb5998083133860bb2e4783af073fb4e59baf9d58"
+    },
+    {
+      "path": "casper-model/MC_CasperSoakHarness_resume_unsafe.log.txt",
+      "original_sha256": "0aedf44fd9af9a46955de97836902601a735f4169f6b4b9f4ba11ef7706af388",
+      "retained_sha256": "5b7005e206e0b864ea2d1ff98fbe9e8f93f11139f8d97b091d506a2149f3a78e"
+    },
+    {
+      "path": "casper-model/MC_CasperSoakHarness_samples_unsafe.log.txt",
+      "original_sha256": "a36a02fe387594510c8a728990e983d5e692b89e4daea50986941f9d948ab6b8",
+      "retained_sha256": "80767a6839a4b2a97aa57bf7dd55284682335690e57fefd3238883fc9d01de27"
+    },
+    {
+      "path": "casper-model/MC_CasperSoakHarness_stop_unsafe.log.txt",
+      "original_sha256": "23f04390c9e90f0e3f418ab8942b6a5bfa2296c1eea5eac7be15fdf604e43cef",
+      "retained_sha256": "79d3da915f25b5d147022232e31d856562ddec882e4951b46f7bb3eed07be0da"
+    },
+    {
+      "path": "casper-model/report.json.txt",
+      "original_sha256": "9034305408f4c5a92043da996b8eec856f0adc0fd906f10f38c39c3428b5db56",
+      "retained_sha256": "9034305408f4c5a92043da996b8eec856f0adc0fd906f10f38c39c3428b5db56"
+    },
+    {
+      "path": "runner-tests.txt",
+      "original_sha256": "02857f766e266e367097190794667188a772a53fb3d0ce3c91280b32067e3ef3",
+      "retained_sha256": "02857f766e266e367097190794667188a772a53fb3d0ce3c91280b32067e3ef3"
+    },
+    {
+      "path": "pyright-linux.txt",
+      "original_sha256": "6d88a1b220adb7a3d62092b6e38431f0b3fe8babe9864fab90e5849766260332",
+      "retained_sha256": "6d88a1b220adb7a3d62092b6e38431f0b3fe8babe9864fab90e5849766260332"
+    },
+    {
+      "path": "cbc-gate.json",
+      "original_sha256": "a353b362c35f798ca7b808dcf21bd5d20208a08e4fcfadb47a16878fdb6ee5ae",
+      "retained_sha256": "a353b362c35f798ca7b808dcf21bd5d20208a08e4fcfadb47a16878fdb6ee5ae"
+    },
+    {
+      "path": "cbc-gate.stderr",
+      "original_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "retained_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "implementation.patch.txt",
+      "original_sha256": "c30ec4ee2e6ac778a45fa257432fe1d38c40a7a595cb8ca9e07b0de42a36e6db",
+      "retained_sha256": "2bac2c3c20fce5df06edbcd660d3b0fe889a8cc26688703e56215131db84e823",
+      "transformation": "The retained patch uses git diff --unified=0 to omit unchanged context lines. A reverse --check --unidiff-zero validation passed."
+    }
+  ]
+}

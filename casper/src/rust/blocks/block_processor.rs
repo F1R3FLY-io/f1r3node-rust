@@ -12,7 +12,7 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use block_storage::rust::casperbuffer::casper_buffer_key_value_storage::CasperBufferKeyValueStorage;
 use block_storage::rust::dag::block_dag_key_value_storage::{
@@ -254,6 +254,90 @@ const VALIDATION_ERROR_QUARANTINE_MS: u64 = 120_000;
 /// Admission cap on the shared in-flight block set. Must not exceed the
 /// node's block-processor queue capacity.
 pub const MAX_BLOCKS_IN_PROCESSING: usize = 512;
+/// Pipeline width: blocks the block processor validates at the same time.
+pub const MAX_PARALLEL_BLOCKS: usize = 2;
+
+/// The node warns when its oldest in-flight marker is older than this. The
+/// marker is kept: an old marker means a block that is still queued or still
+/// processing, for example a long replay (#407).
+pub const IN_FLIGHT_MARKER_MAX_WARN_AGE: Duration = Duration::from_secs(10 * 60);
+
+/// Blocks that are queued for processing or being processed. A marker is
+/// only added through [`mark_in_flight`], which returns the guard that owns
+/// it, so no marker can exist without an owner.
+#[derive(Debug, Default)]
+pub struct InFlightBlocks {
+    markers: dashmap::DashMap<BlockHash, Instant>,
+}
+
+impl InFlightBlocks {
+    pub fn new() -> Self { Self::default() }
+
+    pub fn contains(&self, hash: &BlockHash) -> bool { self.markers.contains_key(hash) }
+
+    pub fn len(&self) -> usize { self.markers.len() }
+
+    pub fn is_empty(&self) -> bool { self.markers.is_empty() }
+
+    pub fn oldest(&self, now: Instant) -> Option<(BlockHash, Duration)> {
+        self.markers
+            .iter()
+            .min_by_key(|entry| *entry.value())
+            .map(|entry| {
+                (
+                    entry.key().clone(),
+                    now.saturating_duration_since(*entry.value()),
+                )
+            })
+    }
+}
+
+/// Owns one in-flight marker and removes it on drop, also on an early return,
+/// an error or a panic. It travels in the processing queue with its block, so a
+/// queued block that is dropped without processing releases its marker.
+#[derive(Debug)]
+pub struct InFlightBlockGuard {
+    blocks: Arc<InFlightBlocks>,
+    hash: BlockHash,
+}
+
+impl Drop for InFlightBlockGuard {
+    fn drop(&mut self) { self.blocks.markers.remove(&self.hash); }
+}
+
+#[derive(Debug)]
+pub enum InFlightMark {
+    Marked(InFlightBlockGuard),
+    /// The block is already queued or processing.
+    AlreadyInFlight,
+    /// The set was full. No marker was kept, and the caller drops the block.
+    CapReached,
+}
+
+pub fn mark_in_flight(blocks: &Arc<InFlightBlocks>, hash: BlockHash) -> InFlightMark {
+    match blocks.markers.entry(hash.clone()) {
+        dashmap::mapref::entry::Entry::Occupied(_) => return InFlightMark::AlreadyInFlight,
+        dashmap::mapref::entry::Entry::Vacant(slot) => {
+            slot.insert(Instant::now());
+        }
+    }
+    let guard = InFlightBlockGuard {
+        blocks: blocks.clone(),
+        hash,
+    };
+    if blocks.len() > MAX_BLOCKS_IN_PROCESSING {
+        return InFlightMark::CapReached;
+    }
+    InFlightMark::Marked(guard)
+}
+
+/// An item of the block processing queue. The guard keeps the block's
+/// in-flight marker while the item exists.
+pub type BlockQueueItem = (
+    Arc<dyn crate::rust::casper::MultiParentCasper + Send + Sync>,
+    BlockMessage,
+    InFlightBlockGuard,
+);
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
 const MALLOC_TRIM_INTERVAL_BLOCKS: u64 = 64;
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
@@ -302,8 +386,8 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessor<T> {
         block: &BlockMessage,
     ) -> Result<OfInterestVerdict, CasperError> {
         // TODO casper.dag_contains does not take into account equivocation tracker
-        let already_processed =
-            casper.dag_contains(&block.block_hash) || casper.buffer_contains(&block.block_hash);
+        let already_processed = casper.dag_contains(&block.block_hash)
+            || casper.buffer_waits_on_dependency(&block.block_hash);
 
         let shard_of_interest = casper.get_approved_block().map(|approved_block| {
             approved_block
@@ -1040,12 +1124,14 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorDependencies<T> {
                 self.casper_buffer.put_pendant(block_hash_serde)?;
             }
             Some(dependencies) => {
-                let block_hash_serde = BlockHashSerde(block.block_hash.clone());
-                dependencies.iter().try_for_each(|dep| {
-                    let dep_serde = BlockHashSerde(dep.clone());
-                    self.casper_buffer
-                        .add_relation(dep_serde, block_hash_serde.clone())
-                })?;
+                let dependencies: Vec<BlockHashSerde> =
+                    dependencies.into_iter().map(BlockHashSerde).collect();
+                block_storage::rust::dag::buffer_dag_transition::atomic_commit_dependencies(
+                    &self.block_dag_storage,
+                    &self.casper_buffer,
+                    BlockHashSerde(block.block_hash.clone()),
+                    &dependencies,
+                )?;
             }
         }
 
@@ -1643,6 +1729,94 @@ pub fn new_block_processor<T: TransportLayer + Send + Sync + 'static>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn hash(byte: u8) -> BlockHash { BlockHash::from(vec![byte; 32]) }
+
+    #[test]
+    fn a_marker_lives_exactly_as_long_as_its_guard() {
+        let blocks = Arc::new(InFlightBlocks::new());
+        let guard = match mark_in_flight(&blocks, hash(1)) {
+            InFlightMark::Marked(guard) => guard,
+            other => panic!("expected a new marker, got {other:?}"),
+        };
+        assert!(matches!(
+            mark_in_flight(&blocks, hash(1)),
+            InFlightMark::AlreadyInFlight
+        ));
+        drop(guard);
+        assert!(blocks.is_empty());
+        assert!(matches!(
+            mark_in_flight(&blocks, hash(1)),
+            InFlightMark::Marked(_)
+        ));
+    }
+
+    fn marked(blocks: &Arc<InFlightBlocks>, byte: u8) -> InFlightBlockGuard {
+        match mark_in_flight(blocks, hash(byte)) {
+            InFlightMark::Marked(guard) => guard,
+            other => panic!("expected a new marker, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn oldest_reports_the_earliest_marker_and_its_age() {
+        let blocks = Arc::new(InFlightBlocks::new());
+        assert!(blocks.oldest(Instant::now()).is_none());
+
+        let _first = marked(&blocks, 1);
+        std::thread::sleep(Duration::from_millis(10));
+        let _second = marked(&blocks, 2);
+
+        let (hash_of_oldest, age) = blocks.oldest(Instant::now()).unwrap();
+        assert_eq!(hash_of_oldest, hash(1));
+        assert!(age >= Duration::from_millis(10));
+    }
+
+    /// The producers rely on this instead of a manual rollback in `map_err`:
+    /// the item that failed to send is dropped, and so is its guard.
+    #[tokio::test]
+    async fn a_failed_send_releases_the_marker() {
+        let blocks = Arc::new(InFlightBlocks::new());
+        let (tx, rx) = mpsc::channel(1);
+        drop(rx);
+
+        assert!(tx.send(marked(&blocks, 1)).await.is_err());
+        assert!(blocks.is_empty());
+    }
+
+    #[tokio::test]
+    async fn dropping_the_queue_releases_every_queued_marker() {
+        let blocks = Arc::new(InFlightBlocks::new());
+        let (tx, rx) = mpsc::channel(4);
+        for byte in 1..=3 {
+            tx.send(marked(&blocks, byte)).await.unwrap();
+        }
+        assert_eq!(blocks.len(), 3);
+
+        drop(rx);
+        drop(tx);
+        assert!(blocks.is_empty());
+    }
+
+    #[test]
+    fn the_cap_rejects_a_new_marker_without_keeping_it() {
+        let blocks = Arc::new(InFlightBlocks::new());
+        let guards: Vec<_> = (0..MAX_BLOCKS_IN_PROCESSING)
+            .map(
+                |i| match mark_in_flight(&blocks, BlockHash::from(i.to_be_bytes().to_vec())) {
+                    InFlightMark::Marked(guard) => guard,
+                    other => panic!("marker {i} must fit under the cap, got {other:?}"),
+                },
+            )
+            .collect();
+        assert!(matches!(
+            mark_in_flight(&blocks, hash(0xff)),
+            InFlightMark::CapReached
+        ));
+        assert_eq!(blocks.len(), MAX_BLOCKS_IN_PROCESSING);
+        drop(guards);
+        assert!(blocks.is_empty());
+    }
     use crate::rust::block_status::ValidBlock;
 
     /// A block validation could not judge must not be cleaned up like one it

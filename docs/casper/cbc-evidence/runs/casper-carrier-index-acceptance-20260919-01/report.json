@@ -1,0 +1,267 @@
+{
+  "schema_version": 1,
+  "status": "accepted-bounded-carrier-binding",
+  "claim_ids": [
+    "CLAIM-CASPER-SOAK-008"
+  ],
+  "claim_discharge": "discharged",
+  "phase": "pre_pr216_merge",
+  "scope": "harness-profile",
+  "base_revision": "f7b0cb32f4d4ac8ac28996e99e75e0cd8cdb68c6",
+  "working_tree": true,
+  "recorded_at": "2026-09-19T17:37:20Z",
+  "source_digests": {
+    ".github/workflows/casper-carrier-index.yml": "fbf03950c448d1872ac2cdc59772aadf1c9b96f657cda736dd1e9d4a9d2da97d",
+    "scripts/casper-soak/check-carrier-index.sh": "7312a341117291d6affe23c42239a4f3968d38524c2c340c9ef8d768b5914e00",
+    "scripts/casper-soak/src/bin/casper-carrier-index.rs": "012a3c217cbc39ddf2d31d4236e46f85272af2d352ece9d52e96b831e131617c",
+    "scripts/casper-soak/src/profiles/carrier_index.rs": "997181af0574612162ad8167f1989c86d49d005e54a77a1da9f0a1bdb0409d57",
+    "scripts/casper-soak/tests/carrier_index.rs": "e2dcbd5c5cd457b01234586b2b5e806a4fc73727aaba8c94d5b5f63d39c9cdc9",
+    "scripts/casper-soak/src/lib.rs": "a70f76a28de8ef8010eb7f8876b5e947ce94bf35752bbd70b086983383ee7a8f",
+    "scripts/casper-soak/src/manifest.rs": "d9606d542cfb9bc058f691196244ae2e6055e6c84c02b5c2581ee07e70c03000",
+    "scripts/casper-soak/src/models.rs": "99e3f736aa9e753b73edced77049ab206f993d612870bb1d866f6d5c0655983f",
+    "scripts/casper-soak/Cargo.toml": "f6082e839d8bb20e5b2988a9ed92ffe5d1cd79a0e578e10d68582593ea3d13cb",
+    "Cargo.toml": "7c5397136932d04c6e72a04a593249dea347a0f13c4cbd2d7e04c7d6a69f9e88",
+    "Cargo.lock": "318659f6c97ee6030ac0b128b6e2ba0a6a86e07314c2761ecd73052830bb0c4e",
+    "rust-toolchain.toml": "cef5cc010fbd237ab34a4d07129372406e11ff8595c2efc1126d9c93e039aed4",
+    ".cargo/config.toml": "da7e626941c437575405e8eade493a1994483236d0f775c39800b2b2e93f230f",
+    "docs/claims/casper-soak-carrier-index.md": "4aab7367b93766df504bcd679670b8d4bcfeda3d4cd5ea3a2f6b2f39ca86a236",
+    "formal/tlaplus/casper_soak/profiles/carrier_index/README.md": "9756c9b74fd54c73f7cf5e0487efe4cd67efe6fea96ce93a47364e2bdef6df77",
+    "formal/tlaplus/casper_soak/profiles/carrier_index/CarrierIndex.tla": "db2e55be76a8ba4221282a47695b3b50a8d536b912e4b7cd10650ede9521fd59",
+    "formal/tlaplus/casper_soak/profiles/carrier_index/MC_CarrierIndex.cfg": "43ad380e7ef3076738a658d806df672708c4608afe60b40cb8d2c01984709e0e",
+    "formal/tlaplus/casper_soak/profiles/carrier_index/MC_CarrierIndex_counter_unsafe.cfg": "f6ab729f2187bae1a3e8d1ee4ae2acbe77a5e2e45e985ca244fa364c049ced13",
+    "formal/tlaplus/casper_soak/profiles/carrier_index/MC_CarrierIndex_path_unsafe.cfg": "17e96482cca383b76c726942de71369f2bf24134b8772b25b964a1bd4fac6588",
+    "formal/tlaplus/casper_soak/profiles/carrier_index/MC_CarrierIndex_window_unsafe.cfg": "35a20940754963616db711c38bb8da6e4a250ea33a9454273fd6bdae5c8ef4fb",
+    "formal/tlaplus/casper_soak/profiles/carrier_index/verification-plan.jsonc": "e914f6852dd5b01746215996df69bd000a6f8a074c1341cacb766e58382c3322"
+  },
+  "claim_digests": {
+    "docs/claims/casper-soak-carrier-index.md": "4aab7367b93766df504bcd679670b8d4bcfeda3d4cd5ea3a2f6b2f39ca86a236"
+  },
+  "artifact_inventory": [
+    "scripts/casper-soak/src/profiles/carrier_index.rs",
+    "scripts/casper-soak/src/bin/casper-carrier-index.rs",
+    "scripts/casper-soak/tests/carrier_index.rs",
+    "scripts/casper-soak/check-carrier-index.sh",
+    ".github/workflows/casper-carrier-index.yml",
+    "formal/tlaplus/casper_soak/profiles/carrier_index/CarrierIndex.tla",
+    "formal/tlaplus/casper_soak/profiles/carrier_index/MC_CarrierIndex.cfg",
+    "formal/tlaplus/casper_soak/profiles/carrier_index/MC_CarrierIndex_path_unsafe.cfg",
+    "formal/tlaplus/casper_soak/profiles/carrier_index/MC_CarrierIndex_window_unsafe.cfg",
+    "formal/tlaplus/casper_soak/profiles/carrier_index/MC_CarrierIndex_counter_unsafe.cfg",
+    "formal/tlaplus/casper_soak/profiles/carrier_index/verification-plan.jsonc",
+    "formal/tlaplus/casper_soak/profiles/carrier_index/README.md"
+  ],
+  "tiers": {
+    "refutation": "bounded-safety-pass",
+    "construction": "not-applicable",
+    "binding": "passed"
+  },
+  "approval": {
+    "confirmation": "I accept Claim008\u2019s bounded carrier-index binding and ratify .github/workflows/casper-carrier-index.yml as cbc=mandatory cbc-weight=high.",
+    "relay_message": "01a0ba8f-fc95-7575-99d9-835d4b9b5b79",
+    "closure_instruction": "proceed with the Claim008 acceptance, audit and closure",
+    "closure_relay_message": "01a0bab7-2e7a-7d91-b6ef-545592fecbca",
+    "scope": "bounded-claim-008-binding-carrier-tag-and-strict-task-closure"
+  },
+  "review": {
+    "path": "docs/casper/cbc-evidence/runs/casper-carrier-index-20260919-01/report.json",
+    "sha256": "b18b3549273c469f2cb7a59f547834f5413ddb96f8791aa989ba93144543d33b"
+  },
+  "publication_review": {
+    "path": "docs/casper/cbc-evidence/runs/casper-carrier-index-publication-20260919-01/report.json",
+    "sha256": "d18b6e247c7710aa09961c3f3120b2c2ca5a9c1139d82723b9285ea772fcfe23"
+  },
+  "hosted": {
+    "run_id": 35429044639,
+    "run_attempt": 1,
+    "url": "https://github.com/F1R3FLY-io/f1r3node-rust/actions/runs/35429044639",
+    "head_sha": "51615255aa4ad24779639120ea2a8c5ec0500d78",
+    "event": "pull_request",
+    "conclusion": "success",
+    "artifact_id": 10580395137,
+    "artifact_name": "casper-carrier-index",
+    "artifact_zip_sha256": "1c3fd03ba834fecd4b9f44cbb7504a2630b4ff8a43cbb401c85abe52daf76c41",
+    "artifact_zip_bytes": 2945064,
+    "source_files_verified": 21,
+    "rust_tests": 23,
+    "cases": 88,
+    "invocations": 91,
+    "model_controls": 4,
+    "executable_sha256": "dc50c1d535b600c18d3c1cd8d80282a17d7715a2e15e0112e511bfad386bb091",
+    "checkout_note": "The pull-request job checks its merge ref. Retained source hashes match the reviewed carrier inputs.",
+    "retention_days": 30
+  },
+  "publication": {
+    "receipt_sha256": "7ca046ac32e63d014e315f9a52d817aa533fef1f8612cd5a7bb3b6474744753e",
+    "receipt": {
+      "status": "uploaded-and-download-verified",
+      "verified_at": "2026-09-19T16:53:38Z",
+      "repository": "F1R3FLY-io/f1r3node-rust",
+      "release_id": 391939637,
+      "tag": "cbc-evidence-epic-017",
+      "release_remains_draft": true,
+      "asset": {
+        "browser_download_url": "https://github.com/F1R3FLY-io/f1r3node-rust/releases/download/untagged-2a2f91efe1230279a77d/casper-carrier-index-publication-20260919-01.external.tar.gz",
+        "digest": "sha256:941c3c95a05e972e24bea9b33ba6c08b3da439dda7a87ceb63fa35da78dd0ca0",
+        "id": 575126186,
+        "name": "casper-carrier-index-publication-20260919-01.external.tar.gz",
+        "size": 2529945,
+        "state": "uploaded",
+        "url": "https://api.github.com/repos/F1R3FLY-io/f1r3node-rust/releases/assets/575126186"
+      },
+      "download_sha256": "941c3c95a05e972e24bea9b33ba6c08b3da439dda7a87ceb63fa35da78dd0ca0",
+      "download_byte_identical": true,
+      "archive_members": 14607,
+      "manifest_hashes_verified": 14606,
+      "current_source_hashes_verified": 21,
+      "workstation_path_scan_matches": 0,
+      "withheld_native_binaries": 2,
+      "existing_assets_unchanged": true,
+      "shared_index_unchanged": true,
+      "shared_checksums_unchanged": true,
+      "publication_report_sha256": "d18b6e247c7710aa09961c3f3120b2c2ca5a9c1139d82723b9285ea772fcfe23",
+      "credential_route": "stored-gh-login-with-environment-tokens-excluded",
+      "credentials_transferred": false,
+      "git_commit": false,
+      "git_push": false,
+      "task_closure": "carrier-owner-pending",
+      "verification_files": "target/task-017-10-upload-20260919-01/"
+    },
+    "verification_attribution": "The Mac publisher verified the remote download. This Linux session verified the transferred receipt, local archive, and source hashes."
+  },
+  "preacceptance_validation": {
+    "checked_at": "2026-09-19T17:32:41Z",
+    "archive_sha256": "941c3c95a05e972e24bea9b33ba6c08b3da439dda7a87ceb63fa35da78dd0ca0",
+    "archive_bytes": 2529945,
+    "archive_members": 14607,
+    "manifest_hashes_verified": 14606,
+    "receipt_files_verified": 12,
+    "compatibility_links_verified": 12
+  },
+  "reviewed_checks": {
+    "native": {
+      "rust_tests": 23,
+      "cases": 88,
+      "invocations": 91,
+      "exit": 0
+    },
+    "isolated_linux": {
+      "rust_tests": 23,
+      "cases": 88,
+      "invocations": 91,
+      "exit": 0,
+      "network": "none",
+      "read_only_root": true,
+      "unprivileged": true,
+      "identity": "image=sha256:9b515734d83b6a1166cfe14b87766f85cd212dc6b2883fb333de0db4c8904e93\nprofile=[WORKSPACE_ROOT]/target/release/casper-carrier-index\ntest=[WORKSPACE_ROOT]/target/release/deps/carrier_index-2cd52d997aedcc00\nf365f833946af49fafcf14bc27f32cca96eab1aedc713c12d504bc27dbe21cb4  [WORKSPACE_ROOT]/target/release/casper-carrier-index\n40219f3f076b4c7c522b9f19b6c6bd41cafa55aa5e03b260852521b34bf20dcf  [WORKSPACE_ROOT]/target/release/deps/carrier_index-2cd52d997aedcc00\n"
+    },
+    "model": {
+      "scenarios": 2,
+      "observation_steps": 3,
+      "clean_generated_states": 1201,
+      "clean_distinct_states": 625,
+      "controls": [
+        {
+          "configuration": "MC_CarrierIndex.cfg",
+          "exit": 0,
+          "property": null,
+          "outcome": "passed"
+        },
+        {
+          "configuration": "MC_CarrierIndex_path_unsafe.cfg",
+          "exit": 12,
+          "property": "PathEngagementObserved",
+          "outcome": "passed"
+        },
+        {
+          "configuration": "MC_CarrierIndex_window_unsafe.cfg",
+          "exit": 12,
+          "property": "CarrierInputsMatched",
+          "outcome": "passed"
+        },
+        {
+          "configuration": "MC_CarrierIndex_counter_unsafe.cfg",
+          "exit": 12,
+          "property": "MissingCountersUnknown",
+          "outcome": "passed"
+        }
+      ]
+    },
+    "shared_rust_tests": 11,
+    "runner_negative_controls": {
+      "renamed_required_case": 1,
+      "interruption": 143,
+      "passing_summaries": false
+    },
+    "nested_references_checked": 3274
+  },
+  "current_native_check": {
+    "base_revision": "f7b0cb32f4d4ac8ac28996e99e75e0cd8cdb68c6",
+    "working_tree": true,
+    "path": "/tmp/carrier-index-checks/acceptance-20260919-01/native",
+    "tests": 23,
+    "cases": 88,
+    "invocations": 91,
+    "model_controls": 4,
+    "exit": 0,
+    "summary_sha256": "8712c8b10ad28345f690fbad79b9c5593050628cd9fdbe62532407b5b13f7c6a",
+    "source_inventory_sha256": "8b86f2d82a7d69c7bb36c69822a69365fdee401c84509098306a6e221979f1ce",
+    "model_report_sha256": "9a96cfcc366fd0277af432685379be7cc80e20b6ce0d42ef7fba7f5a01d2e4b3",
+    "executable_sha256": "f365f833946af49fafcf14bc27f32cca96eab1aedc713c12d504bc27dbe21cb4"
+  },
+  "source_transition": {
+    "previous_claim_sha256": "bad35868513365e7702f57899a67ef40fcec5e8471c1cfe4ec2265291897aec3",
+    "current_claim_sha256": "4aab7367b93766df504bcd679670b8d4bcfeda3d4cd5ea3a2f6b2f39ca86a236",
+    "unchanged_reviewed_sources": 20,
+    "unchanged_artifacts": 12,
+    "change": "Only claim status, binding status, and acceptance prose changed. Profile, fixtures, model, workflow, and shared compiled sources remain unchanged."
+  },
+  "previous_ledgers": {
+    "git_revision": "f7b0cb32f4d4ac8ac28996e99e75e0cd8cdb68c6",
+    "sha256_by_path": {
+      "docs/casper/cbc-evidence/scripts-casper-soak-src-profiles-carrier-index-rs.md": "4551620a3a83a8d0aaf5779a91145f684a039acf5655f61c9ab85a1672d58dae",
+      "docs/casper/cbc-evidence/scripts-casper-soak-src-bin-casper-carrier-index-rs.md": "ac6061fa5814f9ab22112d6ac1b241761a2ebc9a16a38da40cd6f12bc832f98a",
+      "docs/casper/cbc-evidence/scripts-casper-soak-tests-carrier-index-rs.md": "0c9c2071ea795917de23f8513be8f10053f324866fb804505f67e71088752455",
+      "docs/casper/cbc-evidence/scripts-casper-soak-check-carrier-index-sh.md": "b4787789de19bef7314f743b949474a4119851638547011668688c7d353bdb18",
+      "docs/casper/cbc-evidence/github-workflows-casper-carrier-index-yml.md": "70c3a12844215e0f210a005286af364bf242d8b1150cb21e3b50dbe6f8e9750e",
+      "docs/casper/cbc-evidence/formal-tlaplus-casper-soak-profiles-carrier-index-CarrierIndex-tla.md": "83e6e9735708119c324da9ece73df3f95a3a856315aa68db6cd4d710b52462f9",
+      "docs/casper/cbc-evidence/formal-tlaplus-casper-soak-profiles-carrier-index-MC-CarrierIndex-cfg.md": "c54fbf6e186165a6a44624f8c1aa5e8579e85159b06f5a09f255a155f17f2f3d",
+      "docs/casper/cbc-evidence/formal-tlaplus-casper-soak-profiles-carrier-index-MC-CarrierIndex-path-unsafe-cfg.md": "a9f049f9910c91a475c078859c0b0233e7d865df2c01193f5b5386dd63512d7f",
+      "docs/casper/cbc-evidence/formal-tlaplus-casper-soak-profiles-carrier-index-MC-CarrierIndex-window-unsafe-cfg.md": "ac59c82910359ba07daaa865e48c89803caf1ca4ef99b9bf08a0fbd088bebc35",
+      "docs/casper/cbc-evidence/formal-tlaplus-casper-soak-profiles-carrier-index-MC-CarrierIndex-counter-unsafe-cfg.md": "e866d65cb9921254184a748e4b4b102192a5cbf6023504997c38638de0eb3f7b",
+      "docs/casper/cbc-evidence/formal-tlaplus-casper-soak-profiles-carrier-index-verification-plan-jsonc.md": "4c5d0684ed3ae2c1f8da3421849ba4f5bb7808021c818fdb91372f04d7bf8040",
+      "docs/casper/cbc-evidence/formal-tlaplus-casper-soak-profiles-carrier-index-README-md.md": "6e681fb892cd864dc7fe9d392c78880fe7ab749b41d9ed271989483a8b68b9de"
+    },
+    "recovery": "Read each path at git_revision. Exact copies also remain in the external acceptance evidence directory."
+  },
+  "workflow_tag": {
+    "path": ".github/workflows/casper-carrier-index.yml",
+    "cbc": "mandatory",
+    "weight": "high",
+    "ratified": true,
+    "attributes_sha256": "a7ac028169a0f02ab1ba87546834727795f91e67a67a2e77aaf7dafeac17e7fe"
+  },
+  "retained_intermediate_failure": {
+    "path": "/tmp/carrier-index-checks/acceptance-20260919-01/shared-tests.log",
+    "sha256": "bb43b05dfda27006edebc2ac5a0d25643e9e12f034a8d7127c4a36c7f77f9fb1",
+    "exit": 101,
+    "audit_exit": 2,
+    "audit_log_sha256": "a15591e48b6d879fbe006d5ad9d6da6ec1244f7eca0e97db79e14b54786dacf6",
+    "reason": "The shared claim test ran after the claim update but before its ledger update. The auditor reported no artifact discharge. Final checks must run after ledger assembly."
+  },
+  "task_closure_evidence": "docs/casper/cbc-evidence/runs/casper-carrier-index-acceptance-20260919-01/validation.json",
+  "limits": [
+    "The finite model has two scenarios and three observation steps per scenario.",
+    "The model assumes valid auxiliary evidence and excludes independent product failures. Executable fixtures cover those cases separately.",
+    "The isolated verification used host-built binaries, not a fresh container build.",
+    "The sanitized published archive withholds two native binaries and retains their original hashes.",
+    "The shared workflow inventory repair and release index maintenance remain separate owner obligations."
+  ],
+  "other_claims": "outside-this-acceptance",
+  "live_adapters": "unqualified",
+  "post_merge_execution": "blocked",
+  "external_node_equivalence": "not-discharged",
+  "protocol_activation": false,
+  "node_execution": false,
+  "soak": "pending",
+  "waiver": null
+}

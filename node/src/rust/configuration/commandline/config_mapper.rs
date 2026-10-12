@@ -18,6 +18,7 @@ impl ConfigMapper<Options> for NodeConf {
     /// Override config values with CLI provided options
     fn override_config_values(&mut self, options: Options) {
         if let Some(OptionsSubCommand::Run(run)) = options.subcommand {
+            Self::try_override_option(&mut self.soak_observer, run.soak_observer);
             Self::try_override_bool(&mut self.standalone, run.standalone);
             Self::try_override_bool(&mut self.autopropose, run.autopropose);
             Self::try_override_bool(&mut self.dev_mode, run.dev_mode);
@@ -607,6 +608,7 @@ mod tests {
             log_format: None,
             log_sink: None,
             subcommand: Some(OptionsSubCommand::Run(RunOptions {
+                soak_observer: None,
                 config_file: None,
                 thread_pool_size: None,
                 standalone: true,
@@ -717,6 +719,7 @@ mod tests {
 
         // Create a default configuration (similar to loading from defaults.conf)
         let mut default_config = NodeConf {
+            soak_observer: None,
             standalone: false,
             autopropose: false,
             protocol_server: crate::rust::configuration::model::ProtocolServer {

@@ -1,0 +1,120 @@
+{
+ "acceptance": null,
+ "checks": [
+  {
+   "artifact": "scripts/casper-soak/src/profiles/publication.rs",
+   "change": "id() rejects control characters",
+   "claim_id": "CLAIM-CASPER-SOAK-003",
+   "exit": 0,
+   "model_controls": {
+    "clean_no_error": 1,
+    "negative_controls_violated_as_expected": 3
+   },
+   "previous_accepted_report": {
+    "path": "docs/casper/cbc-evidence/runs/casper-profile-acceptance-20260919-01/report.json",
+    "sha256": "614d13c3e52ed11afb84a9a0b5f6345db42bc3a684518f9ce7060b15fc08c4da"
+   },
+   "profile_check": "scripts/casper-soak/check-publication.sh",
+   "rust_tests": 6
+  },
+  {
+   "artifact": "scripts/casper-soak/src/profiles/merge_accounting.rs",
+   "change": "same() requires the compared key on both sides",
+   "claim_id": "CLAIM-CASPER-SOAK-005",
+   "exit": 0,
+   "model_controls": {
+    "clean_no_error": 1,
+    "negative_controls_violated_as_expected": 3
+   },
+   "previous_accepted_report": {
+    "path": "docs/casper/cbc-evidence/runs/casper-merge-accounting-acceptance-20260919-01/report.json",
+    "sha256": "ba73b6ff31e85ee528490be184a8b95441977bcaba7ceac6eb905fdb1e0a576b"
+   },
+   "profile_check": "scripts/casper-soak/check-merge-accounting.sh",
+   "rust_tests": 7
+  },
+  {
+   "artifact": "scripts/casper-soak/src/profiles/slashing.rs",
+   "change": "same() requires the compared key on both sides",
+   "claim_id": "CLAIM-CASPER-SOAK-006",
+   "exit": 0,
+   "model_controls": {
+    "clean_no_error": 1,
+    "negative_controls_violated_as_expected": 3
+   },
+   "previous_accepted_report": {
+    "path": "docs/casper/cbc-evidence/runs/casper-slashing-ratification-20260919-01/report.json",
+    "sha256": "b47dc09e4d3f901503b88ae0ce346c94aecc4a0fc60d3b76079c8b19f54070ca"
+   },
+   "profile_check": "scripts/casper-soak/check-slashing.sh",
+   "rust_tests": 7
+  },
+  {
+   "artifact": "scripts/casper-soak/src/profiles/carrier_index.rs",
+   "change": "the dependency order accepts a pair only when both decimal values parse",
+   "claim_id": "CLAIM-CASPER-SOAK-008",
+   "exit": 0,
+   "model_controls": {
+    "clean_no_error": 1,
+    "negative_controls_violated_as_expected": 3
+   },
+   "previous_accepted_report": {
+    "path": "docs/casper/cbc-evidence/runs/casper-carrier-index-acceptance-20260919-01/report.json",
+    "sha256": "06e5c0d15a9eef13c09f5e28c5b553a082685be7dc44f305fed5380e0c7860e7"
+   },
+   "profile_check": "scripts/casper-soak/check-carrier-index.sh",
+   "rust_tests": 23
+  }
+ ],
+ "claim_digests": {
+  "docs/claims/casper-soak-carrier-index.md": "4aab7367b93766df504bcd679670b8d4bcfeda3d4cd5ea3a2f6b2f39ca86a236",
+  "docs/claims/casper-soak-merge-accounting.md": "22a6534ef37b1675b6fe69cd04dbae6473d2fa93d9306efb454499cd04c970f3",
+  "docs/claims/casper-soak-publication.md": "f49995b85ec66fe5da179efeadef28559eaec3df2a55fa69479c7688492b00db",
+  "docs/claims/casper-soak-slashing.md": "6954ff5fe9edb29909f88f94b328aced5229ac5c7387b67d02c185c4b717845b"
+ },
+ "claim_discharge": "pending",
+ "claim_ids": [
+  "CLAIM-CASPER-SOAK-003",
+  "CLAIM-CASPER-SOAK-005",
+  "CLAIM-CASPER-SOAK-006",
+  "CLAIM-CASPER-SOAK-008"
+ ],
+ "environment": {
+  "local_rustflags": "-C target-cpu=apple-m1",
+  "note": "Local runs used an explicit target CPU because target-cpu=native crashes LLVM on the review host. The hosted Linux run is authoritative.",
+  "tla_tools_sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88"
+ },
+ "expected_gate_state": "check-casper-claims refuses the changed discharged bytes until the maintainer accepts this package and the ledger records point to an acceptance package.",
+ "harness_models": {
+  "command": "scripts/ci/check-casper-soak-models.sh",
+  "exit": 0
+ },
+ "node_execution": false,
+ "phase": "pre_pr216_merge",
+ "schema_version": 1,
+ "scope": "bounded-profile-validator-review-remediation",
+ "soak": "pending",
+ "source": {
+  "origin": "PR #436 review remediation 8f5f1c239, re-applied on fix/soak-finalization-attribution",
+  "revision_parent": "a5bfefbfbc42a159784ac666c0c55d4911b404e2"
+ },
+ "source_digests": {
+  "scripts/casper-soak/src/profiles/carrier_index.rs": "4deffb17e398490678d4c5ecc09eb486c9110c4cbbf541da5a65cf2669cdfa62",
+  "scripts/casper-soak/src/profiles/merge_accounting.rs": "2e7e96dbfefd77688bb8f6c69ca7a6cd86782d5c00dab40b653ef1bd2884ca8f",
+  "scripts/casper-soak/src/profiles/publication.rs": "21848ac903ddf4cdcacfbc4ce3b31b1bd1033f64dc034c1bc11604cc544502c1",
+  "scripts/casper-soak/src/profiles/slashing.rs": "00203010bcad782b9c9631aa72e5052f4d49830ca9ba08b0f7fcaf78c5dfd4c2"
+ },
+ "status": "review-remediation-verified-pending-acceptance",
+ "tiers": {
+  "binding": "passed",
+  "construction": "not-applicable",
+  "refutation": "bounded-safety-pass"
+ },
+ "totals": {
+  "clean_models": 4,
+  "negative_controls": 12,
+  "rust_tests": 43
+ },
+ "verified_at": "2026-10-03",
+ "waiver": null
+}

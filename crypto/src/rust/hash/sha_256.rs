@@ -12,6 +12,12 @@ impl Sha256Hasher {
         hasher.update(input);
         hasher.finalize().to_vec()
     }
+
+    pub fn hash_reader(mut reader: impl std::io::Read) -> std::io::Result<(Vec<u8>, u64)> {
+        let mut hasher = Sha256::new();
+        let bytes = std::io::copy(&mut reader, &mut hasher)?;
+        Ok((hasher.finalize().to_vec(), bytes))
+    }
 }
 
 #[cfg(test)]
@@ -34,6 +40,14 @@ mod tests {
             hex::encode(result),
             "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
         );
+    }
+
+    #[test]
+    fn hash_reader_matches_hash_and_counts_bytes() {
+        let input = vec![7u8; 3 * 8192 + 5];
+        let (digest, bytes) = Sha256Hasher::hash_reader(input.as_slice()).unwrap();
+        assert_eq!(digest, Sha256Hasher::hash(input.clone()));
+        assert_eq!(bytes, input.len() as u64);
     }
 
     #[test]

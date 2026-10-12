@@ -237,9 +237,23 @@ The implementation is based on Ethereum's CBC Casper research and the clique ora
 
 The clique oracle computes normalized fault tolerance through the following steps:
 
+**Step 0: Determine the Counted Committee**
+
+The committee is the `bonds` field of the target block's main parent, which
+`floor_committee` derives from the finalized floor. One exclusion applies: a
+validator that bonded after genesis and whose latest message in the witnessing
+view is still the genesis placeholder is dropped, because it can never agree
+with any block and counting its stake stalls finalization indefinitely. Its
+stake counts again from its first block, and genesis validators always count so
+that a minority cannot finalize alone on a young DAG.
+
+```scala
+committee = participatingWeightMap(bondsOf(mainParent(targetBlock)))
+```
+
 **Step 1: Identify Agreeing Validators**
 ```scala
-agreeingValidators = validators.filter { v =>
+agreeingValidators = committee.filter { v =>
   v.latestMessage.isInMainChain(targetBlock)
 }
 ```
@@ -267,7 +281,7 @@ maxCliqueWeight = findMaximumCliqueByWeight(edges, stakes)
 **Step 4: Calculate Normalized Fault Tolerance**
 
 ```scala
-totalStake = allValidatorStakes.sum
+totalStake = committee.values.sum
 normalizedFaultTolerance = (maxCliqueWeight * 2 - totalStake) / totalStake
 ```
 

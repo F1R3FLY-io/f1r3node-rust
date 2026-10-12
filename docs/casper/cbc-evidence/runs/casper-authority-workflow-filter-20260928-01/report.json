@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "task": "TASK-017-12",
+  "status": "controlled-verification-passed",
+  "source_head_revision": "1ea62331f60a2c1f6bc21e116892090c85baf217",
+  "working_tree": true,
+  "branch": "formal/soak-casper-consensus",
+  "claim_ids": [
+    "CLAIM-CASPER-AUTHORITY-ADAPTER-001",
+    "CLAIM-CASPER-AUTHORITY-LIVE-001"
+  ],
+  "source_digests": {
+    ".github/workflows/casper-authority-adapter.yml": "2004f50535c623b79d13ae367c51609bb28cfbb275324605fc142a9594cc419d"
+  },
+  "claim_digests": {
+    "docs/claims/casper-authority-adapter.md": "5d13e8d1bd319566fe682bd8e02a32d4b16992222203dfdb1184fc38d3f921b0",
+    "docs/claims/casper-authority-live-executor.md": "925c1cbb2b99215d17a0223ab7c8bdb3554fe6549309021e0f99b5526ca84d33"
+  },
+  "failed_hosted_run": {
+    "id": 36505457621,
+    "url": "https://github.com/F1R3FLY-io/f1r3node-rust/actions/runs/36505457621",
+    "head_sha": "1ea62331f60a2c1f6bc21e116892090c85baf217",
+    "conclusion": "failure",
+    "jobs": []
+  },
+  "checks": {
+    "actionlint_version": "1.7.12",
+    "actionlint_sha256": "8db11704dc296f096216db4db65d86cd7f0ebfdf4c38453a1da276b137b88388",
+    "before_exit_code": 1,
+    "before_error": "Line 10 contains an invalid glob pattern: the second plus sign follows a special character.",
+    "after_exit_code": 0,
+    "claim002_artifacts_changed": false
+  },
+  "log_digests": {
+    "target/task-017-12-adapter-output-20260928/actionlint-before.txt": "a741f1c2d7ec96afefd79827a6f17c297946b96f42b568c9143edb70c0afebdf",
+    "target/task-017-12-adapter-output-20260928/actionlint-after.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "target/task-017-12-adapter-output-20260928/actionlint-validation.json": "e2a87048c694d772e2f213f5dcfaa591fc4968c31c2570777914d89e4d0a7082"
+  },
+  "qualification": "pending",
+  "soak_verdict": "non_passing",
+  "hosted_correction_verified": false
+}

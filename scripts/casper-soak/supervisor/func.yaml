@@ -1,0 +1,6 @@
+schema_version: 20180708
+name: casper-campaign-supervisor
+version: 0.0.1
+runtime: docker
+memory: 256
+timeout: 120

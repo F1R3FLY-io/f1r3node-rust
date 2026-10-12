@@ -1,0 +1,109 @@
+{
+  "schema_version": 1,
+  "claim_id": "CLAIM-CASPER-NODE-OBSERVATION-002",
+  "scope": "batch-b1-reader-budget-and-block-length-corrections",
+  "status": "local-regressions-passed-claim-pending",
+  "execution_base": "2ccc4ae0ac1045232c247ecd76925e13fabd0ade",
+  "working_tree": true,
+  "branch": "feature/casper-node-observation",
+  "platform": "linux/aarch64",
+  "rustc": "1.95.0-nightly (6efa357bf 2026-02-08)",
+  "source_manifest": "sources.sha256",
+  "bulk_evidence": "target/node-snapshot-review-2ccc4ae0a-GccxEV",
+  "changed_sources": [
+    "shared/src/rust/store/soak_snapshot.rs",
+    "shared/tests/soak_snapshot.rs",
+    "block-storage/src/rust/key_value_block_store.rs",
+    "block-storage/tests/soak_snapshot.rs"
+  ],
+  "prior_report": {
+    "path": "docs/cbc-evidence/runs/casper-node-snapshot-batch-b1-799e2136a-01/report.json",
+    "sha256": "8d3067ed1b184d204465b8d52ca2d610d44e46d67b591f1d08e56cce55bfa4d3",
+    "unchanged": true
+  },
+  "refutations": [
+    {
+      "command": "cargo test --locked -p shared --test soak_snapshot",
+      "log": "red.log",
+      "exit": 101,
+      "passed": 12,
+      "failed": 5,
+      "source_archive": "source-before.tar",
+      "test_source": "tests-red.rs",
+      "source_manifest": "red-sources.sha256",
+      "failed_tests": [
+        "failed_scan_retains_consumed_work_and_record_budget",
+        "empty_scans_consume_operation_budget",
+        "scan_keys_obey_the_per_buffer_limit",
+        "lookup_keys_are_bounded_before_encoding",
+        "store_list_is_bounded_before_backend_inspection"
+      ]
+    },
+    {
+      "command": "cargo test --locked -p block-storage --test soak_snapshot bounded_block_decoding_rejects_short_decompression_with_valid_zero_padding -- --exact",
+      "log": "decoder-red.log",
+      "exit": 101,
+      "passed": 0,
+      "failed": 1,
+      "source_archive": "decoder-red-source.tar",
+      "source_manifest": "decoder-red-sources.sha256"
+    }
+  ],
+  "native": {
+    "test_command": "cargo test --locked -p shared -p block-storage",
+    "test_log": "regressions-02.log",
+    "test_exit": 0,
+    "test_executions": 290,
+    "unique_behavior_count": null,
+    "shared_library_tests": 102,
+    "shared_snapshot_tests": 17,
+    "block_storage_library_tests": 68,
+    "block_storage_snapshot_tests": 15,
+    "other_block_storage_test_executions": 88,
+    "clippy_command": "cargo clippy --locked -p shared -p block-storage --all-targets -- -D warnings",
+    "clippy_log": "clippy-02.log",
+    "clippy_exit": 0,
+    "fmt_command": "cargo fmt --check -p shared -p block-storage",
+    "fmt_log": "fmt-02.log",
+    "fmt_exit": 0
+  },
+  "lsp": {
+    "requested_files": 4,
+    "completed_without_findings": 3,
+    "inconclusive": 1,
+    "complete_clean_coverage": false
+  },
+  "cbc_gate": {
+    "exit": 4,
+    "total": 3,
+    "gaps": 3,
+    "status": "pending"
+  },
+  "evidence_limits": {
+    "failing_executables_retained": false,
+    "final_snapshot_executables_retained": true,
+    "final_executable_hash_timing": "post-run",
+    "allocation_instrumentation_executed": false,
+    "formal_proof_executed": false,
+    "hosted_verification_executed": false,
+    "isolated_execution": false,
+    "independent_rebuild": false
+  },
+  "remaining_source_findings": [
+    "nested metadata allocation limits precede neither all decodes nor all collection construction",
+    "capture work accounting does not cover every traversal and output copy",
+    "scratch construction does not create a block store from captured bodies",
+    "canonical field coverage needs reconciliation with public duplicate fields and scratch inputs"
+  ],
+  "production_write_path_changed": false,
+  "production_decoder_changed": false,
+  "dependency_changed_by_this_continuation": false,
+  "claim_acceptance": false,
+  "live_node_qualified": false,
+  "batch_b2_approved_by_this_continuation": false,
+  "batch_c_approved_by_this_continuation": false,
+  "node_launches": 0,
+  "cloud_launches": 0,
+  "commit_created": false,
+  "push_performed": false
+}

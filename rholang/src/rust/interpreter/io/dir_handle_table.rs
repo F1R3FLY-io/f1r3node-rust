@@ -406,6 +406,12 @@ impl DirHandleTable {
         let n = hash.len().min(8);
         buf[..n].copy_from_slice(&hash[..n]);
         let hi = u64::from_be_bytes(buf);
+        // Mask bit 63 so the watermark stays in `[0, i64::MAX]`.
+        // Same rationale as `FileHandleTable::seed_next_fd_from_state_hash`
+        // — dir-stream fd values traverse the Rholang boundary as GInt
+        // (i64) and `response::Fd::try_from(u64)` rejects values outside
+        // `[0, i64::MAX]`.
+        let hi = hi & 0x7FFF_FFFF_FFFF_FFFF;
         let watermark = hi & !((1u64 << FD_ENTROPY_HEADROOM_BITS) - 1);
         self.seed_next_fd_watermark(watermark);
     }

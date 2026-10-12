@@ -1,0 +1,29 @@
+{
+ "schema_version": 2,
+ "package": "casper-slashing-acceptance-20260919-01",
+ "task": "TASK-017-14",
+ "recorded_on": "2026-10-03",
+ "store": {
+  "kind": "github-release",
+  "repository": "F1R3FLY-io/f1r3node-rust",
+  "tag": "cbc-evidence-epic-017"
+ },
+ "assets": [
+  {
+   "asset": "casper-slashing-acceptance-20260919-01.external.tar.gz",
+   "sha256": "5f21cb60104f2dd2a4bcc3d794452d4a2b32d1fed8e161965e99804c72520ee1",
+   "bytes": 4694,
+   "members": 3,
+   "bundle_created": "2026-10-03",
+   "inner_manifest": "external-manifest.json"
+  },
+  {
+   "asset": "casper-slashing-acceptance-20260919-01.metadata.tar.gz",
+   "sha256": "b7c2d32b02ad5aafe5998249c62d428c6b04d0a8836f9e9481953a23c7662b10",
+   "bytes": 1125,
+   "members": 2,
+   "bundle_created": "2026-10-03",
+   "inner_manifest": "external-manifest.json"
+  }
+ ]
+}

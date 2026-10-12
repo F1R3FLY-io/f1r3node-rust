@@ -1,0 +1,21 @@
+{
+ "schema_version": 2,
+ "package": "casper-carrier-index-20260919-01",
+ "task": "TASK-017-14",
+ "recorded_on": "2026-10-03",
+ "store": {
+  "kind": "github-release",
+  "repository": "F1R3FLY-io/f1r3node-rust",
+  "tag": "cbc-evidence-epic-017"
+ },
+ "assets": [
+  {
+   "asset": "casper-carrier-index-20260919-01.metadata.tar.gz",
+   "sha256": "363e30cd3086d84e39baaed199e4841fe40119a85a269146b54955960e131714",
+   "bytes": 780,
+   "members": 3,
+   "bundle_created": "2026-10-03",
+   "inner_manifest": "external-manifest.json"
+  }
+ ]
+}

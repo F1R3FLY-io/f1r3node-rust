@@ -1,0 +1,3638 @@
+{
+  "schema_version": 1,
+  "task": "TASK-017-3",
+  "recorded_at": "2026-09-17T03:16:48.034733+00:00",
+  "scope": "prerequisite-application-validation",
+  "evidence_kind": "synthetic_fixture",
+  "harness_revision": "f29c59d010a32b523246bf2c980a48dd7f49d152",
+  "source_manifest": "source-manifest.json",
+  "source_manifest_sha256": "37d25e3c4d808fdd313ef5997c1d0d24cb763eff15bbdcf69440b6c1389f83d4",
+  "node_executed": false,
+  "claim_discharge": "none",
+  "cbc_gate_exit_code": 4,
+  "disk_suite": {
+    "exit_code": 0,
+    "case_count": 42,
+    "image_id": "sha256:7d402dd7f1922bcdbdbeb90d14cecf398fdd36bc5105242fa4a4dc1d1cd596c5",
+    "limits": {
+      "memory_mb": 256,
+      "cpus": 1,
+      "pids": 128,
+      "seconds_per_case": 40,
+      "network": "none",
+      "mounts": 0,
+      "docker_socket": false,
+      "uid": 65534
+    },
+    "cases": [
+      {
+        "id": "band",
+        "exit_code": 0,
+        "retained_artifacts": [
+          "disk/band/result.txt",
+          "disk/band/test-exit.txt",
+          "disk/band/evidence/driver.txt",
+          "disk/band/evidence/source-sha256.txt",
+          "disk/band/evidence/packages.txt",
+          "disk/band/evidence/output/summary.json",
+          "disk/band/evidence/output/early-exit.txt"
+        ]
+      },
+      {
+        "id": "benchmark-active-disk",
+        "exit_code": 0,
+        "retained_artifacts": [
+          "disk/benchmark-active-disk/result.txt",
+          "disk/benchmark-active-disk/test-exit.txt",
+          "disk/benchmark-active-disk/evidence/driver.txt",
+          "disk/benchmark-active-disk/evidence/source-sha256.txt",
+          "disk/benchmark-active-disk/evidence/packages.txt",
+          "disk/benchmark-active-disk/evidence/output/summary.json",
+          "disk/benchmark-active-disk/evidence/output/early-exit.txt"
+        ]
+      },
+      {
+        "id": "benchmark-band",
+        "exit_code": 0,
+        "retained_artifacts": [
+          "disk/benchmark-band/result.txt",
+          "disk/benchmark-band/test-exit.txt",
+          "disk/benchmark-band/evidence/driver.txt",
+          "disk/benchmark-band/evidence/source-sha256.txt",
+          "disk/benchmark-band/evidence/packages.txt",
+          "disk/benchmark-band/evidence/output/summary.json",
+          "disk/benchmark-band/evidence/output/early-exit.txt"
+        ]
+      },
+      {
+        "id": "benchmark-cancel-breach",
+        "exit_code": 0,
+        "retained_artifacts": [
+          "disk/benchmark-cancel-breach/result.txt",
+          "disk/benchmark-cancel-breach/test-exit.txt",
+          "disk/benchmark-cancel-breach/evidence/driver.txt",
+          "disk/benchmark-cancel-breach/evidence/source-sha256.txt",
+          "disk/benchmark-cancel-breach/evidence/packages.txt",
+          "disk/benchmark-cancel-breach/evidence/output/summary.json",
+          "disk/benchmark-cancel-breach/evidence/output/early-exit.txt"
+        ]
+      },
+      {
+        "id": "benchmark-cancel-death",
+        "exit_code": 0,
+        "retained_artifacts": [
+          "disk/benchmark-cancel-death/result.txt",
+          "disk/benchmark-cancel-death/test-exit.txt",
+          "disk/benchmark-cancel-death/evidence/driver.txt",
+          "disk/benchmark-cancel-death/evidence/source-sha256.txt",
+          "disk/benchmark-cancel-death/evidence/packages.txt",
+          "disk/benchmark-cancel-death/evidence/output/summary.json",
+          "disk/benchmark-cancel-death/evidence/output/early-exit.txt"
+        ]
+      },
+      {
+        "id": "benchmark-cancel-stall",
+        "exit_code": 0,
+        "retained_artifacts": [
+          "disk/benchmark-cancel-stall/result.txt",
+          "disk/benchmark-cancel-stall/test-exit.txt",
+          "disk/benchmark-cancel-stall/evidence/driver.txt",
+          "disk/benchmark-cancel-stall/evidence/source-sha256.txt",
+          "disk/benchmark-cancel-stall/evidence/packages.txt",
+          "disk/benchmark-cancel-stall/evidence/output/summary.json",
+          "disk/benchmark-cancel-stall/evidence/output/early-exit.txt"
+        ]
+      },
+      {
+        "id": "benchmark-disabled",
+        "exit_code": 0,
+        "retained_artifacts": [
+          "disk/benchmark-disabled/result.txt",
+          "disk/benchmark-disabled/test-exit.txt",
+          "disk/benchmark-disabled/evidence/driver.txt",
+          "disk/benchmark-disabled/evidence/source-sha256.txt",
+          "disk/benchmark-disabled/evidence/packages.txt",
+          "disk/benchmark-disabled/evidence/output/summary.json"
+        ]
+      },
+      {
+        "id": "benchmark-equal",
+        "exit_code": 0,
+        "retained_artifacts": [
+          "disk/benchmark-equal/result.txt",
+          "disk/benchmark-equal/test-exit.txt",
+          "disk/benchmark-equal/evidence/driver.txt",
+          "disk/benchmark-equal/evidence/source-sha256.txt",
+          "disk/benchmark-equal/evidence/packages.txt",
+          "disk/benchmark-equal/evidence/output/summary.json"
+        ]
+      },
+      {
+        "id": "benchmark-guardian-boundary",
+        "exit_code": 0,
+        "retained_artifacts": [
+          "disk/benchmark-guardian-boundary/result.txt",
+          "disk/benchmark-guardian-boundary/test-exit.txt",
+          "disk/benchmark-guardian-boundary/evidence/driver.txt",
+          "disk/benchmark-guardian-boundary/evidence/source-sha256.txt",
+          "disk/benchmark-guardian-boundary/evidence/packages.txt",
+          "disk/benchmark-guardian-boundary/evidence/output/summary.json",
+          "disk/benchmark-guardian-boundary/evidence/output/early-exit.txt"
+        ]
+      },
+      {
+        "id": "benchmark-guardian-interleaved",
+        "exit_code": 0,
+        "retained_artifacts": [
+          "disk/benchmark-guardian-interleaved/result.txt",
+          "disk/benchmark-guardian-interleaved/test-exit.txt",
+          "disk/benchmark-guardian-interleaved/evidence/driver.txt",
+          "disk/benchmark-guardian-interleaved/evidence/source-sha256.txt",
+          "disk/benchmark-guardian-interleaved/evidence/packages.txt",
+          "disk/benchmark-guardian-interleaved/evidence/output/summary.json",
+          "disk/benchmark-guardian-interleaved/evidence/output/early-exit.txt"
+        ]
+      },
+      {
+        "id": "benchmark-missing",
+        "exit_code": 0,
+        "retained_artifacts": [
+          "disk/benchmark-missing/result.txt",
+          "disk/benchmark-missing/test-exit.txt",
+          "disk/benchmark-missing/evidence/driver.txt",
+          "disk/benchmark-missing/evidence/source-sha256.txt",
+          "disk/benchmark-missing/evidence/packages.txt",
+          "disk/benchmark-missing/evidence/output/summary.json",
+          "disk/benchmark-missing/evidence/output/early-exit.txt"
+        ]
+      },
+      {
+        "id": "benchmark-progress-boundary",
+        "exit_code": 0,
+        "retained_artifacts": [
+          "disk/benchmark-progress-boundary/result.txt",
+          "disk/benchmark-progress-boundary/test-exit.txt",
+          "disk/benchmark-progress-boundary/evidence/driver.txt",
+          "disk/benchmark-progress-boundary/evidence/source-sha256.txt",
+          "disk/benchmark-progress-boundary/evidence/packages.txt",
+          "disk/benchmark-progress-boundary/evidence/output/summary.json",
+          "disk/benchmark-progress-boundary/evidence/output/early-exit.txt"
+        ]
+      },
+      {
+        "id": "benchmark-sufficient",
+        "exit_code": 0,
+        "retained_artifacts": [
+          "disk/benchmark-sufficient/result.txt",
+          "disk/benchmark-sufficient/test-exit.txt",
+          "disk/benchmark-sufficient/evidence/driver.txt",
+          "disk/benchmark-sufficient/evidence/source-sha256.txt",
+          "disk/benchmark-sufficient/evidence/packages.txt",
+          "disk/benchmark-sufficient/evidence/output/summary.json"
+        ]
+      },
+      {
+        "id": "cleanup-active-session",
+        "exit_code": 0,
+        "retained_artifacts": [
+          "disk/cleanup-active-session/result.txt",
+          "disk/cleanup-active-session/test-exit.txt",
+          "disk/cleanup-active-session/evidence/driver.txt",
+          "disk/cleanup-active-session/evidence/source-sha256.txt",
+          "disk/cleanup-active-session/evidence/packages.txt",
+          "disk/cleanup-active-session/evidence/output/summary.json",
+          "disk/cleanup-active-session/evidence/output/early-exit.txt"
+        ]
+      },
+      {
+        "id": "cleanup-error-builder",
+        "exit_code": 0,
+        "retained_artifacts": [
+          "disk/cleanup-error-builder/result.txt",
+          "disk/cleanup-error-builder/test-exit.txt",
+          "disk/cleanup-error-builder/evidence/driver.txt",
+          "disk/cleanup-error-builder/evidence/source-sha256.txt",
+          "disk/cleanup-error-builder/evidence/packages.txt",
+          "disk/cleanup-error-builder/evidence/output/summary.json",
+          "disk/cleanup-error-builder/evidence/output/early-exit.txt"
+        ]
+      },
+      {
+        "id": "cleanup-error-image",
+        "exit_code": 0,
+        "retained_artifacts": [
+          "disk/cleanup-error-image/result.txt",
+          "disk/cleanup-error-image/test-exit.txt",
+          "disk/cleanup-error-image/evidence/driver.txt",
+          "disk/cleanup-error-image/evidence/source-sha256.txt",
+          "disk/cleanup-error-image/evidence/packages.txt",
+          "disk/cleanup-error-image/evidence/output/summary.json",
+          "disk/cleanup-error-image/evidence/output/early-exit.txt"
+        ]
+      },
+      {
+        "id": "cleanup-error-list",
+        "exit_code": 0,
+        "retained_artifacts": [
+          "disk/cleanup-error-list/result.txt",
+          "disk/cleanup-error-list/test-exit.txt",
+          "disk/cleanup-error-list/evidence/driver.txt",
+          "disk/cleanup-error-list/evidence/source-sha256.txt",
+          "disk/cleanup-error-list/evidence/packages.txt",
+          "disk/cleanup-error-list/evidence/output/summary.json",
+          "disk/cleanup-error-list/evidence/output/early-exit.txt"
+        ]
+      },
+      {
+        "id": "cleanup-error-network",
+        "exit_code": 0,
+        "retained_artifacts": [
+          "disk/cleanup-error-network/result.txt",
+          "disk/cleanup-error-network/test-exit.txt",
+          "disk/cleanup-error-network/evidence/driver.txt",
+          "disk/cleanup-error-network/evidence/source-sha256.txt",
+          "disk/cleanup-error-network/evidence/packages.txt",
+          "disk/cleanup-error-network/evidence/output/summary.json",
+          "disk/cleanup-error-network/evidence/output/early-exit.txt"
+        ]
+      },
+      {
+        "id": "cleanup-error-remove",
+        "exit_code": 0,
+        "retained_artifacts": [
+          "disk/cleanup-error-remove/result.txt",
+          "disk/cleanup-error-remove/test-exit.txt",
+          "disk/cleanup-error-remove/evidence/driver.txt",
+          "disk/cleanup-error-remove/evidence/source-sha256.txt",
+          "disk/cleanup-error-remove/evidence/packages.txt",
+          "disk/cleanup-error-remove/evidence/output/summary.json",
+          "disk/cleanup-error-remove/evidence/output/early-exit.txt"
+        ]
+      },
+      {
+        "id": "cleanup-partial",
+        "exit_code": 0,
+        "retained_artifacts": [
+          "disk/cleanup-partial/result.txt",
+          "disk/cleanup-partial/test-exit.txt",
+          "disk/cleanup-partial/evidence/driver.txt",
+          "disk/cleanup-partial/evidence/source-sha256.txt",
+          "disk/cleanup-partial/evidence/packages.txt",
+          "disk/cleanup-partial/evidence/output/summary.json",
+          "disk/cleanup-partial/evidence/output/early-exit.txt"
+        ]
+      },
+      {
+        "id": "cleanup-sufficient",
+        "exit_code": 0,
+        "retained_artifacts": [
+          "disk/cleanup-sufficient/result.txt",
+          "disk/cleanup-sufficient/test-exit.txt",
+          "disk/cleanup-sufficient/evidence/driver.txt",
+          "disk/cleanup-sufficient/evidence/source-sha256.txt",
+          "disk/cleanup-sufficient/evidence/packages.txt",
+          "disk/cleanup-sufficient/evidence/output/summary.json"
+        ]
+      },
+      {
+        "id": "diagnostic-deadline",
+        "exit_code": 0,
+        "retained_artifacts": [
+          "disk/diagnostic-deadline/result.txt",
+          "disk/diagnostic-deadline/test-exit.txt",
+          "disk/diagnostic-deadline/evidence/driver.txt",
+          "disk/diagnostic-deadline/evidence/source-sha256.txt",
+          "disk/diagnostic-deadline/evidence/packages.txt",
+          "disk/diagnostic-deadline/evidence/output/summary.json",
+          "disk/diagnostic-deadline/evidence/output/early-exit.txt"
+        ]
+      },
+      {
+        "id": "disk-band-range",
+        "exit_code": 0,
+        "retained_artifacts": [
+          "disk/disk-band-range/result.txt",
+          "disk/disk-band-range/test-exit.txt",
+          "disk/disk-band-range/evidence/driver.txt",
+          "disk/disk-band-range/evidence/source-sha256.txt",
+          "disk/disk-band-range/evidence/packages.txt"
+        ]
+      },
+      {
+        "id": "disk-floor-range",
+        "exit_code": 0,
+        "retained_artifacts": [
+          "disk/disk-floor-range/result.txt",
+          "disk/disk-floor-range/test-exit.txt",
+          "disk/disk-floor-range/evidence/driver.txt",
+          "disk/disk-floor-range/evidence/source-sha256.txt",
+          "disk/disk-floor-range/evidence/packages.txt"
+        ]
+      },
+      {
+        "id": "disk-max-band",
+        "exit_code": 0,
+        "retained_artifacts": [
+          "disk/disk-max-band/result.txt",
+          "disk/disk-max-band/test-exit.txt",
+          "disk/disk-max-band/evidence/driver.txt",
+          "disk/disk-max-band/evidence/source-sha256.txt",
+          "disk/disk-max-band/evidence/packages.txt",
+          "disk/disk-max-band/evidence/output/summary.json"
+        ]
+      },
+      {
+        "id": "disk-max-floor",
+        "exit_code": 0,
+        "retained_artifacts": [
+          "disk/disk-max-floor/result.txt",
+          "disk/disk-max-floor/test-exit.txt",
+          "disk/disk-max-floor/evidence/driver.txt",
+          "disk/disk-max-floor/evidence/source-sha256.txt",
+          "disk/disk-max-floor/evidence/packages.txt",
+          "disk/disk-max-floor/evidence/output/summary.json",
+          "disk/disk-max-floor/evidence/output/early-exit.txt"
+        ]
+      },
+      {
+        "id": "disk-sum-range",
+        "exit_code": 0,
+        "retained_artifacts": [
+          "disk/disk-sum-range/result.txt",
+          "disk/disk-sum-range/test-exit.txt",
+          "disk/disk-sum-range/evidence/driver.txt",
+          "disk/disk-sum-range/evidence/source-sha256.txt",
+          "disk/disk-sum-range/evidence/packages.txt"
+        ]
+      },
+      {
+        "id": "guardian-death",
+        "exit_code": 0,
+        "retained_artifacts": [
+          "disk/guardian-death/result.txt",
+          "disk/guardian-death/test-exit.txt",
+          "disk/guardian-death/evidence/driver.txt",
+          "disk/guardian-death/evidence/source-sha256.txt",
+          "disk/guardian-death/evidence/packages.txt",
+          "disk/guardian-death/evidence/output/summary.json",
+          "disk/guardian-death/evidence/output/early-exit.txt"
+        ]
+      },
+      {
+        "id": "guardian-death-boundary",
+        "exit_code": 0,
+        "retained_artifacts": [
+          "disk/guardian-death-boundary/result.txt",
+          "disk/guardian-death-boundary/test-exit.txt",
+          "disk/guardian-death-boundary/evidence/driver.txt",
+          "disk/guardian-death-boundary/evidence/source-sha256.txt",
+          "disk/guardian-death-boundary/evidence/packages.txt",
+          "disk/guardian-death-boundary/evidence/output/summary.json",
+          "disk/guardian-death-boundary/evidence/output/early-exit.txt"
+        ]
+      },
+      {
+        "id": "guardian-progress-boundary",
+        "exit_code": 0,
+        "retained_artifacts": [
+          "disk/guardian-progress-boundary/result.txt",
+          "disk/guardian-progress-boundary/test-exit.txt",
+          "disk/guardian-progress-boundary/evidence/driver.txt",
+          "disk/guardian-progress-boundary/evidence/source-sha256.txt",
+          "disk/guardian-progress-boundary/evidence/packages.txt",
+          "disk/guardian-progress-boundary/evidence/output/summary.json",
+          "disk/guardian-progress-boundary/evidence/output/early-exit.txt"
+        ]
+      },
+      {
+        "id": "guardian-stall",
+        "exit_code": 0,
+        "retained_artifacts": [
+          "disk/guardian-stall/result.txt",
+          "disk/guardian-stall/test-exit.txt",
+          "disk/guardian-stall/evidence/driver.txt",
+          "disk/guardian-stall/evidence/source-sha256.txt",
+          "disk/guardian-stall/evidence/packages.txt",
+          "disk/guardian-stall/evidence/output/summary.json",
+          "disk/guardian-stall/evidence/output/early-exit.txt"
+        ]
+      },
+      {
+        "id": "hygiene-timeout",
+        "exit_code": 0,
+        "retained_artifacts": [
+          "disk/hygiene-timeout/result.txt",
+          "disk/hygiene-timeout/test-exit.txt",
+          "disk/hygiene-timeout/evidence/driver.txt",
+          "disk/hygiene-timeout/evidence/source-sha256.txt",
+          "disk/hygiene-timeout/evidence/packages.txt",
+          "disk/hygiene-timeout/evidence/output/summary.json",
+          "disk/hygiene-timeout/evidence/output/early-exit.txt"
+        ]
+      },
+      {
+        "id": "malformed-boundary",
+        "exit_code": 0,
+        "retained_artifacts": [
+          "disk/malformed-boundary/result.txt",
+          "disk/malformed-boundary/test-exit.txt",
+          "disk/malformed-boundary/evidence/driver.txt",
+          "disk/malformed-boundary/evidence/source-sha256.txt",
+          "disk/malformed-boundary/evidence/packages.txt",
+          "disk/malformed-boundary/evidence/output/summary.json",
+          "disk/malformed-boundary/evidence/output/early-exit.txt"
+        ]
+      },
+      {
+        "id": "missing-active",
+        "exit_code": 0,
+        "retained_artifacts": [
+          "disk/missing-active/result.txt",
+          "disk/missing-active/test-exit.txt",
+          "disk/missing-active/evidence/driver.txt",
+          "disk/missing-active/evidence/source-sha256.txt",
+          "disk/missing-active/evidence/packages.txt",
+          "disk/missing-active/evidence/output/summary.json",
+          "disk/missing-active/evidence/output/early-exit.txt"
+        ]
+      },
+      {
+        "id": "missing-after-hygiene",
+        "exit_code": 0,
+        "retained_artifacts": [
+          "disk/missing-after-hygiene/result.txt",
+          "disk/missing-after-hygiene/test-exit.txt",
+          "disk/missing-after-hygiene/evidence/driver.txt",
+          "disk/missing-after-hygiene/evidence/source-sha256.txt",
+          "disk/missing-after-hygiene/evidence/packages.txt",
+          "disk/missing-after-hygiene/evidence/output/summary.json",
+          "disk/missing-after-hygiene/evidence/output/early-exit.txt"
+        ]
+      },
+      {
+        "id": "missing-boundary",
+        "exit_code": 0,
+        "retained_artifacts": [
+          "disk/missing-boundary/result.txt",
+          "disk/missing-boundary/test-exit.txt",
+          "disk/missing-boundary/evidence/driver.txt",
+          "disk/missing-boundary/evidence/source-sha256.txt",
+          "disk/missing-boundary/evidence/packages.txt",
+          "disk/missing-boundary/evidence/output/summary.json",
+          "disk/missing-boundary/evidence/output/early-exit.txt"
+        ]
+      },
+      {
+        "id": "record-before-stop",
+        "exit_code": 0,
+        "retained_artifacts": [
+          "disk/record-before-stop/result.txt",
+          "disk/record-before-stop/test-exit.txt",
+          "disk/record-before-stop/evidence/driver.txt",
+          "disk/record-before-stop/evidence/source-sha256.txt",
+          "disk/record-before-stop/evidence/packages.txt",
+          "disk/record-before-stop/evidence/output/summary.json",
+          "disk/record-before-stop/evidence/output/early-exit.txt"
+        ]
+      },
+      {
+        "id": "restart-benchmark",
+        "exit_code": 0,
+        "retained_artifacts": [
+          "disk/restart-benchmark/result.txt",
+          "disk/restart-benchmark/test-exit.txt",
+          "disk/restart-benchmark/evidence/driver.txt",
+          "disk/restart-benchmark/evidence/source-sha256.txt",
+          "disk/restart-benchmark/evidence/packages.txt",
+          "disk/restart-benchmark/evidence/output/summary.json",
+          "disk/restart-benchmark/evidence/output/early-exit.txt"
+        ]
+      },
+      {
+        "id": "restart-counted",
+        "exit_code": 0,
+        "retained_artifacts": [
+          "disk/restart-counted/result.txt",
+          "disk/restart-counted/test-exit.txt",
+          "disk/restart-counted/evidence/driver.txt",
+          "disk/restart-counted/evidence/source-sha256.txt",
+          "disk/restart-counted/evidence/packages.txt",
+          "disk/restart-counted/evidence/output/summary.json",
+          "disk/restart-counted/evidence/output/early-exit.txt"
+        ]
+      },
+      {
+        "id": "restart-uncounted",
+        "exit_code": 0,
+        "retained_artifacts": [
+          "disk/restart-uncounted/result.txt",
+          "disk/restart-uncounted/test-exit.txt",
+          "disk/restart-uncounted/evidence/driver.txt",
+          "disk/restart-uncounted/evidence/source-sha256.txt",
+          "disk/restart-uncounted/evidence/packages.txt",
+          "disk/restart-uncounted/evidence/output/summary.json",
+          "disk/restart-uncounted/evidence/output/early-exit.txt"
+        ]
+      },
+      {
+        "id": "stalled-active",
+        "exit_code": 0,
+        "retained_artifacts": [
+          "disk/stalled-active/result.txt",
+          "disk/stalled-active/test-exit.txt",
+          "disk/stalled-active/evidence/driver.txt",
+          "disk/stalled-active/evidence/source-sha256.txt",
+          "disk/stalled-active/evidence/packages.txt",
+          "disk/stalled-active/evidence/output/summary.json",
+          "disk/stalled-active/evidence/output/early-exit.txt"
+        ]
+      },
+      {
+        "id": "stop-timeout",
+        "exit_code": 0,
+        "retained_artifacts": [
+          "disk/stop-timeout/result.txt",
+          "disk/stop-timeout/test-exit.txt",
+          "disk/stop-timeout/evidence/driver.txt",
+          "disk/stop-timeout/evidence/source-sha256.txt",
+          "disk/stop-timeout/evidence/packages.txt",
+          "disk/stop-timeout/evidence/output/summary.json",
+          "disk/stop-timeout/evidence/output/early-exit.txt"
+        ]
+      }
+    ]
+  },
+  "shared_tlc": {
+    "exit_code": 0,
+    "positive_count": 13,
+    "negative_count": 61,
+    "elapsed_seconds": 67,
+    "heap_limit_mb": 384,
+    "workers": 2,
+    "timeout_seconds_per_configuration": 120,
+    "kill_grace_seconds": 60,
+    "container_memory_mb": 768,
+    "container_cpus": 2,
+    "image_id": "sha256:dc81b270cbde51da56ddc700548c7f1b476b610ae71c96b155dc4e944f83ef64",
+    "jar_sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88",
+    "results": [
+      {
+        "configuration": "carrier_index/MC_CarrierIndex",
+        "expected_invariant": null,
+        "exit_code": 0,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": true,
+        "counterexample_trace": false,
+        "states_generated": 1713,
+        "distinct_states": 222,
+        "seed": "3844885288603938613",
+        "fingerprint_index": 47,
+        "transcript": "tlc/tlc-carrier_index-MC_CarrierIndex.txt"
+      },
+      {
+        "configuration": "carrier_index/MC_CarrierIndex_dag_first_pre_fix",
+        "expected_invariant": "IndexCompleteForWindow",
+        "exit_code": 12,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": false,
+        "counterexample_trace": true,
+        "states_generated": 11,
+        "distinct_states": 9,
+        "seed": "3508732039299235670",
+        "fingerprint_index": 56,
+        "transcript": "tlc/tlc-carrier_index-MC_CarrierIndex_dag_first_pre_fix.txt"
+      },
+      {
+        "configuration": "carrier_index/MC_CarrierIndex_read_failure_pre_fix",
+        "expected_invariant": "AbsenceProofSound",
+        "exit_code": 12,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": false,
+        "counterexample_trace": true,
+        "states_generated": 104,
+        "distinct_states": 39,
+        "seed": "6982746795549167292",
+        "fingerprint_index": 16,
+        "transcript": "tlc/tlc-carrier_index-MC_CarrierIndex_read_failure_pre_fix.txt"
+      },
+      {
+        "configuration": "deploy_storage/MC_DeployStorageBound",
+        "expected_invariant": null,
+        "exit_code": 0,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": true,
+        "counterexample_trace": false,
+        "states_generated": 443,
+        "distinct_states": 237,
+        "seed": "7980515075363573008",
+        "fingerprint_index": 4,
+        "transcript": "tlc/tlc-deploy_storage-MC_DeployStorageBound.txt"
+      },
+      {
+        "configuration": "deploy_storage/MC_DeployStorageBound_unmetered_pre_fix",
+        "expected_invariant": "RetainedWithinPhlo",
+        "exit_code": 12,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": false,
+        "counterexample_trace": true,
+        "states_generated": 67,
+        "distinct_states": 40,
+        "seed": "-2665043021959800222",
+        "fingerprint_index": 128,
+        "transcript": "tlc/tlc-deploy_storage-MC_DeployStorageBound_unmetered_pre_fix.txt"
+      },
+      {
+        "configuration": "replay_liveness/MC_ReplayHotLoop",
+        "expected_invariant": null,
+        "exit_code": 0,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": true,
+        "counterexample_trace": false,
+        "states_generated": 10,
+        "distinct_states": 9,
+        "seed": "-5192577948218706272",
+        "fingerprint_index": 27,
+        "transcript": "tlc/tlc-replay_liveness-MC_ReplayHotLoop.txt"
+      },
+      {
+        "configuration": "soak_disk/MC_MetricBaseline",
+        "expected_invariant": null,
+        "exit_code": 0,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": true,
+        "counterexample_trace": false,
+        "states_generated": 2,
+        "distinct_states": 2,
+        "seed": "-6101536281566813182",
+        "fingerprint_index": 22,
+        "transcript": "tlc/tlc-soak_disk-MC_MetricBaseline.txt"
+      },
+      {
+        "configuration": "soak_disk/MC_MetricBaseline_available",
+        "expected_invariant": null,
+        "exit_code": 0,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": true,
+        "counterexample_trace": false,
+        "states_generated": 2,
+        "distinct_states": 2,
+        "seed": "-1217561686055027034",
+        "fingerprint_index": 108,
+        "transcript": "tlc/tlc-soak_disk-MC_MetricBaseline_available.txt"
+      },
+      {
+        "configuration": "soak_disk/MC_MetricBaseline_zero_pre_fix",
+        "expected_invariant": "MissingBaselineUnavailable",
+        "exit_code": 12,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": false,
+        "counterexample_trace": true,
+        "states_generated": 2,
+        "distinct_states": 2,
+        "seed": "-8691188693779982519",
+        "fingerprint_index": 0,
+        "transcript": "tlc/tlc-soak_disk-MC_MetricBaseline_zero_pre_fix.txt"
+      },
+      {
+        "configuration": "soak_disk/MC_MetricMonotonicity",
+        "expected_invariant": null,
+        "exit_code": 0,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": true,
+        "counterexample_trace": false,
+        "states_generated": 15,
+        "distinct_states": 15,
+        "seed": "4873237527507952877",
+        "fingerprint_index": 11,
+        "transcript": "tlc/tlc-soak_disk-MC_MetricMonotonicity.txt"
+      },
+      {
+        "configuration": "soak_disk/MC_MetricMonotonicity_unchecked_pre_fix",
+        "expected_invariant": "DecreasingSamplesUnavailable",
+        "exit_code": 12,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": false,
+        "counterexample_trace": true,
+        "states_generated": 10,
+        "distinct_states": 10,
+        "seed": "-148283314288934741",
+        "fingerprint_index": 116,
+        "transcript": "tlc/tlc-soak_disk-MC_MetricMonotonicity_unchecked_pre_fix.txt"
+      },
+      {
+        "configuration": "soak_disk/MC_MetricSampleValidity",
+        "expected_invariant": null,
+        "exit_code": 0,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": true,
+        "counterexample_trace": false,
+        "states_generated": 11,
+        "distinct_states": 11,
+        "seed": "-8333405295636807285",
+        "fingerprint_index": 38,
+        "transcript": "tlc/tlc-soak_disk-MC_MetricSampleValidity.txt"
+      },
+      {
+        "configuration": "soak_disk/MC_MetricSampleValidity_unchecked_pre_fix",
+        "expected_invariant": "InvalidSamplesRejected",
+        "exit_code": 12,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": false,
+        "counterexample_trace": true,
+        "states_generated": 8,
+        "distinct_states": 8,
+        "seed": "8184568024630737301",
+        "fingerprint_index": 20,
+        "transcript": "tlc/tlc-soak_disk-MC_MetricSampleValidity_unchecked_pre_fix.txt"
+      },
+      {
+        "configuration": "soak_disk/MC_MetricSummary",
+        "expected_invariant": null,
+        "exit_code": 0,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": true,
+        "counterexample_trace": false,
+        "states_generated": 3,
+        "distinct_states": 3,
+        "seed": "-8117300762533855614",
+        "fingerprint_index": 109,
+        "transcript": "tlc/tlc-soak_disk-MC_MetricSummary.txt"
+      },
+      {
+        "configuration": "soak_disk/MC_MetricSummary_omitted_pre_fix",
+        "expected_invariant": "CollectedRequiredPublished",
+        "exit_code": 12,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": false,
+        "counterexample_trace": true,
+        "states_generated": 3,
+        "distinct_states": 3,
+        "seed": "590581723435255764",
+        "fingerprint_index": 54,
+        "transcript": "tlc/tlc-soak_disk-MC_MetricSummary_omitted_pre_fix.txt"
+      },
+      {
+        "configuration": "soak_disk/MC_ReserveBound",
+        "expected_invariant": null,
+        "exit_code": 0,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": true,
+        "counterexample_trace": false,
+        "states_generated": 11,
+        "distinct_states": 8,
+        "seed": "5742012616192186089",
+        "fingerprint_index": 76,
+        "transcript": "tlc/tlc-soak_disk-MC_ReserveBound.txt"
+      },
+      {
+        "configuration": "soak_disk/MC_ReserveBound_unbounded_pre_fix",
+        "expected_invariant": "OperatingReserveHeld",
+        "exit_code": 12,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": false,
+        "counterexample_trace": true,
+        "states_generated": 20,
+        "distinct_states": 15,
+        "seed": "-5930793840315103335",
+        "fingerprint_index": 56,
+        "transcript": "tlc/tlc-soak_disk-MC_ReserveBound_unbounded_pre_fix.txt"
+      },
+      {
+        "configuration": "soak_disk/MC_RetentionReserve",
+        "expected_invariant": null,
+        "exit_code": 0,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": true,
+        "counterexample_trace": false,
+        "states_generated": 6,
+        "distinct_states": 5,
+        "seed": "-5733493698037524672",
+        "fingerprint_index": 80,
+        "transcript": "tlc/tlc-soak_disk-MC_RetentionReserve.txt"
+      },
+      {
+        "configuration": "soak_disk/MC_RetentionReserve_unskipped_pre_fix",
+        "expected_invariant": "ReserveHeld",
+        "exit_code": 12,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": false,
+        "counterexample_trace": true,
+        "states_generated": 5,
+        "distinct_states": 5,
+        "seed": "1344969308463144781",
+        "fingerprint_index": 105,
+        "transcript": "tlc/tlc-soak_disk-MC_RetentionReserve_unskipped_pre_fix.txt"
+      },
+      {
+        "configuration": "soak_disk/MC_SoakDiskAdmission",
+        "expected_invariant": null,
+        "exit_code": 0,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": true,
+        "counterexample_trace": false,
+        "states_generated": 82186,
+        "distinct_states": 52528,
+        "seed": "-4561628272124425947",
+        "fingerprint_index": 96,
+        "transcript": "tlc/tlc-soak_disk-MC_SoakDiskAdmission.txt"
+      },
+      {
+        "configuration": "soak_disk/MC_SoakDiskAdmission_age_only_pre_fix",
+        "expected_invariant": "UnownedSessionPreserved",
+        "exit_code": 12,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": false,
+        "counterexample_trace": true,
+        "states_generated": 14614,
+        "distinct_states": 9168,
+        "seed": "-5498101784409886800",
+        "fingerprint_index": 116,
+        "transcript": "tlc/tlc-soak_disk-MC_SoakDiskAdmission_age_only_pre_fix.txt"
+      },
+      {
+        "configuration": "soak_disk/MC_SoakDiskAdmission_attribute_first_pre_fix",
+        "expected_invariant": "AttributionRequiresRecord",
+        "exit_code": 12,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": false,
+        "counterexample_trace": true,
+        "states_generated": 4358,
+        "distinct_states": 2386,
+        "seed": "-1914167902654114639",
+        "fingerprint_index": 85,
+        "transcript": "tlc/tlc-soak_disk-MC_SoakDiskAdmission_attribute_first_pre_fix.txt"
+      },
+      {
+        "configuration": "soak_disk/MC_SoakDiskAdmission_benchmark_band_pre_fix",
+        "expected_invariant": "BenchmarkRequiresBand",
+        "exit_code": 12,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": false,
+        "counterexample_trace": true,
+        "states_generated": 2000,
+        "distinct_states": 1361,
+        "seed": "-1748417172742927633",
+        "fingerprint_index": 38,
+        "transcript": "tlc/tlc-soak_disk-MC_SoakDiskAdmission_benchmark_band_pre_fix.txt"
+      },
+      {
+        "configuration": "soak_disk/MC_SoakDiskAdmission_floor_only_pre_fix",
+        "expected_invariant": "AdmissionRequiresBand",
+        "exit_code": 12,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": false,
+        "counterexample_trace": true,
+        "states_generated": 35433,
+        "distinct_states": 21582,
+        "seed": "-3034724274353842879",
+        "fingerprint_index": 105,
+        "transcript": "tlc/tlc-soak_disk-MC_SoakDiskAdmission_floor_only_pre_fix.txt"
+      },
+      {
+        "configuration": "soak_disk/MC_SoakDiskAdmission_global_prune_pre_fix",
+        "expected_invariant": "UnownedDockerResourcesPreserved",
+        "exit_code": 12,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": false,
+        "counterexample_trace": true,
+        "states_generated": 14568,
+        "distinct_states": 9122,
+        "seed": "3781212961624753732",
+        "fingerprint_index": 40,
+        "transcript": "tlc/tlc-soak_disk-MC_SoakDiskAdmission_global_prune_pre_fix.txt"
+      },
+      {
+        "configuration": "soak_disk/MC_SoakDiskAdmission_ignore_errors_pre_fix",
+        "expected_invariant": "CleanupFailurePreventsAdmission",
+        "exit_code": 12,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": false,
+        "counterexample_trace": true,
+        "states_generated": 44301,
+        "distinct_states": 24769,
+        "seed": "757302750029267089",
+        "fingerprint_index": 15,
+        "transcript": "tlc/tlc-soak_disk-MC_SoakDiskAdmission_ignore_errors_pre_fix.txt"
+      },
+      {
+        "configuration": "soak_disk/MC_SoakDiskAdmission_in_place_pre_fix",
+        "expected_invariant": "VisibleImpliesComplete",
+        "exit_code": 12,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": false,
+        "counterexample_trace": true,
+        "states_generated": 1985,
+        "distinct_states": 1329,
+        "seed": "-1282000142784088844",
+        "fingerprint_index": 74,
+        "transcript": "tlc/tlc-soak_disk-MC_SoakDiskAdmission_in_place_pre_fix.txt"
+      },
+      {
+        "configuration": "soak_disk/MC_SoakDiskAdmission_iteration_only_pre_fix",
+        "expected_invariant": "BenchmarkMonitorDeathObserved",
+        "exit_code": 12,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": false,
+        "counterexample_trace": true,
+        "states_generated": 2050,
+        "distinct_states": 1376,
+        "seed": "-2559826631094188666",
+        "fingerprint_index": 79,
+        "transcript": "tlc/tlc-soak_disk-MC_SoakDiskAdmission_iteration_only_pre_fix.txt"
+      },
+      {
+        "configuration": "soak_disk/MC_SoakDiskAdmission_late_guardian_pre_fix",
+        "expected_invariant": "BenchmarkBreachObserved",
+        "exit_code": 12,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": false,
+        "counterexample_trace": true,
+        "states_generated": 1910,
+        "distinct_states": 1302,
+        "seed": "-3933246389496680109",
+        "fingerprint_index": 89,
+        "transcript": "tlc/tlc-soak_disk-MC_SoakDiskAdmission_late_guardian_pre_fix.txt"
+      },
+      {
+        "configuration": "soak_disk/MC_SoakDiskAdmission_missing_sample_pre_fix",
+        "expected_invariant": "AdmissionRequiresSample",
+        "exit_code": 12,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": false,
+        "counterexample_trace": true,
+        "states_generated": 16845,
+        "distinct_states": 11032,
+        "seed": "4729966390068619403",
+        "fingerprint_index": 33,
+        "transcript": "tlc/tlc-soak_disk-MC_SoakDiskAdmission_missing_sample_pre_fix.txt"
+      },
+      {
+        "configuration": "soak_disk/MC_SoakDiskAdmission_numeric_prefix_pre_fix",
+        "expected_invariant": "AdmissionRequiresValidSample",
+        "exit_code": 12,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": false,
+        "counterexample_trace": true,
+        "states_generated": 17031,
+        "distinct_states": 11114,
+        "seed": "4344374478786870242",
+        "fingerprint_index": 59,
+        "transcript": "tlc/tlc-soak_disk-MC_SoakDiskAdmission_numeric_prefix_pre_fix.txt"
+      },
+      {
+        "configuration": "soak_disk/MC_SoakDiskAdmission_pathname_pre_fix",
+        "expected_invariant": "UntrustedRecordPreventsAdmission",
+        "exit_code": 12,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": false,
+        "counterexample_trace": true,
+        "states_generated": 2003,
+        "distinct_states": 1355,
+        "seed": "3038850292799927969",
+        "fingerprint_index": 117,
+        "transcript": "tlc/tlc-soak_disk-MC_SoakDiskAdmission_pathname_pre_fix.txt"
+      },
+      {
+        "configuration": "soak_disk/MC_SoakDiskAdmission_retained_breach_pre_fix",
+        "expected_invariant": "RetainedBreachPreventsBenchmark",
+        "exit_code": 12,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": false,
+        "counterexample_trace": true,
+        "states_generated": 2074,
+        "distinct_states": 1383,
+        "seed": "2556211230229592641",
+        "fingerprint_index": 51,
+        "transcript": "tlc/tlc-soak_disk-MC_SoakDiskAdmission_retained_breach_pre_fix.txt"
+      },
+      {
+        "configuration": "soak_disk/MC_SoakDiskAdmission_unbounded_hygiene_pre_fix",
+        "expected_invariant": "HygieneWithinBudget",
+        "exit_code": 12,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": false,
+        "counterexample_trace": true,
+        "states_generated": 19103,
+        "distinct_states": 12545,
+        "seed": "-2858912383046801438",
+        "fingerprint_index": 17,
+        "transcript": "tlc/tlc-soak_disk-MC_SoakDiskAdmission_unbounded_hygiene_pre_fix.txt"
+      },
+      {
+        "configuration": "soak_disk/MC_SoakDiskAdmission_unchecked_guardian_pre_fix",
+        "expected_invariant": "AdmissionRequiresGuardian",
+        "exit_code": 12,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": false,
+        "counterexample_trace": true,
+        "states_generated": 4904,
+        "distinct_states": 2679,
+        "seed": "-8220085636335243453",
+        "fingerprint_index": 35,
+        "transcript": "tlc/tlc-soak_disk-MC_SoakDiskAdmission_unchecked_guardian_pre_fix.txt"
+      },
+      {
+        "configuration": "soak_disk/MC_SoakDiskAdmission_unchecked_monitor_pre_fix",
+        "expected_invariant": "MonitorDeathPreventsAdmission",
+        "exit_code": 12,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": false,
+        "counterexample_trace": true,
+        "states_generated": 5097,
+        "distinct_states": 2713,
+        "seed": "5055997649620763824",
+        "fingerprint_index": 90,
+        "transcript": "tlc/tlc-soak_disk-MC_SoakDiskAdmission_unchecked_monitor_pre_fix.txt"
+      },
+      {
+        "configuration": "soak_disk/MC_SoakDiskAdmission_unchecked_placement_pre_fix",
+        "expected_invariant": "UnverifiedPlacementPreventsAdmission",
+        "exit_code": 12,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": false,
+        "counterexample_trace": true,
+        "states_generated": 1771,
+        "distinct_states": 1245,
+        "seed": "4744848359942698489",
+        "fingerprint_index": 40,
+        "transcript": "tlc/tlc-soak_disk-MC_SoakDiskAdmission_unchecked_placement_pre_fix.txt"
+      },
+      {
+        "configuration": "soak_disk/MC_SoakDiskAdmission_unchecked_producer_pre_fix",
+        "expected_invariant": "FailedProducerPreservesRecord",
+        "exit_code": 12,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": false,
+        "counterexample_trace": true,
+        "states_generated": 5021,
+        "distinct_states": 2635,
+        "seed": "-7860394647413477249",
+        "fingerprint_index": 15,
+        "transcript": "tlc/tlc-soak_disk-MC_SoakDiskAdmission_unchecked_producer_pre_fix.txt"
+      },
+      {
+        "configuration": "soak_disk/MC_SoakDiskAdmission_unchecked_progress_pre_fix",
+        "expected_invariant": "StaleProgressPreventsAdmission",
+        "exit_code": 12,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": false,
+        "counterexample_trace": true,
+        "states_generated": 4799,
+        "distinct_states": 2600,
+        "seed": "5104121638427953672",
+        "fingerprint_index": 108,
+        "transcript": "tlc/tlc-soak_disk-MC_SoakDiskAdmission_unchecked_progress_pre_fix.txt"
+      },
+      {
+        "configuration": "soak_disk/MC_SoakDiskAdmission_unchecked_range_pre_fix",
+        "expected_invariant": "AdmissionRequiresValidDiskSettings",
+        "exit_code": 12,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": false,
+        "counterexample_trace": true,
+        "states_generated": 987,
+        "distinct_states": 854,
+        "seed": "-8027152833398873485",
+        "fingerprint_index": 88,
+        "transcript": "tlc/tlc-soak_disk-MC_SoakDiskAdmission_unchecked_range_pre_fix.txt"
+      },
+      {
+        "configuration": "soak_disk/MC_SoakDiskAdmission_unrecorded_benchmark_pre_fix",
+        "expected_invariant": "BenchmarkCrashRequiresRefusal",
+        "exit_code": 12,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": false,
+        "counterexample_trace": true,
+        "states_generated": 2234,
+        "distinct_states": 1471,
+        "seed": "-2744245213037717385",
+        "fingerprint_index": 67,
+        "transcript": "tlc/tlc-soak_disk-MC_SoakDiskAdmission_unrecorded_benchmark_pre_fix.txt"
+      },
+      {
+        "configuration": "soak_disk/MC_SoakDiskAdmission_unrecorded_pre_fix",
+        "expected_invariant": "CrashRequiresRefusal",
+        "exit_code": 12,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": false,
+        "counterexample_trace": true,
+        "states_generated": 2480,
+        "distinct_states": 1610,
+        "seed": "7726738382329646698",
+        "fingerprint_index": 4,
+        "transcript": "tlc/tlc-soak_disk-MC_SoakDiskAdmission_unrecorded_pre_fix.txt"
+      },
+      {
+        "configuration": "soak_disk/MC_SoakDiskAdmission_unwatched_breach_pre_fix",
+        "expected_invariant": "BenchmarkCancellationObserved",
+        "exit_code": 12,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": false,
+        "counterexample_trace": true,
+        "states_generated": 1996,
+        "distinct_states": 1372,
+        "seed": "7271454208578114235",
+        "fingerprint_index": 113,
+        "transcript": "tlc/tlc-soak_disk-MC_SoakDiskAdmission_unwatched_breach_pre_fix.txt"
+      },
+      {
+        "configuration": "soak_disk/MC_SoakDiskAdmission_unwatched_death_pre_fix",
+        "expected_invariant": "BenchmarkCancellationObserved",
+        "exit_code": 12,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": false,
+        "counterexample_trace": true,
+        "states_generated": 1945,
+        "distinct_states": 1338,
+        "seed": "1834173108206029286",
+        "fingerprint_index": 78,
+        "transcript": "tlc/tlc-soak_disk-MC_SoakDiskAdmission_unwatched_death_pre_fix.txt"
+      },
+      {
+        "configuration": "soak_disk/MC_SoakDiskGuardian",
+        "expected_invariant": null,
+        "exit_code": 0,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": true,
+        "counterexample_trace": false,
+        "states_generated": 404952,
+        "distinct_states": 217788,
+        "seed": "-2245063857330845361",
+        "fingerprint_index": 77,
+        "transcript": "tlc/tlc-soak_disk-MC_SoakDiskGuardian.txt"
+      },
+      {
+        "configuration": "soak_disk/MC_SoakDiskGuardian_alive_only_pre_fix",
+        "expected_invariant": "StaleGuardianRequiresInterrupt",
+        "exit_code": 12,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": false,
+        "counterexample_trace": true,
+        "states_generated": 196,
+        "distinct_states": 196,
+        "seed": "-2437217509342514642",
+        "fingerprint_index": 12,
+        "transcript": "tlc/tlc-soak_disk-MC_SoakDiskGuardian_alive_only_pre_fix.txt"
+      },
+      {
+        "configuration": "soak_disk/MC_SoakDiskGuardian_blocking_pre_fix",
+        "expected_invariant": "ShutdownIndependentOfSync",
+        "exit_code": 12,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": false,
+        "counterexample_trace": true,
+        "states_generated": 496,
+        "distinct_states": 472,
+        "seed": "1763525962736393605",
+        "fingerprint_index": 70,
+        "transcript": "tlc/tlc-soak_disk-MC_SoakDiskGuardian_blocking_pre_fix.txt"
+      },
+      {
+        "configuration": "soak_disk/MC_SoakDiskGuardian_cleared_breach_pre_fix",
+        "expected_invariant": "RetainedBreachStopsRestart",
+        "exit_code": 12,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": false,
+        "counterexample_trace": true,
+        "states_generated": 11940,
+        "distinct_states": 8569,
+        "seed": "2747403991136184125",
+        "fingerprint_index": 31,
+        "transcript": "tlc/tlc-soak_disk-MC_SoakDiskGuardian_cleared_breach_pre_fix.txt"
+      },
+      {
+        "configuration": "soak_disk/MC_SoakDiskGuardian_client_only_pre_fix",
+        "expected_invariant": "ExitStopsWriters",
+        "exit_code": 12,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": false,
+        "counterexample_trace": true,
+        "states_generated": 182,
+        "distinct_states": 182,
+        "seed": "6812436532240912192",
+        "fingerprint_index": 63,
+        "transcript": "tlc/tlc-soak_disk-MC_SoakDiskGuardian_client_only_pre_fix.txt"
+      },
+      {
+        "configuration": "soak_disk/MC_SoakDiskGuardian_drain_first_pre_fix",
+        "expected_invariant": "DrainRequiresOwnedStop",
+        "exit_code": 12,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": false,
+        "counterexample_trace": true,
+        "states_generated": 3713,
+        "distinct_states": 3447,
+        "seed": "774187629728363976",
+        "fingerprint_index": 82,
+        "transcript": "tlc/tlc-soak_disk-MC_SoakDiskGuardian_drain_first_pre_fix.txt"
+      },
+      {
+        "configuration": "soak_disk/MC_SoakDiskGuardian_host_pattern_only_pre_fix",
+        "expected_invariant": "UnownedHostWritersPreserved",
+        "exit_code": 12,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": false,
+        "counterexample_trace": true,
+        "states_generated": 182,
+        "distinct_states": 182,
+        "seed": "7530520224553597898",
+        "fingerprint_index": 33,
+        "transcript": "tlc/tlc-soak_disk-MC_SoakDiskGuardian_host_pattern_only_pre_fix.txt"
+      },
+      {
+        "configuration": "soak_disk/MC_SoakDiskGuardian_ignored_pre_fix",
+        "expected_invariant": "FailedStopRetained",
+        "exit_code": 12,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": false,
+        "counterexample_trace": true,
+        "states_generated": 207,
+        "distinct_states": 205,
+        "seed": "-8656051928401123002",
+        "fingerprint_index": 116,
+        "transcript": "tlc/tlc-soak_disk-MC_SoakDiskGuardian_ignored_pre_fix.txt"
+      },
+      {
+        "configuration": "soak_disk/MC_SoakDiskGuardian_name_only_pre_fix",
+        "expected_invariant": "UnownedWritersPreserved",
+        "exit_code": 12,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": false,
+        "counterexample_trace": true,
+        "states_generated": 182,
+        "distinct_states": 182,
+        "seed": "-5075516173410745637",
+        "fingerprint_index": 83,
+        "transcript": "tlc/tlc-soak_disk-MC_SoakDiskGuardian_name_only_pre_fix.txt"
+      },
+      {
+        "configuration": "soak_disk/MC_SoakDiskGuardian_oom_pattern_only_pre_fix",
+        "expected_invariant": "UnownedPreferencesPreserved",
+        "exit_code": 12,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": false,
+        "counterexample_trace": true,
+        "states_generated": 106,
+        "distinct_states": 106,
+        "seed": "2712668721561581208",
+        "fingerprint_index": 5,
+        "transcript": "tlc/tlc-soak_disk-MC_SoakDiskGuardian_oom_pattern_only_pre_fix.txt"
+      },
+      {
+        "configuration": "soak_disk/MC_SoakDiskGuardian_parent_group_pre_fix",
+        "expected_invariant": "CrashStopsOwnedWriters",
+        "exit_code": 12,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": false,
+        "counterexample_trace": true,
+        "states_generated": 186,
+        "distinct_states": 186,
+        "seed": "96806278753731354",
+        "fingerprint_index": 98,
+        "transcript": "tlc/tlc-soak_disk-MC_SoakDiskGuardian_parent_group_pre_fix.txt"
+      },
+      {
+        "configuration": "soak_disk/MC_SoakDiskGuardian_parent_only_pre_fix",
+        "expected_invariant": "UntrustedControlPreventsRelease",
+        "exit_code": 12,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": false,
+        "counterexample_trace": true,
+        "states_generated": 54,
+        "distinct_states": 54,
+        "seed": "3792883540686205170",
+        "fingerprint_index": 119,
+        "transcript": "tlc/tlc-soak_disk-MC_SoakDiskGuardian_parent_only_pre_fix.txt"
+      },
+      {
+        "configuration": "soak_disk/MC_SoakDiskGuardian_per_root_deadline_pre_fix",
+        "expected_invariant": "AttributionWithinBudget",
+        "exit_code": 12,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": false,
+        "counterexample_trace": true,
+        "states_generated": 3026,
+        "distinct_states": 2940,
+        "seed": "8236541009143147355",
+        "fingerprint_index": 11,
+        "transcript": "tlc/tlc-soak_disk-MC_SoakDiskGuardian_per_root_deadline_pre_fix.txt"
+      },
+      {
+        "configuration": "soak_disk/MC_SoakDiskGuardian_periodic_name_pre_fix",
+        "expected_invariant": "UnownedContainerPreferencesPreserved",
+        "exit_code": 12,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": false,
+        "counterexample_trace": true,
+        "states_generated": 106,
+        "distinct_states": 106,
+        "seed": "-3852908622115497165",
+        "fingerprint_index": 29,
+        "transcript": "tlc/tlc-soak_disk-MC_SoakDiskGuardian_periodic_name_pre_fix.txt"
+      },
+      {
+        "configuration": "soak_disk/MC_SoakDiskGuardian_rate_exceeds_floor_pre_fix",
+        "expected_invariant": "NoOverrun",
+        "exit_code": 12,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": false,
+        "counterexample_trace": true,
+        "states_generated": 1078,
+        "distinct_states": 1042,
+        "seed": "-215716938482055570",
+        "fingerprint_index": 78,
+        "transcript": "tlc/tlc-soak_disk-MC_SoakDiskGuardian_rate_exceeds_floor_pre_fix.txt"
+      },
+      {
+        "configuration": "soak_disk/MC_SoakDiskGuardian_start_first_pre_fix",
+        "expected_invariant": "UnavailableQueryPreventsRelease",
+        "exit_code": 12,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": false,
+        "counterexample_trace": true,
+        "states_generated": 52,
+        "distinct_states": 52,
+        "seed": "4213807005950379511",
+        "fingerprint_index": 60,
+        "transcript": "tlc/tlc-soak_disk-MC_SoakDiskGuardian_start_first_pre_fix.txt"
+      },
+      {
+        "configuration": "soak_disk/MC_SoakDiskGuardian_startup_only_pre_fix",
+        "expected_invariant": "DeadMonitorRequiresInterrupt",
+        "exit_code": 12,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": false,
+        "counterexample_trace": true,
+        "states_generated": 218,
+        "distinct_states": 216,
+        "seed": "517037877228576742",
+        "fingerprint_index": 61,
+        "transcript": "tlc/tlc-soak_disk-MC_SoakDiskGuardian_startup_only_pre_fix.txt"
+      },
+      {
+        "configuration": "soak_disk/MC_SoakDiskGuardian_stop_first_pre_fix",
+        "expected_invariant": "StopRequiresRecord",
+        "exit_code": 12,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": false,
+        "counterexample_trace": true,
+        "states_generated": 1694,
+        "distinct_states": 1658,
+        "seed": "594987762424433004",
+        "fingerprint_index": 24,
+        "transcript": "tlc/tlc-soak_disk-MC_SoakDiskGuardian_stop_first_pre_fix.txt"
+      },
+      {
+        "configuration": "soak_disk/MC_SoakDiskGuardian_unavailable_sample_pre_fix",
+        "expected_invariant": "InvalidSampleRequiresInterrupt",
+        "exit_code": 12,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": false,
+        "counterexample_trace": true,
+        "states_generated": 532,
+        "distinct_states": 506,
+        "seed": "-181565160656846863",
+        "fingerprint_index": 125,
+        "transcript": "tlc/tlc-soak_disk-MC_SoakDiskGuardian_unavailable_sample_pre_fix.txt"
+      },
+      {
+        "configuration": "soak_disk/MC_SoakDiskGuardian_unbounded_pre_fix",
+        "expected_invariant": "ResponseWithinDeadline",
+        "exit_code": 12,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": false,
+        "counterexample_trace": true,
+        "states_generated": 20807,
+        "distinct_states": 12770,
+        "seed": "1152050599486524844",
+        "fingerprint_index": 46,
+        "transcript": "tlc/tlc-soak_disk-MC_SoakDiskGuardian_unbounded_pre_fix.txt"
+      },
+      {
+        "configuration": "soak_disk/MC_SoakDiskGuardian_unbounded_probe_pre_fix",
+        "expected_invariant": "ProbeWithinDeadline",
+        "exit_code": 12,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": false,
+        "counterexample_trace": true,
+        "states_generated": 1076,
+        "distinct_states": 1040,
+        "seed": "4329988076036843231",
+        "fingerprint_index": 94,
+        "transcript": "tlc/tlc-soak_disk-MC_SoakDiskGuardian_unbounded_probe_pre_fix.txt"
+      },
+      {
+        "configuration": "soak_disk/MC_SoakDiskGuardian_unbounded_stop_pre_fix",
+        "expected_invariant": "StopWithinBudget",
+        "exit_code": 12,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": false,
+        "counterexample_trace": true,
+        "states_generated": 3014,
+        "distinct_states": 2930,
+        "seed": "-4359693460234128977",
+        "fingerprint_index": 28,
+        "transcript": "tlc/tlc-soak_disk-MC_SoakDiskGuardian_unbounded_stop_pre_fix.txt"
+      },
+      {
+        "configuration": "soak_disk/MC_SoakDiskGuardian_unconditional_pre_fix",
+        "expected_invariant": "HandledExitHasNoExtraStop",
+        "exit_code": 12,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": false,
+        "counterexample_trace": true,
+        "states_generated": 482,
+        "distinct_states": 458,
+        "seed": "2580033310171705197",
+        "fingerprint_index": 59,
+        "transcript": "tlc/tlc-soak_disk-MC_SoakDiskGuardian_unconditional_pre_fix.txt"
+      },
+      {
+        "configuration": "soak_disk/MC_SoakDiskGuardian_unconfirmed_stop_pre_fix",
+        "expected_invariant": "NoOverrun",
+        "exit_code": 12,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": false,
+        "counterexample_trace": true,
+        "states_generated": 34698,
+        "distinct_states": 19741,
+        "seed": "-3986731955469676845",
+        "fingerprint_index": 71,
+        "transcript": "tlc/tlc-soak_disk-MC_SoakDiskGuardian_unconfirmed_stop_pre_fix.txt"
+      },
+      {
+        "configuration": "soak_disk/MC_SoakDiskGuardian_unmanaged_pre_fix",
+        "expected_invariant": "ControllerLossStopsOwnedWriters",
+        "exit_code": 12,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": false,
+        "counterexample_trace": true,
+        "states_generated": 188,
+        "distinct_states": 188,
+        "seed": "5305645176273067237",
+        "fingerprint_index": 115,
+        "transcript": "tlc/tlc-soak_disk-MC_SoakDiskGuardian_unmanaged_pre_fix.txt"
+      },
+      {
+        "configuration": "soak_disk/MC_SoakDiskGuardian_unwatched_pre_fix",
+        "expected_invariant": "DeadGuardianRequiresInterrupt",
+        "exit_code": 12,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": false,
+        "counterexample_trace": true,
+        "states_generated": 230,
+        "distinct_states": 226,
+        "seed": "-6861791256707074602",
+        "fingerprint_index": 36,
+        "transcript": "tlc/tlc-soak_disk-MC_SoakDiskGuardian_unwatched_pre_fix.txt"
+      },
+      {
+        "configuration": "soak_disk/MC_SoakStorageBudget",
+        "expected_invariant": null,
+        "exit_code": 0,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": true,
+        "counterexample_trace": false,
+        "states_generated": 38485,
+        "distinct_states": 5616,
+        "seed": "2442824106086946653",
+        "fingerprint_index": 65,
+        "transcript": "tlc/tlc-soak_disk-MC_SoakStorageBudget.txt"
+      },
+      {
+        "configuration": "soak_disk/MC_SoakStorageBudget_uncapped_blocks_pre_fix",
+        "expected_invariant": "WithinBudget",
+        "exit_code": 12,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": false,
+        "counterexample_trace": true,
+        "states_generated": 2364,
+        "distinct_states": 557,
+        "seed": "-4183659816189222132",
+        "fingerprint_index": 50,
+        "transcript": "tlc/tlc-soak_disk-MC_SoakStorageBudget_uncapped_blocks_pre_fix.txt"
+      },
+      {
+        "configuration": "soak_disk/MC_SoakStorageBudget_uncapped_history_pre_fix",
+        "expected_invariant": "WithinBudget",
+        "exit_code": 12,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": false,
+        "counterexample_trace": true,
+        "states_generated": 4458,
+        "distinct_states": 871,
+        "seed": "-399878432033989516",
+        "fingerprint_index": 81,
+        "transcript": "tlc/tlc-soak_disk-MC_SoakStorageBudget_uncapped_history_pre_fix.txt"
+      },
+      {
+        "configuration": "soak_disk/MC_SoakStorageBudget_uncapped_logs_pre_fix",
+        "expected_invariant": "WithinBudget",
+        "exit_code": 12,
+        "exit_code_source": "successful checked gate branch",
+        "completed_search": false,
+        "counterexample_trace": true,
+        "states_generated": 2006,
+        "distinct_states": 583,
+        "seed": "-5298446079617834869",
+        "fingerprint_index": 66,
+        "transcript": "tlc/tlc-soak_disk-MC_SoakStorageBudget_uncapped_logs_pre_fix.txt"
+      }
+    ]
+  },
+  "gate_fixture": {
+    "exit_code": 0,
+    "negative_acceptance_controls": 61,
+    "rejection_cases": 18,
+    "registered_areas": 3,
+    "routing_and_registration_checks": true
+  },
+  "driver_fixture": {
+    "exit_code": 0,
+    "scenarios": 3
+  },
+  "summary_fixture": {
+    "exit_code": 0,
+    "data_cases": 5,
+    "keyword_scan": true
+  },
+  "casper_runner_tests": {
+    "exit_code": 0,
+    "tests": 12
+  },
+  "casper_model": {
+    "exit_code": 0,
+    "report": "casper-model/report.json",
+    "log_archive_suffix": ".txt"
+  },
+  "initial_failures": [
+    {
+      "kind": "fixture_image_build",
+      "exit_code": 1,
+      "reason": "BuildKit treated the local image ID as a registry name. The retry used the pinned Debian manifest."
+    },
+    {
+      "kind": "shared_tlc_environment",
+      "exit_code": 1,
+      "configurations": 74,
+      "reason": "Copied directories were root-owned. TLC could not create its state directory. The retry used an unprivileged writable copy."
+    }
+  ],
+  "not_executed": [
+    "native-root-systemd-fixtures",
+    "real-Docker-daemon-ownership-fixtures",
+    "node-soak",
+    "Rocq",
+    "Rust-tests"
+  ],
+  "remaining_limits": [
+    "B44-controller-loss",
+    "profile-adapter-qualification",
+    "malformed-metric-summary-completeness",
+    "shared-gate-does-not-require-trace",
+    "shared-positive-gate-checks-exit-only",
+    "no-hosted-CI-budget-measurement"
+  ],
+  "artifacts": [
+    {
+      "path": "runner-tests.txt",
+      "original_sha256": "429642d2d6dc2f54f05f7575c039826977190fc16d51c03d4e028959a9bf4d46",
+      "retained_sha256": "429642d2d6dc2f54f05f7575c039826977190fc16d51c03d4e028959a9bf4d46"
+    },
+    {
+      "path": "summary-tests.txt",
+      "original_sha256": "e5932a2b8042b930bc55b739d26886dc3caaecf5005f99a75d82c431dc6ae133",
+      "retained_sha256": "e5932a2b8042b930bc55b739d26886dc3caaecf5005f99a75d82c431dc6ae133"
+    },
+    {
+      "path": "pyright-linux.txt",
+      "original_sha256": "6d88a1b220adb7a3d62092b6e38431f0b3fe8babe9864fab90e5849766260332",
+      "retained_sha256": "6d88a1b220adb7a3d62092b6e38431f0b3fe8babe9864fab90e5849766260332"
+    },
+    {
+      "path": "yaml.txt",
+      "original_sha256": "fdd022ade379b0548b5b0374bb23cc0b57cca296b0bcd883d0bbd688e37cbff6",
+      "retained_sha256": "fdd022ade379b0548b5b0374bb23cc0b57cca296b0bcd883d0bbd688e37cbff6"
+    },
+    {
+      "path": "syntax.json",
+      "original_sha256": "6d70d2639b83970d81ee26c1c892ef61bd144f85345e4fadabda0573b1c03513",
+      "retained_sha256": "6d70d2639b83970d81ee26c1c892ef61bd144f85345e4fadabda0573b1c03513"
+    },
+    {
+      "path": "cbc-gate.json",
+      "original_sha256": "a353b362c35f798ca7b808dcf21bd5d20208a08e4fcfadb47a16878fdb6ee5ae",
+      "retained_sha256": "a353b362c35f798ca7b808dcf21bd5d20208a08e4fcfadb47a16878fdb6ee5ae"
+    },
+    {
+      "path": "cbc-gate.stderr",
+      "original_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "retained_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "dev-build-run.json",
+      "original_sha256": "50047ebfe1ab5daa8426ac2f16b115064dc2ea96f041c613ff014fc963b3bf77",
+      "retained_sha256": "50047ebfe1ab5daa8426ac2f16b115064dc2ea96f041c613ff014fc963b3bf77"
+    },
+    {
+      "path": "dev-build-artifacts.json",
+      "original_sha256": "cb4727d4156a28f1593b503493f82f18daf1069e51396a5f0ece9682d47cda64",
+      "retained_sha256": "cb4727d4156a28f1593b503493f82f18daf1069e51396a5f0ece9682d47cda64"
+    },
+    {
+      "path": "dev-arm64-identity.json",
+      "original_sha256": "bffaf6ef6145a51dd10fc87fb63d15e29f2e96182ef4fd995a95c53163849350",
+      "retained_sha256": "bffaf6ef6145a51dd10fc87fb63d15e29f2e96182ef4fd995a95c53163849350"
+    },
+    {
+      "path": "dev-amd64-identity.json",
+      "original_sha256": "24d46589f84549d4164cded9ba11d9479ccd89c66c1064e222019cf01569b638",
+      "retained_sha256": "24d46589f84549d4164cded9ba11d9479ccd89c66c1064e222019cf01569b638"
+    },
+    {
+      "path": "pr216.json",
+      "original_sha256": "be3dfdbc1696f639a1b10131bc6682b05f6b9830a53fdde629256db46ca1a129",
+      "retained_sha256": "be3dfdbc1696f639a1b10131bc6682b05f6b9830a53fdde629256db46ca1a129"
+    },
+    {
+      "path": "initial-container/bash.txt",
+      "original_sha256": "d37bf540847d877c350b9f65bde8fe1fe07f560fbba67b522c7f91628fd7e408",
+      "retained_sha256": "d37bf540847d877c350b9f65bde8fe1fe07f560fbba67b522c7f91628fd7e408"
+    },
+    {
+      "path": "initial-container/driver-fixture.exit",
+      "original_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "retained_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "path": "initial-container/driver-fixture.txt",
+      "original_sha256": "bf05567217400498d2dff1088c82ea977a34a00cb0517f1e4e3fecbb8727575e",
+      "retained_sha256": "bf05567217400498d2dff1088c82ea977a34a00cb0517f1e4e3fecbb8727575e"
+    },
+    {
+      "path": "initial-container/gate-fixture.exit",
+      "original_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "retained_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "path": "initial-container/gate-fixture.seconds",
+      "original_sha256": "10159baf262b43a92d95db59dae1f72c645127301661e0a3ce4e38b295a97c58",
+      "retained_sha256": "10159baf262b43a92d95db59dae1f72c645127301661e0a3ce4e38b295a97c58"
+    },
+    {
+      "path": "initial-container/gate-fixture.txt",
+      "original_sha256": "8366d4c68f6fa026bc5324fa4c9e17b38f9e3ec6d8cce709ee4fae04eeec154f",
+      "retained_sha256": "8366d4c68f6fa026bc5324fa4c9e17b38f9e3ec6d8cce709ee4fae04eeec154f"
+    },
+    {
+      "path": "initial-container/java.txt",
+      "original_sha256": "abf5f664d47a8c8ffa40cf1343ba60aed5c097f18dc7649f109b09cf910e44ed",
+      "retained_sha256": "abf5f664d47a8c8ffa40cf1343ba60aed5c097f18dc7649f109b09cf910e44ed"
+    },
+    {
+      "path": "initial-container/jq.txt",
+      "original_sha256": "e2cfc9a901d66cf6aca67f104545e351ddb7f028a7fe80ca5af7c9297e5111a1",
+      "retained_sha256": "e2cfc9a901d66cf6aca67f104545e351ddb7f028a7fe80ca5af7c9297e5111a1"
+    },
+    {
+      "path": "initial-container/python.txt",
+      "original_sha256": "cb64a3a0ddcaff0ce013ea3612beda0be4a4d3537087505bd8850d8f8476f4f8",
+      "retained_sha256": "cb64a3a0ddcaff0ce013ea3612beda0be4a4d3537087505bd8850d8f8476f4f8"
+    },
+    {
+      "path": "initial-container/tlc-gate.exit",
+      "original_sha256": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865",
+      "retained_sha256": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865"
+    },
+    {
+      "path": "initial-container/tlc-gate.seconds",
+      "original_sha256": "1121cfccd5913f0a63fec40a6ffd44ea64f9dc135c66634ba001d10bcf4302a2",
+      "retained_sha256": "1121cfccd5913f0a63fec40a6ffd44ea64f9dc135c66634ba001d10bcf4302a2"
+    },
+    {
+      "path": "initial-container/tlc-gate.txt",
+      "original_sha256": "0cf066ea6559e9d22daaa5e0a145ffa0da955bbc3752873926cda28d9638220a",
+      "retained_sha256": "0cf066ea6559e9d22daaa5e0a145ffa0da955bbc3752873926cda28d9638220a"
+    },
+    {
+      "path": "verified-container/bash.txt",
+      "original_sha256": "d37bf540847d877c350b9f65bde8fe1fe07f560fbba67b522c7f91628fd7e408",
+      "retained_sha256": "d37bf540847d877c350b9f65bde8fe1fe07f560fbba67b522c7f91628fd7e408"
+    },
+    {
+      "path": "verified-container/driver-fixture.exit",
+      "original_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "retained_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "path": "verified-container/driver-fixture.txt",
+      "original_sha256": "bf05567217400498d2dff1088c82ea977a34a00cb0517f1e4e3fecbb8727575e",
+      "retained_sha256": "bf05567217400498d2dff1088c82ea977a34a00cb0517f1e4e3fecbb8727575e"
+    },
+    {
+      "path": "verified-container/gate-fixture.exit",
+      "original_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "retained_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "path": "verified-container/gate-fixture.seconds",
+      "original_sha256": "06e9d52c1720fca412803e3b07c4b228ff113e303f4c7ab94665319d832bbfb7",
+      "retained_sha256": "06e9d52c1720fca412803e3b07c4b228ff113e303f4c7ab94665319d832bbfb7"
+    },
+    {
+      "path": "verified-container/gate-fixture.txt",
+      "original_sha256": "8366d4c68f6fa026bc5324fa4c9e17b38f9e3ec6d8cce709ee4fae04eeec154f",
+      "retained_sha256": "8366d4c68f6fa026bc5324fa4c9e17b38f9e3ec6d8cce709ee4fae04eeec154f"
+    },
+    {
+      "path": "verified-container/java.txt",
+      "original_sha256": "abf5f664d47a8c8ffa40cf1343ba60aed5c097f18dc7649f109b09cf910e44ed",
+      "retained_sha256": "abf5f664d47a8c8ffa40cf1343ba60aed5c097f18dc7649f109b09cf910e44ed"
+    },
+    {
+      "path": "verified-container/jq.txt",
+      "original_sha256": "e2cfc9a901d66cf6aca67f104545e351ddb7f028a7fe80ca5af7c9297e5111a1",
+      "retained_sha256": "e2cfc9a901d66cf6aca67f104545e351ddb7f028a7fe80ca5af7c9297e5111a1"
+    },
+    {
+      "path": "verified-container/python.txt",
+      "original_sha256": "cb64a3a0ddcaff0ce013ea3612beda0be4a4d3537087505bd8850d8f8476f4f8",
+      "retained_sha256": "cb64a3a0ddcaff0ce013ea3612beda0be4a4d3537087505bd8850d8f8476f4f8"
+    },
+    {
+      "path": "verified-container/tlc-gate.exit",
+      "original_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "retained_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "path": "verified-container/tlc-gate.seconds",
+      "original_sha256": "7f3d905fd916ac40ded4007bbe76e90633bb99a856b7bf512eaf5ae1e91f6ca7",
+      "retained_sha256": "7f3d905fd916ac40ded4007bbe76e90633bb99a856b7bf512eaf5ae1e91f6ca7"
+    },
+    {
+      "path": "verified-container/tlc-gate.txt",
+      "original_sha256": "e1008eb06591c712c7f860337560565e1bb7410e862a35d43719176b990b0e87",
+      "retained_sha256": "e1008eb06591c712c7f860337560565e1bb7410e862a35d43719176b990b0e87"
+    },
+    {
+      "path": "tlc/tlc-carrier_index-MC_CarrierIndex.txt",
+      "original_sha256": "c2cf475dae4d94ce1652ba76ff1fa7981ddf63475f9dddab4955a8053d511d7d",
+      "retained_sha256": "c2cf475dae4d94ce1652ba76ff1fa7981ddf63475f9dddab4955a8053d511d7d"
+    },
+    {
+      "path": "tlc/tlc-carrier_index-MC_CarrierIndex_dag_first_pre_fix.txt",
+      "original_sha256": "2c158971938837286d78fea058b4a65ca9b518a676860d1fffe6b006520c3fa6",
+      "retained_sha256": "2c158971938837286d78fea058b4a65ca9b518a676860d1fffe6b006520c3fa6"
+    },
+    {
+      "path": "tlc/tlc-carrier_index-MC_CarrierIndex_read_failure_pre_fix.txt",
+      "original_sha256": "4939673b9e992bde665d22ab757399e59c34a567d506d6a61fb3f464f389c2e7",
+      "retained_sha256": "4939673b9e992bde665d22ab757399e59c34a567d506d6a61fb3f464f389c2e7"
+    },
+    {
+      "path": "tlc/tlc-deploy_storage-MC_DeployStorageBound.txt",
+      "original_sha256": "26d65d8fdb3e2a6a95101d8448ce91c65e26a3733021870f007a91de271881da",
+      "retained_sha256": "26d65d8fdb3e2a6a95101d8448ce91c65e26a3733021870f007a91de271881da"
+    },
+    {
+      "path": "tlc/tlc-deploy_storage-MC_DeployStorageBound_unmetered_pre_fix.txt",
+      "original_sha256": "08960bc472fddeb423146402b75d53d9477ed1a16f57df16dd95de9ba01641cb",
+      "retained_sha256": "08960bc472fddeb423146402b75d53d9477ed1a16f57df16dd95de9ba01641cb"
+    },
+    {
+      "path": "tlc/tlc-replay_liveness-MC_ReplayHotLoop.txt",
+      "original_sha256": "d77233b725be0861687b339afcd5175a6bb29dafec7cea88bd85d849b68f8d73",
+      "retained_sha256": "d77233b725be0861687b339afcd5175a6bb29dafec7cea88bd85d849b68f8d73"
+    },
+    {
+      "path": "tlc/tlc-soak_disk-MC_MetricBaseline.txt",
+      "original_sha256": "c4cf3763c3dff8b16969d57a4c6c90abcf81a1001085e8e9c6fb16e0a9ad71a3",
+      "retained_sha256": "c4cf3763c3dff8b16969d57a4c6c90abcf81a1001085e8e9c6fb16e0a9ad71a3"
+    },
+    {
+      "path": "tlc/tlc-soak_disk-MC_MetricBaseline_available.txt",
+      "original_sha256": "49903054ce848b5fc13c34ff553d196bb9330d9c8c4f49b8518a76ef5225f17a",
+      "retained_sha256": "49903054ce848b5fc13c34ff553d196bb9330d9c8c4f49b8518a76ef5225f17a"
+    },
+    {
+      "path": "tlc/tlc-soak_disk-MC_MetricBaseline_zero_pre_fix.txt",
+      "original_sha256": "1ccac41c3d03822c27f3bab6af2ceaa03ab49a0e5c26304005e38df073de6f6f",
+      "retained_sha256": "1ccac41c3d03822c27f3bab6af2ceaa03ab49a0e5c26304005e38df073de6f6f"
+    },
+    {
+      "path": "tlc/tlc-soak_disk-MC_MetricMonotonicity.txt",
+      "original_sha256": "1ae888d37fc0925c1be8e1778baffb822717a90a666014d8a3cc28f3e8bc14cc",
+      "retained_sha256": "1ae888d37fc0925c1be8e1778baffb822717a90a666014d8a3cc28f3e8bc14cc"
+    },
+    {
+      "path": "tlc/tlc-soak_disk-MC_MetricMonotonicity_unchecked_pre_fix.txt",
+      "original_sha256": "777ef1c659fbf7632b897badc176fe14f871248f16adc13847490b18c0d0200e",
+      "retained_sha256": "777ef1c659fbf7632b897badc176fe14f871248f16adc13847490b18c0d0200e"
+    },
+    {
+      "path": "tlc/tlc-soak_disk-MC_MetricSampleValidity.txt",
+      "original_sha256": "aeacc0eecf6b150fd16959ac8c4a7acd27727ff71e9a04f4e5ea7293f5a6aa59",
+      "retained_sha256": "aeacc0eecf6b150fd16959ac8c4a7acd27727ff71e9a04f4e5ea7293f5a6aa59"
+    },
+    {
+      "path": "tlc/tlc-soak_disk-MC_MetricSampleValidity_unchecked_pre_fix.txt",
+      "original_sha256": "a793c09af2bcbe720f00bfd9715fa6e60133cadb5b0aac5b41c9f56d254afe3e",
+      "retained_sha256": "a793c09af2bcbe720f00bfd9715fa6e60133cadb5b0aac5b41c9f56d254afe3e"
+    },
+    {
+      "path": "tlc/tlc-soak_disk-MC_MetricSummary.txt",
+      "original_sha256": "311c04fee695be95e3388079a327fcf33a4b74726d1ea13c145c0acd6fd6415c",
+      "retained_sha256": "311c04fee695be95e3388079a327fcf33a4b74726d1ea13c145c0acd6fd6415c"
+    },
+    {
+      "path": "tlc/tlc-soak_disk-MC_MetricSummary_omitted_pre_fix.txt",
+      "original_sha256": "14fb66718d3fe5c3fc148f466393c548fdc2e653cc67fcb4f91be6de870ae666",
+      "retained_sha256": "14fb66718d3fe5c3fc148f466393c548fdc2e653cc67fcb4f91be6de870ae666"
+    },
+    {
+      "path": "tlc/tlc-soak_disk-MC_ReserveBound.txt",
+      "original_sha256": "ac7922e9c3de35a21587bcf01808776259bd2eec4a2a2270e4a8193ae9460dbe",
+      "retained_sha256": "ac7922e9c3de35a21587bcf01808776259bd2eec4a2a2270e4a8193ae9460dbe"
+    },
+    {
+      "path": "tlc/tlc-soak_disk-MC_ReserveBound_unbounded_pre_fix.txt",
+      "original_sha256": "a0ca6e6c134360d9795bea903e8aba657eb7ef4f85c482b4404bb42ad0f76a0c",
+      "retained_sha256": "a0ca6e6c134360d9795bea903e8aba657eb7ef4f85c482b4404bb42ad0f76a0c"
+    },
+    {
+      "path": "tlc/tlc-soak_disk-MC_RetentionReserve.txt",
+      "original_sha256": "ad1d63d40ea2d2de82b3f152ae2c42a14a5cbbdaec496b0587bad4abae0ae934",
+      "retained_sha256": "ad1d63d40ea2d2de82b3f152ae2c42a14a5cbbdaec496b0587bad4abae0ae934"
+    },
+    {
+      "path": "tlc/tlc-soak_disk-MC_RetentionReserve_unskipped_pre_fix.txt",
+      "original_sha256": "650069a47ba541efa09cd70614e99fc2a4e28c0f652b94e38b7bbb0ab4a9f46f",
+      "retained_sha256": "650069a47ba541efa09cd70614e99fc2a4e28c0f652b94e38b7bbb0ab4a9f46f"
+    },
+    {
+      "path": "tlc/tlc-soak_disk-MC_SoakDiskAdmission.txt",
+      "original_sha256": "50375202a90aa2c7104b9c1f51ae510c15b712f1104519f62e5d03bbdd09c761",
+      "retained_sha256": "50375202a90aa2c7104b9c1f51ae510c15b712f1104519f62e5d03bbdd09c761"
+    },
+    {
+      "path": "tlc/tlc-soak_disk-MC_SoakDiskAdmission_age_only_pre_fix.txt",
+      "original_sha256": "52d8251a6b1d2f33420a38ca69766390934f2e25c227ed87435f355de540d50d",
+      "retained_sha256": "52d8251a6b1d2f33420a38ca69766390934f2e25c227ed87435f355de540d50d"
+    },
+    {
+      "path": "tlc/tlc-soak_disk-MC_SoakDiskAdmission_attribute_first_pre_fix.txt",
+      "original_sha256": "c278e484c8a4d2f32eb8b5b013279339461296e645000a502477e0bc8dc0505c",
+      "retained_sha256": "c278e484c8a4d2f32eb8b5b013279339461296e645000a502477e0bc8dc0505c"
+    },
+    {
+      "path": "tlc/tlc-soak_disk-MC_SoakDiskAdmission_benchmark_band_pre_fix.txt",
+      "original_sha256": "b239ccbbbff096b26306497e73d37c95c2b001d8896f822ba2d0b05425ca28fb",
+      "retained_sha256": "b239ccbbbff096b26306497e73d37c95c2b001d8896f822ba2d0b05425ca28fb"
+    },
+    {
+      "path": "tlc/tlc-soak_disk-MC_SoakDiskAdmission_floor_only_pre_fix.txt",
+      "original_sha256": "d3602129531e445f4e4f5b0ea2532e29985644239309954bed64263bcf9ff189",
+      "retained_sha256": "d3602129531e445f4e4f5b0ea2532e29985644239309954bed64263bcf9ff189"
+    },
+    {
+      "path": "tlc/tlc-soak_disk-MC_SoakDiskAdmission_global_prune_pre_fix.txt",
+      "original_sha256": "154fa2952d6e86bda872f6d5c437d32ee565ee43501240ed2b90d3c09094361e",
+      "retained_sha256": "154fa2952d6e86bda872f6d5c437d32ee565ee43501240ed2b90d3c09094361e"
+    },
+    {
+      "path": "tlc/tlc-soak_disk-MC_SoakDiskAdmission_ignore_errors_pre_fix.txt",
+      "original_sha256": "f0b92add50428cc31ac81dc3256a8f9bb742c02c6142192bde919ca26e0bb1de",
+      "retained_sha256": "f0b92add50428cc31ac81dc3256a8f9bb742c02c6142192bde919ca26e0bb1de"
+    },
+    {
+      "path": "tlc/tlc-soak_disk-MC_SoakDiskAdmission_in_place_pre_fix.txt",
+      "original_sha256": "7c61b17db60827e9adb844c2e4cb5012e7010a09d8ab716c9d2e80ddd46379e8",
+      "retained_sha256": "7c61b17db60827e9adb844c2e4cb5012e7010a09d8ab716c9d2e80ddd46379e8"
+    },
+    {
+      "path": "tlc/tlc-soak_disk-MC_SoakDiskAdmission_iteration_only_pre_fix.txt",
+      "original_sha256": "6d44afa7dba5a211fdf70c830a7322c6c8a787ed84d9b8546313d9c4f9a35a14",
+      "retained_sha256": "6d44afa7dba5a211fdf70c830a7322c6c8a787ed84d9b8546313d9c4f9a35a14"
+    },
+    {
+      "path": "tlc/tlc-soak_disk-MC_SoakDiskAdmission_late_guardian_pre_fix.txt",
+      "original_sha256": "f75ed18e49af7085f911dc7c52490dce5a6a891dab010cd77b68b7998d0dda42",
+      "retained_sha256": "f75ed18e49af7085f911dc7c52490dce5a6a891dab010cd77b68b7998d0dda42"
+    },
+    {
+      "path": "tlc/tlc-soak_disk-MC_SoakDiskAdmission_missing_sample_pre_fix.txt",
+      "original_sha256": "3511d959be8b50396a3db9fab3a333d7667f2b44fa6a19c8f2036328dbd3d007",
+      "retained_sha256": "3511d959be8b50396a3db9fab3a333d7667f2b44fa6a19c8f2036328dbd3d007"
+    },
+    {
+      "path": "tlc/tlc-soak_disk-MC_SoakDiskAdmission_numeric_prefix_pre_fix.txt",
+      "original_sha256": "49f6aaee20522827e8dfadb7e0f82f5702b4009383ebc226c4b9b4ba1a39aa4c",
+      "retained_sha256": "49f6aaee20522827e8dfadb7e0f82f5702b4009383ebc226c4b9b4ba1a39aa4c"
+    },
+    {
+      "path": "tlc/tlc-soak_disk-MC_SoakDiskAdmission_pathname_pre_fix.txt",
+      "original_sha256": "69f68a956b94af87983b40e393ab43544d51cb7324d84f5508ee094b8f25cda8",
+      "retained_sha256": "69f68a956b94af87983b40e393ab43544d51cb7324d84f5508ee094b8f25cda8"
+    },
+    {
+      "path": "tlc/tlc-soak_disk-MC_SoakDiskAdmission_retained_breach_pre_fix.txt",
+      "original_sha256": "d675717119357bcb2ba086a7380e719be8b1ffe94c1cc88e101538487fb77172",
+      "retained_sha256": "d675717119357bcb2ba086a7380e719be8b1ffe94c1cc88e101538487fb77172"
+    },
+    {
+      "path": "tlc/tlc-soak_disk-MC_SoakDiskAdmission_unbounded_hygiene_pre_fix.txt",
+      "original_sha256": "b1eab587454d3623338f389ca0c7cad665eab989615227de39e3022d6a7a7fb9",
+      "retained_sha256": "b1eab587454d3623338f389ca0c7cad665eab989615227de39e3022d6a7a7fb9"
+    },
+    {
+      "path": "tlc/tlc-soak_disk-MC_SoakDiskAdmission_unchecked_guardian_pre_fix.txt",
+      "original_sha256": "7448340466986c320144312e18cb977f0c9e5625b26793255892fb2081d8a198",
+      "retained_sha256": "7448340466986c320144312e18cb977f0c9e5625b26793255892fb2081d8a198"
+    },
+    {
+      "path": "tlc/tlc-soak_disk-MC_SoakDiskAdmission_unchecked_monitor_pre_fix.txt",
+      "original_sha256": "f8513bb3abba4163a095ed6fcc11e4ca525b49da4b3241a291dc2e0a83e58a50",
+      "retained_sha256": "f8513bb3abba4163a095ed6fcc11e4ca525b49da4b3241a291dc2e0a83e58a50"
+    },
+    {
+      "path": "tlc/tlc-soak_disk-MC_SoakDiskAdmission_unchecked_placement_pre_fix.txt",
+      "original_sha256": "d1c6db84bf8488b9df04501e305e086e621edd0c198ef2e13ec12fd00989b161",
+      "retained_sha256": "d1c6db84bf8488b9df04501e305e086e621edd0c198ef2e13ec12fd00989b161"
+    },
+    {
+      "path": "tlc/tlc-soak_disk-MC_SoakDiskAdmission_unchecked_producer_pre_fix.txt",
+      "original_sha256": "96f289d3cf805a48d0bba5ef7df7c7a12c90fc0ad9aa3264029410848018572e",
+      "retained_sha256": "96f289d3cf805a48d0bba5ef7df7c7a12c90fc0ad9aa3264029410848018572e"
+    },
+    {
+      "path": "tlc/tlc-soak_disk-MC_SoakDiskAdmission_unchecked_progress_pre_fix.txt",
+      "original_sha256": "70e09ba14965c5643612089fc6c0673ae597d3016e1c4f1fa6ce9e2fc0c8beb5",
+      "retained_sha256": "70e09ba14965c5643612089fc6c0673ae597d3016e1c4f1fa6ce9e2fc0c8beb5"
+    },
+    {
+      "path": "tlc/tlc-soak_disk-MC_SoakDiskAdmission_unchecked_range_pre_fix.txt",
+      "original_sha256": "464ccb49cb56459ee8cbcb2f6b63c3369629ccdb34d8b923c0de5afa571c4a42",
+      "retained_sha256": "464ccb49cb56459ee8cbcb2f6b63c3369629ccdb34d8b923c0de5afa571c4a42"
+    },
+    {
+      "path": "tlc/tlc-soak_disk-MC_SoakDiskAdmission_unrecorded_benchmark_pre_fix.txt",
+      "original_sha256": "d3db57bcd6d4629320419ffeb179a006a36b28768863a07ba63b584ecb3d8930",
+      "retained_sha256": "d3db57bcd6d4629320419ffeb179a006a36b28768863a07ba63b584ecb3d8930"
+    },
+    {
+      "path": "tlc/tlc-soak_disk-MC_SoakDiskAdmission_unrecorded_pre_fix.txt",
+      "original_sha256": "eaa7285d6a5f42f09e417d27ac757093969191721637c163e27271cbcc19fe54",
+      "retained_sha256": "eaa7285d6a5f42f09e417d27ac757093969191721637c163e27271cbcc19fe54"
+    },
+    {
+      "path": "tlc/tlc-soak_disk-MC_SoakDiskAdmission_unwatched_breach_pre_fix.txt",
+      "original_sha256": "ca93fb728d1682f269661873db33475576176baee64ac441909331eb79425aa4",
+      "retained_sha256": "ca93fb728d1682f269661873db33475576176baee64ac441909331eb79425aa4"
+    },
+    {
+      "path": "tlc/tlc-soak_disk-MC_SoakDiskAdmission_unwatched_death_pre_fix.txt",
+      "original_sha256": "4cbe5bd1c549d03fd7dae9d8807361421486213f00cf0e3ad188db7b7537b034",
+      "retained_sha256": "4cbe5bd1c549d03fd7dae9d8807361421486213f00cf0e3ad188db7b7537b034"
+    },
+    {
+      "path": "tlc/tlc-soak_disk-MC_SoakDiskGuardian.txt",
+      "original_sha256": "fd9e279b2743e5bfa1f1fe1f8fffa49eef12db33d5ce6df4cf19bdf710624059",
+      "retained_sha256": "fd9e279b2743e5bfa1f1fe1f8fffa49eef12db33d5ce6df4cf19bdf710624059"
+    },
+    {
+      "path": "tlc/tlc-soak_disk-MC_SoakDiskGuardian_alive_only_pre_fix.txt",
+      "original_sha256": "2cdebad2f67b4487a01a3125c9f167d8c70eb936b7c416dfad7e249e16635fd0",
+      "retained_sha256": "2cdebad2f67b4487a01a3125c9f167d8c70eb936b7c416dfad7e249e16635fd0"
+    },
+    {
+      "path": "tlc/tlc-soak_disk-MC_SoakDiskGuardian_blocking_pre_fix.txt",
+      "original_sha256": "bd55db55e1fe86892012d1369058c7d85b37eb9ebb72ee0a3ae8706d4386878a",
+      "retained_sha256": "bd55db55e1fe86892012d1369058c7d85b37eb9ebb72ee0a3ae8706d4386878a"
+    },
+    {
+      "path": "tlc/tlc-soak_disk-MC_SoakDiskGuardian_cleared_breach_pre_fix.txt",
+      "original_sha256": "54f4b57b148ae77f39f2a229be9f42654ee789354501849efcec4bf329f1e258",
+      "retained_sha256": "54f4b57b148ae77f39f2a229be9f42654ee789354501849efcec4bf329f1e258"
+    },
+    {
+      "path": "tlc/tlc-soak_disk-MC_SoakDiskGuardian_client_only_pre_fix.txt",
+      "original_sha256": "8f13ecf5d079522c1b51009e09d7f4f1133d13c61cdc4087315a56a063260f74",
+      "retained_sha256": "8f13ecf5d079522c1b51009e09d7f4f1133d13c61cdc4087315a56a063260f74"
+    },
+    {
+      "path": "tlc/tlc-soak_disk-MC_SoakDiskGuardian_drain_first_pre_fix.txt",
+      "original_sha256": "9c84f4576c478d1de2d0d38583ec87fe20f6ba44ab4f6b764677bc983588f05d",
+      "retained_sha256": "9c84f4576c478d1de2d0d38583ec87fe20f6ba44ab4f6b764677bc983588f05d"
+    },
+    {
+      "path": "tlc/tlc-soak_disk-MC_SoakDiskGuardian_host_pattern_only_pre_fix.txt",
+      "original_sha256": "95461d71503f20ba4e7874ce100ad860a90a3cb782b5f8ae459abb4af843ea4c",
+      "retained_sha256": "95461d71503f20ba4e7874ce100ad860a90a3cb782b5f8ae459abb4af843ea4c"
+    },
+    {
+      "path": "tlc/tlc-soak_disk-MC_SoakDiskGuardian_ignored_pre_fix.txt",
+      "original_sha256": "d9b1c048afcfaefb9049389efdb4827c7a9e57dec308842f03d74cc6749a1e3e",
+      "retained_sha256": "d9b1c048afcfaefb9049389efdb4827c7a9e57dec308842f03d74cc6749a1e3e"
+    },
+    {
+      "path": "tlc/tlc-soak_disk-MC_SoakDiskGuardian_name_only_pre_fix.txt",
+      "original_sha256": "14c1ea00ad0b592f7bd9562ac2e5bb1835be85a3b7a1901e25ec53725686abca",
+      "retained_sha256": "14c1ea00ad0b592f7bd9562ac2e5bb1835be85a3b7a1901e25ec53725686abca"
+    },
+    {
+      "path": "tlc/tlc-soak_disk-MC_SoakDiskGuardian_oom_pattern_only_pre_fix.txt",
+      "original_sha256": "6e7010e90bf37182a56594d2f2435ee8f0627bca5b3ea53f147a25857e2af263",
+      "retained_sha256": "6e7010e90bf37182a56594d2f2435ee8f0627bca5b3ea53f147a25857e2af263"
+    },
+    {
+      "path": "tlc/tlc-soak_disk-MC_SoakDiskGuardian_parent_group_pre_fix.txt",
+      "original_sha256": "d3fdb91c33932cdaa97cc8d19768be10bd30ebecb7dd11be12997c5a9dd28d3d",
+      "retained_sha256": "d3fdb91c33932cdaa97cc8d19768be10bd30ebecb7dd11be12997c5a9dd28d3d"
+    },
+    {
+      "path": "tlc/tlc-soak_disk-MC_SoakDiskGuardian_parent_only_pre_fix.txt",
+      "original_sha256": "0c99616ff10508cf223a57021304e084eac7fc4fc6dc1ca568f1db7c1addf00d",
+      "retained_sha256": "0c99616ff10508cf223a57021304e084eac7fc4fc6dc1ca568f1db7c1addf00d"
+    },
+    {
+      "path": "tlc/tlc-soak_disk-MC_SoakDiskGuardian_per_root_deadline_pre_fix.txt",
+      "original_sha256": "3771773381fcd78f533490cee6d5accf94211071775a70061c27105eb70a9ea2",
+      "retained_sha256": "3771773381fcd78f533490cee6d5accf94211071775a70061c27105eb70a9ea2"
+    },
+    {
+      "path": "tlc/tlc-soak_disk-MC_SoakDiskGuardian_periodic_name_pre_fix.txt",
+      "original_sha256": "0bcbf0fa38e8d95c390f1840a63ae80bdcf63bf28b0763bc4b16c6e604d34928",
+      "retained_sha256": "0bcbf0fa38e8d95c390f1840a63ae80bdcf63bf28b0763bc4b16c6e604d34928"
+    },
+    {
+      "path": "tlc/tlc-soak_disk-MC_SoakDiskGuardian_rate_exceeds_floor_pre_fix.txt",
+      "original_sha256": "b875f21910fc04aa9ed8bc7c99ad878dc42e868a6990440f830790c7d3719e21",
+      "retained_sha256": "b875f21910fc04aa9ed8bc7c99ad878dc42e868a6990440f830790c7d3719e21"
+    },
+    {
+      "path": "tlc/tlc-soak_disk-MC_SoakDiskGuardian_start_first_pre_fix.txt",
+      "original_sha256": "dbc2b54c896fe4f0c7e6132977cdee62cb4cee154e2faedd4c475573c13f8fee",
+      "retained_sha256": "dbc2b54c896fe4f0c7e6132977cdee62cb4cee154e2faedd4c475573c13f8fee"
+    },
+    {
+      "path": "tlc/tlc-soak_disk-MC_SoakDiskGuardian_startup_only_pre_fix.txt",
+      "original_sha256": "1162da13fda94151c251ecc121e38d4a761673242fb882d35cf39a6801e71f4c",
+      "retained_sha256": "1162da13fda94151c251ecc121e38d4a761673242fb882d35cf39a6801e71f4c"
+    },
+    {
+      "path": "tlc/tlc-soak_disk-MC_SoakDiskGuardian_stop_first_pre_fix.txt",
+      "original_sha256": "fb3ac943284d3c3b5f0a128cf2fd1a9584731db68a4e9ad5d1b4500f04c52bf6",
+      "retained_sha256": "fb3ac943284d3c3b5f0a128cf2fd1a9584731db68a4e9ad5d1b4500f04c52bf6"
+    },
+    {
+      "path": "tlc/tlc-soak_disk-MC_SoakDiskGuardian_unavailable_sample_pre_fix.txt",
+      "original_sha256": "f7096b1c4c420965b7f95987d0d7e655c5fe3b61aa0bab1c9b79ad3260c93311",
+      "retained_sha256": "f7096b1c4c420965b7f95987d0d7e655c5fe3b61aa0bab1c9b79ad3260c93311"
+    },
+    {
+      "path": "tlc/tlc-soak_disk-MC_SoakDiskGuardian_unbounded_pre_fix.txt",
+      "original_sha256": "0bea6a086059169dc947cad42770207959b47e950390d6ed9d1e3f761a02bc1f",
+      "retained_sha256": "0bea6a086059169dc947cad42770207959b47e950390d6ed9d1e3f761a02bc1f"
+    },
+    {
+      "path": "tlc/tlc-soak_disk-MC_SoakDiskGuardian_unbounded_probe_pre_fix.txt",
+      "original_sha256": "787a691cffa4dbccc7cc736aef741caae365844170cf364f05a88dd4319d7bdf",
+      "retained_sha256": "787a691cffa4dbccc7cc736aef741caae365844170cf364f05a88dd4319d7bdf"
+    },
+    {
+      "path": "tlc/tlc-soak_disk-MC_SoakDiskGuardian_unbounded_stop_pre_fix.txt",
+      "original_sha256": "663e770caf50006e0501cb6957e42c98d7906e8578dbe3ea8ffa3a56783458d3",
+      "retained_sha256": "663e770caf50006e0501cb6957e42c98d7906e8578dbe3ea8ffa3a56783458d3"
+    },
+    {
+      "path": "tlc/tlc-soak_disk-MC_SoakDiskGuardian_unconditional_pre_fix.txt",
+      "original_sha256": "edf20f4634a5f9e685e315c51850d9a5d924d0a75b2898fc98563fc5804bda4e",
+      "retained_sha256": "edf20f4634a5f9e685e315c51850d9a5d924d0a75b2898fc98563fc5804bda4e"
+    },
+    {
+      "path": "tlc/tlc-soak_disk-MC_SoakDiskGuardian_unconfirmed_stop_pre_fix.txt",
+      "original_sha256": "f1197880eaa7721c437283a837f120c5ebc0dd6abd1bdc61b921f0715b1eb099",
+      "retained_sha256": "f1197880eaa7721c437283a837f120c5ebc0dd6abd1bdc61b921f0715b1eb099"
+    },
+    {
+      "path": "tlc/tlc-soak_disk-MC_SoakDiskGuardian_unmanaged_pre_fix.txt",
+      "original_sha256": "6e02f240b4b57bbd7aa0c7ceab6fd334c664f8b4ee80f50a6c427084f9e1c01f",
+      "retained_sha256": "6e02f240b4b57bbd7aa0c7ceab6fd334c664f8b4ee80f50a6c427084f9e1c01f"
+    },
+    {
+      "path": "tlc/tlc-soak_disk-MC_SoakDiskGuardian_unwatched_pre_fix.txt",
+      "original_sha256": "f7def17b1f9ed4b7de6759111b930b32f83d1e71e7a3c182e371352c05c709a8",
+      "retained_sha256": "f7def17b1f9ed4b7de6759111b930b32f83d1e71e7a3c182e371352c05c709a8"
+    },
+    {
+      "path": "tlc/tlc-soak_disk-MC_SoakStorageBudget.txt",
+      "original_sha256": "c6d16661d1b776cc629bff0a307bc159a7cc254f6b9dd2273a6fe05e8c13876e",
+      "retained_sha256": "c6d16661d1b776cc629bff0a307bc159a7cc254f6b9dd2273a6fe05e8c13876e"
+    },
+    {
+      "path": "tlc/tlc-soak_disk-MC_SoakStorageBudget_uncapped_blocks_pre_fix.txt",
+      "original_sha256": "257cafac709d03a9055f93e9cae4363e33b327b21d7e478f20ef09ec222df232",
+      "retained_sha256": "257cafac709d03a9055f93e9cae4363e33b327b21d7e478f20ef09ec222df232"
+    },
+    {
+      "path": "tlc/tlc-soak_disk-MC_SoakStorageBudget_uncapped_history_pre_fix.txt",
+      "original_sha256": "16d88a8a8756ceafb4d251c8b1f47c4a9a18db9cc4e4fe152501c98012b11a9a",
+      "retained_sha256": "16d88a8a8756ceafb4d251c8b1f47c4a9a18db9cc4e4fe152501c98012b11a9a"
+    },
+    {
+      "path": "tlc/tlc-soak_disk-MC_SoakStorageBudget_uncapped_logs_pre_fix.txt",
+      "original_sha256": "a717d5169b67c7d90e4bcd9e8a4cc16062df2e3919e9999d566ad02a30d48ccd",
+      "retained_sha256": "a717d5169b67c7d90e4bcd9e8a4cc16062df2e3919e9999d566ad02a30d48ccd"
+    },
+    {
+      "path": "casper-model/MC_CasperSoakHarness.txt",
+      "original_sha256": "567a7130d9e6eb6e11e42f9117f01e8f5a978c43d0e123313c8f6a4c5ecfe184",
+      "retained_sha256": "2a2a246270b090971b0f86b7cffc327f71dad319f3103fa7c276b24ddf28ee61"
+    },
+    {
+      "path": "casper-model/MC_CasperSoakHarness_cleanup_unsafe.txt",
+      "original_sha256": "b7fad06654f4c0bda8acfa902915b5a3aa0f6c6b8854e895ca01bbab7d617dc3",
+      "retained_sha256": "8193a738687d4084757b2a74506a2497ba70c53f8a42b982028036d3de66a452"
+    },
+    {
+      "path": "casper-model/MC_CasperSoakHarness_control_unsafe.txt",
+      "original_sha256": "ace133e18f2fd6f2b393a205ad6041c10ddf380de2f0caa6f081d91854676913",
+      "retained_sha256": "b2778621758ccc85d8b2594298411ec7793bfc9cbe024ab59b4d43e824696203"
+    },
+    {
+      "path": "casper-model/MC_CasperSoakHarness_evidence_unsafe.txt",
+      "original_sha256": "2b386bbb9088b1b94ab47e757a2f01f3f4b5af6f8e3f718d59a7839b18485c19",
+      "retained_sha256": "a3f528cd7c5cad34bab32748be67e1f5c1dec0f6ba6ded13c946a19ecfb39e4c"
+    },
+    {
+      "path": "casper-model/MC_CasperSoakHarness_failure_unsafe.txt",
+      "original_sha256": "e07d6f98f78ef19d5ab73916c811fa0ee96e1e7c394efffa34c7defc3c99c923",
+      "retained_sha256": "cc0bd9a08024ca4840ce6abc3edcb37fc5dfa269f518f0881a2f9e295d7de45a"
+    },
+    {
+      "path": "casper-model/MC_CasperSoakHarness_identity_unsafe.txt",
+      "original_sha256": "4658b522780fdc4fc38075eb74a0ebea118cffdced852cc1e3b4a143250a922d",
+      "retained_sha256": "f07e6973a4e2272cfc0e6eb962555b7deb3251ca8d6374e363b519b4982d5218"
+    },
+    {
+      "path": "casper-model/MC_CasperSoakHarness_merge_unsafe.txt",
+      "original_sha256": "3bf02a058444e876c2c5c9e94b8976e40ef8761692615d27e8794c4d4b7d70a4",
+      "retained_sha256": "6857ef9b08fc8edc8080fdc2f9bc6dd6e8ec085203073984b7a5fd2f08f89040"
+    },
+    {
+      "path": "casper-model/MC_CasperSoakHarness_policy_unsafe.txt",
+      "original_sha256": "2e493c1334caeb399b2ab9a3644cf5d04d15387298812d4e0f5396dad1e21450",
+      "retained_sha256": "f0869d5c586344e551e7bb28f6c0609967063cb9f10fd1715a6a12075b5acaa1"
+    },
+    {
+      "path": "casper-model/MC_CasperSoakHarness_resume_unsafe.txt",
+      "original_sha256": "9bb1bcfe0610dc584325b0d76553377438b70fbd2704ea4bef686db939d20d28",
+      "retained_sha256": "629d3c6bfb1c0316940a49b4ec9b3c940fe496a4d2696cfb0ca1dc6024efad92"
+    },
+    {
+      "path": "casper-model/MC_CasperSoakHarness_samples_unsafe.txt",
+      "original_sha256": "077effa4289f11c2a3f4a02fbe1b5c5c6245d11cdc529e908e714a0710fccaa7",
+      "retained_sha256": "e0c3a41c795e12db32c9f21c36a6c22119cc77defd0fe4b8341185d7f40c634c"
+    },
+    {
+      "path": "casper-model/MC_CasperSoakHarness_stop_unsafe.txt",
+      "original_sha256": "cbcae9923eeecebbbcb3638e37622d0e1eb45decd72bf3fa8b2e92c384b9e24f",
+      "retained_sha256": "d4eae0ea1e46476080ea2dd5bbf69adcfef621a700ca3d68be5fdf5a6aa3ea06"
+    },
+    {
+      "path": "casper-model/report.json",
+      "original_sha256": "fb653958e483faa71045cce1169e0e6c5ff83554e92abdf190e62ef2a5fd8f5a",
+      "retained_sha256": "fb653958e483faa71045cce1169e0e6c5ff83554e92abdf190e62ef2a5fd8f5a"
+    },
+    {
+      "path": "disk-suite.txt",
+      "original_sha256": "29f605ee208d02638ccfb535fba6454a23f65fe6c5ccb74ce85afa94b80d2a74",
+      "retained_sha256": "74aa28d8b0f3658a76dce4901318bec6beb802bb603aa2e49e9ac8bf4f40b38c"
+    },
+    {
+      "path": "initial-image-build.txt",
+      "original_sha256": "52c81bc2c5196faf7ec7270878a061e21ccd0394fc5fa094142fb213b3501c2e",
+      "retained_sha256": "52c81bc2c5196faf7ec7270878a061e21ccd0394fc5fa094142fb213b3501c2e"
+    },
+    {
+      "path": "disk/band/result.txt",
+      "original_sha256": "563444d52e8de88cb6227f1aca5868ab4919b06aaf3f8f3af66b51fa18a67c10",
+      "retained_sha256": "563444d52e8de88cb6227f1aca5868ab4919b06aaf3f8f3af66b51fa18a67c10"
+    },
+    {
+      "path": "disk/band/test-exit.txt",
+      "original_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "retained_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "path": "disk/band/evidence/driver.txt",
+      "original_sha256": "d528c5dc0849a4484712a4334fdba67f0e1062887f12d3e3f86e0a87050985e7",
+      "retained_sha256": "d528c5dc0849a4484712a4334fdba67f0e1062887f12d3e3f86e0a87050985e7"
+    },
+    {
+      "path": "disk/band/evidence/source-sha256.txt",
+      "original_sha256": "9250688b819ffc37391b48c06e13d7d2601d25a19f4037cea14ceaa765f231f4",
+      "retained_sha256": "9250688b819ffc37391b48c06e13d7d2601d25a19f4037cea14ceaa765f231f4"
+    },
+    {
+      "path": "disk/band/evidence/packages.txt",
+      "original_sha256": "0c7d4761e9672a71df16bb3c86ea8b038ddb75b4e0efa81463919957cfbe18c6",
+      "retained_sha256": "0c7d4761e9672a71df16bb3c86ea8b038ddb75b4e0efa81463919957cfbe18c6"
+    },
+    {
+      "path": "disk/band/evidence/output/summary.json",
+      "original_sha256": "0c2aa8183c5e18f6d70b0ec205a65b86c7a24e9e07ff48ff0d5a8c45909efb64",
+      "retained_sha256": "0c2aa8183c5e18f6d70b0ec205a65b86c7a24e9e07ff48ff0d5a8c45909efb64"
+    },
+    {
+      "path": "disk/band/evidence/output/early-exit.txt",
+      "original_sha256": "405402f3ba10a3241e908cbff395d41b275c6c1a8e7a8913399cc613fd9c6241",
+      "retained_sha256": "405402f3ba10a3241e908cbff395d41b275c6c1a8e7a8913399cc613fd9c6241"
+    },
+    {
+      "path": "disk/benchmark-active-disk/result.txt",
+      "original_sha256": "259708031c06c32f16cc335d53ec52e5ba5b405203430e94fb87204926f5cdca",
+      "retained_sha256": "259708031c06c32f16cc335d53ec52e5ba5b405203430e94fb87204926f5cdca"
+    },
+    {
+      "path": "disk/benchmark-active-disk/test-exit.txt",
+      "original_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "retained_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "path": "disk/benchmark-active-disk/evidence/driver.txt",
+      "original_sha256": "ae88a5f6c35a0900542e6416130286aa80a3451f19dac92e2ad0afbdea6316ab",
+      "retained_sha256": "ae88a5f6c35a0900542e6416130286aa80a3451f19dac92e2ad0afbdea6316ab"
+    },
+    {
+      "path": "disk/benchmark-active-disk/evidence/source-sha256.txt",
+      "original_sha256": "9250688b819ffc37391b48c06e13d7d2601d25a19f4037cea14ceaa765f231f4",
+      "retained_sha256": "9250688b819ffc37391b48c06e13d7d2601d25a19f4037cea14ceaa765f231f4"
+    },
+    {
+      "path": "disk/benchmark-active-disk/evidence/packages.txt",
+      "original_sha256": "0c7d4761e9672a71df16bb3c86ea8b038ddb75b4e0efa81463919957cfbe18c6",
+      "retained_sha256": "0c7d4761e9672a71df16bb3c86ea8b038ddb75b4e0efa81463919957cfbe18c6"
+    },
+    {
+      "path": "disk/benchmark-active-disk/evidence/output/summary.json",
+      "original_sha256": "ce605ff98d0ae8d7071c27f4c155a2969b4973723356720f3f077f7709621759",
+      "retained_sha256": "ce605ff98d0ae8d7071c27f4c155a2969b4973723356720f3f077f7709621759"
+    },
+    {
+      "path": "disk/benchmark-active-disk/evidence/output/early-exit.txt",
+      "original_sha256": "eb06c48dd7353aba7bf02046e15752787cccafd12a86065d96764e5691f45a1b",
+      "retained_sha256": "eb06c48dd7353aba7bf02046e15752787cccafd12a86065d96764e5691f45a1b"
+    },
+    {
+      "path": "disk/benchmark-band/result.txt",
+      "original_sha256": "e7f5140662b1a7eb1cce2e97bdca19d726e10e34868e38845b87725538900d70",
+      "retained_sha256": "e7f5140662b1a7eb1cce2e97bdca19d726e10e34868e38845b87725538900d70"
+    },
+    {
+      "path": "disk/benchmark-band/test-exit.txt",
+      "original_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "retained_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "path": "disk/benchmark-band/evidence/driver.txt",
+      "original_sha256": "5f48e6e439fc1f82cad97790259783ac2b90088f364d9c97f4a57240ec24b73b",
+      "retained_sha256": "5f48e6e439fc1f82cad97790259783ac2b90088f364d9c97f4a57240ec24b73b"
+    },
+    {
+      "path": "disk/benchmark-band/evidence/source-sha256.txt",
+      "original_sha256": "9250688b819ffc37391b48c06e13d7d2601d25a19f4037cea14ceaa765f231f4",
+      "retained_sha256": "9250688b819ffc37391b48c06e13d7d2601d25a19f4037cea14ceaa765f231f4"
+    },
+    {
+      "path": "disk/benchmark-band/evidence/packages.txt",
+      "original_sha256": "0c7d4761e9672a71df16bb3c86ea8b038ddb75b4e0efa81463919957cfbe18c6",
+      "retained_sha256": "0c7d4761e9672a71df16bb3c86ea8b038ddb75b4e0efa81463919957cfbe18c6"
+    },
+    {
+      "path": "disk/benchmark-band/evidence/output/summary.json",
+      "original_sha256": "5a48159cf6a09599fb62fe2abde098091aee9c4de16ebdb4d9431c3af309f1b1",
+      "retained_sha256": "5a48159cf6a09599fb62fe2abde098091aee9c4de16ebdb4d9431c3af309f1b1"
+    },
+    {
+      "path": "disk/benchmark-band/evidence/output/early-exit.txt",
+      "original_sha256": "b2c5e8beb45921b219a45ec2c00441f7ed868b62f1be250cb7460b7ad05ceb71",
+      "retained_sha256": "b2c5e8beb45921b219a45ec2c00441f7ed868b62f1be250cb7460b7ad05ceb71"
+    },
+    {
+      "path": "disk/benchmark-cancel-breach/result.txt",
+      "original_sha256": "9fa1cf07a127c57d84a35e2237c233b69c65f1e524bf060ce66acbaf92bf4bb5",
+      "retained_sha256": "9fa1cf07a127c57d84a35e2237c233b69c65f1e524bf060ce66acbaf92bf4bb5"
+    },
+    {
+      "path": "disk/benchmark-cancel-breach/test-exit.txt",
+      "original_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "retained_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "path": "disk/benchmark-cancel-breach/evidence/driver.txt",
+      "original_sha256": "2743d112eec077cf3d25b7faa75045b14590a4aa23a17cd1a679b7117b3455ba",
+      "retained_sha256": "2743d112eec077cf3d25b7faa75045b14590a4aa23a17cd1a679b7117b3455ba"
+    },
+    {
+      "path": "disk/benchmark-cancel-breach/evidence/source-sha256.txt",
+      "original_sha256": "9250688b819ffc37391b48c06e13d7d2601d25a19f4037cea14ceaa765f231f4",
+      "retained_sha256": "9250688b819ffc37391b48c06e13d7d2601d25a19f4037cea14ceaa765f231f4"
+    },
+    {
+      "path": "disk/benchmark-cancel-breach/evidence/packages.txt",
+      "original_sha256": "0c7d4761e9672a71df16bb3c86ea8b038ddb75b4e0efa81463919957cfbe18c6",
+      "retained_sha256": "0c7d4761e9672a71df16bb3c86ea8b038ddb75b4e0efa81463919957cfbe18c6"
+    },
+    {
+      "path": "disk/benchmark-cancel-breach/evidence/output/summary.json",
+      "original_sha256": "e8bca7162134fd4b74c710dec5f0a43d42001dc9fc2364d26f7b784abce03289",
+      "retained_sha256": "e8bca7162134fd4b74c710dec5f0a43d42001dc9fc2364d26f7b784abce03289"
+    },
+    {
+      "path": "disk/benchmark-cancel-breach/evidence/output/early-exit.txt",
+      "original_sha256": "eb06c48dd7353aba7bf02046e15752787cccafd12a86065d96764e5691f45a1b",
+      "retained_sha256": "eb06c48dd7353aba7bf02046e15752787cccafd12a86065d96764e5691f45a1b"
+    },
+    {
+      "path": "disk/benchmark-cancel-death/result.txt",
+      "original_sha256": "2a8c44593d27f60ef579173217398f8c7bd9ced1db8ed855345823a520fe82bd",
+      "retained_sha256": "2a8c44593d27f60ef579173217398f8c7bd9ced1db8ed855345823a520fe82bd"
+    },
+    {
+      "path": "disk/benchmark-cancel-death/test-exit.txt",
+      "original_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "retained_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "path": "disk/benchmark-cancel-death/evidence/driver.txt",
+      "original_sha256": "262563cdf085b482d3ea57dc9b5ec5fa9e15306d56839590e7ad73d1695c4864",
+      "retained_sha256": "298c583b743752afc9bae0358646eb849d9b8028cbdffbb5cd7d67c453b1d649",
+      "transformation": "Trailing spaces were removed from five shell-dump lines."
+    },
+    {
+      "path": "disk/benchmark-cancel-death/evidence/source-sha256.txt",
+      "original_sha256": "9250688b819ffc37391b48c06e13d7d2601d25a19f4037cea14ceaa765f231f4",
+      "retained_sha256": "9250688b819ffc37391b48c06e13d7d2601d25a19f4037cea14ceaa765f231f4"
+    },
+    {
+      "path": "disk/benchmark-cancel-death/evidence/packages.txt",
+      "original_sha256": "0c7d4761e9672a71df16bb3c86ea8b038ddb75b4e0efa81463919957cfbe18c6",
+      "retained_sha256": "0c7d4761e9672a71df16bb3c86ea8b038ddb75b4e0efa81463919957cfbe18c6"
+    },
+    {
+      "path": "disk/benchmark-cancel-death/evidence/output/summary.json",
+      "original_sha256": "a41c3cca27394adfb1f35c18de6c529a308ac61b5eccb82abbac67f7e6ab4b86",
+      "retained_sha256": "a41c3cca27394adfb1f35c18de6c529a308ac61b5eccb82abbac67f7e6ab4b86"
+    },
+    {
+      "path": "disk/benchmark-cancel-death/evidence/output/early-exit.txt",
+      "original_sha256": "7de2122074351e07761a59e55c5e6683a0bb950bc137b9a2d737e04cea2c16ba",
+      "retained_sha256": "7de2122074351e07761a59e55c5e6683a0bb950bc137b9a2d737e04cea2c16ba"
+    },
+    {
+      "path": "disk/benchmark-cancel-stall/result.txt",
+      "original_sha256": "60c06d3ad54e4cec41967c212a7e591763a001c59f41786e1119670e63f4723d",
+      "retained_sha256": "60c06d3ad54e4cec41967c212a7e591763a001c59f41786e1119670e63f4723d"
+    },
+    {
+      "path": "disk/benchmark-cancel-stall/test-exit.txt",
+      "original_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "retained_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "path": "disk/benchmark-cancel-stall/evidence/driver.txt",
+      "original_sha256": "4cd2890213bbeafbb95811c080d669781f0c9b4dfb5ad41d1851b003f8fddb97",
+      "retained_sha256": "4cd2890213bbeafbb95811c080d669781f0c9b4dfb5ad41d1851b003f8fddb97"
+    },
+    {
+      "path": "disk/benchmark-cancel-stall/evidence/source-sha256.txt",
+      "original_sha256": "9250688b819ffc37391b48c06e13d7d2601d25a19f4037cea14ceaa765f231f4",
+      "retained_sha256": "9250688b819ffc37391b48c06e13d7d2601d25a19f4037cea14ceaa765f231f4"
+    },
+    {
+      "path": "disk/benchmark-cancel-stall/evidence/packages.txt",
+      "original_sha256": "0c7d4761e9672a71df16bb3c86ea8b038ddb75b4e0efa81463919957cfbe18c6",
+      "retained_sha256": "0c7d4761e9672a71df16bb3c86ea8b038ddb75b4e0efa81463919957cfbe18c6"
+    },
+    {
+      "path": "disk/benchmark-cancel-stall/evidence/output/summary.json",
+      "original_sha256": "d2140a7d9c61fb1cdb1026702659ebcdfe9864d79b9ed311accec875508dd7af",
+      "retained_sha256": "d2140a7d9c61fb1cdb1026702659ebcdfe9864d79b9ed311accec875508dd7af"
+    },
+    {
+      "path": "disk/benchmark-cancel-stall/evidence/output/early-exit.txt",
+      "original_sha256": "7468bb314dc1ea24f40fc7035026211317ecc9dc327a1d7299a8b152ec8c2a87",
+      "retained_sha256": "7468bb314dc1ea24f40fc7035026211317ecc9dc327a1d7299a8b152ec8c2a87"
+    },
+    {
+      "path": "disk/benchmark-disabled/result.txt",
+      "original_sha256": "ef461dbc1ae67c9edbaa9a3a844bc67dd9414ad6a95d05734e4b7d1dd1795eab",
+      "retained_sha256": "ef461dbc1ae67c9edbaa9a3a844bc67dd9414ad6a95d05734e4b7d1dd1795eab"
+    },
+    {
+      "path": "disk/benchmark-disabled/test-exit.txt",
+      "original_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "retained_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "path": "disk/benchmark-disabled/evidence/driver.txt",
+      "original_sha256": "0f449f512db1fa1b74f79f73fcc89c97b7be1b5ee9ad80016fd3d8f82740e190",
+      "retained_sha256": "0f449f512db1fa1b74f79f73fcc89c97b7be1b5ee9ad80016fd3d8f82740e190"
+    },
+    {
+      "path": "disk/benchmark-disabled/evidence/source-sha256.txt",
+      "original_sha256": "9250688b819ffc37391b48c06e13d7d2601d25a19f4037cea14ceaa765f231f4",
+      "retained_sha256": "9250688b819ffc37391b48c06e13d7d2601d25a19f4037cea14ceaa765f231f4"
+    },
+    {
+      "path": "disk/benchmark-disabled/evidence/packages.txt",
+      "original_sha256": "0c7d4761e9672a71df16bb3c86ea8b038ddb75b4e0efa81463919957cfbe18c6",
+      "retained_sha256": "0c7d4761e9672a71df16bb3c86ea8b038ddb75b4e0efa81463919957cfbe18c6"
+    },
+    {
+      "path": "disk/benchmark-disabled/evidence/output/summary.json",
+      "original_sha256": "fc7b70e94da3448c507d4195196fca1c3827922ec9da4b5defcf14264b7aa06e",
+      "retained_sha256": "fc7b70e94da3448c507d4195196fca1c3827922ec9da4b5defcf14264b7aa06e"
+    },
+    {
+      "path": "disk/benchmark-equal/result.txt",
+      "original_sha256": "b3e1ca3a9b5a86cd444575318402c357327a02688e261764af01f43fb2c989d3",
+      "retained_sha256": "b3e1ca3a9b5a86cd444575318402c357327a02688e261764af01f43fb2c989d3"
+    },
+    {
+      "path": "disk/benchmark-equal/test-exit.txt",
+      "original_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "retained_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "path": "disk/benchmark-equal/evidence/driver.txt",
+      "original_sha256": "0ab4005933fc5fd0a7ffe168306e65a20d37551c18acd783400eb2dff72e0913",
+      "retained_sha256": "0ab4005933fc5fd0a7ffe168306e65a20d37551c18acd783400eb2dff72e0913"
+    },
+    {
+      "path": "disk/benchmark-equal/evidence/source-sha256.txt",
+      "original_sha256": "9250688b819ffc37391b48c06e13d7d2601d25a19f4037cea14ceaa765f231f4",
+      "retained_sha256": "9250688b819ffc37391b48c06e13d7d2601d25a19f4037cea14ceaa765f231f4"
+    },
+    {
+      "path": "disk/benchmark-equal/evidence/packages.txt",
+      "original_sha256": "0c7d4761e9672a71df16bb3c86ea8b038ddb75b4e0efa81463919957cfbe18c6",
+      "retained_sha256": "0c7d4761e9672a71df16bb3c86ea8b038ddb75b4e0efa81463919957cfbe18c6"
+    },
+    {
+      "path": "disk/benchmark-equal/evidence/output/summary.json",
+      "original_sha256": "c45c4fbf9d0949bdbad1d6dde0bc7b581eee3239446829479f02be8777188285",
+      "retained_sha256": "c45c4fbf9d0949bdbad1d6dde0bc7b581eee3239446829479f02be8777188285"
+    },
+    {
+      "path": "disk/benchmark-guardian-boundary/result.txt",
+      "original_sha256": "f6a6bffa6844add1fd3e3a42b87cefceaccace750ba873c0117a3d9b171436c4",
+      "retained_sha256": "f6a6bffa6844add1fd3e3a42b87cefceaccace750ba873c0117a3d9b171436c4"
+    },
+    {
+      "path": "disk/benchmark-guardian-boundary/test-exit.txt",
+      "original_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "retained_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "path": "disk/benchmark-guardian-boundary/evidence/driver.txt",
+      "original_sha256": "7776f4e904ceba40994358c0d0c7c0e848307445ea649404fda2c62b815e401f",
+      "retained_sha256": "4a9e06a94249d0c3f8da558d84d7b2fe87a2731de75882364b2239a1d3f9d135",
+      "transformation": "Trailing spaces were removed from five shell-dump lines."
+    },
+    {
+      "path": "disk/benchmark-guardian-boundary/evidence/source-sha256.txt",
+      "original_sha256": "9250688b819ffc37391b48c06e13d7d2601d25a19f4037cea14ceaa765f231f4",
+      "retained_sha256": "9250688b819ffc37391b48c06e13d7d2601d25a19f4037cea14ceaa765f231f4"
+    },
+    {
+      "path": "disk/benchmark-guardian-boundary/evidence/packages.txt",
+      "original_sha256": "0c7d4761e9672a71df16bb3c86ea8b038ddb75b4e0efa81463919957cfbe18c6",
+      "retained_sha256": "0c7d4761e9672a71df16bb3c86ea8b038ddb75b4e0efa81463919957cfbe18c6"
+    },
+    {
+      "path": "disk/benchmark-guardian-boundary/evidence/output/summary.json",
+      "original_sha256": "5fa31b0dd2a41fa614b21c19ce7f4052936c39d0e87390953113e93c87f5db4f",
+      "retained_sha256": "5fa31b0dd2a41fa614b21c19ce7f4052936c39d0e87390953113e93c87f5db4f"
+    },
+    {
+      "path": "disk/benchmark-guardian-boundary/evidence/output/early-exit.txt",
+      "original_sha256": "802ce8ede3f801642553f27570e52c000fb75600766efb105a0bc8a6fa0e414c",
+      "retained_sha256": "802ce8ede3f801642553f27570e52c000fb75600766efb105a0bc8a6fa0e414c"
+    },
+    {
+      "path": "disk/benchmark-guardian-interleaved/result.txt",
+      "original_sha256": "fb9035dc582cd1ae228bac74da2addc80e6c35587c74e92e904ad6a05f950ad5",
+      "retained_sha256": "fb9035dc582cd1ae228bac74da2addc80e6c35587c74e92e904ad6a05f950ad5"
+    },
+    {
+      "path": "disk/benchmark-guardian-interleaved/test-exit.txt",
+      "original_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "retained_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "path": "disk/benchmark-guardian-interleaved/evidence/driver.txt",
+      "original_sha256": "9a7ca929d177f5b644c7013813d3dfacd4639d786fe33bd542b398a36b8ca895",
+      "retained_sha256": "ebc28882fd5acbba5a1f7261132c931deac29bc2bb7a6045ee25d5a43bb122e1",
+      "transformation": "Trailing spaces were removed from five shell-dump lines."
+    },
+    {
+      "path": "disk/benchmark-guardian-interleaved/evidence/source-sha256.txt",
+      "original_sha256": "9250688b819ffc37391b48c06e13d7d2601d25a19f4037cea14ceaa765f231f4",
+      "retained_sha256": "9250688b819ffc37391b48c06e13d7d2601d25a19f4037cea14ceaa765f231f4"
+    },
+    {
+      "path": "disk/benchmark-guardian-interleaved/evidence/packages.txt",
+      "original_sha256": "0c7d4761e9672a71df16bb3c86ea8b038ddb75b4e0efa81463919957cfbe18c6",
+      "retained_sha256": "0c7d4761e9672a71df16bb3c86ea8b038ddb75b4e0efa81463919957cfbe18c6"
+    },
+    {
+      "path": "disk/benchmark-guardian-interleaved/evidence/output/summary.json",
+      "original_sha256": "f49664acc613c8aa9132878d1a692354aebcd34bd6dec71acadc464022cd196a",
+      "retained_sha256": "f49664acc613c8aa9132878d1a692354aebcd34bd6dec71acadc464022cd196a"
+    },
+    {
+      "path": "disk/benchmark-guardian-interleaved/evidence/output/early-exit.txt",
+      "original_sha256": "802ce8ede3f801642553f27570e52c000fb75600766efb105a0bc8a6fa0e414c",
+      "retained_sha256": "802ce8ede3f801642553f27570e52c000fb75600766efb105a0bc8a6fa0e414c"
+    },
+    {
+      "path": "disk/benchmark-missing/result.txt",
+      "original_sha256": "13285f71f8699b0a8faae94ae7da757fa17e3ea90d8624da642c64e51eb9a39b",
+      "retained_sha256": "13285f71f8699b0a8faae94ae7da757fa17e3ea90d8624da642c64e51eb9a39b"
+    },
+    {
+      "path": "disk/benchmark-missing/test-exit.txt",
+      "original_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "retained_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "path": "disk/benchmark-missing/evidence/driver.txt",
+      "original_sha256": "5c50e17905f825000c14bc11ccf0699e13ba69fbe1a2fafb356a586520806ffc",
+      "retained_sha256": "5c50e17905f825000c14bc11ccf0699e13ba69fbe1a2fafb356a586520806ffc"
+    },
+    {
+      "path": "disk/benchmark-missing/evidence/source-sha256.txt",
+      "original_sha256": "9250688b819ffc37391b48c06e13d7d2601d25a19f4037cea14ceaa765f231f4",
+      "retained_sha256": "9250688b819ffc37391b48c06e13d7d2601d25a19f4037cea14ceaa765f231f4"
+    },
+    {
+      "path": "disk/benchmark-missing/evidence/packages.txt",
+      "original_sha256": "0c7d4761e9672a71df16bb3c86ea8b038ddb75b4e0efa81463919957cfbe18c6",
+      "retained_sha256": "0c7d4761e9672a71df16bb3c86ea8b038ddb75b4e0efa81463919957cfbe18c6"
+    },
+    {
+      "path": "disk/benchmark-missing/evidence/output/summary.json",
+      "original_sha256": "780c09e4d308c76d607145738a7dd825e72f8a00244218a43a26a9a3b640799b",
+      "retained_sha256": "780c09e4d308c76d607145738a7dd825e72f8a00244218a43a26a9a3b640799b"
+    },
+    {
+      "path": "disk/benchmark-missing/evidence/output/early-exit.txt",
+      "original_sha256": "b7c54b0ef77d55718c1723ad77de491f4dc50a53f3911a8a56498000d3c3fce1",
+      "retained_sha256": "b7c54b0ef77d55718c1723ad77de491f4dc50a53f3911a8a56498000d3c3fce1"
+    },
+    {
+      "path": "disk/benchmark-progress-boundary/result.txt",
+      "original_sha256": "29dfa9eb32a2ccac543e681e3f1655db789283b8b959d5a81097addab7dd580e",
+      "retained_sha256": "29dfa9eb32a2ccac543e681e3f1655db789283b8b959d5a81097addab7dd580e"
+    },
+    {
+      "path": "disk/benchmark-progress-boundary/test-exit.txt",
+      "original_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "retained_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "path": "disk/benchmark-progress-boundary/evidence/driver.txt",
+      "original_sha256": "5e889110681e8ebc2d10b928e39ced301287c2a2a68a3045094a1fdf4b332c6b",
+      "retained_sha256": "5e889110681e8ebc2d10b928e39ced301287c2a2a68a3045094a1fdf4b332c6b"
+    },
+    {
+      "path": "disk/benchmark-progress-boundary/evidence/source-sha256.txt",
+      "original_sha256": "9250688b819ffc37391b48c06e13d7d2601d25a19f4037cea14ceaa765f231f4",
+      "retained_sha256": "9250688b819ffc37391b48c06e13d7d2601d25a19f4037cea14ceaa765f231f4"
+    },
+    {
+      "path": "disk/benchmark-progress-boundary/evidence/packages.txt",
+      "original_sha256": "0c7d4761e9672a71df16bb3c86ea8b038ddb75b4e0efa81463919957cfbe18c6",
+      "retained_sha256": "0c7d4761e9672a71df16bb3c86ea8b038ddb75b4e0efa81463919957cfbe18c6"
+    },
+    {
+      "path": "disk/benchmark-progress-boundary/evidence/output/summary.json",
+      "original_sha256": "e7df505bde0169badbefdccb52c5bbca6b322c7d6e9550140752fa36746c5747",
+      "retained_sha256": "e7df505bde0169badbefdccb52c5bbca6b322c7d6e9550140752fa36746c5747"
+    },
+    {
+      "path": "disk/benchmark-progress-boundary/evidence/output/early-exit.txt",
+      "original_sha256": "802ce8ede3f801642553f27570e52c000fb75600766efb105a0bc8a6fa0e414c",
+      "retained_sha256": "802ce8ede3f801642553f27570e52c000fb75600766efb105a0bc8a6fa0e414c"
+    },
+    {
+      "path": "disk/benchmark-sufficient/result.txt",
+      "original_sha256": "06d1a542555b0b9e4d1be10990097414c7feccb11c72bf991864937b921ae9a1",
+      "retained_sha256": "06d1a542555b0b9e4d1be10990097414c7feccb11c72bf991864937b921ae9a1"
+    },
+    {
+      "path": "disk/benchmark-sufficient/test-exit.txt",
+      "original_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "retained_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "path": "disk/benchmark-sufficient/evidence/driver.txt",
+      "original_sha256": "7df4b51b394f0af5f9f5adaf9593e67e4884c6e20fd9f721337e67277cf5958a",
+      "retained_sha256": "7df4b51b394f0af5f9f5adaf9593e67e4884c6e20fd9f721337e67277cf5958a"
+    },
+    {
+      "path": "disk/benchmark-sufficient/evidence/source-sha256.txt",
+      "original_sha256": "9250688b819ffc37391b48c06e13d7d2601d25a19f4037cea14ceaa765f231f4",
+      "retained_sha256": "9250688b819ffc37391b48c06e13d7d2601d25a19f4037cea14ceaa765f231f4"
+    },
+    {
+      "path": "disk/benchmark-sufficient/evidence/packages.txt",
+      "original_sha256": "0c7d4761e9672a71df16bb3c86ea8b038ddb75b4e0efa81463919957cfbe18c6",
+      "retained_sha256": "0c7d4761e9672a71df16bb3c86ea8b038ddb75b4e0efa81463919957cfbe18c6"
+    },
+    {
+      "path": "disk/benchmark-sufficient/evidence/output/summary.json",
+      "original_sha256": "98fce0b1dd7cb85c20c7e5b081e7c3e87bbca847b6a44c940ab6a3dcade4c328",
+      "retained_sha256": "98fce0b1dd7cb85c20c7e5b081e7c3e87bbca847b6a44c940ab6a3dcade4c328"
+    },
+    {
+      "path": "disk/cleanup-active-session/result.txt",
+      "original_sha256": "45ea361debdea16f3db4b0fb1b1a2adddb93d79b286a000265b0682c1f072709",
+      "retained_sha256": "45ea361debdea16f3db4b0fb1b1a2adddb93d79b286a000265b0682c1f072709"
+    },
+    {
+      "path": "disk/cleanup-active-session/test-exit.txt",
+      "original_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "retained_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "path": "disk/cleanup-active-session/evidence/driver.txt",
+      "original_sha256": "28cf46e67e88b85d1287627ce7ad3076110a496594cfcdde7743fd3b55c8a933",
+      "retained_sha256": "28cf46e67e88b85d1287627ce7ad3076110a496594cfcdde7743fd3b55c8a933"
+    },
+    {
+      "path": "disk/cleanup-active-session/evidence/source-sha256.txt",
+      "original_sha256": "9250688b819ffc37391b48c06e13d7d2601d25a19f4037cea14ceaa765f231f4",
+      "retained_sha256": "9250688b819ffc37391b48c06e13d7d2601d25a19f4037cea14ceaa765f231f4"
+    },
+    {
+      "path": "disk/cleanup-active-session/evidence/packages.txt",
+      "original_sha256": "0c7d4761e9672a71df16bb3c86ea8b038ddb75b4e0efa81463919957cfbe18c6",
+      "retained_sha256": "0c7d4761e9672a71df16bb3c86ea8b038ddb75b4e0efa81463919957cfbe18c6"
+    },
+    {
+      "path": "disk/cleanup-active-session/evidence/output/summary.json",
+      "original_sha256": "b3d36b2448c1416d4f21093e75033339076f187dfe8a7a6250547ff46f582a0d",
+      "retained_sha256": "b3d36b2448c1416d4f21093e75033339076f187dfe8a7a6250547ff46f582a0d"
+    },
+    {
+      "path": "disk/cleanup-active-session/evidence/output/early-exit.txt",
+      "original_sha256": "405402f3ba10a3241e908cbff395d41b275c6c1a8e7a8913399cc613fd9c6241",
+      "retained_sha256": "405402f3ba10a3241e908cbff395d41b275c6c1a8e7a8913399cc613fd9c6241"
+    },
+    {
+      "path": "disk/cleanup-error-builder/result.txt",
+      "original_sha256": "ce587bdffa1dd8b2713f04fe6276283d2993f660bb300d37d1890cc468c7aa12",
+      "retained_sha256": "ce587bdffa1dd8b2713f04fe6276283d2993f660bb300d37d1890cc468c7aa12"
+    },
+    {
+      "path": "disk/cleanup-error-builder/test-exit.txt",
+      "original_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "retained_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "path": "disk/cleanup-error-builder/evidence/driver.txt",
+      "original_sha256": "c2d1dd516cef6e07d54a93f809d633dde34dc8ca61b2493087a6de17d8a5df71",
+      "retained_sha256": "c2d1dd516cef6e07d54a93f809d633dde34dc8ca61b2493087a6de17d8a5df71"
+    },
+    {
+      "path": "disk/cleanup-error-builder/evidence/source-sha256.txt",
+      "original_sha256": "9250688b819ffc37391b48c06e13d7d2601d25a19f4037cea14ceaa765f231f4",
+      "retained_sha256": "9250688b819ffc37391b48c06e13d7d2601d25a19f4037cea14ceaa765f231f4"
+    },
+    {
+      "path": "disk/cleanup-error-builder/evidence/packages.txt",
+      "original_sha256": "0c7d4761e9672a71df16bb3c86ea8b038ddb75b4e0efa81463919957cfbe18c6",
+      "retained_sha256": "0c7d4761e9672a71df16bb3c86ea8b038ddb75b4e0efa81463919957cfbe18c6"
+    },
+    {
+      "path": "disk/cleanup-error-builder/evidence/output/summary.json",
+      "original_sha256": "f4254575d987af5d39311ea5262b9c1b08d07db962ad779b9faf817e8af0d53d",
+      "retained_sha256": "f4254575d987af5d39311ea5262b9c1b08d07db962ad779b9faf817e8af0d53d"
+    },
+    {
+      "path": "disk/cleanup-error-builder/evidence/output/early-exit.txt",
+      "original_sha256": "b0f95fba8f86b2ca4263ab873604041c3aae03dec315103a98d2cbc98a07b5db",
+      "retained_sha256": "b0f95fba8f86b2ca4263ab873604041c3aae03dec315103a98d2cbc98a07b5db"
+    },
+    {
+      "path": "disk/cleanup-error-image/result.txt",
+      "original_sha256": "8867d2abd2bfda5b9b08b1cfaf2c5dcda6940cc5c370ff909fa597383dab1c74",
+      "retained_sha256": "8867d2abd2bfda5b9b08b1cfaf2c5dcda6940cc5c370ff909fa597383dab1c74"
+    },
+    {
+      "path": "disk/cleanup-error-image/test-exit.txt",
+      "original_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "retained_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "path": "disk/cleanup-error-image/evidence/driver.txt",
+      "original_sha256": "c5165a45d12a397ef0337d4145641374328e11eff54f9ca5fe9845c860e31536",
+      "retained_sha256": "c5165a45d12a397ef0337d4145641374328e11eff54f9ca5fe9845c860e31536"
+    },
+    {
+      "path": "disk/cleanup-error-image/evidence/source-sha256.txt",
+      "original_sha256": "9250688b819ffc37391b48c06e13d7d2601d25a19f4037cea14ceaa765f231f4",
+      "retained_sha256": "9250688b819ffc37391b48c06e13d7d2601d25a19f4037cea14ceaa765f231f4"
+    },
+    {
+      "path": "disk/cleanup-error-image/evidence/packages.txt",
+      "original_sha256": "0c7d4761e9672a71df16bb3c86ea8b038ddb75b4e0efa81463919957cfbe18c6",
+      "retained_sha256": "0c7d4761e9672a71df16bb3c86ea8b038ddb75b4e0efa81463919957cfbe18c6"
+    },
+    {
+      "path": "disk/cleanup-error-image/evidence/output/summary.json",
+      "original_sha256": "6f8608f5cf4a282f12e83bb17d602ae15ca2c714c0e46cb0796961131d531219",
+      "retained_sha256": "6f8608f5cf4a282f12e83bb17d602ae15ca2c714c0e46cb0796961131d531219"
+    },
+    {
+      "path": "disk/cleanup-error-image/evidence/output/early-exit.txt",
+      "original_sha256": "b0f95fba8f86b2ca4263ab873604041c3aae03dec315103a98d2cbc98a07b5db",
+      "retained_sha256": "b0f95fba8f86b2ca4263ab873604041c3aae03dec315103a98d2cbc98a07b5db"
+    },
+    {
+      "path": "disk/cleanup-error-list/result.txt",
+      "original_sha256": "181922f865ed464356c36c630fd33cbda893cd454bf83928ad578200c0c91668",
+      "retained_sha256": "181922f865ed464356c36c630fd33cbda893cd454bf83928ad578200c0c91668"
+    },
+    {
+      "path": "disk/cleanup-error-list/test-exit.txt",
+      "original_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "retained_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "path": "disk/cleanup-error-list/evidence/driver.txt",
+      "original_sha256": "d42593b8da2a4c4025f219f5490353abd7204afa4fbadd078a5851cf68a5796d",
+      "retained_sha256": "d42593b8da2a4c4025f219f5490353abd7204afa4fbadd078a5851cf68a5796d"
+    },
+    {
+      "path": "disk/cleanup-error-list/evidence/source-sha256.txt",
+      "original_sha256": "9250688b819ffc37391b48c06e13d7d2601d25a19f4037cea14ceaa765f231f4",
+      "retained_sha256": "9250688b819ffc37391b48c06e13d7d2601d25a19f4037cea14ceaa765f231f4"
+    },
+    {
+      "path": "disk/cleanup-error-list/evidence/packages.txt",
+      "original_sha256": "0c7d4761e9672a71df16bb3c86ea8b038ddb75b4e0efa81463919957cfbe18c6",
+      "retained_sha256": "0c7d4761e9672a71df16bb3c86ea8b038ddb75b4e0efa81463919957cfbe18c6"
+    },
+    {
+      "path": "disk/cleanup-error-list/evidence/output/summary.json",
+      "original_sha256": "634952b447bb83dd5422d04a1fcc9c52e65849d733f100ea4570617547015ff2",
+      "retained_sha256": "634952b447bb83dd5422d04a1fcc9c52e65849d733f100ea4570617547015ff2"
+    },
+    {
+      "path": "disk/cleanup-error-list/evidence/output/early-exit.txt",
+      "original_sha256": "b0f95fba8f86b2ca4263ab873604041c3aae03dec315103a98d2cbc98a07b5db",
+      "retained_sha256": "b0f95fba8f86b2ca4263ab873604041c3aae03dec315103a98d2cbc98a07b5db"
+    },
+    {
+      "path": "disk/cleanup-error-network/result.txt",
+      "original_sha256": "cbdd0a096db7cb7cc0c74f698975bafa1bbe2b3e0b70b9107ea7366247c5be28",
+      "retained_sha256": "cbdd0a096db7cb7cc0c74f698975bafa1bbe2b3e0b70b9107ea7366247c5be28"
+    },
+    {
+      "path": "disk/cleanup-error-network/test-exit.txt",
+      "original_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "retained_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "path": "disk/cleanup-error-network/evidence/driver.txt",
+      "original_sha256": "ab1fdf56d982bc8dd5d4b930f00e7b97ce69c43a5defe66a230d4e830ac3969a",
+      "retained_sha256": "ab1fdf56d982bc8dd5d4b930f00e7b97ce69c43a5defe66a230d4e830ac3969a"
+    },
+    {
+      "path": "disk/cleanup-error-network/evidence/source-sha256.txt",
+      "original_sha256": "9250688b819ffc37391b48c06e13d7d2601d25a19f4037cea14ceaa765f231f4",
+      "retained_sha256": "9250688b819ffc37391b48c06e13d7d2601d25a19f4037cea14ceaa765f231f4"
+    },
+    {
+      "path": "disk/cleanup-error-network/evidence/packages.txt",
+      "original_sha256": "0c7d4761e9672a71df16bb3c86ea8b038ddb75b4e0efa81463919957cfbe18c6",
+      "retained_sha256": "0c7d4761e9672a71df16bb3c86ea8b038ddb75b4e0efa81463919957cfbe18c6"
+    },
+    {
+      "path": "disk/cleanup-error-network/evidence/output/summary.json",
+      "original_sha256": "bb860e8f74f1a901e4e9c64410d5955bab65a8de2ca64657a5844f2c544ecddb",
+      "retained_sha256": "bb860e8f74f1a901e4e9c64410d5955bab65a8de2ca64657a5844f2c544ecddb"
+    },
+    {
+      "path": "disk/cleanup-error-network/evidence/output/early-exit.txt",
+      "original_sha256": "b0f95fba8f86b2ca4263ab873604041c3aae03dec315103a98d2cbc98a07b5db",
+      "retained_sha256": "b0f95fba8f86b2ca4263ab873604041c3aae03dec315103a98d2cbc98a07b5db"
+    },
+    {
+      "path": "disk/cleanup-error-remove/result.txt",
+      "original_sha256": "385f7583cebce55702750effd2daf5bd3b74cdb9e395f5ed60ac6505f8affea9",
+      "retained_sha256": "385f7583cebce55702750effd2daf5bd3b74cdb9e395f5ed60ac6505f8affea9"
+    },
+    {
+      "path": "disk/cleanup-error-remove/test-exit.txt",
+      "original_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "retained_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "path": "disk/cleanup-error-remove/evidence/driver.txt",
+      "original_sha256": "32802f3f9b6f2cf3afa847c699b92fee7940ec3e598d68d8379adbe45fd5acd8",
+      "retained_sha256": "32802f3f9b6f2cf3afa847c699b92fee7940ec3e598d68d8379adbe45fd5acd8"
+    },
+    {
+      "path": "disk/cleanup-error-remove/evidence/source-sha256.txt",
+      "original_sha256": "9250688b819ffc37391b48c06e13d7d2601d25a19f4037cea14ceaa765f231f4",
+      "retained_sha256": "9250688b819ffc37391b48c06e13d7d2601d25a19f4037cea14ceaa765f231f4"
+    },
+    {
+      "path": "disk/cleanup-error-remove/evidence/packages.txt",
+      "original_sha256": "0c7d4761e9672a71df16bb3c86ea8b038ddb75b4e0efa81463919957cfbe18c6",
+      "retained_sha256": "0c7d4761e9672a71df16bb3c86ea8b038ddb75b4e0efa81463919957cfbe18c6"
+    },
+    {
+      "path": "disk/cleanup-error-remove/evidence/output/summary.json",
+      "original_sha256": "159b42ae353e9b44764eaea2e469a6c332adac392d4ea49e0c750331622e0178",
+      "retained_sha256": "159b42ae353e9b44764eaea2e469a6c332adac392d4ea49e0c750331622e0178"
+    },
+    {
+      "path": "disk/cleanup-error-remove/evidence/output/early-exit.txt",
+      "original_sha256": "b0f95fba8f86b2ca4263ab873604041c3aae03dec315103a98d2cbc98a07b5db",
+      "retained_sha256": "b0f95fba8f86b2ca4263ab873604041c3aae03dec315103a98d2cbc98a07b5db"
+    },
+    {
+      "path": "disk/cleanup-partial/result.txt",
+      "original_sha256": "c13ea70a0bffb8e19ae64a709e914b344b883063a9cd8c7e3a01ccb3a0af5f6f",
+      "retained_sha256": "c13ea70a0bffb8e19ae64a709e914b344b883063a9cd8c7e3a01ccb3a0af5f6f"
+    },
+    {
+      "path": "disk/cleanup-partial/test-exit.txt",
+      "original_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "retained_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "path": "disk/cleanup-partial/evidence/driver.txt",
+      "original_sha256": "bda604879e1e9b52d43ccadc1aed8376a681728b38fe307ba08602852b5deec2",
+      "retained_sha256": "bda604879e1e9b52d43ccadc1aed8376a681728b38fe307ba08602852b5deec2"
+    },
+    {
+      "path": "disk/cleanup-partial/evidence/source-sha256.txt",
+      "original_sha256": "9250688b819ffc37391b48c06e13d7d2601d25a19f4037cea14ceaa765f231f4",
+      "retained_sha256": "9250688b819ffc37391b48c06e13d7d2601d25a19f4037cea14ceaa765f231f4"
+    },
+    {
+      "path": "disk/cleanup-partial/evidence/packages.txt",
+      "original_sha256": "0c7d4761e9672a71df16bb3c86ea8b038ddb75b4e0efa81463919957cfbe18c6",
+      "retained_sha256": "0c7d4761e9672a71df16bb3c86ea8b038ddb75b4e0efa81463919957cfbe18c6"
+    },
+    {
+      "path": "disk/cleanup-partial/evidence/output/summary.json",
+      "original_sha256": "dc296d8f031b7e61a4076288d5d1928a32cd787b0c3b5f5ef950aad526cbb561",
+      "retained_sha256": "dc296d8f031b7e61a4076288d5d1928a32cd787b0c3b5f5ef950aad526cbb561"
+    },
+    {
+      "path": "disk/cleanup-partial/evidence/output/early-exit.txt",
+      "original_sha256": "86db04b82c419772d58322f4f9e55730e9ac070566b06dc4f119758516590dce",
+      "retained_sha256": "86db04b82c419772d58322f4f9e55730e9ac070566b06dc4f119758516590dce"
+    },
+    {
+      "path": "disk/cleanup-sufficient/result.txt",
+      "original_sha256": "732dadccf9b7a1682bff4a6d187475daa14abe261b0c6568cf7580467b860a2b",
+      "retained_sha256": "732dadccf9b7a1682bff4a6d187475daa14abe261b0c6568cf7580467b860a2b"
+    },
+    {
+      "path": "disk/cleanup-sufficient/test-exit.txt",
+      "original_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "retained_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "path": "disk/cleanup-sufficient/evidence/driver.txt",
+      "original_sha256": "f9ef8f56d82d251965856768378737a41257a40e29af5ded00e7c3e413791efe",
+      "retained_sha256": "f9ef8f56d82d251965856768378737a41257a40e29af5ded00e7c3e413791efe"
+    },
+    {
+      "path": "disk/cleanup-sufficient/evidence/source-sha256.txt",
+      "original_sha256": "9250688b819ffc37391b48c06e13d7d2601d25a19f4037cea14ceaa765f231f4",
+      "retained_sha256": "9250688b819ffc37391b48c06e13d7d2601d25a19f4037cea14ceaa765f231f4"
+    },
+    {
+      "path": "disk/cleanup-sufficient/evidence/packages.txt",
+      "original_sha256": "0c7d4761e9672a71df16bb3c86ea8b038ddb75b4e0efa81463919957cfbe18c6",
+      "retained_sha256": "0c7d4761e9672a71df16bb3c86ea8b038ddb75b4e0efa81463919957cfbe18c6"
+    },
+    {
+      "path": "disk/cleanup-sufficient/evidence/output/summary.json",
+      "original_sha256": "b8b63b1a19b0655d4dd7b509186a2553fc771a9f609ade61bed0dcda42c83f5c",
+      "retained_sha256": "b8b63b1a19b0655d4dd7b509186a2553fc771a9f609ade61bed0dcda42c83f5c"
+    },
+    {
+      "path": "disk/diagnostic-deadline/result.txt",
+      "original_sha256": "c52aab18579bf1aecf218d9025ef84f4851d3ffd56af08aebe751e103729ca3c",
+      "retained_sha256": "c52aab18579bf1aecf218d9025ef84f4851d3ffd56af08aebe751e103729ca3c"
+    },
+    {
+      "path": "disk/diagnostic-deadline/test-exit.txt",
+      "original_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "retained_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "path": "disk/diagnostic-deadline/evidence/driver.txt",
+      "original_sha256": "0e3750219f23afc9d05fa16897fb63f3c6cc4afc0dbe2d82b8043043c705b40c",
+      "retained_sha256": "0e3750219f23afc9d05fa16897fb63f3c6cc4afc0dbe2d82b8043043c705b40c"
+    },
+    {
+      "path": "disk/diagnostic-deadline/evidence/source-sha256.txt",
+      "original_sha256": "9250688b819ffc37391b48c06e13d7d2601d25a19f4037cea14ceaa765f231f4",
+      "retained_sha256": "9250688b819ffc37391b48c06e13d7d2601d25a19f4037cea14ceaa765f231f4"
+    },
+    {
+      "path": "disk/diagnostic-deadline/evidence/packages.txt",
+      "original_sha256": "0c7d4761e9672a71df16bb3c86ea8b038ddb75b4e0efa81463919957cfbe18c6",
+      "retained_sha256": "0c7d4761e9672a71df16bb3c86ea8b038ddb75b4e0efa81463919957cfbe18c6"
+    },
+    {
+      "path": "disk/diagnostic-deadline/evidence/output/summary.json",
+      "original_sha256": "71eb8d7374fe790e688f84cce40615be1c391691963ed53be656f5557e72d14a",
+      "retained_sha256": "71eb8d7374fe790e688f84cce40615be1c391691963ed53be656f5557e72d14a"
+    },
+    {
+      "path": "disk/diagnostic-deadline/evidence/output/early-exit.txt",
+      "original_sha256": "405402f3ba10a3241e908cbff395d41b275c6c1a8e7a8913399cc613fd9c6241",
+      "retained_sha256": "405402f3ba10a3241e908cbff395d41b275c6c1a8e7a8913399cc613fd9c6241"
+    },
+    {
+      "path": "disk/disk-band-range/result.txt",
+      "original_sha256": "3412b07b7422c0773b85b20cd1d6c889c02246da3ae40804d8cb9fcd8a524d7d",
+      "retained_sha256": "3412b07b7422c0773b85b20cd1d6c889c02246da3ae40804d8cb9fcd8a524d7d"
+    },
+    {
+      "path": "disk/disk-band-range/test-exit.txt",
+      "original_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "retained_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "path": "disk/disk-band-range/evidence/driver.txt",
+      "original_sha256": "6c080156f8594c2906eb9940fbeb83ab6f844f5ac3ce53c722ebf48cad13cc06",
+      "retained_sha256": "6c080156f8594c2906eb9940fbeb83ab6f844f5ac3ce53c722ebf48cad13cc06"
+    },
+    {
+      "path": "disk/disk-band-range/evidence/source-sha256.txt",
+      "original_sha256": "9250688b819ffc37391b48c06e13d7d2601d25a19f4037cea14ceaa765f231f4",
+      "retained_sha256": "9250688b819ffc37391b48c06e13d7d2601d25a19f4037cea14ceaa765f231f4"
+    },
+    {
+      "path": "disk/disk-band-range/evidence/packages.txt",
+      "original_sha256": "0c7d4761e9672a71df16bb3c86ea8b038ddb75b4e0efa81463919957cfbe18c6",
+      "retained_sha256": "0c7d4761e9672a71df16bb3c86ea8b038ddb75b4e0efa81463919957cfbe18c6"
+    },
+    {
+      "path": "disk/disk-floor-range/result.txt",
+      "original_sha256": "05030f4e3476bfd9bb4b13c2cf4d91d8133281a9fac8e64ebd184b71cc0b3d2d",
+      "retained_sha256": "05030f4e3476bfd9bb4b13c2cf4d91d8133281a9fac8e64ebd184b71cc0b3d2d"
+    },
+    {
+      "path": "disk/disk-floor-range/test-exit.txt",
+      "original_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "retained_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "path": "disk/disk-floor-range/evidence/driver.txt",
+      "original_sha256": "6da659a8aa1be35eb3e0597f1c09a17c953f5ad7b2a2b72c5e03a0f7a2cbddc8",
+      "retained_sha256": "6da659a8aa1be35eb3e0597f1c09a17c953f5ad7b2a2b72c5e03a0f7a2cbddc8"
+    },
+    {
+      "path": "disk/disk-floor-range/evidence/source-sha256.txt",
+      "original_sha256": "9250688b819ffc37391b48c06e13d7d2601d25a19f4037cea14ceaa765f231f4",
+      "retained_sha256": "9250688b819ffc37391b48c06e13d7d2601d25a19f4037cea14ceaa765f231f4"
+    },
+    {
+      "path": "disk/disk-floor-range/evidence/packages.txt",
+      "original_sha256": "0c7d4761e9672a71df16bb3c86ea8b038ddb75b4e0efa81463919957cfbe18c6",
+      "retained_sha256": "0c7d4761e9672a71df16bb3c86ea8b038ddb75b4e0efa81463919957cfbe18c6"
+    },
+    {
+      "path": "disk/disk-max-band/result.txt",
+      "original_sha256": "41ea708a1354a67e09c01605b598fa6f10fd1f4213df65e0c66e52fad2f57f66",
+      "retained_sha256": "41ea708a1354a67e09c01605b598fa6f10fd1f4213df65e0c66e52fad2f57f66"
+    },
+    {
+      "path": "disk/disk-max-band/test-exit.txt",
+      "original_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "retained_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "path": "disk/disk-max-band/evidence/driver.txt",
+      "original_sha256": "5b0e8a745bb69a422589b497fd87ebea5a7632605aea3283b5c7f7b1bbf5f3a0",
+      "retained_sha256": "5b0e8a745bb69a422589b497fd87ebea5a7632605aea3283b5c7f7b1bbf5f3a0"
+    },
+    {
+      "path": "disk/disk-max-band/evidence/source-sha256.txt",
+      "original_sha256": "9250688b819ffc37391b48c06e13d7d2601d25a19f4037cea14ceaa765f231f4",
+      "retained_sha256": "9250688b819ffc37391b48c06e13d7d2601d25a19f4037cea14ceaa765f231f4"
+    },
+    {
+      "path": "disk/disk-max-band/evidence/packages.txt",
+      "original_sha256": "0c7d4761e9672a71df16bb3c86ea8b038ddb75b4e0efa81463919957cfbe18c6",
+      "retained_sha256": "0c7d4761e9672a71df16bb3c86ea8b038ddb75b4e0efa81463919957cfbe18c6"
+    },
+    {
+      "path": "disk/disk-max-band/evidence/output/summary.json",
+      "original_sha256": "f660f690ed0feb75e849ed95d45a106e7d35d471f0b375ec376b550a60393419",
+      "retained_sha256": "f660f690ed0feb75e849ed95d45a106e7d35d471f0b375ec376b550a60393419"
+    },
+    {
+      "path": "disk/disk-max-floor/result.txt",
+      "original_sha256": "fc1805164f833accd61b5554d678145c3e71bb94bc6c051f4578cd412ed9bab1",
+      "retained_sha256": "fc1805164f833accd61b5554d678145c3e71bb94bc6c051f4578cd412ed9bab1"
+    },
+    {
+      "path": "disk/disk-max-floor/test-exit.txt",
+      "original_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "retained_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "path": "disk/disk-max-floor/evidence/driver.txt",
+      "original_sha256": "e1956c7f670164f5c11e80622fca7770465c901d026b2457b370d24d7b224186",
+      "retained_sha256": "e1956c7f670164f5c11e80622fca7770465c901d026b2457b370d24d7b224186"
+    },
+    {
+      "path": "disk/disk-max-floor/evidence/source-sha256.txt",
+      "original_sha256": "9250688b819ffc37391b48c06e13d7d2601d25a19f4037cea14ceaa765f231f4",
+      "retained_sha256": "9250688b819ffc37391b48c06e13d7d2601d25a19f4037cea14ceaa765f231f4"
+    },
+    {
+      "path": "disk/disk-max-floor/evidence/packages.txt",
+      "original_sha256": "0c7d4761e9672a71df16bb3c86ea8b038ddb75b4e0efa81463919957cfbe18c6",
+      "retained_sha256": "0c7d4761e9672a71df16bb3c86ea8b038ddb75b4e0efa81463919957cfbe18c6"
+    },
+    {
+      "path": "disk/disk-max-floor/evidence/output/summary.json",
+      "original_sha256": "f8cca311f806bed7c21607f9a434f58ea0004abf938afd357a2371097d00facd",
+      "retained_sha256": "f8cca311f806bed7c21607f9a434f58ea0004abf938afd357a2371097d00facd"
+    },
+    {
+      "path": "disk/disk-max-floor/evidence/output/early-exit.txt",
+      "original_sha256": "ddb01f8ea9bcbc5f59730af973c83b58a17804ab08bef9980c0c06b1c7f3c872",
+      "retained_sha256": "ddb01f8ea9bcbc5f59730af973c83b58a17804ab08bef9980c0c06b1c7f3c872"
+    },
+    {
+      "path": "disk/disk-sum-range/result.txt",
+      "original_sha256": "7ad4cf8bd98ecd85e92a1aae6efa3ee3951af34d9799bfd8759fc687f7caf111",
+      "retained_sha256": "7ad4cf8bd98ecd85e92a1aae6efa3ee3951af34d9799bfd8759fc687f7caf111"
+    },
+    {
+      "path": "disk/disk-sum-range/test-exit.txt",
+      "original_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "retained_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "path": "disk/disk-sum-range/evidence/driver.txt",
+      "original_sha256": "12285c203e7afb10712504b5b7eb1273e96918a12f114e683c12fc160b38be72",
+      "retained_sha256": "12285c203e7afb10712504b5b7eb1273e96918a12f114e683c12fc160b38be72"
+    },
+    {
+      "path": "disk/disk-sum-range/evidence/source-sha256.txt",
+      "original_sha256": "9250688b819ffc37391b48c06e13d7d2601d25a19f4037cea14ceaa765f231f4",
+      "retained_sha256": "9250688b819ffc37391b48c06e13d7d2601d25a19f4037cea14ceaa765f231f4"
+    },
+    {
+      "path": "disk/disk-sum-range/evidence/packages.txt",
+      "original_sha256": "0c7d4761e9672a71df16bb3c86ea8b038ddb75b4e0efa81463919957cfbe18c6",
+      "retained_sha256": "0c7d4761e9672a71df16bb3c86ea8b038ddb75b4e0efa81463919957cfbe18c6"
+    },
+    {
+      "path": "disk/guardian-death/result.txt",
+      "original_sha256": "19200c474cc5374c9e55edc5ba9325473e9ffa24e7dcf20df77aa61a7c3a0c86",
+      "retained_sha256": "19200c474cc5374c9e55edc5ba9325473e9ffa24e7dcf20df77aa61a7c3a0c86"
+    },
+    {
+      "path": "disk/guardian-death/test-exit.txt",
+      "original_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "retained_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "path": "disk/guardian-death/evidence/driver.txt",
+      "original_sha256": "17c845f40fd62f727516e11d516564acaf3684ffd9ed0c46bccc698e0344bc67",
+      "retained_sha256": "e6008e7ca8c7b7a44d962c7607d066e9a1f202e63018620b40956e487c4c430a",
+      "transformation": "Trailing spaces were removed from five shell-dump lines."
+    },
+    {
+      "path": "disk/guardian-death/evidence/source-sha256.txt",
+      "original_sha256": "9250688b819ffc37391b48c06e13d7d2601d25a19f4037cea14ceaa765f231f4",
+      "retained_sha256": "9250688b819ffc37391b48c06e13d7d2601d25a19f4037cea14ceaa765f231f4"
+    },
+    {
+      "path": "disk/guardian-death/evidence/packages.txt",
+      "original_sha256": "0c7d4761e9672a71df16bb3c86ea8b038ddb75b4e0efa81463919957cfbe18c6",
+      "retained_sha256": "0c7d4761e9672a71df16bb3c86ea8b038ddb75b4e0efa81463919957cfbe18c6"
+    },
+    {
+      "path": "disk/guardian-death/evidence/output/summary.json",
+      "original_sha256": "ba81f8ec83f10c7f556bb234e13ab1ad000f12bbcdda3756e8108a98be0fe0dc",
+      "retained_sha256": "ba81f8ec83f10c7f556bb234e13ab1ad000f12bbcdda3756e8108a98be0fe0dc"
+    },
+    {
+      "path": "disk/guardian-death/evidence/output/early-exit.txt",
+      "original_sha256": "9e53916a17197c923f9b956a19f4af25eaa70431d1b2fad5fb7b1173bb443a62",
+      "retained_sha256": "9e53916a17197c923f9b956a19f4af25eaa70431d1b2fad5fb7b1173bb443a62"
+    },
+    {
+      "path": "disk/guardian-death-boundary/result.txt",
+      "original_sha256": "f3939f6e626ec95385767d4061848ba1e0efeeb0469d259bf8824d25e4002e09",
+      "retained_sha256": "f3939f6e626ec95385767d4061848ba1e0efeeb0469d259bf8824d25e4002e09"
+    },
+    {
+      "path": "disk/guardian-death-boundary/test-exit.txt",
+      "original_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "retained_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "path": "disk/guardian-death-boundary/evidence/driver.txt",
+      "original_sha256": "540acc4d27e5b888379239a9dba05564d5bce56329f5c24fd0eed09c56009a19",
+      "retained_sha256": "c21b8b33e42a90d97e9ff2be6e1e3220eb211e1c8465e27549693530a078679c",
+      "transformation": "Trailing spaces were removed from five shell-dump lines."
+    },
+    {
+      "path": "disk/guardian-death-boundary/evidence/source-sha256.txt",
+      "original_sha256": "9250688b819ffc37391b48c06e13d7d2601d25a19f4037cea14ceaa765f231f4",
+      "retained_sha256": "9250688b819ffc37391b48c06e13d7d2601d25a19f4037cea14ceaa765f231f4"
+    },
+    {
+      "path": "disk/guardian-death-boundary/evidence/packages.txt",
+      "original_sha256": "0c7d4761e9672a71df16bb3c86ea8b038ddb75b4e0efa81463919957cfbe18c6",
+      "retained_sha256": "0c7d4761e9672a71df16bb3c86ea8b038ddb75b4e0efa81463919957cfbe18c6"
+    },
+    {
+      "path": "disk/guardian-death-boundary/evidence/output/summary.json",
+      "original_sha256": "fe2da3ecc4424228bb0baa4280d59b84ee127365d2442db544844d56d362fc4c",
+      "retained_sha256": "fe2da3ecc4424228bb0baa4280d59b84ee127365d2442db544844d56d362fc4c"
+    },
+    {
+      "path": "disk/guardian-death-boundary/evidence/output/early-exit.txt",
+      "original_sha256": "252ec80780dadac1417dac9a716e714921a168c98b56417349a27de3615cf77b",
+      "retained_sha256": "252ec80780dadac1417dac9a716e714921a168c98b56417349a27de3615cf77b"
+    },
+    {
+      "path": "disk/guardian-progress-boundary/result.txt",
+      "original_sha256": "477042da13d9a54bffdc1740d4eaf084b4b3184a762b523fb881d50336a23470",
+      "retained_sha256": "477042da13d9a54bffdc1740d4eaf084b4b3184a762b523fb881d50336a23470"
+    },
+    {
+      "path": "disk/guardian-progress-boundary/test-exit.txt",
+      "original_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "retained_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "path": "disk/guardian-progress-boundary/evidence/driver.txt",
+      "original_sha256": "269cf92b44e54f6b235c98fea9790dcda5053bb8ca283d0e2406c2bcdbb13ad4",
+      "retained_sha256": "269cf92b44e54f6b235c98fea9790dcda5053bb8ca283d0e2406c2bcdbb13ad4"
+    },
+    {
+      "path": "disk/guardian-progress-boundary/evidence/source-sha256.txt",
+      "original_sha256": "9250688b819ffc37391b48c06e13d7d2601d25a19f4037cea14ceaa765f231f4",
+      "retained_sha256": "9250688b819ffc37391b48c06e13d7d2601d25a19f4037cea14ceaa765f231f4"
+    },
+    {
+      "path": "disk/guardian-progress-boundary/evidence/packages.txt",
+      "original_sha256": "0c7d4761e9672a71df16bb3c86ea8b038ddb75b4e0efa81463919957cfbe18c6",
+      "retained_sha256": "0c7d4761e9672a71df16bb3c86ea8b038ddb75b4e0efa81463919957cfbe18c6"
+    },
+    {
+      "path": "disk/guardian-progress-boundary/evidence/output/summary.json",
+      "original_sha256": "8b64b1d8521380a12b776abada5c92bec63aeee5b2f0acfabc2b334df6bd74e1",
+      "retained_sha256": "8b64b1d8521380a12b776abada5c92bec63aeee5b2f0acfabc2b334df6bd74e1"
+    },
+    {
+      "path": "disk/guardian-progress-boundary/evidence/output/early-exit.txt",
+      "original_sha256": "252ec80780dadac1417dac9a716e714921a168c98b56417349a27de3615cf77b",
+      "retained_sha256": "252ec80780dadac1417dac9a716e714921a168c98b56417349a27de3615cf77b"
+    },
+    {
+      "path": "disk/guardian-stall/result.txt",
+      "original_sha256": "81f635c05a45e6a21bc22a865be41c352d42eb10854dae92ae3e3233fdb20047",
+      "retained_sha256": "81f635c05a45e6a21bc22a865be41c352d42eb10854dae92ae3e3233fdb20047"
+    },
+    {
+      "path": "disk/guardian-stall/test-exit.txt",
+      "original_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "retained_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "path": "disk/guardian-stall/evidence/driver.txt",
+      "original_sha256": "6d0fda8d33d10d60d84ba9b821d38fc5cbb7f19bee05aa21674f653ea38d888e",
+      "retained_sha256": "6d0fda8d33d10d60d84ba9b821d38fc5cbb7f19bee05aa21674f653ea38d888e"
+    },
+    {
+      "path": "disk/guardian-stall/evidence/source-sha256.txt",
+      "original_sha256": "9250688b819ffc37391b48c06e13d7d2601d25a19f4037cea14ceaa765f231f4",
+      "retained_sha256": "9250688b819ffc37391b48c06e13d7d2601d25a19f4037cea14ceaa765f231f4"
+    },
+    {
+      "path": "disk/guardian-stall/evidence/packages.txt",
+      "original_sha256": "0c7d4761e9672a71df16bb3c86ea8b038ddb75b4e0efa81463919957cfbe18c6",
+      "retained_sha256": "0c7d4761e9672a71df16bb3c86ea8b038ddb75b4e0efa81463919957cfbe18c6"
+    },
+    {
+      "path": "disk/guardian-stall/evidence/output/summary.json",
+      "original_sha256": "6a0d8771c930588a4e843b2f869963f2d38853e7b8ec9d361f8025c395b38bac",
+      "retained_sha256": "6a0d8771c930588a4e843b2f869963f2d38853e7b8ec9d361f8025c395b38bac"
+    },
+    {
+      "path": "disk/guardian-stall/evidence/output/early-exit.txt",
+      "original_sha256": "532f9a47ea3f92ea01b02e9a3ec7784c3e6fa9ed4720a48ebd1cc0dbd26b4aeb",
+      "retained_sha256": "532f9a47ea3f92ea01b02e9a3ec7784c3e6fa9ed4720a48ebd1cc0dbd26b4aeb"
+    },
+    {
+      "path": "disk/hygiene-timeout/result.txt",
+      "original_sha256": "4153ea342aae11e5ed910edee20d14ab7cfb127e793a7558655e82ff175d4a5a",
+      "retained_sha256": "4153ea342aae11e5ed910edee20d14ab7cfb127e793a7558655e82ff175d4a5a"
+    },
+    {
+      "path": "disk/hygiene-timeout/test-exit.txt",
+      "original_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "retained_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "path": "disk/hygiene-timeout/evidence/driver.txt",
+      "original_sha256": "4bf2cacf548b8f44bfc25e11f867ff8df42c241a9b4a2c7168256f7b4bf4cdce",
+      "retained_sha256": "4bf2cacf548b8f44bfc25e11f867ff8df42c241a9b4a2c7168256f7b4bf4cdce"
+    },
+    {
+      "path": "disk/hygiene-timeout/evidence/source-sha256.txt",
+      "original_sha256": "9250688b819ffc37391b48c06e13d7d2601d25a19f4037cea14ceaa765f231f4",
+      "retained_sha256": "9250688b819ffc37391b48c06e13d7d2601d25a19f4037cea14ceaa765f231f4"
+    },
+    {
+      "path": "disk/hygiene-timeout/evidence/packages.txt",
+      "original_sha256": "0c7d4761e9672a71df16bb3c86ea8b038ddb75b4e0efa81463919957cfbe18c6",
+      "retained_sha256": "0c7d4761e9672a71df16bb3c86ea8b038ddb75b4e0efa81463919957cfbe18c6"
+    },
+    {
+      "path": "disk/hygiene-timeout/evidence/output/summary.json",
+      "original_sha256": "ff5d12d6df41849a735aa67c565e58e266ac97eff58c7ad2d16e30d66f57994f",
+      "retained_sha256": "ff5d12d6df41849a735aa67c565e58e266ac97eff58c7ad2d16e30d66f57994f"
+    },
+    {
+      "path": "disk/hygiene-timeout/evidence/output/early-exit.txt",
+      "original_sha256": "b0f95fba8f86b2ca4263ab873604041c3aae03dec315103a98d2cbc98a07b5db",
+      "retained_sha256": "b0f95fba8f86b2ca4263ab873604041c3aae03dec315103a98d2cbc98a07b5db"
+    },
+    {
+      "path": "disk/malformed-boundary/result.txt",
+      "original_sha256": "2f1eb64944cbad91793e05b2474a7b32b80c5e7e9ee9d2023612370fc0e211ad",
+      "retained_sha256": "2f1eb64944cbad91793e05b2474a7b32b80c5e7e9ee9d2023612370fc0e211ad"
+    },
+    {
+      "path": "disk/malformed-boundary/test-exit.txt",
+      "original_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "retained_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "path": "disk/malformed-boundary/evidence/driver.txt",
+      "original_sha256": "f2faf749974c8f981d740631dd7afeb0c08cf517a7207e303938954438ef6f02",
+      "retained_sha256": "f2faf749974c8f981d740631dd7afeb0c08cf517a7207e303938954438ef6f02"
+    },
+    {
+      "path": "disk/malformed-boundary/evidence/source-sha256.txt",
+      "original_sha256": "9250688b819ffc37391b48c06e13d7d2601d25a19f4037cea14ceaa765f231f4",
+      "retained_sha256": "9250688b819ffc37391b48c06e13d7d2601d25a19f4037cea14ceaa765f231f4"
+    },
+    {
+      "path": "disk/malformed-boundary/evidence/packages.txt",
+      "original_sha256": "0c7d4761e9672a71df16bb3c86ea8b038ddb75b4e0efa81463919957cfbe18c6",
+      "retained_sha256": "0c7d4761e9672a71df16bb3c86ea8b038ddb75b4e0efa81463919957cfbe18c6"
+    },
+    {
+      "path": "disk/malformed-boundary/evidence/output/summary.json",
+      "original_sha256": "9ec7244156631f154b8a7ae49489b43555393768031f68fe1901e6679bf15e4b",
+      "retained_sha256": "9ec7244156631f154b8a7ae49489b43555393768031f68fe1901e6679bf15e4b"
+    },
+    {
+      "path": "disk/malformed-boundary/evidence/output/early-exit.txt",
+      "original_sha256": "29433ae5d533a84236a707cce2b19596c4b55df6a56c1a712cb70e92033bb422",
+      "retained_sha256": "29433ae5d533a84236a707cce2b19596c4b55df6a56c1a712cb70e92033bb422"
+    },
+    {
+      "path": "disk/missing-active/result.txt",
+      "original_sha256": "ff69abe8424dc3b6591c0ea9b5169ab3dedb30c3189229ffb0a4c955013aaffe",
+      "retained_sha256": "ff69abe8424dc3b6591c0ea9b5169ab3dedb30c3189229ffb0a4c955013aaffe"
+    },
+    {
+      "path": "disk/missing-active/test-exit.txt",
+      "original_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "retained_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "path": "disk/missing-active/evidence/driver.txt",
+      "original_sha256": "1b6c4ddaf5a098390ff6e9a8041ec4e7f73835f0480ec0b14e900cc3c4742ff3",
+      "retained_sha256": "1b6c4ddaf5a098390ff6e9a8041ec4e7f73835f0480ec0b14e900cc3c4742ff3"
+    },
+    {
+      "path": "disk/missing-active/evidence/source-sha256.txt",
+      "original_sha256": "9250688b819ffc37391b48c06e13d7d2601d25a19f4037cea14ceaa765f231f4",
+      "retained_sha256": "9250688b819ffc37391b48c06e13d7d2601d25a19f4037cea14ceaa765f231f4"
+    },
+    {
+      "path": "disk/missing-active/evidence/packages.txt",
+      "original_sha256": "0c7d4761e9672a71df16bb3c86ea8b038ddb75b4e0efa81463919957cfbe18c6",
+      "retained_sha256": "0c7d4761e9672a71df16bb3c86ea8b038ddb75b4e0efa81463919957cfbe18c6"
+    },
+    {
+      "path": "disk/missing-active/evidence/output/summary.json",
+      "original_sha256": "21a7fc0b562717d63dbc73cbf9d501b5ec665226797dfefad1fe858e3fffe9d2",
+      "retained_sha256": "21a7fc0b562717d63dbc73cbf9d501b5ec665226797dfefad1fe858e3fffe9d2"
+    },
+    {
+      "path": "disk/missing-active/evidence/output/early-exit.txt",
+      "original_sha256": "e4b8553e2f694787833ba803ceff4ac0b0c7df4bcb1bd37e3f2e1f9eb69a6bf0",
+      "retained_sha256": "e4b8553e2f694787833ba803ceff4ac0b0c7df4bcb1bd37e3f2e1f9eb69a6bf0"
+    },
+    {
+      "path": "disk/missing-after-hygiene/result.txt",
+      "original_sha256": "e3d7c4328410374c3d8eff7a9b2ec9e2ea9f5d922e92f2b5067b7336f2a484cc",
+      "retained_sha256": "e3d7c4328410374c3d8eff7a9b2ec9e2ea9f5d922e92f2b5067b7336f2a484cc"
+    },
+    {
+      "path": "disk/missing-after-hygiene/test-exit.txt",
+      "original_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "retained_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "path": "disk/missing-after-hygiene/evidence/driver.txt",
+      "original_sha256": "91524c70d4d67ad4426509a5b60b85ef1388a8360eb993da2267001a495feb24",
+      "retained_sha256": "91524c70d4d67ad4426509a5b60b85ef1388a8360eb993da2267001a495feb24"
+    },
+    {
+      "path": "disk/missing-after-hygiene/evidence/source-sha256.txt",
+      "original_sha256": "9250688b819ffc37391b48c06e13d7d2601d25a19f4037cea14ceaa765f231f4",
+      "retained_sha256": "9250688b819ffc37391b48c06e13d7d2601d25a19f4037cea14ceaa765f231f4"
+    },
+    {
+      "path": "disk/missing-after-hygiene/evidence/packages.txt",
+      "original_sha256": "0c7d4761e9672a71df16bb3c86ea8b038ddb75b4e0efa81463919957cfbe18c6",
+      "retained_sha256": "0c7d4761e9672a71df16bb3c86ea8b038ddb75b4e0efa81463919957cfbe18c6"
+    },
+    {
+      "path": "disk/missing-after-hygiene/evidence/output/summary.json",
+      "original_sha256": "baca7b082dd17d9233880cd6b1251f891dac8838194bd359c34b92d2890e9089",
+      "retained_sha256": "baca7b082dd17d9233880cd6b1251f891dac8838194bd359c34b92d2890e9089"
+    },
+    {
+      "path": "disk/missing-after-hygiene/evidence/output/early-exit.txt",
+      "original_sha256": "29433ae5d533a84236a707cce2b19596c4b55df6a56c1a712cb70e92033bb422",
+      "retained_sha256": "29433ae5d533a84236a707cce2b19596c4b55df6a56c1a712cb70e92033bb422"
+    },
+    {
+      "path": "disk/missing-boundary/result.txt",
+      "original_sha256": "6af5e0289485b72797773b0677d0574292dabc84ce84836d441a3a0885ccf9e3",
+      "retained_sha256": "6af5e0289485b72797773b0677d0574292dabc84ce84836d441a3a0885ccf9e3"
+    },
+    {
+      "path": "disk/missing-boundary/test-exit.txt",
+      "original_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "retained_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "path": "disk/missing-boundary/evidence/driver.txt",
+      "original_sha256": "44ac30a11ced6ce55555307e25076238ad19baa0ba4c33057addd149c9f2eaa9",
+      "retained_sha256": "44ac30a11ced6ce55555307e25076238ad19baa0ba4c33057addd149c9f2eaa9"
+    },
+    {
+      "path": "disk/missing-boundary/evidence/source-sha256.txt",
+      "original_sha256": "9250688b819ffc37391b48c06e13d7d2601d25a19f4037cea14ceaa765f231f4",
+      "retained_sha256": "9250688b819ffc37391b48c06e13d7d2601d25a19f4037cea14ceaa765f231f4"
+    },
+    {
+      "path": "disk/missing-boundary/evidence/packages.txt",
+      "original_sha256": "0c7d4761e9672a71df16bb3c86ea8b038ddb75b4e0efa81463919957cfbe18c6",
+      "retained_sha256": "0c7d4761e9672a71df16bb3c86ea8b038ddb75b4e0efa81463919957cfbe18c6"
+    },
+    {
+      "path": "disk/missing-boundary/evidence/output/summary.json",
+      "original_sha256": "bbed9851d443efa205caa982b1c5369a734a01e4f01b98b81428aab9cec931e8",
+      "retained_sha256": "bbed9851d443efa205caa982b1c5369a734a01e4f01b98b81428aab9cec931e8"
+    },
+    {
+      "path": "disk/missing-boundary/evidence/output/early-exit.txt",
+      "original_sha256": "29433ae5d533a84236a707cce2b19596c4b55df6a56c1a712cb70e92033bb422",
+      "retained_sha256": "29433ae5d533a84236a707cce2b19596c4b55df6a56c1a712cb70e92033bb422"
+    },
+    {
+      "path": "disk/record-before-stop/result.txt",
+      "original_sha256": "50cb97ec8e1d071cebd763e97f2e3ed84536bc24ff16f23bc1afbfbd2771c8d8",
+      "retained_sha256": "50cb97ec8e1d071cebd763e97f2e3ed84536bc24ff16f23bc1afbfbd2771c8d8"
+    },
+    {
+      "path": "disk/record-before-stop/test-exit.txt",
+      "original_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "retained_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "path": "disk/record-before-stop/evidence/driver.txt",
+      "original_sha256": "a12d9e93c3828dfebeac4d2408ee3e860310f885a625a0ace5832bee23338382",
+      "retained_sha256": "a12d9e93c3828dfebeac4d2408ee3e860310f885a625a0ace5832bee23338382"
+    },
+    {
+      "path": "disk/record-before-stop/evidence/source-sha256.txt",
+      "original_sha256": "9250688b819ffc37391b48c06e13d7d2601d25a19f4037cea14ceaa765f231f4",
+      "retained_sha256": "9250688b819ffc37391b48c06e13d7d2601d25a19f4037cea14ceaa765f231f4"
+    },
+    {
+      "path": "disk/record-before-stop/evidence/packages.txt",
+      "original_sha256": "0c7d4761e9672a71df16bb3c86ea8b038ddb75b4e0efa81463919957cfbe18c6",
+      "retained_sha256": "0c7d4761e9672a71df16bb3c86ea8b038ddb75b4e0efa81463919957cfbe18c6"
+    },
+    {
+      "path": "disk/record-before-stop/evidence/output/summary.json",
+      "original_sha256": "96221c592afc32fcf73216b0deb6e9e86536d360816d2121739da887c0e07c20",
+      "retained_sha256": "96221c592afc32fcf73216b0deb6e9e86536d360816d2121739da887c0e07c20"
+    },
+    {
+      "path": "disk/record-before-stop/evidence/output/early-exit.txt",
+      "original_sha256": "27ae0dee70b2aee22101227ae8c702dc198c81cd0bdecb38f444a455f0a193d1",
+      "retained_sha256": "27ae0dee70b2aee22101227ae8c702dc198c81cd0bdecb38f444a455f0a193d1"
+    },
+    {
+      "path": "disk/restart-benchmark/result.txt",
+      "original_sha256": "d78cc0ef5d5b1b2aa4d3c49f2512c6e19fe620b68a527e3ce8273dcd742ffef5",
+      "retained_sha256": "d78cc0ef5d5b1b2aa4d3c49f2512c6e19fe620b68a527e3ce8273dcd742ffef5"
+    },
+    {
+      "path": "disk/restart-benchmark/test-exit.txt",
+      "original_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "retained_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "path": "disk/restart-benchmark/evidence/driver.txt",
+      "original_sha256": "e3c562c87f8905163b11beab03d1e29ccad14e56113f04a8832cfe6a6bae259b",
+      "retained_sha256": "e3c562c87f8905163b11beab03d1e29ccad14e56113f04a8832cfe6a6bae259b"
+    },
+    {
+      "path": "disk/restart-benchmark/evidence/source-sha256.txt",
+      "original_sha256": "9250688b819ffc37391b48c06e13d7d2601d25a19f4037cea14ceaa765f231f4",
+      "retained_sha256": "9250688b819ffc37391b48c06e13d7d2601d25a19f4037cea14ceaa765f231f4"
+    },
+    {
+      "path": "disk/restart-benchmark/evidence/packages.txt",
+      "original_sha256": "0c7d4761e9672a71df16bb3c86ea8b038ddb75b4e0efa81463919957cfbe18c6",
+      "retained_sha256": "0c7d4761e9672a71df16bb3c86ea8b038ddb75b4e0efa81463919957cfbe18c6"
+    },
+    {
+      "path": "disk/restart-benchmark/evidence/output/summary.json",
+      "original_sha256": "a8ab6be9e4c85d2a8e506b398d2d90341a2cb87a5b048e14efc1a02f4c7fab63",
+      "retained_sha256": "a8ab6be9e4c85d2a8e506b398d2d90341a2cb87a5b048e14efc1a02f4c7fab63"
+    },
+    {
+      "path": "disk/restart-benchmark/evidence/output/early-exit.txt",
+      "original_sha256": "5331229221f175289b8c1b4e3b5ccdd4b7830aca8f1e2b5ac2cb3b6ff1b05588",
+      "retained_sha256": "5331229221f175289b8c1b4e3b5ccdd4b7830aca8f1e2b5ac2cb3b6ff1b05588"
+    },
+    {
+      "path": "disk/restart-counted/result.txt",
+      "original_sha256": "e6e9257352f0fa572af0605cc3fdf6287697c8e7140526e330a8a388d1589522",
+      "retained_sha256": "e6e9257352f0fa572af0605cc3fdf6287697c8e7140526e330a8a388d1589522"
+    },
+    {
+      "path": "disk/restart-counted/test-exit.txt",
+      "original_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "retained_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "path": "disk/restart-counted/evidence/driver.txt",
+      "original_sha256": "e1303b28f05a1a8cf608b06bdb4bebbb4417eca5b76f92605f7da54392f261b1",
+      "retained_sha256": "e1303b28f05a1a8cf608b06bdb4bebbb4417eca5b76f92605f7da54392f261b1"
+    },
+    {
+      "path": "disk/restart-counted/evidence/source-sha256.txt",
+      "original_sha256": "9250688b819ffc37391b48c06e13d7d2601d25a19f4037cea14ceaa765f231f4",
+      "retained_sha256": "9250688b819ffc37391b48c06e13d7d2601d25a19f4037cea14ceaa765f231f4"
+    },
+    {
+      "path": "disk/restart-counted/evidence/packages.txt",
+      "original_sha256": "0c7d4761e9672a71df16bb3c86ea8b038ddb75b4e0efa81463919957cfbe18c6",
+      "retained_sha256": "0c7d4761e9672a71df16bb3c86ea8b038ddb75b4e0efa81463919957cfbe18c6"
+    },
+    {
+      "path": "disk/restart-counted/evidence/output/summary.json",
+      "original_sha256": "bae7657aa89e6efca880a2cb675a936203ac30750b0e677d136368e14a955bca",
+      "retained_sha256": "bae7657aa89e6efca880a2cb675a936203ac30750b0e677d136368e14a955bca"
+    },
+    {
+      "path": "disk/restart-counted/evidence/output/early-exit.txt",
+      "original_sha256": "5331229221f175289b8c1b4e3b5ccdd4b7830aca8f1e2b5ac2cb3b6ff1b05588",
+      "retained_sha256": "5331229221f175289b8c1b4e3b5ccdd4b7830aca8f1e2b5ac2cb3b6ff1b05588"
+    },
+    {
+      "path": "disk/restart-uncounted/result.txt",
+      "original_sha256": "3d8a7a5b32cef00a2cfb2e1d800dec52625da26c42d17e875261d387175a850a",
+      "retained_sha256": "3d8a7a5b32cef00a2cfb2e1d800dec52625da26c42d17e875261d387175a850a"
+    },
+    {
+      "path": "disk/restart-uncounted/test-exit.txt",
+      "original_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "retained_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "path": "disk/restart-uncounted/evidence/driver.txt",
+      "original_sha256": "0489d5d08aa7ef239e6dac54cf45c56dfe347d04d0dce25dbafaa219de44c811",
+      "retained_sha256": "0489d5d08aa7ef239e6dac54cf45c56dfe347d04d0dce25dbafaa219de44c811"
+    },
+    {
+      "path": "disk/restart-uncounted/evidence/source-sha256.txt",
+      "original_sha256": "9250688b819ffc37391b48c06e13d7d2601d25a19f4037cea14ceaa765f231f4",
+      "retained_sha256": "9250688b819ffc37391b48c06e13d7d2601d25a19f4037cea14ceaa765f231f4"
+    },
+    {
+      "path": "disk/restart-uncounted/evidence/packages.txt",
+      "original_sha256": "0c7d4761e9672a71df16bb3c86ea8b038ddb75b4e0efa81463919957cfbe18c6",
+      "retained_sha256": "0c7d4761e9672a71df16bb3c86ea8b038ddb75b4e0efa81463919957cfbe18c6"
+    },
+    {
+      "path": "disk/restart-uncounted/evidence/output/summary.json",
+      "original_sha256": "0b0bdae347344fb29fd05f12d28643ed6d34d5527a0fb672de62618e38fefd47",
+      "retained_sha256": "0b0bdae347344fb29fd05f12d28643ed6d34d5527a0fb672de62618e38fefd47"
+    },
+    {
+      "path": "disk/restart-uncounted/evidence/output/early-exit.txt",
+      "original_sha256": "5331229221f175289b8c1b4e3b5ccdd4b7830aca8f1e2b5ac2cb3b6ff1b05588",
+      "retained_sha256": "5331229221f175289b8c1b4e3b5ccdd4b7830aca8f1e2b5ac2cb3b6ff1b05588"
+    },
+    {
+      "path": "disk/stalled-active/result.txt",
+      "original_sha256": "b6bcc74ea6055c5728c21ee39f1b9a39111246911a8c225ac2b1bc8940d2cc0d",
+      "retained_sha256": "b6bcc74ea6055c5728c21ee39f1b9a39111246911a8c225ac2b1bc8940d2cc0d"
+    },
+    {
+      "path": "disk/stalled-active/test-exit.txt",
+      "original_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "retained_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "path": "disk/stalled-active/evidence/driver.txt",
+      "original_sha256": "6b52c73fc313b5af1963746d490e7952df37152153e393b387f9aafc659c97ca",
+      "retained_sha256": "6b52c73fc313b5af1963746d490e7952df37152153e393b387f9aafc659c97ca"
+    },
+    {
+      "path": "disk/stalled-active/evidence/source-sha256.txt",
+      "original_sha256": "9250688b819ffc37391b48c06e13d7d2601d25a19f4037cea14ceaa765f231f4",
+      "retained_sha256": "9250688b819ffc37391b48c06e13d7d2601d25a19f4037cea14ceaa765f231f4"
+    },
+    {
+      "path": "disk/stalled-active/evidence/packages.txt",
+      "original_sha256": "0c7d4761e9672a71df16bb3c86ea8b038ddb75b4e0efa81463919957cfbe18c6",
+      "retained_sha256": "0c7d4761e9672a71df16bb3c86ea8b038ddb75b4e0efa81463919957cfbe18c6"
+    },
+    {
+      "path": "disk/stalled-active/evidence/output/summary.json",
+      "original_sha256": "439748cc978173105f6baa3a6483ba609f75ee46bd152b09ec32cfb6c8f7cccc",
+      "retained_sha256": "439748cc978173105f6baa3a6483ba609f75ee46bd152b09ec32cfb6c8f7cccc"
+    },
+    {
+      "path": "disk/stalled-active/evidence/output/early-exit.txt",
+      "original_sha256": "e4b8553e2f694787833ba803ceff4ac0b0c7df4bcb1bd37e3f2e1f9eb69a6bf0",
+      "retained_sha256": "e4b8553e2f694787833ba803ceff4ac0b0c7df4bcb1bd37e3f2e1f9eb69a6bf0"
+    },
+    {
+      "path": "disk/stop-timeout/result.txt",
+      "original_sha256": "d171dfae0fc64d36c517d3021e2d74c7ada8ec317effbe4088bb6ef4b4e527bd",
+      "retained_sha256": "d171dfae0fc64d36c517d3021e2d74c7ada8ec317effbe4088bb6ef4b4e527bd"
+    },
+    {
+      "path": "disk/stop-timeout/test-exit.txt",
+      "original_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "retained_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "path": "disk/stop-timeout/evidence/driver.txt",
+      "original_sha256": "eee97698cfc76946b5a9534c24041ca10924b87beea5727f0be2a848b6620671",
+      "retained_sha256": "eee97698cfc76946b5a9534c24041ca10924b87beea5727f0be2a848b6620671"
+    },
+    {
+      "path": "disk/stop-timeout/evidence/source-sha256.txt",
+      "original_sha256": "9250688b819ffc37391b48c06e13d7d2601d25a19f4037cea14ceaa765f231f4",
+      "retained_sha256": "9250688b819ffc37391b48c06e13d7d2601d25a19f4037cea14ceaa765f231f4"
+    },
+    {
+      "path": "disk/stop-timeout/evidence/packages.txt",
+      "original_sha256": "0c7d4761e9672a71df16bb3c86ea8b038ddb75b4e0efa81463919957cfbe18c6",
+      "retained_sha256": "0c7d4761e9672a71df16bb3c86ea8b038ddb75b4e0efa81463919957cfbe18c6"
+    },
+    {
+      "path": "disk/stop-timeout/evidence/output/summary.json",
+      "original_sha256": "cd523fde5896e251e829e837abeb7165188860c7dae55d5d1aa427324e3d944f",
+      "retained_sha256": "cd523fde5896e251e829e837abeb7165188860c7dae55d5d1aa427324e3d944f"
+    },
+    {
+      "path": "disk/stop-timeout/evidence/output/early-exit.txt",
+      "original_sha256": "27ae0dee70b2aee22101227ae8c702dc198c81cd0bdecb38f444a455f0a193d1",
+      "retained_sha256": "27ae0dee70b2aee22101227ae8c702dc198c81cd0bdecb38f444a455f0a193d1"
+    }
+  ]
+}

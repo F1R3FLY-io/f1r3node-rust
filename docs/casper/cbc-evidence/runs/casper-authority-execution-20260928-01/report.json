@@ -1,0 +1,325 @@
+{
+  "schema_version": 1,
+  "claim_ids": [
+    "CLAIM-CASPER-SOAK-002"
+  ],
+  "task": "TASK-017-12",
+  "status": "local-verification-passed",
+  "claim_discharge": "pending",
+  "phase": "pre_pr216_merge",
+  "source_head_revision": "66c21f26eeceac6027ad618cd96df07482a864c2",
+  "working_tree": true,
+  "source_digests": {
+    ".github/workflows/casper-authority-finality.yml": "db9a1044cb693690f66975ff45d7954ab10b4469d353d156fe5bc402e6746721",
+    "formal/tlaplus/casper_soak/profiles/authority_finality/README.md": "bc579f07c72c2c3e5f4a02f7017125344ab8d2a778578ec23638c9d2762d35fa",
+    "scripts/casper-soak/src/bin/casper-authority-finality.rs": "16ee4ff45ca67c801a7393b6f4041a0a043f653483039e59bc621377284d39a4",
+    "scripts/casper-soak/src/authority_execution.rs": "93ece0971da840404e69477c55125aadf7f93021f90a32fa0ecb3e695f97b80f",
+    "scripts/casper-soak/src/profiles/authority_finality.rs": "ff64a61e06aceb71c73f82701fccaa1f096ddf4717f0efa39a945aaed2be041b",
+    "scripts/casper-soak/tests/authority_finality.rs": "9f754df8091809c3dc5cec70be9a4746eb25fa0b7b6321c529b6807cd22ea081",
+    "scripts/casper-soak/check-authority-finality.sh": "e11a5ab62c085a5ea7c3d2e97c01087881dfab707f2873c5b0ea43274cab50b6",
+    "scripts/casper-soak/src/lib.rs": "a70f76a28de8ef8010eb7f8876b5e947ce94bf35752bbd70b086983383ee7a8f",
+    "scripts/casper-soak/src/manifest.rs": "d9606d542cfb9bc058f691196244ae2e6055e6c84c02b5c2581ee07e70c03000",
+    "scripts/casper-soak/src/models.rs": "99e3f736aa9e753b73edced77049ab206f993d612870bb1d866f6d5c0655983f",
+    "scripts/casper-soak/Cargo.toml": "0389290c18cb725d108ce3709018f92d9f04fdf84a62eb97d905c53874f43139",
+    "Cargo.lock": "9da684952a74e56706dfd0fcc9165a02e05529443d963f5040aec61b2a6a0f75",
+    "rust-toolchain.toml": "cef5cc010fbd237ab34a4d07129372406e11ff8595c2efc1126d9c93e039aed4",
+    ".cargo/config.toml": "da7e626941c437575405e8eade493a1994483236d0f775c39800b2b2e93f230f",
+    "docs/claims/casper-soak-authority-finality.md": "3838b950f0def2bcd4ff777017781a7d3e49faede57a1c71e679c613b57c5547",
+    "formal/tlaplus/casper_soak/profiles/authority_finality/AuthorityFinality.tla": "3a10b0683796a16feaa7fb90df679c5338e1f01bf5fcc5bffca44cce41633e43",
+    "formal/tlaplus/casper_soak/profiles/authority_finality/MC_AuthorityFinality_finality_unsafe.cfg": "3bf95d421574c52be7e5f6c1088750f1b8005bf04678c149502ec88790decda3",
+    "formal/tlaplus/casper_soak/profiles/authority_finality/MC_AuthorityFinality_head_unsafe.cfg": "e14750f03bde5483e91b03a1f0af7389b4d3d5a69a0370cb94741ea8b2c0a145",
+    "formal/tlaplus/casper_soak/profiles/authority_finality/MC_AuthorityFinality_pair_unsafe.cfg": "9e191e33d284747e20a309c5a62f73244e1dd54ee8d062de676886dcb392d594",
+    "formal/tlaplus/casper_soak/profiles/authority_finality/MC_AuthorityFinality.cfg": "b667ec0af8708b150743719d18a6667b2faa5906fc4b1a6f21591e68812746b8",
+    "formal/tlaplus/casper_soak/profiles/authority_finality/verification-plan.jsonc": "0caee1e328f2f1e2c29da9cff7e6185e2d1a36767247853dcd45eab4355ab345"
+  },
+  "claim_digests": {
+    "docs/claims/casper-soak-authority-finality.md": "3838b950f0def2bcd4ff777017781a7d3e49faede57a1c71e679c613b57c5547"
+  },
+  "tiers": {
+    "refutation": "bounded-safety-pass",
+    "construction": "not-applicable",
+    "binding": "pending"
+  },
+  "qualification": "pending",
+  "soak_verdict": "non_passing",
+  "verification": {
+    "native": {
+      "exit": 0,
+      "rust_tests_passed": 12,
+      "executor_helper_tests": 1,
+      "test_opt_level": 0,
+      "gate": "target/task-017-12-scenario-bindings-20260928/native-gate-verified",
+      "source_inventory_unchanged": true
+    },
+    "linux": {
+      "exit": 0,
+      "rust_tests_passed": 12,
+      "executor_helper_tests": 1,
+      "test_opt_level": 1,
+      "architecture": "aarch64",
+      "image_digest": "sha256:1696356fe6e6a15941983171fa4ca663b1f53686d3840f6787aca0b10ec5edc6",
+      "network": "none",
+      "repository_mount": "readonly",
+      "log": "target/task-017-12-scenario-bindings-20260928/linux-tests-final.log"
+    },
+    "native_clippy": {
+      "exit": 0,
+      "warnings": "denied",
+      "log": "target/task-017-12-scenario-bindings-20260928/clippy-verified.log"
+    },
+    "models": {
+      "construction": "not-applicable",
+      "driver_binding": "pending",
+      "harness_binary_sha256": "777ff5eb221aba28b8ffe75c1472f79d5b3857c5c25f847440cb8e7557771acf",
+      "heap_limit_mb": 512,
+      "kill_grace_seconds": 5,
+      "model": "formal/tlaplus/casper_soak/AuthorityFinality.tla",
+      "plan_sha256": "79db5436fe2e0c73bfec9dcab75c4a58116b6aa35992d98ff2e953baa9148232",
+      "profile_verification": "pending",
+      "results": [
+        {
+          "configuration": "MC_AuthorityFinality.cfg",
+          "configuration_sha256": "b667ec0af8708b150743719d18a6667b2faa5906fc4b1a6f21591e68812746b8",
+          "constant_assignments": [
+            [
+              "Scenarios",
+              "2"
+            ],
+            [
+              "MaxObservations",
+              "3"
+            ],
+            [
+              "PairDifferentDags",
+              "FALSE"
+            ],
+            [
+              "AcceptMissingFinality",
+              "FALSE"
+            ],
+            [
+              "SuppressHeadMismatch",
+              "FALSE"
+            ]
+          ],
+          "distinct_states": 1681,
+          "elapsed_seconds": 0.832899,
+          "exit": 0,
+          "expected_exit": 0,
+          "expected_property": null,
+          "log": "MC_AuthorityFinality.log",
+          "log_sha256": "e224e78dd116a12abfb5bbf9384b69f9245e72c2805cc97ca09bf7b24f7af2b0",
+          "model_sha256": "3a10b0683796a16feaa7fb90df679c5338e1f01bf5fcc5bffca44cce41633e43",
+          "outcome": "passed",
+          "states_generated": 3281,
+          "tlc_sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88",
+          "tlc_version": "TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)"
+        },
+        {
+          "configuration": "MC_AuthorityFinality_pair_unsafe.cfg",
+          "configuration_sha256": "9e191e33d284747e20a309c5a62f73244e1dd54ee8d062de676886dcb392d594",
+          "constant_assignments": [
+            [
+              "Scenarios",
+              "2"
+            ],
+            [
+              "MaxObservations",
+              "3"
+            ],
+            [
+              "PairDifferentDags",
+              "TRUE"
+            ],
+            [
+              "AcceptMissingFinality",
+              "FALSE"
+            ],
+            [
+              "SuppressHeadMismatch",
+              "FALSE"
+            ]
+          ],
+          "distinct_states": 450,
+          "elapsed_seconds": 0.768055833,
+          "exit": 12,
+          "expected_exit": 12,
+          "expected_property": "MismatchedInputDetected",
+          "log": "MC_AuthorityFinality_pair_unsafe.log",
+          "log_sha256": "89233a58ab5f2f3768a4cbcd9562709c36da6cc5cf6c037591d6ad65e22ba126",
+          "model_sha256": "3a10b0683796a16feaa7fb90df679c5338e1f01bf5fcc5bffca44cce41633e43",
+          "outcome": "passed",
+          "states_generated": 834,
+          "tlc_sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88",
+          "tlc_version": "TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)"
+        },
+        {
+          "configuration": "MC_AuthorityFinality_finality_unsafe.cfg",
+          "configuration_sha256": "3bf95d421574c52be7e5f6c1088750f1b8005bf04678c149502ec88790decda3",
+          "constant_assignments": [
+            [
+              "Scenarios",
+              "2"
+            ],
+            [
+              "MaxObservations",
+              "3"
+            ],
+            [
+              "PairDifferentDags",
+              "FALSE"
+            ],
+            [
+              "AcceptMissingFinality",
+              "TRUE"
+            ],
+            [
+              "SuppressHeadMismatch",
+              "FALSE"
+            ]
+          ],
+          "distinct_states": 615,
+          "elapsed_seconds": 0.746943542,
+          "exit": 12,
+          "expected_exit": 12,
+          "expected_property": "MissingFinalityDetected",
+          "log": "MC_AuthorityFinality_finality_unsafe.log",
+          "log_sha256": "8ba4396119dca5de89b85efa83a6f5c53f814658d8e82c0d37fb6d869459c983",
+          "model_sha256": "3a10b0683796a16feaa7fb90df679c5338e1f01bf5fcc5bffca44cce41633e43",
+          "outcome": "passed",
+          "states_generated": 1119,
+          "tlc_sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88",
+          "tlc_version": "TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)"
+        },
+        {
+          "configuration": "MC_AuthorityFinality_head_unsafe.cfg",
+          "configuration_sha256": "e14750f03bde5483e91b03a1f0af7389b4d3d5a69a0370cb94741ea8b2c0a145",
+          "constant_assignments": [
+            [
+              "Scenarios",
+              "2"
+            ],
+            [
+              "MaxObservations",
+              "3"
+            ],
+            [
+              "PairDifferentDags",
+              "FALSE"
+            ],
+            [
+              "AcceptMissingFinality",
+              "FALSE"
+            ],
+            [
+              "SuppressHeadMismatch",
+              "TRUE"
+            ]
+          ],
+          "distinct_states": 483,
+          "elapsed_seconds": 0.754630042,
+          "exit": 12,
+          "expected_exit": 12,
+          "expected_property": "HeadMismatchReported",
+          "log": "MC_AuthorityFinality_head_unsafe.log",
+          "log_sha256": "e96319ac2e887d10582f85b42aa1a3dba7dc421bf6204b89914c70e833adcac1",
+          "model_sha256": "3a10b0683796a16feaa7fb90df679c5338e1f01bf5fcc5bffca44cce41633e43",
+          "outcome": "passed",
+          "states_generated": 891,
+          "tlc_sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88",
+          "tlc_version": "TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)"
+        }
+      ],
+      "runner_sha256": "99e3f736aa9e753b73edced77049ab206f993d612870bb1d866f6d5c0655983f",
+      "scope": "bounded-harness-refutation-only",
+      "seed": 1,
+      "status": "passed",
+      "timeout_seconds": 120,
+      "workers": 1
+    },
+    "threshold_cases": 2000,
+    "scenario_kinds": [
+      "threshold_boundary",
+      "strict_majority",
+      "committee_provenance",
+      "duplicate_justifications",
+      "signature_rejection",
+      "replay",
+      "restart",
+      "missing_dependencies",
+      "traversal_comparison"
+    ],
+    "strict_claim_audit": {
+      "exit": 4,
+      "pending": [
+        "CLAIM-CASPER-SOAK-001",
+        "CLAIM-CASPER-SOAK-002"
+      ],
+      "report": "target/task-017-12-scenario-bindings-20260928/claims-final.json"
+    },
+    "failure_history": [
+      "The first native wrapper used an incompatible Java executable.",
+      "The optimized native build failed in dependency compilation. The final native run used test optimization level zero.",
+      "The sandbox blocked the TLC local listener. The approved external run passed.",
+      "The first Clippy run rejected a collapsible conditional. The corrected source passes."
+    ]
+  },
+  "log_digests": {
+    "target/task-017-12-scenario-bindings-20260928/build.log": "88778518daaba51eb68e576934c1b74a3be103353a7ebb95421425ae1f126afc",
+    "target/task-017-12-scenario-bindings-20260928/claims-final.json": "4c8f2a687db2f91dac2581657952e997825e50ea9ba5c737125a15b1b378ced6",
+    "target/task-017-12-scenario-bindings-20260928/clippy-final.log": "72c1efc7a01154637e20e1bd2561d1cc51e3ed6e589e8e3eef7cd63696897e30",
+    "target/task-017-12-scenario-bindings-20260928/clippy-verified.log": "910ce9df35db66d2121750bb86a09ab0647f5a1e0e077d0b5c79e6734aee0668",
+    "target/task-017-12-scenario-bindings-20260928/clippy.log": "fd3f14c45fccaded6103e04adf4dd49fdeef772cd13aa1181dfb427da2d71c24",
+    "target/task-017-12-scenario-bindings-20260928/linux-tests-final.log": "52e7c37f81fa90305fb2101cccab960ce3f6e25120167d0f316f27da45111e09",
+    "target/task-017-12-scenario-bindings-20260928/linux-tests.log": "e459c36c5fe59f72fc8b090287ecfbbada3a5713eb810b9ca140904752b14a29",
+    "target/task-017-12-scenario-bindings-20260928/native-gate/exit.txt": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865",
+    "target/task-017-12-scenario-bindings-20260928/native-gate/source-before.sha256": "730b6196aff39b59022f076d5c6247a1a367f21257d3a7718c995ce5a0c7faeb",
+    "target/task-017-12-scenario-bindings-20260928/native-gate/tools.txt": "93afcdb4fd1a68795790fa93aca3f2cc9edd126735429cc7488c3111ec94f52b",
+    "target/task-017-12-scenario-bindings-20260928/native-gate-arm/exit.txt": "39b8dc3fc8b44765c8e6f1adee04c5b465e555ab791cc42d0d9e810d5b64297c",
+    "target/task-017-12-scenario-bindings-20260928/native-gate-arm/fixtures.txt": "553f4d321bceec9a04e3ddcfe67a5216df5a0cbffd4ed9cc01de49421557c78d",
+    "target/task-017-12-scenario-bindings-20260928/native-gate-arm/source-before.sha256": "730b6196aff39b59022f076d5c6247a1a367f21257d3a7718c995ce5a0c7faeb",
+    "target/task-017-12-scenario-bindings-20260928/native-gate-arm/tools.txt": "286a0e0d39845ac12c188349c735aba166f7affc86f3b86e4739303cc168a99f",
+    "target/task-017-12-scenario-bindings-20260928/native-gate-arm.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "target/task-017-12-scenario-bindings-20260928/native-gate-final/exit.txt": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865",
+    "target/task-017-12-scenario-bindings-20260928/native-gate-final/fixtures.txt": "c15097fb707c9e3f20f0866208fd9d7086c32b7f977d326d4dde3814ff12c30c",
+    "target/task-017-12-scenario-bindings-20260928/native-gate-final/identity.json": "b83d4506067e7a06894213c874a05d3ac9c90c654d9cf49a179d45e6546d23bb",
+    "target/task-017-12-scenario-bindings-20260928/native-gate-final/models/MC_AuthorityFinality.log": "613f931cd41ca62d081c34d6e89de905c5893e19a7549528ce2de2bada1e1b7f",
+    "target/task-017-12-scenario-bindings-20260928/native-gate-final/models/MC_AuthorityFinality_finality_unsafe.log": "7114ecd0d82097bb057e1d9e73e98e8755f9dd3b5a12b09eb0f157e1ccc7bb8c",
+    "target/task-017-12-scenario-bindings-20260928/native-gate-final/models/MC_AuthorityFinality_head_unsafe.log": "29ac70c9ec9d43460faa7a622e17075a361cdce8ce8da1e16244d3f45429518b",
+    "target/task-017-12-scenario-bindings-20260928/native-gate-final/models/MC_AuthorityFinality_pair_unsafe.log": "bc85b114b3daf588b95fee5fa67987411d90ca22bbee3694be60b4cd780dcd82",
+    "target/task-017-12-scenario-bindings-20260928/native-gate-final/models/report.json": "8886c5bafafe438afe22acdb1d0eedf1fdf22fb904f146f8d086f4fd65adcfdd",
+    "target/task-017-12-scenario-bindings-20260928/native-gate-final/models.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "target/task-017-12-scenario-bindings-20260928/native-gate-final/source-before.sha256": "bbb6fc9f304702ee41d4c8aecc6e853ed61d3557037fdc5993fa1a49f791d119",
+    "target/task-017-12-scenario-bindings-20260928/native-gate-final/tools.txt": "f0d13b16fbd938e9b025af3281483ac819cc77f465043216b09af964d248b279",
+    "target/task-017-12-scenario-bindings-20260928/native-gate-final.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "target/task-017-12-scenario-bindings-20260928/native-gate-verified/exit.txt": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+    "target/task-017-12-scenario-bindings-20260928/native-gate-verified/fixtures.txt": "855d61c735d25f7003d57298fa98c884511571cb017512849392f2d868e9e3cc",
+    "target/task-017-12-scenario-bindings-20260928/native-gate-verified/identity.json": "b83d4506067e7a06894213c874a05d3ac9c90c654d9cf49a179d45e6546d23bb",
+    "target/task-017-12-scenario-bindings-20260928/native-gate-verified/models/MC_AuthorityFinality.log": "e224e78dd116a12abfb5bbf9384b69f9245e72c2805cc97ca09bf7b24f7af2b0",
+    "target/task-017-12-scenario-bindings-20260928/native-gate-verified/models/MC_AuthorityFinality_finality_unsafe.log": "8ba4396119dca5de89b85efa83a6f5c53f814658d8e82c0d37fb6d869459c983",
+    "target/task-017-12-scenario-bindings-20260928/native-gate-verified/models/MC_AuthorityFinality_head_unsafe.log": "e96319ac2e887d10582f85b42aa1a3dba7dc421bf6204b89914c70e833adcac1",
+    "target/task-017-12-scenario-bindings-20260928/native-gate-verified/models/MC_AuthorityFinality_pair_unsafe.log": "89233a58ab5f2f3768a4cbcd9562709c36da6cc5cf6c037591d6ad65e22ba126",
+    "target/task-017-12-scenario-bindings-20260928/native-gate-verified/models/report.json": "4bcda87aaff4a1d8593695229fd5a09180746327e179304655a5f3d63c6b6e75",
+    "target/task-017-12-scenario-bindings-20260928/native-gate-verified/models.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "target/task-017-12-scenario-bindings-20260928/native-gate-verified/source-after.sha256": "bbb6fc9f304702ee41d4c8aecc6e853ed61d3557037fdc5993fa1a49f791d119",
+    "target/task-017-12-scenario-bindings-20260928/native-gate-verified/source-before.sha256": "bbb6fc9f304702ee41d4c8aecc6e853ed61d3557037fdc5993fa1a49f791d119",
+    "target/task-017-12-scenario-bindings-20260928/native-gate-verified/summary.json": "83c276b194a129c3fc00ac3dcd5d0ef93609180fd8d892f5a5fee5f4b9ccba29",
+    "target/task-017-12-scenario-bindings-20260928/native-gate-verified/tools.txt": "f0d13b16fbd938e9b025af3281483ac819cc77f465043216b09af964d248b279",
+    "target/task-017-12-scenario-bindings-20260928/native-gate.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "target/task-017-12-scenario-bindings-20260928/ste-claim.log": "de35dfab665e543dde02d576486475d3be9c7999ac284608786f5d999fe6bc9b",
+    "target/task-017-12-scenario-bindings-20260928/ste-guide.log": "de35dfab665e543dde02d576486475d3be9c7999ac284608786f5d999fe6bc9b",
+    "target/task-017-12-scenario-bindings-20260928/tests-final.log": "064f4027182abdea0b7531f98f6cc2dcbc8485f4b57c240e34a29d2e5fe68dbb",
+    "target/task-017-12-scenario-bindings-20260928/tests-initial.log": "41ecd7a2ba2d36b3e446b415cab2cbee16b1b56b6c05fe6d5ed386cb8cd19b1f"
+  },
+  "node_launch_count": 0,
+  "cloud_dispatch_count": 0,
+  "live_admission": "blocked",
+  "binding_scope": "controlled-provider-execution",
+  "limitations": [
+    "Provider receipts assert applied operations. Controlled fixtures do not qualify actual node behavior.",
+    "The model covers two scenarios and three collection slots. Concrete receipt checks have separate executable tests.",
+    "Live provider implementation, captured node input exports, and qualification remain outstanding.",
+    "Process group cleanup does not contain escaped processes.",
+    "Named acceptance and hosted verification of these changed sources remain pending."
+  ]
+}

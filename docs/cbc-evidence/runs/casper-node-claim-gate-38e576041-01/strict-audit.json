@@ -1,0 +1,286 @@
+{
+  "total": 70,
+  "gaps": 70,
+  "items": [
+    {
+      "status": "pending",
+      "path": ".github/workflows/slashing-tests.yml"
+    },
+    {
+      "status": "pending",
+      "path": "block-storage/src/rust/dag/block_dag_key_value_storage.rs"
+    },
+    {
+      "status": "pending",
+      "path": "block-storage/src/rust/dag/soak_snapshot.rs"
+    },
+    {
+      "status": "pending",
+      "path": "block-storage/src/rust/dag/soak_snapshot/canonical_wire_tests.rs"
+    },
+    {
+      "status": "pending",
+      "path": "block-storage/tests/soak_snapshot.rs"
+    },
+    {
+      "status": "pending",
+      "path": "formal/rocq/node_observation/README.md"
+    },
+    {
+      "status": "pending",
+      "path": "formal/rocq/node_observation/_CoqProject"
+    },
+    {
+      "status": "pending",
+      "path": "formal/rocq/node_observation/b11/README.md"
+    },
+    {
+      "status": "pending",
+      "path": "formal/rocq/node_observation/b11/_CoqProject"
+    },
+    {
+      "status": "pending",
+      "path": "formal/rocq/node_observation/b11/theories/MainTheorem.v"
+    },
+    {
+      "status": "pending",
+      "path": "formal/rocq/node_observation/b11/theories/Schema.v"
+    },
+    {
+      "status": "pending",
+      "path": "formal/rocq/node_observation/b11/theories/Wire.v"
+    },
+    {
+      "status": "pending",
+      "path": "formal/rocq/node_observation/theories/BoundedCapture.v"
+    },
+    {
+      "status": "pending",
+      "path": "formal/rocq/node_observation/theories/CaptureIntegrity.v"
+    },
+    {
+      "status": "pending",
+      "path": "formal/rocq/node_observation/theories/InterfaceSafety.v"
+    },
+    {
+      "status": "pending",
+      "path": "formal/rocq/node_observation/theories/MainTheorem.v"
+    },
+    {
+      "status": "pending",
+      "path": "formal/rocq/node_observation/theories/ObserverSession.v"
+    },
+    {
+      "status": "pending",
+      "path": "formal/tlaplus/node_observation/BoundedCapture.tla"
+    },
+    {
+      "status": "pending",
+      "path": "formal/tlaplus/node_observation/MC_BoundedCapture.cfg"
+    },
+    {
+      "status": "pending",
+      "path": "formal/tlaplus/node_observation/MC_BoundedCapture.tla"
+    },
+    {
+      "status": "pending",
+      "path": "formal/tlaplus/node_observation/MC_BoundedCapture_admission_unsafe.cfg"
+    },
+    {
+      "status": "pending",
+      "path": "formal/tlaplus/node_observation/MC_BoundedCapture_admission_unsafe.tla"
+    },
+    {
+      "status": "pending",
+      "path": "formal/tlaplus/node_observation/MC_BoundedCapture_bytes_unsafe.cfg"
+    },
+    {
+      "status": "pending",
+      "path": "formal/tlaplus/node_observation/MC_BoundedCapture_bytes_unsafe.tla"
+    },
+    {
+      "status": "pending",
+      "path": "formal/tlaplus/node_observation/MC_BoundedCapture_deadline_unsafe.cfg"
+    },
+    {
+      "status": "pending",
+      "path": "formal/tlaplus/node_observation/MC_BoundedCapture_deadline_unsafe.tla"
+    },
+    {
+      "status": "pending",
+      "path": "formal/tlaplus/node_observation/MC_BoundedCapture_generation_unsafe.cfg"
+    },
+    {
+      "status": "pending",
+      "path": "formal/tlaplus/node_observation/MC_BoundedCapture_generation_unsafe.tla"
+    },
+    {
+      "status": "pending",
+      "path": "formal/tlaplus/node_observation/MC_BoundedCapture_incomplete_unsafe.cfg"
+    },
+    {
+      "status": "pending",
+      "path": "formal/tlaplus/node_observation/MC_BoundedCapture_incomplete_unsafe.tla"
+    },
+    {
+      "status": "pending",
+      "path": "formal/tlaplus/node_observation/MC_BoundedCapture_open_unsafe.cfg"
+    },
+    {
+      "status": "pending",
+      "path": "formal/tlaplus/node_observation/MC_BoundedCapture_open_unsafe.tla"
+    },
+    {
+      "status": "pending",
+      "path": "formal/tlaplus/node_observation/MC_BoundedCapture_order_unsafe.cfg"
+    },
+    {
+      "status": "pending",
+      "path": "formal/tlaplus/node_observation/MC_BoundedCapture_order_unsafe.tla"
+    },
+    {
+      "status": "pending",
+      "path": "formal/tlaplus/node_observation/MC_BoundedCapture_release_unsafe.cfg"
+    },
+    {
+      "status": "pending",
+      "path": "formal/tlaplus/node_observation/MC_BoundedCapture_release_unsafe.tla"
+    },
+    {
+      "status": "pending",
+      "path": "formal/tlaplus/node_observation/MC_BoundedCapture_validation_unsafe.cfg"
+    },
+    {
+      "status": "pending",
+      "path": "formal/tlaplus/node_observation/MC_BoundedCapture_validation_unsafe.tla"
+    },
+    {
+      "status": "pending",
+      "path": "formal/tlaplus/node_observation/MC_BoundedCapture_write_unsafe.cfg"
+    },
+    {
+      "status": "pending",
+      "path": "formal/tlaplus/node_observation/MC_BoundedCapture_write_unsafe.tla"
+    },
+    {
+      "status": "pending",
+      "path": "formal/tlaplus/node_observation/MC_ObserverSession.cfg"
+    },
+    {
+      "status": "pending",
+      "path": "formal/tlaplus/node_observation/MC_ObserverSession.tla"
+    },
+    {
+      "status": "pending",
+      "path": "formal/tlaplus/node_observation/MC_ObserverSession_budget_unsafe.cfg"
+    },
+    {
+      "status": "pending",
+      "path": "formal/tlaplus/node_observation/MC_ObserverSession_budget_unsafe.tla"
+    },
+    {
+      "status": "pending",
+      "path": "formal/tlaplus/node_observation/MC_ObserverSession_challenge_unsafe.cfg"
+    },
+    {
+      "status": "pending",
+      "path": "formal/tlaplus/node_observation/MC_ObserverSession_challenge_unsafe.tla"
+    },
+    {
+      "status": "pending",
+      "path": "formal/tlaplus/node_observation/MC_ObserverSession_deadline_unsafe.cfg"
+    },
+    {
+      "status": "pending",
+      "path": "formal/tlaplus/node_observation/MC_ObserverSession_deadline_unsafe.tla"
+    },
+    {
+      "status": "pending",
+      "path": "formal/tlaplus/node_observation/MC_ObserverSession_frame_unsafe.cfg"
+    },
+    {
+      "status": "pending",
+      "path": "formal/tlaplus/node_observation/MC_ObserverSession_frame_unsafe.tla"
+    },
+    {
+      "status": "pending",
+      "path": "formal/tlaplus/node_observation/MC_ObserverSession_freshness_pre_fix.cfg"
+    },
+    {
+      "status": "pending",
+      "path": "formal/tlaplus/node_observation/MC_ObserverSession_freshness_pre_fix.tla"
+    },
+    {
+      "status": "pending",
+      "path": "formal/tlaplus/node_observation/MC_ObserverSession_identity_unsafe.cfg"
+    },
+    {
+      "status": "pending",
+      "path": "formal/tlaplus/node_observation/MC_ObserverSession_identity_unsafe.tla"
+    },
+    {
+      "status": "pending",
+      "path": "formal/tlaplus/node_observation/MC_ObserverSession_repeat_unsafe.cfg"
+    },
+    {
+      "status": "pending",
+      "path": "formal/tlaplus/node_observation/MC_ObserverSession_repeat_unsafe.tla"
+    },
+    {
+      "status": "pending",
+      "path": "formal/tlaplus/node_observation/ObserverSession.tla"
+    },
+    {
+      "status": "pending",
+      "path": "formal/tlaplus/node_observation/README.md"
+    },
+    {
+      "status": "pending",
+      "path": "formal/tlaplus/node_observation/bindings.json"
+    },
+    {
+      "status": "pending",
+      "path": "formal/tlaplus/node_observation/verification-plan.json"
+    },
+    {
+      "status": "pending",
+      "path": "node/src/rust/soak_observer.rs"
+    },
+    {
+      "status": "pending",
+      "path": "node/tests/soak_observer.rs"
+    },
+    {
+      "status": "pending",
+      "path": "scripts/ci/check-formal-invariants.sh"
+    },
+    {
+      "status": "pending",
+      "path": "scripts/ci/check-node-canonical-wire.sh"
+    },
+    {
+      "status": "pending",
+      "path": "scripts/ci/check-node-observation-bindings.sh"
+    },
+    {
+      "status": "pending",
+      "path": "scripts/ci/check-tla-invariants.sh"
+    },
+    {
+      "status": "pending",
+      "path": "scripts/ci/test-check-node-observation-bindings.sh"
+    },
+    {
+      "status": "pending",
+      "path": "scripts/ci/test-check-tla-invariants.sh"
+    },
+    {
+      "status": "pending",
+      "path": "shared/src/rust/store/soak_snapshot.rs"
+    },
+    {
+      "status": "pending",
+      "path": "shared/tests/soak_snapshot.rs"
+    }
+  ]
+}
