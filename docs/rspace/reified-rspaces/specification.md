@@ -301,9 +301,14 @@ This covers the names of its lock keys, the config and the shape of an Array spa
 It also covers the copy and the decode of $`A(\mathit{sid})`$, each comparison, and the buffer of the indices.
 In native execution, an allocation job runs as every space job does ([section 8](#8-native-execution), [decision 47](decision-register.md#decision-47)).
 
-**Rule AL-8: authority.** An allocation job takes the cost authority of the process that asks for the names (`rholang/src/rust/interpreter/reified/reducer_hooks.rs:1129-1156`).
-That process evaluates the `new`, or it calls the handle method `gensym`.
-So each allocation is paid by its caller, and the allocator record that the job puts carries that authority (P4 design B.7).
+**Rule AL-8: authority.** An allocation job takes the cost authority that a call of the process that asks for the names carries (`rholang/src/rust/interpreter/reified/reducer_hooks.rs:1147-1194`).
+For the handle method `gensym`, that is the authority of the call.
+For a `new`, that is the authority that the call `s!gensym()` of the process would carry.
+It is the authority of the process, or the cost region of the deploy signature when the process has none, as `eval_send` stamps a send.
+So each allocation is paid by its caller, and the allocator record that the job puts always carries an authority (P4 design B.7).
+
+*Amended in P9 step 2 ([verification.md, section 34.3](verification.md#343-step-2-n1-n9-the-merge-across-blocks-and-the-event-coverage)): a `new` took the authority of the process as it was.*
+*That authority is empty for a root term and for a fired body, so a second allocation made a COMM that is not billable.*
 
 ### 2.5 PathMap paths and re-rooting
 
@@ -826,14 +831,14 @@ A re-issued element takes its FIFO place in its level, and a re-entered waiter k
 
 ### 3.7 Receive queries
 
-**Rule RQ-1: inner channel.** A receive bind with a QUERY tuple as its source reads from the inner channel of the query (`rholang/src/rust/interpreter/reified/reducer_hooks.rs:1320-1334`).
+**Rule RQ-1: inner channel.** A receive bind with a QUERY tuple as its source reads from the inner channel of the query (`rholang/src/rust/interpreter/reified/reducer_hooks.rs:1358-1372`).
 The inner channel takes the read rule of a receive source.
 
-**Rule RQ-2: route.** The route of the inner channel decides (`rholang/src/rust/interpreter/reified/reducer_hooks.rs:1352-1397`).
+**Rule RQ-2: route.** The route of the inner channel decides (`rholang/src/rust/interpreter/reified/reducer_hooks.rs:1390-1435`).
 A native space gets the payload and the named params in its consume, and its discipline checks them before the bump.
 The default space fails with `QuerySpecUnsupported`, and a user agent fails with `QuerySpecUnsupportedOnAgentSpace` ([decision 77](decision-register.md#decision-77), item TR-2).
 
-**Rule RQ-3: no host channel.** A QUERY tuple never becomes a channel of the host (`rholang/src/rust/interpreter/reified/reducer_hooks.rs:1307-1309`).
+**Rule RQ-3: no host channel.** A QUERY tuple never becomes a channel of the host (`rholang/src/rust/interpreter/reified/reducer_hooks.rs:1345-1347`).
 
 ### 3.8 Joins
 

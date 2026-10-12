@@ -1747,9 +1747,9 @@ The 3 properties of `rholang/tests/reified_legacy_charges.rs` (section [11.14](#
 
 | Test | Location | Covers |
 |---|---|---|
-| `reified_marker_flags_change_derived_flags_only` | `reified/reducer_hooks.rs:2610` | Q56 |
-| `reified_marker_flags_use_body_with_connective_send_is_canonical` | `reified/reducer_hooks.rs:2362` | Q57 |
-| `reified_marker_flags_variable_bound_to_connective_is_canonical` | `reified/reducer_hooks.rs:2413` | Q58 |
+| `reified_marker_flags_change_derived_flags_only` | `reified/reducer_hooks.rs:2648` | Q56 |
+| `reified_marker_flags_use_body_with_connective_send_is_canonical` | `reified/reducer_hooks.rs:2400` | Q57 |
+| `reified_marker_flags_variable_bound_to_connective_is_canonical` | `reified/reducer_hooks.rs:2451` | Q58 |
 | `space_already_exists_aborts` | `reified/factory.rs:202` | Q55 |
 | `persistent_sends_abort_on_every_call_op_and_every_handle` | `reified/system_channels.rs:819` | Q54 |
 | `forged_channels_route_to_the_context_space` | `reified/route.rs:345` | Q42 |
@@ -2594,6 +2594,7 @@ The 20 Rocq negative controls fail inside their expected lemmas, and the 6 contr
 `prop_query_bind_routes_inner_channel` (the hooks) and `prop_query_source_routes_inner_channel` (`rholang/tests/reified_hooks_p5.rs`) test it.
 `rholang/tests/reified_hooks_p5.rs` holds 9 tests and 1 property, and the five Rocq negative controls fail inside the headline.
 The test `reducer_space_routing_allocation_jobs_give_index_names` checks that each allocation job stamps the authority of the process that evaluates the `new` on the allocator record.
+Since P9 step 2, a job of a process without an authority takes the cost region of the deploy signature, as `eval_send` does ([section 34.3](#343-step-2-n1-n9-the-merge-across-blocks-and-the-event-coverage)).
 
 ### 12.10 The stack and the fire count of a transaction
 
@@ -3196,14 +3197,14 @@ It then runs the journal check, the trace binding, the native replay environment
 
 | Test | Location | What it checks |
 |---|---|---|
-| `space_native_replay_equal_{hashmap,pathmap,array,vector}` | `reified_native_spaces.rs:123-132` | Each of the 24 families plays natively without error and delivers its results. Native replay reproduces the errors, a complete journal, the usage, the evidence and the root. |
-| `space_native_journal_rows_per_operation` | `reified_native_spaces.rs:243` | One row for each produce and consume of the log, one COMM record for each COMM, and sub-order paths numbered from 0 in each transaction. |
-| `space_native_handle_calls_after_factory` | `reified_native_spaces.rs:252` | The factory parks the handle first, and each handle call follows the previous operation on the handle. |
-| `space_native_persistent_retry_rows` | `reified_native_spaces.rs:321` | A persistent element offered again in flight is a retry of a space row, and native replay consumes the retry. |
-| `space_native_denial_replay` | `reified_native_spaces.rs:393-465` | Out of phlo at each charged attempt of the largest space transaction, found by bisection on the limit, play and native replay agree. |
-| `space_native_scope_reset_after_restore` | `reified_native_spaces.rs:480` | A second evaluation after a restore reproduces play. |
-| `space_native_forged_predecessor_fails_closed` | `reified_native_spaces.rs:523` | The journal check rejects a forged predecessor, and a matching forged footprint fails closed at the footprint check. |
-| `space_native_forged_footprints_never_hang` | `reified_native_spaces.rs:619` | Every forgery of a space row on a later host row ends within 60 s and is rejected. |
+| `space_native_replay_equal_{hashmap,pathmap,array,vector}` | `reified_native_spaces.rs:125-134` | Each of the 24 families plays natively without error and delivers its results. Native replay reproduces the errors, a complete journal, the usage, the evidence and the root. |
+| `space_native_journal_rows_per_operation` | `reified_native_spaces.rs:245` | One row for each produce and consume of the log, one COMM record for each COMM, and sub-order paths numbered from 0 in each transaction. |
+| `space_native_handle_calls_after_factory` | `reified_native_spaces.rs:254` | The factory parks the handle first, and each handle call follows the previous operation on the handle. |
+| `space_native_persistent_retry_rows` | `reified_native_spaces.rs:323` | A persistent element offered again in flight is a retry of a space row, and native replay consumes the retry. |
+| `space_native_denial_replay` | `reified_native_spaces.rs:395-467` | Out of phlo at each charged attempt of the largest space transaction, found by bisection on the limit, play and native replay agree. |
+| `space_native_scope_reset_after_restore` | `reified_native_spaces.rs:482` | A second evaluation after a restore reproduces play. |
+| `space_native_forged_predecessor_fails_closed` | `reified_native_spaces.rs:525` | The journal check rejects a forged predecessor, and a matching forged footprint fails closed at the footprint check. |
+| `space_native_forged_footprints_never_hang` | `reified_native_spaces.rs:621` | Every forgery of a space row on a later host row ends within 60 s and is rejected. |
 
 The unit tests of the backend add `native_space_replay_view_charges_equal_play` (`native_session/space.rs:1750`) and `native_space_replay_rejects_another_valid_candidate` (`native_session/space.rs:1793`).
 The scheduler adds `space_native_single_conflict_group` (`reified/schedule.rs:724`) and `space_native_space_key_groups` (`reified/schedule.rs:743`).
@@ -5128,7 +5129,7 @@ The registry holds the ephemeral spaces that the current root evaluation created
 `SpaceEnv::begin` records each lock key with an ephemeral KIND before the transaction opens (VR-2).
 The factory job records a new `temp` space after its commit and before its reply, so each holder of the handle comes after the record.
 
-`ReducerCore::begin_root_evaluation` starts a root evaluation only when no reduction context exists (VR-3, `rholang/src/rust/interpreter/reified/reducer_hooks.rs:199-205`).
+`ReducerCore::begin_root_evaluation` starts a root evaluation only when no reduction context exists (VR-3, `rholang/src/rust/interpreter/reified/reducer_hooks.rs:202-208`).
 A root call clears the registry, the mirror journal and the parent tracker.
 A nested call clears nothing and sweeps nothing.
 The three root entries of `reduce.rs` call `end_root_evaluation` after the evaluation, on the `Ok` and the `Err` path (VR-4, VR-8).
@@ -5291,7 +5292,7 @@ The factory process takes the model from the budget of its runtime (`ReifiedRunt
 ### 28.2 The send rule
 
 `check_send` scans the data of a send for seq names (`rholang/src/rust/interpreter/reified/seq.rs:77-101`).
-`route_send` calls it after the checks of A21 and DG-1, before any mutation, and only while the evaluation holds a seq space (`rholang/src/rust/interpreter/reified/reducer_hooks.rs:587-592`).
+`route_send` calls it after the checks of A21 and DG-1, before any mutation, and only while the evaluation holds a seq space (`rholang/src/rust/interpreter/reified/reducer_hooks.rs:590-595`).
 The scan walks a work list and destructures every field of every type of the `Par` tree, the cost signatures included.
 So a new field of the protobuf schema is a compile error until the scan handles it.
 
@@ -6432,6 +6433,39 @@ The ledger of step 7 maps each of these tests to a port, a retarget or a drop wi
 | `rustfmt --check` of the changed test files | No difference |
 | The 40 checkers of the campaign: the footprint policy `p9`, the consensus checklist, the completeness phases, the maps and the document lint | 40 passed |
 | I-14: the two empty-state-hash tests of `runtime_spec.rs` in release | 2 passed, 0 failed |
+
+### 34.3 Step 2: N1, N9, the merge across blocks and the event coverage
+
+#### 34.3.1 The defect of the second allocation
+
+The cross-block suite of step 2 found a defect of Reified code.
+A second `new` inside a `use` block of an Array or a Vector space failed in native play with an incomplete budget recording.
+The defect needs no branch.
+Two such deploys on one chain fail at the second one, and one deploy with two nested `new`s fails at once.
+A `gensym` call before or after such a `new` passes.
+
+*Table 191. The experiments of the defect.*
+
+| Hypothesis | Experiment | Result |
+|---|---|---|
+| A second allocation in a later deploy fails | Three serial deploys on one chain | Confirmed |
+| Runtime state of the first deploy leaks | Each deploy on a restarted runtime at its root | Refuted: the second deploy still fails |
+| The host-work budget rejects the deploy | Each deploy with 64 times the v6 limits | Refuted: the first deploy uses 1.76 % of `VerificationBytes`, and the second still fails |
+| The trigger is the provenance of the allocator record | Eight sequences of `new`, `gensym`, peeks and nested `new`s, on Array and Vector spaces | A `new` fails exactly when it consumes an allocator record that a `new` produced |
+| The recording check hides the root error | The same sequences in the legacy model | Confirmed: `a billable communication has no cost-authority wrapper` |
+
+The mechanism has three parts:
+
+1. `eval_send` stamps an empty process authority with the cost region of the deploy signature (`rholang/src/rust/interpreter/reduce.rs:1274-1283`).
+2. A root term and the body of a fired continuation evaluate with an empty authority (`reduce.rs:268, 340`). So the authority of a process at its `new` is usually empty.
+3. The job of a `new` took that authority as it was. So its consume and its new allocator record had no cost authority. A second job then made a COMM with an empty merged authority, which is not billable (`accounting/observation_construction.rs:113-118`).
+
+The handle method `gensym` was correct, because it takes the authority of its call, which `eval_send` stamped.
+The fix is in Reified code only: `ReducerCore::call_authority` derives the authority of a job as `eval_send` derives the authority of a send (`reified/reducer_hooks.rs:1147-1161`).
+Rule AL-8 of the specification states the rule.
+The regression test `space_native_allocations_keep_an_authority` runs on an Array and a Vector space.
+It plays two deploys with one `new` each, and one deploy with two nested `new`s.
+Native replay certifies each deploy, and each allocator record carries a cost authority.
 
 ## References
 

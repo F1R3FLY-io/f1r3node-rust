@@ -1311,7 +1311,7 @@ A category that does not apply to a leaf has no criterion, and the leaf states t
 An allocation job allocates the index names of an Array or a Vector space ([specification AL-2](specification.md#24-the-allocator-of-array-and-vector-spaces)).
 It takes the [allocator](#allocator) record once and puts the next value once, or it fails with `OutOfNames` and stages nothing.
 A store without an allocator answers `Baseline`, and the job then commits nothing.
-The job takes the cost authority of the process that asks for the names.
+The job takes the cost authority that a call of the process that asks for the names carries ([specification AL-8](specification.md#24-the-allocator-of-array-and-vector-spaces)).
 
 ### Allocator
 

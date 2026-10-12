@@ -45,6 +45,9 @@ use models::rust::rholang::implicits::single_bundle;
 use models::rust::utils::{new_elist_par, union};
 
 use super::ReducerCore;
+use crate::rust::interpreter::accounting::authority::{
+    cost_region, extend_authority, sig_to_cost_signature,
+};
 use crate::rust::interpreter::accounting::costs::new_bindings_cost;
 use crate::rust::interpreter::accounting::economic_failure::EvaluationFailureSummary;
 use crate::rust::interpreter::accounting::phlo_execution::PhloFailure;
@@ -1072,9 +1075,9 @@ impl ReducerCore {
     ///
     /// Each job takes the random state of `rand` after the draws of HEAD, and no job draws. So
     /// the body gets the random state of HEAD. The jobs of one `new` touch the allocator records
-    /// of distinct spaces, so their identities differ by channel. Each job runs with
-    /// `authority`, the cost authority of the process that evaluates the `new`. The process pays
-    /// for its allocation, as its call `s!gensym()` would (P4 design B.7).
+    /// of distinct spaces, so their identities differ by channel. Each job runs with the cost
+    /// authority that the call `s!gensym()` of the process would carry ([`Self::call_authority`]),
+    /// so the process pays for its allocation (P4 design B.7).
     async fn allocate_in_spaces(
         &self,
         agent: Arc<dyn SpaceAgent>,
@@ -1092,10 +1095,24 @@ impl ReducerCore {
             self.reified.check_live_space(*space)?;
         }
         let random_state = rand.to_bytes();
+        // Changed by P9 step 2: a job took the authority of the process as it was. That authority
+        // is empty for a root term and for the body of a fired continuation (`reduce.rs`,
+        // `eval_inner` with `CostAuthority::default()`), so the allocator record of the job had no
+        // cost authority. A second job over that record then made a COMM with an empty merged
+        // authority, which is not billable (`MissingAuthority`), and native play failed with an
+        // incomplete recording. The job now takes the authority of the call `s!gensym()`.
+        // let mut allocated = Vec::with_capacity(groups.spaces.len());
+        // for &(space, count) in &groups.spaces {
+        //     allocated.push(
+        //         self.allocate_names(Arc::clone(&agent), space, count, &random_state, authority)
+        //             .await?,
+        //     );
+        // }
+        let authority = self.call_authority(authority, &random_state)?;
         let mut allocated = Vec::with_capacity(groups.spaces.len());
         for &(space, count) in &groups.spaces {
             allocated.push(
-                self.allocate_names(Arc::clone(&agent), space, count, &random_state, authority)
+                self.allocate_names(Arc::clone(&agent), space, count, &random_state, &authority)
                     .await?,
             );
         }
@@ -1120,6 +1137,27 @@ impl ReducerCore {
             }
         }
         Ok(bound)
+    }
+
+    /// The cost authority of a call that a process with the authority `authority` makes with the
+    /// random state `random_state`, as `eval_send` stamps a send (`reduce.rs`): `authority`
+    /// itself, or, when it is empty and the deploy has a COMM accounting scope, `authority`
+    /// extended with the cost region of the deploy signature and that random state. So every
+    /// record of an allocation job carries an authority, as the record of a send does.
+    fn call_authority(
+        &self,
+        authority: &CostAuthority,
+        random_state: &[u8],
+    ) -> Result<CostAuthority, InterpreterError> {
+        if !authority.regions.is_empty() || !self.metering.budget().has_comm_accounting_scope() {
+            return Ok(authority.clone());
+        }
+        let signature = sig_to_cost_signature(&self.metering.budget().signature())
+            .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
+        let region = cost_region(&signature, random_state, 0)
+            .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
+        extend_authority(authority, region)
+            .map_err(|error| InterpreterError::ReduceError(error.to_string()))
     }
 
     /// Runs the allocation job of `count` names of `space` with `agent` (P5d, F11), with the

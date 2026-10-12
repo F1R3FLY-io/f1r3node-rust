@@ -362,7 +362,7 @@ The USE tuple takes the random state of the block, so it changes no random state
 A `use` block checks only the reference, so an operation in `P` on a space without a config record aborts with `DanglingHandle`.
 
 A `new` with plain binders in `P` runs one allocation job for the space of `s`.
-The job takes the cost authority of the process that evaluates the `new`.
+The job takes the cost authority that the call `s!gensym()` of the process that evaluates the `new` would carry ([specification AL-8](specification.md#24-the-allocator-of-array-and-vector-spaces)).
 For an Array or a Vector space, the job reads the config of the space and gives each binder an index name.
 So a `new` inside `use` of a missing space aborts at the `new` with `DanglingHandle`, not at the first use of the name.
 A `new` inside `use` of a full fixed Array space aborts with `OutOfNames`. A HashMap space keeps the names of a plain `new`.
@@ -509,10 +509,10 @@ The table lists each construct that P4 rejects, with its code and the phase that
 | A join over two spaces, over a space and the default space, or over a user agent and another target | `for (@a <- x & @b <- @"y") { Nil }`, with `x` in a space | `CrossSpaceJoin` | None: the plan keeps this abort |
 | A factory of a family that is not registered yet, or its FIPS alias | ``new f(`rho:space:pathmap:bag`) in { Nil }`` | The baseline error `No value set for <urn>` | P5 wave W3 for PathMap, P6 for VectorDB, P7 for HashSet |
 
-A query routes the inner channel of its QUERY tuple (`reified/reducer_hooks.rs:1320-1334`).
+A query routes the inner channel of its QUERY tuple (`reified/reducer_hooks.rs:1358-1372`).
 The inner channel takes the read rule of a receive source, with the same error text.
-A query on the default space fails with `QuerySpecUnsupported` (`reified/reducer_hooks.rs:1352-1397`).
-On a native space, the agent checks the query against the query params of the discipline. Hook H4 fails only on a malformed QUERY tuple (`reified/reducer_hooks.rs:1280-1291`).
+A query on the default space fails with `QuerySpecUnsupported` (`reified/reducer_hooks.rs:1390-1435`).
+On a native space, the agent checks the query against the query params of the discipline. Hook H4 fails only on a malformed QUERY tuple (`reified/reducer_hooks.rs:1318-1329`).
 A reference that names no space aborts with `EmptySpaceRef`, `HandleNotWritable`, or `NotASpaceRef` in every phase.
 
 Since P8, the reference of a user agent under a bundle without the write flag also aborts with `HandleNotWritable`, because a call cannot reach it.

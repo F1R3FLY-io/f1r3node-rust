@@ -18,6 +18,7 @@
 //! | `space_native_vectordb_cascade_carries_at_the_cap` | P6 step 5: at the v6 limits the round-cap program of LIST-CASCADE is rejected for host work and records no evidence. With 32 times the v6 limits, its receive stops at the round cap, its settle job carries the other fires, and native replay reproduces the play. |
 //! | `space_native_vectordb_errors_reproduce` | P6 step 5: `CapacityExceeded` and `DimensionMismatch` abort the deploy in native play, and native replay reproduces the failure. |
 //! | `space_native_vectordb_denial_replay` | P6 step 5: out of phlo at each charged budget attempt of the largest VectorDB transaction (LM-b), play and native replay agree. |
+//! | `space_native_allocations_keep_an_authority` | P9 step 2 regression: on an Array and a Vector space, two deploys with one `new` in a `use` block each, and one deploy with two nested `new`s, play natively and certify. Each allocator record carries a cost authority, so the COMM of the next allocation is billable. |
 //!
 //! The unit tests of the native backend (`native_session/space.rs`) and of the scheduler
 //! (`reified/schedule.rs`) cover the other rows of section 6.
@@ -47,6 +48,7 @@ use rholang::rust::interpreter::compiler::compiler::Compiler;
 use rholang::rust::interpreter::errors::InterpreterError;
 use rholang::rust::interpreter::host_work::HostWorkBudget;
 use rholang::rust::interpreter::reified::costs::FIRE_ROUND_CAP;
+use rholang::rust::interpreter::spaces::allocator;
 use rholang::rust::interpreter::spaces::namespace::{self, ReifiedId};
 use rspace_plus_plus::rspace::trace::event::{Event, IOEvent};
 use support::family_programs::{program, space_program, Inner, Outer};
@@ -937,4 +939,61 @@ async fn space_native_vectordb_denial_replay() {
         VECTORDB_LIST_PATHS,
     ))
     .await
+}
+
+// ─── Allocations (P9 step 2) ───────────────────────────────────────────────────────────────────
+
+/// Regression of P9 step 2. An allocation job took the cost authority of the process that
+/// evaluates the `new`, and that authority is empty for a root term and for the body of a fired
+/// continuation. So the allocator record of the job had no cost authority. The next `new` in a
+/// `use` block of the space then made a COMM over that record with an empty merged authority,
+/// which is not billable, and native play failed with an incomplete recording. A job now takes
+/// the authority of the call `s!gensym()` (`ReducerCore::call_authority`). On an Array and a
+/// Vector space, two deploys with one `new` each and one deploy with two nested `new`s play
+/// natively and certify, and each allocator record carries a cost authority.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn space_native_allocations_keep_an_authority() {
+    for (store, urn, ctor) in [
+        ("array", "rho:space:array:queue", r#""default"; size=8"#),
+        ("vector", "rho:space:vector:queue", r#""default""#),
+    ] {
+        let mut chain = support::native::NativeChain::new().await;
+        let setup = format!(
+            r#"new factory(`{urn}`) in {{ for (space <- factory!?({ctor})) {{ @"rrs-p9-allocations"!(*space) }} }}"#
+        );
+        let deploys = [
+            setup.as_str(),
+            r#"for (space <<- @"rrs-p9-allocations") { use space { new n in { Nil } } }"#,
+            r#"for (space <<- @"rrs-p9-allocations") { use space { new n in { Nil } } }"#,
+            r#"for (space <<- @"rrs-p9-allocations") { use space { new n in { new m in { Nil } } } }"#,
+        ];
+        let mut space = None;
+        for (step, term) in deploys.into_iter().enumerate() {
+            let label = format!("rrs-p9-allocations-{store}-{step}");
+            let played = chain.play(term, &label, AMPLE_LIMIT).await;
+            assert!(
+                played.result.errors.is_empty(),
+                "{label}: native play fails: {:?}",
+                played.result.errors
+            );
+            let certification = certify(&played, term, AMPLE_LIMIT).await;
+            assert_reproduces(&label, &played, &certification);
+            if space.is_none() {
+                let stash = chain.values("rrs-p9-allocations").await;
+                assert_eq!(stash.len(), 1, "{label}: one datum holds the handle");
+                space = Some(support::session::native(&stash[0][0]));
+            }
+            let native = space.expect("the setup stores the handle");
+            let records = chain.data(&allocator::allocator_channel(native)).await;
+            assert_eq!(records.len(), 1, "{label}: one allocator record");
+            assert!(
+                records[0]
+                    .a
+                    .cost_authority
+                    .as_ref()
+                    .is_some_and(|authority| !authority.regions.is_empty()),
+                "{label}: the allocator record carries a cost authority"
+            );
+        }
+    }
 }

@@ -69,14 +69,14 @@
    r7_agent_bundle          rholang/src/rust/interpreter/reified/execution.rs:
                             139-154 (r7_route, R7A-1)
    routes_to_default_       rholang/src/rust/interpreter/reified/
-     without_context        reducer_hooks.rs:1295-1300
+     without_context        reducer_hooks.rs:1333-1338
    classify_space_ref, unbundle
                             rholang/src/rust/interpreter/reified/scope.rs:
                             141-180
    wrap_body                rholang/src/rust/interpreter/reified/scope.rs:
                             185-193
    enter_use, fire_step     rholang/src/rust/interpreter/reified/
-                            reducer_hooks.rs:254-271, 281-311, 437-452
+                            reducer_hooks.rs:257-274, 284-314, 440-455
                             (eval_marker, eval_use, space_ref),
                             rholang/src/rust/interpreter/dispatch.rs:62-71
                             (a fired body runs on the root reducer).
@@ -111,20 +111,20 @@
                             models/src/rust/reified/encoding.rs:346-356,
                             369-374 (marker_of, sole_marker_tuple)
    decode_source, h4_passes rholang/src/rust/interpreter/reified/
-                            reducer_hooks.rs:1280-1291 (reject_query_source),
+                            reducer_hooks.rs:1318-1329 (reject_query_source),
                             models/src/rust/reified/encoding.rs:841-848
                             (decode_query_source)
    takes_fast_path          rholang/src/rust/interpreter/reified/
-                            reducer_hooks.rs:1307-1309
+                            reducer_hooks.rs:1345-1347
    read_channel             rholang/src/rust/interpreter/reified/
-                            reducer_hooks.rs:1339-1347 (readable_channel)
+                            reducer_hooks.rs:1377-1385 (readable_channel)
    read_bind, route_bind    rholang/src/rust/interpreter/reified/
-                            reducer_hooks.rs:1320-1334, 865-885 (query_bind,
+                            reducer_hooks.rs:1358-1372, 868-888 (query_bind,
                             route_receive)
    single_target            rholang/src/rust/interpreter/reified/
-                            reducer_hooks.rs:1352-1397 (single_bind_route)
+                            reducer_hooks.rs:1390-1435 (single_bind_route)
    receive_one              rholang/src/rust/interpreter/reified/
-                            reducer_hooks.rs:701-788 (reified_consume)
+                            reducer_hooks.rs:704-791 (reified_consume)
 
    ─────────────────────────────────────────────────────────────────────────
    Abstraction

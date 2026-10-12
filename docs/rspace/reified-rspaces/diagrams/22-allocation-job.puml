@@ -1,17 +1,20 @@
 ' 22 Allocation job: the names of a new in an Array or a Vector space.
 '
 ' Source of Figure N11.6 in ../design.md (section N11.6). The figure restates
-' reified_allocate, allocate_in_spaces and allocate_names of
+' reified_allocate, allocate_in_spaces, call_authority and allocate_names of
 ' rholang/src/rust/interpreter/reified/reducer_hooks.rs, the family agent of
 ' spaces/families.rs and the allocator of spaces/allocator.rs (P5d, F11, P4
 ' design B.7). It adds no new fact.
 '
 ' Reading order:
 '   1. The reducer draws the names of the new as HEAD does.
-'   2. One job runs for each distinct space of the plain binders, with the
-'      cost authority of the process that evaluates the new.
-'   3. The job takes A(sid) = n, plans the indices, and puts the next value.
-'   4. Each binder gets the index name N(sid ‖ u64_be(i)).
+'   2. The jobs take the cost authority that the call s!gensym() of the
+'      process would carry: the authority of the process, or the cost region
+'      of the deploy signature when it is empty, as eval_send stamps a send
+'      (P9 step 2).
+'   3. One job runs for each distinct space of the plain binders.
+'   4. The job takes A(sid) = n, plans the indices, and puts the next value.
+'   5. Each binder gets the index name N(sid ‖ u64_be(i)).
 '
 ' Colors come from concept-colors.iuml (aliases of the shared palette).
 ' Render: ./render.sh 22-allocation-job.puml   Check: ./render.sh --check
@@ -37,8 +40,9 @@ participant "SpaceTxn\ncommit" as TXN $rrs_substrate
 
 RED -[$rrs_flow]> HOOK : reified_allocate(new, env, rand, authority)
 HOOK -[$rrs_flow]> HOOK : HEAD draws the names of the new
+HOOK -[$rrs_relation]> HOOK : call_authority(authority, rand):\nthe authority, or the cost region of the\ndeploy signature when it is empty
 loop each distinct space of the plain binders
-  HOOK -[$rrs_flow]> FAM : allocate(AllocOp(s, count, rand, authority))
+  HOOK -[$rrs_flow]> FAM : allocate(AllocOp(s, count, rand, call authority))
   FAM -[$rrs_relation]> FAM : read the config once, find the family
   FAM -[$rrs_flow]> ALC : plan(n, count)
   alt OutOfNames

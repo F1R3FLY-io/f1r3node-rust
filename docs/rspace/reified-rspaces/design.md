@@ -2155,11 +2155,11 @@ EVAL-NEWSPACE(annotations, new, env, rand):    ▷ reducer_hooks.rs, eval_new_sp
 ```
 
 The annotations evaluate in the environment outside the `new`, as the [syntax contract](syntax-contract.md#scopes-and-binding-order) states.
-Inside a use context, a plain `new` without annotations also stamps every plain binder with the space of the context (`reified/reducer_hooks.rs:1002-1057`).
-Inside the context of a user agent, every plain binder is an agent binder, and `reified_new` runs T-NEW (`reified/reducer_hooks.rs:887-925`).
+Inside a use context, a plain `new` without annotations also stamps every plain binder with the space of the context (`reified/reducer_hooks.rs:1005-1060`).
+Inside the context of a user agent, every plain binder is an agent binder, and `reified_new` runs T-NEW (`reified/reducer_hooks.rs:890-928`).
 The stamp keeps the 32 random bytes of the baseline name as the tail, so the random draws do not change ([decision I-3](decision-register.md#i-3)).
 
-**The send hook.** `reified_produce` (`reified/reducer_hooks.rs:479-503`) is hook H3, with the same signature as the baseline `produce`.
+**The send hook.** `reified_produce` (`reified/reducer_hooks.rs:482-506`) is hook H3, with the same signature as the baseline `produce`.
 
 ```text
 REIFIED-PRODUCE(chan, data, persistent, α):    ▷ reducer_hooks.rs, reified_produce and route_send
@@ -2203,7 +2203,7 @@ Its data hold only the sink, the method name, `raw` and the data that the first 
 A handle call keeps its trailing PARAMS tuple, which `HANDLE_OP` reads.
 The queue discipline takes no send params, so a named param on a queue fails with `UnknownParam` and no suggestion.
 
-**The receive hook.** `reified_consume` (`reified/reducer_hooks.rs:701-788`) takes the parameters of the baseline `consume`.
+**The receive hook.** `reified_consume` (`reified/reducer_hooks.rs:704-791`) takes the parameters of the baseline `consume`.
 
 ```text
 REIFIED-CONSUME(binds, body, persistent, peek, guard, α, α_intro):
@@ -2229,7 +2229,7 @@ Since P8 step 3, a join whose binds all route to one user agent is translated, a
 Two routes name one agent when their references are equal as sorted `Par`s, and each comparison reserves the reads of both references first (`one_agent`).
 The fast path classifies without an allocation, so an ordinary receive costs no extra work.
 
-**The translation of a receive.** `agent_consume` (`reified/reducer_hooks.rs:790-861`) runs T_recv of [decision 77](decision-register.md#decision-77), items TR-1 to TR-8.
+**The translation of a receive.** `agent_consume` (`reified/reducer_hooks.rs:793-864`) runs T_recv of [decision 77](decision-register.md#decision-77), items TR-1 to TR-8.
 `translate_receive` (`reified/user_agent.rs:1071-1202`) builds the terms, and $`\mathrm{base} = \mathrm{Xlate}(R)`$, where $`R`$ is the random state of the receive body.
 
 ```text
@@ -2273,7 +2273,7 @@ The matcher op replies this map when every pattern of its bind matches and the g
 A native handle that receives the call runs the receive that the matchers describe (item HC-1).
 So a wrapper agent can forward the call to a native space.
 
-**The translation of `new`.** `agent_new` (`reified/reducer_hooks.rs:927-989`) runs T_new of [decision 77](decision-register.md#decision-77), items TN-1 to TN-5.
+**The translation of `new`.** `agent_new` (`reified/reducer_hooks.rs:930-992`) runs T_new of [decision 77](decision-register.md#decision-77), items TN-1 to TN-5.
 `translate_new` (`reified/user_agent.rs:1272-1389`) builds the terms, and $`\mathrm{base} = \mathrm{Xlate}(R')`$, where $`R'`$ is the random state after the draws of HEAD.
 
 ```text
@@ -2308,7 +2308,7 @@ So two calls on one agent have distinct random states, and an agent that mints n
 An agent that never replies leaves the resume term parked, charged and persisted, and replay reproduces it (item TN-5).
 
 **The refresh of derived flags.** The evaluation and the substitution of the baseline keep a stale `connective_used` flag on a tuple, a list, or a map ([decision I-20](decision-register.md#i-20)).
-So before each strict decode, the hooks compute again the flags that the encoder derives from the children, and they change no value (`reified/reducer_hooks.rs:1981-2001`).
+So before each strict decode, the hooks compute again the flags that the encoder derives from the children, and they change no value (`reified/reducer_hooks.rs:2019-2039`).
 Hook H4 refreshes a QUERY tuple the same way before it fails closed with `QuerySpecUnsupported`.
 
 **Examples.** The first program puts a forged channel into a queue space with `use`.
@@ -2413,7 +2413,7 @@ Native play and a bound native replay runtime run the same space entry, so nativ
 The runtime holds no cache, so nothing in it survives a reset.
 The host runtime holds one `SpaceStoreHandle` for the host, which the substrate requires ([S10](#s10-limits)).
 
-**The dispatch of fires.** `dispatch_space_outcome` (`reified/reducer_hooks.rs:1202-1258`) runs the continuations that a space operation fired.
+**The dispatch of fires.** `dispatch_space_outcome` (`reified/reducer_hooks.rs:1240-1296`) runs the continuations that a space operation fired.
 
 ```text
 DISPATCH-SPACE-OUTCOME(fires, reissue, then):  ▷ reducer_hooks.rs, dispatch_space_outcome
@@ -2910,12 +2910,16 @@ An allocation is one job over $`[C(\mathit{sid}), A(\mathit{sid})]`$: the family
 `AllocCx` then takes $`A(\mathit{sid}) = n`$ and puts the next value (`spaces/generic.rs:2778-2826`).
 An allocation that fails stages nothing, and every read and copy is reserved before it is made.
 
-The reducer runs one allocation job for each distinct space of the plain binders of a `new` inside `use s` (F11, `reified/reducer_hooks.rs:1078-1123`).
-Each job takes the cost authority of the process that evaluates the `new`, as its call `s!gensym()` would (`reified/reducer_hooks.rs:1129-1156`).
+The reducer runs one allocation job for each distinct space of the plain binders of a `new` inside `use s` (F11, `reified/reducer_hooks.rs:1081-1140`).
+Each job takes the cost authority that the call `s!gensym()` of the process would carry (`reified/reducer_hooks.rs:1147-1194`).
+That is the authority of the process, or the cost region of the deploy signature when the process has none, as `eval_send` stamps a send.
 So each allocation is paid by its caller (P4 design B.7), and the handle method `gensym` runs a job with the authority of its call.
 A store without an allocator answers `Baseline`, and the binders keep the names that HEAD draws.
 
-![Sequence diagram of the allocation job of a new inside use s. The reducer calls reified_allocate with the new, the environment, the random state and the cost authority of the evaluating process. The hooks draw the names as HEAD does. For each distinct space of the plain binders, the hooks call allocate with an AllocOp of the space, the count, the random state and the authority. The family agent reads the config once and finds the family, and the allocator plans the indices. OutOfNames aborts with nothing staged. Otherwise the allocator takes A(sid) = n and puts the next value through the SpaceTxn commit, and the indices return to the hooks. Each binder gets the index name N(sid, u64_be(i)).](diagrams/22-allocation-job.svg)
+*Changed in P9 step 2 ([verification.md, section 34.3](verification.md#343-step-2-n1-n9-the-merge-across-blocks-and-the-event-coverage)): a job took the authority of the process as it was.*
+*That authority is empty for a root term and for a fired body, so a second allocation made a COMM that is not billable.*
+
+![Sequence diagram of the allocation job of a new inside use s. The reducer calls reified_allocate with the new, the environment, the random state and the cost authority of the evaluating process. The hooks draw the names as HEAD does, and they derive the call authority: the authority of the process, or the cost region of the deploy signature when it is empty. For each distinct space of the plain binders, the hooks call allocate with an AllocOp of the space, the count, the random state and the call authority. The family agent reads the config once and finds the family, and the allocator plans the indices. OutOfNames aborts with nothing staged. Otherwise the allocator takes A(sid) = n and puts the next value through the SpaceTxn commit, and the indices return to the hooks. Each binder gets the index name N(sid, u64_be(i)).](diagrams/22-allocation-job.svg)
 
 *Figure N11.6. Source: [diagrams/22-allocation-job.puml](diagrams/22-allocation-job.puml), rendered by [diagrams/render.sh](diagrams/render.sh).*
 
@@ -2945,8 +2949,8 @@ Every read, copy, comparison and allocation of the layer is reserved before it i
 
 #### N11.8 Receive queries and allocation jobs in the hooks
 
-Hook H4 fails only on a malformed QUERY tuple, and a query routes the inner channel of its tuple (`reified/reducer_hooks.rs:1280-1291`, `reified/reducer_hooks.rs:1320-1334`).
-The fast path of a receive admits no marker tuple, so a QUERY tuple never becomes a channel of the host (`reified/reducer_hooks.rs:1307-1309`).
+Hook H4 fails only on a malformed QUERY tuple, and a query routes the inner channel of its tuple (`reified/reducer_hooks.rs:1318-1329`, `reified/reducer_hooks.rs:1358-1372`).
+The fast path of a receive admits no marker tuple, so a QUERY tuple never becomes a channel of the host (`reified/reducer_hooks.rs:1345-1347`).
 
 ```text
 REIFIED-PRODUCE: Space(n,k) → remove the PARAMS tuple from data; named ← SPACE-PARAMS(params)   ▷ positional: PositionalParamsUnsupported
@@ -3066,8 +3070,8 @@ A program never issues a settle job, and the reducer issues a join only through 
 | `PendingProduce` (`spaces/agent.rs:244-256`) | One owed second send: its collection, its record with the envelope, and its persistence. |
 | `SpaceAgent::prepare_join` (`spaces/agent.rs:480-484`) | Stages a join: the classification, the scope, and the engine. |
 
-The receive hook routes a receive with two or more binds on one native space to `SpaceOp::Join` (`reified/reducer_hooks.rs:1406-1446`).
-Since P8 step 3, a join whose binds all route to one user agent becomes the translation T_recv (`reified/reducer_hooks.rs:1448-1471`).
+The receive hook routes a receive with two or more binds on one native space to `SpaceOp::Join` (`reified/reducer_hooks.rs:1444-1484`).
+Since P8 step 3, a join whose binds all route to one user agent becomes the translation T_recv (`reified/reducer_hooks.rs:1486-1509`).
 Any other mix of routes fails with `CrossSpaceJoin`.
 
 #### N12.2 Classification and the scope
