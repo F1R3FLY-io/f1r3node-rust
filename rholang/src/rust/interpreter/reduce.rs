@@ -131,11 +131,16 @@ impl<T> Drop for AbortOnDrop<T> {
 
 type DispatchHandle = AbortOnDrop<Result<DispatchType, InterpreterError>>;
 
-type DispatchArgs = (
-    TaggedContinuation,
-    Vec<(Par, ListParWithRandom, ListParWithRandom, bool)>,
-    Vec<Par>,
-);
+/// Returns the current deferred-dispatch scope when the dispatch of
+/// `continuation` can be deferred. It cannot for a system-process continuation
+/// (its `DispatchType` updates the produce event) or without a scope (a direct
+/// `eval` call without `inj`); such a dispatch runs inline.
+fn deferral_scope(continuation: &TaggedContinuation) -> Option<Arc<DeferredDispatches>> {
+    match continuation.tagged_cont {
+        Some(TaggedCont::ParBody(_)) => DEFERRED_DISPATCHES.try_with(Arc::clone).ok(),
+        _ => None,
+    }
+}
 
 #[derive(Default)]
 struct DeferredState {
@@ -446,7 +451,7 @@ impl DebruijnInterpreter {
     /// Evaluates a deploy term inside a deferred-dispatch scope.
     ///
     /// A COMM whose continuation is a Rholang body does not evaluate the body
-    /// inside the produce or consume that fired it: `defer_dispatch` spawns the
+    /// inside the produce or consume that fired it: `spawn_deferred_dispatch` runs the
     /// body as a task of this scope. After the root `eval` returns, `inj` awaits
     /// the deferred tasks until none is left and aggregates all their errors.
     /// The old code did not cancel other work on an error either, so the set of
@@ -476,26 +481,18 @@ impl DebruijnInterpreter {
         self.aggregate_evaluator_errors(errors).map(|_| ())
     }
 
-    /// Spawns the dispatch of a Rholang-body continuation as a task of the
-    /// current deferred-dispatch scope. A `ParBody` dispatch always returns
+    /// Spawns the dispatch of a Rholang-body continuation as a task of `scope`
+    /// (from `deferral_scope`). A `ParBody` dispatch always returns
     /// `DispatchType::DeterministicCall` or an error, so the caller does not need
-    /// its result. Returns the arguments back when the dispatch must run inline:
-    /// a system-process continuation (its `DispatchType` updates the produce
-    /// event), or no scope (a direct `eval` call without `inj`).
-    fn defer_dispatch(
+    /// its result.
+    fn spawn_deferred_dispatch(
         &self,
+        scope: Arc<DeferredDispatches>,
         continuation: TaggedContinuation,
         data_list: Vec<(Par, ListParWithRandom, ListParWithRandom, bool)>,
         is_replay: bool,
         previous_output: Vec<Par>,
-    ) -> Result<(), DispatchArgs> {
-        let scope = match continuation.tagged_cont {
-            Some(TaggedCont::ParBody(_)) => DEFERRED_DISPATCHES.try_with(Arc::clone).ok(),
-            _ => None,
-        };
-        let Some(scope) = scope else {
-            return Err((continuation, data_list, previous_output));
-        };
+    ) {
         let reducer = self.clone();
         let handle = AbortOnDrop(tokio::spawn(DEFERRED_DISPATCHES.scope(
             scope.clone(),
@@ -506,7 +503,6 @@ impl DebruijnInterpreter {
             },
         )));
         scope.push(handle);
-        Ok(())
     }
 
     async fn dispatch_or_defer(
@@ -516,13 +512,18 @@ impl DebruijnInterpreter {
         is_replay: bool,
         previous_output: Vec<Par>,
     ) -> Result<DispatchType, InterpreterError> {
-        match self.defer_dispatch(continuation, data_list, is_replay, previous_output) {
-            Ok(()) => Ok(DispatchType::DeterministicCall),
-            Err((continuation, data_list, previous_output)) => {
-                self.dispatch(continuation, data_list, is_replay, previous_output)
-                    .await
-            }
+        if let Some(scope) = deferral_scope(&continuation) {
+            self.spawn_deferred_dispatch(
+                scope,
+                continuation,
+                data_list,
+                is_replay,
+                previous_output,
+            );
+            return Ok(DispatchType::DeterministicCall);
         }
+        self.dispatch(continuation, data_list, is_replay, previous_output)
+            .await
     }
 
     /**
@@ -718,14 +719,15 @@ impl DebruijnInterpreter {
                         >,
                     > = vec![];
 
-                    if let Err((continuation_clone, data_list_clone, previous_output_clone)) = self
-                        .defer_dispatch(
+                    if let Some(scope) = deferral_scope(&continuation_clone) {
+                        self.spawn_deferred_dispatch(
+                            scope,
                             continuation_clone,
                             data_list_clone,
                             is_replay_flag,
                             previous_output_clone,
-                        )
-                    {
+                        );
+                    } else {
                         futures.push(Box::pin(async move {
                             self_clone1
                                 .dispatch(
@@ -788,14 +790,15 @@ impl DebruijnInterpreter {
                             >,
                         >,
                     > = vec![];
-                    if let Err((continuation_clone, data_list_clone, previous_output_clone)) = self
-                        .defer_dispatch(
+                    if let Some(scope) = deferral_scope(&continuation_clone) {
+                        self.spawn_deferred_dispatch(
+                            scope,
                             continuation_clone,
                             data_list_clone,
                             is_replay,
                             previous_output_clone,
-                        )
-                    {
+                        );
+                    } else {
                         futures.push(Box::pin(async move {
                             self_clone
                                 .dispatch(
@@ -882,14 +885,15 @@ impl DebruijnInterpreter {
                         >,
                     > = vec![];
 
-                    if let Err((continuation_clone, data_list_clone, previous_output_clone)) = self
-                        .defer_dispatch(
+                    if let Some(scope) = deferral_scope(&continuation_clone) {
+                        self.spawn_deferred_dispatch(
+                            scope,
                             continuation_clone,
                             data_list_clone,
                             is_replay_flag,
                             previous_output_clone,
-                        )
-                    {
+                        );
+                    } else {
                         futures.push(Box::pin(async move {
                             self_clone1
                                 .dispatch(
@@ -951,14 +955,15 @@ impl DebruijnInterpreter {
                             >,
                         >,
                     > = vec![];
-                    if let Err((continuation_clone, data_list_clone, previous_output_clone)) = self
-                        .defer_dispatch(
+                    if let Some(scope) = deferral_scope(&continuation_clone) {
+                        self.spawn_deferred_dispatch(
+                            scope,
                             continuation_clone,
                             data_list_clone,
                             is_replay,
                             previous_output_clone,
-                        )
-                    {
+                        );
+                    } else {
                         futures.push(Box::pin(async move {
                             self_clone
                                 .dispatch(
