@@ -1274,8 +1274,8 @@ fn the_client_lanes_are_the_deploy_lane_and_the_located_sources() {
 
 /// The loophole control of DR-124. A source that permits only some classes of
 /// a client lane does not make that lane foreign: the class without an
-/// eligible source still rejects the offer before execution. Only a lane at
-/// whose purse no source is located leaves the holds.
+/// eligible source still rejects the offer before execution. Only a lane that
+/// no source is located at or permits leaves the holds (G1-6 fix).
 #[test]
 fn restricting_class_permissions_does_not_exclude_a_client_lane() {
     let case = Case {
@@ -1309,4 +1309,230 @@ fn restricting_class_permissions_does_not_exclude_a_client_lane() {
     assert_eq!(gate.estimate_phlo(), 1);
     assert_eq!(gate.bound_source(), NativeBoundSource::SignedLimit);
     assert_eq!(gate.total_hold(), u128::from(case.limit()) * 2 + 1);
+}
+
+// ── The lanes that the sources permit (G1-6 fix, DR-124) ───────────────────
+
+/// The lanes that the signed permissions of `case` name, for any class.
+fn permitted_of(case: &Case) -> BTreeSet<[u8; 32]> {
+    case.sources
+        .iter()
+        .flat_map(|source| {
+            case.counts
+                .iter()
+                .zip(&source.permits)
+                .filter(|(_, permitted)| **permitted)
+                .map(|((lane_index, _, _), _)| lane(*lane_index as u8 + 1).key)
+        })
+        .collect()
+}
+
+/// The client lanes of `case`, as the check computes them. Lane 0 stands
+/// for the deploy lane, and the other client lanes come from the signed
+/// permissions of the sources (`permitted_lanes`).
+fn client_of(case: &Case) -> BTreeSet<[u8; 32]> {
+    with_instance(case, &signed_only(case), |_, _, funding| {
+        let host = unlimited();
+        let permitted = permitted_lanes(funding.signed, &host).expect("an unlimited digest");
+        client_lane_set(lane(1).key, permitted, &host).expect("an unlimited set")
+    })
+}
+
+/// The parts of a decision that a narrowing of permissions must keep.
+fn summary(gate: &OfferedGate) -> (OfferedEstimateKind, u64, u64, NativeBoundSource, u128) {
+    (
+        gate.kind().clone(),
+        gate.estimate_phlo(),
+        gate.resource_bound(),
+        gate.bound_source(),
+        gate.total_hold(),
+    )
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(256))]
+
+    /// The permitted lanes are the lanes of the signed permissions, with one
+    /// digest for each permission. The work is charged before it is done.
+    #[test]
+    fn the_permitted_lanes_are_the_lanes_of_the_permissions(case in arb_case(3)) {
+        let permissions = case
+            .sources
+            .iter()
+            .map(|source| source.permits.iter().filter(|permitted| **permitted).count())
+            .sum::<usize>();
+        let expected = permitted_of(&case);
+        with_instance(&case, &signed_only(&case), |_, _, funding| {
+            let host = unlimited();
+            let lanes = permitted_lanes(funding.signed, &host).expect("an unlimited digest");
+            prop_assert_eq!(lanes.len(), permissions);
+            prop_assert_eq!(lanes.iter().copied().collect::<BTreeSet<_>>(), expected.clone());
+            prop_assert_eq!(
+                host.usage(HostWorkDimension::VerificationOperations).get(),
+                u64::try_from(permissions).expect("a small count")
+            );
+            Ok(())
+        })?;
+    }
+
+    /// Fewer permitted classes never lower the decision. Each lane keeps one
+    /// permission, so the client lanes stay the same. The narrowed offer is
+    /// then rejected, or it reaches the same kind, estimate, bound and total
+    /// hold as the offer before the narrowing (the loophole control of DR-124).
+    #[test]
+    fn fewer_permitted_classes_reject_or_keep_the_decision(
+        case in arb_case(3),
+        mask in prop::collection::vec(any::<bool>(), 0..16),
+    ) {
+        let mut narrowed = case.clone();
+        let mut flag = 0;
+        for source in &mut narrowed.sources {
+            for permitted in &mut source.permits {
+                if mask.get(flag).copied().unwrap_or(false) {
+                    *permitted = false;
+                }
+                flag += 1;
+            }
+        }
+        for (index, (lane_index, _, _)) in case.counts.iter().enumerate() {
+            let lane_permits = |sources: &[SourceCase]| {
+                sources.iter().any(|source| {
+                    case.counts
+                        .iter()
+                        .zip(&source.permits)
+                        .any(|((other, _, _), permitted)| other == lane_index && *permitted)
+                })
+            };
+            if lane_permits(&case.sources) && !lane_permits(&narrowed.sources) {
+                if let Some(source) = case
+                    .sources
+                    .iter()
+                    .position(|source| source.permits[index])
+                {
+                    narrowed.sources[source].permits[index] = true;
+                }
+            }
+        }
+        let client = client_of(&case);
+        prop_assert_eq!(&client_of(&narrowed), &client);
+        match (
+            decide_restricted(&narrowed, &client),
+            decide_restricted(&case, &client),
+        ) {
+            (Err(_), _) => {}
+            (Ok(narrow), Ok(wide)) => prop_assert_eq!(summary(&narrow), summary(&wide)),
+            (Ok(narrow), Err(rejection)) => prop_assert!(
+                false,
+                "a narrowing accepted a rejected offer: {:?} after {:?}",
+                narrow,
+                rejection
+            ),
+        }
+    }
+
+    /// When every counted lane is the deploy lane or a permitted lane, the
+    /// restriction to the client lanes changes no decision. A permitted lane
+    /// keeps its exact holds.
+    #[test]
+    fn permitted_lanes_keep_every_decision(case in arb_case(3)) {
+        let mut sponsored = case.clone();
+        for (index, (lane_index, _, _)) in case.counts.iter().enumerate() {
+            if *lane_index != 0 && !permitted_of(&sponsored).contains(&lane(*lane_index as u8 + 1).key) {
+                sponsored.sources[0].permits[index] = true;
+            }
+        }
+        let client = client_of(&sponsored);
+        prop_assert!(sponsored
+            .counts
+            .iter()
+            .all(|(lane_index, _, _)| client.contains(&lane(*lane_index as u8 + 1).key)));
+        prop_assert_eq!(
+            decide_restricted(&sponsored, &client),
+            decide_case(&sponsored, &signed_only(&sponsored))
+        );
+    }
+}
+
+/// The case of the 64-source test. Two sources each permit one class of a
+/// lane at whose purse no source is located. The lane is a client lane, the
+/// estimate stays complete, and each class lands on the source that permits
+/// it. The fee lands on the fee source.
+#[test]
+fn a_lane_that_sources_permit_is_a_client_lane_with_exact_holds() {
+    let source = |fee: bool, permits: Vec<bool>| SourceCase {
+        capacity: 40,
+        hold_cap: 40,
+        debit_cap: 40,
+        fee,
+        permits,
+    };
+    let case = Case {
+        price: 2,
+        counts: vec![(1, 0, 2), (1, 1, 3)],
+        extra: 3,
+        complete: true,
+        sources: vec![
+            source(true, vec![true, false]),
+            source(false, vec![false, true]),
+        ],
+        custody: vec![1, 2],
+        total_exposure: 40,
+        cursors: (0, 0),
+    };
+    let client = client_of(&case);
+    assert_eq!(client, BTreeSet::from([lane(1).key, lane(2).key]));
+    let gate = decide_restricted(&case, &client).expect("the permitted lane is held");
+    assert_eq!(gate.kind(), &OfferedEstimateKind::Complete);
+    assert_eq!(gate.bound_source(), NativeBoundSource::Certificate);
+    assert_eq!(gate.estimate_phlo(), 5);
+    assert_eq!(gate.resource_bound(), 5);
+    assert_eq!(
+        gate.holds().to_vec(),
+        vec![([1u8; 32], 2u128 * 2 + 1), ([2u8; 32], 3u128 * 2)],
+        "each class lands on the source that permits it, and the fee on the fee source"
+    );
+}
+
+/// The loophole control for a permitted lane. A source permits one of the two
+/// classes with demand of a lane at whose purse no source is located. The
+/// lane stays a client lane, so the class without a permission rejects the
+/// offer before execution. Only a lane with no permission at all is foreign,
+/// and the offer then holds its signed limit.
+#[test]
+fn a_permitted_lane_without_a_permission_for_a_class_with_demand_rejects() {
+    let case = Case {
+        price: 2,
+        counts: vec![(1, 0, 2), (1, 1, 3)],
+        extra: 3,
+        complete: true,
+        sources: vec![SourceCase {
+            capacity: 40,
+            hold_cap: 40,
+            debit_cap: 40,
+            fee: true,
+            permits: vec![true, false],
+        }],
+        custody: vec![1],
+        total_exposure: 40,
+        cursors: (0, 0),
+    };
+    let client = client_of(&case);
+    assert!(client.contains(&lane(2).key));
+    assert_eq!(
+        decide_restricted(&case, &client),
+        Err(OfferedGateRejection::InsufficientPhlogiston(
+            InsufficientCause::NoPlacement
+        ))
+    );
+    let mut unpermitted = case.clone();
+    unpermitted.sources[0].permits = vec![false, false];
+    let client = client_of(&unpermitted);
+    assert_eq!(client, BTreeSet::from([lane(1).key]));
+    let gate = decide_restricted(&unpermitted, &client).expect("the foreign lane leaves the holds");
+    assert_eq!(
+        gate.kind(),
+        &OfferedEstimateKind::Incomplete(IncompleteReason::ForeignLane)
+    );
+    assert_eq!(gate.bound_source(), NativeBoundSource::SignedLimit);
+    assert_eq!(gate.total_hold(), u128::from(unpermitted.limit()) * 2 + 1);
 }

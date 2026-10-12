@@ -1963,3 +1963,58 @@ fn the_restriction_rejects_a_malformed_estimate_and_charges_first() {
         Err(InterpreterError::HostWorkRejected)
     ));
 }
+
+// ── The lanes that a source permits (G1-6 fix, DR-124) ─────────────────────
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(64))]
+
+    /// The lane key of an encoded supply channel is the lane key of its
+    /// signature. A permission names its lane by that channel, so the check
+    /// finds the lane that a source permits. The digest charges one
+    /// verification operation and the bytes of the domain and the location.
+    #[test]
+    fn the_lane_key_of_a_location_is_the_lane_key_of_its_signature(
+        atoms in proptest::collection::vec(
+            (any::<bool>(), proptest::collection::vec(any::<u8>(), 1..8)),
+            1..5,
+        ),
+    ) {
+        let signature = atoms
+            .into_iter()
+            .map(|(ground, bytes)| match ground {
+                true => Sig::Ground(bytes),
+                false => Sig::Quote(bytes),
+            })
+            .reduce(|left, right| Sig::And(Box::new(left), Box::new(right)))
+            .expect("the generator gives at least one atom");
+        let location = crate::rust::interpreter::accounting::SignatureChannel::from_sig(&signature)
+            .par
+            .encode_to_vec();
+        let host = unlimited();
+        prop_assert_eq!(
+            location_lane_key(&location, &host).expect("an unlimited digest"),
+            signature.lane_hash()
+        );
+        prop_assert_eq!(host.usage(HostWorkDimension::VerificationOperations).get(), 1);
+        prop_assert_eq!(
+            host.usage(HostWorkDimension::VerificationBytes).get(),
+            u64::try_from(
+                crate::rust::interpreter::accounting::SIGNATURE_LANE_DOMAIN.len() + location.len()
+            )
+            .expect("a small length")
+        );
+    }
+}
+
+/// The digest of a location charges its work before it reads the location.
+#[test]
+fn the_location_digest_charges_first() {
+    let mut limits = HostWorkLimits::uniform(HostWorkLimit::new(u64::MAX));
+    limits.set(HostWorkDimension::VerificationBytes, HostWorkLimit::new(0));
+    let exhausted = HostWorkBudget::new(limits);
+    assert!(matches!(
+        location_lane_key(&[1, 2, 3], &exhausted),
+        Err(InterpreterError::HostWorkRejected)
+    ));
+}

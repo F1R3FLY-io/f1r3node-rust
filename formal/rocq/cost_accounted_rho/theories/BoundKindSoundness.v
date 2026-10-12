@@ -22,7 +22,15 @@
    estimate has demand on client lanes only, a foreign lane with demand makes
    the estimate incomplete, and the limit test reads the client's demand. A
    fifth negative control keeps an estimate with a foreign lane complete, and
-   its run passes the certified bound unpaid. *)
+   its run passes the certified bound unpaid.
+
+   The G1-6 fix corrects the client lanes to the lanes that the sources may
+   pay: a lane is a client lane when a source is located at its purse or
+   permits it for at least one class (P2 prop:local-suff). A class of a
+   client lane with known demand and no permission rejects the offer. Fewer
+   permitted classes then reject the offer or keep its decision (dodge
+   freedom). A sixth negative control excludes a permitted lane by class,
+   and a narrowed offer lowers its certified bound and runs unpaid. *)
 
 From Stdlib Require Import Arith.PeanoNat Bool.Bool Lists.List Lia.
 From CostAccountedRho Require Import SignedPhloControls SignedLimitExhaustion.
@@ -312,16 +320,22 @@ Qed.
     The check holds only the client's demand. P1's acceptance protocol checks
     the client's demand and supply only (P1:2191-2200), and a layer signed by
     another signature adds nothing to the client's demand (P1:2002-2027). A
-    lane is a client lane when a source of the envelope is located at the
-    purse of the lane. The model gives each lane of an estimate that flag and
-    its known demand in phlo. The restriction keeps the client lanes, and a
-    foreign lane with known demand makes the estimate incomplete. The model
-    does not cover how the code decides the flag (the lane key of each
-    payer), the classes of a lane, or the placement of the holds. *)
+    lane is a client lane when a source of the envelope is located at its
+    purse. The G1-6 fix adds every lane that a source permits for at least
+    one class: a signed permission is how a client sponsors a lane, because
+    the client's own purse may pay it, and P2 checks one local linear proof
+    per purse (prop:local-suff, P2:1520-1527). The flag [located] also
+    stands for the deploy lane, which is always a client lane. The model
+    gives each lane that flag, its permitted classes and its known demand
+    for each class. The restriction keeps the client lanes, and a foreign
+    lane with known demand makes the estimate incomplete. The model does not
+    cover how the code computes the lane keys, the capacities of the sources
+    or the placement of the holds on them. *)
 
 Record lane_demand := {
   located : bool;
-  lane_phlo : nat;
+  permitted_classes : list nat;
+  class_demand : list (nat * nat);
 }.
 
 Record lane_estimate := {
@@ -330,11 +344,31 @@ Record lane_estimate := {
   lane_demands : list lane_demand;
 }.
 
+(** Whether a source permits the lane for at least one class. *)
+Definition permits_any (lane : lane_demand) : bool :=
+  match permitted_classes lane with
+  | [] => false
+  | _ :: _ => true
+  end.
+
+(** A client lane: a source is located at its purse or permits it. *)
+Definition client (lane : lane_demand) : bool := located lane || permits_any lane.
+
+(** The known demand of a list of (class, phlo) entries. *)
+Fixpoint demand_sum (demand : list (nat * nat)) : nat :=
+  match demand with
+  | [] => 0
+  | entry :: rest => snd entry + demand_sum rest
+  end.
+
+(** The known demand of a lane over all its classes. *)
+Definition lane_phlo (lane : lane_demand) : nat := demand_sum (class_demand lane).
+
 (** The known demand of the client lanes. *)
 Fixpoint client_phlo (lanes : list lane_demand) : nat :=
   match lanes with
   | [] => 0
-  | lane :: rest => (if located lane then lane_phlo lane else 0) + client_phlo rest
+  | lane :: rest => (if client lane then lane_phlo lane else 0) + client_phlo rest
   end.
 
 (** The known demand of every lane. *)
@@ -348,7 +382,7 @@ Fixpoint total_phlo (lanes : list lane_demand) : nat :=
 Fixpoint foreign_demand (lanes : list lane_demand) : bool :=
   match lanes with
   | [] => false
-  | lane :: rest => (negb (located lane) && (0 <? lane_phlo lane)) || foreign_demand rest
+  | lane :: rest => (negb (client lane) && (0 <? lane_phlo lane)) || foreign_demand rest
   end.
 
 (** The restriction of DR-124: the estimate of the client lanes. *)
@@ -361,34 +395,56 @@ Definition restrict (e : lane_estimate) : estimate :=
 Definition check_client (e : lane_estimate) (o : offer) : decision :=
   check (restrict e) o.
 
+(** A lane is a client lane exactly when a source is located at its purse or
+    a source permits it for at least one class. *)
+Theorem client_iff_located_or_permitted : forall lane,
+  client lane = true <-> located lane = true \/ permitted_classes lane <> [].
+Proof.
+  intros lane. unfold client, permits_any.
+  destruct (located lane); destruct (permitted_classes lane) as [|class rest]; simpl.
+  - split; [intros _; left; reflexivity | intros _; reflexivity].
+  - split; [intros _; left; reflexivity | intros _; reflexivity].
+  - split; [intros absurd; discriminate absurd |].
+    intros [absurd | empty]; [discriminate absurd | exfalso; apply empty; reflexivity].
+  - split; [intros _; right; discriminate | intros _; reflexivity].
+Qed.
+
+(** The case of the 64-source test: a lane that a source permits is a client
+    lane, even when no source is located at its purse. *)
+Theorem permitted_lane_is_client : forall lane,
+  permitted_classes lane <> [] -> client lane = true.
+Proof.
+  intros lane permitted. apply client_iff_located_or_permitted. right. exact permitted.
+Qed.
+
 Lemma foreign_demand_false_iff : forall lanes,
   foreign_demand lanes = false <->
-  Forall (fun lane => located lane = true \/ lane_phlo lane = 0) lanes.
+  Forall (fun lane => client lane = true \/ lane_phlo lane = 0) lanes.
 Proof.
-  induction lanes as [|lane rest IH]; simpl.
+  induction lanes as [|lane rest IH]; cbn -[client lane_phlo Nat.ltb].
   - split; intros; [constructor | reflexivity].
   - rewrite orb_false_iff, Forall_cons_iff, <- IH.
     split; intros [head tail]; split; try exact tail.
-    + apply andb_false_iff in head. destruct head as [located_lane | idle].
-      * left. apply negb_false_iff. exact located_lane.
+    + apply andb_false_iff in head. destruct head as [client_lane | idle].
+      * left. apply negb_false_iff. exact client_lane.
       * right. apply Nat.ltb_ge in idle. lia.
-    + apply andb_false_iff. destruct head as [located_lane | idle].
-      * left. rewrite located_lane. reflexivity.
+    + apply andb_false_iff. destruct head as [client_lane | idle].
+      * left. rewrite client_lane. reflexivity.
       * right. apply Nat.ltb_ge. lia.
 Qed.
 
 Lemma client_phlo_of_client_lanes : forall lanes,
-  Forall (fun lane => located lane = true) lanes -> client_phlo lanes = total_phlo lanes.
+  Forall (fun lane => client lane = true) lanes -> client_phlo lanes = total_phlo lanes.
 Proof.
-  induction lanes as [|lane rest IH]; intros client; simpl; [reflexivity|].
-  apply Forall_cons_iff in client. destruct client as [head tail].
+  induction lanes as [|lane rest IH]; intros clients; cbn -[client lane_phlo]; [reflexivity|].
+  apply Forall_cons_iff in clients. destruct clients as [head tail].
   rewrite head, (IH tail). reflexivity.
 Qed.
 
 (** A certified estimate has known demand on client lanes only. *)
 Theorem certified_estimate_has_only_client_lanes : forall e o bound hold,
   check_client e o = Bind CertificateSource bound hold ->
-  Forall (fun lane => located lane = true \/ lane_phlo lane = 0) (lane_demands e).
+  Forall (fun lane => client lane = true \/ lane_phlo lane = 0) (lane_demands e).
 Proof.
   intros e o bound hold checked.
   pose proof (classification_conservative (restrict e) o bound hold checked) as completed.
@@ -401,20 +457,20 @@ Qed.
 
 (** A foreign lane with known demand forces the incomplete classification. *)
 Theorem foreign_lane_forces_incomplete : forall e,
-  (exists lane, In lane (lane_demands e) /\ located lane = false /\ 0 < lane_phlo lane) ->
+  (exists lane, In lane (lane_demands e) /\ client lane = false /\ 0 < lane_phlo lane) ->
   complete (restrict e) = false.
 Proof.
   intros e [lane [member [foreign positive]]].
   assert (counted : foreign_demand (lane_demands e) = true).
   { destruct (foreign_demand (lane_demands e)) eqn:demand; [reflexivity|].
     apply foreign_demand_false_iff in demand. rewrite Forall_forall in demand.
-    destruct (demand lane member) as [located_lane | idle]; [congruence | lia]. }
+    destruct (demand lane member) as [client_lane | idle]; [congruence | lia]. }
   unfold complete, restrict. simpl. rewrite counted. simpl.
   destruct (lanes_analysis_complete e); reflexivity.
 Qed.
 
 Theorem foreign_lane_is_never_certified : forall e o bound hold,
-  (exists lane, In lane (lane_demands e) /\ located lane = false /\ 0 < lane_phlo lane) ->
+  (exists lane, In lane (lane_demands e) /\ client lane = false /\ 0 < lane_phlo lane) ->
   check_client e o <> Bind CertificateSource bound hold.
 Proof.
   intros e o bound hold foreign checked.
@@ -425,7 +481,7 @@ Qed.
 (** With a foreign lane, an offer whose client demand fits its limit holds
     the signed limit under SignedLimit. *)
 Theorem foreign_lane_holds_the_signed_limit : forall e o,
-  (exists lane, In lane (lane_demands e) /\ located lane = false /\ 0 < lane_phlo lane) ->
+  (exists lane, In lane (lane_demands e) /\ client lane = false /\ 0 < lane_phlo lane) ->
   client_phlo (lane_demands e) <= offer_limit o ->
   check_client e o = Bind SignedLimitSource (offer_limit o) (offer_limit o * offer_price o + 1).
 Proof.
@@ -450,18 +506,18 @@ Qed.
 (** For an estimate whose lanes are all client lanes, the restriction
     changes nothing. *)
 Theorem client_lanes_keep_the_check : forall e o,
-  Forall (fun lane => located lane = true) (lane_demands e) ->
+  Forall (fun lane => client lane = true) (lane_demands e) ->
   check_client e o =
     check {| analysis_complete := lanes_analysis_complete e;
              onchain_payer := lanes_onchain_payer e;
              estimate_phlo := total_phlo (lane_demands e) |} o.
 Proof.
-  intros e o client.
+  intros e o clients.
   assert (no_foreign : foreign_demand (lane_demands e) = false).
-  { apply foreign_demand_false_iff. eapply Forall_impl; [|exact client].
-    intros lane located_lane. left. exact located_lane. }
+  { apply foreign_demand_false_iff. eapply Forall_impl; [|exact clients].
+    intros lane client_lane. left. exact client_lane. }
   unfold check_client, restrict. rewrite no_foreign, andb_true_r.
-  rewrite (client_phlo_of_client_lanes (lane_demands e) client). reflexivity.
+  rewrite (client_phlo_of_client_lanes (lane_demands e) clients). reflexivity.
 Qed.
 
 (** N5 (G1-6, DR-124): a restriction that removes a foreign lane with known
@@ -478,8 +534,8 @@ Definition restrict_ignoring_foreign_lanes (e : lane_estimate) : estimate :=
 Definition foreign_lane_estimate : lane_estimate :=
   {| lanes_analysis_complete := true;
      lanes_onchain_payer := false;
-     lane_demands := [{| located := true; lane_phlo := 1 |};
-                      {| located := false; lane_phlo := 5 |}] |}.
+     lane_demands := [{| located := true; permitted_classes := [0]; class_demand := [(0, 1)] |};
+                      {| located := false; permitted_classes := []; class_demand := [(0, 5)] |}] |}.
 
 Definition foreign_lane_offer : offer := {| offer_limit := 10; offer_price := 1 |}.
 
@@ -494,6 +550,221 @@ Theorem nc_foreign_lane_as_complete_breaks_the_bound :
   snd (outcome SignedLimitSource 10 (offer_price foreign_lane_offer) foreign_lane_run) = 7.
 Proof.
   split; [reflexivity|]. split; [reflexivity|]. split; reflexivity.
+Qed.
+
+(** * Placement and dodge freedom (G1-6 fix, DR-124)
+
+    The check places the known demand of each client lane on the sources
+    that permit its classes. A class with known demand and no permission
+    rejects the offer before execution with "insufficient phlogiston". As in
+    the code, a source located at a lane is eligible only for the classes
+    that it permits. So fewer permitted classes never exclude a lane that
+    keeps one permission or a located source. They can only reject the
+    offer before execution. *)
+
+(** A class entry is placed when it has no demand or a source permits its
+    class. *)
+Definition class_placed (lane : lane_demand) (entry : nat * nat) : bool :=
+  (snd entry =? 0) || existsb (Nat.eqb (fst entry)) (permitted_classes lane).
+
+Definition placeable (lane : lane_demand) : bool :=
+  forallb (class_placed lane) (class_demand lane).
+
+(** Whether a client lane has a class with demand and no permission. *)
+Fixpoint unplaceable (lanes : list lane_demand) : bool :=
+  match lanes with
+  | [] => false
+  | lane :: rest => (client lane && negb (placeable lane)) || unplaceable rest
+  end.
+
+(** The check with the placement of the client lanes. *)
+Definition check_placed (e : lane_estimate) (o : offer) : decision :=
+  if unplaceable (lane_demands e) then Reject else check_client e o.
+
+(** A narrowing of the permissions of a lane: the same flag and demand, and
+    a subset of the permitted classes. *)
+Definition narrows (wide narrow : lane_demand) : Prop :=
+  located narrow = located wide /\
+  class_demand narrow = class_demand wide /\
+  incl (permitted_classes narrow) (permitted_classes wide).
+
+(** A narrowing that keeps the client status of the lane. *)
+Definition narrows_with_clients (wide narrow : lane_demand) : Prop :=
+  narrows wide narrow /\ client narrow = client wide.
+
+(** A narrowing of every lane of an estimate. *)
+Definition narrowed_estimate (wide narrow : lane_estimate) : Prop :=
+  lanes_analysis_complete narrow = lanes_analysis_complete wide /\
+  lanes_onchain_payer narrow = lanes_onchain_payer wide /\
+  Forall2 narrows_with_clients (lane_demands wide) (lane_demands narrow).
+
+(** A narrowing that keeps one permission or a located source keeps a client
+    lane. *)
+Lemma narrowing_keeps_a_client_lane : forall wide narrow,
+  narrows wide narrow ->
+  located wide = true \/ permitted_classes narrow <> [] ->
+  client narrow = true.
+Proof.
+  intros wide narrow [same_located _] kept. apply client_iff_located_or_permitted.
+  rewrite same_located. exact kept.
+Qed.
+
+Lemma narrowing_keeps_placed_classes : forall wide narrow entry,
+  narrows wide narrow -> class_placed narrow entry = true -> class_placed wide entry = true.
+Proof.
+  intros wide narrow entry [_ [_ subset]] placed. unfold class_placed in *.
+  apply orb_true_iff in placed. apply orb_true_iff.
+  destruct placed as [idle | permitted]; [left; exact idle | right].
+  apply existsb_exists in permitted. destruct permitted as [class [member equal]].
+  apply existsb_exists. exists class. split; [apply subset; exact member | exact equal].
+Qed.
+
+Lemma narrowing_keeps_unplaceable_lanes : forall wide narrow,
+  narrows wide narrow -> placeable wide = false -> placeable narrow = false.
+Proof.
+  intros wide narrow narrowing unplaced. unfold placeable in *.
+  destruct (forallb (class_placed narrow) (class_demand narrow)) eqn:placed; [|reflexivity].
+  exfalso.
+  assert (same_demand : class_demand narrow = class_demand wide).
+  { destruct narrowing as [_ [same _]]. exact same. }
+  rewrite same_demand in placed. rewrite forallb_forall in placed.
+  assert (all_wide : forallb (class_placed wide) (class_demand wide) = true).
+  { apply forallb_forall. intros entry member.
+    apply (narrowing_keeps_placed_classes wide narrow entry narrowing).
+    apply placed. exact member. }
+  congruence.
+Qed.
+
+Lemma narrowed_client_phlo : forall wides narrowed,
+  Forall2 narrows_with_clients wides narrowed ->
+  client_phlo narrowed = client_phlo wides.
+Proof.
+  intros wides narrowed related.
+  induction related as [|wide narrow wides' narrowed' [narrowing same_client] tail IH];
+    cbn -[client lane_phlo]; [reflexivity|].
+  assert (same_phlo : lane_phlo narrow = lane_phlo wide).
+  { unfold lane_phlo. destruct narrowing as [_ [same_demand _]]. rewrite same_demand.
+    reflexivity. }
+  rewrite same_client, same_phlo, IH. reflexivity.
+Qed.
+
+Lemma narrowed_foreign_demand : forall wides narrowed,
+  Forall2 narrows_with_clients wides narrowed ->
+  foreign_demand narrowed = foreign_demand wides.
+Proof.
+  intros wides narrowed related.
+  induction related as [|wide narrow wides' narrowed' [narrowing same_client] tail IH];
+    cbn -[client lane_phlo Nat.ltb]; [reflexivity|].
+  assert (same_phlo : lane_phlo narrow = lane_phlo wide).
+  { unfold lane_phlo. destruct narrowing as [_ [same_demand _]]. rewrite same_demand.
+    reflexivity. }
+  rewrite same_client, same_phlo, IH. reflexivity.
+Qed.
+
+Lemma narrowed_unplaceable : forall wides narrowed,
+  Forall2 narrows_with_clients wides narrowed ->
+  unplaceable wides = true -> unplaceable narrowed = true.
+Proof.
+  intros wides narrowed related.
+  induction related as [|wide narrow wides' narrowed' [narrowing same_client] tail IH];
+    cbn -[client placeable]; [discriminate|].
+  intros unplaced. apply orb_true_iff in unplaced. apply orb_true_iff.
+  destruct unplaced as [here | later]; [left | right; apply IH; exact later].
+  apply andb_true_iff in here. destruct here as [client_wide stuck].
+  apply andb_true_iff. split; [rewrite same_client; exact client_wide |].
+  apply negb_true_iff in stuck. apply negb_true_iff.
+  exact (narrowing_keeps_unplaceable_lanes wide narrow narrowing stuck).
+Qed.
+
+Lemma narrowed_restriction : forall wide narrow,
+  narrowed_estimate wide narrow -> restrict narrow = restrict wide.
+Proof.
+  intros wide narrow [same_complete [same_onchain related]]. unfold restrict.
+  rewrite same_complete, same_onchain,
+    (narrowed_foreign_demand _ _ related), (narrowed_client_phlo _ _ related).
+  reflexivity.
+Qed.
+
+(** Dodge freedom: when every lane keeps its client status, fewer permitted
+    classes reject the offer before execution or keep its decision. A client
+    cannot lower its certified bound or its hold by narrowing its
+    permissions. *)
+Theorem narrowing_rejects_or_keeps_the_decision : forall wide narrow o,
+  narrowed_estimate wide narrow ->
+  check_placed narrow o = Reject \/ check_placed narrow o = check_placed wide o.
+Proof.
+  intros wide narrow o narrowing. unfold check_placed.
+  destruct (unplaceable (lane_demands narrow)) eqn:narrow_stuck; [left; reflexivity|].
+  right.
+  destruct (unplaceable (lane_demands wide)) eqn:wide_stuck.
+  - exfalso. destruct narrowing as [_ [_ related]].
+    rewrite (narrowed_unplaceable _ _ related wide_stuck) in narrow_stuck. discriminate.
+  - unfold check_client. rewrite (narrowed_restriction wide narrow narrowing). reflexivity.
+Qed.
+
+(** N6 (G1-6 fix, DR-124): a rule that excludes a permitted lane by class. It
+    counts, for a lane at whose purse no source is located, only the demand
+    of its permitted classes, and it keeps the estimate complete. A client
+    that narrows its permissions then lowers its certified bound, and the
+    work of the dropped class runs unpaid. The narrowing satisfies the
+    premise of [narrowing_rejects_or_keeps_the_decision], and the rule of
+    DR-124 rejects the narrowed offer before execution. *)
+Fixpoint permitted_demand (permitted : list nat) (demand : list (nat * nat)) : nat :=
+  match demand with
+  | [] => 0
+  | entry :: rest =>
+      (if existsb (Nat.eqb (fst entry)) permitted then snd entry else 0)
+      + permitted_demand permitted rest
+  end.
+
+Fixpoint class_phlo (lanes : list lane_demand) : nat :=
+  match lanes with
+  | [] => 0
+  | lane :: rest =>
+      (if located lane then lane_phlo lane
+       else permitted_demand (permitted_classes lane) (class_demand lane))
+      + class_phlo rest
+  end.
+
+Definition restrict_by_class (e : lane_estimate) : estimate :=
+  {| analysis_complete := lanes_analysis_complete e && negb (foreign_demand (lane_demands e));
+     onchain_payer := lanes_onchain_payer e;
+     estimate_phlo := class_phlo (lane_demands e) |}.
+
+Definition check_by_class (e : lane_estimate) (o : offer) : decision :=
+  check (restrict_by_class e) o.
+
+Definition sponsored_lane (permitted : list nat) : lane_demand :=
+  {| located := false; permitted_classes := permitted; class_demand := [(0, 1); (1, 5)] |}.
+
+Definition sponsored_estimate (permitted : list nat) : lane_estimate :=
+  {| lanes_analysis_complete := true;
+     lanes_onchain_payer := false;
+     lane_demands := [sponsored_lane permitted] |}.
+
+Definition sponsored_offer : offer := {| offer_limit := 10; offer_price := 1 |}.
+
+Definition sponsored_run : run :=
+  {| pre_balance := 100; post_balance := 100; run_usage := 6 |}.
+
+Theorem nc_class_exclusion_breaks_dodge_freedom :
+  narrowed_estimate (sponsored_estimate [0; 1]) (sponsored_estimate [0]) /\
+  check_by_class (sponsored_estimate [0; 1]) sponsored_offer = Bind CertificateSource 6 7 /\
+  check_by_class (sponsored_estimate [0]) sponsored_offer = Bind CertificateSource 1 2 /\
+  snd (outcome CertificateSource 1 (offer_price sponsored_offer) sponsored_run) = 0 /\
+  check_placed (sponsored_estimate [0; 1]) sponsored_offer = Bind CertificateSource 6 7 /\
+  check_placed (sponsored_estimate [0]) sponsored_offer = Reject.
+Proof.
+  split.
+  - unfold narrowed_estimate. simpl.
+    split; [reflexivity|]. split; [reflexivity|].
+    constructor; [|constructor].
+    split; [|reflexivity].
+    split; [reflexivity|]. split; [reflexivity|].
+    intros class member. simpl in member |- *.
+    destruct member as [same | []]. left. exact same.
+  - split; [reflexivity|]. split; [reflexivity|]. split; [reflexivity|].
+    split; reflexivity.
 Qed.
 
 Print Assumptions classification_conservative.
@@ -520,3 +791,14 @@ Print Assumptions foreign_lane_holds_the_signed_limit.
 Print Assumptions limit_test_uses_client_demand.
 Print Assumptions client_lanes_keep_the_check.
 Print Assumptions nc_foreign_lane_as_complete_breaks_the_bound.
+Print Assumptions client_iff_located_or_permitted.
+Print Assumptions permitted_lane_is_client.
+Print Assumptions narrowing_keeps_a_client_lane.
+Print Assumptions narrowing_keeps_placed_classes.
+Print Assumptions narrowing_keeps_unplaceable_lanes.
+Print Assumptions narrowed_client_phlo.
+Print Assumptions narrowed_foreign_demand.
+Print Assumptions narrowed_unplaceable.
+Print Assumptions narrowed_restriction.
+Print Assumptions narrowing_rejects_or_keeps_the_decision.
+Print Assumptions nc_class_exclusion_breaks_dodge_freedom.

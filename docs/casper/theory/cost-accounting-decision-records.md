@@ -3997,8 +3997,10 @@ is "insufficient phlogiston" (P1:2210).
 **Amendment (DR-124, 2026-10-11).** DR-124 makes the check live in play and
 in every replay. The check holds only the client's demand, as P1's acceptance
 protocol does (P1:2191-2200). That demand is the demand of the client lanes,
-the lanes at whose purses a source of the envelope is located. The demand of
-every other lane leaves the holds, and the estimate is then incomplete.
+the lanes that a source of the envelope may pay. A source is located at the
+purse of such a lane, or it permits the lane for at least one class (the
+G1-6 fix). The demand of every other lane leaves the holds, and the estimate
+is then incomplete.
 
 **Cross-refs.** P1 `def:funding-proof`, `thm:decidability`,
 `def:conservative-demand`, `sec:acceptance-protocol`. DR-65, DR-67, DR-68.
@@ -14258,7 +14260,8 @@ lane in every run.
 - The plan and the counts of the analysis do not change.
 - Review finding M-3 now affects the counts only. A layer such as
   `{% Nil %}[alice]` inside send data still counts. Its lane leaves the holds
-  when no source is located at the purse of `alice`.
+  when no source is located at the purse of `alice` or permits `alice` (the
+  G1-6 fix). When a source permits `alice`, the check holds that demand.
 
 **Cross-refs.** DR-64, DR-65, DR-67, DR-101, DR-113, DR-118, DR-121, DR-124.
 
@@ -14471,9 +14474,9 @@ restores its pre-state and pays nothing.
 
 - Step G1-6 makes the check live in play and in every replay.
 - The check holds only the client's demand. Before item 3 decides the kind,
-  the check removes every lane at whose purse no source of the envelope is
-  located. Such a lane with counts makes the estimate incomplete with the
-  reason `ForeignLane`.
+  the check removes every lane that no source of the envelope is located at
+  or permits for at least one class (the G1-6 fix). Such a lane with counts
+  makes the estimate incomplete with the reason `ForeignLane`.
 - $`B`$ in items 4, 5 and 7 counts the client lanes only. Item 7 places the
   known demand of the client lanes exactly as before.
 
@@ -14484,7 +14487,9 @@ restores its pre-state and pays nothing.
 **Status.** Implemented 2026-10-11 for step G1-6 of gap G1 of epic 8946. It
 makes the check of DR-123 live in play and in every replay. It amends DR-113
 item 6, DR-122 and DR-123. It records the user decision of 2026-10-11 "Hold
-only the client's $`\Delta_c`$ (Recommended)" and its basis in P1 and P2.
+only the client's $`\Delta_c`$ (Recommended)" and its basis in P1 and P2. The
+G1-6 fix of the same day corrects item 4: a lane that a source permits is a
+client lane too (see **Correction**).
 
 **Context.**
 
@@ -14522,15 +14527,24 @@ only the client's $`\Delta_c`$ (Recommended)" and its basis in P1 and P2.
    text of the check. Play maps it to the typed candidate rejection of DR-72,
    which quarantines the envelope. Replay fails the block. In both cases the
    runtime is never entered, no state changes and no tokens are consumed.
-4. **Client lanes (the user decision).** A lane is a *client lane* when a
-   source of the envelope is located at the purse of the lane. The supply
-   channel of the lane's signature then equals the custody location of the
-   source. That location is the supply channel of the signature of the
-   source's payer (`supply_reader.rs`). The lane key is a digest of the same
-   channel (`Sig::lane_hash`), so the check compares lane keys.
+4. **Client lanes (the user decision, as corrected).** A lane is a *client
+   lane* when a source of the envelope may pay it.
+   - A source is located at the purse of the lane. The supply channel of the
+     lane's signature then equals the custody location of the source. That
+     location is the supply channel of the signature of the source's payer
+     (`supply_reader.rs`). The lane key is a digest of the same channel
+     (`Sig::lane_hash`), so the check compares lane keys.
+   - Or a source permits the lane for at least one class (the G1-6 fix). A
+     permission names its lane by the encoded supply channel, so its lane key
+     is the digest of its location (`location_lane_key`,
+     `permitted_lanes`).
    - The deploy lane is always a client lane.
-   - Class permissions do not decide whether a lane is a client lane. A
-     client cannot drop the demand of its own lane by restricting them.
+   - A source is eligible for a class of a lane only when it permits that
+     lane and class, as before. So a class of a client lane with known demand
+     and no permitting source rejects the offer before execution. Fewer
+     permitted classes never exclude a lane that keeps one permission or a
+     located source. A client cannot drop the demand of its own lane by
+     restricting its permissions.
    - A lane that is not a client lane is a *foreign lane*.
 5. **The holds.** The check keeps the known demand of the client lanes and
    removes every foreign lane (`CostEstimate::retain_client_lanes`). A removed
@@ -14555,10 +14569,33 @@ only the client's $`\Delta_c`$ (Recommended)" and its basis in P1 and P2.
    comparisons. It also carries
    two hooks of one node: skip the check, and remove the counts of the
    estimate. No production build contains them.
-9. **The 64-source test.** Under item 4 its lane `payer` is a foreign lane.
-   Its sources are the purses of principal keys, and they only permit that
-   lane. The test passes, with a hold of its signed limit under `SignedLimit`.
-   It no longer holds the exact estimate.
+9. **The 64-source test.** Four of its sources permit its lane `payer`, one
+   class each, so `payer` is a client lane. Its estimate stays complete, and
+   the offer holds $`B \cdot \mathrm{phloPrice} + 1`$ under `Certificate`.
+   Each class lands on the source that permits it, and the fee lands on the
+   first source. The first implementation of item 4 made `payer` a foreign
+   lane, and the test then held its signed limit under `SignedLimit`.
+
+**Correction (G1-6 fix, 2026-10-11).** As the coordinator relayed it, the
+user's option said "hold only the lanes the envelope's sources may pay". The
+first implementation (e64261134) narrowed that to "a source is located at the
+purse of the lane". The 64-source test showed the gap. Four of its sources
+permit its lane `payer`, but no source is located at that purse, so `payer`
+became a foreign lane.
+
+- A signed lane permission is how a client sponsors a lane. The client's own
+  purse funds it, so the demand of the lane is the client's demand in P2's
+  located-purse form. P2 checks one local linear proof per purse, and local
+  proofs compose (`prop:local-suff`, P2:1520-1527). The G1-6 fix adds the
+  permitted lanes to item 4.
+- The eligibility rule does not change. In the check and in settlement, a
+  source is eligible only for the classes that it permits (`source_permits`).
+  So a source located at a lane is not eligible for a class of that lane that
+  it does not permit. The loophole control of item 4 depends on this rule.
+- No source can be located at the fresh names of the deploy itself or permit
+  them. The deploy identity commits to the sources and their permissions. So
+  the funding-slot installer still passes the check and holds its signed
+  limit.
 
 **Basis in P1 and P2.** The user decision of 2026-10-11 adopts the reading
 of the acceptance protocol.
@@ -14586,13 +14623,17 @@ of the acceptance protocol.
   slot's tokens belongs to the deployment in which the continuation runs.
 - P2 decomposes the linear proof into "one local linear proof per purse"
   (P2:1514), and local proofs compose (`prop:local-suff`, P2:1520-1527). The
-  client's purses are the envelope's sources. Each other purse has its own
+  client's purses are the envelope's sources. A source may pay the lane at
+  whose purse it is located and each lane that it permits. So those lanes
+  carry the client's demand (the G1-6 fix). Each other purse has its own
   local proof when its surface executes.
 - The earlier design applied `def:funding-proof`, which covers every
   signature, at acceptance (P1:2047-2058).
 - Consequence for review finding M-3 of DR-122: a deploy whose send data
-  carry `{% Nil %}[alice]` needs no source for `alice`. The compute count of
-  the plan stays as `def:token-demand` defines it. Only the holding changes.
+  carry `{% Nil %}[alice]` needs no source for `alice`. When a source permits
+  `alice`, the layer is the client's sponsored demand, and the check holds it.
+  The compute count of the plan stays as `def:token-demand` defines it. Only
+  the holding changes.
 
 **Region attribution in the code.** The code attributes regions as the papers
 do. The outer receive of the installer is unsigned, so its introduction opens
@@ -14620,8 +14661,21 @@ rules over estimates with client and foreign lanes:
   check then certifies the client's demand alone, and a run that does the
   foreign work passes that bound and pays nothing
   (`nc_foreign_lane_as_complete_breaks_the_bound`).
+- Since the G1-6 fix, a lane is a client lane exactly when a source is
+  located at it or permits it (`client_iff_located_or_permitted`,
+  `permitted_lane_is_client`).
+- Dodge freedom: when every lane keeps its client status, fewer permitted
+  classes reject the offer before execution or keep its decision
+  (`narrowing_rejects_or_keeps_the_decision`, from `narrowed_restriction` and
+  `narrowed_unplaceable`).
+- A sixth negative control excludes a permitted lane by class. A narrowed
+  offer then lowers its certified bound from 6 to 1, and a run that does all
+  the work pays nothing. The rule of item 4 rejects the narrowed offer
+  (`nc_class_exclusion_breaks_dodge_freedom`).
 
-**Verification.**
+**Verification of the first implementation (e64261134).** The G1-6 fix
+supersedes the items that depend on the located-only rule. Its own
+verification follows this list.
 
 - Rocq, with no axiom:
   - `BoundKindSoundness.v` gains lanes with a located flag, the restriction
@@ -14672,7 +14726,8 @@ rules over estimates with client and foreign lanes:
   - a send of `{% Nil %}[alice]` needs no source for `alice`
   - a client-lane class without an eligible source rejects before execution
   - restricted class permissions do not exclude a client lane
-  - a lane that a source only permits is a foreign lane
+  - a lane that a source only permits is a foreign lane (the G1-6 fix
+    disables and inverts it)
 - Suites:
   - casper (nextest, release, 8 test threads): 1792 of 1796 tests pass with
     the provisional caps, and 1790 of 1796 with the committed caps. 14 tests
@@ -14699,6 +14754,78 @@ rules over estimates with client and foreign lanes:
     read exceeds the host-work budget. With the provisional caps it is
     accepted, which is the known failure of that test.
   - rholang and rspace++ pass 4223 of 4223 in release, with 13 skipped.
+  - `cargo fmt --check`, the workspace doctests and
+    `cargo clippy --workspace --all-targets -- -D warnings` pass on the
+    commit tree.
+
+**Verification of the G1-6 fix.**
+
+- Rocq, with no axiom: `BoundKindSoundness.v` gives each lane its located
+  flag, its permitted classes and its demand for each class.
+  - The client lane is located or permitted
+    (`client_iff_located_or_permitted`, `permitted_lane_is_client`). The
+    eight results and the control of the first implementation hold for the
+    new predicate.
+  - `check_placed` rejects a client lane with a class that has demand and no
+    permission. Dodge freedom follows from `narrowing_keeps_a_client_lane`,
+    `narrowing_keeps_placed_classes`, `narrowing_keeps_unplaceable_lanes`,
+    `narrowed_client_phlo`, `narrowed_foreign_demand`,
+    `narrowed_unplaceable` and `narrowed_restriction`.
+  - The sixth proved negative control,
+    `nc_class_exclusion_breaks_dodge_freedom`, satisfies the premise of the
+    dodge-freedom theorem and breaks its conclusion.
+  - The proof gate with `COST_ACCOUNTING_ONLY=1` passes with 290 modules
+    and 3336 closed assumption queries. The 11 new queries
+    cover the new theorems, lemmas and control.
+- Rust tests in `delta_sigma/estimate/tests.rs`: a property test of 64 cases
+  checks the lane key of an encoded supply channel and its charge. That key
+  is the lane key of the signature of the channel. A unit test shows that the
+  digest charges first.
+- Rust tests in `direct_wallet_funding/execution/gate/tests.rs`, with 256
+  cases for each property test:
+  - the permitted lanes are the lanes of the permissions, with one digest
+    for each permission
+  - fewer permitted classes reject the offer or keep its kind, estimate,
+    bound and total hold, when every lane keeps a permission
+  - with every counted lane permitted, the restriction changes no decision
+  - the case of the 64-source test: each class lands on the source that
+    permits it, and the fee on the fee source
+  - a permitted lane without a permission for a class with demand rejects,
+    and without any permission the lane is foreign
+- `offered_admission_api_test.rs`: the permit-only test is disabled and
+  inverted. Three tests are new.
+  - Four sources each permit one class of the lane `payer`. The estimate is
+    complete, the offer holds $`B \cdot 2 + 1`$ under `Certificate`, and
+    each class lands on the source that permits it.
+  - A permitted lane without a source for a class with demand rejects
+    before execution. The same term with every class permitted is accepted
+    under `Certificate`.
+  - A send of `{% Nil %}[alice]` holds the demand of `alice` when a source
+    permits `alice`.
+- The 64-source test: a diagnostic run showed the check record
+  `complete`, $`B = 2860`$, `Certificate` and a total hold of 5721 in play
+  and in both replays. Settlement charged the four permitting purses, one
+  class each, and the fee on the first purse.
+- Suites:
+  - casper (nextest, release, 8 test threads): 1799 of 1803 tests pass with
+    the provisional caps, and 1797 of 1803 with the committed caps. 14 tests
+    are skipped.
+  - The failures are the known failures: 4 with the provisional caps and 6
+    with the committed caps. Each fails at its earlier assertion with its
+    earlier message.
+  - The gateway and replay-usage outcomes stay as before the fix. With the
+    provisional caps, `offered_replay_usage_is_identical_across_roles`
+    passes, and the gateway call test still fails at its call step with
+    `NoNewDeploys`.
+    With the committed caps, both tests fail at their funding step. The
+    permissions of the call name only the lanes at whose purses its sources
+    are located, so the fix does not change its client lanes.
+  - The dense variant of the 64-source test now has a complete estimate
+    under `Certificate`. With the committed caps it executes and is then
+    rejected with no charge, because its metered live read exceeds the
+    host-work budget. With the provisional caps it is accepted, which is the
+    known failure of that test.
+  - rholang and rspace++ pass 4225 of 4225 in release, with 13 skipped.
   - `cargo fmt --check`, the workspace doctests and
     `cargo clippy --workspace --all-targets -- -D warnings` pass on the
     commit tree.

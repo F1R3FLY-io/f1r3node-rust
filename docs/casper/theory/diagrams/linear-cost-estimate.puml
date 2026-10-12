@@ -8,7 +8,8 @@
 ' Settlement charges the measured use directly, with no floor, under the
 ' guard of DR-65 item 5. Since step G1-6 (DR-124), the check keeps only the
 ' client lanes: the demand of every foreign lane leaves the holds and makes
-' the estimate incomplete.
+' the estimate incomplete. The G1-6 fix counts a lane that a source permits
+' for at least one class as a client lane too.
 '
 ' Source of truth: docs/casper/theory/cost-accounting-impl/linear-cost-estimate.md
 ' Palette: inputs = supply blue · resolver and analysis = process lilac ·
@@ -122,7 +123,7 @@ legend bottom
   |= name |= meaning |
   | P1 | the paper "Cost-Accounted Rho Calculus" by L. G. Meredith, publications revision 0bf7817 |
   | DR-n | decision record n: DR-64 (the funding check before execution), DR-65 (same-block offers that share a purse), DR-113 (exhaustion of the signed limit), DR-121 (names that a receive body creates), DR-124 (the live check of the client's demand) |
-  | client lane, foreign lane | a lane at whose purse a source of the envelope is located, and any other lane |
+  | client lane, foreign lane | a lane that a source of the envelope is located at or permits for at least one class, and any other lane |
   | G2, G3 | several offered deploys in one block, and installer funding of a stored continuation |
   | B5 | the interim rule of 2026-10-10 for an installer purse that cannot pay |
   | X1 to X8 | the completeness rules of the analysis |

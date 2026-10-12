@@ -56,7 +56,7 @@ Before execution, the check reserves funds on the funding sources. Each reservat
 - **Complete estimate.** The deploy holds exactly the estimated cost, times the phlo price, plus the fee. The fee is one atomic unit, the smallest unit of the token that the funding sources hold. This rule follows acceptance step 2 of P1 and decision record DR-64 (the funding check before execution).
 - **Incomplete estimate.** The deploy holds its whole signed limit, times the phlo price, plus the fee. This rule is the margin rule of P1. DR-64 uses the signed limit as the margin.
 - **Rejection.** The check rejects the deploy before execution if the holds do not fit the balances, or if the estimate exceeds the signed limit. Such a rejection has no effect and no charge.
-- **Only the client's demand.** The check holds only the demand that the sources of the envelope fund. The demand of another party stays out of the holds, because that party funds it when its work runs. The estimate is then incomplete (Section 6, DR-124).
+- **Only the client's demand.** The check holds only the demand of the lanes that the sources of the envelope may pay. The demand of another party stays out of the holds, because that party funds it when its work runs. The estimate is then incomplete (Section 6, DR-124).
 
 After execution, *settlement* charges the measured use directly. There is no settlement floor. So refunds stay implicit, and offered state roots stay as they are today. A guard protects the funds that the block still needs. The guard is item 5 of DR-65 (same-block offers that share a purse).
 
@@ -109,7 +109,7 @@ This section defines the names, terms and symbols that later sections use.
 | Funding signature | The signature that the signers of the envelope form. It pays for the work that no explicit signature covers. | `runtime.rs:152` |
 | Signature lane | The part of the demand that one signature pays. Its key is the lane hash of the signature. | `delta_sigma.rs:92-104` |
 | Deploy lane | The lane of the funding signature | `reduce.rs:1423-1441` |
-| Client lane | A lane at whose purse a source of the envelope is located. The purse of that source then belongs to the signature of the lane. The deploy lane is always a client lane. | DR-124 |
+| Client lane | A lane that a source of the envelope may pay. A source is located at the purse of the lane, or a source permits the lane for at least one class. The deploy lane is always a client lane. | DR-124 |
 | Foreign lane | A lane that is not a client lane. Its demand stays out of the holds (Section 6). | DR-124 |
 | Region | One signed scope at run time. It has an instance identity, which is a Blake2b-256 hash, and a signature. | `authority.rs:404-424` |
 | Authority | The set of regions that a send or a receive carries. The runtime merges regions that have equal instance identities. | `authority.rs:452-475` |
@@ -509,11 +509,11 @@ For a typical deploy the nesting depth and the number of lanes are small, so the
 - **The token demand.** $`\Delta_c`$ counts only the layers that $`c`$ signs (P1:2002-2027). It recurses through receive bodies, but a layer that another signature signs adds nothing to $`\Delta_c`$. A layer that the client signs inside a stored receive body still counts. Rule X1 makes a persistent receive incomplete, so the signed limit covers it.
 - **The signing sugar.** Uniform signing gives a signed receive and its continuation one signed layer each (P1:1251-1271). The lollipop `{for(y <- x){P}}[s1 -o s2]` means `{for(y <- x){ {P}[s2] }}[s1]`. Then s1 "authorizes and funds the communication", and s2 "authorizes and funds the continuation" (P1:1273-1315). "Neither party can impose costs on the other beyond what the sugar makes explicit" (P1:1313-1314). Compound signatures compose (P1:1317-1327).
 - **Funding slots.** "Anyone who knows the channel can deposit tokens there. The linear proof at acceptance time checks whether tokens are present on the funding slot, not who deposited them" (P1:1553-1555). And "the continuation runs once the slot is funded" (P1:1584-1586). So the check of a slot's tokens belongs to the deployment in which the continuation runs.
-- **Located purses.** P2 decomposes the linear proof into one local proof per purse (P2:1514), and local proofs compose (P2:1520-1527). The purses of the client are the sources of the envelope. Each other purse has its own local proof when its surface executes.
+- **Located purses.** P2 decomposes the linear proof into one local proof per purse (P2:1514), and local proofs compose (P2:1520-1527). The purses of the client are the sources of the envelope. A source may pay the lane at whose purse it is located, and each lane that it permits for at least one class. A signed permission is how a client sponsors a lane, so the demand of a permitted lane is the client's demand. Each other purse has its own local proof when its surface executes.
 
 The code attributes regions as the papers do. An unsigned receive of the deploy opens a region of the deploy that runs it (`reduce.rs:1520-1531`), so its introduction is the client's demand. The normalizer desugars the lollipop as P1 defines it (`normalizer/cost_accounting/desugar.rs:66-85`). A fired body runs with an empty authority, and its unsigned work charges the deploy that triggers it (DR-101, Section 13). An earlier draft of this design applied `def:funding-proof`, which covers every signature, at acceptance (P1:2047-2058).
 
-A class of a client lane without an eligible source still rejects the offer (Section 6.3). Class permissions do not decide whether a lane is a client lane. So a client cannot drop the demand of its own lane by restricting them. Work of a foreign lane that runs in the deployment is token-gated by G3 (DR-68). Until G3, settlement keeps its behavior for that work (Section 7).
+A lane is a client lane when a source is located at its purse or permits it for at least one class. The first implementation of step G1-6 counted located sources only, and the G1-6 fix corrects it (Section 16). A source is eligible for a class of a lane only when it permits that lane and class. So a class of a client lane with known demand and no permitting source rejects the offer (Section 6.3). Fewer permitted classes never exclude a lane that keeps one permission or a located source. They can only reject the offer before execution. Work of a foreign lane that runs in the deployment is token-gated by G3 (DR-68). Until G3, settlement keeps its behavior for that work (Section 7).
 
 ### 6.1 A complete estimate
 
@@ -530,7 +530,7 @@ The check reuses existing interfaces.
 3. `project_phlo_obligations` turns the witness into obligations for each lane and class, plus the fee (`obligations.rs:213`).
 4. `select_phlo_funding_family` places the obligations on the eligible sources at $`R_0`$, with one requirement (`family_policy.rs:426`).
 
-The permissions of the signed record decide which sources are eligible. Before execution, an on-chain purse is eligible for the fee only, because no run has shown its authority yet (DR-123).
+The permissions of the signed record decide which sources are eligible. They also make each permitted lane a client lane, so the demand of a sponsored lane lands on the sources that permit its classes (DR-124). Before execution, an on-chain purse is eligible for the fee only, because no run has shown its authority yet (DR-123).
 
 The meter then runs under the bound $`B`$ with the bound source `Certificate`.
 
@@ -549,7 +549,7 @@ For an incomplete estimate, $`B`$ counts only the parts that the analysis can se
 - A participant whose value contains poison or fails to evaluate.
 - The transfer and trace terms of a participant on a channel that is not fresh.
 - The participants of a region whose signature is dynamic (DR-121).
-- The demand of a foreign lane, which the check removes (DR-124).
+- The demand of a foreign lane, which no source is located at or permits. The check removes it (DR-124).
 
 The check places the holds in two steps.
 
@@ -574,7 +574,7 @@ In each case, the deploy is rejected "without executing any part of the deployme
 
 Every validator recomputes the whole decision. [C][D]
 
-- **Inputs.** The decision is a pure function of the five inputs of Section 5.1 and of the wallet snapshot at $`R_0`$. The snapshot depends on the block time through its grant checks. The client lanes come from the sources of that snapshot.
+- **Inputs.** The decision is a pure function of the five inputs of Section 5.1 and of the wallet snapshot at $`R_0`$. The snapshot depends on the block time through its grant checks. The client lanes come from the sources of that snapshot. They are the lane of the payer of each source and the lane of each signed permission (`source_lanes`, `permitted_lanes`).
 - **Host work.** The check meters its work on its own host-work budget, with the consensus limits. Play and replay create that budget at the same point, just before evaluation. So the outcome does not depend on earlier work (DR-102, acceptance work on its own budget).
 - **URN maps.** Play and replay build the URN map with the same constructor and the same inputs (`rho_runtime.rs:1997-1999`, `:2065-2068`). External services do not change the map.
 
@@ -598,7 +598,7 @@ The meter enforces the bound that the check chose. The table lists every outcome
 | Total usage passes $`B`$ | `Certificate` | Certificate failure | Reject, no charge. It means an analyzer defect, which DR-64 classifies as a correctness failure (DRs:3962-3964, DRs:12010). |
 | One lane and class pass their estimate, but the total stays within $`B`$ | `Certificate` | No meter event | Settlement charges the use when eligible sources have balance. Otherwise settlement is infeasible, and the deploy is rejected with no charge. Both cases mean an analyzer defect. |
 | Usage passes $`\mathrm{phloLimit}`$ | `SignedLimit` | Classified user failure | Roll back, charge the billable usage times the price plus 1, and publish as failed (DRs:12009) |
-| Work of a foreign lane runs within the bound | `SignedLimit` | Normal | G3 token-gates this work (DR-68). Until G3, settlement keeps its behavior: a source that permits the lane pays, or the deploy is rejected with no charge (DR-124). |
+| Work of a foreign lane runs within the bound | `SignedLimit` | Normal | G3 token-gates this work (DR-68). Until G3, settlement keeps its behavior. No source permits a foreign lane, so the selection after execution fails, and the deploy is rejected with no charge (DR-124). |
 | A host-work limit | Either | Platform failure | Reject, no charge (DRs:12012) |
 
 The billable usage is the fresh usage that the run drew before it failed (`phlo_execution.rs:559-564`). The producer logs each correctness failure under `Certificate`: a total usage above $`B`$, and a selection that fails after execution (DR-124).
@@ -807,11 +807,12 @@ The known demand applies the weights and the units once. The raw counts stay unw
   B ← Σ over lanes s of known[s]
 ```
 
-The check holds only the client's demand (Section 6, DR-124). A source is located at the purse of its payer, and the deploy lane is always a client lane. Class permissions play no part in this chunk.
+The check holds only the client's demand (Section 6, DR-124). A source is located at the purse of its payer. It also permits the lane of each of its permissions, for any class (the G1-6 fix). The deploy lane is always a client lane. The classes of the permissions matter only when the holds are placed.
 
 ```text
 ⟨keep the client lanes⟩ ≡
   client ← {deploy lane} ∪ {lane of the payer of each source}       -- DR-124
+           ∪ {lane of each permission of each source}               -- G1-6 fix
   remove every lane outside client from V and from the signatures
   if a removed lane has counts and complete: complete ← false (ForeignLane)
   B ← Σ over client lanes s of known[s]
@@ -1059,7 +1060,7 @@ The verification follows the bar of this branch: formal models with negative con
 - `EstimateDemandWalk.v` instantiates the generic walk section of `StackSafeDemandWalk.v` (`:409-424`). It covers the vector pass only, because the walk term has no binders.
 - `EstimateBinderKinds.v` models the binder analysis over de Bruijn terms with the six kinds. Its lemmas are `kinds_channels_fresh`, `kinds_no_escape`, `kinds_poison_free_introductions` and `full_environment_matches_runtime_free_levels`. It reads a receive guard at the base of the bind count (DR-122 item 8). It models signatures, and `static_signature_names_one_lane` shows that a static signature has one value in every run (DR-122 item 11). `keep_until_compose` models the `locally_free` prefix of Section 5.6. Every outer level of a checked guard has a pattern kind (`checked_guard_levels_are_patterns`, DR-122 item 8).
 - `PlanComputeDominates.v` proves that the compute row of the plan is at least the row of the vector for every lane (`plan_compute_dominates_vector`). So the plan's row bounds the realized compute (`plan_bounds_realized_compute`, DR-122 item 7).
-- `BoundKindSoundness.v` proves that the check never treats an incomplete estimate as complete, and that a rollback after an overrun has no effect. Step G1-6 extends it to client and foreign lanes (DR-124). A certified estimate has demand on client lanes only (`certified_estimate_has_only_client_lanes`). A foreign lane with demand forces an incomplete estimate and a hold of the signed limit (`foreign_lane_forces_incomplete`, `foreign_lane_holds_the_signed_limit`). The limit test reads the client's demand (`limit_test_uses_client_demand`). A negative control keeps an estimate with a foreign lane complete, and its run passes the certified bound unpaid.
+- `BoundKindSoundness.v` proves that the check never treats an incomplete estimate as complete, and that a rollback after an overrun has no effect. Step G1-6 extends it to client and foreign lanes (DR-124). A certified estimate has demand on client lanes only (`certified_estimate_has_only_client_lanes`). A foreign lane with demand forces an incomplete estimate and a hold of the signed limit (`foreign_lane_forces_incomplete`, `foreign_lane_holds_the_signed_limit`). The limit test reads the client's demand (`limit_test_uses_client_demand`). A negative control keeps an estimate with a foreign lane complete, and its run passes the certified bound unpaid. The G1-6 fix makes a lane a client lane when a source is located at it or permits it (`client_iff_located_or_permitted`, `permitted_lane_is_client`). It adds the placement of the client lanes and proves dodge freedom: fewer permitted classes reject the offer or keep its decision (`narrowing_rejects_or_keeps_the_decision`). A sixth negative control excludes a permitted lane by class, and a narrowed offer lowers its certified bound and runs unpaid.
 - The guard lemmas of DR-65 are `group_holds_prevent_overdraft`, `held_capacity_guard_preserves_later_holds` and `group_decision_permutation_invariant`. They are restated for settlement without a floor, with the capacity cap of Section 8.4 on both paths.
 
 **Negative controls.** Each control is a deliberately broken variant that a witness must refute.
@@ -1110,7 +1111,10 @@ The verification follows the bar of this branch: formal models with negative con
   - a funding-slot installer passes the check and holds its signed limit
   - a send of `{% Nil %}[alice]` needs no source for `alice`
   - a class of a client lane without an eligible source rejects before execution, and restricting class permissions keeps a client lane
-  - a lane that a source only permits is a foreign lane
+  - a lane that four sources permit, one class each, is a client lane, with each class on its permitting source (G1-6 fix)
+  - a permitted lane without a source for a class with demand rejects before execution (G1-6 fix)
+  - a send of `{% Nil %}[alice]` holds the demand of `alice` when a source permits `alice` (G1-6 fix)
+  - the gate tests of the G1-6 fix for the permitted lanes, the narrowing of permissions and the decisions with permitted lanes
 - The tests of the G1-4a fix:
   - the four `#P` forms of DR-122 item 11, and the quote of a resolved name in a receive body
   - `#P` signatures in the generated programs
@@ -1214,6 +1218,7 @@ The user made these decisions on 2026-10-10, and the last two on 2026-10-11. Tim
 | 20:22 | **The meaning of "linear solver".** "By linear solver, I mean the linear proof documented by the cost-accounting publications, [`publications/cost-accounting/cost-accounted-rho.tex`] and [`publications/cost-accounting-as-monad/continued-gslt-cost-v2.tex`], not that it can be solved in linear time." The brackets mark two paths shortened to their repository-relative form. Section 1 says what *linear* means in the name of this estimate. Section 4.1 adds the requirements of P2, and Section 5.8 states the running time. |
 | 00:09 on 2026-10-11 | **U3, the capacity of the selection in G1.** The user chose "Balance at R0 (Recommended)". With one offer per block, the selection after execution caps each source by its balance at $`R_0`$, as today. The guard then separates a self-drain from a placement that never fit. The cap of Section 8.4 applies from step G2-2 on (Sections 8.4 and 9). |
 | Later on 2026-10-11 | **Hold only the client's demand.** The user chose "Hold only the client's $`\Delta_c`$ (Recommended)". The check holds the demand of the client lanes only, as P1's acceptance protocol does (P1:2191-2200). A foreign lane leaves the holds and makes the estimate incomplete. The user added: "So long as you stay true to Greg's publications about cost-accounting and its new syntax semantics." Section 6 states the basis in P1 and P2, and DR-124 records the decision. |
+| Later on 2026-10-11, correction | **The lanes that the sources may pay.** As the coordinator relayed it, the user's option said "hold only the lanes the envelope's sources may pay". The first implementation counted only the lanes at whose purses a source is located. The 64-source test showed the gap, because four of its sources permit its lane `payer`. A signed permission is how a client sponsors a lane, so P2's local proof per purse covers it (P2:1520-1527). The G1-6 fix makes every permitted lane a client lane. DR-124 records the correction. |
 
 A second independent check of the design followed on the same day. Its corrections are part of this document.
 

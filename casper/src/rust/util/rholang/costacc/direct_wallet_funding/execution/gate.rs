@@ -5,7 +5,9 @@
 //!
 //! G1-6 (DR-124) makes the check live in play and replay, and the check holds
 //! only the client's demand: the demand of the client lanes, whose purses the
-//! envelope's sources are located at (P1:2191-2200).
+//! envelope's sources are located at (P1:2191-2200). The G1-6 fix adds the
+//! lanes that the sources permit for at least one class: the client's purses
+//! may pay them (P2 `prop:local-suff`, P2:1520-1527).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::mem::size_of;
@@ -22,7 +24,7 @@ use rholang::rust::interpreter::accounting::authority::{
     cost_signature_to_sig_metered, funding_sig_channel_metered,
 };
 use rholang::rust::interpreter::accounting::delta_sigma::estimate::{
-    estimate_offered_term, Completeness, CostEstimate, IncompleteReason,
+    estimate_offered_term, location_lane_key, Completeness, CostEstimate, IncompleteReason,
 };
 use rholang::rust::interpreter::accounting::monetary_allocation::MonetaryCursor;
 use rholang::rust::interpreter::accounting::native_phlo_rules::NativeBoundSource;
@@ -207,9 +209,17 @@ fn check_with_estimate(
     // Added by G1-6 (DR-124): the check holds only the client's demand
     // (P1:2191-2200). The demand of every other lane leaves the estimate, and
     // the estimate is then incomplete.
+    // Changed by the G1-6 fix (DR-124 correction): the client lanes are the
+    // lanes that the sources may pay, so they include every lane that a
+    // source permits, and the permission digests charge the check's budget.
+    // let client = client_lane_set(
+    //     funding_signature.lane_hash(),
+    //     source_lanes(input.snapshot)?,
+    //     &host,
+    // )?;
     let client = client_lane_set(
         funding_signature.lane_hash(),
-        source_lanes(input.snapshot)?,
+        source_lanes(input.snapshot, &host)?,
         &host,
     )?;
     let estimate = estimate
@@ -304,16 +314,28 @@ fn run_estimate(
     )
 }
 
-/// Added by G1-6 (DR-124): the lane of each signed source. A source is
-/// located at the purse of its payer: the supply channel of the payer's
-/// signature is its custody location (`supply_reader.rs`). `Sig::lane_hash`
-/// digests that supply channel, so the payer's `lane_key` names the location.
+/// Added by G1-6 (DR-124): the lanes that the signed sources may pay. A
+/// source is located at the purse of its payer: the supply channel of the
+/// payer's signature is its custody location (`supply_reader.rs`).
+/// `Sig::lane_hash` digests that supply channel, so the payer's `lane_key`
+/// names the location. Changed by the G1-6 fix: the result also holds the
+/// lane of each resource permission of each source (`permitted_lanes`).
+// Changed by the G1-6 fix (DR-124 correction): the function takes the
+// check's budget for the permission digests.
+// pub(super) fn source_lanes(
+//     snapshot: &DirectWalletPolicySnapshot<'_, OfferedFundedDeploy>,
+// ) -> Result<Vec<[u8; 32]>, OfferedGateRejection> {
 pub(super) fn source_lanes(
     snapshot: &DirectWalletPolicySnapshot<'_, OfferedFundedDeploy>,
+    host: &HostWorkBudget,
 ) -> Result<Vec<[u8; 32]>, OfferedGateRejection> {
     let authorization = snapshot.wallets().authorization();
     let sources = &authorization.record().sources;
-    let mut lanes = Vec::with_capacity(sources.len());
+    // Changed by the G1-6 fix (DR-124 correction): the room also covers the
+    // permitted lanes.
+    // let mut lanes = Vec::with_capacity(sources.len());
+    let permitted = permitted_lanes(sources, host)?;
+    let mut lanes = Vec::with_capacity(sources.len().saturating_add(permitted.len()));
     for source in sources {
         let custody: [u8; 32] = source.custody().try_into().map_err(|_| {
             OfferedGateRejection::Invalid("a custody key is not 32 bytes".to_string())
@@ -323,15 +345,57 @@ pub(super) fn source_lanes(
         })?;
         lanes.push(payer.lane_key);
     }
+    lanes.extend(permitted);
     Ok(lanes)
 }
 
-/// Added by G1-6 (DR-124): the client lanes. A lane is a client lane when a
-/// source of the envelope is located at the purse of the lane, that is, when
-/// the supply channel of the lane's signature equals the custody location of
-/// the source. The deploy lane is always a client lane. Class permissions do
-/// not decide whether a lane is a client lane, so a client cannot drop the
-/// demand of its own lane by restricting them.
+/// Added by the G1-6 fix (DR-124 correction): the lane of each resource
+/// permission of each signed source. A permission for any class makes its
+/// lane a client lane. The client's own purse may pay that lane, so the
+/// lane's demand is the client's sponsored demand: P2 checks one local
+/// linear proof per purse (`prop:local-suff`, P2:1520-1527). The lane key of
+/// a permission is the digest of its location (`location_lane_key`). The
+/// function charges the room of the result and each digest before it
+/// computes them.
+pub(super) fn permitted_lanes(
+    signed: &[PhloSourcePolicyV1<'_>],
+    host: &HostWorkBudget,
+) -> Result<Vec<[u8; 32]>, OfferedGateRejection> {
+    let count = signed
+        .iter()
+        .try_fold(0usize, |total, source| {
+            total.checked_add(source.resources().len())
+        })
+        .ok_or(OfferedGateRejection::HostWork)?;
+    reserve(
+        host,
+        HostWorkDimension::SearchStateBytes,
+        count
+            .checked_mul(size_of::<[u8; 32]>())
+            .ok_or(OfferedGateRejection::HostWork)?,
+    )?;
+    let mut lanes = Vec::with_capacity(count);
+    for source in signed {
+        for permission in source.resources() {
+            lanes.push(
+                location_lane_key(permission.location, host).map_err(|error| {
+                    host_work_or(host, || OfferedGateRejection::Invalid(error.to_string()))
+                })?,
+            );
+        }
+    }
+    Ok(lanes)
+}
+
+/// Added by G1-6 (DR-124): the client lanes, the lanes that the sources of
+/// the envelope may pay. The deploy lane is always a client lane. A lane is a
+/// client lane when a source is located at its purse, that is, when the
+/// supply channel of the lane's signature equals the custody location of the
+/// source. Changed by the G1-6 fix: a lane is also a client lane when a
+/// source permits it for at least one class (`source_lanes`). Fewer permitted
+/// classes never exclude a lane that keeps one permission or a located
+/// source. A class of a client lane with known demand and no permitting
+/// source rejects the offer before execution, when the holds are placed.
 pub(super) fn client_lane_set(
     deploy_lane: [u8; 32],
     source_lanes: Vec<[u8; 32]>,

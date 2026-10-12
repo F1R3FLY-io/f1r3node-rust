@@ -20,6 +20,8 @@ use casper::rust::util::rholang::costacc::offered_grants::offered_grant_issue_ca
 use casper::rust::util::rholang::costacc::production_limits::offered_funded_v6_production_limits;
 use crypto::rust::private_key::PrivateKey;
 use crypto::rust::public_key::PublicKey;
+use crypto::rust::signatures::signatures_alg::SignaturesAlg;
+use crypto::rust::signatures::signed::Cosigner;
 use models::rust::block::state_hash::StateHash;
 use models::rust::cost_protocol_limits::offered_funded_v6_host_work_limits;
 use models::rust::deploy_envelope::DeployEnvelopeRef;
@@ -341,6 +343,20 @@ async fn estimated_lanes(
     node: &TestNode,
     offer: &models::casper::DeployDataProto,
 ) -> (Vec<[u8; 32]>, [u8; 32]) {
+    // Changed by the G1-6 fix (DR-124): the estimate moved into
+    // `estimated_counts`, which also returns the counts.
+    let (counts, deploy_lane) = estimated_counts(node, offer).await;
+    let mut lanes = counts.keys().map(|(lane, _)| *lane).collect::<Vec<_>>();
+    lanes.dedup();
+    (lanes, deploy_lane)
+}
+
+/// The counts V(lane, class) of the estimate of `offer`, before the check
+/// restricts it to the client lanes, and the deploy lane.
+async fn estimated_counts(
+    node: &TestNode,
+    offer: &models::casper::DeployDataProto,
+) -> (std::collections::BTreeMap<([u8; 32], usize), u64>, [u8; 32]) {
     use rholang::rust::interpreter::accounting::delta_sigma::estimate::estimate_offered_term;
     use rholang::rust::interpreter::accounting::funding_sig;
 
@@ -367,13 +383,16 @@ async fn estimated_lanes(
         &HostWorkBudget::new(offered_funded_v6_host_work_limits()),
     )
     .expect("the estimate runs");
-    let mut lanes = estimate
-        .quantities
-        .keys()
-        .map(|(lane, _)| *lane)
-        .collect::<Vec<_>>();
-    lanes.dedup();
-    (lanes, funding.lane_hash())
+    // Changed by the G1-6 fix (DR-124): the caller derives the lanes from the
+    // counts.
+    // let mut lanes = estimate
+    //     .quantities
+    //     .keys()
+    //     .map(|(lane, _)| *lane)
+    //     .collect::<Vec<_>>();
+    // lanes.dedup();
+    // (lanes, funding.lane_hash())
+    (estimate.quantities, funding.lane_hash())
 }
 
 /// Every node accepts `block`, every node holds one receipt for `offer`, and
@@ -912,8 +931,9 @@ fn lane_of(signature: &CostSignature) -> [u8; 32] {
 /// unsigned, so its introduction is the installer's own demand. The body
 /// signs `[entry -o slot]`, which desugars to `{for(..){{P}_slot}}_entry`
 /// (P1 `def:sugar-lollipop`). `entry` and `slot` are fresh names of the
-/// installer, so no source of the envelope is located at their purses: the
-/// envelope commits to its sources, and the names come from its identity.
+/// installer, so no source of the envelope is located at their purses or
+/// permits their lanes: the envelope commits to its sources and their
+/// permissions, and the names come from its identity.
 const FUNDING_SLOT_INSTALLER: &str = r#"new entry, slot, entryAddressCh, slotAddressCh,
       VaultAddress(`rho:vault:address`), DeployerIdOps(`rho:system:deployerId:ops`) in {
       for (@request, deployerId <= @"agent-trigger") {
@@ -978,8 +998,9 @@ async fn a_funding_slot_installer_passes_the_check_and_holds_its_signed_limit() 
 
 /// Review finding M-3 under DR-124: the plan counts the layer `{% Nil %}[alice]`
 /// inside sent data (P1 `def:token-demand`), but no source is located at the
-/// purse of `alice`. The layer adds nothing to the client's demand, so the
-/// offer needs no source for `alice` and holds its signed limit.
+/// purse of `alice` or permits it. The layer adds nothing to the client's
+/// demand, so the offer needs no source for `alice` and holds its signed
+/// limit.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_send_of_a_foreign_signed_process_needs_no_source_for_that_lane() {
     let genesis = super::offered_v6_genesis(3).await;
@@ -1121,28 +1142,278 @@ async fn restricting_class_permissions_does_not_exclude_a_client_lane() {
     ));
 }
 
-/// The rule of DR-124 locates a source at the purse of its payer. A source
-/// that only permits a lane is not located there, so that lane is foreign.
-/// This is the case of the `payer` lane in the 64-source test. The offer holds
-/// its signed limit, runs under `SignedLimit`, and settlement charges the
-/// work of the lane to the permitting purse, as it did before G1-6.
+// Disabled by the G1-6 fix (DR-124 correction): the corrected rule makes a
+// lane that a source permits for at least one class a client lane, so the
+// expectation of this test (a permitted lane is foreign) no longer holds.
+// The inverted test `a_lane_that_sources_permit_is_a_client_lane_with_exact_holds`
+// replaces it.
+// /// The rule of DR-124 locates a source at the purse of its payer. A source
+// /// that only permits a lane is not located there, so that lane is foreign.
+// /// This is the case of the `payer` lane in the 64-source test. The offer holds
+// /// its signed limit, runs under `SignedLimit`, and settlement charges the
+// /// work of the lane to the permitting purse, as it did before G1-6.
+// #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+// async fn a_lane_that_a_source_only_permits_is_a_foreign_lane() {
+//     let genesis = super::offered_v6_genesis(3).await;
+//     let mut nodes = TestNode::create_network(genesis.clone(), 2, None, None, None, None)
+//         .await
+//         .expect("a two-node network starts");
+//     let payer = genesis.genesis_vaults[0].clone();
+//     let payer_lane = spelled_signature("payer");
+//     let offer = permissioned_offer(
+//         &payer,
+//         1,
+//         "{% new x in { x!(0) | for (@n <- x) { Nil } } %}[ payer ]",
+//         2_000_000,
+//         5_000_000,
+//         &[0, 1, 2, 3],
+//         &[(payer_lane.clone(), &[0, 1, 2, 3])],
+//     );
+//     let gate = direct_gate(
+//         &nodes[0],
+//         &genesis,
+//         &offer,
+//         &genesis.genesis_block.body.state.post_state_hash,
+//     )
+//     .await
+//     .expect("the check accepts the offer");
+//     assert_eq!(
+//         gate.kind(),
+//         &OfferedEstimateKind::Incomplete(
+//             rholang::rust::interpreter::accounting::delta_sigma::estimate::IncompleteReason::ForeignLane
+//         )
+//     );
+//     assert_eq!(gate.estimate_phlo(), 0, "the deploy lane has no demand");
+//     assert_eq!(gate.total_hold(), 2_000_000 * 2 + 1);
+//     let (block, _) = super::offered_block(&mut nodes, 0, offer.clone()).await;
+//     assert!(!block.body.deploys[0].is_failed());
+//     let (decision, receipt) = accepted_with_one_decision(&mut nodes, &block, &offer).await;
+//     assert_eq!(decision, decision_of(&gate));
+//     assert!(
+//         receipt.fresh_phlo > 0,
+//         "the work of the payer lane is charged"
+//     );
+//     assert_eq!(
+//         receipt.rev_spent,
+//         u128::from(receipt.fresh_phlo) * u128::from(receipt.phlo_price) + receipt.fee_rev
+//     );
+//     assert!(
+//         lane_of(&payer_lane)
+//             != lane_of(&CostSignature {
+//                 value: Some(Value::Ground(principal_ground_v61(&payer.1.bytes))),
+//             })
+//     );
+// }
+
+// ── The lanes that the sources permit (G1-6 fix, DR-124) ───────────────────
+
+/// Signer keys for the offers with several sources. The keys follow the
+/// default genesis keys and avoid the system keys, which may not sign a
+/// deploy.
+fn sponsor_keys(count: usize) -> Vec<(PrivateKey, PublicKey)> {
+    let forbidden = casper::rust::genesis::contracts::standard_deploys::system_public_keys();
+    let mut keys = Vec::with_capacity(count);
+    let mut index = 20_000u32;
+    while keys.len() < count {
+        let mut private_bytes = [0u8; 32];
+        private_bytes[28..].copy_from_slice(&index.to_be_bytes());
+        index += 1;
+        let private = PrivateKey::from_bytes(&private_bytes);
+        let public = Secp256k1.to_public(&private);
+        if forbidden.iter().any(|key| **key == public) {
+            continue;
+        }
+        keys.push((private, public));
+    }
+    keys
+}
+
+/// An offer funded by the principal purse of each signer. Source `i` permits
+/// the lanes and classes of `permissions[i]`, and only the first source
+/// permits the fee. Every signer cosigns the envelope. The total exposure is
+/// phloLimit·phloPrice + 1.
+fn sponsored_offer(
+    signers: &[(PrivateKey, PublicKey)],
+    time_stamp: i64,
+    term: &str,
+    phlo_limit: u64,
+    source_cap: u64,
+    permissions: &[Vec<(CostSignature, Vec<usize>)>],
+) -> models::casper::DeployDataProto {
+    let limits = offered_funded_v6_limits().envelope.payload;
+    let schedule = selected_schedule();
+    let acquisition_terms = schedule
+        .encode(PhloGenesisPolicy::LIMITS)
+        .expect("the selected schedule encodes");
+    let payers = signers
+        .iter()
+        .map(|(_, public)| {
+            vault_payer(&CostSignature {
+                value: Some(Value::Ground(principal_ground_v61(&public.bytes))),
+            })
+            .expect("a principal signature has a vault payer")
+        })
+        .collect::<Vec<_>>();
+    let lanes = permissions
+        .iter()
+        .map(|lanes| {
+            lanes
+                .iter()
+                .map(|(signature, classes)| {
+                    let authority =
+                        cost_signature_to_sig(signature).expect("a lane signature converts");
+                    let location = SignatureChannel::from_sig(&authority).par.encode_to_vec();
+                    (authority, location, classes.clone())
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    let sources = payers
+        .iter()
+        .zip(&lanes)
+        .enumerate()
+        .map(|(index, (payer, lanes))| {
+            let mut keys = Vec::new();
+            for (authority, location, classes) in lanes {
+                for class in classes {
+                    keys.push(
+                        PhloResource {
+                            location,
+                            class: *class,
+                            acquisition_terms: &acquisition_terms,
+                            authority,
+                        }
+                        .wire_key(PhloExecutionLimits {
+                            resource_entries: 1,
+                            authority_nodes: limits.funding.authority_nodes,
+                            key_bytes: limits.funding.wire.field_bytes,
+                        })
+                        .expect("a resource permission encodes"),
+                    );
+                }
+            }
+            let permission_count = keys.len();
+            PhloSourcePolicyV1::new(
+                &payer.custody_key,
+                source_cap,
+                source_cap,
+                index == 0,
+                keys,
+                PhloSourceLimits {
+                    wire: limits.funding.wire,
+                    resource_permissions: permission_count,
+                    authority_nodes: limits.funding.authority_nodes,
+                },
+            )
+            .expect("the sponsored source policy is valid")
+        })
+        .collect::<Vec<_>>();
+    let funding = PhloFundingIntentV2 {
+        base: PhloFundingIntentV1 {
+            controls: PhloControlsV1 {
+                limit: phlo_limit,
+                price_ceiling: 2,
+                required_owner_ceilings: vec![2],
+                permitted_schedules: vec![schedule.clone()],
+            },
+            schedule_commitment: schedule
+                .digest(PhloGenesisPolicy::LIMITS)
+                .expect("the selected schedule digests"),
+            total_exposure: u128::from(phlo_limit) * 2 + 1,
+            sources,
+        },
+        grant_uses: Vec::new(),
+        conversion: PhloConversionCompositionV2::NoConversion,
+    }
+    .encode(PhloFundingIntentV2Limits {
+        wire: limits.funding.wire,
+        base: limits.funding,
+        grant_uses: limits.funding.wire.total_bytes / 8,
+        grant_id_bytes: limits.funding.wire.field_bytes,
+        quote_evidence_bytes: limits.funding.wire.field_bytes,
+    })
+    .expect("the funding intent encodes");
+    let body = DeployData {
+        term: term.to_string(),
+        language: "rholang".to_string(),
+        time_stamp,
+        valid_after_block_number: 0,
+        shard_id: "root".to_string(),
+        expiration_timestamp: None,
+        authority_presentations: Vec::new(),
+    };
+    let payload = OfferedFundedDeploy::new(
+        body,
+        funding,
+        i64::try_from(phlo_limit).expect("the phlo limit fits an i64"),
+        2,
+        limits,
+    )
+    .expect("the sponsored payload is valid");
+    let mut cosigners = signers
+        .iter()
+        .map(|(_, public)| Cosigner {
+            pk: public.clone(),
+            sig: prost::bytes::Bytes::from_static(&[1]),
+            sig_algorithm: Box::new(Secp256k1),
+        })
+        .collect::<Vec<_>>();
+    let hash = Cosigned::envelope_signing_hash(
+        &payload,
+        &cosigners,
+        u32::try_from(cosigners.len()).expect("a small signer count"),
+        &Secp256k1::name(),
+    )
+    .expect("the envelope hash computes");
+    for (cosigner, (private, _)) in cosigners.iter_mut().zip(signers) {
+        cosigner.sig = Secp256k1.sign(&hash, &private.bytes).into();
+    }
+    let signed = Cosigned::from_envelope_signed_data(payload, cosigners)
+        .expect("the signers cosign the offer");
+    OfferedFundedDeploy::to_proto(&signed).expect("a signed offer encodes")
+}
+
+/// The inverted test of the 64-source case. A lane that the sources permit
+/// is a client lane, because the client's purses may pay it (P2
+/// `prop:local-suff`, P2:1520-1527). Four sources each permit one class of
+/// the lane `payer`, at whose purse no source is located. The estimate stays
+/// complete. The offer runs under `Certificate` with the bound B and holds
+/// B·phloPrice + 1. Each class lands on the source that permits it, and the
+/// fee lands on the first source.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_lane_that_a_source_only_permits_is_a_foreign_lane() {
-    let genesis = super::offered_v6_genesis(3).await;
+async fn a_lane_that_sources_permit_is_a_client_lane_with_exact_holds() {
+    let sponsors = sponsor_keys(4);
+    let genesis = super::offered_v6_genesis_with_signers(2, &sponsors).await;
     let mut nodes = TestNode::create_network(genesis.clone(), 2, None, None, None, None)
         .await
         .expect("a two-node network starts");
-    let payer = genesis.genesis_vaults[0].clone();
     let payer_lane = spelled_signature("payer");
-    let offer = permissioned_offer(
-        &payer,
+    let permissions = (0..4)
+        .map(|class| vec![(payer_lane.clone(), vec![class])])
+        .collect::<Vec<_>>();
+    let offer = sponsored_offer(
+        &sponsors,
         1,
         "{% new x in { x!(0) | for (@n <- x) { Nil } } %}[ payer ]",
         2_000_000,
         5_000_000,
-        &[0, 1, 2, 3],
-        &[(payer_lane.clone(), &[0, 1, 2, 3])],
+        &permissions,
     );
+    let (counts, deploy_lane) = estimated_counts(&nodes[0], &offer).await;
+    let payer_key = lane_of(&payer_lane);
+    assert!(
+        counts.keys().all(|(lane, _)| *lane == payer_key),
+        "only the lane payer has demand: {counts:?}"
+    );
+    assert_ne!(payer_key, deploy_lane);
+    let class_counts = (0..4)
+        .map(|class| counts.get(&(payer_key, class)).copied().unwrap_or(0))
+        .collect::<Vec<_>>();
+    assert!(
+        class_counts.iter().filter(|count| **count > 0).count() >= 2,
+        "the lane payer has demand in at least two classes: {class_counts:?}"
+    );
+    let estimate = class_counts.iter().sum::<u64>();
     let gate = direct_gate(
         &nodes[0],
         &genesis,
@@ -1151,30 +1422,165 @@ async fn a_lane_that_a_source_only_permits_is_a_foreign_lane() {
     )
     .await
     .expect("the check accepts the offer");
+    assert_eq!(gate.kind(), &OfferedEstimateKind::Complete);
+    assert_eq!(gate.bound_source(), NativeBoundSource::Certificate);
+    assert_eq!(gate.estimate_phlo(), estimate);
+    assert_eq!(gate.resource_bound(), estimate);
+    assert_eq!(gate.total_hold(), u128::from(estimate) * 2 + 1);
+    let expected = sponsors
+        .iter()
+        .zip(&class_counts)
+        .enumerate()
+        .map(|(index, ((_, public), count))| {
+            let custody = vault_payer(&CostSignature {
+                value: Some(Value::Ground(principal_ground_v61(&public.bytes))),
+            })
+            .expect("a principal signature has a vault payer")
+            .custody_key;
+            (custody, u128::from(*count) * 2 + u128::from(index == 0))
+        })
+        .collect::<std::collections::BTreeMap<_, _>>();
     assert_eq!(
-        gate.kind(),
-        &OfferedEstimateKind::Incomplete(
-            rholang::rust::interpreter::accounting::delta_sigma::estimate::IncompleteReason::ForeignLane
-        )
+        gate.holds()
+            .iter()
+            .copied()
+            .collect::<std::collections::BTreeMap<_, _>>(),
+        expected,
+        "each class lands on the source that permits it, and the fee on the first source"
     );
-    assert_eq!(gate.estimate_phlo(), 0, "the deploy lane has no demand");
-    assert_eq!(gate.total_hold(), 2_000_000 * 2 + 1);
     let (block, _) = super::offered_block(&mut nodes, 0, offer.clone()).await;
     assert!(!block.body.deploys[0].is_failed());
     let (decision, receipt) = accepted_with_one_decision(&mut nodes, &block, &offer).await;
     assert_eq!(decision, decision_of(&gate));
     assert!(
-        receipt.fresh_phlo > 0,
-        "the work of the payer lane is charged"
+        receipt.fresh_phlo <= estimate,
+        "the run stays within its certified bound"
+    );
+}
+
+/// The loophole control for a permitted lane. The owner's source permits only
+/// the class 0 of the lane `payer`, which has demand in more classes. The lane
+/// is a client lane, so the classes without a permission reject the offer
+/// before execution with "insufficient phlogiston". The same term with every
+/// class of `payer` permitted is accepted under `Certificate`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_permitted_lane_without_a_source_for_a_class_with_demand_rejects_before_execution() {
+    let genesis = super::offered_v6_genesis(3).await;
+    let mut nodes = TestNode::create_network(genesis.clone(), 1, None, None, None, None)
+        .await
+        .expect("a single-node network starts");
+    let payer_lane = spelled_signature("payer");
+    let term = "{% new x in { x!(0) | for (@n <- x) { Nil } } %}[ payer ]";
+    let restricted = permissioned_offer(
+        &genesis.genesis_vaults[0],
+        1,
+        term,
+        2_000_000,
+        5_000_000,
+        &[0, 1, 2, 3],
+        &[(payer_lane.clone(), &[0])],
+    );
+    let permitted = permissioned_offer(
+        &genesis.genesis_vaults[2],
+        2,
+        term,
+        2_000_000,
+        5_000_000,
+        &[0, 1, 2, 3],
+        &[(payer_lane.clone(), &[0, 1, 2, 3])],
+    );
+    let (counts, _) = estimated_counts(&nodes[0], &restricted).await;
+    assert!(
+        (1..4).any(|class| counts
+            .get(&(lane_of(&payer_lane), class))
+            .copied()
+            .unwrap_or(0)
+            > 0),
+        "the lane payer has demand outside the class 0: {counts:?}"
+    );
+    admit(&nodes[0], &restricted).await;
+    admit(&nodes[0], &permitted).await;
+    let block = nodes[0]
+        .create_block_unsafe(&[])
+        .await
+        .expect("the proposer includes the permitted offer");
+    assert_eq!(block.body.deploys.len(), 1);
+    assert_eq!(
+        block.body.deploys[0].identity_bytes(),
+        permitted.deploy_id.as_ref()
+    );
+    let reason = recorded_rejection(&nodes[0], &restricted);
+    assert!(reason.contains("insufficient phlogiston"), "{reason}");
+    assert_eq!(
+        records(&nodes[0], &restricted, OfferedUsageKind::PlayRuntimeEntry),
+        0,
+        "the restricted offer never runs"
     );
     assert_eq!(
-        receipt.rev_spent,
-        u128::from(receipt.fresh_phlo) * u128::from(receipt.phlo_price) + receipt.fee_rev
+        checks(&nodes[0], &restricted, OfferedCheckRole::Play),
+        vec![OfferedCheckRecord::Rejected]
     );
+    assert!(matches!(
+        checks(&nodes[0], &permitted, OfferedCheckRole::Play)[..],
+        [OfferedCheckRecord::Accepted {
+            complete: true,
+            bound_source: NativeBoundSource::Certificate,
+            ..
+        }]
+    ));
+}
+
+/// Review finding M-3 when a source permits the lane `alice`. The layer
+/// `{% Nil %}[alice]` inside sent data is then the client's sponsored demand.
+/// The lane is a client lane, the estimate stays complete, and B counts the
+/// demand of `alice`. The offer holds B·phloPrice + 1 under `Certificate`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_send_of_a_signed_process_holds_that_lane_when_a_source_permits_it() {
+    let genesis = super::offered_v6_genesis(3).await;
+    let mut nodes = TestNode::create_network(genesis.clone(), 2, None, None, None, None)
+        .await
+        .expect("a two-node network starts");
+    let payer = genesis.genesis_vaults[0].clone();
+    let alice = spelled_signature("alice");
+    let offer = permissioned_offer(
+        &payer,
+        1,
+        "new x in { x!({% Nil %}[alice]) }",
+        2_000_000,
+        5_000_000,
+        &[0, 1, 2, 3],
+        &[(alice.clone(), &[0, 1, 2, 3])],
+    );
+    let (counts, deploy_lane) = estimated_counts(&nodes[0], &offer).await;
+    let alice_key = lane_of(&alice);
     assert!(
-        lane_of(&payer_lane)
-            != lane_of(&CostSignature {
-                value: Some(Value::Ground(principal_ground_v61(&payer.1.bytes))),
-            })
+        counts
+            .iter()
+            .any(|((lane, _), count)| *lane == alice_key && *count > 0),
+        "the plan counts the signed layer inside the data"
     );
+    assert!(counts
+        .keys()
+        .all(|(lane, _)| *lane == alice_key || *lane == deploy_lane));
+    let estimate = counts.values().sum::<u64>();
+    let gate = direct_gate(
+        &nodes[0],
+        &genesis,
+        &offer,
+        &genesis.genesis_block.body.state.post_state_hash,
+    )
+    .await
+    .expect("the check accepts the offer");
+    assert_eq!(gate.kind(), &OfferedEstimateKind::Complete);
+    assert_eq!(gate.bound_source(), NativeBoundSource::Certificate);
+    assert_eq!(
+        gate.estimate_phlo(),
+        estimate,
+        "B counts the demand of alice"
+    );
+    assert_eq!(gate.total_hold(), u128::from(estimate) * 2 + 1);
+    let (block, _) = super::offered_block(&mut nodes, 0, offer.clone()).await;
+    assert!(!block.body.deploys[0].is_failed());
+    let (decision, _) = accepted_with_one_decision(&mut nodes, &block, &offer).await;
+    assert_eq!(decision, decision_of(&gate));
 }

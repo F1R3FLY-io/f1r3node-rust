@@ -99,7 +99,8 @@ pub enum IncompleteReason {
     /// Added by G1-6 (DR-124): a lane outside the client lanes has known
     /// demand. The check holds only the client's demand (P1:2191-2200), so
     /// that demand leaves the estimate. The check of step G1-6 sets this
-    /// reason.
+    /// reason. Since the G1-6 fix, a client lane is a lane at whose purse a
+    /// source is located, or that a source permits for at least one class.
     ForeignLane,
 }
 
@@ -125,7 +126,9 @@ impl CostEstimate {
     /// Added by G1-6 (DR-124): the estimate of the client lanes alone. P1's
     /// acceptance protocol checks the client's demand only (P1:2191-2200),
     /// and a layer signed by another signature adds nothing to that demand
-    /// (P1:2002-2027). The check gives the client lanes. Every other lane
+    /// (P1:2002-2027). The check gives the client lanes: the deploy lane, the
+    /// lanes at whose purses the sources are located, and, since the G1-6
+    /// fix, the lanes that the sources permit. Every other lane
     /// leaves the estimate, and B counts the kept lanes with the formula of
     /// the analysis: weight times units times count, with an overflow that
     /// gives `u64::MAX`. An estimate that loses a counted lane is incomplete
@@ -201,6 +204,31 @@ impl CostEstimate {
             completeness,
         })
     }
+}
+
+/// Added by the G1-6 fix (DR-124): the lane key of a supply location. A lane
+/// key is the digest of the encoded supply channel of the lane's signature
+/// under the lane domain (`Sig::lane_hash`). A resource permission names its
+/// lane by that encoded channel, so the lane key of a permission is the
+/// digest of its location. The check uses it to find the lanes that a source
+/// permits. The digest charges one verification operation and the bytes that
+/// it reads before it reads them.
+pub fn location_lane_key(
+    location: &[u8],
+    host: &HostWorkBudget,
+) -> Result<SigKey, InterpreterError> {
+    let domain = crate::rust::interpreter::accounting::SIGNATURE_LANE_DOMAIN;
+    reserve(host, HostWorkDimension::VerificationOperations, 1)?;
+    reserve(
+        host,
+        HostWorkDimension::VerificationBytes,
+        byte_count(domain.len()).saturating_add(byte_count(location.len())),
+    )?;
+    let digest = crypto::rust::hash::blake2b256::Blake2b256::hash_parts([domain, location]);
+    digest
+        .as_slice()
+        .try_into()
+        .map_err(|_| InterpreterError::ReduceError("a lane digest is not 32 bytes".to_string()))
 }
 
 /// The per-message length bound of the pre-pass: a key, a length prefix and
