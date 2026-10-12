@@ -53,7 +53,10 @@ use rspace_plus_plus::rspace::merger::event_log_index::EventLogIndex;
 use rspace_plus_plus::rspace::merger::merging_logic::{conflict_reason, conflicts, depends};
 use rspace_plus_plus::rspace::trace::event::Event;
 use support::coverage::{assert_merge_reproduces, coverage};
-use support::family_programs::{program_with, Inner, Outer, STORED_FAMILIES};
+use support::family_programs::{
+    hashset_program, kit_deploys, program_with, reference_agent_creation, with_kit_names, Inner,
+    Outer, HASHSET_INNERS, HASHSET_UNIT_TAKE, KIT_NAMES, STORED_FAMILIES,
+};
 use support::merge::{index, merged_root, touching, without_channels};
 use support::native::{
     assert_reproduces, certify, footprint_channels, host_work, native_play, NativeChain, Played,
@@ -86,13 +89,6 @@ const OWN: &str = "rrs-p9-own";
 
 /// The public channel of the names that a `new` inside `use` makes.
 const MINTED: &str = "rrs-p9-minted";
-
-/// The reference agent: the example program of the repository, as the conformance kit runs it
-/// (`reified_agent_conformance.rs`).
-const REFERENCE_AGENT: &str = include_str!("../../examples/reified_rspaces/agent_hashmap_bag.rho");
-
-/// The comment that starts the demo of the reference agent.
-const DEMO_MARKER: &str = "  // Demo:";
 
 /// A send of `[label, value]` to the public channel [`OUT`].
 fn out(label: &str, value: &str) -> String { format!("@\"{OUT}\"!([\"{label}\", {value}])") }
@@ -953,28 +949,8 @@ async fn space_cross_block_merge_own_spaces() {
 
 // ─── The row of the reference agent ────────────────────────────────────────────────────────────
 
-/// The deploy that creates one instance of the reference agent and publishes it on
-/// `@"kit-agent"`, as the conformance kit does.
-fn reference_agent_creation() -> String {
-    let (definitions, _) = REFERENCE_AGENT
-        .split_once(DEMO_MARKER)
-        .expect("the reference agent marks its demo");
-    format!(
-        "{definitions}  for (space <- agentHashmapBag!?(\"default\")) {{ @\"kit-agent\"!(*space) }}\n}}\n"
-    )
-}
-
-/// The deploy that draws the names `x` and `y` from the agent space and publishes them on
-/// `@"kit-names"`, as the conformance kit does.
-const KIT_NAMES: &str = r#"new names in {
-  for (space <<- @"kit-agent") { use space { new x, y in { names!([*x, *y]) } } } |
-  for (@ns <- names) { @"kit-names"!(ns) }
-}"#;
-
-/// `body` with the names of the agent space bound to `x` and `y`.
-fn with_kit_names(body: &str) -> String {
-    format!("for (@[x, y] <<- @\"kit-names\") {{\n{body}\n}}")
-}
+// The reference agent, its kit names and `with_kit_names` moved to `support::family_programs`
+// (P9 step 3), so the P9 suites share them.
 
 /// Both branches call the reference agent of block 1 with a send on `x`. The agent keeps its
 /// messages in a state cell, an ordinary channel that each call consumes and produces again, so
@@ -1051,24 +1027,8 @@ async fn space_cross_block_merge_agent_calls_race_on_its_state() {
 
 // ─── Event coverage (A4) ───────────────────────────────────────────────────────────────────────
 
-/// The inner collections of the six HashSet families (`reified_hashset.rs`).
-const HASHSET_INNERS: [&str; 6] = ["bag", "queue", "stack", "set", "cell", "priorityqueue"];
-
-/// A deploy that creates a `seq` space `S` of the family `hashset:inner`, draws the names `x`
-/// and `y` from it, adds one unit to `x` through the handle and takes it
-/// (`reified_hashset.rs`, `hashset_program`).
-fn hashset_program(inner: &str) -> String {
-    format!(
-        r#"new factory(`rho:space:hashset:{inner}`), out in {{
-  for (S <- factory!?("seq")) {{
-    for (x <- S!?("gensym"); y <- S!?("gensym")) {{
-      S!?("produce", *x, []); for ( <- x) {{ out!(["took", 1]) }}
-    }}
-  }} |
-  for (@value <= out) {{ @"{OUT}"!(value) }}
-}}"#
-    )
-}
+// `HASHSET_INNERS` and `hashset_program` moved to `support::family_programs` (P9 step 3), so the
+// P9 suites share them.
 
 /// The merge of the log of each deploy over its pre-state gives its post-state (A4): the 24
 /// family programs with the qualifiers `default` and `temp`, the six HashSet families with
@@ -1087,7 +1047,7 @@ async fn space_event_coverage_debug_assert() {
     }
     for inner in HASHSET_INNERS {
         let label = format!("hashset:{inner}:seq");
-        let played = native_play(&hashset_program(inner), HASHSET_LIMIT).await;
+        let played = native_play(&hashset_program(inner, HASHSET_UNIT_TAKE), HASHSET_LIMIT).await;
         check_deploy(&played, &label);
         assert_eq!(labels(&played), expect(&["took"]), "{label}: the take");
     }
@@ -1109,14 +1069,7 @@ async fn space_event_coverage_debug_assert() {
         .await;
     }
     let mut chain = NativeChain::new().await;
-    let kit = [
-        reference_agent_creation(),
-        KIT_NAMES.to_string(),
-        with_kit_names("@x!(1, 2)"),
-        with_kit_names(&format!("for (@a, @b <- @x) {{ @\"{OUT}\"!([a, b]) }}")),
-        with_kit_names(&format!("for (@a <<- @y) {{ @\"{OUT}\"!(a) }}")),
-        with_kit_names("@y!(3)"),
-    ];
+    let kit = kit_deploys();
     for (step, term) in kit.iter().enumerate() {
         play_checked(&mut chain, term, &format!("kit-step-{step}"), LIMIT).await;
     }

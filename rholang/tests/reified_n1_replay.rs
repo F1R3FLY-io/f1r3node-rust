@@ -33,7 +33,10 @@ mod support;
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::{Expr, Par};
 use rspace_plus_plus::rspace::trace::event::Event;
-use support::family_programs::{program, space_program, Inner, Outer, JOIN};
+use support::family_programs::{
+    kit_deploys, program, reference_agent_creation, space_program, with_kit_names, Inner, Outer,
+    JOIN, KIT_NAMES,
+};
 use support::native::{
     assert_reproduces, certify, committed_evidence, host_work, replay_environment_from,
     run_twice_assert_canonical_equal, NativeChain, Played, AMPLE_LIMIT, OUT,
@@ -43,35 +46,8 @@ use support::session::error_codes;
 /// The phlo limit of every deploy of the suite.
 const LIMIT: u64 = AMPLE_LIMIT;
 
-/// The reference agent: the example program of the repository, as the conformance kit runs it
-/// (`reified_agent_conformance.rs`).
-const REFERENCE_AGENT: &str = include_str!("../../examples/reified_rspaces/agent_hashmap_bag.rho");
-
-/// The comment that starts the demo of the reference agent.
-const DEMO_MARKER: &str = "  // Demo:";
-
-/// The deploy that creates one instance of the reference agent and publishes it on
-/// `@"kit-agent"`, as the conformance kit does.
-fn reference_agent_creation() -> String {
-    let (definitions, _) = REFERENCE_AGENT
-        .split_once(DEMO_MARKER)
-        .expect("the reference agent marks its demo");
-    format!(
-        "{definitions}  for (space <- agentHashmapBag!?(\"default\")) {{ @\"kit-agent\"!(*space) }}\n}}\n"
-    )
-}
-
-/// The deploy that draws the names `x` and `y` from the agent space and publishes them on
-/// `@"kit-names"`, as the conformance kit does.
-const KIT_NAMES: &str = r#"new names in {
-  for (space <<- @"kit-agent") { use space { new x, y in { names!([*x, *y]) } } } |
-  for (@ns <- names) { @"kit-names"!(ns) }
-}"#;
-
-/// `body` with the names of the agent space bound to `x` and `y`.
-fn with_kit_names(body: &str) -> String {
-    format!("for (@[x, y] <<- @\"kit-names\") {{\n{body}\n}}")
-}
+// The reference agent, its kit names and `with_kit_names` moved to `support::family_programs`
+// (P9 step 3), so the P9 suites share them.
 
 /// A send of `[label, value]` to the public channel [`OUT`].
 fn out(label: &str, value: &str) -> String { format!("@\"{OUT}\"!([\"{label}\", {value}])") }
@@ -377,14 +353,7 @@ async fn n9_run_twice_assert_canonical_equal() {
         .collect();
     let terms: Vec<&str> = families.iter().map(String::as_str).collect();
     run_twice_assert_canonical_equal("rrs-p9-n9-families", &terms, LIMIT).await;
-    let kit = [
-        reference_agent_creation(),
-        KIT_NAMES.to_string(),
-        with_kit_names("@x!(1, 2)"),
-        with_kit_names(&format!("for (@a, @b <- @x) {{ @\"{OUT}\"!([a, b]) }}")),
-        with_kit_names(&format!("for (@a <<- @y) {{ @\"{OUT}\"!(a) }}")),
-        with_kit_names("@y!(3)"),
-    ];
+    let kit = kit_deploys();
     let terms: Vec<&str> = kit.iter().map(String::as_str).collect();
     run_twice_assert_canonical_equal("rrs-p9-n9-kit", &terms, LIMIT).await;
 }

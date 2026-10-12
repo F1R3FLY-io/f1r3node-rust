@@ -6658,6 +6658,100 @@ It adds no determinism to the fix, and the user kept it as the pgmcp follow-up `
 | The 40 checkers of the campaign, and the document lint | 40 passed |
 | I-14: the two empty-state-hash tests of `runtime_spec.rs` in release | 2 passed |
 
+#### 34.4.2 N2: the same records in every process
+
+N2 checks that a deploy gives the same result in every process (design v2, amendment A14).
+The test `n2_cross_process_post_state_equal` (`rholang/tests/reified_cross_process.rs`) starts its own binary twice, as the children `n2-a` and `n2-b`.
+Each child plays the deploy set in a fresh process over an in-memory store, and the parent plays the set twice in its own process.
+
+Each run writes one record for each deploy.
+A record holds the roots of the pre-state and the post-state, the outputs and the event log.
+It also holds the evidence bytes, the phlo and the host work of play.
+All four runs give equal records for each deploy.
+
+*Table 200. The deploy set of N2.*
+
+| Part | Deploys |
+|---|---|
+| The 24 family programs with the qualifier `default` | 24 |
+| The same programs with `temp` | 24 |
+| A VectorDB program on `hashmap` and on `vector`, with a list query and a waiter with a threshold | 2 |
+| The six HashSet families with `seq` | 6 |
+| The conformance kit of the reference agent | 6 |
+| Total | 62 |
+
+The children run the same test function as the parent, so they have the tokio worker count of the parent.
+The session charge of native execution depends on that count (finding F-47-2), so a child with another count would give other host work.
+The parent keeps the standard output of each child, so no test-harness line of a child reaches the output of the parent (`rholang/tests/support/process.rs`).
+
+#### 34.4.3 The replay of spaces across blocks
+
+The test `space_cross_block_replay` plays three blocks in a child `propose` over one LMDB store.
+A second child `validate` opens the store in another process, and it certifies each deploy once from its pre-state (amendment A16).
+The certification runs the journal check, the trace binding, native replay, the completeness check and the export.
+It must reach the post-state root of play with the phlo of play.
+The parent plays the blocks in its own process, and it compares every record of the child `propose` with its own.
+It also checks the deliveries of each family and of the agent.
+
+*Table 201. The blocks of the replay across blocks.*
+
+| Block | Deploys | Content |
+|---|---|---|
+| 1 | 30 | Each of the 26 families (the 24 families and the two VectorDB families) creates a durable space and draws four names. It stores records on `a`, parks a waiter on `b`, and puts the handle and the names on a public channel. The reference agent gets a space, its names, a stored message and a parked waiter. |
+| 2 | 28 | Each family takes a record of `a` and stores a new one, fires the waiter of block 1 on `b`, and creates and ends a `temp` space and a `seq` space. The waiter of the agent wakes, and a take runs. |
+| 3 | 28 | Each family runs a join of `c` and `d`, and each PathMap family makes a prefix delivery. The agent gets one call and one take. |
+
+Two rules of the suite come from native replay, which charges more host work than play ([decision 79](decision-register.md#decision-79)).
+
+1. Each family forwards its deliveries to a channel of its own. With one shared channel, the validation failed at the 48th deploy, `block 2 array:priorityqueue`: replay returned `HostWorkRejected`, and play had passed.
+2. Each deploy of the agent makes one call, as each step of the conformance kit does. Two calls of the reference agent in one deploy need more than the v6 limits in replay.
+
+A probe measured the first rule (`target/verification/reified-rspaces/p9/step3/probe-r4-growth.log`).
+It certified one deploy of block 2 at 64 times the v6 limits, after earlier deploys had put values on the shared channel.
+
+*Table 202. The replay host work of one deploy of block 2, as fractions of the v6 limits.*
+
+| Values on the shared channel | `SearchStateBytes` | `VerificationBytes` |
+|---|---|---|
+| 0 | 0.296 | 0.552 |
+| 20 | 0.420 | 0.644 |
+| 60 | 0.691 | 0.853 |
+| 120 | 1.083 | 1.151 |
+
+Play of the same deploy does not grow with the channel, and replay reaches the root of play in each case.
+This growth belongs to the replay costs that the cost-accounting work repairs (decision 79), and the pgmcp record M-47-1 holds the measurement.
+
+#### 34.4.4 R4: the debug wall time
+
+The recipes of the family RF9 run the cross-process suites in the debug profile, with a limit of 7,200 seconds and 24 GiB.
+R4 measures each test alone in that profile, with one test thread.
+
+*Table 203. The debug wall time and the peak memory of the cross-process suites.*
+
+| Test | Deploys | Wall time | Peak resident memory |
+|---|---|---|---|
+| `n2_cross_process_post_state_equal` | 62 in each of 4 runs | 102.9 s | 136,400 KB |
+| `space_cross_block_replay` | 86 played twice, and certified once | 51.8 s | 87,640 KB |
+
+The memory column is the peak resident set that `/usr/bin/time -v` reports for the test process.
+Both tests use less than 2 % of the time limit of RF9, so the suites keep the deploy counts of design v2.
+In the release profile, the two tests take 6.9 seconds together.
+The logs are `target/verification/reified-rspaces/p9/step3/r4-debug-*.log`.
+
+#### 34.4.5 The gates of step 3
+
+*Table 204. The gates of step 3.*
+
+| Gate | Result |
+|---|---|
+| `cargo test --release -p rholang --no-fail-fast`, with the fix of section 34.4.1 | 4,312 passed, 0 failed and 6 ignored, in 92 test binaries (Table 199) |
+| `cargo test --release -p rholang --test reified_cross_process` | 2 passed, in 6.9 seconds |
+| The two tests of Table 203 in the debug profile | 2 passed |
+| `cargo clippy -p rholang --lib --tests -- -D warnings` | No warning |
+| `rustfmt --check` of the changed and the new test files | No difference |
+| The 40 checkers of the campaign, and the document lint | 40 passed |
+| I-14: the two empty-state-hash tests of `runtime_spec.rs` in release | 2 passed |
+
 ## References
 
 <a id="ref-ch00"></a>[CH00] K. Claessen and J. Hughes, "QuickCheck: a lightweight tool for random testing of Haskell programs," in *Proceedings of the Fifth ACM SIGPLAN International Conference on Functional Programming (ICFP 2000)*, ACM, 2000, pp. 268–279. [doi:10.1145/351240.351266](https://doi.org/10.1145/351240.351266)

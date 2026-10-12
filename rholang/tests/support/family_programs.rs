@@ -283,3 +283,71 @@ for (@w <- b ~ ([0.0, 1.0]; threshold=0.9)) { out!(["fired", w]) }"#,
         touch: r#"for (@v <- a) { out!(["take", v]) } | use space { @[*b, 3]!(7) }"#,
     },
 ];
+
+// ─── The HashSet families and the reference agent (P9) ─────────────────────────────────────────
+
+/// The inner collections of the six HashSet families, in family-index order.
+pub const HASHSET_INNERS: [&str; 6] = ["bag", "queue", "stack", "set", "cell", "priorityqueue"];
+
+/// The body of [`hashset_program`] that adds one unit to `x` through the handle and takes it.
+pub const HASHSET_UNIT_TAKE: &str = r#"S!?("produce", *x, []); for ( <- x) { out!(["took", 1]) }"#;
+
+/// A deploy that creates a `seq` space `S` of the family `hashset:inner`, draws the names `x`
+/// and `y` of `S`, and runs `body` (`reified_hashset.rs`). The values on `out` go to the public
+/// channel [`OUT`].
+pub fn hashset_program(inner: &str, body: &str) -> String {
+    format!(
+        r#"new factory(`rho:space:hashset:{inner}`), out in {{
+  for (S <- factory!?("seq")) {{
+    for (x <- S!?("gensym"); y <- S!?("gensym")) {{
+      {body}
+    }}
+  }} |
+  for (@value <= out) {{ @"{OUT}"!(value) }}
+}}"#
+    )
+}
+
+/// The reference agent: the example program of the repository.
+pub const REFERENCE_AGENT: &str =
+    include_str!("../../../examples/reified_rspaces/agent_hashmap_bag.rho");
+
+/// The comment that starts the demo of the reference agent. The kit runs the definitions before
+/// it, without the demo.
+pub const DEMO_MARKER: &str = "  // Demo:";
+
+/// The deploy that creates one instance of the reference agent and publishes it on
+/// `@"kit-agent"`, as the conformance kit does (`reified_agent_conformance.rs`).
+pub fn reference_agent_creation() -> String {
+    let (definitions, _) = REFERENCE_AGENT
+        .split_once(DEMO_MARKER)
+        .expect("the reference agent marks its demo");
+    format!(
+        "{definitions}  for (space <- agentHashmapBag!?(\"default\")) {{ @\"kit-agent\"!(*space) }}\n}}\n"
+    )
+}
+
+/// The deploy that draws the names `x` and `y` from the agent space and publishes them on
+/// `@"kit-names"`, as the conformance kit does.
+pub const KIT_NAMES: &str = r#"new names in {
+  for (space <<- @"kit-agent") { use space { new x, y in { names!([*x, *y]) } } } |
+  for (@ns <- names) { @"kit-names"!(ns) }
+}"#;
+
+/// `body` with the names of the agent space bound to `x` and `y`.
+pub fn with_kit_names(body: &str) -> String {
+    format!("for (@[x, y] <<- @\"kit-names\") {{\n{body}\n}}")
+}
+
+/// The six deploys of a run of the conformance kit: the creation of the agent, its names, a send,
+/// a take, a parked peek and a send that wakes the peek. The values go to [`OUT`].
+pub fn kit_deploys() -> Vec<String> {
+    vec![
+        reference_agent_creation(),
+        KIT_NAMES.to_string(),
+        with_kit_names("@x!(1, 2)"),
+        with_kit_names(&format!("for (@a, @b <- @x) {{ @\"{OUT}\"!([a, b]) }}")),
+        with_kit_names(&format!("for (@a <<- @y) {{ @\"{OUT}\"!(a) }}")),
+        with_kit_names("@y!(3)"),
+    ]
+}

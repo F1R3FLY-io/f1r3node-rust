@@ -9115,7 +9115,7 @@
       ]
     },
     "p9": {
-      "description": "Phase P9, consensus integration (design v2, plan decision 80). It extends campaign and restates the edits and the new files of p8. Step 0 adds the backport of the DR-119 fix of bug 11004 from feature/cost-accounted-rho, commit 7ab849b56 (plan decision 81): the bucket locks of SystemVault.rho and their policy snapshot tests, the only approved casper/src change, and the new Rocq module and TLA configurations of that commit. Step 1 adds the shared merge and coverage support of the rholang suites, the legacy test inventory and its script, the N4 support files, and the test-port ledger checker. Step 2 adds the suites of N1 and N9 and of the merge across blocks. The fix of decision 83 (the creation job records a seq space) edits only campaign files. Its new file is the Unsafe control RecordInWindowUnsafe.cfg of SpaceCoordination.tla.",
+      "description": "Phase P9, consensus integration (design v2, plan decision 80). It extends campaign and restates the edits and the new files of p8. Step 0 adds the backport of the DR-119 fix of bug 11004 from feature/cost-accounted-rho, commit 7ab849b56 (plan decision 81): the bucket locks of SystemVault.rho and their policy snapshot tests, the only approved casper/src change, and the new Rocq module and TLA configurations of that commit. Step 1 adds the shared merge and coverage support of the rholang suites, the legacy test inventory and its script, the N4 support files, and the test-port ledger checker. Step 2 adds the suites of N1 and N9 and of the merge across blocks. The fix of decision 83 (the creation job records a seq space) edits only campaign files. Its new file is the Unsafe control RecordInWindowUnsafe.cfg of SpaceCoordination.tla. Step 3 adds the cross-process suites of N2 and of the replay across blocks, with the support of their child processes.",
       "extends": "campaign",
       "unchanged": [
         "**"
@@ -12636,7 +12636,9 @@
         "scripts/verify-reified/check-test-port-ledger.py",
         "rholang/tests/reified_cross_block_merge.rs",
         "rholang/tests/reified_n1_replay.rs",
-        "formal/tlaplus/reified_rspaces/RecordInWindowUnsafe.cfg"
+        "formal/tlaplus/reified_rspaces/RecordInWindowUnsafe.cfg",
+        "rholang/tests/support/process.rs",
+        "rholang/tests/reified_cross_process.rs"
       ]
     }
   }
