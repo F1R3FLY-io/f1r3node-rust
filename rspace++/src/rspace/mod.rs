@@ -21,6 +21,7 @@ pub mod replay_rspace_interface;
 pub mod errors;
 pub mod replay_rspace;
 pub mod merger;
+pub mod operation_context;
 pub mod reporting_rspace;
 pub mod reporting_transformer;
 pub mod metrics_constants;

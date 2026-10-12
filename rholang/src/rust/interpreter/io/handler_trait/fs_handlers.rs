@@ -9,7 +9,9 @@
 // # Status
 //
 // Migration complete: 27 trait-registered handlers + 1 trait-exempt
-// (`fs_remove_dir`, dispatched via its own stub in slice 5.44).
+// (`fs_remove_dir`, dispatched via `FsProcesses::fs_remove_dir`
+// method — real DD-RemoveDirReplyShape handler ported in slices
+// 5.136-5.141, URN registration swapped in slice 5.142).
 // See [`EXPECTED_MIGRATED_HANDLER_COUNT`] for the authoritative
 // count; [`EXPECTED_PER_FAMILY_HANDLER_COUNTS`] for the per-family
 // breakdown; [`EXPECTED_VERIFYING_HANDLER_COUNT`] +
