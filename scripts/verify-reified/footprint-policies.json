@@ -11070,6 +11070,1965 @@
         "docs/rspace/reified-rspaces/diagrams/54-tl-verification-pipeline.puml",
         "docs/rspace/reified-rspaces/diagrams/54-tl-verification-pipeline.svg"
       ]
+    },
+    "p10": {
+      "description": "Phase P10, the formal-verification closure, the documents, the examples, the benchmarks and the FIPS matrix (design v2, plan decision 85). It extends campaign and restates the edits and the new files of p9. Step S1 adds the aggregate gate scripts/check-reified-rspaces-ALL.sh and the tracked checker list scripts/verify-reified/checker-commands.txt.",
+      "extends": "campaign",
+      "unchanged": [
+        "**"
+      ],
+      "edits": [
+        {
+          "path": "rspace++/src/rspace/mod.rs",
+          "added_lines": [
+            "pub mod space_store_handle;"
+          ]
+        },
+        {
+          "path": "rspace++/src/rspace/rspace.rs",
+          "added_lines": [
+            "mod space_play;"
+          ]
+        },
+        {
+          "path": "rspace++/src/rspace/replay_rspace.rs",
+          "added_lines": [
+            "mod space_replay;"
+          ]
+        },
+        {
+          "path": "rspace++/src/rspace/reporting_rspace.rs",
+          "replaced_lines": [
+            [
+              "    replay_rspace: ReplayRSpace<C, P, A, K>,",
+              "    pub(crate) replay_rspace: ReplayRSpace<C, P, A, K>,"
+            ]
+          ]
+        },
+        {
+          "path": "scripts/audit/check-rocq-line-refs.sh",
+          "replaced_lines": [
+            [
+              "    \"${REPO}/formal/rocq/validator/theories\"",
+              "    \"${REPO}/formal/rocq/reified_rspaces/theories\""
+            ]
+          ],
+          "added_lines": [
+            "    # 2026-10-04: the validator tree no longer exists. Its entry now names the Reified RSpaces theories."
+          ]
+        },
+        {
+          "path": "rholang/src/rust/interpreter/util/mod.rs",
+          "replaced_blocks": [
+            [
+              [
+                "",
+                "pub fn evaluation_terms(par: &Par) -> Vec<GeneratedMessage> {"
+              ],
+              [
+                "",
+                "/// True when the reducer evaluates `expr` as a term of its process `Par`: a variable, a",
+                "/// method call, or a USE or NEWSPACE marker tuple (Reified RSpaces hook H1).",
+                "pub fn is_evaluated_process_expr(expr: &Expr) -> bool {",
+                "    match &expr.expr_instance {",
+                "        Some(ExprInstance::EVarBody(_)) | Some(ExprInstance::EMethodBody(_)) => true,",
+                "        Some(ExprInstance::ETupleBody(tuple)) => {",
+                "            models::rust::reified::encoding::is_process_marker_tuple(tuple)",
+                "        }",
+                "        _ => false,",
+                "    }",
+                "}",
+                "",
+                "pub fn evaluation_terms(par: &Par) -> Vec<GeneratedMessage> {"
+              ]
+            ],
+            [
+              [
+                "            .iter()",
+                "            .filter(|expr| {",
+                "                matches!(",
+                "                    expr.expr_instance,",
+                "                    Some(ExprInstance::EVarBody(_)) | Some(ExprInstance::EMethodBody(_))",
+                "                )",
+                "            })"
+              ],
+              [
+                "            .iter()",
+                "            .filter(|expr| is_evaluated_process_expr(expr))"
+              ]
+            ],
+            [
+              [
+                "            .into_iter()",
+                "            .filter(|expr| {",
+                "                matches!(",
+                "                    expr.expr_instance,",
+                "                    Some(ExprInstance::EVarBody(_)) | Some(ExprInstance::EMethodBody(_))",
+                "                )",
+                "            })"
+              ],
+              [
+                "            .into_iter()",
+                "            .filter(|expr| is_evaluated_process_expr(expr))"
+              ]
+            ]
+          ]
+        },
+        {
+          "path": "models/src/rust/mod.rs",
+          "added_lines": [
+            "pub mod reified;",
+            "pub mod space_factory_urn;"
+          ]
+        },
+        {
+          "path": "rholang/src/rust/interpreter/mod.rs",
+          "added_lines": [
+            "pub mod reified;",
+            "pub mod spaces;",
+            "pub mod tensor;"
+          ]
+        },
+        {
+          "path": "rholang/src/rust/interpreter/reduce.rs",
+          "added_lines": [
+            "                    ExprInstance::ETupleBody(t) => self.eval_marker(t, env, rand, authority).await,",
+            "        reified_hooks::reject_query_source(&subst)?;",
+            "    pub(crate) space_ctx: super::reified::scope::SpaceCtx,",
+            "    pub(crate) reified: Arc<super::reified::runtime::ReifiedRuntime>,",
+            "            space_ctx: Default::default(),",
+            "            reified: super::reified::runtime::unavailable(),"
+          ],
+          "replaced_lines": [
+            [
+              "        self.produce(",
+              "        self.reified_produce("
+            ],
+            [
+              "        self.consume(",
+              "        self.reified_consume("
+            ]
+          ],
+          "replaced_blocks": [
+            [
+              [
+                "#[cfg(test)]",
+                "#[path = \"reduce_economic_failure_tests.rs\"]"
+              ],
+              [
+                "#[path = \"reified/reducer_hooks.rs\"]",
+                "mod reified_hooks;",
+                "",
+                "#[cfg(test)]",
+                "#[path = \"reduce_economic_failure_tests.rs\"]"
+              ]
+            ],
+            [
+              [
+                "    pub async fn inj(&self, par: Par, rand: Blake2b512Random) -> Result<(), InterpreterError> {",
+                "        self.eval(par, &Env::new(), rand).await",
+                "    }"
+              ],
+              [
+                "    pub async fn inj(&self, par: Par, rand: Blake2b512Random) -> Result<(), InterpreterError> {",
+                "        let root = self.begin_root_evaluation();",
+                "        let result = self.eval(par, &Env::new(), rand).await;",
+                "        self.end_root_evaluation(root, result).await",
+                "    }"
+              ]
+            ],
+            [
+              [
+                "        let env = Env::new();",
+                "        let (result, summary, errors) = StackGrowingFuture {"
+              ],
+              [
+                "        let env = Env::new();",
+                "        let root = self.begin_root_evaluation();",
+                "        let (result, summary, errors) = StackGrowingFuture {"
+              ]
+            ],
+            [
+              [
+                "        .await;",
+                "        (self.finish_detached_errors(result, errors), summary)",
+                "    }"
+              ],
+              [
+                "        .await;",
+                "        let result = self.finish_detached_errors(result, errors);",
+                "        self.end_root_evaluation_observed(root, result, summary)",
+                "            .await",
+                "    }"
+              ]
+            ],
+            [
+              [
+                "        host_work: HostWorkBudget,",
+                "    ) -> Result<(), InterpreterError> {",
+                "        self.eval_with_host_work(par, &Env::new(), rand, host_work)",
+                "            .await",
+                "    }"
+              ],
+              [
+                "        host_work: HostWorkBudget,",
+                "    ) -> Result<(), InterpreterError> {",
+                "        let root = self.begin_root_evaluation();",
+                "        let result = self",
+                "            .eval_with_host_work(par, &Env::new(), rand, host_work)",
+                "            .await;",
+                "        self.end_root_evaluation(root, result).await",
+                "    }"
+              ]
+            ],
+            [
+              [
+                "    async fn eval_new(",
+                "        &self,",
+                "        new: &New,",
+                "        env: Env<Par>,",
+                "        mut rand: Blake2b512Random,",
+                "        authority: &CostAuthority,",
+                "    ) -> Result<(), InterpreterError> {",
+                "        // D3 (DR-9, OD-3): `new` (name allocation) is a non-COMM structural",
+                "        // reduction — DIAGNOSTIC only (metered for fidelity, 0 toward the",
+                "        // consensus consumed cost). §7.4 re-pins 9→8 precisely because the",
+                "        // `new` no longer counts toward the per-COMM consensus cost.",
+                "        self.metering",
+                "            .reserve_reduction(new_bindings_cost(new.bind_count as i64))?;",
+                "        match allocate_new_bindings(new, &env, &mut rand, &self.urn_map) {",
+                "            Ok(env) => {",
+                "                self.eval_with_authority(",
+                "                    unwrap_option_safe(new.p.clone())?,",
+                "                    &env,",
+                "                    rand,",
+                "                    authority.clone(),",
+                "                )",
+                "                .await",
+                "            }",
+                "            Err(e) => Err(e),",
+                "        }"
+              ],
+              [
+                "    async fn eval_new(",
+                "        &self,",
+                "        new: &New,",
+                "        env: Env<Par>,",
+                "        rand: Blake2b512Random,",
+                "        authority: &CostAuthority,",
+                "    ) -> Result<(), InterpreterError> {",
+                "        // D3 (DR-9, OD-3): `new` (name allocation) is a non-COMM structural",
+                "        // reduction — DIAGNOSTIC only (metered for fidelity, 0 toward the",
+                "        // consensus consumed cost). §7.4 re-pins 9→8 precisely because the",
+                "        // `new` no longer counts toward the per-COMM consensus cost.",
+                "        self.metering",
+                "            .reserve_reduction(new_bindings_cost(new.bind_count as i64))?;",
+                "        self.reified_new(new, env, rand, authority).await"
+              ]
+            ]
+          ]
+        },
+        {
+          "path": "rholang/src/rust/interpreter/deterministic_reduction.rs",
+          "added_lines": [
+            "#[path = \"reified/schedule.rs\"]",
+            "pub(crate) mod reified_schedule;",
+            "    Space(reified_schedule::SpaceIntent),",
+            "    Space(OperationOrder, reified_schedule::SpaceDelivery),",
+            "            Self::Space(space) => Completion::Space(order, space.reject(error)),",
+            "            Self::Space(order, _) => order,",
+            "            Self::Space(_, delivery) => delivery.deliver(),",
+            "            Intent::Space(space) => space.extend_footprint(&mut footprint, &self.budget),",
+            "            Intent::Space(space) => space.execute(self, order).await,"
+          ],
+          "replaced_lines": [
+            [
+              "    async fn enter_boundary(&self) -> OwnedRwLockWriteGuard<()> {",
+              "    pub(crate) async fn enter_boundary(&self) -> OwnedRwLockWriteGuard<()> {"
+            ]
+          ]
+        },
+        {
+          "path": "rholang/src/rust/interpreter/rho_runtime.rs",
+          "added_lines": [
+            "use rspace_plus_plus::rspace::space_store_handle::SpaceTxnHost;",
+            "use super::reified;",
+            "    reified_runtime: Arc<reified::runtime::ReifiedRuntime>,",
+            "        space_ctx: Default::default(),",
+            "        reified: reified_runtime,",
+            "    let native_space_runtime = reified::runtime::native_replay();",
+            "    reified::system_processes::register(extra_system_processes, &native_space_runtime);",
+            "        native_space_runtime,",
+            "    let space_runtime = reified::runtime::for_host(rspace.clone(), cost.clone());",
+            "    reified::system_processes::register(extra_system_processes, &space_runtime);",
+            "        space_runtime,",
+            "    native_space_runtime.bind_native_replay(session.space_store(cost.clone())?, cost.clone())?;",
+            "        self.reducer.reified.settle_mirror_journal(&result);"
+          ],
+          "added_line_counts": [
+            [
+              "        + SpaceTxnHost<Par, BindPattern, ListParWithRandom, TaggedContinuation>",
+              6
+            ]
+          ],
+          "replaced_lines": [
+            [
+              "        rspace.clone(),",
+              "        reified::execution::wrap(rspace.clone(), &reified_runtime, &reducer_cell),"
+            ]
+          ]
+        },
+        {
+          "path": "Cargo.toml",
+          "replaced_blocks": [
+            [
+              [
+                "debug = true",
+                ""
+              ],
+              [
+                "debug = true",
+                "",
+                "[patch.\"https://github.com/F1R3FLY-io/rholang-rs\"]",
+                "rholang-parser = { path = \"../rholang-rs-reified-rspaces/rholang-parser\" }",
+                ""
+              ]
+            ]
+          ]
+        },
+        {
+          "path": "Cargo.lock",
+          "replaced_blocks": [
+            [
+              [
+                "name = \"rholang-parser\"",
+                "version = \"0.1.0\"",
+                "source = \"git+https://github.com/F1R3FLY-io/rholang-rs?rev=02cef80d32214ecdac3ee7d3b91c3786a34174d5#02cef80d32214ecdac3ee7d3b91c3786a34174d5\""
+              ],
+              [
+                "name = \"rholang-parser\"",
+                "version = \"0.1.0\""
+              ]
+            ],
+            [
+              [
+                "name = \"rholang-tree-sitter\"",
+                "version = \"0.1.2\"",
+                "source = \"git+https://github.com/F1R3FLY-io/rholang-rs?rev=02cef80d32214ecdac3ee7d3b91c3786a34174d5#02cef80d32214ecdac3ee7d3b91c3786a34174d5\""
+              ],
+              [
+                "name = \"rholang-tree-sitter\"",
+                "version = \"0.1.2\""
+              ]
+            ],
+            [
+              [
+                "name = \"rholang-tree-sitter-proc-macro\"",
+                "version = \"0.1.2\"",
+                "source = \"git+https://github.com/F1R3FLY-io/rholang-rs?rev=02cef80d32214ecdac3ee7d3b91c3786a34174d5#02cef80d32214ecdac3ee7d3b91c3786a34174d5\""
+              ],
+              [
+                "name = \"rholang-tree-sitter-proc-macro\"",
+                "version = \"0.1.2\""
+              ]
+            ]
+          ]
+        },
+        {
+          "path": "rholang/src/rust/interpreter/compiler/normalize.rs",
+          "added_line_counts": [
+            [
+              "            params,",
+              2
+            ]
+          ],
+          "replaced_blocks": [
+            [
+              [
+                "            normalize_p_send(channel, send_type, inputs, input, _env, parser)"
+              ],
+              [
+                "            normalize_p_send(",
+                "                channel,",
+                "                send_type,",
+                "                inputs,",
+                "                params.as_ref(),",
+                "                input,",
+                "                _env,",
+                "                parser,",
+                "            )"
+              ]
+            ],
+            [
+              [
+                "            normalize_p_send_sync(channel, inputs, cont, &proc.span, input, _env, parser)"
+              ],
+              [
+                "            normalize_p_send_sync(",
+                "                channel,",
+                "                inputs,",
+                "                params.as_ref(),",
+                "                cont,",
+                "                &proc.span,",
+                "                input,",
+                "                _env,",
+                "                parser,",
+                "            )"
+              ]
+            ],
+            [
+              [
+                "            normalize_p_new(decls, proc, input, _env, parser)"
+              ],
+              [
+                "            normalize_p_new(decls, proc, input, _env, parser)",
+                "        }",
+                "",
+                "        // UseBlock - handle the Reified RSpaces `use s { P }` block",
+                "        Proc::UseBlock { space, proc } => {",
+                "            use crate::rust::interpreter::compiler::normalizer::processes::p_use_block_normalizer::normalize_p_use_block;",
+                "            normalize_p_use_block(space, proc, input, _env, parser)",
+                "        }",
+                "",
+                "        // FreeTheory - handle the Reified RSpaces theory reference `free Th(args)`",
+                "        Proc::FreeTheory { name, args } => {",
+                "            use crate::rust::interpreter::compiler::normalizer::processes::p_free_theory_normalizer::normalize_p_free_theory;",
+                "            normalize_p_free_theory(name, args, input, _env, parser)"
+              ]
+            ]
+          ]
+        },
+        {
+          "path": "rholang/src/rust/interpreter/compiler/normalizer/processes/mod.rs",
+          "added_lines": [
+            "pub mod p_free_theory_normalizer;",
+            "pub mod p_use_block_normalizer;",
+            "pub mod reified_syntax;"
+          ]
+        },
+        {
+          "path": "rholang/src/rust/interpreter/compiler/normalizer/processes/p_input_normalizer.rs",
+          "added_lines": [
+            "                                        space: None,",
+            "                                            params.as_deref(),",
+            "            bind_queries: Vec<Option<&'ast rholang_parser::ast::QuerySpec<'ast>>>,"
+          ],
+          "added_line_counts": [
+            [
+              "            query_spec: None,",
+              6
+            ]
+          ],
+          "replaced_lines": [
+            [
+              "                Bind::Linear { lhs, rhs } => {",
+              "                Bind::Linear { lhs, rhs, .. } => {"
+            ],
+            [
+              "            for (name, signature) in sources {",
+              "            for ((name, signature), query) in sources.into_iter().zip(bind_queries) {"
+            ]
+          ],
+          "replaced_blocks": [
+            [
+              [
+                "                        Bind::Linear { lhs, rhs } | Bind::Signed { lhs, rhs, .. } => {"
+              ],
+              [
+                "                        Bind::Linear { lhs, rhs, .. } | Bind::Signed { lhs, rhs, .. } => {",
+                "                            check_query_source(bind)?;"
+              ]
+            ],
+            [
+              [
+                "                                    let rhs = Source::Simple { name: *name };",
+                "                                    list_linear_bind.push(match signature {",
+                "                                        Some(sig) => Bind::Signed { lhs, rhs, sig },",
+                "                                        None => Bind::Linear { lhs, rhs },"
+              ],
+              [
+                "                                    let rhs = Source::Simple { name: *name };",
+                "                                    list_linear_bind.push(match signature {",
+                "                                        Some(sig) => Bind::Signed { lhs, rhs, sig },",
+                "                                        None => Bind::Linear {",
+                "                                            lhs,",
+                "                                            rhs,",
+                "                                            query_spec: None,",
+                "                                        },"
+              ]
+            ],
+            [
+              [
+                "                                Source::SendReceive { name, inputs, .. } => {"
+              ],
+              [
+                "                                Source::SendReceive {",
+                "                                    name,",
+                "                                    inputs,",
+                "                                    params,",
+                "                                } => {"
+              ]
+            ],
+            [
+              [
+                "                                    };",
+                "                                    list_linear_bind.push(match signature {",
+                "                                        Some(sig) => Bind::Signed { lhs, rhs, sig },",
+                "                                        None => Bind::Linear { lhs, rhs },"
+              ],
+              [
+                "                                    };",
+                "                                    list_linear_bind.push(match signature {",
+                "                                        Some(sig) => Bind::Signed { lhs, rhs, sig },",
+                "                                        None => Bind::Linear {",
+                "                                            lhs,",
+                "                                            rhs,",
+                "                                            query_spec: None,",
+                "                                        },"
+              ]
+            ],
+            [
+              [
+                "                                        proc: parser.ast_builder().alloc_send(",
+                "                                            rholang_parser::ast::SendType::Single,"
+              ],
+              [
+                "                                        proc: alloc_desugared_send(",
+                "                                            parser,"
+              ]
+            ],
+            [
+              [
+                "        let processed_sources = process_sources(sources, input.clone(), env, parser)?;"
+              ],
+              [
+                "        let bind_queries = flat_receipts.iter().map(|bind| bind.query_spec()).collect();",
+                "        let processed_sources = process_sources(sources, bind_queries, input.clone(), env, parser)?;"
+              ]
+            ],
+            [
+              [
+                "use crate::rust::interpreter::compiler::normalizer::name_normalize_matcher::normalize_name;"
+              ],
+              [
+                "use crate::rust::interpreter::compiler::normalizer::name_normalize_matcher::normalize_name;",
+                "use crate::rust::interpreter::compiler::normalizer::processes::reified_syntax::{",
+                "    alloc_desugared_send, check_query_source, normalize_bind_source,",
+                "};"
+              ]
+            ],
+            [
+              [
+                "                current_known_free = updated_known_free;"
+              ],
+              [
+                "                current_known_free = updated_known_free;",
+                "                let (par, query_known_free) = normalize_bind_source(",
+                "                    par,",
+                "                    query,",
+                "                    &input.bound_map_chain,",
+                "                    current_known_free,",
+                "                    env,",
+                "                    parser,",
+                "                )?;",
+                "                current_known_free = query_known_free;"
+              ]
+            ]
+          ]
+        },
+        {
+          "path": "rholang/src/rust/interpreter/compiler/normalizer/processes/p_let_normalizer.rs",
+          "added_lines": [
+            "                    space: None,"
+          ],
+          "added_line_counts": [
+            [
+              "                    query_spec: None,",
+              2
+            ]
+          ]
+        },
+        {
+          "path": "rholang/src/rust/interpreter/compiler/normalizer/processes/p_match_normalizer.rs",
+          "added_line_counts": [
+            [
+              "            query_spec: None,",
+              2
+            ]
+          ]
+        },
+        {
+          "path": "rholang/src/rust/interpreter/compiler/normalizer/processes/p_new_normalizer.rs",
+          "added_line_counts": [
+            [
+              "                space: None,",
+              8
+            ]
+          ],
+          "replaced_lines": [
+            [
+              "            NameDecl { id, uri: None } => Ok((",
+              "            NameDecl { id, uri: None, .. } => Ok(("
+            ],
+            [
+              "            free_map: input.free_map.clone(),",
+              "            free_map: annotations_free_map,"
+            ],
+            [
+              "        par: prepend_new(input.par.clone(), result_new),",
+              "        par,"
+            ]
+          ],
+          "replaced_blocks": [
+            [
+              [
+                "            NameDecl { id, uri: Some(urn) } => Ok(("
+              ],
+              [
+                "            NameDecl {",
+                "                id, uri: Some(urn), ..",
+                "            } => Ok(("
+              ]
+            ],
+            [
+              [
+                "use crate::rust::interpreter::compiler::normalize::{normalize_ann_proc, VarSort};"
+              ],
+              [
+                "use crate::rust::interpreter::compiler::normalize::{normalize_ann_proc, VarSort};",
+                "use crate::rust::interpreter::compiler::normalizer::processes::reified_syntax::{",
+                "    normalize_space_annotations, push_space_annotated_new,",
+                "};"
+              ]
+            ],
+            [
+              [
+                "    let new_count: usize = new_env.get_count() - input.bound_map_chain.get_count();",
+                ""
+              ],
+              [
+                "    let new_count: usize = new_env.get_count() - input.bound_map_chain.get_count();",
+                "",
+                "    let (space_annotations, annotations_free_map) = normalize_space_annotations(",
+                "        decls,",
+                "        &input.bound_map_chain,",
+                "        input.free_map.clone(),",
+                "        env,",
+                "        parser,",
+                "    )?;",
+                ""
+              ]
+            ],
+            [
+              [
+                "    };",
+                ""
+              ],
+              [
+                "    };",
+                "",
+                "    let par = match space_annotations {",
+                "        Some(annotations) => push_space_annotated_new(input.par.clone(), result_new, annotations)?,",
+                "        None => prepend_new(input.par.clone(), result_new),",
+                "    };",
+                ""
+              ]
+            ]
+          ]
+        },
+        {
+          "path": "rholang/src/rust/interpreter/compiler/normalizer/processes/p_send_normalizer.rs",
+          "added_lines": [
+            "use crate::rust::interpreter::compiler::normalizer::processes::reified_syntax::normalize_send_params;",
+            "    params: Option<&'ast HyperparamList<'ast>>,"
+          ],
+          "replaced_lines": [
+            [
+              "use rholang_parser::ast::{Name, SendType};",
+              "use rholang_parser::ast::{HyperparamList, Name, SendType};"
+            ]
+          ],
+          "replaced_blocks": [
+            [
+              [
+                "        acc.3 = acc.3 || proc_match_result.par.connective_used;"
+              ],
+              [
+                "        acc.3 = acc.3 || proc_match_result.par.connective_used;",
+                "    }",
+                "",
+                "    let (trailing_params, params_free_map) =",
+                "        normalize_send_params(params, &input.bound_map_chain, acc.1.free_map, env, parser)?;",
+                "    acc.1.free_map = params_free_map;",
+                "    if let Some(params_par) = trailing_params {",
+                "        acc.2 = union(acc.2, params_par.locally_free.clone());",
+                "        acc.3 = acc.3 || params_par.connective_used;",
+                "        acc.0.push(params_par);"
+              ]
+            ]
+          ]
+        },
+        {
+          "path": "rholang/src/rust/interpreter/compiler/normalizer/processes/p_send_sync_normalizer.rs",
+          "added_lines": [
+            "use crate::rust::interpreter::compiler::normalizer::processes::reified_syntax::alloc_desugared_send;",
+            "    params: Option<&'ast HyperparamList<'ast>>,",
+            "            query_spec: None,",
+            "        space: None,"
+          ],
+          "replaced_lines": [
+            [
+              "use rholang_parser::ast::{AnnProc, Bind, Id, Name, SendType, SyncSendCont};",
+              "use rholang_parser::ast::{AnnProc, Bind, HyperparamList, Id, Name, SyncSendCont};"
+            ]
+          ],
+          "replaced_blocks": [
+            [
+              [
+                "            proc: parser",
+                "                .ast_builder()",
+                "                .alloc_send(SendType::Single, *channel, &listproc),"
+              ],
+              [
+                "            proc: alloc_desugared_send(parser, *channel, &listproc, params),"
+              ]
+            ],
+            [
+              [
+                "        let result =",
+                "            normalize_p_send_sync(&channel, &messages, &cont, &span, inputs(), &env, &parser);"
+              ],
+              [
+                "        let result = normalize_p_send_sync(",
+                "            &channel,",
+                "            &messages,",
+                "            None,",
+                "            &cont,",
+                "            &span,",
+                "            inputs(),",
+                "            &env,",
+                "            &parser,",
+                "        );"
+              ]
+            ]
+          ]
+        },
+        {
+          "path": "rholang/src/rust/interpreter/compiler/normalizer/processes/p_var_ref_normalizer.rs",
+          "added_lines": [
+            "            query_spec: None,"
+          ]
+        },
+        {
+          "path": "rholang/src/rust/interpreter/test_utils/par_builder_util.rs",
+          "added_lines": [
+            "            space: None,"
+          ],
+          "replaced_blocks": [
+            [
+              [
+                "                Var::Id(id) => NameDecl { id, uri: None },"
+              ],
+              [
+                "                Var::Id(id) => NameDecl {",
+                "                    id,",
+                "                    space: None,",
+                "                    uri: None,",
+                "                },"
+              ]
+            ],
+            [
+              [
+                "                    },"
+              ],
+              [
+                "                    },",
+                "                    space: None,"
+              ]
+            ]
+          ]
+        },
+        {
+          "path": "rspace++/src/rspace/replay_rspace/native_session.rs",
+          "added_lines": [
+            "pub mod space;"
+          ]
+        },
+        {
+          "path": "rholang/src/rust/interpreter/accounting/native_runtime/checked_operations/trace/replay/session/execution.rs",
+          "replaced_blocks": [
+            [
+              [
+                "use rspace_plus_plus::rspace::errors::RSpaceError;",
+                "use rspace_plus_plus::rspace::trace::event::Produce;"
+              ],
+              [
+                "use rspace_plus_plus::rspace::errors::RSpaceError;",
+                "use rspace_plus_plus::rspace::replay_rspace::native_session::space::NativeSpaceHost;",
+                "use rspace_plus_plus::rspace::rspace_interface::RSpaceOperationSource;",
+                "use rspace_plus_plus::rspace::space_store_handle::SpaceStoreHandle;",
+                "use rspace_plus_plus::rspace::trace::event::Produce;"
+              ]
+            ],
+            [
+              [
+                "};",
+                ""
+              ],
+              [
+                "};",
+                "use crate::rust::interpreter::spaces::agent::ParSpaceStore;",
+                ""
+              ]
+            ],
+            [
+              [
+                "        }))",
+                "    }"
+              ],
+              [
+                "        }))",
+                "    }",
+                "",
+                "    /// The space store of this session for the Reified RSpaces runtime of native replay",
+                "    /// (decision 47). A space operation gets its introduction authority from `budget`, as",
+                "    /// `NativeExecution` gives one to a host operation.",
+                "    pub(crate) fn space_store(",
+                "        self: &Arc<Self>,",
+                "        budget: RuntimeBudget,",
+                "    ) -> Result<ParSpaceStore, RSpaceError> {",
+                "        let host = NativeSpaceHost::new(",
+                "            Arc::clone(self),",
+                "            |session: &Self| &session.inner,",
+                "            Arc::new(move |source: RSpaceOperationSource<'_>| {",
+                "                let (identity, kind) = match source {",
+                "                    RSpaceOperationSource::Produce(produce) => (",
+                "                        produce_introduction_identity(produce),",
+                "                        AuthorityByteEventKind::ProduceIntroduction,",
+                "                    ),",
+                "                    RSpaceOperationSource::Consume(consume) => (",
+                "                        consume_introduction_identity(consume),",
+                "                        AuthorityByteEventKind::ConsumeIntroduction,",
+                "                    ),",
+                "                };",
+                "                budget",
+                "                    .introduction_authority(identity, kind)",
+                "                    .map_err(Into::into)",
+                "            }),",
+                "        )?;",
+                "        Ok(SpaceStoreHandle::new(host))",
+                "    }"
+              ]
+            ]
+          ]
+        },
+        {
+          "path": "rholang/src/rust/interpreter/system_processes.rs",
+          "added_lines": [
+            "        crate::rust::interpreter::reified::system_channels::EMBED_BODY_REF,",
+            "        crate::rust::interpreter::reified::system_channels::ANN_BODY_REF,"
+          ]
+        },
+        {
+          "path": "node/src/rust/runtime/setup.rs",
+          "replaced_blocks": [
+            [
+              [
+                "",
+                "    // Clone trigger_propose_f_opt before passing to api_servers since we'll use it later for web_api, admin_web_api, and return value"
+              ],
+              [
+                "",
+                "    // The mirror reconciler of the Reified VectorDB spaces (P6 step 7c, decision 61). It reads the",
+                "    // finalized state through read-only calls and writes only the ChromaDB mirror of the node.",
+                "    {",
+                "        use rholang::rust::interpreter::reified::mirror_reconciler::{spawn, ClosureState};",
+                "        use rholang::rust::interpreter::rho_runtime::RhoRuntime;",
+                "        use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;",
+                "",
+                "        let blocks = block_store.clone();",
+                "        let runtimes = runtime_manager.clone();",
+                "        spawn(",
+                "            &event_publisher,",
+                "            Arc::new(ClosureState::new(",
+                "                move |hash: Vec<u8>| {",
+                "                    let block = blocks.get(&BlockHash::from(hash));",
+                "                    async move {",
+                "                        block.map_err(|error| error.to_string()).map(|block| {",
+                "                            block.map(|block| {",
+                "                                Blake2b256Hash::from_bytes_prost(&block.body.state.post_state_hash)",
+                "                            })",
+                "                        })",
+                "                    }",
+                "                },",
+                "                move |root: Blake2b256Hash| {",
+                "                    let runtimes = runtimes.clone();",
+                "                    async move {",
+                "                        let mut runtime = runtimes",
+                "                            .spawn_runtime()",
+                "                            .await",
+                "                            .map_err(|error| error.to_string())?;",
+                "                        runtime",
+                "                            .reset(&root)",
+                "                            .await",
+                "                            .map_err(|error| error.to_string())?;",
+                "                        Ok(runtime)",
+                "                    }",
+                "                },",
+                "            )),",
+                "        );",
+                "    }",
+                "",
+                "    // Clone trigger_propose_f_opt before passing to api_servers since we'll use it later for web_api, admin_web_api, and return value"
+              ]
+            ]
+          ]
+        },
+        {
+          "path": "docker/shard.yml",
+          "replaced_blocks": [
+            [
+              [
+                "    - f1r3fly",
+                "  environment:",
+                "    - OPENAI_ENABLED=${OPENAI_ENABLED:-false}",
+                "    # Limit glibc arena proliferation and return freed heap pages faster."
+              ],
+              [
+                "    - f1r3fly",
+                "  # A map, so each node merges it with its own CHROMA_DATABASE.",
+                "  environment: &rnode-environment",
+                "    OPENAI_ENABLED: ${OPENAI_ENABLED:-false}",
+                "    # Limit glibc arena proliferation and return freed heap pages faster."
+              ]
+            ],
+            [
+              [
+                "    # Limit glibc arena proliferation and return freed heap pages faster.",
+                "    - MALLOC_ARENA_MAX=2",
+                "    - MALLOC_TRIM_THRESHOLD_=131072",
+                "    - MALLOC_MMAP_THRESHOLD_=131072",
+                "    # Passed only when set, so logging.filter in the node config applies by default."
+              ],
+              [
+                "    # Limit glibc arena proliferation and return freed heap pages faster.",
+                "    MALLOC_ARENA_MAX: \"2\"",
+                "    MALLOC_TRIM_THRESHOLD_: \"131072\"",
+                "    MALLOC_MMAP_THRESHOLD_: \"131072\"",
+                "    # Passed only when set, so logging.filter in the node config applies by default."
+              ]
+            ],
+            [
+              [
+                "    # Passed only when set, so logging.filter in the node config applies by default.",
+                "    - RUST_LOG",
+                "  logging:"
+              ],
+              [
+                "    # Passed only when set, so logging.filter in the node config applies by default.",
+                "    RUST_LOG:",
+                "    # The ChromaDB server of the mirror of the Reified VectorDB spaces (profile chromadb).",
+                "    # A node built without the chromadb feature ignores it.",
+                "    CHROMA_ENDPOINT: ${CHROMA_ENDPOINT:-http://chroma-db:8000}",
+                "  logging:"
+              ]
+            ],
+            [
+              [
+                "    container_name: ${BOOTSTRAP_HOST:-rnode.bootstrap}",
+                "    command:"
+              ],
+              [
+                "    container_name: ${BOOTSTRAP_HOST:-rnode.bootstrap}",
+                "    environment:",
+                "      <<: *rnode-environment",
+                "      # Each node keeps its own mirror database.",
+                "      CHROMA_DATABASE: rnode-bootstrap",
+                "    command:"
+              ]
+            ],
+            [
+              [
+                "    profiles: [\"chromadb\"]",
+                "    image: chromadb/chroma",
+                "    networks: [f1r3fly]"
+              ],
+              [
+                "    profiles: [\"chromadb\"]",
+                "    # Pinned by digest (server 1.0.0), so the mirror and its live tests run one server version.",
+                "    image: chromadb/chroma@sha256:1e0b73a187a28757c572acba508c46f48c9e8b0acaf5c20e6d95cdedce1acdf6",
+                "    networks: [f1r3fly]"
+              ]
+            ],
+            [
+              [
+                "    container_name: ${VALIDATOR1_HOST:-rnode.validator1}",
+                "    command:"
+              ],
+              [
+                "    container_name: ${VALIDATOR1_HOST:-rnode.validator1}",
+                "    environment:",
+                "      <<: *rnode-environment",
+                "      # Each node keeps its own mirror database.",
+                "      CHROMA_DATABASE: rnode-validator1",
+                "    command:"
+              ]
+            ],
+            [
+              [
+                "    container_name: ${VALIDATOR2_HOST:-rnode.validator2}",
+                "    command:"
+              ],
+              [
+                "    container_name: ${VALIDATOR2_HOST:-rnode.validator2}",
+                "    environment:",
+                "      <<: *rnode-environment",
+                "      # Each node keeps its own mirror database.",
+                "      CHROMA_DATABASE: rnode-validator2",
+                "    command:"
+              ]
+            ],
+            [
+              [
+                "    container_name: ${VALIDATOR3_HOST:-rnode.validator3}",
+                "    command:"
+              ],
+              [
+                "    container_name: ${VALIDATOR3_HOST:-rnode.validator3}",
+                "    environment:",
+                "      <<: *rnode-environment",
+                "      # Each node keeps its own mirror database.",
+                "      CHROMA_DATABASE: rnode-validator3",
+                "    command:"
+              ]
+            ],
+            [
+              [
+                "    container_name: ${READONLY_HOST:-rnode.readonly}",
+                "    command:"
+              ],
+              [
+                "    container_name: ${READONLY_HOST:-rnode.readonly}",
+                "    environment:",
+                "      <<: *rnode-environment",
+                "      # Each node keeps its own mirror database.",
+                "      CHROMA_DATABASE: rnode-readonly",
+                "    command:"
+              ]
+            ]
+          ]
+        },
+        {
+          "path": "rholang/src/rust/interpreter/interpreter.rs",
+          "added_lines": [
+            "        reducer.reified.settle_mirror_journal(&evaluation_result);"
+          ]
+        },
+        {
+          "path": "docs/rholang/chromadb.md",
+          "replaced_blocks": [
+            [
+              [
+                "  deleteEntries!(\"foo\", [ \"doc1\" ], *retCh) |",
+                "  for(@res <- retCh) {",
+                "      stdout!(res)",
+                "  }",
+                "}",
+                "```"
+              ],
+              [
+                "  deleteEntries!(\"foo\", [ \"doc1\" ], *retCh) |",
+                "  for(@res <- retCh) {",
+                "      stdout!(res)",
+                "  }",
+                "}",
+                "```",
+                "",
+                "## ChromaDB as the search backend of Reified VectorDB spaces",
+                "",
+                "Phase P6 of Reified RSpaces adds the VectorDB spaces `rho:space:hashmap:vectordb` and `rho:space:vector:vectordb`.",
+                "A VectorDB space can keep a copy of its records in ChromaDB, its mirror, and answer advisory queries from it.",
+                "This section explains how the mirror works and how to run a node with it.",
+                "The rules are in the [Reified RSpaces specification](../rspace/reified-rspaces/specification.md#10-the-chromadb-mirror), and the [design](../rspace/reified-rspaces/design.md#n16-phase-p6-the-chromadb-search-backend) explains the code.",
+                "",
+                "The mirror differs from the `rho:chroma:*` channels above in one main point: it never decides a consensus result.",
+                "The exact engine of the space selects every record that a receive takes, and the mirror only gives hints.",
+                "So a node with a stale mirror, or with no mirror, computes the same state as every other node.",
+                "",
+                "### The three layers",
+                "",
+                "A VectorDB space has three layers:",
+                "",
+                "1. The frontend: the factory, the sends with the param `embedding`, and the receives with similarity queries.",
+                "2. RSpace: the store of the consensus records, with the state root, replay, merges and LFS.",
+                "3. ChromaDB: an optional mirror of the records on each node, which answers the advisory query `rho:vectordb:ann`.",
+                "",
+                "A space has a mirror when its factory call names `mirror = \"chroma\"`.",
+                "The space must have the default qualifier and a metric that ChromaDB indexes: `cosine`, `dot` or `euclidean`.",
+                "",
+                "### Embeddings and advisory queries",
+                "",
+                "Two system processes connect a program to the services of a node.",
+                "Each one takes the reply channel first and replies `[true, …]` or `[false, code, detail]`.",
+                "A call with send params aborts the deploy with `ParamsUnsupported`, and a persistent call aborts it with `PersistentOpCall`.",
+                "",
+                "- `rho:vectordb:embed` embeds one text, or a list of at most 64 texts with at most 64 KiB of text. It replies `[true, vector, model]`, or `[true, [vector…], model]` for a list. The model of a node is `all-MiniLM-L6-v2`, with 384 dimensions.",
+                "- `rho:vectordb:ann` takes a mirrored space, a channel of the space, a query and the options `{\"k\": k}`. It replies `[true, ids, distances, watermark]`: the ids of at most $`k`$ nearest records, their distances, and the last finalized block that the mirror reflects.",
+                "",
+                "The failure codes of `embed` are `BadArgument`, `EmbeddingRateLimited`, `EmbeddingUnavailable` and `NonFiniteEmbedding`.",
+                "The failure codes of `ann` are `NotAVectorDbSpace`, `MirrorDisabled`, `DimensionMismatch`, `BadArgument`, `InvalidOption` and `MirrorUnavailable`.",
+                "A text query of `ann` can also fail with the codes of the embedder.",
+                "",
+                "Both processes are recorded processes.",
+                "The node records each reply, a failure reply included, and replay produces the recorded reply without a call to the embedder or the mirror.",
+                "Before it produces the reply, replay makes the checks of `ann` against consensus state, as play does.",
+                "Both processes run in native execution.",
+                "",
+                "An id of `ann` is the 32-byte hash of the source produce of a record.",
+                "A program passes the ids to a receive with the query param `ids=`.",
+                "The exact engine then keeps only the stored records whose id is among them.",
+                "A stale id names no record, so it selects nothing.",
+                "The exact order of the query decides among the other records, and not the order of the mirror.",
+                "",
+                "### Example",
+                "",
+                "The mirror receives the records of a deploy only after the deploy succeeds.",
+                "So the example stores the records in one deploy, and it queries them in a later deploy.",
+                "The first deploy makes a space with a mirror, takes a name of the space, and stores three vectors under it.",
+                "",
+                "```rholang",
+                "new vdb(`rho:space:hashmap:vectordb`) in {",
+                "  for (m <- vdb!?(\"default\"; capacity=4, dimensions=2, mirror=\"chroma\")) {",
+                "    for (mn <- m!?(\"gensym\")) {",
+                "      @\"my-space\"!(*m) | @\"my-name\"!(*mn) |",
+                "      mn!([1.0, 0.0]) | mn!([0.0, 1.0]) | mn!([1.0, 1.0])",
+                "    }",
+                "  }",
+                "}",
+                "```",
+                "",
+                "The second deploy asks the mirror for the three nearest records, and then it lets the exact engine select among them.",
+                "",
+                "```rholang",
+                "new ann(`rho:vectordb:ann`) in {",
+                "  for (m <<- @\"my-space\") { for (mn <<- @\"my-name\") {",
+                "    for (@r <- ann!?(*m, *mn, [1.0, 0.0], {\"k\": 3})) {",
+                "      match r {",
+                "        [true, ids, _, _] => { for (@x <- mn ~ ([1.0, 0.0]; ids=ids, k=3)) { @\"result\"!(x) } }",
+                "        [false, code, _]  => { @\"result\"!(code) }",
+                "      }",
+                "    }",
+                "  } }",
+                "}",
+                "```",
+                "",
+                "The receive binds the list of the selected vectors, in the exact order of the query.",
+                "",
+                "### How the mirror stays current",
+                "",
+                "The mirror follows the finalized state of the space through four steps:",
+                "",
+                "1. **Journal.** After each committed transaction, the node computes its net writes. A new record that stays is an upsert, and a removed record is a delete. A peek writes nothing.",
+                "2. **Publication.** A deploy whose final result has no errors publishes its journal to the writer of the node. A failed deploy publishes nothing.",
+                "3. **Writer.** One task applies the batches in order, from a queue of 1,024 batches, with up to 3 attempts. A publication never waits: a full queue or a failed batch marks its collection dirty.",
+                "4. **Reconciler.** On each finalized block, the reconciler repairs each collection that is dirty or older than the block. It sets each registered channel to the records of the finalized state, and then it sets the watermark of the collection.",
+                "",
+                "A node that replays a block publishes the deploys of the block to its own mirror.",
+                "The mirror reflects the finalized blocks, and `ann` reports the watermark of that view.",
+                "After an LFS bootstrap, the records of a channel that the node never journaled are absent until the channel changes.",
+                "After a restart, the dirty marks of the writer are lost, so a failed batch is repaired when its channels change again.",
+                "",
+                "### Running a node with the mirror",
+                "",
+                "To run a node with the mirror, do these steps:",
+                "",
+                "1. Build the node with the `chromadb` feature of the rholang crate: `cargo build -p node --release --features rholang/chromadb`.",
+                "2. Start a ChromaDB server of the pinned image: `docker compose -f docker/shard.yml --profile chromadb up`.",
+                "3. Set `CHROMA_ENDPOINT` for each node. `docker/shard.yml` sets it to `http://chroma-db:8000`.",
+                "4. Give each node its own `CHROMA_DATABASE`, so that no node writes the mirror of another node.",
+                "",
+                "The node makes its database on the first call.",
+                "Each collection of a space is named `rrs-` and the lowercase hex of the first 16 bytes of the space id.",
+                "The reply of `space!?(\"config\")` reports it under the key `mirror`.",
+                "A node without the feature, or without an endpoint, has no mirror: its publications drop, and `ann` replies `MirrorUnavailable`.",
+                "",
+                "The repository tests the backend against a real server with `bash scripts/verify-reified/chroma-live.sh`.",
+                "The script starts a disposable server of the pinned image, and it gives each run a new database."
+              ]
+            ]
+          ]
+        },
+        {
+          "path": "docs/rholang/10-system-channels.md",
+          "replaced_blocks": [
+            [
+              [
+                "## Channel Summary"
+              ],
+              [
+                "## Reified RSpaces: vectors and the VectorDB services",
+                "",
+                "The VectorDB family of [Reified RSpaces](../rspace/reified-rspaces/README.md) adds three system processes.",
+                "Each one takes the reply channel first and replies `[true, …]`, or `[false, code, detail]` with a fixed detail text.",
+                "So `!?` and `try … catch` read a reply.",
+                "A call with send params aborts the deploy with `ParamsUnsupported`, and a persistent call `!!` aborts it with `PersistentOpCall`.",
+                "The [Reified RSpaces specification](../rspace/reified-rspaces/specification.md#9-system-processes-of-the-vectordb-family) states the rules.",
+                "",
+                "### `rho:lang:vector` (call `vec!(ret, op, x…)`)",
+                "",
+                "Exact vector arithmetic. The operation `op` is `\"add\"`, `\"scale\"`, `\"dot\"`, `\"norm\"` or `\"distance\"`.",
+                "",
+                "```rho",
+                "new vec(`rho:lang:vector`), stdout(`rho:io:stdout`) in {",
+                "  for (@r <- vec!?(\"dot\", [1, 2], [3, 4])) {",
+                "    stdout!(r)   // [true, 11]",
+                "  }",
+                "}",
+                "```",
+                "",
+                "`add`, `scale` and `dot` compute exactly and reply in the widest kind of their inputs.",
+                "Integers give an integer, a big rational or a fixed point gives a big rational, and a float gives an `f64`.",
+                "The `f64` is one rounding of the exact value, so `dot` rounds its exact sum once.",
+                "`norm` and `distance` reply the correctly rounded `f64` of the root of an exact square.",
+                "The failure codes are `UnknownMethod`, `BadArgument`, `NotAVector`, `NotANumber`, `NonFiniteValue`, `MalformedNumber`, `DimensionMismatch` and `ValueOutOfRange`.",
+                "",
+                "### `rho:vectordb:embed` (arity 2)",
+                "",
+                "Embeds one text, or a list of at most 64 texts with at most 64 KiB of text, with the embedding model of the node.",
+                "",
+                "```rho",
+                "new embed(`rho:vectordb:embed`), stdout(`rho:io:stdout`) in {",
+                "  for (@r <- embed!?(\"a short text\")) {",
+                "    stdout!(r)   // [true, vector, \"all-MiniLM-L6-v2\"], or [false, code, detail]",
+                "  }",
+                "}",
+                "```",
+                "",
+                "A vector is a list of 384 `Float32` values.",
+                "The failure codes are `BadArgument`, `EmbeddingRateLimited`, `EmbeddingUnavailable` and `NonFiniteEmbedding`.",
+                "The process is recorded: the node records each reply, and replay produces the recorded reply without a call to the model.",
+                "",
+                "### `rho:vectordb:ann` (arity 5)",
+                "",
+                "Asks the ChromaDB mirror of the node for the records of a channel of a VectorDB space that are nearest to a query.",
+                "The arguments are the reply channel, the space, the channel, the query (a vector or a text) and the options `{\"k\": k}`.",
+                "",
+                "```rho",
+                "new ann(`rho:vectordb:ann`), stdout(`rho:io:stdout`) in {",
+                "  for (@space <<- @\"my-space\") { for (@name <<- @\"my-name\") {",
+                "    for (@r <- ann!?(space, name, [1, 0], {\"k\": 3})) {",
+                "      stdout!(r)   // [true, ids, distances, watermark], or [false, code, detail]",
+                "    }",
+                "  } }",
+                "}",
+                "```",
+                "",
+                "The ids are hints for the query param `ids` of a receive, and the exact engine of the space decides.",
+                "The failure codes are `NotAVectorDbSpace`, `MirrorDisabled`, `DimensionMismatch`, `BadArgument`, `InvalidOption` and `MirrorUnavailable`.",
+                "A text query can also fail with the codes of `embed`.",
+                "Like `embed`, the process is recorded. Replay also makes the checks of the call against consensus state, as play does.",
+                "See [ChromaDB Integration](chromadb.md#chromadb-as-the-search-backend-of-reified-vectordb-spaces) for the mirror.",
+                "",
+                "## Channel Summary"
+              ]
+            ],
+            [
+              [
+                "| `rho:ollama:models` | 1 | AI | No |"
+              ],
+              [
+                "| `rho:ollama:models` | 1 | AI | No |",
+                "| `rho:lang:vector` | varies | Reified | Yes |",
+                "| `rho:vectordb:embed` | 2 | Reified | Recorded |",
+                "| `rho:vectordb:ann` | 5 | Reified | Recorded |"
+              ]
+            ]
+          ]
+        },
+        {
+          "path": "rholang/src/rust/interpreter/accounting/native_runtime/checked_operations/trace/replay/session/execution/tests.rs",
+          "replaced_blocks": [
+            [
+              [
+                "    let operations = budget.native_operation_recording().unwrap().unwrap();",
+                "    let log = play.create_soft_checkpoint().await.log;",
+                "    let host = priced_config(limit, weights, funding.price).host_work();"
+              ],
+              [
+                "    let operations = budget.native_operation_recording().unwrap().unwrap();",
+                "    let log = play.create_soft_checkpoint().await.log;",
+                "    // Changed by P8 step 1 (decision 78): the replay runs at the v6 host-work limits of",
+                "    // certification. Native replay reserves host work for each installed system process, and",
+                "    // the 100 M test budget had no room left for the two P8 processes.",
+                "    // let host = priced_config(limit, weights, funding.price).host_work();",
+                "    let host = HostWorkBudget::new(",
+                "        models::rust::cost_protocol_limits::offered_funded_v6_host_work_limits(),",
+                "    );"
+              ]
+            ]
+          ]
+        },
+        {
+          "path": "casper/tests/mod.rs",
+          "replaced_blocks": [
+            [
+              [
+                "mod multi_node;",
+                "mod repeat_deploy;"
+              ],
+              [
+                "mod multi_node;",
+                "mod reified;",
+                "mod repeat_deploy;"
+              ]
+            ]
+          ]
+        }
+      ],
+      "allowed_new_files": [
+        "docs/rholang/21-reified-spaces.md",
+        "docs/rspace/reified-rspaces/README.md",
+        "docs/rspace/reified-rspaces/agent-api.md",
+        "docs/rspace/reified-rspaces/decision-register.md",
+        "docs/rspace/reified-rspaces/design-record/2026-08-15-design-ledger.md",
+        "docs/rspace/reified-rspaces/design-record/README.md",
+        "docs/rspace/reified-rspaces/design.md",
+        "docs/rspace/reified-rspaces/diagrams/01-substrate-components.puml",
+        "docs/rspace/reified-rspaces/diagrams/01-substrate-components.svg",
+        "docs/rspace/reified-rspaces/diagrams/02-namespace-bytes.puml",
+        "docs/rspace/reified-rspaces/diagrams/02-namespace-bytes.svg",
+        "docs/rspace/reified-rspaces/diagrams/03-native-handle-lifecycle.puml",
+        "docs/rspace/reified-rspaces/diagrams/03-native-handle-lifecycle.svg",
+        "docs/rspace/reified-rspaces/diagrams/04-user-agent-translation.puml",
+        "docs/rspace/reified-rspaces/diagrams/04-user-agent-translation.svg",
+        "docs/rspace/reified-rspaces/diagrams/05-head-only-queue.puml",
+        "docs/rspace/reified-rspaces/diagrams/05-head-only-queue.svg",
+        "docs/rspace/reified-rspaces/diagrams/06-space-txn-commit.puml",
+        "docs/rspace/reified-rspaces/diagrams/06-space-txn-commit.svg",
+        "docs/rspace/reified-rspaces/diagrams/06a-space-txn-lifecycle.puml",
+        "docs/rspace/reified-rspaces/diagrams/06a-space-txn-lifecycle.svg",
+        "docs/rspace/reified-rspaces/diagrams/07-checkpoint-replay-sweep.puml",
+        "docs/rspace/reified-rspaces/diagrams/07-checkpoint-replay-sweep.svg",
+        "docs/rspace/reified-rspaces/diagrams/07a-restart-lazy-attach.puml",
+        "docs/rspace/reified-rspaces/diagrams/07a-restart-lazy-attach.svg",
+        "docs/rspace/reified-rspaces/diagrams/08-counter-conflict-merge.puml",
+        "docs/rspace/reified-rspaces/diagrams/08-counter-conflict-merge.svg",
+        "docs/rspace/reified-rspaces/diagrams/09-pathmap-delivery.puml",
+        "docs/rspace/reified-rspaces/diagrams/09-pathmap-delivery.svg",
+        "docs/rspace/reified-rspaces/diagrams/10-theory-admission.puml",
+        "docs/rspace/reified-rspaces/diagrams/10-theory-admission.svg",
+        "docs/rspace/reified-rspaces/diagrams/11-record-envelope.puml",
+        "docs/rspace/reified-rspaces/diagrams/11-record-envelope.svg",
+        "docs/rspace/reified-rspaces/diagrams/12-routing-decision.puml",
+        "docs/rspace/reified-rspaces/diagrams/12-routing-decision.svg",
+        "docs/rspace/reified-rspaces/diagrams/13-verification-pipeline.puml",
+        "docs/rspace/reified-rspaces/diagrams/13-verification-pipeline.svg",
+        "docs/rspace/reified-rspaces/diagrams/15-syntax-normalization.puml",
+        "docs/rspace/reified-rspaces/diagrams/15-syntax-normalization.svg",
+        "docs/rspace/reified-rspaces/diagrams/16-space-replay-out-of-phlo.puml",
+        "docs/rspace/reified-rspaces/diagrams/16-space-replay-out-of-phlo.svg",
+        "docs/rspace/reified-rspaces/diagrams/17-legacy-charge-chain.puml",
+        "docs/rspace/reified-rspaces/diagrams/17-legacy-charge-chain.svg",
+        "docs/rspace/reified-rspaces/diagrams/18-scan-driver.puml",
+        "docs/rspace/reified-rspaces/diagrams/18-scan-driver.svg",
+        "docs/rspace/reified-rspaces/diagrams/19-pathmap-keys.puml",
+        "docs/rspace/reified-rspaces/diagrams/19-pathmap-keys.svg",
+        "docs/rspace/reified-rspaces/diagrams/20-pathmap-reroot.puml",
+        "docs/rspace/reified-rspaces/diagrams/20-pathmap-reroot.svg",
+        "docs/rspace/reified-rspaces/diagrams/21-transaction-fire-count.puml",
+        "docs/rspace/reified-rspaces/diagrams/21-transaction-fire-count.svg",
+        "docs/rspace/reified-rspaces/diagrams/22-allocation-job.puml",
+        "docs/rspace/reified-rspaces/diagrams/22-allocation-job.svg",
+        "docs/rspace/reified-rspaces/diagrams/23-crossed-stacks-merge.puml",
+        "docs/rspace/reified-rspaces/diagrams/23-crossed-stacks-merge.svg",
+        "docs/rspace/reified-rspaces/diagrams/24-set-class-fire.puml",
+        "docs/rspace/reified-rspaces/diagrams/24-set-class-fire.svg",
+        "docs/rspace/reified-rspaces/diagrams/25-priority-queue-lanes.puml",
+        "docs/rspace/reified-rspaces/diagrams/25-priority-queue-lanes.svg",
+        "docs/rspace/reified-rspaces/diagrams/26-join-engine.puml",
+        "docs/rspace/reified-rspaces/diagrams/26-join-engine.svg",
+        "docs/rspace/reified-rspaces/diagrams/27-pathmap-prefix-source.puml",
+        "docs/rspace/reified-rspaces/diagrams/27-pathmap-prefix-source.svg",
+        "docs/rspace/reified-rspaces/diagrams/28-vectordb-selection.puml",
+        "docs/rspace/reified-rspaces/diagrams/28-vectordb-selection.svg",
+        "docs/rspace/reified-rspaces/diagrams/29-vectordb-list-cascade.puml",
+        "docs/rspace/reified-rspaces/diagrams/29-vectordb-list-cascade.svg",
+        "docs/rspace/reified-rspaces/diagrams/30-mirror-journal-reconciler.puml",
+        "docs/rspace/reified-rspaces/diagrams/30-mirror-journal-reconciler.svg",
+        "docs/rspace/reified-rspaces/diagrams/31-recorded-embeddings.puml",
+        "docs/rspace/reified-rspaces/diagrams/31-recorded-embeddings.svg",
+        "docs/rspace/reified-rspaces/diagrams/32-advisory-query.puml",
+        "docs/rspace/reified-rspaces/diagrams/32-advisory-query.svg",
+        "docs/rspace/reified-rspaces/diagrams/33-number-model.puml",
+        "docs/rspace/reified-rspaces/diagrams/33-number-model.svg",
+        "docs/rspace/reified-rspaces/diagrams/concept-colors.iuml",
+        "docs/rspace/reified-rspaces/diagrams/fonts.lock",
+        "docs/rspace/reified-rspaces/diagrams/render.sh",
+        "docs/rspace/reified-rspaces/f1r3lang-integration.md",
+        "docs/rspace/reified-rspaces/findings/native-execution-cost-accounting.md",
+        "docs/rspace/reified-rspaces/findings/space-legacy-storage-charges.md",
+        "docs/rspace/reified-rspaces/findings/space-replay-out-of-phlo.md",
+        "docs/rspace/reified-rspaces/glossary.md",
+        "docs/rspace/reified-rspaces/pathmap-prefix-delivery.md",
+        "docs/rspace/reified-rspaces/specification.md",
+        "docs/rspace/reified-rspaces/syntax-contract.md",
+        "docs/rspace/reified-rspaces/theory-seam.md",
+        "docs/rspace/reified-rspaces/verification.md",
+        "examples/reified_rspaces/MANIFEST.toml",
+        "examples/reified_rspaces/agent_hashmap_bag.rho",
+        "formal/reified-rspaces-invariant-map.json",
+        "formal/reified-rspaces-model-map-d47.json",
+        "formal/reified-rspaces-model-map-p4.json",
+        "formal/reified-rspaces-model-map-p5.json",
+        "formal/reified-rspaces-model-map-p6.json",
+        "formal/reified-rspaces-model-map-p7.json",
+        "formal/reified-rspaces-model-map-p8.json",
+        "formal/reified-rspaces-model-map.json",
+        "formal/rocq/reified_rspaces/Makefile",
+        "formal/rocq/reified_rspaces/_CoqProject",
+        "formal/rocq/reified_rspaces/theories/AgentReadCoverage.v",
+        "formal/rocq/reified_rspaces/theories/AgentTranslation.v",
+        "formal/rocq/reified_rspaces/theories/CellDiscipline.v",
+        "formal/rocq/reified_rspaces/theories/ContinuationCollection.v",
+        "formal/rocq/reified_rspaces/theories/CounterConflict.v",
+        "formal/rocq/reified_rspaces/theories/DataCollection.v",
+        "formal/rocq/reified_rspaces/theories/Encoding.v",
+        "formal/rocq/reified_rspaces/theories/EventCorrelation.v",
+        "formal/rocq/reified_rspaces/theories/GenericRSpace.v",
+        "formal/rocq/reified_rspaces/theories/HashMapStore.v",
+        "formal/rocq/reified_rspaces/theories/HeadOnlyDisciplines.v",
+        "formal/rocq/reified_rspaces/theories/JoinCascade.v",
+        "formal/rocq/reified_rspaces/theories/LegacyCharges.v",
+        "formal/rocq/reified_rspaces/theories/Match.v",
+        "formal/rocq/reified_rspaces/theories/Namespace.v",
+        "formal/rocq/reified_rspaces/theories/OuterStorage.v",
+        "formal/rocq/reified_rspaces/theories/PathMapPrefix.v",
+        "formal/rocq/reified_rspaces/theories/PriorityQueue.v",
+        "formal/rocq/reified_rspaces/theories/RecordEnvelope.v",
+        "formal/rocq/reified_rspaces/theories/SetDiscipline.v",
+        "formal/rocq/reified_rspaces/theories/Similarity.v",
+        "formal/rocq/reified_rspaces/theories/SpaceFactory.v",
+        "formal/rocq/reified_rspaces/theories/SpaceRefs.v",
+        "formal/rocq/reified_rspaces/theories/StackDiscipline.v",
+        "formal/rocq/reified_rspaces/theories/TheoryAdmission.v",
+        "formal/rocq/reified_rspaces/theories/VectorDbDiscipline.v",
+        "formal/rocq/reified_rspaces/theories/VectorOps.v",
+        "formal/rocq/reified_rspaces/theories/VectorStore.v",
+        "formal/rocq/reified_rspaces/theories/VolatileSweep.v",
+        "formal/sage/reified_rspaces/similarity_metrics.sage",
+        "formal/tlaplus/reified_rspaces/AcceptUnpairedUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/AgentSpaces.tla",
+        "formal/tlaplus/reified_rspaces/AnnChecksOnlyInPlayUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/BeginScopeKeepsJournalUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/BlockingPublishUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/CellNoCapacityUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/CheckpointReplay.tla",
+        "formal/tlaplus/reified_rspaces/ChromaMirror.tla",
+        "formal/tlaplus/reified_rspaces/CounterConflict.tla",
+        "formal/tlaplus/reified_rspaces/CounterDroppedUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/DoublePairUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/DoublePairUnsafe_IndStep_Apalache.cfg",
+        "formal/tlaplus/reified_rspaces/FaultyAgentUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/GenericRSpace.tla",
+        "formal/tlaplus/reified_rspaces/HeadOnIncomingOnlyUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/HeadOnlyDiscipline.tla",
+        "formal/tlaplus/reified_rspaces/HeadOnlyScanUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/HeadOnlyScanUnsafe_IndStep_Apalache.cfg",
+        "formal/tlaplus/reified_rspaces/IncomingTwiceUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/JoinCascade.tla",
+        "formal/tlaplus/reified_rspaces/JoinDescriptorUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/JoinDescriptorUnsafe_IndStep_Apalache.cfg",
+        "formal/tlaplus/reified_rspaces/JoinPerPhaseCountUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/JoinReissueFreshOrdsUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/JoinResidueUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/JoinResidueUnsafe_IndStep_Apalache.cfg",
+        "formal/tlaplus/reified_rspaces/LazyAllocatorUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/LazyTouchUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/LegacyPreAfterObserveUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/LegacyTailDroppedUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/MC_AgentSpaces.cfg",
+        "formal/tlaplus/reified_rspaces/MC_CheckpointReplay.cfg",
+        "formal/tlaplus/reified_rspaces/MC_CheckpointReplay_IndBase_Apalache.cfg",
+        "formal/tlaplus/reified_rspaces/MC_CheckpointReplay_IndStep_Apalache.cfg",
+        "formal/tlaplus/reified_rspaces/MC_CheckpointReplay_Legacy.cfg",
+        "formal/tlaplus/reified_rspaces/MC_CheckpointReplay_Legacy_IndBase_Apalache.cfg",
+        "formal/tlaplus/reified_rspaces/MC_CheckpointReplay_Legacy_IndStep_Apalache.cfg",
+        "formal/tlaplus/reified_rspaces/MC_CheckpointReplay_Legacy_TwoBlock.cfg",
+        "formal/tlaplus/reified_rspaces/MC_CheckpointReplay_Peek.cfg",
+        "formal/tlaplus/reified_rspaces/MC_CheckpointReplay_TwoBlock.cfg",
+        "formal/tlaplus/reified_rspaces/MC_ChromaMirror.cfg",
+        "formal/tlaplus/reified_rspaces/MC_CounterConflict.cfg",
+        "formal/tlaplus/reified_rspaces/MC_CounterConflict_Allocator.cfg",
+        "formal/tlaplus/reified_rspaces/MC_CounterConflict_Stacks.cfg",
+        "formal/tlaplus/reified_rspaces/MC_GenericRSpace_Bag.cfg",
+        "formal/tlaplus/reified_rspaces/MC_GenericRSpace_Cell.cfg",
+        "formal/tlaplus/reified_rspaces/MC_GenericRSpace_Set.cfg",
+        "formal/tlaplus/reified_rspaces/MC_HeadOnlyDiscipline.cfg",
+        "formal/tlaplus/reified_rspaces/MC_HeadOnlyDiscipline_IndBase_Apalache.cfg",
+        "formal/tlaplus/reified_rspaces/MC_HeadOnlyDiscipline_IndStep_Apalache.cfg",
+        "formal/tlaplus/reified_rspaces/MC_HeadOnlyDiscipline_Reissue.cfg",
+        "formal/tlaplus/reified_rspaces/MC_HeadOnlyDiscipline_Reissue_IndBase_Apalache.cfg",
+        "formal/tlaplus/reified_rspaces/MC_HeadOnlyDiscipline_Reissue_IndStep_Apalache.cfg",
+        "formal/tlaplus/reified_rspaces/MC_JoinCascade_Bag.cfg",
+        "formal/tlaplus/reified_rspaces/MC_JoinCascade_Queue.cfg",
+        "formal/tlaplus/reified_rspaces/MC_JoinCascade_Set.cfg",
+        "formal/tlaplus/reified_rspaces/MC_JoinCascade_Stack.cfg",
+        "formal/tlaplus/reified_rspaces/MC_NativeHandles.cfg",
+        "formal/tlaplus/reified_rspaces/MC_NativeHandles_IndBase_Apalache.cfg",
+        "formal/tlaplus/reified_rspaces/MC_NativeHandles_IndStep_Apalache.cfg",
+        "formal/tlaplus/reified_rspaces/MC_NativeReplay_Outcome.cfg",
+        "formal/tlaplus/reified_rspaces/MC_NativeReplay_Schedule.cfg",
+        "formal/tlaplus/reified_rspaces/MC_NativeReplay_Schedule_NativeKey.cfg",
+        "formal/tlaplus/reified_rspaces/MC_PathMapPrefix.cfg",
+        "formal/tlaplus/reified_rspaces/MC_PathMapPrefix_Merge.cfg",
+        "formal/tlaplus/reified_rspaces/MC_PathMapPrefix_Peek.cfg",
+        "formal/tlaplus/reified_rspaces/MC_PriorityQueue.cfg",
+        "formal/tlaplus/reified_rspaces/MC_PriorityQueue_Deep.cfg",
+        "formal/tlaplus/reified_rspaces/MC_SpaceCoordination.cfg",
+        "formal/tlaplus/reified_rspaces/MC_StackDiscipline.cfg",
+        "formal/tlaplus/reified_rspaces/MC_TxnLockCoverage.cfg",
+        "formal/tlaplus/reified_rspaces/MC_TxnLockCoverage_IndBase_Apalache.cfg",
+        "formal/tlaplus/reified_rspaces/MC_TxnLockCoverage_IndStep_Apalache.cfg",
+        "formal/tlaplus/reified_rspaces/MC_VectorDb_List.cfg",
+        "formal/tlaplus/reified_rspaces/MC_VectorDb_Persist.cfg",
+        "formal/tlaplus/reified_rspaces/MC_VectorDb_Plain.cfg",
+        "formal/tlaplus/reified_rspaces/MirrorWriteInTxnUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/NativeHandles.tla",
+        "formal/tlaplus/reified_rspaces/NativeReplay.tla",
+        "formal/tlaplus/reified_rspaces/NoInvalidateUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/NoLiftUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/NoSetCascadeUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/NoSpaceKeyUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/NonPersistentFirstOrdUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/OrphansKeptUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/PathMapExactPathOnlyUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/PathMapMarkerNotRestoredUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/PathMapNoRetireUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/PathMapPrefix.tla",
+        "formal/tlaplus/reified_rspaces/PeekCounterFreeUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/PeekNoRestoreUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/PeekPersistUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/PlainRestoreUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/PqAnyOrderUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/PqNoSettleUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/PqPerPhaseCountUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/PqPlanOpensAtCapUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/PqReentryAtHeadUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/PriorityQueue.tla",
+        "formal/tlaplus/reified_rspaces/PublishFailedDeployUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/QualifierSupportUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/ReentryAtHeadUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/ReissueFreshOrdUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/RemovalCounterFreeUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/RestoreDroppedUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/RestoreNoReofferUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/RestoreOpAuthorityUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/RetainPeekUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/RootIgnoresVolatileUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/RuleEUpsertUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/SeqGuardToctouUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/SeqScanSkippedUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/SetNoProduceRetireUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/SetRetireOneUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/SpaceCoordination.tla",
+        "formal/tlaplus/reified_rspaces/SpaceWideIndexUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/StackDiscipline.tla",
+        "formal/tlaplus/reified_rspaces/StackNoSettleUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/StackPerPhaseCountUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/StackPlanOpensAtCapUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/StackReentryAtTopUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/StagingDivergenceUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/StoredRecordTwiceUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/SystemRouteUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/TamperedOutcomeUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/TxnLockCoverage.tla",
+        "formal/tlaplus/reified_rspaces/UncoveredChannelUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/UncoveredChannelUnsafe_IndStep_Apalache.cfg",
+        "formal/tlaplus/reified_rspaces/UnjoinedChannelUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/UnjoinedChannelUnsafe_IndStep_Apalache.cfg",
+        "formal/tlaplus/reified_rspaces/UnrecordedAdvisoryUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/UseBalanceUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/UuidUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/VdbDropOwedUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/VdbNoCascadeUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/VdbNoRetireUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/VdbParkOnlyWhileEmptyUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/VdbUncountedCascadeUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/VectorDb.tla",
+        "formal/tlaplus/reified_rspaces/WaitUnderLocksUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/WatermarkAfterFailureUnsafe.cfg",
+        "formal/tlaplus/reified_rspaces/WildcardUnsafe.cfg",
+        "formal/z3/reified_rspaces/metric_algebra.py",
+        "formal/z3/reified_rspaces/squared_form_cosine.py",
+        "formal/z3/reified_rspaces/topk_tiebreak_total_order.py",
+        "models/src/rust/reified/builders.rs",
+        "models/src/rust/reified/encoding.rs",
+        "models/src/rust/reified/mod.rs",
+        "models/src/rust/reified/params.rs",
+        "models/src/rust/reified/query_spec.rs",
+        "models/src/rust/reified/validation.rs",
+        "models/src/rust/space_factory_urn.rs",
+        "models/tests/reified_encoding.rs",
+        "models/tests/space_factory_urn.rs",
+        "models/tests/support/reified_strategies.rs",
+        "rholang/src/rust/interpreter/compiler/normalizer/processes/p_free_theory_normalizer.rs",
+        "rholang/src/rust/interpreter/compiler/normalizer/processes/p_use_block_normalizer.rs",
+        "rholang/src/rust/interpreter/compiler/normalizer/processes/reified_syntax.rs",
+        "rholang/src/rust/interpreter/reified/costs.rs",
+        "rholang/src/rust/interpreter/reified/errors.rs",
+        "rholang/src/rust/interpreter/reified/execution.rs",
+        "rholang/src/rust/interpreter/reified/factory.rs",
+        "rholang/src/rust/interpreter/reified/handle.rs",
+        "rholang/src/rust/interpreter/reified/legacy_charges.rs",
+        "rholang/src/rust/interpreter/reified/mirror_reconciler.rs",
+        "rholang/src/rust/interpreter/reified/mod.rs",
+        "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
+        "rholang/src/rust/interpreter/reified/route.rs",
+        "rholang/src/rust/interpreter/reified/runtime.rs",
+        "rholang/src/rust/interpreter/reified/schedule.rs",
+        "rholang/src/rust/interpreter/reified/scope.rs",
+        "rholang/src/rust/interpreter/reified/seq.rs",
+        "rholang/src/rust/interpreter/reified/system_channels.rs",
+        "rholang/src/rust/interpreter/reified/system_processes.rs",
+        "rholang/src/rust/interpreter/reified/user_agent.rs",
+        "rholang/src/rust/interpreter/reified/vectordb_services.rs",
+        "rholang/src/rust/interpreter/spaces/agent.rs",
+        "rholang/src/rust/interpreter/spaces/allocator.rs",
+        "rholang/src/rust/interpreter/spaces/counter.rs",
+        "rholang/src/rust/interpreter/spaces/disciplines/bag.rs",
+        "rholang/src/rust/interpreter/spaces/disciplines/cell.rs",
+        "rholang/src/rust/interpreter/spaces/disciplines/mod.rs",
+        "rholang/src/rust/interpreter/spaces/disciplines/priority_queue.rs",
+        "rholang/src/rust/interpreter/spaces/disciplines/queue.rs",
+        "rholang/src/rust/interpreter/spaces/disciplines/scan.rs",
+        "rholang/src/rust/interpreter/spaces/disciplines/set.rs",
+        "rholang/src/rust/interpreter/spaces/disciplines/stack.rs",
+        "rholang/src/rust/interpreter/spaces/disciplines/vectordb.rs",
+        "rholang/src/rust/interpreter/spaces/ephemeral.rs",
+        "rholang/src/rust/interpreter/spaces/errors.rs",
+        "rholang/src/rust/interpreter/spaces/factory/constructor.rs",
+        "rholang/src/rust/interpreter/spaces/factory/defaults.rs",
+        "rholang/src/rust/interpreter/spaces/factory/mod.rs",
+        "rholang/src/rust/interpreter/spaces/factory/urn.rs",
+        "rholang/src/rust/interpreter/spaces/families.rs",
+        "rholang/src/rust/interpreter/spaces/generic.rs",
+        "rholang/src/rust/interpreter/spaces/join.rs",
+        "rholang/src/rust/interpreter/spaces/matching.rs",
+        "rholang/src/rust/interpreter/spaces/mirror.rs",
+        "rholang/src/rust/interpreter/spaces/mod.rs",
+        "rholang/src/rust/interpreter/spaces/namespace.rs",
+        "rholang/src/rust/interpreter/spaces/outer/array.rs",
+        "rholang/src/rust/interpreter/spaces/outer/hashmap.rs",
+        "rholang/src/rust/interpreter/spaces/outer/hashset.rs",
+        "rholang/src/rust/interpreter/spaces/outer/mod.rs",
+        "rholang/src/rust/interpreter/spaces/outer/pathmap.rs",
+        "rholang/src/rust/interpreter/spaces/outer/vector.rs",
+        "rholang/src/rust/interpreter/spaces/pathmap/adapter.rs",
+        "rholang/src/rust/interpreter/spaces/pathmap/delivery.rs",
+        "rholang/src/rust/interpreter/spaces/pathmap/join.rs",
+        "rholang/src/rust/interpreter/spaces/pathmap/markers.rs",
+        "rholang/src/rust/interpreter/spaces/pathmap/mod.rs",
+        "rholang/src/rust/interpreter/spaces/pathmap/path_codec.rs",
+        "rholang/src/rust/interpreter/spaces/pathmap/reroot.rs",
+        "rholang/src/rust/interpreter/spaces/record.rs",
+        "rholang/src/rust/interpreter/spaces/settle.rs",
+        "rholang/src/rust/interpreter/spaces/theory/builtin.rs",
+        "rholang/src/rust/interpreter/spaces/theory/identity.rs",
+        "rholang/src/rust/interpreter/spaces/theory/mod.rs",
+        "rholang/src/rust/interpreter/spaces/theory/tests.rs",
+        "rholang/src/rust/interpreter/spaces/types/config.rs",
+        "rholang/src/rust/interpreter/spaces/types/id.rs",
+        "rholang/src/rust/interpreter/spaces/types/mod.rs",
+        "rholang/src/rust/interpreter/spaces/types/qualifier.rs",
+        "rholang/src/rust/interpreter/tensor/costs.rs",
+        "rholang/src/rust/interpreter/tensor/exact.rs",
+        "rholang/src/rust/interpreter/tensor/mod.rs",
+        "rholang/src/rust/interpreter/tensor/num.rs",
+        "rholang/src/rust/interpreter/tensor/ops.rs",
+        "rholang/tests/reified_agent_conformance.rs",
+        "rholang/tests/reified_array_vector.rs",
+        "rholang/tests/reified_bag.rs",
+        "rholang/tests/reified_cell.rs",
+        "rholang/tests/reified_determinism.rs",
+        "rholang/tests/reified_engine_props.rs",
+        "rholang/tests/reified_factory.rs",
+        "rholang/tests/reified_families.rs",
+        "rholang/tests/reified_handle.rs",
+        "rholang/tests/reified_hashset.rs",
+        "rholang/tests/reified_hooks_p5.rs",
+        "rholang/tests/reified_join_props.rs",
+        "rholang/tests/reified_joins.rs",
+        "rholang/tests/reified_legacy_charges.rs",
+        "rholang/tests/reified_marker_recognition.rs",
+        "rholang/tests/reified_merge.rs",
+        "rholang/tests/reified_merge_p5.rs",
+        "rholang/tests/reified_native_fail_closed.rs",
+        "rholang/tests/reified_native_spaces.rs",
+        "rholang/tests/reified_ordinary_regression.rs",
+        "rholang/tests/reified_p4_props.rs",
+        "rholang/tests/reified_p4_smoke.rs",
+        "rholang/tests/reified_p5_harness.rs",
+        "rholang/tests/reified_p8_props.rs",
+        "rholang/tests/reified_pathmap.rs",
+        "rholang/tests/reified_pattern_enforcement.rs",
+        "rholang/tests/reified_priority_queue.rs",
+        "rholang/tests/reified_queue.rs",
+        "rholang/tests/reified_queue_parity.rs",
+        "rholang/tests/reified_queue_replay.rs",
+        "rholang/tests/reified_queue_restart.rs",
+        "rholang/tests/reified_queue_source.rs",
+        "rholang/tests/reified_rehydrate.rs",
+        "rholang/tests/reified_restart_rehydrate.rs",
+        "rholang/tests/reified_routing.rs",
+        "rholang/tests/reified_seq.rs",
+        "rholang/tests/reified_set.rs",
+        "rholang/tests/reified_source_normalization.rs",
+        "rholang/tests/reified_space_store_handle_par.rs",
+        "rholang/tests/reified_space_txn_host_bounds.rs",
+        "rholang/tests/reified_stack.rs",
+        "rholang/tests/reified_syntax_corpus.rs",
+        "rholang/tests/reified_syntax_identifiers.rs",
+        "rholang/tests/reified_syntax_normalize.rs",
+        "rholang/tests/reified_temp_seq.rs",
+        "rholang/tests/reified_theory.rs",
+        "rholang/tests/reified_user_agents.rs",
+        "rholang/tests/reified_vector_ops.rs",
+        "rholang/tests/reified_vectordb.rs",
+        "rholang/tests/reified_vectordb_chroma.rs",
+        "rholang/tests/reified_vectordb_chroma_live.rs",
+        "rholang/tests/reified_volatile_sweep.rs",
+        "rholang/tests/support/agent.rs",
+        "rholang/tests/support/backends.rs",
+        "rholang/tests/support/family_programs.rs",
+        "rholang/tests/support/legacy.rs",
+        "rholang/tests/support/mod.rs",
+        "rholang/tests/support/native.rs",
+        "rholang/tests/support/props.rs",
+        "rholang/tests/support/session.rs",
+        "rspace++/src/rspace/replay_rspace/native_session/space.rs",
+        "rspace++/src/rspace/replay_rspace/space_replay.rs",
+        "rspace++/src/rspace/rspace/space_play.rs",
+        "rspace++/src/rspace/space_store_handle.rs",
+        "rspace++/tests/legacy_golden_corpus.rs",
+        "rspace++/tests/reified_space_store_handle.rs",
+        "rspace++/tests/reified_space_store_handle/support.rs",
+        "rspace++/tests/reified_space_store_handle_props.rs",
+        "scripts/check-reified-rspaces-patch-gate.sh",
+        "scripts/check-reified-rspaces-proofs.sh",
+        "scripts/check-reified-rspaces-tla-invariants.sh",
+        "scripts/verify-reified/apalache-expect.sh",
+        "scripts/verify-reified/check-closure.py",
+        "scripts/verify-reified/check-complete.py",
+        "scripts/verify-reified/check-consensus-checklist.py",
+        "scripts/verify-reified/check-footprint.py",
+        "scripts/verify-reified/check-invariant-map.py",
+        "scripts/verify-reified/check-model-map.py",
+        "scripts/verify-reified/chroma-live.sh",
+        "scripts/verify-reified/closure-policies.json",
+        "scripts/verify-reified/complete-policies.json",
+        "scripts/verify-reified/consensus-checklist.json",
+        "scripts/verify-reified/doc_lint.py",
+        "scripts/verify-reified/footprint-policies.json",
+        "scripts/verify-reified/merge-ordinary-capture.py",
+        "scripts/verify-reified/merge-queue-parity-capture.py",
+        "scripts/verify-reified/mirror-mutants.py",
+        "scripts/verify-reified/numeric_reference_receipt.py",
+        "scripts/verify-reified/p7-mutants.py",
+        "scripts/verify-reified/rocq-negative-controls.py",
+        "scripts/verify-reified/run-checker-tests.py",
+        "scripts/verify-reified/rust_citations.py",
+        "scripts/verify-reified/tensor-mutants.py",
+        "scripts/verify-reified/tests/fixtures/doc_lint/citation-doi/fail/doc.md.txt",
+        "scripts/verify-reified/tests/fixtures/doc_lint/citation-doi/pass/doc.md.txt",
+        "scripts/verify-reified/tests/fixtures/doc_lint/citation-key/fail/doc.md.txt",
+        "scripts/verify-reified/tests/fixtures/doc_lint/citation-key/pass/doc.md.txt",
+        "scripts/verify-reified/tests/fixtures/doc_lint/diagram-orphan/fail/diagrams/01-sample.puml",
+        "scripts/verify-reified/tests/fixtures/doc_lint/diagram-orphan/fail/diagrams/01-sample.svg",
+        "scripts/verify-reified/tests/fixtures/doc_lint/diagram-orphan/fail/diagrams/02-unused.puml",
+        "scripts/verify-reified/tests/fixtures/doc_lint/diagram-orphan/fail/doc.md.txt",
+        "scripts/verify-reified/tests/fixtures/doc_lint/diagram-orphan/fail/palette.iuml",
+        "scripts/verify-reified/tests/fixtures/doc_lint/diagram-orphan/pass/diagrams/01-sample.puml",
+        "scripts/verify-reified/tests/fixtures/doc_lint/diagram-orphan/pass/diagrams/01-sample.svg",
+        "scripts/verify-reified/tests/fixtures/doc_lint/diagram-orphan/pass/doc.md.txt",
+        "scripts/verify-reified/tests/fixtures/doc_lint/diagram-orphan/pass/palette.iuml",
+        "scripts/verify-reified/tests/fixtures/doc_lint/diagram-palette/fail/diagrams/01-sample.puml",
+        "scripts/verify-reified/tests/fixtures/doc_lint/diagram-palette/fail/diagrams/01-sample.svg",
+        "scripts/verify-reified/tests/fixtures/doc_lint/diagram-palette/fail/diagrams/02-uncolored.puml",
+        "scripts/verify-reified/tests/fixtures/doc_lint/diagram-palette/fail/diagrams/02-uncolored.svg",
+        "scripts/verify-reified/tests/fixtures/doc_lint/diagram-palette/fail/doc.md.txt",
+        "scripts/verify-reified/tests/fixtures/doc_lint/diagram-palette/fail/palette.iuml",
+        "scripts/verify-reified/tests/fixtures/doc_lint/diagram-palette/pass/diagrams/01-sample.puml",
+        "scripts/verify-reified/tests/fixtures/doc_lint/diagram-palette/pass/diagrams/01-sample.svg",
+        "scripts/verify-reified/tests/fixtures/doc_lint/diagram-palette/pass/doc.md.txt",
+        "scripts/verify-reified/tests/fixtures/doc_lint/diagram-palette/pass/palette.iuml",
+        "scripts/verify-reified/tests/fixtures/doc_lint/diagram-render/fail-latex/diagrams/01-sample.puml",
+        "scripts/verify-reified/tests/fixtures/doc_lint/diagram-render/fail-latex/doc.md.txt",
+        "scripts/verify-reified/tests/fixtures/doc_lint/diagram-render/fail-latex/palette.iuml",
+        "scripts/verify-reified/tests/fixtures/doc_lint/diagram-render/fail/diagrams/01-sample.puml",
+        "scripts/verify-reified/tests/fixtures/doc_lint/diagram-render/fail/doc.md.txt",
+        "scripts/verify-reified/tests/fixtures/doc_lint/diagram-render/fail/palette.iuml",
+        "scripts/verify-reified/tests/fixtures/doc_lint/diagram-render/pass/diagrams/01-sample.puml",
+        "scripts/verify-reified/tests/fixtures/doc_lint/diagram-render/pass/doc.md.txt",
+        "scripts/verify-reified/tests/fixtures/doc_lint/diagram-render/pass/palette.iuml",
+        "scripts/verify-reified/tests/fixtures/doc_lint/diagram-source/fail/diagrams/01-sample.svg",
+        "scripts/verify-reified/tests/fixtures/doc_lint/diagram-source/fail/doc.md.txt",
+        "scripts/verify-reified/tests/fixtures/doc_lint/diagram-source/fail/palette.iuml",
+        "scripts/verify-reified/tests/fixtures/doc_lint/diagram-source/pass/diagrams/01-sample.puml",
+        "scripts/verify-reified/tests/fixtures/doc_lint/diagram-source/pass/diagrams/01-sample.svg",
+        "scripts/verify-reified/tests/fixtures/doc_lint/diagram-source/pass/doc.md.txt",
+        "scripts/verify-reified/tests/fixtures/doc_lint/diagram-source/pass/palette.iuml",
+        "scripts/verify-reified/tests/fixtures/doc_lint/glossary-anchor/fail/doc.md.txt",
+        "scripts/verify-reified/tests/fixtures/doc_lint/glossary-anchor/fail/glossary.md",
+        "scripts/verify-reified/tests/fixtures/doc_lint/glossary-anchor/pass/doc.md.txt",
+        "scripts/verify-reified/tests/fixtures/doc_lint/glossary-anchor/pass/glossary.md",
+        "scripts/verify-reified/tests/fixtures/doc_lint/link/fail/doc.md.txt",
+        "scripts/verify-reified/tests/fixtures/doc_lint/link/fail/target.md",
+        "scripts/verify-reified/tests/fixtures/doc_lint/link/pass/doc.md.txt",
+        "scripts/verify-reified/tests/fixtures/doc_lint/link/pass/target.md",
+        "scripts/verify-reified/tests/fixtures/doc_lint/markdown-fence/fail/doc.md.txt",
+        "scripts/verify-reified/tests/fixtures/doc_lint/markdown-fence/pass/doc.md.txt",
+        "scripts/verify-reified/tests/fixtures/doc_lint/math-abut/fail/doc.md.txt",
+        "scripts/verify-reified/tests/fixtures/doc_lint/math-abut/pass/doc.md.txt",
+        "scripts/verify-reified/tests/fixtures/doc_lint/math-delimiter/fail/doc.md.txt",
+        "scripts/verify-reified/tests/fixtures/doc_lint/math-delimiter/pass/doc.md.txt",
+        "scripts/verify-reified/tests/fixtures/doc_lint/math-undelimited/fail/doc.md.txt",
+        "scripts/verify-reified/tests/fixtures/doc_lint/math-undelimited/pass/doc.md.txt",
+        "scripts/verify-reified/tests/fixtures/doc_lint/mermaid/fail/doc.md.txt",
+        "scripts/verify-reified/tests/fixtures/doc_lint/mermaid/pass/doc.md.txt",
+        "scripts/verify-reified/tests/fixtures/doc_lint/placement/fail/docroot/Bad_Name.md",
+        "scripts/verify-reified/tests/fixtures/doc_lint/placement/fail/docroot/README.md",
+        "scripts/verify-reified/tests/fixtures/doc_lint/placement/fail/docroot/diagrams/06A-upper-letter.puml",
+        "scripts/verify-reified/tests/fixtures/doc_lint/placement/fail/docroot/diagrams/06A-upper-letter.svg",
+        "scripts/verify-reified/tests/fixtures/doc_lint/placement/fail/docroot/diagrams/Sample.puml",
+        "scripts/verify-reified/tests/fixtures/doc_lint/placement/fail/docroot/diagrams/Sample.svg",
+        "scripts/verify-reified/tests/fixtures/doc_lint/placement/fail/docroot/diagrams/notes.txt",
+        "scripts/verify-reified/tests/fixtures/doc_lint/placement/fail/palette.iuml",
+        "scripts/verify-reified/tests/fixtures/doc_lint/placement/pass/docroot/README.md",
+        "scripts/verify-reified/tests/fixtures/doc_lint/placement/pass/docroot/diagrams/06a-sub-figure.puml",
+        "scripts/verify-reified/tests/fixtures/doc_lint/placement/pass/docroot/diagrams/06a-sub-figure.svg",
+        "scripts/verify-reified/tests/fixtures/doc_lint/placement/pass/docroot/diagrams/fonts.lock",
+        "scripts/verify-reified/tests/fixtures/doc_lint/placement/pass/docroot/guide.md",
+        "scripts/verify-reified/tests/fixtures/doc_lint/placement/pass/palette.iuml",
+        "scripts/verify-reified/tests/fixtures/doc_lint/rocq-cite/fail/doc.md.txt",
+        "scripts/verify-reified/tests/fixtures/doc_lint/rocq-cite/fail/theories/Sample.v",
+        "scripts/verify-reified/tests/fixtures/doc_lint/rocq-cite/pass/doc.md.txt",
+        "scripts/verify-reified/tests/fixtures/doc_lint/rocq-cite/pass/theories/Sample.v",
+        "scripts/verify-reified/tests/fixtures/doc_lint/rust-cite/fail/doc.md.txt",
+        "scripts/verify-reified/tests/fixtures/doc_lint/rust-cite/fail/src/rust_cite_fixture.rs",
+        "scripts/verify-reified/tests/fixtures/doc_lint/rust-cite/pass/doc.md.txt",
+        "scripts/verify-reified/tests/fixtures/doc_lint/rust-cite/pass/src/rust_cite_fixture.rs",
+        "scripts/verify-reified/tests/fixtures/doc_lint/snippet-corpus/fail-missing-corpus/doc.md.txt",
+        "scripts/verify-reified/tests/fixtures/doc_lint/snippet-corpus/fail-missing-corpus/test-vectors/reified-syntax-corpus-v1.json",
+        "scripts/verify-reified/tests/fixtures/doc_lint/snippet-corpus/fail/doc.md.txt",
+        "scripts/verify-reified/tests/fixtures/doc_lint/snippet-corpus/fail/examples/reified_rspaces/MANIFEST.toml",
+        "scripts/verify-reified/tests/fixtures/doc_lint/snippet-corpus/fail/test-vectors/reified-syntax-corpus-v1.json",
+        "scripts/verify-reified/tests/fixtures/doc_lint/snippet-corpus/pass/doc.md.txt",
+        "scripts/verify-reified/tests/fixtures/doc_lint/snippet-corpus/pass/examples/reified_rspaces/MANIFEST.toml",
+        "scripts/verify-reified/tests/fixtures/doc_lint/snippet-corpus/pass/test-vectors/reified-syntax-corpus-v1.json",
+        "scripts/verify-reified/tests/fixtures/doc_lint/ste-contraction/fail/doc.md.txt",
+        "scripts/verify-reified/tests/fixtures/doc_lint/ste-contraction/pass/doc.md.txt",
+        "scripts/verify-reified/tests/fixtures/doc_lint/ste-paragraph-length/fail/doc.md.txt",
+        "scripts/verify-reified/tests/fixtures/doc_lint/ste-paragraph-length/pass/doc.md.txt",
+        "scripts/verify-reified/tests/fixtures/doc_lint/ste-procedure-length/fail/doc.md.txt",
+        "scripts/verify-reified/tests/fixtures/doc_lint/ste-procedure-length/pass/doc.md.txt",
+        "scripts/verify-reified/tests/fixtures/doc_lint/ste-semicolon/fail/doc.md.txt",
+        "scripts/verify-reified/tests/fixtures/doc_lint/ste-semicolon/pass/doc.md.txt",
+        "scripts/verify-reified/tests/fixtures/doc_lint/ste-sentence-length/fail/doc.md.txt",
+        "scripts/verify-reified/tests/fixtures/doc_lint/ste-sentence-length/pass/doc.md.txt",
+        "scripts/verify-reified/tests/fixtures/patch-gate/parser-override.toml",
+        "scripts/verify-reified/tests/test_checkers.py",
+        "scripts/verify-reified/tests/test_closure.py",
+        "scripts/verify-reified/tests/test_doc_lint.py",
+        "scripts/verify-reified/tlc-expect-violation.sh",
+        "scripts/verify-reified/vector-ops-mutants.py",
+        "scripts/verify-reified/vectordb-mutants.py",
+        "scripts/verify-reified/vectordb-services-mutants.py",
+        "test-vectors/head-file-digests-4d67b5ccc.json",
+        "test-vectors/head-file-digests-6f7a80da3.json",
+        "test-vectors/legacy-golden-corpus-v1.json",
+        "test-vectors/numeric-reference-v1.json",
+        "test-vectors/ordinary-execution-v1.json",
+        "test-vectors/ordinary-float-forms-v1.json",
+        "test-vectors/ordinary-source-normalization-v1.json",
+        "test-vectors/protobuf-schema-head-4d67b5ccc.json",
+        "test-vectors/protobuf-schema-head-6f7a80da3.json",
+        "test-vectors/reified-join-seams-v1.json",
+        "test-vectors/reified-queue-parity-v1.json",
+        "test-vectors/reified-syntax-corpus-v1.json",
+        "rholang/tests/support/merge.rs",
+        "rholang/tests/support/coverage.rs",
+        "scripts/verify-reified/legacy-test-inventory.py",
+        "test-vectors/legacy-test-inventory-ff479042.json",
+        "casper/tests/reified/mod.rs",
+        "casper/tests/reified/support.rs",
+        "scripts/verify-reified/check-test-port-ledger.py",
+        "rholang/tests/reified_cross_block_merge.rs",
+        "rholang/tests/reified_n1_replay.rs",
+        "formal/tlaplus/reified_rspaces/RecordInWindowUnsafe.cfg",
+        "rholang/tests/support/process.rs",
+        "rholang/tests/reified_cross_process.rs",
+        "rholang/tests/support/blocks.rs",
+        "rholang/tests/reified_lfs.rs",
+        "casper/tests/reified/n4.rs",
+        "rholang/tests/loom_reified.rs",
+        "scripts/verify-reified/generate-test-port-ledger.py",
+        "docs/rspace/reified-rspaces/verification/test-port-ledger.json",
+        "docs/rspace/reified-rspaces/diagrams/34-p9-process-harnesses.puml",
+        "docs/rspace/reified-rspaces/diagrams/34-p9-process-harnesses.svg",
+        "docs/rspace/reified-rspaces/diagrams/34a-n4-merge-dag.puml",
+        "docs/rspace/reified-rspaces/diagrams/34a-n4-merge-dag.svg",
+        "docs/rspace/reified-rspaces/tensor-logic/README.md",
+        "docs/rspace/reified-rspaces/tensor-logic/concepts.md",
+        "docs/rspace/reified-rspaces/tensor-logic/syntax.md",
+        "docs/rspace/reified-rspaces/tensor-logic/static-semantics.md",
+        "docs/rspace/reified-rspaces/tensor-logic/dynamic-semantics.md",
+        "docs/rspace/reified-rspaces/tensor-logic/gslt.md",
+        "docs/rspace/reified-rspaces/tensor-logic/integration.md",
+        "docs/rspace/reified-rspaces/tensor-logic/verification-plan.md",
+        "docs/rspace/reified-rspaces/tensor-logic/design-rationale.md",
+        "docs/rspace/reified-rspaces/diagrams/35-tl-components.puml",
+        "docs/rspace/reified-rspaces/diagrams/35-tl-components.svg",
+        "docs/rspace/reified-rspaces/diagrams/36-tl-join-projection.puml",
+        "docs/rspace/reified-rspaces/diagrams/36-tl-join-projection.svg",
+        "docs/rspace/reified-rspaces/diagrams/37-tl-grammar-statements.puml",
+        "docs/rspace/reified-rspaces/diagrams/37-tl-grammar-statements.svg",
+        "docs/rspace/reified-rspaces/diagrams/38-tl-grammar-expressions.puml",
+        "docs/rspace/reified-rspaces/diagrams/38-tl-grammar-expressions.svg",
+        "docs/rspace/reified-rspaces/diagrams/39-tl-value-abi.puml",
+        "docs/rspace/reified-rspaces/diagrams/39-tl-value-abi.svg",
+        "docs/rspace/reified-rspaces/diagrams/40-tl-static-checks.puml",
+        "docs/rspace/reified-rspaces/diagrams/40-tl-static-checks.svg",
+        "docs/rspace/reified-rspaces/diagrams/41-tl-scope-rule.puml",
+        "docs/rspace/reified-rspaces/diagrams/41-tl-scope-rule.svg",
+        "docs/rspace/reified-rspaces/diagrams/42-tl-broadcast-matmul.puml",
+        "docs/rspace/reified-rspaces/diagrams/42-tl-broadcast-matmul.svg",
+        "docs/rspace/reified-rspaces/diagrams/43-tl-evaluation-order.puml",
+        "docs/rspace/reified-rspaces/diagrams/43-tl-evaluation-order.svg",
+        "docs/rspace/reified-rspaces/diagrams/44-tl-ziv-loop.puml",
+        "docs/rspace/reified-rspaces/diagrams/44-tl-ziv-loop.svg",
+        "docs/rspace/reified-rspaces/diagrams/45-tl-semi-naive.puml",
+        "docs/rspace/reified-rspaces/diagrams/45-tl-semi-naive.svg",
+        "docs/rspace/reified-rspaces/diagrams/46-tl-normalization-pipeline.puml",
+        "docs/rspace/reified-rspaces/diagrams/46-tl-normalization-pipeline.svg",
+        "docs/rspace/reified-rspaces/diagrams/47-tl-gslt-categories.puml",
+        "docs/rspace/reified-rspaces/diagrams/47-tl-gslt-categories.svg",
+        "docs/rspace/reified-rspaces/diagrams/48-tl-identity-install.puml",
+        "docs/rspace/reified-rspaces/diagrams/48-tl-identity-install.svg",
+        "docs/rspace/reified-rspaces/diagrams/49-tl-score-query.puml",
+        "docs/rspace/reified-rspaces/diagrams/49-tl-score-query.svg",
+        "docs/rspace/reified-rspaces/diagrams/50-tl-vector-eval.puml",
+        "docs/rspace/reified-rspaces/diagrams/50-tl-vector-eval.svg",
+        "docs/rspace/reified-rspaces/diagrams/51-tl-set-at-a-time.puml",
+        "docs/rspace/reified-rspaces/diagrams/51-tl-set-at-a-time.svg",
+        "docs/rspace/reified-rspaces/diagrams/52-tl-admission.puml",
+        "docs/rspace/reified-rspaces/diagrams/52-tl-admission.svg",
+        "docs/rspace/reified-rspaces/diagrams/53-tl-error-codes.puml",
+        "docs/rspace/reified-rspaces/diagrams/53-tl-error-codes.svg",
+        "docs/rspace/reified-rspaces/diagrams/54-tl-verification-pipeline.puml",
+        "docs/rspace/reified-rspaces/diagrams/54-tl-verification-pipeline.svg",
+        "scripts/check-reified-rspaces-ALL.sh",
+        "scripts/verify-reified/checker-commands.txt"
+      ]
     }
   }
 }

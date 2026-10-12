@@ -2358,6 +2358,13 @@
         "rspace++/tests/reified_space_store_handle_props.rs",
         "rholang/src/rust/interpreter/reified/runtime.rs"
       ]
+    },
+    "p10": {
+      "description": "Phase P10, the formal-verification closure, the documents, the examples, the benchmarks and the FIPS matrix (design v2, plan decision 85). Step S1 adds no Rust code. Each later step adds its tests here, and its sources if it must change production code.",
+      "sources": [],
+      "entry_points": [],
+      "tests": [],
+      "property_files": []
     }
   }
 }

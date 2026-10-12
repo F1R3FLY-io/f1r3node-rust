@@ -1,0 +1,44 @@
+python3 scripts/verify-reified/run-checker-tests.py test_checkers test_closure test_doc_lint
+python3 scripts/verify-reified/check-closure.py modeled
+python3 scripts/verify-reified/check-closure.py invariants
+python3 scripts/verify-reified/check-closure.py entry-points
+python3 scripts/verify-reified/check-closure.py docs
+python3 scripts/verify-reified/check-closure.py ledger-copy
+python3 scripts/verify-reified/check-closure.py ledger-copy-controls
+python3 scripts/verify-reified/check-closure.py audit --script scripts/audit/check-rocq-line-refs.sh
+python3 scripts/verify-reified/check-closure.py audit --script scripts/audit/check-source-line-refs.sh
+python3 scripts/verify-reified/check-consensus-checklist.py --milestone p5
+python3 scripts/verify-reified/check-consensus-checklist.py --milestone d47
+python3 scripts/verify-reified/check-consensus-checklist.py --milestone p6
+python3 scripts/verify-reified/check-consensus-checklist.py --milestone p7
+python3 scripts/verify-reified/check-consensus-checklist.py --milestone p8
+python3 scripts/verify-reified/check-consensus-checklist.py --milestone p9
+python3 scripts/verify-reified/check-consensus-checklist.py --milestone p10
+python3 scripts/verify-reified/check-complete.py --phase p4
+python3 scripts/verify-reified/check-complete.py --phase p5
+python3 scripts/verify-reified/check-complete.py --phase d47
+python3 scripts/verify-reified/check-complete.py --phase p6
+python3 scripts/verify-reified/check-complete.py --phase p7
+python3 scripts/verify-reified/check-complete.py --phase p8
+python3 scripts/verify-reified/check-complete.py --phase p9
+python3 scripts/verify-reified/check-complete.py --phase p10
+python3 scripts/verify-reified/check-complete.py --production-scan
+python3 scripts/verify-reified/check-footprint.py --policy p10
+python3 scripts/verify-reified/check-model-map.py
+python3 scripts/verify-reified/check-model-map.py --map formal/reified-rspaces-model-map-p4.json
+python3 scripts/verify-reified/check-model-map.py --map formal/reified-rspaces-model-map-p5.json
+python3 scripts/verify-reified/check-model-map.py --map formal/reified-rspaces-model-map-d47.json
+python3 scripts/verify-reified/check-model-map.py --map formal/reified-rspaces-model-map-p6.json
+python3 scripts/verify-reified/check-model-map.py --map formal/reified-rspaces-model-map-p7.json
+python3 scripts/verify-reified/check-model-map.py --map formal/reified-rspaces-model-map-p8.json
+python3 scripts/verify-reified/check-invariant-map.py --phase D47
+python3 scripts/verify-reified/check-invariant-map.py
+python3 scripts/verify-reified/check-invariant-map.py --phase P5
+python3 scripts/verify-reified/check-invariant-map.py --phase P6
+python3 scripts/verify-reified/check-invariant-map.py --phase P7
+python3 scripts/verify-reified/check-invariant-map.py --phase P8
+python3 scripts/verify-reified/numeric_reference_receipt.py
+python3 scripts/verify-reified/check-test-port-ledger.py
+python3 scripts/verify-reified/generate-test-port-ledger.py --check
+bash scripts/check-reified-rspaces-patch-gate.sh
+python3 scripts/verify-reified/doc_lint.py
