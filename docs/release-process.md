@@ -392,7 +392,7 @@ flowchart LR
     C[Canary release] --> W[60h stability soak]
     W -->|pass| TC[Test net candidate]
     TC --> M{Consensus model}
-    M -->|CBC Casper| TN1[CBC Casper test net]
+    M -->|CbC Casper| TN1[CbC Casper test net]
     M -->|future model| TN2[Test net of that model]
     TN1 --> K{Compatible with the current shard?}
     K -->|yes| J[Join a mixed-release shard as a soaking node]
@@ -424,9 +424,15 @@ The Shard soak-in therefore tests cross-version compatibility. A test net candid
 
 #### One consensus model per test net
 
-All shards in one test net use the same consensus and state machine replication (SMR) model. Today, the only implemented model is CBC Casper, so one CBC Casper test net exists.
+All shards in one test net use the same consensus and state machine replication (SMR) model. Today, the only implemented model is CbC Casper, so one test net exists: the F1r3fly CbC Casper test net. Its design record is `docs/plans/test-net.md`.
+
+"F1r3fly CbC Casper" names the consensus protocol (`consensus_model: cbc-casper`). CbC stands for correct by construction. Used alone, "CbC" names the verification process in the Glossary.
 
 The roadmap modularizes consensus behind a consensus-neutral boundary (branch `feature/consensus-neutral-boundary`, and `docs/artifacts/f1r3fly-consensus-neutral-sm.md`). Each additional model gets its own test net. A test net candidate enrolls only in the test net of its own model. A test net never mixes models, even across shards.
+
+The roadmap names three further models: Casanova, Cordial Miners, and RGB. Each one gets its own test net design record before its first test net candidate. That record defines what a shard, an Anchor, a soaking slot, and a compatibility check mean for the model. RGB runs as a peer-clique sidecar that anchors to Bitcoin single-use seals and Lightning, so its shard and Anchor meanings differ.
+
+The model-neutral parts of this process stay the same for every model. These parts are the 60h stability soak, the test net candidate, the Shard soak-in gate, and the candidate lifecycle (Section 12.2).
 
 The candidate evidence can carry a `consensus_model` field. An absent field means `cbc-casper`, so existing canary evidence stays valid and regenerates byte for byte. The `test-net-candidate.json` marker always records the model.
 
@@ -446,7 +452,7 @@ The image digest of that stable release seeds all three Anchors of the first sha
 
 A shard holds one soaking node at a time. A new test net candidate waits when the soaking slot is busy.
 
-When the slot frees, only the newest waiting test net candidate enrolls. Each older waiting test net candidate becomes superseded. A superseded candidate keeps its canary tag and its evidence, but it cannot enroll or promote.
+The queue keeps the newest waiting test net candidate of each release line. The standard line is one release line, and each Deployment Train is another. When the slot frees, the waiting candidates enroll in arrival order. A newer candidate supersedes only an older waiting candidate of its own line. A superseded candidate keeps its canary tag and its evidence, but it cannot enroll or promote.
 
 When a candidate promotes, each other candidate with the same target version also becomes superseded. The stable version is no longer available to those candidates (Section 5).
 
@@ -469,7 +475,7 @@ Phase 6 sets these parameters, when the test net exists and real behavior can in
 
 The test net candidate entry point, the mixed-release shard rule, the one-model-per-test-net rule, and the new-shard rule for incompatible releases become binding at ratification. The first-shard rule, the soaking slot queue, and the gates before enrollment become binding at the same ratification. The soaking-node versus Anchor distinction stays binding now.
 
-**Follow-on:** a future change can separate the Casper consensus into its own repository. The CBC Casper test net will then consume consensus releases from that repository.
+**Follow-on (decided 2026-10-11):** The modular replication boundary (branch `feature/consensus-neutral-boundary`) lets each model define its own soak. The F1r3fly CbC Casper implementation will move from this repository to a new repository. The system-integration repository then brings it into the soak. The F1r3fly CbC Casper test net will then consume consensus releases from that repository.
 
 ### 12.2 Candidate lifecycle (proposed 2026-10-11, pending ratification)
 
@@ -483,7 +489,7 @@ stateDiagram-v2
     StabilitySoak --> TestNetCandidate: pass, or regress accepted by a maintainer
     StabilitySoak --> Rejected: soak fails
     TestNetCandidate --> Queued: soaking slot busy
-    Queued --> Superseded: a newer test net candidate waits
+    Queued --> Superseded: a newer candidate of the same line waits
     TestNetCandidate --> CompatibilityCheck: slot free, enrollment gates pass
     Queued --> CompatibilityCheck: slot frees
     CompatibilityCheck --> SoakingIn: joins a shard or starts a new shard
@@ -706,7 +712,8 @@ The first planned use is the cost-accounting train from pull request #216.
 | Shard soak-in fails (proposed, Section 12.1) | Do not promote. Remove the soaking nodes from the test net |
 | Test net candidate is incompatible with its shard (proposed, Section 12.1) | Start a new shard with a fresh genesis in the test net of the same consensus model |
 | No eligible canary at the Friday slot (proposed, Section 10) | Run a source-mode soak on `master` as evidence only. No test net candidate results |
-| Soaking slot is busy (proposed, Section 12.1) | Queue the test net candidate. Enroll only the newest waiting candidate when the slot frees |
+| Soaking slot is busy (proposed, Section 12.1) | Queue the test net candidate. Keep the newest waiting candidate of each release line, and enroll in arrival order |
+| Defect found after stable promotion (proposed, Section 12.1) | Fix forward with a new release. A test net operator can revert an Anchor slot only under the slot revert rule in `docs/plans/test-net.md` |
 | Candidate is superseded (proposed, Section 12.2) | Stop the candidate. Keep its tag and evidence |
 | Promotion stops after tag creation | Resume idempotently and verify every existing object |
 
@@ -873,7 +880,7 @@ The manifest validator and the stack checks (Section 13.2 steps 4 to 6) depend o
 
 If maintainers ratify the Section 12.1 amendment, these steps replace steps 1 to 4:
 
-1. Stand up the CBC Casper test net with mixed-release shards. The first stable release seeds the Anchors of the first shard.
+1. Stand up the F1r3fly CbC Casper test net with mixed-release shards. The first stable release seeds the Anchors of the first shard.
 2. Record the consensus model in the candidate evidence.
 3. Enroll each test net candidate after its 60h stability soak passes. The Friday slot selects the newest eligible `master` canary, and the soaking slot queue applies.
 4. Start a new shard with a fresh genesis for an incompatible test net candidate.

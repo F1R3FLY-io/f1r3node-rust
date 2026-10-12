@@ -191,7 +191,7 @@ The test net is the continuously running network of shards that hosts [Shard soa
 
 Under the proposed 2026-10-06 amendment (`docs/release-process.md` Section 12.1), each shard mixes releases: Anchors run earlier releases, and soaking nodes run a [test net candidate](#test-net-candidate). All shards in one test net use the same consensus and state machine replication (SMR) model. Each consensus model has its own test net.
 
-**Preferred usage.** Use this term for the standing shard network of one consensus model. Name the model when more than one test net exists, for example "the CBC Casper test net". *Avoid*: long-running quorum of shards, standing quorum, and continuously running shard quorum. *Distinguish from* the casper test-network fixture, which is an in-process test helper, not infrastructure.
+**Preferred usage.** Use this term for the standing shard network of one consensus model. Name the model when more than one test net exists, for example "the F1r3fly CbC Casper test net". Further models (Casanova, Cordial Miners, and RGB) each get their own test net. *Avoid*: long-running quorum of shards, standing quorum, and continuously running shard quorum. *Distinguish from* the casper test-network fixture, which is an in-process test helper, not infrastructure.
 
 ### Test net candidate
 
@@ -274,7 +274,7 @@ state. *Distinguish from* finalization distance from the block graph tip.
 
 Correct by Construction (CbC) is the development process that connects a correctness claim to implementation behavior, formal verification, and retained evidence.
 
-**Preferred usage.** Use CbC for this verification process. *Distinguish from* CBC Casper, which names the consensus protocol. *Distinguish from* [Construction](#construction), which names one evidence tier inside this process.
+**Preferred usage.** Use CbC for this verification process. *Distinguish from* F1r3fly CbC Casper, which names the consensus protocol (`consensus_model: cbc-casper`). In that name, CbC qualifies the protocol. Used alone, CbC names this verification process. *Distinguish from* [Construction](#construction), which names one evidence tier inside this process.
 
 ### Work bound
 

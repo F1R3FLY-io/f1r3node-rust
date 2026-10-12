@@ -1,6 +1,6 @@
-# Test Net Design (EPIC-014)
+# F1r3fly CbC Casper Test Net Design (EPIC-014)
 
-- **Status:** Draft for review, 2026-10-06. Updated 2026-10-11 with candidate selection, the first shard, and the soaking slot queue
+- **Status:** Draft for review, 2026-10-06. Updated 2026-10-11 with candidate selection, the first shard, the soaking slot queue, the resolved questions, and the consensus model provisions
 - **Task:** TASK-014-1 in `docs/ToDos.md`
 - **User story:** US-010 in `docs/UserStories.md`
 - **Governing text:** `docs/release-process.md` Section 12 and the proposed Section 12.1 amendment, Section 12.2, and the Section 10 candidate selection (pending ratification as TASK-014-5)
@@ -8,7 +8,11 @@
 
 ## 1. Scope
 
-This record designs the first test net: the CBC Casper test net. It covers the topology, the shard lifecycle, the enrollment flow, the compatibility check, and shard retirement. It also proposes values for the six deferred parameters in Section 12.1.
+This record designs one test net only: the **F1r3fly CbC Casper test net**. It applies to the CbC Casper consensus and state machine replication (SMR) model and to no other model. It covers the topology, the shard lifecycle, the enrollment flow, the compatibility check, and shard retirement. It also proposes values for the six deferred parameters in Section 12.1.
+
+**Terminology.** "F1r3fly CbC Casper" names the consensus protocol of this test net, and its `consensus_model` identifier is `cbc-casper`. CbC stands for correct by construction. Used alone, "CbC" still names the verification process in the Glossary, not a consensus model.
+
+In this record, "the test net" without a qualifier means the F1r3fly CbC Casper test net. The words shard, validator, Anchor, soaking slot, and bond have their CbC Casper meanings. Section 12 records the provisions for the other models: RGB, Casanova, and Cordial Miners.
 
 This record does not change a workflow, a script, or an OCI resource. TASK-014-2 builds the infrastructure after a maintainer accepts this design. TASK-014-6 changes the release workflows after a maintainer ratifies Section 12.1.
 
@@ -67,22 +71,32 @@ The layout reuses the two-VM structure of `scripts/remote/` (`oci-provision.sh`,
 
 ```mermaid
 stateDiagram-v2
-    [*] --> Genesis: shard created with three Anchors
+    [*] --> Genesis: genesis bonds four slot keys, three Anchor slots run
     Genesis --> Steady: Anchors finalize blocks
-    Steady --> Soaking: test net candidate bonds into the soaking slot
+    Steady --> Soaking: soaking slot starts the test net candidate digest
     Soaking --> Promoted: soak period and Anchor criteria pass
     Soaking --> Ejected: soak-in fails
-    Promoted --> Steady: oldest Anchor unbonds
-    Ejected --> Steady: soaking node unbonds and stops
+    Promoted --> Steady: oldest Anchor slot takes the candidate digest
+    Ejected --> Steady: soaking slot stops, its data is wiped
     Steady --> Retiring: retirement rule applies
     Retiring --> [*]
 ```
 
+**Fixed slots (decided 2026-10-11).** Genesis bonds four slot keys: Anchor 1, Anchor 2, Anchor 3, and the soaking slot. The bonds never change. Only the image digest of each slot changes, as `scripts/remote/testnet-slots.sh` records.
+
+A Shard soak-in therefore does not use dynamic PoS bonding. The slashing suite and the bonding integration tests cover that path.
+
 A shard holds one soaking node at a time. A weekly release cadence and a soak period of five days or less fit this limit.
 
-A test net candidate that arrives while the soaking slot is busy waits in a queue. When the slot frees, only the newest waiting candidate enrolls, and each older waiting candidate becomes superseded (release-process Sections 12.1 and 12.2).
+A test net candidate that arrives while the soaking slot is busy waits in a queue. The queue keeps the newest waiting candidate of each release line: the standard line and each Deployment Train. When the slot frees, the waiting candidates enroll in arrival order. A newer candidate supersedes only an older waiting candidate of its own line (release-process Sections 12.1 and 12.2).
 
-When a soaking node becomes an Anchor, the oldest Anchor unbonds and stops. The shard keeps four validators. Each promotion thus moves the release mix forward by one release.
+When the soaking node passes, the oldest Anchor slot restarts with the candidate digest on its existing node data. This step tests the in-place upgrade path that operators use. The soaking slot then stops, and its data is wiped. The next candidate in the soaking slot syncs from the shard, which tests the sync path. Each promotion thus moves the release mix forward by one release.
+
+### 4.1 Slot revert (decided 2026-10-11)
+
+A release never rolls back. A defect found after promotion needs a new release (fix forward).
+
+An operator can revert one Anchor slot to its previous digest as a test net recovery step. The revert is allowed only when the newer release declares no storage-format change (Section 6). Otherwise, the operator stops the slot, wipes its data, and lets it sync again on the newest good release. The operator records each revert or wipe, with its reason, in EPIC-014.
 
 ## 5. Enrollment flow
 
@@ -93,7 +107,7 @@ sequenceDiagram
     participant Soak as 60h stability soak
     participant Rel as Canary prerelease
     participant SI as soak-in.yml
-    participant TN as CBC Casper test net
+    participant TN as CbC Casper test net
     participant RC as release.yml
     Soak->>Rel: upload test-net-candidate.json
     Rel->>SI: trigger enrollment
@@ -101,7 +115,7 @@ sequenceDiagram
     SI->>TN: start candidate as read-only observer
     TN-->>SI: compatibility check result
     alt compatible
-        SI->>TN: bond candidate into the soaking slot
+        SI->>TN: start candidate digest in the soaking slot
     else declared incompatible
         SI->>TN: create new shard with fresh genesis
     else undeclared failure
@@ -120,10 +134,10 @@ The compatibility check decides between joining a shard and starting a new shard
 
 **Proposed rule:** Incompatibility is declared, not inferred.
 
-1. A release that changes the wire format, the block format, or the genesis state declares this in its candidate evidence. The exact field is set during implementation, for example `requires_fresh_genesis: true`.
+1. A release that changes the wire format, the block format, or the genesis state declares this in its candidate evidence. The exact field is set during implementation, for example `requires_fresh_genesis: true`. A release that changes the on-disk storage format (LMDB, RSpace, or the WAL) declares this in a second field, for example `storage_format_changed: true`. The second field controls the slot revert in Section 4.1. It does not send the candidate to a new shard.
 2. A declared candidate goes directly to a new shard.
 3. An undeclared candidate first runs as a read-only observer on the current shard. It must sync to the last finalized block and replay a fixed window of recent blocks with identical post-state hashes.
-4. An undeclared candidate that passes the check bonds into the soaking slot.
+4. An undeclared candidate that passes the check starts in the soaking slot, with the bonded soaking-slot key.
 5. An undeclared candidate that fails the check fails its Shard soak-in. A maintainer can add the declaration and start enrollment again.
 
 **Proposed replay window:** 200 blocks. With the default epoch length of 10, this window covers 20 epoch boundaries.
@@ -187,6 +201,7 @@ The promotion controller checks this document as it checks other gate documents.
 - The HTTP API ports that export metrics and the Prometheus port are not public. Prometheus scrapes the nodes over the VCN.
 - The deploy workflow uses short-lived credentials from the `release-credentials` environment.
 - TASK-014-4 opens read-only observer endpoints to partners. Partners never receive validator access.
+- **First partner access (decided 2026-10-11):** Partners get read-only access to the gRPC and HTTP API of the observer on the main shard. They reach no validator, no Prometheus, and no SSH. Partners see mixed-release behavior, including the soaking candidate.
 
 ## 11. Cost
 
@@ -194,14 +209,57 @@ Two VMs run all the time, with block volumes. The OCI budget alerts from the run
 
 ## 12. Consensus models
 
-This design covers the CBC Casper test net only. A model from the consensus-neutral boundary roadmap gets its own test net with its own VCN, shards, and keys. It reuses this lifecycle, the enrollment flow, and the evidence format. The `consensus_model` field in the gate documents selects the test net.
+This design covers the F1r3fly CbC Casper test net only. The platform is designed for more than one consensus and SMR model. `docs/artifacts/f1r3fly-consensus-neutral-sm.md` and the branch `feature/consensus-neutral-boundary` describe the other models as ordering media in front of the same execution layer.
 
-## 13. Open questions
+### 12.1 Consensus model registry
 
-1. Can a release roll back while it is an Anchor, or does a defect found after promotion always need a new release?
-2. Does the soaking node bond with real PoS stake from a test net wallet, or does genesis reserve a fixed bond for the soaking slot?
-3. Which partners need access first, and do they need a separate shard (TASK-014-4)?
-4. Does a Deployment Train candidate enroll in the same shard as a standard candidate?
+| Model | `consensus_model` identifier | Ordering medium | State in this repository | Test net |
+|---|---|---|---|---|
+| CbC Casper | `cbc-casper` | Multi-parent PoS block DAG | Implemented in the `casper` crate | This record |
+| Casanova | `casanova` (proposed) | Leaderless optimistic PoS block DAG | Specified, not implemented. An adapter is in progress | Not designed |
+| Cordial Miners | `cordial-miners` (proposed) | Blocklace (partial order, then τ total order) | Cited only | Not designed |
+| RGB | `rgb` (proposed) | Peer-clique sidecar that anchors to Bitcoin single-use seals and Lightning, with client-side validation | Private F1r3fly-RGB tree, not in this repository | Not designed |
+
+Today the release scripts accept only `cbc-casper`. An absent `consensus_model` field means `cbc-casper`. A new identifier enters the scripts only when its model has an implementation and a ratified test net design.
+
+### 12.2 Provisions for other models
+
+These rules keep the CbC Casper design from blocking the other models:
+
+1. Each model gets its own test net, with its own VCN, keys, metrics store, and design record. A test net never mixes models, even across shards.
+2. A test net candidate enrolls only in the test net of its own `consensus_model`. The gate documents (`test-net-candidate.json` and `shard-soak-in-evidence.json`) already record the model.
+3. The release process stays model-neutral: the 60h stability soak, the test net candidate, the Shard soak-in gate, and the candidate lifecycle. Each model's design record defines what "shard", "Anchor", "soaking slot", and "compatibility" mean for that model.
+4. The model-specific parts of this record do not transfer by default. These parts are the four-validator topology, the fixed genesis bonds, the n ≥ 3f + 1 bound, the replay check, and the Anchor criteria.
+
+### 12.3 Model modules and their soaks (decided 2026-10-11)
+
+The branch `feature/consensus-neutral-boundary` defines a modular replication boundary. That branch tracks it as EPIC-022, and the ToDos of this branch mirror it as EPIC-025. A shard binds one model at start, and the binding never changes.
+
+Each model defines its own soak as part of the model. The 60h stability soak and the Shard soak-in of a model use the soak definition of that model.
+
+The F1r3fly CbC Casper implementation now lives in the Rust code of this repository. It will move to a new repository. The system-integration repository (`../system-integration`) then brings that implementation into the soak, as it brings the node image today. The test net then takes F1r3fly CbC Casper releases from the new repository.
+
+When the move happens, three parts of this record change. These parts are the source of the test net candidate, the slot images, and the system-integration pin of the soak. The test net topology, lifecycle, and gates stay the same.
+
+Notes for each model:
+
+- **Casanova** is a leaderless PoS block DAG. A validator shard with Anchors and a soaking slot can probably carry over, but its finality and Anchor criteria differ.
+- **Cordial Miners** uses a blocklace and needs no Reliable Broadcast. A miner set can take the place of the validator set. The Anchor criteria must measure τ-order progress instead of last-finalized-block lag.
+- **RGB** runs as a peer-clique sidecar. It anchors to Bitcoin single-use seals and to Lightning, and validation is client-side. An RGB test net therefore needs a Bitcoin test network and Lightning nodes beside the peer clique. Its design record defines what "mixed-release shard" and "Anchor" mean for a peer clique. RGB follows the same release process as the other models (decided 2026-10-11).
+
+## 13. Questions
+
+### 13.1 Resolved (2026-10-11)
+
+1. **Rollback:** Releases fix forward. An operator can revert an Anchor slot only when the release declares no storage-format change (Section 4.1).
+2. **Bonding:** Genesis bonds four fixed slot keys. Only digests change. Promotion moves the candidate digest into the oldest Anchor slot (Section 4).
+3. **First partner access:** Read-only observer API on the main shard (Section 10). A stable-only partner shard with deploy access stays open for TASK-014-4.
+4. **Deployment Trains:** Train candidates use the same shard and soaking slot. The queue keeps the newest waiting candidate of each release line (Section 4).
+
+### 13.2 Open
+
+1. Which partners get access first, and when does a partner need deploy access?
+2. Does one f1r3node release that carries more than one consensus model soak in the test net of each model before stable promotion?
 
 ## 14. Implementation state
 
