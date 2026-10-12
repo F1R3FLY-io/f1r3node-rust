@@ -7,6 +7,7 @@
 - G1, the funding check before execution, is a work item of epic 8946. Two implementation steps of G1 build this design. Step G1-4a adds the analysis to the `rholang` crate. Step G1-4b adds the check to the `casper` crate.
 - Step G1-4a implements the analysis, as decision record DR-122 (the linear cost estimate) records. Step G1-4b implements the check, as DR-123 (the check before execution) records.
 - Step G1-6 makes the check live in play and in every replay, as DR-124 (the live check of the client's demand) records. Since step G1-6, the check reserves only the client's demand (Section 6).
+- Step G1-7 enforces the guard of Section 8.3 for one offer per block. Implementation note 2 of DR-65 (same-block offers that share a purse) records it.
 - This document is the reference for the amended linear cost estimate.
 
 **Basis.**
@@ -653,6 +654,13 @@ Every purse $`p`$ in the scope of the guard must satisfy:
 
 An earlier amendment, decision B3, also required the balance after execution to cover the member's own hold. That condition existed only because of the floor. With hold equal to debit, DR-65 item 5 is exact, and B3 is no longer needed.
 
+**Status since step G1-7.** Play and replay enforce the guard for one offer per block, with no later holds (implementation note 2 of DR-65). [C]
+
+- **The guard.** `held_capacity_guard` in `gate.rs` checks the inequality above with checked arithmetic, for every purse of the debits and the later holds.
+- **The inputs.** The debit of each custody is the acquisition plus the fee of the settlement capture on the success path. The balances come from the settlement root, where the run has changed them.
+- **Play.** The producer checks the guard right after the capture of the success path, before any state change. If the guard fails, the producer resets the run to its execution root. It drops the births of the run, its grant issuances, their log and its mergeable map. It then settles the run as a user failure, with the capacities at $`R_0`$ (Section 16, decision U3).
+- **Replay.** A committed `UserFailure` for a run without a user failure claims a guard failure. Replay recomputes the success path and the guard at the root after the run. It accepts the claim only if the guard fails, and then it settles the rollback from the execution root.
+
 ### 8.4 Several offers per block
 
 Several offers per block (G2) need one more rule, which replaces the floor. [I] Each member's funding capacity on each purse is capped, on the success path and on the rollback path. Let $`\mathrm{balance}(p)`$ be the balance of $`p`$ at the settlement root on the success path, and at $`R_{i-1}`$ on the rollback path. The cap of member $`i`$ on purse $`p`$ is:
@@ -1062,6 +1070,7 @@ The verification follows the bar of this branch: formal models with negative con
 - `PlanComputeDominates.v` proves that the compute row of the plan is at least the row of the vector for every lane (`plan_compute_dominates_vector`). So the plan's row bounds the realized compute (`plan_bounds_realized_compute`, DR-122 item 7).
 - `BoundKindSoundness.v` proves that the check never treats an incomplete estimate as complete, and that a rollback after an overrun has no effect. Step G1-6 extends it to client and foreign lanes (DR-124). A certified estimate has demand on client lanes only (`certified_estimate_has_only_client_lanes`). A foreign lane with demand forces an incomplete estimate and a hold of the signed limit (`foreign_lane_forces_incomplete`, `foreign_lane_holds_the_signed_limit`). The limit test reads the client's demand (`limit_test_uses_client_demand`). A negative control keeps an estimate with a foreign lane complete, and its run passes the certified bound unpaid. The G1-6 fix makes a lane a client lane when a source is located at it or permits it (`client_iff_located_or_permitted`, `permitted_lane_is_client`). It adds the placement of the client lanes and proves dodge freedom: fewer permitted classes reject the offer or keep its decision (`narrowing_rejects_or_keeps_the_decision`). A sixth negative control excludes a permitted lane by class, and a narrowed offer lowers its certified bound and runs unpaid.
 - The guard lemmas of DR-65 are `group_holds_prevent_overdraft`, `held_capacity_guard_preserves_later_holds` and `group_decision_permutation_invariant`. They are restated for settlement without a floor, with the capacity cap of Section 8.4 on both paths.
+- `HeldCapacityGuard.v` (step G1-7) proves the guard of one member without a floor. It proves `held_capacity_guard_preserves_later_holds`, `guard_implies_vault_reservation`, `single_member_guard_is_vault_condition` and `rollback_charge_fits_restored_balance`. `replay_accepts_exactly_the_honest_class` shows that the replay of a committed outcome accepts exactly the class that an honest producer publishes. The group lemmas follow in steps G2-3 and G2-4.
 
 **Negative controls.** Each control is a deliberately broken variant that a witness must refute.
 
@@ -1077,6 +1086,9 @@ The verification follows the bar of this branch: formal models with negative con
 - A URI level treated as fresh inside a receive body.
 - A poison check that flags the bound levels of a receive inside its own body.
 - A rollback charge without the capacity cap. It must break `held_capacity_guard_preserves_later_holds`.
+- The condition of SystemVault alone, which settles the example of Section 8.3 and loses the later hold (step G1-7).
+- Settlement without the guard, which rejects a self-drain with no charge after all the work ran (step G1-7).
+- A replay that trusts the failure class of the evidence. It accepts the rollback of a successful run, which drops the effects of the run and still charges it (step G1-7).
 - A guard check at base 0, which rejects a guard on the received value (DR-122 item 8).
 - The rule that calls every quote static, which gives the quote of a matched variable two values in two runs (DR-122 item 11).
 - A resolution at shift 0 followed by a substitution under a positive shift, which loses the `locally_free` prefix of the reducer (DR-122 item 11).
@@ -1098,7 +1110,9 @@ The verification follows the bar of this branch: formal models with negative con
 - The level counts of the binder machine equal those of the resolver on the Rholang corpus.
 - Play and replay reach the same decision. The outcome of the check does not depend on earlier budget use. The URN maps of play and replay are equal.
 - Settlement evidence has hold equal to debit and refund 0. Balances satisfy post-state balance equal to pre-state balance minus debit.
-- A self-drain becomes a charged user failure, and the receipts of producer and validators agree.
+- A self-drain becomes a charged user failure, and the receipts of producer and validators agree. Step G1-7 adds this test. The balance after the block is the restored balance minus the charge, and the drained transfer moves nothing.
+- A producer that claims a guard failure while the guard holds gets its block rejected by every validator (step G1-7).
+- Property tests of the guard (step G1-7). The guard equals the pointwise inequality. With no later holds, it equals the condition of SystemVault. The rollback charge fits the restored balance when realized use is at most the estimate.
 - A property test of feasibility. Assume that the realized use is at most the estimate for every lane and class, and that balances do not change. Then the post-execution selection succeeds. The capacity is the balance in G1, and the balance minus later holds in G2.
 - The 64-source test passes under the committed caps.
 - The tests of step G1-6 (DR-124):

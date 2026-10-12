@@ -4194,6 +4194,86 @@ moves the single-offer play and replay code and changes no behavior.
   source-line audit reports the same 57 older mismatches of 502 citations
   before and after.
 
+**Implementation note 2: the held-capacity guard with one offer per block
+(G1-7, 2026-10-12).** Step G1-7 enforces item 5 for one offered member per
+block. There are no later holds, so the guard is the condition under which
+SystemVault reserves each debit (design section 8.3). Decision B3 stays
+superseded. Steps G2-2 and G2-4 add the later holds.
+
+- **The purpose.** A member whose own code spends the funds that its
+  settlement needs becomes a charged user failure. Before G1-7, such a
+  self-drain ended with "wallet settlement rejected" after all the work, and
+  the work was free, against P1:1990-1992 and P1:2301-2302.
+- **The guard.** `held_capacity_guard` in `gate.rs` checks
+  $`\mathrm{balance}_{\mathrm{after}}(p) \geq \mathrm{debit}(p) + \mathrm{later}(p)`$
+  for every purse of the debits and the later holds. A purse that the
+  balances do not list has balance 0, and a sum that overflows fails its
+  purse. The function walks the two sorted key sets in one pass and returns
+  the failing purses in ascending order.
+- **The inputs.** `held_capacity.rs` takes the debit of each custody from the
+  settlement capture of the success path, as the acquisition plus the fee.
+  Settlement charges the same amounts. It reads the SystemVault balance of
+  each debited purse at the settlement root, where the run has changed it.
+  Play and replay read the same root.
+- **Play.** The producer runs a pass after execution. On the success path
+  it checks the guard right after the settlement capture, before any state
+  change. If the guard fails, `roll_back_for_guard` resets the runtime to the
+  execution root, as `abort` does. It drops the births of the run, its grant
+  issuances, their log and its mergeable map. A second pass then settles the
+  run as `UserFailure`. Its selection uses the capacities at $`R_0`$ (user
+  decision U3), and its settlement binds to the execution root.
+- **Replay (arbitration M2).** One flag, "user failure or guard failure",
+  reaches every site.
+  - The witness replay treats a committed `UserFailure` for a run without a
+    user failure as a claimed guard failure. A run with a user failure that
+    the block commits as a success still rejects.
+  - The flag selects the settlement root and skips the grant collection.
+  - `settle_replayed_candidate` recomputes the success path at the root after
+    the run (`success_path_debits`) and reads the balances there. It accepts
+    the claim only if the guard fails. It then drops the births of the run
+    and settles the rollback from the execution root.
+  - The outcome and the mergeable map follow the flag.
+  - A committed success needs no extra check. Its wallet settlement rejects a
+    short purse, and with one offer per block that condition is the guard.
+- **Test hooks.** These hooks exist only in builds with the feature
+  `test-utils`. The recorder keeps each guard outcome, and a hook of one node
+  makes its guard fail in play and in replay.
+- **Rocq.** `HeldCapacityGuard.v` proves the guard lemmas without a floor and
+  the replay rule, with three negative controls.
+- **Shared files.** The step changes no Casper file that the branch shares
+  with `dev`.
+
+- **Verification.**
+  - Rocq, with no axiom: `HeldCapacityGuard.v` proves `guard_true_iff`,
+    `held_capacity_guard_preserves_later_holds`,
+    `guard_implies_vault_reservation`, `single_member_guard_is_vault_condition`,
+    `rollback_charge_fits_restored_balance`, `rollback_keeps_later_holds`,
+    `settled_keeps_later_holds` and `replay_accepts_exactly_the_honest_class`.
+  - Three proved negative controls refute three wrong rules:
+    - the vault-only condition, with the example of design section 8.3
+    - settlement without the guard
+    - the replay that trusts the failure class of the evidence
+  - The proof gate with `COST_ACCOUNTING_ONLY=1` passes with 291 modules and
+    3347 closed assumption queries.
+  - Property tests of 256 cases in `execution/gate/tests.rs`:
+    - the guard equals the pointwise inequality
+    - with no later holds, the guard equals the condition of SystemVault
+    - the rollback charge fits the restored balance when realized use is at
+      most the estimate
+  - A unit test replays the example of design section 8.3.
+  - `casper/tests/api/offered_guard_api_test.rs`: a self-drain becomes a
+    charged user failure with equal receipts on every node. The balance is
+    the restored balance minus the charge, and the drained transfer moves
+    nothing. A later transfer that leaves enough funds settles normally. A
+    producer with a hook that makes its guard fail gets its block rejected
+    by the other validators, which find a holding guard.
+  - casper (nextest, release, 8 test threads): 1805 of 1809 tests pass with
+    the provisional caps, and 1803 of 1809 with the committed caps. The
+    failures are the known failures, at their earlier assertions.
+  - `cargo fmt --check`, the workspace doctests and
+    `cargo clippy --workspace --all-targets -- -D warnings` pass on the
+    commit tree.
+
 ## DR-66 — Protocol-6 test genesis is activated, and the legacy meter is retired
 
 **Status.** Adopted 2026-10-03 as decision D3 of epic 8946, by the user

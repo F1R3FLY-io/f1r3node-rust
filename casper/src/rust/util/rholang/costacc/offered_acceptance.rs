@@ -105,6 +105,17 @@ mod recorder {
         /// deploy sees an estimate without counts. A complete offer then runs
         /// under the certified bound 0 and passes it.
         ZeroEstimateHook,
+        /// Added by G1-7 (DR-65 item 5): the outcome of one held-capacity
+        /// guard on the success path. Play records its own guard, and replay
+        /// records the guard that it recomputes for a committed rollback.
+        HeldCapacityGuard {
+            role: OfferedCheckRole,
+            holds: bool,
+        },
+        /// Added by G1-7 (DR-65 item 5), a test hook of one node: the guard of
+        /// the deploy fails on that node, in play and in replay. A producer
+        /// with the hook claims a guard failure that other nodes reject.
+        ForceGuardFailureHook,
     }
 
     /// Added by G1-6 (DR-124): the path that ran a check before execution.

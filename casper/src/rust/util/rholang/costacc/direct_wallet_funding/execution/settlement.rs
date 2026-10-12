@@ -45,6 +45,10 @@ use crate::rust::util::rholang::costacc::supply_reader::{
 };
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 
+// Changed by G1-7 (DR-65 item 5): the producer passes the same inputs to the
+// pass after a failed held-capacity guard, so the inputs are copies of
+// references.
+#[derive(Clone, Copy)]
 pub struct NativeAttemptSettlementInput<'r, 's, 'p> {
     pub inventory: &'r NativePrepaidInventory<'s, 'p>,
     pub schedule: &'r PhloScheduleBinding<'r>,
@@ -52,6 +56,8 @@ pub struct NativeAttemptSettlementInput<'r, 's, 'p> {
     pub retained: &'r [PhloResourceAmount<'r>],
 }
 
+// Changed by G1-7 (DR-65 item 5): copied for the pass after a failed guard.
+#[derive(Clone, Copy)]
 pub struct NativeGrantSettlementInput<'a> {
     pub snapshot: &'a OfferedGrantSnapshot,
     pub verified: &'a VerifiedOfferedGrantSources,

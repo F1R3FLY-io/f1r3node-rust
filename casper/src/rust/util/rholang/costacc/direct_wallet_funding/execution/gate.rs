@@ -1014,5 +1014,68 @@ pub(super) fn place_holds(
     })
 }
 
+/// Added by G1-7 (DR-65 item 5, design §8.3): the held-capacity guard of one
+/// member at its settlement. Every purse in the debits or in the later holds
+/// must satisfy balance_after(p) ≥ debit(p) + later(p), where balance_after
+/// is the balance at the settlement root of the member. A purse that the
+/// balances do not list has balance 0, and a sum that overflows fails its
+/// purse. One offer per block (G1) passes no later holds, so the guard is
+/// the condition under which SystemVault reserves each debit. The error
+/// lists the failing purses in ascending order. The walk merges the two
+/// sorted key sets in one pass, with no recursion.
+pub(crate) fn held_capacity_guard(
+    balance_after: &BTreeMap<[u8; 32], u128>,
+    debits: &BTreeMap<[u8; 32], u128>,
+    later_holds: &BTreeMap<[u8; 32], u128>,
+) -> Result<(), Vec<[u8; 32]>> {
+    let mut failing = Vec::new();
+    let mut debit_entries = debits.iter().peekable();
+    let mut later_entries = later_holds.iter().peekable();
+    loop {
+        let (purse, debit, later) = match (debit_entries.peek(), later_entries.peek()) {
+            (None, None) => break,
+            (Some((purse, debit)), None) => {
+                let entry = (**purse, **debit, 0);
+                debit_entries.next();
+                entry
+            }
+            (None, Some((purse, later))) => {
+                let entry = (**purse, 0, **later);
+                later_entries.next();
+                entry
+            }
+            (Some((debit_purse, debit)), Some((later_purse, later))) => {
+                match debit_purse.cmp(later_purse) {
+                    std::cmp::Ordering::Less => {
+                        let entry = (**debit_purse, **debit, 0);
+                        debit_entries.next();
+                        entry
+                    }
+                    std::cmp::Ordering::Greater => {
+                        let entry = (**later_purse, 0, **later);
+                        later_entries.next();
+                        entry
+                    }
+                    std::cmp::Ordering::Equal => {
+                        let entry = (**debit_purse, **debit, **later);
+                        debit_entries.next();
+                        later_entries.next();
+                        entry
+                    }
+                }
+            }
+        };
+        let balance = balance_after.get(&purse).copied().unwrap_or(0);
+        match debit.checked_add(later) {
+            Some(required) if required <= balance => {}
+            _ => failing.push(purse),
+        }
+    }
+    match failing.is_empty() {
+        true => Ok(()),
+        false => Err(failing),
+    }
+}
+
 #[cfg(test)]
 mod tests;

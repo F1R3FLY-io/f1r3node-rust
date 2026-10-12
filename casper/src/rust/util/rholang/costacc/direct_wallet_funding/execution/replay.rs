@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::mem::size_of;
 use std::sync::Arc;
 
@@ -21,9 +21,10 @@ use models::rust::signed_phlo_deploy::OfferedFundedDeploy;
 use rholang::rust::interpreter::accounting::authority::AuthorityStackBirth;
 use rholang::rust::interpreter::accounting::costs::Cost;
 use rholang::rust::interpreter::accounting::economic_failure::classify_errors;
+use rholang::rust::interpreter::accounting::native_phlo_rules::NativePhloAcquisitionDemand;
 use rholang::rust::interpreter::accounting::phlo_controls::{
-    check_offered_phlo_controls, PhloControlsBinding, PhloFundingTerms, PhloOffer,
-    PhloScheduleBinding,
+    check_offered_phlo_controls, CheckedPhloControls, PhloControlsBinding, PhloFundingTerms,
+    PhloOffer, PhloScheduleBinding,
 };
 use rholang::rust::interpreter::accounting::phlo_execution::{
     check_counted_phlo_execution, check_phlo_funding_family, project_phlo_obligations, PhloFailure,
@@ -46,6 +47,7 @@ use rspace_plus_plus::rspace::merger::merging_logic::MergeType;
 use rspace_plus_plus::rspace::trace::event::Event;
 use tokio::sync::RwLock;
 
+use super::held_capacity::{capture_debits, GuardMember, GuardRole};
 use super::producer::{
     check_birth_positions, check_retained_origin, derive_birth_positions, derive_live_born_stacks,
     derive_retained_amounts, restore_retained_permissions,
@@ -80,9 +82,9 @@ use crate::rust::util::rholang::costacc::offered_grants::{
     grant_issue_definition, offered_grant_issue_call_limits, offered_grant_transition_limits,
 };
 use crate::rust::util::rholang::costacc::prepaid_receipts::{
-    NativePrepaidConsumption, NativePrepaidDemandInput, NativePrepaidInventoryLimits,
-    NativeRetainedReceiptRecords, NativeRetainedSettlementLimits, PrepaidReceiptBucket,
-    PrepaidReceiptChange, PrepaidReceiptLimits, PrepaidStackCaptureLimits,
+    NativePrepaidConsumption, NativePrepaidDemandInput, NativePrepaidInventory,
+    NativePrepaidInventoryLimits, NativeRetainedReceiptRecords, NativeRetainedSettlementLimits,
+    PrepaidReceiptBucket, PrepaidReceiptChange, PrepaidReceiptLimits, PrepaidStackCaptureLimits,
     PreparedNativeRetainedReceipts,
 };
 use crate::rust::util::rholang::costacc::production_limits::{
@@ -228,6 +230,51 @@ impl<'preflight, 'a> NativeOfferedAttempt<'preflight, 'a> {
             budget,
         )?;
         let inventory = captured_stacks.resource_inventory(inventory_limits, budget)?;
+        // Added by G1-7 (DR-65 item 5, arbitration M2): a claimed guard
+        // failure. The success path is recomputed at the root after the run,
+        // with the births of the run, and the balances are read at that root,
+        // as play reads them. The claim stands only if the guard fails. The
+        // rolled-back run then has no births, and it settles from the
+        // execution root.
+        if self.guard_claimed {
+            let post_run_root = self
+                .post_run_root
+                .ok_or_else(|| invalid("a claimed guard failure has no root after the run"))?;
+            let debits = self
+                .success_path_debits(
+                    manager,
+                    snapshot,
+                    SuccessPathInput {
+                        adopted: &adopted,
+                        schedule: &schedule,
+                        terms: selected_terms.bytes(),
+                        controls,
+                        inventory: &inventory,
+                        demand: &demand,
+                        post_run_root,
+                    },
+                    production,
+                    budget,
+                )
+                .await?;
+            let balances = manager
+                .purse_balances_at(snapshot, post_run_root, &debits, budget)
+                .await?;
+            let member = GuardMember {
+                deploy_id: &self.preflight.envelope_identity,
+                funding_root: &funding_root,
+                role: GuardRole::Replay,
+            };
+            if manager
+                .held_capacity_guard_outcome(member, &balances, &debits)
+                .is_ok()
+            {
+                return Err(invalid(
+                    "offered replay: the block commits a guard failure, but the held-capacity guard holds",
+                ));
+            }
+            self.evaluation.authority_stack_births.clear();
+        }
         let post_stacks = manager.read_measured_prepaid_stacks_with_births(
             settlement_root,
             &demand,
@@ -310,11 +357,19 @@ impl<'preflight, 'a> NativeOfferedAttempt<'preflight, 'a> {
             return Err(invalid("offered replay has a non-user economic failure"));
         }
         let user_failure = failures.contains(PhloFailure::User);
-        if user_failure != (evidence.failure_class == NativeCostFailureClass::UserFailure) {
+        // Changed by G1-7 (arbitration M2): one flag, "user failure or guard
+        // failure". The guard of a claimed guard failure failed above.
+        // if user_failure != (evidence.failure_class == NativeCostFailureClass::UserFailure) {
+        //     return Err(invalid("offered replay failure differs from commitment"));
+        // }
+        // let user_failures = [PhloFailure::User];
+        // let outcome = PhloOutcome::Accepted(if user_failure { &user_failures } else { &[] });
+        let rolled_back = user_failure || self.guard_claimed;
+        if rolled_back != (evidence.failure_class == NativeCostFailureClass::UserFailure) {
             return Err(invalid("offered replay failure differs from commitment"));
         }
         let user_failures = [PhloFailure::User];
-        let outcome = PhloOutcome::Accepted(if user_failure { &user_failures } else { &[] });
+        let outcome = PhloOutcome::Accepted(if rolled_back { &user_failures } else { &[] });
         let obligations =
             project_phlo_obligations(observed, outcome, limits.policy.funding.obligations)
                 .map_err(invalid)?;
@@ -627,7 +682,10 @@ impl<'preflight, 'a> NativeOfferedAttempt<'preflight, 'a> {
         }
         let final_root = completion?;
         let mergeable = (|| {
-            let mut mergeable = if user_failure {
+            // Changed by G1-7 (arbitration M2): a rolled-back run, by a user
+            // failure or by a guard failure, keeps no mergeable map of its own.
+            // let mut mergeable = if user_failure {
+            let mut mergeable = if rolled_back {
                 HashMap::new()
             } else {
                 std::mem::take(&mut self.evaluation.mergeable)
@@ -664,6 +722,160 @@ impl<'preflight, 'a> NativeOfferedAttempt<'preflight, 'a> {
             final_root,
             mergeable,
         })
+    }
+}
+
+/// Added by G1-7 (DR-65 item 5, arbitration M2): the inputs of the success
+/// path that `settle_replayed_candidate` already holds.
+struct SuccessPathInput<'r, 's, 'p> {
+    adopted: &'r AdoptedResourcePolicy,
+    schedule: &'r PhloScheduleBinding<'r>,
+    terms: &'r [u8],
+    controls: CheckedPhloControls<'r>,
+    inventory: &'r NativePrepaidInventory<'s, 'p>,
+    demand: &'r NativePhloAcquisitionDemand<'r>,
+    post_run_root: [u8; 32],
+}
+
+impl NativeOfferedAttempt<'_, '_> {
+    /// Added by G1-7 (DR-65 item 5, arbitration M2): the debits of the success
+    /// path of a run that the block commits as a guard failure. The function
+    /// repeats the measured settlement of `settle_replayed_candidate` at the
+    /// root after the run, with the births of the run and no failure, up to
+    /// the capture that settlement would charge. Play computes the same
+    /// capture before its own guard.
+    async fn success_path_debits(
+        &self,
+        manager: &RuntimeManager,
+        snapshot: &DirectWalletPolicySnapshot<'_, OfferedFundedDeploy>,
+        input: SuccessPathInput<'_, '_, '_>,
+        production: NativeOfferedProductionLimits,
+        budget: &HostWorkBudget,
+    ) -> Result<BTreeMap<[u8; 32], u128>, CasperError> {
+        let limits = production.family;
+        let post_stacks = manager.read_measured_prepaid_stacks_with_births(
+            input.post_run_root,
+            input.demand,
+            &self.evaluation.authority_stack_births,
+            production.stack_capture,
+            budget,
+        )?;
+        let born = derive_live_born_stacks(
+            &self.evaluation.authority_stack_births,
+            &post_stacks,
+            limits.retained.funding.births,
+            budget,
+        )?;
+        let permissions = restore_retained_permissions(
+            &snapshot.wallets().authorization().record().sources,
+            input.terms,
+            input.schedule.descriptor().classes.len(),
+            limits.measured.settlement.matching.execution,
+            budget,
+        )?;
+        let retained = derive_retained_amounts(
+            &permissions,
+            input.terms,
+            &born,
+            limits.retained.funding.cells,
+            budget,
+        )?;
+        check_retained_origin(
+            &permissions,
+            input.terms,
+            &retained,
+            &born,
+            limits.retained.funding.cells,
+            budget,
+        )?;
+        let selection =
+            input
+                .inventory
+                .select_measured_demand(input.demand, limits.measured.demand, budget)?;
+        let binding = input.inventory.bind_measured_demand(
+            NativePrepaidDemandInput {
+                expected_root: self.preflight.funding_root,
+                controls: input.controls,
+                demand: input.demand,
+                draws: selection.draws(),
+                demand_positions: selection.demand_positions(),
+            },
+            limits.measured.demand,
+            budget,
+        )?;
+        let observed = check_counted_phlo_execution(
+            input.controls,
+            binding.witness(),
+            limits.measured.settlement.matching.execution,
+        )
+        .map_err(invalid)?
+        .with_retained_acquisitions(&retained, budget)
+        .map_err(invalid)?;
+        let obligations = project_phlo_obligations(
+            observed,
+            PhloOutcome::Accepted(&[]),
+            limits.policy.funding.obligations,
+        )
+        .map_err(invalid)?;
+        let family_selection = select_rooted_native_family(
+            snapshot,
+            &obligations,
+            &self.evaluation.authority_events,
+            &self.evaluation.authority_byte_events,
+            limits,
+            budget,
+        )?;
+        let assignment = family_selection
+            .selected
+            .assignments()
+            .first()
+            .ok_or_else(|| invalid("the success path of a claimed guard failure has no case"))?;
+        let cases = [PhloFundingCase {
+            obligations: &obligations,
+            eligible: &family_selection.eligible,
+            assignment,
+        }];
+        let family = check_phlo_funding_family(
+            &family_selection.sources,
+            &cases,
+            family_selection.total_exposure_limit,
+            limits.policy.funding,
+        )
+        .map_err(invalid)?;
+        let intent = PhloFundingIntentBinding::new(
+            snapshot.wallets().authorization().record(),
+            limits.signed.intent,
+        )
+        .map_err(invalid)?;
+        let view = intent.view().map_err(invalid)?;
+        let terms = PhloFundingTerms {
+            required_owner_ceilings: input.controls.terms().required_owner_ceilings,
+            asset: input.controls.schedule().environment.asset,
+            schedule_commitment: input.controls.schedule().commitment,
+        };
+        let policy = snapshot
+            .bind_native_family_in_context(
+                &view,
+                &family,
+                terms,
+                limits.signed,
+                limits.policy,
+                input.adopted,
+                budget,
+            )
+            .map_err(invalid)?
+            .ok_or_else(|| invalid("the success path of a claimed guard failure has no policy"))?;
+        let checked = policy
+            .capture_settlement(
+                observed,
+                PhloOutcome::Accepted(&[]),
+                limits.measured.settlement.matching,
+                limits.measured.settlement.capture,
+                budget,
+            )
+            .map(|checked| checked.bind_execution_root(input.post_run_root))
+            .map_err(invalid)?;
+        capture_debits(checked.capture().amounts(), budget)
     }
 }
 
@@ -1567,15 +1779,42 @@ impl RuntimeManager {
             ));
         }
         let user_failure = failures.contains(PhloFailure::User);
-        if evaluation.native_phlo_usage != Some(evidence.phlo_used)
-            || user_failure != (evidence.failure_class == NativeCostFailureClass::UserFailure)
-        {
-            return Err(invalid(
-                "native offered witness differs from committed usage or failure",
-            ));
-        }
+        // Changed by G1-7 (DR-65 item 5, arbitration M2): one flag, "user
+        // failure or guard failure". A committed UserFailure for a run without
+        // a user failure claims a failed held-capacity guard.
+        // `settle_replayed_candidate` recomputes the guard and accepts the
+        // claim only if the guard fails. A run with a user failure that the
+        // block commits as a success still rejects.
+        // if evaluation.native_phlo_usage != Some(evidence.phlo_used)
+        //     || user_failure != (evidence.failure_class == NativeCostFailureClass::UserFailure)
+        // {
+        //     return Err(invalid(
+        //         "native offered witness differs from committed usage or failure",
+        //     ));
+        // }
+        let committed_failure = evidence.failure_class == NativeCostFailureClass::UserFailure;
+        let rolled_back = match (
+            evaluation.native_phlo_usage == Some(evidence.phlo_used),
+            user_failure,
+            committed_failure,
+        ) {
+            (false, _, _) | (true, true, false) => {
+                return Err(invalid(
+                    "native offered witness differs from committed usage or failure",
+                ));
+            }
+            (true, user, committed) => user || committed,
+        };
+        let guard_claimed = rolled_back && !user_failure;
         let exported = replay.export().await?;
-        let root = settlement_root(before, exported.root().clone(), user_failure);
+        let post_run_root: [u8; 32] = exported
+            .root()
+            .bytes()
+            .try_into()
+            .map_err(|_| invalid("native offered witness export root must be 32 bytes"))?;
+        // Changed by G1-7: the settlement root follows the combined flag.
+        // let root = settlement_root(before, exported.root().clone(), user_failure);
+        let root = settlement_root(before, exported.root().clone(), rolled_back);
         // Changed by G1-6 (DR-124): the replay reuses the runtime that it
         // spawned before the check.
         // let mut runtime = RuntimeOps::new(
@@ -1596,7 +1835,10 @@ impl RuntimeManager {
             .await;
         runtime.runtime.reset(&root).await?;
         super::check_execution_root(&root.bytes(), &runtime.runtime.get_root().await.bytes())?;
-        let grant_issuances = if user_failure {
+        // Changed by G1-7 (arbitration M2): a rolled-back run, by a user
+        // failure or by a guard failure, issues no grants.
+        // let grant_issuances = if user_failure {
+        let grant_issuances = if rolled_back {
             Vec::new()
         } else {
             runtime
@@ -1663,6 +1905,10 @@ impl RuntimeManager {
             grant_issuances,
             grant_issue_log: Arc::from(grant_log),
             gate,
+            // Added by G1-7 (arbitration M2): the guard of a claimed guard
+            // failure reads the root after the run.
+            post_run_root: Some(post_run_root),
+            guard_claimed,
         })
     }
 

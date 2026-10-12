@@ -3180,3 +3180,9 @@ async fn a_failed_offer_charge_survives_beside_another_signer() {
 // changes no Casper file that the branch shares with dev.
 #[path = "offered_admission_api_test.rs"]
 mod offered_admission_api_test;
+
+// Added by G1-7 (DR-65 item 5): the tests of the held-capacity guard with one
+// offer per block. The module is declared here and not in `api/mod.rs`, so
+// the step changes no Casper file that the branch shares with dev.
+#[path = "offered_guard_api_test.rs"]
+mod offered_guard_api_test;

@@ -72,6 +72,15 @@ pub struct NativeOfferedAttempt<'preflight, 'a> {
     /// Added by G1-6 (DR-124): the check before execution. Its resource bound
     /// and bound source bind every later control of the attempt.
     gate: OfferedGate,
+    /// Added by G1-7 (DR-65 item 5, arbitration M2): the root after the run,
+    /// where the held-capacity guard reads the balances. The witness replay
+    /// sets it from its export. Play reads its own settlement checkpoint.
+    post_run_root: Option<[u8; 32]>,
+    /// Added by G1-7 (arbitration M2): the witness replay found a committed
+    /// UserFailure for a run without a user failure, that is, a claimed guard
+    /// failure. `settle_replayed_candidate` accepts it only if the recomputed
+    /// guard fails.
+    guard_claimed: bool,
 }
 
 impl<'preflight, 'a> NativeOfferedAttempt<'preflight, 'a> {
@@ -93,6 +102,25 @@ impl<'preflight, 'a> NativeOfferedAttempt<'preflight, 'a> {
             &self.preflight.execution_root,
             &self.runtime.runtime.get_root().await.bytes(),
         )
+    }
+
+    /// Added by G1-7 (DR-65 item 5, arbitration M2): the rollback of a run
+    /// whose held-capacity guard failed. The runtime returns to the execution
+    /// root, as `abort` does. The births of the run, its grant issuances,
+    /// their log and its mergeable map go with it. The settlement then binds
+    /// to the execution root and charges the run as a user failure.
+    pub(super) async fn roll_back_for_guard(&mut self) -> Result<(), CasperError> {
+        let root = Blake2b256Hash::from_bytes(self.preflight.execution_root.to_vec());
+        self.runtime.runtime.reset(&root).await?;
+        check_execution_root(
+            &self.preflight.execution_root,
+            &self.runtime.runtime.get_root().await.bytes(),
+        )?;
+        self.evaluation.authority_stack_births.clear();
+        self.evaluation.mergeable.clear();
+        self.grant_issuances.clear();
+        self.grant_issue_log = Arc::from([]);
+        Ok(())
     }
 
     pub async fn read_measured_prepaid_stacks(
@@ -221,6 +249,9 @@ pub use gate::{
     gate_offered_candidate, InsufficientCause, OfferedEstimateKind, OfferedGate, OfferedGateInput,
     OfferedGateRejection,
 };
+
+// Added by G1-7 (DR-65 item 5): the inputs of the held-capacity guard.
+mod held_capacity;
 
 /// Added by DR-114: the bytes of external-service replies that one offered
 /// play may record. The replay telemetry and the clone-byte check of the
@@ -627,6 +658,10 @@ impl RuntimeManager {
             grant_issuances,
             grant_issue_log,
             gate,
+            // Added by G1-7: play reads the root after its run from its own
+            // settlement checkpoint, and it never claims a guard failure.
+            post_run_root: None,
+            guard_claimed: false,
         })
     }
 

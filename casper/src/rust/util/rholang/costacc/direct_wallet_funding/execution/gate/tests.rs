@@ -1536,3 +1536,193 @@ fn a_permitted_lane_without_a_permission_for_a_class_with_demand_rejects() {
     assert_eq!(gate.bound_source(), NativeBoundSource::SignedLimit);
     assert_eq!(gate.total_hold(), u128::from(unpermitted.limit()) * 2 + 1);
 }
+
+// ── The held-capacity guard (G1-7, DR-65 item 5) ──────────────────────────
+
+/// A purse key from a small tag.
+fn purse(tag: u8) -> [u8; 32] { [tag; 32] }
+
+/// Maps over four purses, with small amounts and amounts near the top of
+/// `u128`, so that both the inequality and the overflow of the sum occur.
+fn arb_purse_map() -> impl Strategy<Value = BTreeMap<[u8; 32], u128>> {
+    prop::collection::btree_map(
+        (0u8..4).prop_map(purse),
+        prop_oneof![0u128..=20, (u128::MAX - 20)..=u128::MAX],
+        0..=4,
+    )
+}
+
+/// The pointwise statement of the guard (design §8.3): the purses of the
+/// debits and the later holds where balance_after(p) < debit(p) + later(p),
+/// in ascending order. A sum that overflows fails its purse.
+fn pointwise_failures(
+    balances: &BTreeMap<[u8; 32], u128>,
+    debits: &BTreeMap<[u8; 32], u128>,
+    later: &BTreeMap<[u8; 32], u128>,
+) -> Vec<[u8; 32]> {
+    debits
+        .keys()
+        .chain(later.keys())
+        .copied()
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .filter(|purse| {
+            let required = debits
+                .get(purse)
+                .copied()
+                .unwrap_or(0)
+                .checked_add(later.get(purse).copied().unwrap_or(0));
+            let balance = balances.get(purse).copied().unwrap_or(0);
+            !matches!(required, Some(required) if required <= balance)
+        })
+        .collect()
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(256))]
+
+    /// The guard equals the pointwise inequality over every purse of the
+    /// debits and the later holds, and it lists exactly the failing purses.
+    #[test]
+    fn the_guard_equals_the_pointwise_inequality(
+        balances in arb_purse_map(),
+        debits in arb_purse_map(),
+        later in arb_purse_map(),
+    ) {
+        let failing = pointwise_failures(&balances, &debits, &later);
+        let expected = match failing.is_empty() {
+            true => Ok(()),
+            false => Err(failing),
+        };
+        prop_assert_eq!(held_capacity_guard(&balances, &debits, &later), expected);
+    }
+
+    /// With no later holds, as with one offer per block, the guard is the
+    /// condition under which SystemVault reserves each debit:
+    /// balance_after(p) ≥ debit(p) for every debited purse.
+    #[test]
+    fn with_no_later_holds_the_guard_is_the_vault_condition(
+        balances in arb_purse_map(),
+        debits in arb_purse_map(),
+    ) {
+        let vault = debits
+            .iter()
+            .all(|(purse, debit)| *debit <= balances.get(purse).copied().unwrap_or(0));
+        prop_assert_eq!(
+            held_capacity_guard(&balances, &debits, &BTreeMap::new()).is_ok(),
+            vault
+        );
+    }
+
+    /// The rollback charge fits the restored balance when realized use is at
+    /// most the estimate. With one offer per block the restored balance is
+    /// the balance at R0. The check placed the hold of the estimate there,
+    /// and the realized obligations, which a user failure charges in full,
+    /// are placed within the same capacities. So the guard over the restored
+    /// balances holds for the rollback debits.
+    #[test]
+    fn the_rollback_charge_fits_the_restored_balance(
+        case in arb_case(3),
+        realized in prop::collection::vec(0u64..=3, 3),
+    ) {
+        let case = Case { complete: true, ..case };
+        let onchain = signed_only(&case);
+        if decide_case(&case, &onchain).is_ok() {
+            let kept = case
+                .counts
+                .iter()
+                .zip(&realized)
+                .map(|((_, _, count), used)| (*count).min(*used) > 0)
+                .collect::<Vec<_>>();
+            let realized_counts = case
+                .counts
+                .iter()
+                .zip(&realized)
+                .map(|((lane, class, count), used)| (*lane, *class, (*count).min(*used)))
+                .filter(|(_, _, used)| *used > 0)
+                .collect::<Vec<_>>();
+            let realized_case = Case {
+                counts: realized_counts,
+                sources: case
+                    .sources
+                    .iter()
+                    .map(|source| SourceCase {
+                        permits: source
+                            .permits
+                            .iter()
+                            .zip(&kept)
+                            .filter(|(_, kept)| **kept)
+                            .map(|(permitted, _)| *permitted)
+                            .collect(),
+                        ..source.clone()
+                    })
+                    .collect(),
+                ..case.clone()
+            };
+            let realized_case = Case {
+                extra: case.limit() - realized_case.bound(),
+                ..realized_case
+            };
+            let fitted = with_instance(&realized_case, &onchain, |estimate, terms, funding| {
+                let host = unlimited();
+                let placed =
+                    with_estimated_obligations(estimate, terms, estimate.bound_phlo, limits(), &host, |obligations| {
+                        let eligible = eligibility(obligations, funding, limits(), &host)?;
+                        place_holds(
+                            obligations,
+                            &funding.sources,
+                            &eligible,
+                            &funding.onchain,
+                            funding.total_exposure,
+                            funding.cursors,
+                            0,
+                            &funding.fill_order,
+                            limits().policy,
+                            &host,
+                        )
+                    })?;
+                let mut balances = BTreeMap::new();
+                let mut debits = BTreeMap::new();
+                for (position, source) in funding.sources.iter().enumerate() {
+                    let custody: [u8; 32] = source
+                        .custody
+                        .try_into()
+                        .expect("the case custodies have 32 bytes");
+                    balances.insert(custody, u128::from(source.capacity));
+                    debits.insert(custody, u128::from(placed.known[position]));
+                }
+                Ok::<_, OfferedGateRejection>(held_capacity_guard(&balances, &debits, &BTreeMap::new()))
+            });
+            prop_assert!(matches!(fitted, Ok(Ok(()))), "{:?}", fitted);
+        }
+    }
+}
+
+/// The example of design §8.3 with two members. A purse of 1,000,000 carries
+/// the holds 500,001 and 390,001. The code of member 1 pays 600,000 out of
+/// the purse, and its charge is 20,000. SystemVault alone would reserve the
+/// debit, but the guard fails, because 400,000 − 20,000 < 390,001. Without
+/// member 2 the guard holds.
+#[test]
+fn the_guard_keeps_a_later_hold_that_the_vault_condition_loses() {
+    let balances = BTreeMap::from([(purse(1), 400_000u128)]);
+    let debits = BTreeMap::from([(purse(1), 20_000u128)]);
+    let later = BTreeMap::from([(purse(1), 390_001u128)]);
+    assert_eq!(
+        held_capacity_guard(&balances, &debits, &later),
+        Err(vec![purse(1)])
+    );
+    assert_eq!(
+        held_capacity_guard(&balances, &debits, &BTreeMap::new()),
+        Ok(())
+    );
+    assert_eq!(
+        held_capacity_guard(
+            &BTreeMap::new(),
+            &BTreeMap::from([(purse(2), 0u128)]),
+            &BTreeMap::new()
+        ),
+        Ok(()),
+        "a zero debit needs no balance"
+    );
+}

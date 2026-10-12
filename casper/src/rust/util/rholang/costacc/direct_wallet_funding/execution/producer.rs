@@ -40,6 +40,7 @@ use rspace_plus_plus::rspace::merger::merging_logic::MergeType;
 use rspace_plus_plus::rspace::trace::event::Event;
 use shared::rust::clone_backing::{self, BackingError};
 
+use super::held_capacity::{capture_debits, GuardMember, GuardRole};
 use super::settlement::{
     check_metered_usage, invalid, NativeFundedSettlement, NativeGrantIssuanceInput,
     NativeGrantSettlementInput,
@@ -700,10 +701,30 @@ impl NativeOfferedAttempt<'_, '_> {
         production: NativeOfferedProductionLimits,
         budget: &HostWorkBudget,
     ) -> Result<NativeOfferedCandidateResult, CasperError> {
-        let result = self
+        // Changed by G1-7 (DR-65 item 5, design §8.3): a failed held-capacity
+        // guard on the success path rolls the run back to the execution root
+        // and settles it again as a user failure, from the restored balances
+        // and with the capacities at R0 (user decision U3).
+        // let result = self
+        //     .produce_native_offered_candidate_inner(
+        //         manager,
+        //         envelope,
+        //         snapshot,
+        //         input,
+        //         birth_claims,
+        //         receipt_snapshot,
+        //         grants,
+        //         reservation_id,
+        //         fee_address,
+        //         initial_rand,
+        //         production,
+        //         budget,
+        //     )
+        //     .await;
+        let first = self
             .produce_native_offered_candidate_inner(
                 manager,
-                envelope,
+                envelope.clone(),
                 snapshot,
                 input,
                 birth_claims,
@@ -711,11 +732,43 @@ impl NativeOfferedAttempt<'_, '_> {
                 grants,
                 reservation_id,
                 fee_address,
-                initial_rand,
+                initial_rand.clone(),
                 production,
                 budget,
+                false,
             )
             .await;
+        let result = match first {
+            Ok(ProducedOutcome::Settled(candidate)) => Ok(candidate),
+            Ok(ProducedOutcome::GuardFailed) => match self.roll_back_for_guard().await {
+                Ok(()) => match self
+                    .produce_native_offered_candidate_inner(
+                        manager,
+                        envelope,
+                        snapshot,
+                        input,
+                        birth_claims,
+                        receipt_snapshot,
+                        grants,
+                        reservation_id,
+                        fee_address,
+                        initial_rand,
+                        production,
+                        budget,
+                        true,
+                    )
+                    .await
+                {
+                    Ok(ProducedOutcome::Settled(candidate)) => Ok(candidate),
+                    Ok(ProducedOutcome::GuardFailed) => Err(invalid(
+                        "the rolled-back pass of the held-capacity guard reached the guard",
+                    )),
+                    Err(error) => Err(error),
+                },
+                Err(error) => Err(error),
+            },
+            Err(error) => Err(error),
+        };
         if result.is_err() {
             let baseline = Blake2b256Hash::from_bytes(self.preflight.execution_root.to_vec());
             self.runtime.runtime.reset(&baseline).await?;
@@ -726,6 +779,26 @@ impl NativeOfferedAttempt<'_, '_> {
         result
     }
 
+    // Changed by G1-7 (DR-65 item 5): one pass after execution. The first
+    // pass checks the held-capacity guard on the success path and stops with
+    // `GuardFailed` before any settlement when the guard fails. The second
+    // pass (`rolled_back`) settles the rolled-back run as a user failure.
+    // async fn produce_native_offered_candidate_inner(
+    //     &mut self,
+    //     manager: &RuntimeManager,
+    //     envelope: DeployEnvelope,
+    //     snapshot: &DirectWalletPolicySnapshot<'_, OfferedFundedDeploy>,
+    //     input: NativeAttemptSettlementInput<'_, '_, '_>,
+    //     birth_claims: &[RetainedBirthFunding<'_>],
+    //     receipt_snapshot: &PrepaidReceiptSnapshot,
+    //     grants: Option<NativeGrantSettlementInput<'_>>,
+    //     reservation_id: [u8; 32],
+    //     fee_address: &VaultAddress,
+    //     initial_rand: Blake2b512Random,
+    //     production: NativeOfferedProductionLimits,
+    //     budget: &HostWorkBudget,
+    // ) -> Result<NativeOfferedCandidateResult, CasperError> {
+    #[allow(clippy::too_many_arguments)]
     async fn produce_native_offered_candidate_inner(
         &mut self,
         manager: &RuntimeManager,
@@ -740,7 +813,8 @@ impl NativeOfferedAttempt<'_, '_> {
         initial_rand: Blake2b512Random,
         production: NativeOfferedProductionLimits,
         budget: &HostWorkBudget,
-    ) -> Result<NativeOfferedCandidateResult, CasperError> {
+        rolled_back: bool,
+    ) -> Result<ProducedOutcome, CasperError> {
         let limits = production.family;
         let identity = snapshot
             .wallets()
@@ -966,8 +1040,14 @@ impl NativeOfferedAttempt<'_, '_> {
             }
             return Err(invalid("native offered execution has non-user failure"));
         }
-        let failure_class = if summary
-            .contains(rholang::rust::interpreter::accounting::phlo_execution::PhloFailure::User)
+        // Changed by G1-7 (DR-65 item 5): the rolled-back pass after a failed
+        // held-capacity guard settles a user failure.
+        // let failure_class = if summary
+        //     .contains(rholang::rust::interpreter::accounting::phlo_execution::PhloFailure::User)
+        // {
+        let failure_class = if rolled_back
+            || summary
+                .contains(rholang::rust::interpreter::accounting::phlo_execution::PhloFailure::User)
         {
             NativeCostFailureClass::UserFailure
         } else {
@@ -982,7 +1062,14 @@ impl NativeOfferedAttempt<'_, '_> {
             rholang::rust::interpreter::accounting::phlo_execution::PhloFailure::Certificate,
             rholang::rust::interpreter::accounting::phlo_execution::PhloFailure::Unclassified,
         ] {
-            if summary.contains(failure) {
+            // Changed by G1-7: the rolled-back pass adds the user failure.
+            // if summary.contains(failure) {
+            let forced = rolled_back
+                && matches!(
+                    failure,
+                    rholang::rust::interpreter::accounting::phlo_execution::PhloFailure::User
+                );
+            if summary.contains(failure) || forced {
                 failures[failure_count] = failure;
                 failure_count += 1;
             }
@@ -1143,6 +1230,28 @@ impl NativeOfferedAttempt<'_, '_> {
                 )
                 .map(|checked| checked.bind_execution_root(settlement_root))
                 .map_err(invalid)?;
+            // Added by G1-7 (DR-65 item 5, design §8.3): the held-capacity
+            // guard on the success path. The debits come from the capture that
+            // settlement would charge, and the balances from the settlement
+            // root, where the run has changed them. A failing guard settles
+            // nothing here, and the caller rolls the run back.
+            if !rolled_back && matches!(failure_class, NativeCostFailureClass::Success) {
+                let debits = capture_debits(checked.capture().amounts(), budget)?;
+                let balances = manager
+                    .purse_balances_at(snapshot, settlement_root, &debits, budget)
+                    .await?;
+                let member = GuardMember {
+                    deploy_id: &self.preflight.envelope_identity,
+                    funding_root: &self.preflight.funding_root,
+                    role: GuardRole::Play,
+                };
+                if manager
+                    .held_capacity_guard_outcome(member, &balances, &debits)
+                    .is_err()
+                {
+                    return Ok(None);
+                }
+            }
             let births = self
                 .runtime
                 .capture_retained_births(
@@ -1295,10 +1404,22 @@ impl NativeOfferedAttempt<'_, '_> {
                 .evaluation
                 .native_phlo_usage
                 .ok_or_else(|| invalid("offered producer lost measured phlo usage"))?;
-            Ok((result, settlement_root, wallet_settlement_root, phlo_used))
+            // Changed by G1-7: `None` marks a failed held-capacity guard.
+            // Ok((result, settlement_root, wallet_settlement_root, phlo_used))
+            Ok(Some((
+                result,
+                settlement_root,
+                wallet_settlement_root,
+                phlo_used,
+            )))
         }
         .await;
-        let (result, settlement_root, wallet_settlement_root, phlo_used) = prepared?;
+        // Changed by G1-7 (DR-65 item 5): a failed guard ends the pass before
+        // any settlement.
+        // let (result, settlement_root, wallet_settlement_root, phlo_used) = prepared?;
+        let Some((result, settlement_root, wallet_settlement_root, phlo_used)) = prepared? else {
+            return Ok(ProducedOutcome::GuardFailed);
+        };
         let prepared = NativeOfferedPreparedResult {
             funding_root: self.preflight.funding_root,
             execution_root: self.preflight.execution_root,
@@ -1333,12 +1454,27 @@ impl NativeOfferedAttempt<'_, '_> {
             prepared,
             budget,
         )?;
-        Ok(NativeOfferedCandidateResult {
+        // Changed by G1-7: the pass returns its settled candidate.
+        // Ok(NativeOfferedCandidateResult {
+        //     processed,
+        //     final_root,
+        //     mergeable,
+        // })
+        Ok(ProducedOutcome::Settled(NativeOfferedCandidateResult {
             processed,
             final_root,
             mergeable,
-        })
+        }))
     }
+}
+
+/// Added by G1-7 (DR-65 item 5): the outcome of one pass of the producer after
+/// execution.
+enum ProducedOutcome {
+    Settled(NativeOfferedCandidateResult),
+    /// The held-capacity guard failed on the success path. The pass settled
+    /// nothing.
+    GuardFailed,
 }
 
 #[cfg(test)]
