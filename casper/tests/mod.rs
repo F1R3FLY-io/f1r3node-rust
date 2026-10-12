@@ -12,6 +12,7 @@ mod genesis;
 mod helper;
 mod merging;
 mod multi_node;
+mod reified;
 mod repeat_deploy;
 mod slashing;
 mod sync;

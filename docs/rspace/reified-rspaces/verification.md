@@ -6799,6 +6799,50 @@ The code of the exporter and the importer predates the campaign ([decision 70](d
 | The 40 checkers of the campaign, and the document lint | 40 passed |
 | I-14: the two empty-state-hash tests of `runtime_spec.rs` in release | 2 passed |
 
+### 34.6 Step 5: N4, spaces under Casper's proposal, validation and merge
+
+N4 runs native spaces through the two-node and three-node harness of Casper (design v2, section 8).
+A v6 block holds one offered user deploy, so each row is a chain of single-deploy blocks.
+One durable family fits the v6 replay limits in one deploy (Table 188), so each deploy creates or touches the space of one family.
+The suite adds the files `casper/tests/reified/` and one line `mod reified;` in `casper/tests/mod.rs`, and it changes no Casper source.
+
+The rows follow the three facts of Casper of [decision 82](decision-register.md#decision-82):
+
+1. The leader rule: node 0 proposes every space block of a chain.
+2. The funding rule: each payer touches only its own spaces.
+3. The cost cursor: two sibling offers of one payer conflict on its cost cursor, and the merge rejects one of them.
+
+Step 5 measured one more case of the third fact.
+A merge also rejects the second of two sequential offers of one payer in one branch.
+A probe merged such a branch with an empty sibling.
+With two plain deploys without spaces, the merge rejected the second deploy, and with two space deploys it did the same.
+So the merge rows use one payer for each space block: two searched payers whose cost-cursor buckets are disjoint (DR-119).
+
+*Table 207. The tests of `casper/tests/reified/n4.rs`.*
+
+| Test | Property | Result |
+|---|---|---|
+| `n4_space_chain_propose_validate` | Node 0 proposes ten blocks: the creations of a queue, a set, a priority queue, a VectorDB space and a PathMap space, each with records and a waiter, and then a touch of each space. Node 1 validates each block, and the two nodes hold equal settlement receipts. At the last block, both nodes read the same deliveries of each family: the config of the handle, a take and a fired waiter. | Pass |
+| `n4_space_merge_with_empty_sibling` | Node 0 proposes two space blocks of the two payers, and node 1 proposes an empty block from genesis. Node 2 merges them. The empty block is the main parent of the merge block, the merge rejects no deploy, and every node validates the merge block. Node 0 then touches the queue of its branch on the merge, every node validates that block, and the touch delivers the config, a take and a fired waiter. | Pass |
+| `n4_concurrent_space_blocks_agree` | The two payers create their own spaces in sibling blocks over genesis. Every node validates both siblings and the merge block, and the merge rejects no deploy. | Pass |
+| `n4_tampered_space_block_rejected` | A space block with a changed post-state hash, and the same block with a channel added to the footprint of a space row of its operation journal, are each signed again. Node 1 rejects the first with "offered block replay post-state differs from commitment" and the second with "native replay epoch is closed". Its DAG does not hold either block, and its DAG heads do not change. Both nodes then accept the untampered block. | Pass |
+
+N4 has no Casper-level counter row (decision 82).
+The rholang merge suites (section 34.3.3) and the models `CounterConflict.v` and `CounterConflict.tla` cover the guard of M-1.
+Spaces enter the block hash through the post-state root, so the validation of a space block needs no Casper change.
+The suite takes 89.6 seconds in the release profile.
+
+*Table 208. The gates of step 5.*
+
+| Gate | Result |
+|---|---|
+| `cargo test --release -p casper --test mod -- reified::n4` | 4 passed |
+| `cargo clippy -p casper --tests -- -D warnings` | No warning |
+| `rustfmt --check` of the files of `casper/tests/reified/` | No difference |
+| The footprint policy `p9`: the line `mod reified;` is an approved edit of `casper/tests/mod.rs` | 0 violations |
+| The 40 checkers of the campaign, and the document lint | 40 passed |
+| I-14: the two empty-state-hash tests of `runtime_spec.rs` in release | 2 passed |
+
 ## References
 
 <a id="ref-ch00"></a>[CH00] K. Claessen and J. Hughes, "QuickCheck: a lightweight tool for random testing of Haskell programs," in *Proceedings of the Fifth ACM SIGPLAN International Conference on Functional Programming (ICFP 2000)*, ACM, 2000, pp. 268–279. [doi:10.1145/351240.351266](https://doi.org/10.1145/351240.351266)
