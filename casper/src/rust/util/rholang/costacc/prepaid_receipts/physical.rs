@@ -213,10 +213,18 @@ impl RuntimeManager {
                 return Err(invalid("measured purse authority is not a funding former"));
             }
             let key = purse.encoded_channel();
-            if let Some((_, previous)) = channels.get(key) {
-                if *previous != purse.original_authority() {
-                    return Err(invalid("one measured purse channel has conflicting heads"));
-                }
+            // Changed by H2 (bug 11419, DR-127): the capture keeps the first
+            // head of each channel. A head of another form names the same
+            // channel and so the same lane, and decoding reads only the lane
+            // (`decode_purse_inventory`). The cell match in the selection still
+            // compares forms.
+            // if let Some((_, previous)) = channels.get(key) {
+            //     if *previous != purse.original_authority() {
+            //         return Err(invalid("one measured purse channel has conflicting heads"));
+            //     }
+            //     continue;
+            // }
+            if channels.contains_key(key) {
                 continue;
             }
             if channels.len() >= limits.stacks {
@@ -252,16 +260,21 @@ impl RuntimeManager {
                     .checked_mul(comparisons)
                     .ok_or_else(|| invalid("measured birth channel lookup overflows"))?,
             )?;
-            if let Some((_, previous)) = channels.get(key.as_slice()) {
-                if *previous != head {
-                    return Err(invalid("one measured purse channel has conflicting heads"));
-                }
-                continue;
-            }
-            if let Some((_, previous)) = born_channels.get(key.as_slice()) {
-                if *previous != head {
-                    return Err(invalid("one measured purse channel has conflicting heads"));
-                }
+            // Changed by H2 (bug 11419, DR-127): a birth head of another form
+            // keeps the first head of its channel, as a measured head does.
+            // if let Some((_, previous)) = channels.get(key.as_slice()) {
+            //     if *previous != head {
+            //         return Err(invalid("one measured purse channel has conflicting heads"));
+            //     }
+            //     continue;
+            // }
+            // if let Some((_, previous)) = born_channels.get(key.as_slice()) {
+            //     if *previous != head {
+            //         return Err(invalid("one measured purse channel has conflicting heads"));
+            //     }
+            //     continue;
+            // }
+            if channels.contains_key(key.as_slice()) || born_channels.contains_key(key.as_slice()) {
                 continue;
             }
             if channels
@@ -661,6 +674,273 @@ mod tests {
                 mirror.usage(dimension).get(),
                 "{dimension:?}"
             );
+        }
+    }
+
+    // Added by H2 (bug 11419, DR-127): the capture keeps the first head of
+    // each measured channel, so its result does not depend on the form that
+    // comes first.
+
+    use std::sync::Arc;
+
+    use models::rhoapi::expr::ExprInstance;
+    use models::rhoapi::{CostAuthority, CostStack, Expr};
+    use models::rust::phlo_schedule::{PhloGenesisPolicy, PhloScheduleV1};
+    use models::rust::rholang::sorter::par_sort_matcher::ParSortMatcher;
+    use models::rust::rholang::sorter::sortable::Sortable;
+    use proptest::prelude::*;
+    use rholang::rust::interpreter::accounting::authority::{
+        cost_region, cost_signature_to_sig, AuthorityByteEventKind,
+    };
+    use rholang::rust::interpreter::accounting::byte_accounting::ByteCharge;
+    use rholang::rust::interpreter::accounting::byte_receipts::{
+        ByteObservation, ByteObservationSnapshot,
+    };
+    use rholang::rust::interpreter::accounting::native_phlo_rules::{
+        native_resource_compatibility_rule, NativePhloDimension, NativePhloRules,
+    };
+    use rholang::rust::interpreter::accounting::phlo_controls::PhloScheduleBinding;
+    use rholang::rust::interpreter::compiler::normalizer::cost_accounting::sig::canon_ground;
+    use rholang::rust::interpreter::external_services::ExternalServices;
+    use rholang::rust::interpreter::rho_runtime::RhoRuntime;
+    use rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore;
+    use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
+    use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
+    use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
+
+    use crate::rust::util::rholang::costacc::production_limits::offered_funded_v6_production_limits;
+    use crate::rust::util::rholang::costacc::supply::supply_channel;
+
+    /// The two authority forms of one lane: the ground atom that `[lane]`
+    /// gives (`sig.rs`) and the quoted process that a received `@"lane"`
+    /// gives (`substitute.rs`).
+    fn forms(lane: &str) -> [CostSignature; 2] {
+        let ground = CostSignature {
+            value: Some(CostSignatureValue::Ground(canon_ground(lane))),
+        };
+        let quoted = Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::GString(lane.to_string())),
+        }]);
+        let name = CostSignature {
+            value: Some(CostSignatureValue::Name(
+                ParSortMatcher::sort_match(&quoted).term,
+            )),
+        };
+        [ground, name]
+    }
+
+    fn schedule() -> PhloScheduleV1<'static> {
+        let identities: [&[u8]; 4] = [b"compute", b"introduction", b"transfer", b"trace"];
+        PhloScheduleV1 {
+            protocol_version: 6,
+            network: b"test",
+            shard: b"root",
+            settlement_asset: b"REV",
+            settlement_unit: b"atomic-REV",
+            decimal_scale: 8,
+            classes: NativePhloDimension::ALL
+                .into_iter()
+                .zip(identities)
+                .map(|(dimension, identity)| dimension.resource_class(identity, 1))
+                .collect(),
+            actual_price: 2,
+            compatibility_rule: native_resource_compatibility_rule(),
+        }
+    }
+
+    /// One measured introduction for each signature, in the given order. Each
+    /// region has its own entropy, so its identity is distinct.
+    fn observations(signatures: &[&CostSignature]) -> ByteObservationSnapshot {
+        let rows = signatures
+            .iter()
+            .enumerate()
+            .map(|(index, signature)| {
+                let tag = u8::try_from(index + 1).expect("few observations");
+                Arc::new(ByteObservation {
+                    event_id: [tag; 32],
+                    kind: AuthorityByteEventKind::ProduceIntroduction,
+                    authority: CostAuthority {
+                        regions: vec![
+                            cost_region(signature, &[tag], 0).expect("a region of the lane")
+                        ],
+                    },
+                    measurement: Some(ByteCharge {
+                        introduction_bytes: 3,
+                        transfer_bytes: 0,
+                        trace_bytes: 0,
+                    }),
+                    legacy_amount: None,
+                })
+            })
+            .collect();
+        ByteObservationSnapshot {
+            rows,
+            metered_context: true,
+            history_lost: false,
+        }
+    }
+
+    /// The capture of a run whose measured occurrences carry `measured` in
+    /// order and whose births carry `born` heads in order. The state root
+    /// holds `stored` stacks on the lane's channel.
+    async fn capture(
+        lane: &str,
+        stored: usize,
+        measured: &[&CostSignature],
+        born: &[&CostSignature],
+    ) -> Result<Vec<PurseStack>, CasperError> {
+        let limits = offered_funded_v6_production_limits();
+        let measured_limits = limits.family.measured;
+        let budget = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(u64::MAX)));
+        let store = InMemoryStoreManager::new()
+            .r_space_stores()
+            .await
+            .expect("in-memory stores open");
+        let (manager, _) = RuntimeManager::create_with_history(
+            store,
+            KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
+            Arc::new(Default::default()),
+            ExternalServices::noop(),
+        );
+        let mut runtime = manager.spawn_runtime().await.expect("a runtime spawns");
+        let [ground, _] = forms(lane);
+        let channel = supply_channel(&cost_signature_to_sig(&ground).expect("a lane signature"));
+        for random in 0..stored {
+            runtime
+                .reducer
+                .space
+                .produce(
+                    channel.clone(),
+                    ListParWithRandom {
+                        pars: Vec::new(),
+                        random_state: vec![u8::try_from(random).expect("few stacks")],
+                        cost_authority: None,
+                        cost_stack: Some(CostStack {
+                            cells: vec![ground.clone()],
+                        }),
+                    },
+                    false,
+                )
+                .await
+                .expect("a stack is stored");
+        }
+        let root: [u8; 32] = runtime
+            .create_checkpoint()
+            .await
+            .root
+            .bytes()
+            .try_into()
+            .expect("a 32-byte root");
+        let schedule = schedule();
+        let rules = NativePhloRules::resolve(&schedule).expect("the schedule resolves");
+        let snapshot = observations(measured);
+        let measurements = rules
+            .measure(&snapshot, measured_limits.observations)
+            .expect("the observations measure");
+        let regions = measurements
+            .region_demands(measured_limits.regions, &budget)
+            .expect("the regions check");
+        let located = regions
+            .locate_purses(measured_limits.purses, &budget)
+            .expect("the purses locate");
+        let binding = PhloScheduleBinding::new(&schedule, PhloGenesisPolicy::LIMITS)
+            .expect("the schedule binds");
+        let terms = schedule
+            .encode(PhloGenesisPolicy::LIMITS)
+            .expect("the schedule encodes");
+        let demand = located
+            .prepare_acquisition_demand(&binding, &terms, measured_limits.acquisition, &budget)
+            .expect("the demand prepares");
+        let births = born
+            .iter()
+            .enumerate()
+            .map(|(index, head)| AuthorityStackBirth {
+                produce_hash: [u8::try_from(index + 1).expect("few births"); 32],
+                cells: vec![(*head).clone()],
+            })
+            .collect::<Vec<_>>();
+        manager.read_measured_prepaid_stacks_with_births(
+            root,
+            &demand,
+            &births,
+            limits.stack_capture,
+            &budget,
+        )
+    }
+
+    /// Added by H2 (bug 11419, DR-127): both forms of one lane name one
+    /// channel and one lane, so the capture reads one channel for them.
+    #[test]
+    fn both_authority_forms_of_a_lane_name_one_channel() {
+        let [ground, name] = forms("foo");
+        assert_ne!(ground, name, "the forms differ");
+        let budget = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(u64::MAX)));
+        let (ground_key, _) = measured_birth_channel(&ground, &budget).expect("a ground channel");
+        let (name_key, _) = measured_birth_channel(&name, &budget).expect("a name channel");
+        assert_eq!(ground_key, name_key);
+        assert_eq!(
+            cost_signature_to_sig(&ground)
+                .expect("a ground lane")
+                .lane_hash(),
+            cost_signature_to_sig(&name)
+                .expect("a name lane")
+                .lane_hash()
+        );
+    }
+
+    /// Added by H2 (bug 11419, DR-127): a run that measures both forms of one
+    /// lane captures the stacks of that lane. Before H2, the capture failed
+    /// with "one measured purse channel has conflicting heads".
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_run_with_both_forms_of_a_lane_captures_its_stacks() {
+        let [ground, name] = forms("foo");
+        let both = capture("foo", 2, &[&ground, &name], &[])
+            .await
+            .expect("the capture accepts both forms");
+        let one = capture("foo", 2, &[&ground], &[])
+            .await
+            .expect("the capture accepts one form");
+        assert_eq!(both.len(), 2);
+        assert_eq!(both, one);
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(128))]
+
+        /// Added by H2 (bug 11419, DR-127): the capture result does not depend
+        /// on the form that comes first, among the measured heads and the
+        /// birth heads. It equals the capture of the ground form alone.
+        #[test]
+        fn the_capture_does_not_depend_on_the_first_form(
+            lane in "[a-z]{1,6}",
+            stored in 0_usize..3,
+            measured in proptest::collection::vec(any::<bool>(), 1..4),
+            born in proptest::collection::vec(any::<bool>(), 0..3),
+        ) {
+            let runtime = tokio::runtime::Runtime::new().expect("a test runtime starts");
+            let both = forms(&lane);
+            let pick = |names: &[bool]| {
+                names
+                    .iter()
+                    .map(|name| &both[usize::from(*name)])
+                    .collect::<Vec<_>>()
+            };
+            let flip = |names: &[bool]| names.iter().map(|name| !name).collect::<Vec<_>>();
+            let given = runtime.block_on(capture(&lane, stored, &pick(&measured), &pick(&born)));
+            let flipped = runtime.block_on(capture(
+                &lane,
+                stored,
+                &pick(&flip(&measured)),
+                &pick(&flip(&born)),
+            ));
+            let ground = runtime.block_on(capture(&lane, stored, &[&both[0]], &[]));
+            prop_assert!(given.is_ok(), "{given:?}");
+            prop_assert!(flipped.is_ok(), "{flipped:?}");
+            prop_assert!(ground.is_ok(), "{ground:?}");
+            let given = given.expect("checked above");
+            prop_assert_eq!(&given, &flipped.expect("checked above"));
+            prop_assert_eq!(&given, &ground.expect("checked above"));
+            prop_assert_eq!(given.len(), stored);
         }
     }
 }

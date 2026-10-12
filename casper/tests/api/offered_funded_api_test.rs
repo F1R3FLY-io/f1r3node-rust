@@ -3250,3 +3250,9 @@ mod offered_admission_api_test;
 // the step changes no Casper file that the branch shares with dev.
 #[path = "offered_guard_api_test.rs"]
 mod offered_guard_api_test;
+
+// Added by H2 (bug 11419, DR-127): the capture of measured purse heads by
+// channel. The module is declared here and not in `api/mod.rs`, so the step
+// changes no Casper file that the branch shares with dev.
+#[path = "offered_capture_api_test.rs"]
+mod offered_capture_api_test;

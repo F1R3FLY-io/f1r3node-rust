@@ -15282,3 +15282,107 @@ theorem with `Print Assumptions`.
 
 **Cross-refs.** DR-66, DR-87, DR-113. Bug 11420. G3 design v5 section 1.1.
 [Prepaid receipt storage](cost-accounting-impl/prepaid-receipt-storage.md).
+
+## DR-127 — The capture keys measured purse heads by lane (bug 11419)
+
+**Status.** Implemented 2026-10-12 for bug 11419 of epic 8946. Step H2 of G3
+design v5 (section 1.2) is the design, and the user approved the step.
+
+**Context.**
+
+- The capture of measured purse stacks
+  (`read_measured_prepaid_stacks_with_births` in `physical.rs`) reads the
+  stacks of each measured channel at the funding root.
+- It kept one head for each encoded channel. A second head of another form
+  failed the run with "one measured purse channel has conflicting heads". The
+  births repeated that check.
+- One lane can appear in two authority forms. `[foo]` gives the ground atom
+  `Ground(canon_ground("foo"))` (`sig.rs`). A name bound to `@"foo"` gives a
+  `Name` signature after substitution (`substitute.rs`).
+- Both forms convert to the same `Sig::Ground` bytes (`cost_signature_to_sig`
+  in `authority.rs`). So they name one channel and one lane, because the lane
+  key is the digest of the channel.
+- So a run that used both forms failed after execution with no charge, with
+  or without a slot.
+
+**Decision.**
+
+1. The capture keeps the first head of each channel and accepts a later head
+   of another form. The births get the same change. The old checks stay as
+   comments.
+2. A later head names the same channel, so it names the same lane. Decoding
+   reads only the lane: `decode_purse_inventory` compares lane keys and
+   derives the channel from the head (`supply.rs`). So the kept head changes
+   no output.
+3. The cell match of the selection stays by form. The binding section of
+   [prepaid receipt storage](cost-accounting-impl/prepaid-receipt-storage.md)
+   requires that the complete stored `CostSignature` equals the measured
+   purse authority. DR-1 keeps ground and quote as distinct sorts. So a cell
+   funds only the occurrences of its own form.
+
+**Why no committed run changes.**
+
+- Every settlement path runs the capture before the selection, in play and
+  in replay.
+- Before this record, the capture rejected every run with two forms on one
+  measured channel. So no committed block holds such a run.
+- For every other run, the capture reads the same channels with the same
+  heads as before.
+
+**Consensus notes.**
+
+- Play and replay run the same capture, so they read the same stacks.
+- The removed head comparisons reserved no host work. So every host-work
+  reservation of the capture keeps its order and amount.
+- Protocol 6 is unreleased and activates with the branch binary (DR-66), so
+  version skew is not a concern.
+
+**Known limit.** With an on-chain slot listed, the observation map of
+`family_selection.rs` still fails for two forms (G3 design v5 section 7.8).
+G3-0 fixes that case.
+
+**Formal model.** No formal file changes. No Rocq module models the capture
+of measured purse heads. `PrepaidReceiptStorage.v`,
+`PrepaidResourceDischarge.v` and `AggregatedAcquisitionDemand.v` model the
+receipts, their discharge and the aggregated demand.
+
+**Verification.**
+
+- Failing first:
+  - The API test `a_lane_in_two_authority_forms_settles` in
+    `offered_capture_api_test.rs` uses a client that permits lane foo. Its
+    term signs one layer with `[foo]` and another with `[n]`, where n is bound
+    to `@"foo"`. The offer lists no slot.
+  - Hypothesis: the capture rejects the second form after execution, and the
+    producer quarantines the offer. Result: confirmed at HEAD ee9ef21df and at
+    HEAD ce6581a56. The proposer recorded "one measured purse channel has
+    conflicting heads".
+  - With the new tests in place and the old checks, the unit test
+    `a_run_with_both_forms_of_a_lane_captures_its_stacks` failed with the
+    same message. The property test found a minimal input. It has one
+    measured head of the ground form, one birth head of the name form and no
+    stored stack.
+  - The unit test `both_authority_forms_of_a_lane_name_one_channel` passed
+    before and after the fix. Both forms give one channel key and one lane
+    key.
+- After the fix:
+  - The unit tests and the property test (128 cases) pass. The capture of a
+    run does not depend on the form that comes first, and it equals the
+    capture of the ground form alone.
+  - The API test settles on three validators with equal receipts.
+- Suites:
+  - casper (nextest, release, 8 test threads): 1813 of 1817 tests pass with
+    the provisional caps, and 1811 of 1817 with the committed caps. 14
+    tests are skipped. The four new tests pass.
+  - The failures are the known failures: 4 with the provisional caps and 6
+    with the committed caps. Each failure set equals the run of DR-126 test
+    by test.
+  - Two committed-cap messages show another host-work usage number for the
+    two registry tests. Two repeats at the same build gave other numbers
+    again, so that number varies from run to run.
+- `cargo fmt --check`, the workspace doctests and
+  `cargo clippy --workspace --all-targets -- -D warnings` pass. The
+  documentation syntax and formal source substance checks pass.
+
+**Cross-refs.** DR-1, DR-66, DR-126. Bug 11419. G3 design v5 section 1.2.
+[Prepaid receipt storage](cost-accounting-impl/prepaid-receipt-storage.md).
