@@ -64,7 +64,7 @@ This document captures user stories that drive feature development. User stories
 
 > As a **platform architect**, I want **each shard to select its state machine replication mechanism (CBC Casper, Cordial Miners, Casanova, or the RGB peer-clique sidecar with Bitcoin anchoring) behind one replication boundary** so that **a new mechanism plugs in without changes to node wiring, APIs, transport, or Rholang execution**.
 
-**Implemented in:** EPIC-025
+**Implemented in:** EPIC-025 (design PR #627, issue #624 with PR #651, and issue #625)
 
 **Status:** In Progress
 
