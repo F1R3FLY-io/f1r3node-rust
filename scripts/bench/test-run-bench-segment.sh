@@ -14,9 +14,30 @@ mkdir -p "$TMP/repo/docker" "$TMP/bin" "$TMP/out"
 : >"$TMP/repo/docker/ci-ports.shard.yml"
 printf 'BOOTSTRAP_PRIVATE_KEY=fixture\n' >"$TMP/repo/docker/.env"
 
+# Merged compose configuration that the fake docker prints for `config`.
+# validator1 HTTP (container 40403) is published on 14999, not on the 14413 of
+# the real override, so a passing probe check proves the script reads the port.
+cat >"$TMP/config-ok.json" <<'JSON'
+{"services": {
+  "boot": {"ports": [{"target": 40403, "published": "14403"}]},
+  "validator1": {"ports": [{"target": 40401, "published": "14411"}, {"target": 40403, "published": "14999"}]},
+  "grafana": {"ports": [{"target": 3000, "published": "3000"}]}
+}}
+JSON
+cat >"$TMP/config-ephemeral.json" <<'JSON'
+{"services": {
+  "validator1": {"ports": [{"target": 40403, "published": "14413"}]},
+  "readonly": {"ports": [{"target": 40402, "published": "40452"}]}
+}}
+JSON
+
 cat >"$TMP/bin/docker" <<'SH'
 #!/usr/bin/env bash
 case " $* " in
+	*" config "*)
+		cat "$CONFIG_JSON"
+		exit 0
+		;;
 	*" up "*)
 		echo ' Container grafana  Creating'
 		echo 'Error response from daemon: Conflict. The container name "/grafana" is already in use by container "fixture".'
@@ -28,7 +49,7 @@ SH
 chmod +x "$TMP/bin/docker"
 
 status=0
-PATH="$TMP/bin:$PATH" NODE_REPO_DIR="$TMP/repo" OUT_DIR="$TMP/out" \
+CONFIG_JSON="$TMP/config-ok.json" PATH="$TMP/bin:$PATH" NODE_REPO_DIR="$TMP/repo" OUT_DIR="$TMP/out" \
 	"$ROOT/scripts/bench/run-bench-segment.sh" >"$TMP/stdout" 2>"$TMP/stderr" || status=$?
 
 [ "$status" -eq 1 ] || { echo "expected exit 1, got $status" >&2; cat "$TMP/stderr" >&2; exit 1; }
@@ -39,15 +60,19 @@ grep -Fq 'The container name "/grafana" is already in use' "$TMP/stderr" || {
 	exit 1
 }
 
-
 # The bench shard must publish its host ports below the kernel ephemeral
 # range. Soak 38184406100 lost bench segments 11 and 13 to "failed to bind
 # host port 0.0.0.0:40452/tcp: address already in use": 40400-40455 is inside
 # 32768-60999, so an outbound connection can hold one of those ports.
+# The fake docker and curl record their arguments in the files that CALLS and
+# PROBES name. The variables reach them through the environment of the run.
 mkdir -p "$TMP/bin2" "$TMP/out2"
 cat >"$TMP/bin2/docker" <<'SH'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >>"$CALLS"
+case " $* " in
+	*" config "*) cat "$CONFIG_JSON" ;;
+esac
 exit 0
 SH
 cat >"$TMP/bin2/curl" <<'SH'
@@ -57,7 +82,7 @@ exit 7
 SH
 chmod +x "$TMP/bin2/docker" "$TMP/bin2/curl"
 status=0
-CALLS="$TMP/calls" PROBES="$TMP/probes" READY_TIMEOUT=1 \
+CONFIG_JSON="$TMP/config-ok.json" CALLS="$TMP/calls" PROBES="$TMP/probes" READY_TIMEOUT=1 \
 	PATH="$TMP/bin2:$PATH" NODE_REPO_DIR="$TMP/repo" OUT_DIR="$TMP/out2" \
 	"$ROOT/scripts/bench/run-bench-segment.sh" >"$TMP/stdout2" 2>"$TMP/stderr2" || status=$?
 [ "$status" -eq 1 ] || { echo "expected exit 1 (shard not ready), got $status" >&2; cat "$TMP/stderr2" >&2; exit 1; }
@@ -66,10 +91,47 @@ grep -Fq "compose -f $TMP/repo/docker/shard.yml -f $TMP/repo/docker/ci-ports.sha
 	cat "$TMP/calls" >&2
 	exit 1
 }
-grep -Fq "http://localhost:14413/api/status" "$TMP/probes" || {
-	echo "readiness probe does not use the remapped validator1 HTTP port 14413" >&2
+grep -Fq "http://localhost:14999/api/status" "$TMP/probes" || {
+	echo "readiness probe does not use the validator1 HTTP port from the merged configuration" >&2
 	cat "$TMP/probes" >&2
 	exit 1
 }
+
+# A merged configuration that still publishes a port in the ephemeral range
+# must stop the segment before compose up.
+mkdir -p "$TMP/out3"
+: >"$TMP/calls3"
+status=0
+CONFIG_JSON="$TMP/config-ephemeral.json" CALLS="$TMP/calls3" PROBES="$TMP/probes3" READY_TIMEOUT=1 \
+	PATH="$TMP/bin2:$PATH" NODE_REPO_DIR="$TMP/repo" OUT_DIR="$TMP/out3" \
+	"$ROOT/scripts/bench/run-bench-segment.sh" >"$TMP/stdout3" 2>"$TMP/stderr3" || status=$?
+[ "$status" -eq 2 ] || { echo "expected exit 2 for an ephemeral host port, got $status" >&2; cat "$TMP/stderr3" >&2; exit 1; }
+grep -Fq '40452' "$TMP/stderr3" || { echo "refusal does not name port 40452" >&2; cat "$TMP/stderr3" >&2; exit 1; }
+if grep -Fq ' up ' "$TMP/calls3"; then
+	echo "compose up ran although a host port is in the ephemeral range" >&2
+	exit 1
+fi
+
+# The real compose files must merge to host ports below the ephemeral floor.
+# This needs docker compose. CI runs this test where Docker exists, so a
+# missing docker compose fails in CI and only skips locally.
+if docker compose version >/dev/null 2>&1; then
+	docker compose -f "$ROOT/docker/shard.yml" -f "$ROOT/docker/ci-ports.shard.yml" -p soak-bench \
+		config --format json >"$TMP/real-config.json"
+	jq -e '
+	  ([.services[].ports[]? | .published | tonumber] | length) > 0
+	  and ([.services[].ports[]? | .published | tonumber | select(. >= 32768)] | length) == 0
+	  and ([.services.validator1.ports[]? | select(.target == 40403)] | length) == 1
+	' "$TMP/real-config.json" >/dev/null || {
+		echo "the real merged compose configuration publishes a host port at or above 32768, or no validator1 HTTP port" >&2
+		jq -c '[.services | to_entries[] | {(.key): [.value.ports[]? | .published]}]' "$TMP/real-config.json" >&2
+		exit 1
+	}
+elif [ -n "${CI:-}" ]; then
+	echo "docker compose is not available; the merged port check cannot run in CI" >&2
+	exit 1
+else
+	echo "skipped the real merged port check: docker compose is not available" >&2
+fi
 
 printf 'bench segment failure diagnostics tests passed\n'

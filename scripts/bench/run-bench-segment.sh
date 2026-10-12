@@ -29,8 +29,6 @@ BENCH_RATE="${BENCH_RATE:-2}"
 SEGMENT_INDEX="${SEGMENT_INDEX:-0}"
 SOAK_STARTED_AT="${SOAK_STARTED_AT:-$(date +%s)}"
 READY_TIMEOUT="${READY_TIMEOUT:-420}"
-# validator1 HTTP (container 40403) after the ci-ports.shard.yml remap.
-HTTP_PORT=14413
 
 SHARD_YML="$NODE_REPO_DIR/docker/shard.yml"
 [ -f "$SHARD_YML" ] || { echo "missing $SHARD_YML" >&2; exit 2; }
@@ -60,6 +58,33 @@ export DEPLOYER_KEY
 
 mkdir -p "$OUT_DIR"
 COMPOSE=(docker compose -f "$SHARD_YML" -f "$PORTS_YML" -p soak-bench)
+
+# Check the merged configuration before the shard starts. A later edit of
+# either file must not bring a published host port back into the ephemeral
+# range. The validator1 HTTP port (container 40403) comes from the same
+# configuration, so the probe and the benchmark follow the override file.
+if ! "${COMPOSE[@]}" config --format json > "$OUT_DIR/compose-config.json" 2> "$OUT_DIR/compose-config.err"; then
+  echo "shard compose config failed; compose-config.err tail:" >&2
+  tail -15 "$OUT_DIR/compose-config.err" >&2
+  exit 2
+fi
+EPHEMERAL_FLOOR="$(sysctl -n net.ipv4.ip_local_port_range 2>/dev/null | awk '{print $1}')"
+case "$EPHEMERAL_FLOOR" in
+  ''|*[!0-9]*) EPHEMERAL_FLOOR=32768 ;;
+esac
+EPHEMERAL_PORTS="$(jq -r --argjson floor "$EPHEMERAL_FLOOR" \
+  '[.services[].ports[]? | .published | tonumber | select(. >= $floor)] | unique | map(tostring) | join(" ")' \
+  "$OUT_DIR/compose-config.json")"
+if [ -n "$EPHEMERAL_PORTS" ]; then
+  echo "bench shard publishes host port(s) $EPHEMERAL_PORTS at or above the ephemeral floor $EPHEMERAL_FLOOR" >&2
+  exit 2
+fi
+HTTP_PORT="$(jq -r '[.services.validator1.ports[]? | select(.target == 40403) | .published][0] // empty' \
+  "$OUT_DIR/compose-config.json")"
+if ! [[ "$HTTP_PORT" =~ ^[0-9]+$ ]]; then
+  echo "bench shard publishes no host port for validator1 HTTP (container 40403)" >&2
+  exit 2
+fi
 SAMPLER_PID=""
 
 cleanup() {
