@@ -83,7 +83,10 @@ pub(crate) fn admit_deploy<T: TransportLayer + Send + Sync>(
     }
 
     // Create normalizer environment from deploy
-    let normalizer_env = normalizer_env_from_deploy(&deploy);
+    let normalizer_env = match normalizer_env_from_deploy(&deploy) {
+        Ok(env) => env,
+        Err(error) => return Ok(Either::Left(DeployError::parsing_error(error.to_string()))),
+    };
     let parse_started_at = std::time::Instant::now();
 
     // Try to parse the deploy term
@@ -169,6 +172,7 @@ pub(crate) async fn admit_handle_valid_block<T: TransportLayer + Send + Sync>(
     // finalization_runner), so an accepted-but-orphaned deploy can be
     // re-proposed via the canonical-won record before it is lost.
     let block_hash_serde = BlockHashSerde(block.block_hash.clone());
+    let insert_start = std::time::Instant::now();
     let updated_dag = block_storage::rust::dag::buffer_dag_transition::atomic_insert_then_buffer(
         &this.block_dag_storage,
         block,
@@ -178,6 +182,15 @@ pub(crate) async fn admit_handle_valid_block<T: TransportLayer + Send + Sync>(
             block_hash_serde,
         ),
     )?;
+    let insert_ms = insert_start.elapsed().as_millis();
+    if insert_ms >= 1_000 {
+        tracing::warn!(
+            target: "f1r3fly.casper.lifecycle.timing",
+            "DAG insert slow: block_number={}, insert_ms={}",
+            block.body.state.block_number,
+            insert_ms
+        );
+    }
     record_dag_cardinality_metrics(&updated_dag);
 
     // Advance the deploy-lifecycle register: the insert above already
