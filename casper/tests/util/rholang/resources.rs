@@ -415,10 +415,6 @@ pub async fn key_value_deploy_storage_from_dyn(
     shared::rust::store::key_value_store::KvStoreError,
 > {
     use block_storage::rust::deploy::key_value_deploy_storage::KeyValueDeployStorage;
-    use crypto::rust::signatures::signed::Signed;
-    use models::rust::casper::protocol::casper_message::DeployData;
-    use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
-    use shared::rust::ByteString;
 
     let deploy_storage_kv_store = kvm.store("deploy_storage".to_string()).await.map_err(|e| {
         shared::rust::store::key_value_store::KvStoreError::IoError(format!(
@@ -426,12 +422,7 @@ pub async fn key_value_deploy_storage_from_dyn(
             e
         ))
     })?;
-    let deploy_storage_db: KeyValueTypedStoreImpl<ByteString, Signed<DeployData>> =
-        KeyValueTypedStoreImpl::new(deploy_storage_kv_store);
-
-    Ok(KeyValueDeployStorage {
-        store: deploy_storage_db,
-    })
+    Ok(KeyValueDeployStorage::from_store(deploy_storage_kv_store))
 }
 
 pub async fn key_value_rejected_deploy_buffer_from_dyn(
@@ -441,10 +432,6 @@ pub async fn key_value_rejected_deploy_buffer_from_dyn(
     shared::rust::store::key_value_store::KvStoreError,
 > {
     use block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer;
-    use crypto::rust::signatures::signed::Signed;
-    use models::rust::casper::protocol::casper_message::DeployData;
-    use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
-    use shared::rust::ByteString;
 
     let buffer_kv_store = kvm
         .store("rejected_deploy_buffer".to_string())
@@ -455,10 +442,7 @@ pub async fn key_value_rejected_deploy_buffer_from_dyn(
                 e
             ))
         })?;
-    let buffer_db: KeyValueTypedStoreImpl<ByteString, Signed<DeployData>> =
-        KeyValueTypedStoreImpl::new(buffer_kv_store);
-
-    Ok(KeyValueRejectedDeployBuffer { store: buffer_db })
+    Ok(KeyValueRejectedDeployBuffer::from_store(buffer_kv_store))
 }
 
 pub async fn casper_buffer_storage_from_dyn(
