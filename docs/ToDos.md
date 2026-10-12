@@ -429,6 +429,20 @@ tasks:
       - "run-bench-segment.sh puts the last 15 lines of compose-up.log on stderr when compose up fails. test-run-bench-segment.sh checks this with a fake docker."
       - "The weekly summary carries active.segments_failed from the run state bench_failures. The verdict warns about failed segments. The all-failed warning also fires when no failed segment wrote metrics. The report row shows the failed count."
       - "The cause of the compose failures is diagnosed separately from bench-segment-00011 and bench-segment-00013/compose-up.log in the run artifact."
+  - id: TASK-023-12
+    title: "Move the soak bench shard host ports below the ephemeral range"
+    status: review
+    priority: p1
+    claimed_by: claude-session-dfac55a4
+    claimed_at: 2026-10-12T17:30:00Z
+    branch: hotfix/soak-bench-port-range
+    pr_base_branch: master
+    finding: "Soak 38184406100 artifact: bench segments 11 and 13 failed with failed to bind host port 0.0.0.0:40452/tcp and 0.0.0.0:40412/tcp: address already in use. docker/shard.yml publishes 40400-40455, inside the kernel ephemeral range 32768-60999, so an outbound connection on the soak runner can hold the port. CI already avoids this with docker/ci-ports.shard.yml, but run-bench-segment.sh did not use it."
+    acceptance:
+      - "run-bench-segment.sh starts the bench shard with docker/shard.yml and docker/ci-ports.shard.yml, and probes and benchmarks validator1 on host port 14413."
+      - "test-run-bench-segment.sh checks both compose files and the probe port with a fake docker and curl."
+      - "The merged compose configuration publishes no host port at or above 32768."
+      - "The next weekend soak has no bench segment that fails with address already in use."
   - id: TASK-023-5
     title: "Measure the disk admission failure rate after the fix"
     status: pending
