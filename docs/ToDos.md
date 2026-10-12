@@ -394,9 +394,11 @@ tasks:
     codeql_note: "2026-10-09: the commit identity check moves to a new Commit Policy job without a cache step, because the CodeQL rule actions/cache-poisoning/poisonable-step re-raised a false positive (alerts #93 to #110) each time the old job shifted lines. Commit Policy joins the required checks in the admin command."
     blocked_by: [TASK-023-4, TASK-023-6]
     owner_note: "Steps 1 and 2 of the acceptance need a repository admin. An agent does not change rulesets."
+    ruleset_note: "2026-10-12: an admin removed the required_deployments rule (environment protected-branch-image-publish) from masterProtect. Only a push to dev or master deploys to that environment, so a pull request head never had the deployment. Auto-merge never fired, and every PR to master needed a rule bypass (#698). The current masterProtect rules are deletion, non_fast_forward, required_status_checks, and pull_request. The step 2 ruleset change must not add required_deployments again."
     acceptance:
       - "devProtect requires Static Checks, Script Tests, Soak Harness Tests, Integration Gate (amd64), and Integration Gate (arm64) instead of Lint and Integration Tests (amd64), (arm64)."
       - "masterProtect requires Static Checks, Script Tests, Soak Harness Tests, and Test Gate (casper) instead of Lint and Test (casper)."
+      - "masterProtect has no required_deployments rule, so a pull request to master can merge with auto-merge and without a bypass."
       - "In one commit: the build_base heavy reuse gate and release-train.sh validate-ci-evidence read Integration Gate (amd64), (arm64); test-ci-stack-gate.sh and test-release-train.sh use the new names; the temporary jobs leave ci.yml and ci-fork-pr.yml."
       - "A merge group with the change passes the queue. docs/ci.md describes the result without the switch section."
   - id: TASK-023-10
