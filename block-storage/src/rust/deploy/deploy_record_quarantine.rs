@@ -1,5 +1,11 @@
 // Quarantine of undecodable records in the node-local deploy stores. The
 // behavior and the operator procedure are in docs/block-storage/README.md.
+//
+// Locking requirement: `read_all` and `any` write. They read a damaged record
+// and later delete it from the live store if its bytes are unchanged. Callers
+// must run them under the same lock that guards `add` and `remove` on the
+// store, as casper does with `Arc<Mutex<...>>`. Without that lock, an `add`
+// between the read and the delete of the same key can be removed.
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -66,21 +72,30 @@ impl DeployRecordQuarantine {
         F: FnMut(&Signed<DeployData>) -> Result<bool, KvStoreError>,
     {
         let mut matched = false;
+        let mut predicate_error = None;
         let mut damaged = Vec::new();
         store.raw_store().iterate_while(&mut |key, value| {
             match decode_record(store, &key, &value) {
-                Ok(deploy) => {
-                    if predicate(&deploy)? {
+                Ok(deploy) => match predicate(&deploy) {
+                    Ok(true) => {
                         matched = true;
                         return Ok(false);
                     }
-                }
+                    Ok(false) => {}
+                    Err(error) => {
+                        predicate_error = Some(error);
+                        return Ok(false);
+                    }
+                },
                 Err(error) => damaged.push(DamagedRecord { key, value, error }),
             }
             Ok(true)
         })?;
         self.isolate(store, damaged)?;
-        Ok(matched)
+        match predicate_error {
+            Some(error) => Err(error),
+            None => Ok(matched),
+        }
     }
 
     pub(super) fn restore_readable(&self, store: &DeployTypedStore) -> Result<(), KvStoreError> {
@@ -89,14 +104,21 @@ impl DeployRecordQuarantine {
             return Ok(());
         }
         let total = quarantined.len();
-        let mut restored = 0usize;
+        let live = store.raw_store();
+        let (mut restored, mut duplicates, mut conflicts) = (0usize, 0usize, 0usize);
         for (key, value) in quarantined {
             if decode_record(store, &key, &value).is_err() {
                 continue;
             }
-            store.raw_store().put_one_if_absent(key.clone(), value)?;
+            if live.put_one_if_absent(key.clone(), value.clone())? {
+                restored += 1;
+            } else if live.get_one(&key)?.as_ref() == Some(&value) {
+                duplicates += 1;
+            } else {
+                conflicts += 1;
+                continue;
+            }
             self.quarantine.delete(vec![key])?;
-            restored += 1;
         }
         if restored > 0 {
             metrics::counter!(RESTORED_RECORDS_METRIC, "store" => self.store_name)
@@ -105,7 +127,9 @@ impl DeployRecordQuarantine {
         tracing::warn!(
             store = self.store_name,
             restored,
-            remaining = total - restored,
+            duplicates_removed = duplicates,
+            kept_on_conflict = conflicts,
+            remaining = total - restored - duplicates,
             "Deploy store opened with quarantined records"
         );
         Ok(())
@@ -121,17 +145,37 @@ impl DeployRecordQuarantine {
         }
         let total = damaged.len();
         let live = store.raw_store();
-        for (index, record) in damaged.into_iter().enumerate() {
-            self.quarantine
-                .put_one(record.key.clone(), record.value.clone())?;
+        let (mut moved, mut conflicts, mut logged) = (0usize, 0usize, 0usize);
+        for record in damaged {
+            let preserved = self
+                .quarantine
+                .put_one_if_absent(record.key.clone(), record.value.clone())?
+                || self.quarantine.get_one(&record.key)?.as_ref() == Some(&record.value);
+            if !preserved {
+                conflicts += 1;
+                if logged < MAX_LOGGED_RECORDS_PER_SCAN {
+                    logged += 1;
+                    tracing::warn!(
+                        store = self.store_name,
+                        key_prefix = %key_prefix(&record.key),
+                        key_len = record.key.len(),
+                        value_len = record.value.len(),
+                        error = %bounded_error(&record.error),
+                        "Kept an undecodable deploy record in place: its quarantine key holds different bytes"
+                    );
+                }
+                continue;
+            }
             if live.get_one(&record.key)?.as_ref() == Some(&record.value) {
                 live.delete(vec![record.key.clone()])?;
             }
+            moved += 1;
             metrics::counter!(QUARANTINED_RECORDS_METRIC, "store" => self.store_name).increment(1);
-            if index < MAX_LOGGED_RECORDS_PER_SCAN {
+            if logged < MAX_LOGGED_RECORDS_PER_SCAN {
+                logged += 1;
                 tracing::warn!(
                     store = self.store_name,
-                    key_prefix = %hex::encode(&record.key[..record.key.len().min(MAX_LOGGED_KEY_BYTES)]),
+                    key_prefix = %key_prefix(&record.key),
                     key_len = record.key.len(),
                     value_len = record.value.len(),
                     error = %bounded_error(&record.error),
@@ -139,16 +183,21 @@ impl DeployRecordQuarantine {
                 );
             }
         }
-        if total > MAX_LOGGED_RECORDS_PER_SCAN {
+        if total > logged {
             tracing::warn!(
                 store = self.store_name,
-                quarantined = total,
-                logged = MAX_LOGGED_RECORDS_PER_SCAN,
-                "Moved more undecodable deploy records to quarantine than were logged"
+                moved,
+                kept_on_conflict = conflicts,
+                logged,
+                "Found more undecodable deploy records than were logged"
             );
         }
         Ok(())
     }
+}
+
+fn key_prefix(key: &ByteBuffer) -> String {
+    hex::encode(&key[..key.len().min(MAX_LOGGED_KEY_BYTES)])
 }
 
 fn decode_record(
@@ -433,22 +482,136 @@ mod tests {
     }
 
     #[test]
-    fn open_does_not_overwrite_a_live_record_with_its_quarantined_copy() {
-        let (live, quarantine) = (in_memory(), in_memory());
-        let legacy = legacy_deploy();
-        let legacy_key = key_for(&legacy.sig);
-        let mut storage =
+    fn open_keeps_a_readable_quarantined_copy_when_the_live_key_holds_other_bytes() {
+        let recorder = DebuggingRecorder::new();
+        let snapshotter = recorder.snapshotter();
+        metrics::with_local_recorder(&recorder, || {
+            let legacy = legacy_deploy();
+            let legacy_key = key_for(&legacy.sig);
+            for live_bytes in [None, Some(MALFORMED_VALUE.to_vec())] {
+                let (live, quarantine) = (in_memory(), in_memory());
+                let storage =
+                    KeyValueDeployStorage::from_stores(live.clone(), quarantine.clone()).unwrap();
+                match &live_bytes {
+                    Some(bytes) => live.put_one(legacy_key.clone(), bytes.clone()).unwrap(),
+                    None => storage
+                        .store
+                        .put_one(legacy.sig.to_vec(), legacy.clone())
+                        .unwrap(),
+                }
+                let live_before = live.get_one(&legacy_key).unwrap();
+                quarantine
+                    .put_one(legacy_key.clone(), legacy_bytes())
+                    .unwrap();
+
+                let reopened =
+                    KeyValueDeployStorage::from_stores(live.clone(), quarantine.clone()).unwrap();
+                reopened.read_all().unwrap();
+
+                assert_eq!(live.get_one(&legacy_key).unwrap(), live_before);
+                assert_eq!(
+                    quarantine.get_one(&legacy_key).unwrap(),
+                    Some(legacy_bytes())
+                );
+            }
+            assert_eq!(
+                counter(&snapshotter, RESTORED_RECORDS_METRIC, DEPLOY_STORAGE_DB),
+                0
+            );
+        });
+    }
+
+    #[test]
+    fn open_removes_a_quarantined_copy_identical_to_the_live_record() {
+        let recorder = DebuggingRecorder::new();
+        let snapshotter = recorder.snapshotter();
+        metrics::with_local_recorder(&recorder, || {
+            let (live, quarantine) = (in_memory(), in_memory());
+            let legacy = legacy_deploy();
+            let legacy_key = key_for(&legacy.sig);
+            live.put_one(legacy_key.clone(), legacy_bytes()).unwrap();
+            quarantine
+                .put_one(legacy_key.clone(), legacy_bytes())
+                .unwrap();
+
             KeyValueDeployStorage::from_stores(live.clone(), quarantine.clone()).unwrap();
-        storage.add(vec![legacy.clone()]).unwrap();
-        let live_bytes = live.get_one(&legacy_key).unwrap();
-        quarantine
-            .put_one(legacy_key.clone(), legacy_bytes())
+
+            assert_eq!(live.get_one(&legacy_key).unwrap(), Some(legacy_bytes()));
+            assert!(!quarantine.non_empty().unwrap());
+            assert_eq!(
+                counter(&snapshotter, RESTORED_RECORDS_METRIC, DEPLOY_STORAGE_DB),
+                0
+            );
+        });
+    }
+
+    #[test]
+    fn scan_keeps_a_damaged_record_when_its_quarantine_key_holds_different_bytes() {
+        for name in POOLS {
+            let (live, quarantine) = (in_memory(), in_memory());
+            let pool = Pool::open(name, &live, &quarantine);
+            let (malformed_key, _) = seed_damaged(&live);
+            quarantine
+                .put_one(malformed_key.clone(), vec![0xee])
+                .unwrap();
+
+            assert!(pool.read_all().unwrap().is_empty(), "{name}");
+            assert_eq!(
+                quarantine.get_one(&malformed_key).unwrap(),
+                Some(vec![0xee]),
+                "{name}"
+            );
+            assert_eq!(
+                live.get_one(&malformed_key).unwrap(),
+                Some(MALFORMED_VALUE.to_vec()),
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn scan_completes_a_move_interrupted_after_the_quarantine_write() {
+        for name in POOLS {
+            let (live, quarantine) = (in_memory(), in_memory());
+            let pool = Pool::open(name, &live, &quarantine);
+            let (malformed_key, _) = seed_damaged(&live);
+            quarantine
+                .put_one(malformed_key.clone(), MALFORMED_VALUE.to_vec())
+                .unwrap();
+
+            assert!(pool.read_all().unwrap().is_empty(), "{name}");
+            assert_eq!(live.get_one(&malformed_key).unwrap(), None, "{name}");
+            assert_eq!(
+                quarantine.get_one(&malformed_key).unwrap(),
+                Some(MALFORMED_VALUE.to_vec()),
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn any_quarantines_damaged_records_seen_before_a_predicate_error() {
+        let live = FailingStore::new(false, false);
+        let live_dyn: Arc<dyn KeyValueStore> = live.clone();
+        let quarantine = in_memory();
+        let mut storage =
+            KeyValueDeployStorage::from_stores(live_dyn.clone(), quarantine.clone()).unwrap();
+        let valid = deploy(1);
+        storage.add(vec![valid.clone()]).unwrap();
+        let malformed_key = key_for(&[0; 64]);
+        live.put_one(malformed_key.clone(), MALFORMED_VALUE.to_vec())
             .unwrap();
+        assert!(malformed_key < key_for(&valid.sig));
 
-        KeyValueDeployStorage::from_stores(live.clone(), quarantine.clone()).unwrap();
-
-        assert_eq!(live.get_one(&legacy_key).unwrap(), live_bytes);
-        assert!(!quarantine.non_empty().unwrap());
+        assert!(matches!(
+            storage.any(|_| Err(KvStoreError::InvalidArgument("predicate".to_string()))),
+            Err(KvStoreError::InvalidArgument(_))
+        ));
+        assert_eq!(
+            quarantine.get_one(&malformed_key).unwrap(),
+            Some(MALFORMED_VALUE.to_vec())
+        );
+        assert_eq!(live.get_one(&malformed_key).unwrap(), None);
     }
 
     #[tokio::test]
@@ -544,7 +707,12 @@ mod tests {
             f: &mut dyn FnMut(ByteBuffer, ByteBuffer) -> Result<bool, KvStoreError>,
         ) -> Result<(), KvStoreError> {
             Self::check(&self.fail_scans)?;
-            self.inner.iterate_while(f)
+            for (key, value) in self.inner.to_map()? {
+                if !f(key, value)? {
+                    break;
+                }
+            }
+            Ok(())
         }
 
         fn clone_box(&self) -> Box<dyn KeyValueStore> { self.inner.clone_box() }

@@ -2,6 +2,8 @@
 
 use std::path::PathBuf;
 
+use block_storage::rust::deploy::key_value_deploy_storage::DEPLOY_STORAGE_QUARANTINE_DB;
+use block_storage::rust::deploy::key_value_rejected_deploy_buffer::REJECTED_DEPLOY_BUFFER_QUARANTINE_DB;
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
 use rspace_plus_plus::rspace::shared::lmdb_dir_store_manager::{
     Db, LmdbDirStoreManager, LmdbEnvConfig, GB, TB,
@@ -159,11 +161,11 @@ pub fn rnode_db_mapping(legacy_rspace_paths: Option<bool>) -> Vec<(Db, LmdbEnvCo
         // Undecodable records moved out of deploy_storage and
         // rejected_deploy_buffer by a scan, kept byte-for-byte for diagnosis.
         (
-            Db::new("deploy_storage_quarantine".to_string(), None),
+            Db::new(DEPLOY_STORAGE_QUARANTINE_DB.to_string(), None),
             deploy_storage_env_config(),
         ),
         (
-            Db::new("rejected_deploy_buffer_quarantine".to_string(), None),
+            Db::new(REJECTED_DEPLOY_BUFFER_QUARANTINE_DB.to_string(), None),
             deploy_storage_env_config(),
         ),
         // Reporting (trace) cache
