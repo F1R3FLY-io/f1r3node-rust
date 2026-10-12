@@ -143,9 +143,19 @@ async fn a_finalized_carrier_releases_its_pool_copy_before_floor_coverage() {
          is the legitimate one",
     );
 
+    // The finalizer persists the mark before it sweeps the register, so the
+    // release trails the mark the test just observed.
+    let mut released = false;
+    for _ in 0..40 {
+        if !pool_holds(&nodes[0], &sig) {
+            released = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
     assert!(
-        !pool_holds(&nodes[0], &sig),
-        "the carrier is finalized, so the verdict is written on this advance \
+        released,
+        "the carrier is finalized, so the verdict is written on that advance \
          and the pool copy goes with it — the release must not wait for the \
          floor to climb over the carrier",
     );

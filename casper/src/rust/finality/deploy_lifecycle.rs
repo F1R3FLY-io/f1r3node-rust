@@ -3,7 +3,7 @@
 //! make them true, and written write-once into the DAG storage's lifecycle
 //! tables. The status API reads; it never computes.
 //!
-//! Every input to a verdict is frozen consensus data: the floor clock
+//! Every input to a verdict is frozen consensus data: the register clock
 //! (monotone) and the state-construction facts blocks record (`deploys`,
 //! `applied_from_scope`, `merge_base`). Records feed the recovery plane
 //! and the display row; they do NOT decide verdicts — a verdict computed
@@ -12,15 +12,15 @@
 //! 87a5d970).
 //!
 //! Verdict rules:
-//! - **Finalized** ⟺ the sig's effect is in the FLOOR's committed state
-//!   (membership by recorded construction pointers). Floor-covered effects
-//!   are in every future merge base — membership at the floor is monotone
-//!   — so Finalized is decided AT COVERAGE, re-checked per floor advance
-//!   with a per-sig checked-up-to memo bounding each walk to the new
-//!   lineage segment.
+//! - **Finalized** ⟺ the sig's effect is in the ADOPTED LFB's committed
+//!   state (membership by recorded construction pointers). Finalization is
+//!   the single authority on finality, so membership below the clock is
+//!   monotone and Finalized is decided AT COVERAGE, re-checked per clock
+//!   advance with a per-sig checked-up-to memo bounding each walk to the
+//!   new lineage segment.
 //! - **Failed** ⟺ beyond the contestability bound, not in the state, and
-//!   a floor-covered `is_failed` execution exists (it ran and failed; the
-//!   charge landed).
+//!   an `is_failed` execution exists below the clock (it ran and failed;
+//!   the charge landed).
 //! - **Expired** ⟺ beyond the bound, not in the state, and the whole
 //!   lineage segment down to the bound was READABLE: on a truncated node a
 //!   sig whose walk crosses the restore horizon is unknowable, and the
@@ -286,7 +286,7 @@ struct Schedule {
     /// Sigs to re-evaluate once the clock height reaches the key (the next
     /// adoption for coverage re-checks; the contestability bound for
     /// Expired/Failed).
-    floor_thresholds: BTreeMap<i64, HashSet<Bytes>>,
+    clock_thresholds: BTreeMap<i64, HashSet<Bytes>>,
     /// The register's ONE clock, monotone per node.
     adopted_lfb: Option<AdoptedLfb>,
     /// Per-sig coverage memo: the floor block whose lineage a previous
@@ -335,7 +335,7 @@ impl DeployLifecycle {
     pub fn rebuild_schedule(&self, dag: &KeyValueDagRepresentation) -> Result<(), CasperError> {
         let mut schedule = self.schedule.lock();
         let open = dag.open_lifecycle_sigs().map_err(CasperError::from)?;
-        let armed = schedule.floor_thresholds.entry(0).or_default();
+        let armed = schedule.clock_thresholds.entry(0).or_default();
         for sig in open {
             armed.insert(Bytes::from(sig));
         }
@@ -343,7 +343,7 @@ impl DeployLifecycle {
         Ok(())
     }
 
-    /// Bump the floor clock and evaluate the sigs whose thresholds crossed,
+    /// Bump the register clock and evaluate the sigs whose thresholds crossed,
     /// plus the ones `touched` carries — a newly admitted block, or `None` for
     /// the finalizer's own advance, which has no block in hand.
     ///
@@ -410,19 +410,19 @@ impl DeployLifecycle {
                 due.insert(rd.sig.clone());
             }
         }
-        let floor_height = schedule
+        let clock_height = schedule
             .adopted_lfb
             .as_ref()
             .map(|c| c.block_number)
             .expect("the clock is set unconditionally above, before this read");
-        let crossed_floor: Vec<i64> = schedule
-            .floor_thresholds
-            .range(..=floor_height)
+        let crossed_clock: Vec<i64> = schedule
+            .clock_thresholds
+            .range(..=clock_height)
             .map(|(k, _)| *k)
             .collect();
-        let crossed_floor_key_count = crossed_floor.len();
-        for key in crossed_floor {
-            if let Some(sigs) = schedule.floor_thresholds.remove(&key) {
+        let crossed_clock_key_count = crossed_clock.len();
+        for key in crossed_clock {
+            if let Some(sigs) = schedule.clock_thresholds.remove(&key) {
                 due.extend(sigs);
             }
         }
@@ -432,16 +432,27 @@ impl DeployLifecycle {
         let due_count = due.len();
         let evaluate_start = std::time::Instant::now();
         let mut terminalized: Vec<Bytes> = Vec::new();
-        for sig in due {
-            evaluate(
+        for (i, sig) in due.iter().enumerate() {
+            if let Err(e) = evaluate(
                 &mut schedule,
                 dag,
                 block_store,
-                &sig,
+                sig,
                 deploy_lifespan,
                 citability_horizon,
                 &mut terminalized,
-            )?;
+            ) {
+                // The crossed keys were drained above, so returning here would
+                // drop the unevaluated remainder from the schedule entirely and
+                // leave those sigs Pending until restart. Re-arm them, this one
+                // included, for the next clock advance.
+                schedule
+                    .clock_thresholds
+                    .entry(clock_height + 1)
+                    .or_default()
+                    .extend(due[i..].iter().cloned());
+                return Err(e);
+            }
         }
         let evaluate_ms = evaluate_start.elapsed().as_millis();
         let total_ms = observe_start.elapsed().as_millis();
@@ -449,13 +460,13 @@ impl DeployLifecycle {
         if total_ms >= 1_000 {
             tracing::warn!(
                 target: "f1r3fly.casper.lifecycle.timing",
-                "Lifecycle observe slow: block_number={:?}, lock_wait_ms={}, rebuild_ms={}, prune_ms={}, due={}, crossed_floor_keys={}, evaluate_ms={}, terminalized={}, total_ms={}",
+                "Lifecycle observe slow: block_number={:?}, lock_wait_ms={}, rebuild_ms={}, prune_ms={}, due={}, crossed_clock_keys={}, evaluate_ms={}, terminalized={}, total_ms={}",
                 touched.map(|b| b.body.state.block_number),
                 lock_wait_ms,
                 rebuild_ms,
                 prune_ms,
                 due_count,
-                crossed_floor_key_count,
+                crossed_clock_key_count,
                 evaluate_ms,
                 terminalized.len(),
                 total_ms
@@ -483,7 +494,7 @@ fn evaluate(
     let Some(clock) = schedule.adopted_lfb.clone() else {
         return Ok(());
     };
-    let floor_height = clock.block_number;
+    let clock_height = clock.block_number;
 
     // A record-only row (carrier never observed) has no window basis yet;
     // its inclusion event will arm it.
@@ -522,8 +533,8 @@ fn evaluate(
             schedule.horizon_blocked.insert(sig.clone());
             schedule.checked.insert(sig.clone(), missing);
             schedule
-                .floor_thresholds
-                .entry(floor_height + 1)
+                .clock_thresholds
+                .entry(clock_height + 1)
                 .or_default()
                 .insert(sig.clone());
             return Ok(());
@@ -543,8 +554,8 @@ fn evaluate(
     // an invented terminal verdict; keep re-checking coverage instead.
     if schedule.horizon_blocked.contains(sig) {
         schedule
-            .floor_thresholds
-            .entry(floor_height + 1)
+            .clock_thresholds
+            .entry(clock_height + 1)
             .or_default()
             .insert(sig.clone());
         return Ok(());
@@ -557,8 +568,8 @@ fn evaluate(
     // Pending by design.
     let Some(bound) = citability_horizon else {
         schedule
-            .floor_thresholds
-            .entry(floor_height + 1)
+            .clock_thresholds
+            .entry(clock_height + 1)
             .or_default()
             .insert(sig.clone());
         return Ok(());
@@ -572,13 +583,13 @@ fn evaluate(
         .max()
         .unwrap_or(window_end);
     let decide_at = window_end.max(last_inclusion) + bound;
-    if floor_height <= decide_at {
+    if clock_height <= decide_at {
         // Not yet decidable: re-arm on the FLOOR clock — at the next
         // advance for the coverage re-check (a threshold that always
         // comes due, so a verdict is always eventually written).
         schedule
-            .floor_thresholds
-            .entry(floor_height + 1)
+            .clock_thresholds
+            .entry(clock_height + 1)
             .or_default()
             .insert(sig.clone());
         return Ok(());
@@ -674,7 +685,7 @@ fn write_terminal(
             latest_block_hash,
         })
         .map_err(CasperError::from)?;
-    // The sig is now irreversibly settled on the floor clock, whatever
+    // The sig is now irreversibly settled on the register clock, whatever
     // the verdict: the caller releases the proposer's pool copy against
     // exactly this list.
     terminalized.push(sig.clone());
