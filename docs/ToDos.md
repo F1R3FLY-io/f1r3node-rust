@@ -181,6 +181,85 @@ tasks:
 
 ---
 
+### EPIC-026: Hierarchical CbC Attributes (Nested .gitattributes Files)
+
+```yaml
+---
+epic_id: EPIC-026
+title: "Hierarchical CbC Attributes (Nested .gitattributes Files)"
+status: blocked
+priority: p2
+user_story: null
+blocked_by: ["top-level-gitlab-profile docs/ToDos.md INBOX: hierarchical cbc .gitattributes design (2026-10-12)"]
+created_at: 2026-10-12
+updated_at: 2026-10-12
+plan: docs/plans/cbc-hierarchical-attributes.md
+claimed_by: claude-session-dfac55a4
+claimed_at: 2026-10-12T14:00:00Z
+branch: chore/cbc-hierarchical-attributes
+pr_base_branch: dev
+origin: "On 2026-10-12 the maintainer asked to move the cbc=mandatory tags out of the flat root .gitattributes (160 lines) into .gitattributes files in subdirectories, following the new CbC workflow in top-level-gitlab-profile."
+roles:
+  design: "top-level-gitlab-profile owns the design, the tooling change, and its tests (its docs/ToDos.md INBOX entry of 2026-10-12)."
+  implementation: "This epic. It applies the ratified design to this repository and reorganizes the .gitattributes files."
+execution_contract:
+  design_policy: "No change to any .gitattributes file before the maintainer approves the design. The rule moves follow docs/plans/cbc-hierarchical-attributes.md. The revised R1 to R7 apply: the owner map routes proposals only, existing rules keep their coverage, and R7 is a separate change."
+  git_policy: "Commits require /quick-commit consent. The user runs push, merge, and PR operations."
+baseline:
+  root_file: ".gitattributes has 160 cbc lines. Two are duplicates: .github/workflows/slashing-tests.yml (lines 13 and 125) and scripts/ci/check-tla-invariants.sh (lines 10 and 117)."
+  evidence_dirs: "docs/cbc-evidence/ (tooling default) and docs/casper/cbc-evidence/ (selected through CBC_EVIDENCE_DIR in docs/casper/README.md)."
+  acceptance: "No entry sets cbc-acceptance yet."
+tasks:
+  - id: TASK-026-1
+    title: "Record the attribute baseline"
+    status: pending
+    blocked_by: []
+    acceptance:
+      - "The snapshot command of the plan (section 3) runs at the branch base, and its output is kept with the pull request as the reference."
+  - id: TASK-026-2
+    title: "Declare the owner directories"
+    status: pending
+    blocked_by: ["design approval", "shared owner map interface (R1)"]
+    acceptance:
+      - "The owner map of the shared tooling lists the nine owner directories of plan section 4."
+      - "The owner map routes new proposals only. The snapshot diff stays empty."
+  - id: TASK-026-3
+    title: "Move the rules into the owner .gitattributes files"
+    status: pending
+    blocked_by: [TASK-026-1, TASK-026-2]
+    acceptance:
+      - "Each commit moves one owner directory: it creates the owner file and removes the matching root lines."
+      - "Each moved pattern loses its owner prefix and gains a leading slash. The attributes stay the same."
+      - "No owner file uses an [attr] macro."
+      - "The snapshot diff against the previous commit is empty after each commit."
+      - "The root file keeps only rholang/src/rust/interpreter/reduce.rs and docs/crypto/README.md."
+  - id: TASK-026-4
+    title: "Remove the duplicate lines"
+    status: pending
+    blocked_by: [TASK-026-3]
+    acceptance:
+      - "A separate commit removes the second copy of .github/workflows/slashing-tests.yml and scripts/ci/check-tla-invariants.sh."
+      - "The snapshot diff is empty."
+  - id: TASK-026-5
+    title: "Prove that the migration is exact"
+    status: pending
+    blocked_by: [TASK-026-4, "shared R5 snapshot command"]
+    acceptance:
+      - "The snapshot at the branch head equals the baseline, except for paths that dev changed during the work. Each such path is recorded with its commit."
+      - "The R5 warnings report no override, duplicate, unanchored single-file pattern, or ambient attribute source."
+      - "cbc discharge --strict gives the same result at the branch base and the branch head."
+      - "The independent verifier in top-level-gitlab-profile confirms the result."
+  - id: TASK-026-6
+    title: "Set the evidence directory per path"
+    status: deferred
+    blocked_by: ["R7 approval as a separate interface change"]
+    notes:
+      - "2026-10-12: deferred. R7 is a separate change in top-level-gitlab-profile. The consumer auditors (check-casper-claims.rs, check-casper-soak-bindings.sh) use fixed paths, so the migration does not need R7."
+---
+```
+
+---
+
 ### EPIC-023: Disk Admission Test Flake and the Lint Job Scope
 
 ```yaml
@@ -306,9 +385,13 @@ tasks:
       - "If the stall is in a fixture command, the claim is not changed, and the task records that decision."
   - id: TASK-023-9
     title: "Switch the rulesets to the new check names and remove the temporary jobs (step 2)"
-    status: pending
+    status: in_progress
     priority: p0
-    claimed_by: null
+    claimed_by: claude-session-dfac55a4
+    claimed_at: 2026-10-09T02:00:00Z
+    branch: chore/ci-ruleset-switch
+    merge_order: "Merge only after #687 is merged and a repository admin has changed devProtect and masterProtect. Merging earlier removes checks that the rulesets still require."
+    codeql_note: "2026-10-09: the commit identity check moves to a new Commit Policy job without a cache step, because the CodeQL rule actions/cache-poisoning/poisonable-step re-raised a false positive (alerts #93 to #110) each time the old job shifted lines. Commit Policy joins the required checks in the admin command."
     blocked_by: [TASK-023-4, TASK-023-6]
     owner_note: "Steps 1 and 2 of the acceptance need a repository admin. An agent does not change rulesets."
     acceptance:
@@ -316,6 +399,21 @@ tasks:
       - "masterProtect requires Static Checks, Script Tests, Soak Harness Tests, and Test Gate (casper) instead of Lint and Test (casper)."
       - "In one commit: the build_base heavy reuse gate and release-train.sh validate-ci-evidence read Integration Gate (amd64), (arm64); test-ci-stack-gate.sh and test-release-train.sh use the new names; the temporary jobs leave ci.yml and ci-fork-pr.yml."
       - "A merge group with the change passes the queue. docs/ci.md describes the result without the switch section."
+  - id: TASK-023-10
+    title: "Promote dev to master from a promote/* branch and reject promotions with head dev"
+    status: review
+    priority: p0
+    claimed_by: claude-session-dfac55a4
+    claimed_at: 2026-10-09T10:00:00Z
+    branch: chore/ci-ruleset-switch
+    blocked_by: []
+    finding: "The repository deletes the head branch of a merged pull request (delete_branch_on_merge). Promotions #619 (2026-10-04) and #684 (2026-10-09) had head dev, so GitHub retargeted every open dev pull request to master: 7 and then 10 AutomaticBaseChangeSucceeded events within 13 seconds of each merge. The 13 affected pull requests other than #671 and the stacked #189 were retargeted back to dev on 2026-10-09."
+    decision: "2026-10-09: the user chose a local command (just promote) over an Actions workflow, because a pull request opened with GITHUB_TOKEN does not trigger CI and the CI GitHub App has only administration permissions."
+    acceptance:
+      - "just promote creates promote/<UTC timestamp> at the origin/dev commit and opens the pull request to master. test-open-promotion-pr.sh covers the nothing-to-promote case and the created branch and pull request."
+      - "The Promotion Source job rejects a pull request from dev to master and accepts promote/* and hotfix/* heads."
+      - "masterProtect requires Promotion Source after the admin ruleset change of TASK-023-9."
+      - "The next promotion retargets no open pull request."
   - id: TASK-023-5
     title: "Measure the disk admission failure rate after the fix"
     status: pending
