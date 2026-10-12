@@ -6,6 +6,7 @@ use crypto::rust::public_key::PublicKey;
 use crypto::rust::signatures::signed::Signed;
 
 use super::casper::protocol::casper_message::DeployData;
+use super::deploy_parameters::{parameters_to_par, ParameterError};
 use crate::rhoapi::g_unforgeable::UnfInstance;
 use crate::rhoapi::{GDeployId, GDeployerId, GUnforgeable, Par};
 
@@ -48,7 +49,10 @@ pub fn with_deployer_id(deployer_pk: &PublicKey) -> HashMap<String, Par> {
     env
 }
 
-pub fn normalizer_env_from_deploy(deploy: &Signed<DeployData>) -> HashMap<String, Par> {
+pub fn normalizer_env_from_deploy(
+    deploy: &Signed<DeployData>,
+) -> Result<HashMap<String, Par>, ParameterError> {
+    let parameter_values = parameters_to_par(&deploy.data.parameters)?;
     let mut env = HashMap::new();
 
     let deploy_id_par = Par::default().with_unforgeables(vec![GUnforgeable {
@@ -81,7 +85,10 @@ pub fn normalizer_env_from_deploy(deploy: &Signed<DeployData>) -> HashMap<String
         deployer_id_par,
     );
 
-    env
+    for (parameter, value) in deploy.data.parameters.iter().zip(parameter_values) {
+        env.insert(format!("rho:deploy:param:{}", parameter.name), value);
+    }
+    Ok(env)
 }
 
 #[cfg(test)]
@@ -102,6 +109,7 @@ mod tests {
                 valid_after_block_number: 0,
                 shard_id: "root".to_string(),
                 expiration_timestamp: None,
+                parameters: Vec::new(),
             },
             pk: PublicKey::from_bytes(&[1, 2, 3, 4]),
             sig: Bytes::from(vec![5, 6, 7, 8]),
@@ -127,7 +135,7 @@ mod tests {
     #[test]
     fn normalizer_env_from_deploy_should_include_legacy_aliases() {
         let deploy = signed_deploy_fixture();
-        let env = normalizer_env_from_deploy(&deploy);
+        let env = normalizer_env_from_deploy(&deploy).unwrap();
 
         let system_deploy_id = env
             .get(SYSTEM_DEPLOY_ID_URI)

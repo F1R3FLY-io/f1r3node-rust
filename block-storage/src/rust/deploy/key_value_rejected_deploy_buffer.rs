@@ -43,7 +43,11 @@ impl KeyValueRejectedDeployBuffer {
         quarantine: Arc<dyn KeyValueStore>,
     ) -> Result<Self, KvStoreError> {
         let buffer = Self {
-            store: KeyValueTypedStoreImpl::new(store),
+            store: KeyValueTypedStoreImpl::with_value_codec(
+                store,
+                super::deploy_codec::encode,
+                super::deploy_codec::decode,
+            ),
             quarantine: DeployRecordQuarantine::new(REJECTED_DEPLOY_BUFFER_DB, quarantine),
         };
         buffer.quarantine.restore_readable(&buffer.store)?;
@@ -121,6 +125,7 @@ mod tests {
                 valid_after_block_number: 0,
                 shard_id: "root".to_string(),
                 expiration_timestamp: None,
+                parameters: Vec::new(),
             },
             Box::new(Secp256k1),
             PrivateKey::from_bytes(&[1; 32]),

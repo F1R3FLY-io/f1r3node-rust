@@ -29,6 +29,13 @@ correctness — proved, model-checked, and tested — is the organizing concern.
 
 ## Canonical Terms
 
+### Deploy parameter
+
+A deploy parameter is a named, typed Rholang value included in the signed deploy data.
+Rholang code accesses the value through `rho:deploy:param:<name>`.
+
+**Preferred usage.** Use this term for values in `DeployData.parameters`.
+
 ### Soak harness
 
 The soak harness is the driver, profile adapters, collectors, and classifier that run [soak profiles](#soak-profile) against a [soak candidate](#soak-candidate) and retain evidence.

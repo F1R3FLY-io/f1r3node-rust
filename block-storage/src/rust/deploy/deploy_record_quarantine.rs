@@ -211,6 +211,7 @@ mod tests {
             valid_after_block_number: 0,
             shard_id: "root".to_string(),
             expiration_timestamp: None,
+            parameters: Vec::new(),
         })
     }
 
@@ -223,6 +224,7 @@ mod tests {
             valid_after_block_number: 17,
             shard_id: "root".to_string(),
             expiration_timestamp: Some(1000),
+            parameters: Vec::new(),
         })
     }
 
@@ -340,6 +342,28 @@ mod tests {
         }
     }
 
+    #[test]
+    fn read_all_quarantines_a_versioned_record_with_an_invalid_signature() {
+        for name in POOLS {
+            let (live, quarantine) = (in_memory(), in_memory());
+            let mut pool = Pool::open(name, &live, &quarantine);
+            let valid = deploy(1);
+            pool.add(vec![valid.clone()]);
+            let mut tampered = deploy(2);
+            let tampered_key = key_for(&tampered.sig);
+            tampered.data.phlo_limit += 1;
+            let tampered_bytes = crate::rust::deploy::deploy_codec::encode(&tampered).unwrap();
+            live.put_one(tampered_key.clone(), tampered_bytes.clone())
+                .unwrap();
+
+            assert_eq!(pool.read_all().unwrap(), HashSet::from([valid]), "{name}");
+            assert_eq!(
+                quarantine.get_one(&tampered_key).unwrap(),
+                Some(tampered_bytes),
+                "{name}"
+            );
+        }
+    }
     #[test]
     fn any_skips_damaged_records_and_still_finds_matches() {
         let (live, quarantine) = (in_memory(), in_memory());
