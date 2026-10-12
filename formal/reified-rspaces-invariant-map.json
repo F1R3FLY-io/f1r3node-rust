@@ -24,7 +24,7 @@
         "rspace++/tests/reified_space_store_handle_props.rs",
         "rholang/tests/reified_space_store_handle_par.rs"
       ],
-      "expected_properties": 25,
+      "expected_properties": 26,
       "formal": {
         "H1": {
           "kind": "rocq",
@@ -268,6 +268,24 @@
           "tests": [
             "prop_space_txn_replay_reproduces_play_rejection"
           ]
+        },
+        "H28": {
+          "kind": "rocq",
+          "name": "coverage_commit",
+          "file": "formal/rocq/reified_rspaces/theories/EventCorrelation.v",
+          "statement": "With the leaf-hash, decoded-row and event-multiplicity premises, for every committed operation a Produce of the log that the index keeps names the channel of each changed data leaf, and a Consume names the group of each changed continuation leaf and join (P9, amendment A10, leaf 9079).",
+          "tests": [
+            "prop_event_coverage_holds_for_generated_commits"
+          ]
+        },
+        "H29": {
+          "kind": "rocq",
+          "name": "two_block_replay_preserves_roots",
+          "file": "formal/rocq/reified_rspaces/theories/EventCorrelation.v",
+          "statement": "With a hash premise (the root is a function of the content of a store, and a reset to the root of a store rebuilds that store), a two-block reset-and-replay trace gives the events, statuses, stores and roots of play (P9, amendment A10, leaf 9080; from H23).",
+          "tests": [
+            "prop_space_txn_two_block_replay_preserves_roots"
+          ]
         }
       },
       "properties": [
@@ -362,7 +380,8 @@
           "test": "prop_event_coverage_holds_for_generated_commits",
           "file": "rspace++/tests/reified_space_store_handle_props.rs",
           "covers": [
-            "H10"
+            "H10",
+            "H28"
           ]
         },
         {
@@ -484,6 +503,14 @@
           "covers": [
             "H23",
             "T6"
+          ]
+        },
+        {
+          "number": 26,
+          "test": "prop_space_txn_two_block_replay_preserves_roots",
+          "file": "rspace++/tests/reified_space_store_handle_props.rs",
+          "covers": [
+            "H29"
           ]
         }
       ],
@@ -665,6 +692,14 @@
           "covers": [
             "H23",
             "T6"
+          ]
+        },
+        {
+          "test": "space_event_coverage_debug_assert",
+          "file": "rholang/tests/reified_cross_block_merge.rs",
+          "rule": "P9 amendment A4",
+          "covers": [
+            "H28"
           ]
         }
       ]
@@ -6844,6 +6879,15 @@
             "prop_native_space_replay_denial_keeps_prefix",
             "prop_native_space_replay_fails_closed"
           ]
+        },
+        "N8": {
+          "kind": "rocq",
+          "name": "two_block_native_replay_preserves_roots",
+          "file": "formal/rocq/reified_rspaces/theories/EventCorrelation.v",
+          "statement": "With the hash premise that a reset to the root of a store rebuilds that store, a two-block trace of native replay over the rows of native play gives the observer calls, the stores, the roots and the statuses of play (H30, P9, amendment A10, leaf 9080; from H24).",
+          "tests": [
+            "prop_native_space_replay_reproduces_play"
+          ]
         }
       },
       "properties": [
@@ -6853,7 +6897,8 @@
           "file": "rspace++/src/rspace/replay_rspace/native_session/space.rs",
           "covers": [
             "N1",
-            "N5"
+            "N5",
+            "N8"
           ]
         },
         {
@@ -7035,6 +7080,14 @@
           "rule": "decision 47 (the epoch closure of c6cb371ba)",
           "covers": [
             "N7"
+          ]
+        },
+        {
+          "test": "space_cross_block_replay",
+          "file": "rholang/tests/reified_cross_process.rs",
+          "rule": "P9 design v2 section 6",
+          "covers": [
+            "N8"
           ]
         }
       ]

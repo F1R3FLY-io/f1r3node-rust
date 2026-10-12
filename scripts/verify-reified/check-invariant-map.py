@@ -3,10 +3,10 @@
 
 The invariant map connects each formal headline (a Rocq theorem, a TLA+
 invariant or a consensus-checklist item) with its property-based tests. The
-map has one section for each phase: P1 (the storage substrate: H1-H23 and
-T1-T6, with H23 and T6 of decision 36), P2 (the wire encoding: E1-E12, the
-12 headlines of Encoding.v) and
-ORD (ordinary execution: O1, item 10 of the consensus checklist). The checker
+map has one section for each phase: P1 (the storage substrate: H1-H23, H28,
+H29 and T1-T6, with H23 and T6 of decision 36 and H28 and H29 of P9), P2
+(the wire encoding: E1-E12, the 12 headlines of Encoding.v) and ORD
+(ordinary execution: O1, item 10 of the consensus checklist). The checker
 fails when:
 
   * a required id of a phase is missing, or an entry names no test (an
@@ -59,9 +59,10 @@ DEFAULT_MAP = REPO_ROOT / "formal" / "reified-rspaces-invariant-map.json"
 SCHEMA = "reified-rspaces-invariant-map/3"
 CHECKLIST_SCHEMA = "reified-rspaces-consensus-checklist/1"
 # The ids that each known phase must map. Another phase takes its ids from
-# the map. Decision 36 adds H23 and T6 to P1 (replay reproduces play).
+# the map. Decision 36 adds H23 and T6 to P1 (replay reproduces play), and P9
+# (amendment A10) adds H28 (channel coverage) and H29 (two blocks of replay).
 REQUIRED_IDS = {
-    "P1": tuple(f"H{i}" for i in range(1, 24)) + tuple(f"T{i}" for i in range(1, 7)),
+    "P1": tuple(f"H{i}" for i in range(1, 24)) + ("H28", "H29") + tuple(f"T{i}" for i in range(1, 7)),
     "P2": tuple(f"E{i}" for i in range(1, 13)),
     "ORD": ("O1",),
 }

@@ -1,8 +1,8 @@
 // Property tests of the Reified RSpaces storage substrate. Each property is
 // the executable form of headline theorems of the Rocq models
-// (EventCorrelation.v H1–H12 and H17–H23, VolatileSweep.v H13–H16) and of
-// TLA+ invariants (CheckpointReplay.tla T1–T4 and T6, TxnLockCoverage T5);
-// the mapping lives in formal/reified-rspaces-invariant-map.json. Runs are
+// (EventCorrelation.v H1–H12, H17–H23, H28 and H29, VolatileSweep.v H13–H16)
+// and of TLA+ invariants (CheckpointReplay.tla T1–T4 and T6, TxnLockCoverage
+// T5); the mapping lives in formal/reified-rspaces-invariant-map.json. Runs are
 // deterministic (fixed seed) and never write to the source tree (no failure
 // persistence). Where a property allows it, the generators also produce
 // groups that are not canonical (a permutation, or a repeat out of sorted
@@ -27,7 +27,7 @@ use proptest::sample::{select, subsequence};
 use proptest::test_runner::RngSeed;
 use rspace_plus_plus::rspace::errors::RSpaceError;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
-use rspace_plus_plus::rspace::hashing::stable_hash_provider::{hash, hash_from_vec};
+use rspace_plus_plus::rspace::hashing::stable_hash_provider::{hash, hash_from_vec, hash_vec};
 use rspace_plus_plus::rspace::internal::{Datum, WaitingContinuation};
 use rspace_plus_plus::rspace::operation_context::{self, CausalPath, OperationOrder};
 use rspace_plus_plus::rspace::rspace::RSpace;
@@ -239,6 +239,18 @@ fn op_groups(peeks: bool, odd: f64) -> impl Strategy<Value = Vec<Vec<Op>>> {
         .prop_map(binds_incoming_once)
 }
 
+// Groups for the two-block property (H29), with a split that leaves at least
+// one group in each block. The groups are normalized as one sequence, because
+// a waiter of block 1 can wait for a send of block 2.
+fn two_block_op_groups() -> impl Strategy<Value = (Vec<Vec<Op>>, usize)> {
+    proptest::collection::vec(proptest::collection::vec(op(false, ODD, REPEAT), 1..=4), 2..=8)
+        .prop_map(binds_incoming_once)
+        .prop_flat_map(|groups| {
+            let len = groups.len();
+            (Just(groups), 1..len)
+        })
+}
+
 // Groups for the peek property (H11, FR-10, decision 45). Waiters outnumber
 // sends two to one, and most waiters peek. So peek fires on one channel and
 // on joins, re-stores of the records that they remove, re-offers that store
@@ -402,6 +414,60 @@ async fn replay_pairs_play_log(groups: Vec<Vec<Op>>) -> Result<(), TestCaseError
     match replay.create_checkpoint().await {
         Ok(replayed) => prop_assert_eq!(replayed.root, played.root),
         Err(error) => return Err(TestCaseError::fail(format!("replay checkpoint: {:?}", error))),
+    }
+    Ok(())
+}
+
+// H29: a two-block reset-and-replay trace gives the roots of play. Play
+// commits the first `split` transactions of the plan as block 1 and the rest
+// as block 2, with a checkpoint after each block. Each block holds at least
+// one transaction. Replay resets to the start root, replays block 1 with its
+// log, resets to the root that its own replay of block 1 gives, and replays
+// block 2 with its log. Each block commits the receipts of play, pairs every
+// COMM, and reaches the root of play.
+async fn two_block_replay_preserves_roots(
+    groups: Vec<Vec<Op>>,
+    split: usize,
+) -> Result<(), TestCaseError> {
+    // A checkpoint resets the hot store to the history, which can reorder the
+    // records of a channel. So the plans of block 2 come from scratch spaces
+    // that checkpoint after block 1 too, and their candidate positions match.
+    let (first_groups, second_groups) = groups.split_at(split);
+    let scratch_host = play_space().await;
+    let scratch_txn = play_space().await;
+    let (first, _) = run_guided(&scratch_host, &scratch_txn, first_groups).await;
+    checkpoint(&scratch_host).await;
+    checkpoint(&scratch_txn).await;
+    let (second, _) = run_guided(&scratch_host, &scratch_txn, second_groups).await;
+    let (first, second) = (first.as_slice(), second.as_slice());
+    let (play, replay) = play_and_replay().await;
+    let start = checkpoint(&play).await;
+    let played_first =
+        assert_committed(run_plans(&SpaceStoreHandle::new(play.clone()), first).await)?;
+    let block_one = checkpoint(&play).await;
+    let played_second =
+        assert_committed(run_plans(&SpaceStoreHandle::new(play.clone()), second).await)?;
+    let block_two = checkpoint(&play).await;
+
+    rig(&replay, &start.root, &block_one.log).await;
+    let replayed_first =
+        assert_committed(run_plans(&SpaceStoreHandle::new(replay.clone()), first).await)?;
+    prop_assert_eq!(replayed_first, played_first);
+    prop_assert!(replay_bindings(&replay).is_empty());
+    let root_one = match replay.create_checkpoint().await {
+        Ok(replayed) => replayed.root,
+        Err(error) => return Err(TestCaseError::fail(format!("replay checkpoint 1: {:?}", error))),
+    };
+    prop_assert_eq!(&root_one, &block_one.root);
+
+    rig(&replay, &root_one, &block_two.log).await;
+    let replayed_second =
+        assert_committed(run_plans(&SpaceStoreHandle::new(replay.clone()), second).await)?;
+    prop_assert_eq!(replayed_second, played_second);
+    prop_assert!(replay_bindings(&replay).is_empty());
+    match replay.create_checkpoint().await {
+        Ok(replayed) => prop_assert_eq!(replayed.root, block_two.root),
+        Err(error) => return Err(TestCaseError::fail(format!("replay checkpoint 2: {:?}", error))),
     }
     Ok(())
 }
@@ -1000,6 +1066,63 @@ fn multiset_changes(before: &[Vec<u8>], after: &[Vec<u8>]) -> (Vec<Vec<u8>>, Vec
     (added, remaining)
 }
 
+// The leaves that a commit changes (H28): the data channels and the
+// continuation groups whose record multisets differ, and the join entries
+// (channel, group) that the commit adds or removes.
+type ChangedLeaves = (Vec<String>, Vec<Vec<String>>, Vec<(String, Vec<String>)>);
+
+fn changed_leaves(before: &LogicalState, after: &LogicalState) -> ChangedLeaves {
+    let empty = Vec::new();
+    let changed = |old: &[Vec<u8>], new: &[Vec<u8>]| {
+        let (added, removed) = multiset_changes(old, new);
+        !(added.is_empty() && removed.is_empty())
+    };
+    let channels: BTreeSet<&String> = before.data.keys().chain(after.data.keys()).collect();
+    let data = channels
+        .into_iter()
+        .filter(|channel| {
+            changed(
+                before.data.get(*channel).unwrap_or(&empty),
+                after.data.get(*channel).unwrap_or(&empty),
+            )
+        })
+        .cloned()
+        .collect();
+    let groups: BTreeSet<&Vec<String>> = before
+        .continuations
+        .keys()
+        .chain(after.continuations.keys())
+        .collect();
+    let continuations = groups
+        .into_iter()
+        .filter(|group| {
+            changed(
+                before.continuations.get(*group).unwrap_or(&empty),
+                after.continuations.get(*group).unwrap_or(&empty),
+            )
+        })
+        .cloned()
+        .collect();
+    let no_groups = Vec::new();
+    let join_channels: BTreeSet<&String> = before.joins.keys().chain(after.joins.keys()).collect();
+    let mut joins = Vec::new();
+    for channel in join_channels {
+        let old = before.joins.get(channel).unwrap_or(&no_groups);
+        let new = after.joins.get(channel).unwrap_or(&no_groups);
+        let mut remaining = old.clone();
+        for group in new {
+            match remaining.iter().position(|existing| existing == group) {
+                Some(position) => {
+                    remaining.swap_remove(position);
+                }
+                None => joins.push((channel.clone(), group.clone())),
+            }
+        }
+        joins.extend(remaining.into_iter().map(|group| (channel.clone(), group)));
+    }
+    (data, continuations, joins)
+}
+
 fn state_effects(before: &LogicalState, after: &LogicalState) -> Effects {
     let empty = Vec::new();
     let mut effects: Effects = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
@@ -1037,9 +1160,10 @@ fn state_effects(before: &LogicalState, after: &LogicalState) -> Effects {
     effects
 }
 
-// H10: every committed store change has its event, and every COMM follows
-// its trigger event. The commit-time correlation check runs in every build
-// profile as well.
+// H10 and H28: every committed store change has the event of its record,
+// an event names the channel or the group of each changed leaf, and every
+// COMM follows its trigger event. The commit-time correlation check runs in
+// every build profile as well.
 async fn coverage_holds(groups: Vec<Vec<Op>>) -> Result<(), TestCaseError> {
     let plans = plan_groups(&groups).await;
     let space = play_space().await;
@@ -1068,6 +1192,59 @@ async fn coverage_holds(groups: Vec<Vec<Op>>) -> Result<(), TestCaseError> {
         }
         for waiting in &unparked {
             prop_assert!(comms.iter().any(|comm| comm.consume == waiting.source));
+        }
+        // H28: a Produce of the log names the channel of each changed data
+        // leaf, and a Consume names the group of each changed continuation
+        // leaf and join, through the channel hashes of the event identities.
+        let (data, continuations, joins) = changed_leaves(&before, &logical_state(&space));
+        let named_channels: BTreeSet<Blake2b256Hash> = events
+            .iter()
+            .flat_map(|event| match event {
+                Event::IoEvent(IOEvent::Produce(produce)) => vec![produce.channel_hash.clone()],
+                Event::Comm(comm) => comm
+                    .produces
+                    .iter()
+                    .map(|produce| produce.channel_hash.clone())
+                    .collect(),
+                Event::IoEvent(IOEvent::Consume(_)) => Vec::new(),
+            })
+            .collect();
+        let named_groups: BTreeSet<Vec<Blake2b256Hash>> = events
+            .iter()
+            .map(|event| match event {
+                Event::IoEvent(IOEvent::Consume(consume)) => consume.channel_hashes.clone(),
+                Event::Comm(comm) => comm.consume.channel_hashes.clone(),
+                Event::IoEvent(IOEvent::Produce(_)) => Vec::new(),
+            })
+            .filter(|hashes| !hashes.is_empty())
+            .collect();
+        for channel in &data {
+            prop_assert!(
+                named_channels.contains(&hash(channel)),
+                "no Produce names the changed data leaf {}",
+                channel
+            );
+        }
+        for group in &continuations {
+            prop_assert!(
+                named_groups.contains(&hash_vec(group)),
+                "no Consume names the changed continuation leaf {:?}",
+                group
+            );
+        }
+        for (channel, group) in &joins {
+            prop_assert!(
+                group.contains(channel),
+                "the join {:?} of {} misses its channel",
+                group,
+                channel
+            );
+            prop_assert!(
+                named_groups.contains(&hash_vec(group)),
+                "no Consume names the changed join {:?} of {}",
+                group,
+                channel
+            );
         }
         for (position, event) in events.iter().enumerate() {
             if let Event::Comm(comm) = event {
@@ -2403,6 +2580,13 @@ proptest! {
     #[test]
     fn prop_space_txn_cross_replay_with_host(groups in host_replay_op_groups()) {
         runtime().block_on(cross_replay_with_host(groups))?;
+    }
+
+    #[test]
+    fn prop_space_txn_two_block_replay_preserves_roots(
+        (groups, split) in two_block_op_groups(),
+    ) {
+        runtime().block_on(two_block_replay_preserves_roots(groups, split))?;
     }
 
     #[test]

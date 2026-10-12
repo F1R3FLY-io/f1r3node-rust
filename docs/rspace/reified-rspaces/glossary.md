@@ -1616,6 +1616,10 @@ The check merges the event log of a deploy over the pre-state of the deploy.
 It requires the post-state root of the deploy (P9 design v2, amendment A4).
 The test `space_event_coverage_debug_assert` runs the check for each family program and for each deploy of the merge suite of P9 ([verification §34.3](verification.md#343-step-2-n1-n9-the-merge-across-blocks-and-the-event-coverage)).
 
+The Rocq headline `coverage_commit` (H28 of `EventCorrelation.v`) proves the channel part for each commit of the substrate ([verification §34.9](verification.md#349-step-8-the-formal-models-the-maps-and-the-documents)).
+A Produce of the log names the channel of each changed data leaf.
+A Consume names the group of each changed continuation leaf and of each changed join.
+
 ## References
 
 <a id="ref-anww13"></a>[ANWW13] J.-P. Aumasson, S. Neves, Z. Wilcox-O'Hearn, and C. Winnerlein, "BLAKE2: simpler, smaller, fast as MD5," in *Applied Cryptography and Network Security (ACNS 2013)*, Lecture Notes in Computer Science, Springer, 2013, pp. 119–135. [doi:10.1007/978-3-642-38980-1_8](https://doi.org/10.1007/978-3-642-38980-1_8)

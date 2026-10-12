@@ -86,6 +86,27 @@ one rule of the native replay backend of spaces or of its view charges:
                                only: view_charge_cache_independent (H27)
                                breaks
 
+P9 (amendment A10; EventCorrelation.v, H28 to H30) has five controls. Each
+reverts one rule of event coverage or of the replay of two blocks:
+  ec-store-drops-produce-event         the commit of a store logs no Produce
+                                       event, as a counter write whose event
+                                       is dropped: coh_produce_store, the
+                                       store case of H10 and H28, breaks
+  ec-store-logs-mismatched-produce-event
+                                       the commit of a store logs the Produce
+                                       of another record of the same channel
+                                       (the other persistence flag). The
+                                       event names the channel, so only the
+                                       record coverage of coh_produce_store
+                                       breaks
+  ec-coverage-without-continuation-rows  H28 without the decoded-row premise
+                                       of continuations: H28 breaks
+  ec-two-block-stale-reset             H29 with a validator that replays
+                                       block 2 from the root before block 1:
+                                       H29 breaks
+  ec-native-two-block-stale-reset      the same for native replay: H30
+                                       breaks
+
 Decision 47 (SpaceRefs.v) has two controls: a host runtime that rejects space
 jobs in native play, as decision 46 did, and a native replay runtime that runs
 space jobs before its environment binds it. The control of decision 46 is
@@ -671,6 +692,88 @@ CONTROLS = (
      "  | Some v => (v, key_charge k + value_charge v)",
      "  | Some v => (v, key_charge k)",
      ("view_charge_cache_independent",)),
+    # ── P9 (amendment A10): channel coverage (H28) and two blocks (H29, H30) ─
+    ("ec-store-drops-produce-event", "EventCorrelation",
+     "the commit of a store logs no Produce event, as a counter write whose event is dropped",
+     ("  match space_prelude Play H s (ObStart s [ch] joins0) (ObProduce src ch v persist) with\n"
+      "  | PreStop obs st => mkRes S rd obs [] [] st\n"
+      "  | PreGo obs =>\n"
+      "      match out with\n"
+      "      | PStore =>\n"
+      "          let p := put_datum (bump S src persist) ch (mkDatum v persist src) in\n"
+      "          mkRes (fst p) rd (obs ++ [ObFinish s Stored]) [EvProduce src] (snd p) StOk",
+      "  match space_prelude Replay H s (ObStart s [ch] joins0) (ObProduce src ch v persist) with\n"
+      "  | PreStop obs st => mkRes S rd obs [] [] st\n"
+      "  | PreGo obs =>\n"
+      "      let S1 := bump S src persist in\n"
+      "      match out with\n"
+      "      | PStore =>\n"
+      "          let p := put_datum S1 ch (mkDatum v persist src) in\n"
+      "          mkRes (fst p) rd (obs ++ [ObFinish s Stored]) [EvProduce src] (snd p) StOk"),
+     ("  match space_prelude Play H s (ObStart s [ch] joins0) (ObProduce src ch v persist) with\n"
+      "  | PreStop obs st => mkRes S rd obs [] [] st\n"
+      "  | PreGo obs =>\n"
+      "      match out with\n"
+      "      | PStore =>\n"
+      "          let p := put_datum (bump S src persist) ch (mkDatum v persist src) in\n"
+      "          mkRes (fst p) rd (obs ++ [ObFinish s Stored]) [] (snd p) StOk",
+      "  match space_prelude Replay H s (ObStart s [ch] joins0) (ObProduce src ch v persist) with\n"
+      "  | PreStop obs st => mkRes S rd obs [] [] st\n"
+      "  | PreGo obs =>\n"
+      "      let S1 := bump S src persist in\n"
+      "      match out with\n"
+      "      | PStore =>\n"
+      "          let p := put_datum S1 ch (mkDatum v persist src) in\n"
+      "          mkRes (fst p) rd (obs ++ [ObFinish s Stored]) [] (snd p) StOk"),
+     ("coh_produce_store",)),
+    ("ec-store-logs-mismatched-produce-event", "EventCorrelation",
+     "the commit of a store logs the Produce of another record of the same channel",
+     ("  match space_prelude Play H s (ObStart s [ch] joins0) (ObProduce src ch v persist) with\n"
+      "  | PreStop obs st => mkRes S rd obs [] [] st\n"
+      "  | PreGo obs =>\n"
+      "      match out with\n"
+      "      | PStore =>\n"
+      "          let p := put_datum (bump S src persist) ch (mkDatum v persist src) in\n"
+      "          mkRes (fst p) rd (obs ++ [ObFinish s Stored]) [EvProduce src] (snd p) StOk",
+      "  match space_prelude Replay H s (ObStart s [ch] joins0) (ObProduce src ch v persist) with\n"
+      "  | PreStop obs st => mkRes S rd obs [] [] st\n"
+      "  | PreGo obs =>\n"
+      "      let S1 := bump S src persist in\n"
+      "      match out with\n"
+      "      | PStore =>\n"
+      "          let p := put_datum S1 ch (mkDatum v persist src) in\n"
+      "          mkRes (fst p) rd (obs ++ [ObFinish s Stored]) [EvProduce src] (snd p) StOk"),
+     ("  match space_prelude Play H s (ObStart s [ch] joins0) (ObProduce src ch v persist) with\n"
+      "  | PreStop obs st => mkRes S rd obs [] [] st\n"
+      "  | PreGo obs =>\n"
+      "      match out with\n"
+      "      | PStore =>\n"
+      "          let p := put_datum (bump S src persist) ch (mkDatum v persist src) in\n"
+      "          mkRes (fst p) rd (obs ++ [ObFinish s Stored]) [EvProduce (produce_id ch v (negb persist))] (snd p) StOk",
+      "  match space_prelude Replay H s (ObStart s [ch] joins0) (ObProduce src ch v persist) with\n"
+      "  | PreStop obs st => mkRes S rd obs [] [] st\n"
+      "  | PreGo obs =>\n"
+      "      let S1 := bump S src persist in\n"
+      "      match out with\n"
+      "      | PStore =>\n"
+      "          let p := put_datum S1 ch (mkDatum v persist src) in\n"
+      "          mkRes (fst p) rd (obs ++ [ObFinish s Stored]) [EvProduce (produce_id ch v (negb persist))] (snd p) StOk"),
+     ("coh_produce_store",)),
+    ("ec-coverage-without-continuation-rows", "EventCorrelation",
+     "H28 without the decoded-row premise for continuations: a removed continuation names no group",
+     "  (forall g w, In w (s_conts S g) -> cid_chans (w_src w) = g).",
+     "  True.",
+     ("coverage_commit",)),
+    ("ec-two-block-stale-reset", "EventCorrelation",
+     "H29 with a validator that replays block 2 from the root before block 1",
+     "        let v2 := commit_run (t_mode Q2) H2r (reset (root (r_st v1))) rd2r (t_staged Q2') in",
+     "        let v2 := commit_run (t_mode Q2) H2r (reset (root S0)) rd2r (t_staged Q2') in",
+     ("two_block_replay_preserves_roots",)),
+    ("ec-native-two-block-stale-reset", "EventCorrelation",
+     "H30 with a validator that replays block 2 from the root before block 1",
+     "                  match native_replay h2 (reset (root s1r)) ops2 rows2 with",
+     "                  match native_replay h2 (reset (root s0)) ops2 rows2 with",
+     ("two_block_native_replay_preserves_roots",)),
     # ── P4: Namespace.v ──────────────────────────────────────────────────
     ("ns-ephemeral-bit-dropped", "Namespace",
      "an ephemeral id has the durable KIND byte (no bit 0x20)",

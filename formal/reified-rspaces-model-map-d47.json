@@ -55,6 +55,12 @@
       "name": "NoDeadlock",
       "file": "formal/tlaplus/reified_rspaces/NativeReplay.tla",
       "statement": "Until every intent ends, some intent can step: a space transaction never waits under its stripes (P1), a host operation waits before it takes its stripes (F4), and a failed space row closes the epoch, so no operation waits forever for it, also with a footprint-consistent forged journal."
+    },
+    "N8": {
+      "kind": "rocq",
+      "name": "two_block_native_replay_preserves_roots",
+      "file": "formal/rocq/reified_rspaces/theories/EventCorrelation.v",
+      "statement": "H30 (P9, amendment A10): with the hash premise that a reset to the root of a store rebuilds that store, a two-block trace of native replay over the rows of native play gives the observer calls, the stores, the roots and the statuses of play (H24 once for each block)."
     }
   },
   "items": [
@@ -75,7 +81,8 @@
       ],
       "covers": [
         "N1",
-        "N5"
+        "N5",
+        "N8"
       ]
     },
     {
@@ -100,7 +107,8 @@
         "N2",
         "N3",
         "N5",
-        "N7"
+        "N7",
+        "N8"
       ]
     },
     {
@@ -183,7 +191,8 @@
       "covers": [
         "N1",
         "N3",
-        "N5"
+        "N5",
+        "N8"
       ]
     },
     {
@@ -206,7 +215,8 @@
       "covers": [
         "N1",
         "N3",
-        "N5"
+        "N5",
+        "N8"
       ]
     },
     {

@@ -510,6 +510,20 @@
    H27 view_charge_cache_independent   P5: a view load charges its key and
                                        its value only, so a hit and a miss
                                        charge the same
+   H28 coverage_commit                 P9 (amendment A10): with the leaf-hash,
+                                       decoded-row and event-multiplicity
+                                       premises, a Produce of the log names
+                                       the channel of each changed data leaf,
+                                       and a Consume names the group of each
+                                       changed continuation leaf and join
+   H29 two_block_replay_preserves_roots
+                                       P9: with a hash premise, a two-block
+                                       reset-and-replay trace gives the
+                                       events, statuses, stores and roots
+                                       of play (from H23)
+   H30 two_block_native_replay_preserves_roots
+                                       P9: the same for native replay (from
+                                       H24)
 
    No Axiom, Parameter, Admitted, admit, Abort or Conjecture. Section
    variables become universally quantified parameters of the closed
@@ -7895,6 +7909,372 @@ Proof.
   - intros c. apply Nat.le_refl.
 Qed.
 
+(* ═══════ P9 (amendment A10): channel coverage (H28) and two blocks (H29) ═══════ *)
+
+(* ── H28: the channel-level commit corollary of H10 (leaf 9079) ─────────── *)
+
+(* Casper merges the state change of each deploy. StateChange::new reads
+   only the leaves that the events of the deploy name (state_change.rs:150-
+   299): the data leaf of the channel of each affected Produce, and the
+   continuation and join leaves of the channels of each affected Consume.
+   H10 is record coverage: each effect of a commit has the event of its own
+   record. H28 gives the channel-level fact that the merger needs: a Produce
+   of the log names the channel of each changed data leaf, and a Consume of
+   the log names the group of each changed continuation or join leaf. The
+   merger reads a subset of these events (produces_affected and
+   consumes_affected, merging_logic.rs:526-637), so H28 is a necessary
+   condition of a correct merge, not a sufficient one. The merge-level test
+   space_event_coverage_debug_assert checks the rest (amendment A4). *)
+
+(* The channel that a Produce of an event names. *)
+Definition produce_names (pid_chan : PId -> Chan) (e : Ev) (c : Chan) : Prop :=
+  match e with
+  | EvProduce p => pid_chan p = c
+  | EvConsume _ => False
+  | EvComm _ cm => exists p, In p (c_produces cm) /\ pid_chan p = c
+  end.
+
+(* The group of channels that a Consume of an event names. *)
+Definition consume_names (cid_chans : CId -> list Chan) (e : Ev) (g : list Chan) : Prop :=
+  match e with
+  | EvProduce _ => False
+  | EvConsume k => cid_chans k = g
+  | EvComm _ cm => cid_chans (c_consume cm) = g
+  end.
+
+(* Channel coverage of the effects fx by the events evs: a Produce of evs
+   names the channel of each changed data leaf, and a Consume of evs names
+   the group of each changed continuation leaf and of each changed join. A
+   changed join of channel c and group g has c in g. *)
+Definition channel_covered (pid_chan : PId -> Chan) (cid_chans : CId -> list Chan)
+    (evs : list Ev) (fx : list Fx) : Prop :=
+  (forall c d, In (FxPutDatum c d) fx \/ In (FxRemoveDatum c d) fx ->
+     exists e, In e evs /\ produce_names pid_chan e c) /\
+  (forall g w, In (FxPutCont g w) fx \/ In (FxRemoveCont g w) fx ->
+     exists e, In e evs /\ consume_names cid_chans e g) /\
+  (forall c g, In (FxPutJoin c g) fx \/ In (FxRemoveJoin c g) fx ->
+     In c g /\ exists e, In e evs /\ consume_names cid_chans e g).
+
+(* The leaf-hash premise: the identity of a Produce names the channel of its
+   operation, and the identity of a Consume names the channels of its
+   operation. Produce::create and Consume::create hash them (event.rs). *)
+Definition leaf_hash (pid_chan : PId -> Chan) (cid_chans : CId -> list Chan) : Prop :=
+  (forall c v b, pid_chan (produce_id c v b) = c) /\
+  (forall chs pats k b, cid_chans (consume_id chs pats k b) = chs).
+
+(* The decoded-row premise: each record that a leaf of S holds names the
+   channel of that leaf. A datum keeps the Produce that stored it, and a
+   continuation keeps the Consume that parked it. *)
+Definition decoded_rows (pid_chan : PId -> Chan) (cid_chans : CId -> list Chan) (S : Store) : Prop :=
+  (forall c d, In d (s_data S c) -> pid_chan (d_src d) = c) /\
+  (forall g w, In w (s_conts S g) -> cid_chans (w_src w) = g).
+
+(* The event-multiplicity premise: the index of the merger keeps each event
+   of the log at least once. The index of production is a set of identities
+   (event_log_index.rs), so it can drop a repeated event, but no event. *)
+Definition index_keeps_events (idx : list Ev -> list Ev) : Prop :=
+  forall evs e, In e evs -> In e (idx evs).
+
+Lemma channel_covered_index :
+  forall pid_chan cid_chans idx evs fx,
+    index_keeps_events idx -> channel_covered pid_chan cid_chans evs fx ->
+    channel_covered pid_chan cid_chans (idx evs) fx.
+Proof.
+  intros pid_chan cid_chans idx evs fx Hidx (Hd & Hk & Hj). split; [| split].
+  - intros c d Hf. destruct (Hd c d Hf) as (e & He & Hn).
+    exists e. split; [apply Hidx; exact He | exact Hn].
+  - intros g w Hf. destruct (Hk g w Hf) as (e & He & Hn).
+    exists e. split; [apply Hidx; exact He | exact Hn].
+  - intros c g Hf. destruct (Hj c g Hf) as (Hc & e & He & Hn).
+    split; [exact Hc |]. exists e. split; [apply Hidx; exact He | exact Hn].
+Qed.
+
+Lemma channel_covered_nil : forall pid_chan cid_chans evs, channel_covered pid_chan cid_chans evs [].
+Proof.
+  intros pid_chan cid_chans evs. split; [| split].
+  - intros c d [[] | []].
+  - intros g w [[] | []].
+  - intros c g [[] | []].
+Qed.
+
+(* A removal leaves the other records of the store and drops no record that
+   was not there. *)
+Lemma remove_datum_data_incl :
+  forall S c d c' x, In x (s_data (fst (space_remove_datum S c d)) c') -> In x (s_data S c').
+Proof.
+  intros S c d c' x Hx. destruct (space_remove_datum_fields S c d) as (Hd & _).
+  apply (count_occ_In datum_eq_dec) in Hx. apply (count_occ_In datum_eq_dec).
+  specialize (Hd c' x). lia.
+Qed.
+
+Lemma remove_continuation_data :
+  forall S g w c, s_data (fst (space_remove_continuation S g w)) c = s_data S c.
+Proof.
+  intros S g w c. unfold space_remove_continuation.
+  destruct (in_dec wk_eq_dec w (s_conts S g)); reflexivity.
+Qed.
+
+(* The produce-side loop removes only records that its store holds. *)
+Lemma space_pf_loop_removed :
+  forall cs S chs c d, In (FxRemoveDatum c d) (snd (space_pf_loop S chs cs)) -> In d (s_data S c).
+Proof.
+  induction cs as [| cd rest IH]; intros S chs c d Hin; simpl in Hin; [contradiction |].
+  set (p1 := if removable cd then space_remove_datum S (cd_chan cd) (cd_rec cd) else (S, [])) in Hin.
+  assert (D1 : forall c' x, In x (s_data (fst p1) c') -> In x (s_data S c')).
+  { intros c' x Hx. subst p1. destruct (removable cd); [| exact Hx].
+    eapply remove_datum_data_incl. exact Hx. }
+  apply in_app_or in Hin as [Hin | Hin].
+  - subst p1. destruct (removable cd); [| contradiction].
+    unfold space_remove_datum in Hin.
+    destruct (in_dec datum_eq_dec (cd_rec cd) (s_data S (cd_chan cd))) as [Hd | _];
+      simpl in Hin; [| contradiction].
+    destruct Hin as [E | []]. injection E as Hc Hdd. subst c d. exact Hd.
+  - apply in_app_or in Hin as [Hin | Hin].
+    + exfalso. unfold remove_join in Hin. destruct (s_conts (fst p1) chs); [| contradiction].
+      destruct (in_dec lc_eq_dec chs (s_joins (fst p1) (cd_chan cd))); simpl in Hin; [| contradiction].
+      destruct Hin as [E | []]. discriminate.
+    + apply IH in Hin. apply D1.
+      destruct (remove_join_fields (fst p1) (cd_chan cd) chs) as (Rd & _).
+      rewrite Rd in Hin. exact Hin.
+Qed.
+
+(* The produce-side loop removes joins of the fired group only, on the
+   channels of its candidates. *)
+Lemma space_pf_loop_join_chan :
+  forall cs S chs c g, In (FxRemoveJoin c g) (snd (space_pf_loop S chs cs)) ->
+    g = chs /\ In c (map cd_chan cs).
+Proof.
+  induction cs as [| cd rest IH]; intros S chs c g Hin; simpl in Hin; [contradiction |].
+  set (p1 := if removable cd then space_remove_datum S (cd_chan cd) (cd_rec cd) else (S, [])) in Hin.
+  apply in_app_or in Hin as [Hin | Hin].
+  - exfalso. subst p1. destruct (removable cd); [| contradiction].
+    unfold space_remove_datum in Hin.
+    destruct (in_dec datum_eq_dec (cd_rec cd) (s_data S (cd_chan cd))); simpl in Hin; [| contradiction].
+    destruct Hin as [E | []]. discriminate.
+  - apply in_app_or in Hin as [Hin | Hin].
+    + unfold remove_join in Hin. destruct (s_conts (fst p1) chs); [| contradiction].
+      destruct (in_dec lc_eq_dec chs (s_joins (fst p1) (cd_chan cd))); simpl in Hin; [| contradiction].
+      destruct Hin as [E | []]. injection E as Hc Hg. subst c g.
+      split; [reflexivity | left; reflexivity].
+    + destruct (IH _ _ _ _ Hin) as (Eg & Hc). split; [exact Eg | right; exact Hc].
+Qed.
+
+(* The consume-side loop removes only records that its store holds. *)
+Lemma space_cf_loop_removed :
+  forall cs S c d, In (FxRemoveDatum c d) (snd (space_cf_loop S cs)) -> In d (s_data S c).
+Proof.
+  induction cs as [| cd rest IH]; intros S c d Hin; simpl in Hin; [contradiction |].
+  apply in_app_or in Hin as [Hin | Hin].
+  - destruct (negb (d_persist (cd_rec cd))); [| contradiction].
+    unfold space_remove_datum in Hin.
+    destruct (in_dec datum_eq_dec (cd_rec cd) (s_data S (cd_chan cd))) as [Hd | _];
+      simpl in Hin; [| contradiction].
+    destruct Hin as [E | []]. injection E as Hc Hdd. subst c d. exact Hd.
+  - apply IH in Hin.
+    destruct (negb (d_persist (cd_rec cd))); [| exact Hin].
+    eapply remove_datum_data_incl. exact Hin.
+Qed.
+
+(* H28 (leaf 9079, amendment A10): for every committed operation, a Produce
+   of the log that the index keeps names the channel of each changed data
+   leaf, and a Consume of the log names the group of each changed
+   continuation leaf and join. The premises are the leaf hash, the decoded
+   rows of the store before the commit, and the event multiplicity of the
+   index. H10 gives the event of each record. The premises map the records
+   to their channels. *)
+Theorem coverage_commit :
+  forall (pid_chan : PId -> Chan) (cid_chans : CId -> list Chan) (idx : list Ev -> list Ev),
+    leaf_hash pid_chan cid_chans -> index_keeps_events idx ->
+    forall T op T' H S rd,
+      stage T op = Some T' ->
+      store_eq (view_store (t_view T)) S ->
+      decoded_rows pid_chan cid_chans S ->
+      exists sg, t_staged T' = t_staged T ++ [sg] /\
+        channel_covered pid_chan cid_chans (idx (r_ev (commit_op (t_mode T) H S rd sg)))
+          (r_fx (commit_op (t_mode T) H S rd sg)).
+Proof.
+  intros pid_chan cid_chans idx (Hpc & Hcc) Hidx T op T' H S rd Hst Heq (Rd & Rc).
+  pose proof Heq as (Ed & Ec & Ej & En).
+  destruct op as [ch v persist [| chs wk kidx cands] | chs pats k persist peeks [| cands]].
+  - (* produce, Store *)
+    unfold stage in Hst. destruct (t_installed T ch); [discriminate |]. injection Hst as <-.
+    eexists. split; [reflexivity |]. apply channel_covered_index; [exact Hidx |].
+    destruct (coh_produce_store (t_mode T) H S rd ch v persist (vjoins (t_view T) ch) false)
+      as [(_ & _ & _ & Hev & Hfx) | (_ & _ & _ & Hev & Hfx)]; rewrite Hev, Hfx;
+      [| apply channel_covered_nil].
+    unfold put_datum. cbn [snd]. split; [| split].
+    + intros c d [Hf | Hf]; destruct Hf as [E | []]; [| discriminate].
+      injection E as Hc Hd. subst c d. exists (EvProduce (produce_id ch v persist)).
+      split; [left; reflexivity | apply Hpc].
+    + intros g w [Hf | Hf]; destruct Hf as [E | []]; discriminate.
+    + intros c g [Hf | Hf]; destruct Hf as [E | []]; discriminate.
+  - (* produce, Fire *)
+    unfold stage in Hst. destruct (t_installed T ch); [discriminate |].
+    destruct (pfire_ok T ch v persist chs wk cands) eqn:Hok; cbn [negb] in Hst; [| discriminate].
+    set (cm := mk_comm cands (w_src wk) (w_peeks wk)
+                 (play_counters_closure (vcount (t_view T)) (produce_id ch v persist) persist)) in Hst.
+    apply stage_fire_some in Hst. subst T'.
+    destruct (pfire_ok_spec T ch v persist chs wk cands Hok) as (_ & _ & Hmap & _ & _ & Hwk & _).
+    eexists. split; [reflexivity |]. apply channel_covered_index; [exact Hidx |].
+    assert (Hcm : cm = mk_comm cands (w_src wk) (w_peeks wk)
+                         (play_counters_closure (s_count S) (produce_id ch v persist) persist)).
+    { subst cm. apply mk_comm_play_ext. intros p. apply En. }
+    destruct (coh_produce_fire (t_mode T) H S rd ch v persist chs wk kidx cands (vjoins (t_view T) ch) cm
+                (snd (pair_step T (KProduce (produce_id ch v persist)) cm)) Hcm)
+      as [(_ & _ & _ & Hev & Hfx) | (_ & _ & _ & _ & _ & Hev & Hfx)]; rewrite Hev, Hfx;
+      [| apply channel_covered_nil].
+    set (src := produce_id ch v persist).
+    assert (Hwk' : In wk (s_conts S chs)) by (rewrite <- Ec; exact Hwk).
+    assert (Hsg : cid_chans (c_consume cm) = chs) by (subst cm; apply Rc; exact Hwk').
+    set (S1 := bump S src persist).
+    set (p1 := if w_persist wk then (S1, []) else space_remove_continuation S1 chs wk).
+    set (p2 := space_pf_loop (fst p1) chs (sort_desc vkey cands)).
+    assert (Fp1 : forall f, In f (snd p1) -> f = FxRemoveCont chs wk).
+    { intros f Hf. subst p1. destruct (w_persist wk); [contradiction |].
+      unfold space_remove_continuation in Hf. destruct (in_dec wk_eq_dec wk (s_conts S1 chs)); simpl in Hf;
+        [destruct Hf as [E | []]; symmetry; exact E | contradiction]. }
+    assert (D1 : forall c x, In x (s_data (fst p1) c) -> In x (s_data S c)).
+    { intros c x Hx. subst p1. destruct (w_persist wk); [exact Hx |].
+      rewrite remove_continuation_data in Hx. exact Hx. }
+    assert (Hcm2 : In (EvComm ProduceSide cm) [EvProduce src; EvComm ProduceSide cm])
+      by (right; left; reflexivity).
+    split; [| split].
+    + intros c d [Hf | Hf]; apply in_app_or in Hf as [Hf | Hf].
+      * apply Fp1 in Hf. discriminate.
+      * destruct (space_pf_loop_fx _ _ _ _ Hf) as [(cd & _ & E) | (c' & E & _)]; discriminate.
+      * apply Fp1 in Hf. discriminate.
+      * pose proof (space_pf_loop_removed _ _ _ _ _ Hf) as Hin.
+        destruct (space_pf_loop_fx _ _ _ _ Hf) as [(cd & Hcd & E) | (c' & E & _)]; [| discriminate].
+        injection E as Hc Hd. subst c d.
+        exists (EvComm ProduceSide cm). split; [exact Hcm2 |].
+        exists (d_src (cd_rec cd)). split.
+        -- subst cm. apply cand_src_in_comm. eapply Permutation_in; [apply sort_desc_perm | exact Hcd].
+        -- apply Rd. apply D1. exact Hin.
+    + intros g w [Hf | Hf]; apply in_app_or in Hf as [Hf | Hf].
+      * apply Fp1 in Hf. discriminate.
+      * destruct (space_pf_loop_fx _ _ _ _ Hf) as [(cd & _ & E) | (c' & E & _)]; discriminate.
+      * apply Fp1 in Hf. injection Hf as Hg Hw. subst g w.
+        exists (EvComm ProduceSide cm). split; [exact Hcm2 | exact Hsg].
+      * destruct (space_pf_loop_fx _ _ _ _ Hf) as [(cd & _ & E) | (c' & E & _)]; discriminate.
+    + intros c g [Hf | Hf]; apply in_app_or in Hf as [Hf | Hf].
+      * apply Fp1 in Hf. discriminate.
+      * destruct (space_pf_loop_fx _ _ _ _ Hf) as [(cd & _ & E) | (c' & E & _)]; discriminate.
+      * apply Fp1 in Hf. discriminate.
+      * destruct (space_pf_loop_join_chan _ _ _ _ _ Hf) as (Eg & Hc). subst g. split.
+        -- rewrite <- Hmap. eapply Permutation_in; [| exact Hc].
+           apply Permutation_map. apply sort_desc_perm.
+        -- exists (EvComm ProduceSide cm). split; [exact Hcm2 | exact Hsg].
+  - (* consume, Park *)
+    unfold stage in Hst. destruct (consume_args_ok T chs pats peeks); simpl in Hst; [| discriminate].
+    injection Hst as <-. eexists. split; [reflexivity |]. apply channel_covered_index; [exact Hidx |].
+    destruct (coh_consume_park (t_mode T) H S rd chs pats k persist peeks false)
+      as [(_ & _ & _ & Hev & Hfx) | (_ & _ & _ & Hev & Hfx)]; rewrite Hev, Hfx;
+      [| apply channel_covered_nil].
+    set (src := consume_id chs pats k persist).
+    set (w := mkWK pats k persist peeks src).
+    assert (Hev1 : exists e, In e [EvConsume src] /\ consume_names cid_chans e chs).
+    { exists (EvConsume src). split; [left; reflexivity | apply Hcc]. }
+    split; [| split].
+    + intros c d [Hf | Hf]; destruct (swc_fx _ _ _ _ Hf) as [(E & _) | (c' & E & _)]; discriminate.
+    + intros g w' [Hf | Hf]; destruct (swc_fx _ _ _ _ Hf) as [(E & _) | (c' & E & _)]; try discriminate.
+      injection E as Hg Hw. subst g w'. exact Hev1.
+    + intros c g [Hf | Hf]; destruct (swc_fx _ _ _ _ Hf) as [(E & _) | (c' & E & Hc' & _)]; try discriminate.
+      injection E as Hc Hg. subst c' g. split; [exact Hc' | exact Hev1].
+  - (* consume, Fire *)
+    unfold stage in Hst. destruct (consume_args_ok T chs pats peeks); cbn [negb] in Hst; [| discriminate].
+    destruct (cfire_ok T chs cands) eqn:Hcf; cbn [negb] in Hst; [| discriminate].
+    set (cm := mk_comm cands (consume_id chs pats k persist) peeks (counters_of (vcount (t_view T)))) in Hst.
+    apply stage_fire_some in Hst. subst T'.
+    eexists. split; [reflexivity |]. apply channel_covered_index; [exact Hidx |].
+    assert (Hcm : cm = mk_comm cands (consume_id chs pats k persist) peeks (counters_of (s_count S))).
+    { subst cm. apply mk_comm_counters_ext. intros p. apply En. }
+    destruct (coh_consume_fire (t_mode T) H S rd chs pats k persist peeks cands cm
+                (snd (pair_step T (KConsume (consume_id chs pats k persist)) cm)) Hcm)
+      as [(_ & _ & _ & Hev & Hfx) | (_ & _ & _ & _ & _ & Hev & Hfx)]; rewrite Hev, Hfx;
+      [| apply channel_covered_nil].
+    split; [| split].
+    + intros c d [Hf | Hf].
+      * destruct (space_cf_loop_fx _ _ _ Hf) as (cd & _ & E). discriminate.
+      * pose proof (space_cf_loop_removed _ _ _ _ Hf) as Hin.
+        destruct (space_cf_loop_fx _ _ _ Hf) as (cd & Hcd & E).
+        injection E as Hc Hd. subst c d.
+        exists (EvComm ConsumeSide cm). split; [right; left; reflexivity |].
+        exists (d_src (cd_rec cd)). split.
+        -- subst cm. apply cand_src_in_comm. eapply Permutation_in; [apply sort_desc_perm | exact Hcd].
+        -- apply Rd. exact Hin.
+    + intros g w [Hf | Hf]; destruct (space_cf_loop_fx _ _ _ Hf) as (cd & _ & E); discriminate.
+    + intros c g [Hf | Hf]; destruct (space_cf_loop_fx _ _ _ Hf) as (cd & _ & E); discriminate.
+Qed.
+
+(* ── H29: two blocks of replay preserve the roots of play (leaf 9080) ───── *)
+
+(* H29 (leaf 9080, amendment A10): a two-block reset-and-replay trace
+   preserves the roots of play. Play commits block 1 from S0, and block 2
+   from the store that block 1 leaves. A validator resets to the root of
+   S0, replays block 1 with the log of play, resets to the root that its
+   own replay of block 1 gives, and replays block 2 with the log of play.
+   It then logs the events and gets the statuses of play, its stores equal
+   the stores of play, and its roots are the roots of play.
+
+   The hash premise has two parts. The root is a function of the content
+   of a store: stores that store_eq relates have equivalent roots
+   (root_eq; equality for the Blake2b256 roots of production). A reset to
+   the root of a store rebuilds that store. H23 makes the proof: it holds
+   for any store that store_eq relates to the store of play. *)
+Theorem two_block_replay_preserves_roots :
+  ob_ignores_directive -> dir_always_none ->
+  forall (Root : Type) (root_eq : Root -> Root -> Prop) (root : Store -> Root) (reset : Root -> Store),
+    (forall S1 S2, store_eq S1 S2 -> root_eq (root S1) (root S2)) ->
+    (forall S, store_eq (reset (root S)) S) ->
+    forall ops1 ops2 P1 P1' Q1 P2 P2' Q2 H1p H1r H2p H2r S0 rd1p rd1r rd2p rd2r,
+      t_mode P1 = Play -> backend (t_mode Q1) = Replay ->
+      t_view Q1 = t_view P1 -> t_installed Q1 = t_installed P1 ->
+      t_staged P1 = [] -> t_staged Q1 = [] -> t_paired Q1 = [] ->
+      stage_all P1 ops1 = Some P1' -> erase_dir H1r = erase_dir H1p ->
+      t_mode P2 = Play -> backend (t_mode Q2) = Replay ->
+      t_view Q2 = t_view P2 -> t_installed Q2 = t_installed P2 ->
+      t_staged P2 = [] -> t_staged Q2 = [] -> t_paired Q2 = [] ->
+      stage_all P2 ops2 = Some P2' -> erase_dir H2r = erase_dir H2p ->
+      let b1 := commit_run Play H1p S0 rd1p (t_staged P1') in
+      let b2 := commit_run Play H2p (r_st b1) rd2p (t_staged P2') in
+      t_rd Q1 = rig (r_ev b1) -> t_rd Q2 = rig (r_ev b2) ->
+      exists Q1' Q2',
+        stage_all Q1 ops1 = Some Q1' /\ stage_all Q2 ops2 = Some Q2' /\
+        let v1 := commit_run (t_mode Q1) H1r (reset (root S0)) rd1r (t_staged Q1') in
+        let v2 := commit_run (t_mode Q2) H2r (reset (root (r_st v1))) rd2r (t_staged Q2') in
+        store_eq (r_st v1) (r_st b1) /\ store_eq (r_st v2) (r_st b2) /\
+        root_eq (root (r_st v1)) (root (r_st b1)) /\ root_eq (root (r_st v2)) (root (r_st b2)) /\
+        r_ev v1 = r_ev b1 /\ r_ev v2 = r_ev b2 /\
+        r_status v1 = r_status b1 /\ r_status v2 = r_status b2.
+Proof.
+  intros Hig Hdn Root root_eq root reset Hroot Hreset ops1 ops2 P1 P1' Q1 P2 P2' Q2 H1p H1r H2p H2r
+    S0 rd1p rd1r rd2p rd2r Hm1 Hb1 Hv1 Hi1 Hs1 Hq1 Hpq1 Hst1 EH1 Hm2 Hb2 Hv2 Hi2 Hs2 Hq2 Hpq2 Hst2 EH2
+    b1 b2 Hrig1 Hrig2.
+  destruct (replay_sim_gen Hig Hdn ops1 P1 P1' Q1 H1p H1r S0 (reset (root S0)) rd1p rd1r
+              (io_of_log (r_ev b1)) (fun c => count_occ comm_eq_dec (comms_of_log (r_ev b1)) c)
+              Hm1 Hb1 Hv1 Hi1 Hst1 EH1 (Hreset S0)
+              ltac:(rewrite Hrig1; apply rig_binding_inv)
+              ltac:(rewrite Hs1; intros key Hkey; exact Hkey)
+              ltac:(rewrite Hpq1, Hs1; intros c; apply Nat.le_refl))
+    as (Q1' & HQ1 & _ & Rs1 & _ & Rev1 & Rst1).
+  rewrite Hq1, Hs1 in Rs1, Rev1, Rst1. cbn [length skipn] in Rs1, Rev1, Rst1.
+  set (v1 := commit_run (t_mode Q1) H1r (reset (root S0)) rd1r (t_staged Q1')) in *.
+  assert (Hreset2 : store_eq (reset (root (r_st v1))) (r_st b1))
+    by (eapply store_eq_trans; [apply Hreset | exact Rst1]).
+  destruct (replay_sim_gen Hig Hdn ops2 P2 P2' Q2 H2p H2r (r_st b1) (reset (root (r_st v1))) rd2p rd2r
+              (io_of_log (r_ev b2)) (fun c => count_occ comm_eq_dec (comms_of_log (r_ev b2)) c)
+              Hm2 Hb2 Hv2 Hi2 Hst2 EH2 Hreset2
+              ltac:(rewrite Hrig2; apply rig_binding_inv)
+              ltac:(rewrite Hs2; intros key Hkey; exact Hkey)
+              ltac:(rewrite Hpq2, Hs2; intros c; apply Nat.le_refl))
+    as (Q2' & HQ2 & _ & Rs2 & _ & Rev2 & Rst2).
+  rewrite Hq2, Hs2 in Rs2, Rev2, Rst2. cbn [length skipn] in Rs2, Rev2, Rst2.
+  exists Q1', Q2'. split; [exact HQ1 |]. split; [exact HQ2 |]. cbv zeta. fold v1.
+  split; [exact Rst1 |]. split; [exact Rst2 |].
+  split; [apply Hroot; exact Rst1 |]. split; [apply Hroot; exact Rst2 |].
+  split; [exact Rev1 |]. split; [exact Rev2 |]. split; [exact Rs1 | exact Rs2].
+Qed.
+
 End Substrate.
 
 (* ═══════════════ Sub-orders (H8, decision D3) ════════════════════════════ *)
@@ -8732,6 +9112,48 @@ Proof.
   destruct (comm_eq_dec c rc) as [Ec | _]; [contradiction | reflexivity].
 Qed.
 
+(* ── H30: two blocks of native replay preserve the roots of play (9080) ── *)
+
+(* H30 (leaf 9080, amendment A10): a two-block trace of native replay
+   preserves the roots of native play. Native play runs block 1 from s0,
+   and block 2 from the store that block 1 leaves, each block with its own
+   history of observer calls. A validator resets to the root of s0,
+   replays block 1 over the rows of play, resets to the root that its own
+   replay gives, and replays block 2 over the rows of play. It gets the
+   calls, the stores, the roots and the statuses of play. The hash premise:
+   a reset to the root of a store rebuilds that store. H24 makes the
+   proof. *)
+Theorem two_block_native_replay_preserves_roots :
+  forall (Root : Type) (root : Store -> Root) (reset : Root -> Store),
+    (forall s, reset (root s) = s) ->
+    forall ops1 ops2 h1 h2 s0,
+      match native_play h1 s0 ops1 with
+      | (h1', s1, rows1, st1) =>
+          match native_play h2 s1 ops2 with
+          | (h2', s2, rows2, st2) =>
+              match native_replay h1 (reset (root s0)) ops1 rows1 with
+              | (h1r, s1r, st1r) =>
+                  match native_replay h2 (reset (root s1r)) ops2 rows2 with
+                  | (h2r, s2r, st2r) =>
+                      root s1r = root s1 /\ root s2r = root s2 /\ s1r = s1 /\ s2r = s2 /\
+                      h1r = h1' /\ h2r = h2' /\ st1r = st1 /\ st2r = st2
+                  end
+              end
+          end
+      end.
+Proof.
+  intros Root root reset Hreset ops1 ops2 h1 h2 s0.
+  pose proof (native_replay_reproduces_play ops1 h1 s0) as R1.
+  destruct (native_play h1 s0 ops1) as [[[h1' s1] rows1] st1].
+  destruct R1 as (R1 & _ & _).
+  pose proof (native_replay_reproduces_play ops2 h2 s1) as R2.
+  destruct (native_play h2 s1 ops2) as [[[h2' s2] rows2] st2].
+  destruct R2 as (R2 & _ & _).
+  rewrite (Hreset s0), R1. cbn beta iota.
+  rewrite (Hreset s1), R2. cbn beta iota.
+  repeat split.
+Qed.
+
 End NativeReplay.
 
 (* ═════════ The charge of a view load (P5 of decision 47, I-12) ═════════ *)
@@ -8855,6 +9277,42 @@ Lemma native_denial_premise_satisfiable :
     end.
 Proof. intros. reflexivity. Qed.
 
+(* The premises of H28 are satisfiable, so H28 does not hold vacuously: a
+   Produce identity that holds its channel, a Consume identity that holds
+   its channels, and an index that keeps the log. *)
+Lemma coverage_commit_premises_satisfiable :
+  forall (Chan Val Pat Kont : Type),
+    leaf_hash Chan Val Pat Kont (Chan * Val * bool) (list Chan * list Pat * Kont * bool)
+      (fun c v b => (c, v, b)) (fun chs pats k b => (chs, pats, k, b))
+      (fun p => fst (fst p)) (fun k => fst (fst (fst k))) /\
+    index_keeps_events (Chan * Val * bool) (list Chan * list Pat * Kont * bool) (fun evs => evs).
+Proof.
+  intros Chan Val Pat Kont. split.
+  - split; intros; reflexivity.
+  - intros evs e He. exact He.
+Qed.
+
+(* The hash premise of H29 is satisfiable: the root of a store is the store
+   itself, root_eq is store_eq, and a reset returns its root. *)
+Lemma two_block_hash_premise_satisfiable :
+  forall (Chan Val Pat Kont PId CId : Type),
+    (forall S1 S2 : Store Chan Val Pat Kont PId CId,
+       store_eq Chan Val Pat Kont PId CId S1 S2 ->
+       store_eq Chan Val Pat Kont PId CId ((fun S => S) S1) ((fun S => S) S2)) /\
+    (forall S : Store Chan Val Pat Kont PId CId,
+       store_eq Chan Val Pat Kont PId CId ((fun S => S) ((fun S => S) S)) S).
+Proof.
+  intros Chan Val Pat Kont PId CId. split.
+  - intros S1 S2 E. exact E.
+  - intros S. apply store_eq_refl.
+Qed.
+
+(* The hash premise of H30 is satisfiable: the root of a store is the store
+   itself, and a reset returns its root. *)
+Lemma two_block_native_hash_premise_satisfiable :
+  forall (Store : Type), forall s : Store, (fun r => r) ((fun s' => s') s) = s.
+Proof. intros. reflexivity. Qed.
+
 (* ═══════════ Headline trust base: every headline is axiom-free ═══════════ *)
 
 Print Assumptions commit_trace_eq_host.
@@ -8881,3 +9339,6 @@ Print Assumptions native_replay_reproduces_play.
 Print Assumptions native_replay_denial_keeps_prefix.
 Print Assumptions native_replay_fails_closed.
 Print Assumptions view_charge_cache_independent.
+Print Assumptions coverage_commit.
+Print Assumptions two_block_replay_preserves_roots.
+Print Assumptions two_block_native_replay_preserves_roots.

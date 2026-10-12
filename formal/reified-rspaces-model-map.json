@@ -154,6 +154,18 @@
       "file": "formal/rocq/reified_rspaces/theories/EventCorrelation.v",
       "statement": "Decision 36: play and replay stage the same operations from the same view. When the bindings of replay hold the IO events and the COMMs that play commits (the commit log of play), replay stages exactly the operations of play, and its commit makes the observer calls of play (directive queries erased), the events, the status and the store of play. An operation that play rejects (an out-of-phlo charge) fails replay at the same call after the same prefix."
     },
+    "H28": {
+      "kind": "rocq",
+      "name": "coverage_commit",
+      "file": "formal/rocq/reified_rspaces/theories/EventCorrelation.v",
+      "statement": "P9 (amendment A10): with the leaf-hash, decoded-row and event-multiplicity premises, the index of the log of each commit names the channel of each changed data leaf and the group of each changed continuation leaf and join (channel coverage; H10 is the record coverage)."
+    },
+    "H29": {
+      "kind": "rocq",
+      "name": "two_block_replay_preserves_roots",
+      "file": "formal/rocq/reified_rspaces/theories/EventCorrelation.v",
+      "statement": "P9 (amendment A10): with a hash premise, a validator that resets to a root before each of two blocks and replays each block with the commit log of play gets the events, the statuses, the stores and the roots of play (H23 once for each block)."
+    },
     "T1": {
       "kind": "tla",
       "name": "ReplayPrefixEqual",
@@ -470,6 +482,7 @@
         "T3",
         "T5",
         "H23",
+        "H29",
         "T6"
       ]
     },
@@ -520,6 +533,7 @@
         "T3",
         "T5",
         "H23",
+        "H29",
         "T6"
       ]
     },
@@ -555,6 +569,7 @@
         "H5",
         "T3",
         "H23",
+        "H29",
         "T6"
       ]
     },
@@ -576,7 +591,8 @@
       ],
       "covers": [
         "H4",
-        "H23"
+        "H23",
+        "H29"
       ]
     },
     {
@@ -597,7 +613,8 @@
       ],
       "covers": [
         "H4",
-        "H23"
+        "H23",
+        "H29"
       ]
     },
     {
@@ -656,10 +673,12 @@
         "H3",
         "H6",
         "H10",
+        "H28",
         "H11",
         "T1",
         "T2",
         "H23",
+        "H29",
         "T6"
       ]
     },
@@ -688,6 +707,7 @@
         "H1",
         "H2",
         "H10",
+        "H28",
         "H11"
       ]
     },
@@ -723,11 +743,13 @@
         "H3",
         "H5",
         "H10",
+        "H28",
         "H11",
         "T1",
         "T3",
         "H4",
         "H23",
+        "H29",
         "T6"
       ]
     },
@@ -761,9 +783,11 @@
         "H2",
         "H5",
         "H10",
+        "H28",
         "H11",
         "H4",
         "H23",
+        "H29",
         "T6"
       ]
     },
@@ -788,7 +812,8 @@
       "covers": [
         "H3",
         "H4",
-        "H23"
+        "H23",
+        "H29"
       ]
     },
     {
@@ -813,6 +838,7 @@
         "H1",
         "H4",
         "H23",
+        "H29",
         "T6"
       ]
     },
@@ -889,6 +915,7 @@
         "T5",
         "H6",
         "H23",
+        "H29",
         "T6"
       ]
     },
@@ -909,7 +936,8 @@
       "tla": [],
       "covers": [
         "H6",
-        "H10"
+        "H10",
+        "H28"
       ]
     },
     {
@@ -976,7 +1004,8 @@
       ],
       "tla": [],
       "covers": [
-        "H10"
+        "H10",
+        "H28"
       ]
     },
     {
@@ -1478,6 +1507,7 @@
         "H4",
         "T3",
         "H23",
+        "H29",
         "T6"
       ]
     },

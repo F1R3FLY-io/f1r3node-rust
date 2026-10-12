@@ -3,7 +3,8 @@
 
 A model map connects each Rust item of a phase to the Rocq headlines and the
 TLA+ invariants that model it. The P1 map (formal/reified-rspaces-model-map.json)
-maps the storage substrate to H# and T#, and each P1 fix rule (FR-1 to FR-9,
+maps the storage substrate to H# (H1 to H23, and H28 and H29 of P9) and T#, and
+each P1 fix rule (FR-1 to FR-9,
 the round-2 rules FR-1', FR-5', FR-7' and FR-9', and the round-3 rule FR-10)
 to its Rust items and headlines. The map of another phase (its "phase" key,
 for example P4 in formal/reified-rspaces-model-map-p4.json) defines its own
@@ -107,7 +108,7 @@ REQUIRED_ITEMS = (
 REQUIRED_MODES = ("play", "replay", "reporting")
 # The P1 headlines: H1-H22 and T1-T5, and H23 and T6 of decision 36 (replay
 # reproduces play).
-HEADLINE_IDS = tuple(f"H{i}" for i in range(1, 24)) + tuple(f"T{i}" for i in range(1, 7))
+HEADLINE_IDS = tuple(f"H{i}" for i in range(1, 24)) + ("H28", "H29") + tuple(f"T{i}" for i in range(1, 7))
 RULE_IDS = tuple(f"FR-{i}" for i in range(1, 11)) + ("FR-1'", "FR-5'", "FR-7'", "FR-9'")
 ITEM_KINDS = ("fn", "struct", "const", "type", "variant")
 HEADLINE_KINDS = ("rocq", "tla")

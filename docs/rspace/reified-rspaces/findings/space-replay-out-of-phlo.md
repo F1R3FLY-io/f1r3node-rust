@@ -187,9 +187,9 @@ The fix changes only two substrate files. Casper, the host, and the P4 agents do
 
 The [verification dossier](../verification.md#42-headlines-of-eventcorrelationv) records the headlines and the invariants of the fix:
 
-- Headline H4 `verify_sound_complete` (`EventCorrelation.v:6290`) is restated. Its conjunct 3 `stage_without_trigger_unpaired` (`EventCorrelation.v:6226`) stages a fire without its trigger event unpaired.
-- Its conjunct 6 `unpaired_fire_inert` (`EventCorrelation.v:6256`) shows that an unpaired fire never commits, and that it emits no event and no effect.
-- The new headline H23 `replay_reproduces_play_run` (`EventCorrelation.v:7834`) covers replay with the commit log of play. That replay reproduces the calls, the events, the status, and the store of play.
+- Headline H4 `verify_sound_complete` (`EventCorrelation.v:6304`) is restated. Its conjunct 3 `stage_without_trigger_unpaired` (`EventCorrelation.v:6240`) stages a fire without its trigger event unpaired.
+- Its conjunct 6 `unpaired_fire_inert` (`EventCorrelation.v:6270`) shows that an unpaired fire never commits, and that it emits no event and no effect.
+- The new headline H23 `replay_reproduces_play_run` (`EventCorrelation.v:7848`) covers replay with the commit log of play. That replay reproduces the calls, the events, the status, and the store of play.
 - The new invariant T6 `ReplayOutcomeEqual` of `CheckpointReplay.tla` states that validators never reject an honest block. Its replayed deploy ends with the failure and the spending of play.
 - The Unsafe control `StagingDivergenceUnsafe.cfg` restores the rule of decision 19 and refutes exactly T6. The control `AcceptUnpairedUnsafe.cfg` commits an unpaired fire and refutes exactly T1.
 - Three Rocq mutants fail in the expected declarations: `ec-replay-fire-fails-at-staging`, `ec-unpaired-skips-observe-comm`, and `ec-unpaired-fire-commits`.

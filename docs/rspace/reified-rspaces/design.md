@@ -721,7 +721,7 @@ The staging core applies the rule as follows:
 
 The literal rule of the design pass compared $`b`$ with the paired copies, without the division.
 For a COMM that lists one produce twice, that rule pairs one recorded occurrence two times.
-The Rocq lemma `design_verify_overpairs` (`EventCorrelation.v:5164`) proves this over-pairing, and the test `space_store_handle_replay_cross_channel_comm_pairs_once` pins the corrected rule.
+The Rocq lemma `design_verify_overpairs` (`EventCorrelation.v:5178`) proves this over-pairing, and the test `space_store_handle_replay_cross_channel_comm_pairs_once` pins the corrected rule.
 
 The commit removes all bindings of a paired COMM with `remove_bindings_for` (Table S3.2, step 11).
 A binding that no operation pairs fails the deploy at `check_replay_data` with `UnusedCommEvent`, as in host replay (`replay_rspace.rs:542-558`).
@@ -867,7 +867,7 @@ pub(crate) fn require_canonical(keys: &[Blake2b256Hash]) -> Result<(), SpaceTxnE
 
 The comparison of byte strings is a total order, and it is antisymmetric.
 So each multiset of keys has exactly one non-decreasing arrangement: its sorted list.
-The Rocq lemma `sorted_unique_canonical` (`EventCorrelation.v:7073`) proves this, also when the list repeats a key.
+The Rocq lemma `sorted_unique_canonical` (`EventCorrelation.v:7087`) proves this, also when the list repeats a key.
 Headline H22 uses it to show that canonical cache keys have distinct history keys.
 
 The check runs before the hot-store access of its group.
@@ -1065,8 +1065,8 @@ Without $`W_2`$, operation 1 has the outcome Store, and the space holds one copy
 
 Under the P1 rule before decision 30, operation 0 stored $`d`$, and $`W_2`$ then matched the stored $`d`$.
 That pending match breaks the no-pending-match invariant of the queue.
-The lemma `offer_p1_breaks_no_pending_match` (`EventCorrelation.v:4043`) shows the break.
-The lemma `offer_keeps_no_pending_match` (`EventCorrelation.v:4005`) shows that the plan with the re-offer keeps the invariant.
+The lemma `offer_p1_breaks_no_pending_match` (`EventCorrelation.v:4057`) shows the break.
+The lemma `offer_keeps_no_pending_match` (`EventCorrelation.v:4019`) shows that the plan with the re-offer keeps the invariant.
 
 The re-offer registers its introduction authority under the identity of the peek fire.
 The registry accepts an equal authority for an identity that it holds (`rholang/src/rust/interpreter/accounting/mod.rs:1041-1046`).
@@ -1273,40 +1273,43 @@ The substrate has formal models in Rocq and TLA+, property-based tests for each 
 The [model map](../../../formal/reified-rspaces-model-map.json) links each Rust item to the models.
 The [invariant map](../../../formal/reified-rspaces-invariant-map.json) links each headline and invariant to its property tests.
 
-**Rocq headlines.** Table S9.1 lists the 23 headlines of P1.
+**Rocq headlines.** Table S9.1 lists the 25 headlines of the substrate: the 23 headlines of P1, and H28 and H29 of P9.
 Each one closes under the global context, with no axiom, no parameter, and no admitted proof.
 
 | Id | Headline | Citation | Statement | Property tests |
 |---|---|---|---|---|
-| H1 | `commit_trace_eq_host` | `EventCorrelation.v:5501` | A commit makes the observer calls, events, and status of the host run of the same operations. | `prop_space_txn_play_trace_equals_host`, `prop_space_txn_repeated_channel_groups_equal_host` |
-| H2 | `commit_state_eq_host` | `EventCorrelation.v:5559` | A commit leaves the store of the host run, with data lists equal up to permutation. | `prop_space_txn_play_root_equals_host`, `prop_space_txn_repeated_channel_groups_equal_host` |
-| H3 | `counter_timing_play_replay` | `EventCorrelation.v:6200` | The play closure and the replay rule give the same COMM counters. | `prop_counter_timing_play_equals_replay` |
-| H4 | `verify_sound_complete` | `EventCorrelation.v:6290` | Verify pairs a COMM exactly when the log holds the trigger event and a free occurrence remains. `recorded_comms` reports the same copies. A replay fire without its trigger event stages unpaired, and an unpaired fire never commits: it emits no event or effect, and it keeps the bindings and the store (decision 36). | `prop_space_txn_replay_divergence_typed_at_commit`, `prop_space_txn_replay_requires_trigger_event` |
-| H5 | `replay_pairs_each_comm_once` | `EventCorrelation.v:6494` | Replay pairs each recorded COMM occurrence at most once. | `prop_space_txn_replay_pairs_play_log`, `prop_space_txn_repeated_channel_groups_equal_host`, `prop_space_txn_peek_restore` |
-| H6 | `view_commit_coherent` | `EventCorrelation.v:5586` | The staged view equals the committed store. | `prop_space_txn_view_equals_committed_store` |
-| H7 | `joins_lockstep_preserved` | `EventCorrelation.v:5609` | Join entries stay in lockstep with the waiting continuations. | `prop_space_txn_joins_lockstep` |
-| H8 | `sub_order_between` | `EventCorrelation.v:8058` | Sub-orders follow the parent order, precede its successors, and are contiguous and unique. | `prop_sub_orders_contiguous_and_disjoint` |
-| H9 | `abort_inert` | `EventCorrelation.v:7159` | A drop, an access error, and a commit after a store swap change no store, binding, observer call, or event. | `prop_space_txn_abort_inert`, `prop_space_txn_non_canonical_inputs_fail_closed` |
-| H10 | `coverage_total` | `EventCorrelation.v:6082` | Every store change of a commit has its event. | `prop_event_coverage_holds_for_generated_commits` |
-| H11 | `peek_reproduces_trace_eq_host` | `EventCorrelation.v:5836` | With the re-offer and the re-stores as the next operations, a commit makes the calls, events, status, and bindings of the host run, whose reducer sends the peeked data again. The stores are equal ([decision 45](decision-register.md#decision-45)). | `prop_space_txn_peek_restore` |
-| H12 | `reporting_trace_is_replay_trace` | `EventCorrelation.v:7244` | Reporting stages and commits as replay does. | `prop_space_txn_reporting_equals_replay`, `prop_space_txn_peek_restore` |
+| H1 | `commit_trace_eq_host` | `EventCorrelation.v:5515` | A commit makes the observer calls, events, and status of the host run of the same operations. | `prop_space_txn_play_trace_equals_host`, `prop_space_txn_repeated_channel_groups_equal_host` |
+| H2 | `commit_state_eq_host` | `EventCorrelation.v:5573` | A commit leaves the store of the host run, with data lists equal up to permutation. | `prop_space_txn_play_root_equals_host`, `prop_space_txn_repeated_channel_groups_equal_host` |
+| H3 | `counter_timing_play_replay` | `EventCorrelation.v:6214` | The play closure and the replay rule give the same COMM counters. | `prop_counter_timing_play_equals_replay` |
+| H4 | `verify_sound_complete` | `EventCorrelation.v:6304` | Verify pairs a COMM exactly when the log holds the trigger event and a free occurrence remains. `recorded_comms` reports the same copies. A replay fire without its trigger event stages unpaired, and an unpaired fire never commits: it emits no event or effect, and it keeps the bindings and the store (decision 36). | `prop_space_txn_replay_divergence_typed_at_commit`, `prop_space_txn_replay_requires_trigger_event` |
+| H5 | `replay_pairs_each_comm_once` | `EventCorrelation.v:6508` | Replay pairs each recorded COMM occurrence at most once. | `prop_space_txn_replay_pairs_play_log`, `prop_space_txn_repeated_channel_groups_equal_host`, `prop_space_txn_peek_restore` |
+| H6 | `view_commit_coherent` | `EventCorrelation.v:5600` | The staged view equals the committed store. | `prop_space_txn_view_equals_committed_store` |
+| H7 | `joins_lockstep_preserved` | `EventCorrelation.v:5623` | Join entries stay in lockstep with the waiting continuations. | `prop_space_txn_joins_lockstep` |
+| H8 | `sub_order_between` | `EventCorrelation.v:8438` | Sub-orders follow the parent order, precede its successors, and are contiguous and unique. | `prop_sub_orders_contiguous_and_disjoint` |
+| H9 | `abort_inert` | `EventCorrelation.v:7173` | A drop, an access error, and a commit after a store swap change no store, binding, observer call, or event. | `prop_space_txn_abort_inert`, `prop_space_txn_non_canonical_inputs_fail_closed` |
+| H10 | `coverage_total` | `EventCorrelation.v:6096` | Every store change of a commit has its event. | `prop_event_coverage_holds_for_generated_commits` |
+| H11 | `peek_reproduces_trace_eq_host` | `EventCorrelation.v:5850` | With the re-offer and the re-stores as the next operations, a commit makes the calls, events, status, and bindings of the host run, whose reducer sends the peeked data again. The stores are equal ([decision 45](decision-register.md#decision-45)). | `prop_space_txn_peek_restore` |
+| H12 | `reporting_trace_is_replay_trace` | `EventCorrelation.v:7258` | Reporting stages and commits as replay does. | `prop_space_txn_reporting_equals_replay`, `prop_space_txn_peek_restore` |
 | H13 | `sweep_exact` | `VolatileSweep.v:894` | The sweep removes exactly the volatile data, continuations, and joins. Through the handle, a sweep in a task with an open transaction fails closed. | `prop_sweep_volatile_exact_and_root_neutral` |
 | H14 | `delete_absent_identity` | `VolatileSweep.v:971` | A history delete of an absent key changes nothing. | `prop_sweep_volatile_exact_and_root_neutral` |
 | H15 | `sweep_root_neutral` | `VolatileSweep.v:1266` | The checkpoint after a sweep gives the trie of the durable changes alone. | `prop_sweep_volatile_exact_and_root_neutral` |
 | H16 | `leaf_count_is_length` | `VolatileSweep.v:1329` | The root leaf record count is the length of the data list. | `prop_root_leaf_record_count_matches_history` |
-| H17 | `non_canonical_fails_closed` | `EventCorrelation.v:7101` | A group that is not non-decreasing fails before any store or cache effect. The sorted list is the only canonical member of its permutation class. | `prop_space_txn_non_canonical_inputs_fail_closed`, `prop_space_txn_repeated_channel_groups_equal_host` |
+| H17 | `non_canonical_fails_closed` | `EventCorrelation.v:7115` | A group that is not non-decreasing fails before any store or cache effect. The sorted list is the only canonical member of its permutation class. | `prop_space_txn_non_canonical_inputs_fail_closed`, `prop_space_txn_repeated_channel_groups_equal_host` |
 | H18 | `canonical_reads_root_neutral` | `VolatileSweep.v:1444` | Reads of canonical keys leave the checkpoint root unchanged. | `prop_space_txn_reads_root_neutral` |
-| H19 | `directive_fails_closed` | `EventCorrelation.v:7284` | A replay directive rejects the operation with no effect. | `prop_space_txn_replay_directive_fails_closed` |
-| H20 | `parent_order_single_txn` | `EventCorrelation.v:8331` | Sub-orders are unique in an evaluation scope, and each reset admits the same parent again. | `prop_space_txn_parent_order_single_commit` |
-| H21 | `view_identity_is_store_identity` | `EventCorrelation.v:8452` | View lookups agree with store lookups by store identity. | `prop_space_txn_store_identity_ignores_ord_only_fields`, `prop_space_txn_par_identity_ignores_locally_free` |
+| H19 | `directive_fails_closed` | `EventCorrelation.v:7298` | A replay directive rejects the operation with no effect. | `prop_space_txn_replay_directive_fails_closed` |
+| H20 | `parent_order_single_txn` | `EventCorrelation.v:8711` | Sub-orders are unique in an evaluation scope, and each reset admits the same parent again. | `prop_space_txn_parent_order_single_commit` |
+| H21 | `view_identity_is_store_identity` | `EventCorrelation.v:8832` | View lookups agree with store lookups by store identity. | `prop_space_txn_store_identity_ignores_ord_only_fields`, `prop_space_txn_par_identity_ignores_locally_free` |
 | H22 | `checkpoint_rejects_duplicate_key_actions` | `VolatileSweep.v:1628` | The checkpoint refuses two actions on one history key, and canonical cache keys have distinct history keys. | `prop_space_txn_non_canonical_inputs_fail_closed` |
-| H23 | `replay_reproduces_play_run` | `EventCorrelation.v:7834` | With the commit log of play, replay stages the operations of play, and its commit makes the observer calls, events, status, and store of play. So an operation that play rejects fails replay at the same call, after the same prefix (decision 36). | `prop_space_txn_replay_reproduces_play_rejection` |
+| H23 | `replay_reproduces_play_run` | `EventCorrelation.v:7848` | With the commit log of play, replay stages the operations of play, and its commit makes the observer calls, events, status, and store of play. So an operation that play rejects fails replay at the same call, after the same prefix (decision 36). | `prop_space_txn_replay_reproduces_play_rejection` |
+| H28 | `coverage_commit` | `EventCorrelation.v:8085` | With the leaf-hash, decoded-row, and event-multiplicity premises, a Produce of the log of a commit names the channel of each changed data leaf, and a Consume names the group of each changed continuation leaf and join (P9, amendment A10). | `prop_event_coverage_holds_for_generated_commits` |
+| H29 | `two_block_replay_preserves_roots` | `EventCorrelation.v:8224` | With a hash premise, a validator that resets to the root of play before each of two blocks and replays each block with the log of play gets the events, statuses, stores, and roots of play (P9, amendment A10). | `prop_space_txn_two_block_replay_preserves_roots` |
 
-The models are [EventCorrelation.v](../../../formal/rocq/reified_rspaces/theories/EventCorrelation.v), with H1 to H12, H17, H19 to H21, and H23, and [VolatileSweep.v](../../../formal/rocq/reified_rspaces/theories/VolatileSweep.v), with H13 to H16, H18, and H22.
+The models are [EventCorrelation.v](../../../formal/rocq/reified_rspaces/theories/EventCorrelation.v), with H1 to H12, H17, H19 to H21, H23, H28, and H29, and [VolatileSweep.v](../../../formal/rocq/reified_rspaces/theories/VolatileSweep.v), with H13 to H16, H18, and H22.
 Since [decision 36](decision-register.md#decision-36), H1, H2, and H11 assume in replay that every staged fire paired, which a successful staging implied before.
 H4 and H23 cover the unpaired fire.
 H23 assumes that the observer ignores the stateless directive queries and gives no directive.
-The lemma `replay_premises_satisfiable` (`EventCorrelation.v:8836`) shows that the observer of a phlo limit meets both premises.
+The lemma `replay_premises_satisfiable` (`EventCorrelation.v:9258`) shows that the observer of a phlo limit meets both premises.
+The lemmas `coverage_commit_premises_satisfiable` (`EventCorrelation.v:9283`) and `two_block_hash_premise_satisfiable` (`EventCorrelation.v:9297`) show that the premises of H28 and H29 can hold, so neither headline is vacuous.
 
 **TLA+ invariants.** Table S9.2 lists the invariants of the two TLA+ modules [[Lam94](#ref-lam94)].
 TLC explores the complete state space of each safe configuration.
@@ -3500,7 +3503,7 @@ The charge of a load is then a function of the channel and of the loaded value o
 Here $`c`$ is the channel or the channel group of the load.
 The value $`v`$ is the list of records, continuations or join groups that the load copies.
 The commit checks of [S5.2](#s52-commit) read through the same three steps.
-The Rocq theorem `view_charge_cache_independent` (`EventCorrelation.v:8773`) proves that a coherent cache does not change the charge of a load.
+The Rocq theorem `view_charge_cache_independent` (`EventCorrelation.v:9195`) proves that a coherent cache does not change the charge of a load.
 
 No deploy pays for the physical read of step 2. Three bounds limit that read instead:
 

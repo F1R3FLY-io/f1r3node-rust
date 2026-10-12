@@ -1,0 +1,93 @@
+' 34 The process harnesses of P9: N2 and the replay of spaces across blocks.
+' Each child is a fresh process of the same test binary, so a result that
+' depends on the memory of one process differs between the runs.
+'
+' Source of the harness figure of ../verification.md (section 34.9). The
+' figure restates the suite rholang/tests/reified_cross_process.rs, its
+' process support rholang/tests/support/process.rs and the native
+' certification of rholang/tests/support/native.rs (P9 design v2, section 6,
+' amendments A14 and A16). It adds no new fact.
+'
+' Reading order, from the top to the bottom:
+'   1. N2: the children n2-a and n2-b each play the deploy set of N2 over an
+'      in-memory store, and the parent plays it twice. The four runs give
+'      the same record for each deploy.
+'   2. The replay across blocks: the child propose plays three blocks over
+'      one LMDB store. The child validate opens the store in another process
+'      and certifies each deploy once from its pre-state, as a validator
+'      does. The parent plays the blocks again and compares the records.
+'
+' Colors come from concept-colors.iuml (aliases of the shared palette).
+' Render: ./render.sh 34-p9-process-harnesses.puml   Check: ./render.sh --check
+
+@startuml 34-p9-process-harnesses
+!include ../../../casper/theory/diagrams/palette.iuml
+!include concept-colors.iuml
+$ca_base_skin()
+skinparam sequence {
+  ArrowColor $rrs_relation
+  LifeLineBorderColor $rrs_relation
+  ParticipantBorderColor $rrs_relation
+  ActorBorderColor $rrs_relation
+  GroupBorderColor $rrs_relation
+  DividerBorderColor $rrs_relation
+  DividerBackgroundColor $ca_note_grey
+}
+skinparam DatabaseBorderColor $rrs_relation
+skinparam CollectionsBorderColor $rrs_relation
+skinparam NoteBorderColor $rrs_relation
+skinparam LegendBorderColor $rrs_relation
+skinparam LegendBackgroundColor $ca_note_grey
+title The process harnesses of P9: N2 and the replay across blocks
+autonumber
+
+participant "Parent process\ntest function" as PARENT $rrs_host
+participant "Children\nn2-a and n2-b" as N2 $rrs_host
+participant "Child propose" as PROPOSE $rrs_host
+database "LMDB store\nrun directory" as STORE $rrs_storage
+collections "Deploy records\nrun directory" as RECORDS $rrs_storage
+participant "Child validate" as VALIDATE $rrs_host
+
+== N2: one deploy set in four runs ==
+PARENT -[$rrs_flow]> N2 : start the test binary again (current_exe)\nwith a role variable, one child at a time
+N2 -[$rrs_flow]> N2 : native play of the 62 deploys\nover an in-memory store, at the v6 limits
+N2 -[$rrs_effect]> RECORDS : one record for each deploy
+PARENT -[$rrs_flow]> PARENT : play the same 62 deploys twice\nin the parent process
+PARENT -[$rrs_relation]> RECORDS : read the records of n2-a and n2-b
+PARENT -[$rrs_relation]-> PARENT : the four runs give equal records
+
+== The replay across blocks ==
+PARENT -[$rrs_flow]> PROPOSE : start the child propose
+PROPOSE -[$rrs_flow]> STORE : open the store
+PROPOSE -[$rrs_flow]> PROPOSE : native play of blocks 1, 2 and 3:\n30, 28 and 28 deploys at the v6 limits
+PROPOSE -[$rrs_effect]> STORE : the post-state of each deploy
+PROPOSE -[$rrs_effect]> RECORDS : one record for each deploy
+PARENT -[$rrs_flow]> VALIDATE : start the child validate
+VALIDATE -[$rrs_relation]> RECORDS : read the records of propose
+VALIDATE -[$rrs_flow]> STORE : open the store at the pre-state\nroot of the first deploy
+loop each of the 86 deploys, once
+  VALIDATE -[$rrs_relation]> VALIDATE : decode the evidence, check the journal,\nbind the trace to the event log
+  VALIDATE -[$rrs_flow]> STORE : native replay from the pre-state,\ncompleteness check, export
+  VALIDATE -[$rrs_relation]-> VALIDATE : the post-state root of play\nand the phlo of play
+end
+PARENT -[$rrs_relation]> RECORDS : read the records of propose
+PARENT -[$rrs_relation]-> PARENT : each deploy starts at the\npost-state root of the deploy before it
+PARENT -[$rrs_flow]> PARENT : play the three blocks again over\nan in-memory store, in the parent process
+PARENT -[$rrs_relation]-> PARENT : equal records, and the deliveries\nof each family and of the agent
+
+note over PARENT, VALIDATE
+A record holds the pre-state and post-state roots, the outputs, the event log,
+the evidence bytes, the phlo and the host work of play. A child prints no test
+output to the parent: the parent keeps the standard output of each child.
+end note
+
+legend bottom
+**Concept colors**
+|<$rrs_host>       | process of the test binary |
+|<$rrs_storage>    | stored state and the record files |
+**Arrows**
+|<$rrs_flow>       | start, play or replay |
+|<$rrs_effect>     | write to a store or to a record file |
+|<$rrs_relation>   | read, check or result |
+endlegend
+@enduml

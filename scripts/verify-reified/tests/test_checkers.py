@@ -1314,7 +1314,7 @@ class ModelMapPhase(unittest.TestCase):
         self.assertEqual(["Q2", "Q10", "U1"], sorted(["U1", "Q10", "Q2"], key=MODEL_MAP.id_key))
 
 
-P1_THEORY = "".join(f"Theorem h{i} : True. Proof. exact I. Qed.\nPrint Assumptions h{i}.\n" for i in range(1, 25))
+P1_THEORY = "".join(f"Theorem h{i} : True. Proof. exact I. Qed.\nPrint Assumptions h{i}.\n" for i in range(1, 30))
 P1_MODULE = "---- MODULE P1 ----\n" + "".join(f"T{i}Inv == TRUE\n" for i in range(1, 8)) + "====\n"
 
 
@@ -1336,7 +1336,8 @@ def p1_phase(ids):
 
 
 class PhaseOneDecision36Ids(unittest.TestCase):
-    """check-invariant-map.py and check-model-map.py: the P1 ids include H23 and T6 (decision 36)."""
+    """check-invariant-map.py and check-model-map.py: the P1 ids include H23 and T6 (decision 36),
+    and H28 and H29 (P9, amendment A10)."""
 
     def run_phase(self, ids):
         with tempfile.TemporaryDirectory() as directory:
@@ -1351,10 +1352,13 @@ class PhaseOneDecision36Ids(unittest.TestCase):
 
     def test_invariant_map_requires_h23_and_t6(self):
         ids = INVARIANT_MAP.REQUIRED_IDS["P1"]
-        self.assertEqual(29, len(ids))
+        self.assertEqual(31, len(ids))
         self.assertIn("H23", ids)
         self.assertIn("T6", ids)
+        self.assertIn("H28", ids)
+        self.assertIn("H29", ids)
         self.assertNotIn("H24", ids)
+        self.assertNotIn("H30", ids)
         self.assertNotIn("T7", ids)
 
     def test_complete_p1_phase_passes(self):
@@ -1370,15 +1374,24 @@ class PhaseOneDecision36Ids(unittest.TestCase):
         self.assertIn("FAIL: P1: unmapped: H23 is not in the invariant map", output)
         self.assertIn("FAIL: P1: unmapped: T6 is not in the invariant map", output)
 
+    def test_p1_phase_without_h28_and_h29_fails(self):
+        ids = [fid for fid in INVARIANT_MAP.REQUIRED_IDS["P1"] if fid not in ("H28", "H29")]
+        report, output = self.run_phase(ids)
+        self.assertEqual(2, report.failed, output)
+        self.assertIn("FAIL: P1: unmapped: H28 is not in the invariant map", output)
+        self.assertIn("FAIL: P1: unmapped: H29 is not in the invariant map", output)
+
     def test_p1_phase_with_an_id_past_t6_fails(self):
         report, output = self.run_phase(list(INVARIANT_MAP.REQUIRED_IDS["P1"]) + ["T7"])
         self.assertEqual(1, report.failed, output)
         self.assertIn("FAIL: P1: T7 is not an id of phase P1", output)
 
     def test_model_map_requires_h23_and_t6(self):
-        self.assertEqual(29, len(MODEL_MAP.HEADLINE_IDS))
+        self.assertEqual(31, len(MODEL_MAP.HEADLINE_IDS))
         self.assertIn("H23", MODEL_MAP.HEADLINE_IDS)
         self.assertIn("T6", MODEL_MAP.HEADLINE_IDS)
+        self.assertIn("H28", MODEL_MAP.HEADLINE_IDS)
+        self.assertIn("H29", MODEL_MAP.HEADLINE_IDS)
         data = {
             "schema": "reified-rspaces-model-map/2",
             "formal_files": {"rocq": ["theories/P1.v"], "tla": ["tla/P1.tla"]},

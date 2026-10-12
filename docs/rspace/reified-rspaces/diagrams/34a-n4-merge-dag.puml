@@ -1,0 +1,72 @@
+' 34a The blocks of the N4 merge with an empty sibling: the empty block is
+' the main parent of the merge block, so the merge adds the space branch to
+' the state of an empty block.
+'
+' Source of the N4 figure of ../verification.md (section 34.9), a
+' sub-figure of figure 34. The figure restates the test
+' n4_space_merge_with_empty_sibling of casper/tests/reified/n4.rs and the
+' three facts of Casper of decision 82. It adds no new fact.
+'
+' Reading order, from the bottom to the top:
+'   1. Node 0, the leader, proposes block A (payer 0 creates a queue space)
+'      and block B (payer 1 creates a set space) on genesis.
+'   2. Node 1 proposes the empty block E on genesis.
+'   3. Node 2 receives A, B and E and proposes the merge block M. Its first
+'      parent, the main parent, is E. The merge rejects no deploy.
+'   4. Node 0 proposes block T on M: payer 0 touches its queue space. Every
+'      node validates M and T, and T reads the queue of the space branch.
+'
+' Colors come from concept-colors.iuml (aliases of the shared palette).
+' Render: ./render.sh 34a-n4-merge-dag.puml   Check: ./render.sh --check
+
+@startuml 34a-n4-merge-dag
+!include ../../../casper/theory/diagrams/palette.iuml
+!include concept-colors.iuml
+$ca_base_skin()
+skinparam ArrowColor $rrs_relation
+skinparam RectangleBorderColor $rrs_relation
+skinparam NoteBorderColor $rrs_relation
+skinparam LegendBorderColor $rrs_relation
+skinparam LegendBackgroundColor $ca_note_grey
+title The blocks of the N4 merge with an empty sibling
+
+rectangle "**T**: node 0\npayer 0 touches its queue space\ndelivers the config, a take\nand a fired waiter" as T $rrs_storage
+rectangle "**M**: merge block of node 2\nparents [E, B]\nno rejected deploy" as M $rrs_host
+rectangle "**E**: node 1\nan empty block" as E $rrs_reserved
+rectangle "**B**: node 0\npayer 1 creates a set space" as B $rrs_storage
+rectangle "**A**: node 0\npayer 0 creates a queue space\nwith records and a waiter" as A $rrs_storage
+rectangle "**genesis**\noffered v6, three validators,\ntwo searched payers" as G $rrs_host
+
+T -[$rrs_relation]-> M : parent
+M -[$rrs_effect,bold]-> E : main parent
+M -[$rrs_relation,dashed]-> B : second parent
+B -[$rrs_relation]-> A : parent
+A -[$rrs_relation]-> G : parent
+E -[$rrs_relation]-> G : parent
+
+note right of M
+The chains of the main parent never enter
+a merge. With E as the main parent, the
+merge applies the deploys of A and B to
+the post-state of E, so the merge of the
+space branch is not vacuous. Every node
+validates M, and then T.
+end note
+
+note right of A
+Leader rule: node 0 proposes every
+space block. The cost-cursor buckets
+of payers 0 and 1 are disjoint (DR-119),
+so the branch has no cursor conflict.
+end note
+
+legend bottom
+**Concept colors**
+|<$rrs_storage>    | block with a space deploy |
+|<$rrs_host>       | genesis and the merge block |
+|<$rrs_reserved>   | empty block |
+**Arrows**
+|<$rrs_effect>     | main parent: the merge starts from its post-state |
+|<$rrs_relation>   | parent |
+endlegend
+@enduml
