@@ -1,6 +1,6 @@
 //! Support of the N4 suite: offered v6 genesis, signed offers with a chosen term, the propose
-//! and validate steps of the two- and three-node harness, and the searched signers of the
-//! concurrent row, whose cost-cursor buckets are disjoint (DR-119).
+//! and validate steps of the two- and three-node harness, and the labeled signers of the merge
+//! row.
 //!
 //! The schedule, the offer and the genesis follow `casper/tests/api/offered_funded_api_test.rs`
 //! (`selected_schedule`, `signed_offer_at` and `offered_v6_genesis`, lines 136-256), whose
@@ -13,7 +13,8 @@ use casper::rust::block_status::BlockError;
 use casper::rust::genesis::contracts::vault::Vault;
 use casper::rust::util::rholang::costacc::vault_payer::vault_payer;
 use crypto::rust::hash::blake2b256::Blake2b256;
-use crypto::rust::hash::keccak256::Keccak256;
+// Disabled by decision 84 (the revert of the DR-119 backport): only the bucket search used it.
+// use crypto::rust::hash::keccak256::Keccak256;
 use crypto::rust::private_key::PrivateKey;
 use crypto::rust::public_key::PublicKey;
 use crypto::rust::signatures::secp256k1::Secp256k1;
@@ -35,13 +36,15 @@ use models::rust::phlo_source::{PhloSourceLimits, PhloSourcePolicyV1};
 use models::rust::signed_phlo_deploy::OfferedFundedDeploy;
 use prost::Message;
 use rholang::rust::interpreter::accounting::authority::cost_signature_to_sig;
-use rholang::rust::interpreter::accounting::monetary_allocation::monetary_scope_for_custodies;
+// Disabled by decision 84 (the revert of the DR-119 backport): only the bucket search used it.
+// use rholang::rust::interpreter::accounting::monetary_allocation::monetary_scope_for_custodies;
 use rholang::rust::interpreter::accounting::native_phlo_rules::{
     native_resource_compatibility_rule, NativePhloDimension,
 };
 use rholang::rust::interpreter::accounting::phlo_execution::{PhloExecutionLimits, PhloResource};
 use rholang::rust::interpreter::accounting::{principal_ground_v61, SignatureChannel};
-use rholang::rust::interpreter::rho_type::RhoByteArray;
+// Disabled by decision 84 (the revert of the DR-119 backport): only the bucket search used it.
+// use rholang::rust::interpreter::rho_type::RhoByteArray;
 use rholang::rust::interpreter::util::vault_address::VaultAddress;
 use rspace_plus_plus::rspace::history::Either;
 
@@ -242,52 +245,64 @@ pub async fn rejection(node: &mut TestNode, block: &BlockMessage) -> BlockError 
     }
 }
 
-/// The cost-cursor bucket of the monetary scope `scope`: the first byte of the Keccak-256 hash of
-/// the scope as a Rholang byte array, as `SystemVault.rho` keys its creation locks (DR-119,
-/// `CostCursorBuckets.v`).
-fn cost_cursor_bucket(scope: &[u8; 32]) -> u8 {
-    let encoded = RhoByteArray::create_par(scope.to_vec()).encode_to_vec();
-    Keccak256::hash(encoded)[0]
-}
+// Disabled by decision 84 (the revert of the DR-119 backport, P9): this tree has no cost-cursor
+// buckets in SystemVault.rho, so N4 searches no payer by bucket. The merge row takes two
+// labeled payers instead (`labeled_signer`).
+// /// The cost-cursor bucket of the monetary scope `scope`: the first byte of the Keccak-256 hash of
+// /// the scope as a Rholang byte array, as `SystemVault.rho` keys its creation locks (DR-119,
+// /// `CostCursorBuckets.v`).
+// fn cost_cursor_bucket(scope: &[u8; 32]) -> u8 {
+//     let encoded = RhoByteArray::create_par(scope.to_vec()).encode_to_vec();
+//     Keccak256::hash(encoded)[0]
+// }
+//
+// /// The two cost-cursor buckets of the vault of `owner`: the bucket of its monetary resource scope
+// /// and the bucket of its monetary fee scope.
+// pub fn owner_cursor_buckets(owner: &PublicKey) -> [u8; 2] {
+//     let signature = CostSignature {
+//         value: Some(Value::Ground(principal_ground_v61(&owner.bytes))),
+//     };
+//     let custody = vault_payer(&signature)
+//         .expect("a principal signature has a vault payer")
+//         .custody_key;
+//     let context = |label: &[u8]| -> [u8; 32] {
+//         Blake2b256::hash(label.to_vec())
+//             .try_into()
+//             .expect("a Blake2b-256 digest has 32 bytes")
+//     };
+//     [
+//         context(
+//             b"f1r3node:monetary-resource:canonical-family-lexicographic-minimax:v1:SystemVault:General",
+//         ),
+//         context(b"f1r3node:monetary-fee:rotating-capped-max-min:v1:SystemVault:General"),
+//     ]
+//     .map(|policy| monetary_scope_for_custodies(&policy, std::iter::once(&custody)))
+//     .map(|scope| cost_cursor_bucket(&scope))
+// }
+//
+// /// The first key of the chain `Blake2b256("{label}-{n}")`, n = 0, 1, ..., whose vault has buckets
+// /// that `accept` admits. Two offers of payers with disjoint buckets settle without a conflict in
+// /// the vault (DR-119), so the concurrent row of N4 searches its two payers.
+// pub fn searched_signer(label: &str, accept: impl Fn(&[u8; 2]) -> bool) -> (PrivateKey, PublicKey) {
+//     (0u32..65_536)
+//         .map(|counter| {
+//             let secret = PrivateKey::from_bytes(&Blake2b256::hash(
+//                 format!("{label}-{counter}").into_bytes(),
+//             ));
+//             let public = Secp256k1.to_public(&secret);
+//             (secret, public)
+//         })
+//         .find(|(_, public)| accept(&owner_cursor_buckets(public)))
+//         .expect("the key chain holds a key with the wanted buckets")
+// }
 
-/// The two cost-cursor buckets of the vault of `owner`: the bucket of its monetary resource scope
-/// and the bucket of its monetary fee scope.
-pub fn owner_cursor_buckets(owner: &PublicKey) -> [u8; 2] {
-    let signature = CostSignature {
-        value: Some(Value::Ground(principal_ground_v61(&owner.bytes))),
-    };
-    let custody = vault_payer(&signature)
-        .expect("a principal signature has a vault payer")
-        .custody_key;
-    let context = |label: &[u8]| -> [u8; 32] {
-        Blake2b256::hash(label.to_vec())
-            .try_into()
-            .expect("a Blake2b-256 digest has 32 bytes")
-    };
-    [
-        context(
-            b"f1r3node:monetary-resource:canonical-family-lexicographic-minimax:v1:SystemVault:General",
-        ),
-        context(b"f1r3node:monetary-fee:rotating-capped-max-min:v1:SystemVault:General"),
-    ]
-    .map(|policy| monetary_scope_for_custodies(&policy, std::iter::once(&custody)))
-    .map(|scope| cost_cursor_bucket(&scope))
-}
-
-/// The first key of the chain `Blake2b256("{label}-{n}")`, n = 0, 1, ..., whose vault has buckets
-/// that `accept` admits. Two offers of payers with disjoint buckets settle without a conflict in
-/// the vault (DR-119), so the concurrent row of N4 searches its two payers.
-pub fn searched_signer(label: &str, accept: impl Fn(&[u8; 2]) -> bool) -> (PrivateKey, PublicKey) {
-    (0u32..65_536)
-        .map(|counter| {
-            let secret = PrivateKey::from_bytes(&Blake2b256::hash(
-                format!("{label}-{counter}").into_bytes(),
-            ));
-            let public = Secp256k1.to_public(&secret);
-            (secret, public)
-        })
-        .find(|(_, public)| accept(&owner_cursor_buckets(public)))
-        .expect("the key chain holds a key with the wanted buckets")
+/// The signer of the key `Blake2b256(label)`. The merge row of N4 gives each of its two space
+/// blocks its own payer, because a merge rejects the second of two sequential offers of one
+/// payer in one branch (decision 82, fact 3, measured in P9 step 5).
+pub fn labeled_signer(label: &str) -> (PrivateKey, PublicKey) {
+    let secret = PrivateKey::from_bytes(&Blake2b256::hash(label.as_bytes().to_vec()));
+    let public = Secp256k1.to_public(&secret);
+    (secret, public)
 }
 
 /// The offered v6 genesis of [`offered_v6_genesis`] with a vault of 9,000,000 atomic REV for

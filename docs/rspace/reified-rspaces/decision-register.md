@@ -65,7 +65,7 @@ The minimal-footprint revision (M-1 to M-5) overrides the target architecture of
 | [Decision 15](#decision-15) | Empty-state hash fixture | 2026-10-04 | Fixture commit superseded by decision 18 |
 | [Decision 16](#decision-16) | Tracker dispositions | 2026-10-04 | In force |
 | [Decision 17](#decision-17) | Runtime space registration postponed | 2026-10-04 | In force |
-| [Decision 18](#decision-18) | Marker-tagged tuples | 2026-10-04 | In force. [Decision 81](#decision-81) approves one `casper/src` exception |
+| [Decision 18](#decision-18) | Marker-tagged tuples | 2026-10-04 | In force. [Decision 81](#decision-81) approved one `casper/src` exception, and [decision 84](#decision-84) reverted it |
 | [Decision 19](#decision-19) | P1 substrate | 2026-10-04 | In force, amended by decisions 30 and 36 |
 | [Decision 20](#decision-20) | Tracker leftovers of TRI-1 | 2026-10-04 | In force |
 | [Decision 21](#decision-21) | Corrected encoding table | 2026-10-04 | In force |
@@ -128,9 +128,10 @@ The minimal-footprint revision (M-1 to M-5) overrides the target architecture of
 | [Decision 78](#decision-78) | One native replay test runs at the v6 host-work limits | 2026-10-10 | In force. Implemented in P8 step 1 |
 | [Decision 79](#decision-79) | The conformance kit keeps the v6 host-work limits | 2026-10-10 | In force. Implemented in P8 step 5 |
 | [Decision 80](#decision-80) | The P9 design process | 2026-10-11 | In force |
-| [Decision 81](#decision-81) | Backport the DR-119 fix of bug 11004 | 2026-10-11 | In force. Implemented in P9 step 0. [Decision 82](#decision-82) amends its effect on N4 |
-| [Decision 82](#decision-82) | N4 fits three facts of Casper | 2026-10-11 | In force |
+| [Decision 81](#decision-81) | Backport the DR-119 fix of bug 11004 | 2026-10-11 | Reverted by [decision 84](#decision-84). It was implemented in P9 step 0 |
+| [Decision 82](#decision-82) | N4 fits three facts of Casper | 2026-10-11 | In force. [Decision 84](#decision-84) disables its concurrent row |
 | [Decision 83](#decision-83) | The creation job records a seq space | 2026-10-12 | In force. Its second half is a recorded follow-up |
+| [Decision 84](#decision-84) | Revert the DR-119 backport | 2026-10-12 | In force |
 | [M-1](#m-1) | Counter meta-channels and merge check #1 | 2026-10-04 | In force, scope widened by decision 31 |
 | [M-2](#m-2) | Space-owned record envelope | 2026-10-04 | In force |
 | [M-3](#m-3) | Charging through the accounting observer | 2026-10-04 | In force, revised 2026-10-04 |
@@ -555,7 +556,7 @@ The four proposals follow the words and the reason.
 | Field | Value |
 |---|---|
 | Date | 2026-10-04 |
-| Status | In force. [Decision 81](#decision-81) approves one `casper/src` exception: the backport of the DR-119 fix of bug 11004 |
+| Status | In force. [Decision 81](#decision-81) approved one `casper/src` exception, the backport of the DR-119 fix of bug 11004, and [decision 84](#decision-84) reverted it |
 | Supersedes | The ledger K15 protobuf fields `Par.use_blocks = 15`, `New.space_types = 6`, `Send.params = 8`, `ReceiveBind.query_spec = 6`, and `Expr.e_free_body = 38` |
 | Changes | The fixture parts of [decision 6](#decision-6), [decision 15](#decision-15), and [I-14](#i-14) |
 | Related | [Decision 21](#decision-21), [marker tuple](glossary.md#marker-tuple), [recognized position](glossary.md#recognized-position) |
@@ -2288,7 +2289,7 @@ The footprint policy `p8` approves the edit, and checklist items 11 and 21 name 
 | Field | Value |
 |---|---|
 | Date | 2026-10-11 |
-| Status | In force. Implemented in P9 step 0. [Decision 82](#decision-82) amends its effect on N4 |
+| Status | Reverted by [decision 84](#decision-84) (2026-10-12). It was implemented in P9 step 0, and [decision 82](#decision-82) amended its effect on N4 |
 | Amends | [Decision 18](#decision-18): one approved exception to "no `casper/src` change" |
 | Related | [Decision 70](#decision-70), [decision 80](#decision-80), [M-1](#m-1) |
 
@@ -2304,6 +2305,10 @@ The footprint policy `p8` approves the edit, and checklist items 11 and 21 name 
 - The footprint policy `p9`, the completeness phase `p9` and item 8 of the consensus checklist allow exactly these changes.
 
 **User's words.** "Can you backport the fixes to Bug 11004 from feature/cost-accounted-rho?", and then "Backport DR-119 (Recommended)".
+
+*Correction ([decision 84](#decision-84), 2026-10-12).* The backport was the main session's recommendation, and the user asked only whether a backport was possible.
+The recommendation did not state that `SystemVault.rho` is a genesis contract (`standard_deploys.rs:195`), so the backport changed the genesis state of new networks.
+The user: "I did not ask you to change Genesis, you asked me to change genesis."
 
 **Reason.**
 
@@ -2324,7 +2329,7 @@ The footprint policy `p8` approves the edit, and checklist items 11 and 21 name 
 | Field | Value |
 |---|---|
 | Date | 2026-10-11 |
-| Status | In force |
+| Status | In force. [Decision 84](#decision-84) disables its concurrent row |
 | Amends | Section 8 of the P9 design v2 (alternating proposers), and the effect of [decision 81](#decision-81) on N4 (two payers on one space) |
 | Related | [Decision 70](#decision-70), [decision 80](#decision-80), [M-1](#m-1) |
 
@@ -2336,6 +2341,10 @@ The footprint policy `p8` approves the edit, and checklist items 11 and 21 name 
 - N4 has no Casper-level row in which two siblings race on one space counter.
 - The rholang merge suites and the models `CounterConflict.v` and `CounterConflict.tla` cover the guard of [M-1](#m-1).
 - The campaign changes no Casper file for these facts.
+
+*Amended by [decision 84](#decision-84) (2026-10-12).* This tree has no DR-119 fix again.
+So the merge of two paid siblings rejects one of them, and the sender of the rejected sibling fails the merge block (gap G6).
+`n4_concurrent_space_blocks_agree` is disabled, and the merge row takes two labeled payers.
 
 **User's words.** "Adjust N4 (Recommended)".
 
@@ -2399,6 +2408,46 @@ Native replay runs under the same scheduler as play, so the fix makes both deter
 - Check every send. The host work of every ordinary deploy would change.
 
 **Evidence.** The ledger of the defect and the tests `prepare_create_records_ephemeral_spaces_after_commit`, `prop_seq_gate_constant_per_window` and `seq_scan_charge_is_schedule_independent` (verification.md, section 34.4.1). The invariant `ScanViewPerWindow` of `SpaceCoordination.tla` and its Unsafe control `RecordInWindowUnsafe`.
+
+### <a id="decision-84"></a>Decision 84: Revert the DR-119 backport
+
+| Field | Value |
+|---|---|
+| Date | 2026-10-12 |
+| Status | In force |
+| Reverts | [Decision 81](#decision-81) |
+| Amends | [Decision 18](#decision-18) (its `casper/src` exception ends), and [decision 82](#decision-82) (its concurrent row) |
+| Related | [Decision 70](#decision-70), [decision 80](#decision-80) |
+
+**Statement.**
+
+- One commit reverts P9 step 0 (`e46123f6e`). `SystemVault.rho`, its two tests, the cost-accounting documents, the formal artifacts and the three cost-accounting scripts equal the base `4d67b5ccc` again.
+- The five files that the backport added are removed. They stay in the history and on feature/cost-accounted-rho.
+- The entry of `SystemVault.rho` in the corpus of ordinary sources returns to its capture of 2026-10-05.
+- The footprint policy `p9`, item 8 of the consensus checklist and the closure total return to their state before the backport.
+- The completeness phase `p9` held only the files of the backport. It now holds the Reified changes of P9, because the checklist checks a phase for each milestone.
+- `casper/src` matches the base again. The only Casper changes of the campaign are the N4 test files and their one `mod` line.
+- `n4_concurrent_space_blocks_agree` is disabled, with its reason at the test. The merge row takes two labeled payers, and no bucket search chooses them.
+
+**User's words.** "I did not ask you to change Genesis, you asked me to change genesis.", then "Revert it if it does not directly relate to Reified RSpaces and is not a technical blocker. This campaign is only focused on completing support for Reified RSpaces, nothing else should be investigated, changed, or implemented unless it is a technical blocker.", and "If a change to casper is necessary for the correct implementation of Reified RSpaces, then that is okay, but do not randomize on unrelated work!"
+
+**Reason.**
+
+- DR-119 fixes a defect of the vault (bug 11004), not a defect of Reified RSpaces. Reified code never touches the vault.
+- `SystemVault.rho` is a genesis contract (`standard_deploys.rs:195`), so the backport changed the genesis state of new networks.
+- The backport was the main session's recommendation, and the recommendation did not state this effect.
+- The fix is not a technical blocker of Reified RSpaces. The N4 acceptance needs equal blocks, roots, event logs and costs on two nodes.
+  It also needs a merge across blocks, and invalid traces that fail without a panic.
+- The chain row, the merge row with an empty main parent and the tamper row meet that acceptance without the fix (verification.md, section 34.10).
+- Only the row of two concurrent paid siblings needs the fix. Without it, the vault conflict rejects one sibling, and its sender then fails the merge block (gap G6). That row tests Casper's merge of paid blocks, not spaces.
+- The next merge of feature/cost-accounted-rho brings DR-119 and DR-116 through their owner. The reverted files equal the base, so that merge takes them with no conflict.
+
+**Rejected alternatives.**
+
+- Keep the backport. It is a change of genesis that Reified RSpaces do not need.
+- Keep the concurrent row in the form of design v2, which checks agreement on the rejected sibling. Measured: the sender of the rejected sibling fails the merge block with "offered-funded recovery requires an envelope buffer" (gap G6).
+
+**Evidence.** The N4 runs without the fix, before and after the adaptation, and the byte comparison of the reverted files with the base (verification.md, section 34.10).
 
 ## Minimal-footprint revision: M-1 to M-5
 

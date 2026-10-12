@@ -639,4 +639,3 @@ theories/GenesisVersionAdoption.v
 theories/NativePathDeltaCodec.v
 theories/MeteredComparison.v
 theories/QuoteExactOutput.v
-theories/CostCursorBuckets.v

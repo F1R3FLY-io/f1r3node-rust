@@ -738,7 +738,7 @@ A separate merge or copy then puts the result into `test-vectors/`, so a normal 
 | Corpus | Content | Provenance | Capture command |
 |---|---|---|---|
 | `test-vectors/ordinary-execution-v1.json` | The sections `r1_comm_produce_sort` to `r9_play_replay_equality` and `deterministic_candidates`. | Captured on 2026-10-05 in a clean export of `4d67b5ccc`, with the harness file copied in ([8.8](#88-the-merge-of-featurecost-accounted-rho)). The earlier captures were at `6f7a80da3` and at `11c39d77d`. Sections R1, R2, R4, R5, R7, R8 and R9 are byte-identical to them. Toolchain: `rustc 1.95.0-nightly (6efa357bf 2026-02-08)`. | The corpus records the command, which starts with `git archive 4d67b5ccc` and runs `cargo test --offline -p rholang --test reified_ordinary_regression` in the export with `RRS_CAPTURE_ORDINARY_OUT` under its `target`. Then `python3 scripts/verify-reified/merge-ordinary-capture.py --capture-dir <fragments> --output test-vectors/ordinary-execution-v1.json --capture-command '<the command>' --revision 4d67b5ccc42c4e510162d075f7ed423bf8175563 --code-identical-to '<the text of the corpus>'` joins the fragments `r1` to `r9` and `dc`. Its option `--check` compares the result with the corpus. |
-| `test-vectors/ordinary-source-normalization-v1.json` | One entry for each of the 192 `.rho` and `.rhox` files of `4d67b5ccc`: 127 `ok`, 63 `error`, and 2 `panic`. | Captured on 2026-10-05 in a clean export of `4d67b5ccc`, with the parser of HEAD (`02cef80`). The placeholder `resourcePolicyGetter` takes the value of the default genesis, the empty text. The earlier capture was at `6f7a80da3`. Rule: each `ok` entry normalizes to identical prost and stable hashes. The entry of `casper/src/main/resources/SystemVault.rho` was captured again on 2026-10-11 in the same way, with the `SystemVault.rho` of the DR-119 backport ([decision 81](decision-register.md#decision-81), section [34.1](#341-step-0-the-dr-119-backport)). | In the export: `RRS_CAPTURE_SOURCES_OUT=<absolute directory under target> RRS_CAPTURE_REVISION=4d67b5ccc42c4e510162d075f7ed423bf8175563 cargo test --offline -p rholang --test reified_source_normalization -- --exact ordinary_source_normalization_unchanged`. The corpus records no command, and this one comes from the capture code (`reified_source_normalization.rs:176-223`, `reified_source_normalization.rs:284-290`). |
+| `test-vectors/ordinary-source-normalization-v1.json` | One entry for each of the 192 `.rho` and `.rhox` files of `4d67b5ccc`: 127 `ok`, 63 `error`, and 2 `panic`. | Captured on 2026-10-05 in a clean export of `4d67b5ccc`, with the parser of HEAD (`02cef80`). The placeholder `resourcePolicyGetter` takes the value of the default genesis, the empty text. The earlier capture was at `6f7a80da3`. Rule: each `ok` entry normalizes to identical prost and stable hashes. The entry of `casper/src/main/resources/SystemVault.rho` was captured again on 2026-10-11 for the DR-119 backport ([decision 81](decision-register.md#decision-81)). The revert of [decision 84](decision-register.md#decision-84) restored the entry of 2026-10-05 (section [34.10](#3410-the-revert-of-the-dr-119-backport)). | In the export: `RRS_CAPTURE_SOURCES_OUT=<absolute directory under target> RRS_CAPTURE_REVISION=4d67b5ccc42c4e510162d075f7ed423bf8175563 cargo test --offline -p rholang --test reified_source_normalization -- --exact ordinary_source_normalization_unchanged`. The corpus records no command, and this one comes from the capture code (`reified_source_normalization.rs:176-223`, `reified_source_normalization.rs:284-290`). |
 | `test-vectors/ordinary-float-forms-v1.json` | 15 float forms: 13 `ok`, and `sync_dot` and `sync_dot_new` rejected. | Captured on 2026-10-05 in a clean export of `4d67b5ccc`, with the parser revision `02cef80d32214ecdac3ee7d3b91c3786a34174d5` and no active parser patch. The earlier capture was at `11c39d77d`, and only the form `suffixed` changed. Rule: an accepted form keeps its hashes, and a rejected form can become accepted. | The corpus records the command: in the export, `RRS_CAPTURE_FLOATS_OUT` and `RRS_CAPTURE_REVISION=4d67b5ccc42c4e510162d075f7ed423bf8175563` with `cargo test --offline -p rholang --test reified_source_normalization -- --exact ordinary_float_forms_unchanged`. The capture also needs `RRS_CAPTURE_COMMAND`, which holds this command. |
 | `test-vectors/legacy-golden-corpus-v1.json` | Channel hashes, event identities and bytes, the protobuf bytes of `Par`, and state roots. | Captured from three revisions: the legacy branch `rust/dev` at `95be4feb`, the legacy Reified branch at `ff479042`, and the current code at `e748426`. The file is byte-identical to its backup copy. | The corpus records seven commands of the earlier campaign, for example `python3 scripts/capture-legacy-golden-corpus.py`. Those capture scripts exist only in the backup, so the corpus is frozen evidence that this repository cannot capture again. |
 | `test-vectors/head-file-digests-4d67b5ccc.json` | The SHA-256 digest of each of the 4,470 files that `4d67b5ccc` tracks (`roots: ["."]`). | Pinned on the host from the git objects of the base revision, on 2026-10-05. The file `test-vectors/head-file-digests-6f7a80da3.json` keeps the 4,300 digests of the base before the merge, which the milestone policies `p1`, `p1-realign` and `p2` used. | `python3 scripts/verify-reified/check-footprint.py --pin`. It needs git and the objects of the base revision, so it runs only on the host. |
@@ -6288,7 +6288,7 @@ Its suites found two defects of Reified code, and the phase fixes them.
 They are the authority of an allocation job (section 34.3.1) and the charge of the SQ-2 check (section 34.4.1).
 It has nine steps:
 
-1. Step 0: the backport of the DR-119 fix of bug 11004 ([decision 81](decision-register.md#decision-81)).
+1. Step 0: the backport of the DR-119 fix of bug 11004 ([decision 81](decision-register.md#decision-81)). [Decision 84](decision-register.md#decision-84) reverts it (section 34.10).
 2. Step 1: the probes of N4, the inventory of the legacy tests, and the shared test support.
 3. Step 2: N1, N9, the merge of spaces across blocks, and the event coverage.
 4. Step 3: N2 and the replay of spaces across blocks.
@@ -6299,6 +6299,8 @@ It has nine steps:
 9. Step 8: the formal models, the maps, the documents and the full gate set.
 
 ### 34.1 Step 0: the DR-119 backport
+
+*Reverted by [decision 84](decision-register.md#decision-84) (section 34.10).* This section records the backport as it was made.
 
 Before the backport, `SystemVault.rho` took one global lock for every settlement that moves a cost cursor.
 A paid offered deploy always moves a cursor, so two sibling blocks with paid offered deploys always conflicted in the vault.
@@ -6827,6 +6829,9 @@ So the merge rows use one payer for each space block: two searched payers whose 
 | `n4_concurrent_space_blocks_agree` | The two payers create their own spaces in sibling blocks over genesis. Every node validates both siblings and the merge block, and the merge rejects no deploy. | Pass |
 | `n4_tampered_space_block_rejected` | A space block with a changed post-state hash, and the same block with a channel added to the footprint of a space row of its operation journal, are each signed again. Node 1 rejects the first with "offered block replay post-state differs from commitment" and the second with "native replay epoch is closed". Its DAG does not hold either block, and its DAG heads do not change. Both nodes then accept the untampered block. | Pass |
 
+*Amended by [decision 84](decision-register.md#decision-84) (section 34.10).* The revert of DR-119 disables `n4_concurrent_space_blocks_agree`.
+The merge row takes two labeled payers, and no bucket search chooses them.
+
 N4 has no Casper-level counter row (decision 82).
 The rholang merge suites (section 34.3.3) and the models `CounterConflict.v` and `CounterConflict.tla` cover the guard of M-1.
 Spaces enter the block hash through the post-state root, so the validation of a space block needs no Casper change.
@@ -7211,7 +7216,7 @@ Figure V3 shows the blocks of the N4 merge with an empty sibling (section 34.6).
 
 *Figure V2. Source: [diagrams/34-p9-process-harnesses.puml](diagrams/34-p9-process-harnesses.puml), rendered by [diagrams/render.sh](diagrams/render.sh).*
 
-![Diagram of the blocks of the N4 merge with an empty sibling. Genesis is an offered v6 genesis with three validators and two searched payers. Node 0, the leader, proposes block A, in which payer 0 creates a queue space with records and a waiter, and block B on A, in which payer 1 creates a set space; the cost-cursor buckets of the two payers are disjoint, by DR-119, so the branch has no cursor conflict. Node 1 proposes the empty block E on genesis. Node 2 proposes the merge block M with the parents E and B, and E is the main parent. The chains of the main parent never enter a merge, so the merge applies the deploys of A and B to the post-state of E, and the merge of the space branch is not vacuous; the merge rejects no deploy. Node 0 then proposes block T on M, in which payer 0 touches its queue space, and T delivers the config, a take and a fired waiter. Every node validates M and then T.](diagrams/34a-n4-merge-dag.svg)
+![Diagram of the blocks of the N4 merge with an empty sibling. Genesis is an offered v6 genesis with three validators and two labeled payers. Node 0, the leader, proposes block A, in which payer 0 creates a queue space with records and a waiter, and block B on A, in which payer 1 creates a set space; each space block has its own payer, because a merge rejects the second of two sequential offers of one payer in one branch. Node 1 proposes the empty block E on genesis. Node 2 proposes the merge block M with the parents E and B, and E is the main parent. The chains of the main parent never enter a merge, so the merge applies the deploys of A and B to the post-state of E, and the merge of the space branch is not vacuous; the merge rejects no deploy. Node 0 then proposes block T on M, in which payer 0 touches its queue space, and T delivers the config, a take and a fired waiter. Every node validates M and then T.](diagrams/34a-n4-merge-dag.svg)
 
 *Figure V3. Source: [diagrams/34a-n4-merge-dag.puml](diagrams/34a-n4-merge-dag.puml), rendered by [diagrams/render.sh](diagrams/render.sh).*
 
@@ -7231,6 +7236,64 @@ Figure V3 shows the blocks of the N4 merge with an empty sibling (section 34.6).
 | `rustfmt --check` of the property file, and `cargo clippy -p rspace_plus_plus --lib --tests -- -D warnings` | No difference and no warning |
 | The 42 checkers of the campaign: the footprint policy `p9` (5,066 files), the maps, the document lint and 214 checker tests | 42 passed |
 | I-14: the two empty-state-hash tests of `runtime_spec.rs` in release | 2 passed |
+
+### 34.10 The revert of the DR-119 backport
+
+[Decision 84](decision-register.md#decision-84) reverts step 0.
+The backport changed `SystemVault.rho`, which is a genesis contract (`standard_deploys.rs:195`), and Reified RSpaces do not need it.
+The backport was the main session's recommendation, and the recommendation did not state the change of genesis.
+The revert is one new commit, and no commit is rewritten.
+
+*Table 222. The files of the revert.*
+
+| Group | Files | Result |
+|---|---|---|
+| Restored from the parent of step 0 | The 23 files of step 0 outside the Reified documents and policies: `SystemVault.rho`, its two tests, four cost-accounting documents, `PROOF_ARTIFACTS.md`, `_CoqProject`, the 11 changed TLA files of the cost cursors, and three cost-accounting scripts | Each file equals the base `4d67b5ccc` byte for byte |
+| Removed | `CostCursorBuckets.v` and the four new Unsafe configurations of the cost-cursor TLA models | They stay in the history and on feature/cost-accounted-rho |
+| Reified policies | `closure-policies.json`, `complete-policies.json` and `consensus-checklist.json` | Equal to their state before step 0, with one exception. The completeness phase `p9` held only the files of the backport. It now holds the Reified changes of P9: the two fixes of production code and the P9 suites. |
+| Footprint policy `p9` | 23 approved edits and 5 new files of the backport | Removed. The line `mod reified;` of N4 stays. |
+| Corpus | The entry of `SystemVault.rho` in `ordinary-source-normalization-v1.json` | Equal to its capture of 2026-10-05 |
+| N4 | `n4.rs` and `support.rs` | The concurrent row is disabled. The merge row takes two labeled payers. |
+| Documents | The decision register, items 4 and 9 of table S8 of the design, this dossier and figure V3 | Updated |
+
+The revert keeps the N4 rows that need no Casper change.
+The measurement of Table 223 decides which rows those are.
+It runs the N4 suite in the release profile, with one test thread.
+
+*Table 223. The N4 suite without the fix.*
+
+| Hypothesis | Experiment | Result |
+|---|---|---|
+| The chain row, the merge row and the tamper row need no fix of the vault. | The N4 suite after the revert, before any change of N4 | Confirmed: 3 passed. The merge row merges the two space blocks of two payers with no rejected deploy. |
+| The concurrent row needs the fix. | The same run | Confirmed: the row fails at its check "the merge rejects no deploy", because the merge rejects one of the two paid siblings. |
+| The concurrent row passes in the form of design v2, which checks only the agreement of the nodes. | The row with the expectation of one rejected deploy, and the merge block accepted by every node | Refuted: the sender of the rejected sibling fails the merge block with "offered-funded recovery requires an envelope buffer" (gap G6, `interpreter_util.rs:2156`). |
+
+So in this tree, Casper cannot merge two concurrent paid blocks, with or without spaces.
+Two Casper defects cause this: the global lock of the vault (bug 11004) and gap G6.
+Both are outside the campaign ([decision 70](decision-register.md#decision-70)), and feature/cost-accounted-rho fixes them with DR-119 and DR-116.
+The concurrent row is disabled, and its reason is at the test, so it can return with the merge of that branch.
+The merge of concurrent space branches stays covered by the native merge rig of section 34.3.3, which runs the merge functions of Casper.
+
+The N4 acceptance needs equal blocks, roots, event logs and costs on two nodes.
+It also needs a merge across blocks, and invalid traces that fail without a panic.
+The three remaining rows meet it, and the merge row covers the same two families as the disabled row.
+The probes of section 34.2.2 ran with the fix in place, and R8a measured the merge of two sibling payers with it.
+
+*Table 224. The gates of the revert.*
+
+| Gate | Result |
+|---|---|
+| `git diff 4d67b5ccc` of `casper/src`, `casper/tests/util`, `docs/casper`, the two cost-accounting formal trees and the three scripts | Empty |
+| The corpus file against its capture of 2026-10-05 | Equal |
+| `cargo test --release -p casper --test mod -- reified::n4` | 3 passed, 0 failed, in 87.7 seconds |
+| `cargo test --release -p casper --lib policy_snapshot` | 8 passed, the count of the base |
+| `cargo test --release -p rholang --test reified_source_normalization` | 2 passed |
+| `cargo clippy -p casper --tests -- -D warnings`, and `rustfmt --check` of `n4.rs` and `support.rs` | No warning and no difference |
+| `render.sh` of diagram 34a | Rendered with no message |
+| The 42 checkers of the campaign: the footprint policy `p9` (5,061 files), the completeness phase `p9`, the checklist at `p9`, the closure audits and the document lint | 42 passed |
+| I-14: the two empty-state-hash tests of `runtime_spec.rs` in release | 2 passed |
+
+The full gate set of P9 then runs on the commit of the revert.
 
 ## References
 

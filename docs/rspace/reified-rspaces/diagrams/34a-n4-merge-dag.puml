@@ -35,7 +35,7 @@ rectangle "**M**: merge block of node 2\nparents [E, B]\nno rejected deploy" as 
 rectangle "**E**: node 1\nan empty block" as E $rrs_reserved
 rectangle "**B**: node 0\npayer 1 creates a set space" as B $rrs_storage
 rectangle "**A**: node 0\npayer 0 creates a queue space\nwith records and a waiter" as A $rrs_storage
-rectangle "**genesis**\noffered v6, three validators,\ntwo searched payers" as G $rrs_host
+rectangle "**genesis**\noffered v6, three validators,\ntwo labeled payers" as G $rrs_host
 
 T -[$rrs_relation]-> M : parent
 M -[$rrs_effect,bold]-> E : main parent
@@ -55,9 +55,10 @@ end note
 
 note right of A
 Leader rule: node 0 proposes every
-space block. The cost-cursor buckets
-of payers 0 and 1 are disjoint (DR-119),
-so the branch has no cursor conflict.
+space block. Each space block has its
+own payer, because a merge rejects the
+second of two sequential offers of
+one payer in one branch.
 end note
 
 legend bottom
