@@ -150,7 +150,7 @@ tasks:
       - "docs/designs/replication-boundary.md section 16 (coalition structure) and open questions 5 to 7"
       - "Coalition structure mappings in the CBC Casper, peer-clique, Casanova, and Cordial Miners glossaries"
     work_log: docs/work-logs/task-025-1-2026-10-05.md
-    review_status: "Draft complete. The D7 update and maintainer approval are pending."
+    review_status: "Draft complete. The D7 update is complete (2026-10-12). Maintainer approval is pending."
   - id: TASK-025-2
     title: "Add the shared lifecycle runtime and the CBC Casper adapter (issue #624, PR #651)"
     status: review

@@ -573,16 +573,40 @@ anchoring are not only consensus.
 
 ### Mechanism identifier
 
-A mechanism identifier names the replication medium of a shard: `cbc`,
-`peer-clique`, `casanova`, `cordial`, or `stub` for tests.
+A mechanism identifier names the replication medium of a shard. It is the
+`consensus.protocol` value and the `ProtocolDescriptor.id`: `cbc-casper`,
+`cordial-miners`, `peer-clique`, `casanova`, or `stub` for tests.
 
 **Preferred usage.** Use in configuration and in the
-[shard replication binding](#shard-replication-binding).
+[shard replication binding](#shard-replication-binding). Configuration and
+code say "protocol" for the same value.
+
+### Consensus runtime
+
+The consensus runtime is the lifecycle layer between the node process host
+and one [consensus adapter](#consensus-adapter). It admits commands through
+bounded queues, applies command deadlines, reports readiness, supervises
+tasks, and runs drain and cleanup at shutdown. The `consensus/runtime` crate
+of PR #651 implements it.
+
+**Preferred usage.** Use for lifecycle and supervision.
+*Distinguish from* the [replication medium](#replication-medium), which
+states order, finality, and membership.
+
+### Consensus adapter
+
+A consensus adapter is the per-protocol component that the
+[consensus runtime](#consensus-runtime) runs. It owns native startup,
+recovery, workers, storage checks, and protocol API routes. It supplies the
+`ReplicationMedium` contract to the node services.
+
+**Preferred usage.** Use "CBC Casper adapter" or "Cordial Miners adapter"
+for a concrete adapter.
 
 ### Shard replication binding
 
 The shard replication binding is the mechanism identifier that a shard
-records when it starts. The binding never changes for the life of the shard.
+records in the manifest of its data directory when it starts. The binding never changes for the life of the shard.
 A node refuses to start a shard when its configured mechanism differs from
 the binding.
 

@@ -23,7 +23,7 @@ Reliable Broadcast. They use the blocklace for dissemination, equivocation
 exclusion, and ordering.
 
 **Preferred usage.** Use as the mechanism name. Its
-[mechanism identifier](../Glossary.md#mechanism-identifier) is `cordial`.
+[mechanism identifier](../Glossary.md#mechanism-identifier) is `cordial-miners`.
 *Avoid*: "F1r3fly consensus" for Cordial Miners until an adapter exists.
 
 ### Miner

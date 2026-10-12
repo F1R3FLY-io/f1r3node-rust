@@ -1,8 +1,9 @@
 # Replication Boundary Design
 
-- **Status:** draft for maintainer review (TASK-025-1, EPIC-025)
+- **Status:** draft for maintainer review (TASK-025-1, EPIC-025). Updated on 2026-10-12 for decision D7.
 - **Story:** [US-011](../UserStories.md) Pluggable state machine replication per shard
 - **Branch:** `feature/consensus-neutral-boundary`
+- **Implementation track:** issue #624 with PR #651 (lifecycle runtime and CBC Casper adapter), and issue #625 (Cordial Miners adapter)
 - **Extends:** [F1r3fly: Parallel State Machines and Consensus-Neutral Execution](../artifacts/f1r3fly-consensus-neutral-sm.md)
 - **Vocabulary:** [docs/Glossary.md](../Glossary.md) for the boundary terms, and one glossary for each mechanism: [CBC Casper](../casper/GLOSSARY.md), [RGB peer clique](../peer-clique/GLOSSARY.md), [Casanova](../casanova/GLOSSARY.md), and [Cordial Miners](../cordial-miners/GLOSSARY.md). The coalition vocabulary is in the [semitopology glossary](../semitopology/GLOSSARY.md).
 
@@ -24,7 +25,7 @@ The architecture note states the claim that this design depends on. Rholang redu
 
 ## 2. Decisions
 
-The user made these decisions on 2026-10-05. Maintainer approval is pending.
+The user made decisions D1 to D6 on 2026-10-05 and decision D7 on 2026-10-12. Maintainer approval is pending.
 
 | ID | Decision |
 | --- | --- |
@@ -33,6 +34,8 @@ The user made these decisions on 2026-10-05. Maintainer approval is pending.
 | D3 | The deploy pool and the rejected-deploy buffer are generic node services. A medium reads deploys from the pool. The medium has no deploy submission method. |
 | D4 | Anchoring is available to every mechanism. RGB anchors to Bitcoin layer 1 and to Lightning state channels. |
 | D5 | Each mechanism has its own glossary, in the same form as the Casper glossary. |
+| D6 | The boundary states the coalition rule of each medium in the vocabulary of semitopology (section 16). |
+| D7 | The boundary has two layers (2026-10-12). The lifecycle layer of PR #651 (`ConsensusRuntime`, `ConsensusAdapter`, and `consensus.protocol`) is the lower layer. `ReplicationMedium` is the semantic contract that an adapter supplies. Where the names differ, this document uses the PR #651 names. |
 
 D2 removes a class of problems. The boundary needs no migration between mechanisms, no dual operation, and no handover of membership. Each node process serves one shard with one mechanism.
 
@@ -67,29 +70,50 @@ The commit units differ, but each one has a pre-state, a set of deploys, a post-
 
 ## 5. Architecture
 
+The boundary has two layers (decision D7). The lifecycle layer starts, supervises, and stops one adapter. The semantic layer states what the adapter tells the node about order, finality, and membership.
+
 ```mermaid
 flowchart LR
-  subgraph Node["Node services (mechanism-neutral)"]
-    W[Startup wiring]
-    API[gRPC and HTTP APIs]
-    P[Deploy pool and<br/>rejected-deploy buffer]
+  subgraph Host["NodeRuntime (process host)"]
+    W[Configuration and<br/>factory selection]
+    API[Listeners for<br/>gRPC and HTTP]
     T[Transport]
   end
-  W -->|binds once at shard start| RM{{ReplicationMedium}}
-  API --> RM
-  RM -->|reads pending deploys| P
-  T <-->|medium messages| RM
+  subgraph Life["Lifecycle layer (consensus/api, consensus/runtime)"]
+    CR[ConsensusRuntime<br/>admission, deadlines,<br/>readiness, supervision,<br/>shutdown]
+    H[ConsensusHandle]
+  end
+  subgraph Adapter["ConsensusAdapter (one per protocol)"]
+    RM{{ReplicationMedium<br/>semantic contract}}
+    APP[ApplicationProvider<br/>protocol API routes]
+  end
+  W -->|binds once, manifest| CR
+  CR -->|run, cleanup| Adapter
+  API --> H -->|bounded commands| CR
+  T -->|NetworkPacket| CR
+  APP -->|routes| API
   RM -->|play, replay, merge| X[ExecutionPort<br/>Rholang and RSpace++]
   RM -. capability .-> D[DagMedium]
   RM -. capability .-> E[EquivocationEvidence]
   RM -. port .-> A[AnchorPort<br/>Bitcoin L1, Lightning]
-  RM --- C1[CBC Casper adapter]
-  RM --- C2[Peer clique]
-  RM --- C3[Casanova]
-  RM --- C4[Cordial Miners]
+  Adapter --- C1[CBC Casper]
+  Adapter --- C2[Peer clique]
+  Adapter --- C3[Casanova]
+  Adapter --- C4[Cordial Miners]
 ```
 
-The node owns the deploy pool, the transport, the APIs, and the execution machine. The medium owns ordering, conflict decisions, finality, and membership. The medium calls the execution port. The execution port never calls the medium.
+| Layer | Owner | Responsibility | Source |
+| --- | --- | --- | --- |
+| Process host | `NodeRuntime` | Process configuration, transport, server listeners, process shutdown | PR #651, `node/src/rust/runtime` |
+| Protocol selection | Factory and manifest | Select the compiled protocol and bind the data directory to it | PR #651, `node/src/rust/consensus/factory.rs` and `manifest.rs` |
+| Lifecycle | `ConsensusRuntime` | Bounded admission, command deadlines, readiness phases, task supervision, drain and cleanup | PR #651, `consensus/runtime` |
+| Adapter contract | `ConsensusAdapter` | `run` with an `AdapterContext`: commands, packets, status, and cleanup registration | PR #651, `consensus/api` |
+| Semantic contract | `ReplicationMedium` | Commits, finality events, membership, and capabilities (sections 6 to 8) | This design, TASK-025-3 |
+| Protocol APIs | `ApplicationProvider` | The protocol API routes that the host binds to its listeners | PR #651 |
+
+The host does not inspect a protocol enum and does not receive native consensus state. The adapter owns ordering, conflict decisions, finality, membership, native workers, and native storage checks. The adapter calls the execution port. The execution port never calls the adapter.
+
+The deploy pool is still a node service in decision D3. In PR #651, `ConsensusCommand::Submit` goes to the adapter, and the CBC Casper adapter stores the deploy in its own deploy storage. Question 8 in section 17 records this difference.
 
 ---
 
@@ -98,7 +122,7 @@ The node owns the deploy pool, the transport, the APIs, and the execution machin
 These types contain no DAG parent, justification, bond, or equivocation fields. Mechanism data travels inside `MechanismEvidence`, which only the bound mechanism decodes.
 
 ```rust
-pub struct MechanismId(&'static str);          // "cbc", "peer-clique", "casanova", "cordial", "stub"
+pub struct MechanismId(&'static str);          // ProtocolDescriptor.id, for example "cbc-casper"
 
 pub struct CommitId(Hash);
 
@@ -137,15 +161,29 @@ A **commit** is the unit that a medium orders and finalizes. A CBC block, a peer
 
 ## 7. The `ReplicationMedium` trait
 
+Decision D7 divides the trait of the first draft. The lifecycle methods (`start`, `on_message`, and `on_tick`) move to the lifecycle layer of PR #651. `ReplicationMedium` keeps only the semantic methods.
+
+**Lifecycle layer (PR #651, `consensus/api`).** The adapter runs as one supervised future:
+
+```rust
+pub trait ConsensusAdapter: Send + 'static {
+    async fn run(self: Box<Self>, context: AdapterContext) -> Result<(), ConsensusError>;
+}
+```
+
+| First draft | Lifecycle layer of PR #651 |
+| --- | --- |
+| `start(ctx)` | `ConsensusAdapter::run`. The adapter restores its state, registers a `CleanupTask`, and reports its `Phase` (`Bootstrapping`, then `Ready`). |
+| `on_message(peer, message)` | `PacketRequest` with a `NetworkPacket`. The ingress bridge keeps the peer identity, the packet kind, and the payload bytes. Only the adapter decodes the payload. |
+| `on_tick(now)` | Internal to the adapter. Proposal timing belongs to the protocol. CBC uses heartbeat timing, and a peer clique uses height and round timeouts. |
+| Deploy and proposal writes | `ConsensusCommand::Submit` and `ConsensusCommand::Propose` through `ConsensusHandle`. Each command carries a deadline, and `try_start` rejects it after expiry. |
+| `MediumContext` | `AdapterContext`, plus the protocol factory inputs. The execution port and the anchor port go to the adapter through its factory. |
+
+**Semantic layer (this design, TASK-025-3).** The adapter supplies a `ReplicationMedium` to the node services that need order, finality, or membership:
+
 ```rust
 pub trait ReplicationMedium: Send + Sync {
     fn mechanism(&self) -> MechanismId;
-
-    fn start(&self, ctx: MediumContext) -> Result<(), MediumError>;
-
-    fn on_message(&self, peer: PeerId, message: MediumMessage) -> Result<(), MediumError>;
-
-    fn on_tick(&self, now: Instant);
 
     fn commit(&self, id: &CommitId) -> Option<CommitRecord>;
 
@@ -159,29 +197,18 @@ pub trait ReplicationMedium: Send + Sync {
 
     fn capabilities(&self) -> Capabilities;
 }
-
-pub struct MediumContext {
-    pub shard: ShardBinding,                   // shard id and the bound mechanism
-    pub execution: Arc<dyn ExecutionPort>,
-    pub deploys: Arc<dyn DeployPool>,
-    pub transport: Arc<dyn MediumTransport>,
-    pub storage: Arc<dyn MediumStorage>,
-    pub anchor: Option<Arc<dyn AnchorPort>>,
-    pub identity: Option<ValidatorIdentity>,   // none for a read-only node
-}
 ```
 
 Each method has one job:
 
-- `start` runs once when the shard starts. The medium restores its state from `storage`.
-- `on_message` receives a mechanism message from the transport. The comm `PacketHandler` seam already exists and routes these messages.
-- `on_tick` lets the medium decide when to propose. Proposal timing belongs to the medium. CBC uses heartbeat timing, and a peer clique uses height and round timeouts.
-- `commit`, `last_finalized`, and `finality_events` give the node and the APIs a view of order and finality.
+- `commit`, `last_finalized`, and `finality_events` give the node and the neutral APIs a view of order and finality.
 - `membership` replaces direct reads of bonds and active validators.
 - `snapshot_source` supplies state sync at a finalized commit, for example the existing last-finalized-state export.
-- `capabilities` returns the optional traits in section 8.
+- `capabilities` returns the optional traits in section 8. Do not confuse this value with the `Capabilities` bits of PR #651 (`SUBMIT`, `PROPOSE`, and `FINALIZED_PROGRESS`), which state the commands that an adapter accepts.
 
-This trait resolves the open question in section 12 of the architecture note. `ReplicationMedium` is the thin core trait. `MultiParentCasper` becomes an internal trait of the CBC Casper implementation, behind an adapter.
+The semantic methods are reads. Issue #624 states that APIs must not lock native consensus state, so each method returns a copy or a stream.
+
+This design resolves the open question in section 12 of the architecture note. `ReplicationMedium` is the thin semantic trait, and `ConsensusAdapter` is the lifecycle trait. `MultiParentCasper` becomes an internal trait of the CBC Casper adapter.
 
 ---
 
@@ -275,51 +302,63 @@ The node keeps one set of neutral endpoints:
 
 Mechanism data moves to a `MechanismApi` namespace. For CBC Casper, the namespace holds `justifications`, `bonds`, `faultTolerance`, latest messages, bond status, and the DAG visualization.
 
-**Wire compatibility.** The current gRPC services and HTTP routes stay as CBC extension routes with the same messages. Existing CBC clients see no change. A shard bound to another mechanism returns "not supported" from the CBC routes.
+**Wire compatibility.** The current gRPC services and HTTP routes stay as CBC extension routes with the same messages. Existing CBC clients see no change. A shard bound to another mechanism returns a typed "not supported" error from the CBC routes: gRPC `Unimplemented` or HTTP 501. Issue #625 uses the same errors.
+
+**Status in PR #651.** The CBC Casper adapter owns all existing APIs and gives them to the host through its `ApplicationProvider`. Deploy and proposal writes go through `ConsensusHandle`. The neutral endpoints of this section do not exist yet. TASK-025-5 adds them.
 
 ---
 
 ## 12. Shard configuration and binding
 
+The configuration uses the selector of PR #651 (decision D7):
+
 ```hocon
-shard {
-  replication {
-    mechanism = "cbc"            # cbc | peer-clique | casanova | cordial | stub
-    cbc { ... }                  # the CBC fields of today's casper configuration
-    peer-clique { ... }
+consensus {
+  protocol = "cbc-casper"        # cbc-casper | cordial-miners | peer-clique | casanova | stub
+  cordial {                      # protocol settings, issue #625
+    chain-file = "/path/to/chain.json"
   }
 }
 ```
 
-- The genesis or shard-start record stores the mechanism identifier.
-- At each start, the node compares the configured mechanism with the stored one. If they differ, the node refuses to start.
-- The node builds the medium through one factory. No other code names a concrete mechanism.
+- `cbc-casper` is the default. PR #651 implements it. Issue #625 proposes `cordial-miners`. The names `peer-clique`, `casanova`, and `stub` are proposals of this design.
+- The CBC fields of today's casper configuration stay where they are. PR #651 keeps the existing configuration and CLI types, which still depend on the casper crate.
+
+**Binding.** Each node process serves one shard with one protocol (decision D2):
+
+- A Cargo feature compiles each protocol factory. The `cbc-casper` feature is on by default.
+- An unknown `protocol` value fails during configuration parsing. A known value without a compiled factory returns `UnavailableProtocol` before logging, TLS setup, transport startup, or storage writes.
+- The manifest in the data directory records the protocol, its version, the network, the shard, and the genesis identity. The adapter checks existing stores against the manifest before it opens writable resources. It writes the manifest before it reports readiness.
+- At each start, the node compares the configured protocol with the manifest. If they differ, the node refuses to start.
+- The node builds the adapter through one factory. No other host code names a concrete protocol.
 
 ---
 
 ## 13. Leak assignment and migration order
 
-The coupling survey of 2026-10-05 found five places where CBC Casper leaks past the boundary. Each step below keeps CBC behavior unchanged.
+The coupling survey of 2026-10-05 found five places where CBC Casper leaks past the boundary. Each step below keeps CBC behavior unchanged. The task numbers are those of 2026-10-12.
 
-| Step | Task | Change | Leak removed |
-| --- | --- | --- | --- |
-| 1 | TASK-025-2 | New interface crate with the types and traits of sections 6 to 10. No behavior. | None |
-| 2 | TASK-025-2 | CBC Casper adapter that wraps `MultiParentCasper`, `Engine`, and the proposer | `KeyValueDagRepresentation` in the node-facing signatures |
-| 3 | TASK-025-3 | Mechanism factory and shard binding | `setup.rs` builds `Estimator` and `CliqueOracleImpl` and calls `update_fork_choice_tips_if_stuck` |
-| 4 | TASK-025-4 | Heartbeat proposal timing moves into the CBC medium | Latest-message, bonds, justification, and finality-lag logic in `heartbeat_proposer.rs` |
-| 5 | TASK-025-5 | `MechanismApi` namespace with the CBC extension routes | `justifications`, `bonds`, and `faultTolerance` in the neutral API |
-| 6 | TASK-025-6 | The execution glue takes boundary types | `CasperSnapshot` and the finality floor types in `interpreter_util.rs` |
-| 7 | TASK-025-7 | Test-only stub mechanism and a soak | None. This step proves the boundary |
+| Step | Task | Change | Leak removed | Status |
+| --- | --- | --- | --- | --- |
+| 1 | TASK-025-2 | Lifecycle crates `consensus/api` and `consensus/runtime`, the CBC Casper adapter, the protocol factory, and the manifest | `setup.rs` builds `Estimator` and `CliqueOracleImpl` and calls `update_fork_choice_tips_if_stuck`. The host no longer receives Casper types such as `KeyValueDagRepresentation`. | PR #651, in review |
+| 2 | TASK-025-3 | Semantic types and `ReplicationMedium` (sections 6 to 8), supplied by the CBC Casper adapter, and the binding-mismatch test | None. The node services get a typed view of order and finality | Pending |
+| 3 | TASK-025-4 | Proposal timing behind the medium. PR #651 already moved `heartbeat_proposer.rs` into the adapter | Latest-message, bonds, justification, and finality-lag logic in `heartbeat_proposer.rs` | Pending |
+| 4 | TASK-025-5 | Neutral endpoints, the `MechanismApi` namespace with the CBC extension routes, and typed "not supported" errors | `justifications`, `bonds`, and `faultTolerance` in the neutral API | Pending |
+| 5 | TASK-025-6 | The execution glue takes boundary types | `CasperSnapshot` and the finality floor types in `interpreter_util.rs` | Pending |
+| 6 | TASK-025-7 | Cordial Miners adapter (issue #625) | None. This is the first real second protocol | Pending |
+| 7 | TASK-025-8 | Test-only stub mechanism and a soak | None. This step proves the boundary | Pending |
 
-Step 6 also starts the move of the three Rholang runtime files out of the casper crate. Section 9 of the architecture note calls them execution glue in the medium crate.
+Step 5 also starts the move of the three Rholang runtime files out of the casper crate. Section 9 of the architecture note calls them execution glue in the medium crate.
 
 ---
 
 ## 14. Verification
 
 - **No behavior change for CBC.** The full test suite passes after each step. A soak on the merged change gives the same consensus results as before the change.
+- **The host builds without CBC.** PR #651 runs the host tests with `--no-default-features` (`consensus_factory`, `consensus_application`, `consensus_ingress`, and `consensus_boundaries`).
 - **The stub proves neutrality.** A test-only mechanism runs the node wiring tests with no CBC code linked into the test binary.
-- **Binding check.** A test starts a shard with one mechanism and restarts it with another. The node must refuse the restart.
+- **Lifecycle checks.** The PR #651 tests cover recovery, readiness, bounded ingress, command deadlines, capability errors, drain, and cleanup.
+- **Binding check.** A test starts a node with one protocol and restarts it with another. The node must refuse the restart.
 - **CbC claims follow the split.** Section 9 of the architecture note assigns formal checks to machine, substrate, and medium. The interface crate becomes the stated boundary for those claims.
 
 ---
@@ -385,3 +424,5 @@ impl CoalitionStructure {
 5. **Peer-clique coalition intersection.** Each transaction has its own engaged subset. Two quorum certificates at one height must have a correct signer in common. The WS5 source must state the threshold and the engaged-subset rule that give this property. The SATCHEL RGB repositories contain no peer clique, so the rule must come from the WS5 specification or the Rholang-RGB implementation.
 6. **Coalition structure field.** A maintainer must approve the optional `coalition` field of `MembershipView` and the two forms in section 16.2.
 7. **Finality evidence in consignments.** An RGB consignment must carry the mechanism evidence of its `FinalityEvent`, so that a receiver can check finality without a trusted node. Today the SATCHEL consignment proof has only a block hash, a state hash, and a deploy identifier. The receiver asks its own node whether the block is finalized.
+8. **Deploy pool ownership.** Decision D3 makes the deploy pool a node service, and a medium only reads it. In PR #651, `ConsensusCommand::Submit` goes to the adapter, and the CBC Casper adapter keeps its own deploy storage. A maintainer must decide one of two options. Either the shared pool moves to the host and `Submit` writes to it, or D3 changes so that each adapter owns admission.
+9. **Agreement with the Notion architecture document.** Issues #624 and #625 refer to the f1r3node Consensus Architecture document in Notion. This design does not yet compare its terms with that document, because the reviewers could not open it.

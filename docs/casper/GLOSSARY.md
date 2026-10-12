@@ -717,7 +717,7 @@ which are NIST signature standards and not this process.
 
 ## Replication Boundary Mapping
 
-CBC Casper is the `cbc` [replication medium](../Glossary.md#replication-medium)
+CBC Casper is the `cbc-casper` [replication medium](../Glossary.md#replication-medium)
 of the [replication boundary design](../designs/replication-boundary.md). The
 table maps each boundary term to its Casper term. The Casper terms stay
 canonical inside Casper documents.
@@ -730,7 +730,7 @@ canonical inside Casper documents.
 | [Membership view](../Glossary.md#membership-view) | Bonded validators and their stake |
 | `DagMedium` capability | Parents, [merge scope](#merge-scope), and the [finalized floor](#finalized-floor) |
 | `EquivocationEvidence` capability | Equivocation records of the [equivocation detector](#equivocation-detector) |
-| Proposal timing (`on_tick`) | Heartbeat proposal and [block proposal](#block-proposal) |
+| Proposal timing (internal to the CBC Casper adapter) | Heartbeat proposal and [block proposal](#block-proposal) |
 
 ## Coalition Structure Mapping
 
