@@ -198,7 +198,7 @@ A program that holds the capability can call the space, and it can give the capa
 A call on a handle has the form `h!(ret, method, a…; k=v…)`.
 The reducer removes the write bundle, and the channel $`H(\mathit{sid})`$ routes to the default space (rule R1).
 The handle continuation of the space is a persistent receive on $`H(\mathit{sid})`$ with the pattern `[...@args]`, so it binds the whole call as one list.
-Its body `[0xE0, 0x30]!(this, args)` forwards the call to `HANDLE_OP` (`reified/factory.rs:136-160`).
+Its body `[0xE0, 0x30]!(this, args)` forwards the call to `HANDLE_OP` (`reified/factory.rs:140-164`).
 The forwarder has no guard and no cost authority, so the caller pays for each call.
 
 The send hook applies two rules to a handle call before the forward:

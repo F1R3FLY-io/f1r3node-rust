@@ -11,8 +11,11 @@
 //! that the evaluation created, with their qualifiers, and the volatile channels that the
 //! transactions of the evaluation locked. It is node bookkeeping, not consensus state:
 //!
-//! * The factory records a space after its creation commits and before it replies, so every
-//!   holder of the handle or of a name of the space causally follows the record (VR-2).
+//! * The creation job records a space after its commit, as the last step of the job (VR-2,
+//!   decision 83). The factory replies after the job, so every holder of the handle or of a
+//!   name of the space causally follows the record. The scheduler runs no reduction
+//!   participant during a job, so the book changes only between two scheduling windows, and
+//!   every read of one window sees one book.
 //! * `SpaceEnv::begin` records each lock key with an ephemeral KIND. The lock keys of a
 //!   transaction hold every channel that it stages (readiness review S2, FR-4), so the book
 //!   holds every volatile channel that a commit can write.
@@ -109,6 +112,16 @@ impl VolatileRegistry {
     /// Records the ephemeral space `space` with its qualifier, after its creation committed.
     pub fn record_space(&self, space: NativeSpace, qualifier: SpaceQualifier) {
         self.state().spaces.insert(space.sid, qualifier);
+    }
+
+    /// Records the space `space` that a creation job committed, when it is ephemeral (VR-2,
+    /// decision 83). A durable space is not recorded. The creation job calls it as the last step
+    /// of its commit, so the book changes only inside a job.
+    pub fn record_created(&self, space: NativeSpace, qualifier: SpaceQualifier) {
+        match space.durability {
+            Durability::Ephemeral => self.record_space(space, qualifier),
+            Durability::Durable => {}
+        }
     }
 
     /// The qualifier of the ephemeral space `sid` when the current evaluation created it.

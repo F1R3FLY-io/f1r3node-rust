@@ -130,6 +130,7 @@ The minimal-footprint revision (M-1 to M-5) overrides the target architecture of
 | [Decision 80](#decision-80) | The P9 design process | 2026-10-11 | In force |
 | [Decision 81](#decision-81) | Backport the DR-119 fix of bug 11004 | 2026-10-11 | In force. Implemented in P9 step 0. [Decision 82](#decision-82) amends its effect on N4 |
 | [Decision 82](#decision-82) | N4 fits three facts of Casper | 2026-10-11 | In force |
+| [Decision 83](#decision-83) | The creation job records a seq space | 2026-10-12 | In force. Its second half is a recorded follow-up |
 | [M-1](#m-1) | Counter meta-channels and merge check #1 | 2026-10-04 | In force, scope widened by decision 31 |
 | [M-2](#m-2) | Space-owned record envelope | 2026-10-04 | In force |
 | [M-3](#m-3) | Charging through the accounting observer | 2026-10-04 | In force, revised 2026-10-04 |
@@ -2355,6 +2356,49 @@ DR-116 of feature/cost-accounted-rho closes gap G6 after the base `4d67b5ccc`.
 - Finalize each space block before another node proposes. N4 then depends on Casper's finality, which the campaign does not test ([decision 70](#decision-70)).
 
 **Evidence.** The probes R1, R2, R6, R7 and R8 of P9 step 1 (verification.md, section 34.2).
+
+### <a id="decision-83"></a>Decision 83: The creation job records a seq space
+
+| Field | Value |
+|---|---|
+| Date | 2026-10-12 |
+| Status | In force. The second half of the first direction is recorded as a follow-up |
+| Amends | The place of the record of VR-2 in the code. P7 design v3 VR-2 already put the record in the creation job |
+| Related | [Decision 73](#decision-73), [decision 80](#decision-80), [I-4](#i-4) |
+
+**Statement.**
+
+- The creation job of a temp or seq space records the space in the book of the root evaluation after its commit, inside the job. A durable space and a failed creation record nothing.
+- The factory no longer records the space. It replies after the job, as before.
+- The SQ-2 check of a send stays in the reduction participant that evaluates the send. Every check reads the book before its participant dispatches.
+- The scheduler runs no reduction participant while a job runs. So the book changes only between the steps of the participants.
+- The checks that run between two jobs read one book. So the charge of each check is a function of the deploy, in native play and in native replay.
+
+**User's words.** "Design pass, then fix (Recommended)", then "Drop second half (Recommended)", then "Make note of the second half in case we want to pursue it later".
+
+**Reason.** P9 step 3 measured one deploy that created a seq space in parallel with other sends. Over 24 runs, play gave two host-work vectors (19 and 5 runs) with equal events, roots and phlo.
+
+The factory recorded the space in its participant after the creation job.
+Other participants of the same scheduling window read the book at the same time.
+So a send of that window was checked or not by timing, and the charge of the check varied.
+The `SeqSent` verdict did not vary, because a holder of a seq name follows the record.
+
+Native replay runs under the same scheduler as play, so the fix makes both deterministic.
+
+**Rejected alternatives.**
+
+- Also run the SQ-2 check inside the ordered execution of each produce (the second half of the first direction). It adds no determinism today. It needs these changes:
+  - an edit outside the Reified files, in the execution of `Intent::Produce` (`deterministic_reduction.rs`)
+  - host-work plumbing in jobs
+  - job-side copies of the two scan sites of user agents
+  - `SeqSent` through `RSpaceError`
+
+  It would guard against a future write of the book outside a job. The user asked to keep it as a follow-up: pgmcp item `rrs-fu-sq2-scan-in-ordered-produce`.
+- Compare operation orders. The lexicographic order of participant paths does not follow causality, so a holder of a seq name could skip the check.
+- Carry a causal lineage of seq spaces with each process. It is exact, but it needs a participant field, a carrier for stored bodies and a hook at the dispatch of a COMM.
+- Check every send. The host work of every ordinary deploy would change.
+
+**Evidence.** The ledger of the defect and the tests `prepare_create_records_ephemeral_spaces_after_commit`, `prop_seq_gate_constant_per_window` and `seq_scan_charge_is_schedule_independent` (verification.md, section 34.4.1). The invariant `ScanViewPerWindow` of `SpaceCoordination.tla` and its Unsafe control `RecordInWindowUnsafe`.
 
 ## Minimal-footprint revision: M-1 to M-5
 

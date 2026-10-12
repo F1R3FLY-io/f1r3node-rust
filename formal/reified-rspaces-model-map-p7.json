@@ -120,6 +120,12 @@
       "name": "theory_gate_validated",
       "file": "formal/rocq/reified_rspaces/theories/SpaceFactory.v",
       "statement": "Gate 4 passes no theory and the builtin names without arguments; a builtin with arguments fails with BadConstructorArgument, another name with UnknownTheory and the least builtin within two edits; gate 4 runs after gate 3 and before the params gates (design v3 TH-4)."
+    },
+    "V19": {
+      "kind": "tla",
+      "name": "ScanViewPerWindow",
+      "file": "formal/tlaplus/reified_rspaces/SpaceCoordination.tla",
+      "statement": "Every send of one scheduling window reads one book of seq spaces: the creation job records a seq space after its commit, and the scheduler runs no participant during a job, so the charge of the SQ-2 scan is a function of the deploy (decision 83, design v3 VR-2)."
     }
   },
   "items": [
@@ -286,13 +292,34 @@
       "kind": "fn",
       "name": "record_ephemeral_space",
       "line": 121,
-      "role": "The factory records a created ephemeral space before its reply.",
+      "role": "Records an ephemeral space in the book through the registry helper that the creation job uses. Since decision 83 only the unit tests that build the book directly call it; the factory no longer does.",
       "rocq": [
         "check_live"
       ],
       "tla": [],
       "covers": [
         "V2"
+      ]
+    },
+    {
+      "item": "GenericSpace::prepare_create",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/spaces/generic.rs",
+      "scope": "GenericSpace",
+      "kind": "fn",
+      "name": "prepare_create",
+      "line": 2904,
+      "role": "The creation job: its finish closure records an ephemeral space in the book after the commit, as its last step (decision 83, design v3 VR-2), so the book changes only inside a job.",
+      "rocq": [
+        "check_live"
+      ],
+      "tla": [
+        "Create",
+        "ScanViewPerWindow"
+      ],
+      "covers": [
+        "V2",
+        "V19"
       ]
     },
     {

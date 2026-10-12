@@ -52,7 +52,9 @@
 # form one prefix chain of participant paths; no delivered message holds a
 # seq name; gate 3 creates a HashSet space only with seq and a seq space
 # only in native execution; and the use context of each participant is its
-# lexical context).
+# lexical context). P9 step 3 (decision 83): every send of one scheduling
+# window reads one book of seq spaces, because the creation job records a
+# seq space.
 # P8 step 6: AgentSpaces.tla (the spaces of user agents: under every
 # context the names of a space route to that space and system channels to
 # the default space, a join runs on one space or aborts with CrossSpaceJoin,
@@ -228,6 +230,7 @@ UNSAFE_CONFIGS=(
   "SpaceCoordination SeqScanSkippedUnsafe.cfg SeqNotSent"
   "SpaceCoordination QualifierSupportUnsafe.cfg QualifierSupport"
   "SpaceCoordination UseBalanceUnsafe.cfg UseBalance"
+  "SpaceCoordination RecordInWindowUnsafe.cfg ScanViewPerWindow"
   "AgentSpaces SystemRouteUnsafe.cfg SystemChannelsDefault"
   "AgentSpaces FaultyAgentUnsafe.cfg NoMatchRemains"
 )

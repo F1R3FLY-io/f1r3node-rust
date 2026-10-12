@@ -2169,7 +2169,7 @@ REIFIED-PRODUCE(chan, data, persistent, α):    ▷ reducer_hooks.rs, reified_pr
         route ← ROUTE(ctx, chan)
         if route = Default: CHECK-PERSISTENT-SEND(chan, persistent)   ▷ item A21
         CHECK-ROUTE-LIVE(chan, route)              ▷ DG-1
-        if a seq space is live and not scanned: SEQ-SCAN(chan, data)  ▷ SQ-2
+        if the book holds a seq space and not scanned: SEQ-SCAN(chan, data)  ▷ SQ-2, decision 83
         case route of
             Default:
                 if chan is a factory op:   reject positional params, data ← PACK(data)
@@ -2406,7 +2406,7 @@ Without a budget, the meter accepts every charge and skips every walk, as `reser
 | `Detached` | `unavailable`, in `ReducerCore::new` and `DebruijnInterpreter::new` | fails with `RuntimeUnavailable` |
 | `NativeReplay` | `native_replay`, in the native replay environment, which binds it to the store of its native replay session with `bind_native_replay` | runs one space intent over the native backend of the session once bound, and fails with `RuntimeUnavailable` before ([decision 47](decision-register.md#decision-47)) |
 
-Every space entry point checks the runtime first (`ReifiedRuntime::host` and `ensure_available`, `reified/runtime.rs:194-211, 215`).
+Every space entry point checks the runtime first (`ReifiedRuntime::host` and `ensure_available`, `reified/runtime.rs:198-215, 219`).
 `run_op`, `create_space`, and `read_config` check it before `submit_space`, so a failing check takes no operation order and makes no observer call.
 Native play and a bound native replay runtime run the same space entry, so native replay reproduces play (`SpaceRefs.v`, `native_execution_runs_spaces`).
 [Decision 46](decision-register.md#decision-46) made both modes reject a space deploy before any space work, and decision 47 replaces that rule.
@@ -2442,9 +2442,24 @@ For this reason, `then` is the work that the caller makes after the operation, f
 The test `reducer_space_routing_then_runs_after_the_fires_in_its_own_branch` makes an operation in `then` after one fire and after two fires.
 Without the branch, that operation fails with the panic `reduction participant must be registered`.
 
+**The book between two frontiers ([decision 83](decision-register.md#decision-83)).** A frontier is the set of intents that the scheduler runs together.
+A frontier starts only when every registered participant waits for an intent (`deterministic_reduction.rs:787-801`).
+The scheduler sends the completions of a frontier only after `release_frontier` (`:737-750`, `:1016-1027`), so no participant runs during a frontier.
+A direct job runs only when its participant is the only one (`:704-716`).
+The steps of the participants between two frontiers form a scheduling window.
+
+A split removes its parent from the participants (`:752-758`), and production code never registers the parent again.
+So each read of the book of the evaluation must happen in a registered participant before its first dispatch, or in a job.
+The SQ-2 check reads the book at `reified/reducer_hooks.rs:573, 812` and `reified/execution.rs:116`, before the first operation of its participant.
+The creation job records an ephemeral space after its commit (`spaces/generic.rs:2948-2949, 3019-3022`).
+Every other write of the book happens in a job or outside the evaluation, so all reads of one scheduling window see one book.
+
+Native replay runs under the same scheduler (`accounting/native_runtime/checked_operations/trace/replay/session/execution.rs:32-37`), so its windows are those of play.
+The invariant `ScanViewPerWindow` of `SpaceCoordination.tla` states the rule, and its Unsafe control `RecordInWindowUnsafe` moves the record into a window.
+
 ### N7. Factories and handles
 
-**The factory call.** A call `F!(ret, ctor)` on the factory of a family creates a native space (`reified/factory.rs:75-121`).
+**The factory call.** A call `F!(ret, ctor)` on the factory of a family creates a native space (`reified/factory.rs:76-125`).
 The send hook packs the arguments of the program after `ret` into the constructor list `ctor`.
 
 ```text
@@ -2490,7 +2505,7 @@ Gate 5 then fails with `UnknownTheory` or `BadConstructorArgument`.*
 
 The Levenshtein distance of two words is the least number of insertions, deletions, and substitutions of one character that change one word into the other. A suggestion is the candidate at the least distance, when that distance is at most 2 (`spaces/factory/defaults.rs:268-277`). A tie goes to the bytewise least candidate.
 
-**The handle.** The handle continuation is a persistent single-channel receive on `this` $`= H(\mathit{sid})`$ (`reified/factory.rs:126-160`).
+**The handle.** The handle continuation is a persistent single-channel receive on `this` $`= H(\mathit{sid})`$ (`reified/factory.rs:130-164`).
 Its pattern `[...@args]` binds the whole call as one list, and its body `[0xE0, 0x30]!(this, args)` forwards the call to `HANDLE_OP`.
 It has no guard and no cost authority, so each call is paid by its caller.
 It is a single-channel receive, so it adds no pre-state join, and handle calls merge like contract calls (consensus checklist item 18, [decision I-16](decision-register.md#i-16)).
@@ -2730,7 +2745,7 @@ The callback of operation $`i`$ wraps the registration of the introduction (`rho
 
 Every staged operation of a space job goes through the chain.
 This covers the counter bump (`counter::bump`), the plans of the queue, the [re-store](glossary.md#re-store), and the operations that create a space.
-The finish step of each prepared job calls `LegacyChain::finish` after the commit and before the outcome (`rholang/src/rust/interpreter/spaces/generic.rs:2695`, `2756`, `3005`).
+The finish step of each prepared job calls `LegacyChain::finish` after the commit and before the outcome (`rholang/src/rust/interpreter/spaces/generic.rs:2695`, `2756`, `3007`).
 
 **Out of phlo.** A charge that runs out of phlo stops the run where the host program stops.
 A carried post-charge or a pre-charge fails inside the callback of its operation.
@@ -3574,9 +3589,9 @@ Phase P7 enables the temp and seq qualifiers, so P7 runs the sweep of native rep
 | Step | Code | Rule |
 |---|---|---|
 | W1, the accessor | `accounting/native_runtime/checked_operations/trace/replay/session/execution.rs:39-66` | `Session::space_store` returns a `ParSpaceStore` over `NativeSpaceHost`. Its resolver asks the budget for the introduction authority, as `NativeExecution` does for a host operation. |
-| W2, the bound state | `reified/runtime.rs:68-73`, `reified/runtime.rs:241-258` | The mode `NativeReplay` holds a slot that the environment binds once, with the store and the budget. An unbound slot fails with `RuntimeUnavailable`. |
+| W2, the bound state | `reified/runtime.rs:68-73`, `reified/runtime.rs:245-262` | The mode `NativeReplay` holds a slot that the environment binds once, with the store and the budget. An unbound slot fails with `RuntimeUnavailable`. |
 | W3, the bind call | `rho_runtime.rs:1918-1934` | `create_native_replay_env` binds the runtime right after it builds the session. |
-| N1, native play | `reified/runtime.rs:194-211` | `ReifiedRuntime::host` no longer fails for a native budget. The guard of decision 46 stays in a comment that gives the reason. |
+| N1, native play | `reified/runtime.rs:198-215` | `ReifiedRuntime::host` no longer fails for a native budget. The guard of decision 46 stays in a comment that gives the reason. |
 
 [Table N6.1](#n6-scheduling) gives the three modes of the runtime.
 `NativeReplayEnvironment::restore` keeps the same store across evaluations, so `begin_evaluation_scope` forwards to the bound store (FR-5').

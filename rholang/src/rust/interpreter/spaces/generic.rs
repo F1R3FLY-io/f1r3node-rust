@@ -2945,6 +2945,8 @@ impl<S: OuterStore, D: Discipline> SpaceAgent for GenericSpace<S, D> {
                 "the config of a new space names another space",
             ));
         }
+        let qualifier = config.qualifier;
+        let volatile = Arc::clone(&env.volatile);
         self.check_family(config, meter)?;
         let introduction = Introduction::new(&env.budget, &creation.authority, meter)?;
         let mut legacy = LegacyChain::new(&env.budget);
@@ -3013,7 +3015,11 @@ impl<S: OuterStore, D: Discipline> SpaceAgent for GenericSpace<S, D> {
                 _ => false,
             };
             match committed {
-                true => Ok(()),
+                // Decision 83 (VR-2): the job records an ephemeral space as its last step.
+                true => {
+                    volatile.record_created(space, qualifier);
+                    Ok(())
+                }
                 false => Err(SpaceError::Inconsistent(
                     "a space creation committed other operations",
                 )),
@@ -3528,6 +3534,105 @@ mod tests {
         assert_eq!(
             Queue::default().read_config(&env, SPACE).await,
             Err(SpaceError::DanglingHandle { space: SPACE.sid })
+        );
+    }
+
+    /// Decision 83 (P7 design v3, VR-2): the creation job records an ephemeral space in the book
+    /// of the evaluation after its commit, inside the job. A durable space records nothing, and
+    /// a creation that fails records nothing: a second creation of one space fails with
+    /// `SpaceAlreadyExists`, and a config that names another space fails before the commit.
+    #[tokio::test]
+    async fn prepare_create_records_ephemeral_spaces_after_commit() {
+        for (qualifier, durability) in [
+            (SpaceQualifier::Seq, Durability::Ephemeral),
+            (SpaceQualifier::Temp, Durability::Ephemeral),
+            (SpaceQualifier::Default, Durability::Durable),
+        ] {
+            let space = NativeSpace {
+                sid: SPACE.sid,
+                durability,
+            };
+            let env = env_over(play().await, &budget());
+            let config = SpaceConfig::new(
+                space.sid,
+                HashMapOuter::NAME,
+                QueueDiscipline::NAME,
+                qualifier,
+            )
+            .to_par();
+            let prepared = Queue::default()
+                .prepare_create(&env, SpaceCreation {
+                    space,
+                    ..creation(config.clone())
+                })
+                .await
+                .expect("the creation stages");
+            assert_eq!(
+                env.volatile.qualifier(&space.sid),
+                None,
+                "{qualifier:?}: the book holds no space before the commit"
+            );
+            prepared.commit().await.expect("the creation commits");
+            let recorded = match durability {
+                Durability::Ephemeral => Some(qualifier),
+                Durability::Durable => None,
+            };
+            assert_eq!(
+                env.volatile.qualifier(&space.sid),
+                recorded,
+                "{qualifier:?}: the book after the commit"
+            );
+            let seq = match qualifier {
+                SpaceQualifier::Seq => BTreeSet::from([space.sid]),
+                SpaceQualifier::Temp | SpaceQualifier::Default => BTreeSet::new(),
+            };
+            assert_eq!(
+                env.volatile.seq_spaces(),
+                seq,
+                "{qualifier:?}: the seq spaces of the book"
+            );
+            env.volatile.clear();
+            let again = Queue::default()
+                .prepare_create(&env, SpaceCreation {
+                    space,
+                    ..creation(config)
+                })
+                .await;
+            assert_eq!(again.err(), Some(SpaceError::SpaceAlreadyExists));
+            assert_eq!(
+                env.volatile.qualifier(&space.sid),
+                None,
+                "{qualifier:?}: a second creation records nothing"
+            );
+        }
+        let space = NativeSpace {
+            sid: SPACE.sid,
+            durability: Durability::Ephemeral,
+        };
+        let env = env_over(play().await, &budget());
+        let elsewhere = SpaceConfig::new(
+            [9; SID_LEN],
+            HashMapOuter::NAME,
+            QueueDiscipline::NAME,
+            SpaceQualifier::Seq,
+        )
+        .to_par();
+        let failed = Queue::default()
+            .prepare_create(&env, SpaceCreation {
+                space,
+                ..creation(elsewhere)
+            })
+            .await;
+        assert_eq!(
+            failed.err(),
+            Some(SpaceError::Inconsistent(
+                "the config of a new space names another space"
+            ))
+        );
+        assert_eq!(env.volatile.qualifier(&space.sid), None);
+        assert!(
+            env.volatile.seq_spaces().is_empty(),
+            "a creation that fails before its commit records nothing"
         );
     }
 

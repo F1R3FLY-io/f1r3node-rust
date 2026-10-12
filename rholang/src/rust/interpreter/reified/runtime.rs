@@ -117,13 +117,17 @@ impl ReifiedRuntime {
         }
     }
 
-    /// Records the ephemeral space `space` that a factory created in the current root
-    /// evaluation, after its creation committed and before the factory replies (VR-2). A durable
-    /// space is not recorded.
+    /// Records the ephemeral space `space` in the book of the current root evaluation. A
+    /// durable space is not recorded. Since decision 83 the creation job records a space itself
+    /// (`GenericSpace::prepare_create`, VR-2), so only the unit tests that build the book
+    /// directly call this.
     pub fn record_ephemeral_space(&self, space: NativeSpace, qualifier: SpaceQualifier) {
-        if matches!(space.durability, namespace::Durability::Ephemeral) {
-            self.volatile.record_space(space, qualifier);
-        }
+        // Changed by P9 step 3 (decision 83): the registry holds the durability filter, which
+        // the creation job shares.
+        // if matches!(space.durability, namespace::Durability::Ephemeral) {
+        //     self.volatile.record_space(space, qualifier);
+        // }
+        self.volatile.record_created(space, qualifier);
     }
 
     /// DG-1 for a space reference: an ephemeral space that the current root evaluation did not
@@ -936,5 +940,152 @@ mod tests {
                 Ok(())
             })
             .expect("the live check of DG-1 holds");
+    }
+
+    /// The seq space of [`prop_seq_gate_constant_per_window`].
+    const SEQ_SPACE: NativeSpace = NativeSpace {
+        sid: [5; SID_LEN],
+        durability: Durability::Ephemeral,
+    };
+
+    /// One evaluation of [`prop_seq_gate_constant_per_window`]: `count` participants, the
+    /// participant `creator` creates [`SEQ_SPACE`] with the native agent, and each other
+    /// participant submits one empty job, so all jobs share one frontier. Each participant
+    /// sleeps for the milliseconds of its pair before its job and after it, and reads the seq
+    /// spaces before its job and after it.
+    async fn seq_views(
+        count: usize,
+        creator: usize,
+        sleeps: Vec<(u64, u64)>,
+    ) -> Vec<(BTreeSet<SpaceId>, BTreeSet<SpaceId>)> {
+        use std::time::Duration;
+
+        use crate::rust::interpreter::deterministic_reduction::{current, scope, ParticipantGuard};
+        use crate::rust::interpreter::reified::factory::{handle_continuation, handle_pattern};
+        use crate::rust::interpreter::reified::system_processes::native_agent;
+        use crate::rust::interpreter::spaces::types::config::SpaceConfig;
+
+        let budget = || RuntimeBudget::new(Cost::create(1_000_000, "seq gate test"));
+        let host = rspace().await;
+        let session: RhoISpace = Arc::new(Box::new(host.clone()));
+        let runtime = for_host(host, budget());
+        runtime.begin_evaluation_scope();
+        root(session, budget(), ReductionCoordinator::default(), async {
+            let parent = current().expect("root reduction context");
+            let children = parent.split(count);
+            let mut participants = Vec::with_capacity(count);
+            for (index, (child, (before, after))) in children.into_iter().zip(sleeps).enumerate() {
+                let runtime = Arc::clone(&runtime);
+                participants.push(tokio::spawn(scope(child.clone(), async move {
+                    let _guard = ParticipantGuard::for_context(&child);
+                    tokio::time::sleep(Duration::from_millis(before)).await;
+                    let seen_before = runtime.seq_spaces();
+                    match index == creator {
+                        true => {
+                            let random = Blake2b512Random::create_from_bytes(b"seq gate");
+                            let config = SpaceConfig::new(
+                                SEQ_SPACE.sid,
+                                "hashmap",
+                                "queue",
+                                SpaceQualifier::Seq,
+                            )
+                            .to_par();
+                            runtime
+                                .create_space(native_agent(), SpaceCreation {
+                                    space: SEQ_SPACE,
+                                    config,
+                                    handle_pattern: handle_pattern(),
+                                    handle_continuation: handle_continuation(SEQ_SPACE, &random),
+                                    random,
+                                    authority: CostAuthority::default(),
+                                    family: SpaceFactoryUrn::HASHMAP_QUEUE,
+                                })
+                                .await
+                                .expect("the seq space is created");
+                        }
+                        false => {
+                            let byte = u8::try_from(index).expect("a small participant index");
+                            submit_space(SpaceRequest {
+                                sid: [byte; SID_LEN],
+                                authority: None,
+                                channels: Vec::new(),
+                                job: Box::new(|_| Box::pin(async { Ok(()) })),
+                            })
+                            .await
+                            .expect("the empty job runs");
+                        }
+                    }
+                    tokio::time::sleep(Duration::from_millis(after)).await;
+                    (seen_before, runtime.seq_spaces())
+                })));
+            }
+            let mut seen = Vec::with_capacity(count);
+            for participant in participants {
+                seen.push(participant.await.expect("the participant task joins"));
+            }
+            parent.rejoin();
+            seen
+        })
+        .await
+    }
+
+    /// `ScanViewPerWindow` (`SpaceCoordination.tla`, decision 83): the book of the seq spaces
+    /// changes only inside a job, so every read of one scheduling window sees one set. Generated
+    /// participants share one frontier with the creation job of a seq space, which reaches
+    /// `GenericSpace::prepare_create` through the native agent, with generated sleeps before and
+    /// after their jobs. Every read before that frontier sees no seq space, and every read after
+    /// it sees the new space.
+    #[test]
+    fn prop_seq_gate_constant_per_window() {
+        use std::time::Duration;
+
+        use proptest::collection::vec;
+        use proptest::prelude::{any, prop_assert, prop_assert_eq};
+        use proptest::test_runner::{Config, RngSeed, TestRunner};
+
+        let mut runner = TestRunner::new(Config {
+            cases: 32,
+            rng_seed: RngSeed::Fixed(0x0E0D_2026_1012_0083),
+            failure_persistence: None,
+            ..Config::default()
+        });
+        let tokio = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(4)
+            .enable_all()
+            .build()
+            .expect("a tokio runtime");
+        runner
+            .run(
+                &(2usize..=4, any::<usize>(), vec((0u64..3, 0u64..3), 4)),
+                |(count, creator, sleeps)| {
+                    let creator = creator % count;
+                    let sleeps: Vec<(u64, u64)> = sleeps.into_iter().take(count).collect();
+                    let seen = tokio.block_on(async {
+                        tokio::time::timeout(
+                            Duration::from_secs(60),
+                            seq_views(count, creator, sleeps),
+                        )
+                        .await
+                        .expect("the participants finish")
+                    });
+                    prop_assert_eq!(seen.len(), count);
+                    for (index, (before, after)) in seen.into_iter().enumerate() {
+                        prop_assert!(
+                            before.is_empty(),
+                            "participant {} read {:?} before the frontier",
+                            index,
+                            before
+                        );
+                        prop_assert_eq!(
+                            after,
+                            BTreeSet::from([SEQ_SPACE.sid]),
+                            "participant {} after the frontier",
+                            index
+                        );
+                    }
+                    Ok(())
+                },
+            )
+            .expect("every read of one window sees one set of seq spaces");
     }
 }

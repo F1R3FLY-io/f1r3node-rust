@@ -25,6 +25,16 @@
 (* its body in a child with the context S, and the rest of the process in  *)
 (* the other child with the context of the parent.                         *)
 (*                                                                         *)
+(* The book of the evaluation (decision 83). The scan reads the set of     *)
+(* seq spaces of the book at every send, and it charges host work only     *)
+(* when the set is not empty. The creation job of a seq space records the  *)
+(* space after its commit (P7 design v3, VR-2). The scheduler runs no      *)
+(* participant during a job, so a job step ends one scheduling window and  *)
+(* starts the next, and every send between two job steps belongs to one    *)
+(* window. A seq name exists only after the record, because a holder of a  *)
+(* name follows the reply of the factory, and the factory replies after    *)
+(* the record.                                                             *)
+(*                                                                         *)
 (* Invariants:                                                             *)
 (*   SeqExclusive       for each channel, the admitted uses form one       *)
 (*                      prefix chain of participant paths                  *)
@@ -34,6 +44,7 @@
 (*                      exists only in native execution                    *)
 (*   UseBalance         the context of each participant is its lexical     *)
 (*                      context                                            *)
+(*   ScanViewPerWindow  every send of one scheduling window reads one book *)
 (*                                                                         *)
 (* Unsafe controls (each refutes exactly one invariant):                   *)
 (*   AtomicGuard = FALSE   SeqGuardToctouUnsafe: two jobs check one claim  *)
@@ -44,10 +55,13 @@
 (*                         legacy execution -> QualifierSupport            *)
 (*   UseRestores = FALSE   UseBalanceUnsafe: the use context leaks into    *)
 (*                         the rest of the process -> UseBalance           *)
+(*   RecordInJob = FALSE   RecordInWindowUnsafe: the factory records the   *)
+(*                         seq space in a window after the job, as before  *)
+(*                         decision 83 -> ScanViewPerWindow                *)
 (*                                                                         *)
 (* Code (paths under rholang/src/rust/interpreter):                        *)
-(*   claims        spaces/ephemeral.rs:207-231 (SeqClaims::open),          *)
-(*                 236-270 (claim), 274 (store)                            *)
+(*   claims        spaces/ephemeral.rs:220-244 (SeqClaims::open),          *)
+(*                 249-283 (claim), 287 (store)                            *)
 (*   the uses      spaces/generic.rs:1162-1168 (Cx::claim), 1181-1203,      *)
 (*                 1220-1246, 1287-1320, 1353-1396, 1427-1461 (store_on,   *)
 (*                 park_on, fire_offer_on, fire_receive_group,             *)
@@ -66,6 +80,14 @@
 (*   gate 3        spaces/factory/constructor.rs:93-178 (validate_in)      *)
 (*   use context   reified/scope.rs:185-193 (wrap_body),                   *)
 (*                 reified/reducer_hooks.rs:284-314 (eval_use)             *)
+(*   the book      spaces/generic.rs:2948-2949, 3019-3022 (the creation    *)
+(*                 job records a seq space after its commit),              *)
+(*                 spaces/ephemeral.rs:120-125 (record_created); the       *)
+(*                 scan reads it at reified/runtime.rs:234-239             *)
+(*   windows       deterministic_reduction.rs:737-750, 752-758, 787-801    *)
+(*                 and 1016-1027: a frontier starts when every             *)
+(*                 participant waits, its completions follow               *)
+(*                 release_frontier, and a split removes its parent        *)
 (*                                                                         *)
 (* Abstractions:                                                           *)
 (*   - A participant path is a sequence over {1, 2}: the index of each     *)
@@ -88,6 +110,9 @@ CONSTANTS
     NativeOnlySeq,
     \* TRUE: the use block keeps the context of the rest of the process.
     UseRestores,
+    \* TRUE: the creation job records a seq space in the book (decision 83).
+    \* FALSE: the factory records it in a window after the job.
+    RecordInJob,
     \* The depth bound of the participant tree.
     MaxDepth,
     \* The number of steps of one run.
@@ -95,6 +120,7 @@ CONSTANTS
 
 ASSUME AtomicGuard \in BOOLEAN /\ ScanEnabled \in BOOLEAN
 ASSUME NativeOnlySeq \in BOOLEAN /\ UseRestores \in BOOLEAN
+ASSUME RecordInJob \in BOOLEAN
 ASSUME MaxDepth \in 1..3 /\ MaxSteps \in 1..8
 
 Chans == {"x", "y"}
@@ -126,9 +152,13 @@ VARIABLES
     ctx,        \* the context of each participant
     lex,        \* the lexical context of each participant
     aborted,    \* TRUE when the deploy aborted
-    steps       \* the number of steps so far
+    steps,      \* the number of steps so far
+    book,       \* TRUE when the book of the evaluation holds the seq space
+    created,    \* TRUE when a job created the seq space
+    seen        \* the values of book that the sends of the current window read
 
-vars == <<parts, claimed, claim, pending, uses, delivered, spaces, ctx, lex, aborted, steps>>
+vars == <<parts, claimed, claim, pending, uses, delivered, spaces, ctx, lex, aborted, steps,
+          book, created, seen>>
 
 TypeOK ==
     /\ parts \subseteq Parts
@@ -142,6 +172,9 @@ TypeOK ==
     /\ lex \in [Parts -> Contexts]
     /\ aborted \in BOOLEAN
     /\ steps \in 0..MaxSteps
+    /\ book \in BOOLEAN
+    /\ created \in BOOLEAN
+    /\ seen \subseteq BOOLEAN
 
 Init ==
     /\ parts = {<<>>}
@@ -155,6 +188,9 @@ Init ==
     /\ lex = [p \in Parts |-> "default"]
     /\ aborted = FALSE
     /\ steps = 0
+    /\ book = FALSE
+    /\ created = FALSE
+    /\ seen = {}
 
 Waiting(p) == \E c \in Chans : <<p, c>> \in pending
 
@@ -166,7 +202,7 @@ Split(p) ==
     /\ parts' = (parts \ {p}) \cup Children(p)
     /\ ctx' = [ctx EXCEPT ![Append(p, 1)] = ctx[p], ![Append(p, 2)] = ctx[p]]
     /\ lex' = [lex EXCEPT ![Append(p, 1)] = lex[p], ![Append(p, 2)] = lex[p]]
-    /\ UNCHANGED <<claimed, claim, pending, uses, delivered, spaces, aborted>>
+    /\ UNCHANGED <<claimed, claim, pending, uses, delivered, spaces, aborted, book, created, seen>>
 
 (* use S { P } | Q: the body P runs in the first child with the context S,  *)
 (* and Q in the second child with the context of p (wrap_body, eval_use).   *)
@@ -176,16 +212,18 @@ Use(p) ==
     /\ ctx' = [ctx EXCEPT ![Append(p, 1)] = "S",
                           ![Append(p, 2)] = IF UseRestores THEN ctx[p] ELSE "S"]
     /\ lex' = [lex EXCEPT ![Append(p, 1)] = "S", ![Append(p, 2)] = lex[p]]
-    /\ UNCHANGED <<claimed, claim, pending, uses, delivered, spaces, aborted>>
+    /\ UNCHANGED <<claimed, claim, pending, uses, delivered, spaces, aborted, book, created, seen>>
 
 Finish(p) ==
     /\ p \in parts /\ ~Waiting(p)
     /\ parts' = parts \ {p}
-    /\ UNCHANGED <<claimed, claim, pending, uses, delivered, spaces, ctx, lex, aborted>>
+    /\ UNCHANGED <<claimed, claim, pending, uses, delivered, spaces, ctx, lex, aborted, book,
+                   created, seen>>
 
 Admissible(p, c) == c \notin claimed \/ IsPrefix(claim[c], p)
 
-(* SQ-3: the check of a program job of p on c. *)
+(* SQ-3: the check of a program job of p on c. A job step starts a new     *)
+(* scheduling window.                                                       *)
 StartUse(p, c) ==
     /\ p \in parts /\ ~Waiting(p)
     /\ AtomicGuard => pending = {}
@@ -194,7 +232,8 @@ StartUse(p, c) ==
               /\ UNCHANGED aborted
          ELSE /\ aborted' = TRUE
               /\ UNCHANGED pending
-    /\ UNCHANGED <<parts, claimed, claim, uses, delivered, spaces, ctx, lex>>
+    /\ seen' = {}
+    /\ UNCHANGED <<parts, claimed, claim, uses, delivered, spaces, ctx, lex, book, created>>
 
 (* SQ-4: the job commits and stores its claim. *)
 CommitUse(j) ==
@@ -203,7 +242,8 @@ CommitUse(j) ==
     /\ claimed' = claimed \cup {j[2]}
     /\ claim' = [claim EXCEPT ![j[2]] = j[1]]
     /\ uses' = [uses EXCEPT ![j[2]] = Append(@, j[1])]
-    /\ UNCHANGED <<parts, delivered, spaces, ctx, lex, aborted>>
+    /\ seen' = {}
+    /\ UNCHANGED <<parts, delivered, spaces, ctx, lex, aborted, book, created>>
 
 (* SQ-4: the job fails after its check: the deploy aborts, and no claim     *)
 (* changes.                                                                 *)
@@ -211,37 +251,57 @@ FailUse(j) ==
     /\ j \in pending
     /\ pending' = pending \ {j}
     /\ aborted' = TRUE
-    /\ UNCHANGED <<parts, claimed, claim, uses, delivered, spaces, ctx, lex>>
+    /\ seen' = {}
+    /\ UNCHANGED <<parts, claimed, claim, uses, delivered, spaces, ctx, lex, book, created>>
 
-(* SQ-2: a plain send of the message ns.                                    *)
+(* SQ-2: a plain send of the message ns. The send reads the book, the gate  *)
+(* of the scan. A seq name exists only after the record (VR-2).             *)
 SendPlain(ns) ==
-    /\ IF ScanEnabled /\ ns \cap SeqNames # {}
+    /\ ns \cap SeqNames # {} => book
+    /\ seen' = seen \cup {book}
+    /\ IF ScanEnabled /\ book /\ ns \cap SeqNames # {}
          THEN /\ aborted' = TRUE
               /\ UNCHANGED delivered
          ELSE /\ delivered' = delivered \cup {[kind |-> "plain", arg |-> "none", names |-> ns]}
               /\ UNCHANGED aborted
-    /\ UNCHANGED <<parts, claimed, claim, pending, uses, spaces, ctx, lex>>
+    /\ UNCHANGED <<parts, claimed, claim, pending, uses, spaces, ctx, lex, book, created>>
 
 (* SQ-2: a handle produce with the channel argument a (a name of the own    *)
-(* space, exempt) and the message ns.                                       *)
+(* space, exempt) and the message ns. The channel argument is a seq name,   *)
+(* so the send follows the record.                                          *)
 SendHandle(a, ns) ==
-    /\ IF ScanEnabled /\ ns \cap SeqNames # {}
+    /\ book
+    /\ seen' = seen \cup {book}
+    /\ IF ScanEnabled /\ book /\ ns \cap SeqNames # {}
          THEN /\ aborted' = TRUE
               /\ UNCHANGED delivered
          ELSE /\ delivered' = delivered \cup {[kind |-> "handle", arg |-> a, names |-> ns]}
               /\ UNCHANGED aborted
-    /\ UNCHANGED <<parts, claimed, claim, pending, uses, spaces, ctx, lex>>
+    /\ UNCHANGED <<parts, claimed, claim, pending, uses, spaces, ctx, lex, book, created>>
 
 (* QT-4 and QT-5: gate 3 of a factory call.                                 *)
 Gate3(o, q, m) ==
     /\ o = "hashset" => q = "seq"
     /\ NativeOnlySeq => (q = "seq" => m = "native")
 
+(* The creation job of a factory call: a job step. With RecordInJob, the   *)
+(* job records a seq space after its commit (decision 83).                  *)
 Create(o, q, m) ==
     /\ IF Gate3(o, q, m)
          THEN spaces' = spaces \cup {[outer |-> o, q |-> q, model |-> m]}
          ELSE UNCHANGED spaces
+    /\ created' = (created \/ (Gate3(o, q, m) /\ q = "seq"))
+    /\ book' = (book \/ (RecordInJob /\ Gate3(o, q, m) /\ q = "seq"))
+    /\ seen' = {}
     /\ UNCHANGED <<parts, claimed, claim, pending, uses, delivered, ctx, lex, aborted>>
+
+(* Before decision 83: the factory records the seq space in its participant *)
+(* after the creation job, in a scheduling window.                          *)
+Record ==
+    /\ ~RecordInJob /\ created /\ ~book
+    /\ book' = TRUE
+    /\ UNCHANGED <<parts, claimed, claim, pending, uses, delivered, spaces, ctx, lex, aborted,
+                   created, seen>>
 
 Live == ~aborted /\ steps < MaxSteps
 
@@ -254,6 +314,7 @@ Next ==
        \/ \E ns \in PlainMessages : SendPlain(ns)
        \/ \E a \in HandleArguments, ns \in HandleMessages : SendHandle(a, ns)
        \/ \E o \in Outers, q \in Qualifiers, m \in Models : Create(o, q, m)
+       \/ Record
 
 Spec == Init /\ [][Next]_vars
 
@@ -275,4 +336,6 @@ QualifierSupport ==
                       /\ s.q = "seq" => s.model = "native"
 
 UseBalance == \A p \in parts : ctx[p] = lex[p]
+
+ScanViewPerWindow == Cardinality(seen) <= 1
 =============================================================================

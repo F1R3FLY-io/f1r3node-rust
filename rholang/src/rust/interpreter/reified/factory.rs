@@ -10,9 +10,10 @@
 //! 4. `ReifiedRuntime::create_space` runs one `Intent::Space` job whose footprint holds
 //!    `[2]‖sid` and `H(sid)`. The agent locks `C(sid)`, `S(sid)` and `H(sid)`, fails with
 //!    `SpaceAlreadyExists` when `C(sid)` holds a record, and stages the config record, the
-//!    space counter `S(sid) = 0` and the handle continuation on `H(sid)` (steps 5 to 7).
-//! 5. After the commit, the factory records an ephemeral (`temp` or `seq`) space in the book of
-//!    the evaluation (P7, VR-2) and replies `bundle+{H(sid)}` on `ret` (step 8).
+//!    space counter `S(sid) = 0` and the handle continuation on `H(sid)` (steps 5 to 7). After
+//!    the commit, the job records an ephemeral (`temp` or `seq`) space in the book of the
+//!    evaluation (P7 VR-2, decision 83).
+//! 5. The factory replies `bundle+{H(sid)}` on `ret` (step 8).
 //!
 //! Every failure aborts the deploy. The reducer aborts a persistent send to a factory before
 //! the call (A21), so no call repeats.
@@ -112,9 +113,12 @@ impl FactoryProcess {
         self.runtime
             .create_space(Arc::clone(&self.agent), creation)
             .await?;
-        // P7 (VR-2): an ephemeral space enters the book of the evaluation after its creation
-        // committed and before the reply, so every holder of its handle follows the record.
-        self.runtime.record_ephemeral_space(space, config.qualifier);
+        // Changed by P9 step 3 (decision 83): the creation job records an ephemeral space after
+        // its commit (`GenericSpace::prepare_create`), so no participant writes the book, and the
+        // sends of one scheduling window read one book.
+        // // P7 (VR-2): an ephemeral space enters the book of the evaluation after its creation
+        // // committed and before the reply, so every holder of its handle follows the record.
+        // self.runtime.record_ephemeral_space(space, config.qualifier);
         let reply = vec![handle_capability(space)];
         produce(&reply, ret).await?;
         Ok(reply)

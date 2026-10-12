@@ -49,7 +49,7 @@ use support::native::{
     AMPLE_LIMIT, OUT,
 };
 use support::props::{check, pure_config, runtime_config, tokio_runtime};
-use support::session::error_codes;
+use support::session::{error_codes, Injections};
 
 // ─── Helpers ───────────────────────────────────────────────────────────────────────────────────
 
@@ -165,6 +165,118 @@ async fn reducer_seq_payload() {
             .any(|output| output.contains("\"got\"")),
         "{:?}",
         played.outputs
+    );
+}
+
+/// The number of runs of each shape of [`seq_scan_charge_is_schedule_independent`]. Before the
+/// fix of decision 83, about one run in five gave a second play host-work vector.
+const SCHEDULE_RUNS: usize = 24;
+
+/// Block 1 of [`seq_scan_charge_is_schedule_independent`] (the probe of P9 step 3): a
+/// `hashmap:bag` space with two records on `a` and a waiter on `b`, whose body sends to a
+/// persistent forwarder. The handle and the names of the space wait on a public channel.
+const SCHEDULE_SETUP: &str = r#"new factory(`rho:space:hashmap:bag`), out in {
+  for (space <- factory!?("default")) {
+    for (a <- space!?("gensym")) { for (b <- space!?("gensym")) {
+      for (c <- space!?("gensym")) { for (d <- space!?("gensym")) {
+        @"rrs-seq-schedule-stash"!(*space, *a, *b, *c, *d) |
+        a!(1) | a!(2) | for (@v <- b) { out!(["fired", v]) }
+      } }
+    } }
+  } |
+  for (@value <= out) { @"rrs-seq-schedule-out"!(value) }
+}"#;
+
+/// The creation of a seq space.
+const SEQ_CREATE: &str =
+    r#"new sf(`rho:space:hashset:bag`) in { for (S <- sf!?("seq")) { out!(["seq", 0]) } }"#;
+
+/// The creation of a seq space and one name of it.
+const SEQ_GENSYM: &str = r#"new sf(`rho:space:hashset:bag`) in {
+  for (S <- sf!?("seq")) { for (u <- S!?("gensym")) { out!(["seq", 0]) } }
+}"#;
+
+/// Block 2: a touch of the space of block 1 in parallel with `seq`. The take stores a record
+/// again, and the send on `b` fires the waiter of block 1. Their sends run in the scheduling
+/// windows around the creation job of the seq space.
+fn schedule_touch(seq: &str) -> String {
+    format!(
+        r#"new out in {{
+  for (space, a, b, c, d <<- @"rrs-seq-schedule-stash") {{
+    for (@x <- a) {{ out!(["take", x]) | a!(x + 10) }} | b!(3) | {seq}
+  }} |
+  for (@value <= out) {{ @"rrs-seq-schedule-out"!(value) }}
+}}"#
+    )
+}
+
+/// The host work of `budget` in each dimension.
+fn host_vector(budget: &HostWorkBudget) -> Vec<u64> {
+    budget
+        .usages()
+        .into_array()
+        .iter()
+        .map(|usage| usage.get())
+        .collect()
+}
+
+/// Decision 83 (P7 design v3, VR-2): the charge of the SQ-2 scan is a function of the deploy.
+/// The creation job records a seq space, and no participant runs during a job, so the sends of
+/// one scheduling window read one set of seq spaces. Each shape plays [`SCHEDULE_RUNS`] times
+/// on a fresh chain at the v6 limits, and native replay certifies each play. Play gives one
+/// host-work vector for each shape. The test compares play only, as N9 does: native replay in
+/// this tree reserves host work that depends on the schedule also for programs without spaces
+/// (verification.md, section 34.4.1).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn seq_scan_charge_is_schedule_independent() {
+    let mut splits = Vec::with_capacity(2);
+    for (shape, seq) in [
+        ("a touch beside a seq creation", SEQ_CREATE),
+        ("a touch beside a seq gensym", SEQ_GENSYM),
+    ] {
+        let term = schedule_touch(seq);
+        let mut vectors: BTreeMap<Vec<u64>, usize> = BTreeMap::new();
+        for _ in 0..SCHEDULE_RUNS {
+            let mut chain = NativeChain::new().await;
+            let setup = chain
+                .play(SCHEDULE_SETUP, "seq schedule setup", AMPLE_LIMIT)
+                .await;
+            assert!(
+                setup.result.errors.is_empty(),
+                "{shape}: the setup fails: {:?}",
+                setup.result.errors
+            );
+            let host = host_work();
+            let played = chain
+                .play_with(
+                    &term,
+                    "seq schedule touch",
+                    SEQ_LIMIT,
+                    host.clone(),
+                    Injections::new(),
+                )
+                .await;
+            assert!(
+                played.result.errors.is_empty(),
+                "{shape}: the deploy fails: {:?}",
+                played.result.errors
+            );
+            assert!(
+                played.residue.is_empty(),
+                "{shape}: the sweep leaves no volatile channel: {:?}",
+                played.residue
+            );
+            let certification = certify(&played, &term, SEQ_LIMIT).await;
+            assert_reproduces(shape, &played, &certification);
+            *vectors.entry(host_vector(&host)).or_insert(0) += 1;
+        }
+        if vectors.len() != 1 {
+            splits.push(format!("{shape}: {vectors:?}"));
+        }
+    }
+    assert!(
+        splits.is_empty(),
+        "the play host work of a shape depends on the schedule: {splits:#?}"
     );
 }
 

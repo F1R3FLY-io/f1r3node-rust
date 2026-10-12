@@ -1740,8 +1740,8 @@ Proof.
         rewrite E. intro Habs. discriminate Habs.
 Qed.
 
-(* DG-1: the ephemeral spaces that the root evaluation created. The factory records a space
-   after its creation commits (VolatileRegistry::record_space). *)
+(* DG-1: the ephemeral spaces that the root evaluation created. The creation job records a
+   space after its commit, inside the job (VolatileRegistry::record_created, decision 83). *)
 Variable Space : Type.
 Variable space_eq_dec : forall x y : Space, {x = y} + {x <> y}.
 

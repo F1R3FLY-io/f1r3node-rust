@@ -1117,6 +1117,9 @@ Replay pairs these events, and the deploy pays for them.
 A send pays its introduction also when the sweep later removes its record, so no refund applies.
 
 **Rule QF-8: the sweep.** Each root evaluation keeps a book of the temp spaces that it created and of the volatile channels that its space transactions locked.
+The creation job of a temp or seq space records the space in the book as its last step, after its commit ([decision 83](decision-register.md#decision-83)).
+The scheduler runs no [reduction participant](glossary.md#reduction-participant) while a job runs, so the book changes only between the steps of the participants.
+
 After every detached task of a root evaluation, the node [sweeps](glossary.md#sweep) the channels of the book: it removes their records, waiting continuations and join entries.
 The sweep runs after a success and after a failure, under the boundary guard of the reducer, and it emits no event and no charge.
 Play, replay and native replay sweep at the same point, so their post-states are equal.
@@ -1148,6 +1151,10 @@ The handle of a seq space is not a name, so a program may send it.
 A send whose data holds a seq name at any depth must abort with `SeqSent`, and the error names the space id.
 The check covers data, quoted processes, bundles, collections and the message of a handle call.
 
+The root evaluation holds a seq space from the end of the job that created it (QF-8).
+A check reads the book in its reduction participant before the participant dispatches, so all checks between two jobs read the same seq spaces.
+So the charge of each check is a function of the deploy.
+
 Two sends are exempt from the check of QF-14.
 In a send to the handle of a seq space, the channel argument of the method `produce` may hold names of that space.
 The forwarder of a handle continuation sends the arguments of a call to the handle process, and the node does not check it again.
@@ -1175,6 +1182,10 @@ A program uses a channel again with sync handle calls such as `S!?("produce", *x
 **Rule QF-19: charges.** The check of a send reserves one `VerificationOperations` unit for each node of its data.
 It also reserves the `VerificationBytes` of each id and the `SearchStateBytes` of its work list.
 The check of a claim reserves its lookups and its comparison of participant paths on the meter of its job.
+
+For each name of an ephemeral space that it finds, the check of a send also reserves a search in the set of seq spaces.
+The search reserves the comparison bound of a B-tree search over the set as `VerificationOperations`.
+It reserves two space ids for each comparison as `VerificationBytes`.
 
 ## 5. Theories
 
@@ -1579,7 +1590,7 @@ The computation has no meter, no error path and no wait, so it never changes the
 The start of each root evaluation drops a journal that no result settled (`rholang/src/rust/interpreter/reified/runtime.rs:102-118`).
 So an exploratory evaluation never publishes, and its writes never reach the next deploy.
 
-**Rule MR-3: publication (M1).** A final evaluation result with no errors publishes the journal as one batch for each collection, and every other result drops it (`rholang/src/rust/interpreter/reified/runtime.rs:315-320`, [decision 66](decision-register.md#decision-66)).
+**Rule MR-3: publication (M1).** A final evaluation result with no errors publishes the journal as one batch for each collection, and every other result drops it (`rholang/src/rust/interpreter/reified/runtime.rs:319-324`, [decision 66](decision-register.md#decision-66)).
 The two settle points are `rholang/src/rust/interpreter/interpreter.rs:257` for play and `rholang/src/rust/interpreter/rho_runtime.rs:1808` for native replay.
 Native replay publishes to the mirror of the node that replays, so a validator keeps its mirror current from the blocks that it certifies.
 A node that plays and then certifies one deploy publishes its batch twice, and the upserts by id make the second publication change nothing.

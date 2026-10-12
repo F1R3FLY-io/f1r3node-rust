@@ -7941,8 +7941,8 @@
       ]
     },
     "P7": {
-      "title": "P7: the ephemeral spaces of one deploy (design v3 W1 and W2): the book of a root evaluation and its sweep (VolatileSweep.v V1), the dangling ids of ended deploys (V2); and the Seq rules (W3): seq names (Namespace.v V3), and the claims, the send rule, the qualifier gate and the use context of SpaceCoordination.tla (V4 to V8); and the HashSet store (W4): the unit rules of a HashSet collection (HashMapStore.v V9); and the theory seam (W5): the builtin theories, the fail-closed admission and the commit guard, the transparent cache, the resolution of an identity, replay of the admission, the identity bytes (TheoryAdmission.v V10 to V15), the theory at a match (Match.v V16) and gate 4 (SpaceFactory.v V17); and rehydration and charging (W6): the charge of a view load, the same on a hit and a miss, applied to the first operation after a restart (EventCorrelation.v V18).",
-      "design": "P7 design v3 (.reified-rspaces-work/p7/design-v3.md), sections 3 (QT, VR), 4 (DG), 5 (SQ), 6 (HS) and 9. witness_tests lists the deterministic tests of the native suites reified_temp_seq.rs, reified_volatile_sweep.rs, reified_seq.rs and reified_hashset.rs and of the reducer hooks; section 7 (TH) and decision 74 for the theory seam. The witness tests of W5 are in reified_theory.rs and in the library tests of spaces/theory, spaces/generic.rs and spaces/factory/constructor.rs. Section 8 (RH) and the rows of section 4 for W6: the witness tests are in reified_rehydrate.rs and reified_restart_rehydrate.rs.",
+      "title": "P7: the ephemeral spaces of one deploy (design v3 W1 and W2): the book of a root evaluation and its sweep (VolatileSweep.v V1), the dangling ids of ended deploys (V2); and the Seq rules (W3): seq names (Namespace.v V3), and the claims, the send rule, the qualifier gate and the use context of SpaceCoordination.tla (V4 to V8); and the HashSet store (W4): the unit rules of a HashSet collection (HashMapStore.v V9); and the theory seam (W5): the builtin theories, the fail-closed admission and the commit guard, the transparent cache, the resolution of an identity, replay of the admission, the identity bytes (TheoryAdmission.v V10 to V15), the theory at a match (Match.v V16) and gate 4 (SpaceFactory.v V17); and rehydration and charging (W6): the charge of a view load, the same on a hit and a miss, applied to the first operation after a restart (EventCorrelation.v V18); and decision 83 (P9 step 3): every send of one scheduling window reads one book of seq spaces, because the creation job records a seq space (SpaceCoordination.tla V19).",
+      "design": "P7 design v3 (.reified-rspaces-work/p7/design-v3.md), sections 3 (QT, VR), 4 (DG), 5 (SQ), 6 (HS) and 9. witness_tests lists the deterministic tests of the native suites reified_temp_seq.rs, reified_volatile_sweep.rs, reified_seq.rs and reified_hashset.rs and of the reducer hooks; section 7 (TH) and decision 74 for the theory seam. The witness tests of W5 are in reified_theory.rs and in the library tests of spaces/theory, spaces/generic.rs and spaces/factory/constructor.rs. Section 8 (RH) and the rows of section 4 for W6: the witness tests are in reified_rehydrate.rs and reified_restart_rehydrate.rs. Decision 83 (.reified-rspaces-work/p9/sq2/design-v2.md) for V19: the property runs the scheduler in the library tests of reified/runtime.rs, and its witness tests are the record placement in spaces/generic.rs and the play and replay host work of reified_seq.rs.",
       "test_status": "required",
       "test_files": [
         "rholang/src/rust/interpreter/reified/runtime.rs",
@@ -7955,7 +7955,7 @@
         "rholang/tests/reified_theory.rs",
         "rholang/tests/reified_volatile_sweep.rs"
       ],
-      "expected_properties": 16,
+      "expected_properties": 17,
       "formal": {
         "V1": {
           "kind": "rocq",
@@ -8118,6 +8118,15 @@
           "tests": [
             "prop_attach_warm_cold_cost_equal"
           ]
+        },
+        "V19": {
+          "kind": "tla",
+          "name": "ScanViewPerWindow",
+          "file": "formal/tlaplus/reified_rspaces/SpaceCoordination.tla",
+          "statement": "Every send of one scheduling window reads one book of seq spaces, so the charge of the SQ-2 scan is a function of the deploy: the creation job records a seq space after its commit, and the scheduler runs no participant during a job (decision 83, P7 design v3 VR-2).",
+          "tests": [
+            "prop_seq_gate_constant_per_window"
+          ]
         }
       },
       "properties": [
@@ -8249,6 +8258,14 @@
           "file": "rholang/tests/reified_rehydrate.rs",
           "covers": [
             "V18"
+          ]
+        },
+        {
+          "number": 17,
+          "test": "prop_seq_gate_constant_per_window",
+          "file": "rholang/src/rust/interpreter/reified/runtime.rs",
+          "covers": [
+            "V19"
           ]
         }
       ],
@@ -8701,6 +8718,22 @@
           "rule": "QT-1 and QT-4 in native execution: HashSet with default or temp, and VectorDB with temp or seq and a mirror, fail before any space exists",
           "covers": [
             "V6"
+          ]
+        },
+        {
+          "test": "prepare_create_records_ephemeral_spaces_after_commit",
+          "file": "rholang/src/rust/interpreter/spaces/generic.rs",
+          "rule": "VR-2 and decision 83 (the creation job records an ephemeral space after its commit; a durable space and a failed creation record nothing)",
+          "covers": [
+            "V19"
+          ]
+        },
+        {
+          "test": "seq_scan_charge_is_schedule_independent",
+          "file": "rholang/tests/reified_seq.rs",
+          "rule": "decision 83 (sends beside a seq creation give one play and one replay host-work vector over 24 runs)",
+          "covers": [
+            "V19"
           ]
         }
       ]
