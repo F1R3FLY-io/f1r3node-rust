@@ -6752,6 +6752,53 @@ The logs are `target/verification/reified-rspaces/p9/step3/r4-debug-*.log`.
 | The 40 checkers of the campaign, and the document lint | 40 passed |
 | I-14: the two empty-state-hash tests of `runtime_spec.rs` in release | 2 passed |
 
+### 34.5 Step 4: the LFS export and import of space state
+
+A node that joins a network loads the state of the last finalized block (LFS) from a peer.
+The peer exports the history items and the data items of one root in pages, and the new node validates each page and imports it.
+Spaces are consensus state in the one RSpace, so the exporter and the importer of the history repository carry them with no Reified code.
+The campaign changes neither (design v2, amendment A19).
+
+The test `space_lfs_export_import` (`rholang/tests/reified_lfs.rs`) plays block 1 over one LMDB store.
+Block 1 is the first block of section 34.4.3, with the creations of the five stored families of P7.
+Its root R1 holds a durable space of each of the 26 families and the stored spaces with records and waiters.
+It also holds VectorDB records and an agent space.
+`temp`, `seq` and HashSet spaces never reach a root, because each deploy sweeps them (QF-8).
+
+*Table 205. The steps of the LFS test.*
+
+| Step | Check |
+|---|---|
+| Export | The exporter of the source pages R1 in pages of 64 history items, and the importer of the source validates each page, as a node validates the pages of a peer. |
+| Negative control | The whole export validates as one page. The same page with one changed byte in a data item fails the validation. |
+| Import | The importer of a fresh LMDB store takes the history items, the data items and the root R1, and the store resets to R1. |
+| State | Each space channel that block 1 touched holds the same records and the same waiting continuations on both stores. |
+| Block 2 | Block 2 of section 34.4.3 and the touches of the stored families play on both stores, from R1. Each deploy gives the same record on both stores: the roots, the outputs, the event log, the evidence bytes, the phlo and the host work of play. |
+| Replay | Native replay certifies each deploy of block 2 from its pre-state on the imported store. |
+
+The shared blocks of the P9 suites moved from `reified_cross_process.rs` to `rholang/tests/support/blocks.rs`, so the replay across blocks and the LFS test use the same deploys.
+
+R7 measures the export.
+R1 needs 2 pages of 64 history items: 75 history items and 385 data items, with 584,505 bytes of values.
+The LMDB stores of the test have a map of 256 MiB (`support/native.rs`), so the export uses less than 1 % of it.
+The test compares 215 space channels.
+
+The test reads the imported state through the history reader, and it does not export again from the imported store.
+In this tree, the importer writes a data item under the raw bytes of its hash (`rspace++/src/rspace/state/instances/rspace_importer_store.rs`).
+The exporter reads a data item only under the bincode bytes of its hash (`rspace_exporter_store.rs`).
+The history reader tries both keys (`rspace_history_reader_impl.rs`), so the imported state serves reads, but an exporter over an imported store finds no data item.
+The code of the exporter and the importer predates the campaign ([decision 70](decision-register.md#decision-70)).
+
+*Table 206. The gates of step 4.*
+
+| Gate | Result |
+|---|---|
+| `cargo test --release -p rholang --test reified_lfs --test reified_cross_process --test reified_cross_block_merge --test reified_n1_replay` | 1, 2, 11 and 6 passed |
+| `cargo clippy -p rholang --lib --tests -- -D warnings` | No warning |
+| `rustfmt --check` of the changed and the new test files | No difference |
+| The 40 checkers of the campaign, and the document lint | 40 passed |
+| I-14: the two empty-state-hash tests of `runtime_spec.rs` in release | 2 passed |
+
 ## References
 
 <a id="ref-ch00"></a>[CH00] K. Claessen and J. Hughes, "QuickCheck: a lightweight tool for random testing of Haskell programs," in *Proceedings of the Fifth ACM SIGPLAN International Conference on Functional Programming (ICFP 2000)*, ACM, 2000, pp. 268–279. [doi:10.1145/351240.351266](https://doi.org/10.1145/351240.351266)
