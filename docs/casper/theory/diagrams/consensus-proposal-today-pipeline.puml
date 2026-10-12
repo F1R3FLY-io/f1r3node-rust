@@ -1,8 +1,7 @@
 ' Today's execute-then-merge pipeline on a protocol-6 (v6) shard, at
-' feature/cost-accounted-rho 17e07307f (dev 93e38575e merged). Each step
-' carries the file:line of the code that performs it. The lines of runtime.rs,
-' runtime_manager.rs and offered_block.rs follow later commits: one moved
-' code with no behavior change, and one added the check before execution.
+' feature/cost-accounted-rho e38ff0de8 (dev 93e38575e merged). Each step
+' carries the file:line of the code that performs it, at that commit. The
+' audit of 2026-10-12 corrected the merge, play and replay steps.
 '
 ' The diagram marks the two places where run-to-completion lives (the block
 ' play and the validator replay before acceptance) and the two places where
@@ -29,7 +28,7 @@ skinparam sequence {
   GroupBorderColor        #666666
 }
 skinparam maxMessageSize 260
-title Today: execute-then-merge on a v6 shard (HEAD 17e07307f)
+title Today: execute-then-merge on a v6 shard (HEAD e38ff0de8)
 
 autonumber
 
@@ -44,15 +43,15 @@ participant "Finalizer\nfinalization_runner.rs\nclique_oracle.rs" as F $ca_capab
 == Proposal ==
 U -[$ca_instantiate]> P : signed offered envelope\nbody, funding_intent, phloLimit, phloPrice\n(offered.rs:11-21)
 P -> P : select at most one offer,\nthe rest become alternates\n(block_creator.rs:1847-1916)
-P -> M : compute_parents_post_state\n(interpreter_util.rs:930-940)
-M -> M : read the event-log index of every\nparent, find conflicts, choose survivors\nafter execution (conflict_set_merger.rs:864-974)
+P -> M : compute_parents_post_state\n(interpreter_util.rs:932-942)
+M -> M : read the event-log index of the scope.\nv6: compose a conflict-free scope, else\none ordered pass, after execution\n(interpreter_util.rs:1995-2036)
 M --> P : merged pre-state, rejected records,\napplied-from-scope, merge base
 note over P, M $ca_note_red
   **Merge before execution.** The proposer cannot run
   a deploy until it has merged the parents' post-states.
 end note
 P -> R : compute_state_envelopes\n(runtime.rs:327-392)
-R -> R : execute the single envelope\n(offered_block.rs:222-236), then fund\nand settle it (offered_block.rs:260-280)
+R -> R : check the funding at R0\n(offered_block.rs:220-236), execute,\nthen settle (offered_block.rs:259-280)
 R -> R : producer self-replay of the same envelope\n(offered_block.rs:315-323)
 R -> R : system deploys, CloseBlock\n(offered_block.rs:361-370)
 note right of R $ca_note_red
@@ -66,17 +65,17 @@ P -[$ca_instantiate]> V : broadcast the signed block
 
 == Validation by every validator ==
 V -> V : block summary and offered-only check\n(validation_dispatcher.rs:99-130)
-V -> M : recompute the merge from the block's parents\n(interpreter_util.rs:423-433)
+V -> M : recompute the merge from the block's parents\n(interpreter_util.rs:420-435)
 M --> V : computed pre-state, records, state facts
-V -> V : compare pre-state, rejected records and\nstate facts (interpreter_util.rs:461-532)
-V -> RP : replay_block (interpreter_util.rs:538-545)
-RP -> RP : wait for the one-permit ReplayLock\n(runtime_manager.rs:198-205, 1226-1229)
+V -> V : compare pre-state, rejected records and\nstate facts (interpreter_util.rs:463-534)
+V -> RP : replay_block (interpreter_util.rs:540-547)
+RP -> RP : a legacy block waits for the one-permit\nReplayLock (runtime_manager.rs:198-205, 1227).\nAn offered replay takes none (:1317-1333)\nand first checks the funding at R0 (replay.rs:1642)
 RP -> RP : replay the envelope and system deploys\nto termination
 RP --> V : replayed post-state equals the block's?
 note over V, RP $ca_note_red
   **Acceptance waits for execution.** A validator accepts
   a block only after it has recomputed the merge and
-  replayed the block (interpreter_util.rs:400-555).
+  replayed the block (interpreter_util.rs:402-557).
 end note
 V -> V : eager merge index when the shard\nallows more than one parent\n(validation_dispatcher.rs:340-375)
 V -> F : add the valid block to the DAG
@@ -95,15 +94,16 @@ legend bottom
   |<$ca_note_red>| run-to-completion and merge hot spots |
 
   |= name |= meaning |
-  | HEAD 17e07307f | the commit of feature/cost-accounted-rho that this diagram shows |
+  | HEAD e38ff0de8 | the commit of feature/cost-accounted-rho that this diagram shows |
   | v6 shard | a shard of protocol version 6: cost accounting, offered envelopes only |
   | offered envelope | a signed user deploy: body, funding intent, phlo limit, phlo price |
+  | R0 | the original root: the authenticated state root that a candidate funds from |
   | CloseBlock | the system deploy that closes each block |
-  | ReplayLock | a semaphore with one permit: a node replays one block at a time |
+  | ReplayLock | a semaphore with one permit: a node replays one legacy block at a time |
   | DAG | the directed acyclic graph of blocks |
   | LFB | the last finalized block |
   | floor | the highest ancestor that the clique oracle certifies as finalized |
-  | file.rs:a-b | lines a to b of a source file at HEAD. The lines of runtime.rs, runtime_manager.rs and offered_block.rs follow later commits that moved code and added the check before execution. |
+  | file.rs:a-b | lines a to b of a source file at HEAD |
 endlegend
 
 @enduml

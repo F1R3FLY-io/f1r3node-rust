@@ -12,7 +12,7 @@
 
 **Basis.**
 
-- Code: HEAD, the commit `3e7af80e0` of the branch `feature/cost-accounted-rho`. A citation `file.rs:a-b` names lines a to b of that file at HEAD. The citations of `runtime.rs` and `direct_wallet_funding.rs` follow a later commit that moved code with no behavior change. The citation of the offered `replay.rs` follows the commit of step G1-6.
+- Code: HEAD, the commit `3e7af80e0` of the branch `feature/cost-accounted-rho`. A citation `file.rs:a-b` names lines a to b of that file at HEAD. The citations of `runtime.rs` and `direct_wallet_funding.rs` follow a later commit that moved code with no behavior change. The citation of the offered `replay.rs` follows the commit `88f4176db` of step G1-7. The audit of 2026-10-12 corrected the facts that this document states about the code.
 - Paper: P1, the paper *Cost-Accounted Rho Calculus* by L. G. Meredith, at publications revision `0bf7817`. A citation P1:a-b names lines a to b of its source file.
 - Paper: P2, the paper *Continued Interactive GSLTs and the Cost Endofunctor* by L. G. Meredith, at the same revision. A GSLT is a graph-structured lambda theory (P2:97). A citation P2:a-b names lines a to b of its source file.
 - Evidence tags: [C] code, [P] paper, [D] decision record, [I] inference.
@@ -61,7 +61,7 @@ Before execution, the check reserves funds on the funding sources. Each reservat
 
 After execution, *settlement* charges the measured use directly. There is no settlement floor. So refunds stay implicit, and offered state roots stay as they are today. A guard protects the funds that the block still needs. The guard is item 5 of DR-65 (same-block offers that share a purse).
 
-Clients must sign a phlo limit at least as large as the estimate. The estimate counts each COMM once for each participant, so it can reach twice the realized use in compute, transfer and trace.
+Clients must sign a phlo limit at least as large as the estimate. The estimate counts each COMM once for each participant. So it can reach a multiple of the realized use in compute, transfer and trace. For a binary COMM it can reach twice the realized use (Section 14).
 
 ---
 
@@ -121,7 +121,7 @@ This section defines the names, terms and symbols that later sections use.
 | Resource class | One of the four native measurement dimensions: compute, introduction bytes, transfer bytes and trace bytes | `native_phlo_rules.rs:27-59` |
 | Native meter | The meter that charges every resource class for every region during execution | `native_phlo_rules/execution.rs:162-220` |
 | Weight | The phlo weight of one resource class in the adopted schedule | `phlo_schedule.rs:119-126` |
-| Units of a lane | The number of Ground and Quote leaves of the signature of the lane | `phlo_execution.rs:477-491` |
+| Units of a lane | The number of Ground, Name and Quote leaves of the signature of the lane. Settlement counts the same leaves after it converts each Name to a Ground. | `native_phlo_rules/execution.rs:289-341`, `phlo_execution.rs:477-491` |
 | prost | The protobuf library of the node. Every byte size in this document is a prost-encoded length. | `byte_accounting.rs:72-74` |
 | URN | A uniform resource name, such as `rho:io:stdout`. A `new` binds a URN to its value from the URN map. | `util/mod.rs:181-243` |
 | URI | A uniform resource identifier. A `new` lists one URI for each URN that it binds. | `util/mod.rs:203` |
@@ -226,7 +226,7 @@ The native meter defines the four classes and their charges. [C]
 
 - **Classes.** Compute is measured in COMMs. Introduction, transfer and trace are measured in bytes (`native_phlo_rules.rs:27-59`).
 - **Charge per region.** For each observation, the meter charges every region $`\rho`$ of its authority. The charge is $`w_k \cdot u(\mathrm{lane}(\rho)) \cdot q`$, where $`q`$ is the measured quantity (`native_phlo_rules/execution.rs:186-214`, `regions.rs:118-132`).
-- **Units.** The units of a lane are the number of Ground and Quote leaves of its signature (`phlo_execution.rs:477-491`).
+- **Units.** The units of a lane are the number of Ground, Name and Quote leaves of its signature (`native_phlo_rules/execution.rs:289-341`). Settlement counts the same leaves after conversion (`phlo_execution.rs:477-491`).
 - **Bound.** The meter fails with `BoundExceeded` when the usage would pass the bound (`native_phlo_rules/execution.rs:274-287`).
 - **Fee.** The acquisition charge is the fresh usage times the price, plus one atomic unit (`phlo_execution.rs:561-564`).
 
@@ -256,11 +256,11 @@ The analyzer `static_authority_plan` already computes the compute class. [C] It 
 
 - It counts one potential COMM for every enclosing region of every send and receive (`:276-295`), and one for every signed bind (`:489-497`).
 - It adds parallel parts and takes the componentwise maximum at `if` and `match` (`:516-542`, `:565-574`).
-- It rejects persistent sends and receives, a dequotation `*x` in process position, dynamic authority and mixed signed binds (`:325-334`, `:464-504`, `:549-563`).
+- It rejects persistent sends and receives, a dequotation `*x` in process position and mixed signed binds (`:464-504`, `:549-563`). It rejects dynamic authority in signed terms and signed binds (`:394-397`, `:489-495`, mapped at `:325-334`). It counts a cost-stack cell with dynamic authority (`:456-459`).
 - It counts no bytes. It ignores peeks and method calls in process position.
-- No production path calls it yet (the proposal, §3.6).
+- At `3e7af80e0` no production path called it. An earlier gate called it at the commit `f9bd3895d` (`acceptance.rs:1378`), until the merge `1d325b996` removed that gate. Since step G1-6, the check calls it in play and in every replay.
 
-This design adds the three byte classes and the completeness decision to that walk.
+This design keeps that walk for rule X1 and the compute row. Separate walks in `estimate.rs` add the three byte classes and the completeness decision (`estimate.rs:6-18` at the commit `e38ff0de8`).
 
 ---
 
@@ -512,7 +512,7 @@ For a typical deploy the nesting depth and the number of lanes are small, so the
 - **Funding slots.** "Anyone who knows the channel can deposit tokens there. The linear proof at acceptance time checks whether tokens are present on the funding slot, not who deposited them" (P1:1553-1555). And "the continuation runs once the slot is funded" (P1:1584-1586). So the check of a slot's tokens belongs to the deployment in which the continuation runs.
 - **Located purses.** P2 decomposes the linear proof into one local proof per purse (P2:1514), and local proofs compose (P2:1520-1527). The purses of the client are the sources of the envelope. A source may pay the lane at whose purse it is located, and each lane that it permits for at least one class. A signed permission is how a client sponsors a lane, so the demand of a permitted lane is the client's demand. Each other purse has its own local proof when its surface executes.
 
-The code attributes regions as the papers do. An unsigned receive of the deploy opens a region of the deploy that runs it (`reduce.rs:1520-1531`), so its introduction is the client's demand. The normalizer desugars the lollipop as P1 defines it (`normalizer/cost_accounting/desugar.rs:66-85`). A fired body runs with an empty authority, and its unsigned work charges the deploy that triggers it (DR-101, Section 13). An earlier draft of this design applied `def:funding-proof`, which covers every signature, at acceptance (P1:2047-2058).
+The code attributes the regions of the deploy's own terms as the papers do. An unsigned receive of the deploy opens a region of the deploy that runs it (`reduce.rs:1520-1531`), so its introduction is the client's demand. The normalizer desugars the lollipop as P1 defines it (`normalizer/cost_accounting/desugar.rs:66-85`). One case differs. A fired stored body runs with an empty authority, so its unsigned work charges the triggering deploy (DR-101, Section 13). An earlier draft of this design applied `def:funding-proof`, which covers every signature, at acceptance (P1:2047-2058).
 
 A lane is a client lane when a source is located at its purse or permits it for at least one class. The first implementation of step G1-6 counted located sources only, and the G1-6 fix corrects it (Section 16). A source is eligible for a class of a lane only when it permits that lane and class. So a class of a client lane with known demand and no permitting source rejects the offer (Section 6.3). Fewer permitted classes never exclude a lane that keeps one permission or a located source. They can only reject the offer before execution. Work of a foreign lane that runs in the deployment is token-gated by G3 (DR-68). Until G3, settlement keeps its behavior for that work (Section 7).
 
@@ -531,7 +531,7 @@ The check reuses existing interfaces.
 3. `project_phlo_obligations` turns the witness into obligations for each lane and class, plus the fee (`obligations.rs:213`).
 4. `select_phlo_funding_family` places the obligations on the eligible sources at $`R_0`$, with one requirement (`family_policy.rs:426`).
 
-The permissions of the signed record decide which sources are eligible. They also make each permitted lane a client lane, so the demand of a sponsored lane lands on the sources that permit its classes (DR-124). Before execution, an on-chain purse is eligible for the fee only, because no run has shown its authority yet (DR-123).
+The permissions of the signed record decide which sources are eligible. They also make each permitted lane a client lane, so the demand of a sponsored lane lands on the sources that permit its classes (DR-124). Before execution, an on-chain purse funds nothing. No run has shown its authority, and `authorize_wallets` already forbids it the fee (`direct_wallet_funding.rs:237-240`). This rule is the gap fill G-5 of the implementation map of G1 (DR-123 item 6). P1 checks the tokens of a funding slot at acceptance (P1:1553-1555). A correction of G-5 for the funding slots of P1 is therefore pending (G3 and the proposal, §6.2).
 
 The meter then runs under the bound $`B`$ with the bound source `Certificate`.
 
@@ -582,10 +582,10 @@ Every validator recomputes the whole decision. [C][D]
 Three checks detect a difference between the producer and a validator:
 
 1. Validators re-run the check. A block whose offer fails the check is invalid.
-2. The budget evidence stores the bound source of the contract (DR-113 item 5, DRs:11988-11991).
+2. Each validator checks the `granted` flag of each row of the budget evidence again, against its own bound (`budget_trace.rs:196-208`). The checked evidence takes the bound source of the validator's contract (`:215-216`), not producer data (DR-113 item 5).
 3. With several offers per block, validators recompute the guard outcomes (DR-65 item 6).
 
-Replay also compares the encoded funding case byte for byte (`replay.rs:445-451`). That case now carries holds equal to debits.
+Replay also compares the encoded funding case byte for byte (`replay.rs:500-506`). That case now carries holds equal to debits.
 
 ---
 
@@ -1166,6 +1166,8 @@ The rules also make the estimate incomplete for these constructs.
 - Signatures whose quoted process still holds a variable, and quotes of a name inside a receive body or a datum (DR-122 item 11).
 - Guards that name a URN, injection or unknown level (DR-122 item 8).
 - Data whose evaluation fails, or that use a form without a known work limit (DR-122).
+- A value or a signature taller than the sizing bound, and a counted lane without a signature (DR-122 items 6 and 12).
+- Demand on a lane that no source is located at or permits (DR-124).
 - Sources that are on-chain private-name payers.
 
 Most real deploys call stored contracts, such as a registry lookup or a vault transfer. So most real deploys get an incomplete estimate and hold their whole signed limit. [I]
@@ -1178,7 +1180,7 @@ Most real deploys call stored contracts, such as a registry lookup or a vault tr
 
 The estimate can exceed the realized use, so clients must size their limits to it. [I]
 
-- **The gap.** The estimate counts each COMM once for each participant. When participants share a region, the estimate can reach twice the realized use in compute, transfer and trace. For the term of Section 10.1, the realized values 1, $`d`$ and 128 face estimates of 2, $`2d`$ and 256.
+- **The gap.** The estimate counts each COMM once for each participant. When participants share a region, the estimate can reach $`n + 1`$ times the realized use in compute, transfer and trace, for a receive with $`n`$ binds. For the term of Section 10.1 ($`n = 1`$), the realized values 1, $`d`$ and 128 face estimates of 2, $`2d`$ and 256.
 - **Wider gaps.** Branches that do not run and introductions that never match widen the gap further.
 - **Rejection.** An offer whose estimate exceeds its signed limit is rejected before execution (P1:2208-2212, `phlo_bounds.rs:42-43`).
 - **The rule.** Clients must sign a phlo limit at least as large as the estimate. The estimate is a pure function of the envelope and of public consensus inputs, so a client can compute it before signing.

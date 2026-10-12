@@ -3,9 +3,9 @@
 | Field | Value |
 |---|---|
 | Status | Proposal for discussion with the Casper team. Not ratified. |
-| Date | 2026-10-09 |
+| Date | 2026-10-09. Amended on 2026-10-12 after an audit of every claim against the code. |
 | Audience | The Casper team of F1R3FLY, the user (the developer who directs this work), and Greg (L. G. Meredith), the author of the cost-accounting papers |
-| Code basis | Branch `feature/cost-accounted-rho` at `17e07307f`. It contains `dev`, the integration branch of the F1R3node repository, at `93e38575e`. The line citations of `runtime.rs`, `runtime_manager.rs` and `offered_block.rs` follow later commits. One moved the single-offer play and replay code with no behavior change, and the live check before execution then added lines to `offered_block.rs`. |
+| Code basis | Branch `feature/cost-accounted-rho` at `e38ff0de8`. It contains `dev`, the integration branch of the F1R3node repository, at `93e38575e`. Every `file:line` reference is at `e38ff0de8` unless the text names another commit. The first version of this document used the commit `17e07307f`, and the profiles of §9 come from that commit. |
 | Paper basis | The F1R3FLY publications repository at revision `0bf7817` |
 | Authority | The [ratification status ledger](../design/cost-accounting-ratification-status.md) applies. An implementation record does not ratify a Casper change. |
 
@@ -30,7 +30,7 @@
 
 | Tag | Meaning |
 |---|---|
-| [C] | Code, with a `file:line` reference. The code is at HEAD unless the text names another commit. HEAD is the commit `17e07307f` of the code basis. |
+| [C] | Code, with a `file:line` reference. The code is at HEAD unless the text names another commit. HEAD is the commit `e38ff0de8` of the code basis. |
 | [D] | The text of a repository document, such as a decision record, at a named commit |
 | [P] | Paper text, with line numbers |
 | [M] | Measured data, with its source and its limits |
@@ -44,11 +44,12 @@
 | Acronyms | API: application programming interface. AUC: area under the curve. CBC: correct by construction. COMM: communication event. CPU: central processing unit. DAG: directed acyclic graph. DOI: digital object identifier. LFB: last finalized block. LFS: last-finalized-state synchronization. LMD-GHOST: latest-message-driven greedy heaviest-observed subtree. PoS: proof of stake. PR: pull request. TLA+: temporal logic of actions. | §2.1, and at first use |
 | v6, legacy | A v6 shard runs protocol version 6, with cost accounting and offered envelopes. A legacy shard runs dev's Casper path. | §2.1 |
 | P1, P2, ST | The three governing papers of Greg. The next table gives their titles. "P1" never names a phase. | Papers table below |
-| HEAD, commit IDs | HEAD is the commit `17e07307f`. A hexadecimal string such as `1d325b996` is the ID of a git commit. The word "session" marks the ID of a codex session instead (§5). | This guide |
+| HEAD, commit IDs | HEAD is the commit `e38ff0de8`. A hexadecimal string such as `1d325b996` is the ID of a git commit. The word "session" marks the ID of a codex session instead (§5). | This guide |
 | E1 to E4 | Greg's four expectations: E1 merge logic, E2 user alternatives, E3 keep accepting blocks, E4 performance | §1.2 |
 | (a), (b), (c), (c)+(b), (d1), (d5) | The candidate designs. "(a)+(b)" in §11 combines (a) and (b). | §1.4 |
-| Epic 8946, bug 11004 | Two items in pgmcp, the work tracker of this effort: the epic "Complete offered-funded production cost-accounting integration", and the global cost-cursor lock bug | §2.1, §2.4 |
+| Epic 8946, bug 11004 | Two items in pgmcp, the work tracker of this effort: the epic "Complete offered-funded production cost-accounting integration", and the global cost-cursor lock bug. The cost-cursor lock fix closed the bug on 2026-10-10. | §2.1, §2.4 |
 | G1, G2, G3, G6, G9 | Gap labels of epic 8946. G1: the funding check before execution. G2: several offers per block. G3: installer funding. G6: the recovery of offered envelopes. G9: the v6 merge rule. | §2.1 |
+| G-5 | The rule of G1 that an on-chain purse funds nothing before execution. It is a gap fill of the implementation map of G1. | §4.1 |
 | DR-*n* | Decision record *n*. DR-119 and DR-120 are the records of the cost-cursor lock fix and of the interim v6 merge rule. | §12.3 |
 | Class I, class S, class D | The three conflict classes under cost accounting: independent, same purse, and shared data | §2.4 |
 | F1 to F8 | The eight fast-path conditions of the v6 merge rule | §4.4 |
@@ -101,10 +102,22 @@
 | `family_selection.rs` | `casper/src/rust/util/rholang/costacc/direct_wallet_funding/execution/family_selection.rs` |
 | `offered_block.rs` | `casper/src/rust/util/rholang/costacc/direct_wallet_funding/execution/offered_block.rs` |
 | `production_limits.rs` | `casper/src/rust/util/rholang/costacc/production_limits.rs` |
-| `acceptance.rs` | `casper/src/rust/util/rholang/acceptance.rs`, only at the commit `f9bd3895d` (§5) |
+| `acceptance.rs` | `casper/src/rust/util/rholang/acceptance.rs`. §5 cites the 8,258-line file at the commit `f9bd3895d`. HEAD has a different 541-line file at the same path, which the commit `068d51c65` created. |
+| `gate.rs` | `casper/src/rust/util/rholang/costacc/direct_wallet_funding/execution/gate.rs` |
+| `replay.rs` | `casper/src/rust/util/rholang/costacc/direct_wallet_funding/execution/replay.rs` |
+| `settlement.rs` | `casper/src/rust/util/rholang/costacc/direct_wallet_funding/execution/settlement.rs` |
+| `direct_wallet_funding.rs` | `casper/src/rust/util/rholang/costacc/direct_wallet_funding.rs` |
+| `vault_payer.rs` | `casper/src/rust/util/rholang/costacc/vault_payer.rs` |
+| `v6_merge/mod.rs` | `casper/src/rust/util/rholang/costacc/v6_merge/mod.rs` |
+| `fast.rs` | `casper/src/rust/util/rholang/costacc/v6_merge/fast.rs` |
+| `ordered.rs` | `casper/src/rust/util/rholang/costacc/v6_merge/ordered.rs` |
 | `SystemVault.rho` | `casper/src/main/resources/SystemVault.rho` |
 | `MakeMint.rho` | `casper/src/main/resources/MakeMint.rho` |
+| `PoS.rhox` | `casper/src/main/resources/PoS.rhox` |
 | `offered_funded_api_test.rs` | `casper/tests/api/offered_funded_api_test.rs` |
+| `offered_gateway_slot_api_test.rs` | `casper/tests/api/offered_gateway_slot_api_test.rs` |
+| `offered_prepaid_api_test.rs` | `casper/tests/api/offered_prepaid_api_test.rs` |
+| `offered_admission_api_test.rs` | `casper/tests/api/offered_admission_api_test.rs` |
 | `offered.rs` | `models/src/rust/signed_phlo_deploy/offered.rs` |
 | `block_metadata.rs` | `models/src/rust/block_metadata.rs` |
 | `cost_protocol_limits.rs` | `models/src/rust/cost_protocol_limits.rs` |
@@ -112,9 +125,23 @@
 | `block_dag_key_value_storage.rs` | `block-storage/src/rust/dag/block_dag_key_value_storage.rs` |
 | `deterministic_reduction.rs` | `rholang/src/rust/interpreter/deterministic_reduction.rs` |
 | `rholang_merging_logic.rs` | `rholang/src/rust/interpreter/merging/rholang_merging_logic.rs` |
+| `dispatch.rs` | `rholang/src/rust/interpreter/dispatch.rs` |
+| `accounting/mod.rs` | `rholang/src/rust/interpreter/accounting/mod.rs` |
+| `authority.rs` | `rholang/src/rust/interpreter/accounting/authority.rs` |
+| `delta_sigma.rs` | `rholang/src/rust/interpreter/accounting/delta_sigma.rs` |
+| `lexical.rs` | `rholang/src/rust/interpreter/accounting/lexical.rs` |
+| `phlo_bounds.rs` | `rholang/src/rust/interpreter/accounting/phlo_bounds.rs` |
+| `phlo_controls.rs` | `rholang/src/rust/interpreter/accounting/phlo_controls.rs` |
+| `funding_minimax.rs` | `rholang/src/rust/interpreter/accounting/monetary_allocation/funding_minimax.rs` |
+| `desugar.rs` | `rholang/src/rust/interpreter/compiler/normalizer/cost_accounting/desugar.rs` |
+| `match.rs` | `rspace++/src/rspace/match.rs` |
+| `space_matcher.rs` | `rspace++/src/rspace/space_matcher.rs` |
+| `rspace_interface.rs` | `rspace++/src/rspace/rspace_interface.rs` |
 | `DeterministicParallelReduction.v` | `formal/rocq/cost_accounted_rho/theories/DeterministicParallelReduction.v` |
+| `EndToEndAuthority.v` | `formal/rocq/cost_accounted_rho/theories/EndToEndAuthority.v` |
+| `HeldCapacityGuard.v` | `formal/rocq/cost_accounted_rho/theories/HeldCapacityGuard.v` |
 
-"DR-*n*" names record *n* of the [decision records](cost-accounting-decision-records.md). Each decision record gets a short description at its first use, and §12.3 lists them all. Two of them are new. DR-119 records the cost-cursor lock fix (§4.5). DR-120 records the interim merge rule for cost-accounted (v6) shards (§4.4).
+"DR-*n*" names record *n* of the [decision records](cost-accounting-decision-records.md). Each decision record gets a short description at its first use, and §12.3 lists them all. Seven records are newer than `17e07307f`. DR-119 records the cost-cursor lock fix (§4.5). DR-120 records the interim merge rule for cost-accounted (v6) shards (§4.4). Four records cover the steps of the funding check before execution (§4.1). DR-125 records the fix of bug 11008, a call of an unknown method that the node did not charge.
 
 **Status markers.** Each item of §4 carries a dated status line. The orchestrator, the agent session that coordinates this work, updates these lines. §5 reports the finished review of the earlier branch.
 
@@ -136,7 +163,7 @@ This document has three aims:
 
 ### 1.2 Greg's four expectations
 
-Greg is the author of the cost-accounting papers. The user relayed his four expectations verbatim.
+Greg is the author of the cost-accounting papers. The user relayed his four expectations verbatim on 2026-09-28 (codex session `01a0e3fe`, lines 10134 and 10260). [S]
 
 | ID | Short name | Expectation (verbatim) |
 |---|---|---|
@@ -144,6 +171,8 @@ Greg is the author of the cost-accounting papers. The user relayed his four expe
 | E2 | User alternatives | "users may decide which alternatives they want which eliminates merging." |
 | E3 | Keep accepting blocks | "You no longer need to run to completion -- you can just keep running and keep accepting blocks." |
 | E4 | Performance | "the majority of the performance issues in F1r3node are caused by the existing merge logic and that the cost-accounting changes should eliminate most of them." |
+
+E1 came as a question that ended in "correct?". The user gave E2 as the reason for E1. The user also asked codex to "verify against the model" and to decide whether it "can be and should be the case". [S]
 
 ### 1.3 What the papers say
 
@@ -154,7 +183,7 @@ P1 starts from two defects of the current node. [P]
 
 P1 replaces run-to-completion with "concurrent acceptance gated by linear resource proofs" (P1:313-314). Conflicts "are detected *at acceptance time* through the linear resource proof" (P1:346-348). [P]
 
-**Scope of the papers.** P1 is explicit for one RSpace and one validator. It states its arrival rules for deployments that "arrive at a validator" (P1:2247). P1 does not say how a multi-validator block DAG (the directed acyclic graph of blocks) orders acceptances. Every mapping of P1 onto Casper in this document is therefore an interpretation. [P][I]
+**Scope of the papers.** P1 states its arrival rules for deployments that "arrive at a validator" (P1:2247). P1 frames the merge burden as combining states that "different validators" or speculative parallel runs computed (P1:290-298). It claims to replace that analysis (P1:344-354). It does not say how a multi-validator block DAG (the directed acyclic graph of blocks) orders acceptances. Every mapping of P1 onto Casper in this document is therefore an interpretation. [P][I]
 
 P1 lists an implementation path of four phases, and no phase changes consensus (P1:1716-1730). P1 also says that block validity becomes "a syntactic predicate" (P1:1711-1712). [P]
 
@@ -174,9 +203,9 @@ This document compares six candidate designs. §6.9 and §7.12 define them in fu
 The conclusions, with their basis:
 
 1. **Execute-then-merge, the pipeline at HEAD, meets E1 only in part and cannot meet E3.** [I] A proposer must merge the parent states before it executes. A validator must replay a block before it accepts it (§3).
-2. **Order-then-execute on cost-accounted (v6) shards meets all four expectations.** [I] E4 still needs confirmation by measurement. Consensus orders the accepted envelopes, which are signed user deploys. A deterministic executor runs the finalized order and applies the acceptance gate of P1 (§2.2) before each envelope (§7).
+2. **Order-then-execute on cost-accounted (v6) shards meets all four expectations.** [I] E4 still needs confirmation by measurement. E2 is met if the canonical order may pick the winner among alternatives. Sub-question Q3 of decision D-0 (what Greg means, §11) asks Greg about this. Consensus orders the accepted envelopes, which are signed user deploys. A deterministic executor runs the finalized order and applies the acceptance gate of P1 (§2.2) before each envelope (§7).
 3. **Order-then-execute remains Casper.** [I] It keeps the justifications of Casper CBC (correct by construction), the fork choice, the clique-oracle finality and the equivocation slashing. It changes when state is computed and where the validator weights come from (§7.8, §7.9).
-4. **E4 is not yet proven.** [M][I] The data of the August soak test (a long load test of a validator network) agree with E4. Dev's later fixes moved the visible costs to the per-block cycle of state reset, replay and checkpoint (§2.1, §9).
+4. **E4 is not yet proven.** [M][I] The data of the August soak test (a long load test of a validator network) agree with E4. After dev's later fixes, no per-node stage separates failing soak sessions from passing ones. Dev's analysis points to the finality round length and to blocks that wait for missing parents (§9).
 5. **The earlier branch does not change this assessment.** [C][I] A review of the earlier branch `feature/casper-cost-accounting-completion` found that its tip met none of E1 to E4 (§5). It met E2 in part, but only inside one proposer's block and only under a narrow reading in which funding decides. No gap of §6 closes, and §7 to §11 do not change.
 
 Two further gaps affect every design (§6.10). The first is the committed host-work caps, which are limits on deterministic node work per deploy. Today they reject the testnet log initializer of Embers, the F1R3FLY blockchain application programming interface (API). The second is unmetered continuations on the settlement log channels.
@@ -185,8 +214,8 @@ Two further gaps affect every design (§6.10). The first is the committed host-w
 |---|---|---|---|---|
 | (a) | Partial | Partial | Unmet | Marginal |
 | (b) | Unmet | Partial | Partial | Partial |
-| (c) | Met on v6 | Met | Met | Largest gain, not yet measured |
-| (c)+(b) | Met on v6 | Met | Met | Largest gain, not yet measured |
+| (c) | Met on v6 | Met if Q3 picks the canonical order | Met | Largest gain, not yet measured |
+| (c)+(b) | Met on v6 | Met if Q3 picks the canonical order | Met | Largest gain, not yet measured |
 | (d1) | Partial | Met for funding | Unmet | Small |
 | (d5) | Mostly | Unmet | Unmet | Mixed |
 
@@ -215,12 +244,16 @@ This section defines the cost-accounting, Casper and merge terms. The summary in
 | SystemVault | The genesis contract that holds the purses | `SystemVault.rho` |
 | Purse | A token stack located at a channel name. Only processes that hold the name can draw on it. P1 calls it a located resource stack. In the code, one purse is one physical custody key of SystemVault. | P1:575-583, DR-65 (same-block offers that share a purse) |
 | Funding slot | An unforgeable channel that a contract creates as a funding surface. "Anyone who deposits tokens" on the slot pays for its continuation. | P1:1557-1587 |
+| Compound signature | A joint authority $`s_1 \circ s_2`$. Every component signer must sign, and the process fires only with tokens of every component. The compound holds one combined token stack, a joint purse. | P1:380-397, 887-888. `Sig::And` (`accounting/mod.rs:3150`), `compound_cost_signatures` (`authority.rs:387`) |
+| Lollipop | A transfer signature, written `[s1 -o s2]` in Rholang. In `{for(y <- x){P}}[s1 -o s2]`, the signature `s1` funds the communication, and `s2` funds the continuation `P`. | P1:1273-1293. `desugar.rs:7-13, 61-80` |
+| Cost share | Settlement splits one charge among the eligible sources of one envelope. It shares equally where it can and uses lexicographic minimax otherwise. The user approved this rule on 2026-09-10. | `funding_minimax.rs:63`, [lexicographic minimax funding](cost-accounting-impl/lexicographic-minimax-funding.md) |
+| Owner price ceiling | The highest price that one required owner signed. The applicable price must not exceed the ceiling of any required owner. | `phlo_controls.rs:110, 125, 251`, `phlo_bounds.rs:48-50`, [signed price consent](cost-accounting-impl/signed-price-consent.md) |
 | Demand $`\Delta_s`$ | The number of $`s`$-signed layers that a deployment can force, over its whole call graph. | P1:2002-2027 |
 | Linear resource proof | The inequality $`\Sigma_s \geq \Delta_s`$ for every signature $`s`$ of a deployment. Each token is used exactly once. Here *linear* refers to linear logic. | P1:2047-2058, 2318-2326 |
 | Acceptance, the gate | The validator computes the demand before any execution, compares it with the supply, and then accepts or rejects. | P1:2188-2213 |
 | Hold | The part of a purse that acceptance commits to one deployment until settlement. Other deployments cannot use it. | P1:2301-2302, DR-64 (the funding check before execution) |
 | Settlement | The step after execution that charges the measured use, transfers the fee and refunds the unused hold. | P1:2132-2136, DR-38 (reserve and settle as one native step), DR-64 |
-| Cost cursor | Revision and position cells in SystemVault for one charge scope. Each charged settlement advances them. Today every cursor check takes one global lock. | `SystemVault.rho:52-56, 145-185` |
+| Cost cursor | Revision and position cells in SystemVault for one charge scope. Each charged settlement advances them. An existing cursor takes no lock. A first use takes one of 256 bucket creation locks (DR-119). | `SystemVault.rho:63-72, 146-160, 186-229` |
 | Offered envelope | The v6 user-deploy format: a body, a funding intent, a signed phlo limit and a signed phlo price. | `offered.rs:11-21` |
 | v6 shard | A shard whose genesis adopts the protocol-6 offered-funded resource policy. Its user deploys are offered envelopes only. | DR-66 (the activation of protocol 6), `validation_dispatcher.rs:124-130` |
 | Legacy shard | A shard with a legacy genesis. It runs dev's Casper path. | DR-66 |
@@ -242,7 +275,7 @@ Consensus, runtime and tooling terms:
 | RSpace | The tuple-space storage engine of F1R3node, keyed by channel names | P1:1694-1696 |
 | COMM | One RSpace communication event: a send that matches a receive | DR-32 (the COMM is the only execution-cost event) |
 | PoS contract | The proof-of-stake contract that holds the bonds | `CasperMessage.proto:601-603` |
-| IntegerAdd channel | A channel that holds one number. A merge combines concurrent changes to it by addition. | `rholang_merging_logic.rs:237-267` |
+| IntegerAdd channel | A channel that holds one number. A merge combines concurrent changes to it by addition. | `rholang_merging_logic.rs:102-136` (the addition), `:237-267` (one value) |
 | LFS | Last-finalized-state synchronization: a joining node fetches the blocks and the tuple space of the LFB. | `casper/src/rust/engine/lfs_tuple_space_requester.rs` |
 | Reset, checkpoint | Before a node plays or replays a block, it resets RSpace to the pre-state root. After execution it creates a checkpoint, which commits the state and gives the post-state root. | `rspace++/src/rspace/history/history_repository_impl.rs`, `docs/ToDos.md:241-246` |
 | Host-work budget, host-work caps | A per-deploy budget of deterministic node work, such as admission, authority analysis and witness checks. Its caps are consensus constants. It charges no tokens. | [host-work budget](host-work-budget.md) |
@@ -261,14 +294,14 @@ Terms of dev's merger, which §3 and §4.4 use:
 | Floor | For a block $`B`$, the highest ancestor of the parents of $`B`$ that the clique oracle certifies as finalized over the justifications of $`B`$. The finalizer derives a floor from its live view in the same way. | [Finalized-floor glossary](finalized-floor/finalized-floor-glossary.md) |
 | Event-log index | The index of the produce and consume events of each chain. The merger finds conflicts with it. | [Merge-algebra glossary](merge-algebra/merge-algebra-glossary.md) |
 | Mergeable channel | A channel whose concurrent changes fold, for example by addition on an IntegerAdd channel | [Merge-algebra glossary](merge-algebra/merge-algebra-glossary.md) |
-| Folded mixing | One branch changes a mergeable channel by a folded diff, and another branch writes the same channel as a plain value. Dev's merger rejects the mix. | `dag_merger.rs:437-461` |
+| Folded mixing | One branch changes a mergeable channel by a folded diff, and another branch writes the same channel as a plain value. Dev's merger rejects the mix. | `dag_merger.rs:438-462` |
 | Over-fill | A merge result in which a single-value cell would hold more than one datum | [Merge-algebra glossary](merge-algebra/merge-algebra-glossary.md) |
 | Rejected records | The deploys that a merge rejects. A block records them, and every validator recomputes them. | `CasperMessage.proto:554-575` |
-| Option search | The adjudication of dev's merger. It lists the sets of branches that it could reject, and it picks one by prior losses and then by cost. | `conflict_set_merger.rs:864-974` |
-| Pinned chain, settled chain | A chain whose effects are already in the state that the merge builds on. A merge never rejects it. | `conflict_set_merger.rs:134-144`, `dag_merger.rs:1854-1915` |
-| Late chain | A chain whose merge window has closed. The merge rejects it and every chain that depends on it. | `dag_merger.rs:944-948` |
-| Prior losses | The number of earlier merges that rejected a chain. A chain with more losses gets priority. | `conflict_set_merger.rs:1012-1018` |
-| Lineage closure | After a merge rejects chains, it also rejects each unpinned chain whose block descends from a block with a rejected chain. | `dag_merger.rs:1854-1915` |
+| Option search | The adjudication of dev's merger, which legacy shards keep. It lists the sets of branches that it could reject. It picks one by prior losses and then by cost. On v6 shards one ordered pass replaces it (DR-120). | `conflict_set_merger.rs:870-980`, `dag_merger.rs:1870-1882` |
+| Pinned chain, settled chain | A chain whose effects are already in the state that the merge builds on. A merge never rejects it. | `conflict_set_merger.rs:137-147`, `dag_merger.rs:1434` |
+| Late chain | A chain whose merge window has closed. The merge rejects it and every chain that depends on it. | `dag_merger.rs:988-992` |
+| Prior losses | The number of earlier merges that rejected a chain. A chain with more losses gets priority. | `conflict_set_merger.rs:1018-1024` |
+| Lineage closure | After a merge rejects chains, it also rejects each unpinned chain whose block descends from a block with a rejected chain. | `dag_merger.rs:1913-1974` |
 | Merge index | The index of a validated block that later merges read. The node builds it eagerly, right after validation, when the shard allows more than one parent. | `validation_dispatcher.rs:340-375` |
 | Settled-effect probe | A walk along a state lineage that decides if the effect of a deploy signature is already committed. The merge calls it to protect settled content. It is also called a settled-signature probe. | [Settled-effect probe claim](../../claims/settled-effect-probe-equivalence.md) |
 
@@ -316,11 +349,11 @@ P1 states the general rule as a theorem of linear logic: "Two deployments compet
 
 ### 2.4 How cost accounting changes conflicts
 
-Today the merger discovers conflicts after execution, from the event logs of the executed deploys. P1 replaces that analysis with three classes that the signatures already determine (P1:356-366). [P]
+Today the merger discovers conflicts after execution, from the event logs of the executed deploys. P1 replaces that analysis with three classes. The signatures decide two of them. Shared data channels mark the third (P1:356-366). [P]
 
 > "deployments signed by *different* signatures draw from *disjoint* token pools and cannot conflict. They may be executed in parallel and their results composed without merge analysis. Deployments signed by the *same* signature (or overlapping compound signatures) compete for the same token pool and are serialized by the linear proof --- again without merge analysis. The only case requiring attention is deployments that interact via shared data channels, and even here the cost-accounting structure provides a natural serialization order." (P1:356-366)
 
-![Activity diagram of the three conflict classes under cost accounting. Two deployments D1 and D2 enter. The first question asks if they draw on a common purse. A common purse means the same signature or overlapping compound signatures. If yes, they are class S, and the linear proof serializes them. In sequence, the first is accepted and the second is rejected if the remaining supply is short (P1:2245-2269). Together, they form one parallel composition, and both are rejected if the supply is short (P1:2271-2287). An indigo note says that P1 states both rules for one validator only. If they share no purse but share a data channel, they are class D, which an order serializes (P1:363-366). Otherwise they are class I. They run in parallel and compose without merge analysis (P1:356-359). A red note says that today every class goes through post-hoc merge analysis. Another red note says that the global costCursorLock makes every pair of charged offered siblings a false class S conflict. That note names the global cost-cursor lock bug, pgmcp bug 11004. A legend explains the colours. It also defines P1, the deployments D1 and D2, their demands, and the supply of the common purse. It defines the classes S, D and I, HEAD 17e07307f, pgmcp bug 11004 and DAG.](diagrams/consensus-proposal-conflict-classes.svg)
+![Activity diagram of the three conflict classes under cost accounting. Two deployments D1 and D2 enter. The first question asks if they draw on a common purse. A common purse means the same signature or overlapping compound signatures. If yes, they are class S, and the linear proof serializes them. In sequence, the first is accepted and the second is rejected if the remaining supply is short (P1:2245-2269). Together, they form one parallel composition, and both are rejected if the supply is short (P1:2271-2287). An indigo note says that P1 states both rules for one validator only. If they share no purse but share a data channel, they are class D, which an order serializes (P1:363-366). Otherwise they are class I. They run in parallel and compose without merge analysis (P1:356-359). A red note describes HEAD e38ff0de8 on a v6 shard. The fast path composes a conflict-free scope, and one ordered pass decides the rest. Both run after execution. Along one chain, the check before execution decides class S. Another red note says that since DR-119, sibling settlements conflict only on a shared cursor scope or a shared first-use bucket. That note names the fixed global cost-cursor lock bug, pgmcp bug 11004. A legend explains the colours. It also defines P1, the deployments D1 and D2, their demands, and the supply of the common purse. It defines the classes S, D and I, HEAD e38ff0de8, v6, DR-119, pgmcp bug 11004 and DAG.](diagrams/consensus-proposal-conflict-classes.svg)
 
 *Source: [`diagrams/consensus-proposal-conflict-classes.puml`](diagrams/consensus-proposal-conflict-classes.puml). Render it with `./render.sh consensus-proposal-conflict-classes.puml` in `docs/casper/theory/diagrams/`.*
 
@@ -338,13 +371,13 @@ Independent redexes commute by a diamond lemma (ST:413-425). Two redexes that bo
 
 For Casper readers, the consequence is direct. [I]
 
-| Class | What decides it under cost accounting | What decides it today |
+| Class | What decides it under cost accounting | What decides it today on a v6 shard |
 |---|---|---|
-| I, independent | Nothing. The results compose. | The merger, after execution |
-| S, same purse | The gate, in arrival order | The merger, after execution |
-| D, shared data | An order. Under §7 it is the canonical order. | The merger, after execution |
+| I, independent | Nothing. The results compose. | The v6 fast path, after execution, when its eight conditions hold (§4.4). It reads the event-log index and runs no rejection logic (DR-120). |
+| S, same purse | The gate, in arrival order | Along one chain, the check of G1 before execution at $`R_0`$ (§4.1). Across sibling blocks, the v6 ordered pass, after execution (DR-120). |
+| D, shared data | An order. Under §7 it is the canonical order. | The v6 ordered pass in its strict order of branches, after execution (DR-120) |
 
-The global cost-cursor lock bug (pgmcp bug 11004) adds a fourth effect today. The global lock `costCursorLock` (`SystemVault.rho:52-56`) is consumed by every cursor check (`SystemVault.rho:145-167`). It therefore puts every pair of charged offered siblings into a false class S conflict. DR-115, the record that a failed offered deploy keeps its settlement in the merge index, states this under "Merge outcomes". [C]
+The global cost-cursor lock bug (pgmcp bug 11004) added a fourth effect until 2026-10-10. A global lock put every pair of charged offered siblings into a false class S conflict. DR-119 removed it (commit `7ab849b56`). An existing cursor now takes no lock (`SystemVault.rho:186-194`). A first use takes one of 256 bucket locks (`SystemVault.rho:63-72, 196-218`). Two settlements now conflict only when they share a cursor scope, or when first uses on both sides fall in one bucket. The second case is a residual false conflict. Its probability is near $`4/256`$ for two new cohorts (DR-119). [C] DR-115, the record that a failed offered deploy keeps its settlement in the merge index, describes the old lock under "Merge outcomes". An amendment of 2026-10-12 to DR-115 records the change. [D]
 
 ### 2.5 What the papers do not specify
 
@@ -360,36 +393,36 @@ The following points are outside the papers. This document marks every rule for 
 
 ## 3. Today's pipeline
 
-This section describes the code at HEAD on a v6 shard. Legacy shards run the same Casper path with legacy deploys.
+This section describes the code at HEAD on a v6 shard. Legacy shards run the same path with legacy deploys. Their merges keep dev's rule (`MergeRule::Dev`, `v6_merge/mod.rs:51-57, 81-103`).
 
-![Sequence diagram of today's execute-then-merge pipeline on a v6 shard at HEAD 17e07307f. The participants are the signing user, the proposer, the merge, the play runtime, the validator, the replay and the finalizer. In the proposal phase, the signing user sends a signed offered envelope. The proposer selects at most one offer. It merges the parent states first, and the merge chooses survivors after execution. A red note says that the proposer cannot run a deploy before this merge. The play runtime then executes the single envelope, funds and settles it, replays it and runs the system deploys. A red note says that a v6 block holds one envelope and that the legacy loop plays each deploy to termination. In the validation phase, every validator recomputes the merge. It compares the pre-state, the rejected records and the state facts. It waits for the one-permit ReplayLock and replays the block to termination. A red note says that acceptance waits for execution. The validator builds the eager merge index and adds the block to the DAG. In the finality phase, the finalizer derives the floor of the live view. It reads the weight map from the main parent's bonds, which execution wrote into the block. A legend explains the colours. It also defines HEAD 17e07307f, v6 shard, offered envelope, CloseBlock, ReplayLock, DAG, LFB, floor, and the file and line notation.](diagrams/consensus-proposal-today-pipeline.svg)
+![Sequence diagram of today's execute-then-merge pipeline on a v6 shard at HEAD e38ff0de8. The participants are the signing user, the proposer, the merge, the play runtime, the validator, the replay and the finalizer. In the proposal phase, the signing user sends a signed offered envelope. The proposer selects at most one offer. It merges the parent states first. On a v6 shard the merge composes a conflict-free scope, or else one ordered pass chooses the survivors, after execution. A red note says that the proposer cannot run a deploy before this merge. The play runtime then checks the funding at the original root R0, executes the single envelope and settles it. It replays the envelope and runs the system deploys. A red note says that a v6 block holds one envelope and that the legacy loop plays each deploy to termination. In the validation phase, every validator recomputes the merge. It compares the pre-state, the rejected records and the state facts. It replays the block to termination. A legacy block waits for the one-permit ReplayLock, and an offered replay takes no permit. A red note says that acceptance waits for execution. The validator builds the eager merge index and adds the block to the DAG. In the finality phase, the finalizer derives the floor of the live view. It reads the weight map from the main parent's bonds, which execution wrote into the block. A legend explains the colours. It also defines HEAD e38ff0de8, v6 shard, offered envelope, R0, CloseBlock, ReplayLock, DAG, LFB, floor, and the file and line notation.](diagrams/consensus-proposal-today-pipeline.svg)
 
 *Source: [`diagrams/consensus-proposal-today-pipeline.puml`](diagrams/consensus-proposal-today-pipeline.puml). Render it with `./render.sh consensus-proposal-today-pipeline.puml` in `docs/casper/theory/diagrams/`.*
 
 ### 3.1 Proposal
 
-1. The proposer selects at most one offered envelope. Every further envelope becomes an alternate (`block_creator.rs:1847-1916`, the rule at `:1910-1916`). [C]
-2. `compute_deploys_checkpoint_envelopes` logs "merge parents, then run deploys" (`interpreter_util.rs:912`). It merges first (`interpreter_util.rs:930-940`) and plays afterwards (`interpreter_util.rs:995-1005`). [C]
+1. The proposer selects at most one offered envelope. Up to `ordinary_cap − 1` further envelopes become alternates. The proposer tries them in canonical order when the selected one is rejected. The rest wait for later proposals (`block_creator.rs:1847-1916`, the rule at `:1910-1916`, the retry at `:4100-4113`). [C]
+2. `compute_deploys_checkpoint_envelopes` logs "merge parents, then run deploys" (`interpreter_util.rs:914`). It merges first (`interpreter_util.rs:932-942`) and plays afterwards (`interpreter_util.rs:997-1007`). [C]
 
 ### 3.2 Merge
 
-1. `compute_parents_post_state` (`interpreter_util.rs:1212`) dispatches on the number of parents (`interpreter_util.rs:1244-1319`). A single parent gives its post-state only when its lineage holds the derived floor. Otherwise the block re-bases through the full merge (`interpreter_util.rs:1311-1319`). [C]
-2. With several parents, the full merge is `dag_merger::merge` (`interpreter_util.rs:1994`, `dag_merger.rs:820`). [C]
-3. The merger chooses the rejected branches by an option search after execution (`conflict_set_merger.rs:864-974`). It groups every pair of branches that share any mergeable channel (`conflict_set_merger.rs:900-912`). With pinned branches it searches exhaustively (`conflict_set_merger.rs:873-883`). [C]
+1. `compute_parents_post_state` (`interpreter_util.rs:1214`) dispatches on the number of parents (`interpreter_util.rs:1246-1321`). A single parent gives its post-state only when its lineage holds the derived floor. Otherwise the block re-bases through the full merge (`interpreter_util.rs:1313-1321`). [C]
+2. With several parents, or after a re-base, the block takes the full merge path. On a v6 shard it first tries the fast path, which composes a conflict-free scope without the rejection logic (`interpreter_util.rs:1995-2016`, `fast.rs:144`). Otherwise it calls `dag_merger::merge_with_rule` (`interpreter_util.rs:2018-2036`, `dag_merger.rs:863`). The rule is `OfferedV6` when a parent or a scope block holds an offered deploy (`v6_merge/mod.rs:81-103`). [C]
+3. On a legacy shard, the merger chooses the rejected branches by an option search after execution (`conflict_set_merger.rs:870-980`). It groups every pair of branches that share any mergeable channel (`:906-918`). With pinned branches it searches exhaustively (`:879-889`). Production pins the settled chains (`dag_merger.rs:1434`). On a v6 shard, one ordered pass in a strict total order $`K`$ on branches replaces the search (`dag_merger.rs:1870-1882`, `ordered.rs:173`, §4.4). It also runs after execution. [C]
 4. The merge results are consensus content: the pre-state root, the rejected records, the applied-from-scope set and the merge base (`CasperMessage.proto:554-575`). [C]
 
 ### 3.3 Play and run-to-completion
 
 1. `compute_state_envelopes` (`runtime.rs:327-392`) accepts exactly one envelope (`runtime.rs:346`). A second envelope is an error (`runtime.rs:364-373`). [C]
-2. The offered path executes first (`offered_block.rs:222-236`). It funds and settles the candidate afterwards (`offered_block.rs:260-280`). DR-64 records the same fact: the static analysis existed, "but no production path called them". [C]
+2. The offered path first checks the funding before execution (`offered_block.rs:220-236`, `execution.rs:495-521`). The check estimates the client's demand with the static analysis (`gate.rs:169`, `:423-442`). It rejects the offer with no effect when the holds do not fit the supply at $`R_0`$. DR-123 (the check before execution of an offered deploy) and DR-124 (the live check of the client's demand) record this check. The path then executes the candidate and settles the measured use (`offered_block.rs:259-280`). A run that drains the funds of its own settlement is a charged user failure (DR-65 item 5, commit `88f4176db`). [C]
 3. The producer replays its own candidate before it publishes (`offered_block.rs:315-323`). It then runs the system deploys (`offered_block.rs:361-370`). [C]
 4. The legacy loop plays each deploy to termination before the next one (`runtime.rs:455-476`). A play budget can defer the remaining deploys to a later proposal (`runtime.rs:455-457`). [C]
 
 ### 3.4 Validation and replay
 
 1. `run_validation_steps` (`validation_dispatcher.rs:84-334`) checks the block summary (`:99-118`) and the offered-only rule (`:124-130`). It then runs the checkpoint step. [C]
-2. The checkpoint step recomputes the merge from the block's own justifications (`interpreter_util.rs:418-433`). It compares the pre-state (`:461-470`), the rejected records (`:471-518`) and the state facts (`:519-532`). Then it replays the block (`:538-545`). [C]
-3. A node replays one block at a time. The `ReplayLock` is a semaphore with one permit (`runtime_manager.rs:198-205`). The wait for it has its own metric (`runtime_manager.rs:1226-1229`). [C]
+2. The checkpoint step recomputes the merge from the block's own justifications (`interpreter_util.rs:420-435`). It compares the pre-state (`:463-472`), the rejected records (`:473-520`) and the state facts (`:521-534`). Then it replays the block (`:540-547`). An offered replay first runs the same check before execution at $`R_0`$ (`offered_block.rs:585-606`, `replay.rs:1642`). [C]
+3. A node replays one legacy block at a time. The `ReplayLock` is a semaphore with one permit (`runtime_manager.rs:198-205`). Of the block replays, only the legacy replay takes it (`:1348`, acquired at `:1227`). The wait has its own metric (`:1226-1229`). The replay of a block with an offered deploy returns earlier and takes no permit (`:1317-1333`). [C]
 4. Offered replay requires "one isolated user candidate" (`offered_block.rs:784-788`). [C]
 5. After validation, every block gets a merge index when the shard allows more than one parent (`validation_dispatcher.rs:340-375`). The guard is at `:345`. [C]
 
@@ -404,20 +437,20 @@ This section describes the code at HEAD on a v6 shard. Legacy shards run the sam
 | Place | What waits, or what is repeated | Code |
 |---|---|---|
 | Block play | Each deploy runs to termination before the next | `runtime.rs:455-476`, `:346` |
-| Proposal | Play waits for the merge of the parents | `interpreter_util.rs:930-940` |
-| Validation | Acceptance waits for the merge recomputation and the replay | `interpreter_util.rs:400-555` |
-| Replay | One replay at a time on each node | `runtime_manager.rs:198-205` |
+| Proposal | Play waits for the merge of the parents | `interpreter_util.rs:932-942` |
+| Validation | Acceptance waits for the merge recomputation and the replay | `interpreter_util.rs:402-557` |
+| Replay | One legacy replay at a time on each node. An offered replay takes no permit. | `runtime_manager.rs:198-205, 1227, 1317-1333` |
 | Producer | The producer replays its own candidate | `offered_block.rs:315-323` |
 | Native frontier | One conflict component for each native frontier inside one deploy | `deterministic_reduction.rs:1068-1072, 1120-1122` |
 | After validation | A merge index for every block | `validation_dispatcher.rs:340-375` |
 
-**Note on DR-15.** DR-15 item 1 states that run-to-completion "was never ported" and that the acceptance gate of DR-11 is live. DR-11 is the record of a static linear-proof gate at block assembly. At HEAD, the code above plays and replays each deploy to termination. No file under `casper/src` or `node/src` calls `admit_by_funding`, `delta_sigma` or `static_authority_plan`. [C] The merge `1d325b996` restored dev's Casper code on 2026-10-01 (§5). The v6 merge-rule work plans a correction of DR-15. [C]
+**Note on DR-15.** DR-15 item 1 states that run-to-completion "was never ported" and that the acceptance gate of DR-11 is live through `admit_by_funding`. DR-11 is the record of a static linear-proof gate at block assembly. At HEAD, the code above plays and replays each deploy to termination. No file under `casper/src` or `node/src` calls `admit_by_funding` or `static_authority_plan`, so the gate of DR-11 is not live. [C] Since the commits `02d01541b` and `e64261134`, a different check runs before execution in play and in every replay. It is the check of DR-123 and DR-124, and it calls `delta_sigma::estimate` (`gate.rs:26-28, 423-442`). It checks one envelope against $`R_0`$ and admits nothing concurrently. [C] The merge `1d325b996` restored dev's Casper code on 2026-10-01 (§5). DR-120 amended the outcome of DR-15 on 2026-10-10 (`b496df9d8`). An amendment of 2026-10-12 to DR-15 corrects item 1. [D]
 
 ---
 
 ## 4. What is being implemented now
 
-**Status on 2026-10-10: designed, checked and approved.** The user approved the designs of all five items on 2026-10-10. The preparatory steps of G1 are committed. The v6 merge rule and the cost-cursor lock fix are committed. The check of G1 is live in play and in every replay (§4.1). G2 and G3 are not started. The orchestrator updates this section.
+**Status on 2026-10-12.** The user approved the designs of all five items on 2026-10-10. G1 is committed through the live check (step G1-6) and the held-capacity guard for one offer per block (step G1-7). The check of G1 is live in play and in every replay (§4.1). The v6 merge rule and the cost-cursor lock fix are committed. Of G2, only the code motion G2-1 is committed. G3 is not started. The orchestrator updates this section.
 
 The user directed the lane to "Implement what you can, cleanly, without a lot of changes to casper". The five items below follow that rule. Each one changes Casper only at a v6 seam or in cost-accounting code.
 
@@ -428,9 +461,9 @@ Two ownership boundaries apply to this work.
 
 ### 4.1 G1: the funding check before execution (DR-64)
 
-**Status: approved on 2026-10-10 after two independent checks. The preparatory steps G1-1 to G1-3, the analysis, the check and the live check are committed. The check runs before execution in play and in every replay.** The design document is [the linear pre-execution cost estimate](cost-accounting-impl/linear-cost-estimate.md).
+**Status: approved on 2026-10-10 after two independent checks. The fixture step, the steps G1-1 to G1-4b, G1-6 and G1-7 are committed. The check runs before execution in play and in every replay.** The design document is [the linear pre-execution cost estimate](cost-accounting-impl/linear-cost-estimate.md).
 
-- **Problem.** The offered path executes the candidate and checks the funding afterwards (`offered_block.rs:222-280`). [C] P1 requires the check "**Before** executing any part of the deployment" (P1:2191). [P]
+- **Problem.** Before step G1-6, the offered path executed the candidate and checked the funding afterwards (`offered_block.rs:222-280` at the commit `72de6b52a`). [C] Since G1-6, the check runs before any runtime entry (`execution.rs:503-517`). [C] P1 requires the check "**Before** executing any part of the deployment" (P1:2191). [P]
 - **Change.** Before execution, the producer and every validator compute the known demand $`\Delta^{\mathrm{known}}_s`$ of each signature lane $`s`$ from the envelope and $`R_0`$. A signature lane is the part of the demand that one signature pays. The known demand counts communications plus introduction, transfer and trace bytes. One analysis computes it as the demand side of the linear resource proof. The same pass decides whether the estimate is complete, which means that no dynamic logic can add cost. A complete estimate is held exactly, plus the fee, and no remainder is held. For an incomplete estimate, a construct that the analysis cannot prove contributes 0, and the unprovable remainder $`R`$ is held in full. Here $`\mathrm{phloLimit}`$ and $`\mathrm{phloPrice}`$ are the signed phlo limit and the signed phlo price of the envelope:
 
 ```math
@@ -439,45 +472,42 @@ R \;=\; \Bigl(\mathrm{phloLimit} - \sum_{s} \Delta^{\mathrm{known}}_s\Bigr) \cdo
 
 - **Rejection.** If the holds do not fit the supply at $`R_0`$, the candidate never enters the runtime. The rejection has no effect and no charge (DR-64 decision 5).
 - **Only the client's demand.** The check holds only the client's demand, because P1's acceptance protocol checks only that demand (P1:2191-2200). A lane counts for the client when a source of the envelope may pay it. That is, a source is located at the purse of the lane, or a source permits the lane for at least one class. A signed permission sponsors a lane, and P2 checks one local proof per purse (P2:1520-1527). The demand of every other lane leaves the holds and makes the estimate incomplete. An example is the continuation of a funding slot, which deposits on the slot fund when it runs (P1:1534-1630). The user decided this rule on 2026-10-11, and DR-124 (the live check of the client's demand) records it.
-- **Casper footprint.** None for the check itself. The user moved the code motion of G2 ahead of the live check. That step moves the single-offer play and replay code out of `runtime.rs` and `runtime_manager.rs` into cost-accounting code. Then the check lives entirely in cost-accounting code: the analysis, a new gate module and the offered execution path (`execution.rs:413-631`). Settlement keeps charging the measured use directly, so no hold floor is added. No message format changes. Legacy shards are unchanged.
-- **Analyzers.** The check uses the static demand analyzer (`delta_sigma.rs`) and the lexical name resolver (`lexical.rs`). Both recurse today, so a deeply nested deploy could overflow a node's stack. The F1R3Lang branches already have iterative versions of the analyzer's four walks (merge commit `29b729551`). The lane backports them verbatim, with a citation. No branch makes the resolver metered, linear or stack-safe. The lane therefore adds those three properties itself, in the style of the stack-safe pushdown automata (PDAs) of `feature/mettail`.
-- **A defect in the resolver.** The resolver gives a name created inside a receive body the parent's randomness (`lexical.rs:53-56`). The runtime builds that name from the received data (`dispatch.rs:63-79`). Such names must count as dynamic demand, so the held limit covers them. Step G1-3 fixed this defect, and DR-121 (names that a receive body creates are dynamic) records the fix. [C]
+- **Casper footprint.** None for the check itself. The user moved the code motion of G2 ahead of the live check. That step moves the single-offer play and replay code out of `runtime.rs` and `runtime_manager.rs` into cost-accounting code. Then the check lives entirely in cost-accounting code: the analysis, a new gate module and the offered execution path (`execution.rs:444-666`). Settlement keeps charging the measured use directly, so no hold floor is added. No message format changes. Legacy shards are unchanged.
+- **Analyzers.** The check uses the static demand analyzer (`delta_sigma.rs`) and the lexical name resolver (`lexical.rs`). Both recursed at the commit `17e07307f`, so a deeply nested deploy could overflow a node's stack. Step G1-1 backported the iterative walks of the merge commit `29b729551` verbatim, with a citation. No branch had a metered or stack-safe resolver, so step G1-2 built one, in the style of the stack-safe pushdown automata (PDAs) of `feature/mettail`. Since the commit `8527aa6e2`, the helper `signature_lane` also marks a signature that holds a variable as dynamic. DR-122 (the linear cost estimate) records this as its item 11.
+- **A defect in the resolver.** Before step G1-3, the resolver gave a name created inside a receive body the parent's randomness (`lexical.rs:53-56` at `17e07307f`). The runtime builds that name from the received data (`dispatch.rs:61-77`). Such names count as dynamic demand, so the held limit covers them. Step G1-3 fixed this defect, and DR-121 (names that a receive body creates are dynamic) records the fix. [C]
 - **Effect on clients.** [I]
-  - An offer with an incomplete estimate is accepted only if its eligible sources can hold $`\mathrm{phloLimit} \cdot \mathrm{phloPrice} + 1`$ at $`R_0`$. Most real deploys call stored contracts, so most estimates are incomplete. Some offers that succeed today will therefore be rejected.
-  - The estimate counts each communication once for each participant. It can therefore reach twice the realized use in compute, transfer and trace. An offer whose estimate exceeds its signed limit is rejected.
+  - An offer with an incomplete estimate is accepted only if its sources can hold $`\mathrm{phloLimit} \cdot \mathrm{phloPrice} + 1`$ at $`R_0`$. Eligible sources hold the known demand and the fee. Signed sources that are not on-chain purses hold the remainder. Most real deploys call stored contracts, so most estimates are incomplete. Some offers that succeeded before step G1-6 are now rejected.
+  - On-chain private-name purses hold nothing before execution. No run has shown their authority yet (`gate.rs:865-869`), and `authorize_wallets` already forbids them the fee (`direct_wallet_funding.rs:237-240`). This is rule G-5 of G1, a gap fill of its implementation map. So the gateway call now fails at the check (DR-124, §6.2). [C]
+  - The estimate counts each communication once for each participant. A communication of a receive with $`n`$ binds has $`n + 1`$ participants. When they share a region, the estimate reaches $`n + 1`$ times the realized use in compute, transfer and trace. That is twice the realized use for a binary communication. An offer whose estimate exceeds its signed limit is rejected.
   - Clients such as Embers must size the phlo limit to their balances and to the estimate. The estimate depends only on the envelope and on public consensus inputs, so a client can compute it before signing.
   - An offer with several sources needs one more rule, which [Section 14 of the design document](cost-accounting-impl/linear-cost-estimate.md#14-the-client-sizing-rule) states and proves.
-- **Open points.** [C][I]
-  - Before the check goes live, the offered test fixtures must fit their holds. An incomplete estimate holds the whole signed limit.
-  - The shared helper (`casper/tests/helper/offered_deploy.rs:49-52`) signs a hold of 200,000,001 against test vaults of 9,000,000. About 52 tests that pass today would therefore be rejected at the check.
-  - The user decided on 2026-10-10 to raise the funded test vaults to $`10^{12}`$.
-  - The 64-source test needs no change. Its term is complete, so its holds land per class of charge on the one source of each class.
-- **Verification.** `EndToEndAuthority.v` must extend its branch lemmas to the held remainder. Tests must show that an underfunded offer never enters the runtime.
+- **Fixtures.** [C] An incomplete estimate holds the whole signed limit. The user decided on 2026-10-10 to raise the funded test vaults to $`10^{12}`$. The fixture step of G1 did so (commit `419629883`). The hold of 200,000,001 that the shared helper signs now fits. The 64-source test needed no change. Its term is complete, so its holds land per class of charge on the one source of each class.
+- **Verification.** `EndToEndAuthority.v` extends its branch lemmas to the held remainder (`EndToEndAuthority.v:612-665`). The test `an_underfunded_offer_never_enters_the_runtime_and_pays_no_fee` shows that an underfunded offer never enters the runtime (`offered_admission_api_test.rs:468`). [C]
 
 ### 4.2 G2: several offered deploys per block as an ordered batch executor (DR-65)
 
-**Status: approved on 2026-10-10. Not started.**
+**Status: approved on 2026-10-10. Step G2-1 is committed (`72de6b52a`). Step G1-7 enforces item 5 of DR-65 for one offer per block (`88f4176db`). Step G2-2 and the later steps are not started.**
 
 - **Problem.** A block holds at most one offer (`block_creator.rs:1910-1916`). Replay requires one isolated candidate (`offered_block.rs:784-788`). [C]
 - **Change.** A block holds several offers in canonical order. Member $`i`$ funds from $`R_0`$ and executes from $`R_{i-1}`$, the root after member $`i - 1`$. Members that share a purse form one group. Let $`\mathrm{hold}_m(p)`$ be the hold of member $`m`$ on purse $`p`$, and let $`\mathrm{supply}_{R_0}(p)`$ be the balance of $`p`$ at $`R_0`$. If one purse $`p`$ of a group $`G`$ has $`\sum_{m \in G} \mathrm{hold}_m(p) > \mathrm{supply}_{R_0}(p)`$, every member of $`G`$ is rejected. This is P1's simultaneous-arrival rule (P1:2271-2287). A held-capacity guard keeps the holds of later members available.
 - **Design choice.** The member loop is built as an ordered batch-executor API. The parallel executor of §7.10 can then parallelize it, and the executor of §7.6 can feed it finalized blocks. [I]
-- **Casper footprint.** A refactor first moves the single-offer play code out of `runtime.rs` into a new cost-accounting module. That step changes about −230 and +25 lines in `runtime.rs`. Then `runtime_manager.rs` (about 40 lines), `replay_runtime.rs` (about 10), `block_creator.rs` (about 45) and `errors.rs` (about 10) change. All changes sit behind the v6 seam.
+- **Casper footprint.** Step G2-1 moved the single-offer play and replay code into a cost-accounting module: `runtime.rs` +12/−289 and `runtime_manager.rs` +28/−554 (commit `72de6b52a`). The later steps still touch `replay_runtime.rs`, `block_creator.rs` and `errors.rs`. Their sizes need a new estimate. All changes sit behind the v6 seam.
 - **Decided points.** [I]
-  - Member $`i`$ is accepted at $`R_0`$ but reads its settlement inputs at $`R_{i-1}`$. Two offers of one signer share a cursor scope, so a read at $`R_0`$ makes the second settlement fail. This amends DR-65, and the user approved it on 2026-10-10.
+  - Member $`i`$ is accepted at $`R_0`$ but reads its settlement inputs at $`R_{i-1}`$. Two offers of one signer share a cursor scope, so a read at $`R_0`$ makes the second settlement fail. This amends DR-65, and the user approved it on 2026-10-10. An amendment of 2026-10-12 records it in DR-65.
   - The guard is item 5 of DR-65 as adopted. Here $`\mathrm{balance}_{\mathrm{after}}(p)`$ is the balance of purse $`p`$ after member $`i`$ executes, and $`\mathrm{debit}_i(p)`$ is the debit of member $`i`$ on $`p`$, fee included. The guard requires $`\mathrm{balance}_{\mathrm{after}}(p) - \mathrm{debit}_i(p) \geq \sum_{j>i} \mathrm{hold}_j(p)`$. Settlement charges the measured use directly, so this one condition is exact. An earlier draft added a second condition, which only a settlement floor needed.
   - The design also caps the funding capacity of each member on a purse at the purse balance minus the later holds. The cap applies on the success path and on the rollback path, so a member never draws on funds that a later member holds.
-- **Verification.** The planned model `SameBlockFundingGroups.tla` must check GroupAllOrNone, NoOverdraft, GateBeforeExecute, HeldCapacityGuard and DecisionPermutationInvariant. Negative controls must cover prefix admission and a missing held guard. Rocq must prove the three group lemmas of DR-65.
+- **Verification.** The planned model `SameBlockFundingGroups.tla` must check GroupAllOrNone, NoOverdraft, GateBeforeExecute, HeldCapacityGuard and DecisionPermutationInvariant. Negative controls must cover prefix admission and a missing held guard. Rocq must prove the three group lemmas of DR-65. `HeldCapacityGuard.v` already proves `held_capacity_guard_preserves_later_holds` without a settlement floor (`HeldCapacityGuard.v:67`). The other two lemmas and the TLA+ model remain.
 
 ### 4.3 G3: installer funding (DR-68)
 
 **Status: approved on 2026-10-10, including the two changes to DR-68 that the decided points below describe. Not started.**
 
-- **Problem.** Funding eligibility admits only the sources of the triggering envelope (`family_selection.rs:163-186`). [C] A continuation that an installer stored therefore cannot draw on the installer's purse, and the gateway flow fails (DR-68 context).
+- **Problem.** Funding eligibility admits only the signed sources of the triggering envelope (`family_selection.rs:163-186` at the commit `17e07307f`, now `source_permits` at `family_selection.rs:89-120`). [C] Another owner's purse can be a source only in two existing ways: through a grant to a named delegate key, or as an on-chain private-name purse whose authority the run observes (`direct_wallet_funding.rs:289-300`). [C] So a continuation that an installer stored cannot draw on the installer's key wallet for an arbitrary caller (DR-68 context). The gateway flow fails today. The check before execution rejects it first, because rule G-5 gives its on-chain slot purses no hold (§6.2). [C]
 - **Change.** The installer's located purse becomes an eligible source for obligations in the installer's stored signed region. A signed region is the part of a term under one signature $`s`$, as in $`\{P\}_s`$. Its seal is the stored record of that signature. When that budget is exhausted, the interaction does not fire and has no charge. This is the token gating of P1's rules.
 - **Decided points.** [C][I]
-  - "Does not fire" needs a veto in the RSpace accounting observer, and no veto exists today. A denied COMM aborts the deploy (`rholang/src/rust/interpreter/accounting/mod.rs:2079-2084`). Until a veto exists, the node rejects the triggering deploy with no charge. This interim rule deviates from DR-68, and the user approved it on 2026-10-10. The veto stays a tracked follow-up.
+  - "Does not fire" needs a veto. The accounting observer of RSpace has none (`rspace_interface.rs:116-122`), and a denied COMM aborts the deploy (`accounting/mod.rs:2079-2084`). RSpace already vetoes commits for `where` guards through `Match::check_commit` (`match.rs:34-39`, `space_matcher.rs:184-199`). That hook keeps the data and the continuation. Until a veto exists, the node rejects the triggering deploy with no charge. This interim rule deviates from DR-68, and the user approved it on 2026-10-10. The veto stays a tracked follow-up. The commit veto above puts the premise of this interim rule under review in G3 (audit of 2026-10-12).
   - `eval_cost_signed_term` (`rholang/src/rust/interpreter/reduce.rs:1920`) does not check the signer.
-  - User syntax cannot create a key signature. Key regions come only from the deploy's own funding signature (`rholang/src/rust/interpreter/accounting/mod.rs:1359-1399`), and `vault_payer` maps only key-shaped signatures to a wallet (`casper/src/rust/util/rholang/costacc/vault_payer.rs:28-61`).
+  - User syntax cannot create a key signature. Key regions come only from the deploy's own funding signature (`accounting/mod.rs:1359-1399`). `vault_payer` maps every non-Unit signature to a purse (`vault_payer.rs:45-103`). A key ground maps to its key wallet. A private name maps to its on-chain purse. Any other signature, including a compound of joint owners, maps to a purse keyed by its lane hash.
   - User syntax can still create spelled, quoted and held-name signatures. So G3 funds only seals whose signature locates a key wallet, and only seals that existed at $`R_0`$. This narrows DR-68, and the user approved it on 2026-10-10.
 - **Casper footprint.** Cost-accounting code only. No dev Casper file changes.
 
@@ -489,7 +519,7 @@ R \;=\; \Bigl(\mathrm{phloLimit} - \sum_{s} \Delta^{\mathrm{known}}_s\Bigr) \cdo
 
 **Shape.** The rule comes from the deploy formats. A merge is a v6 merge when a parent or scope block other than genesis holds an offered user deploy. Validation already rejects mixed formats on v6 shards, so the rule needs no shard flag. The user chose this variant on 2026-10-10, because it removes three Casper files from the change. The rule has two paths below dev's dispatcher.
 
-- **Fast path.** When the eight fast-path conditions F1 to F8 of the table below all hold, the rule composes all branches with `compute_merged_state` and rejects nothing.
+- **Fast path.** When the eight fast-path conditions F1 to F8 all hold, the rule composes all branches with `compute_merged_state` and rejects nothing. The table below states them. The code numbers its own checks differently. `fast.rs` runs the checks `F1` to `F13` and then composes as `F14` (`fast.rs:6, 145-245`). For example, condition F2 is the check `F3`, and conditions F4 to F7 are the checks `F7`, `F10`, `F11` and `F12`.
 - **Slow path.** Otherwise one ordered pass replaces the option search.
 
 | Condition | Meaning |
@@ -503,7 +533,7 @@ R \;=\; \Bigl(\mathrm{phloLimit} - \sum_{s} \Delta^{\mathrm{known}}_s\Bigr) \cdo
 | F7 | No channel fails the overfill predicate on the full set (`rholang_merging_logic.rs:237-267`), and no plain change mixes with a folded channel. |
 | F8 | Every IntegerAdd channel stays within `i64` bounds. The sums use `i128` over per-chain diffs. |
 
-The slow path is one pass in a strict total order $`K`$ on branches. The order puts settled (pinned) branches first. It then ranks branches with more prior losses first, then lower height, and then by dev's branch comparator (`conflict_set_merger.rs:40-78`).
+The slow path is one pass in a strict total order $`K`$ on branches. The order puts settled (pinned) branches first. It then ranks branches with more prior losses first, then lower height, and then by dev's branch comparator (`conflict_set_merger.rs:40-81`).
 
 The pass uses these names. `unavailable(b)` is the part of branch `b` that the availability walk rejects. `C[b]` is the set of branches that conflict with `b`. The purse ledger sums the per-chain diffs of each IntegerAdd channel. It admits `b` only if no purse balance goes below zero and no sum overflows. Pre-rejected chains are the chains that conflict with the base or with settled content before the pass starts.
 
@@ -523,24 +553,24 @@ The pass uses these names. `unavailable(b)` is the part of branch `b` that the a
       close the lineage again
 ```
 
-A failure prefers a contributor whose diff has the failure's sign. If no such contributor exists, for example on a negative base, the pass drops a contributor of either sign. Each trim round therefore removes at least one branch, and the pass terminates. The composition folds the survivors in canonical order (`conflict_set_merger.rs:458-468`), so the result does not depend on hash-set order. [C][I]
+A failure prefers a contributor whose diff has the failure's sign. If no such contributor exists, for example on a negative base, the pass drops a contributor of either sign. Each trim round therefore removes at least one branch, and the pass terminates. The composition folds the survivors in canonical order (`conflict_set_merger.rs:461-471`), so the result does not depend on hash-set order. [C][I]
 
-**What it eliminates.** [C][M]
+**What it eliminates.** [I][M]
 
 | Measure | Fast path | Slow path |
 |---|---|---|
-| Dev's Casper merge lines that do not run (of 4,477) | about 2,828 (63 %) | about 887 (20 %) |
-| Net merge logic eliminated | about 56 % | not measured |
-| CPU (central processing unit) time on the measured tests | adjudication, about 1 to 1.5 % of test work | the same |
+| Dev's Casper merge lines that do not run (of 4,477) | about 2,810 (63 %) | about 887 (20 %) |
+| Net merge logic eliminated | about 55 % | not measured |
+| CPU (central processing unit) time on the measured tests | It skips the adjudication. Dev's merge call took 1.0 to 1.6 % of test work. | One ordered pass replaces the option search. |
 | What stays | the eager merge index, 7.8 to 10.5 % of test work | the same |
 
-The line counts come from the step inventory of the v6 merge-rule design. It counts non-blank, non-comment lines at HEAD. The 63 % counts dev lines that the fast path does not run. It is not the amount of logic removed. The arbiter of the next paragraph required this label as its change C8.
+The line counts come from version 4 of the v6 merge-rule design. They are estimates of its inventory, which the repository does not hold, and not measurements of the committed code. The inventory counts non-blank, non-comment lines before the rule was committed. The 63 % counts dev lines that the fast path does not run. It is not the amount of logic removed. The arbiter of the next paragraph required this label as its change C8.
 
 **Arbitration.** An independent arbiter checked version 2 of the design and accepted it with ten required changes, C1 to C10. Each change has a level. HIGH marks a defect that must close before implementation. MEDIUM marks a required change of the design, its proofs or its plan. LOW marks a precision fix. [I]
 
 | ID | Level | Required change |
 |---|---|---|
-| C1 | HIGH | Add dev's folded-mixing rejection (`dag_merger.rs:437-461`) to F7 and to the pass. |
+| C1 | HIGH | Add dev's folded-mixing rejection (`dag_merger.rs:438-462`) to F7 and to the pass. |
 | C2 | HIGH | Run the deploy-identity check of F5 on the raw chain list. Chain equality uses only `deploys_with_cost` (`deploy_chain_index.rs:163-171`), so equal-cost copies collapse in a set. |
 | C3 | MEDIUM | Define F8 and the ledger over per-chain diffs. |
 | C4 | MEDIUM | Map availability-split errors to "the fast path fails" and to the rejection of that branch in the pass. |
@@ -570,9 +600,9 @@ Design v3 resolves C1 to C10. A third independent check accepted v3 with the cha
 
 The rule from the deploy formats removes three dev files from an earlier variant, which read a shard flag. System-only v6 merges use dev's merger, because they hold no offered user deploy. One cost remains on legacy shards: the rule reads the scope blocks before it selects dev's merger.
 
-**Verification plan.**
-- **Rocq.** `V6MergeOrder.v`, `V6MergeLedger.v` and `V6MergeOrderedPass.v` must prove order independence, conflict freedom, ledger validity, termination and fast-equals-slow. `CursorLinearity.v` and `CostCursorBuckets.v` cover the cursor arguments. Negative controls include an arrival-order tie-break and a missing claim check. Two more cover a set collapse that hides a duplicate and a sign-only repair that stalls on a negative base.
-- **TLA+.** `V6MergeSerialization.tla` must check three validators with permuted arrival orders. Ten failing configurations must each refute one named invariant. `CursorDuplicateDetection.tla`, `FeeCursorBranchMerge.tla` and `FeeCursorCells.tla` cover the cursors and the lock fix.
+**Verification (committed).**
+- **Rocq.** `V6MergeOrder.v`, `V6MergeLedger.v` and `V6MergeOrderedPass.v` prove order independence, conflict freedom, ledger validity, termination and fast-equals-slow. `CursorLinearity.v` and `CostCursorBuckets.v` cover the cursor arguments. Negative controls include an arrival-order tie-break and a missing claim check. Two more cover a set collapse that hides a duplicate and a sign-only repair that stalls on a negative base. The modules came with the commits `b496df9d8` and `7ab849b56`, with no admitted proof and no axiom.
+- **TLA+.** `V6MergeSerialization.tla` checks three validators with permuted arrival orders. Eighteen failing configurations each refute one named invariant. `CursorDuplicateDetection.tla`, `FeeCursorBranchMerge.tla` and `FeeCursorCells.tla` cover the cursors and the lock fix.
 
 **Same-signer sibling blocks: open for discussion.** [C][P][I] This is decision D-7, same-signer siblings, in §11.
 
@@ -591,10 +621,10 @@ The rule from the deploy formats removes three dev files from an earlier variant
 
 ### 4.5 The cost-cursor lock fix (bug 11004, DR-119)
 
-**Status: implemented and committed as `7ab849b56` on 2026-10-10.** The only Casper file that it changes is `SystemVault.rho`, with 88 lines added and 18 removed. Each replaced line stays as a comment that states its reason.
+**Status: implemented and committed as `7ab849b56` on 2026-10-10.** The only Casper source file that it changes is `SystemVault.rho`, with 88 lines added and 18 removed. It also restores dev lines in two dev specs, `exactly_once_spec.rs` and `verdict_convergence_spec.rs`. Each replaced line stays as a comment that states its reason.
 
-- **Problem.** `SystemVault.rho:52` declares one lock, and `:56` produces it once. `ensureCostCursor` consumes it on every call (`SystemVault.rho:145-167`). Every charged settlement therefore writes one shared channel. [C] P1 requires that "RSpace is never locked by a single deployment" (P1:333-334). [P]
-- **Effect.** Any two charged offered siblings conflict in a merge. A test relies on this fact today (`offered_funded_api_test.rs:1858-1861`). [C]
+- **Problem.** Before the fix, at the commit `b496df9d8`, `SystemVault.rho:52` declared one lock, and `:56` produced it once. `ensureCostCursor` consumed it on every call (`SystemVault.rho:145-167` at that commit). Every charged settlement therefore wrote one shared channel. [C] P1 requires that "RSpace is never locked by a single deployment" (P1:333-334). [P]
+- **Effect.** Before DR-119, any two charged offered siblings conflicted in a merge, and a test relied on it (`offered_funded_api_test.rs:1858-1861` at the commit `17e07307f`). DR-119 migrated that test to two siblings of one signer. [C]
 - **Change.** A settlement with an existing cursor takes no lock. A new cursor takes one of 256 bucket locks, keyed by the first byte of the Keccak-256 hash of its scope. The code checks again under the lock. Only cost-cursor code changes. The vault-creation code keeps dev's version, and its race is reported to the Casper team.
 - **Residual false conflicts.** [I] A new payer cohort, which is a set of payers that share charge scopes, creates two cursors. Two new cohorts in one merge collide with a probability of about $`4/256 = 1/64`$. With $`m`$ new cohorts the expected number of colliding pairs is $`\binom{m}{2}/64`$. That is about 0.7 for $`m = 10`$, so the chance of at least one collision is about one half.
 - **Order.** Without the v6 merge rule, sparse conflict graphs reach dev's exhaustive option search. The fix therefore lands second. [I]
@@ -604,8 +634,8 @@ The rule from the deploy formats removes three dev files from an earlier variant
 
 | Item | Record | Casper files touched | v6 only | Status |
 |---|---|---|---|---|
-| G1 | DR-64 | none after the code motion of G2, cost-accounting code only | yes | approved, preparatory steps committed |
-| G2 | DR-65 | `runtime.rs`, `runtime_manager.rs`, `replay_runtime.rs`, `block_creator.rs`, `errors.rs` | yes | approved, not started |
+| G1 | DR-64 | none after the code motion of G2, cost-accounting code only | yes | committed: the live check (G1-6) and the guard for one offer per block (G1-7) |
+| G2 | DR-65 | `runtime.rs` +12/−289 and `runtime_manager.rs` +28/−554 (G2-1). Later: `replay_runtime.rs`, `block_creator.rs`, `errors.rs`. | yes | G2-1 committed (`72de6b52a`). G2-2 onward not started. |
 | G3 | DR-68 | none, cost-accounting code only | yes | approved, not started |
 | v6 merge rule | DR-120 | 4 dev files, +104 / −13 lines, one new module | yes, by deploy format | committed (`b496df9d8`) |
 | Cost-cursor lock fix | DR-119 | `SystemVault.rho`, cost-cursor code only | called on v6 only | committed (`7ab849b56`) |
@@ -626,7 +656,7 @@ The rule from the deploy formats removes three dev files from an earlier variant
 | The tip is an ancestor of HEAD. It is the first parent of the merge `1d325b996` (2026-10-01). | `git merge-base` |
 | `1d325b996` merged dev `eb98d8e07` and states that it restored "dev's ordinary Casper protocol and consensus implementation". | the commit message of `1d325b996` |
 | From `f9bd3895d` to `1d325b996`, the Casper merge module, `interpreter_util.rs` and `block_creator.rs` changed by 4,466 insertions and 8,254 deletions. | `git diff --shortstat` |
-| At `f9bd3895d`, `casper/src/rust/util/rholang/acceptance.rs:2368` defines the block-assembly funding gate `admit_by_funding`. At HEAD no file under `casper/src` or `node/src` calls it. | `git grep` |
+| At `f9bd3895d`, `acceptance.rs:2368` defines `admit_by_funding`, the gate of DR-11. No production code called it there. The proposer's gate was `certify_state_bound_admission` (`block_creator.rs:3022-3030`), which ran the state-bound loop. The commit `d367bc11a` (2026-08-16) made that switch. At HEAD neither function exists. | `git grep`, `git log -G` |
 | At `f9bd3895d`, the multi-parent merge still ran dev's conflict search. `interpreter_util.rs:2756` calls `dag_merger::merge`, and `dag_merger.rs:2082` calls `conflict_set_merger::resolve_conflicts`, which is defined at `conflict_set_merger.rs:113`. | `git show` at `f9bd3895d` |
 | Against its dev merge base, the branch changed its five merge files by 2,482 insertions and 1,726 deletions. It reworked the merger. It did not remove it. | `git diff --shortstat` |
 
@@ -636,10 +666,10 @@ The rule from the deploy formats removes three dev files from an earlier variant
 
 | Expectation | What the branch did | Verdict | Key evidence at `f9bd3895d` |
 |---|---|---|---|
-| E1, merge logic | It reworked the merger into an exact-effect merge and removed no merge step. Non-test merge code grew from 7,490 to 8,299 lines (+10.8 %). [C] | **NOT MET** under every reading | Proposal reaches `dag_merger::merge` through `block_creator.rs:3580`. Validation reaches it through `validation_dispatcher.rs:400` and `interpreter_util.rs:895`. In a branch test, two funded charges by different payers on one shared cursor scope conflict. The merge rejects one of them after both ran (`casper/tests/util/rholang/monetary_cursor_branches.rs:142,207,215-216`). [C] |
-| E2, user alternatives | No user-facing alternative exists. Inside one proposal, a state-bound loop sorts the candidates canonically and admits a prefix of each funding group. [C] | **NOT MET.** Partly met only inside one proposer's block, under the reading "funding decides the competition". | Group closure in `runtime.rs:647,693,814,844,1116`. The prefix rule departs from the simultaneous-arrival rule of P1 (P1:2271-2287). Across sibling blocks, the merge decides after both blocks ran (`dag_merger.rs:104-121`, `conflict_set_merger.rs:353`). [C][P] |
+| E1, merge logic | It reworked the merger into an exact-effect merge and removed no merge step. Non-test merge code grew by about 11 %, from 7,587 to 8,415 lines, against the dev merge base `375933475`. The count runs up to the first `#[cfg(test)]` in `casper/src/rust/merging`, `rspace++/src/rspace/merger` and `rholang/src/rust/interpreter/merging`. [C] | **NOT MET** under every reading | Proposal reaches `dag_merger::merge` through `block_creator.rs:3580`. Validation reaches it through `validation_dispatcher.rs:400` and `interpreter_util.rs:895`. In a branch test, two funded charges by different payers on one shared cursor scope conflict. The merge rejects one of them after both ran (`casper/tests/util/rholang/monetary_cursor_branches.rs:142,207,215-216`). [C] |
+| E2, user alternatives | No mechanism lets a user pick the winner among alternatives. A user could already make alternatives exclusive by funding them from one purse or one funding slot. Compound signatures and the lollipop were native (`desugar.rs:7-13`, since the commit `3a4e03eb9`). Inside one proposal, a state-bound loop sorts the candidates canonically and admits a prefix of each funding group. [C] | **NOT MET.** Partly met only inside one proposer's block, under the reading "funding decides the competition". | Group closure in `runtime.rs:647,693,814,844,1116`. The prefix rule departs from the simultaneous-arrival rule of P1 (P1:2271-2287). Across sibling blocks, the merge decides after both blocks ran (`dag_merger.rs:104-121`, `conflict_set_merger.rs:353`). [C][P] |
 | E3, keep accepting blocks | Nothing lets a node accept a block before it executes the block. The proposer executes each candidate in a scratch runtime before admission. [C] | **NOT MET** for blocks. The weak reading, no node-wide lock on RSpace, already held on dev. | The state-bound loop (`runtime.rs:627-1190`). Every validator recomputes the merge (`interpreter_util.rs:895`) and replays the block (`interpreter_util.rs:1073`) before the block is valid. Replays share one permit (`runtime_manager.rs:147`, acquired at `:1283-1287`). [C] |
-| E4, performance | No change targets merge cost, and the branch measured nothing. On v6 it adds merge and admission work. [C][I] | **NOT MET**, and not measured | Per-deploy exact state witnesses (`block_index.rs:196,273`), a projection check on every merge (`dag_merger.rs:1205-1211`), and the execution of every candidate before admission (`runtime.rs:627-1190`). [C] |
+| E4, performance | No change targets merge cost. The branch has merge timing instrumentation but no profile of merge cost (session `01a0e3fe`, line 10822). On v6 it adds merge and admission work. [C][I] | **NOT MET**, and not measured | Per-deploy exact state witnesses (`block_index.rs:196,273`), a projection check on every merge (`dag_merger.rs:1205-1211`), and the execution of every candidate before admission (`runtime.rs:627-1190`). [C] |
 
 ### 5.2 What the codex logs say
 
@@ -649,7 +679,7 @@ The review searched the prompt history of codex and its session logs from May to
 - In the logged exchanges, codex rejected E1 and E4 and limited E3.
   - E1, on 2026-06-05: merge elimination "cannot mean all merge logic" (session `019e97d6`, line 718).
   - E1 and E2, on 2026-09-28: codex advised that the team "keep the residual multi-parent composition" and its conflict checks (session `01a0e3fe`, line 10252).
-  - E3, on the same day: a node can receive or check more blocks while work runs. However, it "cannot certify a block" until the execution and replay evidence of that block is complete. The certification concerns the final state root and the settlement of the block (session `01a0e3fe`, line 10252).
+  - E3, on the same day: a node can receive or check more blocks while work runs. However, it "cannot certify a block’s final state root and settlement before that block’s execution/replay evidence is complete" (session `01a0e3fe`, line 10252).
   - E4, on the same day: codex found "no profile establishing that merge causes a majority" of the current latency. It added that the non-Casper campaign "will not, by itself, remove most existing merge cost" (session `01a0e3fe`, line 10822).
 - The strongest "met" wording is in documents on the branch. [D]
   - DR-11 says that its gate "eliminates the run-to-completion lock and most merge analysis".
@@ -717,13 +747,13 @@ Each gap has a name. GAP-E1 to GAP-E4 are the gaps against the expectations E1 t
 - P1 says "substantially reduced", not "eliminated". The remainder is the shared-data residual (P1:363-366).
 
 **Code at HEAD.** [C]
-- The proposer merges before it plays (`interpreter_util.rs:930-940`).
-- Every validator recomputes the merge and compares the records (`interpreter_util.rs:423-532`).
+- The proposer merges before it plays (`interpreter_util.rs:932-942`).
+- Every validator recomputes the merge and compares the records (`interpreter_util.rs:425-534`).
 - Every validated block gets a merge index when the shard allows more than one parent (`validation_dispatcher.rs:340-375`).
-- The merger selects survivors after execution (`conflict_set_merger.rs:864-974`).
-- `dag_merger.rs` and `conflict_set_merger.rs` differ from dev by +26 and −22 lines.
+- On v6 merges, one ordered pass selects survivors after execution (`ordered.rs:242-270`). Legacy merges keep dev's option search (`conflict_set_merger.rs:870-980`).
+- At HEAD, `dag_merger.rs` and `conflict_set_merger.rs` differ from dev `93e38575e` by +103 and −34 lines. The v6 merge rule (`b496df9d8`) added most of them.
 
-**Why the interim work does not close the gap.** [I] The v6 merge rule skips about 63 % of dev's merge lines on its fast path. It still reads execution traces, because conditions F4 to F7 need the event-log index. The eager index stays at 7.8 to 10.5 % of test work. Merging therefore remains "a separate analysis pass over execution traces", which P1:351-353 rules out.
+**Why the interim work does not close the gap.** [I] The v6 merge rule still reads execution traces. Its design inventory estimates that its fast path skips about 63 % of dev's merge lines. The repository does not hold that inventory. Its checks `F7` and `F10` to `F12` (`fast.rs:187-231`) are the conditions F4 to F7 of §4.4. They read the event logs and the changes of the chains in the block index. The eager index stays at 7.8 to 10.5 % of test work. Merging therefore remains "a separate analysis pass over execution traces", which P1:351-353 rules out.
 
 **Recommended resolution.** Order-then-execute on v6 shards (§7). No state merge exists there. The executor's gate decides class S conflicts in the canonical order, and the canonical order serializes class D. The v6 merge rule retires on v6 shards in Phase 3, the order-then-execute phase of §10. Legacy shards keep dev's merger.
 
@@ -737,14 +767,14 @@ Each gap has a name. GAP-E1 to GAP-E4 are the gaps against the expectations E1 t
 - Choice inside one deployment: acceptance holds the largest branch, and settlement refunds the rest (P1:2129-2152).
 
 **Code at HEAD.** [C]
-- At HEAD, no production path runs the static analysis (§3.6, note on DR-15).
+- Since the commit `e64261134`, play and every replay run the linear cost estimate before execution (`execution.rs:503`, `replay.rs:1642`). It holds only the client's demand, for the one offer of a block.
 - The proposer selects at most one offer per block (`block_creator.rs:1910-1916`).
-- The global cost-cursor lock makes charged offered siblings conflict (`SystemVault.rho:52-56, 145-167`).
-- The merger picks the survivor after both deploys ran (`conflict_set_merger.rs:864-974`).
+- Since the commit `7ab849b56`, an existing cursor takes no lock, and a new cursor takes one of 256 bucket locks (`SystemVault.rho:63-72, 186-229`). Siblings of different payers compose. Same-signer siblings still conflict (D-7).
+- On v6 merges, one ordered pass picks the survivor after both deploys ran (`ordered.rs:242-270`). Legacy merges keep dev's option search (`conflict_set_merger.rs:870-980`).
 
 **Why the interim work does not close the gap.** [I]
-- G1 and G2 apply P1's gate and arrival rules inside one block only.
-- Across validators, the v6 merge rule picks the survivor after execution by its order key $`K`$. Neither the signer's funding nor an arrival order picks it.
+- G1 applies P1's gate to the one offer of a block today. G2, which is not yet built, will apply the arrival rules inside one block.
+- Across validators, the v6 merge rule orders branches by $`K`$ after execution. It then drops the last branch by $`K`$ that would overdraw a balance (`ordered.rs:242-270, 344-395`). No arrival order plays a part.
 - The interim keeps one of two fully funded same-signer siblings (decision D-7, same-signer siblings under (a), §11). P1:360-363 serializes them, and both can succeed when the purse funds both.
 
 **How a user expresses alternatives under cost accounting.** [I]
@@ -752,6 +782,10 @@ Each gap has a name. GAP-E1 to GAP-E4 are the gaps against the expectations E1 t
 - Arrival order picks the winner (P1:2245-2269). Simultaneous arrival rejects both (P1:2271-2287).
 - A choice by a condition belongs inside one deployment as branches (P1:2129-2152).
 - No new envelope field is necessary.
+
+**Consent that the code already supports.** [C] The code already lets several owners consent to one deployment. A compound signature needs every owner (P1:380-397). Each required owner sets a price ceiling and can veto a draw (`phlo_bounds.rs:31-50`). A certified minimax allocation sets the shares (`funding_minimax.rs`). These mechanisms decide funding inside one envelope. They do not order envelopes across validators.
+
+**The funding-slot gap.** [C] At HEAD the slot mechanism above fails. Rule G-5 gives an on-chain slot purse no hold before execution (`gate.rs:865-869`, `direct_wallet_funding.rs:237-240`). The funding-slot test is a known failure. With the provisional caps, the check rejects the gateway call with "200001 atomic units of the remainder fit no source" (DR-124, §6.10). The resolution is pending (G3 and the G1 rule G-5).
 
 **What remains unmet.** A user cannot rank the alternatives that the same user submits separately. The canonical order ranks them. Sub-question Q3 of decision D-0 (what Greg means, §11) asks who must pick the winner: the canonical order or the submitting user.
 
@@ -772,17 +806,17 @@ Each gap has a name. GAP-E1 to GAP-E4 are the gaps against the expectations E1 t
 - A v6 block plays one envelope (`runtime.rs:346`), and the producer replays it (`offered_block.rs:315-323`).
 - More than one envelope is an error (`runtime.rs:364-373`, `offered_block.rs:784-788`).
 - The legacy loop plays each deploy to termination (`runtime.rs:455-476`).
-- Validators merge and replay a block before they accept it (`interpreter_util.rs:400-555`).
-- A node replays one block at a time (`runtime_manager.rs:198-205, 1226-1229`).
+- Validators merge and replay a block before they accept it (`interpreter_util.rs:402-557`).
+- A node replays one legacy block at a time (`runtime_manager.rs:198-205, 1226-1229`). An offered replay takes no permit (`runtime_manager.rs:1317-1333`).
 - Each native frontier forms one conflict component (`deterministic_reduction.rs:1068-1072, 1120-1122`).
 
 **Why the interim work does not close the gap.** [I]
 - In execute-then-merge, the block content includes its post-state root (`CasperMessage.proto:597-605`). A validator can only check that root by execution. Acceptance of a block therefore waits for execution.
-- A proposer needs the merged parent state before it can execute (`interpreter_util.rs:930-1005`).
+- A proposer needs the merged parent state before it can execute (`interpreter_util.rs:932-1007`).
 - The v6 merge rule changes how the merge decides, not when it runs.
 - A parallel executor shortens execution but does not decouple acceptance from it.
 
-**Recommended resolution.** Order-then-execute (§7). Consensus accepts a block by a structural validity predicate, as P1:1708-1714 states. Execution follows finality and never blocks consensus.
+**Recommended resolution.** Order-then-execute (§7). Consensus accepts a block by a structural predicate. P1:1708-1714 calls validity a syntactic predicate that requires token backing. Under §7 the executor's gate checks that backing after finality. [I] Execution follows finality and never blocks consensus.
 
 ### 6.4 GAP-E4: the performance claim
 
@@ -792,9 +826,9 @@ Each gap has a name. GAP-E1 to GAP-E4 are the gaps against the expectations E1 t
 - P2 attributes the gain to "*protocol fusion*" of fuel acquisition into single transitions (P2:856-865).
 - No paper measures F1r3node.
 
-**Code and data at HEAD.** [M] §9 gives the data. In short, the merge dominated block cost in the August soak. A code comment records that the parents-post-state stage "dominates block cost in sustained-load soaks" (`metrics_constants.rs:125-128`). After dev's fixes, the visible costs are the per-block reset, the replay and the checkpoint cycle.
+**Code and data at HEAD.** [M] §9 gives the data. In short, the merge dominated block cost in the August soak. A code comment records that the parents-post-state stage "dominates block cost in sustained-load soaks while the `dag.merge.*` buckets stay small" (`metrics_constants.rs:125-128`). In the August soak, settled-signature probes took 92 % of the merge call. After dev's fixes, the roots-lock wait stays high but does not separate failing sessions (`docs/ToDos.md:201-204`). Dev's analysis of a later soak, run 37343966570, points to the finality round length and to blocks that wait for missing parents (dev `74ab85dd2`).
 
-**Why the interim work does not close the gap.** [I] The v6 merge rule removes the adjudication, about 1 to 1.5 % of test work. The eager index and the reset, replay and checkpoint cycle stay.
+**Why the interim work does not close the gap.** [I] The fast path skips the adjudication. The slow path replaces the option search with one ordered pass. Dev's merge call took 1.0 to 1.6 % of test work, and `resolve_conflicts` took 0.9 % in one profiled test (§9.1). The eager index and the reset, replay and checkpoint cycle stay.
 
 **Recommended resolution.** Measure first (§9.3). Then build order-then-execute, which removes the most work and takes replay and lock waits off the consensus path.
 
@@ -802,17 +836,17 @@ Each gap has a name. GAP-E1 to GAP-E4 are the gaps against the expectations E1 t
 
 **Paper.** "The for-comprehension is the transaction primitive ... A deployment may contain multiple transactions" (P1:318-325). [P]
 
-**Code at HEAD.** [C] The native meter charges each COMM (DR-32). Funding admits only the sources of the envelope itself (`family_selection.rs:163-186`).
+**Code at HEAD.** [C] The native meter charges each COMM (DR-32). Funding admits only the sources of the envelope itself (`family_selection.rs:89-120, 242-248`).
 
-**Gap.** A continuation that one signer stored cannot draw on that signer's purse when another signer triggers it. Multi-deployment transactions "via shared signature channels" (P1:323-325) therefore fail.
+**Gap.** [C] P1's funding-slot form exists (`offered_gateway_slot_api_test.rs:492`), and a retained birth funds a later prepaid draw (`offered_prepaid_api_test.rs:175`). At HEAD the slot test fails, because rule G-5 gives an on-chain purse no hold before execution. No code lets a stored continuation draw on its installer's wallet.
 
-**Recommended resolution.** Finish G1 and G3 (§4). No architecture change is necessary. Every candidate design needs them.
+**Recommended resolution.** Pending (G3 and the G1 rule G-5). G1 itself is live. No architecture change is necessary, and every candidate design needs the resolution.
 
 ### 6.6 GAP-ii: concurrent acceptance
 
 **Paper.** "RSpace can accept deployments *at any time* ... Multiple deployments can be active simultaneously" (P1:327-334). [P]
 
-**Code at HEAD.** [C] One offer per block (`block_creator.rs:1910-1916`). One replay at a time (`runtime_manager.rs:198-205`).
+**Code at HEAD.** [C] One offer per block (`block_creator.rs:1910-1916`). One legacy replay at a time, and an offered replay takes no permit (`runtime_manager.rs:198-205, 1317-1333`).
 
 **Why the interim work does not close the gap.** [I] G2 accepts several offers in one block. Across blocks, acceptance still waits for the merge and the replay.
 
@@ -822,7 +856,7 @@ Each gap has a name. GAP-E1 to GAP-E4 are the gaps against the expectations E1 t
 
 **Paper.** "the F1R3Node can accept and begin executing deployments in parallel" (P1:338-339). [P]
 
-**Code at HEAD.** [C] Play and replay are sequential (`runtime.rs:461-476`, `runtime_manager.rs:1226-1229`).
+**Code at HEAD.** [C] Play and replay are sequential (`runtime.rs:455-476`). A legacy replay holds the one replay permit (`runtime_manager.rs:1226-1229`), and an offered replay runs one isolated candidate (`offered_block.rs:784-788`).
 
 **Why the interim work does not close the gap.** [I] G2 runs the members of a block one after another in canonical order.
 
@@ -832,7 +866,7 @@ Each gap has a name. GAP-E1 to GAP-E4 are the gaps against the expectations E1 t
 
 **Paper.** "Merging is no longer a separate analysis pass over execution traces --- it is a consequence of the signature and cost-accounting structure of the calculus itself." (P1:351-354) [P]
 
-**Code at HEAD.** [C] The merger searches for survivors after execution (`conflict_set_merger.rs:864-974`).
+**Code at HEAD.** [C] On v6 merges, one ordered pass selects survivors after execution (`ordered.rs:242-270`). Legacy merges keep dev's option search (`conflict_set_merger.rs:870-980`).
 
 **Why the interim work does not close the gap.** [I] Inside a block, G1 and G2 decide conflicts by the linear proof. Across validators, the v6 merge rule still analyzes traces after execution.
 
@@ -844,12 +878,12 @@ The matrix rates each candidate design against the expectations and against the 
 
 | Design | E1 merge logic | E2 user alternatives | E3 keep accepting blocks | E4 performance | (i) transaction boundaries | (ii) concurrent acceptance | (iii) throughput | (iv) merge via signatures |
 |---|---|---|---|---|---|---|---|---|
-| (a) v6 merge rule, G1, G2 | Partial | Partial | Unmet | Marginal | Met with G1 and G3 | Partial | Unmet | Partial |
-| (b) parallel batch executor, G1, G2, lock fix | Unmet | Partial | Partial | Partial | Met with G1 and G3 | In a block | In a block | In a block |
-| (c) order-then-execute, sequential executor | Met on v6 | Met | Met | Largest, not measured | Met with G1 and G3 | Partial | Unmet | Met |
-| (c)+(b) | Met on v6 | Met | Met | Largest, not measured | Met with G1 and G3 | Met | Met | Met |
-| (d1) purse lanes | Partial | Met for funding | Unmet | Small | Met with G1 and G3 | Partial | Unmet | Partial |
-| (d5) single-parent v6 | Mostly | Unmet | Unmet | Mixed | Met with G1 and G3 | Unmet | Unmet | Unmet |
+| (a) v6 merge rule, G1, G2 | Partial | Partial | Unmet | Marginal | Pending (G3 and the G1 rule G-5) | Partial | Unmet | Partial |
+| (b) parallel batch executor, G1, G2, lock fix | Unmet | Partial | Partial | Partial | Pending (G3 and the G1 rule G-5) | In a block | In a block | In a block |
+| (c) order-then-execute, sequential executor | Met on v6 | Met if Q3 picks the canonical order | Met | Largest, not measured | Pending (G3 and the G1 rule G-5) | Partial | Unmet | Met |
+| (c)+(b) | Met on v6 | Met if Q3 picks the canonical order | Met | Largest, not measured | Pending (G3 and the G1 rule G-5) | Met | Met | Met |
+| (d1) purse lanes | Partial | Met for funding | Unmet | Small | Pending (G3 and the G1 rule G-5) | Partial | Unmet | Partial |
+| (d5) single-parent v6 | Mostly | Unmet | Unmet | Mixed | Pending (G3 and the G1 rule G-5) | Unmet | Unmet | Unmet |
 
 ### 6.10 Related gaps outside the four expectations
 
@@ -862,15 +896,23 @@ Two further gaps affect every design. Both must close before a v6 network carrie
 | `registry_initializer_is_funded_on_a_fresh_genesis` (`offered_funded_api_test.rs:987`) | Fails: "host work budget is rejected for verification operations: usage 20555630, requested 1" | Passes |
 | `another_signer_initializes_a_registry_environment_after_a_registry_insert` (`offered_funded_api_test.rs:1025`) | Fails: "host work budget is rejected for verification operations: usage 20550481, requested 1" | Passes |
 
-- **Source.** The test-suite runs of 2026-10-09 for work item D-F2. That item is the reuse of the reducer's measurement of each introduction (DR-118). The logs are `target/verification/d-f2/suite-committed.log` (lines 929-981) and `suite-provisional.log` (lines 933, 940). These local logs are not in the repository.
+- **Source.** The test-suite runs of 2026-10-09 for work item D-F2. That item is the reuse of the reducer's measurement of each introduction (DR-118). The logs are `target/verification/d-f2/suite-committed.log` (lines 929-981) and `suite-provisional.log` (lines 933, 940). The suites of 2026-10-12 at HEAD show the same results (`target/verification/bug-11008/`). These local logs are not in the repository.
 - **The two cap sets.** The committed caps are the protocol-6 host-work limits in `cost_protocol_limits.rs` and `production_limits.rs` at HEAD. The provisional caps are a candidate set of larger limits that the lane tests but has not committed. They change seven limit values in the same two files.
 - **Limit of this evidence.** Both errors name the verification-operations dimension of the host-work budget. This document does not identify the smallest limit that the two tests need.
 - **Why it matters for Casper.** The protocol-6 host-work caps are consensus constants. Play and replay must reject the same work. A shard must therefore fix them before activation.
 - **Resolution.** Finish phase D of epic 8946, an internal phase of that epic. That work removes the last copies and repeated source builds from replay and play. Then measure the Embers workloads and settle the caps. Commit them with the activation of the v6 genesis.
 
-**Settlement log-channel continuations.** [C][I] A vault owner can register a log channel (`SystemVault.rho:551-571`). Deposits and settlement steps send to it (`MakeMint.rho:55-88, 130-174`). System deploys run as the system payer under `Cost::unsafe_max()` (`runtime.rs:1447-1459`). A user continuation that fires at settlement is therefore neither metered nor bounded.
+**Settlement log-channel continuations.** [C][I] A vault owner can register a log channel (`SystemVault.rho:621-641`). Transfers, deposits and settlement steps send to it (`SystemVault.rho:571-580`, `MakeMint.rho:55-88, 130-174`). Settlement plays a system deploy (`settlement.rs:388-390`, `runtime.rs:1012-1029`). System deploys run as the system payer under `Cost::unsafe_max()` (`runtime.rs:1447-1459`). A user continuation that fires at settlement is therefore neither metered nor bounded.
 
 Under the parallel executor, such a loop stalls a worker. Under order-then-execute it stalls the executor. Meter and bound these continuations before Phase 2 (the parallel executor) or Phase 3 (order-then-execute) of §10.
+
+**Known test failures at HEAD.** [M] The suites of 2026-10-12 at HEAD have these known failures (`target/verification/bug-11008/`).
+
+- Under both cap sets: the funding-slot gateway test (`offered_gateway_slot_api_test.rs:492`) and two legacy-charge tests. They are `replay_should_match_in_case_of_user_execution_error` and `compute_state_should_capture_rholang_parsing_errors_and_charge_for_parsing`.
+- Under the committed caps also: `offered_replay_usage_is_identical_across_roles` and the two Embers tests above.
+- Under the provisional caps also: the 64-source test.
+
+The funding-slot failure is a gap for E2 and for (i) explicit transaction boundaries (§6.2, §6.5). With the provisional caps, the check before execution rejects the gateway call, because rule G-5 gives the on-chain slot purses no hold. With the committed caps, the test fails earlier, at its funding step. The resolution is pending (G3 and the G1 rule G-5).
 
 ---
 
@@ -944,7 +986,7 @@ A block's validity must be a pure function of the block and its past cone. It mu
   result: Valid or Invalid, with no merge, no execution and no replay
 ```
 
-The signed phlo limit bounds the demand of an envelope (DR-64). The demand cap is therefore a syntactic check, in the sense of P1:1711-1714. [I]
+The signed phlo limit bounds the demand of an envelope (DR-64). The demand cap is therefore a syntactic check. P1:1708-1714 calls validity a syntactic predicate that requires token backing. The demand cap does not check that backing. Under §7 the executor's gate checks it after finality. [I]
 
 **Deferred checks.** They need the executed state at $`E`$. A node runs them when its own executor reaches $`E`$ (§7.7). A failure produces signed slashing evidence. It never invalidates a block after the fact.
 
@@ -1041,7 +1083,7 @@ Four rules come from the papers. [P]
 3. Arrival in sequence across blocks follows P1:2245-2269. The canonical order defines "in sequence".
 4. Simultaneous arrival applies only inside one block (P1:2271-2287, decision D-5).
 
-The executor keeps the user's rule against escrow, in the reading of this document. [I] Holds live only inside the execution of one block, as they do in G2 today (DR-65). The no-escrow review exempts short-lived reservations inside one lexical execution (`cost-accounting-impl/funding-settlement-design-review.md:305-315`). The user must confirm that a hold across the members of one block is such a reservation (decision D-4).
+The executor keeps the user's rule against escrow, in the reading of this document. [I] Holds live only inside the execution of one block, as DR-65 designs for G2. Today the check holds the demand of one offer inside its block. The no-escrow review exempts short-lived reservations inside one lexical execution (`cost-accounting-impl/funding-settlement-design-review.md:305-315`). The user must confirm that a hold across the members of one block is such a reservation (decision D-4).
 
 ### 7.7 Attestation of executed roots
 
@@ -1067,7 +1109,7 @@ The evidence class and the penalty of each offense are question Q-2.
 
 ### 7.8 Epoch-attested validator sets and the timing of slashing
 
-**Today.** A block's bonds come from its own executed post-state (`CasperMessage.proto:603`, `block_metadata.rs:141-162`). The clique oracle reads them from the main parent (`clique_oracle.rs:202-220`). A slash zeroes a bond in the post-state of the block that executes it (slashing design, chapter 07). [C]
+**Today.** A block's bonds come from its own executed post-state (`CasperMessage.proto:603`, `block_metadata.rs:141-162`). The clique oracle reads them from the main parent (`clique_oracle.rs:202-220`). A slash zeroes a bond in the post-state of the block that executes it (slashing design, chapter 07). PoS already changes the active validator set at each epoch boundary (`PoS.rhox:558-589`). Block `bonds`, and so the finality weights, carry all bonds (`PoS.rhox:265-268`, `runtime.rs:1855-1862`). [C]
 
 **Under order-then-execute.** Blocks have no own post-state, so the validator set comes from attested state. P1 updates validator sets at epoch boundaries. [P]
 
@@ -1137,10 +1179,10 @@ The executor of §7.6 can run the members of one batch in parallel. The result m
   settle each member exactly as the sequential executor does
 ```
 
-**Basis.** Independent redexes commute (ST:367-383, ST:413-425). `DeterministicParallelReduction.v:204` proves `disjoint_parallel_schedule_refines_canonical` for disjoint schedules. Phase 2 generalizes it to batches. Block-STM uses the same idea, with a preset order and a result that equals sequential execution [Gelashvili et al. 2023]. [P][C]
+**Basis.** Independent redexes commute (ST:367-383, ST:413-425). `DeterministicParallelReduction.v:115` proves that two non-conflicting intents commute in a two-channel model. Line 204 checks one fixed schedule by computation. Phase 2 must prove the batch theorem. Block-STM uses the same idea, with a preset order and a result that equals sequential execution [Gelashvili et al. 2023]. [P][C]
 
 **Prerequisites.** [I]
-- The cost-cursor lock fix. Without it, every settlement writes one lock channel, and every pair of members conflicts.
+- The cost-cursor lock fix (commit `7ab849b56`, done). Without it, every settlement writes one lock channel, and every pair of members conflicts.
 - The metering of settlement log-channel continuations (§6.10).
 
 Native scheduling inside one deploy is a separate source of parallelism. Today each native frontier forms one conflict component (`deterministic_reduction.rs:1068-1072, 1120-1122`). [C]
@@ -1165,7 +1207,7 @@ Failing TLA+ configurations must refute these properties when a guard is removed
 | (a) Execute-then-merge with the v6 merge rule only | E3 stays unmet. E1 and E2 are only partly met (§6). It is the interim for v6 shards until Phase 3. |
 | (b) Parallel batch executor inside execute-then-merge | It shortens play and replay. Consensus still waits for execution, and every merge cost stays. It is kept as Phase 2 and becomes part of (c). |
 | (d1) Purse lanes | Per-purse proofs compose (P2:1520-1527). Data-channel conflicts between lanes still need a merge. One lane can be censored or can stall. Rejected. |
-| (d5) Single-parent v6 shards | It skips the eager index (`validation_dispatcher.rs:345`). It drops the concurrency that merging recovers (P1:290-294). A sole parent that lacks the floor still re-bases through the merge (`interpreter_util.rs:1284-1319`). Rejected. |
+| (d5) Single-parent v6 shards | It skips the eager index (`validation_dispatcher.rs:345`). It drops the concurrency that merging recovers (P1:290-294). A sole parent that lacks the floor still re-bases through the merge (`interpreter_util.rs:1286-1321`). Rejected. |
 | Optimistic execution on the fork-choice chain | Lower latency than executing only the finalized prefix. It needs rollback. Deferred (decision D-3, the execution point and the order rule, §11). |
 | Holds bound at inclusion | A hold that survives across blocks needs a reservation table. The user prohibited "regression to the retired escrow-based model" (`funding-settlement-design-review.md:13`). Not recommended (decision D-4). |
 | Pure height-then-hash order of finality batches | Nodes with different finality steps diverge (§7.5). Rejected. |
@@ -1193,16 +1235,16 @@ These questions arise from the design. Each answer can change §7. [I]
 
 | # | Area | Files | Change | Cost-accounting reason | Risk | Interaction with ongoing Casper work | Scope |
 |---|---|---|---|---|---|---|---|
-| 1 | G1 check before execution | `runtime.rs` and `runtime_manager.rs`, about 4 lines. The rest is cost-accounting code. | Run the DR-64 check before `evaluate_native_offered`. Validators recompute it. | P1:2188-2213 | Low | The stack-safe analyzer walks come from the F1R3Lang branches. | v6 only |
-| 2 | G2 several offers per block | `runtime.rs` (about −230 / +25, moved out), `runtime_manager.rs`, `replay_runtime.rs`, `block_creator.rs`, `errors.rs` (about 105 lines) | An ordered batch with DR-65 groups | P1:2271-2287, P1:327-334 | Low, a v6 seam | None known | v6 only |
-| 3 | G3 installer funding | `family_selection.rs:163-186` | The installer's purse is eligible for its stored region | P1:1557-1587 | Low | None known | v6 only |
-| 4 | Cost-cursor lock fix | `SystemVault.rho:52-167` | 256 bucket locks on cursor creation only | P1:333-334 | Low. It needs a fresh v6 genesis. | The vault-creation race stays with the Casper team. | Genesis contract, called on v6 only |
-| 5 | Interim v6 merge rule | `interpreter_util.rs`, `dag_merger.rs`, `conflict_set_merger.rs`, new `costacc/v6_merge` | Fast-path composition and one ordered pass | P1:344-366 | Medium | Dev reworked the merger in August and September, for example `cdb85d1e4`. | Shared files, v6 behavior |
-| 6 | Settlement log channels | `SystemVault.rho:551-571`, `MakeMint.rho:55-174`, `runtime.rs:1447-1459` | Meter and bound continuations that fire at settlement | "every communicating process must engage the cost layer" (P1:2389-2391) | Medium | Dev's legacy precharge and refund likely share the hole. | Shared genesis contracts |
+| 1 | G1 check before execution | Cost-accounting code only (`gate.rs`, `execution.rs:321-345`, `replay.rs:1642`). Committed and live. | Run the DR-64 check before `evaluate_native_offered`. Validators recompute it. | P1:2188-2213 | Low | The stack-safe analyzer walks come from the F1R3Lang branches. | v6 only |
+| 2 | G2 several offers per block | Code motion done in `72de6b52a` (`runtime.rs` +12/−289, `runtime_manager.rs` +28/−554). Remaining: `replay_runtime.rs`, `block_creator.rs`, `errors.rs`. | An ordered batch with DR-65 groups | P1:2271-2287, P1:327-334 | Low, a v6 seam | None known | v6 only |
+| 3 | G3 installer funding | `family_selection.rs:89-120, 242-248` | The installer's purse is eligible for its stored region | P1:1557-1587 | Low | None known | v6 only |
+| 4 | Cost-cursor lock fix | `SystemVault.rho:52-72, 186-229` | 256 bucket locks on cursor creation only. Done (commit `7ab849b56`). | P1:333-334 | Low. It needs a fresh v6 genesis. | The vault-creation race stays with the Casper team. | Genesis contract, called on v6 only |
+| 5 | Interim v6 merge rule | `interpreter_util.rs`, `dag_merger.rs`, `conflict_set_merger.rs`, new `costacc/v6_merge` | Fast-path composition and one ordered pass. Done (commit `b496df9d8`). | P1:344-366 | Medium | Dev reworked the merger in August and September, for example `cdb85d1e4`. | Shared files, v6 behavior |
+| 6 | Settlement log channels | `SystemVault.rho:571-580, 621-641`, `MakeMint.rho:55-174`, `runtime.rs:1447-1459` | Meter and bound continuations that fire at settlement | "every communicating process must engage the cost layer" (P1:2389-2391) | Medium | Dev's legacy precharge and refund likely share the hole. | Shared genesis contracts |
 | 7 | Parallel batch executor | `runtime.rs`, `runtime_manager.rs`, `deterministic_reduction.rs` | Independent members at once, with the sequential result | P1:327-342 | Low, the roots equal the sequential roots | EPIC-021 measures the replay lock. It is the task-board epic on the root cause of issue #24, the finalization failures of the soak tests. | v6 only |
 | 8 | Block body meaning | `CasperMessage.proto:554-575, 597-605` | Envelopes, the attestation and the epoch validator set | P1:1708-1714 | High | Any work on the block format | Shared message, v6 meaning |
-| 9 | Proposal without execution | `block_creator.rs`, `interpreter_util.rs:893-1030` | Build blocks from the inclusion filter, with no merge and no play | P1:2303-2304 | High | None known | v6 only |
-| 10 | Validation without merge or replay | `validation_dispatcher.rs:84-334`, `interpreter_util.rs:400-555` | Structural validity and deferred attestation checks | E3, P1:1708-1714 | High | Overlaps EPIC-021, which measures replay and checkpoint waits | v6 only |
+| 9 | Proposal without execution | `block_creator.rs`, `interpreter_util.rs:895-1032` | Build blocks from the inclusion filter, with no merge and no play | P1:2303-2304 | High | None known | v6 only |
+| 10 | Validation without merge or replay | `validation_dispatcher.rs:84-334`, `interpreter_util.rs:402-557` | Structural validity and deferred attestation checks | E3, P1:1708-1714 | High | Overlaps EPIC-021, which measures replay and checkpoint waits | v6 only |
 | 11 | Executor driven by finality | `finalization_runner.rs:351-560`, `block_dag_key_value_storage.rs:1574-1640`, `runtime_manager.rs` | Linearize and execute each newly finalized set | P1:327-334 | High | EPIC-021 studies finalization latency. | Shared hook, v6 executor |
 | 12 | LFB containment | `floor.rs:615-638` | DAG containment replaces state containment, because v6 has no merge rejections | P1:351-353, §6.1 | High, the finalized-floor proofs | The finalized-floor dossier | Shared, v6 branch |
 | 13 | Validator set and slashing timing | `clique_oracle.rs:202-253`, `block_metadata.rs:141-162`, `estimator.rs`, PoS reads | Epoch-attested bonds, and equivocators weigh zero at once | P1:3036-3043 | High | Pull request (PR) #480 changed the finality weights (`clique_oracle.rs:222-253`). | Shared |
@@ -1213,17 +1255,18 @@ These questions arise from the design. Each answer can change §7. [I]
 
 ### 8.2 Change map
 
-![Component diagram of the Casper change map for order-then-execute on v6 shards, read from left to right. Group 1 is the unchanged Casper core in indigo. It holds signed blocks and justifications, fork choice, equivocation detection and the clique-oracle decision rule. Group 2 is shared code that gets a v6 branch, in amber. It holds the block body for v6, the epoch validator set, the finality hook, LFB containment, and the API and state sync. Group 3 is new v6-only machinery in green. It holds proposal without execution, structural validation, the linearizer, the executor, the parallel batch executor and the attestation check. Group 4 holds the cost-accounting modules, which are designed but not yet implemented. G1, G2, G3 and the cost-cursor lock fix are teal. The v6 merge rule is salmon, and it retires on v6 at Phase 3. Group 5 is dev's legacy path in grey. It holds the merger and the replay before acceptance. Each element carries its risk: high, medium or low. Arrows show the data flow from the core and the finality hook through the linearizer and the executor to the attestation and the block body. A legend explains the colours and the risk marks. It also defines v6, G1 to G3, DR-64, DR-120, pgmcp bug 11004, the P1 gate, Phase 3, LFB, LFS, API, DAG and LMD-GHOST.](diagrams/consensus-proposal-change-map.svg)
+![Component diagram of the Casper change map for order-then-execute on v6 shards, read from left to right. Group 1 is the unchanged Casper core in indigo. It holds signed blocks and justifications, fork choice, equivocation detection and the clique-oracle decision rule. Group 2 is shared code that gets a v6 branch, in amber. It holds the block body for v6, the epoch validator set, the finality hook, LFB containment, and the API and state sync. Group 3 is new v6-only machinery in green. It holds proposal without execution, structural validation, the linearizer, the executor, the parallel batch executor and the attestation check. Group 4 holds the cost-accounting modules. G1, the cost-cursor lock fix and the v6 merge rule are committed, and G2 and G3 are designed. G1, G2, G3 and the cost-cursor lock fix are teal. The v6 merge rule is salmon, and it retires on v6 at Phase 3. Group 5 is dev's legacy path in grey. It holds the merger and the replay before acceptance. Each element carries its risk: high, medium or low. Arrows show the data flow from the core and the finality hook through the linearizer and the executor to the attestation and the block body. A legend explains the colours and the risk marks. It also defines v6, G1 to G3, DR-64, DR-120, pgmcp bug 11004, the P1 gate, Phase 3, LFB, LFS, API, DAG and LMD-GHOST.](diagrams/consensus-proposal-change-map.svg)
 
 *Source: [`diagrams/consensus-proposal-change-map.puml`](diagrams/consensus-proposal-change-map.puml). Render it with `./render.sh consensus-proposal-change-map.puml` in `docs/casper/theory/diagrams/`.*
 
 ### 8.3 Interaction with ongoing Casper work
 
-- **EPIC-021, the issue #24 root cause** (`docs/ToDos.md:74-106`). Order-then-execute removes the replay and the per-block reset and checkpoint from the consensus path of v6 shards. Legacy shards and the v6 executor still need the roots-lock fix `0ef0966c6`. Soak comparisons must separate v6 and legacy profiles. [I]
+- **EPIC-021, the issue #24 root cause** (`docs/ToDos.md:74-106`). Order-then-execute removes the replay and the per-block reset and checkpoint from the consensus path of v6 shards. Legacy shards and the v6 executor keep the roots-lock fix `0ef0966c6`, which HEAD contains. The soak of that fix, run 37343966570, still had failing iterations. Dev's analysis found no per-node stage that separates them from passing ones (dev `74ab85dd2`). Soak comparisons must separate v6 and legacy profiles. [I]
+- **Dev's task TASK-021-12.** Dev's task TASK-021-12 of EPIC-021, "Release parked blocks without queue, scan, and stale-link delays", changes how parked blocks wait for parents. Q-6 relies on that holding mechanism, so the two must compose. [I]
 - **PR #480, the fix of issue 18** (`docs/ToDos.md:268`). It excludes silent bonded validators from the clique-oracle weight (`clique_oracle.rs:222-253`). Row 13 changes the weight source on v6 shards. The two changes must compose. [C][I]
 - **Dev's merger rework.** For example `cdb85d1e4` resolves rejection groups independently. The v6 merge rule sits below dev's dispatcher and keeps dev's signature for its callers, so the conflict is medium. [C][I]
 - **The finalized-floor and slashing dossiers.** Rows 12 and 13 change premises of mechanized proofs. Row 12 changes the state containment of the floor. Row 13 changes the bond-zero part of the fork-choice exclusion theorem T-10. Both dossiers need new proof obligations for v6. [I]
-- **Epic 8946.** Its fixed exclusions forbid changes to consensus, finality and merging. Order-then-execute therefore needs a new epic (decision D-9).
+- **Epic 8946.** Its fixed exclusions authorize only the Casper edits that cost accounting requires. General consensus, finality and merge repairs stay with the Casper team. Order-then-execute changes consensus and finality, so it needs a new epic (decision D-9).
 
 ---
 
@@ -1231,7 +1274,7 @@ These questions arise from the design. Each answer can change §7. [I]
 
 ### 9.1 Measured data and their limits
 
-**Profile of two legacy multi-parent tests on dev.** [M] AMD uProf recorded hotspot profiles of dev `93e38575e` on 2026-10-09. The host was one AMD Ryzen Threadripper PRO 5975WX, pinned to 16 hardware threads. T1 is `hash_set_casper_should_compute_identical_post_states_across_validators_for_merge_blocks`. T3 is `a_co_witnessed_sibling_fork_must_adjudicate_and_advance`. The profiling plan also names the legacy test T2, `multi_parent_casper_should_allow_bonding`. Its profiles follow the HEAD table below. Rayon is the thread-pool library of the node, and its idle threads spin. "Work" is sampled CPU time minus that rayon idle spin.
+**Profile of two legacy multi-parent tests on dev.** [M] AMD uProf recorded hotspot profiles of dev `93e38575e` on 2026-10-09. The host was one AMD Ryzen Threadripper PRO 5975WX, pinned to 16 hardware threads. T1 is `hash_set_casper_should_compute_identical_post_states_across_validators_for_merge_blocks`. T3 is `a_co_witnessed_sibling_fork_must_adjudicate_and_advance`. The profiling plan also names the legacy test T2, `multi_parent_casper_should_allow_bonding`. Its profiles follow the table of the branch below. Rayon is the thread-pool library of the node, and its idle threads spin. "Work" is sampled CPU time minus that rayon idle spin.
 
 | Inclusive share of work | T1 (work 9.30 s) | T3 (work 9.12 s) |
 |---|---|---|
@@ -1248,31 +1291,31 @@ Limits of this profile:
 - The tests run about 10 s each. They are legacy tests, not v6 tests, and not a production node.
 - Inclusive times overlap, so the shares do not add up.
 - Much of the `reduce` time is genesis.
-- The HEAD profiles follow in the next paragraph.
+- The profiles of the branch at the commit `17e07307f` follow in the next paragraph.
 - The raw reports are local artifacts and are not in the repository.
 
-**Profiles of HEAD.** [M] AMD uProf recorded T1 and T3 on HEAD `17e07307f` on 2026-10-09, with the same host and pinning. It also recorded the offered test T4, `a_third_signer_inserts_a_version_after_a_merge_with_a_writers_branch`, on HEAD. The report step of each HEAD profile needed 27 to 29 gigabytes of memory, so it ran under a cap of 32 gibibytes. The profiles of T2 finished later, and the paragraph after the table gives them.
+**Profiles of the branch at `17e07307f`.** [M] AMD uProf recorded T1 and T3 at the commit `17e07307f` on 2026-10-09, with the same host and pinning. It also recorded the offered test T4, `a_third_signer_inserts_a_version_after_a_merge_with_a_writers_branch`, at that commit. The profiles predate the v6 merge rule and the live check. The report step of each of these profiles needed 27 to 29 gigabytes of memory, so it ran under a cap of 32 gibibytes. The profiles of T2 finished later, and the paragraph after the table gives them.
 
-| Inclusive share of work | T1, dev | T1, HEAD | T3, dev | T3, HEAD | T4, HEAD (offered) |
+| Inclusive share of work | T1, dev | T1, `17e07307f` | T3, dev | T3, `17e07307f` | T4, `17e07307f` (offered) |
 |---|---|---|---|---|---|
 | Work, sampled CPU minus rayon idle spin | 9.30 s | 11.19 s | 9.12 s | 10.50 s | 19.07 s |
 | Merge index, `block_index::new` | 10.5 % | 10.2 % | 7.8 % | 7.0 % | 2.9 % |
 | `compute_parents_post_state` | 1.2 % | — | 1.8 % | 1.4 % | — |
 | `dag_merger::merge` | 1.1 % | — | 1.6 % | 1.0 % | — |
 | Replay, `replay_compute_state` | 5.4 % | 4.6 % | 7.5 % | 6.1 % | 8.7 % |
-| Producer self-replay, `certify_offered_draft` | — | — | — | — | 7.2 % |
+| Offered certification, `certify_offered_draft` (self-replay and validator replay) | — | — | — | — | 7.2 % |
 | Play, `compute_deploys_checkpoint` | 3.4 % | 2.7 % | 4.9 % | 3.7 % | — |
-| Rholang reduction (dev `DebruijnInterpreter`, HEAD `ReducerCore`) | 34.2 % | 23.9 % | 27.9 % | 21.1 % | 34.0 % |
+| Rholang reduction (dev `DebruijnInterpreter`, branch `ReducerCore`) | 34.2 % | 23.9 % | 27.9 % | 21.1 % | 34.0 % |
 | RSpace produce and consume | 10.2 % | 7.6 % | 7.8 % | 7.6 % | 8.7 % |
 
 A dash means that the report does not list the function. Either the function is below the report's cutoff of 400 entries, or it does not run on that path.
 
-**T2 on dev and on HEAD.** [M] Work grew from 10.24 s on dev to 12.64 s on HEAD. The merge index took 11.6 % of work on dev and 10.8 % on HEAD. Replay took 5.3 % and 5.2 %, play took 2.3 % and 1.9 %, and Rholang reduction took 35.5 % and 24.2 %.
+**T2 on dev and on the branch.** [M] Work grew from 10.24 s on dev to 12.64 s on the branch at `17e07307f`. The merge index took 11.6 % of work on dev and 10.8 % on the branch. Replay took 5.3 % and 5.2 %, play took 2.3 % and 1.9 %, and Rholang reduction took 35.5 % and 24.2 %.
 
-What the HEAD profiles show: [M][I]
-- The merge takes about the same share of work on HEAD as on dev. In the offered-deploy test its share is smaller.
-- HEAD does 15 to 23 % more work than dev on the three legacy tests. The extra work is outside the merge.
-- In the offered-deploy test, replay and the producer's self-replay together take about 16 % of the work.
+What the profiles of the branch show: [M][I]
+- The merge takes about the same share of work on the branch as on dev. In the offered-deploy test its share is smaller.
+- The branch does 15 to 23 % more work than dev on the three legacy tests. The extra work is outside the merge.
+- In the offered-deploy test, replay takes 8.7 % of the work. Replay contains each validator's call of `certify_offered_draft`. So replay and the producer's self-replay together take between 8.7 % and 15.9 %.
 - These are short tests. They do not decide E4, the performance claim, for a loaded network. The three-validator v6 soak that §9.3 lists is still needed.
 
 **August soak, GitHub Actions run 33099406770.** [M] One merge call took 2.16 s on average. The settled-signature probes took 92 % of it. The walk depth grew with the finalization lag, which deepened the lag further (`docs/claims/settled-effect-probe-equivalence.md:27-33`). Dev then batched the probes in `c9aff7732`, which HEAD contains.
@@ -1287,27 +1330,27 @@ What the HEAD profiles show: [M][I]
 | Checkpoint time | 79 ms | 116 ms | `docs/ToDos.md:241` |
 | Replay runtime-lock wait | 140 ms | 215 ms | `docs/ToDos.md:246` |
 
-No metric separated failing sessions from passing sessions well. The AUC was at most 0.70 for any metric (`docs/ToDos.md:202`). Dev's roots-lock fix `0ef0966c6` is in HEAD. The verdict of its soak, run 37343966570, is not recorded. Two dev changes confound later comparisons (`docs/ToDos.md:267-269`). They are PR #480 and PR #523, which stops in-flight marker leaks in the block processor.
+No metric separated failing sessions from passing sessions well. The AUC was at most 0.70 for any metric (`docs/ToDos.md:202`). Dev's roots-lock fix `0ef0966c6` is in HEAD. This branch records no verdict for its soak, run 37343966570. Dev recorded one on 2026-10-06 (dev `74ab85dd2`, issue #24 comment 6016872961). No per-node stage separated failing from passing iterations. Two dev changes confound later comparisons (`docs/ToDos.md:267-269`). They are PR #480 and PR #523, which stops in-flight marker leaks in the block processor.
 
 **Branch against dev.** [M] The integrated design review reported a local timing of the branch tests against dev. The branch was slower by a factor of 1.13 on merge-heavy tests and 1.15 on the rest. The slowdown was not in the merger. This document could not locate the artifacts of that timing, so the numbers are unverified.
 
-**Reading.** [I] The merge dominated block cost in August. The stage metrics record the same observation: the parents-post-state stage "dominates block cost in sustained-load soaks" (`metrics_constants.rs:125-128`). After dev's fixes, the visible costs are the per-block reset, replay and checkpoint cycle. Both come from execute-then-merge with run-to-completion.
+**Reading.** [I] The merge dominated block cost in August. The stage metrics record the same observation: the parents-post-state stage "dominates block cost in sustained-load soaks while the `dag.merge.*` buckets stay small" (`metrics_constants.rs:125-128`). After dev's fixes, the roots-lock wait stays high but does not separate failing sessions (`docs/ToDos.md:201-204`). Dev's analysis of soak 37343966570 points to the finality round length and to blocks that wait for missing parents (dev `74ab85dd2`). The merge, the per-block reset, the replay and the checkpoint all come from execute-then-merge with run-to-completion.
 
 ### 9.2 What each design and phase removes
 
 | Design | Phase | Removes | Keeps |
 |---|---|---|---|
-| (a) | Phase 1b, interim merge (§10) | Adjudication, about 1 to 1.5 % of test work. The fast path also skips the settled-signature probes. | The index, 7.8 to 10.5 %. The reset, replay and checkpoint cycle. The v6 self-replay. |
+| (a) | Phase 1b, interim merge (§10) | The fast path skips the adjudication and the settled-signature probes. The slow path replaces the option search with one ordered pass. Dev's merge call took 1.0 to 1.6 % of test work. | The index, 7.8 to 10.5 %. The reset, replay and checkpoint cycle. The v6 self-replay. |
 | (b) | Phase 2 | Wall time of play and replay for independent members, up to 8.8 to 12.4 % of test work. CPU time stays. | Every merge cost. Consensus still waits for execution. |
 | (c) | Phase 3 | The index and the parents post-state, about 10 to 12 % of test work (11.7 % for T1, 9.6 % for T3). The v6 self-replay. Executions of deploys that the merge would reject. Replay and lock waits leave the consensus path. | `reduce`, 27.9 to 34.2 %, much of it genesis. RSpace operations, 7.8 to 10.2 %. Rayon idle spin. |
 
-No design touches the rayon idle spin, 58 to 63 % of sampled CPU. [M] Order-then-execute also ends the August feedback loop. Consensus no longer merges, so a finality lag cannot slow a merge. [I]
+The play share contains the proposer's merge (`interpreter_util.rs:932-942`), so the play and merge shares overlap. [C] No design touches the rayon idle spin, 58 to 63 % of sampled CPU. [M] Order-then-execute also ends the August feedback loop. Consensus no longer merges, so a finality lag cannot slow a merge. [I]
 
 ### 9.3 Measurements still needed, and the decision rule
 
 | ID | Measurement |
 |---|---|
-| M1 | AMD uProf reports for HEAD tests T1 to T3 and for the offered test T4, `a_third_signer_inserts_a_version_after_a_merge_with_a_writers_branch`, one at a time. Done for T1 to T4 (§9.1). |
+| M1 | AMD uProf reports for the branch tests T1 to T3 and for the offered test T4, `a_third_signer_inserts_a_version_after_a_merge_with_a_writers_branch`, one at a time. Done for T1 to T4 (§9.1). |
 | M2 | A three-validator v6 soak with the stage histograms (`metrics_constants.rs:125-165`) and lock counters, against a dev legacy soak |
 | M3 | Validation time with and without the checkpoint and replay stages |
 | M4 | Executions per deploy (play, self-replay, replays), and executions of deploys that a merge later rejects |
@@ -1323,7 +1366,7 @@ Let $`t_{\mathrm{merge}}`$ be the merge-stage time, $`t_{\mathrm{replay}}`$ the 
 \rho < \tfrac{1}{5} \;\Rightarrow\; \text{E4 is refuted for the current code}.
 ```
 
-E1 to E3 require order-then-execute whatever $`\rho`$ turns out to be. [I]
+Under the strict readings of decision D-0 (§11), E1 and E3 require order-then-execute whatever $`\rho`$ turns out to be. E2 also needs it if Greg means that the canonical order picks the winner among alternatives. [I]
 
 ---
 
@@ -1331,7 +1374,7 @@ E1 to E3 require order-then-execute whatever $`\rho`$ turns out to be. [I]
 
 The plan has five phases: Phase 0 (evidence), Phase 1 (acceptance core), Phase 1b (interim merge), Phase 2 (parallel executor) and Phase 3 (order-then-execute). In this document "P1" always names the paper, never a phase. Sizes are relative estimates: S (small), M (medium), L (large) and XL (extra large). Only Phase 0 and Phase 3 carry a duration estimate.
 
-![Activity diagram of the phased plan. Two branches start in parallel. Phase 0, evidence, size S, covers the measurements M1 to M5 and gives evidence for or against E4 performance. Phase 1, acceptance core, size L and designed, covers G1, G2 and G3. Inside one block it meets (i) transaction boundaries, the P1 gate, E2 user alternatives and (iv) merge via signatures. Phase 1b, interim merge, size M to L and designed, follows Phase 1. It adds the v6 merge rule and then the cost-cursor lock fix, and it meets E1 merge logic in part. After the join, a prerequisite fix meters and bounds settlement log-channel continuations. A decision point follows, for the user, Greg and the Casper team. It asks if keep accepting blocks means acceptance before execution. The no branch is option B of decision D-1, the target for v6 shards. On it, Phase 2, parallel batch executor, size L, meets (ii), (iii) and (iv) inside one block, and E3 stays unmet. The recommended yes branch is option A of D-1. On it, Phase 2 builds the same executor, and Phase 3, order-then-execute, follows. Phase 3 is size XL, about four to nine engineer-months. It meets E1 to E4 on v6 shards. Each phase box names its verification artifacts. A legend explains the colours and defines every name that the boxes use.](diagrams/consensus-proposal-phase-plan.svg)
+![Activity diagram of the phased plan. Three branches start in parallel. Phase 0, evidence, size S, covers the measurements M1 to M5 and gives evidence for or against E4 performance. Phase 1, acceptance core, size L, covers G1, G2 and G3. G1 is committed and live. Of G2 only the code motion is committed, and G3 is not started. Inside one block it meets (i) transaction boundaries, the P1 gate, E2 user alternatives and (iv) merge via signatures. Phase 1b, interim merge, size M to L, is committed. It adds the v6 merge rule and then the cost-cursor lock fix, and it meets E1 merge logic in part. After the join, a prerequisite fix meters and bounds settlement log-channel continuations. A decision point follows, for the user, Greg and the Casper team. It asks if keep accepting blocks means acceptance before execution. The no branch is option B of decision D-1, the target for v6 shards. On it, Phase 2, parallel batch executor, size L, meets (ii), (iii) and (iv) inside one block, and E3 stays unmet. The recommended yes branch is option A of D-1. On it, Phase 2 builds the same executor, and Phase 3, order-then-execute, follows. Phase 3 is size XL, about four to nine engineer-months. It meets E1, E3 and E4 on v6 shards, and E2 if Q3 picks the canonical order. Each phase box names its verification artifacts. A legend explains the colours and defines every name that the boxes use.](diagrams/consensus-proposal-phase-plan.svg)
 
 *Source: [`diagrams/consensus-proposal-phase-plan.puml`](diagrams/consensus-proposal-phase-plan.puml). Render it with `./render.sh consensus-proposal-phase-plan.puml` in `docs/casper/theory/diagrams/`.*
 
@@ -1340,10 +1383,10 @@ Every Rocq proof is axiom-free and has negative controls. Every TLA+ model has f
 | Phase | Content | Size | Prerequisites | Verification | Meets |
 |---|---|---|---|---|---|
 | Phase 0, evidence | M1 to M5 (§9.3) | S, 1 to 2 weeks | None | Preregistered experiments with A/A calibration | Evidence for or against E4 |
-| Phase 1, acceptance core | G1 with the DR-64 holds, G2 as a batch executor with DR-65 groups and the held-capacity guard, G3 | L | The G1 chain of epic 8946 | `SameBlockFundingGroups.tla`: GroupAllOrNone, NoOverdraft, GateBeforeExecute, HeldCapacityGuard, DecisionPermutationInvariant. Controls: prefix admission, no held guard. Rocq group lemmas. `EndToEndAuthority.v` extensions. | (i) transaction boundaries, the gate of P1, E2 user alternatives and (iv) merge via signatures, inside one block |
-| Phase 1b, interim merge | The v6 merge rule with C1 to C10, then the cost-cursor lock fix | M to L | G1 of Phase 1 | `V6MergeOrderedPass.v`, `CursorLinearity.v`, `CostCursorBuckets.v`, `V6MergeSerialization.tla`, `FeeCursorBranchMerge.tla`, `FeeCursorCells.tla`, with the C1 and C2 controls | E1 in part, bounded merges on v6 |
-| Phase 2, parallel executor | The parallel batch executor, and the lock fix if it has not shipped | L | Phase 1, the log-channel fix, and Phase 1b or Phase 3 | Rocq: a parallel batch equals the sequential canonical batch. Controls: a shared-purse pair in parallel overdraws, an arrival-order commit is not canonical, a skipped re-run misses a COMM. TLA+ `ParallelBatchExecutor.tla` with SequentialEquivalence, NoOverdraft, HeldCapacityGuard, DeterministicRoot, and failing NoRevalidation, AuthorityKeyIgnored, NoHeldGuard. 256-seed property tests against a sequential reference. | (ii) concurrent acceptance, (iii) throughput and (iv) merge via signatures, inside one block |
-| Phase 3, order-then-execute | §7 | XL, 4 to 9 engineer-months | Phase 1, the log-channel fix, the decisions of §11, a new epic | TLA+ `OrderThenExecute.tla`: three validators, permuted arrival orders, finality as an oracle, the invariants of §7.11, liveness BoundedLag, failing ExecuteUnfinalizedOrder, LocalViewAuthoritative, NoDemandCap. Rocq `CanonicalLinearization.v` (order deterministic and stable under prefix extension) and `OrderedGateSoundness.v` (the sequential gate is sound per purse, P2:1520-1527). Controls: arrival-order blocks diverge, a gate after execution strands funds. Three-node tests and a v6 soak. | E1, E2, E3, E4 on v6 shards |
+| Phase 1, acceptance core | G1 with the DR-64 holds, G2 as a batch executor with DR-65 groups and the held-capacity guard, G3. Status: G1 committed and live. Of G2, only the code motion is committed. G3 is not started. | L | The G1 chain of epic 8946 | `SameBlockFundingGroups.tla`: GroupAllOrNone, NoOverdraft, GateBeforeExecute, HeldCapacityGuard, DecisionPermutationInvariant. Controls: prefix admission, no held guard. Rocq group lemmas. `EndToEndAuthority.v` extensions. `HeldCapacityGuard.v` (committed). | (i) transaction boundaries, the gate of P1, E2 user alternatives and (iv) merge via signatures, inside one block |
+| Phase 1b, interim merge | The v6 merge rule with C1 to C10, then the cost-cursor lock fix. Status: committed, with its proofs and models (`b496df9d8`, `7ab849b56`). | M to L | None | `V6MergeOrderedPass.v`, `CursorLinearity.v`, `CostCursorBuckets.v`, `V6MergeSerialization.tla`, `FeeCursorBranchMerge.tla`, `FeeCursorCells.tla`, with the C1 and C2 controls | E1 in part, bounded merges on v6 |
+| Phase 2, parallel executor | The parallel batch executor | L | Phase 1, the log-channel fix, and Phase 1b or Phase 3 | Rocq: a parallel batch equals the sequential canonical batch. Controls: a shared-purse pair in parallel overdraws, an arrival-order commit is not canonical, a skipped re-run misses a COMM. TLA+ `ParallelBatchExecutor.tla` with SequentialEquivalence, NoOverdraft, HeldCapacityGuard, DeterministicRoot, and failing NoRevalidation, AuthorityKeyIgnored, NoHeldGuard. 256-seed property tests against a sequential reference. | (ii) concurrent acceptance, (iii) throughput and (iv) merge via signatures, inside one block |
+| Phase 3, order-then-execute | §7 | XL, 4 to 9 engineer-months | Phase 1, the log-channel fix, the decisions of §11, a new epic | TLA+ `OrderThenExecute.tla`: three validators, permuted arrival orders, finality as an oracle, the invariants of §7.11, liveness BoundedLag, failing ExecuteUnfinalizedOrder, LocalViewAuthoritative, NoDemandCap. Rocq `CanonicalLinearization.v` (order deterministic and stable under prefix extension) and `OrderedGateSoundness.v` (the sequential gate is sound per purse, P2:1520-1527). Controls: arrival-order blocks diverge, a gate after execution strands funds. Three-node tests and a v6 soak. | E1, E3, E4 on v6 shards, and E2 if Q3 picks the canonical order |
 
 The G2 member loop is the seam between the phases. Phase 1 builds it as an ordered batch API, Phase 2 parallelizes it, and Phase 3 feeds it finalized blocks. G1 stays in every phase. Under Phase 3 it becomes the inclusion filter and the executor's gate. [I]
 
@@ -1358,15 +1401,15 @@ These decisions belong to the user, Greg and the Casper team. Each row gives the
 | ID | Question | Options | Recommendation | What each option leaves unmet |
 |---|---|---|---|---|
 | D-0 | What does Greg mean? | Q1: does "keep accepting blocks" mean that consensus accepts a block before it executes it? Q2: does E1 count merge code that no longer runs, or the removal of after-the-fact trace analysis? Q3: who picks the winner among alternatives that a user submits separately, the canonical order or that submitting user? | Ask Greg first. | If Q1 is yes, only (c) among the designs of §6.9 meets E3. If Q1 is no, (b) is enough. If Q2 counts lines, (a) is enough for E1. If Q3 is "the submitting user", no paper mechanism exists (option B of D-6). |
-| D-1 | The target for v6 shards | A: (c)+(b). B: (a)+(b), the v6 merge rule with the parallel batch executor. C: (a) alone. | A. It meets E1 to E4. It is XL and changes Casper's core. | B leaves E3 unmet and E1, E2 partial, and E4 marginal. C also leaves (ii) and (iii) unmet. |
-| D-2 | The interim merge before (c) | A: the v6 merge rule with C1 to C10, then the lock fix. B: no interim rule. C: the lock fix alone on dev's resolver. | A. The user chose "implement what you can, cleanly". | A is thrown away on v6 at Phase 3: about 1,530 plus 2,600 lines and the models. B: until Phase 3, the global cost-cursor lock bug keeps rejecting every charged offer outside the main parent in v6 merges. C: groups collapse on shared mergeable channels (`conflict_set_merger.rs:900-912`). |
+| D-1 | The target for v6 shards | A: (c)+(b). B: (a)+(b), the v6 merge rule with the parallel batch executor. C: (a) alone. | A. It meets E1, E3 and E4, and E2 if Q3 picks the canonical order. It is XL and changes Casper's core. | B leaves E3 unmet, E1 and E2 partial, and E4 partial. C also leaves (ii) and (iii) unmet. |
+| D-2 | The interim merge before (c) | A: the v6 merge rule with C1 to C10, then the lock fix. B: no interim rule. C: the lock fix alone on dev's resolver. | Decided: A, implemented in the commits `b496df9d8` and `7ab849b56`. The user chose "implement what you can, cleanly". | A is thrown away on v6 at Phase 3: about 1,530 plus 2,600 lines and the models. B: until Phase 3, the global cost-cursor lock bug keeps rejecting every charged offer outside the main parent in v6 merges. C: groups collapse on shared mergeable channels (`conflict_set_merger.rs:906-918`). |
 | D-3 | The execution point and the order rule in (c) | A: execute only the finalized prefix. B: execute optimistically on the fork-choice chain, with rollback. Order rule: main-chain epochs, or height then hash. | A first, with main-chain epochs (§7.5). | A: results wait for finality. B: rollback complexity. Height then hash over finality batches diverges between nodes. |
 | D-4 | Where acceptance binds in (c) | A: at execution, as P1 states. A2: A, plus a filter that counts the unexecuted demand of the past cone (§7.4). B: derived in-flight holds at inclusion. | A2. No hold crosses a block. The user must confirm that holds inside one block are exempt from the no-escrow rule (§7.6). | A: jointly overcommitted envelopes can fill blocks and then fail at no cost (P1:2208-2212, §7.4). A2: concurrent blocks can still overcommit a purse. B: a reservation table that the user's no-escrow rule forbids (`funding-settlement-design-review.md:171-176`). |
 | D-5 | "Simultaneous arrival" in a DAG | A: only inside one block (DR-65). B: concurrent sibling blocks too. | A | A: alternatives in concurrent blocks resolve by the canonical order. B rejects many honest pairs. |
 | D-6 | User alternatives | A: funding, slots and branches inside a deployment. B: a new envelope-level alternative group. | A. "D6 deferred" was an agent's default, not the user's decision. D6 was the label of this decision in the v6 merge-rule design report. | A: a user cannot rank the alternatives that the same user submits separately. B: not in the papers, size M, and a new consensus encoding. |
 | D-7 | Two fully funded same-signer siblings under (a). §4.4 gives the full analysis. | A: keep one, the current default. B: redesign the cursor so that both survive. | A while (a) is an interim. Under (c), both execute in order. | A departs from P1:360-363. B is size M, and Phase 3 makes it unnecessary. |
 | D-8 | The validator-set source under (c) | A: epoch-attested state (P1:3036-3043). B: a validator registry in consensus, outside RSpace. | A, with the lag of Q-3 | A: a new bond waits up to the lag. B: a new protocol element. P1 says that slashing, minting and stake-weighted voting are expressible as Rholang contracts (P1:3777-3780). |
-| D-9 | Ownership | A: a new epic, owned with the Casper team. B: extend epic 8946. C: the Casper team alone. | A | B: the fixed exclusions of epic 8946 forbid consensus, finality and merge changes. C: the cost-accounting invariants lose their owner. |
+| D-9 | Ownership | A: a new epic, owned with the Casper team. B: extend epic 8946. C: the Casper team alone. | A | B: the fixed exclusions of epic 8946 leave general consensus, finality and merge repairs to the Casper team. C: the cost-accounting invariants lose their owner. |
 
 ---
 
@@ -1422,6 +1465,10 @@ The linear-logic reading of acceptance in P1:2318-2326 rests on [Girard 1987]. T
   - DR-119: one creation lock for each bucket replaces the global cost-cursor lock
   - DR-120: the interim v6 merge rule, a fast path or one ordered pass
   - DR-121: names that a receive body creates are dynamic for the funding analysis
+  - DR-122: the linear pre-execution cost estimate
+  - DR-123: the check before execution of an offered deploy
+  - DR-124: the live check holds only the client's demand
+  - DR-125: a call of an unknown method is a classified user failure
 - [Conformance catalog](cost-accounting-conformance-properties.md): the rows CA-P-171 and CA-P-172 (§5).
 - [Merge-algebra dossier](merge-algebra/merge-algebra-specification.md): the determinism contract of dev's merger.
 - [Finalized-floor dossier](finalized-floor/finalized-floor-specification.md): the floor rule and the LFB derivation.

@@ -1,7 +1,8 @@
 ' Phased plan from today's execute-then-merge pipeline to order-then-execute
 ' on cost-accounted (v6) shards. Each phase lists its content, its size, its
 ' verification, and the expectations (E1-E4) and paper items (i)-(iv) it meets.
-' Arrows are prerequisites. Legacy shards keep dev's path in every phase.
+' Arrows are prerequisites. Phase 0, Phase 1 and Phase 1b start in parallel.
+' Legacy shards keep dev's path in every phase.
 '
 ' The phases are Phase 0, Phase 1, Phase 1b, Phase 2 and Phase 3. "P1" names
 ' only the paper, never a phase.
@@ -24,12 +25,12 @@ skinparam ActivityBorderColor #333333
 skinparam ActivityDiamondBackgroundColor $ca_control
 skinparam ActivityDiamondBorderColor #333333
 skinparam ActivityBarColor #555555
-title Phased plan: Phase 0 to Phase 3 (status at HEAD 17e07307f)
+title Phased plan: Phase 0 to Phase 3 (status at HEAD e38ff0de8)
 
 start
 fork
   :**Phase 0, evidence** (S, 1-2 weeks)
-  M1 profiles of the HEAD tests and the offered test,
+  M1 profiles of the branch tests and the offered test,
   M2 three-validator v6 soak, M3 validation time by stage,
   M4 executions per deploy, M5 share of envelopes
   with disjoint funding footprints
@@ -37,16 +38,21 @@ fork
   verify: preregistered experiments, A/A calibration
   meets: evidence for or against E4 performance; <<$ca_supply>>
 fork again
-  :**Phase 1, acceptance core** (L) — designed
+  :**Phase 1, acceptance core** (L) — G1 committed
+  and live, only the code motion of G2 committed,
+  G3 not started
   G1 DR-64 check before execution,
   G2 several offers per block as an ordered batch executor,
   G3 installer funding (DR-68)
   ----
   verify: SameBlockFundingGroups.tla with negative controls,
-  Rocq group lemmas, EndToEndAuthority.v extensions
+  Rocq group lemmas, EndToEndAuthority.v extensions,
+  HeldCapacityGuard.v (committed)
   meets, inside one block: (i) transaction boundaries,
   the P1 gate, E2 user alternatives, (iv) merge via signatures; <<$ca_gate>>
-  :**Phase 1b, interim merge** (M-L) — designed
+fork again
+  :**Phase 1b, interim merge** (M-L) — committed,
+  with its proofs and models
   v6 merge rule (DR-120, fast path and ordered pass,
   arbiter changes C1-C10), then the cost-cursor
   lock fix (pgmcp bug 11004, DR-119)
@@ -56,7 +62,7 @@ fork again
   meets: E1 merge logic in part, bounded merges on v6; <<$ca_surface>>
 end fork
 :**Prerequisite fix:** settlement log-channel continuations
-are unmetered and unbounded today (SystemVault.rho:551-571,
+are unmetered and unbounded today (SystemVault.rho:621-641,
 runtime.rs:1447-1459). Meter and bound them first.; <<$ca_process>>
 if (**Decisions D-0 to D-9** by the user, Greg
 and the Casper team. Does "keep accepting blocks"
@@ -82,7 +88,8 @@ else (yes: D-1 option A, recommended)
   verify: OrderThenExecute.tla (three validators),
   CanonicalLinearization.v, OrderedGateSoundness.v,
   three-node tests, v6 soak
-  meets: E1, E2, E3, E4 on v6 shards,
+  meets: E1, E3, E4 on v6 shards, and E2
+  if Q3 picks the canonical order,
   retires the v6 merge rule on v6; <<$ca_capability>>
 endif
 stop
@@ -103,13 +110,14 @@ legend bottom
   | P1, P1 gate | the paper "Cost-Accounted Rho Calculus" (L. G. Meredith, May 2026), and its acceptance gate: supply must cover demand before execution |
   | G1, G2, G3 | gap labels of epic 8946 in pgmcp, the work tracker. Each box names the work. |
   | M1 to M5 | the measurements of Phase 0. Each box names the measurement. |
-  | DR-n | decision record n. DR-119 and DR-120 are planned records. |
+  | DR-n | decision record n. DR-119 and DR-120 are committed records. |
+  | Q3 | sub-question 3 of decision D-0: who picks the winner among alternatives, the canonical order or the submitting user |
   | C1 to C10 | the ten changes that an independent arbiter required of the v6 merge-rule design |
   | pgmcp bug 11004 | the global cost-cursor lock bug |
   | D-0 to D-9 | the open decisions of the proposal (§11) |
   | D-1 option A, option B | A: order-then-execute with the parallel executor. B: the v6 merge rule with the parallel executor. |
   | S, M, L, XL | relative sizes: small, medium, large, extra large |
-  | HEAD 17e07307f | the commit of feature/cost-accounted-rho at which this status holds. The runtime.rs lines follow a later commit that moved code with no behavior change. |
+  | HEAD e38ff0de8 | the commit of feature/cost-accounted-rho at which this status holds |
   | v6 | protocol version 6, with cost accounting |
   | soak | a long load test of a network of validators |
   | A/A calibration | two runs of the same build that measure the noise |

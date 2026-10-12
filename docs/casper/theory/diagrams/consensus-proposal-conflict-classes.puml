@@ -5,7 +5,8 @@
 ' compound signatures, compete for one pool and are serialized by the linear
 ' proof (P1:360-363). Only interaction through shared data channels remains,
 ' and the cost structure gives it a natural serialization order (P1:363-366).
-' The red notes show what the code does with each class today.
+' The red notes show what the code does with each class today, at HEAD
+' e38ff0de8 on a v6 shard (corrected by the audit of 2026-10-12).
 '
 ' Source of truth: docs/casper/theory/cost-accounting-consensus-proposal.md §2.4.
 ' Palette: inputs = supply blue · decisions = control amber ·
@@ -29,18 +30,21 @@ title Conflict classes of two deployments under cost accounting (P1:344-366)
 start
 :two deployments <latex>D_1</latex> and <latex>D_2</latex>,\neach with signed funding lanes\nand an execution footprint; <<$ca_supply>>
 floating note left $ca_note_red
-  **Today (HEAD 17e07307f):** every class goes
-  through post-hoc merge analysis after execution
-  (conflict_set_merger.rs:864-974).
+  **Today (HEAD e38ff0de8):** on a v6 shard the fast
+  path composes a conflict-free scope, and one
+  ordered pass decides the rest. Both run after
+  execution (DR-120). Along one chain, the check
+  before execution decides class S.
 end note
 if (do <latex>D_1</latex> and <latex>D_2</latex> draw on a common purse?\n(same signature, or overlapping\ncompound signatures)) then (yes)
   :**Class S: one pool, serialized by the linear proof**\nTwo proof obligations compete for the same\nlinear hypotheses. At most one can succeed\nwhen the pool cannot fund both (P1:348-351).; <<$ca_gate>>
   note left $ca_note_red
-    **Today:** the global costCursorLock
-    (SystemVault.rho:52-56, 145-167) also puts
-    every pair of charged offered siblings into
-    a false class S conflict. This is the global
-    cost-cursor lock bug, pgmcp bug 11004.
+    **Since DR-119:** sibling settlements conflict
+    only on a shared cursor scope or a shared
+    first-use bucket. Before it, the global
+    costCursorLock put every pair of charged
+    offered siblings into a false class S
+    conflict: pgmcp bug 11004, now fixed.
   end note
   if (did they arrive in sequence or together?) then (in sequence)
     :the first is accepted and its tokens are committed,\nthe second is rejected before any step if the\nremaining supply is short (P1:2245-2269); <<$ca_gate>>
@@ -79,8 +83,11 @@ legend bottom
   | <latex>\Delta_1</latex>, <latex>\Delta_2</latex>, <latex>\Delta</latex> | the demands of <latex>D_1</latex> and <latex>D_2</latex>, and their joint demand |
   | <latex>\Sigma</latex> | the token supply of the common purse |
   | class S, D, I | same purse, shared data channel, independent |
-  | HEAD 17e07307f | the commit of feature/cost-accounted-rho that the red notes describe |
-  | pgmcp bug 11004 | the global cost-cursor lock bug, in the pgmcp work tracker |
+  | HEAD e38ff0de8 | the commit of feature/cost-accounted-rho that the red notes describe |
+  | v6 | protocol version 6, with cost accounting and offered envelopes |
+  | DR-119 | the decision record of the cost-cursor lock fix, one creation lock per bucket |
+  | DR-120 | the decision record of the interim v6 merge rule: a fast path or one ordered pass |
+  | pgmcp bug 11004 | the global cost-cursor lock bug, in the pgmcp work tracker. DR-119 fixed it. |
   | DAG | the directed acyclic graph of blocks |
 endlegend
 

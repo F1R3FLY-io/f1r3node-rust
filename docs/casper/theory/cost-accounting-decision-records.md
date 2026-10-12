@@ -513,6 +513,17 @@ realizes both for offered-funded v6 merges: a conflict-free scope composes
 without the analysis, and one ordered pass in a strict total order replaces
 the search. Legacy merges keep the dispatcher and dev's merger unchanged.
 
+**Amendment (audit 2026-10-12).** Item 1 is wrong at HEAD `e38ff0de8`. No
+file under `casper/src` or `node/src` calls `admit_by_funding` or
+`static_authority_plan`, so the gate of DR-11 is not live. The merge
+`1d325b996` removed that gate on 2026-10-01. The node plays and replays each
+deploy to termination. Since the commits `02d01541b` and `e64261134`, a
+different check runs before execution in play and in every replay. It is the
+check of DR-123 and DR-124, and it calls `delta_sigma::estimate`
+(`direct_wallet_funding/execution/gate.rs:26-28, 423-442`). It checks one
+envelope against $`R_0`$ and admits nothing concurrently. The text above stays
+as the record of that time.
+
 **Cross-refs.** DR-5 (precharge/refund removal), DR-9 (token-per-COMM cost), DR-11 (acceptance gate),
 DR-13 (Σ⟦s⟧ supply). KEEP-LIST: `MergeableChannelAccounting.v`/`.tla` (the merge path's formal anchor).
 
@@ -4002,6 +4013,18 @@ purse of such a lane, or it permits the lane for at least one class (the
 G1-6 fix). The demand of every other lane leaves the holds, and the estimate
 is then incomplete.
 
+**Amendment (audit 2026-10-12).** The context is wrong about the hold
+arithmetic. `FundingBranchReservation` had production callers.
+`select_phlo_funding_family` (`phlo_execution/family_policy.rs:426`) calls
+`FundingBranchReservation::from_plans` at `:686`, and
+`phlo_execution/funding.rs:277` also calls it. At the commit `c3aacd649` of
+2026-10-03, the producer called `select_phlo_funding_family` during
+settlement (`family_selection.rs:206`). So the hold arithmetic ran after
+execution, not before it. The check of DR-123 now calls it before execution
+(`direct_wallet_funding/execution/gate.rs:935`). The context is right that no
+production path called the static analysis. The text above stays as the record
+of that time.
+
 **Cross-refs.** P1 `def:funding-proof`, `thm:decidability`,
 `def:conservative-demand`, `sec:acceptance-protocol`. DR-65, DR-67, DR-68.
 Epic 8946 leaves `ofp-1-admission-inputs`, `ofp-2-bound-analyzer`, and
@@ -4273,6 +4296,13 @@ superseded. Steps G2-2 and G2-4 add the later holds.
   - `cargo fmt --check`, the workspace doctests and
     `cargo clippy --workspace --all-targets -- -D warnings` pass on the
     commit tree.
+
+**Amendment (audit 2026-10-12).** The user approved one amendment on
+2026-10-10, and this record did not carry it. Member $`i`$ is accepted at
+$`R_0`$, but it reads its settlement inputs at $`R_{i-1}`$. Two offers of one
+signer share a cursor scope. So a settlement read at $`R_0`$ would make the
+second settlement fail. The proposal records the rule in §4.2. The rule refines
+item 1, and the decision above stays.
 
 ## DR-66 — Protocol-6 test genesis is activated, and the legacy meter is retired
 
@@ -4637,6 +4667,23 @@ region. That region charges the deployment's own payer inside the deployment
 and maps to no purse in any later deployment. The installer rule of items 1
 to 3 applies only to stored terms that user code signs, never to system
 residue.
+
+**Amendment (audit 2026-10-12).** The user approved two changes to this
+record on 2026-10-10, and the record did not carry them. The proposal records
+both (§4.3). The linear cost estimate design records the interim rule as B5
+(sections 8.5 and 16).
+
+- **Narrowing.** G3 funds only seals whose signature locates a key wallet,
+  and only seals that existed at $`R_0`$.
+- **Interim rule B5.** Until a tuple-space veto exists, the node rejects the
+  triggering deploy with no charge when an installer purse cannot pay. B5
+  replaces item 3 for now.
+- **Note on the premise of B5.** RSpace already has a commit veto.
+  `Match::check_commit` (`rspace++/src/rspace/match.rs:34-39`) lets a `where`
+  guard veto a commit, and the veto keeps the data and the continuation
+  (`rspace++/src/rspace/space_matcher.rs:184-199`). The accounting observer
+  has no veto (`rspace++/src/rspace/rspace_interface.rs:116-122`). So the
+  premise of B5 is under review in G3.
 
 **Verification obligations.** The three-node gateway flow passes. A TLA+
 control shows that a trigger with no stored signature cannot draw an installer
@@ -8448,6 +8495,25 @@ producer's self-replay and the validator replays. The replay budget of every
 role now measures `certify_offered_draft` alone, and each role charges its
 acceptance work to a separate budget.
 
+**Amendment (audit 2026-10-12).** The behavior change "The validator replays
+of one block charge the same usage" holds for the replays that the probe
+measured. Those replays ran in one process on one host. Two validator-local
+dependencies remain, so validators on different hosts can charge different
+host work.
+
+- The native session constructor sizes its host-work reservation with the
+  shard count of the native cache
+  (`rspace++/src/rspace/replay_rspace/native_session.rs:164-175`). That count
+  comes from `available_parallelism()`, the CPU count of the host
+  (`rspace++/src/rspace/hot_store.rs:1609-1614`). This is pgmcp bug 10814.
+- The charges of set and map construction depend on the iteration order of a
+  hash table, which varies between processes. DR-111 keeps this open by user
+  decision. This is pgmcp bug 10812, which DR-111 calls bug 475811.
+
+So the claim of item D-C5 that every validator charges identical host work
+overclaims. DR-102 repeats the claim for every role, and its amendment points
+here.
+
 **Cross-refs.** DR-79, DR-96, DR-98. Leaf `ofp-2-cap-d-c5a-trace-known-bounds`.
 
 ## DR-101 — System residue is never charged to an earlier deployment
@@ -8998,6 +9064,11 @@ usage, and the small-block test fails with the exact differences:
 VerificationBytes, 8.73 M VerificationOperations and 4.37 MB of
 SearchStateBytes to its replay budget. The final probe measurement of Phase D
 (item D-R) records the gateway numbers.
+
+**Amendment (audit 2026-10-12).** The first behavior change above holds on
+one host and in one process. Bugs 10814 and 10812 remain. So a validator on
+another host, or in another process, can charge a different usage. The
+amendment of DR-100 states both causes.
 
 **Cross-refs.** DR-72, DR-95, DR-100, DR-101. Leaf
 `ofp-2-cap-d-c5b-acceptance-attribution-test`.
@@ -12754,6 +12825,16 @@ wrong premise. `{}.xxx()` never raised `MethodNotDefined`. The reducer raised
 raises `MethodNotDefined`, a user failure, so such a deploy is now a charged
 user failure. The text above stays as the record of that time.
 
+**Amendment (audit 2026-10-12).** "Merge outcomes" describes the global
+`costCursorLock`. DR-119 removed that lock on 2026-10-10 (commit
+`7ab849b56`). An existing cursor now takes no lock, and a first use takes one
+of 256 bucket locks (`SystemVault.rho:63-72, 186-229`). So two sibling
+settlements conflict only when they share a cursor scope, or when first uses
+on both sides fall in one bucket (DR-119). Since DR-120, the v6 merge rule
+decides v6 merges instead of dev's cost adjudication. The table and the text of
+"Merge outcomes" describe the time before DR-119, and they stay as that
+record.
+
 **Cross-refs.** DR-57, DR-64, DR-66, DR-69, DR-101, DR-113, DR-114. E2E-052,
 CA-P-203, TM-CA-193, UC-CA-184. Bugs 10986, 11004 and 11008.
 
@@ -13799,6 +13880,15 @@ allocates. DR-119 and DR-120 stay reserved.
   - No production code calls the resolver yet, so the Casper suite does not
     apply.
 
+**Amendment (audit 2026-10-12).** Two statements of this record are stale.
+
+- DR-119 and DR-120 were reserved at G1-3. Both are now committed
+  (`7ab849b56`, `b496df9d8`).
+- At G1-3 no production code called the resolver. Since G1-6 the check calls
+  it in play and in every replay. `estimate_offered_term`
+  (`delta_sigma/estimate.rs:337`) calls
+  `resolve_lexical_names_for_funding_metered` at `:348`.
+
 **Cross-refs.** DR-64, DR-67. Leaves `ofp-1-lexical-authority` and
 `ofp-1-stack-safe-lexical`.
 
@@ -14349,6 +14439,18 @@ lane in every run.
   when no source is located at the purse of `alice` or permits `alice` (the
   G1-6 fix). When a source permits `alice`, the check holds that demand.
 
+**Amendment (audit 2026-10-12).**
+
+- At G1-4a no production path called the analysis, as the status above
+  states. Since G1-6 the check calls it in play and in every replay.
+- Item 4 states that the runtime evaluates the same forms without a host-work
+  limit (`reduce.rs:1467-1474`). That is partly wrong. The runtime charges
+  each of these forms one primitive call and its input bytes. The charge is
+  `reserve_host_primitive` (`reduce.rs:288-303` at `e38ff0de8`), applied at
+  `:2182-2187` and `:2238-2270`. The runtime does not charge the work that the
+  form does. Examples are the quadratic loop of `%%`, the matcher of `matches`
+  and the growth of big-number products.
+
 **Cross-refs.** DR-64, DR-65, DR-67, DR-101, DR-113, DR-118, DR-121, DR-124.
 
 ## DR-123 — The check before execution of an offered deploy (G1-4b)
@@ -14565,6 +14667,19 @@ restores its pre-state and pays nothing.
   makes the estimate incomplete with the reason `ForeignLane`.
 - $`B`$ in items 4, 5 and 7 counts the client lanes only. Item 7 places the
   known demand of the client lanes exactly as before.
+
+**Amendment (audit 2026-10-12).**
+
+- Since G1-6 the check is live. The status line above predates that step.
+- Item 6 and the context say that an on-chain purse funds the fee only before
+  execution. In effect it funds nothing. `authorize_wallets` rejects a
+  fee-permitted on-chain source (`direct_wallet_funding.rs:237-240`, error
+  `OnchainFee`), so the fee test is always false for an on-chain purse.
+- The gate property test `an_on_chain_purse_holds_at_most_the_fee`
+  (`execution/gate/tests.rs:637-662`) exercises fee-permitted on-chain
+  sources. Production rejects that state.
+- P1 checks the tokens of a funding slot at acceptance (P1:1553-1555). A
+  correction of the gap fill G-5 for funding slots is pending (G3).
 
 **Cross-refs.** DR-5, DR-64, DR-65, DR-102, DR-113, DR-122, DR-124.
 
@@ -14915,6 +15030,13 @@ verification follows this list.
   - `cargo fmt --check`, the workspace doctests and
     `cargo clippy --workspace --all-targets -- -D warnings` pass on the
     commit tree.
+
+**Amendment (audit 2026-10-12).** The first sentence of "Region attribution
+in the code" overstates. The code attributes the regions of the deploy's own
+terms as the papers do. One case differs. A fired stored body runs with an
+empty authority, so its unsigned work charges the triggering deploy
+(`reduce.rs:382-406`). Design section 13 records how that charge differs from
+uniform signing.
 
 **Cross-refs.** DR-64, DR-68, DR-72, DR-101, DR-102, DR-113, DR-122, DR-123.
 Design sections 5.3, 6, 7, 9 and 16 of
