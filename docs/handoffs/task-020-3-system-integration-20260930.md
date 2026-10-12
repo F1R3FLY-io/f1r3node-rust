@@ -87,6 +87,6 @@ TASK-020-4 remains on `formal/soak-casper-consensus` and is not part of this han
 
 ## Evidence
 
-- [Node work log](../work-logs/task-020-3-deployment-log-caps-20260930.md).
+- [Node work log](../work-logs/archived/EPIC-020/task-020-3-deployment-log-caps-20260930.md).
 - [Node logging policy](../node/README.md#deployment-policy).
 - [EPIC-020 tracker](../ToDos.md#epic-020-node-log-and-accept-path-self-limits).

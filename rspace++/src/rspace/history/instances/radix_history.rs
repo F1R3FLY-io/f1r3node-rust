@@ -9,7 +9,7 @@ use shared::rust::store::key_value_store::KeyValueStore;
 
 use crate::rspace::errors::HistoryError;
 use crate::rspace::hashing::blake2b256_hash::Blake2b256Hash;
-use crate::rspace::history::history::History;
+use crate::rspace::history::history::{History, StagedHistory};
 use crate::rspace::history::history_action::{HistoryAction, HistoryActionTrait};
 use crate::rspace::history::radix_tree::{Node, RadixTreeImpl, empty_node, hash_node};
 
@@ -57,6 +57,12 @@ impl History for RadixHistory {
     }
 
     fn process(&self, actions: Vec<HistoryAction>) -> Result<Box<dyn History>, HistoryError> {
+        let (next, nodes) = self.stage(actions)?;
+        self.store.put(nodes)?;
+        Ok(next)
+    }
+
+    fn stage(&self, actions: Vec<HistoryAction>) -> Result<StagedHistory, HistoryError> {
         if !self.has_no_duplicates(&actions) {
             return Err(HistoryError::ActionError(
                 "Cannot process duplicate actions on one key.".to_string(),
@@ -79,19 +85,22 @@ impl History for RadixHistory {
                     imple: new_imple,
                     store: self.store.clone(),
                 };
-                self.imple.commit()?;
+                let nodes = self.imple.pending_writes()?;
 
                 self.imple.clear_write_cache();
                 self.imple.clear_read_cache();
 
-                Ok(Box::new(new_history))
+                Ok((Box::new(new_history), nodes))
             }
-            None => Ok(Box::new(RadixHistory {
-                root_hash: self.root_hash.clone(),
-                root_node: self.root_node.clone(),
-                imple: RadixTreeImpl::new(self.store.clone()),
-                store: self.store.clone(),
-            })),
+            None => Ok((
+                Box::new(RadixHistory {
+                    root_hash: self.root_hash.clone(),
+                    root_node: self.root_node.clone(),
+                    imple: RadixTreeImpl::new(self.store.clone()),
+                    store: self.store.clone(),
+                }),
+                Vec::new(),
+            )),
         }
     }
 

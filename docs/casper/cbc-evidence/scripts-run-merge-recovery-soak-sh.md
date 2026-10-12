@@ -6,17 +6,19 @@ The previous ledger remains in the archive below. Earlier reports retain their e
 
 The maintainer accepted the TASK-021-6 evidence-scope change of this file on 2026-10-04 (PR #580, comment 5979020312) at revision `384b5fb08`.
 The maintainer accepted the review fixes of this file on 2026-10-04 (PR #580, comment 5980616375) at revision `3d384bc9e`.
+The maintainer accepted the TASK-020-4 node log budget change of this file on 2026-10-04 (PR #622, comment 5983133741) at revision `6ea45dc8f`.
+The maintainer accepted the TASK-020-4 log probe fix of this file on 2026-10-05 (PR #622, comment 6005866151) at revision `1a04095da`.
 
 ```json
 {
   "artifact": {
     "path": "scripts/run-merge-recovery-soak.sh",
     "id": "scripts-run-merge-recovery-soak-sh",
-    "commit": "345a99a23260be7dfc817b4ef3911842243a9700",
+    "commit": "82fe22a0acf74034c87b66af5a9d8f0be0ef7207",
     "commit_is_base": false,
-    "sha256": "8135af2bf0a704f2d79af74392110387b0be0f2ef7939a542a203b4860bec44f",
+    "sha256": "4bc134545eea9a2f355ea3e018d8024400d8691ca22047402a20b7bc16e6008a",
     "working_tree": true,
-    "sha256_before_change": "5df5d1be14baa228f1ed36ec853e265273aa2ba3b5cb46586744cd8a133f0bee"
+    "sha256_before_change": "7ea92dac03cb2b69d9dd88abcbf9f8b83dcea6a36fa403409bcba9127feb8d74"
   },
   "claim": "docs/claims/casper-soak-harness.md",
   "claim_ids": [
@@ -30,8 +32,8 @@ The maintainer accepted the review fixes of this file on 2026-10-04 (PR #580, co
   "scope": "bounded-harness-only",
   "evidence": {
     "kind": "accepted-change",
-    "ref": "docs/casper/cbc-evidence/runs/casper-soak-driver-evidence-scope-acceptance-20261004-02/report.json",
-    "sha256": "5943def5a8f7dee8de9b75a8f68e642a03068484140cbd4e815f184192df832f"
+    "ref": "docs/casper/cbc-evidence/runs/casper-soak-log-budget-guardian-acceptance-20261005-01/report.json",
+    "sha256": "32d0af7350dda78fa0927025fa310c2a18b0cde8c2b5e780ef188d656ca5b199"
   },
   "tiers": {
     "refutation": "bounded-safety-pass",
@@ -44,7 +46,7 @@ The maintainer accepted the review fixes of this file on 2026-10-04 (PR #580, co
   },
   "soak": "pending",
   "waiver": null,
-  "verified_at": "2026-10-04T13:41:54Z",
+  "verified_at": "2026-10-05T23:54:28Z",
   "previous_ledger": {
     "path": "docs/casper/cbc-evidence/runs/casper-formal-gate-renewal-20260919-01/previous-metadata.tar.gz",
     "sha256": "855516a6685384190c8a4f427ff547fc2c8a0f2b6d894849d26dea9fde91b6d9",
@@ -54,14 +56,14 @@ The maintainer accepted the review fixes of this file on 2026-10-04 (PR #580, co
   "review_candidate": "docs/casper/cbc-evidence/runs/casper-driver-rebind-20260918-01/candidate-ledgers/scripts-run-merge-recovery-soak-sh.md",
   "evidence_before_change": {
     "kind": "accepted-change",
-    "ref": "docs/casper/cbc-evidence/runs/casper-soak-driver-evidence-scope-acceptance-20261004-01/report.json",
-    "sha256": "7ce7d34b7fe5f8233cb764d6b80211625c6677f73acebff27690ba88869d1af2"
+    "ref": "docs/casper/cbc-evidence/runs/casper-soak-log-budget-guardian-acceptance-20261004-01/report.json",
+    "sha256": "20eca5b86c1c399ddec8670c2675e470d644fb64b6c9e520c3d28675df3bbffa"
   },
   "acceptance": {
     "accepted_by": "jltatbeach",
-    "record": "https://github.com/F1R3FLY-io/f1r3node-rust/pull/580#issuecomment-5980616375",
-    "revision": "3d384bc9ed4c38738c88bf84dd6f570ef5fc78e0",
-    "reviewed_at": "2026-10-04T13:41:54Z"
+    "record": "https://github.com/F1R3FLY-io/f1r3node-rust/pull/622#issuecomment-6005866151",
+    "revision": "1a04095dacf1112821eefbe51e1a74732deee115",
+    "reviewed_at": "2026-10-05T23:54:28Z"
   }
 }
 ```

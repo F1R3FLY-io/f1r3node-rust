@@ -82,6 +82,7 @@ casper = { path = "../casper", features = ["test-utils"] }
 tower = { workspace = true }
 serial_test = { workspace = true }
 proptest = { workspace = true }
+metrics-util = { workspace = true }
 
 [build-dependencies]
 tonic-prost-build = { workspace = true }

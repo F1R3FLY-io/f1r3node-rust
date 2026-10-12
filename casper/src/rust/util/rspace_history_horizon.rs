@@ -61,8 +61,8 @@ use crate::rust::casper::CasperShardConf;
 /// requester and the mergeable-channel replay — [`lfs_min_block_number`].
 /// Deriving a narrower one here is what broke joiner sync: the replay resets
 /// rspace history to the pre-state of every block from that bound upward, so
-/// any block it reaches whose roots were not synced fails
-/// `validate_and_set_current_root` and the node never reaches Running. The
+/// any block it reaches whose roots were not synced fails `validate_root`
+/// and the node never reaches Running. The
 /// parent-reachability window is only one of the two constraints in that
 /// bound, and it is the narrower one whenever `deploy_lifespan` exceeds
 /// `max_parent_depth + depth_buffer`.

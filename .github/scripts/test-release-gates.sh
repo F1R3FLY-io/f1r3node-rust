@@ -152,8 +152,8 @@ OTHER_SHA=fedcba9876543210fedcba9876543210fedcba98
 fail_case 'CI run for another commit' ci-run.json ".head_sha = \"$OTHER_SHA\"" full_ci
 fail_case 'CI run from a pull request' ci-run.json '.event = "pull_request"' full_ci
 fail_case 'CI run attempt differs from evidence' ci-run.json '.run_attempt = 3' full_ci
-fail_case 'required CI job failed' ci-jobs.json '(.jobs[] | select(.name == "Lint") | .conclusion) = "failure"' heavy_integration
-fail_case 'required CI job id differs from evidence' ci-jobs.json '(.jobs[] | select(.name == "Lint") | .id) = 9999' heavy_integration
+fail_case 'required CI job failed' ci-jobs.json '(.jobs[] | select(.name == "Static Checks") | .conclusion) = "failure"' heavy_integration
+fail_case 'required CI job id differs from evidence' ci-jobs.json '(.jobs[] | select(.name == "Static Checks") | .id) = 9999' heavy_integration
 fail_case 'slashing run for another commit' slashing-run.json ".head_sha = \"$OTHER_SHA\"" slashing
 fail_case 'slashing matrix job failed' slashing-jobs.json '(.jobs[] | select(.name == "Pre-fix regression backstops (7)") | .conclusion) = "failure"' slashing
 fail_case 'slashing matrix absent' slashing-jobs.json '.jobs |= map(select(.name | startswith("Pre-fix") | not))' slashing

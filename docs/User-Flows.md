@@ -46,7 +46,7 @@ Use the persona name in each flow's `Personas:` field.
 
 ### FLOW-002: Operate a node through resource faults
 
-**Status:** In Progress
+**Status:** Complete
 **Implemented in:** EPIC-020
 **Related Stories:** US-009
 **Related Flows:**
@@ -86,12 +86,12 @@ TASK-020-1 has [source-bound hosted transport evidence](work-logs/evidence/task-
 The regression file is `comm/src/rust/transport/f1r3fly_server_resource_tests.rs`.
 The controlled recovery test reaches handshake timeout. It does not establish successful authenticated peer communication.
 
-TASK-020-2 has [local file-budget verification](work-logs/task-020-2-byte-bounded-logging-20260930.md).
+TASK-020-2 has [local file-budget verification](work-logs/archived/EPIC-020/task-020-2-byte-bounded-logging-20260930.md).
 The file sink defaults to 100 MiB per file and 2 GiB across its log directory.
 
-TASK-020-3 has [local deployment checks](work-logs/task-020-3-deployment-log-caps-20260930.md) for single sinks and container caps.
+TASK-020-3 has [local deployment checks](work-logs/archived/EPIC-020/task-020-3-deployment-log-caps-20260930.md) for single sinks and container caps.
 The external single-sink correction merged into system-integration `dev` through PR #146 at `ccd717195`.
-TASK-020-4 still requires guardian enforcement.
+TASK-020-4 added guardian enforcement of the node log directory and the container log budgets in PR #622, accepted on 2026-10-05. EPIC-020 was archived on 2026-10-06.
 Integration-test references remain empty until actual deployment tests exist. No generated specification is treated as executed evidence.
 
 ---

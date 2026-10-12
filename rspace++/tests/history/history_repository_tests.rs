@@ -8,13 +8,14 @@ use rand::prelude::SliceRandom;
 use rspace_plus_plus::rspace::errors::{HistoryError, RootError};
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::hashing::stable_hash_provider::{hash, hash_from_vec};
+use rspace_plus_plus::rspace::history::checkpoint_writer::{CheckpointWriter, KvCheckpointWriter};
 use rspace_plus_plus::rspace::history::history::HistoryInstances;
 use rspace_plus_plus::rspace::history::history_reader::HistoryReader;
 use rspace_plus_plus::rspace::history::history_repository::HistoryRepository;
 use rspace_plus_plus::rspace::history::history_repository_impl::HistoryRepositoryImpl;
 use rspace_plus_plus::rspace::history::instances::radix_history::RadixHistory;
 use rspace_plus_plus::rspace::history::root_repository::RootRepository;
-use rspace_plus_plus::rspace::history::roots_store::RootsStore;
+use rspace_plus_plus::rspace::history::roots_store::{RootsStore, RootsStoreInstances};
 use rspace_plus_plus::rspace::hot_store_action::{
     DeleteAction, DeleteContinuations, DeleteData, DeleteJoins, HotStoreAction, InsertAction,
     InsertContinuations, InsertData, InsertJoins,
@@ -356,7 +357,6 @@ fn checkpoint_attribution_preserves_roots_and_records_only_executed_stages() {
             "leaf-write",
             "history-lock-wait",
             "history-process",
-            "roots-lock-wait",
             "root-commit",
         ] {
             let values = samples(&format!("history.checkpoint.{stage}.time"));
@@ -472,6 +472,215 @@ async fn record_root_makes_root_visible_to_contains_root() {
         repo.contains_root(&RadixHistory::empty_root_node_hash())
             .unwrap()
     );
+}
+
+#[test]
+fn reset_does_not_move_the_current_root_pointer() {
+    let repo = create_empty_repository();
+    let (first, _) = insert_datum(1);
+    let (second, _) = insert_datum(2);
+    let first_root = repo.checkpoint(vec![first]).root();
+    let second_root = repo.checkpoint(vec![second]).root();
+    let current = || {
+        repo.roots_repository
+            .lock()
+            .unwrap()
+            .roots_store
+            .current_root()
+            .unwrap()
+    };
+    assert_eq!(current(), Some(second_root.clone()));
+
+    let next = repo.reset(&first_root).unwrap();
+
+    assert_eq!(next.root(), first_root);
+    assert_eq!(current(), Some(second_root));
+}
+
+struct FailingCheckpointWriter;
+
+impl CheckpointWriter for FailingCheckpointWriter {
+    fn write(
+        &self,
+        _nodes: Vec<(ByteVector, ByteVector)>,
+        _root: &Blake2b256Hash,
+    ) -> Result<(), KvStoreError> {
+        Err(KvStoreError::IoError("injected checkpoint write failure".to_string()))
+    }
+}
+
+#[test]
+fn failed_checkpoint_write_leaves_the_store_at_the_previous_root() {
+    let history_store: Arc<dyn KeyValueStore> = Arc::new(InMemoryKeyValueStore::new());
+    let roots_store: Arc<dyn KeyValueStore> = Arc::new(InMemoryKeyValueStore::new());
+    let repo = empty_repository_over(
+        history_store.clone(),
+        roots_store.clone(),
+        Arc::new(FailingCheckpointWriter),
+    );
+    let previous_root = repo.root();
+    let history_before = history_store.to_map().unwrap();
+    let (insert, _) = insert_datum(1);
+
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        repo.checkpoint(vec![insert]).root()
+    }));
+
+    assert!(outcome.is_err());
+    assert_eq!(
+        RootsStoreInstances::roots_store(roots_store)
+            .current_root()
+            .unwrap(),
+        Some(previous_root)
+    );
+    assert_eq!(history_store.to_map().unwrap(), history_before);
+}
+
+fn repository_over_in_memory_stores()
+-> (HistoryRepositoryImpl<String, String, String, String>, Arc<dyn KeyValueStore>) {
+    let history_store: Arc<dyn KeyValueStore> = Arc::new(InMemoryKeyValueStore::new());
+    let roots_store: Arc<dyn KeyValueStore> = Arc::new(InMemoryKeyValueStore::new());
+    let writer = Arc::new(KvCheckpointWriter {
+        history: history_store.clone(),
+        roots: roots_store.clone(),
+    });
+    (empty_repository_over(history_store.clone(), roots_store, writer), history_store)
+}
+
+#[test]
+fn checkpoint_rejects_a_stored_node_with_a_different_value_and_accepts_an_equal_one() {
+    let (reference, reference_store) = repository_over_in_memory_stores();
+    let (insert, _) = insert_datum(1);
+    let new_root = reference.checkpoint(vec![insert.clone()]).root();
+    let root_key = new_root.bytes().to_vec();
+    let root_node = reference_store.get_one(&root_key).unwrap().unwrap();
+
+    let (equal, equal_store) = repository_over_in_memory_stores();
+    equal_store
+        .put(vec![(root_key.clone(), root_node.clone())])
+        .unwrap();
+    assert_eq!(equal.checkpoint(vec![insert.clone()]).root(), new_root);
+
+    let (conflicting, conflicting_store) = repository_over_in_memory_stores();
+    conflicting_store
+        .put(vec![(root_key, b"a different node".to_vec())])
+        .unwrap();
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        conflicting.checkpoint(vec![insert]).root()
+    }));
+    let message = outcome
+        .err()
+        .and_then(|payload| payload.downcast_ref::<String>().cloned())
+        .unwrap_or_default();
+    assert!(message.contains("CollisionError"), "{message}");
+}
+
+struct RecordingCheckpointWriter {
+    inner: KvCheckpointWriter,
+    roots_repository: Mutex<Option<Arc<Mutex<RootRepository>>>>,
+    roots_lock_held_at_write: Mutex<Vec<bool>>,
+}
+
+impl CheckpointWriter for RecordingCheckpointWriter {
+    fn write(
+        &self,
+        nodes: Vec<(ByteVector, ByteVector)>,
+        root: &Blake2b256Hash,
+    ) -> Result<(), KvStoreError> {
+        let held = self
+            .roots_repository
+            .lock()
+            .unwrap()
+            .as_ref()
+            .is_some_and(|roots| roots.try_lock().is_err());
+        self.roots_lock_held_at_write.lock().unwrap().push(held);
+        self.inner.write(nodes, root)
+    }
+}
+
+fn repository_with_recording_writer()
+-> (HistoryRepositoryImpl<String, String, String, String>, Arc<RecordingCheckpointWriter>) {
+    let history_store: Arc<dyn KeyValueStore> = Arc::new(InMemoryKeyValueStore::new());
+    let roots_store: Arc<dyn KeyValueStore> = Arc::new(InMemoryKeyValueStore::new());
+    let writer = Arc::new(RecordingCheckpointWriter {
+        inner: KvCheckpointWriter {
+            history: history_store.clone(),
+            roots: roots_store.clone(),
+        },
+        roots_repository: Mutex::new(None),
+        roots_lock_held_at_write: Mutex::new(Vec::new()),
+    });
+    let repo = empty_repository_over(history_store, roots_store, writer.clone());
+    *writer.roots_repository.lock().unwrap() = Some(repo.roots_repository.clone());
+    (repo, writer)
+}
+
+#[test]
+fn checkpoint_writes_its_state_while_the_roots_mutex_is_free() {
+    let (repo, writer) = repository_with_recording_writer();
+    let (first, _) = insert_datum(1);
+    let (second, _) = insert_datum(2);
+
+    repo.checkpoint(vec![first]).checkpoint(vec![second]);
+
+    assert_eq!(*writer.roots_lock_held_at_write.lock().unwrap(), vec![false, false]);
+}
+
+#[test]
+fn empty_checkpoint_writes_nothing_and_keeps_the_current_root() {
+    let (repo, writer) = repository_with_recording_writer();
+    let current_root = repo.root();
+
+    let next = repo.checkpoint(Vec::new());
+
+    assert_eq!(next.root(), current_root);
+    assert!(writer.roots_lock_held_at_write.lock().unwrap().is_empty());
+}
+
+#[test]
+fn lock_site_metrics_count_each_call_site_separately() {
+    use metrics_util::debugging::{DebugValue, DebuggingRecorder};
+
+    let repo = create_empty_repository();
+    let recorder = DebuggingRecorder::new();
+    let snapshotter = recorder.snapshotter();
+    metrics::with_local_recorder(&recorder, || {
+        let (insert, _) = insert_datum(1);
+        let next = repo.checkpoint(vec![insert]);
+        let root = next.root();
+        repo.record_root(&root).unwrap();
+        assert!(repo.contains_root(&root).unwrap());
+        repo.reset(&root).unwrap();
+        repo.get_history_reader(&root).unwrap();
+        repo.get_history_reader_struct(&root).unwrap();
+    });
+    let snapshot = snapshotter.snapshot().into_vec();
+    let counter = |name: &str| -> Option<u64> {
+        snapshot
+            .iter()
+            .find(|(key, _, _, _)| key.key().name() == name)
+            .and_then(|(_, _, _, value)| match value {
+                DebugValue::Counter(value) => Some(*value),
+                _ => None,
+            })
+    };
+    for (lock, site, calls) in [
+        ("roots_repository", "record_root", 1),
+        ("roots_repository", "contains_root", 1),
+        ("roots_repository", "reset", 1),
+        ("current_history", "checkpoint", 1),
+        ("current_history", "reset", 1),
+        ("current_history", "history_reader", 2),
+        ("current_history", "root", 1),
+    ] {
+        let prefix = format!("history.repository.{lock}.{site}");
+        assert_eq!(counter(&format!("{prefix}.calls")), Some(calls), "{prefix}");
+        assert!(counter(&format!("{prefix}.wait_ns")).is_some(), "{prefix}");
+        assert!(counter(&format!("{prefix}.hold_ns")).is_some(), "{prefix}");
+    }
+    assert_eq!(counter("history.repository.roots_repository.checkpoint.calls"), None);
+    assert_eq!(counter("history.repository.roots_repository.lock_calls"), Some(3));
+    assert_eq!(counter("history.repository.current_history.lock_calls"), Some(5));
 }
 
 #[tokio::test]
@@ -619,76 +828,37 @@ pub fn datum(s: i32) -> Datum<String> {
 }
 
 pub fn create_empty_repository() -> HistoryRepositoryImpl<String, String, String, String> {
-    let past_roots = root_repository();
-    let empty_history = HistoryInstances::create(
-        RadixHistory::empty_root_node_hash(),
-        Arc::new(InMemoryKeyValueStore::new()),
-    )
-    .unwrap();
+    let history_store: Arc<dyn KeyValueStore> = Arc::new(InMemoryKeyValueStore::new());
+    let roots_store: Arc<dyn KeyValueStore> = Arc::new(InMemoryKeyValueStore::new());
+    let writer = Arc::new(KvCheckpointWriter {
+        history: history_store.clone(),
+        roots: roots_store.clone(),
+    });
+    empty_repository_over(history_store, roots_store, writer)
+}
+
+fn empty_repository_over(
+    history_store: Arc<dyn KeyValueStore>,
+    roots_store: Arc<dyn KeyValueStore>,
+    checkpoint_writer: Arc<dyn CheckpointWriter>,
+) -> HistoryRepositoryImpl<String, String, String, String> {
+    let past_roots = RootRepository {
+        roots_store: Box::new(RootsStoreInstances::roots_store(roots_store.clone())),
+    };
+    let empty_history =
+        HistoryInstances::create(RadixHistory::empty_root_node_hash(), history_store.clone())
+            .unwrap();
 
     let _ = past_roots.commit(&RadixHistory::empty_root_node_hash());
 
     HistoryRepositoryImpl {
         current_history: Arc::new(Mutex::new(Box::new(empty_history))),
         roots_repository: Arc::new(Mutex::new(past_roots)),
+        checkpoint_writer,
         leaf_store: create_inmem_cold_store(),
         rspace_exporter: Arc::new(EmptyExporter),
         rspace_importer: Arc::new(EmptyImporter),
         _marker: std::marker::PhantomData,
-    }
-}
-
-struct InmemRootsStore {
-    roots: Arc<Mutex<HashSet<Blake2b256Hash>>>,
-    maybe_current_root: Arc<Mutex<Option<Blake2b256Hash>>>,
-}
-
-impl RootsStore for InmemRootsStore {
-    fn current_root(&self) -> Result<Option<Blake2b256Hash>, RootError> {
-        Ok(self.maybe_current_root.lock().unwrap().clone())
-    }
-
-    fn validate_and_set_current_root(
-        &self,
-        key: Blake2b256Hash,
-    ) -> Result<Option<Blake2b256Hash>, RootError> {
-        let roots_lock = self.roots.lock().unwrap();
-        let mut maybe_current_root_lock = self.maybe_current_root.lock().unwrap();
-
-        if roots_lock.contains(&key) {
-            *maybe_current_root_lock = Some(key);
-            Ok(maybe_current_root_lock.clone())
-        } else {
-            Ok(None)
-        }
-    }
-
-    fn record_root(&self, key: &Blake2b256Hash) -> Result<(), RootError> {
-        let mut roots_lock = self.roots.lock().unwrap();
-        let mut maybe_current_root_lock = self.maybe_current_root.lock().unwrap();
-
-        *maybe_current_root_lock = Some(key.clone());
-        let _ = roots_lock.insert(key.clone());
-        Ok(())
-    }
-
-    fn contains_root(&self, key: &Blake2b256Hash) -> Result<bool, RootError> {
-        Ok(self.roots.lock().unwrap().contains(key))
-    }
-}
-
-impl InmemRootsStore {
-    fn new() -> InmemRootsStore {
-        InmemRootsStore {
-            roots: Arc::new(Mutex::new(HashSet::new())),
-            maybe_current_root: Arc::new(Mutex::new(None)),
-        }
-    }
-}
-
-fn root_repository() -> RootRepository {
-    RootRepository {
-        roots_store: Box::new(InmemRootsStore::new()),
     }
 }
 

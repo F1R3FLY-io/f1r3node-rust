@@ -13,16 +13,31 @@ ruby -ryaml -e '
 ' "$ROOT/.github/workflows/ci.yml" "$TMP/gate.sh"
 
 mkdir -p "$TMP/bin"
-cat >"$TMP/bin/gh" <<'SH'
+cat >"$TMP/bin/gh" <<'FAKE'
 #!/usr/bin/env bash
+filter=""
+args=("$@")
+for ((i = 0; i < ${#args[@]}; i++)); do
+  [ "${args[i]}" = --jq ] && filter="${args[i + 1]}"
+done
+emit() {
+  if [ -n "$filter" ]; then jq -r "$filter" <<<"$1"; else printf '%s\n' "$1"; fi
+}
 case "$*" in
+  *"${FAKE_FAIL_ON:-no-failure}"*) printf 'simulated API failure: %s\n' "$*" >&2; exit 1 ;;
+  *"actions/workflows/ci.yml/runs"*) emit "$FAKE_WORKFLOW_RUNS" ;;
+  *"actions/runs/${FAKE_NEWEST_RUN:-none}/jobs"*) emit "$FAKE_NEWEST_JOBS" ;;
+  *"actions/runs/"*"/jobs"*) emit "$FAKE_OTHER_JOBS" ;;
+  *"git/commits/${FAKE_GROUP_HEAD:-none}"*) emit "{\"tree\": {\"sha\": \"$FAKE_GROUP_TREE\"}}" ;;
+  *"git/commits/"*) emit "{\"tree\": {\"sha\": \"$FAKE_HEAD_TREE\"}}" ;;
+  *"pulls/648"*) emit "{\"head\": {\"sha\": \"$FAKE_PULL_HEAD\"}}" ;;
   *"pulls/311"*) cat "$FAKE_PULL" ;;
   *"commits/"*) cat "$FAKE_COMMIT" ;;
   *"compare/"*) printf '%s\n' "${FAKE_RELATIONSHIP:-ahead}" ;;
   *"pulls"*) printf '%s\n' "$FAKE_CHILDREN" ;;
   *) printf 'unexpected gh invocation: %s\n' "$*" >&2; exit 1 ;;
 esac
-SH
+FAKE
 chmod +x "$TMP/bin/gh"
 
 SHA=1111111111111111111111111111111111111111
@@ -55,6 +70,18 @@ run_case() {
     PR_HEAD_REF="$head_ref" \
     PR_HEAD_REPOSITORY="$head_repo" \
     PR_HAS_HEAVY_LABEL="${PR_HAS_HEAVY_LABEL:-false}" \
+    MERGE_GROUP_HEAD_REF="${MERGE_GROUP_HEAD_REF:-}" \
+    MERGE_GROUP_HEAD_SHA="${MERGE_GROUP_HEAD_SHA:-}" \
+    MERGE_GROUP_BASE_SHA="${MERGE_GROUP_BASE_SHA:-}" \
+    FAKE_FAIL_ON="${FAKE_FAIL_ON:-no-failure}" \
+    FAKE_WORKFLOW_RUNS="${FAKE_WORKFLOW_RUNS:-}" \
+    FAKE_NEWEST_RUN="${FAKE_NEWEST_RUN:-none}" \
+    FAKE_NEWEST_JOBS="${FAKE_NEWEST_JOBS:-}" \
+    FAKE_OTHER_JOBS="${FAKE_OTHER_JOBS:-}" \
+    FAKE_GROUP_HEAD="${MERGE_GROUP_HEAD_SHA:-none}" \
+    FAKE_GROUP_TREE="${FAKE_GROUP_TREE:-}" \
+    FAKE_HEAD_TREE="${FAKE_HEAD_TREE:-}" \
+    FAKE_PULL_HEAD="${FAKE_PULL_HEAD:-}" \
     FAKE_CHILDREN="$children" \
     FAKE_PULL="$fake_pull" \
     FAKE_COMMIT="$TMP/commit.json" \
@@ -106,5 +133,71 @@ if run_case missing-target workflow_dispatch refs/heads/master '' '' '' '[]' '' 
   echo 'top pull request without an exact target passed' >&2
   exit 1
 fi
+
+ruby -ryaml -e '
+  doc = YAML.load_file(ARGV[0])
+  names = doc["jobs"].values.map { |job| job["name"] }
+  gate = doc.dig("jobs", "build_base", "steps").find { |item| item["id"] == "target" }["run"]
+  ["Integration Tests (amd64)", "Integration Tests (arm64)"].each do |name|
+    abort "ci.yml has no job named #{name}" unless names.count(name) == 1
+    abort "the heavy reuse gate does not read #{name}" unless gate.include?(name)
+  end
+' "$ROOT/.github/workflows/ci.yml"
+
+GROUP_HEAD=6666666666666666666666666666666666666666
+GROUP_BASE=7777777777777777777777777777777777777777
+PULL_HEAD=8888888888888888888888888888888888888888
+TREE=9999999999999999999999999999999999999999
+OTHER_TREE=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+WORKFLOW_RUNS='{"workflow_runs": [
+  {"id": 10, "path": ".github/workflows/ci.yml"},
+  {"id": 20, "path": ".github/workflows/ci.yml"},
+  {"id": 40, "path": ".github/workflows/other.yml"}
+]}'
+jobs_json() {
+  jq -n --arg amd64 "$1" --arg arm64 "$2" '{jobs: [
+    {name: "Integration Pipeline / Integration Tests (amd64-docker)", conclusion: "success"},
+    {name: "Integration Tests (amd64)", conclusion: (if $amd64 == "" then null else $amd64 end)},
+    {name: "Integration Tests (arm64)", conclusion: (if $arm64 == "" then null else $arm64 end)}
+  ]}'
+}
+merge_group_case() {
+  local label="$1" expected="$2"
+  MERGE_GROUP_HEAD_REF="${REF:-refs/heads/gh-readonly-queue/dev/pr-648-$GROUP_BASE}" \
+    MERGE_GROUP_HEAD_SHA="$GROUP_HEAD" \
+    MERGE_GROUP_BASE_SHA="$GROUP_BASE" \
+    FAKE_PULL_HEAD="$PULL_HEAD" \
+    FAKE_GROUP_TREE="$TREE" \
+    FAKE_HEAD_TREE="${HEAD_TREE:-$TREE}" \
+    FAKE_WORKFLOW_RUNS="${RUNS:-$WORKFLOW_RUNS}" \
+    FAKE_NEWEST_RUN=20 \
+    FAKE_NEWEST_JOBS="${NEWEST:-$(jobs_json success success)}" \
+    FAKE_OTHER_JOBS="${OTHER:-$(jobs_json failure failure)}" \
+    FAKE_FAIL_ON="${FAIL_ON:-no-failure}" \
+    run_case "$label" merge_group refs/heads/gh-readonly-queue/dev/pr-648 '' '' '' '[]' '' '' "$expected" \
+    "$TMP/pull.json" "${RELATIONSHIP:-ahead}"
+}
+
+merge_group_case reuse-newest-ci-run false
+RELATIONSHIP=identical merge_group_case reuse-identical-base false
+HEAD_TREE="$OTHER_TREE" merge_group_case tree-differs true
+RELATIONSHIP=behind merge_group_case base-not-contained true
+RELATIONSHIP=diverged merge_group_case base-diverged true
+NEWEST="$(jobs_json skipped skipped)" merge_group_case heavy-skipped true
+NEWEST="$(jobs_json skipped skipped)" OTHER="$(jobs_json success success)" merge_group_case older-run-passed-newer-skipped true
+NEWEST="$(jobs_json success failure)" merge_group_case arm64-failed true
+NEWEST="$(jobs_json success "")" merge_group_case arm64-pending true
+NEWEST='{"jobs": [{"name": "Integration Tests (amd64)", "conclusion": "success"}, {"name": "Integration Tests (amd64)", "conclusion": "success"}, {"name": "Integration Tests (arm64)", "conclusion": "success"}]}' \
+  merge_group_case duplicate-job true
+NEWEST='{"jobs": []}' merge_group_case no-jobs true
+RUNS='{"workflow_runs": []}' merge_group_case no-ci-run true
+RUNS='{"workflow_runs": [{"id": 20, "path": ".github/workflows/other.yml"}]}' merge_group_case other-workflow-only true
+REF=refs/heads/gh-readonly-queue/dev/pr-648-abc merge_group_case malformed-ref true
+REF=refs/heads/feature/pr-648 merge_group_case foreign-ref true
+FAIL_ON=pulls/648 merge_group_case pull-api-error true
+FAIL_ON=compare/ merge_group_case compare-api-error true
+FAIL_ON=git/commits merge_group_case tree-api-error true
+FAIL_ON=workflows/ci.yml/runs merge_group_case runs-api-error true
+FAIL_ON=/jobs merge_group_case jobs-api-error true
 
 printf 'CI stack gate tests passed\n'
