@@ -2856,6 +2856,7 @@ design_intent:
   consensus_scope: "This epic covers the F1r3fly CbC Casper test net only (consensus_model cbc-casper). In that name, CbC qualifies the protocol. Used alone, CbC names the verification process. Casanova, Cordial Miners, and RGB each get their own test net and design record (docs/plans/test-net.md Section 12). The release-process rules stay model-neutral."
   decisions_2026_10_11: "Releases fix forward, and an Anchor slot reverts only when the release declares no storage-format change. Genesis bonds four fixed slot keys, and only digests change. First partner access is read-only on the observer of the main shard. Deployment Train candidates share the soaking slot, and the queue keeps the newest waiting candidate per release line."
   modular_soaks: "2026-10-11: the modular replication boundary (EPIC-025, branch feature/consensus-neutral-boundary) lets each model define its own soak. The F1r3fly CbC Casper implementation moves to a new repository, and the system-integration repository brings it into the soak. RGB uses the same release process."
+  boundary_epic: "EPIC-025 Pluggable State Machine Replication Boundary (TASK-025-1 to TASK-025-7, story US-011) is tracked on feature/consensus-neutral-boundary. It reaches dev when that branch merges. This epic does not copy it, so that dev holds one EPIC-025."
   incompatible_release: "A test net candidate that cannot interoperate with its shard starts a new shard with a fresh genesis in the same test net. Old shards run until a retirement policy removes them."
   candidate_selection: "Proposed 2026-10-11 (release-process Section 10): the Friday scheduled slot soaks the newest eligible master canary in candidate artifact mode. With no eligible canary, it runs a source-mode soak as evidence only."
   first_shard: "Proposed 2026-10-11: the test net waits for the first stable release under the new process. Its digest seeds all three Anchors. The next test net candidate is the first soaking node."
@@ -2947,130 +2948,6 @@ tasks:
 ```
 
 **Context:** Unlike the soaks, which create a fresh shard per iteration, this epic delivers the test net: shards that run continuously. **Mechanism sketch (brief by intent; a follow-on branch/PR carries the design):** long-lived OCI instances run test net members, reusing the existing fleet tooling (runner launch, monitoring, ONS alerts, soak dashboard) as the foundation. Under the proposed Section 12.1 amendment, each weekly test net candidate (a canary that passed the 60h stability soak) enrolls new nodes through the Shard soak-in. The new nodes join mixed-release shards beside the Anchors of earlier releases, or start a new shard with a fresh genesis when the candidate is incompatible. Nodes that complete the soak period gain the Anchor role, and the Shard soak-in result gates stable promotion. Each test net runs one consensus/SMR model. This epic delivers the F1r3fly CbC Casper test net only. The consensus-neutral boundary roadmap adds one test net for each further model: Casanova, Cordial Miners, and RGB (TASK-014-9). The test net is primarily internal release-validation infrastructure and also serves select partners and customers. This epic delivers the test net that release-process Phase 6 requires. The deferred Shard soak-in parameters are set here.
-
----
-
-### EPIC-025: Pluggable State Machine Replication Boundary (mirror of feature/consensus-neutral-boundary)
-
-```yaml
----
-epic_id: EPIC-025
-title: "Pluggable State Machine Replication Boundary"
-mirror_of: "EPIC-025 on feature/consensus-neutral-boundary at 4bf92e4f5 (renumbered from EPIC-022 in 7aee564a6)"
-mirror_note: "Copied 2026-10-11 so that EPIC-014 can depend on it. The boundary branch owns this content. Both branches now use EPIC-025, TASK-025-n, and US-011, so the two copies merge as one epic. Take the boundary branch version when they differ."
-unblocks: [TASK-014-9]
-status: in_progress
-priority: p1
-user_story: US-011
-blocked_by: []
-created_at: 2026-10-05
-updated_at: 2026-10-05
-claimed_by: claude-session-aa467dea
-claimed_at: 2026-10-05T14:00:00Z
-branch: feature/consensus-neutral-boundary
-pr_base_branch: dev
-origin: "Four replication mechanisms are planned for F1R3FLY shards: CBC Casper (implemented), Cordial Miners, Casanova, and the RGB peer-clique sidecar with Bitcoin single-use-seal anchoring. Today node services reach CBC Casper directly. RGB SoW2 workstream WS5 requires a shard consensus selection framework."
-related_docs:
-  - docs/artifacts/f1r3fly-consensus-neutral-sm.md
-  - docs/casper/CONSENSUS_PROTOCOL.md
-related_external: "Rholang-RGB docs/sow-2.md (WS5) and docs/design/architecture.md"
-execution_contract:
-  base_branch: dev
-  base_revision: b5cbb51d1
-  scope: "Define one replication boundary that all four mechanisms can implement, move node services onto it, and keep CBC Casper behavior unchanged."
-  design_policy: "No code change before maintainer approval of the TASK-025-1 design document."
-  git_policy: "Commits require /quick-commit consent. The user runs push, merge, and PR operations."
-coupling_survey:
-  date: 2026-10-05
-  consumers: "Only the node and fuzz crates depend on casper. comm PacketHandler and runtime_manager are already neutral."
-  leaks:
-    - "node/src/rust/runtime/setup.rs constructs Estimator and CliqueOracleImpl and calls update_fork_choice_tips_if_stuck."
-    - "node/src/rust/instances/heartbeat_proposer.rs contains latest-message, bonds, justification, and finalization-lag logic."
-    - "The gRPC and HTTP APIs serialize justifications, bonds, and faultTolerance."
-    - "casper util/rholang/interpreter_util.rs takes CasperSnapshot and the finality floor types."
-    - "block-storage KeyValueDagRepresentation, a CBC DAG type, is part of the Casper trait signatures."
-tasks:
-  - id: TASK-025-1
-    title: "Write the replication boundary design document"
-    status: in_progress
-    claimed_by: claude-session-aa467dea
-    claimed_at: 2026-10-05T14:00:00Z
-    blocked_by: []
-    acceptance:
-      - "The document extends docs/artifacts/f1r3fly-consensus-neutral-sm.md and maps the needs of CBC Casper, Cordial Miners, Casanova, and the RGB peer-clique sidecar."
-      - "The document resolves the OrderingMedium question of section 12 of the note."
-      - "The document assigns each coupling-survey leak to a task and states the migration order."
-      - "Each supported mechanism has a glossary in the form of docs/casper/GLOSSARY.md, and docs/Glossary.md defines the shared boundary terms."
-      - "A maintainer approves the document before code changes start."
-    decisions_2026_10_05:
-      - "D1: the core trait is ReplicationMedium."
-      - "D2: a shard binds one mechanism at start. The binding never changes, and no runtime switching exists."
-      - "D3: the deploy pool and the rejected-deploy buffer are generic node services. A medium has no deploy submission method."
-      - "D4: anchoring is available to every mechanism. RGB anchors to Bitcoin layer 1 and to Lightning state channels."
-      - "D5: each mechanism has its own glossary."
-      - "D6: the boundary states the coalition rule of each medium in the vocabulary of semitopology (Gabbay, arXiv:2402.03253). MembershipView gets an optional CoalitionStructure field, a proposal for maintainer review."
-    deliverables:
-      - docs/designs/replication-boundary.md
-      - docs/peer-clique/GLOSSARY.md
-      - docs/casanova/GLOSSARY.md
-      - docs/cordial-miners/GLOSSARY.md
-      - "docs/Glossary.md (nine boundary terms)"
-      - "docs/casper/GLOSSARY.md (boundary mapping)"
-      - "docs/artifacts/f1r3fly-consensus-neutral-sm.md (RGB and Casanova corrections, section 12 resolved)"
-      - "docs/semitopology/GLOSSARY.md and README.md (D6)"
-      - "docs/Glossary.md (four coalition terms: membership view, coalition structure, actionable coalition, intertwined coalition structure)"
-      - "docs/designs/replication-boundary.md section 16 (coalition structure) and open questions 5 to 7"
-      - "Coalition structure mappings in the CBC Casper, peer-clique, Casanova, and Cordial Miners glossaries"
-    work_log: docs/work-logs/task-025-1-2026-10-05.md
-    review_status: "Draft complete. Maintainer approval pending."
-  - id: TASK-025-2
-    title: "Add the boundary interface crate and the CBC Casper adapter"
-    status: pending
-    claimed_by: null
-    blocked_by: [TASK-025-1]
-    acceptance:
-      - "A new crate defines the boundary traits for ordering, validity, finality or settlement, and external anchoring, with no DAG parent, justification, bond, or equivocation types."
-      - "CBC Casper implements the traits as an adapter with no behavior change."
-  - id: TASK-025-3
-    title: "Select the mechanism through shard configuration in node wiring"
-    status: pending
-    claimed_by: null
-    blocked_by: [TASK-025-2]
-    acceptance:
-      - "node startup builds the mechanism through a factory selected by shard configuration."
-      - "setup.rs no longer constructs Estimator or CliqueOracleImpl."
-  - id: TASK-025-4
-    title: "Move CBC logic out of the heartbeat proposer"
-    status: pending
-    claimed_by: null
-    blocked_by: [TASK-025-2]
-    acceptance:
-      - "heartbeat_proposer.rs uses only the boundary. The latest-message, bonds, and finalization-lag logic moves into the CBC implementation."
-  - id: TASK-025-5
-    title: "Move CBC-specific API fields into mechanism-scoped extensions"
-    status: pending
-    claimed_by: null
-    blocked_by: [TASK-025-2]
-    acceptance:
-      - "The gRPC and HTTP APIs carry justifications, bonds, and faultTolerance only through a CBC-scoped extension."
-      - "Existing CBC clients keep wire compatibility."
-  - id: TASK-025-6
-    title: "Separate the execution glue from CBC snapshot and finality types"
-    status: pending
-    claimed_by: null
-    blocked_by: [TASK-025-2]
-    acceptance:
-      - "interpreter_util.rs takes boundary types instead of CasperSnapshot and the finality floor types."
-  - id: TASK-025-7
-    title: "Prove the boundary with a test-only second mechanism and a soak"
-    status: pending
-    claimed_by: null
-    blocked_by: [TASK-025-3, TASK-025-4, TASK-025-5, TASK-025-6]
-    acceptance:
-      - "A test-only second mechanism runs the node wiring tests without CBC code."
-      - "The full test suite passes and a soak on the merged change gives the same consensus results as before the change."
----
-```
 
 ---
 
