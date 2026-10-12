@@ -10,8 +10,10 @@
 //! may pay them (P2 `prop:local-suff`, P2:1520-1527).
 
 use std::collections::{BTreeMap, BTreeSet};
+// Moved by dedup (task 11415) with the cursors to `rooted_cursors` in
+// `family_selection.rs`.
+// use std::num::NonZeroUsize;
 use std::mem::size_of;
-use std::num::NonZeroUsize;
 
 use models::rust::deploy_envelope::{DeployEnvelope, DeployEnvelopeRef};
 use models::rust::host_work::{HostWorkDimension, HostWorkLimits, HostWorkUnits};
@@ -19,14 +21,18 @@ use models::rust::normalizer_env::normalizer_env_from_envelope;
 use models::rust::phlo_controls::PhloControlsV1;
 use models::rust::phlo_source::PhloSourcePolicyV1;
 use models::rust::signed_phlo_deploy::OfferedFundedDeploy;
-use prost::Message;
-use rholang::rust::interpreter::accounting::authority::{
-    cost_signature_to_sig_metered, funding_sig_channel_metered,
-};
+// Moved by dedup (task 11415) with the lane conversion to
+// `lane_location_metered` in `producer.rs`, which uses these imports now.
+// use prost::Message;
+// use rholang::rust::interpreter::accounting::authority::{
+//     cost_signature_to_sig_metered, funding_sig_channel_metered,
+// };
 use rholang::rust::interpreter::accounting::delta_sigma::estimate::{
     estimate_offered_term, location_lane_key, Completeness, CostEstimate, IncompleteReason,
 };
-use rholang::rust::interpreter::accounting::monetary_allocation::MonetaryCursor;
+// Moved by dedup (task 11415) with the cursors to `rooted_cursors` in
+// `family_selection.rs`.
+// use rholang::rust::interpreter::accounting::monetary_allocation::MonetaryCursor;
 use rholang::rust::interpreter::accounting::native_phlo_rules::NativeBoundSource;
 use rholang::rust::interpreter::accounting::phlo_controls::{
     check_offered_phlo_controls, PhloControlsBinding, PhloOffer, PhloScheduleBinding,
@@ -41,10 +47,20 @@ use rholang::rust::interpreter::accounting::{funding_sig, Sig};
 use rholang::rust::interpreter::errors::InterpreterError;
 use rholang::rust::interpreter::host_work::HostWorkBudget;
 use rholang::rust::interpreter::reduce::ReducerCore;
-use shared::rust::clone_backing::{self, BackingError};
 
-use super::family_selection::{source_permits, SourceAuthority};
-use super::producer::NativeOfferedFamilyLimits;
+// Moved by dedup (task 11415) with the lane conversion to
+// `lane_location_metered` in `producer.rs`.
+// use shared::rust::clone_backing::{self, BackingError};
+
+// Changed by dedup (task 11415, D1): the shared steps of the rooted funding
+// setup.
+// use super::family_selection::{source_permits, SourceAuthority};
+use super::family_selection::{
+    eligibility_row, rooted_cursors, rooted_source, RootedSetupError, SourceAuthority,
+};
+// Changed by dedup (task 11415, D2): the shared lane conversion.
+// use super::producer::NativeOfferedFamilyLimits;
+use super::producer::{lane_location_metered, LaneLocationError, NativeOfferedFamilyLimits};
 use crate::rust::util::rholang::acceptance::PreparedOfferedCandidate;
 use crate::rust::util::rholang::costacc::direct_wallet_funding::DirectWalletPolicySnapshot;
 use crate::rust::util::rholang::tools::Tools;
@@ -522,15 +538,18 @@ impl<'f> GateFunding<'f> {
         for (position, (physical, signed)) in
             wallets.sources().iter().zip(&record.sources).enumerate()
         {
-            let source = physical.source();
-            if source.custody != signed.custody() {
-                return Err(OfferedGateRejection::Invalid(
-                    "a snapshot source differs from its signed source".to_string(),
-                ));
-            }
-            let custody: [u8; 32] = source.custody.try_into().map_err(|_| {
-                OfferedGateRejection::Invalid("a custody key is not 32 bytes".to_string())
-            })?;
+            // Moved by dedup (task 11415) to `rooted_source` in
+            // `casper/src/rust/util/rholang/costacc/direct_wallet_funding/execution/family_selection.rs`.
+            // let source = physical.source();
+            // if source.custody != signed.custody() {
+            //     return Err(OfferedGateRejection::Invalid(
+            //         "a snapshot source differs from its signed source".to_string(),
+            //     ));
+            // }
+            // let custody: [u8; 32] = source.custody.try_into().map_err(|_| {
+            //     OfferedGateRejection::Invalid("a custody key is not 32 bytes".to_string())
+            // })?;
+            let (source, custody) = rooted_source(physical, signed).map_err(setup_rejection)?;
             onchain.push(onchain_payers.contains(&custody));
             positions.insert(source.custody, position);
             sources.push(source);
@@ -543,27 +562,52 @@ impl<'f> GateFunding<'f> {
                 )
             })?);
         }
-        let payers = NonZeroUsize::new(count).ok_or_else(|| {
-            OfferedGateRejection::Invalid("the offer has no funding source".to_string())
-        })?;
-        let cursor = |cursor: Option<MonetaryCursor>| {
-            cursor
-                .unwrap_or(MonetaryCursor::INITIAL)
-                .position_index(payers)
-                .map_err(|error| OfferedGateRejection::Invalid(error.to_string()))
-        };
+        // Moved by dedup (task 11415) to `rooted_cursors` in
+        // `casper/src/rust/util/rholang/costacc/direct_wallet_funding/execution/family_selection.rs`.
+        // let payers = NonZeroUsize::new(count).ok_or_else(|| {
+        //     OfferedGateRejection::Invalid("the offer has no funding source".to_string())
+        // })?;
+        // let cursor = |cursor: Option<MonetaryCursor>| {
+        //     cursor
+        //         .unwrap_or(MonetaryCursor::INITIAL)
+        //         .position_index(payers)
+        //         .map_err(|error| OfferedGateRejection::Invalid(error.to_string()))
+        // };
+        // Ok(Self {
+        //     sources,
+        //     signed: &record.sources,
+        //     onchain,
+        //     fill_order,
+        //     total_exposure: record.total_exposure,
+        //     cursors: (
+        //         cursor(snapshot.resource_cursor())?,
+        //         cursor(snapshot.fee_cursor())?,
+        //     ),
+        // })
+        let cursors = rooted_cursors(snapshot, count).map_err(setup_rejection)?;
         Ok(Self {
             sources,
             signed: &record.sources,
             onchain,
             fill_order,
             total_exposure: record.total_exposure,
-            cursors: (
-                cursor(snapshot.resource_cursor())?,
-                cursor(snapshot.fee_cursor())?,
-            ),
+            cursors,
         })
     }
+}
+
+/// Added by dedup (task 11415, D1): the rejection of a failed step of the
+/// rooted funding setup (`family_selection.rs`), with the messages of the
+/// check.
+fn setup_rejection(error: RootedSetupError) -> OfferedGateRejection {
+    OfferedGateRejection::Invalid(match error {
+        RootedSetupError::SourceDiffers => {
+            "a snapshot source differs from its signed source".to_string()
+        }
+        RootedSetupError::CustodyWidth => "a custody key is not 32 bytes".to_string(),
+        RootedSetupError::NoSources => "the offer has no funding source".to_string(),
+        RootedSetupError::Cursor(error) => error.to_string(),
+    })
 }
 
 /// The signed terms that the controls check reads.
@@ -753,10 +797,11 @@ struct EstimatedResources {
 }
 
 impl EstimatedResources {
-    /// The conversions are the metered ones of `born_resource`
-    /// (`producer.rs`). Their sorter stops at 256 nesting levels, so a deeper
-    /// lane signature fails here instead of recursing. The check then rejects
-    /// the offer with no charge.
+    /// Changed by dedup (task 11415, D2): the conversion is
+    /// `lane_location_metered` (`producer.rs`), which `born_resource` also
+    /// calls. Its sorter stops at 256 nesting levels, so a deeper lane
+    /// signature fails here instead of recursing. The check then rejects the
+    /// offer with no charge.
     fn new(estimate: &CostEstimate, host: &HostWorkBudget) -> Result<Self, OfferedGateRejection> {
         let count = estimate.quantities.len();
         reserve(
@@ -766,15 +811,17 @@ impl EstimatedResources {
                 .checked_mul(size_of::<([u8; 32], usize, u64)>())
                 .ok_or(OfferedGateRejection::HostWork)?,
         )?;
-        let backing = |operations: usize, scanned: usize, allocation: usize| {
-            let doubled = operations.checked_mul(2).ok_or(BackingError::Overflow)?;
-            reserve(host, HostWorkDimension::VerificationOperations, doubled)
-                .map_err(|_| BackingError::Rejected)?;
-            reserve(host, HostWorkDimension::VerificationBytes, scanned)
-                .map_err(|_| BackingError::Rejected)?;
-            reserve(host, HostWorkDimension::SearchStateBytes, allocation)
-                .map_err(|_| BackingError::Rejected)
-        };
+        // Moved by dedup (task 11415) to `lane_location_metered` in
+        // `casper/src/rust/util/rholang/costacc/direct_wallet_funding/execution/producer.rs`.
+        // let backing = |operations: usize, scanned: usize, allocation: usize| {
+        //     let doubled = operations.checked_mul(2).ok_or(BackingError::Overflow)?;
+        //     reserve(host, HostWorkDimension::VerificationOperations, doubled)
+        //         .map_err(|_| BackingError::Rejected)?;
+        //     reserve(host, HostWorkDimension::VerificationBytes, scanned)
+        //         .map_err(|_| BackingError::Rejected)?;
+        //     reserve(host, HostWorkDimension::SearchStateBytes, allocation)
+        //         .map_err(|_| BackingError::Rejected)
+        // };
         let conversion = |error: String| {
             host_work_or(host, || {
                 OfferedGateRejection::Invalid(format!("a lane signature does not convert: {error}"))
@@ -789,33 +836,52 @@ impl EstimatedResources {
                         "the estimate counted a lane without a signature".to_string(),
                     )
                 })?;
-                let authority = cost_signature_to_sig_metered(signature, &backing)
-                    .map_err(|error| conversion(error.to_string()))?;
-                if !authority.is_funding_former() {
-                    return Err(OfferedGateRejection::Invalid(
-                        "a lane signature is not a funding former".to_string(),
-                    ));
-                }
-                let channel = funding_sig_channel_metered(&authority, &backing)
-                    .map_err(|error| conversion(error.to_string()))?;
-                clone_backing::inspect_blocks(&channel, &backing)
-                    .map_err(|error| conversion(format!("{error:?}")))?;
-                let size = channel.encoded_len();
-                reserve(
-                    host,
-                    HostWorkDimension::VerificationOperations,
-                    size.checked_mul(2).ok_or(OfferedGateRejection::HostWork)?,
-                )?;
-                reserve(host, HostWorkDimension::SearchStateBytes, size)?;
-                let mut location = Vec::new();
-                location.try_reserve_exact(size).map_err(|_| {
-                    OfferedGateRejection::Invalid(
-                        "the location of a lane does not fit in memory".to_string(),
-                    )
-                })?;
-                channel
-                    .encode(&mut location)
-                    .map_err(|error| conversion(error.to_string()))?;
+                // Moved by dedup (task 11415) to `lane_location_metered` in
+                // `casper/src/rust/util/rholang/costacc/direct_wallet_funding/execution/producer.rs`.
+                // let authority = cost_signature_to_sig_metered(signature, &backing)
+                //     .map_err(|error| conversion(error.to_string()))?;
+                // if !authority.is_funding_former() {
+                //     return Err(OfferedGateRejection::Invalid(
+                //         "a lane signature is not a funding former".to_string(),
+                //     ));
+                // }
+                // let channel = funding_sig_channel_metered(&authority, &backing)
+                //     .map_err(|error| conversion(error.to_string()))?;
+                // clone_backing::inspect_blocks(&channel, &backing)
+                //     .map_err(|error| conversion(format!("{error:?}")))?;
+                // let size = channel.encoded_len();
+                // reserve(
+                //     host,
+                //     HostWorkDimension::VerificationOperations,
+                //     size.checked_mul(2).ok_or(OfferedGateRejection::HostWork)?,
+                // )?;
+                // reserve(host, HostWorkDimension::SearchStateBytes, size)?;
+                // let mut location = Vec::new();
+                // location.try_reserve_exact(size).map_err(|_| {
+                //     OfferedGateRejection::Invalid(
+                //         "the location of a lane does not fit in memory".to_string(),
+                //     )
+                // })?;
+                // channel
+                //     .encode(&mut location)
+                //     .map_err(|error| conversion(error.to_string()))?;
+                let (authority, location) =
+                    lane_location_metered(signature, host).map_err(|error| match error {
+                        LaneLocationError::Authority(error) | LaneLocationError::Channel(error) => {
+                            conversion(error.to_string())
+                        }
+                        LaneLocationError::NotFundingFormer => OfferedGateRejection::Invalid(
+                            "a lane signature is not a funding former".to_string(),
+                        ),
+                        LaneLocationError::Inspection(error) => conversion(format!("{error:?}")),
+                        LaneLocationError::WorkOverflow
+                        | LaneLocationError::Width
+                        | LaneLocationError::Rejected(_) => OfferedGateRejection::HostWork,
+                        LaneLocationError::Allocation => OfferedGateRejection::Invalid(
+                            "the location of a lane does not fit in memory".to_string(),
+                        ),
+                        LaneLocationError::Encode(error) => conversion(error.to_string()),
+                    })?;
                 lanes.insert(*lane, (authority, location));
             }
             entries.push((*lane, *class, *quantity));
@@ -868,13 +934,18 @@ fn eligibility(
             false => SourceAuthority::Signed,
         };
         let mut row = Vec::with_capacity(columns);
-        for key in obligations.keys() {
-            row.push(
-                source_permits(key, signed, authority, limits, host).map_err(|error| {
-                    host_work_or(host, || OfferedGateRejection::Invalid(error.to_string()))
-                })?,
-            );
-        }
+        // Moved by dedup (task 11415) to `eligibility_row` in
+        // `casper/src/rust/util/rholang/costacc/direct_wallet_funding/execution/family_selection.rs`.
+        // for key in obligations.keys() {
+        //     row.push(
+        //         source_permits(key, signed, authority, limits, host).map_err(|error| {
+        //             host_work_or(host, || OfferedGateRejection::Invalid(error.to_string()))
+        //         })?,
+        //     );
+        // }
+        eligibility_row(&mut row, obligations, signed, authority, limits, host).map_err(
+            |error| host_work_or(host, || OfferedGateRejection::Invalid(error.to_string())),
+        )?;
         eligible.push(row);
     }
     Ok(eligible)
@@ -998,6 +1069,11 @@ pub(super) fn place_holds(
                 limit: total_exposure,
             },
         ))?;
+    // Kept by dedup (task 11415, D3) as a defensive check. Production does not
+    // reach it. The ceiling of an offer is the signed limit times the signed
+    // price plus the fee. `prepare_offered_candidate` already rejects an offer
+    // whose ceiling exceeds the total exposure (`acceptance.rs:289-295`). The
+    // holds never exceed that ceiling.
     if total > total_exposure {
         return Err(OfferedGateRejection::InsufficientPhlogiston(
             InsufficientCause::ExposureExceeded {

@@ -98,6 +98,19 @@ const COST_TRACE_DIGEST_DOMAIN: &[u8] = b"f1r3node:cost-accounted-rho:cost-trace
 /// the channel is a `GPrivate`-keyed `Par`; both are pure functions of the same
 /// canonical bytes.
 const SIGNATURE_LANE_DOMAIN: &[u8] = b"f1r3node:cost-accounted-rho:signature-lane:v1";
+
+/// Added by dedup (task 11415, D9): the lane key of an encoded supply channel,
+/// the Blake2b-256 digest of the channel bytes under the lane domain.
+/// `Sig::lane_hash`, the metered lane hash of `authority.rs` and
+/// `location_lane_key` of the estimate share this digest. It does no metering:
+/// each metered caller charges its work before it calls the digest.
+pub(crate) fn lane_digest(encoded_channel: &[u8]) -> [u8; 32] {
+    let digest = Blake2b256::hash_parts([SIGNATURE_LANE_DOMAIN, encoded_channel]);
+    let mut lane_key = [0_u8; 32];
+    lane_key.copy_from_slice(&digest[..32]);
+    lane_key
+}
+
 pub const MAX_COST_TRACE_PRIMITIVE_DESCRIPTOR_BYTES: usize = 512;
 pub const MAX_COST_TRACE_SOURCE_PATH_COMPONENTS: usize = 1024;
 
@@ -3573,13 +3586,15 @@ impl Sig {
         use prost::Message;
         let channel = SignatureChannel::from_sig(self).par;
         let encoded = channel.encode_to_vec();
-        let mut domain_separated = Vec::with_capacity(SIGNATURE_LANE_DOMAIN.len() + encoded.len());
-        domain_separated.extend_from_slice(SIGNATURE_LANE_DOMAIN);
-        domain_separated.extend_from_slice(&encoded);
-        let hash = Blake2b256::hash(domain_separated);
-        let mut lane_key = [0_u8; 32];
-        lane_key.copy_from_slice(&hash[..32]);
-        lane_key
+        // Moved by dedup (task 11415) to `lane_digest` in this module.
+        // let mut domain_separated = Vec::with_capacity(SIGNATURE_LANE_DOMAIN.len() + encoded.len());
+        // domain_separated.extend_from_slice(SIGNATURE_LANE_DOMAIN);
+        // domain_separated.extend_from_slice(&encoded);
+        // let hash = Blake2b256::hash(domain_separated);
+        // let mut lane_key = [0_u8; 32];
+        // lane_key.copy_from_slice(&hash[..32]);
+        // lane_key
+        lane_digest(&encoded)
     }
 
     /// `true` iff this `Sig` is a member of the FUNDING-signature grammar of the

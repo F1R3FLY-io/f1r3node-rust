@@ -11,6 +11,9 @@ pub use acquisition::{
     NativePhloAcquisitionDemand, NativePhloAcquisitionError, NativePhloAcquisitionLimits,
 };
 pub(super) use execution::{observation_comparison_bytes, CheckedNativeBudgetEvidence};
+// Added by dedup (task 11415, D8): the leaf walk of the native meter, which the
+// estimate shares.
+pub(crate) use execution::{signature_leaf_units, SignatureUnitsMeter};
 pub use execution::{
     CheckedNativeBudgetTrace, NativeAttemptStage, NativeBoundSource, NativeBudgetAttempt,
     NativeBudgetOccurrence, NativeBudgetReplayDecision, NativeBudgetTraceError,

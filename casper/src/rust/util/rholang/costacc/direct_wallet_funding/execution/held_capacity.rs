@@ -4,16 +4,22 @@
 //! SystemVault balance of each debited purse at the settlement root, where
 //! the run has changed it. The pure guard is `gate::held_capacity_guard`.
 
+// Moved by dedup (task 11415) with the body of `capture_debits` to
+// `custody_debits` in `settlement.rs`, which uses this import now.
+// use std::mem::size_of;
 use std::collections::BTreeMap;
-use std::mem::size_of;
 
-use models::rust::host_work::{HostWorkDimension, HostWorkUnits};
+// Moved by dedup (task 11415) with the body of `capture_debits` to
+// `custody_debits` in `settlement.rs`, which uses this import now.
+// use models::rust::host_work::{HostWorkDimension, HostWorkUnits};
 use models::rust::signed_phlo_deploy::OfferedFundedDeploy;
 use rholang::rust::interpreter::accounting::phlo_execution::NativePhloSourceAmounts;
 use rholang::rust::interpreter::host_work::HostWorkBudget;
 
 use super::gate::held_capacity_guard;
-use super::settlement::invalid;
+// Changed by dedup (task 11415): the shared debit map of `settlement.rs`.
+// use super::settlement::invalid;
+use super::settlement::{custody_debits, invalid, CustodyDebitError};
 use crate::rust::errors::CasperError;
 use crate::rust::util::rholang::costacc::direct_wallet_funding::DirectWalletPolicySnapshot;
 #[cfg(any(test, feature = "test-utils"))]
@@ -46,35 +52,46 @@ pub(super) fn capture_debits(
     amounts: &[NativePhloSourceAmounts<'_>],
     budget: &HostWorkBudget,
 ) -> Result<BTreeMap<[u8; 32], u128>, CasperError> {
-    let size = amounts
-        .len()
-        .checked_mul(size_of::<([u8; 32], u128)>())
-        .ok_or_else(|| invalid("guard debit map size overflows"))?;
-    budget
-        .reserve(
-            HostWorkDimension::SearchStateBytes,
-            HostWorkUnits::new(
-                u64::try_from(size).map_err(|_| invalid("guard debit map size overflows"))?,
-            ),
-        )
-        .map_err(invalid)?;
-    let mut debits = BTreeMap::new();
-    for amount in amounts {
-        let custody: [u8; 32] = amount
-            .custody()
-            .try_into()
-            .map_err(|_| invalid("guard debit custody is not 32 bytes"))?;
-        let acquisition = u128::try_from(amount.acquisition())
-            .map_err(|_| invalid("negative resource charge"))?;
-        let fee = u128::try_from(amount.fee()).map_err(|_| invalid("negative fee"))?;
-        let debit = acquisition
-            .checked_add(fee)
-            .ok_or_else(|| invalid("guard debit overflows"))?;
-        if debits.insert(custody, debit).is_some() {
-            return Err(invalid("duplicate guard debit custody"));
-        }
-    }
-    Ok(debits)
+    // Moved by dedup (task 11415) to `custody_debits` in
+    // `casper/src/rust/util/rholang/costacc/direct_wallet_funding/execution/settlement.rs`.
+    // let size = amounts
+    //     .len()
+    //     .checked_mul(size_of::<([u8; 32], u128)>())
+    //     .ok_or_else(|| invalid("guard debit map size overflows"))?;
+    // budget
+    //     .reserve(
+    //         HostWorkDimension::SearchStateBytes,
+    //         HostWorkUnits::new(
+    //             u64::try_from(size).map_err(|_| invalid("guard debit map size overflows"))?,
+    //         ),
+    //     )
+    //     .map_err(invalid)?;
+    // let mut debits = BTreeMap::new();
+    // for amount in amounts {
+    //     let custody: [u8; 32] = amount
+    //         .custody()
+    //         .try_into()
+    //         .map_err(|_| invalid("guard debit custody is not 32 bytes"))?;
+    //     let acquisition = u128::try_from(amount.acquisition())
+    //         .map_err(|_| invalid("negative resource charge"))?;
+    //     let fee = u128::try_from(amount.fee()).map_err(|_| invalid("negative fee"))?;
+    //     let debit = acquisition
+    //         .checked_add(fee)
+    //         .ok_or_else(|| invalid("guard debit overflows"))?;
+    //     if debits.insert(custody, debit).is_some() {
+    //         return Err(invalid("duplicate guard debit custody"));
+    //     }
+    // }
+    // Ok(debits)
+    custody_debits(amounts, budget).map_err(|error| match error {
+        CustodyDebitError::Size => invalid("guard debit map size overflows"),
+        CustodyDebitError::Rejected(error) => invalid(error),
+        CustodyDebitError::Width => invalid("guard debit custody is not 32 bytes"),
+        CustodyDebitError::NegativeCharge => invalid("negative resource charge"),
+        CustodyDebitError::NegativeFee => invalid("negative fee"),
+        CustodyDebitError::Overflow => invalid("guard debit overflows"),
+        CustodyDebitError::Duplicate => invalid("duplicate guard debit custody"),
+    })
 }
 
 impl RuntimeManager {

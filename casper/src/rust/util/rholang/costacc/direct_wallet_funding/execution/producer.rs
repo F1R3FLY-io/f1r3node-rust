@@ -287,48 +287,144 @@ pub(super) fn restore_retained_permissions<'a>(
     Ok(restored)
 }
 
+/// Added by dedup (task 11415, D2): why `lane_location_metered` fails.
+/// `born_resource` and the check before execution (`gate.rs`) map each case
+/// to their own message.
+#[derive(Debug)]
+pub(super) enum LaneLocationError {
+    /// The signature does not convert to an authority.
+    Authority(rholang::rust::interpreter::accounting::authority::AuthorityError),
+    /// The authority is not a funding former.
+    NotFundingFormer,
+    /// The authority does not convert to its supply channel.
+    Channel(rholang::rust::interpreter::accounting::authority::AuthorityError),
+    /// The block inspection of the channel is rejected.
+    Inspection(BackingError),
+    /// The doubled size of the channel overflows.
+    WorkOverflow,
+    /// A reserved amount does not fit in 64 bits.
+    Width,
+    /// The host-work budget rejects a reservation of the encoding.
+    Rejected(models::rust::host_work::HostWorkReservationError),
+    /// The location does not fit in memory.
+    Allocation,
+    /// The channel does not encode.
+    Encode(prost::EncodeError),
+}
+
+/// Added by dedup (task 11415, D2): the metered conversion of a cost
+/// signature to its authority and its location. The location is the encoded
+/// supply channel of the authority. `born_resource` and the check before
+/// execution (`gate.rs`, `EstimatedResources::new`) share this conversion,
+/// so both reserve the same host work in the same order.
+pub(super) fn lane_location_metered(
+    signature: &models::rhoapi::CostSignature,
+    budget: &HostWorkBudget,
+) -> Result<(Sig, Vec<u8>), LaneLocationError> {
+    let reserve = |dimension: HostWorkDimension, amount: usize| {
+        let units = u64::try_from(amount).map_err(|_| LaneLocationError::Width)?;
+        budget
+            .reserve(dimension, HostWorkUnits::new(units))
+            .map(|_| ())
+            .map_err(LaneLocationError::Rejected)
+    };
+    let backing = |operations: usize, scanned: usize, allocation: usize| {
+        let doubled = operations.checked_mul(2).ok_or(BackingError::Overflow)?;
+        reserve(HostWorkDimension::VerificationOperations, doubled)
+            .map_err(|_| BackingError::Rejected)?;
+        reserve(HostWorkDimension::VerificationBytes, scanned)
+            .map_err(|_| BackingError::Rejected)?;
+        reserve(HostWorkDimension::SearchStateBytes, allocation).map_err(|_| BackingError::Rejected)
+    };
+    let authority =
+        cost_signature_to_sig_metered(signature, &backing).map_err(LaneLocationError::Authority)?;
+    if !authority.is_funding_former() {
+        return Err(LaneLocationError::NotFundingFormer);
+    }
+    let channel =
+        funding_sig_channel_metered(&authority, &backing).map_err(LaneLocationError::Channel)?;
+    // Added by D-E3 (DR-110): `funding_sig_channel_metered` prepays only the
+    // release of its unsorted channel. The surplus of its per-level inspection
+    // paid the length computation below, so a block inspection prepays it
+    // here.
+    clone_backing::inspect_blocks(&channel, &backing).map_err(LaneLocationError::Inspection)?;
+    let size = channel.encoded_len();
+    reserve(
+        HostWorkDimension::VerificationOperations,
+        size.checked_mul(2).ok_or(LaneLocationError::WorkOverflow)?,
+    )?;
+    reserve(HostWorkDimension::SearchStateBytes, size)?;
+    let mut location = Vec::new();
+    location
+        .try_reserve_exact(size)
+        .map_err(|_| LaneLocationError::Allocation)?;
+    channel
+        .encode(&mut location)
+        .map_err(LaneLocationError::Encode)?;
+    Ok((authority, location))
+}
+
 fn born_resource<'a>(
     cell: &models::rhoapi::CostSignature,
     permissions: &'a [RestoredPhloResource<'_>],
     terms: &[u8],
     budget: &HostWorkBudget,
 ) -> Result<PhloResource<'a>, CasperError> {
-    let backing = |operations: usize, scanned: usize, allocation: usize| {
-        reserve(
-            budget,
-            HostWorkDimension::VerificationOperations,
-            operations.checked_mul(2).ok_or(BackingError::Overflow)?,
-        )
-        .map_err(|_| BackingError::Rejected)?;
-        reserve(budget, HostWorkDimension::VerificationBytes, scanned)
-            .map_err(|_| BackingError::Rejected)?;
-        reserve(budget, HostWorkDimension::SearchStateBytes, allocation)
-            .map_err(|_| BackingError::Rejected)
-    };
-    let authority = cost_signature_to_sig_metered(cell, &backing).map_err(invalid)?;
-    if !authority.is_funding_former() {
-        return Err(invalid("native retained cell is not a funding former"));
-    }
-    let channel = funding_sig_channel_metered(&authority, &backing).map_err(invalid)?;
-    // Added by D-E3 (DR-110): `funding_sig_channel_metered` prepays only the
-    // release of its unsorted channel. The surplus of its per-level inspection
-    // paid the length computation below, so a block inspection prepays it
-    // here.
-    clone_backing::inspect_blocks(&channel, &backing)
-        .map_err(|_| invalid("native retained channel inspection is rejected"))?;
-    let size = channel.encoded_len();
-    reserve(
-        budget,
-        HostWorkDimension::VerificationOperations,
-        size.checked_mul(2)
-            .ok_or_else(|| invalid("native retained channel work overflows"))?,
-    )?;
-    reserve(budget, HostWorkDimension::SearchStateBytes, size)?;
-    let mut location = Vec::new();
-    location
-        .try_reserve_exact(size)
-        .map_err(|_| invalid("native retained channel allocation failed"))?;
-    channel.encode(&mut location).map_err(invalid)?;
+    // Moved by dedup (task 11415) to `lane_location_metered` in
+    // `casper/src/rust/util/rholang/costacc/direct_wallet_funding/execution/producer.rs`.
+    // let backing = |operations: usize, scanned: usize, allocation: usize| {
+    //     reserve(
+    //         budget,
+    //         HostWorkDimension::VerificationOperations,
+    //         operations.checked_mul(2).ok_or(BackingError::Overflow)?,
+    //     )
+    //     .map_err(|_| BackingError::Rejected)?;
+    //     reserve(budget, HostWorkDimension::VerificationBytes, scanned)
+    //         .map_err(|_| BackingError::Rejected)?;
+    //     reserve(budget, HostWorkDimension::SearchStateBytes, allocation)
+    //         .map_err(|_| BackingError::Rejected)
+    // };
+    // let authority = cost_signature_to_sig_metered(cell, &backing).map_err(invalid)?;
+    // if !authority.is_funding_former() {
+    //     return Err(invalid("native retained cell is not a funding former"));
+    // }
+    // let channel = funding_sig_channel_metered(&authority, &backing).map_err(invalid)?;
+    // // Added by D-E3 (DR-110): `funding_sig_channel_metered` prepays only the
+    // // release of its unsorted channel. The surplus of its per-level inspection
+    // // paid the length computation below, so a block inspection prepays it
+    // // here.
+    // clone_backing::inspect_blocks(&channel, &backing)
+    //     .map_err(|_| invalid("native retained channel inspection is rejected"))?;
+    // let size = channel.encoded_len();
+    // reserve(
+    //     budget,
+    //     HostWorkDimension::VerificationOperations,
+    //     size.checked_mul(2)
+    //         .ok_or_else(|| invalid("native retained channel work overflows"))?,
+    // )?;
+    // reserve(budget, HostWorkDimension::SearchStateBytes, size)?;
+    // let mut location = Vec::new();
+    // location
+    //     .try_reserve_exact(size)
+    //     .map_err(|_| invalid("native retained channel allocation failed"))?;
+    // channel.encode(&mut location).map_err(invalid)?;
+    let (authority, location) =
+        lane_location_metered(cell, budget).map_err(|error| match error {
+            LaneLocationError::Authority(error) | LaneLocationError::Channel(error) => {
+                invalid(error)
+            }
+            LaneLocationError::NotFundingFormer => {
+                invalid("native retained cell is not a funding former")
+            }
+            LaneLocationError::Inspection(_) => {
+                invalid("native retained channel inspection is rejected")
+            }
+            LaneLocationError::WorkOverflow => invalid("native retained channel work overflows"),
+            LaneLocationError::Width => invalid("native funding work overflow"),
+            LaneLocationError::Rejected(error) => invalid(error),
+            LaneLocationError::Allocation => invalid("native retained channel allocation failed"),
+            LaneLocationError::Encode(error) => invalid(error),
+        })?;
     let mut selected: Option<PhloResource<'a>> = None;
     for permission in permissions {
         reserve(budget, HostWorkDimension::VerificationOperations, 1)?;

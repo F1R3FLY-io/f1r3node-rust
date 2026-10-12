@@ -113,6 +113,65 @@ pub(super) fn invalid(error: impl std::fmt::Display) -> CasperError {
     CasperError::RuntimeError(error.to_string())
 }
 
+/// Added by dedup (task 11415, D4): why `custody_debits` fails. Grant
+/// settlement and the held-capacity guard map each case to their own message.
+#[derive(Debug)]
+pub(super) enum CustodyDebitError {
+    /// The size of the debit map overflows.
+    Size,
+    /// The host-work budget rejects the debit map.
+    Rejected(models::rust::host_work::HostWorkReservationError),
+    /// A custody key is not 32 bytes.
+    Width,
+    /// An acquisition is negative.
+    NegativeCharge,
+    /// A fee is negative.
+    NegativeFee,
+    /// A debit overflows.
+    Overflow,
+    /// Two amounts name one custody.
+    Duplicate,
+}
+
+/// Added by dedup (task 11415, D4): the debit of each custody in a settlement
+/// capture, the acquisition plus the fee. The map is charged to the host-work
+/// budget before it is built. Grant settlement (below) and the held-capacity
+/// guard (`held_capacity.rs`) share it, so both read the same debits.
+pub(super) fn custody_debits(
+    amounts: &[rholang::rust::interpreter::accounting::phlo_execution::NativePhloSourceAmounts<
+        '_,
+    >],
+    budget: &HostWorkBudget,
+) -> Result<BTreeMap<[u8; 32], u128>, CustodyDebitError> {
+    let size = amounts
+        .len()
+        .checked_mul(std::mem::size_of::<([u8; 32], u128)>())
+        .ok_or(CustodyDebitError::Size)?;
+    budget
+        .reserve(
+            HostWorkDimension::SearchStateBytes,
+            HostWorkUnits::new(u64::try_from(size).map_err(|_| CustodyDebitError::Size)?),
+        )
+        .map_err(CustodyDebitError::Rejected)?;
+    let mut debits = BTreeMap::new();
+    for amount in amounts {
+        let custody: [u8; 32] = amount
+            .custody()
+            .try_into()
+            .map_err(|_| CustodyDebitError::Width)?;
+        let acquisition =
+            u128::try_from(amount.acquisition()).map_err(|_| CustodyDebitError::NegativeCharge)?;
+        let fee = u128::try_from(amount.fee()).map_err(|_| CustodyDebitError::NegativeFee)?;
+        let debit = acquisition
+            .checked_add(fee)
+            .ok_or(CustodyDebitError::Overflow)?;
+        if debits.insert(custody, debit).is_some() {
+            return Err(CustodyDebitError::Duplicate);
+        }
+    }
+    Ok(debits)
+}
+
 pub(super) fn check_metered_usage(
     complete: bool,
     observed: Option<u64>,
@@ -299,35 +358,49 @@ impl RuntimeOps {
             if input.snapshot.root() != funding_root || input.verified.root() != funding_root {
                 return Err(invalid("grant settlement belongs to another funding root"));
             }
-            let mut debits = BTreeMap::new();
-            let count = checked.capture().amounts().len();
-            let size = count
-                .checked_mul(std::mem::size_of::<([u8; 32], u128)>())
-                .ok_or_else(|| invalid("grant debit projection size overflow"))?;
-            budget
-                .reserve(
-                    HostWorkDimension::SearchStateBytes,
-                    HostWorkUnits::new(
-                        u64::try_from(size)
-                            .map_err(|_| invalid("grant debit projection size overflow"))?,
-                    ),
-                )
-                .map_err(invalid)?;
-            for amount in checked.capture().amounts() {
-                let key: [u8; 32] = amount
-                    .custody()
-                    .try_into()
-                    .map_err(|_| invalid("grant debit custody width"))?;
-                let acquisition = u128::try_from(amount.acquisition())
-                    .map_err(|_| invalid("negative resource charge"))?;
-                let fee = u128::try_from(amount.fee()).map_err(|_| invalid("negative fee"))?;
-                let debit = acquisition
-                    .checked_add(fee)
-                    .ok_or_else(|| invalid("grant debit overflow"))?;
-                if debits.insert(key, debit).is_some() {
-                    return Err(invalid("duplicate grant debit custody"));
-                }
-            }
+            // Moved by dedup (task 11415) to `custody_debits` in
+            // `casper/src/rust/util/rholang/costacc/direct_wallet_funding/execution/settlement.rs`.
+            // let mut debits = BTreeMap::new();
+            // let count = checked.capture().amounts().len();
+            // let size = count
+            //     .checked_mul(std::mem::size_of::<([u8; 32], u128)>())
+            //     .ok_or_else(|| invalid("grant debit projection size overflow"))?;
+            // budget
+            //     .reserve(
+            //         HostWorkDimension::SearchStateBytes,
+            //         HostWorkUnits::new(
+            //             u64::try_from(size)
+            //                 .map_err(|_| invalid("grant debit projection size overflow"))?,
+            //         ),
+            //     )
+            //     .map_err(invalid)?;
+            // for amount in checked.capture().amounts() {
+            //     let key: [u8; 32] = amount
+            //         .custody()
+            //         .try_into()
+            //         .map_err(|_| invalid("grant debit custody width"))?;
+            //     let acquisition = u128::try_from(amount.acquisition())
+            //         .map_err(|_| invalid("negative resource charge"))?;
+            //     let fee = u128::try_from(amount.fee()).map_err(|_| invalid("negative fee"))?;
+            //     let debit = acquisition
+            //         .checked_add(fee)
+            //         .ok_or_else(|| invalid("grant debit overflow"))?;
+            //     if debits.insert(key, debit).is_some() {
+            //         return Err(invalid("duplicate grant debit custody"));
+            //     }
+            // }
+            let debits =
+                custody_debits(checked.capture().amounts(), budget).map_err(
+                    |error| match error {
+                        CustodyDebitError::Size => invalid("grant debit projection size overflow"),
+                        CustodyDebitError::Rejected(error) => invalid(error),
+                        CustodyDebitError::Width => invalid("grant debit custody width"),
+                        CustodyDebitError::NegativeCharge => invalid("negative resource charge"),
+                        CustodyDebitError::NegativeFee => invalid("negative fee"),
+                        CustodyDebitError::Overflow => invalid("grant debit overflow"),
+                        CustodyDebitError::Duplicate => invalid("duplicate grant debit custody"),
+                    },
+                )?;
             let mut measured = Vec::new();
             measured
                 .try_reserve_exact(grant_uses.len())

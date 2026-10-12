@@ -12,7 +12,11 @@ use rholang::rust::interpreter::accounting::authority::{
     authority_funding_signatures_for_events_with_host_work, cost_signature_to_sig,
     AuthorityByteEvent, AuthorityEvent,
 };
-use rholang::rust::interpreter::accounting::monetary_allocation::MonetaryCursor;
+// Changed by dedup (task 11415, D1): `rooted_cursors` names the cursor error.
+// use rholang::rust::interpreter::accounting::monetary_allocation::MonetaryCursor;
+use rholang::rust::interpreter::accounting::monetary_allocation::{
+    MonetaryCursor, MonetaryCursorError,
+};
 use rholang::rust::interpreter::accounting::phlo_execution::{
     select_phlo_funding_family, CheckedPhloObligations, PhloFamilyFundingInput,
     PhloFamilyFundingSelection, PhloFundingRequirement, PhloFundingSource, PhloObligationKey,
@@ -22,7 +26,11 @@ use rholang::rust::interpreter::host_work::HostWorkBudget;
 use super::producer::NativeOfferedFamilyLimits;
 use super::settlement::invalid;
 use crate::rust::errors::CasperError;
-use crate::rust::util::rholang::costacc::direct_wallet_funding::DirectWalletPolicySnapshot;
+// Changed by dedup (task 11415, D1): `rooted_source` reads one snapshot source.
+// use crate::rust::util::rholang::costacc::direct_wallet_funding::DirectWalletPolicySnapshot;
+use crate::rust::util::rholang::costacc::direct_wallet_funding::{
+    DirectWalletPolicySnapshot, DirectWalletSource,
+};
 use crate::rust::util::rholang::costacc::vault_payer::VaultPayer;
 
 fn reserve(
@@ -119,6 +127,85 @@ pub(super) fn source_permits(
     }
 }
 
+/// Added by dedup (task 11415, D1): why a step of the rooted funding setup
+/// fails. `select_rooted_native_family` and the check before execution
+/// (`gate.rs`) map each case to their own message.
+#[derive(Debug)]
+pub(super) enum RootedSetupError {
+    /// A snapshot source differs from its signed source.
+    SourceDiffers,
+    /// A custody key is not 32 bytes.
+    CustodyWidth,
+    /// The snapshot has no source.
+    NoSources,
+    /// A canonical cursor does not index the sources.
+    Cursor(MonetaryCursorError),
+}
+
+/// Added by dedup (task 11415, D1): the source step of the rooted funding
+/// setup. It checks one snapshot source against its signed source and returns
+/// the source with its custody key. `select_rooted_native_family` and
+/// `GateFunding::from_snapshot` (`gate.rs`) call it once per source, each in
+/// its own loop. Each caller keeps its own host-work reservations around the
+/// step. The step reserves no host work.
+pub(super) fn rooted_source<'a>(
+    physical: &DirectWalletSource<'a>,
+    signed: &PhloSourcePolicyV1<'_>,
+) -> Result<(PhloFundingSource<'a>, [u8; 32]), RootedSetupError> {
+    let source = physical.source();
+    if source.custody != signed.custody() {
+        return Err(RootedSetupError::SourceDiffers);
+    }
+    let custody: [u8; 32] = source
+        .custody
+        .try_into()
+        .map_err(|_| RootedSetupError::CustodyWidth)?;
+    Ok((source, custody))
+}
+
+/// Added by dedup (task 11415, D1): the eligibility step of the rooted funding
+/// setup. It appends one permission test for each obligation key, in key
+/// order, to the row of one source. The authority mode of the source is the
+/// parameter. After execution, `select_rooted_native_family` passes the
+/// signed or the observed authority. Before execution, the check of `gate.rs`
+/// (`eligibility`) passes the signed authority or no observed authority (map
+/// gap fill G-5). The caller allocates the row and reserves its host work, so
+/// each caller keeps its own order. The step returns the first error of
+/// `source_permits`.
+pub(super) fn eligibility_row(
+    row: &mut Vec<bool>,
+    obligations: &CheckedPhloObligations<'_>,
+    signed: &PhloSourcePolicyV1<'_>,
+    authority: SourceAuthority<'_>,
+    limits: NativeOfferedFamilyLimits,
+    budget: &HostWorkBudget,
+) -> Result<(), CasperError> {
+    for key in obligations.keys() {
+        row.push(source_permits(key, signed, authority, limits, budget)?);
+    }
+    Ok(())
+}
+
+/// Added by dedup (task 11415, D1): the cursor step of the rooted funding
+/// setup. It returns the canonical resource cursor and then the canonical fee
+/// cursor of the snapshot as source positions. An absent cursor is the
+/// initial cursor. The step reserves no host work.
+pub(super) fn rooted_cursors(
+    snapshot: &DirectWalletPolicySnapshot<'_, OfferedFundedDeploy>,
+    source_count: usize,
+) -> Result<(usize, usize), RootedSetupError> {
+    let count = NonZeroUsize::new(source_count).ok_or(RootedSetupError::NoSources)?;
+    let position = |cursor: Option<MonetaryCursor>| {
+        cursor
+            .unwrap_or(MonetaryCursor::INITIAL)
+            .position_index(count)
+            .map_err(RootedSetupError::Cursor)
+    };
+    let resource = position(snapshot.resource_cursor())?;
+    let fee = position(snapshot.fee_cursor())?;
+    Ok((resource, fee))
+}
+
 pub(crate) fn select_rooted_native_family<'a>(
     snapshot: &DirectWalletPolicySnapshot<'a, OfferedFundedDeploy>,
     obligations: &CheckedPhloObligations<'_>,
@@ -182,17 +269,30 @@ pub(crate) fn select_rooted_native_family<'a>(
             "signed funding source count differs from rooted snapshot",
         ));
     }
-    for (physical, signed) in snapshot.wallets().sources().iter().zip(signed_sources) {
-        let source = physical.source();
-        if source.custody != signed.custody() {
-            return Err(invalid(
-                "signed funding source differs from rooted snapshot",
-            ));
+    // Added by dedup (task 11415, D1): the messages of this selection for the
+    // shared steps of the rooted funding setup.
+    let setup_error = |error: RootedSetupError| match error {
+        RootedSetupError::SourceDiffers => {
+            invalid("signed funding source differs from rooted snapshot")
         }
-        let custody: [u8; 32] = source
-            .custody
-            .try_into()
-            .map_err(|_| invalid("invalid on-chain custody width"))?;
+        RootedSetupError::CustodyWidth => invalid("invalid on-chain custody width"),
+        RootedSetupError::NoSources => invalid("native funding has no rooted sources"),
+        RootedSetupError::Cursor(error) => invalid(error),
+    };
+    for (physical, signed) in snapshot.wallets().sources().iter().zip(signed_sources) {
+        // Moved by dedup (task 11415) to `rooted_source` in
+        // `casper/src/rust/util/rholang/costacc/direct_wallet_funding/execution/family_selection.rs`.
+        // let source = physical.source();
+        // if source.custody != signed.custody() {
+        //     return Err(invalid(
+        //         "signed funding source differs from rooted snapshot",
+        //     ));
+        // }
+        // let custody: [u8; 32] = source
+        //     .custody
+        //     .try_into()
+        //     .map_err(|_| invalid("invalid on-chain custody width"))?;
+        let (source, custody) = rooted_source(physical, signed).map_err(setup_error)?;
         let onchain_authority = if onchain.contains(&custody) {
             let payer = snapshot
                 .wallets()
@@ -243,23 +343,30 @@ pub(crate) fn select_rooted_native_family<'a>(
             Some(bytes) => SourceAuthority::Observed(bytes),
             None => SourceAuthority::Signed,
         };
-        for key in obligations.keys() {
-            row.push(source_permits(key, signed, authority, limits, budget)?);
-        }
+        // Moved by dedup (task 11415) to `eligibility_row` in
+        // `casper/src/rust/util/rholang/costacc/direct_wallet_funding/execution/family_selection.rs`.
+        // for key in obligations.keys() {
+        //     row.push(source_permits(key, signed, authority, limits, budget)?);
+        // }
+        eligibility_row(&mut row, obligations, signed, authority, limits, budget)?;
         eligible.push(row);
     }
-    let count = NonZeroUsize::new(source_count)
-        .ok_or_else(|| invalid("native funding has no rooted sources"))?;
-    let resource_cursor = snapshot
-        .resource_cursor()
-        .unwrap_or(MonetaryCursor::INITIAL)
-        .position_index(count)
-        .map_err(invalid)?;
-    let fee_cursor = snapshot
-        .fee_cursor()
-        .unwrap_or(MonetaryCursor::INITIAL)
-        .position_index(count)
-        .map_err(invalid)?;
+    // Moved by dedup (task 11415) to `rooted_cursors` in
+    // `casper/src/rust/util/rholang/costacc/direct_wallet_funding/execution/family_selection.rs`.
+    // let count = NonZeroUsize::new(source_count)
+    //     .ok_or_else(|| invalid("native funding has no rooted sources"))?;
+    // let resource_cursor = snapshot
+    //     .resource_cursor()
+    //     .unwrap_or(MonetaryCursor::INITIAL)
+    //     .position_index(count)
+    //     .map_err(invalid)?;
+    // let fee_cursor = snapshot
+    //     .fee_cursor()
+    //     .unwrap_or(MonetaryCursor::INITIAL)
+    //     .position_index(count)
+    //     .map_err(invalid)?;
+    let (resource_cursor, fee_cursor) =
+        rooted_cursors(snapshot, source_count).map_err(setup_error)?;
     let requirements = [PhloFundingRequirement {
         obligations,
         eligible: &eligible,

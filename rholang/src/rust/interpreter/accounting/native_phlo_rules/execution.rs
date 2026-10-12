@@ -290,55 +290,166 @@ fn authority_units(
     signature: &CostSignature,
     budget: &HostWorkBudget,
 ) -> Result<u64, NativePhloExecutionError> {
+    // Moved by dedup (task 11415) to `signature_leaf_units` in this file. The
+    // native meter keeps its charges in `NativeUnitsMeter` below.
+    // let mut pending = Vec::new();
+    // reserve_work(
+    //     budget,
+    //     HostWorkDimension::SearchStateBytes,
+    //     size_of::<&CostSignature>(),
+    // )?;
+    // pending
+    //     .try_reserve_exact(1)
+    //     .map_err(|_| FundingSearchError::AllocationFailed)?;
+    // pending.push(signature);
+    // let mut units = 0_u64;
+    // while let Some(current) = pending.pop() {
+    //     reserve_work(budget, HostWorkDimension::VerificationOperations, 1)?;
+    //     match current.value.as_ref() {
+    //         Some(Value::Unit(true)) => {}
+    //         Some(Value::Ground(_) | Value::Name(_) | Value::Quote(_)) => {
+    //             // DR-113: this overflow needs more than 2^64 signature
+    //             // leaves, and each leaf reserves one verification operation
+    //             // first, so the host-work budget rejects long before it.
+    //             units = units
+    //                 .checked_add(1)
+    //                 .ok_or(NativePhloExecutionError::Overflow)?;
+    //         }
+    //         Some(Value::Compound(compound)) => {
+    //             reserve_work(
+    //                 budget,
+    //                 HostWorkDimension::SearchStateBytes,
+    //                 // Changed by DR-113: a sizing overflow is host work, never
+    //                 // a charge.
+    //                 // compound
+    //                 //     .elements
+    //                 //     .len()
+    //                 //     .checked_mul(size_of::<&CostSignature>())
+    //                 //     .ok_or(NativePhloExecutionError::Overflow)?,
+    //                 compound
+    //                     .elements
+    //                     .len()
+    //                     .checked_mul(size_of::<&CostSignature>())
+    //                     .ok_or(FundingSearchError::AllocationFailed)?,
+    //             )?;
+    //             pending
+    //                 .try_reserve(compound.elements.len())
+    //                 .map_err(|_| FundingSearchError::AllocationFailed)?;
+    //             pending.extend(&compound.elements);
+    //         }
+    //         _ => return Err(AuthorityError::UnsupportedFundingSignature.into()),
+    //     }
+    // }
+    // Ok(units)
+    signature_leaf_units(signature, &NativeUnitsMeter { budget })
+}
+
+/// Added by dedup (task 11415, D8): how a walk over the leaves of a cost
+/// signature meters its work. The native meter charges search-state bytes and
+/// verification operations. The metered estimate charges one structural item
+/// for each node, and the estimate charges nothing. Each meter keeps its own
+/// charges, at the same points of the walk as before.
+pub(crate) trait SignatureUnitsMeter {
+    type Error;
+    /// Before the walk allocates its stack.
+    fn start(&self) -> Result<(), Self::Error>;
+    /// Before the walk reads a node.
+    fn node(&self) -> Result<(), Self::Error>;
+    /// Before the walk pushes the elements of a compound.
+    fn compound(&self, elements: usize) -> Result<(), Self::Error>;
+    /// A node that is not a leaf, not a compound and not the true unit.
+    fn other(&self) -> Result<(), Self::Error>;
+    /// The units after one more leaf.
+    fn add(&self, units: u64) -> Result<u64, Self::Error>;
+    /// The error of a failed allocation of the stack.
+    fn allocation(&self) -> Self::Error;
+}
+
+/// Added by dedup (task 11415, D8): the units of a lane, the number of Ground,
+/// Name and Quote leaves of its signature. The walk uses a heap stack
+/// (DR-67), so its stack depth does not grow with the nesting of the
+/// signature. The native meter (`authority_units`) and the two unit functions
+/// of the estimate (`delta_sigma/estimate.rs`) share it.
+pub(crate) fn signature_leaf_units<M: SignatureUnitsMeter>(
+    signature: &CostSignature,
+    meter: &M,
+) -> Result<u64, M::Error> {
+    meter.start()?;
     let mut pending = Vec::new();
-    reserve_work(
-        budget,
-        HostWorkDimension::SearchStateBytes,
-        size_of::<&CostSignature>(),
-    )?;
     pending
         .try_reserve_exact(1)
-        .map_err(|_| FundingSearchError::AllocationFailed)?;
+        .map_err(|_| meter.allocation())?;
     pending.push(signature);
     let mut units = 0_u64;
     while let Some(current) = pending.pop() {
-        reserve_work(budget, HostWorkDimension::VerificationOperations, 1)?;
+        meter.node()?;
         match current.value.as_ref() {
             Some(Value::Unit(true)) => {}
             Some(Value::Ground(_) | Value::Name(_) | Value::Quote(_)) => {
-                // DR-113: this overflow needs more than 2^64 signature
-                // leaves, and each leaf reserves one verification operation
-                // first, so the host-work budget rejects long before it.
-                units = units
-                    .checked_add(1)
-                    .ok_or(NativePhloExecutionError::Overflow)?;
+                units = meter.add(units)?;
             }
             Some(Value::Compound(compound)) => {
-                reserve_work(
-                    budget,
-                    HostWorkDimension::SearchStateBytes,
-                    // Changed by DR-113: a sizing overflow is host work, never
-                    // a charge.
-                    // compound
-                    //     .elements
-                    //     .len()
-                    //     .checked_mul(size_of::<&CostSignature>())
-                    //     .ok_or(NativePhloExecutionError::Overflow)?,
-                    compound
-                        .elements
-                        .len()
-                        .checked_mul(size_of::<&CostSignature>())
-                        .ok_or(FundingSearchError::AllocationFailed)?,
-                )?;
+                meter.compound(compound.elements.len())?;
                 pending
                     .try_reserve(compound.elements.len())
-                    .map_err(|_| FundingSearchError::AllocationFailed)?;
+                    .map_err(|_| meter.allocation())?;
                 pending.extend(&compound.elements);
             }
-            _ => return Err(AuthorityError::UnsupportedFundingSignature.into()),
+            _ => meter.other()?,
         }
     }
     Ok(units)
+}
+
+/// Added by dedup (task 11415, D8): the charges of `authority_units`, as the
+/// native meter made them before the walk moved.
+struct NativeUnitsMeter<'b> {
+    budget: &'b HostWorkBudget,
+}
+
+impl SignatureUnitsMeter for NativeUnitsMeter<'_> {
+    type Error = NativePhloExecutionError;
+
+    fn start(&self) -> Result<(), Self::Error> {
+        reserve_work(
+            self.budget,
+            HostWorkDimension::SearchStateBytes,
+            size_of::<&CostSignature>(),
+        )?;
+        Ok(())
+    }
+
+    fn node(&self) -> Result<(), Self::Error> {
+        reserve_work(self.budget, HostWorkDimension::VerificationOperations, 1)?;
+        Ok(())
+    }
+
+    fn compound(&self, elements: usize) -> Result<(), Self::Error> {
+        reserve_work(
+            self.budget,
+            HostWorkDimension::SearchStateBytes,
+            // DR-113: a sizing overflow is host work, never a charge.
+            elements
+                .checked_mul(size_of::<&CostSignature>())
+                .ok_or(FundingSearchError::AllocationFailed)?,
+        )?;
+        Ok(())
+    }
+
+    fn other(&self) -> Result<(), Self::Error> {
+        Err(AuthorityError::UnsupportedFundingSignature.into())
+    }
+
+    fn add(&self, units: u64) -> Result<u64, Self::Error> {
+        // DR-113: this overflow needs more than 2^64 signature leaves, and
+        // each leaf reserves one verification operation first, so the
+        // host-work budget rejects long before it.
+        units
+            .checked_add(1)
+            .ok_or(NativePhloExecutionError::Overflow)
+    }
+
+    fn allocation(&self) -> Self::Error { FundingSearchError::AllocationFailed.into() }
 }
 
 #[cfg(test)]

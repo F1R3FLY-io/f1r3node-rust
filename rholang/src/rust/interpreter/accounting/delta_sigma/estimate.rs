@@ -51,6 +51,10 @@ use crate::rust::interpreter::accounting::byte_accounting::{
 };
 use crate::rust::interpreter::accounting::costs::Cost;
 use crate::rust::interpreter::accounting::lexical::resolve_lexical_names_for_funding_metered;
+// Added by dedup (task 11415, D8): the leaf walk of the native meter.
+use crate::rust::interpreter::accounting::native_phlo_rules::{
+    signature_leaf_units, SignatureUnitsMeter,
+};
 use crate::rust::interpreter::accounting::native_phlo_rules::{
     NativePhloDimension, NativePhloRules,
 };
@@ -158,39 +162,58 @@ impl CostEstimate {
         for (lane, signature) in &signatures {
             units.insert(*lane, signature_units_metered(signature, host)?);
         }
+        // Changed by dedup (task 11415, D8): the B loop moved to `bound_over`,
+        // which `assemble` shares. The loop below keeps the client quantities.
+        // `bound_over` then checks each kept quantity in the same order as
+        // before, the units of its lane first and then its class.
+        // let mut kept = BTreeMap::new();
+        // let mut foreign = false;
+        // let mut bound_phlo = Some(0u64);
+        // for ((lane, class), count) in quantities {
+        //     let lane_units = match (client.contains(&lane), units.get(&lane)) {
+        //         (false, _) => {
+        //             foreign = true;
+        //             continue;
+        //         }
+        //         (true, None) => {
+        //             return Err(InterpreterError::ReduceError(
+        //                 "the estimate counted a lane without a static signature".to_string(),
+        //             ))
+        //         }
+        //         (true, Some(lane_units)) => lane_units,
+        //     };
+        //     let weight = schedule
+        //         .classes
+        //         .get(class)
+        //         .map(|class| class.weight)
+        //         .ok_or_else(|| {
+        //             InterpreterError::ReduceError(
+        //                 "the schedule has no class for a counted quantity".to_string(),
+        //             )
+        //         })?;
+        //     bound_phlo = bound_phlo.and_then(|bound| {
+        //         weight
+        //             .checked_mul(*lane_units)
+        //             .and_then(|amount| amount.checked_mul(count))
+        //             .and_then(|amount| bound.checked_add(amount))
+        //     });
+        //     kept.insert((lane, class), count);
+        // }
         let mut kept = BTreeMap::new();
         let mut foreign = false;
-        let mut bound_phlo = Some(0u64);
         for ((lane, class), count) in quantities {
-            let lane_units = match (client.contains(&lane), units.get(&lane)) {
-                (false, _) => {
-                    foreign = true;
-                    continue;
-                }
-                (true, None) => {
-                    return Err(InterpreterError::ReduceError(
-                        "the estimate counted a lane without a static signature".to_string(),
-                    ))
-                }
-                (true, Some(lane_units)) => lane_units,
-            };
-            let weight = schedule
-                .classes
-                .get(class)
-                .map(|class| class.weight)
-                .ok_or_else(|| {
-                    InterpreterError::ReduceError(
-                        "the schedule has no class for a counted quantity".to_string(),
-                    )
-                })?;
-            bound_phlo = bound_phlo.and_then(|bound| {
-                weight
-                    .checked_mul(*lane_units)
-                    .and_then(|amount| amount.checked_mul(count))
-                    .and_then(|amount| bound.checked_add(amount))
-            });
+            if !client.contains(&lane) {
+                foreign = true;
+                continue;
+            }
             kept.insert((lane, class), count);
         }
+        let bound_phlo = bound_over(
+            &kept,
+            &units,
+            schedule,
+            "the schedule has no class for a counted quantity",
+        )?;
         let completeness = match (completeness, foreign) {
             (Completeness::Complete, true) => {
                 Completeness::Incomplete(IncompleteReason::ForeignLane)
@@ -224,11 +247,14 @@ pub fn location_lane_key(
         HostWorkDimension::VerificationBytes,
         byte_count(domain.len()).saturating_add(byte_count(location.len())),
     )?;
-    let digest = crypto::rust::hash::blake2b256::Blake2b256::hash_parts([domain, location]);
-    digest
-        .as_slice()
-        .try_into()
-        .map_err(|_| InterpreterError::ReduceError("a lane digest is not 32 bytes".to_string()))
+    // Moved by dedup (task 11415) to `lane_digest` in
+    // `rholang/src/rust/interpreter/accounting/mod.rs`.
+    // let digest = crypto::rust::hash::blake2b256::Blake2b256::hash_parts([domain, location]);
+    // digest
+    //     .as_slice()
+    //     .try_into()
+    //     .map_err(|_| InterpreterError::ReduceError("a lane digest is not 32 bytes".to_string()))
+    Ok(crate::rust::interpreter::accounting::lane_digest(location))
 }
 
 /// The per-message length bound of the pre-pass: a key, a length prefix and
@@ -3038,10 +3064,53 @@ impl<'e> Estimator<'e> {
                 completeness = Completeness::Incomplete(IncompleteReason::UnsizedValue);
             }
         }
+        // Changed by dedup (task 11415, D8): the B loop moved to `bound_over`,
+        // which `retain_client_lanes` shares. The loop below keeps the
+        // quantities and the units of each lane. `rules` comes from
+        // `schedule`, so each class has a weight, and every lane of `rows`
+        // has a signature after the unpriced lanes left. The classes of one
+        // lane are distinct (`NativePhloRules::resolve`), so B has the same
+        // terms as before.
+        // let mut quantities = BTreeMap::new();
+        // let mut bound_phlo = Some(0u64);
+        // for (lane, counts) in &rows {
+        //     let units = signatures.get(lane).map(signature_units);
+        //     for (dimension, count) in NativePhloDimension::ALL.into_iter().zip(counts) {
+        //         if *count == 0 {
+        //             continue;
+        //         }
+        //         let class = rules
+        //             .class_for(dimension)
+        //             .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
+        //         quantities.insert((*lane, class), *count);
+        //         let weight = schedule
+        //             .classes
+        //             .get(class)
+        //             .map(|class| class.weight)
+        //             .ok_or_else(|| {
+        //                 InterpreterError::ReduceError(
+        //                     "the schedule has no class for a native dimension".to_string(),
+        //                 )
+        //             })?;
+        //         let units = units.ok_or_else(|| {
+        //             InterpreterError::ReduceError(
+        //                 "the estimate counted a lane without a static signature".to_string(),
+        //             )
+        //         })?;
+        //         bound_phlo = bound_phlo.and_then(|bound| {
+        //             weight
+        //                 .checked_mul(units)
+        //                 .and_then(|amount| amount.checked_mul(*count))
+        //                 .and_then(|amount| bound.checked_add(amount))
+        //         });
+        //     }
+        // }
         let mut quantities = BTreeMap::new();
-        let mut bound_phlo = Some(0u64);
+        let mut units = BTreeMap::new();
         for (lane, counts) in &rows {
-            let units = signatures.get(lane).map(signature_units);
+            if let Some(signature) = signatures.get(lane) {
+                units.insert(*lane, signature_units(signature));
+            }
             for (dimension, count) in NativePhloDimension::ALL.into_iter().zip(counts) {
                 if *count == 0 {
                     continue;
@@ -3050,28 +3119,14 @@ impl<'e> Estimator<'e> {
                     .class_for(dimension)
                     .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
                 quantities.insert((*lane, class), *count);
-                let weight = schedule
-                    .classes
-                    .get(class)
-                    .map(|class| class.weight)
-                    .ok_or_else(|| {
-                        InterpreterError::ReduceError(
-                            "the schedule has no class for a native dimension".to_string(),
-                        )
-                    })?;
-                let units = units.ok_or_else(|| {
-                    InterpreterError::ReduceError(
-                        "the estimate counted a lane without a static signature".to_string(),
-                    )
-                })?;
-                bound_phlo = bound_phlo.and_then(|bound| {
-                    weight
-                        .checked_mul(units)
-                        .and_then(|amount| amount.checked_mul(*count))
-                        .and_then(|amount| bound.checked_add(amount))
-                });
             }
         }
+        let bound_phlo = bound_over(
+            &quantities,
+            &units,
+            schedule,
+            "the schedule has no class for a native dimension",
+        )?;
         signatures.retain(|lane, _| rows.contains_key(lane));
         Ok(CostEstimate {
             quantities,
@@ -3109,23 +3164,61 @@ fn merge_vectors(left: Vector, right: Vector, combine: fn(u64, u64) -> u64) -> V
     into
 }
 
+/// Added by dedup (task 11415, D8): the estimate B of design §5.7 over raw
+/// counts. B is the sum of weight times units times count over every lane
+/// and class. An overflow gives `None`, which the estimate reports as
+/// `u64::MAX`. `assemble` and `retain_client_lanes` share this loop. It
+/// checks each quantity in key order. It checks the units of the lane first,
+/// and then the weight of the class with the message that the caller names.
+fn bound_over(
+    quantities: &BTreeMap<(SigKey, usize), u64>,
+    units: &BTreeMap<SigKey, u64>,
+    schedule: &PhloScheduleV1<'_>,
+    missing_class: &str,
+) -> Result<Option<u64>, InterpreterError> {
+    let mut bound_phlo = Some(0u64);
+    for ((lane, class), count) in quantities {
+        let lane_units = units.get(lane).ok_or_else(|| {
+            InterpreterError::ReduceError(
+                "the estimate counted a lane without a static signature".to_string(),
+            )
+        })?;
+        let weight = schedule
+            .classes
+            .get(*class)
+            .map(|class| class.weight)
+            .ok_or_else(|| InterpreterError::ReduceError(missing_class.to_string()))?;
+        bound_phlo = bound_phlo.and_then(|bound| {
+            weight
+                .checked_mul(*lane_units)
+                .and_then(|amount| amount.checked_mul(*count))
+                .and_then(|amount| bound.checked_add(amount))
+        });
+    }
+    Ok(bound_phlo)
+}
+
 /// The units of a lane: the Ground, Name and Quote leaves of its signature,
 /// which the native meter counts (`authority_units`).
 pub(crate) fn signature_units(signature: &CostSignature) -> u64 {
-    let mut pending = vec![signature];
-    let mut units = 0u64;
-    while let Some(current) = pending.pop() {
-        match current.value.as_ref() {
-            Some(CostSignatureValue::Ground(_))
-            | Some(CostSignatureValue::Name(_))
-            | Some(CostSignatureValue::Quote(_)) => units = units.saturating_add(1),
-            Some(CostSignatureValue::Compound(compound)) => {
-                pending.extend(compound.elements.iter())
-            }
-            Some(CostSignatureValue::Unit(_)) | Some(CostSignatureValue::BoundLevel(_)) | None => {}
-        }
-    }
-    units
+    // Moved by dedup (task 11415) to `signature_leaf_units` in
+    // `rholang/src/rust/interpreter/accounting/native_phlo_rules/execution.rs`.
+    // let mut pending = vec![signature];
+    // let mut units = 0u64;
+    // while let Some(current) = pending.pop() {
+    //     match current.value.as_ref() {
+    //         Some(CostSignatureValue::Ground(_))
+    //         | Some(CostSignatureValue::Name(_))
+    //         | Some(CostSignatureValue::Quote(_)) => units = units.saturating_add(1),
+    //         Some(CostSignatureValue::Compound(compound)) => {
+    //             pending.extend(compound.elements.iter())
+    //         }
+    //         Some(CostSignatureValue::Unit(_)) | Some(CostSignatureValue::BoundLevel(_)) | None => {}
+    //     }
+    // }
+    // units
+    signature_leaf_units(signature, &EstimateUnits { host: None })
+        .expect("the unmetered unit walk fails only when its stack does not fit in memory")
 }
 
 /// Added by G1-6 (DR-124): `signature_units` with one structural item charged
@@ -3135,21 +3228,56 @@ pub(crate) fn signature_units_metered(
     signature: &CostSignature,
     host: &HostWorkBudget,
 ) -> Result<u64, InterpreterError> {
-    let mut pending = vec![signature];
-    let mut units = 0u64;
-    while let Some(current) = pending.pop() {
-        reserve(host, HostWorkDimension::StructuralItems, 1)?;
-        match current.value.as_ref() {
-            Some(CostSignatureValue::Ground(_))
-            | Some(CostSignatureValue::Name(_))
-            | Some(CostSignatureValue::Quote(_)) => units = units.saturating_add(1),
-            Some(CostSignatureValue::Compound(compound)) => {
-                pending.extend(compound.elements.iter())
-            }
-            Some(CostSignatureValue::Unit(_)) | Some(CostSignatureValue::BoundLevel(_)) | None => {}
+    // Moved by dedup (task 11415) to `signature_leaf_units` in
+    // `rholang/src/rust/interpreter/accounting/native_phlo_rules/execution.rs`.
+    // let mut pending = vec![signature];
+    // let mut units = 0u64;
+    // while let Some(current) = pending.pop() {
+    //     reserve(host, HostWorkDimension::StructuralItems, 1)?;
+    //     match current.value.as_ref() {
+    //         Some(CostSignatureValue::Ground(_))
+    //         | Some(CostSignatureValue::Name(_))
+    //         | Some(CostSignatureValue::Quote(_)) => units = units.saturating_add(1),
+    //         Some(CostSignatureValue::Compound(compound)) => {
+    //             pending.extend(compound.elements.iter())
+    //         }
+    //         Some(CostSignatureValue::Unit(_)) | Some(CostSignatureValue::BoundLevel(_)) | None => {}
+    //     }
+    // }
+    // Ok(units)
+    signature_leaf_units(signature, &EstimateUnits { host: Some(host) })
+}
+
+/// Added by dedup (task 11415, D8): the charges of the two unit functions of
+/// the estimate. With a budget, the walk charges one structural item for each
+/// node before it reads the node (`signature_units_metered`). Without one, it
+/// charges nothing (`signature_units`). Both count every leaf with a
+/// saturating sum, and a node that is not a leaf or a compound adds nothing.
+struct EstimateUnits<'h> {
+    host: Option<&'h HostWorkBudget>,
+}
+
+impl SignatureUnitsMeter for EstimateUnits<'_> {
+    type Error = InterpreterError;
+
+    fn start(&self) -> Result<(), Self::Error> { Ok(()) }
+
+    fn node(&self) -> Result<(), Self::Error> {
+        match self.host {
+            Some(host) => reserve(host, HostWorkDimension::StructuralItems, 1),
+            None => Ok(()),
         }
     }
-    Ok(units)
+
+    fn compound(&self, _elements: usize) -> Result<(), Self::Error> { Ok(()) }
+
+    fn other(&self) -> Result<(), Self::Error> { Ok(()) }
+
+    fn add(&self, units: u64) -> Result<u64, Self::Error> { Ok(units.saturating_add(1)) }
+
+    fn allocation(&self) -> Self::Error {
+        InterpreterError::ReduceError("the stack of a unit walk does not fit in memory".to_string())
+    }
 }
 
 /// The field length of the region of `signature` inside a `CostAuthority`,

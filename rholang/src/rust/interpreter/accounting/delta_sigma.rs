@@ -61,9 +61,11 @@
 //! child and the supply of its parent, so the work grows with the term plus its
 //! region links and merged map entries. The estimate of `estimate.rs` counts
 //! that work and charges it to the host-work budget before it calls the plan.
-//! The native gate constructs each raw `Σ_s` from the signature's canonical
-//! SystemVault balance and available located stacks, then feeds the integer
-//! projection into this module as a `BTreeMap<SigKey, i64>`.
+//! Corrected by dedup (task 11415, D10): no live gate feeds a supply map
+//! `BTreeMap<SigKey, i64>` into this module. The merge `1d325b996` removed the
+//! native gate that did. The check before execution of G1 (DR-123, DR-124)
+//! calls only `static_authority_plan`, through `estimate.rs`, and Casper's
+//! `gate.rs` compares the holds with the SystemVault balances.
 //!
 //! ## Stack safety (G1-1, DR-67)
 //!

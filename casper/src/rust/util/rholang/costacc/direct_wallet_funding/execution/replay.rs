@@ -18,7 +18,12 @@ use models::rust::phlo_intent::PhloConversionCompositionV2;
 use models::rust::phlo_schedule::PhloGenesisPolicy;
 use models::rust::phlo_wire::PhloWireLimits;
 use models::rust::signed_phlo_deploy::OfferedFundedDeploy;
-use rholang::rust::interpreter::accounting::authority::AuthorityStackBirth;
+// Changed by dedup (task 11415, D5): the halves of the settlement pipeline
+// name these types.
+// use rholang::rust::interpreter::accounting::authority::AuthorityStackBirth;
+use rholang::rust::interpreter::accounting::authority::{
+    AuthorityBornStack, AuthorityByteEvent, AuthorityEvent, AuthorityStackBirth,
+};
 use rholang::rust::interpreter::accounting::costs::Cost;
 use rholang::rust::interpreter::accounting::economic_failure::classify_errors;
 use rholang::rust::interpreter::accounting::native_phlo_rules::NativePhloAcquisitionDemand;
@@ -26,9 +31,17 @@ use rholang::rust::interpreter::accounting::phlo_controls::{
     check_offered_phlo_controls, CheckedPhloControls, PhloControlsBinding, PhloFundingTerms,
     PhloOffer, PhloScheduleBinding,
 };
+// Changed by dedup (task 11415, D5): the halves of the settlement pipeline
+// name these types.
+// use rholang::rust::interpreter::accounting::phlo_execution::{
+//     check_counted_phlo_execution, check_phlo_funding_family, project_phlo_obligations, PhloFailure,
+//     PhloFundingCase, PhloFundingIntentBinding, PhloOutcome, RetainedBirthFunding,
+// };
 use rholang::rust::interpreter::accounting::phlo_execution::{
-    check_counted_phlo_execution, check_phlo_funding_family, project_phlo_obligations, PhloFailure,
-    PhloFundingCase, PhloFundingIntentBinding, PhloOutcome, RetainedBirthFunding,
+    check_counted_phlo_execution, check_phlo_funding_family, project_phlo_obligations,
+    CheckedPhloExecution, CheckedPhloFundingFamily, CheckedPhloObligations, PhloFailure,
+    PhloFundingCase, PhloFundingIntentBinding, PhloFundingIntentView, PhloOutcome,
+    PhloResourceAmount, RestoredPhloResource, RetainedBirthFunding,
 };
 use rholang::rust::interpreter::accounting::{
     funding_sig, NativeBudgetRecording, NativeOperationJournalLimits, NativeOperationRecord,
@@ -47,6 +60,9 @@ use rspace_plus_plus::rspace::merger::merging_logic::MergeType;
 use rspace_plus_plus::rspace::trace::event::Event;
 use tokio::sync::RwLock;
 
+// Added by dedup (task 11415, D5): the funding half of the settlement
+// pipeline names the rooted selection.
+use super::family_selection::NativeRootedFamilySelection;
 use super::held_capacity::{capture_debits, GuardMember, GuardRole};
 use super::producer::{
     check_birth_positions, check_retained_origin, derive_birth_positions, derive_live_born_stacks,
@@ -57,10 +73,17 @@ use super::settlement::{
     NativeCapturedSettlement, NativeFundedSettlement, NativeGrantIssuanceInput,
     NativeGrantSettlementInput,
 };
+// Changed by dedup (task 11415, D5): the funding half of the settlement
+// pipeline names the family limits.
+// use super::{
+//     select_rooted_native_family, CheckedDirectWalletPolicy, NativeFundedAttempt,
+//     NativeFundedExecutionContext, NativeOfferedAttempt, NativeOfferedProductionLimits,
+//     OfferedGateInput,
+// };
 use super::{
     select_rooted_native_family, CheckedDirectWalletPolicy, NativeFundedAttempt,
-    NativeFundedExecutionContext, NativeOfferedAttempt, NativeOfferedProductionLimits,
-    OfferedGateInput,
+    NativeFundedExecutionContext, NativeOfferedAttempt, NativeOfferedFamilyLimits,
+    NativeOfferedProductionLimits, OfferedGateInput,
 };
 use crate::rust::errors::CasperError;
 use crate::rust::rholang::runtime::RuntimeOps;
@@ -69,7 +92,12 @@ use crate::rust::util::rholang::acceptance::{
     prepare_offered_candidate, CandidateReplayPermit, OfferedCandidateLimits,
     PreparedOfferedCandidate,
 };
-use crate::rust::util::rholang::costacc::direct_wallet_funding::DirectWalletPolicySnapshot;
+// Changed by dedup (task 11415, D5): the funding half of the settlement
+// pipeline returns the captured settlement.
+// use crate::rust::util::rholang::costacc::direct_wallet_funding::DirectWalletPolicySnapshot;
+use crate::rust::util::rholang::costacc::direct_wallet_funding::{
+    CheckedDirectWalletSettlement, DirectWalletPolicySnapshot,
+};
 use crate::rust::util::rholang::costacc::genesis_resource_policy::AdoptedResourcePolicy;
 #[cfg(any(test, feature = "test-utils"))]
 use crate::rust::util::rholang::costacc::offered_acceptance::{OfferedCheckRole, OfferedUsageKind};
@@ -81,10 +109,19 @@ use crate::rust::util::rholang::costacc::offered_evidence::{
 use crate::rust::util::rholang::costacc::offered_grants::{
     grant_issue_definition, offered_grant_issue_call_limits, offered_grant_transition_limits,
 };
+// Changed by dedup (task 11415, D5): the measured half of the settlement
+// pipeline names the selection and the binding.
+// use crate::rust::util::rholang::costacc::prepaid_receipts::{
+//     NativePrepaidConsumption, NativePrepaidDemandInput, NativePrepaidInventory,
+//     NativePrepaidInventoryLimits, NativeRetainedReceiptRecords, NativeRetainedSettlementLimits,
+//     PrepaidReceiptBucket, PrepaidReceiptChange, PrepaidReceiptLimits, PrepaidStackCaptureLimits,
+//     PreparedNativeRetainedReceipts,
+// };
 use crate::rust::util::rholang::costacc::prepaid_receipts::{
-    NativePrepaidConsumption, NativePrepaidDemandInput, NativePrepaidInventory,
-    NativePrepaidInventoryLimits, NativeRetainedReceiptRecords, NativeRetainedSettlementLimits,
-    PrepaidReceiptBucket, PrepaidReceiptChange, PrepaidReceiptLimits, PrepaidStackCaptureLimits,
+    CanonicalPrepaidSelection, NativePrepaidConsumption, NativePrepaidDemandBinding,
+    NativePrepaidDemandInput, NativePrepaidInventory, NativePrepaidInventoryLimits,
+    NativeRetainedReceiptRecords, NativeRetainedSettlementLimits, PrepaidReceiptBucket,
+    PrepaidReceiptChange, PrepaidReceiptLimits, PrepaidStackCaptureLimits,
     PreparedNativeRetainedReceipts,
 };
 use crate::rust::util::rholang::costacc::production_limits::{
@@ -275,62 +312,86 @@ impl<'preflight, 'a> NativeOfferedAttempt<'preflight, 'a> {
             }
             self.evaluation.authority_stack_births.clear();
         }
-        let post_stacks = manager.read_measured_prepaid_stacks_with_births(
-            settlement_root,
-            &demand,
-            &self.evaluation.authority_stack_births,
-            production.stack_capture,
-            budget,
-        )?;
-        let born = derive_live_born_stacks(
-            &self.evaluation.authority_stack_births,
-            &post_stacks,
-            limits.retained.funding.births,
-            budget,
-        )?;
-        let permissions = restore_retained_permissions(
-            &snapshot.wallets().authorization().record().sources,
-            selected_terms.bytes(),
-            schedule.descriptor().classes.len(),
-            limits.measured.settlement.matching.execution,
-            budget,
-        )?;
-        let retained = derive_retained_amounts(
-            &permissions,
-            selected_terms.bytes(),
-            &born,
-            limits.retained.funding.cells,
-            budget,
-        )?;
-        check_retained_origin(
-            &permissions,
-            selected_terms.bytes(),
-            &retained,
-            &born,
-            limits.retained.funding.cells,
-            budget,
-        )?;
-        let selection =
-            inventory.select_measured_demand(&demand, limits.measured.demand, budget)?;
-        let binding = inventory.bind_measured_demand(
-            NativePrepaidDemandInput {
-                expected_root: funding_root,
+        // Moved by dedup (task 11415) to `measure_replayed_settlement` in
+        // `casper/src/rust/util/rholang/costacc/direct_wallet_funding/execution/replay.rs`.
+        // let post_stacks = manager.read_measured_prepaid_stacks_with_births(
+        //     settlement_root,
+        //     &demand,
+        //     &self.evaluation.authority_stack_births,
+        //     production.stack_capture,
+        //     budget,
+        // )?;
+        // let born = derive_live_born_stacks(
+        //     &self.evaluation.authority_stack_births,
+        //     &post_stacks,
+        //     limits.retained.funding.births,
+        //     budget,
+        // )?;
+        // let permissions = restore_retained_permissions(
+        //     &snapshot.wallets().authorization().record().sources,
+        //     selected_terms.bytes(),
+        //     schedule.descriptor().classes.len(),
+        //     limits.measured.settlement.matching.execution,
+        //     budget,
+        // )?;
+        // let retained = derive_retained_amounts(
+        //     &permissions,
+        //     selected_terms.bytes(),
+        //     &born,
+        //     limits.retained.funding.cells,
+        //     budget,
+        // )?;
+        // check_retained_origin(
+        //     &permissions,
+        //     selected_terms.bytes(),
+        //     &retained,
+        //     &born,
+        //     limits.retained.funding.cells,
+        //     budget,
+        // )?;
+        // let selection =
+        //     inventory.select_measured_demand(&demand, limits.measured.demand, budget)?;
+        // let binding = inventory.bind_measured_demand(
+        //     NativePrepaidDemandInput {
+        //         expected_root: funding_root,
+        //         controls,
+        //         demand: &demand,
+        //         draws: selection.draws(),
+        //         demand_positions: selection.demand_positions(),
+        //     },
+        //     limits.measured.demand,
+        //     budget,
+        // )?;
+        // let observed = check_counted_phlo_execution(
+        //     controls,
+        //     binding.witness(),
+        //     limits.measured.settlement.matching.execution,
+        // )
+        // .map_err(invalid)?
+        // .with_retained_acquisitions(&retained, budget)
+        // .map_err(invalid)?;
+        let mut measured_slots = MeasuredSettlementSlots::default();
+        let MeasuredSettlement {
+            born,
+            selection,
+            observed,
+        } = measure_replayed_settlement(
+            manager,
+            &mut measured_slots,
+            MeasuredSettlementInput {
+                root: settlement_root,
+                funding_root,
+                births: &self.evaluation.authority_stack_births,
+                snapshot,
+                schedule: &schedule,
+                terms: selected_terms.bytes(),
                 controls,
+                inventory: &inventory,
                 demand: &demand,
-                draws: selection.draws(),
-                demand_positions: selection.demand_positions(),
             },
-            limits.measured.demand,
+            production,
             budget,
         )?;
-        let observed = check_counted_phlo_execution(
-            controls,
-            binding.witness(),
-            limits.measured.settlement.matching.execution,
-        )
-        .map_err(invalid)?
-        .with_retained_acquisitions(&retained, budget)
-        .map_err(invalid)?;
         check_metered_usage(
             self.evaluation
                 .byte_observations
@@ -392,59 +453,83 @@ impl<'preflight, 'a> NativeOfferedAttempt<'preflight, 'a> {
             });
         }
         check_birth_positions(&obligations, &derived_claims, budget)?;
-        let family_selection = select_rooted_native_family(
-            snapshot,
-            &obligations,
-            &self.evaluation.authority_events,
-            &self.evaluation.authority_byte_events,
+        // Moved by dedup (task 11415) to `capture_replayed_funding` in
+        // `casper/src/rust/util/rholang/costacc/direct_wallet_funding/execution/replay.rs`.
+        // let family_selection = select_rooted_native_family(
+        //     snapshot,
+        //     &obligations,
+        //     &self.evaluation.authority_events,
+        //     &self.evaluation.authority_byte_events,
+        //     limits,
+        //     budget,
+        // )?;
+        // let cases = [PhloFundingCase {
+        //     obligations: &obligations,
+        //     eligible: &family_selection.eligible,
+        //     assignment: &family_selection.selected.assignments()[0],
+        // }];
+        // let family = check_phlo_funding_family(
+        //     &family_selection.sources,
+        //     &cases,
+        //     family_selection.total_exposure_limit,
+        //     limits.policy.funding,
+        // )
+        // .map_err(invalid)?;
+        // let intent = PhloFundingIntentBinding::new(
+        //     snapshot.wallets().authorization().record(),
+        //     limits.signed.intent,
+        // )
+        // .map_err(invalid)?;
+        // let view = intent.view().map_err(invalid)?;
+        // let terms = PhloFundingTerms {
+        //     required_owner_ceilings: controls.terms().required_owner_ceilings,
+        //     asset: controls.schedule().environment.asset,
+        //     schedule_commitment: controls.schedule().commitment,
+        // };
+        // let policy = snapshot
+        //     .bind_native_family_in_context(
+        //         &view,
+        //         &family,
+        //         terms,
+        //         limits.signed,
+        //         limits.policy,
+        //         &adopted,
+        //         budget,
+        //     )
+        //     .map_err(invalid)?
+        //     .ok_or_else(|| invalid("replayed funding family has no valid cursor policy"))?;
+        // let checked = policy
+        //     .capture_settlement(
+        //         observed,
+        //         outcome,
+        //         limits.measured.settlement.matching,
+        //         limits.measured.settlement.capture,
+        //         budget,
+        //     )
+        //     .map(|checked| checked.bind_execution_root(settlement_root))
+        //     .map_err(invalid)?;
+        let mut capture_slots = FundingCaptureSlots::default();
+        let FundingCapture {
+            family_selection,
+            checked,
+        } = capture_replayed_funding(
+            &mut capture_slots,
+            FundingCaptureInput {
+                snapshot,
+                obligations: &obligations,
+                observed,
+                outcome,
+                root: settlement_root,
+                controls,
+                adopted: &adopted,
+                authority_events: &self.evaluation.authority_events,
+                authority_byte_events: &self.evaluation.authority_byte_events,
+                no_case: "replayed funding family has no case",
+                no_policy: "replayed funding family has no valid cursor policy",
+            },
             limits,
             budget,
         )?;
-        let cases = [PhloFundingCase {
-            obligations: &obligations,
-            eligible: &family_selection.eligible,
-            assignment: &family_selection.selected.assignments()[0],
-        }];
-        let family = check_phlo_funding_family(
-            &family_selection.sources,
-            &cases,
-            family_selection.total_exposure_limit,
-            limits.policy.funding,
-        )
-        .map_err(invalid)?;
-        let intent = PhloFundingIntentBinding::new(
-            snapshot.wallets().authorization().record(),
-            limits.signed.intent,
-        )
-        .map_err(invalid)?;
-        let view = intent.view().map_err(invalid)?;
-        let terms = PhloFundingTerms {
-            required_owner_ceilings: controls.terms().required_owner_ceilings,
-            asset: controls.schedule().environment.asset,
-            schedule_commitment: controls.schedule().commitment,
-        };
-        let policy = snapshot
-            .bind_native_family_in_context(
-                &view,
-                &family,
-                terms,
-                limits.signed,
-                limits.policy,
-                &adopted,
-                budget,
-            )
-            .map_err(invalid)?
-            .ok_or_else(|| invalid("replayed funding family has no valid cursor policy"))?;
-        let checked = policy
-            .capture_settlement(
-                observed,
-                outcome,
-                limits.measured.settlement.matching,
-                limits.measured.settlement.capture,
-                budget,
-            )
-            .map(|checked| checked.bind_execution_root(settlement_root))
-            .map_err(invalid)?;
         let births = self
             .runtime
             .capture_retained_births(&checked, &adopted, &derived_claims, limits.retained, budget)
@@ -631,7 +716,10 @@ impl<'preflight, 'a> NativeOfferedAttempt<'preflight, 'a> {
                     .map(|change| change.as_change()),
             );
             let prepaid_delta = encode_measured_prepaid_delta(
-                &selection,
+                // Changed by dedup (task 11415, D5): `measure_replayed_settlement`
+                // returns the selection as a reference.
+                // &selection,
+                selection,
                 records.records(),
                 &changes,
                 offered_funded_v6_limits().prepaid_delta,
@@ -725,6 +813,258 @@ impl<'preflight, 'a> NativeOfferedAttempt<'preflight, 'a> {
     }
 }
 
+/// Added by dedup (task 11415, D5): the inputs of the measured half of the
+/// replayed settlement pipeline. The root is a parameter:
+/// `settle_replayed_candidate` passes the settlement root, and
+/// `success_path_debits` passes the root after the run.
+#[derive(Clone, Copy)]
+struct MeasuredSettlementInput<'r, 's, 'p> {
+    root: [u8; 32],
+    funding_root: [u8; 32],
+    births: &'r [AuthorityStackBirth],
+    snapshot: &'r DirectWalletPolicySnapshot<'r, OfferedFundedDeploy>,
+    schedule: &'r PhloScheduleBinding<'r>,
+    terms: &'r [u8],
+    controls: CheckedPhloControls<'r>,
+    inventory: &'r NativePrepaidInventory<'s, 'p>,
+    demand: &'r NativePhloAcquisitionDemand<'r>,
+}
+
+/// Added by dedup (task 11415, D5): the values of the measured half that the
+/// observed execution borrows. The caller owns them, so the observed
+/// execution outlives the call.
+#[derive(Default)]
+struct MeasuredSettlementSlots<'r> {
+    permissions: Option<Vec<RestoredPhloResource<'r>>>,
+    retained: Option<Vec<PhloResourceAmount<'r>>>,
+    selection: Option<CanonicalPrepaidSelection>,
+    binding: Option<NativePrepaidDemandBinding<'r>>,
+}
+
+/// Added by dedup (task 11415, D5): the result of the measured half. It holds
+/// the live born stacks, the prepaid selection and the observed execution
+/// with its retained acquisitions.
+struct MeasuredSettlement<'r> {
+    born: Vec<AuthorityBornStack>,
+    selection: &'r CanonicalPrepaidSelection,
+    observed: CheckedPhloExecution<'r>,
+}
+
+/// Added by dedup (task 11415, D5): the measured half of the replayed
+/// settlement pipeline, from the stacks at the root to the observed execution.
+/// The steps, their host-work reservations and their errors are those that
+/// `settle_replayed_candidate` and `success_path_debits` ran, in the same
+/// order.
+fn measure_replayed_settlement<'r>(
+    manager: &RuntimeManager,
+    slots: &'r mut MeasuredSettlementSlots<'r>,
+    input: MeasuredSettlementInput<'r, '_, '_>,
+    production: NativeOfferedProductionLimits,
+    budget: &HostWorkBudget,
+) -> Result<MeasuredSettlement<'r>, CasperError> {
+    let limits = production.family;
+    let MeasuredSettlementSlots {
+        permissions: permission_slot,
+        retained: retained_slot,
+        selection: selection_slot,
+        binding: binding_slot,
+    } = slots;
+    let post_stacks = manager.read_measured_prepaid_stacks_with_births(
+        input.root,
+        input.demand,
+        input.births,
+        production.stack_capture,
+        budget,
+    )?;
+    let born = derive_live_born_stacks(
+        input.births,
+        &post_stacks,
+        limits.retained.funding.births,
+        budget,
+    )?;
+    let permissions: &'r [RestoredPhloResource<'r>] =
+        permission_slot.insert(restore_retained_permissions(
+            &input.snapshot.wallets().authorization().record().sources,
+            input.terms,
+            input.schedule.descriptor().classes.len(),
+            limits.measured.settlement.matching.execution,
+            budget,
+        )?);
+    let retained: &'r [PhloResourceAmount<'r>] = retained_slot.insert(derive_retained_amounts(
+        permissions,
+        input.terms,
+        &born,
+        limits.retained.funding.cells,
+        budget,
+    )?);
+    check_retained_origin(
+        permissions,
+        input.terms,
+        retained,
+        &born,
+        limits.retained.funding.cells,
+        budget,
+    )?;
+    let selection: &'r CanonicalPrepaidSelection = selection_slot.insert(
+        input
+            .inventory
+            .select_measured_demand(input.demand, limits.measured.demand, budget)?,
+    );
+    let binding: &'r NativePrepaidDemandBinding<'r> =
+        binding_slot.insert(input.inventory.bind_measured_demand(
+            NativePrepaidDemandInput {
+                expected_root: input.funding_root,
+                controls: input.controls,
+                demand: input.demand,
+                draws: selection.draws(),
+                demand_positions: selection.demand_positions(),
+            },
+            limits.measured.demand,
+            budget,
+        )?);
+    let observed = check_counted_phlo_execution(
+        input.controls,
+        binding.witness(),
+        limits.measured.settlement.matching.execution,
+    )
+    .map_err(invalid)?
+    .with_retained_acquisitions(retained, budget)
+    .map_err(invalid)?;
+    Ok(MeasuredSettlement {
+        born,
+        selection,
+        observed,
+    })
+}
+
+/// Added by dedup (task 11415, D5): the inputs of the funding half of the
+/// replayed settlement pipeline. The outcome and the root are parameters.
+/// Each caller passes its own message for a family without a case and its own
+/// message for a family without a cursor policy.
+#[derive(Clone, Copy)]
+struct FundingCaptureInput<'r> {
+    snapshot: &'r DirectWalletPolicySnapshot<'r, OfferedFundedDeploy>,
+    obligations: &'r CheckedPhloObligations<'r>,
+    observed: CheckedPhloExecution<'r>,
+    outcome: PhloOutcome<'r>,
+    root: [u8; 32],
+    controls: CheckedPhloControls<'r>,
+    adopted: &'r AdoptedResourcePolicy,
+    authority_events: &'r [AuthorityEvent<[u8; 32]>],
+    authority_byte_events: &'r [AuthorityByteEvent],
+    no_case: &'static str,
+    no_policy: &'static str,
+}
+
+/// Added by dedup (task 11415, D5): the values of the funding half that the
+/// captured settlement borrows. The caller owns them, so the captured
+/// settlement outlives the call.
+#[derive(Default)]
+struct FundingCaptureSlots<'r> {
+    family_selection: Option<NativeRootedFamilySelection<'r>>,
+    cases: Option<[PhloFundingCase<'r>; 1]>,
+    family: Option<CheckedPhloFundingFamily<'r>>,
+    intent: Option<PhloFundingIntentBinding<'r>>,
+    view: Option<PhloFundingIntentView<'r>>,
+}
+
+/// Added by dedup (task 11415, D5): the result of the funding half: the
+/// rooted family selection and the captured settlement, bound to the root.
+struct FundingCapture<'r> {
+    family_selection: &'r NativeRootedFamilySelection<'r>,
+    checked: CheckedDirectWalletSettlement<'r, OfferedFundedDeploy>,
+}
+
+/// Added by dedup (task 11415, D5): the funding half of the replayed
+/// settlement pipeline, from the rooted family selection to the captured
+/// settlement. The steps, their host-work reservations and their errors are
+/// those that `settle_replayed_candidate` and `success_path_debits` ran, in
+/// the same order. `select_phlo_funding_family` returns one assignment for
+/// each outcome (`family_policy.rs`), so the one requirement always has its
+/// case.
+fn capture_replayed_funding<'r>(
+    slots: &'r mut FundingCaptureSlots<'r>,
+    input: FundingCaptureInput<'r>,
+    limits: NativeOfferedFamilyLimits,
+    budget: &HostWorkBudget,
+) -> Result<FundingCapture<'r>, CasperError> {
+    let FundingCaptureSlots {
+        family_selection: selection_slot,
+        cases: case_slot,
+        family: family_slot,
+        intent: intent_slot,
+        view: view_slot,
+    } = slots;
+    let family_selection: &'r NativeRootedFamilySelection<'r> =
+        selection_slot.insert(select_rooted_native_family(
+            input.snapshot,
+            input.obligations,
+            input.authority_events,
+            input.authority_byte_events,
+            limits,
+            budget,
+        )?);
+    let assignment = family_selection
+        .selected
+        .assignments()
+        .first()
+        .ok_or_else(|| invalid(input.no_case))?;
+    let cases: &'r [PhloFundingCase<'r>] = case_slot.insert([PhloFundingCase {
+        obligations: input.obligations,
+        eligible: &family_selection.eligible,
+        assignment,
+    }]);
+    let family: &'r CheckedPhloFundingFamily<'r> = family_slot.insert(
+        check_phlo_funding_family(
+            &family_selection.sources,
+            cases,
+            family_selection.total_exposure_limit,
+            limits.policy.funding,
+        )
+        .map_err(invalid)?,
+    );
+    let intent: &'r PhloFundingIntentBinding<'r> = intent_slot.insert(
+        PhloFundingIntentBinding::new(
+            input.snapshot.wallets().authorization().record(),
+            limits.signed.intent,
+        )
+        .map_err(invalid)?,
+    );
+    let view: &'r PhloFundingIntentView<'r> = view_slot.insert(intent.view().map_err(invalid)?);
+    let terms = PhloFundingTerms {
+        required_owner_ceilings: input.controls.terms().required_owner_ceilings,
+        asset: input.controls.schedule().environment.asset,
+        schedule_commitment: input.controls.schedule().commitment,
+    };
+    let policy = input
+        .snapshot
+        .bind_native_family_in_context(
+            view,
+            family,
+            terms,
+            limits.signed,
+            limits.policy,
+            input.adopted,
+            budget,
+        )
+        .map_err(invalid)?
+        .ok_or_else(|| invalid(input.no_policy))?;
+    let checked = policy
+        .capture_settlement(
+            input.observed,
+            input.outcome,
+            limits.measured.settlement.matching,
+            limits.measured.settlement.capture,
+            budget,
+        )
+        .map(|checked| checked.bind_execution_root(input.root))
+        .map_err(invalid)?;
+    Ok(FundingCapture {
+        family_selection,
+        checked,
+    })
+}
+
 /// Added by G1-7 (DR-65 item 5, arbitration M2): the inputs of the success
 /// path that `settle_replayed_candidate` already holds.
 struct SuccessPathInput<'r, 's, 'p> {
@@ -740,10 +1080,14 @@ struct SuccessPathInput<'r, 's, 'p> {
 impl NativeOfferedAttempt<'_, '_> {
     /// Added by G1-7 (DR-65 item 5, arbitration M2): the debits of the success
     /// path of a run that the block commits as a guard failure. The function
-    /// repeats the measured settlement of `settle_replayed_candidate` at the
+    /// runs the measured settlement of `settle_replayed_candidate` at the
     /// root after the run, with the births of the run and no failure, up to
     /// the capture that settlement would charge. Play computes the same
     /// capture before its own guard.
+    // Changed by dedup (task 11415, D5): the function calls the two halves of
+    // the settlement pipeline, `measure_replayed_settlement` and
+    // `capture_replayed_funding`. It passes the root after the run and the
+    // outcome without failures.
     async fn success_path_debits(
         &self,
         manager: &RuntimeManager,
@@ -753,129 +1097,177 @@ impl NativeOfferedAttempt<'_, '_> {
         budget: &HostWorkBudget,
     ) -> Result<BTreeMap<[u8; 32], u128>, CasperError> {
         let limits = production.family;
-        let post_stacks = manager.read_measured_prepaid_stacks_with_births(
-            input.post_run_root,
-            input.demand,
-            &self.evaluation.authority_stack_births,
-            production.stack_capture,
-            budget,
-        )?;
-        let born = derive_live_born_stacks(
-            &self.evaluation.authority_stack_births,
-            &post_stacks,
-            limits.retained.funding.births,
-            budget,
-        )?;
-        let permissions = restore_retained_permissions(
-            &snapshot.wallets().authorization().record().sources,
-            input.terms,
-            input.schedule.descriptor().classes.len(),
-            limits.measured.settlement.matching.execution,
-            budget,
-        )?;
-        let retained = derive_retained_amounts(
-            &permissions,
-            input.terms,
-            &born,
-            limits.retained.funding.cells,
-            budget,
-        )?;
-        check_retained_origin(
-            &permissions,
-            input.terms,
-            &retained,
-            &born,
-            limits.retained.funding.cells,
-            budget,
-        )?;
-        let selection =
-            input
-                .inventory
-                .select_measured_demand(input.demand, limits.measured.demand, budget)?;
-        let binding = input.inventory.bind_measured_demand(
-            NativePrepaidDemandInput {
-                expected_root: self.preflight.funding_root,
+        // Moved by dedup (task 11415) to `measure_replayed_settlement` and
+        // `capture_replayed_funding` in
+        // `casper/src/rust/util/rholang/costacc/direct_wallet_funding/execution/replay.rs`.
+        // let post_stacks = manager.read_measured_prepaid_stacks_with_births(
+        //     input.post_run_root,
+        //     input.demand,
+        //     &self.evaluation.authority_stack_births,
+        //     production.stack_capture,
+        //     budget,
+        // )?;
+        // let born = derive_live_born_stacks(
+        //     &self.evaluation.authority_stack_births,
+        //     &post_stacks,
+        //     limits.retained.funding.births,
+        //     budget,
+        // )?;
+        // let permissions = restore_retained_permissions(
+        //     &snapshot.wallets().authorization().record().sources,
+        //     input.terms,
+        //     input.schedule.descriptor().classes.len(),
+        //     limits.measured.settlement.matching.execution,
+        //     budget,
+        // )?;
+        // let retained = derive_retained_amounts(
+        //     &permissions,
+        //     input.terms,
+        //     &born,
+        //     limits.retained.funding.cells,
+        //     budget,
+        // )?;
+        // check_retained_origin(
+        //     &permissions,
+        //     input.terms,
+        //     &retained,
+        //     &born,
+        //     limits.retained.funding.cells,
+        //     budget,
+        // )?;
+        // let selection =
+        //     input
+        //         .inventory
+        //         .select_measured_demand(input.demand, limits.measured.demand, budget)?;
+        // let binding = input.inventory.bind_measured_demand(
+        //     NativePrepaidDemandInput {
+        //         expected_root: self.preflight.funding_root,
+        //         controls: input.controls,
+        //         demand: input.demand,
+        //         draws: selection.draws(),
+        //         demand_positions: selection.demand_positions(),
+        //     },
+        //     limits.measured.demand,
+        //     budget,
+        // )?;
+        // let observed = check_counted_phlo_execution(
+        //     input.controls,
+        //     binding.witness(),
+        //     limits.measured.settlement.matching.execution,
+        // )
+        // .map_err(invalid)?
+        // .with_retained_acquisitions(&retained, budget)
+        // .map_err(invalid)?;
+        // let obligations = project_phlo_obligations(
+        //     observed,
+        //     PhloOutcome::Accepted(&[]),
+        //     limits.policy.funding.obligations,
+        // )
+        // .map_err(invalid)?;
+        // let family_selection = select_rooted_native_family(
+        //     snapshot,
+        //     &obligations,
+        //     &self.evaluation.authority_events,
+        //     &self.evaluation.authority_byte_events,
+        //     limits,
+        //     budget,
+        // )?;
+        // let assignment = family_selection
+        //     .selected
+        //     .assignments()
+        //     .first()
+        //     .ok_or_else(|| invalid("the success path of a claimed guard failure has no case"))?;
+        // let cases = [PhloFundingCase {
+        //     obligations: &obligations,
+        //     eligible: &family_selection.eligible,
+        //     assignment,
+        // }];
+        // let family = check_phlo_funding_family(
+        //     &family_selection.sources,
+        //     &cases,
+        //     family_selection.total_exposure_limit,
+        //     limits.policy.funding,
+        // )
+        // .map_err(invalid)?;
+        // let intent = PhloFundingIntentBinding::new(
+        //     snapshot.wallets().authorization().record(),
+        //     limits.signed.intent,
+        // )
+        // .map_err(invalid)?;
+        // let view = intent.view().map_err(invalid)?;
+        // let terms = PhloFundingTerms {
+        //     required_owner_ceilings: input.controls.terms().required_owner_ceilings,
+        //     asset: input.controls.schedule().environment.asset,
+        //     schedule_commitment: input.controls.schedule().commitment,
+        // };
+        // let policy = snapshot
+        //     .bind_native_family_in_context(
+        //         &view,
+        //         &family,
+        //         terms,
+        //         limits.signed,
+        //         limits.policy,
+        //         input.adopted,
+        //         budget,
+        //     )
+        //     .map_err(invalid)?
+        //     .ok_or_else(|| invalid("the success path of a claimed guard failure has no policy"))?;
+        // let checked = policy
+        //     .capture_settlement(
+        //         observed,
+        //         PhloOutcome::Accepted(&[]),
+        //         limits.measured.settlement.matching,
+        //         limits.measured.settlement.capture,
+        //         budget,
+        //     )
+        //     .map(|checked| checked.bind_execution_root(input.post_run_root))
+        //     .map_err(invalid)?;
+        // capture_debits(checked.capture().amounts(), budget)
+        let mut measured_slots = MeasuredSettlementSlots::default();
+        let measured = measure_replayed_settlement(
+            manager,
+            &mut measured_slots,
+            MeasuredSettlementInput {
+                root: input.post_run_root,
+                funding_root: self.preflight.funding_root,
+                births: &self.evaluation.authority_stack_births,
+                snapshot,
+                schedule: input.schedule,
+                terms: input.terms,
                 controls: input.controls,
+                inventory: input.inventory,
                 demand: input.demand,
-                draws: selection.draws(),
-                demand_positions: selection.demand_positions(),
             },
-            limits.measured.demand,
+            production,
             budget,
         )?;
-        let observed = check_counted_phlo_execution(
-            input.controls,
-            binding.witness(),
-            limits.measured.settlement.matching.execution,
-        )
-        .map_err(invalid)?
-        .with_retained_acquisitions(&retained, budget)
-        .map_err(invalid)?;
+        let outcome = PhloOutcome::Accepted(&[]);
         let obligations = project_phlo_obligations(
-            observed,
-            PhloOutcome::Accepted(&[]),
+            measured.observed,
+            outcome,
             limits.policy.funding.obligations,
         )
         .map_err(invalid)?;
-        let family_selection = select_rooted_native_family(
-            snapshot,
-            &obligations,
-            &self.evaluation.authority_events,
-            &self.evaluation.authority_byte_events,
+        let mut capture_slots = FundingCaptureSlots::default();
+        let capture = capture_replayed_funding(
+            &mut capture_slots,
+            FundingCaptureInput {
+                snapshot,
+                obligations: &obligations,
+                observed: measured.observed,
+                outcome,
+                root: input.post_run_root,
+                controls: input.controls,
+                adopted: input.adopted,
+                authority_events: &self.evaluation.authority_events,
+                authority_byte_events: &self.evaluation.authority_byte_events,
+                no_case: "the success path of a claimed guard failure has no case",
+                no_policy: "the success path of a claimed guard failure has no policy",
+            },
             limits,
             budget,
         )?;
-        let assignment = family_selection
-            .selected
-            .assignments()
-            .first()
-            .ok_or_else(|| invalid("the success path of a claimed guard failure has no case"))?;
-        let cases = [PhloFundingCase {
-            obligations: &obligations,
-            eligible: &family_selection.eligible,
-            assignment,
-        }];
-        let family = check_phlo_funding_family(
-            &family_selection.sources,
-            &cases,
-            family_selection.total_exposure_limit,
-            limits.policy.funding,
-        )
-        .map_err(invalid)?;
-        let intent = PhloFundingIntentBinding::new(
-            snapshot.wallets().authorization().record(),
-            limits.signed.intent,
-        )
-        .map_err(invalid)?;
-        let view = intent.view().map_err(invalid)?;
-        let terms = PhloFundingTerms {
-            required_owner_ceilings: input.controls.terms().required_owner_ceilings,
-            asset: input.controls.schedule().environment.asset,
-            schedule_commitment: input.controls.schedule().commitment,
-        };
-        let policy = snapshot
-            .bind_native_family_in_context(
-                &view,
-                &family,
-                terms,
-                limits.signed,
-                limits.policy,
-                input.adopted,
-                budget,
-            )
-            .map_err(invalid)?
-            .ok_or_else(|| invalid("the success path of a claimed guard failure has no policy"))?;
-        let checked = policy
-            .capture_settlement(
-                observed,
-                PhloOutcome::Accepted(&[]),
-                limits.measured.settlement.matching,
-                limits.measured.settlement.capture,
-                budget,
-            )
-            .map(|checked| checked.bind_execution_root(input.post_run_root))
-            .map_err(invalid)?;
-        capture_debits(checked.capture().amounts(), budget)
+        capture_debits(capture.checked.capture().amounts(), budget)
     }
 }
 

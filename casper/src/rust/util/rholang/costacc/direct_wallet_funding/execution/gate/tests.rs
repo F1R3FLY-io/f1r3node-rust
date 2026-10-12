@@ -19,6 +19,9 @@ use models::rust::phlo_wire::PhloWireLimits;
 use proptest::prelude::*;
 use proptest::strategy::ValueTree;
 use proptest::test_runner::TestRunner;
+// Added by dedup (task 11415, D2): the gate no longer imports `Message`, so
+// these tests import it for `encode_to_vec`.
+use prost::Message;
 use rholang::rust::interpreter::accounting::authority::cost_signature_to_sig;
 use rholang::rust::interpreter::accounting::cost_accounting::CostAccounting;
 use rholang::rust::interpreter::accounting::delta_sigma::estimate::dismantle_term;

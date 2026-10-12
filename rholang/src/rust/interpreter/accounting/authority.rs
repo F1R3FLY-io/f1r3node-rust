@@ -859,12 +859,15 @@ fn cost_signature_lane_metered(
     meter
         .reserve(1, scanned, 32)
         .map_err(authority_backing_error)?;
-    let hash = Blake2b256::hash_parts([super::SIGNATURE_LANE_DOMAIN, encoded.as_slice()]);
-    Ok(Some(
-        hash.as_slice()
-            .try_into()
-            .map_err(|_| AuthorityError::HostWorkRejected)?,
-    ))
+    // Moved by dedup (task 11415) to `lane_digest` in
+    // `rholang/src/rust/interpreter/accounting/mod.rs`.
+    // let hash = Blake2b256::hash_parts([super::SIGNATURE_LANE_DOMAIN, encoded.as_slice()]);
+    // Ok(Some(
+    //     hash.as_slice()
+    //         .try_into()
+    //         .map_err(|_| AuthorityError::HostWorkRejected)?,
+    // ))
+    Ok(Some(super::lane_digest(&encoded)))
 }
 
 fn append_signature_channel_atom_metered(
