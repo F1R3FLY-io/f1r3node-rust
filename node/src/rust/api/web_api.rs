@@ -832,7 +832,8 @@ impl WebApi for WebApiImpl {
 
         let exprs: Vec<RhoExpr> = pars.into_iter().filter_map(expr_from_par_proto).collect();
         let balance = match exprs.first() {
-            Some(RhoExpr::ExprInt { data }) => *data,
+            Some(RhoExpr::ExprBigInt { data }) => data.clone(),
+            Some(RhoExpr::ExprInt { data }) => data.to_string(),
             _ => return Err(eyre!("Unexpected balance result for address {}", address)),
         };
 
@@ -1519,7 +1520,8 @@ pub enum ViewMode {
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct BalanceResponse {
     pub address: String,
-    pub balance: i64,
+    /// Balance in base units as a decimal string (vault balances are BigInt).
+    pub balance: String,
     #[serde(rename = "blockNumber")]
     pub block_number: i64,
     #[serde(rename = "blockHash")]
@@ -1669,6 +1671,8 @@ fn validate_and_decode_pubkey(pubkey_hex: &str) -> Result<Vec<u8>> {
 
 /// Convert DeployRequest to Signed DeployData
 fn to_signed_deploy(request: &DeployRequest) -> Result<Signed<DeployData>> {
+    models::rust::deploy_parameters::validate_parameters(&request.data.parameters)
+        .map_err(|error| eyre!("Invalid deploy parameters: {}", error))?;
     // Decode hex strings
     let pk_bytes = hex::decode(&request.deployer)
         .map_err(|e| eyre!("Public key is not valid base16 format: {}", e))?;
@@ -2186,6 +2190,7 @@ mod tests {
                 valid_after_block_number: 0,
                 shard_id: "".to_string(),
                 expiration_timestamp: None,
+                parameters: Vec::new(),
             },
             deployer: "0123456789abcdef".to_string(),
             signature: "fedcba9876543210".to_string(),
@@ -3098,6 +3103,7 @@ mod tests {
             valid_after_block_number: 0,
             shard_id: "root".to_string(),
             expiration_timestamp: None,
+            parameters: Vec::new(),
         }
     }
 
@@ -3118,6 +3124,40 @@ mod tests {
         let result = to_signed_deploy(&request).unwrap();
         assert_eq!(result.sig, signed.sig);
         assert_eq!(result.pk.bytes, signed.pk.bytes);
+    }
+
+    #[test]
+    fn deploy_parameters_survive_http_requests_and_reject_tampering() {
+        use crypto::rust::signatures::secp256k1::Secp256k1;
+        use models::rust::deploy_parameters::{DeployParameter, RholangValue};
+
+        let (sk, _) = Secp256k1.new_key_pair();
+        let mut data = sample_deploy_data();
+        data.parameters = vec![DeployParameter {
+            name: "input".into(),
+            value: RholangValue::List(vec![RholangValue::Int(-42), RholangValue::Nil]),
+        }];
+        let signed = Signed::create(data, Box::new(Secp256k1), sk).unwrap();
+        let request = DeployRequest {
+            data: signed.data.clone(),
+            deployer: hex::encode(&signed.pk.bytes),
+            signature: hex::encode(&signed.sig),
+            sig_algorithm: "secp256k1".into(),
+        };
+        let json = serde_json::to_string(&request).unwrap();
+        let mut restored: DeployRequest = serde_json::from_str(&json).unwrap();
+        assert_eq!(to_signed_deploy(&restored).unwrap(), signed);
+        restored.data.parameters[0].value = RholangValue::Nil;
+        assert!(to_signed_deploy(&restored).is_err());
+        restored.data.parameters[0].name = "invalid:name".into();
+        assert!(to_signed_deploy(&restored)
+            .unwrap_err()
+            .to_string()
+            .contains("Invalid deploy parameters"));
+        assert!(
+            serde_json::from_str::<DeployRequest>(&serde_json::to_string(&restored).unwrap())
+                .is_err()
+        );
     }
 
     #[test]

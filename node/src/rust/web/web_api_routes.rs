@@ -1189,7 +1189,7 @@ mod router_tests {
             }
             Ok(BalanceResponse {
                 address,
-                balance: 1000,
+                balance: "1000".to_string(),
                 block_number: 5,
                 block_hash: "aa".to_string(),
             })
@@ -1533,7 +1533,7 @@ mod router_tests {
     async fn query_routes_answer() {
         let (status, json) = get_response("/balance/wallet-address").await;
         assert_eq!(status, StatusCode::OK);
-        assert_eq!(json["balance"], 1000);
+        assert_eq!(json["balance"], "1000");
 
         let (status, json) = get_response("/registry/rho:id:abc").await;
         assert_eq!(status, StatusCode::OK);

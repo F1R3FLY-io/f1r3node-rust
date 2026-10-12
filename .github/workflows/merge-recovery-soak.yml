@@ -298,7 +298,12 @@ env:
   #   decode fix). Attribute soak deltas to all three, not to #150 alone.
   #   extend-issue24-metrics.sh applies cleanly to this metrics.py.
   #   Verified: descends from f106a34 (merge-base --is-ancestor).
-  SYSTEM_INTEGRATION_REF: 37e8c846c5f38ead2ec326c15e759487c35a7528
+  # 2026-10-11: 37e8c84 -> 942de7b (system-integration MAIN — the #156 merge
+  #   commit): test_web_api polls the read-only node for `transfers`
+  #   instead of reading once. The only other changes since 37e8c84 are
+  #   .mergify.yml and docs/ToDos.md, neither of which the suite runs.
+  #   Verified: descends from 37e8c84 (merge-base --is-ancestor).
+  SYSTEM_INTEGRATION_REF: 942de7b7ead62cb215fc162efce7ae1b6206e261
   # Pinned OCI CLI installer (release tag + sha256). The checksum fails closed
   # if the tag is ever moved. Bump both together when upgrading.
   OCI_CLI_INSTALLER_URL: "https://raw.githubusercontent.com/oracle/oci-cli/v3.89.1/scripts/install/install.sh"
