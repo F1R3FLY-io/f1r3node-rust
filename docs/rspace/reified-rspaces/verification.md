@@ -7295,6 +7295,80 @@ The probes of section 34.2.2 ran with the fix in place, and R8a measured the mer
 
 The full gate set of P9 then runs on the commit of the revert.
 
+### 34.11 The full gate set
+
+The gate set ran on the candidate `8ac895ba3`, the commit of the revert of section 34.10.
+Every leg ran on that commit, so the formal results and the test results hold for one tree.
+
+The run stopped once, for a restart of the host that the user asked for.
+At the stop, the harness `vectordb-services-mutants.py` had a mutant in its source file.
+An interrupt let the harness restore the file, and the worktree then held only the uncommitted `Cargo.toml` and `Cargo.lock`.
+After the restart, a resume script ran the remaining legs with the commands of the first run, in the same order.
+It runs each mutant harness under a wrapper that turns SIGTERM into an interrupt, so a shutdown also restores the sources.
+
+*Table 225. The legs of the full gate set of P9.*
+
+| Leg | Check | Result |
+|---|---|---|
+| Format and lint | `cargo fmt --all -- --check`, and `cargo clippy` with `-D warnings` in the three configurations of Table 138 | pass |
+| G1 | `cargo check --workspace --all-targets`, and `cargo check -p node --all-targets --features rholang/chromadb` | 0 warnings |
+| G2 to G6 | The `rholang` library and the 56 suites `rholang/tests/reified_*.rs` | 3,430 passed, 0 failed, 3 ignored |
+| G2 to G6 | Every `rspace_plus_plus` test | 854 passed, 0 failed, 7 ignored |
+| G2 to G6 | The `models` suites `reified_encoding` and `space_factory_urn` | 17 passed, 0 failed |
+| G7 | I-14: the two empty-state-hash tests of `casper` | 2 passed |
+| G8 | `scripts/check-reified-rspaces-proofs.sh` | `PASS=125 FAIL=0 SKIP=0`, 300 closed headlines, 446 negative checks |
+| G9 | `scripts/check-reified-rspaces-tla-invariants.sh` with 4 TLC workers | `PASS=466 FAIL=0 SKIP=0`. The largest model check explores 44,207,717 distinct states. |
+| G10 to G15 | The 42 checkers of the phase | 42 of 42 pass before and after the mutant harnesses. |
+| G16 | The protected paths against the base `4d67b5ccc` | Only the accessor of [decision 47](decision-register.md#decision-47), the test edit of [decision 78](decision-register.md#decision-78) and the four N4 files differ. No file is untracked under the protected paths, and Reified code holds no `0xF3`. |
+| G17 | The release tests of each crate | Table 226 |
+| Release builds | `cargo build --release -p node`, without and with `rholang/chromadb` | Both succeed, in 136 s and 303 s. |
+| Z3 | The three scripts of `formal/z3/reified_rspaces` | 12, 10 and 17 checks pass. |
+| Sage and receipt | `similarity_metrics.sage` and `numeric_reference_receipt.py` | 182 of 182 cases agree, 200 random cases satisfy the metric laws, and the reference vectors are unchanged. |
+| Mutants | The five harnesses of P6 and `p7-mutants.py` | Table 227 |
+| Live leg | `scripts/verify-reified/chroma-live.sh` with the pinned server | 3 passed |
+
+G17 and the release builds ran in an export of the tree under `target/`, with their own target directory.
+A sha256 manifest showed that each of the 5,061 tracked files of the export equals its file in the worktree.
+
+*Table 226. The release tests of each crate (G17).*
+
+| Crate | Passed | Failed | Ignored | Seconds |
+|---|---|---|---|---|
+| `rspace++` | 854 | 0 | 7 | 155 |
+| `rholang` | 4,322 | 0 | 6 | 1,311 |
+| `casper` | 1,508 | 3 | 14 | 2,078 |
+| `models` | 466 | 0 | 0 | 78 |
+| `crypto` | 121 | 0 | 0 | 30 |
+| `shared` | 142 | 0 | 0 | 32 |
+| `graphz` | 48 | 0 | 0 | 9 |
+| `block-storage` | 165 | 0 | 0 | 26 |
+| `comm` | 401 | 0 | 0 | 87 |
+| `node` | 260 | 0 | 0 | 355 |
+| Total | 8,287 | 3 | 27 | |
+
+The three failures of `casper` are the three failures of the base `4d67b5ccc` that section [26.2](#262-the-release-regression) lists, with the same panic sites and values.
+The `casper` crate has the three rows of N4 more than in P8, and they pass.
+The `rholang` crate has 33 more release tests than in P8, and every one of them passes.
+Each crate ran once, and `rspace++` passed in full.
+Another session ran a `casper` suite on the host at the same time, so the `casper` leg took longer than in P8.
+
+*Table 227. The mutant harnesses in the gate set.*
+
+| Harness | Mutants | Fail tests | Stale | Seconds |
+|---|---|---|---|---|
+| `tensor-mutants.py` | 6 | 6 | 0 | 472 |
+| `vectordb-mutants.py` | 14 | 14 | 0 | 1,824 |
+| `vector-ops-mutants.py` | 8 | 8 | 0 | 769 |
+| `vectordb-services-mutants.py` | 12 | 12 | 0 | 1,701 |
+| `mirror-mutants.py` | 34 | 34 | 0 | 3,826 |
+| `p7-mutants.py` | 11 | 11 | 0 | 814 |
+
+Each harness restored its sources.
+After the worktree legs, the worktree held only the uncommitted `Cargo.toml` and `Cargo.lock`.
+G17 took its export from `8ac895ba3` before any later commit.
+While G17 ran, the commit `3cadea5f9` added the TensorLogic design documents of P12.
+That commit holds documents and figures only, so it changes no tested file.
+
 ## References
 
 <a id="ref-ch00"></a>[CH00] K. Claessen and J. Hughes, "QuickCheck: a lightweight tool for random testing of Haskell programs," in *Proceedings of the Fifth ACM SIGPLAN International Conference on Functional Programming (ICFP 2000)*, ACM, 2000, pp. 268–279. [doi:10.1145/351240.351266](https://doi.org/10.1145/351240.351266)
