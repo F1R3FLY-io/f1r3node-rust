@@ -252,6 +252,9 @@ jq -n \
       active: {
         segments_total: ($segs | length),
         segments_ok: ($ok | length),
+        # A segment whose shard never starts writes no metrics.json and so is
+        # missing from $segs. The run state counts every failed segment.
+        segments_failed: ($passive.bench_failures // 0),
         p50_ms: ($ok | map(.latency.p50_ms) | median),
         p95_ms: ($ok | map(.latency.p95_ms) | median),
         throughput: ($ok | map(.observed_throughput) | median),
@@ -308,7 +311,9 @@ jq -n \
     ) as $failures
   | (
       []
-      | if ($a.segments_total > 0) and ($a.segments_ok == 0)
+      | if ($a.segments_failed // 0) > 0
+          then . + ["\($a.segments_failed) active benchmark segment(s) failed"] else . end
+      | if (($a.segments_total > 0) or (($a.segments_failed // 0) > 0)) and ($a.segments_ok == 0)
           then . + ["all active benchmark segments failed"] else . end
       | if $ba != null and pct_over($a.p95_ms; $ba.p95_ms; $thresholds.active_p95_warn_increase_pct)
           then . + ["active-segment p95 \($a.p95_ms)ms > baseline \($ba.p95_ms)ms +\($thresholds.active_p95_warn_increase_pct * 100)%"] else . end
@@ -485,7 +490,7 @@ jq -r \
   "",
   "| metric | this week | last week |",
   "|---|---|---|",
-  "| segments ok | \(.active.segments_ok)/\(.active.segments_total) | \($ba.segments_ok | fmt)/\($ba.segments_total | fmt) |",
+  "| segments ok | \(.active.segments_ok)/\(.active.segments_total)\(if (.active.segments_failed // 0) > 0 then " (\(.active.segments_failed) failed)" else "" end) | \($ba.segments_ok | fmt)/\($ba.segments_total | fmt) |",
   "| p50 latency (ms) | \(.active.p50_ms | fmt) | \($ba.p50_ms | fmt) |",
   "| p95 latency (ms) | \(.active.p95_ms | fmt) | \($ba.p95_ms | fmt) |",
   "| throughput (deploys/s) | \(.active.throughput | fmt) | \($ba.throughput | fmt) |",

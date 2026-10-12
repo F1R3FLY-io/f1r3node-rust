@@ -65,7 +65,11 @@ trap cleanup EXIT
 SEGMENT_STARTED_AT="$(date +%s)"
 
 if ! "${COMPOSE[@]}" up -d > "$OUT_DIR/compose-up.log" 2>&1; then
-  echo "shard compose up failed" >&2
+  # The soak driver copies only the segment.log tail into the job log, and
+  # compose-up.log stays on the runner until the run ends. Put the cause in
+  # the copied tail (soak 38184406100 lost it for two segments).
+  echo "shard compose up failed; compose-up.log tail:" >&2
+  tail -15 "$OUT_DIR/compose-up.log" >&2
   exit 1
 fi
 
