@@ -37,6 +37,7 @@ match (
       testInvalidVaultAddress,
       testUnfBoundVault,
       testLogging,
+      testBigIntAmount,
       withVaultAndIdentityOf,
       transfer,
       assertBalances
@@ -55,7 +56,8 @@ match (
             ("Fail the transfer if there are insufficient funds", *testInsufficeintFunds),
             ("Fail the transfer if the destination addresss is not a valid VaultAddress", *testInvalidVaultAddress),
             ("Transfer from unforgeable name bound vault", *testUnfBoundVault),
-            ("Logging works", *testLogging)
+            ("Logging works", *testLogging),
+            ("Transfer a BigInt amount", *testBigIntAmount)
           ])
       } |
 
@@ -74,7 +76,7 @@ match (
           for (@(true, genesisVault) <- genesisVaultCh) {
             // so far, access to genesisVault is not secured. This will be changd.
             @genesisVault!("balance", *balanceCh) |
-            rhoSpec!("assert", (9000000, "== <-", *balanceCh), "balance is as expected", *ackCh)
+            rhoSpec!("assert", (9000000n, "== <-", *balanceCh), "balance is as expected", *ackCh)
           }
         }
       } |
@@ -100,7 +102,7 @@ match (
             @aliceVault!("transfer", genesisVaultAddress, 1, *genesisAuthKey, *transferCh) |
             rhoSpec!("assertMany",
               [
-                ((0, "== <-", *balanceCh), "balance should be 0"),
+                ((0n, "== <-", *balanceCh), "balance should be 0"),
                 (((false, "Invalid AuthKey"), "== <-", *transferCh), "transfer should fail")
               ], *ackCh
             )
@@ -223,6 +225,18 @@ match (
         }
       } |
 
+      contract testBigIntAmount(rhoSpec, SystemVault, ackCh) = {
+        new genesisVaultCh, bobVaultCh, ret, transferSuccessful in {
+          withVaultAndIdentityOf!(genesisPubKey, *genesisVaultCh) |
+          SystemVault!("findOrCreate", bobVaultAddress, *bobVaultCh) |
+          for (genesisVault, @genesisVaultKey <- genesisVaultCh & @(true, bobVault) <- bobVaultCh) {
+            genesisVault!("transfer", bobVaultAddress, 500n, genesisVaultKey, *ret) |
+            rhoSpec!("assert", ((true, Nil), "== <-", *ret), "BigInt transfer successful", *transferSuccessful) |
+            assertBalances!(*transferSuccessful, [(bobVault, 500n)], *rhoSpec, *ackCh)
+          }
+        }
+      } |
+
       new SystemVaultCh in {
         rl!(`rho:vault:system`, *SystemVaultCh) |
         for (@(_, SystemVault) <- SystemVaultCh) {
@@ -263,7 +277,7 @@ match (
               contract assertBalance(@(vault, expectedBalance), retCh) = {
                 new balanceCh in {
                   @vault!("balance", *balanceCh) |
-                  rhoSpec!("assert", (expectedBalance, "== <-", *balanceCh), "balance is as expected", *retCh)
+                  rhoSpec!("assert", (expectedBalance.toBigInt(), "== <-", *balanceCh), "balance is as expected", *retCh)
                 }
               }
             }

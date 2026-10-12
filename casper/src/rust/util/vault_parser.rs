@@ -84,7 +84,7 @@ impl VaultParser {
             // Parse balance
             let initial_balance =
                 balance_str
-                    .parse::<u64>()
+                    .parse::<u128>()
                     .map_err(|_| VaultParserError::InvalidBalance {
                         balance: balance_str.to_string(),
                     })?;

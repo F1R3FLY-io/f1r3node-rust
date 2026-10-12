@@ -33,6 +33,8 @@ bytes = { workspace = true }
 tracing = { workspace = true }
 rayon = { workspace = true }
 hex = { workspace = true }
+num-bigint = { workspace = true }
+num-traits = { workspace = true }
 proptest = { workspace = true }
 lazy_static = { workspace = true }
 chrono = { workspace = true }

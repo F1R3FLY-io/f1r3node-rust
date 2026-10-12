@@ -114,6 +114,46 @@ impl RhoNumber {
     }
 }
 
+pub fn bytes_to_bigint(bytes: &[u8]) -> num_bigint::BigInt {
+    if bytes.is_empty() {
+        num_bigint::BigInt::from(0)
+    } else {
+        num_bigint::BigInt::from_signed_bytes_be(bytes)
+    }
+}
+
+pub fn bigint_to_bytes(n: &num_bigint::BigInt) -> Vec<u8> {
+    use num_traits::Zero;
+    if n.is_zero() {
+        vec![0]
+    } else {
+        n.to_signed_bytes_be()
+    }
+}
+
+pub struct RhoBigInt;
+
+impl RhoBigInt {
+    pub fn create_expr(n: &num_bigint::BigInt) -> Expr {
+        Expr {
+            expr_instance: Some(ExprInstance::GBigInt(bigint_to_bytes(n))),
+        }
+    }
+
+    pub fn create_par(n: &num_bigint::BigInt) -> Par {
+        Par::default().with_exprs(vec![RhoBigInt::create_expr(n)])
+    }
+
+    pub fn unapply(p: &Par) -> Option<num_bigint::BigInt> {
+        match single_expr(p) {
+            Some(Expr {
+                expr_instance: Some(ExprInstance::GBigInt(bytes)),
+            }) => Some(bytes_to_bigint(&bytes)),
+            _ => None,
+        }
+    }
+}
+
 pub struct RhoTuple2;
 
 impl RhoTuple2 {
@@ -383,6 +423,12 @@ impl Extractor for RhoNumber {
     type RustType = i64;
 
     fn unapply(p: &Par) -> Option<Self::RustType> { RhoNumber::unapply(p) }
+}
+
+impl Extractor for RhoBigInt {
+    type RustType = num_bigint::BigInt;
+
+    fn unapply(p: &Par) -> Option<Self::RustType> { RhoBigInt::unapply(p) }
 }
 
 impl Extractor for RhoUri {

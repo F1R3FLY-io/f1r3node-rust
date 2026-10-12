@@ -238,7 +238,7 @@ in {
             in {
               VaultAddress!("validate", targetAddress, *vaultAddressValid) |
               @Either!("fromNillableError <-", *vaultAddressValid, *vaultAddressValidEither) |
-              @Either!("fromBoolean", amount > 0, "Amount must be positive value", *amountNonNegative) |
+              @Either!("fromBoolean", amount.toBigInt() > 0n, "Amount must be positive value", *amountNonNegative) |
               @AuthKey!("check", *authKey, (*_systemVault, ownVaultAddress), *authKeyValidCh) |
               @Either!("fromBoolean <-", *authKeyValidCh, "Invalid AuthKey", *authKeyValidEitherCh) |
               @Either!("productR <-", *vaultAddressValidEither, *amountNonNegative, *parametersOkCh) |

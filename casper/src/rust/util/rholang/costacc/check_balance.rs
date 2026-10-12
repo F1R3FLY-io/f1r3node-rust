@@ -5,7 +5,8 @@ use std::collections::HashMap;
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
 use crypto::rust::public_key::PublicKey;
 use models::rhoapi::Par;
-use rholang::rust::interpreter::rho_type::{Extractor, RhoNumber};
+use num_bigint::BigInt;
+use rholang::rust::interpreter::rho_type::{Extractor, RhoBigInt};
 use rspace_plus_plus::rspace::history::Either;
 
 use crate::rust::errors::CasperError;
@@ -18,8 +19,8 @@ pub struct CheckBalance {
 }
 
 impl SystemDeployTrait for CheckBalance {
-    type Output = RhoNumber;
-    type Result = i64;
+    type Output = RhoBigInt;
+    type Result = BigInt;
 
     fn source() -> &'static str {
         r#"
