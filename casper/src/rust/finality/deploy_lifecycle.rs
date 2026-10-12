@@ -432,7 +432,7 @@ impl DeployLifecycle {
         let due_count = due.len();
         let evaluate_start = std::time::Instant::now();
         let mut terminalized: Vec<Bytes> = Vec::new();
-        for (i, sig) in due.iter().enumerate() {
+        for sig in &due {
             if let Err(e) = evaluate(
                 &mut schedule,
                 dag,
@@ -442,16 +442,22 @@ impl DeployLifecycle {
                 citability_horizon,
                 &mut terminalized,
             ) {
-                // The crossed keys were drained above, so returning here would
-                // drop the unevaluated remainder from the schedule entirely and
-                // leave those sigs Pending until restart. Re-arm them, this one
-                // included, for the next clock advance.
+                // A verdict that cannot be computed is a fact about this sig on
+                // this node, never a failure of the pass: returning here would
+                // strand the sigs sorted after it and discard the terminal list
+                // the caller releases pool copies against. The crossed keys were
+                // drained above, so the sig is re-armed for the next advance.
+                tracing::error!(
+                    target: "f1r3fly.casper.lifecycle",
+                    sig = %hex::encode(&sig[..8.min(sig.len())]),
+                    error = %e,
+                    "verdict evaluation failed: sig stays Pending and is re-armed"
+                );
                 schedule
                     .clock_thresholds
                     .entry(clock_height + 1)
                     .or_default()
-                    .extend(due[i..].iter().cloned());
-                return Err(e);
+                    .insert(sig.clone());
             }
         }
         let evaluate_ms = evaluate_start.elapsed().as_millis();
@@ -875,6 +881,70 @@ mod tests {
              finalization has already decided it and the verdict must be \
              written on this advance; got {:?}",
             terminalized
+        );
+    }
+
+    /// A sig whose evaluation errors must cost only itself: the pass still
+    /// returns the verdicts it reached, a sig sorted after the failing one is
+    /// still evaluated, and the failing sig stays armed for a later advance.
+    #[tokio::test]
+    async fn a_failing_evaluation_neither_aborts_the_pass_nor_strands_other_sigs() {
+        let (block_store, dag_storage) = store_and_dag().await;
+        let (s1, p1) = processed(1, true);
+        let (s2, p2) = processed(2, true);
+        let (first, second) = if s1 < s2 { (s1, s2) } else { (s2, s1) };
+
+        let genesis = block_at(0, vec![], 0);
+        let mut a = block_at(1, vec![genesis.block_hash.clone()], 1);
+        a.body.deploys = vec![p1, p2];
+        // Two parents and no recorded merge_base: every walk reaching it errors.
+        let malformed = block_at(2, vec![a.block_hash.clone(), genesis.block_hash.clone()], 2);
+        let mut n = block_at(3, vec![malformed.block_hash.clone()], 3);
+        n.body.applied_from_scope = vec![second.clone()];
+        let mut p = block_at(4, vec![n.block_hash.clone()], 4);
+        p.body.applied_from_scope = vec![first.clone()];
+        seed(&block_store, &dag_storage, &[
+            &genesis, &a, &malformed, &n, &p,
+        ]);
+
+        let register = DeployLifecycle::default();
+        let dag = dag_storage.get_representation().expect("dag");
+        let armed = register
+            .observe(&dag, &block_store, Some(&a), 10, Some(10))
+            .await
+            .expect("arm both sigs");
+        assert!(armed.is_empty());
+
+        adopt(&dag_storage, &malformed.block_hash).await;
+        let dag = dag_storage.get_representation().expect("dag");
+        let terminalized = register
+            .observe(&dag, &block_store, None, 10, Some(10))
+            .await
+            .expect("a failing evaluation must not abort the pass");
+        assert!(terminalized.is_empty());
+
+        adopt(&dag_storage, &n.block_hash).await;
+        let dag = dag_storage.get_representation().expect("dag");
+        let terminalized = register
+            .observe(&dag, &block_store, None, 10, Some(10))
+            .await
+            .expect("observe n");
+        assert_eq!(
+            terminalized,
+            vec![second],
+            "the sig sorted after the failing one must still be evaluated and returned"
+        );
+
+        adopt(&dag_storage, &p.block_hash).await;
+        let dag = dag_storage.get_representation().expect("dag");
+        let terminalized = register
+            .observe(&dag, &block_store, None, 10, Some(10))
+            .await
+            .expect("observe p");
+        assert_eq!(
+            terminalized,
+            vec![first],
+            "the failing sig must have stayed armed across its errors"
         );
     }
 
