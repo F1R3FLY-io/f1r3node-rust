@@ -233,7 +233,7 @@ These rules keep the CbC Casper design from blocking the other models:
 
 ### 12.3 Model modules and their soaks (decided 2026-10-11)
 
-The branch `feature/consensus-neutral-boundary` defines a modular replication boundary. That branch tracks it as EPIC-022, and the ToDos of this branch mirror it as EPIC-025. A shard binds one model at start, and the binding never changes.
+The branch `feature/consensus-neutral-boundary` defines a modular replication boundary. Both branches track it as EPIC-025. A shard binds one model at start, and the binding never changes.
 
 Each model defines its own soak as part of the model. The 60h stability soak and the Shard soak-in of a model use the soak definition of that model.
 

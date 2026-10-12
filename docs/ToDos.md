@@ -2855,7 +2855,7 @@ design_intent:
   shard_composition: "Mixed-release shards: Anchors run earlier releases and soaking nodes run the test net candidate, so the soak-in tests cross-version compatibility."
   consensus_scope: "This epic covers the F1r3fly CbC Casper test net only (consensus_model cbc-casper). In that name, CbC qualifies the protocol. Used alone, CbC names the verification process. Casanova, Cordial Miners, and RGB each get their own test net and design record (docs/plans/test-net.md Section 12). The release-process rules stay model-neutral."
   decisions_2026_10_11: "Releases fix forward, and an Anchor slot reverts only when the release declares no storage-format change. Genesis bonds four fixed slot keys, and only digests change. First partner access is read-only on the observer of the main shard. Deployment Train candidates share the soaking slot, and the queue keeps the newest waiting candidate per release line."
-  modular_soaks: "2026-10-11: the modular replication boundary (EPIC-022 on feature/consensus-neutral-boundary) (mirrored here as EPIC-025) lets each model define its own soak. The F1r3fly CbC Casper implementation moves to a new repository, and the system-integration repository brings it into the soak. RGB uses the same release process."
+  modular_soaks: "2026-10-11: the modular replication boundary (EPIC-025, branch feature/consensus-neutral-boundary) lets each model define its own soak. The F1r3fly CbC Casper implementation moves to a new repository, and the system-integration repository brings it into the soak. RGB uses the same release process."
   incompatible_release: "A test net candidate that cannot interoperate with its shard starts a new shard with a fresh genesis in the same test net. Old shards run until a retirement policy removes them."
   candidate_selection: "Proposed 2026-10-11 (release-process Section 10): the Friday scheduled slot soaks the newest eligible master canary in candidate artifact mode. With no eligible canary, it runs a source-mode soak as evidence only."
   first_shard: "Proposed 2026-10-11: the test net waits for the first stable release under the new process. Its digest seeds all three Anchors. The next test net candidate is the first soaking node."
@@ -2950,18 +2950,18 @@ tasks:
 
 ---
 
-### EPIC-025: Pluggable State Machine Replication Boundary (mirror of EPIC-022 on feature/consensus-neutral-boundary)
+### EPIC-025: Pluggable State Machine Replication Boundary (mirror of feature/consensus-neutral-boundary)
 
 ```yaml
 ---
 epic_id: EPIC-025
 title: "Pluggable State Machine Replication Boundary"
-mirror_of: "EPIC-022 on feature/consensus-neutral-boundary at 3fdf0e9c8 (added in b705c13e7)"
-mirror_note: "Copied 2026-10-11 because this branch already uses EPIC-022 for OCI CI Spend Alerting. The boundary branch owns this content. The task IDs stay TASK-025-n to match that branch. When the boundary branch merges to dev, keep one copy and give it one epic number."
+mirror_of: "EPIC-025 on feature/consensus-neutral-boundary at 4bf92e4f5 (renumbered from EPIC-022 in 7aee564a6)"
+mirror_note: "Copied 2026-10-11 so that EPIC-014 can depend on it. The boundary branch owns this content. Both branches now use EPIC-025, TASK-025-n, and US-011, so the two copies merge as one epic. Take the boundary branch version when they differ."
 unblocks: [TASK-014-9]
 status: in_progress
 priority: p1
-user_story: US-010
+user_story: US-011
 blocked_by: []
 created_at: 2026-10-05
 updated_at: 2026-10-05
@@ -3021,7 +3021,7 @@ tasks:
       - "docs/Glossary.md (four coalition terms: membership view, coalition structure, actionable coalition, intertwined coalition structure)"
       - "docs/designs/replication-boundary.md section 16 (coalition structure) and open questions 5 to 7"
       - "Coalition structure mappings in the CBC Casper, peer-clique, Casanova, and Cordial Miners glossaries"
-    work_log: "docs/work-logs/task-022-1-2026-10-05.md on feature/consensus-neutral-boundary (gitignored here)"
+    work_log: docs/work-logs/task-025-1-2026-10-05.md
     review_status: "Draft complete. Maintainer approval pending."
   - id: TASK-025-2
     title: "Add the boundary interface crate and the CBC Casper adapter"
