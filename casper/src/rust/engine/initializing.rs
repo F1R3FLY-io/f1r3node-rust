@@ -193,6 +193,78 @@ fn contiguous_coverage_start(
     Some(lowest.max(accept_bound - 1))
 }
 
+fn populate_dag(
+    block_dag_storage: &BlockDagKeyValueStorage,
+    block_store: &KeyValueBlockStore,
+    start_block: &BlockMessage,
+    min_height: i64,
+    height_map: &BTreeMap<i64, HashSet<BlockHash>>,
+) -> Result<(), CasperError> {
+    use block_storage::rust::dag::block_dag_key_value_storage::InsertMode;
+
+    tracing::info!("Adding blocks for approved state to DAG.");
+
+    let slashed_validators: Vec<ByteString> = start_block
+        .body
+        .state
+        .bonds
+        .iter()
+        .filter(|bond| bond.stake == 0)
+        .map(|bond| bond.validator.to_vec())
+        .collect();
+
+    let invalid_blocks: HashSet<ByteString> = start_block
+        .justifications
+        .iter()
+        .filter(|justification| slashed_validators.contains(&justification.validator.to_vec()))
+        .map(|justification| justification.latest_block_hash.to_vec())
+        .collect();
+
+    let mut inserted = 0usize;
+
+    // Add sorted DAG in order from approved block to oldest
+    for hash in blocks_for_dag(height_map) {
+        let block = block_store.get_unsafe(&hash);
+        // If sender has stake 0 in approved block, this means that sender has been slashed and block is invalid
+        let is_invalid = invalid_blocks.contains(&block.block_hash.to_vec());
+        tracing::info!(
+            "Adding {}, invalid = {}.",
+            PrettyPrinter::build_string(CasperMessage::BlockMessage(block.clone()), true),
+            is_invalid
+        );
+        block_dag_storage.insert(
+            &block,
+            if is_invalid {
+                InsertMode::Invalid
+            } else {
+                InsertMode::Normal
+            },
+        )?;
+        inserted += 1;
+    }
+
+    block_dag_storage.record_anchor_ancestry_finalized(&start_block.block_hash)?;
+
+    // What the horizon walk will actually see. The requester's `finished`
+    // count is not this number — it counts downloads, and anything the
+    // height map dropped never reaches the DAG. `min_height` is the
+    // requester's bound, reported because the DAG now reaches below it.
+    let lowest_height = height_map.keys().next().copied();
+    let coverage_from = contiguous_coverage_start(height_map, min_height);
+    if let Some(lowest_held) = coverage_from {
+        block_dag_storage.record_carrier_coverage_from(lowest_held)?;
+    }
+
+    tracing::info!(
+        inserted,
+        min_height,
+        lowest_height,
+        coverage_from,
+        "Blocks for approved state added to DAG."
+    );
+    Ok(())
+}
+
 /// Land the shipped genesis block on a truncated node: verified against the
 /// learned register (claimed hash equals the register AND the content
 /// re-hashes to it), then stored and inserted finalized. Holding genesis
@@ -233,12 +305,6 @@ fn receive_shipped_genesis(
         );
         refuse();
         return Ok(false);
-    }
-    if block_dag_storage
-        .get_representation()?
-        .contains(&genesis_block.block_hash)
-    {
-        return Ok(true);
     }
     block_store.put_block_message(&genesis_block)?;
     block_dag_storage.insert(
@@ -925,12 +991,13 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
 
         // Now populate DAG with the final state (equivalent to evalMap in Scala)
         if let Some(st) = final_state_result {
-            self.populate_dag(
-                approved_block.candidate.block.clone(),
+            populate_dag(
+                &self.block_dag_storage,
+                &self.block_store,
+                &approved_block.candidate.block,
                 st.lower_bound,
-                st.height_map,
-            )
-            .await?;
+                &st.height_map,
+            )?;
             // After the blocks are in, never before: the caches are keyed by
             // hash, and a floor entry pointing at a block the DAG does not hold
             // reads back as a missing block rather than as a floor.
@@ -1239,88 +1306,6 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
             frontier = %PrettyPrinter::build_string_bytes(&seed.frontier_hash),
             frontier_number = seed.frontier_number,
             "Seeded the anchor's finalized floor and frontier from the approved block"
-        );
-        Ok(())
-    }
-
-    async fn populate_dag(
-        &self,
-        start_block: BlockMessage,
-        min_height: i64,
-        height_map: BTreeMap<i64, HashSet<BlockHash>>,
-    ) -> Result<(), CasperError> {
-        async fn add_block_to_dag<T: TransportLayer + Send + Sync + Clone>(
-            initializing: &Initializing<T>,
-            block: &BlockMessage,
-            is_invalid: bool,
-        ) -> Result<(), CasperError> {
-            tracing::info!(
-                "Adding {}, invalid = {}.",
-                PrettyPrinter::build_string(CasperMessage::BlockMessage(block.clone()), true),
-                is_invalid
-            );
-
-            // Scala equivalent: `BlockDagStorage[F].insert(block, invalid = isInvalid)`
-            initializing.block_dag_storage.insert(
-                block,
-                if is_invalid {
-                    block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Invalid
-                } else {
-                    block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Normal
-                },
-            )?;
-
-            Ok(())
-        }
-
-        tracing::info!("Adding blocks for approved state to DAG.");
-
-        let slashed_validators: Vec<ByteString> = start_block
-            .body
-            .state
-            .bonds
-            .iter()
-            .filter(|bond| bond.stake == 0)
-            .map(|bond| bond.validator.to_vec())
-            .collect();
-
-        let invalid_blocks: HashSet<ByteString> = start_block
-            .justifications
-            .iter()
-            .filter(|justification| slashed_validators.contains(&justification.validator.to_vec()))
-            .map(|justification| justification.latest_block_hash.to_vec())
-            .collect();
-
-        let mut inserted = 0usize;
-
-        // Add sorted DAG in order from approved block to oldest
-        for hash in blocks_for_dag(&height_map) {
-            // NOTE: This is not in original Scala code. Added because we changed block_store
-            // to Option<KeyValueBlockStore> to support moving it in create_casper_and_transition_to_running
-            let block = self.block_store.get_unsafe(&hash);
-            // If sender has stake 0 in approved block, this means that sender has been slashed and block is invalid
-            let is_invalid = invalid_blocks.contains(&block.block_hash.to_vec());
-            add_block_to_dag(self, &block, is_invalid).await?;
-            inserted += 1;
-        }
-
-        // What the horizon walk will actually see. The requester's `finished`
-        // count is not this number — it counts downloads, and anything the
-        // height map dropped never reaches the DAG. `min_height` is the
-        // requester's bound, reported because the DAG now reaches below it.
-        let lowest_height = height_map.keys().next().copied();
-        let coverage_from = contiguous_coverage_start(&height_map, min_height);
-        if let Some(lowest_held) = coverage_from {
-            self.block_dag_storage
-                .record_carrier_coverage_from(lowest_held)?;
-        }
-
-        tracing::info!(
-            inserted,
-            min_height,
-            lowest_height,
-            coverage_from,
-            "Blocks for approved state added to DAG."
         );
         Ok(())
     }
@@ -2320,6 +2305,154 @@ mod tests {
                 block_store2.get(&genesis.block_hash).unwrap().is_none(),
                 "a refused copy leaves no trace in the block store"
             );
+        });
+    }
+
+    /// An anchor just above genesis puts genesis inside the downloaded window,
+    /// so it reaches the DAG as an ordinary block before the shipped copy
+    /// arrives.
+    #[test]
+    fn genesis_inside_the_restore_window_is_finalized() {
+        use block_storage::rust::dag::block_dag_key_value_storage::{
+            BlockDagKeyValueStorage, InsertMode,
+        };
+        use models::rust::block_implicits::get_random_block;
+        use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let mut kvm = InMemoryStoreManager::new();
+            let dag_storage = BlockDagKeyValueStorage::new(&mut kvm).await.unwrap();
+            let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm).await.unwrap();
+
+            let mut genesis = get_random_block(
+                Some(0),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                Some(vec![]),
+                Some(vec![]),
+                None,
+                None,
+                Some(vec![]),
+                None,
+                None,
+            );
+            genesis.block_hash = crate::rust::util::proto_util::hash_block(&genesis);
+
+            let anchor = get_random_block(
+                Some(1),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                Some(vec![genesis.block_hash.clone()]),
+                None,
+                None,
+                None,
+                Some(vec![]),
+                None,
+                None,
+            );
+            dag_storage.insert(&anchor, InsertMode::Approved).unwrap();
+            dag_storage.insert(&genesis, InsertMode::Normal).unwrap();
+            dag_storage
+                .record_genesis_hash(genesis.block_hash.clone())
+                .unwrap();
+
+            let landed = receive_shipped_genesis(
+                &dag_storage,
+                &block_store,
+                &genesis.block_hash.clone(),
+                genesis.clone(),
+            )
+            .expect("receive_shipped_genesis");
+            assert!(landed, "a verified genesis copy must land");
+
+            let dag = dag_storage.get_representation().unwrap();
+            assert!(
+                dag.is_finalized(&genesis.block_hash),
+                "genesis is finalized by definition"
+            );
+            assert_eq!(
+                dag.last_finalized_block(),
+                anchor.block_hash,
+                "landing genesis must not move the LFB off the anchor"
+            );
+        });
+    }
+
+    /// The anchor is a last-finalized block, so every ancestor of it is
+    /// finalized. A block in the window that is not an ancestor is not.
+    #[test]
+    fn the_anchors_held_ancestry_is_finalized() {
+        use block_storage::rust::dag::block_dag_key_value_storage::{
+            BlockDagKeyValueStorage, InsertMode,
+        };
+        use models::rust::block_implicits::get_random_block;
+        use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
+
+        let block = |number: i64, parents: Vec<BlockHash>| {
+            get_random_block(
+                Some(number),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                Some(parents),
+                Some(vec![]),
+                None,
+                None,
+                Some(vec![]),
+                None,
+                None,
+            )
+        };
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let mut kvm = InMemoryStoreManager::new();
+            let dag_storage = BlockDagKeyValueStorage::new(&mut kvm).await.unwrap();
+            let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm).await.unwrap();
+
+            let genesis = block(0, vec![]);
+            let ancestor = block(1, vec![genesis.block_hash.clone()]);
+            let sibling = block(1, vec![genesis.block_hash.clone()]);
+            let anchor = block(2, vec![ancestor.block_hash.clone()]);
+
+            let mut height_map: BTreeMap<i64, HashSet<BlockHash>> = BTreeMap::new();
+            for held in [&genesis, &ancestor, &sibling, &anchor] {
+                block_store.put_block_message(held).unwrap();
+                height_map
+                    .entry(held.body.state.block_number)
+                    .or_default()
+                    .insert(held.block_hash.clone());
+            }
+
+            dag_storage.insert(&anchor, InsertMode::Approved).unwrap();
+            populate_dag(&dag_storage, &block_store, &anchor, 0, &height_map).unwrap();
+
+            let dag = dag_storage.get_representation().unwrap();
+            assert!(
+                dag.is_finalized(&ancestor.block_hash),
+                "a parent of the anchor is finalized"
+            );
+            assert!(
+                dag.is_finalized(&genesis.block_hash),
+                "the walk continues below the anchor's parent"
+            );
+            assert!(
+                !dag.is_finalized(&sibling.block_hash),
+                "a held block the anchor does not descend from is not finalized by the restore"
+            );
+            assert_eq!(dag.last_finalized_block(), anchor.block_hash);
         });
     }
 
