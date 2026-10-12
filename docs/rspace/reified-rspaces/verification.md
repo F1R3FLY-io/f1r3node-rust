@@ -6843,6 +6843,97 @@ The suite takes 89.6 seconds in the release profile.
 | The 40 checkers of the campaign, and the document lint | 40 passed |
 | I-14: the two empty-state-hash tests of `runtime_spec.rs` in release | 2 passed |
 
+### 34.7 Step 6: N7, the loom models
+
+loom [[LOOM](#ref-loom)] is a model checker for concurrent Rust code.
+It runs a test once for each interleaving of the operations of its threads on the `loom::sync` types.
+Its partial-order reduction [[FG05](#ref-fg05)] skips the interleavings that only reorder independent operations.
+A preemption bound limits the number of forced thread switches in each execution, and most concurrency defects need few of them [[MQ07](#ref-mq07)].
+
+N7 is four loom models in `rholang/tests/loom_reified.rs` (design v2, section 10, amendment A11).
+The production types use `tokio::sync` and `std::sync`, so each test is a shadow model, as in the other loom tests of the crate.
+A shadow model restates one protocol with loom types, and it keeps each step that orders a shared write.
+
+The models claim no race in native execution.
+There, every intent carries the footprint key `[2, 0]` (`deterministic_reduction.rs:1049-1051`).
+So all intents of a frontier fall into one conflict component, and the component runs them one at a time, in order (`:1004-1011`).
+The models assume less: the footprint `[2]‖sid` of a space job, under which the jobs of two spaces run at the same time.
+The routing, ord and dispatch models also let the operations on one space run at the same time.
+
+*Table 209. The loom models of N7.*
+
+| Test | Protocol | Properties |
+|---|---|---|
+| `loom_space_routing` | Two jobs of one space, a job of a second space and a host produce take the stripes of their channels. A job takes its stripes in phase A and then in phase B, each set sorted and deduplicated (`striped_locks.rs:41-82`). A host produce takes the stripe of its channel in phase A and the stripes of its joins in phase B (`rspace/locks.rs:33-57`). | No deadlock. No two jobs update one space at the same time. Each space holds the updates of its own jobs only. |
+| `loom_seq_guard` | The jobs of a `seq` space check their claim on a channel under the stripe of the space (`ephemeral.rs:251-284`). The commit releases the stripe, and then the job stores its claim (`generic.rs:2267-2270`). | Each stored claim descends from the claim that it replaces. One of two sibling lineages uses the channel. A job of another space always commits. |
+| `loom_ord_assignment` | Two enqueues and a dequeue of one queue each read the counter, write the next value and commit in one transaction under the stripes of the collection (`counter.rs:165-245`). | Each operation gets a different `ord`. The records stay in commit order, and the dequeue takes the first committed record. |
+| `loom_handle_dispatch` | Calls are sends on the handle channel `H(sid)`, which a persistent receive serves. A fire on a stored call removes the call in its COMM, and then the body and the re-issued receive run at the same time (`ops_consume.rs:124-143`, `reduce.rs:848-913`). | Each call has one reply, on its own return channel. The receive waits at the end, and no call stays stored. |
+
+Each property has a negative control: the same model with one protocol step changed.
+Loom finds an interleaving that fails with the named message, and the control expects that message (`#[should_panic]`).
+
+*Table 210. The negative controls of N7.*
+
+| Control | Changed step | Failure message |
+|---|---|---|
+| `loom_space_routing_unsorted_acquisition_deadlocks` | Two jobs of two spaces take their stripes in key order. | "two jobs can each hold a stripe that the other one needs" |
+| `loom_space_routing_one_phase_escalation_deadlocks` | The host produce takes the stripes of its joins in phase A. | "two jobs can each hold a stripe that the other one needs" |
+| `loom_seq_guard_without_footprint_breaks_descent` | The jobs do not hold the footprint of their space. | "a stored claim does not descend from the claim that it replaces" |
+| `loom_ord_assignment_bump_without_stripe_duplicates_an_ord` | The operations bump the counter before they take the stripe. | "two operations of one collection share an ord" |
+| `loom_handle_dispatch_removal_outside_the_comm_dispatches_twice` | The body removes the stored call, not the COMM. | "a call is dispatched twice" |
+
+The seq model shows why the jobs of a `seq` space need their footprint.
+A job checks its claims under the stripes of its space, and its commit releases the stripes (`space_store_handle.rs:918-919`).
+The job stores its claims only after the commit, in the finish closure.
+So the stripes alone do not keep the check and the store together.
+The footprint `[2]‖sid` keeps them together, because a conflict component runs each job to completion before the next one starts.
+Without the footprint, two sibling jobs both pass the check, and the second store replaces a claim that is not its prefix.
+
+The two routing controls detect a lock cycle and do not block on it.
+When loom reports a deadlock, the threads that hold loom guards drop them after the end of the execution, and the test process aborts.
+So the controls use the detector `hold_and_wait`.
+Each job takes its first stripe, probes each later stripe once, and raises a flag when a probe fails.
+A job that sees the flag of the other job proves that each job holds a stripe that the other one needs.
+
+The routing test runs the same detector on the stripe orders of the protocol, and the detector finds no cycle there.
+So each routing control fails only because of its changed step.
+
+The detector uses atomic flags as stripes, not mutexes.
+In loom 0.7.2, the release of a mutex is not a scheduling point, and the partial-order reduction records no access for it.
+So its partial-order reduction never runs the probe of one job between the failed probe of the other job and its release.
+A first version of the detector used `try_lock` probes.
+Over all its executions, the probe of each job failed in 35 executions, but no execution had two failed probes.
+
+R8 measures the state space of each model at 3 preemptions and 1,000 branches.
+The tests use these bounds by default, and `LOOM_MAX_PREEMPTIONS` and `LOOM_MAX_BRANCHES` set other bounds.
+
+*Table 211. R8: the executions that loom explored at 3 preemptions and 1,000 branches.*
+
+| Model | Executions |
+|---|---|
+| `loom_space_routing`: the four jobs with blocking stripes | 336,838 |
+| `loom_space_routing`: the detector on the two protocol orders | 2,724 |
+| `loom_seq_guard` | 7,792 |
+| `loom_ord_assignment` | 2,628 |
+| `loom_handle_dispatch` | 774 |
+
+The nine tests take 24.2 to 27.1 seconds over two runs, in the release profile with four test threads.
+That is well inside the limits of the loom recipe family RF8 (3,600 seconds and 12 GiB).
+Without a preemption bound, the seq, ord and dispatch models also passed.
+Loom then explored 1,093,603, 14,139 and 4,785 executions of them, in that order.
+The model of the four routing jobs did not finish in 11 minutes without a bound.
+
+*Table 212. The gates of step 6.*
+
+| Gate | Result |
+|---|---|
+| `cargo test --release -p rholang --test loom_reified` | 9 passed |
+| `cargo clippy -p rholang --lib --tests -- -D warnings` | No warning |
+| `rustfmt --check rholang/tests/loom_reified.rs` | No difference |
+| The footprint policy `p9`: `rholang/tests/loom_reified.rs` is an allowed new file | 0 violations |
+| The 40 checkers of the campaign, and the document lint | 40 passed |
+| I-14: the two empty-state-hash tests of `runtime_spec.rs` in release | 2 passed |
+
 ## References
 
 <a id="ref-ch00"></a>[CH00] K. Claessen and J. Hughes, "QuickCheck: a lightweight tool for random testing of Haskell programs," in *Proceedings of the Fifth ACM SIGPLAN International Conference on Functional Programming (ICFP 2000)*, ACM, 2000, pp. 268–279. [doi:10.1145/351240.351266](https://doi.org/10.1145/351240.351266)
@@ -6851,11 +6942,17 @@ The suite takes 89.6 seconds in the release profile.
 
 <a id="ref-dls78"></a>[DLS78] R. A. DeMillo, R. J. Lipton, and F. G. Sayward, "Hints on test data selection: help for the practicing programmer," *Computer*, vol. 11, no. 4, pp. 34–41, 1978. [doi:10.1109/C-M.1978.218136](https://doi.org/10.1109/C-M.1978.218136)
 
+<a id="ref-fg05"></a>[FG05] C. Flanagan and P. Godefroid, "Dynamic partial-order reduction for model checking software," in *Proceedings of the 32nd ACM SIGPLAN-SIGACT Symposium on Principles of Programming Languages (POPL 2005)*, ACM, 2005, pp. 110–121. [doi:10.1145/1040305.1040315](https://doi.org/10.1145/1040305.1040315)
+
 <a id="ref-fips-rrs"></a>[FIPS-RRS] M. Stay and L. G. Meredith, "Reifying RSpaces," F1r3fly Improvement Proposal, 2025-09-26. [FIPS repository, approved/2025-09-26-Reifying-RSpaces](https://github.com/F1R3FLY-io/FIPS/blob/main/approved/2025-09-26-Reifying-RSpaces/Reifying%20RSpaces.md)
 
 <a id="ref-kkt19"></a>[KKT19] I. Konnov, J. Kukovec, and T.-H. Tran, "TLA+ model checking made symbolic," *Proceedings of the ACM on Programming Languages*, vol. 3, no. OOPSLA, pp. 1–30, 2019. [doi:10.1145/3360549](https://doi.org/10.1145/3360549)
 
 <a id="ref-lam94"></a>[Lam94] L. Lamport, "The temporal logic of actions," *ACM Transactions on Programming Languages and Systems*, vol. 16, no. 3, pp. 872–923, 1994. [doi:10.1145/177492.177726](https://doi.org/10.1145/177492.177726)
+
+<a id="ref-loom"></a>[LOOM] The Tokio authors, "loom," version 0.7.2, a model checker for concurrent Rust code. [docs.rs/loom/0.7.2](https://docs.rs/loom/0.7.2/loom/)
+
+<a id="ref-mq07"></a>[MQ07] M. Musuvathi and S. Qadeer, "Iterative context bounding for systematic testing of multithreaded programs," in *Proceedings of the 28th ACM SIGPLAN Conference on Programming Language Design and Implementation (PLDI 2007)*, ACM, 2007, pp. 446–455. [doi:10.1145/1250734.1250785](https://doi.org/10.1145/1250734.1250785)
 
 <a id="ref-pt"></a>[PT] The proptest authors, "Proptest," version 1.11.0, a property-testing framework for Rust. [proptest-rs.github.io/proptest](https://proptest-rs.github.io/proptest/)
 
