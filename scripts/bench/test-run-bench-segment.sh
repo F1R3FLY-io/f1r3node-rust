@@ -112,6 +112,25 @@ if grep -Fq ' up ' "$TMP/calls3"; then
 	exit 1
 fi
 
+# A merged configuration without a validator1 HTTP port (the soak fixtures use
+# a one-service shard) falls back to the default remapped port 14413 and says
+# so on stderr. The readiness probe then shows whether the shard answers.
+cat >"$TMP/config-no-validator1.json" <<'JSON'
+{"services": {"writer": {}}}
+JSON
+mkdir -p "$TMP/out4"
+status=0
+CONFIG_JSON="$TMP/config-no-validator1.json" CALLS="$TMP/calls4" PROBES="$TMP/probes4" READY_TIMEOUT=1 \
+	PATH="$TMP/bin2:$PATH" NODE_REPO_DIR="$TMP/repo" OUT_DIR="$TMP/out4" \
+	"$ROOT/scripts/bench/run-bench-segment.sh" >"$TMP/stdout4" 2>"$TMP/stderr4" || status=$?
+[ "$status" -eq 1 ] || { echo "expected exit 1 (shard not ready) without a validator1 port, got $status" >&2; cat "$TMP/stderr4" >&2; exit 1; }
+grep -Fq "http://localhost:14413/api/status" "$TMP/probes4" || {
+	echo "probe does not fall back to 14413 without a validator1 port" >&2
+	cat "$TMP/probes4" >&2
+	exit 1
+}
+grep -Fq 'no host port for validator1 HTTP' "$TMP/stderr4" || { echo "fallback is not reported on stderr" >&2; cat "$TMP/stderr4" >&2; exit 1; }
+
 # The real compose files must merge to host ports below the ephemeral floor.
 # This needs docker compose. CI runs this test where Docker exists, so a
 # missing docker compose fails in CI and only skips locally.

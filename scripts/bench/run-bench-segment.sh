@@ -82,8 +82,10 @@ fi
 HTTP_PORT="$(jq -r '[.services.validator1.ports[]? | select(.target == 40403) | .published][0] // empty' \
   "$OUT_DIR/compose-config.json")"
 if ! [[ "$HTTP_PORT" =~ ^[0-9]+$ ]]; then
-  echo "bench shard publishes no host port for validator1 HTTP (container 40403)" >&2
-  exit 2
+  # A shard without validator1 (the soak test fixtures) keeps the default
+  # remapped port. The readiness probe then shows whether the shard answers.
+  HTTP_PORT=14413
+  echo "bench shard publishes no host port for validator1 HTTP (container 40403); probing default $HTTP_PORT" >&2
 fi
 SAMPLER_PID=""
 

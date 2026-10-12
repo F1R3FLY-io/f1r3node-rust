@@ -41,6 +41,7 @@ if [[ "${1:-}" == --inside-worker ]]; then
     find /run/soak-run-domain /run/soak-untrusted /run/soak-link -maxdepth 3 -exec stat -c '%u %a %F %s %n' {} + | sort >evidence/records.txt
     cp /run/soak-run-domain/fixture-cgroup.txt evidence/fixture-cgroup.txt
     printf '{"services":{"writer":{"image":"fixture-unused"}}}\n' >node/docker/shard.yml
+    printf 'services: {}\n' >node/docker/ci-ports.shard.yml
     cat >bin/df <<'SH'
 #!/usr/bin/env bash
 printf 'Filesystem 1024-blocks Used Available Capacity Mounted on\n'
