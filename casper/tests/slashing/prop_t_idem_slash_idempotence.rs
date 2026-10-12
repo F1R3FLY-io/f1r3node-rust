@@ -6,7 +6,7 @@
 // Property-based test for T-Idem (slash idempotence).
 //
 // Theorem: T-Idem (alias T-9), `t_idem_slash_idempotent`,
-// formal/rocq/slashing/theories/PoSContract.v:117.
+// formal/rocq/slashing/theories/PoSContract.v:140.
 // Reference: docs/casper/theory/slashing/slashing-specification.md §5.2,
 // design/06-proposing-and-effect.md §6.5.
 //

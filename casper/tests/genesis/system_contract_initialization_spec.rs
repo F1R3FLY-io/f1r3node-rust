@@ -11,6 +11,11 @@
 use casper::rust::block_status::{BlockError, InvalidBlock};
 use casper::rust::casper::MultiParentCasper;
 use casper::rust::util::construct_deploy;
+use casper::rust::util::rholang::costacc::close_block_deploy::CloseBlockDeploy;
+use casper::rust::util::rholang::system_deploy_enum::SystemDeployEnum;
+use casper::rust::util::rholang::system_deploy_util;
+use models::rhoapi::expr::ExprInstance;
+use rholang::rust::interpreter::system_processes::BlockData;
 use rholang::rust::interpreter::util::vault_address::VaultAddress;
 use rspace_plus_plus::rspace::history::Either;
 
@@ -60,6 +65,116 @@ async fn pos_contract_should_return_correct_bonds_at_genesis() {
     );
 
     tracing::info!("PoS getBonds result: {:?}", result);
+}
+
+#[tokio::test]
+async fn delegated_stake_is_visible_to_runtime_bonds_and_pos_queries() {
+    let parameters = GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(3));
+    let genesis = GenesisBuilder::new()
+        .build_genesis_with_parameters(Some(parameters))
+        .await
+        .expect("Failed to build genesis");
+
+    let node = TestNode::standalone(genesis.clone())
+        .await
+        .expect("Failed to create standalone node");
+
+    let target_validator = genesis.validator_key_pairs[0].1.clone();
+    let target_hex = hex::encode(&target_validator.bytes);
+    let delegator_hex = hex::encode(&construct_deploy::DEFAULT_PUB.bytes);
+    let delegation_amount = 40;
+    let initial_stake = genesis
+        .genesis_block
+        .body
+        .state
+        .bonds
+        .iter()
+        .find(|bond| bond.validator.as_ref() == target_validator.bytes.as_ref())
+        .expect("Target validator should be bonded at genesis")
+        .stake;
+
+    let deploy = construct_deploy::source_deploy_now_full(
+        format!(
+            r#"new return, rl(`rho:registry:lookup`), poSCh, deployerId(`rho:system:deployerId`) in {{
+  rl!(`rho:system:pos`, *poSCh) |
+  for(@(_, PoS) <- poSCh) {{
+    @PoS!("delegate", *deployerId, "{target_hex}".hexToBytes(), {delegation_amount}, *return)
+  }}
+}}"#
+        ),
+        Some(1_000_000),
+        None,
+        Some(construct_deploy::DEFAULT_SEC.clone()),
+        None,
+        Some(genesis.genesis_block.shard_id.clone()),
+    )
+    .expect("Failed to create delegation deploy");
+    let block_time = deploy.data.time_stamp;
+
+    let (state_hash, processed_deploys, _processed_system_deploys, bonds) = node
+        .runtime_manager
+        .compute_state_with_bonds(
+            &genesis.genesis_block.body.state.post_state_hash,
+            vec![deploy],
+            vec![SystemDeployEnum::Close(CloseBlockDeploy {
+                initial_rand: system_deploy_util::generate_close_deploy_random_seed_from_pk(
+                    genesis.validator_pks()[0].clone(),
+                    0,
+                ),
+            })],
+            BlockData {
+                time_stamp: block_time,
+                block_number: 1,
+                sender: genesis.validator_pks()[0].clone(),
+                seq_num: 0,
+            },
+            None,
+            None,
+        )
+        .await
+        .expect("Delegation state should be computed");
+    let processed_deploy = processed_deploys
+        .first()
+        .expect("Delegation deploy should be processed");
+    assert!(
+        !processed_deploy.is_failed,
+        "Delegation deploy should succeed: {:?}",
+        processed_deploy.system_deploy_error
+    );
+
+    let effective_stake = bonds
+        .iter()
+        .find(|bond| bond.validator.as_ref() == target_validator.bytes.as_ref())
+        .expect("Target validator should remain in effective bonds")
+        .stake;
+    assert_eq!(effective_stake, initial_stake + delegation_amount);
+
+    let query = format!(
+        r#"new return, rl(`rho:registry:lookup`), poSCh, delegationsCh in {{
+  rl!(`rho:system:pos`, *poSCh) |
+  for(@(_, PoS) <- poSCh) {{
+    @PoS!("getDelegations", *delegationsCh) |
+    for(@delegations <- delegationsCh) {{
+      return!(delegations.getOrElse("{delegator_hex}".hexToBytes(), {{}}).getOrElse("{target_hex}".hexToBytes(), 0))
+    }}
+  }}
+}}"#
+    );
+    let (pars, _cost) = node
+        .runtime_manager
+        .play_exploratory_deploy(query, &state_hash, None)
+        .await
+        .expect("Delegation query should execute");
+    let amount = pars
+        .first()
+        .and_then(|par| par.exprs.first())
+        .and_then(|expr| expr.expr_instance.as_ref())
+        .and_then(|expr| match expr {
+            ExprInstance::GInt(value) => Some(*value),
+            _ => None,
+        })
+        .expect("Delegation query should return an integer");
+    assert_eq!(amount, delegation_amount);
 }
 
 /// SystemVault should be accessible at genesis post-state

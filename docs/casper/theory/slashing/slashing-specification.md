@@ -50,8 +50,9 @@ consensus protocol. Validators put up a *bond* of tokens to participate in
 block production; that bond is the collateral the protocol can seize when
 a validator misbehaves in a *cryptographically-attributable* way. The
 slashing layer detects misbehavior, records evidence on-chain, and
-executes the punitive state transition that zeros the offender's bond and
-removes them from the active set.
+executes the punitive state transition that zeros the offender's self-bond,
+removes active and pending delegated exposure, and removes them from the
+active set.
 
 The Rust implementation in this repository was migrated from the Scala
 original in EPOCH-005 as a 1:1 port. The detection plumbing arrived
@@ -585,25 +586,29 @@ construction. The contract:
 1. Verifies the system auth token (rejects if invalid).
 2. Looks up the offender via `invalidBlocks[blockHash]`; if the lookup
    misses, returns `(false, "invalid slash evidence")` without mutation.
-3. Reads the offender's bond.
-4. If the bond is already zero, returns `(true, Nil)` without mutation.
-5. Otherwise transfers the bond to the Coop vault.
-6. Updates `state.allBonds`, `state.activeValidators`,
-   `state.committedRewards` as a single atomic `stateUpdateCh!`
-   map-construction in the `slash` method (one map write, not three
-   field writes).
+3. Reads the offender's self-bond, active delegated total, and pending
+   undelegation exposure.
+4. If that slash exposure is already zero, returns `(true, Nil)` without
+   mutation.
+5. Otherwise transfers the slash exposure to the Coop vault.
+6. Updates `state.allBonds`, `state.delegations`,
+   `state.delegatedTotals`, `state.pendingUndelegations`,
+   `state.activeValidators`, and `state.committedRewards` as a single
+   atomic `stateUpdateCh!` map-construction in the `slash` method (one
+   map write, not several field writes).
 7. Returns `(true, Nil)` on `returnCh`; transfer failure returns
    `(false, "transfer failed: ...")` deterministically.
 
 Bug fix #4 (T-9.4) addresses the missing error path on transfer failure.
-The zero-bond no-op branch is the implementation hook that makes
+The zero-exposure no-op branch is the implementation hook that makes
 merge-rejected slash reissuance idempotent.
 
 #### 3.4.2 Bond map / Validator registry
 
-State held inside the PoS contract: `state.allBonds`,
-`state.activeValidators`, `state.committedRewards`. Mutated by the slash
-contract; read by `BlockCreator.prepare_slashing_deploys`.
+State held inside the PoS contract includes `state.allBonds`,
+`state.delegatedTotals`, `state.pendingUndelegations`,
+`state.activeValidators`, and `state.committedRewards`. Mutated by the
+slash contract; read by `BlockCreator.prepare_slashing_deploys`.
 
 #### 3.4.3 Coop vault
 
@@ -785,24 +790,22 @@ gives the activity flow.
 ### 5.1 PoS state
 
 **Definition 5.1** *(PoS state).*
-A `PoSState` is a 4-tuple `(allBonds, activeValidators, committedRewards,
-coopVaultBalance)` with:
+A `PoSState` is a tuple containing at least `(allBonds, delegatedTotals,
+pendingUndelegationTotals, activeValidators, committedRewards, coopVaultBalance)` with:
 
 - `allBonds : V → ℕ` — the bond map
+- `delegatedTotals : V → ℕ` — active delegated principal by validator
+- `pendingUndelegationTotals : V → ℕ` — pending undelegation principal by validator
 - `activeValidators ⊆ V` — currently bonded validators
 - `committedRewards : V → ℕ` — pending rewards
 - `coopVaultBalance ∈ ℕ` — accumulated forfeited stake
 
-**Mechanization note.** The Rholang/Scala `PoSState` carries all four
-fields; the Rocq mechanization at `PoSContract.v:40-44` records only
-the three fields the slash transition actually mutates and observes:
-`ps_allBonds`, `ps_active`, and `ps_coopVault`. The
-`committedRewards` field is omitted from the Rocq record because
-`slash` does not read or modify it in the formalized fragment (the
-field is mutated by orthogonal reward-distribution logic outside the
-slashing scope). The §5.2 prose semantics presents the four-field
-view for parity with the Scala contract; T-7 / T-8 / T-Idem are
-proven against the three-field Rocq record.
+**Mechanization note.** The Rocq mechanization at `PoSContract.v:42-47`
+records the fields the slash transition mutates and observes:
+`ps_allBonds`, `ps_delegatedTotals`, `ps_pendingUndelegationTotals`,
+`ps_active`, and `ps_coopVault`. The `committedRewards` field is
+omitted from the Rocq record because reward distribution is orthogonal
+to T-7 / T-8 / T-Idem.
 
 ### 5.2 The slash transition
 
@@ -814,11 +817,15 @@ slash(ps, v) =
   | not authTokenValid                    ⟹ (ps, false)  [auth failure]
   | otherwise:
       let b = ps.allBonds[v]
-      transfer(coopVault, b)              [bug #4: pattern-match on result]
+      let d = ps.delegatedTotals[v]
+      let p = ps.pendingUndelegationTotals[v]
+      transfer(coopVault, b + d + p)      [bug #4: pattern-match on result]
       ps' = { allBonds[v] := 0;
+              delegatedTotals := delegatedTotals \\ {v};
+              pendingUndelegationTotals := pendingUndelegationTotals \\ {v};
               activeValidators := activeValidators \\ {v};
               committedRewards := committedRewards \\ {v};
-              coopVaultBalance += b }
+              coopVaultBalance += b + d + p }
       return (ps', true)
 ```
 
@@ -833,15 +840,15 @@ on the second attempt one of two structural identities applies: either
 has been pruned post-slash), and the contract returns
 `(false, "invalid slash evidence")` from the invalid-evidence branch
 of `slash`; or (b) the
-`posVault.transfer` of an already-zero `valBond` is a no-op map
-identity, and the subsequent `state.allBonds[v := 0]` overwrite of an
-already-zero entry leaves the state unchanged. The Rocq proof of T-Idem
-(`PoSContract.v:117`) is consistent with this structural realisation.
+`posVault.transfer` of an already-zero slash exposure is a no-op map
+identity, and the subsequent self-bond plus delegated-exposure cleanup
+leaves the state unchanged. The Rocq proof of T-Idem
+(`PoSContract.v:140`) is consistent with this structural realisation.
 
 ### 5.3 Theorems
 
 **Theorem 5.1 (T-7, Slash zeros bond).** *(`slash_zeros_bond`,
-`PoSContract.v:75`.)* For every `ps` and `v`,
+`PoSContract.v:87`.)* For every `ps` and `v`,
 
 ```
   let (ps', _) = slash(ps, v) in  ps'.allBonds[v] = 0
@@ -851,11 +858,15 @@ Proven by direct unfolding. TLC verifies `Inv_BondsZeroAfterSlash` in
 `MC_SlashFlow.tla`.
 
 **Theorem 5.2 (T-8, Slash transfers stake).** *(`slash_transfers_stake`,
-`PoSContract.v:95`.)* If the transfer succeeds (the `Bool` in the result is
+`PoSContract.v:107`.)* If the transfer succeeds (the `Bool` in the result is
 `true`), then
 
 ```
-  ps'.coopVaultBalance = ps.coopVaultBalance + ps.allBonds[v]
+  ps'.coopVaultBalance =
+    ps.coopVaultBalance
+    + ps.allBonds[v]
+    + ps.delegatedTotals[v]
+    + ps.pendingUndelegationTotals[v]
 ```
 
 This relies on the transfer-success precondition; bug fix #4 (T-9.4)
@@ -863,7 +874,7 @@ guarantees that the transition either succeeds with this property or
 returns `false` deterministically.
 
 **Theorem 5.3 (T-Idem, Slash idempotence).** *(`slash_idempotent`,
-`PoSContract.v:117`. Historical alias **T-9**; the alias is retained in
+`PoSContract.v:140`. Historical alias **T-9**; the alias is retained in
 older artifacts but `T-Idem` is preferred to avoid collision with the
 `T-9.M` bug-fix family.)* For every `ps` and `v`,
 
@@ -1451,7 +1462,7 @@ design*; T-9.9 establishes that the widening is sound.
   See §9.4 of `slashing-verification.md` for the full proof.
 - **Diagram.**
 
-  [![Diagram 07 — PoS.slash() Rholang activity flow with zero-bond no-op, unknown-evidence rejection, and deterministic transfer failure](./diagrams/07-activity-pos-slash-contract.svg)](./diagrams/07-activity-pos-slash-contract.svg)
+  [![Diagram 07 — PoS.slash() Rholang activity flow with zero-exposure no-op, unknown-evidence rejection, and deterministic transfer failure](./diagrams/07-activity-pos-slash-contract.svg)](./diagrams/07-activity-pos-slash-contract.svg)
 
 ### 10.5 Bug #5 — Stake-0 silent classification
 
@@ -2077,8 +2088,8 @@ range.
 ### Core scenarios (UC-01–UC-25)
 
 **Outcome legend.** Each row's *Outcome* column states what the test
-should assert as the steady state: `slashed` (offender's bond zeroed,
-removed from active set), `not-slashed` (offender bond unchanged;
+should assert as the steady state: `slashed` (offender's slash exposure
+removed and offender removed from active set), `not-slashed` (offender bond unchanged;
 covers stake-0 invariant and unbonded-proposer no-emit), `rejected`
 (block or deploy refused), `admitted` (block accepted modulo prior
 slashing), `error` (deterministic failure return path), `behavioral`

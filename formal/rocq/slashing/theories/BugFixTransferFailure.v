@@ -51,7 +51,7 @@ Proof.
   - left.
     pose proof (slash_zeros_bond ps v) as Hzero.
     unfold slash in *.
-    destruct (Nat.eq_dec (bm_lookup (ps_allBonds ps) v) 0) as [E | NE]; simpl in *.
+    destruct (Nat.eq_dec (slash_exposure ps v) 0) as [_ | _]; simpl in *.
     + split; [reflexivity | assumption].
     + split; [reflexivity | assumption].
   - right. split; reflexivity.
