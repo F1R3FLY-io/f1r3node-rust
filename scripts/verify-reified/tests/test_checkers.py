@@ -6,7 +6,8 @@ They also cover check-consensus-checklist.py, the citation rule of
 check-model-map.py, and its maps of phases other than P1 (Q# and U# ids, no
 fix rules, const fn, restricted visibility, associated consts and type aliases).
 The P1 id lists of both map checkers include H23 and T6 (decision 36). They also cover
-merge-queue-parity-capture.py, which assembles the queue parity golden of P5.
+merge-queue-parity-capture.py, which assembles the queue parity golden of P5, and
+check-test-port-ledger.py with generate-test-port-ledger.py, the ledger of the legacy tests (P9).
 
 Each checker gets passing fixtures and failing fixtures (negative controls).
 Fixtures are built in a temporary directory, so the source tree is never written.
@@ -50,6 +51,8 @@ CITATIONS = load("rust_citations", "rust_citations.py")
 INVARIANT_MAP = load("check_invariant_map", "check-invariant-map.py")
 CHECKLIST = load("check_consensus_checklist", "check-consensus-checklist.py")
 QUEUE_PARITY_MERGE = load("merge_queue_parity_capture", "merge-queue-parity-capture.py")
+PORT_LEDGER = load("check_test_port_ledger", "check-test-port-ledger.py")
+LEDGER_GENERATOR = load("generate_test_port_ledger", "generate-test-port-ledger.py")
 
 GIT_FIXTURE_ENVIRONMENT = {
     "GIT_CONFIG_NOSYSTEM": "1",
@@ -1482,6 +1485,198 @@ class QueueParityMerge(unittest.TestCase):
                     contextlib.redirect_stderr(io.StringIO()) as errors:
                 self.assertEqual(1, QUEUE_PARITY_MERGE.main())
             self.assertIn("differs from the assembled capture", errors.getvalue())
+
+
+def ledger_entry(name, module=""):
+    return {"path": "legacy/tests.rs", "module": module, "name": name, "kind": "test", "line": 1}
+
+
+def ledger_row(name, **fields):
+    row = {
+        "path": "legacy/tests.rs",
+        "module": "",
+        "name": name,
+        "kind": "test",
+        "behavior": f"area: {name}",
+        "disposition": "port",
+        "successors": [{"file": "tests/new.rs", "test": "successor_test"}],
+    }
+    row.update(fields)
+    return row
+
+
+class TestPortLedgerChecker(unittest.TestCase):
+    """check-test-port-ledger.py: one row for each inventory entry, existing successors, the
+    reason of a drop, and the non-match counterpart of a positive matcher test."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name)
+        write(
+            self.root / "tests/new.rs",
+            "#[test]\nfn successor_test() {}\n\n#[test]\nasync fn non_match_test() {}\n\n"
+            "#[test]\nfn prefix_test_longer() {}\n",
+        )
+        write_json(self.root / "inventory.json", {"tests": [ledger_entry("first"), ledger_entry("second")]})
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    def check(self, rows):
+        write_json(self.root / "ledger.json", {"rows": rows})
+        output = io.StringIO()
+        with mock.patch.object(PORT_LEDGER, "ROOT", self.root), \
+                mock.patch.object(PORT_LEDGER, "INVENTORY", self.root / "inventory.json"), \
+                mock.patch.object(PORT_LEDGER, "LEDGER", self.root / "ledger.json"), \
+                mock.patch.object(sys, "argv", ["check-test-port-ledger.py"]), \
+                contextlib.redirect_stdout(output):
+            code = PORT_LEDGER.main()
+        return code, output.getvalue()
+
+    def assert_fails(self, rows, message):
+        code, output = self.check(rows)
+        self.assertEqual(code, 1, output)
+        self.assertIn(message, output)
+
+    def test_complete_ledger_passes(self):
+        code, output = self.check([
+            ledger_row("first"),
+            ledger_row("second", disposition="drop", reason="decision 7: the channel layout changed"),
+        ])
+        self.assertEqual(code, 0, output)
+        self.assertIn("test-port ledger: PASS", output)
+
+    def test_missing_row_fails(self):
+        self.assert_fails([ledger_row("first")], "legacy/tests.rs::::second: 0 rows, expected 1")
+
+    def test_duplicate_row_fails(self):
+        self.assert_fails([ledger_row("first"), ledger_row("first"), ledger_row("second")], "2 rows, expected 1")
+
+    def test_row_without_entry_fails(self):
+        self.assert_fails([ledger_row("first"), ledger_row("second"), ledger_row("third")],
+                          "row names no inventory entry")
+
+    def test_unknown_disposition_fails(self):
+        self.assert_fails([ledger_row("first", disposition="skip"), ledger_row("second")],
+                          "disposition 'skip' is not one of")
+
+    def test_missing_behavior_fails(self):
+        self.assert_fails([ledger_row("first", behavior=""), ledger_row("second")], "first: no behavior")
+
+    def test_missing_successor_fails(self):
+        self.assert_fails([ledger_row("first", successors=[]), ledger_row("second")], "first: no successor")
+
+    def test_successor_must_exist_by_exact_name(self):
+        missing = [{"file": "tests/new.rs", "test": "prefix_test"}]
+        self.assert_fails([ledger_row("first", successors=missing), ledger_row("second")],
+                          "successor tests/new.rs::prefix_test does not exist")
+
+    def test_successor_in_missing_file_fails(self):
+        missing = [{"file": "tests/absent.rs", "test": "successor_test"}]
+        self.assert_fails([ledger_row("first", successors=missing), ledger_row("second")],
+                          "successor tests/absent.rs::successor_test does not exist")
+
+    def test_drop_needs_a_reason_naming_a_decision(self):
+        self.assert_fails([ledger_row("first", disposition="drop", reason="obsolete"), ledger_row("second")],
+                          "a drop needs a reason that names a decision or a plan section")
+
+    def test_positive_match_needs_a_non_match_counterpart(self):
+        self.assert_fails([ledger_row("first", positive_match=True), ledger_row("second")],
+                          "needs a non_match counterpart")
+
+    def test_non_match_counterpart_must_exist(self):
+        counterpart = [{"file": "tests/new.rs", "test": "absent_test"}]
+        self.assert_fails([ledger_row("first", positive_match=True, non_match=counterpart), ledger_row("second")],
+                          "non_match tests/new.rs::absent_test does not exist")
+
+    def test_positive_match_with_an_existing_counterpart_passes(self):
+        counterpart = [{"file": "tests/new.rs", "test": "non_match_test"}]
+        code, output = self.check([ledger_row("first", positive_match=True, non_match=counterpart),
+                                   ledger_row("second")])
+        self.assertEqual(code, 0, output)
+
+    def test_missing_ledger_fails(self):
+        output = io.StringIO()
+        with mock.patch.object(PORT_LEDGER, "ROOT", self.root), \
+                mock.patch.object(PORT_LEDGER, "INVENTORY", self.root / "inventory.json"), \
+                mock.patch.object(PORT_LEDGER, "LEDGER", self.root / "absent.json"), \
+                mock.patch.object(sys, "argv", ["check-test-port-ledger.py"]), \
+                contextlib.redirect_stdout(output):
+            self.assertEqual(PORT_LEDGER.main(), 1)
+        self.assertIn("is missing", output.getvalue())
+
+
+class TestPortLedgerGenerator(unittest.TestCase):
+    """generate-test-port-ledger.py: the first matching rule gives a row, every entry needs a
+    rule, every rule needs an entry, and a positive matcher rule marks its rows."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name)
+        write_json(self.root / "inventory.json", {
+            "base": "a",
+            "head": "b",
+            "tests": [ledger_entry("test_first"), ledger_entry("test_second", module="unit_tests")],
+        })
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    def build(self, rules):
+        output = io.StringIO()
+        with mock.patch.object(LEDGER_GENERATOR, "INVENTORY", self.root / "inventory.json"), \
+                mock.patch.object(LEDGER_GENERATOR, "RULES", rules), \
+                mock.patch.object(LEDGER_GENERATOR, "FILES", {"new": "tests/new.rs"}), \
+                mock.patch.object(LEDGER_GENERATOR, "OVERRIDES", {}), \
+                contextlib.redirect_stdout(output):
+            try:
+                return LEDGER_GENERATOR.build(), output.getvalue()
+            except SystemExit:
+                return None, output.getvalue()
+
+    def test_first_matching_rule_gives_the_row(self):
+        rule = LEDGER_GENERATOR.rule
+        ledger, output = self.build([
+            rule("legacy/tests.rs", "test_first", "area", "port", ["new:successor_test"], nm=["new:non_match_test"]),
+            rule("legacy/tests.rs", None, "area", "drop", ["new:successor_test"], "decision 7: changed"),
+            rule("legacy/tests.rs", "test_second", "unused", "port", ["new:successor_test"]),
+        ])
+        self.assertIsNone(ledger, output)
+        self.assertIn("rule matches no entry: legacy/tests.rs test_second", output)
+
+    def test_rows_follow_their_rules(self):
+        rule = LEDGER_GENERATOR.rule
+        ledger, output = self.build([
+            rule("legacy/tests.rs", "test_first", "area", "port", ["new:successor_test"], nm=["new:non_match_test"]),
+            rule("legacy/tests.rs", "test_second", "area", "drop", ["new:successor_test"], "decision 7: changed",
+                 module="unit_tests"),
+        ])
+        self.assertIsNotNone(ledger, output)
+        first, second = ledger["rows"]
+        self.assertEqual(first["behavior"], "area: first")
+        self.assertTrue(first["positive_match"])
+        self.assertEqual(first["non_match"], [{"file": "tests/new.rs", "test": "non_match_test"}])
+        self.assertNotIn("reason", first)
+        self.assertEqual(second["disposition"], "drop")
+        self.assertEqual(second["reason"], "decision 7: changed")
+        self.assertNotIn("positive_match", second)
+
+    def test_entry_without_a_rule_fails(self):
+        rule = LEDGER_GENERATOR.rule
+        ledger, output = self.build([
+            rule("legacy/tests.rs", "test_first", "area", "port", ["new:successor_test"]),
+        ])
+        self.assertIsNone(ledger, output)
+        self.assertIn("no rule matches legacy/tests.rs::unit_tests::test_second", output)
+
+    def test_module_filter_excludes_other_modules(self):
+        rule = LEDGER_GENERATOR.rule
+        ledger, output = self.build([
+            rule("legacy/tests.rs", "test_(first|second)", "area", "port", ["new:successor_test"], module=""),
+            rule("legacy/tests.rs", None, "other", "port", ["new:successor_test"]),
+        ])
+        self.assertIsNotNone(ledger, output)
+        self.assertEqual([row["behavior"] for row in ledger["rows"]], ["area: first", "other: second"])
 
 
 if __name__ == "__main__":

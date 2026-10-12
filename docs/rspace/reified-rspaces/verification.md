@@ -6934,6 +6934,105 @@ The model of the four routing jobs did not finish in 11 minutes without a bound.
 | The 40 checkers of the campaign, and the document lint | 40 passed |
 | I-14: the two empty-state-hash tests of `runtime_spec.rs` in release | 2 passed |
 
+### 34.8 Step 7: the ledger of the legacy tests
+
+The legacy stack `5c0363d9..ff479042` added 1,181 tests (section 34.2.4).
+The plan gives each of them one row in a ledger, with a disposition and named successors (plan section "Tests", design v2 section 12).
+The ledger is `docs/rspace/reified-rspaces/verification/test-port-ledger.json`.
+`scripts/verify-reified/generate-test-port-ledger.py` writes it from a rule table, and its option `--check` compares the committed ledger with the generated ledger.
+`scripts/verify-reified/check-test-port-ledger.py` checks the ledger against the inventory.
+
+A rule names a legacy file, a pattern of test names, and the fields of the rows that it gives.
+The first rule that matches a test gives its row.
+The generator fails when a test matches no rule, or when a rule matches no test.
+No row needs a per-test override.
+
+*Table 213. The dispositions of the ledger.*
+
+| Disposition | Meaning | Rows |
+|---|---|---|
+| port | The behavior stays, and each successor tests it. | 558 |
+| retarget | A recorded decision changed the mechanism of the behavior, and each successor tests the new mechanism. | 258 |
+| drop | A recorded decision removed the behavior, and each successor tests what replaces it. The row names the decision or the plan section. | 365 |
+
+Each row names its behavior, from its area and its test name, and at least one successor by file and exact test name.
+The checker finds each successor as a function of that name in its file.
+72 rows are positive matcher tests of the legacy branch, in which a receive fired under the wildcard matcher.
+Each of them also names a non-match counterpart, a test in which a pattern that does not match does not fire (plan section "Tests").
+The rows name 301 distinct successors.
+The two successors that serve the most rows are the similarity reference cases (90 rows) and the observer parity of the queue (59 rows).
+
+*Table 214. The rows of each legacy area.*
+
+| Area | Rows | Port | Retarget | Drop |
+|---|---|---|---|---|
+| Adapter | 17 | 9 | 5 | 3 |
+| Charging agent | 33 | 0 | 24 | 9 |
+| Checkpoints | 22 | 15 | 3 | 4 |
+| Collections | 101 | 69 | 16 | 16 |
+| End to end | 23 | 16 | 4 | 3 |
+| Errors | 2 | 0 | 0 | 2 |
+| Factory | 71 | 11 | 49 | 11 |
+| Generic space | 26 | 19 | 1 | 6 |
+| getSpaceAgent | 19 | 8 | 5 | 6 |
+| History | 40 | 0 | 0 | 40 |
+| Invariants | 25 | 25 | 0 | 0 |
+| Matcher | 56 | 27 | 21 | 8 |
+| Multiple spaces | 16 | 14 | 2 | 0 |
+| Normalizers | 5 | 2 | 2 | 1 |
+| Outer stores | 44 | 29 | 14 | 1 |
+| PathMap | 26 | 23 | 0 | 3 |
+| Phlogiston | 28 | 0 | 0 | 28 |
+| Registry | 77 | 0 | 51 | 26 |
+| Seq channels | 8 | 7 | 1 | 0 |
+| Similarity | 82 | 60 | 15 | 7 |
+| Suffix key | 4 | 0 | 0 | 4 |
+| Tensor operations | 28 | 0 | 6 | 22 |
+| Test helpers | 5 | 0 | 0 | 5 |
+| Theories | 35 | 34 | 0 | 1 |
+| Types | 134 | 68 | 17 | 49 |
+| VectorDB | 254 | 122 | 22 | 110 |
+| Total | 1,181 | 558 | 258 | 365 |
+
+*Table 215. The drops by class of reason.*
+
+| Class of reason | Rows |
+|---|---|
+| The one RSpace, the accounting observer and derived maps replace the module: history, phlogiston, the charging agent and the registry. | 100 |
+| The exact engine, the factory params and the query params replace the internals of the legacy VectorDB: handlers, index caches, bit packing, embedding types and slots. | 109 |
+| The detail is not part of the contract: display text, trait details, builders, the in-memory collection API and the legacy test helpers. | 78 |
+| Tensor logic waits for the F1r3lang merge at P12 ([decision 65](decision-register.md#decision-65)). | 32 |
+| The legacy configuration, URN and theory forms are gone: the raw config, the legacy URN strings and the theories that F1r3lang installs. | 31 |
+| Re-rooting replaces the suffix forms (I-1, decision 9.3). | 15 |
+| Total | 365 |
+
+R5 counts the behaviors in the FIPS scope that have no successor after this pass.
+The count is 0.
+Every row has a successor that exists, and each drop names the decision or the plan section that removes the behavior or replaces its mechanism.
+The review checked two FIPS passages that the legacy tests touch.
+
+1. The quantale paragraph of the FIPS (lines 187 to 189) states that union and intersection act on sets of paths, and that multiplication concatenates them.
+   The legacy tests combined two whole PathMap stores.
+   The ledger retargets them to the algebra of PathMap values of the host (`rholang/tests/reduce_deep_spec.rs`, `pathmap_union_intersection_restriction_drophead_run`) and to the composition of re-rooting.
+   The open unification question of that paragraph is the follow-up `rrs-fu-quantale-unification`.
+2. The FIPS names `clear` in its description of the host interface (line 29) and in its proposed trait hierarchy (lines 371, 394, 440 and 540).
+   The Rholang surface of a space has no clear method (plan section "Handle methods"), so the tests of `clear` are drops.
+
+One drop records a limit of a formal model.
+`Similarity.v` (headline 7) proves the triangle inequality of the manhattan distance and the laws of the squared distance.
+It does not prove the triangle inequality of the rounded euclidean distance.
+No FIPS rule needs that inequality, so no successor restates the legacy property test `euclidean_triangle_inequality`.
+
+*Table 216. The gates of step 7.*
+
+| Gate | Result |
+|---|---|
+| `python3 scripts/verify-reified/check-test-port-ledger.py` | 1,181 inventory entries, 1,181 rows, pass |
+| `python3 scripts/verify-reified/generate-test-port-ledger.py --check` | The committed ledger is the generated ledger |
+| `python3 scripts/verify-reified/run-checker-tests.py test_checkers`, with 18 tests of the ledger checker and the generator | 126 passed |
+| The footprint policy `p9`: the generator and the ledger are allowed new files | 0 violations |
+| The 42 checkers of the campaign, and the document lint | 42 passed |
+
 ## References
 
 <a id="ref-ch00"></a>[CH00] K. Claessen and J. Hughes, "QuickCheck: a lightweight tool for random testing of Haskell programs," in *Proceedings of the Fifth ACM SIGPLAN International Conference on Functional Programming (ICFP 2000)*, ACM, 2000, pp. 268–279. [doi:10.1145/351240.351266](https://doi.org/10.1145/351240.351266)
