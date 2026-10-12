@@ -1,7 +1,7 @@
 # Replication Boundary Design
 
-- **Status:** draft for maintainer review (TASK-022-1, EPIC-022)
-- **Story:** [US-010](../UserStories.md) Pluggable state machine replication per shard
+- **Status:** draft for maintainer review (TASK-025-1, EPIC-025)
+- **Story:** [US-011](../UserStories.md) Pluggable state machine replication per shard
 - **Branch:** `feature/consensus-neutral-boundary`
 - **Extends:** [F1r3fly: Parallel State Machines and Consensus-Neutral Execution](../artifacts/f1r3fly-consensus-neutral-sm.md)
 - **Vocabulary:** [docs/Glossary.md](../Glossary.md) for the boundary terms, and one glossary for each mechanism: [CBC Casper](../casper/GLOSSARY.md), [RGB peer clique](../peer-clique/GLOSSARY.md), [Casanova](../casanova/GLOSSARY.md), and [Cordial Miners](../cordial-miners/GLOSSARY.md). The coalition vocabulary is in the [semitopology glossary](../semitopology/GLOSSARY.md).
@@ -303,13 +303,13 @@ The coupling survey of 2026-10-05 found five places where CBC Casper leaks past 
 
 | Step | Task | Change | Leak removed |
 | --- | --- | --- | --- |
-| 1 | TASK-022-2 | New interface crate with the types and traits of sections 6 to 10. No behavior. | None |
-| 2 | TASK-022-2 | CBC Casper adapter that wraps `MultiParentCasper`, `Engine`, and the proposer | `KeyValueDagRepresentation` in the node-facing signatures |
-| 3 | TASK-022-3 | Mechanism factory and shard binding | `setup.rs` builds `Estimator` and `CliqueOracleImpl` and calls `update_fork_choice_tips_if_stuck` |
-| 4 | TASK-022-4 | Heartbeat proposal timing moves into the CBC medium | Latest-message, bonds, justification, and finality-lag logic in `heartbeat_proposer.rs` |
-| 5 | TASK-022-5 | `MechanismApi` namespace with the CBC extension routes | `justifications`, `bonds`, and `faultTolerance` in the neutral API |
-| 6 | TASK-022-6 | The execution glue takes boundary types | `CasperSnapshot` and the finality floor types in `interpreter_util.rs` |
-| 7 | TASK-022-7 | Test-only stub mechanism and a soak | None. This step proves the boundary |
+| 1 | TASK-025-2 | New interface crate with the types and traits of sections 6 to 10. No behavior. | None |
+| 2 | TASK-025-2 | CBC Casper adapter that wraps `MultiParentCasper`, `Engine`, and the proposer | `KeyValueDagRepresentation` in the node-facing signatures |
+| 3 | TASK-025-3 | Mechanism factory and shard binding | `setup.rs` builds `Estimator` and `CliqueOracleImpl` and calls `update_fork_choice_tips_if_stuck` |
+| 4 | TASK-025-4 | Heartbeat proposal timing moves into the CBC medium | Latest-message, bonds, justification, and finality-lag logic in `heartbeat_proposer.rs` |
+| 5 | TASK-025-5 | `MechanismApi` namespace with the CBC extension routes | `justifications`, `bonds`, and `faultTolerance` in the neutral API |
+| 6 | TASK-025-6 | The execution glue takes boundary types | `CasperSnapshot` and the finality floor types in `interpreter_util.rs` |
+| 7 | TASK-025-7 | Test-only stub mechanism and a soak | None. This step proves the boundary |
 
 Step 6 also starts the move of the three Rholang runtime files out of the casper crate. Section 9 of the architecture note calls them execution glue in the medium crate.
 

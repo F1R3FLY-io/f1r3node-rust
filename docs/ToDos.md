@@ -71,15 +71,16 @@ mr_status:
 
 ---
 
-### EPIC-022: Pluggable State Machine Replication Boundary
+### EPIC-025: Pluggable State Machine Replication Boundary
 
 ```yaml
 ---
-epic_id: EPIC-022
+epic_id: EPIC-025
 title: "Pluggable State Machine Replication Boundary"
+renumbered: "EPIC-022 until 2026-10-11. Renumbered to EPIC-025, with TASK-022-n to TASK-025-n, because dev uses EPIC-022 for OCI CI Spend Alerting and Runner Cleanup. Its story moved from US-010 to US-011, because ci/testnet-deployment uses US-010 for the test net."
 status: in_progress
 priority: p1
-user_story: US-010
+user_story: US-011
 blocked_by: []
 created_at: 2026-10-05
 updated_at: 2026-10-05
@@ -96,7 +97,7 @@ execution_contract:
   base_branch: dev
   base_revision: b5cbb51d1
   scope: "Define one replication boundary that all four mechanisms can implement, move node services onto it, and keep CBC Casper behavior unchanged."
-  design_policy: "No code change before maintainer approval of the TASK-022-1 design document."
+  design_policy: "No code change before maintainer approval of the TASK-025-1 design document."
   git_policy: "Commits require /quick-commit consent. The user runs push, merge, and PR operations."
 coupling_survey:
   date: 2026-10-05
@@ -108,7 +109,7 @@ coupling_survey:
     - "casper util/rholang/interpreter_util.rs takes CasperSnapshot and the finality floor types."
     - "block-storage KeyValueDagRepresentation, a CBC DAG type, is part of the Casper trait signatures."
 tasks:
-  - id: TASK-022-1
+  - id: TASK-025-1
     title: "Write the replication boundary design document"
     status: in_progress
     claimed_by: claude-session-aa467dea
@@ -139,51 +140,51 @@ tasks:
       - "docs/Glossary.md (four coalition terms: membership view, coalition structure, actionable coalition, intertwined coalition structure)"
       - "docs/designs/replication-boundary.md section 16 (coalition structure) and open questions 5 to 7"
       - "Coalition structure mappings in the CBC Casper, peer-clique, Casanova, and Cordial Miners glossaries"
-    work_log: docs/work-logs/task-022-1-2026-10-05.md
+    work_log: docs/work-logs/task-025-1-2026-10-05.md
     review_status: "Draft complete. Maintainer approval pending."
-  - id: TASK-022-2
+  - id: TASK-025-2
     title: "Add the boundary interface crate and the CBC Casper adapter"
     status: pending
     claimed_by: null
-    blocked_by: [TASK-022-1]
+    blocked_by: [TASK-025-1]
     acceptance:
       - "A new crate defines the boundary traits for ordering, validity, finality or settlement, and external anchoring, with no DAG parent, justification, bond, or equivocation types."
       - "CBC Casper implements the traits as an adapter with no behavior change."
-  - id: TASK-022-3
+  - id: TASK-025-3
     title: "Select the mechanism through shard configuration in node wiring"
     status: pending
     claimed_by: null
-    blocked_by: [TASK-022-2]
+    blocked_by: [TASK-025-2]
     acceptance:
       - "node startup builds the mechanism through a factory selected by shard configuration."
       - "setup.rs no longer constructs Estimator or CliqueOracleImpl."
-  - id: TASK-022-4
+  - id: TASK-025-4
     title: "Move CBC logic out of the heartbeat proposer"
     status: pending
     claimed_by: null
-    blocked_by: [TASK-022-2]
+    blocked_by: [TASK-025-2]
     acceptance:
       - "heartbeat_proposer.rs uses only the boundary. The latest-message, bonds, and finalization-lag logic moves into the CBC implementation."
-  - id: TASK-022-5
+  - id: TASK-025-5
     title: "Move CBC-specific API fields into mechanism-scoped extensions"
     status: pending
     claimed_by: null
-    blocked_by: [TASK-022-2]
+    blocked_by: [TASK-025-2]
     acceptance:
       - "The gRPC and HTTP APIs carry justifications, bonds, and faultTolerance only through a CBC-scoped extension."
       - "Existing CBC clients keep wire compatibility."
-  - id: TASK-022-6
+  - id: TASK-025-6
     title: "Separate the execution glue from CBC snapshot and finality types"
     status: pending
     claimed_by: null
-    blocked_by: [TASK-022-2]
+    blocked_by: [TASK-025-2]
     acceptance:
       - "interpreter_util.rs takes boundary types instead of CasperSnapshot and the finality floor types."
-  - id: TASK-022-7
+  - id: TASK-025-7
     title: "Prove the boundary with a test-only second mechanism and a soak"
     status: pending
     claimed_by: null
-    blocked_by: [TASK-022-3, TASK-022-4, TASK-022-5, TASK-022-6]
+    blocked_by: [TASK-025-3, TASK-025-4, TASK-025-5, TASK-025-6]
     acceptance:
       - "A test-only second mechanism runs the node wiring tests without CBC code."
       - "The full test suite passes and a soak on the merged change gives the same consensus results as before the change."
