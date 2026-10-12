@@ -46,7 +46,10 @@ pub const TEST_SHARD: &str = "root";
 
 /// The phlo limit that each offer signs. It covers the test terms with a wide
 /// margin, and a genesis vault funds it (F0: offered test vaults hold 10^12).
-const OFFER_PHLO_LIMIT: u64 = 100_000_000;
+// Changed by H1 (bug 11420, DR-126): public, so that an offer with permitted
+// lanes signs the same limit.
+// const OFFER_PHLO_LIMIT: u64 = 100_000_000;
+pub const OFFER_PHLO_LIMIT: u64 = 100_000_000;
 
 /// The source cap of each offer, in atomic REV.
 const OFFER_SOURCE_CAP: u64 = 400_000_000;
@@ -98,6 +101,8 @@ pub fn owner_offer(
 }
 
 /// Added by DR-113: an owner-direct offer with the given signed phlo limit.
+// Changed by H1 (bug 11420, DR-126): the body became `owner_offer_with_lanes`,
+// which can also permit other lanes. This function permits no other lane.
 pub fn owner_offer_limited(
     owner: &(PrivateKey, PublicKey),
     time_stamp: i64,
@@ -105,6 +110,49 @@ pub fn owner_offer_limited(
     valid_after_block_number: i64,
     shard_id: String,
     phlo_limit: u64,
+) -> models::casper::DeployDataProto {
+    owner_offer_with_lanes(
+        owner,
+        time_stamp,
+        term,
+        valid_after_block_number,
+        shard_id,
+        phlo_limit,
+        &[],
+    )
+}
+
+/// Added by H1 (bug 11420, DR-126): a lane that an offer permits besides the
+/// owner's own lane, and the schedule classes that the offer permits on it.
+#[derive(Clone, Copy, Debug)]
+pub struct PermittedLane<'a> {
+    pub signature: &'a CostSignature,
+    pub classes: &'a [usize],
+}
+
+/// Added by H1 (bug 11420, DR-126): the class of the selected schedule that
+/// measures `dimension`.
+pub fn schedule_class(dimension: NativePhloDimension) -> usize {
+    selected_schedule()
+        .classes
+        .iter()
+        .position(|class| class.measurement_rule == dimension.measurement_rule())
+        .expect("the selected schedule has a class for every native dimension")
+}
+
+/// An owner-direct offer with the given signed phlo limit. The owner's vault
+/// funds every class of the owner's own principal lane and the given classes
+/// of each permitted lane.
+// Changed by H1 (bug 11420, DR-126): the former body of `owner_offer_limited`,
+// with the permitted lanes added after the owner's lane.
+pub fn owner_offer_with_lanes(
+    owner: &(PrivateKey, PublicKey),
+    time_stamp: i64,
+    term: String,
+    valid_after_block_number: i64,
+    shard_id: String,
+    phlo_limit: u64,
+    lanes: &[PermittedLane<'_>],
 ) -> models::casper::DeployDataProto {
     let (owner_secret, owner_public) = owner;
     let limits = offered_funded_v6_limits().envelope.payload;
@@ -118,13 +166,53 @@ pub fn owner_offer_limited(
         .expect("the selected schedule encodes");
     let authority = cost_signature_to_sig(&signature).expect("a principal signature converts");
     let location = SignatureChannel::from_sig(&authority).par.encode_to_vec();
-    let permissions = (0..schedule.classes.len())
-        .map(|class| {
+    // Changed by H1 (bug 11420, DR-126): the permitted lanes follow the
+    // owner's lane, so the source permits both.
+    // let permissions = (0..schedule.classes.len())
+    //     .map(|class| {
+    //         PhloResource {
+    //             location: &location,
+    //             class,
+    //             acquisition_terms: &acquisition_terms,
+    //             authority: &authority,
+    //         }
+    //         .wire_key(PhloExecutionLimits {
+    //             resource_entries: 1,
+    //             authority_nodes: limits.funding.authority_nodes,
+    //             key_bytes: limits.funding.wire.field_bytes,
+    //         })
+    //         .expect("a resource permission encodes")
+    //     })
+    //     .collect();
+    let mut lane_keys = Vec::with_capacity(lanes.len());
+    for lane in lanes {
+        let lane_authority =
+            cost_signature_to_sig(lane.signature).expect("a permitted lane signature converts");
+        let lane_location = SignatureChannel::from_sig(&lane_authority)
+            .par
+            .encode_to_vec();
+        lane_keys.push((lane_authority, lane_location, lane.classes));
+    }
+    let owner_classes = (0..schedule.classes.len()).collect::<Vec<_>>();
+    let permissions = std::iter::once((&authority, &location, owner_classes.as_slice()))
+        .chain(
+            lane_keys
+                .iter()
+                .map(|(lane_authority, lane_location, classes)| {
+                    (lane_authority, lane_location, *classes)
+                }),
+        )
+        .flat_map(|(authority, location, classes)| {
+            classes
+                .iter()
+                .map(move |class| (authority, location, *class))
+        })
+        .map(|(authority, location, class)| {
             PhloResource {
-                location: &location,
+                location,
                 class,
                 acquisition_terms: &acquisition_terms,
-                authority: &authority,
+                authority,
             }
             .wire_key(PhloExecutionLimits {
                 resource_entries: 1,
@@ -133,7 +221,8 @@ pub fn owner_offer_limited(
             })
             .expect("a resource permission encodes")
         })
-        .collect();
+        .collect::<Vec<_>>();
+    let permission_count = permissions.len();
     let source = PhloSourcePolicyV1::new(
         &payer.custody_key,
         OFFER_SOURCE_CAP,
@@ -142,7 +231,10 @@ pub fn owner_offer_limited(
         permissions,
         PhloSourceLimits {
             wire: limits.funding.wire,
-            resource_permissions: schedule.classes.len(),
+            // Changed by H1 (bug 11420, DR-126): the count includes the
+            // permitted lanes.
+            // resource_permissions: schedule.classes.len(),
+            resource_permissions: permission_count,
             authority_nodes: limits.funding.authority_nodes,
         },
     )

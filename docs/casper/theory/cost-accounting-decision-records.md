@@ -15155,3 +15155,130 @@ as given.
 [The economic failure observation](cost-accounting-impl/economic-failure-observation.md)
 and
 [the economic failure policy decisions](cost-accounting-impl/economic-failure-policy-decisions.md).
+
+## DR-126 — The prepaid selection searches forward (bug 11420)
+
+**Status.** Implemented 2026-10-12 for bug 11420 of epic 8946. Step H1 of G3
+design v5 (section 1.1) is the design, and the user approved the step.
+
+**Context.**
+
+- A captured stack can hold cells of several lanes. Each born cell takes its
+  location from its own authority (`born_resource` in `producer.rs`).
+- The selection `select_measured_demand` gives each cell of a receipt record
+  one measured demand occurrence. A cell takes only a free occurrence of its
+  match class: its resource shape and the current form of its stack cell.
+- Before this record, every cell scanned the occurrences from position 0. So
+  each cell took the least free matching occurrence anywhere.
+- The encoder copies the positions of a draw in cell order
+  (`encode_measured_prepaid_delta` in `offered_evidence.rs`). The canonical
+  check of the evidence needs strictly increasing positions in each draw
+  (`NativePrepaidDeltaV1::check` in `sections.rs`), and encoding runs that
+  check.
+- So a stack `[a, b]` against a run that measured lane b before lane a gave
+  the positions `[1, 0]`. Encoding then failed as Noncanonical after
+  execution.
+- The producer wrapped the error as `OfferedCandidateRejected` and
+  quarantined the envelope. The executed work was free.
+
+**Decision.**
+
+1. Cell j of a record searches only the free occurrences above the occurrence
+   of cell j − 1. A miss ends the prefix. Each cell then reads each position
+   at most once in a record.
+2. The rest of the selection does not change. The first strictly longest
+   prefix of each stack wins. The used positions and the drawn receipt
+   records stay excluded, and the draw limit applies as before.
+3. The selection moved to the generic function `select_prefixes` in
+   `demand.rs`. The unit test and the property test call the same function
+   that production calls. `select_measured_demand` keeps its entry limit, its
+   reservations and its comparison in the same order.
+4. The cell match stays by form, as the binding section of
+   [prepaid receipt storage](cost-accounting-impl/prepaid-receipt-storage.md)
+   requires.
+
+**Why no valid evidence changes.** Let $`M_c`$ be the set of occurrence
+positions of match class $`c`$. Only cells of class $`c`$ take positions in
+$`M_c`$.
+
+- Lemma 1, agreement. Suppose the old positions $`p_0 < \dots < p_{k-1}`$ of
+  a record strictly increase. Each $`p_j`$ is the least free position of
+  $`M_{c_j}`$, and it lies above $`p_{j-1}`$. So the forward search finds the
+  same $`p_j`$. Where the old scan finds no position for cell k, the forward
+  scan finds none either.
+- Lemma 2, no gain. The forward prefix of a record is never longer than the
+  old prefix. Suppose the forward scan placed cells 0 to k and the old scan
+  stopped at cell k, of class c. Let n be the number of class-c cells among
+  cells 0 to k. The old scan placed n − 1 of them and covered every free
+  position of $`M_c`$. The forward scan placed all n on distinct free
+  positions of $`M_c`$. So $`n \le n - 1`$, which is false.
+- The theorem. Take the stacks in captured order. Suppose the old scan keeps
+  record r, the first record of greatest length L, and r is canonical.
+  - By Lemma 1, the forward scan gives r the same positions.
+  - By Lemma 2, every other record gets at most its old length. The records
+    before r stay shorter than L.
+  - So the forward scan also keeps r, and both scans mark the same positions
+    as used.
+- Every committed block passed the canonical check. So no committed block
+  changes, and the draw limit sees the same draws.
+
+**Consensus notes.**
+
+- Play and replay run the same selection, so they give the same positions.
+- The forward scan reads fewer positions, so it reserves less host work for
+  the search and the comparisons. No evidence records host work.
+- Protocol 6 is unreleased and activates with the branch binary (DR-66), so
+  version skew is not a concern.
+- A run whose old positions were not canonical now settles. The cells above
+  the end of the prefix stay in their stack, and the run pays their
+  occurrences fresh.
+
+**Formal model.** `PrepaidOccurrenceSelection.v` models the scan with match
+classes as natural numbers. It proves `forward_agrees_on_increasing_prefix`,
+`forward_never_lengthens`, `forward_preserves_canonical_selection` and
+`forward_selection_canonical`. The negative control
+`nc_cell_order_positions_noncanonical` computes the positions `[1, 0]` of the
+old rule. `forward_selection_on_the_bug_example` computes both rules on the
+example of the bug. The module has no axiom, and the proof gate queries each
+theorem with `Print Assumptions`.
+
+**Verification.**
+
+- Failing first, at HEAD ee9ef21df:
+  - The API test `a_stack_funds_its_first_cell_when_the_run_measures_its_second_lane_first`
+    in `offered_prepaid_api_test.rs` births `a :: b :: ()` with one class
+    for each lane. Its consumer measures lane b before lane a, because a peek
+    on `@"draw-b"` waits for the stored lane b datum.
+  - Hypothesis: the producer quarantines the consumer after execution.
+    Result: confirmed. The proposer created no block and recorded "native
+    evidence section contains a noncanonical field".
+  - With the selection moved and the old scan kept, the unit test
+    `a_stack_against_occurrences_in_reverse_order_draws_a_forward_prefix`
+    failed with `Err(Noncanonical)`. The property test against a test copy of
+    the old selection found the counterexample occurrences `[(1, 1), (2, 0)]`
+    with a stack of forms `[0, 1, 0]`.
+- After the fix:
+  - The unit test draws one cell at position 1, and the delta encodes.
+  - The property test (1024 cases) finds the old selection again wherever it
+    is canonical, and a canonical selection everywhere else.
+  - The API test settles on three validators with equal receipts. Its draw
+    takes the born stack with strictly increasing positions. This run also
+    measures lane b after lane a, so cell b takes that later occurrence.
+- Suites:
+  - casper (nextest, release, 8 test threads): 1809 of 1813 tests pass with
+    the provisional caps, and 1807 of 1813 with the committed caps. 14 tests
+    are skipped. The three new tests pass.
+  - The failures are the known failures: 4 with the provisional caps and 6
+    with the committed caps. Each failure set equals the ee9ef21df run test by
+    test.
+  - Two committed-cap messages show another host-work usage number for the
+    two registry tests. Two repeats at the same build gave other numbers
+    again, so that number varies from run to run.
+- The proof gate passes in cost-accounting-only mode with 292 modules and 3353
+  closed assumption queries.
+- `cargo fmt --check`, the workspace doctests and
+  `cargo clippy --workspace --all-targets -- -D warnings` pass. The
+  documentation syntax and formal source substance checks pass.
+
+**Cross-refs.** DR-66, DR-87, DR-113. Bug 11420. G3 design v5 section 1.1.
+[Prepaid receipt storage](cost-accounting-impl/prepaid-receipt-storage.md).

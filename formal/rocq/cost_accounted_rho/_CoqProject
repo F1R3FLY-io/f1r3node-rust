@@ -521,6 +521,7 @@ theories/ClosedDemandBound.v
 theories/BoundKindSoundness.v
 theories/PlanComputeDominates.v
 theories/HeldCapacityGuard.v
+theories/PrepaidOccurrenceSelection.v
 theories/RuntimeAuthorityScope.v
 theories/StackTransferConservation.v
 theories/OrderedStackMaterialization.v
