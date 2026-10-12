@@ -15,50 +15,51 @@ The [decision register](decision-register.md) records the decisions that fix the
 
 | Term | Part | Term | Part |
 |---|---|---|---|
-| [Acceptance category](#acceptance-category) | 2 | [Namespace tag](#namespace-tag) | 2 |
-| [Accounting observer](#accounting-observer) | 1 | [Native backend](#native-backend) | 2 |
-| [Admission verdict](#admission-verdict) | 2 | [Native play](#native-play) | 2 |
-| [Advisory query](#advisory-query) | 2 | [Native replay](#native-replay) | 2 |
-| [Agent](#agent) | 1 | [Native space](#native-space) | 2 |
-| [Agent route](#agent-route) | 2 | [Negative control](#negative-control) | 2 |
-| [Agent-minted name](#agent-minted-name) | 2 | [Net write](#net-write) | 2 |
-| [Allocation job](#allocation-job) | 2 | [Op channel](#op-channel) | 2 |
-| [Allocator](#allocator) | 2 | [Operation order](#operation-order) | 2 |
-| [Binding](#binding) | 2 | [Outcome](#outcome) | 2 |
-| [Block](#block) | 1 | [Outer store](#outer-store) | 2 |
-| [Body capability](#body-capability) | 2 | [Pairing](#pairing) | 2 |
-| [Body channel](#body-channel) | 2 | [Par](#par) | 1 |
-| [Bundle](#bundle) | 1 | [Param rule](#param-rule) | 2 |
-| [Canonical form](#canonical-form) | 2 | [Path](#path) | 2 |
-| [Canonical group](#canonical-group) | 2 | [Path marker](#path-marker) | 2 |
-| [Canonical order](#canonical-order) | 2 | [Pattern](#pattern) | 1 |
-| [Capacity](#capacity) | 2 | [Peek](#peek) | 1 |
-| [Cascade](#cascade) | 2 | [Persistent](#persistent) | 1 |
-| [Cell](#cell) | 2 | [pgmcp](#pgmcp) | 1 |
-| [Channel](#channel) | 1 | [Phlo](#phlo) | 1 |
-| [Checkpoint](#checkpoint) | 1 | [Play](#play) | 1 |
-| [Class fire](#class-fire) | 2 | [Prefix atomicity](#prefix-atomicity) | 2 |
-| [Class key](#class-key) | 2 | [Prefix source](#prefix-source) | 2 |
-| [Collection](#collection) | 2 | [Process](#process) | 1 |
-| [Collection counter](#collection-counter) | 2 | [Produce counter](#produce-counter) | 2 |
-| [Collection key](#collection-key) | 2 | [Property-based test](#property-based-test) | 1 |
-| [COMM event](#comm-event) | 1 | [Qualifier](#qualifier) | 2 |
-| [Config record](#config-record) | 2 | [Random state](#random-state) | 1 |
-| [Conformance kit](#conformance-kit) | 2 | [Re-issue](#re-issue) | 2 |
-| [Consensus-preservation checklist](#consensus-preservation-checklist) | 2 | [Re-offer](#re-offer) | 2 |
-| [Conservative extension](#conservative-extension) | 2 | [Re-rooting](#re-rooting) | 2 |
-| [Constructor schema](#constructor-schema) | 2 | [Re-store](#re-store) | 2 |
-| [Continuation](#continuation) | 1 | [Receive](#receive) | 1 |
-| [Counter meta-channel](#counter-meta-channel) | 2 | [Recognized position](#recognized-position) | 2 |
-| [Crossed stacks](#crossed-stacks) | 2 | [Reconciler](#reconciler) | 2 |
-| [Datum](#datum) | 1 | [Record envelope](#record-envelope) | 2 |
-| [Deploy](#deploy) | 1 | [Record id](#record-id) | 2 |
-| [Dirty collection](#dirty-collection) | 2 | [Recorded process](#recorded-process) | 2 |
-| [Dyadic number](#dyadic-number) | 2 | [Reduction participant](#reduction-participant) | 2 |
-| [Eligible set](#eligible-set) | 2 | [Reference agent](#reference-agent) | 2 |
-| [Embedding](#embedding) | 2 | [Registered family](#registered-family) | 2 |
-| [Epoch closure](#epoch-closure) | 2 | [Regression corpus](#regression-corpus) | 2 |
-| [Evaluation scope](#evaluation-scope) | 2 | [Reified RSpace](#reified-rspace) | 2 |
+| [Acceptance category](#acceptance-category) | 2 | [Name](#name) | 1 |
+| [Accounting observer](#accounting-observer) | 1 | [Namespace tag](#namespace-tag) | 2 |
+| [Admission verdict](#admission-verdict) | 2 | [Native backend](#native-backend) | 2 |
+| [Advisory query](#advisory-query) | 2 | [Native play](#native-play) | 2 |
+| [Agent](#agent) | 1 | [Native replay](#native-replay) | 2 |
+| [Agent route](#agent-route) | 2 | [Native space](#native-space) | 2 |
+| [Agent-minted name](#agent-minted-name) | 2 | [Negative control](#negative-control) | 2 |
+| [Allocation job](#allocation-job) | 2 | [Net write](#net-write) | 2 |
+| [Allocator](#allocator) | 2 | [Op channel](#op-channel) | 2 |
+| [Binding](#binding) | 2 | [Operation order](#operation-order) | 2 |
+| [Block](#block) | 1 | [Outcome](#outcome) | 2 |
+| [Body capability](#body-capability) | 2 | [Outer store](#outer-store) | 2 |
+| [Body channel](#body-channel) | 2 | [Pairing](#pairing) | 2 |
+| [Bundle](#bundle) | 1 | [Par](#par) | 1 |
+| [Canonical form](#canonical-form) | 2 | [Param rule](#param-rule) | 2 |
+| [Canonical group](#canonical-group) | 2 | [Path](#path) | 2 |
+| [Canonical order](#canonical-order) | 2 | [Path marker](#path-marker) | 2 |
+| [Capacity](#capacity) | 2 | [Pattern](#pattern) | 1 |
+| [Cascade](#cascade) | 2 | [Peek](#peek) | 1 |
+| [Cell](#cell) | 2 | [Persistent](#persistent) | 1 |
+| [Channel](#channel) | 1 | [pgmcp](#pgmcp) | 1 |
+| [Checkpoint](#checkpoint) | 1 | [Phlo](#phlo) | 1 |
+| [Class fire](#class-fire) | 2 | [Play](#play) | 1 |
+| [Class key](#class-key) | 2 | [Prefix atomicity](#prefix-atomicity) | 2 |
+| [Collection](#collection) | 2 | [Prefix source](#prefix-source) | 2 |
+| [Collection counter](#collection-counter) | 2 | [Process](#process) | 1 |
+| [Collection key](#collection-key) | 2 | [Produce counter](#produce-counter) | 2 |
+| [COMM event](#comm-event) | 1 | [Property-based test](#property-based-test) | 1 |
+| [Config record](#config-record) | 2 | [Qualifier](#qualifier) | 2 |
+| [Conformance kit](#conformance-kit) | 2 | [Random state](#random-state) | 1 |
+| [Consensus-preservation checklist](#consensus-preservation-checklist) | 2 | [Re-issue](#re-issue) | 2 |
+| [Conservative extension](#conservative-extension) | 2 | [Re-offer](#re-offer) | 2 |
+| [Constructor schema](#constructor-schema) | 2 | [Re-rooting](#re-rooting) | 2 |
+| [Continuation](#continuation) | 1 | [Re-store](#re-store) | 2 |
+| [Counter meta-channel](#counter-meta-channel) | 2 | [Receive](#receive) | 1 |
+| [Crossed stacks](#crossed-stacks) | 2 | [Recognized position](#recognized-position) | 2 |
+| [Datum](#datum) | 1 | [Reconciler](#reconciler) | 2 |
+| [Deploy](#deploy) | 1 | [Record envelope](#record-envelope) | 2 |
+| [Dirty collection](#dirty-collection) | 2 | [Record id](#record-id) | 2 |
+| [Dyadic number](#dyadic-number) | 2 | [Recorded process](#recorded-process) | 2 |
+| [Eligible set](#eligible-set) | 2 | [Reduction participant](#reduction-participant) | 2 |
+| [Embedding](#embedding) | 2 | [Reference agent](#reference-agent) | 2 |
+| [Epoch closure](#epoch-closure) | 2 | [Registered family](#registered-family) | 2 |
+| [Evaluation scope](#evaluation-scope) | 2 | [Regression corpus](#regression-corpus) | 2 |
+| [Event coverage](#event-coverage) | 2 | [Reified RSpace](#reified-rspace) | 2 |
 | [Event log](#event-log) | 1 | [Replay](#replay) | 1 |
 | [Exact cut](#exact-cut) | 2 | [Reporting](#reporting) | 1 |
 | [Exact value](#exact-value) | 2 | [Representative](#representative) | 2 |
@@ -117,7 +118,6 @@ The [decision register](decision-register.md) records the decisions that fix the
 | [Mirror journal](#mirror-journal) | 2 | [Widest kind](#widest-kind) | 2 |
 | [Mirror writer](#mirror-writer) | 2 | [Witness test](#witness-test) | 2 |
 | [Model map](#model-map) | 2 | [Write skew](#write-skew) | 2 |
-| [Name](#name) | 1 |  |  |
 
 ## Part 1: background terms
 
@@ -1607,6 +1607,14 @@ Replay produces the recorded reply and asks no service, so nodes with different 
 
 An advisory query asks the [mirror](#mirror) for the ids of the records nearest to a query, through `rho:vectordb:ann`.
 Its answer is a hint: only the query param `ids` of a receive turns the ids into a decision, and the exact engine decides.
+
+### Event coverage
+
+Event coverage holds for a deploy when its event log names every channel whose records, waiting continuations or join entries the deploy changes.
+A [merge](#merge) reads only the channels that the event log of a branch names, so a change on another channel is lost in every merge.
+The check merges the event log of a deploy over the pre-state of the deploy.
+It requires the post-state root of the deploy (P9 design v2, amendment A4).
+The test `space_event_coverage_debug_assert` runs the check for each family program and for each deploy of the merge suite of P9 ([verification §34.3](verification.md#343-step-2-n1-n9-the-merge-across-blocks-and-the-event-coverage)).
 
 ## References
 

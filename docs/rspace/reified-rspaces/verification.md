@@ -6467,6 +6467,106 @@ The regression test `space_native_allocations_keep_an_authority` runs on an Arra
 It plays two deploys with one `new` each, and one deploy with two nested `new`s.
 Native replay certifies each deploy, and each allocator record carries a cost authority.
 
+#### 34.3.2 N1 and N9
+
+Native replay keeps no event log, so N1 checks events through the trace binding (design v2, amendment A1).
+The trace binding requires that the log of play is exactly the events of the journal rows, in preorder.
+Replay authenticates each operation, and the completeness check requires every row.
+So `assert_reproduces` is the event check of N1, and two negative controls show that the binding refuses a log in another order.
+Each program forwards each delivery to the public channel `rrs-native-out`, so the post-state root witnesses the order of the deliveries.
+
+*Table 192. The tests of `rholang/tests/reified_n1_replay.rs`.*
+
+| Test | Property | Result |
+|---|---|---|
+| `n1_parked_wake_across_deploys_replay_equal` | Deploy 1 parks a waiter on a native bag space and a stored consume on the reference agent. Deploy 2 sends a value that matches neither, and deploy 3 wakes both. Each deploy certifies from its own pre-state. | Pass |
+| `n1_failed_deploy_reverts_replay_equal` | A deploy commits a queue write through the handle, and then aborts with `CellOccupied`. Native replay reproduces the failure and the root of play. The block continues from the pre-state, as Casper settles a user failure (`settlement_root`), and the next deploy sees the pre-state. | Pass |
+| `n1_k_comm_replay_equal` | A same-space join, a set retirement over $`[D; n]`$ and a VectorDB list delivery each log a COMM with two produces, and native replay reproduces each play. | Pass |
+| `n1_trace_binding_rejects_swapped_events` | Negative control: the log of the join program with two adjacent distinct events swapped fails the trace binding. The log of play passes it. | Pass |
+| `n1_trace_binding_rejects_permuted_comm` | Negative control: the log of the join program with the produce list of its COMM reversed fails the trace binding. | Pass |
+| `n9_run_twice_assert_canonical_equal` | Two fresh native runtimes give the same roots, outputs, event logs, evidence bytes, phlo and host work for the 24 family programs on one chain, and for the six deploys of the conformance kit of the reference agent. | Pass |
+
+N9 compares host work only play against play, because native replay charges more host work than play ([decision 79](decision-register.md#decision-79)).
+
+*Table 193. The other rows of N1 and their existing tests.*
+
+| Row | Existing test |
+|---|---|
+| The space operations of the 24 families | `space_native_replay_equal_hashmap`, `_pathmap`, `_array` and `_vector` (`rholang/tests/reified_native_spaces.rs`) |
+| The factory and the handle calls | `space_native_handle_calls_after_factory` (`reified_native_spaces.rs`) |
+| The similarity queries of VectorDB | `space_native_vectordb_replay_equal` (`reified_native_spaces.rs`) |
+| `temp` spaces | The native suites of P7 (`rholang/tests/reified_temp_seq.rs`) |
+| `seq` spaces | The HashSet suite of P7 (`rholang/tests/reified_hashset.rs`) |
+
+#### 34.3.3 The merge across blocks
+
+The suite `rholang/tests/reified_cross_block_merge.rs` runs in native execution (design v2, amendment A6).
+Block 1 creates a space and draws four names from it.
+It stores a record, parks a persistent and a linear waiter, and writes and takes one record on the fourth name.
+Two branches then play one deploy each on the root of block 1, as two sibling blocks do.
+The rig builds the merge index of each branch as Casper does, and it computes the conflict-free merged state with the shared merge functions.
+It does not reproduce Casper's rejection choice, dedup or edges between the deploys of one block (amendment A7).
+
+*Table 194. The rows of the merge across blocks.*
+
+| Test | Families | Result |
+|---|---|---|
+| `space_cross_block_merge_unordered_writes` | Bag, set and VectorDB | No conflict. The merged root equals the root of both serial orders. Block 3 takes the records of both branches, and the set holds one class. |
+| `space_cross_block_merge_ordered_operations_race_on_the_counter` | Queue, stack, cell and priority queue | The branches race on the collection counter only (M-1), also when one branch takes its own record. Without the counter events they merge. |
+| `space_cross_block_merge_persistent_waiter_fired_on_both_branches` | All seven | The ordered families race on the counter ([decision 31](decision-register.md#decision-31)). The unordered families merge, and block 3 fires the waiter again. |
+| `space_cross_block_merge_linear_waiter_fired_on_both_branches` | All seven | Every family races on the waiter in merge check #1. The ordered families also race on the counter. |
+| `space_cross_block_merge_new_in_use_races_on_the_allocator` | Array and Vector queues | The branches race on the allocator. Each branch makes the index name 4. Without the allocator events they merge. |
+| `space_cross_block_merge_pathmap_writes_race_on_the_token` | PathMap bag | The branches race on the space token. Without the token events they merge. |
+| `space_cross_block_merge_distinct_spaces` | Two queue spaces of block 1 | No conflict, and each branch touches only the counter of its own space. |
+| `space_cross_block_merge_own_spaces` | A queue space of each branch | No conflict. The two spaces have distinct ids. |
+| `space_cross_block_merge_agent_calls_race_on_its_state` | The reference agent | The branches race in merge check #1 on ordinary channels only, as two calls of a contract with a state cell do. |
+
+In every row, each branch succeeds and delivers its values.
+Its log touches the counter, the token or the allocator of its row, or no counter for an unordered family.
+Its merge index holds its space events, and no mergeable channel of a deploy is a Reified channel (item 19 of the consensus checklist).
+For a conflict-free row, block 3 runs on the merged root in a restarted runtime, and native replay reproduces it.
+Block 3 on the root of a serial order gives the same root, phlo and host work.
+For a conflict row, block 3 runs on the root of the left branch, and native replay reproduces it.
+
+Two test errors of the first run were corrected without a code change.
+A persistent waiter takes no query in source text, so the VectorDB seed parks its persistent waiter without a query ([specification VD-3](specification.md#39-vectordb)).
+Block 1 now makes the collection of the fourth name, so the ordered rows race on its collection counter.
+Before, the first operation of each branch created that counter from the space counter.
+So the branches raced on the space counter, as first operations do (M-1).
+
+#### 34.3.4 Event coverage
+
+Design v2 asks for the measurement R3 before the merge rows.
+The check of amendment A4 merges the log of a deploy over its pre-state, and it requires the post-state root of the deploy ([event coverage](glossary.md#event-coverage)).
+The test `space_event_coverage_debug_assert` runs it for these deploys:
+
+- The 24 family programs with the qualifier `default`, and again with `temp`.
+- The six HashSet families with `seq`.
+- The five stored families of P7, with a creation deploy and a touch deploy each, on one chain.
+- The six deploys of the conformance kit of the reference agent.
+
+Every deploy of every row of section 34.3.3 also passes the check.
+The check held for every deploy on its first run.
+Its negative control, `space_event_coverage_names_dropped_channels`, drops the counter events of a queue branch and the token events of a PathMap branch.
+The reproduction then fails, and the diagnostic names the dropped channel.
+The check runs in every build profile, and the test name keeps the word of the plan.
+
+#### 34.3.5 The gates of step 2
+
+*Table 195. The gates of step 2.*
+
+| Gate | Result |
+|---|---|
+| `cargo test --release -p rholang --no-fail-fast`, after the fix of section 34.3.1 | 4,306 passed, 1 failed and 6 ignored, in 91 test binaries. The one failure was the corpus gate of step 0 (section 34.1), which the repair of that section closes. |
+| `cargo test --release -p rholang --test reified_source_normalization`, after the repair | 2 passed |
+| `cargo test --release -p rholang --test reified_cross_block_merge` | 11 passed. The filter `space_cross_block_merge` of the tracker selects the 9 rows. |
+| `cargo test --release -p rholang --test reified_n1_replay` | 6 passed |
+| `cargo test --release -p rholang --test reified_native_spaces` | 16 passed, with the regression test of section 34.3.1 |
+| `cargo clippy -p rholang --lib --tests -- -D warnings` | No warning |
+| `rustfmt --check` of the changed and the new test files | No difference |
+| The 40 checkers of the campaign, and the document lint | 40 passed |
+| I-14: the two empty-state-hash tests of `runtime_spec.rs` in release | 2 passed |
+
 ## References
 
 <a id="ref-ch00"></a>[CH00] K. Claessen and J. Hughes, "QuickCheck: a lightweight tool for random testing of Haskell programs," in *Proceedings of the Fifth ACM SIGPLAN International Conference on Functional Programming (ICFP 2000)*, ACM, 2000, pp. 268–279. [doi:10.1145/351240.351266](https://doi.org/10.1145/351240.351266)
