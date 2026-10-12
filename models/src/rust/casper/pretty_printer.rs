@@ -156,6 +156,7 @@ mod tests {
                 valid_after_block_number: 5,
                 shard_id: "root".to_string(),
                 expiration_timestamp: None,
+                parameters: Vec::new(),
             },
             Box::new(secp256k1),
             sec,
@@ -303,6 +304,7 @@ mod tests {
             valid_after_block_number: 0,
             shard_id: "root".to_string(),
             expiration_timestamp: None,
+            parameters: Vec::new(),
         };
         assert_eq!(
             PrettyPrinter::build_string_deploy_data(&deploy),
