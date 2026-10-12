@@ -118,5 +118,5 @@ does not propose is counted in consensus while contributing nothing to it.
   dragging the import window below its intended floor. Keep the logs.
 - **It reaches Running but a bonded validator never proposes.** Being bonded is
   not enough: the validator enters the active set only at an epoch boundary.
-  Note that `/api/status`'s `isValidator` reports whether autopropose is
-  enabled, not whether the node is a bonded validator.
+  `/api/status` reports `isValidator: true` when the node has a configured
+  validator key. This field does not report current bond status.
