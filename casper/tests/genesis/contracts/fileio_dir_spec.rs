@@ -593,18 +593,19 @@ in {{
     assert_eq!(src_bytes, b"copy me", "source content preserved");
 }
 
-/// SEC-1(A) end-to-end: `Fs.revoke()` is the ambient-authority
-/// off switch, but it MUST NOT cascade to previously-minted File /
-/// Dir caps.  The Fs.rho docstring (lines 204-212) states:
+/// Non-cascading-revoke end-to-end: `Fs.revoke()` is the ambient-
+/// authority off switch, but it MUST NOT cascade to previously-
+/// minted File / Dir caps.  The Fs.rho docstring (lines 204-212)
+/// states:
 ///
 ///   > Previously-minted File/Dir caps are unaffected — they are
 ///   > independent agents.  See spec §Revocation for the normative
-///   > semantics (SEC-1(A): revoke does NOT cascade to previously-
-///   > minted caps).
+///   > semantics (revoke does NOT cascade to previously-minted
+///   > caps).
 ///
 /// This test pins that invariant end-to-end at the Rholang API
-/// surface.  Shape (three sub-assertions in a single contract so
-/// state threads through the same deploy):
+/// surface.  Shape (six chained sub-assertions in a single contract
+/// so state threads through the same deploy):
 ///
 ///   1. Pre-revoke, `Fs.openDir("shareddir", {})` returns
 ///      `[true, dirCap]`.  Store the dirCap on a private channel.
@@ -613,7 +614,7 @@ in {{
 ///      return `[false, "FSERR_REVOKED", _]` — the ambient Fs cap
 ///      is inert.
 ///   4. The *stored* dirCap must still answer `exists("child.txt")`
-///      with `[true, true]` — SEC-1(A) non-cascade.
+///      with `[true, true]` — pre-held cap unaffected.
 ///   5. The stored dirCap's `openFile("child.txt", {"mode": "r"})`
 ///      must return `[true, fileCap]` — minting a NEW sub-cap from
 ///      a PRE-revoke Dir cap after revoke is permitted (the Dir
@@ -626,7 +627,8 @@ in {{
 /// Regression value: a future refactor that routes File / Dir
 /// method dispatch through an `fsRevokedP` peek (e.g., someone adds
 /// a "revoke everything" switch to the agent trees) would silently
-/// break SEC-1(A) and this test would catch it immediately.
+/// break the non-cascade invariant and this test would catch it
+/// immediately.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn fs_revoke_leaves_pre_held_dir_cap_live() {
     let child_bytes = b"non-cascade payload"; // 19 bytes
@@ -648,7 +650,7 @@ in {{
   rl!(`rho:id:zphjgsfy13h1k85isc8rtwtgt3t9zzt5pjd5ihykfmyapfc4wt3x5h`, *RhoSpecCh) |
   for(@(_, RhoSpec) <- RhoSpecCh) {{
     @RhoSpec!("testSuite",
-      [("Fs.revoke() leaves pre-held Dir cap live (SEC-1(A) non-cascade)",
+      [("Fs.revoke() leaves pre-held Dir cap live (non-cascade)",
         *test_revoke_leaves_pre_held_dir_cap_live)])
   }} |
 
@@ -681,7 +683,7 @@ in {{
                                         [true, bytes] => {{
                                           rhoSpec!("assert",
                                             (bytes, "==", "{hex_payload}".hexToBytes()),
-                                            "SEC-1(A) full chain: revoke -> ambient inert, pre-held dirCap still mints & reads",
+                                            "full chain: revoke -> ambient inert, pre-held dirCap still mints & reads",
                                             *ackCh)
                                         }}
                                         _ => {{
