@@ -45,6 +45,7 @@ fn create_deploy(
         valid_after_block_number,
         shard_id: "test-shard".to_string(),
         expiration_timestamp,
+        parameters: Vec::new(),
     };
 
     Signed::create(deploy_data, Box::new(Secp256k1), validator_sk.clone())

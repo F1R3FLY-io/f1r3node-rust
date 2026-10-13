@@ -99,6 +99,64 @@ async fn replay_compute_state(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn deploy_parameters_compute_and_replay_the_same_state() {
+    use crypto::rust::signatures::secp256k1::Secp256k1;
+    use models::rust::deploy_parameters::{DeployMapEntry, DeployParameter, RholangValue};
+
+    with_runtime_manager(
+        |mut runtime_manager, genesis_context, genesis_block| async move {
+            let pre_state = genesis_block.body.state.post_state_hash;
+            let mut data = construct_deploy::source_deploy_now_full(
+                "new input(`rho:deploy:param:input`) in { @\"parameter-result\"!(*input) }".into(),
+                Some(1_000_000),
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap()
+            .data;
+            data.parameters = vec![DeployParameter {
+                name: "input".into(),
+                value: RholangValue::Tuple(vec![
+                    RholangValue::Nil,
+                    RholangValue::Uri("rho:io:stdout".into()),
+                    RholangValue::List(vec![RholangValue::Int(-1), RholangValue::Bytes(vec![255])]),
+                    RholangValue::Set(vec![RholangValue::Int(2), RholangValue::Int(1)]),
+                    RholangValue::Map(vec![DeployMapEntry {
+                        key: RholangValue::String("key".into()),
+                        value: RholangValue::Bool(false),
+                    }]),
+                ]),
+            }];
+            let deploy = Signed::create(
+                data,
+                Box::new(Secp256k1),
+                construct_deploy::DEFAULT_SEC.clone(),
+            )
+            .unwrap();
+            let (post_state, processed) =
+                compute_state(&mut runtime_manager, &genesis_context, deploy, &pre_state).await;
+            assert!(!processed.is_failed);
+            assert!(processed.system_deploy_error.is_none());
+            let processed = ProcessedDeploy::from_proto(processed.to_proto()).unwrap();
+            let replay_state = replay_compute_state(
+                &mut runtime_manager,
+                &genesis_context,
+                processed,
+                &pre_state,
+            )
+            .await
+            .unwrap();
+            assert_ne!(post_state, pre_state);
+            assert_eq!(replay_state, post_state);
+        },
+    )
+    .await
+    .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn comput_state_should_charge_for_deploys() {
     with_runtime_manager(
         |mut runtime_manager, genesis_context, genesis_block| async move {
@@ -415,7 +473,7 @@ async fn pre_charge_deploy_should_reduce_user_account_balance_by_correct_amount(
                     pk: user_pk.clone(),
                     rand: Blake2b512Random::create_from_bytes(&[1]),
                 },
-                |result| *result == 0,
+                |result| *result == 0.into(),
             )
             .await
             .unwrap();
@@ -449,7 +507,7 @@ async fn pre_charge_deploy_should_reduce_user_account_balance_by_correct_amount(
                     pk: user_pk,
                     rand: Blake2b512Random::create_from_bytes(&[3]),
                 },
-                |result| *result == 9000000,
+                |result| *result == 9000000.into(),
             )
             .await
             .unwrap();
@@ -525,7 +583,7 @@ async fn balance_deploy_should_compute_rev_balances() {
                     pk: user_pk.clone(),
                     rand: Blake2b512Random::create_from_bytes(&[]),
                 },
-                |result| *result == 9000000,
+                |result| *result == 9000000.into(),
             )
             .await
             .unwrap();
@@ -877,7 +935,7 @@ async fn capture_result_should_return_the_value_at_the_specified_channel_after_a
                 .unwrap();
 
             assert!(result1.len() == 1);
-            assert!(result1[0] == ParBuilderUtil::mk_term("37").unwrap());
+            assert!(result1[0] == ParBuilderUtil::mk_term("37n").unwrap());
         },
     )
     .await

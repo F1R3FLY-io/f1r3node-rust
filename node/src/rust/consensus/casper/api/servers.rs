@@ -84,6 +84,7 @@ impl APIServers {
         native_token_name: String,
         native_token_symbol: String,
         native_token_decimals: u32,
+        has_validator_key: bool,
         is_node_read_only: bool,
         // Shared dependencies
         engine_cell: EngineCell,
@@ -115,6 +116,7 @@ impl APIServers {
             native_token_name,
             native_token_symbol,
             native_token_decimals,
+            has_validator_key,
             is_node_read_only,
             engine_cell,
             block_report_api,
