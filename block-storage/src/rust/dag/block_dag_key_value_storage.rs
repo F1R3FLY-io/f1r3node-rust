@@ -957,21 +957,6 @@ impl BlockDagKeyValueStorage {
             .set_watermark_if_absent(lowest_held)
     }
 
-    /// Marks the held ancestors of a restore anchor finalized. The anchor is
-    /// a last-finalized block, and every later finalization walk stops at
-    /// it, so nothing else reaches the blocks below.
-    pub fn record_anchor_ancestry_finalized(&self, anchor: &BlockHash) -> Result<(), KvStoreError> {
-        let _lock_guard = self.global_lock.write();
-        let dag = self.get_representation_internal()?;
-        let ancestors = dag.held_ancestors(anchor.clone(), |hash| !dag.is_finalized(hash))?;
-        if ancestors.is_empty() {
-            return Ok(());
-        }
-        self.block_metadata_index
-            .write()
-            .record_finalized(anchor.clone(), ancestors, 1.0)
-    }
-
     /// Test-only corruption helper (P2-16-style escape hatch): deletes the
     /// PERSISTED metadata row for a block while the in-memory DAG state
     /// still lists it, simulating a crash between the lifecycle ingest and
