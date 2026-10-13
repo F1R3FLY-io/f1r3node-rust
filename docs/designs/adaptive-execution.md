@@ -5,8 +5,9 @@
 - **Branch:** `perf/issue-24-adaptive-execution`
 - **Closes:** issue #24, "perf: block replay pipeline bottleneck limits sustained deploy throughput"
 - **Depends on:** the replication boundary of EPIC-025 (design PR #627, decision D7) and the lifecycle runtime of PR #651
+- **Mechanisms:** F1r3fly CbC Casper (`cbc-casper`) first. The RGB peer clique (`peer-clique`), Casanova (`casanova`), and Cordial Miners (`cordial-miners`) have provisions in section 11.
 - **Evidence source:** EPIC-021 and the issue #24 comments from 2026-08-27 to 2026-10-10
-- **Vocabulary:** [docs/Glossary.md](../Glossary.md). The new terms in section 18 go into the glossary when this design is approved.
+- **Vocabulary:** [docs/Glossary.md](../Glossary.md). The new terms in section 19 go into the glossary when this design is approved.
 
 ---
 
@@ -20,9 +21,11 @@ This design adds three parts to the node:
 2. A **closed-loop controller** that reads continuous telemetry and changes node-local work limits inside the bounds of the tier profile.
 3. **Degradation levels** that remove optional work and limit intake before the node misses deadlines, runs out of memory, or stops.
 
-The design is consensus-neutral. The controller is a node service on the lifecycle layer of the replication boundary. Each replication mechanism declares the controls and the signals that it supports. CBC Casper is the first mechanism to do this.
+The design is consensus-neutral. The controller is a node service on the lifecycle layer of the replication boundary. Each replication mechanism declares the controls and the signals that it supports. F1r3fly CbC Casper is the first mechanism to do this. Section 11 gives the provisions for the RGB peer clique, Casanova, and Cordial Miners.
 
-The implementation on this branch closes issue #24 for the CBC Casper mechanism.
+In the name F1r3fly CbC Casper, CbC qualifies the protocol. Used alone in this document, CbC names the verification process, for example a CbC claim.
+
+The implementation on this branch closes issue #24 for the F1r3fly CbC Casper mechanism (`cbc-casper`).
 
 ---
 
@@ -30,7 +33,7 @@ The implementation on this branch closes issue #24 for the CBC Casper mechanism.
 
 | ID | Decision | Date |
 |---|---|---|
-| A1 | The design is consensus-neutral. The controller is part of the node, on top of `ConsensusRuntime`. A mechanism declares its controls and signals through the adapter contract. The controller never calls mechanism internals. | 2026-10-13 |
+| A1 | The design is consensus-neutral. The controller is part of the node, on top of `ConsensusRuntime`. A mechanism declares its controls and signals through the adapter contract. The controller never calls the internals of F1r3fly CbC Casper, the RGB peer clique, Casanova, or Cordial Miners. | 2026-10-13 |
 | A2 | The controller changes node-local behavior only. No control changes the validity of a block, a commit, or any value that other validators check. The hardware tier never enters replicated state. | 2026-10-13 |
 | A3 | A startup probe selects the initial tier profile. A runtime controller then steps each control down or up with hysteresis, from live telemetry. | 2026-10-13 |
 | A4 | Telemetry stays local. The node exports Prometheus metrics and structured records tagged with the tier and the protocol identifier. Soak and test net runs collect these records. Central opt-in aggregation is Backlog item BACKLOG-FI-004. | 2026-10-13 |
@@ -108,7 +111,7 @@ flowchart TB
 | `TelemetryBus`, `AdaptiveController`, `DegradationLevel` | Node | This design |
 | Node-local controls | Node | This design |
 | Delivery of control updates to the adapter | Lifecycle | `ConsensusRuntime` and `AdapterContext` of PR #651, extended |
-| `AdaptationDescriptor`, mechanism controls and signals | Adapter | Each mechanism. CBC Casper first. |
+| `AdaptationDescriptor`, mechanism controls and signals | Adapter | Each mechanism. F1r3fly CbC Casper first, then the RGB peer clique, Casanova, and Cordial Miners (section 11). |
 
 The controller never reads mechanism state directly. It reads signals from the `TelemetryBus`. It sends control updates through `ConsensusRuntime`. This keeps the controller neutral, as decision D7 requires.
 
@@ -149,7 +152,13 @@ pub struct AdaptationDescriptor {
     pub protocol: ProtocolId,
     pub controls: Vec<ControlSpec>,
     pub signals: Vec<SignalSpec>,
+    pub required_duties: Vec<DutySpec>,
     pub degradation_order: Vec<ControlId>,
+}
+
+pub struct DutySpec {
+    pub id: DutyId,
+    pub deadline: Option<Duration>,
 }
 
 pub struct ControlUpdate {
@@ -206,7 +215,8 @@ The levels go from normal operation to the protection of liveness. The node chan
 
 Rules:
 
-- No level drops a duty that the mechanism marks as required. For CBC Casper, the required duties are block validation, finalization, and the proposals that the mechanism needs for liveness.
+- No level drops a duty that the mechanism marks as required. Section 11.1 lists the required duties of each mechanism.
+- No level delays a required duty past the protocol deadline that the mechanism declares for it (invariant I6).
 - A deploy that the node accepted is never dropped without a recorded rejection.
 - The node returns to a lower level with the same hysteresis rules as section 7.
 
@@ -235,7 +245,7 @@ Rules:
 
 ---
 
-## 10. CBC Casper binding
+## 10. F1r3fly CbC Casper binding
 
 The `cbc-casper` adapter supplies the first `AdaptationDescriptor`. The binding replaces fixed constants in `casper/src/rust/blocks/proposer/block_creator.rs` with controlled values. It does not change validation.
 
@@ -266,7 +276,42 @@ In the sustained-phase failures, deploys wait after inclusion. Admission control
 
 ---
 
-## 11. Determinism and safety
+## 11. Provisions for the other mechanisms
+
+The replication boundary design (PR #627, section 4) has four mechanisms in scope. This design must work for all four. Only F1r3fly CbC Casper has an implementation today. The other three mechanisms get their bindings when their adapters land.
+
+### 11.1 Mechanism table
+
+The controls and signals for the RGB peer clique, Casanova, and Cordial Miners are candidates. The owner of each adapter confirms or changes them in the adaptation descriptor of that adapter.
+
+| Mechanism | Identifier | State | Candidate controls | Candidate signals | Required duties |
+|---|---|---|---|---|---|
+| F1r3fly CbC Casper | `cbc-casper` | Implemented, adapter in PR #651 | Section 10.1 | Section 10.2 | Block validation, finalization, and the proposals that liveness needs |
+| RGB peer clique | `peer-clique` | Seal media `alpha`, clique `coming_soon` (RGB SoW2 workstream WS5) | Transactions admitted for each height, client-side validation concurrency, anchor poll interval | Time to commit a height, quorum certificate latency, anchor confirmation lag | Votes and certificate signatures for each height inside the protocol timeout, and anchoring to Bitcoin layer 1 and Lightning |
+| Casanova | `casanova` | `coming_soon` | Deploys admitted for each block, conflict-set evaluation concurrency | Round length, latency of the FTM-observed set, backlog of conflict votes | Votes on conflicting transactions, and participation in each round |
+| Cordial Miners | `cordial-miners` | `coming_soon`, adapter in issue #625 | Deploys admitted for each block, blocklace sync concurrency | Wave length, delay of the τ order, delay of the super-ratification of the wave leader | Participation in each wave, and the blocks that ratify the leader |
+
+### 11.2 Rules for each binding
+
+1. The binding declares its controls, signals, and required duties in an `AdaptationDescriptor` (section 6).
+2. The binding declares the protocol deadline of each required duty. Examples are the height timeout of the peer clique and the wave timeout of Cordial Miners.
+3. The binding shows invariants I1 to I6 (section 12) for its own controls.
+4. The binding supplies its default tier profiles and its soak profile (section 14.1).
+5. The binding adds no mechanism-specific code to the controller. If a mechanism needs a new kind of control, the controller gets a neutral control kind, and every mechanism can use it.
+
+### 11.3 Differences that the design must allow
+
+| Difference | Mechanisms | Effect on the design |
+|---|---|---|
+| No DAG and one transaction for each commit | RGB peer clique | Admission is per height, not per block. No control can use a DAG signal such as the last finalized block lag. |
+| Leader or wave timeouts | RGB peer clique, Cordial Miners | A slow node can miss a timeout and lose its turn. Invariant I6 protects required duties from all degradation levels. |
+| No leader, with votes on conflicts | Casanova | Admission limits can be on conflicting transactions. Vote work is a required duty. |
+| External anchoring | RGB peer clique | Anchor polling is a control. A missed anchor deadline is a signal. |
+| Proposer choice of deploys | F1r3fly CbC Casper, Casanova, Cordial Miners | For F1r3fly CbC Casper, other validators do not check the admission cap, so the cap is local. The Casanova and Cordial Miners bindings must confirm the same property. |
+
+---
+
+## 12. Determinism and safety
 
 The controller must not create disagreement between validators. These invariants apply:
 
@@ -277,12 +322,13 @@ The controller must not create disagreement between validators. These invariants
 | I3 | No control value, tier, or level is written into a block, a deploy, or replicated state. |
 | I4 | An accepted deploy is either included, rejected with a recorded reason, or expired under the existing lifespan rule. The controller never drops it without a record. |
 | I5 | The controller cannot remove a duty that the mechanism marks as required for safety or liveness. |
+| I6 | No control or degradation level delays a required duty past the protocol deadline that the mechanism declares for it. |
 
-I1, I2, and I3 make the design consensus-neutral. The binding for each mechanism must show these invariants for its own controls.
+I1, I2, and I3 make the design consensus-neutral. I6 matters most for mechanisms with leader, height, or wave timeouts. The binding for each mechanism must show these invariants for its own controls.
 
 ---
 
-## 12. Configuration
+## 13. Configuration
 
 ```hocon
 adaptive {
@@ -302,9 +348,9 @@ adaptive {
 
 ---
 
-## 13. Verification and soak profiles
+## 14. Verification and soak profiles
 
-### 13.1 Soak profile for each mechanism
+### 14.1 Soak profile for each mechanism
 
 Each mechanism supplies a soak profile with its workload, its deadlines, and its pass gate. This follows the modular soak decision of EPIC-014 (2026-10-11).
 
@@ -316,9 +362,18 @@ The `cbc-casper` profile closes issue #24 with these gates:
 4. No run shows an out-of-memory stop, a watchdog stop, or a guardian stop.
 5. The controller records show at least one step down and one step up in the high phase. This proves that the loop acts.
 
-Other mechanisms add their profiles when their adapters land.
+The other mechanisms supply their profiles with their adapters:
 
-### 13.2 Test levels
+| Mechanism | Soak profile | Gate shape |
+|---|---|---|
+| F1r3fly CbC Casper | `cbc-casper`, this epic | The gates above |
+| RGB peer clique | `peer-clique`, with its adapter | Commit latency for each height and anchor lag, on each host class and on the constrained tier |
+| Casanova | `casanova`, with its adapter | Round length and conflict-vote latency, on each host class and on the constrained tier |
+| Cordial Miners | `cordial-miners`, with the issue #625 adapter | Wave length and leader ratification delay, on each host class and on the constrained tier |
+
+Each profile also checks gate 4 (no out-of-memory, watchdog, or guardian stop) and gate 5 (the loop acts). The `stub` mechanism of TASK-025-8 runs the controller tests without a real mechanism.
+
+### 14.2 Test levels
 
 | Level | Method |
 |---|---|
@@ -329,24 +384,25 @@ Other mechanisms add their profiles when their adapters land.
 
 ---
 
-## 14. Migration order
+## 15. Migration order
 
 | Step | Task | Change | Condition |
 |---|---|---|---|
 | 1 | TASK-027-1 | This design | Maintainer approval |
 | 2 | TASK-027-2 | Telemetry signals and records, with no control changes | PR #651 merged into `dev` |
 | 3 | TASK-027-3 | Hardware probe and tier profiles | Step 2 |
-| 4 | TASK-027-4 | Controller and degradation levels, and the CbC claim for I1 to I5 | Step 3 |
-| 5 | TASK-027-5 | `cbc-casper` binding of the admission controls | Step 4 |
+| 4 | TASK-027-4 | Controller and degradation levels, and the CbC claim for I1 to I6 | Step 3 |
+| 5 | TASK-027-5 | F1r3fly CbC Casper (`cbc-casper`) binding of the admission controls | Step 4 |
 | 6 | TASK-027-6 | Sustained-phase fix from the TASK-021-13 attribution | TASK-021-13 result |
 | 7 | TASK-027-7 | Constrained tier CI and the `cbc-casper` soak profile | Step 5 |
 | 8 | TASK-027-8 | Close-out soak and the issue #24 report | Steps 6 and 7 |
+| 9 | TASK-027-9 | Adaptation descriptors, tier profiles, and soak profiles for the RGB peer clique, Casanova, and Cordial Miners | The adapter of each mechanism. This step does not block the close-out of issue #24. |
 
 Step 2 changes no behavior. Its records give the baseline that sets the thresholds of step 4.
 
 ---
 
-## 15. Non-goals
+## 16. Non-goals
 
 - Changes to consensus parameters or block validity rules.
 - Shard-wide coordination of tiers between validators.
@@ -356,7 +412,7 @@ Step 2 changes no behavior. Its records give the baseline that sets the threshol
 
 ---
 
-## 16. Risks
+## 17. Risks
 
 | Risk | Control |
 |---|---|
@@ -368,7 +424,7 @@ Step 2 changes no behavior. Its records give the baseline that sets the threshol
 
 ---
 
-## 17. Open questions
+## 18. Open questions
 
 | ID | Question |
 |---|---|
@@ -377,10 +433,11 @@ Step 2 changes no behavior. Its records give the baseline that sets the threshol
 | Q3 | Does the heartbeat wait belong to the controller, or does a separate fix remove the empty-block cost (issue #24 item 4)? |
 | Q4 | The replication boundary design leaves deploy pool ownership open (its question Q8). If the node owns the pool, API intake and admission are one control. If the adapter owns the pool, they are two controls. |
 | Q5 | Is a mixed-tier shard test in CI possible on the current runners, or does it need the test net of EPIC-014? |
+| Q6 | Who owns the adaptation descriptors and soak profiles of the RGB peer clique, Casanova, and Cordial Miners? EPIC-014 gives each mechanism its own test net and design record. |
 
 ---
 
-## 18. Terms
+## 19. Terms
 
 | Term | Meaning |
 |---|---|
@@ -390,3 +447,4 @@ Step 2 changes no behavior. Its records give the baseline that sets the threshol
 | Degradation level | One of the levels L0 to L3 in section 8 |
 | Adaptation descriptor | The list of controls and signals that a mechanism declares |
 | Soak profile | The workload, the deadlines, and the pass gate that a mechanism supplies for its soak |
+| Required duty | Work that a mechanism needs for safety or liveness. No degradation level removes it or delays it past its deadline. |

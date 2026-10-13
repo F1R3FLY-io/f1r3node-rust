@@ -611,10 +611,11 @@ related_epics:
   EPIC-021: "Issue #24 root-cause epic. It keeps its measurement and fix history. Its open tasks, TASK-021-13 first, are inputs to this epic."
   EPIC-025: "Pluggable State Machine Replication Boundary (design PR #627, decision D7). This epic adds a node service on its lifecycle layer."
   EPIC-014: "Test net. Its modular soak decision of 2026-10-11 lets each mechanism define its own soak profile."
-related_prs: ["#651 (lifecycle runtime and CBC Casper adapter)", "#627 (replication boundary design)", "#695 (backlog-following non-leader admission cap)"]
+related_issues: ["#624 (lifecycle runtime)", "#625 (Cordial Miners adapter)"]
+related_prs: ["#651 (lifecycle runtime and F1r3fly CbC Casper adapter)", "#627 (replication boundary design)", "#695 (backlog-following non-leader admission cap)"]
 origin: "On 2026-10-13 the user chose to close issue #24 with a design that relies on adaptive execution, continuous telemetry, and tiered degradation, so that shards run on hardware with different performance. Soak 37996403003 showed that all three high-phase failures ran on Docker, with about twice the left-out deploys and twice the selection age of subprocess shards."
 decisions_2026_10_13:
-  consensus_neutral: "The controller is a node service on ConsensusRuntime. Each mechanism declares its controls and signals in an adaptation descriptor. CBC Casper is the first binding (design decision A1)."
+  consensus_neutral: "The controller is a node service on ConsensusRuntime. Each mechanism declares its controls and signals in an adaptation descriptor. F1r3fly CbC Casper (cbc-casper) is the first binding. The RGB peer clique (peer-clique), Casanova (casanova), and Cordial Miners (cordial-miners) have provisions in design section 11 (design decision A1)."
   node_local_only: "No control changes block validity or replicated state (design decision A2)."
   tier_selection: "A startup hardware probe selects the tier profile, and a closed-loop controller with hysteresis adjusts inside it (design decision A3)."
   telemetry: "Local Prometheus metrics and structured records, tagged with tier, host class, and protocol, collected by soak and test net runs. Central opt-in aggregation goes to the Backlog (design decision A4)."
@@ -622,7 +623,7 @@ decisions_2026_10_13:
   sequencing: "Design now against D7. Implementation tasks wait for PR #651 to merge into dev (design decision A7)."
 execution_contract:
   design_policy: "No code change before the maintainer approves docs/designs/adaptive-execution.md (TASK-027-1)."
-  cbc_policy: "Register the pending claim for invariants I1 to I5 before the controller code (TASK-027-4)."
+  cbc_policy: "Register the pending claim for invariants I1 to I6 before the controller code (TASK-027-4)."
   git_policy: "Commits require /quick-commit consent. The user runs push, merge, and PR operations."
 tasks:
   - id: TASK-027-1
@@ -632,10 +633,10 @@ tasks:
     claimed_at: 2026-10-13T15:00:00Z
     blocked_by: []
     acceptance:
-      - "docs/designs/adaptive-execution.md records decisions A1 to A7, the issue #24 evidence, the controller rules, the degradation levels, the invariants I1 to I5, the CBC Casper binding, and the soak profile."
+      - "docs/designs/adaptive-execution.md records decisions A1 to A7, the issue #24 evidence, the controller rules, the degradation levels, the invariants I1 to I6, the F1r3fly CbC Casper binding, the provisions for the RGB peer clique, Casanova, and Cordial Miners, and the soak profile for each mechanism."
       - "The design uses the names of the D7 boundary layers and states which names change when PR #651 merges."
       - "The maintainer approves the design, or the review comments are resolved."
-      - "The new terms of design section 18 are in docs/Glossary.md."
+      - "The new terms of design section 19 are in docs/Glossary.md."
   - id: TASK-027-2
     title: "Add the adaptive telemetry signals and records with no behavior change"
     status: pending
@@ -658,13 +659,14 @@ tasks:
     status: pending
     blocked_by: [TASK-027-3]
     acceptance:
-      - "A pending CbC claim states invariants I1 to I5 before the controller code."
+      - "A pending CbC claim states invariants I1 to I6 before the controller code."
       - "Unit tests drive the controller as a function of signal windows and a tier profile, with time as the only boundary."
       - "The tests prove one step for each action, the N and M interval rules, the cooldown, the bounds, and no step up without data."
       - "Levels L1 to L3 follow design section 8. A full intake queue returns a typed retryable overload error."
       - "A mixed-tier test shows that validators with different control values reach the same finalized state."
+      - "A test with a required duty that has a declared deadline shows that no degradation level delays the duty past the deadline (I6)."
   - id: TASK-027-5
-    title: "Bind the CBC Casper admission controls to the controller"
+    title: "Bind the F1r3fly CbC Casper admission controls to the controller"
     status: pending
     blocked_by: [TASK-027-4]
     acceptance:
@@ -686,7 +688,7 @@ tasks:
     blocked_by: [TASK-027-5]
     acceptance:
       - "A CI job runs a node under cgroup CPU and memory limits and checks the degradation level and the absence of out-of-memory stops."
-      - "The cbc-casper soak profile states the gates of design section 13.1 and reports them separately for each host class."
+      - "The cbc-casper soak profile states the gates of design section 14.1 and reports them separately for each host class."
       - "Each tier has a baseline for deploys per second, inclusion p95, and finalization p95."
   - id: TASK-027-8
     title: "Run the close-out soak and report on issue #24"
@@ -697,6 +699,17 @@ tasks:
       - "No run shows an out-of-memory stop, a watchdog stop, or a guardian stop."
       - "The controller records show at least one step down and one step up in a high phase."
       - "An issue #24 comment reports the result, and the PR that merges this branch closes issue #24."
+  - id: TASK-027-9
+    title: "Add the adaptation provisions for the RGB peer clique, Casanova, and Cordial Miners"
+    status: pending
+    blocked_by: [TASK-027-4, "the adapter of each mechanism (Cordial Miners: issue #625)"]
+    notes:
+      - "This task does not block the close-out of issue #24. Each mechanism completes its part when its adapter lands."
+    acceptance:
+      - "Each adapter declares its controls, signals, required duties, and protocol deadlines in an AdaptationDescriptor, following design section 11.2."
+      - "Each adapter supplies default tier profiles and a soak profile with the gate shape of design section 14.1."
+      - "Each binding shows invariants I1 to I6 for its own controls."
+      - "The controller has no mechanism-specific code."
 ---
 ```
 
