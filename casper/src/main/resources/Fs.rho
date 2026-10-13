@@ -147,28 +147,21 @@
 // strict "capped at provisioned" reading.  Matches the pre-existing
 // Dir.openFile behavior.
 //
-// ## m-16-6 fix (2026-08-06, M-6 rev-2)
+// ## Cap check
 //
-// Pre-fix (fileio era), the File openFile cap check was
-// `provisioned == "rw"`.  But `CONFIG_FILE_MODES = {"r", "r+", "w",
-// "w+", "a", "a+"}` — no `"rw"` — so File entries could NEVER be
-// provisioned as `"rw"`, and every non-`"r"` file open through
-// `Fs.openFile` unconditionally returned `FSERR_UNSUPPORTED` in
-// production.
-//
-// Current cap check: `provisioned == "r"` rejects non-`"r"`
-// requests; any other provisioned mode (any POSIX write-capable
-// file mode for files, `"r+"` for dirs) allows the request through.
-// Matches the File.rho write-capable-mode pattern already used at
-// every internal method gate (writeChars, writeLines, chmod,
-// chown, truncate, etc.).
+// `provisioned == "r"` rejects non-`"r"` requests; any other
+// provisioned mode (any POSIX write-capable file mode for files,
+// `"r+"` for dirs) allows the request through.  Matches the
+// File.rho write-capable-mode pattern already used at every
+// internal method gate (writeChars, writeLines, chmod, chown,
+// truncate, etc.).
 //
 // The requested-mode arm accepts the full POSIX file-mode set
 // (`r`, `r+`, `w`, `w+`, `wx`, `w+x`, `a`, `a+`) and rejects
-// everything else — including the historical `"rw"` alias.  Dir
-// attenuation is `"r"` (read-only) or `"r+"` (read/write) —
-// unified around POSIX naming so there is no namespace split
-// between file-open modes and Dir attenuation keywords.
+// everything else.  Dir attenuation is `"r"` (read-only) or
+// `"r+"` (read/write) — unified around POSIX naming so there is
+// no namespace split between file-open modes and Dir attenuation
+// keywords.
 //
 // ## Map pattern-match ordering assumption
 //
@@ -342,15 +335,10 @@ new Fs, fsBundleP,
                             match m {
                               "r" => openFileImpl!(
                                 canonRoot, "", rel, "r", cmode, *File, *return)
-                              // M-12 (2026-09-04): the `"rw"` alias
-                              // was removed from the file-mode
-                              // disjunction; callers who previously
-                              // wrote `"rw"` migrate to `"r+"`.  Spec
-                              // §File modes enumerates exactly 8
-                              // forms (r/w/a/r+/w+/wx/w+x/a+).
+                              // Spec §File modes enumerates exactly
+                              // 8 forms (r/w/a/r+/w+/wx/w+x/a+).
                               "w" \/ "w+" \/ "wx" \/ "w+x" \/ "a" \/ "a+" \/ "r+" => {
-                                // m-16-6 fix (2026-08-06, M-6 rev-2):
-                                // write-capable cap check.  Only "r"
+                                // Write-capable cap check.  Only "r"
                                 // provisioned rejects; every other
                                 // file mode (r+, w, w+, a, a+, wx,
                                 // w+x) grants write.

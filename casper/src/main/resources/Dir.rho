@@ -12,7 +12,7 @@
 //   - `openFile(rel, options)` — quarantine + open + mint a File agent
 //   - `openDir(rel, options)`  — mint a nested Dir agent
 //   - `removeFile(rel)`, `removeDir(rel, options)`, `rename`,
-//     `copyFile`, `chmod`, `chown` — mutation methods, rw-gated
+//     `copyFile`, `chmod`, `chown` — mutation methods, require `"r+"` Dir
 //   - `default(...@args)` — FSERR_UNSUPPORTED
 //
 // ## State layout — sandbox safety
@@ -319,12 +319,9 @@ new Dir, rootP, cmodeP in {
                         // match if m equals any of the alternatives.
                         match m {
                           "r" => openFileImpl!(canonRoot, subPath, r, "r", cmode, fileCtor, *return)
-                          // M-12 (2026-09-04): `"rw"` removed from
-                          // file-mode disjunction; callers migrate to
-                          // `"r+"`.  Spec §File modes lists 8 forms.
-                          // (Dir attenuation `"rw"` was renamed to
-                          // `"r+"` in a follow-up slice; the two
-                          // namespaces are now unified around POSIX.)
+                          // Spec §File modes lists 8 POSIX forms;
+                          // the write-capable set is gated on an
+                          // `"r+"` Dir attenuation below.
                           "w" \/ "w+" \/ "wx" \/ "w+x" \/ "a" \/ "a+" \/ "r+" => {
                             match dirMode {
                               "r+" => openFileImpl!(canonRoot, subPath, r, m, cmode, fileCtor, *return)
@@ -449,7 +446,7 @@ new Dir, rootP, cmodeP in {
                     }
                   }
                   _ => return!([false, "FSERR_UNSUPPORTED",
-                    "removeFile requires \"rw\" Dir mode"])
+                    "removeFile requires \"r+\" Dir mode"])
                 }
               }
               _ => return!([false, "FSERR_IO", "root params malformed"])
@@ -534,7 +531,7 @@ new Dir, rootP, cmodeP in {
                             }
                           }
                           _ => return!([false, "FSERR_UNSUPPORTED",
-                            "removeDir requires \"rw\" Dir mode", 0])
+                            "removeDir requires \"r+\" Dir mode", 0])
                         }
                       }
                       _ => return!([false, "FSERR_IO", "root params malformed", 0])
@@ -576,7 +573,7 @@ new Dir, rootP, cmodeP in {
                         }
                       }
                       _ => return!([false, "FSERR_UNSUPPORTED",
-                        "rename requires \"rw\" Dir mode"])
+                        "rename requires \"r+\" Dir mode"])
                     }
                   }
                   _ => return!([false, "FSERR_IO", "root params malformed"])
@@ -614,7 +611,7 @@ new Dir, rootP, cmodeP in {
                         }
                       }
                       _ => return!([false, "FSERR_UNSUPPORTED",
-                        "copyFile requires \"rw\" Dir mode"])
+                        "copyFile requires \"r+\" Dir mode"])
                     }
                   }
                   _ => return!([false, "FSERR_IO", "root params malformed"])
@@ -657,7 +654,7 @@ new Dir, rootP, cmodeP in {
                             }
                           }
                           _ => return!([false, "FSERR_UNSUPPORTED",
-                            "chmod requires \"rw\" Dir mode"])
+                            "chmod requires \"r+\" Dir mode"])
                         }
                       }
                       _ => return!([false, "FSERR_IO", "root params malformed"])
@@ -721,7 +718,7 @@ new Dir, rootP, cmodeP in {
                                 }
                               }
                               _ => return!([false, "FSERR_UNSUPPORTED",
-                                "chown requires \"rw\" Dir mode"])
+                                "chown requires \"r+\" Dir mode"])
                             }
                           }
                           _ => return!([false, "FSERR_IO", "root params malformed"])
@@ -799,9 +796,9 @@ new Dir, rootP, cmodeP in {
         // If stat fails for any reason (not-found, permission, etc.),
         // we pass through to fsOpen — for creation modes (w/w+/wx/w+x/
         // a/a+) the target may legitimately not exist yet, and fsOpen
-        // handles the create/exclusive semantics.  For read/rw modes
-        // fsOpen will re-surface the appropriate error (FSERR_NOTFOUND,
-        // etc.).
+        // handles the create/exclusive semantics.  For read / r+
+        // modes fsOpen will re-surface the appropriate error
+        // (FSERR_NOTFOUND, etc.).
         //
         // Racy against a directory being created between stat and open;
         // the alternative (bind fd first, fstat inode) requires a
