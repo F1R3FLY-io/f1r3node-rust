@@ -4863,7 +4863,7 @@ Each document states what the code of steps 1 to 8d does, and the citations name
 | [syntax-contract.md](syntax-contract.md) | Params and queries at run time | The factory params of the family, the send param `embedding`, and the checks of a query with their codes. |
 | [decision-register.md](decision-register.md) | Decisions 66 to 71 | The entries of the decisions of P6, and the amendments of decisions 56 and 57. |
 | [glossary.md](glossary.md) | Part 2 | 20 terms, from the exact value to the advisory query. |
-| [`../../rholang/21-reified-spaces.md`](../../rholang/21-reified-spaces.md) | VectorDB spaces | The language section on VectorDB spaces. Phase P10 completes the chapter. |
+| [`../../rholang/21-reified-spaces.md`](../../rholang/21-reified-spaces.md) | VectorDB spaces | The language section on VectorDB spaces. Step S5 of P10 completed the chapter ([section 35.4](#354-step-s5-the-documents)). |
 | [`../../rholang/chromadb.md`](../../rholang/chromadb.md) and [`10-system-channels.md`](../../rholang/10-system-channels.md) | The search backend, the processes | The mirror, `embed` and `ann`, the example of an advisory query, and how to run a node with the mirror. |
 
 Six new diagrams show the selection (28), list fires and LIST-CASCADE (29), and the mirror (30).
@@ -7910,6 +7910,38 @@ The third one is the `embed` block of chapter 10, and its reply comes from the f
 - Sections 5 and 8 show the examples of the methods, the wrapper agent of `consume`, `getSpaceAgent` and `assertEqual`.
 - Table 10 gives each code its own row. Each row names the example that reaches the code, or the test that reaches it and the reason that no example can.
 - Section 10.1 shows the 24 examples of the aborts, and section 11 states the current limits instead of the limits of P4.
+
+#### 35.4.5 The specification and the syntax contract
+
+Part 3 states the final scope of the specification and adds its section 11, "Determinism":
+
+- The scope section lists every part of this version. Table 1 gives the phase that wrote each section, instead of the sections that later phases would add.
+- The header of the config table names a `hashmap:queue` space instead of phase P4. Section 6 states the rule of the constructs that fail closed without a phase.
+- Section 11 collects the rules DT-1 to DT-8 of determinism. They cover the canonical order, the orders and ids, the operation order and the costs. They also cover the roots, the event coverage, rehydration and the execution context, and Table 9 maps each rule to its evidence.
+- Section 11.1 gives the replay trace of the example `queue-fifo`, and section 11.2 gives the merge trace of a bag space with two branches.
+
+Two new tests pin the roots of the traces (Table 246).
+A change of a root fails the test, and the specification must then record the new root.
+
+*Table 246. The tests of the traces.*
+
+| Test | File | Pinned roots |
+|---|---|---|
+| `determinism_replay_trace_root_is_pinned` | `rholang/tests/reified_examples_execute.rs` | The post-state root `36cf8734…` of `queue-fifo`, which the record line of the example also shows |
+| `space_determinism_merge_trace_roots_are_pinned` | `rholang/tests/reified_cross_block_merge.rs` | R1, the roots of the two branches, and the merged root, which equals the root of both serial orders |
+
+`syntax-contract.md` states its final scope, and each of its six grammar forms shows one row of the invalid corpus with its error.
+Its section on the meaning at run time no longer names the phase of each construct.
+The stale row of Table 137 in section 25 now states that step S5 completed chapter 21.
+
+*Table 247. The gates of part 3 of step S5.*
+
+| Gate | Result |
+|---|---|
+| `cargo test --release -p rholang --test reified_examples_execute` | 66 passed, 0 failed: the 63 examples, the two controls and the replay trace |
+| `cargo test --release -p rholang --test reified_cross_block_merge` | 12 passed, 0 failed, with the merge trace |
+| `doc_lint.py` over every campaign document and every Reified section | No finding |
+| `rustfmt --check`, and `cargo clippy` of the two test targets with `-D warnings` | No difference and no warning |
 
 #### 35.4.4 The gates of parts 1 and 2
 

@@ -134,8 +134,9 @@ fn pretty_datums(datums: &[Vec<Par>]) -> String {
     format!("[{}]", shown.join(", "))
 }
 
-/// Runs `example` and checks its outcome. Returns the record line of the example.
-async fn run(example: &Example) -> String {
+/// Runs `example` and checks its outcome. Returns the record line of the example and the
+/// post-state root of its last deploy, in hex.
+async fn run(example: &Example) -> (String, String) {
     let embedder = MockEmbedder::new("rrs-examples", 2, 0.5, EmbedMode::Vectors);
     let first_mirror = FakeMirror::new(Vec::new(), 0);
     let lock = match example.services {
@@ -205,7 +206,7 @@ async fn run(example: &Example) -> String {
         root
     );
     println!("{record}");
-    record
+    (record, root)
 }
 
 /// The directory of the example files.
@@ -744,6 +745,22 @@ fn examples_cover_the_directory() {
         .collect();
     let in_table: BTreeSet<String> = in_table.into_iter().map(str::to_owned).collect();
     assert_eq!(in_table, on_disk);
+}
+
+/// The post-state root of the replay trace of the specification (section 11, Determinism).
+const REPLAY_TRACE_ROOT: &str = "36cf8734055ee8a51bccea4ceeb5f29133f6767f04bafb6dc6aedea3abfcd8c9";
+
+/// The replay trace of the specification (section 11, Determinism): the example `queue-fifo`
+/// plays natively at the v6 limits, native replay reproduces its play, and its post-state root
+/// is the recorded root of the specification. A change of the root changes the trace of the
+/// specification too, so the specification must record the new root.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn determinism_replay_trace_root_is_pinned() {
+    let (_, root) = run(&QUEUE_FIFO).await;
+    assert_eq!(
+        root, REPLAY_TRACE_ROOT,
+        "the root of the replay trace of specification section 11"
+    );
 }
 
 /// The negative control of leaf 9760: a changed expected value fails the comparison.

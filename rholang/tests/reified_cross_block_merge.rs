@@ -1034,6 +1034,53 @@ async fn space_cross_block_merge_agent_calls_race_on_its_state() {
 /// family programs with the qualifiers `default` and `temp`, the six HashSet families with
 /// `seq`, the stored families of P7 across two deploys, and the conformance kit of the
 /// reference agent. Peeks are in the family programs and in each deploy that reads a stash.
+/// The roots of the merge trace of the specification (section 11, Determinism): R1, the left
+/// branch, the right branch and the merge.
+const MERGE_TRACE_ROOTS: [&str; 4] = [
+    "98c68b5e2deb454a81cded3fec6dfa349081beb6f7f234b2501ec0a97795165f",
+    "d7cabfa35f3dd880fdcf8705d1c5d3656940c3f96f3e85db472845bda9ec7b12",
+    "dc94fd62a404c3e956dc4da1afafecedc95289808b1beee2b09d1cc94744a2fa",
+    "8825f3dd7faa2838e09f01cc305babe2d3580d7c9798944c22673d2189e69bf3",
+];
+
+/// The merge trace of the specification (section 11, Determinism). Block 1 creates a bag space
+/// and draws the names `a` to `d` from it, and the chain checkpoints R1. Two branches each store
+/// one record on `d` from R1. They do not conflict, and the merged root is the root of both
+/// serial orders. The test pins the four roots that the specification records, so a change of
+/// one of them changes the trace of the specification too.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn space_determinism_merge_trace_roots_are_pinned() {
+    let mut rig = Rig::new(
+        "rrs-spec-merge",
+        &[("rho:space:hashmap:bag", r#""default""#)],
+        "",
+    )
+    .await;
+    let (left_body, left_label) = ("d!(1)", "rrs-spec-merge-left");
+    let (right_body, right_label) = ("d!(2)", "rrs-spec-merge-right");
+    let left = rig.branch(left_body, left_label).await;
+    let right = rig.branch(right_body, right_label).await;
+    assert!(
+        rig.conflicts(&left.log, &right.log).is_empty(),
+        "the branches of the merge trace conflict: {:?}",
+        rig.reason(&left.log, &right.log)
+    );
+    let merged = rig.merged(&left, &right);
+    let serial = rig
+        .serial(&[(left_body, left_label), (right_body, right_label)])
+        .await;
+    let reversed = rig
+        .serial(&[(right_body, right_label), (left_body, left_label)])
+        .await;
+    assert_eq!(merged, serial, "the merge is the serial state");
+    assert_eq!(merged, reversed, "the merge is the reversed serial state");
+    let roots = [&rig.root, &left.root, &right.root, &merged].map(|root| hex::encode(root.bytes()));
+    assert_eq!(
+        roots, MERGE_TRACE_ROOTS,
+        "the roots of the merge trace of specification section 11"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn space_event_coverage_debug_assert() {
     for qualifier in ["default", "temp"] {

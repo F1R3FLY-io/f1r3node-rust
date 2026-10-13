@@ -23,29 +23,37 @@ Where this specification and the register differ, the register applies.
 - [8. Native execution](#8-native-execution)
 - [9. System processes of the VectorDB family](#9-system-processes-of-the-vectordb-family)
 - [10. The ChromaDB mirror](#10-the-chromadb-mirror)
+- [11. Determinism](#11-determinism)
 - [References](#references)
 
 ## Scope of this version
 
-Phase P4 writes the rules of the first [space family](glossary.md#space-family), `hashmap:queue`:
+This version states the rules of every [space family](glossary.md#space-family) of Reified RSpaces:
 
 - the [space model](#1-space-model), which every family shares
-- the [HashMap outer store](#21-hashmap)
-- the [rules of ordered collections](#30-ordered-collections) and the [queue discipline](#31-queue)
-- the [default qualifier](#41-default)
+- the [outer stores](#2-outer-stores): HashMap, Array, Vector, PathMap and HashSet
+- the [inner collections](#3-inner-collections): queue, bag, cell, stack, set, priority queue and VectorDB, with the receive queries and the joins of one space
+- the [qualifiers](#4-qualifiers) `"default"`, `"temp"` and `"seq"`, and the builtin [theories](#5-theories)
+- the spaces that [user agents](#6-constructs-that-fail-closed) implement
+- [native execution](#8-native-execution), the [system processes of the VectorDB family](#9-system-processes-of-the-vectordb-family) and the [ChromaDB mirror](#10-the-chromadb-mirror)
+- the [determinism](#11-determinism) of every operation
 
-Later phases add their rules as new sections at the places that Table 1 marks.
-Each new section must state the items that its extension point lists, so that a reader can compare the families.
+Each section of a family states the items of its extension point, so that a reader can compare the families.
+Phase P12 adds the installed theories of F1r3lang and its rule of `where` guards ([decision 37](decision-register.md#decision-37)).
+It also adds TensorLogic ([decisions 62 to 65](decision-register.md#decision-62)), after the F1r3lang merge.
+Table 1 gives the phase that wrote each section.
 
-*Table 1. The sections that later phases add.*
+*Table 1. The sections and the phases that wrote them.*
 
-| Phase | Section | Content |
+| Phase | Sections | Content |
 |---|---|---|
-| P5 | [2.2](#22-array) to [2.6](#26-the-pathmap-store) | The Array and Vector outer stores with their allocator, the PathMap paths, and the [PathMap store](#26-the-pathmap-store) |
-| P5 | [3.2](#32-bag) to [3.8](#38-joins) | The bag, set, stack, cell, and priority queue disciplines, the receive queries, the query of a priority queue, and the [joins of one space](#38-joins) ([decision 29](decision-register.md#decision-29)) |
-| P6 | [3.9](#39-vectordb), [9](#9-system-processes-of-the-vectordb-family) and [10](#10-the-chromadb-mirror) | The VectorDB discipline, its query, and its bounds, the system processes of the family, and the ChromaDB mirror |
-| P7 | [2.7](#27-hashset), [4.2](#42-temp), [4.3](#43-seq) and [5](#5-theories) | The HashSet store, the `temp` and `seq` qualifiers, the sweep of their state, the dangling ids of ended deploys, and the theories |
-| P8 | [6](#6-constructs-that-fail-closed) | Spaces that user agents implement |
+| P4 | [1](#1-space-model), [2.1](#21-hashmap), [3.0](#30-ordered-collections), [3.1](#31-queue), [4.1](#41-default) | The space model, the HashMap store, the ordered collections, the queue and the default qualifier |
+| P5 | [2.2](#22-array) to [2.6](#26-the-pathmap-store), [3.2](#32-bag) to [3.8](#38-joins) | The Array, Vector and PathMap stores with the allocator, the bag, set, stack, cell and priority-queue disciplines, the receive queries and the joins of one space |
+| Decision 47, after P5 | [8](#8-native-execution) | Native execution |
+| P6 | [3.9](#39-vectordb), [9](#9-system-processes-of-the-vectordb-family), [10](#10-the-chromadb-mirror) | The VectorDB discipline, the system processes of the family and the ChromaDB mirror |
+| P7 | [2.7](#27-hashset), [4.2](#42-temp), [4.3](#43-seq), [5](#5-theories) | The HashSet store, the `temp` and `seq` qualifiers with the sweep and the dangling ids, and the theories |
+| P8 | [6](#6-constructs-that-fail-closed) | The spaces that user agents implement |
+| P10 | [11](#11-determinism) | The rules of determinism, with a replay trace and a merge trace |
 
 ## Terms and notation
 
@@ -87,7 +95,7 @@ A collection operation, a handle method, and `getSpaceAgent` read the map, and n
 
 *Table 3. The entries of the config map.*
 
-| Key | Value | Value in P4 |
+| Key | Value | Value of a `hashmap:queue` space without params |
 |---|---|---|
 | `"spaceId"` | A byte array of 32 bytes | The space id |
 | `"outer"` | A string that names the outer store | `"hashmap"` |
@@ -1267,8 +1275,8 @@ So the library tests of `spaces/theory` check them.
 
 ## 6. Constructs that fail closed
 
-P4 rejects each construct that a later phase adds with a deterministic code ([decision 34](decision-register.md#decision-34), item A9).
-The [syntax contract](syntax-contract.md#meaning-at-run-time) lists each construct with its code and its phase.
+A construct that this version does not implement fails closed with a deterministic code ([decision 34](decision-register.md#decision-34), item A9).
+The [syntax contract](syntax-contract.md#meaning-at-run-time) lists each such construct with its code.
 Phase P7 replaced the code `TheoryUnavailable` of a theory in a constructor with the rules of section [5](#5-theories).
 The code stays for an identity that names no checker of this build (Rule TH-3).
 Phase P8 replaced the code `AgentSpacesUnavailable` with the rules of spaces that user agents implement, and P8 step 4 retired the code.
@@ -1438,6 +1446,14 @@ A Rocq theorem shows the file and the line of its statement, and a TLA+ invarian
 | NE-2 | `view_charge_cache_independent` (`EventCorrelation.v:9195`) | `prop_view_charge_cache_independent`, `native_space_replay_view_charges_equal_play`, `prop_attach_warm_cold_cost_equal`, `space_attach_cost`, `space_attach_warm_cold_cost_equal`, `reducer_attach_costs` |
 | NE-4 | `native_replay_fails_closed` (`EventCorrelation.v:9088`), the TLA+ invariant `NoDeadlock` (N7) | `prop_native_space_replay_fails_closed`, `space_native_forged_predecessor_fails_closed`, `space_native_forged_footprints_never_hang` |
 | NE-5 | The TLA+ invariant `NoBlockedReadiness` (N6) | `prop_space_key_keeps_one_space_in_one_group`, `space_native_space_key_groups` |
+| DT-1 | The evidence of rules QD-1, SK-1, PQ-4, BG-1, ST-3, VD-4 and PS-5, and `candidate_order_total` (`PathMapPrefix.v:1014`) | `example_determinism_demo`, and the tests of those rules |
+| DT-2 | The evidence of rules OC-1 to OC-3, AL-1 to AL-5, QD-9, SM-1 and HM-4 | The tests of those rules |
+| DT-3 | The evidence of rule NE-5 | `prop_space_key_keeps_one_space_in_one_group`, `space_native_space_key_groups` |
+| DT-4 | `view_charge_cache_independent` (`EventCorrelation.v:9195`), and the evidence of rule SM-8 | `prop_view_charge_cache_independent`, `space_queue_observer_parity` |
+| DT-5 | The evidence of rules NE-1 and NE-3 | `determinism_replay_trace_root_is_pinned`, `n9_run_twice_assert_canonical_equal` |
+| DT-6 | `coverage_commit` (`EventCorrelation.v:8085`) | `space_event_coverage_debug_assert`, `space_event_coverage_names_dropped_channels`, `space_determinism_merge_trace_roots_are_pinned` |
+| DT-7 | The evidence of rules QF-2 and NE-2 | `space_attach_warm_cold_cost_equal`, `space_restart_rehydrate_three_processes` |
+| DT-8 | The evidence of rules NE-1 and QF-8 | `reified_sweep_runs_at_each_entry_point_native` |
 | VD-1 | `vectordb_params_validated` (`SpaceFactory.v:2387`) | `prop_vectordb_params_validated`, `reified_factory_gate_9_needs_the_default_qualifier_and_an_indexed_metric` |
 | VD-2 | None | `space_vectordb_payload_is_the_vector_by_default`, `space_vectordb_peek_restores_records_with_their_embedding`, `space_native_vectors_every_kind_enters_exactly` |
 | VD-3 | None | `space_vectordb_errors_have_their_codes`, `space_vectordb_source_errors_have_their_codes`, `space_vectordb_fixed_point_and_rational_thresholds` |
@@ -1615,6 +1631,162 @@ After a restart, the dirty marks of the writer are lost. A failed batch is repai
 **Rule MR-7: nodes without a mirror.** A node without the `chromadb` feature, or without a ChromaDB endpoint, has no writer, and it starts no reconciler (`rholang/src/rust/interpreter/reified/mirror_reconciler.rs:373-411`).
 Its publications drop their batches, and `ann` replies `MirrorUnavailable` in play.
 Each node of a shard has its own database (`CHROMA_DATABASE`), so a node never writes the mirror of another node ([decision 61](decision-register.md#decision-61)).
+
+## 11. Determinism
+
+Every node must compute the same result for a deploy, and the replay of a block must compute that result again.
+The rules of the earlier sections make each space operation deterministic.
+This section collects them in eight rules, and it gives a replay trace and a merge trace with their recorded roots.
+
+**Rule DT-1: canonical order.** Every choice among the entries of a collection uses an order that depends only on the entries:
+
+- A head-only collection orders its entries by the pair of the order and the bincode bytes (rules QD-1, SK-1 and PQ-4).
+- A bag, a set and the ties of a VectorDB collection use the canonical order of DR-75 ([decision 41](decision-register.md#decision-41), rules BG-1, ST-3 and VD-4).
+- A PathMap receive visits the paths in path-key order, with the exact path first (rule PS-5).
+- A join searches the positions of its canonical group in order, and it never goes back (rules JN-3 and JN-8).
+
+The order of DR-75 sorts by the hash of the source produce or consume of each entry, and then by its digest.
+No choice depends on the order of a list in memory, on the order of a hash map, or on the timing of threads.
+
+**Rule DT-2: orders and ids.** An order comes from a counter that the transaction consumes and produces again (rules OC-1 to OC-3).
+An index name comes from the allocator of an Array or a Vector space (rules AL-1 to AL-4).
+A re-issued persistent operation keeps the order of its first round (rule QD-9).
+A space id and a random-tail name come from the random state of their call (rules SM-1 and HM-4).
+So no order and no id depends on time, on the node, or on a cache.
+
+**Rule DT-3: operation order.** The scheduler runs the transactions of one space in one conflict group, in operation order (rule NE-5).
+Each staged operation of a transaction runs under its own sub-order ([decision 19](decision-register.md#decision-19), item D3).
+So play and replay stage the same operations in the same order.
+
+**Rule DT-4: costs.** The phlo of a space operation comes only from the observer calls of its staged produces, consumes and COMMs (rule SM-8).
+These calls are the calls of the equivalent host program.
+A job reserves host work before each read and each copy ([decision 40](decision-register.md#decision-40) and [decision 42](decision-register.md#decision-42)).
+A view load charges the same on a cache hit and on a cache miss (rule NE-2).
+So the cost of a deploy is a function of the deploy and its pre-state.
+
+**Rule DT-5: roots.** The post-state root of a deploy is a function of its pre-state root, its term, its random state, its phlo limit and its host-work limits.
+Native replay of the deploy from its pre-state reproduces the errors, the journal and the phlo of play (rule NE-3).
+It also reproduces the authority events, the byte observations and the root of play.
+Two fresh runtimes give the same canonical run of one sequence of deploys (test `n9_run_twice_assert_canonical_equal`).
+
+**Rule DT-6: event coverage.** The event log of a deploy covers every change of the deploy to the state.
+The merge of the index of the log over the pre-state gives the post-state:
+
+```math
+\mathrm{merged}\bigl(\mathit{pre},\ [(\mathit{post},\ \mathrm{index}(\mathit{log}))]\bigr) = \mathit{post}
+```
+
+So the merger sees every space write, and two branches that use one ordered collection race on its counter (rule OC-5).
+The theorem `coverage_commit` (`EventCorrelation.v:8085`) proves the rule for one transaction.
+The test `space_event_coverage_debug_assert` checks every family, and `space_event_coverage_names_dropped_channels` shows that a log without its counter or token events fails.
+
+**Rule DT-7: rehydration.** After a restart, the first operation on a space reads the space from the trie (rule QF-2).
+A view load charges its key and its value before it decodes the value (rule NE-2).
+The charge is the same with a warm cache and with a cold cache.
+So a restarted node pays what a node without a restart pays, and both reach the same root.
+
+**Rule DT-8: execution context.** User deploys run in native execution, protocol version 6 ([decision 69](decision-register.md#decision-69)).
+A space error is a deterministic `ReduceError`, so play and replay fail with the same code.
+The sweep of temp and seq spaces runs at one point of each root evaluation, in play and in replay (rule QF-8).
+
+### 11.1 The replay trace
+
+The replay trace runs the example `queue-fifo` on the native test chain of `rholang/tests/support/native.rs`.
+Table 12 gives its inputs, and the program is the text of `examples/reified_rspaces/queue_fifo.rho`:
+
+```rholang
+// A queue space gives back its records in the order in which they arrived:
+// first in, first out.
+//
+// Each send waits for the reply of the handle method produce, so the arrival
+// order is "A", "B", "C". The three receives take the records in that order.
+// The result leaves the space on the name `out`, which this deploy creates
+// outside the use block, so it routes to the default space.
+new factory(`rho:space:hashmap:queue`), out in {
+  for (queue <- factory!?("default")) {
+    queue!?("produce", "jobs", ["A"]);
+    queue!?("produce", "jobs", ["B"]);
+    queue!?("produce", "jobs", ["C"]);
+    use queue {
+      for (@first <- @"jobs") {
+        for (@second <- @"jobs") {
+          for (@third <- @"jobs") {
+            out!([first, second, third])
+          }
+        }
+      }
+    }
+  } |
+  for (@taken <- out) { @"rrs.example.queue"!(taken) }
+}
+```
+
+*Table 12. The inputs of the replay trace.*
+
+| Input | Value |
+|---|---|
+| Pre-state | The empty state of a new native runtime, with the system processes installed |
+| Deploy signature | The bytes of `rrs-native-spaces` |
+| Random state | `Blake2b512Random` of the bytes of the label `queue-fifo queue_fifo.rho` |
+| Phlo limit | 1,000,000 |
+| Host-work limits | `offered_funded_v6_host_work_limits`, the limits of protocol version 6 |
+
+*Table 13. The result of the replay trace.*
+
+| Step | Result |
+|---|---|
+| Native play | The deploy reports `["A", "B", "C"]` on `@"rrs.example.queue"` and uses the phlo 55,973. |
+| Native replay | The replay reproduces the errors, the journal, the phlo and the root of play. |
+| Post-state root | `36cf8734055ee8a51bccea4ceeb5f29133f6767f04bafb6dc6aedea3abfcd8c9` |
+
+The test `determinism_replay_trace_root_is_pinned` (`rholang/tests/reified_examples_execute.rs`) runs the trace and pins the root.
+
+### 11.2 The merge trace
+
+The merge trace uses the rig of `rholang/tests/reified_cross_block_merge.rs`, which builds the merge index of each branch as Casper builds it for a block.
+Block 1 runs this program with the label `rrs-spec-merge-setup-0` on the chain of section 11.1, and the chain checkpoints the root R1:
+
+```text
+new factory(`rho:space:hashmap:bag`) in {
+  for (space <- factory!?("default")) {
+    for (a <- space!?("gensym")) {
+      for (b <- space!?("gensym")) {
+        for (c <- space!?("gensym")) {
+          for (d <- space!?("gensym")) {
+            @"rrs-p9-handle-0"!(*space) | @"rrs-p9-names-0"!(*a, *b, *c, *d)
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+Two branches then run one deploy each from R1, as two sibling blocks do.
+Each branch takes the handle and the names of block 1 with peeks, and it stores one record on the name `d`.
+The left branch runs this program with the label `rrs-spec-merge-left`:
+
+```text
+for (space <<- @"rrs-p9-handle-0") { for (a, b, c, d <<- @"rrs-p9-names-0") {
+d!(1)
+} }
+```
+
+The right branch runs the same program with `d!(2)` and the label `rrs-spec-merge-right`.
+A bag has no counter, so the logs of the branches do not race, and the merge applies both records (rule BG-7).
+
+*Table 14. The roots of the merge trace.*
+
+| State | Root |
+|---|---|
+| R1, after block 1 | `98c68b5e2deb454a81cded3fec6dfa349081beb6f7f234b2501ec0a97795165f` |
+| The left branch | `d7cabfa35f3dd880fdcf8705d1c5d3656940c3f96f3e85db472845bda9ec7b12` |
+| The right branch | `dc94fd62a404c3e956dc4da1afafecedc95289808b1beee2b09d1cc94744a2fa` |
+| The merge of both branches | `8825f3dd7faa2838e09f01cc305babe2d3580d7c9798944c22673d2189e69bf3` |
+
+The merged root is also the root of both serial orders of the two deploys.
+The test `space_determinism_merge_trace_roots_are_pinned` (`rholang/tests/reified_cross_block_merge.rs`) runs the trace and pins the four roots.
+A change of a root changes one of these traces, so the specification must then record the new root.
 
 ## References
 

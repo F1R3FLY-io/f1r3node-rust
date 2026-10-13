@@ -10,7 +10,7 @@ Where this contract and the register differ, the register applies.
 
 ## Scope of this version
 
-This version holds the surface sections of phase P3 and the run-time section of phase P4:
+This version holds the surface syntax of every Reified construct and its meaning at run time:
 
 - the [terms](#terms) of the syntax
 - the [grammar forms](#grammar-forms), with examples
@@ -18,9 +18,11 @@ This version holds the surface sections of phase P3 and the run-time section of 
 - the [errors](#errors) of the parser and of the normalizer
 - the [keyword rule](#keyword-rule) of [decision 24](decision-register.md#decision-24) and the identifier rule of [decision 27](decision-register.md#decision-27)
 - the [dual-frontend corpus](#dual-frontend-corpus) and [how the contract is checked](#how-the-contract-is-checked)
-- the [meaning at run time](#meaning-at-run-time) of each construct in phase P4, and the constructs that still fail closed
+- the [meaning at run time](#meaning-at-run-time) of each construct, and the constructs that fail closed
 
 Phase P12 adds the Rholang 1.4 productions.
+Each grammar form below shows valid rows of the dual-frontend corpus and one invalid row of the invalid corpus `test-vectors/reified-syntax-invalid-v1.json`.
+The test `reified_syntax_invalid_rows_fail` compiles each invalid row and checks its error.
 
 ## Terms
 
@@ -95,6 +97,12 @@ new s, t in { use s { use t { @"x"!(1) } } }
 
 A quoted space reference with a compound process needs a block or parentheses, for example `use @{ x /\ y } { P }`.
 
+Without a block after the space reference, `use` is no keyword, so this text fails to parse with `ParserError`:
+
+```rholang
+use @"space" @"x"!(1)
+```
+
 ### Space annotations on `new`
 
 ```text
@@ -104,6 +112,12 @@ name_decl := var [ ":" name | "(" uri ")" ]
 A binder takes a space annotation or a URI, never both.
 The parser stores the annotation in `NameDecl.space`.
 A quoted name is a valid annotation.
+
+A binder with an annotation and a URI fails to parse with `ParserError`:
+
+```rholang
+new s, x : s(`rho:io:stdout`) in { Nil }
+```
 
 ```rholang
 new s in { new x : s, y in { x!(1) | y!(2) } }
@@ -123,6 +137,12 @@ The keyword `free` comes from the external scanner, by the [keyword rule](#keywo
 A theory reference is an expression, so it is a value in every position.
 The parser builds `Proc::FreeTheory { name, args }`.
 The builtin theories `Nat`, `Int`, `String`, `Bool`, and `Any` parse here, because the theory name accepts the token `var`.
+
+`free` before a value that is not an identifier is no keyword, so this text fails to parse with `ParserError`:
+
+```rholang
+new f in { f!(free 3()) }
+```
 
 ```rholang
 @"factory"!(free Th(1, "two"))
@@ -161,6 +181,12 @@ for (y <- @"x"!?(1; k=1)) { Nil }
 new factory in { for (space <- factory!?("default", free Nat(); capacity=4)) { Nil } }
 ```
 
+A repeated key fails with the parser error `DuplicateParamKey`:
+
+```rholang
+@"x"!(1; a=1, a=2)
+```
+
 ### Receive queries
 
 ```text
@@ -194,12 +220,24 @@ for (@task <- @"tasks" ~ (; priority=0)) { Nil }
 for (@a <- @"x" ~ 1 & @b <- @"y" where a == b) { Nil }
 ```
 
+A positional param in a query fails with the parser error `MalformedQuerySpec`:
+
+```rholang
+for (@y <- @"x" ~ ([1]; 2)) { Nil }
+```
+
 ### Bare floats
 
 The v3 grammar reads a float without a suffix, such as `0.85` or `1e3`, as a 64-bit float ([I-7](decision-register.md#i-7)).
 A bare float needs a digit after its dot, so `5.toByteArray()` stays a method call on an integer.
 Until the final parser pin, the node still applies `preprocess_floats` before it parses.
 So the node normalizes every float form that the baseline accepts to its baseline bytes.
+
+A number with two dots fails to parse with `ParserError`:
+
+```rholang
+@"x"!(1.2.3)
+```
 
 ## Normalization mapping
 
@@ -341,9 +379,8 @@ The [agent API](agent-api.md#10-aborts) gives the errors of each call, and the [
 ## Meaning at run time
 
 The reducer gives a meaning to a marker tuple only in its recognized position ([decision 22](decision-register.md#decision-22)).
-In phase P4, three constructs have a meaning at run time: `use` blocks, space annotations, and params.
-Later phases add the qualifiers, the HashSet collections and the queries of the sections below.
-Every other construct fails closed with a deterministic code, until the phase that adds it ([decision 34](decision-register.md#decision-34), item A9).
+Every construct of this contract has a meaning at run time: `use` blocks, space annotations, params, queries and theory references.
+A construct in a position or on a target that does not take it fails closed with a deterministic code ([decision 34](decision-register.md#decision-34), item A9).
 A failure at run time aborts the deploy with `InterpreterError::ReduceError` and the text `reified:<Code>: <message>`.
 The [design](design.md#n5-routing-and-scope) gives the algorithms, and the [specification](specification.md) gives the behavior of a space.
 
@@ -495,7 +532,8 @@ So a peek or a persistent receive of a source program has no query.
 
 ### Constructs that fail closed
 
-The table lists each construct that P4 rejects, with its code and the phase that adds its meaning.
+The table lists each construct that failed closed in phase P4, with its code and the phase that gave it its meaning.
+A row with the phase "None" still fails closed.
 
 | Construct | Example | Code | Phase |
 |---|---|---|---|
