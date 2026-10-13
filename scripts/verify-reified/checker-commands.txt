@@ -1,4 +1,4 @@
-python3 scripts/verify-reified/run-checker-tests.py test_checkers test_closure test_doc_lint
+python3 scripts/verify-reified/run-checker-tests.py test_checkers test_closure test_doc_lint test_fips_matrix
 python3 scripts/verify-reified/check-closure.py modeled
 python3 scripts/verify-reified/check-closure.py invariants
 python3 scripts/verify-reified/check-closure.py entry-points
@@ -44,3 +44,4 @@ python3 scripts/verify-reified/check-test-port-ledger.py
 python3 scripts/verify-reified/generate-test-port-ledger.py --check
 bash scripts/check-reified-rspaces-patch-gate.sh
 python3 scripts/verify-reified/doc_lint.py
+python3 scripts/verify-reified/check-fips-matrix.py

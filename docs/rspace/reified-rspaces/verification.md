@@ -159,7 +159,7 @@ Read it from the left to the right: sources, checks, local gates, pgmcp recipes,
 The negative controls are checks that must fail, and their gates require the expected failure.
 Each recipe runs the same command as its local gate, in the verifier sandbox.
 
-![Verification pipeline of all phases as five columns from the left to the right. Sources: the Rust code of P1 to P10 (the substrate of rspace++, the syntax layer of models, and reified and spaces of rholang, with their tests), the base code at 4d67b5ccc and its suites, the Rocq models with 308 headlines from EventCorrelation.v to Checkpoint.v, the TLA+ models with 128 configurations with BOUNDS headers, the three Z3 scripts and the Sage script with the numeric reference vectors, the maps and policies, the corpora with the 70 examples, and the documents with chapter 21 and the diagram sources. Checks: the Rocq kernel checks (hygiene, coqc alone, Print Assumptions closed for 308 headlines, rocqchk), TLC and Apalache with BASE and STEP, the Z3 and Sage checks, the property-based tests with one property for each invariant, the deterministic suites (the suites of each phase, N1 to N9, the examples harness, loom, the bench smoke, the base suites and the empty-state hashes), the 46 Python checker commands, the document checks, and the negative controls that must fail (456 Rocq negative checks and the axiom control, the Unsafe TLC configurations, the Apalache Error controls, the mutant harnesses and the checker self-tests). Each check reads its sources. Local gates: the proofs gate and the TLA gate run inside the aggregate gate scripts/check-reified-rspaces-ALL.sh with the legs proofs, tla, z3, sage, checkers, examples, loom and benches, and cargo test runs the suites G2 to G17 of each phase; the negative controls go to the gates that require their failure. pgmcp recipes: the recipe families RF0 to RF12, registered in the one freeze of P11 (decision 75), with RF12 for the aggregate gate. Each recipe step binds evidence of the six acceptance categories: formally modeled, formal verification passes, every invariant extracted as a property-based test, implementation complete, thoroughly tested, and documented per the pgmcp guidelines.](diagrams/13-verification-pipeline.svg)
+![Verification pipeline of all phases as five columns from the left to the right. Sources: the Rust code of P1 to P10 (the substrate of rspace++, the syntax layer of models, and reified and spaces of rholang, with their tests), the base code at 4d67b5ccc and its suites, the Rocq models with 308 headlines from EventCorrelation.v to Checkpoint.v, the TLA+ models with 128 configurations with BOUNDS headers, the three Z3 scripts and the Sage script with the numeric reference vectors, the maps and policies, the corpora with the 70 examples, and the documents with chapter 21 and the diagram sources. Checks: the Rocq kernel checks (hygiene, coqc alone, Print Assumptions closed for 308 headlines, rocqchk), TLC and Apalache with BASE and STEP, the Z3 and Sage checks, the property-based tests with one property for each invariant, the deterministic suites (the suites of each phase, N1 to N9, the examples harness, loom, the bench smoke, the base suites and the empty-state hashes), the 47 Python checker commands with the FIPS matrix, the document checks, and the negative controls that must fail (456 Rocq negative checks and the axiom control, the Unsafe TLC configurations, the Apalache Error controls, the mutant harnesses and the checker self-tests). Each check reads its sources. Local gates: the proofs gate and the TLA gate run inside the aggregate gate scripts/check-reified-rspaces-ALL.sh with the legs proofs, tla, z3, sage, checkers, examples, loom and benches, and cargo test runs the suites G2 to G17 of each phase; the negative controls go to the gates that require their failure. pgmcp recipes: the recipe families RF0 to RF12, registered in the one freeze of P11 (decision 75), with RF12 for the aggregate gate. Each recipe step binds evidence of the six acceptance categories: formally modeled, formal verification passes, every invariant extracted as a property-based test, implementation complete, thoroughly tested, and documented per the pgmcp guidelines.](diagrams/13-verification-pipeline.svg)
 
 *Figure V1. Source: [diagrams/13-verification-pipeline.puml](diagrams/13-verification-pipeline.puml), rendered by [diagrams/render.sh](diagrams/render.sh).*
 
@@ -8062,6 +8062,55 @@ The README row of P0 now names the commit `6f7a80da3`, which recorded the design
 | `doc_lint.py` over every campaign document and every Reified section | No finding |
 | The tests of `doc_lint.py` | 91 passed, 0 failed |
 | The checkers of `checker-commands.txt` | 46 of 46 pass, the footprint policy `p10` with the two files of diagram 14 included |
+
+### 35.6 Step S4: the FIPS clause matrix
+
+Step S4 writes the [FIPS conformance matrix](fips-conformance-matrix.md) of design v2, section 2.7, for the leaf `rrs-fips-clause-matrix`.
+Its source is `fips-conformance-matrix.json`, and the checker `scripts/verify-reified/check-fips-matrix.py` renders the Markdown from it.
+So the two files cannot drift.
+
+The JSON pins two FIPS files by their SHA-256 digests.
+They are the Reifying RSpaces FIPS and the Agents FIPS, whose agent section is lines 8 to 57.
+Every non-blank line of these ranges belongs to a row, and Table 252 counts the rows by status.
+
+*Table 252. The rows of the matrix by status.*
+
+| FIPS | `implemented` | `deviation` | `future` | `out-of-scope` | `informative` | Rows |
+|---|---|---|---|---|---|---|
+| Reifying RSpaces | 34 | 4 | 4 | 0 | 8 | 50 |
+| Agents | 6 | 0 | 0 | 1 | 0 | 7 |
+
+The evidence of a row comes from the rules of the specification that state its clause.
+The code cells are the Rust citations of those rules and the items of the modules that implement them.
+The formal cells and the tests are the entries of Table 9 of the specification, with the examples of the clause.
+A row that no model covers states its reason and links it.
+
+The checker makes six checks:
+
+1. The schema of the file, the FIPS entries, the spec holes and the rows.
+2. The digest of each FIPS file under the FIPS root, by default the repository `FIPS` beside this one.
+3. The coverage of every normative line by a row.
+4. The cells that each status requires.
+5. The resolution of each cell. The checker uses the citation rules of `doc_lint.py`, the test scan of `check-consensus-checklist.py` and the anchors of the decision register.
+6. The equality of the Markdown file with the rendering of the JSON.
+
+The FIPS root is an input of the checker, so the recipe of P11 mounts the FIPS repository and passes `--fips-root`.
+The pinned files are those of commit `7a8a093` of that repository.
+The leaf names the script `scripts/audit/check-reified-rspaces-citations.py`, which never existed.
+The matrix checker and the citation rules of `doc_lint.py` make its checks, and the freeze of P11 binds the criterion to them.
+
+The matrix also holds the four spec holes of the design ledger and their resolutions.
+They are the syntax of queries and params, the theory documents, the unification question of the quantale section, and tensor logic with the nonlinear operations.
+
+*Table 253. The gates of step S4.*
+
+| Gate | Result |
+|---|---|
+| `check-fips-matrix.py` | 57 rows, 1065 checks, no failure |
+| The 27 tests of `test_fips_matrix.py`, 24 of them negative controls | 27 passed, 0 failed |
+| `doc_lint.py` over every campaign document and every Reified section, the matrix included | No finding |
+| The checkers of `checker-commands.txt` | 47 of 47 pass, the matrix checker included, and the checker self-tests are 332 |
+| `render.sh --check` over the diagram directory | 59 of 59 diagrams are current, diagram 13 with 47 checker commands |
 
 ## References
 

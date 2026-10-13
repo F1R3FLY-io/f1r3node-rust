@@ -148,9 +148,10 @@ package "2. Checks" as CHECKS {
   ]
   rectangle CK_PY $v_check [
   **Python checkers**
-  the 46 commands of checker-commands.txt:
+  the 47 commands of checker-commands.txt:
   maps, footprint, complete, closure,
-  checklist, ledger, patch gate, doc_lint
+  checklist, ledger, patch gate, doc_lint,
+  the FIPS matrix
   ]
   rectangle CK_DOC $v_check [
   **Document checks**

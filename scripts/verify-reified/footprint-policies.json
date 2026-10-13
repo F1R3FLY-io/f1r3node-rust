@@ -13409,7 +13409,11 @@
         "docs/rspace/reified-rspaces/diagrams/55-security-trust-boundaries.puml",
         "docs/rspace/reified-rspaces/diagrams/55-security-trust-boundaries.svg",
         "docs/rspace/reified-rspaces/diagrams/14-phase-gantt.puml",
-        "docs/rspace/reified-rspaces/diagrams/14-phase-gantt.svg"
+        "docs/rspace/reified-rspaces/diagrams/14-phase-gantt.svg",
+        "docs/rspace/reified-rspaces/fips-conformance-matrix.json",
+        "docs/rspace/reified-rspaces/fips-conformance-matrix.md",
+        "scripts/verify-reified/check-fips-matrix.py",
+        "scripts/verify-reified/tests/test_fips_matrix.py"
       ]
     }
   }

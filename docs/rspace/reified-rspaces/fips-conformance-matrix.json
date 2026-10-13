@@ -1,0 +1,3782 @@
+{
+  "schema": "reified-rspaces-fips-matrix/1",
+  "title": "Reified RSpaces: the conformance of each normative clause of the FIPS",
+  "checker": "scripts/verify-reified/check-fips-matrix.py",
+  "rendering": "docs/rspace/reified-rspaces/fips-conformance-matrix.md",
+  "fips": [
+    {
+      "key": "RR",
+      "title": "Reifying RSpaces",
+      "date": "2025-09-26",
+      "path": "approved/2025-09-26-Reifying-RSpaces/Reifying RSpaces.md",
+      "sha256": "ecf1ebfab339b2257ea62ff00ffccdb973f1fcb7f9ce6357dce1d7f08aba02e3",
+      "normative": [
+        [
+          1,
+          825
+        ]
+      ],
+      "outside": "None"
+    },
+    {
+      "key": "AG",
+      "title": "Agents",
+      "date": "2025-08-20",
+      "path": "approved/2025-08-20-Agents/Agents.md",
+      "sha256": "fa75ed55be09d68df6aca3e2f43de76706bd8f72eda11463a6ee65a2089e3491",
+      "normative": [
+        [
+          8,
+          57
+        ]
+      ],
+      "outside": "Lines 1 to 7 (the title), 59 to 131 (the example) and 133 to 138 (contracts as agents)"
+    }
+  ],
+  "spec_holes": [
+    {
+      "id": "SH-1",
+      "hole": "The surface syntax of similarity queries and of params",
+      "fips": "RR",
+      "lines": [
+        [
+          249,
+          249
+        ],
+        [
+          257,
+          257
+        ]
+      ],
+      "resolution": "The syntax contract gives send params and receive queries, encoded as marker tuples. The VectorDB family takes the query keys of rule VD-3.",
+      "rows": [
+        "RR-26",
+        "RR-28"
+      ],
+      "decision": [
+        "decision-18",
+        "decision-21",
+        "decision-56"
+      ]
+    },
+    {
+      "id": "SH-2",
+      "hole": "The theory documents, which a later design document was to specify",
+      "fips": "RR",
+      "lines": [
+        [
+          117,
+          118
+        ],
+        [
+          293,
+          293
+        ]
+      ],
+      "resolution": "The theory seam admits the builtin structural theories now. The MeTTaIL theories come through the seam in phase P12.",
+      "rows": [
+        "RR-06",
+        "RR-07"
+      ],
+      "decision": [
+        "decision-9",
+        "decision-74"
+      ]
+    },
+    {
+      "id": "SH-3",
+      "hole": "The unification question of the quantale section",
+      "fips": "RR",
+      "lines": [
+        [
+          187,
+          193
+        ]
+      ],
+      "resolution": "The passage is informative, and follow-up rrs-fu-quantale-unification routes the question to the FIPS authors.",
+      "rows": [
+        "RR-15",
+        "RR-33"
+      ],
+      "decision": [
+        "decision-87"
+      ]
+    },
+    {
+      "id": "SH-4",
+      "hole": "Tensor logic and nonlinear vector operations, which the FIPS marks as topics to look into",
+      "fips": "RR",
+      "lines": [
+        [
+          259,
+          261
+        ]
+      ],
+      "resolution": "The design study of decision 52 answered the question. Tensor logic and the nonlinear operations come in phase P12.",
+      "rows": [
+        "RR-29",
+        "RR-30"
+      ],
+      "decision": [
+        "decision-52",
+        "decision-62",
+        "decision-65",
+        "decision-88"
+      ]
+    }
+  ],
+  "rows": [
+    {
+      "id": "RR-01",
+      "fips": "RR",
+      "lines": [
+        [
+          1,
+          11
+        ]
+      ],
+      "clause": "The title, the authors, the date and the abstract of the FIPS.",
+      "status": "informative",
+      "code": [],
+      "formal": [],
+      "no_model": null,
+      "tests": [],
+      "docs": [],
+      "decision": [],
+      "reason": "The abstract summarizes the clauses of the rows RR-04 (the invariant), RR-05 (the agent) and RR-13 to RR-28 (the stores and the collections).",
+      "note": null
+    },
+    {
+      "id": "RR-02",
+      "fips": "RR",
+      "lines": [
+        [
+          13,
+          65
+        ]
+      ],
+      "clause": "Background: the four groups of operations of the ISpace trait of the baseline (checkpoints, replay, produce and consume).",
+      "status": "informative",
+      "code": [],
+      "formal": [],
+      "no_model": null,
+      "tests": [],
+      "docs": [
+        "docs/rspace/reified-rspaces/design.md#s1-purpose-and-the-rule-of-no-new-ispace-surface"
+      ],
+      "decision": [
+        "i-1"
+      ],
+      "reason": "The section describes the baseline. The campaign does not change ISpace, and the substrate reaches the same operations through SpaceTxnHost.",
+      "note": null
+    },
+    {
+      "id": "RR-03",
+      "fips": "RR",
+      "lines": [
+        [
+          67,
+          95
+        ]
+      ],
+      "clause": "An RSpace is a key-value store: a channel or a group of channels is a key, a data bag and a continuation bag are the value, and a channel exists on its first use.",
+      "status": "implemented",
+      "code": [
+        "rholang/src/rust/interpreter/spaces/generic.rs:139-250",
+        "rholang/src/rust/interpreter/spaces/generic.rs:325-491"
+      ],
+      "formal": [
+        {
+          "rocq": "Namespace.v",
+          "name": "storage_id_injective",
+          "line": 732
+        },
+        {
+          "rocq": "Namespace.v",
+          "name": "space_and_collection_counters_distinct",
+          "line": 789
+        },
+        {
+          "rocq": "CounterConflict.v",
+          "name": "first_ops_race_on_space_counter",
+          "line": 939
+        }
+      ],
+      "no_model": null,
+      "tests": [
+        "rholang/tests/reified_queue.rs::space_meta_channels_counters",
+        "rholang/tests/reified_queue.rs::space_queue_events_namespaced",
+        "rholang/tests/reified_p4_props.rs::prop_first_ops_race_on_space_counter",
+        "rholang/src/rust/interpreter/spaces/counter.rs::space_counter_first_operation_bumps_the_space_counter",
+        "rholang/tests/reified_examples_execute.rs::example_queue_fifo",
+        "rholang/tests/reified_examples_execute.rs::example_bag_basics"
+      ],
+      "docs": [
+        "docs/rspace/reified-rspaces/specification.md#1-space-model",
+        "docs/rspace/reified-rspaces/specification.md#12-collections",
+        "docs/rspace/reified-rspaces/specification.md#13-entries-and-operations",
+        "docs/rholang/21-reified-spaces.md#terms"
+      ],
+      "decision": [],
+      "reason": null,
+      "note": "Each collection of a space holds its records and its waiters, and its first operation opens it (rule OC-2)."
+    },
+    {
+      "id": "RR-04",
+      "fips": "RR",
+      "lines": [
+        [
+          97,
+          107
+        ]
+      ],
+      "clause": "The invariant: after each produce or consume, no data and no continuation match, and every generalization keeps the invariant.",
+      "status": "implemented",
+      "code": [
+        "rholang/src/rust/interpreter/spaces/disciplines/priority_queue.rs:319-345",
+        "rholang/src/rust/interpreter/spaces/disciplines/priority_queue.rs:1010-1105",
+        "rholang/src/rust/interpreter/spaces/settle.rs:425-430",
+        "rholang/src/rust/interpreter/spaces/disciplines/vectordb.rs:1878-1978",
+        "rholang/src/rust/interpreter/spaces/disciplines/scan.rs:794-879",
+        "rholang/src/rust/interpreter/spaces/settle.rs:404-498"
+      ],
+      "formal": [
+        {
+          "rocq": "HeadOnlyDisciplines.v",
+          "name": "queue_produce_preserves_inv",
+          "line": 928
+        },
+        {
+          "rocq": "HeadOnlyDisciplines.v",
+          "name": "queue_consume_preserves_inv",
+          "line": 948
+        },
+        {
+          "rocq": "HeadOnlyDisciplines.v",
+          "name": "queue_reentry_preserves_shadow_inv",
+          "line": 2712
+        },
+        {
+          "rocq": "HeadOnlyDisciplines.v",
+          "name": "queue_quiescent_inv",
+          "line": 2781
+        },
+        {
+          "tla": "formal/tlaplus/reified_rspaces/HeadOnlyDiscipline.tla",
+          "invariant": "QuiescentNoPendingMatch"
+        },
+        {
+          "rocq": "StackDiscipline.v",
+          "name": "stack_lifo",
+          "line": 1255
+        },
+        {
+          "tla": "formal/tlaplus/reified_rspaces/StackDiscipline.tla",
+          "invariant": "LifoOrder"
+        },
+        {
+          "rocq": "JoinCascade.v",
+          "name": "cascade_restores_inv",
+          "line": 7230
+        },
+        {
+          "tla": "formal/tlaplus/reified_rspaces/JoinCascade.tla",
+          "invariant": "QuiescentNoPendingMatch"
+        },
+        {
+          "rocq": "PriorityQueue.v",
+          "name": "pq_settle_oldest_first",
+          "line": 1899
+        },
+        {
+          "rocq": "PriorityQueue.v",
+          "name": "pq_settle_order_matters",
+          "line": 4081
+        },
+        {
+          "rocq": "PriorityQueue.v",
+          "name": "pq_produce_preserves_inv",
+          "line": 1390
+        },
+        {
+          "rocq": "PriorityQueue.v",
+          "name": "pq_without_settle_breaks_inv",
+          "line": 4002
+        },
+        {
+          "tla": "formal/tlaplus/reified_rspaces/PriorityQueue.tla",
+          "invariant": "PqOldestFirst"
+        },
+        {
+          "rocq": "VectorDbDiscipline.v",
+          "name": "vdb_no_pending_match",
+          "line": 662
+        },
+        {
+          "rocq": "VectorDbDiscipline.v",
+          "name": "vdb_list_needs_cascade",
+          "line": 1311
+        },
+        {
+          "rocq": "SetDiscipline.v",
+          "name": "set_produce_fire_retires_stored_class",
+          "line": 1151
+        },
+        {
+          "tla": "formal/tlaplus/reified_rspaces/GenericRSpace.tla",
+          "invariant": "SetClassRetired"
+        },
+        {
+          "rocq": "CellDiscipline.v",
+          "name": "cell_capacity_one",
+          "line": 672
+        },
+        {
+          "tla": "formal/tlaplus/reified_rspaces/GenericRSpace.tla",
+          "invariant": "NoPendingMatch"
+        },
+        {
+          "tla": "formal/tlaplus/reified_rspaces/StackDiscipline.tla",
+          "invariant": "StackNoPendingMatch"
+        },
+        {
+          "tla": "formal/tlaplus/reified_rspaces/PriorityQueue.tla",
+          "invariant": "PqNoPendingMatch"
+        },
+        {
+          "tla": "formal/tlaplus/reified_rspaces/PathMapPrefix.tla",
+          "invariant": "NoMatchRemains"
+        },
+        {
+          "tla": "formal/tlaplus/reified_rspaces/VectorDb.tla",
+          "invariant": "QuiescentNoPendingMatch"
+        }
+      ],
+      "no_model": null,
+      "tests": [
+        "rholang/tests/reified_p4_props.rs::prop_queue_produce_preserves_invariant",
+        "rholang/tests/reified_p4_props.rs::prop_queue_consume_preserves_invariant",
+        "rholang/tests/reified_p4_props.rs::prop_queue_shadow_invariant_with_inflight",
+        "rholang/tests/reified_stack.rs::prop_stack_lifo_order_any_schedule",
+        "rholang/tests/reified_join_props.rs::prop_cascade_restores_inv_any_schedule",
+        "rholang/tests/reified_join_props.rs::prop_quiescent_no_pending_match_any_schedule",
+        "rholang/tests/reified_join_props.rs::prop_join_engine_agrees_with_drivers_without_joins",
+        "rholang/tests/reified_priority_queue.rs::prop_pq_oldest_first_any_schedule",
+        "rholang/tests/reified_priority_queue.rs::prop_pq_no_pending_match_any_schedule",
+        "rholang/tests/reified_priority_queue.rs::space_disciplines_pq_older_waiter_wins",
+        "rholang/tests/reified_vectordb.rs::prop_vectordb_no_pending_match",
+        "rholang/tests/reified_vectordb.rs::space_vectordb_ce2_removal_cascade_fires_the_list_waiter",
+        "rholang/tests/reified_set.rs::prop_set_produce_fire_retires_stored_class",
+        "rholang/tests/reified_set.rs::prop_set_class_retired_any_schedule",
+        "rholang/tests/reified_set.rs::space_set_discipline_guarded_waiter_then_equal_send_retires_class",
+        "rholang/tests/reified_cell.rs::space_disciplines_cell_every_operation_bumps_counter",
+        "rholang/tests/reified_cell.rs::space_disciplines_cell_branch_writes_race_on_the_counter",
+        "rholang/tests/reified_engine_props.rs::prop_engine_no_guard_free_pending_match",
+        "rholang/tests/reified_stack.rs::prop_stack_no_pending_match_any_schedule",
+        "rholang/src/rust/interpreter/spaces/pathmap/delivery.rs::prop_candidates_cover_the_prefix_in_key_order",
+        "rholang/src/rust/interpreter/spaces/pathmap/delivery.rs::prop_waiter_prefixes_are_most_specific_first",
+        "rholang/tests/reified_pathmap.rs::prop_pathmap_no_match_remains_any_schedule",
+        "rholang/tests/reified_examples_execute.rs::example_queue_peeks_and_persistence",
+        "rholang/tests/reified_examples_execute.rs::example_stack_peeks_and_persistence"
+      ],
+      "docs": [
+        "docs/rspace/reified-rspaces/specification.md#30-ordered-collections",
+        "docs/rspace/reified-rspaces/specification.md#38-joins",
+        "docs/rholang/21-reified-spaces.md#inner-collections"
+      ],
+      "decision": [
+        "decision-11",
+        "decision-29",
+        "decision-50"
+      ],
+      "reason": null,
+      "note": "On a head-only collection the invariant concerns the heads: a head that does not match blocks the entries behind it (decision 11)."
+    },
+    {
+      "id": "RR-05",
+      "fips": "RR",
+      "lines": [
+        [
+          109,
+          111
+        ]
+      ],
+      "clause": "Every agent with the behavioral type of a space can be an RSpace, and every RSpace can be reified into an agent.",
+      "status": "implemented",
+      "code": [
+        "rholang/src/rust/interpreter/reified/handle.rs:225-386",
+        "rholang/src/rust/interpreter/reified/user_agent.rs:531-557"
+      ],
+      "formal": [
+        {
+          "rocq": "SpaceRefs.v",
+          "name": "agent_ref_requires_write_flag",
+          "line": 1146
+        },
+        {
+          "tla": "formal/tlaplus/reified_rspaces/AgentSpaces.tla",
+          "invariant": "RoutingIsolation"
+        },
+        {
+          "rocq": "SpaceRefs.v",
+          "name": "r7_agent_reply_bundle_exact",
+          "line": 898
+        },
+        {
+          "rocq": "AgentTranslation.v",
+          "name": "offsets_partition",
+          "line": 226
+        },
+        {
+          "rocq": "AgentTranslation.v",
+          "name": "env_keys_disjoint_union",
+          "line": 324
+        },
+        {
+          "rocq": "AgentTranslation.v",
+          "name": "body_equivalence",
+          "line": 401
+        },
+        {
+          "rocq": "AgentTranslation.v",
+          "name": "guard_fold_sound",
+          "line": 596
+        },
+        {
+          "rocq": "AgentTranslation.v",
+          "name": "matcher_sound_complete",
+          "line": 650
+        },
+        {
+          "rocq": "AgentTranslation.v",
+          "name": "matcher_state_roundtrip",
+          "line": 783
+        },
+        {
+          "tla": "formal/tlaplus/reified_rspaces/AgentSpaces.tla",
+          "invariant": "JoinSameSpace"
+        },
+        {
+          "rocq": "SpaceRefs.v",
+          "name": "tag_untag_id",
+          "line": 947
+        },
+        {
+          "rocq": "AgentTranslation.v",
+          "name": "resume_binds_innermost",
+          "line": 914
+        }
+      ],
+      "no_model": null,
+      "tests": [
+        "rholang/tests/reified_p8_props.rs::prop_agent_ref_requires_write_flag",
+        "rholang/tests/reified_p8_props.rs::prop_routes_follow_the_owner_of_the_channel",
+        "rholang/tests/reified_p8_props.rs::prop_space_ref_unwraps_one_bundle",
+        "rholang/tests/reified_user_agents.rs::agent_reference_not_writable_rejected",
+        "rholang/tests/reified_user_agents.rs::agent_use_and_new_follow_the_write_rule",
+        "rholang/tests/reified_p8_props.rs::prop_r7_agent_reply_bundle_exact",
+        "rholang/tests/reified_user_agents.rs::user_agent_send_calls_the_agent",
+        "rholang/tests/reified_user_agents.rs::user_agent_reply_reaches_the_agent",
+        "rholang/tests/reified_user_agents.rs::agent_xlate_bang_bang_rejected",
+        "rholang/tests/reified_user_agents.rs::user_agent_errors_params",
+        "rholang/tests/reified_user_agents.rs::prop_body_equivalence",
+        "rholang/tests/reified_user_agents.rs::prop_matcher_sound_complete",
+        "rholang/tests/reified_user_agents.rs::prop_guard_fold_sound",
+        "rholang/tests/reified_user_agents.rs::prop_receive_joins_one_space",
+        "rholang/tests/reified_user_agents.rs::prop_linear_body_runs_at_most_once",
+        "rholang/tests/reified_user_agents.rs::agent_xlate_join_two_matchers",
+        "rholang/tests/reified_user_agents.rs::agent_xlate_guard_span_rejected",
+        "rholang/tests/reified_user_agents.rs::agent_xlate_cross_space_join_rejected",
+        "rholang/tests/reified_user_agents.rs::user_agent_errors_query",
+        "rholang/tests/reified_user_agents.rs::user_agent_errors_pattern_too_deep",
+        "rholang/tests/reified_p8_props.rs::prop_tag_untag_id",
+        "rholang/tests/reified_p8_props.rs::prop_resume_binds_innermost",
+        "rholang/tests/reified_user_agents.rs::user_agent_new_binding_order_matches_native",
+        "rholang/tests/reified_user_agents.rs::agent_gensym_calls_have_distinct_states",
+        "rholang/tests/reified_user_agents.rs::agent_never_replies_pending_replay_equal",
+        "rholang/tests/reified_user_agents.rs::agent_wrapper_forwards_to_native",
+        "rholang/tests/reified_handle.rs::space_handle_methods_consume_rejects_foreign_matcher",
+        "rholang/tests/reified_examples_execute.rs::example_handle_methods",
+        "rholang/tests/reified_examples_execute.rs::example_agent_hashmap_bag",
+        "rholang/tests/reified_examples_execute.rs::example_agent_wrapper_forwards_to_native"
+      ],
+      "docs": [
+        "docs/rspace/reified-rspaces/agent-api.md#1-overview",
+        "docs/rspace/reified-rspaces/agent-api.md#12-user-agent-backed-spaces",
+        "docs/rholang/21-reified-spaces.md#writing-your-own-space",
+        "docs/rspace/reified-rspaces/design.md#n18-phase-p8-user-agent-backed-spaces"
+      ],
+      "decision": [
+        "decision-8",
+        "decision-77"
+      ],
+      "reason": null,
+      "note": null
+    },
+    {
+      "id": "RR-06",
+      "fips": "RR",
+      "lines": [
+        [
+          113,
+          121
+        ]
+      ],
+      "clause": "The constructor takes a qualifier (default, temp or seq), a theory and more arguments, and it may abort when it does not support the qualifier.",
+      "status": "implemented",
+      "code": [
+        "rholang/src/rust/interpreter/spaces/factory/urn.rs:203",
+        "rholang/src/rust/interpreter/spaces/factory/urn.rs:231-237",
+        "rholang/src/rust/interpreter/spaces/families.rs:540-549",
+        "rholang/src/rust/interpreter/spaces/families.rs:258-291",
+        "rholang/src/rust/interpreter/spaces/factory/defaults.rs:107-156",
+        "rholang/src/rust/interpreter/spaces/factory/defaults.rs:173-188",
+        "rholang/src/rust/interpreter/spaces/factory/constructor.rs:87-178",
+        "rholang/src/rust/interpreter/spaces/factory/constructor.rs:265-279",
+        "rholang/src/rust/interpreter/spaces/factory/constructor.rs:87-89",
+        "rholang/src/rust/interpreter/reified/factory.rs:58-126"
+      ],
+      "formal": [
+        {
+          "rocq": "SpaceFactory.v",
+          "name": "registered_families_complete",
+          "line": 1444
+        },
+        {
+          "rocq": "Match.v",
+          "name": "space_match_is_injected_match",
+          "line": 642
+        },
+        {
+          "rocq": "SpaceFactory.v",
+          "name": "constructor_params_validated",
+          "line": 1938
+        },
+        {
+          "rocq": "SpaceFactory.v",
+          "name": "priorities_validated",
+          "line": 2075
+        },
+        {
+          "rocq": "SpaceFactory.v",
+          "name": "array_size_validated",
+          "line": 2188
+        },
+        {
+          "rocq": "SpaceFactory.v",
+          "name": "qualifier_matrix",
+          "line": 383
+        },
+        {
+          "rocq": "SpaceFactory.v",
+          "name": "theory_gate_validated",
+          "line": 2525
+        }
+      ],
+      "no_model": null,
+      "tests": [
+        "rholang/tests/reified_families.rs::prop_registered_families_complete",
+        "rholang/tests/reified_families.rs::space_factory_families_registered",
+        "rholang/src/rust/interpreter/spaces/families.rs::space_families_dispatch_by_config_reserves_one_comparison_per_arm",
+        "rholang/tests/reified_families.rs::space_family_dispatch_by_config",
+        "rholang/tests/reified_families.rs::prop_constructor_params_validated",
+        "rholang/tests/reified_families.rs::space_factory_kwargs_unknown_param_with_suggestion",
+        "rholang/tests/reified_families.rs::prop_priorities_validated",
+        "rholang/tests/reified_families.rs::prop_array_size_validated",
+        "rholang/tests/reified_families.rs::space_factory_kwargs_are_stored_canonical",
+        "rholang/tests/reified_p4_props.rs::prop_qualifier_matrix",
+        "models/tests/space_factory_urn.rs::space_urn_factory_qualifier_support_matrix",
+        "rholang/tests/reified_theory.rs::prop_theory_gate",
+        "rholang/tests/reified_theory.rs::theory_unknown_name_suggestion",
+        "rholang/tests/reified_theory.rs::theory_builtin_args_rejected",
+        "rholang/src/rust/interpreter/spaces/factory/constructor.rs::reified_factory_theory_gate",
+        "rholang/tests/reified_examples_execute.rs::example_factory_rejects_a_bad_argument",
+        "rholang/tests/reified_examples_execute.rs::example_factory_rejects_an_unknown_param",
+        "rholang/tests/reified_examples_execute.rs::example_factory_rejects_a_missing_param",
+        "rholang/tests/reified_examples_execute.rs::example_factory_rejects_an_invalid_param",
+        "rholang/tests/reified_examples_execute.rs::example_space_qualifier_temp",
+        "rholang/tests/reified_examples_execute.rs::example_space_qualifier_seq"
+      ],
+      "docs": [
+        "docs/rspace/reified-rspaces/agent-api.md#3-factories",
+        "docs/rspace/reified-rspaces/agent-api.md#32-the-gates",
+        "docs/rholang/21-reified-spaces.md#creating-a-space"
+      ],
+      "decision": [
+        "decision-8",
+        "decision-73"
+      ],
+      "reason": null,
+      "note": null
+    },
+    {
+      "id": "RR-07",
+      "fips": "RR",
+      "lines": [
+        [
+          117,
+          118
+        ]
+      ],
+      "clause": "The theory of a space is a MeTTaIL theory that describes the data of its channels.",
+      "status": "future",
+      "code": [],
+      "formal": [],
+      "no_model": null,
+      "tests": [],
+      "docs": [
+        "docs/rspace/reified-rspaces/specification.md#5-theories",
+        "docs/rspace/reified-rspaces/theory-seam.md#4-the-builtin-theories",
+        "docs/rspace/reified-rspaces/f1r3lang-integration.md#4-what-changes-at-the-merge"
+      ],
+      "decision": [
+        "decision-9",
+        "decision-3"
+      ],
+      "reason": null,
+      "note": "The builtin structural theories Nat, Int, String, Bool and Any work now (row RR-06). The MeTTaIL theories come through the theory seam in phase P12, after the readiness signal of F1r3lang."
+    },
+    {
+      "id": "RR-08",
+      "fips": "RR",
+      "lines": [
+        [
+          123,
+          125
+        ]
+      ],
+      "clause": "The method gensym returns a name, and it may abort, for example when it runs out of names.",
+      "status": "implemented",
+      "code": [
+        "rholang/src/rust/interpreter/spaces/allocator.rs:283-296",
+        "rholang/src/rust/interpreter/spaces/allocator.rs:109-162",
+        "rholang/src/rust/interpreter/reified/handle.rs:358-385"
+      ],
+      "formal": [
+        {
+          "rocq": "Namespace.v",
+          "name": "name_id_routes_to_sid",
+          "line": 1003
+        },
+        {
+          "rocq": "OuterStorage.v",
+          "name": "fixed_array_allocates_at_most_size",
+          "line": 313
+        },
+        {
+          "rocq": "VectorStore.v",
+          "name": "vector_index_is_counter",
+          "line": 184
+        },
+        {
+          "rocq": "OuterStorage.v",
+          "name": "fixed_array_indices_sequential",
+          "line": 345
+        },
+        {
+          "rocq": "OuterStorage.v",
+          "name": "cyclic_array_index_mod_size",
+          "line": 376
+        },
+        {
+          "rocq": "VectorStore.v",
+          "name": "vector_gensym_monotonic",
+          "line": 219
+        },
+        {
+          "rocq": "OuterStorage.v",
+          "name": "allocation_batch_atomic",
+          "line": 402
+        },
+        {
+          "rocq": "OuterStorage.v",
+          "name": "fixed_array_out_of_names_exact",
+          "line": 330
+        }
+      ],
+      "no_model": null,
+      "tests": [
+        "rholang/tests/reified_p4_props.rs::prop_name_id_routes_to_sid",
+        "rholang/tests/reified_handle.rs::space_handle_methods_gensym",
+        "rholang/tests/reified_array_vector.rs::prop_fixed_array_allocates_at_most_size",
+        "rholang/tests/reified_array_vector.rs::prop_vector_index_is_counter",
+        "rholang/tests/reified_array_vector.rs::prop_fixed_array_indices_sequential",
+        "rholang/tests/reified_array_vector.rs::prop_cyclic_array_index_mod_size",
+        "rholang/tests/reified_array_vector.rs::prop_vector_gensym_monotonic",
+        "rholang/tests/reified_array_vector.rs::prop_allocation_batch_atomic",
+        "rholang/tests/reified_array_vector.rs::prop_fixed_array_out_of_names_exact",
+        "rholang/tests/reified_examples_execute.rs::example_handle_methods",
+        "rholang/tests/reified_examples_execute.rs::example_array_out_of_names",
+        "rholang/tests/reified_examples_execute.rs::example_space_annotations"
+      ],
+      "docs": [
+        "docs/rspace/reified-rspaces/agent-api.md#5-handle-methods",
+        "docs/rspace/reified-rspaces/specification.md#24-the-allocator-of-array-and-vector-spaces"
+      ],
+      "decision": [],
+      "reason": null,
+      "note": null
+    },
+    {
+      "id": "RR-09",
+      "fips": "RR",
+      "lines": [
+        [
+          127,
+          130
+        ]
+      ],
+      "clause": "The method produce sends a process on a channel, and it may abort, for example when the process holds a Seq name.",
+      "status": "implemented",
+      "code": [
+        "rholang/src/rust/interpreter/reified/handle.rs:416-458",
+        "rholang/src/rust/interpreter/reified/seq.rs:77-101"
+      ],
+      "formal": [
+        {
+          "rocq": "Namespace.v",
+          "name": "seq_name_iff",
+          "line": 1150
+        },
+        {
+          "tla": "formal/tlaplus/reified_rspaces/SpaceCoordination.tla",
+          "invariant": "SeqNotSent"
+        },
+        {
+          "rocq": "TheoryAdmission.v",
+          "name": "fail_closed",
+          "line": 398
+        },
+        {
+          "rocq": "TheoryAdmission.v",
+          "name": "replay_preserves_theory_admission",
+          "line": 851
+        }
+      ],
+      "no_model": null,
+      "tests": [
+        "rholang/tests/reified_seq.rs::prop_seq_scan_finds_every_seq_name",
+        "rholang/tests/reified_seq.rs::reducer_seq_payload",
+        "rholang/tests/reified_theory.rs::prop_theory_fail_closed",
+        "rholang/tests/reified_theory.rs::prop_replay_preserves_theory_admission",
+        "rholang/src/rust/interpreter/spaces/theory/tests.rs::theory_refuted_value_aborts_before_staging",
+        "rholang/src/rust/interpreter/spaces/theory/tests.rs::theory_undetermined_budget0_aborts",
+        "rholang/src/rust/interpreter/spaces/generic.rs::theory_admission_precedes_any_staging",
+        "rholang/tests/reified_examples_execute.rs::example_handle_methods",
+        "rholang/tests/reified_examples_execute.rs::example_space_qualifiers_seq_sent",
+        "rholang/tests/reified_examples_execute.rs::example_theory_refuses_a_value"
+      ],
+      "docs": [
+        "docs/rspace/reified-rspaces/agent-api.md#5-handle-methods",
+        "docs/rspace/reified-rspaces/specification.md#43-seq"
+      ],
+      "decision": [],
+      "reason": null,
+      "note": null
+    },
+    {
+      "id": "RR-10",
+      "fips": "RR",
+      "lines": [
+        [
+          132,
+          145
+        ]
+      ],
+      "clause": "The method consume receives on a join: pairs of a matcher and a channel, the arrow <-, <= or <<-, and a body that takes a map of the bindings.",
+      "status": "implemented",
+      "code": [
+        "rholang/src/rust/interpreter/reified/handle.rs:522-641",
+        "rholang/src/rust/interpreter/reified/user_agent.rs:343-421"
+      ],
+      "formal": [
+        {
+          "rocq": "AgentTranslation.v",
+          "name": "matcher_state_roundtrip",
+          "line": 783
+        },
+        {
+          "rocq": "AgentTranslation.v",
+          "name": "offsets_partition",
+          "line": 226
+        },
+        {
+          "rocq": "AgentTranslation.v",
+          "name": "env_keys_disjoint_union",
+          "line": 324
+        },
+        {
+          "rocq": "AgentTranslation.v",
+          "name": "body_equivalence",
+          "line": 401
+        },
+        {
+          "rocq": "AgentTranslation.v",
+          "name": "guard_fold_sound",
+          "line": 596
+        },
+        {
+          "rocq": "AgentTranslation.v",
+          "name": "matcher_sound_complete",
+          "line": 650
+        },
+        {
+          "tla": "formal/tlaplus/reified_rspaces/AgentSpaces.tla",
+          "invariant": "JoinSameSpace"
+        }
+      ],
+      "no_model": null,
+      "tests": [
+        "rholang/tests/reified_user_agents.rs::agent_wrapper_forwards_to_native",
+        "rholang/tests/reified_handle.rs::space_handle_methods_consume_rejects_foreign_matcher",
+        "rholang/tests/reified_user_agents.rs::prop_body_equivalence",
+        "rholang/tests/reified_user_agents.rs::prop_matcher_sound_complete",
+        "rholang/tests/reified_user_agents.rs::prop_guard_fold_sound",
+        "rholang/tests/reified_user_agents.rs::prop_receive_joins_one_space",
+        "rholang/tests/reified_user_agents.rs::prop_linear_body_runs_at_most_once",
+        "rholang/tests/reified_user_agents.rs::agent_xlate_join_two_matchers",
+        "rholang/tests/reified_user_agents.rs::agent_xlate_guard_span_rejected",
+        "rholang/tests/reified_user_agents.rs::agent_xlate_cross_space_join_rejected",
+        "rholang/tests/reified_user_agents.rs::user_agent_errors_query",
+        "rholang/tests/reified_user_agents.rs::user_agent_errors_pattern_too_deep",
+        "rholang/tests/reified_examples_execute.rs::example_agent_wrapper_forwards_to_native",
+        "rholang/tests/reified_examples_execute.rs::example_agent_hashmap_bag"
+      ],
+      "docs": [
+        "docs/rspace/reified-rspaces/agent-api.md#5-handle-methods",
+        "docs/rspace/reified-rspaces/agent-api.md#122-the-protocol",
+        "docs/rholang/21-reified-spaces.md#the-methods-of-a-space-agent"
+      ],
+      "decision": [
+        "decision-8"
+      ],
+      "reason": null,
+      "note": null
+    },
+    {
+      "id": "RR-11",
+      "fips": "RR",
+      "lines": [
+        [
+          147,
+          147
+        ]
+      ],
+      "clause": "Patterns will grow into spatial-behavioral types in datalog form, and matchers will then tailor patterns to the inner structure and the theory.",
+      "status": "informative",
+      "code": [],
+      "formal": [],
+      "no_model": null,
+      "tests": [],
+      "docs": [
+        "docs/rspace/reified-rspaces/f1r3lang-integration.md#6-open-items-for-phase-p12"
+      ],
+      "decision": [],
+      "reason": "The sentence states a direction of future pattern work and requires no behavior of this version.",
+      "note": null
+    },
+    {
+      "id": "RR-12",
+      "fips": "RR",
+      "lines": [
+        [
+          149,
+          151
+        ]
+      ],
+      "clause": "The namespace rho:space holds combinations of stores and collections, and developers can write their own spaces.",
+      "status": "implemented",
+      "code": [
+        "rholang/src/rust/interpreter/spaces/factory/urn.rs:203",
+        "rholang/src/rust/interpreter/spaces/factory/urn.rs:231-237",
+        "rholang/src/rust/interpreter/reified/system_channels.rs:310-314",
+        "rholang/src/rust/interpreter/reified/system_channels.rs:318-322",
+        "models/src/rust/space_factory_urn.rs:217-314"
+      ],
+      "formal": [
+        {
+          "rocq": "SpaceFactory.v",
+          "name": "registered_families_complete",
+          "line": 1444
+        },
+        {
+          "rocq": "SpaceFactory.v",
+          "name": "aliases_bind_family_capability",
+          "line": 1533
+        }
+      ],
+      "no_model": null,
+      "tests": [
+        "rholang/tests/reified_families.rs::prop_registered_families_complete",
+        "rholang/tests/reified_families.rs::space_factory_families_registered",
+        "rholang/tests/reified_families.rs::prop_aliases_bind_family_capability",
+        "rholang/tests/reified_families.rs::reified_getspaceagent_alias_equal",
+        "rholang/tests/reified_examples_execute.rs::example_agent_hashmap_bag",
+        "rholang/tests/reified_examples_execute.rs::example_fips_example"
+      ],
+      "docs": [
+        "docs/rspace/reified-rspaces/specification.md#15-families",
+        "docs/rholang/21-reified-spaces.md#space-families",
+        "docs/rholang/21-reified-spaces.md#writing-your-own-space"
+      ],
+      "decision": [
+        "decision-8"
+      ],
+      "reason": null,
+      "note": null
+    },
+    {
+      "id": "RR-13",
+      "fips": "RR",
+      "lines": [
+        [
+          153,
+          157
+        ]
+      ],
+      "clause": "The outer store HashMap, the store of the current implementation.",
+      "status": "implemented",
+      "code": [
+        "rholang/src/rust/interpreter/spaces/outer/hashmap.rs:26-56"
+      ],
+      "formal": [
+        {
+          "rocq": "Namespace.v",
+          "name": "canon_respects_par_eq",
+          "line": 1043
+        },
+        {
+          "rocq": "Namespace.v",
+          "name": "name_id_routes_to_sid",
+          "line": 1003
+        }
+      ],
+      "no_model": null,
+      "tests": [
+        "rholang/tests/reified_p4_props.rs::prop_canonical_inner_bytes_respects_par_eq",
+        "rholang/tests/reified_p4_props.rs::prop_name_id_routes_to_sid",
+        "rholang/tests/reified_handle.rs::space_handle_methods_gensym",
+        "rholang/tests/reified_examples_execute.rs::example_queue_fifo",
+        "rholang/tests/reified_examples_execute.rs::example_bag_basics",
+        "rholang/tests/reified_examples_execute.rs::example_multi_space_isolation"
+      ],
+      "docs": [
+        "docs/rspace/reified-rspaces/specification.md#21-hashmap",
+        "docs/rholang/21-reified-spaces.md#hashmap"
+      ],
+      "decision": [],
+      "reason": null,
+      "note": null
+    },
+    {
+      "id": "RR-14",
+      "fips": "RR",
+      "lines": [
+        [
+          159,
+          186
+        ]
+      ],
+      "clause": "The outer store PathMap: channels are paths, a send also sends on every prefix, and a receive on a prefix binds the re-rooted data and leaves the rest.",
+      "status": "implemented",
+      "code": [
+        "rholang/src/rust/interpreter/spaces/pathmap/path_codec.rs:281-286",
+        "rholang/src/rust/interpreter/spaces/pathmap/path_codec.rs:343-347",
+        "rholang/src/rust/interpreter/spaces/pathmap/path_codec.rs:369-371",
+        "rholang/src/rust/interpreter/spaces/pathmap/reroot.rs:51-75",
+        "rholang/src/rust/interpreter/spaces/pathmap/adapter.rs:293-337",
+        "rholang/src/rust/interpreter/spaces/outer/pathmap.rs:85-96",
+        "rholang/src/rust/interpreter/spaces/outer/pathmap.rs:201-210",
+        "rholang/src/rust/interpreter/spaces/pathmap/markers.rs:137-165",
+        "rholang/src/rust/interpreter/spaces/pathmap/markers.rs:130-132",
+        "rholang/src/rust/interpreter/spaces/pathmap/markers.rs:197-213",
+        "rholang/src/rust/interpreter/spaces/pathmap/delivery.rs:175-249",
+        "rholang/src/rust/interpreter/spaces/pathmap/delivery.rs:389-431",
+        "rholang/src/rust/interpreter/spaces/pathmap/delivery.rs:542-551"
+      ],
+      "formal": [
+        {
+          "rocq": "PathMapPrefix.v",
+          "name": "prefix_key_iff_prefix",
+          "line": 584
+        },
+        {
+          "rocq": "PathMapPrefix.v",
+          "name": "candidate_order_total",
+          "line": 1014
+        },
+        {
+          "rocq": "PathMapPrefix.v",
+          "name": "reroot_ident",
+          "line": 843
+        },
+        {
+          "rocq": "PathMapPrefix.v",
+          "name": "reroot_compose",
+          "line": 850
+        },
+        {
+          "rocq": "PathMapPrefix.v",
+          "name": "fips_example",
+          "line": 959
+        },
+        {
+          "rocq": "PathMapPrefix.v",
+          "name": "reroot_injective",
+          "line": 922
+        },
+        {
+          "rocq": "PathMapPrefix.v",
+          "name": "prefix_contact_anchored",
+          "line": 1948
+        },
+        {
+          "rocq": "PathMapPrefix.v",
+          "name": "path_element_rules",
+          "line": 1455
+        },
+        {
+          "rocq": "PathMapPrefix.v",
+          "name": "marker_record_roundtrip",
+          "line": 1350
+        },
+        {
+          "rocq": "PathMapPrefix.v",
+          "name": "marker_invariant_preserved",
+          "line": 2560
+        },
+        {
+          "tla": "formal/tlaplus/reified_rspaces/PathMapPrefix.tla",
+          "invariant": "MarkerCount"
+        },
+        {
+          "rocq": "PathMapPrefix.v",
+          "name": "vehicle_carries_payload",
+          "line": 1382
+        },
+        {
+          "rocq": "PathMapPrefix.v",
+          "name": "delivery_vehicle_single_channel",
+          "line": 1911
+        },
+        {
+          "rocq": "PathMapPrefix.v",
+          "name": "no_match_remains",
+          "line": 2380
+        },
+        {
+          "tla": "formal/tlaplus/reified_rspaces/PathMapPrefix.tla",
+          "invariant": "NoMatchRemains"
+        },
+        {
+          "rocq": "PathMapPrefix.v",
+          "name": "peek_restores_delivered_marker",
+          "line": 2010
+        },
+        {
+          "rocq": "PathMapPrefix.v",
+          "name": "token_ord_reentry",
+          "line": 3126
+        },
+        {
+          "tla": "formal/tlaplus/reified_rspaces/PathMapPrefix.tla",
+          "invariant": "MergeDetectsPrefixContact"
+        }
+      ],
+      "no_model": null,
+      "tests": [
+        "rholang/src/rust/interpreter/spaces/pathmap/path_codec.rs::prop_prefix_key_iff_prefix",
+        "rholang/src/rust/interpreter/spaces/pathmap/path_codec.rs::prop_candidate_order_total",
+        "rholang/src/rust/interpreter/spaces/pathmap/path_codec.rs::the_depth_cap_bounds_channel_paths_and_prefixes",
+        "rholang/src/rust/interpreter/spaces/pathmap/path_codec.rs::pathmaps_and_zippers_are_unsupported_at_any_depth",
+        "rholang/src/rust/interpreter/spaces/pathmap/reroot.rs::prop_reroot_ident",
+        "rholang/src/rust/interpreter/spaces/pathmap/reroot.rs::prop_reroot_compose",
+        "rholang/src/rust/interpreter/spaces/pathmap/reroot.rs::prop_unit_shift",
+        "rholang/src/rust/interpreter/spaces/pathmap/reroot.rs::fips_example",
+        "rholang/src/rust/interpreter/spaces/pathmap/adapter.rs::prop_head_adapter_roundtrip",
+        "rholang/src/rust/interpreter/spaces/pathmap/reroot.rs::prop_reroot_injective",
+        "rholang/src/rust/interpreter/spaces/outer/pathmap.rs::the_path_channels_are_storage_channels_of_the_space",
+        "rholang/src/rust/interpreter/spaces/outer/pathmap.rs::the_token_is_the_space_counter_and_the_counter_of_every_path",
+        "rholang/src/rust/interpreter/spaces/pathmap/delivery.rs::prop_path_element_rules",
+        "rholang/src/rust/interpreter/spaces/outer/pathmap.rs::check_key_follows_the_path_rules",
+        "rholang/src/rust/interpreter/spaces/outer/pathmap.rs::gensym_names_root_a_private_subtree",
+        "rholang/src/rust/interpreter/spaces/pathmap/markers.rs::prop_marker_record_roundtrip",
+        "rholang/src/rust/interpreter/spaces/pathmap/delivery.rs::prop_marker_invariant_preserved",
+        "rholang/src/rust/interpreter/spaces/pathmap/markers.rs::marker_random_states_differ_by_depth_and_follow_the_path_marker_purpose",
+        "rholang/src/rust/interpreter/spaces/pathmap/markers.rs::prop_vehicle_carries_payload",
+        "rholang/src/rust/interpreter/spaces/pathmap/markers.rs::a_vehicle_is_the_marker_followed_by_the_payload",
+        "rholang/src/rust/interpreter/spaces/pathmap/delivery.rs::prop_candidates_cover_the_prefix_in_key_order",
+        "rholang/src/rust/interpreter/spaces/pathmap/delivery.rs::the_fips_paths_deliver_the_exact_path_first_and_rerooted",
+        "rholang/src/rust/interpreter/spaces/pathmap/delivery.rs::prop_waiter_prefixes_are_most_specific_first",
+        "rholang/src/rust/interpreter/spaces/pathmap/delivery.rs::the_waiters_of_a_send_are_the_most_specific_first",
+        "rholang/src/rust/interpreter/spaces/pathmap/delivery.rs::a_removal_retires_the_record_and_every_other_marker",
+        "rholang/tests/reified_examples_execute.rs::example_pathmap_prefix_aggregation",
+        "rholang/tests/reified_examples_execute.rs::example_pathmap_hierarchical_spaces"
+      ],
+      "docs": [
+        "docs/rspace/reified-rspaces/specification.md#25-pathmap-paths-and-re-rooting",
+        "docs/rspace/reified-rspaces/specification.md#26-the-pathmap-store",
+        "docs/rspace/reified-rspaces/pathmap-prefix-delivery.md#2-the-model",
+        "docs/rholang/21-reified-spaces.md#pathmap"
+      ],
+      "decision": [
+        "decision-9",
+        "decision-51"
+      ],
+      "reason": null,
+      "note": "Lines 181 to 183 of the FIPS write the pathmaps without their opening bar, for example {[2, \"hello\"], [3, \"there\"]|}. The rows read them as pathmaps."
+    },
+    {
+      "id": "RR-15",
+      "fips": "RR",
+      "lines": [
+        [
+          187,
+          193
+        ]
+      ],
+      "clause": "The quantale semantics of sequential processes on sets of paths.",
+      "status": "informative",
+      "code": [],
+      "formal": [],
+      "no_model": null,
+      "tests": [],
+      "docs": [],
+      "decision": [
+        "decision-87"
+      ],
+      "reason": "The FIPS states the semantics with an open question on line 193. Decision 87 records it as informative, and follow-up rrs-fu-quantale-unification routes it to the FIPS authors.",
+      "note": null
+    },
+    {
+      "id": "RR-16",
+      "fips": "RR",
+      "lines": [
+        [
+          195,
+          201
+        ]
+      ],
+      "clause": "The outer store Array of fixed length: new gives the next index up to the maximum, then aborts with an out-of-names error, and indices can be unforgeable.",
+      "status": "implemented",
+      "code": [
+        "rholang/src/rust/interpreter/spaces/outer/array.rs:130-197",
+        "rholang/src/rust/interpreter/spaces/outer/array.rs:142-152",
+        "rholang/src/rust/interpreter/spaces/allocator.rs:259-277",
+        "rholang/src/rust/interpreter/spaces/allocator.rs:283-296",
+        "rholang/src/rust/interpreter/spaces/allocator.rs:109-162",
+        "rholang/tests/reified_merge_p5.rs:822-883"
+      ],
+      "formal": [
+        {
+          "rocq": "OuterStorage.v",
+          "name": "fixed_array_allocates_at_most_size",
+          "line": 313
+        },
+        {
+          "rocq": "VectorStore.v",
+          "name": "vector_index_is_counter",
+          "line": 184
+        },
+        {
+          "rocq": "HashMapStore.v",
+          "name": "hashmap_get_put_other",
+          "line": 256
+        },
+        {
+          "rocq": "HashMapStore.v",
+          "name": "hashmap_iteration_permutation_invariant",
+          "line": 211
+        },
+        {
+          "rocq": "OuterStorage.v",
+          "name": "fixed_array_indices_sequential",
+          "line": 345
+        },
+        {
+          "rocq": "OuterStorage.v",
+          "name": "cyclic_array_index_mod_size",
+          "line": 376
+        },
+        {
+          "rocq": "VectorStore.v",
+          "name": "vector_gensym_monotonic",
+          "line": 219
+        },
+        {
+          "rocq": "OuterStorage.v",
+          "name": "allocation_batch_atomic",
+          "line": 402
+        },
+        {
+          "rocq": "OuterStorage.v",
+          "name": "fixed_array_out_of_names_exact",
+          "line": 330
+        },
+        {
+          "rocq": "OuterStorage.v",
+          "name": "allocator_identities_unique",
+          "line": 555
+        },
+        {
+          "tla": "formal/tlaplus/reified_rspaces/CounterConflict.tla",
+          "invariant": "NoDuplicateIndex"
+        }
+      ],
+      "no_model": null,
+      "tests": [
+        "rholang/tests/reified_array_vector.rs::prop_fixed_array_allocates_at_most_size",
+        "rholang/tests/reified_array_vector.rs::prop_vector_index_is_counter",
+        "rholang/tests/reified_array_vector.rs::prop_hashmap_get_put_other",
+        "rholang/tests/reified_array_vector.rs::prop_hashmap_iteration_permutation_invariant",
+        "rholang/tests/reified_array_vector.rs::prop_fixed_array_indices_sequential",
+        "rholang/tests/reified_array_vector.rs::prop_cyclic_array_index_mod_size",
+        "rholang/tests/reified_array_vector.rs::prop_vector_gensym_monotonic",
+        "rholang/tests/reified_array_vector.rs::prop_allocation_batch_atomic",
+        "rholang/tests/reified_array_vector.rs::prop_fixed_array_out_of_names_exact",
+        "rholang/tests/reified_array_vector.rs::prop_allocator_identities_unique",
+        "rholang/tests/reified_array_vector.rs::prop_no_duplicate_index",
+        "rholang/tests/reified_array_vector.rs::prop_allocations_race",
+        "rholang/tests/reified_array_vector.rs::space_allocator_race_conflict",
+        "rholang/tests/reified_examples_execute.rs::example_array_indexed_space",
+        "rholang/tests/reified_examples_execute.rs::example_array_out_of_names"
+      ],
+      "docs": [
+        "docs/rspace/reified-rspaces/specification.md#22-array",
+        "docs/rspace/reified-rspaces/specification.md#24-the-allocator-of-array-and-vector-spaces",
+        "docs/rholang/21-reified-spaces.md#array-and-vector"
+      ],
+      "decision": [
+        "decision-39"
+      ],
+      "reason": null,
+      "note": "Each index name is an unforgeable id of its space, so a client cannot reach an index ambiently (rule AR-1)."
+    },
+    {
+      "id": "RR-17",
+      "fips": "RR",
+      "lines": [
+        [
+          203,
+          205
+        ]
+      ],
+      "clause": "The outer store Array with reuse: new gives the next index modulo the size.",
+      "status": "implemented",
+      "code": [
+        "rholang/src/rust/interpreter/spaces/outer/array.rs:64-93"
+      ],
+      "formal": [
+        {
+          "rocq": "OuterStorage.v",
+          "name": "fixed_array_indices_sequential",
+          "line": 345
+        },
+        {
+          "rocq": "OuterStorage.v",
+          "name": "cyclic_array_index_mod_size",
+          "line": 376
+        },
+        {
+          "rocq": "VectorStore.v",
+          "name": "vector_gensym_monotonic",
+          "line": 219
+        }
+      ],
+      "no_model": null,
+      "tests": [
+        "rholang/tests/reified_array_vector.rs::prop_fixed_array_indices_sequential",
+        "rholang/tests/reified_array_vector.rs::prop_cyclic_array_index_mod_size",
+        "rholang/tests/reified_array_vector.rs::prop_vector_gensym_monotonic"
+      ],
+      "docs": [
+        "docs/rspace/reified-rspaces/specification.md#22-array",
+        "docs/rholang/21-reified-spaces.md#array-and-vector"
+      ],
+      "decision": [
+        "decision-39"
+      ],
+      "reason": null,
+      "note": null
+    },
+    {
+      "id": "RR-18",
+      "fips": "RR",
+      "lines": [
+        [
+          207,
+          208
+        ],
+        [
+          211,
+          211
+        ]
+      ],
+      "clause": "The outer store Vector of unbounded length: new grows the vector and gives the index of its last element, and indices can be unforgeable.",
+      "status": "implemented",
+      "code": [
+        "rholang/src/rust/interpreter/spaces/outer/vector.rs:34-98",
+        "rholang/src/rust/interpreter/spaces/outer/vector.rs:46-54",
+        "rholang/src/rust/interpreter/reified/reducer_hooks.rs:1147-1194"
+      ],
+      "formal": [
+        {
+          "rocq": "OuterStorage.v",
+          "name": "fixed_array_allocates_at_most_size",
+          "line": 313
+        },
+        {
+          "rocq": "VectorStore.v",
+          "name": "vector_index_is_counter",
+          "line": 184
+        },
+        {
+          "rocq": "HashMapStore.v",
+          "name": "hashmap_get_put_other",
+          "line": 256
+        },
+        {
+          "rocq": "HashMapStore.v",
+          "name": "hashmap_iteration_permutation_invariant",
+          "line": 211
+        },
+        {
+          "rocq": "OuterStorage.v",
+          "name": "fixed_array_indices_sequential",
+          "line": 345
+        },
+        {
+          "rocq": "OuterStorage.v",
+          "name": "cyclic_array_index_mod_size",
+          "line": 376
+        },
+        {
+          "rocq": "VectorStore.v",
+          "name": "vector_gensym_monotonic",
+          "line": 219
+        },
+        {
+          "rocq": "OuterStorage.v",
+          "name": "alloc_trace_covered",
+          "line": 695
+        }
+      ],
+      "no_model": null,
+      "tests": [
+        "rholang/tests/reified_array_vector.rs::prop_fixed_array_allocates_at_most_size",
+        "rholang/tests/reified_array_vector.rs::prop_vector_index_is_counter",
+        "rholang/tests/reified_array_vector.rs::prop_hashmap_get_put_other",
+        "rholang/tests/reified_array_vector.rs::prop_hashmap_iteration_permutation_invariant",
+        "rholang/tests/reified_array_vector.rs::prop_fixed_array_indices_sequential",
+        "rholang/tests/reified_array_vector.rs::prop_cyclic_array_index_mod_size",
+        "rholang/tests/reified_array_vector.rs::prop_vector_gensym_monotonic",
+        "rholang/src/rust/interpreter/reified/reducer_hooks.rs::reducer_space_routing_allocation_jobs_give_index_names",
+        "rholang/src/rust/interpreter/reified/reducer_hooks.rs::reducer_space_routing_baseline_job_reserves_its_reads",
+        "rholang/tests/reified_array_vector.rs::prop_alloc_trace_covered",
+        "rholang/tests/reified_examples_execute.rs::example_vector_indexed_space"
+      ],
+      "docs": [
+        "docs/rspace/reified-rspaces/specification.md#23-vector",
+        "docs/rholang/21-reified-spaces.md#array-and-vector"
+      ],
+      "decision": [],
+      "reason": null,
+      "note": null
+    },
+    {
+      "id": "RR-19",
+      "fips": "RR",
+      "lines": [
+        [
+          209,
+          209
+        ]
+      ],
+      "clause": "When the server runs out of memory, the deploy fails with an out-of-memory error.",
+      "status": "deviation",
+      "code": [],
+      "formal": [],
+      "no_model": null,
+      "tests": [],
+      "docs": [],
+      "decision": [
+        "decision-87"
+      ],
+      "reason": null,
+      "note": "A deploy fails deterministically when it exceeds its phlo or its host-work budget. Memory exhaustion cannot be a consensus outcome, because it depends on the node."
+    },
+    {
+      "id": "RR-20",
+      "fips": "RR",
+      "lines": [
+        [
+          213,
+          215
+        ]
+      ],
+      "clause": "The outer store HashSet of channels: a send adds the channel to the set, a receive uses only the empty pattern, and joins are allowed.",
+      "status": "implemented",
+      "code": [
+        "rholang/src/rust/interpreter/spaces/generic.rs:2586-2591",
+        "rholang/src/rust/interpreter/spaces/join.rs:412-471"
+      ],
+      "formal": [
+        {
+          "rocq": "HashMapStore.v",
+          "name": "hashmap_get_put_other",
+          "line": 256
+        },
+        {
+          "rocq": "HashMapStore.v",
+          "name": "hashset_unit_rules",
+          "line": 378
+        },
+        {
+          "rocq": "SpaceFactory.v",
+          "name": "qualifier_matrix",
+          "line": 383
+        },
+        {
+          "tla": "formal/tlaplus/reified_rspaces/SpaceCoordination.tla",
+          "invariant": "QualifierSupport"
+        },
+        {
+          "rocq": "SpaceFactory.v",
+          "name": "registered_families_complete",
+          "line": 1444
+        }
+      ],
+      "no_model": null,
+      "tests": [
+        "rholang/src/rust/interpreter/spaces/outer/hashset.rs::space_hashset_keys_channels_and_names_are_those_of_the_hashmap_store",
+        "rholang/tests/reified_hashset.rs::prop_hashset_unit_rules",
+        "rholang/tests/reified_hashset.rs::reified_hashset_payload_not_empty",
+        "rholang/tests/reified_hashset.rs::reified_hashset_pattern_not_empty",
+        "rholang/tests/reified_hashset.rs::reified_hashset_guards",
+        "rholang/src/rust/interpreter/spaces/generic.rs::space_engine_hashset_families_take_units_only",
+        "rholang/src/rust/interpreter/spaces/outer/hashset.rs::space_hashset_accepts_exactly_the_empty_payload",
+        "rholang/src/rust/interpreter/spaces/outer/hashset.rs::space_hashset_accepts_exactly_the_empty_pattern_list",
+        "rholang/tests/reified_pattern_enforcement.rs::pattern_enforcement_hashset_rows",
+        "rholang/tests/reified_hashset.rs::reified_hashset_joins",
+        "rholang/tests/reified_hashset.rs::reified_hashset_unit_sends",
+        "rholang/tests/reified_hashset.rs::reified_hashset_disciplines",
+        "rholang/tests/reified_hashset.rs::reified_hashset_head_order",
+        "rholang/tests/reified_hashset.rs::reified_hashset_seq_only",
+        "rholang/tests/reified_hashset.rs::reified_hashset_absent_unit_waits",
+        "rholang/tests/reified_temp_seq.rs::reducer_qualifier_matrix",
+        "rholang/src/rust/interpreter/spaces/factory/constructor.rs::reified_factory_hashset_takes_only_seq_in_native_execution",
+        "rholang/tests/reified_pattern_enforcement.rs::pattern_enforcement_native_unsupported_pairs_reject",
+        "rholang/tests/reified_hashset.rs::reified_hashset_factory_params",
+        "rholang/tests/reified_families.rs::space_factory_families_registered",
+        "rholang/src/rust/interpreter/reified/system_channels.rs::p7_system_channels_have_the_table_values",
+        "rholang/tests/reified_examples_execute.rs::example_hashset_dedup_spaces",
+        "rholang/tests/reified_examples_execute.rs::example_hashset_rejects_a_payload",
+        "rholang/tests/reified_examples_execute.rs::example_hashset_rejects_a_pattern"
+      ],
+      "docs": [
+        "docs/rspace/reified-rspaces/specification.md#27-hashset",
+        "docs/rholang/21-reified-spaces.md#hashset"
+      ],
+      "decision": [
+        "decision-73"
+      ],
+      "reason": null,
+      "note": "A receive fires with the unit, which is Some(()), or it waits. So a process never observes an absent unit (rule HS-6, decision 73)."
+    },
+    {
+      "id": "RR-21",
+      "fips": "RR",
+      "lines": [
+        [
+          217,
+          227
+        ]
+      ],
+      "clause": "Inner collections: a pair of collection types replaces the two bags, the collections are unindexed, patterns depend on the collection type, and produces need not commute.",
+      "status": "implemented",
+      "code": [
+        "rholang/src/rust/interpreter/reified/reducer_hooks.rs:1358-1372",
+        "rholang/src/rust/interpreter/reified/reducer_hooks.rs:1390-1435",
+        "rholang/src/rust/interpreter/reified/reducer_hooks.rs:1345-1347"
+      ],
+      "formal": [
+        {
+          "rocq": "HeadOnlyDisciplines.v",
+          "name": "queue_ord_fresh",
+          "line": 1046
+        },
+        {
+          "rocq": "CounterConflict.v",
+          "name": "ordered_writes_race_on_counter",
+          "line": 910
+        },
+        {
+          "rocq": "CounterConflict.v",
+          "name": "ordered_reads_race_on_counter",
+          "line": 924
+        },
+        {
+          "rocq": "CounterConflict.v",
+          "name": "same_block_ops_chain",
+          "line": 1113
+        },
+        {
+          "rocq": "CounterConflict.v",
+          "name": "shared_collection_race",
+          "line": 889
+        },
+        {
+          "rocq": "CounterConflict.v",
+          "name": "merge_without_race_is_serializable",
+          "line": 1489
+        },
+        {
+          "rocq": "CounterConflict.v",
+          "name": "crossed_stacks_without_removal_counters_fabricate",
+          "line": 2578
+        },
+        {
+          "tla": "formal/tlaplus/reified_rspaces/CounterConflict.tla",
+          "invariant": "NoMergedOrderFabrication"
+        },
+        {
+          "rocq": "SpaceRefs.v",
+          "name": "query_source_routes_inner_channel",
+          "line": 1665
+        }
+      ],
+      "no_model": null,
+      "tests": [
+        "rholang/tests/reified_p4_props.rs::prop_queue_ord_fresh",
+        "rholang/tests/reified_queue.rs::space_queue_counter_bump_shape",
+        "rholang/tests/reified_merge.rs::space_queue_counter_race_conflict_enq_deq",
+        "rholang/tests/reified_merge.rs::space_queue_counter_race_conflict_same_block_one_chain",
+        "rholang/tests/reified_merge_p5.rs::space_collection_conflicts_cell_writes_race",
+        "rholang/tests/reified_merge_p5.rs::space_collection_conflicts_stack_push_pop_race",
+        "rholang/tests/reified_merge_p5.rs::prop_cell_ops_race_on_counter",
+        "rholang/tests/reified_p4_props.rs::prop_nonracing_queue_branches_serializable",
+        "rholang/tests/reified_merge.rs::space_queue_counter_race_conflict_unrelated_queues_merge",
+        "rholang/tests/reified_merge_p5.rs::prop_merged_stack_state_is_serial",
+        "rholang/tests/reified_merge_p5.rs::space_collection_conflicts_crossed_stacks",
+        "rholang/src/rust/interpreter/reified/reducer_hooks.rs::prop_query_bind_routes_inner_channel",
+        "rholang/tests/reified_hooks_p5.rs::prop_query_source_routes_inner_channel",
+        "rholang/tests/reified_examples_execute.rs::example_determinism_demo"
+      ],
+      "docs": [
+        "docs/rspace/reified-rspaces/specification.md#3-inner-collections",
+        "docs/rholang/21-reified-spaces.md#inner-collections"
+      ],
+      "decision": [
+        "m-1",
+        "decision-31"
+      ],
+      "reason": null,
+      "note": null
+    },
+    {
+      "id": "RR-22",
+      "fips": "RR",
+      "lines": [
+        [
+          229,
+          231
+        ]
+      ],
+      "clause": "Bags: the multiset semantics of the default space.",
+      "status": "implemented",
+      "code": [
+        "rholang/src/rust/interpreter/spaces/disciplines/scan.rs:730-762",
+        "rholang/tests/reified_merge_p5.rs:592-647"
+      ],
+      "formal": [
+        {
+          "rocq": "DataCollection.v",
+          "name": "bag_visit_order_canonical",
+          "line": 243
+        },
+        {
+          "rocq": "ContinuationCollection.v",
+          "name": "waiter_visit_order_canonical",
+          "line": 337
+        },
+        {
+          "rocq": "DataCollection.v",
+          "name": "bag_consume_first_spatial_match",
+          "line": 445
+        },
+        {
+          "rocq": "Match.v",
+          "name": "guard_once_greedy_like_head",
+          "line": 685
+        },
+        {
+          "rocq": "DataCollection.v",
+          "name": "bag_multiplicity_preserved",
+          "line": 559
+        },
+        {
+          "rocq": "DataCollection.v",
+          "name": "bag_removal_keeps_equal_duplicate",
+          "line": 578
+        },
+        {
+          "rocq": "DataCollection.v",
+          "name": "bag_persistent_match_not_removed",
+          "line": 536
+        },
+        {
+          "rocq": "DataCollection.v",
+          "name": "bag_peek_restore_is_host_second_send",
+          "line": 725
+        },
+        {
+          "rocq": "GenericRSpace.v",
+          "name": "peek_restore_equals_host_reproduce",
+          "line": 1156
+        },
+        {
+          "tla": "formal/tlaplus/reified_rspaces/GenericRSpace.tla",
+          "invariant": "PeekRestoresRecord"
+        },
+        {
+          "rocq": "GenericRSpace.v",
+          "name": "scan_reissue_identity_stable",
+          "line": 1300
+        },
+        {
+          "rocq": "DataCollection.v",
+          "name": "scan_trace_covered",
+          "line": 856
+        }
+      ],
+      "no_model": null,
+      "tests": [
+        "rholang/tests/reified_bag.rs::prop_bag_visit_order_canonical",
+        "rholang/tests/reified_bag.rs::prop_bag_waiter_visit_order_canonical",
+        "rholang/tests/reified_bag.rs::prop_bag_consume_first_spatial_match",
+        "rholang/tests/reified_engine_props.rs::prop_engine_guard_checked_once_as_the_host_checks_it",
+        "rholang/tests/reified_bag.rs::prop_bag_multiplicity_preserved",
+        "rholang/tests/reified_bag.rs::prop_bag_removal_keeps_equal_duplicate",
+        "rholang/tests/reified_bag.rs::prop_bag_legacy_charges_equal_host",
+        "rholang/tests/reified_bag.rs::prop_bag_restore_registers_the_record_authority",
+        "rholang/tests/reified_engine_props.rs::prop_engine_scan_reissue_keeps_identity",
+        "rholang/tests/reified_bag.rs::prop_bag_reservation_cut_rejects_without_effect",
+        "rholang/tests/reified_examples_execute.rs::example_bag_basics",
+        "rholang/tests/reified_examples_execute.rs::example_bag_peeks_and_persistence",
+        "rholang/tests/reified_examples_execute.rs::example_bag_rejects_a_query"
+      ],
+      "docs": [
+        "docs/rspace/reified-rspaces/specification.md#32-bag",
+        "docs/rholang/21-reified-spaces.md#bag"
+      ],
+      "decision": [
+        "decision-41",
+        "decision-45"
+      ],
+      "reason": null,
+      "note": null
+    },
+    {
+      "id": "RR-23",
+      "fips": "RR",
+      "lines": [
+        [
+          233,
+          235
+        ]
+      ],
+      "clause": "Sets: each datum or continuation appears at most once, and a second equal send is idempotent.",
+      "status": "implemented",
+      "code": [
+        "rholang/src/rust/interpreter/spaces/disciplines/set.rs:176-227",
+        "rholang/src/rust/interpreter/spaces/disciplines/scan.rs:597-685",
+        "rholang/src/rust/interpreter/spaces/disciplines/scan.rs:794-879",
+        "rholang/src/rust/interpreter/spaces/disciplines/scan.rs:709-789",
+        "rholang/src/rust/interpreter/spaces/disciplines/scan.rs:884-899",
+        "rholang/src/rust/interpreter/spaces/disciplines/scan.rs:419-429"
+      ],
+      "formal": [
+        {
+          "rocq": "SetDiscipline.v",
+          "name": "set_key_injective",
+          "line": 297
+        },
+        {
+          "rocq": "SetDiscipline.v",
+          "name": "set_view_dedups_equal_pars",
+          "line": 704
+        },
+        {
+          "rocq": "SetDiscipline.v",
+          "name": "set_consume_retires_class",
+          "line": 792
+        },
+        {
+          "rocq": "SetDiscipline.v",
+          "name": "set_retire_comm_lines_up",
+          "line": 872
+        },
+        {
+          "rocq": "SetDiscipline.v",
+          "name": "set_produce_fire_retires_stored_class",
+          "line": 1151
+        },
+        {
+          "tla": "formal/tlaplus/reified_rspaces/GenericRSpace.tla",
+          "invariant": "SetClassRetired"
+        },
+        {
+          "rocq": "SetDiscipline.v",
+          "name": "set_peek_restores_representative_only",
+          "line": 1205
+        },
+        {
+          "rocq": "SetDiscipline.v",
+          "name": "set_membership_full_compare_on_equal_hash",
+          "line": 1274
+        },
+        {
+          "rocq": "GenericRSpace.v",
+          "name": "scan_reissue_identity_stable",
+          "line": 1300
+        },
+        {
+          "rocq": "CounterConflict.v",
+          "name": "set_retirements_race",
+          "line": 1992
+        },
+        {
+          "rocq": "CounterConflict.v",
+          "name": "unordered_set_writes_commute",
+          "line": 2024
+        },
+        {
+          "rocq": "SetDiscipline.v",
+          "name": "set_key_trace_covered",
+          "line": 1389
+        }
+      ],
+      "no_model": null,
+      "tests": [
+        "rholang/tests/reified_set.rs::prop_set_key_injective",
+        "rholang/tests/reified_set.rs::space_set_discipline_key_length_prefix_no_collision",
+        "rholang/tests/reified_set.rs::prop_set_view_dedups_equal_pars",
+        "rholang/tests/reified_set.rs::space_set_discipline_duplicates_stay_distinct_records",
+        "rholang/tests/reified_set.rs::prop_set_consume_retires_class",
+        "rholang/tests/reified_set.rs::prop_set_retire_comm_lines_up",
+        "rholang/tests/reified_set.rs::prop_set_produce_fire_retires_stored_class",
+        "rholang/tests/reified_set.rs::prop_set_class_retired_any_schedule",
+        "rholang/tests/reified_set.rs::space_set_discipline_guarded_waiter_then_equal_send_retires_class",
+        "rholang/tests/reified_set.rs::prop_set_peek_restores_representative_only",
+        "rholang/tests/reified_set.rs::space_set_discipline_peek_restore_reoffer_retires_class",
+        "rholang/tests/reified_set.rs::prop_set_membership_full_compare_on_equal_hash",
+        "rholang/tests/reified_set.rs::space_set_discipline_persistent_reissue_keeps_identity",
+        "rholang/tests/reified_set.rs::space_set_discipline_equal_receives_stay_two_waiters",
+        "rholang/tests/reified_merge_p5.rs::prop_set_retirements_race",
+        "rholang/tests/reified_merge_p5.rs::prop_unordered_set_writes_commute",
+        "rholang/tests/reified_merge_p5.rs::space_collection_conflicts_set_retirements_race",
+        "rholang/tests/reified_merge_p5.rs::space_collection_conflicts_set_writes_merge",
+        "rholang/tests/reified_set.rs::prop_set_key_trace_covered",
+        "rholang/tests/reified_set.rs::space_set_discipline_failed_canonicalization_rejects_before_staging",
+        "rholang/tests/reified_examples_execute.rs::example_set_idempotent",
+        "rholang/tests/reified_examples_execute.rs::example_set_peeks_and_persistence",
+        "rholang/tests/reified_examples_execute.rs::example_set_rejects_a_send_param"
+      ],
+      "docs": [
+        "docs/rspace/reified-rspaces/specification.md#35-set",
+        "docs/rholang/21-reified-spaces.md#set"
+      ],
+      "decision": [
+        "decision-39",
+        "decision-41"
+      ],
+      "reason": null,
+      "note": "Equal data form one class (rule ST-2). Two waiters are equal only when their bytes are equal (rule ST-9, item F14 of decision 39)."
+    },
+    {
+      "id": "RR-24",
+      "fips": "RR",
+      "lines": [
+        [
+          237,
+          241
+        ]
+      ],
+      "clause": "Cells: at most one datum or continuation on a channel, and a second send is an error.",
+      "status": "implemented",
+      "code": [
+        "rholang/src/rust/interpreter/spaces/generic.rs:1118-1135",
+        "rholang/tests/reified_merge_p5.rs:651-699"
+      ],
+      "formal": [
+        {
+          "rocq": "CellDiscipline.v",
+          "name": "cell_capacity_one",
+          "line": 672
+        },
+        {
+          "tla": "formal/tlaplus/reified_rspaces/GenericRSpace.tla",
+          "invariant": "CellCapacity"
+        },
+        {
+          "rocq": "CellDiscipline.v",
+          "name": "cell_restore_never_occupied",
+          "line": 858
+        },
+        {
+          "rocq": "CellDiscipline.v",
+          "name": "cell_reentry_as_fresh",
+          "line": 889
+        }
+      ],
+      "no_model": null,
+      "tests": [
+        "rholang/tests/reified_cell.rs::prop_cell_capacity_one",
+        "rholang/tests/reified_cell.rs::space_disciplines_cell_second_produce_occupied",
+        "rholang/tests/reified_cell.rs::space_disciplines_cell_every_operation_bumps_counter",
+        "rholang/tests/reified_cell.rs::space_disciplines_cell_branch_writes_race_on_the_counter",
+        "rholang/tests/reified_cell.rs::prop_cell_restore_never_occupied",
+        "rholang/tests/reified_cell.rs::prop_cell_reentry_as_fresh",
+        "rholang/tests/reified_examples_execute.rs::example_cell_exactly_once",
+        "rholang/tests/reified_examples_execute.rs::example_cell_occupied",
+        "rholang/tests/reified_examples_execute.rs::example_cell_peeks_and_persistence"
+      ],
+      "docs": [
+        "docs/rspace/reified-rspaces/specification.md#33-cell",
+        "docs/rholang/21-reified-spaces.md#cell"
+      ],
+      "decision": [
+        "decision-39"
+      ],
+      "reason": null,
+      "note": "Line 239 notes that exactly one datum would need more machinery. That sentence requires no behavior."
+    },
+    {
+      "id": "RR-25",
+      "fips": "RR",
+      "lines": [
+        [
+          243,
+          245
+        ]
+      ],
+      "clause": "Queues: FIFO semantics, only the heads interact, one queue is empty or the heads do not match, and nodes agree on the arrival order.",
+      "status": "implemented",
+      "code": [
+        "rholang/src/rust/interpreter/spaces/disciplines/queue.rs:32-75"
+      ],
+      "formal": [
+        {
+          "rocq": "HeadOnlyDisciplines.v",
+          "name": "queue_head_is_min_ord",
+          "line": 530
+        },
+        {
+          "rocq": "HeadOnlyDisciplines.v",
+          "name": "queue_head_blocks",
+          "line": 1218
+        },
+        {
+          "tla": "formal/tlaplus/reified_rspaces/HeadOnlyDiscipline.tla",
+          "invariant": "HeadBlocks"
+        },
+        {
+          "rocq": "HeadOnlyDisciplines.v",
+          "name": "queue_loop_bounded_or_reissues",
+          "line": 1380
+        },
+        {
+          "rocq": "HeadOnlyDisciplines.v",
+          "name": "queue_fifo",
+          "line": 1135
+        },
+        {
+          "rocq": "HeadOnlyDisciplines.v",
+          "name": "queue_fifo_with_reentries",
+          "line": 2946
+        },
+        {
+          "tla": "formal/tlaplus/reified_rspaces/HeadOnlyDiscipline.tla",
+          "invariant": "FifoOrder"
+        },
+        {
+          "rocq": "HeadOnlyDisciplines.v",
+          "name": "queue_reissue_keeps_ord",
+          "line": 2373
+        },
+        {
+          "rocq": "HeadOnlyDisciplines.v",
+          "name": "queue_head_blocks_reentry",
+          "line": 3021
+        },
+        {
+          "rocq": "HeadOnlyDisciplines.v",
+          "name": "persistent_reentry_never_spent",
+          "line": 2342
+        },
+        {
+          "tla": "formal/tlaplus/reified_rspaces/HeadOnlyDiscipline.tla",
+          "invariant": "ReissueKeepsOrd"
+        },
+        {
+          "rocq": "HeadOnlyDisciplines.v",
+          "name": "queue_ord_fresh",
+          "line": 1046
+        },
+        {
+          "rocq": "CounterConflict.v",
+          "name": "first_ops_race_on_space_counter",
+          "line": 939
+        }
+      ],
+      "no_model": null,
+      "tests": [
+        "rholang/tests/reified_p4_props.rs::prop_queue_candidates_head_only",
+        "rholang/tests/reified_queue.rs::space_queue_head_only_data_head_blocks",
+        "rholang/tests/reified_queue.rs::space_queue_head_only_waiter_head_blocks",
+        "rholang/tests/reified_queue.rs::space_queue_reissue_persistent_send",
+        "rholang/tests/reified_queue.rs::space_queue_reissue_peek_produce",
+        "rholang/tests/reified_queue.rs::space_queue_divergent_pair_exhausts_phlo",
+        "rholang/tests/reified_queue.rs::space_queue_head_only_fifo_delivery",
+        "rholang/tests/reified_p4_props.rs::prop_queue_fifo_with_reentries",
+        "rholang/tests/reified_joins.rs::space_joins_queue_programs_run_as_joins",
+        "rholang/tests/reified_queue.rs::space_queue_send_params_rejected",
+        "rholang/tests/reified_queue.rs::space_queue_query_rejected",
+        "rholang/tests/reified_queue.rs::space_queue_reissue_reenters_ahead_of_younger_records",
+        "rholang/tests/reified_p4_props.rs::prop_queue_reissue_keeps_first_round_ord",
+        "rholang/tests/reified_p4_props.rs::prop_queue_reentry_head_blocks",
+        "rholang/tests/reified_p4_props.rs::prop_queue_ord_fresh",
+        "rholang/tests/reified_queue.rs::space_queue_counter_bump_shape",
+        "rholang/tests/reified_p4_props.rs::prop_first_ops_race_on_space_counter",
+        "rholang/src/rust/interpreter/spaces/counter.rs::space_counter_first_operation_bumps_the_space_counter",
+        "rholang/src/rust/interpreter/spaces/counter.rs::space_counter_rejects_corrupt_counters",
+        "rholang/tests/reified_examples_execute.rs::example_queue_fifo",
+        "rholang/tests/reified_examples_execute.rs::example_queue_peeks_and_persistence",
+        "rholang/tests/reified_examples_execute.rs::example_queue_rejects_a_send_param"
+      ],
+      "docs": [
+        "docs/rspace/reified-rspaces/specification.md#31-queue",
+        "docs/rspace/reified-rspaces/specification.md#30-ordered-collections",
+        "docs/rholang/21-reified-spaces.md#queue"
+      ],
+      "decision": [
+        "decision-11",
+        "decision-31",
+        "m-1"
+      ],
+      "reason": null,
+      "note": null
+    },
+    {
+      "id": "RR-26",
+      "fips": "RR",
+      "lines": [
+        [
+          247,
+          249
+        ]
+      ],
+      "clause": "Priority queues: a queue for each priority, and patterns can name a priority.",
+      "status": "implemented",
+      "code": [
+        "rholang/src/rust/interpreter/spaces/disciplines/priority_queue.rs:119-155",
+        "rholang/src/rust/interpreter/spaces/disciplines/priority_queue.rs:157-193",
+        "rholang/src/rust/interpreter/spaces/record.rs:867-1233",
+        "rholang/src/rust/interpreter/spaces/disciplines/priority_queue.rs:355-397",
+        "rholang/src/rust/interpreter/spaces/disciplines/priority_queue.rs:186-192",
+        "rholang/src/rust/interpreter/spaces/disciplines/priority_queue.rs:513-539",
+        "rholang/src/rust/interpreter/spaces/disciplines/priority_queue.rs:545-597",
+        "rholang/src/rust/interpreter/spaces/disciplines/priority_queue.rs:860-965",
+        "rholang/src/rust/interpreter/spaces/disciplines/priority_queue.rs:970-979",
+        "rholang/src/rust/interpreter/spaces/disciplines/priority_queue.rs:750-762"
+      ],
+      "formal": [
+        {
+          "rocq": "PriorityQueue.v",
+          "name": "pq_level_order",
+          "line": 863
+        },
+        {
+          "rocq": "PriorityQueue.v",
+          "name": "pq_unprioritized_lowest",
+          "line": 887
+        },
+        {
+          "tla": "formal/tlaplus/reified_rspaces/PriorityQueue.tla",
+          "invariant": "PqLevelOrder"
+        },
+        {
+          "rocq": "PriorityQueue.v",
+          "name": "pq_restricted_waiter_in_level_queue",
+          "line": 1921
+        },
+        {
+          "rocq": "PriorityQueue.v",
+          "name": "pq_unrestricted_first_matching_level",
+          "line": 1943
+        },
+        {
+          "rocq": "PriorityQueue.v",
+          "name": "pq_fifo_within_level",
+          "line": 2151
+        },
+        {
+          "rocq": "PriorityQueue.v",
+          "name": "pq_head_blocks_within_level",
+          "line": 2324
+        },
+        {
+          "rocq": "PriorityQueue.v",
+          "name": "pq_no_level_storage",
+          "line": 3903
+        },
+        {
+          "rocq": "RecordEnvelope.v",
+          "name": "datum_priority_slot_roundtrip",
+          "line": 1506
+        },
+        {
+          "rocq": "RecordEnvelope.v",
+          "name": "continuation_policy_slot_roundtrip",
+          "line": 1542
+        },
+        {
+          "rocq": "PriorityQueue.v",
+          "name": "pq_settle_oldest_first",
+          "line": 1899
+        },
+        {
+          "rocq": "PriorityQueue.v",
+          "name": "pq_settle_order_matters",
+          "line": 4081
+        },
+        {
+          "rocq": "PriorityQueue.v",
+          "name": "pq_produce_preserves_inv",
+          "line": 1390
+        },
+        {
+          "rocq": "PriorityQueue.v",
+          "name": "pq_without_settle_breaks_inv",
+          "line": 4002
+        },
+        {
+          "tla": "formal/tlaplus/reified_rspaces/PriorityQueue.tla",
+          "invariant": "PqOldestFirst"
+        },
+        {
+          "rocq": "PriorityQueue.v",
+          "name": "pq_consume_preserves_inv",
+          "line": 1404
+        },
+        {
+          "rocq": "PriorityQueue.v",
+          "name": "pq_peek_restores_head",
+          "line": 2486
+        },
+        {
+          "rocq": "PriorityQueue.v",
+          "name": "pq_settle_keeps_unspent_records",
+          "line": 2864
+        },
+        {
+          "tla": "formal/tlaplus/reified_rspaces/PriorityQueue.tla",
+          "invariant": "NoRecordLost"
+        },
+        {
+          "rocq": "PriorityQueue.v",
+          "name": "pq_priority_domain",
+          "line": 3730
+        },
+        {
+          "rocq": "PriorityQueue.v",
+          "name": "pq_settle_terminates",
+          "line": 3181
+        },
+        {
+          "rocq": "PriorityQueue.v",
+          "name": "pq_reissue_takes_level_fifo_place",
+          "line": 2673
+        },
+        {
+          "rocq": "PriorityQueue.v",
+          "name": "pq_reentered_waiter_keeps_seniority",
+          "line": 2716
+        },
+        {
+          "tla": "formal/tlaplus/reified_rspaces/PriorityQueue.tla",
+          "invariant": "TxnFiresBounded"
+        }
+      ],
+      "no_model": null,
+      "tests": [
+        "rholang/tests/reified_priority_queue.rs::prop_pq_level_order",
+        "rholang/tests/reified_priority_queue.rs::space_disciplines_pq_ascending_levels",
+        "rholang/tests/reified_priority_queue.rs::space_disciplines_pq_unprioritized_lowest",
+        "rholang/tests/reified_priority_queue.rs::prop_pq_fifo_order_any_schedule",
+        "rholang/tests/reified_priority_queue.rs::space_disciplines_pq_restricted_waiter_waits_in_level_queue",
+        "rholang/tests/reified_priority_queue.rs::space_disciplines_pq_head_blocks_within_level",
+        "rholang/tests/reified_priority_queue.rs::prop_pq_no_level_storage",
+        "rholang/tests/reified_priority_queue.rs::prop_pq_record_slots_roundtrip",
+        "rholang/tests/reified_priority_queue.rs::prop_pq_oldest_first_any_schedule",
+        "rholang/tests/reified_priority_queue.rs::prop_pq_no_pending_match_any_schedule",
+        "rholang/tests/reified_priority_queue.rs::space_disciplines_pq_older_waiter_wins",
+        "rholang/tests/reified_priority_queue.rs::space_disciplines_pq_guarded_unrestricted_receive_parks",
+        "rholang/tests/reified_priority_queue.rs::space_disciplines_pq_peek_restores_head",
+        "rholang/tests/reified_priority_queue.rs::space_disciplines_pq_produce_peek_waiter_reoffers",
+        "rholang/tests/reified_priority_queue.rs::prop_pq_priority_domain",
+        "rholang/tests/reified_priority_queue.rs::space_disciplines_pq_priorities_bound_rejects",
+        "rholang/tests/reified_priority_queue.rs::space_disciplines_pq_priority_param_type_checked",
+        "rholang/tests/reified_priority_queue.rs::prop_pq_txn_fires_bounded_at_the_cap",
+        "rholang/tests/reified_priority_queue.rs::prop_pq_reissue_keeps_ord_any_schedule",
+        "rholang/tests/reified_examples_execute.rs::example_priority_queue",
+        "rholang/tests/reified_examples_execute.rs::example_priority_queue_peeks_and_persistence",
+        "rholang/tests/reified_examples_execute.rs::example_priority_queue_rejects_a_level"
+      ],
+      "docs": [
+        "docs/rspace/reified-rspaces/specification.md#36-priority-queue",
+        "docs/rholang/21-reified-spaces.md#priority-queue"
+      ],
+      "decision": [
+        "decision-11",
+        "decision-38"
+      ],
+      "reason": null,
+      "note": null
+    },
+    {
+      "id": "RR-27",
+      "fips": "RR",
+      "lines": [
+        [
+          251,
+          253
+        ]
+      ],
+      "clause": "Stacks: FILO semantics, and only the tops interact.",
+      "status": "implemented",
+      "code": [
+        "rholang/src/rust/interpreter/spaces/settle.rs:404-498",
+        "rholang/src/rust/interpreter/spaces/generic.rs:1702-1715"
+      ],
+      "formal": [
+        {
+          "rocq": "StackDiscipline.v",
+          "name": "stack_head_is_max_ord",
+          "line": 556
+        },
+        {
+          "rocq": "StackDiscipline.v",
+          "name": "stack_head_blocks",
+          "line": 1348
+        },
+        {
+          "rocq": "StackDiscipline.v",
+          "name": "stack_reentry_at_lifo_place",
+          "line": 1444
+        },
+        {
+          "rocq": "StackDiscipline.v",
+          "name": "stack_reissue_keeps_ord",
+          "line": 1576
+        },
+        {
+          "tla": "formal/tlaplus/reified_rspaces/StackDiscipline.tla",
+          "invariant": "ReissueKeepsOrd"
+        },
+        {
+          "rocq": "StackDiscipline.v",
+          "name": "stack_produce_preserves_inv",
+          "line": 1043
+        },
+        {
+          "rocq": "StackDiscipline.v",
+          "name": "stack_settle_keeps_unspent_records",
+          "line": 2151
+        },
+        {
+          "rocq": "StackDiscipline.v",
+          "name": "stack_peek_restore_needs_no_settle",
+          "line": 1405
+        },
+        {
+          "tla": "formal/tlaplus/reified_rspaces/StackDiscipline.tla",
+          "invariant": "StackNoPendingMatch"
+        },
+        {
+          "rocq": "StackDiscipline.v",
+          "name": "stack_settle_terminates",
+          "line": 1959
+        },
+        {
+          "tla": "formal/tlaplus/reified_rspaces/StackDiscipline.tla",
+          "invariant": "TxnFiresBounded"
+        }
+      ],
+      "no_model": null,
+      "tests": [
+        "rholang/tests/reified_stack.rs::prop_stack_head_is_max_ord",
+        "rholang/tests/reified_stack.rs::prop_stack_reissue_keeps_ord_any_schedule",
+        "rholang/tests/reified_stack.rs::prop_stack_no_pending_match_any_schedule",
+        "rholang/tests/reified_stack.rs::prop_stack_txn_fires_bounded_at_the_cap",
+        "rholang/tests/reified_stack.rs::prop_stack_settle_bounded_any_schedule",
+        "rholang/tests/reified_stack.rs::space_stack_plan_after_a_full_settle_reissues_the_operation",
+        "rholang/tests/reified_examples_execute.rs::example_stack_lifo",
+        "rholang/tests/reified_examples_execute.rs::example_stack_peeks_and_persistence",
+        "rholang/tests/reified_examples_execute.rs::example_stack_rejects_a_query"
+      ],
+      "docs": [
+        "docs/rspace/reified-rspaces/specification.md#34-stack",
+        "docs/rholang/21-reified-spaces.md#stack"
+      ],
+      "decision": [
+        "decision-11",
+        "decision-49"
+      ],
+      "reason": null,
+      "note": null
+    },
+    {
+      "id": "RR-28",
+      "fips": "RR",
+      "lines": [
+        [
+          255,
+          257
+        ]
+      ],
+      "clause": "A bag and a vector DB: receives wait in a bag, data goes into a vector DB, a pattern gives a vector and a similarity bound, and a receive takes one vector within the bound.",
+      "status": "implemented",
+      "code": [
+        "rholang/src/rust/interpreter/spaces/factory/defaults.rs:63-102",
+        "rholang/src/rust/interpreter/spaces/factory/constructor.rs:229-260",
+        "rholang/src/rust/interpreter/spaces/disciplines/vectordb.rs:635-657",
+        "rholang/src/rust/interpreter/spaces/disciplines/vectordb.rs:404-511",
+        "rholang/src/rust/interpreter/spaces/disciplines/vectordb.rs:881-952",
+        "rholang/src/rust/interpreter/tensor/exact.rs:478-521",
+        "rholang/src/rust/interpreter/spaces/disciplines/vectordb.rs:1655-1707",
+        "rholang/src/rust/interpreter/spaces/disciplines/vectordb.rs:1068-1117",
+        "rholang/src/rust/interpreter/spaces/disciplines/vectordb.rs:810-850",
+        "rholang/src/rust/interpreter/spaces/disciplines/vectordb.rs:1422-1471",
+        "rholang/src/rust/interpreter/spaces/disciplines/vectordb.rs:1151-1194",
+        "rholang/src/rust/interpreter/spaces/disciplines/vectordb.rs:1791-1826",
+        "rholang/src/rust/interpreter/spaces/join.rs:412-471",
+        "rholang/src/rust/interpreter/spaces/generic.rs:1118-1135",
+        "rholang/src/rust/interpreter/tensor/exact.rs:578-599"
+      ],
+      "formal": [
+        {
+          "rocq": "SpaceFactory.v",
+          "name": "vectordb_params_validated",
+          "line": 2387
+        },
+        {
+          "rocq": "Similarity.v",
+          "name": "cosine_squared_form_iff",
+          "line": 412
+        },
+        {
+          "rocq": "Similarity.v",
+          "name": "cosine_order_squared_form",
+          "line": 471
+        },
+        {
+          "rocq": "Similarity.v",
+          "name": "euclidean_radius_squared_form",
+          "line": 545
+        },
+        {
+          "rocq": "Similarity.v",
+          "name": "binary_laws",
+          "line": 1042
+        },
+        {
+          "rocq": "Similarity.v",
+          "name": "selection_total_order",
+          "line": 1169
+        },
+        {
+          "rocq": "Similarity.v",
+          "name": "topk_deterministic",
+          "line": 1199
+        },
+        {
+          "rocq": "Similarity.v",
+          "name": "list_selection_deterministic",
+          "line": 1278
+        },
+        {
+          "tla": "formal/tlaplus/reified_rspaces/VectorDb.tla",
+          "invariant": "ListAtomic"
+        },
+        {
+          "rocq": "VectorDbDiscipline.v",
+          "name": "vdb_txn_bounded",
+          "line": 924
+        },
+        {
+          "tla": "formal/tlaplus/reified_rspaces/VectorDb.tla",
+          "invariant": "CascadeTerminates"
+        },
+        {
+          "rocq": "VectorDbDiscipline.v",
+          "name": "vdb_no_record_lost",
+          "line": 1082
+        },
+        {
+          "tla": "formal/tlaplus/reified_rspaces/VectorDb.tla",
+          "invariant": "PeekConservation"
+        },
+        {
+          "rocq": "VectorDbDiscipline.v",
+          "name": "vdb_join_removal_exposes_nothing",
+          "line": 781
+        },
+        {
+          "rocq": "CounterConflict.v",
+          "name": "capped_writes_soft_bound",
+          "line": 2383
+        },
+        {
+          "rocq": "Similarity.v",
+          "name": "squared_forms_embed",
+          "line": 1000
+        },
+        {
+          "rocq": "VectorOps.v",
+          "name": "root_midpoint_nearest",
+          "line": 367
+        }
+      ],
+      "no_model": null,
+      "tests": [
+        "rholang/tests/reified_families.rs::prop_vectordb_params_validated",
+        "rholang/src/rust/interpreter/spaces/factory/constructor.rs::reified_factory_gate_9_needs_the_default_qualifier_and_an_indexed_metric",
+        "rholang/tests/reified_vectordb.rs::space_vectordb_payload_is_the_vector_by_default",
+        "rholang/tests/reified_vectordb.rs::space_vectordb_peek_restores_records_with_their_embedding",
+        "rholang/tests/reified_vectordb.rs::space_native_vectors_every_kind_enters_exactly",
+        "rholang/tests/reified_vectordb.rs::space_vectordb_errors_have_their_codes",
+        "rholang/tests/reified_vectordb.rs::space_vectordb_source_errors_have_their_codes",
+        "rholang/tests/reified_vectordb.rs::space_vectordb_fixed_point_and_rational_thresholds",
+        "rholang/src/rust/interpreter/tensor/exact.rs::prop_selection_order_is_a_strict_total_order",
+        "rholang/tests/reified_vectordb.rs::space_vectordb_bounds_select_the_eligible_records",
+        "rholang/tests/reified_vectordb.rs::space_vectordb_ids_keep_only_the_listed_records",
+        "rholang/tests/reified_vectordb.rs::space_vectordb_binary_metrics_read_binary_vectors_only",
+        "rholang/tests/reified_vectordb.rs::space_vectordb_reads_without_a_vector_follow_the_canonical_order",
+        "rholang/tests/reified_vectordb.rs::space_similarity_topk_reference_cases_through_the_space",
+        "rholang/tests/reified_vectordb.rs::space_hash_collision_tie_duplicates_are_interchangeable",
+        "rholang/tests/reified_vectordb.rs::space_hash_collision_tie_forced_equal_source_hashes_select_one_value",
+        "rholang/src/rust/interpreter/tensor/exact.rs::prop_topk_is_deterministic",
+        "rholang/tests/reified_vectordb.rs::space_vectordb_single_mode_takes_the_best_record",
+        "rholang/tests/reified_vectordb.rs::space_vectordb_guard_refusal_parks_until_a_worse_record_passes",
+        "rholang/tests/reified_vectordb.rs::space_vector_discipline_restart_keeps_values_ties_and_order",
+        "rholang/tests/reified_vectordb.rs::prop_vectordb_list_is_ordered_and_complete",
+        "rholang/tests/reified_vectordb.rs::space_vectordb_list_mode_delivers_one_list_in_selection_order",
+        "rholang/tests/reified_vectordb.rs::rspace_list_random_state_zero_one_and_two_members",
+        "rholang/tests/reified_vectordb.rs::rspace_list_random_state_replay_reproduces_the_merged_states",
+        "rholang/tests/reified_vectordb.rs::prop_vectordb_list_fires_are_atomic",
+        "rholang/tests/reified_vectordb.rs::space_vectordb_ce1_list_waiter_fires_with_the_incoming_datum",
+        "rholang/tests/reified_vectordb.rs::prop_vectordb_transactions_are_bounded",
+        "rholang/tests/reified_vectordb.rs::space_vectordb_list_cascade_carries_at_the_cap",
+        "rholang/tests/reified_vectordb.rs::prop_vectordb_records_are_conserved",
+        "rholang/tests/reified_vectordb.rs::space_vectordb_cascade_peek_restores_the_lifted_member",
+        "rholang/tests/reified_vectordb.rs::prop_vectordb_driver_and_engine_agree",
+        "rholang/tests/reified_vectordb.rs::space_vectordb_join_binds_each_position_by_its_query",
+        "rholang/tests/reified_vectordb.rs::space_vectordb_list_mode_in_a_join_fails",
+        "rholang/tests/reified_vectordb.rs::space_vectordb_join_waiter_fires_on_an_eligible_send",
+        "rholang/tests/reified_merge_p5.rs::prop_vectordb_capacity_soft_bound",
+        "rholang/tests/reified_merge_p5.rs::space_collection_conflicts_vectordb_capacity_soft_bound",
+        "rholang/tests/reified_merge_p5.rs::prop_vectordb_writes_commute",
+        "rholang/tests/reified_vectordb.rs::space_vectordb_capacity_bounds_records_not_waiters",
+        "rholang/src/rust/interpreter/tensor/exact.rs::prop_dyadic_and_rational_kernels_agree",
+        "rholang/tests/reified_vectordb.rs::space_vectordb_scores_are_the_correctly_rounded_exact_scores",
+        "rholang/src/rust/interpreter/tensor/num.rs::tensor_square_roots_are_correctly_rounded",
+        "rholang/tests/reified_native_spaces.rs::space_native_vectordb_errors_reproduce",
+        "rholang/tests/reified_native_spaces.rs::space_native_vectordb_cascade_carries_at_the_cap",
+        "rholang/tests/reified_native_spaces.rs::space_native_vectordb_denial_replay",
+        "rholang/tests/reified_vectordb.rs::space_vectordb_reservation_cut_rejects_without_effect",
+        "rholang/tests/reified_vectordb.rs::reducer_query_costs_of_a_query_follow_its_records_and_dimensions",
+        "rholang/src/rust/interpreter/tensor/costs.rs::reducer_query_costs_follow_the_table_of_the_module",
+        "rholang/tests/reified_examples_execute.rs::example_vectordb_queries",
+        "rholang/tests/reified_examples_execute.rs::example_vectordb_list_scores",
+        "rholang/tests/reified_examples_execute.rs::example_vectordb_multi_topic",
+        "rholang/tests/reified_examples_execute.rs::example_vectordb_peeks_and_persistence",
+        "rholang/tests/reified_examples_execute.rs::example_vectordb_dimension_mismatch",
+        "rholang/tests/reified_examples_execute.rs::example_vectordb_capacity_exceeded"
+      ],
+      "docs": [
+        "docs/rspace/reified-rspaces/specification.md#39-vectordb",
+        "docs/rholang/21-reified-spaces.md#vectordb-spaces"
+      ],
+      "decision": [
+        "decision-52",
+        "decision-66",
+        "decision-71"
+      ],
+      "reason": null,
+      "note": null
+    },
+    {
+      "id": "RR-29",
+      "fips": "RR",
+      "lines": [
+        [
+          259,
+          259
+        ]
+      ],
+      "clause": "Look into tensor logic for a vector DB.",
+      "status": "future",
+      "code": [],
+      "formal": [],
+      "no_model": null,
+      "tests": [],
+      "docs": [
+        "docs/rholang/21-reified-spaces.md#vector-arithmetic"
+      ],
+      "decision": [
+        "decision-62",
+        "decision-65"
+      ],
+      "reason": null,
+      "note": "The design study of decision 52 answered the question. The TensorLogic GSLT and its FLT surface come in phase P12, after the readiness signal of F1r3lang."
+    },
+    {
+      "id": "RR-30",
+      "fips": "RR",
+      "lines": [
+        [
+          261,
+          261
+        ]
+      ],
+      "clause": "Look into nonlinear operations on vectors, such as majority for binary vectors and an elementwise sigmoid.",
+      "status": "future",
+      "code": [],
+      "formal": [],
+      "no_model": null,
+      "tests": [],
+      "docs": [],
+      "decision": [
+        "decision-87",
+        "decision-88"
+      ],
+      "reason": null,
+      "note": "These operations come with tensor logic in phase P12. The five exact operations of rho:lang:vector exist now (example vector-ops)."
+    },
+    {
+      "id": "RR-31",
+      "fips": "RR",
+      "lines": [
+        [
+          263,
+          265
+        ]
+      ],
+      "clause": "Other collections: fixed-size versions of the collection types, and collections that mix data types.",
+      "status": "informative",
+      "code": [],
+      "formal": [],
+      "no_model": null,
+      "tests": [],
+      "docs": [],
+      "decision": [
+        "decision-87"
+      ],
+      "reason": "Decision 87 records the passage as informative. Its fixed-size versions exist where the legacy branch had them: the size of an Array and the capacity of a VectorDB collection.",
+      "note": null
+    },
+    {
+      "id": "RR-32",
+      "fips": "RR",
+      "lines": [
+        [
+          267,
+          269
+        ]
+      ],
+      "clause": "Qualifiers change the behavior and the persistence of the channels of a space, and some outer structures, such as sets, require the sequential qualifier.",
+      "status": "implemented",
+      "code": [
+        "rholang/src/rust/interpreter/spaces/types/qualifier.rs:23-31"
+      ],
+      "formal": [
+        {
+          "rocq": "SpaceFactory.v",
+          "name": "qualifier_matrix",
+          "line": 383
+        },
+        {
+          "tla": "formal/tlaplus/reified_rspaces/SpaceCoordination.tla",
+          "invariant": "QualifierSupport"
+        }
+      ],
+      "no_model": null,
+      "tests": [
+        "rholang/tests/reified_p4_props.rs::prop_qualifier_matrix",
+        "models/tests/space_factory_urn.rs::space_urn_factory_qualifier_support_matrix",
+        "rholang/tests/reified_hashset.rs::reified_hashset_seq_only",
+        "rholang/tests/reified_hashset.rs::reified_hashset_absent_unit_waits",
+        "rholang/tests/reified_temp_seq.rs::reducer_qualifier_matrix",
+        "rholang/src/rust/interpreter/spaces/factory/constructor.rs::reified_factory_hashset_takes_only_seq_in_native_execution",
+        "rholang/tests/reified_pattern_enforcement.rs::pattern_enforcement_native_unsupported_pairs_reject",
+        "rholang/tests/reified_examples_execute.rs::example_hashset_dedup_spaces"
+      ],
+      "docs": [
+        "docs/rspace/reified-rspaces/specification.md#4-qualifiers",
+        "docs/rholang/21-reified-spaces.md#qualifiers"
+      ],
+      "decision": [
+        "decision-73"
+      ],
+      "reason": null,
+      "note": null
+    },
+    {
+      "id": "RR-33",
+      "fips": "RR",
+      "lines": [
+        [
+          269,
+          269
+        ]
+      ],
+      "clause": "Pathmaps with quantale semantics require the sequential qualifier.",
+      "status": "informative",
+      "code": [],
+      "formal": [],
+      "no_model": null,
+      "tests": [],
+      "docs": [],
+      "decision": [
+        "decision-87"
+      ],
+      "reason": "The clause depends on the quantale semantics of row RR-15, which decision 87 records as informative. A PathMap space takes every qualifier.",
+      "note": null
+    },
+    {
+      "id": "RR-34",
+      "fips": "RR",
+      "lines": [
+        [
+          271,
+          273
+        ]
+      ],
+      "clause": "The default qualifier: a channel persists, and it allows concurrent access.",
+      "status": "implemented",
+      "code": [
+        "rholang/src/rust/interpreter/spaces/types/qualifier.rs:33-61"
+      ],
+      "formal": [
+        {
+          "rocq": "SpaceFactory.v",
+          "name": "qualifier_matrix",
+          "line": 383
+        },
+        {
+          "rocq": "EventCorrelation.v",
+          "name": "view_charge_cache_independent",
+          "line": 9195
+        },
+        {
+          "tla": "formal/tlaplus/reified_rspaces/NativeHandles.tla",
+          "invariant": "DurableSurvivesRestart"
+        },
+        {
+          "tla": "formal/tlaplus/reified_rspaces/NativeHandles.tla",
+          "invariant": "HandleCallsMergeLikeContracts"
+        }
+      ],
+      "no_model": null,
+      "tests": [
+        "rholang/tests/reified_p4_props.rs::prop_qualifier_matrix",
+        "models/tests/space_factory_urn.rs::space_urn_factory_qualifier_support_matrix",
+        "rholang/tests/reified_p4_props.rs::prop_handle_survives_checkpoint_reset",
+        "rholang/tests/reified_queue_restart.rs::reified_handle_persisted_restart_replay",
+        "rholang/tests/reified_rehydrate.rs::prop_attach_warm_cold_cost_equal",
+        "rholang/tests/reified_rehydrate.rs::space_lazy_attach",
+        "rholang/tests/reified_rehydrate.rs::space_checkpoint_reset",
+        "rholang/tests/reified_rehydrate.rs::space_attach_warm_cold_cost_equal",
+        "rholang/tests/reified_restart_rehydrate.rs::space_restart_rehydrate_three_processes",
+        "rholang/src/rust/interpreter/reified/schedule.rs::space_intents_for_two_sids_in_one_frontier_run_in_separate_tasks",
+        "rholang/tests/reified_merge.rs::reified_handle_cross_block_merge_no_conflict",
+        "rholang/tests/reified_examples_execute.rs::example_space_qualifier_default"
+      ],
+      "docs": [
+        "docs/rspace/reified-rspaces/specification.md#41-default",
+        "docs/rholang/21-reified-spaces.md#default"
+      ],
+      "decision": [],
+      "reason": null,
+      "note": null
+    },
+    {
+      "id": "RR-35",
+      "fips": "RR",
+      "lines": [
+        [
+          275,
+          277
+        ]
+      ],
+      "clause": "The temp qualifier: concurrent access, and the data and continuations of the channel are never written to disk.",
+      "status": "implemented",
+      "code": [
+        "rholang/src/rust/interpreter/spaces/ephemeral.rs:92-187"
+      ],
+      "formal": [
+        {
+          "rocq": "SpaceFactory.v",
+          "name": "qualifier_matrix",
+          "line": 383
+        },
+        {
+          "rocq": "Namespace.v",
+          "name": "ephemeral_durable_disjoint",
+          "line": 867
+        },
+        {
+          "rocq": "VolatileSweep.v",
+          "name": "sweep_complete",
+          "line": 1714
+        },
+        {
+          "rocq": "VolatileSweep.v",
+          "name": "sweep_exact",
+          "line": 894
+        },
+        {
+          "rocq": "VolatileSweep.v",
+          "name": "sweep_root_neutral",
+          "line": 1266
+        },
+        {
+          "rocq": "VolatileSweep.v",
+          "name": "dead_ephemeral_dangling",
+          "line": 1759
+        },
+        {
+          "tla": "formal/tlaplus/reified_rspaces/SpaceCoordination.tla",
+          "invariant": "QualifierSupport"
+        }
+      ],
+      "no_model": null,
+      "tests": [
+        "rholang/tests/reified_temp_seq.rs::reducer_qualifier_matrix",
+        "rholang/tests/reified_temp_seq.rs::space_temp_replay_equal_hashmap",
+        "rholang/tests/reified_temp_seq.rs::space_temp_replay_equal_vector",
+        "rholang/tests/reified_rehydrate.rs::reified_factory_ephemeral_staging",
+        "rholang/tests/reified_pattern_enforcement.rs::pattern_enforcement_temp_rows",
+        "rholang/tests/reified_temp_seq.rs::reified_ephemeral_cost_charged",
+        "rholang/tests/reified_temp_seq.rs::prop_sweep_complete",
+        "rholang/tests/reified_temp_seq.rs::space_temp_swept_at_deploy_end",
+        "rholang/tests/reified_temp_seq.rs::space_temp_join_swept",
+        "rholang/tests/reified_temp_seq.rs::space_temp_failed_deploy_reverts",
+        "rholang/tests/reified_temp_seq.rs::space_temp_many_volatile_keys_export",
+        "rholang/src/rust/interpreter/reified/reducer_hooks.rs::reified_sweep_runs_at_each_entry_point_of_the_reducer",
+        "rholang/tests/reified_temp_seq.rs::reified_sweep_runs_at_each_entry_point_native",
+        "rholang/src/rust/interpreter/reified/runtime.rs::prop_dead_ephemeral_dangling",
+        "rholang/tests/reified_temp_seq.rs::reified_ephemeral_dangling_next_deploy",
+        "rholang/tests/reified_temp_seq.rs::reified_ephemeral_dangling_charge_is_fixed",
+        "rholang/tests/reified_rehydrate.rs::reducer_dangling_handle",
+        "rholang/tests/reified_vectordb_chroma.rs::mirror_temp_never_mirrored",
+        "rholang/tests/reified_pattern_enforcement.rs::pattern_enforcement_native_unsupported_pairs_reject",
+        "rholang/tests/reified_seq.rs::prop_seq_qualifier_support",
+        "rholang/tests/reified_pattern_enforcement.rs::pattern_enforcement_qualifiers_fail_closed",
+        "rholang/tests/reified_pattern_enforcement.rs::pattern_enforcement_seq_rows",
+        "rholang/tests/reified_examples_execute.rs::example_space_qualifier_temp",
+        "rholang/tests/reified_examples_execute.rs::example_temp_space_ends_with_its_deploy"
+      ],
+      "docs": [
+        "docs/rspace/reified-rspaces/specification.md#42-temp",
+        "docs/rholang/21-reified-spaces.md#temp"
+      ],
+      "decision": [
+        "i-4",
+        "decision-72"
+      ],
+      "reason": null,
+      "note": "A temp space lives for one deploy, and the sweep at the end of the deploy removes its state (plan revision I-4)."
+    },
+    {
+      "id": "RR-36",
+      "fips": "RR",
+      "lines": [
+        [
+          279,
+          285
+        ]
+      ],
+      "clause": "The seq qualifier: temp, and a seq channel is never sent, is not used in a concurrent process, and is used in at most one sequential process.",
+      "status": "implemented",
+      "code": [
+        "rholang/src/rust/interpreter/reified/seq.rs:77-101",
+        "rholang/src/rust/interpreter/spaces/ephemeral.rs:216-290"
+      ],
+      "formal": [
+        {
+          "rocq": "Namespace.v",
+          "name": "seq_name_iff",
+          "line": 1150
+        },
+        {
+          "tla": "formal/tlaplus/reified_rspaces/SpaceCoordination.tla",
+          "invariant": "SeqNotSent"
+        },
+        {
+          "tla": "formal/tlaplus/reified_rspaces/SpaceCoordination.tla",
+          "invariant": "SeqExclusive"
+        }
+      ],
+      "no_model": null,
+      "tests": [
+        "rholang/tests/reified_seq.rs::prop_seq_scan_finds_every_seq_name",
+        "rholang/tests/reified_seq.rs::reducer_seq_payload",
+        "rholang/tests/reified_seq.rs::prop_seq_claim_chain",
+        "rholang/tests/reified_seq.rs::reducer_seq_atomic_guard",
+        "rholang/tests/reified_pattern_enforcement.rs::pattern_enforcement_seq_rows",
+        "rholang/tests/reified_examples_execute.rs::example_space_qualifier_seq",
+        "rholang/tests/reified_examples_execute.rs::example_space_qualifiers_seq_sent",
+        "rholang/tests/reified_examples_execute.rs::example_seq_rejects_concurrent_uses"
+      ],
+      "docs": [
+        "docs/rspace/reified-rspaces/specification.md#43-seq",
+        "docs/rholang/21-reified-spaces.md#seq"
+      ],
+      "decision": [
+        "decision-73",
+        "decision-83"
+      ],
+      "reason": null,
+      "note": null
+    },
+    {
+      "id": "RR-37",
+      "fips": "RR",
+      "lines": [
+        [
+          287,
+          289
+        ]
+      ],
+      "clause": "The use block sets the default space of untagged channels in new blocks and of forged names.",
+      "status": "implemented",
+      "code": [
+        "rholang/src/rust/interpreter/reified/route.rs:173-225",
+        "rholang/src/rust/interpreter/reified/scope.rs:185-193"
+      ],
+      "formal": [
+        {
+          "rocq": "SpaceRefs.v",
+          "name": "route_rules",
+          "line": 763
+        },
+        {
+          "rocq": "SpaceRefs.v",
+          "name": "space_name_route_ignores_ctx",
+          "line": 791
+        },
+        {
+          "rocq": "SpaceRefs.v",
+          "name": "ordinary_channels_route_default",
+          "line": 977
+        }
+      ],
+      "no_model": null,
+      "tests": [
+        "rholang/tests/reified_p4_props.rs::prop_route_rules",
+        "rholang/tests/reified_routing.rs::reducer_space_routing_ordinary_unchanged",
+        "rholang/tests/reified_examples_execute.rs::example_multi_space_isolation",
+        "rholang/tests/reified_examples_execute.rs::example_fips_example"
+      ],
+      "docs": [
+        "docs/rspace/reified-rspaces/specification.md#14-routing",
+        "docs/rholang/21-reified-spaces.md#use-blocks",
+        "docs/rspace/reified-rspaces/syntax-contract.md#use-blocks"
+      ],
+      "decision": [
+        "decision-18"
+      ],
+      "reason": null,
+      "note": null
+    },
+    {
+      "id": "RR-38",
+      "fips": "RR",
+      "lines": [
+        [
+          291,
+          293
+        ]
+      ],
+      "clause": "The introduction of the example: one space on each of n channels, qualifiers that set persistence and sequentiality, and theories that a later design document specifies.",
+      "status": "informative",
+      "code": [],
+      "formal": [],
+      "no_model": null,
+      "tests": [],
+      "docs": [],
+      "decision": [],
+      "reason": "The paragraph introduces the example of rows RR-39 to RR-43. Its sentence on theories is row RR-07.",
+      "note": null
+    },
+    {
+      "id": "RR-39",
+      "fips": "RR",
+      "lines": [
+        [
+          295,
+          302
+        ]
+      ],
+      "clause": "The factories by URN, the FIPS names rho:space:HashMapBagSpace and rho:space:PathMapSpace included, and their calls with a qualifier and a theory.",
+      "status": "implemented",
+      "code": [
+        "rholang/src/rust/interpreter/reified/system_channels.rs:310-314",
+        "rholang/src/rust/interpreter/reified/system_channels.rs:318-322",
+        "models/src/rust/space_factory_urn.rs:217-314"
+      ],
+      "formal": [
+        {
+          "rocq": "SpaceFactory.v",
+          "name": "aliases_bind_family_capability",
+          "line": 1533
+        },
+        {
+          "rocq": "TheoryAdmission.v",
+          "name": "builtin_decidable_structural",
+          "line": 254
+        },
+        {
+          "rocq": "TheoryAdmission.v",
+          "name": "resolve_identity_deterministic",
+          "line": 587
+        },
+        {
+          "rocq": "TheoryAdmission.v",
+          "name": "replay_preserves_theory_admission",
+          "line": 851
+        },
+        {
+          "rocq": "SpaceFactory.v",
+          "name": "theory_gate_validated",
+          "line": 2525
+        }
+      ],
+      "no_model": null,
+      "tests": [
+        "rholang/tests/reified_families.rs::prop_aliases_bind_family_capability",
+        "rholang/tests/reified_families.rs::reified_getspaceagent_alias_equal",
+        "rholang/tests/reified_theory.rs::prop_theory_builtin_decidable",
+        "rholang/tests/reified_theory.rs::theory_nat_accepts_bigint_nonneg",
+        "rholang/tests/reified_theory.rs::theory_nat_rejects_minus1_string_par",
+        "rholang/tests/reified_theory.rs::prop_resolve_identity_deterministic",
+        "rholang/src/rust/interpreter/spaces/theory/tests.rs::theory_unavailable_fails_each_config_read",
+        "rholang/tests/reified_rehydrate.rs::reified_factory_theory_argument",
+        "rholang/tests/reified_theory.rs::prop_theory_gate",
+        "rholang/tests/reified_theory.rs::theory_unknown_name_suggestion",
+        "rholang/tests/reified_theory.rs::theory_builtin_args_rejected",
+        "rholang/src/rust/interpreter/spaces/factory/constructor.rs::reified_factory_theory_gate",
+        "rholang/tests/reified_examples_execute.rs::example_fips_example",
+        "rholang/tests/reified_examples_execute.rs::example_theory_validated_space"
+      ],
+      "docs": [
+        "docs/rspace/reified-rspaces/specification.md#15-families",
+        "docs/rholang/21-reified-spaces.md#the-fips-example"
+      ],
+      "decision": [
+        "decision-9"
+      ],
+      "reason": null,
+      "note": null
+    },
+    {
+      "id": "RR-40",
+      "fips": "RR",
+      "lines": [
+        [
+          303,
+          308
+        ]
+      ],
+      "clause": "Inside a use block, new x : s creates a name in the space s, and a forged name is created in the space of the use block.",
+      "status": "implemented",
+      "code": [
+        "rholang/src/rust/interpreter/reified/route.rs:173-225"
+      ],
+      "formal": [
+        {
+          "rocq": "Namespace.v",
+          "name": "name_id_routes_to_sid",
+          "line": 1003
+        },
+        {
+          "rocq": "SpaceRefs.v",
+          "name": "route_rules",
+          "line": 763
+        }
+      ],
+      "no_model": null,
+      "tests": [
+        "rholang/tests/reified_p4_props.rs::prop_name_id_routes_to_sid",
+        "rholang/tests/reified_handle.rs::space_handle_methods_gensym",
+        "rholang/tests/reified_p4_props.rs::prop_route_rules",
+        "rholang/tests/reified_examples_execute.rs::example_space_annotations",
+        "rholang/tests/reified_examples_execute.rs::example_multi_space_isolation",
+        "rholang/tests/reified_examples_execute.rs::example_fips_example"
+      ],
+      "docs": [
+        "docs/rholang/21-reified-spaces.md#space-annotations",
+        "docs/rholang/21-reified-spaces.md#use-blocks",
+        "docs/rspace/reified-rspaces/syntax-contract.md#space-annotations-on-new"
+      ],
+      "decision": [
+        "decision-18",
+        "decision-21"
+      ],
+      "reason": null,
+      "note": null
+    },
+    {
+      "id": "RR-41",
+      "fips": "RR",
+      "lines": [
+        [
+          309,
+          317
+        ]
+      ],
+      "clause": "Joins are permitted in one space and prohibited across spaces.",
+      "status": "implemented",
+      "code": [
+        "rholang/src/rust/interpreter/spaces/join.rs:371-404",
+        "rholang/src/rust/interpreter/spaces/join.rs:669-681"
+      ],
+      "formal": [
+        {
+          "rocq": "JoinCascade.v",
+          "name": "plan_then_lock_stable",
+          "line": 5723
+        },
+        {
+          "rocq": "JoinCascade.v",
+          "name": "join_repeated_channel_distinct_records",
+          "line": 1244
+        },
+        {
+          "rocq": "JoinCascade.v",
+          "name": "bind_permutation_restores_order",
+          "line": 2148
+        },
+        {
+          "rocq": "RecordEnvelope.v",
+          "name": "continuation_v2_roundtrip",
+          "line": 1734
+        },
+        {
+          "tla": "formal/tlaplus/reified_rspaces/JoinCascade.tla",
+          "invariant": "DistinctRecordsPerBind"
+        },
+        {
+          "rocq": "JoinCascade.v",
+          "name": "cascade_bumps_touched_counters",
+          "line": 4056
+        },
+        {
+          "rocq": "JoinCascade.v",
+          "name": "join_reissue_keeps_bind_ords",
+          "line": 4130
+        },
+        {
+          "tla": "formal/tlaplus/reified_rspaces/JoinCascade.tla",
+          "invariant": "TouchedCountersBumped"
+        },
+        {
+          "rocq": "JoinCascade.v",
+          "name": "join_fires_heads_only",
+          "line": 3210
+        },
+        {
+          "tla": "formal/tlaplus/reified_rspaces/JoinCascade.tla",
+          "invariant": "JoinFiresHeadsOnly"
+        },
+        {
+          "rocq": "JoinCascade.v",
+          "name": "join_search_is_head_greedy",
+          "line": 1468
+        },
+        {
+          "rocq": "JoinCascade.v",
+          "name": "greedy_join_can_miss_assignment",
+          "line": 1345
+        },
+        {
+          "rocq": "JoinCascade.v",
+          "name": "join_produce_search_agrees_with_head",
+          "line": 1871
+        },
+        {
+          "rocq": "JoinCascade.v",
+          "name": "join_incoming_binds_once",
+          "line": 1146
+        },
+        {
+          "tla": "formal/tlaplus/reified_rspaces/JoinCascade.tla",
+          "invariant": "IncomingBoundOnce"
+        },
+        {
+          "rocq": "JoinCascade.v",
+          "name": "cascade_terminates",
+          "line": 4497
+        },
+        {
+          "rocq": "JoinCascade.v",
+          "name": "cascade_order_independent",
+          "line": 3144
+        },
+        {
+          "rocq": "JoinCascade.v",
+          "name": "lift_reoffer_equals_direct_comm",
+          "line": 3576
+        },
+        {
+          "tla": "formal/tlaplus/reified_rspaces/JoinCascade.tla",
+          "invariant": "CascadeMeasureDecreases"
+        },
+        {
+          "rocq": "JoinCascade.v",
+          "name": "join_set_bind_retires_class",
+          "line": 2973
+        },
+        {
+          "rocq": "JoinCascade.v",
+          "name": "peek_join_restores_stored_candidates",
+          "line": 5156
+        },
+        {
+          "tla": "formal/tlaplus/reified_rspaces/JoinCascade.tla",
+          "invariant": "NoRecordLost"
+        },
+        {
+          "rocq": "JoinCascade.v",
+          "name": "join_txn_fires_bounded",
+          "line": 4642
+        },
+        {
+          "tla": "formal/tlaplus/reified_rspaces/JoinCascade.tla",
+          "invariant": "TxnFiresBounded"
+        },
+        {
+          "rocq": "CounterConflict.v",
+          "name": "join_ops_race_on_every_counter",
+          "line": 1947
+        }
+      ],
+      "no_model": null,
+      "tests": [
+        "rholang/tests/reified_joins.rs::space_joins_cross_space_join_aborts",
+        "rholang/tests/reified_joins.rs::space_joins_default_and_space_join_aborts",
+        "rholang/tests/reified_routing.rs::reducer_space_routing_agent_gate",
+        "rholang/tests/reified_join_props.rs::prop_plan_then_lock_covers_every_staged_channel",
+        "rholang/tests/reified_joins.rs::space_joins_escalation_relocks_once",
+        "rholang/tests/reified_joins.rs::space_joins_classification_reserves_check_joins",
+        "rholang/tests/reified_join_props.rs::prop_join_repeated_channel_distinct_records",
+        "rholang/tests/reified_join_props.rs::prop_bind_permutation_restores_order",
+        "rholang/tests/reified_join_props.rs::prop_continuation_v2_roundtrip",
+        "rholang/tests/reified_joins.rs::space_joins_repeated_channel_distinct_records",
+        "rholang/tests/reified_joins.rs::space_joins_bind_order_restored_for_body",
+        "rholang/tests/reified_joins.rs::space_joins_multi_ord_envelope_roundtrip",
+        "rholang/tests/reified_joins.rs::space_joins_peek_join_restores_stored_candidates",
+        "rholang/tests/reified_joins.rs::space_joins_reissued_join_keeps_bind_ords",
+        "rholang/tests/reified_join_props.rs::prop_cascade_bumps_touched_counters",
+        "rholang/tests/reified_join_props.rs::prop_join_reissue_keeps_bind_ords",
+        "rholang/tests/reified_join_props.rs::prop_join_fires_heads_only",
+        "rholang/tests/reified_joins.rs::space_joins_queue_heads_only",
+        "rholang/tests/reified_joins.rs::space_joins_stack_heads_only",
+        "rholang/tests/reified_joins.rs::space_joins_pq_heads_only",
+        "rholang/tests/reified_joins.rs::space_joins_cell_join",
+        "rholang/tests/reified_join_props.rs::prop_join_search_is_head_greedy",
+        "rholang/tests/reified_join_props.rs::prop_greedy_join_limit",
+        "rholang/tests/reified_joins.rs::space_joins_bag_greedy",
+        "rholang/tests/reified_joins.rs::space_joins_set_classes",
+        "rholang/tests/reified_joins.rs::space_joins_guard_checked_once_after_all_binds",
+        "rholang/tests/reified_join_props.rs::prop_join_produce_search_agrees_with_head",
+        "rholang/tests/reified_join_props.rs::prop_join_incoming_binds_once",
+        "rholang/tests/reified_joins.rs::space_joins_incoming_binds_once",
+        "rholang/tests/reified_join_props.rs::prop_cascade_terminates_any_schedule",
+        "rholang/tests/reified_join_props.rs::prop_cascade_order_independent",
+        "rholang/tests/reified_join_props.rs::prop_lift_reoffer_equals_direct_comm",
+        "rholang/tests/reified_join_props.rs::prop_cascade_measure_decreases",
+        "rholang/tests/reified_joins.rs::space_joins_cascade_after_produce",
+        "rholang/tests/reified_joins.rs::space_joins_cascade_after_consume",
+        "rholang/tests/reified_joins.rs::space_joins_cascade_order_independent",
+        "rholang/tests/reified_joins.rs::space_joins_set_join_cascade_fires_exposed_waiter",
+        "rholang/tests/reified_join_props.rs::prop_join_set_bind_retires_class",
+        "rholang/tests/reified_joins.rs::space_joins_set_bind_retires_class",
+        "rholang/tests/reified_join_props.rs::prop_peek_join_restores_stored_candidates",
+        "rholang/tests/reified_join_props.rs::prop_no_record_lost_any_schedule",
+        "rholang/tests/reified_joins.rs::space_joins_produce_side_peek_reproduces_in_receipt_order",
+        "rholang/tests/reified_join_props.rs::prop_join_txn_fires_bounded_at_the_cap",
+        "rholang/tests/reified_joins.rs::space_joins_txn_fires_bounded_at_the_cap",
+        "rholang/tests/reified_joins.rs::space_joins_cascade_round_cap_reissues_settle",
+        "rholang/tests/reified_joins.rs::space_joins_cap_carries_pending_second_sends",
+        "rholang/tests/reified_joins.rs::space_joins_settle_before_cap_resumes_the_operation",
+        "rholang/tests/reified_join_props.rs::prop_join_ops_race_on_every_counter",
+        "rholang/tests/reified_merge_p5.rs::space_collection_conflicts_join_ops_race_all_counters",
+        "rholang/tests/reified_merge_p5.rs::space_collection_conflicts_unrelated_collections_merge",
+        "rholang/tests/reified_merge_p5.rs::space_collection_conflicts_bag_join_potential_comm",
+        "rholang/tests/reified_joins.rs::space_joins_persisted_waiter_check3_conflict",
+        "rholang/tests/reified_merge_p5.rs::reified_p5c_only_user_joins_persist",
+        "rholang/tests/reified_examples_execute.rs::example_cross_space_join",
+        "rholang/tests/reified_examples_execute.rs::example_fips_example"
+      ],
+      "docs": [
+        "docs/rspace/reified-rspaces/specification.md#38-joins",
+        "docs/rholang/21-reified-spaces.md#joins"
+      ],
+      "decision": [
+        "decision-29",
+        "decision-50"
+      ],
+      "reason": null,
+      "note": null
+    },
+    {
+      "id": "RR-42",
+      "fips": "RR",
+      "lines": [
+        [
+          318,
+          320
+        ],
+        [
+          323,
+          330
+        ]
+      ],
+      "clause": "Inside a new block that creates names in the spaces, the names of the spaces refer to the modified spaces, and outside it they refer to the unmodified spaces.",
+      "status": "implemented",
+      "code": [
+        "rholang/src/rust/interpreter/reified/scope.rs:185-193",
+        "rholang/src/rust/interpreter/reified/scope.rs:141-164"
+      ],
+      "formal": [],
+      "no_model": {
+        "reason": "The clause is the scoping of a typing context. A name from new is unforgeable and lexically scoped in the baseline, so no new model is needed (decision 77).",
+        "link": "docs/rspace/reified-rspaces/decision-register.md#decision-77"
+      },
+      "tests": [
+        "rholang/tests/reified_p8_props.rs::prop_space_ref_unwraps_one_bundle",
+        "rholang/tests/reified_examples_execute.rs::example_fips_example",
+        "rholang/tests/reified_examples_execute.rs::example_space_annotations"
+      ],
+      "docs": [
+        "docs/rholang/21-reified-spaces.md#the-fips-example",
+        "docs/rspace/reified-rspaces/agent-api.md#41-the-handle-capability"
+      ],
+      "decision": [
+        "decision-77"
+      ],
+      "reason": null,
+      "note": "A space keeps its theory. The new block adds its names to the space, and the names reach only the scope of the block."
+    },
+    {
+      "id": "RR-43",
+      "fips": "RR",
+      "lines": [
+        [
+          321,
+          322
+        ]
+      ],
+      "clause": "getSpaceAgent returns the agent of a space, and assertEqual compares it with the factory.",
+      "status": "implemented",
+      "code": [
+        "rholang/src/rust/interpreter/reified/system_processes.rs:260-298",
+        "rholang/src/rust/interpreter/reified/system_processes.rs:346-360"
+      ],
+      "formal": [
+        {
+          "rocq": "SpaceFactory.v",
+          "name": "aliases_map_to_family",
+          "line": 338
+        }
+      ],
+      "no_model": null,
+      "tests": [
+        "rholang/tests/reified_factory.rs::space_system_ops_get_space_agent_capability",
+        "rholang/tests/reified_factory.rs::space_system_ops_assert_equal",
+        "rholang/tests/reified_examples_execute.rs::example_get_space_agent",
+        "rholang/tests/reified_examples_execute.rs::example_fips_example"
+      ],
+      "docs": [
+        "docs/rspace/reified-rspaces/agent-api.md#8-getspaceagent",
+        "docs/rspace/reified-rspaces/agent-api.md#9-assertequal",
+        "docs/rholang/21-reified-spaces.md#getspaceagent-and-assertequal"
+      ],
+      "decision": [
+        "decision-9",
+        "decision-33"
+      ],
+      "reason": null,
+      "note": "getSpaceAgent replies with the factory capability of the family of the space (decision 9). assertEqual takes a reply name, so its arity is 3 (decision 33)."
+    },
+    {
+      "id": "RR-44",
+      "fips": "RR",
+      "lines": [
+        [
+          332,
+          339
+        ]
+      ],
+      "clause": "The issues of the current architecture: ISpace couples the outer structure, the inner structure and the operations.",
+      "status": "informative",
+      "code": [],
+      "formal": [],
+      "no_model": null,
+      "tests": [],
+      "docs": [],
+      "decision": [],
+      "reason": "The section motivates the proposal of the rows RR-45 to RR-50.",
+      "note": null
+    },
+    {
+      "id": "RR-45",
+      "fips": "RR",
+      "lines": [
+        [
+          341,
+          442
+        ]
+      ],
+      "clause": "Layers 1 and 2 of the proposal: the traits DataCollection, ContinuationCollection and ChannelStore.",
+      "status": "deviation",
+      "code": [
+        "rholang/src/rust/interpreter/spaces/generic.rs:139-250",
+        "rholang/src/rust/interpreter/spaces/generic.rs:325-491"
+      ],
+      "formal": [],
+      "no_model": null,
+      "tests": [],
+      "docs": [
+        "docs/rspace/reified-rspaces/design.md#n4-genericspace-and-the-queue-discipline",
+        "docs/rspace/reified-rspaces/design.md#n1211-the-seam-of-a-store"
+      ],
+      "decision": [
+        "decision-19",
+        "i-1"
+      ],
+      "reason": null,
+      "note": "The traits Discipline and OuterStore separate the inner collection from the outer store. They plan whole operations on the staged view of one space transaction, not on mutable collection objects."
+    },
+    {
+      "id": "RR-46",
+      "fips": "RR",
+      "lines": [
+        [
+          444,
+          561
+        ]
+      ],
+      "clause": "Layers 3 and 4 of the proposal: the qualifier enum, the trait SpaceAgent, and the extension traits for checkpoints and replay.",
+      "status": "deviation",
+      "code": [
+        "rholang/src/rust/interpreter/spaces/agent.rs:453-506",
+        "rholang/src/rust/interpreter/spaces/types/qualifier.rs:23-31"
+      ],
+      "formal": [],
+      "no_model": null,
+      "tests": [],
+      "docs": [
+        "docs/rspace/reified-rspaces/design.md#substrate",
+        "docs/rspace/reified-rspaces/design.md#s1-purpose-and-the-rule-of-no-new-ispace-surface"
+      ],
+      "decision": [
+        "i-1",
+        "decision-19"
+      ],
+      "reason": null,
+      "note": "Spaces are not ISpace implementors. Checkpoints, replay and reset stay with the one RSpace of the node, which holds the state of every space."
+    },
+    {
+      "id": "RR-47",
+      "fips": "RR",
+      "lines": [
+        [
+          563,
+          716
+        ]
+      ],
+      "clause": "Layer 5 of the proposal: the bag, queue, set and cell collections, the HashMap and PathMap stores, and a generic RSpace over a store and a matcher.",
+      "status": "implemented",
+      "code": [
+        "rholang/src/rust/interpreter/spaces/disciplines/set.rs:176-227",
+        "rholang/src/rust/interpreter/spaces/generic.rs:1118-1135",
+        "rholang/src/rust/interpreter/spaces/pathmap/path_codec.rs:281-286",
+        "rholang/src/rust/interpreter/spaces/generic.rs:507-553"
+      ],
+      "formal": [
+        {
+          "rocq": "DataCollection.v",
+          "name": "bag_visit_order_canonical",
+          "line": 243
+        },
+        {
+          "rocq": "ContinuationCollection.v",
+          "name": "waiter_visit_order_canonical",
+          "line": 337
+        },
+        {
+          "rocq": "HeadOnlyDisciplines.v",
+          "name": "queue_head_is_min_ord",
+          "line": 530
+        },
+        {
+          "rocq": "SetDiscipline.v",
+          "name": "set_key_injective",
+          "line": 297
+        },
+        {
+          "rocq": "CellDiscipline.v",
+          "name": "cell_capacity_one",
+          "line": 672
+        },
+        {
+          "tla": "formal/tlaplus/reified_rspaces/GenericRSpace.tla",
+          "invariant": "CellCapacity"
+        },
+        {
+          "rocq": "Namespace.v",
+          "name": "canon_respects_par_eq",
+          "line": 1043
+        },
+        {
+          "rocq": "PathMapPrefix.v",
+          "name": "prefix_key_iff_prefix",
+          "line": 584
+        },
+        {
+          "rocq": "PathMapPrefix.v",
+          "name": "candidate_order_total",
+          "line": 1014
+        }
+      ],
+      "no_model": null,
+      "tests": [
+        "rholang/tests/reified_bag.rs::prop_bag_visit_order_canonical",
+        "rholang/tests/reified_bag.rs::prop_bag_waiter_visit_order_canonical",
+        "rholang/tests/reified_p4_props.rs::prop_queue_candidates_head_only",
+        "rholang/tests/reified_set.rs::prop_set_key_injective",
+        "rholang/tests/reified_set.rs::space_set_discipline_key_length_prefix_no_collision",
+        "rholang/tests/reified_cell.rs::prop_cell_capacity_one",
+        "rholang/tests/reified_cell.rs::space_disciplines_cell_second_produce_occupied",
+        "rholang/tests/reified_p4_props.rs::prop_canonical_inner_bytes_respects_par_eq",
+        "rholang/src/rust/interpreter/spaces/pathmap/path_codec.rs::prop_prefix_key_iff_prefix",
+        "rholang/src/rust/interpreter/spaces/pathmap/path_codec.rs::prop_candidate_order_total",
+        "rholang/tests/reified_examples_execute.rs::example_bag_basics",
+        "rholang/tests/reified_examples_execute.rs::example_queue_fifo",
+        "rholang/tests/reified_examples_execute.rs::example_set_idempotent",
+        "rholang/tests/reified_examples_execute.rs::example_cell_exactly_once",
+        "rholang/tests/reified_examples_execute.rs::example_pathmap_prefix_aggregation"
+      ],
+      "docs": [
+        "docs/rspace/reified-rspaces/design.md#n4-genericspace-and-the-queue-discipline",
+        "docs/rspace/reified-rspaces/design.md#n111-family-dispatch-and-registration"
+      ],
+      "decision": [
+        "decision-19",
+        "m-1"
+      ],
+      "reason": null,
+      "note": "GenericSpace takes the injected matcher of the runtime. A space keeps its counters in records and its state in the one history of the node, not in a history repository of its own."
+    },
+    {
+      "id": "RR-48",
+      "fips": "RR",
+      "lines": [
+        [
+          718,
+          770
+        ]
+      ],
+      "clause": "Layer 6 of the proposal: a factory for each kind of space that creates a space from a qualifier, a theory and more arguments.",
+      "status": "implemented",
+      "code": [
+        "rholang/src/rust/interpreter/spaces/factory/urn.rs:203",
+        "rholang/src/rust/interpreter/spaces/factory/urn.rs:231-237",
+        "rholang/src/rust/interpreter/spaces/families.rs:540-549",
+        "rholang/src/rust/interpreter/spaces/families.rs:258-291",
+        "rholang/src/rust/interpreter/spaces/factory/defaults.rs:107-156",
+        "rholang/src/rust/interpreter/spaces/factory/constructor.rs:87-178",
+        "rholang/src/rust/interpreter/spaces/factory/constructor.rs:265-279",
+        "rholang/src/rust/interpreter/reified/factory.rs:58-126"
+      ],
+      "formal": [
+        {
+          "rocq": "SpaceFactory.v",
+          "name": "registered_families_complete",
+          "line": 1444
+        },
+        {
+          "rocq": "Match.v",
+          "name": "space_match_is_injected_match",
+          "line": 642
+        },
+        {
+          "rocq": "SpaceFactory.v",
+          "name": "constructor_params_validated",
+          "line": 1938
+        },
+        {
+          "rocq": "SpaceFactory.v",
+          "name": "array_size_validated",
+          "line": 2188
+        }
+      ],
+      "no_model": null,
+      "tests": [
+        "rholang/tests/reified_families.rs::prop_registered_families_complete",
+        "rholang/tests/reified_families.rs::space_factory_families_registered",
+        "rholang/src/rust/interpreter/spaces/families.rs::space_families_dispatch_by_config_reserves_one_comparison_per_arm",
+        "rholang/tests/reified_families.rs::space_family_dispatch_by_config",
+        "rholang/tests/reified_families.rs::prop_constructor_params_validated",
+        "rholang/tests/reified_families.rs::space_factory_kwargs_unknown_param_with_suggestion",
+        "rholang/tests/reified_families.rs::space_factory_kwargs_are_stored_canonical",
+        "rholang/tests/reified_examples_execute.rs::example_queue_fifo",
+        "rholang/tests/reified_examples_execute.rs::example_factory_rejects_an_unknown_param"
+      ],
+      "docs": [
+        "docs/rspace/reified-rspaces/agent-api.md#3-factories",
+        "docs/rspace/reified-rspaces/design.md#n7-factories-and-handles"
+      ],
+      "decision": [],
+      "reason": null,
+      "note": null
+    },
+    {
+      "id": "RR-49",
+      "fips": "RR",
+      "lines": [
+        [
+          771,
+          815
+        ]
+      ],
+      "clause": "Layer 6 of the proposal: a registry that registers space factories at run time and creates spaces by name.",
+      "status": "future",
+      "code": [],
+      "formal": [],
+      "no_model": null,
+      "tests": [],
+      "docs": [],
+      "decision": [
+        "decision-17"
+      ],
+      "reason": null,
+      "note": "The fixed URN table registers the builtin families (rule FA-1). Decision 17 postpones the registration of custom spaces at run time to the follow-up rrs-fu-runtime-space-registration."
+    },
+    {
+      "id": "RR-50",
+      "fips": "RR",
+      "lines": [
+        [
+          817,
+          824
+        ]
+      ],
+      "clause": "The migration path of the proposal in six phases.",
+      "status": "deviation",
+      "code": [],
+      "formal": [],
+      "no_model": null,
+      "tests": [],
+      "docs": [
+        "docs/rspace/reified-rspaces/README.md#campaign-phases"
+      ],
+      "decision": [
+        "m-2",
+        "i-1"
+      ],
+      "reason": null,
+      "note": "The campaign runs its phases P0 to P12. It keeps HotStore, the host structs and ISpace unchanged, so the phases 1 to 3 of the proposal do not apply."
+    },
+    {
+      "id": "AG-01",
+      "fips": "AG",
+      "lines": [
+        [
+          8,
+          8
+        ]
+      ],
+      "clause": "Agents emulate objects: a constructor sets up the state of a new instance and returns a reference to it.",
+      "status": "implemented",
+      "code": [
+        "rholang/src/rust/interpreter/spaces/families.rs:540-549",
+        "rholang/src/rust/interpreter/spaces/families.rs:258-291",
+        "rholang/src/rust/interpreter/reified/factory.rs:167-173"
+      ],
+      "formal": [
+        {
+          "rocq": "SpaceFactory.v",
+          "name": "sid_derivation_deterministic",
+          "line": 669
+        },
+        {
+          "rocq": "SpaceFactory.v",
+          "name": "space_already_exists_is_deterministic_abort",
+          "line": 816
+        },
+        {
+          "rocq": "RecordEnvelope.v",
+          "name": "counter_and_config_roundtrip",
+          "line": 1075
+        },
+        {
+          "tla": "formal/tlaplus/reified_rspaces/NativeHandles.tla",
+          "invariant": "HandleUnique"
+        },
+        {
+          "tla": "formal/tlaplus/reified_rspaces/NativeHandles.tla",
+          "invariant": "DanglingIsDeterministicError"
+        },
+        {
+          "rocq": "Match.v",
+          "name": "space_match_is_injected_match",
+          "line": 642
+        }
+      ],
+      "no_model": null,
+      "tests": [
+        "rholang/tests/reified_p4_props.rs::prop_sid_derivation_deterministic",
+        "rholang/src/rust/interpreter/reified/factory.rs::space_already_exists_aborts",
+        "rholang/tests/reified_p4_props.rs::prop_counter_and_config_records_roundtrip",
+        "rholang/tests/reified_queue.rs::space_meta_channels_config_record",
+        "rholang/tests/reified_handle.rs::reified_handle_dangling_aborts",
+        "rholang/tests/reified_queue.rs::space_queue_dangling_name_aborts",
+        "rholang/tests/reified_rehydrate.rs::reducer_dangling_handle",
+        "rholang/tests/reified_rehydrate.rs::reducer_attach_costs",
+        "rholang/src/rust/interpreter/spaces/families.rs::space_families_dispatch_by_config_reserves_one_comparison_per_arm",
+        "rholang/tests/reified_families.rs::space_family_dispatch_by_config",
+        "rholang/tests/reified_examples_execute.rs::example_handle_methods",
+        "rholang/tests/reified_examples_execute.rs::example_get_space_agent"
+      ],
+      "docs": [
+        "docs/rspace/reified-rspaces/agent-api.md#33-the-creation-and-the-reply",
+        "docs/rspace/reified-rspaces/agent-api.md#41-the-handle-capability"
+      ],
+      "decision": [
+        "decision-8"
+      ],
+      "reason": null,
+      "note": null
+    },
+    {
+      "id": "AG-02",
+      "fips": "AG",
+      "lines": [
+        [
+          10,
+          35
+        ]
+      ],
+      "clause": "The agent block: a replicated receive on the constructor creates this and private, dispatches each message [return, method, args] to its method or to default, and replies bundle+{*this}.",
+      "status": "implemented",
+      "code": [
+        "rholang/src/rust/interpreter/reified/handle.rs:225-386",
+        "rholang/src/rust/interpreter/reified/handle.rs:149-181",
+        "rholang/src/rust/interpreter/reified/factory.rs:140-164"
+      ],
+      "formal": [
+        {
+          "tla": "formal/tlaplus/reified_rspaces/NativeHandles.tla",
+          "invariant": "HandleUnique"
+        },
+        {
+          "tla": "formal/tlaplus/reified_rspaces/NativeHandles.tla",
+          "invariant": "HandleCallsMergeLikeContracts"
+        }
+      ],
+      "no_model": null,
+      "tests": [
+        "rholang/src/rust/interpreter/reified/factory.rs::reified_factory_handle_continuation_forwards_to_handle_op",
+        "rholang/tests/reified_handle.rs::reified_unknown_method_typed_reply",
+        "rholang/tests/reified_examples_execute.rs::example_handle_methods",
+        "rholang/tests/reified_examples_execute.rs::example_agent_hashmap_bag"
+      ],
+      "docs": [
+        "docs/rspace/reified-rspaces/agent-api.md#4-handles",
+        "docs/rspace/reified-rspaces/agent-api.md#43-the-steps-of-a-call",
+        "docs/rspace/reified-rspaces/design.md#n7-factories-and-handles"
+      ],
+      "decision": [
+        "decision-8"
+      ],
+      "reason": null,
+      "note": "The parser desugars the agent block (decision 8), and the reference agent uses it. A native space follows the same protocol: its factory replies bundle+{*this}, and HANDLE_OP dispatches each message."
+    },
+    {
+      "id": "AG-03",
+      "fips": "AG",
+      "lines": [
+        [
+          37,
+          40
+        ]
+      ],
+      "clause": "The method-call sugar: x!y(args) means x!?(\"y\", args) as a receive source, before a continuation and as a final send.",
+      "status": "implemented",
+      "code": [
+        "rholang/src/rust/interpreter/reified/handle.rs:102-123"
+      ],
+      "formal": [],
+      "no_model": {
+        "reason": "The parser desugars the sugar (decision 8), and the handle receives the desugared call, so the handle protocol models of row AG-02 apply.",
+        "link": "docs/rspace/reified-rspaces/agent-api.md#5-handle-methods"
+      },
+      "tests": [
+        "rholang/tests/reified_handle.rs::space_handle_methods_gensym",
+        "rholang/tests/reified_examples_execute.rs::example_handle_methods",
+        "rholang/tests/reified_examples_execute.rs::example_agent_wrapper_forwards_to_native"
+      ],
+      "docs": [
+        "docs/rspace/reified-rspaces/agent-api.md#5-handle-methods",
+        "docs/rholang/21-reified-spaces.md#the-handle-and-its-methods"
+      ],
+      "decision": [
+        "decision-8"
+      ],
+      "reason": null,
+      "note": null
+    },
+    {
+      "id": "AG-04",
+      "fips": "AG",
+      "lines": [
+        [
+          42,
+          42
+        ]
+      ],
+      "clause": "The constructor channel r is fresh, this and return are bound in the method bodies, default sees only this, and a return channel is the first element of args.",
+      "status": "implemented",
+      "code": [
+        "rholang/src/rust/interpreter/reified/handle.rs:194-203"
+      ],
+      "formal": [],
+      "no_model": {
+        "reason": "The name rule is a check of the first element of a message, which the tests of the drop rule cover.",
+        "link": "docs/rspace/reified-rspaces/agent-api.md#44-the-drop-rule-and-the-name-rule"
+      },
+      "tests": [
+        "rholang/tests/reified_handle.rs::reified_malformed_message_dropped",
+        "rholang/tests/reified_examples_execute.rs::example_handle_methods"
+      ],
+      "docs": [
+        "docs/rspace/reified-rspaces/agent-api.md#44-the-drop-rule-and-the-name-rule",
+        "docs/rspace/reified-rspaces/agent-api.md#6-replies"
+      ],
+      "decision": [
+        "decision-8"
+      ],
+      "reason": null,
+      "note": null
+    },
+    {
+      "id": "AG-05",
+      "fips": "AG",
+      "lines": [
+        [
+          44,
+          44
+        ]
+      ],
+      "clause": "Every agent has a default clause, because messages of an unexpected shape can arrive on this.",
+      "status": "implemented",
+      "code": [
+        "rholang/src/rust/interpreter/reified/handle.rs:206-216",
+        "rholang/src/rust/interpreter/reified/handle.rs:787-792"
+      ],
+      "formal": [],
+      "no_model": {
+        "reason": "The default behavior is one typed reply or one drop for each message, which the tests check.",
+        "link": "docs/rspace/reified-rspaces/agent-api.md#7-typed-replies"
+      },
+      "tests": [
+        "rholang/tests/reified_handle.rs::reified_unknown_method_typed_reply",
+        "rholang/tests/reified_handle.rs::reified_malformed_message_dropped",
+        "rholang/tests/reified_examples_execute.rs::example_agent_hashmap_bag"
+      ],
+      "docs": [
+        "docs/rspace/reified-rspaces/agent-api.md#7-typed-replies",
+        "docs/rspace/reified-rspaces/agent-api.md#44-the-drop-rule-and-the-name-rule"
+      ],
+      "decision": [
+        "decision-8"
+      ],
+      "reason": null,
+      "note": "A native handle answers an unknown method with a typed reply and drops a malformed message, as a default clause does. The reference agent has a default clause."
+    },
+    {
+      "id": "AG-06",
+      "fips": "AG",
+      "lines": [
+        [
+          46,
+          46
+        ]
+      ],
+      "clause": "The desugaring binds a private channel for the state of an instance, and the Private Methods FIP builds on it.",
+      "status": "out-of-scope",
+      "code": [],
+      "formal": [],
+      "no_model": null,
+      "tests": [],
+      "docs": [],
+      "decision": [
+        "decision-8"
+      ],
+      "reason": null,
+      "note": "The private channel belongs to the agent sugar of the parser. A native handle keeps its state in the records of its space, and a user agent may use private."
+    },
+    {
+      "id": "AG-07",
+      "fips": "AG",
+      "lines": [
+        [
+          48,
+          57
+        ]
+      ],
+      "clause": "The constructor composes with the send-return syntax: for (b <- ctor!?(args)) calls methods of b.",
+      "status": "implemented",
+      "code": [
+        "rholang/src/rust/interpreter/reified/factory.rs:58-126"
+      ],
+      "formal": [
+        {
+          "tla": "formal/tlaplus/reified_rspaces/NativeHandles.tla",
+          "invariant": "HandleUnique"
+        }
+      ],
+      "no_model": null,
+      "tests": [
+        "rholang/tests/reified_factory.rs::reified_factory_creates_config_counter_handle",
+        "rholang/tests/reified_examples_execute.rs::example_handle_methods",
+        "rholang/tests/reified_examples_execute.rs::example_queue_fifo",
+        "rholang/tests/reified_examples_execute.rs::example_fips_example"
+      ],
+      "docs": [
+        "docs/rspace/reified-rspaces/agent-api.md#31-the-call",
+        "docs/rholang/21-reified-spaces.md#a-first-space"
+      ],
+      "decision": [
+        "decision-8"
+      ],
+      "reason": null,
+      "note": null
+    }
+  ]
+}
