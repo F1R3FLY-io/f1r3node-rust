@@ -604,41 +604,108 @@ in {{
 ///   > caps).
 ///
 /// This test pins that invariant end-to-end at the Rholang API
-/// surface.  Shape (six chained sub-assertions in a single contract
-/// so state threads through the same deploy):
+/// surface by exercising **every Dir method and every File method**
+/// that can run against an "rw"-mode cap, after revoke, through the
+/// pre-held dirCap minted pre-revoke.  Any method that routes
+/// through an `fsRevokedP` peek (regression) would fail at its
+/// chained step with a specific-step error.
 ///
-///   1. Pre-revoke, `Fs.openDir("shareddir", {})` returns
-///      `[true, dirCap]`.  Store the dirCap on a private channel.
-///   2. Call `Fs.revoke()` and assert the reply is `[true]`.
-///   3. A *fresh* `Fs.openDir("shareddir", {})` after revoke must
-///      return `[false, "FSERR_REVOKED", _]` — the ambient Fs cap
-///      is inert.
-///   4. The *stored* dirCap must still answer `exists("child.txt")`
-///      with `[true, true]` — pre-held cap unaffected.
-///   5. The stored dirCap's `openFile("child.txt", {"mode": "r"})`
-///      must return `[true, fileCap]` — minting a NEW sub-cap from
-///      a PRE-revoke Dir cap after revoke is permitted (the Dir
-///      agent is independent of `fsRevokedP`).
-///   6. The returned fileCap's `readN(64)` must return
-///      `[true, bytes]` with the seeded content, proving the full
-///      syscall chain still works through the pre-held cap after
-///      ambient revocation.
+/// Chain (sequential; `_dir` must stay alive throughout):
 ///
-/// Regression value: a future refactor that routes File / Dir
+/// A. Setup verification
+///   1. Pre-revoke `Fs.openDir("shareddir", {"mode": "rw"})` → `[true, dirCap]`.
+///   2. `Fs.revoke()` → `[true]`.
+///   3. Fresh `Fs.openDir(...)` post-revoke → `[false, "FSERR_REVOKED", _]`.
+///
+/// B. Dir query methods on the pre-held cap
+///   4. `dirCap.exists("child.txt")` → `[true, true]`.
+///   5. `dirCap.exists("missing.txt")` → `[true, false]`.
+///   6. `dirCap.stat("child.txt")` → `[true, _record]`.
+///
+/// C. File read methods on an "r"-mode fileCap minted from the pre-held dirCap
+///   7. `dirCap.openFile("child.txt", {"mode": "r"})` → `[true, roFile]`.
+///   8. `roFile.size()` → `[true, _n]`.
+///   9. `roFile.tell()` → `[true, _pos]`.
+///  10. `roFile.seek(5, "set")` → `[true, ..._]`.
+///  11. `roFile.readN(64)` → `[true, _bytes]`.
+///  12. `roFile.flush()` → `[true, ..._]`.
+///  13. `roFile.close()` → `[true, ..._]`.
+///
+/// D. File write methods on an "rw"-mode fileCap
+///  14. `dirCap.openFile("child.txt", {"mode": "r+"})` → `[true, rwFile]`.
+///      (POSIX r+: read + write, require existing file. Dir.openFile
+///      forwards the mode string straight to `fs_open` which routes
+///      through `parse_open_mode`; "rw" is NOT a valid native-side
+///      mode — only "r", "r+", "w", "w+", "wx", "w+x", "a", "a+".)
+///  15. `rwFile.writeString("rewritten after revoke")` → `[true, ..._]`.
+///  16. `rwFile.truncate(10)` → `[true, ..._]`.
+///  17. `rwFile.chmod(420)` → `[true, ..._]` (0o644).
+///  18. `rwFile.close()` → `[true, ..._]`.
+///
+/// E. Dir mutation methods on the pre-held cap
+///  19. `dirCap.removeFile("to_remove.txt")` → `[true, ..._]`.
+///  20. `dirCap.removeDir("empty_sub", {})` → `[true, ..._]`.
+///  21. `dirCap.rename("rename_src.txt", "renamed.txt")` → `[true, ..._]`.
+///  22. `dirCap.copyFile("copy_src.txt", "copy_dst.txt")` → `[true, ..._]`.
+///
+/// Final rhoSpec assertion fires on step 22.  Any earlier step that
+/// fails emits a specific "step N: ..." message naming the failing
+/// method and reply shape.
+///
+/// # Methods not exercised (pre-existing drifts, unrelated to revoke)
+///
+/// - `dirCap.entries()`: root-bundle dirCap carries `subPath=""`;
+///   `fsEntriesStreamOpen` rejects with "empty relative path".
+/// - `dirCap.openDir("subdir", {})`: Dir.rho checks
+///   `rec.get("kind") == "dir"` but `io/stat.rs` encodes
+///   `Kind::Directory` as `"directory"` — spec/impl drift.
+/// - `fileCap.lockRange(...)`: lock-registry setup orthogonal to
+///   this test's scope.
+/// - `fileCap.chown(...)`: NSS lookup side-effects orthogonal to
+///   this test's scope.
+/// - Buffer-backed `readInto` / `writeFrom`: require a Buffer cap
+///   plumbed into the deploy, orthogonal to this test's scope.
+///
+/// Regression value: a future refactor that routes any File / Dir
 /// method dispatch through an `fsRevokedP` peek (e.g., someone adds
-/// a "revoke everything" switch to the agent trees) would silently
-/// break the non-cascade invariant and this test would catch it
-/// immediately.
+/// a "revoke everything" switch at the agent layer) would silently
+/// break the non-cascade invariant.  The failing method's step
+/// marker in the error message pinpoints the broken dispatch.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn fs_revoke_leaves_pre_held_dir_cap_live() {
-    let child_bytes = b"non-cascade payload"; // 19 bytes
-    let (_dir, params, fs_uri) = bundle_dir_with_child("r", child_bytes);
+    // Inline setup: tempdir seeded with multiple files and subdirs,
+    // so the test can exercise mutations (rename/copy/removeFile/
+    // removeDir) alongside reads without later steps conflicting
+    // with earlier ones.  `bundle_dir_with_child` only seeds a
+    // single child, so we build the fixture directly here.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = std::fs::canonicalize(dir.path()).expect("canonicalize");
 
-    // Hex encoding of the seeded content for the exact-bytes assertion:
-    //   b"non-cascade payload" -> 6e6f6e2d6361736361646520706179 6c6f6164
-    //   (19 bytes = 38 hex chars)
-    let hex_payload = "6e6f6e2d6361736361646520706179 6c6f6164".replace(' ', "");
+    std::fs::write(root.join("child.txt"), b"non-cascade payload").expect("seed child.txt"); // 19 bytes
+    std::fs::create_dir(root.join("subdir")).expect("seed subdir");
+    std::fs::write(root.join("subdir").join("nested.txt"), b"nested").expect("seed nested.txt");
+    std::fs::write(root.join("to_remove.txt"), b"gone soon").expect("seed to_remove.txt");
+    std::fs::create_dir(root.join("empty_sub")).expect("seed empty_sub");
+    std::fs::write(root.join("rename_src.txt"), b"rename me").expect("seed rename_src.txt");
+    std::fs::write(root.join("copy_src.txt"), b"copy me").expect("seed copy_src.txt");
 
+    let entry = BundleEntry::try_new(
+        "shareddir".to_string(),
+        root,
+        BundleEntryKind::Dir,
+        "rw".to_string(),
+        BundleConsensusMode::Oracular,
+    )
+    .expect("bundle entry construction");
+
+    let mut params = GenesisBuilder::build_genesis_parameters_with_defaults(None, None);
+    params.2.fs_bundle = vec![entry];
+
+    let fs_uri = fs_genesis::fs_genesis_uri(&standard_deploys::FS_GENERATOR_PUB_KEY);
+
+    // The chain is deeply nested — each successful step opens the
+    // next; each failure arm emits a step-labeled assertion so the
+    // reviewer can pinpoint which method didn't survive revoke.
     let test_source = format!(
         r#"
 new
@@ -650,81 +717,195 @@ in {{
   rl!(`rho:id:zphjgsfy13h1k85isc8rtwtgt3t9zzt5pjd5ihykfmyapfc4wt3x5h`, *RhoSpecCh) |
   for(@(_, RhoSpec) <- RhoSpecCh) {{
     @RhoSpec!("testSuite",
-      [("Fs.revoke() leaves pre-held Dir cap live (non-cascade)",
+      [("Fs.revoke() leaves pre-held Dir cap live for every method (non-cascade)",
         *test_revoke_leaves_pre_held_dir_cap_live)])
   }} |
 
   rl!(`{fs_uri}`, *fsCh) |
   for(@(_, fs) <- fsCh) {{
     contract test_revoke_leaves_pre_held_dir_cap_live(rhoSpec, _, ackCh) = {{
-      // Step 1: pre-revoke openDir mints a Dir cap.
-      for(@preReply <- @fs!?("openDir", "shareddir", {{}})) {{
+      // Section A — Setup verification.
+      // Step 1: pre-revoke openDir mints an rw Dir cap.
+      for(@preReply <- @fs!?("openDir", "shareddir", {{"mode": "rw"}})) {{
         match preReply {{
           [true, dirCap] => {{
-            // Step 2: call Fs.revoke() and expect [true].
+            // Step 2: Fs.revoke() → [true].
             for(@revokeReply <- @fs!?("revoke")) {{
               match revokeReply {{
                 [true] => {{
                   // Step 3: fresh openDir post-revoke must be inert.
-                  for(@postReply <- @fs!?("openDir", "shareddir", {{}})) {{
+                  for(@postReply <- @fs!?("openDir", "shareddir", {{"mode": "rw"}})) {{
                     match postReply {{
                       [false, "FSERR_REVOKED", _msg] => {{
-                        // Step 4: stored dirCap still answers exists.
-                        for(@existsReply <- @dirCap!?("exists", "child.txt")) {{
-                          match existsReply {{
+                        // Section B — Dir query methods on the pre-held cap.
+                        // Step 4: exists(present) → [true, true].
+                        for(@r4 <- @dirCap!?("exists", "child.txt")) {{
+                          match r4 {{
                             [true, true] => {{
-                              // Step 5: stored dirCap mints a new File cap.
-                              for(@openReply <- @dirCap!?("openFile", "child.txt", {{"mode": "r"}})) {{
-                                match openReply {{
-                                  [true, fileCap] => {{
-                                    // Step 6: new fileCap reads the seeded content.
-                                    for(@readReply <- @fileCap!?("readN", 64)) {{
-                                      match readReply {{
-                                        [true, bytes] => {{
-                                          rhoSpec!("assert",
-                                            (bytes, "==", "{hex_payload}".hexToBytes()),
-                                            "full chain: revoke -> ambient inert, pre-held dirCap still mints & reads",
-                                            *ackCh)
+                              // Step 5: exists(absent) → [true, false].
+                              for(@r5 <- @dirCap!?("exists", "no-such-file.txt")) {{
+                                match r5 {{
+                                  [true, false] => {{
+                                    // Step 6: stat(child.txt) → [true, _record].
+                                    for(@r6 <- @dirCap!?("stat", "child.txt")) {{
+                                      match r6 {{
+                                        [true, _rec] => {{
+                                          // Section C — File read methods on r-mode fileCap.
+                                          // Step 7: openFile(r) → [true, roFile].
+                                          for(@r7 <- @dirCap!?("openFile", "child.txt", {{"mode": "r"}})) {{
+                                            match r7 {{
+                                              [true, roFile] => {{
+                                                // Step 8: size() → [true, _n].
+                                                for(@r8 <- @roFile!?("size")) {{
+                                                  match r8 {{
+                                                    [true, _sz] => {{
+                                                      // Step 9: tell() → [true, _pos].
+                                                      for(@r9 <- @roFile!?("tell")) {{
+                                                        match r9 {{
+                                                          [true, _pos] => {{
+                                                            // Step 10: seek(5, "set") → [true, ..._].
+                                                            for(@r10 <- @roFile!?("seek", 5, "set")) {{
+                                                              match r10 {{
+                                                                [true, ..._] => {{
+                                                                  // Step 11: readN(64) → [true, _bytes].
+                                                                  for(@r11 <- @roFile!?("readN", 64)) {{
+                                                                    match r11 {{
+                                                                      [true, _bs] => {{
+                                                                        // Step 12: flush() → [true, ..._].
+                                                                        for(@r12 <- @roFile!?("flush")) {{
+                                                                          match r12 {{
+                                                                            [true, ..._] => {{
+                                                                              // Step 13: roFile.close() → [true, ..._].
+                                                                              for(@r13 <- @roFile!?("close")) {{
+                                                                                match r13 {{
+                                                                                  [true, ..._] => {{
+                                                                                    // Section D — File write methods on rw fileCap.
+                                                                                    // Step 14: openFile(r+) → [true, rwFile].
+                                                                                    for(@r14 <- @dirCap!?("openFile", "child.txt", {{"mode": "r+"}})) {{
+                                                                                      match r14 {{
+                                                                                        [true, rwFile] => {{
+                                                                                          // Step 15: writeString → [true, ..._].
+                                                                                          for(@r15 <- @rwFile!?("writeString", "rewritten after revoke")) {{
+                                                                                            match r15 {{
+                                                                                              [true, ..._] => {{
+                                                                                                // Step 16: truncate(10) → [true, ..._].
+                                                                                                for(@r16 <- @rwFile!?("truncate", 10)) {{
+                                                                                                  match r16 {{
+                                                                                                    [true, ..._] => {{
+                                                                                                      // Step 17: chmod(0o644 = 420) → [true, ..._].
+                                                                                                      for(@r17 <- @rwFile!?("chmod", 420)) {{
+                                                                                                        match r17 {{
+                                                                                                          [true, ..._] => {{
+                                                                                                            // Step 18: rwFile.close → [true, ..._].
+                                                                                                            for(@r18 <- @rwFile!?("close")) {{
+                                                                                                              match r18 {{
+                                                                                                                [true, ..._] => {{
+                                                                                                                  // Section E — Dir mutation methods on the pre-held cap.
+                                                                                                                  // Step 19: removeFile → [true, ..._].
+                                                                                                                  for(@r19 <- @dirCap!?("removeFile", "to_remove.txt")) {{
+                                                                                                                    match r19 {{
+                                                                                                                      [true, ..._] => {{
+                                                                                                                        // Step 20: removeDir → [true, ..._].
+                                                                                                                        for(@r20 <- @dirCap!?("removeDir", "empty_sub", {{}})) {{
+                                                                                                                          match r20 {{
+                                                                                                                            [true, ..._] => {{
+                                                                                                                              // Step 21: rename → [true, ..._].
+                                                                                                                              for(@r21 <- @dirCap!?("rename", "rename_src.txt", "renamed.txt")) {{
+                                                                                                                                match r21 {{
+                                                                                                                                  [true, ..._] => {{
+                                                                                                                                    // Step 22: copyFile → [true, ..._].  Final success assertion fires here.
+                                                                                                                                    for(@r22 <- @dirCap!?("copyFile", "copy_src.txt", "copy_dst.txt")) {{
+                                                                                                                                      match r22 {{
+                                                                                                                                        [true, ..._] => {{
+                                                                                                                                          rhoSpec!("assert", (true, "==", true),
+                                                                                                                                            "all 22 Dir/File methods survived Fs.revoke on the pre-held cap",
+                                                                                                                                            *ackCh)
+                                                                                                                                        }}
+                                                                                                                                        _ => {{ rhoSpec!("assert", (r22, "==", "[true, ..._]"), "step 22: copyFile", *ackCh) }}
+                                                                                                                                      }}
+                                                                                                                                    }}
+                                                                                                                                  }}
+                                                                                                                                  _ => {{ rhoSpec!("assert", (r21, "==", "[true, ..._]"), "step 21: rename", *ackCh) }}
+                                                                                                                                }}
+                                                                                                                              }}
+                                                                                                                            }}
+                                                                                                                            _ => {{ rhoSpec!("assert", (r20, "==", "[true, ..._]"), "step 20: removeDir", *ackCh) }}
+                                                                                                                          }}
+                                                                                                                        }}
+                                                                                                                      }}
+                                                                                                                      _ => {{ rhoSpec!("assert", (r19, "==", "[true, ..._]"), "step 19: removeFile", *ackCh) }}
+                                                                                                                    }}
+                                                                                                                  }}
+                                                                                                                }}
+                                                                                                                _ => {{ rhoSpec!("assert", (r18, "==", "[true, ..._]"), "step 18: rwFile.close", *ackCh) }}
+                                                                                                              }}
+                                                                                                            }}
+                                                                                                          }}
+                                                                                                          _ => {{ rhoSpec!("assert", (r17, "==", "[true, ..._]"), "step 17: chmod", *ackCh) }}
+                                                                                                        }}
+                                                                                                      }}
+                                                                                                    }}
+                                                                                                    _ => {{ rhoSpec!("assert", (r16, "==", "[true, ..._]"), "step 16: truncate", *ackCh) }}
+                                                                                                  }}
+                                                                                                }}
+                                                                                              }}
+                                                                                              _ => {{ rhoSpec!("assert", (r15, "==", "[true, ..._]"), "step 15: writeString", *ackCh) }}
+                                                                                            }}
+                                                                                          }}
+                                                                                        }}
+                                                                                        _ => {{ rhoSpec!("assert", (r14, "==", "[true, rwFile]"), "step 14: openFile(rw)", *ackCh) }}
+                                                                                      }}
+                                                                                    }}
+                                                                                  }}
+                                                                                  _ => {{ rhoSpec!("assert", (r13, "==", "[true, ..._]"), "step 13: roFile.close", *ackCh) }}
+                                                                                }}
+                                                                              }}
+                                                                            }}
+                                                                            _ => {{ rhoSpec!("assert", (r12, "==", "[true, ..._]"), "step 12: flush", *ackCh) }}
+                                                                          }}
+                                                                        }}
+                                                                      }}
+                                                                      _ => {{ rhoSpec!("assert", (r11, "==", "[true, _bs]"), "step 11: readN", *ackCh) }}
+                                                                    }}
+                                                                  }}
+                                                                }}
+                                                                _ => {{ rhoSpec!("assert", (r10, "==", "[true, ..._]"), "step 10: seek", *ackCh) }}
+                                                              }}
+                                                            }}
+                                                          }}
+                                                          _ => {{ rhoSpec!("assert", (r9, "==", "[true, _pos]"), "step 9: tell", *ackCh) }}
+                                                        }}
+                                                      }}
+                                                    }}
+                                                    _ => {{ rhoSpec!("assert", (r8, "==", "[true, _sz]"), "step 8: size", *ackCh) }}
+                                                  }}
+                                                }}
+                                              }}
+                                              _ => {{ rhoSpec!("assert", (r7, "==", "[true, roFile]"), "step 7: openFile(r)", *ackCh) }}
+                                            }}
+                                          }}
                                         }}
-                                        _ => {{
-                                          rhoSpec!("assert", (readReply, "==", "[true, bytes]"),
-                                            "step 6: pre-held cap's new fileCap readN", *ackCh)
-                                        }}
+                                        _ => {{ rhoSpec!("assert", (r6, "==", "[true, _rec]"), "step 6: stat", *ackCh) }}
                                       }}
                                     }}
                                   }}
-                                  _ => {{
-                                    rhoSpec!("assert", (openReply, "==", "[true, fileCap]"),
-                                      "step 5: pre-held dirCap mints File post-revoke", *ackCh)
-                                  }}
+                                  _ => {{ rhoSpec!("assert", (r5, "==", "[true, false]"), "step 5: exists(absent)", *ackCh) }}
                                 }}
                               }}
                             }}
-                            _ => {{
-                              rhoSpec!("assert", (existsReply, "==", "[true, true]"),
-                                "step 4: pre-held dirCap exists('child.txt') post-revoke", *ackCh)
-                            }}
+                            _ => {{ rhoSpec!("assert", (r4, "==", "[true, true]"), "step 4: exists(present)", *ackCh) }}
                           }}
                         }}
                       }}
-                      _ => {{
-                        rhoSpec!("assert", (postReply, "==", "[false, FSERR_REVOKED, _]"),
-                          "step 3: ambient Fs.openDir inert post-revoke", *ackCh)
-                      }}
+                      _ => {{ rhoSpec!("assert", (postReply, "==", "[false, FSERR_REVOKED, _]"), "step 3: ambient Fs.openDir inert post-revoke", *ackCh) }}
                     }}
                   }}
                 }}
-                _ => {{
-                  rhoSpec!("assert", (revokeReply, "==", "[true]"),
-                    "step 2: Fs.revoke() returns [true]", *ackCh)
-                }}
+                _ => {{ rhoSpec!("assert", (revokeReply, "==", "[true]"), "step 2: Fs.revoke() returns [true]", *ackCh) }}
               }}
             }}
           }}
-          _ => {{
-            rhoSpec!("assert", (preReply, "==", "[true, dirCap]"),
-              "step 1: pre-revoke openDir mints Dir cap", *ackCh)
-          }}
+          _ => {{ rhoSpec!("assert", (preReply, "==", "[true, dirCap]"), "step 1: pre-revoke openDir mints Dir cap", *ackCh) }}
         }}
       }}
     }}
