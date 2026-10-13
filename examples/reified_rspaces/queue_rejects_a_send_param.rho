@@ -1,0 +1,9 @@
+// A queue collection has no send param. A send with a named param aborts the
+// deploy with UnknownParam, before anything is stored.
+new factory(`rho:space:hashmap:queue`) in {
+  for (queue <- factory!?("default")) {
+    use queue {
+      @"jobs"!("A"; priority=1)
+    }
+  }
+}

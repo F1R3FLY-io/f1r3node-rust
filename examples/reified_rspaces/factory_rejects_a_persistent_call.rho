@@ -1,0 +1,6 @@
+// A persistent send `!!` to a factory aborts the deploy with
+// PersistentFactoryCall. The runtime sends a persistent message again after
+// each call, so the call could create spaces without end.
+new factory(`rho:space:hashmap:queue`), ret in {
+  factory!!(*ret, "default")
+}

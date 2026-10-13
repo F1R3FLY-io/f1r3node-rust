@@ -1,0 +1,20 @@
+// A Vector space grows: each `new` inside a use block takes the next index,
+// with no fixed size. The handle method gensym takes the next index too.
+//
+// The deploy creates three names with `new`, one with gensym, and sends on
+// each. The receive joins the four names.
+new factory(`rho:space:vector:bag`), out in {
+  for (vector <- factory!?("default")) {
+    for (fourth <- vector!?("gensym")) {
+      use vector {
+        new first, second, third in {
+          first!(1) | second!(2) | third!(3) | fourth!(4) |
+          for (@a <- first & @b <- second & @c <- third & @d <- fourth) {
+            out!(a + b + c + d)
+          }
+        }
+      }
+    }
+  } |
+  for (@sum <- out) { @"rrs.example.vector"!(sum) }
+}

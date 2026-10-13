@@ -1,0 +1,8 @@
+// A cell holds at most one record. A second send to a full cell aborts the
+// deploy with CellOccupied.
+new factory(`rho:space:hashmap:cell`) in {
+  for (cell <- factory!?("default")) {
+    cell!?("produce", "counter", [1]);
+    cell!?("produce", "counter", [2]).
+  }
+}

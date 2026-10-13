@@ -1,0 +1,24 @@
+// A PathMap space as a tree of channels. A receive on a prefix sees the
+// records of every path below it, and a receive on a full path sees only the
+// records of that path.
+//
+// The deploy stores two readings under ["sensors", "north"] and one under
+// ["sensors", "south"]. A receive on ["sensors", "south"] takes its reading
+// with an empty suffix. Then two receives on ["sensors"] take the two north
+// readings, re-rooted under "north".
+new factory(`rho:space:pathmap:bag`), out in {
+  for (tree <- factory!?("default")) {
+    tree!?("produce", ["sensors", "north"], [10]);
+    tree!?("produce", ["sensors", "north"], [11]);
+    tree!?("produce", ["sensors", "south"], [20]);
+    use tree {
+      for (@south <- @["sensors", "south"]) {
+        out!(["south", south]) |
+        for (@first <- @["sensors"]) {
+          for (@second <- @["sensors"]) { out!(["prefix", first]) | out!(["prefix", second]) }
+        }
+      }
+    }
+  } |
+  for (@value <= out) { @"rrs.example.pathmap.tree"!(value) }
+}

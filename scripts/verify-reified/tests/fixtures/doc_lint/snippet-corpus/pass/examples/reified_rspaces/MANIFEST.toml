@@ -1,4 +1,5 @@
-# doc_lint fixture manifest: one example with an inline source row.
+# doc_lint fixture manifest: one example with an inline source row, and its test.
 [[example]]
 name = "inline-send"
 source = "new y in { y!(2) }"
+test = "runner.txt"

@@ -1,0 +1,17 @@
+// A record can keep another payload and give its vector with the send param
+// `embedding`. A list query with `k` binds the payloads of the first k
+// eligible records, in the order of their scores. With `scores=true` each
+// element is [score, value].
+//
+// The space uses the euclidean metric. The query keeps the records within the
+// distance 5 of [0, 0], the nearest first.
+new vdb(`rho:space:hashmap:vectordb`), out in {
+  for (space <- vdb!?("default"; capacity=8, dimensions=2, metric="euclidean")) {
+    space!?("produce", "docs", ["origin"]; embedding=[0, 0]);
+    space!?("produce", "docs", ["far"]; embedding=[3, 4]);
+    use space {
+      for (@top <- @"docs" ~ ([0, 0]; radius=5, k=2, scores=true)) { out!(top) }
+    }
+  } |
+  for (@list <- out) { @"rrs.example.vectordb.list"!(list) }
+}

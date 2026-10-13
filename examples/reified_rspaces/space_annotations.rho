@@ -1,0 +1,12 @@
+// `new x : s` creates the name x in the space s, wherever the `new` stands. A
+// name of a space routes to that space by its id, also outside every use
+// block. A join of two names of one space is allowed.
+new factory(`rho:space:hashmap:queue`), out in {
+  for (queue <- factory!?("default")) {
+    new first : queue, second : queue in {
+      first!("one") | second!("two") |
+      for (@a <- first & @b <- second) { out!([a, b]) }
+    }
+  } |
+  for (@pair <- out) { @"rrs.example.annotations"!(pair) }
+}

@@ -1,0 +1,9 @@
+// A priority queue with the bound `priorities=3` has the levels 0, 1 and 2.
+// A send at level 5 aborts the deploy with InvalidParam.
+new factory(`rho:space:hashmap:priorityqueue`) in {
+  for (queue <- factory!?("default"; priorities=3)) {
+    use queue {
+      @"tasks"!("late"; priority=5)
+    }
+  }
+}

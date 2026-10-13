@@ -1,0 +1,10 @@
+// The first deploy of the temp example. It makes a temp space, stores a value
+// in it, and publishes the handle of the space on a public channel. A temp
+// space lives for one deploy, so the sweep at the end of this deploy removes
+// it.
+new factory(`rho:space:hashmap:bag`) in {
+  for (scratch <- factory!?("temp")) {
+    scratch!?("produce", "notes", ["draft"]);
+    @"rrs.example.temp.handle"!(*scratch)
+  }
+}

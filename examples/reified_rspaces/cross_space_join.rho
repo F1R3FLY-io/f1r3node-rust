@@ -1,0 +1,13 @@
+// A join may take its channels from one space only. A receive that joins a
+// channel of one space with a channel of another space aborts the deploy with
+// CrossSpaceJoin.
+new factory(`rho:space:hashmap:bag`) in {
+  for (left <- factory!?("default")) {
+    for (right <- factory!?("default")) {
+      new a : left, b : right in {
+        a!(1) | b!(2) |
+        for (@x <- a & @y <- b) { Nil }
+      }
+    }
+  }
+}

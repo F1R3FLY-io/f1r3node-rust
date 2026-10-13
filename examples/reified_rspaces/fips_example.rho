@@ -1,0 +1,31 @@
+// The example code of the Reifying RSpaces FIPS, with concrete names. Two
+// spaces: a bag space with the theory Nat, and a temp PathMap space. In a use
+// block of the first space, `new` makes two names in each space, and a forged
+// name lands in the first space. A join takes two channels of one space, and
+// a second join takes two channels of the other space. getSpaceAgent gives the
+// factory of a space, and assertEqual compares it with the factory.
+//
+// The calls of getSpaceAgent and assertEqual stand outside the use block. A
+// sync call `x!?(...)` creates its reply name with `new`, so inside the block
+// the reply name would belong to space_1, whose theory Nat refuses the reply.
+new HMB(`rho:space:HashMapBagSpace`),
+    PM(`rho:space:PathMapSpace`),
+    getSpaceAgent(`rho:space:getSpaceAgent`),
+    assertEqual(`rho:assert:assertEqual`), out in {
+  for (space_1 <- HMB!?("default", free Nat()) ; space_2 <- PM!?("temp", free Any())) {
+    use space_1 {
+      new x_1 : space_1, x_2 : space_1, x_3 : space_2, x_4 : space_2 in {
+        x_1!(1) | x_2!(2) | x_3!(3) | x_4!(4) |
+        @{*x_1 | *x_2}!(5) |
+        for (@a <- x_1 & @b <- x_2 ; @c <- x_3 & @d <- x_4) {
+          out!(["joins", a + b, c + d])
+        } |
+        for (@forged <- @{*x_1 | *x_2}) { out!(["forged", forged]) }
+      }
+    } |
+    for (@capability <- getSpaceAgent!?(*space_1)) {
+      for (@same <- assertEqual!?(capability, *HMB)) { out!(["agent", same]) }
+    }
+  } |
+  for (@answer <= out) { @"rrs.example.fips"!(answer) }
+}

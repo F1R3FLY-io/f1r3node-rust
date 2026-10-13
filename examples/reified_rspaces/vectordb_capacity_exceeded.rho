@@ -1,0 +1,8 @@
+// A VectorDB collection holds at most `capacity` records. A store into a full
+// collection aborts the deploy with CapacityExceeded.
+new vdb(`rho:space:hashmap:vectordb`) in {
+  for (space <- vdb!?("default"; capacity=1, dimensions=2)) {
+    space!?("produce", "docs", [[1, 0]]);
+    space!?("produce", "docs", [[0, 1]]).
+  }
+}

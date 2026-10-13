@@ -1,0 +1,8 @@
+new vdb(`rho:space:hashmap:vectordb`) in {
+  for (m <- vdb!?("default"; capacity=4, dimensions=2, mirror="chroma")) {
+    for (mn <- m!?("gensym")) {
+      @"my-space"!(*m) | @"my-name"!(*mn) |
+      mn!([1.0, 0.0]) | mn!([0.0, 1.0]) | mn!([1.0, 1.0])
+    }
+  }
+}

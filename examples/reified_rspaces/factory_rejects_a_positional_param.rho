@@ -1,0 +1,5 @@
+// A factory takes only named params. A positional param aborts the deploy with
+// PositionalParamsUnsupported before the factory creates a space.
+new factory(`rho:space:hashmap:queue`) in {
+  for (queue <- factory!?("default"; 4)) { Nil }
+}

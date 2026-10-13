@@ -1,0 +1,9 @@
+// A HashSet space holds units. A send with data aborts the deploy with
+// PayloadNotEmpty.
+new factory(`rho:space:hashset:bag`) in {
+  for (space <- factory!?("seq")) {
+    use space {
+      @"seen"!(1)
+    }
+  }
+}

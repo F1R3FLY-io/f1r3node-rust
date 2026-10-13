@@ -1,0 +1,18 @@
+// A program can take a marker of the Reified syntax out of its own quoted
+// code, because a marker is an ordinary name in a term. The marker gives no
+// capability beyond the syntax itself: the node accepts a marker tuple only in
+// the exact form that the normalizer writes. The deploy sends a quoted send
+// with a params section as data, takes the marker of the params section out of
+// it, and builds a params tuple with empty sections, which the normalizer
+// never writes. The factory call with that tuple aborts the deploy with
+// Malformed.
+new factory(`rho:space:hashmap:queue`), ret, code in {
+  code!(@"x"!(1; k=1)) |
+  for (@sent <- code) {
+    match sent {
+      @"x"!(1, (marker, positional, named)) => {
+        factory!(*ret, "default", (marker, [], {}))
+      }
+    }
+  }
+}

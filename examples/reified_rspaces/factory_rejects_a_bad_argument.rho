@@ -1,0 +1,6 @@
+// The arguments of a factory are an optional qualifier, then an optional
+// theory, then the params. Any other argument aborts the deploy with
+// BadConstructorArgument.
+new factory(`rho:space:hashmap:queue`) in {
+  for (queue <- factory!?(1)) { Nil }
+}

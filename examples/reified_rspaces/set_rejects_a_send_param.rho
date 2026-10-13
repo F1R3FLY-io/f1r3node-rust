@@ -1,0 +1,9 @@
+// A set collection has no send param. A send with a named param aborts the
+// deploy with UnknownParam.
+new factory(`rho:space:hashmap:set`) in {
+  for (set <- factory!?("default")) {
+    use set {
+      @"tags"!("a"; priority=0)
+    }
+  }
+}

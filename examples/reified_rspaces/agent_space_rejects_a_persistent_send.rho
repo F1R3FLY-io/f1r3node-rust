@@ -1,0 +1,7 @@
+// In a use block of a user agent, a forged name belongs to the agent, and a
+// send on it becomes a produce call of the agent. A persistent send `!!`
+// aborts the deploy with PersistentSendOnAgentSpace before the agent gets a
+// call.
+new agent in {
+  use agent { @"jobs"!!("task") }
+}

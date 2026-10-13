@@ -1,0 +1,9 @@
+// Only a VectorDB collection answers a query. A receive with a query on a bag
+// aborts the deploy with QuerySpecUnsupported.
+new factory(`rho:space:hashmap:bag`) in {
+  for (bag <- factory!?("default")) {
+    use bag {
+      for (@number <- @"numbers" ~ ([1, 0]; k=1)) { Nil }
+    }
+  }
+}

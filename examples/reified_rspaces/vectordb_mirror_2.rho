@@ -1,0 +1,10 @@
+new ann(`rho:vectordb:ann`) in {
+  for (m <<- @"my-space") { for (mn <<- @"my-name") {
+    for (@r <- ann!?(*m, *mn, [1.0, 0.0], {"k": 3})) {
+      match r {
+        [true, ids, _, _] => { for (@x <- mn ~ ([1.0, 0.0]; ids=ids, k=3)) { @"result"!(x) } }
+        [false, code, _]  => { @"result"!(code) }
+      }
+    }
+  } }
+}

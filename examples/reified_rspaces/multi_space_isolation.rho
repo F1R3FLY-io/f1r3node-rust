@@ -1,0 +1,15 @@
+// Two spaces keep their channels apart. A forged name such as @"inbox" inside
+// a use block routes to the space of that block, so @"inbox" in one space and
+// @"inbox" in the other are two channels. A name that `new` creates outside
+// every use block stays in the default space.
+new factory(`rho:space:hashmap:bag`), out in {
+  for (left <- factory!?("default")) {
+    for (right <- factory!?("default")) {
+      use left { @"inbox"!("left mail") } |
+      use right { @"inbox"!("right mail") } |
+      use left { for (@mail <- @"inbox") { out!(["left", mail]) } } |
+      use right { for (@mail <- @"inbox") { out!(["right", mail]) } }
+    }
+  } |
+  for (@delivery <= out) { @"rrs.example.isolation"!(delivery) }
+}

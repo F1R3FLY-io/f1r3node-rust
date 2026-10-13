@@ -1,0 +1,21 @@
+// A set space holds each value once. A receive takes the value, and it also
+// retires every equal record that arrived earlier.
+//
+// The deploy sends "a" twice. The first receive takes "a". Then the deploy
+// sends "probe", and the second receive takes "probe": the second "a" left
+// the set with the first one. In a bag space the second receive could take
+// the second "a".
+new factory(`rho:space:hashmap:set`), out in {
+  for (set <- factory!?("default")) {
+    set!?("produce", "tags", ["a"]);
+    set!?("produce", "tags", ["a"]);
+    use set {
+      for (@first <- @"tags") {
+        out!(first) |
+        set!?("produce", "tags", ["probe"]);
+        for (@second <- @"tags") { out!(second) }
+      }
+    }
+  } |
+  for (@value <= out) { @"rrs.example.set"!(value) }
+}

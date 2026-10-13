@@ -1,0 +1,5 @@
+// getSpaceAgent and assertEqual take no params. A call with a params section
+// aborts the deploy with ParamsUnsupported.
+new assertEqual(`rho:assert:assertEqual`), ret in {
+  assertEqual!(*ret, 1, 1; strict=true)
+}

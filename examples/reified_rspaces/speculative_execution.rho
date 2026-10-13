@@ -1,0 +1,33 @@
+// Speculative execution with a checkpoint record. An account lives in a cell
+// space, which holds one record on each channel. A transfer keeps the old
+// balance as a checkpoint and writes the new balance. A commit drops the
+// checkpoint, and a rollback writes the checkpoint back.
+//
+// The deploy transfers 300, which commits. Then it transfers 900, which would
+// make the balance negative, so it rolls back to 700.
+new factory(`rho:space:hashmap:cell`), out in {
+  for (cells <- factory!?("default")) {
+    use cells {
+      new account, saved in {
+        account!(1000) |
+        for (@balance <- account) {
+          saved!(balance) | account!(balance - 300) |
+          for (_ <- saved) {
+            for (@after <- account) {
+              out!(["committed", after]) |
+              saved!(after) | account!(after - 900) |
+              for (@candidate <- account) {
+                if (candidate < 0) {
+                  for (@restored <- saved) { account!(restored) | out!(["rolled back", restored]) }
+                } else {
+                  for (_ <- saved) { account!(candidate) | out!(["committed", candidate]) }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  } |
+  for (@step <= out) { @"rrs.example.speculative"!(step) }
+}

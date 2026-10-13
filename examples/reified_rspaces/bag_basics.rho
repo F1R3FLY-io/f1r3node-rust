@@ -1,0 +1,19 @@
+// A bag space is the default discipline of an RSpace: a receive takes any
+// matching record, and the records have no order.
+//
+// The deploy sends 1, 2 and 3 in parallel. A receive with the pattern 2 takes
+// the record 2, and two receives take the other two records.
+new factory(`rho:space:hashmap:bag`), out in {
+  for (bag <- factory!?("default")) {
+    use bag {
+      @"numbers"!(1) | @"numbers"!(2) | @"numbers"!(3) |
+      for (@2 <- @"numbers") {
+        out!(["matched", 2]) |
+        for (@x <- @"numbers") {
+          for (@y <- @"numbers") { out!(["rest", x + y]) }
+        }
+      }
+    }
+  } |
+  for (@value <= out) { @"rrs.example.bag"!(value) }
+}

@@ -1,0 +1,14 @@
+// A theory restricts the data of a space. The builtin theory Nat admits only
+// natural numbers.
+//
+// The deploy makes a bag space with `free Nat()` and sends 7 and 42. Both
+// sends are admitted, and two receives take both.
+new factory(`rho:space:HashMapBagSpace`), out in {
+  for (space <- factory!?(free Nat())) {
+    use space {
+      @"numbers"!(7) | @"numbers"!(42) |
+      for (@a <- @"numbers") { for (@b <- @"numbers") { out!(a + b) } }
+    }
+  } |
+  for (@sum <- out) { @"rrs.example.theory"!(sum) }
+}

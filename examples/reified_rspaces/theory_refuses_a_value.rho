@@ -1,0 +1,9 @@
+// The builtin theory Nat refuses a value that is not a natural number. A send
+// of -1 to a space with `free Nat()` aborts the deploy with TheoryRefuted.
+new factory(`rho:space:HashMapBagSpace`) in {
+  for (space <- factory!?(free Nat())) {
+    use space {
+      @"numbers"!(-1)
+    }
+  }
+}

@@ -1,0 +1,9 @@
+// An Array space of size 2 has two names. A third `new` in the same space
+// aborts the deploy with OutOfNames, because the space is not cyclic.
+new factory(`rho:space:array:bag`) in {
+  for (array <- factory!?("default"; size=2)) {
+    use array {
+      new first, second, third in { Nil }
+    }
+  }
+}

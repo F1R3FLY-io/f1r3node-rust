@@ -1,0 +1,10 @@
+// Only a VectorDB collection answers a query. A receive with a query on a
+// stack aborts the deploy with QuerySpecUnsupported.
+new factory(`rho:space:hashmap:stack`) in {
+  for (stack <- factory!?("default")) {
+    use stack {
+      @"plates"!([1, 0]) |
+      for (@plate <- @"plates" ~ ([1, 0]; k=1)) { Nil }
+    }
+  }
+}

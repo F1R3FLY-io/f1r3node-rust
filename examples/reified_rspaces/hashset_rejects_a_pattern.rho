@@ -1,0 +1,9 @@
+// A HashSet space holds units, so a receive binds nothing. A receive with a
+// binder aborts the deploy with PatternNotEmpty.
+new factory(`rho:space:hashset:bag`) in {
+  for (space <- factory!?("seq")) {
+    use space {
+      for (@value <- @"seen") { Nil }
+    }
+  }
+}

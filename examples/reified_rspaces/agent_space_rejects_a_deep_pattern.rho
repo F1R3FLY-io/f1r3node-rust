@@ -1,0 +1,10 @@
+// The node puts the pattern of each bind of a receive on a user agent in the
+// id of the matcher of the bind, and a node decodes such an id only up to a
+// fixed depth. A pattern of 30 nested lists is too deep, so the receive
+// aborts the deploy with AgentPatternTooDeep before the agent gets a call. A
+// pattern of 29 nested lists is the deepest that the node accepts.
+new agent in {
+  use agent {
+    for (@[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[x]]]]]]]]]]]]]]]]]]]]]]]]]]]]]] <- @"jobs") { Nil }
+  }
+}

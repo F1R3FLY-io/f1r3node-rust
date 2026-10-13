@@ -1,0 +1,5 @@
+// The builtin theories are Nat, Int, String, Bool and Any. A factory call that
+// names another theory aborts the deploy with UnknownTheory.
+new factory(`rho:space:hashmap:bag`) in {
+  for (bag <- factory!?("default", free Bounded())) { Nil }
+}

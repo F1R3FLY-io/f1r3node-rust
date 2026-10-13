@@ -1,0 +1,21 @@
+// rho:lang:vector computes exactly with vectors of numbers. Its operations are
+// "add", "scale", "dot", "norm" and "distance". Each reply is [true, value],
+// or [false, code] for an error.
+//
+// The legacy branch had more operations, such as sigmoid, softmax and the
+// hyper-dimensional operations. They come with TensorLogic in phase P12
+// (decisions 52, 62 to 65 and 88).
+new vec(`rho:lang:vector`), out in {
+  for (@sum <- vec!?("add", [1, 2], [3, 4])) {
+    for (@scaled <- vec!?("scale", [1, 2], 3)) {
+      for (@dot <- vec!?("dot", [1, 2], [3, 4])) {
+        for (@norm <- vec!?("norm", [3, 4])) {
+          for (@distance <- vec!?("distance", [0, 0], [3, 4])) {
+            out!([sum, scaled, dot, norm, distance])
+          }
+        }
+      }
+    }
+  } |
+  for (@replies <- out) { @"rrs.example.vector.ops"!(replies) }
+}

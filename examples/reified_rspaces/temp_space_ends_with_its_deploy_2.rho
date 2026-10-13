@@ -1,0 +1,6 @@
+// The second deploy of the temp example. It takes the handle that the first
+// deploy published and calls it. The temp space ended with the first deploy,
+// so the call aborts the deploy with DanglingHandle.
+for (scratch <- @"rrs.example.temp.handle") {
+  for (@qualifier <- scratch!?("qualifier")) { Nil }
+}

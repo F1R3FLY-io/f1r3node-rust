@@ -1,0 +1,18 @@
+// A bag holds three records that match one receive. The space picks the
+// record by the canonical order of decision 41 (the hash of the source of
+// each record), not by the order of execution. So every node, and the replay
+// of the block, takes the same record.
+//
+// The sends wait for the reply of the handle method produce, so all three
+// records are stored before the receive runs.
+new factory(`rho:space:hashmap:bag`), out in {
+  for (bag <- factory!?("default")) {
+    bag!?("produce", "pool", ["red"]);
+    bag!?("produce", "pool", ["green"]);
+    bag!?("produce", "pool", ["blue"]);
+    use bag {
+      for (@picked <- @"pool") { out!(picked) }
+    }
+  } |
+  for (@picked <- out) { @"rrs.example.determinism"!(picked) }
+}

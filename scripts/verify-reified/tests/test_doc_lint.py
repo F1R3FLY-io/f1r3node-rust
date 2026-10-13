@@ -261,29 +261,105 @@ class ExactFindings(unittest.TestCase):
 
 
 class ManifestFileRows(unittest.TestCase):
-    """A manifest row may name an example file. The .rho file lives in scratch,
-    because the workspace source-normalization gate collects every .rho file."""
+    """A manifest row may name an example file. The .rho files live in scratch,
+    because the workspace source-normalization gate collects every .rho file.
+    Each example names the test that runs it, and that test names its files."""
+
+    @staticmethod
+    def make_case(case: Path) -> Path:
+        (case / "test-vectors").mkdir()
+        (case / "test-vectors" / "reified-syntax-corpus-v1.json").write_text('{"entries": []}', encoding="utf-8")
+        examples = case / "examples" / "reified_rspaces"
+        examples.mkdir(parents=True)
+        (examples / "send.rho").write_text("new w in {\n  w!(4)\n}\n", encoding="utf-8")
+        (case / "harness.rs").write_text('// runs "send.rho" and "first.rho" and "second.rho"\n', encoding="utf-8")
+        doc = case / "doc.md.txt"
+        doc.write_text("# Snippet\n\nThe block is an example file.\n\n```rholang\nnew w in { w!(4) }\n```\n",
+                       encoding="utf-8")
+        return examples
 
     def test_manifest_file_row_matches_and_a_missing_file_is_reported(self):
         with tempfile.TemporaryDirectory(dir=scratch_root()) as tmp:
             case = Path(tmp)
-            (case / "test-vectors").mkdir()
-            (case / "test-vectors" / "reified-syntax-corpus-v1.json").write_text('{"entries": []}', encoding="utf-8")
-            examples = case / "examples" / "reified_rspaces"
-            examples.mkdir(parents=True)
-            (examples / "send.rho").write_text("new w in {\n  w!(4)\n}\n", encoding="utf-8")
-            (examples / "MANIFEST.toml").write_text('[[example]]\nfile = "send.rho"\n', encoding="utf-8")
-            doc = case / "doc.md.txt"
-            doc.write_text("# Snippet\n\nThe block is an example file.\n\n```rholang\nnew w in { w!(4) }\n```\n",
-                           encoding="utf-8")
+            examples = self.make_case(case)
+            (examples / "MANIFEST.toml").write_text(
+                '[[example]]\nfile = "send.rho"\ntest = "harness.rs"\n', encoding="utf-8")
             _, violations, _, _ = lint_case(case)
             self.assertEqual([], rendered(violations))
             (examples / "MANIFEST.toml").write_text(
-                '[[example]]\nfile = "send.rho"\n\n[[example]]\nfile = "gone.rho"\n', encoding="utf-8")
+                '[[example]]\nfile = "send.rho"\ntest = "harness.rs"\n\n'
+                '[[example]]\nfile = "gone.rho"\ntest = "harness.rs"\n', encoding="utf-8")
             _, violations, _, _ = lint_case(case)
             self.assertEqual({"snippet-corpus"}, {v.rule for v in violations})
-            self.assertIn("lists gone.rho, which does not exist", violations[0].detail)
+            details = " | ".join(v.detail for v in violations)
+            self.assertIn("lists gone.rho, which does not exist", details)
 
+    def test_a_files_list_names_every_deploy_of_an_example(self):
+        with tempfile.TemporaryDirectory(dir=scratch_root()) as tmp:
+            case = Path(tmp)
+            examples = self.make_case(case)
+            (examples / "first.rho").write_text("new a in {\n  a!(1)\n}\n", encoding="utf-8")
+            (examples / "second.rho").write_text("new b in {\n  b!(2)\n}\n", encoding="utf-8")
+            (examples / "MANIFEST.toml").write_text(
+                '[[example]]\nfile = "send.rho"\ntest = "harness.rs"\n\n'
+                '[[example]]\nfiles = ["first.rho", "second.rho"]\ntest = "harness.rs"\n', encoding="utf-8")
+            (case / "doc.md.txt").write_text(
+                "# Snippet\n\nThe second deploy.\n\n```rholang\nnew b in { b!(2) }\n```\n", encoding="utf-8")
+            _, violations, _, _ = lint_case(case)
+            self.assertEqual([], rendered(violations))
+
+    def test_an_unlisted_rholang_file_is_reported(self):
+        with tempfile.TemporaryDirectory(dir=scratch_root()) as tmp:
+            case = Path(tmp)
+            examples = self.make_case(case)
+            (examples / "stray.rho").write_text("Nil\n", encoding="utf-8")
+            (examples / "MANIFEST.toml").write_text(
+                '[[example]]\nfile = "send.rho"\ntest = "harness.rs"\n', encoding="utf-8")
+            _, violations, _, _ = lint_case(case)
+            self.assertEqual({"snippet-corpus"}, {v.rule for v in violations})
+            self.assertIn("does not list stray.rho", " | ".join(v.detail for v in violations))
+
+    def test_a_test_that_does_not_name_its_file_is_reported(self):
+        with tempfile.TemporaryDirectory(dir=scratch_root()) as tmp:
+            case = Path(tmp)
+            examples = self.make_case(case)
+            (case / "harness.rs").write_text("// runs nothing\n", encoding="utf-8")
+            (examples / "MANIFEST.toml").write_text(
+                '[[example]]\nname = "send"\nfile = "send.rho"\ntest = "harness.rs"\n', encoding="utf-8")
+            _, violations, _, _ = lint_case(case)
+            self.assertEqual({"snippet-corpus"}, {v.rule for v in violations})
+            self.assertIn("the test harness.rs of send does not name send.rho",
+                          " | ".join(v.detail for v in violations))
+
+    def test_a_missing_test_and_a_repeated_file_are_reported(self):
+        with tempfile.TemporaryDirectory(dir=scratch_root()) as tmp:
+            case = Path(tmp)
+            examples = self.make_case(case)
+            (examples / "MANIFEST.toml").write_text(
+                '[[example]]\nname = "first"\nfile = "send.rho"\n\n'
+                '[[example]]\nname = "second"\nfile = "send.rho"\ntest = "gone.rs"\n', encoding="utf-8")
+            _, violations, _, _ = lint_case(case)
+            details = " | ".join(v.detail for v in violations)
+            self.assertEqual({"snippet-corpus"}, {v.rule for v in violations})
+            self.assertIn("first names no test", details)
+            self.assertIn("the test gone.rs of second does not exist", details)
+            self.assertIn("lists send.rho in 2 examples", details)
+
+    def test_a_test_that_does_not_hold_an_inline_source_is_reported(self):
+        with tempfile.TemporaryDirectory(dir=scratch_root()) as tmp:
+            case = Path(tmp)
+            examples = self.make_case(case)
+            (examples / "MANIFEST.toml").write_text(
+                '[[example]]\nname = "send"\nfile = "send.rho"\ntest = "harness.rs"\n\n'
+                '[[example]]\nname = "inline"\nsource = "new u in { u!(6) }"\ntest = "harness.rs"\n',
+                encoding="utf-8")
+            _, violations, _, _ = lint_case(case)
+            self.assertEqual({"snippet-corpus"}, {v.rule for v in violations})
+            self.assertIn("the test harness.rs of inline does not hold its source",
+                          " | ".join(v.detail for v in violations))
+            (case / "harness.rs").write_text('// runs "send.rho" and new u in {\n  u!(6)\n}\n', encoding="utf-8")
+            _, violations, _, _ = lint_case(case)
+            self.assertEqual([], rendered(violations))
 
 # ---------------------------------------------------------------------------
 # diagram-render: PlantUML through render.sh

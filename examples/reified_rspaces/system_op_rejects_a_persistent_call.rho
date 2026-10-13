@@ -1,0 +1,5 @@
+// A persistent send `!!` to a system process of Reified RSpaces, here
+// assertEqual, aborts the deploy with PersistentOpCall.
+new assertEqual(`rho:assert:assertEqual`), ret in {
+  assertEqual!!(*ret, 1, 1)
+}

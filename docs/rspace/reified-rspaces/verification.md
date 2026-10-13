@@ -7576,6 +7576,287 @@ The phase `P10` of the invariant map binds each headline to its property test.
 | The checkers of `checker-commands.txt` | 46 of 46 pass |
 | `rustfmt --check`, and `cargo clippy -p rspace_plus_plus --tests` with `-D warnings` | No difference and no warning |
 
+### 35.3 Step S2: the examples
+
+Step S2 adds the example programs of `examples/reified_rspaces/`, the harness that runs them, and the invalid rows of the syntax corpus (design v2, section 2.3).
+It also adds the manifest rule of `doc_lint.py`.
+The node command line cannot run these examples yet ([decision 86](decision-register.md#decision-86)), so step S3 adds that gate after the repair.
+
+#### 35.3.1 The harness
+
+An example is an ordered list of one or more files, and each file is one deploy.
+`examples/reified_rspaces/MANIFEST.toml` is the index of the examples.
+Each entry has a `name`, a `file` or a `files` list in deploy order, a `description` and a `test`.
+The harness `rholang/tests/reified_examples_execute.rs` holds the expected outcome of each example as Rust data ([decision 85](decision-register.md#decision-85), deviation D-B).
+
+The harness runs the deploys of each example in order on one native chain:
+
+1. Each deploy plays natively at the v6 limits ([decision 79](decision-register.md#decision-79)).
+2. Native replay certifies the play, and the harness checks that the replay reproduces the play.
+3. A value example then compares the values on each result channel with its expected values.
+4. An error example ends with one abort, and the harness checks only the error code of its last deploy (review item A4(c)).
+
+The harness compiles each expected value from a Rholang literal, so the comparison is between canonical pars.
+Each example prints one record line with its files, its expected and actual outcome, the phlo of each deploy and the post-state root.
+The harness records the costs and the roots, but it does not assert them.
+A pinned cost would fail at each legitimate change of the cost model ([decision 79](decision-register.md#decision-79)).
+Section 35.3.7 summarizes the record lines.
+
+Two controls guard the harness.
+`examples_cover_the_directory` checks that the examples name each `.rho` file of the directory exactly once.
+`examples_reject_a_changed_expectation` changes one expected value and checks that the comparison fails (leaf 9760).
+One macro makes the test functions and the list of the examples, so no example of the list can lack its test function.
+
+#### 35.3.2 The legacy examples
+
+The legacy branch had 18 examples.
+A legacy example that shows an abort is split into a valid example and one error example for each abort (review item A4(c)).
+Table 237 gives the disposition of each legacy example and the examples that replace it.
+
+*Table 237. The dispositions of the legacy examples.*
+
+| Legacy example | Disposition | Examples |
+|---|---|---|
+| `queue_fifo` | Ported | `queue-fifo` |
+| `stack_lifo` | Ported | `stack-lifo` |
+| `set_idempotent` | Ported | `set-idempotent` |
+| `priority_queue` | Ported, with the send param `priority` | `priority-queue` |
+| `cell_exactly_once` | Ported. Its second write is an error example. | `cell-exactly-once`, `cell-occupied` |
+| `array_indexed_space` | Ported, with the required param `size`. Its exhausted array is an error example. | `array-indexed-space`, `array-out-of-names` |
+| `vector_indexed_space` | Ported. Its header "PLANNED" is gone, because the family exists. | `vector-indexed-space` |
+| `pathmap_prefix_aggregation` | Ported: the FIPS example of the PathMap delivery | `pathmap-prefix-aggregation` |
+| `pathmap_hierarchical_spaces` | Ported | `pathmap-hierarchical-spaces` |
+| `space_qualifiers` | One example for each qualifier, the temp sweep as two deploys, and the seq error | `space-qualifier-default`, `space-qualifier-temp`, `space-qualifier-seq`, `temp-space-ends-with-its-deploy`, `space-qualifiers-seq-sent` |
+| `hashset_dedup_spaces` | Rewritten for units ([decision 73](decision-register.md#decision-73)) | `hashset-dedup-spaces` |
+| `theory_validated_space` | Ported to `free Nat()`. Its refused value is an error example. | `theory-validated-space`, `theory-refuses-a-value` |
+| `multi_space_isolation` | Ported. Its join across two spaces is an error example. | `multi-space-isolation`, `cross-space-join` |
+| `speculative_execution` | Ported to the current factory form | `speculative-execution` |
+| `vectordb_queries` | Ported to numeric vectors, `capacity`, `dimensions` and the query params `metric`, `threshold` and `k` | `vectordb-queries` |
+| `vectordb_multi_topic` | Rewritten with one query for each space, because a join in list mode fails with `ListModeInJoin` | `vectordb-multi-topic` |
+| `vector_ops` | The five operations of `rho:lang:vector` are ported. The other legacy operations arrive with TensorLogic at P12 ([decision 88](decision-register.md#decision-88)). | `vector-ops` |
+| `nondeterminism_demo` | Rewritten as the determinism demo: native replay gives the same values and the same root | `determinism-demo` |
+
+#### 35.3.3 The new valid examples
+
+Table 238 lists the valid examples that have no legacy source.
+Each one shows an item of the list of new examples in design v2, section 2.3.
+
+*Table 238. The new valid examples.*
+
+| Example | What the example shows |
+|---|---|
+| `fips-example` | The example code of the FIPS (lines 295 to 330) with concrete names: `new x : s` in a `use` block, a forged name, a join in each of two spaces, `getSpaceAgent` and `assertEqual` |
+| `get-space-agent` | `getSpaceAgent` gives the factory of a space, and the FIPS alias and the URN name one factory |
+| `space-annotations` | `new x : s` outside every `use` block, and a join of two names of one space |
+| `handle-methods` | The methods `gensym`, `produce`, `qualifier` and `config` with the method-call sugar of the Agents FIPS (review item A4(f)) |
+| `agent-wrapper-forwards-to-native` | A user agent that forwards `gensym`, `produce` and `consume` to the handle of a native space with the method-call sugar |
+| `bag-basics` | The valid example of the bag discipline |
+| `vectordb-list-scores` | A list query with `k`, `radius` and `scores` on records whose vector is the send param `embedding` |
+| `vectordb-mirror` | The ChromaDB mirror of `chromadb.md` in two deploys, with the fake service backends of the test support |
+| `agent-hashmap-bag` | The reference user agent of P8 |
+
+A native handle accepts only the matchers that the node builds for a receive.
+So a program can call `consume` on a native handle only through a user agent, and `agent-wrapper-forwards-to-native` shows that call.
+
+#### 35.3.4 The error examples
+
+Design v2 asks for a valid example and an error example for each discipline.
+It also asks for one error example for each abort of [agent-api Table 10](agent-api.md#10-aborts) that a source program can reach.
+Table 239 gives the examples of the disciplines and of the outer stores with their own rules.
+Table 240 gives the example of each code of the agent API, or the reason that a source program cannot reach the code.
+
+*Table 239. The valid and the error examples of each discipline and outer store.*
+
+| Discipline or outer store | Valid examples | Error examples | Error codes |
+|---|---|---|---|
+| Bag | `bag-basics` | `bag-rejects-a-query` | `QuerySpecUnsupported` |
+| Set | `set-idempotent` | `set-rejects-a-send-param` | `UnknownParam` |
+| Cell | `cell-exactly-once` | `cell-occupied` | `CellOccupied` |
+| Queue | `queue-fifo` | `queue-rejects-a-send-param` | `UnknownParam` |
+| Priority queue | `priority-queue` | `priority-queue-rejects-a-level` | `InvalidParam` |
+| Stack | `stack-lifo` | `stack-rejects-a-query` | `QuerySpecUnsupported` |
+| VectorDB | `vectordb-queries`, `vectordb-list-scores`, `vectordb-multi-topic`, `vectordb-mirror` | `vectordb-dimension-mismatch`, `vectordb-capacity-exceeded` | `DimensionMismatch`, `CapacityExceeded` |
+| Array | `array-indexed-space` | `array-out-of-names` | `OutOfNames` |
+| HashSet | `hashset-dedup-spaces` | `hashset-rejects-a-payload`, `hashset-rejects-a-pattern` | `PayloadNotEmpty`, `PatternNotEmpty` |
+
+*Table 240. The aborts of the agent API and their examples.*
+
+| Code | Example, or the reason that no example exists |
+|---|---|
+| `PersistentFactoryCall` | `factory-rejects-a-persistent-call` |
+| `PersistentOpCall` | `system-op-rejects-a-persistent-call` |
+| `PersistentHandleCall` | `handle-rejects-a-persistent-call` |
+| `PersistentCapabilityCall` | `agent-capability-rejects-a-persistent-call` |
+| `PersistentSendOnAgentSpace` | `agent-space-rejects-a-persistent-send` |
+| `ParamsUnsupportedOnAgentSpace` | `agent-space-rejects-params` |
+| `ParamsUnsupported` | `system-op-rejects-params` |
+| `Malformed` | `factory-rejects-a-forged-params-tuple` |
+| `PositionalParamsUnsupported` | `factory-rejects-a-positional-param` |
+| `FamilyUnavailable` | None. Each factory URN that a program can name runs a wired family, and a URN without a family has no binding. |
+| `BadConstructorArgument` | `factory-rejects-a-bad-argument` |
+| `QualifierUnavailable` | None. Only legacy execution reaches the code ([decision 73](decision-register.md#decision-73)), and the examples run natively ([decision 69](decision-register.md#decision-69)). |
+| `UnknownTheory` | `factory-rejects-an-unknown-theory` |
+| `UnknownParam` | `factory-rejects-an-unknown-param`, and on sends `queue-rejects-a-send-param` and `set-rejects-a-send-param` |
+| `TheoryUnavailable` | None. The factory accepts only the theories that this build checks, so only a hand-built config reaches the code. |
+| `TheoryRefuted` | `theory-refuses-a-value` |
+| `TheoryUndetermined` | None. The builtin theories always decide. Only a limit profile without budget reaches the code, and a program cannot set a limit profile. |
+| `NestedCommitGuard` | None. The builtin theories take no lease, so before P12 no transaction holds two leases. |
+| `SpaceAlreadyExists` | None. The id of a space comes from the random state of its call, so only a test with a repeated random state reaches the code. |
+| `DanglingHandle` | `temp-space-ends-with-its-deploy` |
+| `SeqSent` | `space-qualifiers-seq-sent` |
+| `SeqConcurrent` | `seq-rejects-concurrent-uses` |
+| `PayloadNotEmpty` | `hashset-rejects-a-payload` |
+| `PatternNotEmpty` | `hashset-rejects-a-pattern` |
+| `QuerySpecUnsupportedOnAgentSpace` | `agent-space-rejects-a-query` |
+| `AgentGuardSpansJoin` | `agent-space-rejects-a-spanning-guard` |
+| `AgentPatternTooDeep` | `agent-space-rejects-a-deep-pattern` |
+| `CrossSpaceJoin` | `cross-space-join` |
+| `Inconsistent` | None. Only a record that is not well formed reaches the code, and a program cannot write a record of a space. |
+| `CounterOverflow` | None. A counter reaches its greatest value only after about $`2^{63}`$ operations on one collection. |
+
+Design v2 named `Malformed` as an abort that only a hand-built term reaches.
+A program can take a marker out of its own quoted code, as [decision 18](decision-register.md#decision-18) states, and build a tuple that the normalizer never writes.
+So `factory-rejects-a-forged-params-tuple` reaches `Malformed` from source text, and the code has an example.
+Step S5 names, in `agent-api.md`, the test that reaches each code without an example.
+
+#### 35.3.5 The invalid rows of the syntax corpus
+
+The leaf `rrs-doc-syntax` asks for a failing invalid example of each syntax form (review item A5).
+`test-vectors/reified-syntax-invalid-v1.json` holds 19 invalid rows, and each row has a form, a source text and an expected error.
+The test `reified_syntax_invalid_rows_fail` compiles each row with the compiler of the node.
+The test checks that the compile fails and that the debug form of the error contains the expected error.
+It also checks that each of the six forms of the syntax contract has a row.
+The valid corpus `reified-syntax-corpus-v1.json` does not change.
+
+An expected error is the variant or the reason of a parser error, or the message of a normalizer error.
+The expected error `ParserError` marks a text that the grammar does not accept.
+The test prints the actual error of each row, and each such row fails at its Reified construct.
+The debug form of an error escapes the quotes of a message, so the corpus file stores the escaped form.
+
+*Table 241. The invalid rows of the syntax corpus.*
+
+| Form | Source | Expected error |
+|---|---|---|
+| use block | `use @"space" @"x"!(1)` | `ParserError` |
+| space annotation | `new x : in { Nil }` | `ParserError` |
+| space annotation | `` new s, x : s(`rho:io:stdout`) in { Nil } `` | `ParserError` |
+| theory reference | `new f in { f!(free 3()) }` | `ParserError` |
+| params | `@"x"!(1; a=1, a=2)` | `DuplicateParamKey` |
+| params | `@"x"!(1; a=1, 2)` | `PositionalAfterNamed` |
+| params | `@"x"!(1; 1 = 2)` | `NonIdentifierParamKey` |
+| params | `@"x"!(1; priority=-1)` | `the value of "priority" is not` |
+| query | `for (@y <- @"x" ~ ([1]; 2)) { Nil }` | `positional parameter in a receive query` |
+| query | `for (@y <- @"x" ~ (;)) { Nil }` | `empty receive query group` |
+| query | `for (@y <- @"x"!?(1) ~ 2) { Nil }` | `receive query on a non-simple source` |
+| query | `for (@y <= @"x" ~ 1) { Nil }` | `ParserError` |
+| query | `for (@y <- @"x" ~ ([1]; k=1, k=2)) { Nil }` | `DuplicateParamKey` |
+| query | `for (@y <- @"x" ~ ([1]; k=1, results="all")) { Nil }` | `` a query takes `k` or `results`, not both `` |
+| query | `for (@y <- @"x" ~ ([1]; k=0)) { Nil }` | `the value of "k" is not` |
+| query | `for (@y <- @"x" ~ ([1]; results="some")) { Nil }` | `the value of "results" is not` |
+| query | `for (@y <- @"x" ~ ([1]; threshold=2.0)) { Nil }` | `the value of "threshold" is not` |
+| query | `for (@y <- @"x" ~ ([1]; metric="cosine2")) { Nil }` | `the value of "metric" is not` |
+| bare float | `@"x"!(1.2.3)` | `ParserError` |
+
+#### 35.3.6 The manifest rule of doc_lint
+
+`doc_lint.py` reads `MANIFEST.toml` as a corpus file, and the rule `snippet-corpus` now also checks the manifest (design v2, section 2.1, item 3):
+
+- Each `.rho` file of the directory of the manifest belongs to exactly one example.
+- Each example names its test, and the test file exists.
+- The test file names each file of the example and holds the inline source of the example, if the example has one.
+- A file that an example names exists.
+
+Six tests of `test_doc_lint.py` check the rule, and one test makes each kind of finding.
+The fixtures of the rule `snippet-corpus` gain the test file `runner.txt`, because their manifests hold an inline source row.
+The invalid corpus joins the default corpora, so `syntax-contract.md` can show an invalid form in step S5.
+
+#### 35.3.7 The record lines
+
+Table 242 summarizes the record lines of the gate run.
+A deploy that aborts before its first RSpace operation records the phlo 0, because consensus phlo comes only from the observed RSpace operations (M-3).
+Two runs of the harness gave identical record lines.
+
+*Table 242. The record lines of the examples.*
+
+| Example | Deploys | Outcome | Phlo of each deploy | Root (first 12 hex digits) |
+|---|---|---|---|---|
+| `queue-fifo` | 1 | values | 55973 | `36cf8734055e` |
+| `queue-rejects-a-send-param` | 1 | `UnknownParam` | 6490 | `95845d914ed1` |
+| `stack-lifo` | 1 | values | 56073 | `ce1d752ef57b` |
+| `stack-rejects-a-query` | 1 | `QuerySpecUnsupported` | 10923 | `3d82b7c1026c` |
+| `set-idempotent` | 1 | values | 41184 | `51450f9b32ed` |
+| `set-rejects-a-send-param` | 1 | `UnknownParam` | 6488 | `ea17f836af73` |
+| `cell-exactly-once` | 1 | values | 50380 | `dde78243a596` |
+| `cell-occupied` | 1 | `CellOccupied` | 20352 | `e5ebffdfdfd4` |
+| `bag-basics` | 1 | values | 22272 | `5f5d41d2ab1a` |
+| `bag-rejects-a-query` | 1 | `QuerySpecUnsupported` | 6520 | `24b23237f1a5` |
+| `priority-queue` | 1 | values | 75038 | `6d9e89686ea3` |
+| `priority-queue-rejects-a-level` | 1 | `InvalidParam` | 6636 | `20afa3e03b2f` |
+| `pathmap-prefix-aggregation` | 1 | values | 96443 | `a59f8c7037f7` |
+| `pathmap-hierarchical-spaces` | 1 | values | 85848 | `938232e8f410` |
+| `array-indexed-space` | 1 | values | 20266 | `bedb83690842` |
+| `array-out-of-names` | 1 | `OutOfNames` | 7253 | `c1cd994af866` |
+| `vector-indexed-space` | 1 | values | 39865 | `7e0bde9e69ec` |
+| `hashset-dedup-spaces` | 1 | values | 72148 | `bb826515d349` |
+| `hashset-rejects-a-payload` | 1 | `PayloadNotEmpty` | 6422 | `0e5751c026e5` |
+| `hashset-rejects-a-pattern` | 1 | `PatternNotEmpty` | 6437 | `0e5751c026e5` |
+| `space-qualifier-default` | 2 | values | 8157, 13901 | `939d32f5271c` |
+| `space-qualifier-temp` | 1 | values | 19179 | `52500c3711ff` |
+| `space-qualifier-seq` | 1 | values | 31487 | `be7fde98a0d4` |
+| `space-qualifiers-seq-sent` | 1 | `SeqSent` | 12183 | `0e5751c026e5` |
+| `seq-rejects-concurrent-uses` | 1 | `SeqConcurrent` | 16733 | `0e5751c026e5` |
+| `theory-validated-space` | 1 | values | 16282 | `8272b0049e14` |
+| `theory-refuses-a-value` | 1 | `TheoryRefuted` | 6569 | `f6d08ccb5f87` |
+| `get-space-agent` | 1 | values | 23082 | `ee805c4ee060` |
+| `vectordb-queries` | 1 | values | 53922 | `8c5f33fd58a6` |
+| `vectordb-list-scores` | 1 | values | 28809 | `1a7ee5a1f46b` |
+| `vectordb-multi-topic` | 1 | values | 57179 | `7fe74ce4750c` |
+| `vectordb-dimension-mismatch` | 1 | `DimensionMismatch` | 6658 | `78349be8b26a` |
+| `vectordb-capacity-exceeded` | 1 | `CapacityExceeded` | 17184 | `47beaf2a294a` |
+| `vector-ops` | 1 | values | 26934 | `98aa875792cb` |
+| `determinism-demo` | 1 | values | 32708 | `0d32c0960894` |
+| `multi-space-isolation` | 1 | values | 26214 | `96662a815bc1` |
+| `cross-space-join` | 1 | `CrossSpaceJoin` | 15197 | `5ab1e549b675` |
+| `space-annotations` | 1 | values | 30085 | `1010ab8f8280` |
+| `handle-methods` | 1 | values | 39470 | `b485a296c590` |
+| `factory-rejects-a-bad-argument` | 1 | `BadConstructorArgument` | 2067 | `838ebe188bac` |
+| `factory-rejects-an-unknown-theory` | 1 | `UnknownTheory` | 2155 | `52827ba4791d` |
+| `factory-rejects-an-unknown-param` | 1 | `UnknownParam` | 2187 | `c820cc99fe10` |
+| `factory-rejects-a-positional-param` | 1 | `PositionalParamsUnsupported` | 711 | `dc1b0eb83b36` |
+| `factory-rejects-a-forged-params-tuple` | 1 | `Malformed` | 3015 | `0e5751c026e5` |
+| `factory-rejects-a-persistent-call` | 1 | `PersistentFactoryCall` | 0 | `0e5751c026e5` |
+| `system-op-rejects-a-persistent-call` | 1 | `PersistentOpCall` | 0 | `0e5751c026e5` |
+| `system-op-rejects-params` | 1 | `ParamsUnsupported` | 0 | `0e5751c026e5` |
+| `handle-rejects-a-persistent-call` | 1 | `PersistentHandleCall` | 6460 | `a5f406590106` |
+| `temp-space-ends-with-its-deploy` | 2 | `DanglingHandle` | 13759, 2791 | `d86c5e3ad195` |
+| `fips-example` | 1 | values | 69624 | `4939a683539d` |
+| `speculative-execution` | 1 | values | 68893 | `6b48020213c5` |
+| `vectordb-mirror` | 2 | values | 17277, 20091 | `b16a3499902f` |
+| `agent-hashmap-bag` | 1 | values | 68284 | `ce866f23a568` |
+| `agent-wrapper-forwards-to-native` | 1 | values | 48617 | `f0b64b3711b4` |
+| `agent-space-rejects-a-persistent-send` | 1 | `PersistentSendOnAgentSpace` | 0 | `0e5751c026e5` |
+| `agent-space-rejects-params` | 1 | `ParamsUnsupportedOnAgentSpace` | 0 | `0e5751c026e5` |
+| `agent-space-rejects-a-query` | 1 | `QuerySpecUnsupportedOnAgentSpace` | 0 | `0e5751c026e5` |
+| `agent-space-rejects-a-spanning-guard` | 1 | `AgentGuardSpansJoin` | 0 | `0e5751c026e5` |
+| `agent-space-rejects-a-deep-pattern` | 1 | `AgentPatternTooDeep` | 0 | `0e5751c026e5` |
+| `agent-capability-rejects-a-persistent-call` | 1 | `PersistentCapabilityCall` | 5109 | `1349d1ca39f4` |
+
+#### 35.3.8 The gates of S2
+
+S2 changes no production code.
+
+*Table 243. The gates of step S2.*
+
+| Gate | Result |
+|---|---|
+| `cargo test --release -p rholang --test reified_examples_execute` | 62 passed, 0 failed: the 60 examples and the two controls. Two runs gave identical record lines. |
+| `cargo test --release -p rholang --test reified_syntax_corpus` | 5 passed, 0 failed, with `reified_syntax_invalid_rows_fail` |
+| The tests of `doc_lint.py` | 88 passed, 0 failed |
+| The checkers of `checker-commands.txt` | 46 of 46 pass |
+| `doc_lint.py` | No finding |
+| `rustfmt --check`, and `cargo clippy` of the two test targets with `-D warnings` | No difference and no warning |
+| The footprint policy `p10` and the completeness phase `p10` | 0 violations in 5,182 files, and 0 findings in 5 checks |
+
 ## References
 
 <a id="ref-ch00"></a>[CH00] K. Claessen and J. Hughes, "QuickCheck: a lightweight tool for random testing of Haskell programs," in *Proceedings of the Fifth ACM SIGPLAN International Conference on Functional Programming (ICFP 2000)*, ACM, 2000, pp. 268–279. [doi:10.1145/351240.351266](https://doi.org/10.1145/351240.351266)

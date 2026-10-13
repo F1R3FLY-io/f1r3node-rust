@@ -1,11 +1,369 @@
 # The example programs of Reified RSpaces.
 #
+# Each example is one or more deploys. The harness rholang/tests/reified_examples_execute.rs
+# plays each deploy natively, certifies it by native replay, and checks the expected values or
+# the expected error code, which it holds as Rust data (P10 design v2, deviation D-B).
+#
 # doc_lint.py reads this manifest (rule snippet-corpus): every rholang block of the campaign
-# documents is the text of one example file or one source row. Each example names the test that
-# runs it.
+# documents is the text of one example file or one row of the syntax corpus. doc_lint also
+# checks that each .rho file of this directory is an example here, and that the test of each
+# example names its files.
+
+[[example]]
+name = "queue-fifo"
+file = "queue_fifo.rho"
+description = "A queue space gives back its records in arrival order (FIFO)."
+test = "rholang/tests/reified_examples_execute.rs"
+
+[[example]]
+name = "queue-rejects-a-send-param"
+file = "queue_rejects_a_send_param.rho"
+description = "A send param on a queue collection aborts with UnknownParam."
+test = "rholang/tests/reified_examples_execute.rs"
+
+[[example]]
+name = "stack-lifo"
+file = "stack_lifo.rho"
+description = "A stack space gives back its records in reverse arrival order (LIFO)."
+test = "rholang/tests/reified_examples_execute.rs"
+
+[[example]]
+name = "stack-rejects-a-query"
+file = "stack_rejects_a_query.rho"
+description = "A query on a stack aborts with QuerySpecUnsupported."
+test = "rholang/tests/reified_examples_execute.rs"
+
+[[example]]
+name = "set-idempotent"
+file = "set_idempotent.rho"
+description = "A set space holds each value once, and a receive retires the equal records."
+test = "rholang/tests/reified_examples_execute.rs"
+
+[[example]]
+name = "set-rejects-a-send-param"
+file = "set_rejects_a_send_param.rho"
+description = "A send param on a set collection aborts with UnknownParam."
+test = "rholang/tests/reified_examples_execute.rs"
+
+[[example]]
+name = "cell-exactly-once"
+file = "cell_exactly_once.rho"
+description = "A cell holds at most one record on each channel."
+test = "rholang/tests/reified_examples_execute.rs"
+
+[[example]]
+name = "cell-occupied"
+file = "cell_occupied.rho"
+description = "A second send to a full cell aborts with CellOccupied."
+test = "rholang/tests/reified_examples_execute.rs"
+
+[[example]]
+name = "bag-basics"
+file = "bag_basics.rho"
+description = "A bag space takes any matching record, as the default space does."
+test = "rholang/tests/reified_examples_execute.rs"
+
+[[example]]
+name = "bag-rejects-a-query"
+file = "bag_rejects_a_query.rho"
+description = "A query on a bag aborts with QuerySpecUnsupported."
+test = "rholang/tests/reified_examples_execute.rs"
+
+[[example]]
+name = "priority-queue"
+file = "priority_queue.rho"
+description = "A priority queue serves the highest level first, and a receive can take one level."
+test = "rholang/tests/reified_examples_execute.rs"
+
+[[example]]
+name = "priority-queue-rejects-a-level"
+file = "priority_queue_rejects_a_level.rho"
+description = "A level beyond the bound `priorities` aborts with InvalidParam."
+test = "rholang/tests/reified_examples_execute.rs"
+
+[[example]]
+name = "pathmap-prefix-aggregation"
+file = "pathmap_prefix_aggregation.rho"
+description = "The PathMap example of the FIPS: a receive on a prefix takes re-rooted records."
+test = "rholang/tests/reified_examples_execute.rs"
+
+[[example]]
+name = "pathmap-hierarchical-spaces"
+file = "pathmap_hierarchical_spaces.rho"
+description = "A PathMap space as a tree of channels."
+test = "rholang/tests/reified_examples_execute.rs"
+
+[[example]]
+name = "array-indexed-space"
+file = "array_indexed_space.rho"
+description = "An Array space hands out a fixed number of names."
+test = "rholang/tests/reified_examples_execute.rs"
+
+[[example]]
+name = "array-out-of-names"
+file = "array_out_of_names.rho"
+description = "A name beyond the size of an Array space aborts with OutOfNames."
+test = "rholang/tests/reified_examples_execute.rs"
+
+[[example]]
+name = "vector-indexed-space"
+file = "vector_indexed_space.rho"
+description = "A Vector space grows with each new name."
+test = "rholang/tests/reified_examples_execute.rs"
+
+[[example]]
+name = "hashset-dedup-spaces"
+file = "hashset_dedup_spaces.rho"
+description = "HashSet spaces hold units, with the set and the bag collections."
+test = "rholang/tests/reified_examples_execute.rs"
+
+[[example]]
+name = "hashset-rejects-a-payload"
+file = "hashset_rejects_a_payload.rho"
+description = "A send with data to a HashSet space aborts with PayloadNotEmpty."
+test = "rholang/tests/reified_examples_execute.rs"
+
+[[example]]
+name = "hashset-rejects-a-pattern"
+file = "hashset_rejects_a_pattern.rho"
+description = "A receive with a binder on a HashSet collection aborts with PatternNotEmpty."
+test = "rholang/tests/reified_examples_execute.rs"
+
+[[example]]
+name = "space-qualifier-default"
+files = ["space_qualifier_default_1.rho", "space_qualifier_default_2.rho"]
+description = "A default space persists, so a later deploy reads its records through its handle."
+test = "rholang/tests/reified_examples_execute.rs"
+
+[[example]]
+name = "space-qualifier-temp"
+file = "space_qualifier_temp.rho"
+description = "A temp space works like any other space within its deploy."
+test = "rholang/tests/reified_examples_execute.rs"
+
+[[example]]
+name = "space-qualifier-seq"
+file = "space_qualifier_seq.rho"
+description = "A seq space takes uses of a channel one after the other."
+test = "rholang/tests/reified_examples_execute.rs"
+[[example]]
+name = "space-qualifiers-seq-sent"
+file = "space_qualifiers_seq_sent.rho"
+description = "A name of a seq space sent as data aborts with SeqSent."
+test = "rholang/tests/reified_examples_execute.rs"
+
+[[example]]
+name = "seq-rejects-concurrent-uses"
+file = "seq_rejects_concurrent_uses.rho"
+description = "A send and a receive in parallel on one channel of a seq space abort with SeqConcurrent."
+test = "rholang/tests/reified_examples_execute.rs"
+
+[[example]]
+name = "theory-validated-space"
+file = "theory_validated_space.rho"
+description = "The builtin theory Nat admits natural numbers."
+test = "rholang/tests/reified_examples_execute.rs"
+
+[[example]]
+name = "theory-refuses-a-value"
+file = "theory_refuses_a_value.rho"
+description = "The theory Nat refuses -1 with TheoryRefuted."
+test = "rholang/tests/reified_examples_execute.rs"
+
+[[example]]
+name = "get-space-agent"
+file = "get_space_agent.rho"
+description = "getSpaceAgent gives the factory of a space, and assertEqual compares values."
+test = "rholang/tests/reified_examples_execute.rs"
+
+[[example]]
+name = "vectordb-queries"
+file = "vectordb_queries.rho"
+description = "A VectorDB query takes the most similar record."
+test = "rholang/tests/reified_examples_execute.rs"
+
+[[example]]
+name = "vectordb-list-scores"
+file = "vectordb_list_scores.rho"
+description = "A list query with k, a radius and scores."
+test = "rholang/tests/reified_examples_execute.rs"
+
+[[example]]
+name = "vectordb-multi-topic"
+file = "vectordb_multi_topic.rho"
+description = "Two topics in two VectorDB spaces."
+test = "rholang/tests/reified_examples_execute.rs"
+
+[[example]]
+name = "vectordb-dimension-mismatch"
+file = "vectordb_dimension_mismatch.rho"
+description = "A vector of the wrong length aborts with DimensionMismatch."
+test = "rholang/tests/reified_examples_execute.rs"
+
+[[example]]
+name = "vectordb-capacity-exceeded"
+file = "vectordb_capacity_exceeded.rho"
+description = "A store into a full VectorDB collection aborts with CapacityExceeded."
+test = "rholang/tests/reified_examples_execute.rs"
+
+[[example]]
+name = "vector-ops"
+file = "vector_ops.rho"
+description = "The five exact operations of rho:lang:vector."
+test = "rholang/tests/reified_examples_execute.rs"
+
+[[example]]
+name = "determinism-demo"
+file = "determinism_demo.rho"
+description = "The canonical order picks one record on every node and in replay."
+test = "rholang/tests/reified_examples_execute.rs"
+
+[[example]]
+name = "multi-space-isolation"
+file = "multi_space_isolation.rho"
+description = "Forged names in two spaces are two channels."
+test = "rholang/tests/reified_examples_execute.rs"
+
+[[example]]
+name = "cross-space-join"
+file = "cross_space_join.rho"
+description = "A join across two spaces aborts with CrossSpaceJoin."
+test = "rholang/tests/reified_examples_execute.rs"
+
+[[example]]
+name = "space-annotations"
+file = "space_annotations.rho"
+description = "new x : s creates a name in the space s."
+test = "rholang/tests/reified_examples_execute.rs"
+
+[[example]]
+name = "handle-methods"
+file = "handle_methods.rho"
+description = "The handle methods with the method-call sugar of the Agents FIPS."
+test = "rholang/tests/reified_examples_execute.rs"
+
+[[example]]
+name = "factory-rejects-a-bad-argument"
+file = "factory_rejects_a_bad_argument.rho"
+description = "A constructor argument that is not a qualifier, a theory or a params section aborts with BadConstructorArgument."
+test = "rholang/tests/reified_examples_execute.rs"
+
+[[example]]
+name = "factory-rejects-an-unknown-theory"
+file = "factory_rejects_an_unknown_theory.rho"
+description = "A theory that is not a builtin theory aborts the factory call with UnknownTheory."
+test = "rholang/tests/reified_examples_execute.rs"
+
+[[example]]
+name = "factory-rejects-an-unknown-param"
+file = "factory_rejects_an_unknown_param.rho"
+description = "A named param outside the schema of the family aborts the factory call with UnknownParam."
+test = "rholang/tests/reified_examples_execute.rs"
+
+[[example]]
+name = "factory-rejects-a-positional-param"
+file = "factory_rejects_a_positional_param.rho"
+description = "A positional param aborts the factory call with PositionalParamsUnsupported."
+test = "rholang/tests/reified_examples_execute.rs"
+
+[[example]]
+name = "factory-rejects-a-forged-params-tuple"
+file = "factory_rejects_a_forged_params_tuple.rho"
+description = "A params tuple that a program builds with a marker from its own quoted code, in a form that the normalizer never writes, aborts with Malformed."
+test = "rholang/tests/reified_examples_execute.rs"
+
+[[example]]
+name = "factory-rejects-a-persistent-call"
+file = "factory_rejects_a_persistent_call.rho"
+description = "A persistent send to a factory aborts with PersistentFactoryCall."
+test = "rholang/tests/reified_examples_execute.rs"
+
+[[example]]
+name = "system-op-rejects-a-persistent-call"
+file = "system_op_rejects_a_persistent_call.rho"
+description = "A persistent send to assertEqual aborts with PersistentOpCall."
+test = "rholang/tests/reified_examples_execute.rs"
+
+[[example]]
+name = "system-op-rejects-params"
+file = "system_op_rejects_params.rho"
+description = "A params section on a call of assertEqual aborts with ParamsUnsupported."
+test = "rholang/tests/reified_examples_execute.rs"
+
+[[example]]
+name = "handle-rejects-a-persistent-call"
+file = "handle_rejects_a_persistent_call.rho"
+description = "A persistent send to the handle of a space aborts with PersistentHandleCall."
+test = "rholang/tests/reified_examples_execute.rs"
+
+[[example]]
+name = "temp-space-ends-with-its-deploy"
+files = ["temp_space_ends_with_its_deploy_1.rho", "temp_space_ends_with_its_deploy_2.rho"]
+description = "A temp space ends with its deploy, so a later call aborts with DanglingHandle."
+test = "rholang/tests/reified_examples_execute.rs"
+
+[[example]]
+name = "fips-example"
+file = "fips_example.rho"
+description = "The example code of the Reifying RSpaces FIPS with concrete names."
+test = "rholang/tests/reified_examples_execute.rs"
+
+[[example]]
+name = "speculative-execution"
+file = "speculative_execution.rho"
+description = "A checkpoint record with commit and rollback in a cell space."
+test = "rholang/tests/reified_examples_execute.rs"
+
+[[example]]
+name = "vectordb-mirror"
+files = ["vectordb_mirror_1.rho", "vectordb_mirror_2.rho"]
+description = "The ChromaDB mirror of a VectorDB space: one deploy stores records, and a later deploy asks rho:vectordb:ann and lets the exact engine select."
+test = "rholang/tests/reified_examples_execute.rs"
 
 [[example]]
 name = "agent-hashmap-bag"
 file = "agent_hashmap_bag.rho"
 description = "The reference user agent: an agent of the Agents FIPS whose instances are spaces with HashMap channels and bag collections."
-test = "rholang/tests/reified_agent_conformance.rs"
+test = "rholang/tests/reified_examples_execute.rs"
+
+[[example]]
+name = "agent-wrapper-forwards-to-native"
+file = "agent_wrapper_forwards_to_native.rho"
+description = "A user agent that forwards gensym, produce and consume to the handle of a native space with the method-call sugar."
+test = "rholang/tests/reified_examples_execute.rs"
+
+[[example]]
+name = "agent-space-rejects-a-persistent-send"
+file = "agent_space_rejects_a_persistent_send.rho"
+description = "A persistent send in a use block of a user agent aborts with PersistentSendOnAgentSpace."
+test = "rholang/tests/reified_examples_execute.rs"
+
+[[example]]
+name = "agent-space-rejects-params"
+file = "agent_space_rejects_params.rho"
+description = "A send with a params section in a use block of a user agent aborts with ParamsUnsupportedOnAgentSpace."
+test = "rholang/tests/reified_examples_execute.rs"
+
+[[example]]
+name = "agent-space-rejects-a-query"
+file = "agent_space_rejects_a_query.rho"
+description = "A receive with a query in a use block of a user agent aborts with QuerySpecUnsupportedOnAgentSpace."
+test = "rholang/tests/reified_examples_execute.rs"
+
+[[example]]
+name = "agent-space-rejects-a-spanning-guard"
+file = "agent_space_rejects_a_spanning_guard.rho"
+description = "A guard over the binders of two binds of a receive on a user agent aborts with AgentGuardSpansJoin."
+test = "rholang/tests/reified_examples_execute.rs"
+
+[[example]]
+name = "agent-space-rejects-a-deep-pattern"
+file = "agent_space_rejects_a_deep_pattern.rho"
+description = "A pattern of 30 nested lists in a receive on a user agent aborts with AgentPatternTooDeep."
+test = "rholang/tests/reified_examples_execute.rs"
+
+[[example]]
+name = "agent-capability-rejects-a-persistent-call"
+file = "agent_capability_rejects_a_persistent_call.rho"
+description = "A persistent send on the body capability of a consume call aborts with PersistentCapabilityCall."
+test = "rholang/tests/reified_examples_execute.rs"

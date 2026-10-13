@@ -1,0 +1,8 @@
+// With each consume call, the node gives a user agent one matcher for each
+// bind of the receive and a body capability. A persistent send `!!` on the
+// body capability aborts the deploy with PersistentCapabilityCall. The same
+// rule applies to the matchers.
+new agent in {
+  for (_, @"consume", @pairs, @arrow, body <= agent) { body!!({}) } |
+  use agent { for (@task <- @"jobs") { Nil } }
+}

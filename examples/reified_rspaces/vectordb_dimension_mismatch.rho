@@ -1,0 +1,10 @@
+// Every vector of a VectorDB space has the dimensions of the space. A send of
+// a vector with three elements to a space of two dimensions aborts the deploy
+// with DimensionMismatch.
+new vdb(`rho:space:hashmap:vectordb`) in {
+  for (space <- vdb!?("default"; capacity=4, dimensions=2)) {
+    use space {
+      @"docs"!([1, 0, 0])
+    }
+  }
+}

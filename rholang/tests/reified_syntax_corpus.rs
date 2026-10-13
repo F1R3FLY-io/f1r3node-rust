@@ -1070,6 +1070,101 @@ fn reified_syntax_corpus_covers_every_construct() {
 }
 
 // ---------------------------------------------------------------------------
+// The invalid rows: each syntax form fails in the documented way
+// ---------------------------------------------------------------------------
+
+const INVALID_CORPUS_PATH: &str = "test-vectors/reified-syntax-invalid-v1.json";
+const INVALID_CORPUS_NAME: &str = "reified-syntax-invalid-v1";
+
+/// The syntax forms of the section "Grammar forms" of `syntax-contract.md`. Each form has at
+/// least one invalid row (P10 design v2, section 2.3, review item A5).
+const SYNTAX_FORMS: [&str; 6] = [
+    "use block",
+    "space annotation",
+    "theory reference",
+    "params",
+    "query",
+    "bare float",
+];
+
+/// One invalid row: the syntax form, the source text, and a text that the debug form of the
+/// compile error contains.
+struct InvalidEntry {
+    form: String,
+    source: String,
+    expected_error: String,
+}
+
+fn read_invalid_corpus(root: &Path) -> Vec<InvalidEntry> {
+    let text = fs::read_to_string(root.join(INVALID_CORPUS_PATH))
+        .unwrap_or_else(|error| panic!("read {INVALID_CORPUS_PATH}: {error}"));
+    let corpus: Value = serde_json::from_str(&text).expect("parse the invalid syntax corpus");
+    assert_eq!(
+        corpus.get("name").and_then(Value::as_str),
+        Some(INVALID_CORPUS_NAME)
+    );
+    corpus
+        .get("entries")
+        .and_then(Value::as_array)
+        .expect("the invalid corpus has an entries array")
+        .iter()
+        .map(|entry| {
+            let field = |key: &str| {
+                entry
+                    .get(key)
+                    .and_then(Value::as_str)
+                    .unwrap_or_else(|| panic!("an invalid entry has no string {key}: {entry}"))
+                    .to_owned()
+            };
+            match entry.as_object().map(Map::len) {
+                Some(3) => {}
+                other => {
+                    panic!("an invalid entry has exactly three fields, found {other:?}: {entry}")
+                }
+            }
+            InvalidEntry {
+                form: field("form"),
+                source: field("source"),
+                expected_error: field("expected_error"),
+            }
+        })
+        .collect()
+}
+
+/// Each invalid row fails to compile with its documented error: the variant or the reason of
+/// a parser error, the message of a normalizer error, or `ParserError` for a text that the
+/// grammar does not accept. Every syntax form of the contract has a row.
+#[test]
+fn reified_syntax_invalid_rows_fail() {
+    let entries = read_invalid_corpus(&workspace_root());
+    let mut failures = Vec::new();
+    for entry in &entries {
+        match Compiler::source_to_adt(&entry.source) {
+            Ok(_) => failures.push(format!("{}: compiled", entry.source)),
+            Err(error) => {
+                let shown = format!("{error:?}");
+                println!("invalid row {}: {}: {shown}", entry.form, entry.source);
+                if !shown.contains(&entry.expected_error) {
+                    failures.push(format!(
+                        "{}: expected {}, actual {shown}",
+                        entry.source, entry.expected_error
+                    ));
+                }
+            }
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "{} of {} invalid rows failed otherwise:\n{}",
+        failures.len(),
+        entries.len(),
+        failures.join("\n")
+    );
+    let forms: BTreeSet<&str> = entries.iter().map(|entry| entry.form.as_str()).collect();
+    assert_eq!(forms, SYNTAX_FORMS.into_iter().collect::<BTreeSet<_>>());
+}
+
+// ---------------------------------------------------------------------------
 // Ordinary programs have no marker
 // ---------------------------------------------------------------------------
 

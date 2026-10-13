@@ -1,0 +1,18 @@
+// A `temp` space lives for one deploy: its records never enter the history,
+// and the sweep at the end of the deploy removes them. Within its deploy a
+// temp space works like any other space. The deploy stores a token in a temp
+// space, takes it back with a receive in the space, and reports the qualifier.
+// The example temp_space_ends_with_its_deploy shows the end of a temp space.
+new factory(`rho:space:hashmap:bag`), out in {
+  for (space <- factory!?("temp")) {
+    for (@qualifier <- space!qualifier()) {
+      use space {
+        new token in {
+          token!("session-token") |
+          for (@value <- token) { out!([qualifier, value]) }
+        }
+      }
+    }
+  } |
+  for (@answer <- out) { @"rrs.example.qualifier.temp"!(answer) }
+}

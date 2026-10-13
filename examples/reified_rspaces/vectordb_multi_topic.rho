@@ -1,0 +1,20 @@
+// Two topics, each in its own VectorDB space. Each receive queries one space,
+// so the topics never mix.
+//
+// The deploy stores two vectors in each space and queries each space with one
+// vector. Each answer comes from its own space.
+new vdb(`rho:space:hashmap:vectordb`), out in {
+  for (sports <- vdb!?("default"; capacity=4, dimensions=2)) {
+    for (music <- vdb!?("default"; capacity=4, dimensions=2)) {
+      sports!?("produce", "items", ["football"]; embedding=[1, 0]);
+      sports!?("produce", "items", ["chess"]; embedding=[0, 1]);
+      music!?("produce", "items", ["drums"]; embedding=[1, 0]);
+      music!?("produce", "items", ["violin"]; embedding=[0, 1]);
+      {
+        use sports { for (@a <- @"items" ~ ([1, 0])) { out!(["sports", a]) } } |
+        use music { for (@b <- @"items" ~ ([0, 1])) { out!(["music", b]) } }
+      }
+    }
+  } |
+  for (@answer <= out) { @"rrs.example.vectordb.topics"!(answer) }
+}

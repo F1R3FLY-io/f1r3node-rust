@@ -1,0 +1,29 @@
+// A VectorDB space stores records that carry a vector, and a receive with a
+// query vector takes the most similar record. A query can name its own metric
+// and threshold, and a query with `k` binds a list of the first k records, the
+// most similar first. Every decision compares exact numbers, so every node
+// selects the same records.
+//
+// The deploy stores three persistent records, so every query sees all of them.
+// Then four queries run:
+//   - with the defaults of the space: the metric cosine and no threshold;
+//   - with the metric dot, which prefers the longest vector in the direction
+//     of the query;
+//   - with the threshold 0.9, which keeps only the records whose cosine with
+//     the query is at least 0.9;
+//   - with the metric, a threshold and k=2, which binds the list of the two
+//     best records.
+new vdb(`rho:space:hashmap:vectordb`), out in {
+  for (space <- vdb!?("default"; capacity=8, dimensions=2)) {
+    space!?("produce", "docs", [[1, 0]]; persistent=true);
+    space!?("produce", "docs", [[3, 4]]; persistent=true);
+    space!?("produce", "docs", [[0, 1]]; persistent=true);
+    use space {
+      for (@v <- @"docs" ~ ([1, 0])) { out!(["defaults", v]) } |
+      for (@v <- @"docs" ~ ([1, 1]; metric="dot")) { out!(["dot", v]) } |
+      for (@v <- @"docs" ~ ([0, 1]; threshold=0.9)) { out!(["threshold", v]) } |
+      for (@v <- @"docs" ~ ([1, 0]; metric="cosine", threshold=0.5, k=2)) { out!(["top two", v]) }
+    }
+  } |
+  for (@answer <= out) { @"rrs.example.vectordb"!(answer) }
+}

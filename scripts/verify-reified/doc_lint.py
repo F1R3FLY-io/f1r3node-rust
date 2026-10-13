@@ -145,6 +145,7 @@ DEFAULT_DOC_ROOT = Path("docs/rspace/reified-rspaces")
 DEFAULT_CHAPTER_GLOB = ("docs/rholang", "21-*.md")
 DEFAULT_CORPORA = (
     Path("test-vectors/reified-syntax-corpus-v1.json"),
+    Path("test-vectors/reified-syntax-invalid-v1.json"),
     Path("examples/reified_rspaces/MANIFEST.toml"),
 )
 DEFAULT_THEORIES = Path("formal/rocq/reified_rspaces/theories")
@@ -1027,7 +1028,67 @@ def normalize_ws(text: str) -> str:
     return " ".join(text.split())
 
 
-def corpus_rows(path: Path) -> tuple[set[str], list[str]]:
+def source_files(item: dict) -> list[str]:
+    """The Rholang files that one manifest entry names: its `file`, its `path`, and the
+    strings of its `files` list."""
+    names: list[str] = []
+    for key in ("file", "path"):
+        if isinstance(item.get(key), str) and item[key].endswith((".rho", ".rhox")):
+            names.append(item[key])
+    files = item.get("files")
+    if isinstance(files, list):
+        names.extend(f for f in files if isinstance(f, str) and f.endswith((".rho", ".rhox")))
+    return names
+
+
+def manifest_coverage(path: Path, data: dict, repo_root: Path) -> list[str]:
+    """The coverage problems of an examples manifest: a table of `example` entries.
+
+    Every Rholang file of the directory of the manifest is named by one example. The test file
+    of each example exists, names each file of the example, and holds its inline source, so
+    every row of the manifest runs in a test. The test path is relative to the repository
+    root."""
+    examples = data.get("example") if isinstance(data, dict) else None
+    if not isinstance(examples, list):
+        return []
+    problems: list[str] = []
+    named: dict[str, int] = {}
+    for index, entry in enumerate(examples, start=1):
+        if not isinstance(entry, dict):
+            continue
+        label = entry.get("name") if isinstance(entry.get("name"), str) else f"example {index}"
+        files = source_files(entry)
+        for name in files:
+            named[name] = named.get(name, 0) + 1
+        test = entry.get("test")
+        if not isinstance(test, str):
+            problems.append(f"manifest {path.name}: {label} names no test")
+            continue
+        try:
+            test_text = (repo_root / test).read_text(encoding="utf-8")
+        except OSError:
+            problems.append(f"manifest {path.name}: the test {test} of {label} does not exist")
+            continue
+        for name in files:
+            if name not in test_text:
+                problems.append(f"manifest {path.name}: the test {test} of {label} does not name {name}")
+        source = entry.get("source")
+        if isinstance(source, str) and normalize_ws(source) not in normalize_ws(test_text):
+            problems.append(f"manifest {path.name}: the test {test} of {label} does not hold its source")
+    for name, count in sorted(named.items()):
+        if count > 1:
+            problems.append(f"manifest {path.name} lists {name} in {count} examples")
+    try:
+        on_disk = sorted(p.name for p in path.parent.iterdir() if p.suffix in (".rho", ".rhox"))
+    except OSError:
+        on_disk = []
+    for name in on_disk:
+        if name not in named:
+            problems.append(f"manifest {path.name} does not list {name}")
+    return problems
+
+
+def corpus_rows(path: Path, repo_root: Path) -> tuple[set[str], list[str]]:
     """Return the normalized rows of one corpus file and the problems found."""
     problems: list[str] = []
     rows: set[str] = set()
@@ -1058,16 +1119,16 @@ def corpus_rows(path: Path) -> tuple[set[str], list[str]]:
             if isinstance(item, dict):
                 if isinstance(item.get("source"), str):
                     rows.add(normalize_ws(item["source"]))
-                for key in ("file", "path"):
-                    if isinstance(item.get(key), str) and item[key].endswith((".rho", ".rhox")):
-                        target = (path.parent / item[key]).resolve()
-                        try:
-                            rows.add(normalize_ws(target.read_text(encoding="utf-8")))
-                        except OSError:
-                            problems.append(f"manifest {path.name} lists {item[key]}, which does not exist")
+                for name in source_files(item):
+                    target = (path.parent / name).resolve()
+                    try:
+                        rows.add(normalize_ws(target.read_text(encoding="utf-8")))
+                    except OSError:
+                        problems.append(f"manifest {path.name} lists {name}, which does not exist")
                 stack.extend(item.values())
             elif isinstance(item, list):
                 stack.extend(item)
+        problems.extend(manifest_coverage(path, data, repo_root))
     else:
         problems.append(f"corpus file {path} has an unsupported format (expected .json or .toml)")
     return rows, problems
@@ -1173,7 +1234,7 @@ class LintContext:
                     if self.cfg.explicit_corpora:
                         missing.append(corpus_path)
                     continue
-                r, p = corpus_rows(corpus_path)
+                r, p = corpus_rows(corpus_path, self.cfg.repo_root)
                 rows |= r
                 problems.extend(p)
             self._corpus = (rows, problems, missing)

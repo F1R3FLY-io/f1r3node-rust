@@ -1,0 +1,23 @@
+// The PathMap example of the Reifying RSpaces FIPS. In a PathMap space a send
+// on a path is also a send on each prefix of the path. A receive on the
+// prefix [0, 1] takes a record of a longer path and gets it re-rooted under
+// the suffix of the path:
+//
+//   @[0, 1, 2]!({|"hi"|})   binds {|[2, "hi"]|}
+//   @[0, 1, 2]!(42)         binds [2, 42]
+//
+// The deploy sends three path maps and the number 42, and four receives on
+// the prefix [0, 1] take them.
+new factory(`rho:space:PathMapSpace`), out in {
+  for (space <- factory!?("default")) {
+    use space {
+      @[0, 1, 2]!({|"hi"|}) | @[0, 1, 2]!({|"hello"|}) | @[0, 1, 3]!({|"there"|}) |
+      @[0, 1, 2]!(42) |
+      for (@a <- @[0, 1]) { out!(a) } |
+      for (@b <- @[0, 1]) { out!(b) } |
+      for (@c <- @[0, 1]) { out!(c) } |
+      for (@d <- @[0, 1]) { out!(d) }
+    }
+  } |
+  for (@value <= out) { @"rrs.example.pathmap"!(value) }
+}

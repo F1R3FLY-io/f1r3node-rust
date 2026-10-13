@@ -1,0 +1,25 @@
+// A space is an agent of the Agents FIPS. Its handle answers the methods
+// gensym, produce, consume, qualifier and config. The method-call sugar
+// `space!m(args)` sends the call with a reply channel.
+//
+// The deploy asks for a fresh name, stores a value on it with produce, reads
+// the qualifier and the config, and takes the value with a receive in the
+// space. The config is a map, and the deploy reads its outer store and its
+// inner collection. The example agent_wrapper_forwards_to_native shows
+// consume, which takes the matchers that the node builds for a receive.
+new factory(`rho:space:hashmap:bag`), out in {
+  for (space <- factory!?("default")) {
+    for (name <- space!gensym()) {
+      for (_ <- space!produce(*name, ["stored by produce"])) {
+        for (@qualifier <- space!qualifier()) {
+          for (@config <- space!config()) {
+            for (@value <- name) {
+              out!([qualifier, config.get("outer"), config.get("inner"), value])
+            }
+          }
+        }
+      }
+    }
+  } |
+  for (@answer <- out) { @"rrs.example.handle"!(answer) }
+}

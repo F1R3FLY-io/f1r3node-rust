@@ -1,0 +1,18 @@
+// A `seq` space lives for one deploy, like a temp space, and it adds two
+// rules: each use of a channel must follow the previous use of that channel,
+// and a name of the space never travels as data. The deploy stores a value on
+// a name of a seq space with the produce method, and after the reply it takes
+// the value with a receive, so the second use follows the first. The examples
+// space_qualifiers_seq_sent and seq_rejects_concurrent_uses show the two rules.
+new factory(`rho:space:hashmap:bag`), out in {
+  for (space <- factory!?("seq")) {
+    for (@qualifier <- space!qualifier()) {
+      for (name <- space!gensym()) {
+        for (_ <- space!produce(*name, ["local data"])) {
+          for (@value <- name) { out!([qualifier, value]) }
+        }
+      }
+    }
+  } |
+  for (@answer <- out) { @"rrs.example.qualifier.seq"!(answer) }
+}

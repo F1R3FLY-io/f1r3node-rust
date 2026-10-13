@@ -1,0 +1,6 @@
+// The node gives each bind of a receive on a user agent its own matcher, and
+// a guard belongs to one matcher. A guard that reads the binders of two binds
+// aborts the deploy with AgentGuardSpansJoin before the agent gets a call.
+new agent in {
+  use agent { for (@x <- @"left" & @y <- @"right" where x == y) { Nil } }
+}

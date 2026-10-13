@@ -1,0 +1,36 @@
+// A HashSet space holds units: a send carries no data, and a receive binds
+// nothing. HashSet spaces take only the `seq` qualifier. With the set
+// collection a channel holds one unit, and with the bag collection it counts
+// its units.
+//
+// The deploy sends two units to "seen" in a set space and in a bag space. In
+// each space a receive takes one unit, reports it, and then waits for a second
+// unit. The bag holds the second unit, and the set does not. In a seq space
+// each later use of a channel must follow the earlier use, so the second
+// receive stands in the body of the first.
+new setFactory(`rho:space:hashset:set`), bagFactory(`rho:space:hashset:bag`), out in {
+  for (set <- setFactory!?("seq")) {
+    for (bag <- bagFactory!?("seq")) {
+      set!?("produce", "seen", []);
+      set!?("produce", "seen", []);
+      bag!?("produce", "seen", []);
+      bag!?("produce", "seen", []);
+      {
+        use set {
+          for ( <- @"seen") {
+            out!("set took a unit") |
+            for ( <- @"seen") { out!("set took a second unit") }
+          }
+        } |
+        use bag {
+          for ( <- @"seen") {
+            out!("bag took a unit") |
+            for ( <- @"seen") { out!("bag took a second unit") }
+          }
+        } |
+        for (@qualifier <- set!?("qualifier")) { out!(["set", qualifier]) }
+      }
+    }
+  } |
+  for (@value <= out) { @"rrs.example.hashset"!(value) }
+}

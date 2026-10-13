@@ -1,0 +1,14 @@
+// The second deploy of the default example. It takes the handle that the
+// first deploy published, asks the space for its qualifier, and takes the map
+// that the first deploy stored. The example temp_space_ends_with_its_deploy
+// shows the same steps on a temp space, which ends with its deploy.
+new out in {
+  for (space <- @"rrs.example.default.handle") {
+    for (@qualifier <- space!qualifier()) {
+      use space {
+        for (@settings <- @"settings") { out!([qualifier, settings]) }
+      }
+    }
+  } |
+  for (@answer <- out) { @"rrs.example.qualifier.default"!(answer) }
+}

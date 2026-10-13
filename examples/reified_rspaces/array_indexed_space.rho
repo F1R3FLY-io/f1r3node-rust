@@ -1,0 +1,17 @@
+// An Array space has a fixed number of names. Each `new` inside a use block
+// of the space takes the next free index, and the names route to the space
+// by their index.
+//
+// The space has size 2. The deploy creates two names, stores a value on each,
+// and takes both values.
+new factory(`rho:space:array:bag`), out in {
+  for (array <- factory!?("default"; size=2)) {
+    use array {
+      new first, second in {
+        first!("x") | second!("y") |
+        for (@a <- first & @b <- second) { out!([a, b]) }
+      }
+    }
+  } |
+  for (@pair <- out) { @"rrs.example.array"!(pair) }
+}

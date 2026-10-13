@@ -1,0 +1,27 @@
+// A user agent can serve a space by forwarding each call to the handle of a
+// native space. In a use block of the agent, the node translates `new`, each
+// send and each receive into the calls gensym, produce and consume of the
+// agent. This agent forwards each call to a native bag space with the
+// method-call sugar. The native handle accepts the matchers that the node
+// built for the receive, runs the receive in its own space, and sends the
+// bound values to the body capability of the receive.
+new factory(`rho:space:hashmap:bag`), wrapper, out in {
+  for (space <- factory!?("default")) {
+    for (ret, @"gensym" <= wrapper) {
+      for (name <- space!gensym()) { ret!(*name) }
+    } |
+    for (_, @"produce", @raw, @msg <= wrapper) {
+      space!produce(raw, msg).
+    } |
+    for (_, @"consume", @pairs, @arrow, body <= wrapper) {
+      space!consume(pairs, arrow, *body).
+    } |
+    use wrapper {
+      new job in {
+        job!("work") |
+        for (@task <- job) { out!(task) }
+      }
+    }
+  } |
+  for (@task <- out) { @"rrs.example.wrapper"!(task) }
+}

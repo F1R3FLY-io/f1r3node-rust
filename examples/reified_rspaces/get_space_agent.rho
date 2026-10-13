@@ -1,0 +1,14 @@
+// getSpaceAgent gives the factory capability of a native space, and
+// assertEqual compares two values by their sorted pars. The FIPS alias
+// rho:space:HashMapBagSpace and the URN rho:space:hashmap:bag name one factory.
+new HMB(`rho:space:HashMapBagSpace`), bag(`rho:space:hashmap:bag`),
+    getSpaceAgent(`rho:space:getSpaceAgent`), assertEqual(`rho:assert:assertEqual`), out in {
+  for (space <- HMB!?("default")) {
+    for (@capability <- getSpaceAgent!?(*space)) {
+      for (@same <- assertEqual!?(capability, *HMB)) {
+        for (@alias <- assertEqual!?(*HMB, *bag)) { out!([same, alias]) }
+      }
+    }
+  } |
+  for (@answers <- out) { @"rrs.example.agent"!(answers) }
+}

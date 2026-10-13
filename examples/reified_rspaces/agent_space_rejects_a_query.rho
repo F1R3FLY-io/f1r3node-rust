@@ -1,0 +1,6 @@
+// A receive on a space of a user agent takes no query. A receive with a query
+// section aborts the deploy with QuerySpecUnsupportedOnAgentSpace before the
+// agent gets a call.
+new agent in {
+  use agent { for (@x <- @"jobs" ~ 5) { Nil } }
+}

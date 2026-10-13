@@ -1,0 +1,9 @@
+// A name of a `seq` space must never travel as data. A send that carries such
+// a name aborts the deploy with SeqSent, before anything is stored.
+new factory(`rho:space:hashmap:bag`) in {
+  for (space <- factory!?("seq")) {
+    for (name <- space!?("gensym")) {
+      @"leak"!(*name)
+    }
+  }
+}

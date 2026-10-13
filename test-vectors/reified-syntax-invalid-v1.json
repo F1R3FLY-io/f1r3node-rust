@@ -1,0 +1,101 @@
+{
+  "name": "reified-syntax-invalid-v1",
+  "rule": "Each row fails to compile, and the debug form of its error contains expected_error: the variant or the reason of a parser error, the message of a normalizer error, or ParserError for a text that the grammar does not accept (syntax-contract.md, section Errors). Every syntax form of the contract has at least one row.",
+  "entries": [
+    {
+      "form": "use block",
+      "source": "use @\"space\" @\"x\"!(1)",
+      "expected_error": "ParserError"
+    },
+    {
+      "form": "space annotation",
+      "source": "new x : in { Nil }",
+      "expected_error": "ParserError"
+    },
+    {
+      "form": "space annotation",
+      "source": "new s, x : s(`rho:io:stdout`) in { Nil }",
+      "expected_error": "ParserError"
+    },
+    {
+      "form": "theory reference",
+      "source": "new f in { f!(free 3()) }",
+      "expected_error": "ParserError"
+    },
+    {
+      "form": "params",
+      "source": "@\"x\"!(1; a=1, a=2)",
+      "expected_error": "DuplicateParamKey"
+    },
+    {
+      "form": "params",
+      "source": "@\"x\"!(1; a=1, 2)",
+      "expected_error": "PositionalAfterNamed"
+    },
+    {
+      "form": "params",
+      "source": "@\"x\"!(1; 1 = 2)",
+      "expected_error": "NonIdentifierParamKey"
+    },
+    {
+      "form": "params",
+      "source": "@\"x\"!(1; priority=-1)",
+      "expected_error": "the value of \\\"priority\\\" is not"
+    },
+    {
+      "form": "query",
+      "source": "for (@y <- @\"x\" ~ ([1]; 2)) { Nil }",
+      "expected_error": "positional parameter in a receive query"
+    },
+    {
+      "form": "query",
+      "source": "for (@y <- @\"x\" ~ (;)) { Nil }",
+      "expected_error": "empty receive query group"
+    },
+    {
+      "form": "query",
+      "source": "for (@y <- @\"x\"!?(1) ~ 2) { Nil }",
+      "expected_error": "receive query on a non-simple source"
+    },
+    {
+      "form": "query",
+      "source": "for (@y <= @\"x\" ~ 1) { Nil }",
+      "expected_error": "ParserError"
+    },
+    {
+      "form": "query",
+      "source": "for (@y <- @\"x\" ~ ([1]; k=1, k=2)) { Nil }",
+      "expected_error": "DuplicateParamKey"
+    },
+    {
+      "form": "query",
+      "source": "for (@y <- @\"x\" ~ ([1]; k=1, results=\"all\")) { Nil }",
+      "expected_error": "a query takes `k` or `results`, not both"
+    },
+    {
+      "form": "query",
+      "source": "for (@y <- @\"x\" ~ ([1]; k=0)) { Nil }",
+      "expected_error": "the value of \\\"k\\\" is not"
+    },
+    {
+      "form": "query",
+      "source": "for (@y <- @\"x\" ~ ([1]; results=\"some\")) { Nil }",
+      "expected_error": "the value of \\\"results\\\" is not"
+    },
+    {
+      "form": "query",
+      "source": "for (@y <- @\"x\" ~ ([1]; threshold=2.0)) { Nil }",
+      "expected_error": "the value of \\\"threshold\\\" is not"
+    },
+    {
+      "form": "query",
+      "source": "for (@y <- @\"x\" ~ ([1]; metric=\"cosine2\")) { Nil }",
+      "expected_error": "the value of \\\"metric\\\" is not"
+    },
+    {
+      "form": "bare float",
+      "source": "@\"x\"!(1.2.3)",
+      "expected_error": "ParserError"
+    }
+  ]
+}

@@ -1,0 +1,6 @@
+// The params of a factory follow the schema of its family. A queue has no
+// params, so a named param aborts the deploy with UnknownParam. The message of
+// the error names the param.
+new factory(`rho:space:hashmap:queue`) in {
+  for (queue <- factory!?("default"; capacity=4)) { Nil }
+}

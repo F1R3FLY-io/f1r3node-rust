@@ -1,0 +1,17 @@
+// A cell space holds at most one record on each channel. A receive empties
+// the cell, and then the cell takes a new record.
+//
+// The deploy stores 1, takes it, stores 2 and takes it.
+new factory(`rho:space:hashmap:cell`), out in {
+  for (cell <- factory!?("default")) {
+    cell!?("produce", "counter", [1]);
+    use cell {
+      for (@first <- @"counter") {
+        out!(first) |
+        cell!?("produce", "counter", [first + 1]);
+        for (@second <- @"counter") { out!(second) }
+      }
+    }
+  } |
+  for (@value <= out) { @"rrs.example.cell"!(value) }
+}

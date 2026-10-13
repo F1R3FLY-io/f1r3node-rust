@@ -1,0 +1,27 @@
+// A priority queue keeps one queue for each level. Level 0 is the highest,
+// and a send without a priority goes to the lowest level.
+//
+// The deploy sends "low" with no priority, "two" at level 2 and "zero" at
+// level 0. A receive without a level takes the head of the highest level
+// that holds a record, so the receives take "zero", "two" and "low". A
+// receive with `priority=2` only takes from level 2.
+new factory(`rho:space:hashmap:priorityqueue`), out in {
+  for (queue <- factory!?("default")) {
+    queue!?("produce", "tasks", ["low"]);
+    queue!?("produce", "tasks", ["two"]; priority=2);
+    queue!?("produce", "tasks", ["zero"]; priority=0);
+    use queue {
+      for (@first <- @"tasks") {
+        for (@second <- @"tasks") {
+          for (@third <- @"tasks") {
+            out!([first, second, third]) |
+            @"lanes"!("lane two"; priority=2) |
+            @"lanes"!("lane zero"; priority=0) |
+            for (@lane <- @"lanes" ~ (; priority=2)) { out!(lane) }
+          }
+        }
+      }
+    }
+  } |
+  for (@value <= out) { @"rrs.example.pq"!(value) }
+}

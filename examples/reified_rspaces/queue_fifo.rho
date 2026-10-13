@@ -1,0 +1,24 @@
+// A queue space gives back its records in the order in which they arrived:
+// first in, first out.
+//
+// Each send waits for the reply of the handle method produce, so the arrival
+// order is "A", "B", "C". The three receives take the records in that order.
+// The result leaves the space on the name `out`, which this deploy creates
+// outside the use block, so it routes to the default space.
+new factory(`rho:space:hashmap:queue`), out in {
+  for (queue <- factory!?("default")) {
+    queue!?("produce", "jobs", ["A"]);
+    queue!?("produce", "jobs", ["B"]);
+    queue!?("produce", "jobs", ["C"]);
+    use queue {
+      for (@first <- @"jobs") {
+        for (@second <- @"jobs") {
+          for (@third <- @"jobs") {
+            out!([first, second, third])
+          }
+        }
+      }
+    }
+  } |
+  for (@taken <- out) { @"rrs.example.queue"!(taken) }
+}

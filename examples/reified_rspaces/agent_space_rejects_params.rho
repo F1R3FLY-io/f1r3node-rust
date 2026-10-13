@@ -1,0 +1,6 @@
+// A send on a space of a user agent takes no params. A send with a params
+// section aborts the deploy with ParamsUnsupportedOnAgentSpace before the
+// agent gets a call.
+new agent in {
+  use agent { @"jobs"!("task"; priority=1) }
+}

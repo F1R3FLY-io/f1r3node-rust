@@ -2360,14 +2360,17 @@
       ]
     },
     "p10": {
-      "description": "Phase P10, the formal-verification closure, the documents, the examples, the benchmarks and the FIPS matrix (design v2, plan decision 85). Step S1 adds no Rust code. Each later step adds its tests here, and its sources if it must change production code. Step S7 adds the property tests of Checkpoint.v.",
+      "description": "Phase P10, the formal-verification closure, the documents, the examples, the benchmarks and the FIPS matrix (design v2, plan decision 85). Step S1 adds no Rust code. Each later step adds its tests here, and its sources if it must change production code. Step S7 adds the property tests of Checkpoint.v. Step S2 adds the examples harness and the test of the invalid syntax corpus, whose file reified_syntax_corpus.rs also holds a property test.",
       "sources": [],
       "entry_points": [],
       "tests": [
-        "rspace++/tests/reified_checkpoint_props.rs"
+        "rspace++/tests/reified_checkpoint_props.rs",
+        "rholang/tests/reified_examples_execute.rs",
+        "rholang/tests/reified_syntax_corpus.rs"
       ],
       "property_files": [
-        "rspace++/tests/reified_checkpoint_props.rs"
+        "rspace++/tests/reified_checkpoint_props.rs",
+        "rholang/tests/reified_syntax_corpus.rs"
       ]
     }
   }

@@ -1,0 +1,10 @@
+// In a seq space each use of a channel must follow the previous use of that
+// channel. A send and a receive that run in parallel on one channel abort the
+// deploy with SeqConcurrent.
+new factory(`rho:space:hashmap:queue`) in {
+  for (space <- factory!?("seq")) {
+    for (x <- space!gensym()) {
+      x!(1) | for (@value <- x) { Nil }
+    }
+  }
+}

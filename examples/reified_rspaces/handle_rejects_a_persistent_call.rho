@@ -1,0 +1,7 @@
+// A persistent send `!!` to the handle of a space aborts the deploy with
+// PersistentHandleCall.
+new factory(`rho:space:hashmap:queue`), ret in {
+  for (queue <- factory!?("default")) {
+    queue!!(*ret, "gensym")
+  }
+}

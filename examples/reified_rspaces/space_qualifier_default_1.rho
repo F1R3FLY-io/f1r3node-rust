@@ -1,0 +1,10 @@
+// The first deploy of the default example. A `default` space persists: its
+// records enter the history like ordinary data, and its handle stays valid in
+// later deploys. The deploy makes a default space, stores a map in it, and
+// publishes the handle of the space on a public channel.
+new factory(`rho:space:hashmap:bag`) in {
+  for (space <- factory!?("default")) {
+    use space { @"settings"!({"theme": "dark", "lang": "en"}) } |
+    @"rrs.example.default.handle"!(*space)
+  }
+}

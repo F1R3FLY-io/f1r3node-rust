@@ -1,0 +1,22 @@
+// A stack space gives back its records in the reverse order of their arrival:
+// last in, first out.
+//
+// Each send waits for the reply of the handle method produce, so the arrival
+// order is "A", "B", "C". The three receives take "C", "B" and "A".
+new factory(`rho:space:hashmap:stack`), out in {
+  for (stack <- factory!?("default")) {
+    stack!?("produce", "plates", ["A"]);
+    stack!?("produce", "plates", ["B"]);
+    stack!?("produce", "plates", ["C"]);
+    use stack {
+      for (@first <- @"plates") {
+        for (@second <- @"plates") {
+          for (@third <- @"plates") {
+            out!([first, second, third])
+          }
+        }
+      }
+    }
+  } |
+  for (@taken <- out) { @"rrs.example.stack"!(taken) }
+}
