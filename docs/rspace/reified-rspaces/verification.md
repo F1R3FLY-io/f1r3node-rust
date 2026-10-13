@@ -7954,6 +7954,15 @@ Part 4 completes `design.md`:
 
 The new diagram 07b shows the LFS export and import (step S6), and part N20 embeds it.
 
+#### 35.4.7 The security document
+
+Part 5 adds `security.md`, the threat model of Reified RSpaces.
+It names five assets, four adversaries and four trust boundaries.
+Its tables give the 22 controls SC-1 to SC-22, each with the input that it rejects and its evidence.
+Its failure section states the prefix-atomic commit with the deploy revert (decision 19, item D6), which replaces the item "failure atomicity" of its first outline.
+Its last section states six residual risks.
+The new diagram 55 shows the trust boundaries with their controls.
+
 #### 35.4.4 The gates of parts 1 and 2
 
 *Table 245. The gates of parts 1 and 2 of step S5.*

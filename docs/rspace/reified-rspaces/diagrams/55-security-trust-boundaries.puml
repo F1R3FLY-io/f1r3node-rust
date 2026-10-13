@@ -1,0 +1,156 @@
+' 55 Trust boundaries of Reified RSpaces: the untrusted inputs, the parts of
+' the node that check them, and the controls SC-1 to SC-22 of security.md.
+'
+' Source of the figure of ../security.md (section 3). The figure restates the
+' control table of that document. It adds no new fact.
+'
+' Reading order, from the left to the right:
+'   1. Four kinds of untrusted input reach the node: the program of a deploy,
+'      the code of a user agent, the blocks and pages of a peer, and the
+'      answers of an external service.
+'   2. The program passes the normalizer and the reducer hooks, then the
+'      system processes and the space agents, and last the substrate.
+'   3. The code of a user agent runs as an ordinary program. It reaches a
+'      space only through the capabilities that the node built.
+'   4. The blocks of a peer pass native replay and the merger, and its LFS
+'      pages pass the validation of the importer.
+'   5. The answers of a service are advisory or recorded, and the exact
+'      engine decides.
+'
+' Colors come from concept-colors.iuml (aliases of the shared palette).
+' Render: ./render.sh 55-security-trust-boundaries.puml   Check: ./render.sh --check
+
+@startuml 55-security-trust-boundaries
+!include ../../../casper/theory/diagrams/palette.iuml
+!include concept-colors.iuml
+$ca_base_skin()
+skinparam ArrowColor $rrs_relation
+skinparam ArrowThickness 1.3
+skinparam PackageBorderColor $rrs_relation
+skinparam ComponentBorderColor $rrs_relation
+skinparam DatabaseBorderColor $rrs_relation
+skinparam NoteBorderColor $rrs_relation
+skinparam LegendBorderColor $rrs_relation
+skinparam LegendBackgroundColor $ca_note_grey
+skinparam nodesep 35
+skinparam ranksep 45
+left to right direction
+title Trust boundaries of Reified RSpaces and their controls
+
+package "Untrusted inputs" as INPUTS $rrs_reject {
+  component PROGRAM $rrs_reject [
+  **Program of a deploy**
+  arbitrary Rholang of a deploy author
+  ]
+  component AGENTCODE $rrs_reject [
+  **Code of a user agent**
+  the Rholang of an agent author
+  ]
+  component PEER $rrs_reject [
+  **Peer node**
+  blocks, journals, LFS pages
+  ]
+  component SERVICE $rrs_reject [
+  **External service**
+  ChromaDB answers, embeddings
+  ]
+}
+
+package "Node: program boundary" as NODE $rrs_host {
+  component NORMALIZER $rrs_syntax [
+  **Normalizer and decoders**
+  marker tuples: exactly the
+  canonical image (SC-1)
+  ]
+  component HOOKS $rrs_host [
+  **Reducer hooks**
+  routing and space references (SC-2, SC-3)
+  persistent calls and params (SC-5, SC-6)
+  seq rules, dangling ids, joins (SC-10 to SC-12)
+  ]
+  component PROCESSES $rrs_system [
+  **System processes**
+  factory gates (SC-7), bare handle (SC-4)
+  reply names (SC-8), internal ops (SC-15, SC-16)
+  ]
+  component AGENTS $rrs_agent [
+  **Space agents**
+  theories fail closed (SC-9)
+  bounds and metered reads (SC-13)
+  deterministic choices (SC-18)
+  ]
+  database SUBSTRATE $rrs_substrate [
+  **Substrate**
+  prefix-atomic commit and
+  deploy revert (SC-14)
+  ]
+}
+
+package "Consensus boundary" as CONSENSUS $rrs_substrate {
+  component REPLAY $rrs_substrate [
+  **Native replay**
+  fails closed on a forged row (SC-19)
+  ]
+  component MERGER $rrs_substrate [
+  **Merger**
+  counter races and event coverage (SC-20)
+  ]
+  component IMPORTER $rrs_substrate [
+  **LFS importer**
+  validates each page (SC-21)
+  ]
+}
+
+package "Agent boundary" as AGENTB $rrs_object {
+  component CAPS $rrs_name [
+  **Capabilities of a translation**
+  matchers, bodies and the sink:
+  built by the node, decoded strictly (SC-15)
+  no persistent send (SC-16)
+  ]
+  component OBLIGATIONS $rrs_object [
+  **Obligations ASO-1 to ASO-3**
+  not checked by the node,
+  checked by the conformance kit (SC-17)
+  ]
+}
+
+component MIRROR $rrs_service [
+**Service boundary**
+advisory ids and recorded outputs;
+the exact engine decides (SC-22)
+]
+
+PROGRAM -[$rrs_flow]-> NORMALIZER : source text
+NORMALIZER -[$rrs_flow]-> HOOKS : normalized Par
+HOOKS -[$rrs_flow]-> PROCESSES : calls on op channels and handles
+PROCESSES -[$rrs_flow]-> AGENTS : space intents
+HOOKS -[$rrs_flow]-> AGENTS : routed sends and receives
+AGENTS -[$rrs_effect]-> SUBSTRATE : staged operations, one commit
+AGENTCODE -[$rrs_flow]-> CAPS : calls on the capabilities
+CAPS -[$rrs_flow]-> PROCESSES : matcher op, sink, handle consume
+AGENTCODE -[$rrs_relation]-> OBLIGATIONS : author keeps
+PEER -[$rrs_flow]-> REPLAY : blocks and journals
+PEER -[$rrs_flow]-> MERGER : sibling blocks
+PEER -[$rrs_flow]-> IMPORTER : LFS pages
+SERVICE -[$rrs_flow]-> MIRROR : answers
+MIRROR -[$rrs_relation]-> AGENTS : ids as hints only
+REPLAY -[$rrs_relation]-> SUBSTRATE : the same operations as play
+IMPORTER -[$rrs_effect]-> SUBSTRATE : state of a root
+
+legend bottom
+**Concept colors**
+|<$rrs_reject>     | untrusted input |
+|<$rrs_host>       | node at the baseline: the reducer |
+|<$rrs_syntax>     | syntax layer |
+|<$rrs_system>     | system processes |
+|<$rrs_agent>      | space agents and user agents |
+|<$rrs_name>       | capabilities |
+|<$rrs_substrate>  | substrate and consensus parts |
+|<$rrs_service>    | external services |
+**Arrows**
+|<$rrs_flow>       | input or call |
+|<$rrs_effect>     | effect on the stored state |
+|<$rrs_relation>   | check or rule |
+endlegend
+@enduml
