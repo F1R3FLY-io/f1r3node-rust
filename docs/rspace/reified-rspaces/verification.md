@@ -7963,6 +7963,17 @@ Its failure section states the prefix-atomic commit with the deploy revert (deci
 Its last section states six residual risks.
 The new diagram 55 shows the trust boundaries with their controls.
 
+#### 35.4.8 The README and the glossaries
+
+Part 6 updates the indexes:
+
+- The campaign README gives the current status of each document and lists `security.md` and the ledger of the legacy tests.
+- The status block of P4 becomes a status table of the phases P0 to P9. The table gives the commit that closed each phase and its section of this dossier.
+- `docs/Glossary.md` gets the entries Reified RSpace, space agent, space family and qualifier, and each entry links the campaign glossary.
+- `theory-seam.md` and `f1r3lang-integration.md` pass the lint. Their rows "Planned in P12" are current, because P12 waits for the readiness signal.
+
+The link from `docs/node/README.md` to `performance.md` waits for step S8, which writes `performance.md`.
+
 #### 35.4.4 The gates of parts 1 and 2
 
 *Table 245. The gates of parts 1 and 2 of step S5.*

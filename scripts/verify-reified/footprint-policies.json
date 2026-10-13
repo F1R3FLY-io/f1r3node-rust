@@ -12624,6 +12624,60 @@
               ]
             ]
           ]
+        },
+        {
+          "path": "docs/Glossary.md",
+          "replaced_blocks": [
+            [
+              [
+                "",
+                "## Maintenance"
+              ],
+              [
+                "",
+                "## Reified RSpaces",
+                "",
+                "The [campaign glossary](rspace/reified-rspaces/glossary.md) defines every term of Reified RSpaces.",
+                "The four entries below are the terms that other documents of the repository use.",
+                "",
+                "### Reified RSpace",
+                "",
+                "A **Reified RSpace** is a tuple space that a Rholang program creates with a factory and uses as a value.",
+                "Its state is ordinary consensus state in the one RSpace of the node, so checkpoints, replay and merges cover it.",
+                "",
+                "**Preferred usage.** Use \"space\" inside the Reified documents and \"Reified RSpace\" elsewhere.",
+                "*Distinguish from* the RSpace of the node, which every program uses without Reified syntax.",
+                "See the [campaign glossary](rspace/reified-rspaces/glossary.md#reified-rspace).",
+                "",
+                "### Space agent",
+                "",
+                "A **space agent** serves the operations of one space.",
+                "A native space agent runs in the node, and a user agent is Rholang code that a program writes and uses as a space.",
+                "",
+                "**Preferred usage.** Use this term for the party that decides how the sends and the receives of a space meet.",
+                "*Distinguish from* an agent of the Agents FIPS in general, which need not serve a space.",
+                "See the [campaign glossary](rspace/reified-rspaces/glossary.md#space-agent).",
+                "",
+                "### Space family",
+                "",
+                "A **space family** pairs one outer store with one inner collection, for example `hashmap:queue`.",
+                "The factory of the family has the URN `rho:space:` followed by the two names.",
+                "",
+                "**Preferred usage.** Use this term for the kind of a native space, not for one space.",
+                "See the [campaign glossary](rspace/reified-rspaces/glossary.md#space-family).",
+                "",
+                "### Qualifier",
+                "",
+                "A **qualifier** sets the lifetime and the concurrency of a space: `\"default\"`, `\"temp\"` or `\"seq\"`.",
+                "",
+                "**Preferred usage.** Use this term only for the first argument of a factory call.",
+                "*Distinguish from* the Seq rules, which apply only to a space with the qualifier `\"seq\"`.",
+                "See the [campaign glossary](rspace/reified-rspaces/glossary.md#qualifier).",
+                "",
+                "## Maintenance"
+              ]
+            ]
+          ]
         }
       ],
       "allowed_new_files": [

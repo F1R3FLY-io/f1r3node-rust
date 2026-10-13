@@ -24,33 +24,33 @@ This README is the index and the reading order of the documents.
 1. Read the [glossary](glossary.md) first. Each later document uses its terms and links its anchors.
 2. Read the [decision register](decision-register.md) for the normative decisions and their reasons.
 3. Read the [specification](specification.md), the [syntax contract](syntax-contract.md), and the [agent API](agent-api.md) for the behavior of spaces.
-4. Read the [design](design.md), the [PathMap delivery](pathmap-prefix-delivery.md), and the theory seam for the structure of the implementation.
-5. Read the security, performance, and verification documents and the FIPS matrix for the evidence.
-6. Read the F1r3lang integration document for the merge path of phase P12.
+4. Read the [design](design.md), the [PathMap delivery](pathmap-prefix-delivery.md), and the [theory seam](theory-seam.md) for the structure of the implementation.
+5. Read the [security](security.md), performance, and [verification](verification.md) documents and the FIPS matrix for the evidence.
+6. Read the [F1r3lang integration](f1r3lang-integration.md) document for the merge path of phase P12.
 7. Read the [TensorLogic design](tensor-logic/README.md) for the tensor language that P12 installs.
 8. Read the [design record](design-record/README.md) last, as history of the early design.
 
 ## Documents
 
 The table lists every campaign document.
-A document that a later phase writes shows the phase as "planned in Pn" and names its tracker leaves.
+A document that a later step of P10 writes shows the step as "planned in P10" with the step, and it names its tracker leaf.
 
 | Document | Content | Status |
 |---|---|---|
 | [README.md](README.md) | This index: scope, reading order, documents, diagrams, phases, and the checking procedure. | Written |
 | [glossary.md](glossary.md) | Every campaign term with a stable anchor, in dependency order, with the background terms of Rholang, RSpace, and the verification tools. | Written |
-| [decision-register.md](decision-register.md) | The normative register: decisions 1 to 88, M-1 to M-5, and I-1 to I-21, with dates, words of the user, reasons, and supersession links. | Written. `rrs-doc-design-record` (P10) keeps it current. |
-| [specification.md](specification.md) | The normative behavior of spaces: outer stores, disciplines, qualifiers, the sweep, the VectorDB bounds, and the vector operations. | The P4 sections are written: the space model, the HashMap outer store, the ordered collections, the queue discipline, and the default qualifier. P5 adds the Array and Vector stores, the PathMap paths, the bag, cell, stack, set, and priority queue disciplines, the receive queries, and the joins of one space. P6 adds the VectorDB discipline (3.9), the system processes of the family (9) and the ChromaDB mirror (10). P7 adds the HashSet store (2.7), the `temp` and `seq` qualifiers (4.2, 4.3) and the theories (5), and P10 completes it (`rrs-perf-docs-final-spec-design-security`). |
-| `fips-conformance-matrix.md` and `.json` | One row for each normative clause of the FIPS and of the agent section of the Agents FIPS, with code, proof, test, and document evidence. | Planned in P10 (`rrs-fips-clause-matrix`). P11 runs it on the frozen candidate. |
-| [design.md](design.md) | The module structure: types, the agent traits, the generic space algorithm, the space transaction, and the metrics source. | The substrate section of P1 and the native-spaces section of P4 are written. P5 adds the legacy charges (N10), the drivers and stores of wave W2 (N11), and the join engine (N12) and the PathMap engine (N13) of wave W3. Decision 47 adds native execution (N14), and P6 adds the VectorDB family (N15) and the ChromaDB search backend (N16). Later phases add sections, and P10 completes the document. |
-| [agent-api.md](agent-api.md) | Factories, handles, methods, replies, errors, `getSpaceAgent`, space references, and user agent-backed spaces. | The P4 sections are written: the system processes, the factory, the handle and its methods, the replies, the typed replies, `getSpaceAgent`, and `assertEqual`. P8 adds the internal processes of Table 2b and section 12 on user agent-backed spaces, with the obligations ASO-1 to ASO-3. P10 completes it (`rrs-doc-agent-api`). |
-| [theory-seam.md](theory-seam.md) | Admission verdicts, builtin theories, theory identity and its bytes, resolution, the admission of a send, the check at a match, charging, leases, and the evidence. | Written in P7 step 4 (`rrs-theory-seam`, `rrs-reducer-theory-admission`). P10 completes it (`rrs-doc-theory-seam`). |
-| [pathmap-prefix-delivery.md](pathmap-prefix-delivery.md) | Paths, prefix keys, re-rooting, path markers, waiters, and the merge behavior of PathMap spaces. | P5 wave W3 is written. Phase 1 gives the store, the markers, the vehicle, the delivery plans, and the formal models. Phase 2 gives the prefix source of the join engine, the joins over prefixes, and the integration tests (`rrs-pathmap-prefix-delivery`). |
-| [syntax-contract.md](syntax-contract.md) | The surface syntax, the marker-tuple encoding table, the Par builders, and the dual-frontend corpus. | The P3 sections are written: the grammar forms, the normalization mapping with the builders and the marker tuples, the errors, the keyword rule, and the corpus. The P4 section on the meaning at run time is written. P6 adds the VectorDB factory params, the send param `embedding` and the queries at run time. P12 adds the Rholang 1.4 productions. |
-| [verification.md](verification.md) | The verification dossier: Rocq headlines, TLA invariants, negative controls, property tests, regression suites, the realignment closure, and later the example gate. | The P1 sections, the P4 section, and the P5 section with waves W2 and W3 (the joins of one space and both phases of the PathMap engine) are written. Decision 47 and P6 add their sections, P7 adds sections 27 to 32, P8 adds section 33, and P9 adds section 34. Each later phase adds the sections of its models and suites. P10 completes it (`rrs-doc-verification-dossier`). |
+| [decision-register.md](decision-register.md) | The normative register: decisions 1 to 88, M-1 to M-5, and I-1 to I-21, with dates, words of the user, reasons, and supersession links. | Written, with every decision up to decision 88 |
+| [specification.md](specification.md) | The normative behavior of spaces: outer stores, disciplines, qualifiers, the sweep, the VectorDB bounds, and the vector operations. | Written. P4 to P8 wrote the sections of their phases (Table 1 of the document). P10 step S5 added the final scope and the determinism of section 11 (`rrs-perf-docs-final-spec-design-security`). |
+| `fips-conformance-matrix.md` and `.json` | One row for each normative clause of the FIPS and of the agent section of the Agents FIPS, with code, proof, test, and document evidence. | Planned in P10 step S4 (`rrs-fips-clause-matrix`). P11 runs it on the frozen candidate. |
+| [design.md](design.md) | The module structure: types, the agent traits, the generic space algorithm, the space transaction, and the metrics source. | Written. P1 wrote the substrate, and P4 to P9 wrote the parts N1 to N19 of the native spaces. P10 step S5 added part N20 on the persistence and the recovery of space state. |
+| [agent-api.md](agent-api.md) | Factories, handles, methods, replies, errors, `getSpaceAgent`, space references, and user agent-backed spaces. | Written. P4 wrote the native calls, and P8 wrote the user agent-backed spaces. P10 step S5 added every family, the nine gates, an example or a test of each abort, and the current limits (`rrs-doc-agent-api`). |
+| [theory-seam.md](theory-seam.md) | Admission verdicts, builtin theories, theory identity and its bytes, resolution, the admission of a send, the check at a match, charging, leases, and the evidence. | Written in P7 step 4 (`rrs-theory-seam`, `rrs-reducer-theory-admission`), and checked in P10 step S5 (`rrs-doc-theory-seam`) |
+| [pathmap-prefix-delivery.md](pathmap-prefix-delivery.md) | Paths, prefix keys, re-rooting, path markers, waiters, and the merge behavior of PathMap spaces. | Written in P5 wave W3. Phase 1 gives the store, the markers, the vehicle, the delivery plans, and the formal models. Phase 2 gives the prefix source of the join engine, the joins over prefixes, and the integration tests (`rrs-pathmap-prefix-delivery`). |
+| [syntax-contract.md](syntax-contract.md) | The surface syntax, the marker-tuple encoding table, the Par builders, and the dual-frontend corpus. | Written. P3 wrote the surface sections, P4 the meaning at run time, and P6 the VectorDB params. P10 step S5 added an invalid row under each grammar form. P12 adds the Rholang 1.4 productions. |
+| [verification.md](verification.md) | The verification dossier: Rocq headlines, TLA invariants, negative controls, property tests, regression suites, the realignment closure, and later the example gate. | Written for every phase: P1 in sections 1 to 10, P4 in 11, P5 in 12, decision 47 in 13, P6 in 14 to 26, P7 in 27 to 32, P8 in 33, P9 in 34 and P10 in 35 (`rrs-doc-verification-dossier`). |
 | [security.md](security.md) | The threat model: assets, adversaries, trust boundaries, the controls SC-1 to SC-22 with their rejected inputs and evidence, the failure behavior, and the residual risks. | Written in P10 step S5 (`rrs-perf-docs-final-spec-design-security`) |
-| `performance.md` | Benchmarks of the space operations against frozen baselines, with any regressions. | Planned in P10 (`rrs-perf-docs-final-benchmarks`). |
-| [f1r3lang-integration.md](f1r3lang-integration.md) | The F1r3lang merge: the theory seam after the merge, installed theories, guard composition, and the Rholang 1.4 productions. | The theory part is written in P7 step 4. P12 extends it after the readiness signal (`rrs-doc-theory-seam`). |
+| `performance.md` | Benchmarks of the space operations against frozen baselines, with any regressions. | Planned in P10 step S8 (`rrs-perf-docs-final-benchmarks`) |
+| [f1r3lang-integration.md](f1r3lang-integration.md) | The F1r3lang merge: the theory seam after the merge, installed theories, guard composition, and the Rholang 1.4 productions. | The theory part is written in P7 step 4, and P10 step S5 checked it. P12 extends it after the readiness signal (`rrs-doc-theory-seam`). |
 | [tensor-logic/README.md](tensor-logic/README.md) | The TensorLogic design for P12: the design in five points, the reading order, the findings of the design pass and the binding decisions. | A proposal for P12, written in P9. The grammar waits for the approval of the user ([decision 64](decision-register.md#decision-64)), and P12 waits for the readiness signal SIG-F ([decision 65](decision-register.md#decision-65)). |
 | [tensor-logic/concepts.md](tensor-logic/concepts.md) | The terms of TensorLogic: tensors, indices, joins, projections, rules, normalization, exact numbers, reflection and fragments. | A proposal for P12, written in P9. P12 waits for the readiness signal SIG-F ([decision 65](decision-register.md#decision-65)). |
 | [tensor-logic/syntax.md](tensor-logic/syntax.md) | The lexical rules, the grammar, the precedence, the ambiguity rules, the embedding in Rholang 1.4, the value ABI and worked examples. | A proposal for P12, written in P9. P12 waits for the readiness signal SIG-F ([decision 65](decision-register.md#decision-65)). |
@@ -64,7 +64,8 @@ A document that a later phase writes shows the phase as "planned in Pn" and name
 | [findings/space-legacy-storage-charges.md](findings/space-legacy-storage-charges.md) | A finding of decision 45: in a legacy deploy, a space operation paid no storage charge, while its equivalent host program paid them. It holds the mechanism, a measurement, the reach in block processing, and the fix. | Written. Fixed by Option P of [decision 45](decision-register.md#decision-45) on 2026-10-06. |
 | [findings/native-execution-cost-accounting.md](findings/native-execution-cost-accounting.md) | Five items of decision 47 for the cost-accounting owner: an untyped class of space errors, a session charge that depends on the thread count, two readers for host continuations, a lost wake-up of the host path under a forged journal, and the verification bytes of native replay. | Written. The space instance of the lost wake-up is fixed by commit `c6cb371ba`. The other items stay open for their owner. |
 | [design-record/](design-record/README.md) | The design ledger of 2026-08-15 with its provenance record. It is history and is exempt from the documentation lint. | Written |
-| [../../rholang/21-reified-spaces.md](../../rholang/21-reified-spaces.md) | The language chapter on Reified spaces, with the section "Writing your own space". | P6 writes the section on VectorDB spaces, and P8 writes the section "Writing your own space". P10 completes the chapter (`rrs-doc-language-chapter`). |
+| [../../rholang/21-reified-spaces.md](../../rholang/21-reified-spaces.md) | The language chapter of Reified spaces: every family and qualifier, `use` blocks, annotations, factories, the handle methods, theories, queries, joins, VectorDB spaces and own spaces, each with an executed example. | Written in P10 step S5, after the first sections of P6 and P8 (`rrs-doc-language-chapter`) |
+| [verification/test-port-ledger.json](verification/test-port-ledger.json) | The ledger of the legacy Reified tests: one row for each test of the legacy branch, with its disposition: port, retarget, or drop with a named successor. | Written in P9 step 7. `check-test-port-ledger.py` checks it. |
 
 ## Diagrams
 
@@ -162,14 +163,28 @@ P3 runs in parallel in the parser worktree.
 | P11 | Full gates, the parser revision pin, and the unchanged-fixture gate |
 | P12 | The F1r3lang merge, only after the readiness signal of the user, and the TensorLogic language of the [TensorLogic design](tensor-logic/README.md) |
 
-### Status of phase P4
+### Status of the phases
 
-Phase P4 delivers the first working space family, `hashmap:queue`.
-The P4 code is in the commit `407a9b957`, and the P3b commit `a0bcaf90e` follows it.
-The P4 tests, the formal models, and the documents of this directory are in the working tree.
-The substrate fix of [decision 36](decision-register.md#decision-36), with its models and tests, is in the working tree too.
-[Section 11 of the verification dossier](verification.md#11-phase-p4-the-hashmapqueue-slice) records the local gates and their last results.
-The pgmcp runs of the P4 leaves take place in the freeze of [decision 35](decision-register.md#decision-35).
+Phases P0 to P9 are complete.
+The next table gives the commit that closed each phase and the section of the dossier that records it.
+Phase P10 is in progress, and section 35 of the dossier records each of its steps.
+Phase P11 runs the one pgmcp freeze of [decision 75](decision-register.md#decision-75), and phase P12 waits for the readiness signal of F1r3lang.
+
+| Phase | Closing commit | Record |
+|---|---|---|
+| P0 | The restore of the realignment ([decision 5](decision-register.md#decision-5)) | [Section 9](verification.md#9-realignment-closure-checks) |
+| P1 | `b783d6122` | [Sections 1 to 8](verification.md#1-purpose-and-scope) |
+| P2 | `e9812d0e5` | [Section 4](verification.md#4-rocq-models), the module `Encoding.v` |
+| P3 | `a0bcaf90e` in this tree, and the branch `feature/reified-rspaces-v3` of the parser | The [syntax contract](syntax-contract.md) |
+| P4 | `294c95632` | [Section 11](verification.md#11-phase-p4-the-hashmapqueue-slice) |
+| P5 | `418d81d7c` | [Section 12](verification.md#12-phase-p5-the-other-disciplines-and-outer-stores) |
+| Decision 47 | `d559efa48` | [Section 13](verification.md#13-decision-47-spaces-in-native-execution) |
+| P6 | `8ecc6b786` | Sections 14 to 26 |
+| P7 | `be4e9def3` | Sections 27 to 32 |
+| P8 | `d003151d3` | [Section 33](verification.md#33-phase-p8-the-spaces-of-user-agents) |
+| P9 | `e8cd072ff` | [Section 34](verification.md#34-phase-p9-consensus-integration) |
+
+The pgmcp runs of the leaves take place in the freeze of [decision 75](decision-register.md#decision-75).
 
 ## Normative status
 
