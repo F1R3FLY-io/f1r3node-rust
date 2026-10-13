@@ -621,6 +621,7 @@ decisions_2026_10_13:
   telemetry: "Local Prometheus metrics and structured records, tagged with tier, host class, and protocol, collected by soak and test net runs. Central opt-in aggregation goes to the Backlog (design decision A4)."
   close_gate: "The close-out gate depends on the mechanism. Each mechanism supplies a soak profile. The cbc-casper profile closes issue #24 (design decision A5)."
   sequencing: "Design now against D7. Implementation tasks wait for PR #651 to merge into dev (design decision A7)."
+  ethereum_practices: "The node adopts two node-local practices from Ethereum: published hardware targets for each tier, and a probe warning when the host is below a target. Neither practice enforces a minimum (design decision A8, design section 16). Timeliness rewards stay open as design question Q7."
 execution_contract:
   design_policy: "No code change before the maintainer approves docs/designs/adaptive-execution.md (TASK-027-1)."
   cbc_policy: "Register the pending claim for invariants I1 to I6 before the controller code (TASK-027-4)."
@@ -633,10 +634,10 @@ tasks:
     claimed_at: 2026-10-13T15:00:00Z
     blocked_by: []
     acceptance:
-      - "docs/designs/adaptive-execution.md records decisions A1 to A7, the issue #24 evidence, the controller rules, the degradation levels, the invariants I1 to I6, the F1r3fly CbC Casper binding, the provisions for the RGB peer clique, Casanova, and Cordial Miners, and the soak profile for each mechanism."
+      - "docs/designs/adaptive-execution.md records decisions A1 to A8, the issue #24 evidence, the controller rules, the degradation levels, the invariants I1 to I6, the F1r3fly CbC Casper binding, the provisions for the RGB peer clique, Casanova, and Cordial Miners, and the soak profile for each mechanism, and the comparison with Ethereum with cited sources (section 16)."
       - "The design uses the names of the D7 boundary layers and states which names change when PR #651 merges."
       - "The maintainer approves the design, or the review comments are resolved."
-      - "The new terms of design section 19 are in docs/Glossary.md."
+      - "The new terms of design section 20 are in docs/Glossary.md."
   - id: TASK-027-2
     title: "Add the adaptive telemetry signals and records with no behavior change"
     status: pending
@@ -654,6 +655,8 @@ tasks:
       - "The probe reads the CPU cores, the cgroup memory limit, the disk write latency, and the host class at startup."
       - "tier = auto selects a profile from the probe. A named tier skips the probe, and the node records the choice."
       - "An operator override can narrow a bound and cannot widen it. A test proves both cases."
+      - "The probe compares the host with the published targets of design section 14.3: the named tier, or the Constrained targets when tier = auto."
+      - "Below a target, the node writes a warning record that names each value below its target and sets the gauge adaptive_probe_below_target to 1. The node still starts. A test proves both the warning and the normal start."
   - id: TASK-027-4
     title: "Add the adaptive controller and the degradation levels"
     status: pending
@@ -683,13 +686,15 @@ tasks:
       - "The fix or the new control for that stage has a test that fails before the change."
       - "Design open question Q1 is closed in the design document."
   - id: TASK-027-7
-    title: "Add the constrained tier CI run and the cbc-casper soak profile"
+    title: "Add the constrained tier CI run, the cbc-casper soak profile, and the first published tier targets"
     status: pending
     blocked_by: [TASK-027-5]
     acceptance:
       - "A CI job runs a node under cgroup CPU and memory limits and checks the degradation level and the absence of out-of-memory stops."
       - "The cbc-casper soak profile states the gates of design section 14.1 and reports them separately for each host class."
       - "Each tier has a baseline for deploys per second, inclusion p95, and finalization p95."
+      - "The operator documentation publishes the cbc-casper target for each tier, with the fields of design section 14.3. Each value names the release and the soak run that set it."
+      - "The targets are recommendations. No node refuses to start below a target."
   - id: TASK-027-8
     title: "Run the close-out soak and report on issue #24"
     status: pending

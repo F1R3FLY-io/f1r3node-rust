@@ -7,7 +7,7 @@
 - **Depends on:** the replication boundary of EPIC-025 (design PR #627, decision D7) and the lifecycle runtime of PR #651
 - **Mechanisms:** F1r3fly CbC Casper (`cbc-casper`) first. The RGB peer clique (`peer-clique`), Casanova (`casanova`), and Cordial Miners (`cordial-miners`) have provisions in section 11.
 - **Evidence source:** EPIC-021 and the issue #24 comments from 2026-08-27 to 2026-10-10
-- **Vocabulary:** [docs/Glossary.md](../Glossary.md). The new terms in section 19 go into the glossary when this design is approved.
+- **Vocabulary:** [docs/Glossary.md](../Glossary.md). The new terms in section 20 go into the glossary when this design is approved.
 
 ---
 
@@ -40,6 +40,7 @@ The implementation on this branch closes issue #24 for the F1r3fly CbC Casper me
 | A5 | The close-out gate depends on the replication mechanism. Each mechanism supplies a soak profile. The `cbc-casper` profile closes issue #24. | 2026-10-13 |
 | A6 | EPIC-027 owns the close-out of issue #24. EPIC-021 keeps its measurement and fix history. Its open tasks are inputs to EPIC-027. | 2026-10-13 |
 | A7 | The design is written now against decision D7. The implementation starts after PR #651 merges into `dev`. | 2026-10-13 |
+| A8 | The design adopts two node-local practices from Ethereum. They are published hardware targets for each tier (section 14.3) and a probe warning when the host is below a target (section 6). Neither practice enforces a minimum or enters replicated state. Section 16 gives the comparison. | 2026-10-13 |
 
 ---
 
@@ -172,6 +173,9 @@ pub struct ControlUpdate {
 - `HostClass` records the container or process context, for example `docker` or `subprocess`. The soak evidence shows that this class changes the result.
 - A `TierProfile` gives the floor and the ceiling of each control for one tier. A mechanism supplies default profiles. An operator can narrow them in the configuration, but cannot widen them.
 - `Direction` states whether a higher value means more work or less work.
+- The probe compares the `HardwareProfile` with the published targets of section 14.3. With a named tier, the probe uses the targets of that tier. With `tier = "auto"`, it uses the `Constrained` targets.
+- If the host is below the targets, the node writes a warning record and sets the gauge `adaptive_probe_below_target` to 1. The record names each value that is below its target.
+- The node starts normally after the warning. The warning enforces nothing. This follows the informational model of EIP-7870 (section 16).
 
 ---
 
@@ -382,6 +386,20 @@ Each profile also checks gate 4 (no out-of-memory, watchdog, or guardian stop) a
 | Soak | The `cbc-casper` profile on both host classes |
 | Benchmark | A baseline for each tier: deploys per second, inclusion p95, and finalization p95. A regression check runs for each release. |
 
+### 14.3 Published tier targets
+
+The project publishes a hardware target for each tier in the operator documentation. Operators use the targets to select hardware before they join a shard. This follows the Ethereum practice of EIP-7870 (section 16).
+
+| Rule | Detail |
+|---|---|
+| Content | Each target gives the CPU cores, the memory limit, the disk write latency at p99, and the host class. The fields match `HardwareProfile` (section 6). |
+| Source | The tier baselines of section 14.2 and the `cbc-casper` soak results on each host class set the values. No value comes from an estimate. |
+| Status | The targets are recommendations. The node does not refuse to start below a target. The probe warning of section 6 is the only effect. |
+| Updates | A release updates the targets when a baseline changes. The document records the release and the soak run that set each value. |
+| Mechanisms | Each mechanism publishes its own targets with its soak profile. The `cbc-casper` targets come first. |
+
+The allocator is part of the host class. Soak 38300649650 showed that the same binary is 3 to 23 times slower in the storage stages without jemalloc ([issue #24 comment](https://github.com/F1R3FLY-io/f1r3node-rust/issues/24#issuecomment-6148770562)).
+
 ---
 
 ## 15. Migration order
@@ -390,11 +408,11 @@ Each profile also checks gate 4 (no out-of-memory, watchdog, or guardian stop) a
 |---|---|---|---|
 | 1 | TASK-027-1 | This design | Maintainer approval |
 | 2 | TASK-027-2 | Telemetry signals and records, with no control changes | PR #651 merged into `dev` |
-| 3 | TASK-027-3 | Hardware probe and tier profiles | Step 2 |
+| 3 | TASK-027-3 | Hardware probe, tier profiles, and the probe warning | Step 2 |
 | 4 | TASK-027-4 | Controller and degradation levels, and the CbC claim for I1 to I6 | Step 3 |
 | 5 | TASK-027-5 | F1r3fly CbC Casper (`cbc-casper`) binding of the admission controls | Step 4 |
 | 6 | TASK-027-6 | Sustained-phase fix from the TASK-021-13 attribution | TASK-021-13 result |
-| 7 | TASK-027-7 | Constrained tier CI and the `cbc-casper` soak profile | Step 5 |
+| 7 | TASK-027-7 | Constrained tier CI, the `cbc-casper` soak profile, and the first published tier targets | Step 5 |
 | 8 | TASK-027-8 | Close-out soak and the issue #24 report | Steps 6 and 7 |
 | 9 | TASK-027-9 | Adaptation descriptors, tier profiles, and soak profiles for the RGB peer clique, Casanova, and Cordial Miners | The adapter of each mechanism. This step does not block the close-out of issue #24. |
 
@@ -402,7 +420,64 @@ Step 2 changes no behavior. Its records give the baseline that sets the threshol
 
 ---
 
-## 16. Non-goals
+## 16. Comparison with Ethereum
+
+Ethereum also runs validators on hardware of different performance. This section compares its approach with this design for the F1r3fly CbC Casper mechanism only.
+
+### 16.1 Differences
+
+Ethereum handles a slow node in the protocol and in its rewards. A slow node misses deadlines and earns less, and the network continues without it. This design handles a slow node inside the node. The node reduces its own work so that it misses fewer deadlines. Decision A2 keeps the design out of the protocol and out of the rewards.
+
+| Topic | Ethereum | F1r3fly CbC Casper today | With this design |
+|---|---|---|---|
+| Pace of the chain | Fixed 12 s slots on the wall clock [E1] | Event-driven heartbeat proposals, with `check-interval = 5 seconds` and `self-propose-cooldown = 3 seconds` [F2]. No slots. | No change between validators. The controller changes only the local proposal wait (section 10.1). |
+| Deadline for a vote | An attester votes when the block arrives, or at `ATTESTATION_DUE_BPS = 3333` (about one third of the slot) at the latest [E1] | No deadline. A validator builds on the blocks that it has validated. | No protocol deadline. Invariant I6 protects the local deadlines that the mechanism declares. |
+| Late blocks | Only a block that arrives before the attestation deadline of its slot is timely, and `PROPOSER_SCORE_BOOST = 40` favors it. The optional honest reorg rule can orphan a late, weak head [E2]. | Fork choice weighs latest messages by bond, with no time term | No change, because a time term in fork choice changes validity (decision A2) |
+| Effect of one slow node | Small, because the protocol needs two thirds of the stake, spread over a very large validator set | Large in a small shard, where each of a few validators carries a large part of the weight that finality needs | Smaller, because the slow node sheds optional work and limits intake (section 8) |
+| Cost to the operator | Lost rewards for late or missed duties | None. `PoS.rhox` pays epoch rewards in proportion to bond among active validators, with no participation term [F1]. Slashing covers invalid blocks and equivocation only. | None (open question Q7) |
+| Hardware guidance | EIP-7870 is an informational recommendation [E3]. For a full node, it gives 4 TB of NVMe storage, about 50,000 read and 15,000 write IOPS, and 32 GB of RAM. | None | Published tier targets (section 14.3) and a probe warning (section 6), with no enforcement |
+
+### 16.2 Advantages of this design
+
+1. **Prevention before failure.** The controller reduces work before the node misses a deadline or runs out of memory. Ethereum lets the node miss the deadline and then removes rewards.
+2. **No timing risk to safety.** No control changes validity (invariants I1 to I3). Ethereum ties fork choice to local clocks, so proposer boost and reorg rules need careful tuning and permit timing games.
+3. **Fit for small shards.** A shard with few validators cannot ignore a slow member. Keeping each member responsive matters more than a penalty for lateness.
+4. **Diagnosis of local causes.** Telemetry for each host class found an allocator difference (section 14.3). A penalty does not show the cause of slowness.
+5. **One controller for all mechanisms.** The adaptation descriptor (section 11) applies the same controller to each mechanism. The Ethereum rules belong to one protocol.
+
+### 16.3 Disadvantages of this design
+
+1. **No bound on the pace of the shard.** Ethereum slots keep a regular pace whatever one node does. F1r3fly CbC Casper finality still waits for the slow members of the shard (open question Q1).
+2. **No incentive for adequate hardware.** Ethereum rewards make timely hardware profitable. F1r3fly rewards do not change with timeliness (open question Q7).
+3. **Targets after the fact.** The tier targets come from soak baselines. Until TASK-027-7, an operator has no published target.
+4. **More moving parts.** A closed loop has thresholds, cooldowns, and a risk of oscillation (section 18). Fixed deadlines are simpler to analyze.
+5. **Cost moves to users.** At levels L2 and L3, the node rejects deploys with a retryable error. In Ethereum, the validator pays for its own lateness.
+
+### 16.4 What this design adopts
+
+| Ethereum practice | Decision |
+|---|---|
+| Published hardware recommendations (EIP-7870) | Adopted as the published tier targets of section 14.3 (decision A8) |
+| Recommendations that are not enforced | Adopted as the probe warning of section 6 (decision A8) |
+| Fixed deadlines for duties | Already present as `DutySpec.deadline` and invariant I6 |
+| Rewards for timely participation | Not decided. Recorded as open question Q7. |
+| Wall-clock slots, proposer boost, and honest reorg | Not adopted. They change fork choice and validity (decision A2). |
+
+### 16.5 Sources
+
+| ID | Source |
+|---|---|
+| E1 | Ethereum consensus specifications, [phase0 honest validator](https://github.com/ethereum/consensus-specs/blob/master/specs/phase0/validator.md): `ATTESTATION_DUE_BPS = 3333`, `AGGREGATE_DUE_BPS = 6667` |
+| E2 | Ethereum consensus specifications, [phase0 fork choice](https://github.com/ethereum/consensus-specs/blob/master/specs/phase0/fork-choice.md): `PROPOSER_SCORE_BOOST = 40`, `REORG_HEAD_WEIGHT_THRESHOLD = 20`, `REORG_PARENT_WEIGHT_THRESHOLD = 160`, and the optional `get_proposer_head` |
+| E3 | [EIP-7870: Hardware and Bandwidth Recommendations](https://eips.ethereum.org/EIPS/eip-7870), category Informational, status Living |
+| F1 | [`casper/src/main/resources/PoS.rhox`](../../casper/src/main/resources/PoS.rhox), contract `getCurrentEpochRewards` |
+| F2 | [`node/src/main/resources/defaults.conf`](../../node/src/main/resources/defaults.conf), block `heartbeat` |
+
+The Ethereum values were checked on 2026-10-13 against the `master` branch of the consensus specifications.
+
+---
+
+## 17. Non-goals
 
 - Changes to consensus parameters or block validity rules.
 - Shard-wide coordination of tiers between validators.
@@ -412,7 +487,7 @@ Step 2 changes no behavior. Its records give the baseline that sets the threshol
 
 ---
 
-## 17. Risks
+## 18. Risks
 
 | Risk | Control |
 |---|---|
@@ -424,7 +499,7 @@ Step 2 changes no behavior. Its records give the baseline that sets the threshol
 
 ---
 
-## 18. Open questions
+## 19. Open questions
 
 | ID | Question |
 |---|---|
@@ -434,10 +509,11 @@ Step 2 changes no behavior. Its records give the baseline that sets the threshol
 | Q4 | The replication boundary design leaves deploy pool ownership open (its question Q8). If the node owns the pool, API intake and admission are one control. If the adapter owns the pool, they are two controls. |
 | Q5 | Is a mixed-tier shard test in CI possible on the current runners, or does it need the test net of EPIC-014? |
 | Q6 | Who owns the adaptation descriptors and soak profiles of the RGB peer clique, Casanova, and Cordial Miners? EPIC-014 gives each mechanism its own test net and design record. |
+| Q7 | Should F1r3fly CbC Casper reward timely participation? `PoS.rhox` pays epoch rewards in proportion to bond, with no participation term. Ethereum makes timely work profitable through rewards (section 16). A timeliness reward changes replicated state, so it is outside this design (decision A2). It needs its own design and a CbC claim. |
 
 ---
 
-## 19. Terms
+## 20. Terms
 
 | Term | Meaning |
 |---|---|
