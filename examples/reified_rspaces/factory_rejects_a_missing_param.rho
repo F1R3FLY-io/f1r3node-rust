@@ -1,0 +1,6 @@
+// An Array space needs the param `size`, the number of its names. A factory
+// call without a required param aborts the deploy with MissingParam, and the
+// message names the param.
+new factory(`rho:space:array:bag`) in {
+  for (array <- factory!?("default")) { Nil }
+}

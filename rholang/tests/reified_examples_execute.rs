@@ -40,6 +40,9 @@ enum Expect {
 enum Services {
     /// The example uses no external service.
     None,
+    /// The example calls `rho:vectordb:embed`. The harness installs the fake embedder, whose
+    /// vector of a text has two values: `0.5 + len(text)` and `1.5 + len(text)`.
+    Embedder,
     /// The example stores records with a ChromaDB mirror in its first deploy, and its last
     /// deploy asks `rho:vectordb:ann` for the neighbours of `query`. The harness installs a fake
     /// mirror, and before the last deploy it installs a fake whose neighbours are the published
@@ -137,7 +140,7 @@ async fn run(example: &Example) -> String {
     let first_mirror = FakeMirror::new(Vec::new(), 0);
     let lock = match example.services {
         Services::None => None,
-        Services::Mirror { .. } => {
+        Services::Embedder | Services::Mirror { .. } => {
             Some(backends::install(services(&embedder, &first_mirror)).await)
         }
     };
@@ -500,6 +503,18 @@ const FACTORY_REJECTS_AN_UNKNOWN_PARAM: Example = Example {
     services: Services::None,
     expect: Expect::Error("UnknownParam"),
 };
+const FACTORY_REJECTS_A_MISSING_PARAM: Example = Example {
+    name: "factory-rejects-a-missing-param",
+    deploys: &[deploy!("factory_rejects_a_missing_param.rho")],
+    services: Services::None,
+    expect: Expect::Error("MissingParam"),
+};
+const FACTORY_REJECTS_AN_INVALID_PARAM: Example = Example {
+    name: "factory-rejects-an-invalid-param",
+    deploys: &[deploy!("factory_rejects_an_invalid_param.rho")],
+    services: Services::None,
+    expect: Expect::Error("InvalidParam"),
+};
 const FACTORY_REJECTS_A_POSITIONAL_PARAM: Example = Example {
     name: "factory-rejects-a-positional-param",
     deploys: &[deploy!("factory_rejects_a_positional_param.rho")],
@@ -563,6 +578,12 @@ const SPECULATIVE_EXECUTION: Example = Example {
         r#"["committed", 700]"#,
         r#"["rolled back", 700]"#,
     ]),
+};
+const VECTORDB_EMBED: Example = Example {
+    name: "vectordb-embed",
+    deploys: &[deploy!("vectordb_embed.rho")],
+    services: Services::Embedder,
+    expect: values!("rrs.example.embed" => [r#"[true, [12.5f32, 13.5f32], "rrs-examples"]"#]),
 };
 const VECTORDB_MIRROR: Example = Example {
     name: "vectordb-mirror",
@@ -678,6 +699,8 @@ example_tests! {
     example_factory_rejects_a_bad_argument => FACTORY_REJECTS_A_BAD_ARGUMENT,
     example_factory_rejects_an_unknown_theory => FACTORY_REJECTS_AN_UNKNOWN_THEORY,
     example_factory_rejects_an_unknown_param => FACTORY_REJECTS_AN_UNKNOWN_PARAM,
+    example_factory_rejects_a_missing_param => FACTORY_REJECTS_A_MISSING_PARAM,
+    example_factory_rejects_an_invalid_param => FACTORY_REJECTS_AN_INVALID_PARAM,
     example_factory_rejects_a_positional_param => FACTORY_REJECTS_A_POSITIONAL_PARAM,
     example_factory_rejects_a_forged_params_tuple => FACTORY_REJECTS_A_FORGED_PARAMS_TUPLE,
     example_factory_rejects_a_persistent_call => FACTORY_REJECTS_A_PERSISTENT_CALL,
@@ -687,6 +710,7 @@ example_tests! {
     example_temp_space_ends_with_its_deploy => TEMP_SPACE_ENDS_WITH_ITS_DEPLOY,
     example_fips_example => FIPS_EXAMPLE,
     example_speculative_execution => SPECULATIVE_EXECUTION,
+    example_vectordb_embed => VECTORDB_EMBED,
     example_vectordb_mirror => VECTORDB_MIRROR,
     example_agent_hashmap_bag => AGENT_HASHMAP_BAG,
     example_agent_wrapper_forwards_to_native => AGENT_WRAPPER_FORWARDS_TO_NATIVE,

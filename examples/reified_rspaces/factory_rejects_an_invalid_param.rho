@@ -1,0 +1,6 @@
+// The param `size` of an Array space is an Int of at least 1. A factory call
+// with a value outside the range of its param aborts the deploy with
+// InvalidParam, and the message names the param.
+new factory(`rho:space:array:bag`) in {
+  for (array <- factory!?("default"; size=0)) { Nil }
+}

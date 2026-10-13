@@ -1,0 +1,10 @@
+// rho:vectordb:embed embeds a text with the embedding model of the node. It
+// replies [true, vector, model], or [false, code, detail] for an error. The
+// node records the reply, so the replay of the block gives the same reply
+// without a call to the model.
+//
+// The model of a node gives 384 Float32 values. The examples harness installs
+// a fake model whose vector of a text has two values.
+new embed(`rho:vectordb:embed`) in {
+  for (@reply <- embed!?("a short text")) { @"rrs.example.embed"!(reply) }
+}

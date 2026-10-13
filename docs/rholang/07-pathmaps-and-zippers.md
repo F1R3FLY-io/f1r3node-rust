@@ -185,3 +185,12 @@ The mode distinction prevents accidental mutation when you only intend to read.
 | Dynamic key access | Limited | Yes (`.get()`) |
 
 PathMaps excel at representing tree-structured data (filesystems, org charts, nested configs) where you need structural operations like union, intersection, and subtree extraction.
+
+## <a id="reified-pathmap-spaces"></a>PathMap spaces
+
+A PathMap value of this chapter is data.
+A PathMap space of Reified RSpaces uses the same paths as channels instead ([chapter 21](21-reified-spaces.md#pathmap)).
+A send on the channel `@[0, 1, 2]` is also a send on each prefix of the path, such as `@[0, 1]`.
+A receive on a prefix gets each value re-rooted under the rest of its path.
+So a receive on `@[0, 1]` binds the PathMap `{|"hi"|}` of a send on `@[0, 1, 2]` as `{|[2, "hi"]|}`.
+The [PathMap delivery](../rspace/reified-rspaces/pathmap-prefix-delivery.md) explains the model.

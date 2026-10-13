@@ -169,7 +169,7 @@ new deleteEntries(`rho:chroma:collection:entries:delete`), stdout(`rho:io:stdout
 }
 ```
 
-## ChromaDB as the search backend of Reified VectorDB spaces
+## <a id="reified-chromadb-mirror"></a>ChromaDB as the search backend of Reified VectorDB spaces
 
 Phase P6 of Reified RSpaces adds the VectorDB spaces `rho:space:hashmap:vectordb` and `rho:space:vector:vectordb`.
 A VectorDB space can keep a copy of its records in ChromaDB, its mirror, and answer advisory queries from it.

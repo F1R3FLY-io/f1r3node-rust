@@ -366,6 +366,73 @@ class ManifestFileRows(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 
+
+class SectionScopeAndExecutedOnly(unittest.TestCase):
+    """Chapters 02, 06, 07, 08, 10 and chromadb.md are linted only in their Reified sections, and
+    the rholang blocks of agent-api.md, chapter 21 and those sections must be example files. The
+    cases live in scratch, because their example files are .rho files."""
+
+    @staticmethod
+    def run_on(case: Path, path: Path):
+        out, err = io.StringIO(), io.StringIO()
+        _, violations = doc_lint.run(["--repo-root", str(case), "--no-render-check", str(path)],
+                                     out=out, err=err)
+        return violations
+
+    def test_only_the_reified_sections_of_a_chapter_are_linted(self):
+        with tempfile.TemporaryDirectory(dir=scratch_root()) as tmp:
+            case = Path(tmp)
+            chapter = case / "docs" / "rholang" / "02-syntax-reference.md"
+            chapter.parent.mkdir(parents=True)
+            chapter.write_text(
+                "# Syntax\n\nThe older text has a semicolon; the scope leaves it alone.\n\n"
+                '## <a id="reified-spaces"></a>Reified spaces\n\nThe section has no defect.\n\n'
+                "## Next\n\nMore older text; with a semicolon.\n", encoding="utf-8")
+            self.assertEqual([], rendered(self.run_on(case, chapter)))
+            chapter.write_text(
+                "# Syntax\n\nOlder text.\n\n"
+                '## <a id="reified-spaces"></a>Reified spaces\n\nThis sentence has a semicolon; it fails.\n',
+                encoding="utf-8")
+            violations = self.run_on(case, chapter)
+            self.assertEqual({"ste-semicolon"}, {v.rule for v in violations}, rendered(violations))
+
+    def test_a_reified_section_ends_at_the_next_heading_of_its_level(self):
+        with tempfile.TemporaryDirectory(dir=scratch_root()) as tmp:
+            case = Path(tmp)
+            chapter = case / "docs" / "rholang" / "10-system-channels.md"
+            chapter.parent.mkdir(parents=True)
+            chapter.write_text(
+                '## <a id="reified-vectors"></a>Vectors\n\nClean text.\n\n'
+                "### A subsection\n\nThis subsection is part of the section; it fails.\n\n"
+                "## Older\n\nOlder text; not linted.\n", encoding="utf-8")
+            violations = self.run_on(case, chapter)
+            self.assertEqual({"ste-semicolon"}, {v.rule for v in violations}, rendered(violations))
+            self.assertEqual(1, len(violations))
+
+    def test_an_executed_only_document_takes_only_example_files(self):
+        with tempfile.TemporaryDirectory(dir=scratch_root()) as tmp:
+            case = Path(tmp)
+            (case / "test-vectors").mkdir()
+            (case / "test-vectors" / "reified-syntax-corpus-v1.json").write_text(
+                '{"entries": [{"source": "new w in { w!(4) }", "expected_prost_hex": ""}]}', encoding="utf-8")
+            examples = case / "examples" / "reified_rspaces"
+            examples.mkdir(parents=True)
+            (examples / "send.rho").write_text("new v in {\n  v!(5)\n}\n", encoding="utf-8")
+            (examples / "MANIFEST.toml").write_text(
+                '[[example]]\nfile = "send.rho"\ntest = "harness.rs"\n', encoding="utf-8")
+            (case / "harness.rs").write_text('// runs "send.rho"\n', encoding="utf-8")
+            doc = case / "docs" / "rspace" / "reified-rspaces" / "agent-api.md"
+            doc.parent.mkdir(parents=True)
+            (doc.parent / "README.md").write_text("# Index\n\nThe [agent API](agent-api.md).\n", encoding="utf-8")
+            doc.write_text("# Agent API\n\nA corpus row.\n\n```rholang\nnew w in { w!(4) }\n```\n",
+                           encoding="utf-8")
+            violations = self.run_on(case, doc)
+            self.assertEqual({"snippet-corpus"}, {v.rule for v in violations}, rendered(violations))
+            self.assertIn("not the text of an example file", violations[0].detail)
+            doc.write_text("# Agent API\n\nAn example file.\n\n```rholang\nnew v in { v!(5) }\n```\n",
+                           encoding="utf-8")
+            self.assertEqual([], rendered(self.run_on(case, doc)))
+
 class DiagramRender(unittest.TestCase):
     def copy_case(self, name: str) -> Path:
         tmp = tempfile.TemporaryDirectory(dir=scratch_root())

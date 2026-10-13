@@ -143,6 +143,15 @@ SCRIPT_PATH = Path(__file__).resolve()
 DEFAULT_REPO_ROOT = SCRIPT_PATH.parents[2]
 DEFAULT_DOC_ROOT = Path("docs/rspace/reified-rspaces")
 DEFAULT_CHAPTER_GLOB = ("docs/rholang", "21-*.md")
+# Chapters of the Rholang documentation that hold a few Reified sections among older text.
+# doc_lint lints only their Reified sections: a heading whose anchor id starts with
+# REIFIED_SECTION_PREFIX opens such a section, and the next heading of the same or a higher
+# level closes it.
+DEFAULT_SECTION_SCOPED = ("docs/rholang", ("02-*.md", "06-*.md", "07-*.md", "08-*.md", "10-*.md", "chromadb.md"))
+REIFIED_SECTION_PREFIX = "reified-"
+# Documents whose rholang blocks must be the text of an example file, so each block runs in the
+# examples harness. A row of the syntax corpus does not satisfy the rule in these documents.
+DEFAULT_EXECUTED_ONLY = ("docs/rspace/reified-rspaces/agent-api.md", "docs/rholang/21-*.md")
 DEFAULT_CORPORA = (
     Path("test-vectors/reified-syntax-corpus-v1.json"),
     Path("test-vectors/reified-syntax-invalid-v1.json"),
@@ -1088,6 +1097,30 @@ def manifest_coverage(path: Path, data: dict, repo_root: Path) -> list[str]:
     return problems
 
 
+def example_file_rows(path: Path) -> set[str]:
+    """The normalized texts of the Rholang files that a TOML manifest names."""
+    rows: set[str] = set()
+    if path.suffix != ".toml" or tomllib is None:
+        return rows
+    try:
+        data = tomllib.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return rows
+    stack: list = [data]
+    while stack:
+        item = stack.pop()
+        if isinstance(item, dict):
+            for name in source_files(item):
+                try:
+                    rows.add(normalize_ws((path.parent / name).resolve().read_text(encoding="utf-8")))
+                except OSError:
+                    pass
+            stack.extend(item.values())
+        elif isinstance(item, list):
+            stack.extend(item)
+    return rows
+
+
 def corpus_rows(path: Path, repo_root: Path) -> tuple[set[str], list[str]]:
     """Return the normalized rows of one corpus file and the problems found."""
     problems: list[str] = []
@@ -1165,6 +1198,10 @@ class Config:
     # exist yet (the examples manifest arrives in P10) adds no rows, and the
     # per-block rule still rejects every block that no existing corpus holds.
     explicit_corpora: bool = False
+    # The chapter files whose Reified sections alone are linted, and the documents whose rholang
+    # blocks must be example files. Both hold resolved paths.
+    section_scoped: frozenset[Path] = frozenset()
+    executed_only: frozenset[Path] = frozenset()
 
 
 @dataclass
@@ -1182,6 +1219,7 @@ class LintContext:
         self._docs: dict[Path, Document | None] = {}
         self._decls: dict[Path, dict[str, list[int]] | None] = {}
         self._corpus: tuple[set[str], list[str], list[Path]] | None = None
+        self._examples: set[str] | None = None
         self.linted: list[Path] = []
         self.diagram_dirs: set[Path] = set()
         self._rust_citations: rust_citations.Citations | None = None
@@ -1240,6 +1278,16 @@ class LintContext:
             self._corpus = (rows, problems, missing)
         return self._corpus
 
+    def examples(self) -> set[str]:
+        """The texts of the example files of the listed manifests."""
+        if self._examples is None:
+            rows: set[str] = set()
+            for corpus_path in self.cfg.corpora:
+                if corpus_path.is_file():
+                    rows |= example_file_rows(corpus_path)
+            self._examples = rows
+        return self._examples
+
     # -- per-document rules ---------------------------------------------------
 
     def lint_file(self, path: Path) -> None:
@@ -1252,7 +1300,8 @@ class LintContext:
         if local_diagrams.is_dir():
             self.diagram_dirs.add(local_diagrams)
         rholang_blocks: list[Block] = []
-        for block in doc.blocks:
+        blocks = reified_sections(doc.blocks) if path.resolve() in self.cfg.section_scoped else doc.blocks
+        for block in blocks:
             if block.kind == "code":
                 self.lint_code_block(path, block, rholang_blocks)
                 continue
@@ -1484,8 +1533,16 @@ class LintContext:
                         f"the listed corpus file {self.display(corpus_path)} does not exist")
         for problem in problems:
             self.report(path, blocks[0].start, "snippet-corpus", problem)
+        executed_only = path.resolve() in self.cfg.executed_only
+        examples = self.examples() if executed_only else set()
         for b in blocks:
-            if normalize_ws(b.text) not in rows:
+            text = normalize_ws(b.text)
+            if executed_only:
+                if text not in examples:
+                    self.report(path, b.start, "snippet-corpus",
+                                "the rholang block is not the text of an example file, and this document "
+                                "shows only examples that the examples harness runs")
+            elif text not in rows:
                 self.report(path, b.start, "snippet-corpus",
                             "the rholang block is not a row of any listed corpus file")
 
@@ -1680,6 +1737,7 @@ def default_files(cfg: Config) -> list[Path]:
     chapter_dir = cfg.repo_root / DEFAULT_CHAPTER_GLOB[0]
     if chapter_dir.is_dir():
         files.extend(sorted(chapter_dir.glob(DEFAULT_CHAPTER_GLOB[1])))
+    files.extend(sorted(cfg.section_scoped))
     return files
 
 
@@ -1731,7 +1789,46 @@ def config_from_args(args: argparse.Namespace) -> Config:
         render_check=not args.no_render_check,
         only=only,
         explicit_corpora=bool(args.corpus),
+        section_scoped=section_scoped_files(root),
+        executed_only=executed_only_files(root),
     )
+
+
+def section_scoped_files(root: Path) -> frozenset[Path]:
+    """The chapter files of DEFAULT_SECTION_SCOPED that exist under `root`."""
+    directory = root / DEFAULT_SECTION_SCOPED[0]
+    if not directory.is_dir():
+        return frozenset()
+    found: set[Path] = set()
+    for pattern in DEFAULT_SECTION_SCOPED[1]:
+        found.update(p.resolve() for p in directory.glob(pattern) if p.is_file())
+    return frozenset(found)
+
+
+def executed_only_files(root: Path) -> frozenset[Path]:
+    """The documents of DEFAULT_EXECUTED_ONLY and the section-scoped chapters under `root`."""
+    found: set[Path] = set(section_scoped_files(root))
+    for pattern in DEFAULT_EXECUTED_ONLY:
+        found.update(p.resolve() for p in root.glob(pattern) if p.is_file())
+    return frozenset(found)
+
+
+def reified_sections(blocks: list[Block]) -> list[Block]:
+    """The blocks of the Reified sections of a chapter: each heading with an anchor id that starts
+    with REIFIED_SECTION_PREFIX, and the blocks below it up to the next heading of the same or a
+    higher level."""
+    kept: list[Block] = []
+    open_level = 0
+    for b in blocks:
+        if b.kind == "heading":
+            if open_level and b.level <= open_level:
+                open_level = 0
+            if not open_level and any(
+                    m.group(1).startswith(REIFIED_SECTION_PREFIX) for m in HTML_ID_RE.finditer(b.text)):
+                open_level = b.level
+        if open_level:
+            kept.append(b)
+    return kept
 
 
 def lint(files: list[Path], cfg: Config) -> list[Violation]:

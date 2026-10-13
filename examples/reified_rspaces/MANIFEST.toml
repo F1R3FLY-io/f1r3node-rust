@@ -261,6 +261,18 @@ description = "A named param outside the schema of the family aborts the factory
 test = "rholang/tests/reified_examples_execute.rs"
 
 [[example]]
+name = "factory-rejects-a-missing-param"
+file = "factory_rejects_a_missing_param.rho"
+description = "A factory call without a required param aborts with MissingParam."
+test = "rholang/tests/reified_examples_execute.rs"
+
+[[example]]
+name = "factory-rejects-an-invalid-param"
+file = "factory_rejects_an_invalid_param.rho"
+description = "A factory param with a value outside its range aborts with InvalidParam."
+test = "rholang/tests/reified_examples_execute.rs"
+
+[[example]]
 name = "factory-rejects-a-positional-param"
 file = "factory_rejects_a_positional_param.rho"
 description = "A positional param aborts the factory call with PositionalParamsUnsupported."
@@ -312,6 +324,12 @@ test = "rholang/tests/reified_examples_execute.rs"
 name = "speculative-execution"
 file = "speculative_execution.rho"
 description = "A checkpoint record with commit and rollback in a cell space."
+test = "rholang/tests/reified_examples_execute.rs"
+
+[[example]]
+name = "vectordb-embed"
+file = "vectordb_embed.rho"
+description = "The recorded process rho:vectordb:embed, with the fake embedder of the test support."
 test = "rholang/tests/reified_examples_execute.rs"
 
 [[example]]

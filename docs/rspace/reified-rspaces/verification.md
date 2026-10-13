@@ -7857,6 +7857,72 @@ S2 changes no production code.
 | `rustfmt --check`, and `cargo clippy` of the two test targets with `-D warnings` | No difference and no warning |
 | The footprint policy `p10` and the completeness phase `p10` | 0 violations in 5,182 files, and 0 findings in 5 checks |
 
+### 35.4 Step S5: the documents
+
+Step S5 completes the documents of the campaign (design v2, section 2.5).
+It lands in parts, and this section records each part.
+
+#### 35.4.1 The scope rules of doc_lint
+
+Two rules of `doc_lint.py` complete the extensions of design v2, section 2.1:
+
+- **Section scope.** In chapters 02, 06, 07, 08 and 10 and in `chromadb.md`, doc_lint lints only the Reified sections. A Reified section starts at a heading with an anchor id that starts with `reified-`. The next heading of the same or a higher level ends it.
+- **Executed only.** In `agent-api.md`, chapter 21 and the Reified sections, each `rholang` or `rho` block must be the text of an example file. A row of the syntax corpus does not satisfy the rule there.
+
+Three tests of `test_doc_lint.py` check the two rules, and the 91 tests of the file pass.
+A heading keeps its GitHub anchor when it gets an anchor id.
+The reason is that doc_lint and GitHub remove the HTML tags of a heading before they make its anchor.
+
+#### 35.4.2 The language chapters
+
+Chapter 21 is rewritten as the language chapter of Reified spaces.
+It covers the terms, the 32 families, the factories, `use` blocks, space annotations, the routing, the inner collections and the outer stores.
+It also covers the qualifiers, the handle methods, `getSpaceAgent`, `assertEqual`, theories, receive queries, joins, VectorDB spaces, determinism, the aborts and own spaces.
+Its 36 code blocks are example files, so the examples harness runs every block, and it embeds the diagrams 12, 20 and 04.
+Its last section lists every example of the manifest.
+
+The other chapters get these changes:
+
+- Chapters 02, 06, 07 and 08 each get a short Reified section that links to chapter 21.
+- Chapter 10 gets a Reified section on the space factories and processes, and its channel summary lists them. Its VectorDB section gets an anchor, and its three blocks become example files.
+- `chromadb.md` gets the anchor of its Reified section, whose two blocks were already the files of the example `vectordb-mirror`.
+- `docs/rholang/README.md` lists chapter 21, and `examples/README.md` lists the Reified examples.
+
+Part 1 adds three examples, and the harness gets the service mode `Services::Embedder`, which installs the fake embedder.
+
+*Table 244. The examples of part 1.*
+
+| Example | Outcome | Phlo | Root (first 12 hex digits) |
+|---|---|---|---|
+| `factory-rejects-a-missing-param` | `MissingParam` | 2081 | `394a6ca01a14` |
+| `factory-rejects-an-invalid-param` | `InvalidParam` | 2179 | `0b0fbb2f6d7b` |
+| `vectordb-embed` | `[true, [12.5f32, 13.5f32], "rrs-examples"]` | 4897 | `2ab5a4326a82` |
+
+The first two examples give gates 7 and 8 of the factory their own examples.
+The third one is the `embed` block of chapter 10, and its reply comes from the fake model of the harness.
+
+#### 35.4.3 The agent API
+
+`agent-api.md` loses its statements of phase P4, and it gets the examples of design v2, section 2.5:
+
+- The introduction states that the document covers every family. Table 2a lists every factory, and the new Table 2c lists the processes of the VectorDB family.
+- Table 3 lists the nine gates of a factory in the numbering of rule FA-6 of the specification. The P4 table listed seven gates. It gave the two checks of the qualifier two numbers, and it had no gates for `MissingParam`, `InvalidParam` and `mirror`.
+- Sections 5 and 8 show the examples of the methods, the wrapper agent of `consume`, `getSpaceAgent` and `assertEqual`.
+- Table 10 gives each code its own row. Each row names the example that reaches the code, or the test that reaches it and the reason that no example can.
+- Section 10.1 shows the 24 examples of the aborts, and section 11 states the current limits instead of the limits of P4.
+
+#### 35.4.4 The gates of parts 1 and 2
+
+*Table 245. The gates of parts 1 and 2 of step S5.*
+
+| Gate | Result |
+|---|---|
+| `cargo test --release -p rholang --test reified_examples_execute` | 65 passed, 0 failed: the 63 examples and the two controls |
+| The tests of `doc_lint.py` | 91 passed, 0 failed |
+| `doc_lint.py` over every campaign document and every Reified section | No finding |
+| The checkers of `checker-commands.txt` | 46 of 46 pass |
+| `rustfmt --check` of the harness | No difference |
+
 ## References
 
 <a id="ref-ch00"></a>[CH00] K. Claessen and J. Hughes, "QuickCheck: a lightweight tool for random testing of Haskell programs," in *Proceedings of the Fifth ACM SIGPLAN International Conference on Functional Programming (ICFP 2000)*, ACM, 2000, pp. 268–279. [doi:10.1145/351240.351266](https://doi.org/10.1145/351240.351266)

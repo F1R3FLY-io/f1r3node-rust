@@ -320,3 +320,12 @@ new mutex in {
   }
 }
 ```
+
+## <a id="reified-spaces-and-channels"></a>Channels in Reified spaces
+
+Every channel of this chapter lives in the default space of the node.
+A Reified space is a tuple space that a program creates, with its own rules for its channels ([chapter 21](21-reified-spaces.md)).
+A `use` block routes the forged names of its body into a space, and a space annotation `new x : s` makes a name of a space.
+The send, receive, persistent, peek and join forms of this chapter keep their syntax in a space.
+The inner collection of the space decides which record a receive takes, for example the oldest record in a queue space.
+A join must take all its channels from one space, and a join across spaces aborts the deploy with `CrossSpaceJoin`.

@@ -26,13 +26,14 @@ Verified against the f1r3node-rust implementation (Rust shard).
 13. [Vaults and Tokens](12-vaults-and-tokens.md) -- SystemVault, MakeMint, transfers, auth keys
 14. [Cost Model](13-cost-model.md) -- Compute authority, storage bytes, REV bounds, settlement, replay
 15. [Wallet-Funded Processes](20-wallet-funded-processes.md) -- Wallet refill, process purses, lollipop grants, cryptography, finalization
+16. [Reified Spaces](21-reified-spaces.md) -- Tuple spaces as values: factories, `use` blocks, space families, qualifiers, theories, VectorDB spaces, user agents
 
 ### Patterns and Practice
-16. [Design Patterns](14-design-patterns.md) -- Security, capabilities, common idioms
-17. [Rhox Macros](16-rhox-macros.md) -- `.rhox` template format
-18. [Testing with RhoSpec](17-testing-with-rhospec.md) -- Test framework, writing contract tests
-19. [Deployment Workflow](18-deployment-workflow.md) -- Deploy, propose, finalize, exploratory deploy
-20. [Real-World Applications](19-real-world-applications.md) -- Embers template system, production patterns
+17. [Design Patterns](14-design-patterns.md) -- Security, capabilities, common idioms
+18. [Rhox Macros](16-rhox-macros.md) -- `.rhox` template format
+19. [Testing with RhoSpec](17-testing-with-rhospec.md) -- Test framework, writing contract tests
+20. [Deployment Workflow](18-deployment-workflow.md) -- Deploy, propose, finalize, exploratory deploy
+21. [Real-World Applications](19-real-world-applications.md) -- Embers template system, production patterns
 
 ### Internal Reference
 - [Crate Overview](crate-overview.md) -- Interpreter crate architecture, compilation pipeline, system processes
@@ -62,6 +63,8 @@ Working examples are in [`rholang/examples/`](../../rholang/examples/):
 | `numeric-types.rho` | BigInt, BigRat, Float, FixedPoint |
 | `user-crud-example.rho` | Full CRUD with mutable state |
 | `vault_demo/` | Vault address, balance, transfer |
+
+The examples of Reified spaces are in [`examples/reified_rspaces/`](../../examples/reified_rspaces/), and [chapter 21](21-reified-spaces.md#all-examples) lists them.
 
 ## System Contracts
 

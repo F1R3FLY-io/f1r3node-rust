@@ -190,3 +190,12 @@ contract forEach(@list, body, done) = {
   }
 }
 ```
+
+## <a id="reified-collections-of-channels"></a>Collections of channels in Reified spaces
+
+The collections of this chapter are values: lists, tuples, sets and maps.
+A Reified space gives the channels of a program a collection behavior instead ([chapter 21](21-reified-spaces.md#inner-collections)).
+For example, the records of a channel in a queue space leave in their order of arrival.
+The inner collections are `bag`, `queue`, `stack`, `set`, `cell`, `priorityqueue` and `vectordb`.
+A Set value holds its elements.
+A set space holds the records that sends store on its channels, and a receive sees one record for each value of a channel.

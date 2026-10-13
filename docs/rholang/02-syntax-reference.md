@@ -248,3 +248,20 @@ See [Collections](06-collections.md) for methods.
 /* multi-line
    comment */
 ```
+
+## <a id="reified-spaces-syntax"></a>Reified spaces syntax
+
+The Reified RSpaces extension adds five forms to the syntax ([chapter 21](21-reified-spaces.md)).
+The [syntax contract](../rspace/reified-rspaces/syntax-contract.md) states each form, its normal form and its errors.
+
+| Form | Example | Meaning |
+|---|---|---|
+| `use` block | `use s { P }` | `P` runs in the context of the space `s`, so its forged names route to `s`. |
+| Space annotation | `new x : s in { P }` | The name `x` belongs to the space `s`. |
+| Params section | `x!(d; priority=0)` | The send gives its named params to the collection of `x`. |
+| Receive query | `for (@y <- x ~ ([1, 0]; k=3)) { P }` | The receive gives a query to the collection of `x`, for example a query vector. |
+| Theory reference | `free Nat()` | A factory argument that names a builtin theory. |
+
+`use` is a keyword only when a space name and a block follow it.
+`free` is a keyword only when a theory call follows it.
+So a program that uses these words as names keeps its meaning.

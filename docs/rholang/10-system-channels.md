@@ -437,26 +437,64 @@ new models(`rho:ollama:models`) in {
 }
 ```
 
-## Reified RSpaces: vectors and the VectorDB services
+## <a id="reified-space-factories"></a>Reified RSpaces: factories and space processes
 
-The VectorDB family of [Reified RSpaces](../rspace/reified-rspaces/README.md) adds three system processes.
+[Chapter 21](21-reified-spaces.md) teaches Reified spaces, and the [agent API](../rspace/reified-rspaces/agent-api.md) states each call.
+The processes of Table 1 create spaces and answer questions about them.
+A persistent call `!!` of any of them aborts the deploy with `PersistentFactoryCall` or `PersistentOpCall`.
+
+*Table 1. The space processes of Reified RSpaces.*
+
+| URN | Arity | What the process does |
+|---|---|---|
+| `rho:space:<outer>:<inner>`, one for each of the 32 families | 2 | Creates a space of the family and replies its handle ([chapter 21](21-reified-spaces.md#space-families)) |
+| `rho:space:HashMapBagSpace` and `rho:space:PathMapSpace` | 2 | The FIPS names of the factories of `hashmap:bag` and `pathmap:bag` |
+| `rho:space:getSpaceAgent` | 2 | Replies the factory of the family of a space |
+| `rho:assert:assertEqual` | 3 | Replies `true` when two values are equal after sorting, and `false` otherwise |
+| `rho:reified:internal:handleOp`, `rho:reified:internal:matcherOp` and `rho:reified:internal:sinkOp` | 2, 2 and 0 | The internal processes of handles and user agents. Each one accepts only the capabilities that the node builds. |
+
+A factory takes any number of arguments, because the node packs the arguments of a call into one list.
+So the arity of a factory counts the reply channel and that list.
+
+## <a id="reified-vectors-and-vectordb-services"></a>Reified RSpaces: vectors and the VectorDB services
+
+The VectorDB family of [Reified RSpaces](21-reified-spaces.md#vectordb-spaces) adds three system processes.
 Each one takes the reply channel first and replies `[true, …]`, or `[false, code, detail]` with a fixed detail text.
 So `!?` and `try … catch` read a reply.
 A call with send params aborts the deploy with `ParamsUnsupported`, and a persistent call `!!` aborts it with `PersistentOpCall`.
 The [Reified RSpaces specification](../rspace/reified-rspaces/specification.md#9-system-processes-of-the-vectordb-family) states the rules.
+Each code block of this section is the text of an example file, and the examples harness runs each file.
 
 ### `rho:lang:vector` (call `vec!(ret, op, x…)`)
 
-Exact vector arithmetic. The operation `op` is `"add"`, `"scale"`, `"dot"`, `"norm"` or `"distance"`.
+The process computes with vectors exactly.
+The operation `op` is `"add"`, `"scale"`, `"dot"`, `"norm"` or `"distance"`.
 
-```rho
-new vec(`rho:lang:vector`), stdout(`rho:io:stdout`) in {
-  for (@r <- vec!?("dot", [1, 2], [3, 4])) {
-    stdout!(r)   // [true, 11]
-  }
+```rholang
+// rho:lang:vector computes exactly with vectors of numbers. Its operations are
+// "add", "scale", "dot", "norm" and "distance". Each reply is [true, value],
+// or [false, code] for an error.
+//
+// The legacy branch had more operations, such as sigmoid, softmax and the
+// hyper-dimensional operations. They come with TensorLogic in phase P12
+// (decisions 52, 62 to 65 and 88).
+new vec(`rho:lang:vector`), out in {
+  for (@sum <- vec!?("add", [1, 2], [3, 4])) {
+    for (@scaled <- vec!?("scale", [1, 2], 3)) {
+      for (@dot <- vec!?("dot", [1, 2], [3, 4])) {
+        for (@norm <- vec!?("norm", [3, 4])) {
+          for (@distance <- vec!?("distance", [0, 0], [3, 4])) {
+            out!([sum, scaled, dot, norm, distance])
+          }
+        }
+      }
+    }
+  } |
+  for (@replies <- out) { @"rrs.example.vector.ops"!(replies) }
 }
 ```
 
+The deploy reports `[[true, [4, 6]], [true, [3, 6]], [true, 11], [true, 5.0], [true, 5.0]]`.
 `add`, `scale` and `dot` compute exactly and reply in the widest kind of their inputs.
 Integers give an integer, a big rational or a fixed point gives a big rational, and a float gives an `f64`.
 The `f64` is one rounding of the exact value, so `dot` rounds its exact sum once.
@@ -465,40 +503,50 @@ The failure codes are `UnknownMethod`, `BadArgument`, `NotAVector`, `NotANumber`
 
 ### `rho:vectordb:embed` (arity 2)
 
-Embeds one text, or a list of at most 64 texts with at most 64 KiB of text, with the embedding model of the node.
+The process embeds a text with the embedding model of the node.
+It also takes a list of at most 64 texts with at most 64 KiB of text.
 
-```rho
-new embed(`rho:vectordb:embed`), stdout(`rho:io:stdout`) in {
-  for (@r <- embed!?("a short text")) {
-    stdout!(r)   // [true, vector, "all-MiniLM-L6-v2"], or [false, code, detail]
-  }
+```rholang
+// rho:vectordb:embed embeds a text with the embedding model of the node. It
+// replies [true, vector, model], or [false, code, detail] for an error. The
+// node records the reply, so the replay of the block gives the same reply
+// without a call to the model.
+//
+// The model of a node gives 384 Float32 values. The examples harness installs
+// a fake model whose vector of a text has two values.
+new embed(`rho:vectordb:embed`) in {
+  for (@reply <- embed!?("a short text")) { @"rrs.example.embed"!(reply) }
 }
 ```
 
-A vector is a list of 384 `Float32` values.
+With the model of a node, a vector is a list of 384 `Float32` values.
+With the fake model of the examples harness, the deploy reports `[true, [12.5f32, 13.5f32], "rrs-examples"]`.
 The failure codes are `BadArgument`, `EmbeddingRateLimited`, `EmbeddingUnavailable` and `NonFiniteEmbedding`.
 The process is recorded: the node records each reply, and replay produces the recorded reply without a call to the model.
 
 ### `rho:vectordb:ann` (arity 5)
 
-Asks the ChromaDB mirror of the node for the records of a channel of a VectorDB space that are nearest to a query.
+The process asks the ChromaDB mirror of the node for the records of a channel of a VectorDB space that are nearest to a query.
 The arguments are the reply channel, the space, the channel, the query (a vector or a text) and the options `{"k": k}`.
 
-```rho
-new ann(`rho:vectordb:ann`), stdout(`rho:io:stdout`) in {
-  for (@space <<- @"my-space") { for (@name <<- @"my-name") {
-    for (@r <- ann!?(space, name, [1, 0], {"k": 3})) {
-      stdout!(r)   // [true, ids, distances, watermark], or [false, code, detail]
+```rholang
+new ann(`rho:vectordb:ann`) in {
+  for (m <<- @"my-space") { for (mn <<- @"my-name") {
+    for (@r <- ann!?(*m, *mn, [1.0, 0.0], {"k": 3})) {
+      match r {
+        [true, ids, _, _] => { for (@x <- mn ~ ([1.0, 0.0]; ids=ids, k=3)) { @"result"!(x) } }
+        [false, code, _]  => { @"result"!(code) }
+      }
     }
   } }
 }
 ```
 
-The ids are hints for the query param `ids` of a receive, and the exact engine of the space decides.
+This deploy is the second deploy of the mirror example of [ChromaDB Integration](chromadb.md#reified-chromadb-mirror), whose first deploy stores the records.
+The ids of the reply are hints for the query param `ids` of a receive, and the exact engine of the space decides.
 The failure codes are `NotAVectorDbSpace`, `MirrorDisabled`, `DimensionMismatch`, `BadArgument`, `InvalidOption` and `MirrorUnavailable`.
 A text query can also fail with the codes of `embed`.
 Like `embed`, the process is recorded. Replay also makes the checks of the call against consensus state, as play does.
-See [ChromaDB Integration](chromadb.md#chromadb-as-the-search-backend-of-reified-vectordb-spaces) for the mirror.
 
 ## Channel Summary
 
@@ -535,3 +583,7 @@ See [ChromaDB Integration](chromadb.md#chromadb-as-the-search-backend-of-reified
 | `rho:lang:vector` | varies | Reified | Yes |
 | `rho:vectordb:embed` | 2 | Reified | Recorded |
 | `rho:vectordb:ann` | 5 | Reified | Recorded |
+| `rho:space:*` (the 32 factories and the 2 FIPS names) | 2 | Reified | Yes |
+| `rho:space:getSpaceAgent` | 2 | Reified | Yes |
+| `rho:assert:assertEqual` | 3 | Reified | Yes |
+| `rho:reified:internal:*` (3 processes) | 2, 2 and 0 | Reified | Yes |
