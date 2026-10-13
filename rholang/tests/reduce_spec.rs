@@ -177,7 +177,9 @@ async fn eval_expr_should_return_error_for_division_by_zero() {
     assert!(result.is_err());
     assert_eq!(
         result.unwrap_err(),
-        InterpreterError::ReduceError("Division by zero".to_string())
+        // Changed by DR-128 (bug 11414): a user failure with the same text.
+        // InterpreterError::ReduceError("Division by zero".to_string())
+        InterpreterError::DivisionByZero("Division by zero".to_string())
     );
 }
 
@@ -217,7 +219,9 @@ async fn eval_expr_should_return_error_for_modulo_by_zero() {
     assert!(result.is_err());
     assert_eq!(
         result.unwrap_err(),
-        InterpreterError::ReduceError("Modulo by zero".to_string())
+        // Changed by DR-128 (bug 11414): a user failure with the same text.
+        // InterpreterError::ReduceError("Modulo by zero".to_string())
+        InterpreterError::DivisionByZero("Modulo by zero".to_string())
     );
 }
 
@@ -257,7 +261,9 @@ async fn eval_expr_should_return_error_for_multiplication_overflow() {
     assert!(result.is_err());
     assert_eq!(
         result.unwrap_err(),
-        InterpreterError::ReduceError(format!(
+        // Changed by DR-128 (bug 11414): a user failure with the same text.
+        // InterpreterError::ReduceError(format!(
+        InterpreterError::ArithmeticOverflow(format!(
             "Arithmetic overflow in multiplication: {} * {}",
             i64::MAX,
             2
@@ -318,7 +324,9 @@ async fn eval_expr_should_return_error_for_negation_overflow() {
     assert!(result.is_err());
     assert_eq!(
         result.unwrap_err(),
-        InterpreterError::ReduceError("Arithmetic overflow in negation".to_string())
+        // Changed by DR-128 (bug 11414): a user failure with the same text.
+        // InterpreterError::ReduceError("Arithmetic overflow in negation".to_string())
+        InterpreterError::ArithmeticOverflow("Arithmetic overflow in negation".to_string())
     );
 }
 
@@ -339,7 +347,9 @@ async fn eval_expr_should_return_error_for_division_overflow() {
     assert!(result.is_err());
     assert_eq!(
         result.unwrap_err(),
-        InterpreterError::ReduceError("Arithmetic overflow in division".to_string())
+        // Changed by DR-128 (bug 11414): a user failure with the same text.
+        // InterpreterError::ReduceError("Arithmetic overflow in division".to_string())
+        InterpreterError::ArithmeticOverflow("Arithmetic overflow in division".to_string())
     );
 }
 
@@ -479,7 +489,9 @@ async fn eval_of_bundle_should_throw_an_error_if_names_are_used_against_their_po
     if let Err(e) = result {
         assert_eq!(
             e,
-            InterpreterError::ReduceError(String::from(
+            // Changed by DR-128 (bug 11414): a user failure with the same text.
+            // InterpreterError::ReduceError(String::from(
+            InterpreterError::BundlePermissionError(String::from(
                 "Trying to read from non-readable channel."
             ))
         );
@@ -509,7 +521,11 @@ async fn eval_of_bundle_should_throw_an_error_if_names_are_used_against_their_po
     if let Err(e) = result {
         assert_eq!(
             e,
-            InterpreterError::ReduceError(String::from("Trying to send on non-writeable channel."))
+            // Changed by DR-128 (bug 11414): a user failure with the same text.
+            // InterpreterError::ReduceError(String::from("Trying to send on non-writeable channel."))
+            InterpreterError::BundlePermissionError(String::from(
+                "Trying to send on non-writeable channel."
+            ))
         );
     }
 }
@@ -4723,7 +4739,9 @@ async fn term_split_size_max_should_limited_to_max_value() {
     assert!(res.is_err());
     assert_eq!(
         res,
-        Err(InterpreterError::ReduceError(
+        // Changed by DR-128 (bug 11414): a user failure with the same text.
+        // Err(InterpreterError::ReduceError(
+        Err(InterpreterError::TermStructureError(
             "The number of terms in the Par is 32768, which exceeds the limit of 32767".to_string()
         ))
     )

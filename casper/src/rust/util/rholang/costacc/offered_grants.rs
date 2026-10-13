@@ -108,12 +108,19 @@ pub fn grant_issue_definition(limits: GrantIssueCallLimits, budget: HostWorkBudg
                         expr_instance: Some(models::rhoapi::expr::ExprInstance::GByteArray(call)),
                     }] = payload.exprs.as_slice()
                     else {
-                        return Err(InterpreterError::ReduceError(
+                        // Changed by DR-128 (bug 11414): a payload that is not one byte
+                        // array is an illegal argument. Native execution makes it the
+                        // user failure `SystemProcessShapeError` (DR-114).
+                        // return Err(InterpreterError::ReduceError(
+                        return Err(InterpreterError::IllegalArgumentError(
                             "grant issue expects canonical bytes".to_owned(),
                         ));
                     };
                     if call.len() > limits.wire.total_bytes {
-                        return Err(InterpreterError::ReduceError(
+                        // Changed by DR-128 (bug 11414): a payload over the wire limit is
+                        // an illegal argument too.
+                        // return Err(InterpreterError::ReduceError(
+                        return Err(InterpreterError::IllegalArgumentError(
                             "grant issue exceeds syntax limit".to_owned(),
                         ));
                     }

@@ -2272,6 +2272,258 @@ async fn an_unknown_method_is_published_as_a_charged_user_failure() {
     }
 }
 
+// ── Deterministic user reducer errors (DR-128, bug 11414) ──────────────────
+
+/// Added by DR-128 (bug 11414): proposes `offer` on node 0. It returns the
+/// block and the deploy id, or the reason that node 0 recorded when it
+/// quarantined the offer.
+async fn offered_block_or_rejection(
+    nodes: &mut [TestNode],
+    offer: models::casper::DeployDataProto,
+) -> Result<
+    (
+        models::rust::casper::protocol::casper_message::BlockMessage,
+        Vec<u8>,
+    ),
+    String,
+> {
+    BlockAPI::deploy_offered(&nodes[0].engine_cell, offer.clone(), &None, false, "root")
+        .await
+        .expect("a well-formed offer is admitted");
+    let id = models::rust::deploy_id::DeployIdV6::try_from(offer.deploy_id.to_vec())
+        .expect("an offered deploy id has 32 bytes");
+    match nodes[0].create_block_unsafe(&[]).await {
+        Ok(block) => Ok((block, offer.deploy_id.to_vec())),
+        Err(error) => {
+            let storage = nodes[0].deploy_storage.lock();
+            Err(format!(
+                "{error:?}; recorded rejection: {:?}",
+                storage
+                    .envelope_rejection(&id)
+                    .map(|rejection| rejection.reason)
+            ))
+        }
+    }
+}
+
+/// Added by DR-128 (bug 11414): runs each case as an owner-direct offer of
+/// genesis vault 2 on three validators, as the probe of DR-125 does. Each
+/// case must end in a charged user failure:
+/// - the block holds the deploy, published as failed;
+/// - every validator accepts the block, and all hold one equal receipt;
+/// - the charge is the billable work and the fee, and the payer pays it;
+/// - the write to `written` rolls back.
+///
+/// The probe runs every case, and then it reports each case that the
+/// producer quarantined.
+async fn assert_charged_user_failures(written: &str, cases: &[String]) {
+    let genesis = offered_v6_genesis(3).await;
+    let mut nodes = TestNode::create_network(genesis.clone(), 3, None, None, None, None)
+        .await
+        .expect("a three-node network starts");
+    let payer = genesis.genesis_vaults[2].clone();
+    let payer_vault = VaultAddress::from_public_key(&payer.1).expect("a payer vault address");
+    let mut root = genesis.genesis_block.body.state.post_state_hash.clone();
+    let mut quarantined = Vec::with_capacity(cases.len());
+    for (index, term) in cases.iter().enumerate() {
+        let initial = vault_balance(&nodes, &root, &payer_vault).await;
+        let offer = owner_direct_offer(
+            &payer,
+            i64::try_from(index + 1).expect("a small timestamp"),
+            term.clone(),
+        );
+        let (block, id) = match offered_block_or_rejection(&mut nodes, offer).await {
+            Ok(published) => published,
+            Err(reason) => {
+                quarantined.push(format!("case {index} `{term}`: {reason}"));
+                continue;
+            }
+        };
+        assert!(
+            block.body.deploys[0].is_failed(),
+            "case {index}: the deploy is published as failed"
+        );
+        let receipt = accepted_everywhere_with_one_receipt(&mut nodes, &block, &id).await;
+        assert!(
+            receipt.rev_spent > 0,
+            "case {index}: the failure is charged"
+        );
+        assert_eq!(
+            receipt.rev_spent,
+            u128::from(receipt.fresh_phlo) * u128::from(receipt.phlo_price) + receipt.fee_rev,
+            "case {index}: the charge is the billable work and the fee"
+        );
+        root = block.body.state.post_state_hash.clone();
+        let balance = vault_balance(&nodes, &root, &payer_vault).await;
+        assert_eq!(
+            u128::from(balance) + receipt.rev_spent,
+            u128::from(initial),
+            "case {index}: the payer pays rev_spent"
+        );
+        let (read, _) = nodes[0]
+            .runtime_manager
+            .play_exploratory_deploy(
+                format!("new return in {{ for (@value <<- @\"{written}\") {{ return!(value) }} }}"),
+                &root,
+                None,
+            )
+            .await
+            .expect("the exploratory read runs");
+        assert!(
+            read.is_empty(),
+            "case {index}: the user's write rolls back: {read:?}"
+        );
+    }
+    assert!(
+        quarantined.is_empty(),
+        "the producer quarantined these cases: {quarantined:#?}"
+    );
+}
+
+/// Added by DR-128: the failing term at the top level, next to a write to
+/// `written`.
+fn at_top_level(written: &str, failing: &str) -> String {
+    format!("@\"{written}\"!(1) | {failing}")
+}
+
+/// Added by DR-128: the failing term after a COMM, next to a write to
+/// `written`.
+fn after_a_comm(written: &str, failing: &str) -> String {
+    format!("new ack in {{ @\"{written}\"!(1) | ack!(0) | for (_ <- ack) {{ {failing} }} }}")
+}
+
+/// Added by DR-128 (bug 11414): a division or a modulo by zero is the user
+/// failure `DivisionByZero`. The cases divide an Int by zero at the top
+/// level (`reduce.rs` EDivBody) and take a BigInt modulo zero after a COMM
+/// (EModBody).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_division_by_zero_is_published_as_a_charged_user_failure() {
+    const WRITTEN: &str = "division-by-zero-written";
+    assert_charged_user_failures(WRITTEN, &[
+        at_top_level(WRITTEN, "@\"r\"!(1 / 0)"),
+        after_a_comm(WRITTEN, "@\"r\"!(1n % 0n)"),
+    ])
+    .await;
+}
+
+/// Added by DR-128 (bug 11414): an integer result that does not fit its type
+/// is the user failure `ArithmeticOverflow`. The cases multiply Ints at the
+/// top level and sized integers after a COMM.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_arithmetic_overflow_is_published_as_a_charged_user_failure() {
+    const WRITTEN: &str = "arithmetic-overflow-written";
+    assert_charged_user_failures(WRITTEN, &[
+        at_top_level(WRITTEN, "@\"r\"!(9223372036854775807 * 2)"),
+        after_a_comm(WRITTEN, "@\"r\"!(255u8 * 2u8)"),
+    ])
+    .await;
+}
+
+/// Added by DR-128 (bug 11414): an integer method argument outside the
+/// method's domain is the user failure `ArgumentOutOfRange`. The cases take
+/// an index past the end of a tuple at the top level and a negative
+/// `dropHead` count after a COMM.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_argument_out_of_range_is_published_as_a_charged_user_failure() {
+    const WRITTEN: &str = "argument-out-of-range-written";
+    assert_charged_user_failures(WRITTEN, &[
+        at_top_level(WRITTEN, "@\"r\"!((4, 5).nth(9))"),
+        after_a_comm(WRITTEN, "@\"r\"!({| [\"a\"] |}.dropHead(-1))"),
+    ])
+    .await;
+}
+
+/// Added by DR-128 (bug 11414): a send or a receive on a bundle without that
+/// permission is the user failure `BundlePermissionError`. The cases send on
+/// a `bundle0` at the top level and receive on one after a COMM.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_bundle_permission_error_is_published_as_a_charged_user_failure() {
+    const WRITTEN: &str = "bundle-permission-written";
+    assert_charged_user_failures(WRITTEN, &[
+        format!("new x in {{ @\"{WRITTEN}\"!(1) | @{{bundle0{{*x}}}}!(1) }}"),
+        format!(
+            "new x, ack in {{ @\"{WRITTEN}\"!(1) | ack!(0) | \
+             for (_ <- ack) {{ for (_ <- @{{bundle0{{*x}}}}) {{ Nil }} }} }}"
+        ),
+    ])
+    .await;
+}
+
+/// Added by DR-128 (bug 11414): an operand, receiver or argument of a type
+/// that the operation rejects is the user failure `ValueTypeError`. The
+/// cases compare an Int with a String at the top level and call `toString`
+/// on an Int after a COMM.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_value_type_error_is_published_as_a_charged_user_failure() {
+    const WRITTEN: &str = "value-type-written";
+    assert_charged_user_failures(WRITTEN, &[
+        at_top_level(WRITTEN, "@\"r\"!(1 < \"a\")"),
+        after_a_comm(WRITTEN, "@\"r\"!(42.toString())"),
+    ])
+    .await;
+}
+
+// Disabled by DR-128 (bug 11414): under the committed caps the host-work
+// budget stops this run before the term count. The doubling needs more than
+// 268,435,456 verification bytes, the committed limit of
+// `offered_funded_v6_host_work_limits`. The producer then records "native
+// offered execution has incomplete byte measurements" with
+// `HostWorkRejected`. Under the provisional caps the run reaches the term
+// count, and the probe passes. The unit test
+// `a_process_with_too_many_terms_is_a_user_failure` (rholang) covers the
+// site with a hand-built process and with this doubling term.
+// /// Added by DR-128 (bug 11414): a process with more than 32767 terms is the
+// /// user failure `TermStructureError`. A contract doubles a one-send process
+// /// fifteen times through substitution, and the receiver then evaluates the
+// /// 32768 sends. The pre-execution count reads no send data, so only the
+// /// reducer sees the process.
+// #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+// async fn a_process_with_too_many_terms_is_published_as_a_charged_user_failure() {
+//     const WRITTEN: &str = "term-structure-written";
+//     assert_charged_user_failures(WRITTEN, &[format!(
+//         "new double, ret in {{ @\"{WRITTEN}\"!(1) | \
+//          contract double(@p, @n, r) = {{ \
+//            if (n == 0) {{ r!(p) }} else {{ double!(p | p, n - 1, *r) }} \
+//          }} | \
+//          double!(@\"t\"!(0), 15, *ret) | \
+//          for (@big <- ret) {{ big }} }}"
+//     )])
+//     .await;
+// }
+
+/// Added by DR-128 (bug 11414): two sites reuse existing user variants. A
+/// float modulo is `OperatorNotDefined`, and `nth` on an Int is
+/// `MethodNotDefined`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_reused_user_variant_is_published_as_a_charged_user_failure() {
+    const WRITTEN: &str = "reused-variant-written";
+    assert_charged_user_failures(WRITTEN, &[
+        at_top_level(WRITTEN, "@\"r\"!(1.0f64 % 0.0f64)"),
+        after_a_comm(WRITTEN, "@\"r\"!(42.nth(0))"),
+    ])
+    .await;
+}
+
+/// Added by DR-128 (bug 11414): a system-process call with an illegal
+/// argument is the user failure `SystemProcessShapeError` in native
+/// execution (DR-114). The cases look up an unknown URN at the top level and
+/// call the grant issuer with an Int after a COMM.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_illegal_system_process_call_is_published_as_a_charged_user_failure() {
+    const WRITTEN: &str = "system-process-written";
+    assert_charged_user_failures(WRITTEN, &[
+        format!(
+            "new lookup(`rho:internal:registry_lookup`), ret in {{ \
+             @\"{WRITTEN}\"!(1) | lookup!(\"no-such-urn\", *ret) }}"
+        ),
+        format!(
+            "new issue(`rho:cost:grant:issue:v1`), ack in {{ \
+             @\"{WRITTEN}\"!(1) | ack!(0) | for (_ <- ack) {{ issue!(1) }} }}"
+        ),
+    ])
+    .await;
+}
+
 /// DR-114: every node accepts `block`, and every node holds the same
 /// settlement receipt for `id`. Returns that receipt.
 async fn accepted_everywhere_with_one_receipt(

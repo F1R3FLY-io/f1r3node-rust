@@ -1729,7 +1729,11 @@ impl SystemProcesses {
         }
 
         // 3. Unknown URN.
-        Err(InterpreterError::ReduceError(format!(
+        // Changed by DR-128 (bug 11414): an unknown URN is an illegal argument,
+        // as the other argument checks of this process are. Native execution
+        // makes it the user failure `SystemProcessShapeError` (DR-114).
+        // Err(InterpreterError::ReduceError(format!(
+        Err(InterpreterError::IllegalArgumentError(format!(
             "registry_lookup: unknown URN: {}",
             urn_str
         )))

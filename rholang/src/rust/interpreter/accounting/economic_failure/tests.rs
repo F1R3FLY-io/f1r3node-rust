@@ -67,6 +67,13 @@ fn typed_variants_define_charge_class_without_message_heuristics() {
             actual_type: text.clone(),
         },
         InterpreterError::SystemProcessShapeError(text.clone()),
+        // Added by DR-128 (bug 11414): the user variants of reduce errors.
+        InterpreterError::DivisionByZero(text.clone()),
+        InterpreterError::ArithmeticOverflow(text.clone()),
+        InterpreterError::ArgumentOutOfRange(text.clone()),
+        InterpreterError::BundlePermissionError(text.clone()),
+        InterpreterError::ValueTypeError(text.clone()),
+        InterpreterError::TermStructureError(text.clone()),
     ];
     let platform = vec![
         InterpreterError::BugFoundError(text.clone()),

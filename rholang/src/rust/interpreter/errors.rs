@@ -105,6 +105,28 @@ pub enum InterpreterError {
     /// to a recorded process. It depends only on the user's term, so it is a
     /// classified user failure.
     SystemProcessShapeError(String),
+    /// Added by DR-128 (bug 11414): a `/` or `%` divisor is zero. The result
+    /// depends only on the user's operands, so it is a classified user
+    /// failure.
+    DivisionByZero(String),
+    /// Added by DR-128 (bug 11414): an integer result does not fit its
+    /// operand type. It is a classified user failure.
+    ArithmeticOverflow(String),
+    /// Added by DR-128 (bug 11414): an integer method argument lies outside
+    /// the method's domain, such as an `nth` index past the end or a negative
+    /// `dropHead` count. It is a classified user failure.
+    ArgumentOutOfRange(String),
+    /// Added by DR-128 (bug 11414): a send or a receive uses a bundle without
+    /// that permission. It is a classified user failure.
+    BundlePermissionError(String),
+    /// Added by DR-128 (bug 11414): an operand, receiver or argument has a
+    /// type or shape that the operation rejects. It is a classified user
+    /// failure.
+    ValueTypeError(String),
+    /// Added by DR-128 (bug 11414): a process breaks a structural rule at
+    /// evaluation: it has more than 32767 terms. It is a classified user
+    /// failure.
+    TermStructureError(String),
     IoError(String),
     /// Raised when a non-deterministic process (OpenAI, Ollama, gRPC) fails during execution.
     /// Contains the underlying cause and the empty output that would have been produced.
@@ -208,6 +230,15 @@ impl fmt::Display for InterpreterError {
             InterpreterError::SortMatchError(msg) => write!(f, "Sort match error: {}", msg),
 
             InterpreterError::ReduceError(msg) => write!(f, "Reduce error: {}", msg),
+
+            // Added by DR-128 (bug 11414): each user variant keeps the text of
+            // the reduce error that it replaces.
+            InterpreterError::DivisionByZero(msg)
+            | InterpreterError::ArithmeticOverflow(msg)
+            | InterpreterError::ArgumentOutOfRange(msg)
+            | InterpreterError::BundlePermissionError(msg)
+            | InterpreterError::ValueTypeError(msg)
+            | InterpreterError::TermStructureError(msg) => write!(f, "Reduce error: {}", msg),
 
             InterpreterError::MethodNotDefined { method, other_type } => write!(
                 f,

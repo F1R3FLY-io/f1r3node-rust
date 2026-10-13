@@ -100,7 +100,7 @@ prefix.
 
 **Variable substitution**: `Substitute` trait replaces De Bruijn-indexed variables. Each substitution reserves a deterministic `Substitution` source-token event through `MeteredMachine`.
 
-**Arithmetic overflow safety**: Division and negation operations guard against i64 overflow. `i64::MIN / -1` and `i64::MIN.neg()` return `InterpreterError::ReduceError("Arithmetic overflow in ...")` as soft deploy failures rather than panics.
+**Arithmetic overflow safety**: Division and negation operations guard against i64 overflow. `i64::MIN / -1` and `i64::MIN.neg()` return `InterpreterError::ArithmeticOverflow("Arithmetic overflow in ...")` as soft deploy failures rather than panics. The variant is a classified user failure (DR-128).
 
 ## Cost accounting
 

@@ -116,7 +116,15 @@ pub fn classify_errors(
             | IfConditionTypeError { .. }
             // Added by DR-114 (§4.1 option A): a malformed system-process call
             // in native funded execution depends only on the user's term.
-            | SystemProcessShapeError(_) => (Some(PhloFailure::User), None),
+            | SystemProcessShapeError(_)
+            // Added by DR-128 (bug 11414): a reducer error that depends only on
+            // the user's term.
+            | DivisionByZero(_)
+            | ArithmeticOverflow(_)
+            | ArgumentOutOfRange(_)
+            | BundlePermissionError(_)
+            | ValueTypeError(_)
+            | TermStructureError(_) => (Some(PhloFailure::User), None),
             OutOfPhlogistonsError | RSpaceError(SpaceError::OutOfPhlogistons) => {
                 (Some(PhloFailure::Certificate), None)
             }

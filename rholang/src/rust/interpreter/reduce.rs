@@ -428,7 +428,9 @@ impl ReducerCore {
     ) -> Result<(), InterpreterError> {
         let terms = owned_evaluation_terms(par);
         if terms.len() > i16::MAX as usize {
-            Err(InterpreterError::ReduceError(format!(
+            // Changed by DR-128 (bug 11414): a user failure with the same text.
+            // Err(InterpreterError::ReduceError(format!(
+            Err(InterpreterError::TermStructureError(format!(
                 "The number of terms in the Par is {}, which exceeds the limit of {}",
                 terms.len(),
                 i16::MAX
@@ -1444,7 +1446,9 @@ impl ReducerCore {
         let unbundled = match single_bundle(&sub_chan) {
             Some(value) => {
                 if !value.write_flag {
-                    return Err(InterpreterError::ReduceError(
+                    // Changed by DR-128 (bug 11414): a user failure with the same text.
+                    // return Err(InterpreterError::ReduceError(
+                    return Err(InterpreterError::BundlePermissionError(
                         "Trying to send on non-writeable channel.".to_string(),
                     ));
                 } else {
@@ -1888,7 +1892,9 @@ impl ReducerCore {
         let unbndl = match single_bundle(&subst) {
             Some(value) => {
                 if !value.read_flag {
-                    return Err(InterpreterError::ReduceError(
+                    // Changed by DR-128 (bug 11414): a user failure with the same text.
+                    // return Err(InterpreterError::ReduceError(
+                    return Err(InterpreterError::BundlePermissionError(
                         "Trying to read from non-readable channel.".to_string(),
                     ));
                 } else {
@@ -2405,7 +2411,9 @@ impl ReducerCore {
                     })
                 }
 
-                _ => Err(InterpreterError::ReduceError(format!(
+                // Changed by DR-128 (bug 11414): a user failure with the same text.
+                // _ => Err(InterpreterError::ReduceError(format!(
+                _ => Err(InterpreterError::ValueTypeError(format!(
                     "Unexpected compare: {:?} vs. {:?}",
                     v1, v2
                 ))),
@@ -2486,7 +2494,9 @@ impl ReducerCore {
                     match v.expr_instance.unwrap() {
                         ExprInstance::GInt(i) => {
                             let result = i.checked_neg().ok_or_else(|| {
-                                InterpreterError::ReduceError(
+                                // Changed by DR-128 (bug 11414): a user failure with the same text.
+                                // InterpreterError::ReduceError(
+                                InterpreterError::ArithmeticOverflow(
                                     "Arithmetic overflow in negation".to_string(),
                                 )
                             })?;
@@ -2496,7 +2506,9 @@ impl ReducerCore {
                         }
                         ExprInstance::GInt32(i) => {
                             let result = i.checked_neg().ok_or_else(|| {
-                                InterpreterError::ReduceError(
+                                // Changed by DR-128 (bug 11414): a user failure with the same text.
+                                // InterpreterError::ReduceError(
+                                InterpreterError::ArithmeticOverflow(
                                     "Arithmetic overflow in negation".to_string(),
                                 )
                             })?;
@@ -2567,7 +2579,9 @@ impl ReducerCore {
                         (ExprInstance::GInt(lhs), ExprInstance::GInt(rhs)) => {
                             self.metering.reserve_primitive(multiplication_cost())?;
                             let result = lhs.checked_mul(rhs).ok_or_else(|| {
-                                InterpreterError::ReduceError(format!(
+                                // Changed by DR-128 (bug 11414): a user failure with the same text.
+                                // InterpreterError::ReduceError(format!(
+                                InterpreterError::ArithmeticOverflow(format!(
                                     "Arithmetic overflow in multiplication: {} * {}",
                                     lhs, rhs
                                 ))
@@ -2659,12 +2673,16 @@ impl ReducerCore {
                         (ExprInstance::GInt(lhs), ExprInstance::GInt(rhs)) => {
                             self.metering.reserve_primitive(division_cost())?;
                             if rhs == 0 {
-                                return Err(InterpreterError::ReduceError(
+                                // Changed by DR-128 (bug 11414): a user failure with the same text.
+                                // return Err(InterpreterError::ReduceError(
+                                return Err(InterpreterError::DivisionByZero(
                                     "Division by zero".to_string(),
                                 ));
                             }
                             if lhs == i64::MIN && rhs == -1 {
-                                return Err(InterpreterError::ReduceError(
+                                // Changed by DR-128 (bug 11414): a user failure with the same text.
+                                // return Err(InterpreterError::ReduceError(
+                                return Err(InterpreterError::ArithmeticOverflow(
                                     "Arithmetic overflow in division".to_string(),
                                 ));
                             }
@@ -2690,7 +2708,9 @@ impl ReducerCore {
                             self.metering
                                 .reserve_primitive(bigint_division_cost(b1.len(), b2.len()))?;
                             if is_zero_twos_complement(&b2) {
-                                return Err(InterpreterError::ReduceError(
+                                // Changed by DR-128 (bug 11414): a user failure with the same text.
+                                // return Err(InterpreterError::ReduceError(
+                                return Err(InterpreterError::DivisionByZero(
                                     "Division by zero".to_string(),
                                 ));
                             }
@@ -2704,7 +2724,9 @@ impl ReducerCore {
                                 r2.denominator.len(),
                             ))?;
                             if is_zero_twos_complement(&r2.numerator) {
-                                return Err(InterpreterError::ReduceError(
+                                // Changed by DR-128 (bug 11414): a user failure with the same text.
+                                // return Err(InterpreterError::ReduceError(
+                                return Err(InterpreterError::DivisionByZero(
                                     "Division by zero".to_string(),
                                 ));
                             }
@@ -2723,7 +2745,9 @@ impl ReducerCore {
                                 fp2.unscaled.len(),
                             ))?;
                             if is_zero_twos_complement(&fp2.unscaled) {
-                                return Err(InterpreterError::ReduceError(
+                                // Changed by DR-128 (bug 11414): a user failure with the same text.
+                                // return Err(InterpreterError::ReduceError(
+                                return Err(InterpreterError::DivisionByZero(
                                     "Division by zero".to_string(),
                                 ));
                             }
@@ -2765,12 +2789,16 @@ impl ReducerCore {
                         (ExprInstance::GInt(lhs), ExprInstance::GInt(rhs)) => {
                             self.metering.reserve_primitive(modulo_cost())?;
                             if rhs == 0 {
-                                return Err(InterpreterError::ReduceError(
+                                // Changed by DR-128 (bug 11414): a user failure with the same text.
+                                // return Err(InterpreterError::ReduceError(
+                                return Err(InterpreterError::DivisionByZero(
                                     "Modulo by zero".to_string(),
                                 ));
                             }
                             if lhs == i64::MIN && rhs == -1 {
-                                return Err(InterpreterError::ReduceError(
+                                // Changed by DR-128 (bug 11414): a user failure with the same text.
+                                // return Err(InterpreterError::ReduceError(
+                                return Err(InterpreterError::ArithmeticOverflow(
                                     "Arithmetic overflow in modulo".to_string(),
                                 ));
                             }
@@ -2778,17 +2806,21 @@ impl ReducerCore {
                                 expr_instance: Some(ExprInstance::GInt(lhs % rhs)),
                             })
                         }
-                        (ExprInstance::GDouble(_), ExprInstance::GDouble(_))
-                        | (ExprInstance::GFloat32(_), ExprInstance::GFloat32(_)) => {
-                            Err(InterpreterError::ReduceError(
-                                "Modulus not defined on floating point".to_string(),
-                            ))
-                        }
+                        // Changed by DR-128 (bug 11414): two floats reach the arm of equal
+                        // types below, which raises the user failure `OperatorNotDefined`.
+                        // (ExprInstance::GDouble(_), ExprInstance::GDouble(_))
+                        // | (ExprInstance::GFloat32(_), ExprInstance::GFloat32(_)) => {
+                        //     Err(InterpreterError::ReduceError(
+                        //         "Modulus not defined on floating point".to_string(),
+                        //     ))
+                        // }
                         (ExprInstance::GBigInt(b1), ExprInstance::GBigInt(b2)) => {
                             self.metering
                                 .reserve_primitive(bigint_modulo_cost(b1.len(), b2.len()))?;
                             if is_zero_twos_complement(&b2) {
-                                return Err(InterpreterError::ReduceError(
+                                // Changed by DR-128 (bug 11414): a user failure with the same text.
+                                // return Err(InterpreterError::ReduceError(
+                                return Err(InterpreterError::DivisionByZero(
                                     "Modulo by zero".to_string(),
                                 ));
                             }
@@ -2796,7 +2828,9 @@ impl ReducerCore {
                         }
                         (ExprInstance::GBigRat(_), ExprInstance::GBigRat(r2)) => {
                             if is_zero_twos_complement(&r2.numerator) {
-                                return Err(InterpreterError::ReduceError(
+                                // Changed by DR-128 (bug 11414): a user failure with the same text.
+                                // return Err(InterpreterError::ReduceError(
+                                return Err(InterpreterError::DivisionByZero(
                                     "Modulo by zero".to_string(),
                                 ));
                             }
@@ -2822,7 +2856,9 @@ impl ReducerCore {
                                 fp2.unscaled.len(),
                             ))?;
                             if is_zero_twos_complement(&fp2.unscaled) {
-                                return Err(InterpreterError::ReduceError(
+                                // Changed by DR-128 (bug 11414): a user failure with the same text.
+                                // return Err(InterpreterError::ReduceError(
+                                return Err(InterpreterError::DivisionByZero(
                                     "Modulo by zero".to_string(),
                                 ));
                             }
@@ -3250,13 +3286,17 @@ impl ReducerCore {
                             // TODO: Add cases for other ground terms as well? Maybe it would be better
                             // to implement cats.Show for all ground terms. - OLD
                             (ExprInstance::GString(_), value) => {
-                                Err(InterpreterError::ReduceError(format!(
+                                // Changed by DR-128 (bug 11414): a user failure with the same text.
+                                // Err(InterpreterError::ReduceError(format!(
+                                Err(InterpreterError::ValueTypeError(format!(
                                     "Error: interpolation doesn't support {:?}",
                                     get_type(value),
                                 )))
                             }
 
-                            _ => Err(InterpreterError::ReduceError(
+                            // Changed by DR-128 (bug 11414): a user failure with the same text.
+                            // _ => Err(InterpreterError::ReduceError(
+                            _ => Err(InterpreterError::ValueTypeError(
                                 "Error: interpolation Map should only contain String keys"
                                     .to_string(),
                             )),
@@ -3667,7 +3707,9 @@ impl ReducerCore {
                 if ps.len() > nth {
                     Ok(ps[nth].clone())
                 } else {
-                    Err(InterpreterError::ReduceError(format!(
+                    // Changed by DR-128 (bug 11414): a user failure with the same text.
+                    // Err(InterpreterError::ReduceError(format!(
+                    Err(InterpreterError::ArgumentOutOfRange(format!(
                         "Error: index out of bound: {}",
                         nth
                     )))
@@ -3705,15 +3747,23 @@ impl ReducerCore {
                             let p = new_gint_par(b as i64, Vec::new(), false);
                             Ok(p)
                         } else {
-                            Err(InterpreterError::ReduceError(format!(
+                            // Changed by DR-128 (bug 11414): a user failure with the same text.
+                            // Err(InterpreterError::ReduceError(format!(
+                            Err(InterpreterError::ArgumentOutOfRange(format!(
                                 "Error: index out of bound: {}",
                                 nth
                             )))
                         }
                     }
-                    _ => Err(InterpreterError::ReduceError(String::from(
-                        "Error: nth applied to something that wasn't a list or tuple.",
-                    ))),
+                    // Changed by DR-128 (bug 11414): the user failure `MethodNotDefined`,
+                    // as other methods raise for a receiver of the wrong type.
+                    // _ => Err(InterpreterError::ReduceError(String::from(
+                    //     "Error: nth applied to something that wasn't a list or tuple.",
+                    // ))),
+                    other => Err(InterpreterError::MethodNotDefined {
+                        method: "nth".to_string(),
+                        other_type: get_type(other),
+                    }),
                 }
             }
         }
@@ -3805,7 +3855,9 @@ impl ReducerCore {
                             }),
                         },
 
-                        None => Err(InterpreterError::ReduceError(String::from(
+                        // Changed by DR-128 (bug 11414): a user failure with the same text.
+                        // None => Err(InterpreterError::ReduceError(String::from(
+                        None => Err(InterpreterError::ValueTypeError(String::from(
                             "Error: Method can only be called on singular expressions.",
                         ))),
                     }
@@ -3854,7 +3906,9 @@ impl ReducerCore {
                             }),
                         },
 
-                        None => Err(InterpreterError::ReduceError(String::from(
+                        // Changed by DR-128 (bug 11414): a user failure with the same text.
+                        // None => Err(InterpreterError::ReduceError(String::from(
+                        None => Err(InterpreterError::ValueTypeError(String::from(
                             "Error: Method can only be called on singular expressions.",
                         ))),
                     }
@@ -3904,7 +3958,9 @@ impl ReducerCore {
                             }),
                         },
 
-                        None => Err(InterpreterError::ReduceError(String::from(
+                        // Changed by DR-128 (bug 11414): a user failure with the same text.
+                        // None => Err(InterpreterError::ReduceError(String::from(
+                        None => Err(InterpreterError::ValueTypeError(String::from(
                             "Error: Method can only be called on singular expressions.",
                         ))),
                     }
@@ -4334,7 +4390,9 @@ impl ReducerCore {
                         let base_rmap =
                             PathMapCrateTypeMapper::e_pathmap_to_rholang_pathmap(&base_pathmap);
                         if n < 0 {
-                            return Err(InterpreterError::ReduceError(format!(
+                            // Changed by DR-128 (bug 11414): a user failure with the same text.
+                            // return Err(InterpreterError::ReduceError(format!(
+                            return Err(InterpreterError::ArgumentOutOfRange(format!(
                                 "dropHead argument must be non-negative, got: {}",
                                 n
                             )));
@@ -7968,14 +8026,18 @@ impl ReducerCore {
             || !p.unforgeables.is_empty()
             || !p.bundles.is_empty()
         {
-            Err(InterpreterError::ReduceError(String::from(
+            // Changed by DR-128 (bug 11414): a user failure with the same text.
+            // Err(InterpreterError::ReduceError(String::from(
+            Err(InterpreterError::ValueTypeError(String::from(
                 "Error: parallel or non expression found where expression expected.",
             )))
         } else {
             match p.exprs.as_slice() {
                 [e] => Ok(self.eval_expr_to_expr(e, env)?),
 
-                _ => Err(InterpreterError::ReduceError(
+                // Changed by DR-128 (bug 11414): a user failure with the same text.
+                // _ => Err(InterpreterError::ReduceError(
+                _ => Err(InterpreterError::ValueTypeError(
                     "Error: Multiple expressions given.".to_string(),
                 )),
             }
@@ -7993,14 +8055,18 @@ impl ReducerCore {
             || !p.exprs.is_empty()
             || !p.bundles.is_empty()
         {
-            Err(InterpreterError::ReduceError(String::from(
+            // Changed by DR-128 (bug 11414): a user failure with the same text.
+            // Err(InterpreterError::ReduceError(String::from(
+            Err(InterpreterError::ValueTypeError(String::from(
                 "Error: non unforgeable found where unforgeable expected.",
             )))
         } else {
             match p.unforgeables.as_slice() {
                 [e] => Ok(e),
 
-                _ => Err(InterpreterError::ReduceError(
+                // Changed by DR-128 (bug 11414): a user failure with the same text.
+                // _ => Err(InterpreterError::ReduceError(
+                _ => Err(InterpreterError::ValueTypeError(
                     "Error: Multiple unforgeables given.".to_string(),
                 )),
             }
@@ -8015,7 +8081,9 @@ impl ReducerCore {
             && !p.unforgeables.is_empty()
             && !p.bundles.is_empty()
         {
-            Err(InterpreterError::ReduceError(String::from(
+            // Changed by DR-128 (bug 11414): a user failure with the same text.
+            // Err(InterpreterError::ReduceError(String::from(
+            Err(InterpreterError::ValueTypeError(String::from(
                 "Error: parallel or non expression found where expression expected.",
             )))
         } else {
@@ -8038,7 +8106,9 @@ impl ReducerCore {
                         Some(expr_instance) => match expr_instance {
                             ExprInstance::GInt(v) => Ok(v),
 
-                            _ => Err(InterpreterError::ReduceError(
+                            // Changed by DR-128 (bug 11414): a user failure with the same text.
+                            // _ => Err(InterpreterError::ReduceError(
+                            _ => Err(InterpreterError::ValueTypeError(
                                 "Error: expression didn't evaluate to integer.".to_string(),
                             )),
                         },
@@ -8049,7 +8119,9 @@ impl ReducerCore {
                     }
                 }
 
-                _ => Err(InterpreterError::ReduceError(
+                // Changed by DR-128 (bug 11414): a user failure with the same text.
+                // _ => Err(InterpreterError::ReduceError(
+                _ => Err(InterpreterError::ValueTypeError(
                     "Error: Integer expected, or unimplemented expression.".to_string(),
                 )),
             }
@@ -8064,7 +8136,9 @@ impl ReducerCore {
             && !p.unforgeables.is_empty()
             && !p.bundles.is_empty()
         {
-            Err(InterpreterError::ReduceError(String::from(
+            // Changed by DR-128 (bug 11414): a user failure with the same text.
+            // Err(InterpreterError::ReduceError(String::from(
+            Err(InterpreterError::ValueTypeError(String::from(
                 "Error: parallel or non expression found where expression expected.",
             )))
         } else {
@@ -8087,7 +8161,9 @@ impl ReducerCore {
                         Some(expr_instance) => match expr_instance {
                             ExprInstance::GBool(b) => Ok(b),
 
-                            _ => Err(InterpreterError::ReduceError(
+                            // Changed by DR-128 (bug 11414): a user failure with the same text.
+                            // _ => Err(InterpreterError::ReduceError(
+                            _ => Err(InterpreterError::ValueTypeError(
                                 "Error: expression didn't evaluate to boolean.".to_string(),
                             )),
                         },
@@ -8098,7 +8174,9 @@ impl ReducerCore {
                     }
                 }
 
-                _ => Err(InterpreterError::ReduceError(
+                // Changed by DR-128 (bug 11414): a user failure with the same text.
+                // _ => Err(InterpreterError::ReduceError(
+                _ => Err(InterpreterError::ValueTypeError(
                     "Error: Multiple expressions given.".to_string(),
                 )),
             }
@@ -8365,7 +8443,9 @@ macro_rules! sized_int_op {
         let a = <$t>::try_from($lhs).map_err(|_| out_of_range($lhs.to_string()))?;
         let b = <$t>::try_from($rhs).map_err(|_| out_of_range($rhs.to_string()))?;
         let overflow = || {
-            InterpreterError::ReduceError(format!(
+            // Changed by DR-128 (bug 11414): a user failure with the same text.
+            // InterpreterError::ReduceError(format!(
+            InterpreterError::ArithmeticOverflow(format!(
                 "Arithmetic overflow in {}: {}{} {} {}{}",
                 $op.name(),
                 a,
@@ -8381,7 +8461,9 @@ macro_rules! sized_int_op {
             SizedIntOp::Mul => a.checked_mul(b).ok_or_else(overflow)?,
             SizedIntOp::Div => {
                 if b == 0 {
-                    return Err(InterpreterError::ReduceError(
+                    // Changed by DR-128 (bug 11414): a user failure with the same text.
+                    // return Err(InterpreterError::ReduceError(
+                    return Err(InterpreterError::DivisionByZero(
                         "Division by zero".to_string(),
                     ));
                 }
@@ -8389,7 +8471,11 @@ macro_rules! sized_int_op {
             }
             SizedIntOp::Mod => {
                 if b == 0 {
-                    return Err(InterpreterError::ReduceError("Modulo by zero".to_string()));
+                    // Changed by DR-128 (bug 11414): a user failure with the same text.
+                    // return Err(InterpreterError::ReduceError("Modulo by zero".to_string()));
+                    return Err(InterpreterError::DivisionByZero(
+                        "Modulo by zero".to_string(),
+                    ));
                 }
                 a.checked_rem(b).ok_or_else(overflow)?
             }

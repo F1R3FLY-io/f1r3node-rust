@@ -23,7 +23,7 @@ The match covers every `InterpreterError` variant, so a new variant requires an 
 
 | Class | Typed cases | Economic meaning |
 | --- | --- | --- |
-| User | Explicit abort, undefined method or operator (also a method that the method table lacks, DR-125), argument-count mismatch, operand-type mismatch, invalid condition type, exhaustion of the signed limit (DR-113), and a malformed system-process call in native funded execution (DR-114) | May retain an otherwise authorized charge. |
+| User | Explicit abort, undefined method or operator (also a method that the method table lacks, DR-125), argument-count mismatch, operand-type mismatch, invalid condition type, exhaustion of the signed limit (DR-113), a malformed system-process call in native funded execution (DR-114), and a reducer error that depends only on the user's term: a division or modulo by zero, an arithmetic overflow, an argument out of range, a bundle permission error, a value of the wrong type or shape, or a process with too many terms (DR-128) | May retain an otherwise authorized charge. |
 | Platform | Storage failures, host-work rejection, internal defects, missing required protobuf fields, decoding failures, external-service failures in legacy execution, and nondeterministic replay failures | Prevent economic publication. |
 | Certificate | Interpreter or RSpace phlogiston exhaustion | Prevent economic publication under the certified sufficient-funding contract. |
 | Unclassified | Mixed-purpose errors such as `ReduceError`, parser errors, substitution failures, and remaining explicitly matched variants | Prevent economic publication until a more precise typed contract exists. |

@@ -15063,6 +15063,13 @@ Design sections 5.3, 6, 7, 9 and 16 of
   message (economic-failure-policy-decisions.md).
 - `MethodNotDefined` was raised only when a known method met a receiver of the
   wrong type, such as `1.nth(0)`.
+
+**Amendment (DR-128, 2026-10-12).** The `1.nth(0)` example was wrong at HEAD
+`e38ff0de8`. That call raised `ReduceError` with this message:
+`Error: nth applied to something that wasn't a list or tuple.`. Since DR-128 it
+raises `MethodNotDefined`, so the example now holds. The text above stays as
+written.
+
 - `1 + "a"` takes another path. It raises `OperatorExpectedError`, a user
   failure, and is already charged (DR-115).
 - A failing-first probe confirmed the cause at HEAD 88f4176db. The proposer
@@ -15105,6 +15112,11 @@ record does not change them. Examples in `reduce.rs`:
 - `nth` on a value that is not a list or a tuple
 - a method call on an expression that is not singular
 - the two errors of `eval_single_expr`
+
+**Amendment (DR-128, 2026-10-12).** DR-128 classifies these sites as user
+failures. It adds six typed variants and reuses `MethodNotDefined` and
+`OperatorNotDefined`. The join that signs some clauses but not all stays an
+unclassified `ReduceError`, because that rejection is a separate gap.
 
 **Formal models.** No formal file changes. `EconomicFailureSummary.v` models
 the four failure classes. It takes the mapping from error variants to classes
@@ -15386,3 +15398,189 @@ receipts, their discharge and the aggregated demand.
 
 **Cross-refs.** DR-1, DR-66, DR-126. Bug 11419. G3 design v5 section 1.2.
 [Prepaid receipt storage](cost-accounting-impl/prepaid-receipt-storage.md).
+
+## DR-128 — Deterministic user reducer errors are classified user failures (bug 11414)
+
+**Status.** Implemented 2026-10-12 for bug 11414 of epic 8946. The user
+approved the design `design-v1` with one change: the site of a partly signed
+join stays out (item 7).
+
+**Context.**
+
+- A deterministic user reducer error is an evaluation error whose cause is in
+  the user's term alone, such as a division by zero. Every node raises it at
+  the same place.
+- The classifier `classify_errors` maps `ReduceError` and
+  `IllegalArgumentError` to Unclassified on purpose, because each variant has
+  many causes (`economic_failure.rs`).
+- The producer joins the recorded summary with `classify_errors` after
+  execution. A class other than User gives "native offered execution has
+  non-user failure", and the producer quarantines the offer (`producer.rs`).
+  Replay applies the same check (`replay.rs`).
+- So a user could run a term that ends in such an error with no block and no
+  charge. DR-125 closed one site, a call of an unknown method. Bug 11414 lists
+  the others.
+- The policy charges an accepted deterministic failure of user code
+  ([policy decisions](cost-accounting-impl/economic-failure-policy-decisions.md)).
+  It also forbids a default to User for an unknown variant, so each variant
+  needs an explicit class.
+
+**Decision.**
+
+1. Six new variants of `InterpreterError` name the user failures. Each holds
+   the old message, and each shows as "Reduce error: <message>". So the error
+   text and the HTTP status (422, `rholang_execution_error`) do not change.
+2. `classify_errors` maps the six variants to User. `ReduceError` and
+   `IllegalArgumentError` stay Unclassified.
+3. The reducer raises the new variants at 38 sites of `reduce.rs`. Each old
+   line stays as a comment.
+
+   | Variant | Meaning | Sites |
+   | --- | --- | --- |
+   | `DivisionByZero` | A divisor of `/` or `%` is zero | 10: Int, BigInt, BigRat and FixedPoint for `/` and `%`, and the sized integers for `/` and `%` |
+   | `ArithmeticOverflow` | An integer result does not fit its type | 6: Int negation, Int32 negation, Int product, Int quotient and remainder of `i64::MIN` by `-1`, and the sized product, quotient or remainder |
+   | `ArgumentOutOfRange` | An integer method argument is outside the method's domain | 3: `nth` past the end of a list or tuple, `nth` past the end of a byte array, and a negative `dropHead` count |
+   | `BundlePermissionError` | A send or a receive uses a bundle without that permission | 2: the send and the receive |
+   | `ValueTypeError` | An operand, receiver or argument has a type or shape that the operation rejects | 16: the relational operators, the two checks of `%%` interpolation, the receivers of `hexToBytes`, `bytesToHex` and `toUtf8Bytes`, and the ten checks of `eval_single_expr`, `eval_single_unforgeable`, `eval_to_i64` and `eval_to_bool` |
+   | `TermStructureError` | A process has more than 32767 terms at evaluation | 1: the term count of `eval_inner` |
+
+4. Two sites reuse existing user variants, and their text changes:
+   - A `%` of two floats reaches the arm of equal types, which raises
+     `OperatorNotDefined` for `float` or `float32`. The float arm stays as a
+     comment.
+   - `nth` on a value that is not a list, a tuple or a byte array raises
+     `MethodNotDefined`. The error names `nth` and the type of the value. This
+     makes the `1.nth(0)` example of DR-125 true.
+5. Three system-process sites raise `IllegalArgumentError`: a lookup of an
+   unknown URN (`system_processes.rs`), and a grant issue payload that is not
+   one byte array or that exceeds the wire limit (`offered_grants.rs`).
+   - In native execution the dispatcher makes `IllegalArgumentError` the user
+     failure `SystemProcessShapeError` (DR-114, `dispatch.rs`).
+   - In legacy execution the error stays Unclassified, and HTTP reports it
+     with status 400 (`illegal_argument`).
+6. 22 sites of `reduce.rs` stay `ReduceError`, because the user's term alone
+   cannot raise them:
+   - the payer signature and a stored seal of a residue context
+   - the region construction of a send or a receive, where a conflict needs a
+     hash collision
+   - a signed clause whose signature is not canonical after substitution
+   - a missing bound level, a wildcard or a free variable in `eval_var`, and a
+     variable with no instance
+   - the authority errors of `eval_cost_signed_term` and `eval_cost_stack`, an
+     empty token stack and a Unit stack cell
+   - an expression with no instance, and a sized operand out of its range
+7. The rejection of a join that signs some clauses but not all stays an
+   unclassified `ReduceError`. P1's join schema (def:join-schema, P1:1078-1110)
+   allows any grouping of the clauses under signatures. So that rejection is a
+   separate gap, and it will get its own design. `TermStructureError` covers
+   only the term count.
+
+**Consensus notes.**
+
+- Play and replay call the same pure `classify_errors`, so they give the same
+  class.
+- No committed protocol-6 block holds such a run, because the producer
+  dropped each one. So no committed replay changes.
+- Legacy settlement does not read the classes. A processed deploy stores only
+  its `errored` flag, which stays true.
+- Metering and host work do not change. Each raise keeps its place after the
+  same reservations, and the classifier reserves one operation for each error
+  of any variant.
+- Protocol 6 is unreleased and activates with the branch binary (DR-66), so
+  version skew is not a concern.
+- A mixed failure still blocks publication.
+- A reducer defect that returns a value of the wrong shape now charges the
+  user. `MethodNotDefined` and `OperatorExpectedError` already carry this
+  risk.
+- A host-work limit can stop a run before it reaches the term count. With
+  the committed caps, the probe's doubling term stops this way (see
+  Verification). The producer then drops the run with "native offered
+  execution has incomplete byte measurements", as before this change.
+
+**Formal models.** No formal file changes. `EconomicFailureSummary.v` models
+the four failure classes, their union and the retained-charge rule. It takes
+the map from error variants to classes as given. A search of `formal/` finds
+no model that lists `InterpreterError` variants.
+
+**Verification.**
+
+- Failing first, at HEAD `024b4ebcb` with the provisional caps of the
+  working tree:
+  - The offered probes in `offered_funded_api_test.rs` run each case as an
+    owner-direct offer on three validators. A probe has a case at the top
+    level and a case after a COMM. The probe of the term count had one case:
+    a contract that doubles a one-send process fifteen times and then
+    evaluates the 32768 sends.
+  - Hypothesis: each case executes, and the producer then drops it with no
+    block and no charge.
+  - Result: confirmed for all 15 cases of the 8 probes. The proposer recorded
+    "native offered execution has non-user failure" each time. The check
+    before execution rejected no case, so every top-level form stays.
+  - That recorded reason cannot tell the term count from a phlo or host-work
+    stop, because every class other than User gives it. After the fix the
+    probe of the term count passed with the provisional caps. The fix
+    changes nothing before the raise, so that run reached the term count at
+    HEAD too.
+  - The unit tests in `reduce_economic_failure_tests.rs` failed in every
+    case. Each case gave Unclassified with the expected `ReduceError` text,
+    so each term reaches its site. The tests of the six variants have 10, 6,
+    4, 2, 16 and 2 cases, and the property test has 663 cases.
+  - The tests of the two reused variants and of the unknown URN failed on the
+    error value, `ReduceError`.
+  - The negative controls passed: a hand-built `GUint8(256)` and the partly
+    signed join stay an unclassified `ReduceError`.
+- The probe of the term count with the committed caps:
+  - The casper suite with the committed caps failed this probe. The
+    host-work budget stopped the doubling before the term count.
+  - The producer recorded "native offered execution has incomplete byte
+    measurements" with the errors `[HostWorkRejected]`. The run had used
+    268,434,846 of the 268,435,456 permitted verification bytes, and it
+    requested 1,200 more.
+  - The task brief keeps only the unit test if a phlo or host-work limit
+    stops this probe before the term count. So the probe stays as a comment
+    that gives this reason.
+  - The unit test `a_process_with_too_many_terms_is_a_user_failure` covers
+    the site. It runs the same doubling term in the rholang test runtime,
+    where the run reaches the term count. It also evaluates a hand-built
+    process of 32768 terms.
+- After the fix:
+  - The 7 active probes pass on three validators with both cap sets, with
+    the DR-125 probe. Each case is published as failed, and every validator
+    holds one equal receipt. The charge is the billable work and the fee,
+    the payer pays it, and the write rolls back.
+  - Every unit test checks the exact error value, its text and the user class
+    at every site. The property test uses a fixed seed. It covers 32
+    numerators of nine numeric kinds for `/` and `%`, and 32 indices past the
+    end of lists, tuples and byte arrays.
+- Test updates:
+  - `reduce_spec.rs` (8 assertions), `numeric_types_spec.rs` (the macro
+    `assert_err!` and its 12 uses), and the classifier and HTTP tests (the six
+    variants).
+  - One case that the design did not list:
+    `economic_observation_reaches_results_and_isolates_parse_and_reduction_failures`
+    asserted that an abort with `1 / 0` holds User and Unclassified. Now that
+    run holds User alone. A new case pairs the abort with the partly signed
+    join, so the test still checks that a mixed run keeps the unclassified
+    veto.
+- Suites:
+  - rholang and rspace++ (nextest, release): 4238 of 4238 tests pass, with 13
+    skipped.
+  - casper (nextest, release, 8 test threads): 1820 of 1824 tests pass with
+    the provisional caps, and 1818 of 1824 with the committed caps. 14 tests
+    are skipped.
+  - The failures are the known failures: 4 with the provisional caps and 6
+    with the committed caps. Each failure set equals the run of DR-127 test
+    by test.
+  - With the committed caps, the two registry failures show other host-work
+    usage numbers than the DR-127 run. The two committed runs of this change
+    gave different numbers too, with the same production code. So that number
+    varies from run to run, as DR-127 found.
+- `cargo fmt --check`, the workspace doctests and
+  `cargo clippy --workspace --all-targets -- -D warnings` pass. The node tests
+  of the HTTP mapping pass. The documentation syntax, formal source substance
+  and STE checks pass.
+
+**Cross-refs.** DR-66, DR-113, DR-114, DR-115, DR-125, DR-127. Bug 11414.
+[The economic failure observation](cost-accounting-impl/economic-failure-observation.md)
+and
+[the economic failure policy decisions](cost-accounting-impl/economic-failure-policy-decisions.md).

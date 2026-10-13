@@ -406,6 +406,13 @@ fn classify_interpreter_error(ie: &InterpreterError) -> (StatusCode, &'static st
         UserAbortError => (S::UNPROCESSABLE_ENTITY, "user_abort", ie.to_string()),
 
         ReduceError(_)
+        // Added by DR-128 (bug 11414): the user variants of reduce errors.
+        | DivisionByZero(_)
+        | ArithmeticOverflow(_)
+        | ArgumentOutOfRange(_)
+        | BundlePermissionError(_)
+        | ValueTypeError(_)
+        | TermStructureError(_)
         | IfConditionTypeError { .. }
         | MethodNotDefined { .. }
         | MethodArgumentNumberMismatch { .. }
@@ -967,6 +974,13 @@ mod tests {
                     other_type: "Int".to_string(),
                 },
                 InterpreterError::SubstituteError("boom".to_string()),
+                // Added by DR-128 (bug 11414): the user variants of reduce errors.
+                InterpreterError::DivisionByZero("boom".to_string()),
+                InterpreterError::ArithmeticOverflow("boom".to_string()),
+                InterpreterError::ArgumentOutOfRange("boom".to_string()),
+                InterpreterError::BundlePermissionError("boom".to_string()),
+                InterpreterError::ValueTypeError("boom".to_string()),
+                InterpreterError::TermStructureError("boom".to_string()),
             ] {
                 let (status, kind) = classify(CasperError::InterpreterError(err));
                 assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
