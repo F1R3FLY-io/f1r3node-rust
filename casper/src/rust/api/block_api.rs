@@ -661,6 +661,28 @@ impl BlockAPI {
                 }));
             }
             let dag = casper.block_dag().await?;
+            let validator = casper.get_validator().ok_or_else(|| {
+                eyre::Report::new(DeployValidationError {
+                    message: "Deploy was rejected because node has no validator key.".to_string(),
+                })
+            })?;
+            let last_finalized_hash = dag.last_finalized_block();
+            let last_finalized_block = casper
+                .block_store()
+                .get(&last_finalized_hash)?
+                .ok_or_else(|| eyre::eyre!("Last finalized block is missing from block storage"))?;
+            if !last_finalized_block
+                .body
+                .state
+                .bonds
+                .iter()
+                .any(|bond| bond.validator == validator.public_key.bytes)
+            {
+                return Err(eyre::Report::new(DeployValidationError {
+                    message: "Deploy was rejected because node's validator is not bonded."
+                        .to_string(),
+                }));
+            }
             // A deploy admitted now can only ever land in a block that doesn't
             // exist yet — the next one, at `latest_block_number + 1` — never
             // in the current tip, which is already built. block_creator.rs's
