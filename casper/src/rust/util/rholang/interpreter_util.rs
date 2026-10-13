@@ -354,7 +354,13 @@ pub async fn validate_block_checkpoint(
     block_store: &KeyValueBlockStore,
     s: &mut CasperSnapshot,
     runtime_manager: &RuntimeManager,
-    rejected_deploy_buffer: Option<&std::sync::Arc<std::sync::Mutex<block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer>>>,
+    rejected_deploy_buffer: Option<
+        &std::sync::Arc<
+            std::sync::Mutex<
+                block_storage::rust::deploy::key_value_deploy_storage::KeyValueRejectedDeployBuffer,
+            >,
+        >,
+    >,
     floor_ctx: Option<&crate::rust::finality::floor_context::FloorContext>,
     // This node's validator identity. The rejected-deploy buffer is
     // OWNER-SCOPED: only the sender of a rejected copy's carrier buffers
@@ -780,7 +786,13 @@ pub async fn compute_deploys_checkpoint(
     runtime_manager: &RuntimeManager,
     block_data: BlockData,
     invalid_blocks: HashMap<BlockHash, Validator>,
-    rejected_deploy_buffer: Option<&std::sync::Arc<std::sync::Mutex<block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer>>>,
+    rejected_deploy_buffer: Option<
+        &std::sync::Arc<
+            std::sync::Mutex<
+                block_storage::rust::deploy::key_value_deploy_storage::KeyValueRejectedDeployBuffer,
+            >,
+        >,
+    >,
     floor_ctx: Option<&crate::rust::finality::floor_context::FloorContext>,
     local_validator: Option<&Validator>,
 ) -> Result<DeploysCheckpoint, CasperError> {
@@ -1061,7 +1073,13 @@ pub async fn compute_parents_post_state(
     // propose, the block's recorded justifications at validate) — NEVER the live
     // DAG view. The finalized floor is derived from this so it is node-identical.
     latest_messages: &BTreeMap<Validator, BlockHash>,
-    rejected_deploy_buffer: Option<&std::sync::Arc<std::sync::Mutex<block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer>>>,
+    rejected_deploy_buffer: Option<
+        &std::sync::Arc<
+            std::sync::Mutex<
+                block_storage::rust::deploy::key_value_deploy_storage::KeyValueRejectedDeployBuffer,
+            >,
+        >,
+    >,
     // The caller's per-operation derivation context. When present, the
     // floor (and its post-state) come from it instead of a second
     // derivation, and the settled-sig probes share its memo. `None`

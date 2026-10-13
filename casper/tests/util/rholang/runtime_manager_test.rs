@@ -3777,7 +3777,7 @@ async fn consensus_parameters_are_adopted_from_chain_over_local_config() {
     use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
 
-    use block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer;
+    use block_storage::rust::deploy::key_value_deploy_storage::KeyValueRejectedDeployBuffer;
     use block_storage::rust::key_value_block_store::KeyValueBlockStore;
     use casper::rust::casper::{hash_set_casper, CasperShardConf, MultiParentCasper};
     use casper::rust::engine::block_retriever::BlockRetriever;

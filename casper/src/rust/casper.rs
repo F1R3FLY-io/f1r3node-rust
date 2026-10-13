@@ -10,8 +10,9 @@ use block_storage::rust::casperbuffer::casper_buffer_key_value_storage::CasperBu
 use block_storage::rust::dag::block_dag_key_value_storage::{
     BlockDagKeyValueStorage, DeployId, KeyValueDagRepresentation,
 };
-use block_storage::rust::deploy::key_value_deploy_storage::KeyValueDeployStorage;
-use block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer;
+use block_storage::rust::deploy::key_value_deploy_storage::{
+    KeyValueDeployStorage, KeyValueRejectedDeployBuffer,
+};
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use comm::rust::transport::transport_layer::TransportLayer;
 use crypto::rust::signatures::signed::Signed;
@@ -483,7 +484,7 @@ pub struct CasperShardConf {
     pub max_parent_depth: i32,
     pub synchrony_constraint_threshold: f32,
     pub height_constraint_threshold: i64,
-    // Validators will try to put deploy in a block only for next `deployLifespan` blocks.
+    // Validators will try to put deploy in a block only for next `deploy_lifespan` blocks.
     // Required to enable protection from re-submitting duplicate deploys
     pub deploy_lifespan: i64,
     /// Wall-clock ceiling on user-deploy execution per proposed block
