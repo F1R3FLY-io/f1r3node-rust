@@ -171,7 +171,9 @@ tasks:
       decision: "https://github.com/F1R3FLY-io/f1r3node-rust/pull/651#issuecomment-6136089479"
       design_reference: "https://github.com/F1R3FLY-io/f1r3node-rust/blob/6609305bbde5a13ab6df4d1f0877bfbe53e74f2a/docs/designs/replication-boundary.md"
       lifecycle_scope: "D7 retains ConsensusRuntime and ConsensusAdapter. ReplicationMedium remains a separate semantic contract."
-      local_validation: "Step 6 passed 69 focused Rust tests after synchronization with dev at 0f3943d64. Release build, strict workspace Clippy, formatting, whitespace, two benchmark checks, and five CI script checks passed. Socket-based integration tests ran outside the sandbox."
+      upstream_storage: "PR #676 on dev unifies the deploy-store implementation while retaining separate pending and rejected stores. Generic node service ownership remains a follow-up."
+      local_validation: "After synchronization with dev at 91b73256b, 1062 selected Rust tests passed. These cover the block-storage, Casper, and node libraries, six node compatibility targets, and the shared runtime. Release build, strict workspace Clippy, formatting, whitespace, and release-train fixture checks passed. Socket tests ran outside the sandbox."
+      integration_limit: "An earlier broad Casper integration run on f335bf197 exceeded its 1800-second command budget. It did not complete. Current library and focused tests do not replace full integration acceptance."
       network_validation: "An earlier network attempt selected 124 tests before synchronization with 0f3943d64. The run stopped after three passes and one slow-deploy convergence failure when the host memory guard terminated the nodes. The remaining 120 tests did not run."
       baseline_comparison: "The isolated slow-deploy test also hit the memory guard on unchanged dev at 5ec6b542f. Host memory differed between attempts. This result does not establish a performance comparison or an accepted exception."
       pending_acceptance: "The updated implementation still requires ci-heavy, network acceptance, and the dev merge queue. Local checks do not complete these gates."
@@ -179,7 +181,7 @@ tasks:
       shared_deploy_pool:
         status: pending
         decision: "D3 retains shared deploy admission, the deploy pool, and the rejected-deploy buffer as generic node services."
-        scope: "Extract these services from the transitional adapter-owned submission path. Each mechanism retains deploy selection, ordering, and protocol-specific validation."
+        scope: "Extract these services from the transitional adapter-owned submission path and reuse the shared deploy-store implementation from #676. Each mechanism retains deploy selection, ordering, and protocol-specific validation."
         coordination: "Assign a separate task identifier with the #627 owner. This extraction is outside PR #651."
     acceptance:
       - "The acceptance criteria of issue #624 pass."

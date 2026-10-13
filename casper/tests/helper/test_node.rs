@@ -67,7 +67,7 @@ pub struct TestNode {
     pub block_dag_storage: BlockDagKeyValueStorage,
     pub deploy_storage: Arc<parking_lot::Mutex<KeyValueDeployStorage>>,
     pub rejected_deploy_buffer: Arc<
-        Mutex<block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer>,
+        Mutex<block_storage::rust::deploy::key_value_deploy_storage::KeyValueRejectedDeployBuffer>,
     >,
     pub runtime_manager: RuntimeManager,
     // Note: no log field, logging will come from log crate
@@ -1138,7 +1138,7 @@ impl TestNode {
             max_parent_depth: max_parent_depth.unwrap_or(30),
             synchrony_constraint_threshold: synchrony_constraint_threshold as f32,
             height_constraint_threshold: i64::MAX,
-            // Validators will try to put deploy in a block only for next `deployLifespan` blocks.
+            // Validators will try to put deploy in a block only for next `deploy_lifespan` blocks.
             // Required to enable protection from re-submitting duplicate deploys
             deploy_lifespan: deploy_lifespan.unwrap_or(50),
             casper_version: 1,
