@@ -4,8 +4,18 @@
 //! Phase one sorts by (source hash, index) and reads only the precomputed
 //! `Produce`/`Consume` hashes. Phase two re-sorts each run of two or more equal
 //! source hashes by (digest, index), so a digest is computed only for a member
-//! of such a run. Play, directive replay and metered native replay share this
-//! function, so they choose the same candidate.
+//! of such a run.
+//!
+//! Changed by DR-129: restored dev's randomized candidate order (user decision
+//! 2026-10-12). Play shuffles its candidates at random again
+//! (`RSpace::shuffle_with_index`), and replay follows the recorded pick. This
+//! order is now the internal order of replay only: directive replay
+//! (`native_candidate.rs`) and metered native replay
+//! (`native_candidate/metered.rs`), whose host-work charges must agree from
+//! replay to replay. Before DR-129, play, directive replay and metered native
+//! replay shared this function, so they chose the same candidate. A play join
+//! that names one channel twice orders that channel by source hash (E1 of
+//! DR-129, `space_matcher.rs`), which agrees with this order.
 //!
 //! Formal model:
 //! `formal/rocq/cost_accounted_rho/theories/CandidateSourceOrder.v`
@@ -43,9 +53,9 @@ impl<T: CandidateSource + ?Sized> CandidateSource for Arc<T> {
     fn source_hash(&self) -> &Blake2b256Hash { (**self).source_hash() }
 }
 
-/// The primitive work of the canonical order. [`Unmetered`] serves play and
-/// directive replay. Metered native replay reserves host work before each
-/// primitive.
+/// The primitive work of the canonical order. [`Unmetered`] serves directive
+/// replay (and served play before DR-129). Metered native replay reserves host
+/// work before each primitive.
 pub(crate) trait OrderWork<D> {
     type Error;
 
@@ -221,6 +231,82 @@ pub(crate) fn encoded_order<D: Serialize>(ordered: &[(D, i32)]) -> Vec<(Vec<u8>,
             (bincode::serialize(value).expect("test candidate serializes"), *index)
         })
         .collect()
+}
+
+// Moved by DR-129 from `space_matcher.rs` (a `dev` file), with no change in
+// behavior, so that the dev file keeps only dev's code and E1.
+// Legacy (digest, index) candidate order. Production now uses the canonical
+// (source hash, digest, index) order in `candidate_order::canonical_candidates`
+// (I1, DR-75), which digests only tie runs. This body stays as the test oracle
+// that `NativeCandidateDigestCache.v` and
+// `hash_once_order_equals_per_comparison_hash_order` cover.
+#[cfg(test)]
+pub(crate) fn deterministic_candidates<D: serde::Serialize>(data: Vec<D>) -> Vec<(D, i32)> {
+    if data.len() <= 1 {
+        return data.into_iter().map(|datum| (datum, 0)).collect();
+    }
+    use crate::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+    let hash =
+        |candidate: &D| Blake2b256Hash::new(&bincode::serialize(candidate).unwrap_or_default());
+    let mut indexed: Vec<_> = data
+        .into_iter()
+        .enumerate()
+        .map(|(index, datum)| {
+            let digest = hash(&datum);
+            (datum, index as i32, digest)
+        })
+        .collect();
+    indexed.sort_by(|(_, left_index, left_hash), (_, right_index, right_hash)| {
+        left_hash
+            .cmp(right_hash)
+            .then_with(|| left_index.cmp(right_index))
+    });
+    indexed
+        .into_iter()
+        .map(|(datum, index, _)| (datum, index))
+        .collect()
+}
+
+#[cfg(test)]
+mod deterministic_candidates_tests {
+    use super::deterministic_candidates;
+    use crate::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+
+    fn per_comparison_hash_order<D: serde::Serialize>(data: Vec<D>) -> Vec<(D, i32)> {
+        let hash = |candidate: &D| {
+            Blake2b256Hash::new(&bincode::serialize(candidate).expect("test candidate serializes"))
+        };
+        let mut indexed: Vec<(D, i32)> = data
+            .into_iter()
+            .enumerate()
+            .map(|(index, datum)| (datum, index as i32))
+            .collect();
+        indexed.sort_by(|(left, left_index), (right, right_index)| {
+            hash(left)
+                .cmp(&hash(right))
+                .then_with(|| left_index.cmp(right_index))
+        });
+        indexed
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig::with_cases(512))]
+
+        /// Extracted from `NativeCandidateDigestCache.v`:
+        /// `cached_comparison_is_original_comparison` and
+        /// `caching_preserves_candidate_order`. Hashing each candidate once yields
+        /// the same order as hashing inside every comparison, including duplicate
+        /// candidates (index tie-break) and the `n <= 1` fast path.
+        #[test]
+        fn hash_once_order_equals_per_comparison_hash_order(
+            data in proptest::collection::vec((0u8..4, "[a-c]{0,3}"), 0..12),
+        ) {
+            proptest::prop_assert_eq!(
+                deterministic_candidates(data.clone()),
+                per_comparison_hash_order(data)
+            );
+        }
+    }
 }
 
 #[cfg(test)]

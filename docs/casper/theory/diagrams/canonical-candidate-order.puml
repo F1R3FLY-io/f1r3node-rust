@@ -2,10 +2,14 @@
 ' Phase one sorts candidates by (source hash, store index) and reads only the
 ' precomputed Produce/Consume hashes. Phase two re-sorts each run of two or
 ' more equal source hashes by (digest, store index), so only tie-run members
-' are serialized and hashed. Play, directive replay and metered native replay
-' share the function, so they choose the same candidate.
+' are serialized and hashed. Since DR-129 the order is the internal order of
+' directive replay and metered native replay: play shuffles its candidates at
+' random again, as on dev, and replay follows the recorded pick. (Before
+' DR-129, play, directive replay and metered native replay shared the function,
+' so they chose the same candidate.)
 '
-' Source of truth: docs/casper/theory/cost-accounting-decision-records.md (DR-75);
+' Source of truth: docs/casper/theory/cost-accounting-decision-records.md (DR-75,
+'                  DR-129);
 '                  rspace++/src/rspace/candidate_order.rs (canonical_order,
 '                  Unmetered); rspace++/src/rspace/replay_rspace/native_candidate/
 '                  metered.rs (MeteredOrder).
@@ -24,7 +28,7 @@ skinparam ArrowColor $ca_neutral
 skinparam ActivityBorderColor #333333
 skinparam ActivityDiamondBackgroundColor $ca_control
 skinparam ActivityDiamondBorderColor #333333
-title Canonical candidate order: source hash first, digest only for ties (DR-75)
+title Canonical candidate order of replay: source hash first, digest only for ties (DR-75, DR-129)
 
 start
 :read the candidates of one channel (or channel group)
@@ -54,7 +58,8 @@ repeat
 repeat while (another run?) is (yes)
 -> no;
 :canonical order <latex>(h(c),\, d(c),\, i(c))</latex>
-the same in play, directive replay and metered native replay; <<$ca_note_green>>
+the internal order of directive replay and metered native replay
+(play shuffles at random since DR-129); <<$ca_note_green>>
 stop
 
 note right

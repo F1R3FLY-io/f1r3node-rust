@@ -174,6 +174,13 @@ impl Match<BindPattern, ListParWithRandom, TaggedContinuation> for Matcher {
         guard_passes(guard, &combined)
     }
 
+    /// Added by DR-129 (E3-a): `check_commit` vetoes only through a guard
+    /// that is present and not empty, so exactly those continuations may
+    /// veto.
+    fn commit_may_veto(&self, k: &TaggedContinuation) -> bool {
+        k.guard.as_ref().is_some_and(|guard| !is_empty_par(guard))
+    }
+
     // Changed by D-M6 (DR-88): the matched data are borrowed.
     // matched: &[ListParWithRandom],
     fn check_commit_metered(
@@ -733,5 +740,41 @@ mod metered_tests {
         }
         drop(meter);
         assert_eq!(actual.into_inner(), expected.into_inner());
+    }
+
+    /// Added by DR-129 (E3-a, risk R2): `commit_may_veto` is false only for a
+    /// continuation whose commit cannot veto. A continuation with no guard or
+    /// an empty guard never vetoes. Every other guard may, so the Stored check
+    /// of replay skips it, even a guard that is the literal `true`.
+    #[test]
+    fn commit_may_veto_marks_every_continuation_whose_commit_can_veto() {
+        let matcher = Matcher;
+        let samples = [Vec::new(), vec![binding(vec![bool_par(true)])], vec![
+            binding(vec![bool_par(false)]),
+        ]];
+        let cases = [
+            (None, false),
+            (Some(Par::default()), false),
+            (Some(bool_par(true)), true),
+            (Some(bool_par(false)), true),
+            (Some(bound_var_par(0)), true),
+        ];
+        let mut vetoed = 0;
+        for (guard, may_veto) in cases {
+            let continuation = continuation_with(guard.clone(), 2);
+            assert_eq!(
+                matcher.commit_may_veto(&continuation),
+                may_veto,
+                "{guard:?}"
+            );
+            for matched in &samples {
+                let committed = matcher.check_commit(&continuation, matched);
+                if !committed {
+                    vetoed += 1;
+                    assert!(may_veto, "{guard:?} vetoed {matched:?}");
+                }
+            }
+        }
+        assert!(vetoed >= 2, "the fixture must exercise a veto");
     }
 }

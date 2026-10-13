@@ -1808,6 +1808,15 @@ where
                     continue;
                 }
             }
+            // Added by DR-129 (E3-a): the frozen selection mirrors the Stored
+            // check of the live selection, which skips a continuation whose
+            // commit can veto and charges one operation for the check.
+            if expected.is_none() {
+                reader.meter.reserve(1, 0, 0)?;
+                if space.matcher.commit_may_veto(&continuation.continuation) {
+                    continue;
+                }
+            }
             let Some(data_candidates) = legacy_positioned_match_data(
                 space,
                 &channels,

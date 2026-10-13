@@ -835,6 +835,10 @@ mod history_decode_tests;
 #[path = "tests/store_keys.rs"]
 mod store_key_tests;
 
+// Added by DR-129 (M34): F4-F6 of the random-order restoration.
+#[path = "tests/random_candidate_order.rs"]
+mod random_candidate_order_tests;
+
 /// DR-113: a native charge past a signed limit is the classified user failure
 /// `SignedLimitExhausted`, and its charge is retained. The same charge past a
 /// certified bound stays the certificate failure `OutOfPhlogistonsError`.

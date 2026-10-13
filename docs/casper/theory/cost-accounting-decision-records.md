@@ -5257,6 +5257,25 @@ greedy candidate stores the operation without an exhaustive search. Before
 the change, the second test failed, because the canonical order put the
 guard-approved candidate first.
 
+**Amendment (DR-129, 2026-10-13).** DR-129 restores `dev`'s random shuffle
+in play (user decision 2026-10-12). Replay follows the recorded pick, so
+play does not need this order. The text above stays as written, with these
+changes:
+
+- Decision item 4 now holds for directive replay and metered native replay
+  only. Play calls `shuffle_with_index` with `dev`'s body again.
+- The context overstates the need. Play and replay need one order only for
+  a join that names one channel twice (E1) and for the Stored check (E3).
+  DR-129 closes both with local fixes.
+- The legacy (digest, index) oracle of item 5 moved to `candidate_order.rs`,
+  with no change in behavior.
+- `NativeCandidateOrder.tla` now lets play pick any matching candidate, and
+  replay follows the recorded payload. The control
+  `NativeCandidateOrderReplaySourceMatchUnsafe` replaces
+  `NativeCandidateOrderReplayNoTieBreakUnsafe`.
+- The diagram above now names the order of replay.
+- DR-129 lists the changes to the three directive-replay tests.
+
 **Cross-refs.** DR-72, DR-74. Leaves `ofp-2-perf-ordering` and
 `ofp-2-cap-root-causes`.
 
@@ -15584,3 +15603,253 @@ no model that lists `InterpreterError` variants.
 [The economic failure observation](cost-accounting-impl/economic-failure-observation.md)
 and
 [the economic failure policy decisions](cost-accounting-impl/economic-failure-policy-decisions.md).
+
+## DR-129 — Play picks at random again, and replay keeps the canonical order (M34)
+
+**Status.** Implemented 2026-10-13 for the M34 recheck of epic 8946. The
+user approved the M34 restoration plan on 2026-10-12, with these items:
+
+- play back to `dev`'s code
+- the canonical order as the own order of replay
+- E1, E3-a, and the R3 fix after a failing test
+- the tests and the formal updates
+
+E2 stays out.
+
+**Terms.**
+
+- A pick is the candidate that an RSpace operation matches when two or
+  more candidates satisfy its patterns.
+- The canonical order is the order of DR-75. It is lexicographic in source
+  hash, digest and store index.
+- A repeated channel is a channel that one join names more than once at
+  run time.
+- The Stored check is the native replay of an operation that play stored.
+  Replay runs its greedy match with no recorded identity, and a match is a
+  mismatch.
+
+**Context.**
+
+- `dev` shuffles the candidates of each play operation at random
+  (`shuffle_with_index`). DR-75 replaced the shuffle with the canonical
+  order, because it held that play and native replay must choose the same
+  candidate.
+- Every replay role follows the recorded pick. Native replay filters its
+  candidates by the recorded COMM, and legacy replay reads the recorded
+  COMMs. So agreement on the pick needs no shared order.
+- The order matters at the replay boundary in two cases only:
+  - E1, a repeated channel. The COMM records the set of produces, not which
+    datum went to which pattern. Replay works the assignment out again, so
+    another play order gives other bindings. `dev` has this defect too.
+  - E3, the Stored check. Play tries one greedy tuple and stores the
+    operation when a commit guard vetoes it. The greedy pass of replay, in
+    canonical order, can find a tuple that passes and report a mismatch.
+- Play does not count the candidate scan. Replay host work must agree only
+  from replay to replay (DR-79 item 4, DR-100, DR-102).
+- No charge depends on the order beyond the pick. This holds for phlo
+  charges, byte charges, receipts, evidence fields and settlement inputs.
+- The standing rule of the user keeps `dev`'s version of everything that
+  the correctness or the completeness of cost accounting does not need.
+
+**Decision.**
+
+1. Play returns to `dev`'s code. `RSpace::shuffle_with_index` shuffles with
+   `rand::rng()`, as on `dev`. The canonical body stays as a comment.
+2. Replay keeps the canonical order as its own internal order. Directive
+   replay (`native_candidate.rs`) and metered native replay
+   (`native_candidate/metered.rs`) use it. Every replay charges the same
+   host work for it.
+3. E1. `order_repeated_channels` in `space_matcher.rs` gives the list of
+   each repeated channel one stable order by source hash, with the incoming
+   datum of a produce first. The greedy assignment of play is then the
+   assignment that replay finds. The change reaches play consume and
+   produce, legacy replay and the unmetered oracle.
+4. E3-a. `Match::commit_may_veto` (default false) tells whether
+   `check_commit` can veto a continuation. The Rholang matcher answers true
+   for a guard that is present and not empty. The Stored check skips such a
+   continuation in the metered session and in the unmetered oracle. The
+   metered check reserves one operation, as the metered commit check does.
+5. R3. `extract_first_match` restores a rollback in reverse order. A
+   repeated channel is saved once for each match, so the whole list, which
+   is saved first, is written back last. The fix applies because F7 failed
+   first.
+6. The test oracle `deterministic_candidates` and its property test moved
+   from `space_matcher.rs` to `candidate_order.rs`, with no change in
+   behavior.
+7. E2 stays out. Two continuations with one identity and other peeks cannot
+   occur in Rholang, because each continuation carries a random state.
+
+**Algorithm (literate form).** E1 is one chunk at the start of each greedy
+match over the channel-pattern pairs of a join.
+
+```text
+⟨order repeated channels⟩ ≡
+  for each channel x that the pairs name at least twice, at its first pair:
+    L ← the candidate list of x
+    key(c) = (index(c) ≠ −1, h(c))        -- the incoming datum first, then the source hash.
+    if L is not sorted by key:
+      save L in the rollback
+      sort L by key, keeping the order of equal keys.
+```
+
+E3-a adds one step to each candidate continuation of the Stored check.
+
+```text
+⟨Stored check⟩ ≡
+  for each candidate continuation k, in canonical order:
+    reserve one operation
+    if commit_may_veto(k): skip k
+    if the greedy match of k succeeds: report a mismatch
+  accept the stored operation
+```
+
+**Why the parts agree.**
+
+- Play picks, for each pattern, the first datum in its order that matches.
+  A datum before the pick that play did not take fails that pattern.
+- Replay keeps only the recorded data and takes, for each pattern, the
+  first match in its own order. When the two orders agree on the recorded
+  data, replay takes the datum that play took.
+- E1 makes the orders agree for a repeated channel, because phase one of the
+  canonical order sorts by source hash too
+  (`CandidateSourceOrder.filter_commutes_with_canonical_sort`).
+- Data with one source hash have equal pars and random state, so a tie
+  changes no binding.
+- With E1, a continuation with no veto that replay can match is one that
+  play can match too. So the Stored check rejects only a false claim.
+- A continuation that can veto may reject the tuple of play and accept the
+  tuple of replay. E3-a therefore skips it.
+
+**Remaining differences from `dev` in the changed `dev` files.** Each one
+serves cost accounting.
+
+- `ops_produce.rs` and `ops_consume.rs` keep the accounting observer of
+  each operation and its COMM, and the produce counter of the incoming
+  datum in the COMM. Native metering reads them.
+- Both files also retire matched data in descending store index. The
+  native replay session retires in the same order
+  (`native_session/result.rs`), so a repeated channel loses the same data
+  in play and in replay.
+- `space_matcher.rs` keeps E1 and R3 of this record.
+- The `Match` trait of rspace++ keeps `get_metered` and
+  `check_commit_metered` (DR-88) and `commit_may_veto` (this record).
+- `rspace++/Cargo.toml` keeps the serde `rc` feature. The canonical order of
+  replay digests shared continuations, which needs it.
+- The candidate order of play is `dev`'s.
+
+**Consensus notes.**
+
+- The branch accepts only fresh-genesis networks (DR-6, DR-34), so no
+  network mixes `dev` nodes and branch nodes.
+- Play picks at random in every ambiguous operation, as on `dev`. Replay
+  follows the record, so the block of an honest producer replays on every
+  validator.
+- E1 changes the pick of play only for a repeated channel. Protocol 6 is
+  unreleased and activates with the branch binary (DR-66).
+- E3-a changes when native replay accepts a block. It accepts a Stored
+  claim on a continuation whose commit can veto, as `dev`'s replay accepts
+  every Stored claim.
+- No wire, evidence or receipt format changes.
+
+**Residual risks.**
+
+- R1. A dishonest producer can claim Stored on a guarded continuation, as
+  `dev` allows.
+- R2. A matcher that overrides `check_commit` but not `commit_may_veto`
+  makes the Stored check unsound. A unit test pins the Rholang matcher.
+- R6. A user can still grind source hashes to win a join on a repeated
+  channel. No test can catch this.
+- E4. Two data that differ only in Produce metadata need equal pars and
+  random state, so a Rholang run cannot make them.
+- R7. G3 design v7 depends on the shared order: its join residual and its
+  Stored detector. The G3 v8 review must account for this record.
+- A comment in the metered tests cites pgmcp bug 10137. After a vetoed
+  join on a repeated channel, play and the metered selection could choose
+  other data. R3 matches that defect. This record fixes R3 in play, and
+  the comment stays as written.
+
+**Formal models.**
+
+- `NativeCandidateOrder.tla` now lets play pick any candidate that
+  satisfies the pattern. Replay retires the first candidate, in canonical
+  order, that satisfies the pattern and equals the recorded payload.
+- `PlayReplayAgree` now also requires that the two stores keep one
+  multiset. `InsertionIndependent` now states the order of replay. The old
+  definitions stay as comments.
+- The control `NativeCandidateOrderReplaySourceMatchUnsafe` replaces
+  `NativeCandidateOrderReplayNoTieBreakUnsafe`. The new control lets replay
+  follow the recorded source hash only, and it violates `PlayReplayAgree`.
+  The old control violates nothing now. Its cfg keeps a superseded header.
+- `CandidateSourceOrder.v` keeps its 14 theorems. Its header names replay
+  and marks the role in play as superseded. `PROOF_ARTIFACTS.md` says the
+  same.
+- `TranslationFaithfulness.v` has an amendment comment after the PR #466
+  section. The corollary on parallel symmetry models no candidate choice,
+  so it stays true.
+- `NativeCandidateDigestCache.v` does not change.
+
+**Verification.**
+
+- Failing first, in the order of the plan:
+  - F1-F3 (`random_candidate_order_tests`, rspace++) ran at HEAD code. F1
+    picked only one of three data in 200 runs, and F2 fired only one of
+    three continuations. In F3 every run picked the canonical first datum.
+  - After the restore of the shuffle, F1-F3 pass.
+  - F4 (E1) and F5 (E3) first replayed through the legacy replay only. F4
+    failed in 22 of 64 runs, and F5 passed, because that replay has no
+    Stored check. Both now replay through the native replay session too.
+  - After the restore, F4 failed in 66 of 128 runs: 32 of 64 in the native
+    session and 34 of 64 in the legacy replay. F5 failed in 33 of 128 runs,
+    all with the guard that accepts the canonical first datum.
+  - After E1, F4 passes, and F5 still fails in 30 of 128 runs.
+  - After E3-a, F5 passes. F6 passes with 512 cases over nine families of
+    terms. Each family except the repeated channel shows two or more picks,
+    and E1 gives the repeated channel one pick by design.
+  - F7 (R3) passed at HEAD, because the canonical order tried the accepted
+    continuation first. After the restore it failed in 31 of 64 runs, and
+    after E1 and E3-a in 38 and 33 of 64 runs. After the R3 fix it passes.
+  - A unit test pins `commit_may_veto` of the Rholang matcher to the
+    continuations whose commit can veto (risk R2).
+- Tests that the restoration broke. Each fix keeps the old code as a
+  comment:
+  - `store_consumes_greedy_guard_veto_without_exhaustive_search`, rewritten
+    as the plan says. It runs 64 times and replays Store or AcceptedComm,
+    as play stored or fired. The two other directive tests keep their logic,
+    with new comments and `commit_may_veto` overrides.
+  - `compacted_schedule_equals_legacy_schedule` (DR-84), which compared the
+    whole logs of two plays. Two of its four terms meet a choice, so for them
+    it compares the sorted produces and consumes, the COMM count and the root
+  - the frozen metered selection of two charge-parity tests, which now
+    mirrors the one operation of E3-a
+  - the rspace++ source guard, which now requires `dev`'s shuffle
+- The plan named five rholang spec tests that would break. Three broke in
+  three runs: the competing produces, the guarded match and the persistent
+  receive. They now replay each run and require the known outcomes.
+- The other two stay canonical in 72 plays each, because the scheduler runs
+  the sends first. They have a DR-129 note and no other change.
+- Suites (nextest, release), each three times under each cap set:
+  - rholang and rspace++: 4246 of 4246 tests pass in all six runs, with 13
+    skipped. The baselines at `717a33b16` have 4238 of 4238.
+  - casper (8 test threads): 1820 of 1824 tests pass in each provisional
+    run, and 1818 of 1824 in each committed run, with 14 skipped. Each
+    failing set equals the run of DR-128 (`717a33b16`) test by test.
+  - The sorted panic messages equal those of DR-128. The committed runs
+    differ only in the host-work usage numbers of the two registry tests,
+    which vary from run to run (DR-127).
+  - The offered API tests (admission, capture, funded, gateway slot, guard,
+    prepaid, source cap) ran in each casper run. Admission (14 tests),
+    capture, guard and prepaid pass in every run. The other failures are
+    the known failures of each cap set: the two registry tests and two
+    gateway-slot tests under the committed caps, and one gateway-slot test
+    and the source-cap test under the provisional caps.
+- `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`
+  and the workspace doctests pass.
+- The proof gate in cost-accounting-only mode passes: 292 modules and 3,353
+  closed assumption queries. The new comment lines moved the Rocq line count
+  to 113,371, and the verification document now states that count.
+- The TLA gate for `NativeCandidateOrder` passes: the two safe
+  configurations and three refutations, among them the new control.
+- The documentation syntax, formal source substance and STE checks pass.
+
+**Cross-refs.** DR-6, DR-34, DR-66, DR-75, DR-79, DR-88, DR-100, DR-102,
+DR-107. [The canonical candidate order diagram](diagrams/canonical-candidate-order.svg).

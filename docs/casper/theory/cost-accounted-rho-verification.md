@@ -48,7 +48,7 @@ become channels, tokens become messages on those channels, and signed
 processes must consume fuel before they can communicate.
 
 This article presents a machine-checked proof of that claim, mechanized
-in **Rocq 9.1.1** across 292 modules and 113,345 lines of development, and
+in **Rocq 9.1.1** across 292 modules and 113,371 lines of development, and
 complements it with a **TLA+** finite-state model verified by TLC. The required
 aggregate gate also cross-checks symbolic N-ary authority, the typed threat and
 search-frontier models, and replay-root materialization with Apalache. The
@@ -555,7 +555,7 @@ This article proves that claim. Concretely, we contribute:
    calculus, its compositional translation back into pure rho, and the
    infrastructure (`Split`, `Join`, persistent mediators) required to
    discharge the paper's five reduction rules (Section 5). The
-   development spans 292 modules and 113,345 lines, with 5,866 `Qed.` or
+   development spans 292 modules and 113,371 lines, with 5,866 `Qed.` or
    `Defined.` proof obligations and zero `Admitted` / `admit` /
    `Axiom` declarations.
 
@@ -721,7 +721,7 @@ the proof context.
 | Metric                                           | Value                                                      |
 |--------------------------------------------------|------------------------------------------------------------|
 | Rocq source files                                | 292 modules                                                |
-| Total lines of Rocq                              | 113,345                                                    |
+| Total lines of Rocq                              | 113,371                                                    |
 | Proven lemmas and theorems (`Qed.` / `Defined.`) | 5,866                                                      |
 | `Admitted` / `admit`                             | **0**                                                      |
 | Named `Axiom` declarations                       | **0**                                                      |

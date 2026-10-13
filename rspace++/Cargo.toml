@@ -13,12 +13,15 @@ doctest = false
 shared = { path = "../shared" }
 bincode = { workspace = true }
 heed = { workspace = true }
-# `rc` is load-bearing, not incidental: the replay-deterministic candidate
-# ordering (`shuffle_with_index` → `deterministic_candidate_hash`) serializes
-# `Arc<WaitingContinuation>` candidates (Arc-wrapped by the sharded hot store),
-# which needs serde's `impl Serialize for Arc<T>`. Declaring it here keeps the
-# crate self-contained instead of depending on feature unification from a
-# sibling crate (the fuzz workspace builds this crate without those siblings).
+# `rc` is load-bearing, not incidental: the canonical candidate order of replay
+# (`candidate_order::canonical_order`, used by `native_candidate.rs` and
+# `native_candidate/metered.rs`) digests `Arc<WaitingContinuation>` candidates
+# (Arc-wrapped by the sharded hot store), which needs serde's
+# `impl Serialize for Arc<T>`. Since DR-129 play shuffles at random again
+# (`shuffle_with_index`, as on dev) and serializes no candidate. Declaring it
+# here keeps the crate self-contained instead of depending on feature
+# unification from a sibling crate (the fuzz workspace builds this crate
+# without those siblings).
 serde = { workspace = true, features = ["rc"] }
 serde_json = { workspace = true }
 dashmap = { workspace = true, features = ["raw-api"] }

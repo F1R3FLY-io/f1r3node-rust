@@ -860,6 +860,17 @@ where
                 return Ok(None);
             }
         }
+        // Added by DR-129 (E3-a): with no recorded identity this call is the
+        // Stored check (`native_session/operations.rs`). It skips a
+        // continuation whose commit can veto, because play, in dev's random
+        // order, may have tried another tuple and stored. One operation pays
+        // for the check, as the metered commit check does.
+        if expected.is_none() {
+            reader.meter.reserve(1, 0, 0)?;
+            if self.matcher.commit_may_veto(continuation) {
+                return Ok(None);
+            }
+        }
         // Changed by C2 (DR-82): the channel data borrow copy-free views.
         // let data = self.metered_channel_data(channels, None, expected, reader)?;
         let views = self.metered_data_views(channels, keys, reader)?;
@@ -967,6 +978,15 @@ where
                 native_backing::inspect_blocks(&continuation.source, reader.meter)?;
                 if let Some(identity) = expected {
                     if !identity.metered_matches_consume(&continuation.source, reader.meter)? {
+                        continue;
+                    }
+                }
+                // Added by DR-129 (E3-a): the Stored check (no recorded
+                // identity) skips a continuation whose commit can veto. One
+                // operation pays for the check.
+                if expected.is_none() {
+                    reader.meter.reserve(1, 0, 0)?;
+                    if self.matcher.commit_may_veto(&continuation.continuation) {
                         continue;
                     }
                 }

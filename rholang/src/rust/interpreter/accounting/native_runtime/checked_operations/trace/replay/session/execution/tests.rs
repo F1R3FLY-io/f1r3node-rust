@@ -966,28 +966,76 @@ async fn played_checkpoint(
 /// of every generated path. Native play of each corpus term therefore fires
 /// the same COMMs in the same order and reaches the same root with the
 /// compacted splitter and with the legacy splitter.
+///
+/// Changed by DR-129: restored dev's randomized candidate order (user
+/// decision 2026-10-12). Play picks at random among candidates that match
+/// equally. In the second and third corpus terms play meets such choices, so
+/// two plays can fire their COMMs in other orders or pair other candidates,
+/// with either splitter. For those terms the plays must log the same produces
+/// and consumes, fire the same number of COMMs and reach the same root. The
+/// other terms offer play no choice and still compare their whole logs.
 #[tokio::test]
 async fn compacted_schedule_equals_legacy_schedule() {
+    // Changed by DR-129: each term carries whether play meets a choice.
     let corpus = [
-        r#"new loop, a, b, c, d in {
+        (
+            r#"new loop, a, b, c, d in {
             contract loop(@n) = { if (n > 0) { loop!(n - 1) } } | loop!(12) |
             a!(1) | b!(2) | c!(3) | d!(4) |
             for (_ <- a) { Nil } | for (_ <- b) { Nil } | for (_ <- c) { Nil } | for (_ <- d) { Nil }
         }"#,
-        r#"new fork, done in {
+            false,
+        ),
+        (
+            r#"new fork, done in {
             contract fork(@n) = { if (n > 0) { fork!(n - 1) | fork!(n - 1) } else { done!(n) } } |
             fork!(4) | for (@x <= done) { Nil }
         }"#,
-        r#"new a, b, ack in {
+            true,
+        ),
+        (
+            r#"new a, b, ack in {
             contract a(@x) = { ack!(x) } | a!(1) | a!(2) | b!(3) | b!(4) |
             for (@x <- ack & @y <- b) { Nil } | for (@x <- ack & @y <- b) { Nil }
         }"#,
-        r#"new c, d, e in {
+            true,
+        ),
+        (
+            r#"new c, d, e in {
             c!!(1) | for (@x <<- c) { d!(x) } | for (@y <- c) { e!(y + 1) } |
             for (@u <- d & @v <- e) { Nil }
         }"#,
+            false,
+        ),
     ];
-    for term in corpus {
+    // Added by DR-129: the produces and consumes of a log, in a fixed order,
+    // and the number of its COMMs.
+    let operations = |log: &rspace_plus_plus::rspace::trace::Log| {
+        let mut events: Vec<String> = log
+            .iter()
+            .filter(|event| {
+                !matches!(
+                    event,
+                    rspace_plus_plus::rspace::trace::event::Event::Comm(_)
+                )
+            })
+            .map(|event| format!("{event:?}"))
+            .collect();
+        events.sort();
+        events
+    };
+    let comms = |log: &rspace_plus_plus::rspace::trace::Log| {
+        log.iter()
+            .filter(|event| {
+                matches!(
+                    event,
+                    rspace_plus_plus::rspace::trace::event::Event::Comm(_)
+                )
+            })
+            .count()
+    };
+    // for term in corpus {
+    for (term, offers_choice) in corpus {
         let (legacy_root, legacy_log, legacy_depth) = played_checkpoint(term, true).await;
         let (compacted_root, compacted_log, compacted_depth) = played_checkpoint(term, false).await;
         assert!(compacted_depth < legacy_depth, "{term}");
@@ -998,7 +1046,19 @@ async fn compacted_schedule_equals_legacy_schedule() {
             )),
             "{term}"
         );
-        assert_eq!(compacted_log, legacy_log, "{term}");
+        // Changed by DR-129: whole logs only for a term without a choice.
+        // assert_eq!(compacted_log, legacy_log, "{term}");
+        match offers_choice {
+            false => assert_eq!(compacted_log, legacy_log, "{term}"),
+            true => {
+                assert_eq!(
+                    operations(&compacted_log),
+                    operations(&legacy_log),
+                    "{term}"
+                );
+                assert_eq!(comms(&compacted_log), comms(&legacy_log), "{term}");
+            }
+        }
         assert_eq!(compacted_root, legacy_root, "{term}");
     }
 }

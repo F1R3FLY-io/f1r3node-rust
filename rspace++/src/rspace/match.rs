@@ -38,6 +38,15 @@ pub trait Match<P, A, K>: Send + Sync {
     /// continuation stays installed.
     fn check_commit(&self, _k: &K, _matched: &[A]) -> bool { true }
 
+    /// Added by DR-129 (E3-a): whether `check_commit` can return false for
+    /// the continuation `k`, for any matched data. Under dev's random play
+    /// order, play tries one greedy tuple and stores the operation when the
+    /// commit vetoes it, so replay's greedy pass in its own order can find a
+    /// tuple that passes. The Stored check of replay therefore skips such a
+    /// continuation. The default is false, so a matcher that overrides
+    /// `check_commit` must override this method too.
+    fn commit_may_veto(&self, _k: &K) -> bool { false }
+
     /// Metered `check_commit`. D-M1 (DR-88): an implementation reserves every
     /// read of the continuation (in practice its guard) and of the matched
     /// data on `meter` before it performs the read, so a caller does not

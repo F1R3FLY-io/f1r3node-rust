@@ -54,6 +54,12 @@ where
         if expected.is_some_and(|identity| !identity.matches_consume(consume_ref)) {
             return None;
         }
+        // Added by DR-129 (E3-a): with no recorded identity this call is the
+        // Stored check of directive replay (`native_directive.rs`). It skips a
+        // continuation whose commit can veto.
+        if expected.is_none() && self.matcher.commit_may_veto(continuation) {
+            return None;
+        }
         let mut candidates: HashMap<_, _> = channels
             .iter()
             .map(|channel| {
@@ -117,8 +123,15 @@ where
             |channels| {
                 canonical_candidates(self.get_store().get_continuations_arc(&channels))
                     .into_iter()
-                    .filter(|(waiting, _)| {
-                        expected.is_none_or(|identity| identity.matches_consume(&waiting.source))
+                    // Changed by DR-129 (E3-a): with no recorded identity (the
+                    // Stored check) the oracle skips a continuation whose
+                    // commit can veto.
+                    // .filter(|(waiting, _)| {
+                    //     expected.is_none_or(|identity| identity.matches_consume(&waiting.source))
+                    // })
+                    .filter(|(waiting, _)| match expected {
+                        Some(identity) => identity.matches_consume(&waiting.source),
+                        None => !self.matcher.commit_may_veto(&waiting.continuation),
                     })
                     .collect()
             },

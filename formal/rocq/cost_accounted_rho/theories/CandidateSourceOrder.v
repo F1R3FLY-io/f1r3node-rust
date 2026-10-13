@@ -38,11 +38,22 @@
    that the order is a function of the candidate multiset therefore relies
    on digest collision resistance, which is outside this model.
 
-   Rust correspondence: rspace++/src/rspace/candidate_order.rs (the shared
-   two-phase function), used by rspace++/src/rspace/rspace/ops_produce.rs and
-   ops_consume.rs (play), rspace++/src/rspace/replay_rspace/native_candidate.rs
-   (directive replay), and native_candidate/metered.rs (metered native
-   replay). *)
+   Rust correspondence (since DR-129): rspace++/src/rspace/candidate_order.rs
+   (the two-phase function), used by
+   rspace++/src/rspace/replay_rspace/native_candidate.rs (directive replay)
+   and native_candidate/metered.rs (metered native replay). E1 of DR-129
+   gives a play join that names one channel twice the order by source hash
+   (rspace++/src/rspace/space_matcher.rs), which agrees with phase one.
+
+   Superseded by DR-129 (restored dev's randomized candidate order, user
+   decision 2026-10-12): the role of this order in play. Play shuffles its
+   candidates at random again, as dev does, and replay follows the recorded
+   pick. The theorems stay true and now describe the internal order of
+   replay. Before DR-129 the correspondence read:
+   rspace++/src/rspace/candidate_order.rs (the shared two-phase function),
+   used by rspace++/src/rspace/rspace/ops_produce.rs and ops_consume.rs
+   (play), rspace++/src/rspace/replay_rspace/native_candidate.rs (directive
+   replay), and native_candidate/metered.rs (metered native replay). *)
 
 From Stdlib Require Import Lists.List Arith.PeanoNat Bool.Bool Lia.
 From Stdlib Require Import Sorting.Permutation Sorting.Sorted.
