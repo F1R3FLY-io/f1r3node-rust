@@ -11,7 +11,7 @@
 
 **Amendment (2026-10-13, the scheduler, the candidate pick, and record and replay).** The user decided two points on 2026-10-13, and this amendment applies them. It follows the user's standing rule: "stick with dev's version of everything that is not directly related to the correctness or completeness of cost-accounting". Replaced text stays in `<details>` blocks titled "Text before the amendment of 2026-10-13". The [genesis resource policy](cost-accounting-impl/genesis-resource-policy.md) keeps its earlier text in the same way.
 
-- **The scheduler stays.** The single-order reduction scheduler of `deterministic_reduction.rs` stays. The new §3.7 analyzes it. It covers what the scheduler does, why it was added and what the papers say. It also covers the effect on E1 to E4 and the dependency of dev's file I/O work. It ends with what a return to dev's racing evaluation would entail. This document does not propose that return. It keeps the option possible.
+- **The scheduler stays.** The single-order reduction scheduler of `deterministic_reduction.rs` stays. The new §3.7 analyzes it. It covers what the scheduler does, why it was added and what the papers say. It also covers the effect on E1 to E4 and the dependency of dev's file I/O work. This document does not propose a return to dev's racing evaluation. On 2026-10-13 the user removed the analysis of what a return would entail (the former §3.7.6).
 - **The candidate pick.** The user ordered on 2026-10-12 that RSpace pick a candidate at random, as dev does, with two fixes at the replay boundary. The new §3.8 explains why the pick does not affect the correctness of cost accounting.
 - **Record and replay in §7.** Section 7 no longer assumes a deterministic executor. One executor runs the ordered envelopes and publishes its record. The other nodes replay that record and attest. A wrong attestation is shown by replaying the record. This works whether the scheduler stays or goes, and with a fixed or a random candidate pick.
 - **Changed sites.** The amendment changes §1.4 (conclusion 2 and the new conclusion 6), §1.5 and the reading guide. It also changes §3.6, §6.3, §6.7, §7.1 to §7.3, §7.6 to §7.13, §8.1, §9.2, §10 and §12.
@@ -74,8 +74,6 @@
 | Q-1 to Q-6 | The technical questions for the Casper team | §7.13 |
 | Q-7 | The technical question on records. Added on 2026-10-13. | §7.13 |
 | The scheduler | The single-order reduction scheduler of `deterministic_reduction.rs`. It orders the RSpace operations inside one deploy evaluation. Added on 2026-10-13. | §3.7 |
-| RD-1 to RD-4 | The four record-based designs that a return to dev's racing evaluation would need. Added on 2026-10-13. | §3.7.6 |
-| H1 to H7, W1 to W4 | The hypotheses and the workloads of the measurement plan for the scheduler. Added on 2026-10-13. | §3.7.6 |
 | Record, canonical record, $`\mathrm{executed}(b)`$ | The record of one run of a finalized block $`b`$, the record that the canonical order fixes for $`b`$, and the root after that record. Added on 2026-10-13. | §7.7 |
 | T1 to T4, M1 to M5 | The profiled tests, and the measurements that are still needed | §9.1, §9.3 |
 | Phase 0, Phase 1, Phase 1b, Phase 2, Phase 3 | The phases of the plan. S, M, L and XL are their relative sizes. | §10 |
@@ -250,7 +248,7 @@ The conclusions, with their basis:
 3. **Order-then-execute remains Casper.** [I] It keeps the justifications of Casper CBC (correct by construction), the fork choice, the clique-oracle finality and the equivocation slashing. It changes when state is computed and where the validator weights come from (§7.8, §7.9).
 4. **E4 is not yet proven.** [M][I] The data of the August soak test (a long load test of a validator network) agree with E4. After dev's later fixes, no per-node stage separates failing soak sessions from passing ones. Dev's analysis points to the finality round length and to blocks that wait for missing parents (§9).
 5. **The earlier branch does not change this assessment.** [C][I] A review of the earlier branch `feature/casper-cost-accounting-completion` found that its tip met none of E1 to E4 (§5). It met E2 in part, but only inside one proposer's block and only under a narrow reading in which funding decides. No gap of §6 closes, and §7 to §11 do not change.
-6. **Record and replay does not depend on the reduction scheduler.** [C][I] This conclusion was added on 2026-10-13. The single-order scheduler stays, by the user's decision of that day. §3.7 analyzes it and records what a return to dev's racing evaluation would entail, without a proposal to return. RSpace returns to dev's random candidate pick, with two fixes at the replay boundary (§3.8). Execution is therefore not deterministic. Agreement comes from the record, as it does today between a producer and its validators.
+6. **Record and replay does not depend on the reduction scheduler.** [C][I] This conclusion was added on 2026-10-13. The single-order scheduler stays, by the user's decision of that day. §3.7 analyzes it. RSpace returns to dev's random candidate pick, with two fixes at the replay boundary (§3.8). Execution is therefore not deterministic. Agreement comes from the record, as it does today between a producer and its validators.
 
 Two further gaps affect every design (§6.10). The first is the committed host-work caps, which are limits on deterministic node work per deploy. Today they reject the testnet log initializer of Embers, the F1R3FLY blockchain application programming interface (API). The second is unmetered continuations on the settlement log channels.
 
@@ -498,7 +496,7 @@ The user gave this direction:
 
 > "keep it and amend the proposal document to address Greg's concerns with information about the scheduler, why it was added, and what reverting to the randomized scheduler would entail (but include just the analysis, do not propose reverting to dev's version but make that option possible)"
 
-Greg's concerns are his four expectations (§1.2) and the papers on which they rest. This section therefore states what the scheduler does and why it exists. It measures the scheduler against the papers and against E1 to E4. It does not propose a return to dev's racing evaluation. It records what that return would need, so that the option stays possible (§3.7.6). [I]
+Greg's concerns are his four expectations (§1.2) and the papers on which they rest. This section therefore states what the scheduler does and why it exists. It measures the scheduler against the papers and against E1 to E4. It does not propose a return to dev's racing evaluation. On 2026-10-13 the user removed the analysis of what a return would need (the former §3.7.6). [I]
 
 The source is a design study of the removal of the scheduler, `target/scratch/scheduler-removal-design-v1.md`. That study is a local artifact and is not in the repository. This document checked its paper quotes at revision `0bf7817` and its main code citations at `e38ff0de8`. Where the two differ, this document follows the code. [I]
 
@@ -547,7 +545,7 @@ Three properties of the code matter for cost accounting. [C]
 - Replay does not race against play. `ReplayRSpace` "uses the play event log to force the exact same COMMs during replay, regardless of evaluation order" (dev `docs/rholang-evaluation-order.md:25-26`).
 - That dev document opens with the heading "Rholang Is Non-Deterministic By Design" (line 5).
 
-![Activity diagram of one deploy evaluation under two designs. A deploy body with parallel branches enters and splits into two flows. The left flow, in lilac, is the single-order scheduler of this branch. It splits the participant into child participants with causal paths. Each child submits one RSpace intent and waits. A complete frontier forms when every live participant waits or has completed. Native execution adds the key [2, 0] to every footprint, so each native frontier is one conflict component. The intents then run one at a time in causal order, the single order of a native deploy. A green note lists four things that the scheduler supplies to cost accounting today. They are equal replay host work at live map sizes (DR-78, DR-79 step 5, DR-100) and operation names by causal path (DR-74, DR-84 to DR-86). They are also order-dependent decisions without a record in the G3 design draft, and checkpoints that never see a partial evaluation. The right flow, in amber, is dev's racing evaluation. It spawns each branch as a Tokio task and awaits every handle. The tasks race, per-channel locks serialize one channel, and arrival order decides the rest. An indigo note lists what a return to it would need. RD-1 is journal-order replay. RD-2 is names by RSpace source and occurrence. RD-3 is recorded G3 decisions and settlement in recorded attempt order. RD-4 is a replay stall verdict that also fixes a latent hang at HEAD. Both flows join. RSpace picks one matching candidate, by the canonical order at e38ff0de8 and at random after the restoration of dev's pick. Play writes the record, the event log and the native cost evidence. Replay follows the record. A grey note quotes dev's document: Rholang is non-deterministic by design, and replay forces the same COMMs regardless of evaluation order. A legend explains the colours and defines participant, intent, complete frontier, footprint, the key [2, 0], conflict component, native deploy, COMM, DR-n, G3, RD-1 to RD-4, HEAD and dev.](diagrams/consensus-proposal-scheduler-vs-racing.svg)
+![Activity diagram of one deploy evaluation under two designs. A deploy body with parallel branches enters and splits into two flows. The left flow, in lilac, is the single-order scheduler of this branch. It splits the participant into child participants with causal paths. Each child submits one RSpace intent and waits. A complete frontier forms when every live participant waits or has completed. Native execution adds the key [2, 0] to every footprint, so each native frontier is one conflict component. The intents then run one at a time in causal order, the single order of a native deploy. A green note lists four things that the scheduler supplies to cost accounting today. They are equal replay host work at live map sizes (DR-78, DR-79 step 5, DR-100) and operation names by causal path (DR-74, DR-84 to DR-86). They are also order-dependent decisions without a record in the G3 design draft, and checkpoints that never see a partial evaluation. The right flow, in amber, is dev's racing evaluation. It spawns each branch as a Tokio task and awaits every handle. The tasks race, per-channel locks serialize one channel, and arrival order decides the rest. Both flows join. RSpace picks one matching candidate, by the canonical order at e38ff0de8 and at random after the restoration of dev's pick. Play writes the record, the event log and the native cost evidence. Replay follows the record. A grey note quotes dev's document: Rholang is non-deterministic by design, and replay forces the same COMMs regardless of evaluation order. A legend explains the colours and defines participant, intent, complete frontier, footprint, the key [2, 0], conflict component, native deploy, COMM, DR-n, G3, HEAD and dev.](diagrams/consensus-proposal-scheduler-vs-racing.svg)
 
 *Source: [`diagrams/consensus-proposal-scheduler-vs-racing.puml`](diagrams/consensus-proposal-scheduler-vs-racing.puml). Render it with `./render.sh consensus-proposal-scheduler-vs-racing.puml` in `docs/casper/theory/diagrams/`.*
 
@@ -629,85 +627,6 @@ Four points follow. [I]
 2. Dev's port is the copy of 1,437 lines on fileio. This branch's file has 1,448 lines before its test module. If the branch later takes dev's version, it must check that the copy keeps the four guarantees of §3.7.2.
 3. This branch carries dev's file-lock handlers without `park_external_during` (`rholang/src/rust/interpreter/io/handlers/lock/fs_lock_range.rs:33`). If a native deploy can reach them, a parked waiter could stall a native frontier, as on fileio before `0f7bfb089`. This document did not check that reachability.
 4. Dev runs no scheduler, so the hang of the ignored dev test must have another cause on dev. This is an inference that no test has checked.
-
-#### 3.7.6 What reverting to dev's racing evaluation would entail
-
-**This document does not propose this return.** The user keeps the scheduler. This subsection records the work that a return would need, so that the option stays possible. [I]
-
-A return has two parts. The evaluation part restores dev's code. The accounting part keeps the four guarantees of §3.7.2 without the single order. The accounting part needs four record-based designs, RD-1 to RD-4. Each design follows the user's standing rule: what cost accounting truly needs stays, and what the current design merely chose returns to dev. [I]
-
-| ID | Design | What it keeps | Change |
-|---|---|---|---|
-| RD-1 | **Journal-order replay.** Native replay starts an operation only after every journal row with a lower index has completed. Play appends a row when its operation starts, so journal order extends causal order. | Equal replay host work. Every replay charge reads state that the journal fixes. DR-78, DR-79 and DR-100 keep their charges, and only their determinism premise changes. | About 30 lines in `trace/replay.rs` and `trace/replay/state.rs` (an estimate). The readiness rule of protocol 6 changes, and the wire format does not. Native replay stays serial, as today. |
-| RD-2 | **Source-and-occurrence names.** An operation is named by its RSpace source and by the number of earlier operations with that source. The source is the channel hash, the Produce or Consume hash, and persistence. An attempt is named by its journal row and its stage. | Equal names in play and replay. A causal path depends on which side completes a COMM. Under racing evaluation, that side can differ between play and replay. | A protocol-6 evidence change. Causal paths leave attempts, retries and rows, and the path-trie section goes. Protocol 6 is unreleased. DR-74 and DR-84 to DR-86 become superseded. |
-| RD-3 | **Recorded decisions.** G3 records each lane decision, as its v7 checkpoint proposed. The record holds an attempt decision byte and Vetoed and Skipped completions. One validation pass checks them in recorded attempt order. Settlement measures observations in recorded attempt order in both roles. | Decisions that depend on order. The budget trace of DR-113 already works this way (`budget_trace.rs:196-214, 232-269`). | Additive attempt values in protocol 6. The byte-receipts log and `replay_authority.rs` change. The G3 design changes before any G3 code exists. |
-| RD-4 | **The replay stall verdict.** Native replay counts its live evaluation tasks. A task that waits for readiness, or for the join of its children, is not live. When the count reaches zero while an operation waits, replay fails, and the record is invalid. | A verdict on a forged journal. It also fixes the latent hang of §3.7.2, which exists at HEAD. | About 60 lines of task counting in `reduce.rs` (an estimate) |
-
-**Why the names of RD-2 are sound.** [C][P][I]
-
-- Dev splits the random state at every parallel term (dev `a06e3e7b3`, `reduce.rs:255-262`). A COMM merges the random states of its participants (dev `dispatch.rs:52-71`). The source hash covers the random state.
-- A source is therefore a location in the sense of P3: "a finite path ... from the root of a term" (P3:452-455). Its fresh root is the seed of the deploy: "an injection publishes on a root ... for a quoted nonce ... No $`\nu`$, no central allocator" (P3:461-463).
-- Two operations share a source only when one operation is issued again: a persistent send, a re-installed receive or a peek restoration. Each new issue follows the COMM that caused it, so play and replay number the new issues alike.
-
-**The evaluation part.** [C][I]
-
-- `eval` returns to dev's spawn-and-join form (dev `reduce.rs:318-337`). An evaluation then returns only after all of its tasks end, and Casper checkpoints after the return.
-- `ReductionCoordinator`, `DeterministicRSpace`, the detached driver and the complete-cut check leave the active code. They stay as comments with the reason, as the rules of this repository require.
-- RSpace's ordered event log returns to dev's arrival-order log. The grant-issuance check then compares multisets of events instead of ordered slices.
-- The host-work budget, the failure recorder and the failure-work budget move from the session to the reducer of one evaluation. Dev's reducer carries its cost in the same way.
-
-**Footprint.** The sizes are estimates of the design study, not measurements. [C][I]
-
-| Area | Change |
-|---|---|
-| `deterministic_reduction.rs` | Its 1,448 production lines and 933 test lines become comments with the reason. Its `capability_tests.rs` (137 lines) follows. |
-| `reduce.rs`, `rho_runtime.rs`, `substitute.rs` | About 200 to 250 lines return to dev, plus about 60 lines of task counting for RD-4 |
-| Native runtime and evidence | `native_runtime.rs` and its `operations`, `recording`, `index`, `path_trie` and `wire` modules, `checked_operations.rs`, `trace/replay.rs`, `budget_trace.rs`, and casper `offered_evidence.rs` (RD-2) |
-| rspace++ | The observer hooks of `rspace_interface.rs` and `accounting.rs` (RD-2). `operation_context.rs` returns to dev's version. |
-| Records | Amendments to DR-74, DR-78, DR-79, DR-84 to DR-86, DR-100 and DR-102, and to the G3 design. DR-31, DR-96, the R1 decision of DR-100 and DR-113 support the designs. |
-
-**Tests and formal artifacts.** The rule is to update a test or mark it superseded, never to delete it. [C][I]
-
-- The tests of the scheduler and `capability_tests.rs` become superseded with the module. The native runtime tests migrate to source-and-occurrence names.
-- One source guard requires the detached spawn of the scheduler (`rholang/tests/concurrent_rspace_architecture_repro_spec.rs:42-63`). It inverts to require dev's spawn and join, with the reason.
-- Failing-first tests come first. They cover racing play under the old paths (RD-2) and swapped concurrent grants (RD-3). They also cover an inverted journal that hangs at HEAD (RD-4), and a live-size charge under per-channel admission (RD-1).
-- A multi-validator test replays offered deploys with races, joins, persistent sends, peeks, deep continuation chains and wide parallel branches. Three validators replay on 1, 2, 4 and 8 workers under at least 64 seeds of a test-only yield injector. Every validator must agree with the producer's self-replay on usage in all 16 host-work dimensions, receipts, settlement, evidence and roots.
-- `DeterministicParallelReduction.v`, `CountedDetachedBisimulation.v`, the five TLA+ models in `formal/tlaplus/deterministic_parallel_reduction/` with their 36 configurations, and the R0 part of `ReplayChargeScheduleInvariance` get superseded headers. They keep compiling and leave the release gate. `NativePathDeltaCodec.v`, `NativePathTrie.v` and `DetachedPathCompaction.v` follow RD-2.
-- New artifacts are a model `RecordedOrderReplay.tla` for RD-1 and RD-4, and a Rocq lemma that the source-and-occurrence name is injective on journal rows. Each has a negative control. The control of the lemma drops the occurrence.
-
-**Risks.** [I]
-
-- With RD-1, waits become common, so a forged journal could hang replay. RD-4 closes that risk.
-- Two live operations with one source and unrelated origins would break RD-2. The random-state argument above rules them out in Rholang. The recorder must still reject such a run as a recording error, which quarantines the candidate under DR-72.
-- A removal diverges from dev's file I/O plan (§3.7.5).
-- RD-1 keeps native replay serial, so a return speeds up play only.
-- Several claims are unverified. The hang at HEAD was reasoned and never run. The uniqueness of sources assumes unique random states, and nobody checked the random states of system-process replies. Nobody checked that the grant-issuance log keeps its event multiset under racing. The line counts are estimates.
-
-**The measurement plan.** The measurements only size the effect, and the user's rule decides any return. Nobody has measured the cost of the scheduler itself. The design study states seven hypotheses before any measurement. [M][I]
-
-| ID | Hypothesis and prediction | Refuted if |
-|---|---|---|
-| H1 | The scheduler is a large share of the extra CPU time on parallel terms. On W3 with 32 or more forks, the scheduler arm exceeds the racing arm by 10 % or more in CPU time or wall time. | The interval of the ratio lies inside the A/A band, or below 3 % |
-| H2 | Native frontiers serialize RSpace work. From 1 to 8 cores, the W4 play wall time of the scheduler arm does not improve. The racing arm improves by a factor of 1.5 or more. | The scheduler arm scales within 20 % of the racing arm |
-| H3 | The scheduler raises memory. The peak resident set of the scheduler arm is 10 % or more above the racing arm on W3 and W4. | The difference lies inside the A/A band |
-| H4 | The scheduler is not the main cause of the gap to dev. The racing arm closes less than one third of the gap between dev and the scheduler arm on W1. | The racing arm closes two thirds of the gap or more |
-| H5 | Frontier coordination dominates fine-grained branches. Frontier waits plus driver time are 20 % or more of the deploy wall time on W3 with 100 iterations. | They are below 5 % |
-| H6 | Legacy deploys pay only for the driver and the session, because legacy budgets bypass the queue. The two arms differ by less than 3 % on W2. | The difference is larger |
-| H7 | The replay host work of the scheduler arm is equal across runs and worker counts. | Any dimension differs |
-
-- **Arms.** The scheduler arm is the branch as it stands. The racing arm is the branch with dev's evaluation, through a measurement-only patch that never enters the branch and needs the user's approval. It measures native play only, because native replay cannot run without RD-1 to RD-4. The dev arm is `origin/dev`. The redesign arm is the branch after RD-1 to RD-4, for replay host work.
-- **Workloads.** W1 is the casper suite, and W2 is `pos_spec`. W3 is the parallel reducer benchmark `bench_par_reducer`, with 1 to 128 forks and 100 to 5,000 iterations. W4 is an offered deploy with 8, 64 or 256 branches, a join and a race, plus the gateway funding block of DR-100.
-- **Metrics.** The plan records wall time, CPU time, the peak resident set, host-work usage in all 16 dimensions, and parallelism as task clock over wall time.
-- **Method.** The plan pins the cores, caps memory with `systemd-run`, runs one arm at a time, and records the commit, compiler, kernel, governor and caps. It takes ten or more interleaved runs per arm on W2 to W4, and three or more on W1. A/A pairs set the noise band. It reports medians, the median absolute deviation and bootstrap 95 % intervals.
-- **Profiles.** The plan records `perf record --call-graph lbr` on W3 and W4 in the scheduler arm. The driver, frontier and detached-task functions of the scheduler are in focus.
-
-**Order of work, if a return is ever chosen.** [I]
-
-1. Build RD-2, RD-3, and RD-1 with RD-4, while the scheduler still runs.
-2. Check that RD-1 changes nothing, because the single order already follows the journal.
-3. Remove the scheduler.
-4. Update the G3 design.
-5. Run the multi-validator tests.
 
 ### 3.8 The candidate pick inside RSpace
 
@@ -1242,16 +1161,14 @@ Order-then-execute separates two jobs that Casper does together today. [I]
 
 - The first version required every honest executor to reach the same root from the same order. It said: "Execution is a deterministic function of genesis and the canonical order."
 - The random candidate pick breaks that premise (§3.8). Two honest executors can match different candidates and reach different roots.
-- A return to dev's racing evaluation would break the premise a second time (§3.7.6). Then the order of operations would also vary between runs.
 - The papers allow both. A run decides which interactions fire (P1:2090-2093), and the refund comes from the actual run (P1:2154-2160).
 - The node already agrees in this way. The producer plays and records, and validators replay the record (§3.3, §3.4). Section 7 moves that pattern behind finality.
 
 **What replay needs.** [C][I]
 
 - *With the scheduler, nothing new.* Native replay already follows the recorded COMM (§3.8). Every replay of one record charges the same host work on one host and in one process (DR-79 item 4, DR-100, DR-102). Bugs 10814 and 10812 still separate hosts and processes, for today's replay too (§7.7). The restoration of the random pick adds RB-1 and RB-3a at the replay boundary (§3.8).
-- *Without the scheduler, three record-side pieces.* Replay must also follow the journal order (RD-1), the source-and-occurrence names (RD-2) and the recorded decisions (RD-3). RD-4 makes the replay of a forged record end with a verdict (§3.7.6).
 
-The design therefore works whether the scheduler stays or goes, and with a fixed or a random candidate pick. Consensus still orders the envelopes, and P1's gate still runs before each envelope (§7.6). [I]
+The design therefore works with the scheduler, and with a fixed or a random candidate pick. Consensus still orders the envelopes, and P1's gate still runs before each envelope (§7.6). [I]
 
 This is the classic order-execute split of state-machine replication [Schneider 1990]. Calvin uses a deterministic order before execution for the same reason [Thomson et al. 2012]. Execute-then-merge resembles the execute-order-validate pattern of Hyperledger Fabric [Androulaki et al. 2018]. [I]
 
@@ -1569,7 +1486,7 @@ The executor keeps the user's rule against escrow, in the reading of this docume
 
 1. Honest nodes agree on $`\mathrm{Ord}`$ over the finalized blocks, by property 4 of §7.5 and assumption A-LIN.
 2. A citing block carries its records. Every node that holds a finalized block therefore holds the same records. Record availability is block availability.
-3. The replay of a record from its pre-root is a function of that record. With the scheduler, native replay follows the recorded COMMs and charges the same host work in every replay (DR-79 item 4, DR-100, DR-102). Without the scheduler, RD-1 to RD-4 give the same property (§3.7.6). One known gap remains. Bugs 10814 and 10812 let host work depend on the host and the process (amendment of 2026-10-12 to DR-100). Today's validator replay has the same gap. It must close before activation, because the verdict at a cap boundary decides consensus (DR-100).
+3. The replay of a record from its pre-root is a function of that record. With the scheduler, native replay follows the recorded COMMs and charges the same host work in every replay (DR-79 item 4, DR-100, DR-102). One known gap remains. Bugs 10814 and 10812 let host work depend on the host and the process (amendment of 2026-10-12 to DR-100). Today's validator replay has the same gap. It must close before activation, because the verdict at a cap boundary decides consensus (DR-100).
 4. By induction along $`\mathrm{Ord}`$, honest nodes agree on $`\mathrm{executed}(\mathrm{prev}(b))`$. Steps 1 to 3 then give them the same first valid citation, so they agree on $`\mathrm{rec}^{*}(b)`$ and on $`\mathrm{executed}(b)`$.
 
 **Who executes first.** [I] The binding rule above needs no designated executor. A convention avoids duplicate work, and consensus does not check it. The sender of $`b`$ executes $`b`$ first, as today's producer plays its own block. Other nodes wait a bounded local time for a citation, and then execute $`b`$ themselves. Question Q-7 asks the Casper team to choose this convention, the record cap and the retention of records.
@@ -1738,7 +1655,7 @@ The result must equal the sequential canonical execution. [I]
 - The cost-cursor lock fix (commit `7ab849b56`, done). Without it, every settlement writes one lock channel, and every pair of members conflicts.
 - The metering of settlement log-channel continuations (§6.10).
 
-Native scheduling inside one deploy is a separate source of parallelism. Today each native frontier forms one conflict component (`deterministic_reduction.rs:1068-1072, 1120-1122`). [C] §3.7 analyzes that scheduler, and §3.7.6 states what a return to racing evaluation would entail (added on 2026-10-13).
+Native scheduling inside one deploy is a separate source of parallelism. Today each native frontier forms one conflict component (`deterministic_reduction.rs:1068-1072, 1120-1122`). [C] §3.7 analyzes that scheduler.
 
 ### 7.11 Properties to verify
 
