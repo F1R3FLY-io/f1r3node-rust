@@ -592,3 +592,154 @@ in {{
     );
     assert_eq!(src_bytes, b"copy me", "source content preserved");
 }
+
+/// SEC-1(A) end-to-end: `Fs.revoke()` is the ambient-authority
+/// off switch, but it MUST NOT cascade to previously-minted File /
+/// Dir caps.  The Fs.rho docstring (lines 204-212) states:
+///
+///   > Previously-minted File/Dir caps are unaffected — they are
+///   > independent agents.  See spec §Revocation for the normative
+///   > semantics (SEC-1(A): revoke does NOT cascade to previously-
+///   > minted caps).
+///
+/// This test pins that invariant end-to-end at the Rholang API
+/// surface.  Shape (three sub-assertions in a single contract so
+/// state threads through the same deploy):
+///
+///   1. Pre-revoke, `Fs.openDir("shareddir", {})` returns
+///      `[true, dirCap]`.  Store the dirCap on a private channel.
+///   2. Call `Fs.revoke()` and assert the reply is `[true]`.
+///   3. A *fresh* `Fs.openDir("shareddir", {})` after revoke must
+///      return `[false, "FSERR_REVOKED", _]` — the ambient Fs cap
+///      is inert.
+///   4. The *stored* dirCap must still answer `exists("child.txt")`
+///      with `[true, true]` — SEC-1(A) non-cascade.
+///   5. The stored dirCap's `openFile("child.txt", {"mode": "r"})`
+///      must return `[true, fileCap]` — minting a NEW sub-cap from
+///      a PRE-revoke Dir cap after revoke is permitted (the Dir
+///      agent is independent of `fsRevokedP`).
+///   6. The returned fileCap's `readN(64)` must return
+///      `[true, bytes]` with the seeded content, proving the full
+///      syscall chain still works through the pre-held cap after
+///      ambient revocation.
+///
+/// Regression value: a future refactor that routes File / Dir
+/// method dispatch through an `fsRevokedP` peek (e.g., someone adds
+/// a "revoke everything" switch to the agent trees) would silently
+/// break SEC-1(A) and this test would catch it immediately.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn fs_revoke_leaves_pre_held_dir_cap_live() {
+    let child_bytes = b"non-cascade payload"; // 19 bytes
+    let (_dir, params, fs_uri) = bundle_dir_with_child("r", child_bytes);
+
+    // Hex encoding of the seeded content for the exact-bytes assertion:
+    //   b"non-cascade payload" -> 6e6f6e2d6361736361646520706179 6c6f6164
+    //   (19 bytes = 38 hex chars)
+    let hex_payload = "6e6f6e2d6361736361646520706179 6c6f6164".replace(' ', "");
+
+    let test_source = format!(
+        r#"
+new
+  rl(`rho:registry:lookup`),
+  RhoSpecCh,
+  fsCh,
+  test_revoke_leaves_pre_held_dir_cap_live
+in {{
+  rl!(`rho:id:zphjgsfy13h1k85isc8rtwtgt3t9zzt5pjd5ihykfmyapfc4wt3x5h`, *RhoSpecCh) |
+  for(@(_, RhoSpec) <- RhoSpecCh) {{
+    @RhoSpec!("testSuite",
+      [("Fs.revoke() leaves pre-held Dir cap live (SEC-1(A) non-cascade)",
+        *test_revoke_leaves_pre_held_dir_cap_live)])
+  }} |
+
+  rl!(`{fs_uri}`, *fsCh) |
+  for(@(_, fs) <- fsCh) {{
+    contract test_revoke_leaves_pre_held_dir_cap_live(rhoSpec, _, ackCh) = {{
+      // Step 1: pre-revoke openDir mints a Dir cap.
+      for(@preReply <- @fs!?("openDir", "shareddir", {{}})) {{
+        match preReply {{
+          [true, dirCap] => {{
+            // Step 2: call Fs.revoke() and expect [true].
+            for(@revokeReply <- @fs!?("revoke")) {{
+              match revokeReply {{
+                [true] => {{
+                  // Step 3: fresh openDir post-revoke must be inert.
+                  for(@postReply <- @fs!?("openDir", "shareddir", {{}})) {{
+                    match postReply {{
+                      [false, "FSERR_REVOKED", _msg] => {{
+                        // Step 4: stored dirCap still answers exists.
+                        for(@existsReply <- @dirCap!?("exists", "child.txt")) {{
+                          match existsReply {{
+                            [true, true] => {{
+                              // Step 5: stored dirCap mints a new File cap.
+                              for(@openReply <- @dirCap!?("openFile", "child.txt", {{"mode": "r"}})) {{
+                                match openReply {{
+                                  [true, fileCap] => {{
+                                    // Step 6: new fileCap reads the seeded content.
+                                    for(@readReply <- @fileCap!?("readN", 64)) {{
+                                      match readReply {{
+                                        [true, bytes] => {{
+                                          rhoSpec!("assert",
+                                            (bytes, "==", "{hex_payload}".hexToBytes()),
+                                            "SEC-1(A) full chain: revoke -> ambient inert, pre-held dirCap still mints & reads",
+                                            *ackCh)
+                                        }}
+                                        _ => {{
+                                          rhoSpec!("assert", (readReply, "==", "[true, bytes]"),
+                                            "step 6: pre-held cap's new fileCap readN", *ackCh)
+                                        }}
+                                      }}
+                                    }}
+                                  }}
+                                  _ => {{
+                                    rhoSpec!("assert", (openReply, "==", "[true, fileCap]"),
+                                      "step 5: pre-held dirCap mints File post-revoke", *ackCh)
+                                  }}
+                                }}
+                              }}
+                            }}
+                            _ => {{
+                              rhoSpec!("assert", (existsReply, "==", "[true, true]"),
+                                "step 4: pre-held dirCap exists('child.txt') post-revoke", *ackCh)
+                            }}
+                          }}
+                        }}
+                      }}
+                      _ => {{
+                        rhoSpec!("assert", (postReply, "==", "[false, FSERR_REVOKED, _]"),
+                          "step 3: ambient Fs.openDir inert post-revoke", *ackCh)
+                      }}
+                    }}
+                  }}
+                }}
+                _ => {{
+                  rhoSpec!("assert", (revokeReply, "==", "[true]"),
+                    "step 2: Fs.revoke() returns [true]", *ackCh)
+                }}
+              }}
+            }}
+          }}
+          _ => {{
+            rhoSpec!("assert", (preReply, "==", "[true, dirCap]"),
+              "step 1: pre-revoke openDir mints Dir cap", *ackCh)
+          }}
+        }}
+      }}
+    }}
+  }}
+}}
+"#
+    );
+
+    let compiled = CompiledRholangSource::new(
+        test_source,
+        HashMap::new(),
+        "FsRevokeNonCascadeSpec".to_string(),
+    )
+    .expect("compile fs_revoke non-cascade spec");
+
+    let spec = RhoSpec::new_with_genesis_parameters(compiled, vec![], GENESIS_TEST_TIMEOUT, params);
+    spec.run_tests()
+        .await
+        .expect("fs_revoke non-cascade spec failed");
+}
