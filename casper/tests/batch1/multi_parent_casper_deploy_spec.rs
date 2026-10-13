@@ -1,15 +1,83 @@
 // See casper/src/test/scala/coop/rchain/casper/batch1/MultiParentCasperDeploySpec.scala
 
+use std::collections::HashMap;
+
 use casper::rust::api::block_api::BlockAPI;
 use casper::rust::blocks::proposer::propose_result::BlockCreatorResult;
 use casper::rust::blocks::proposer::proposer::ProposerResult;
 use casper::rust::casper::{Casper, DeployError};
 use casper::rust::util::construct_deploy;
 use casper::rust::ProposeFunction;
+use crypto::rust::public_key::PublicKey;
 use rspace_plus_plus::rspace::history::Either;
 
 use crate::helper::test_node::TestNode;
 use crate::util::genesis_builder::GenesisBuilder;
+
+#[tokio::test]
+async fn block_api_rejects_deploy_from_unbonded_validator() {
+    fn bonds_without_first(validators: Vec<PublicKey>) -> HashMap<PublicKey, i64> {
+        GenesisBuilder::create_bonds(validators.into_iter().skip(1).collect())
+    }
+
+    let parameters =
+        GenesisBuilder::build_genesis_parameters_with_defaults(Some(bonds_without_first), None);
+    let genesis = GenesisBuilder::new()
+        .build_genesis_with_parameters(Some(parameters))
+        .await
+        .unwrap();
+    let node = TestNode::standalone(genesis.clone()).await.unwrap();
+    let deploy =
+        construct_deploy::basic_deploy_data(0, None, Some(genesis.genesis_block.shard_id.clone()))
+            .unwrap();
+
+    let result = BlockAPI::deploy(
+        &node.engine_cell,
+        deploy.clone(),
+        &None,
+        false,
+        &genesis.genesis_block.shard_id,
+    )
+    .await;
+
+    assert!(result
+        .unwrap_err()
+        .to_string()
+        .contains("validator is not bonded"));
+    assert!(!node
+        .deploy_storage
+        .lock()
+        .contains_sig(&deploy.sig)
+        .unwrap());
+}
+
+#[tokio::test]
+async fn block_api_accepts_deploy_from_bonded_validator_without_autopropose() {
+    let genesis = GenesisBuilder::new()
+        .build_genesis_with_parameters(None)
+        .await
+        .unwrap();
+    let node = TestNode::standalone(genesis.clone()).await.unwrap();
+    let deploy =
+        construct_deploy::basic_deploy_data(0, None, Some(genesis.genesis_block.shard_id.clone()))
+            .unwrap();
+
+    let result = BlockAPI::deploy(
+        &node.engine_cell,
+        deploy.clone(),
+        &None,
+        false,
+        &genesis.genesis_block.shard_id,
+    )
+    .await;
+
+    assert!(result.is_ok(), "{result:?}");
+    assert!(node
+        .deploy_storage
+        .lock()
+        .contains_sig(&deploy.sig)
+        .unwrap());
+}
 
 #[tokio::test]
 async fn multi_parent_casper_should_accept_a_deploy_and_return_its_id() {
