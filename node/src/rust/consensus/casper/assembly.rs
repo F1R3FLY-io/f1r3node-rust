@@ -70,6 +70,13 @@ pub async fn prepare<T: TransportLayer + Send + Sync + Clone + 'static>(
     event_publisher: F1r3flyEvents,
     node_discovery: Arc<dyn NodeDiscovery + Send + Sync>,
 ) -> Result<PreparedNode, CasperError> {
+    let validator_identity_opt = {
+        use casper::rust::validator_identity::ValidatorIdentity;
+
+        ValidatorIdentity::from_private_key_with_logging(
+            conf.casper.validator_private_key.as_deref(),
+        )?
+    };
     let manifest = ManifestGuard::inspect(
         &conf.storage.data_dir,
         &conf.protocol_server.network_id,
@@ -79,7 +86,7 @@ pub async fn prepare<T: TransportLayer + Send + Sync + Clone + 'static>(
     let observer = crate::rust::soak_observer::Observer::bind(&conf)
         .map_err(|error| CasperError::Other(error.to_string()))?;
     let mut capabilities = Capabilities::FINALIZED_PROGRESS;
-    if conf.casper.validator_private_key.is_some() {
+    if validator_identity_opt.is_some() {
         capabilities = capabilities
             .union(Capabilities::PROPOSE)
             .union(Capabilities::SUBMIT);
@@ -436,15 +443,6 @@ pub async fn prepare<T: TransportLayer + Send + Sync + Clone + 'static>(
         rp_conf.clone(),
         Some(state_requester_handles.fetch_tx.clone()),
     );
-
-    // Proposer instance
-    let validator_identity_opt = {
-        use casper::rust::validator_identity::ValidatorIdentity;
-
-        ValidatorIdentity::from_private_key_with_logging(
-            conf.casper.validator_private_key.as_deref(),
-        )
-    };
 
     // Clone validator_identity for heartbeat (used by both proposer and heartbeat)
     let validator_identity_for_heartbeat = validator_identity_opt.clone();

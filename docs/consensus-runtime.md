@@ -39,6 +39,10 @@ The packet bridge preserves the peer identity, packet kind, and payload bytes. O
 The manifest schema contains protocol, version, network, shard, and genesis identity. Casper validates existing LMDB stores before opening writable resources.
 Casper records the manifest before it reports readiness.
 
+Casper validates the configured validator key before it derives capabilities, binds the observer, or opens stores.
+Invalid hexadecimal, incorrect key lengths, and invalid secp256k1 scalars return a signing error without key material.
+An absent key preserves read-only operation.
+
 The Casper adapter also owns the optional soak observer. The observer binds during preparation and stops before store shutdown.
 Dropping a prepared adapter releases its observer socket. The host does not receive the native observer controller.
 

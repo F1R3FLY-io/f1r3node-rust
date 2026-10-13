@@ -440,6 +440,35 @@ async fn casper_runtime_shutdown_while_waiting_for_peers() {
     assert!(!directory.path().join("consensus-manifest.json").exists());
 }
 
+#[tokio::test]
+async fn invalid_validator_keys_are_rejected_before_store_creation() {
+    for key in [
+        String::new(),
+        "1".repeat(63),
+        "11".repeat(31),
+        "11".repeat(33),
+        "zz".repeat(32),
+        "00".repeat(32),
+        "ff".repeat(32),
+    ] {
+        let directory = tempfile::tempdir().unwrap();
+        let (mut conf, _) = config(directory.path());
+        let store = directory.path().join("store");
+        conf.storage.data_dir = store.clone();
+        conf.casper.validator_private_key = Some(key);
+        let error = prepare(conf)
+            .await
+            .err()
+            .expect("Invalid validator key must fail");
+        assert!(matches!(
+            error.downcast_ref::<casper::rust::errors::CasperError>(),
+            Some(casper::rust::errors::CasperError::SigningError(_))
+        ));
+        assert!(!store.exists());
+    }
+}
+
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn casper_runtime_reports_failed_genesis_initialization() {
     let directory = tempfile::tempdir().unwrap();

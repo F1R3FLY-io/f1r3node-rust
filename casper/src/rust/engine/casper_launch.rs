@@ -378,7 +378,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
 
         let validator_id = ValidatorIdentity::from_private_key_with_logging(
             self.conf.validator_private_key.as_deref(),
-        );
+        )?;
 
         let ab = approved_block.candidate.block.clone();
         let genesis_post_state_hash = ab.body.state.post_state_hash.clone();
@@ -616,7 +616,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
 
         let validator_id = ValidatorIdentity::from_private_key_with_logging(
             self.conf.validator_private_key.as_deref(),
-        )
+        )?
         .ok_or_else(|| {
             CasperError::RuntimeError(
                 "Validator identity required for genesis validator".to_string(),
@@ -689,7 +689,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
     async fn init_bootstrap(&self, disable_state_exporter: bool) -> Result<(), CasperError> {
         let validator_id = ValidatorIdentity::from_private_key_with_logging(
             self.conf.validator_private_key.as_deref(),
-        );
+        )?;
 
         // As ceremony master, native-token-* values from local config will be
         // baked into the TokenMetadata contract at genesis (via
@@ -829,7 +829,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
     ) -> Result<(), CasperError> {
         let validator_id = ValidatorIdentity::from_private_key_with_logging(
             self.conf.validator_private_key.as_deref(),
-        );
+        )?;
 
         // Scala: CommUtil[F].requestApprovedBlock(trimState) - passed as init to transitionToInitializing
         let transport_layer_for_init = self.transport_layer.clone();
