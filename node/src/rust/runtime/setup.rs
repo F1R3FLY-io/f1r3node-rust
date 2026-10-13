@@ -180,7 +180,7 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
     // Buffer of deploys rejected during multi-parent merge; re-proposed in
     // subsequent blocks to avoid silent loss of otherwise-valid user deploys.
     let rejected_deploy_buffer_arc = {
-        use block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer;
+        use block_storage::rust::deploy::key_value_deploy_storage::KeyValueRejectedDeployBuffer;
 
         let buffer = KeyValueRejectedDeployBuffer::new(&mut rnode_store_manager).await?;
         Arc::new(Mutex::new(buffer))
@@ -738,6 +738,7 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
         conf.casper.genesis_block_data.native_token_name.clone(),
         conf.casper.genesis_block_data.native_token_symbol.clone(),
         conf.casper.genesis_block_data.native_token_decimals,
+        is_validator,
         is_node_read_only,
         engine_cell.clone(),
         block_store.clone(),
@@ -898,6 +899,7 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
             conf.casper.genesis_block_data.native_token_name.clone(),
             conf.casper.genesis_block_data.native_token_symbol.clone(),
             conf.casper.genesis_block_data.native_token_decimals,
+            is_validator,
             is_node_read_only,
             block_report_api_for_return.clone(),
             transfer_unforgeable,

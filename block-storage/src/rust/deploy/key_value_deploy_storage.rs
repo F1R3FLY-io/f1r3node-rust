@@ -37,6 +37,12 @@ pub struct KeyValueDeployStore<N: DeployStoreName> {
 }
 
 pub type KeyValueDeployStorage = KeyValueDeployStore<DeployStorageName>;
+/// Per-node local buffer of deploys rejected during multi-parent merge.
+///
+/// When the merge algorithm drops a deploy from the canonical merged state,
+/// its data is placed here so the block creator can re-propose it in a
+/// subsequent block. Each validator maintains its own buffer; there is no
+/// cross-validator coordination.
 pub type KeyValueRejectedDeployBuffer = KeyValueDeployStore<RejectedDeployBufferName>;
 
 impl<N: DeployStoreName> KeyValueDeployStore<N> {
@@ -79,12 +85,6 @@ impl<N: DeployStoreName> KeyValueDeployStore<N> {
             .into_iter()
             .next()
             .unwrap_or(false))
-    }
-
-    pub fn get_by_sig(&self, sig: &[u8]) -> Result<Option<Signed<DeployData>>, KvStoreError> {
-        let key: ByteString = sig.to_vec();
-        let results = self.store.get(&vec![key])?;
-        Ok(results.into_iter().next().flatten())
     }
 
     pub fn remove(&mut self, deploys: Vec<Signed<DeployData>>) -> Result<(), KvStoreError> {
@@ -176,6 +176,45 @@ mod tests {
         assert!(storage.remove_by_sig(&d1.sig).unwrap());
         assert!(!storage.remove_by_sig(&d1.sig).unwrap());
         assert!(!storage.non_empty().unwrap());
+    }
+
+    async fn buffer() -> KeyValueRejectedDeployBuffer {
+        let mut kvm = InMemoryStoreManager::new();
+        KeyValueRejectedDeployBuffer::new(&mut kvm).await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn add_read_all_and_non_empty() {
+        let mut buffer = buffer().await;
+        assert!(!buffer.non_empty().unwrap());
+
+        let (d1, d2) = (deploy(1), deploy(2));
+        buffer.add(vec![d1.clone(), d2.clone()]).unwrap();
+
+        assert!(buffer.non_empty().unwrap());
+        assert_eq!(buffer.read_all().unwrap(), HashSet::from([d1, d2]));
+    }
+
+    #[tokio::test]
+    async fn remove_deletes_listed_deploys() {
+        let mut buffer = buffer().await;
+        let (d1, d2) = (deploy(1), deploy(2));
+        buffer.add(vec![d1.clone(), d2.clone()]).unwrap();
+
+        buffer.remove(vec![d2]).unwrap();
+        assert_eq!(buffer.read_all().unwrap(), HashSet::from([d1]));
+    }
+
+    #[tokio::test]
+    async fn remove_by_sig_reports_presence() {
+        let mut buffer = buffer().await;
+        let d1 = deploy(1);
+        buffer.add(vec![d1.clone()]).unwrap();
+
+        assert!(buffer.remove_by_sig(&d1.sig).unwrap());
+        assert!(!buffer.remove_by_sig(&d1.sig).unwrap());
+        assert!(!buffer.contains_sig(&d1.sig).unwrap());
+        assert!(!buffer.non_empty().unwrap());
     }
 
     #[tokio::test]

@@ -67,7 +67,7 @@ pub struct TestNode {
     pub block_dag_storage: BlockDagKeyValueStorage,
     pub deploy_storage: Arc<parking_lot::Mutex<KeyValueDeployStorage>>,
     pub rejected_deploy_buffer: Arc<
-        Mutex<block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer>,
+        Mutex<block_storage::rust::deploy::key_value_deploy_storage::KeyValueRejectedDeployBuffer>,
     >,
     pub runtime_manager: RuntimeManager,
     // Note: no log field, logging will come from log crate

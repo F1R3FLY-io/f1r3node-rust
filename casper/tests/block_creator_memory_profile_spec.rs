@@ -166,9 +166,11 @@ async fn run_block_creator_create_memory_profile() {
             .expect("Failed to create deploy storage"),
     ));
     let rejected_deploy_buffer = Arc::new(Mutex::new(
-        block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer::new(&mut kvm)
-            .await
-            .expect("Failed to create rejected deploy buffer"),
+        block_storage::rust::deploy::key_value_deploy_storage::KeyValueRejectedDeployBuffer::new(
+            &mut kvm,
+        )
+        .await
+        .expect("Failed to create rejected deploy buffer"),
     ));
     let mut block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
         .await
