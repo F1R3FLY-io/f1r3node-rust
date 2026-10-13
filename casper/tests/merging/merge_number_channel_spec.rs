@@ -17,7 +17,7 @@ use models::rhoapi::{
 use rholang::rust::interpreter::accounting::costs::Cost;
 use rholang::rust::interpreter::merging::rholang_merging_logic::RholangMergingLogic;
 use rholang::rust::interpreter::rho_runtime::{RhoRuntime, RhoRuntimeImpl};
-use rholang::rust::interpreter::rho_type::RhoNumber;
+use rholang::rust::interpreter::rho_type::RhoBigInt;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::hot_store_trie_action::HotStoreTrieAction;
 use rspace_plus_plus::rspace::merger::channel_change::ChannelChange;
@@ -54,7 +54,29 @@ new MergeableTag, stCh  in {
 }
 "#;
 
-fn rho_change(num: i64) -> String {
+static RHO_ST_BIGINT: &str = r#"
+new MergeableTag, stCh  in {
+  @(*MergeableTag, *stCh)!(0n) |
+
+  contract @"SET"(ret, @v) = {
+    for(@s <- @(*MergeableTag, *stCh)) {
+      @(*MergeableTag, *stCh)!(s + v) | ret!(s, s + v)
+    }
+  } |
+
+  contract @"READ"(ret) = {
+    for(@s <<- @(*MergeableTag, *stCh)) {
+      ret!(s)
+    }
+  }
+}
+"#;
+
+fn rho_change_bigint(num: &str) -> String { rho_change_literal(&format!("{}n", num)) }
+
+fn rho_change(num: i64) -> String { rho_change_literal(&num.to_string()) }
+
+fn rho_change_literal(num: &str) -> String {
     format!(
         r#"
 new retCh, out(`rho:io:stdout`) in {{
@@ -105,13 +127,30 @@ fn unforgeable_name_seed() -> Par {
     }])
 }
 
-#[allow(clippy::mutable_key_type)]
 async fn test_case(
     base_terms: Vec<String>,
     left_terms: Vec<DeployTestInfo>,
     right_terms: Vec<DeployTestInfo>,
     expected_rejected: HashableSet<prost::bytes::Bytes>,
     expected_final_result: i64,
+) {
+    run_test_case(
+        base_terms,
+        left_terms,
+        right_terms,
+        expected_rejected,
+        RhoBigInt::create_par(&num_bigint::BigInt::from(expected_final_result)),
+    )
+    .await
+}
+
+#[allow(clippy::mutable_key_type)]
+async fn run_test_case(
+    base_terms: Vec<String>,
+    left_terms: Vec<DeployTestInfo>,
+    right_terms: Vec<DeployTestInfo>,
+    expected_rejected: HashableSet<prost::bytes::Bytes>,
+    expected_final_result: Par,
 ) {
     let mergeable_tags = {
         let mut m = std::collections::HashMap::new();
@@ -304,11 +343,11 @@ async fn test_case(
          number_channels: &NumberChannelsDiff| {
             match number_channels.get(hash) {
                 Some(number_channel_diff) => {
-                    let (diff, merge_type) = *number_channel_diff;
+                    let (diff, merge_type) = number_channel_diff;
                     Ok(Some(RholangMergingLogic::calculate_number_channel_merge(
                         hash,
                         diff,
-                        merge_type,
+                        *merge_type,
                         changes,
                         |_hash| base_reader.get_data(_hash),
                     )?))
@@ -441,7 +480,7 @@ async fn test_case(
         .await
         .unwrap();
 
-    assert_eq!(RhoNumber::unapply(&res[0]).unwrap(), expected_final_result);
+    assert_eq!(res[0], expected_final_result);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -554,6 +593,47 @@ async fn multiple_branches_should_merge_number_channels() {
         ],
         HashableSet::new(),
         10,
+    )
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn multiple_branches_should_merge_bigint_number_channels_past_i64() {
+    let big = num_bigint::BigInt::from(i64::MAX);
+    run_test_case(
+        vec![RHO_ST_BIGINT.to_owned(), rho_change_bigint("10")],
+        vec![DeployTestInfo {
+            term: rho_change_bigint(&big.to_string()),
+            cost: 10,
+            sig: "0x11".to_string(),
+        }],
+        vec![DeployTestInfo {
+            term: rho_change_bigint(&big.to_string()),
+            cost: 10,
+            sig: "0x22".to_string(),
+        }],
+        HashableSet::from_iter(Vec::<prost::bytes::Bytes>::new()),
+        RhoBigInt::create_par(&(num_bigint::BigInt::from(10) + &big * 2)),
+    )
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn multiple_branches_should_reject_deploy_when_bigint_number_channel_got_negative_number() {
+    run_test_case(
+        vec![RHO_ST_BIGINT.to_owned(), rho_change_bigint("10")],
+        vec![DeployTestInfo {
+            term: rho_change_bigint("-5"),
+            cost: 10,
+            sig: "0x11".to_string(),
+        }],
+        vec![DeployTestInfo {
+            term: rho_change_bigint("-6"),
+            cost: 10,
+            sig: "0x22".to_string(),
+        }],
+        HashableSet::from_iter(vec![make_sig_pb("0x22")]),
+        RhoBigInt::create_par(&num_bigint::BigInt::from(5)),
     )
     .await;
 }
