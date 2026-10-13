@@ -89,6 +89,7 @@ Update `fonts.lock`, render every diagram again, and review the images.
 | 06a | [Lifecycle of a space transaction](diagrams/06a-space-txn-lifecycle.svg) (state), a sub-figure of figure 06 | Drawn in P1 |
 | 07 | [Checkpoint, replay, and sweep](diagrams/07-checkpoint-replay-sweep.svg) (sequence) | Drawn in P1. Diagram 07a draws the restart. |
 | 07a | [Restart and lazy attach](diagrams/07a-restart-lazy-attach.svg) (sequence), a sub-figure of figure 07 | Drawn in P7 step 5 (`rrs-tests-verification-restart-rehydrate`) |
+| 07b | [LFS export and import](diagrams/07b-lfs-export-import.svg) (sequence), a sub-figure of figure 07 | Drawn in P10 step S6 for part N20 of the design |
 | 08 | [Merge flow of the counter conflict](diagrams/08-counter-conflict-merge.svg) (activity) | Drawn in P4 |
 | 09 | [PathMap delivery](diagrams/09-pathmap-delivery.svg) (activity) | Drawn in P5 wave W3 |
 | 10 | [Theory admission](diagrams/10-theory-admission.svg) (activity) | Drawn in P7 step 4 |

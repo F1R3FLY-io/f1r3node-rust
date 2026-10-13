@@ -1,10 +1,10 @@
 # Reified RSpaces design
 
 This document describes how the campaign builds Reified RSpaces in the node.
-Each phase of the campaign adds a section, and the [README](README.md#campaign-phases) lists the phases.
-Phase P1 writes the [substrate](#substrate) section, which describes the storage layer of spaces in `rspace++`.
-Phase P4 writes the section [Native spaces](#native-spaces), which describes the first working space, of the family `hashmap:queue`.
-Later phases add the other disciplines and outer stores, the theory seam, and the other parts.
+Each phase of the campaign added a part, and the [README](README.md#campaign-phases) lists the phases.
+Phase P1 wrote the [substrate](#substrate) section, which describes the storage layer of spaces in `rspace++`.
+Phase P4 wrote the first parts of the section [Native spaces](#native-spaces), for the family `hashmap:queue`.
+Phases P5 to P9 added the parts N11 to N19, and part N20 describes the persistence and the recovery of space state.
 
 Read the [glossary](glossary.md) first, because this document uses its terms and links to its entries.
 The [decision register](decision-register.md) is normative, and this document follows it.
@@ -1440,7 +1440,8 @@ So the events, the charges, the replay, and the merge of a space operation are t
 
 The [specification](specification.md) states the required behavior of the queue, of the HashMap outer store, and of the default qualifier.
 The [agent API](agent-api.md) states the calls, the replies, and the errors that a program sees.
-This section explains how the code meets them, in fourteen parts that follow the life of one space operation:
+This section explains how the code meets them, in twenty parts.
+The first fourteen parts follow the life of one space operation:
 
 1. [N1](#n1-module-map-and-hook-lines): the new modules and the hook lines in the three hot files of the reducer.
 2. [N2](#n2-namespace-and-records): the ids under the namespace tag, and the envelopes of the records ([decision M-2](decision-register.md#m-2)).
@@ -1450,12 +1451,18 @@ This section explains how the code meets them, in fourteen parts that follow the
 6. [N6](#n6-scheduling): the space intents of the deterministic scheduler.
 7. [N7](#n7-factories-and-handles): the factory, the handle, `HANDLE_OP`, `getSpaceAgent`, and `assertEqual`.
 8. [N8](#n8-errors): the errors and their codes.
-9. [N9](#n9-limits-of-p4): the limits of this phase.
+9. [N9](#n9-limits): the limits of native spaces.
 10. [N10](#n10-legacy-charges): the legacy charges of each staged operation ([decision 45](decision-register.md#decision-45)).
 11. [N11](#n11-wave-w2-of-p5-the-drivers-the-stores-and-the-hooks): the drivers, the stores and the hooks of P5 wave W2.
 12. [N12](#n12-wave-w3-of-p5-joins-of-one-space): the join engine of P5 wave W3 ([decision 29](decision-register.md#decision-29)).
 13. [N13](#n13-wave-w3-of-p5-the-pathmap-engine): the PathMap engine of P5 wave W3 ([decision 51](decision-register.md#decision-51)).
 14. [N14](#n14-decision-47-spaces-in-native-execution): spaces in native play and native replay ([decision 47](decision-register.md#decision-47)).
+15. [N15](#n15-phase-p6-the-vectordb-family): the VectorDB family of P6.
+16. [N16](#n16-phase-p6-the-chromadb-search-backend): the ChromaDB search backend of P6.
+17. [N17](#n17-phase-p7-temp-and-seq-spaces-hashset-spaces-theories-and-rehydration): the qualifiers, the HashSet store, the theories and the rehydration of P7.
+18. [N18](#n18-phase-p8-user-agent-backed-spaces): the user agent-backed spaces of P8.
+19. [N19](#n19-phase-p9-consensus-integration): the consensus integration of P9.
+20. [N20](#n20-persistence-and-recovery): the persistence and the recovery of space state.
 
 The pseudocode of this section uses the notation of [Table S5.0](#s5-algorithms), in the literate form of Knuth [[Knu84](#ref-knu84)].
 
@@ -2647,13 +2654,16 @@ The substrate errors map explicitly, never through the text of `RSpaceError` (re
 
 The typed replies are not aborts, and the [agent API](agent-api.md#7-typed-replies) lists their codes and their detail maps.
 
-### N9. Limits of P4
+### N9. Limits
 
-- **Fail-closed constructs.** P4 rejects the constructs that later phases add, with a deterministic code ([decision 34](decision-register.md#decision-34), item A9). The [syntax contract](syntax-contract.md#meaning-at-run-time) lists each construct with its code and its phase.
-- **One family.** Only `hashmap:queue` has a factory. A config record of another family fails with `FamilyUnavailable`, and P5 and P6 add the other families.
-- **Conservative merges.** Two branches that only peek one queue conflict (item A2). Two branches that open collections of one space conflict on the space counter (item A25).
+This part gives the current limits of native spaces.
+Phase P4 had two more limits: it had only the family `hashmap:queue`, and it rejected the constructs of later phases with a code.
+P5 to P8 removed both, and the [syntax contract](syntax-contract.md#constructs-that-fail-closed) records the phase of each construct.
+
+- **Fail-closed constructs.** A construct in a position or on a target that does not take it fails closed with a deterministic code ([decision 34](decision-register.md#decision-34), item A9).
+- **Conservative merges.** Two branches that only peek one ordered collection conflict (item A2). Two branches that open collections of one space conflict on the space counter (item A25).
 - **Divergent pairs.** A persistent send and a persistent receive on one queue fire again in each new space intent. They stop only when the phlo of the deploy runs out, as on the baseline host.
-- **Host work.** The meter charges the matcher work and the own reads and copies of each operation ([decision 42](decision-register.md#decision-42)). The production evaluation passes no host-work budget yet. Each charge then takes effect when cost accounting enables the budget.
+- **Host work.** The meter charges the matcher work and the own reads and copies of each operation ([decision 42](decision-register.md#decision-42)). Native execution carries the host-work budget of protocol version 6 in play and in replay, so each charge binds there (`casper/src/rust/util/rholang/runtime_manager.rs:870`, `casper/src/rust/rholang/replay_runtime.rs:74`). Legacy evaluation passes no budget.
 - **Matching under the stripes.** The agent matches while its transaction holds its lock stripes, as the host does under its own locks.
 - **Closures.** A data value that a program sends inside a `use` block gets no wrapper (item A24). A forged reply channel of a system process loses its use context, so a reply channel should be a `new` name (R7).
 - **Key size.** A data channel holds the collection key, so the id of a data channel grows with the size of the channel.
@@ -3975,6 +3985,237 @@ The reconciler starts only when the installed services have a writer, so a node 
 `docker/shard.yml` pins the server image by its digest, under the Compose profile `chromadb`.
 Each node gets the endpoint `CHROMA_ENDPOINT` and a database of its own, `CHROMA_DATABASE`, so no node writes the mirror of another node.
 A node built without the `chromadb` feature ignores these entries.
+
+### N17. Phase P7: temp and seq spaces, HashSet spaces, theories and rehydration
+
+Phase P7 adds the qualifiers `temp` and `seq`, the HashSet store and the builtin theories ([decision 72](decision-register.md#decision-72) to [decision 74](decision-register.md#decision-74)).
+It also shows that the first operation after a restart pays what a warm operation pays.
+The [specification](specification.md#4-qualifiers) states the rules, and the [theory seam](theory-seam.md) explains the theories.
+This section describes the code in seven parts.
+
+#### N17.1 The book of a root evaluation
+
+A temp or seq space lives for one deploy ([I-4](decision-register.md#i-4)).
+Its ids use the lowercase KIND bytes.
+Its space id comes from the message that created it, so no other deploy can make its ids.
+The node keeps a [volatile registry](glossary.md#volatile-registry) for each root evaluation, `VolatileRegistry` (`spaces/ephemeral.rs:77`).
+The registry is node bookkeeping, not consensus state, and Table N17.1 lists how its entries arrive.
+
+*Table N17.1. The entries of the volatile registry.*
+
+| Entry | Writer | Code |
+|---|---|---|
+| An ephemeral space and its qualifier | The creation job of the space, as the last step of the job, after its commit ([decision 83](decision-register.md#decision-83)) | `record_created` (`spaces/ephemeral.rs:120`), called at `spaces/generic.rs:3020` |
+| A volatile channel | `SpaceEnv::begin`, for each lock key with an ephemeral KIND | `record_locked` (`spaces/ephemeral.rs:98`) |
+| The claim of a channel of a seq space | A program job, after its commit | `SeqClaims` (`spaces/ephemeral.rs:206`) |
+
+A root evaluation is a call of the reducer that runs outside every reduction context (`begin_root_evaluation`, `reified/reducer_hooks.rs:202`).
+`begin_evaluation_scope` (`reified/runtime.rs:102`) clears the registry at the start of each root evaluation.
+A nested call neither clears the registry nor sweeps it.
+The scheduler runs no reduction participant while a job runs, so the registry changes only between two scheduling windows.
+
+#### N17.2 The sweep
+
+The reducer sweeps the registry at the end of each root evaluation (`end_root_evaluation_observed`, `reified/reducer_hooks.rs:225`).
+The three entry points `inj`, `inj_with_observation` and `inj_with_host_work` of the reducer call it (`reduce.rs:459`, `reduce.rs:465`, `reduce.rs:501`).
+So the sweep runs after every detached task of the evaluation, in legacy play, native play, native replay and reporting replay.
+
+`sweep_volatile` (`reified/runtime.rs:176`) takes the volatile channels of the registry.
+It removes their records, their waiting continuations and their join entries from the hot store through `SpaceTxnHost::sweep_volatile` ([S5.4](#s54-sweep)).
+With no volatile channel, it does nothing, so ordinary execution does not change.
+It runs under the boundary guard of the reduction coordinator, as the `ISpace` methods of the deterministic space do.
+It makes no observer call and no charge, so the send of a swept record keeps the charge of its introduction.
+A failed sweep breaks an invariant of P7, so the evaluation fails with `BugFoundError` and its failure summary gets the class `Platform`.
+
+#### N17.3 Dangling ids
+
+An id with an ephemeral KIND whose space is not in the registry belongs to a deploy that has ended.
+The entry points check the registry before any job, so the check costs nothing beyond the evaluation that reaches it (Table N17.2).
+
+*Table N17.2. The checks of dangling ids.*
+
+| Entry point | Code | Error |
+|---|---|---|
+| A send or a receive on a channel of an ended space | `check_live` (`reified/runtime.rs:150`), called by `check_route_live` (`reified/reducer_hooks.rs:530`) | `DanglingName` for a name, and `DanglingHandle` for every other id |
+| A `use` block on an ended space | `check_live_space` (`reified/runtime.rs:136`), called by `eval_use` (`reified/reducer_hooks.rs:284`) | `DanglingHandle` |
+| A `new x : s` on an ended space | `check_live_space`, called by `allocate_in_spaces` (`reified/reducer_hooks.rs:1081`) before any job | `DanglingHandle` |
+| `getSpaceAgent` on an ended space | `reified/system_processes.rs:280` | The typed reply `DanglingHandle` |
+
+A durable space without a config record fails at its config read instead, with the same codes (rule SM-3).
+
+#### N17.4 The rules of seq spaces
+
+The rule `SeqSent` keeps the names of a seq space out of the data of every send ([specification 4.3](specification.md#43-seq), rule QF-14).
+`check_send` (`reified/seq.rs:77`) scans the evaluated data of each send while the evaluation holds a seq space.
+
+The scan keeps a work list, and it destructures every field of each `Par` and each expression, so no recursion depth limits it.
+Before each step, it reserves one `VerificationOperations` unit for each node and `VerificationBytes` for each id that it compares.
+It also reserves `SearchStateBytes` for the growth of its work list.
+It exempts the channel argument of the own `produce` of a seq space and the forwarder hop of a handle call.
+The scan runs in the reduction participant before its first dispatch, so every scan between two jobs reads one registry ([decision 83](decision-register.md#decision-83)).
+
+The rule `SeqConcurrent` gives each channel of a seq space one chain of uses (rule QF-15, [decision 73](decision-register.md#decision-73)):
+
+1. `SeqClaims::open` (`spaces/ephemeral.rs:220`) opens the claims of a program job on a seq space. An internal job, such as a re-issue or a settle job, opens none.
+2. The staging primitives of the engine call `Cx::claim` (`spaces/generic.rs:1162`): `store_on` claims its data channel, and `park_on` and `fire_offer_on` claim each channel of their waiter group.
+3. `SeqClaims::claim` (`spaces/ephemeral.rs:251`) admits a use when the channel has no claim or when its claim is a prefix of the participant path of the job. A refused claim aborts the deploy with `SeqConcurrent` before the commit.
+4. `SeqClaims::store` (`spaces/ephemeral.rs:289`) stores the pending claims after the commit, so a failed job changes no claim.
+
+The claim reserves its lookups and its comparison of participant paths on the meter of its job (rule QF-19).
+The TLA+ module `SpaceCoordination.tla` models the claims, with the invariants `SeqExclusive` and `ScanViewPerWindow`.
+
+#### N17.5 The HashSet store
+
+`HashSetOuter` (`spaces/outer/hashset.rs:36`) keeps the key and name rules of the HashMap store ([decision 73](decision-register.md#decision-73)).
+It implements two hooks of the outer store, which every other store accepts with no check:
+
+- `check_payload` (`spaces/outer/hashset.rs:52`) fails a send with data with `PayloadNotEmpty`.
+- `check_patterns` (`spaces/outer/hashset.rs:61`) fails a bind with a pattern, a binder or a remainder with `PatternNotEmpty`.
+
+The driver and the join engine call both hooks after the key check and before the params, so a failed check stages nothing.
+The six families with the indices 26 to 31 have constructor schemas, agents and system channels.
+Gate 3 of a factory gives them only the qualifier `"seq"`.
+
+#### N17.6 Theories
+
+The [theory seam](theory-seam.md) explains the theories, and Table N17.3 maps its parts to the code.
+
+*Table N17.3. The theories in the code.*
+
+| Part | Code |
+|---|---|
+| The trait of a theory, and its verdicts `Proven`, `Refuted` and `Undetermined` | `SpaceTheory` (`spaces/theory/mod.rs:104`), `TheoryVerdict` (`spaces/theory/mod.rs:66`) |
+| The resolution of an identity to a checker of this build | `resolve` (`spaces/theory/mod.rs:127`) |
+| The admission of each value of a send, before any staging | `admit_values` (`spaces/theory/mod.rs:144`), called at `spaces/generic.rs:2194` |
+| The check of each stored datum of a match, after the `where` guard | `check_match`, called at `spaces/generic.rs:989` |
+| The builtin theories and the predicate `sole` | `BuiltinTheory` (`spaces/theory/builtin.rs:131`), `sole` (`spaces/theory/builtin.rs:86`) |
+| The identity and its canonical bytes ([decision 74](decision-register.md#decision-74)) | `TheoryIdentity` (`spaces/theory/identity.rs:59`), `to_bytes` (`spaces/theory/identity.rs:128`), `from_bytes` (`spaces/theory/identity.rs:169`) |
+| Gate 4 of a factory | `theory_gate` (`spaces/factory/constructor.rs:205`) |
+
+#### N17.7 Rehydration and charging
+
+The runtime keeps no cache of space state between two operations.
+Each operation reads the config record and the records of its collections through the metered view of [N14.1](#n141-the-metered-view).
+So a first operation after a restart reads the same keys and values as a warm operation, and it pays the same (rule NE-2).
+
+[Decision 47](decision-register.md#decision-47) replaced the rule "count before decode" of the plan.
+A view load charges its key and its value, the same on a hit and on a miss.
+The test `space_attach_warm_cold_cost_equal` compares the cost vectors of a cold and a warm attach.
+The suite `reified_restart_rehydrate.rs` runs a restart in three processes, as Figure S7a of [S7](#s7-locking-and-ordering) shows.
+
+### N18. Phase P8: user agent-backed spaces
+
+A program can use an agent that it writes as a space ([decision 77](decision-register.md#decision-77)).
+The node translates each operation on such a space into a call on the agent.
+The agent serves the call with its own Rholang code.
+The [agent API](agent-api.md#12-user-agent-backed-spaces) states the calls, and [chapter 21](../../rholang/21-reified-spaces.md#writing-your-own-space) explains how to write an agent.
+Figure 2 of the agent API shows the translation of a `new`, a send and a receive.
+
+#### N18.1 Routes and contexts
+
+The routes of an agent come from three functions:
+
+- `route` (`reified/route.rs:173`) gives an agent-tagged name the route of rule R4: the agent `A` and the raw channel `raw`.
+- `classify_space_ref` (`reified/scope.rs:141`) classifies a space reference that names no Reified id as a user agent. A `use` block of the agent routes each forged name of its body to the agent, with the name as the raw channel (rule R5).
+- `r7_route` (`reified/execution.rs:139`) routes the reply of a system process. The bundle with both flags of an agent-minted name reaches its agent (rule R7A).
+
+#### N18.2 Sends
+
+`route_send_from` (`reified/reducer_hooks.rs:564`) makes the call of a send on an agent route.
+`produce_call` (`reified/user_agent.rs:531`) builds the call `A!(sink, "produce", raw, [d…])`, which carries the authority of the send.
+The send fails first with `PersistentSendOnAgentSpace` for `!!` and with `ParamsUnsupportedOnAgentSpace` for a params section.
+The seq scan of N17.4 also runs first, so a name of a seq space never reaches an agent.
+The sink (`reified/user_agent.rs:491`) is an internal process that absorbs any reply.
+
+#### N18.3 Receives
+
+`agent_consume` (`reified/reducer_hooks.rs:800`) translates a receive whose binds all route to one agent, with `translate_receive` (`reified/user_agent.rs:1088`):
+
+1. A bind on another target fails with `CrossSpaceJoin`, and a query fails with `QuerySpecUnsupportedOnAgentSpace`.
+2. `guard_indices` (`reified/user_agent.rs:640`) finds the binders that the guard reads. `place_guard` (`reified/user_agent.rs:968`) gives the guard to the one bind that owns them, and a guard over two binds fails with `AgentGuardSpansJoin`.
+3. Each bind gets a matcher state, `MatcherState` (`reified/user_agent.rs:115`). Its encoding (`reified/user_agent.rs:217`) becomes the id of the matcher, and a state that prost cannot decode fails with `AgentPatternTooDeep`.
+4. The translation puts one persistent matcher receive for each bind, then the body receive, and last the call `A!(sink, "consume", pairs, arrow, b)`.
+
+`MatcherProcess::call` (`reified/user_agent.rs:363`) serves the call `m!(ret, msg)` of an agent.
+It decodes the state from the id of `m`, and it runs the injected matcher of the host with the metering of a native receive.
+It replies `(true, env)` with the values of the binders, or `(false, Nil)`.
+
+#### N18.4 New
+
+`agent_new` (`reified/reducer_hooks.rs:945`) translates a `new` with agent binders, with `translate_new` (`reified/user_agent.rs:1272`).
+The `new` draws every name of HEAD first, so native and default binders keep their names.
+Each agent binder makes the call `A!(r, "gensym")` with a fresh reply name `r`.
+A resume term of nested receives waits for the replies, binds each agent-minted name (`agent_minted_name`, `reified/user_agent.rs:1220`), and then runs the body.
+
+#### N18.5 Native handles and wrapper agents
+
+`consume_method` (`reified/handle.rs:522`) runs the receive that the matchers of one translation describe (items HC-1 to HC-3 of decision 77).
+It checks the arrow, the pairs, each matcher and the set of matchers, and then it runs one consume or one join on its space.
+So a wrapper agent can forward the calls of its translations to a native space, as the example `agent-wrapper-forwards-to-native` shows.
+
+#### N18.6 The internal processes
+
+`MATCHER_OP_PROCESS` (`reified/system_channels.rs:496`) and `SINK_OP_PROCESS` (`reified/system_channels.rs:504`) are bound to URNs, as `HANDLE_OP` is (decision 77, item U1).
+Each one accepts only the capabilities that the node builds.
+The matcher process decodes its state strictly, so a state that no translation built cannot reach a space (decision 77, point C).
+
+### N19. Phase P9: consensus integration
+
+Phase P9 checks spaces under the consensus parts of the node: replay across blocks, merges, restarts, LFS and Casper ([decision 80](decision-register.md#decision-80)).
+It changes the production code twice:
+
+1. An allocation job of a `new` takes the authority of a call (`call_authority`, `reified/reducer_hooks.rs:1147`, rule AL-8). Before the change, a job of a root term had an empty authority, so its second allocation made a COMM that is not billable.
+2. The creation job of a temp or seq space records the space inside the job, after its commit (`spaces/generic.rs:3020`, [decision 83](decision-register.md#decision-83)). Before the change, the factory recorded the space outside the job, so the charge of the seq scan of a parallel send depended on timing.
+
+The rest of the phase is suites (Table N19.1).
+The [dossier](verification.md#34-phase-p9-consensus-integration) gives their results.
+
+*Table N19.1. The suites of P9.*
+
+| Suite | File | What it checks |
+|---|---|---|
+| N1 | `rholang/tests/reified_n1_replay.rs` | Play and native replay of every family, with order-sensitive negative controls on the trace binding |
+| N2 | `rholang/tests/reified_cross_process.rs` | The same post-state roots in two processes |
+| N4 | `casper/tests/reified/n4.rs` | Spaces under the proposal, the validation and the merge of Casper, on two nodes |
+| N7 | `rholang/tests/loom_reified.rs` | The loom models of four space protocols |
+| N9 | `rholang/tests/reified_n1_replay.rs` | Two fresh runtimes give the same canonical run |
+| Merge and event coverage | `rholang/tests/reified_cross_block_merge.rs` | The merge of space state across blocks, and the coverage of each deploy (rule DT-6) |
+| LFS | `rholang/tests/reified_lfs.rs` | The export and the import of the state of spaces (N20) |
+
+N4 follows three facts of Casper ([decision 82](decision-register.md#decision-82)).
+Only the leader includes offered deploys while a parent branch holds unfinalized user deploys.
+A deploy that takes a record that another payer funded has no feasible signed assignment.
+Two sibling offers of one payer conflict on its cost cursor, and Casper cannot merge them in this tree ([decision 84](decision-register.md#decision-84)).
+So the concurrent row of N4 stays disabled, and the merge row uses two payers.
+
+### N20. Persistence and recovery
+
+Space state is ordinary consensus state in the one RSpace of the node.
+So each transition of that state has the commit point, the failure result and the checks of a host transition.
+Table N20.1 gives each transition, and section [N14](#n14-decision-47-spaces-in-native-execution) gives the native forms of the commit and the replay.
+A migration of space state between versions of the node stays out of scope ([decision 27](decision-register.md#decision-27)).
+
+*Table N20.1. The transitions of space state.*
+
+| Transition | Durable commit point | Result of a failure | Diagram | Checks |
+|---|---|---|---|---|
+| The space transaction | `SpaceTxn::commit` applies the staged writes and events to the hot store, and the next checkpoint makes them durable ([S5.2](#s52-commit)) | The commit is prefix-atomic: the operations before the failed one stay, the deploy fails, and its revert removes them (decision 19, item D6) | Figures S5.2 and S5.2a | `EventCorrelation.v` H1 and `coverage_commit`, and the event coverage of rule DT-6 |
+| The checkpoint | `create_checkpoint` writes the hot store into the history trie and gives the root | A failure is a failure of the host checkpoint, with no Reified step | Figure S7 | `Checkpoint.v` C1, C2 and C8, and `CheckpointReplay.tla` |
+| The restart and the lazy attach | None: the first operation reads the space from the trie | A missing config record fails with `DanglingHandle` or `DanglingName` (rule SM-3) | Figure S7a | `space_restart_rehydrate_three_processes`, `space_attach_warm_cold_cost_equal` |
+| The sweep | The removals of the sweep run in the hot store before the checkpoint, so volatile state never reaches the trie | `BugFoundError` of the class `Platform` (N17.2) | Figure S7 | `VolatileSweep.v` `sweep_complete`, `sweep_exact` and `sweep_root_neutral`, and `Checkpoint.v` C6 |
+| The LFS export and import | The importer sets the root of the exported items, and the new store then holds the state of the root | A page that fails validation is not imported | Figure N20.1 | `space_lfs_export_import` |
+| The revert of a failed deploy | None: the soft checkpoint of the deploy restores its pre-state | A failure is a failure of the host revert, with no Reified step | Figure S5.2a | `Checkpoint.v` C7 and `EventCorrelation.v` H23 |
+
+The exporter and the importer of the history repository carry the state of spaces with no Reified code.
+The suite `reified_lfs.rs` exports a root that holds a durable space of each family.
+The root also holds the stored families with records and waiters, VectorDB records and an agent space.
+Each page validates, and a page with one changed data byte fails.
+After the import, block 2 gives the same record for each deploy on both stores, and native replay certifies each deploy on the imported store.
+Figure N20.1 shows the export and the import.
+
+![LFS export and import as a sequence over the source node, its store, the exporter of the history repository, the importer of the new node, the new store and the new node. The source node plays block 1 natively: durable spaces of every family, records, waiters, VectorDB records and an agent space. The sweep of each deploy leaves no volatile channel (QF-8), and the checkpoint gives the root R1. In a loop until a page holds fewer than 64 history items, the exporter calls get_history_and_data with the start path and 64 on the source store, sends one page of history items and data items to the importer, and the importer runs validate_state_items on the page and the start path; a note states that a page with one changed data byte fails there. The importer then calls set_history_items and set_data_items, and set_root(R1), on the new store, and every space channel of block 1 holds the records and the waiters of the source. The new node resets to R1 and plays block 2, gets the same deploy records as on the source (roots, cost vectors, evidence bytes and event logs), and native replay certifies each deploy of block 2 on the imported store. A legend gives the concept colors of the hosts, the exporter and the importer, and the stored state, and the arrows of calls, effects on the stored state, and reads or checks.](diagrams/07b-lfs-export-import.svg)
+
+*Figure N20.1. Source: [diagrams/07b-lfs-export-import.puml](diagrams/07b-lfs-export-import.puml), rendered by [diagrams/render.sh](diagrams/render.sh).*
 
 ## References
 

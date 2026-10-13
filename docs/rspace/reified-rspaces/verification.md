@@ -7943,6 +7943,17 @@ The stale row of Table 137 in section 25 now states that step S5 completed chapt
 | `doc_lint.py` over every campaign document and every Reified section | No finding |
 | `rustfmt --check`, and `cargo clippy` of the two test targets with `-D warnings` | No difference and no warning |
 
+#### 35.4.6 The design
+
+Part 4 completes `design.md`:
+
+- The introduction and the list of the native-spaces section name all twenty parts, and part N9 gives the current limits of native spaces.
+- Part N9 corrects one stale limit. Native execution carries the host-work budget of protocol version 6 in play and in replay, so each charge binds there.
+- Parts N17 to N19 describe the code of P7, P8 and P9, with a citation of each function that they name.
+- Part N20 gives the commit point, the result of a failure, the diagram and the checks of each transition of space state.
+
+The new diagram 07b shows the LFS export and import (step S6), and part N20 embeds it.
+
 #### 35.4.4 The gates of parts 1 and 2
 
 *Table 245. The gates of parts 1 and 2 of step S5.*

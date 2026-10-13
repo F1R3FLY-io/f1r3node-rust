@@ -1,0 +1,91 @@
+' 07b LFS export and import: the state of the spaces of a root crosses to a
+' new node through the export and the import of the history repository, with
+' no Reified code in either.
+'
+' Source of the LFS figure of ../design.md (section N20). The figure restates
+' P9 design v2 section 9 (amendment A19) and the harness
+' rholang/tests/reified_lfs.rs. It adds no new fact.
+'
+' Reading order, from the top to the bottom:
+'   1. The source node plays block 1 natively: one durable space of each
+'      registered family, the stored families with records and waiters,
+'      VectorDB records and an agent space. The sweep leaves no volatile
+'      channel, so temp, seq and HashSet spaces never reach the root. The
+'      checkpoint gives the root R1.
+'   2. The exporter of the history repository reads R1 in pages of 64 history
+'      items, with the data items of each page.
+'   3. The new node validates each page with its importer, as a node
+'      validates the pages of a peer. A page with one changed data byte fails.
+'   4. The new node sets the history items, the data items and the root R1.
+'      Every space channel of block 1 holds the same records and waiters on
+'      both stores.
+'   5. Block 2 runs on both stores and gives the same record for each deploy,
+'      and native replay certifies each deploy on the imported store.
+'
+' Colors come from concept-colors.iuml (aliases of the shared palette).
+' Render: ./render.sh 07b-lfs-export-import.puml   Check: ./render.sh --check
+
+@startuml 07b-lfs-export-import
+!include ../../../casper/theory/diagrams/palette.iuml
+!include concept-colors.iuml
+$ca_base_skin()
+skinparam sequence {
+  ArrowColor $rrs_relation
+  LifeLineBorderColor $rrs_relation
+  ParticipantBorderColor $rrs_relation
+  ActorBorderColor $rrs_relation
+  GroupBorderColor $rrs_relation
+  DividerBorderColor $rrs_relation
+  DividerBackgroundColor $ca_note_grey
+}
+skinparam DatabaseBorderColor $rrs_relation
+skinparam NoteBorderColor $rrs_relation
+skinparam LegendBorderColor $rrs_relation
+skinparam LegendBackgroundColor $ca_note_grey
+title LFS export and import of the state of spaces
+autonumber
+
+participant "Source node\nblock 1" as SRC $rrs_host
+database "Source store\nhistory trie" as SSTORE $rrs_storage
+participant "Exporter of the\nhistory repository" as EXP $rrs_substrate
+participant "New node\nimporter" as IMP $rrs_substrate
+database "New store\nhistory trie" as NSTORE $rrs_storage
+participant "New node\nblock 2" as NEW $rrs_host
+
+== Block 1 on the source node ==
+SRC -[$rrs_flow]> SRC : native play: durable spaces of every family,\nrecords, waiters, VectorDB records, an agent space
+SRC -[$rrs_relation]> SRC : the sweep of each deploy:\nno volatile channel stays (QF-8)
+SRC -[$rrs_effect]> SSTORE : create_checkpoint(): root R1
+
+== Export in pages ==
+loop until a page holds fewer than 64 history items
+  EXP -[$rrs_relation]> SSTORE : get_history_and_data(start path, 64)
+  EXP -[$rrs_flow]> IMP : one page: history items and data items
+  IMP -[$rrs_relation]> IMP : validate_state_items(page, start path)
+  note right of IMP
+  A page with one changed
+  data byte fails here.
+  end note
+end
+
+== Import ==
+IMP -[$rrs_effect]> NSTORE : set_history_items, set_data_items
+IMP -[$rrs_effect]> NSTORE : set_root(R1)
+NSTORE -[$rrs_relation]-> IMP : every space channel of block 1 holds\nthe records and the waiters of the source
+
+== Block 2 on both stores ==
+NEW -[$rrs_flow]> NSTORE : reset to R1, play block 2
+NEW -[$rrs_relation]-> NEW : the same deploy records as on the source:\nroots, cost vectors, evidence bytes, event logs
+NEW -[$rrs_relation]> NEW : native replay certifies each deploy\nof block 2 on the imported store
+
+legend bottom
+**Concept colors**
+|<$rrs_host>       | host at the baseline: nodes and their runtimes |
+|<$rrs_substrate>  | the exporter and the importer of the history repository |
+|<$rrs_storage>    | stored state |
+**Arrows**
+|<$rrs_flow>       | call or transfer |
+|<$rrs_effect>     | effect on the stored state |
+|<$rrs_relation>   | read, check or internal step |
+endlegend
+@enduml

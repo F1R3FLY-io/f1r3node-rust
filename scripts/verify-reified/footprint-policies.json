@@ -11072,7 +11072,7 @@
       ]
     },
     "p10": {
-      "description": "Phase P10, the formal-verification closure, the documents, the examples, the benchmarks and the FIPS matrix (design v2, plan decision 85). It extends campaign and restates the edits and the new files of p9. Step S1 adds the aggregate gate scripts/check-reified-rspaces-ALL.sh and the tracked checker list scripts/verify-reified/checker-commands.txt. Step S7 adds Checkpoint.v, the axiom control fixture, the model map of P10 and the property tests of Checkpoint.v. Step S2 adds the example programs of examples/reified_rspaces/, their harness rholang/tests/reified_examples_execute.rs, the invalid syntax corpus test-vectors/reified-syntax-invalid-v1.json and the test files of the fixtures of the manifest rule of doc_lint. Step S5 rewrites chapter 21 and adds the Reified sections of chapters 02, 06, 07, 08 and 10, the anchor of the Reified section of chromadb.md, and the Reified entries of docs/rholang/README.md and examples/README.md. Their edits are replaced blocks against the base. It also adds three examples.",
+      "description": "Phase P10, the formal-verification closure, the documents, the examples, the benchmarks and the FIPS matrix (design v2, plan decision 85). It extends campaign and restates the edits and the new files of p9. Step S1 adds the aggregate gate scripts/check-reified-rspaces-ALL.sh and the tracked checker list scripts/verify-reified/checker-commands.txt. Step S7 adds Checkpoint.v, the axiom control fixture, the model map of P10 and the property tests of Checkpoint.v. Step S2 adds the example programs of examples/reified_rspaces/, their harness rholang/tests/reified_examples_execute.rs, the invalid syntax corpus test-vectors/reified-syntax-invalid-v1.json and the test files of the fixtures of the manifest rule of doc_lint. Step S5 rewrites chapter 21 and adds the Reified sections of chapters 02, 06, 07, 08 and 10, the anchor of the Reified section of chromadb.md, and the Reified entries of docs/rholang/README.md and examples/README.md. Their edits are replaced blocks against the base. It also adds three examples. Step S6 adds the diagram 07b of the LFS export and import.",
       "extends": "campaign",
       "unchanged": [
         "**"
@@ -13341,7 +13341,9 @@
         "rholang/tests/reified_examples_execute.rs",
         "test-vectors/reified-syntax-invalid-v1.json",
         "scripts/verify-reified/tests/fixtures/doc_lint/snippet-corpus/fail/runner.txt",
-        "scripts/verify-reified/tests/fixtures/doc_lint/snippet-corpus/pass/runner.txt"
+        "scripts/verify-reified/tests/fixtures/doc_lint/snippet-corpus/pass/runner.txt",
+        "docs/rspace/reified-rspaces/diagrams/07b-lfs-export-import.puml",
+        "docs/rspace/reified-rspaces/diagrams/07b-lfs-export-import.svg"
       ]
     }
   }
