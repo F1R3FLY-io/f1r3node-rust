@@ -431,13 +431,55 @@ async fn casper_runtime_shutdown_while_waiting_for_peers() {
     let prepared = prepare(conf).await.unwrap();
     let handle = prepared.consensus.handle();
     let runtime = prepared.consensus.start();
-    tokio::time::sleep(Duration::from_millis(20)).await;
-    tokio::time::timeout(Duration::from_secs(5), runtime.shutdown())
-        .await
-        .unwrap()
-        .unwrap();
+    tokio::time::timeout(
+        Duration::from_secs(180),
+        handle.handle_packet(consensus_api::NetworkPacket {
+            peer: consensus_api::Peer {
+                id: vec![2; 32],
+                host: "127.0.0.1".into(),
+                tcp_port: 40410,
+                udp_port: 40414,
+            },
+            kind: "startup-probe".into(),
+            payload: vec![],
+        }),
+    )
+    .await
+    .expect("Casper must finish launch and accept packets before shutdown")
+    .unwrap();
+    assert_eq!(handle.status().phase, Phase::Bootstrapping);
+    assert_eq!(handle.propose(false).await, Err(ConsensusError::NotReady));
+    let budget = consensus_runtime::RuntimeConfig::default();
+    tokio::time::timeout(
+        budget.drain_timeout + budget.cleanup_timeout + Duration::from_secs(5),
+        runtime.shutdown(),
+    )
+    .await
+    .unwrap()
+    .unwrap();
     assert_eq!(handle.status().phase, Phase::Stopped);
     assert!(!directory.path().join("consensus-manifest.json").exists());
+    prepared.application.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn casper_runtime_shutdown_immediately_after_start() {
+    let directory = tempfile::tempdir().unwrap();
+    let (conf, _) = config(directory.path());
+    let prepared = prepare(conf).await.unwrap();
+    let handle = prepared.consensus.handle();
+    let runtime = prepared.consensus.start();
+    let budget = consensus_runtime::RuntimeConfig::default();
+    tokio::time::timeout(
+        budget.drain_timeout + budget.cleanup_timeout + Duration::from_secs(5),
+        runtime.shutdown(),
+    )
+    .await
+    .expect("Startup cancellation must complete within the runtime shutdown budget")
+    .unwrap();
+    assert_eq!(handle.status().phase, Phase::Stopped);
+    assert!(!directory.path().join("consensus-manifest.json").exists());
+    prepared.application.close().await;
 }
 
 #[tokio::test]
@@ -467,7 +509,6 @@ async fn invalid_validator_keys_are_rejected_before_store_creation() {
         assert!(!store.exists());
     }
 }
-
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn casper_runtime_reports_failed_genesis_initialization() {

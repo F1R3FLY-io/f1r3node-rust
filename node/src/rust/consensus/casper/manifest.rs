@@ -253,3 +253,155 @@ fn contains_database(path: &Path) -> eyre::Result<bool> {
     }
     Ok(false)
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{Arc, Barrier};
+
+    use models::rust::casper::protocol::casper_message::{ApprovedBlock, ApprovedBlockCandidate};
+
+    use super::*;
+
+    fn publish_concurrently(genesis: [Vec<u8>; 2]) -> (tempfile::TempDir, Vec<eyre::Result<()>>) {
+        let directory = tempfile::tempdir().unwrap();
+        let guard = ManifestGuard::inspect(directory.path(), "test", "root").unwrap();
+        let barrier = Arc::new(Barrier::new(2));
+        let results = std::thread::scope(|scope| {
+            let tasks: Vec<_> = genesis
+                .into_iter()
+                .map(|hash| {
+                    let guard = guard.clone();
+                    let barrier = barrier.clone();
+                    scope.spawn(move || {
+                        barrier.wait();
+                        guard.record(&hash)
+                    })
+                })
+                .collect();
+            tasks.into_iter().map(|task| task.join().unwrap()).collect()
+        });
+        let entries: Vec<_> = std::fs::read_dir(directory.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(entries, vec![std::ffi::OsString::from(
+            "consensus-manifest.json"
+        )]);
+        (directory, results)
+    }
+
+    #[test]
+    fn concurrent_identical_publications_succeed() {
+        let (directory, results) = publish_concurrently([vec![1; 32], vec![1; 32]]);
+        assert!(results.iter().all(Result::is_ok));
+        let manifest: ChainManifest = serde_json::from_slice(
+            &std::fs::read(directory.path().join("consensus-manifest.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(manifest.genesis, hex::encode([1; 32]));
+    }
+
+    #[test]
+    fn concurrent_conflicting_publications_preserve_the_winner() {
+        let (directory, results) = publish_concurrently([vec![1; 32], vec![2; 32]]);
+        assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+        let winner = results.iter().position(Result::is_ok).unwrap() as u8 + 1;
+        let error = results.into_iter().find_map(Result::err).unwrap();
+        assert!(error
+            .to_string()
+            .contains("Concurrent consensus manifest mismatch"));
+        let manifest: ChainManifest = serde_json::from_slice(
+            &std::fs::read(directory.path().join("consensus-manifest.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(manifest.genesis, hex::encode([winner; 32]));
+    }
+
+    fn legacy_store(directory: &Path, height: i64, genesis: Option<&[u8]>) {
+        let dag = directory.join("dagstorage");
+        std::fs::create_dir_all(&dag).unwrap();
+        let env = unsafe { heed::EnvOpenOptions::new().max_dbs(128).open(&dag).unwrap() };
+        let mut txn = env.write_txn().unwrap();
+        let approved_db: heed::Database<
+            heed::types::SerdeBincode<Vec<u8>>,
+            heed::types::SerdeBincode<Vec<u8>>,
+        > = env
+            .create_database(&mut txn, Some("blocks-approved"))
+            .unwrap();
+        let mut block = models::rust::block_implicits::get_random_block_default();
+        block.body.state.block_number = height;
+        block.shard_id = "root".into();
+        block.block_hash = vec![2; 32].into();
+        let approved = ApprovedBlock {
+            candidate: ApprovedBlockCandidate {
+                block,
+                required_sigs: 0,
+            },
+            sigs: vec![],
+            floor_seed: None,
+        };
+        approved_db
+            .put(&mut txn, &vec![42], &approved.to_proto().encode_to_vec())
+            .unwrap();
+        if let Some(genesis) = genesis {
+            let db: heed::Database<
+                heed::types::SerdeBincode<Vec<u8>>,
+                heed::types::SerdeBincode<Vec<u8>>,
+            > = env.create_database(&mut txn, Some("genesis-hash")).unwrap();
+            let hash = models::rust::block_hash::BlockHashSerde(genesis.to_vec().into());
+            db.put(
+                &mut txn,
+                &bincode::serialize("genesis").unwrap(),
+                &bincode::serialize(&hash).unwrap(),
+            )
+            .unwrap();
+        }
+        txn.commit().unwrap();
+        env.force_sync().unwrap();
+        env.prepare_for_closing().wait();
+    }
+
+    #[test]
+    fn legacy_genesis_block_without_genesis_entry_is_accepted() {
+        let directory = tempfile::tempdir().unwrap();
+        legacy_store(directory.path(), 0, None);
+        let before = std::fs::read(directory.path().join("dagstorage/data.mdb")).unwrap();
+        ManifestGuard::inspect(directory.path(), "test", "root").unwrap();
+        assert_eq!(
+            std::fs::read(directory.path().join("dagstorage/data.mdb")).unwrap(),
+            before
+        );
+    }
+
+    #[test]
+    fn legacy_checkpoint_without_genesis_identity_is_rejected_without_writes() {
+        let directory = tempfile::tempdir().unwrap();
+        legacy_store(directory.path(), 10, None);
+        let before = std::fs::read(directory.path().join("dagstorage/data.mdb")).unwrap();
+        let error = ManifestGuard::inspect(directory.path(), "test", "root")
+            .err()
+            .unwrap();
+        assert!(error
+            .to_string()
+            .contains("Truncated Casper store has no genesis identity"));
+        assert_eq!(
+            std::fs::read(directory.path().join("dagstorage/data.mdb")).unwrap(),
+            before
+        );
+        assert!(!directory.path().join("consensus-manifest.json").exists());
+    }
+
+    #[test]
+    fn legacy_checkpoint_with_genesis_identity_is_accepted() {
+        let directory = tempfile::tempdir().unwrap();
+        legacy_store(directory.path(), 10, Some(&[1; 32]));
+        let before = std::fs::read(directory.path().join("dagstorage/data.mdb")).unwrap();
+        let guard = ManifestGuard::inspect(directory.path(), "test", "root").unwrap();
+        guard.record(&[1; 32]).unwrap();
+        ManifestGuard::inspect(directory.path(), "test", "root").unwrap();
+        assert_eq!(
+            std::fs::read(directory.path().join("dagstorage/data.mdb")).unwrap(),
+            before
+        );
+    }
+}

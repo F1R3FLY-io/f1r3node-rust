@@ -43,6 +43,12 @@ Casper validates the configured validator key before it derives capabilities, bi
 Invalid hexadecimal, incorrect key lengths, and invalid secp256k1 scalars return a signing error without key material.
 An absent key preserves read-only operation.
 
+Manifest publication does not replace an existing manifest. Concurrent publishers must agree on the full chain identity.
+A legacy genesis block can establish genesis identity when the native genesis entry is absent.
+A later checkpoint requires the native genesis entry. A checkpoint hash cannot replace a genesis hash.
+The adapter rejects an unidentified checkpoint without changing the store.
+This change does not provide an automatic migration for that case. Retain the store and obtain a verified recovery source before retrying startup.
+
 The Casper adapter also owns the optional soak observer. The observer binds during preparation and stops before store shutdown.
 Dropping a prepared adapter releases its observer socket. The host does not receive the native observer controller.
 
@@ -127,3 +133,7 @@ cargo test --locked --release -p node --lib \
 The Casper acceptance test uses HTTP routes and a loopback gRPC server. It covers deploys, proposals, finality, native packet delivery, shutdown, and store recovery.
 Additional tests cover initialization failure and store identity rejection. These focused checks do not replace the full network acceptance suite.
 The observer lifecycle test checks socket cleanup after preparation cancellation and runtime shutdown.
+The peer-wait shutdown test waits for a packet acknowledgement after launch, while the test connection set remains empty.
+Its shutdown deadline includes the configured drain and cleanup budgets. A separate test cancels startup immediately.
+Readiness tests check both APIs through preparation, bootstrap, readiness, draining, shutdown, and failure.
+Manifest tests cover concurrent publication and legacy checkpoints with and without a genesis entry.

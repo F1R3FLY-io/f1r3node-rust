@@ -33,6 +33,7 @@ impl NodeDiscovery for StubNodeDiscovery {
 fn services(
     has_validator_key: bool,
     is_node_read_only: bool,
+    fallback_ready: bool,
 ) -> (WebApiImpl, DeployGrpcServiceV1Impl) {
     let local = PeerNode::new(
         NodeIdentifier::new("0a0b0c0d00000000000000000000000000000000")
@@ -64,7 +65,7 @@ fn services(
     ));
     let connections_cell = ConnectionsCell::new();
     let node_discovery: Arc<dyn NodeDiscovery + Send + Sync> = Arc::new(StubNodeDiscovery);
-    let is_ready = Arc::new(AtomicBool::new(true));
+    let is_ready = Arc::new(AtomicBool::new(fallback_ready));
 
     let web = WebApiImpl::new(
         10,
@@ -119,7 +120,7 @@ async fn status_reports_validator_identity_without_autopropose() {
     for (has_validator_key, is_node_read_only) in
         [(true, false), (false, true), (false, false), (true, true)]
     {
-        let (web, grpc) = services(has_validator_key, is_node_read_only);
+        let (web, grpc) = services(has_validator_key, is_node_read_only, true);
         let web_status = web.status().await.unwrap();
         assert_eq!(web_status.is_validator, has_validator_key);
         assert_eq!(web_status.is_read_only, is_node_read_only);
@@ -130,5 +131,94 @@ async fn status_reports_validator_identity_without_autopropose() {
         };
         assert_eq!(grpc_status.is_validator, has_validator_key);
         assert_eq!(grpc_status.is_read_only, is_node_read_only);
+    }
+}
+
+struct ControlledAdapter {
+    started: tokio::sync::oneshot::Sender<consensus_api::RuntimeControl>,
+    fail: tokio::sync::oneshot::Receiver<()>,
+}
+
+#[async_trait::async_trait]
+impl consensus_api::ConsensusAdapter for ControlledAdapter {
+    async fn run(
+        mut self: Box<Self>,
+        mut context: consensus_api::AdapterContext,
+    ) -> Result<(), consensus_api::ConsensusError> {
+        self.started.send(context.control.clone()).ok().unwrap();
+        tokio::select! {
+            _ = context.control.cancelled() => Ok(()),
+            _ = &mut self.fail => Err(consensus_api::ConsensusError::Protocol("test failure".into())),
+        }
+    }
+}
+
+async fn assert_readiness(web: &WebApiImpl, grpc: &DeployGrpcServiceV1Impl, ready: bool) {
+    assert_eq!(web.is_ready(), ready);
+    assert_eq!(web.status().await.unwrap().is_ready, ready);
+    let response = grpc
+        .status(tonic::Request::new(()))
+        .await
+        .unwrap()
+        .into_inner();
+    let Some(Message::Status(status)) = response.message else {
+        panic!("expected status response");
+    };
+    assert_eq!(status.is_ready, ready);
+}
+
+#[tokio::test]
+async fn attached_apis_follow_runtime_readiness_through_shutdown_and_failure() {
+    use consensus_api::{Capabilities, Phase, ProtocolDescriptor};
+    use consensus_runtime::{RuntimeBuilder, RuntimeConfig};
+
+    for (fallback_ready, fail_after_ready) in
+        [(false, false), (true, false), (false, true), (true, true)]
+    {
+        let builder = RuntimeBuilder::new(
+            ProtocolDescriptor {
+                id: "test".into(),
+                version: 1,
+                capabilities: Capabilities::NONE,
+            },
+            RuntimeConfig::default(),
+        )
+        .unwrap();
+        let handle = builder.handle();
+        let (web, grpc) = services(true, false, fallback_ready);
+        let web = web.with_consensus(handle.clone());
+        let grpc = grpc.with_consensus(handle.clone());
+        assert_eq!(handle.status().phase, Phase::Prepared);
+        assert_readiness(&web, &grpc, false).await;
+        let (started, control) = tokio::sync::oneshot::channel();
+        let (fail, failed) = tokio::sync::oneshot::channel();
+        let mut runtime = builder
+            .build(Box::new(ControlledAdapter {
+                started,
+                fail: failed,
+            }))
+            .start();
+        let control = tokio::time::timeout(Duration::from_secs(5), control)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(handle.status().phase, Phase::Bootstrapping);
+        assert_readiness(&web, &grpc, false).await;
+        control.ready();
+        assert_readiness(&web, &grpc, true).await;
+        if fail_after_ready {
+            fail.send(()).unwrap();
+            assert!(tokio::time::timeout(Duration::from_secs(5), runtime.wait())
+                .await
+                .unwrap()
+                .is_err());
+            assert_eq!(handle.status().phase, Phase::Failed);
+        } else {
+            control.draining();
+            assert_readiness(&web, &grpc, false).await;
+            runtime.shutdown().await.unwrap();
+            assert_eq!(handle.status().phase, Phase::Stopped);
+        }
+        assert_readiness(&web, &grpc, false).await;
     }
 }
