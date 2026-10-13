@@ -886,11 +886,10 @@ in {{
 
     // ===== Section D — File write methods on an r+-mode fileCap =====
     //
-    // POSIX "r+" = read + write, require-exist.  "r+" is NOT a
-    // valid native-side file mode; the native parser accepts only
-    // r / r+ / w / w+ / wx / w+x / a / a+.  Dir.openFile forwards
-    // the mode straight to `fs_open` which routes through
-    // `parse_open_mode`.
+    // POSIX "r+" = read + write, require-exist.  Dir.openFile
+    // forwards the mode straight to `fs_open` which routes through
+    // `parse_open_mode`; the accepted file-mode set is
+    // r / r+ / w / w+ / wx / w+x / a / a+.
 
     // Step 14: dirCap.openFile(r+) → mints a writable File cap.
     contract step14(rhoSpec, @dirCap, ackCh) = {{
