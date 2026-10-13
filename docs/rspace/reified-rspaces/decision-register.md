@@ -132,6 +132,10 @@ The minimal-footprint revision (M-1 to M-5) overrides the target architecture of
 | [Decision 82](#decision-82) | N4 fits three facts of Casper | 2026-10-11 | In force. [Decision 84](#decision-84) disables its concurrent row |
 | [Decision 83](#decision-83) | The creation job records a seq space | 2026-10-12 | In force. Its second half is a recorded follow-up |
 | [Decision 84](#decision-84) | Revert the DR-119 backport | 2026-10-12 | In force |
+| [Decision 85](#decision-85) | P10 design v2 | 2026-10-12 | In force |
+| [Decision 86](#decision-86) | The gate of the node command line waits for its repair | 2026-10-12 | In force |
+| [Decision 87](#decision-87) | No new capacity param | 2026-10-12 | In force |
+| [Decision 88](#decision-88) | The legacy vector operations come with tensor logic | 2026-10-12 | In force |
 | [M-1](#m-1) | Counter meta-channels and merge check #1 | 2026-10-04 | In force, scope widened by decision 31 |
 | [M-2](#m-2) | Space-owned record envelope | 2026-10-04 | In force |
 | [M-3](#m-3) | Charging through the accounting observer | 2026-10-04 | In force, revised 2026-10-04 |
@@ -815,7 +819,7 @@ The plan also records two items under this decision:
 
 **Reason.** The user classifies the rollout as an operations problem that is not part of this campaign.
 
-## User decisions 28 to 47
+## User decisions 28 to 51
 
 The P4 design pass and its arbitration found more places where the plan did not fit the code.
 The user approved each recommended option on 2026-10-04, as decisions 28 to 35.
@@ -2031,7 +2035,7 @@ Their main terms are these:
 - In native execution, with `capacity = 2` and one stored record, two concurrent branches that each add a record merge with no conflict. The merged collection holds 3 records.
 - An exact bound needs a counter bump on each store, and then all VectorDB writes into one collection serialize across branches. The plan keeps full merge concurrency for bag, set and VectorDB spaces.
 
-## User decisions 72 to 78
+## User decisions 72 to 84
 
 ### <a id="decision-72"></a>Decision 72: The P7 design process
 
@@ -2448,6 +2452,91 @@ Native replay runs under the same scheduler as play, so the fix makes both deter
 - Keep the concurrent row in the form of design v2, which checks agreement on the rejected sibling. Measured: the sender of the rejected sibling fails the merge block with "offered-funded recovery requires an envelope buffer" (gap G6).
 
 **Evidence.** The N4 runs without the fix, before and after the adaptation, and the byte comparison of the reverted files with the base (verification.md, section 34.10).
+
+## User decisions 85 to 88
+
+### <a id="decision-85"></a>Decision 85: P10 design v2
+
+| Field | Value |
+|---|---|
+| Date | 2026-10-12 |
+| Status | In force |
+| Related | [Decision 72](#decision-72), [decision 76](#decision-76), [decision 80](#decision-80) |
+
+**Statement.**
+
+- Phase P10 follows design v2 (`.reified-rspaces-work/p10/design-v2.md`). The main session drafted design v1, one read-only review agent arbitrated it, and the main session checked each fact of the review in code.
+- `Checkpoint.v` is written as the plan and the leaf `rrs-fv-port-checkpoint` state it. It has a concrete store and a concrete `apply_operation`, and its premises hold for one concrete instance.
+- The benchmarks keep the comparison before and after of the parent task: P10 restores the P0 archives from the backup.
+- The Determinism section goes in `specification.md`, and P10 drafts the body of PR-C in pgmcp.
+- Deviation D-A: the codex modules `Occurrence.v`, `DirectionalMatch.v`, `EventCoverage.v` and `SavedQueryPolicy.tla` are recorded with their successors, and each of their laws is checked against a successor.
+- Deviation D-B: `MANIFEST.toml` stays the index of the examples, and the expected values are Rust data in the harness. The reason: rholang has no TOML parser, and campaign commits never change `Cargo.lock`.
+- This host has a Zen 3 CPU with no LBR, so the benchmarks record call graphs with `perf record --call-graph dwarf`.
+
+**User's words.** "Approve v2 (Recommended)". The recommendation was the main session's.
+
+**Reason.** The plan requires a design pass with one review agent for each phase (decisions 72, 76 and 80). The two deviations keep the plan's intent with no new dependency and no duplicate proofs.
+
+### <a id="decision-86"></a>Decision 86: The gate of the node command line waits for its repair
+
+| Field | Value |
+|---|---|
+| Date | 2026-10-12 |
+| Status | In force |
+| Amends | [Decision 13](#decision-13) (the timing of the gate of the node command line) |
+| Related | [Decision 69](#decision-69) |
+
+**Statement.**
+
+- With offered funding active, the node refuses legacy deploys and rejects a block that holds one (`casper/src/rust/api/block_api.rs:823`, `validation_dispatcher.rs:123`).
+- On this branch and on feature/cost-accounted-rho, `node deploy` builds a legacy deploy and `node eval` evaluates on the legacy path. Only the HTTP route `/deploy/offered` and the gRPC deploy service take offered deploys.
+- P10 verifies every example in the native harness, with native play and native-replay certification at the v6 limits.
+- The gate of decision 13 is written against the repaired command line and runs every example after the repair reaches this branch. The campaign changes no file of `node/src` for it.
+
+**User's words.** "I am repairing the node CLI with the cost-accounting agent"
+
+**Reason.** The repair belongs to the owner of the offered protocol, and the user leads it.
+
+### <a id="decision-87"></a>Decision 87: No new capacity param
+
+| Field | Value |
+|---|---|
+| Date | 2026-10-12 |
+| Status | In force |
+| Related | [Decision 39](#decision-39) (F7, the `size` of an Array), [decision 71](#decision-71) |
+
+**Statement.**
+
+- The legacy branch had `size` and `cyclic` on Array spaces and `capacity` on VectorDB collections. Both exist here, so the campaign adds no new param.
+- The features of the legacy branch must exist here, but the API does not have to match the legacy API.
+- The FIPS matrix records four passages with these dispositions. They are the main session's recommendation, and the user's answers leave them in place.
+- Vector out of memory (FIPS line 209) is a deviation. The deploy fails deterministically when it exceeds its phlo or host-work budget, because memory exhaustion cannot be a consensus outcome.
+- The quantale semantics (lines 187 to 193, and 269) is informative. The FIPS states it as an open question, and the follow-up `rrs-fu-quantale-unification` routes it to the FIPS authors.
+- Majority and the elementwise sigmoid (line 261) come at P12 with tensor logic (decisions 62 to 65, and decision 88).
+- "Others" (lines 263 to 265) is informative. Its fixed-size versions exist where the legacy branch had them: the `size` of an Array and the `capacity` of a VectorDB collection.
+
+**User's words.** "Your question is confusing if the legacy `size` parameter already exists, then why are you asking me about adding the redundant `capacity` parameter?", and "you don't have to mirror the API and interface from the legacy branch, but those specific features had been implemented"
+
+**Reason.** The legacy features exist, so a new param would be redundant.
+
+### <a id="decision-88"></a>Decision 88: The legacy vector operations come with tensor logic
+
+| Field | Value |
+|---|---|
+| Date | 2026-10-12 |
+| Status | In force |
+| Related | [Decision 52](#decision-52), [decisions 62 to 65](#decision-62) |
+
+**Statement.**
+
+- The legacy `rho:lang:vector` had 18 operations. The current process has `add`, `scale`, `dot`, `norm` and `distance`.
+- The other 16 legacy operations come with tensor logic in phase P12, after the readiness signal of F1r3lang.
+- They are `cosine_similarity`, `sigmoid`, `temperature_sigmoid`, `softmax`, `heaviside`, `l2_normalize`, `majority`, `gram_matrix`, `top_k_similar`, `bind`, `unbind`, `bundle`, `permute`, `unpermute`, `hamming_similarity` and `resonance`.
+- The example `vector_ops` ports the five current operations, and its disposition cites this decision.
+
+**User's words.** "Keep them for P12", then "I didn't say they needed to exist before their dependencies were ready ...". The main session had recommended adding them in P10.
+
+**Reason.** The legacy operations depend on the work of tensor logic, which depends on F1r3lang. A legacy feature must exist when its dependencies are ready.
 
 ## Minimal-footprint revision: M-1 to M-5
 

@@ -4,7 +4,8 @@
 # Array and Vector stores, the PathMap paths and the P5 families, P5 wave
 # W3: the joins of one space and the PathMap engine, P6: the exact
 # similarity decisions of the VectorDB family, P7: the theory seam, P8: the
-# translation of receives on spaces that user agents implement)
+# translation of receives on spaces that user agents implement, P10: the
+# checkpoint model of the host)
 #
 # Mechanizes the P1 headlines of the Reified RSpaces campaign for the
 # SpaceTxnHost / SpaceStoreHandle / SpaceTxn substrate in rspace++. The
@@ -172,6 +173,17 @@
 #                     matcher replies exactly on a spatial match with a
 #                     passing guard, and the codec of a matcher state is
 #                     exact.
+#   Checkpoint        P10 step S7 (8 headlines, C1 to C8): the checkpoint,
+#                     the reset, the soft checkpoint and the replay rig of
+#                     the host RSpace, the successor of the legacy
+#                     Checkpoint.v. A reset gives back the checkpointed
+#                     store with its persistent flags, the checkpoint does
+#                     not depend on the order of the records of a key, the
+#                     rig accepts exactly the log of play, a reset after
+#                     the sweep holds no volatile record, the revert of a
+#                     soft checkpoint restores the snapshot, and every root
+#                     of the history resets. The premises hold for one
+#                     concrete instance (checkpoint_premises_satisfiable).
 #
 # Each module is standalone and imports only the Rocq standard library. A
 # verifier compiles each file alone with `coqc -q -noglob` and no -Q or -R
@@ -213,3 +225,4 @@ theories/VectorDbDiscipline.v
 theories/VectorOps.v
 theories/TheoryAdmission.v
 theories/AgentTranslation.v
+theories/Checkpoint.v

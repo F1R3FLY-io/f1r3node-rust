@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Rocq negative controls for the Reified RSpaces P1, P2, P4 to P8 models.
+"""Rocq negative controls for the Reified RSpaces P1, P2, P4 to P8 and P10 models.
 
 Each control mutates one rule in a scratch copy of a module
 (formal/rocq/reified_rspaces/theories). The mutation changes one definition,
@@ -351,6 +351,31 @@ replies of rho:lang:vector:
   vo-faithful-root-bound  the check bounds the square of the root by the
                           square of the next float, not of the midpoint (a
                           faithful rounding): root_midpoint_nearest breaks
+
+P10 step S7 (Checkpoint.v) has nine controls. Each reverts one rule of the
+checkpoint model:
+  ck-reset-wrong-root           a reset takes the next trie of the history:
+                                checkpoint_reset_restores_store (C1) breaks
+  ck-checkpoint-strips-persist  the checkpoint writes each datum without its
+                                persistent flag (legacy defect D11): C1
+                                breaks
+  ck-comm-removes-persistent    a COMM removes a persistent datum:
+                                take_datum_keeps_persistent, and so C2,
+                                breaks
+  ck-waiter-removed-by-position a COMM removes the first waiter, not the
+                                matched one: equiv_apply, and so C3, breaks
+  ck-weak-byte-antisymmetry     a byte order whose antisymmetry concludes
+                                nothing: ssorted_perm_eq, and so C4, breaks
+  ck-rig-skips-check            the rig accepts an operation without the
+                                log: replay_ops_spec, and so C5, breaks
+  ck-sweep-keeps-joins          the sweep keeps the joins of a swept
+                                channel: clear_channel_self, and so C6,
+                                breaks
+  ck-revert-forgets-base        a revert reads an uncached key as empty:
+                                soft_revert_after_prefix_failure (C7) breaks
+  ck-root-collisions-allowed    a root premise that allows two tries with
+                                one root to read differently:
+                                chain_checkpoints_retrievable (C8) breaks
 
 Rules of the harness:
   * The pristine modules must compile first. Otherwise every control fails.
@@ -2329,6 +2354,52 @@ CONTROLS = (
      "    mkPar 0 0 0 [] [] [mkBundle (Some (agent_tuple a raw lf cu)) true true] blf bcu.",
      "    mkPar 0 0 0 [] [] [mkBundle (Some (agent_tuple a raw lf cu)) true false] blf bcu.",
      ("tag_untag_id",)),
+    # ── P10 step S7: Checkpoint.v (design v2 section 2.2) ──
+    ("ck-reset-wrong-root", "Checkpoint",
+     "a reset takes the next trie of the history, not the trie with the root",
+     "  | (r', T) :: rest => if root_eq_dec r r' then Some T else lookup_root r rest",
+     "  | (r', T) :: rest => if root_eq_dec r r' then lookup_root r rest else Some T",
+     ("checkpoint_reset_restores_store",)),
+    ("ck-checkpoint-strips-persist", "Checkpoint",
+     "the checkpoint writes each datum without its persistent flag (legacy defect D11)",
+     "  | CData c => isort bytes_leb (map ser_datum (hs_data S c))",
+     "  | CData c => isort bytes_leb (map (fun d => ser_datum (mkDatum (d_val d) false)) (hs_data S c))",
+     ("checkpoint_reset_restores_store",)),
+    ("ck-comm-removes-persistent", "Checkpoint",
+     "a COMM removes a matched datum also when it is persistent",
+     "  if d_persist d then S else set_data c (remove_first datum_eq_dec d (hs_data S c)) S.",
+     "  if d_persist d then set_data c (remove_first datum_eq_dec d (hs_data S c)) S\n  else set_data c (remove_first datum_eq_dec d (hs_data S c)) S.",
+     ("take_datum_keeps_persistent",)),
+    ("ck-waiter-removed-by-position", "Checkpoint",
+     "a COMM removes the first waiter of the group, not the matched waiter",
+     "    let S := set_conts g (remove_first wk_eq_dec w (hs_conts S g)) S in",
+     "    let S := set_conts g (tl (hs_conts S g)) S in",
+     ("equiv_apply",)),
+    ("ck-weak-byte-antisymmetry", "Checkpoint",
+     "a byte order whose antisymmetry concludes nothing, so a leaf is not canonical",
+     "    (forall x y, leb x y = true -> leb y x = true -> x = y).",
+     "    (forall x y, leb x y = true -> leb y x = true -> True).",
+     ("ssorted_perm_eq",)),
+    ("ck-rig-skips-check", "Checkpoint",
+     "the rig accepts an operation without comparing it with the log",
+     "      if op_eq_dec op op' then Some (apply_operation hs op, mkRig (rig_log rg) (S (rig_pos rg)))\n      else None",
+     "      Some (apply_operation hs op, mkRig (rig_log rg) (S (rig_pos rg)))",
+     ("replay_ops_spec",)),
+    ("ck-sweep-keeps-joins", "Checkpoint",
+     "the sweep clears the data of a swept channel and keeps its joins",
+     "  set_joins c [] (set_data c [] S).",
+     "  set_data c [] S.",
+     ("clear_channel_self",)),
+    ("ck-revert-forgets-base", "Checkpoint",
+     "a revert reads an uncached data key as empty, not from the base of the history",
+     "                 else read_leaf de_datum T (CData c))",
+     "                 else [])",
+     ("soft_revert_after_prefix_failure",)),
+    ("ck-root-collisions-allowed", "Checkpoint",
+     "a root premise that allows two tries with one root to read differently",
+     "  forall T1 T2, root_of T1 = root_of T2 -> forall k, tlookup k T1 = tlookup k T2.",
+     "  forall T1 T2, root_of T1 = root_of T2 -> True.",
+     ("chain_checkpoints_retrievable",)),
 )
 
 DECLARATION = re.compile(

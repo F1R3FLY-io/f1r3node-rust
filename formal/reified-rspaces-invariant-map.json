@@ -9239,6 +9239,141 @@
           ]
         }
       ]
+    },
+    "P10": {
+      "title": "P10: the checkpoint model of the host RSpace (Checkpoint.v K1 to K8 = C1 to C8, the successor of the legacy Checkpoint.v): a reset gives back the checkpointed store with its persistent flags, the checkpoint does not depend on the order of the records of a key, the rig accepts exactly the log of play, a reset after the sweep holds no volatile record, the revert of a soft checkpoint restores the snapshot, and every root of the history resets.",
+      "design": "P10 design v2 (.reified-rspaces-work/p10/design-v2.md), section 2.2, and plan decision 85.",
+      "test_status": "required",
+      "test_files": [
+        "rspace++/tests/reified_checkpoint_props.rs"
+      ],
+      "expected_properties": 6,
+      "formal": {
+        "K1": {
+          "kind": "rocq",
+          "name": "checkpoint_reset_restores_store",
+          "file": "formal/rocq/reified_rspaces/theories/Checkpoint.v",
+          "statement": "A reset at the root of a checkpoint gives a hot store whose record list of every key is a permutation of the list of the checkpointed hot store, with an empty cache that reads through to the new trie.",
+          "tests": [
+            "prop_checkpoint_reset_restores_every_root"
+          ]
+        },
+        "K2": {
+          "kind": "rocq",
+          "name": "checkpoint_restore_preserves_persist",
+          "file": "formal/rocq/reified_rspaces/theories/Checkpoint.v",
+          "statement": "A persistent datum of the checkpointed hot store is in the reset store with its flag, and a later COMM keeps it (the legacy defect D11 cannot occur).",
+          "tests": [
+            "prop_checkpoint_keeps_persistent_data"
+          ]
+        },
+        "K3": {
+          "kind": "rocq",
+          "name": "replay_from_equal_parent_states",
+          "file": "formal/rocq/reified_rspaces/theories/Checkpoint.v",
+          "statement": "Two hot stores with one cache whose record lists are permutations of each other stay so under the same operations, and their checkpoints and roots are equal.",
+          "tests": [
+            "prop_permuted_parents_share_roots"
+          ]
+        },
+        "K4": {
+          "kind": "rocq",
+          "name": "checkpoint_root_order_independent",
+          "file": "formal/rocq/reified_rspaces/theories/Checkpoint.v",
+          "statement": "The checkpoint of a hot store does not depend on the order of the records of a key, because each leaf is the sorted list of the encodings under a total order.",
+          "tests": [
+            "prop_permuted_parents_share_roots"
+          ]
+        },
+        "K5": {
+          "kind": "rocq",
+          "name": "rig_and_reset_replays_the_log",
+          "file": "formal/rocq/reified_rspaces/theories/Checkpoint.v",
+          "statement": "A replay rigged with the log of play and reset to the parent root accepts exactly that log, completes, and reaches the hot store of play.",
+          "tests": [
+            "prop_rig_accepts_the_log_of_play"
+          ]
+        },
+        "K6": {
+          "kind": "rocq",
+          "name": "reset_after_sweep_drops_volatile",
+          "file": "formal/rocq/reified_rspaces/theories/Checkpoint.v",
+          "statement": "After the volatile sweep and the checkpoint, a reset store holds no data and no joins of a swept channel and no continuation of a swept group.",
+          "tests": [
+            "prop_sweep_then_reset_holds_no_volatile_record"
+          ]
+        },
+        "K7": {
+          "kind": "rocq",
+          "name": "soft_revert_after_prefix_failure",
+          "file": "formal/rocq/reified_rspaces/theories/Checkpoint.v",
+          "statement": "Every prefix of a deploy keeps the read-through to the base trie, and the revert of a soft checkpoint gives the cache and the values of the snapshot and the same checkpoint (decision 19 D6).",
+          "tests": [
+            "prop_soft_revert_restores_the_parent"
+          ]
+        },
+        "K8": {
+          "kind": "rocq",
+          "name": "chain_checkpoints_retrievable",
+          "file": "formal/rocq/reified_rspaces/theories/Checkpoint.v",
+          "statement": "Under collision resistance of the root, every root of a well-rooted history resets to a store that reads as the trie checkpointed under that root.",
+          "tests": [
+            "prop_checkpoint_reset_restores_every_root"
+          ]
+        }
+      },
+      "properties": [
+        {
+          "number": 1,
+          "test": "prop_checkpoint_reset_restores_every_root",
+          "file": "rspace++/tests/reified_checkpoint_props.rs",
+          "covers": [
+            "K1",
+            "K8"
+          ]
+        },
+        {
+          "number": 2,
+          "test": "prop_checkpoint_keeps_persistent_data",
+          "file": "rspace++/tests/reified_checkpoint_props.rs",
+          "covers": [
+            "K2"
+          ]
+        },
+        {
+          "number": 3,
+          "test": "prop_permuted_parents_share_roots",
+          "file": "rspace++/tests/reified_checkpoint_props.rs",
+          "covers": [
+            "K3",
+            "K4"
+          ]
+        },
+        {
+          "number": 4,
+          "test": "prop_rig_accepts_the_log_of_play",
+          "file": "rspace++/tests/reified_checkpoint_props.rs",
+          "covers": [
+            "K5"
+          ]
+        },
+        {
+          "number": 5,
+          "test": "prop_sweep_then_reset_holds_no_volatile_record",
+          "file": "rspace++/tests/reified_checkpoint_props.rs",
+          "covers": [
+            "K6"
+          ]
+        },
+        {
+          "number": 6,
+          "test": "prop_soft_revert_restores_the_parent",
+          "file": "rspace++/tests/reified_checkpoint_props.rs",
+          "covers": [
+            "K7"
+          ]
+        }
+      ]
     }
   }
 }

@@ -7369,6 +7369,213 @@ G17 took its export from `8ac895ba3` before any later commit.
 While G17 ran, the commit `3cadea5f9` added the TensorLogic design documents of P12.
 That commit holds documents and figures only, so it changes no tested file.
 
+## 35. Phase P10: the formal-verification closure, the documents, the examples and the benchmarks
+
+Phase P10 closes the formal verification of the campaign, completes the documents, adds the examples and the benchmarks, and writes the FIPS clause matrix.
+The design is design v2 of the phase ([decision 85](decision-register.md#decision-85)), with the answers of [decisions 86 to 88](decision-register.md#decision-86).
+The phase has eleven steps, and this section records each step when it lands:
+
+1. S1: the aggregate gate and the policies of the phase.
+2. S7: the model `Checkpoint.v`, the dispositions of the legacy models and the axiom control.
+3. S2: the examples, their harness and the invalid rows of the syntax corpus.
+4. S3: the gate of the examples through the node command line, after the repair of that command line ([decision 86](decision-register.md#decision-86)).
+5. S5 and S6: the documents and the diagrams.
+6. S4: the FIPS clause matrix and its checker.
+7. S8: the benchmarks and `performance.md`.
+8. S9 to S11: the claims gate, the tracker notes and the full gate set.
+
+### 35.1 Step S1: the aggregate gate
+
+`scripts/check-reified-rspaces-ALL.sh` is the aggregate gate of recipe family RF12.
+It prints one line `reified-rspaces ALL: PASS=n FAIL=m SKIP=0`, and it exits with 0 only when every leg passes.
+A missing tool is a failure, never a skip.
+
+*Table 228. The legs of the aggregate gate.*
+
+| Leg | Command | What it checks |
+|---|---|---|
+| `proofs` | `scripts/check-reified-rspaces-proofs.sh` | Hygiene, the standalone compiles, the headlines, `rocqchk`, the project build, the negative controls and the axiom control |
+| `tla` | `scripts/check-reified-rspaces-tla-invariants.sh` | TLC, the Unsafe controls and Apalache |
+| `z3` | The three scripts of `formal/z3/reified_rspaces` | The squared forms, the selection order and the metric algebra of the VectorDB family |
+| `sage` | `similarity_metrics.sage` in a scratch copy, then `numeric_reference_receipt.py` | The reference vectors, byte for byte, and the receipt of the Rust tests |
+| `checkers` | Each command of `scripts/verify-reified/checker-commands.txt` | The checker tests, the closure, the checklist, the completeness phases, the footprint, the maps, the ledger, the patch gate and `doc_lint.py` |
+| `examples` | `cargo test --release -p rholang --test reified_examples_execute` | Every example of `examples/reified_rspaces/` (step S2) |
+| `loom` | `cargo test --release -p rholang --test loom_reified` | The N7 models, with the explored executions in the log |
+| `benches` | `cargo bench -p rholang --bench B -- --test`, with `RRS_BENCH_MAX_SIZE=1000` | One run of each benchmark (step S8) |
+
+The per-phase suites G2 to G17 are not legs.
+With `RRS_SANDBOX=1`, the gate runs no nested `systemd-run`, and it writes only under `$RRS_SCRATCH`, as the verifier of pgmcp requires.
+The Sage script compares the regenerated reference vectors with the committed file, so the gate needs no `git`.
+
+The list of checker commands is now a tracked file.
+The list of P9 was a scratch file under `target/`, which the verifier snapshot does not hold (review amendment A1).
+The tracked list adds the checker tests of `doc_lint.py`, the milestone `p10` of the checklist, the completeness phase `p10` and the footprint policy `p10`.
+
+The footprint policy `p10` restates the edits and the new files of `p9`, and each later step adds its own.
+The completeness phase `p10` started empty, because S1 adds no Rust code.
+The `checkers` leg passed with 44 of 44 commands at the commit of S1.
+The legs `examples` and `benches` fail until steps S2 and S8 add their targets.
+
+### 35.2 Step S7: `Checkpoint.v` and the closure of the legacy models
+
+#### 35.2.1 The model `Checkpoint.v`
+
+`Checkpoint.v` models the checkpoint, the reset, the soft checkpoint and the replay of the host RSpace.
+It is the successor of the legacy `Checkpoint.v` of the legacy branch, as the plan and the leaf `rrs-fv-port-checkpoint` require.
+The legacy module declared `apply_operation` and the hash as a `Parameter` and stated two `Axiom`s.
+The new module defines the store, the operations, the checkpoint, the history, the reset, the soft checkpoint and the rig as concrete functions.
+It also absorbs the codex module `ReplayDeterminism.v`.
+
+*Table 229. The headlines of `Checkpoint.v`.*
+
+| Id | Theorem | Statement | Property test |
+|---|---|---|---|
+| C1 | `checkpoint_reset_restores_store` | A reset at the root of a checkpoint gives back each record of the checkpointed store, with an empty cache that reads through to the new trie | `prop_checkpoint_reset_restores_every_root` |
+| C2 | `checkpoint_restore_preserves_persist` | A persistent datum keeps its flag across the checkpoint and the reset, and a later COMM keeps it | `prop_checkpoint_keeps_persistent_data` |
+| C3 | `replay_from_equal_parent_states` | Two stores whose record lists are permutations of each other stay so under the same operations, and their checkpoints are equal | `prop_permuted_parents_share_roots` |
+| C4 | `checkpoint_root_order_independent` | The checkpoint does not depend on the order of the records of a key | `prop_permuted_parents_share_roots` |
+| C5 | `rig_and_reset_replays_the_log` | A replay rigged with the log of play accepts exactly that log, completes and reaches the store of play | `prop_rig_accepts_the_log_of_play` |
+| C6 | `reset_after_sweep_drops_volatile` | After the sweep and the checkpoint, a reset holds no record of a swept channel or group | `prop_sweep_then_reset_holds_no_volatile_record` |
+| C7 | `soft_revert_after_prefix_failure` | Every prefix of a deploy keeps the read-through to the base, and a revert restores the store of the snapshot | `prop_soft_revert_restores_the_parent` |
+| C8 | `chain_checkpoints_retrievable` | Every root of the history resets to a store that reads as its trie | `prop_checkpoint_reset_restores_every_root` |
+
+The theorems take four premises as hypotheses.
+Each decoder inverts its encoder, the key function is injective, the byte order is total, and two tries with one root read alike.
+The last premise is the collision resistance of the root.
+The lemma `checkpoint_premises_satisfiable` proves all four premises for one concrete instance, so no premise is vacuous.
+The property tests are in `rspace++/tests/reified_checkpoint_props.rs`, and they run on the host RSpace.
+A mutated copy of the tests, with four inverted assertions, failed in all four properties, so the tests check real cases.
+
+*Table 230. The negative controls of `Checkpoint.v`.*
+
+| Control | Mutation | First failure |
+|---|---|---|
+| `ck-reset-wrong-root` | A reset takes the next trie of the history | `checkpoint_reset_restores_store` |
+| `ck-checkpoint-strips-persist` | The checkpoint writes each datum without its persistent flag, the legacy defect D11 | `checkpoint_reset_restores_store` |
+| `ck-comm-removes-persistent` | A COMM removes a persistent datum | `take_datum_keeps_persistent` |
+| `ck-waiter-removed-by-position` | A COMM removes the first waiter, not the matched one | `equiv_apply` |
+| `ck-weak-byte-antisymmetry` | The antisymmetry of the byte order concludes nothing | `ssorted_perm_eq` |
+| `ck-rig-skips-check` | The rig accepts an operation without the log | `replay_ops_spec` |
+| `ck-sweep-keeps-joins` | The sweep keeps the joins of a swept channel | `clear_channel_self` |
+| `ck-revert-forgets-base` | A revert reads an uncached key as empty | `soft_revert_after_prefix_failure` |
+| `ck-root-collisions-allowed` | The root premise allows two tries with one root to read differently | `chain_checkpoints_retrievable` |
+
+#### 35.2.2 The axiom control
+
+The proofs gate has a new leg, the axiom control.
+The fixture `formal/rocq/reified_rspaces/controls/AxiomControl.v` states one `Axiom` on purpose.
+It lies outside `theories/` and outside `_CoqProject`, so the library never holds it.
+The leg passes only when the hygiene check reports an axiom declaration and `rocqchk` lists `AxiomControl.control_axiom`.
+So the gate shows that the two checks that keep the theories free of axioms can fail, as the plan requires.
+
+#### 35.2.3 The dispositions of the legacy models
+
+The legacy branch had 19 Rocq modules, 3 TLA specifications and 14 documents of formal verification.
+Codex added further modules, which the realignment kept only in the backup of P0.
+Tables 231 to 234 give the disposition of each.
+
+*Table 231. The legacy Rocq modules.*
+
+| Legacy module | Disposition |
+|---|---|
+| `Checkpoint.v` | Rewritten as `Checkpoint.v` (section 35.2.1) |
+| `GenericRSpace.v` | Rewritten as `GenericRSpace.v`, with the capstone `consume_fires_only_matching` |
+| `Match.v` | Rewritten as `Match.v`: the wildcard matcher is the degenerate instance `wildcard_matcher_degenerate` |
+| `OuterStorage.v` | Rewritten as `OuterStorage.v` |
+| `SpaceFactory.v` | Rewritten as `SpaceFactory.v` |
+| `ChannelStore/HashMapStore.v` | Rewritten as `HashMapStore.v` |
+| `ChannelStore/VectorStore.v` | Rewritten as `VectorStore.v` |
+| `ChannelStore/PathMapStore.v` | Superseded by `PathMapPrefix.v` |
+| `PathMapQuantale.v` | Superseded by `PathMapPrefix.v`. Its axioms made `False` derivable for infinite support. |
+| `Collections/DataCollection.v` | Rewritten as `DataCollection.v`. Its two `Abort`s are the proved negative results `bag_persistent_match_not_removed` and `bag_removal_keeps_equal_duplicate`. |
+| `Collections/ContinuationCollection.v` | Rewritten as `ContinuationCollection.v` |
+| `Collections/PriorityQueue.v` | Rewritten as `PriorityQueue.v` |
+| `Collections/VectorDB.v` | Superseded by `VectorDbDiscipline.v` and `Similarity.v` |
+| `Routing/Routing.v` | Superseded by `SpaceRefs.v` |
+| `Safety/Properties.v` | Superseded by `Namespace.v` `seq_name_iff` and the invariant `SeqNotSent` of `SpaceCoordination.tla` |
+| `Prelude.v` | Its list facts are restated in each module, because each module is standalone |
+| `Substitution.v` | Superseded by the marker encoding of [decision 18](decision-register.md#decision-18) and `Encoding.v` |
+| `Phlogiston.v` | Retargeted (Table 234) |
+| `Registry/Invariants.v` | Retargeted (Table 234) |
+
+*Table 232. The legacy documents and TLA specifications.*
+
+| Legacy file | Disposition |
+|---|---|
+| `docs/formal-verification/README.md` and `rocq/00-introduction.md` | Absorbed by sections 1 to 4 of this dossier |
+| `rocq/01-foundations.md` | Absorbed by the sections of `Namespace.v`, `Encoding.v` and `RecordEnvelope.v` |
+| `rocq/02-pattern-matching.md` | Absorbed by the sections of `Match.v` and the bag and set drivers (section 12.4) |
+| `rocq/03-generic-rspace.md` | Absorbed by section 12 |
+| `rocq/04-checkpoint-replay.md` | Absorbed by section 4 (`EventCorrelation.v`) and section 35.2.1 |
+| `rocq/05-phlogiston.md` | Retired with `Phlogiston.v` (Table 234) |
+| `rocq/06-substitution.md` | Retired: substitution needs no Reified change ([decision 18](decision-register.md#decision-18)) |
+| `rocq/07-outer-storage.md` | Absorbed by section 12 and the PathMap sections 12.7 and 12.16 |
+| `rocq/08-space-factory.md` | Absorbed by section 21.1 |
+| `tla/00-introduction.md` | Absorbed by section 5 |
+| `tla/01-generic-rspace-spec.md` and `GenericRSpace.tla` | Rewritten as `GenericRSpace.tla` (section 12) |
+| `tla/02-checkpoint-replay-spec.md` and `CheckpointReplay.tla` | Rewritten as `CheckpointReplay.tla` (section 5.2) |
+| `tla/03-space-coordination-spec.md` and `SpaceCoordination.tla` | Rewritten as `SpaceCoordination.tla` (sections 27 and 28) |
+
+*Table 233. The codex modules.*
+
+| Codex module | Disposition ([decision 85](decision-register.md#decision-85), D-A) |
+|---|---|
+| `Occurrence.v` | Succeeded by `JoinCascade.v` `join_repeated_channel_distinct_records` and `bind_permutation_restores_order` |
+| `DirectionalMatch.v` | Succeeded by `Match.v` `space_match_is_injected_match` and `GenericRSpace.v` `consume_fires_only_matching` |
+| `EventCoverage.v` | Succeeded by `EventCorrelation.v` `coverage_commit` and the merge-level reproduction of section 34.3 |
+| `SavedQueryPolicy.tla` | Succeeded by `RecordEnvelope.v` `continuation_policy_slot_roundtrip`, `CheckpointReplay.tla` and `Checkpoint.v` |
+| `ReplayDeterminism.v` | Absorbed by `Checkpoint.v` C3 |
+| `SpacePathKey.v`, `ByteFrame.v` | Dropped: they proved the text key of codex, which [decision 7](decision-register.md#decision-7) replaced |
+| `ExclusiveWrite.v` | Superseded by `CounterConflict.v` (M-1) |
+| `Bag.v`, `ParComponentPath.v` | Kept in the backup for the owner of PathMap Bags ([decision 1](decision-register.md#decision-1)) |
+
+*Table 234. The retargeted legacy laws of `Phlogiston.v` and `Registry/Invariants.v`.*
+
+| Legacy laws | Successor |
+|---|---|
+| `Phlogiston.v`: the laws of the second budget (charges succeed and fail, decrease the budget, log, accumulate, refund, and keep the budget non-negative, 21 laws) | Retired with the second gas system (defect D12). One charging path remains (M-3). A space transaction makes the observer calls of the equivalent host program: `EventCorrelation.v` H1 `commit_trace_eq_host`, `LegacyCharges.v` `legacy_rebracket_eq_host` and `legacy_replay_stops_with_play`, and H27 for native execution |
+| `Phlogiston.v`: `produce_cost_bounded`, `consume_cost_bounded`, `install_cost_bounded` | `AgentReadCoverage.v` `operation_trace_covered`, `reservations_precede_commit` and `cut_rejects_before_commit`: every read is reserved on the budget before it happens |
+| `Registry/Invariants.v`: one owner for each channel, the registration and the removal of a space, the owner of a new channel, the default space (8 laws) | Retired with the registry (defect D12). An id names its space: `Namespace.v` `handle_id_injective`, `storage_id_injective` and `name_id_routes_to_sid`, and `SpaceRefs.v` `route_total_deterministic`, `route_rules` and `ordinary_channels_route_default` |
+| `Registry/Invariants.v`: the push and the pop of a use block | `SpaceRefs.v` `use_wrapper_restores_ctx`: the use context is lexical |
+| `Registry/Invariants.v`: `cross_space_join_forbidden` | The invariant `JoinSameSpace` of `AgentSpaces.tla` |
+
+The leaf `rrs-fv-matching-reservation` states two laws.
+The first law says that a record is reserved at most once, and `JoinCascade.v` `join_repeated_channel_distinct_records` proves it.
+The second law says that a failed commit leaves the state unchanged.
+The prefix-atomic commit of [decision 19](decision-register.md#decision-19) (D6) supersedes it: the prefix stays applied, and the revert of the deploy removes it.
+`EventCorrelation.v` H23 `replay_reproduces_play_run` and `Checkpoint.v` C7 state that rule.
+
+#### 35.2.4 The proof manifest and the model inventory
+
+The proofs gate now expects 308 closed headlines: the 300 of P9 and the 8 of `Checkpoint.v`.
+Every headline is in the sections of its module, and Table 229 lists the new ones.
+The TLA gate checks 128 configurations.
+Four of them had no row in this dossier, and Table 235 adds them, with the results of the gate set of P9.
+
+*Table 235. Four configurations of the TLA gate.*
+
+| Configuration | Bounds | Result |
+|---|---|---|
+| `MC_GenericRSpace_Bag.cfg` | The bag discipline, `Vals={"a","b"}`, `Pats={"a","b","any"}`, two guards, `MaxOps=5`, `Cap=2` | 5,750,278 distinct states, depth 6, no violation |
+| `MC_GenericRSpace_Set.cfg` | The set discipline, with the bounds of the bag | 5,721,998 distinct states, depth 6, no violation |
+| `MC_GenericRSpace_Cell.cfg` | The cell discipline, with the bounds of the bag | 127,901 distinct states, depth 6, no violation |
+| `MC_StackDiscipline.cfg` | `Vals={"a","b"}`, `Pats={"a","b","any"}`, `MaxOps=6`, `Cap=2`, re-issues | 12,002,269 distinct states, depth 34, no violation |
+
+The model map `formal/reified-rspaces-model-map-p10.json` maps each host item that `Checkpoint.v` models to its definitions and headlines.
+The phase `P10` of the invariant map binds each headline to its property test.
+
+#### 35.2.5 The gates of S7
+
+*Table 236. The gates of step S7.*
+
+| Gate | Result |
+|---|---|
+| `scripts/check-reified-rspaces-proofs.sh` | `PASS=131 FAIL=0 SKIP=0`: 308 closed headlines, 456 negative checks, and both checks of the axiom control |
+| `cargo test --release -p rspace_plus_plus --test reified_checkpoint_props` | 6 passed, 0 failed |
+| The model map of P10 and the phase `P10` of the invariant map | `PASS=49 FAIL=0` and `PASS=143 FAIL=0`. The whole invariant map gives `PASS=1567 FAIL=0`. |
+| The checkers of `checker-commands.txt` | 46 of 46 pass |
+| `rustfmt --check`, and `cargo clippy -p rspace_plus_plus --tests` with `-D warnings` | No difference and no warning |
+
 ## References
 
 <a id="ref-ch00"></a>[CH00] K. Claessen and J. Hughes, "QuickCheck: a lightweight tool for random testing of Haskell programs," in *Proceedings of the Fifth ACM SIGPLAN International Conference on Functional Programming (ICFP 2000)*, ACM, 2000, pp. 268–279. [doi:10.1145/351240.351266](https://doi.org/10.1145/351240.351266)

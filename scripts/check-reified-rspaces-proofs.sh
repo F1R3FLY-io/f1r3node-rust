@@ -23,7 +23,8 @@
 # headline 13 of SpaceRefs.v (agent_ref_requires_write_flag, AG-4). P9 step 8
 # adds H28 to H30 of EventCorrelation.v (coverage_commit,
 # two_block_replay_preserves_roots and two_block_native_replay_preserves_roots,
-# amendment A10).
+# amendment A10). P10 step S7 adds Checkpoint.v (8: C1 to C8), the successor
+# of the legacy Checkpoint.v, and leg 8, the axiom control.
 #
 # The gate copies the formal tree into a scratch directory and builds it
 # there. It never builds in the source tree. Legs:
@@ -53,6 +54,11 @@
 #                 carry, the place of the pre-charge, the replay premises)
 #                 must fail to compile inside its expected lemma, after the
 #                 pristine modules compile
+#   8. axiom    - the fixture formal/rocq/reified_rspaces/controls/
+#                 AxiomControl.v states one Axiom on purpose: the hygiene
+#                 check must report an axiom declaration, and rocqchk must
+#                 list the axiom. So the two checks that keep the theories
+#                 axiom-free can fail.
 #
 # A missing tool is a FAIL, never a SKIP.
 #
@@ -106,7 +112,8 @@
 #                        tag_untag_id of SpaceRefs.v and
 #                        resume_binds_innermost of AgentTranslation.v,
 #                        and 3 for P9 step 8: H28 to H30 of
-#                        EventCorrelation.v)
+#                        EventCorrelation.v, and 8 for P10 step S7: C1
+#                        to C8 of Checkpoint.v)
 #   RRS_SANDBOX=1        the job runs inside the verifier scope: no
 #                        systemd-run, logs under $RRS_SCRATCH/logs
 #   RRS_SCRATCH          scratch root (default <repo>/target/verification/
@@ -125,7 +132,7 @@ if [[ "${RRS_SANDBOX:-}" == "1" ]]; then
 else
   LOG_DIR="$ROOT/target/verification/reified-rspaces/logs/proofs"
 fi
-EXPECTED_CLOSED="${RRS_EXPECTED_CLOSED:-300}"
+EXPECTED_CLOSED="${RRS_EXPECTED_CLOSED:-308}"
 RRS_MEMORY_MAX="${RRS_MEMORY_MAX:-6G}"
 RRS_CPU_QUOTA="${RRS_CPU_QUOTA:-400%}"
 
@@ -161,6 +168,7 @@ declare -A EXPECTED_PER_MODULE=(
   [VectorOps]=2
   [TheoryAdmission]=6
   [AgentTranslation]=7
+  [Checkpoint]=8
 )
 
 PASS=0
@@ -420,6 +428,38 @@ if RRS_ROCQ_SRC="$WORK/tree" RRS_SCRATCH="$SCRATCH_ROOT" \
 else
   fail "negative: see $negative_log"
   grep -E '^  FAIL ' "$negative_log" | sed 's/^/      /'
+fi
+
+# ── 8. Axiom control ────────────────────────────────────────────────────────
+# The fixture lies outside theories/ and outside _CoqProject. It states one
+# axiom on purpose, and the leg passes only when both checks report it.
+fixture="$ROOT/formal/rocq/reified_rspaces/controls/AxiomControl.v"
+if [[ ! -f "$fixture" ]]; then
+  fail "axiom control: $fixture is missing"
+else
+  dir="$WORK/controls/AxiomControl"
+  mkdir -p "$dir"
+  cp -- "$fixture" "$dir/AxiomControl.v"
+  if out="$(python3 "$hygiene_py" "$dir/AxiomControl.v" 2>&1)"; then
+    fail "axiom control: the hygiene check accepts the fixture"
+  elif grep -q 'an axiom declaration' <<<"$out"; then
+    pass "axiom control: the hygiene check reports an axiom declaration"
+  else
+    fail "axiom control: the hygiene check fails without naming the axiom: $out"
+  fi
+  log="$LOG_DIR/AxiomControl.coqc.log"
+  chk_log="$LOG_DIR/AxiomControl.rocqchk.log"
+  if ! (cd "$dir" && bounded coqc -q -noglob AxiomControl.v) > "$log" 2>&1; then
+    fail "axiom control: the fixture does not compile; see $log"
+  elif ! (cd "$dir" && bounded rocqchk -o -R . '' AxiomControl) > "$chk_log" 2>&1; then
+    fail "axiom control: rocqchk fails on the fixture; see $chk_log"
+  elif grep -q '^\* Axioms: <none>' "$chk_log"; then
+    fail "axiom control: rocqchk reports Axioms <none> for the fixture"
+  elif grep -A1 '^\* Axioms:' "$chk_log" | grep -q 'AxiomControl.control_axiom'; then
+    pass "axiom control: rocqchk lists the axiom AxiomControl.control_axiom"
+  else
+    fail "axiom control: rocqchk does not list the axiom; see $chk_log"
+  fi
 fi
 
 echo "   logs: $LOG_DIR"

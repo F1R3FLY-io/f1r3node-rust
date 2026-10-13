@@ -2360,11 +2360,15 @@
       ]
     },
     "p10": {
-      "description": "Phase P10, the formal-verification closure, the documents, the examples, the benchmarks and the FIPS matrix (design v2, plan decision 85). Step S1 adds no Rust code. Each later step adds its tests here, and its sources if it must change production code.",
+      "description": "Phase P10, the formal-verification closure, the documents, the examples, the benchmarks and the FIPS matrix (design v2, plan decision 85). Step S1 adds no Rust code. Each later step adds its tests here, and its sources if it must change production code. Step S7 adds the property tests of Checkpoint.v.",
       "sources": [],
       "entry_points": [],
-      "tests": [],
-      "property_files": []
+      "tests": [
+        "rspace++/tests/reified_checkpoint_props.rs"
+      ],
+      "property_files": [
+        "rspace++/tests/reified_checkpoint_props.rs"
+      ]
     }
   }
 }

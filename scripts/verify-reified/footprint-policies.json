@@ -11072,7 +11072,7 @@
       ]
     },
     "p10": {
-      "description": "Phase P10, the formal-verification closure, the documents, the examples, the benchmarks and the FIPS matrix (design v2, plan decision 85). It extends campaign and restates the edits and the new files of p9. Step S1 adds the aggregate gate scripts/check-reified-rspaces-ALL.sh and the tracked checker list scripts/verify-reified/checker-commands.txt.",
+      "description": "Phase P10, the formal-verification closure, the documents, the examples, the benchmarks and the FIPS matrix (design v2, plan decision 85). It extends campaign and restates the edits and the new files of p9. Step S1 adds the aggregate gate scripts/check-reified-rspaces-ALL.sh and the tracked checker list scripts/verify-reified/checker-commands.txt. Step S7 adds Checkpoint.v, the axiom control fixture, the model map of P10 and the property tests of Checkpoint.v.",
       "extends": "campaign",
       "unchanged": [
         "**"
@@ -13027,7 +13027,11 @@
         "docs/rspace/reified-rspaces/diagrams/54-tl-verification-pipeline.puml",
         "docs/rspace/reified-rspaces/diagrams/54-tl-verification-pipeline.svg",
         "scripts/check-reified-rspaces-ALL.sh",
-        "scripts/verify-reified/checker-commands.txt"
+        "scripts/verify-reified/checker-commands.txt",
+        "formal/rocq/reified_rspaces/theories/Checkpoint.v",
+        "formal/rocq/reified_rspaces/controls/AxiomControl.v",
+        "formal/reified-rspaces-model-map-p10.json",
+        "rspace++/tests/reified_checkpoint_props.rs"
       ]
     }
   }

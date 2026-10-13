@@ -1,0 +1,440 @@
+{
+  "schema": "reified-rspaces-model-map/2",
+  "phase": "P10",
+  "title": "P10: the checkpoint model of the host RSpace (Checkpoint.v, the successor of the legacy Checkpoint.v, leaf rrs-fv-port-checkpoint). The items are the host code that writes the hot store into the history, resets the hot store to a root, takes and reverts a soft checkpoint, encodes the records of a key, applies the store steps of the space transaction, sweeps the volatile channels, and rigs a replay with the log of play.",
+  "design": "P10 design v2 (.reified-rspaces-work/p10/design-v2.md), section 2.2, and plan decision 85. The headline ids are the ids of the P10 phase of formal/reified-rspaces-invariant-map.json.",
+  "code_base": "The items are host code of the base 4d67b5ccc and the P1 substrate of this repository. The line numbers are informative. The checker finds each item by its scope and name.",
+  "checker": "scripts/verify-reified/check-model-map.py",
+  "formal_files": {
+    "rocq": [
+      "formal/rocq/reified_rspaces/theories/Checkpoint.v"
+    ],
+    "tla": []
+  },
+  "headlines": {
+    "K1": {
+      "kind": "rocq",
+      "name": "checkpoint_reset_restores_store",
+      "file": "formal/rocq/reified_rspaces/theories/Checkpoint.v",
+      "statement": "A reset at the root of a checkpoint gives a hot store whose record list of every key is a permutation of the list of the checkpointed hot store, with an empty cache that reads through to the new trie."
+    },
+    "K2": {
+      "kind": "rocq",
+      "name": "checkpoint_restore_preserves_persist",
+      "file": "formal/rocq/reified_rspaces/theories/Checkpoint.v",
+      "statement": "A persistent datum of the checkpointed hot store is in the reset store with its flag, and a later COMM keeps it (the legacy defect D11 cannot occur)."
+    },
+    "K3": {
+      "kind": "rocq",
+      "name": "replay_from_equal_parent_states",
+      "file": "formal/rocq/reified_rspaces/theories/Checkpoint.v",
+      "statement": "Two hot stores with one cache whose record lists are permutations of each other stay so under the same operations, and their checkpoints and roots are equal."
+    },
+    "K4": {
+      "kind": "rocq",
+      "name": "checkpoint_root_order_independent",
+      "file": "formal/rocq/reified_rspaces/theories/Checkpoint.v",
+      "statement": "The checkpoint of a hot store does not depend on the order of the records of a key, because each leaf is the sorted list of the encodings under a total order."
+    },
+    "K5": {
+      "kind": "rocq",
+      "name": "rig_and_reset_replays_the_log",
+      "file": "formal/rocq/reified_rspaces/theories/Checkpoint.v",
+      "statement": "A replay rigged with the log of play and reset to the parent root accepts exactly that log, completes, and reaches the hot store of play."
+    },
+    "K6": {
+      "kind": "rocq",
+      "name": "reset_after_sweep_drops_volatile",
+      "file": "formal/rocq/reified_rspaces/theories/Checkpoint.v",
+      "statement": "After the volatile sweep and the checkpoint, a reset store holds no data and no joins of a swept channel and no continuation of a swept group."
+    },
+    "K7": {
+      "kind": "rocq",
+      "name": "soft_revert_after_prefix_failure",
+      "file": "formal/rocq/reified_rspaces/theories/Checkpoint.v",
+      "statement": "Every prefix of a deploy keeps the read-through to the base trie, and the revert of a soft checkpoint gives the cache and the values of the snapshot and the same checkpoint (decision 19 D6)."
+    },
+    "K8": {
+      "kind": "rocq",
+      "name": "chain_checkpoints_retrievable",
+      "file": "formal/rocq/reified_rspaces/theories/Checkpoint.v",
+      "statement": "Under collision resistance of the root, every root of a well-rooted history resets to a store that reads as the trie checkpointed under that root."
+    }
+  },
+  "items": [
+    {
+      "item": "RSpace::create_checkpoint",
+      "required": true,
+      "file": "rspace++/src/rspace/rspace/ispace_impl.rs",
+      "scope": "RSpace",
+      "kind": "fn",
+      "name": "create_checkpoint",
+      "line": 60,
+      "role": "Writes the changes of the hot store into the history, then makes a new hot store over the new root.",
+      "rocq": [
+        "checkpoint",
+        "commit",
+        "changes",
+        "reset_view"
+      ],
+      "tla": [],
+      "covers": [
+        "K1",
+        "K8"
+      ]
+    },
+    {
+      "item": "RSpace::reset",
+      "required": true,
+      "file": "rspace++/src/rspace/rspace/ispace_impl.rs",
+      "scope": "RSpace",
+      "kind": "fn",
+      "name": "reset",
+      "line": 97,
+      "role": "Resets the history to a root and makes a new hot store over the reader of that root.",
+      "rocq": [
+        "reset",
+        "lookup_root",
+        "reset_view"
+      ],
+      "tla": [],
+      "covers": [
+        "K1",
+        "K8"
+      ]
+    },
+    {
+      "item": "RSpace::create_soft_checkpoint",
+      "required": true,
+      "file": "rspace++/src/rspace/rspace/ispace_impl.rs",
+      "scope": "RSpace",
+      "kind": "fn",
+      "name": "create_soft_checkpoint",
+      "line": 278,
+      "role": "Takes the cache snapshot of the hot store (with the event log and the produce counter).",
+      "rocq": [
+        "snapshot"
+      ],
+      "tla": [],
+      "covers": [
+        "K7"
+      ]
+    },
+    {
+      "item": "RSpace::revert_to_soft_checkpoint",
+      "required": true,
+      "file": "rspace++/src/rspace/rspace/ispace_impl.rs",
+      "scope": "RSpace",
+      "kind": "fn",
+      "name": "revert_to_soft_checkpoint",
+      "line": 296,
+      "role": "Makes a hot store from the cache snapshot over the base of the current history.",
+      "rocq": [
+        "revert"
+      ],
+      "tla": [],
+      "covers": [
+        "K7"
+      ]
+    },
+    {
+      "item": "HotStoreInstances::create_from_hs_and_hr",
+      "required": true,
+      "file": "rspace++/src/rspace/hot_store.rs",
+      "scope": "HotStoreInstances",
+      "kind": "fn",
+      "name": "create_from_hs_and_hr",
+      "line": 1487,
+      "role": "The hot store of a revert: the cached keys take the snapshot, the other keys read through to the base.",
+      "rocq": [
+        "revert",
+        "reads_through"
+      ],
+      "tla": [],
+      "covers": [
+        "K7"
+      ]
+    },
+    {
+      "item": "InMemHotStore::snapshot",
+      "required": true,
+      "file": "rspace++/src/rspace/hot_store.rs",
+      "scope": "InMemHotStore",
+      "kind": "fn",
+      "name": "snapshot",
+      "line": 648,
+      "role": "The cache of the hot store, which a soft checkpoint keeps.",
+      "rocq": [
+        "snapshot"
+      ],
+      "tla": [],
+      "covers": [
+        "K7"
+      ]
+    },
+    {
+      "item": "InMemHotStore::changes",
+      "required": true,
+      "file": "rspace++/src/rspace/hot_store.rs",
+      "scope": "InMemHotStore",
+      "kind": "fn",
+      "name": "changes",
+      "line": 1115,
+      "role": "One action for each cached key: a delete for an empty list, an insert of the records otherwise.",
+      "rocq": [
+        "changes",
+        "action_of",
+        "leaf_of"
+      ],
+      "tla": [],
+      "covers": [
+        "K1",
+        "K3",
+        "K4",
+        "K6"
+      ]
+    },
+    {
+      "item": "HistoryRepositoryImpl::checkpoint",
+      "required": true,
+      "file": "rspace++/src/rspace/history/history_repository_impl.rs",
+      "scope": "HistoryRepositoryImpl",
+      "kind": "fn",
+      "name": "checkpoint",
+      "line": 467,
+      "role": "Applies the actions of the hot store to the radix tree and gives the new root.",
+      "rocq": [
+        "make_actions",
+        "apply_action",
+        "tinsert",
+        "tdelete"
+      ],
+      "tla": [],
+      "covers": [
+        "K1",
+        "K8"
+      ]
+    },
+    {
+      "item": "HistoryRepositoryImpl::reset",
+      "required": true,
+      "file": "rspace++/src/rspace/history/history_repository_impl.rs",
+      "scope": "HistoryRepositoryImpl",
+      "kind": "fn",
+      "name": "reset",
+      "line": 569,
+      "role": "A history at a root of the content-addressed store.",
+      "rocq": [
+        "lookup_root",
+        "History"
+      ],
+      "tla": [],
+      "covers": [
+        "K8"
+      ]
+    },
+    {
+      "item": "encode_datums",
+      "required": true,
+      "file": "rspace++/src/rspace/serializers/serializers.rs",
+      "kind": "fn",
+      "name": "encode_datums",
+      "line": 18,
+      "role": "The leaf of a data key: the bincode of each datum (its persistent flag included), sorted.",
+      "rocq": [
+        "leaf_of",
+        "isort",
+        "roundtrips",
+        "bytes_order"
+      ],
+      "tla": [],
+      "covers": [
+        "K1",
+        "K2",
+        "K4"
+      ]
+    },
+    {
+      "item": "encode_continuations",
+      "required": true,
+      "file": "rspace++/src/rspace/serializers/serializers.rs",
+      "kind": "fn",
+      "name": "encode_continuations",
+      "line": 39,
+      "role": "The leaf of a continuation key: the bincode of each waiting continuation, sorted.",
+      "rocq": [
+        "leaf_of",
+        "isort",
+        "roundtrips",
+        "bytes_order"
+      ],
+      "tla": [],
+      "covers": [
+        "K1",
+        "K4"
+      ]
+    },
+    {
+      "item": "encode_joins",
+      "required": true,
+      "file": "rspace++/src/rspace/serializers/serializers.rs",
+      "kind": "fn",
+      "name": "encode_joins",
+      "line": 69,
+      "role": "The leaf of a joins key: the bincode of each join group, sorted.",
+      "rocq": [
+        "leaf_of",
+        "isort",
+        "roundtrips",
+        "bytes_order"
+      ],
+      "tla": [],
+      "covers": [
+        "K1",
+        "K4"
+      ]
+    },
+    {
+      "item": "Datum",
+      "required": true,
+      "file": "rspace++/src/rspace/internal.rs",
+      "kind": "struct",
+      "name": "Datum",
+      "line": 16,
+      "role": "A stored datum; its persistent flag is a field of the record, so the encoding carries it.",
+      "rocq": [
+        "Datum",
+        "take_datum"
+      ],
+      "tla": [],
+      "covers": [
+        "K2"
+      ]
+    },
+    {
+      "item": "store_data",
+      "required": true,
+      "file": "rspace++/src/rspace/space_store_handle.rs",
+      "kind": "fn",
+      "name": "store_data",
+      "line": 3248,
+      "role": "The store step of a produce that stores its datum.",
+      "rocq": [
+        "set_data",
+        "apply_operation"
+      ],
+      "tla": [],
+      "covers": [
+        "K3"
+      ]
+    },
+    {
+      "item": "remove_matched_datum_and_join",
+      "required": true,
+      "file": "rspace++/src/rspace/space_store_handle.rs",
+      "kind": "fn",
+      "name": "remove_matched_datum_and_join",
+      "line": 3268,
+      "role": "The store step of a COMM: removes each matched record unless it is persistent, and the join entries of a group whose last waiter leaves.",
+      "rocq": [
+        "take_datum",
+        "take_waiter",
+        "remove_first",
+        "drop_join"
+      ],
+      "tla": [],
+      "covers": [
+        "K2",
+        "K3"
+      ]
+    },
+    {
+      "item": "store_waiting_continuation",
+      "required": true,
+      "file": "rspace++/src/rspace/space_store_handle.rs",
+      "kind": "fn",
+      "name": "store_waiting_continuation",
+      "line": 3320,
+      "role": "The store step of a consume that parks: appends the waiter and adds its group to the joins of each channel.",
+      "rocq": [
+        "set_conts",
+        "add_join"
+      ],
+      "tla": [],
+      "covers": [
+        "K3"
+      ]
+    },
+    {
+      "item": "sweep_volatile_channels",
+      "required": true,
+      "file": "rspace++/src/rspace/space_store_handle.rs",
+      "kind": "fn",
+      "name": "sweep_volatile_channels",
+      "line": 3682,
+      "role": "Clears the data, the joins and the continuations of the volatile channels and of their groups.",
+      "rocq": [
+        "clear_channel",
+        "clear_group",
+        "apply_operation"
+      ],
+      "tla": [],
+      "covers": [
+        "K6"
+      ]
+    },
+    {
+      "item": "ReplayRSpace::rig_and_reset",
+      "required": true,
+      "file": "rspace++/src/rspace/replay_rspace.rs",
+      "scope": "ReplayRSpace",
+      "kind": "fn",
+      "name": "rig_and_reset",
+      "line": 475,
+      "role": "Resets the replay space to the parent root and rigs it with the log of play.",
+      "rocq": [
+        "rig_and_reset",
+        "Rig"
+      ],
+      "tla": [],
+      "covers": [
+        "K5"
+      ]
+    },
+    {
+      "item": "ReplayRSpace::rig",
+      "required": true,
+      "file": "rspace++/src/rspace/replay_rspace.rs",
+      "scope": "ReplayRSpace",
+      "kind": "fn",
+      "name": "rig",
+      "line": 480,
+      "role": "Records the events of the log, which the replayed operations must meet.",
+      "rocq": [
+        "replay_step",
+        "replay_ops"
+      ],
+      "tla": [],
+      "covers": [
+        "K5"
+      ]
+    },
+    {
+      "item": "ReplayRSpace::check_replay_data",
+      "required": true,
+      "file": "rspace++/src/rspace/replay_rspace.rs",
+      "scope": "ReplayRSpace",
+      "kind": "fn",
+      "name": "check_replay_data",
+      "line": 542,
+      "role": "Fails when an event of the log was not met: the replay is complete.",
+      "rocq": [
+        "complete"
+      ],
+      "tla": [],
+      "covers": [
+        "K5"
+      ]
+    }
+  ]
+}
