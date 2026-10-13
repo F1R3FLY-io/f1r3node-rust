@@ -1013,3 +1013,167 @@ in {{
         .await
         .expect("fs_revoke non-cascade spec failed");
 }
+
+/// Companion to `fs_revoke_leaves_pre_held_dir_cap_live`: the
+/// non-cascade invariant is paired with a *no-escape* invariant.
+/// Once `Fs.revoke()` has been called, re-looking up the registered
+/// `fs_uri` via the registry MUST return the same (now-inert) Fs
+/// cap — not a fresh, un-revoked instance.  Otherwise a deploy
+/// could circumvent revocation by doing `rl!(fs_uri, *ch)` again
+/// after revoke and regain ambient access to the filesystem.
+///
+/// The guarantee lives at `Fs.rho:197-212`:
+///
+///   > Module-level cell `fsRevokedP` holds the one-way revoke
+///   > flag, shared across every Fs instance minted from this
+///   > composed source. … Post-revoke, any Fs instance (including
+///   > instances minted AFTER revoke) has all methods returning
+///   > FSERR_REVOKED.
+///
+/// Combined with the registry's identity semantics — a URI lookup
+/// returns a reference to the same registered cap on every call,
+/// not a fresh mint — the only path to the filesystem post-revoke
+/// is through File / Dir caps that were acquired *before* revoke.
+/// This test pins that end-to-end at the Rholang API surface.
+///
+/// Chain:
+///   1. `rl!(fs_uri, *fsCh1)` + revoke → `[true]`.
+///   2. **Second** `rl!(fs_uri, *fsCh2)` — fresh registry lookup
+///      against the same URI.  Forward the resolved `fs2` to each
+///      subsequent step.
+///   3-7. On the re-looked-up `fs2`, every ambient method
+///      (`openFile`, `openDir`, `stdin`, `stdout`, `stderr`) must
+///      return `[false, "FSERR_REVOKED", _]`.  The revoke gate at
+///      the top of each Fs method body peeks `fsRevokedP` before
+///      the bundle / fd lookup, so any args work; the test uses
+///      syntactically valid shapes to avoid a different error-arm
+///      masking the revoke gate.
+///
+/// Regression value: a refactor that mints a fresh Fs on each
+/// registry lookup (e.g., by replacing `insertSigned` with a
+/// factory registration), or wires `fsRevokedP` per-instance
+/// rather than module-level, would silently restore ambient access
+/// post-revoke and this test would catch it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn fs_revoke_blocks_registry_re_lookup() {
+    // Setup: a minimal populated bundle so Fs mint succeeds at
+    // genesis; the test doesn't exercise bundle contents because
+    // the revoke gate fires before any name-in-bundle check.
+    let (_dir, params, fs_uri) = bundle_dir_with_child("r", b"irrelevant");
+
+    let test_source = format!(
+        r#"
+new
+  rl(`rho:registry:lookup`),
+  RhoSpecCh,
+  fsCh1,
+  step1, step2, step3, step4, step5, step6
+in {{
+  rl!(`rho:id:zphjgsfy13h1k85isc8rtwtgt3t9zzt5pjd5ihykfmyapfc4wt3x5h`, *RhoSpecCh) |
+  for(@(_, RhoSpec) <- RhoSpecCh) {{
+    @RhoSpec!("testSuite",
+      [("Fs.revoke() blocks subsequent registry re-lookups (no ambient-access escape)",
+        *step1)])
+  }} |
+
+  rl!(`{fs_uri}`, *fsCh1) |
+  for(@(_, fs1) <- fsCh1) {{
+
+    // Step 1: fs1.revoke() → [true].  Then do a FRESH
+    // registry lookup for the same URI and forward the resolved
+    // `fs2` into step2.  `fs2` is a Rholang-level distinct binding
+    // but the registry returns the SAME registered cap, so fs2 is
+    // bound to the same agent and reads the same (now-flipped)
+    // fsRevokedP cell.
+    contract step1(rhoSpec, _, ackCh) = {{
+      for(@r1 <- @fs1!?("revoke")) {{
+        match r1 {{
+          [true] => {{
+            new fsCh2 in {{
+              rl!(`{fs_uri}`, *fsCh2) |
+              for(@(_, fs2) <- fsCh2) {{
+                step2!(*rhoSpec, fs2, *ackCh)
+              }}
+            }}
+          }}
+          _ => rhoSpec!("assert", (r1, "==", "[true]"),
+            "step 1: Fs.revoke() returns [true]", *ackCh)
+        }}
+      }}
+    }} |
+
+    // Step 2: re-looked-up fs2.openFile post-revoke must be inert.
+    contract step2(rhoSpec, @fs2, ackCh) = {{
+      for(@r2 <- @fs2!?("openFile", "shareddir", {{}})) {{
+        match r2 {{
+          [false, "FSERR_REVOKED", _msg] => step3!(*rhoSpec, fs2, *ackCh)
+          _ => rhoSpec!("assert", (r2, "==", "[false, FSERR_REVOKED, _]"),
+            "step 2: re-looked-up fs.openFile inert", *ackCh)
+        }}
+      }}
+    }} |
+
+    // Step 3: re-looked-up fs2.openDir post-revoke must be inert.
+    contract step3(rhoSpec, @fs2, ackCh) = {{
+      for(@r3 <- @fs2!?("openDir", "shareddir", {{}})) {{
+        match r3 {{
+          [false, "FSERR_REVOKED", _msg] => step4!(*rhoSpec, fs2, *ackCh)
+          _ => rhoSpec!("assert", (r3, "==", "[false, FSERR_REVOKED, _]"),
+            "step 3: re-looked-up fs.openDir inert", *ackCh)
+        }}
+      }}
+    }} |
+
+    // Step 4: re-looked-up fs2.stdin post-revoke must be inert.
+    contract step4(rhoSpec, @fs2, ackCh) = {{
+      for(@r4 <- @fs2!?("stdin")) {{
+        match r4 {{
+          [false, "FSERR_REVOKED", _msg] => step5!(*rhoSpec, fs2, *ackCh)
+          _ => rhoSpec!("assert", (r4, "==", "[false, FSERR_REVOKED, _]"),
+            "step 4: re-looked-up fs.stdin inert", *ackCh)
+        }}
+      }}
+    }} |
+
+    // Step 5: re-looked-up fs2.stdout post-revoke must be inert.
+    contract step5(rhoSpec, @fs2, ackCh) = {{
+      for(@r5 <- @fs2!?("stdout")) {{
+        match r5 {{
+          [false, "FSERR_REVOKED", _msg] => step6!(*rhoSpec, fs2, *ackCh)
+          _ => rhoSpec!("assert", (r5, "==", "[false, FSERR_REVOKED, _]"),
+            "step 5: re-looked-up fs.stdout inert", *ackCh)
+        }}
+      }}
+    }} |
+
+    // Step 6: re-looked-up fs2.stderr post-revoke must be inert.
+    // Final success assertion fires here.
+    contract step6(rhoSpec, @fs2, ackCh) = {{
+      for(@r6 <- @fs2!?("stderr")) {{
+        match r6 {{
+          [false, "FSERR_REVOKED", _msg] =>
+            rhoSpec!("assert", (true, "==", true),
+              "every Fs method on a re-looked-up fs post-revoke returns FSERR_REVOKED — no ambient-access escape via registry re-import",
+              *ackCh)
+          _ => rhoSpec!("assert", (r6, "==", "[false, FSERR_REVOKED, _]"),
+            "step 6: re-looked-up fs.stderr inert", *ackCh)
+        }}
+      }}
+    }}
+  }}
+}}
+"#
+    );
+
+    let compiled = CompiledRholangSource::new(
+        test_source,
+        HashMap::new(),
+        "FsRevokeNoReLookupEscapeSpec".to_string(),
+    )
+    .expect("compile fs_revoke re-lookup spec");
+
+    let spec = RhoSpec::new_with_genesis_parameters(compiled, vec![], GENESIS_TEST_TIMEOUT, params);
+    spec.run_tests()
+        .await
+        .expect("fs_revoke re-lookup spec failed");
+}
