@@ -1,7 +1,7 @@
 ---
 doc_type: todos
 version: "1.1"
-last_updated: 2026-10-10
+last_updated: 2026-10-13
 mr_status:
   ready: false
   target_branch: master
@@ -588,6 +588,120 @@ tasks:
 
 ---
 
+### EPIC-027: Adaptive Execution Across Hardware Tiers (Issue #24 Close-Out)
+
+```yaml
+---
+epic_id: EPIC-027
+title: "Adaptive Execution Across Hardware Tiers (Issue #24 Close-Out)"
+status: in_progress
+priority: p0
+user_story: US-012
+issues: [24]
+blocked_by: []
+created_at: 2026-10-13
+updated_at: 2026-10-13
+design: docs/designs/adaptive-execution.md
+claimed_by: claude-session-dfac55a4
+claimed_at: 2026-10-13T15:00:00Z
+branch: perf/issue-24-adaptive-execution
+pr_base_branch: dev
+closes: "issue #24 (the PR body uses 'Closes #24')"
+related_epics:
+  EPIC-021: "Issue #24 root-cause epic. It keeps its measurement and fix history. Its open tasks, TASK-021-13 first, are inputs to this epic."
+  EPIC-025: "Pluggable State Machine Replication Boundary (design PR #627, decision D7). This epic adds a node service on its lifecycle layer."
+  EPIC-014: "Test net. Its modular soak decision of 2026-10-11 lets each mechanism define its own soak profile."
+related_prs: ["#651 (lifecycle runtime and CBC Casper adapter)", "#627 (replication boundary design)", "#695 (backlog-following non-leader admission cap)"]
+origin: "On 2026-10-13 the user chose to close issue #24 with a design that relies on adaptive execution, continuous telemetry, and tiered degradation, so that shards run on hardware with different performance. Soak 37996403003 showed that all three high-phase failures ran on Docker, with about twice the left-out deploys and twice the selection age of subprocess shards."
+decisions_2026_10_13:
+  consensus_neutral: "The controller is a node service on ConsensusRuntime. Each mechanism declares its controls and signals in an adaptation descriptor. CBC Casper is the first binding (design decision A1)."
+  node_local_only: "No control changes block validity or replicated state (design decision A2)."
+  tier_selection: "A startup hardware probe selects the tier profile, and a closed-loop controller with hysteresis adjusts inside it (design decision A3)."
+  telemetry: "Local Prometheus metrics and structured records, tagged with tier, host class, and protocol, collected by soak and test net runs. Central opt-in aggregation goes to the Backlog (design decision A4)."
+  close_gate: "The close-out gate depends on the mechanism. Each mechanism supplies a soak profile. The cbc-casper profile closes issue #24 (design decision A5)."
+  sequencing: "Design now against D7. Implementation tasks wait for PR #651 to merge into dev (design decision A7)."
+execution_contract:
+  design_policy: "No code change before the maintainer approves docs/designs/adaptive-execution.md (TASK-027-1)."
+  cbc_policy: "Register the pending claim for invariants I1 to I5 before the controller code (TASK-027-4)."
+  git_policy: "Commits require /quick-commit consent. The user runs push, merge, and PR operations."
+tasks:
+  - id: TASK-027-1
+    title: "Write and approve the adaptive execution design"
+    status: review
+    claimed_by: claude-session-dfac55a4
+    claimed_at: 2026-10-13T15:00:00Z
+    blocked_by: []
+    acceptance:
+      - "docs/designs/adaptive-execution.md records decisions A1 to A7, the issue #24 evidence, the controller rules, the degradation levels, the invariants I1 to I5, the CBC Casper binding, and the soak profile."
+      - "The design uses the names of the D7 boundary layers and states which names change when PR #651 merges."
+      - "The maintainer approves the design, or the review comments are resolved."
+      - "The new terms of design section 18 are in docs/Glossary.md."
+  - id: TASK-027-2
+    title: "Add the adaptive telemetry signals and records with no behavior change"
+    status: pending
+    blocked_by: [TASK-027-1, "PR #651 merged into dev"]
+    acceptance:
+      - "The node exports the signals of design section 9.1 with the prefix adaptive_ and the labels tier, host_class, and protocol."
+      - "The cbc-casper adapter exports the signals of design section 10.2."
+      - "A soak run collects the records in its artifacts, and the records contain no keys, addresses, deploy contents, or host names."
+      - "A comparison run shows no change in the soak results."
+  - id: TASK-027-3
+    title: "Add the hardware probe and the tier profiles"
+    status: pending
+    blocked_by: [TASK-027-2]
+    acceptance:
+      - "The probe reads the CPU cores, the cgroup memory limit, the disk write latency, and the host class at startup."
+      - "tier = auto selects a profile from the probe. A named tier skips the probe, and the node records the choice."
+      - "An operator override can narrow a bound and cannot widen it. A test proves both cases."
+  - id: TASK-027-4
+    title: "Add the adaptive controller and the degradation levels"
+    status: pending
+    blocked_by: [TASK-027-3]
+    acceptance:
+      - "A pending CbC claim states invariants I1 to I5 before the controller code."
+      - "Unit tests drive the controller as a function of signal windows and a tier profile, with time as the only boundary."
+      - "The tests prove one step for each action, the N and M interval rules, the cooldown, the bounds, and no step up without data."
+      - "Levels L1 to L3 follow design section 8. A full intake queue returns a typed retryable overload error."
+      - "A mixed-tier test shows that validators with different control values reach the same finalized state."
+  - id: TASK-027-5
+    title: "Bind the CBC Casper admission controls to the controller"
+    status: pending
+    blocked_by: [TASK-027-4]
+    acceptance:
+      - "The non-leader fallback cap and the fresh-deploy escalation delays in block_creator.rs come from the controller inside the tier profile bounds."
+      - "The PR #695 backlog rule stays, and its bound comes from the profile."
+      - "Block validation does not read any controlled value."
+      - "A local high-phase run shows a lower deploy age at selection than the fixed cap of 8."
+  - id: TASK-027-6
+    title: "Fix the sustained-phase wait from inclusion to finality"
+    status: pending
+    blocked_by: [TASK-021-13, TASK-027-2]
+    acceptance:
+      - "The TASK-021-13 attribution names the stage that causes the wait, with the evidence on issue #24."
+      - "The fix or the new control for that stage has a test that fails before the change."
+      - "Design open question Q1 is closed in the design document."
+  - id: TASK-027-7
+    title: "Add the constrained tier CI run and the cbc-casper soak profile"
+    status: pending
+    blocked_by: [TASK-027-5]
+    acceptance:
+      - "A CI job runs a node under cgroup CPU and memory limits and checks the degradation level and the absence of out-of-memory stops."
+      - "The cbc-casper soak profile states the gates of design section 13.1 and reports them separately for each host class."
+      - "Each tier has a baseline for deploys per second, inclusion p95, and finalization p95."
+  - id: TASK-027-8
+    title: "Run the close-out soak and report on issue #24"
+    status: pending
+    blocked_by: [TASK-027-6, TASK-027-7]
+    acceptance:
+      - "The cbc-casper soak profile passes: at most 5 test_load failures in 100 sessions on the Docker host class, on the subprocess host class, and on the constrained tier."
+      - "No run shows an out-of-memory stop, a watchdog stop, or a guardian stop."
+      - "The controller records show at least one step down and one step up in a high phase."
+      - "An issue #24 comment reports the result, and the PR that merges this branch closes issue #24."
+---
+```
+
+---
+
 ### EPIC-021: Issue #24 Replay Throughput Root Cause Under the CbC Harness
 
 ```yaml
@@ -598,6 +712,7 @@ status: in_progress
 priority: p0
 user_story: null
 issues: [24]
+closed_out_by: "EPIC-027 (2026-10-13). This epic keeps its measurement and fix history. Its open tasks, TASK-021-13 first, are inputs to EPIC-027."
 blocked_by: []
 created_at: 2026-10-03
 updated_at: 2026-10-06
@@ -4223,6 +4338,7 @@ EPIC-010 / EPIC-012 / EPIC-015 / EPIC-016 ─> EPIC-017 shared evidence and fixt
 EPIC-017 handoff + PR #216 merged into dev ─> EPIC-018 post-merge formal harness PR
 EPIC-020 (node log and accept-path limits, complete 2026-10-06) ─> merged to dev before PR #447
 EPIC-017 harness + PR #441 stage metrics ─> EPIC-021 (issue #24 root cause, fix/issue-24 -> dev)
+EPIC-021 evidence + EPIC-025 boundary (PR #651) ─> EPIC-027 (issue #24 close-out, perf/issue-24-adaptive-execution -> dev)
 EPIC-019 (node observation, PR #447 -> dev) ─> EPIC-017 TASK-017-12 node prerequisite (soak branch)
 EPIC-011 (TLA exhaustive baseline, complete) ─> EPIC-012 / TASK-012-22
 EPIC-012 (open-issue PR queue)              (all other lanes start independently)
