@@ -387,7 +387,13 @@ where
                 successful_connections.push(peer);
             }
             Err(CommError::WrongNetwork(peer_addr, msg)) => {
-                warn!("Can't connect to peer {}. {}", peer_addr, msg);
+                warn!(
+                    "Can't connect to peer {}. {} Removing it from the routing table.",
+                    peer_addr, msg
+                );
+                if let Err(e) = node_discovery.remove_peer(&peer) {
+                    warn!("Failed to remove peer {} from Kademlia: {}", peer, e);
+                }
             }
             Err(CommError::DnsResolutionFailed(_, _)) => {}
             Err(_) => {
@@ -424,7 +430,6 @@ pub async fn connect<T: TransportLayer>(
 mod tests {
     use super::*;
     use crate::rust::peer_node::{Endpoint, NodeIdentifier};
-    use crate::rust::test_instances::NodeDiscoveryStub;
 
     fn peer(name: &str) -> PeerNode {
         PeerNode {
@@ -514,11 +519,33 @@ mod tests {
         assert!(cell.read().unwrap().is_empty());
     }
 
+    /// Test-only fake of `NodeDiscovery`. `nodes` is a fixed peer list for one
+    /// `find_and_connect` call; `removed` records every `remove_peer` request so
+    /// a test can assert which peers were dropped from the routing table.
+    struct RecordingDiscovery {
+        nodes: Vec<PeerNode>,
+        removed: std::sync::Mutex<Vec<PeerNode>>,
+    }
+
+    #[async_trait::async_trait]
+    impl NodeDiscovery for RecordingDiscovery {
+        async fn discover(&self) -> Result<(), CommError> { Ok(()) }
+
+        fn peers(&self) -> Result<Vec<PeerNode>, CommError> { Ok(self.nodes.clone()) }
+
+        fn remove_peer(&self, peer: &PeerNode) -> Result<(), CommError> {
+            self.removed.lock().unwrap().push(peer.clone());
+            Ok(())
+        }
+    }
+
     #[tokio::test]
     async fn find_and_connect_skips_wrong_network_peers() {
         let cell = cell_with(&[]);
-        let mut discovery = NodeDiscoveryStub::new();
-        discovery.nodes = vec![peer("good"), peer("wrong-net"), peer("broken")];
+        let discovery = RecordingDiscovery {
+            nodes: vec![peer("good"), peer("wrong-net"), peer("broken")],
+            removed: std::sync::Mutex::new(Vec::new()),
+        };
 
         let connect_fn = |p: &PeerNode| {
             let p = p.clone();
@@ -540,5 +567,6 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(connected, vec![peer("good")]);
+        assert_eq!(*discovery.removed.lock().unwrap(), vec![peer("wrong-net")]);
     }
 }

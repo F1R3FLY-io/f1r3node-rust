@@ -580,12 +580,7 @@ impl TransportLayer for GrpcTransportClient {
         // Execute all sends in parallel and collect results
         let results = futures::future::join_all(send_futures).await;
 
-        // Check if any send failed - if so, return the first error
-        for result in results {
-            result?; // Return early on first error
-        }
-
-        Ok(())
+        best_effort("broadcast", peers, results)
     }
 
     /// Stream a blob to a peer by enqueueing it in the buffer
@@ -606,12 +601,7 @@ impl TransportLayer for GrpcTransportClient {
         // Execute all streams in parallel and collect results
         let results = futures::future::join_all(stream_futures).await;
 
-        // Check if any stream failed - if so, return the first error
-        for result in results {
-            result?; // Return early on first error
-        }
-
-        Ok(())
+        best_effort("stream", peers, results)
     }
 
     /// Disconnect from a peer, shutting down any gRPC channels
@@ -633,6 +623,30 @@ impl TransportLayer for GrpcTransportClient {
     async fn get_channeled_peers(&self) -> Result<std::collections::HashSet<PeerNode>, CommError> {
         let channels_map = self.channels_map.lock().await;
         Ok(channels_map.keys().cloned().collect())
+    }
+}
+
+/// A fan-out succeeds if it reached at least one peer. One unreachable or
+/// refusing peer must not fail the operation for the peers that received it.
+fn best_effort(
+    operation: &str,
+    peers: &[PeerNode],
+    results: Vec<Result<(), CommError>>,
+) -> Result<(), CommError> {
+    let mut first_error = None;
+    let mut delivered = false;
+    for (peer, result) in peers.iter().zip(results) {
+        match result {
+            Ok(()) => delivered = true,
+            Err(error) => {
+                tracing::debug!(peer = %peer.to_address(), error = %error, "{} to one peer failed", operation);
+                first_error.get_or_insert(error);
+            }
+        }
+    }
+    match first_error {
+        Some(error) if !delivered => Err(error),
+        _ => Ok(()),
     }
 }
 
@@ -707,5 +721,20 @@ mod tests {
         assert!(c.stream_mult(&[], &blob).await.is_ok());
 
         assert!(c.get_channeled_peers().await.unwrap().is_empty());
+    }
+
+    #[test]
+    fn best_effort_fails_only_when_no_peer_was_reached() {
+        let peers = [peer("a"), peer("b")];
+        let refused = || CommError::WrongNetwork("b".to_string(), "other chain".to_string());
+
+        assert!(best_effort("broadcast", &peers, vec![Ok(()), Err(refused())]).is_ok());
+        assert!(matches!(
+            best_effort("broadcast", &peers, vec![
+                Err(CommError::TimeOut),
+                Err(refused())
+            ]),
+            Err(CommError::TimeOut)
+        ));
     }
 }

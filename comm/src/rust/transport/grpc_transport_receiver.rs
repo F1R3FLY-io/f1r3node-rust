@@ -478,7 +478,7 @@ impl TransportLayer for TransportLayerService {
             }
             _ => None,
         };
-        
+
         if packet_type_id.is_some() {
             if let Err(error) =
                 self.rp_config
