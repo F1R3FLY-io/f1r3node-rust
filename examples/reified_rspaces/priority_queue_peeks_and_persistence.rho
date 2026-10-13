@@ -1,0 +1,26 @@
+// A priority queue with the factory param priorities=2 has the levels 0 and
+// 1. It keeps two equal records apart, a peek leaves the head record in
+// place, and a persistent receive takes every record.
+//
+// The deploy stores "x" twice at level 1 and "urgent" at level 0. The peek
+// sees "urgent", the head of the highest level, and the head stays. The next
+// receive takes "urgent". The persistent receive then takes both records "x"
+// of level 1, and it stays for later records. A persistent receive takes no
+// query, because only a linear bind takes a query.
+new factory(`rho:space:hashmap:priorityqueue`), out in {
+  for (queue <- factory!?("default"; priorities=2)) {
+    queue!?("produce", "tasks", ["x"]; priority=1);
+    queue!?("produce", "tasks", ["x"]; priority=1);
+    queue!?("produce", "tasks", ["urgent"]; priority=0);
+    use queue {
+      for (@peeked <<- @"tasks") {
+        out!(["peeked", peeked]) |
+        for (@first <- @"tasks") {
+          out!(["taken", first]) |
+          for (@rest <= @"tasks") { out!(["drained", rest]) }
+        }
+      }
+    }
+  } |
+  for (@value <= out) { @"rrs.example.pq.aspects"!(value) }
+}

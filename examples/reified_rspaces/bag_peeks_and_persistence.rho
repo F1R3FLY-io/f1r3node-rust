@@ -1,0 +1,29 @@
+// A bag keeps two equal records apart, a peek leaves the record in place,
+// and a persistent record stays after every receive.
+//
+// The deploy stores 5 twice and the persistent record 7. The peek with the
+// pattern 5 sees a 5, and the record stays. Two receives with the pattern 5
+// take the two equal records. Two receives with the pattern 7 both take 7.
+new factory(`rho:space:hashmap:bag`), out in {
+  for (bag <- factory!?("default")) {
+    bag!?("produce", "coins", [5]);
+    bag!?("produce", "coins", [5]);
+    bag!?("produce", "coins", [7]; persistent=true);
+    use bag {
+      for (@5 <<- @"coins") {
+        out!(["peeked", 5]) |
+        for (@5 <- @"coins") {
+          out!(["first", 5]) |
+          for (@5 <- @"coins") {
+            out!(["second", 5]) |
+            for (@7 <- @"coins") {
+              out!(["persistent", 7]) |
+              for (@7 <- @"coins") { out!(["again", 7]) }
+            }
+          }
+        }
+      }
+    }
+  } |
+  for (@value <= out) { @"rrs.example.bag.aspects"!(value) }
+}

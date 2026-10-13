@@ -1,0 +1,28 @@
+// A set holds one class for each value. A peek leaves the class in place,
+// and a persistent member stays after every receive.
+//
+// The deploy sends "a" twice, which makes one class, and the persistent
+// member "p". The peek with the pattern "a" sees "a", and the class stays.
+// The receive with the pattern "a" takes the class, both copies of "a"
+// included. So the next receive with any pattern takes "p", the only class
+// left, and one more receive takes "p" again.
+new factory(`rho:space:hashmap:set`), out in {
+  for (set <- factory!?("default")) {
+    set!?("produce", "tags", ["a"]);
+    set!?("produce", "tags", ["a"]);
+    set!?("produce", "tags", ["p"]; persistent=true);
+    use set {
+      for (@"a" <<- @"tags") {
+        out!(["peeked", "a"]) |
+        for (@"a" <- @"tags") {
+          out!(["taken", "a"]) |
+          for (@left <- @"tags") {
+            out!(["left", left]) |
+            for (@again <- @"tags") { out!(["again", again]) }
+          }
+        }
+      }
+    }
+  } |
+  for (@value <= out) { @"rrs.example.set.aspects"!(value) }
+}

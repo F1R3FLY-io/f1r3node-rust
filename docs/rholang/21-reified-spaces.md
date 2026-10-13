@@ -250,7 +250,45 @@ The last column says what happens when two parallel blocks both use one collecti
 
 On a queue, a stack, a cell and a priority queue, a head that does not match blocks the records behind it.
 A receive with a `where` guard checks the guard once, on the record that it would take, and a refusal makes it wait.
-The [specification](../rspace/reified-rspaces/specification.md#3-inner-collections) states the rules of peeks and persistent records for each collection.
+
+Each subsection below shows the order of one collection, and then its equal records, a peek and persistence.
+A peek `for (x <<- ch)` binds a record and leaves it in its place.
+A persistent send `ch!!(v)`, or the handle param `persistent=true`, stores a record that stays after every receive.
+A persistent receive `for (x <= ch)` takes the records that it matches, one in each round, and it then waits for later records.
+Only a linear bind `<-` takes a receive query, so a peek and a persistent receive have no query.
+[Table 9a](../rspace/reified-rspaces/specification.md#3-inner-collections) of the specification gives the rules of these aspects for each collection.
+
+### Queue
+
+The [first space](#a-first-space) of this chapter shows the order of a queue.
+This example shows its equal records, a peek and a persistent receive.
+
+```rholang
+// A queue keeps two equal records apart, a peek leaves the head record in
+// place, and a persistent receive takes every record from the head.
+//
+// The deploy stores "A", "A" and "B" in this order. The peek sees the head
+// "A", and the head stays. The next receive takes the first "A". The
+// persistent receive then takes the second "A" and "B", one record in each
+// round, and it stays for later records.
+new factory(`rho:space:hashmap:queue`), out in {
+  for (queue <- factory!?("default")) {
+    queue!?("produce", "jobs", ["A"]);
+    queue!?("produce", "jobs", ["A"]);
+    queue!?("produce", "jobs", ["B"]);
+    use queue {
+      for (@peeked <<- @"jobs") {
+        out!(["peeked", peeked]) |
+        for (@first <- @"jobs") {
+          out!(["taken", first]) |
+          for (@rest <= @"jobs") { out!(["drained", rest]) }
+        }
+      }
+    }
+  } |
+  for (@value <= out) { @"rrs.example.queue.aspects"!(value) }
+}
+```
 
 ### Stack
 
@@ -276,6 +314,33 @@ new factory(`rho:space:hashmap:stack`), out in {
     }
   } |
   for (@taken <- out) { @"rrs.example.stack"!(taken) }
+}
+```
+
+```rholang
+// A stack keeps two equal records apart, a peek leaves the top record in
+// place, and a persistent receive takes every record from the top.
+//
+// The deploy pushes "A", "B" and "B" in this order. The peek sees the top
+// "B", and the top stays. The next receive takes that "B". The persistent
+// receive then takes the other "B" and then "A", and it stays for later
+// records.
+new factory(`rho:space:hashmap:stack`), out in {
+  for (stack <- factory!?("default")) {
+    stack!?("produce", "plates", ["A"]);
+    stack!?("produce", "plates", ["B"]);
+    stack!?("produce", "plates", ["B"]);
+    use stack {
+      for (@peeked <<- @"plates") {
+        out!(["peeked", peeked]) |
+        for (@top <- @"plates") {
+          out!(["taken", top]) |
+          for (@rest <= @"plates") { out!(["drained", rest]) }
+        }
+      }
+    }
+  } |
+  for (@value <= out) { @"rrs.example.stack.aspects"!(value) }
 }
 ```
 
@@ -306,6 +371,38 @@ new factory(`rho:space:hashmap:bag`), out in {
 The receive with the pattern `2` takes only the record 2.
 The other two receives take the records 1 and 3 in either order, and their sum is 4.
 
+```rholang
+// A bag keeps two equal records apart, a peek leaves the record in place,
+// and a persistent record stays after every receive.
+//
+// The deploy stores 5 twice and the persistent record 7. The peek with the
+// pattern 5 sees a 5, and the record stays. Two receives with the pattern 5
+// take the two equal records. Two receives with the pattern 7 both take 7.
+new factory(`rho:space:hashmap:bag`), out in {
+  for (bag <- factory!?("default")) {
+    bag!?("produce", "coins", [5]);
+    bag!?("produce", "coins", [5]);
+    bag!?("produce", "coins", [7]; persistent=true);
+    use bag {
+      for (@5 <<- @"coins") {
+        out!(["peeked", 5]) |
+        for (@5 <- @"coins") {
+          out!(["first", 5]) |
+          for (@5 <- @"coins") {
+            out!(["second", 5]) |
+            for (@7 <- @"coins") {
+              out!(["persistent", 7]) |
+              for (@7 <- @"coins") { out!(["again", 7]) }
+            }
+          }
+        }
+      }
+    }
+  } |
+  for (@value <= out) { @"rrs.example.bag.aspects"!(value) }
+}
+```
+
 ### Set
 
 ```rholang
@@ -329,6 +426,37 @@ new factory(`rho:space:hashmap:set`), out in {
     }
   } |
   for (@value <= out) { @"rrs.example.set"!(value) }
+}
+```
+
+```rholang
+// A set holds one class for each value. A peek leaves the class in place,
+// and a persistent member stays after every receive.
+//
+// The deploy sends "a" twice, which makes one class, and the persistent
+// member "p". The peek with the pattern "a" sees "a", and the class stays.
+// The receive with the pattern "a" takes the class, both copies of "a"
+// included. So the next receive with any pattern takes "p", the only class
+// left, and one more receive takes "p" again.
+new factory(`rho:space:hashmap:set`), out in {
+  for (set <- factory!?("default")) {
+    set!?("produce", "tags", ["a"]);
+    set!?("produce", "tags", ["a"]);
+    set!?("produce", "tags", ["p"]; persistent=true);
+    use set {
+      for (@"a" <<- @"tags") {
+        out!(["peeked", "a"]) |
+        for (@"a" <- @"tags") {
+          out!(["taken", "a"]) |
+          for (@left <- @"tags") {
+            out!(["left", left]) |
+            for (@again <- @"tags") { out!(["again", again]) }
+          }
+        }
+      }
+    }
+  } |
+  for (@value <= out) { @"rrs.example.set.aspects"!(value) }
 }
 ```
 
@@ -367,6 +495,35 @@ new factory(`rho:space:hashmap:cell`) in {
 }
 ```
 
+```rholang
+// A cell holds one record. A peek leaves the record in place, and a
+// persistent record stays after every receive.
+//
+// The deploy stores 1. The peek sees 1, and the cell stays full, so the next
+// receive takes 1. Then the deploy stores 2 as a persistent record, and two
+// receives both take 2. A second record in a full cell aborts the deploy
+// with CellOccupied, as the example cell-occupied shows.
+new factory(`rho:space:hashmap:cell`), out in {
+  for (cell <- factory!?("default")) {
+    cell!?("produce", "slot", [1]);
+    use cell {
+      for (@peeked <<- @"slot") {
+        out!(["peeked", peeked]) |
+        for (@taken <- @"slot") {
+          out!(["taken", taken]) |
+          cell!?("produce", "slot", [2]; persistent=true);
+          for (@kept <- @"slot") {
+            out!(["persistent", kept]) |
+            for (@again <- @"slot") { out!(["again", again]) }
+          }
+        }
+      }
+    }
+  } |
+  for (@value <= out) { @"rrs.example.cell.aspects"!(value) }
+}
+```
+
 ### Priority queue
 
 ```rholang
@@ -402,6 +559,35 @@ new factory(`rho:space:hashmap:priorityqueue`), out in {
 A send takes the level of its param `priority`, and a send without it goes to the lowest level.
 A receive with the query `~ (; priority=p)` sees only the level `p`.
 A receive without a query sees every level, the highest first.
+
+```rholang
+// A priority queue with the factory param priorities=2 has the levels 0 and
+// 1. It keeps two equal records apart, a peek leaves the head record in
+// place, and a persistent receive takes every record.
+//
+// The deploy stores "x" twice at level 1 and "urgent" at level 0. The peek
+// sees "urgent", the head of the highest level, and the head stays. The next
+// receive takes "urgent". The persistent receive then takes both records "x"
+// of level 1, and it stays for later records. A persistent receive takes no
+// query, because only a linear bind takes a query.
+new factory(`rho:space:hashmap:priorityqueue`), out in {
+  for (queue <- factory!?("default"; priorities=2)) {
+    queue!?("produce", "tasks", ["x"]; priority=1);
+    queue!?("produce", "tasks", ["x"]; priority=1);
+    queue!?("produce", "tasks", ["urgent"]; priority=0);
+    use queue {
+      for (@peeked <<- @"tasks") {
+        out!(["peeked", peeked]) |
+        for (@first <- @"tasks") {
+          out!(["taken", first]) |
+          for (@rest <= @"tasks") { out!(["drained", rest]) }
+        }
+      }
+    }
+  } |
+  for (@value <= out) { @"rrs.example.pq.aspects"!(value) }
+}
+```
 
 ## Outer stores
 
@@ -978,6 +1164,44 @@ new vdb(`rho:space:hashmap:vectordb`), out in {
 With `scores=true`, each element of the list is `[score, value]`, so the deploy reports `[[0.0, "origin"], [5.0, "far"]]`.
 When the receive runs before the sends, it fires as soon as one record is eligible, with the eligible records of that moment.
 
+A VectorDB collection keeps equal records apart, and a peek and a persistent record work as in a bag.
+
+```rholang
+// A VectorDB collection keeps two equal records apart, a peek leaves the
+// record in place, and a persistent record stays after every receive.
+//
+// The factory takes capacity=4, dimensions=2 and metric="euclidean". The
+// deploy stores the vector [1, 0] twice and the persistent record [0, 1].
+// A peek takes no query, because only a linear bind takes a query. So the
+// peek reads the records in their canonical order, and its pattern [1, 0]
+// binds a record [1, 0], which stays. Two receives with the query [1, 0]
+// take the two equal records. Two receives with the query [0, 1] both take
+// the persistent record.
+new vdb(`rho:space:hashmap:vectordb`), out in {
+  for (space <- vdb!?("default"; capacity=4, dimensions=2, metric="euclidean")) {
+    space!?("produce", "docs", [[1, 0]]);
+    space!?("produce", "docs", [[1, 0]]);
+    space!?("produce", "docs", [[0, 1]]; persistent=true);
+    use space {
+      for (@[1, 0] <<- @"docs") {
+        out!(["peeked", [1, 0]]) |
+        for (@a <- @"docs" ~ ([1, 0])) {
+          out!(["first", a]) |
+          for (@b <- @"docs" ~ ([1, 0])) {
+            out!(["second", b]) |
+            for (@c <- @"docs" ~ ([0, 1])) {
+              out!(["persistent", c]) |
+              for (@d <- @"docs" ~ ([0, 1])) { out!(["again", d]) }
+            }
+          }
+        }
+      }
+    }
+  } |
+  for (@value <= out) { @"rrs.example.vectordb.aspects"!(value) }
+}
+```
+
 ### The keys of a query
 
 | Key | Meaning |
@@ -1466,16 +1690,22 @@ The forged name `@{*x_1 | *x_2}` routes to `space_1`, because the `use` block of
 |---|---|---|
 | `queue-fifo` | `queue_fifo.rho` | A queue space gives back its records in arrival order (FIFO). |
 | `queue-rejects-a-send-param` | `queue_rejects_a_send_param.rho` | A send param on a queue collection aborts with UnknownParam. |
+| `queue-peeks-and-persistence` | `queue_peeks_and_persistence.rho` | A queue keeps equal records apart, a peek leaves the head in place, and a persistent receive drains the queue. |
 | `stack-lifo` | `stack_lifo.rho` | A stack space gives back its records in reverse arrival order (LIFO). |
 | `stack-rejects-a-query` | `stack_rejects_a_query.rho` | A query on a stack aborts with QuerySpecUnsupported. |
+| `stack-peeks-and-persistence` | `stack_peeks_and_persistence.rho` | A stack keeps equal records apart, a peek leaves the top in place, and a persistent receive drains the stack. |
 | `set-idempotent` | `set_idempotent.rho` | A set space holds each value once, and a receive retires the equal records. |
 | `set-rejects-a-send-param` | `set_rejects_a_send_param.rho` | A send param on a set collection aborts with UnknownParam. |
+| `set-peeks-and-persistence` | `set_peeks_and_persistence.rho` | A peek leaves a set class in place, a receive takes the whole class, and a persistent member stays. |
 | `cell-exactly-once` | `cell_exactly_once.rho` | A cell holds at most one record on each channel. |
 | `cell-occupied` | `cell_occupied.rho` | A second send to a full cell aborts with CellOccupied. |
+| `cell-peeks-and-persistence` | `cell_peeks_and_persistence.rho` | A peek leaves the record of a cell in place, and a persistent record stays after each receive. |
 | `bag-basics` | `bag_basics.rho` | A bag space takes any matching record, as the default space does. |
 | `bag-rejects-a-query` | `bag_rejects_a_query.rho` | A query on a bag aborts with QuerySpecUnsupported. |
+| `bag-peeks-and-persistence` | `bag_peeks_and_persistence.rho` | A bag keeps equal records apart, a peek leaves the record in place, and a persistent record stays. |
 | `priority-queue` | `priority_queue.rho` | A priority queue serves the highest level first, and a receive can take one level. |
 | `priority-queue-rejects-a-level` | `priority_queue_rejects_a_level.rho` | A level beyond the bound `priorities` aborts with InvalidParam. |
+| `priority-queue-peeks-and-persistence` | `priority_queue_peeks_and_persistence.rho` | A priority queue with priorities=2 keeps equal records apart, a peek leaves the head in place, and a persistent receive takes every record. |
 | `pathmap-prefix-aggregation` | `pathmap_prefix_aggregation.rho` | The PathMap example of the FIPS: a receive on a prefix takes re-rooted records. |
 | `pathmap-hierarchical-spaces` | `pathmap_hierarchical_spaces.rho` | A PathMap space as a tree of channels. |
 | `array-indexed-space` | `array_indexed_space.rho` | An Array space hands out a fixed number of names. |
@@ -1497,6 +1727,7 @@ The forged name `@{*x_1 | *x_2}` routes to `space_1`, because the `use` block of
 | `vectordb-multi-topic` | `vectordb_multi_topic.rho` | Two topics in two VectorDB spaces. |
 | `vectordb-dimension-mismatch` | `vectordb_dimension_mismatch.rho` | A vector of the wrong length aborts with DimensionMismatch. |
 | `vectordb-capacity-exceeded` | `vectordb_capacity_exceeded.rho` | A store into a full VectorDB collection aborts with CapacityExceeded. |
+| `vectordb-peeks-and-persistence` | `vectordb_peeks_and_persistence.rho` | A VectorDB collection keeps equal records apart, a peek leaves the record in place, and a persistent record stays. |
 | `vector-ops` | `vector_ops.rho` | The five exact operations of rho:lang:vector. |
 | `determinism-demo` | `determinism_demo.rho` | The canonical order picks one record on every node and in replay. |
 | `multi-space-isolation` | `multi_space_isolation.rho` | Forged names in two spaces are two channels. |

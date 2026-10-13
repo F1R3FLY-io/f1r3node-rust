@@ -1,0 +1,26 @@
+// A cell holds one record. A peek leaves the record in place, and a
+// persistent record stays after every receive.
+//
+// The deploy stores 1. The peek sees 1, and the cell stays full, so the next
+// receive takes 1. Then the deploy stores 2 as a persistent record, and two
+// receives both take 2. A second record in a full cell aborts the deploy
+// with CellOccupied, as the example cell-occupied shows.
+new factory(`rho:space:hashmap:cell`), out in {
+  for (cell <- factory!?("default")) {
+    cell!?("produce", "slot", [1]);
+    use cell {
+      for (@peeked <<- @"slot") {
+        out!(["peeked", peeked]) |
+        for (@taken <- @"slot") {
+          out!(["taken", taken]) |
+          cell!?("produce", "slot", [2]; persistent=true);
+          for (@kept <- @"slot") {
+            out!(["persistent", kept]) |
+            for (@again <- @"slot") { out!(["again", again]) }
+          }
+        }
+      }
+    }
+  } |
+  for (@value <= out) { @"rrs.example.cell.aspects"!(value) }
+}

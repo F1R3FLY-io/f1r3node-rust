@@ -154,12 +154,12 @@ The realignment leaves `rrs-ra-03-04` and `rrs-ra-05-01` to `rrs-ra-05-06` also 
 ## 3. Verification pipeline
 
 Figure V1 shows how the sources of every phase reach the six acceptance categories.
-Its counts are those of the gate sets of P9 and of P10 step S7.
+Its counts are those of the gate sets of P9 and of P10.
 Read it from the left to the right: sources, checks, local gates, pgmcp recipes, and categories.
 The negative controls are checks that must fail, and their gates require the expected failure.
 Each recipe runs the same command as its local gate, in the verifier sandbox.
 
-![Verification pipeline of all phases as five columns from the left to the right. Sources: the Rust code of P1 to P10 (the substrate of rspace++, the syntax layer of models, and reified and spaces of rholang, with their tests), the base code at 4d67b5ccc and its suites, the Rocq models with 308 headlines from EventCorrelation.v to Checkpoint.v, the TLA+ models with 128 configurations with BOUNDS headers, the three Z3 scripts and the Sage script with the numeric reference vectors, the maps and policies, the corpora with the 63 examples, and the documents with chapter 21 and the diagram sources. Checks: the Rocq kernel checks (hygiene, coqc alone, Print Assumptions closed for 308 headlines, rocqchk), TLC and Apalache with BASE and STEP, the Z3 and Sage checks, the property-based tests with one property for each invariant, the deterministic suites (the suites of each phase, N1 to N9, the examples harness, loom, the bench smoke, the base suites and the empty-state hashes), the 46 Python checker commands, the document checks, and the negative controls that must fail (456 Rocq negative checks and the axiom control, the Unsafe TLC configurations, the Apalache Error controls, the mutant harnesses and the checker self-tests). Each check reads its sources. Local gates: the proofs gate and the TLA gate run inside the aggregate gate scripts/check-reified-rspaces-ALL.sh with the legs proofs, tla, z3, sage, checkers, examples, loom and benches, and cargo test runs the suites G2 to G17 of each phase; the negative controls go to the gates that require their failure. pgmcp recipes: the recipe families RF0 to RF12, registered in the one freeze of P11 (decision 75), with RF12 for the aggregate gate. Each recipe step binds evidence of the six acceptance categories: formally modeled, formal verification passes, every invariant extracted as a property-based test, implementation complete, thoroughly tested, and documented per the pgmcp guidelines.](diagrams/13-verification-pipeline.svg)
+![Verification pipeline of all phases as five columns from the left to the right. Sources: the Rust code of P1 to P10 (the substrate of rspace++, the syntax layer of models, and reified and spaces of rholang, with their tests), the base code at 4d67b5ccc and its suites, the Rocq models with 308 headlines from EventCorrelation.v to Checkpoint.v, the TLA+ models with 128 configurations with BOUNDS headers, the three Z3 scripts and the Sage script with the numeric reference vectors, the maps and policies, the corpora with the 70 examples, and the documents with chapter 21 and the diagram sources. Checks: the Rocq kernel checks (hygiene, coqc alone, Print Assumptions closed for 308 headlines, rocqchk), TLC and Apalache with BASE and STEP, the Z3 and Sage checks, the property-based tests with one property for each invariant, the deterministic suites (the suites of each phase, N1 to N9, the examples harness, loom, the bench smoke, the base suites and the empty-state hashes), the 46 Python checker commands, the document checks, and the negative controls that must fail (456 Rocq negative checks and the axiom control, the Unsafe TLC configurations, the Apalache Error controls, the mutant harnesses and the checker self-tests). Each check reads its sources. Local gates: the proofs gate and the TLA gate run inside the aggregate gate scripts/check-reified-rspaces-ALL.sh with the legs proofs, tla, z3, sage, checkers, examples, loom and benches, and cargo test runs the suites G2 to G17 of each phase; the negative controls go to the gates that require their failure. pgmcp recipes: the recipe families RF0 to RF12, registered in the one freeze of P11 (decision 75), with RF12 for the aggregate gate. Each recipe step binds evidence of the six acceptance categories: formally modeled, formal verification passes, every invariant extracted as a property-based test, implementation complete, thoroughly tested, and documented per the pgmcp guidelines.](diagrams/13-verification-pipeline.svg)
 
 *Figure V1. Source: [diagrams/13-verification-pipeline.puml](diagrams/13-verification-pipeline.puml), rendered by [diagrams/render.sh](diagrams/render.sh).*
 
@@ -7994,6 +7994,42 @@ For each of the seven inner collections, the table gives the rules of six aspect
 The aspects are the order, equal records, peeks, persistence, errors and limits, and the factory.
 Each cell names rules of section 3, and Table 9 of the specification maps each rule to its theorems and its named tests.
 A script checked that each rule id of the table is the id of a rule of section 3.
+
+#### 35.4.10 The examples of each aspect
+
+Part 8 adds one example for each inner collection, for the criterion of the leaf `rrs-doc-spaces`.
+Now each collection has an executed example of each aspect of Table 9a.
+Each new example shows the equal records, a peek and persistence of its collection.
+Table 9b of the specification names the examples of each aspect, and Table 250 lists the new examples.
+The expected values are the values that the rules of section 3 of the specification give, and each run gave them.
+
+*Table 250. The examples of part 8.*
+
+| Example | Values | Phlo | Root (first 12 hex digits) |
+|---|---|---|---|
+| `queue-peeks-and-persistence` | `["peeked", "A"]`, `["taken", "A"]`, `["drained", "A"]`, `["drained", "B"]` | 66863 | `60517ea43f75` |
+| `stack-peeks-and-persistence` | `["peeked", "B"]`, `["taken", "B"]`, `["drained", "B"]`, `["drained", "A"]` | 66965 | `c15cd95903c8` |
+| `set-peeks-and-persistence` | `["peeked", "a"]`, `["taken", "a"]`, `["left", "p"]`, `["again", "p"]` | 53229 | `2d1281649df9` |
+| `cell-peeks-and-persistence` | `["peeked", 1]`, `["taken", 1]`, `["persistent", 2]`, `["again", 2]` | 69018 | `0dc82eed72e6` |
+| `bag-peeks-and-persistence` | `["peeked", 5]`, `["first", 5]`, `["second", 5]`, `["persistent", 7]`, `["again", 7]` | 55772 | `3a7f05881ef2` |
+| `priority-queue-peeks-and-persistence` | `["peeked", "urgent"]`, `["taken", "urgent"]`, and `["drained", "x"]` twice | 68147 | `044f5552a631` |
+| `vectordb-peeks-and-persistence` | `["peeked", [1, 0]]`, `["first", [1, 0]]`, `["second", [1, 0]]`, `["persistent", [0, 1]]`, `["again", [0, 1]]` | 59546 | `d7b4bf6e04cb` |
+
+The first drafts of two examples put a query on a peek and on a persistent receive, and the parser refused both.
+The grammar and the syntax contract allow a query only on a linear bind.
+So the peek of the VectorDB example selects its record with a pattern, and the persistent receive of the priority queue has no query.
+Chapter 21 shows each new example in the subsection of its collection, and it gets a subsection for the queue.
+Diagram 13 and Figure V1 now count 70 examples.
+
+*Table 251. The gates of part 8.*
+
+| Gate | Result |
+|---|---|
+| `cargo test --release -p rholang --test reified_examples_execute` | 73 passed, 0 failed: the 70 examples, the two controls and the replay trace, whose pinned root did not change |
+| Two runs of the seven new examples | Equal phlo and equal roots |
+| `rustfmt --check` and `cargo clippy` of the harness with `-D warnings` | No difference and no warning |
+| `doc_lint.py` over every campaign document and every Reified section | No finding |
+| The checkers of `checker-commands.txt` | 46 of 46 pass, with the seven example files in the footprint policy `p10` |
 
 ### 35.5 Step S6: the diagrams
 

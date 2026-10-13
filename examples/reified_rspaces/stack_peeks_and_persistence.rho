@@ -1,0 +1,24 @@
+// A stack keeps two equal records apart, a peek leaves the top record in
+// place, and a persistent receive takes every record from the top.
+//
+// The deploy pushes "A", "B" and "B" in this order. The peek sees the top
+// "B", and the top stays. The next receive takes that "B". The persistent
+// receive then takes the other "B" and then "A", and it stays for later
+// records.
+new factory(`rho:space:hashmap:stack`), out in {
+  for (stack <- factory!?("default")) {
+    stack!?("produce", "plates", ["A"]);
+    stack!?("produce", "plates", ["B"]);
+    stack!?("produce", "plates", ["B"]);
+    use stack {
+      for (@peeked <<- @"plates") {
+        out!(["peeked", peeked]) |
+        for (@top <- @"plates") {
+          out!(["taken", top]) |
+          for (@rest <= @"plates") { out!(["drained", rest]) }
+        }
+      }
+    }
+  } |
+  for (@value <= out) { @"rrs.example.stack.aspects"!(value) }
+}

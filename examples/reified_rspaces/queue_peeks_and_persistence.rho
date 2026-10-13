@@ -1,0 +1,24 @@
+// A queue keeps two equal records apart, a peek leaves the head record in
+// place, and a persistent receive takes every record from the head.
+//
+// The deploy stores "A", "A" and "B" in this order. The peek sees the head
+// "A", and the head stays. The next receive takes the first "A". The
+// persistent receive then takes the second "A" and "B", one record in each
+// round, and it stays for later records.
+new factory(`rho:space:hashmap:queue`), out in {
+  for (queue <- factory!?("default")) {
+    queue!?("produce", "jobs", ["A"]);
+    queue!?("produce", "jobs", ["A"]);
+    queue!?("produce", "jobs", ["B"]);
+    use queue {
+      for (@peeked <<- @"jobs") {
+        out!(["peeked", peeked]) |
+        for (@first <- @"jobs") {
+          out!(["taken", first]) |
+          for (@rest <= @"jobs") { out!(["drained", rest]) }
+        }
+      }
+    }
+  } |
+  for (@value <= out) { @"rrs.example.queue.aspects"!(value) }
+}

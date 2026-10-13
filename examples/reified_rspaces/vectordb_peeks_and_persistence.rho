@@ -1,0 +1,33 @@
+// A VectorDB collection keeps two equal records apart, a peek leaves the
+// record in place, and a persistent record stays after every receive.
+//
+// The factory takes capacity=4, dimensions=2 and metric="euclidean". The
+// deploy stores the vector [1, 0] twice and the persistent record [0, 1].
+// A peek takes no query, because only a linear bind takes a query. So the
+// peek reads the records in their canonical order, and its pattern [1, 0]
+// binds a record [1, 0], which stays. Two receives with the query [1, 0]
+// take the two equal records. Two receives with the query [0, 1] both take
+// the persistent record.
+new vdb(`rho:space:hashmap:vectordb`), out in {
+  for (space <- vdb!?("default"; capacity=4, dimensions=2, metric="euclidean")) {
+    space!?("produce", "docs", [[1, 0]]);
+    space!?("produce", "docs", [[1, 0]]);
+    space!?("produce", "docs", [[0, 1]]; persistent=true);
+    use space {
+      for (@[1, 0] <<- @"docs") {
+        out!(["peeked", [1, 0]]) |
+        for (@a <- @"docs" ~ ([1, 0])) {
+          out!(["first", a]) |
+          for (@b <- @"docs" ~ ([1, 0])) {
+            out!(["second", b]) |
+            for (@c <- @"docs" ~ ([0, 1])) {
+              out!(["persistent", c]) |
+              for (@d <- @"docs" ~ ([0, 1])) { out!(["again", d]) }
+            }
+          }
+        }
+      }
+    }
+  } |
+  for (@value <= out) { @"rrs.example.vectordb.aspects"!(value) }
+}

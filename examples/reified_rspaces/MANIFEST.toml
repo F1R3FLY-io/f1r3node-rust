@@ -22,6 +22,12 @@ description = "A send param on a queue collection aborts with UnknownParam."
 test = "rholang/tests/reified_examples_execute.rs"
 
 [[example]]
+name = "queue-peeks-and-persistence"
+file = "queue_peeks_and_persistence.rho"
+description = "A queue keeps equal records apart, a peek leaves the head in place, and a persistent receive drains the queue."
+test = "rholang/tests/reified_examples_execute.rs"
+
+[[example]]
 name = "stack-lifo"
 file = "stack_lifo.rho"
 description = "A stack space gives back its records in reverse arrival order (LIFO)."
@@ -31,6 +37,12 @@ test = "rholang/tests/reified_examples_execute.rs"
 name = "stack-rejects-a-query"
 file = "stack_rejects_a_query.rho"
 description = "A query on a stack aborts with QuerySpecUnsupported."
+test = "rholang/tests/reified_examples_execute.rs"
+
+[[example]]
+name = "stack-peeks-and-persistence"
+file = "stack_peeks_and_persistence.rho"
+description = "A stack keeps equal records apart, a peek leaves the top in place, and a persistent receive drains the stack."
 test = "rholang/tests/reified_examples_execute.rs"
 
 [[example]]
@@ -46,6 +58,12 @@ description = "A send param on a set collection aborts with UnknownParam."
 test = "rholang/tests/reified_examples_execute.rs"
 
 [[example]]
+name = "set-peeks-and-persistence"
+file = "set_peeks_and_persistence.rho"
+description = "A peek leaves a set class in place, a receive takes the whole class, and a persistent member stays."
+test = "rholang/tests/reified_examples_execute.rs"
+
+[[example]]
 name = "cell-exactly-once"
 file = "cell_exactly_once.rho"
 description = "A cell holds at most one record on each channel."
@@ -55,6 +73,12 @@ test = "rholang/tests/reified_examples_execute.rs"
 name = "cell-occupied"
 file = "cell_occupied.rho"
 description = "A second send to a full cell aborts with CellOccupied."
+test = "rholang/tests/reified_examples_execute.rs"
+
+[[example]]
+name = "cell-peeks-and-persistence"
+file = "cell_peeks_and_persistence.rho"
+description = "A peek leaves the record of a cell in place, and a persistent record stays after each receive."
 test = "rholang/tests/reified_examples_execute.rs"
 
 [[example]]
@@ -70,6 +94,12 @@ description = "A query on a bag aborts with QuerySpecUnsupported."
 test = "rholang/tests/reified_examples_execute.rs"
 
 [[example]]
+name = "bag-peeks-and-persistence"
+file = "bag_peeks_and_persistence.rho"
+description = "A bag keeps equal records apart, a peek leaves the record in place, and a persistent record stays."
+test = "rholang/tests/reified_examples_execute.rs"
+
+[[example]]
 name = "priority-queue"
 file = "priority_queue.rho"
 description = "A priority queue serves the highest level first, and a receive can take one level."
@@ -79,6 +109,12 @@ test = "rholang/tests/reified_examples_execute.rs"
 name = "priority-queue-rejects-a-level"
 file = "priority_queue_rejects_a_level.rho"
 description = "A level beyond the bound `priorities` aborts with InvalidParam."
+test = "rholang/tests/reified_examples_execute.rs"
+
+[[example]]
+name = "priority-queue-peeks-and-persistence"
+file = "priority_queue_peeks_and_persistence.rho"
+description = "A priority queue with priorities=2 keeps equal records apart, a peek leaves the head in place, and a persistent receive takes every record."
 test = "rholang/tests/reified_examples_execute.rs"
 
 [[example]]
@@ -204,6 +240,12 @@ test = "rholang/tests/reified_examples_execute.rs"
 name = "vectordb-capacity-exceeded"
 file = "vectordb_capacity_exceeded.rho"
 description = "A store into a full VectorDB collection aborts with CapacityExceeded."
+test = "rholang/tests/reified_examples_execute.rs"
+
+[[example]]
+name = "vectordb-peeks-and-persistence"
+file = "vectordb_peeks_and_persistence.rho"
+description = "A VectorDB collection keeps equal records apart, a peek leaves the record in place, and a persistent record stays."
 test = "rholang/tests/reified_examples_execute.rs"
 
 [[example]]

@@ -7,8 +7,8 @@
 ' the two gates that it calls, the checker list
 ' scripts/verify-reified/checker-commands.txt, the cargo suites of the
 ' phases, and the recipe families RF0 to RF12 of the freeze of decision 75.
-' The counts are those of the gate sets of P9 and of P10 step S7. It adds no
-' new fact.
+' The counts are those of the gate sets of P9 and of P10. It adds no new
+' fact.
 '
 ' Reading order, from the left to the right:
 '   1. Sources: the code of the phases, the base code, the formal models,
@@ -106,7 +106,7 @@ package "1. Sources" as SOURCES {
   **Corpora and examples**
   ordinary execution, source normalization,
   the valid and the invalid syntax corpus,
-  63 examples of examples/reified_rspaces
+  70 examples of examples/reified_rspaces
   ]
   rectangle SRC_DOCS $v_doc [
   **Documents**

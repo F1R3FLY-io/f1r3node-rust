@@ -466,7 +466,6 @@ Headline `hashset_unit_rules` of `HashMapStore.v` proves the unit rules.
 An [inner collection](glossary.md#inner-collection) decides the order in which the entries of a collection interact.
 Table 9a gives, for each inner collection, the rules of six aspects: the order, equal records, peeks, persistence, errors and limits, and the factory.
 Table 9 of [section 7](#7-conformance) maps each rule to its theorems and its named tests.
-[Chapter 21](../../rholang/21-reified-spaces.md#inner-collections) shows an executed example of each collection.
 
 *Table 9a. The rules of each inner collection, by aspect.*
 
@@ -479,6 +478,21 @@ Table 9 of [section 7](#7-conformance) maps each rule to its theorems and its na
 | Stack | SK-1, SK-2, SK-7 | OC-3 | SK-4 | SK-2, SK-6 | RQ-2, OC-4 | FA-4: no param |
 | Priority queue | PQ-1, PQ-2, PQ-4, PQ-5, PQ-6 | OC-3 | PQ-7 | PQ-10 | PQ-9, OC-4 | FA-4, FA-5: `priorities` |
 | VectorDB | VD-4, VD-5, VD-6, VD-7 | VD-2, VD-12: each record, up to the capacity | VD-9 | VD-8 | VD-3, VD-12 | VD-1 |
+
+Table 9b names the executed examples of each aspect, and [chapter 21](../../rholang/21-reified-spaces.md#inner-collections) shows each one.
+Each example runs as the test `example_NAME` of `rholang/tests/reified_examples_execute.rs`, where `NAME` is the example name with `_` for `-`.
+
+*Table 9b. The examples of each inner collection, by aspect.*
+
+| Collection | Order | Equal records, peeks and persistence | Errors and limits | Factory |
+|---|---|---|---|---|
+| Queue | [`queue-fifo`](../../../examples/reified_rspaces/queue_fifo.rho) | [`queue-peeks-and-persistence`](../../../examples/reified_rspaces/queue_peeks_and_persistence.rho) | [`queue-rejects-a-send-param`](../../../examples/reified_rspaces/queue_rejects_a_send_param.rho) | [`queue-fifo`](../../../examples/reified_rspaces/queue_fifo.rho): no param; [`factory-rejects-an-unknown-param`](../../../examples/reified_rspaces/factory_rejects_an_unknown_param.rho): `capacity` |
+| Bag | [`bag-basics`](../../../examples/reified_rspaces/bag_basics.rho) | [`bag-peeks-and-persistence`](../../../examples/reified_rspaces/bag_peeks_and_persistence.rho) | [`bag-rejects-a-query`](../../../examples/reified_rspaces/bag_rejects_a_query.rho) | [`bag-basics`](../../../examples/reified_rspaces/bag_basics.rho): no param |
+| Set | [`set-idempotent`](../../../examples/reified_rspaces/set_idempotent.rho) | [`set-idempotent`](../../../examples/reified_rspaces/set_idempotent.rho), [`set-peeks-and-persistence`](../../../examples/reified_rspaces/set_peeks_and_persistence.rho) | [`set-rejects-a-send-param`](../../../examples/reified_rspaces/set_rejects_a_send_param.rho) | [`set-idempotent`](../../../examples/reified_rspaces/set_idempotent.rho): no param |
+| Cell | [`cell-exactly-once`](../../../examples/reified_rspaces/cell_exactly_once.rho) | [`cell-occupied`](../../../examples/reified_rspaces/cell_occupied.rho), [`cell-peeks-and-persistence`](../../../examples/reified_rspaces/cell_peeks_and_persistence.rho) | [`cell-occupied`](../../../examples/reified_rspaces/cell_occupied.rho) | [`cell-exactly-once`](../../../examples/reified_rspaces/cell_exactly_once.rho): no param |
+| Stack | [`stack-lifo`](../../../examples/reified_rspaces/stack_lifo.rho) | [`stack-peeks-and-persistence`](../../../examples/reified_rspaces/stack_peeks_and_persistence.rho) | [`stack-rejects-a-query`](../../../examples/reified_rspaces/stack_rejects_a_query.rho) | [`stack-lifo`](../../../examples/reified_rspaces/stack_lifo.rho): no param |
+| Priority queue | [`priority-queue`](../../../examples/reified_rspaces/priority_queue.rho) | [`priority-queue-peeks-and-persistence`](../../../examples/reified_rspaces/priority_queue_peeks_and_persistence.rho) | [`priority-queue-rejects-a-level`](../../../examples/reified_rspaces/priority_queue_rejects_a_level.rho) | [`priority-queue-peeks-and-persistence`](../../../examples/reified_rspaces/priority_queue_peeks_and_persistence.rho): `priorities=2`; [`priority-queue-rejects-a-level`](../../../examples/reified_rspaces/priority_queue_rejects_a_level.rho): `priorities=3` |
+| VectorDB | [`vectordb-queries`](../../../examples/reified_rspaces/vectordb_queries.rho), [`vectordb-list-scores`](../../../examples/reified_rspaces/vectordb_list_scores.rho) | [`vectordb-peeks-and-persistence`](../../../examples/reified_rspaces/vectordb_peeks_and_persistence.rho) | [`vectordb-dimension-mismatch`](../../../examples/reified_rspaces/vectordb_dimension_mismatch.rho), [`vectordb-capacity-exceeded`](../../../examples/reified_rspaces/vectordb_capacity_exceeded.rho) | [`vectordb-queries`](../../../examples/reified_rspaces/vectordb_queries.rho): `capacity`, `dimensions`; [`vectordb-peeks-and-persistence`](../../../examples/reified_rspaces/vectordb_peeks_and_persistence.rho): `metric` |
 
 ### 3.0 Ordered collections
 

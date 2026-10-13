@@ -232,6 +232,17 @@ const QUEUE_REJECTS_A_SEND_PARAM: Example = Example {
     services: Services::None,
     expect: Expect::Error("UnknownParam"),
 };
+const QUEUE_PEEKS_AND_PERSISTENCE: Example = Example {
+    name: "queue-peeks-and-persistence",
+    deploys: &[deploy!("queue_peeks_and_persistence.rho")],
+    services: Services::None,
+    expect: values!("rrs.example.queue.aspects" => [
+        r#"["peeked", "A"]"#,
+        r#"["taken", "A"]"#,
+        r#"["drained", "A"]"#,
+        r#"["drained", "B"]"#,
+    ]),
+};
 const STACK_LIFO: Example = Example {
     name: "stack-lifo",
     deploys: &[deploy!("stack_lifo.rho")],
@@ -243,6 +254,17 @@ const STACK_REJECTS_A_QUERY: Example = Example {
     deploys: &[deploy!("stack_rejects_a_query.rho")],
     services: Services::None,
     expect: Expect::Error("QuerySpecUnsupported"),
+};
+const STACK_PEEKS_AND_PERSISTENCE: Example = Example {
+    name: "stack-peeks-and-persistence",
+    deploys: &[deploy!("stack_peeks_and_persistence.rho")],
+    services: Services::None,
+    expect: values!("rrs.example.stack.aspects" => [
+        r#"["peeked", "B"]"#,
+        r#"["taken", "B"]"#,
+        r#"["drained", "B"]"#,
+        r#"["drained", "A"]"#,
+    ]),
 };
 const SET_IDEMPOTENT: Example = Example {
     name: "set-idempotent",
@@ -256,6 +278,17 @@ const SET_REJECTS_A_SEND_PARAM: Example = Example {
     services: Services::None,
     expect: Expect::Error("UnknownParam"),
 };
+const SET_PEEKS_AND_PERSISTENCE: Example = Example {
+    name: "set-peeks-and-persistence",
+    deploys: &[deploy!("set_peeks_and_persistence.rho")],
+    services: Services::None,
+    expect: values!("rrs.example.set.aspects" => [
+        r#"["peeked", "a"]"#,
+        r#"["taken", "a"]"#,
+        r#"["left", "p"]"#,
+        r#"["again", "p"]"#,
+    ]),
+};
 const CELL_EXACTLY_ONCE: Example = Example {
     name: "cell-exactly-once",
     deploys: &[deploy!("cell_exactly_once.rho")],
@@ -267,6 +300,17 @@ const CELL_OCCUPIED: Example = Example {
     deploys: &[deploy!("cell_occupied.rho")],
     services: Services::None,
     expect: Expect::Error("CellOccupied"),
+};
+const CELL_PEEKS_AND_PERSISTENCE: Example = Example {
+    name: "cell-peeks-and-persistence",
+    deploys: &[deploy!("cell_peeks_and_persistence.rho")],
+    services: Services::None,
+    expect: values!("rrs.example.cell.aspects" => [
+        r#"["peeked", 1]"#,
+        r#"["taken", 1]"#,
+        r#"["persistent", 2]"#,
+        r#"["again", 2]"#,
+    ]),
 };
 const BAG_BASICS: Example = Example {
     name: "bag-basics",
@@ -280,6 +324,18 @@ const BAG_REJECTS_A_QUERY: Example = Example {
     services: Services::None,
     expect: Expect::Error("QuerySpecUnsupported"),
 };
+const BAG_PEEKS_AND_PERSISTENCE: Example = Example {
+    name: "bag-peeks-and-persistence",
+    deploys: &[deploy!("bag_peeks_and_persistence.rho")],
+    services: Services::None,
+    expect: values!("rrs.example.bag.aspects" => [
+        r#"["peeked", 5]"#,
+        r#"["first", 5]"#,
+        r#"["second", 5]"#,
+        r#"["persistent", 7]"#,
+        r#"["again", 7]"#,
+    ]),
+};
 const PRIORITY_QUEUE: Example = Example {
     name: "priority-queue",
     deploys: &[deploy!("priority_queue.rho")],
@@ -291,6 +347,17 @@ const PRIORITY_QUEUE_REJECTS_A_LEVEL: Example = Example {
     deploys: &[deploy!("priority_queue_rejects_a_level.rho")],
     services: Services::None,
     expect: Expect::Error("InvalidParam"),
+};
+const PRIORITY_QUEUE_PEEKS_AND_PERSISTENCE: Example = Example {
+    name: "priority-queue-peeks-and-persistence",
+    deploys: &[deploy!("priority_queue_peeks_and_persistence.rho")],
+    services: Services::None,
+    expect: values!("rrs.example.pq.aspects" => [
+        r#"["peeked", "urgent"]"#,
+        r#"["taken", "urgent"]"#,
+        r#"["drained", "x"]"#,
+        r#"["drained", "x"]"#,
+    ]),
 };
 const PATHMAP_PREFIX_AGGREGATION: Example = Example {
     name: "pathmap-prefix-aggregation",
@@ -444,6 +511,18 @@ const VECTORDB_CAPACITY_EXCEEDED: Example = Example {
     deploys: &[deploy!("vectordb_capacity_exceeded.rho")],
     services: Services::None,
     expect: Expect::Error("CapacityExceeded"),
+};
+const VECTORDB_PEEKS_AND_PERSISTENCE: Example = Example {
+    name: "vectordb-peeks-and-persistence",
+    deploys: &[deploy!("vectordb_peeks_and_persistence.rho")],
+    services: Services::None,
+    expect: values!("rrs.example.vectordb.aspects" => [
+        r#"["peeked", [1, 0]]"#,
+        r#"["first", [1, 0]]"#,
+        r#"["second", [1, 0]]"#,
+        r#"["persistent", [0, 1]]"#,
+        r#"["again", [0, 1]]"#,
+    ]),
 };
 const VECTOR_OPS: Example = Example {
     name: "vector-ops",
@@ -660,16 +739,22 @@ macro_rules! example_tests {
 example_tests! {
     example_queue_fifo => QUEUE_FIFO,
     example_queue_rejects_a_send_param => QUEUE_REJECTS_A_SEND_PARAM,
+    example_queue_peeks_and_persistence => QUEUE_PEEKS_AND_PERSISTENCE,
     example_stack_lifo => STACK_LIFO,
     example_stack_rejects_a_query => STACK_REJECTS_A_QUERY,
+    example_stack_peeks_and_persistence => STACK_PEEKS_AND_PERSISTENCE,
     example_set_idempotent => SET_IDEMPOTENT,
     example_set_rejects_a_send_param => SET_REJECTS_A_SEND_PARAM,
+    example_set_peeks_and_persistence => SET_PEEKS_AND_PERSISTENCE,
     example_cell_exactly_once => CELL_EXACTLY_ONCE,
     example_cell_occupied => CELL_OCCUPIED,
+    example_cell_peeks_and_persistence => CELL_PEEKS_AND_PERSISTENCE,
     example_bag_basics => BAG_BASICS,
     example_bag_rejects_a_query => BAG_REJECTS_A_QUERY,
+    example_bag_peeks_and_persistence => BAG_PEEKS_AND_PERSISTENCE,
     example_priority_queue => PRIORITY_QUEUE,
     example_priority_queue_rejects_a_level => PRIORITY_QUEUE_REJECTS_A_LEVEL,
+    example_priority_queue_peeks_and_persistence => PRIORITY_QUEUE_PEEKS_AND_PERSISTENCE,
     example_pathmap_prefix_aggregation => PATHMAP_PREFIX_AGGREGATION,
     example_pathmap_hierarchical_spaces => PATHMAP_HIERARCHICAL_SPACES,
     example_array_indexed_space => ARRAY_INDEXED_SPACE,
@@ -691,6 +776,7 @@ example_tests! {
     example_vectordb_multi_topic => VECTORDB_MULTI_TOPIC,
     example_vectordb_dimension_mismatch => VECTORDB_DIMENSION_MISMATCH,
     example_vectordb_capacity_exceeded => VECTORDB_CAPACITY_EXCEEDED,
+    example_vectordb_peeks_and_persistence => VECTORDB_PEEKS_AND_PERSISTENCE,
     example_vector_ops => VECTOR_OPS,
     example_determinism_demo => DETERMINISM_DEMO,
     example_multi_space_isolation => MULTI_SPACE_ISOLATION,
