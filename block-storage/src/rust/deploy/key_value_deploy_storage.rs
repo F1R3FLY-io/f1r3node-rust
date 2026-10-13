@@ -12,8 +12,11 @@ use shared::rust::store::key_value_typed_store::KeyValueTypedStore;
 use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
 use shared::rust::ByteString;
 
+const DEPLOY_STORE_SIZE_METRIC: &str = "deploy.store.size";
+
 pub trait DeployStoreName {
     const NAME: &'static str;
+    const SIZE_WARNING_THRESHOLD: Option<usize> = None;
 }
 
 #[derive(Clone)]
@@ -28,6 +31,7 @@ pub struct RejectedDeployBufferName;
 
 impl DeployStoreName for RejectedDeployBufferName {
     const NAME: &'static str = "rejected_deploy_buffer";
+    const SIZE_WARNING_THRESHOLD: Option<usize> = Some(1_000);
 }
 
 #[derive(Clone)]
@@ -113,7 +117,20 @@ impl<N: DeployStoreName> KeyValueDeployStore<N> {
     }
 
     pub fn read_all(&self) -> Result<HashSet<Signed<DeployData>>, KvStoreError> {
-        self.store.to_map().map(|map| map.into_values().collect())
+        let all: HashSet<Signed<DeployData>> =
+            self.store.to_map().map(|map| map.into_values().collect())?;
+        metrics::gauge!(DEPLOY_STORE_SIZE_METRIC, "store" => N::NAME).set(all.len() as f64);
+        if let Some(limit) = N::SIZE_WARNING_THRESHOLD {
+            if all.len() > limit {
+                tracing::warn!(
+                    store = N::NAME,
+                    size = all.len(),
+                    limit,
+                    "deploy store above size warning threshold"
+                );
+            }
+        }
+        Ok(all)
     }
 
     /// Check if the storage contains any pending deploys. O(1) time and space.
@@ -122,10 +139,12 @@ impl<N: DeployStoreName> KeyValueDeployStore<N> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
     use std::sync::{Arc, Barrier};
 
     use crypto::rust::private_key::PrivateKey;
     use crypto::rust::signatures::secp256k1::Secp256k1;
+    use metrics_util::debugging::{DebugValue, DebuggingRecorder};
     use rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore;
     use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
     use shared::rust::store::key_value_store::KeyValueStore;
@@ -215,6 +234,44 @@ mod tests {
         assert!(!buffer.remove_by_sig(&d1.sig).unwrap());
         assert!(!buffer.contains_sig(&d1.sig).unwrap());
         assert!(!buffer.non_empty().unwrap());
+    }
+
+    #[tokio::test]
+    async fn read_all_reports_the_size_of_each_store() {
+        let mut kvm = InMemoryStoreManager::new();
+        let mut storage = KeyValueDeployStorage::new(&mut kvm).await.unwrap();
+        let mut buffer = KeyValueRejectedDeployBuffer::new(&mut kvm).await.unwrap();
+        storage.add(vec![deploy(1), deploy(2)]).unwrap();
+        buffer.add(vec![deploy(3)]).unwrap();
+
+        let recorder = DebuggingRecorder::new();
+        let snapshotter = recorder.snapshotter();
+        metrics::with_local_recorder(&recorder, || {
+            storage.read_all().unwrap();
+            buffer.read_all().unwrap();
+        });
+
+        let sizes: HashMap<String, f64> = snapshotter
+            .snapshot()
+            .into_vec()
+            .into_iter()
+            .filter(|(key, ..)| key.key().name() == DEPLOY_STORE_SIZE_METRIC)
+            .filter_map(|(key, _, _, value)| match value {
+                DebugValue::Gauge(size) => key
+                    .key()
+                    .labels()
+                    .find(|label| label.key() == "store")
+                    .map(|label| (label.value().to_string(), size.into_inner())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            sizes,
+            HashMap::from([
+                ("deploy_storage".to_string(), 2.0),
+                ("rejected_deploy_buffer".to_string(), 1.0),
+            ])
+        );
     }
 
     #[tokio::test]
