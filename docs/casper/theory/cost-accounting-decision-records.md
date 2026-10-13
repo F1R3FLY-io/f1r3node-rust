@@ -15853,3 +15853,71 @@ serves cost accounting.
 
 **Cross-refs.** DR-6, DR-34, DR-66, DR-75, DR-79, DR-88, DR-100, DR-102,
 DR-107. [The canonical candidate order diagram](diagrams/canonical-candidate-order.svg).
+
+## DR-130 — The branch keeps its fixes of `dev` defects while `dev` leaves them
+
+**Status.** Decided by the user on 2026-10-13 for epic 8946. The user
+said: "Keep and document the bug fixes so long as they do not conflict
+with dev's changes; if dev fixes them another way, revert to dev's
+approach".
+
+**Terms.**
+
+- A carried fix is a change on this branch that corrects a defect that
+  `dev` still has.
+- The merge base is `93e38575e`, the `dev` merge of 2026-10-06. `dev`
+  means `origin/dev` at `0f3943d64`.
+- An overlap is a `dev` change since the merge base that touches the
+  lines of a carried fix.
+
+**Context.**
+
+- The standing rule of the user keeps the version of `dev` for everything
+  that the correctness or the completeness of cost accounting does not
+  need (DR-129).
+- A read-only audit of this branch against `dev` found ten carried fixes.
+  Cost accounting needs five of them. It does not need the other five.
+
+**Decision.**
+
+1. The branch keeps the ten carried fixes in the table below.
+2. A carried fix stays only while it does not conflict with a `dev`
+   change.
+3. If `dev` fixes a defect in another way, the branch takes the fix of
+   `dev` and drops its own.
+4. For a fix that cost accounting needs, the merge also checks that the
+   fix of `dev` meets the same requirement. The test that pins the
+   requirement stays.
+5. The report to `dev` lists each carried fix. `dev` can then take the
+   fix or correct the defect in its own way.
+6. This record covers only the fixes that exist now. A `dev` defect that
+   is found later goes to the report to `dev`. The branch fixes it only
+   if cost accounting needs the fix (DR-129).
+
+**Carried fixes.** The last column compares the lines of each fix with the
+`dev` changes since the merge base.
+
+| Row | Defect on `dev` | Fix on this branch | Needed by cost accounting | Overlap with `dev` |
+|---|---|---|---|---|
+| R6 | A join that takes two data from one channel removes them in ascending index order. The first removal shifts the second index, so the wrong datum goes. | Remove in descending index order (`ops_produce.rs`, `ops_consume.rs`, `replay_rspace.rs`) | Yes. Native replay must agree on joins that repeat a channel. | None |
+| K1 | The DER to R‖S conversion of secp256k1-eth pads R and S at the wrong end. About 1 signature in 128 then fails verification (`6a4c71ec0`). | Left-pad R and S to 32 bytes (`secp256k1_eth.rs`) | Yes. Cosigned envelopes with mixed algorithms need it (DR-2). | None |
+| H16 | `getBlockData` and `getDeployData` hold a read guard across `produce().await`. | Release the guard before `produce` (`system_processes.rs`) | Yes. The reduction scheduler needs it (`1af280644`). | None. `dev` changed other parts of the file. |
+| W13 | The formal gate passes the source inventory to `jq` as one argument. Above 128 KiB, the call fails with E2BIG. | Pass the inventory on standard input (`scripts/ci/check-formal-gate.sh`) | Yes. The formal tree of this branch is above the limit. | None |
+| W12 | Two audit scripts scan `docs/theory`, which exists on neither branch. So they check nothing. | Scan `docs/casper/theory` (`scripts/audit/check-rocq-line-refs.sh`, `check-source-line-refs.sh`) | Yes. The scripts then check the cost-accounting documents. | None |
+| R17 | The state importer and exporter panic on a malformed chunk from a peer. | Return errors (`rspace_importer.rs`, `rspace_exporter.rs`, `engine/initializing.rs`) | No | None. `dev` changed other parts of `initializing.rs`. |
+| R12 | Merge indexing panics on an affected consume that has no join record. | Skip that consume (`merger/state_change.rs`, `798dc5772`) | No | None |
+| H22 | The numeric merge panics on a malformed datum in `decode_rnd`. | Return `MergeError`, and require one distinct datum or two distinct random states (`rholang_merging_logic.rs`) | No | Yes. `dev` reworked the numeric merge for BigInt balances (`b2a858a3a`, `8d0341cfe`). Its `decode_rnd` still panics. |
+| H12 | `Cost::to_proto` casts a negative cost to a large unsigned value. | Convert with `try_from` (`accounting/costs.rs`) | No | None. `dev` added code in another part of the file. |
+| H34 | A test resets replay to the post-state root of play. | Reset replay to the pre-state root (`non_deterministic_processes_spec.rs`) | No. The change is in a test only. | None |
+
+**At the next `dev` merge.**
+
+- H22: take the BigInt rework of `dev`. Apply the H22 fix again only
+  where it leaves the logic of `dev` unchanged. The same file carries the
+  merged `cost_authority` of the numeric merge. Cost accounting needs that
+  change, so the merge carries it into the new code of `dev`.
+- Every other row: check whether `dev` fixed the defect. If it did, apply
+  items 3 and 4 of the decision.
+
+**Cross-refs.** DR-2, DR-129. The report to `dev` and the audit are local
+artifacts and are not in the repository.
