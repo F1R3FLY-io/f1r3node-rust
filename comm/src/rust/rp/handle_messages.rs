@@ -132,10 +132,21 @@ pub fn handle_disconnect(
     sender: &PeerNode,
     connections_cell: &ConnectionsCell,
 ) -> Result<CommunicationResponse, CommError> {
-    tracing::info!("Forgetting about {}", sender);
-    connections_cell
-        .flat_modify(|connections| connections.remove_conn_and_report(sender.clone()))?;
-    metrics::counter!(DISCONNECT_METRIC, "source" => RP_HANDLE_METRICS_SOURCE).increment(1);
+    let mut removed = false;
+    connections_cell.flat_modify(|connections| {
+        if connections.iter().any(|known| known.id.key == sender.id.key) {
+            removed = true;
+            connections.remove_conn_and_report(sender.clone())
+        } else {
+            Ok(connections)
+        }
+    })?;
+    if removed {
+        tracing::info!("Forgetting about {}", sender);
+        metrics::counter!(DISCONNECT_METRIC, "source" => RP_HANDLE_METRICS_SOURCE).increment(1);
+    } else {
+        tracing::debug!("Ignoring a disconnect from {}, which is not connected", sender);
+    }
     Ok(CommunicationResponse::handled_without_message())
 }
 
