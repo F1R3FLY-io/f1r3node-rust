@@ -16,7 +16,9 @@ pub fn check(
         .shard_conf
         .height_constraint_threshold;
 
-    let last_finalized_block = snapshot.dag.lookup_unsafe(&last_finalized_block_hash)?;
+    let last_finalized_height = snapshot
+        .dag
+        .block_number_unsafe(&last_finalized_block_hash)?;
     let latest_message_opt = snapshot.dag.latest_message(&validator)?;
     let latest_message = match latest_message_opt {
         Some(latest_message) => latest_message,
@@ -29,8 +31,8 @@ pub fn check(
         }
     };
 
-    let height_difference = latest_message.block_number - last_finalized_block.block_number;
-    let global_height_difference = snapshot.max_block_num - last_finalized_block.block_number;
+    let height_difference = latest_message.block_number - last_finalized_height;
+    let global_height_difference = snapshot.max_block_num - last_finalized_height;
 
     tracing::info!(
         "Height constraint check: validator_height_diff={}, global_height_diff={}, threshold={}",
