@@ -1,0 +1,117 @@
+' 14 Phase Gantt chart: the days of each phase of the campaign, from the
+' realignment P0 to P10, and the two phases that have no date.
+'
+' Source of Figure 1 in ../README.md (section "Status of the phases"). The
+' figure restates Table 2 of that section and the dates of the commits in the
+' git history of the branch (author dates, local time of the development
+' host). It adds no new fact.
+'
+' Reading order, from the top to the bottom:
+'   1. The realignment P0: the backup, the restore and the ledger record.
+'   2. The foundations: the substrate (P1), the marker encoding (P2), and the
+'      parser and the normalizers (P3), which ran in the parser worktree in
+'      parallel with P2 and P4.
+'   3. The space families: the first family (P4), the merge of
+'      feature/cost-accounted-rho (decision 44, a milestone), the decisions
+'      42, 43, 45 and 46, the other disciplines and outer stores (P5), native
+'      execution (decision 47), VectorDB and ChromaDB (P6), and the temp and
+'      seq qualifiers, HashSet, theories and rehydration (P7).
+'   4. The user agent-backed spaces (P8) and the consensus integration (P9).
+'   5. P10, which is in progress. A note names its done and its open steps.
+'   6. A note gives P11 and P12, which have no date: P11 follows P10, and
+'      P12 waits for the readiness signal of F1r3lang (SIG-F).
+'
+' Each bar covers the days from the first commit of its phase to its closing
+' commit. The label of each bar names the closing commit.
+'
+' Colors: the shared palette and concept-colors.iuml. The aliases $g_* below
+' give each kind of work a color. Each alias names a palette variable, so this
+' file holds no hexadecimal color code.
+' Render: ./render.sh 14-phase-gantt.puml   Check: ./render.sh --check
+
+@startgantt 14-phase-gantt
+!include ../../../casper/theory/diagrams/palette.iuml
+!include concept-colors.iuml
+
+' Kinds of work of this figure.
+' The realignment of the codex work (P0).
+!$g_realign = $rrs_reserved
+' The storage substrate of P1.
+!$g_substrate = $rrs_substrate
+' The syntax: the marker encoding and the parser.
+!$g_syntax = $rrs_syntax
+' The space families and the agents that serve them.
+!$g_spaces = $rrs_agent
+' The changes that apply to every family: the merge and the decisions.
+!$g_decision = $rrs_tag
+' The consensus integration.
+!$g_consensus = $rrs_storage
+' The verification and the documents of P10.
+!$g_verification = $rrs_system
+' The border of every bar.
+!$g_border = $rrs_relation
+
+$ca_base_skin()
+title Phases of the Reified RSpaces campaign: the days from the first commit to the closing commit of each phase
+Project starts 2026-10-04
+printscale daily zoom 3
+
+-- Realignment --
+[P0: backup, restore and ledger record (6f7a80da3)] as [P0] starts 2026-10-04 and ends 2026-10-04
+[P0] is colored in $g_realign/$g_border
+
+-- Foundations --
+[P1: storage substrate (b783d6122)] as [P1] starts 2026-10-04 and ends 2026-10-04
+[P1] is colored in $g_substrate/$g_border
+[P2: marker encoding of the syntax (e9812d0e5)] as [P2] starts 2026-10-04 and ends 2026-10-04
+[P2] is colored in $g_syntax/$g_border
+[P3: parser v3 and normalizers (a0bcaf90e)] as [P3] starts 2026-10-04 and ends 2026-10-05
+[P3] is colored in $g_syntax/$g_border
+
+-- Space families --
+[P4: the family hashmap:queue (294c95632)] as [P4] starts 2026-10-05 and ends 2026-10-05
+[P4] is colored in $g_spaces/$g_border
+[Decision 44: merge of feature/cost-accounted-rho (881257d75)] as [M44] happens 2026-10-05
+[M44] is colored in $g_decision/$g_border
+[Decisions 42, 43, 45 and 46 (2c2b45bf5)] as [D45] starts 2026-10-06 and ends 2026-10-06
+[D45] is colored in $g_decision/$g_border
+[P5: other disciplines and outer stores, joins (418d81d7c)] as [P5] starts 2026-10-06 and ends 2026-10-07
+[P5] is colored in $g_spaces/$g_border
+[Decision 47: spaces in native execution (d559efa48)] as [D47] starts 2026-10-07 and ends 2026-10-07
+[D47] is colored in $g_decision/$g_border
+[P6: VectorDB family and ChromaDB backend (8ecc6b786)] as [P6] starts 2026-10-08 and ends 2026-10-09
+[P6] is colored in $g_spaces/$g_border
+[P7: temp, seq, HashSet, theories, rehydration (be4e9def3)] as [P7] starts 2026-10-09 and ends 2026-10-10
+[P7] is colored in $g_spaces/$g_border
+
+-- Agents and consensus --
+[P8: user agent-backed spaces (d003151d3)] as [P8] starts 2026-10-10 and ends 2026-10-11
+[P8] is colored in $g_spaces/$g_border
+[P9: consensus integration (e8cd072ff)] as [P9] starts 2026-10-11 and ends 2026-10-12
+[P9] is colored in $g_consensus/$g_border
+
+-- Verification and documents --
+[P10: formal models, examples, documents, FIPS matrix, benchmarks (in progress)] as [P10] starts 2026-10-12 and ends 2026-10-12
+[P10] is colored in $g_verification/$g_border
+note bottom
+  **P10 is in progress.** Done: S1 (the aggregate gate), S7 (Checkpoint.v),
+  S2 (the examples), S5 (the documents) and S6 (the diagrams).
+  Open: S4 (the FIPS matrix), S8 (the benchmarks), S9 to S11 (close-out).
+  S3 (the node CLI gate) waits for the repair of the node CLI (decision 86).
+
+  **Phases with no date**
+  P11 follows P10: one pgmcp freeze registers the recipes and runs the
+  verifier for every active leaf (decision 75), with the final gates.
+  P12 waits for the readiness signal of F1r3lang (SIG-F): the merge of
+  F1r3lang, the Rholang 1.4 productions, and TensorLogic.
+
+  **Colors**
+  |<$g_realign>      | realignment |
+  |<$g_substrate>    | storage substrate |
+  |<$g_syntax>       | syntax: encoding, parser, normalizers |
+  |<$g_spaces>       | space families and agents |
+  |<$g_decision>     | merge and decisions for every family |
+  |<$g_consensus>    | consensus integration |
+  |<$g_verification> | verification and documents |
+end note
+@endgantt

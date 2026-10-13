@@ -1,19 +1,37 @@
-' 01 Substrate components: the storage substrate of phase P1 and the host
-' that it calls.
+' 01 Components of Reified RSpaces: the modules of every phase, the storage
+' substrate of phase P1 in detail, and the host that they call.
 '
 ' Source of Figure S1 in ../design.md (section S1). The figure restates the
-' P1 code in rspace++/src/rspace/space_store_handle.rs, rspace/space_play.rs
-' and replay_rspace/space_replay.rs. It adds no new fact.
+' module map of design part N1 (Table N1.1) and the files of the later
+' phases: the syntax layer models/src/rust/reified/ and the normalizer arms
+' (P2, P3), rholang/src/rust/interpreter/reified/ and spaces/ (P4 to P9),
+' tensor/ (P6), the substrate files rspace++/src/rspace/space_store_handle.rs,
+' rspace/space_play.rs and replay_rspace/space_replay.rs (P1), and the native
+' backend replay_rspace/native_session/space.rs with the accessor space_store
+' (decision 47). It adds no new fact.
 '
 ' Reading order, from the top to the bottom:
-'   1. The callers outside P1: the space agent (P4) and the reducer hooks
-'      (P4 and P7).
-'   2. The substrate of P1. The handle opens a HostTxn through the
+'   1. The callers: a deploy program, the code of a user agent (P8), Casper,
+'      which evaluates each deploy and never changes, and the node setup,
+'      which starts the mirror reconciler (P6).
+'   2. The frontend: the parser, the normalizer arms and the syntax layer
+'      turn the source text into a Par with marker tuples (P2, P3).
+'   3. The interpreter at the baseline with its hook lines: the reducer and
+'      the runtime constructors.
+'   4. The Reified runtime: the routing, the scheduling, the system
+'      processes, the translation of user agents, the Seq rules, the costs,
+'      and the VectorDB services.
+'   5. The spaces: the agent and its engine, the disciplines, the outer
+'      stores, the records, the theories, the factory, the mirror journal,
+'      and the exact numbers.
+'   6. The substrate of P1. The handle opens a HostTxn through the
 '      SpaceTxnHost trait. The HostTxn holds the staging core, and its commit
 '      runs each operation through the backend of its mode.
-'   3. The mode backends, the child modules of P1.
-'   4. The baseline host, which the substrate calls and never changes, with
-'      the hot store and the history trie under it.
+'   7. The mode backends: the child modules of P1, and the native backend of
+'      decision 47.
+'   8. The host at the baseline, which the substrate calls and never changes,
+'      with the hot store and the history trie under it, and the external
+'      services of the VectorDB mirror.
 '
 ' Colors come from concept-colors.iuml (aliases of the shared palette).
 ' Render: ./render.sh 01-substrate-components.puml   Check: ./render.sh --check
@@ -30,21 +48,160 @@ skinparam DatabaseBorderColor $rrs_relation
 skinparam NoteBorderColor $rrs_relation
 skinparam LegendBorderColor $rrs_relation
 skinparam LegendBackgroundColor $ca_note_grey
-skinparam nodesep 40
-skinparam ranksep 55
-title Reified RSpaces substrate (P1): its components and the host that it calls
+skinparam nodesep 30
+skinparam ranksep 50
+title Components of Reified RSpaces: the modules of every phase, the substrate of P1 in detail, and the host that they call
 
-package "Callers outside P1" as CALLERS $rrs_agent {
+package "Callers" as CALLERS $rrs_host {
+  component PROGRAM $rrs_syntax [
+  **Deploy program**
+  Rholang source text with
+  Reified syntax
+  ]
+  component USERCODE $rrs_agent [
+  **Code of a user agent** (P8)
+  an ordinary Rholang program
+  that serves gensym, produce, consume
+  ]
+  component CASPER $rrs_host [
+  **Casper** (casper/src unchanged)
+  RuntimeManager plays and replays
+  each deploy; spaces enter a block
+  through its post-state root
+  ]
+  component NODE $rrs_host [
+  **Node setup**
+  node/src/rust/runtime/setup.rs:
+  starts the mirror reconciler (P6)
+  ]
+}
+
+package "Frontend: source text to Par (P2, P3)" as FRONTEND $rrs_syntax {
+  component PARSER $rrs_syntax [
+  **Parser v3** (rholang-rs,
+  feature/reified-rspaces-v3)
+  tree-sitter grammar and scanner:
+  use, free, params, queries, floats
+  ]
+  component NORMALIZERS $rrs_syntax [
+  **Normalizer arms**
+  compiler/normalizer/processes/:
+  p_use_block, p_free_theory,
+  reified_syntax, and the arms of
+  send, sync send, input and new
+  ]
+  component SYNTAX $rrs_syntax [
+  **Syntax layer** models/src/rust/reified/
+  encoding, builders, params, query_spec,
+  validation: the marker tuples USE, NEWSPACE,
+  PARAMS, QUERY and FREE (decisions 18, 21)
+  models/src/rust/space_factory_urn.rs:
+  the families, URNs and aliases
+  ]
+}
+
+package "Interpreter at the baseline, with hook lines (P2, P4, P7)" as INTERP $rrs_host {
+  component REDUCER $rrs_host [
+  **Reducer** reduce.rs, util/mod.rs,
+  deterministic_reduction.rs
+  hooks H2 to H4, receive, new, the
+  root evaluation; Intent::Space
+  ]
+  component RHORUNTIME $rrs_host [
+  **Runtime constructors** rho_runtime.rs
+  the Reified definitions, the bound
+  SpaceTxnHost, the native bind call;
+  interpreter.rs: settles the mirror journal (M1);
+  system_processes.rs: embed and ann are recorded
+  ]
+}
+
+package "Reified runtime: rholang/src/rust/interpreter/reified/ (P4 to P9)" as REIFIED $rrs_name {
+  component ROUTE $rrs_name [
+  **Hooks, routing and scope**
+  reducer_hooks.rs, route.rs, scope.rs,
+  execution.rs (the R7 backend): routes R1
+  to R7, space references, the use context,
+  params and queries
+  ]
+  component SCHED $rrs_name [
+  **Runtime and scheduling**
+  runtime.rs, schedule.rs:
+  space intents in the operation order,
+  the modes of the runtime, the scope
+  of a root evaluation and its sweep
+  ]
+  component SYSPROC $rrs_system [
+  **System processes**
+  system_channels.rs, system_processes.rs,
+  factory.rs, handle.rs: factories,
+  HANDLE_OP, getSpaceAgent, assertEqual,
+  rho:lang:vector
+  ]
+  component USERAGENT $rrs_name [
+  **User agents** user_agent.rs
+  translation of new, send, receive;
+  MATCHER_OP and SINK_OP (P8)
+  ]
+  component SEQ $rrs_name [
+  **Seq send rule** seq.rs
+  SQ-1 and SQ-2: the scan
+  of each send (P7)
+  ]
+  component COSTS $rrs_name [
+  **Costs and errors**
+  costs.rs, legacy_charges.rs, errors.rs
+  host-work charges, FIRE_ROUND_CAP
+  ]
+  component VDBSVC $rrs_service [
+  **VectorDB services**
+  vectordb_services.rs: embed and ann
+  mirror_reconciler.rs (P6)
+  ]
+}
+
+package "Spaces: rholang/src/rust/interpreter/spaces/ and tensor/ (P4 to P7)" as SPACES $rrs_agent {
   component AGENT $rrs_agent [
-  **Space agent** (P4)
-  reads the staged view, decides each outcome,
+  **Space agent and engine**
+  agent.rs, generic.rs, join.rs, settle.rs,
+  matching.rs, families.rs: reads the
+  staged view, decides each outcome,
   stages whole operations, and commits
   ]
-  component REDUCER $rrs_host [
-  **Reducer root evaluation** (hooks of P4 and P7)
-  ReducerCore::inj_with_observation and inj
-  at the entry: begin_evaluation_scope()
-  at the end: sweep_volatile(volatile channels)
+  component DISC $rrs_agent [
+  **Disciplines** disciplines/
+  bag, set, cell, queue, stack,
+  priority_queue, vectordb, scan
+  ]
+  component OUTER $rrs_agent [
+  **Outer stores** outer/ and pathmap/
+  hashmap, array, vector, hashset,
+  pathmap: adapter, path codec, re-rooting,
+  markers, delivery, prefix joins
+  ]
+  component RECORDS $rrs_agent [
+  **Records, ids and claims**
+  record.rs, counter.rs, allocator.rs,
+  namespace.rs, types/; ephemeral.rs:
+  volatile ids and the Seq claims (SQ-3)
+  ]
+  component FACTORY $rrs_factory [
+  **Factory** factory/
+  urn, constructor, defaults:
+  the nine gates
+  ]
+  component THEORY $rrs_checker [
+  **Theories** theory/
+  builtin, identity:
+  admission fails closed
+  ]
+  component MIRROR $rrs_service [
+  **Mirror journal** mirror.rs
+  the writes of a deploy
+  ]
+  component TENSOR $rrs_system [
+  **Exact numbers** tensor/
+  num, exact, ops, costs (P6)
   ]
 }
 
@@ -90,16 +247,22 @@ package "Substrate of P1: rspace++/src/rspace/space_store_handle.rs" as SUB $rrs
   ]
 }
 
-package "Mode backends of P1 (child modules of the hosts)" as BACKENDS $rrs_substrate {
+package "Mode backends (child modules of the hosts)" as BACKENDS $rrs_substrate {
   component PLAY $rrs_substrate [
   **PlayBackend**: rspace/space_play.rs
   the play call order of ops_produce.rs
-  and ops_consume.rs
+  and ops_consume.rs (legacy and native play)
   ]
   component REPLAY $rrs_substrate [
   **ReplayBackend**: replay_rspace/space_replay.rs
   the replay call order of replay_rspace.rs,
   and a directive fails closed
+  ]
+  component NATIVE $rrs_substrate [
+  **NativeSpaceHost** (decision 47)
+  replay_rspace/native_session/space.rs:
+  each operation meets its journal row
+  through the ticket protocol
   ]
 }
 
@@ -118,6 +281,13 @@ package "Host at the baseline (unchanged code)" as HOST $rrs_host {
   **ReportingRspace** (reporting)
   an inner replay space
   with the ReportingLogger
+  ]
+  component SESSION $rrs_host [
+  **Native replay session**
+  native_session.rs and the accounting
+  module, with the one accessor
+  space_store (decision 47), which
+  rho_runtime.rs binds (W3)
   ]
   component LOCKS $rrs_host [
   **Lock stripes**
@@ -143,21 +313,71 @@ package "Host at the baseline (unchanged code)" as HOST $rrs_host {
 
 database "Hot store\n(hot_store.rs)" as HOT $rrs_storage
 database "History trie" as HIST $rrs_storage
+component CHROMA $rrs_service [
+**ChromaDB service** and
+the **embedder** (fastembed):
+local to one node, outside
+every state root
+]
 
 note right of HIST
 **Unchanged at the baseline**
-(footprint policy p1)
 ISpace, ispace_impl.rs, hot_store.rs,
 trace, serializers, history, merger,
-casper/src
+contract_call.rs, dispatch.rs, every
+.proto file, and casper/src
 end note
 
-' Vertical order of the layers.
+' Horizontal order inside the layers.
+SEQ -[hidden]right-> USERAGENT
+USERAGENT -[hidden]right-> SCHED
+SCHED -[hidden]right-> COSTS
+COSTS -[hidden]right-> VDBSVC
+AGENT -[hidden]right-> FACTORY
+DISC -[hidden]right-> OUTER
+OUTER -[hidden]right-> RECORDS
+RECORDS -[hidden]right-> THEORY
+THEORY -[hidden]right-> MIRROR
 RSPACE -[hidden]down-> LOCKS
 EVENTS -[hidden]down-> HOT
 
+' Callers, frontend and interpreter.
+PROGRAM -[$rrs_flow]-> PARSER : source text
+PARSER -[$rrs_flow]right-> NORMALIZERS : syntax tree
+NORMALIZERS -[$rrs_flow]right-> SYNTAX : builders\nand validators
+NORMALIZERS -[$rrs_flow]-> RHORUNTIME : normalized Par\nwith marker tuples
+CASPER -[$rrs_flow]-> RHORUNTIME : play and replay\nof each deploy
+RHORUNTIME -[$rrs_flow]-> REDUCER : evaluates the term
+
+' Reified runtime.
+REDUCER -[$rrs_flow]-> ROUTE : hooks
+REDUCER -[$rrs_flow]-> SYSPROC : calls on op channels\nand handles
+USERCODE -[$rrs_flow]-> SYSPROC : MATCHER_OP, SINK_OP,\nhandle calls
+NODE -[$rrs_flow]-> VDBSVC : starts the reconciler
+ROUTE -[$rrs_flow]-> SEQ : scan of a send
+ROUTE -[$rrs_flow]-> USERAGENT : agent route
+ROUTE -[$rrs_flow]-> SCHED : space operation,\nroot evaluation
+USERCODE <-[$rrs_flow]- USERAGENT : gensym, produce\nand consume calls
+SYSPROC -[$rrs_flow]-> SCHED : factory and\nhandle jobs
+SYSPROC -[$rrs_flow]-> VDBSVC : embed, ann
+
+' Spaces.
+SCHED -[$rrs_flow]-> AGENT : runs each job\nin the operation order
+SYSPROC -[$rrs_relation]-> FACTORY : constructor
+COSTS <-[$rrs_relation]- AGENT : host-work charges
+AGENT -[$rrs_relation]-> DISC : candidate order
+AGENT -[$rrs_relation]-> OUTER : keys and paths
+AGENT -[$rrs_relation]-> RECORDS : envelopes, counters,\nSeq claims
+AGENT -[$rrs_relation]-> THEORY : admission
+AGENT -[$rrs_effect]-> MIRROR : journal entries
+VDBSVC <-[$rrs_flow]- MIRROR : published journal
+VDBSVC -[$rrs_flow]right-> CHROMA : mirror writes,\nqueries, embeddings
+DISC -[$rrs_relation]-> TENSOR : exact scores
+SYSPROC -[$rrs_relation]-> TENSOR : rho:lang:vector
+
+' Substrate, backends and host.
 AGENT -[$rrs_flow]-> HANDLE : begin(lock keys)
-REDUCER -[$rrs_flow]-> HANDLE : begin_evaluation_scope()\nsweep_volatile(channels)
+SCHED -[$rrs_flow]-> HANDLE : begin_evaluation_scope()\nsweep_volatile(channels)
 HANDLE -[$rrs_flow]right-> HOSTTRAIT : begin(lock keys, registration)\nsweep_volatile(channels, registration)
 HOSTTRAIT -[$rrs_flow]-> TXN : opens
 HOSTTRAIT -[$rrs_flow]-> SWEEP : sweep
@@ -166,11 +386,14 @@ TXN *-[$rrs_relation]- CORE
 TXN -[$rrs_flow]-> COMMIT : commit()
 COMMIT -[$rrs_flow]-> PLAY : apply_op (play)
 COMMIT -[$rrs_flow]-> REPLAY : apply_op (replay, reporting)
+COMMIT -[$rrs_flow]-> NATIVE : apply_op (native replay)
 PLAY -[$rrs_effect]-> RSPACE : host calls
 REPLAY -[$rrs_effect]-> REPLAYSPACE : host calls
+NATIVE -[$rrs_effect]-> SESSION : tickets and\njournal rows
 HOSTTRAIT <|.[$rrs_relation]. RSPACE : implements
 HOSTTRAIT <|.[$rrs_relation]. REPLAYSPACE : implements
 HOSTTRAIT <|.[$rrs_relation]. REPORTING : implements
+HOSTTRAIT <|.[$rrs_relation]. NATIVE : implements
 REPORTING -[$rrs_relation]left-> REPLAYSPACE : delegates
 RSPACE -[$rrs_relation]-> LOCKS : begin takes
 REPLAYSPACE -[$rrs_relation]-> LOCKS : begin takes
@@ -180,19 +403,25 @@ RSPACE -[$rrs_effect]-> EVENTS : logs
 REPLAYSPACE -[$rrs_relation]-> REPLAYDATA : verify reads,\ncommit removes bindings
 RSPACE -[$rrs_effect]-> HOT
 REPLAYSPACE -[$rrs_effect]-> HOT
+SESSION -[$rrs_effect]-> HOT
 CORE -[$rrs_relation]-> HOT : loads lists\n(read-through)
 SWEEP -[$rrs_effect]-> HOT : removes the volatile state
 HOT -[$rrs_relation]-> HIST : reads through,\nthe checkpoint writes
 
 legend bottom
 **Concept colors**
-|<$rrs_substrate>  | substrate of P1 (new code) |
-|<$rrs_host>       | host at the baseline (unchanged code) |
-|<$rrs_agent>      | space agent (P4), and the group of callers outside P1 |
+|<$rrs_syntax>     | syntax: the source text, the parser, the normalizer arms and the syntax layer |
+|<$rrs_host>       | code at the baseline: unchanged, or changed only by hook lines |
+|<$rrs_name>       | Reified runtime: routing, scheduling, translation, Seq rules and costs (new code) |
+|<$rrs_system>     | system processes and the exact numbers that they use (new code) |
+|<$rrs_agent>      | space agents and their parts, and the code of a user agent |
+|<$rrs_factory>    | factory |
+|<$rrs_service>    | services outside consensus: the VectorDB services, the mirror, ChromaDB |
+|<$rrs_substrate>  | substrate of P1 and its mode backends (new code) |
 |<$rrs_storage>    | stored state: hot store and history trie |
 **Arrows**
-|<$rrs_flow>       | call |
-|<$rrs_effect>     | effect on the host state |
+|<$rrs_flow>       | call or input |
+|<$rrs_effect>     | effect on the stored state |
 |<$rrs_relation>   | relation |
 endlegend
 @enduml

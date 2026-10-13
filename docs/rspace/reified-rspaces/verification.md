@@ -153,12 +153,13 @@ The realignment leaves `rrs-ra-03-04` and `rrs-ra-05-01` to `rrs-ra-05-06` also 
 
 ## 3. Verification pipeline
 
-Figure V1 shows how the sources of P1 reach the six acceptance categories.
+Figure V1 shows how the sources of every phase reach the six acceptance categories.
+Its counts are those of the gate sets of P9 and of P10 step S7.
 Read it from the left to the right: sources, checks, local gates, pgmcp recipes, and categories.
 The negative controls are checks that must fail, and their gates require the expected failure.
 Each recipe runs the same command as its local gate, in the verifier sandbox.
 
-![Verification pipeline of phase P1 as five columns from the left to the right. Sources: the P1 Rust code, the HEAD Rust code, the Rocq models EventCorrelation.v and VolatileSweep.v, the TLA+ models CheckpointReplay.tla and TxnLockCoverage.tla with 27 configurations, the maps and policies, the corpora, and the documents. Checks: the Rocq kernel checks, TLC on 6 safe configurations, the Apalache BASE check Init implies IndInv and STEP check IndInv and Next imply IndInv prime, the property-based tests with 64 cases, the deterministic suites, the Python checkers, the document checks, and the negative controls that must fail. Local gates: check-reified-rspaces-proofs.sh, check-reified-rspaces-tla-invariants.sh, cargo test, the Python checkers, and doc_lint.py with render.sh. pgmcp recipes: rrs-p1-rocq-ec, rrs-p1-rocq-vs and rrs-p1-rocq-negative, the TLA recipes, the Rust recipes, rrs-p1-checks with 18 checker steps, and rrs-p1-docs. Acceptance categories: formally modeled, formal verification passes, every invariant extracted as a property-based test, implementation complete, thoroughly tested, and documented. Green arrows show which recipe binds evidence of which category.](diagrams/13-verification-pipeline.svg)
+![Verification pipeline of all phases as five columns from the left to the right. Sources: the Rust code of P1 to P10 (the substrate of rspace++, the syntax layer of models, and reified and spaces of rholang, with their tests), the base code at 4d67b5ccc and its suites, the Rocq models with 308 headlines from EventCorrelation.v to Checkpoint.v, the TLA+ models with 128 configurations with BOUNDS headers, the three Z3 scripts and the Sage script with the numeric reference vectors, the maps and policies, the corpora with the 63 examples, and the documents with chapter 21 and the diagram sources. Checks: the Rocq kernel checks (hygiene, coqc alone, Print Assumptions closed for 308 headlines, rocqchk), TLC and Apalache with BASE and STEP, the Z3 and Sage checks, the property-based tests with one property for each invariant, the deterministic suites (the suites of each phase, N1 to N9, the examples harness, loom, the bench smoke, the base suites and the empty-state hashes), the 46 Python checker commands, the document checks, and the negative controls that must fail (456 Rocq negative checks and the axiom control, the Unsafe TLC configurations, the Apalache Error controls, the mutant harnesses and the checker self-tests). Each check reads its sources. Local gates: the proofs gate and the TLA gate run inside the aggregate gate scripts/check-reified-rspaces-ALL.sh with the legs proofs, tla, z3, sage, checkers, examples, loom and benches, and cargo test runs the suites G2 to G17 of each phase; the negative controls go to the gates that require their failure. pgmcp recipes: the recipe families RF0 to RF12, registered in the one freeze of P11 (decision 75), with RF12 for the aggregate gate. Each recipe step binds evidence of the six acceptance categories: formally modeled, formal verification passes, every invariant extracted as a property-based test, implementation complete, thoroughly tested, and documented per the pgmcp guidelines.](diagrams/13-verification-pipeline.svg)
 
 *Figure V1. Source: [diagrams/13-verification-pipeline.puml](diagrams/13-verification-pipeline.puml), rendered by [diagrams/render.sh](diagrams/render.sh).*
 
@@ -7911,6 +7912,18 @@ The third one is the `embed` block of chapter 10, and its reply comes from the f
 - Table 10 gives each code its own row. Each row names the example that reaches the code, or the test that reaches it and the reason that no example can.
 - Section 10.1 shows the 24 examples of the aborts, and section 11 states the current limits instead of the limits of P4.
 
+#### 35.4.4 The gates of parts 1 and 2
+
+*Table 245. The gates of parts 1 and 2 of step S5.*
+
+| Gate | Result |
+|---|---|
+| `cargo test --release -p rholang --test reified_examples_execute` | 65 passed, 0 failed: the 63 examples and the two controls |
+| The tests of `doc_lint.py` | 91 passed, 0 failed |
+| `doc_lint.py` over every campaign document and every Reified section | No finding |
+| The checkers of `checker-commands.txt` | 46 of 46 pass |
+| `rustfmt --check` of the harness | No difference |
+
 #### 35.4.5 The specification and the syntax contract
 
 Part 3 states the final scope of the specification and adds its section 11, "Determinism":
@@ -7974,17 +7987,45 @@ Part 6 updates the indexes:
 
 The link from `docs/node/README.md` to `performance.md` waits for step S8, which writes `performance.md`.
 
-#### 35.4.4 The gates of parts 1 and 2
+#### 35.4.9 The rules of each inner collection
 
-*Table 245. The gates of parts 1 and 2 of step S5.*
+Part 7 adds Table 9a to section 3 of the specification for the leaf `rrs-doc-spaces`.
+For each of the seven inner collections, the table gives the rules of six aspects.
+The aspects are the order, equal records, peeks, persistence, errors and limits, and the factory.
+Each cell names rules of section 3, and Table 9 of the specification maps each rule to its theorems and its named tests.
+A script checked that each rule id of the table is the id of a rule of section 3.
+
+### 35.5 Step S6: the diagrams
+
+Step S6 draws the diagrams of design v2, section 2.6.
+Each diagram renders with an empty stderr, and each document that embeds a diagram gives it alt text.
+Table 248 lists the diagrams of the step.
+
+*Table 248. The diagrams of step S6.*
+
+| Diagram | Change | Embedded in |
+|---|---|---|
+| 01, Components | Extended from the substrate of P1 to the modules of every phase: the callers, the frontend, the interpreter with its hook lines, the Reified runtime, the spaces, the substrate with the native backend of decision 47, the host, and the services of the VectorDB mirror | Figure S1 of `design.md`, which part N1 cites |
+| 05, Head-only collections | A third note gives the stack (SK-1 to SK-7), the cell (CL-1 to CL-5) and the priority queue (PQ-1 to PQ-10) | Figure 1 of `specification.md` and Figure N4 of `design.md` |
+| 07b, LFS export and import | New in part 4 of step S5 | Figure N20.1 of `design.md` |
+| 13, Verification pipeline | Extended from the checks of P1 to the sources, the checks and the gates of every phase, with the aggregate gate and its eight legs, and the recipe families RF0 to RF12 | Figure V1 of this dossier, section 3 |
+| 14, Phase Gantt chart | New: the days of each phase from P0 to P10, from the first commit of the phase to its closing commit, and a note on P10, P11 and P12 | Figure 1 of the campaign README |
+| 55, Trust boundaries | New in part 5 of step S5 | Figure 1 of `security.md` |
+
+The counts of diagram 13 come from the gate logs of step S7.
+They are 308 closed headlines, 456 negative checks, 128 TLA+ configurations with a BOUNDS header, three Z3 scripts and 46 checker commands.
+The dates of diagram 14 are the author dates of the commits of the branch.
+P10 step S11 adds the closing commit of P10 to diagram 14.
+The README row of P0 now names the commit `6f7a80da3`, which recorded the design ledger after the restore, as diagram 14 does.
+
+*Table 249. The gates of step S6.*
 
 | Gate | Result |
 |---|---|
-| `cargo test --release -p rholang --test reified_examples_execute` | 65 passed, 0 failed: the 63 examples and the two controls |
-| The tests of `doc_lint.py` | 91 passed, 0 failed |
+| `render.sh --check` over the diagram directory | 59 of 59 diagrams are current, with an empty stderr |
 | `doc_lint.py` over every campaign document and every Reified section | No finding |
-| The checkers of `checker-commands.txt` | 46 of 46 pass |
-| `rustfmt --check` of the harness | No difference |
+| The tests of `doc_lint.py` | 91 passed, 0 failed |
+| The checkers of `checker-commands.txt` | 46 of 46 pass, the footprint policy `p10` with the two files of diagram 14 included |
 
 ## References
 

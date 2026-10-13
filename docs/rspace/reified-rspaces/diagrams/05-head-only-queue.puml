@@ -20,6 +20,9 @@
 '      re-issue of a divergent pair, and the cap of 64 fires.
 '   6. A second note gives the joins of P5 wave W3: the head rule for each
 '      collection of a join and the cascade of the join engine.
+'   7. A third note gives the other head-only collections of P5 wave W2:
+'      the stack (SK-1 to SK-7), the cell (CL-1 to CL-5) and the priority
+'      queue (PQ-1 to PQ-10), from spaces/disciplines/ and spaces/settle.rs.
 '
 ' Colors come from concept-colors.iuml (aliases of the shared palette).
 ' Render: ./render.sh 05-head-only-queue.puml   Check: ./render.sh --check
@@ -33,7 +36,7 @@ skinparam StateBorderColor $rrs_relation
 skinparam NoteBorderColor $rrs_relation
 skinparam LegendBorderColor $rrs_relation
 skinparam LegendBackgroundColor $ca_note_grey
-title States of one queue collection (head-only matching, decision 11)
+title States of one collection with head-only matching: the queue, and the stack, the cell and the priority queue (decision 11)
 
 state "Unopened" as UNOPENED $rrs_reserved : no counter record on <latex>S(\mathit{sid}, k)</latex>
 state "Open collection" as OPEN $ca_pkg_indigo {
@@ -103,6 +106,32 @@ note bottom of OPEN
   a matching pair of heads on another collection of the join scope.
   The cascade fires that pair in the same transaction with a lift and
   a re-offer, so INV holds again at the end of the transaction.
+end note
+
+note left of OPEN
+  **The other head-only collections** pass through the
+  same states, with these differences (P5 wave W2):
+
+  **Stack** (SK-1 to SK-7): the head of each side is its
+  greatest <latex>(\mathit{ord}, \mathrm{bincode})</latex>, so a fresh element
+  reaches the top. A fire can expose an older pair, so
+  the stack settles before and after each plan and in a
+  settle job: it fires the top pair with a lift and a
+  re-offer. Records and waiters leave in LIFO order.
+
+  **Cell** (CL-1 to CL-5): one record and one waiter.
+  A store or a park on a full side fails with
+  CellOccupied before the plan stages it. A fresh send
+  meets the waiter, and a fresh receive meets the record.
+
+  **Priority queue** (PQ-1 to PQ-10): records in levels,
+  waiters in lanes, each one FIFO and head-only. The lane
+  of a level sees the head of its level, and the
+  unrestricted lane sees the heads of all levels in
+  ascending level order. A send offers its datum to the
+  head of its lane and to the head of the unrestricted
+  lane, the older head first. The settle fires the
+  oldest fireable lane head first.
 end note
 
 legend bottom

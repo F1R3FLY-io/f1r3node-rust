@@ -81,11 +81,11 @@ Update `fonts.lock`, render every diagram again, and review the images.
 
 | Number | Diagram | Status |
 |---|---|---|
-| 01 | [Substrate components](diagrams/01-substrate-components.svg) | Drawn for the substrate in P1. P10 extends it to all components (`rrs-doc-diagrams`). |
+| 01 | [Components](diagrams/01-substrate-components.svg) (component) | Drawn for the substrate in P1. P10 step S6 extended it to the modules of every phase (`rrs-doc-diagrams`). |
 | 02 | [Namespace bytes](diagrams/02-namespace-bytes.svg) | Drawn. P4 corrected the status of the op channels. |
 | 03 | [Native handle lifecycle](diagrams/03-native-handle-lifecycle.svg) (sequence) | Drawn in P4 |
 | 04 | [User-agent translation](diagrams/04-user-agent-translation.svg) (sequence) | Drawn in P8 step 6 |
-| 05 | [Head-only queue](diagrams/05-head-only-queue.svg) (state) | Drawn in P4 for the queue. P5 wave W3 adds the note on joins. P10 extends it to the other ordered disciplines (`rrs-doc-diagrams`). |
+| 05 | [Head-only collections](diagrams/05-head-only-queue.svg) (state) | Drawn in P4 for the queue. P5 wave W3 added the note on joins. P10 step S6 added the stack, the cell and the priority queue (`rrs-doc-diagrams`). |
 | 06 | [Commit of a space transaction](diagrams/06-space-txn-commit.svg) (activity) | Drawn in P1. Decision 47 adds the branch of native replay. |
 | 06a | [Lifecycle of a space transaction](diagrams/06a-space-txn-lifecycle.svg) (state), a sub-figure of figure 06 | Drawn in P1 |
 | 07 | [Checkpoint, replay, and sweep](diagrams/07-checkpoint-replay-sweep.svg) (sequence) | Drawn in P1. Diagram 07a draws the restart. |
@@ -96,8 +96,8 @@ Update `fonts.lock`, render every diagram again, and review the images.
 | 10 | [Theory admission](diagrams/10-theory-admission.svg) (activity) | Drawn in P7 step 4 |
 | 11 | [Layout of the record envelope](diagrams/11-record-envelope.svg) (component) | Drawn in P5 wave W3, with the join continuation of version 2 |
 | 12 | [Routing decision](diagrams/12-routing-decision.svg) (activity) | Drawn in P4 |
-| 13 | [Verification pipeline](diagrams/13-verification-pipeline.svg) (component) | Drawn for the checks of P1. P10 extends it to all phases (`rrs-doc-diagrams`). |
-| 14 | Phase Gantt chart | Planned in P10 (`rrs-doc-diagrams`) |
+| 13 | [Verification pipeline](diagrams/13-verification-pipeline.svg) (component) | Drawn for the checks of P1. P10 step S6 extended it to every phase, with the aggregate gate (`rrs-doc-diagrams`). |
+| 14 | [Phase Gantt chart](diagrams/14-phase-gantt.svg) (Gantt) | Drawn in P10 step S6. P10 step S11 adds the closing commit of P10 (`rrs-doc-diagrams`). |
 | 15 | [Normalization of the Reified syntax](diagrams/15-syntax-normalization.svg) (activity) | Drawn in P3 |
 | 16 | [Space replay when a deploy runs out of phlo](diagrams/16-space-replay-out-of-phlo.svg) (sequence) | Drawn for the finding. Its third part shows the fix of decision 36. |
 | 17 | [Legacy charges of a space transaction](diagrams/17-legacy-charge-chain.svg) (sequence) | Drawn for decision 45, Option P |
@@ -172,7 +172,7 @@ Phase P11 runs the one pgmcp freeze of [decision 75](decision-register.md#decisi
 
 | Phase | Closing commit | Record |
 |---|---|---|
-| P0 | The restore of the realignment ([decision 5](decision-register.md#decision-5)) | [Section 9](verification.md#9-realignment-closure-checks) |
+| P0 | `6f7a80da3`, after the restore of the realignment ([decision 5](decision-register.md#decision-5)) | [Section 9](verification.md#9-realignment-closure-checks) |
 | P1 | `b783d6122` | [Sections 1 to 8](verification.md#1-purpose-and-scope) |
 | P2 | `e9812d0e5` | [Section 4](verification.md#4-rocq-models), the module `Encoding.v` |
 | P3 | `a0bcaf90e` in this tree, and the branch `feature/reified-rspaces-v3` of the parser | The [syntax contract](syntax-contract.md) |
@@ -183,6 +183,12 @@ Phase P11 runs the one pgmcp freeze of [decision 75](decision-register.md#decisi
 | P7 | `be4e9def3` | Sections 27 to 32 |
 | P8 | `d003151d3` | [Section 33](verification.md#33-phase-p8-the-spaces-of-user-agents) |
 | P9 | `e8cd072ff` | [Section 34](verification.md#34-phase-p9-consensus-integration) |
+
+Figure 1 shows the days of each phase, from the first commit of the phase to its closing commit.
+
+![Gantt chart of the phases of the campaign on a daily scale from Sunday 2026-10-04 to Monday 2026-10-12. Realignment: P0, the backup, the restore and the ledger record, on October 4 (6f7a80da3). Foundations: P1, the storage substrate, on October 4 (b783d6122); P2, the marker encoding of the syntax, on October 4 (e9812d0e5); P3, the parser v3 and the normalizers, from October 4 to October 5 (a0bcaf90e). Space families: P4, the family hashmap:queue, on October 5 (294c95632); the milestone of decision 44, the merge of feature/cost-accounted-rho, on October 5 (881257d75); decisions 42, 43, 45 and 46 on October 6 (2c2b45bf5); P5, the other disciplines, the outer stores and the joins, from October 6 to October 7 (418d81d7c); decision 47, spaces in native execution, on October 7 (d559efa48); P6, the VectorDB family and the ChromaDB backend, from October 8 to October 9 (8ecc6b786); P7, the temp and seq qualifiers, HashSet, theories and rehydration, from October 9 to October 10 (be4e9def3). Agents and consensus: P8, the user agent-backed spaces, from October 10 to October 11 (d003151d3); P9, the consensus integration, from October 11 to October 12 (e8cd072ff). Verification and documents: P10, in progress from October 12. A note names the done steps of P10 (S1, S7, S2, S5 and S6) and its open steps (S4, S8, S9 to S11, and S3, which waits for the repair of the node CLI, decision 86). The note also gives the two phases with no date: P11, the one pgmcp freeze of decision 75 after P10, and P12, which waits for the readiness signal of F1r3lang. The colors mark the kind of work: realignment, storage substrate, syntax, space families and agents, merge and decisions, consensus integration, and verification and documents.](diagrams/14-phase-gantt.svg)
+
+*Figure 1. Source: [diagrams/14-phase-gantt.puml](diagrams/14-phase-gantt.puml), rendered by [diagrams/render.sh](diagrams/render.sh).*
 
 The pgmcp runs of the leaves take place in the freeze of [decision 75](decision-register.md#decision-75).
 

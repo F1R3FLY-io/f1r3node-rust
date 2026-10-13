@@ -13400,7 +13400,9 @@
         "docs/rspace/reified-rspaces/diagrams/07b-lfs-export-import.svg",
         "docs/rspace/reified-rspaces/security.md",
         "docs/rspace/reified-rspaces/diagrams/55-security-trust-boundaries.puml",
-        "docs/rspace/reified-rspaces/diagrams/55-security-trust-boundaries.svg"
+        "docs/rspace/reified-rspaces/diagrams/55-security-trust-boundaries.svg",
+        "docs/rspace/reified-rspaces/diagrams/14-phase-gantt.puml",
+        "docs/rspace/reified-rspaces/diagrams/14-phase-gantt.svg"
       ]
     }
   }

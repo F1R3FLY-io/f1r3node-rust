@@ -1,22 +1,24 @@
-' 13 Verification pipeline: how the sources of phase P1 go through checks,
+' 13 Verification pipeline: how the sources of every phase go through checks,
 ' local gates and pgmcp recipes to the evidence of the six acceptance
 ' categories.
 '
 ' Source of Figure V1 in ../verification.md (section 3). The figure restates
-' the two gates scripts/check-reified-rspaces-proofs.sh and
-' scripts/check-reified-rspaces-tla-invariants.sh, the checkers of
-' scripts/verify-reified/, the cargo test targets of P1, and the planned pgmcp
-' recipes rrs-p1-* with the category bindings of each P1 leaf. It adds no new
-' fact.
+' the aggregate gate scripts/check-reified-rspaces-ALL.sh with its eight legs,
+' the two gates that it calls, the checker list
+' scripts/verify-reified/checker-commands.txt, the cargo suites of the
+' phases, and the recipe families RF0 to RF12 of the freeze of decision 75.
+' The counts are those of the gate sets of P9 and of P10 step S7. It adds no
+' new fact.
 '
 ' Reading order, from the left to the right:
-'   1. Sources: the P1 code, the HEAD code, the formal models, the maps and
-'      policies, the corpora and the documents.
+'   1. Sources: the code of the phases, the base code, the formal models,
+'      the scripts of Z3 and Sage, the maps and policies, the corpora, the
+'      examples and the documents.
 '   2. Checks: each check reads its sources. The negative controls are
 '      checks that must fail.
-'   3. Local gates: the commands that run the checks on a development host.
-'   4. pgmcp recipes: the same commands in the verifier sandbox, with one
-'      step key for each check.
+'   3. Local gates: the aggregate gate and the cargo suites of each phase.
+'   4. pgmcp recipes: the same commands in the verifier sandbox, in the one
+'      freeze of P11 (decision 75).
 '   5. Acceptance categories: each recipe step binds a criterion of one
 '      category.
 '
@@ -30,15 +32,15 @@
 !include concept-colors.iuml
 
 ' Concepts of this figure.
-' New P1 code and its tests.
+' The Rust code of the phases and its tests.
 !$v_code = $rrs_substrate
-' Baseline code at HEAD and the HEAD test suites.
+' The code at the base revision and its suites.
 !$v_head = $rrs_host
 ' Formal models: Rocq modules and TLA+ specifications.
 !$v_model = $ca_process
 ' Maps and policies that bind code, models and tests.
 !$v_map = $ca_capability
-' Corpora: expected outputs that a capture run recorded.
+' Corpora of expected outputs, and the examples.
 !$v_corpus = $ca_supply
 ' Documents and diagram sources.
 !$v_doc = $ca_surface
@@ -46,11 +48,11 @@
 !$v_check = $ca_gate
 ' A negative control: a check that must fail.
 !$v_control = $rrs_reject
-' A local gate on a development host.
+' A local gate.
 !$v_gate = $ca_control
 ' A pgmcp verification recipe.
 !$v_recipe = $ca_pool
-' An acceptance category: the evidence of a tracker leaf.
+' An acceptance category.
 !$v_category = $ca_delta
 
 $ca_base_skin()
@@ -63,45 +65,53 @@ skinparam LegendBorderColor $rrs_relation
 skinparam LegendBackgroundColor $ca_note_grey
 skinparam nodesep 22
 skinparam ranksep 70
-title Verification pipeline of phase P1: from the sources to the six acceptance categories
+title Verification pipeline of all phases: from the sources to the six acceptance categories
 
 package "1. Sources" as SOURCES {
-  rectangle SRC_P1 $v_code [
-  **P1 Rust code**
-  space_store_handle.rs, space_play.rs,
-  space_replay.rs, and the P1 tests
+  rectangle SRC_CODE $v_code [
+  **Rust code of P1 to P10**
+  the substrate of rspace++, the syntax layer
+  of models, and reified/ and spaces/ of rholang,
+  with their unit tests and suites
   ]
   rectangle SRC_HEAD $v_head [
-  **HEAD Rust code**
+  **Base code**
   ordinary execution at the base
-  revision 4d67b5ccc (6f7a80da3 before
-  the merge), and the HEAD suites
+  revision 4d67b5ccc, and its suites
   ]
   rectangle SRC_ROCQ $v_model [
   **Rocq models**
-  EventCorrelation.v: H1 to H12, H17, H19 to H21, H23
-  VolatileSweep.v: H13 to H16, H18, H22
+  formal/rocq/reified_rspaces/theories:
+  308 headlines, from EventCorrelation.v
+  to Checkpoint.v
   ]
   rectangle SRC_TLA $v_model [
   **TLA+ models**
-  CheckpointReplay.tla: T1 to T4, T6, and U13
-  of decision 45
-  TxnLockCoverage.tla: T5
-  27 configurations with BOUNDS headers
+  formal/tlaplus/reified_rspaces:
+  128 configurations with BOUNDS headers
+  ]
+  rectangle SRC_NUM $v_model [
+  **Z3 and Sage**
+  formal/z3/reified_rspaces: three scripts
+  similarity_metrics.sage and the
+  numeric reference vectors
   ]
   rectangle SRC_MAPS $v_map [
   **Maps and policies**
-  model map, invariant map, consensus checklist,
-  footprint, complete and closure policies
+  model maps of the phases, invariant map,
+  consensus checklist, footprint, complete
+  and closure policies
   ]
   rectangle SRC_CORPUS $v_corpus [
-  **Corpora**
+  **Corpora and examples**
   ordinary execution, source normalization,
-  float forms, legacy golden, HEAD file digests
+  the valid and the invalid syntax corpus,
+  63 examples of examples/reified_rspaces
   ]
   rectangle SRC_DOCS $v_doc [
   **Documents**
-  docs/rspace/reified-rspaces
+  docs/rspace/reified-rspaces, chapter 21
+  and the Reified chapter sections,
   and the diagram sources
   ]
 }
@@ -110,50 +120,60 @@ package "2. Checks" as CHECKS {
   rectangle CK_ROCQ $v_check [
   **Rocq kernel checks**
   hygiene, coqc -q -noglob alone,
-  Print Assumptions closed (23 headlines),
+  Print Assumptions closed (308 headlines),
   rocqchk -o: no axiom, no assumption
   ]
   rectangle CK_TLC $v_check [
-  **TLC model checking**
-  6 safe configurations,
+  **TLC and Apalache**
   exhaustive breadth-first search
-  ]
-  rectangle CK_APA $v_check [
-  **Apalache inductive checks**
   BASE <latex>\mathit{Init} \Rightarrow \mathit{IndInv}</latex>
   STEP <latex>\mathit{IndInv} \land \mathit{Next} \Rightarrow \mathit{IndInv}'</latex>
   ]
+  rectangle CK_NUM $v_check [
+  **Z3 and Sage checks**
+  the squared forms, the selection order
+  and the metric algebra; the reference
+  vectors, byte for byte
+  ]
   rectangle CK_PBT $v_check [
   **Property-based tests**
-  25 P1 properties and the ORD property,
-  64 cases with a fixed seed
+  one property for each invariant of the
+  invariant map, 64 cases with a fixed seed
   ]
   rectangle CK_SUITES $v_check [
   **Deterministic suites**
-  substrate suites, R1 to R9 and the corpora,
-  HEAD suites, casper empty-state hashes
+  the suites of each phase, N1 to N9,
+  the examples harness, loom, the bench smoke,
+  the base suites, the empty-state hashes
   ]
   rectangle CK_PY $v_check [
   **Python checkers**
-  model map, invariant map, footprint, complete,
-  production scan, consensus checklist, closure.
-  They also read the code, the models and the
-  documents that the maps and policies name.
+  the 46 commands of checker-commands.txt:
+  maps, footprint, complete, closure,
+  checklist, ledger, patch gate, doc_lint
   ]
   rectangle CK_DOC $v_check [
   **Document checks**
-  doc_lint.py rules, with the Rocq and Rust
-  line citations, and render.sh --check
+  doc_lint.py rules with the citations,
+  the snippet and the manifest rules,
+  and render.sh --check
   ]
   rectangle NEG $v_control [
   **Negative controls: must fail**
-  27 Rocq mutants, 11 Unsafe TLC configurations,
-  4 Apalache Error controls, 2 replay mutants,
-  checker self-tests
+  456 Rocq negative checks and the axiom
+  control, the Unsafe TLC configurations,
+  the Apalache Error controls, the mutant
+  harnesses and the checker self-tests
   ]
 }
 
 package "3. Local gates" as GATES {
+  rectangle G_ALL $v_gate [
+  **scripts/check-reified-rspaces-ALL.sh**
+  legs: proofs, tla, z3, sage, checkers,
+  examples, loom, benches
+  PASS=n FAIL=0 SKIP=0
+  ]
   rectangle G_PROOFS $v_gate [
   scripts/check-reified-rspaces-proofs.sh
   ]
@@ -161,36 +181,17 @@ package "3. Local gates" as GATES {
   scripts/check-reified-rspaces-tla-invariants.sh
   ]
   rectangle G_CARGO $v_gate [
-  cargo test -p CRATE --test TARGET
-  ]
-  rectangle G_PY $v_gate [
-  python3 scripts/verify-reified/CHECKER
-  ]
-  rectangle G_DOC $v_gate [
-  doc_lint.py, render.sh --check
+  cargo test ~--release ~-p CRATE ~--test TARGET:
+  the suites G2 to G17 of each phase
   ]
 }
 
 package "4. pgmcp recipes" as RECIPES {
-  rectangle R_ROCQ $v_recipe [
-  rrs-p1-rocq-ec, rrs-p1-rocq-vs: fresh-kernel
-  rrs-p1-rocq-negative
-  ]
-  rectangle R_TLA $v_recipe [
-  rrs-p1-tla-checkpoint,
-  rrs-p1-tla-lock, rrs-p1-tla-lock-core
-  ]
-  rectangle R_RUST $v_recipe [
-  rrs-p1-rspace, rrs-p1-rspace-full,
-  rrs-p1-rholang, rrs-p1-regression,
-  rrs-p1-head-rspace, rrs-p1-rholang-matcher
-  ]
-  rectangle R_CHECKS $v_recipe [
-  rrs-p1-checks
-  (18 checker steps)
-  ]
-  rectangle R_DOCS $v_recipe [
-  rrs-p1-docs
+  rectangle R_FAMILIES $v_recipe [
+  **Recipe families RF0 to RF12**
+  registered in the one freeze of P11
+  (decision 75), one recipe for each leaf
+  RF12 runs the aggregate gate
   ]
 }
 
@@ -217,65 +218,52 @@ package "5. Acceptance categories" as CATEGORIES {
   ]
 }
 
-' 1 -> 2: each check reads its sources.
 SRC_ROCQ -[$rrs_relation]-> CK_ROCQ
 SRC_ROCQ -[$rrs_relation]-> NEG
 SRC_TLA -[$rrs_relation]-> CK_TLC
-SRC_TLA -[$rrs_relation]-> CK_APA
 SRC_TLA -[$rrs_relation]-> NEG
-SRC_P1 -[$rrs_relation]-> CK_PBT
-SRC_P1 -[$rrs_relation]-> CK_SUITES
-SRC_HEAD -[$rrs_relation]-> CK_PBT
+SRC_NUM -[$rrs_relation]-> CK_NUM
+SRC_CODE -[$rrs_relation]-> CK_PBT
+SRC_CODE -[$rrs_relation]-> CK_SUITES
+SRC_CODE -[$rrs_relation]-> NEG
 SRC_HEAD -[$rrs_relation]-> CK_SUITES
-SRC_HEAD -[$rrs_relation]-> NEG
 SRC_CORPUS -[$rrs_relation]-> CK_SUITES
-SRC_CORPUS -[$rrs_relation]-> CK_PY
+SRC_CORPUS -[$rrs_relation]-> CK_DOC
 SRC_MAPS -[$rrs_relation]-> CK_PY
 SRC_DOCS -[$rrs_relation]-> CK_DOC
 SRC_DOCS -[$rrs_relation]-> CK_PY
 
-' 2 -> 3: each local gate runs its checks.
 CK_ROCQ -[$rrs_flow]-> G_PROOFS
 CK_TLC -[$rrs_flow]-> G_TLA
-CK_APA -[$rrs_flow]-> G_TLA
+CK_NUM -[$rrs_flow]-> G_ALL
 CK_PBT -[$rrs_flow]-> G_CARGO
 CK_SUITES -[$rrs_flow]-> G_CARGO
-CK_PY -[$rrs_flow]-> G_PY
-CK_DOC -[$rrs_flow]-> G_DOC
+CK_SUITES -[$rrs_flow]-> G_ALL
+CK_PY -[$rrs_flow]-> G_ALL
+CK_DOC -[$rrs_flow]-> G_ALL
 NEG -[$rrs_fail]-> G_PROOFS
 NEG -[$rrs_fail]-> G_TLA
-NEG -[$rrs_fail]-> G_CARGO
-NEG -[$rrs_fail]-> G_PY
+NEG -[$rrs_fail]-> G_ALL
+G_PROOFS -[$rrs_flow]-> G_ALL
+G_TLA -[$rrs_flow]-> G_ALL
 
-' 3 -> 4: each recipe runs the same commands in the sandbox.
-G_PROOFS -[$rrs_flow]-> R_ROCQ
-G_TLA -[$rrs_flow]-> R_TLA
-G_CARGO -[$rrs_flow]-> R_RUST
-G_PY -[$rrs_flow]-> R_CHECKS
-G_DOC -[$rrs_flow]-> R_DOCS
+G_ALL -[$rrs_flow]-> R_FAMILIES
+G_CARGO -[$rrs_flow]-> R_FAMILIES
 
-' 4 -> 5: each recipe step binds a criterion of one category.
-R_CHECKS -[$rrs_effect]-> E_MOD
-R_ROCQ -[$rrs_effect]-> E_FV
-R_TLA -[$rrs_effect]-> E_FV
-R_CHECKS -[$rrs_effect]-> E_PBT
-R_RUST -[$rrs_effect]-> E_PBT
-R_CHECKS -[$rrs_effect]-> E_COMPLETE
-R_ROCQ -[$rrs_effect]-> E_COMPLETE
-R_TLA -[$rrs_effect]-> E_COMPLETE
-R_RUST -[$rrs_effect]-> E_TESTED
-R_ROCQ -[$rrs_effect]-> E_TESTED
-R_CHECKS -[$rrs_effect]-> E_TESTED
-R_DOCS -[$rrs_effect]-> E_DOC
-R_CHECKS -[$rrs_effect]-> E_DOC
+R_FAMILIES -[$rrs_effect]-> E_MOD
+R_FAMILIES -[$rrs_effect]-> E_FV
+R_FAMILIES -[$rrs_effect]-> E_PBT
+R_FAMILIES -[$rrs_effect]-> E_COMPLETE
+R_FAMILIES -[$rrs_effect]-> E_TESTED
+R_FAMILIES -[$rrs_effect]-> E_DOC
 
 legend bottom
 **Concept colors**
-|<$v_code>     | P1 Rust code and its tests |
-|<$v_head>     | HEAD code and HEAD suites |
-|<$v_model>    | formal models (Rocq, TLA+) |
+|<$v_code>     | Rust code of the phases and its tests |
+|<$v_head>     | base code and its suites |
+|<$v_model>    | formal models (Rocq, TLA+, Z3, Sage) |
 |<$v_map>      | maps and policies |
-|<$v_corpus>   | corpora of expected outputs |
+|<$v_corpus>   | corpora of expected outputs, and the examples |
 |<$v_doc>      | documents and diagram sources |
 |<$v_check>    | check that must pass |
 |<$v_control>  | negative control: check that must fail |
