@@ -6,7 +6,7 @@
 //!
 //! Scope (Phase-9-independent):
 //!   - `Dir.exists(rel)` reports present/absent children correctly.
-//!   - `Dir.openFile(rel, "rw")` on a "r"-mode Dir returns
+//!   - `Dir.openFile(rel, "r+")` on a "r"-mode Dir returns
 //!     FSERR_UNSUPPORTED (monotonic mode attenuation).
 //!   - `Dir.openFile(rel, "r")` on a "r"-mode Dir returns a File cap
 //!     whose readN drains the seeded content.
@@ -120,9 +120,9 @@ in {{
 }
 
 /// Dir.openFile mode attenuation: an "r"-mode Dir refuses to yield
-/// a "rw"-mode File child.  Pins Dir.rho line 220's
+/// a "r+"-mode File child.  Pins Dir.rho line 220's
 /// `"requested mode exceeds Dir attenuation"` gate.  Regression
-/// would let a subordinate escalate mode by requesting "rw" on a
+/// would let a subordinate escalate mode by requesting "r+" on a
 /// read-only Dir cap.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn dir_openfile_mode_attenuation() {
@@ -247,7 +247,7 @@ in {{
 /// `unlinkat(2)`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn dir_remove_file_actually_unlinks() {
-    let (dir, params, fs_uri) = bundle_dir_with_child("rw", b"unlink me");
+    let (dir, params, fs_uri) = bundle_dir_with_child("r+", b"unlink me");
     let child_path = std::fs::canonicalize(dir.path())
         .expect("canonicalize root")
         .join("child.txt");
@@ -271,7 +271,7 @@ in {{
   rl!(`{fs_uri}`, *fsCh) |
   for(@(_, fs) <- fsCh) {{
     contract test_remove_file(rhoSpec, _, ackCh) = {{
-      for(@[true, d] <- @fs!?("openDir", "shareddir", {{"mode": "rw"}})) {{
+      for(@[true, d] <- @fs!?("openDir", "shareddir", {{"mode": "r+"}})) {{
         for(@r <- @d!?("removeFile", "child.txt")) {{
           rhoSpec!("assert", (r, "==", [true]),
             "Dir.removeFile('child.txt') → [true]", *ackCh)
@@ -316,7 +316,7 @@ async fn dir_remove_dir_recursive_wipes_subtree() {
         "shareddir".to_string(),
         root,
         BundleEntryKind::Dir,
-        "rw".to_string(),
+        "r+".to_string(),
         BundleConsensusMode::Oracular,
     )
     .expect("bundle entry");
@@ -342,7 +342,7 @@ in {{
   rl!(`{fs_uri}`, *fsCh) |
   for(@(_, fs) <- fsCh) {{
     contract test_remove_dir_recursive(rhoSpec, _, ackCh) = {{
-      for(@[true, d] <- @fs!?("openDir", "shareddir", {{"mode": "rw"}})) {{
+      for(@[true, d] <- @fs!?("openDir", "shareddir", {{"mode": "r+"}})) {{
         for(@r <- @d!?("removeDir", "subdir", {{"recursive": true}})) {{
           // DD-RemoveDirReplyShape: subdir contains 2 files + subdir itself
           // = 3 filesystem entries removed.
@@ -397,7 +397,7 @@ async fn dir_remove_dir_recursive_consensus_truncates_manifest_upward() {
         "shareddir".to_string(),
         root,
         BundleEntryKind::Dir,
-        "rw".to_string(),
+        "r+".to_string(),
         BundleConsensusMode::Consensus,
     )
     .expect("bundle entry");
@@ -423,7 +423,7 @@ in {{
   rl!(`{fs_uri}`, *fsCh) |
   for(@(_, fs) <- fsCh) {{
     contract test_remove_dir_consensus_truncated(rhoSpec, _, ackCh) = {{
-      for(@[true, d] <- @fs!?("openDir", "shareddir", {{"mode": "rw"}})) {{
+      for(@[true, d] <- @fs!?("openDir", "shareddir", {{"mode": "r+"}})) {{
         for(@r <- @d!?("removeDir", "subdir", {{"recursive": true}})) {{
           // Native returns [true, 3, [[path, kind], ...]] for
           // Consensus recursive; Dir.rho unwraps to [true, 3].
@@ -469,7 +469,7 @@ in {{
 async fn dir_rename_moves_child_on_disk() {
     // bundle_dir_with_child seeds `child.txt`; rename it to
     // `renamed.txt`.
-    let (dir, params, fs_uri) = bundle_dir_with_child("rw", b"rename me");
+    let (dir, params, fs_uri) = bundle_dir_with_child("r+", b"rename me");
     let root = std::fs::canonicalize(dir.path()).expect("canonicalize");
     let old_path = root.join("child.txt");
     let new_path = root.join("renamed.txt");
@@ -494,7 +494,7 @@ in {{
   rl!(`{fs_uri}`, *fsCh) |
   for(@(_, fs) <- fsCh) {{
     contract test_rename(rhoSpec, _, ackCh) = {{
-      for(@[true, d] <- @fs!?("openDir", "shareddir", {{"mode": "rw"}})) {{
+      for(@[true, d] <- @fs!?("openDir", "shareddir", {{"mode": "r+"}})) {{
         for(@r <- @d!?("rename", "child.txt", "renamed.txt")) {{
           rhoSpec!("assert", (r, "==", [true]),
             "Dir.rename → [true]", *ackCh)
@@ -537,7 +537,7 @@ in {{
 /// aspect; file_dir_check covers that in the mock-syscall layer).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn dir_copy_file_duplicates_content_on_disk() {
-    let (dir, params, fs_uri) = bundle_dir_with_child("rw", b"copy me");
+    let (dir, params, fs_uri) = bundle_dir_with_child("r+", b"copy me");
     let root = std::fs::canonicalize(dir.path()).expect("canonicalize");
     let src_path = root.join("child.txt");
     let dst_path = root.join("copy.txt");
@@ -562,7 +562,7 @@ in {{
   rl!(`{fs_uri}`, *fsCh) |
   for(@(_, fs) <- fsCh) {{
     contract test_copy(rhoSpec, _, ackCh) = {{
-      for(@[true, d] <- @fs!?("openDir", "shareddir", {{"mode": "rw"}})) {{
+      for(@[true, d] <- @fs!?("openDir", "shareddir", {{"mode": "r+"}})) {{
         for(@r <- @d!?("copyFile", "child.txt", "copy.txt")) {{
           // Native fs_copyFile returns [true, nBytes]; content is
           // 7 bytes ("copy me" without a trailing newline).
@@ -605,7 +605,7 @@ in {{
 ///
 /// This test pins that invariant end-to-end at the Rholang API
 /// surface by exercising **every Dir method and every File method**
-/// that can run against an "rw"-mode cap, after revoke, through the
+/// that can run against an "r+"-mode cap, after revoke, through the
 /// pre-held dirCap minted pre-revoke.  Any method that routes
 /// through an `fsRevokedP` peek (regression) would fail at its
 /// chained step with a specific-step error.
@@ -613,7 +613,7 @@ in {{
 /// Chain (sequential; `_dir` must stay alive throughout):
 ///
 /// A. Setup verification
-///   1. Pre-revoke `Fs.openDir("shareddir", {"mode": "rw"})` → `[true, dirCap]`.
+///   1. Pre-revoke `Fs.openDir("shareddir", {"mode": "r+"})` → `[true, dirCap]`.
 ///   2. `Fs.revoke()` → `[true]`.
 ///   3. Fresh `Fs.openDir(...)` post-revoke → `[false, "FSERR_REVOKED", _]`.
 ///
@@ -631,11 +631,11 @@ in {{
 ///  12. `roFile.flush()` → `[true, ..._]`.
 ///  13. `roFile.close()` → `[true, ..._]`.
 ///
-/// D. File write methods on an "rw"-mode fileCap
+/// D. File write methods on an "r+"-mode fileCap
 ///  14. `dirCap.openFile("child.txt", {"mode": "r+"})` → `[true, rwFile]`.
 ///      (POSIX r+: read + write, require existing file. Dir.openFile
 ///      forwards the mode string straight to `fs_open` which routes
-///      through `parse_open_mode`; "rw" is NOT a valid native-side
+///      through `parse_open_mode`; "r+" is NOT a valid native-side
 ///      mode — only "r", "r+", "w", "w+", "wx", "w+x", "a", "a+".)
 ///  15. `rwFile.writeString("rewritten after revoke")` → `[true, ..._]`.
 ///  16. `rwFile.truncate(10)` → `[true, ..._]`.
@@ -693,7 +693,7 @@ async fn fs_revoke_leaves_pre_held_dir_cap_live() {
         "shareddir".to_string(),
         root,
         BundleEntryKind::Dir,
-        "rw".to_string(),
+        "r+".to_string(),
         BundleConsensusMode::Oracular,
     )
     .expect("bundle entry construction");
@@ -737,7 +737,7 @@ in {{
     // success, forwards (rhoSpec, dirCap, ackCh) to step2 so the
     // minted-pre-revoke cap threads through every later step.
     contract step1(rhoSpec, _, ackCh) = {{
-      for(@r1 <- @fs!?("openDir", "shareddir", {{"mode": "rw"}})) {{
+      for(@r1 <- @fs!?("openDir", "shareddir", {{"mode": "r+"}})) {{
         match r1 {{
           [true, dirCap] => step2!(*rhoSpec, dirCap, *ackCh)
           _ => rhoSpec!("assert", (r1, "==", "[true, dirCap]"),
@@ -759,7 +759,7 @@ in {{
 
     // Step 3: fresh `Fs.openDir` post-revoke must be inert.
     contract step3(rhoSpec, @dirCap, ackCh) = {{
-      for(@r3 <- @fs!?("openDir", "shareddir", {{"mode": "rw"}})) {{
+      for(@r3 <- @fs!?("openDir", "shareddir", {{"mode": "r+"}})) {{
         match r3 {{
           [false, "FSERR_REVOKED", _msg] => step4!(*rhoSpec, dirCap, *ackCh)
           _ => rhoSpec!("assert", (r3, "==", "[false, FSERR_REVOKED, _]"),
@@ -886,7 +886,7 @@ in {{
 
     // ===== Section D — File write methods on an r+-mode fileCap =====
     //
-    // POSIX "r+" = read + write, require-exist.  "rw" is NOT a
+    // POSIX "r+" = read + write, require-exist.  "r+" is NOT a
     // valid native-side file mode; the native parser accepts only
     // r / r+ / w / w+ / wx / w+x / a / a+.  Dir.openFile forwards
     // the mode straight to `fs_open` which routes through

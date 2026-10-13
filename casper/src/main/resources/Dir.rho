@@ -48,10 +48,10 @@
 //
 // ## Mode attenuation (spec §Dir)
 //
-// Directory modes are `"r"` (read-only) or `"rw"` (read/write).
+// Directory modes are `"r"` (read-only) or `"r+"` (read/write).
 //   Dir mode "r"  → File modes {"r"};  openDir "r"
-//   Dir mode "rw" → File modes {"r", "r+", "w", "w+", "a", "a+",
-//                                "wx", "w+x"};  openDir "r" or "rw"
+//   Dir mode "r+" → File modes {"r", "r+", "w", "w+", "a", "a+",
+//                                "wx", "w+x"};  openDir "r" or "r+"
 // A downgrade is fine; an upgrade returns FSERR_UNSUPPORTED.
 //
 // ## Reply shape asymmetry — `removeDir` is the 4-elem exception
@@ -122,7 +122,7 @@ new Dir, rootP, cmodeP in {
     //
     // Returns [true, EntryStream] — a Stream whose elements are per-
     // entry record Maps (see spec §Dir > Listing).  Read op; allowed
-    // on both "r" and "rw" Dirs.
+    // on both "r" and "r+" Dirs.
     //
     // Backing native is the per-fd streaming primitive:
     // `entriesStreamOpen(root, rel, cmode, ack)` allocates a stream fd
@@ -322,9 +322,12 @@ new Dir, rootP, cmodeP in {
                           // M-12 (2026-09-04): `"rw"` removed from
                           // file-mode disjunction; callers migrate to
                           // `"r+"`.  Spec §File modes lists 8 forms.
+                          // (Dir attenuation `"rw"` was renamed to
+                          // `"r+"` in a follow-up slice; the two
+                          // namespaces are now unified around POSIX.)
                           "w" \/ "w+" \/ "wx" \/ "w+x" \/ "a" \/ "a+" \/ "r+" => {
                             match dirMode {
-                              "rw" => openFileImpl!(canonRoot, subPath, r, m, cmode, fileCtor, *return)
+                              "r+" => openFileImpl!(canonRoot, subPath, r, m, cmode, fileCtor, *return)
                               _ => return!([false, "FSERR_UNSUPPORTED",
                                 "requested mode exceeds Dir attenuation"])
                             }
@@ -350,7 +353,7 @@ new Dir, rootP, cmodeP in {
     // B4 (2026-09-03): options-map signature per spec §Dir >
     // Composition — supports `mode` and `path` (path: true enables
     // `mkdir -p`-style ancestor creation per spec §Options, requires
-    // "rw" Dir mode).  Prior shape took bare `@mode` positional.
+    // "r+" Dir mode).  Prior shape took bare `@mode` positional.
     //
     // Mints a nested Dir sharing this Dir's immutable canonRoot, with
     // subPath extended by `rel`.  Validated at mint time via fsStat
@@ -394,15 +397,15 @@ new Dir, rootP, cmodeP in {
                               (canonRoot, subPath, dirMode, fileCtor) => {
                                 match m {
                                   "r" => openDirImpl!(canonRoot, subPath, r, "r", cmode, fileCtor, *return)
-                                  "rw" => {
+                                  "r+" => {
                                     match dirMode {
-                                      "rw" => openDirImpl!(canonRoot, subPath, r, m, cmode, fileCtor, *return)
+                                      "r+" => openDirImpl!(canonRoot, subPath, r, m, cmode, fileCtor, *return)
                                       _ => return!([false, "FSERR_UNSUPPORTED",
                                         "requested mode exceeds Dir attenuation"])
                                     }
                                   }
                                   _ => return!([false, "FSERR_BAD_ARG",
-                                    "dir mode must be \"r\" or \"rw\""])
+                                    "dir mode must be \"r\" or \"r+\""])
                                 }
                               }
                               _ => return!([false, "FSERR_IO", "root params malformed"])
@@ -434,7 +437,7 @@ new Dir, rootP, cmodeP in {
             match params {
               (canonRoot, subPath, dirMode, _fileCtor) => {
                 match dirMode {
-                  "rw" => {
+                  "r+" => {
                     new joinedCh in {
                       joinRel!(subPath, r, *joinedCh) |
                       for (@joined <- joinedCh) {
@@ -509,7 +512,7 @@ new Dir, rootP, cmodeP in {
                     match params {
                       (canonRoot, subPath, dirMode, _fileCtor) => {
                         match dirMode {
-                          "rw" => {
+                          "r+" => {
                             new joinedCh in {
                               joinRel!(subPath, r, *joinedCh) |
                               for (@joined <- joinedCh) {
@@ -558,7 +561,7 @@ new Dir, rootP, cmodeP in {
                 match params {
                   (canonRoot, subPath, dirMode, _fileCtor) => {
                     match dirMode {
-                      "rw" => {
+                      "r+" => {
                         new jFromCh, jToCh in {
                           joinRel!(subPath, f, *jFromCh) |
                           joinRel!(subPath, t, *jToCh) |
@@ -598,7 +601,7 @@ new Dir, rootP, cmodeP in {
                 match params {
                   (canonRoot, subPath, dirMode, _fileCtor) => {
                     match dirMode {
-                      "rw" => {
+                      "r+" => {
                         new jFromCh, jToCh in {
                           joinRel!(subPath, f, *jFromCh) |
                           joinRel!(subPath, t, *jToCh) |
@@ -642,7 +645,7 @@ new Dir, rootP, cmodeP in {
                     match params {
                       (canonRoot, subPath, dirMode, _fileCtor) => {
                         match dirMode {
-                          "rw" => {
+                          "r+" => {
                             new joinedCh in {
                               joinRel!(subPath, r, *joinedCh) |
                               for (@joined <- joinedCh) {
@@ -706,7 +709,7 @@ new Dir, rootP, cmodeP in {
                         match params {
                           (canonRoot, subPath, dirMode, _fileCtor) => {
                             match dirMode {
-                              "rw" => {
+                              "r+" => {
                                 new joinedCh in {
                                   joinRel!(subPath, r, *joinedCh) |
                                   for (@joined <- joinedCh) {
