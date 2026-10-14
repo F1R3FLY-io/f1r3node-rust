@@ -636,7 +636,7 @@ tasks:
     acceptance:
       - "docs/designs/adaptive-execution.md records decisions A1 to A8, the issue #24 evidence, the controller rules, the degradation levels, the invariants I1 to I6, the F1r3fly CbC Casper binding, the provisions for the RGB peer clique, Casanova, and Cordial Miners, and the soak profile for each mechanism, and the comparison with Ethereum with cited sources (section 16)."
       - "The design uses the names of the D7 boundary layers and states which names change when PR #651 merges."
-      - "The maintainer approves the design, or the review comments are resolved."
+      - "The architects ratify the parts listed in design section 2.1, or the review comments are resolved. Design section 19 gives the task that each open question blocks and a recommended answer."
       - "The new terms of design section 20 are in docs/Glossary.md."
   - id: TASK-027-2
     title: "Add the adaptive telemetry signals and records with no behavior change"
@@ -653,7 +653,7 @@ tasks:
     blocked_by: [TASK-027-2]
     acceptance:
       - "The probe reads the CPU cores, the cgroup memory limit, the disk write latency, and the host class at startup."
-      - "tier = auto selects a profile from the probe. A named tier skips the probe, and the node records the choice."
+      - "tier = auto selects a profile from the probe. A named tier selects that profile, and the node records the choice. The probe runs in both cases."
       - "An operator override can narrow a bound and cannot widen it. A test proves both cases."
       - "The probe compares the host with the published targets of design section 14.3: the named tier, or the Constrained targets when tier = auto."
       - "Below a target, the node writes a warning record that names each value below its target and sets the gauge adaptive_probe_below_target to 1. The node still starts. A test proves both the warning and the normal start."
