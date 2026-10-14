@@ -171,7 +171,7 @@ in {{
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn file_truncate_write_mode_roundtrip() {
     let content = b"sixteen bytes!!!"; // 16 bytes
-    let (dir, params, fs_uri) = bundle_file(content, "rw");
+    let (dir, params, fs_uri) = bundle_file(content, "r+");
     let file_path = dir.path().join("target.bin");
 
     let test_source = format!(
@@ -311,7 +311,7 @@ in {{
 /// FSERR_IO instead of the semantically-correct FSERR_CLOSED.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn file_close_gates_subsequent_methods() {
-    let (_dir, params, fs_uri) = bundle_file(b"content", "rw");
+    let (_dir, params, fs_uri) = bundle_file(b"content", "r+");
 
     let test_source = format!(
         r#"

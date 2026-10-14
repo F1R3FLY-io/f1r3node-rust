@@ -102,7 +102,7 @@
 //   rel               — path within canonRoot; joinRel(subPath="", rel)
 //                       used by openFileImpl / openDirImpl produces the
 //                       full relative segment
-//   provisionedMode   — max attenuation ("r" / "rw" for dirs; any file
+//   provisionedMode   — max attenuation ("r" / "r+" for dirs; any file
 //                       mode from spec §File modes for files)
 //   kind              — "file" or "dir"
 //   consensusMode     — "oracular" or "consensus" (slice 26).  Derived
@@ -137,8 +137,8 @@
 // A downgrade succeeds; an upgrade → FSERR_UNSUPPORTED.  Mirrors
 // Dir.openFile / Dir.openDir:
 //   - Request `"r"` is always allowed.
-//   - Any other requested mode requires provisioned `"rw"` (or the
-//     analogous write-capable dir mode).
+//   - Any other requested mode requires a non-`"r"` provisioned mode
+//     (for files: any POSIX write-capable mode; for dirs: `"r+"`).
 //
 // ## Known limitation — narrow-provisioned mode-cap (m-16-5)
 //
@@ -147,35 +147,21 @@
 // strict "capped at provisioned" reading.  Matches the pre-existing
 // Dir.openFile behavior.
 //
-// ## m-16-6 fix (2026-08-06, M-6 rev-2)
+// ## Cap check
 //
-// Pre-fix, the File openFile cap check was `provisioned == "rw"`.
-// But `CONFIG_FILE_MODES = {"r", "r+", "w", "w+", "a", "a+"}` —
-// no `"rw"` — so File entries could NEVER be provisioned as
-// `"rw"`, and every non-`"r"` file open through `Fs.openFile`
-// unconditionally returned `FSERR_UNSUPPORTED` in production.
-// The pre-existing tests only passed because they hand-craft a
-// fake bundle with a File entry provisioned as `"rw"` — a shape
-// no HOCON- or CLI-parsed bundle can produce.  A real deployment
-// with `oracle-static-files { "cfg" = { path = ..., mode = "r+" }}`
-// followed by `Fs.openFile("cfg", {"mode": "w"})` returned
-// `FSERR_UNSUPPORTED` with `"requested mode exceeds provisioned
-// attenuation"` — even though the operator granted write access.
+// `provisioned == "r"` rejects non-`"r"` requests; any other
+// provisioned mode (any POSIX write-capable file mode for files,
+// `"r+"` for dirs) allows the request through.  Matches the
+// File.rho write-capable-mode pattern already used at every
+// internal method gate (writeChars, writeLines, chmod, chown,
+// truncate, etc.).
 //
-// Post-fix cap check: `provisioned == "r"` rejects non-`"r"`
-// requests; any other provisioned mode (`r+`, `w`, `w+`, `a`,
-// `a+`, and the non-spec but still-accepted `rw`) allows the
-// request through.  Matches the File.rho write-capable-mode
-// pattern already used at every internal method gate
-// (writeChars, writeLines, chmod, chown, truncate, etc.).
-//
-// The requested-mode arm retains `"rw"` as an accepted request
-// even though it is not in the spec's File modes table — the
-// native mode parser (mode.rs::parse_open_mode) accepts `"rw"`
-// as an alias for POSIX `"r+"` (ReadWrite + require-exist).
-// The spec/impl drift on `"rw"` vs `"r+"` is tracked as a
-// separate cleanup; retaining `"rw"` as a valid request
-// preserves existing caller code and matches native semantics.
+// The requested-mode arm accepts the full POSIX file-mode set
+// (`r`, `r+`, `w`, `w+`, `wx`, `w+x`, `a`, `a+`) and rejects
+// everything else.  Dir attenuation is `"r"` (read-only) or
+// `"r+"` (read/write) — unified around POSIX naming so there is
+// no namespace split between file-open modes and Dir attenuation
+// keywords.
 //
 // ## Map pattern-match ordering assumption
 //
@@ -349,15 +335,10 @@ new Fs, fsBundleP,
                             match m {
                               "r" => openFileImpl!(
                                 canonRoot, "", rel, "r", cmode, *File, *return)
-                              // M-12 (2026-09-04): the `"rw"` alias
-                              // was removed from the file-mode
-                              // disjunction; callers who previously
-                              // wrote `"rw"` migrate to `"r+"`.  Spec
-                              // §File modes enumerates exactly 8
-                              // forms (r/w/a/r+/w+/wx/w+x/a+).
+                              // Spec §File modes enumerates exactly
+                              // 8 forms (r/w/a/r+/w+/wx/w+x/a+).
                               "w" \/ "w+" \/ "wx" \/ "w+x" \/ "a" \/ "a+" \/ "r+" => {
-                                // m-16-6 fix (2026-08-06, M-6 rev-2):
-                                // write-capable cap check.  Only "r"
+                                // Write-capable cap check.  Only "r"
                                 // provisioned rejects; every other
                                 // file mode (r+, w, w+, a, a+, wx,
                                 // w+x) grants write.
@@ -443,9 +424,9 @@ new Fs, fsBundleP,
                             match m {
                               "r" => openDirImpl!(
                                 canonRoot, "", rel, "r", cmode, *File, *return)
-                              "rw" => {
+                              "r+" => {
                                 match provisioned {
-                                  "rw" => openDirImpl!(
+                                  "r+" => openDirImpl!(
                                     canonRoot, "", rel, m, cmode, *File, *return)
                                   _ => return!(
                                     [false, "FSERR_UNSUPPORTED",
@@ -454,7 +435,7 @@ new Fs, fsBundleP,
                               }
                               _ => return!(
                                 [false, "FSERR_BAD_ARG",
-                                 "dir mode must be \"r\" or \"rw\""])
+                                 "dir mode must be \"r\" or \"r+\""])
                             }
                           }
                           (_, _, _, "file", _) => return!(
