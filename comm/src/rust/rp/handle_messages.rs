@@ -5,9 +5,7 @@ use std::sync::Arc;
 use models::routing::{Packet, Protocol};
 
 use crate::rust::errors::CommError;
-use crate::rust::metrics_constants::{
-    DISCONNECT_METRIC, FOREIGN_CHAIN_REFUSED_METRIC, RP_HANDLE_METRICS_SOURCE,
-};
+use crate::rust::metrics_constants::{DISCONNECT_METRIC, RP_HANDLE_METRICS_SOURCE};
 use crate::rust::p2p::packet_handler::PacketHandler;
 use crate::rust::peer_node::PeerNode;
 use crate::rust::rp::connect::ConnectionsCell;
@@ -15,57 +13,6 @@ use crate::rust::rp::protocol_helper;
 use crate::rust::rp::rp_conf::RPConf;
 use crate::rust::transport::communication_response::CommunicationResponse;
 use crate::rust::transport::transport_layer::TransportLayer;
-
-fn peer_chain_id(protocol: &Protocol) -> &[u8] {
-    protocol
-        .header
-        .as_ref()
-        .map(|header| header.chain_id.as_ref())
-        .unwrap_or_default()
-}
-
-fn is_handshake(protocol: &Protocol) -> bool {
-    matches!(
-        &protocol.message,
-        Some(models::routing::protocol::Message::ProtocolHandshake(_))
-            | Some(models::routing::protocol::Message::ProtocolHandshakeResponse(_))
-    )
-}
-
-/// Refuse a peer that does not share this node's chain.
-async fn refuse_foreign_chain(
-    peer: &PeerNode,
-    protocol: &Protocol,
-    transport_layer: Arc<dyn TransportLayer + Send + Sync + 'static>,
-    connections_cell: &ConnectionsCell,
-    rp_conf: &RPConf,
-    error: CommError,
-) -> Result<CommunicationResponse, CommError> {
-    metrics::counter!(FOREIGN_CHAIN_REFUSED_METRIC, "source" => RP_HANDLE_METRICS_SOURCE)
-        .increment(1);
-    tracing::warn!(peer = %peer, error = %error, "Refused a message from a peer of another chain");
-
-    let _ = connections_cell.flat_modify(|connections| {
-        if connections.iter().any(|known| known.id.key == peer.id.key) {
-            connections.remove_conn_and_report(peer.clone())
-        } else {
-            Ok(connections)
-        }
-    });
-
-    if is_handshake(protocol) {
-        let goodbye = protocol_helper::disconnect(
-            &rp_conf.local,
-            &rp_conf.network_id,
-            rp_conf.chain_id.to_wire(),
-        );
-        if let Err(e) = transport_layer.send(peer, &goodbye).await {
-            tracing::debug!(peer = %peer, error = %e, "Could not tell a foreign-chain peer to disconnect");
-        }
-    }
-
-    Ok(CommunicationResponse::not_handled(error))
-}
 
 pub async fn handle(
     protocol: &Protocol,
@@ -75,26 +22,6 @@ pub async fn handle(
     rp_conf: &RPConf,
 ) -> Result<CommunicationResponse, CommError> {
     let sender = protocol_helper::sender(protocol);
-    let is_packet = matches!(
-        &protocol.message,
-        Some(models::routing::protocol::Message::Packet(_))
-    );
-
-    if !is_packet {
-        if let Err(error) =
-            rp_conf.check_chain_id(&sender.to_string(), peer_chain_id(protocol), None)
-        {
-            return refuse_foreign_chain(
-                &sender,
-                protocol,
-                transport_layer,
-                connections_cell,
-                rp_conf,
-                error,
-            )
-            .await;
-        }
-    }
 
     match &protocol.message {
         Some(models::routing::protocol::Message::Heartbeat(_)) => {
@@ -134,7 +61,10 @@ pub fn handle_disconnect(
 ) -> Result<CommunicationResponse, CommError> {
     let mut removed = false;
     connections_cell.flat_modify(|connections| {
-        if connections.iter().any(|known| known.id.key == sender.id.key) {
+        if connections
+            .iter()
+            .any(|known| known.id.key == sender.id.key)
+        {
             removed = true;
             connections.remove_conn_and_report(sender.clone())
         } else {
@@ -145,7 +75,10 @@ pub fn handle_disconnect(
         tracing::info!("Forgetting about {}", sender);
         metrics::counter!(DISCONNECT_METRIC, "source" => RP_HANDLE_METRICS_SOURCE).increment(1);
     } else {
-        tracing::debug!("Ignoring a disconnect from {}, which is not connected", sender);
+        tracing::debug!(
+            "Ignoring a disconnect from {}, which is not connected",
+            sender
+        );
     }
     Ok(CommunicationResponse::handled_without_message())
 }

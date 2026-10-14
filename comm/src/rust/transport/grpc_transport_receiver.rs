@@ -479,19 +479,17 @@ impl TransportLayer for TransportLayerService {
             _ => None,
         };
 
-        if packet_type_id.is_some() {
-            if let Err(error) =
-                self.rp_config
-                    .check_chain_id(&peer.to_string(), &header.chain_id, packet_type_id)
-            {
-                metrics::counter!(
-                    FOREIGN_CHAIN_REFUSED_METRIC,
-                    "source" => TRANSPORT_METRICS_SOURCE
-                )
-                .increment(1);
-                tracing::warn!(peer = %peer, error = %error, "Refused a packet from a peer of another chain");
-                return Err(Status::permission_denied(error.to_string()));
-            }
+        if let Err(error) =
+            self.rp_config
+                .check_chain_id(&peer.to_string(), &header.chain_id, packet_type_id)
+        {
+            metrics::counter!(
+                FOREIGN_CHAIN_REFUSED_METRIC,
+                "source" => TRANSPORT_METRICS_SOURCE
+            )
+            .increment(1);
+            tracing::warn!(peer = %peer, error = %error, "Refused a message from a peer of another chain");
+            return Err(Status::permission_denied(error.to_string()));
         }
 
         // Determine if this is a gossip message (not a request/response)

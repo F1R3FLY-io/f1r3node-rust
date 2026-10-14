@@ -290,6 +290,12 @@ where
                 liveness.record_success(&peer.id.key);
                 retained_peers.push(peer);
             }
+            // A peer of another chain or network refuses every message, so
+            // waiting for a failure streak only delays the inevitable.
+            Err(error @ CommError::WrongNetwork(..)) => {
+                warn!("Heartbeat to {} refused; evicting: {}", peer, error);
+                failed_peers.push(peer);
+            }
             Err(error) => match liveness.record_failure(&peer.id.key) {
                 HeartbeatFailure::Evicted => failed_peers.push(peer),
                 HeartbeatFailure::Retained { streak, threshold } => {
