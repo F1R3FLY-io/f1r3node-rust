@@ -204,6 +204,7 @@ edges are *active*; the neglect graph is the specific active-edge structure).
 ### Block
 
 A block is a signed consensus artifact with parents, justifications, deploy results, and state commitments.
+It is the CbC Casper form of a commit, the unit that a replication mechanism orders and finalizes.
 
 **Preferred usage.** Use this term for the artifact that [block proposal](#block-proposal) constructs and [block validation](#block-validation) checks.
 Distinguish a block from a CPU task, an execution attempt, and an application lifetime.

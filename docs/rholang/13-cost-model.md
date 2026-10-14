@@ -1,7 +1,7 @@
 # Cost Model
 
 This reference describes the existing phlogiston contract.
-See [Execution and Resource Authorization](../casper/execution-and-resource-authorization.md) for completion boundaries, concurrency levels, and the historical PR #216 token proposal.
+See [Execution and Resource Authorization](../execution-and-resource-authorization.md) for completion boundaries, concurrency levels, and the historical PR #216 token proposal. The [CbC Casper binding](../casper/execution-and-resource-authorization.md) records the Casper decisions on the cost fields.
 
 [D-12](../casper/design/decision-ledger/12-deploy-cost-limits.md#decision-2026-09-16) preserves `phloLimit` and `phloPrice`.
 Token accounting requires separate approval and does not replace those fields under the recorded decision.

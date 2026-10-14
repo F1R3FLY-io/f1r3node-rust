@@ -35,7 +35,7 @@ An execution attempt is one runtime evaluation of a deploy against a selected st
 
 **Preferred usage.** Use this term for the bounded evaluation scope, not all future activity of an installed contract.
 Distinguish an execution attempt from block validation and finalization.
-See [Execution and Resource Authorization](casper/execution-and-resource-authorization.md#units-of-work).
+See [Execution and Resource Authorization](execution-and-resource-authorization.md#units-of-work).
 
 ### Evaluation completion
 
@@ -44,7 +44,7 @@ Unmatched receives can remain in RSpace after a successful evaluation.
 
 **Preferred usage.** Use this term instead of an unqualified run-to-completion claim.
 Distinguish evaluation completion from application completion and finalization.
-See the [completion boundaries](casper/execution-and-resource-authorization.md#completion-boundaries).
+See the [completion boundaries](execution-and-resource-authorization.md#completion-boundaries).
 
 ### Application completion
 
@@ -52,21 +52,21 @@ Application completion occurs when an application reaches its explicitly defined
 
 **Preferred usage.** State the result or acknowledgment that establishes completion.
 Do not infer application completion from evaluation return or block finalization alone.
-See the [completion boundaries](casper/execution-and-resource-authorization.md#completion-boundaries).
+See the [completion boundaries](execution-and-resource-authorization.md#completion-boundaries).
 
 ### Atomic COMM
 
 An atomic COMM is a tuple-space communication that matches sends and receives and enables a continuation.
 
 **Preferred usage.** Use this term for the communication event, not a block, deploy, CPU instruction, or fixed elapsed-time unit.
-See the [accounting distinction](casper/execution-and-resource-authorization.md#accounting-versus-resource-protection).
+See the [accounting distinction](execution-and-resource-authorization.md#accounting-versus-resource-protection).
 
 ### Resource authorization
 
 Resource authorization determines which authenticated authority can fund an operation under the applicable accounting rules.
 
 **Preferred usage.** Use this term for funding authority, not CPU scheduling or physical resource protection.
-See [Execution and Resource Authorization](casper/execution-and-resource-authorization.md#accounting-versus-resource-protection).
+See [Execution and Resource Authorization](execution-and-resource-authorization.md#accounting-versus-resource-protection).
 
 ### Cost accounting
 
@@ -74,7 +74,7 @@ Cost accounting records charges and settlement under the applicable accounting r
 
 **Preferred usage.** State the accounting authority and cost units when comparing accounting models.
 Distinguish economic bounds from CPU-time, memory, and elapsed-time bounds.
-See the [existing contract and recorded proposal](casper/execution-and-resource-authorization.md#accounting-versus-resource-protection).
+See the [existing contract and recorded proposal](execution-and-resource-authorization.md#accounting-versus-resource-protection).
 
 ### Deploy parameter
 
