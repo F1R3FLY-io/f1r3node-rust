@@ -1,5 +1,12 @@
 # Cost Model
 
+This reference describes the existing phlogiston contract.
+See [Execution and Resource Authorization](../casper/execution-and-resource-authorization.md) for completion boundaries, concurrency levels, and the historical PR #216 token proposal.
+
+[D-12](../casper/design/decision-ledger/12-deploy-cost-limits.md#decision-2026-09-16) preserves `phloLimit` and `phloPrice`.
+Token accounting requires separate approval and does not replace those fields under the recorded decision.
+Economic cost units alone do not establish CPU-time, memory, or elapsed-time bounds.
+
 Every Rholang operation consumes phlogiston (gas). Deploys specify a `phlo_limit` and `phlo_price`. The runtime charges costs as it executes. If the limit is exhausted, execution halts with `OutOfPhlogistonsError`.
 
 ## Charging Mechanism

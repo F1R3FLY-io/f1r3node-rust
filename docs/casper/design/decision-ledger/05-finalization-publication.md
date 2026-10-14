@@ -25,6 +25,8 @@
 
 **Edits that follow.** The Consensus Protocol section 7 trigger text, its FT caching text, and the BFT propagation paragraph record the five invariants. They also record the single-flight default. The `FinalizationAtomicity.tla` gate item applies only when the ledger architecture is used.
 
+See [Execution and Resource Authorization](../../execution-and-resource-authorization.md#concurrency-levels) for the distinction between finalization evaluation, block replay, and intra-deploy concurrency.
+
 ## 1. Question
 
 How does a node record a finalization decision durably, how many evaluations may overlap, and what may a node-local finality marker do?

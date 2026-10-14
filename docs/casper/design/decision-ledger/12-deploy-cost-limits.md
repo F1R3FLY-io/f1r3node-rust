@@ -25,6 +25,8 @@
 
 **Edits that follow.** No `dev` specification edit. On `feature/cost-accounted-rho`, the fields, the validation rule, and the client contract return before that branch merges into `dev`. The token validity layer needs its own FIP and its own row.
 
+See [Execution and Resource Authorization](../../execution-and-resource-authorization.md#accounting-versus-resource-protection) for the distinction between funding authority, economic cost units, and physical work bounds.
+
 ## 1. Question
 
 Why did PR #216 remove the per-deploy `phloLimit` and `phloPrice` fields, what replaces their functions, and which of those replacements has a specification?
