@@ -2140,11 +2140,34 @@ jobs:
       - name: Extract subprocess binary
         shell: bash -euo pipefail {0}
         run: |
+          # The image entrypoint (node/docker-entrypoint-rust.sh) preloads
+          # jemalloc. Without the same preload, subprocess nodes run on glibc
+          # malloc, and their checkpoint and trie-apply stages were 3 to 23
+          # times slower than Docker in soak 38300649650 (issue #24). The
+          # wrapper gives subprocess nodes the jemalloc build of the image.
+          # It execs the binary, so the PID and the environment, including
+          # the SOAK_PROCESS_OWNER marker, stay the same.
+          jemalloc="/usr/lib/$(uname -m)-linux-gnu/libjemalloc.so.2"
           container_id="$(docker create "$DOCKER_IMAGE_NAME:latest")"
-          docker cp "$container_id:/opt/docker/bin/node" /tmp/rnode
+          docker cp "$container_id:/opt/docker/bin/node" /tmp/rnode.bin
+          docker cp -L "$container_id:$jemalloc" /tmp/libjemalloc.so.2
           docker rm "$container_id"
+          chmod +x /tmp/rnode.bin
+          printf '%s\n' \
+            '#!/bin/sh' \
+            'LD_PRELOAD="/tmp/libjemalloc.so.2${LD_PRELOAD:+:$LD_PRELOAD}"' \
+            'export LD_PRELOAD' \
+            'exec /tmp/rnode.bin "$@"' > /tmp/rnode
           chmod +x /tmp/rnode
-          ldd /tmp/rnode
+          ldd /tmp/rnode.bin
+          # jemalloc prints its statistics at exit only when it is the active
+          # allocator. This checks the wrapper path that the provider starts.
+          stats="$(MALLOC_CONF=stats_print:true /tmp/rnode --help 2>&1 >/dev/null || true)"
+          grep -q 'Begin jemalloc statistics' <<<"$stats" || {
+            echo "::error::the subprocess node wrapper does not run the node on jemalloc"
+            exit 1
+          }
+          echo "Subprocess nodes run on jemalloc: $(grep -m1 -E '^Version' <<<"$stats" || echo 'version not reported')"
 
       - name: Install integration dependencies
         working-directory: system-integration
