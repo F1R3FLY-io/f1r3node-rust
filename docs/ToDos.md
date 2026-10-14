@@ -2166,6 +2166,10 @@ tasks:
     unit_tests: [scripts/casper-soak/tests/authority_finality.rs]
     completion_gaps: []
     completed_date: 2026-09-19
+    notes:
+      - "2026-10-13, branch fix/authority-finality-timeout-flake: the timeout test asserted a 5 s bound on the whole execute_fixture call. That call also copies and hashes the debug test binary."
+      - "A loaded GitHub runner exceeded the 5 s bound in run 38480514170. The bound is now the 30 s fixture sleep. The test still fails if the profile waits for the stuck executor."
+      - "The change does not alter the acceptance items or CLAIM-CASPER-SOAK-002. The suite still reports 12 passed and 1 ignored."
   - id: TASK-017-6
     title: "Verify publication and restart fault profiles and observations"
     claims: [CLAIM-CASPER-SOAK-003]
