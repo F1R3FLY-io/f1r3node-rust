@@ -29,6 +29,30 @@ pub struct Blob {
     pub packet: Packet,
 }
 
+/// A fan-out succeeds if it reached at least one peer. One unreachable or
+/// refusing peer must not fail the operation for the peers that received it.
+pub(crate) fn best_effort(
+    operation: &str,
+    peers: &[PeerNode],
+    results: Vec<Result<(), CommError>>,
+) -> Result<(), CommError> {
+    let mut first_error = None;
+    let mut delivered = false;
+    for (peer, result) in peers.iter().zip(results) {
+        match result {
+            Ok(()) => delivered = true,
+            Err(error) => {
+                tracing::debug!(peer = %peer.to_address(), error = %error, "{} to one peer failed", operation);
+                first_error.get_or_insert(error);
+            }
+        }
+    }
+    match first_error {
+        Some(error) if !delivered => Err(error),
+        _ => Ok(()),
+    }
+}
+
 #[async_trait]
 pub trait TransportLayer {
     async fn send(&self, peer: &PeerNode, msg: &Protocol) -> Result<(), CommError>;
@@ -113,14 +137,32 @@ pub trait TransportLayer {
         scope_size: Option<usize>,
     ) -> Result<(), CommError> {
         let max = scope_size.unwrap_or(conf.max_num_of_connections);
-        let peers = connections_cell.random(max)?;
+        let peers = connections_cell.random(max)?.into_vec();
         let protocol_msg = protocol_helper::packet(
             &conf.local,
             &conf.network_id,
             conf.chain_id.to_wire(),
             message,
         );
-        self.broadcast(&peers.0, &protocol_msg).await
+        let results =
+            futures::future::join_all(peers.iter().map(|peer| self.send(peer, &protocol_msg)))
+                .await;
+
+        for (peer, result) in peers.iter().zip(&results) {
+            if let Err(error @ CommError::WrongChainId(..)) = result {
+                warn!("Disconnecting from {}: {}", peer, error);
+                let _ = connections_cell.flat_modify(|connections| {
+                    if connections.iter().any(|known| known.id.key == peer.id.key) {
+                        connections.remove_conn_and_report(peer.clone())
+                    } else {
+                        Ok(connections)
+                    }
+                });
+                let _ = self.disconnect(peer).await;
+            }
+        }
+
+        best_effort("broadcast", &peers, results)
     }
 
     async fn stream_packet_to_peers(
@@ -310,5 +352,62 @@ pub trait TransportLayer {
             "ApprovedBlockRequest",
         )
         .await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::rust::peer_node::{Endpoint, NodeIdentifier};
+    use crate::rust::rp::connect::Connections;
+    use crate::rust::test_instances::{create_rp_conf_ask, TransportLayerStub};
+
+    fn peer(name: &str) -> PeerNode {
+        PeerNode {
+            id: NodeIdentifier {
+                key: Bytes::from(name.as_bytes().to_vec()),
+            },
+            endpoint: Endpoint::new("host".to_string(), 40400, 40404),
+        }
+    }
+
+    #[tokio::test]
+    async fn broadcast_drops_a_connected_peer_that_refuses_our_chain() {
+        let cell = ConnectionsCell::new();
+        cell.flat_modify(|_| {
+            Ok(Connections::from_vec(vec![
+                peer("foreign"),
+                peer("slow"),
+                peer("good"),
+            ]))
+        })
+        .unwrap();
+        let transport = TransportLayerStub::new();
+        transport.set_responses(|remote, _| {
+            if remote.id.key == peer("foreign").id.key {
+                Err(CommError::WrongChainId(
+                    "foreign".to_string(),
+                    "other chain".to_string(),
+                ))
+            } else if remote.id.key == peer("slow").id.key {
+                Err(CommError::TimeOut)
+            } else {
+                Ok(())
+            }
+        });
+        let conf = create_rp_conf_ask(peer("local"), None, None);
+        let packet = Packet {
+            type_id: "BlockHashMessage".to_string(),
+            content: Bytes::new(),
+        };
+
+        transport
+            .send_packet_to_peers(&cell, &conf, packet, None)
+            .await
+            .unwrap();
+
+        let mut left = cell.read().unwrap().into_vec();
+        left.sort_by(|a, b| a.id.key.cmp(&b.id.key));
+        assert_eq!(left, vec![peer("good"), peer("slow")]);
     }
 }

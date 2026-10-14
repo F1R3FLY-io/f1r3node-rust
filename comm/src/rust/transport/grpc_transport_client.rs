@@ -20,7 +20,7 @@ use crate::rust::transport::grpc_transport::GrpcTransport;
 use crate::rust::transport::packet_ops::PacketOps;
 use crate::rust::transport::ssl_session_client_interceptor::SslSessionClientInterceptor;
 use crate::rust::transport::stream_observable::StreamObservable;
-use crate::rust::transport::transport_layer::{Blob, TransportLayer};
+use crate::rust::transport::transport_layer::{best_effort, Blob, TransportLayer};
 use crate::rust::utils::resolve_hostname_to_ip;
 
 type StreamCache = Arc<dashmap::DashMap<String, Vec<u8>>>;
@@ -623,30 +623,6 @@ impl TransportLayer for GrpcTransportClient {
     async fn get_channeled_peers(&self) -> Result<std::collections::HashSet<PeerNode>, CommError> {
         let channels_map = self.channels_map.lock().await;
         Ok(channels_map.keys().cloned().collect())
-    }
-}
-
-/// A fan-out succeeds if it reached at least one peer. One unreachable or
-/// refusing peer must not fail the operation for the peers that received it.
-fn best_effort(
-    operation: &str,
-    peers: &[PeerNode],
-    results: Vec<Result<(), CommError>>,
-) -> Result<(), CommError> {
-    let mut first_error = None;
-    let mut delivered = false;
-    for (peer, result) in peers.iter().zip(results) {
-        match result {
-            Ok(()) => delivered = true,
-            Err(error) => {
-                tracing::debug!(peer = %peer.to_address(), error = %error, "{} to one peer failed", operation);
-                first_error.get_or_insert(error);
-            }
-        }
-    }
-    match first_error {
-        Some(error) if !delivered => Err(error),
-        _ => Ok(()),
     }
 }
 

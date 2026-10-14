@@ -489,7 +489,7 @@ impl TransportLayer for TransportLayerService {
             )
             .increment(1);
             tracing::warn!(peer = %peer, error = %error, "Refused a message from a peer of another chain");
-            return Err(Status::permission_denied(error.to_string()));
+            return Err(Status::failed_precondition(error.to_string()));
         }
 
         // Determine if this is a gossip message (not a request/response)

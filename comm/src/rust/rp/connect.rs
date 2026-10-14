@@ -292,7 +292,7 @@ where
             }
             // A peer of another chain or network refuses every message, so
             // waiting for a failure streak only delays the inevitable.
-            Err(error @ CommError::WrongNetwork(..)) => {
+            Err(error @ (CommError::WrongNetwork(..) | CommError::WrongChainId(..))) => {
                 warn!("Heartbeat to {} refused; evicting: {}", peer, error);
                 failed_peers.push(peer);
             }
@@ -392,7 +392,8 @@ where
             Ok(()) => {
                 successful_connections.push(peer);
             }
-            Err(CommError::WrongNetwork(peer_addr, msg)) => {
+            Err(CommError::WrongNetwork(peer_addr, msg))
+            | Err(CommError::WrongChainId(peer_addr, msg)) => {
                 warn!(
                     "Can't connect to peer {}. {} Removing it from the routing table.",
                     peer_addr, msg

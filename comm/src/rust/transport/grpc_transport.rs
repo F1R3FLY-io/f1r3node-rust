@@ -73,6 +73,16 @@ impl GrpcTransport {
         }
     }
 
+    /// Error pattern matching: Check if the peer refused us as a node of
+    /// another chain
+    pub fn is_peer_wrong_chain(error: &Status) -> Option<String> {
+        if matches!(error.code(), tonic::Code::FailedPrecondition) {
+            Some(error.message().to_string())
+        } else {
+            None
+        }
+    }
+
     /// Error pattern matching: Check if error indicates message too large
     pub fn is_peer_message_too_large(error: &Status) -> bool {
         matches!(error.code(), tonic::Code::ResourceExhausted)
@@ -111,6 +121,8 @@ impl GrpcTransport {
                 errors::message_too_large(peer.endpoint.host.clone())
             } else if let Some(msg) = Self::is_peer_wrong_network(&error) {
                 errors::wrong_network(peer.endpoint.host.clone(), msg)
+            } else if let Some(msg) = Self::is_peer_wrong_chain(&error) {
+                errors::wrong_chain_id(peer.endpoint.host.clone(), msg)
             } else {
                 errors::protocol_exception(error.to_string())
             }
@@ -261,6 +273,11 @@ mod tests {
         let permission_result: Result<(), Status> = Err(Status::permission_denied("wrong network"));
         let mapped = GrpcTransport::process_error(&peer, permission_result);
         assert!(matches!(mapped, Err(CommError::WrongNetwork(_, _))));
+
+        // Test failed precondition mapping (peer of another chain)
+        let chain_result: Result<(), Status> = Err(Status::failed_precondition("other chain"));
+        let mapped = GrpcTransport::process_error(&peer, chain_result);
+        assert!(matches!(mapped, Err(CommError::WrongChainId(_, _))));
 
         // Test resource exhausted mapping
         let resource_result: Result<(), Status> = Err(Status::resource_exhausted("too large"));
