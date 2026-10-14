@@ -706,7 +706,7 @@ fn honest_store_items(
         rspace_store.roots.clone(),
     );
     let history_store = rspace_store.history.clone();
-    let get_from_history: Arc<dyn Fn(&ByteVector) -> Option<ByteVector>> =
+    let get_from_history =
         Arc::new(move |key: &ByteVector| history_store.get_one(key).ok().flatten());
 
     let root = Blake2b256Hash::from_bytes_prost(
