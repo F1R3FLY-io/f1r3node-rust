@@ -1102,6 +1102,34 @@ tasks:
       - "A 24-hour soak shows a test_load failure rate lower than soak 37640235959 on the same base."
     candidate_fix_empty_heartbeat_blocks: "If the soak shows that the heartbeat lane builds many empty blocks in the failing phases, suppress empty heartbeat blocks while user deploys are pending or finality advances. This changes proposer behavior and the liveness mechanism that the discharged heartbeat proposal amplification bound claim covers, so it needs its own pending claim, a TDD plan, and evidence that finality still advances without deploys."
     candidate_fix_api_lfb: "If the measurement implicates the API path, bond_status and exploratory_deploy read the stored LFB (dag.last_finalized_block) instead of computing it. This changes cbc=mandatory casper code, so it needs a pending claim and a TDD cycle first, with a test that two overlapping LFB requests apply the finalization effect once for each block."
+  - id: TASK-021-14
+    title: "Run subprocess soak nodes on the jemalloc build of the image (allocator parity)"
+    status: review
+    claimed_by: claude-session-dfac55a4
+    claimed_at: 2026-10-13T16:00:00Z
+    branch: hotfix/subprocess-allocator-parity
+    pr_base_branch: master
+    blocked_by: []
+    origin: "Soak 38300649650 segment 2 (master e5a0531a6): 28 of 86 iterations failed test_load, all on the subprocess provider (28 of 42), none on Docker (0 of 43). The subprocess checkpoint and trie-apply stages were 3 to 23 times slower. The Docker entrypoint preloads jemalloc, and the subprocess binary runs on glibc malloc (issue #24 comment 6148770562)."
+    change: "The merge-recovery-soak workflow extracts the jemalloc library of the image with the binary and starts subprocess nodes through a wrapper that preloads it. The step fails when the wrapper does not run the node on jemalloc."
+    acceptance:
+      - "The Extract subprocess binary step reports the jemalloc version of the image."
+      - "In the sustained phase, the subprocess replay checkpoint and apply_trie_actions times are near the Docker values (about 270 ms and 13 ms)."
+      - "The test_load failure rate meets the issue #24 gate (at most 5 in 100 sessions) on each provider."
+      - "Subprocess node RSS stays inside the soak envelope."
+  - id: TASK-021-15
+    title: "Link jemalloc into the node binary as its global allocator"
+    status: pending
+    claimed_by: null
+    pr_base_branch: dev
+    blocked_by: [TASK-021-14]
+    notes:
+      - "Start only if TASK-021-14 shows that the allocator causes the subprocess slowdown."
+    acceptance:
+      - "The node uses jemalloc on every launch path, so the Docker entrypoint and the soak wrapper no longer need LD_PRELOAD."
+      - "The arm64 build sets a page size that works on 64 KiB page hosts, and the Dockerfile cross-compile builds the allocator."
+      - "cargo deny passes with the new dependency."
+      - "The issue #244 memory ceiling (TASK-012-25) is measured before and after the change."
 ---
 ```
 
@@ -2166,6 +2194,11 @@ tasks:
     unit_tests: [scripts/casper-soak/tests/authority_finality.rs]
     completion_gaps: []
     completed_date: 2026-09-19
+    notes:
+      - "2026-10-13, branch fix/authority-finality-timeout-flake: the timeout test asserted a 5 s bound on the whole execute_fixture call. That call also copies and hashes the debug test binary."
+      - "A loaded GitHub runner exceeded the 5 s bound in run 38480514170. The bound is now TIMEOUT_TEST_BOUND (15 s), half of the 30 s fixture sleep."
+      - "The test fails if the profile waits for the stuck executor or kills it 15 s or more after the start. The executor_deadline assertion still proves that the 200 ms deadline caused the stop."
+      - "The change does not alter the acceptance items or CLAIM-CASPER-SOAK-002. The suite still reports 12 passed and 1 ignored."
   - id: TASK-017-6
     title: "Verify publication and restart fault profiles and observations"
     claims: [CLAIM-CASPER-SOAK-003]

@@ -177,7 +177,7 @@ async fn fileio_lockrange_cross_cap_busy_then_release() {
         "target".to_string(),
         canon.clone(),
         BundleEntryKind::File,
-        "rw".to_string(),
+        "r+".to_string(),
         BundleConsensusMode::Oracular,
     )
     .expect("bundle entry construction");
@@ -351,7 +351,7 @@ async fn fileio_lockrange_three_way_no_starvation() {
         "target".to_string(),
         canon,
         BundleEntryKind::File,
-        "rw".to_string(),
+        "r+".to_string(),
         BundleConsensusMode::Oracular,
     )
     .expect("bundle entry construction");
@@ -509,7 +509,7 @@ async fn fileio_lockrange_wait_true_admit_after_release() {
         "target".to_string(),
         canon,
         BundleEntryKind::File,
-        "rw".to_string(),
+        "r+".to_string(),
         BundleConsensusMode::Oracular,
     )
     .expect("bundle entry construction");
@@ -625,7 +625,7 @@ async fn fileio_static_line_copy() {
         "dest".to_string(),
         dest_canon.clone(),
         BundleEntryKind::File,
-        "rw".to_string(),
+        "r+".to_string(),
         BundleConsensusMode::Oracular,
     )
     .expect("dest bundle entry");

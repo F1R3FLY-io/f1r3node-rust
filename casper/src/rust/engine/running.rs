@@ -35,6 +35,16 @@ use crate::rust::metrics_constants::{
 };
 use crate::rust::safety::clique_oracle::FtThreshold;
 
+/// Largest `skip` and `take` a `StoreItemsMessageRequest` may carry. Honest
+/// requesters page with `skip = 0` and at most this many items, so anything
+/// outside the bound is a hostile request for an unbounded trie export.
+pub const STORE_ITEMS_REQUEST_MAX_PAGE: i32 = 1024;
+
+const _: () = assert!(
+    crate::rust::engine::lfs_tuple_space_requester::PAGE_SIZE <= STORE_ITEMS_REQUEST_MAX_PAGE
+        && crate::rust::engine::lfs_horizon_requester::PAGE_SIZE <= STORE_ITEMS_REQUEST_MAX_PAGE
+);
+
 /// Phase 7b-1 (2026-08-27): snapshot chunk-fetch context threaded
 /// through the running engine's packet dispatch.  Optional so
 /// nodes without a snapshot backing store don't have to wire it up.
@@ -381,8 +391,8 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> Engine for Running<T> {
                     self.handle_state_items_message_request(
                         peer,
                         req.start_path,
-                        req.skip as u32,
-                        req.take as u32,
+                        req.skip,
+                        req.take,
                     )
                     .await
                 } else {
@@ -859,17 +869,26 @@ impl<T: TransportLayer + Send + Sync> Running<T> {
         &self,
         peer: PeerNode,
         start_path: Vec<(Blake2b256Hash, Option<u8>)>,
-        skip: u32,
-        take: u32,
+        skip: i32,
+        take: i32,
     ) -> Result<(), CasperError> {
+        if !(0..=STORE_ITEMS_REQUEST_MAX_PAGE).contains(&skip)
+            || !(1..=STORE_ITEMS_REQUEST_MAX_PAGE).contains(&take)
+        {
+            tracing::warn!(
+                skip,
+                take,
+                max = STORE_ITEMS_REQUEST_MAX_PAGE,
+                %peer,
+                "StoreItemsMessageRequest outside page bounds; ignoring"
+            );
+            return Ok(());
+        }
+
         let exporter = self.casper.get_history_exporter().await;
 
-        let (history, data) = RSpaceExporterItems::get_history_and_data(
-            exporter,
-            start_path.clone(),
-            skip as i32,
-            take as i32,
-        );
+        let (history, data) =
+            RSpaceExporterItems::get_history_and_data(exporter, start_path.clone(), skip, take);
         let resp = casper_message::StoreItemsMessage {
             start_path,
             last_path: history.last_path,
