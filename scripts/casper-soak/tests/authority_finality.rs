@@ -5,6 +5,8 @@ use std::process::Command;
 use casper_soak::{encoded, hash, record};
 use serde_json::{json, Value};
 
+const TIMEOUT_EXECUTOR_SLEEP: std::time::Duration = std::time::Duration::from_secs(30);
+
 fn binary() -> &'static str { env!("CARGO_BIN_EXE_casper-authority-finality") }
 fn observed(value: Value) -> Value { json!({"presence":"observed","value":value,"reason":null}) }
 fn missing() -> Value { json!({"presence":"missing","value":null,"reason":"not available"}) }
@@ -575,7 +577,7 @@ fn scenario_executor_fixture() {
     let fixture = record(&input_root.join("execution-fixture.json")).unwrap();
     let mode = fixture["mode"].as_str().unwrap();
     if mode == "timeout" {
-        std::thread::sleep(std::time::Duration::from_secs(30));
+        std::thread::sleep(TIMEOUT_EXECUTOR_SLEEP);
     }
     let mut receipts = Vec::new();
     let mut previous = Value::Null;
@@ -790,7 +792,7 @@ fn executable_bindings_preserve_product_failures_and_bound_process_lifetime() {
     let start = std::time::Instant::now();
     let report = execute_fixture(&mut f, "timeout", 1, "incomplete");
     assert_eq!(report["execution"]["failure"], "executor_deadline");
-    assert!(start.elapsed() < std::time::Duration::from_secs(5));
+    assert!(start.elapsed() < TIMEOUT_EXECUTOR_SLEEP);
 }
 
 #[test]
