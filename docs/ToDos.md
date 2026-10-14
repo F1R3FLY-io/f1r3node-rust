@@ -1,7 +1,7 @@
 ---
 doc_type: todos
 version: "1.1"
-last_updated: 2026-10-13
+last_updated: 2026-10-14
 mr_status:
   ready: false
   target_branch: master
@@ -68,6 +68,118 @@ mr_status:
 ## Active Epics
 
 <!-- Epics are ordered by priority. Work on the highest priority epic first. -->
+
+---
+
+### EPIC-028: Cost-Accounting Direction and Reference Authority
+
+```yaml
+---
+epic_id: EPIC-028
+title: "Cost-Accounting Direction and Reference Authority"
+status: pending
+priority: p1
+user_story: US-013
+blocked_by: []
+created_at: 2026-10-14
+updated_at: 2026-10-14
+claimed_by: null
+claimed_at: null
+branch: docs/canonical-cost-accounting-resource-auth
+plan: docs/plans/cost-accounting-direction.md
+related_epics: [EPIC-017, EPIC-018, EPIC-027]
+source_prs: [216]
+related_decisions: [D-01, D-05, D-12]
+origin: "The user requested a provisional conclusion and a documentation plan after a Zoom discussion. No meeting transcript or new decision accompanies this request."
+provisional_conclusion: "The historical comparison supports an accounting-authority shift. A switch to funded or multisigned execution fragments remains unverified."
+execution_contract:
+  scope: "Document direction, reference ownership, funding authority, signature scope, execution boundaries, and physical work bounds. Do not change runtime behavior."
+  authority: "Preserve the 2026-09-16 D-12 decision. New rules require the applicable maintainer and FIP approvals."
+  source_policy: "Compare the original proposal, recorded requirements, and a pinned current PR #216 head. Record exact applicable approved FIPs."
+  meeting_policy: "Treat the Zoom recollection as a question until a shareable record or approved summary establishes its meaning."
+  completion_policy: "Complete only with source-bound documentation and recorded dispositions. Missing evidence and deferred decisions remain explicit."
+  git_policy: "Do not commit, push, merge, or create a PR without separate user authorization."
+  execution_policy: "Do not dispatch cloud runs or implement accounting changes under this documentation epic."
+files:
+  - docs/plans/cost-accounting-direction.md
+  - docs/execution-and-resource-authorization.md
+  - docs/casper/execution-and-resource-authorization.md
+  - docs/Glossary.md
+  - docs/casper/GLOSSARY.md
+  - docs/rholang/13-cost-model.md
+  - docs/casper/design/decision-ledger/12-deploy-cost-limits.md
+  - docs/casper/design/decision-ledger/README.md
+tasks:
+  - id: TASK-028-1
+    title: "Establish the reference registry and document owners"
+    status: pending
+    claimed_by: null
+    blocked_by: []
+    acceptance:
+      - "The registry locates the original paper, historical proposal, current candidate documents, applicable approved FIPs, and any shareable Zoom record."
+      - "Each source records its repository or publisher, full revision or version, path, authority scope, owner, and review status."
+      - "Each applicable FIP records its identifier, approval evidence, scope, and activation conditions. Unavailable sources remain explicit blockers."
+      - "Maintainers assign canonical locations for shared accounting specifications and Casper-specific rules. External documents remain referenced sources, not duplicate normative copies."
+  - id: TASK-028-2
+    title: "Compare the three accounting positions without inferring implementation"
+    status: pending
+    claimed_by: null
+    blocked_by: [TASK-028-1]
+    acceptance:
+      - "The comparison distinguishes the original proposal, the recorded D-12 requirements, and a pinned current PR #216 head."
+      - "The comparison covers cost fields, authenticated supply, admission reservations, COMM charges, settlement, and shared funding."
+      - "Each conclusion cites exact source sections and separates intended design, implementation evidence, and approval status."
+      - "The provisional conclusion is confirmed, revised, or left unresolved with an explicit reason."
+  - id: TASK-028-3
+    title: "Specify funding units and signature authority"
+    status: pending
+    claimed_by: null
+    blocked_by: [TASK-028-2]
+    acceptance:
+      - "The contract distinguishes deploy, COMM, execution-fragment, and block funding without assuming one is the accepted payment unit."
+      - "The signature matrix distinguishes deployer, payer, cosigner, contract owner, proposer, and validator roles, including parties with several roles."
+      - "Each signature names its signed object, authorized action, domain, replay protection, and relationship to expenditure or consensus support."
+      - "The contract states whether funding and signatures are alternatives, combined conditions, or separate obligations."
+      - "The contract identifies payer attribution for stored continuations, shared-wallet reservations, failed bodies, exhaustion, refunds, and repeated settlement."
+  - id: TASK-028-4
+    title: "Specify completion boundaries and physical work bounds"
+    status: pending
+    claimed_by: null
+    blocked_by: [TASK-028-2]
+    acceptance:
+      - "The contract distinguishes completed evaluation, application completion, block validation, finalization, and stored continuations."
+      - "Any proposed partial execution states its stopping point, persisted state, resume authority, deterministic replay, and settlement boundary."
+      - "Economic authorization and physical bounds are separate. The analysis covers work within each COMM, native calls, storage, replay, and concurrency."
+      - "The evidence plan names passing and failing scenarios for exhaustion, cancellation, continuation activation, repeated replay, and repeated settlement."
+      - "The analysis does not infer termination, execution correctness, or finality from payment or multiple signatures."
+  - id: TASK-028-5
+    title: "Obtain a recorded disposition for the D-12 extension"
+    status: pending
+    claimed_by: null
+    blocked_by: [TASK-028-3, TASK-028-4]
+    acceptance:
+      - "Maintainers choose a D-12 extension or a separate decision for each rule that needs approval."
+      - "Each proposed change has an approval, rejection, or deferral with linked proof under the applicable decision process."
+      - "Any applicable approved FIP maps explicitly to affected accounting and Casper rules. Later amendments do not silently replace earlier decisions."
+      - "The record preserves D-12's cost-field decision unless an explicit accepted amendment changes it. Deferred items retain owners and blockers."
+  - id: TASK-028-6
+    title: "Publish consistent canonical documentation and acceptance evidence"
+    status: pending
+    claimed_by: null
+    blocked_by: [TASK-028-5]
+    acceptance:
+      - "The platform reference, Casper binding, cost model, glossaries, and D-12 follow-up reflect the recorded dispositions."
+      - "Canonical links identify where detailed accounting specifications live and distinguish historical evidence from current authority."
+      - "Reference checks pass. The change receives a technical review and an English prose review."
+      - "The epic and US-013 link the accepted documentation and remaining obligations. Documentation completion does not imply implementation or activation."
+---
+```
+
+**Plan:** [Cost-Accounting Direction and Reference Plan](plans/cost-accounting-direction.md).
+**User story:** [US-013](UserStories.md#us-013-traceable-cost-accounting-direction).
+**Decision follow-up:** [D-12 section 10](casper/design/decision-ledger/12-deploy-cost-limits.md#10-provisional-direction-follow-up).
+
+All six tasks remain pending. This record schedules the source reviews instead of performing them now.
 
 ---
 

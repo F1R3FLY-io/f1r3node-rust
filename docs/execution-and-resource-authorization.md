@@ -87,6 +87,15 @@ A resource-bound claim must identify the operations covered and their bounds. It
 
 Stored continuations also require explicit funding attribution when later messages enable them. This document does not choose a payer.
 
+## Provisional accounting direction
+
+The [Cost-Accounting Direction and Reference Plan](./plans/cost-accounting-direction.md) records a provisional accounting-authority interpretation and its evidence gaps.
+A switch to funded or multisigned execution fragments remains unverified.
+
+[EPIC-028](./ToDos.md#epic-028-cost-accounting-direction-and-reference-authority) schedules source comparison, funding and signature contracts, execution-boundary analysis, and maintainer dispositions.
+The [D-12 follow-up](./casper/design/decision-ledger/12-deploy-cost-limits.md#10-provisional-direction-follow-up) preserves the existing decision.
+Neither record changes this reference's completion boundaries or activates a proposal.
+
 ## Relationship to proposed designs
 
 Two draft designs use these terms. Neither is approved, so this document cites them by pull request number.
