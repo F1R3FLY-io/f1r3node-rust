@@ -2524,6 +2524,91 @@ async fn an_illegal_system_process_call_is_published_as_a_charged_user_failure()
     .await;
 }
 
+/// Added by I6 (epic 8946, D3): the term of the legacy test
+/// `replay_should_match_in_case_of_user_execution_error`
+/// (`casper/tests/util/rholang/interpreter_util_test.rs`).
+const MULTI_BRANCH_TERM_WITH_ERROR: &str = r#"
+  new rl(`rho:registry:lookup`), RevVaultCh, ackCh, out(`rho:io:stdout`)
+  in {
+    new signal in {
+      signal!(0) | signal!(0) | signal!(0) | signal!(0) | signal!(0) | signal!(0) | signal!(1) |
+      contract signal(@x) = {
+        rl!(`rho:vault:system`, *RevVaultCh) | ackCh!(x) |
+        if (x == 1) {}.xxx() // Simulates error in one branch
+      }
+    } |
+    for (@(_, RevVault) <= RevVaultCh & @x<= ackCh) {
+      @(*ackCh, "parallel universe")!("Rick and Morty")
+    }
+  }
+"#;
+
+/// Added by I6 (epic 8946, D3): the offered form of the legacy test
+/// `replay_should_match_in_case_of_user_execution_error`. Seven calls of one
+/// contract run in parallel, and one of them calls an unknown method. The
+/// deploy is a charged user failure: it is published as failed, it pays the
+/// billable work and the fee, its write rolls back, and every node holds one
+/// equal receipt, so replay matches play.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_user_error_in_one_branch_is_published_as_a_charged_user_failure() {
+    const WRITTEN: &str = "branch-error-written";
+    assert_charged_user_failures(WRITTEN, &[at_top_level(
+        WRITTEN,
+        MULTI_BRANCH_TERM_WITH_ERROR,
+    )])
+    .await;
+}
+
+/// Added by I6 (epic 8946, D3): the offered form of the legacy test
+/// `compute_state_should_capture_rholang_parsing_errors_and_charge_for_parsing`
+/// (`casper/tests/util/rholang/runtime_manager_test.rs`). Its term parses.
+/// The join fires, and `1 + "hi"` then fails with `OperatorExpectedError`, a
+/// classified user failure.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_operator_error_after_a_join_is_published_as_a_charged_user_failure() {
+    const WRITTEN: &str = "join-error-written";
+    assert_charged_user_failures(WRITTEN, &[at_top_level(
+        WRITTEN,
+        r#"for(@x <- @"x" & @y <- @"y"){ @"xy"!(x + y) } | @"x"!(1) | @"y"!("hi")"#,
+    )])
+    .await;
+}
+
+/// Added by I6 (epic 8946, D3): a term that does not parse is refused at
+/// submission (`admit_deploy_envelope`). The node does not store the offer,
+/// so the offer never runs and no block holds it. The payer pays nothing
+/// (economic-failure-policy-decisions.md:82).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_term_that_does_not_parse_is_rejected_at_submission_without_charge() {
+    let genesis = offered_v6_genesis(3).await;
+    let mut nodes = TestNode::create_network(genesis.clone(), 3, None, None, None, None)
+        .await
+        .expect("a three-node network starts");
+    let payer = genesis.genesis_vaults[2].clone();
+    let offer = owner_direct_offer(&payer, 1, "@\"x\"!(".to_string());
+    let id = models::rust::deploy_id::DeployIdV6::try_from(offer.deploy_id.to_vec())
+        .expect("an offered deploy id has 32 bytes");
+    let error = BlockAPI::deploy_offered(&nodes[0].engine_cell, offer, &None, false, "root")
+        .await
+        .expect_err("a term that does not parse is refused at submission");
+    assert!(
+        error.to_string().contains("Error in parsing term"),
+        "the refusal is a parse error: {error}"
+    );
+    assert!(
+        !nodes[0]
+            .deploy_storage
+            .lock()
+            .contains_envelope_id(&id)
+            .expect("the deploy storage answers"),
+        "the node does not store the refused offer"
+    );
+    assert!(
+        nodes[0].create_block_unsafe(&[]).await.is_err(),
+        "no block holds the refused offer"
+    );
+}
+
 /// DR-114: every node accepts `block`, and every node holds the same
 /// settlement receipt for `id`. Returns that receipt.
 async fn accepted_everywhere_with_one_receipt(

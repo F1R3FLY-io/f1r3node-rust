@@ -752,37 +752,45 @@ async fn compute_state_then_compute_bonds_should_be_replayable_after_all() {
     .unwrap();
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn compute_state_should_capture_rholang_parsing_errors_and_charge_for_parsing() {
-    with_runtime_manager(
-        |mut runtime_manager, genesis_context, genesis_block| async move {
-            let bad_rholang =
-                r#" for(@x <- @"x" & @y <- @"y"){ @"xy"!(x + y) } | @"x"!(1) | @"y"!("hi") "#;
-            let deploy = construct_deploy::source_deploy_now_full(
-                bad_rholang.to_string(),
-                None,
-                None,
-                None,
-                None,
-                None,
-            )
-            .unwrap();
-
-            let result = compute_state(
-                &mut runtime_manager,
-                &genesis_context,
-                deploy,
-                &genesis_block.body.state.post_state_hash,
-            )
-            .await;
-
-            assert!(result.1.is_failed);
-            assert!(result.1.cost.cost == bad_rholang.len() as u64);
-        },
-    )
-    .await
-    .unwrap();
-}
+// Disabled by I6 (epic 8946, D3): legacy accounting is forbidden under v6.
+// This test asserted the legacy charge of the source length for a failed
+// legacy body-only deploy. Its term parses and fails at run time with
+// `OperatorExpectedError` (`1 + "hi"`). The offered forms are
+// `an_operator_error_after_a_join_is_published_as_a_charged_user_failure` and,
+// for a term that does not parse,
+// `a_term_that_does_not_parse_is_rejected_at_submission_without_charge` in
+// `casper/tests/api/offered_funded_api_test.rs`.
+// #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+// async fn compute_state_should_capture_rholang_parsing_errors_and_charge_for_parsing() {
+//     with_runtime_manager(
+//         |mut runtime_manager, genesis_context, genesis_block| async move {
+//             let bad_rholang =
+//                 r#" for(@x <- @"x" & @y <- @"y"){ @"xy"!(x + y) } | @"x"!(1) | @"y"!("hi") "#;
+//             let deploy = construct_deploy::source_deploy_now_full(
+//                 bad_rholang.to_string(),
+//                 None,
+//                 None,
+//                 None,
+//                 None,
+//                 None,
+//             )
+//             .unwrap();
+//
+//             let result = compute_state(
+//                 &mut runtime_manager,
+//                 &genesis_context,
+//                 deploy,
+//                 &genesis_block.body.state.post_state_hash,
+//             )
+//             .await;
+//
+//             assert!(result.1.is_failed);
+//             assert!(result.1.cost.cost == bad_rholang.len() as u64);
+//         },
+//     )
+//     .await
+//     .unwrap();
+// }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn compute_state_should_charge_for_parsing_and_execution() {
