@@ -6,6 +6,7 @@ use rayon::ThreadPoolBuilder;
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use shared::rust::ByteVector;
 
+use crate::rspace::errors::RadixTreeError;
 use crate::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use crate::rspace::history::cold_store::PersistedData;
 use crate::rspace::shared::trie_exporter::KeyHash;
@@ -15,6 +16,46 @@ use crate::rspace::state::rspace_exporter::RSpaceExporterInstance;
 // See rspace/src/main/scala/coop/rchain/rspace/state/RSpaceImporter.scala
 pub trait RSpaceImporter: TrieImporter + Send + Sync {
     fn get_history_item(&self, hash: KeyHash) -> Option<ByteVector>;
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum StateItemsError {
+    InvalidHistorySize { expected: i32, received: i32 },
+    HistoryHashMismatch { key: String, decoded: String },
+    Traversal(RadixTreeError),
+    HistoryItemsCorrupted,
+    DataItemsCorrupted,
+    InvalidDataItem(String),
+}
+
+impl std::fmt::Display for StateItemsError {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            StateItemsError::InvalidHistorySize { expected, received } => write!(
+                f,
+                "RSpace Importer: Input size of history items is not valid. Expected chunk size \
+                 {}, received {}.",
+                expected, received
+            ),
+            StateItemsError::HistoryHashMismatch { key, decoded } => write!(
+                f,
+                "RSpace Importer: Trie hash does not match decoded trie, key: {}, decoded: {}",
+                key, decoded
+            ),
+            StateItemsError::Traversal(err) => {
+                write!(f, "RSpace Importer: Unable to traverse received history: {}", err)
+            }
+            StateItemsError::HistoryItemsCorrupted => {
+                write!(f, "RSpace Importer: History items are corrupted")
+            }
+            StateItemsError::DataItemsCorrupted => {
+                write!(f, "RSpace Importer: Data items are corrupted")
+            }
+            StateItemsError::InvalidDataItem(err) => {
+                write!(f, "RSpace Importer: Unable to validate data items hashes: {}", err)
+            }
+        }
+    }
 }
 
 pub struct RSpaceImporterInstance;
@@ -27,19 +68,20 @@ impl RSpaceImporterInstance {
         chunk_size: i32,
         skip: i32,
         get_from_history: Arc<dyn RSpaceImporter>,
-    ) {
+    ) -> Result<(), StateItemsError> {
         let received_history_size = history_items.len() as i32;
         let is_end = || received_history_size < chunk_size;
 
         // Validate history items size
         let validate_history_size = || {
             let size_is_valid = || received_history_size == chunk_size || is_end();
-            if !size_is_valid() {
-                panic!(
-                    "RSpace Importer: Input size of history items is not valid. Expected chunk \
-                     size {}, received {}.",
-                    chunk_size, received_history_size
-                )
+            if size_is_valid() {
+                Ok(())
+            } else {
+                Err(StateItemsError::InvalidHistorySize {
+                    expected: chunk_size,
+                    received: received_history_size,
+                })
             }
         };
 
@@ -51,15 +93,13 @@ impl RSpaceImporterInstance {
                 if hash == trie_hash {
                     validated_items.push((trie_hash.bytes(), trie_bytes));
                 } else {
-                    panic!(
-                        "RSpace Importer: Trie hash does not match decoded trie, key: {}, \
-                         decoded: {}",
-                        hex::encode(hash.bytes()),
-                        hex::encode(trie_hash.bytes())
-                    );
+                    return Err(StateItemsError::HistoryHashMismatch {
+                        key: hex::encode(hash.bytes()),
+                        decoded: hex::encode(trie_hash.bytes()),
+                    });
                 }
             }
-            validated_items
+            Ok(validated_items)
         };
 
         // Validate data hashes
@@ -67,12 +107,20 @@ impl RSpaceImporterInstance {
             let pool = ThreadPoolBuilder::new().num_threads(64).build().unwrap();
             pool.install(|| {
                 data_items.par_iter().try_for_each(|(hash, value_bytes)| {
-                    let persisted_data: PersistedData = bincode::deserialize(value_bytes).unwrap();
+                    let persisted_data: PersistedData =
+                        bincode::deserialize(value_bytes).map_err(|e| {
+                            format!(
+                                "Data item does not decode, key: {}: {}",
+                                hex::encode(hash.bytes()),
+                                e
+                            )
+                        })?;
                     let bytes = match persisted_data {
-                        PersistedData::Joins(ref leaf) => bincode::serialize(leaf).unwrap(),
-                        PersistedData::Data(ref leaf) => bincode::serialize(leaf).unwrap(),
-                        PersistedData::Continuations(ref leaf) => bincode::serialize(leaf).unwrap(),
-                    };
+                        PersistedData::Joins(ref leaf) => bincode::serialize(leaf),
+                        PersistedData::Data(ref leaf) => bincode::serialize(leaf),
+                        PersistedData::Continuations(ref leaf) => bincode::serialize(leaf),
+                    }
+                    .map_err(|e| e.to_string())?;
                     let data_hash = Blake2b256Hash::new(&bytes);
                     if *hash != data_hash {
                         Err(format!(
@@ -87,40 +135,28 @@ impl RSpaceImporterInstance {
             })
         };
 
-        let get_node = |st: HashMap<ByteVector, ByteVector>| {
-            Arc::new(move |hash: &ByteVector| match st.get(hash) {
-                Some(value) => Some(value.clone()),
-                None => {
-                    match get_from_history
-                        .get_history_item(Blake2b256Hash::from_bytes(hash.to_vec()))
-                    {
-                        Some(bytes) => Some(bytes),
-                        None => panic!(
-                            "RSpace Importer: Trie hash not found in received items or in history \
-                             store, hash: {}",
-                            hex::encode(Blake2b256Hash::new(hash).bytes())
-                        ),
-                    }
-                }
-            })
-        };
-
         // Validate chunk size.
-        validate_history_size();
+        validate_history_size()?;
 
         // Validate tries from received history items.
         let trie_map: HashMap<ByteVector, ByteVector> =
-            get_and_validate_history_items().into_iter().collect();
+            get_and_validate_history_items()?.into_iter().collect();
 
-        let get_node_function = get_node(trie_map);
+        let get_node_function: Arc<dyn Fn(&ByteVector) -> Option<ByteVector>> =
+            Arc::new(move |hash: &ByteVector| {
+                trie_map.get(hash).cloned().or_else(|| {
+                    get_from_history.get_history_item(Blake2b256Hash::from_bytes(hash.to_vec()))
+                })
+            });
         // Traverse trie and extract nodes / the same as in export. Nodes must match
         // hashed keys.
-        let nodes = RSpaceExporterInstance::traverse_history(
+        let nodes = RSpaceExporterInstance::try_traverse_history(
             start_path,
             skip,
             chunk_size,
             get_node_function,
-        );
+        )
+        .map_err(StateItemsError::Traversal)?;
 
         // Extract history and data keys.
         let (leafs, non_leafs): (Vec<_>, Vec<_>) = nodes.into_iter().partition(|node| node.is_leaf);
@@ -136,17 +172,17 @@ impl RSpaceImporterInstance {
             history_items.into_iter().map(|item| item.0).collect();
         // TODO: This might need to check ordering too
         if !check_same_elements(history_item_keys, history_keys) {
-            panic!("RSpace Importer: History items are corrupted")
+            return Err(StateItemsError::HistoryItemsCorrupted);
         }
 
         let data_item_keys: Vec<Blake2b256Hash> =
             data_items.clone().into_iter().map(|item| item.0).collect();
         // TODO: This might need to check ordering too
         if !check_same_elements(data_item_keys, data_keys) {
-            panic!("RSpace Importer: Data items are corrupted")
+            return Err(StateItemsError::DataItemsCorrupted);
         }
 
-        validate_data_items_hashes.expect("RSpace Importer: Unable to validate data items hashes");
+        validate_data_items_hashes.map_err(StateItemsError::InvalidDataItem)
     }
 }
 

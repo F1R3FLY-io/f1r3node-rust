@@ -884,109 +884,67 @@ mod tests {
         .expect("Test should complete successfully");
     }
 
-    /// Tests that the stream stops with error when invalid state chunk is received
-    /// Scala equivalent: "stop if invalid state chunk received"
+    /// Tests that an invalid state chunk is rejected and its path requested again
+    /// (issue #713). The Scala original stopped the whole stream here, which let
+    /// one bad chunk end the approved-state restore.
     #[tokio::test]
-    async fn should_stop_if_invalid_state_chunk_received() {
+    async fn should_request_an_invalid_state_chunk_again() {
         init_logger();
 
         let short_timeout = std::time::Duration::from_millis(100);
         bootstrap_test_no_stream(short_timeout, |mut mock| async move {
-            // Configure mock to fail validation for invalid history items
-            // Scala equivalent: Mock validation setup with predefined invalid items
             {
                 let validation_state = mock.setup();
                 let mut state = validation_state.lock().unwrap();
                 state.set_invalid_items(invalid_history());
             }
 
-            // Process initial request and get initial stream state
-            // Scala equivalent: _ <- stream.take(1).compile.drain
-            let initial_state = mock.next_stream_state().await;
-            assert!(
-                initial_state.is_some(),
-                "Should receive initial stream state"
-            );
-
-            // Drain initial request
-            // Scala equivalent: _ <- sentRequests.take(1).compile.drain
             drain_requests(&mut mock, 1).await?;
 
-            // No other requests should be sent initially
-            // Scala equivalent: _ = sentRequests should notEmit
-            assert_no_requests(&mut mock, 50).await?;
-
-            // Receives store items message with invalid history
-            // Scala equivalent: _ <- receive(StoreItemsMessage(historyPath1, historyPath2, invalidHistory, data1))
-            let invalid_message = StoreItemsMessage {
+            mock.receive(&[StoreItemsMessage {
                 start_path: history_path_1(),
                 last_path: history_path_2(),
                 history_items: invalid_history(),
                 data_items: data_1(),
-            };
-            mock.receive(&[invalid_message]).await?;
+            }])
+            .await?;
 
-            // Try to get stream states after validation error to ensure stream terminates
-            // Scala equivalent: result <- stream.compile.lastOrError.attempt
+            assert_no_saved_history(&mut mock, 50).await?;
+            assert_no_saved_data(&mut mock, 50).await?;
 
-            // The stream should emit one final state showing termination, then stop
-            let final_state = tokio::time::timeout(
-                std::time::Duration::from_millis(200),
-                mock.next_stream_state(),
-            )
-            .await;
+            let reqs = collect_requests(&mut mock, 1).await?;
+            assert_eq!(
+                reqs,
+                vec![mk_request(history_path_1())],
+                "the rejected path is requested again, and its last path is not"
+            );
 
-            // Verify we get the final state indicating termination
-            match final_state {
-                Ok(Some(state)) => {
-                    // Stream emitted final state - verify it shows incomplete processing
-                    tracing::info!("Received final stream state after validation error: finished={}", state.is_finished());
-                    // The state should NOT be finished since validation failed
-                    assert!(!state.is_finished(), "Stream should not be marked as finished after validation error");
+            mock.receive(&[StoreItemsMessage {
+                start_path: history_path_1(),
+                last_path: history_path_2(),
+                history_items: history_1(),
+                data_items: data_1(),
+            }])
+            .await?;
+
+            assert_eq!(
+                collect_saved_history(&mut mock, 1).await?,
+                vec![history_1()]
+            );
+            assert_eq!(collect_saved_data(&mut mock, 1).await?, vec![data_1()]);
+
+            loop {
+                let req = collect_requests(&mut mock, 1).await?.remove(0);
+                if req == mk_request(history_path_2()) {
+                    break;
                 }
-                Ok(None) => {
-                    // Stream terminated immediately - also acceptable
-                    tracing::info!("Stream properly terminated due to validation failure (immediate)");
-                }
-                Err(_) => {
-                    // Timeout occurred - stream stopped processing due to validation error
-                    tracing::info!("Stream stopped processing after validation failure (timeout)");
-                }
+                assert_eq!(
+                    req,
+                    mk_request(history_path_1()),
+                    "unexpected request {:?}",
+                    req
+                );
             }
-
-            // Verify no additional stream states are emitted (stream should be stopped)
-            let additional_state = tokio::time::timeout(
-                std::time::Duration::from_millis(100),
-                mock.next_stream_state(),
-            )
-            .await;
-
-            // Should timeout or get None - no further processing
-            match additional_state {
-                Ok(None) => {
-                    tracing::info!("Stream properly stopped - no additional states");
-                }
-                Err(_) => {
-                    tracing::info!("Stream properly stopped - timeout on additional states");
-                }
-                Ok(Some(_)) => {
-                    panic!("Stream should have stopped after validation error, but continued emitting states");
-                }
-            }
-
-            // Verify no additional requests were sent after validation failure
-            // The stream should have stopped processing entirely
-            // Note: Channel may be closed due to stream termination, which is expected
-            match assert_no_requests(&mut mock, 50).await {
-                Ok(()) => {
-                    tracing::info!("No additional requests sent after validation failure");
-                }
-                Err(TestError::ChannelClosed) => {
-                    tracing::info!("Request channel closed after stream termination - this is expected");
-                }
-            }
-
-            tracing::info!("Invalid state chunk validation test completed - stream properly failed on invalid state");
 
             Ok(())
         })

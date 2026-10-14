@@ -86,7 +86,8 @@ async fn export_and_import_of_one_page_should_works_correctly() {
         page_size,
         start_skip,
         importer1,
-    );
+    )
+    .unwrap();
 
     // Import page to space2
     importer2.set_history_items(history_items);
@@ -157,7 +158,8 @@ async fn multipage_export_should_work_correctly() {
             page_size,
             start_skip,
             importer1,
-        );
+        )
+        .unwrap();
 
         let r = (
             [history_items, history_items_page.clone()].concat(),
@@ -273,7 +275,8 @@ async fn multipage_export_with_skip_should_work_correctly() {
             page_size,
             skip,
             importer1,
-        );
+        )
+        .unwrap();
 
         let r = (
             [history_items, history_items_page.clone()].concat(),

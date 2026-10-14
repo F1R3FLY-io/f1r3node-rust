@@ -157,6 +157,15 @@ impl<Key: Hash + Eq + Clone> ST<Key> {
         (Self { d: new_d }, is_valid)
     }
 
+    /// Return a Received key to Init so it is requested again.
+    pub fn rejected(&self, k: Key) -> Self {
+        let mut new_d = self.d.clone();
+        if self.d.get(&k) == Some(&ReqStatus::Received) {
+            new_d.insert(k, ReqStatus::Init);
+        }
+        Self { d: new_d }
+    }
+
     /// Mark key as finished (Done).
     ///
     /// **Scala equivalent**: `def done(k: Key): ST[Key]`
@@ -221,10 +230,13 @@ impl<T: TupleSpaceRequesterOps> TupleSpaceStreamProcessor<T> {
     ///
     /// **Scala equivalent**: The main logic inside `responseStream` for handling `StoreItemsMessage`
     /// This combines the message destructuring and the validation/import workflow
+    ///
+    /// Returns whether the chunk was imported. A chunk that fails validation
+    /// changes nothing but its path, which goes back to Init to be asked again.
     async fn process_store_items_message(
         &mut self,
         message: StoreItemsMessage,
-    ) -> Result<(), CasperError> {
+    ) -> Result<bool, CasperError> {
         // Extract message fields (Scala: StoreItemsMessage(startPath, lastPath, historyItems, dataItems) = msg)
         let StoreItemsMessage {
             start_path,
@@ -247,80 +259,85 @@ impl<T: TupleSpaceRequesterOps> TupleSpaceStreamProcessor<T> {
         // Mark chunk as received (Scala: isReceived <- Stream.eval(st.modify(_.received(startPath))))
         let is_received = self.mark_chunk_received(start_path.clone()).await?;
 
-        if is_received {
-            // Add next paths for requesting (Scala: st.update(_.add(Set(lastPath))))
-            // Scala adds all lastPath values without checking if empty - match that behavior
-            let mut next_paths = std::collections::HashSet::new();
-            next_paths.insert(last_path);
-            self.add_next_paths(next_paths).await?;
-
-            // Trigger request processing after adding next paths (Scala: requestQueue.enqueue1(false))
-            // Use non-blocking send to avoid deadlock. The biased select with response-first
-            // ordering ensures fair scheduling between request and response processing.
-            // If the channel is full (capacity 2), requests are already queued for processing.
-            if let Err(_) = self.request_tx.try_send(false) {
-                tracing::debug!("Request queue full - requests already pending");
-            }
-
-            // Validate and import chunk in parallel
-            self.validate_and_import_chunk(start_path.clone(), history_items, data_items)
-                .await?;
-
-            // Mark chunk as done (Scala: st.update(_.done(startPath)))
-            self.mark_chunk_done(start_path).await?;
-
-            // Trigger request processing again after marking chunk as done (Scala: requestQueue.enqueue1(false))
-            // Use non-blocking send to avoid deadlock when producer and consumer are in the same task
-            if let Err(_) = self.request_tx.try_send(false) {
-                tracing::debug!(
-                    "Failed to trigger request processing - channel may be closed or full"
-                );
-            }
+        if !is_received {
+            return Ok(false);
         }
 
-        Ok(())
-    }
-
-    /// Validate received chunk and import to RSpace in parallel
-    ///
-    /// **Scala equivalent**: The complex validation and import logic inside the responseStream:
-    /// ```scala
-    /// val validationProcess = Stream.eval { validateTupleSpaceItems(...) }
-    /// val historySaveProcess = Stream.eval { stateImporter.setHistoryItems(...) }  
-    /// val dataSaveProcess = Stream.eval { stateImporter.setDataItems(...) }
-    /// Stream(validationProcess, historySaveProcess, dataSaveProcess).parJoinUnbounded.compile.drain
-    /// ```
-    async fn validate_and_import_chunk(
-        &mut self,
-        start_path: StatePartPath,
-        history_items: Vec<(Blake2b256Hash, Vec<u8>)>,
-        data_items: Vec<(Blake2b256Hash, Vec<u8>)>,
-    ) -> Result<(), CasperError> {
+        // Validate before the chunk can change any state: an invalid chunk must
+        // neither be imported nor extend the request set with its last path.
         let total_validation_start = std::time::Instant::now();
-
         tracing::info!(
             "Validating and importing chunk for path (length: {}) - {} history items, {} data items",
             start_path.len(),
             history_items.len(),
             data_items.len()
         );
-
-        // TODO: The three tasks below are not executed in parallel.
-        // We should use tokio::try_join! to execute them in parallel if performance is an issue.
-
-        // Create validation task (Scala: validateTupleSpaceItems(...))
-        let validation_start = std::time::Instant::now();
-        self.request_ops.validate_tuple_space_items(
+        // Scala: validateTupleSpaceItems(...)
+        if let Err(err) = self.request_ops.validate_tuple_space_items(
             history_items.clone(),
             data_items.clone(),
-            start_path,
+            start_path.clone(),
             PAGE_SIZE,
             0, // offset
             self.state_importer.clone(),
-        )?;
-        let validation_duration = validation_start.elapsed();
-        tracing::debug!("Validation completed in {:?}", validation_duration);
+        ) {
+            tracing::warn!(
+                error = %err,
+                "Rejected invalid tuple space chunk for path (length: {}); it will be requested again",
+                start_path.len()
+            );
+            self.mark_chunk_rejected(start_path).await?;
+            return Ok(false);
+        }
+        tracing::debug!(
+            "Validation completed in {:?}",
+            total_validation_start.elapsed()
+        );
 
+        // Add next paths for requesting (Scala: st.update(_.add(Set(lastPath))))
+        // Scala adds all lastPath values without checking if empty - match that behavior
+        let mut next_paths = std::collections::HashSet::new();
+        next_paths.insert(last_path);
+        self.add_next_paths(next_paths).await?;
+
+        // Trigger request processing after adding next paths (Scala: requestQueue.enqueue1(false))
+        // Use non-blocking send to avoid deadlock. The biased select with response-first
+        // ordering ensures fair scheduling between request and response processing.
+        // If the channel is full (capacity 2), requests are already queued for processing.
+        if let Err(_) = self.request_tx.try_send(false) {
+            tracing::debug!("Request queue full - requests already pending");
+        }
+
+        self.import_chunk(history_items, data_items);
+        tracing::info!(
+            "Chunk validation and import completed in {:?}",
+            total_validation_start.elapsed()
+        );
+
+        // Mark chunk as done (Scala: st.update(_.done(startPath)))
+        self.mark_chunk_done(start_path).await?;
+
+        // Trigger request processing again after marking chunk as done (Scala: requestQueue.enqueue1(false))
+        // Use non-blocking send to avoid deadlock when producer and consumer are in the same task
+        if let Err(_) = self.request_tx.try_send(false) {
+            tracing::debug!("Failed to trigger request processing - channel may be closed or full");
+        }
+
+        Ok(true)
+    }
+
+    /// Import a validated chunk to RSpace
+    ///
+    /// **Scala equivalent**: The import part of the responseStream:
+    /// ```scala
+    /// val historySaveProcess = Stream.eval { stateImporter.setHistoryItems(...) }
+    /// val dataSaveProcess = Stream.eval { stateImporter.setDataItems(...) }
+    /// ```
+    fn import_chunk(
+        &self,
+        history_items: Vec<(Blake2b256Hash, Vec<u8>)>,
+        data_items: Vec<(Blake2b256Hash, Vec<u8>)>,
+    ) {
         // Create history import task (Scala: stateImporter.setHistoryItems(...))
         let history_start = std::time::Instant::now();
         self.state_importer.set_history_items(history_items);
@@ -332,19 +349,6 @@ impl<T: TupleSpaceRequesterOps> TupleSpaceStreamProcessor<T> {
         self.state_importer.set_data_items(data_items);
         let data_duration = data_start.elapsed();
         tracing::debug!("Data import completed in {:?}", data_duration);
-
-        // Execute all in parallel (Scala: parJoinUnbounded.compile.drain)
-        // let (_validation_result, _history_result, _data_result) =
-        //     tokio::try_join!(validation_task, history_task, data_task)
-        //         .map_err(|e| CasperError::StreamError(format!("Task join error: {}", e)))?;
-
-        let total_duration = total_validation_start.elapsed();
-        tracing::info!(
-            "Chunk validation and import completed in {:?}",
-            total_duration
-        );
-
-        Ok(())
     }
 
     /// Read current state for next state chunks and send the requests
@@ -464,6 +468,17 @@ impl<T: TupleSpaceRequesterOps> TupleSpaceStreamProcessor<T> {
         );
 
         Ok(is_valid)
+    }
+
+    /// Return a chunk that failed validation to Init so it is requested again
+    async fn mark_chunk_rejected(&self, start_path: StatePartPath) -> Result<(), CasperError> {
+        let mut state = self.st.lock().map_err(|_| {
+            CasperError::StreamError(
+                "Failed to acquire state lock for mark_chunk_rejected".to_string(),
+            )
+        })?;
+        *state = state.rejected(start_path);
+        Ok(())
     }
 
     /// Mark chunk as done after successful import
@@ -614,16 +629,17 @@ pub async fn stream<T: TupleSpaceRequesterOps>(
                     )
                     .set(tuple_space_queue_pending.load(Ordering::Relaxed) as f64);
 
-                    match processor.process_store_items_message(message).await {
-                        Ok(()) => {
-                            tracing::debug!("Store items message processed successfully");
+                    let imported = match processor.process_store_items_message(message).await {
+                        Ok(imported) => {
+                            tracing::debug!("Store items message processed (imported: {})", imported);
+                            imported
                         }
                         Err(e) => {
                             tracing::error!(error = ?e, "store items message processing failed; terminating stream");
                             *last_error_for_stream.lock().expect("last_error lock") = Some(e);
                             break;
                         }
-                    }
+                    };
 
                     // Get current state after processing response
                     let current_state = {
@@ -651,9 +667,13 @@ pub async fn stream<T: TupleSpaceRequesterOps>(
                         break;
                     }
 
-                    // Reset idle timeout and backoff due to activity (response received)
-                    current_timeout = request_timeout;
-                    idle_timeout = Box::pin(tokio::time::sleep(current_timeout));
+                    // Reset idle timeout and backoff only for an imported chunk: a
+                    // peer that sends nothing but rejected chunks must still run
+                    // into the no-progress deadline.
+                    if imported {
+                        current_timeout = request_timeout;
+                        idle_timeout = Box::pin(tokio::time::sleep(current_timeout));
+                    }
 
                     // Emit state to stream
                     yield current_state;

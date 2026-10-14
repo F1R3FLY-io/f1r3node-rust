@@ -419,6 +419,13 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> Engine for Initializing<
                     .map_err(CasperError::CommError)
             }
             CasperMessage::StoreItemsMessage(store_items_message) => {
+                if self.rp_conf_ask.bootstrap.as_ref() != Some(&peer) {
+                    tracing::warn!(
+                        "Dropping StoreItemsMessage from {}: state chunks are requested only from the bootstrap.",
+                        peer
+                    );
+                    return Ok(());
+                }
                 tracing::info!(
                     "Received {} from {}.",
                     store_items_message.clone().pretty(),
@@ -1938,8 +1945,8 @@ impl<T: TransportLayer + Send + Sync> TupleSpaceRequesterOps for TupleSpaceReque
             page_size,
             skip,
             get_from_history,
-        );
-        Ok(())
+        )
+        .map_err(|e| CasperError::RuntimeError(e.to_string()))
     }
 }
 
