@@ -406,7 +406,13 @@ jobs:
           denied="$RUNNER_TEMP/denied-identities.txt"
           git show "${BASE_SHA}:.github/denied-identities.txt" > "$denied" 2>/dev/null ||
             cp .github/denied-identities.txt "$denied"
-          .github/scripts/check-commit-trailers.sh range "${BASE_SHA}..${HEAD_SHA}" \
+          # The base commit's checker runs, so a pull request cannot weaken its
+          # own check. Before the checker reaches the base branch, the pull
+          # request's copy runs.
+          checker="$RUNNER_TEMP/check-commit-trailers.sh"
+          git show "${BASE_SHA}:.github/scripts/check-commit-trailers.sh" > "$checker" 2>/dev/null ||
+            cp .github/scripts/check-commit-trailers.sh "$checker"
+          bash "$checker" range "${BASE_SHA}..${HEAD_SHA}" \
             --ratified-from "$BASE_SHA" --exempt-authors "$exempt" --denied "$denied"
 
   # Static analysis and repository policy checks. No behavioral test runs here.

@@ -50,7 +50,7 @@ The Integration Pipeline waits for all three of Static Checks, Script Tests, and
 
 ### Commit Policy
 
-The job verifies the commit identities of pull request commits (pull requests only). It reads the pull request head SHA, so it has no cache step. A cache step in the same job is the pattern that the CodeQL rule `actions/cache-poisoning/poisonable-step` reports. The step fetches commit objects only and runs no code from the pull request.
+The job verifies the commit identities of pull request commits (pull requests only). It reads the pull request head SHA, so it has no cache step. A cache step in the same job is the pattern that the CodeQL rule `actions/cache-poisoning/poisonable-step` reports. The step fetches commit objects only. It runs the commit identity checker and reads the denied identities list from the base commit, so a pull request cannot weaken its own check. Before these files reach the base branch, the step uses the copies in the pull request.
 
 ### Script Tests
 

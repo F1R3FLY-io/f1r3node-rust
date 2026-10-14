@@ -15,7 +15,7 @@ set -euo pipefail
 
 remote="${PROMOTE_REMOTE:-origin}"
 repo="${PROMOTE_REPOSITORY:-$(gh repo view --json nameWithOwner -q .nameWithOwner)}"
-stamp="${PROMOTE_TIMESTAMP:-$(date -u +%Y%m%d-%H%M)}"
+stamp="${PROMOTE_TIMESTAMP:-$(date -u +%Y%m%d-%H%M%S)}"
 
 git fetch --quiet "$remote" dev master
 sha="$(git rev-parse "$remote/dev")"
@@ -31,8 +31,13 @@ branch="promote/$stamp"
 gh api "repos/$repo/git/refs" -f ref="refs/heads/$branch" -f sha="$sha" >/dev/null
 echo "Created $branch at ${sha:0:9} ($remote/dev, $count commits not on master)."
 
-gh pr create --repo "$repo" --base master --head "$branch" \
+if ! gh pr create --repo "$repo" --base master --head "$branch" \
 	--title "Promote dev to master ($stamp)" \
 	--body "Promotes \`dev\` at \`${sha:0:9}\` to \`master\` ($count commits).
 
-This pull request comes from the temporary branch \`$branch\`, created by \`just promote\`. GitHub deletes \`$branch\` after the merge. No open pull request targets it, so no pull request is retargeted."
+This pull request comes from the temporary branch \`$branch\`, created by \`just promote\`. GitHub deletes \`$branch\` after the merge. No open pull request targets it, so no pull request is retargeted."; then
+	echo "ERROR: the pull request was not opened. Deleting $branch." >&2
+	gh api -X DELETE "repos/$repo/git/refs/heads/$branch" >/dev/null ||
+		echo "WARNING: delete $branch by hand." >&2
+	exit 1
+fi

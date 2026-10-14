@@ -25,6 +25,7 @@ mkdir -p "$TMP/bin"
 cat >"$TMP/bin/gh" <<'SH'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >>"$GH_LOG"
+if [ "${GH_FAIL_PR_CREATE:-0}" = 1 ] && [ "$1 $2" = "pr create" ]; then exit 1; fi
 SH
 chmod +x "$TMP/bin/gh"
 
@@ -53,4 +54,12 @@ if grep -q -- '--head dev' "$TMP/gh.log"; then
 	fail "the pull request used dev as its head branch"
 fi
 
-printf 'PASS: just promote opens the master pull request from a promote/* branch at the dev commit.\n'
+: >"$TMP/gh.log"
+if (cd "$TMP/work" && PATH="$TMP/bin:$PATH" GH_LOG="$TMP/gh.log" GH_FAIL_PR_CREATE=1 PROMOTE_REPOSITORY=example/repo \
+	PROMOTE_TIMESTAMP=20261009-094501 bash "$TOOL") >/dev/null 2>"$TMP/err"; then
+	fail "a failed pull request creation did not fail the command"
+fi
+grep -Fxq "api -X DELETE repos/example/repo/git/refs/heads/promote/20261009-094501" "$TMP/gh.log" ||
+	fail "a failed pull request creation did not delete the promote branch: $(cat "$TMP/gh.log")"
+
+printf 'PASS: just promote opens the master pull request from a promote/* branch at the dev commit, and deletes the branch when the pull request fails.\n'
