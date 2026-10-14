@@ -1586,6 +1586,7 @@ BENCHMARK_PID=""
 ITERATION_PID=""
 ITERATION_TEE_PID=""
 ITERATION_SNAPSHOT_PID=""
+ITERATION_IO_SAMPLER_PID=""
 ITERATION_FIFO=""
 cleanup_soak_processes() {
 	[ -z "$HOST_GUARDIAN_PID" ] || kill "$HOST_GUARDIAN_PID" 2>/dev/null || true
@@ -1598,6 +1599,7 @@ cleanup_soak_processes() {
 	fi
 	[ -z "$ITERATION_TEE_PID" ] || kill "$ITERATION_TEE_PID" 2>/dev/null || true
 	[ -z "$ITERATION_SNAPSHOT_PID" ] || kill "$ITERATION_SNAPSHOT_PID" 2>/dev/null || true
+	[ -z "$ITERATION_IO_SAMPLER_PID" ] || kill "$ITERATION_IO_SAMPLER_PID" 2>/dev/null || true
 	[ -z "$ITERATION_FIFO" ] || rm -f "$ITERATION_FIFO"
 	if [ -n "$BENCHMARK_PID" ] || [ -n "$ITERATION_PID" ]; then
 		if ! stop_node_writers -q kill >/dev/null 2>&1; then
@@ -2029,6 +2031,12 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
 	if [ "$CASPER_RUNTIME" -eq 0 ]; then
 		snapshot_iteration_monitor_outputs "$ITERATION_DIR" &
 		ITERATION_SNAPSHOT_PID=$!
+		# Diagnostic for the subprocess checkpoint gap (issue #24). Off by default.
+		# The soak workflow on diagnose/vm-sustained-phase-sample turns it on.
+		if [ "${SOAK_IO_DIAGNOSTICS:-0}" = 1 ]; then
+			bash "$SCRIPT_DIR/bench/sample-node-io.sh" "$ITERATION_DIR" &
+			ITERATION_IO_SAMPLER_PID=$!
+		fi
 	fi
 	GUARDIAN_INTERRUPTED=0
 	while kill -0 "$ITERATION_PID" 2>/dev/null; do
@@ -2090,10 +2098,15 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
 		kill "$ITERATION_SNAPSHOT_PID" 2>/dev/null || true
 		wait "$ITERATION_SNAPSHOT_PID" 2>/dev/null || true
 	fi
+	if [ -n "$ITERATION_IO_SAMPLER_PID" ]; then
+		kill "$ITERATION_IO_SAMPLER_PID" 2>/dev/null || true
+		wait "$ITERATION_IO_SAMPLER_PID" 2>/dev/null || true
+	fi
 	rm -f "$ITERATION_FIFO"
 	ITERATION_PID=""
 	ITERATION_TEE_PID=""
 	ITERATION_SNAPSHOT_PID=""
+	ITERATION_IO_SAMPLER_PID=""
 	ITERATION_FIFO=""
 	# No `set -e` restore: this script never enables errexit (line 2 is
 	# `set -uo pipefail`), and turning it on here made the first failed
