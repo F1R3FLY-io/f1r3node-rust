@@ -2999,8 +2999,8 @@ claimed_by: claude-session-dfac55a4
 claimed_at: 2026-10-06T16:14:22Z
 priority: p1
 user_story: US-010
-blocked_by: [EPIC-013]
-blocked_by_note: "2026-10-11: only the first stable promotion through EPIC-013 Phase 4 blocks the first shard. The design, the tooling, TASK-014-7, and TASK-014-8 can be implemented now. Enabling TASK-014-7 and TASK-014-8 waits for TASK-014-5, as for TASK-014-6."
+blocked_by: [EPIC-013, "a release that passes the 60h stability soak", "ratification of the adaptive execution design (PR #714, TASK-027-1)"]
+blocked_by_note: "2026-10-11: only the first stable promotion through EPIC-013 Phase 4 blocks the first shard. The design, the tooling, TASK-014-7, and TASK-014-8 can be implemented now. Enabling TASK-014-7 and TASK-014-8 waits for TASK-014-5, as for TASK-014-6. 2026-10-13: the first shard also waits for two gates. A release must pass the 60h stability soak on its exact image digest. The architects must ratify the adaptive execution design on branch perf/issue-24-adaptive-execution (PR #714, design section 2.1)."
 created_at: 2026-08-19
 branch: ci/testnet-deployment
 design_intent:
@@ -3034,6 +3034,9 @@ tasks:
     claimed_by: claude-session-dfac55a4
     claimed_at: 2026-10-06T16:14:22Z
     pr: 654
+    first_apply_gates:
+      - "A release passes the 60h stability soak on its exact image digest."
+      - "The architects ratify the adaptive execution design (PR #714, branch perf/issue-24-adaptive-execution, design section 2.1)."
     notes:
       - "2026-10-06: dry-run tooling on PR #654: scripts/remote/testnet.env (TESTBED_PROFILE=testnet, 2x amd64 E5.Flex 4 OCPU/24 GB), just testnet-plan, scripts/remote/testnet-slots.sh with its test, docker/testnet.vm-a.yml and testnet.vm-b.yml, validator3 and soaking-slot remote configs."
       - "Blockers before the first --apply (docs/plans/test-net.md section 14): narrow the security list (SSH and 40400-40455 are open to all addresses), move validator keys to OCI Vault, teach deploy.sh the test net compose files, slot file, and keys. No --apply without maintainer approval."
