@@ -509,6 +509,7 @@ theories/CanonicalAuthorityWitness.v
 theories/IntroductionMeasurementReuse.v
 theories/StackSafeDemandWalk.v
 theories/StackSafeLexicalResolver.v
+theories/StackSafeSignatureSort.v
 theories/ReceiveBodyNames.v
 theories/CursorLinearity.v
 theories/V6MergeLedger.v

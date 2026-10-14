@@ -85,10 +85,35 @@ pub fn sort_signature(signature: &CostSignature) -> ScoredTerm<CostSignature> {
     }
 }
 
+// Changed by DR-131 P1: the flatten runs on an explicit work stack, so the
+// native stack no longer grows with the compound depth. The stack holds the
+// pending signatures in reverse source order, so the leaves come out in source
+// order, as the recursive version gave them. That order matters, because
+// `ScoredTerm::sort_vec` keeps ties in input order. The recursive version
+// below stays as the test oracle.
 fn collect_compound(signatures: &[CostSignature], output: &mut Vec<ScoredTerm<CostSignature>>) {
+    let mut work: Vec<&CostSignature> = signatures.iter().rev().collect();
+    while let Some(signature) = work.pop() {
+        match &signature.value {
+            Some(Value::Compound(compound)) => work.extend(compound.elements.iter().rev()),
+            _ => output.push(sort_signature(signature)),
+        }
+    }
+}
+
+// Replaced by DR-131 P1 with the work-stack flatten above, because it recursed
+// once for each compound level. It stays as the oracle of the stack-safety
+// tests.
+#[cfg(test)]
+fn collect_compound_recursive(
+    signatures: &[CostSignature],
+    output: &mut Vec<ScoredTerm<CostSignature>>,
+) {
     for signature in signatures {
         match &signature.value {
-            Some(Value::Compound(compound)) => collect_compound(&compound.elements, output),
+            Some(Value::Compound(compound)) => {
+                collect_compound_recursive(&compound.elements, output)
+            }
             _ => output.push(sort_signature(signature)),
         }
     }
@@ -344,6 +369,10 @@ pub fn sort_stack_metered(
         score: Tree::<ScoreAtom>::create_node_from_i32_metered(Score::COST_STACK, scores, meter)?,
     })
 }
+
+// Added by DR-131 P1: the stack-safety tests of the cost-signature sort.
+#[cfg(test)]
+mod stack_safety_tests;
 
 #[cfg(test)]
 mod metered_tests {

@@ -38,6 +38,9 @@ use super::{deterministic_reduction, unwrap_option_safe};
 mod native_cost_signature;
 mod native_expr;
 mod native_par;
+// Added by DR-131 P1: the stack-safety tests of the cost-signature substitution.
+#[cfg(test)]
+mod cost_signature_stack_safety_tests;
 
 // See rholang/src/main/scala/coop/rchain/rholang/interpreter/Substitute.scala
 pub trait SubstituteTrait<A> {
@@ -284,7 +287,81 @@ impl Substitute {
         }
     }
 
+    // Changed by DR-131 P1: the substitution runs on an explicit work stack and
+    // a value stack, so the native stack no longer grows with the compound
+    // depth. `Visit` substitutes one signature. A compound pushes `Close` with
+    // its element count and then its elements in reverse, so the elements run
+    // in source order and stop at the first error, as the recursive version
+    // did. `Close` takes the substituted elements from the value stack in
+    // source order. Each leaf and each compound is sorted when it completes,
+    // as the recursive version sorted every level. The recursive version stays
+    // below as the test oracle.
     pub(crate) fn substitute_cost_signature(
+        &self,
+        signature: CostSignature,
+        depth: i32,
+        env: &Env<Par>,
+    ) -> Result<CostSignature, InterpreterError> {
+        enum Step {
+            Visit(CostSignature),
+            Close(usize),
+        }
+        let mut work = vec![Step::Visit(signature)];
+        let mut done: Vec<CostSignature> = Vec::new();
+        while let Some(step) = work.pop() {
+            let value = match step {
+                Step::Close(count) => {
+                    let elements = done.split_off(done.len() - count);
+                    CostSignatureValue::Compound(CostSignatureCompound { elements })
+                }
+                Step::Visit(signature) => match signature.value {
+                    Some(CostSignatureValue::Compound(compound)) => {
+                        work.push(Step::Close(compound.elements.len()));
+                        work.extend(compound.elements.into_iter().rev().map(Step::Visit));
+                        continue;
+                    }
+                    Some(CostSignatureValue::Unit(value)) => CostSignatureValue::Unit(value),
+                    Some(CostSignatureValue::Ground(bytes)) => CostSignatureValue::Ground(bytes),
+                    Some(CostSignatureValue::BoundLevel(index)) if depth == 0 => {
+                        match env.get(&index) {
+                            Some(name) => {
+                                CostSignatureValue::Name(ParSortMatcher::sort_match(&name).term)
+                            }
+                            None => CostSignatureValue::BoundLevel(index),
+                        }
+                    }
+                    Some(CostSignatureValue::BoundLevel(index)) => {
+                        CostSignatureValue::BoundLevel(index)
+                    }
+                    Some(CostSignatureValue::Quote(par)) => CostSignatureValue::Quote(
+                        self.substitute_no_sort(par, depth, env)
+                            .map(|par| ParSortMatcher::sort_match(&par).term)?,
+                    ),
+                    Some(CostSignatureValue::Name(par)) => CostSignatureValue::Name(
+                        self.substitute_no_sort(par, depth, env)
+                            .map(|par| ParSortMatcher::sort_match(&par).term)?,
+                    ),
+                    None => {
+                        return Err(InterpreterError::UndefinedRequiredProtobufFieldError(
+                            "CostSignature.value".to_string(),
+                        ))
+                    }
+                },
+            };
+            done.push(sort_signature(&CostSignature { value: Some(value) }).term);
+        }
+        done.pop().ok_or_else(|| {
+            InterpreterError::BugFoundError(
+                "the cost-signature substitution left no signature".to_string(),
+            )
+        })
+    }
+
+    // Replaced by DR-131 P1 with the work-stack substitution above, because it
+    // recursed once for each compound level. It stays as the oracle of the
+    // stack-safety tests.
+    #[cfg(test)]
+    pub(crate) fn substitute_cost_signature_recursive(
         &self,
         signature: CostSignature,
         depth: i32,
@@ -306,7 +383,7 @@ impl Substitute {
                 let elements = compound
                     .elements
                     .into_iter()
-                    .map(|element| self.substitute_cost_signature(element, depth, env))
+                    .map(|element| self.substitute_cost_signature_recursive(element, depth, env))
                     .collect::<Result<Vec<_>, _>>()?;
                 CostSignatureValue::Compound(CostSignatureCompound { elements })
             }
