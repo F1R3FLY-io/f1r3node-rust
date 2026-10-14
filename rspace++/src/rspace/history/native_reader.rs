@@ -5,9 +5,13 @@ use blake2::{Blake2b, Digest};
 use shared::rust::store::key_value_store::{KeyValueStore, KvStoreError};
 
 mod framing;
+mod records;
 mod typed;
 use framing::{MAX_NODE_BYTES, NodeStep, node_step};
 pub use framing::{NativeLeafKind, NativeRecords};
+// Added by DR-131 P2a: the per-record decoding through the cold-store decode
+// boundary. S6 wires it in place of the typed decoder.
+pub use records::{decode_continuation, decode_datum, decode_join};
 pub use typed::{NATIVE_TREE_SET, decode_history_record, decode_record, tree_set};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
