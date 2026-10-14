@@ -188,14 +188,15 @@ Both settings take effect at the next session start.
 - Keep commit messages clean and professional
 - Every commit author and `Co-authored-by` trailer must be ratified. GitHub lists each co-author email that maps to an account in the contributors graph.
 - An email is ratified when it authored a commit in the base branch history. Only accepted pull requests reach that history. A `Co-authored-by` trailer never ratifies an email.
-- The CI `Static Checks` job checks every commit author and co-author. A pull request cannot ratify its own identities.
+- The CI `Commit Policy` job checks every commit author and co-author. A pull request cannot ratify its own identities.
 - The `.githooks/commit-msg` hook checks co-authors only, so a first-time contributor can commit locally. Both reject `Claude-Session` trailers.
 - An outside contributor's own commits in their own pull request pass. Maintainer review decides their acceptance. Only a human account gets this exemption. A bot or app account does not.
 - `.github/denied-identities.txt` lists identities that are always rejected, even when the history ratifies them. It blocks `@anthropic.com`. CI reads it from the base branch.
 - Turn off the co-author attribution setting in your Claude Code `settings.json`.
 
 ### Branch Strategy
-- `master` is the default branch and release line. Maintainers promote `dev` to `master`.
+- `master` is the default branch and release line. Maintainers promote `dev` to `master` with `just promote`.
+- `just promote` opens the promotion from a temporary `promote/*` branch. Do not open a promotion with head `dev`. GitHub deletes the head branch of a merged pull request and retargets every pull request based on it to `master`. The `Promotion Source` check rejects a pull request from `dev` to `master`.
 - `dev` is the integration branch. Feature and fix pull requests target this branch.
 - Feature branches (`feature/`, `fix/`, `docs/`, `perf/`, `chore/`) branch from and target `dev`
 - `hotfix/` branches from and target `master`, then `master` is merged back into `dev`

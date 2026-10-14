@@ -8,7 +8,7 @@
 //!   - `Fs.openFile` mode-default inference on `{}` and on non-empty
 //!     Maps without a `"mode"` key.
 //!   - `Fs.openFile` accepting every non-exclusive-create mode string
-//!     against a `"rw"`-provisioned File bundle.  (Exclusive-create
+//!     against a `"r+"`-provisioned File bundle.  (Exclusive-create
 //!     modes `"wx"` / `"w+x"` deliberately excluded — they require the
 //!     target NOT to exist, and bundle validation always seeds an
 //!     on-disk file.  Their success path is unreachable from a
@@ -189,7 +189,7 @@ in {{
 
 /// `Fs.openFile("target", {"mode": M})` succeeds for every mode M
 /// in the native-parser-accepted, non-exclusive-create set on a
-/// `"rw"`-provisioned bundle.  Sweeps `{"r", "rw", "w", "w+", "a",
+/// `"r+"`-provisioned bundle.  Sweeps `{"r", "r+", "w", "w+", "a",
 /// "a+"}` in a single test so genesis-build cost amortizes.  A
 /// regression that drops any mode from Fs.rho:275's disjunction OR
 /// from `mode.rs::parse_open_mode`'s match would fail here.
@@ -204,10 +204,10 @@ in {{
 /// but the native parser not matching it) is already resolved on
 /// triage — `mode.rs::parse_open_mode` handles `"r+" => (ReadWrite,
 /// Require)` (line 62) so POSIX `r+` semantics work via both
-/// `"r+"` and the legacy `"rw"` alias.
+/// `"r+"` and the legacy `"r+"` alias.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn openfile_all_non_exclusive_modes_succeed_on_rw_bundle() {
-    let (_dir, params, fs_uri) = bundle_file(b"seed", "rw");
+    let (_dir, params, fs_uri) = bundle_file(b"seed", "r+");
     let test_source = format!(
         r#"
 new

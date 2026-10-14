@@ -366,7 +366,7 @@ pub const BUNDLE_ROOT_PREFIX: &str = "/@bundle";
 ///
 /// ```text
 /// {"logical/name": ("/canon/path", "", "r", "file", "oracular"),
-///  "cap":         ("/@bundle", "cap", "rw", "file", "consensus"), ...}
+///  "cap":         ("/@bundle", "cap", "r+", "file", "consensus"), ...}
 /// ```
 ///
 /// The tuple shape matches Fs.rho's `bMap.get(n)` match pattern
@@ -1219,7 +1219,7 @@ mod tests {
             "nested/data.bin".into(),
             PathBuf::from("/host/dir/data.bin"),
             BundleEntryKind::File,
-            "rw".into(),
+            "r+".into(),
             BundleConsensusMode::Consensus,
         )
         .expect("try_new");
@@ -1227,7 +1227,7 @@ mod tests {
         // Consensus File: ("/@bundle/<parent>", filename, mode, "file", "consensus").
         assert_eq!(
             s,
-            r#"{"nested/data.bin": ("/@bundle/nested", "data.bin", "rw", "file", "consensus")}"#
+            r#"{"nested/data.bin": ("/@bundle/nested", "data.bin", "r+", "file", "consensus")}"#
         );
     }
 
@@ -1582,7 +1582,7 @@ mod tests {
             acc
         });
         // Byte-identity with fileio canonical as of slice 5.16 port.
-        const EXPECTED: &str = "79859563b508d3a04812c2c8fb62c76fe6ddd3bcbcdc66f98d99d8836d21103e";
+        const EXPECTED: &str = "07680c2f0bca08c5cd35f4eb3e5296b39958cf8043d6f1725b228b4ae0756581";
         assert_eq!(
             hex, EXPECTED,
             "compose_fs_genesis_source() hash changed.  If intentional \
@@ -2402,21 +2402,21 @@ mod tests {
                 logical_name: "logs/".into(),
                 canon_path: PathBuf::from("/var/log/rnode"),
                 kind: BundleEntryKind::Dir,
-                mode: "rw".into(),
+                mode: "r+".into(),
                 consensus_mode: BundleConsensusMode::Oracular,
             },
             BundleEntry {
                 logical_name: "state.bin".into(),
                 canon_path: PathBuf::from("/@bundle/consensus/state.bin"),
                 kind: BundleEntryKind::File,
-                mode: "rw".into(),
+                mode: "r+".into(),
                 consensus_mode: BundleConsensusMode::Consensus,
             },
             BundleEntry {
                 logical_name: "shared/".into(),
                 canon_path: PathBuf::from("/@bundle/consensus/shared"),
                 kind: BundleEntryKind::Dir,
-                mode: "rw".into(),
+                mode: "r+".into(),
                 consensus_mode: BundleConsensusMode::Consensus,
             },
         ];
@@ -2433,7 +2433,7 @@ mod tests {
         //     compose_fs_genesis_source_golden_hex_with_non_empty_bundle
         // ONLY when intentionally hard-forking the Genesis composition
         // OR the bundle format (both are hard-fork surfaces).
-        const EXPECTED: &str = "a6005130b0ce4db99e83de7341fa823e7e00baeab2ea79b121d1a579a7d8a4b5";
+        const EXPECTED: &str = "25623225a52f22d4b8e72c487911eb533707b86d209160908bebfb1bd07f4107";
         assert_eq!(
             hex, EXPECTED,
             "compose_fs_genesis_source() hash for non-empty bundle changed. \
@@ -2469,21 +2469,21 @@ mod tests {
                 logical_name: "app.log/".into(),
                 canon_path: PathBuf::from("/var/log/app"),
                 kind: BundleEntryKind::Dir,
-                mode: "rw".into(),
+                mode: "r+".into(),
                 consensus_mode: BundleConsensusMode::Oracular,
             },
             BundleEntry {
                 logical_name: "app.state.bin".into(),
                 canon_path: PathBuf::from("/@bundle/consensus/app.state.bin"),
                 kind: BundleEntryKind::File,
-                mode: "rw".into(),
+                mode: "r+".into(),
                 consensus_mode: BundleConsensusMode::Consensus,
             },
             BundleEntry {
                 logical_name: "app.state.dir/".into(),
                 canon_path: PathBuf::from("/@bundle/consensus/app.state.dir"),
                 kind: BundleEntryKind::Dir,
-                mode: "rw".into(),
+                mode: "r+".into(),
                 consensus_mode: BundleConsensusMode::Consensus,
             },
             BundleEntry {
@@ -2514,7 +2514,7 @@ mod tests {
         //     compose_fs_genesis_source_golden_hex_with_sort_tie_bundle
         // ONLY when intentionally hard-forking Genesis composition
         // OR bundle format.
-        const EXPECTED: &str = "5d93da4727878944b726a3e08bd3f7434deb0241efb80d07d7ed6baff9cc4497";
+        const EXPECTED: &str = "6c61d89159ccdf3da1d2860bc529ba5fbc3c72abf0078b29a3c4eac87530d3a9";
         assert_eq!(
             hex, EXPECTED,
             "compose_fs_genesis_source() hash for sort-tie bundle changed. \
