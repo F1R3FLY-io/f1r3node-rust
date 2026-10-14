@@ -2032,7 +2032,7 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
 		snapshot_iteration_monitor_outputs "$ITERATION_DIR" &
 		ITERATION_SNAPSHOT_PID=$!
 		# Diagnostic for the subprocess checkpoint gap (issue #24). Off by default.
-		# The soak workflow on diagnose/vm-sustained-phase-sample turns it on.
+		# The repository variable SOAK_IO_DIAGNOSTICS=1 turns it on.
 		if [ "${SOAK_IO_DIAGNOSTICS:-0}" = 1 ]; then
 			bash "$SCRIPT_DIR/bench/sample-node-io.sh" "$ITERATION_DIR" &
 			ITERATION_IO_SAMPLER_PID=$!

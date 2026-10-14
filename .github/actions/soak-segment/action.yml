@@ -156,8 +156,8 @@ runs:
         SOAK_NODE_REPO_DIR: ${{ inputs.node_repo_dir }}
         SYSTEM_INTEGRATION_DIR: ${{ inputs.system_integration_dir }}
         # Sample the node I/O of each iteration (scripts/bench/sample-node-io.sh,
-        # issue #24) only in a soak dispatched from a diagnose/* branch.
-        SOAK_IO_DIAGNOSTICS: ${{ startsWith(github.ref_name, 'diagnose/') && '1' || '0' }}
+        # issue #24) only when the repository variable SOAK_IO_DIAGNOSTICS is 1.
+        SOAK_IO_DIAGNOSTICS: ${{ vars.SOAK_IO_DIAGNOSTICS == '1' && '1' || '0' }}
       shell: bash -e {0}
       run: ci-control/scripts/run-merge-recovery-soak.sh
 
