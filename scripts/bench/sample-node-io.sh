@@ -14,8 +14,11 @@
 #   host.txt        once: the vm.dirty_* settings
 #   strace-<role>.txt  once, SOAK_IO_STRACE_DELAY_SECONDS after the
 #                   "--- Phase: sustained ---" marker (or SOAK_IO_STRACE_AFTER_SECONDS
-#                   after the start without it): syscall summary of
-#                   SOAK_IO_STRACE_ROLE for SOAK_IO_STRACE_SECONDS
+#                   after the start without it): syscall summary of the node whose
+#                   role, or last dot-separated part of the role, equals
+#                   SOAK_IO_STRACE_ROLE, for SOAK_IO_STRACE_SECONDS. It runs in the
+#                   background, so io.tsv sampling continues. strace -f slows the
+#                   traced node, so compare io.tsv rows of other nodes for timing.
 #
 # Test seams: PROC_ROOT, SOAK_IO_SUDO, SOAK_IO_DOCKER, SOAK_IO_STRACE.
 set -uo pipefail
@@ -34,7 +37,17 @@ STRACE="${SOAK_IO_STRACE:-strace}"
 PYTEST_LOG="$ITERATION_DIR/pytest.log"
 
 mkdir -p "$OUT" || exit 0
-trap 'exit 0' TERM INT
+STRACE_PID=""
+ROLE_CACHE="$OUT/.roles"
+: >"$ROLE_CACHE"
+stop() {
+	if [ -n "$STRACE_PID" ]; then
+		pkill -TERM -P "$STRACE_PID" 2>/dev/null || true
+		kill "$STRACE_PID" 2>/dev/null || true
+	fi
+	exit 0
+}
+trap stop TERM INT
 
 read_proc() {
 	cat "$1" 2>/dev/null || { [ -n "$SUDO" ] && $SUDO cat "$1" 2>/dev/null; }
@@ -63,11 +76,14 @@ discover_nodes() {
 			role="${role##*/}"
 		else
 			data_dir=/var/lib/rnode
-			cid="$(read_proc "$dir/cgroup" | grep -oE '[0-9a-f]{64}' | head -1)"
-			role=""
-			[ -n "$cid" ] && role="$($DOCKER inspect --format '{{.Name}}' "$cid" 2>/dev/null)"
-			role="${role#/}"
-			[ -n "$role" ] || role="pid-$pid"
+			role="$(awk -F'\t' -v p="$pid" '$1 == p { print $2; exit }' "$ROLE_CACHE" 2>/dev/null)"
+			if [ -z "$role" ]; then
+				cid="$(read_proc "$dir/cgroup" | grep -oE '[0-9a-f]{64}' | head -1)"
+				[ -n "$cid" ] && role="$($DOCKER inspect --format '{{.Name}}' "$cid" 2>/dev/null)"
+				role="${role#/}"
+				[ -n "$role" ] || role="pid-$pid"
+				printf '%s\t%s\n' "$pid" "$role" >>"$ROLE_CACHE"
+			fi
 		fi
 		printf '%s\t%s\t%s\n' "$pid" "$role" "$data_dir"
 	done
@@ -123,13 +139,23 @@ describe_host() {
 }
 
 run_strace() {
-	local pid="$1" cmd
-	cmd=(timeout -s INT "$STRACE_SECONDS" "$STRACE" -c -f -p "$pid" -e trace=fsync,fdatasync,msync,pwrite64,write,mmap,munmap,madvise)
+	local pid="$1" trigger="$2" target="$OUT/strace-$STRACE_ROLE.txt" cmd
+	cmd=(timeout --preserve-status -s INT "$STRACE_SECONDS" "$STRACE" -c -f -p "$pid" -e trace=fsync,fdatasync,msync,pwrite64,write,mmap,munmap,madvise)
+	printf 'role: %s\npid: %s\ntrigger: %s\nseconds: %s\nnote: strace -f slows the traced node during the sample.\n\n' \
+		"$STRACE_ROLE" "$pid" "$trigger" "$STRACE_SECONDS" >"$target"
 	if ! command -v "$STRACE" >/dev/null 2>&1; then
-		printf 'strace unavailable\n' >"$OUT/strace-$STRACE_ROLE.txt"
+		printf 'strace unavailable\n' >>"$target"
 		return
 	fi
-	{ "${cmd[@]}" 2>&1 || { [ -n "$SUDO" ] && $SUDO "${cmd[@]}" 2>&1; }; } >"$OUT/strace-$STRACE_ROLE.txt" || true
+	if "${cmd[@]}" >"$target.direct" 2>&1; then
+		cat "$target.direct" >>"$target"
+	elif [ -n "$SUDO" ] && $SUDO "${cmd[@]}" >"$target.sudo" 2>&1; then
+		cat "$target.sudo" >>"$target"
+	else
+		printf 'strace failed:\n' >>"$target"
+		cat "$target.direct" "$target.sudo" >>"$target" 2>/dev/null
+	fi
+	rm -f "$target.direct" "$target.sudo"
 }
 
 printf 'ts\tpid\trole\trchar\twchar\tsyscr\tsyscw\tread_bytes\twrite_bytes\tcancelled_write_bytes\tminflt\tmajflt\n' >"$OUT/io.tsv"
@@ -151,9 +177,11 @@ while :; do
 			now="$(date +%s)"
 			if [ -z "$sustained_at" ] && grep -q '^--- Phase: sustained ---' "$PYTEST_LOG" 2>/dev/null; then sustained_at="$now"; fi
 			if { [ -n "$sustained_at" ] && [ "$((now - sustained_at))" -ge "$STRACE_DELAY" ]; } || [ "$((now - started))" -ge "$STRACE_AFTER" ]; then
-				pid="$(awk -F'\t' -v r="$STRACE_ROLE" '$2 ~ r { print $1; exit }' <<<"$nodes")"
+				pid="$(awk -F'\t' -v r="$STRACE_ROLE" '{ n = split($2, part, "."); if ($2 == r || part[n] == r) { print $1; exit } }' <<<"$nodes")"
 				if [ -n "$pid" ]; then
-					run_strace "$pid"
+					if [ -n "$sustained_at" ]; then trigger="sustained phase marker plus ${STRACE_DELAY}s"; else trigger="fallback after ${STRACE_AFTER}s without the marker"; fi
+					run_strace "$pid" "$trigger" &
+					STRACE_PID=$!
 					straced=1
 				fi
 			fi

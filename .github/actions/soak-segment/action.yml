@@ -155,9 +155,9 @@ runs:
         SOAK_MERGE_EXIT_MIN_SECONDS: ${{ inputs.merge_exit_min_seconds }}
         SOAK_NODE_REPO_DIR: ${{ inputs.node_repo_dir }}
         SYSTEM_INTEGRATION_DIR: ${{ inputs.system_integration_dir }}
-        # Branch diagnose/vm-sustained-phase-sample only: sample the node I/O
-        # of each iteration (scripts/bench/sample-node-io.sh, issue #24).
-        SOAK_IO_DIAGNOSTICS: "1"
+        # Sample the node I/O of each iteration (scripts/bench/sample-node-io.sh,
+        # issue #24) only in a soak dispatched from a diagnose/* branch.
+        SOAK_IO_DIAGNOSTICS: ${{ startsWith(github.ref_name, 'diagnose/') && '1' || '0' }}
       shell: bash -e {0}
       run: ci-control/scripts/run-merge-recovery-soak.sh
 
