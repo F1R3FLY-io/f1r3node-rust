@@ -851,6 +851,7 @@ impl TestNode {
             None,
             test_network,
             deploy_lifespan,
+            true,
         )
         .await
     }
@@ -879,8 +880,38 @@ impl TestNode {
             Some(bootstrap_index),
             test_network,
             None,
+            true,
         )
         .await
+    }
+
+    /// A standalone node that answers `StoreItemsMessage` requests (state
+    /// exporter enabled). Regular `standalone`/`create_network` nodes disable
+    /// the exporter, so use this when a test must drive the real export path,
+    /// e.g. the issue #666 hostile-request resilience check.
+    pub async fn standalone_with_state_exporter(
+        genesis: GenesisContext,
+    ) -> Result<TestNode, CasperError> {
+        crate::init_logger();
+
+        let test_network = TestNetwork::empty();
+        let sks_to_use: Vec<PrivateKey> = genesis.validator_sks().into_iter().take(1).collect();
+
+        let nodes = Self::network(
+            sks_to_use,
+            genesis,
+            0.0,
+            Estimator::UNLIMITED_PARENTS,
+            None,
+            0,
+            None,
+            test_network,
+            None,
+            false,
+        )
+        .await?;
+
+        Ok(nodes.into_iter().next().unwrap())
     }
 
     /// Creates a network of TestNodes
@@ -895,6 +926,7 @@ impl TestNode {
         bootstrap_index: Option<usize>,
         test_network: TestNetwork,
         deploy_lifespan: Option<i64>,
+        disable_state_exporter: bool,
     ) -> Result<Vec<TestNode>, CasperError> {
         let genesis = genesis_context.genesis_block.clone();
         let n = sks.len();
@@ -941,6 +973,7 @@ impl TestNode {
                 &genesis_context,
                 bootstrap_peer.clone(),
                 deploy_lifespan,
+                disable_state_exporter,
             )
             .await;
             nodes.push(node);
@@ -979,6 +1012,7 @@ impl TestNode {
         genesis_context: &GenesisContext,
         bootstrap_peer: Option<PeerNode>,
         deploy_lifespan: Option<i64>,
+        disable_state_exporter: bool,
     ) -> TestNode {
         let tle = Arc::new(TransportLayerTestImpl::new(test_network.clone()));
         let tls =
@@ -1208,7 +1242,7 @@ impl TestNode {
             casper.clone() as Arc<dyn MultiParentCasper + Send + Sync>, // casper
             _approved_block.clone(),         // approved_block
             the_init,                        // the_init
-            true,                            // disable_state_exporter
+            disable_state_exporter,          // disable_state_exporter
             tle.clone(),                     // transport
             rp_conf.clone(),                 // conf
             block_retriever.clone(),         // block_retriever

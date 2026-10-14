@@ -423,7 +423,7 @@ in {{
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn lockrange_conflict_returns_busy() {
     // 512 bytes so the [0, 100) range is well within EOF.
-    let (_dir, params, fs_uri) = bundle_file(&vec![0u8; 512], "rw");
+    let (_dir, params, fs_uri) = bundle_file(&vec![0u8; 512], "r+");
 
     let test_source = format!(
         r#"
@@ -483,9 +483,9 @@ in {{
 /// exclusive-create mode.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn openfile_exclusive_on_existing_returns_already_exists() {
-    // "rw" provisioning is required for the Fs mode-attenuation gate
+    // "r+" provisioning is required for the Fs mode-attenuation gate
     // to admit "wx"; the underlying file is seeded by bundle_file.
-    let (_dir, params, fs_uri) = bundle_file(b"payload", "rw");
+    let (_dir, params, fs_uri) = bundle_file(b"payload", "r+");
 
     let test_source = format!(
         r#"
@@ -658,9 +658,9 @@ in {{
 /// could touch a distinct file if the fd was recycled by the runtime.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn writen_after_close_returns_closed() {
-    // Bundle in "rw" so writeByteArray isn't gated by mode before it
+    // Bundle in "r+" so writeByteArray isn't gated by mode before it
     // reaches the closed-state check.
-    let (_dir, params, fs_uri) = bundle_file(b"payload", "rw");
+    let (_dir, params, fs_uri) = bundle_file(b"payload", "r+");
 
     let test_source = format!(
         r#"
