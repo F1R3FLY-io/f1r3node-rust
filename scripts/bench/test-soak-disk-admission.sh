@@ -285,13 +285,13 @@ if [[ "${1:-}" == inspect && "${2:-}" == --format && "${4:-}" == "$owned_id" ]];
 fi
 if [[ "${1:-}" == kill && "${2:-}" == "$owned_id" ]]; then set -- kill disk-fixture; fi
 if [[ "${1:-}" == rm && "${3:-}" == "$owned_id" ]]; then set -- rm -f disk-fixture; fi
-if [[ "$*" == 'compose -f /case/node/docker/shard.yml -p soak-bench config --format json' ]]; then
-    printf '{"services":{"fixture":{}}}\n'
+if [[ "$*" == 'compose -f /case/node/docker/shard.yml -f /case/node/docker/ci-ports.shard.yml -p soak-bench config --format json' ]]; then
+    printf '{"services":{"fixture":{},"validator1":{"ports":[{"target":40403,"published":"14413"}]}}}\n'
     exit 0
 fi
-if [[ "${1:-}" == compose && "${6:-}" == -f && "${7:-}" == /case/evidence/output/.docker-owner.*/labels.*.json ]]; then
-    jq -e --arg owner "${SOAK_WRITER_OWNER:?}" '.services.fixture.labels["io.f1r3fly.soak.owner"] == $owner' "$7" >/dev/null || exit 2
-    set -- "${@:1:5}" "${@:8}"
+if [[ "${1:-}" == compose && "${8:-}" == -f && "${9:-}" == /case/evidence/output/.docker-owner.*/labels.*.json ]]; then
+    jq -e --arg owner "${SOAK_WRITER_OWNER:?}" '.services.fixture.labels["io.f1r3fly.soak.owner"] == $owner' "$9" >/dev/null || exit 2
+    set -- "${@:1:7}" "${@:10}"
 fi
 if [[ "${SOAK_DISK_TEST_SCENARIO:-band}" == cleanup-error-* ]]; then
     action=""
@@ -311,13 +311,13 @@ if [[ ( "${SOAK_DISK_TEST_SCENARIO:-band}" == restart-benchmark ||
     ( "${SOAK_DISK_TEST_SCENARIO:-band}" == benchmark-* &&
     "${SOAK_DISK_TEST_SCENARIO:-band}" != benchmark-active-disk &&
     "${SOAK_DISK_TEST_SCENARIO:-band}" != benchmark-cancel-* ) ) &&
-    "$*" == 'compose -f /case/node/docker/shard.yml -p soak-bench up -d' ]]; then
+    "$*" == 'compose -f /case/node/docker/shard.yml -f /case/node/docker/ci-ports.shard.yml -p soak-bench up -d' ]]; then
     printf '%s\n' "$*" >/case/evidence/benchmark-started.txt
     exit 1
 fi
 if [[ "${SOAK_DISK_TEST_SCENARIO:-band}" == benchmark-active-disk ]]; then
     case "$*" in
-        'compose -f /case/node/docker/shard.yml -p soak-bench up -d')
+        'compose -f /case/node/docker/shard.yml -f /case/node/docker/ci-ports.shard.yml -p soak-bench up -d')
             printf '%s\n' "$*" >/case/evidence/benchmark-started.txt
             printf '%s\n' "$$" >/case/evidence/benchmark-client-pid.txt
             printf 'available=1024\n' >/case/evidence/benchmark-disk-fault.txt
@@ -344,7 +344,7 @@ if [[ "${SOAK_DISK_TEST_SCENARIO:-band}" == benchmark-active-disk ]]; then
     esac
 fi
 if [[ "${SOAK_DISK_TEST_SCENARIO:-band}" == benchmark-cancel-* &&
-    "$*" == 'compose -f /case/node/docker/shard.yml -p soak-bench up -d' ]]; then
+    "$*" == 'compose -f /case/node/docker/shard.yml -f /case/node/docker/ci-ports.shard.yml -p soak-bench up -d' ]]; then
     trap '' TERM
     printf '%s\n' "$*" >/case/evidence/benchmark-started.txt
     printf '%s\n' "$$" >/case/evidence/benchmark-client-pid.txt
@@ -583,6 +583,7 @@ SH
         run_benchmarks=true
         mkdir -p evidence/output node/docker
         printf 'services: {}\n' >node/docker/shard.yml
+        printf 'services: {}\n' >node/docker/ci-ports.shard.yml
         if [[ "$SCENARIO" == restart-benchmark ]]; then
             printf 'A prior guardian detected a disk breach. Termination remains unconfirmed.\n' >evidence/output/host-guardian-breach.txt
             cp evidence/output/host-guardian-breach.txt evidence/restart-input-breach.txt

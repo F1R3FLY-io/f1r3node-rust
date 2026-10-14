@@ -83,7 +83,10 @@ pub(crate) fn admit_deploy<T: TransportLayer + Send + Sync>(
     }
 
     // Create normalizer environment from deploy
-    let normalizer_env = normalizer_env_from_deploy(&deploy);
+    let normalizer_env = match normalizer_env_from_deploy(&deploy) {
+        Ok(env) => env,
+        Err(error) => return Ok(Either::Left(DeployError::parsing_error(error.to_string()))),
+    };
     let parse_started_at = std::time::Instant::now();
 
     // Try to parse the deploy term
@@ -129,8 +132,7 @@ fn deploy_is_known<T: TransportLayer + Send + Sync>(
         return Ok(true);
     }
     this.rejected_deploy_buffer
-        .lock()
-        .map_err(|error| CasperError::LockError(error.to_string()))?
+        .lock()?
         .contains_sig(deploy_id)
         .map_err(Into::into)
 }
@@ -149,10 +151,7 @@ fn reserve_deploy<T: TransportLayer + Send + Sync>(
     }
 
     let mut deploy_storage = this.deploy_storage.lock();
-    let rejected_deploys = this
-        .rejected_deploy_buffer
-        .lock()
-        .map_err(|error| CasperError::LockError(error.to_string()))?;
+    let rejected_deploys = this.rejected_deploy_buffer.lock()?;
     if rejected_deploys.contains_sig(&deploy_id)? {
         return Ok(false);
     }
@@ -423,8 +422,7 @@ pub(crate) async fn admit_list_pending_deploys<T: TransportLayer + Send + Sync>(
 
     let rejected = this
         .rejected_deploy_buffer
-        .lock()
-        .map_err(|e| CasperError::LockError(e.to_string()))?
+        .lock()?
         .read_all()
         .map_err(|e| {
             CasperError::RuntimeError(format!("Failed to read rejected deploy buffer: {:?}", e))

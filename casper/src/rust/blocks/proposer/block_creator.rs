@@ -9,8 +9,9 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
-use block_storage::rust::deploy::key_value_deploy_storage::KeyValueDeployStorage;
-use block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer;
+use block_storage::rust::deploy::key_value_deploy_storage::{
+    KeyValueDeployStorage, KeyValueRejectedDeployBuffer,
+};
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use crypto::rust::private_key::PrivateKey;
 use crypto::rust::public_key::PublicKey;
@@ -475,7 +476,7 @@ pub async fn prepare_user_deploys(
     current_time_millis: i64,
     deploy_storage: Arc<parking_lot::Mutex<KeyValueDeployStorage>>,
     rejected_deploy_buffer: Arc<
-        Mutex<block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer>,
+        Mutex<block_storage::rust::deploy::key_value_deploy_storage::KeyValueRejectedDeployBuffer>,
     >,
     block_store: &KeyValueBlockStore,
     allow_recovered_deploys: bool,
@@ -573,7 +574,7 @@ async fn prepare_user_deploys_with_policy(
     current_time_millis: i64,
     deploy_storage: Arc<parking_lot::Mutex<KeyValueDeployStorage>>,
     rejected_deploy_buffer: Arc<
-        Mutex<block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer>,
+        Mutex<block_storage::rust::deploy::key_value_deploy_storage::KeyValueRejectedDeployBuffer>,
     >,
     block_store: &KeyValueBlockStore,
     allow_recovered_deploys: bool,
@@ -2843,7 +2844,9 @@ pub async fn create(
     validator_identity: &ValidatorIdentity,
     dummy_deploy_opt: Option<(PrivateKey, String)>,
     deploy_storage: Arc<parking_lot::Mutex<KeyValueDeployStorage>>,
-    rejected_deploy_buffer: Arc<Mutex<block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer>>,
+    rejected_deploy_buffer: Arc<
+        Mutex<block_storage::rust::deploy::key_value_deploy_storage::KeyValueRejectedDeployBuffer>,
+    >,
     runtime_manager: &RuntimeManager,
     block_store: &mut KeyValueBlockStore,
     selection: super::proposer::DeploySelection,
@@ -2867,7 +2870,9 @@ pub async fn create_with_progress(
     validator_identity: &ValidatorIdentity,
     dummy_deploy_opt: Option<(PrivateKey, String)>,
     deploy_storage: Arc<parking_lot::Mutex<KeyValueDeployStorage>>,
-    rejected_deploy_buffer: Arc<Mutex<block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer>>,
+    rejected_deploy_buffer: Arc<
+        Mutex<block_storage::rust::deploy::key_value_deploy_storage::KeyValueRejectedDeployBuffer>,
+    >,
     runtime_manager: &RuntimeManager,
     block_store: &mut KeyValueBlockStore,
     selection: super::proposer::DeploySelection,
@@ -3735,6 +3740,7 @@ fn not_future_deploy(current_block_number: i64, deploy_data: &DeployData) -> boo
 
 #[cfg(test)]
 mod tests {
+    use crypto::rust::signatures::secp256k1::Secp256k1;
     use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
 
     use super::*;
@@ -5566,14 +5572,21 @@ mod tests {
             .duration_since(SystemTime::UNIX_EPOCH)
             .expect("time")
             .as_millis() as i64;
-        let mut expired = construct_deploy::source_deploy_now(
+        let mut expired_data = construct_deploy::source_deploy_now(
             "@expired-buffer!(0)".to_string(),
             None,
             Some(10),
             Some("test".to_string()),
         )
-        .expect("expired deploy");
-        expired.data.expiration_timestamp = Some(now - 1);
+        .expect("expired deploy")
+        .data;
+        expired_data.expiration_timestamp = Some(now - 1);
+        let expired = Signed::create(
+            expired_data,
+            Box::new(Secp256k1),
+            construct_deploy::DEFAULT_SEC.clone(),
+        )
+        .expect("sign expired deploy");
         let old = construct_deploy::source_deploy_now(
             "@old-buffer!(0)".to_string(),
             None,
@@ -5655,14 +5668,21 @@ mod tests {
             .duration_since(SystemTime::UNIX_EPOCH)
             .expect("time")
             .as_millis() as i64;
-        let mut expired = construct_deploy::source_deploy_now(
+        let mut expired_data = construct_deploy::source_deploy_now(
             "@expired-purge!(0)".to_string(),
             None,
             Some(10),
             Some("test".to_string()),
         )
-        .expect("expired deploy");
-        expired.data.expiration_timestamp = Some(now - 1);
+        .expect("expired deploy")
+        .data;
+        expired_data.expiration_timestamp = Some(now - 1);
+        let expired = Signed::create(
+            expired_data,
+            Box::new(Secp256k1),
+            construct_deploy::DEFAULT_SEC.clone(),
+        )
+        .expect("sign expired deploy");
         deploy_storage
             .lock()
             .add(vec![expired.clone()])

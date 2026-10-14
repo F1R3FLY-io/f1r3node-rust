@@ -10,8 +10,9 @@ use block_storage::rust::casperbuffer::casper_buffer_key_value_storage::CasperBu
 use block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage;
 use block_storage::rust::dag::block_metadata_store::BlockMetadataStore;
 use block_storage::rust::dag::equivocation_tracker_store::EquivocationTrackerStore;
-use block_storage::rust::deploy::key_value_deploy_storage::KeyValueDeployStorage;
-use block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer;
+use block_storage::rust::deploy::key_value_deploy_storage::{
+    KeyValueDeployStorage, KeyValueRejectedDeployBuffer,
+};
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use casper::rust::blocks::block_processor::{BlockQueueItem, InFlightBlocks};
 use casper::rust::casper::{CasperShardConf, MultiParentCasper};
@@ -30,12 +31,11 @@ use comm::rust::rp::rp_conf::RPConf;
 use comm::rust::test_instances::{create_rp_conf_ask, TransportLayerStub};
 use crypto::rust::private_key::PrivateKey;
 use crypto::rust::public_key::PublicKey;
-use crypto::rust::signatures::signed::Signed;
 use models::routing::Protocol;
 use models::rust::block_hash::{BlockHash, BlockHashSerde};
 use models::rust::block_metadata::BlockMetadata;
 use models::rust::casper::protocol::casper_message::{
-    ApprovedBlock, ApprovedBlockCandidate, BlockMessage, CasperMessage, DeployData, HasBlock,
+    ApprovedBlock, ApprovedBlockCandidate, BlockMessage, CasperMessage, HasBlock,
 };
 use models::rust::equivocation_record::SequenceNumber;
 use models::rust::validator::ValidatorSerde;
@@ -44,7 +44,6 @@ use prost::Message;
 use rspace_plus_plus::rspace::state::rspace_state_manager::RSpaceStateManager;
 use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
 use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
-use shared::rust::ByteString;
 use tokio::sync::mpsc;
 
 use crate::helper::no_ops_casper_effect::NoOpsCasperEffect;
@@ -288,20 +287,13 @@ impl TestFixture {
         let deploy_storage_store = Arc::new(MockKeyValueStore::with_shared_data(
             kvm_deploystorage.clone(),
         ));
-        let deploy_storage_typed_store =
-            KeyValueTypedStoreImpl::<ByteString, Signed<DeployData>>::new(deploy_storage_store);
-        let deploy_storage = KeyValueDeployStorage {
-            store: deploy_storage_typed_store,
-        };
+        let deploy_storage = KeyValueDeployStorage::from_store(deploy_storage_store);
 
         // Rejected-deploy buffer: mirrors the deploy storage shape with its own backing store.
         let rejected_buffer_store = Arc::new(MockKeyValueStore::new());
-        let rejected_buffer_typed_store =
-            KeyValueTypedStoreImpl::<ByteString, Signed<DeployData>>::new(rejected_buffer_store);
-        let rejected_deploy_buffer =
-            Arc::new(std::sync::Mutex::new(KeyValueRejectedDeployBuffer {
-                store: rejected_buffer_typed_store,
-            }));
+        let rejected_deploy_buffer = Arc::new(std::sync::Mutex::new(
+            KeyValueRejectedDeployBuffer::from_store(rejected_buffer_store),
+        ));
 
         // Scala: implicit val estimator = Estimator[Task](Estimator.UnlimitedParents, None)
         let estimator = Estimator::apply();
