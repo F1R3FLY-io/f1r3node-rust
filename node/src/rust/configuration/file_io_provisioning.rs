@@ -47,15 +47,34 @@
 //! read-only provisioning); object form is required when the
 //! operator opts into write access.
 //!
-//! Mode-string validation is **deferred** to a follow-up slice.
-//! Any string value is accepted at parse time; semantic validation
-//! happens when the entry is threaded through Fs.rho / Dir.rho at
-//! runtime.
+//! Mode-string validation runs at deserialization time (ops-3):
+//! files whitelist against POSIX minus exclusive-create
+//! (`r / r+ / w / w+ / a / a+`); dirs whitelist against `r / r+`.
+//! Invalid modes produce a serde deserialization error naming the
+//! allowed set.
+//!
+//! Path-content validation (absolute-path check, control-char
+//! rejection) remains deferred to a follow-up slice.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+use serde::de::Error as _;
 use serde::{Deserialize, Deserializer, Serialize};
+
+/// Accepted file-mode whitelist for config-block entries.  Spec
+/// §File modes enumerates eight POSIX forms:
+/// `r / r+ / w / w+ / wx / w+x / a / a+`.  The exclusive-create
+/// pair `wx` / `w+x` is rejected in config form per spec §1281:
+/// their semantics require the file to NOT exist at open time,
+/// which contradicts the config's existence check at boot
+/// validation.  The remaining six are accepted.
+pub(crate) const CONFIG_FILE_MODES: &[&str] = &["r", "r+", "w", "w+", "a", "a+"];
+
+/// Accepted dir-attenuation whitelist for config-block entries.
+/// Spec §1245: a Dir cap is either read-only (`"r"`) or
+/// read/write (`"r+"`).  No other values are accepted.
+pub(crate) const CONFIG_DIR_MODES: &[&str] = &["r", "r+"];
 
 /// Default mode substituted when a static-file entry is bare-String.
 /// Spec §File modes default: `"r"`.
@@ -91,14 +110,16 @@ pub struct StaticDirEntry {
 
 /// Shared deserialize-either-shape helper.  Returns the raw
 /// `(path, mode)` pair with `default_mode` substituted when the
-/// entry is bare-String.
+/// entry is bare-String; rejects any mode string that isn't in
+/// `mode_whitelist` with a `D::Error::custom` describing the
+/// allowed set.
 ///
-/// Mode / path validation lands in a follow-up slice; this helper
-/// is intentionally the thinnest wrapper that supports the two
-/// wire shapes.
+/// Path-content validation (absolute-path check, control-char
+/// rejection) lands in a follow-up slice.
 fn deserialize_static_entry<'de, D>(
     deserializer: D,
     default_mode: &str,
+    mode_whitelist: &[&str],
 ) -> Result<(PathBuf, String), D::Error>
 where
     D: Deserializer<'de>,
@@ -111,16 +132,25 @@ where
     }
 
     let wire = Wire::deserialize(deserializer)?;
-    Ok(match wire {
+    let (path, mode) = match wire {
         Wire::Object { path, mode } => (path, mode),
         Wire::Bare(s) => (PathBuf::from(s), default_mode.to_string()),
-    })
+    };
+
+    if !mode_whitelist.contains(&mode.as_str()) {
+        return Err(D::Error::custom(format!(
+            "invalid mode {mode:?}; allowed modes are {mode_whitelist:?}"
+        )));
+    }
+
+    Ok((path, mode))
 }
 
 impl<'de> Deserialize<'de> for StaticFileEntry {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where D: Deserializer<'de> {
-        let (path, mode) = deserialize_static_entry(deserializer, DEFAULT_CONFIG_FILE_MODE)?;
+        let (path, mode) =
+            deserialize_static_entry(deserializer, DEFAULT_CONFIG_FILE_MODE, CONFIG_FILE_MODES)?;
         Ok(StaticFileEntry { path, mode })
     }
 }
@@ -128,7 +158,8 @@ impl<'de> Deserialize<'de> for StaticFileEntry {
 impl<'de> Deserialize<'de> for StaticDirEntry {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where D: Deserializer<'de> {
-        let (path, mode) = deserialize_static_entry(deserializer, DEFAULT_CONFIG_DIR_MODE)?;
+        let (path, mode) =
+            deserialize_static_entry(deserializer, DEFAULT_CONFIG_DIR_MODE, CONFIG_DIR_MODES)?;
         Ok(StaticDirEntry { path, mode })
     }
 }
@@ -316,5 +347,111 @@ mod tests {
         assert_eq!(cfg.oracle_static_dirs.len(), 1);
         assert_eq!(cfg.consensus_static_files.len(), 1);
         assert_eq!(cfg.consensus_static_dirs.len(), 1);
+    }
+
+    /// Every accepted file mode in the whitelist (`r / r+ / w / w+
+    /// / a / a+`) deserializes.  Catches a whitelist typo or an
+    /// accidental removal.
+    #[test]
+    fn every_whitelisted_file_mode_parses() {
+        for mode in ["r", "r+", "w", "w+", "a", "a+"] {
+            let hocon = format!(
+                r#"
+                oracle-static-files {{
+                  "n" = {{ path = "/p", mode = "{mode}" }}
+                }}
+                "#
+            );
+            let cfg = parse_provisioning(&hocon)
+                .unwrap_or_else(|e| panic!("mode {mode:?} should parse but got {e}"));
+            assert_eq!(
+                cfg.oracle_static_files.get("n").map(|e| e.mode.as_str()),
+                Some(mode)
+            );
+        }
+    }
+
+    /// Exclusive-create file modes (`wx`, `w+x`) are rejected in
+    /// config form per spec §1281 — their semantics require the
+    /// file to NOT exist, contradicting the boot-time existence
+    /// check.
+    #[test]
+    fn exclusive_create_file_modes_rejected() {
+        for mode in ["wx", "w+x"] {
+            let hocon = format!(
+                r#"
+                oracle-static-files {{
+                  "n" = {{ path = "/p", mode = "{mode}" }}
+                }}
+                "#
+            );
+            let err = parse_provisioning(&hocon)
+                .err()
+                .unwrap_or_else(|| panic!("mode {mode:?} should reject"));
+            assert!(
+                err.contains("invalid mode") && err.contains(mode),
+                "error message must name the invalid mode; got {err:?}"
+            );
+        }
+    }
+
+    /// Arbitrary non-POSIX mode strings on files are rejected
+    /// (`"rwx"`, `"xyz"`, empty, etc.).  Pins the whitelist as a
+    /// closed set.
+    #[test]
+    fn non_posix_file_modes_rejected() {
+        for mode in ["rwx", "xyz", "", "rw", "R", "r++"] {
+            let hocon = format!(
+                r#"
+                oracle-static-files {{
+                  "n" = {{ path = "/p", mode = "{mode}" }}
+                }}
+                "#
+            );
+            assert!(
+                parse_provisioning(&hocon).is_err(),
+                "mode {mode:?} should reject but parsed"
+            );
+        }
+    }
+
+    /// Both accepted dir attenuation keywords deserialize.
+    #[test]
+    fn every_whitelisted_dir_mode_parses() {
+        for mode in ["r", "r+"] {
+            let hocon = format!(
+                r#"
+                consensus-static-dirs {{
+                  "d/" = {{ path = "/p", mode = "{mode}" }}
+                }}
+                "#
+            );
+            let cfg = parse_provisioning(&hocon)
+                .unwrap_or_else(|e| panic!("dir mode {mode:?} should parse but got {e}"));
+            assert_eq!(
+                cfg.consensus_static_dirs.get("d/").map(|e| e.mode.as_str()),
+                Some(mode)
+            );
+        }
+    }
+
+    /// Any mode outside the dir-attenuation whitelist is rejected
+    /// — including POSIX file modes that aren't valid Dir
+    /// attenuation keywords (`"w"`, `"a+"`, etc.).
+    #[test]
+    fn non_dir_attenuation_dir_modes_rejected() {
+        for mode in ["w", "w+", "a", "a+", "wx", "w+x", "rw", "rwx", ""] {
+            let hocon = format!(
+                r#"
+                oracle-static-dirs {{
+                  "d/" = {{ path = "/p", mode = "{mode}" }}
+                }}
+                "#
+            );
+            assert!(
+                parse_provisioning(&hocon).is_err(),
+                "dir mode {mode:?} should reject but parsed"
+            );
+        }
     }
 }
