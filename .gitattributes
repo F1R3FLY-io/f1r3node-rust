@@ -61,6 +61,10 @@ casper/tests/genesis/contracts/timeout_result_collector_spec.rs cbc=mandatory cb
 casper/tests/genesis/contracts/tree_hash_map_spec.rs cbc=mandatory cbc-weight=medium
 casper/tests/genesis/contracts/vault_address_spec.rs cbc=mandatory cbc-weight=medium
 casper/tests/genesis/contracts/vault_issuance_test.rs cbc=mandatory cbc-weight=medium
+casper/tests/genesis/contracts/vault_uri_aliases_spec.rs cbc=mandatory cbc-weight=medium
+casper/src/test/resources/VaultUriAliasesTest.rho cbc=mandatory cbc-weight=medium
+casper/src/main/resources/Registry.rho cbc=mandatory cbc-weight=high
+models/src/rust/normalizer_env.rs cbc=mandatory cbc-weight=high
 casper/tests/genesis/contracts/versioned_registry_spec.rs cbc=mandatory cbc-weight=medium
 crypto/Cargo.toml cbc=mandatory cbc-weight=medium
 crypto/src/lib.rs cbc=mandatory cbc-weight=medium

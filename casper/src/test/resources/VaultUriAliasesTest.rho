@@ -1,0 +1,151 @@
+// The legacy shorthands rho:rchain:revVault and rho:rchain:pos, and the
+// F1r3fly shorthands rho:f1r3fly:revVault, rho:f1r3fly:pos, and
+// rho:f1r3fly:multiSigRevVault, resolve to the same contracts as
+// rho:vault:system, rho:system:pos, and rho:vault:multiSig. A vault found and
+// used through an alias behaves as the vault found through the canonical URI.
+match (
+    "04f700a417754b775d95421973bdbdadb2d23c8a5af46f1829b1431f5c136e549e8a0d61aa0c793f1a614f8e437711c7758473c6ceb0859ac7e9e07911ca66b5c4".hexToBytes(),
+    "11112VYAt8rUGNRRZX3eJdgagaAhtWTK8Js7F7X5iqddMVqyDTtYau",
+    "1111pdZDG4MZ3eBfaipaD22VXmbFY6PW9ZdGDWdEcXZz4gGxTxgn9",
+    "11112CXAkc8pV2AMHUSgHGbFkqovgyY9SRja4ZLSpRC9q7qYZx5SVc"
+) {
+  (
+    genesisPubKey,
+    genesisVaultAddress,
+    aliceVaultAddress,
+    bobVaultAddress
+  ) => {
+
+    new
+      rl(`rho:registry:lookup`),
+      RhoSpecCh,
+      getDeployerId(`rho:test:deployerId:make`),
+      setup,
+      testAliasesResolve,
+      testFindOrCreateThroughAlias,
+      testTransferThroughAlias,
+      genesisVaultAndKey
+    in {
+      rl!(`rho:id:zphjgsfy13h1k85isc8rtwtgt3t9zzt5pjd5ihykfmyapfc4wt3x5h`, *RhoSpecCh) |
+      for(@(_, RhoSpec) <- RhoSpecCh) {
+        @RhoSpec!("testSuite", *setup,
+          [
+            ("Each alias resolves to the contract of its canonical URI", *testAliasesResolve),
+            ("findOrCreate through each vault alias returns the canonical vault", *testFindOrCreateThroughAlias),
+            ("A transfer through each vault alias moves the same balance as through rho:vault:system", *testTransferThroughAlias)
+          ])
+      } |
+
+      contract setup(_, ret) = {
+        new canonicalCh, legacyCh, f1r3flyCh in {
+          rl!(`rho:vault:system`, *canonicalCh) |
+          rl!(`rho:rchain:revVault`, *legacyCh) |
+          rl!(`rho:f1r3fly:revVault`, *f1r3flyCh) |
+          for (@(_, canonical) <- canonicalCh & @(_, legacy) <- legacyCh & @(_, f1r3fly) <- f1r3flyCh) {
+            ret!((canonical, legacy, f1r3fly))
+          }
+        }
+      } |
+
+      contract testAliasesResolve(rhoSpec, @(canonicalVault, legacyVault, f1r3flyVault), ackCh) = {
+        new posCh, legacyPosCh, f1r3flyPosCh, multiSigCh, multiSigAliasCh in {
+          rl!(`rho:system:pos`, *posCh) |
+          rl!(`rho:rchain:pos`, *legacyPosCh) |
+          rl!(`rho:f1r3fly:pos`, *f1r3flyPosCh) |
+          rl!(`rho:vault:multiSig`, *multiSigCh) |
+          rl!(`rho:f1r3fly:multiSigRevVault`, *multiSigAliasCh) |
+          for (@pos <- posCh & @legacyPos <- legacyPosCh & @f1r3flyPos <- f1r3flyPosCh &
+               @multiSig <- multiSigCh & @multiSigAlias <- multiSigAliasCh) {
+            rhoSpec!("assertMany",
+              [
+                ((canonicalVault, "==", legacyVault), "rho:rchain:revVault is rho:vault:system"),
+                ((canonicalVault, "==", f1r3flyVault), "rho:f1r3fly:revVault is rho:vault:system"),
+                ((pos, "==", legacyPos), "rho:rchain:pos is rho:system:pos"),
+                ((pos, "==", f1r3flyPos), "rho:f1r3fly:pos is rho:system:pos"),
+                ((multiSig, "==", multiSigAlias), "rho:f1r3fly:multiSigRevVault is rho:vault:multiSig")
+              ], *ackCh
+            )
+          }
+        }
+      } |
+
+      contract testFindOrCreateThroughAlias(rhoSpec, @(canonicalVault, legacyVault, f1r3flyVault), ackCh) = {
+        new canonicalCh, legacyCh, f1r3flyCh in {
+          @canonicalVault!("findOrCreate", genesisVaultAddress, *canonicalCh) |
+          @legacyVault!("findOrCreate", genesisVaultAddress, *legacyCh) |
+          @f1r3flyVault!("findOrCreate", genesisVaultAddress, *f1r3flyCh) |
+          for (@(true, fromCanonical) <- canonicalCh & @(true, fromLegacy) <- legacyCh & @(true, fromF1r3fly) <- f1r3flyCh) {
+            rhoSpec!("assertMany",
+              [
+                ((fromCanonical, "==", fromLegacy), "rho:rchain:revVault gives the canonical genesis vault"),
+                ((fromCanonical, "==", fromF1r3fly), "rho:f1r3fly:revVault gives the canonical genesis vault")
+              ], *ackCh
+            )
+          }
+        }
+      } |
+
+      // Three transfers of 1000 from the genesis vault, each through a vault
+      // and an authorization key found through a different URI.
+      contract testTransferThroughAlias(rhoSpec, @(canonicalVault, legacyVault, f1r3flyVault), ackCh) = {
+        new legacyGenesisCh, canonicalGenesisCh, f1r3flyGenesisCh, aliceCh, bobCh,
+            legacyTransferCh, canonicalTransferCh, f1r3flyTransferCh,
+            aliceAfterLegacyCh, aliceBalanceCh, bobBalanceCh, genesisBalanceCh in {
+          genesisVaultAndKey!(legacyVault, *legacyGenesisCh) |
+          genesisVaultAndKey!(canonicalVault, *canonicalGenesisCh) |
+          genesisVaultAndKey!(f1r3flyVault, *f1r3flyGenesisCh) |
+          @legacyVault!("findOrCreate", aliceVaultAddress, *aliceCh) |
+          @canonicalVault!("findOrCreate", bobVaultAddress, *bobCh) |
+          for (@legacyGenesis, @legacyKey <- legacyGenesisCh &
+               @canonicalGenesis, @canonicalKey <- canonicalGenesisCh &
+               @f1r3flyGenesis, @f1r3flyKey <- f1r3flyGenesisCh &
+               @(true, aliceVault) <- aliceCh & @(true, bobVault) <- bobCh) {
+            @legacyGenesis!("transfer", aliceVaultAddress, 1000, legacyKey, *legacyTransferCh) |
+            for (@legacyResult <- legacyTransferCh) {
+              @aliceVault!("balance", *aliceAfterLegacyCh) |
+              for (@aliceAfterLegacy <- aliceAfterLegacyCh) {
+                @canonicalGenesis!("transfer", bobVaultAddress, 1000, canonicalKey, *canonicalTransferCh) |
+                for (@canonicalResult <- canonicalTransferCh) {
+                  @f1r3flyGenesis!("transfer", aliceVaultAddress, 1000, f1r3flyKey, *f1r3flyTransferCh) |
+                  for (@f1r3flyResult <- f1r3flyTransferCh) {
+                    @aliceVault!("balance", *aliceBalanceCh) |
+                    @bobVault!("balance", *bobBalanceCh) |
+                    @canonicalGenesis!("balance", *genesisBalanceCh) |
+                    for (@aliceBalance <- aliceBalanceCh & @bobBalance <- bobBalanceCh & @genesisBalance <- genesisBalanceCh) {
+                      rhoSpec!("assertMany",
+                        [
+                          ((legacyResult, "==", (true, Nil)), "the transfer through rho:rchain:revVault succeeds"),
+                          ((canonicalResult, "==", (true, Nil)), "the transfer through rho:vault:system succeeds"),
+                          ((f1r3flyResult, "==", (true, Nil)), "the transfer through rho:f1r3fly:revVault succeeds"),
+                          ((aliceAfterLegacy, "==", bobBalance), "rho:rchain:revVault moved the same balance as rho:vault:system"),
+                          ((aliceBalance - aliceAfterLegacy, "==", bobBalance), "rho:f1r3fly:revVault moved the same balance as rho:vault:system"),
+                          ((bobBalance, "==", 1000n), "each transfer moved 1000"),
+                          ((genesisBalance, "==", 8997000n), "the genesis vault paid all three transfers")
+                        ], *ackCh
+                      )
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      } |
+
+      // The f1r3wallet transfer flow: find the sender vault and the deployer
+      // authorization key through the vault contract that the URI resolved.
+      contract genesisVaultAndKey(@vaultContract, ret) = {
+        new vaultCh, deployerIdCh, authKeyCh in {
+          getDeployerId!("deployerId", genesisPubKey, *deployerIdCh) |
+          @vaultContract!("findOrCreate", genesisVaultAddress, *vaultCh) |
+          for (@(true, vault) <- vaultCh & deployerId <- deployerIdCh) {
+            @vaultContract!("deployerAuthKey", *deployerId, *authKeyCh) |
+            for (@authKey <- authKeyCh) {
+              ret!(vault, authKey)
+            }
+          }
+        }
+      }
+    }
+  }
+}

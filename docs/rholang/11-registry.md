@@ -161,6 +161,24 @@ Several library contracts are pre-registered during genesis and available via lo
 | `rho:system:makeMint` | MakeMint | `MakeMint.rho` |
 | `rho:vault:system` | SystemVault | `SystemVault.rho` |
 
+### Vault and system URI aliases
+
+The registry also resolves F1r3fly aliases and deprecated RChain aliases. Each alias resolves to the same contract as its canonical URI:
+
+| Canonical URI | F1r3fly alias | Deprecated RChain alias | Contract |
+|---------------|---------------|-------------------------|----------|
+| `rho:vault:system` | `rho:f1r3fly:revVault` | `rho:rchain:revVault` | SystemVault |
+| `rho:system:pos` | `rho:f1r3fly:pos` | `rho:rchain:pos` | PoS |
+| `rho:vault:multiSig` | `rho:f1r3fly:multiSigRevVault` | none | MultiSigSystemVault |
+
+The `rho:rchain:*` aliases keep existing wallets working, for example f1r3wallet. They are deprecated. A wallet that changes its URIs moves to the canonical URI or to the F1r3fly alias. New code uses the canonical URIs.
+
+The shorthand map is part of `Registry.rho`, which genesis deploys. Only a shard whose genesis includes the aliases resolves them. A shard that started earlier keeps its old registry.
+
+The deploy identity URIs `rho:rchain:deployId` and `rho:rchain:deployerId` are not registry entries. The normalizer binds them to the same values as `rho:system:deployId` and `rho:system:deployerId`.
+
+The ASI Chain wallet uses `rho:rchain:asiVault`. F1r3fly shards do not resolve this URI.
+
 Access them the same way as any registry entry:
 
 ```rho
