@@ -1,11 +1,12 @@
-//! File I/O FIP boot-time validation (ops-6b scaffold slice).
+//! File I/O FIP boot-time validation.
 //!
 //! Enumerates every spec-mandated boot-time invariant for the
 //! static-provisioning config as a typed error, plus the
-//! operator-facing `Display` impl.  Validator wiring that emits
-//! these errors lands across subsequent slices:
+//! operator-facing `Display` impl, plus the flatten / canonical-
+//! path / deterministic-sort scaffolding downstream validators
+//! use.  Validator wiring that emits these errors lands across
+//! subsequent slices:
 //!
-//!   * ops-6c — flatten helpers + sort_key.
 //!   * ops-6d — per-entry validators (symlink, hard-link,
 //!     kind-mismatch, forbidden-chars, canonical-path).
 //!   * ops-6e — cross-source + bucket-disjointness validators
@@ -35,7 +36,10 @@
 
 #![allow(dead_code)]
 
-use std::path::PathBuf;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+
+use super::file_io_provisioning::{FileIoProvisioning, StaticDirEntry, StaticFileEntry};
 
 /// The four spec-canonical buckets, as `&'static str` labels so
 /// errors can name the offending bucket without allocating.
@@ -434,6 +438,297 @@ impl std::fmt::Display for FileIoConfigError {
     }
 }
 
+/// Kind of the declared entry — a file or a directory.  Determines
+/// whether the tree walker (ops-6d) recurses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum EntryKind {
+    File,
+    Dir,
+}
+
+/// A flattened view of one provisioning entry used by the
+/// validators (ops-6d/6e).  Keeps borrowed `&str` / `&Path`
+/// references to the owning `FileIoProvisioning` so the walk is
+/// alloc-free beyond the output `Vec`.
+#[derive(Debug)]
+pub(crate) struct FlatEntry<'a> {
+    pub bucket: &'static str,
+    pub logical_name: &'a str,
+    pub path: &'a Path,
+    pub mode: &'a str,
+    pub kind: EntryKind,
+    pub is_consensus: bool,
+}
+
+/// Flatten the four provisioning maps into a single iterable view,
+/// deterministically ordered by `(bucket, logical_name)`.
+///
+/// Rust's `HashMap` iteration order is randomized per build, so a
+/// naive flatten would surface errors in a different order on
+/// different runs — defeating `cargo test`'s deterministic
+/// expectations and operator pattern-matching on error output.
+/// Sorting here lets every downstream validator (ops-6d/6e) emit a
+/// reproducible error `Vec`.
+pub(crate) fn flatten<'a>(cfg: &'a FileIoProvisioning) -> Vec<FlatEntry<'a>> {
+    let mut out: Vec<FlatEntry<'a>> = Vec::new();
+    let extend_files = |bucket: &'static str,
+                        is_consensus: bool,
+                        map: &'a HashMap<String, StaticFileEntry>,
+                        out: &mut Vec<FlatEntry<'a>>| {
+        for (name, entry) in map {
+            out.push(FlatEntry {
+                bucket,
+                logical_name: name.as_str(),
+                path: entry.path.as_path(),
+                mode: entry.mode.as_str(),
+                kind: EntryKind::File,
+                is_consensus,
+            });
+        }
+    };
+    let extend_dirs = |bucket: &'static str,
+                       is_consensus: bool,
+                       map: &'a HashMap<String, StaticDirEntry>,
+                       out: &mut Vec<FlatEntry<'a>>| {
+        for (name, entry) in map {
+            out.push(FlatEntry {
+                bucket,
+                logical_name: name.as_str(),
+                path: entry.path.as_path(),
+                mode: entry.mode.as_str(),
+                kind: EntryKind::Dir,
+                is_consensus,
+            });
+        }
+    };
+    extend_files(
+        BUCKET_ORACLE_FILE,
+        false,
+        &cfg.oracle_static_files,
+        &mut out,
+    );
+    extend_dirs(BUCKET_ORACLE_DIR, false, &cfg.oracle_static_dirs, &mut out);
+    extend_files(
+        BUCKET_CONSENSUS_FILE,
+        true,
+        &cfg.consensus_static_files,
+        &mut out,
+    );
+    extend_dirs(
+        BUCKET_CONSENSUS_DIR,
+        true,
+        &cfg.consensus_static_dirs,
+        &mut out,
+    );
+    out.sort_by(|a, b| {
+        a.bucket
+            .cmp(b.bucket)
+            .then_with(|| a.logical_name.cmp(b.logical_name))
+    });
+    out
+}
+
+/// Reject `.` and `..` components.  Returns `Some(reason)` when
+/// the path is non-canonical; `None` when clean.
+///
+/// Uses string-level inspection because Rust's `Path::components()`
+/// silently drops `Component::CurDir` — a components-only check
+/// would miss `/foo/./bar`.  `PathBuf` equality is byte-level, not
+/// component-level, so `/foo/./bar` and `/foo/bar` compare unequal
+/// despite naming the same file and would defeat the bucket-
+/// disjointness check (ops-6e) without rejection here.  `..` DOES
+/// round-trip as `Component::ParentDir`, but the same string check
+/// is kept for symmetry and clearer operator-facing messages.
+///
+/// Trailing `/` and `//` are intentionally NOT rejected because
+/// `Path` equality normalizes them (pinned by the trailing-slash
+/// overlap test in ops-6e).
+pub(crate) fn non_canonical_reason(p: &Path) -> Option<&'static str> {
+    let s = p.to_string_lossy();
+    let s = s.as_ref();
+    if s == ".." || s.starts_with("../") || s.ends_with("/..") || s.contains("/../") {
+        return Some("contains `..` component");
+    }
+    if s == "." || s.starts_with("./") || s.ends_with("/.") || s.contains("/./") {
+        return Some("contains `.` component");
+    }
+    None
+}
+
+/// Deterministic sort key for `FileIoConfigError`.  Orders by
+/// `(discriminant, bucket, logical_name, path)` so the batched
+/// error report an operator sees is reproducible across
+/// `HashMap`-randomized runs.
+///
+/// Discriminant choice groups related errors together in the
+/// output: size cap (0) first, then syntactic path errors (1-3),
+/// then bucket-disjointness (4-5), then host-filesystem errors
+/// (6-12), then CLI-merge errors (13-15), then catch-alls (16-17).
+///
+/// Exposed at `pub(crate)` so ops-7's CLI-merge layer can sort its
+/// combined error output before returning.
+pub(crate) fn sort_key(err: &FileIoConfigError) -> (u8, String, String, String) {
+    let empty = String::new();
+    match err {
+        FileIoConfigError::SizeLimitExceeded { message } => {
+            (0, empty.clone(), empty.clone(), message.clone())
+        }
+        FileIoConfigError::NotAbsolute {
+            bucket,
+            logical_name,
+            path,
+        } => (
+            1,
+            bucket.to_string(),
+            logical_name.clone(),
+            path.to_string_lossy().into_owned(),
+        ),
+        FileIoConfigError::NonCanonicalPath {
+            bucket,
+            logical_name,
+            path,
+            ..
+        } => (
+            2,
+            bucket.to_string(),
+            logical_name.clone(),
+            path.to_string_lossy().into_owned(),
+        ),
+        FileIoConfigError::InvalidMode {
+            bucket,
+            logical_name,
+            ..
+        } => (3, bucket.to_string(), logical_name.clone(), empty),
+        FileIoConfigError::BucketOverlapSamePath {
+            path,
+            bucket_a,
+            logical_name_a,
+            ..
+        } => (
+            4,
+            bucket_a.to_string(),
+            logical_name_a.clone(),
+            path.to_string_lossy().into_owned(),
+        ),
+        FileIoConfigError::BucketOverlapPrefix {
+            outer_bucket,
+            outer_logical_name,
+            outer_path,
+            ..
+        } => (
+            5,
+            outer_bucket.to_string(),
+            outer_logical_name.clone(),
+            outer_path.to_string_lossy().into_owned(),
+        ),
+        FileIoConfigError::PathNotFound {
+            bucket,
+            logical_name,
+            path,
+        } => (
+            6,
+            bucket.to_string(),
+            logical_name.clone(),
+            path.to_string_lossy().into_owned(),
+        ),
+        FileIoConfigError::IsSymlink {
+            bucket,
+            logical_name,
+            path,
+        } => (
+            7,
+            bucket.to_string(),
+            logical_name.clone(),
+            path.to_string_lossy().into_owned(),
+        ),
+        FileIoConfigError::AbsolutePrefixSymlink {
+            bucket,
+            logical_name,
+            path,
+            ..
+        } => (
+            8,
+            bucket.to_string(),
+            logical_name.clone(),
+            path.to_string_lossy().into_owned(),
+        ),
+        FileIoConfigError::HardLinked {
+            bucket,
+            logical_name,
+            path,
+            ..
+        } => (
+            9,
+            bucket.to_string(),
+            logical_name.clone(),
+            path.to_string_lossy().into_owned(),
+        ),
+        FileIoConfigError::KindMismatch {
+            bucket,
+            logical_name,
+            path,
+            ..
+        } => (
+            10,
+            bucket.to_string(),
+            logical_name.clone(),
+            path.to_string_lossy().into_owned(),
+        ),
+        FileIoConfigError::StatFailed {
+            bucket,
+            logical_name,
+            path,
+            ..
+        } => (
+            11,
+            bucket.to_string(),
+            logical_name.clone(),
+            path.to_string_lossy().into_owned(),
+        ),
+        FileIoConfigError::WalkLimitExceeded {
+            bucket,
+            logical_name,
+            path,
+            ..
+        } => (
+            12,
+            bucket.to_string(),
+            logical_name.clone(),
+            path.to_string_lossy().into_owned(),
+        ),
+        FileIoConfigError::DuplicateLogicalNameAcrossSources {
+            bucket,
+            logical_name,
+            ..
+        } => (13, bucket.to_string(), logical_name.clone(), empty),
+        FileIoConfigError::DuplicateLogicalNameInCli {
+            bucket,
+            logical_name,
+            ..
+        } => (14, bucket.to_string(), logical_name.clone(), empty),
+        FileIoConfigError::DuplicatePathAcrossSources { bucket, path, .. } => (
+            15,
+            bucket.to_string(),
+            empty,
+            path.to_string_lossy().into_owned(),
+        ),
+        FileIoConfigError::ForbiddenChars {
+            bucket,
+            logical_name,
+            field,
+            ..
+        } => (
+            16,
+            bucket.to_string(),
+            logical_name.clone(),
+            field.to_string(),
+        ),
+        FileIoConfigError::LogicalNameConflictAcrossBuckets { logical_name, .. } => {
+            (17, empty.clone(), logical_name.clone(), empty)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -646,5 +941,203 @@ mod tests {
         assert_eq!(BUCKET_ORACLE_DIR, "oracle-static-dirs");
         assert_eq!(BUCKET_CONSENSUS_FILE, "consensus-static-files");
         assert_eq!(BUCKET_CONSENSUS_DIR, "consensus-static-dirs");
+    }
+
+    // ---------- flatten / FlatEntry ----------
+
+    fn empty_cfg() -> FileIoProvisioning {
+        FileIoProvisioning {
+            oracle_static_files: HashMap::new(),
+            oracle_static_dirs: HashMap::new(),
+            consensus_static_files: HashMap::new(),
+            consensus_static_dirs: HashMap::new(),
+        }
+    }
+
+    /// `flatten` emits one `FlatEntry` per entry across all four
+    /// buckets, with `kind` and `is_consensus` set correctly per
+    /// bucket.  Pins the mapping bucket -> (kind, is_consensus):
+    /// oracle-files = (File, false), oracle-dirs = (Dir, false),
+    /// consensus-files = (File, true), consensus-dirs = (Dir, true).
+    #[test]
+    fn flatten_covers_all_four_buckets() {
+        let mut cfg = empty_cfg();
+        cfg.oracle_static_files
+            .insert("of".into(), StaticFileEntry {
+                path: PathBuf::from("/x/of"),
+                mode: "r".into(),
+            });
+        cfg.oracle_static_dirs.insert("od".into(), StaticDirEntry {
+            path: PathBuf::from("/x/od"),
+            mode: "r".into(),
+        });
+        cfg.consensus_static_files
+            .insert("cf".into(), StaticFileEntry {
+                path: PathBuf::from("/x/cf"),
+                mode: "r".into(),
+            });
+        cfg.consensus_static_dirs
+            .insert("cd".into(), StaticDirEntry {
+                path: PathBuf::from("/x/cd"),
+                mode: "r".into(),
+            });
+        let out = flatten(&cfg);
+        assert_eq!(out.len(), 4);
+        let by_bucket: HashMap<&str, &FlatEntry<'_>> = out.iter().map(|e| (e.bucket, e)).collect();
+        assert!(matches!(
+            by_bucket[BUCKET_ORACLE_FILE].kind,
+            EntryKind::File
+        ));
+        assert!(!by_bucket[BUCKET_ORACLE_FILE].is_consensus);
+        assert!(matches!(by_bucket[BUCKET_ORACLE_DIR].kind, EntryKind::Dir));
+        assert!(!by_bucket[BUCKET_ORACLE_DIR].is_consensus);
+        assert!(matches!(
+            by_bucket[BUCKET_CONSENSUS_FILE].kind,
+            EntryKind::File
+        ));
+        assert!(by_bucket[BUCKET_CONSENSUS_FILE].is_consensus);
+        assert!(matches!(
+            by_bucket[BUCKET_CONSENSUS_DIR].kind,
+            EntryKind::Dir
+        ));
+        assert!(by_bucket[BUCKET_CONSENSUS_DIR].is_consensus);
+    }
+
+    /// `flatten` sorts by `(bucket, logical_name)`.  `HashMap`
+    /// iteration order is randomized per build; without the sort,
+    /// downstream validators would emit errors in a different
+    /// order on different runs.  Pins the ordering invariant that
+    /// every downstream validator (ops-6d/6e) depends on.
+    #[test]
+    fn flatten_output_is_deterministically_ordered() {
+        let mut cfg = empty_cfg();
+        for name in ["z", "a", "m", "b"] {
+            cfg.oracle_static_files
+                .insert(name.into(), StaticFileEntry {
+                    path: PathBuf::from(format!("/x/{name}")),
+                    mode: "r".into(),
+                });
+        }
+        let out1 = flatten(&cfg);
+        let out2 = flatten(&cfg);
+        let names1: Vec<&str> = out1.iter().map(|e| e.logical_name).collect();
+        let names2: Vec<&str> = out2.iter().map(|e| e.logical_name).collect();
+        assert_eq!(names1, names2, "flatten must be deterministic across calls");
+        assert_eq!(
+            names1,
+            vec!["a", "b", "m", "z"],
+            "flatten must sort by logical_name within a bucket"
+        );
+    }
+
+    // ---------- non_canonical_reason ----------
+
+    /// `non_canonical_reason` rejects `.` and `..` components but
+    /// accepts canonical absolute paths, roots, and
+    /// `PathBuf`-normalized spellings (trailing slash, double slash).
+    #[test]
+    fn non_canonical_reason_pin_behavior() {
+        assert_eq!(non_canonical_reason(Path::new("/foo/bar")), None);
+        assert_eq!(non_canonical_reason(Path::new("/")), None);
+        assert!(non_canonical_reason(Path::new("/foo/./bar")).is_some());
+        assert!(non_canonical_reason(Path::new("/foo/../bar")).is_some());
+        assert!(non_canonical_reason(Path::new("./bar")).is_some());
+        assert!(non_canonical_reason(Path::new("../bar")).is_some());
+        assert!(non_canonical_reason(Path::new("/foo/.")).is_some());
+        assert!(non_canonical_reason(Path::new("/foo/..")).is_some());
+        // Trailing / and // normalize via Path::components — accepted.
+        assert_eq!(non_canonical_reason(Path::new("/foo/bar/")), None);
+        assert_eq!(non_canonical_reason(Path::new("/foo//bar")), None);
+    }
+
+    /// The reason string names which component triggered rejection
+    /// so the operator-facing error message can point at the fix.
+    #[test]
+    fn non_canonical_reason_names_the_offending_component() {
+        assert!(non_canonical_reason(Path::new("/a/./b"))
+            .expect("`.` must reject")
+            .contains("`.` component"));
+        assert!(non_canonical_reason(Path::new("/a/../b"))
+            .expect("`..` must reject")
+            .contains("`..` component"));
+    }
+
+    // ---------- sort_key ----------
+
+    /// `sort_key` groups error variants by category via its first
+    /// tuple element (the discriminant).  Pins the groups' relative
+    /// order so operator-facing batched reports stay stable:
+    /// size cap first, then path-syntactic errors, then bucket-
+    /// disjointness, then host-filesystem errors, then CLI-merge,
+    /// then catch-alls.
+    #[test]
+    fn sort_key_discriminant_order_is_pinned() {
+        let size = FileIoConfigError::SizeLimitExceeded {
+            message: "overflow".into(),
+        };
+        let not_abs = FileIoConfigError::NotAbsolute {
+            bucket: BUCKET_ORACLE_FILE,
+            logical_name: "n".into(),
+            path: PathBuf::from("rel"),
+        };
+        let overlap = FileIoConfigError::BucketOverlapSamePath {
+            path: PathBuf::from("/p"),
+            bucket_a: BUCKET_ORACLE_FILE,
+            logical_name_a: "a".into(),
+            bucket_b: BUCKET_CONSENSUS_FILE,
+            logical_name_b: "b".into(),
+        };
+        let not_found = FileIoConfigError::PathNotFound {
+            bucket: BUCKET_ORACLE_FILE,
+            logical_name: "n".into(),
+            path: PathBuf::from("/no/such"),
+        };
+        let dup_cli = FileIoConfigError::DuplicateLogicalNameInCli {
+            bucket: BUCKET_ORACLE_FILE,
+            logical_name: "n".into(),
+            count: 2,
+        };
+        let name_conflict = FileIoConfigError::LogicalNameConflictAcrossBuckets {
+            logical_name: "shared".into(),
+            members: vec![],
+        };
+
+        let disc = |e: &FileIoConfigError| sort_key(e).0;
+        assert_eq!(disc(&size), 0);
+        assert_eq!(disc(&not_abs), 1);
+        assert_eq!(disc(&overlap), 4);
+        assert_eq!(disc(&not_found), 6);
+        assert_eq!(disc(&dup_cli), 14);
+        assert_eq!(disc(&name_conflict), 17);
+    }
+
+    /// Within a discriminant class, `sort_key` orders by
+    /// `(bucket, logical_name, path)`.  Pins deterministic
+    /// intra-class ordering so operators see errors for the same
+    /// bucket adjacent in the report.
+    #[test]
+    fn sort_key_within_class_orders_by_bucket_then_name() {
+        let a = FileIoConfigError::PathNotFound {
+            bucket: BUCKET_ORACLE_FILE,
+            logical_name: "b".into(),
+            path: PathBuf::from("/p/b"),
+        };
+        let b = FileIoConfigError::PathNotFound {
+            bucket: BUCKET_ORACLE_FILE,
+            logical_name: "a".into(),
+            path: PathBuf::from("/p/a"),
+        };
+        let c = FileIoConfigError::PathNotFound {
+            bucket: BUCKET_CONSENSUS_FILE,
+            logical_name: "a".into(),
+            path: PathBuf::from("/p/a"),
+        };
+        let mut errs = [&a, &b, &c];
+        errs.sort_by_key(|e| sort_key(e));
+        // consensus-static-files sorts first alphabetically; within
+        // oracle-static-files, logical_name "a" sorts before "b".
+        assert_eq!(errs[0].to_string(), c.to_string());
+        assert_eq!(errs[1].to_string(), b.to_string());
+        assert_eq!(errs[2].to_string(), a.to_string());
     }
 }
