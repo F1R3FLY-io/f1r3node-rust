@@ -130,4 +130,15 @@ The heavy reuse gate in the `build_base` target step and `release-train.sh valid
 
 Run `just promote` to open the promotion pull request. The command runs `.github/scripts/open-promotion-pr.sh`. It creates a temporary `promote/<UTC timestamp>` branch at the `origin/dev` commit and opens the pull request to `master` with your `gh` login.
 
+You can also use the **Promote dev to master** workflow:
+
+1. Open the **Actions** tab and select **Promote dev to master**.
+2. Click **Run workflow**, keep the `master` branch, and click **Run workflow** again.
+
+The workflow runs the same script, so the rules for the branch and the pull request are the same. GitHub shows the button only for a workflow on `master`. A workflow merged to `dev` gets its button after the next promotion.
+
+A pull request opened with `GITHUB_TOKEN` starts no CI, so the workflow opens the pull request with a dedicated promotion GitHub App. The app installation grants only **Contents: write** and **Pull requests: write**. The app must not be a bypass actor on the `devProtect` or `masterProtect` ruleset. The CI automation app is a bypass actor on both rulesets, so the workflow does not use it. The `release-credentials` environment holds `PROMOTION_APP_ID` and `PROMOTION_APP_PRIVATE_KEY`, and it allows `master` only.
+
+The app is the pull request author. The user who started the workflow can therefore approve the pull request. CI does not prevent this approval. The rule that a different maintainer approves is a convention. The pull request body names the user who started the workflow and asks a different member of `@F1R3FLY-io/ci-maintainers` to approve.
+
 Do not open a promotion with head `dev`. The repository deletes the head branch of a merged pull request. GitHub then retargets every open pull request based on that branch to the base of the merged pull request. Two promotions from `dev` moved every open `dev` pull request to `master` (2026-10-04 and 2026-10-09). The `Promotion Source` check rejects a pull request from `dev` to `master`.
