@@ -12,7 +12,7 @@
 //   - `openFile(rel, options)` — quarantine + open + mint a File agent
 //   - `openDir(rel, options)`  — mint a nested Dir agent
 //   - `removeFile(rel)`, `removeDir(rel, options)`, `rename`,
-//     `copyFile`, `chmod`, `chown` — mutation methods, rw-gated
+//     `copyFile`, `chmod`, `chown` — mutation methods, require `"r+"` Dir
 //   - `default(...@args)` — FSERR_UNSUPPORTED
 //
 // ## State layout — sandbox safety
@@ -48,10 +48,10 @@
 //
 // ## Mode attenuation (spec §Dir)
 //
-// Directory modes are `"r"` (read-only) or `"rw"` (read/write).
+// Directory modes are `"r"` (read-only) or `"r+"` (read/write).
 //   Dir mode "r"  → File modes {"r"};  openDir "r"
-//   Dir mode "rw" → File modes {"r", "r+", "w", "w+", "a", "a+",
-//                                "wx", "w+x"};  openDir "r" or "rw"
+//   Dir mode "r+" → File modes {"r", "r+", "w", "w+", "a", "a+",
+//                                "wx", "w+x"};  openDir "r" or "r+"
 // A downgrade is fine; an upgrade returns FSERR_UNSUPPORTED.
 //
 // ## Reply shape asymmetry — `removeDir` is the 4-elem exception
@@ -122,7 +122,7 @@ new Dir, rootP, cmodeP in {
     //
     // Returns [true, EntryStream] — a Stream whose elements are per-
     // entry record Maps (see spec §Dir > Listing).  Read op; allowed
-    // on both "r" and "rw" Dirs.
+    // on both "r" and "r+" Dirs.
     //
     // Backing native is the per-fd streaming primitive:
     // `entriesStreamOpen(root, rel, cmode, ack)` allocates a stream fd
@@ -319,12 +319,12 @@ new Dir, rootP, cmodeP in {
                         // match if m equals any of the alternatives.
                         match m {
                           "r" => openFileImpl!(canonRoot, subPath, r, "r", cmode, fileCtor, *return)
-                          // M-12 (2026-09-04): `"rw"` removed from
-                          // file-mode disjunction; callers migrate to
-                          // `"r+"`.  Spec §File modes lists 8 forms.
+                          // Spec §File modes lists 8 POSIX forms;
+                          // the write-capable set is gated on an
+                          // `"r+"` Dir attenuation below.
                           "w" \/ "w+" \/ "wx" \/ "w+x" \/ "a" \/ "a+" \/ "r+" => {
                             match dirMode {
-                              "rw" => openFileImpl!(canonRoot, subPath, r, m, cmode, fileCtor, *return)
+                              "r+" => openFileImpl!(canonRoot, subPath, r, m, cmode, fileCtor, *return)
                               _ => return!([false, "FSERR_UNSUPPORTED",
                                 "requested mode exceeds Dir attenuation"])
                             }
@@ -350,7 +350,7 @@ new Dir, rootP, cmodeP in {
     // B4 (2026-09-03): options-map signature per spec §Dir >
     // Composition — supports `mode` and `path` (path: true enables
     // `mkdir -p`-style ancestor creation per spec §Options, requires
-    // "rw" Dir mode).  Prior shape took bare `@mode` positional.
+    // "r+" Dir mode).  Prior shape took bare `@mode` positional.
     //
     // Mints a nested Dir sharing this Dir's immutable canonRoot, with
     // subPath extended by `rel`.  Validated at mint time via fsStat
@@ -394,15 +394,15 @@ new Dir, rootP, cmodeP in {
                               (canonRoot, subPath, dirMode, fileCtor) => {
                                 match m {
                                   "r" => openDirImpl!(canonRoot, subPath, r, "r", cmode, fileCtor, *return)
-                                  "rw" => {
+                                  "r+" => {
                                     match dirMode {
-                                      "rw" => openDirImpl!(canonRoot, subPath, r, m, cmode, fileCtor, *return)
+                                      "r+" => openDirImpl!(canonRoot, subPath, r, m, cmode, fileCtor, *return)
                                       _ => return!([false, "FSERR_UNSUPPORTED",
                                         "requested mode exceeds Dir attenuation"])
                                     }
                                   }
                                   _ => return!([false, "FSERR_BAD_ARG",
-                                    "dir mode must be \"r\" or \"rw\""])
+                                    "dir mode must be \"r\" or \"r+\""])
                                 }
                               }
                               _ => return!([false, "FSERR_IO", "root params malformed"])
@@ -434,7 +434,7 @@ new Dir, rootP, cmodeP in {
             match params {
               (canonRoot, subPath, dirMode, _fileCtor) => {
                 match dirMode {
-                  "rw" => {
+                  "r+" => {
                     new joinedCh in {
                       joinRel!(subPath, r, *joinedCh) |
                       for (@joined <- joinedCh) {
@@ -446,7 +446,7 @@ new Dir, rootP, cmodeP in {
                     }
                   }
                   _ => return!([false, "FSERR_UNSUPPORTED",
-                    "removeFile requires \"rw\" Dir mode"])
+                    "removeFile requires \"r+\" Dir mode"])
                 }
               }
               _ => return!([false, "FSERR_IO", "root params malformed"])
@@ -509,7 +509,7 @@ new Dir, rootP, cmodeP in {
                     match params {
                       (canonRoot, subPath, dirMode, _fileCtor) => {
                         match dirMode {
-                          "rw" => {
+                          "r+" => {
                             new joinedCh in {
                               joinRel!(subPath, r, *joinedCh) |
                               for (@joined <- joinedCh) {
@@ -531,7 +531,7 @@ new Dir, rootP, cmodeP in {
                             }
                           }
                           _ => return!([false, "FSERR_UNSUPPORTED",
-                            "removeDir requires \"rw\" Dir mode", 0])
+                            "removeDir requires \"r+\" Dir mode", 0])
                         }
                       }
                       _ => return!([false, "FSERR_IO", "root params malformed", 0])
@@ -558,7 +558,7 @@ new Dir, rootP, cmodeP in {
                 match params {
                   (canonRoot, subPath, dirMode, _fileCtor) => {
                     match dirMode {
-                      "rw" => {
+                      "r+" => {
                         new jFromCh, jToCh in {
                           joinRel!(subPath, f, *jFromCh) |
                           joinRel!(subPath, t, *jToCh) |
@@ -573,7 +573,7 @@ new Dir, rootP, cmodeP in {
                         }
                       }
                       _ => return!([false, "FSERR_UNSUPPORTED",
-                        "rename requires \"rw\" Dir mode"])
+                        "rename requires \"r+\" Dir mode"])
                     }
                   }
                   _ => return!([false, "FSERR_IO", "root params malformed"])
@@ -598,7 +598,7 @@ new Dir, rootP, cmodeP in {
                 match params {
                   (canonRoot, subPath, dirMode, _fileCtor) => {
                     match dirMode {
-                      "rw" => {
+                      "r+" => {
                         new jFromCh, jToCh in {
                           joinRel!(subPath, f, *jFromCh) |
                           joinRel!(subPath, t, *jToCh) |
@@ -611,7 +611,7 @@ new Dir, rootP, cmodeP in {
                         }
                       }
                       _ => return!([false, "FSERR_UNSUPPORTED",
-                        "copyFile requires \"rw\" Dir mode"])
+                        "copyFile requires \"r+\" Dir mode"])
                     }
                   }
                   _ => return!([false, "FSERR_IO", "root params malformed"])
@@ -642,7 +642,7 @@ new Dir, rootP, cmodeP in {
                     match params {
                       (canonRoot, subPath, dirMode, _fileCtor) => {
                         match dirMode {
-                          "rw" => {
+                          "r+" => {
                             new joinedCh in {
                               joinRel!(subPath, r, *joinedCh) |
                               for (@joined <- joinedCh) {
@@ -654,7 +654,7 @@ new Dir, rootP, cmodeP in {
                             }
                           }
                           _ => return!([false, "FSERR_UNSUPPORTED",
-                            "chmod requires \"rw\" Dir mode"])
+                            "chmod requires \"r+\" Dir mode"])
                         }
                       }
                       _ => return!([false, "FSERR_IO", "root params malformed"])
@@ -706,7 +706,7 @@ new Dir, rootP, cmodeP in {
                         match params {
                           (canonRoot, subPath, dirMode, _fileCtor) => {
                             match dirMode {
-                              "rw" => {
+                              "r+" => {
                                 new joinedCh in {
                                   joinRel!(subPath, r, *joinedCh) |
                                   for (@joined <- joinedCh) {
@@ -718,7 +718,7 @@ new Dir, rootP, cmodeP in {
                                 }
                               }
                               _ => return!([false, "FSERR_UNSUPPORTED",
-                                "chown requires \"rw\" Dir mode"])
+                                "chown requires \"r+\" Dir mode"])
                             }
                           }
                           _ => return!([false, "FSERR_IO", "root params malformed"])
@@ -796,9 +796,9 @@ new Dir, rootP, cmodeP in {
         // If stat fails for any reason (not-found, permission, etc.),
         // we pass through to fsOpen — for creation modes (w/w+/wx/w+x/
         // a/a+) the target may legitimately not exist yet, and fsOpen
-        // handles the create/exclusive semantics.  For read/rw modes
-        // fsOpen will re-surface the appropriate error (FSERR_NOTFOUND,
-        // etc.).
+        // handles the create/exclusive semantics.  For read / r+
+        // modes fsOpen will re-surface the appropriate error
+        // (FSERR_NOTFOUND, etc.).
         //
         // Racy against a directory being created between stat and open;
         // the alternative (bind fd first, fstat inode) requires a

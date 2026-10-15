@@ -20,6 +20,8 @@ This page lists the jobs of `.github/workflows/ci.yml`, `.github/workflows/ci-fo
 | Job id | Check name | Category | Needs |
 | --- | --- | --- | --- |
 | `build_base` | Resolve Target | Setup | none |
+| `promotion_source` | Promotion Source | Static check | none |
+| `commit_policy` | Commit Policy | Static check | `build_base` |
 | `static_checks` | Static Checks | Static check | `build_base` |
 | `script_tests` | Script Tests | Script test | `build_base` |
 | `soak_harness_tests` | Soak Harness Tests | Soak harness test | `build_base` |
@@ -42,14 +44,17 @@ The Integration Pipeline waits for all three of Static Checks, Script Tests, and
 ### Static Checks
 
 1. Verify workflow security invariants (first, before the toolchain install)
-2. Verify commit identities in pull request commits (pull requests only)
-3. Verify supply-chain controls
-4. Check formatting
-5. Run clippy
+2. Verify supply-chain controls
+3. Check formatting
+4. Run clippy
+
+### Commit Policy
+
+The job verifies the commit identities of pull request commits (pull requests only). It reads the pull request head SHA, so it has no cache step. A cache step in the same job is the pattern that the CodeQL rule `actions/cache-poisoning/poisonable-step` reports. The step fetches commit objects only. It runs the commit identity checker and reads the denied identities list from the base commit, so a pull request cannot weaken its own check. Before these files reach the base branch, the step uses the copies in the pull request.
 
 ### Script Tests
 
-The job runs 20 script tests:
+The job runs 21 script tests:
 
 - Commit trailer check
 - Pre-push hook
@@ -59,6 +64,7 @@ The job runs 20 script tests:
 - System-integration repin helper
 - Release evidence
 - Release gates
+- Promotion pull request opener
 - Release promotion
 - Release gate evidence
 - Deployment train validator
@@ -98,27 +104,41 @@ The job runs 20 script tests:
 | Old name | New name | Change |
 | --- | --- | --- |
 | Build Base | Resolve Target | The job builds nothing. It resolves the target commit and the run decisions. |
-| Lint | Static Checks, Script Tests, Soak Harness Tests | The job ran static checks, 20 script tests, and the soak harness tests. |
+| Lint | Commit Policy, Static Checks, Script Tests, Soak Harness Tests | The job ran the commit identity check, static checks, 20 script tests, and the soak harness tests. |
 | Test (casper) | Test Gate (casper) | The job is a gate over the casper shards and the coverage summary. |
 | Heavy Pipeline / *job* | Integration Pipeline / *job* | The caller job is the integration pipeline. |
 | Integration Tests (amd64), (arm64) | Integration Gate (amd64), (arm64) | The jobs are gates over the integration test slots. |
 
 Check names on pull requests and runs from before the change keep the old names.
 
-## Ruleset switch
+## Required checks
 
-The branch rulesets require check names. The switch has two steps, so that no pull request waits for a check that never reports.
+The `devProtect` ruleset requires these checks:
 
-**Step 1 (TASK-023-4).** The new jobs run. Temporary jobs keep the old required names: `Lint` in `ci.yml`, `Test (casper)` in `ci.yml`, and `Integration Tests (amd64)` and `(arm64)` in `ci.yml` and `ci-fork-pr.yml`. Each temporary job needs the new job and reports its result. When the new job is skipped, the temporary job is also skipped.
+- Commit Policy, Static Checks, Script Tests, and Soak Harness Tests
+- cargo-deny
+- Test (*crate*) for each crate, and Test (casper 1/2) and Test (casper 2/2)
+- Integration Gate (amd64) and Integration Gate (arm64)
 
-**Step 2 (after step 1 is merged).**
+The `masterProtect` ruleset requires Promotion Source, Commit Policy, Static Checks, Script Tests, Soak Harness Tests, cargo-deny, Test (*crate*) for each crate, and Test Gate (casper).
 
-1. A repository admin changes `devProtect`: remove `Lint`, `Integration Tests (amd64)`, and `Integration Tests (arm64)`. Add `Static Checks`, `Script Tests`, `Soak Harness Tests`, `Integration Gate (amd64)`, and `Integration Gate (arm64)`.
-2. A repository admin changes `masterProtect`: remove `Lint` and `Test (casper)`. Add `Static Checks`, `Script Tests`, `Soak Harness Tests`, and `Test Gate (casper)`.
-3. A pull request makes these changes in the same commit:
-   - The heavy reuse gate in the `build_base` target step of `ci.yml` reads `Integration Gate (amd64)` and `(arm64)`.
-   - `release-train.sh validate-ci-evidence` reads the same names.
-   - `test-ci-stack-gate.sh` and `test-release-train.sh` use the new names.
-   - The temporary jobs are removed from `ci.yml` and `ci-fork-pr.yml`.
+The heavy reuse gate in the `build_base` target step and `release-train.sh validate-ci-evidence` read Integration Gate (amd64) and (arm64). A pull request run from before TASK-023-4 has only the old names. A merge group therefore cannot reuse the heavy result of such a run, and it runs the Integration Pipeline again.
 
-Runs from step 1 carry both the old and the new names, so the readers find the new names in every run after step 1.
+`ci-fork-pr.yml` also has Integration Gate jobs, and it runs for every pull request. For a pull request from this repository, these jobs are skipped and report as Integration Gate (amd64, fork PRs only) and (arm64, fork PRs only). A skipped check counts as a pass. With the required names, the skipped checks would pass the gate before the `ci.yml` gate finishes. A `ci-heavy` pull request could then enter the merge queue during its own heavy run, and the merge group would run the Integration Pipeline again. `check-workflow-invariants.sh` rejects a fork-only job that reports a `ci.yml` check name when it is skipped.
+
+## Promotion from dev to master
+
+Run `just promote` to open the promotion pull request. The command runs `.github/scripts/open-promotion-pr.sh`. It creates a temporary `promote/<UTC timestamp>` branch at the `origin/dev` commit and opens the pull request to `master` with your `gh` login.
+
+You can also use the **Promote dev to master** workflow:
+
+1. Open the **Actions** tab and select **Promote dev to master**.
+2. Click **Run workflow**, keep the `master` branch, and click **Run workflow** again.
+
+The workflow runs the same script, so the rules for the branch and the pull request are the same. GitHub shows the button only for a workflow on `master`. A workflow merged to `dev` gets its button after the next promotion.
+
+A pull request opened with `GITHUB_TOKEN` starts no CI, so the workflow opens the pull request with a dedicated promotion GitHub App. The app installation grants only **Contents: write** and **Pull requests: write**. The app must not be a bypass actor on the `devProtect` or `masterProtect` ruleset. The CI automation app is a bypass actor on both rulesets, so the workflow does not use it. The `release-credentials` environment holds `PROMOTION_APP_ID` and `PROMOTION_APP_PRIVATE_KEY`, and it allows `master` only.
+
+The app is the pull request author. The user who started the workflow can therefore approve the pull request. CI does not prevent this approval. The rule that a different maintainer approves is a convention. The pull request body names the user who started the workflow and asks a different member of `@F1R3FLY-io/ci-maintainers` to approve.
+
+Do not open a promotion with head `dev`. The repository deletes the head branch of a merged pull request. GitHub then retargets every open pull request based on that branch to the base of the merged pull request. Two promotions from `dev` moved every open `dev` pull request to `master` (2026-10-04 and 2026-10-09). The `Promotion Source` check rejects a pull request from `dev` to `master`.

@@ -231,10 +231,8 @@ mod tests {
 
     use super::*;
     use crate::rust::deploy::key_value_deploy_storage::{
-        KeyValueDeployStorage, DEPLOY_STORAGE_DB, DEPLOY_STORAGE_QUARANTINE_DB,
-    };
-    use crate::rust::deploy::key_value_rejected_deploy_buffer::{
-        KeyValueRejectedDeployBuffer, REJECTED_DEPLOY_BUFFER_DB,
+        KeyValueDeployStorage, KeyValueRejectedDeployBuffer, DEPLOY_STORAGE_DB,
+        DEPLOY_STORAGE_QUARANTINE_DB, REJECTED_DEPLOY_BUFFER_DB,
         REJECTED_DEPLOY_BUFFER_QUARANTINE_DB,
     };
 

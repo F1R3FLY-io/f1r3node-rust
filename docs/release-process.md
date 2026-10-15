@@ -628,7 +628,7 @@ The summary job requires 80% line coverage for each crate. The summary job also 
 
 A missing or malformed crate report fails the summary job. The workflow retains JSON, LCOV, and summary artifacts for 30 days.
 
-Push and workflow-dispatch runs skip both coverage jobs. On pull requests, the `Test Gate (casper)` check (required as `Test (casper)` until the ruleset switch in TASK-023-9) also requires a successful `Coverage Summary` result.
+Push and workflow-dispatch runs skip both coverage jobs. On pull requests, the required `Test Gate (casper)` check also requires a successful `Coverage Summary` result.
 
 Add `Coverage Summary` directly to `devProtect` and `masterProtect` when the repository token has ruleset write access.
 

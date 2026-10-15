@@ -2,8 +2,9 @@
 
 use std::path::PathBuf;
 
-use block_storage::rust::deploy::key_value_deploy_storage::DEPLOY_STORAGE_QUARANTINE_DB;
-use block_storage::rust::deploy::key_value_rejected_deploy_buffer::REJECTED_DEPLOY_BUFFER_QUARANTINE_DB;
+use block_storage::rust::deploy::key_value_deploy_storage::{
+    DEPLOY_STORAGE_QUARANTINE_DB, REJECTED_DEPLOY_BUFFER_QUARANTINE_DB,
+};
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
 use rspace_plus_plus::rspace::shared::lmdb_dir_store_manager::{
     Db, LmdbDirStoreManager, LmdbEnvConfig, GB, TB,

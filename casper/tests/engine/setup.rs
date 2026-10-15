@@ -10,8 +10,9 @@ use block_storage::rust::casperbuffer::casper_buffer_key_value_storage::CasperBu
 use block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage;
 use block_storage::rust::dag::block_metadata_store::BlockMetadataStore;
 use block_storage::rust::dag::equivocation_tracker_store::EquivocationTrackerStore;
-use block_storage::rust::deploy::key_value_deploy_storage::KeyValueDeployStorage;
-use block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer;
+use block_storage::rust::deploy::key_value_deploy_storage::{
+    KeyValueDeployStorage, KeyValueRejectedDeployBuffer,
+};
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use casper::rust::blocks::block_processor::{BlockQueueItem, InFlightBlocks};
 use casper::rust::casper::{CasperShardConf, MultiParentCasper};

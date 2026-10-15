@@ -61,8 +61,9 @@ async fn rnode_store_manager_frontier_index_round_trips() {
 async fn rnode_store_manager_quarantines_undecodable_deploy_records_across_reopen() {
     use std::collections::HashSet;
 
-    use block_storage::rust::deploy::key_value_deploy_storage::KeyValueDeployStorage;
-    use block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer;
+    use block_storage::rust::deploy::key_value_deploy_storage::{
+        KeyValueDeployStorage, KeyValueRejectedDeployBuffer,
+    };
     use casper::rust::util::construct_deploy;
     use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
 

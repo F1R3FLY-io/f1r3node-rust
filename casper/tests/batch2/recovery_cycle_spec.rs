@@ -90,7 +90,7 @@ fn assert_touched_integer_add_channels_single_valued(
 
     for (hash, _) in channels {
         let data = reader.get_data(&hash).expect("get mergeable channel data");
-        let values: Vec<i64> = data
+        let values: Vec<num_bigint::BigInt> = data
             .iter()
             .filter_map(|datum| {
                 RholangMergingLogic::try_get_number_with_rnd(&datum.a).map(|(n, _)| n)

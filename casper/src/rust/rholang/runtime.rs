@@ -31,6 +31,7 @@ use models::rust::sorted_par_hash_set::SortedParHashSet;
 use models::rust::sorted_par_map::SortedParMap;
 use models::rust::utils::new_freevar_par;
 use models::rust::validator::Validator;
+use num_bigint::BigInt;
 use rholang::rust::interpreter::accounting::costs::Cost;
 use rholang::rust::interpreter::accounting::has_cost::HasCost;
 use rholang::rust::interpreter::compiler::compiler::Compiler;
@@ -38,6 +39,7 @@ use rholang::rust::interpreter::env::Env;
 use rholang::rust::interpreter::interpreter::EvaluateResult;
 use rholang::rust::interpreter::merging::rholang_merging_logic::RholangMergingLogic;
 use rholang::rust::interpreter::rho_runtime::{bootstrap_registry, RhoRuntime, RhoRuntimeImpl};
+use rholang::rust::interpreter::rho_type::RhoNumber;
 use rholang::rust::interpreter::system_processes::{
     BlockData, DeployData as SystemProcessDeployData,
 };
@@ -649,8 +651,10 @@ impl RuntimeOps {
     ) -> Result<NumberChannelsEndVal, CasperError> {
         let mut result = BTreeMap::new();
         for (channel, merge_type) in channels {
-            if let Some((hash, value)) = self.get_number_channel(channel, *merge_type).await? {
-                result.insert(hash, (value, *merge_type));
+            if let Some((hash, value, value_merge_type)) =
+                self.get_number_channel(channel, *merge_type).await?
+            {
+                result.insert(hash, (value, value_merge_type));
             }
         }
         Ok(result)
@@ -667,11 +671,14 @@ impl RuntimeOps {
         )
     }
 
+    /// Reads a mergeable number channel. The merge type is the tag's strategy
+    /// for every value kind (see `RholangMergingLogic::number_merge_type`), so
+    /// all branches agree on it.
     pub async fn get_number_channel(
         &self,
         channel: &Par,
         merge_type: MergeType,
-    ) -> Result<Option<(Blake2b256Hash, i64)>, CasperError> {
+    ) -> Result<Option<(Blake2b256Hash, BigInt, MergeType)>, CasperError> {
         let ch_values = self.runtime.get_data(channel).await;
 
         if ch_values.is_empty() {
@@ -679,28 +686,34 @@ impl RuntimeOps {
         } else {
             let ch_hash = stable_hash_provider::hash(channel);
             if ch_values.len() != 1 {
-                let nums: Vec<i64> = ch_values
-                    .iter()
-                    .filter_map(|datum| {
-                        RholangMergingLogic::try_get_number_with_rnd(&datum.a).map(|(n, _)| n)
-                    })
-                    .collect();
-
                 match merge_type {
                     MergeType::IntegerAdd => {
+                        let nums: Vec<String> = ch_values
+                            .iter()
+                            .filter_map(|datum| {
+                                RholangMergingLogic::try_get_number_with_rnd(&datum.a)
+                                    .map(|(n, _)| n.to_string())
+                            })
+                            .collect();
                         return Err(CasperError::RuntimeError(format!(
-                            "number channel {} holds {} values {:?}; IntegerAdd single-value invariant violated",
+                            "number channel {} holds {} values {:?}; {:?} single-value invariant violated",
                             hex::encode(ch_hash.bytes()),
                             ch_values.len(),
                             nums,
+                            merge_type,
                         )));
                     }
                     MergeType::BitmaskOr => {
+                        let nums: Vec<i64> = ch_values
+                            .iter()
+                            .filter(|datum| datum.a.pars.len() == 1)
+                            .filter_map(|datum| RhoNumber::unapply(&datum.a.pars[0]))
+                            .collect();
                         let num = match Self::fold_bitmask_or(&nums) {
                             Some(n) => n,
                             None => return Ok(None),
                         };
-                        return Ok(Some((ch_hash, num)));
+                        return Ok(Some((ch_hash, BigInt::from(num), MergeType::BitmaskOr)));
                     }
                 }
             }
@@ -709,9 +722,14 @@ impl RuntimeOps {
             // (e.g., TreeHashMap leaf Maps tagged with the bitmask tag) are
             // skipped here and fall through to the existing conflict path.
             let num_par = &ch_values[0].a;
-            match RholangMergingLogic::try_get_number_with_rnd(num_par) {
-                Some((num, _)) => Ok(Some((ch_hash, num))),
-                None => Ok(None),
+            match (
+                RholangMergingLogic::try_get_number_with_rnd(num_par),
+                RholangMergingLogic::number_merge_type(num_par, merge_type),
+            ) {
+                (Some((num, _)), Some(value_merge_type)) => {
+                    Ok(Some((ch_hash, num, value_merge_type)))
+                }
+                _ => Ok(None),
             }
         }
     }

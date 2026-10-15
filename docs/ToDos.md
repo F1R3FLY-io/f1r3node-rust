@@ -1,7 +1,7 @@
 ---
 doc_type: todos
 version: "1.1"
-last_updated: 2026-10-10
+last_updated: 2026-10-13
 mr_status:
   ready: false
   target_branch: master
@@ -181,6 +181,85 @@ tasks:
 
 ---
 
+### EPIC-026: Hierarchical CbC Attributes (Nested .gitattributes Files)
+
+```yaml
+---
+epic_id: EPIC-026
+title: "Hierarchical CbC Attributes (Nested .gitattributes Files)"
+status: blocked
+priority: p2
+user_story: null
+blocked_by: ["top-level-gitlab-profile docs/ToDos.md INBOX: hierarchical cbc .gitattributes design (2026-10-12)"]
+created_at: 2026-10-12
+updated_at: 2026-10-12
+plan: docs/plans/cbc-hierarchical-attributes.md
+claimed_by: claude-session-dfac55a4
+claimed_at: 2026-10-12T14:00:00Z
+branch: chore/cbc-hierarchical-attributes
+pr_base_branch: dev
+origin: "On 2026-10-12 the maintainer asked to move the cbc=mandatory tags out of the flat root .gitattributes (160 lines) into .gitattributes files in subdirectories, following the new CbC workflow in top-level-gitlab-profile."
+roles:
+  design: "top-level-gitlab-profile owns the design, the tooling change, and its tests (its docs/ToDos.md INBOX entry of 2026-10-12)."
+  implementation: "This epic. It applies the ratified design to this repository and reorganizes the .gitattributes files."
+execution_contract:
+  design_policy: "No change to any .gitattributes file before the maintainer approves the design. The rule moves follow docs/plans/cbc-hierarchical-attributes.md. The revised R1 to R7 apply: the owner map routes proposals only, existing rules keep their coverage, and R7 is a separate change."
+  git_policy: "Commits require /quick-commit consent. The user runs push, merge, and PR operations."
+baseline:
+  root_file: ".gitattributes has 160 cbc lines. Two are duplicates: .github/workflows/slashing-tests.yml (lines 13 and 125) and scripts/ci/check-tla-invariants.sh (lines 10 and 117)."
+  evidence_dirs: "docs/cbc-evidence/ (tooling default) and docs/casper/cbc-evidence/ (selected through CBC_EVIDENCE_DIR in docs/casper/README.md)."
+  acceptance: "No entry sets cbc-acceptance yet."
+tasks:
+  - id: TASK-026-1
+    title: "Record the attribute baseline"
+    status: pending
+    blocked_by: []
+    acceptance:
+      - "The snapshot command of the plan (section 3) runs at the branch base, and its output is kept with the pull request as the reference."
+  - id: TASK-026-2
+    title: "Declare the owner directories"
+    status: pending
+    blocked_by: ["design approval", "shared owner map interface (R1)"]
+    acceptance:
+      - "The owner map of the shared tooling lists the nine owner directories of plan section 4."
+      - "The owner map routes new proposals only. The snapshot diff stays empty."
+  - id: TASK-026-3
+    title: "Move the rules into the owner .gitattributes files"
+    status: pending
+    blocked_by: [TASK-026-1, TASK-026-2]
+    acceptance:
+      - "Each commit moves one owner directory: it creates the owner file and removes the matching root lines."
+      - "Each moved pattern loses its owner prefix and gains a leading slash. The attributes stay the same."
+      - "No owner file uses an [attr] macro."
+      - "The snapshot diff against the previous commit is empty after each commit."
+      - "The root file keeps only rholang/src/rust/interpreter/reduce.rs and docs/crypto/README.md."
+  - id: TASK-026-4
+    title: "Remove the duplicate lines"
+    status: pending
+    blocked_by: [TASK-026-3]
+    acceptance:
+      - "A separate commit removes the second copy of .github/workflows/slashing-tests.yml and scripts/ci/check-tla-invariants.sh."
+      - "The snapshot diff is empty."
+  - id: TASK-026-5
+    title: "Prove that the migration is exact"
+    status: pending
+    blocked_by: [TASK-026-4, "shared R5 snapshot command"]
+    acceptance:
+      - "The snapshot at the branch head equals the baseline, except for paths that dev changed during the work. Each such path is recorded with its commit."
+      - "The R5 warnings report no override, duplicate, unanchored single-file pattern, or ambient attribute source."
+      - "cbc discharge --strict gives the same result at the branch base and the branch head."
+      - "The independent verifier in top-level-gitlab-profile confirms the result."
+  - id: TASK-026-6
+    title: "Set the evidence directory per path"
+    status: deferred
+    blocked_by: ["R7 approval as a separate interface change"]
+    notes:
+      - "2026-10-12: deferred. R7 is a separate change in top-level-gitlab-profile. The consumer auditors (check-casper-claims.rs, check-casper-soak-bindings.sh) use fixed paths, so the migration does not need R7."
+---
+```
+
+---
+
 ### EPIC-023: Disk Admission Test Flake and the Lint Job Scope
 
 ```yaml
@@ -306,16 +385,64 @@ tasks:
       - "If the stall is in a fixture command, the claim is not changed, and the task records that decision."
   - id: TASK-023-9
     title: "Switch the rulesets to the new check names and remove the temporary jobs (step 2)"
-    status: pending
+    status: in_progress
     priority: p0
-    claimed_by: null
+    claimed_by: claude-session-dfac55a4
+    claimed_at: 2026-10-09T02:00:00Z
+    branch: chore/ci-ruleset-switch
+    merge_order: "Merge only after #687 is merged and a repository admin has changed devProtect and masterProtect. Merging earlier removes checks that the rulesets still require."
+    codeql_note: "2026-10-09: the commit identity check moves to a new Commit Policy job without a cache step, because the CodeQL rule actions/cache-poisoning/poisonable-step re-raised a false positive (alerts #93 to #110) each time the old job shifted lines. Commit Policy joins the required checks in the admin command."
     blocked_by: [TASK-023-4, TASK-023-6]
     owner_note: "Steps 1 and 2 of the acceptance need a repository admin. An agent does not change rulesets."
+    ruleset_note: "2026-10-12: an admin removed the required_deployments rule (environment protected-branch-image-publish) from masterProtect. Only a push to dev or master deploys to that environment, so a pull request head never had the deployment. Auto-merge never fired, and every PR to master needed a rule bypass (#698). The current masterProtect rules are deletion, non_fast_forward, required_status_checks, and pull_request. The step 2 ruleset change must not add required_deployments again."
     acceptance:
       - "devProtect requires Static Checks, Script Tests, Soak Harness Tests, Integration Gate (amd64), and Integration Gate (arm64) instead of Lint and Integration Tests (amd64), (arm64)."
       - "masterProtect requires Static Checks, Script Tests, Soak Harness Tests, and Test Gate (casper) instead of Lint and Test (casper)."
+      - "masterProtect has no required_deployments rule, so a pull request to master can merge with auto-merge and without a bypass."
       - "In one commit: the build_base heavy reuse gate and release-train.sh validate-ci-evidence read Integration Gate (amd64), (arm64); test-ci-stack-gate.sh and test-release-train.sh use the new names; the temporary jobs leave ci.yml and ci-fork-pr.yml."
       - "A merge group with the change passes the queue. docs/ci.md describes the result without the switch section."
+  - id: TASK-023-10
+    title: "Promote dev to master from a promote/* branch and reject promotions with head dev"
+    status: review
+    priority: p0
+    claimed_by: claude-session-dfac55a4
+    claimed_at: 2026-10-09T10:00:00Z
+    branch: chore/ci-ruleset-switch
+    blocked_by: []
+    finding: "The repository deletes the head branch of a merged pull request (delete_branch_on_merge). Promotions #619 (2026-10-04) and #684 (2026-10-09) had head dev, so GitHub retargeted every open dev pull request to master: 7 and then 10 AutomaticBaseChangeSucceeded events within 13 seconds of each merge. The 13 affected pull requests other than #671 and the stacked #189 were retargeted back to dev on 2026-10-09."
+    decision: "2026-10-09: the user chose a local command (just promote) over an Actions workflow, because a pull request opened with GITHUB_TOKEN does not trigger CI and the CI GitHub App has only administration permissions."
+    acceptance:
+      - "just promote creates promote/<UTC timestamp> at the origin/dev commit and opens the pull request to master. test-open-promotion-pr.sh covers the nothing-to-promote case and the created branch and pull request."
+      - "The Promotion Source job rejects a pull request from dev to master and accepts promote/* and hotfix/* heads."
+      - "masterProtect requires Promotion Source after the admin ruleset change of TASK-023-9."
+      - "The next promotion retargets no open pull request."
+  - id: TASK-023-11
+    title: "Make failed bench segments visible in the soak log and report"
+    status: review
+    priority: p1
+    claimed_by: claude-session-dfac55a4
+    claimed_at: 2026-10-12T15:30:00Z
+    branch: hotfix/soak-bench-failure-visibility
+    pr_base_branch: master
+    finding: "Soak 38184406100 segment 1: bench segments 11 and 13 failed with shard compose up failed. The job log showed only that line, because compose-up.log stays on the runner until the run ends. The checkpoint report showed 15/15 segments ok, because a segment without metrics.json is missing from the segment list."
+    acceptance:
+      - "run-bench-segment.sh puts the last 15 lines of compose-up.log on stderr when compose up fails. test-run-bench-segment.sh checks this with a fake docker."
+      - "The weekly summary carries active.segments_failed from the run state bench_failures. The verdict warns about failed segments. The all-failed warning also fires when no failed segment wrote metrics. The report row shows the failed count."
+      - "The cause of the compose failures is diagnosed separately from bench-segment-00011 and bench-segment-00013/compose-up.log in the run artifact."
+  - id: TASK-023-12
+    title: "Move the soak bench shard host ports below the ephemeral range"
+    status: review
+    priority: p1
+    claimed_by: claude-session-dfac55a4
+    claimed_at: 2026-10-12T17:30:00Z
+    branch: hotfix/soak-bench-port-range
+    pr_base_branch: master
+    finding: "Soak 38184406100 artifact: bench segments 11 and 13 failed with failed to bind host port 0.0.0.0:40452/tcp and 0.0.0.0:40412/tcp: address already in use. docker/shard.yml publishes 40400-40455, inside the kernel ephemeral range 32768-60999, so an outbound connection on the soak runner can hold the port. CI already avoids this with docker/ci-ports.shard.yml, but run-bench-segment.sh did not use it."
+    acceptance:
+      - "run-bench-segment.sh starts the bench shard with docker/shard.yml and docker/ci-ports.shard.yml, and probes and benchmarks validator1 on host port 14413."
+      - "test-run-bench-segment.sh checks both compose files and the probe port with a fake docker and curl."
+      - "The merged compose configuration publishes no host port at or above 32768."
+      - "The next weekend soak has no bench segment that fails with address already in use."
   - id: TASK-023-5
     title: "Measure the disk admission failure rate after the fix"
     status: pending
@@ -461,6 +588,138 @@ tasks:
 
 ---
 
+### EPIC-027: Adaptive Execution Across Hardware Tiers (Issue #24 Close-Out)
+
+```yaml
+---
+epic_id: EPIC-027
+title: "Adaptive Execution Across Hardware Tiers (Issue #24 Close-Out)"
+status: in_progress
+priority: p0
+user_story: US-012
+issues: [24]
+blocked_by: []
+created_at: 2026-10-13
+updated_at: 2026-10-13
+design: docs/designs/adaptive-execution.md
+claimed_by: claude-session-dfac55a4
+claimed_at: 2026-10-13T15:00:00Z
+branch: perf/issue-24-adaptive-execution
+pr_base_branch: dev
+closes: "issue #24 (the PR body uses 'Closes #24')"
+related_epics:
+  EPIC-021: "Issue #24 root-cause epic. It keeps its measurement and fix history. Its open tasks, TASK-021-13 first, are inputs to this epic."
+  EPIC-025: "Pluggable State Machine Replication Boundary (design PR #627, decision D7). This epic adds a node service on its lifecycle layer."
+  EPIC-014: "Test net. Its modular soak decision of 2026-10-11 lets each mechanism define its own soak profile."
+related_issues: ["#624 (lifecycle runtime)", "#625 (Cordial Miners adapter)"]
+related_prs: ["#651 (lifecycle runtime and F1r3fly CbC Casper adapter)", "#627 (replication boundary design)", "#695 (backlog-following non-leader admission cap)"]
+origin: "On 2026-10-13 the user chose to close issue #24 with a design that relies on adaptive execution, continuous telemetry, and tiered degradation, so that shards run on hardware with different performance. Soak 37996403003 showed that all three high-phase failures ran on Docker, with about twice the left-out deploys and twice the selection age of subprocess shards."
+decisions_2026_10_13:
+  consensus_neutral: "The controller is a node service on ConsensusRuntime. Each mechanism declares its controls and signals in an adaptation descriptor. F1r3fly CbC Casper (cbc-casper) is the first binding. The RGB peer clique (peer-clique), Casanova (casanova), and Cordial Miners (cordial-miners) have provisions in design section 11 (design decision A1)."
+  node_local_only: "No control changes block validity or replicated state (design decision A2)."
+  tier_selection: "A startup hardware probe selects the tier profile, and a closed-loop controller with hysteresis adjusts inside it (design decision A3)."
+  telemetry: "Local Prometheus metrics and structured records, tagged with tier, host class, and protocol, collected by soak and test net runs. Central opt-in aggregation goes to the Backlog (design decision A4)."
+  close_gate: "The close-out gate depends on the mechanism. Each mechanism supplies a soak profile. The cbc-casper profile closes issue #24 (design decision A5)."
+  sequencing: "Design now against D7. Implementation tasks wait for PR #651 to merge into dev (design decision A7)."
+  ethereum_practices: "The node adopts two node-local practices from Ethereum: published hardware targets for each tier, and a probe warning when the host is below a target. Neither practice enforces a minimum (design decision A8, design section 16). Timeliness rewards stay open as design question Q7."
+execution_contract:
+  design_policy: "No code change before the maintainer approves docs/designs/adaptive-execution.md (TASK-027-1)."
+  cbc_policy: "Register the pending claim for invariants I1 to I6 before the controller code (TASK-027-4)."
+  git_policy: "Commits require /quick-commit consent. The user runs push, merge, and PR operations."
+tasks:
+  - id: TASK-027-1
+    title: "Write and approve the adaptive execution design"
+    status: review
+    claimed_by: claude-session-dfac55a4
+    claimed_at: 2026-10-13T15:00:00Z
+    blocked_by: []
+    acceptance:
+      - "docs/designs/adaptive-execution.md records decisions A1 to A8, the issue #24 evidence, the controller rules, the degradation levels, the invariants I1 to I6, the F1r3fly CbC Casper binding, the provisions for the RGB peer clique, Casanova, and Cordial Miners, and the soak profile for each mechanism, and the comparison with Ethereum with cited sources (section 16)."
+      - "The design uses the names of the D7 boundary layers and states which names change when PR #651 merges."
+      - "The maintainer approves the design, or the review comments are resolved."
+      - "The new terms of design section 20 are in docs/Glossary.md."
+  - id: TASK-027-2
+    title: "Add the adaptive telemetry signals and records with no behavior change"
+    status: pending
+    blocked_by: [TASK-027-1, "PR #651 merged into dev"]
+    acceptance:
+      - "The node exports the signals of design section 9.1 with the prefix adaptive_ and the labels tier, host_class, and protocol."
+      - "The cbc-casper adapter exports the signals of design section 10.2."
+      - "A soak run collects the records in its artifacts, and the records contain no keys, addresses, deploy contents, or host names."
+      - "A comparison run shows no change in the soak results."
+  - id: TASK-027-3
+    title: "Add the hardware probe and the tier profiles"
+    status: pending
+    blocked_by: [TASK-027-2]
+    acceptance:
+      - "The probe reads the CPU cores, the cgroup memory limit, the disk write latency, and the host class at startup."
+      - "tier = auto selects a profile from the probe. A named tier skips the probe, and the node records the choice."
+      - "An operator override can narrow a bound and cannot widen it. A test proves both cases."
+      - "The probe compares the host with the published targets of design section 14.3: the named tier, or the Constrained targets when tier = auto."
+      - "Below a target, the node writes a warning record that names each value below its target and sets the gauge adaptive_probe_below_target to 1. The node still starts. A test proves both the warning and the normal start."
+  - id: TASK-027-4
+    title: "Add the adaptive controller and the degradation levels"
+    status: pending
+    blocked_by: [TASK-027-3]
+    acceptance:
+      - "A pending CbC claim states invariants I1 to I6 before the controller code."
+      - "Unit tests drive the controller as a function of signal windows and a tier profile, with time as the only boundary."
+      - "The tests prove one step for each action, the N and M interval rules, the cooldown, the bounds, and no step up without data."
+      - "Levels L1 to L3 follow design section 8. A full intake queue returns a typed retryable overload error."
+      - "A mixed-tier test shows that validators with different control values reach the same finalized state."
+      - "A test with a required duty that has a declared deadline shows that no degradation level delays the duty past the deadline (I6)."
+  - id: TASK-027-5
+    title: "Bind the F1r3fly CbC Casper admission controls to the controller"
+    status: pending
+    blocked_by: [TASK-027-4]
+    acceptance:
+      - "The non-leader fallback cap and the fresh-deploy escalation delays in block_creator.rs come from the controller inside the tier profile bounds."
+      - "The PR #695 backlog rule stays, and its bound comes from the profile."
+      - "Block validation does not read any controlled value."
+      - "A local high-phase run shows a lower deploy age at selection than the fixed cap of 8."
+  - id: TASK-027-6
+    title: "Fix the sustained-phase wait from inclusion to finality"
+    status: pending
+    blocked_by: [TASK-021-13, TASK-027-2]
+    acceptance:
+      - "The TASK-021-13 attribution names the stage that causes the wait, with the evidence on issue #24."
+      - "The fix or the new control for that stage has a test that fails before the change."
+      - "Design open question Q1 is closed in the design document."
+  - id: TASK-027-7
+    title: "Add the constrained tier CI run, the cbc-casper soak profile, and the first published tier targets"
+    status: pending
+    blocked_by: [TASK-027-5]
+    acceptance:
+      - "A CI job runs a node under cgroup CPU and memory limits and checks the degradation level and the absence of out-of-memory stops."
+      - "The cbc-casper soak profile states the gates of design section 14.1 and reports them separately for each host class."
+      - "Each tier has a baseline for deploys per second, inclusion p95, and finalization p95."
+      - "The operator documentation publishes the cbc-casper target for each tier, with the fields of design section 14.3. Each value names the release and the soak run that set it."
+      - "The targets are recommendations. No node refuses to start below a target."
+  - id: TASK-027-8
+    title: "Run the close-out soak and report on issue #24"
+    status: pending
+    blocked_by: [TASK-027-6, TASK-027-7]
+    acceptance:
+      - "The cbc-casper soak profile passes: at most 5 test_load failures in 100 sessions on the Docker host class, on the subprocess host class, and on the constrained tier."
+      - "No run shows an out-of-memory stop, a watchdog stop, or a guardian stop."
+      - "The controller records show at least one step down and one step up in a high phase."
+      - "An issue #24 comment reports the result, and the PR that merges this branch closes issue #24."
+  - id: TASK-027-9
+    title: "Add the adaptation provisions for the RGB peer clique, Casanova, and Cordial Miners"
+    status: pending
+    blocked_by: [TASK-027-4, "the adapter of each mechanism (Cordial Miners: issue #625)"]
+    notes:
+      - "This task does not block the close-out of issue #24. Each mechanism completes its part when its adapter lands."
+    acceptance:
+      - "Each adapter declares its controls, signals, required duties, and protocol deadlines in an AdaptationDescriptor, following design section 11.2."
+      - "Each adapter supplies default tier profiles and a soak profile with the gate shape of design section 14.1."
+      - "Each binding shows invariants I1 to I6 for its own controls."
+      - "The controller has no mechanism-specific code."
+---
+```
+
+---
+
 ### EPIC-021: Issue #24 Replay Throughput Root Cause Under the CbC Harness
 
 ```yaml
@@ -471,6 +730,7 @@ status: in_progress
 priority: p0
 user_story: null
 issues: [24]
+closed_out_by: "EPIC-027 (2026-10-13). This epic keeps its measurement and fix history. Its open tasks, TASK-021-13 first, are inputs to EPIC-027."
 blocked_by: []
 created_at: 2026-10-03
 updated_at: 2026-10-06
@@ -842,6 +1102,34 @@ tasks:
       - "A 24-hour soak shows a test_load failure rate lower than soak 37640235959 on the same base."
     candidate_fix_empty_heartbeat_blocks: "If the soak shows that the heartbeat lane builds many empty blocks in the failing phases, suppress empty heartbeat blocks while user deploys are pending or finality advances. This changes proposer behavior and the liveness mechanism that the discharged heartbeat proposal amplification bound claim covers, so it needs its own pending claim, a TDD plan, and evidence that finality still advances without deploys."
     candidate_fix_api_lfb: "If the measurement implicates the API path, bond_status and exploratory_deploy read the stored LFB (dag.last_finalized_block) instead of computing it. This changes cbc=mandatory casper code, so it needs a pending claim and a TDD cycle first, with a test that two overlapping LFB requests apply the finalization effect once for each block."
+  - id: TASK-021-14
+    title: "Run subprocess soak nodes on the jemalloc build of the image (allocator parity)"
+    status: review
+    claimed_by: claude-session-dfac55a4
+    claimed_at: 2026-10-13T16:00:00Z
+    branch: hotfix/subprocess-allocator-parity
+    pr_base_branch: master
+    blocked_by: []
+    origin: "Soak 38300649650 segment 2 (master e5a0531a6): 28 of 86 iterations failed test_load, all on the subprocess provider (28 of 42), none on Docker (0 of 43). The subprocess checkpoint and trie-apply stages were 3 to 23 times slower. The Docker entrypoint preloads jemalloc, and the subprocess binary runs on glibc malloc (issue #24 comment 6148770562)."
+    change: "The merge-recovery-soak workflow extracts the jemalloc library of the image with the binary and starts subprocess nodes through a wrapper that preloads it. The step fails when the wrapper does not run the node on jemalloc."
+    acceptance:
+      - "The Extract subprocess binary step reports the jemalloc version of the image."
+      - "In the sustained phase, the subprocess replay checkpoint and apply_trie_actions times are near the Docker values (about 270 ms and 13 ms)."
+      - "The test_load failure rate meets the issue #24 gate (at most 5 in 100 sessions) on each provider."
+      - "Subprocess node RSS stays inside the soak envelope."
+  - id: TASK-021-15
+    title: "Link jemalloc into the node binary as its global allocator"
+    status: pending
+    claimed_by: null
+    pr_base_branch: dev
+    blocked_by: [TASK-021-14]
+    notes:
+      - "Start only if TASK-021-14 shows that the allocator causes the subprocess slowdown."
+    acceptance:
+      - "The node uses jemalloc on every launch path, so the Docker entrypoint and the soak wrapper no longer need LD_PRELOAD."
+      - "The arm64 build sets a page size that works on 64 KiB page hosts, and the Dockerfile cross-compile builds the allocator."
+      - "cargo deny passes with the new dependency."
+      - "The issue #244 memory ceiling (TASK-012-25) is measured before and after the change."
 ---
 ```
 
@@ -1906,6 +2194,11 @@ tasks:
     unit_tests: [scripts/casper-soak/tests/authority_finality.rs]
     completion_gaps: []
     completed_date: 2026-09-19
+    notes:
+      - "2026-10-13, branch fix/authority-finality-timeout-flake: the timeout test asserted a 5 s bound on the whole execute_fixture call. That call also copies and hashes the debug test binary."
+      - "A loaded GitHub runner exceeded the 5 s bound in run 38480514170. The bound is now TIMEOUT_TEST_BOUND (15 s), half of the 30 s fixture sleep."
+      - "The test fails if the profile waits for the stuck executor or kills it 15 s or more after the start. The executor_deadline assertion still proves that the 200 ms deadline caused the stop."
+      - "The change does not alter the acceptance items or CLAIM-CASPER-SOAK-002. The suite still reports 12 passed and 1 ignored."
   - id: TASK-017-6
     title: "Verify publication and restart fault profiles and observations"
     claims: [CLAIM-CASPER-SOAK-003]
@@ -4096,6 +4389,7 @@ EPIC-010 / EPIC-012 / EPIC-015 / EPIC-016 ─> EPIC-017 shared evidence and fixt
 EPIC-017 handoff + PR #216 merged into dev ─> EPIC-018 post-merge formal harness PR
 EPIC-020 (node log and accept-path limits, complete 2026-10-06) ─> merged to dev before PR #447
 EPIC-017 harness + PR #441 stage metrics ─> EPIC-021 (issue #24 root cause, fix/issue-24 -> dev)
+EPIC-021 evidence + EPIC-025 boundary (PR #651) ─> EPIC-027 (issue #24 close-out, perf/issue-24-adaptive-execution -> dev)
 EPIC-019 (node observation, PR #447 -> dev) ─> EPIC-017 TASK-017-12 node prerequisite (soak branch)
 EPIC-011 (TLA exhaustive baseline, complete) ─> EPIC-012 / TASK-012-22
 EPIC-012 (open-issue PR queue)              (all other lanes start independently)
