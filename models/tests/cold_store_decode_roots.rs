@@ -9,9 +9,13 @@
 //! the same bytes, not with the original value, because some encoders
 //! normalize their input.
 //!
-//! In P2a the roots still decode through `legacy_prefix`, so these tests pin
-//! the interface and the record extent. In P2b they become the differential
-//! of the explicit-stack machine against the derived decoder.
+//! Since P2b the roots decode through the explicit-stack machine
+//! (`record_decoder.rs`), so these tests are its differential against the
+//! derived decoder on random terms. The `PartialEq` of the `rhoapi` types
+//! skips `locally_free`, so every comparison also compares the `Debug` text.
+//! The random terms come from `record_corpus::random_par`, because the
+//! workspace generator `generate_par` gives only empty collections on this
+//! branch (see `record_corpus/mod.rs`).
 
 use std::fmt::Debug;
 
@@ -22,11 +26,13 @@ use models::rhoapi::{
     BindPattern, CostAuthority, CostSignature, CostStack, ListParWithRandom, Par, ParWithRandom,
     TaggedContinuation, Var,
 };
-use models::rust::test_utils::test_utils::generate_par;
 use proptest::prelude::*;
 use rspace_plus_plus::rspace::serializers::cold_store_decode::ColdStoreDecode;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
+
+mod record_corpus;
+use record_corpus::random_par;
 
 const TRAILING: [u8; 3] = [0xA5, 0x00, 0xFF];
 
@@ -47,6 +53,7 @@ where T: ColdStoreDecode + Serialize + DeserializeOwned + PartialEq + Debug {
         "the boundary consumes the whole encoding"
     );
     assert_eq!(decoded, oracle);
+    assert_eq!(format!("{decoded:?}"), format!("{oracle:?}"));
 
     let mut padded = bytes.clone();
     padded.extend_from_slice(&TRAILING);
@@ -54,6 +61,7 @@ where T: ColdStoreDecode + Serialize + DeserializeOwned + PartialEq + Debug {
         T::cold_decode_prefix(&padded).expect("the boundary accepts trailing bytes");
     assert_eq!(consumed, bytes.len(), "trailing bytes are not consumed");
     assert_eq!(decoded, oracle);
+    assert_eq!(format!("{decoded:?}"), format!("{oracle:?}"));
 
     for end in 0..bytes.len() {
         assert_eq!(
@@ -72,7 +80,14 @@ where T: ColdStoreDecode + Serialize + DeserializeOwned + PartialEq + Debug {
             T::cold_decode(&flipped),
             bincode::deserialize::<T>(&flipped),
         ) {
-            (Ok(decoded), Ok(oracle)) => assert_eq!(decoded, oracle, "a flip at byte {position}"),
+            (Ok(decoded), Ok(oracle)) => {
+                assert_eq!(decoded, oracle, "a flip at byte {position}");
+                assert_eq!(
+                    format!("{decoded:?}"),
+                    format!("{oracle:?}"),
+                    "a flip at byte {position}"
+                );
+            }
             (Err(_), Err(_)) => {}
             (decoded, oracle) => panic!(
                 "a flip at byte {position}: the boundary gives {:?}, the derived decoder {:?}",
@@ -143,8 +158,8 @@ proptest! {
 
     #[test]
     fn generated_roots_decode_as_the_derived_decoder_reads_them(
-        par in generate_par(3),
-        other in generate_par(2),
+        par in random_par(2),
+        other in random_par(2),
     ) {
         agree(&par);
         agree(&list_par_with_random(vec![par.clone(), other.clone()]));
