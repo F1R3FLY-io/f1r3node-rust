@@ -1,6 +1,6 @@
 # F1r3fly CbC Casper Test Net Design (EPIC-014)
 
-- **Status:** Draft for review, 2026-10-06. Updated 2026-10-11 with candidate selection, the first shard, the soaking slot queue, the resolved questions, and the consensus model provisions
+- **Status:** Draft for review, 2026-10-06. Updated 2026-10-11 with candidate selection, the first shard, the soaking slot queue, the resolved questions, and the consensus model provisions. Updated 2026-10-15 with the F1r3Faucet test token faucet (Section 12.4)
 - **Task:** TASK-014-1 in `docs/ToDos.md`
 - **User story:** US-010 in `docs/UserStories.md`
 - **Governing text:** `docs/release-process.md` Section 12 and the proposed Section 12.1 amendment, Section 12.2, and the Section 10 candidate selection (pending ratification as TASK-014-5)
@@ -202,6 +202,7 @@ The promotion controller checks this document as it checks other gate documents.
 - The deploy workflow uses short-lived credentials from the `release-credentials` environment.
 - TASK-014-4 opens read-only observer endpoints to partners. Partners never receive validator access.
 - **First partner access (decided 2026-10-11):** Partners get read-only access to the gRPC and HTTP API of the observer on the main shard. They reach no validator, no Prometheus, and no SSH. Partners see mixed-release behavior, including the soaking candidate.
+- **Faucet (added 2026-10-15):** The F1r3Faucet wallet key lives in OCI Vault. The faucet is the only client that gets a deploy path. Partners get test tokens through the faucet, not through deploy access (Section 12.4).
 
 ## 11. Cost
 
@@ -247,6 +248,20 @@ Notes for each model:
 - **Cordial Miners** uses a blocklace and needs no Reliable Broadcast. A miner set can take the place of the validator set. The Anchor criteria must measure τ-order progress instead of last-finalized-block lag.
 - **RGB** runs as a peer-clique sidecar. It anchors to Bitcoin single-use seals and to Lightning, and validation is client-side. An RGB test net therefore needs a Bitcoin test network and Lightning nodes beside the peer clique. Its design record defines what "mixed-release shard" and "Anchor" mean for a peer clique. RGB follows the same release process as the other models (decided 2026-10-11).
 
+### 12.4 Test tokens: F1r3Faucet (added 2026-10-15)
+
+Developers and partners get test tokens from [F1r3Faucet](https://github.com/F1R3FLY-io/F1r3Faucet). One faucet and website serve every test net. Each consensus or SMR model plugs in through one adapter, so a new model adds an adapter and changes no other adapter. TASK-014-10 tracks the work.
+
+The faucet code lives in F1r3Faucet. Each test net supplies these items:
+
+1. **Genesis funding:** The genesis of each shard funds a faucet wallet. A running shard cannot add a genesis balance, so a new shard with a fresh genesis (Section 6) funds its own faucet wallet. The test net uses its own wallets file. The compose files must not mount the shared development file `docker/genesis/wallets.txt`.
+2. **Shard registry:** The test net publishes each live shard with its consensus model, genesis, status, and observer endpoints. The faucet reads this registry and hard-codes no shard. A retired shard leaves the registry.
+3. **Deploy path:** The faucet submits transfer deploys. Partners get read-only observer access only (Section 10), so operators expose a deploy endpoint to the faucet alone. Section 13.2 keeps this endpoint open.
+4. **Key custody:** The faucet wallet key lives in OCI Vault, as the validator keys do (Section 10).
+5. **Operation:** The faucet runs on OCI beside the test net. An alert fires when a faucet wallet balance drops below a threshold. Rate limits bound the tokens for each address and each client.
+
+Each model's design record defines how the faucet funds an address on that model: the address format, the funding transfer, and the receipt. The CbC Casper adapter funds a REV address with a transfer deploy. RGB uses client-side validation, so its design record defines its own funding flow.
+
 ## 13. Questions
 
 ### 13.1 Resolved (2026-10-11)
@@ -260,6 +275,7 @@ Notes for each model:
 
 1. Which partners get access first, and when does a partner need deploy access?
 2. Does one f1r3node release that carries more than one consensus model soak in the test net of each model before stable promotion?
+3. Which endpoint accepts the F1r3Faucet deploys (Section 12.4)? The candidates are a validator API that only the faucet can reach and a separate deploy-enabled observer.
 
 ## 14. Implementation state
 

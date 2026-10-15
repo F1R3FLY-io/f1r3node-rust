@@ -78,6 +78,7 @@ This document captures user stories that drive feature development. User stories
 - [ ] The Shard soak-in result publishes gate evidence, and stable promotion holds until that gate passes.
 - [ ] A failed deployment removes the soaking nodes, keeps the Anchors running, and reports the failure.
 - [ ] The deploy job runs only from protected refs with the release-credentials environment.
+- [ ] Developers and partners get test tokens for each test net shard from [F1r3Faucet](https://github.com/F1R3FLY-io/F1r3Faucet). The genesis of each shard funds a faucet wallet, and the faucet finds shards through a registry that the test net publishes (TASK-014-10).
 
 ---
 
