@@ -73,7 +73,8 @@ async fn run_once(forks: usize, iters: usize) -> u128 {
         &mut Vec::new(),
         ExternalServices::noop(),
     )
-    .await;
+    .await
+    .expect("create runtime failed");
 
     let term = par_contract(forks, iters);
     let rand = Blake2b512Random::create_from_length(128);

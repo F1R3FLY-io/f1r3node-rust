@@ -50,7 +50,8 @@ where
         Arc::new(Box::new(Matcher)),
         external_services,
     )
-    .await;
+    .await
+    .unwrap();
 
     f(runtime).await;
 }

@@ -680,3 +680,62 @@ async fn streaming_to_empty_peer_list_should_succeed() {
     assert_eq!(received.len(), 0);
     assert!(result.result.is_ok());
 }
+
+#[tokio::test]
+async fn handshake_from_another_chain_is_refused_before_it_is_acknowledged() {
+    init_logger();
+
+    let our_chain = Bytes::from_static(b"genesis-of-this-chain");
+    let runtime =
+        TransportLayerTestRuntime::new("test".to_string()).with_server_chain_id(our_chain.clone());
+    let protocol_dispatcher = TestProtocolDispatcher::new();
+
+    let result = runtime
+        .run_two_nodes_test(
+            |transport, local, remote| async move {
+                let handshake = |chain_id: Bytes| {
+                    comm::rust::rp::protocol_helper::protocol_handshake(&local, "test", chain_id)
+                };
+                (
+                    transport
+                        .send(
+                            &remote,
+                            &handshake(Bytes::from_static(b"genesis-of-old-chain")),
+                        )
+                        .await,
+                    transport.send(&remote, &handshake(our_chain)).await,
+                    transport.send(&remote, &handshake(Bytes::new())).await,
+                )
+            },
+            Some(protocol_dispatcher.clone()),
+            None,
+            false,
+        )
+        .await
+        .expect("Test should succeed");
+
+    let (foreign, same, unnamed) = result.result;
+    assert!(
+        matches!(
+            foreign,
+            Err(comm::rust::errors::CommError::WrongChainId(..))
+        ),
+        "a handshake from another chain must fail at the sender, got {:?}",
+        foreign
+    );
+    assert!(
+        same.is_ok(),
+        "a handshake from this chain must pass: {:?}",
+        same
+    );
+    assert!(
+        unnamed.is_ok(),
+        "a handshake that names no chain is a pull and must pass: {:?}",
+        unnamed
+    );
+    assert_eq!(
+        protocol_dispatcher.received().len(),
+        2,
+        "the refused handshake must not reach the message handler"
+    );
+}

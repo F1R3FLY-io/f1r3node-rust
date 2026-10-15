@@ -560,7 +560,7 @@ mod tests {
 
         let mut rx = fixture.block_processing_queue_rx.lock().await;
         let mut enqueued = 0usize;
-        while let Ok((_, block)) = rx.try_recv() {
+        while let Ok((_, block, _)) = rx.try_recv() {
             if block.block_hash == signed_block.block_hash {
                 enqueued += 1;
             }
@@ -718,6 +718,71 @@ mod tests {
             1,
             "a within-cap request is answered even when no entry is cached"
         );
+    }
+
+    #[tokio::test]
+    async fn store_items_request_outside_the_page_bounds_is_ignored() {
+        use casper::rust::engine::lfs_tuple_space_requester::PAGE_SIZE;
+        use casper::rust::engine::running::STORE_ITEMS_REQUEST_MAX_PAGE;
+        use models::rust::casper::protocol::casper_message::StoreItemsMessageRequest;
+        use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+
+        let fixture = TestFixture::new().await;
+        let root = Blake2b256Hash::from_bytes_prost(&fixture.genesis.body.state.post_state_hash);
+        let request = |skip: i32, take: i32| {
+            CasperMessage::StoreItemsMessageRequest(StoreItemsMessageRequest {
+                start_path: vec![(root.clone(), None)],
+                skip,
+                take,
+            })
+        };
+
+        fixture
+            .engine
+            .handle(fixture.local.clone(), request(0, PAGE_SIZE))
+            .await
+            .unwrap();
+        assert_eq!(
+            fixture.transport_layer.request_count(),
+            1,
+            "an honest page request is answered"
+        );
+        let sent = fixture.transport_layer.pop_request().unwrap();
+        let Some(ProtocolMessage::Packet(packet)) = sent.msg.message else {
+            panic!("Expected a packet");
+        };
+        let proto = casper::rust::protocol::to_casper_message_proto(&packet)
+            .get()
+            .unwrap();
+        match casper::rust::protocol::casper_message_from_proto(proto).unwrap() {
+            CasperMessage::StoreItemsMessage(items) => assert!(
+                !items.history_items.is_empty(),
+                "the answer carries the exported trie page"
+            ),
+            other => panic!("Expected StoreItemsMessage, got {other:?}"),
+        }
+
+        let over = STORE_ITEMS_REQUEST_MAX_PAGE + 1;
+        for (skip, take) in [
+            (0, 0),
+            (5, 0),
+            (0, -1),
+            (0, over),
+            (0, i32::MAX),
+            (-1, PAGE_SIZE),
+            (over, PAGE_SIZE),
+        ] {
+            fixture
+                .engine
+                .handle(fixture.local.clone(), request(skip, take))
+                .await
+                .unwrap();
+            assert_eq!(
+                fixture.transport_layer.request_count(),
+                0,
+                "skip={skip} take={take} must not become a trie export or a response"
+            );
+        }
     }
 
     #[tokio::test]

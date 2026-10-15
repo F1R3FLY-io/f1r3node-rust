@@ -10,14 +10,11 @@
 // rejection should occur. Without the fix, one bridge gets rejected and
 // this test fails — that is the observable repro.
 //
-// Note on bridge `findOrCreate` regression: the bridge-v2.rho fixture in
-// this branch also includes a `SystemVault.findOrCreate(bridgeVaultAddr)`
-// call at bridge init time. That fix is required for the integration-level
-// `test_multi_block_state_evolution` test to pass — without it, transfers
-// to the bridge's vault have their `_deposit` send orphaned. This unit test
-// does not directly exercise the lock flow (constructing a lock deploy and
-// reading its deployId-channel response in TestNode is finicky); the
-// integration test owns that regression guard.
+// Bridge fixture invariant: bridge-v2.rho calls
+// `SystemVault.findOrCreate(bridgeVaultAddr)` at init. Without that call,
+// transfers to the bridge's vault have their `_deposit` send orphaned. This
+// test covers merge behavior only; the lock flow is covered by the
+// integration test `test_multi_block_state_evolution`.
 //
 // Diagnostic mode: run with `RUST_LOG=f1r3fly.merge.tag_check=trace` to
 // observe whether `is_mergeable_channel` ever returns `Some(BitmaskOr)`
@@ -86,63 +83,55 @@ async fn two_concurrent_bridges_should_merge_without_rejection() {
     let shard_id = ctx.genesis.genesis_block.shard_id.clone();
 
     // Two distinct bridge deploys signed by different genesis-funded keys.
-    // Different timestamps avoid signature-collision edge cases.
+    // Each deploy gets its own timestamp, so no two deploys are byte-identical.
     // Bridge deploys need a large phlo budget — they register 3 contracts via
     // insertArbitrary (each is a TreeHashMap insert) plus call findOrCreate
-    // for the bridge's own vault. The integration test uses 500M; we match.
-    let bridge1_deploy = {
-        tokio::time::sleep(tokio::time::Duration::from_millis(1)).await;
-        construct_deploy::source_deploy_now_full(
-            bridge_rho.clone(),
-            Some(500_000_000),
+    // for the bridge's own vault. Genesis funds each deployer with 9M, so the
+    // limit must stay below that or payment fails before the contract runs.
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as i64;
+    let deploy = |source: String, phlo_limit: i64, sec, offset: i64| {
+        construct_deploy::source_deploy(
+            source,
+            now + offset,
+            Some(phlo_limit),
             None,
-            Some(construct_deploy::DEFAULT_SEC.clone()),
+            Some(sec),
             None,
             Some(shard_id.clone()),
         )
         .unwrap()
     };
-    let bridge2_deploy = {
-        tokio::time::sleep(tokio::time::Duration::from_millis(1)).await;
-        construct_deploy::source_deploy_now_full(
-            bridge_rho.clone(),
-            Some(500_000_000),
-            None,
-            Some(construct_deploy::DEFAULT_SEC2.clone()),
-            None,
-            Some(shard_id.clone()),
-        )
-        .unwrap()
-    };
+    let bridge1_deploy = deploy(
+        bridge_rho.clone(),
+        5_000_000,
+        construct_deploy::DEFAULT_SEC.clone(),
+        0,
+    );
+    let bridge2_deploy = deploy(
+        bridge_rho.clone(),
+        5_000_000,
+        construct_deploy::DEFAULT_SEC2.clone(),
+        1,
+    );
     // Trigger deploy for the merge block. Without this, block_creator returns
     // NoNewDeploys and the multi-parent merge path doesn't fire.
-    let trigger_deploy = {
-        tokio::time::sleep(tokio::time::Duration::from_millis(1)).await;
-        construct_deploy::source_deploy_now_full(
-            "Nil".to_string(),
-            None,
-            None,
-            Some(construct_deploy::DEFAULT_SEC.clone()),
-            None,
-            Some(shard_id.clone()),
-        )
-        .unwrap()
-    };
-
+    let trigger_deploy = deploy(
+        "Nil".to_string(),
+        1_000_000,
+        construct_deploy::DEFAULT_SEC.clone(),
+        2,
+    );
     // Third sibling deploy so all three validators have a sibling block,
     // ensuring fork choice on the merge proposer multi-parents over them.
-    let bridge3_deploy = {
-        tokio::time::sleep(tokio::time::Duration::from_millis(1)).await;
-        construct_deploy::source_deploy_now_full(
-            "Nil".to_string(),
-            None,
-            None,
-            Some(construct_deploy::DEFAULT_SEC2.clone()),
-            None,
-            Some(shard_id.clone()),
-        )
-        .unwrap()
-    };
+    let nil_sibling_deploy = deploy(
+        "Nil".to_string(),
+        1_000_000,
+        construct_deploy::DEFAULT_SEC2.clone(),
+        3,
+    );
 
     let bridge1_sig = bridge1_deploy.sig.clone();
     let bridge2_sig = bridge2_deploy.sig.clone();
@@ -158,9 +147,22 @@ async fn two_concurrent_bridges_should_merge_without_rejection() {
         .await
         .expect("validator 1 propose bridge2");
     let block3 = nodes[2]
-        .add_block_from_deploys(std::slice::from_ref(&bridge3_deploy))
+        .add_block_from_deploys(std::slice::from_ref(&nil_sibling_deploy))
         .await
         .expect("validator 2 propose third sibling");
+
+    for block in [&block1, &block2] {
+        assert!(
+            block.body.deploys.iter().all(|deploy| !deploy.is_failed),
+            "a bridge deploy failed: {:?}",
+            block
+                .body
+                .deploys
+                .iter()
+                .map(|deploy| deploy.system_deploy_error.clone())
+                .collect::<Vec<_>>()
+        );
+    }
 
     eprintln!(
         "PHASE 1 siblings: block1={} (bridge1), block2={} (bridge2), block3={} (third)",
@@ -172,25 +174,9 @@ async fn two_concurrent_bridges_should_merge_without_rejection() {
     // Phase 2: full pairwise sync so every node has both sibling blocks
     // in its DAG. After this, validators[2]'s next proposal will multi-parent
     // over both.
-    for sender_idx in 0..3 {
-        for receiver_idx in 0..3 {
-            if sender_idx == receiver_idx {
-                continue;
-            }
-            let (first_idx, second_idx) = if sender_idx < receiver_idx {
-                (sender_idx, receiver_idx)
-            } else {
-                (receiver_idx, sender_idx)
-            };
-            let (left, right) = nodes.split_at_mut(second_idx);
-            let first = &mut left[first_idx];
-            let second = &mut right[0];
-            first
-                .sync_with_one(second)
-                .await
-                .expect("sync first → second");
-        }
-    }
+    TestNode::sync_all(&mut nodes)
+        .await
+        .expect("full pairwise sync");
 
     // Phase 3: validators[0] proposes a follow-up block. With its own sibling
     // and both peers' siblings visible, fork choice picks all three as
@@ -247,18 +233,4 @@ async fn two_concurrent_bridges_should_merge_without_rejection() {
         bridge1_rejected,
         bridge2_rejected,
     );
-
-    // The bridge `findOrCreate` fix (bridge-v2.rho calls findOrCreate on its
-    // own vault address at init) is exercised at integration level — see
-    // `integration-tests/test/tests/shared/test_contract_lifecycle.py::
-    // test_multi_block_state_evolution`. That test calls bridge.lock and
-    // verifies the response chain completes (deployId is populated).
-    //
-    // A code-level equivalent that constructs a lock deploy and reads its
-    // deployId data via `runtime_manager.get_data` was attempted but the
-    // in-process TestNode's per-deploy data lookups don't expose deployId
-    // data the way live gRPC `getDataAtName` does. Rather than fight that,
-    // we let the integration test guard the lock-flow regression and keep
-    // this code-level test scoped to merge behavior, which is what the
-    // multi-node TestNode infrastructure is best at.
 }

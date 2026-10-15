@@ -73,7 +73,7 @@ jobs:
   # base-repo context. Per-push here spent six VMs a push; the ci-heavy label is
   # the opt-in, and applying it needs write access.
   pipeline:
-    name: Heavy Pipeline
+    name: Integration Pipeline
     if: >-
       github.event.pull_request.head.repo.fork == true
       && contains(github.event.pull_request.labels.*.name, 'ci-heavy')
@@ -89,13 +89,14 @@ jobs:
     # which checks out only the pinned system-integration SHA and never fork code.
     secrets: inherit
 
-  # Per-arch aggregators. The branch ruleset requires status checks named
-  # exactly `Integration Tests (amd64)` / `(arm64)`. These collapse the reusable
+  # Per-arch aggregators. Until step 2 of TASK-023-4 the branch ruleset requires
+  # the names `Integration Tests (amd64)` / `(arm64)`, which the temporary jobs
+  # below carry. These collapse the reusable
   # pipeline's per-arch matrix jobs into one ruleset gate per arch. They use
   # `contains(...)` (not `startswith`) because reusable-workflow job names are
-  # prefixed with the caller job id ("Heavy Pipeline / Integration Tests (...)").
+  # prefixed with the caller job name ("Integration Pipeline / Integration Tests (...)").
   integration_tests_amd64:
-    name: Integration Tests (amd64)
+    name: Integration Gate (amd64)
     needs: pipeline
     if: always() && github.event.pull_request.head.repo.fork == true
     runs-on: ubuntu-latest
@@ -109,7 +110,7 @@ jobs:
         shell: bash -e {0}
         run: |
           if [ "${{ needs.pipeline.result }}" = "failure" ] || [ "${{ needs.pipeline.result }}" = "cancelled" ]; then
-            echo "Heavy Pipeline did not succeed (result: ${{ needs.pipeline.result }}); failing gate."
+            echo "Integration Pipeline did not succeed (result: ${{ needs.pipeline.result }}); failing gate."
             exit 1
           fi
           if [ "${{ needs.pipeline.result }}" = "skipped" ]; then
@@ -129,7 +130,7 @@ jobs:
           echo "All amd64 integration test slots succeeded"
 
   integration_tests_arm64:
-    name: Integration Tests (arm64)
+    name: Integration Gate (arm64)
     needs: pipeline
     if: always() && github.event.pull_request.head.repo.fork == true
     runs-on: ubuntu-latest
@@ -143,7 +144,7 @@ jobs:
         shell: bash -e {0}
         run: |
           if [ "${{ needs.pipeline.result }}" = "failure" ] || [ "${{ needs.pipeline.result }}" = "cancelled" ]; then
-            echo "Heavy Pipeline did not succeed (result: ${{ needs.pipeline.result }}); failing gate."
+            echo "Integration Pipeline did not succeed (result: ${{ needs.pipeline.result }}); failing gate."
             exit 1
           fi
           if [ "${{ needs.pipeline.result }}" = "skipped" ]; then
@@ -161,3 +162,36 @@ jobs:
             exit 1
           fi
           echo "All arm64 integration test slots succeeded"
+
+  # Temporary: the rulesets require the names below. Each job reports the result
+  # of the renamed gate it needs and runs no check of its own. Step 2 of
+  # TASK-023-4 points the rulesets at the new names and removes them.
+  integration_tests_amd64_legacy_name:
+    name: Integration Tests (amd64)
+    needs: integration_tests_amd64
+    if: always() && github.event.pull_request.head.repo.fork == true
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Require Integration Gate (amd64)
+        env:
+          GATE: ${{ needs.integration_tests_amd64.result }}
+        run: |
+          echo "Integration Gate (amd64): $GATE"
+          [ "$GATE" = success ]
+
+  integration_tests_arm64_legacy_name:
+    name: Integration Tests (arm64)
+    needs: integration_tests_arm64
+    if: always() && github.event.pull_request.head.repo.fork == true
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Require Integration Gate (arm64)
+        env:
+          GATE: ${{ needs.integration_tests_arm64.result }}
+        run: |
+          echo "Integration Gate (arm64): $GATE"
+          [ "$GATE" = success ]

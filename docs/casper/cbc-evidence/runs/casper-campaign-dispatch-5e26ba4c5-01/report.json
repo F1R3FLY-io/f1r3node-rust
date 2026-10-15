@@ -1,0 +1,77 @@
+{
+  "schema_version": 1,
+  "task": "TASK-017-12",
+  "scope": "manual-campaign-dispatch-fixtures",
+  "status": "blocked-before-execution",
+  "base_revision": "5e26ba4c545ff8dafcf9ca9b20767703fa96f437",
+  "working_tree": true,
+  "observed_at": "2026-09-20T07:02:07Z",
+  "evidence_kind": "synthetic_fixture",
+  "source_manifest": {
+    "path": "sources.sha256",
+    "sha256": "c40507e52ee2069318680ed453bf8e19b5eef1b3193a6053674134949a0a70c4"
+  },
+  "bulk_evidence": "target/task-017-12/manual-dispatch-continuation-5e26ba4c5-01",
+  "native": {
+    "checks": 115,
+    "exit_code": 0
+  },
+  "isolated": {
+    "checks": 115,
+    "exit_code": 0,
+    "image": "sha256:8c72e1eafa838e6416db7b585af3119b9154863165e20a1c3a324eb5f896bca5",
+    "platform": "linux/arm64",
+    "network": "none",
+    "memory_bytes": 536870912,
+    "cpus": 2,
+    "pids_limit": 128,
+    "uid": 65534,
+    "timeout_seconds": 550,
+    "container_removed": true
+  },
+  "retained_failures": [
+    {
+      "case": "missing_test_source",
+      "expected_exit": 2,
+      "observed_exit": 0,
+      "suite_exit": 1
+    },
+    {
+      "case": "initial_isolated_timeout",
+      "process_exit": 124,
+      "wrapper_exit": 1,
+      "timeout_seconds": 120,
+      "container_removed": true
+    }
+  ],
+  "actionlint": {
+    "version": "1.7.12",
+    "exit_code": 0,
+    "shellcheck": false,
+    "pyflakes": false
+  },
+  "prior_run_verification": {
+    "transport": "mock-gh",
+    "live_api_qualification": false,
+    "baseline_candidates": [
+      "dev-amd64",
+      "dev-arm64"
+    ],
+    "stability_prior_records": 3,
+    "consistent_records_still_block_dispatch": true
+  },
+  "campaign_execution_implemented": false,
+  "live_adapters_qualified": false,
+  "launch_reservations_implemented": false,
+  "instance_lifetime_enforcement_implemented": false,
+  "workflow_dispatch_count": 0,
+  "cloud_launch_count": 0,
+  "node_launch_count": 0,
+  "soak_verdict": "non_passing",
+  "task_complete": false,
+  "claim_discharge": "pending",
+  "proof_execution": false,
+  "hosted_verification": false,
+  "recovery_qualification": "requires_actual_pr216_merge",
+  "stability_resource_decision": "required"
+}

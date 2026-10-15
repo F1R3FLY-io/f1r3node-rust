@@ -59,6 +59,17 @@ pub trait TransportLayer {
 
     async fn broadcast(&self, peers: &[PeerNode], msg: &Protocol) -> Result<(), CommError>;
 
+    /// Broadcast, and also return the peers that refused the message because
+    /// this node is on another chain. The default calls `broadcast` and reports
+    /// no refusals; a transport that sees per-peer results overrides it.
+    async fn broadcast_reporting_refusals(
+        &self,
+        peers: &[PeerNode],
+        msg: &Protocol,
+    ) -> (Result<(), CommError>, Vec<PeerNode>) {
+        (self.broadcast(peers, msg).await, Vec::new())
+    }
+
     async fn stream(&self, peer: &PeerNode, blob: &Blob) -> Result<(), CommError>;
 
     async fn stream_mult(&self, peers: &[PeerNode], blob: &Blob) -> Result<(), CommError>;
@@ -144,25 +155,26 @@ pub trait TransportLayer {
             conf.chain_id.to_wire(),
             message,
         );
-        let results =
-            futures::future::join_all(peers.iter().map(|peer| self.send(peer, &protocol_msg)))
-                .await;
+        let (result, refused) = self
+            .broadcast_reporting_refusals(&peers, &protocol_msg)
+            .await;
 
-        for (peer, result) in peers.iter().zip(&results) {
-            if let Err(error @ CommError::WrongChainId(..)) = result {
-                warn!("Disconnecting from {}: {}", peer, error);
-                let _ = connections_cell.flat_modify(|connections| {
-                    if connections.iter().any(|known| known.id.key == peer.id.key) {
-                        connections.remove_conn_and_report(peer.clone())
-                    } else {
-                        Ok(connections)
-                    }
-                });
-                let _ = self.disconnect(peer).await;
-            }
+        // A connected peer that refuses us as a node of another chain will
+        // refuse every later message too, so drop the connection now rather
+        // than wait for the heartbeat cleanup to reach it.
+        for peer in &refused {
+            warn!("Disconnecting from {}: it is on another chain", peer);
+            let _ = connections_cell.flat_modify(|connections| {
+                if connections.iter().any(|known| known.id.key == peer.id.key) {
+                    connections.remove_conn_and_report(peer.clone())
+                } else {
+                    Ok(connections)
+                }
+            });
+            let _ = self.disconnect(peer).await;
         }
 
-        best_effort("broadcast", &peers, results)
+        result
     }
 
     async fn stream_packet_to_peers(
@@ -360,7 +372,7 @@ mod tests {
     use super::*;
     use crate::rust::peer_node::{Endpoint, NodeIdentifier};
     use crate::rust::rp::connect::Connections;
-    use crate::rust::test_instances::{create_rp_conf_ask, TransportLayerStub};
+    use crate::rust::test_instances::create_rp_conf_ask;
 
     fn peer(name: &str) -> PeerNode {
         PeerNode {
@@ -371,30 +383,59 @@ mod tests {
         }
     }
 
+    /// Test-only transport: every peer receives the broadcast except "foreign",
+    /// which is reported as refusing this node's chain.
+    struct RefusingTransport {
+        disconnected: std::sync::Mutex<Vec<PeerNode>>,
+    }
+
+    #[async_trait]
+    impl TransportLayer for RefusingTransport {
+        async fn send(&self, _peer: &PeerNode, _msg: &Protocol) -> Result<(), CommError> { Ok(()) }
+
+        async fn broadcast(&self, _peers: &[PeerNode], _msg: &Protocol) -> Result<(), CommError> {
+            Ok(())
+        }
+
+        async fn broadcast_reporting_refusals(
+            &self,
+            peers: &[PeerNode],
+            _msg: &Protocol,
+        ) -> (Result<(), CommError>, Vec<PeerNode>) {
+            let refused = peers
+                .iter()
+                .filter(|candidate| **candidate == peer("foreign"))
+                .cloned()
+                .collect();
+            (Ok(()), refused)
+        }
+
+        async fn stream(&self, _peer: &PeerNode, _blob: &Blob) -> Result<(), CommError> { Ok(()) }
+
+        async fn stream_mult(&self, _peers: &[PeerNode], _blob: &Blob) -> Result<(), CommError> {
+            Ok(())
+        }
+
+        async fn disconnect(&self, peer: &PeerNode) -> Result<(), CommError> {
+            self.disconnected.lock().unwrap().push(peer.clone());
+            Ok(())
+        }
+
+        async fn get_channeled_peers(
+            &self,
+        ) -> Result<std::collections::HashSet<PeerNode>, CommError> {
+            Ok(std::collections::HashSet::new())
+        }
+    }
+
     #[tokio::test]
     async fn broadcast_drops_a_connected_peer_that_refuses_our_chain() {
         let cell = ConnectionsCell::new();
-        cell.flat_modify(|_| {
-            Ok(Connections::from_vec(vec![
-                peer("foreign"),
-                peer("slow"),
-                peer("good"),
-            ]))
-        })
-        .unwrap();
-        let transport = TransportLayerStub::new();
-        transport.set_responses(|remote, _| {
-            if remote.id.key == peer("foreign").id.key {
-                Err(CommError::WrongChainId(
-                    "foreign".to_string(),
-                    "other chain".to_string(),
-                ))
-            } else if remote.id.key == peer("slow").id.key {
-                Err(CommError::TimeOut)
-            } else {
-                Ok(())
-            }
-        });
+        cell.flat_modify(|_| Ok(Connections::from_vec(vec![peer("foreign"), peer("good")])))
+            .unwrap();
+        let transport = RefusingTransport {
+            disconnected: std::sync::Mutex::new(Vec::new()),
+        };
         let conf = create_rp_conf_ask(peer("local"), None, None);
         let packet = Packet {
             type_id: "BlockHashMessage".to_string(),
@@ -406,8 +447,7 @@ mod tests {
             .await
             .unwrap();
 
-        let mut left = cell.read().unwrap().into_vec();
-        left.sort_by(|a, b| a.id.key.cmp(&b.id.key));
-        assert_eq!(left, vec![peer("good"), peer("slow")]);
+        assert_eq!(cell.read().unwrap().into_vec(), vec![peer("good")]);
+        assert_eq!(*transport.disconnected.lock().unwrap(), vec![peer("foreign")]);
     }
 }

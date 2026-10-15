@@ -1,0 +1,79 @@
+{
+  "schema_version": 1,
+  "status": "accepted-bounded-profile-bindings",
+  "claim_ids": [
+    "CLAIM-CASPER-SOAK-002",
+    "CLAIM-CASPER-SOAK-003",
+    "CLAIM-CASPER-SOAK-004"
+  ],
+  "claim_discharge": "discharged",
+  "phase": "pre_pr216_merge",
+  "scope": "bounded-controlled-transcript-profiles",
+  "approval": {
+    "confirmation": "yes - I authorized acceptance",
+    "scope": "claims-002-003-004-and-their-three-workflow-tags"
+  },
+  "review": {
+    "ref": "docs/casper/cbc-evidence/runs/casper-profile-binding-review-20260919-01/report.json",
+    "sha256": "b4b2cedccde429e4f07adff9d9ce5f4c7c729114b696bfae5574bdb65a470c57"
+  },
+  "source_digests": {
+    "formal/tlaplus/casper_soak/profiles/authority_finality/AuthorityFinality.tla": "3a10b0683796a16feaa7fb90df679c5338e1f01bf5fcc5bffca44cce41633e43",
+    "formal/tlaplus/casper_soak/profiles/authority_finality/MC_AuthorityFinality.cfg": "b667ec0af8708b150743719d18a6667b2faa5906fc4b1a6f21591e68812746b8",
+    "formal/tlaplus/casper_soak/profiles/authority_finality/MC_AuthorityFinality_finality_unsafe.cfg": "3bf95d421574c52be7e5f6c1088750f1b8005bf04678c149502ec88790decda3",
+    "formal/tlaplus/casper_soak/profiles/authority_finality/MC_AuthorityFinality_head_unsafe.cfg": "e14750f03bde5483e91b03a1f0af7389b4d3d5a69a0370cb94741ea8b2c0a145",
+    "formal/tlaplus/casper_soak/profiles/authority_finality/MC_AuthorityFinality_pair_unsafe.cfg": "9e191e33d284747e20a309c5a62f73244e1dd54ee8d062de676886dcb392d594",
+    "formal/tlaplus/casper_soak/profiles/authority_finality/README.md": "3ac84f95a33760072d7a622e0409b1ce0a043e6c082aeaac80260ae49833f634",
+    "formal/tlaplus/casper_soak/profiles/authority_finality/verification-plan.jsonc": "0caee1e328f2f1e2c29da9cff7e6185e2d1a36767247853dcd45eab4355ab345",
+    "formal/tlaplus/casper_soak/profiles/publication/MC_Publication.cfg": "7b46739bfcf7672c272ee1f60a3de9d3dc15bdf5fb6d2fc40410739a0bd1eca9",
+    "formal/tlaplus/casper_soak/profiles/publication/MC_Publication_fault_unsafe.cfg": "23fb485a1e05a87d00fb729b3eb7218b8827806483bea035c6d09f15efb8734d",
+    "formal/tlaplus/casper_soak/profiles/publication/MC_Publication_restart_unsafe.cfg": "2704be696f8201d2d3d923c656fb84f0c1f7f788fd86d830273c2bd61aa61b22",
+    "formal/tlaplus/casper_soak/profiles/publication/MC_Publication_tuple_unsafe.cfg": "3962256d6702962ae564601e9286413423344ae481e029897266ae61c8122c8f",
+    "formal/tlaplus/casper_soak/profiles/publication/Publication.tla": "4b51f9c8aee88ac6526b686edfb2a985fb6e6de0230639ca81567eda9543f287",
+    "formal/tlaplus/casper_soak/profiles/publication/README.md": "4ce28907d9dc19e64627ce01cccb05d726d2e268513fe28861bef4547bf03cd0",
+    "formal/tlaplus/casper_soak/profiles/publication/verification-plan.jsonc": "2eb8b4faa67a7e511d0d71da35edf45f61419816a9ec14c4d9ec80bbd2b44799",
+    "formal/tlaplus/casper_soak/profiles/recovery/MC_Recovery.cfg": "2da0ff4b0aff2b575d7f54ca0e66f540ea7075d1140aea696b7bbc3063c2357b",
+    "formal/tlaplus/casper_soak/profiles/recovery/MC_Recovery_lane_unsafe.cfg": "cb7b66f4f6adb05337dca4cdcd9dd0c3859e5b9c69e216ea63fd81f9d9f85f32",
+    "formal/tlaplus/casper_soak/profiles/recovery/MC_Recovery_occurrence_unsafe.cfg": "9d12e5541c2fa5c5c61801a85d450551878e405965bdc8ae73a36f5d6c652ecd",
+    "formal/tlaplus/casper_soak/profiles/recovery/MC_Recovery_pause_unsafe.cfg": "70f4d44af041ac34135d9c821531ff73dd89ab6939e48b7765295dadbaf6bf42",
+    "formal/tlaplus/casper_soak/profiles/recovery/README.md": "439580f28b3e6790752f526d7df80276cd393c08c4c90a9c46cf9ddee8d782a6",
+    "formal/tlaplus/casper_soak/profiles/recovery/Recovery.tla": "d030a4ede0f47c1ebd2e3b5a93433c14d22924ef98b5a0ea0a84e9fd306d659d",
+    "formal/tlaplus/casper_soak/profiles/recovery/verification-plan.jsonc": "260d29691f609bd3b968a316271843db60e5a163d412b8376ca4bef73e47596f",
+    ".github/workflows/casper-authority-finality.yml": "db9a1044cb693690f66975ff45d7954ab10b4469d353d156fe5bc402e6746721",
+    ".github/workflows/casper-publication.yml": "91c25c33c997588985913a9fc511b9b35b79f0e1a03abf733c0c5aac53f20421",
+    ".github/workflows/casper-recovery.yml": "2745a031e27a851a9503874be3a8932d55f74bc61acfab6b6fab2fe1a7e5dc5d",
+    "scripts/casper-soak/check-authority-finality.sh": "f91835e3c2901e7f5f58e881415e70494639f45ddd324d112c8add20354f367b",
+    "scripts/casper-soak/check-publication.sh": "fc5bd24c875020a5d29e490619a8179a5680fadc514297b7fefd3cc31e8dd794",
+    "scripts/casper-soak/check-recovery.sh": "1784eb2d09dbf6a2cc0996aee84952107ead4c7f17e6ce571ebd65464ba032e2",
+    "scripts/casper-soak/src/bin/casper-authority-finality.rs": "93caa3d4c8909d8c8befe4ec3a1b551ca470d75fe39bf14ba7a45100310d1718",
+    "scripts/casper-soak/src/bin/casper-publication.rs": "2f0e7767e52c0d9decdf1572ddfb38ae41849088aadeed643e7d6ec9b02fb687",
+    "scripts/casper-soak/src/bin/casper-recovery.rs": "636bd7304910cda4dc400a1903f168ee324171574c7f7f9a7269332c75125d65",
+    "scripts/casper-soak/src/profiles/authority_finality.rs": "18a1a18cebe632dc5f87483784e08a00c11f3870116f3a3b54766bbf68c45e47",
+    "scripts/casper-soak/src/profiles/publication.rs": "7cde33e0be93a9b4a655e4053adcad01ef7e3f755cf4afea0d0c3ab36eaa7aee",
+    "scripts/casper-soak/src/profiles/recovery.rs": "9bfa28120b773ac9e55b181d6f4d5c9f40e7b06ef5f86d5c5c41055d57b1e84e",
+    "scripts/casper-soak/tests/authority_finality.rs": "a9c67d88729fa43ebef6b65ce112d223752f35d4395b702139dc19cd71e8f2c8",
+    "scripts/casper-soak/tests/publication.rs": "033832d9ed69e1eb61322d50addea5af831455bb5c4394c23c47991f5c17d3aa",
+    "scripts/casper-soak/tests/recovery.rs": "2e388804a7edbdbdb7ac3e68705810ce14b79e7b925afd6d46cb6520b1bad6bf"
+  },
+  "claim_digests": {
+    "docs/claims/casper-soak-authority-finality.md": "1af422a0628c37ffab2150b98701c954a2875bf77df4eb9f3e69ff56d23feff2",
+    "docs/claims/casper-soak-publication.md": "f49995b85ec66fe5da179efeadef28559eaec3df2a55fa69479c7688492b00db",
+    "docs/claims/casper-soak-recovery.md": "057e4cfe06c19ac3ae7d61a15568fe6c72a8e0083f4737215fdf749cde4c5afe"
+  },
+  "tiers": {
+    "refutation": "bounded-safety-pass",
+    "construction": "not-applicable",
+    "binding": "passed"
+  },
+  "observed_head": "490d21093a751b902ad4856b3bcadbf3f4af3069",
+  "verified_at": "2026-09-19T03:05:12Z",
+  "workflow_tags": "ratified-and-applied",
+  "lifecycle_claim_001": "outside-this-acceptance",
+  "d07_interpretation": "unresolved",
+  "live_adapters": "unqualified",
+  "post_merge_execution": "blocked",
+  "node_execution": false,
+  "policy_activation": false,
+  "soak": "pending",
+  "waiver": null
+}

@@ -83,7 +83,18 @@ pub async fn trace_handler(
         .await
     {
         Ok(block_event_info) => {
-            let serde_data = BlockEventInfoSerde::from(block_event_info);
+            let serde_data = match BlockEventInfoSerde::try_from(block_event_info) {
+                Ok(data) => data,
+                Err(error) => {
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(ReportResponse::BlockReportError {
+                            error_message: error.to_string(),
+                        }),
+                    )
+                        .into_response();
+                }
+            };
             Json(ReportResponse::BlockTracesReport {
                 report: serde_json::to_value(&serde_data).unwrap_or(Value::Null),
             })
@@ -96,6 +107,7 @@ pub async fn trace_handler(
                 // Pruned pre-state does not come back, so this is terminal for
                 // the block rather than something to retry.
                 BlockReportError::StateUnavailable(_) => StatusCode::GONE,
+                BlockReportError::Busy => StatusCode::SERVICE_UNAVAILABLE,
                 BlockReportError::CasperNotInitialized => StatusCode::INTERNAL_SERVER_ERROR,
                 BlockReportError::ReplayFailed(_) => StatusCode::INTERNAL_SERVER_ERROR,
                 BlockReportError::PostStateMismatch { .. } => StatusCode::INTERNAL_SERVER_ERROR,

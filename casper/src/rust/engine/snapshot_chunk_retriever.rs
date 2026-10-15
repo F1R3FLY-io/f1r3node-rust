@@ -1,0 +1,765 @@
+// Phase 7b-1 SnapshotChunkRetriever.
+//
+// Consumer-side counterpart of `SnapshotChunkResponse`.  Tracks
+// which `(block_hash, chunk_index)` pairs a joining validator
+// still needs; validates each incoming chunk against the
+// anchored Merkle root (from
+// `RuntimeManager.snapshot_merkle_roots`, yet-to-land); returns
+// verified chunk bytes ready for assembly into the reconstructed
+// snapshot.
+//
+// Mirrors the shape of `BlockRetriever` at
+// `casper/src/rust/engine/block_retriever.rs` but scoped to the
+// per-chunk problem: a snapshot is many chunks, each fetched
+// independently, each verified independently.  Under partial
+// success (M of N chunks arrive, one is byzantine) we accept
+// the M and re-request the failing index without discarding
+// progress.
+//
+// # Layers of separation
+//
+// This module deliberately does NOT touch the comm layer
+// directly.  It exposes:
+//
+//   * `ChunkRequestState` per pending chunk — peers tried, last
+//     request timestamp, retry count.
+//   * [`SnapshotChunkRetriever::admit_response`] — the
+//     verification + accept path.  Returns [`AdmitOutcome`]
+//     describing what to do next (deliver bytes, retry chunk,
+//     ignore).
+//
+// The comm-layer glue (peer selection, wire send, timeout
+// ticker) lives in a yet-to-land follow-up slice; this module
+// is testable in isolation with no network.
+
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+use models::rust::casper::protocol::casper_message::SnapshotChunkResponse;
+use rholang::rust::interpreter::io::snapshot_chunk::{
+    verify_chunk_hash, verify_merkle_proof, MerkleProof, SnapshotChunk,
+};
+use tokio::sync::RwLock;
+use tracing::debug;
+
+/// Per-chunk request state.  One entry per
+/// `(block_hash, chunk_index)` pair the joiner is trying to
+/// fetch.
+#[derive(Debug, Clone)]
+pub struct ChunkRequestState {
+    /// Which chunk this is (`0..chunk_count`).
+    pub chunk_index: u32,
+    /// Unix timestamp (ms) of the last outbound request for this
+    /// chunk.  Zero if never requested (fresh entry).
+    pub last_request_ms: u64,
+    /// Unix timestamp (ms) of the FIRST outbound request.  Used
+    /// for stale-eviction: an entry idle for too long gets
+    /// dropped.
+    pub initial_request_ms: u64,
+    /// Peers we've asked so far.  Used to rotate through peers
+    /// on retry rather than re-asking the same node.  Represented
+    /// as opaque `Vec<u8>` peer identifiers (matches
+    /// `BlockRetriever`'s `HashSet<PeerNode>`; kept as bytes here
+    /// to avoid pulling in comm types).
+    pub peers_tried: Vec<Vec<u8>>,
+    /// Number of retry attempts across peers.  Increments on
+    /// each timeout without a valid response.  Retriever gives
+    /// up after [`MAX_RETRIES`] and the caller marks the request
+    /// Failed (not represented in this slice — Failed-state
+    /// tracking lives in the comm-layer glue).
+    pub retry_count: u32,
+    /// Verified chunk bytes, or `None` while pending.
+    pub bytes: Option<Vec<u8>>,
+}
+
+/// Max retry attempts across peers per chunk before giving up.
+pub const MAX_RETRIES: u32 = 5;
+/// Per-request timeout (ms) before the retriever marks the
+/// request stale and admits a retry.
+pub const REQUEST_TIMEOUT_MS: u64 = 30_000;
+/// Idle time (ms) before a never-admitted retriever entry gets
+/// evicted by the caller.  Not enforced inside this module;
+/// callers consult `initial_request_ms` + this constant.
+pub const STALE_EVICTION_MS: u64 = 300_000;
+
+/// Security cap: max acceptable size for `chunk_bytes` in a
+/// [`SnapshotChunkResponse`].  A well-formed chunk is
+/// `CHUNK_SIZE = 4 MiB` for all-but-final chunks and shorter
+/// for the tail.  An oversized `chunk_bytes` from a byzantine
+/// peer would otherwise force us to hash arbitrary bytes before
+/// the merkle-proof check catches it — a per-response CPU
+/// exhaustion vector.  Rejected with
+/// [`AdmitOutcome::ChunkHashMismatch`] so the sender is
+/// blacklisted at the sync-driver layer.
+pub const MAX_CHUNK_BYTES: usize = 4 * 1024 * 1024; // == CHUNK_SIZE
+
+/// Security cap: max merkle-proof depth accepted from a peer.
+/// A well-formed proof for a snapshot of N chunks has depth
+/// `ceil(log2(N)) ≤ 32` for `chunk_count: u32`; anything beyond
+/// that is either malformed or a proof-length DoS attempt.  Pad
+/// to 40 for safety.  Rejected with
+/// [`AdmitOutcome::MerkleProofInvalid`].
+pub const MAX_MERKLE_PROOF_STEPS: usize = 40;
+
+/// Snapshot's expected shape as announced by peers.  Populated
+/// from a `HasSnapshotResponse` OR from local
+/// `snapshot_merkle_roots` lookup.  The joiner pins the
+/// snapshot's `merkle_root` + chunk count up front so every
+/// incoming chunk verifies against a known target.
+#[derive(Debug, Clone)]
+pub struct SnapshotTarget {
+    pub block_hash: Vec<u8>,
+    pub merkle_root: [u8; 32],
+    pub chunk_count: u32,
+}
+
+/// Outcome of [`SnapshotChunkRetriever::admit_response`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AdmitOutcome {
+    /// The chunk verified and its bytes are now available.
+    /// Caller can hand them to the snapshot assembler.
+    ChunkAccepted,
+    /// The `(block_hash, chunk_index)` key has no matching
+    /// request — the response is unsolicited or belongs to a
+    /// different snapshot.  Drop it silently (log at debug).
+    UnknownRequest,
+    /// The response's `block_hash` does not match this
+    /// retriever's active target.  Caller should route to the
+    /// correct retriever if multi-target fetching is in play.
+    WrongTarget,
+    /// The response's `merkle_root` disagrees with the anchored
+    /// target.  Peer is byzantine or lied about which snapshot
+    /// it has.  Caller should re-request from a different peer
+    /// and log.
+    MerkleRootMismatch,
+    /// The `chunk_hash` doesn't match
+    /// `Blake2b256(chunk_bytes)`.  Peer's response is malformed.
+    ChunkHashMismatch,
+    /// The Merkle inclusion proof doesn't verify against the
+    /// anchored root.  Peer sent a chunk that isn't in this
+    /// snapshot.
+    MerkleProofInvalid,
+    /// The `chunk_count` doesn't match the anchored target's
+    /// count.  Peer lied about the shape.
+    ChunkCountMismatch,
+}
+
+/// Per-snapshot retriever state.  One instance per snapshot the
+/// joiner is fetching in parallel (typically 1-2 concurrently
+/// during initial sync).
+#[derive(Debug, Clone)]
+pub struct SnapshotChunkRetriever {
+    /// The snapshot being fetched.
+    pub target: SnapshotTarget,
+    /// Per-chunk request state, keyed by `chunk_index`.
+    pub chunks: Arc<RwLock<HashMap<u32, ChunkRequestState>>>,
+}
+
+impl SnapshotChunkRetriever {
+    pub fn new(target: SnapshotTarget) -> Self {
+        let mut chunks = HashMap::with_capacity(target.chunk_count as usize);
+        for i in 0..target.chunk_count {
+            chunks.insert(i, ChunkRequestState {
+                chunk_index: i,
+                last_request_ms: 0,
+                initial_request_ms: 0,
+                peers_tried: Vec::new(),
+                retry_count: 0,
+                bytes: None,
+            });
+        }
+        Self {
+            target,
+            chunks: Arc::new(RwLock::new(chunks)),
+        }
+    }
+
+    /// Number of chunks still needed (pending or in-flight, not
+    /// yet verified).
+    pub async fn pending_count(&self) -> usize {
+        let g = self.chunks.read().await;
+        g.values().filter(|c| c.bytes.is_none()).count()
+    }
+
+    /// True iff every chunk has been received + verified.
+    pub async fn is_complete(&self) -> bool { self.pending_count().await == 0 }
+
+    /// Enumerate chunk indices that still need to be fetched.
+    /// Ordered ascending for deterministic peer request patterns.
+    pub async fn pending_indices(&self) -> Vec<u32> {
+        let g = self.chunks.read().await;
+        let mut out: Vec<u32> = g
+            .values()
+            .filter(|c| c.bytes.is_none())
+            .map(|c| c.chunk_index)
+            .collect();
+        out.sort();
+        out
+    }
+
+    /// Assemble the verified chunk bytes into the reconstructed
+    /// snapshot.  Returns `None` if not yet complete.  Chunks
+    /// are concatenated in index order.
+    pub async fn assemble(&self) -> Option<Vec<u8>> {
+        let g = self.chunks.read().await;
+        let mut out = Vec::new();
+        for i in 0..self.target.chunk_count {
+            let entry = g.get(&i)?;
+            let bytes = entry.bytes.as_ref()?;
+            out.extend_from_slice(bytes);
+        }
+        Some(out)
+    }
+
+    /// Ingest a [`SnapshotChunkResponse`].  Verifies, in order
+    /// (cheap → expensive):
+    ///
+    ///   0. `chunk_index` is tracked (map lookup via read
+    ///      guard) — rejects byzantine floods for untracked
+    ///      indices with [`AdmitOutcome::UnknownRequest`]
+    ///      BEFORE any caps or hashing.
+    ///   1. [`MAX_CHUNK_BYTES`] / [`MAX_MERKLE_PROOF_STEPS`]
+    ///      security caps.
+    ///   2. `block_hash` matches this retriever's target.
+    ///   3. `chunk_count` matches this retriever's target.
+    ///   4. `merkle_root` matches this retriever's target.
+    ///   5. `chunk_hash == hash_leaf(chunk_bytes)` (domain-
+    ///      tagged via [`verify_chunk_hash`]).
+    ///   6. Merkle inclusion proof verifies against target root.
+    ///
+    /// On success, stores the verified bytes and returns
+    /// [`AdmitOutcome::ChunkAccepted`].  On failure, returns the
+    /// specific mismatch variant so the caller can log + retry
+    /// appropriately.
+    ///
+    /// # Cheap-first ordering
+    ///
+    /// Step 0 (`UnknownRequest`) + step 1 (security caps) run
+    /// BEFORE any hashing — the latter two are O(1) constant-
+    /// time; the former is O(1) HashMap lookup under a read
+    /// guard.  Byzantine peers flooding well-formed-but-
+    /// untracked responses, oversized payloads, or oversized
+    /// proofs are rejected without consuming CPU on hashing or
+    /// proof-walking.
+    pub async fn admit_response(&self, response: &SnapshotChunkResponse) -> AdmitOutcome {
+        // Early-exit: unknown chunk_index.  Checked BEFORE
+        // security caps + hashing to close a CPU-exhaustion
+        // vector where a byzantine peer floods well-formed
+        // responses for indices this joiner doesn't track.
+        // The caps would otherwise pass (bytes ≤ 4 MiB, proof
+        // ≤ 40 steps) and burn CPU on hashing + proof
+        // verification before the final map lookup discovered
+        // the chunk isn't ours.  Read-only check — the write
+        // guard is only taken at the final store step.
+        {
+            let g = self.chunks.read().await;
+            if !g.contains_key(&response.chunk_index) {
+                return AdmitOutcome::UnknownRequest;
+            }
+        }
+        if response.chunk_bytes.len() > MAX_CHUNK_BYTES {
+            debug!(
+                target: "f1r3fly.casper.snapshot_chunk_retriever",
+                chunk_bytes_len = response.chunk_bytes.len(),
+                cap = MAX_CHUNK_BYTES,
+                "chunk_bytes exceeds MAX_CHUNK_BYTES; rejecting"
+            );
+            return AdmitOutcome::ChunkHashMismatch;
+        }
+        if response.merkle_proof.len() > MAX_MERKLE_PROOF_STEPS {
+            debug!(
+                target: "f1r3fly.casper.snapshot_chunk_retriever",
+                proof_len = response.merkle_proof.len(),
+                cap = MAX_MERKLE_PROOF_STEPS,
+                "merkle_proof exceeds MAX_MERKLE_PROOF_STEPS; rejecting"
+            );
+            return AdmitOutcome::MerkleProofInvalid;
+        }
+        if response.block_hash.as_ref() != self.target.block_hash.as_slice() {
+            return AdmitOutcome::WrongTarget;
+        }
+        if response.chunk_count != self.target.chunk_count {
+            return AdmitOutcome::ChunkCountMismatch;
+        }
+        let anchored_root: [u8; 32] = self.target.merkle_root;
+        let response_root = match slice_to_hash(&response.merkle_root) {
+            Some(h) => h,
+            None => return AdmitOutcome::MerkleRootMismatch,
+        };
+        if response_root != anchored_root {
+            return AdmitOutcome::MerkleRootMismatch;
+        }
+        // Chunk-hash self-consistency: `hash_leaf(bytes)` must
+        // equal the response's chunk_hash (domain-tagged via
+        // `verify_chunk_hash`, matching the server's chunking
+        // scheme — raw `Blake2b256(bytes)` would NOT match).
+        // Defends against a peer that swaps bytes but forgets
+        // to update the hash (or vice versa).
+        let claimed_hash = match slice_to_hash(&response.chunk_hash) {
+            Some(h) => h,
+            None => return AdmitOutcome::ChunkHashMismatch,
+        };
+        let synthetic = SnapshotChunk {
+            index: response.chunk_index,
+            bytes: response.chunk_bytes.to_vec(),
+            hash: claimed_hash,
+        };
+        if !verify_chunk_hash(&synthetic) {
+            return AdmitOutcome::ChunkHashMismatch;
+        }
+        // Merkle inclusion: the chunk_hash at chunk_index must
+        // participate in the tree rooted at anchored_root.
+        let siblings: Vec<([u8; 32], bool)> = response
+            .merkle_proof
+            .iter()
+            .filter_map(|step| {
+                slice_to_hash(&step.sibling_hash).map(|h| (h, step.is_sibling_right))
+            })
+            .collect();
+        if siblings.len() != response.merkle_proof.len() {
+            return AdmitOutcome::MerkleProofInvalid;
+        }
+        let proof = MerkleProof {
+            index: response.chunk_index,
+            siblings,
+        };
+        if !verify_merkle_proof(&anchored_root, &claimed_hash, &proof) {
+            return AdmitOutcome::MerkleProofInvalid;
+        }
+        // All checks pass — accept the chunk.
+        let mut g = self.chunks.write().await;
+        match g.get_mut(&response.chunk_index) {
+            Some(state) => {
+                if state.bytes.is_some() {
+                    // Duplicate arrival for a chunk we already
+                    // verified.  Idempotent: drop silently.
+                    debug!(
+                        target: "f1r3fly.casper.snapshot_chunk_retriever",
+                        chunk_index = response.chunk_index,
+                        "duplicate response for already-accepted chunk"
+                    );
+                    return AdmitOutcome::ChunkAccepted;
+                }
+                state.bytes = Some(response.chunk_bytes.to_vec());
+                AdmitOutcome::ChunkAccepted
+            }
+            None => AdmitOutcome::UnknownRequest,
+        }
+    }
+
+    /// Mark a chunk request as sent — updates timestamps + peer
+    /// tracking.  Called by the outbound-request pipeline.
+    pub async fn record_request_sent(&self, chunk_index: u32, peer_id: &[u8]) {
+        let now = now_ms();
+        let mut g = self.chunks.write().await;
+        if let Some(state) = g.get_mut(&chunk_index) {
+            if state.initial_request_ms == 0 {
+                state.initial_request_ms = now;
+            }
+            state.last_request_ms = now;
+            if !state.peers_tried.iter().any(|p| p == peer_id) {
+                state.peers_tried.push(peer_id.to_vec());
+            }
+        }
+    }
+
+    /// Enumerate chunks whose last request has timed out AND
+    /// still have retries left.  The caller should re-issue
+    /// requests for these to alternative peers.
+    pub async fn timed_out_indices(&self) -> Vec<u32> {
+        let now = now_ms();
+        let g = self.chunks.read().await;
+        g.values()
+            .filter(|c| {
+                c.bytes.is_none()
+                    && c.last_request_ms > 0
+                    && now.saturating_sub(c.last_request_ms) >= REQUEST_TIMEOUT_MS
+                    && c.retry_count < MAX_RETRIES
+            })
+            .map(|c| c.chunk_index)
+            .collect()
+    }
+
+    /// Increment the retry count for a chunk (called after
+    /// requeuing it to a new peer).
+    pub async fn record_retry(&self, chunk_index: u32) {
+        let mut g = self.chunks.write().await;
+        if let Some(state) = g.get_mut(&chunk_index) {
+            state.retry_count += 1;
+        }
+    }
+}
+
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or(Duration::from_secs(0))
+        .as_millis() as u64
+}
+
+fn slice_to_hash(slice: &[u8]) -> Option<[u8; 32]> {
+    if slice.len() != 32 {
+        return None;
+    }
+    let mut out = [0u8; 32];
+    out.copy_from_slice(slice);
+    Some(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use models::rust::casper::protocol::casper_message::MerkleProofStep;
+    use prost::bytes::Bytes;
+    use rholang::rust::interpreter::io::snapshot_chunk::{
+        build_merkle_proof, chunk_snapshot, snapshot_merkle_root, CHUNK_SIZE,
+    };
+
+    use super::*;
+
+    /// Fixture: build a small multi-chunk snapshot and produce a
+    /// well-formed `SnapshotChunkResponse` for `chunk_index`.
+    fn make_target_and_response(
+        block_hash: &[u8],
+        payload_size: usize,
+        chunk_index: u32,
+    ) -> (SnapshotTarget, SnapshotChunkResponse) {
+        let bytes: Vec<u8> = (0..payload_size).map(|i| (i % 251) as u8).collect();
+        let chunks = chunk_snapshot(&bytes);
+        let hashes: Vec<[u8; 32]> = chunks.iter().map(|c| c.hash).collect();
+        let merkle_root = snapshot_merkle_root(&hashes);
+        let target = SnapshotTarget {
+            block_hash: block_hash.to_vec(),
+            merkle_root,
+            chunk_count: chunks.len() as u32,
+        };
+        let proof = build_merkle_proof(&hashes, chunk_index).expect("proof");
+        let chunk = &chunks[chunk_index as usize];
+        let response = SnapshotChunkResponse {
+            block_hash: Bytes::copy_from_slice(block_hash),
+            chunk_index,
+            chunk_bytes: Bytes::copy_from_slice(&chunk.bytes),
+            chunk_hash: Bytes::copy_from_slice(&chunk.hash),
+            merkle_root: Bytes::copy_from_slice(&merkle_root),
+            chunk_count: chunks.len() as u32,
+            merkle_proof: proof
+                .siblings
+                .into_iter()
+                .map(|(sibling_hash, is_sibling_right)| MerkleProofStep {
+                    sibling_hash: Bytes::copy_from_slice(&sibling_hash),
+                    is_sibling_right,
+                })
+                .collect(),
+        };
+        (target, response)
+    }
+
+    #[tokio::test]
+    async fn accepts_valid_chunk_response() {
+        let (target, response) = make_target_and_response(&[0x99; 32], CHUNK_SIZE + 100, 0);
+        let retriever = SnapshotChunkRetriever::new(target);
+        assert_eq!(retriever.pending_count().await, 2);
+        let outcome = retriever.admit_response(&response).await;
+        assert_eq!(outcome, AdmitOutcome::ChunkAccepted);
+        assert_eq!(retriever.pending_count().await, 1);
+    }
+
+    #[tokio::test]
+    async fn rejects_wrong_block_hash() {
+        let (target, mut response) = make_target_and_response(&[0x11; 32], CHUNK_SIZE + 100, 0);
+        response.block_hash = Bytes::from_static(&[0x22; 32]);
+        let retriever = SnapshotChunkRetriever::new(target);
+        assert_eq!(
+            retriever.admit_response(&response).await,
+            AdmitOutcome::WrongTarget
+        );
+    }
+
+    #[tokio::test]
+    async fn rejects_wrong_merkle_root() {
+        let (target, mut response) = make_target_and_response(&[0x33; 32], CHUNK_SIZE + 100, 0);
+        response.merkle_root = Bytes::from_static(&[0xEE; 32]);
+        let retriever = SnapshotChunkRetriever::new(target);
+        assert_eq!(
+            retriever.admit_response(&response).await,
+            AdmitOutcome::MerkleRootMismatch
+        );
+    }
+
+    #[tokio::test]
+    async fn rejects_tampered_chunk_bytes() {
+        let (target, mut response) = make_target_and_response(&[0x44; 32], CHUNK_SIZE + 100, 0);
+        // Flip a byte in the payload.  chunk_hash still claims
+        // the original, so the self-consistency check catches it.
+        let mut b = response.chunk_bytes.to_vec();
+        b[0] ^= 0x01;
+        response.chunk_bytes = Bytes::from(b);
+        let retriever = SnapshotChunkRetriever::new(target);
+        assert_eq!(
+            retriever.admit_response(&response).await,
+            AdmitOutcome::ChunkHashMismatch
+        );
+    }
+
+    #[tokio::test]
+    async fn rejects_bogus_merkle_proof() {
+        let (target, mut response) = make_target_and_response(&[0x55; 32], CHUNK_SIZE + 100, 0);
+        // Corrupt the first step's sibling hash.
+        if let Some(step) = response.merkle_proof.first_mut() {
+            step.sibling_hash = Bytes::from_static(&[0xFF; 32]);
+        }
+        let retriever = SnapshotChunkRetriever::new(target);
+        assert_eq!(
+            retriever.admit_response(&response).await,
+            AdmitOutcome::MerkleProofInvalid
+        );
+    }
+
+    #[tokio::test]
+    async fn rejects_wrong_chunk_count() {
+        let (target, mut response) = make_target_and_response(&[0x66; 32], CHUNK_SIZE + 100, 0);
+        response.chunk_count += 1;
+        let retriever = SnapshotChunkRetriever::new(target);
+        assert_eq!(
+            retriever.admit_response(&response).await,
+            AdmitOutcome::ChunkCountMismatch
+        );
+    }
+
+    #[tokio::test]
+    async fn assemble_returns_none_until_complete() {
+        let (target, response) = make_target_and_response(&[0x77; 32], CHUNK_SIZE + 100, 0);
+        let retriever = SnapshotChunkRetriever::new(target);
+        assert!(retriever.assemble().await.is_none());
+        retriever.admit_response(&response).await;
+        assert!(retriever.assemble().await.is_none()); // still 1 pending
+    }
+
+    #[tokio::test]
+    async fn assemble_returns_full_bytes_when_complete() {
+        // Two-chunk fixture.  Admit both chunks, then assemble.
+        let block_hash = [0x88u8; 32];
+        let payload_size = CHUNK_SIZE + 100;
+        let bytes: Vec<u8> = (0..payload_size).map(|i| (i % 251) as u8).collect();
+        let (target, r0) = make_target_and_response(&block_hash, payload_size, 0);
+        let (_, r1) = make_target_and_response(&block_hash, payload_size, 1);
+        let retriever = SnapshotChunkRetriever::new(target);
+        retriever.admit_response(&r0).await;
+        retriever.admit_response(&r1).await;
+        assert!(retriever.is_complete().await);
+        let assembled = retriever.assemble().await.expect("complete → Some");
+        assert_eq!(assembled, bytes);
+    }
+
+    #[tokio::test]
+    async fn duplicate_response_for_accepted_chunk_is_idempotent() {
+        let (target, response) = make_target_and_response(&[0x99; 32], CHUNK_SIZE + 100, 0);
+        let retriever = SnapshotChunkRetriever::new(target);
+        assert_eq!(
+            retriever.admit_response(&response).await,
+            AdmitOutcome::ChunkAccepted
+        );
+        // Second admission of the same response.
+        assert_eq!(
+            retriever.admit_response(&response).await,
+            AdmitOutcome::ChunkAccepted
+        );
+        assert_eq!(retriever.pending_count().await, 1);
+    }
+
+    #[tokio::test]
+    async fn record_request_sent_tracks_peers_and_timestamps() {
+        let (target, _r) = make_target_and_response(&[0xAA; 32], CHUNK_SIZE + 100, 0);
+        let retriever = SnapshotChunkRetriever::new(target);
+        retriever.record_request_sent(0, b"peer-alice").await;
+        retriever.record_request_sent(0, b"peer-bob").await;
+        // Duplicate peer add is a no-op.
+        retriever.record_request_sent(0, b"peer-alice").await;
+        let g = retriever.chunks.read().await;
+        let state = g.get(&0).unwrap();
+        assert_eq!(state.peers_tried.len(), 2);
+        assert!(state.last_request_ms > 0);
+        assert!(state.initial_request_ms > 0);
+    }
+
+    /// LOAD-BEARING security cap: a `chunk_bytes` payload larger
+    /// than [`MAX_CHUNK_BYTES`] is rejected before we do any
+    /// hashing.  Defends against a per-response CPU-exhaustion
+    /// attack.
+    #[tokio::test]
+    async fn rejects_oversized_chunk_bytes_before_hashing() {
+        let (target, mut response) = make_target_and_response(&[0xC1; 32], CHUNK_SIZE + 100, 0);
+        // Blow past the cap by a byte.
+        response.chunk_bytes = Bytes::from(vec![0u8; MAX_CHUNK_BYTES + 1]);
+        let retriever = SnapshotChunkRetriever::new(target);
+        assert_eq!(
+            retriever.admit_response(&response).await,
+            AdmitOutcome::ChunkHashMismatch,
+            "oversized chunk_bytes must be rejected before hashing",
+        );
+    }
+
+    /// LOAD-BEARING security cap: a `merkle_proof` deeper than
+    /// [`MAX_MERKLE_PROOF_STEPS`] is rejected before we run any
+    /// hash verification.  Defends against a proof-length-DoS
+    /// attack.
+    #[tokio::test]
+    async fn rejects_oversized_merkle_proof_before_verification() {
+        let (target, mut response) = make_target_and_response(&[0xC2; 32], CHUNK_SIZE + 100, 0);
+        // Pad the proof past the cap with garbage siblings.
+        // These would be expensive to verify if the cap check
+        // were absent.
+        for _ in 0..(MAX_MERKLE_PROOF_STEPS + 5) {
+            response.merkle_proof.push(MerkleProofStep {
+                sibling_hash: Bytes::from_static(&[0u8; 32]),
+                is_sibling_right: false,
+            });
+        }
+        let retriever = SnapshotChunkRetriever::new(target);
+        assert_eq!(
+            retriever.admit_response(&response).await,
+            AdmitOutcome::MerkleProofInvalid,
+            "oversized merkle_proof must be rejected before verification",
+        );
+    }
+
+    #[tokio::test]
+    async fn pending_indices_are_sorted_ascending() {
+        let (target, r0) = make_target_and_response(&[0xBB; 32], CHUNK_SIZE * 3 + 500, 0);
+        assert_eq!(target.chunk_count, 4);
+        let retriever = SnapshotChunkRetriever::new(target);
+        assert_eq!(retriever.pending_indices().await, vec![0, 1, 2, 3]);
+        retriever.admit_response(&r0).await;
+        assert_eq!(retriever.pending_indices().await, vec![1, 2, 3]);
+    }
+
+    /// LOAD-BEARING CPU-exhaustion defense: a well-formed
+    /// response with a chunk_index the retriever doesn't track
+    /// is rejected via the EARLY-exit UnknownRequest check,
+    /// BEFORE the security caps and hashing fire.  A byzantine
+    /// peer flooding well-formed-but-untracked responses can't
+    /// burn CPU on verification.
+    #[tokio::test]
+    async fn unknown_chunk_index_rejects_before_hashing() {
+        let (target, mut response) = make_target_and_response(&[0xD0; 32], CHUNK_SIZE + 100, 0);
+        // Response claims an out-of-range chunk_index.
+        response.chunk_index = target.chunk_count + 7;
+        let retriever = SnapshotChunkRetriever::new(target);
+        assert_eq!(
+            retriever.admit_response(&response).await,
+            AdmitOutcome::UnknownRequest,
+            "untracked chunk_index must return UnknownRequest",
+        );
+    }
+
+    /// LOAD-BEARING: UnknownRequest check runs BEFORE the
+    /// security caps so a byzantine over-sized payload with an
+    /// untracked index doesn't bypass the early-exit.  Pins the
+    /// ordering explicitly.
+    #[tokio::test]
+    async fn unknown_chunk_index_wins_over_oversized_bytes() {
+        let (target, mut response) = make_target_and_response(&[0xD1; 32], CHUNK_SIZE + 100, 0);
+        response.chunk_index = target.chunk_count + 1;
+        response.chunk_bytes = Bytes::from(vec![0u8; MAX_CHUNK_BYTES + 1]);
+        let retriever = SnapshotChunkRetriever::new(target);
+        assert_eq!(
+            retriever.admit_response(&response).await,
+            AdmitOutcome::UnknownRequest,
+            "UnknownRequest must fire before ChunkHashMismatch for oversized payload",
+        );
+    }
+
+    /// `record_retry` increments the per-chunk retry_count.
+    /// Pins the request-tracking surface the sync-driver slice
+    /// consumes to enforce `MAX_RETRIES`.
+    #[tokio::test]
+    async fn record_retry_increments_retry_count() {
+        let (target, _r) = make_target_and_response(&[0xD2; 32], CHUNK_SIZE + 100, 0);
+        let retriever = SnapshotChunkRetriever::new(target);
+        {
+            let g = retriever.chunks.read().await;
+            assert_eq!(g.get(&0).unwrap().retry_count, 0);
+        }
+        retriever.record_retry(0).await;
+        retriever.record_retry(0).await;
+        retriever.record_retry(0).await;
+        let g = retriever.chunks.read().await;
+        assert_eq!(g.get(&0).unwrap().retry_count, 3);
+    }
+
+    /// Non-32-byte `merkle_root` is rejected via the length
+    /// guard in `slice_to_hash`.  Protocol violation treated as
+    /// a MerkleRootMismatch so the sync-driver can blacklist.
+    #[tokio::test]
+    async fn rejects_short_merkle_root() {
+        let (target, mut response) = make_target_and_response(&[0xD3; 32], CHUNK_SIZE + 100, 0);
+        response.merkle_root = Bytes::from(vec![0u8; 16]); // < 32 bytes
+        let retriever = SnapshotChunkRetriever::new(target);
+        assert_eq!(
+            retriever.admit_response(&response).await,
+            AdmitOutcome::MerkleRootMismatch,
+        );
+    }
+
+    /// Non-32-byte `chunk_hash` is rejected via the length
+    /// guard in `slice_to_hash`.  Protocol violation treated as
+    /// a ChunkHashMismatch.
+    #[tokio::test]
+    async fn rejects_short_chunk_hash() {
+        let (target, mut response) = make_target_and_response(&[0xD4; 32], CHUNK_SIZE + 100, 0);
+        response.chunk_hash = Bytes::from(vec![0u8; 16]); // < 32 bytes
+        let retriever = SnapshotChunkRetriever::new(target);
+        assert_eq!(
+            retriever.admit_response(&response).await,
+            AdmitOutcome::ChunkHashMismatch,
+        );
+    }
+
+    /// INTEGRATION: server-produced response (via
+    /// [`crate::rust::engine::snapshot_chunk_server::serve_chunk`])
+    /// admits cleanly through the retriever.  Pins that the
+    /// Wave 3 server and client agree on wire-shape and
+    /// verification semantics.
+    #[tokio::test]
+    async fn server_produced_response_admits_through_retriever() {
+        use rholang::rust::interpreter::io::snapshot::write_snapshot;
+        use rholang::rust::interpreter::io::wal::{PayloadRef, WalEntry, WalOp, WalOutcome};
+
+        use crate::rust::engine::snapshot_chunk_server::serve_chunk;
+
+        let dir = tempfile::tempdir().unwrap();
+        let entries: Vec<WalEntry> = (0..3)
+            .map(|i| WalEntry {
+                op: WalOp::Write,
+                path: std::path::PathBuf::from(format!("/f{i}")),
+                extra_path: None,
+                offset: Some(0),
+                length: Some(1),
+                payload_ref: Some(PayloadRef::hash(&[i as u8])),
+                mode_bits: None,
+                owner: None,
+                group: None,
+                outcome: WalOutcome::Success,
+            })
+            .collect();
+        let (_path, atomic_root, merkle_root) = write_snapshot(dir.path(), &entries).unwrap();
+        let block_hash = vec![0xEEu8; 32];
+
+        // Server builds the response.
+        let response = serve_chunk(&block_hash, 0, (atomic_root, merkle_root), dir.path()).unwrap();
+
+        // Retriever accepts it against a target pinning the
+        // same merkle_root + chunk_count.
+        let target = SnapshotTarget {
+            block_hash: block_hash.clone(),
+            merkle_root,
+            chunk_count: response.chunk_count,
+        };
+        let retriever = SnapshotChunkRetriever::new(target);
+        assert_eq!(
+            retriever.admit_response(&response).await,
+            AdmitOutcome::ChunkAccepted
+        );
+        assert!(retriever.is_complete().await);
+    }
+}

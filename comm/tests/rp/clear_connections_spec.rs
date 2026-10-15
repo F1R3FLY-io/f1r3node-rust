@@ -514,4 +514,38 @@ mod tests {
         assert_eq!(liveness.streak(&peer("A").id.key), 0);
         assert_eq!(liveness.streak(&peer("B").id.key), 2);
     }
+
+    #[tokio::test]
+    async fn test_clear_connections_evicts_a_refusing_peer_without_waiting_for_a_streak() {
+        let connections = mk_connections(&[peer("A"), peer("B")]);
+        let rp_conf = conf(5, Some(2), None);
+        let transport = TransportLayerStub::new();
+        transport.set_responses(|remote, protocol| {
+            if remote.id.key == peer("A").id.key {
+                Err(CommError::WrongChainId(
+                    "A".to_string(),
+                    "peer is on another chain".to_string(),
+                ))
+            } else {
+                always_success(remote, protocol)
+            }
+        });
+        let discovery = TrackingNodeDiscovery::new();
+        let mut liveness = PeerLivenessTracker::new(3).unwrap();
+
+        let (cleared, failed_peers) = clear_connections(
+            &connections,
+            &rp_conf,
+            &transport,
+            &discovery,
+            &mut liveness,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(cleared, 1);
+        assert_eq!(failed_peers, vec![peer("A")]);
+        assert!(!connections.read().unwrap().as_slice().contains(&peer("A")));
+        assert_eq!(discovery.get_removed_keys(), vec![peer("A").id.key]);
+    }
 }

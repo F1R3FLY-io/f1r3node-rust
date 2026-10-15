@@ -31,6 +31,7 @@ use models::rust::sorted_par_hash_set::SortedParHashSet;
 use models::rust::sorted_par_map::SortedParMap;
 use models::rust::utils::new_freevar_par;
 use models::rust::validator::Validator;
+use num_bigint::BigInt;
 use rholang::rust::interpreter::accounting::costs::Cost;
 use rholang::rust::interpreter::accounting::has_cost::HasCost;
 use rholang::rust::interpreter::compiler::compiler::Compiler;
@@ -38,6 +39,7 @@ use rholang::rust::interpreter::env::Env;
 use rholang::rust::interpreter::interpreter::EvaluateResult;
 use rholang::rust::interpreter::merging::rholang_merging_logic::RholangMergingLogic;
 use rholang::rust::interpreter::rho_runtime::{bootstrap_registry, RhoRuntime, RhoRuntimeImpl};
+use rholang::rust::interpreter::rho_type::RhoNumber;
 use rholang::rust::interpreter::system_processes::{
     BlockData, DeployData as SystemProcessDeployData,
 };
@@ -85,6 +87,44 @@ pub struct RuntimeOps {
 
 impl RuntimeOps {
     pub fn new(runtime: RhoRuntimeImpl) -> Self { Self { runtime } }
+}
+
+/// RAII guard that temporarily disables the reducer's fs-native URN
+/// filter and restores it on every return path (success, `?`, panic
+/// unwind).  Used by `play_deploys_for_genesis` + `replay_compute_state
+/// (is_genesis = true)` to let FsGenesis bind the raw fs_* primitives
+/// into its outer new-scope while keeping state-execution deploys
+/// gated.
+///
+/// Memory ordering: Acquire-load the prior value + Release-store the
+/// new value; Drop stores back with Release.  Pairs with the
+/// filter-check Acquire in `reduce.rs::eval_new`.
+///
+/// Owns a cloned `Arc<AtomicBool>` so it doesn't hold a borrow across
+/// the mutable `self.runtime` borrows used elsewhere in the enclosing
+/// function (e.g., `create_checkpoint`).
+pub struct FsNativeFilterGuard {
+    flag: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    prev: bool,
+}
+
+impl FsNativeFilterGuard {
+    /// Clone the reducer's filter Arc, read its current value under
+    /// Acquire, then store `false` under Release.  Caller holds the
+    /// returned guard; Drop restores the prior value.
+    pub fn disable(reducer: &rholang::rust::interpreter::reduce::DebruijnInterpreter) -> Self {
+        let flag = reducer.filter_fs_native_urns.clone();
+        let prev = flag.load(std::sync::atomic::Ordering::Acquire);
+        flag.store(false, std::sync::atomic::Ordering::Release);
+        Self { flag, prev }
+    }
+}
+
+impl Drop for FsNativeFilterGuard {
+    fn drop(&mut self) {
+        self.flag
+            .store(self.prev, std::sync::atomic::Ordering::Release);
+    }
 }
 
 #[allow(type_alias_bounds)]
@@ -368,6 +408,13 @@ impl RuntimeOps {
             .reset(&Blake2b256Hash::from_bytes_prost(start_hash))
             .await?;
 
+        // Slice 31: toggle the reducer's fs-native URN filter off
+        // for the duration of the genesis-blessed batch so FsGenesis
+        // can bind the raw fsRead/fsWrite/... primitives.  Guard is
+        // Drop-based (see FsNativeFilterGuard) so the filter restores
+        // on every return path including ? and panic unwind.
+        let _guard = FsNativeFilterGuard::disable(&self.runtime.reducer);
+
         let mut res = Vec::with_capacity(terms.len());
         for deploy in terms {
             res.push(self.process_deploy_with_mergeable_data(deploy).await?);
@@ -604,8 +651,10 @@ impl RuntimeOps {
     ) -> Result<NumberChannelsEndVal, CasperError> {
         let mut result = BTreeMap::new();
         for (channel, merge_type) in channels {
-            if let Some((hash, value)) = self.get_number_channel(channel, *merge_type).await? {
-                result.insert(hash, (value, *merge_type));
+            if let Some((hash, value, value_merge_type)) =
+                self.get_number_channel(channel, *merge_type).await?
+            {
+                result.insert(hash, (value, value_merge_type));
             }
         }
         Ok(result)
@@ -622,11 +671,14 @@ impl RuntimeOps {
         )
     }
 
+    /// Reads a mergeable number channel. The merge type is the tag's strategy
+    /// for every value kind (see `RholangMergingLogic::number_merge_type`), so
+    /// all branches agree on it.
     pub async fn get_number_channel(
         &self,
         channel: &Par,
         merge_type: MergeType,
-    ) -> Result<Option<(Blake2b256Hash, i64)>, CasperError> {
+    ) -> Result<Option<(Blake2b256Hash, BigInt, MergeType)>, CasperError> {
         let ch_values = self.runtime.get_data(channel).await;
 
         if ch_values.is_empty() {
@@ -634,28 +686,34 @@ impl RuntimeOps {
         } else {
             let ch_hash = stable_hash_provider::hash(channel);
             if ch_values.len() != 1 {
-                let nums: Vec<i64> = ch_values
-                    .iter()
-                    .filter_map(|datum| {
-                        RholangMergingLogic::try_get_number_with_rnd(&datum.a).map(|(n, _)| n)
-                    })
-                    .collect();
-
                 match merge_type {
                     MergeType::IntegerAdd => {
+                        let nums: Vec<String> = ch_values
+                            .iter()
+                            .filter_map(|datum| {
+                                RholangMergingLogic::try_get_number_with_rnd(&datum.a)
+                                    .map(|(n, _)| n.to_string())
+                            })
+                            .collect();
                         return Err(CasperError::RuntimeError(format!(
-                            "number channel {} holds {} values {:?}; IntegerAdd single-value invariant violated",
+                            "number channel {} holds {} values {:?}; {:?} single-value invariant violated",
                             hex::encode(ch_hash.bytes()),
                             ch_values.len(),
                             nums,
+                            merge_type,
                         )));
                     }
                     MergeType::BitmaskOr => {
+                        let nums: Vec<i64> = ch_values
+                            .iter()
+                            .filter(|datum| datum.a.pars.len() == 1)
+                            .filter_map(|datum| RhoNumber::unapply(&datum.a.pars[0]))
+                            .collect();
                         let num = match Self::fold_bitmask_or(&nums) {
                             Some(n) => n,
                             None => return Ok(None),
                         };
-                        return Ok(Some((ch_hash, num)));
+                        return Ok(Some((ch_hash, BigInt::from(num), MergeType::BitmaskOr)));
                     }
                 }
             }
@@ -664,9 +722,14 @@ impl RuntimeOps {
             // (e.g., TreeHashMap leaf Maps tagged with the bitmask tag) are
             // skipped here and fall through to the existing conflict path.
             let num_par = &ch_values[0].a;
-            match RholangMergingLogic::try_get_number_with_rnd(num_par) {
-                Some((num, _)) => Ok(Some((ch_hash, num))),
-                None => Ok(None),
+            match (
+                RholangMergingLogic::try_get_number_with_rnd(num_par),
+                RholangMergingLogic::number_merge_type(num_par, merge_type),
+            ) {
+                (Some((num, _)), Some(value_merge_type)) => {
+                    Ok(Some((ch_hash, num, value_merge_type)))
+                }
+                _ => Ok(None),
             }
         }
     }
@@ -880,6 +943,7 @@ impl RuntimeOps {
                 valid_after_block_number: 0,
                 shard_id: String::new(),
                 expiration_timestamp: None,
+                parameters: Vec::new(),
             };
 
             let (ephemeral_sk, ephemeral_pk) = exploratory_key_pair().clone();
@@ -1110,7 +1174,8 @@ impl RuntimeOps {
             .evaluate(
                 &deploy.data.term,
                 Cost::create(deploy.data.phlo_limit, "Evaluate deploy".to_string()),
-                normalizer_env_from_deploy(deploy),
+                normalizer_env_from_deploy(deploy)
+                    .map_err(|error| CasperError::RuntimeError(error.to_string()))?,
                 Tools::unforgeable_name_rng(&deploy.pk, deploy.data.time_stamp),
             )
             .await;

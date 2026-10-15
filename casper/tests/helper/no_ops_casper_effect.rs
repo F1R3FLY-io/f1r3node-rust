@@ -178,7 +178,9 @@ impl MultiParentCasper for NoOpsCasperEffect {
 
     fn get_validator(&self) -> Option<ValidatorIdentity> { None }
 
-    async fn get_history_exporter(&self) -> Arc<dyn RSpaceExporter> { todo!() }
+    async fn get_history_exporter(&self) -> Arc<dyn RSpaceExporter> {
+        self.runtime_manager.get_history_repo().exporter()
+    }
 
     fn runtime_manager(&self) -> Arc<RuntimeManager> { self.runtime_manager.clone() }
 

@@ -570,8 +570,16 @@ impl TransportLayer for GrpcTransportClient {
 
     /// Broadcast a Protocol message to multiple peers in parallel
     async fn broadcast(&self, peers: &[PeerNode], msg: &Protocol) -> Result<(), CommError> {
+        self.broadcast_reporting_refusals(peers, msg).await.0
+    }
+
+    async fn broadcast_reporting_refusals(
+        &self,
+        peers: &[PeerNode],
+        msg: &Protocol,
+    ) -> (Result<(), CommError>, Vec<PeerNode>) {
         if peers.is_empty() {
-            return Ok(());
+            return (Ok(()), Vec::new());
         }
 
         // Create a vector of futures for parallel execution
@@ -580,7 +588,13 @@ impl TransportLayer for GrpcTransportClient {
         // Execute all sends in parallel and collect results
         let results = futures::future::join_all(send_futures).await;
 
-        best_effort("broadcast", peers, results)
+        let refused = peers
+            .iter()
+            .zip(&results)
+            .filter(|(_, result)| matches!(result, Err(CommError::WrongChainId(..))))
+            .map(|(peer, _)| peer.clone())
+            .collect();
+        (best_effort("broadcast", peers, results), refused)
     }
 
     /// Stream a blob to a peer by enqueueing it in the buffer

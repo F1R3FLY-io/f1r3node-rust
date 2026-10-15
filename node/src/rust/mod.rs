@@ -11,6 +11,7 @@ pub mod node_environment;
 pub mod repl;
 pub mod rho_trie_traverser;
 pub mod runtime;
+pub mod soak_observer;
 pub mod state;
 pub mod web;
 

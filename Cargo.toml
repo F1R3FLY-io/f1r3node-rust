@@ -14,6 +14,7 @@ members = [
 	"comm",
 	"graphz",
 	"scripts/supply-chain",
+	"scripts/casper-soak",
 ]
 
 [workspace.dependencies]

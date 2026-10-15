@@ -8,7 +8,7 @@ use block_storage::rust::test::indexed_block_dag_storage::IndexedBlockDagStorage
 use casper::rust::api::block_api::BlockAPI;
 use casper::rust::engine::engine_cell::EngineCell;
 use casper::rust::engine::engine_with_casper::EngineWithCasper;
-use casper::rust::safety_oracle::{CliqueOracleImpl, MIN_FAULT_TOLERANCE};
+use casper::rust::safety_oracle::CliqueOracleImpl;
 use casper::rust::util::construct_deploy;
 use casper::rust::util::proto_util::{bond_to_bond_info, justifications_to_justification_infos};
 use casper::rust::util::rholang::runtime_manager::RuntimeManager;
@@ -30,7 +30,7 @@ const TOO_SHORT_QUERY: &str = "12345";
 const BAD_TEST_HASH_QUERY: &str = "1234acd";
 const INVALID_HEX_QUERY: &str = "No such a hash";
 const DEPLOY_COUNT: usize = 10;
-const FAULT_TOLERANCE: f32 = MIN_FAULT_TOLERANCE;
+const FAULT_TOLERANCE: f32 = 1.0;
 
 struct TestContext {
     shared_kvm_data: Arc<Mutex<HashMap<Vec<u8>, Vec<u8>>>>,
@@ -595,9 +595,8 @@ async fn find_deploy_should_return_successful_block_info_response_when_block_con
         "Deploy count mismatch"
     );
 
-    let fault_tolerance = MIN_FAULT_TOLERANCE;
     assert_eq!(
-        block_info.fault_tolerance, fault_tolerance,
+        block_info.fault_tolerance, FAULT_TOLERANCE,
         "Fault tolerance mismatch"
     );
 

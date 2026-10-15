@@ -223,6 +223,7 @@ pub struct WebApiImpl {
     native_token_name: String,
     native_token_symbol: String,
     native_token_decimals: u32,
+    has_validator_key: bool,
     is_node_read_only: bool,
     engine_cell: Arc<EngineCell>,
     block_report_api: BlockReportAPI,
@@ -246,6 +247,7 @@ impl WebApiImpl {
         native_token_name: String,
         native_token_symbol: String,
         native_token_decimals: u32,
+        has_validator_key: bool,
         is_node_read_only: bool,
         block_report_api: BlockReportAPI,
         transfer_unforgeable: models::rhoapi::Par,
@@ -267,6 +269,7 @@ impl WebApiImpl {
             native_token_name,
             native_token_symbol,
             native_token_decimals,
+            has_validator_key,
             is_node_read_only,
             engine_cell,
             block_report_api,
@@ -325,13 +328,13 @@ impl WebApiImpl {
             }
         };
         // Serves the cached report when there is one and replays only when the
-        // reporter is idle: block_report refuses rather than queues, so a read
-        // arriving during catch-up returns without waiting instead of adding to
-        // the load. A replay that does happen also caches, so ordinary reads
-        // repopulate what pre-caching missed.
+        // reporter is idle: block_report_if_idle refuses rather than queues, so
+        // a read arriving during catch-up returns without waiting instead of
+        // adding to the load. A replay that does happen also caches, so ordinary
+        // reads repopulate what pre-caching missed.
         match self
             .block_report_api
-            .block_report(block_hash_bytes, false)
+            .block_report_if_idle(block_hash_bytes)
             .await
         {
             Ok(report) => {
@@ -424,7 +427,6 @@ impl WebApi for WebApiImpl {
             );
         }
 
-        let is_validator = self.trigger_propose_f.is_some();
         let is_ready = self.is_ready.load(Ordering::Relaxed);
 
         // Advertise the floor admission and validity actually enforce — the
@@ -455,7 +457,7 @@ impl WebApi for WebApiImpl {
             native_token_symbol: self.native_token_symbol.clone(),
             native_token_decimals: self.native_token_decimals,
             last_finalized_block_number: lfb_number,
-            is_validator,
+            is_validator: self.has_validator_key,
             is_read_only: self.is_node_read_only,
             is_ready,
             current_epoch,
@@ -516,25 +518,27 @@ impl WebApi for WebApiImpl {
 
     async fn last_finalized_block(&self, view: ViewMode) -> Result<BlockInfoSerde> {
         let block_info = BlockAPI::last_finalized_block(&self.engine_cell).await?;
-        let mut serde = BlockInfoSerde::from(block_info);
-        if view == ViewMode::Full {
-            let block_hash = serde.block_info.block_hash.clone();
-            self.enrich_transfers(&mut serde, block_hash).await;
-        } else {
-            serde.deploys = None;
+        if view == ViewMode::Summary {
+            return Ok(BlockInfoSerde::from_light(
+                block_info.block_info.unwrap_or_default().into(),
+            ));
         }
+        let mut serde = BlockInfoSerde::try_from(block_info)?;
+        let block_hash = serde.block_info.block_hash.clone();
+        self.enrich_transfers(&mut serde, block_hash).await;
         Ok(serde)
     }
 
     async fn get_block(&self, hash: String, view: ViewMode) -> Result<BlockInfoSerde> {
         let block_info = BlockAPI::get_block(&self.engine_cell, &hash).await?;
-        let mut serde = BlockInfoSerde::from(block_info);
-        if view == ViewMode::Full {
-            let block_hash = serde.block_info.block_hash.clone();
-            self.enrich_transfers(&mut serde, block_hash).await;
-        } else {
-            serde.deploys = None;
+        if view == ViewMode::Summary {
+            return Ok(BlockInfoSerde::from_light(
+                block_info.block_info.unwrap_or_default().into(),
+            ));
         }
+        let mut serde = BlockInfoSerde::try_from(block_info)?;
+        let block_hash = serde.block_info.block_hash.clone();
+        self.enrich_transfers(&mut serde, block_hash).await;
         Ok(serde)
     }
 
@@ -543,7 +547,10 @@ impl WebApi for WebApiImpl {
             let blocks =
                 BlockAPI::get_blocks_full(&self.engine_cell, depth, self.api_max_blocks_limit)
                     .await?;
-            Ok(blocks.into_iter().map(BlockInfoSerde::from).collect())
+            Ok(blocks
+                .into_iter()
+                .map(BlockInfoSerde::try_from)
+                .collect::<Result<Vec<_>, _>>()?)
         } else {
             let blocks =
                 BlockAPI::get_blocks(&self.engine_cell, depth, self.api_max_blocks_limit).await?;
@@ -603,16 +610,18 @@ impl WebApi for WebApiImpl {
 
         let deploys = block_info
             .deploys
-            .as_ref()
             .ok_or_else(|| eyre!("Block {} returned without deploys", light_block.block_hash))?;
 
-        let deploy = deploys.iter().find(|d| d.sig == deploy_id).ok_or_else(|| {
-            eyre!(
-                "Deploy {} found in block {} but not in deploy list",
-                deploy_id,
-                light_block.block_hash
-            )
-        })?;
+        let deploy = deploys
+            .into_iter()
+            .find(|d| d.sig == deploy_id)
+            .ok_or_else(|| {
+                eyre!(
+                    "Deploy {} found in block {} but not in deploy list",
+                    deploy_id,
+                    light_block.block_hash
+                )
+            })?;
 
         let is_full = view == ViewMode::Full;
         let finalization = BlockAPI::deploy_finalization_status_with_known_block(
@@ -672,6 +681,11 @@ impl WebApi for WebApiImpl {
             } else {
                 None
             },
+            parameters: if is_full {
+                deploy.parameters
+            } else {
+                Vec::new()
+            },
         })
     }
 
@@ -708,7 +722,10 @@ impl WebApi for WebApiImpl {
                 self.api_max_blocks_limit,
             )
             .await?;
-            Ok(blocks.into_iter().map(BlockInfoSerde::from).collect())
+            Ok(blocks
+                .into_iter()
+                .map(BlockInfoSerde::try_from)
+                .collect::<Result<Vec<_>, _>>()?)
         } else {
             let blocks = BlockAPI::get_blocks_by_heights(
                 &self.engine_cell,
@@ -832,7 +849,8 @@ impl WebApi for WebApiImpl {
 
         let exprs: Vec<RhoExpr> = pars.into_iter().filter_map(expr_from_par_proto).collect();
         let balance = match exprs.first() {
-            Some(RhoExpr::ExprInt { data }) => *data,
+            Some(RhoExpr::ExprBigInt { data }) => data.clone(),
+            Some(RhoExpr::ExprInt { data }) => data.to_string(),
             _ => return Err(eyre!("Unexpected balance result for address {}", address)),
         };
 
@@ -1126,6 +1144,21 @@ pub enum RhoExpr {
     ExprInt {
         data: i64,
     },
+    ExprUint64 {
+        data: u64,
+    },
+    ExprInt32 {
+        data: i32,
+    },
+    ExprUint32 {
+        data: u32,
+    },
+    ExprUint16 {
+        data: u32,
+    },
+    ExprUint8 {
+        data: u32,
+    },
     ExprString {
         data: String,
     },
@@ -1139,6 +1172,9 @@ pub enum RhoExpr {
     // === Extended numerics ===
     ExprFloat {
         data: f64,
+    },
+    ExprFloat32 {
+        data: f32,
     },
     ExprBigInt {
         data: String,
@@ -1422,7 +1458,7 @@ pub struct ApiStatus {
     /// Block number of the last finalized block. -1 if casper not yet initialized.
     #[serde(rename = "lastFinalizedBlockNumber")]
     pub last_finalized_block_number: i64,
-    /// Whether this node is a validator (can propose blocks).
+    /// Whether this node has a configured validator key.
     #[serde(rename = "isValidator")]
     pub is_validator: bool,
     /// Whether this node is running in read-only mode.
@@ -1486,6 +1522,12 @@ pub struct DeployResponse {
     pub valid_after_block_number: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub transfers: Option<Vec<TransferInfoSerde>>,
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        deserialize_with = "models::rust::deploy_parameters::deserialize_parameters"
+    )]
+    pub parameters: Vec<models::rust::deploy_parameters::DeployParameter>,
 }
 
 /// View mode for deploy lookups.
@@ -1501,7 +1543,8 @@ pub enum ViewMode {
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct BalanceResponse {
     pub address: String,
-    pub balance: i64,
+    /// Balance in base units as a decimal string (vault balances are BigInt).
+    pub balance: String,
     #[serde(rename = "blockNumber")]
     pub block_number: i64,
     #[serde(rename = "blockHash")]
@@ -1651,6 +1694,8 @@ fn validate_and_decode_pubkey(pubkey_hex: &str) -> Result<Vec<u8>> {
 
 /// Convert DeployRequest to Signed DeployData
 fn to_signed_deploy(request: &DeployRequest) -> Result<Signed<DeployData>> {
+    models::rust::deploy_parameters::validate_parameters(&request.data.parameters)
+        .map_err(|error| eyre!("Invalid deploy parameters: {}", error))?;
     // Decode hex strings
     let pk_bytes = hex::decode(&request.deployer)
         .map_err(|e| eyre!("Public key is not valid base16 format: {}", e))?;
@@ -1765,6 +1810,11 @@ fn expr_from_expr_proto(expr: Expr) -> Option<RhoExpr> {
         // Primitives
         ExprInstance::GBool(v) => RhoExpr::ExprBool { data: v },
         ExprInstance::GInt(v) => RhoExpr::ExprInt { data: v },
+        ExprInstance::GUint64(v) => RhoExpr::ExprUint64 { data: v },
+        ExprInstance::GInt32(v) => RhoExpr::ExprInt32 { data: v },
+        ExprInstance::GUint32(v) => RhoExpr::ExprUint32 { data: v },
+        ExprInstance::GUint16(v) => RhoExpr::ExprUint16 { data: v },
+        ExprInstance::GUint8(v) => RhoExpr::ExprUint8 { data: v },
         ExprInstance::GString(v) => RhoExpr::ExprString { data: v },
         ExprInstance::GUri(v) => RhoExpr::ExprUri { data: v },
         ExprInstance::GByteArray(bytes) => RhoExpr::ExprBytes {
@@ -1774,6 +1824,9 @@ fn expr_from_expr_proto(expr: Expr) -> Option<RhoExpr> {
         // Extended numerics
         ExprInstance::GDouble(bits) => RhoExpr::ExprFloat {
             data: f64::from_bits(bits),
+        },
+        ExprInstance::GFloat32(bits) => RhoExpr::ExprFloat32 {
+            data: f32::from_bits(bits),
         },
         ExprInstance::GBigInt(bytes) => {
             let n = BigInt::from_signed_bytes_be(&bytes);
@@ -2020,8 +2073,14 @@ fn extract_key_from_expr(expr: &RhoExpr) -> String {
     match expr {
         RhoExpr::ExprString { data } => data.clone(),
         RhoExpr::ExprInt { data } => data.to_string(),
+        RhoExpr::ExprUint64 { data } => format!("{}u64", data),
+        RhoExpr::ExprInt32 { data } => format!("{}i32", data),
+        RhoExpr::ExprUint32 { data } => format!("{}u32", data),
+        RhoExpr::ExprUint16 { data } => format!("{}u16", data),
+        RhoExpr::ExprUint8 { data } => format!("{}u8", data),
         RhoExpr::ExprBool { data } => data.to_string(),
         RhoExpr::ExprFloat { data } => data.to_string(),
+        RhoExpr::ExprFloat32 { data } => data.to_string(),
         RhoExpr::ExprBigInt { data } => data.clone(),
         RhoExpr::ExprUri { data } => data.clone(),
         RhoExpr::ExprBytes { data } => data.clone(),
@@ -2083,6 +2142,7 @@ mod tests {
             sig_algorithm: Some("secp256k1".to_string()),
             valid_after_block_number: Some(0),
             transfers: Some(vec![]),
+            parameters: Vec::new(),
         };
 
         let json = serde_json::to_value(&response).unwrap();
@@ -2099,6 +2159,11 @@ mod tests {
         assert!(json.get("phloPrice").is_some());
         assert!(json.get("phloLimit").is_some());
         assert!(json.get("transfers").is_some());
+        assert!(json.get("parameters").is_none());
+        assert!(serde_json::from_value::<DeployResponse>(json)
+            .unwrap()
+            .parameters
+            .is_empty());
     }
 
     #[test]
@@ -2121,6 +2186,7 @@ mod tests {
             sig_algorithm: None,
             valid_after_block_number: None,
             transfers: None,
+            parameters: Vec::new(),
         };
 
         let json = serde_json::to_value(&response).unwrap();
@@ -2141,6 +2207,7 @@ mod tests {
         assert!(json.get("sigAlgorithm").is_none());
         assert!(json.get("validAfterBlockNumber").is_none());
         assert!(json.get("transfers").is_none());
+        assert!(json.get("parameters").is_none());
     }
 
     #[test]
@@ -2154,6 +2221,7 @@ mod tests {
                 valid_after_block_number: 0,
                 shard_id: "".to_string(),
                 expiration_timestamp: None,
+                parameters: Vec::new(),
             },
             deployer: "0123456789abcdef".to_string(),
             signature: "fedcba9876543210".to_string(),
@@ -2364,6 +2432,45 @@ mod tests {
     }
 
     #[test]
+    fn test_expr_from_expr_proto_map_keeps_int_and_sized_int_keys_apart() {
+        let entry = |key: ExprInstance, value: &str| KeyValuePair {
+            key: Some(Par {
+                exprs: vec![Expr {
+                    expr_instance: Some(key),
+                }],
+                ..Default::default()
+            }),
+            value: Some(Par {
+                exprs: vec![Expr {
+                    expr_instance: Some(ExprInstance::GString(value.to_string())),
+                }],
+                ..Default::default()
+            }),
+        };
+        let map = EMap {
+            kvs: vec![
+                entry(ExprInstance::GInt(5), "int"),
+                entry(ExprInstance::GUint64(5), "u64"),
+                entry(ExprInstance::GInt32(5), "i32"),
+                entry(ExprInstance::GUint8(5), "u8"),
+            ],
+            ..Default::default()
+        };
+        match expr_from_expr_proto(Expr {
+            expr_instance: Some(ExprInstance::EMapBody(map)),
+        }) {
+            Some(RhoExpr::ExprMap { data }) => {
+                assert_eq!(data.len(), 4);
+                assert!(matches!(data["5"], RhoExpr::ExprString { data: ref d } if d == "int"));
+                assert!(matches!(data["5u64"], RhoExpr::ExprString { data: ref d } if d == "u64"));
+                assert!(matches!(data["5i32"], RhoExpr::ExprString { data: ref d } if d == "i32"));
+                assert!(matches!(data["5u8"], RhoExpr::ExprString { data: ref d } if d == "u8"));
+            }
+            _ => panic!("Expected ExprMap"),
+        }
+    }
+
+    #[test]
     fn test_expr_from_expr_proto_map() {
         let map = EMap {
             kvs: vec![
@@ -2516,6 +2623,27 @@ mod tests {
         let expr = RhoExpr::ExprInt { data: 42 };
         assert_eq!(extract_key_from_expr(&expr), "42");
 
+        assert_eq!(
+            extract_key_from_expr(&RhoExpr::ExprUint64 { data: 42 }),
+            "42u64"
+        );
+        assert_eq!(
+            extract_key_from_expr(&RhoExpr::ExprInt32 { data: -42 }),
+            "-42i32"
+        );
+        assert_eq!(
+            extract_key_from_expr(&RhoExpr::ExprUint32 { data: 42 }),
+            "42u32"
+        );
+        assert_eq!(
+            extract_key_from_expr(&RhoExpr::ExprUint16 { data: 42 }),
+            "42u16"
+        );
+        assert_eq!(
+            extract_key_from_expr(&RhoExpr::ExprUint8 { data: 42 }),
+            "42u8"
+        );
+
         // Test bool key
         let expr = RhoExpr::ExprBool { data: true };
         assert_eq!(extract_key_from_expr(&expr), "true");
@@ -2566,6 +2694,31 @@ mod tests {
             expr_instance: Some(ExprInstance::GDouble(2.5f64.to_bits())),
         });
         assert!(matches!(double, Some(RhoExpr::ExprFloat { data }) if data == 2.5));
+
+        let sized = |instance| {
+            expr_from_expr_proto(Expr {
+                expr_instance: Some(instance),
+            })
+        };
+        assert!(
+            matches!(sized(ExprInstance::GUint64(u64::MAX)), Some(RhoExpr::ExprUint64 { data }) if data == u64::MAX)
+        );
+        assert!(
+            matches!(sized(ExprInstance::GInt32(-7)), Some(RhoExpr::ExprInt32 { data }) if data == -7)
+        );
+        assert!(
+            matches!(sized(ExprInstance::GUint32(7)), Some(RhoExpr::ExprUint32 { data }) if data == 7)
+        );
+        assert!(
+            matches!(sized(ExprInstance::GUint16(7)), Some(RhoExpr::ExprUint16 { data }) if data == 7)
+        );
+        assert!(
+            matches!(sized(ExprInstance::GUint8(7)), Some(RhoExpr::ExprUint8 { data }) if data == 7)
+        );
+        let float32 = expr_from_expr_proto(Expr {
+            expr_instance: Some(ExprInstance::GFloat32(2.5f32.to_bits())),
+        });
+        assert!(matches!(float32, Some(RhoExpr::ExprFloat32 { data }) if data == 2.5));
 
         let big_int = expr_from_expr_proto(Expr {
             expr_instance: Some(ExprInstance::GBigInt(vec![0x01, 0x00])),
@@ -2981,6 +3134,7 @@ mod tests {
             valid_after_block_number: 0,
             shard_id: "root".to_string(),
             expiration_timestamp: None,
+            parameters: Vec::new(),
         }
     }
 
@@ -3001,6 +3155,40 @@ mod tests {
         let result = to_signed_deploy(&request).unwrap();
         assert_eq!(result.sig, signed.sig);
         assert_eq!(result.pk.bytes, signed.pk.bytes);
+    }
+
+    #[test]
+    fn deploy_parameters_survive_http_requests_and_reject_tampering() {
+        use crypto::rust::signatures::secp256k1::Secp256k1;
+        use models::rust::deploy_parameters::{DeployParameter, RholangValue};
+
+        let (sk, _) = Secp256k1.new_key_pair();
+        let mut data = sample_deploy_data();
+        data.parameters = vec![DeployParameter {
+            name: "input".into(),
+            value: RholangValue::List(vec![RholangValue::Int(-42), RholangValue::Nil]),
+        }];
+        let signed = Signed::create(data, Box::new(Secp256k1), sk).unwrap();
+        let request = DeployRequest {
+            data: signed.data.clone(),
+            deployer: hex::encode(&signed.pk.bytes),
+            signature: hex::encode(&signed.sig),
+            sig_algorithm: "secp256k1".into(),
+        };
+        let json = serde_json::to_string(&request).unwrap();
+        let mut restored: DeployRequest = serde_json::from_str(&json).unwrap();
+        assert_eq!(to_signed_deploy(&restored).unwrap(), signed);
+        restored.data.parameters[0].value = RholangValue::Nil;
+        assert!(to_signed_deploy(&restored).is_err());
+        restored.data.parameters[0].name = "invalid:name".into();
+        assert!(to_signed_deploy(&restored)
+            .unwrap_err()
+            .to_string()
+            .contains("Invalid deploy parameters"));
+        assert!(
+            serde_json::from_str::<DeployRequest>(&serde_json::to_string(&restored).unwrap())
+                .is_err()
+        );
     }
 
     #[test]

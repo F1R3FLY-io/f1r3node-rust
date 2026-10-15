@@ -384,6 +384,11 @@ fn classify_interpreter_error(ie: &InterpreterError) -> (StatusCode, &'static st
             "out_of_phlogistons",
             ie.to_string(),
         ),
+        HostWorkRejected => (
+            S::UNPROCESSABLE_ENTITY,
+            "host_work_rejected",
+            ie.to_string(),
+        ),
         UserAbortError => (S::UNPROCESSABLE_ENTITY, "user_abort", ie.to_string()),
 
         ReduceError(_)

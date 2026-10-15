@@ -7,7 +7,9 @@ use block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStora
 use block_storage::rust::deploy::key_value_deploy_storage::KeyValueDeployStorage;
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use casper::rust::block_status::BlockStatus;
-use casper::rust::blocks::block_processor::{BlockProcessor, BlockProcessorDependencies};
+use casper::rust::blocks::block_processor::{
+    BlockProcessor, BlockProcessorDependencies, BlockQueueItem, InFlightBlocks,
+};
 use casper::rust::blocks::proposer::block_creator;
 use casper::rust::blocks::proposer::propose_result::BlockCreatorResult;
 use casper::rust::blocks::proposer::proposer::new_proposer;
@@ -36,7 +38,6 @@ use comm::rust::transport::grpc_transport_server::TransportLayerServer;
 use comm::rust::transport::transport_layer::Blob;
 use crypto::rust::private_key::PrivateKey;
 use crypto::rust::signatures::signed::Signed;
-use dashmap::DashSet;
 use models::routing::Protocol;
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::protocol::casper_message::{
@@ -66,7 +67,7 @@ pub struct TestNode {
     pub block_dag_storage: BlockDagKeyValueStorage,
     pub deploy_storage: Arc<parking_lot::Mutex<KeyValueDeployStorage>>,
     pub rejected_deploy_buffer: Arc<
-        Mutex<block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer>,
+        Mutex<block_storage::rust::deploy::key_value_deploy_storage::KeyValueRejectedDeployBuffer>,
     >,
     pub runtime_manager: RuntimeManager,
     // Note: no log field, logging will come from log crate
@@ -353,6 +354,23 @@ impl TestNode {
         current[0]
             .propagate_block(deploy_datums, &mut all_others)
             .await
+    }
+
+    /// Makes every node receive the blocks of every other node. `sync_with_one`
+    /// makes its caller the receiver, so each pair is synced in both directions.
+    pub async fn sync_all(nodes: &mut [TestNode]) -> Result<(), CasperError> {
+        for sender_idx in 0..nodes.len() {
+            for receiver_idx in 0..nodes.len() {
+                if sender_idx == receiver_idx {
+                    continue;
+                }
+                let [receiver, sender] = nodes
+                    .get_disjoint_mut([receiver_idx, sender_idx])
+                    .expect("receiver and sender are different nodes");
+                receiver.sync_with_one(sender).await?;
+            }
+        }
+        Ok(())
     }
 
     /// Helper method to propagate a block from one node to another specific node.
@@ -833,6 +851,7 @@ impl TestNode {
             None,
             test_network,
             deploy_lifespan,
+            true,
         )
         .await
     }
@@ -861,8 +880,38 @@ impl TestNode {
             Some(bootstrap_index),
             test_network,
             None,
+            true,
         )
         .await
+    }
+
+    /// A standalone node that answers `StoreItemsMessage` requests (state
+    /// exporter enabled). Regular `standalone`/`create_network` nodes disable
+    /// the exporter, so use this when a test must drive the real export path,
+    /// e.g. the issue #666 hostile-request resilience check.
+    pub async fn standalone_with_state_exporter(
+        genesis: GenesisContext,
+    ) -> Result<TestNode, CasperError> {
+        crate::init_logger();
+
+        let test_network = TestNetwork::empty();
+        let sks_to_use: Vec<PrivateKey> = genesis.validator_sks().into_iter().take(1).collect();
+
+        let nodes = Self::network(
+            sks_to_use,
+            genesis,
+            0.0,
+            Estimator::UNLIMITED_PARENTS,
+            None,
+            0,
+            None,
+            test_network,
+            None,
+            false,
+        )
+        .await?;
+
+        Ok(nodes.into_iter().next().unwrap())
     }
 
     /// Creates a network of TestNodes
@@ -877,6 +926,7 @@ impl TestNode {
         bootstrap_index: Option<usize>,
         test_network: TestNetwork,
         deploy_lifespan: Option<i64>,
+        disable_state_exporter: bool,
     ) -> Result<Vec<TestNode>, CasperError> {
         let genesis = genesis_context.genesis_block.clone();
         let n = sks.len();
@@ -923,6 +973,7 @@ impl TestNode {
                 &genesis_context,
                 bootstrap_peer.clone(),
                 deploy_lifespan,
+                disable_state_exporter,
             )
             .await;
             nodes.push(node);
@@ -961,6 +1012,7 @@ impl TestNode {
         genesis_context: &GenesisContext,
         bootstrap_peer: Option<PeerNode>,
         deploy_lifespan: Option<i64>,
+        disable_state_exporter: bool,
     ) -> TestNode {
         let tle = Arc::new(TransportLayerTestImpl::new(test_network.clone()));
         let tls =
@@ -1024,7 +1076,7 @@ impl TestNode {
         let (runtime_manager, _) = RuntimeManager::create_with_history(
             rspace_store,
             mergeable_store,
-            std::sync::Arc::new(Genesis::default_mergeable_tags()),
+            Genesis::default_mergeable_tags_arc(),
             rholang::rust::interpreter::external_services::ExternalServices::noop(),
         );
         let connections_cell = ConnectionsCell::new();
@@ -1088,7 +1140,7 @@ impl TestNode {
         // - Sender: Non-blocking, cloneable, used to enqueue blocks for processing
         // - Receiver: Thread-safe (Arc<Mutex>), used to dequeue blocks from processing pipeline
         let (block_processor_queue_tx, block_processor_queue_rx) =
-            mpsc::channel::<(Arc<dyn MultiParentCasper + Send + Sync>, BlockMessage)>(1024);
+            mpsc::channel::<BlockQueueItem>(1024);
         let block_processor_queue = (
             block_processor_queue_tx,
             Arc::new(Mutex::new(block_processor_queue_rx)),
@@ -1120,7 +1172,7 @@ impl TestNode {
             max_parent_depth: max_parent_depth.unwrap_or(30),
             synchrony_constraint_threshold: synchrony_constraint_threshold as f32,
             height_constraint_threshold: i64::MAX,
-            // Validators will try to put deploy in a block only for next `deployLifespan` blocks.
+            // Validators will try to put deploy in a block only for next `deploy_lifespan` blocks.
             // Required to enable protection from re-submitting duplicate deploys
             deploy_lifespan: deploy_lifespan.unwrap_or(50),
             casper_version: 1,
@@ -1137,6 +1189,7 @@ impl TestNode {
         };
 
         let casper_impl = MultiParentCasperImpl {
+            observer: std::sync::OnceLock::new(),
             divergence_monitor: std::sync::Arc::new(
                 casper::rust::engine::multi_parent_casper::DivergenceMonitor::default(),
             ),
@@ -1185,11 +1238,11 @@ impl TestNode {
 
         let running_engine = Running::new(
             block_processor_queue.0.clone(), // block_processing_queue_tx
-            Arc::new(DashSet::new()),        // blocks_in_processing
+            Arc::new(InFlightBlocks::new()), // blocks_in_processing
             casper.clone() as Arc<dyn MultiParentCasper + Send + Sync>, // casper
             _approved_block.clone(),         // approved_block
             the_init,                        // the_init
-            true,                            // disable_state_exporter
+            disable_state_exporter,          // disable_state_exporter
             tle.clone(),                     // transport
             rp_conf.clone(),                 // conf
             block_retriever.clone(),         // block_retriever

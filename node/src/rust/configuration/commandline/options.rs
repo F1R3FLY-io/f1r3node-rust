@@ -32,6 +32,18 @@ fn parse_non_negative_i64(s: &str) -> Result<i64, String> {
     Ok(v)
 }
 
+fn parse_soak_observer(
+    raw: &str,
+) -> Result<crate::rust::configuration::model::SoakObserverConfig, String> {
+    if raw.len() > crate::rust::soak_observer::MAX_CONFIG_BYTES {
+        return Err("The observer configuration exceeds its size limit.".to_owned());
+    }
+    let config = serde_json::from_str(raw)
+        .map_err(|_| "The observer configuration is invalid.".to_owned())?;
+    crate::rust::soak_observer::validate_config(&config).map_err(|error| error.to_string())?;
+    Ok(config)
+}
+
 /// F1r3fly node command-line interface
 #[derive(Parser)]
 #[command(
@@ -131,6 +143,9 @@ pub enum OptionsSubCommand {
 /// Run subcommand - Start RNode server
 #[derive(Args, Debug, Clone)]
 pub struct RunOptions {
+    #[arg(long = "soak-observer", value_parser = parse_soak_observer, help = "Enable the local read-only observer with a bounded JSON configuration.")]
+    pub soak_observer: Option<crate::rust::configuration::model::SoakObserverConfig>,
+
     /// Path to the configuration file for RNode server
     #[arg(short = 'c', long = "config-file")]
     pub config_file: Option<PathBuf>,

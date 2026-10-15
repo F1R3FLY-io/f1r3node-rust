@@ -88,6 +88,86 @@ fn exceptions_expire_on_the_review_date() {
 }
 
 #[test]
+fn reviews_due_within_the_warning_window_are_reported() {
+    let mut p = policy();
+    for (id, date) in [
+        ("RUSTSEC-2026-0258", "2026-09-13"),
+        ("RUSTSEC-2025-0134", "2026-09-07"),
+        ("RUSTSEC-2025-0141", "2026-09-14"),
+    ] {
+        p.exceptions.get_mut(id).unwrap().review_by = date.parse().unwrap();
+    }
+    let others: Vec<String> = p
+        .exceptions
+        .keys()
+        .filter(|id| {
+            ![
+                "RUSTSEC-2026-0258",
+                "RUSTSEC-2025-0134",
+                "RUSTSEC-2025-0141",
+            ]
+            .contains(&id.as_str())
+        })
+        .cloned()
+        .collect();
+    for id in others {
+        p.exceptions.get_mut(&id).unwrap().review_by = "2026-12-01".parse().unwrap();
+    }
+    let due = policy::reviews_due(&p, today(), scan::REVIEW_WARNING_DAYS).unwrap();
+    let ids: Vec<&str> = due.iter().map(|(id, _)| id.as_str()).collect();
+    assert_eq!(ids, ["RUSTSEC-2025-0134", "RUSTSEC-2026-0258"]);
+}
+
+#[test]
+fn reviews_due_are_ordered_by_deadline_not_by_advisory_id() {
+    let mut p = policy();
+    for entry in p.exceptions.values_mut() {
+        entry.review_by = "2026-12-01".parse().unwrap();
+    }
+    for (id, date) in [
+        ("RUSTSEC-2021-0141", "2026-09-12"),
+        ("RUSTSEC-2024-0436", "2026-09-10"),
+        ("RUSTSEC-2026-0258", "2026-09-08"),
+    ] {
+        p.exceptions.get_mut(id).unwrap().review_by = date.parse().unwrap();
+    }
+    let due = policy::reviews_due(&p, today(), scan::REVIEW_WARNING_DAYS).unwrap();
+    let ids: Vec<&str> = due.iter().map(|(id, _)| id.as_str()).collect();
+    let mut alphabetical = ids.clone();
+    alphabetical.sort();
+    assert_ne!(ids, alphabetical);
+    assert_eq!(ids, [
+        "RUSTSEC-2026-0258",
+        "RUSTSEC-2024-0436",
+        "RUSTSEC-2021-0141"
+    ]);
+    let warnings = scan::review_warnings(&p, today(), false).unwrap();
+    assert!(warnings[0].contains("RUSTSEC-2026-0258"));
+    assert!(warnings[2].contains("RUSTSEC-2021-0141"));
+}
+
+#[test]
+fn review_warnings_never_fail_and_annotate_under_github_actions() {
+    let mut p = policy();
+    for entry in p.exceptions.values_mut() {
+        entry.review_by = "2026-12-01".parse().unwrap();
+    }
+    p.exceptions.get_mut("RUSTSEC-2026-0258").unwrap().review_by = "2026-09-10".parse().unwrap();
+    policy::validate(&p, &deny(), today()).unwrap();
+    let plain = scan::review_warnings(&p, today(), false).unwrap();
+    assert_eq!(plain.len(), 1);
+    assert!(plain[0].starts_with("Supply-chain warning: RUSTSEC-2026-0258:"));
+    assert!(plain[0].contains("2026-09-10 (4 days)"));
+    let annotated = scan::review_warnings(&p, today(), true).unwrap();
+    assert!(annotated[0].starts_with("::warning title=Supply-chain review due::RUSTSEC-2026-0258:"));
+    assert!(
+        policy::reviews_due(&policy(), today(), scan::REVIEW_WARNING_DAYS)
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
 fn exceptions_require_owners_packages_and_exact_versions() {
     for field in ["owner", "package", "versions", "range"] {
         let mut p = policy();
