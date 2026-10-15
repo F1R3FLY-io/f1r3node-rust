@@ -9,6 +9,7 @@ pub mod commandline;
 pub mod config_check;
 pub mod file_io_provisioning;
 pub mod model;
+pub mod provisioning_merge;
 
 pub use commandline::Options;
 pub use model::{NodeConf, Profile};
