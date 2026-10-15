@@ -562,6 +562,61 @@ for renderer_wf in \
 	fi
 done
 
+# 9. A fork-only job must not share a check name with a ci.yml job when it is
+#    skipped. ci-fork-pr.yml runs for every pull request, and a job skipped by
+#    its `if` still reports a check. A skipped check with a required name passes
+#    the gate before the real ci.yml job finishes. A ci-heavy pull request then
+#    enters the merge queue early, and the merge group runs the heavy pipeline
+#    again.
+#    A fork-only job has `head.repo.fork == true` in its `if`. Its name is a
+#    literal or `${{ github.event.pull_request.head.repo.fork && 'A' || 'B' }}`.
+#    The skipped job reports B, the literal, or the job id when there is no
+#    name. That value must not be a ci.yml check name. A job that calls a
+#    reusable workflow is exempt. Its skipped check carries the caller name
+#    only, and no ruleset requires a caller name. The scan first tests itself
+#    against a swapped expression and a job without a name.
+fork_name_errors=""
+if ! fork_name_errors="$(
+	ruby -ryaml - .github/workflows/ci.yml .github/workflows/ci-fork-pr.yml 2>&1 <<'RUBY'
+FORK_NAME = /\A\$\{\{\s*github\.event\.pull_request\.head\.repo\.fork\s*&&\s*'([^']+)'\s*\|\|\s*'([^']+)'\s*\}\}\z/
+
+def violations(ci_names, jobs)
+  jobs.each_with_object([]) do |(id, job), found|
+    next unless job["if"].to_s.include?("head.repo.fork == true")
+    next if job.key?("uses")
+    name = job.fetch("name", id.to_s).to_s
+    if name.include?("${{")
+      match = FORK_NAME.match(name)
+      if match.nil?
+        found << "ci-fork-pr.yml job '#{id}' has a computed name that is not \"${{ github.event.pull_request.head.repo.fork && 'A' || 'B' }}\""
+        next
+      end
+      name = match[2]
+    end
+    found << "ci-fork-pr.yml job '#{id}' reports '#{name}' when skipped; that is a ci.yml check name" if ci_names.include?(name)
+  end
+end
+
+guard = "always() && github.event.pull_request.head.repo.fork == true"
+probe = {
+  "swapped" => { "if" => guard, "name" => "${{ github.event.pull_request.head.repo.fork && 'Fork only' || 'Gate' }}" },
+  "Gate" => { "if" => guard },
+  "correct" => { "if" => guard, "name" => "${{ github.event.pull_request.head.repo.fork && 'Gate' || 'Gate (fork PRs only)' }}" }
+}
+flagged = violations(["Gate"], probe).map { |line| line[/job '([^']+)'/, 1] }
+puts "invariant 9 self-test failed: flagged #{flagged.inspect}, expected [\"swapped\", \"Gate\"]" unless flagged == %w[swapped Gate]
+
+ci_names = YAML.load_file(ARGV[0]).fetch("jobs").map { |id, job| job.fetch("name", id.to_s).to_s }.reject { |name| name.include?("${{") }
+puts violations(ci_names, YAML.load_file(ARGV[1]).fetch("jobs"))
+RUBY
+)"; then
+	err "fork check name scan failed: $fork_name_errors"
+elif [ -n "$fork_name_errors" ]; then
+	while IFS= read -r line; do err "$line"; done <<<"$fork_name_errors"
+else
+	ok "skipped fork-only jobs do not report ci.yml check names"
+fi
+
 if [ "$fail" -ne 0 ]; then
 	printf '::error::%s\n' "workflow security invariants violated; see errors above"
 	exit 1

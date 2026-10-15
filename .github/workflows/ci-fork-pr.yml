@@ -94,8 +94,14 @@ jobs:
   # pipeline's per-arch matrix jobs into one ruleset gate per arch. They use
   # `contains(...)` (not `startswith`) because reusable-workflow job names are
   # prefixed with the caller job name ("Integration Pipeline / Integration Tests (...)").
+  # A pull request from this repository also runs this workflow, and a job
+  # skipped by its `if` still reports a check. The name must change for such a
+  # pull request. Otherwise the skipped check satisfies the required gate before
+  # the real ci.yml gate finishes, and a ci-heavy pull request enters the merge
+  # queue early. The merge group then cannot reuse that result and runs the
+  # heavy pipeline again.
   integration_tests_amd64:
-    name: Integration Gate (amd64)
+    name: ${{ github.event.pull_request.head.repo.fork && 'Integration Gate (amd64)' || 'Integration Gate (amd64, fork PRs only)' }}
     needs: pipeline
     if: always() && github.event.pull_request.head.repo.fork == true
     runs-on: ubuntu-latest
@@ -129,7 +135,7 @@ jobs:
           echo "All amd64 integration test slots succeeded"
 
   integration_tests_arm64:
-    name: Integration Gate (arm64)
+    name: ${{ github.event.pull_request.head.repo.fork && 'Integration Gate (arm64)' || 'Integration Gate (arm64, fork PRs only)' }}
     needs: pipeline
     if: always() && github.event.pull_request.head.repo.fork == true
     runs-on: ubuntu-latest
