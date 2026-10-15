@@ -1,16 +1,20 @@
 //! File I/O FIP boot-time validation.
 //!
-//! Enumerates every spec-mandated boot-time invariant for the
-//! static-provisioning config as a typed error, plus the
-//! operator-facing `Display` impl, plus the flatten / canonical-
-//! path / deterministic-sort scaffolding, plus the per-entry
-//! validators (symlink / hard-link / kind-mismatch / path-not-
-//! found).  Remaining slices:
+//! Top-level entry point: `validate_provisioning_boot`.  Given a
+//! parsed `FileIoProvisioning`, runs the full invariant pipeline
+//! (size cap, syntactic defense-in-depth, canonicity, cross-bucket
+//! logical-name uniqueness (H-3), bucket disjointness (PB-M-16),
+//! per-entry tree walk) and returns every violation batched into a
+//! `Vec<FileIoConfigError>` (plan §370 posture: one boot pass
+//! surfaces every problem).
 //!
-//!   * ops-6e — cross-source + bucket-disjointness validators
-//!     + top-level `validate_provisioning_boot` entry point.
-//!   * ops-7  — CLI-merge path (populates the three
-//!     `Duplicate*` variants from `provisioning_merge`).
+//! Remaining work:
+//!
+//!   * ops-7 — CLI-merge path (populates the three `Duplicate*`
+//!     variants from `provisioning_merge`); re-uses
+//!     `normalize_for_compare` + `sort_key` from here.
+//!   * ops-8 — wire `validate_provisioning_boot` into the node
+//!     boot pipeline between config parsing and genesis handoff.
 //!
 //! Invariants (all batched into `Vec<FileIoConfigError>` so one
 //! boot-failure report surfaces every violation, per plan §370):
@@ -32,13 +36,14 @@
 //!     map; a duplicate key would produce a Rholang map where
 //!     second-write silently discards one entry.
 
-#![allow(dead_code)]
-
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use super::file_io_provisioning::{FileIoProvisioning, StaticDirEntry, StaticFileEntry};
+use super::file_io_provisioning::{
+    reject_forbidden_chars, validate_absolute_path, validate_size_limits, FileIoProvisioning,
+    StaticDirEntry, StaticFileEntry, CONFIG_DIR_MODES, CONFIG_FILE_MODES,
+};
 
 /// The four spec-canonical buckets, as `&'static str` labels so
 /// errors can name the offending bucket without allocating.
@@ -52,9 +57,9 @@ pub(crate) const BUCKET_CONSENSUS_DIR: &str = "consensus-static-dirs";
 /// line (bucket + logical name) plus the underlying host detail
 /// (path, nlink, canonical resolution, etc.).
 ///
-/// The 15 ops-6 variants are emitted by `validate_provisioning_boot`
-/// (ops-6c..6e); the 3 `Duplicate*` variants are emitted by the
-/// CLI-merge layer (ops-7).
+/// The 15 boot variants are emitted by `validate_provisioning_boot`;
+/// the 3 `Duplicate*` variants are emitted by the CLI-merge layer
+/// (ops-7).
 #[derive(Debug, PartialEq, Eq)]
 pub enum FileIoConfigError {
     /// The declared path itself is a symlink.
@@ -979,6 +984,232 @@ fn check_hardlink(
 ) {
 }
 
+/// Lexical path normalization for comparison only.  Collects
+/// components to drop `.` and collapse `//` / trailing `/`.
+/// Preserves `..` components — `non_canonical_reason` catches
+/// those separately.  Exposed at `pub(crate)` so ops-7's CLI-merge
+/// layer can reuse it when deduplicating host-path collisions.
+pub(crate) fn normalize_for_compare(p: &Path) -> PathBuf { p.components().collect() }
+
+/// H-3 fix: Fs.rho's `bMap` is a single logical-name namespace
+/// shared across all four buckets.  Any name appearing in `> 1`
+/// entry would produce a Rholang map where second-write silently
+/// wins — pre-H-3 this surfaced as a panic in
+/// `format_bundle_for_rholang` on EVERY validator, a network-wide
+/// genesis DoS.  Reject at boot with one error per colliding name
+/// listing every (bucket, path) pair for operator diagnosis.
+fn check_cross_source_logical_name_conflict(
+    entries: &[FlatEntry<'_>],
+    errors: &mut Vec<FileIoConfigError>,
+) {
+    let mut by_name: HashMap<&str, Vec<&FlatEntry<'_>>> = HashMap::new();
+    for e in entries {
+        by_name.entry(e.logical_name).or_default().push(e);
+    }
+    let mut names: Vec<&&str> = by_name
+        .iter()
+        .filter(|(_, vs)| vs.len() > 1)
+        .map(|(n, _)| n)
+        .collect();
+    names.sort();
+    for name in names {
+        let mut vs = by_name[*name].clone();
+        vs.sort_by_key(|e| e.bucket);
+        errors.push(FileIoConfigError::LogicalNameConflictAcrossBuckets {
+            logical_name: (*name).to_string(),
+            members: vs
+                .iter()
+                .map(|e| (e.bucket, e.path.to_path_buf()))
+                .collect(),
+        });
+    }
+}
+
+/// PB-M-16 cross-bucket disjointness.  Detects same-path duplicates
+/// and prefix overlaps between oracle and consensus buckets.
+/// Same-bucket overlaps are legal (a user may legitimately declare
+/// a directory and a file inside it in the same bucket).
+///
+/// Same-path comparison uses `normalize_for_compare` so
+/// `/etc/foo` and `/etc/./foo` are recognized as SamePath (raw
+/// `PathBuf` equality is byte-level, so the un-normalized check
+/// would classify the pair as Prefix).  The emitted error carries
+/// the operator's original path spelling so the fix is locatable.
+fn check_bucket_disjointness(entries: &[FlatEntry<'_>], errors: &mut Vec<FileIoConfigError>) {
+    let mut oracle: Vec<&FlatEntry<'_>> = Vec::new();
+    let mut consensus: Vec<&FlatEntry<'_>> = Vec::new();
+    for e in entries {
+        if e.is_consensus {
+            consensus.push(e);
+        } else {
+            oracle.push(e);
+        }
+    }
+    for o in &oracle {
+        let o_norm = normalize_for_compare(o.path);
+        for c in &consensus {
+            let c_norm = normalize_for_compare(c.path);
+            if o_norm == c_norm {
+                errors.push(FileIoConfigError::BucketOverlapSamePath {
+                    path: o.path.to_path_buf(),
+                    bucket_a: o.bucket,
+                    logical_name_a: o.logical_name.to_string(),
+                    bucket_b: c.bucket,
+                    logical_name_b: c.logical_name.to_string(),
+                });
+                continue;
+            }
+            if let Some((outer, inner)) = prefix_pair(o, c) {
+                errors.push(FileIoConfigError::BucketOverlapPrefix {
+                    outer_bucket: outer.bucket,
+                    outer_logical_name: outer.logical_name.to_string(),
+                    outer_path: outer.path.to_path_buf(),
+                    inner_bucket: inner.bucket,
+                    inner_logical_name: inner.logical_name.to_string(),
+                    inner_path: inner.path.to_path_buf(),
+                });
+            }
+        }
+    }
+}
+
+/// Return `Some((outer, inner))` if one entry's path is a strict
+/// path-component prefix of the other's, else `None`.  A path is
+/// a prefix of another only when the other is inside its directory
+/// tree — string-prefix isn't enough (`/foo` is not a component
+/// prefix of `/foobar`).  `Path::starts_with` does component-level
+/// matching.
+fn prefix_pair<'a>(
+    a: &'a FlatEntry<'a>,
+    b: &'a FlatEntry<'a>,
+) -> Option<(&'a FlatEntry<'a>, &'a FlatEntry<'a>)> {
+    if b.path.starts_with(a.path) && b.path != a.path {
+        Some((a, b))
+    } else if a.path.starts_with(b.path) && a.path != b.path {
+        Some((b, a))
+    } else {
+        None
+    }
+}
+
+/// Boot-time validation entry point.  Runs the full validation
+/// pipeline against a parsed `FileIoProvisioning`; batches every
+/// violation into a single `Vec<FileIoConfigError>` (plan §370);
+/// returns `Ok(())` iff no violations.
+///
+/// Pipeline:
+///
+///   1. Size cap: `validate_size_limits`.  On breach, surface the
+///      error but still run syntactic checks below.  Skip the tree
+///      walk + bucket disjointness to bound cost (a hostile 10M-
+///      entry config shouldn't ever hit the real filesystem).
+///   2. Defense-in-depth syntactic re-checks: absolute path,
+///      canonical path, mode whitelist, forbidden chars (on
+///      logical name, path, mode).  Catches programmatic
+///      construction that bypassed ops-6a's serde-time checks
+///      (test harnesses, ops-7's CLI merge, etc.).  Entries that
+///      fail any syntactic check are FLAGGED but then EXCLUDED
+///      from downstream disjointness + tree walk to avoid cascade
+///      errors.
+///   3. Cross-bucket logical-name conflict (H-3).
+///   4. Bucket disjointness (PB-M-16).
+///   5. Per-entry tree walk (ancestor symlinks, entry symlink,
+///      hard links, kind mismatch, hostile-tree descendant cap).
+///   6. Deterministic sort via `sort_key` (M-23-1).
+pub fn validate_provisioning_boot(cfg: &FileIoProvisioning) -> Result<(), Vec<FileIoConfigError>> {
+    let mut errors: Vec<FileIoConfigError> = Vec::new();
+
+    let size_ok = match validate_size_limits(cfg) {
+        Ok(()) => true,
+        Err(message) => {
+            errors.push(FileIoConfigError::SizeLimitExceeded { message });
+            false
+        }
+    };
+
+    let all_entries = flatten(cfg);
+    let mut valid_entries: Vec<FlatEntry<'_>> = Vec::with_capacity(all_entries.len());
+    for e in all_entries {
+        let mut skip = false;
+        if validate_absolute_path(e.path).is_err() {
+            errors.push(FileIoConfigError::NotAbsolute {
+                bucket: e.bucket,
+                logical_name: e.logical_name.to_string(),
+                path: e.path.to_path_buf(),
+            });
+            skip = true;
+        }
+        if let Some(reason) = non_canonical_reason(e.path) {
+            errors.push(FileIoConfigError::NonCanonicalPath {
+                bucket: e.bucket,
+                logical_name: e.logical_name.to_string(),
+                path: e.path.to_path_buf(),
+                reason,
+            });
+            skip = true;
+        }
+        let whitelist: &[&str] = match e.kind {
+            EntryKind::File => CONFIG_FILE_MODES,
+            EntryKind::Dir => CONFIG_DIR_MODES,
+        };
+        if !whitelist.contains(&e.mode) {
+            errors.push(FileIoConfigError::InvalidMode {
+                bucket: e.bucket,
+                logical_name: e.logical_name.to_string(),
+                mode: e.mode.to_string(),
+            });
+            skip = true;
+        }
+        if let Err(detail) = reject_forbidden_chars("logical_name", e.logical_name) {
+            errors.push(FileIoConfigError::ForbiddenChars {
+                bucket: e.bucket,
+                logical_name: e.logical_name.to_string(),
+                field: "logical_name",
+                detail,
+            });
+            skip = true;
+        }
+        if let Some(s) = e.path.to_str() {
+            if let Err(detail) = reject_forbidden_chars("path", s) {
+                errors.push(FileIoConfigError::ForbiddenChars {
+                    bucket: e.bucket,
+                    logical_name: e.logical_name.to_string(),
+                    field: "path",
+                    detail,
+                });
+                skip = true;
+            }
+        }
+        if let Err(detail) = reject_forbidden_chars("mode", e.mode) {
+            errors.push(FileIoConfigError::ForbiddenChars {
+                bucket: e.bucket,
+                logical_name: e.logical_name.to_string(),
+                field: "mode",
+                detail,
+            });
+            skip = true;
+        }
+        if !skip {
+            valid_entries.push(e);
+        }
+    }
+
+    check_cross_source_logical_name_conflict(&valid_entries, &mut errors);
+
+    if size_ok {
+        check_bucket_disjointness(&valid_entries, &mut errors);
+        check_entries(&valid_entries, &mut errors);
+    }
+
+    errors.sort_by_key(sort_key);
+
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1638,5 +1869,366 @@ mod tests {
         fs::create_dir_all(&share).unwrap();
         let errs = run_entry_check(BUCKET_ORACLE_DIR, EntryKind::Dir, &share);
         assert!(errs.is_empty(), "expected no errors; got {errs:?}");
+    }
+
+    // ---------- Top-level validate_provisioning_boot (ops-6e) ----------
+
+    fn add_oracle_file(cfg: &mut FileIoProvisioning, name: &str, path: PathBuf) {
+        cfg.oracle_static_files
+            .insert(name.into(), StaticFileEntry {
+                path,
+                mode: "r".into(),
+            });
+    }
+    fn add_oracle_dir(cfg: &mut FileIoProvisioning, name: &str, path: PathBuf) {
+        cfg.oracle_static_dirs.insert(name.into(), StaticDirEntry {
+            path,
+            mode: "r".into(),
+        });
+    }
+    fn add_consensus_file(cfg: &mut FileIoProvisioning, name: &str, path: PathBuf) {
+        cfg.consensus_static_files
+            .insert(name.into(), StaticFileEntry {
+                path,
+                mode: "r".into(),
+            });
+    }
+    #[test]
+    fn empty_config_passes() {
+        assert!(validate_provisioning_boot(&empty_cfg()).is_ok());
+    }
+
+    #[test]
+    fn single_regular_file_passes() {
+        let td = TempDir::new().unwrap();
+        let path = td_root(&td).join("cfg.json");
+        make_file(&path);
+        let mut cfg = empty_cfg();
+        add_oracle_file(&mut cfg, "cfg", path);
+        assert!(validate_provisioning_boot(&cfg).is_ok());
+    }
+
+    #[test]
+    fn single_regular_dir_passes() {
+        let td = TempDir::new().unwrap();
+        let share = td_root(&td).join("share");
+        fs::create_dir_all(&share).unwrap();
+        let mut cfg = empty_cfg();
+        add_oracle_dir(&mut cfg, "share", share);
+        assert!(validate_provisioning_boot(&cfg).is_ok());
+    }
+
+    // ---------- PB-M-16 bucket disjointness ----------
+
+    #[test]
+    fn same_path_in_both_buckets_rejected() {
+        let td = TempDir::new().unwrap();
+        let path = td_root(&td).join("f.json");
+        make_file(&path);
+        let mut cfg = empty_cfg();
+        add_oracle_file(&mut cfg, "a", path.clone());
+        add_consensus_file(&mut cfg, "b", path);
+        let errs = validate_provisioning_boot(&cfg).unwrap_err();
+        assert!(
+            errs.iter()
+                .any(|e| matches!(e, FileIoConfigError::BucketOverlapSamePath { .. })),
+            "expected BucketOverlapSamePath; got {errs:?}"
+        );
+    }
+
+    #[test]
+    fn oracle_dir_containing_consensus_file_rejected() {
+        let td = TempDir::new().unwrap();
+        let outer = td_root(&td).join("data");
+        fs::create_dir_all(&outer).unwrap();
+        let inner = outer.join("cfg.json");
+        make_file(&inner);
+        let mut cfg = empty_cfg();
+        add_oracle_dir(&mut cfg, "data", outer);
+        add_consensus_file(&mut cfg, "cfg", inner);
+        let errs = validate_provisioning_boot(&cfg).unwrap_err();
+        assert!(
+            errs.iter()
+                .any(|e| matches!(e, FileIoConfigError::BucketOverlapPrefix { .. })),
+            "expected BucketOverlapPrefix; got {errs:?}"
+        );
+    }
+
+    /// A dir and a file inside it, both in the SAME bucket, is a
+    /// legitimate operator pattern (dir cap + explicit file cap at
+    /// a different mode).  Must not emit `BucketOverlapPrefix`.
+    #[test]
+    fn same_bucket_prefix_overlap_allowed() {
+        let td = TempDir::new().unwrap();
+        let outer = td_root(&td).join("data");
+        fs::create_dir_all(&outer).unwrap();
+        let inner = outer.join("cfg.json");
+        make_file(&inner);
+        let mut cfg = empty_cfg();
+        add_oracle_dir(&mut cfg, "data", outer);
+        add_oracle_file(&mut cfg, "cfg", inner);
+        assert!(
+            validate_provisioning_boot(&cfg).is_ok(),
+            "same-bucket overlap must pass"
+        );
+    }
+
+    /// `/foo` is NOT a component-prefix of `/foobar`; raw string-
+    /// prefix matching would misclassify this as overlap.  Pins
+    /// that `Path::starts_with` component-level semantics are
+    /// honored.
+    #[test]
+    fn string_prefix_only_does_not_overlap() {
+        let td = TempDir::new().unwrap();
+        let root = td_root(&td);
+        let foo_dir = root.join("foo");
+        fs::create_dir_all(&foo_dir).unwrap();
+        let foobar_file = root.join("foobar");
+        make_file(&foobar_file);
+        let mut cfg = empty_cfg();
+        add_oracle_dir(&mut cfg, "foo", foo_dir);
+        add_consensus_file(&mut cfg, "foobar", foobar_file);
+        assert!(
+            validate_provisioning_boot(&cfg).is_ok(),
+            "string-prefix only must not overlap"
+        );
+    }
+
+    // ---------- H-3: logical-name conflict across buckets ----------
+
+    #[test]
+    fn same_name_across_oracle_file_and_oracle_dir_rejected() {
+        let td = TempDir::new().unwrap();
+        let root = td_root(&td);
+        let f = root.join("f");
+        let d = root.join("d");
+        make_file(&f);
+        fs::create_dir_all(&d).unwrap();
+        let mut cfg = empty_cfg();
+        add_oracle_file(&mut cfg, "shared", f);
+        add_oracle_dir(&mut cfg, "shared", d);
+        let errs = validate_provisioning_boot(&cfg).unwrap_err();
+        assert!(
+            errs.iter().any(|e| matches!(
+                e,
+                FileIoConfigError::LogicalNameConflictAcrossBuckets { logical_name, .. }
+                    if logical_name == "shared"
+            )),
+            "expected LogicalNameConflictAcrossBuckets; got {errs:?}"
+        );
+    }
+
+    #[test]
+    fn same_name_across_three_buckets_emits_single_error_with_all_members() {
+        let td = TempDir::new().unwrap();
+        let root = td_root(&td);
+        let f1 = root.join("f1");
+        let f2 = root.join("f2");
+        let d1 = root.join("d1");
+        make_file(&f1);
+        make_file(&f2);
+        fs::create_dir_all(&d1).unwrap();
+        let mut cfg = empty_cfg();
+        add_oracle_file(&mut cfg, "k", f1);
+        add_consensus_file(&mut cfg, "k", f2);
+        add_oracle_dir(&mut cfg, "k", d1);
+        let errs = validate_provisioning_boot(&cfg).unwrap_err();
+        let conflicts: Vec<_> = errs
+            .iter()
+            .filter_map(|e| match e {
+                FileIoConfigError::LogicalNameConflictAcrossBuckets {
+                    logical_name,
+                    members,
+                } => Some((logical_name, members)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(conflicts.len(), 1, "expected exactly one conflict error");
+        assert_eq!(conflicts[0].0, "k");
+        assert_eq!(conflicts[0].1.len(), 3, "all 3 members must be reported");
+    }
+
+    // ---------- Non-canonical path ----------
+
+    #[test]
+    fn dot_component_rejected_as_non_canonical() {
+        let td = TempDir::new().unwrap();
+        let path = td_root(&td).join("./cfg.json");
+        let mut cfg = empty_cfg();
+        add_oracle_file(&mut cfg, "cfg", path);
+        let errs = validate_provisioning_boot(&cfg).unwrap_err();
+        assert!(
+            errs.iter().any(|e| matches!(
+                e,
+                FileIoConfigError::NonCanonicalPath { reason, .. }
+                    if reason.contains("`.`")
+            )),
+            "expected NonCanonicalPath for `.`; got {errs:?}"
+        );
+    }
+
+    #[test]
+    fn dotdot_component_rejected_as_non_canonical() {
+        let mut cfg = empty_cfg();
+        add_oracle_file(&mut cfg, "cfg", PathBuf::from("/etc/../etc/cfg"));
+        let errs = validate_provisioning_boot(&cfg).unwrap_err();
+        assert!(
+            errs.iter().any(|e| matches!(
+                e,
+                FileIoConfigError::NonCanonicalPath { reason, .. }
+                    if reason.contains("`..`")
+            )),
+            "expected NonCanonicalPath for `..`; got {errs:?}"
+        );
+    }
+
+    // ---------- Defense-in-depth: programmatic bypass ----------
+
+    /// Programmatic FileIoProvisioning construction can bypass
+    /// ops-6a's serde-time absolute-path check.  Boot layer
+    /// catches it.
+    #[test]
+    fn programmatic_relative_path_flagged_as_not_absolute() {
+        let mut cfg = empty_cfg();
+        add_oracle_file(&mut cfg, "cfg", PathBuf::from("relative/path"));
+        let errs = validate_provisioning_boot(&cfg).unwrap_err();
+        assert!(
+            errs.iter()
+                .any(|e| matches!(e, FileIoConfigError::NotAbsolute { .. })),
+            "expected NotAbsolute; got {errs:?}"
+        );
+    }
+
+    /// Same programmatic-bypass defense for mode whitelist.
+    #[test]
+    fn programmatic_invalid_mode_flagged() {
+        let td = TempDir::new().unwrap();
+        let path = td_root(&td).join("cfg.json");
+        make_file(&path);
+        let mut cfg = empty_cfg();
+        cfg.oracle_static_files
+            .insert("cfg".into(), StaticFileEntry {
+                path,
+                mode: "rwx".into(),
+            });
+        let errs = validate_provisioning_boot(&cfg).unwrap_err();
+        assert!(
+            errs.iter()
+                .any(|e| matches!(e, FileIoConfigError::InvalidMode { .. })),
+            "expected InvalidMode; got {errs:?}"
+        );
+    }
+
+    // ---------- Batching + determinism ----------
+
+    /// Multiple distinct violations in one config all surface in
+    /// the error Vec.  Plan §370 posture: operator sees every
+    /// problem on one boot pass.
+    #[test]
+    fn multiple_errors_batched() {
+        let td = TempDir::new().unwrap();
+        let root = td_root(&td);
+        let shared = root.join("shared");
+        make_file(&shared);
+        let mut cfg = empty_cfg();
+        add_oracle_file(&mut cfg, "x", PathBuf::from("relative"));
+        add_oracle_file(&mut cfg, "y", root.join("no_such"));
+        add_oracle_file(&mut cfg, "same", shared.clone());
+        add_consensus_file(&mut cfg, "other", shared);
+        let errs = validate_provisioning_boot(&cfg).unwrap_err();
+        assert!(errs
+            .iter()
+            .any(|e| matches!(e, FileIoConfigError::NotAbsolute { .. })));
+        assert!(errs
+            .iter()
+            .any(|e| matches!(e, FileIoConfigError::PathNotFound { .. })));
+        assert!(errs
+            .iter()
+            .any(|e| matches!(e, FileIoConfigError::BucketOverlapSamePath { .. })));
+    }
+
+    /// Error output must be byte-equal across identical calls —
+    /// `HashMap` iteration is randomized by default, so a leak
+    /// through the deterministic-sort would fail intermittently.
+    /// Three back-to-back runs give high confidence in one CI
+    /// invocation.
+    #[test]
+    fn boot_validation_error_order_is_deterministic() {
+        let mut cfg = empty_cfg();
+        for i in 0..8 {
+            add_oracle_file(
+                &mut cfg,
+                &format!("miss-{i}"),
+                PathBuf::from(format!("/no/such/f{i}")),
+            );
+            add_oracle_dir(
+                &mut cfg,
+                &format!("miss-d-{i}"),
+                PathBuf::from(format!("/no/such/d{i}")),
+            );
+        }
+        let errs1 = validate_provisioning_boot(&cfg).unwrap_err();
+        let errs2 = validate_provisioning_boot(&cfg).unwrap_err();
+        let errs3 = validate_provisioning_boot(&cfg).unwrap_err();
+        assert_eq!(errs1, errs2, "run 1 vs 2 must agree");
+        assert_eq!(errs2, errs3, "run 2 vs 3 must agree");
+        assert!(!errs1.is_empty());
+    }
+
+    /// HOCON -> `FileIoProvisioning` -> `validate_provisioning_boot`
+    /// integration: a HOCON config that parses cleanly but has a
+    /// cross-bucket name collision gets caught at boot.  Pins the
+    /// end-to-end pipeline.
+    #[test]
+    fn hocon_parse_then_validate_integration() {
+        let td = TempDir::new().unwrap();
+        let root = td_root(&td);
+        let f = root.join("f");
+        let d = root.join("d");
+        make_file(&f);
+        fs::create_dir_all(&d).unwrap();
+        let hocon = format!(
+            r#"
+            oracle-static-files {{ "shared" = "{}" }}
+            consensus-static-dirs {{ "shared" = "{}" }}
+            "#,
+            f.display(),
+            d.display()
+        );
+        let cfg: FileIoProvisioning = hocon::HoconLoader::new()
+            .load_str(&hocon)
+            .expect("hocon load")
+            .resolve()
+            .expect("hocon resolve");
+        let errs = validate_provisioning_boot(&cfg).unwrap_err();
+        assert!(
+            errs.iter().any(|e| matches!(
+                e,
+                FileIoConfigError::LogicalNameConflictAcrossBuckets { .. }
+            )),
+            "expected LogicalNameConflictAcrossBuckets; got {errs:?}"
+        );
+    }
+
+    // ---------- normalize_for_compare ----------
+
+    #[test]
+    fn normalize_for_compare_strips_dot_and_double_slash() {
+        assert_eq!(
+            normalize_for_compare(Path::new("/a/b")),
+            PathBuf::from("/a/b")
+        );
+        assert_eq!(
+            normalize_for_compare(Path::new("/a/./b")),
+            PathBuf::from("/a/b")
+        );
+        assert_eq!(
+            normalize_for_compare(Path::new("/a//b")),
+            PathBuf::from("/a/b")
+        );
+        assert_eq!(
+            normalize_for_compare(Path::new("/a/b/")),
+            PathBuf::from("/a/b")
+        );
     }
 }
