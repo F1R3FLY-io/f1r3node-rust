@@ -9,8 +9,9 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
-use block_storage::rust::deploy::key_value_deploy_storage::KeyValueDeployStorage;
-use block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer;
+use block_storage::rust::deploy::key_value_deploy_storage::{
+    KeyValueDeployStorage, KeyValueRejectedDeployBuffer,
+};
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use crypto::rust::private_key::PrivateKey;
 use crypto::rust::public_key::PublicKey;
@@ -475,7 +476,7 @@ pub async fn prepare_user_deploys(
     current_time_millis: i64,
     deploy_storage: Arc<parking_lot::Mutex<KeyValueDeployStorage>>,
     rejected_deploy_buffer: Arc<
-        Mutex<block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer>,
+        Mutex<block_storage::rust::deploy::key_value_deploy_storage::KeyValueRejectedDeployBuffer>,
     >,
     block_store: &KeyValueBlockStore,
     allow_recovered_deploys: bool,
@@ -573,7 +574,7 @@ async fn prepare_user_deploys_with_policy(
     current_time_millis: i64,
     deploy_storage: Arc<parking_lot::Mutex<KeyValueDeployStorage>>,
     rejected_deploy_buffer: Arc<
-        Mutex<block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer>,
+        Mutex<block_storage::rust::deploy::key_value_deploy_storage::KeyValueRejectedDeployBuffer>,
     >,
     block_store: &KeyValueBlockStore,
     allow_recovered_deploys: bool,
@@ -2843,7 +2844,9 @@ pub async fn create(
     validator_identity: &ValidatorIdentity,
     dummy_deploy_opt: Option<(PrivateKey, String)>,
     deploy_storage: Arc<parking_lot::Mutex<KeyValueDeployStorage>>,
-    rejected_deploy_buffer: Arc<Mutex<block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer>>,
+    rejected_deploy_buffer: Arc<
+        Mutex<block_storage::rust::deploy::key_value_deploy_storage::KeyValueRejectedDeployBuffer>,
+    >,
     runtime_manager: &RuntimeManager,
     block_store: &mut KeyValueBlockStore,
     selection: super::proposer::DeploySelection,
@@ -2867,7 +2870,9 @@ pub async fn create_with_progress(
     validator_identity: &ValidatorIdentity,
     dummy_deploy_opt: Option<(PrivateKey, String)>,
     deploy_storage: Arc<parking_lot::Mutex<KeyValueDeployStorage>>,
-    rejected_deploy_buffer: Arc<Mutex<block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer>>,
+    rejected_deploy_buffer: Arc<
+        Mutex<block_storage::rust::deploy::key_value_deploy_storage::KeyValueRejectedDeployBuffer>,
+    >,
     runtime_manager: &RuntimeManager,
     block_store: &mut KeyValueBlockStore,
     selection: super::proposer::DeploySelection,

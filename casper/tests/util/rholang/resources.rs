@@ -428,10 +428,10 @@ pub async fn key_value_deploy_storage_from_dyn(
 pub async fn key_value_rejected_deploy_buffer_from_dyn(
     kvm: &mut dyn KeyValueStoreManager,
 ) -> Result<
-    block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer,
+    block_storage::rust::deploy::key_value_deploy_storage::KeyValueRejectedDeployBuffer,
     shared::rust::store::key_value_store::KvStoreError,
 > {
-    use block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer;
+    use block_storage::rust::deploy::key_value_deploy_storage::KeyValueRejectedDeployBuffer;
 
     let buffer_kv_store = kvm
         .store("rejected_deploy_buffer".to_string())
