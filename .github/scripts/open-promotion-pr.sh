@@ -11,7 +11,24 @@
 # The branch is created through the GitHub API, so no local checkout or push
 # (and no pre-push hook) is needed. The pull request is opened with the
 # caller's gh login, so CI runs on it.
+#
+# The Promote dev to master workflow runs this script with a GitHub App token
+# and sets PROMOTE_TRIGGERED_BY. The app is then the pull request author, so the
+# user who started the workflow could approve the promotion alone. The body
+# names that user and asks a different ci-maintainer to approve.
 set -euo pipefail
+
+# Check the login first, before any git or gh call.
+creator="created by \`just promote\`"
+review=""
+if [ -n "${PROMOTE_TRIGGERED_BY:-}" ]; then
+	[[ "$PROMOTE_TRIGGERED_BY" =~ ^[A-Za-z0-9](-?[A-Za-z0-9])*(\[bot\])?$ ]] ||
+		{ echo "ERROR: PROMOTE_TRIGGERED_BY is not a GitHub login." >&2; exit 2; }
+	creator="created by the Promote dev to master workflow for @$PROMOTE_TRIGGERED_BY"
+	review="
+
+@$PROMOTE_TRIGGERED_BY started this promotion. A different member of @F1R3FLY-io/ci-maintainers approves it."
+fi
 
 remote="${PROMOTE_REMOTE:-origin}"
 repo="${PROMOTE_REPOSITORY:-$(gh repo view --json nameWithOwner -q .nameWithOwner)}"
@@ -35,7 +52,7 @@ if ! gh pr create --repo "$repo" --base master --head "$branch" \
 	--title "Promote dev to master ($stamp)" \
 	--body "Promotes \`dev\` at \`${sha:0:9}\` to \`master\` ($count commits).
 
-This pull request comes from the temporary branch \`$branch\`, created by \`just promote\`. GitHub deletes \`$branch\` after the merge. No open pull request targets it, so no pull request is retargeted."; then
+This pull request comes from the temporary branch \`$branch\`, $creator. GitHub deletes \`$branch\` after the merge. No open pull request targets it, so no pull request is retargeted.$review"; then
 	echo "ERROR: the pull request was not opened. Deleting $branch." >&2
 	gh api -X DELETE "repos/$repo/git/refs/heads/$branch" >/dev/null ||
 		echo "WARNING: delete $branch by hand." >&2
