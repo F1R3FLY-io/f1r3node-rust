@@ -428,6 +428,14 @@ pub struct CasperSnapshot {
 }
 
 impl CasperSnapshot {
+    pub fn is_validator_bonded(&self, validator: &[u8]) -> Result<bool, CasperError> {
+        let Some(parent) = self.parents.first() else {
+            return Ok(false);
+        };
+        let metadata = self.dag.lookup_unsafe(&parent.block_hash)?;
+        Ok(metadata.weight_map.contains_key(validator))
+    }
+
     pub fn new(dag: KeyValueDagRepresentation) -> Self {
         Self {
             dag,
