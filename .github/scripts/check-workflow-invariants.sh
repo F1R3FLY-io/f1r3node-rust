@@ -562,6 +562,37 @@ for renderer_wf in \
 	fi
 done
 
+# 9. A fork-only job must not share a check name with a ci.yml job when it is
+#    skipped. ci-fork-pr.yml runs for every pull request, and a job skipped by
+#    its `if` still reports a check. A skipped check with a required name passes
+#    the gate before the real ci.yml job finishes. A ci-heavy pull request then
+#    enters the merge queue early, and the merge group runs the heavy pipeline
+#    again.
+#    A job that calls a reusable workflow is exempt. Its skipped check carries
+#    the caller name only, and no ruleset requires a caller name.
+fork_name_errors=""
+if ! fork_name_errors="$(
+	ruby -ryaml - .github/workflows/ci.yml .github/workflows/ci-fork-pr.yml 2>&1 <<'RUBY'
+ci_names = YAML.load_file(ARGV[0]).fetch("jobs").values.map { |job| job["name"].to_s }.reject { |name| name.include?("${{") }
+YAML.load_file(ARGV[1]).fetch("jobs").each do |id, job|
+  next unless job["if"].to_s.include?("head.repo.fork")
+  next if job.key?("uses")
+  name = job["name"].to_s
+  if ci_names.include?(name)
+    puts "ci-fork-pr.yml job '#{id}' reports '#{name}' when skipped; make the name depend on head.repo.fork"
+  elsif name.include?("${{") && !name.include?("head.repo.fork")
+    puts "ci-fork-pr.yml job '#{id}' has a computed name that does not depend on head.repo.fork"
+  end
+end
+RUBY
+)"; then
+	err "fork check name scan failed: $fork_name_errors"
+elif [ -n "$fork_name_errors" ]; then
+	while IFS= read -r line; do err "$line"; done <<<"$fork_name_errors"
+else
+	ok "skipped fork-only jobs do not report ci.yml check names"
+fi
+
 if [ "$fail" -ne 0 ]; then
 	printf '::error::%s\n' "workflow security invariants violated; see errors above"
 	exit 1
