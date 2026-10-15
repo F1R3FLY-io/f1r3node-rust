@@ -307,7 +307,12 @@ pub(crate) fn validate_size_limits(cfg: &FileIoProvisioning) -> Result<(), Strin
                     "logical name in `{bucket}` has length {} > cap of {MAX_LOGICAL_KEY_LEN}; \
                      truncated preview: `{}...`",
                     k.len(),
-                    &k[..80.min(k.len())]
+                    // Char-boundary-safe truncate: byte-slicing at a
+                    // raw byte offset panics if the offset lands
+                    // mid-UTF-8-codepoint.  `chars().take()` walks
+                    // codepoints so a hostile key with multi-byte
+                    // chars produces a clean error instead of a crash.
+                    k.chars().take(80).collect::<String>()
                 ));
             }
         }
@@ -704,6 +709,27 @@ mod tests {
             err.contains("exceeds cap") && err.contains(&MAX_PROVISIONING_ENTRIES.to_string()),
             "error must name the cap: {err}"
         );
+    }
+
+    /// A hostile key over the cap containing multi-byte UTF-8
+    /// produces a clean error instead of a byte-slice panic.
+    /// Defense-in-depth: a naive `&k[..80]` would panic if byte
+    /// 80 lands mid-codepoint; the char-walking truncate avoids
+    /// that.
+    #[test]
+    fn size_limits_reject_handles_multibyte_utf8_safely() {
+        let mut cfg = FileIoProvisioning::default();
+        // Each "é" is 2 bytes; MAX+1 codepoints * 2 bytes = well
+        // over the byte cap.  Also, byte-offset 80 lands between
+        // the two bytes of the 41st "é" codepoint — exactly the
+        // raw-slice panic case.
+        let hostile_key: String = "é".repeat(MAX_LOGICAL_KEY_LEN);
+        cfg.oracle_static_dirs.insert(hostile_key, StaticDirEntry {
+            path: PathBuf::from("/p"),
+            mode: "r".into(),
+        });
+        let err = validate_size_limits(&cfg).expect_err("over-cap key should fail cleanly");
+        assert!(err.contains("cap of"), "error must name the cap, got {err}");
     }
 
     /// A single key longer than MAX_LOGICAL_KEY_LEN fails even if
