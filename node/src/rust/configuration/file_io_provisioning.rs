@@ -1,15 +1,12 @@
-//! File I/O FIP static-provisioning config schema — type-definition
-//! surface only (ops-port slice 1).
+//! File I/O FIP static-provisioning config schema.
 //!
 //! Carves out `storage.{oracle,consensus}-static-{files,dirs}` as a
 //! typed HOCON block so operator config can declare which host paths
-//! are provisioned into the Fs cap bundle at genesis time.  This
-//! slice is **types + default-deserialization only**.  Subsequent
+//! are provisioned into the Fs cap bundle at genesis time.  Current
+//! surface: typed deserialization (object form + bare-String
+//! shorthand) with mode-string whitelist validation.  Subsequent
 //! slices add:
 //!
-//!   * Bare-String entry-value form (one-line path assignment).
-//!   * Mode validation at deserialization time (whitelist against
-//!     POSIX file modes / Dir attenuation keywords).
 //!   * `check_provisioning_typos` operator-ergonomic typo detector.
 //!   * `validate_size_limits` DoS guard on map cardinality.
 //!   * Boot-time canonicalization + tree validation (symlink /
