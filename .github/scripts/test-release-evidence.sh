@@ -88,7 +88,7 @@ jq -e '
 	and .source_sha == $source_sha
 	and .ci.run_id == 123456789
 	and .ci.run_attempt == 2
-	and (.ci.required_jobs | length) == 27
+	and (.ci.required_jobs | length) == 28
 	and .images.publication_state == "not_published"
 	and .images.docker_hub == null
 	and .images.ocir_index_digest == null
