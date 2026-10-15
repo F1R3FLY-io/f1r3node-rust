@@ -3,12 +3,10 @@
 //! Enumerates every spec-mandated boot-time invariant for the
 //! static-provisioning config as a typed error, plus the
 //! operator-facing `Display` impl, plus the flatten / canonical-
-//! path / deterministic-sort scaffolding downstream validators
-//! use.  Validator wiring that emits these errors lands across
-//! subsequent slices:
+//! path / deterministic-sort scaffolding, plus the per-entry
+//! validators (symlink / hard-link / kind-mismatch / path-not-
+//! found).  Remaining slices:
 //!
-//!   * ops-6d — per-entry validators (symlink, hard-link,
-//!     kind-mismatch, forbidden-chars, canonical-path).
 //!   * ops-6e — cross-source + bucket-disjointness validators
 //!     + top-level `validate_provisioning_boot` entry point.
 //!   * ops-7  — CLI-merge path (populates the three
@@ -37,6 +35,7 @@
 #![allow(dead_code)]
 
 use std::collections::HashMap;
+use std::fs;
 use std::path::{Path, PathBuf};
 
 use super::file_io_provisioning::{FileIoProvisioning, StaticDirEntry, StaticFileEntry};
@@ -729,6 +728,257 @@ pub(crate) fn sort_key(err: &FileIoConfigError) -> (u8, String, String, String) 
     }
 }
 
+/// Iterate the flattened entry set, running the per-entry
+/// validators (`check_absolute_prefix` + `check_entry_tree`) on
+/// each.  Batches every error into the shared accumulator rather
+/// than failing fast — the operator sees every violation on one
+/// boot pass (plan §370).
+pub(crate) fn check_entries(entries: &[FlatEntry<'_>], errors: &mut Vec<FileIoConfigError>) {
+    for e in entries {
+        check_absolute_prefix(e, errors);
+        check_entry_tree(e, errors);
+    }
+}
+
+/// Walk every ancestor of `entry.path` from root down to (but not
+/// including) the entry itself; `symlink_metadata` each.  If any
+/// ancestor is a symlink, emit `AbsolutePrefixSymlink` and stop.
+/// The shallowest symlink wins because it usually captures the
+/// root cause (e.g., `/tmp -> /private/tmp` on macOS).
+///
+/// Ancestor stat errors other than `NotFound` emit `StatFailed`;
+/// a silent skip here could hide a symlink behind a permission-
+/// denied ancestor.  `NotFound` stays silent because
+/// `check_entry_tree` reports `PathNotFound` for the entry itself.
+fn check_absolute_prefix(entry: &FlatEntry<'_>, errors: &mut Vec<FileIoConfigError>) {
+    let mut ancestors: Vec<&Path> = entry.path.ancestors().skip(1).collect();
+    ancestors.reverse();
+    for anc in ancestors {
+        if anc.as_os_str().is_empty() {
+            continue;
+        }
+        match fs::symlink_metadata(anc) {
+            Ok(md) if md.file_type().is_symlink() => {
+                let canonical = fs::canonicalize(anc).ok();
+                errors.push(FileIoConfigError::AbsolutePrefixSymlink {
+                    bucket: entry.bucket,
+                    logical_name: entry.logical_name.to_string(),
+                    path: entry.path.to_path_buf(),
+                    prefix: anc.to_path_buf(),
+                    canonical,
+                });
+                return;
+            }
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return,
+            Err(e) => {
+                errors.push(FileIoConfigError::StatFailed {
+                    bucket: entry.bucket,
+                    logical_name: entry.logical_name.to_string(),
+                    path: anc.to_path_buf(),
+                    error: format!("ancestor stat failed: {e}"),
+                });
+                return;
+            }
+        }
+    }
+}
+
+/// Stat the entry itself.  Dispatch: symlink -> `IsSymlink`;
+/// regular file -> `check_hardlink`; directory -> `walk_dir`;
+/// kind-mismatch or other (device/socket/fifo) -> `KindMismatch`
+/// with the on-disk kind in `actual`.
+fn check_entry_tree(entry: &FlatEntry<'_>, errors: &mut Vec<FileIoConfigError>) {
+    let md = match fs::symlink_metadata(entry.path) {
+        Ok(m) => m,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            errors.push(FileIoConfigError::PathNotFound {
+                bucket: entry.bucket,
+                logical_name: entry.logical_name.to_string(),
+                path: entry.path.to_path_buf(),
+            });
+            return;
+        }
+        Err(e) => {
+            errors.push(FileIoConfigError::StatFailed {
+                bucket: entry.bucket,
+                logical_name: entry.logical_name.to_string(),
+                path: entry.path.to_path_buf(),
+                error: e.to_string(),
+            });
+            return;
+        }
+    };
+    if md.file_type().is_symlink() {
+        errors.push(FileIoConfigError::IsSymlink {
+            bucket: entry.bucket,
+            logical_name: entry.logical_name.to_string(),
+            path: entry.path.to_path_buf(),
+        });
+        return;
+    }
+    match (
+        entry.kind,
+        md.file_type().is_file(),
+        md.file_type().is_dir(),
+    ) {
+        (EntryKind::File, true, _) => {
+            check_hardlink(entry, &md, entry.path, errors);
+        }
+        (EntryKind::Dir, _, true) => {
+            walk_dir(entry, entry.path, errors);
+        }
+        (EntryKind::File, false, true) => {
+            errors.push(FileIoConfigError::KindMismatch {
+                bucket: entry.bucket,
+                logical_name: entry.logical_name.to_string(),
+                path: entry.path.to_path_buf(),
+                declared: "file",
+                actual: "directory",
+            });
+        }
+        (EntryKind::Dir, true, false) => {
+            errors.push(FileIoConfigError::KindMismatch {
+                bucket: entry.bucket,
+                logical_name: entry.logical_name.to_string(),
+                path: entry.path.to_path_buf(),
+                declared: "directory",
+                actual: "file",
+            });
+        }
+        _ => {
+            errors.push(FileIoConfigError::KindMismatch {
+                bucket: entry.bucket,
+                logical_name: entry.logical_name.to_string(),
+                path: entry.path.to_path_buf(),
+                declared: match entry.kind {
+                    EntryKind::File => "file",
+                    EntryKind::Dir => "directory",
+                },
+                actual: "other (device/socket/fifo)",
+            });
+        }
+    }
+}
+
+/// Per-entry cap on how many descendants a single provisioned dir
+/// may walk.  Beyond this, `WalkLimitExceeded` fires once and the
+/// walk stops — a partial report is better than a boot-time hang
+/// on a genuinely huge (or hostile) tree.
+pub(crate) const MAX_WALK_DESCENDANTS: usize = 1_000_000;
+
+/// Iterative subtree walker (converted from recursion to avoid
+/// stack overflow on deep trees).  For every entry: symlink ->
+/// `IsSymlink`; regular file -> `check_hardlink`; subdir -> push
+/// onto work stack; other (FIFO / socket / device) ->
+/// `KindMismatch` with `actual = "other (device/socket/fifo)"`.
+fn walk_dir(entry: &FlatEntry<'_>, root: &Path, errors: &mut Vec<FileIoConfigError>) {
+    let mut stack: Vec<PathBuf> = vec![root.to_path_buf()];
+    let mut visited: usize = 0;
+    while let Some(dir) = stack.pop() {
+        let iter = match fs::read_dir(&dir) {
+            Ok(i) => i,
+            Err(e) => {
+                errors.push(FileIoConfigError::StatFailed {
+                    bucket: entry.bucket,
+                    logical_name: entry.logical_name.to_string(),
+                    path: dir.clone(),
+                    error: e.to_string(),
+                });
+                continue;
+            }
+        };
+        for de in iter {
+            visited += 1;
+            if visited > MAX_WALK_DESCENDANTS {
+                errors.push(FileIoConfigError::WalkLimitExceeded {
+                    bucket: entry.bucket,
+                    logical_name: entry.logical_name.to_string(),
+                    path: root.to_path_buf(),
+                    limit: MAX_WALK_DESCENDANTS,
+                });
+                return;
+            }
+            let de = match de {
+                Ok(d) => d,
+                Err(e) => {
+                    errors.push(FileIoConfigError::StatFailed {
+                        bucket: entry.bucket,
+                        logical_name: entry.logical_name.to_string(),
+                        path: dir.clone(),
+                        error: e.to_string(),
+                    });
+                    continue;
+                }
+            };
+            let child = de.path();
+            let md = match fs::symlink_metadata(&child) {
+                Ok(m) => m,
+                Err(e) => {
+                    errors.push(FileIoConfigError::StatFailed {
+                        bucket: entry.bucket,
+                        logical_name: entry.logical_name.to_string(),
+                        path: child,
+                        error: e.to_string(),
+                    });
+                    continue;
+                }
+            };
+            let ft = md.file_type();
+            if ft.is_symlink() {
+                errors.push(FileIoConfigError::IsSymlink {
+                    bucket: entry.bucket,
+                    logical_name: entry.logical_name.to_string(),
+                    path: child,
+                });
+            } else if ft.is_file() {
+                check_hardlink(entry, &md, &child, errors);
+            } else if ft.is_dir() {
+                stack.push(child);
+            } else {
+                errors.push(FileIoConfigError::KindMismatch {
+                    bucket: entry.bucket,
+                    logical_name: entry.logical_name.to_string(),
+                    path: child,
+                    declared: "regular descendant of provisioned dir",
+                    actual: "other (device/socket/fifo)",
+                });
+            }
+        }
+    }
+}
+
+/// `nlink() > 1` check.  Unix-only via `MetadataExt::nlink`; on
+/// non-Unix hosts the check is a no-op (hard-link semantics aren't
+/// consistent enough across Windows FSs to gate boot on).
+#[cfg(unix)]
+fn check_hardlink(
+    entry: &FlatEntry<'_>,
+    md: &fs::Metadata,
+    path: &Path,
+    errors: &mut Vec<FileIoConfigError>,
+) {
+    use std::os::unix::fs::MetadataExt;
+    let nlink = md.nlink();
+    if nlink > 1 {
+        errors.push(FileIoConfigError::HardLinked {
+            bucket: entry.bucket,
+            logical_name: entry.logical_name.to_string(),
+            path: path.to_path_buf(),
+            nlink,
+        });
+    }
+}
+
+#[cfg(not(unix))]
+fn check_hardlink(
+    _entry: &FlatEntry<'_>,
+    _md: &fs::Metadata,
+    _path: &Path,
+    _errors: &mut Vec<FileIoConfigError>,
+) {
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1139,5 +1389,254 @@ mod tests {
         assert_eq!(errs[0].to_string(), c.to_string());
         assert_eq!(errs[1].to_string(), b.to_string());
         assert_eq!(errs[2].to_string(), a.to_string());
+    }
+
+    // ---------- Per-entry validators (ops-6d) ----------
+
+    use tempfile::TempDir;
+
+    /// `TempDir::path()` on macOS lives under `/var/folders/...`,
+    /// but `/var` is a symlink to `/private/var` — so uncanonicalized
+    /// paths would trip the (correct) absolute-prefix-symlink
+    /// diagnostic in every test.  Real config files supply canonical
+    /// paths per that diagnostic's exact recommendation.
+    fn td_root(td: &TempDir) -> PathBuf { fs::canonicalize(td.path()).unwrap() }
+
+    fn make_file(path: &Path) {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+        fs::write(path, b"x").unwrap();
+    }
+
+    fn run_entry_check(
+        bucket: &'static str,
+        kind: EntryKind,
+        path: &Path,
+    ) -> Vec<FileIoConfigError> {
+        let entry = FlatEntry {
+            bucket,
+            logical_name: "n",
+            path,
+            mode: "r",
+            kind,
+            is_consensus: false,
+        };
+        let mut errors = Vec::new();
+        check_absolute_prefix(&entry, &mut errors);
+        check_entry_tree(&entry, &mut errors);
+        errors
+    }
+
+    /// Happy path: a regular file at a canonical absolute path
+    /// produces no errors.
+    #[test]
+    fn regular_file_passes_entry_check() {
+        let td = TempDir::new().unwrap();
+        let path = td_root(&td).join("cfg.json");
+        make_file(&path);
+        let errs = run_entry_check(BUCKET_ORACLE_FILE, EntryKind::File, &path);
+        assert!(errs.is_empty(), "expected no errors; got {errs:?}");
+    }
+
+    /// Happy path: a regular directory at a canonical absolute path
+    /// produces no errors.
+    #[test]
+    fn regular_dir_passes_entry_check() {
+        let td = TempDir::new().unwrap();
+        let root = td_root(&td);
+        let path = root.join("share");
+        fs::create_dir_all(&path).unwrap();
+        make_file(&path.join("child.json"));
+        let errs = run_entry_check(BUCKET_ORACLE_DIR, EntryKind::Dir, &path);
+        assert!(errs.is_empty(), "expected no errors; got {errs:?}");
+    }
+
+    /// A missing path produces `PathNotFound`.
+    #[test]
+    fn missing_path_rejected() {
+        let td = TempDir::new().unwrap();
+        let path = td_root(&td).join("no_such_file");
+        let errs = run_entry_check(BUCKET_ORACLE_FILE, EntryKind::File, &path);
+        assert!(
+            errs.iter()
+                .any(|e| matches!(e, FileIoConfigError::PathNotFound { .. })),
+            "expected PathNotFound; got {errs:?}"
+        );
+    }
+
+    /// Declared file but on-disk directory -> `KindMismatch`.
+    #[test]
+    fn kind_mismatch_file_declared_but_dir_on_disk() {
+        let td = TempDir::new().unwrap();
+        let path = td_root(&td).join("ambiguous");
+        fs::create_dir_all(&path).unwrap();
+        let errs = run_entry_check(BUCKET_ORACLE_FILE, EntryKind::File, &path);
+        assert!(
+            errs.iter().any(|e| matches!(
+                e,
+                FileIoConfigError::KindMismatch { declared, actual, .. }
+                    if *declared == "file" && *actual == "directory"
+            )),
+            "expected KindMismatch declared=file actual=directory; got {errs:?}"
+        );
+    }
+
+    /// Declared directory but on-disk file -> `KindMismatch`.
+    #[test]
+    fn kind_mismatch_dir_declared_but_file_on_disk() {
+        let td = TempDir::new().unwrap();
+        let path = td_root(&td).join("regular.txt");
+        make_file(&path);
+        let errs = run_entry_check(BUCKET_ORACLE_DIR, EntryKind::Dir, &path);
+        assert!(
+            errs.iter().any(|e| matches!(
+                e,
+                FileIoConfigError::KindMismatch { declared, actual, .. }
+                    if *declared == "directory" && *actual == "file"
+            )),
+            "expected KindMismatch declared=directory actual=file; got {errs:?}"
+        );
+    }
+
+    /// Entry is a symlink -> `IsSymlink`.
+    #[cfg(unix)]
+    #[test]
+    fn entry_as_symlink_rejected() {
+        use std::os::unix::fs::symlink;
+        let td = TempDir::new().unwrap();
+        let root = td_root(&td);
+        let target = root.join("target.json");
+        make_file(&target);
+        let link = root.join("link.json");
+        symlink(&target, &link).unwrap();
+        let errs = run_entry_check(BUCKET_ORACLE_FILE, EntryKind::File, &link);
+        assert!(
+            errs.iter()
+                .any(|e| matches!(e, FileIoConfigError::IsSymlink { .. })),
+            "expected IsSymlink; got {errs:?}"
+        );
+    }
+
+    /// Ancestor is a symlink -> `AbsolutePrefixSymlink` naming the
+    /// ancestor and its canonical resolution.
+    #[cfg(unix)]
+    #[test]
+    fn ancestor_symlink_rejected_with_canonical() {
+        use std::os::unix::fs::symlink;
+        let td = TempDir::new().unwrap();
+        let root = td_root(&td);
+        let real = root.join("real");
+        fs::create_dir_all(&real).unwrap();
+        let link = root.join("alias");
+        symlink(&real, &link).unwrap();
+        let file = link.join("cfg.json");
+        make_file(&real.join("cfg.json"));
+        let errs = run_entry_check(BUCKET_ORACLE_FILE, EntryKind::File, &file);
+        assert!(
+            errs.iter().any(|e| matches!(
+                e,
+                FileIoConfigError::AbsolutePrefixSymlink { prefix, canonical: Some(c), .. }
+                    if prefix == &link && c == &real
+            )),
+            "expected AbsolutePrefixSymlink with canonical resolution; got {errs:?}"
+        );
+    }
+
+    /// A dangling ancestor symlink yields `AbsolutePrefixSymlink`
+    /// with `canonical: None`.
+    #[cfg(unix)]
+    #[test]
+    fn ancestor_symlink_dangling_reports_no_canonical() {
+        use std::os::unix::fs::symlink;
+        let td = TempDir::new().unwrap();
+        let root = td_root(&td);
+        let link = root.join("alias");
+        symlink(root.join("does_not_exist"), &link).unwrap();
+        let file = link.join("cfg.json");
+        let errs = run_entry_check(BUCKET_ORACLE_FILE, EntryKind::File, &file);
+        assert!(
+            errs.iter()
+                .any(|e| matches!(e, FileIoConfigError::AbsolutePrefixSymlink {
+                    canonical: None,
+                    ..
+                })),
+            "expected AbsolutePrefixSymlink with canonical=None; got {errs:?}"
+        );
+    }
+
+    /// A hard-linked regular file (`nlink > 1`) yields `HardLinked`.
+    #[cfg(unix)]
+    #[test]
+    fn hardlinked_file_rejected() {
+        let td = TempDir::new().unwrap();
+        let root = td_root(&td);
+        let a = root.join("a.json");
+        let b = root.join("b.json");
+        make_file(&a);
+        fs::hard_link(&a, &b).unwrap();
+        let errs = run_entry_check(BUCKET_ORACLE_FILE, EntryKind::File, &a);
+        assert!(
+            errs.iter().any(|e| matches!(
+                e,
+                FileIoConfigError::HardLinked { nlink, .. } if *nlink >= 2
+            )),
+            "expected HardLinked with nlink >= 2; got {errs:?}"
+        );
+    }
+
+    /// A symlinked descendant inside a provisioned dir yields
+    /// `IsSymlink`.  Pins the subtree-walk contract: the walker
+    /// surfaces symlinks found anywhere beneath the entry root,
+    /// not just at the top level.
+    #[cfg(unix)]
+    #[test]
+    fn symlink_descendant_of_dir_rejected() {
+        use std::os::unix::fs::symlink;
+        let td = TempDir::new().unwrap();
+        let root = td_root(&td);
+        let share = root.join("share");
+        fs::create_dir_all(&share).unwrap();
+        make_file(&share.join("real.json"));
+        symlink(share.join("real.json"), share.join("alias.json")).unwrap();
+        let errs = run_entry_check(BUCKET_ORACLE_DIR, EntryKind::Dir, &share);
+        assert!(
+            errs.iter()
+                .any(|e| matches!(e, FileIoConfigError::IsSymlink { .. })),
+            "expected IsSymlink inside walked dir; got {errs:?}"
+        );
+    }
+
+    /// Hard-linked descendant inside a walked dir yields
+    /// `HardLinked`.
+    #[cfg(unix)]
+    #[test]
+    fn hardlinked_descendant_of_dir_rejected() {
+        let td = TempDir::new().unwrap();
+        let root = td_root(&td);
+        let share = root.join("share");
+        fs::create_dir_all(&share).unwrap();
+        let a = share.join("a.json");
+        let b = share.join("b.json");
+        make_file(&a);
+        fs::hard_link(&a, &b).unwrap();
+        let errs = run_entry_check(BUCKET_ORACLE_DIR, EntryKind::Dir, &share);
+        assert!(
+            errs.iter().any(|e| matches!(
+                e,
+                FileIoConfigError::HardLinked { nlink, .. } if *nlink >= 2
+            )),
+            "expected HardLinked inside walked dir; got {errs:?}"
+        );
+    }
+
+    /// An empty walked directory produces no errors.
+    #[test]
+    fn empty_walked_dir_passes() {
+        let td = TempDir::new().unwrap();
+        let share = td_root(&td).join("empty");
+        fs::create_dir_all(&share).unwrap();
+        let errs = run_entry_check(BUCKET_ORACLE_DIR, EntryKind::Dir, &share);
+        assert!(errs.is_empty(), "expected no errors; got {errs:?}");
     }
 }
