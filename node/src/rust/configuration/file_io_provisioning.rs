@@ -732,6 +732,68 @@ mod tests {
         assert!(err.contains("cap of"), "error must name the cap, got {err}");
     }
 
+    /// Flatten-into-Storage wire-up: parsing a full `Storage`
+    /// HOCON block carries the four provisioning buckets through
+    /// `#[serde(flatten)]`.  Pins ops-5's field addition.
+    #[test]
+    fn storage_flatten_carries_provisioning_through() {
+        use crate::rust::configuration::model::Storage;
+
+        let hocon = r#"
+            data-dir = "/var/lib/rnode"
+            oracle-static-files {
+              "cfg" = "/etc/myapp/cfg.json"
+            }
+            consensus-static-dirs {
+              "shared/" = { path = "/srv/shared", mode = "r+" }
+            }
+        "#;
+        let storage: Storage = hocon::HoconLoader::new()
+            .load_str(hocon)
+            .expect("load")
+            .resolve()
+            .expect("resolve");
+        assert_eq!(storage.data_dir, PathBuf::from("/var/lib/rnode"));
+        assert_eq!(
+            storage
+                .file_io_provisioning
+                .oracle_static_files
+                .get("cfg")
+                .map(|e| e.mode.as_str()),
+            Some("r")
+        );
+        assert_eq!(
+            storage
+                .file_io_provisioning
+                .consensus_static_dirs
+                .get("shared/")
+                .map(|e| (e.path.as_path(), e.mode.as_str())),
+            Some((std::path::Path::new("/srv/shared"), "r+"))
+        );
+        // Unprovisioned buckets stay empty.
+        assert!(storage.file_io_provisioning.oracle_static_dirs.is_empty());
+        assert!(storage
+            .file_io_provisioning
+            .consensus_static_files
+            .is_empty());
+    }
+
+    /// `Storage` without any provisioning entries parses unchanged
+    /// — operators who haven't opted into static provisioning get
+    /// the default-empty `FileIoProvisioning`.
+    #[test]
+    fn storage_without_provisioning_parses_with_empty_default() {
+        use crate::rust::configuration::model::Storage;
+
+        let storage: Storage = hocon::HoconLoader::new()
+            .load_str(r#"data-dir = "/var/lib/rnode""#)
+            .expect("load")
+            .resolve()
+            .expect("resolve");
+        assert_eq!(storage.data_dir, PathBuf::from("/var/lib/rnode"));
+        assert_eq!(storage.file_io_provisioning, FileIoProvisioning::default());
+    }
+
     /// A single key longer than MAX_LOGICAL_KEY_LEN fails even if
     /// the entry total is well under cap.
     #[test]
