@@ -68,12 +68,18 @@ grep -Fq 'created by the Promote dev to master workflow for @octo-cat.' "$TMP/gh
 grep -Fxq '@octo-cat started this promotion. A different member of @F1R3FLY-io/ci-maintainers approves it.' "$TMP/gh.log" ||
 	fail "the workflow body does not ask a different maintainer to approve: $(cat "$TMP/gh.log")"
 
-: >"$TMP/gh.log"
-if (cd "$TMP/work" && PATH="$TMP/bin:$PATH" GH_LOG="$TMP/gh.log" PROMOTE_REPOSITORY=example/repo \
-	PROMOTE_TIMESTAMP=20261009-094503 PROMOTE_TRIGGERED_BY='x; rm' bash "$TOOL") >/dev/null 2>&1; then
-	fail "an invalid PROMOTE_TRIGGERED_BY did not fail the command"
-fi
-[[ ! -s "$TMP/gh.log" ]] || fail "an invalid PROMOTE_TRIGGERED_BY still called gh: $(cat "$TMP/gh.log")"
+for login in 'x; rm' octo- -octo a--b; do
+	: >"$TMP/gh.log"
+	# A missing remote makes git fetch fail. The login error must come first.
+	if (cd "$TMP/work" && PATH="$TMP/bin:$PATH" GH_LOG="$TMP/gh.log" PROMOTE_REPOSITORY=example/repo \
+		PROMOTE_REMOTE=no-such-remote PROMOTE_TIMESTAMP=20261009-094503 PROMOTE_TRIGGERED_BY="$login" \
+		bash "$TOOL") >/dev/null 2>"$TMP/err"; then
+		fail "the invalid login '$login' did not fail the command"
+	fi
+	grep -q 'PROMOTE_TRIGGERED_BY is not a GitHub login' "$TMP/err" ||
+		fail "the invalid login '$login' was not rejected before git fetch: $(cat "$TMP/err")"
+	[[ ! -s "$TMP/gh.log" ]] || fail "the invalid login '$login' still called gh: $(cat "$TMP/gh.log")"
+done
 
 : >"$TMP/gh.log"
 if (cd "$TMP/work" && PATH="$TMP/bin:$PATH" GH_LOG="$TMP/gh.log" GH_FAIL_PR_CREATE=1 PROMOTE_REPOSITORY=example/repo \

@@ -18,6 +18,18 @@
 # names that user and asks a different ci-maintainer to approve.
 set -euo pipefail
 
+# Check the login first, before any git or gh call.
+creator="created by \`just promote\`"
+review=""
+if [ -n "${PROMOTE_TRIGGERED_BY:-}" ]; then
+	[[ "$PROMOTE_TRIGGERED_BY" =~ ^[A-Za-z0-9](-?[A-Za-z0-9])*(\[bot\])?$ ]] ||
+		{ echo "ERROR: PROMOTE_TRIGGERED_BY is not a GitHub login." >&2; exit 2; }
+	creator="created by the Promote dev to master workflow for @$PROMOTE_TRIGGERED_BY"
+	review="
+
+@$PROMOTE_TRIGGERED_BY started this promotion. A different member of @F1R3FLY-io/ci-maintainers approves it."
+fi
+
 remote="${PROMOTE_REMOTE:-origin}"
 repo="${PROMOTE_REPOSITORY:-$(gh repo view --json nameWithOwner -q .nameWithOwner)}"
 stamp="${PROMOTE_TIMESTAMP:-$(date -u +%Y%m%d-%H%M%S)}"
@@ -33,16 +45,6 @@ fi
 
 count="$(git rev-list --count "$remote/master..$sha")"
 branch="promote/$stamp"
-creator="created by \`just promote\`"
-review=""
-if [ -n "${PROMOTE_TRIGGERED_BY:-}" ]; then
-	[[ "$PROMOTE_TRIGGERED_BY" =~ ^[A-Za-z0-9][A-Za-z0-9-]*(\[bot\])?$ ]] ||
-		{ echo "ERROR: PROMOTE_TRIGGERED_BY is not a GitHub login." >&2; exit 2; }
-	creator="created by the Promote dev to master workflow for @$PROMOTE_TRIGGERED_BY"
-	review="
-
-@$PROMOTE_TRIGGERED_BY started this promotion. A different member of @F1R3FLY-io/ci-maintainers approves it."
-fi
 gh api "repos/$repo/git/refs" -f ref="refs/heads/$branch" -f sha="$sha" >/dev/null
 echo "Created $branch at ${sha:0:9} ($remote/dev, $count commits not on master)."
 

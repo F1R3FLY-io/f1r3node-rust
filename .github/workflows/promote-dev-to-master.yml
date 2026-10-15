@@ -6,9 +6,13 @@ name: Promote dev to master
 # branch at the origin/dev commit. A promotion never uses dev as its head.
 #
 # A pull request opened with GITHUB_TOKEN starts no pull_request workflows, so
-# its required checks never report. The job opens the pull request with the CI
-# GitHub App instead. The app installation must grant Contents: write (to
-# create the branch) and Pull requests: write (to open the pull request).
+# its required checks never report. The job opens the pull request with a
+# dedicated promotion GitHub App instead. The app installation grants only
+# Contents: write (to create the branch) and Pull requests: write (to open the
+# pull request). The app must not be a bypass actor on the devProtect or
+# masterProtect ruleset. The CI automation app is such a bypass actor, so this
+# workflow does not use it. The release-credentials environment holds
+# PROMOTION_APP_ID and PROMOTION_APP_PRIVATE_KEY.
 #
 # The app is the pull request author, so the user who started the workflow
 # could approve the promotion alone. The pull request body names that user and
@@ -31,11 +35,22 @@ concurrency:
 jobs:
   promote:
     name: Open Promotion Pull Request
-    if: github.ref == 'refs/heads/master'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     environment: release-credentials
     steps:
+      # A run from another branch fails here with a clear message. The
+      # environment rule also rejects it. A skipped job would look like a pass.
+      - name: Require master
+        env:
+          REF: ${{ github.ref }}
+        shell: bash -euo pipefail {0}
+        run: |
+          if [ "$REF" != refs/heads/master ]; then
+            echo "::error::Run Promote dev to master from master, not $REF."
+            exit 1
+          fi
+
       - name: Checkout
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
@@ -46,8 +61,8 @@ jobs:
         id: promotion-token
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
-          app-id: ${{ vars.CI_GITHUB_APP_ID }}
-          private-key: ${{ secrets.CI_GITHUB_APP_PRIVATE_KEY }}
+          app-id: ${{ vars.PROMOTION_APP_ID }}
+          private-key: ${{ secrets.PROMOTION_APP_PRIVATE_KEY }}
           permission-contents: write
           permission-pull-requests: write
 
