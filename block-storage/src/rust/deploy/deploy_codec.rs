@@ -24,6 +24,14 @@ struct LegacyDeployData {
 pub(super) fn encode(deploy: &Signed<DeployData>) -> Result<BitVector, KvStoreError> {
     validate_parameters(&deploy.data.parameters)
         .map_err(|error| KvStoreError::SerializationError(error.to_string()))?;
+    Signed::from_signed_data(
+        deploy.data.clone(),
+        deploy.pk.clone(),
+        deploy.sig.clone(),
+        deploy.sig_algorithm.clone(),
+    )
+    .map_err(KvStoreError::SerializationError)?
+    .ok_or_else(|| KvStoreError::SerializationError("Invalid deploy signature".to_string()))?;
     let mut bytes = PREFIX.to_vec();
     DeployData::to_proto_ref(deploy)
         .encode(&mut bytes)
@@ -35,7 +43,7 @@ pub(super) fn decode(bytes: &BitVector) -> Result<Signed<DeployData>, KvStoreErr
     if let Some(payload) = bytes.strip_prefix(PREFIX) {
         let proto = DeployDataProto::decode(payload)
             .map_err(|error| KvStoreError::SerializationError(error.to_string()))?;
-        return DeployData::from_proto(proto).map_err(KvStoreError::SerializationError);
+        return DeployData::from_trusted_proto(proto).map_err(KvStoreError::SerializationError);
     }
     metrics::counter!(LEGACY_DECODE_METRIC).increment(1);
     let legacy: Signed<LegacyDeployData> = bincode::deserialize(bytes)?;
@@ -125,7 +133,7 @@ mod tests {
     }
 
     #[test]
-    fn deploy_storage_rejects_tampered_signed_fields() {
+    fn deploy_storage_verifies_signatures_on_write_and_not_on_read() {
         for parameters in [Vec::new(), vec![DeployParameter {
             name: "input".into(),
             value: RholangValue::Int(42),
@@ -133,12 +141,12 @@ mod tests {
             let mut deploy = signed(parameters);
             assert_eq!(decode(&encode(&deploy).unwrap()).unwrap(), deploy);
             deploy.data.expiration_timestamp = Some(999);
-            let bytes = encode(&deploy).unwrap();
-            assert!(bytes.starts_with(PREFIX));
-            assert!(matches!(
-                decode(&bytes),
-                Err(KvStoreError::SerializationError(error)) if error == "Invalid signature"
-            ));
+            assert!(encode(&deploy).is_err());
+            let mut bytes = PREFIX.to_vec();
+            DeployData::to_proto_ref(&deploy)
+                .encode(&mut bytes)
+                .unwrap();
+            assert_eq!(decode(&bytes).unwrap(), deploy);
         }
     }
 
