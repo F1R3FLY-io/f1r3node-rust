@@ -24,6 +24,7 @@ This document tracks implementation work through **epics** (logical groupings of
 
 ## Active Coordination
 
+- **Consensus boundary track (2026-10-12).** EPIC-025 tracks the design PR #627 and the implementation by Nama21yo: issue #624 with PR #651, and issue #625. Decision D7 layers the PR #651 lifecycle runtime under the ReplicationMedium contract. Our role on PR #651 and issue #625 is reviewer feedback only.
 - **Casper ratification follow-up (2026-09-16).** EPIC-017 owns the pre-#216 models, baseline conformance, and harness preparation on `formal/soak-casper-consensus`. EPIC-018 owns a separate formal-methods harness PR after PR #216 merges. The [meeting record](https://github.com/F1R3FLY-io/f1r3node-rust/pull/390#pullrequestreview-5227717933) controls both phases. PRs #430 through #433 remain prerequisites in stack order. The [branch plan](https://github.com/F1R3FLY-io/f1r3node-rust/blob/ba9758507194d6e34bc1494d416b87405facd550/docs/plans/casper-ratified-soak-2026-09-16.md) (local Git: `ba9758507194d6e34bc1494d416b87405facd550:docs/plans/casper-ratified-soak-2026-09-16.md`) defines the handoff, separate completion gates, and deferred-policy restrictions.
 
 <!-- Compact, current-state-only. This section replaces the free-form status
@@ -68,6 +69,166 @@ mr_status:
 ## Active Epics
 
 <!-- Epics are ordered by priority. Work on the highest priority epic first. -->
+
+---
+
+### EPIC-025: Pluggable State Machine Replication Boundary
+
+```yaml
+---
+epic_id: EPIC-025
+title: "Pluggable State Machine Replication Boundary"
+renumbered: "EPIC-022 until 2026-10-11. Renumbered to EPIC-025, with TASK-022-n to TASK-025-n, because dev uses EPIC-022 for OCI CI Spend Alerting and Runner Cleanup. Its story moved from US-010 to US-011, because ci/testnet-deployment uses US-010 for the test net."
+status: in_progress
+priority: p1
+user_story: US-011
+blocked_by: []
+created_at: 2026-10-05
+updated_at: 2026-10-12
+claimed_by: claude-session-aa467dea
+claimed_at: 2026-10-05T14:00:00Z
+branch: feature/consensus-neutral-boundary
+pr_base_branch: dev
+consolidated: "2026-10-12. This epic is the single epic for the design (PR #627) and the implementation track: issue #624 with PR #651 (TASK-025-2), and issue #625 (TASK-025-7). Nama21yo writes #624, #625, and PR #651."
+related_prs:
+  - "#627: design documents, draft, branch feature/consensus-neutral-boundary"
+  - "#651: lifecycle runtime and CBC Casper adapter, branch feature/consensus-runtime-cordial"
+related_issues: ["#624", "#625"]
+origin: "Four replication mechanisms are planned for F1R3FLY shards: CBC Casper (implemented), Cordial Miners, Casanova, and the RGB peer-clique sidecar with Bitcoin single-use-seal anchoring. Today node services reach CBC Casper directly. RGB SoW2 workstream WS5 requires a shard consensus selection framework."
+related_docs:
+  - docs/artifacts/f1r3fly-consensus-neutral-sm.md
+  - docs/casper/CONSENSUS_PROTOCOL.md
+related_external: "Rholang-RGB docs/sow-2.md (WS5) and docs/design/architecture.md"
+execution_contract:
+  base_branch: dev
+  base_revision: b5cbb51d1
+  scope: "Define one replication boundary that all four mechanisms can implement, move node services onto it, and keep CBC Casper behavior unchanged."
+  design_policy: "No code change before maintainer approval of the TASK-025-1 design document. PR #651 started before this policy and is outside it. Its review aligns it with D7."
+  git_policy: "Commits require /quick-commit consent. The user runs push, merge, and PR operations."
+coupling_survey:
+  date: 2026-10-05
+  consumers: "Only the node and fuzz crates depend on casper. comm PacketHandler and runtime_manager are already neutral."
+  leaks:
+    - "node/src/rust/runtime/setup.rs constructs Estimator and CliqueOracleImpl and calls update_fork_choice_tips_if_stuck."
+    - "node/src/rust/instances/heartbeat_proposer.rs contains latest-message, bonds, justification, and finalization-lag logic."
+    - "The gRPC and HTTP APIs serialize justifications, bonds, and faultTolerance."
+    - "casper util/rholang/interpreter_util.rs takes CasperSnapshot and the finality floor types."
+    - "block-storage KeyValueDagRepresentation, a CBC DAG type, is part of the Casper trait signatures."
+tasks:
+  - id: TASK-025-1
+    title: "Write the replication boundary design document"
+    status: in_progress
+    claimed_by: claude-session-aa467dea
+    claimed_at: 2026-10-05T14:00:00Z
+    blocked_by: []
+    acceptance:
+      - "The document extends docs/artifacts/f1r3fly-consensus-neutral-sm.md and maps the needs of CBC Casper, Cordial Miners, Casanova, and the RGB peer-clique sidecar."
+      - "The document resolves the OrderingMedium question of section 12 of the note."
+      - "The document assigns each coupling-survey leak to a task and states the migration order."
+      - "Each supported mechanism has a glossary in the form of docs/casper/GLOSSARY.md, and docs/Glossary.md defines the shared boundary terms."
+      - "The document adds the lifecycle layer of PR #651 (decision D7). Sections 5, 7, 12, and 13 use the PR #651 names for lifecycle and configuration, and section 13 uses the task numbers of 2026-10-12."
+      - "A maintainer approves the document before code changes start."
+    decisions_2026_10_05:
+      - "D1: the core trait is ReplicationMedium."
+      - "D2: a shard binds one mechanism at start. The binding never changes, and no runtime switching exists."
+      - "D3: the deploy pool and the rejected-deploy buffer are generic node services. A medium has no deploy submission method."
+      - "D4: anchoring is available to every mechanism. RGB anchors to Bitcoin layer 1 and to Lightning state channels."
+      - "D5: each mechanism has its own glossary."
+      - "D6: the boundary states the coalition rule of each medium in the vocabulary of semitopology (Gabbay, arXiv:2402.03253). MembershipView gets an optional CoalitionStructure field, a proposal for maintainer review."
+    decisions_2026_10_12:
+      - "D7: two layers. ConsensusRuntime, ConsensusAdapter, and consensus.protocol from PR #651 are the lifecycle layer: admission, deadlines, readiness, supervision, and shutdown. ReplicationMedium is the semantic contract that an adapter supplies: commits, finality, membership, and capabilities. The design changes to match the code where the names differ."
+    deliverables:
+      - docs/designs/replication-boundary.md
+      - docs/peer-clique/GLOSSARY.md
+      - docs/casanova/GLOSSARY.md
+      - docs/cordial-miners/GLOSSARY.md
+      - "docs/Glossary.md (nine boundary terms)"
+      - "docs/casper/GLOSSARY.md (boundary mapping)"
+      - "docs/artifacts/f1r3fly-consensus-neutral-sm.md (RGB and Casanova corrections, section 12 resolved)"
+      - "docs/semitopology/GLOSSARY.md and README.md (D6)"
+      - "docs/Glossary.md (four coalition terms: membership view, coalition structure, actionable coalition, intertwined coalition structure)"
+      - "docs/designs/replication-boundary.md section 16 (coalition structure) and open questions 5 to 7"
+      - "Coalition structure mappings in the CBC Casper, peer-clique, Casanova, and Cordial Miners glossaries"
+    work_log: docs/work-logs/task-025-1-2026-10-05.md
+    review_status: "Draft complete. The D7 update is complete (2026-10-12). Maintainer approval is pending."
+  - id: TASK-025-2
+    title: "Add the shared lifecycle runtime and the CBC Casper adapter (issue #624, PR #651)"
+    status: review
+    claimed_by: "Nama21yo (external contributor)"
+    blocked_by: ["PR #651"]
+    rescoped: "2026-10-12. Before, this task was the interface crate and the CBC Casper adapter. PR #651 delivers the lifecycle part, and the semantic types moved to TASK-025-3. This task also takes the parts of the former TASK-025-3 (factory and binding) and TASK-025-4 (heartbeat move) that PR #651 delivers."
+    our_role: "Reviewer feedback only. No commits to the PR branch."
+    delivered_in_pr_651:
+      - "consensus/api and consensus/runtime: bounded admission, command deadlines, readiness phases, TaskScope supervision, and drain and cleanup budgets."
+      - "The CBC Casper adapter in node/src/rust/consensus/casper owns startup, recovery, workers, native decoding, store identity checks, and the existing APIs."
+      - "node/src/rust/consensus/factory.rs and the cbc-casper Cargo feature select the compiled protocol. consensus.protocol = \"cbc-casper\" is the default."
+      - "node/src/rust/consensus/manifest.rs binds the data directory to the protocol and the chain before readiness."
+      - "setup.rs and node_runtime.rs no longer construct Casper lifecycle types. heartbeat_proposer.rs moved into the Casper adapter."
+    review_history:
+      - "2026-10-06: multi-agent review on c60ef99fc confirmed three major findings and one minor finding."
+      - "2026-10-12: commits 65df8298e, 1a32c8f38, 7334a090a, and 0cde12068 fix the four findings, each with tests."
+    acceptance:
+      - "The acceptance criteria of issue #624 pass."
+      - "A ci-heavy run on the current head passes, and the PR passes the dev merge queue."
+      - "The Casper network acceptance suite passes, or maintainers accept a documented host limitation."
+      - "The interface names agree with D7, or maintainers approve the documented differences."
+  - id: TASK-025-3
+    title: "Add the semantic boundary types and the binding-mismatch test"
+    status: pending
+    claimed_by: null
+    blocked_by: [TASK-025-1, TASK-025-2]
+    rescoped: "2026-10-12. Before, this task was the factory and the shard binding, which PR #651 delivers (TASK-025-2)."
+    acceptance:
+      - "consensus/api defines CommitRecord, FinalityEvent, MembershipView, and the ReplicationMedium contract, with no DAG parent, justification, bond, or equivocation types."
+      - "The CBC Casper adapter supplies these types with no behavior change."
+      - "A test starts a node with one protocol and restarts it with another. The node refuses the restart (design section 14)."
+  - id: TASK-025-4
+    title: "Move proposal timing behind the medium"
+    status: pending
+    priority: p3
+    claimed_by: null
+    blocked_by: [TASK-025-3]
+    rescoped: "2026-10-12. PR #651 moves heartbeat_proposer.rs into the Casper adapter, so the host no longer starts it. This task keeps only the change to medium-driven timing."
+    acceptance:
+      - "The adapter drives proposal timing through the medium tick of design section 7. The latest-message, bonds, and finalization-lag logic stays inside the CBC implementation."
+  - id: TASK-025-5
+    title: "Add the neutral API endpoints and typed not-supported errors"
+    status: pending
+    claimed_by: null
+    blocked_by: [TASK-025-3]
+    rescoped: "2026-10-12. PR #651 gives the Casper adapter all existing APIs. This task adds the neutral endpoints of design section 11."
+    acceptance:
+      - "The node serves deploy status, commit lookup, last finalized commit, finality stream, state queries, and the membership view through neutral endpoints."
+      - "The gRPC and HTTP APIs carry justifications, bonds, and faultTolerance only through a CBC-scoped extension. Existing CBC clients keep wire compatibility."
+      - "A Casper-only query on another protocol returns a typed error: gRPC Unimplemented or HTTP 501. Issue #625 uses the same errors."
+  - id: TASK-025-6
+    title: "Separate the execution glue from CBC snapshot and finality types"
+    status: pending
+    claimed_by: null
+    blocked_by: [TASK-025-3]
+    acceptance:
+      - "interpreter_util.rs takes boundary types instead of CasperSnapshot and the finality floor types."
+  - id: TASK-025-7
+    title: "Integrate Cordial Miners through its own adapter (issue #625)"
+    status: pending
+    claimed_by: "Nama21yo (external contributor)"
+    blocked_by: [TASK-025-2]
+    added: "2026-10-12. PR #651 removed its Cordial commits (cbb058d28). The adapter comes in a separate PR."
+    our_role: "Reviewer feedback only."
+    acceptance:
+      - "The acceptance criteria of issue #625 pass."
+      - "The adapter uses the TASK-025-3 types when they exist, and the TASK-025-5 not-supported errors."
+  - id: TASK-025-8
+    title: "Prove the boundary with a test-only second mechanism and a soak"
+    status: pending
+    claimed_by: null
+    blocked_by: [TASK-025-3, TASK-025-4, TASK-025-5, TASK-025-6]
+    renumbered: "TASK-025-7 until 2026-10-12."
+    acceptance:
+      - "A test-only second mechanism runs the node wiring tests without CBC code. PR #651 already runs the host tests with --no-default-features."
+      - "The full test suite passes and a soak on the merged change gives the same consensus results as before the change."
+---
+```
 
 ---
 
