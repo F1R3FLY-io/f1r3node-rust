@@ -3155,6 +3155,7 @@ design_intent:
   first_shard: "Proposed 2026-10-11: the test net waits for the first stable release under the new process. Its digest seeds all three Anchors. The next test net candidate is the first soaking node."
   slot_queue: "Proposed 2026-10-11: one soaking node per shard. When the slot frees, only the newest waiting test net candidate enrolls. Older waiting candidates and same-version candidates of a promoted release become superseded."
   candidate_lifecycle: "Proposed 2026-10-11: release-process Section 12.2 lists the candidate states and the gate document of each state."
+  faucet: "2026-10-15: the test net shards get their test tokens from F1r3Faucet (github.com/F1R3FLY-io/F1r3Faucet, TASK-014-10). One faucet site serves every test net. Each consensus or SMR model plugs in through one adapter, and the faucet discovers shards instead of hard-coding them. The CbC Casper adapter comes first. Each further model adds its adapter when its test net runs (TASK-014-9)."
 tasks:
   - id: TASK-014-1
     title: "Design the test net (topology, lifecycle, upgrade path)"
@@ -3178,6 +3179,7 @@ tasks:
     notes:
       - "2026-10-06: dry-run tooling on PR #654: scripts/remote/testnet.env (TESTBED_PROFILE=testnet, 2x amd64 E5.Flex 4 OCPU/24 GB), just testnet-plan, scripts/remote/testnet-slots.sh with its test, docker/testnet.vm-a.yml and testnet.vm-b.yml, validator3 and soaking-slot remote configs."
       - "Blockers before the first --apply (docs/plans/test-net.md section 14): narrow the security list (SSH and 40400-40455 are open to all addresses), move validator keys to OCI Vault, teach deploy.sh the test net compose files, slot file, and keys. No --apply without maintainer approval."
+      - "2026-10-15: the test net genesis must fund the faucet wallet (TASK-014-10). docker/testnet.vm-a.yml and testnet.vm-b.yml mount the shared docker/genesis/wallets.txt today. The first --apply needs a test net wallets file that holds the faucet address, because a running shard cannot add a genesis balance."
   - id: TASK-014-3
     title: "Wire Shard soak-in enrollment and Anchor promotion into the test net"
     status: pending
@@ -3239,11 +3241,29 @@ tasks:
       - "2026-10-11: docs/plans/test-net.md Section 12 holds the model registry and the provisions. Each model needs its own design record before its first test net candidate. RGB has no validator shard, so its record defines its own shard, Anchor, and compatibility meanings."
     acceptance:
       - "Each model has a design record that defines its topology, lifecycle, compatibility check, and Anchor criteria"
+      - "Each design record defines how the faucet funds an address on that model: the address format, the funding transfer, and the receipt. RGB uses client-side validation, so its record defines its own funding flow"
       - "The release scripts accept the model identifier only after its design record is ratified"
+  - id: TASK-014-10
+    title: "Test token faucet and website for the test nets (F1r3Faucet)"
+    status: pending
+    repository: "https://github.com/F1R3FLY-io/F1r3Faucet"
+    notes:
+      - "2026-10-15: the repository holds only a README (intent, proposed TypeScript and Tailwind stack, model adapter interface getShards, getStatus, validateAddress, getBalance, fund). The code, the deployment, and the operations are this task."
+      - "The faucet code lives in F1r3Faucet. This epic tracks what the test net must supply: the genesis funding, the shard registry, the deploy endpoint, the key in OCI Vault, and the hosting."
+      - "Open: which endpoint accepts the faucet deploys. Partner access is read-only on the observer (TASK-014-4), and partners never reach a validator. The faucet needs a deploy path that operators expose only to the faucet."
+    acceptance:
+      - "Each test net shard funds a faucet wallet at genesis. Its key lives in OCI Vault and never appears in either repository"
+      - "The test net publishes a shard registry: each live shard, its consensus model, its genesis, its status, and its observer endpoints. The faucet reads the registry and hard-codes no shard"
+      - "A new shard with a fresh genesis (an incompatible release) appears in the faucet with its own funded wallet. A retired shard disappears from the faucet"
+      - "The cbc-casper adapter validates a REV address, reads a balance through the observer, and funds an address with a transfer deploy whose receipt the site can track"
+      - "Rate limits and abuse controls bound the tokens for each address and each client, and an alert fires when a faucet wallet balance drops below a threshold"
+      - "The website lists each test net with its consensus model, its shards, their status, and their connection details"
+      - "The faucet runs on OCI beside the test net with the existing monitoring and alerts"
+      - "An adapter for a further model (Casanova, Cordial Miners, RGB) follows the design record of that model (TASK-014-9). Adding it does not change the other adapters"
 ---
 ```
 
-**Context:** Unlike the soaks, which create a fresh shard per iteration, this epic delivers the test net: shards that run continuously. **Mechanism sketch (brief by intent; a follow-on branch/PR carries the design):** long-lived OCI instances run test net members, reusing the existing fleet tooling (runner launch, monitoring, ONS alerts, soak dashboard) as the foundation. Under the proposed Section 12.1 amendment, each weekly test net candidate (a canary that passed the 60h stability soak) enrolls new nodes through the Shard soak-in. The new nodes join mixed-release shards beside the Anchors of earlier releases, or start a new shard with a fresh genesis when the candidate is incompatible. Nodes that complete the soak period gain the Anchor role, and the Shard soak-in result gates stable promotion. Each test net runs one consensus/SMR model. This epic delivers the F1r3fly CbC Casper test net only. The consensus-neutral boundary roadmap adds one test net for each further model: Casanova, Cordial Miners, and RGB (TASK-014-9). The test net is primarily internal release-validation infrastructure and also serves select partners and customers. This epic delivers the test net that release-process Phase 6 requires. The deferred Shard soak-in parameters are set here.
+**Context:** Unlike the soaks, which create a fresh shard per iteration, this epic delivers the test net: shards that run continuously. **Mechanism sketch (brief by intent; a follow-on branch/PR carries the design):** long-lived OCI instances run test net members, reusing the existing fleet tooling (runner launch, monitoring, ONS alerts, soak dashboard) as the foundation. Under the proposed Section 12.1 amendment, each weekly test net candidate (a canary that passed the 60h stability soak) enrolls new nodes through the Shard soak-in. The new nodes join mixed-release shards beside the Anchors of earlier releases, or start a new shard with a fresh genesis when the candidate is incompatible. Nodes that complete the soak period gain the Anchor role, and the Shard soak-in result gates stable promotion. Each test net runs one consensus/SMR model. This epic delivers the F1r3fly CbC Casper test net only. The consensus-neutral boundary roadmap adds one test net for each further model: Casanova, Cordial Miners, and RGB (TASK-014-9). One faucet, F1r3Faucet, supplies the test tokens for every test net through one adapter per model (TASK-014-10). The test net is primarily internal release-validation infrastructure and also serves select partners and customers. This epic delivers the test net that release-process Phase 6 requires. The deferred Shard soak-in parameters are set here.
 
 ---
 
