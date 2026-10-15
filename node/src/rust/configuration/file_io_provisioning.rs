@@ -4,11 +4,9 @@
 //! typed HOCON block so operator config can declare which host paths
 //! are provisioned into the Fs cap bundle at genesis time.  Current
 //! surface: typed deserialization (object form + bare-String
-//! shorthand) with mode-string whitelist validation.  Subsequent
-//! slices add:
+//! shorthand), mode-string whitelist validation, operator-ergonomic
+//! typo detector, size-limits DoS guard.  Subsequent slices add:
 //!
-//!   * `check_provisioning_typos` operator-ergonomic typo detector.
-//!   * `validate_size_limits` DoS guard on map cardinality.
 //!   * Boot-time canonicalization + tree validation (symlink /
 //!     hard-link walk) in `boot_validation`.
 //!   * Merge-with-defaults + CLI overrides in `provisioning_merge`.
@@ -58,6 +56,32 @@ use std::path::PathBuf;
 
 use serde::de::Error as _;
 use serde::{Deserialize, Deserializer, Serialize};
+
+/// The four spec-canonical bucket keys.  Used by
+/// `check_provisioning_typos` to distinguish valid names from
+/// operator typos.  `#[allow(dead_code)]` until the typo-check
+/// helper is wired into the config-loader pipeline (ops-7/8); kept
+/// here so a future `--check-config` CLI can invoke it without a
+/// cross-crate dep.
+#[allow(dead_code)]
+pub(crate) const KNOWN_BUCKETS: &[&str] = &[
+    "oracle-static-files",
+    "oracle-static-dirs",
+    "consensus-static-files",
+    "consensus-static-dirs",
+];
+
+/// Cap on the total number of provisioning entries across all four
+/// buckets.  A hostile or corrupted config file with millions of
+/// entries would otherwise OOM the loader at parse time.  100k
+/// comfortably exceeds any legitimate operator workload while
+/// bounding worst-case memory to a few MB.
+pub(crate) const MAX_PROVISIONING_ENTRIES: usize = 100_000;
+
+/// Cap on the length of any logical-name key.  Legitimate logical
+/// paths are file-system-shaped (multi-segment) but bounded; 4 KiB
+/// covers deep hierarchies without allowing pathological inputs.
+pub(crate) const MAX_LOGICAL_KEY_LEN: usize = 4096;
 
 /// Accepted file-mode whitelist for config-block entries.  Spec
 /// §File modes enumerates eight POSIX forms:
@@ -181,6 +205,121 @@ pub struct FileIoProvisioning {
 
     #[serde(default, rename = "consensus-static-dirs")]
     pub consensus_static_dirs: HashMap<String, StaticDirEntry>,
+}
+
+/// Operator-ergonomic typo detector.  Because `FileIoProvisioning`
+/// is designed to `#[serde(flatten)]` into the surrounding `Storage`
+/// config (ops-5), any unrecognized `storage {}` key silently
+/// deserializes as an empty map — an operator who writes
+/// `oracel-static-files { ... }` (typo) discovers the mistake only
+/// when every runtime `openFile` returns `FSERR_UNSUPPORTED`.
+///
+/// Scans line-by-line rather than walking the parsed `hocon::Hocon`
+/// tree to avoid coupling to that crate's API surface.  Skips
+/// comment lines (`#` and `//`).  Detects typos by proximity:
+///
+///   (a) tokens containing `static-file` or `static-dir` that
+///       aren't in `KNOWN_BUCKETS` (catches prefix typos like
+///       `oracel-static-files` and suffix typos like
+///       `consensus-static-dirsx`).
+///   (b) tokens starting with `oracle-` or `consensus-` that
+///       aren't one of the four canonical buckets (catches
+///       middle-of-word typos like `consensus-satic-dirs` that
+///       don't contain either substring).
+///
+/// Returns a de-duplicated, sorted vector of warning strings.  The
+/// typo-check helper is exposed as a library function for a future
+/// `--check-config` CLI (ops-7/8 wire-up); not yet called by the
+/// boot path, hence the module-level `#[allow(dead_code)]`.
+#[allow(dead_code)]
+pub(crate) fn check_provisioning_typos(config_hocon_text: &str) -> Vec<String> {
+    let mut warnings: Vec<String> = Vec::new();
+    for line in config_hocon_text.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with('#') || trimmed.starts_with("//") {
+            continue;
+        }
+        // Split on non-key characters (whitespace, `=`, `{`, `:`,
+        // `.`, quotes) to isolate individual identifier-shaped tokens.
+        for token in line
+            .split(|c: char| !c.is_alphanumeric() && c != '-' && c != '_')
+            .filter(|t| !t.is_empty())
+        {
+            let looks_like_bucket = token.contains("static-file")
+                || token.contains("static-dir")
+                || (token.starts_with("oracle-")
+                    && token != "oracle-static-files"
+                    && token != "oracle-static-dirs")
+                || (token.starts_with("consensus-")
+                    && token != "consensus-static-files"
+                    && token != "consensus-static-dirs");
+            if looks_like_bucket && !KNOWN_BUCKETS.contains(&token) {
+                warnings.push(format!(
+                    "unrecognized static-provisioning key `{token}` in config; \
+                     expected one of {KNOWN_BUCKETS:?}. \
+                     Entries under this key will be silently ignored — \
+                     openFile / openDir calls for those logical names will \
+                     return FSERR_UNSUPPORTED at runtime."
+                ));
+            }
+        }
+    }
+    warnings.sort();
+    warnings.dedup();
+    warnings
+}
+
+/// Enforce the two size caps on a parsed `FileIoProvisioning`.
+/// Called after deserialization; returns `Err` with a human-readable
+/// diagnostic if either cap is exceeded.  Intended to be called by
+/// the config-loader after `resolve()` in a follow-up slice;
+/// `#[allow(dead_code)]` until that wire-up lands.
+///
+///   1. Total entries across all four buckets ≤ MAX_PROVISIONING_ENTRIES.
+///   2. Each logical-name key length ≤ MAX_LOGICAL_KEY_LEN.
+#[allow(dead_code)]
+pub(crate) fn validate_size_limits(cfg: &FileIoProvisioning) -> Result<(), String> {
+    let total = cfg.oracle_static_files.len()
+        + cfg.oracle_static_dirs.len()
+        + cfg.consensus_static_files.len()
+        + cfg.consensus_static_dirs.len();
+    if total > MAX_PROVISIONING_ENTRIES {
+        return Err(format!(
+            "total static-provisioning entries {total} exceeds cap of \
+             {MAX_PROVISIONING_ENTRIES}; refuse to load rather than risk OOM"
+        ));
+    }
+    let key_batches: [(&str, Vec<&String>); 4] = [
+        (
+            "oracle-static-files",
+            cfg.oracle_static_files.keys().collect(),
+        ),
+        (
+            "oracle-static-dirs",
+            cfg.oracle_static_dirs.keys().collect(),
+        ),
+        (
+            "consensus-static-files",
+            cfg.consensus_static_files.keys().collect(),
+        ),
+        (
+            "consensus-static-dirs",
+            cfg.consensus_static_dirs.keys().collect(),
+        ),
+    ];
+    for (bucket, keys) in &key_batches {
+        for k in keys {
+            if k.len() > MAX_LOGICAL_KEY_LEN {
+                return Err(format!(
+                    "logical name in `{bucket}` has length {} > cap of {MAX_LOGICAL_KEY_LEN}; \
+                     truncated preview: `{}...`",
+                    k.len(),
+                    &k[..80.min(k.len())]
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -450,5 +589,144 @@ mod tests {
                 "dir mode {mode:?} should reject but parsed"
             );
         }
+    }
+
+    /// Known bucket names produce no warnings.  Pins that the
+    /// detector doesn't flag the canonical keys as typos.
+    #[test]
+    fn typo_detector_passes_clean_config() {
+        let warnings = check_provisioning_typos(
+            r#"
+            oracle-static-files   { "n" = "/a" }
+            oracle-static-dirs    { "d/" = "/b" }
+            consensus-static-files { "n" = "/c" }
+            consensus-static-dirs { "d/" = "/d" }
+            "#,
+        );
+        assert!(
+            warnings.is_empty(),
+            "clean config should produce no warnings, got {warnings:?}"
+        );
+    }
+
+    /// Prefix typos (`oracel-...`) are flagged.
+    #[test]
+    fn typo_detector_flags_prefix_typo() {
+        let warnings = check_provisioning_typos(
+            r#"
+            oracel-static-files { "n" = "/a" }
+            "#,
+        );
+        assert_eq!(warnings.len(), 1, "expected one warning, got {warnings:?}");
+        assert!(
+            warnings[0].contains("oracel-static-files"),
+            "warning must name the offending token: {}",
+            warnings[0]
+        );
+    }
+
+    /// Suffix typos (`consensus-static-dirsx`) are flagged.
+    #[test]
+    fn typo_detector_flags_suffix_typo() {
+        let warnings = check_provisioning_typos(
+            r#"
+            consensus-static-dirsx { "d/" = "/a" }
+            "#,
+        );
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("consensus-static-dirsx"));
+    }
+
+    /// Middle-of-word typos (`consensus-satic-dirs`) are flagged
+    /// via the `starts_with("consensus-")` heuristic (the token
+    /// doesn't contain `static-dir` so the first heuristic misses).
+    #[test]
+    fn typo_detector_flags_middle_typo() {
+        let warnings = check_provisioning_typos(
+            r#"
+            consensus-satic-dirs { "d/" = "/a" }
+            "#,
+        );
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("consensus-satic-dirs"));
+    }
+
+    /// Comment lines (`#` and `//`) are skipped — an operator can
+    /// paste examples into comments without tripping the detector.
+    #[test]
+    fn typo_detector_skips_comment_lines() {
+        let warnings = check_provisioning_typos(
+            r#"
+            # oracel-static-files { "n" = "/a" }
+            // consensus-satic-dirs { "d/" = "/b" }
+            "#,
+        );
+        assert!(
+            warnings.is_empty(),
+            "comment-wrapped typos should be ignored, got {warnings:?}"
+        );
+    }
+
+    /// Duplicate occurrences of the same typo are de-duplicated to
+    /// a single warning so a config with ten entries under one
+    /// typo'd bucket doesn't produce ten identical warnings.
+    #[test]
+    fn typo_detector_deduplicates_repeat_tokens() {
+        let warnings = check_provisioning_typos(
+            r#"
+            oracel-static-files {
+              "a" = "/a"
+              "b" = "/b"
+            }
+            oracel-static-files { "c" = "/c" }
+            "#,
+        );
+        assert_eq!(
+            warnings.len(),
+            1,
+            "repeated typo should produce one warning, got {warnings:?}"
+        );
+    }
+
+    /// An empty config passes size validation.
+    #[test]
+    fn size_limits_accept_empty_config() {
+        let cfg = FileIoProvisioning::default();
+        validate_size_limits(&cfg).expect("empty config passes");
+    }
+
+    /// A config with (MAX+1) entries fails the total cap.
+    #[test]
+    fn size_limits_reject_total_exceeding_cap() {
+        let mut cfg = FileIoProvisioning::default();
+        for i in 0..=MAX_PROVISIONING_ENTRIES {
+            cfg.oracle_static_files
+                .insert(format!("k{i}"), StaticFileEntry {
+                    path: PathBuf::from("/p"),
+                    mode: "r".into(),
+                });
+        }
+        let err = validate_size_limits(&cfg).expect_err("over-cap should fail");
+        assert!(
+            err.contains("exceeds cap") && err.contains(&MAX_PROVISIONING_ENTRIES.to_string()),
+            "error must name the cap: {err}"
+        );
+    }
+
+    /// A single key longer than MAX_LOGICAL_KEY_LEN fails even if
+    /// the entry total is well under cap.
+    #[test]
+    fn size_limits_reject_key_longer_than_cap() {
+        let mut cfg = FileIoProvisioning::default();
+        let long_key = "x".repeat(MAX_LOGICAL_KEY_LEN + 1);
+        cfg.consensus_static_dirs.insert(long_key, StaticDirEntry {
+            path: PathBuf::from("/p"),
+            mode: "r".into(),
+        });
+        let err = validate_size_limits(&cfg).expect_err("over-long key should fail");
+        assert!(
+            err.contains("consensus-static-dirs") && err.contains("cap of"),
+            "error must name the bucket + cap: {err}"
+        );
     }
 }
