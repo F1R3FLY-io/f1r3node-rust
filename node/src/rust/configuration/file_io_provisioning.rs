@@ -19,13 +19,6 @@
 //!   * §1245 (Dir mode defaults).
 //!   * §File modes (POSIX whitelist).
 //!
-//! # Mode strings
-//!
-//! Static entries use the same mode vocabulary as the Fs/Dir caps:
-//! POSIX file modes for files (`"r"`, `"r+"`, `"w"`, `"w+"`, `"a"`,
-//! `"a+"`), and `"r"` / `"r+"` for Dir attenuation.  Validation of
-//! that vocabulary is deferred to the mode-validation slice.
-//!
 //! # Entry-value shapes
 //!
 //! Each map value is either a `{path, mode}` object OR a bare String
