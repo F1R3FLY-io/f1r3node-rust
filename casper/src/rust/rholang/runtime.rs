@@ -720,9 +720,8 @@ impl RuntimeOps {
     fn bitmask_value(data: &[Datum<ListParWithRandom>]) -> Option<i64> {
         let nums: Vec<i64> = data
             .iter()
-            .filter_map(|datum| {
-                RholangMergingLogic::try_get_number_with_rnd(&datum.a).map(|(n, _)| n)
-            })
+            .filter(|datum| datum.a.pars.len() == 1)
+            .filter_map(|datum| RhoNumber::unapply(&datum.a.pars[0]))
             .collect();
         Self::fold_bitmask_or(&nums)
     }
