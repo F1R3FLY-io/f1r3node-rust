@@ -636,6 +636,15 @@ mod tests {
                 (filled(0), None),
                 (filled(0), None),
             ],
+            vec![(Blake2b256Hash::from_bytes(vec![1, 2, 3]), None)],
+            vec![
+                (root.clone(), None),
+                (Blake2b256Hash::from_bytes(vec![]), None),
+                (filled(0), None),
+                (filled(0), None),
+                (filled(0), None),
+                (filled(0), None),
+            ],
         ];
         for start_path in malformed {
             let len = start_path.len();
