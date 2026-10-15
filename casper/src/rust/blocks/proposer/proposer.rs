@@ -698,12 +698,9 @@ impl ActiveValidatorChecker for ProductionActiveValidatorChecker {
             .parents
             .first()
             .map(|parent| {
-                parent
-                    .body
-                    .state
-                    .bonds
-                    .iter()
-                    .any(|bond| bond.validator == validator_identity.public_key.bytes)
+                parent.body.state.bonds.iter().any(|bond| {
+                    bond.validator == validator_identity.public_key.bytes && bond.stake > 0
+                })
             })
             .unwrap_or(false);
         if in_committee {

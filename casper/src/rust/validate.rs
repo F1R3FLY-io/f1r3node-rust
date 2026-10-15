@@ -237,7 +237,7 @@ impl Validate {
     pub fn block_sender_has_weight(
         b: &BlockMessage,
         genesis: &BlockMessage,
-        block_store: &mut KeyValueBlockStore,
+        block_store: &KeyValueBlockStore,
     ) -> Result<bool, KvStoreError> {
         if b == genesis {
             Ok(true)
