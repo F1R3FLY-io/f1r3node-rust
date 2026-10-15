@@ -1,0 +1,60 @@
+name: Promote dev to master
+
+# The Run workflow button on the Actions tab opens the dev -> master promotion
+# pull request, as `just promote` does. Both run
+# .github/scripts/open-promotion-pr.sh, which creates a temporary promote/*
+# branch at the origin/dev commit. A promotion never uses dev as its head.
+#
+# A pull request opened with GITHUB_TOKEN starts no pull_request workflows, so
+# its required checks never report. The job opens the pull request with the CI
+# GitHub App instead. The app installation must grant Contents: write (to
+# create the branch) and Pull requests: write (to open the pull request).
+#
+# The app is the pull request author, so the user who started the workflow
+# could approve the promotion alone. The pull request body names that user and
+# asks a different member of ci-maintainers to approve. CODEOWNERS requests the
+# review.
+#
+# GitHub shows the button only for a workflow on the default branch (master).
+# The release-credentials environment allows master only.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: promote-dev-to-master
+  cancel-in-progress: false
+
+jobs:
+  promote:
+    name: Open Promotion Pull Request
+    if: github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: release-credentials
+    steps:
+      - name: Checkout
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Create promotion token
+        id: promotion-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ vars.CI_GITHUB_APP_ID }}
+          private-key: ${{ secrets.CI_GITHUB_APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
+
+      - name: Open the promotion pull request
+        env:
+          GH_TOKEN: ${{ steps.promotion-token.outputs.token }}
+          PROMOTE_REPOSITORY: ${{ github.repository }}
+          PROMOTE_TRIGGERED_BY: ${{ github.triggering_actor }}
+        shell: bash -euo pipefail {0}
+        run: bash .github/scripts/open-promotion-pr.sh
