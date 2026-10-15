@@ -31,25 +31,47 @@
 //! `"a+"`), and `"r"` / `"r+"` for Dir attenuation.  Validation of
 //! that vocabulary is deferred to the mode-validation slice.
 //!
-//! # Minimum-slice posture
+//! # Entry-value shapes
 //!
-//! `#[derive(Default, Deserialize, Serialize)]` with `#[serde(rename
-//! = "...")]` kebab-case field names.  No custom deserialize impl
-//! yet; config entries must use the object form `{path = "...",
-//! mode = "..."}`.  An empty HOCON block (or an absent block)
-//! parses to `FileIoProvisioning::default()` with four empty maps.
+//! Each map value is either a `{path, mode}` object OR a bare String
+//! (path only, mode defaults to `"r"`):
+//!
+//! ```text
+//! oracle-static-files = {
+//!   "config/full": { "path": "/etc/myapp/full.json", "mode": "r+" },
+//!   "config/bare": "/etc/myapp/theme.json"           // defaults mode = "r"
+//! }
+//! ```
+//!
+//! Bare-String form reflects the common case (default-restrictive
+//! read-only provisioning); object form is required when the
+//! operator opts into write access.
+//!
+//! Mode-string validation is **deferred** to a follow-up slice.
+//! Any string value is accepted at parse time; semantic validation
+//! happens when the entry is threaded through Fs.rho / Dir.rho at
+//! runtime.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
+
+/// Default mode substituted when a static-file entry is bare-String.
+/// Spec §File modes default: `"r"`.
+pub(crate) const DEFAULT_CONFIG_FILE_MODE: &str = "r";
+
+/// Default mode substituted when a static-dir entry is bare-String.
+/// Spec §1245: config is default-restrictive.
+pub(crate) const DEFAULT_CONFIG_DIR_MODE: &str = "r";
 
 /// One static-file provisioning entry — the value side of an
 /// `oracle-static-files` / `consensus-static-files` map.
 ///
-/// MVP: object form only (`{path = "...", mode = "..."}`).  A later
-/// slice adds bare-String form that defaults `mode = "r"`.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+/// Deserializes from either `{path, mode}` object or bare String
+/// (bare → `mode = "r"`).  See `deserialize_static_entry` for the
+/// untagged-enum impl shared with `StaticDirEntry`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct StaticFileEntry {
     pub path: PathBuf,
     pub mode: String,
@@ -58,12 +80,57 @@ pub struct StaticFileEntry {
 /// One static-dir provisioning entry — the value side of an
 /// `oracle-static-dirs` / `consensus-static-dirs` map.
 ///
-/// MVP: object form only (`{path = "...", mode = "..."}`).  A later
-/// slice adds bare-String form that defaults `mode = "r"`.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+/// Deserializes from either `{path, mode}` object or bare String
+/// (bare → `mode = "r"`).  See `deserialize_static_entry` for the
+/// untagged-enum impl shared with `StaticFileEntry`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct StaticDirEntry {
     pub path: PathBuf,
     pub mode: String,
+}
+
+/// Shared deserialize-either-shape helper.  Returns the raw
+/// `(path, mode)` pair with `default_mode` substituted when the
+/// entry is bare-String.
+///
+/// Mode / path validation lands in a follow-up slice; this helper
+/// is intentionally the thinnest wrapper that supports the two
+/// wire shapes.
+fn deserialize_static_entry<'de, D>(
+    deserializer: D,
+    default_mode: &str,
+) -> Result<(PathBuf, String), D::Error>
+where
+    D: Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Wire {
+        Object { path: PathBuf, mode: String },
+        Bare(String),
+    }
+
+    let wire = Wire::deserialize(deserializer)?;
+    Ok(match wire {
+        Wire::Object { path, mode } => (path, mode),
+        Wire::Bare(s) => (PathBuf::from(s), default_mode.to_string()),
+    })
+}
+
+impl<'de> Deserialize<'de> for StaticFileEntry {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where D: Deserializer<'de> {
+        let (path, mode) = deserialize_static_entry(deserializer, DEFAULT_CONFIG_FILE_MODE)?;
+        Ok(StaticFileEntry { path, mode })
+    }
+}
+
+impl<'de> Deserialize<'de> for StaticDirEntry {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where D: Deserializer<'de> {
+        let (path, mode) = deserialize_static_entry(deserializer, DEFAULT_CONFIG_DIR_MODE)?;
+        Ok(StaticDirEntry { path, mode })
+    }
 }
 
 /// Static-provisioning block: four maps split by consensus axis
@@ -112,9 +179,73 @@ mod tests {
         assert!(cfg.consensus_static_dirs.is_empty());
     }
 
+    /// Bare-String file entry defaults `mode = "r"`.  Pins the
+    /// common-case shorthand: an operator writes a path only and
+    /// gets read-only provisioning.
+    #[test]
+    fn bare_string_file_entry_defaults_to_read_mode() {
+        let cfg = parse_provisioning(
+            r#"
+            oracle-static-files {
+              "config/theme.json" = "/etc/myapp/theme.json"
+            }
+            "#,
+        )
+        .expect("parse");
+        let entry = cfg
+            .oracle_static_files
+            .get("config/theme.json")
+            .expect("entry present");
+        assert_eq!(entry.path, PathBuf::from("/etc/myapp/theme.json"));
+        assert_eq!(entry.mode, "r");
+    }
+
+    /// Bare-String dir entry defaults `mode = "r"` (spec §1245:
+    /// config is default-restrictive; operators must opt into
+    /// `"r+"` via the object form).
+    #[test]
+    fn bare_string_dir_entry_defaults_to_read_mode() {
+        let cfg = parse_provisioning(
+            r#"
+            consensus-static-dirs {
+              "shared/" = "/srv/shared"
+            }
+            "#,
+        )
+        .expect("parse");
+        let entry = cfg
+            .consensus_static_dirs
+            .get("shared/")
+            .expect("entry present");
+        assert_eq!(entry.path, PathBuf::from("/srv/shared"));
+        assert_eq!(entry.mode, "r");
+    }
+
+    /// Mixed object + bare forms in the same bucket parse
+    /// independently.  Catches a regression where the untagged
+    /// enum match arm order misclassifies one shape as the other.
+    #[test]
+    fn object_and_bare_forms_coexist_in_one_bucket() {
+        let cfg = parse_provisioning(
+            r#"
+            oracle-static-files {
+              "full" = { path = "/a/full", mode = "r+" }
+              "bare" = "/a/bare"
+            }
+            "#,
+        )
+        .expect("parse");
+        let full = cfg.oracle_static_files.get("full").expect("full present");
+        assert_eq!(full.mode, "r+");
+        let bare = cfg.oracle_static_files.get("bare").expect("bare present");
+        assert_eq!(bare.path, PathBuf::from("/a/bare"));
+        assert_eq!(bare.mode, "r");
+    }
+
     /// Object-form file entry parses: `{path = ..., mode = ...}`
-    /// deserializes into `StaticFileEntry`.  Bare-String form is
-    /// not yet supported and is deferred to a follow-up slice.
+    /// deserializes into `StaticFileEntry`.  Preserved from ops-1;
+    /// pins that the explicit mode isn't discarded by the untagged
+    /// enum's bare-String arm.
     #[test]
     fn object_form_file_entry_parses() {
         let cfg = parse_provisioning(
