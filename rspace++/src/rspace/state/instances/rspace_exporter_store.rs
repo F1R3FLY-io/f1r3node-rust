@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use shared::rust::store::key_value_store::{KeyValueStore, KvStoreError};
 
-use crate::rspace::errors::RootError;
+use crate::rspace::errors::{RadixTreeError, RootError};
 use crate::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use crate::rspace::history::instances::radix_history::RadixHistory;
 use crate::rspace::history::roots_store::{RootsStore, RootsStoreInstances};
@@ -61,10 +61,15 @@ impl RSpaceExporter for RSpaceExporterImpl {
 }
 
 impl TrieExporter for RSpaceExporterImpl {
-    fn get_nodes(&self, start_path: NodePath, skip: i32, take: i32) -> Vec<TrieNode<KeyHash>> {
+    fn get_nodes(
+        &self,
+        start_path: NodePath,
+        skip: i32,
+        take: i32,
+    ) -> Result<Vec<TrieNode<KeyHash>>, RadixTreeError> {
         let source_trie_store = RadixHistory::create_store(self.source_history_store.clone());
 
-        RSpaceExporterInstance::traverse_history(
+        RSpaceExporterInstance::try_traverse_history(
             start_path,
             skip,
             take,
