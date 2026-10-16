@@ -458,6 +458,23 @@ tasks:
       - "check-promotion-source.sh rejects a pull request from this repository with head master or dev, for every base, and accepts a fork pull request from the fork's master or dev. The Promotion Source job in ci.yml runs it with a read-only token. protected-head-guard.yml runs it from the base branch under pull_request_target and closes the pull request with the remedy and the reason. test-check-promotion-source.sh covers both events, the close, and a failed close."
       - "just backmerge names an open backmerge/* pull request to dev and creates nothing. The branch name backmerge/master-<sha> makes a second run for the same master commit fail at branch creation."
       - "docs/ci.md and CLAUDE.md name just backmerge and the reason."
+  - id: TASK-023-14
+    title: "Harmonize the AI workflow guidance and record the tasking conventions"
+    status: blocked
+    priority: p2
+    claimed_by: claude-session-dfac55a4
+    claimed_at: 2026-10-16T23:00:00Z
+    branch: chore/harmonize-ai-worklflows
+    blocked_by: ["top-level-gitlab-profile INBOX: harmonize regressions on f1r3node-rust (2026-10-16)"]
+    finding: "On 2026-10-16, /harmonize on dev 38dac3c2f with profile 63050a9 removed the YAML frontmatter of three task files, replaced local STE prose with template prose, wrote a relative link that does not resolve here, and raised the CLAUDE.md STE Check findings from 1 to 14. The task files were restored. CLAUDE.md is kept unrestored as a fixture."
+    notes:
+      - "top-level-gitlab-profile-02 took the tooling fix. The regression fixture is in that repository under docs/work-logs/harmonize-regressions-f1r3node-rust-2026-10-16/."
+      - "No guidance file links epic-task-structure.md or user-stories-standard.md, or states the repository conventions: TASK-NNN-N identifiers, task-level acceptance, and the notes, branch, pr_base_branch, pull_request, finding, and decision fields. No file defines where a value stream is recorded."
+      - "Harmonize derives AGENTS.md only when the file is missing (process_agents_md in harmonize-markdown.sh, intended since bef5869). After the next run, update AGENTS.md by hand to match the new CLAUDE.md sections. The tooling owner takes a WARN or a new derivation to its maintainer as a follow-up."
+    acceptance:
+      - "A /harmonize run with the fixed tooling keeps the frontmatter, the local STE prose, and resolvable links, and adds no STE Check findings."
+      - "CLAUDE.md and AGENTS.md link the epic, user story, and ToDos standards and state the repository tasking conventions. AGENTS.md also carries the sections that harmonize adds to CLAUDE.md."
+      - "The guidance states where a value stream is recorded, after the maintainer chooses the user story, the epic, or both."
   - id: TASK-023-5
     title: "Measure the disk admission failure rate after the fix"
     status: pending

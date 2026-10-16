@@ -556,8 +556,17 @@ nobody pushes, cleans up, or audits.
 YOLO mode runs *inside* a worktree that the human created. Running in a worktree
 never authorizes the creation of more worktrees.
 
-Canonical policy: [Git Interaction Policy](https://gitlab.com/smart-assets.io/gitlab-profile/-/blob/master/docs/common/git-interaction-policy.md)
-(Worktrees section).
+Canonical policy: Git Interaction Policy, Worktrees section.
+
+```yaml cross-reference
+reference:
+  purpose: current
+  repository: https://gitlab.com/smart-assets.io/gitlab-profile
+  checkout: ../../SA/top-level-gitlab-profile
+  revision: master
+  path: docs/common/git-interaction-policy.md
+  url: https://gitlab.com/smart-assets.io/gitlab-profile/-/blob/master/docs/common/git-interaction-policy.md
+```
 
 ## grepai - Semantic Code Search
 
@@ -569,8 +578,105 @@ substitute your tool's equivalents for the generic actions described below.
 Setup (with the privacy-first local Ollama embedder as default) lives in the
 CLI Setup guide's "Optional: Semantic Code Search (grepai)" section.
 
-# important-instruction-reminders
+## Stigmergic Collaboration
 
+This project uses **stigmergic collaboration** - agents coordinate through shared `.md` files rather than direct messaging. When agents work as a Claude Code agent team, real-time IPC replaces file-based coordination. The stigmergic files remain for cross-session continuity, audit trails, and cross-tool interoperability.
+
+Full guide: Stigmergic Collaboration Guide.
+
+```yaml cross-reference
+reference:
+  purpose: current
+  repository: https://gitlab.com/smart-assets.io/gitlab-profile
+  checkout: ../../SA/top-level-gitlab-profile
+  revision: master
+  path: docs/common/stigmergic-collaboration.md
+  url: https://gitlab.com/smart-assets.io/gitlab-profile/-/blob/master/docs/common/stigmergic-collaboration.md
+```
+
+### Document-First Workflow
+
+For significant features:
+
+1. **User Story**: Capture the business need in `docs/UserStories.md`
+   - Define persona, capability, and benefit
+   - List acceptance criteria
+
+2. **Design Document**: Describe problem and solution
+   ```bash
+   cp ../../SA/top-level-gitlab-profile/docs/templates/design-doc.md.template docs/designs/[feature-name].md
+   ```
+
+3. **Specification**: Define interfaces and behavior
+   ```bash
+   cp ../../SA/top-level-gitlab-profile/docs/templates/specification.md.template docs/specs/[component-name].md
+   ```
+
+4. **Task Definition**: Add epic to `docs/ToDos.md` with tasks
+
+5. **Implement**: Only after documentation is reviewed
+
+6. **Complete**: Update user story status when epic completes
+
+## Cross-Repository References
+
+Use the reference form that matches the location of the target. The Cross-Reference Standards document contains the full rules.
+
+| Target | Required form |
+| --- | --- |
+| File in the same repository | Document-relative Markdown link |
+| Current guidance in another repository | `yaml cross-reference` block or `cross_references` frontmatter with `purpose: current` |
+| Evidence or an approved decision | Record with `purpose: evidence` and a full commit ID |
+
+Obey these rules when you write a record:
+
+- Set `checkout` relative to the directory of the source document.
+- Set `path` relative to the root of the target repository.
+- Take the hosted project path from the configured remote or from `repo-mapping.yaml`. Local directory names and hosted project names can be different.
+- Set `revision` to the branch that holds the current content. Do not assume `master` or `main`.
+- Do not write a Markdown link to a file in another repository. A single-repository clone cannot resolve that link, and the CI link check fails.
+- Before you commit, run `scripts/check-broken-links.py --references-only` from the top-level profile on each changed Markdown file.
+
+Do not copy the link form of older text. Older text can contain the two-label form that version 2 of the standard replaced.
+
+```yaml cross-reference
+reference:
+  purpose: current
+  repository: https://gitlab.com/smart-assets.io/gitlab-profile
+  checkout: ../../SA/top-level-gitlab-profile
+  revision: master
+  path: docs/common/cross-reference-standards.md
+  url: https://gitlab.com/smart-assets.io/gitlab-profile/-/blob/master/docs/common/cross-reference-standards.md
+```
+
+## Development Modes
+<!-- SYNC:standard -->
+
+This project supports three operational modes for AI-assisted development.
+
+| Mode | Command | Git Access |
+|------|---------|------------|
+| **Safe** | `claude` / `claude-safe` | Via `/quick-commit`, `/recursive-push` only |
+| **Agentic** | `claude-agentic` | Direct git permitted |
+| **YOLO** | `claude-agentic` (in user-created worktree) | Full autonomy, isolated |
+
+**Safe mode** is the default. Use slash commands for all git operations.
+**Agentic mode** requires branch consistency (`check-repo-consistency.sh --strict`).
+**YOLO mode** requires a git worktree for isolation. The human creates the worktree. Agents never create worktrees outside agentic mode (see Worktree Policy).
+
+Reference: Development Modes.
+
+```yaml cross-reference
+reference:
+  purpose: current
+  repository: https://gitlab.com/smart-assets.io/gitlab-profile
+  checkout: ../../SA/top-level-gitlab-profile
+  revision: master
+  path: docs/common/development-modes.md
+  url: https://gitlab.com/smart-assets.io/gitlab-profile/-/blob/master/docs/common/development-modes.md
+```
+
+# important-instruction-reminders
 - Do only the requested work.
 - Do not create a file unless it is necessary to complete the request.
 - Prefer an edit to an existing file instead of a new file.
