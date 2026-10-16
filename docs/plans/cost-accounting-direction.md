@@ -14,7 +14,7 @@ A switch from completed evaluations to funded or multisigned execution fragments
 
 The existing model does not guarantee successful completion of every deploy. Execution errors and resource exhaustion remain possible.
 
-This conclusion is provisional, not a rejection or approval of the intended direction. The relevant approved proposals remain to be examined.
+This conclusion is provisional, not a rejection or approval of the intended direction. The pinned current PR #216 head (`ccbee9287`) and relevant approved proposals remain to be examined.
 
 The user reports that a Zoom discussion prompted this interpretation. On 2026-10-16 the user identified the [stall-loop design](https://github.com/F1R3FLY-io/publications/blob/main/cost-accounting/stall-loop-design.pdf) as the outcome of that discussion.
 
