@@ -24,11 +24,7 @@ pub fn initialize_diagnostics(
     let metrics_interval = conf.metrics.tick_interval;
 
     let prometheus_reporter = if conf.metrics.prometheus {
-        let reporter = new_prometheus_reporter::NewPrometheusReporter::initialize()?;
-        if scheduler_delay::start_scheduler_delay_probe() {
-            info!("Runtime scheduler delay probe started.");
-        }
-        Some(reporter)
+        Some(new_prometheus_reporter::NewPrometheusReporter::initialize()?)
     } else {
         None
     };
@@ -72,6 +68,12 @@ pub fn initialize_diagnostics(
             "Sigar (system metrics) reporter started with interval {:?}.",
             metrics_interval
         );
+    }
+
+    if (conf.metrics.prometheus || conf.metrics.influxdb || conf.metrics.influxdb_udp)
+        && scheduler_delay::start_scheduler_delay_probe()
+    {
+        info!("Runtime scheduler delay probe started.");
     }
 
     Ok(prometheus_reporter)

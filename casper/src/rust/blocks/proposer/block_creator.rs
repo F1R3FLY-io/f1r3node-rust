@@ -278,20 +278,20 @@ fn ordered_user_deploys(deploys: &HashSet<Signed<DeployData>>) -> Vec<Signed<Dep
     ordered
 }
 
-/// Ordinary admission accounting for one deploy preparation: a disabled
-/// lane, and the ordinary candidates the selection left out.
 struct TimedDeployPoolGuard<'a> {
-    guard: parking_lot::MutexGuard<'a, KeyValueDeployStorage>,
+    guard: Option<parking_lot::MutexGuard<'a, KeyValueDeployStorage>>,
     acquired_at: std::time::Instant,
 }
 
 impl std::ops::Deref for TimedDeployPoolGuard<'_> {
     type Target = KeyValueDeployStorage;
-    fn deref(&self) -> &Self::Target { &self.guard }
+    fn deref(&self) -> &Self::Target { self.guard.as_deref().expect("held until drop") }
 }
 
 impl std::ops::DerefMut for TimedDeployPoolGuard<'_> {
-    fn deref_mut(&mut self) -> &mut Self::Target { &mut self.guard }
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.guard.as_deref_mut().expect("held until drop")
+    }
 }
 
 impl Drop for TimedDeployPoolGuard<'_> {
@@ -299,8 +299,10 @@ impl Drop for TimedDeployPoolGuard<'_> {
         use crate::rust::metrics_constants::{
             CASPER_METRICS_SOURCE, DEPLOY_POOL_LOCK_HOLD_TIME_METRIC,
         };
+        let held = self.acquired_at.elapsed();
+        drop(self.guard.take());
         metrics::histogram!(DEPLOY_POOL_LOCK_HOLD_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
-            .record(self.acquired_at.elapsed().as_secs_f64());
+            .record(held.as_secs_f64());
     }
 }
 
@@ -313,9 +315,14 @@ fn lock_deploy_pool(pool: &parking_lot::Mutex<KeyValueDeployStorage>) -> TimedDe
     let acquired_at = std::time::Instant::now();
     metrics::histogram!(DEPLOY_POOL_LOCK_WAIT_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
         .record(acquired_at.duration_since(requested_at).as_secs_f64());
-    TimedDeployPoolGuard { guard, acquired_at }
+    TimedDeployPoolGuard {
+        guard: Some(guard),
+        acquired_at,
+    }
 }
 
+/// Ordinary admission accounting for one deploy preparation: a disabled
+/// lane, and the ordinary candidates the selection left out.
 pub(crate) fn record_ordinary_admission(
     lane_enabled: bool,
     ordinary_candidates: usize,
