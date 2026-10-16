@@ -42,6 +42,9 @@ pub const PARENTS_POST_STATE_CACHE_SIZE_METRIC: &str = "parents-post-state-cache
 pub const REPLAY_CACHE_ENTRIES_METRIC: &str = "replay-cache.entries";
 pub const REPLAY_CACHE_RETAINED_BYTES_METRIC: &str = "replay-cache.retained-bytes";
 pub const PROPOSER_QUEUE_PENDING_METRIC: &str = "proposer.queue.pending";
+// Issue #24 Track A metric (CLAIM-CASPER-STAGE-METRICS-001, TASK-021-17).
+// Histogram: pending propose requests before each take from the queue.
+pub const PROPOSER_QUEUE_DEPTH_METRIC: &str = "proposer.queue.depth";
 // Issue #24 heartbeat stage metrics (CLAIM-CASPER-STAGE-METRICS-001).
 // Counter: heartbeat checks, one per wake or interval tick.
 pub const HEARTBEAT_CHECKS_METRIC: &str = "heartbeat.checks";
@@ -323,6 +326,11 @@ pub const BLOCK_CREATOR_EMPTY_BLOCK_BUILT_METRIC: &str = "block-creator.empty-bl
 // Histogram: age of each user deploy when a block selects it, from the deploy
 // timestamp to the block creation time, in seconds.
 pub const DEPLOY_SELECTION_AGE_TIME_METRIC: &str = "deploy.selection.age.time";
+// Issue #24 Track A metrics (CLAIM-CASPER-STAGE-METRICS-001, TASK-021-17).
+// Histograms, seconds: the wait for the deploy-pool lock and its hold time in
+// one proposal preparation.
+pub const DEPLOY_POOL_LOCK_WAIT_TIME_METRIC: &str = "deploy-pool.lock-wait.time";
+pub const DEPLOY_POOL_LOCK_HOLD_TIME_METRIC: &str = "deploy-pool.lock-hold.time";
 pub const BLOCK_CREATOR_DEPLOY_ADMISSION_FRESH_LOCAL_METRIC: &str =
     "block-creator.deploy-admission.fresh-local";
 pub const BLOCK_CREATOR_DEPLOY_ADMISSION_OLDEST_FRESH_AGE_MS_METRIC: &str =
