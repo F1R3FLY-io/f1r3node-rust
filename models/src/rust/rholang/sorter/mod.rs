@@ -4,7 +4,6 @@ pub mod cost_accounting_sorter;
 pub mod expr_sort_matcher;
 pub mod if_sort_matcher;
 pub mod match_sort_matcher;
-pub mod metered;
 pub mod new_sort_matcher;
 pub mod ordering;
 pub mod par_sort_matcher;
@@ -14,6 +13,3 @@ pub mod send_sort_matcher;
 pub mod sortable;
 pub mod unforgeable_sort_matcher;
 pub mod var_sort_matcher;
-
-#[cfg(test)]
-mod block_tests;

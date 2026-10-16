@@ -1,15 +1,11 @@
-use std::mem::size_of;
 use std::num::NonZeroUsize;
 
-use models::rust::host_work::HostWorkDimension;
 use thiserror::Error;
 
 use super::{
-    filled_vec, reserve_work, solve_box_funding_feasibility, FundingAssignmentError,
-    FundingAssignmentTotals, FundingBoxFeasibility, FundingBoxProblem, FundingSearchError,
-    FundingSearchLimits,
+    filled_vec, solve_box_funding_feasibility, FundingAssignmentError, FundingAssignmentTotals,
+    FundingBoxFeasibility, FundingBoxProblem, FundingSearchError, FundingSearchLimits,
 };
-use crate::rust::interpreter::host_work::HostWorkBudget;
 
 #[derive(Clone, Copy, Debug)]
 pub struct FundingFamilyProblem<'a> {
@@ -58,20 +54,7 @@ pub(super) struct HoldBox {
     pub(super) upper: Vec<u64>,
 }
 
-pub(super) fn vector(
-    count: usize,
-    budget: &HostWorkBudget,
-) -> Result<Vec<u64>, FundingSearchError> {
-    reserve_work(
-        budget,
-        HostWorkDimension::SearchStateBytes,
-        count
-            .checked_mul(size_of::<u64>())
-            .ok_or(FundingSearchError::Overflow)?,
-    )?;
-    reserve_work(budget, HostWorkDimension::SearchCandidates, count)?;
-    filled_vec(count, 0)
-}
+pub(super) fn vector(count: usize) -> Result<Vec<u64>, FundingSearchError> { filled_vec(count, 0) }
 
 pub(super) fn sum(values: &[u64]) -> Result<u128, FundingSearchError> {
     values.iter().try_fold(0_u128, |total, value| {
@@ -81,16 +64,7 @@ pub(super) fn sum(values: &[u64]) -> Result<u128, FundingSearchError> {
     })
 }
 
-pub(super) fn push(
-    stack: &mut Vec<HoldBox>,
-    bounds: HoldBox,
-    budget: &HostWorkBudget,
-) -> Result<(), FundingSearchError> {
-    reserve_work(
-        budget,
-        HostWorkDimension::SearchStateBytes,
-        size_of::<HoldBox>(),
-    )?;
+pub(super) fn push(stack: &mut Vec<HoldBox>, bounds: HoldBox) -> Result<(), FundingSearchError> {
     stack
         .try_reserve_exact(1)
         .map_err(|_| FundingSearchError::AllocationFailed)?;
@@ -101,7 +75,6 @@ pub(super) fn push(
 fn validate(
     problem: FundingFamilyProblem<'_>,
     limits: FundingFamilyLimits,
-    budget: &HostWorkBudget,
 ) -> Result<HoldBox, FundingFamilyError> {
     let n = problem.capacities.len();
     if n == 0 {
@@ -116,8 +89,8 @@ fn validate(
     if problem.cases.len() > limits.case_cap.get() {
         return Err(FundingFamilyError::TooManyCases);
     }
-    let mut lower = vector(n, budget)?;
-    let mut upper = vector(n, budget)?;
+    let mut lower = vector(n)?;
+    let mut upper = vector(n)?;
     for case in problem.cases {
         if case.upper.len() != n {
             return Err(FundingSearchError::from(FundingAssignmentError::InvalidDimensions).into());
@@ -127,16 +100,7 @@ fn validate(
                 FundingSearchError::from(FundingAssignmentError::TooManyObligations).into(),
             );
         }
-        reserve_work(
-            budget,
-            HostWorkDimension::VerificationOperations,
-            case.obligations
-                .len()
-                .checked_add(1)
-                .and_then(|width| n.checked_mul(width))
-                .ok_or(FundingSearchError::Overflow)?,
-        )?;
-        case.validate(limits.search, budget)?;
+        case.validate(limits.search)?;
         let total = case.obligations.iter().try_fold(0_u64, |total, amount| {
             total
                 .checked_add(*amount)
@@ -154,17 +118,9 @@ fn relaxed_witness(
     problem: FundingFamilyProblem<'_>,
     bounds: &HoldBox,
     limits: FundingFamilyLimits,
-    budget: &HostWorkBudget,
 ) -> Result<Option<FundingFamilyWitness>, FundingSearchError> {
     let n = problem.capacities.len();
     let count = problem.cases.len();
-    reserve_work(
-        budget,
-        HostWorkDimension::SearchStateBytes,
-        count
-            .checked_mul(size_of::<Vec<Vec<u64>>>() + size_of::<FundingAssignmentTotals>())
-            .ok_or(FundingSearchError::Overflow)?,
-    )?;
     let mut assignments = Vec::new();
     assignments
         .try_reserve_exact(count)
@@ -173,10 +129,9 @@ fn relaxed_witness(
     totals
         .try_reserve_exact(count)
         .map_err(|_| FundingSearchError::AllocationFailed)?;
-    let mut holds = vector(n, budget)?;
-    let mut upper = vector(n, budget)?;
+    let mut holds = vector(n)?;
+    let mut upper = vector(n)?;
     for case in problem.cases {
-        reserve_work(budget, HostWorkDimension::SearchCandidates, n)?;
         for (i, value) in upper.iter_mut().enumerate() {
             *value = bounds.upper[i].min(case.upper[i]);
             if case.lower[i] > *value {
@@ -189,7 +144,6 @@ fn relaxed_witness(
                 ..*case
             },
             limits.search,
-            budget,
         )? {
             FundingBoxFeasibility::Feasible {
                 assignment,
@@ -217,10 +171,8 @@ fn relaxed_witness(
 pub(super) fn split_hold_box(
     mut bounds: HoldBox,
     stack: &mut Vec<HoldBox>,
-    budget: &HostWorkBudget,
 ) -> Result<(), FundingSearchError> {
     let n = bounds.lower.len();
-    reserve_work(budget, HostWorkDimension::SearchCandidates, n)?;
     let mut split = None;
     let mut width = 0;
     for (i, (lo, hi)) in bounds.lower.iter().zip(&bounds.upper).enumerate() {
@@ -231,42 +183,35 @@ pub(super) fn split_hold_box(
     }
     let source = split.ok_or(FundingSearchError::InvalidResult)?;
     let middle = bounds.lower[source] + width / 2;
-    let mut right_lower = vector(n, budget)?;
+    let mut right_lower = vector(n)?;
     right_lower.copy_from_slice(&bounds.lower);
     right_lower[source] = middle.checked_add(1).ok_or(FundingSearchError::Overflow)?;
-    let mut left_upper = vector(n, budget)?;
+    let mut left_upper = vector(n)?;
     left_upper.copy_from_slice(&bounds.upper);
     left_upper[source] = middle;
     let right_upper = std::mem::replace(&mut bounds.upper, left_upper);
-    push(
-        stack,
-        HoldBox {
-            lower: right_lower,
-            upper: right_upper,
-        },
-        budget,
-    )?;
-    push(stack, bounds, budget)
+    push(stack, HoldBox {
+        lower: right_lower,
+        upper: right_upper,
+    })?;
+    push(stack, bounds)
 }
 
 pub fn solve_funding_family_feasibility(
     problem: FundingFamilyProblem<'_>,
     limits: FundingFamilyLimits,
-    budget: &HostWorkBudget,
 ) -> Result<Option<FundingFamilyWitness>, FundingFamilyError> {
-    let root = validate(problem, limits, budget)?;
+    let root = validate(problem, limits)?;
     if root.lower.iter().zip(&root.upper).any(|(lo, hi)| lo > hi) {
         return Ok(None);
     }
-    let n = problem.capacities.len();
     let mut stack = Vec::new();
-    push(&mut stack, root, budget)?;
+    push(&mut stack, root)?;
     while let Some(bounds) = stack.pop() {
-        reserve_work(budget, HostWorkDimension::SearchCandidates, n)?;
         if sum(&bounds.lower)? > problem.exposure_limit {
             continue;
         }
-        let Some(witness) = relaxed_witness(problem, &bounds, limits, budget)? else {
+        let Some(witness) = relaxed_witness(problem, &bounds, limits)? else {
             continue;
         };
         let padded_total =
@@ -283,7 +228,7 @@ pub fn solve_funding_family_feasibility(
             return Ok(Some(witness));
         }
         drop(witness);
-        split_hold_box(bounds, &mut stack, budget)?;
+        split_hold_box(bounds, &mut stack)?;
     }
     Ok(None)
 }

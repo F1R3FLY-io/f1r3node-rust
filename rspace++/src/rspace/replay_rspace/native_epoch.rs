@@ -1,5 +1,4 @@
 use super::RSpaceError;
-use crate::rspace::hashing::native_source::SourceMeter;
 use crate::rspace::internal::ConsumeCandidate;
 use crate::rspace::rspace_interface::RSpaceOperationSource;
 use crate::rspace::trace::event::{COMM, Consume, Produce};
@@ -64,14 +63,6 @@ pub trait NativeOperationTicket<C, P, A: Clone, K>: Send {
 pub trait NativeOperationEpoch<C, P, A: Clone, K>: NativeReplayEpoch {
     type Ticket: NativeOperationTicket<C, P, A, K>;
 
-    fn prepare_produce_source(&self, channel: &C, data: &A) -> Result<(), RSpaceError>;
-    fn prepare_consume_source(
-        &self,
-        channels: &[C],
-        patterns: &[P],
-        continuation: &K,
-    ) -> Result<(), RSpaceError>;
-
     async fn wait_ready(&self, source: RSpaceOperationSource<'_>) -> Result<(), RSpaceError>;
 
     fn begin_operation(
@@ -85,26 +76,6 @@ pub trait NativeCandidateIdentity {
     fn matches_produce(&self, source: &Produce) -> bool;
     fn repetition(&self, source: &Produce) -> Option<i32>;
     fn matches_comm(&self, source: &COMM) -> bool;
-    fn metered_matches_consume(
-        &self,
-        source: &Consume,
-        meter: &dyn SourceMeter,
-    ) -> Result<bool, RSpaceError>;
-    fn metered_matches_produce(
-        &self,
-        source: &Produce,
-        meter: &dyn SourceMeter,
-    ) -> Result<bool, RSpaceError>;
-    fn metered_repetition(
-        &self,
-        source: &Produce,
-        meter: &dyn SourceMeter,
-    ) -> Result<Option<i32>, RSpaceError>;
-    fn metered_matches_comm(
-        &self,
-        source: &COMM,
-        meter: &dyn SourceMeter,
-    ) -> Result<bool, RSpaceError>;
 }
 
 pub trait NativeReplayRestore: Send {
@@ -128,8 +99,6 @@ pub trait NativeReplayEpoch: Send + Sync {
     type Boundary: NativeReplayBoundary;
 
     fn begin_boundary(&self) -> Result<Self::Boundary, RSpaceError>;
-    fn reserve_work(&self, operations: usize, bytes: usize) -> Result<(), RSpaceError>;
-    fn reserve_comparison(&self, operations: usize, bytes: usize) -> Result<(), RSpaceError>;
     fn invalidate(&self);
     /// Added by DR-113: the error of a published denial. The epoch names it,
     /// because the class of an exhaustion depends on the bound source.

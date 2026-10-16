@@ -6,14 +6,13 @@
 use std::collections::{BTreeMap, HashMap};
 
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
-use models::rust::host_work::{HostWorkLimit, HostWorkLimits};
 use models::rust::phlo_schedule::PhloGenesisPolicy;
 use proptest::prelude::*;
 use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
 
 use super::stack_safety_tests::{arb_program, render};
-use super::tests::{schedule, unlimited};
+use super::tests::schedule;
 use super::*;
 use crate::rust::interpreter::accounting::authority::{
     cost_signature_to_sig, AuthorityByteEventKind,
@@ -62,18 +61,14 @@ fn native_config() -> NativeRuntimeConfig {
     let contract =
         NativePhloExecutionContract::new(controls, &binding, NativeBoundSource::SignedLimit)
             .expect("a contract under the signed limit");
-    NativeRuntimeConfig::new(
-        contract,
-        NativeBudgetTraceLimits {
-            attempts: 100_000,
-            path_segments: 4_096,
-            regions: NativePhloRegionLimits {
-                regions: 10_000,
-                encoded_authority_bytes: 100_000_000,
-            },
+    NativeRuntimeConfig::new(contract, NativeBudgetTraceLimits {
+        attempts: 100_000,
+        path_segments: 4_096,
+        regions: NativePhloRegionLimits {
+            regions: 10_000,
+            encoded_authority_bytes: 100_000_000,
         },
-        HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(1 << 40))),
-    )
+    })
 }
 
 /// The native meter's quantity of every lane and class: each region of an
@@ -128,7 +123,6 @@ async fn assert_measured_within_estimate(source: &str, seed: &[u8]) -> Option<Co
         &runtime_funding(),
         &schedule(WEIGHTS),
         &runtime.reducer,
-        &unlimited(),
     )
     .expect("the estimate runs");
     dismantle_term(resolved);
@@ -264,7 +258,6 @@ fn the_estimate_leaves_the_runtime_budget_untouched() {
             &runtime_funding(),
             &schedule(WEIGHTS),
             &runtime.reducer,
-            &unlimited(),
         )
         .expect("the estimate runs");
         dismantle_term(resolved);

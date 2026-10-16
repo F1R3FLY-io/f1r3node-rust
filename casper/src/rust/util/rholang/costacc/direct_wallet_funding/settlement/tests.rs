@@ -1,12 +1,7 @@
-use models::rust::host_work::{HostWorkLimit, HostWorkLimits};
 use proptest::prelude::*;
 
 use super::*;
 use crate::rust::util::rholang::costacc::vault_cost_deploy::VaultRole;
-
-fn budget() -> HostWorkBudget {
-    HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(100_000_000)))
-}
 
 fn payer(index: u32) -> VaultPayer {
     let signature = CostSignature {
@@ -36,7 +31,7 @@ proptest! {
             SettlementRow { custody, hold: hold as i64, acquisition: (debit - fee) as i64,
                 fee: fee as i64, refund: (hold - debit) as i64 }
         }).collect();
-        let projected = project_amounts(&payers, &canonical, rows.iter().copied(), &budget()).unwrap();
+        let projected = project_amounts(&payers, &canonical, rows.iter().copied()).unwrap();
         prop_assert_eq!(projected.payer_count.get(), seeds.len());
         prop_assert_eq!(projected.has_resource, rows.iter().any(|row| row.acquisition > 0));
         prop_assert_eq!(projected.has_fee, rows.iter().any(|row| row.fee > 0));
@@ -56,7 +51,7 @@ proptest! {
         if rows.len() > 1 {
             let mut substituted = rows.clone();
             substituted[0].custody = rows[1].custody;
-            prop_assert!(matches!(project_amounts(&payers, &canonical, substituted.into_iter(), &budget()), Err(DirectWalletSettlementError::CustodyMismatch)));
+            prop_assert!(matches!(project_amounts(&payers, &canonical, substituted.into_iter()), Err(DirectWalletSettlementError::CustodyMismatch)));
         }
     }
 
@@ -98,7 +93,7 @@ fn projection_keeps_full_refunds_and_zero_hold_owners_in_cohort() {
             refund: 0,
         })
         .collect();
-    let all_zero = project_amounts(&payers, &keys, zero.iter().copied(), &budget()).unwrap();
+    let all_zero = project_amounts(&payers, &keys, zero.iter().copied()).unwrap();
     assert!(all_zero.allocations.is_empty());
     assert!(all_zero.settlements.is_empty());
     assert!(!all_zero.has_resource && !all_zero.has_fee);
@@ -106,7 +101,7 @@ fn projection_keeps_full_refunds_and_zero_hold_owners_in_cohort() {
     let mut full_refund = zero.clone();
     full_refund[2].hold = i64::MAX;
     full_refund[2].refund = i64::MAX;
-    let projected = project_amounts(&payers, &keys, full_refund.into_iter(), &budget()).unwrap();
+    let projected = project_amounts(&payers, &keys, full_refund.into_iter()).unwrap();
     assert_eq!(projected.allocations.len(), 1);
     assert_eq!(projected.allocations[0].amount, i64::MAX);
     assert_eq!(
@@ -117,13 +112,8 @@ fn projection_keeps_full_refunds_and_zero_hold_owners_in_cohort() {
     let mut substituted_zero = zero.clone();
     substituted_zero[0].custody = &[255; 32];
     assert!(matches!(
-        project_amounts(&payers, &keys, substituted_zero.into_iter(), &budget()),
+        project_amounts(&payers, &keys, substituted_zero.into_iter()),
         Err(DirectWalletSettlementError::CustodyMismatch)
-    ));
-    let tiny = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(0)));
-    assert!(matches!(
-        project_amounts(&payers, &keys, zero.into_iter(), &tiny),
-        Err(DirectWalletSettlementError::HostWork(_))
     ));
 }
 
@@ -140,9 +130,9 @@ fn projection_rejects_missing_rows_overflow_and_inconsistent_amounts() {
         fee: 1,
         refund: 2,
     };
-    assert!(project_amounts(&payers, &keys, std::iter::empty(), &budget()).is_err());
-    assert!(project_amounts(&payers, &[], [row].into_iter(), &budget()).is_err());
-    assert!(project_amounts(&BTreeMap::new(), &[], std::iter::empty(), &budget()).is_err());
+    assert!(project_amounts(&payers, &keys, std::iter::empty()).is_err());
+    assert!(project_amounts(&payers, &[], [row].into_iter()).is_err());
+    assert!(project_amounts(&BTreeMap::new(), &[], std::iter::empty()).is_err());
     for invalid in [
         SettlementRow { hold: -1, ..row },
         SettlementRow {
@@ -162,14 +152,14 @@ fn projection_rejects_missing_rows_overflow_and_inconsistent_amounts() {
         },
     ] {
         assert!(matches!(
-            project_amounts(&payers, &keys, [invalid].into_iter(), &budget()),
+            project_amounts(&payers, &keys, [invalid].into_iter()),
             Err(DirectWalletSettlementError::InconsistentAmounts)
         ));
     }
     let mut wrong_payers = payers.clone();
     wrong_payers.get_mut(&key).unwrap().custody_key = [0; 32];
     assert!(matches!(
-        project_amounts(&wrong_payers, &keys, [row].into_iter(), &budget()),
+        project_amounts(&wrong_payers, &keys, [row].into_iter()),
         Err(DirectWalletSettlementError::CustodyMismatch)
     ));
 }

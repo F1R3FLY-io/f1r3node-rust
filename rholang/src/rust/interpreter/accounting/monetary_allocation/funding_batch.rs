@@ -1,14 +1,11 @@
-use std::mem::size_of;
 use std::num::NonZeroUsize;
 
-use models::rust::host_work::HostWorkDimension;
 use thiserror::Error;
 
 use super::{
-    check_funding_assignment, filled_vec, reserve_work, FundingAssignmentError, FundingSearchError,
+    check_funding_assignment, filled_vec, FundingAssignmentError, FundingSearchError,
     FundingSearchLimits,
 };
-use crate::rust::interpreter::host_work::HostWorkBudget;
 
 #[derive(Clone, Copy, Debug)]
 pub struct FixedFundingBatchEntry<'a> {
@@ -43,7 +40,6 @@ pub fn check_fixed_funding_batch(
     entries: &[FixedFundingBatchEntry<'_>],
     limits: FundingSearchLimits,
     entry_cap: NonZeroUsize,
-    budget: &HostWorkBudget,
 ) -> Result<CheckedFixedFundingBatch, FundingBatchError> {
     let sources = capacities.len();
     if sources == 0 {
@@ -55,11 +51,6 @@ pub fn check_fixed_funding_batch(
     if entries.len() > entry_cap.get() {
         return Err(FundingBatchError::TooManyEntries);
     }
-    let state_bytes = sources
-        .checked_mul(2 * size_of::<u64>())
-        .ok_or(FundingSearchError::Overflow)?;
-    reserve_work(budget, HostWorkDimension::SearchStateBytes, state_bytes)?;
-    reserve_work(budget, HostWorkDimension::VerificationOperations, sources)?;
     let mut remaining = filled_vec(sources, 0_u64)?;
     remaining.copy_from_slice(capacities);
     let mut total = 0_u128;
@@ -70,18 +61,6 @@ pub fn check_fixed_funding_batch(
                 FundingSearchError::from(FundingAssignmentError::TooManyObligations).into(),
             );
         }
-        let work = sources
-            .checked_mul(obligations)
-            .and_then(|cells| cells.checked_add(sources.checked_mul(3)?))
-            .and_then(|count| count.checked_add(obligations))
-            .and_then(|count| count.checked_add(1))
-            .ok_or(FundingSearchError::Overflow)?;
-        reserve_work(budget, HostWorkDimension::VerificationOperations, work)?;
-        let bytes = sources
-            .checked_add(obligations)
-            .and_then(|count| count.checked_mul(size_of::<u64>()))
-            .ok_or(FundingSearchError::Overflow)?;
-        reserve_work(budget, HostWorkDimension::SearchStateBytes, bytes)?;
         let checked = check_funding_assignment(
             &remaining,
             entry.obligations,
@@ -100,7 +79,6 @@ pub fn check_fixed_funding_batch(
             .checked_add(u128::from(checked.total()))
             .ok_or(FundingSearchError::Overflow)?;
     }
-    reserve_work(budget, HostWorkDimension::VerificationOperations, sources)?;
     let mut debits = filled_vec(sources, 0_u64)?;
     for ((debit, capacity), residual) in debits.iter_mut().zip(capacities).zip(&remaining) {
         *debit = capacity

@@ -13,13 +13,12 @@ use models::rhoapi::g_unforgeable::UnfInstance;
 use models::rhoapi::tagged_continuation::TaggedCont;
 use models::rhoapi::var::VarInstance;
 use models::rhoapi::{
-    BindPattern, Bundle, CostAuthority, CostRegion, CostSignedTerm, CostStack, EAnd, EDiv, EEq,
-    EGt, EGte, EList, ELt, ELte, EMatches, EMethod, EMinus, EMinusMinus, EMod, EMult, ENeq, EOr,
-    EPathMap, EPercentPercent, EPlus, EPlusPlus, ETuple, EVar, EZipper, Expr, GUnforgeable, If,
-    KeyValuePair, ListParWithRandom, Match, MatchCase, New, Par, ParWithRandom, Receive,
-    ReceiveBind, Send, TaggedContinuation, Var,
+    BindPattern, Bundle, CostAuthority, CostSignedTerm, CostStack, EAnd, EDiv, EEq, EGt, EGte,
+    EList, ELt, ELte, EMatches, EMethod, EMinus, EMinusMinus, EMod, EMult, ENeq, EOr, EPathMap,
+    EPercentPercent, EPlus, EPlusPlus, ETuple, EVar, EZipper, Expr, GUnforgeable, If, KeyValuePair,
+    ListParWithRandom, Match, MatchCase, New, Par, ParWithRandom, Receive, ReceiveBind, Send,
+    TaggedContinuation, Var,
 };
-use models::rust::host_work::{HostWorkDimension, HostWorkUnits};
 use models::rust::par_map::ParMap;
 use models::rust::par_map_type_mapper::ParMapTypeMapper;
 use models::rust::par_set::ParSet;
@@ -34,18 +33,14 @@ use models::rust::utils::{
     new_elist_par, new_emap_par, new_gint_expr, new_gint_par, new_gstring_par, union,
 };
 use prost::Message;
-use rspace_plus_plus::rspace::errors::RSpaceError;
 use rspace_plus_plus::rspace::merger::merging_logic::MergeType;
 use rspace_plus_plus::rspace::trace::event::{Consume, Produce};
 use rspace_plus_plus::rspace::util::unpack_option_with_peek;
-use shared::rust::clone_backing::{self as clone_backing, BackingError, BackingMeter};
 use tokio::sync::RwLock;
 
 use super::accounting::authority::{
-    cost_region, cost_region_metered, cost_signature_to_sig, cost_signature_to_sig_metered,
-    extend_authority, funding_sig_channel_metered, merge_authorities_metered,
-    resolve_system_residue, sig_to_cost_signature, sig_to_cost_signature_metered,
-    system_residue_authority, AuthorityError, ResidueContext,
+    cost_region, cost_signature_to_sig, extend_authority, resolve_system_residue,
+    sig_to_cost_signature, system_residue_authority, AuthorityError, ResidueContext,
 };
 use super::accounting::byte_accounting::{
     message_field_bytes, par_with_random_bytes, IntroductionMeasurement,
@@ -66,7 +61,6 @@ use super::dispatch::{DispatchType, RhoDispatch, RholangAndScalaDispatcher};
 use super::env::Env;
 use super::errors::InterpreterError;
 use super::execution_space::ExecutionSpace;
-use super::host_work::HostWorkBudget;
 use super::matcher::has_locally_free::HasLocallyFree;
 use super::metering::MeteredMachine;
 use super::metrics_constants::{
@@ -99,67 +93,6 @@ const STACK_RED_ZONE: usize = 1024 * 1024; // 1 MB
 /// Size of each new stack segment allocated when the red zone is reached.
 const STACK_GROW_SIZE: usize = 2 * 1024 * 1024; // 2 MB
 const SINGLE_TERM_YIELD_INTERVAL: u64 = 256;
-
-/// D-E3 (DR-110): the charge of a reducer copy of `value` that the reducer
-/// releases later. The block inspection prepays the release of the copy, and
-/// the block copy prepays the clone, with the operations doubled by the owned
-/// meter.
-fn reserve_reducer_copy<T: clone_backing::CloneBacking>(
-    value: &T,
-    backing: &dyn BackingMeter,
-    owned_backing: &dyn BackingMeter,
-) -> Result<(), InterpreterError> {
-    clone_backing::inspect_blocks(value, backing)
-        .map_err(|_| InterpreterError::HostWorkRejected)?;
-    clone_backing::reserve_blocks(value, owned_backing)
-        .map_err(|_| InterpreterError::HostWorkRejected)
-}
-
-/// D-E3 (DR-110): the source of a stack produce. The source hashes the
-/// channel and encodes the datum with bincode, and its writer reserves only
-/// the bytes that it writes, so a block inspection prepays each pass. The
-/// surplus of the per-level copy of the cells paid the datum pass, and the
-/// channel pass had no payment when the funding channel was not sorted.
-fn produce_source_metered(
-    channel: &Par,
-    datum: &ListParWithRandom,
-    backing: &dyn BackingMeter,
-    source_meter: &dyn rspace_plus_plus::rspace::hashing::native_source::SourceMeter,
-) -> Result<Produce, InterpreterError> {
-    clone_backing::inspect_blocks(channel, backing)
-        .map_err(|_| InterpreterError::HostWorkRejected)?;
-    clone_backing::inspect_blocks(datum, backing)
-        .map_err(|_| InterpreterError::HostWorkRejected)?;
-    Ok(Produce::create_metered(
-        channel,
-        datum,
-        false,
-        source_meter,
-    )?)
-}
-
-fn reserve_reducer_random_bytes(
-    rand: &Blake2b512Random,
-    backing: &dyn BackingMeter,
-) -> Result<(), InterpreterError> {
-    let count_bytes = rand
-        .count_view
-        .len()
-        .checked_mul(8)
-        .ok_or(InterpreterError::HostWorkRejected)?;
-    let output_bytes = 168usize
-        .checked_add(rand.last_block.len())
-        .and_then(|size| size.checked_add(rand.path_view.len()))
-        .and_then(|size| size.checked_add(count_bytes))
-        .ok_or(InterpreterError::HostWorkRejected)?;
-    let allocation = output_bytes
-        .checked_mul(4)
-        .and_then(|size| size.checked_add(144))
-        .ok_or(InterpreterError::HostWorkRejected)?;
-    backing
-        .reserve(output_bytes, output_bytes, allocation)
-        .map_err(|_| InterpreterError::HostWorkRejected)
-}
 
 /// A Future wrapper that dynamically grows the thread stack during polling.
 ///
@@ -285,23 +218,6 @@ impl ReducerCore {
         child
     }
 
-    fn reserve_host_primitive<M: Message>(&self, input: &M) -> Result<(), InterpreterError> {
-        let input_bytes = u64::try_from(input.encoded_len()).map_err(|_| {
-            InterpreterError::BugFoundError(
-                "primitive input byte count does not fit in u64".to_string(),
-            )
-        })?;
-        deterministic_reduction::reserve_host_work(
-            HostWorkDimension::PrimitiveCalls,
-            HostWorkUnits::new(1),
-        )?;
-        deterministic_reduction::reserve_host_work(
-            HostWorkDimension::PrimitiveInputBytes,
-            HostWorkUnits::new(input_bytes),
-        )?;
-        Ok(())
-    }
-
     pub fn eval<'a>(
         &'a self,
         par: Par,
@@ -318,33 +234,6 @@ impl ReducerCore {
                     self.space.clone(),
                     self.metering.budget(),
                     self.reduction_coordinator.clone(),
-                    None,
-                    self.eval_inner(par, env, rand, CostAuthority::default()),
-                )
-                .await;
-                self.finish_detached_errors(result, errors)
-            },
-        })
-    }
-
-    pub fn eval_with_host_work<'a>(
-        &'a self,
-        par: Par,
-        env: &'a Env<Par>,
-        rand: Blake2b512Random,
-        host_work: HostWorkBudget,
-    ) -> Pin<
-        Box<
-            dyn std::future::Future<Output = Result<(), InterpreterError>> + std::marker::Send + 'a,
-        >,
-    > {
-        Box::pin(StackGrowingFuture {
-            inner: async move {
-                let (result, _, errors) = deterministic_reduction::root_with_observation(
-                    self.space.clone(),
-                    self.metering.budget(),
-                    self.reduction_coordinator.clone(),
-                    Some(host_work),
                     self.eval_inner(par, env, rand, CostAuthority::default()),
                 )
                 .await;
@@ -370,7 +259,6 @@ impl ReducerCore {
                     self.space.clone(),
                     self.metering.budget(),
                     self.reduction_coordinator.clone(),
-                    None,
                     self.eval_inner(par, env, rand, authority),
                 )
                 .await;
@@ -528,7 +416,6 @@ impl ReducerCore {
         &self,
         par: Par,
         rand: Blake2b512Random,
-        host_work: Option<HostWorkBudget>,
     ) -> (
         Result<(), InterpreterError>,
         super::accounting::economic_failure::EvaluationFailureSummary,
@@ -539,7 +426,6 @@ impl ReducerCore {
                 self.space.clone(),
                 self.metering.budget(),
                 self.reduction_coordinator.clone(),
-                host_work,
                 async {
                     let result = self
                         .eval_inner(par, &env, rand, CostAuthority::default())
@@ -555,16 +441,6 @@ impl ReducerCore {
         }
         .await;
         (self.finish_detached_errors(result, errors), summary)
-    }
-
-    pub async fn inj_with_host_work(
-        &self,
-        par: Par,
-        rand: Blake2b512Random,
-        host_work: HostWorkBudget,
-    ) -> Result<(), InterpreterError> {
-        self.eval_with_host_work(par, &Env::new(), rand, host_work)
-            .await
     }
 
     /**
@@ -1268,14 +1144,6 @@ impl ReducerCore {
             err_list
                 if err_list
                     .iter()
-                    .any(|error| matches!(error, InterpreterError::HostWorkRejected)) =>
-            {
-                Err(InterpreterError::HostWorkRejected)
-            }
-
-            err_list
-                if err_list
-                    .iter()
                     .find(|e| matches!(e, InterpreterError::OutOfPhlogistonsError))
                     .is_some() =>
             {
@@ -1311,19 +1179,6 @@ impl ReducerCore {
         rand: Blake2b512Random,
         authority: &CostAuthority,
     ) -> Result<(), InterpreterError> {
-        deterministic_reduction::reserve_host_work(
-            HostWorkDimension::ReductionSteps,
-            HostWorkUnits::new(1),
-        )?;
-        let term_bytes = u64::try_from(term.encoded_len()).map_err(|_| {
-            InterpreterError::BugFoundError(
-                "reduction term byte count does not fit in u64".to_string(),
-            )
-        })?;
-        deterministic_reduction::reserve_host_work(
-            HostWorkDimension::ReductionTermBytes,
-            HostWorkUnits::new(term_bytes),
-        )?;
         match term {
             GeneratedMessage::Send(term) => {
                 metrics::counter!(REDUCER_EVAL_SEND_CALLS_METRIC, "source" => RHOLANG_METRICS_SOURCE)
@@ -1674,7 +1529,6 @@ impl ReducerCore {
      *                  an exception.
      */
     fn eval_var(&self, valproc: &Var, env: &Env<Par>) -> Result<Par, InterpreterError> {
-        self.reserve_host_primitive(valproc)?;
         self.metering.reserve_primitive(var_eval_cost())?;
         match valproc.var_instance {
             Some(VarInstance::BoundVar(level)) => match env.get(&level) {
@@ -1930,75 +1784,15 @@ impl ReducerCore {
         rand: Blake2b512Random,
         authority: &CostAuthority,
     ) -> Result<(), InterpreterError> {
-        let host =
-            deterministic_reduction::current().and_then(|context| context.host_work_budget());
-        let backing = |operations: usize, scanned: usize, bytes: usize| {
-            let Some(host) = host.as_ref() else {
-                return Ok(());
-            };
-            for (dimension, amount) in [
-                (HostWorkDimension::VerificationOperations, operations),
-                (HostWorkDimension::VerificationBytes, scanned),
-                (HostWorkDimension::SearchStateBytes, bytes),
-            ] {
-                let amount = u64::try_from(amount).map_err(|_| BackingError::Overflow)?;
-                host.reserve(dimension, HostWorkUnits::new(amount))
-                    .map_err(|_| BackingError::Rejected)?;
-            }
-            Ok(())
-        };
-        let owned_backing = |operations: usize, scanned: usize, bytes: usize| {
-            backing(
-                operations.checked_mul(2).ok_or(BackingError::Overflow)?,
-                scanned,
-                bytes,
-            )
-        };
-        let native_error = |error: AuthorityError| match error {
-            AuthorityError::HostWorkRejected => InterpreterError::HostWorkRejected,
-            other => InterpreterError::ReduceError(other.to_string()),
-        };
-        if host.is_some() {
-            // Changed by D-O1 (DR-110): block accounting charges inline bytes
-            // once per enclosing block.
-            // clone_backing::inspect(&term.signature, &backing)
-            //     .map_err(|_| InterpreterError::HostWorkRejected)?;
-            // clone_backing::reserve(&term.signature, &owned_backing)
-            //     .map_err(|_| InterpreterError::HostWorkRejected)?;
-            reserve_reducer_copy(&term.signature, &backing, &owned_backing)?;
-        }
+        let native_error = |error: AuthorityError| InterpreterError::ReduceError(error.to_string());
         let signature = unwrap_option_safe(term.signature.clone())?;
-        let signature = if host.is_some() {
-            self.substitute
-                .substitute_cost_signature_metered(signature, 0, env, &backing)?
-        } else {
-            self.substitute
-                .substitute_cost_signature(signature, 0, env)?
-        };
-        let authority = if host.is_some() {
-            reserve_reducer_random_bytes(&rand, &owned_backing)?;
-            let region = cost_region_metered(&signature, &rand.to_bytes(), 0, &backing)
-                .map_err(native_error)?;
-            backing(1, 0, std::mem::size_of::<CostRegion>())
-                .map_err(|_| InterpreterError::HostWorkRejected)?;
-            let singleton = CostAuthority {
-                regions: vec![region],
-            };
-            merge_authorities_metered([authority, &singleton], &owned_backing)
-                .map_err(native_error)?
-        } else {
+        let signature = self
+            .substitute
+            .substitute_cost_signature(signature, 0, env)?;
+        let authority = {
             let region = cost_region(&signature, &rand.to_bytes(), 0).map_err(native_error)?;
             extend_authority(authority, region).map_err(native_error)?
         };
-        if host.is_some() {
-            // Changed by D-O1 (DR-110): block accounting charges inline bytes
-            // once per enclosing block.
-            // clone_backing::inspect(&term.body, &backing)
-            //     .map_err(|_| InterpreterError::HostWorkRejected)?;
-            // clone_backing::reserve(&term.body, &owned_backing)
-            //     .map_err(|_| InterpreterError::HostWorkRejected)?;
-            reserve_reducer_copy(&term.body, &backing, &owned_backing)?;
-        }
         self.eval_with_authority(unwrap_option_safe(term.body.clone())?, env, rand, authority)
             .await
     }
@@ -2010,139 +1804,37 @@ impl ReducerCore {
         rand: Blake2b512Random,
         authority: &CostAuthority,
     ) -> Result<(), InterpreterError> {
-        let host =
-            deterministic_reduction::current().and_then(|context| context.host_work_budget());
-        let backing = |operations: usize, scanned: usize, bytes: usize| {
-            let Some(host) = host.as_ref() else {
-                return Ok(());
-            };
-            for (dimension, amount) in [
-                (HostWorkDimension::VerificationOperations, operations),
-                (HostWorkDimension::VerificationBytes, scanned),
-                (HostWorkDimension::SearchStateBytes, bytes),
-            ] {
-                let amount = u64::try_from(amount).map_err(|_| BackingError::Overflow)?;
-                host.reserve(dimension, HostWorkUnits::new(amount))
-                    .map_err(|_| BackingError::Rejected)?;
-            }
-            Ok(())
-        };
-        let owned_backing = |operations: usize, scanned: usize, bytes: usize| {
-            backing(
-                operations.checked_mul(2).ok_or(BackingError::Overflow)?,
-                scanned,
-                bytes,
-            )
-        };
-        let source_meter = |operations: usize, scanned: usize, bytes: usize| {
-            let Some(host) = host.as_ref() else {
-                return Ok(());
-            };
-            for (dimension, amount) in [
-                (HostWorkDimension::VerificationOperations, operations),
-                (HostWorkDimension::VerificationBytes, scanned),
-                (HostWorkDimension::SearchStateBytes, bytes),
-            ] {
-                let amount = u64::try_from(amount).map_err(|_| RSpaceError::HostWorkRejected)?;
-                host.reserve(dimension, HostWorkUnits::new(amount))
-                    .map_err(|_| RSpaceError::HostWorkRejected)?;
-            }
-            Ok(())
-        };
-        let native_error = |error: AuthorityError| match error {
-            AuthorityError::HostWorkRejected => InterpreterError::HostWorkRejected,
-            other => InterpreterError::ReduceError(other.to_string()),
-        };
-        if host.is_some() {
-            // Changed by D-O1 (DR-110): block accounting charges inline bytes
-            // once per enclosing block.
-            // clone_backing::inspect(&stack.cells, &backing)
-            //     .map_err(|_| InterpreterError::HostWorkRejected)?;
-            // clone_backing::reserve(&stack.cells, &owned_backing)
-            //     .map_err(|_| InterpreterError::HostWorkRejected)?;
-            reserve_reducer_copy(&stack.cells, &backing, &owned_backing)?;
-        }
+        let native_error = |error: AuthorityError| InterpreterError::ReduceError(error.to_string());
         let stack = CostStack {
             cells: stack
                 .cells
                 .iter()
                 .cloned()
-                .map(|signature| {
-                    if host.is_some() {
-                        self.substitute
-                            .substitute_cost_signature_metered(signature, 0, env, &backing)
-                    } else {
-                        self.substitute.substitute_cost_signature(signature, 0, env)
-                    }
-                })
+                .map(|signature| self.substitute.substitute_cost_signature(signature, 0, env))
                 .collect::<Result<Vec<_>, _>>()?,
         };
         let head = stack.cells.first().ok_or_else(|| {
             InterpreterError::ReduceError("cost-accounting: empty token stack".to_string())
         })?;
         for cell in &stack.cells {
-            let cell_signature = if host.is_some() {
-                cost_signature_to_sig_metered(cell, &backing).map_err(native_error)?
-            } else {
-                cost_signature_to_sig(cell).map_err(native_error)?
-            };
+            let cell_signature = cost_signature_to_sig(cell).map_err(native_error)?;
             if cell_signature == super::accounting::Sig::Unit {
                 return Err(InterpreterError::ReduceError(
                     "cost-accounting: unit cannot be stored as a token-stack cell".to_string(),
                 ));
             }
         }
-        let signature = if host.is_some() {
-            cost_signature_to_sig_metered(head, &backing).map_err(native_error)?
-        } else {
-            cost_signature_to_sig(head).map_err(native_error)?
-        };
-        let authority = if authority.regions.is_empty()
-            && self.metering.budget().has_comm_accounting_scope()
-        {
-            let payer = if let Some(host) = host.as_ref() {
-                self.metering.budget().signature_with_host_work(host)?
-            } else {
-                self.metering.budget().signature()
-            };
-            if host.is_some() {
-                let signature =
-                    sig_to_cost_signature_metered(&payer, &backing).map_err(native_error)?;
-                reserve_reducer_random_bytes(&rand, &owned_backing)?;
-                let region = cost_region_metered(&signature, &rand.to_bytes(), 0, &backing)
-                    .map_err(native_error)?;
-                backing(1, 0, std::mem::size_of::<CostRegion>())
-                    .map_err(|_| InterpreterError::HostWorkRejected)?;
-                let singleton = CostAuthority {
-                    regions: vec![region],
-                };
-                merge_authorities_metered([authority, &singleton], &owned_backing)
-                    .map_err(native_error)?
-            } else {
+        let signature = cost_signature_to_sig(head).map_err(native_error)?;
+        let authority =
+            if authority.regions.is_empty() && self.metering.budget().has_comm_accounting_scope() {
+                let payer = self.metering.budget().signature();
                 let signature = sig_to_cost_signature(&payer).map_err(native_error)?;
                 let region = cost_region(&signature, &rand.to_bytes(), 0).map_err(native_error)?;
                 extend_authority(authority, region).map_err(native_error)?
-            }
-        } else {
-            if host.is_some() {
-                // Changed by D-O1 (DR-110): block accounting charges inline bytes
-                // once per enclosing block.
-                // clone_backing::inspect(authority, &backing)
-                //     .map_err(|_| InterpreterError::HostWorkRejected)?;
-                // clone_backing::reserve(authority, &owned_backing)
-                //     .map_err(|_| InterpreterError::HostWorkRejected)?;
-                reserve_reducer_copy(authority, &backing, &owned_backing)?;
-            }
-            authority.clone()
-        };
-        let channel = if host.is_some() {
-            funding_sig_channel_metered(&signature, &owned_backing).map_err(native_error)?
-        } else {
-            super::accounting::SignatureChannel::from_sig(&signature).par
-        };
-        if host.is_some() {
-            reserve_reducer_random_bytes(&rand, &owned_backing)?;
-        }
+            } else {
+                authority.clone()
+            };
+        let channel = super::accounting::SignatureChannel::from_sig(&signature).par;
         let datum = ListParWithRandom {
             pars: Vec::new(),
             random_state: rand.to_bytes(),
@@ -2150,24 +1842,8 @@ impl ReducerCore {
             cost_stack: Some(stack),
         };
         let datum_cells = &datum.cost_stack.as_ref().expect("cost stack").cells;
-        if host.is_some() {
-            // Changed by D-O1 (DR-110): block accounting charges inline bytes
-            // once per enclosing block.
-            // clone_backing::inspect(datum_cells, &backing)
-            //     .map_err(|_| InterpreterError::HostWorkRejected)?;
-            // clone_backing::reserve(datum_cells, &owned_backing)
-            //     .map_err(|_| InterpreterError::HostWorkRejected)?;
-            reserve_reducer_copy(datum_cells, &backing, &owned_backing)?;
-        }
         let cells = datum_cells.clone();
-        let source = if host.is_some() {
-            // Changed by D-E3 (DR-110): the source also reserves the traversals
-            // of its two bincode passes.
-            // Produce::create_metered(&channel, &datum, false, &source_meter)?
-            produce_source_metered(&channel, &datum, &backing, &source_meter)?
-        } else {
-            Produce::create(&channel, &datum, false)
-        };
+        let source = Produce::create(&channel, &datum, false);
         let produce_hash: [u8; 32] = source
             .hash
             .bytes()
@@ -2185,12 +1861,6 @@ impl ReducerCore {
 
     // Public here for testing purposes
     pub fn eval_expr_to_par(&self, expr: &Expr, env: &Env<Par>) -> Result<Par, InterpreterError> {
-        if matches!(
-            expr.expr_instance.as_ref(),
-            Some(ExprInstance::EMethodBody(_))
-        ) {
-            self.reserve_host_primitive(expr)?;
-        }
         match unwrap_option_safe(expr.expr_instance.clone())? {
             ExprInstance::EVarBody(evar) => {
                 let p = self.eval_var(&unwrap_option_safe(evar.v)?, env)?;
@@ -2241,39 +1911,6 @@ impl ReducerCore {
         expr: &Expr,
         env: &Env<Par>,
     ) -> Result<Expr, InterpreterError> {
-        if matches!(
-            expr.expr_instance.as_ref(),
-            Some(
-                ExprInstance::ENotBody(_)
-                    | ExprInstance::ENegBody(_)
-                    | ExprInstance::EMultBody(_)
-                    | ExprInstance::EDivBody(_)
-                    | ExprInstance::EPlusBody(_)
-                    | ExprInstance::EMinusBody(_)
-                    | ExprInstance::ELtBody(_)
-                    | ExprInstance::ELteBody(_)
-                    | ExprInstance::EGtBody(_)
-                    | ExprInstance::EGteBody(_)
-                    | ExprInstance::EEqBody(_)
-                    | ExprInstance::ENeqBody(_)
-                    | ExprInstance::EAndBody(_)
-                    | ExprInstance::EOrBody(_)
-                    | ExprInstance::EListBody(_)
-                    | ExprInstance::ETupleBody(_)
-                    | ExprInstance::ESetBody(_)
-                    | ExprInstance::EMapBody(_)
-                    | ExprInstance::EMethodBody(_)
-                    | ExprInstance::EPathmapBody(_)
-                    | ExprInstance::EZipperBody(_)
-                    | ExprInstance::EMatchesBody(_)
-                    | ExprInstance::EPercentPercentBody(_)
-                    | ExprInstance::EPlusPlusBody(_)
-                    | ExprInstance::EMinusMinusBody(_)
-                    | ExprInstance::EModBody(_)
-            )
-        ) {
-            self.reserve_host_primitive(expr)?;
-        }
         let relop = |p1: &Par,
                      p2: &Par,
                      relopb: fn(bool, bool) -> bool,

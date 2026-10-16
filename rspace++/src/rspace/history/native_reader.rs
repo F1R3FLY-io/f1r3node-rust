@@ -6,25 +6,13 @@ use shared::rust::store::key_value_store::{KeyValueStore, KvStoreError};
 
 mod framing;
 mod records;
-mod typed;
 use framing::{MAX_NODE_BYTES, NodeStep, node_step};
 pub use framing::{NativeLeafKind, NativeRecords};
 // Added by DR-131 P2a: the per-record decoding through the cold-store decode
-// boundary. S6 wires it in place of the typed decoder.
+// boundary. DR-131 S6 wired it in place of the typed decoder.
 pub use records::{decode_continuation, decode_datum, decode_join};
-pub use typed::{NATIVE_TREE_SET, decode_history_record, decode_record, tree_set};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct NativeReadCharge {
-    pub operations: usize,
-    pub scanned_bytes: usize,
-    pub backing_bytes: usize,
-}
-
-pub trait NativeReadMeter {
-    type Error;
-    fn reserve(&self, charge: NativeReadCharge) -> Result<(), Self::Error>;
-}
+use crate::rspace::serializers::cold_store_decode::ColdStoreDecodeError;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NativeReadFault {
@@ -37,24 +25,26 @@ pub enum NativeReadFault {
     LeafHash,
     MissingNode,
     MissingLeaf,
-    Overflow,
-    Allocation,
     TypedRecord,
-    Depth,
 }
 
 #[derive(Debug)]
 pub enum NativeReadError<E> {
-    Host(E),
     Consumer(E),
     Store(KvStoreError),
     Invalid(NativeReadFault),
 }
 
+/// DR-131 S6: a record that the cold-store decoder rejects is a typed-record
+/// fault of the native history, as a record that the typed decoder rejected
+/// was.
+impl<E> From<ColdStoreDecodeError> for NativeReadError<E> {
+    fn from(_: ColdStoreDecodeError) -> Self { Self::Invalid(NativeReadFault::TypedRecord) }
+}
+
 impl<E: fmt::Display> fmt::Display for NativeReadError<E> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Host(error) => write!(f, "native history host reservation: {error}"),
             Self::Consumer(error) => write!(f, "native history consumer: {error}"),
             Self::Store(error) => write!(f, "native history store: {error}"),
             Self::Invalid(error) => write!(f, "native history: {error:?}"),
@@ -70,34 +60,6 @@ pub struct NativeHistoryReader<'a> {
 
 fn digest(bytes: &[u8]) -> [u8; 32] { Blake2b::<U32>::digest(bytes).into() }
 
-fn reserve<M: NativeReadMeter + ?Sized>(
-    meter: &M,
-    operations: usize,
-    scanned_bytes: usize,
-    backing_bytes: usize,
-) -> Result<(), NativeReadError<M::Error>> {
-    meter
-        .reserve(NativeReadCharge {
-            operations,
-            scanned_bytes,
-            backing_bytes,
-        })
-        .map_err(NativeReadError::Host)
-}
-
-fn lookup_credit<M: NativeReadMeter + ?Sized>(
-    meter: &M,
-    key_len: usize,
-) -> Result<(), NativeReadError<M::Error>> {
-    let scanned = key_len
-        .checked_mul(2)
-        .ok_or(NativeReadError::Invalid(NativeReadFault::Overflow))?;
-    let backing = key_len
-        .checked_add(8)
-        .ok_or(NativeReadError::Invalid(NativeReadFault::Overflow))?;
-    reserve(meter, 4, scanned, backing)
-}
-
 impl<'a> NativeHistoryReader<'a> {
     pub fn new(
         root: [u8; 32],
@@ -111,17 +73,15 @@ impl<'a> NativeHistoryReader<'a> {
         }
     }
 
-    fn leaf_pointer<M: NativeReadMeter + ?Sized>(
+    fn leaf_pointer<E>(
         &self,
         lookup: &[u8],
         scratch: &mut Vec<u8>,
-        meter: &M,
-    ) -> Result<Option<[u8; 32]>, NativeReadError<M::Error>> {
+    ) -> Result<Option<[u8; 32]>, NativeReadError<E>> {
         let mut remaining = lookup;
         let mut pointer = self.root;
         let mut first = true;
         while !remaining.is_empty() {
-            lookup_credit(meter, pointer.len())?;
             scratch.clear();
             scratch.extend_from_slice(&pointer);
             let mut result = Err(NativeReadError::Invalid(NativeReadFault::MissingNode));
@@ -138,7 +98,6 @@ impl<'a> NativeHistoryReader<'a> {
                         if bytes.len() > MAX_NODE_BYTES {
                             return Err(NativeReadError::Invalid(NativeReadFault::NodeSize));
                         }
-                        reserve(meter, 3 + bytes.len() / 34, bytes.len() * 3 + pointer.len(), 0)?;
                         if digest(bytes) != pointer {
                             return Err(NativeReadError::Invalid(NativeReadFault::NodeHash));
                         }
@@ -160,30 +119,21 @@ impl<'a> NativeHistoryReader<'a> {
         Ok(None)
     }
 
-    pub fn with_records<M, T>(
+    pub fn with_records<T, E>(
         &self,
         kind: NativeLeafKind,
         channel_hash: &[u8; 32],
-        meter: &M,
-        consume: impl FnOnce(NativeRecords<'_>) -> Result<T, M::Error>,
-    ) -> Result<Option<T>, NativeReadError<M::Error>>
-    where
-        M: NativeReadMeter + ?Sized,
-    {
-        reserve(meter, 4, 40, 40)?;
-        let mut scratch = Vec::new();
-        scratch
-            .try_reserve_exact(40)
-            .map_err(|_| NativeReadError::Invalid(NativeReadFault::Allocation))?;
+        consume: impl FnOnce(NativeRecords<'_>) -> Result<T, E>,
+    ) -> Result<Option<T>, NativeReadError<E>> {
+        let mut scratch = Vec::with_capacity(40);
         let mut lookup = [0; 33];
         lookup[0] = kind.prefix();
         lookup[1..].copy_from_slice(channel_hash);
-        let Some(pointer) = self.leaf_pointer(&lookup, &mut scratch, meter)? else {
+        let Some(pointer) = self.leaf_pointer(&lookup, &mut scratch)? else {
             return Ok(None);
         };
         let mut consume = Some(consume);
         for serialized in [false, true] {
-            lookup_credit(meter, pointer.len() + if serialized { 8 } else { 0 })?;
             scratch.clear();
             if serialized {
                 scratch.extend_from_slice(&32_u64.to_le_bytes());
@@ -198,12 +148,6 @@ impl<'a> NativeHistoryReader<'a> {
                     };
                     present = true;
                     result = (|| {
-                        let scanned = bytes
-                            .len()
-                            .checked_mul(3)
-                            .and_then(|scanned| scanned.checked_add(pointer.len()))
-                            .ok_or(NativeReadError::Invalid(NativeReadFault::Overflow))?;
-                        reserve(meter, 4 + bytes.len() / 8, scanned, 0)?;
                         let (records, hash_bytes) =
                             NativeRecords::parse(bytes, kind).map_err(NativeReadError::Invalid)?;
                         if digest(hash_bytes) != pointer {

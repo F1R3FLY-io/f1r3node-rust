@@ -10,7 +10,6 @@
 //! for another deployment's system residue.
 
 use std::borrow::Cow;
-use std::mem::size_of;
 
 use super::*;
 
@@ -154,87 +153,6 @@ pub fn resolve_system_residue<'a>(
             canonical_authority(&with_payer_region(seal, index, payer_region)).map(Cow::Owned)
         }
     }
-}
-
-/// DR-101: `resolve_system_residue`, reserving the region scans, both hashes
-/// and the canonical form before the work runs.
-pub fn resolve_system_residue_metered<'a>(
-    seal: &'a CostAuthority,
-    entropy: &[u8],
-    context: &ResidueContext,
-    backing: &dyn BackingMeter,
-) -> Result<Cow<'a, CostAuthority>, AuthorityError> {
-    if !context.resolves() {
-        return Ok(Cow::Borrowed(seal));
-    }
-    backing
-        .reserve(
-            seal.regions
-                .len()
-                .checked_add(1)
-                .ok_or(AuthorityError::HostWorkRejected)?,
-            seal.regions
-                .len()
-                .checked_mul(size_of::<CostRegion>())
-                .ok_or(AuthorityError::HostWorkRejected)?,
-            0,
-        )
-        .map_err(authority_backing_error)?;
-    if !seal.regions.iter().any(is_unit_region) {
-        return Ok(Cow::Borrowed(seal));
-    }
-    let payer_region = cost_region_metered(&context.payer, entropy, 0, backing)?;
-    let preimage_len = SYSTEM_RESIDUE_DOMAIN
-        .len()
-        .checked_add(context.deploy_id.len())
-        .and_then(|length| length.checked_add(payer_region.instance_id.len()))
-        .ok_or(AuthorityError::HostWorkRejected)?;
-    backing
-        .reserve(
-            preimage_len
-                .checked_add(1)
-                .ok_or(AuthorityError::HostWorkRejected)?,
-            preimage_len,
-            preimage_len
-                .checked_add(32)
-                .ok_or(AuthorityError::HostWorkRejected)?,
-        )
-        .map_err(authority_backing_error)?;
-    let expected = residue_identity(&context.deploy_id, &payer_region)?;
-    backing
-        .reserve(
-            seal.regions.len(),
-            seal.regions
-                .len()
-                .checked_mul(expected.len())
-                .ok_or(AuthorityError::HostWorkRejected)?,
-            0,
-        )
-        .map_err(authority_backing_error)?;
-    let Some(index) = residue_index(seal, &expected) else {
-        return Ok(Cow::Borrowed(seal));
-    };
-    let signature_bytes = seal
-        .regions
-        .iter()
-        .chain(std::iter::once(&payer_region))
-        .try_fold(0_usize, |total, region| {
-            total.checked_add(region.signature.as_ref().map_or(0, Message::encoded_len))
-        })
-        .ok_or(AuthorityError::HostWorkRejected)?;
-    backing
-        .reserve(
-            seal.regions.len(),
-            0,
-            seal.regions
-                .len()
-                .checked_mul(size_of::<CostRegion>() + 32)
-                .and_then(|bytes| bytes.checked_add(signature_bytes))
-                .ok_or(AuthorityError::HostWorkRejected)?,
-        )
-        .map_err(authority_backing_error)?;
-    canonical_authority_metered(&with_payer_region(seal, index, payer_region), backing)
-        .map(Cow::Owned)
 }
 
 #[cfg(test)]

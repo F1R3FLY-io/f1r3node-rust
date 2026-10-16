@@ -14,20 +14,12 @@ use std::time::Instant;
 
 use async_trait::async_trait;
 use serde::Serialize;
-use serde::de::DeserializeOwned;
-use shared::rust::clone_backing::CloneBacking;
-use shared::rust::closed_decode::ClosedDecode;
 
 use super::checkpoint::SoftCheckpoint;
 use super::errors::RSpaceError;
 use super::hashing::blake2b256_hash::Blake2b256Hash;
-use super::hashing::native_source::{SourceMeter, hash};
 use super::history::history_reader::HistoryReader;
 use super::history::instances::radix_history::RadixHistory;
-use super::history::native_reader::{
-    NativeLeafKind, NativeReadCharge, NativeReadError, NativeReadFault, NativeReadMeter,
-    decode_history_record,
-};
 use super::logging::{BasicLogger, RSpaceLogger};
 use super::r#match::Match;
 use super::metrics_constants::{
@@ -216,101 +208,6 @@ where
     }
 
     async fn get_data(&self, channel: &C) -> Vec<Datum<A>> { self.get_store().get_data(channel) }
-
-    async fn get_data_metered(
-        &self,
-        channel: &C,
-        meter: &(dyn SourceMeter + Sync),
-    ) -> Result<Vec<Datum<A>>, RSpaceError>
-    where
-        C: CloneBacking + DeserializeOwned,
-        A: CloneBacking + DeserializeOwned + ClosedDecode,
-    {
-        struct ReadMeter<'a>(&'a dyn SourceMeter);
-
-        impl NativeReadMeter for ReadMeter<'_> {
-            type Error = RSpaceError;
-
-            fn reserve(&self, charge: NativeReadCharge) -> Result<(), Self::Error> {
-                self.0
-                    .reserve(charge.operations, charge.scanned_bytes, charge.backing_bytes)
-            }
-        }
-
-        fn read_error(error: NativeReadError<RSpaceError>) -> RSpaceError {
-            match error {
-                NativeReadError::Host(error) | NativeReadError::Consumer(error) => error,
-                NativeReadError::Store(error) => error.into(),
-                NativeReadError::Invalid(
-                    NativeReadFault::Depth |
-                    NativeReadFault::Allocation |
-                    NativeReadFault::Overflow,
-                ) => RSpaceError::HostWorkRejected,
-                NativeReadError::Invalid(error) => {
-                    RSpaceError::InterpreterError(format!("native history: {error:?}"))
-                }
-            }
-        }
-
-        let history = self.get_history_repository();
-        let root: [u8; 32] = history
-            .root()
-            .0
-            .as_slice()
-            .try_into()
-            .map_err(|_| RSpaceError::HostWorkRejected)?;
-        // Changed by D-C4 (D-S5, DR-98): the metered read no longer fills the
-        // store. The cold fill inserted the decoded values with
-        // native_insert_new, whose charges read the whole shard, and grew the
-        // shard that every later lookup charges. A read now copies an entry
-        // only for an installed channel or a channel that the runtime wrote
-        // since its last reset or checkpoint.
-        // self.get_store().get_data_with_reader(
-        self.get_store().get_data_uncached_with_reader(
-            channel,
-            &|| {
-                let projection = hash(channel, &|operations, scanned, backing| {
-                    meter.reserve(operations, scanned, backing)
-                })?;
-                let projection: [u8; 32] = projection
-                    .0
-                    .as_slice()
-                    .try_into()
-                    .map_err(|_| RSpaceError::HostWorkRejected)?;
-                let reader = history.native_history_reader(root);
-                let read_meter = ReadMeter(meter);
-                reader
-                    .with_records(NativeLeafKind::Data, &projection, &read_meter, |rows| {
-                        meter.reserve(
-                            rows.len()
-                                .checked_mul(2)
-                                .and_then(|n| n.checked_add(1))
-                                .ok_or(RSpaceError::HostWorkRejected)?,
-                            0,
-                            rows.len()
-                                .checked_mul(std::mem::size_of::<Datum<A>>())
-                                .ok_or(RSpaceError::HostWorkRejected)?,
-                        )?;
-                        let mut values = Vec::new();
-                        values
-                            .try_reserve_exact(rows.len())
-                            .map_err(|_| RSpaceError::HostWorkRejected)?;
-                        for row in rows.iter() {
-                            // Changed by D-S2 (DR-95): the rows decode in History mode,
-                            // which charges each node once and reserves only real
-                            // allocations.
-                            // values.push(decode_record(row, &read_meter).map_err(read_error)?);
-                            values
-                                .push(decode_history_record(row, &read_meter).map_err(read_error)?);
-                        }
-                        Ok(values)
-                    })
-                    .map_err(read_error)
-                    .map(Option::unwrap_or_default)
-            },
-            meter,
-        )
-    }
 
     async fn get_waiting_continuations(&self, channels: Vec<C>) -> Vec<WaitingContinuation<P, K>> {
         self.get_store().get_continuations(&channels)
@@ -641,28 +538,6 @@ where
         A: Clone + Debug,
         K: Clone + Debug,
     {
-        Self::apply_with_shards(history_repository, store, matcher, None)
-    }
-
-    pub(crate) fn apply_native(
-        history_repository: Arc<Box<dyn HistoryRepository<C, P, A, K> + Send + Sync + 'static>>,
-        store: Arc<Box<dyn HotStore<C, P, A, K>>>,
-        matcher: Arc<Box<dyn Match<P, A, K>>>,
-        cache_shards: usize,
-    ) -> ReplayRSpace<C, P, A, K> {
-        Self::apply_with_shards(history_repository, store, matcher, Some(cache_shards))
-    }
-
-    fn apply_with_shards(
-        history_repository: Arc<Box<dyn HistoryRepository<C, P, A, K> + Send + Sync + 'static>>,
-        store: Arc<Box<dyn HotStore<C, P, A, K>>>,
-        matcher: Arc<Box<dyn Match<P, A, K>>>,
-        cache_shards: Option<usize>,
-    ) -> ReplayRSpace<C, P, A, K> {
-        let replay_data = match cache_shards {
-            Some(shards) => MultisetMultiMap::empty_with_shard_amount(shards),
-            None => MultisetMultiMap::empty(),
-        };
         ReplayRSpace {
             history_repository: Arc::new(std::sync::RwLock::new(history_repository)),
             store: Arc::new(std::sync::RwLock::new(store)),
@@ -671,45 +546,13 @@ where
             installs: Arc::new(Mutex::new(HashMap::new())),
             event_log: Arc::new(Mutex::new(Vec::new())),
             produce_counter: Arc::new(Mutex::new(BTreeMap::new())),
-            replay_data: Arc::new(Mutex::new(replay_data)),
+            replay_data: Arc::new(Mutex::new(MultisetMultiMap::empty())),
             consume_replay_index: Arc::new(Mutex::new(HashMap::new())),
             logger: Arc::new(Mutex::new(Box::new(BasicLogger::new()))),
             replay_waiting_continuations_estimate: Arc::new(AtomicI64::new(0)),
             phase_a_locks: Self::new_striped_locks(),
             phase_b_locks: Self::new_striped_locks(),
         }
-    }
-
-    pub(crate) fn native_constructor_layout(cache_shards: usize) -> Option<(usize, usize)> {
-        use super::native_backing::{arc_allocation_bytes, dashmap_shard_bytes};
-
-        let arc_bytes = [
-            arc_allocation_bytes::<
-                std::sync::RwLock<
-                    Arc<Box<dyn HistoryRepository<C, P, A, K> + Send + Sync + 'static>>,
-                >,
-            >()?,
-            arc_allocation_bytes::<std::sync::RwLock<Arc<Box<dyn HotStore<C, P, A, K>>>>>()?,
-            arc_allocation_bytes::<
-                std::sync::RwLock<Option<Arc<dyn RSpaceAccountingObserver<C, P, A, K>>>>,
-            >()?,
-            arc_allocation_bytes::<Mutex<HashMap<Vec<C>, Install<P, K>>>>()?,
-            arc_allocation_bytes::<Mutex<Log>>()?,
-            arc_allocation_bytes::<Mutex<BTreeMap<Produce, i32>>>()?,
-            arc_allocation_bytes::<Mutex<MultisetMultiMap<IOEvent, COMM>>>()?,
-            arc_allocation_bytes::<
-                Mutex<HashMap<Blake2b256Hash, HashMap<Blake2b256Hash, Vec<COMM>>>>,
-            >()?,
-            arc_allocation_bytes::<Mutex<Box<dyn RSpaceLogger<C, P, A, K>>>>()?,
-            arc_allocation_bytes::<AtomicI64>()?,
-        ]
-        .into_iter()
-        .try_fold(0usize, |sum, bytes| sum.checked_add(bytes))?;
-        let replay_index_bytes =
-            cache_shards.checked_mul(dashmap_shard_bytes::<IOEvent, counter::Counter<COMM>>())?;
-        let bytes = arc_bytes.checked_add(replay_index_bytes)?;
-        let operations = cache_shards.checked_add(10)?;
-        Some((operations, bytes))
     }
 
     pub fn apply_with_logger(

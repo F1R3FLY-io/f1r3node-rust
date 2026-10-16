@@ -295,7 +295,7 @@ where
     // Changed by DR-129: restored dev's randomized candidate order (user
     // decision 2026-10-12). Native replay follows the recorded pick, so play
     // does not need the canonical order of DR-75. Replay keeps that order as its
-    // own internal order (`native_candidate.rs`, `native_candidate/metered.rs`).
+    // own internal order (`native_candidate.rs`, `native_candidate/selection.rs`).
     // pub(super) fn shuffle_with_index<D: Serialize + CandidateSource>(
     //     &self,
     //     t: Vec<D>,

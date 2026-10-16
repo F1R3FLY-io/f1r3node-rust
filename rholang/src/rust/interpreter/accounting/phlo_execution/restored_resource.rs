@@ -1,8 +1,5 @@
-use std::mem::size_of;
-
 use super::{
-    reserve_key_work, AuthorityNode, HostWorkBudget, HostWorkDimension, PhloExecutionError,
-    PhloExecutionLimits, PhloResource, PhloResourceKeyV1, Sig,
+    AuthorityNode, PhloExecutionError, PhloExecutionLimits, PhloResource, PhloResourceKeyV1, Sig,
 };
 
 #[derive(Debug, PartialEq, Eq)]
@@ -17,7 +14,6 @@ impl<'a> RestoredPhloResource<'a> {
     pub fn from_wire_key(
         key: &PhloResourceKeyV1<'a>,
         limits: PhloExecutionLimits,
-        host: &HostWorkBudget,
     ) -> Result<Self, PhloExecutionError> {
         if limits.resource_entries == 0 {
             return Err(PhloExecutionError::TooManyResourceEntries);
@@ -25,11 +21,6 @@ impl<'a> RestoredPhloResource<'a> {
         if key.authority.len() > limits.authority_nodes {
             return Err(PhloExecutionError::TooManyAuthorityNodes);
         }
-        reserve_key_work(
-            Some(host),
-            HostWorkDimension::VerificationOperations,
-            key.authority.len(),
-        )?;
         let mut bytes = key
             .location
             .len()
@@ -55,14 +46,6 @@ impl<'a> RestoredPhloResource<'a> {
         if slots != 0 {
             return Err(PhloExecutionError::MalformedFundingAuthority);
         }
-        let allocation = key
-            .authority
-            .len()
-            .checked_mul(2 * size_of::<Sig>())
-            .and_then(|nodes| nodes.checked_add(bytes))
-            .ok_or(PhloExecutionError::ArithmeticOverflow)?;
-        reserve_key_work(Some(host), HostWorkDimension::SearchStateBytes, allocation)?;
-        reserve_key_work(Some(host), HostWorkDimension::VerificationBytes, bytes)?;
         let mut stack = Vec::new();
         stack
             .try_reserve_exact(key.authority.len())

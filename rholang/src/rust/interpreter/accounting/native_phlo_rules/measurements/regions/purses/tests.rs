@@ -3,7 +3,6 @@ use std::sync::Arc;
 use crypto::rust::hash::blake2b256::Blake2b256;
 use models::rhoapi::g_unforgeable::UnfInstance;
 use models::rhoapi::{CostSignatureCompound, GPrivate, GUnforgeable};
-use models::rust::host_work::{HostWorkLimit, HostWorkLimits};
 use models::rust::rholang::sorter::cost_accounting_sorter::sort_signature;
 use models::rust::rholang::sorter::par_sort_matcher::ParSortMatcher;
 use models::rust::rholang::sorter::sortable::Sortable;
@@ -17,10 +16,6 @@ use crate::rust::interpreter::accounting::native_phlo_rules::tests::schedule;
 use crate::rust::interpreter::accounting::native_phlo_rules::{
     NativePhloRegionLimits, NativePhloRules,
 };
-
-fn budget() -> HostWorkBudget {
-    HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(100_000_000)))
-}
 
 fn region_limits() -> NativePhloRegionLimits {
     NativePhloRegionLimits {
@@ -83,8 +78,8 @@ fn purse_aliases_preserve_both_original_authorities_and_every_occurrence() {
     regions.push(named);
     let input = snapshot(vec![observation.clone(), observation]);
     let measured = rules.measure(&input, 2).unwrap();
-    let demands = measured.region_demands(region_limits(), &budget()).unwrap();
-    let located = demands.locate_purses(limits(), &budget()).unwrap();
+    let demands = measured.region_demands(region_limits()).unwrap();
+    let located = demands.locate_purses(limits()).unwrap();
     assert_eq!(located.binding_count(), 2);
     let original: Vec<_> = demands.occurrences().collect();
     let projected: Vec<_> = located.occurrences().collect();
@@ -130,9 +125,9 @@ fn conflicting_region_identity_rejects_even_zero_quantity_rows_and_channel_alias
         let input = snapshot(rows);
         let original = input.clone();
         let measured = rules.measure(&input, 2).unwrap();
-        let demands = measured.region_demands(region_limits(), &budget()).unwrap();
+        let demands = measured.region_demands(region_limits()).unwrap();
         assert_eq!(
-            demands.locate_purses(limits(), &budget()).unwrap_err(),
+            demands.locate_purses(limits()).unwrap_err(),
             NativePhloPurseError::Authority(AuthorityError::RegionIdentityConflict)
         );
         assert_eq!(input, original);
@@ -140,13 +135,13 @@ fn conflicting_region_identity_rejects_even_zero_quantity_rows_and_channel_alias
 }
 
 #[test]
-fn purse_limits_are_exact_and_include_unit_and_repeated_binding_work() {
+fn purse_limits_are_exact_with_unit_and_repeated_bindings() {
     let rules = NativePhloRules::resolve(&schedule()).unwrap();
     for owners in [0, 1, 3, 65, 1000] {
         let observation = distinct_owner_row([u64::MAX; 3], owners);
         let input = snapshot(vec![observation.clone()]);
         let measured = rules.measure(&input, 1).unwrap();
-        let demands = measured.region_demands(region_limits(), &budget()).unwrap();
+        let demands = measured.region_demands(region_limits()).unwrap();
         let channel =
             independent_channel((0..owners).map(|owner| (owner as u64).to_be_bytes().to_vec()));
         let exact = NativePhloPurseLimits {
@@ -158,7 +153,7 @@ fn purse_limits_are_exact_and_include_unit_and_repeated_binding_work() {
                 .encoded_len()
                 + channel.encoded_len(),
         };
-        let located = demands.locate_purses(exact, &budget()).unwrap();
+        let located = demands.locate_purses(exact).unwrap();
         assert_eq!(located.binding_count(), 1);
         for item in located.occurrences() {
             assert_eq!(item.purse().channel(), &channel);
@@ -179,55 +174,25 @@ fn purse_limits_are_exact_and_include_unit_and_repeated_binding_work() {
                 NativePhloPurseError::BindingByteLimit,
             ),
         ] {
-            assert_eq!(demands.locate_purses(limit, &budget()).unwrap_err(), error);
-        }
-        for dimension in [
-            HostWorkDimension::StructuralItems,
-            HostWorkDimension::StructuralBytes,
-            HostWorkDimension::VerificationOperations,
-            HostWorkDimension::VerificationBytes,
-        ] {
-            let mut caps = HostWorkLimits::uniform(HostWorkLimit::new(100_000_000));
-            caps.set(dimension, HostWorkLimit::new(0));
-            let work = HostWorkBudget::new(caps);
-            assert_eq!(
-                demands.locate_purses(exact, &work).unwrap_err(),
-                NativePhloPurseError::Authority(AuthorityError::HostWorkRejected)
-            );
-            assert!(work.is_rejected());
+            assert_eq!(demands.locate_purses(limit).unwrap_err(), error);
         }
         let observation = distinct_owner_row([1; 3], owners);
         let repeated = snapshot(vec![observation.clone(), observation]);
         let measured = rules.measure(&repeated, 2).unwrap();
-        let demands = measured.region_demands(region_limits(), &budget()).unwrap();
+        let demands = measured.region_demands(region_limits()).unwrap();
         assert_eq!(
-            demands
-                .locate_purses(exact, &budget())
-                .unwrap()
-                .occurrences()
-                .count(),
+            demands.locate_purses(exact).unwrap().occurrences().count(),
             8
         );
-        let mut caps = HostWorkLimits::uniform(HostWorkLimit::new(100_000_000));
-        caps.set(
-            HostWorkDimension::VerificationOperations,
-            HostWorkLimit::new(3),
-        );
-        assert!(demands
-            .locate_purses(exact, &HostWorkBudget::new(caps))
-            .is_err());
     }
     let input = snapshot(Vec::new());
     let measured = rules.measure(&input, 0).unwrap();
-    let demands = measured.region_demands(region_limits(), &budget()).unwrap();
+    let demands = measured.region_demands(region_limits()).unwrap();
     let located = demands
-        .locate_purses(
-            NativePhloPurseLimits {
-                bindings: 0,
-                encoded_binding_bytes: 0,
-            },
-            &budget(),
-        )
+        .locate_purses(NativePhloPurseLimits {
+            bindings: 0,
+            encoded_binding_bytes: 0,
+        })
         .unwrap();
     assert_eq!(located.binding_count(), 0);
     assert_eq!(located.occurrences().count(), 0);
@@ -258,12 +223,12 @@ proptest! {
         Arc::make_mut(&mut observation).authority.regions[0].signature = Some(signature.clone());
         let input = snapshot(vec![observation]);
         let measured = rules.measure(&input, 1).unwrap();
-        let demands = measured.region_demands(region_limits(), &budget()).unwrap();
+        let demands = measured.region_demands(region_limits()).unwrap();
         let channel = independent_channel(reflected);
         let located = demands.locate_purses(NativePhloPurseLimits {
             bindings: 1,
             encoded_binding_bytes: signature.encoded_len() + channel.encoded_len(),
-        }, &budget()).unwrap();
+        }).unwrap();
         for item in located.occurrences() {
             prop_assert_eq!(item.purse().original_authority(), &signature);
             prop_assert_eq!(item.purse().channel(), &channel);
@@ -287,8 +252,8 @@ proptest! {
         if reverse { rows.reverse(); }
         let input = snapshot(rows);
         let measured = rules.measure(&input, 48).unwrap();
-        let demands = measured.region_demands(region_limits(), &budget()).unwrap();
-        let located = demands.locate_purses(limits(), &budget()).unwrap();
+        let demands = measured.region_demands(region_limits()).unwrap();
+        let located = demands.locate_purses(limits()).unwrap();
         prop_assert_eq!(located.binding_count(), samples.len());
         let original: Vec<_> = demands.occurrences().collect();
         let actual: Vec<_> = located.occurrences().collect();

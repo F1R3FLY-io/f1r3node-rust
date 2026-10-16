@@ -25,9 +25,6 @@ use models::rhoapi::{
     CostSignature, CostSignatureCompound, CostSignedTerm, GPrivate, GUnforgeable, New, Par,
     ReceiveBind,
 };
-use models::rust::host_work::{
-    HostWorkDimension, HostWorkLimit, HostWorkLimits, HostWorkReservationError,
-};
 use models::rust::rholang::sorter::par_sort_matcher::ParSortMatcher;
 use models::rust::rholang::sorter::sortable::Sortable;
 use proptest::prelude::*;
@@ -38,25 +35,12 @@ use crate::rust::interpreter::accounting::delta_sigma::{
 };
 use crate::rust::interpreter::accounting::Sig;
 use crate::rust::interpreter::compiler::compiler::Compiler;
-use crate::rust::interpreter::host_work::HostWorkBudget;
 
 /// The nesting depth of the deep tests.
 const DEEP_NESTING: usize = 100_000;
 
 /// The stack of the thread that runs the resolver on a deep term.
 const SMALL_STACK_BYTES: usize = 256 * 1024;
-
-/// Added by the G1-4a hygiene commit: the stack of the thread that parses a
-/// nested program and drops it. The dev normalizer recurses four frames per
-/// nesting level (`normalize_ann_proc`, `normalize_p_new`, `normalize_p_par`),
-/// and in a debug build 128 levels overflow the 8 MiB test stack there.
-///
-/// Extended by the G1-4a fix: this thread is necessary only until the
-/// normalizer pushdown machine of feature/mettail (commit 07853de05) merges
-/// into this branch. That machine normalizes without recursion. After that
-/// merge, the test returns to the default test stack for the parse and the
-/// drop, and this constant and `on_normalizer_stack` are no longer necessary.
-const NORMALIZER_STACK_BYTES: usize = 64 * 1024 * 1024;
 
 fn private_name(tag: u8) -> Par {
     Par::default().with_unforgeables(vec![GUnforgeable {
@@ -71,10 +55,6 @@ fn test_urn_map() -> HashMap<String, Par> {
         ("rho:test:0".to_string(), private_name(0xa0)),
         ("rho:test:1".to_string(), private_name(0xa1)),
     ])
-}
-
-fn unlimited_budget() -> HostWorkBudget {
-    HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(u64::MAX)))
 }
 
 // ── A generator of well-formed programs ────────────────────────────────────
@@ -421,8 +401,7 @@ enum Parity {
 }
 
 /// Compares the two resolvers on one program: the first error, or the walked
-/// signatures and the analyzer's results. It also compares the metered result
-/// with the unmetered one.
+/// signatures and the analyzer's results.
 fn resolver_parity(
     program: &Par,
     rand: &Blake2b512Random,
@@ -432,10 +411,6 @@ fn resolver_parity(
     let machine = resolve_lexical_names_for_funding(program, rand.clone(), urn_map);
     let recursive =
         resolve_lexical_names_for_funding_recursive(program, rand.clone(), urn_map, false);
-    let budget = unlimited_budget();
-    let metered =
-        resolve_lexical_names_for_funding_metered(program, rand.clone(), urn_map, &budget);
-    assert_eq!(metered, machine, "metered and unmetered results of {label}");
     match (machine, recursive) {
         (Ok(machine), Ok(recursive)) => {
             assert_eq!(
@@ -711,7 +686,7 @@ fn new_binding_values_match_allocate_new_bindings() {
     let injected = Par::default().with_unforgeables(vec![GUnforgeable {
         unf_instance: Some(UnfInstance::GPrivateBody(GPrivate { id: vec![0xb0; 32] })),
     }]);
-    let resolver = FundingResolver::new(&urn_map, None);
+    let resolver = FundingResolver::new(&urn_map);
     for bind_count in -1i32..6 {
         for uri in [
             Vec::new(),
@@ -745,152 +720,6 @@ fn new_binding_values_match_allocate_new_bindings() {
 }
 
 // ── Metering ───────────────────────────────────────────────────────────────
-
-/// `new n0 in { {% Nil %}[ n0 ] | new n1 in { ... } }`, nested `depth` levels.
-fn nested_new_source(depth: usize) -> String {
-    let mut source = String::with_capacity(depth * 40);
-    for level in 0..depth {
-        source.push_str(&format!("new n{level} in {{ {{% Nil %}}[ n{level} ] | "));
-    }
-    source.push_str("Nil");
-    for _ in 0..depth {
-        source.push_str(" }");
-    }
-    source
-}
-
-/// Added by the G1-4a hygiene commit: runs `task` on a thread with the
-/// normalizer's stack, for the parse of a nested program and for its drop.
-fn on_normalizer_stack<T: std::marker::Send>(task: impl FnOnce() -> T + std::marker::Send) -> T {
-    std::thread::scope(|scope| {
-        std::thread::Builder::new()
-            .name("lexical-normalizer".to_string())
-            .stack_size(NORMALIZER_STACK_BYTES)
-            .spawn_scoped(scope, task)
-            .expect("spawn the normalizer thread")
-            .join()
-            .expect("the normalizer stays within its stack")
-    })
-}
-
-fn usages_of(program: &Par) -> Vec<u64> {
-    let budget = unlimited_budget();
-    resolve_lexical_names_for_funding_metered(
-        program,
-        Blake2b512Random::create_from_bytes(b"linear work"),
-        &HashMap::new(),
-        &budget,
-    )
-    .expect("an unlimited budget resolves the program");
-    HostWorkDimension::ALL
-        .iter()
-        .map(|dimension| budget.usage(*dimension).get())
-        .collect()
-}
-
-/// Every host-work dimension grows by the same amount for each added level of
-/// nesting, so the charged work is affine in the depth. The recursive resolver
-/// substituted the whole remaining body at each level, a quadratic amount of
-/// work for the same programs.
-#[test]
-fn charged_work_is_linear_in_the_nesting_depth() {
-    let depths = [32usize, 64, 128];
-    let usages = depths
-        .iter()
-        .map(|depth| {
-            // Changed by the G1-4a hygiene commit: the parse and the drop of the
-            // parsed program run on the normalizer's stack, and the resolver's
-            // measurement stays on the test stack.
-            // let program =
-            //     Compiler::source_to_adt(&nested_new_source(*depth)).expect("nested program");
-            // usages_of(&program)
-            let source = nested_new_source(*depth);
-            let program =
-                on_normalizer_stack(|| Compiler::source_to_adt(&source).expect("nested program"));
-            let usage = usages_of(&program);
-            on_normalizer_stack(move || drop(program));
-            usage
-        })
-        .collect::<Vec<_>>();
-    for (position, dimension) in HostWorkDimension::ALL.iter().enumerate() {
-        let first_step = usages[1][position] - usages[0][position];
-        let second_step = usages[2][position] - usages[1][position];
-        assert_eq!(
-            second_step,
-            2 * first_step,
-            "{dimension} grows linearly: {:?}",
-            usages
-                .iter()
-                .map(|usage| usage[position])
-                .collect::<Vec<_>>()
-        );
-    }
-    let items = HostWorkDimension::ALL
-        .iter()
-        .position(|dimension| *dimension == HostWorkDimension::StructuralItems)
-        .expect("structural items");
-    assert!(usages[0][items] > 0, "the resolver charges its steps");
-}
-
-/// A budget one unit below the work of the resolver in any charged dimension
-/// rejects the program, and a budget equal to the work accepts it with the
-/// same result.
-#[test]
-fn an_exhausted_budget_rejects_the_program() {
-    let program = Compiler::source_to_adt(
-        r#"new slot, other(`rho:test:0`) in { {% @"x"!(0) | for (y <- @"in") { {% Nil %}[ y ] } %}[ slot (*) g1 ] | slot :: other :: () | @"data"!({% Nil %}[ other ]) | match 7 { z => { {% Nil %}[ slot ] } _ => Nil } }"#,
-    )
-    .expect("metering program");
-    let rand = Blake2b512Random::create_from_bytes(b"exhausted budget");
-    let urn_map = test_urn_map();
-    let expected = resolve_lexical_names_for_funding(&program, rand.clone(), &urn_map)
-        .expect("the program resolves");
-    let budget = unlimited_budget();
-    resolve_lexical_names_for_funding_metered(&program, rand.clone(), &urn_map, &budget)
-        .expect("an unlimited budget resolves the program");
-    let mut charged = 0;
-    for dimension in HostWorkDimension::ALL {
-        let usage = budget.usage(dimension).get();
-        if usage == 0 {
-            continue;
-        }
-        charged += 1;
-        let mut short = HostWorkLimits::uniform(HostWorkLimit::new(u64::MAX));
-        short.set(dimension, HostWorkLimit::new(usage - 1));
-        let short_budget = HostWorkBudget::new(short);
-        assert_eq!(
-            resolve_lexical_names_for_funding_metered(
-                &program,
-                rand.clone(),
-                &urn_map,
-                &short_budget
-            ),
-            Err(InterpreterError::HostWorkRejected),
-            "{dimension} one unit short"
-        );
-        assert!(matches!(
-            short_budget.rejection(),
-            Some(HostWorkReservationError::LimitExceeded { .. })
-        ));
-
-        let mut exact = HostWorkLimits::uniform(HostWorkLimit::new(u64::MAX));
-        exact.set(dimension, HostWorkLimit::new(usage));
-        assert_eq!(
-            resolve_lexical_names_for_funding_metered(
-                &program,
-                rand.clone(),
-                &urn_map,
-                &HostWorkBudget::new(exact)
-            ),
-            Ok(expected.clone()),
-            "{dimension} exactly enough"
-        );
-    }
-    assert!(
-        charged >= 5,
-        "the resolver charges steps, bindings and backing"
-    );
-}
 
 // ── Stack safety ───────────────────────────────────────────────────────────
 
@@ -939,18 +768,12 @@ fn deep_new_chain(depth: usize) -> Par {
 fn resolver_allocates_one_hundred_thousand_nested_names_on_a_small_stack() {
     let rand = Blake2b512Random::create_from_bytes(b"deep resolver");
     let program = deep_new_chain(DEEP_NESTING);
-    let budget = unlimited_budget();
     let resolved = std::thread::scope(|scope| {
         std::thread::Builder::new()
             .name("lexical-small-stack".to_string())
             .stack_size(SMALL_STACK_BYTES)
             .spawn_scoped(scope, || {
-                resolve_lexical_names_for_funding_metered(
-                    &program,
-                    rand.clone(),
-                    &HashMap::new(),
-                    &budget,
-                )
+                resolve_lexical_names_for_funding(&program, rand.clone(), &HashMap::new())
             })
             .expect("spawn the small-stack thread")
             .join()
@@ -1184,17 +1007,15 @@ fn deep_mixed_term(depth: usize) -> Par {
 #[test]
 fn resolver_walks_a_term_nested_one_hundred_thousand_deep_on_a_small_stack() {
     let program = deep_mixed_term(DEEP_NESTING);
-    let budget = unlimited_budget();
     let resolved = std::thread::scope(|scope| {
         std::thread::Builder::new()
             .name("lexical-mixed-small-stack".to_string())
             .stack_size(SMALL_STACK_BYTES)
             .spawn_scoped(scope, || {
-                let resolved = resolve_lexical_names_for_funding_metered(
+                let resolved = resolve_lexical_names_for_funding(
                     &program,
                     Blake2b512Random::create_from_bytes(b"deep mixed resolver"),
                     &test_urn_map(),
-                    &budget,
                 );
                 let same = resolved
                     .as_ref()
@@ -1267,7 +1088,7 @@ proptest! {
     #[test]
     fn the_free_level_scan_matches_the_recursive_oracle(signature in arb_free_level_signature()) {
         let urn_map = HashMap::new();
-        let resolver = FundingResolver::new(&urn_map, None);
+        let resolver = FundingResolver::new(&urn_map);
         prop_assert_eq!(
             resolver.quotes_a_free_level(&signature).expect("an unmetered scan"),
             quotes_a_free_level_recursively(&signature)
@@ -1309,7 +1130,7 @@ fn the_free_level_scan_runs_a_signature_nested_one_hundred_thousand_deep_on_a_sm
                 .stack_size(SMALL_STACK_BYTES)
                 .spawn_scoped(scope, || {
                     let urn_map = HashMap::new();
-                    FundingResolver::new(&urn_map, None)
+                    FundingResolver::new(&urn_map)
                         .quotes_a_free_level(&signature)
                         .expect("an unmetered scan")
                 })

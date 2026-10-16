@@ -1,6 +1,5 @@
 use std::sync::Arc;
 
-use models::rust::host_work::HostWorkDimension;
 use rspace_plus_plus::rspace::operation_context;
 
 use super::byte_accounting::{ByteCharge, BYTE_COST_SCHEDULE_V1};
@@ -11,7 +10,6 @@ use super::native_phlo_rules::{
 };
 use super::{AuthorityRuntimeState, BillableKind, RuntimeBudget, Token};
 use crate::rust::interpreter::errors::InterpreterError;
-use crate::rust::interpreter::host_work::HostWorkBudget;
 
 mod recording;
 mod operation_sources;
@@ -21,7 +19,6 @@ mod path_trie;
 mod checked_operations;
 mod replay_authority;
 mod wire;
-pub(crate) mod clone_backing;
 pub use checked_operations::{
     CheckedNativeOperationJournal, CheckedNativeOperationTrace, NativeOperationJournalError,
     NativeOperationJournalLimits, NativeOperationReplay, NativeOperationTraceError,
@@ -37,7 +34,7 @@ pub use operations::{
     NativeCommRecord, NativeObservationLink, NativeOperationOccurrence, NativeOperationRecord,
 };
 pub use path_trie::{NativePathTrie, PathId};
-use recording::{recording_error, work, NativeBudgetRecorder, NativeObservationPreparation};
+use recording::{recording_error, NativeBudgetRecorder, NativeObservationPreparation};
 pub use recording::{NativeBudgetRecording, NativeBudgetRetry};
 pub(crate) use replay_authority::NativeAuthorityCheckpoint;
 pub use wire::{
@@ -49,7 +46,6 @@ pub struct NativeRuntimeConfig {
     replay_bound: bool,
     reservation: NativePhloReservation,
     limits: NativeBudgetTraceLimits,
-    host_work: HostWorkBudget,
     session: [u8; 32],
     generation: Arc<()>,
     recording: NativeBudgetRecorder,
@@ -63,18 +59,11 @@ pub struct NativeRuntimeConfig {
 }
 
 impl NativeRuntimeConfig {
-    pub(crate) fn host_work(&self) -> HostWorkBudget { self.host_work.clone() }
-
-    pub fn new(
-        contract: NativePhloExecutionContract<'_>,
-        limits: NativeBudgetTraceLimits,
-        host_work: HostWorkBudget,
-    ) -> Self {
+    pub fn new(contract: NativePhloExecutionContract<'_>, limits: NativeBudgetTraceLimits) -> Self {
         Self {
             replay_bound: false,
             reservation: contract.reservation(),
             limits,
-            host_work,
             session: [0; 32],
             generation: Arc::new(()),
             recording: NativeBudgetRecorder::default(),
@@ -116,68 +105,6 @@ impl RuntimeBudget {
         }
     }
 
-    /// Added by DR-114: prepays the formatting of a printed message in play.
-    /// One inspection gives the scanned bytes S and the nesting depth D. The
-    /// pretty printer then writes at most 2·S·(D+1) bytes of indented text and
-    /// compares at most (D+1) times as many. Replay formats nothing.
-    pub(crate) fn reserve_native_print(
-        &self,
-        message: &models::rhoapi::Par,
-    ) -> Result<(), InterpreterError> {
-        let host = self.native_host_work().ok_or_else(|| {
-            InterpreterError::BugFoundError("native print has no host-work budget".to_string())
-        })?;
-        let walk = clone_backing::inspect_blocks_depth(message, &host)?;
-        let levels = walk
-            .depth
-            .checked_add(1)
-            .ok_or(InterpreterError::HostWorkRejected)?;
-        let written = walk
-            .scanned
-            .checked_mul(2)
-            .and_then(|bytes| bytes.checked_mul(levels))
-            .ok_or(InterpreterError::HostWorkRejected)?;
-        let compared = written
-            .checked_mul(levels)
-            .ok_or(InterpreterError::HostWorkRejected)?;
-        work(&host, HostWorkDimension::SearchStateBytes, written)?;
-        work(&host, HostWorkDimension::VerificationBytes, compared)
-    }
-
-    /// Added by DR-114: prepays the event-log scan that records a reply on its
-    /// produce in play. The log holds at most four entries per recorded
-    /// operation, plus the current one.
-    pub(crate) fn reserve_native_record_scan(&self) -> Result<(), InterpreterError> {
-        let host = self.native_host_work().ok_or_else(|| {
-            InterpreterError::BugFoundError("native record has no host-work budget".to_string())
-        })?;
-        let operations = self.native_operation_count().ok_or_else(|| {
-            InterpreterError::BugFoundError("native record has no operation recorder".to_string())
-        })?;
-        let entries = operations
-            .checked_mul(4)
-            .and_then(|entries| entries.checked_add(4))
-            .ok_or(InterpreterError::HostWorkRejected)?;
-        work(&host, HostWorkDimension::VerificationOperations, entries)?;
-        work(
-            &host,
-            HostWorkDimension::VerificationBytes,
-            entries
-                .checked_mul(32)
-                .ok_or(InterpreterError::HostWorkRejected)?,
-        )
-    }
-
-    pub(crate) fn native_host_work(&self) -> Option<HostWorkBudget> {
-        self.authority_state
-            .lock()
-            .expect("authority state")
-            .native
-            .as_ref()
-            .filter(|native| !native.replay_bound)
-            .map(NativeRuntimeConfig::host_work)
-    }
-
     pub fn reset_for_native_execution(
         &self,
         mut config: NativeRuntimeConfig,
@@ -186,9 +113,6 @@ impl RuntimeBudget {
             return Err(InterpreterError::ReduceError(
                 "native execution requires an idle metered budget".to_owned(),
             ));
-        }
-        if config.host_work.is_rejected() {
-            return Err(InterpreterError::HostWorkRejected);
         }
         self.reset_from_token(&Token::coalesced(self.signature(), 0));
         config.session = self.deploy_id();
@@ -253,7 +177,6 @@ impl RuntimeBudget {
                     Ok::<_, InterpreterError>((
                         native.reservation.preparer(),
                         native.limits,
-                        native.host_work.clone(),
                         Arc::clone(&native.generation),
                         native.session,
                         native.recording.prepare(native.limits.attempts)?,
@@ -261,7 +184,7 @@ impl RuntimeBudget {
                 })
                 .transpose()?
         };
-        let Some((preparer, limits, host_work, generation, session, ticket)) = captured else {
+        let Some((preparer, limits, generation, session, ticket)) = captured else {
             return Ok(None);
         };
         let prepare = || {
@@ -272,24 +195,6 @@ impl RuntimeBudget {
                     "native charge operation session or path is invalid",
                 ));
             }
-            work(
-                &host_work,
-                HostWorkDimension::VerificationOperations,
-                order
-                    .path
-                    .len()
-                    .checked_add(34)
-                    .ok_or(InterpreterError::HostWorkRejected)?,
-            )?;
-            work(
-                &host_work,
-                HostWorkDimension::SearchStateBytes,
-                order
-                    .path
-                    .len()
-                    .checked_mul(std::mem::size_of::<(u64, u64)>())
-                    .ok_or(InterpreterError::HostWorkRejected)?,
-            )?;
             // Changed by C7b (DR-86): the producer records a copied path; the
             // captured evidence names its trie node.
             // let occurrence = NativeBudgetOccurrence {
@@ -305,20 +210,10 @@ impl RuntimeBudget {
                 last: order.path.last_segment(),
                 stage: observation.kind.into(),
             };
-            let comparison_bytes =
-                super::native_phlo_rules::observation_comparison_bytes(observation, &host_work)
-                    .map_err(|_| InterpreterError::HostWorkRejected)?;
-            let charge = match preparer.prepare(Arc::clone(observation), limits.regions, &host_work)
-            {
+            let charge = match preparer.prepare(Arc::clone(observation), limits.regions) {
                 Ok(charge) => Some(charge),
-                Err(NativePhloExecutionError::Overflow) if !host_work.is_rejected() => None,
-                Err(error) => {
-                    return Err(if host_work.is_rejected() {
-                        InterpreterError::HostWorkRejected
-                    } else {
-                        native_error(error, preparer.bound_source())
-                    })
-                }
+                Err(NativePhloExecutionError::Overflow) => None,
+                Err(error) => return Err(native_error(error, preparer.bound_source())),
             };
             Ok(Some(NativeObservationPreparation {
                 generation: Arc::clone(&generation),
@@ -326,7 +221,6 @@ impl RuntimeBudget {
                 occurrence_key,
                 observation: Arc::clone(observation),
                 charge,
-                comparison_bytes,
                 ticket,
             }))
         };

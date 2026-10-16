@@ -14,7 +14,6 @@ use std::collections::BTreeMap;
 // use models::rust::host_work::{HostWorkDimension, HostWorkUnits};
 use models::rust::signed_phlo_deploy::OfferedFundedDeploy;
 use rholang::rust::interpreter::accounting::phlo_execution::NativePhloSourceAmounts;
-use rholang::rust::interpreter::host_work::HostWorkBudget;
 
 use super::gate::held_capacity_guard;
 // Changed by dedup (task 11415): the shared debit map of `settlement.rs`.
@@ -46,11 +45,9 @@ pub(super) struct GuardMember<'a> {
 }
 
 /// The debit of each custody in a settlement capture: the acquisition plus
-/// the fee, as settlement charges them (`settlement.rs`, grant debits). The
-/// map is charged to the host-work budget before it is built.
+/// the fee, as settlement charges them (`settlement.rs`, grant debits).
 pub(super) fn capture_debits(
     amounts: &[NativePhloSourceAmounts<'_>],
-    budget: &HostWorkBudget,
 ) -> Result<BTreeMap<[u8; 32], u128>, CasperError> {
     // Moved by dedup (task 11415) to `custody_debits` in
     // `casper/src/rust/util/rholang/costacc/direct_wallet_funding/execution/settlement.rs`.
@@ -83,9 +80,7 @@ pub(super) fn capture_debits(
     //     }
     // }
     // Ok(debits)
-    custody_debits(amounts, budget).map_err(|error| match error {
-        CustodyDebitError::Size => invalid("guard debit map size overflows"),
-        CustodyDebitError::Rejected(error) => invalid(error),
+    custody_debits(amounts).map_err(|error| match error {
         CustodyDebitError::Width => invalid("guard debit custody is not 32 bytes"),
         CustodyDebitError::NegativeCharge => invalid("negative resource charge"),
         CustodyDebitError::NegativeFee => invalid("negative fee"),
@@ -104,7 +99,6 @@ impl RuntimeManager {
         snapshot: &DirectWalletPolicySnapshot<'_, OfferedFundedDeploy>,
         root: [u8; 32],
         debits: &BTreeMap<[u8; 32], u128>,
-        budget: &HostWorkBudget,
     ) -> Result<BTreeMap<[u8; 32], u128>, CasperError> {
         let reader = RuntimeManagerSupplyReader {
             runtime_manager: self,
@@ -119,7 +113,7 @@ impl RuntimeManager {
             let payer = payers
                 .get(custody)
                 .ok_or_else(|| invalid("a debited purse has no authorized payer"))?;
-            let inventory = reader.read_purse(&payer.signature, budget).await?;
+            let inventory = reader.read_purse(&payer.signature).await?;
             let balance = inventory
                 .balance
                 .ok_or_else(|| invalid("the balance of a debited purse is absent"))?;
@@ -159,7 +153,6 @@ impl RuntimeManager {
             },
             member.deploy_id,
             member.funding_root,
-            models::rust::host_work::HostWorkUsages::default(),
         );
         tracing::debug!(
             target: "f1r3fly.cost_accounting.guard",
@@ -188,11 +181,6 @@ impl RuntimeManager {
     /// guard.
     #[cfg(any(test, feature = "test-utils"))]
     pub fn force_held_capacity_guard_failure_for_tests(&self, deploy_id: &[u8]) {
-        self.record_offered_budget_usage(
-            OfferedUsageKind::ForceGuardFailureHook,
-            deploy_id,
-            &[],
-            models::rust::host_work::HostWorkUsages::default(),
-        );
+        self.record_offered_budget_usage(OfferedUsageKind::ForceGuardFailureHook, deploy_id, &[]);
     }
 }

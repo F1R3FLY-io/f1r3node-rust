@@ -2,11 +2,11 @@
    the position of each channel's entry when it builds the channel data, and
    the selection reads that position instead of searching for it.
 
-   metered_channel_data walks the channels of a join in order. For each
+   channel_data walks the channels of a join in order. For each
    channel it searches the entries built so far for the first entry equal to
    the channel (channel_position). A found entry j takes the channel's
    values. A channel with no equal entry appends a new entry at the end.
-   Before D-D4, the selection (metered_match_data) searched the finished
+   Before D-D4, the selection (match_data) searched the finished
    entries again for each pattern. D-D4 records the found or appended
    position during the build, and the selection reads it.
 
@@ -55,9 +55,15 @@
    universally quantified when the sections close.
 
    Rust correspondence:
-   rspace++/src/rspace/replay_rspace/native_candidate/metered.rs
-   (channel_position, metered_channel_data, metered_match_data,
-   POSITION_BYTES). *)
+   rspace++/src/rspace/replay_rspace/native_candidate/selection.rs
+   (channel_position, channel_data, match_data). *)
+
+(* DR-131: host work is removed. The results under "Charges" above and the
+   negative controls read_before_reservation_is_not_covered,
+   legacy_position_search_charge_example and
+   small_channel_search_cheaper_than_word_example describe deleted code. The
+   position results still describe the selection, and IncomingDatumMove
+   requires them. *)
 
 From Stdlib Require Import Lists.List Arith.PeanoNat Bool Lia.
 Import ListNotations.

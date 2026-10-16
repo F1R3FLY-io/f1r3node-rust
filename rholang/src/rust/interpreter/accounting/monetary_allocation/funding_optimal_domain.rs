@@ -1,13 +1,8 @@
-use std::mem::size_of;
-
-use models::rust::host_work::HostWorkDimension;
-
-use super::funding_feasibility::{filled_vec, reserve_work};
+use super::funding_feasibility::filled_vec;
 use super::{
     check_funding_minimax_certificate, FundingAssignmentTotals, FundingBoxProblem,
     FundingExcessCut, FundingMinimaxProblem, FundingSearchError, FundingSearchLimits,
 };
-use crate::rust::interpreter::host_work::HostWorkBudget;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FundingOptimalDomain {
@@ -31,19 +26,13 @@ impl FundingOptimalDomain {
         &self,
         assignment: &[Vec<u64>],
         limits: FundingSearchLimits,
-        budget: &HostWorkBudget,
     ) -> Result<FundingAssignmentTotals, FundingSearchError> {
         let problem = FundingMinimaxProblem {
             capacities: &self.upper,
             obligations: &self.obligations,
             eligible: &self.eligible,
         };
-        let totals = problem.check_assignment(assignment, limits, budget)?;
-        reserve_work(
-            budget,
-            HostWorkDimension::VerificationOperations,
-            self.lower.len(),
-        )?;
+        let totals = problem.check_assignment(assignment, limits)?;
         if totals
             .source_debits()
             .iter()
@@ -61,31 +50,12 @@ pub fn derive_funding_optimal_domain(
     assignment: &[Vec<u64>],
     cuts: &[FundingExcessCut],
     limits: FundingSearchLimits,
-    budget: &HostWorkBudget,
 ) -> Result<FundingOptimalDomain, FundingSearchError> {
-    if !check_funding_minimax_certificate(problem, assignment, cuts, limits, budget)? {
+    if !check_funding_minimax_certificate(problem, assignment, cuts, limits)? {
         return Err(FundingSearchError::InvalidResult);
     }
     let sources = problem.capacities.len();
     let obligations = problem.obligations.len();
-    let cells = sources
-        .checked_mul(obligations)
-        .ok_or(FundingSearchError::Overflow)?;
-    let bytes = sources
-        .checked_mul(2 * size_of::<u64>() + size_of::<Vec<bool>>())
-        .and_then(|n| n.checked_add(cells))
-        .and_then(|n| {
-            obligations
-                .checked_mul(size_of::<u64>())
-                .and_then(|m| n.checked_add(m))
-        })
-        .ok_or(FundingSearchError::Overflow)?;
-    reserve_work(budget, HostWorkDimension::SearchStateBytes, bytes)?;
-    let preparation = cells
-        .checked_add(sources)
-        .and_then(|n| n.checked_add(obligations))
-        .ok_or(FundingSearchError::Overflow)?;
-    reserve_work(budget, HostWorkDimension::SearchCandidates, preparation)?;
     let mut domain = FundingOptimalDomain {
         lower: filled_vec(sources, 0_u64)?,
         upper: filled_vec(sources, 0_u64)?,
@@ -98,12 +68,7 @@ pub fn derive_funding_optimal_domain(
         *row = filled_vec(obligations, false)?;
         row.copy_from_slice(original);
     }
-    let cut_work = cells
-        .checked_mul(2)
-        .and_then(|n| n.checked_add(sources))
-        .ok_or(FundingSearchError::Overflow)?;
     for cut in cuts {
-        reserve_work(budget, HostWorkDimension::SearchCandidates, cut_work)?;
         for (i, row) in problem.eligible.iter().enumerate() {
             let neighbor = row
                 .iter()
@@ -122,7 +87,7 @@ pub fn derive_funding_optimal_domain(
             }
         }
     }
-    domain.check_assignment(assignment, limits, budget)?;
+    domain.check_assignment(assignment, limits)?;
     Ok(domain)
 }
 

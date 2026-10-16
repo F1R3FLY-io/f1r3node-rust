@@ -2,7 +2,6 @@ use std::sync::Arc;
 
 use models::rhoapi::cost_signature::Value;
 use models::rhoapi::{CostAuthority, CostRegion, CostSignature, CostSignatureCompound, Par};
-use models::rust::host_work::{HostWorkLimit, HostWorkLimits};
 use models::rust::phlo_schedule::PhloGenesisPolicy;
 use models::rust::rholang::sorter::cost_accounting_sorter::sort_signature;
 use proptest::prelude::*;
@@ -24,10 +23,6 @@ use crate::rust::interpreter::accounting::phlo_execution::{
     check_counted_phlo_execution, prepare_counted_phlo_discharge, PhloDischargeLimits,
     PhloExecutionError, PhloExecutionLimits, PhloOutcome,
 };
-
-fn budget() -> HostWorkBudget {
-    HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(100_000_000)))
-}
 
 fn region_limits() -> NativePhloRegionLimits {
     NativePhloRegionLimits {
@@ -125,10 +120,10 @@ fn check_case(
     let input = snapshot(quantities, owners, copies);
     let original = input.clone();
     let measured = rules.measure(&input, copies).unwrap();
-    let regions = measured.region_demands(region_limits(), &budget()).unwrap();
-    let located = regions.locate_purses(purse_limits(), &budget()).unwrap();
+    let regions = measured.region_demands(region_limits()).unwrap();
+    let located = regions.locate_purses(purse_limits()).unwrap();
     let prepared = located
-        .prepare_acquisition_demand(&binding, &terms, limits(), &budget())
+        .prepare_acquisition_demand(&binding, &terms, limits())
         .unwrap();
     let positive = 1 + quantities
         .into_iter()
@@ -187,10 +182,8 @@ fn check_case(
     )
     .unwrap();
     prepared.check_controls(controls).unwrap();
-    let discharge = prepare_counted_phlo_discharge(
-        &[],
-        prepared.resources(),
-        PhloDischargeLimits {
+    let discharge =
+        prepare_counted_phlo_discharge(&[], prepared.resources(), PhloDischargeLimits {
             execution: execution_limits(),
             key: models::rust::phlo_obligation::PhloObligationKeyLimits {
                 wire: models::rust::phlo_wire::PhloWireLimits {
@@ -200,10 +193,8 @@ fn check_case(
                 authority_nodes: 10_000,
             },
             aggregate_key_bytes: 20_000_000,
-        },
-        &budget(),
-    )
-    .unwrap();
+        })
+        .unwrap();
     let checked =
         check_counted_phlo_execution(controls, discharge.witness(), execution_limits()).unwrap();
     assert_eq!(checked.usage(), expected);
@@ -224,7 +215,7 @@ fn check_case(
     let mut reservation = contract.reservation();
     for row in &input.rows {
         let charge = reservation
-            .prepare(Arc::clone(row), region_limits(), &budget())
+            .prepare(Arc::clone(row), region_limits())
             .unwrap();
         reservation.reserve(&charge).unwrap();
     }
@@ -283,8 +274,8 @@ fn native_acquisition_requires_exact_terms_and_measured_class_mapping() {
     let rules = NativePhloRules::resolve(&descriptor).unwrap();
     let input = snapshot([3, 5, 7], 3, 1);
     let measured = rules.measure(&input, 1).unwrap();
-    let regions = measured.region_demands(region_limits(), &budget()).unwrap();
-    let located = regions.locate_purses(purse_limits(), &budget()).unwrap();
+    let regions = measured.region_demands(region_limits()).unwrap();
+    let located = regions.locate_purses(purse_limits()).unwrap();
     for field in 0..8 {
         let mut changed = descriptor.clone();
         match field {
@@ -299,7 +290,7 @@ fn native_acquisition_requires_exact_terms_and_measured_class_mapping() {
         }
         let bytes = changed.encode(PhloGenesisPolicy::LIMITS).unwrap();
         assert!(matches!(
-            located.prepare_acquisition_demand(&binding, &bytes, limits(), &budget()),
+            located.prepare_acquisition_demand(&binding, &bytes, limits()),
             Err(NativePhloAcquisitionError::TermsMismatch)
         ));
     }
@@ -308,7 +299,7 @@ fn native_acquisition_requires_exact_terms_and_measured_class_mapping() {
     let bytes = changed.encode(PhloGenesisPolicy::LIMITS).unwrap();
     let other = PhloScheduleBinding::new(&changed, PhloGenesisPolicy::LIMITS).unwrap();
     assert!(matches!(
-        located.prepare_acquisition_demand(&other, &bytes, limits(), &budget()),
+        located.prepare_acquisition_demand(&other, &bytes, limits()),
         Err(NativePhloAcquisitionError::ClassMismatch)
     ));
 }
@@ -322,46 +313,25 @@ fn native_acquisition_limits_reject_without_changing_observations() {
     let input = snapshot([3, 5, 7], 3, 1);
     let original = input.clone();
     let measured = rules.measure(&input, 1).unwrap();
-    let regions = measured.region_demands(region_limits(), &budget()).unwrap();
-    let located = regions.locate_purses(purse_limits(), &budget()).unwrap();
+    let regions = measured.region_demands(region_limits()).unwrap();
+    let located = regions.locate_purses(purse_limits()).unwrap();
     // Changed by C8 (DR-87): the entry limit counts the four distinct keys
     // (one purse identity, four positive classes) instead of the eight
     // located occurrences.
     // entries: 8 accepted and entries: 7 rejected before.
     assert!(located
-        .prepare_acquisition_demand(
-            &binding,
-            &terms,
-            NativePhloAcquisitionLimits {
-                entries: 4,
-                ..limits()
-            },
-            &budget()
-        )
+        .prepare_acquisition_demand(&binding, &terms, NativePhloAcquisitionLimits {
+            entries: 4,
+            ..limits()
+        })
         .is_ok());
     assert!(matches!(
-        located.prepare_acquisition_demand(
-            &binding,
-            &terms,
-            NativePhloAcquisitionLimits {
-                entries: 3,
-                ..limits()
-            },
-            &budget()
-        ),
+        located.prepare_acquisition_demand(&binding, &terms, NativePhloAcquisitionLimits {
+            entries: 3,
+            ..limits()
+        }),
         Err(NativePhloAcquisitionError::EntryLimit)
     ));
-    for dimension in [
-        HostWorkDimension::VerificationOperations,
-        HostWorkDimension::VerificationBytes,
-        HostWorkDimension::SearchStateBytes,
-    ] {
-        let mut caps = HostWorkLimits::uniform(HostWorkLimit::new(100_000_000));
-        caps.set(dimension, HostWorkLimit::new(0));
-        assert!(located
-            .prepare_acquisition_demand(&binding, &terms, limits(), &HostWorkBudget::new(caps))
-            .is_err());
-    }
     assert_eq!(input, original);
 }
 
@@ -380,10 +350,10 @@ fn native_acquisition_preserves_distinct_authority_despite_channel_aliases() {
         value: Some(Value::Ground(Vec::new())),
     });
     let measured = rules.measure(&input, 1).unwrap();
-    let regions = measured.region_demands(region_limits(), &budget()).unwrap();
-    let located = regions.locate_purses(purse_limits(), &budget()).unwrap();
+    let regions = measured.region_demands(region_limits()).unwrap();
+    let located = regions.locate_purses(purse_limits()).unwrap();
     let prepared = located
-        .prepare_acquisition_demand(&binding, &terms, limits(), &budget())
+        .prepare_acquisition_demand(&binding, &terms, limits())
         .unwrap();
     assert_eq!(prepared.resources().len(), 2);
     assert_eq!(
@@ -408,8 +378,8 @@ fn native_acquisition_does_not_expand_maximum_quantity_or_hide_quantity_overflow
     let rules = NativePhloRules::resolve(&descriptor).unwrap();
     let input = snapshot([u64::MAX; 3], 3, 1);
     let measured = rules.measure(&input, 1).unwrap();
-    let regions = measured.region_demands(region_limits(), &budget()).unwrap();
-    let located = regions.locate_purses(purse_limits(), &budget()).unwrap();
+    let regions = measured.region_demands(region_limits()).unwrap();
+    let located = regions.locate_purses(purse_limits()).unwrap();
     // Changed by C8 (DR-87): the two regions share one purse identity, so the
     // aggregation adds their maximum quantities and rejects the overflow when
     // it prepares the demand. Before C8 the counted check rejected the same
@@ -429,7 +399,7 @@ fn native_acquisition_does_not_expand_maximum_quantity_or_hide_quantity_overflow
     // ... check_counted_phlo_execution(controls, witness, execution_limits())
     //     == Err(PhloExecutionError::ArithmeticOverflow)
     assert!(matches!(
-        located.prepare_acquisition_demand(&binding, &terms, limits(), &budget()),
+        located.prepare_acquisition_demand(&binding, &terms, limits()),
         Err(NativePhloAcquisitionError::QuantityOverflow)
     ));
 
@@ -439,10 +409,10 @@ fn native_acquisition_does_not_expand_maximum_quantity_or_hide_quantity_overflow
         .regions
         .truncate(1);
     let measured = rules.measure(&single, 1).unwrap();
-    let regions = measured.region_demands(region_limits(), &budget()).unwrap();
-    let located = regions.locate_purses(purse_limits(), &budget()).unwrap();
+    let regions = measured.region_demands(region_limits()).unwrap();
+    let located = regions.locate_purses(purse_limits()).unwrap();
     let prepared = located
-        .prepare_acquisition_demand(&binding, &terms, limits(), &budget())
+        .prepare_acquisition_demand(&binding, &terms, limits())
         .unwrap();
     assert_eq!(prepared.resources().len(), 4);
     assert_eq!(
@@ -503,9 +473,9 @@ proptest! {
             let binding = PhloScheduleBinding::new(&descriptor, PhloGenesisPolicy::LIMITS).unwrap();
             let rules = NativePhloRules::resolve(&descriptor).unwrap();
             let measured = rules.measure(input, 2).unwrap();
-            let regions = measured.region_demands(region_limits(), &budget()).unwrap();
-            let located = regions.locate_purses(purse_limits(), &budget()).unwrap();
-            let prepared = located.prepare_acquisition_demand(&binding, &terms, limits(), &budget()).unwrap();
+            let regions = measured.region_demands(region_limits()).unwrap();
+            let located = regions.locate_purses(purse_limits()).unwrap();
+            let prepared = located.prepare_acquisition_demand(&binding, &terms, limits()).unwrap();
             prepared.occurrences().map(|(origin, amount)| {
                 assert_eq!(amount.resource.acquisition_terms, terms);
                 (origin.demand().measurement().observation().event_id,

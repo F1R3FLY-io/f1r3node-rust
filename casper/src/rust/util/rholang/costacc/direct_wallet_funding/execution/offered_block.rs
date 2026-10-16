@@ -3,25 +3,17 @@
 //! `casper/src/rust/util/rholang/runtime_manager.rs`.
 
 use std::collections::HashMap;
-use std::mem::{self, size_of, size_of_val};
 
-use crypto::rust::signatures::signed::Cosigner;
 use models::rust::block::state_hash::StateHash;
 use models::rust::block_hash::BlockHash;
-use models::rust::casper::protocol::casper_message::{
-    Event, ProcessedSystemDeploy, ProcessedUserDeploy,
-};
+use models::rust::casper::protocol::casper_message::{ProcessedSystemDeploy, ProcessedUserDeploy};
 use models::rust::casper::protocol::offered_processed_deploy::OfferedProcessedDeploy;
-use models::rust::cost_protocol_limits::{
-    offered_funded_v6_host_work_limits, offered_funded_v6_limits,
-};
+use models::rust::cost_protocol_limits::offered_funded_v6_limits;
 use models::rust::deploy_envelope::{DeployEnvelope, DeployEnvelopeRef};
-use models::rust::host_work::{HostWorkDimension, HostWorkUnits};
 use models::rust::native_cost_evidence::NativeCostEvidenceV1;
 use models::rust::phlo_intent::{PhloConversionCompositionV2, PhloFundingIntentV2Limits};
 use models::rust::validator::Validator;
 use rholang::rust::interpreter::accounting::phlo_controls::PhloScheduleBinding;
-use rholang::rust::interpreter::host_work::HostWorkBudget;
 use rholang::rust::interpreter::rho_runtime::RhoRuntime;
 use rholang::rust::interpreter::system_processes::BlockData;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
@@ -37,9 +29,6 @@ use crate::rust::util::rholang::costacc::genesis_resource_policy::{
 };
 #[cfg(any(test, feature = "test-utils"))]
 use crate::rust::util::rholang::costacc::offered_acceptance::OfferedUsageKind;
-use crate::rust::util::rholang::costacc::offered_acceptance::{
-    offered_replay_context_copy_bytes, OfferedAcceptanceBudget,
-};
 use crate::rust::util::rholang::costacc::offered_grants::{
     offered_grant_issue_call_limits, offered_grant_transition_limits,
 };
@@ -48,17 +37,13 @@ use crate::rust::util::rholang::costacc::production_limits::{
     offered_funded_v6_production_limits, offered_funded_v6_recording_limits,
     offered_funded_v6_replay_limits, offered_funded_v6_trace_limits,
 };
-use crate::rust::util::rholang::runtime_manager::{
-    offered_event_clone_bytes, reserve_presentation_copy, RuntimeManager,
-};
+use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 
 pub(crate) struct CertifiedOfferedDraft {
     settled_root: [u8; 32],
     envelope_identity: [u8; 32],
     candidate: OfferedProcessedDeploy,
     user_mergeable: NumberChannelsEndVal,
-    #[cfg(any(test, feature = "test-utils"))]
-    replay_usages: models::rust::host_work::HostWorkUsages,
 }
 
 impl CertifiedOfferedDraft {
@@ -67,12 +52,6 @@ impl CertifiedOfferedDraft {
     /// DR-102: the certified mergeable map, which the producer and every
     /// validator store for this deploy.
     pub(crate) fn into_user_mergeable(self) -> NumberChannelsEndVal { self.user_mergeable }
-
-    /// DR-102: the final usage of the replay budget that certify owns.
-    #[cfg(any(test, feature = "test-utils"))]
-    pub(crate) fn replay_usages(&self) -> models::rust::host_work::HostWorkUsages {
-        self.replay_usages
-    }
 
     pub(crate) fn envelope_identity(&self) -> [u8; 32] { self.envelope_identity }
 
@@ -92,7 +71,6 @@ impl RuntimeOps {
         play_budget: Option<std::time::Duration>,
         adopted: Option<&AdoptedResourcePolicy>,
         manager: &RuntimeManager,
-        offered_budget: Option<&HostWorkBudget>,
     ) -> Result<
         (
             StateHash,
@@ -104,11 +82,6 @@ impl RuntimeOps {
         let adopted = adopted.ok_or_else(|| {
             CasperError::RuntimeError(
                 "offered proposal has no authenticated genesis policy".to_string(),
-            )
-        })?;
-        let budget = offered_budget.ok_or_else(|| {
-            CasperError::RuntimeError(
-                "offered proposal has no consensus host-work budget".to_string(),
             )
         })?;
         let root: [u8; 32] = start_hash.as_ref().try_into().map_err(|_| {
@@ -129,16 +102,6 @@ impl RuntimeOps {
                 .envelope
                 .payload
                 .funding;
-            budget
-                .reserve(
-                    HostWorkDimension::VerificationBytes,
-                    HostWorkUnits::new(u64::try_from(base.wire.total_bytes).map_err(|_| {
-                        CasperError::RuntimeError(
-                            "offered funding byte bound overflows".to_string(),
-                        )
-                    })?),
-                )
-                .map_err(|error| CasperError::RuntimeError(error.to_string()))?;
             let limits = OfferedCandidateLimits {
                 funding: PhloFundingIntentV2Limits {
                     wire: base.wire,
@@ -167,18 +130,13 @@ impl RuntimeOps {
                         "offered grant use requires nonnegative block time".to_string(),
                     )
                 })?;
-                let grant_snapshot = manager.capture_offered_grants_from_signed(
-                    root,
-                    signed,
-                    grant_limits,
-                    budget,
-                )?;
+                let grant_snapshot =
+                    manager.capture_offered_grants_from_signed(root, signed, grant_limits)?;
                 let verified = grant_snapshot.verified_source_payers(
                     root,
                     signed,
                     authenticated_time,
                     grant_limits,
-                    budget,
                 )?;
                 Some((grant_snapshot, verified, authenticated_time))
             };
@@ -187,7 +145,6 @@ impl RuntimeOps {
                     envelope,
                     start_hash,
                     grant_context.as_ref().map(|(_, verified, _)| verified),
-                    budget,
                 )
                 .await?;
             if snapshot.wallets().pre_state_root() != root {
@@ -196,27 +153,6 @@ impl RuntimeOps {
                 ));
             }
             let selected = prepared.selected_terms(adopted)?;
-            let context_copy_bytes = invalid_blocks
-                .iter()
-                .try_fold(block_data.sender.bytes.len(), |bytes, (hash, sender)| {
-                    bytes
-                        .checked_add(mem::size_of::<(BlockHash, Validator)>())
-                        .and_then(|bytes| bytes.checked_add(hash.len()))
-                        .and_then(|bytes| bytes.checked_add(sender.len()))
-                })
-                .ok_or_else(|| {
-                    CasperError::RuntimeError("offered block context copy overflows".to_string())
-                })?;
-            budget
-                .reserve(
-                    HostWorkDimension::SearchStateBytes,
-                    HostWorkUnits::new(u64::try_from(context_copy_bytes).map_err(|_| {
-                        CasperError::RuntimeError(
-                            "offered block context copy overflows".to_string(),
-                        )
-                    })?),
-                )
-                .map_err(|error| CasperError::RuntimeError(error.to_string()))?;
             // Changed by G1-6 (DR-124): the attempt runs the check before
             // execution with the wallet snapshot at R0.
             let attempt = manager
@@ -230,32 +166,9 @@ impl RuntimeOps {
                         block_data: block_data.clone(),
                         invalid_blocks: invalid_blocks.clone(),
                         trace: offered_funded_v6_trace_limits(),
-                        host_work: budget.clone(),
                     },
                 )
                 .await?;
-            let protocol = models::rust::cost_protocol_limits::offered_funded_v6_limits();
-            let envelope_copy_bound = protocol
-                .envelope
-                .payload
-                .deploy_bytes
-                .checked_add(protocol.envelope.payload.signing.total_bytes)
-                .and_then(|bytes| {
-                    bytes.checked_add(protocol.envelope.payload.funding.wire.total_bytes)
-                })
-                .ok_or_else(|| {
-                    CasperError::RuntimeError("offered envelope copy bound overflows".to_string())
-                })?;
-            budget
-                .reserve(
-                    HostWorkDimension::SearchStateBytes,
-                    HostWorkUnits::new(u64::try_from(envelope_copy_bound).map_err(|_| {
-                        CasperError::RuntimeError(
-                            "offered envelope copy bound overflows".to_string(),
-                        )
-                    })?),
-                )
-                .map_err(|error| CasperError::RuntimeError(error.to_string()))?;
             let production = offered_funded_v6_production_limits();
             let candidate = attempt
                 .produce_native_offered_candidate_with_rooted_prepaid(
@@ -275,13 +188,9 @@ impl RuntimeOps {
                     production,
                     offered_funded_v6_prepaid_inventory_limits(),
                     offered_funded_v6_prepaid_receipt_limits(),
-                    budget,
                 )
                 .await?;
-            // Changed by DR-102: certify owns the replay budget and charges the
-            // block-context copy itself, so the producer's self-replay charges
-            // exactly what every validator's replay charges. The publication
-            // comparison is producer-only acceptance work.
+            // Changed by DR-102: certify borrows the block context.
             // let replay_budget = HostWorkBudget::new(
             //     models::rust::cost_protocol_limits::offered_funded_v6_host_work_limits(),
             // );
@@ -321,28 +230,17 @@ impl RuntimeOps {
                     adopted,
                 )
                 .await?;
-            let acceptance = OfferedAcceptanceBudget::new();
             let _publication = prepared.authorize_publication_after_replay(
                 &candidate.processed,
                 candidate.final_root,
                 &certificate,
-                &acceptance,
             )?;
             #[cfg(any(test, feature = "test-utils"))]
-            {
-                manager.record_offered_budget_usage(
-                    OfferedUsageKind::ProducerSelfReplay,
-                    candidate.processed.identity_bytes(),
-                    start_hash,
-                    certificate.replay_usages(),
-                );
-                manager.record_offered_budget_usage(
-                    OfferedUsageKind::ProducerAcceptance,
-                    candidate.processed.identity_bytes(),
-                    start_hash,
-                    acceptance.meter().usages(),
-                );
-            }
+            manager.record_offered_budget_usage(
+                OfferedUsageKind::ProducerSelfReplay,
+                candidate.processed.identity_bytes(),
+                start_hash,
+            );
             Ok((candidate, certificate.into_user_mergeable()))
         }
         .await
@@ -382,8 +280,7 @@ impl RuntimeOps {
 }
 
 impl RuntimeManager {
-    // Changed by DR-102: certify owns the replay budget, so every role charges
-    // exactly the certified replay to it, and it borrows the block context.
+    // Changed by DR-102: certify borrows the block context.
     // pub(crate) async fn certify_offered_draft(
     //     &self,
     //     processed: &OfferedProcessedDeploy,
@@ -401,8 +298,6 @@ impl RuntimeManager {
         invalid_blocks: &HashMap<BlockHash, Validator>,
         adopted: &AdoptedResourcePolicy,
     ) -> Result<CertifiedOfferedDraft, CasperError> {
-        let replay_budget = HostWorkBudget::new(offered_funded_v6_host_work_limits());
-        let budget = &replay_budget;
         if !adopted.offered_funded_v6_active() {
             return Err(CasperError::RuntimeError(
                 "offered-funded replay is not active for this block".to_string(),
@@ -417,42 +312,7 @@ impl RuntimeManager {
                 "offered replay candidate exceeds protocol limits".to_string(),
             ));
         }
-        for (dimension, amount) in [
-            (HostWorkDimension::VerificationBytes, evidence_bytes),
-            (HostWorkDimension::VerificationOperations, evidence_bytes),
-            (
-                HostWorkDimension::VerificationOperations,
-                processed.deploy_log().len(),
-            ),
-        ] {
-            budget
-                .reserve(
-                    dimension,
-                    HostWorkUnits::new(u64::try_from(amount).map_err(|_| {
-                        CasperError::RuntimeError("offered replay work overflows".to_string())
-                    })?),
-                )
-                .map_err(|error| CasperError::RuntimeError(error.to_string()))?;
-        }
-        let outer =
-            NativeCostEvidenceV1::decode(processed.native_cost_evidence_bytes(), protocol.evidence)
-                .map_err(|error| CasperError::RuntimeError(error.to_string()))?;
-        let owned_sections = outer
-            .funding_case
-            .len()
-            .checked_add(outer.prepaid_delta.len())
-            .and_then(|bytes| bytes.checked_add(outer.wallet_settlement.len()))
-            .and_then(|bytes| bytes.checked_mul(16))
-            .ok_or_else(|| {
-                CasperError::RuntimeError("offered replay work overflows".to_string())
-            })?;
-        budget
-            .reserve(
-                HostWorkDimension::SearchStateBytes,
-                HostWorkUnits::new(u64::try_from(owned_sections).map_err(|_| {
-                    CasperError::RuntimeError("offered replay work overflows".to_string())
-                })?),
-            )
+        NativeCostEvidenceV1::decode(processed.native_cost_evidence_bytes(), protocol.evidence)
             .map_err(|error| CasperError::RuntimeError(error.to_string()))?;
         processed
             .validate(protocol.evidence)
@@ -474,14 +334,6 @@ impl RuntimeManager {
             ));
         };
         let funding = protocol.envelope.payload.funding;
-        budget
-            .reserve(
-                HostWorkDimension::VerificationBytes,
-                HostWorkUnits::new(u64::try_from(funding.wire.total_bytes).map_err(|_| {
-                    CasperError::RuntimeError("offered replay funding bound overflows".to_string())
-                })?),
-            )
-            .map_err(|error| CasperError::RuntimeError(error.to_string()))?;
         let candidate_limits = OfferedCandidateLimits {
             funding: PhloFundingIntentV2Limits {
                 wire: funding.wire,
@@ -516,18 +368,13 @@ impl RuntimeManager {
                 )
             })?;
             let grant_limits = offered_grant_transition_limits();
-            let grant_snapshot = self.capture_offered_grants_from_signed(
-                original_root,
-                signed,
-                grant_limits,
-                budget,
-            )?;
+            let grant_snapshot =
+                self.capture_offered_grants_from_signed(original_root, signed, grant_limits)?;
             let verified = grant_snapshot.verified_source_payers(
                 original_root,
                 signed,
                 authenticated_time,
                 grant_limits,
-                budget,
             )?;
             Some((grant_snapshot, verified, authenticated_time))
         };
@@ -536,7 +383,6 @@ impl RuntimeManager {
                 processed.envelope(),
                 start_hash,
                 grant_context.as_ref().map(|(_, verified, _)| verified),
-                budget,
             )
             .await?;
         if snapshot.wallets().pre_state_root() != original_root {
@@ -563,25 +409,6 @@ impl RuntimeManager {
                     .to_string(),
             ));
         }
-        // DR-102: every role charges the copy of the block context here, before
-        // the copy. The producer charged it before certify and the validator
-        // did not charge it.
-        budget
-            .reserve(
-                HostWorkDimension::SearchStateBytes,
-                HostWorkUnits::new(
-                    u64::try_from(offered_replay_context_copy_bytes(
-                        block_data,
-                        invalid_blocks,
-                    )?)
-                    .map_err(|_| {
-                        CasperError::RuntimeError(
-                            "offered replay context copy overflows".to_string(),
-                        )
-                    })?,
-                ),
-            )
-            .map_err(|error| CasperError::RuntimeError(error.to_string()))?;
         // Changed by G1-6 (DR-124): the witness replay runs the check before
         // execution with the wallet snapshot at R0, as play does.
         let witness = self
@@ -597,7 +424,6 @@ impl RuntimeManager {
                     // invalid_blocks,
                     invalid_blocks: invalid_blocks.clone(),
                     trace: offered_funded_v6_trace_limits(),
-                    host_work: budget.clone(),
                 },
                 candidate_limits,
                 offered_funded_v6_recording_limits(),
@@ -622,12 +448,11 @@ impl RuntimeManager {
                 offered_funded_v6_production_limits(),
                 offered_funded_v6_prepaid_inventory_limits(),
                 offered_funded_v6_prepaid_receipt_limits(),
-                budget,
             )
             .await?;
         let settled_root = settlement.final_root;
         let mut runtime = RuntimeOps::new(
-            self.spawn_offered_runtime(offered_grant_issue_call_limits(), budget.clone())
+            self.spawn_offered_runtime(offered_grant_issue_call_limits())
                 .await?,
         );
         runtime
@@ -640,98 +465,13 @@ impl RuntimeManager {
             ));
         }
         let user_mergeable = runtime
-            .get_number_channels_data_metered(&settlement.mergeable, budget)
+            .get_number_channels_data_metered(&settlement.mergeable)
             .await?;
-        let event_backing = processed
-            .deploy_log()
-            .iter()
-            .try_fold(0usize, |total, event| {
-                total.checked_add(offered_event_clone_bytes(event)?)
-            })
-            .ok_or_else(|| {
-                CasperError::RuntimeError("offered certificate event copy overflows".to_string())
-            })?;
-        let body = signed.data.body();
-        // Changed by D-O1 (DR-111): the copy charges a block slice copy and
-        // cleanup in `reserve_presentation_copy`.
-        // let presentation_meter = |operations: usize, scanned: usize, backing: usize| {
-        //     for (dimension, amount) in [
-        //         (HostWorkDimension::VerificationOperations, operations),
-        //         (HostWorkDimension::VerificationBytes, scanned),
-        //         (HostWorkDimension::SearchStateBytes, backing),
-        //     ] {
-        //         budget
-        //             .reserve(
-        //                 dimension,
-        //                 HostWorkUnits::new(
-        //                     u64::try_from(amount).map_err(|_| BackingError::Overflow)?,
-        //                 ),
-        //             )
-        //             .map_err(|_| BackingError::Rejected)?;
-        //     }
-        //     Ok(())
-        // };
-        // if !body.authority_presentations.is_empty() {
-        //     clone_backing::reserve_slice_copy_and_cleanup(
-        //         &body.authority_presentations,
-        //         &presentation_meter,
-        //     )
-        //     .map_err(|error| {
-        //         CasperError::RuntimeError(format!(
-        //             "offered certificate presentation copy failed: {error:?}"
-        //         ))
-        //     })?;
-        // }
-        reserve_presentation_copy(&body.authority_presentations, budget)?;
-        let signer_backing = signed.signers().iter().try_fold(0usize, |total, signer| {
-            total
-                .checked_add(size_of::<Cosigner>())?
-                .checked_add(size_of_val(signer.sig_algorithm.as_ref()).max(1))
-        });
-        let clone_bound = body
-            .term
-            .len()
-            .checked_add(body.language.len())
-            .and_then(|n| n.checked_add(body.shard_id.len()))
-            .and_then(|n| n.checked_add(signed.data.funding_intent().len()))
-            .and_then(|n| n.checked_add(signed.data.signing_payload_len()))
-            .and_then(|n| n.checked_add(signer_backing?))
-            .and_then(|n| n.checked_add(processed.identity_bytes().len()))
-            .and_then(|n| n.checked_add(processed.native_cost_evidence_bytes().len()))
-            .and_then(|n| {
-                n.checked_add(
-                    processed
-                        .deploy_log()
-                        .len()
-                        .checked_mul(size_of::<Event>())?,
-                )
-            })
-            .and_then(|n| n.checked_add(event_backing))
-            .ok_or_else(|| {
-                CasperError::RuntimeError("offered certificate copy bound overflows".to_string())
-            })?;
-        for dimension in [
-            HostWorkDimension::SearchStateBytes,
-            HostWorkDimension::VerificationBytes,
-        ] {
-            budget
-                .reserve(
-                    dimension,
-                    HostWorkUnits::new(u64::try_from(clone_bound).map_err(|_| {
-                        CasperError::RuntimeError(
-                            "offered certificate copy work overflows".to_string(),
-                        )
-                    })?),
-                )
-                .map_err(|error| CasperError::RuntimeError(error.to_string()))?;
-        }
         Ok(CertifiedOfferedDraft {
             settled_root,
             envelope_identity: prepared.envelope_identity,
             candidate: processed.clone(),
             user_mergeable,
-            #[cfg(any(test, feature = "test-utils"))]
-            replay_usages: replay_budget.usages(),
         })
     }
 
@@ -741,11 +481,10 @@ impl RuntimeManager {
         system_deploys: Vec<ProcessedSystemDeploy>,
         block_data: &BlockData,
         invalid_blocks: HashMap<BlockHash, Validator>,
-        budget: &HostWorkBudget,
     ) -> Result<(Blake2b256Hash, Vec<NumberChannelsEndVal>), CasperError> {
         let candidate_root = StateHash::copy_from_slice(&certificate.settled_root());
         let runtime = self
-            .spawn_offered_replay_runtime(offered_grant_issue_call_limits(), budget.clone())
+            .spawn_offered_replay_runtime(offered_grant_issue_call_limits())
             .await?;
         let mut replay = ReplayRuntimeOps::new_from_runtime(runtime);
         replay
@@ -786,10 +525,7 @@ impl RuntimeManager {
                 "offered-funded replay requires one isolated user candidate".to_string(),
             ));
         };
-        // Changed by DR-102: certify owns the replay budget. The work that this
-        // validator does after the certified replay to accept the block is
-        // charged to its own acceptance budget, as the producer charges its
-        // counterpart to its execution budget.
+        // Changed by DR-102: certify borrows the block context.
         // let budget = HostWorkBudget::new(offered_funded_v6_host_work_limits());
         // let certificate = self
         //     .certify_offered_draft(
@@ -801,8 +537,6 @@ impl RuntimeManager {
         //         &budget,
         //     )
         //     .await?;
-        let acceptance = OfferedAcceptanceBudget::new();
-        let budget = acceptance.meter().clone();
         let no_invalid_blocks = HashMap::new();
         let certificate = self
             .certify_offered_draft(
@@ -813,15 +547,12 @@ impl RuntimeManager {
                 adopted,
             )
             .await?;
-        #[cfg(any(test, feature = "test-utils"))]
-        let replay_usages = certificate.replay_usages();
         let (post_root, system_mergeable) = self
             .replay_offered_system_continuation(
                 &certificate,
                 system_deploys,
                 block_data,
                 invalid_blocks.unwrap_or_default(),
-                &budget,
             )
             .await?;
         let expected = expected_post_state.ok_or_else(|| {
@@ -843,27 +574,6 @@ impl RuntimeManager {
         let channel_count = system_mergeable.len().checked_add(1).ok_or_else(|| {
             CasperError::RuntimeError("offered mergeable result count overflows".to_string())
         })?;
-        budget
-            .reserve(
-                HostWorkDimension::SearchStateBytes,
-                HostWorkUnits::new(
-                    u64::try_from(
-                        channel_count
-                            .checked_mul(size_of::<NumberChannelsEndVal>())
-                            .ok_or_else(|| {
-                                CasperError::RuntimeError(
-                                    "offered mergeable result allocation overflows".to_string(),
-                                )
-                            })?,
-                    )
-                    .map_err(|_| {
-                        CasperError::RuntimeError(
-                            "offered mergeable result work overflows".to_string(),
-                        )
-                    })?,
-                ),
-            )
-            .map_err(|error| CasperError::RuntimeError(error.to_string()))?;
         let mut mergeable_values = Vec::new();
         mergeable_values
             .try_reserve_exact(channel_count)
@@ -878,7 +588,6 @@ impl RuntimeManager {
             block_data.seq_num,
             mergeable_values,
             &Blake2b256Hash::from_bytes_prost(start_hash),
-            &budget,
         )
         .map_err(|error| {
             CasperError::RuntimeError(format!(
@@ -887,20 +596,11 @@ impl RuntimeManager {
             ))
         })?;
         #[cfg(any(test, feature = "test-utils"))]
-        {
-            self.record_offered_budget_usage(
-                OfferedUsageKind::ValidatorReplay,
-                processed.identity_bytes(),
-                start_hash,
-                replay_usages,
-            );
-            self.record_offered_budget_usage(
-                OfferedUsageKind::ValidatorAcceptance,
-                processed.identity_bytes(),
-                start_hash,
-                budget.usages(),
-            );
-        }
+        self.record_offered_budget_usage(
+            OfferedUsageKind::ValidatorReplay,
+            processed.identity_bytes(),
+            start_hash,
+        );
         Ok(post_root.to_bytes_prost())
     }
 }

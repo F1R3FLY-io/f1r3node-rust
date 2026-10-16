@@ -1,18 +1,9 @@
 use std::borrow::Cow;
-use std::cmp::Ordering;
-use std::mem::size_of;
-
-use shared::rust::clone_backing::CloneBacking;
-use shared::rust::collection_backing::{tree_backing, tree_growth, tree_search_bound};
+use std::convert::Infallible;
 
 use super::*;
-use crate::rspace::candidate_order::{CandidateSource, OrderWork, canonical_order};
-use crate::rspace::hashing::blake2b256_hash::Blake2b256Hash;
-use crate::rspace::hashing::native_source::{
-    self, GroupKeys, OperationKeys, SourceMeter, StoreKey,
-};
+use crate::rspace::hashing::native_source::{GroupKeys, OperationKeys, StoreKey};
 use crate::rspace::hot_store::NativeDataView;
-use crate::rspace::native_backing;
 
 type Result<T> = std::result::Result<T, RSpaceError>;
 // Changed by C2 (DR-82): the reader returns a copy-free view.
@@ -30,53 +21,14 @@ type ContinuationReader<'a, C, P, K> =
     &'a dyn Fn(&[C], &GroupKeys) -> Result<Vec<Arc<WaitingContinuation<P, K>>>>;
 
 pub(in crate::rspace::replay_rspace) struct CandidateReader<'a, C, P: Clone, A: Clone, K: Clone> {
-    pub(in crate::rspace::replay_rspace) meter: &'a (dyn SourceMeter + Send + Sync),
     pub(in crate::rspace::replay_rspace) data: DataReader<'a, C, A>,
     pub(in crate::rspace::replay_rspace) continuations: ContinuationReader<'a, C, P, K>,
-}
-
-fn buffer<T>(length: usize, meter: &dyn SourceMeter) -> Result<Vec<T>> {
-    let bytes = length
-        .checked_mul(size_of::<T>())
-        .ok_or(RSpaceError::HostWorkRejected)?;
-    meter.reserve(length.checked_add(1).ok_or(RSpaceError::HostWorkRejected)?, bytes, bytes)?;
-    let mut values = Vec::new();
-    values
-        .try_reserve_exact(length)
-        .map_err(|_| RSpaceError::HostWorkRejected)?;
-    Ok(values)
-}
-
-/// D-D4 (DR-106): the bytes charged for one recorded channel position. The
-/// constant keeps the charge independent of the platform's layout, and the
-/// assertion keeps the charge at or above the allocation.
-const POSITION_BYTES: usize = 8;
-const _: () = assert!(size_of::<usize>() <= POSITION_BYTES);
-
-/// D-D4 (DR-106): a buffer for `length` channel positions. It charges one
-/// operation for each slot plus one, and `POSITION_BYTES` for each slot.
-fn position_buffer(length: usize, meter: &dyn SourceMeter) -> Result<Vec<usize>> {
-    let bytes = length
-        .checked_mul(POSITION_BYTES)
-        .ok_or(RSpaceError::HostWorkRejected)?;
-    meter.reserve(length.checked_add(1).ok_or(RSpaceError::HostWorkRejected)?, bytes, bytes)?;
-    let mut positions = Vec::new();
-    positions
-        .try_reserve_exact(length)
-        .map_err(|_| RSpaceError::HostWorkRejected)?;
-    Ok(positions)
 }
 
 /// D-D5 (DR-107): the datum index of the incoming datum of a produce
 /// (`native_candidate.rs`). The retirement skips it, because it retires only
 /// stored data (`native_session/result.rs`).
 const INCOMING_INDEX: i32 = -1;
-
-/// D-D5 (DR-107): the bytes charged to read the datum index of one
-/// candidate in the fill. The constant keeps the charge independent of the
-/// platform's layout, and the assertion keeps it at or above the read.
-const INDEX_BYTES: usize = 4;
-const _: () = assert!(size_of::<i32>() <= INDEX_BYTES);
 
 /// D-D5 (DR-107): the selection of a produce owns the incoming datum. A
 /// produce that matches nothing gets its datum back to store it, and a
@@ -93,22 +45,8 @@ pub(in crate::rspace::replay_rspace) enum ProduceSelection<C, P: Clone, A: Clone
 /// D-D5 (DR-107): gives the incoming value to the incoming candidates of
 /// the selected match. The first one receives the value itself, and each
 /// further one (a persistent datum matched through a repeated channel)
-/// receives a copy. The pass reserves its reads and the move first, and
-/// each copy reserves its copy and cleanup before the copy.
-fn fill_incoming<C, A: Clone + CloneBacking>(
-    candidates: &mut [ConsumeCandidate<C, A>],
-    value: A,
-    meter: &dyn SourceMeter,
-) -> Result<()> {
-    let count = candidates.len();
-    let moved = size_of::<A>()
-        .checked_mul(2)
-        .ok_or(RSpaceError::HostWorkRejected)?;
-    let scanned = count
-        .checked_mul(INDEX_BYTES)
-        .and_then(|bytes| bytes.checked_add(moved))
-        .ok_or(RSpaceError::HostWorkRejected)?;
-    meter.reserve(count.checked_add(1).ok_or(RSpaceError::HostWorkRejected)?, scanned, 0)?;
+/// receives a copy.
+fn fill_incoming<C, A: Clone>(candidates: &mut [ConsumeCandidate<C, A>], value: A) {
     let mut first = None;
     for candidate in candidates.iter_mut() {
         if candidate.datum_index != INCOMING_INDEX {
@@ -121,13 +59,11 @@ fn fill_incoming<C, A: Clone + CloneBacking>(
         // Changed by D-O1 (DR-108): block accounting charges inline bytes
         // once per enclosing block.
         // native_backing::reserve_copy_and_cleanup(&value, meter)?;
-        native_backing::reserve_blocks_copy_and_cleanup(&value, meter)?;
         candidate.removed_datum = value.clone();
     }
     if let Some(first) = first {
         first.removed_datum = value;
     }
-    Ok(())
 }
 
 // Legacy metered (digest, index) order: it inspected and hashed every candidate
@@ -159,107 +95,6 @@ fn fill_incoming<C, A: Clone + CloneBacking>(
 // index)));     Ok(result)
 // }
 
-/// One `BTreeMap` lookup among `entries` produce keys: at most
-/// `tree_search_bound(entries)` comparisons, each reading two hashes of
-/// `hash_bytes` bytes (C3, DR-78;
-/// `OrderedLookupBound.search_within_size_bound`).
-fn reserve_ordered_lookup(
-    entries: usize,
-    hash_bytes: usize,
-    meter: &dyn SourceMeter,
-) -> Result<()> {
-    let comparisons = tree_search_bound(entries);
-    meter.reserve(
-        comparisons,
-        hash_bytes
-            .checked_mul(2)
-            .and_then(|pair| pair.checked_mul(comparisons))
-            .ok_or(RSpaceError::HostWorkRejected)?,
-        0,
-    )
-}
-
-struct MeteredOrder<'a>(&'a dyn SourceMeter);
-
-impl<D: Serialize + CloneBacking> OrderWork<D> for MeteredOrder<'_> {
-    type Error = RSpaceError;
-
-    fn index_bound(&self, length: usize) -> Result<i32> {
-        i32::try_from(length).map_err(|_| RSpaceError::HostWorkRejected)
-    }
-
-    fn buffer<T>(&self, length: usize) -> Result<Vec<T>> { buffer(length, self.0) }
-
-    fn sort<T>(
-        &self,
-        values: &mut [T],
-        compare: impl Fn(&T, &T) -> Ordering,
-        scanned: impl Fn(&T) -> usize,
-    ) -> Result<()> {
-        sort(values, self.0, compare, |value| Ok(scanned(value)))
-    }
-
-    fn scan(&self, left: &Blake2b256Hash, right: &Blake2b256Hash) -> Result<()> {
-        self.0.reserve(
-            1,
-            left.0
-                .len()
-                .checked_add(right.0.len())
-                .ok_or(RSpaceError::HostWorkRejected)?,
-            0,
-        )
-    }
-
-    fn digest(&self, value: &D) -> Result<Blake2b256Hash> {
-        // Changed by D-O1 (DR-108): block accounting charges inline bytes
-        // once per enclosing block.
-        // native_backing::inspect(value, self.0)?;
-        native_backing::inspect_blocks(value, self.0)?;
-        native_source::hash(value, &|operations, scanned, backing| {
-            self.0.reserve(operations, scanned, backing)
-        })
-    }
-}
-
-fn sorted<D: CandidateSource + Serialize + CloneBacking>(
-    values: Vec<D>,
-    meter: &dyn SourceMeter,
-) -> Result<Vec<(D, i32)>> {
-    canonical_order(values, &MeteredOrder(meter))
-}
-
-fn sort<T>(
-    values: &mut [T],
-    meter: &dyn SourceMeter,
-    compare: impl Fn(&T, &T) -> Ordering,
-    scanned: impl Fn(&T) -> Result<usize>,
-) -> Result<()> {
-    let moves = size_of::<T>()
-        .checked_mul(2)
-        .ok_or(RSpaceError::HostWorkRejected)?;
-    meter.reserve(
-        values.len(),
-        values
-            .len()
-            .checked_mul(moves)
-            .ok_or(RSpaceError::HostWorkRejected)?,
-        0,
-    )?;
-    shared::rust::fallible_sort::sort(values, |a, b| {
-        let left = scanned(a)?;
-        let right = scanned(b)?;
-        meter.reserve(
-            1,
-            moves
-                .checked_add(left)
-                .and_then(|bytes| bytes.checked_add(right))
-                .ok_or(RSpaceError::HostWorkRejected)?,
-            0,
-        )?;
-        Ok(compare(a, b))
-    })
-}
-
 // Changed by C2 (DR-82): the values borrow the cached data; only the
 // incoming datum is owned.
 // struct ChannelData<C, A: Clone> {
@@ -290,43 +125,38 @@ impl PreparedProduceCounter<'_> {
     }
 }
 
-fn channel_position<C: Eq + CloneBacking, A: Clone>(
+fn channel_position<C: Eq, A: Clone>(
     channels: &[ChannelData<'_, C, A>],
     channel: &C,
-    meter: &dyn SourceMeter,
-) -> Result<Option<usize>> {
+) -> Option<usize> {
     for (position, existing) in channels.iter().enumerate() {
         // Changed by D-O1 (DR-108): block accounting charges inline bytes
         // once per enclosing block.
         // native_backing::inspect(channel, meter)?;
-        native_backing::inspect_blocks(channel, meter)?;
         // Changed by D-D4 (DR-106): the entry borrows its channel.
         // native_backing::inspect(&existing.channel, meter)?;
         // Changed by D-O1 (DR-108): block accounting charges inline bytes
         // once per enclosing block.
         // native_backing::inspect(existing.channel, meter)?;
-        native_backing::inspect_blocks(existing.channel, meter)?;
-        meter.reserve(1, 0, 0)?;
         // if channel == &existing.channel {
         if channel == existing.channel {
-            return Ok(Some(position));
+            return Some(position);
         }
     }
-    Ok(None)
+    None
 }
 
 impl<C, P, A, K> ReplayRSpace<C, P, A, K>
 where
-    C: Clone + Debug + Default + Serialize + CloneBacking + Hash + Ord + Eq + 'static + Sync + Send,
-    P: Clone + Debug + Default + Serialize + CloneBacking + 'static + Sync + Send,
-    A: Clone + Debug + Default + Serialize + CloneBacking + 'static + Sync + Send,
-    K: Clone + Debug + Default + Serialize + CloneBacking + 'static + Sync + Send,
+    C: Clone + Debug + Default + Serialize + Hash + Ord + Eq + 'static + Sync + Send,
+    P: Clone + Debug + Default + Serialize + 'static + Sync + Send,
+    A: Clone + Debug + Default + Serialize + 'static + Sync + Send,
+    K: Clone + Debug + Default + Serialize + 'static + Sync + Send,
 {
-    pub(in crate::rspace::replay_rspace) fn prepare_metered_produce_counter(
+    pub(in crate::rspace::replay_rspace) fn prepare_produce_counter(
         &'_ self,
         source: &Produce,
         persist: bool,
-        meter: &dyn SourceMeter,
     ) -> Result<PreparedProduceCounter<'_>> {
         if persist {
             return Ok(PreparedProduceCounter {
@@ -369,90 +199,48 @@ where
         //         0,
         //     )?;
         // }
-        reserve_ordered_lookup(counters.len(), source.hash.0.len(), meter)?;
-        reserve_ordered_lookup(counters.len(), source.hash.0.len(), meter)?;
         let next = counters
             .get(source)
             .copied()
             .unwrap_or(0)
             .checked_add(1)
-            .ok_or(RSpaceError::HostWorkRejected)?;
+            .ok_or_else(|| {
+                RSpaceError::InterpreterError("Native replay produce counter overflow".to_owned())
+            })?;
         // Changed by D-O1 (DR-108): block accounting charges inline bytes
         // once per enclosing block.
         // native_backing::reserve_copy_and_cleanup(source, meter)?;
-        native_backing::reserve_blocks_copy_and_cleanup(source, meter)?;
         // Disabled by C13 (DR-77): the produce-counter map lives for the whole
         // replay, so charging its whole backing on every produce charged a
         // quadratic total.
         // let (operations, bytes) = tree_backing::<Produce, i32>(entries)
         //     .ok_or(RSpaceError::HostWorkRejected)?;
-        let (operations, bytes) =
-            tree_growth::<Produce, i32>(counters.len(), 1).ok_or(RSpaceError::HostWorkRejected)?;
-        meter.reserve(operations, bytes, bytes)?;
         Ok(PreparedProduceCounter {
             counters: Some(counters),
             entry: Some((source.clone(), next)),
         })
     }
 
-    fn metered_produce_count(&self, source: &Produce, meter: &dyn SourceMeter) -> Result<i32> {
-        let counters = self.produce_counter.lock().expect("produce counter lock");
-        // Disabled by C3 (DR-78): this charged one comparison per entry and
-        // walked every key only to charge it, while the lookup below is one
-        // B-tree search.
-        // let steps = counters
-        //     .len()
-        //     .checked_add(1)
-        //     .ok_or(RSpaceError::HostWorkRejected)?;
-        // meter.reserve(
-        //     steps.checked_mul(32).ok_or(RSpaceError::HostWorkRejected)?,
-        //     source
-        //         .hash
-        //         .0
-        //         .len()
-        //         .checked_mul(steps)
-        //         .ok_or(RSpaceError::HostWorkRejected)?,
-        //     0,
-        // )?;
-        // for key in counters.keys() {
-        //     meter.reserve(1, key.hash.0.len(), 0)?;
-        // }
-        reserve_ordered_lookup(counters.len(), source.hash.0.len(), meter)?;
-        Ok(*counters.get(source).unwrap_or(&0))
-    }
-
-    fn metered_candidate_matches(
+    fn matches_identity(
         &self,
         datum: &Datum<A>,
         expected: Option<&dyn NativeCandidateIdentity>,
         incoming: Option<&Produce>,
-        meter: &dyn SourceMeter,
-    ) -> Result<bool> {
+    ) -> bool {
         let Some(expected) = expected else {
-            return Ok(true);
+            return true;
         };
         // Changed by D-O1 (DR-108): block accounting charges inline bytes
         // once per enclosing block.
         // native_backing::inspect(&datum.source, meter)?;
-        native_backing::inspect_blocks(&datum.source, meter)?;
-        if !expected.metered_matches_produce(&datum.source, meter)? {
-            return Ok(false);
+        if !expected.matches_produce(&datum.source) {
+            return false;
         }
         if datum.persist {
-            return Ok(true);
+            return true;
         }
-        let count = self.metered_produce_count(&datum.source, meter)?;
+        let count = self.get_produce_count(&datum.source);
         let increment = if let Some(incoming) = incoming {
-            meter.reserve(
-                1,
-                incoming
-                    .hash
-                    .0
-                    .len()
-                    .checked_add(datum.source.hash.0.len())
-                    .ok_or(RSpaceError::HostWorkRejected)?,
-                0,
-            )?;
             incoming == &datum.source
         } else {
             false
@@ -462,24 +250,26 @@ where
         } else {
             Some(count)
         };
-        Ok(match count {
-            Some(count) => expected.metered_repetition(&datum.source, meter)? == Some(count),
+        match count {
+            Some(count) => expected.repetition(&datum.source) == Some(count),
             None => false,
-        })
+        }
     }
 
     /// One copy-free view of the cached data of each channel (C2, DR-82),
     /// read by the channel's key (D-C2c, DR-96).
-    fn metered_data_views(
+    fn data_views(
         &self,
         channels: &[C],
         keys: &[StoreKey],
         reader: &CandidateReader<'_, C, P, A, K>,
     ) -> Result<Vec<NativeDataView<C, A>>> {
         if keys.len() != channels.len() {
-            return Err(RSpaceError::HostWorkRejected);
+            return Err(RSpaceError::BugFoundError(
+                "native replay channel keys do not match the channels".to_owned(),
+            ));
         }
-        let mut views = buffer(channels.len(), reader.meter)?;
+        let mut views = Vec::with_capacity(channels.len());
         for (channel, key) in channels.iter().zip(keys) {
             views.push((reader.data)(channel, *key)?);
         }
@@ -490,7 +280,7 @@ where
     /// `channels` the position of its entry (D-D4, DR-106). The entries
     /// borrow the channels, and the incoming datum of a produce (D-D5,
     /// DR-107).
-    fn metered_channel_data<'v>(
+    fn channel_data<'v>(
         &self,
         channels: &'v [C],
         views: &'v [NativeDataView<C, A>],
@@ -498,19 +288,17 @@ where
         // incoming: Option<(&C, &A, bool, &Produce)>,
         incoming: Option<(&C, &'v Datum<A>)>,
         expected: Option<&dyn NativeCandidateIdentity>,
-        reader: &CandidateReader<'_, C, P, A, K>,
-    ) -> Result<(Vec<ChannelData<'v, C, A>>, Vec<usize>)> {
-        let mut result = buffer(channels.len(), reader.meter)?;
-        let mut positions = position_buffer(channels.len(), reader.meter)?;
+    ) -> (Vec<ChannelData<'v, C, A>>, Vec<usize>) {
+        let mut result = Vec::with_capacity(channels.len());
+        let mut positions = Vec::with_capacity(channels.len());
         for (channel, view) in channels.iter().zip(views) {
             // Changed by C2 (DR-82): the candidates borrow the cached data.
             // let mut values = sorted((reader.data)(channel)?, reader.meter)?;
-            let mut borrowed = buffer(view.values().len(), reader.meter)?;
+            let mut borrowed = Vec::with_capacity(view.values().len());
             for datum in view.values() {
-                reader.meter.reserve(1, size_of::<Cow<'v, Datum<A>>>(), 0)?;
                 borrowed.push(Cow::Borrowed(datum));
             }
-            let mut values = sorted(borrowed, reader.meter)?;
+            let mut values = canonical_candidates(borrowed);
             // Changed by D-D5 (DR-107): the incoming datum is borrowed.
             // if let Some((trigger, data, persist, source)) = incoming {
             if let Some((trigger, datum)) = incoming {
@@ -518,14 +306,8 @@ where
                 // once per enclosing block.
                 // native_backing::inspect(channel, reader.meter)?;
                 // native_backing::inspect(trigger, reader.meter)?;
-                native_backing::inspect_blocks(channel, reader.meter)?;
-                native_backing::inspect_blocks(trigger, reader.meter)?;
                 if channel == trigger {
-                    let count = values
-                        .len()
-                        .checked_add(1)
-                        .ok_or(RSpaceError::HostWorkRejected)?;
-                    let mut all = buffer(count, reader.meter)?;
+                    let mut all = Vec::with_capacity(values.len() + 1);
                     // Changed by D-D5 (DR-107): the entry borrows the
                     // incoming datum, as it borrows the cached data (DR-82),
                     // so the value and the source are not copied.
@@ -539,7 +321,6 @@ where
                     //     }),
                     //     -1,
                     // ));
-                    reader.meter.reserve(1, size_of::<Cow<'v, Datum<A>>>(), 0)?;
                     all.push((Cow::Borrowed(datum), INCOMING_INDEX));
                     all.extend(values);
                     values = all;
@@ -553,22 +334,9 @@ where
                 // });
                 let source =
                     incoming.and_then(|(_, datum)| (!datum.persist).then_some(&datum.source));
-                if self.metered_candidate_matches(
-                    &values[position].0,
-                    expected,
-                    source,
-                    reader.meter,
-                )? {
+                if self.matches_identity(&values[position].0, expected, source) {
                     position += 1;
                 } else {
-                    reader.meter.reserve(
-                        values.len(),
-                        values
-                            .len()
-                            .checked_mul(size_of::<(Cow<'v, Datum<A>>, i32)>())
-                            .ok_or(RSpaceError::HostWorkRejected)?,
-                        0,
-                    )?;
                     values.remove(position);
                 }
             }
@@ -584,7 +352,7 @@ where
             //         values,
             //     });
             // }
-            match channel_position(&result, channel, reader.meter)? {
+            match channel_position(&result, channel) {
                 Some(position) => {
                     result[position].values = values;
                     positions.push(position);
@@ -596,27 +364,28 @@ where
             }
         }
         // Ok(result)
-        Ok((result, positions))
+        (result, positions)
     }
 
     /// Selects one datum for each pattern. `positions[i]` is the position in
-    /// `data` of the entry of `channels[i]`, as `metered_channel_data`
+    /// `data` of the entry of `channels[i]`, as `channel_data`
     /// recorded it (D-D4, DR-106).
-    fn metered_match_data(
+    fn match_data(
         &self,
         channels: &[C],
         positions: &[usize],
         patterns: &[P],
         continuation: &K,
         data: &[ChannelData<'_, C, A>],
-        meter: &(dyn SourceMeter + Send + Sync),
     ) -> Result<Option<Vec<ConsumeCandidate<C, A>>>> {
         if positions.len() != channels.len() {
-            return Err(RSpaceError::HostWorkRejected);
+            return Err(RSpaceError::BugFoundError(
+                "native replay channel positions do not match the channels".to_owned(),
+            ));
         }
         let count = channels.len().min(patterns.len());
-        let mut chosen = buffer::<(usize, usize)>(count, meter)?;
-        let mut candidates = buffer(count, meter)?;
+        let mut chosen: Vec<(usize, usize)> = Vec::with_capacity(count);
+        let mut candidates = Vec::with_capacity(count);
         let mut complete = true;
         // Changed by D-D4 (DR-106): the position of each channel's entry is
         // read, one word for each pattern, instead of searched.
@@ -626,27 +395,17 @@ where
         //         continue;
         //     };
         for ((channel, pattern), recorded) in channels.iter().zip(patterns).zip(positions) {
-            meter.reserve(1, POSITION_BYTES, 0)?;
             let channel_index = *recorded;
-            let entry = data
-                .get(channel_index)
-                .ok_or(RSpaceError::HostWorkRejected)?;
+            let entry = data.get(channel_index).ok_or_else(|| {
+                RSpaceError::BugFoundError(
+                    "a recorded channel position is outside the channel data".to_owned(),
+                )
+            })?;
             let mut found = false;
             // for (position, (datum, index)) in
             //     data[channel_index].values.iter().enumerate()
             // {
             for (position, (datum, index)) in entry.values.iter().enumerate() {
-                meter.reserve(
-                    chosen
-                        .len()
-                        .checked_add(1)
-                        .ok_or(RSpaceError::HostWorkRejected)?,
-                    chosen
-                        .len()
-                        .checked_mul(size_of::<(usize, usize)>())
-                        .ok_or(RSpaceError::HostWorkRejected)?,
-                    0,
-                )?;
                 if !datum.persist && chosen.contains(&(channel_index, position)) {
                     continue;
                 }
@@ -654,15 +413,13 @@ where
                 // the pattern and the datum; this walk read nothing.
                 // native_backing::inspect(pattern, meter)?;
                 // native_backing::inspect(&datum.a, meter)?;
-                let Some(matched) = self.matcher.get_metered(pattern, &datum.a, meter)? else {
+                let Some(matched) = self.matcher.get(pattern, &datum.a) else {
                     continue;
                 };
                 // Changed by D-O1 (DR-108): block accounting charges inline bytes
                 // once per enclosing block.
                 // native_backing::reserve_copy_and_cleanup(channel, meter)?;
                 // native_backing::reserve_copy_and_cleanup(&datum.source, meter)?;
-                native_backing::reserve_blocks_copy_and_cleanup(channel, meter)?;
-                native_backing::reserve_blocks_copy_and_cleanup(&datum.source, meter)?;
                 // Changed by D-D5 (DR-107): the removed value of an incoming
                 // candidate is the produce's own value, which the produce
                 // preparation moves in after the selection (`fill_incoming`).
@@ -674,7 +431,6 @@ where
                     // Changed by D-O1 (DR-108): block accounting charges inline bytes
                     // once per enclosing block.
                     // native_backing::reserve_copy_and_cleanup(&datum.a, meter)?;
-                    native_backing::reserve_blocks_copy_and_cleanup(&datum.a, meter)?;
                     datum.a.clone()
                 };
                 candidates.push(ConsumeCandidate {
@@ -708,7 +464,7 @@ where
         //     native_backing::reserve_copy_and_cleanup(&candidate.datum.a, meter)?;
         //     matched.push(candidate.datum.a.clone());
         // }
-        let mut matched = buffer::<&A>(candidates.len(), meter)?;
+        let mut matched: Vec<&A> = Vec::with_capacity(candidates.len());
         for candidate in &candidates {
             matched.push(&candidate.datum.a);
         }
@@ -717,67 +473,44 @@ where
         // native_backing::inspect(continuation, meter)?;
         if !self
             .matcher
-            .check_commit_metered(continuation, &matched, meter)?
+            .check_commit_by_reference(continuation, &matched)
         {
             return Ok(None);
         }
         Ok(Some(candidates))
     }
 
-    fn metered_comm(
+    fn build_comm(
         &self,
         data: &[ConsumeCandidate<C, A>],
         consume: &Consume,
         peeks: &BTreeSet<i32>,
         incoming: Option<(&Produce, i32)>,
-        meter: &dyn SourceMeter,
-    ) -> Result<COMM> {
-        let mut indexed = buffer(data.len(), meter)?;
+    ) -> COMM {
+        let mut indexed = Vec::with_capacity(data.len());
         for (index, candidate) in data.iter().enumerate() {
             // Changed by D-O1 (DR-108): block accounting charges inline bytes
             // once per enclosing block.
             // native_backing::reserve_copy_and_cleanup(&candidate.datum.source, meter)?;
-            native_backing::reserve_blocks_copy_and_cleanup(&candidate.datum.source, meter)?;
             indexed.push((candidate.datum.source.clone(), index));
         }
-        sort(
-            &mut indexed,
-            meter,
-            |a, b| {
+        // Changed by DR-131 S6: the heap sort of `fallible_sort` (D-F) with a
+        // comparator that cannot fail. The index makes the order total.
+        let Ok(()) = shared::rust::fallible_sort::sort(&mut indexed, |a, b| {
+            Ok::<_, Infallible>(
                 a.0.channel_hash
                     .cmp(&b.0.channel_hash)
                     .then_with(|| a.0.hash.cmp(&b.0.hash))
                     .then_with(|| a.0.persistent.cmp(&b.0.persistent))
-                    .then_with(|| a.1.cmp(&b.1))
-            },
-            |(source, _)| {
-                source
-                    .channel_hash
-                    .0
-                    .len()
-                    .checked_add(source.hash.0.len())
-                    .ok_or(RSpaceError::HostWorkRejected)
-            },
-        )?;
-        let mut produces = buffer(indexed.len(), meter)?;
+                    .then_with(|| a.1.cmp(&b.1)),
+            )
+        });
+        let mut produces = Vec::with_capacity(indexed.len());
         produces.extend(indexed.into_iter().map(|(source, _)| source));
-        let (operations, bytes) =
-            tree_backing::<Produce, i32>(produces.len()).ok_or(RSpaceError::HostWorkRejected)?;
-        meter.reserve(operations, bytes, bytes)?;
         let mut times_repeated: BTreeMap<Produce, i32> = BTreeMap::new();
         for source in produces.iter().rev() {
-            let count = self.metered_produce_count(source, meter)?;
+            let count = self.get_produce_count(source);
             let count = if let Some((incoming, next)) = incoming {
-                meter.reserve(
-                    1,
-                    source
-                        .hash
-                        .0
-                        .len()
-                        .checked_add(incoming.hash.0.len())
-                        .ok_or(RSpaceError::HostWorkRejected)?,
-                    0,
-                )?;
                 if source == incoming { next } else { count }
             } else {
                 count
@@ -801,7 +534,6 @@ where
             // for key in times_repeated.keys() {
             //     meter.reserve(1, key.hash.0.len(), 0)?;
             // }
-            reserve_ordered_lookup(times_repeated.len(), source.hash.0.len(), meter)?;
             if times_repeated.contains_key(source) {
                 continue;
             }
@@ -818,29 +550,25 @@ where
             // for key in times_repeated.keys() {
             //     meter.reserve(1, key.hash.0.len(), 0)?;
             // }
-            reserve_ordered_lookup(times_repeated.len(), source.hash.0.len(), meter)?;
             // Changed by D-O1 (DR-108): block accounting charges inline bytes
             // once per enclosing block.
             // native_backing::reserve_copy_and_cleanup(source, meter)?;
-            native_backing::reserve_blocks_copy_and_cleanup(source, meter)?;
             times_repeated.insert(source.clone(), count);
         }
         // Changed by D-O1 (DR-108): block accounting charges inline bytes
         // once per enclosing block.
         // native_backing::reserve_copy_and_cleanup(consume, meter)?;
         // native_backing::reserve_copy_and_cleanup(peeks, meter)?;
-        native_backing::reserve_blocks_copy_and_cleanup(consume, meter)?;
-        native_backing::reserve_blocks_copy_and_cleanup(peeks, meter)?;
-        Ok(COMM {
+        COMM {
             consume: consume.clone(),
             produces,
             peeks: peeks.clone(),
             times_repeated,
-        })
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub(in crate::rspace::replay_rspace) fn prepare_metered_consume_candidate(
+    pub(in crate::rspace::replay_rspace) fn prepare_consume_candidate(
         &self,
         channels: &[C],
         keys: &[StoreKey],
@@ -854,26 +582,21 @@ where
         // Changed by D-O1 (DR-108): block accounting charges inline bytes
         // once per enclosing block.
         // native_backing::inspect(consume, reader.meter)?;
-        native_backing::inspect_blocks(consume, reader.meter)?;
         if let Some(identity) = expected {
-            if !identity.metered_matches_consume(consume, reader.meter)? {
+            if !identity.matches_consume(consume) {
                 return Ok(None);
             }
         }
         // Added by DR-129 (E3-a): with no recorded identity this call is the
         // Stored check (`native_session/operations.rs`). It skips a
         // continuation whose commit can veto, because play, in dev's random
-        // order, may have tried another tuple and stored. One operation pays
-        // for the check, as the metered commit check does.
-        if expected.is_none() {
-            reader.meter.reserve(1, 0, 0)?;
-            if self.matcher.commit_may_veto(continuation) {
-                return Ok(None);
-            }
+        // order, may have tried another tuple and stored.
+        if expected.is_none() && self.matcher.commit_may_veto(continuation) {
+            return Ok(None);
         }
         // Changed by C2 (DR-82): the channel data borrow copy-free views.
         // let data = self.metered_channel_data(channels, None, expected, reader)?;
-        let views = self.metered_data_views(channels, keys, reader)?;
+        let views = self.data_views(channels, keys, reader)?;
         // Changed by D-D4 (DR-106): the match reads the recorded positions.
         // let data =
         //     self.metered_channel_data(channels, &views, None, expected, reader)?;
@@ -887,22 +610,14 @@ where
         // else {
         //     return Ok(None);
         // };
-        let (data, positions) =
-            self.metered_channel_data(channels, &views, None, expected, reader)?;
-        let Some(data) = self.metered_match_data(
-            channels,
-            &positions,
-            patterns,
-            continuation,
-            &data,
-            reader.meter,
-        )?
+        let (data, positions) = self.channel_data(channels, &views, None, expected);
+        let Some(data) = self.match_data(channels, &positions, patterns, continuation, &data)?
         else {
             return Ok(None);
         };
-        let comm = self.metered_comm(&data, consume, peeks, None, reader.meter)?;
+        let comm = self.build_comm(&data, consume, peeks, None);
         if let Some(identity) = expected {
-            if !identity.metered_matches_comm(&comm, reader.meter)? {
+            if !identity.matches_comm(&comm) {
                 return Ok(None);
             }
         }
@@ -927,7 +642,7 @@ where
     //     expected: Option<&dyn NativeCandidateIdentity>,
     //     reader: &CandidateReader<'_, C, P, A, K>,
     // ) -> Result<Option<(PreparedProduceCandidate<C, P, A, K>, usize)>> {
-    pub(in crate::rspace::replay_rspace) fn prepare_metered_produce_candidate(
+    pub(in crate::rspace::replay_rspace) fn prepare_produce_candidate(
         &self,
         channel: &C,
         incoming: Datum<A>,
@@ -937,7 +652,9 @@ where
         reader: &CandidateReader<'_, C, P, A, K>,
     ) -> Result<ProduceSelection<C, P, A, K>> {
         if keys.groups.len() != grouped_channels.len() {
-            return Err(RSpaceError::HostWorkRejected);
+            return Err(RSpaceError::BugFoundError(
+                "native replay join keys do not match the joins".to_owned(),
+            ));
         }
         // Changed by D-D5 (DR-107): the fields of the incoming datum.
         // let next = if persist {
@@ -945,10 +662,9 @@ where
             None
         } else {
             // let count = self.metered_produce_count(source, reader.meter)?;
-            let count = self.metered_produce_count(&incoming.source, reader.meter)?;
+            let count = self.get_produce_count(&incoming.source);
             let Some(next) = count.checked_add(1) else {
                 let message = "Native replay produce counter overflow";
-                reader.meter.reserve(1, message.len(), message.len())?;
                 return Err(RSpaceError::InterpreterError(message.to_owned()));
             };
             Some(next)
@@ -957,61 +673,53 @@ where
             grouped_channels.into_iter().zip(&keys.groups).enumerate()
         {
             let continuations =
-                sorted((reader.continuations)(&channels, group_keys)?, reader.meter)?;
+                canonical_candidates((reader.continuations)(&channels, group_keys)?);
             // Changed by C2 (DR-82): the channel data borrow copy-free views.
-            let views = self.metered_data_views(&channels, &group_keys.channels, reader)?;
+            let views = self.data_views(&channels, &group_keys.channels, reader)?;
             // Changed by D-D4 (DR-106): the match reads the recorded positions.
             // let data = self.metered_channel_data(
-            let (data, positions) = self.metered_channel_data(
+            let (data, positions) = self.channel_data(
                 &channels,
                 &views,
                 // Changed by D-D5 (DR-107): the entries borrow the datum.
                 // Some((channel, value, persist, source)),
                 Some((channel, &incoming)),
                 expected,
-                reader,
-            )?;
+            );
             for (continuation, index) in continuations {
                 // Changed by D-O1 (DR-108): block accounting charges inline bytes
                 // once per enclosing block.
                 // native_backing::inspect(&continuation.source, reader.meter)?;
-                native_backing::inspect_blocks(&continuation.source, reader.meter)?;
                 if let Some(identity) = expected {
-                    if !identity.metered_matches_consume(&continuation.source, reader.meter)? {
+                    if !identity.matches_consume(&continuation.source) {
                         continue;
                     }
                 }
                 // Added by DR-129 (E3-a): the Stored check (no recorded
-                // identity) skips a continuation whose commit can veto. One
-                // operation pays for the check.
-                if expected.is_none() {
-                    reader.meter.reserve(1, 0, 0)?;
-                    if self.matcher.commit_may_veto(&continuation.continuation) {
-                        continue;
-                    }
+                // identity) skips a continuation whose commit can veto.
+                if expected.is_none() && self.matcher.commit_may_veto(&continuation.continuation) {
+                    continue;
                 }
-                let Some(data_candidates) = self.metered_match_data(
+                let Some(data_candidates) = self.match_data(
                     &channels,
                     &positions,
                     &continuation.patterns,
                     &continuation.continuation,
                     &data,
-                    reader.meter,
                 )?
                 else {
                     continue;
                 };
-                let comm = self.metered_comm(
+                let comm = self.build_comm(
                     &data_candidates,
                     &continuation.source,
                     &continuation.peeks,
                     // Changed by D-D5 (DR-107): the source of the datum.
                     // next.map(|next| (source, next)),
                     next.map(|next| (&incoming.source, next)),
-                    reader.meter,
-                )?;
+                );
                 if let Some(identity) = expected {
-                    if !identity.metered_matches_comm(&comm, reader.meter)? {
+                    if !identity.matches_comm(&comm) {
                         // Changed by D-D5 (DR-107): the datum goes back.
                         // return Ok(None);
                         return Ok(ProduceSelection::Unmatched(incoming));
@@ -1024,10 +732,6 @@ where
                 //     continuation.as_ref(),
                 //     reader.meter,
                 // )?;
-                native_backing::reserve_blocks_copy_and_cleanup(
-                    continuation.as_ref(),
-                    reader.meter,
-                )?;
                 let continuation = continuation.as_ref().clone();
                 // Changed by D-D5 (DR-107): the incoming candidates receive
                 // the produce's value, and the source goes back.
@@ -1042,7 +746,7 @@ where
                 let Datum {
                     a: value, source, ..
                 } = incoming;
-                fill_incoming(&mut data_candidates, value, reader.meter)?;
+                fill_incoming(&mut data_candidates, value);
                 let candidate = ProduceCandidate {
                     channels,
                     continuation,

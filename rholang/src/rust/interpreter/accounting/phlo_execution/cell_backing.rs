@@ -1,13 +1,7 @@
-use std::mem::size_of;
-
-use models::rust::host_work::HostWorkDimension;
 use thiserror::Error;
 
 use super::{CapturedPhloObligation, PhloObligationKey};
-use crate::rust::interpreter::accounting::monetary_allocation::{
-    filled_vec, reserve_work, FundingSearchError,
-};
-use crate::rust::interpreter::host_work::HostWorkBudget;
+use crate::rust::interpreter::accounting::monetary_allocation::{filled_vec, FundingSearchError};
 
 #[derive(Clone, Copy, Debug)]
 pub struct RetainedCellBackingLimits {
@@ -64,7 +58,6 @@ impl<'c, 'a> CapturedPhloObligation<'c, 'a> {
     pub fn split_retained_cells(
         self,
         limits: RetainedCellBackingLimits,
-        budget: &HostWorkBudget,
     ) -> Result<CapturedRetainedCellBacking<'c, 'a>, RetainedCellBackingError> {
         if !matches!(self.key(), PhloObligationKey::RetainedResource(_)) {
             return Err(RetainedCellBackingError::NotRetained);
@@ -79,7 +72,6 @@ impl<'c, 'a> CapturedPhloObligation<'c, 'a> {
             unit_value,
             self.contributions().map(|(_, amount)| amount),
             limits,
-            budget,
         )?;
         Ok(CapturedRetainedCellBacking {
             obligation: self,
@@ -94,7 +86,6 @@ fn split_backing(
     unit_value: u64,
     sources: impl ExactSizeIterator<Item = u64>,
     limits: RetainedCellBackingLimits,
-    budget: &HostWorkBudget,
 ) -> Result<CellBacking, RetainedCellBackingError> {
     let count = usize::try_from(quantity).map_err(|_| RetainedCellBackingError::Limit)?;
     if count == 0 || count > limits.cells {
@@ -113,20 +104,6 @@ fn split_backing(
             .ok_or(FundingSearchError::Overflow)?
             .min(limits.contributions)
     };
-    let bytes = offset_count
-        .checked_mul(size_of::<usize>())
-        .and_then(|n| {
-            maximum
-                .checked_mul(size_of::<RetainedCellContribution>())
-                .and_then(|m| n.checked_add(m))
-        })
-        .ok_or(FundingSearchError::Overflow)?;
-    let work = offset_count
-        .checked_add(sources.len())
-        .and_then(|n| n.checked_add(maximum))
-        .ok_or(FundingSearchError::Overflow)?;
-    reserve_work(budget, HostWorkDimension::SearchStateBytes, bytes)?;
-    reserve_work(budget, HostWorkDimension::VerificationOperations, work)?;
     let mut result = CellBacking {
         offsets: filled_vec(offset_count, 0usize)?,
         contributions: Vec::new(),

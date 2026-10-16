@@ -14,7 +14,6 @@ use models::rhoapi::{
     CostAuthority, CostRegion, CostSignature, CostSignedTerm, EVar, Expr, ListParWithRandom, New,
     Par, Receive, ReceiveBind, Send, Var,
 };
-use models::rust::host_work::{HostWorkDimension, HostWorkLimit, HostWorkLimits};
 use models::rust::phlo_schedule::PhloScheduleV1;
 use proptest::prelude::*;
 use rspace_plus_plus::rspace::rspace::RSpace;
@@ -53,10 +52,6 @@ pub(super) fn schedule(weights: [u64; 4]) -> PhloScheduleV1<'static> {
         actual_price: 2,
         compatibility_rule: native_resource_compatibility_rule(),
     }
-}
-
-pub(super) fn unlimited() -> HostWorkBudget {
-    HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(u64::MAX)))
 }
 
 pub(super) fn funding() -> Sig { Sig::Ground(vec![9, 9, 9, 9]) }
@@ -131,17 +126,16 @@ pub(super) fn estimate_with(
     source: &str,
     weights: [u64; 4],
     urn_map: HashMap<String, Par>,
-    host: &HostWorkBudget,
 ) -> Result<CostEstimate, InterpreterError> {
     let par = resolved(source, &urn_map);
     let reducer = evaluator(urn_map);
-    let estimate = linear_cost_estimate(&par, &funding(), &schedule(weights), &reducer, host);
+    let estimate = linear_cost_estimate(&par, &funding(), &schedule(weights), &reducer);
     dismantle_term(par);
     estimate
 }
 
 pub(super) fn estimate(source: &str) -> CostEstimate {
-    estimate_with(source, [1; 4], HashMap::new(), &unlimited()).expect("the estimate runs")
+    estimate_with(source, [1; 4], HashMap::new()).expect("the estimate runs")
 }
 
 /// The signature that the normalizer gives an unbound name in a cost
@@ -405,8 +399,7 @@ fn incomplete_programs_report_their_rule() {
 #[test]
 fn a_urn_inside_a_receive_body_is_not_a_fresh_channel() {
     let source = "new x in { x!(0) | for (@n <- x) { new out(`rho:io:stdout`) in { out!(0) } } }";
-    let estimate =
-        estimate_with(source, [1; 4], stdout_urn_map(), &unlimited()).expect("the estimate runs");
+    let estimate = estimate_with(source, [1; 4], stdout_urn_map()).expect("the estimate runs");
     assert_eq!(
         estimate.completeness,
         Completeness::Incomplete(IncompleteReason::NonFreshChannel)
@@ -494,9 +487,8 @@ fn a_join_with_a_repeated_channel_counts_the_datum_for_each_bind() {
         locally_free: Vec::new(),
     });
     let reducer = evaluator(HashMap::new());
-    let estimate =
-        linear_cost_estimate(&par, &funding(), &schedule([1; 4]), &reducer, &unlimited())
-            .expect("the estimate runs");
+    let estimate = linear_cost_estimate(&par, &funding(), &schedule([1; 4]), &reducer)
+        .expect("the estimate runs");
     assert_eq!(estimate.completeness, Completeness::Complete);
     let datum = stored_datum(
         vec![Par::default().with_exprs(vec![Expr {
@@ -580,25 +572,18 @@ proptest! {
 // ── The narrowed evaluation (arbitration H2) ───────────────────────────────
 
 /// A datum with a costly `matches` is never evaluated: the participant has
-/// no size, and the estimate reserves no primitive call for it.
+/// no size.
 #[test]
 fn a_costly_matches_is_never_evaluated() {
-    let host = unlimited();
     let estimate = estimate_with(
         "new x in { x!([1, 2, 3] matches [1, _, 3]) | for (@n <- x) { Nil } }",
         [1; 4],
         HashMap::new(),
-        &host,
     )
     .expect("the estimate runs");
     assert_eq!(
         estimate.completeness,
         Completeness::Incomplete(IncompleteReason::DataEvaluation)
-    );
-    assert_eq!(
-        host.usage(HostWorkDimension::PrimitiveCalls).get(),
-        2,
-        "only the channel lookups of the send and of the receive are evaluated"
     );
 }
 
@@ -613,36 +598,10 @@ fn a_chain_of_big_integer_multiplications_is_never_evaluated() {
     );
 }
 
-/// A long `%%` template is charged `n * (n + K * (k + 3))` before the
-/// interpolation runs, so the offered host-work limits reject it.
+/// A shallow nested `%%` chain, whose output doubles at each level, has a
+/// complete estimate.
 #[test]
-fn a_long_interpolation_template_is_rejected_before_it_runs() {
-    let template = "${a}".repeat(5_000);
-    let source =
-        format!(r#"new x in {{ x!("{template}" %% {{"a": "b"}}) | for (@n <- x) {{ Nil }} }}"#);
-    let mut limits = HostWorkLimits::uniform(HostWorkLimit::new(268_435_456));
-    limits.set(
-        HostWorkDimension::SearchStateBytes,
-        HostWorkLimit::new(134_217_728),
-    );
-    let host = HostWorkBudget::new(limits);
-    assert_eq!(
-        estimate_with(&source, [1; 4], HashMap::new(), &host),
-        Err(InterpreterError::HostWorkRejected)
-    );
-    assert_eq!(
-        host.rejection().map(|rejection| rejection.dimension()),
-        Some(HostWorkDimension::PrimitiveInputBytes)
-    );
-}
-
-/// A nested `%%` chain doubles its output at each level. The output bound of
-/// each level is the template length of the next, so the charge grows with
-/// the depth of the chain, and the offered host-work limits reject a deep
-/// chain before any level runs. A shallow chain stays complete under the same
-/// limits.
-#[test]
-fn a_nested_interpolation_chain_is_rejected_before_it_runs() {
+fn a_shallow_interpolation_chain_has_a_complete_estimate() {
     fn chain(levels: usize) -> String {
         let mut datum = String::from(r#""${a}${a}""#);
         for _ in 0..levels {
@@ -650,60 +609,8 @@ fn a_nested_interpolation_chain_is_rejected_before_it_runs() {
         }
         format!("new x in {{ x!({datum}) | for (@n <- x) {{ Nil }} }}")
     }
-    fn offered() -> HostWorkBudget {
-        let mut limits = HostWorkLimits::uniform(HostWorkLimit::new(268_435_456));
-        limits.set(
-            HostWorkDimension::SearchStateBytes,
-            HostWorkLimit::new(134_217_728),
-        );
-        HostWorkBudget::new(limits)
-    }
-    let shallow = estimate_with(&chain(4), [1; 4], HashMap::new(), &offered())
-        .expect("the offered limits admit a shallow chain");
+    let shallow = estimate_with(&chain(4), [1; 4], HashMap::new()).expect("a shallow chain");
     assert_eq!(shallow.completeness, Completeness::Complete);
-    let host = offered();
-    assert_eq!(
-        estimate_with(&chain(24), [1; 4], HashMap::new(), &host),
-        Err(InterpreterError::HostWorkRejected)
-    );
-    assert_eq!(
-        host.rejection().map(|rejection| rejection.dimension()),
-        Some(HostWorkDimension::PrimitiveInputBytes)
-    );
-}
-
-/// The interpolation charge is the formula of arbitration H2 plus the bound
-/// of the input and output bytes.
-#[test]
-fn the_interpolation_charge_follows_the_formula() {
-    let reducer = evaluator(HashMap::new());
-    let core = isolated_evaluator(&reducer);
-    let host = unlimited();
-    let datum = Compiler::source_to_adt(r#""${ab}${ab}xyz" %% {"ab": "0123456789", "c": "d"}"#)
-        .expect("the datum compiles");
-    let mut estimator = Estimator::new(&funding(), &core, &host).expect("an estimator");
-    estimator.measure(&datum).expect("the datum is measured");
-    let bound = estimator
-        .evaluation_bound(&datum)
-        .expect("the bound is counted")
-        .expect("an interpolation has a known limit");
-    let template = 13u64;
-    let keys = 2u64;
-    let key_bytes = 2u64;
-    let loops = template * (template + keys * (key_bytes + 3));
-    assert!(bound.work >= loops);
-    let without = Compiler::source_to_adt(r#""${ab}${ab}xyz" ++ "0123456789""#)
-        .expect("the concatenation compiles");
-    estimator
-        .measure(&without)
-        .expect("the concatenation is measured");
-    let concatenation = estimator
-        .evaluation_bound(&without)
-        .expect("the bound is counted")
-        .expect("a concatenation has a known limit");
-    assert!(concatenation.work < bound.work);
-    dismantle_term(datum);
-    dismantle_term(without);
 }
 
 // ── Exactness of the arithmetic sizes ──────────────────────────────────────
@@ -767,8 +674,7 @@ fn pass_one_emits_the_program_of_compile_term() {
     );
     let reducer = evaluator(HashMap::new());
     let core = isolated_evaluator(&reducer);
-    let host = unlimited();
-    let mut estimator = Estimator::new(&funding(), &core, &host).expect("an estimator");
+    let mut estimator = Estimator::new(&funding(), &core).expect("an estimator");
     estimator.measure(&par).expect("the program is measured");
     estimator.walk(&par).expect("pass 1 runs");
     use Instruction::{Alternative, Combine, Local, Push};
@@ -794,253 +700,6 @@ fn pass_one_emits_the_program_of_compile_term() {
 
 // ── The metering of arbitration H1 ─────────────────────────────────────────
 
-/// `depth` nested signed scopes, each with its own signature, around `sends`
-/// sends on one fresh name. The loop builds the term from the inside out.
-fn signed_tower(depth: usize, sends: usize) -> Par {
-    let channel = Par::default().with_exprs(vec![Expr {
-        expr_instance: Some(ExprInstance::EVarBody(EVar {
-            v: Some(Var {
-                var_instance: Some(VarInstance::BoundVar(0)),
-            }),
-        })),
-    }]);
-    let mut body = Par::default();
-    for _ in 0..sends {
-        body.sends.push(Send {
-            chan: Some(channel.clone()),
-            data: Vec::new(),
-            persistent: false,
-            locally_free: vec![1],
-            connective_used: false,
-        });
-    }
-    for level in 0..depth {
-        let mut outer = Par::default();
-        outer.cost_signed_terms.push(CostSignedTerm {
-            body: Some(body),
-            signature: Some(ground(&format!("tower-{level}"))),
-        });
-        body = outer;
-    }
-    let mut root = Par::default();
-    root.news.push(New {
-        bind_count: 1,
-        p: Some(body),
-        uri: Vec::new(),
-        injections: BTreeMap::new(),
-        locally_free: Vec::new(),
-    });
-    root
-}
-
-fn usages_of(par: &Par) -> [u64; 16] {
-    let host = unlimited();
-    let reducer = evaluator(HashMap::new());
-    linear_cost_estimate(par, &funding(), &schedule([1; 4]), &reducer, &host)
-        .expect("the estimate runs");
-    let usages = host.usages().into_array();
-    std::array::from_fn(|index| usages[index].get())
-}
-
-fn dimension_index(dimension: HostWorkDimension) -> usize {
-    HostWorkDimension::ALL
-        .iter()
-        .position(|candidate| *candidate == dimension)
-        .expect("a host-work dimension")
-}
-
-/// The chain walks of the plan and of the fold visit one region link for
-/// each enclosing scope of each send. The plan walks each link once. The
-/// fold charges three walks of each link, because `contribute` can walk the
-/// chain of a receive three times (review LOW 3). The authority-node charge
-/// is therefore four times the sends times the depth plus one.
-#[test]
-fn chain_links_are_charged_for_each_enclosing_scope() {
-    for (depth, sends) in [(4usize, 3usize), (8, 3), (8, 6)] {
-        let par = signed_tower(depth, sends);
-        let usages = usages_of(&par);
-        let links = u64::try_from(sends * (depth + 1)).expect("a small count");
-        // Changed by the G1-4a fix (review LOW 3): the fold charges three
-        // walks of each link.
-        // assert_eq!(
-        //     usages[dimension_index(HostWorkDimension::AuthorityNodes)],
-        //     2 * links,
-        //     "depth {depth}, sends {sends}"
-        // );
-        assert_eq!(
-            usages[dimension_index(HostWorkDimension::AuthorityNodes)],
-            4 * links,
-            "depth {depth}, sends {sends}"
-        );
-        dismantle_term(par);
-    }
-}
-
-/// A combine at each level of a tower touches the lanes of the enclosing
-/// scopes, so the merge charge grows with the square of the depth.
-#[test]
-fn merge_entries_grow_with_the_enclosing_lanes() {
-    let small = usages_of(&signed_tower(16, 1));
-    let large = usages_of(&signed_tower(32, 1));
-    let index = dimension_index(HostWorkDimension::VerificationOperations);
-    assert!(
-        large[index] > 3 * small[index],
-        "doubling the depth more than triples the merge charge: {} and {}",
-        small[index],
-        large[index]
-    );
-}
-
-/// Nested receive bodies: the body of each receive is substituted again at
-/// each enclosing receive, and each substitution is charged before it runs.
-#[test]
-fn nested_receive_bodies_are_charged_for_each_substitution() {
-    let nested = |depth: usize| {
-        let mut source = String::from("Nil");
-        for _ in 0..depth {
-            source = format!("x!(0) | for (@n <- x) {{ {source} }}");
-        }
-        format!("new x in {{ {source} }}")
-    };
-    let index = dimension_index(HostWorkDimension::SubstitutionBytes);
-    let charge = |depth: usize| {
-        let host = unlimited();
-        estimate_with(&nested(depth), [1; 4], HashMap::new(), &host).expect("the estimate runs");
-        host.usages().into_array()[index].get()
-    };
-    let (shallow, deep) = (charge(8), charge(16));
-    assert!(
-        deep > 3 * shallow,
-        "the substituted bytes grow with the square of the receive depth: {shallow} and {deep}"
-    );
-}
-
-/// `Env::shift` copies the whole environment at each binder of a substituted
-/// term. One more `new` inside a sized receive body adds one copy, so the
-/// binding charge grows by the environment size, which holds every outer
-/// name. The `new` itself binds one more level. Changed by the G1-4a fix
-/// (review M-4): a copy costs the capacity of the environment map, which is
-/// at least its length, so the difference is at least the 32 added names.
-/// Changed by the second G1-4a fix (re-review HIGH-1): a copy costs the fixed
-/// bucket count of the map, which the pre-pass sizes from the peak binder
-/// count. A sibling `new` of eight names fixes the peak at the outer names
-/// plus eight, so each nested `new` adds that bucket count plus its own
-/// binding.
-#[test]
-fn each_environment_copy_of_a_sizing_substitution_is_charged() {
-    // let program = |outer: usize, nested: usize| {
-    //     let names = (0..outer)
-    //         .map(|index| format!("a{index}"))
-    //         .collect::<Vec<_>>()
-    //         .join(", ");
-    //     let mut body = String::from("Nil");
-    //     for index in 0..nested {
-    //         body = format!("new b{index} in {{ {body} }}");
-    //     }
-    //     format!("new {names} in {{ new x in {{ x!(0) | for (@n <- x) {{ {body} }} }} }}")
-    // };
-    let program = |outer: usize, nested: usize| {
-        let names = (0..outer)
-            .map(|index| format!("a{index}"))
-            .collect::<Vec<_>>()
-            .join(", ");
-        let mut body = String::from("Nil");
-        for index in 0..nested {
-            body = format!("new b{index} in {{ {body} }}");
-        }
-        format!(
-            "new {names} in {{ new c0, c1, c2, c3, c4, c5, c6, c7 in {{ Nil }} | new x in {{ x!(0) | for (@n <- x) {{ {body} }} }} }}"
-        )
-    };
-    let index = dimension_index(HostWorkDimension::SubstitutionBindings);
-    let bindings = |outer: usize, nested: usize| {
-        let host = unlimited();
-        estimate_with(&program(outer, nested), [1; 4], HashMap::new(), &host)
-            .expect("the estimate runs");
-        host.usages().into_array()[index].get()
-    };
-    let copy = |outer: usize| {
-        let (none, one, two) = (bindings(outer, 0), bindings(outer, 1), bindings(outer, 2));
-        assert_eq!(
-            two - one,
-            one - none,
-            "each nested `new` adds the same charge"
-        );
-        one - none
-    };
-    let (small, large) = (copy(4), copy(36));
-    // Changed by the G1-4a fix (review M-4): the copy charge is the capacity
-    // of the map, and `environment_copies_are_charged_the_capacity_of_the_map`
-    // checks its exact value.
-    // assert_eq!(large - small, 32, "each copy holds every outer name");
-    // Changed by the second G1-4a fix (re-review HIGH-1): the exact charge
-    // follows from the peak binder count.
-    // assert!(
-    //     large - small >= 32,
-    //     "each copy holds every outer name: {small} and {large}"
-    // );
-    for (outer, copy) in [(4usize, small), (36, large)] {
-        let peak = outer + 8;
-        assert_eq!(
-            copy,
-            environment_buckets(2 * peak + 2) + 1,
-            "{outer} outer names"
-        );
-    }
-}
-
-/// For every charged dimension, a budget equal to the charge gives the same
-/// estimate, and a budget one unit below it rejects the program.
-#[test]
-fn an_exhausted_budget_rejects_the_estimate_in_every_dimension() {
-    let source = r#"new x, y, out(`rho:io:stdout`) in {
-        {% x!("${a}" %% {"a": "bc"}, [1, 2] ++ [3]) | for (@n <- x & @m <- y) { if (n == 1) { Nil } else { Nil } } %}[ s ] |
-        y!(true) | for ({% @k <- y %}[ t ]) { match k { true => { Nil } _ => { Nil } } } | out!(0)
-    }"#;
-    let urn_map = stdout_urn_map();
-    let par = resolved(source, &urn_map);
-    let reducer = evaluator(urn_map);
-    let host = unlimited();
-    let expected = linear_cost_estimate(&par, &funding(), &schedule([1; 4]), &reducer, &host)
-        .expect("an unlimited budget estimates the program");
-    let mut charged = 0;
-    for dimension in HostWorkDimension::ALL {
-        let usage = host.usage(dimension).get();
-        if usage == 0 {
-            continue;
-        }
-        charged += 1;
-        let mut short = HostWorkLimits::uniform(HostWorkLimit::new(u64::MAX));
-        short.set(dimension, HostWorkLimit::new(usage - 1));
-        assert_eq!(
-            linear_cost_estimate(
-                &par,
-                &funding(),
-                &schedule([1; 4]),
-                &reducer,
-                &HostWorkBudget::new(short)
-            ),
-            Err(InterpreterError::HostWorkRejected),
-            "{dimension} one unit short"
-        );
-        let mut exact = HostWorkLimits::uniform(HostWorkLimit::new(u64::MAX));
-        exact.set(dimension, HostWorkLimit::new(usage));
-        assert_eq!(
-            linear_cost_estimate(
-                &par,
-                &funding(),
-                &schedule([1; 4]),
-                &reducer,
-                &HostWorkBudget::new(exact)
-            ),
-            Ok(expected.clone()),
-            "{dimension} exactly enough"
-        );
-    }
-    assert!(charged >= 8, "the estimate charges {charged} dimensions");
-    dismantle_term(par);
-}
-
 // ── The estimate applies units once (the M1 control of the map) ────────────
 
 /// The estimate's raw counts form a counted witness whose checked usage is
@@ -1063,7 +722,6 @@ fn the_counted_witness_of_the_raw_counts_has_the_estimate_as_its_usage() {
         "{% new x in { x!(0) | for (@n <- x) { Nil } } %}[ a (*) b ]",
         weights,
         HashMap::new(),
-        &unlimited(),
     )
     .expect("the estimate runs");
     assert_eq!(estimate.completeness, Completeness::Complete);
@@ -1228,13 +886,9 @@ fn new_body(par: &mut Par) -> &mut Par {
         .expect("a `new` with a body")
 }
 
-fn offered_limits() -> HostWorkBudget {
-    HostWorkBudget::new(models::rust::cost_protocol_limits::offered_funded_v6_host_work_limits())
-}
-
-fn estimate_par(par: &Par, host: &HostWorkBudget) -> Result<CostEstimate, InterpreterError> {
+fn estimate_par(par: &Par) -> Result<CostEstimate, InterpreterError> {
     let reducer = evaluator(HashMap::new());
-    linear_cost_estimate(par, &funding(), &schedule([1; 4]), &reducer, host)
+    linear_cost_estimate(par, &funding(), &schedule([1; 4]), &reducer)
 }
 
 /// Review H-1: a `#P` signature whose process still holds a variable names
@@ -1311,11 +965,10 @@ fn the_plan_treats_a_quoted_signature_with_a_variable_as_dynamic() {
     assert_eq!(plans, (Some(UnprovableDemand::DynamicAuthority), None));
 }
 
-/// Review H-2: 30,000 parallel sends on one fresh name fit the offered
-/// host-work limits. A combine costs the lanes that it merges, not the
-/// nodes of the merged subtree.
+/// Review H-2: the estimate of 30,000 parallel sends on one fresh name is
+/// complete, with one count for each send.
 #[test]
-fn thirty_thousand_parallel_sends_fit_the_offered_limits() {
+fn thirty_thousand_parallel_sends_have_a_complete_estimate() {
     let mut par = resolved("new x in { x!(0) }", &HashMap::new());
     let body = new_body(&mut par);
     let send = body.sends.pop().expect("one send");
@@ -1325,17 +978,16 @@ fn thirty_thousand_parallel_sends_fit_the_offered_limits() {
             ..send.clone()
         })
         .collect();
-    let host = offered_limits();
-    let estimate = estimate_par(&par, &host);
+    let estimate = estimate_par(&par);
     dismantle_term(par);
-    let estimate = estimate.expect("the offered limits admit 30,000 parallel sends");
+    let estimate = estimate.expect("30,000 parallel sends have an estimate");
     assert_eq!(estimate.completeness, Completeness::Complete);
     assert_eq!(counts(&estimate, deploy_lane())[0], 30_000);
 }
 
-/// Review H-2: a match with 2,000 cases fits the offered host-work limits.
+/// Review H-2: the estimate of a match with 2,000 cases is complete.
 #[test]
-fn a_two_thousand_case_match_fits_the_offered_limits() {
+fn a_two_thousand_case_match_has_a_complete_estimate() {
     let mut par = resolved(
         "new x in { match 7 { 0 => { x!(0) } _ => { Nil } } }",
         &HashMap::new(),
@@ -1357,10 +1009,9 @@ fn a_two_thousand_case_match_fits_the_offered_limits() {
             case
         })
         .collect();
-    let host = offered_limits();
-    let estimate = estimate_par(&par, &host);
+    let estimate = estimate_par(&par);
     dismantle_term(par);
-    let estimate = estimate.expect("the offered limits admit a match with 2,000 cases");
+    let estimate = estimate.expect("a match with 2,000 cases has an estimate");
     assert_eq!(estimate.completeness, Completeness::Complete);
     assert_eq!(
         counts(&estimate, deploy_lane())[0],
@@ -1369,11 +1020,9 @@ fn a_two_thousand_case_match_fits_the_offered_limits() {
     );
 }
 
-/// Review H-3: a list of 100,000 integers fits the offered host-work limits.
-/// Its evaluation is bounded by its exact length, because the evaluation of
-/// a list sorts nothing.
+/// Review H-3: the estimate of a list of 100,000 integers is complete.
 #[test]
-fn a_list_of_one_hundred_thousand_elements_fits_the_offered_limits() {
+fn a_list_of_one_hundred_thousand_elements_has_a_complete_estimate() {
     let mut par = resolved(
         "new x in { x!([0]) | for (@l <- x) { Nil } }",
         &HashMap::new(),
@@ -1389,10 +1038,9 @@ fn a_list_of_one_hundred_thousand_elements_fits_the_offered_limits() {
         panic!("the skeleton sends one list");
     };
     list.ps = (0..100_000i64).map(integer).collect();
-    let host = offered_limits();
-    let estimate = estimate_par(&par, &host);
+    let estimate = estimate_par(&par);
     dismantle_term(par);
-    let estimate = estimate.expect("the offered limits admit a list of 100,000 elements");
+    let estimate = estimate.expect("a list of 100,000 elements has an estimate");
     assert_eq!(estimate.completeness, Completeness::Complete);
 }
 
@@ -1427,7 +1075,7 @@ fn a_receive_guard_on_the_received_values_is_complete() {
 #[test]
 fn a_guard_that_names_a_urn_level_has_no_size() {
     let with_stdout = |source: &str| {
-        estimate_with(source, [1; 4], stdout_urn_map(), &unlimited())
+        estimate_with(source, [1; 4], stdout_urn_map())
             .expect("the estimate runs")
             .completeness
     };
@@ -1486,14 +1134,8 @@ fn a_deep_quoted_signature_is_unsized_on_a_small_stack() {
             .name("estimate-deep-signature".to_string())
             .stack_size(256 * 1024)
             .spawn_scoped(scope, || {
-                let estimate = linear_cost_estimate(
-                    &par,
-                    &funding(),
-                    &schedule([1; 4]),
-                    &reducer,
-                    &unlimited(),
-                )
-                .expect("the estimate runs");
+                let estimate = linear_cost_estimate(&par, &funding(), &schedule([1; 4]), &reducer)
+                    .expect("the estimate runs");
                 let quoted = estimate
                     .signatures
                     .values()
@@ -1520,257 +1162,6 @@ fn a_deep_quoted_signature_is_unsized_on_a_small_stack() {
     );
 }
 
-// Disabled by the second G1-4a fix (re-review HIGH-1): the charge no longer
-// reads the capacity of the live map, which depends on the hash seed and on
-// the group width after removals.
-// `environment_copies_are_charged_the_fixed_bucket_count` replaces it.
-// /// Review M-4: `pop` never shrinks the environment map, and `Env::shift`
-// /// clones every bucket of it. A substitution is therefore charged the
-// /// capacity of the map for the call and for each copy, not its length.
-// #[test]
-// fn environment_copies_are_charged_the_capacity_of_the_map() {
-//     let reducer = evaluator(HashMap::new());
-//     let core = isolated_evaluator(&reducer);
-//     let host = unlimited();
-//     let mut estimator = Estimator::new(&funding(), &core, &host).expect("an estimator");
-//     estimator
-//         .push_holes(1_000, BinderKind::ReceivePattern)
-//         .expect("the holes are bound");
-//     estimator.pop(999).expect("the holes are popped");
-//     let capacity = u64::try_from(estimator.env.env_map.capacity()).expect("a small capacity");
-//     assert_eq!(estimator.env.env_map.len(), 1);
-//     assert!(capacity >= 1_000, "pop keeps the capacity: {capacity}");
-//     let before = host.usage(HostWorkDimension::SubstitutionBindings).get();
-//     estimator
-//         .charge_substitution(
-//             Metrics {
-//                 height: 1,
-//                 weight: 10,
-//                 vars: 0,
-//                 shifts: 3,
-//             },
-//             false,
-//         )
-//         .expect("an unlimited budget admits the charge");
-//     assert_eq!(
-//         host.usage(HostWorkDimension::SubstitutionBindings).get() - before,
-//         4 * capacity,
-//         "the call and three copies each cost the capacity"
-//     );
-// }
-
-/// The capacity that `bucket_mask_to_capacity` of hashbrown gives a table of
-/// `buckets` buckets.
-fn table_capacity(buckets: u64) -> usize {
-    let mask = usize::try_from(buckets).expect("a small bucket count") - 1;
-    match mask {
-        0..=7 => mask,
-        _ => (mask + 1) / 8 * 7,
-    }
-}
-
-/// Re-review HIGH-1: `environment_buckets` gives the bucket count of the
-/// standard map for every capacity that the pre-pass requests, so the fixed
-/// charge is the work of a copy. A change of the standard map makes this test
-/// fail.
-#[test]
-fn environment_buckets_follow_the_standard_map() {
-    for capacity in (1..=300).chain([1_000, 2_002, 4_096, 100_002, 200_002]) {
-        let map = HashMap::<i32, Par>::with_capacity(capacity);
-        assert_eq!(
-            map.capacity(),
-            table_capacity(environment_buckets(capacity)),
-            "capacity {capacity}"
-        );
-    }
-}
-
-/// Re-review HIGH-1: the environment map is sized once from the peak binder
-/// count. Pushes and pops never grow it, and a substitution costs the fixed
-/// bucket count for the call and for each copy, whatever the removals left.
-#[test]
-fn environment_copies_are_charged_the_fixed_bucket_count() {
-    let reducer = evaluator(HashMap::new());
-    let core = isolated_evaluator(&reducer);
-    let host = unlimited();
-    let mut estimator = Estimator::new(&funding(), &core, &host).expect("an estimator");
-    estimator.size_environment(1_000).expect("the map is sized");
-    let sized = estimator.env.env_map.capacity();
-    let buckets = environment_buckets(2_002);
-    for round in 0..64usize {
-        let count = 1 + (round * 37) % 1_000;
-        estimator
-            .push_holes(count, BinderKind::ReceivePattern)
-            .expect("the holes are bound");
-        let keep = count / 3;
-        estimator.pop(count - keep).expect("the holes are popped");
-        estimator.pop(keep).expect("the rest is popped");
-        assert!(
-            estimator.env.env_map.capacity() <= sized,
-            "the map never grows: {} above {sized}",
-            estimator.env.env_map.capacity()
-        );
-    }
-    estimator
-        .push_holes(1_000, BinderKind::ReceivePattern)
-        .expect("the peak is bound");
-    assert!(
-        estimator.push_holes(1, BinderKind::ReceivePattern).is_err(),
-        "the walk cannot pass the peak of the pre-pass"
-    );
-    estimator.pop(999).expect("the holes are popped");
-    let before = host.usage(HostWorkDimension::SubstitutionBindings).get();
-    estimator
-        .charge_substitution(
-            Metrics {
-                height: 1,
-                weight: 10,
-                vars: 0,
-                shifts: 3,
-            },
-            false,
-        )
-        .expect("an unlimited budget admits the charge");
-    assert_eq!(
-        host.usage(HostWorkDimension::SubstitutionBindings).get() - before,
-        4 * buckets,
-        "the call and three copies each cost the fixed bucket count"
-    );
-}
-
-/// A program with 64 outer names and 40 receives of up to 12 binders, each
-/// with a nested `new`, so pass 1 pushes and pops many binders.
-fn churning_program() -> String {
-    let names = (0..64)
-        .map(|index| format!("a{index}"))
-        .collect::<Vec<_>>()
-        .join(", ");
-    let mut parts = Vec::with_capacity(81);
-    for index in 0..40usize {
-        let channel = index % 64;
-        let patterns = (0..1 + index % 12)
-            .map(|position| format!("@p{position}"))
-            .collect::<Vec<_>>()
-            .join(", ");
-        let data = (0..1 + index % 12)
-            .map(|position| position.to_string())
-            .collect::<Vec<_>>()
-            .join(", ");
-        parts.push(format!("a{channel}!({data})"));
-        parts.push(format!(
-            "for ({patterns} <- a{channel}) {{ new c in {{ c!({index}) | for (@q <- c) {{ Nil }} }} }}"
-        ));
-    }
-    parts.push("Nil".to_string());
-    format!("new {names} in {{ {} }}", parts.join(" | "))
-}
-
-/// Re-review HIGH-1: each estimate creates its maps with a fresh random hash
-/// seed. A program with 64 outer names and many removals gets the same usage
-/// in every host-work dimension in every run.
-#[test]
-fn the_charges_do_not_depend_on_the_hash_seed() {
-    let source = churning_program();
-    let urn_map = HashMap::new();
-    let par = resolved(&source, &urn_map);
-    let reducer = evaluator(urn_map);
-    let usages = (0..32)
-        .map(|_| {
-            let host = unlimited();
-            let estimate =
-                linear_cost_estimate(&par, &funding(), &schedule([1; 4]), &reducer, &host)
-                    .expect("the estimate runs");
-            (estimate, host.usages().into_array())
-        })
-        .collect::<Vec<_>>();
-    dismantle_term(par);
-    let (first_estimate, first_usage) = &usages[0];
-    assert_eq!(first_estimate.completeness, Completeness::Complete);
-    assert!(
-        first_usage[dimension_index(HostWorkDimension::SubstitutionBindings)].get() > 0,
-        "the program charges environment copies"
-    );
-    for (estimate, usage) in &usages[1..] {
-        assert_eq!(estimate, first_estimate);
-        assert_eq!(usage, first_usage);
-    }
-}
-
-/// Re-review MEDIUM-1: at each nesting level the reducer copies or scans the
-/// subtree of each compound expression. A string nested in 60 lists is
-/// charged at least 60 times its length, and the same string in one list
-/// much less.
-#[test]
-fn a_deeply_nested_list_is_charged_for_the_copies_of_each_level() {
-    let text = "A".repeat(10_000);
-    let charge = |depth: usize| {
-        let mut datum = Par::default().with_exprs(vec![Expr {
-            expr_instance: Some(ExprInstance::GString(text.clone())),
-        }]);
-        for _ in 0..depth {
-            datum = Par::default().with_exprs(vec![Expr {
-                expr_instance: Some(ExprInstance::EListBody(models::rhoapi::EList {
-                    ps: vec![datum],
-                    ..Default::default()
-                })),
-            }]);
-        }
-        let mut par = resolved(
-            "new x in { x!([0]) | for (@l <- x) { Nil } }",
-            &HashMap::new(),
-        );
-        new_body(&mut par).sends.first_mut().expect("one send").data = vec![datum];
-        let host = unlimited();
-        let estimate = estimate_par(&par, &host);
-        dismantle_term(par);
-        assert_eq!(
-            estimate.expect("the estimate runs").completeness,
-            Completeness::Complete,
-            "{depth} lists"
-        );
-        host.usage(HostWorkDimension::PrimitiveInputBytes).get()
-    };
-    let length = u64::try_from(text.len()).expect("a small length");
-    let (shallow, deep) = (charge(1), charge(60));
-    assert!(
-        deep >= 60 * length,
-        "60 levels cost at least 60 copies: {deep}"
-    );
-    assert!(
-        shallow < 10 * length,
-        "one level costs a few copies: {shallow}"
-    );
-}
-
-/// Review LOW 1: inside a live reduction session the estimate returns an
-/// error in every build, because the reducer's host-work reservations would
-/// charge that session.
-#[test]
-fn the_estimate_rejects_a_live_reduction_session() {
-    let par = resolved(
-        "new x in { x!(0) | for (@n <- x) { Nil } }",
-        &HashMap::new(),
-    );
-    let reducer = evaluator(HashMap::new());
-    let result = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("a test runtime")
-        .block_on(crate::rust::interpreter::deterministic_reduction::root(
-            reducer.space.clone(),
-            reducer.metering.budget(),
-            reducer.reduction_coordinator.clone(),
-            async {
-                linear_cost_estimate(&par, &funding(), &schedule([1; 4]), &reducer, &unlimited())
-            },
-        ));
-    dismantle_term(par);
-    assert!(
-        matches!(result, Err(InterpreterError::BugFoundError(_))),
-        "{result:?}"
-    );
-}
-
 /// Review LOW 6: a funding signature without a cost signature, here a
 /// threshold, leaves the deploy lane without units. The counts of that lane
 /// drop out and the estimate is incomplete, instead of an error.
@@ -1785,8 +1176,7 @@ fn an_unpriced_deploy_lane_makes_the_estimate_incomplete() {
         threshold: 1,
         members: vec![Sig::Ground(vec![9, 9, 9, 9])],
     };
-    let estimate =
-        linear_cost_estimate(&par, &threshold, &schedule([1; 4]), &reducer, &unlimited());
+    let estimate = linear_cost_estimate(&par, &threshold, &schedule([1; 4]), &reducer);
     dismantle_term(par);
     let estimate = estimate.expect("an unpriced lane is not an error");
     assert_eq!(
@@ -1827,46 +1217,18 @@ proptest! {
             1 => "{% new x in { x!(0) | for (@n <- x) { Nil } } %}[ a (*) b ]",
             _ => r#"new x in { @"public"!(0) | for (@n <- x) { Nil } }"#,
         };
-        let estimate = estimate_with(&wrap(core, context, filler), weights, HashMap::new(), &unlimited())
+        let estimate = estimate_with(&wrap(core, context, filler), weights, HashMap::new())
             .expect("the estimate runs");
         let lanes = counted_lanes(&estimate);
         let retained = estimate
             .clone()
-            .retain_client_lanes(&lanes, &schedule(weights), &unlimited())
+            .retain_client_lanes(&lanes, &schedule(weights))
             .expect("the restriction runs");
         prop_assert_eq!(retained.quantities, estimate.quantities);
         prop_assert_eq!(retained.bound_phlo, estimate.bound_phlo);
         prop_assert_eq!(retained.completeness, estimate.completeness);
     }
 
-    /// The metered units equal the units, and the walk charges one
-    /// structural item for each signature node.
-    #[test]
-    fn the_metered_units_equal_the_units(leaves in proptest::collection::vec(0u8..4, 1..12)) {
-        let elements = leaves
-            .iter()
-            .map(|leaf| match leaf {
-                0 => ground("g"),
-                1 => CostSignature { value: Some(CostSignatureValue::Unit(true)) },
-                2 => CostSignature { value: Some(CostSignatureValue::Quote(Par::default())) },
-                _ => CostSignature { value: Some(CostSignatureValue::Name(private(3))) },
-            })
-            .collect::<Vec<_>>();
-        let compound = CostSignature {
-            value: Some(CostSignatureValue::Compound(models::rhoapi::CostSignatureCompound {
-                elements,
-            })),
-        };
-        let host = unlimited();
-        prop_assert_eq!(
-            signature_units_metered(&compound, &host).expect("an unlimited walk"),
-            signature_units(&compound)
-        );
-        prop_assert_eq!(
-            host.usage(HostWorkDimension::StructuralItems).get(),
-            u64::try_from(leaves.len() + 1).expect("a small count")
-        );
-    }
 }
 
 /// A lane that is not a client lane leaves the estimate. B keeps only the
@@ -1884,7 +1246,7 @@ fn a_foreign_lane_leaves_the_estimate_and_makes_it_incomplete() {
     assert!(deploy.iter().sum::<u64>() > 0);
     assert!(counts(&estimate, lane("alice")).iter().sum::<u64>() > 0);
     let retained = estimate
-        .retain_client_lanes(&client, &schedule([1; 4]), &unlimited())
+        .retain_client_lanes(&client, &schedule([1; 4]))
         .expect("the restriction runs");
     assert_eq!(
         retained.completeness,
@@ -1907,11 +1269,7 @@ fn an_earlier_reason_stays_first_and_client_lanes_keep_completeness() {
         Completeness::Incomplete(IncompleteReason::NonFreshChannel)
     );
     let retained = incomplete
-        .retain_client_lanes(
-            &BTreeSet::from([deploy_lane()]),
-            &schedule([1; 4]),
-            &unlimited(),
-        )
+        .retain_client_lanes(&BTreeSet::from([deploy_lane()]), &schedule([1; 4]))
         .expect("the restriction runs");
     assert_eq!(
         retained.completeness,
@@ -1923,16 +1281,14 @@ fn an_earlier_reason_stays_first_and_client_lanes_keep_completeness() {
         .retain_client_lanes(
             &BTreeSet::from([deploy_lane(), lane("unused")]),
             &schedule([1; 4]),
-            &unlimited(),
         )
         .expect("the restriction runs");
     assert_eq!(retained, complete);
 }
 
-/// A client lane without a static signature is a malformed estimate, and the
-/// restriction charges its walk before the walk.
+/// A client lane without a static signature is a malformed estimate.
 #[test]
-fn the_restriction_rejects_a_malformed_estimate_and_charges_first() {
+fn the_restriction_rejects_a_malformed_estimate() {
     let malformed = CostEstimate {
         quantities: BTreeMap::from([((deploy_lane(), 0), 1)]),
         bound_phlo: 1,
@@ -1940,27 +1296,8 @@ fn the_restriction_rejects_a_malformed_estimate_and_charges_first() {
         completeness: Completeness::Complete,
     };
     assert!(matches!(
-        malformed.retain_client_lanes(
-            &BTreeSet::from([deploy_lane()]),
-            &schedule([1; 4]),
-            &unlimited()
-        ),
+        malformed.retain_client_lanes(&BTreeSet::from([deploy_lane()]), &schedule([1; 4])),
         Err(InterpreterError::ReduceError(_))
-    ));
-    let estimate = estimate("new x in { x!(0) | for (@n <- x) { Nil } }");
-    let mut limits = HostWorkLimits::uniform(HostWorkLimit::new(u64::MAX));
-    limits.set(
-        HostWorkDimension::VerificationOperations,
-        HostWorkLimit::new(0),
-    );
-    let exhausted = HostWorkBudget::new(limits);
-    assert!(matches!(
-        estimate.retain_client_lanes(
-            &BTreeSet::from([deploy_lane()]),
-            &schedule([1; 4]),
-            &exhausted
-        ),
-        Err(InterpreterError::HostWorkRejected)
     ));
 }
 
@@ -1971,8 +1308,7 @@ proptest! {
 
     /// The lane key of an encoded supply channel is the lane key of its
     /// signature. A permission names its lane by that channel, so the check
-    /// finds the lane that a source permits. The digest charges one
-    /// verification operation and the bytes of the domain and the location.
+    /// finds the lane that a source permits.
     #[test]
     fn the_lane_key_of_a_location_is_the_lane_key_of_its_signature(
         atoms in proptest::collection::vec(
@@ -1991,30 +1327,6 @@ proptest! {
         let location = crate::rust::interpreter::accounting::SignatureChannel::from_sig(&signature)
             .par
             .encode_to_vec();
-        let host = unlimited();
-        prop_assert_eq!(
-            location_lane_key(&location, &host).expect("an unlimited digest"),
-            signature.lane_hash()
-        );
-        prop_assert_eq!(host.usage(HostWorkDimension::VerificationOperations).get(), 1);
-        prop_assert_eq!(
-            host.usage(HostWorkDimension::VerificationBytes).get(),
-            u64::try_from(
-                crate::rust::interpreter::accounting::SIGNATURE_LANE_DOMAIN.len() + location.len()
-            )
-            .expect("a small length")
-        );
+        prop_assert_eq!(location_lane_key(&location), signature.lane_hash());
     }
-}
-
-/// The digest of a location charges its work before it reads the location.
-#[test]
-fn the_location_digest_charges_first() {
-    let mut limits = HostWorkLimits::uniform(HostWorkLimit::new(u64::MAX));
-    limits.set(HostWorkDimension::VerificationBytes, HostWorkLimit::new(0));
-    let exhausted = HostWorkBudget::new(limits);
-    assert!(matches!(
-        location_lane_key(&[1, 2, 3], &exhausted),
-        Err(InterpreterError::HostWorkRejected)
-    ));
 }

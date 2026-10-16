@@ -2,7 +2,6 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
-use models::rust::host_work::{HostWorkDimension, HostWorkUnits, HostWorkUsages};
 use proptest::prelude::*;
 use rspace_plus_plus::rspace::rspace::RSpace;
 use rspace_plus_plus::rspace::rspace_interface::ISpace;
@@ -20,8 +19,6 @@ use crate::rust::interpreter::accounting::phlo_execution::PhloFailure;
 use crate::rust::interpreter::compiler::compiler::Compiler;
 use crate::rust::interpreter::errors::InterpreterError;
 use crate::rust::interpreter::external_services::ExternalServices;
-use crate::rust::interpreter::host_work::HostWorkBudget;
-use crate::rust::interpreter::interpreter::EvaluateResult;
 use crate::rust::interpreter::matcher::r#match::Matcher;
 use crate::rust::interpreter::merging::mergeable_tags::default_mergeable_tags;
 use crate::rust::interpreter::rho_runtime::{create_native_replay_env, create_rho_env};
@@ -75,27 +72,8 @@ async fn replay_process(term: &str, limit: u64) -> (Option<u64>, bool) {
 enum Interruption {
     None,
     Cancel,
-    RejectHost,
-    RejectCheckpoint,
     Export,
     ExportBeforeEvaluation,
-}
-
-fn assert_host_rejected(result: &EvaluateResult) {
-    assert_eq!(result.errors, vec![InterpreterError::HostWorkRejected]);
-    assert!(result.economic_failures.contains(PhloFailure::Platform));
-    assert!(!result.economic_failures.permits_retained_charge());
-    assert_eq!(result.cost.value, 0);
-    assert!(result.native_phlo_usage.is_none());
-    assert!(result.native_budget_recording.is_none());
-    assert!(result.native_operation_recording.is_none());
-    assert!(result.byte_observations.rows.is_empty());
-    assert!(result.authority_events.is_empty());
-    assert!(result.authority_byte_events.is_empty());
-    assert!(result.authority_realized.0.is_empty());
-    assert!(result.authority_stack_births.is_empty());
-    assert!(result.mergeable.is_empty());
-    assert_eq!(result.quantitative_byte_cost, 0);
 }
 
 async fn replay_process_with_context(
@@ -137,7 +115,6 @@ async fn replay_process_with_funding(
     let budget = RuntimeBudget::new(Cost::unsafe_max());
     budget.set_deploy_signature_funded(b"native-executor-regression", funding.authority());
     let settings = priced_config(limit, weights, funding.price);
-    let host = settings.host_work();
     budget.reset_for_native_execution(settings).unwrap();
     let play_mergeable = Arc::new(RwLock::new(HashMap::new()));
     let (reducer, block_data, _, deploy_data) = create_rho_env(
@@ -154,9 +131,7 @@ async fn replay_process_with_funding(
     deploy_data.write().await.timestamp = 456;
     let scope = budget.enter_comm_accounting_scope();
     let rand = || Blake2b512Random::create_from_bytes(b"native-executor-regression");
-    let played = reducer
-        .inj_with_observation(parsed.clone(), rand(), Some(host))
-        .await;
+    let played = reducer.inj_with_observation(parsed.clone(), rand()).await;
     let played_observations = budget.byte_observations();
     assert!(played_observations.has_complete_measurements());
     drop(scope);
@@ -181,34 +156,22 @@ async fn replay_process_with_funding(
     let operations = budget.native_operation_recording().unwrap().unwrap();
     assert!(term == "Nil" || !operations.is_empty());
     let log = play.create_soft_checkpoint().await.log;
-    let host = priced_config(limit, weights, funding.price).host_work();
     let trace = with_priced_contract(limit, weights, funding.price, |contract| {
         contract
-            .check_operation_journal(
-                recording.session,
-                &recording,
-                operations,
-                journal_limits(),
-                &host,
-            )
+            .check_operation_journal(recording.session, &recording, operations, journal_limits())
             .unwrap()
     })
-    .bind_trace(
-        log.into(),
-        NativeOperationTraceLimits {
-            events: 100,
-            source_entries: 1000,
-            source_bytes: 1_000_000,
-            telemetry_items: 100,
-            telemetry_bytes: 100_000,
-        },
-        &host,
-    )
+    .bind_trace(log.into(), NativeOperationTraceLimits {
+        events: 100,
+        source_entries: 1000,
+        source_bytes: 1_000_000,
+        telemetry_items: 100,
+        telemetry_bytes: 100_000,
+    })
     .unwrap();
     let replay_budget = RuntimeBudget::new(Cost::unsafe_max());
     replay_budget.set_deploy_signature_funded(b"native-executor-regression", funding.authority());
-    let mut replay_settings = priced_config(limit, weights, funding.price);
-    replay_settings.host_work = host.clone();
+    let replay_settings = priced_config(limit, weights, funding.price);
     replay_budget
         .reset_for_native_execution(replay_settings)
         .unwrap();
@@ -216,7 +179,6 @@ async fn replay_process_with_funding(
         trace,
         history.clone(),
         Arc::new(Box::new(Matcher)),
-        host.clone(),
         Arc::new(RwLock::new(HashMap::new())),
         Arc::new(default_mergeable_tags()),
         &mut extra_processes(),
@@ -239,87 +201,16 @@ async fn replay_process_with_funding(
         assert!(environment.export().await.is_err());
         return (comm_limit, denied_comm);
     }
-    if interruption == Interruption::RejectCheckpoint {
-        let dimension = HostWorkDimension::VerificationOperations;
-        let remaining = host.limits().get(dimension).get() - host.usage(dimension).get();
-        host.reserve(dimension, HostWorkUnits::new(remaining))
-            .unwrap();
-        assert!(!host.is_rejected());
-        let result = environment.evaluate(parsed, rand()).await.unwrap();
-        assert!(host.is_rejected());
-        assert_host_rejected(&result);
-        assert!(environment.completed_evidence().await.is_err());
-        assert!(environment
-            .accounting_budget()
-            .authority_events()
-            .is_empty());
-        environment.restore(checkpoint).await.unwrap();
-        return (comm_limit, denied_comm);
-    }
-    if matches!(
-        interruption,
-        Interruption::Cancel | Interruption::RejectHost
-    ) {
+    if interruption == Interruption::Cancel {
         let deploy_data = environment.deploy_data.clone();
-        let observed_budget = environment.accounting_budget().clone();
         let lock = deploy_data.write().await;
         let mut evaluation = Box::pin(environment.evaluate(parsed.clone(), rand()));
         tokio::select! {
             biased;
             result = &mut evaluation => panic!("locked deploy data must prevent completion: {result:?}"),
             progress = tokio::time::timeout(Duration::from_secs(10), async {
-                if interruption == Interruption::RejectHost {
-                    while observed_budget.authority_events().is_empty() {
-                        tokio::task::yield_now().await;
-                    }
-                } else {
-                    tokio::task::yield_now().await;
-                }
+                tokio::task::yield_now().await;
             }) => progress.expect("replay must reach the interruption point"),
-        }
-        if interruption == Interruption::RejectHost {
-            assert!(
-                !observed_budget.authority_events().is_empty(),
-                "rejection must occur after a published COMM"
-            );
-            assert!(host
-                .reserve(
-                    HostWorkDimension::VerificationOperations,
-                    HostWorkUnits::new(u64::MAX)
-                )
-                .is_err());
-            drop(lock);
-            let result = evaluation.await.unwrap();
-            assert_host_rejected(&result);
-            assert!(environment.completed_evidence().await.is_err());
-            assert!(environment
-                .accounting_budget()
-                .authority_events()
-                .is_empty());
-            assert!(environment
-                .accounting_budget()
-                .authority_realized()
-                .0
-                .is_empty());
-            assert!(environment
-                .accounting_budget()
-                .byte_observations()
-                .rows
-                .is_empty());
-            let channel = models::rust::utils::new_gstring_par("out".to_owned(), Vec::new(), false);
-            assert!(matches!(
-                environment.get_data(&channel).await,
-                Err(RSpaceError::HostWorkRejected)
-            ));
-            let inspection = HostWorkBudget::new(host.limits());
-            assert!(environment
-                .get_data_with_host_work(&channel, &inspection)
-                .await
-                .unwrap()
-                .is_empty());
-            assert!(host.is_rejected());
-            environment.restore(checkpoint).await.unwrap();
-            return (comm_limit, denied_comm);
         }
         drop(evaluation);
         drop(lock);
@@ -452,7 +343,7 @@ async fn replay_process_with_funding(
         Err(InterpreterError::AggregateError { interpreter_errors }) => interpreter_errors,
         Err(error) => vec![error],
     };
-    assert_eq!(repeated.errors, expected_errors, "host={:?}", host.usages());
+    assert_eq!(repeated.errors, expected_errors);
     assert_eq!(repeated.economic_failures, replayed.1);
     assert_eq!(repeated.cost, budget.total_cost());
     assert_eq!(repeated.native_phlo_usage, Some(recording.used));
@@ -540,30 +431,6 @@ async fn replay_process_with_funding(
         return (comm_limit, denied_comm);
     }
     environment.restore(empty_checkpoint).await.unwrap();
-    assert!(host
-        .reserve(
-            HostWorkDimension::VerificationOperations,
-            HostWorkUnits::new(u64::MAX)
-        )
-        .is_err());
-    let rejected = environment.evaluate(parsed, rand()).await.unwrap();
-    assert_host_rejected(&rejected);
-    assert!(environment.completed_evidence().await.is_err());
-    assert!(environment
-        .accounting_budget()
-        .authority_events()
-        .is_empty());
-    assert!(matches!(
-        environment.get_data(&channel).await,
-        Err(RSpaceError::HostWorkRejected)
-    ));
-    let inspection = HostWorkBudget::new(host.limits());
-    assert!(environment
-        .get_data_with_host_work(&channel, &inspection)
-        .await
-        .unwrap()
-        .is_empty());
-    assert!(host.is_rejected());
     (comm_limit, denied_comm)
 }
 
@@ -648,250 +515,6 @@ async fn premeasured_introductions_replay_for_every_measured_shape() {
     .await;
 }
 
-/// Host-work use of the native replay of `term`: play records the native
-/// journal, the checked journal binds the trace, and the replay runs it
-/// (C14, DR-79).
-async fn replayed_host_usage(term: &str) -> HostWorkUsages {
-    replayed_host_usage_with_schedule(term, None).await
-}
-
-/// D-C5a (DR-100): a schedule for the replay session of
-/// `replayed_host_usage_with_schedule`: the seed of the detached-task yields,
-/// the direct-path counter, and the pre-DR-100 joins read.
-struct ReplaySchedule {
-    seed: u64,
-    direct_paths: std::sync::Arc<std::sync::atomic::AtomicUsize>,
-    legacy_joins_read: bool,
-}
-
-/// `replayed_host_usage`, with the test hooks of the schedule set only while
-/// the replay session is built (the play session runs without them).
-async fn replayed_host_usage_with_schedule(
-    term: &str,
-    schedule: Option<&ReplaySchedule>,
-) -> HostWorkUsages {
-    let funding = FundingFixture::default();
-    let (weights, limit) = (funding.weights, 1_000_000);
-    let parsed = Compiler::source_to_adt(term).unwrap();
-    let mut stores = InMemoryStoreManager::new();
-    let (play, _) = RSpace::create_with_replay(
-        stores.r_space_stores().await.unwrap(),
-        Arc::new(Box::new(Matcher)),
-    )
-    .unwrap();
-    play.create_checkpoint().await.unwrap();
-    let history = play.get_history_repository();
-    let budget = RuntimeBudget::new(Cost::unsafe_max());
-    budget.set_deploy_signature_funded(b"native-executor-regression", funding.authority());
-    let settings = priced_config(limit, weights, funding.price);
-    let play_host = settings.host_work();
-    budget.reset_for_native_execution(settings).unwrap();
-    let (reducer, block_data, _, deploy_data) = create_rho_env(
-        play.clone(),
-        Arc::new(RwLock::new(HashMap::new())),
-        Arc::new(default_mergeable_tags()),
-        &mut extra_processes(),
-        budget.clone(),
-        ExternalServices::noop(),
-    )
-    .await
-    .unwrap();
-    block_data.write().await.block_number = 123;
-    deploy_data.write().await.timestamp = 456;
-    let scope = budget.enter_comm_accounting_scope();
-    let rand = || Blake2b512Random::create_from_bytes(b"native-executor-regression");
-    let played = reducer
-        .inj_with_observation(parsed.clone(), rand(), Some(play_host))
-        .await;
-    assert!(played.0.is_ok(), "{played:?}");
-    drop(scope);
-    let recording = budget.native_budget_recording().unwrap().unwrap();
-    let operations = budget.native_operation_recording().unwrap().unwrap();
-    let log = play.create_soft_checkpoint().await.log;
-    let host = priced_config(limit, weights, funding.price).host_work();
-    let trace = with_priced_contract(limit, weights, funding.price, |contract| {
-        contract
-            .check_operation_journal(
-                recording.session,
-                &recording,
-                operations,
-                journal_limits(),
-                &host,
-            )
-            .unwrap()
-    })
-    .bind_trace(
-        log.into(),
-        NativeOperationTraceLimits {
-            events: 1_000,
-            source_entries: 10_000,
-            source_bytes: 10_000_000,
-            telemetry_items: 1_000,
-            telemetry_bytes: 1_000_000,
-        },
-        &host,
-    )
-    .unwrap();
-    let replay_budget = RuntimeBudget::new(Cost::unsafe_max());
-    replay_budget.set_deploy_signature_funded(b"native-executor-regression", funding.authority());
-    let mut replay_settings = priced_config(limit, weights, funding.price);
-    replay_settings.host_work = host.clone();
-    replay_budget
-        .reset_for_native_execution(replay_settings)
-        .unwrap();
-    let mut environment = create_native_replay_env(
-        trace,
-        history,
-        Arc::new(Box::new(Matcher)),
-        host.clone(),
-        Arc::new(RwLock::new(HashMap::new())),
-        Arc::new(default_mergeable_tags()),
-        &mut extra_processes(),
-        replay_budget,
-        ExternalServices::noop(),
-    )
-    .await
-    .unwrap();
-    environment.block_data.write().await.block_number = 123;
-    environment.deploy_data.write().await.timestamp = 456;
-    if let Some(schedule) = schedule {
-        use crate::rust::interpreter::deterministic_reduction::{
-            DIRECT_PATH_PROBE, LEGACY_NATIVE_FOOTPRINT_READ, SCHEDULE_SEED,
-        };
-        SCHEDULE_SEED.with(|seed| seed.set(Some(schedule.seed)));
-        DIRECT_PATH_PROBE.with(|probe| *probe.borrow_mut() = Some(schedule.direct_paths.clone()));
-        LEGACY_NATIVE_FOOTPRINT_READ.with(|legacy| legacy.set(schedule.legacy_joins_read));
-    }
-    let replayed = tokio::time::timeout(
-        Duration::from_secs(60),
-        environment.evaluate_raw(parsed, rand()),
-    )
-    .await
-    .expect("native reducer must complete");
-    if schedule.is_some() {
-        use crate::rust::interpreter::deterministic_reduction::{
-            DIRECT_PATH_PROBE, LEGACY_NATIVE_FOOTPRINT_READ, SCHEDULE_SEED,
-        };
-        SCHEDULE_SEED.with(|seed| seed.set(None));
-        DIRECT_PATH_PROBE.with(|probe| *probe.borrow_mut() = None);
-        LEGACY_NATIVE_FOOTPRINT_READ.with(|legacy| legacy.set(false));
-    }
-    assert_eq!(replayed.0, played.0);
-    environment.check_complete().await.unwrap();
-    assert_eq!(
-        environment.accounting_budget().authority_events(),
-        budget.authority_events()
-    );
-    if schedule.is_none() {
-        assert!(environment.accounting_budget().authority_events().len() > 10);
-    }
-    host.usages()
-}
-
-/// D-C5a (DR-100): the replay usages and direct-path counts of `term` under
-/// the schedule seeds `0..seeds` on a current-thread runtime.
-fn seeded_replay_usages(
-    term: &str,
-    seeds: u64,
-    legacy_joins_read: bool,
-) -> Vec<(HostWorkUsages, usize)> {
-    let mut results = Vec::with_capacity(usize::try_from(seeds).expect("seed count fits usize"));
-    for seed in 0..seeds {
-        let schedule = ReplaySchedule {
-            seed,
-            direct_paths: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
-            legacy_joins_read,
-        };
-        let usages = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("current-thread runtime")
-            .block_on(replayed_host_usage_with_schedule(term, Some(&schedule)));
-        results.push((
-            usages,
-            schedule
-                .direct_paths
-                .load(std::sync::atomic::Ordering::Relaxed),
-        ));
-    }
-    results
-}
-
-/// D-C5a (DR-100; `ReplayChargeScheduleInvariance.direct_and_driver_paths_charge_alike`):
-/// seeded schedules decide which produces of a lone participant take the
-/// direct path and which reach the driver. The replay charges the same
-/// host-work use under every seed, and the seeds reach different path
-/// choices, so the test is not vacuous. Negative control: with the joins read
-/// of the driver path restored, the charge follows the path choice.
-#[test]
-fn replay_charges_are_schedule_independent() {
-    let terms = [
-        r#"@"a"!(1) | match [1, 2, 3] { [4, 5] => @"b"!(2) _ => Nil }"#,
-        r#"new loop, a, b, c, d in {
-            contract loop(@n) = { if (n > 0) { loop!(n - 1) } } | loop!(6) |
-            a!(1) | b!(2) | c!(3) | d!(4) |
-            for (_ <- a) { Nil } | for (_ <- b) { Nil } | for (_ <- c) { Nil } | for (_ <- d) { Nil }
-        }"#,
-    ];
-    let mut reached_both_paths = false;
-    let mut legacy_differs = false;
-    for term in terms {
-        let results = seeded_replay_usages(term, 16, false);
-        let (first, _) = &results[0];
-        for (seed, (usages, _)) in results.iter().enumerate() {
-            assert_eq!(
-                usages, first,
-                "seed {seed} changed the replay charge of {term}"
-            );
-        }
-        let paths = results
-            .iter()
-            .map(|(_, direct)| *direct)
-            .collect::<std::collections::BTreeSet<_>>();
-        if paths.len() > 1 {
-            reached_both_paths = true;
-            let legacy = seeded_replay_usages(term, 16, true);
-            legacy_differs |= legacy.iter().any(|(usages, _)| usages != &legacy[0].0);
-        }
-    }
-    assert!(
-        reached_both_paths,
-        "no seed changed a path choice; the test would be vacuous"
-    );
-    assert!(
-        legacy_differs,
-        "the pre-DR-100 joins read did not change the charge"
-    );
-}
-
-/// C14 (DR-79): the replay authority charges use live map sizes. Native
-/// execution serializes each frontier, so the replay of one trace reports
-/// the same host-work use in all dimensions on a current-thread runtime and
-/// on multi-thread runtimes. The deploy has parallel branches and more than
-/// ten COMMs, so the event map grows past one tree level.
-#[test]
-fn native_replay_authority_charge_is_schedule_independent() {
-    let term = r#"new loop, a, b, c, d in {
-        contract loop(@n) = { if (n > 0) { loop!(n - 1) } } | loop!(12) |
-        a!(1) | b!(2) | c!(3) | d!(4) |
-        for (_ <- a) { Nil } | for (_ <- b) { Nil } | for (_ <- c) { Nil } | for (_ <- d) { Nil }
-    }"#;
-    let current = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("current-thread runtime")
-        .block_on(replayed_host_usage(term));
-    for workers in [2, 4, 8] {
-        let parallel = tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(workers)
-            .enable_all()
-            .build()
-            .expect("multi-thread runtime")
-            .block_on(replayed_host_usage(term));
-        assert_eq!(parallel, current, "{workers} workers");
-    }
-}
-
 /// Plays `term` natively with the legacy or the compacted splitter and
 /// returns the checkpoint root, the event log and the length of the longest
 /// recorded operation path (C9, DR-84). The session reads the splitter flag
@@ -926,7 +549,6 @@ async fn played_checkpoint(
     let budget = RuntimeBudget::new(Cost::unsafe_max());
     budget.set_deploy_signature_funded(b"native-executor-regression", funding.authority());
     let settings = priced_config(limit, weights, funding.price);
-    let play_host = settings.host_work();
     budget.reset_for_native_execution(settings).unwrap();
     let (reducer, block_data, _, deploy_data) = create_rho_env(
         play.clone(),
@@ -945,7 +567,6 @@ async fn played_checkpoint(
         .inj_with_observation(
             parsed,
             Blake2b512Random::create_from_bytes(b"native-executor-regression"),
-            Some(play_host),
         )
         .await;
     assert!(played.0.is_ok(), "{played:?}");
@@ -1069,26 +690,6 @@ async fn cancelled_native_evaluation_cannot_export_or_restore_partial_state() {
         r#"new deploy(`rho:deploy:data`), ack in { deploy!(*ack) | for (@stamp, owner, id <- ack) { @"out"!(stamp) } }"#,
         1_000_000, false, false, Interruption::Cancel,
     ).await;
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn native_replay_host_rejection_restores_partial_execution_without_receipts() {
-    replay_process_with_context(
-        r#"new deploy(`rho:deploy:data`), ack in { deploy!(*ack) | for (@stamp, owner, id <- ack) { @"out"!(stamp) } }"#,
-        1_000_000, false, false, Interruption::RejectHost,
-    ).await;
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn native_replay_checkpoint_rejection_is_nonbillable_without_execution() {
-    replay_process_with_context(
-        r#"@"a"!(7) | for (@x <- @"a") { @"out"!(x) }"#,
-        1_000_000,
-        false,
-        false,
-        Interruption::RejectCheckpoint,
-    )
-    .await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

@@ -1,12 +1,12 @@
 use std::borrow::Borrow;
 
-use shared::rust::clone_backing::CloneBacking;
-
 use super::*;
 use crate::rspace::hashing::native_source::{GroupKeys, OperationKeys, StoreKey};
 // Changed by D-D5 (DR-107): the produce selection owns the incoming datum.
 // use crate::rspace::replay_rspace::native_candidate::metered::CandidateReader;
-use crate::rspace::replay_rspace::native_candidate::metered::{CandidateReader, ProduceSelection};
+use crate::rspace::replay_rspace::native_candidate::selection::{
+    CandidateReader, ProduceSelection,
+};
 use crate::rspace::replay_rspace::native_epoch::{
     NativeOperationEpoch, NativeOperationPublication, NativeOperationTicket, NativeReplayDecision,
     NativeReplayOutcome,
@@ -30,30 +30,14 @@ fn require(
     }
 }
 
-/// D-E3 (DR-110): the keys of the joins that a produce reads, with one
-/// digest per channel, and the traversals of the join channels that the keys
-/// read. The key writer reserves only the bytes that it writes, and the join
-/// copy prepays only its clone and its release (DR-108). So each join gets
-/// one block inspection before its keys (DR-108, decision 6).
-pub(crate) fn join_keys<C: Serialize + CloneBacking>(
-    joins: &[Vec<C>],
-    reserve: &impl crate::rspace::hashing::native_source::SourceMeter,
-) -> Result<OperationKeys, RSpaceError> {
-    for join in joins {
-        crate::rspace::native_backing::inspect_blocks_slice(join, reserve)?;
-    }
-    OperationKeys::build(joins, reserve)
-}
-
 impl<C, P, A, K, E> NativeReplaySession<C, P, A, K, E>
 where
     C: Clone
         + Debug
         + Default
         + Serialize
-        + CloneBacking
         + serde::de::DeserializeOwned
-        + shared::rust::closed_decode::ClosedDecode
+        + ColdStoreDecode
         + Hash
         + Ord
         + Eq
@@ -64,9 +48,8 @@ where
         + Debug
         + Default
         + Serialize
-        + CloneBacking
         + serde::de::DeserializeOwned
-        + shared::rust::closed_decode::ClosedDecode
+        + ColdStoreDecode
         + 'static
         + Sync
         + Send,
@@ -74,9 +57,8 @@ where
         + Debug
         + Default
         + Serialize
-        + CloneBacking
         + serde::de::DeserializeOwned
-        + shared::rust::closed_decode::ClosedDecode
+        + ColdStoreDecode
         + 'static
         + Sync
         + Send,
@@ -84,9 +66,8 @@ where
         + Debug
         + Default
         + Serialize
-        + CloneBacking
         + serde::de::DeserializeOwned
-        + shared::rust::closed_decode::ClosedDecode
+        + ColdStoreDecode
         + 'static
         + Sync
         + Send,
@@ -146,7 +127,7 @@ where
             self.consume_source(&channels, &patterns, &continuation, persist)?;
         let authority = resolve(&source)?;
         let authority = authority.borrow();
-        let hashes = self.channel_hashes(&channels, channels.len())?;
+        let hashes = self.channel_hashes(&channels, channels.len());
         let (_shared, _channels, mut ticket) = loop {
             self.ensure_open()?;
             self.epoch
@@ -178,10 +159,8 @@ where
             return self.publish_denial(ticket, outcome).map(|()| None);
         }
         require(decision, NativeReplayDecision::Granted)?;
-        let reserve =
-            |operations, scanned, backing| self.history_reserve(operations, scanned, backing);
         // D-C2c (D-S1, DR-96): the group key of the consume's channels.
-        let keys = GroupKeys::from_channel_keys(channel_keys, &reserve)?;
+        let keys = GroupKeys::from_channel_keys(channel_keys);
         // Changed by C1 (DR-81): the prefetch fills the cache and copies no
         // continuation.
         // self.read_continuations(&channels)?;
@@ -200,9 +179,8 @@ where
         // let read_data = |channel: &C| self.read_data_with(channel, &reserve);
         // Changed by D-C2c (D-S1, DR-96): the readers receive the keys.
         // let read_data = |channel: &C| self.read_data_view_with(channel, &reserve);
-        let read_data = |channel: &C, channel_key: StoreKey| {
-            self.read_data_view_with(channel, channel_key, &reserve)
-        };
+        let read_data =
+            |channel: &C, channel_key: StoreKey| self.read_data_view_with(channel, channel_key);
         // Changed by C1 (DR-81): candidates read shared views.
         // let read_continuations = |channels: &[C]| self.read_continuations(channels);
         // let read_continuations = |channels: &[C]|
@@ -210,11 +188,10 @@ where
         let read_continuations =
             |channels: &[C], group: &GroupKeys| self.read_continuation_views(channels, group);
         let reader = CandidateReader {
-            meter: &reserve,
             data: &read_data,
             continuations: &read_continuations,
         };
-        let prepared = self.space.prepare_metered_consume_candidate(
+        let prepared = self.space.prepare_consume_candidate(
             &channels,
             &keys.channels,
             &patterns,
@@ -243,9 +220,7 @@ where
             // let store = self.space.get_store();
             // let (inserted, depth) = store.store_consume_metered(&channels, waiting,
             // &reserve)?;
-            let (inserted, depth) = self
-                .store
-                .store_consume(&channels, &keys, waiting, &reserve)?;
+            let (inserted, depth) = self.store.store_consume(&channels, &keys, waiting)?;
             if inserted {
                 self.space.inc_replay_waiting_continuations_depth(depth);
             }
@@ -261,9 +236,7 @@ where
             return self.publish_denial(ticket, outcome).map(|()| None);
         }
         require(decision, NativeReplayDecision::Granted)?;
-        let result = result::prepare(prepared.data, |operations, bytes| {
-            self.epoch.reserve_work(operations, bytes)
-        })?;
+        let result = result::prepare(prepared.data);
         let continuation = ContResult {
             patterns,
             continuation,
@@ -279,7 +252,7 @@ where
         // let store = self.space.get_store();
         // store.retire_data_metered(&result.data, &result.retirement, &reserve)?;
         self.store
-            .retire_data(&result.data, &keys.channels, &result.retirement, &reserve)?;
+            .retire_data(&result.data, &keys.channels, &result.retirement)?;
         completion.publish();
         publication.complete();
         Ok(Some((continuation, result.data)))
@@ -310,9 +283,7 @@ where
         let source = self.produce_source(&channel, &data, persist)?;
         // D-C2c (D-S1, DR-96): the store key of the produced channel is its
         // source digest.
-        let key = StoreKey::from_digest(&source.channel_hash, &|operations, scanned, backing| {
-            self.history_reserve(operations, scanned, backing)
-        })?;
+        let key = StoreKey::from_digest(&source.channel_hash)?;
         let authority = resolve(&source)?;
         let authority = authority.borrow();
         let (_shared, _channels, mut ticket) = loop {
@@ -345,14 +316,12 @@ where
             return self.publish_denial(ticket, outcome).map(|()| None);
         }
         require(decision, NativeReplayDecision::Granted)?;
-        let reserve =
-            |operations, scanned, backing| self.history_reserve(operations, scanned, backing);
         // D-C2c (D-S1, DR-96): the keys of the joins, one digest per channel,
         // computed once for the operation.
         // Changed by D-E3 (DR-110): the keys also reserve the traversals of the
         // join channels that they read.
         // let join_keys = OperationKeys::build(&joins, &reserve)?;
-        let join_keys = join_keys(&joins, &reserve)?;
+        let join_keys = OperationKeys::build(&joins)?;
         // Changed by C2 (DR-82): the prefetch copies no datum.
         // self.prepare_data(&channel)?;
         // Changed by D-C2c (D-S1, DR-96): the store reads by the keys.
@@ -374,9 +343,8 @@ where
         // let read_data = |channel: &C| self.read_data_with(channel, &reserve);
         // Changed by D-C2c (D-S1, DR-96): the readers receive the keys.
         // let read_data = |channel: &C| self.read_data_view_with(channel, &reserve);
-        let read_data = |channel: &C, channel_key: StoreKey| {
-            self.read_data_view_with(channel, channel_key, &reserve)
-        };
+        let read_data =
+            |channel: &C, channel_key: StoreKey| self.read_data_view_with(channel, channel_key);
         // Changed by C1 (DR-81): candidates read shared views.
         // let read_continuations = |channels: &[C]| self.read_continuations(channels);
         // let read_continuations = |channels: &[C]|
@@ -384,7 +352,6 @@ where
         let read_continuations =
             |channels: &[C], group: &GroupKeys| self.read_continuation_views(channels, group);
         let reader = CandidateReader {
-            meter: &reserve,
             data: &read_data,
             continuations: &read_continuations,
         };
@@ -401,7 +368,7 @@ where
         //     ticket.candidate_identity(),
         //     &reader,
         // )?;
-        let selection = self.space.prepare_metered_produce_candidate(
+        let selection = self.space.prepare_produce_candidate(
             &channel,
             Datum {
                 a: data,
@@ -423,11 +390,9 @@ where
             // let counter = self
             //     .space
             //     .prepare_metered_produce_counter(&source, persist, &reserve)?;
-            let counter = self.space.prepare_metered_produce_counter(
-                &incoming.source,
-                incoming.persist,
-                &reserve,
-            )?;
+            let counter = self
+                .space
+                .prepare_produce_counter(&incoming.source, incoming.persist)?;
             let mut completion = ticket.prepare(outcome)?;
             let publication =
                 PublicationGuard::with_invalidation(&self.unavailable, || self.epoch.invalidate());
@@ -465,7 +430,7 @@ where
             //     },
             //     &reserve,
             // )?;
-            self.store.put_datum(&channel, key, incoming, &reserve)?;
+            self.store.put_datum(&channel, key, incoming)?;
             counter.publish();
             completion.publish();
             publication.complete();
@@ -497,9 +462,7 @@ where
         }
         require(decision, NativeReplayDecision::Granted)?;
         let returned = ticket.returned_produce(&source)?;
-        let result = result::prepare(candidate.data_candidates, |operations, bytes| {
-            self.epoch.reserve_work(operations, bytes)
-        })?;
+        let result = result::prepare(candidate.data_candidates);
         let continuation = ContResult {
             continuation: candidate.continuation.continuation,
             persistent: candidate.continuation.persist,
@@ -507,9 +470,7 @@ where
             patterns: candidate.continuation.patterns,
             peek: !candidate.continuation.peeks.is_empty(),
         };
-        let counter = self
-            .space
-            .prepare_metered_produce_counter(&source, persist, &reserve)?;
+        let counter = self.space.prepare_produce_counter(&source, persist)?;
         let mut completion = ticket.prepare(NativeReplayOutcome::Matched)?;
         let publication =
             PublicationGuard::with_invalidation(&self.unavailable, || self.epoch.invalidate());
@@ -531,7 +492,6 @@ where
             continuation.persistent,
             &result.data,
             &result.retirement,
-            &reserve,
         )?;
         self.space.mark_replay_waiting_continuation_match();
         counter.publish();

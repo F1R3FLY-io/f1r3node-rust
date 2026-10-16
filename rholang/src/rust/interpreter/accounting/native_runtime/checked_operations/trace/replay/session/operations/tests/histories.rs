@@ -75,27 +75,22 @@ async fn replay_history(inputs: &[(u8, u8)], persistent: bool) {
     }
     let rows = budget.native_operation_recording().unwrap().unwrap();
     let log = play.create_soft_checkpoint().await.log;
-    let host = config(u64::MAX, [0, 1, 1, 0]).host_work;
     let trace = with_contract(u64::MAX, [0, 1, 1, 0], |contract| {
         contract
-            .check_operation_journal(recording.session, &recording, rows, journal_limits(), &host)
+            .check_operation_journal(recording.session, &recording, rows, journal_limits())
             .unwrap()
     })
-    .bind_trace(
-        log.into(),
-        NativeOperationTraceLimits {
-            events: 64,
-            source_entries: 1024,
-            source_bytes: 1_000_000,
-            telemetry_items: 1024,
-            telemetry_bytes: 1_000_000,
-        },
-        &host,
-    )
+    .bind_trace(log.into(), NativeOperationTraceLimits {
+        events: 64,
+        source_entries: 1024,
+        source_bytes: 1_000_000,
+        telemetry_items: 1024,
+        telemetry_bytes: 1_000_000,
+    })
     .unwrap();
     let replay = Arc::new(
         trace
-            .into_session(history, Arc::new(Box::new(Matcher)), host)
+            .into_session(history, Arc::new(Box::new(Matcher)))
             .unwrap(),
     );
     let root = replay.checkpoint().await.unwrap();

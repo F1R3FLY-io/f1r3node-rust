@@ -156,14 +156,12 @@ pub(super) fn analyze(
     funding: &Sig,
     schedule: &PhloScheduleV1<'_>,
     evaluator: &ReducerCore,
-    host: &HostWorkBudget,
 ) -> Result<Analysis, InterpreterError> {
     let rules = NativePhloRules::resolve(schedule)
         .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
     let core = isolated_evaluator(evaluator);
-    let mut estimator = Estimator::new(funding, &core, host)?;
-    let counts = estimator.measure(resolved)?;
-    estimator.charge_plan(&counts)?;
+    let mut estimator = Estimator::new(funding, &core)?;
+    estimator.measure(resolved)?;
     let shallow = estimator.signatures_fit();
     let plan = match shallow {
         true => Some(static_authority_plan(resolved, funding)),
@@ -197,15 +195,13 @@ pub(super) fn analyze_iteratively(
     funding: &Sig,
     schedule: &PhloScheduleV1<'_>,
     evaluator: &ReducerCore,
-    host: &HostWorkBudget,
 ) -> Result<Analysis, InterpreterError> {
     let rules = NativePhloRules::resolve(schedule)
         .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
     let core = isolated_evaluator(evaluator);
     stacker::grow(SIZING_STACK_BYTES, || {
-        let mut estimator = Estimator::new(funding, &core, host)?;
-        let counts = estimator.measure(resolved)?;
-        estimator.charge_plan(&counts)?;
+        let mut estimator = Estimator::new(funding, &core)?;
+        estimator.measure(resolved)?;
         let shallow = estimator.signatures_fit();
         let plan = match shallow {
             true => Some(static_authority_plan(resolved, funding)),
@@ -216,9 +212,7 @@ pub(super) fn analyze_iteratively(
         };
         estimator.walk(resolved)?;
         let tables = estimator.tables()?;
-        estimator.charge_fold(&counts)?;
         let vector = estimator.run(&tables)?;
-        estimator.charge_signatures(&counts)?;
         let static_signatures = match shallow {
             true => static_authority_signatures(resolved).ok(),
             false => None,
@@ -241,11 +235,8 @@ pub(super) fn estimator_levels(
     evaluator: &ReducerCore,
 ) -> Result<Vec<(usize, usize)>, InterpreterError> {
     let core = isolated_evaluator(evaluator);
-    let host = HostWorkBudget::new(models::rust::host_work::HostWorkLimits::uniform(
-        models::rust::host_work::HostWorkLimit::new(u64::MAX),
-    ));
     stacker::grow(SIZING_STACK_BYTES, || {
-        let mut estimator = Estimator::new(funding, &core, &host)?;
+        let mut estimator = Estimator::new(funding, &core)?;
         estimator.measure(program)?;
         estimator.walk(program)?;
         Ok(estimator.levels)
@@ -410,11 +401,8 @@ pub(super) fn peak_binders(
     evaluator: &ReducerCore,
 ) -> Result<(usize, usize), InterpreterError> {
     let core = isolated_evaluator(evaluator);
-    let host = HostWorkBudget::new(models::rust::host_work::HostWorkLimits::uniform(
-        models::rust::host_work::HostWorkLimit::new(u64::MAX),
-    ));
     stacker::grow(SIZING_STACK_BYTES, || {
-        let mut estimator = Estimator::new(funding, &core, &host)?;
+        let mut estimator = Estimator::new(funding, &core)?;
         let counts = estimator.measure(program)?;
         estimator.walk(program)?;
         Ok((counts.peak_binders, estimator.observed_peak))

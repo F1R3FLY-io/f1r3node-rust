@@ -1,16 +1,14 @@
 use std::collections::BTreeMap;
-use std::mem::size_of;
 use std::num::NonZeroUsize;
 
 use models::rhoapi::cost_signature::Value as CostSignatureValue;
 use models::rhoapi::CostSignature;
-use models::rust::host_work::{HostWorkDimension, HostWorkUnits};
 use models::rust::phlo_resource::PhloAuthorityNode;
 use models::rust::phlo_source::PhloSourcePolicyV1;
 use models::rust::signed_phlo_deploy::OfferedFundedDeploy;
 use rholang::rust::interpreter::accounting::authority::{
-    authority_funding_signatures_for_events_with_host_work, cost_signature_to_sig,
-    AuthorityByteEvent, AuthorityEvent,
+    authority_funding_signatures_for_events, cost_signature_to_sig, AuthorityByteEvent,
+    AuthorityEvent,
 };
 // Changed by dedup (task 11415, D1): `rooted_cursors` names the cursor error.
 // use rholang::rust::interpreter::accounting::monetary_allocation::MonetaryCursor;
@@ -21,7 +19,6 @@ use rholang::rust::interpreter::accounting::phlo_execution::{
     select_phlo_funding_family, CheckedPhloObligations, PhloFamilyFundingInput,
     PhloFamilyFundingSelection, PhloFundingRequirement, PhloFundingSource, PhloObligationKey,
 };
-use rholang::rust::interpreter::host_work::HostWorkBudget;
 
 use super::producer::NativeOfferedFamilyLimits;
 use super::settlement::invalid;
@@ -32,22 +29,6 @@ use crate::rust::util::rholang::costacc::direct_wallet_funding::{
     DirectWalletPolicySnapshot, DirectWalletSource,
 };
 use crate::rust::util::rholang::costacc::vault_payer::VaultPayer;
-
-fn reserve(
-    budget: &HostWorkBudget,
-    dimension: HostWorkDimension,
-    amount: usize,
-) -> Result<(), CasperError> {
-    budget
-        .reserve(
-            dimension,
-            HostWorkUnits::new(
-                u64::try_from(amount).map_err(|_| invalid("native funding work overflow"))?,
-            ),
-        )
-        .map(|_| ())
-        .map_err(|error| invalid(error.to_string()))
-}
 
 pub(crate) struct NativeRootedFamilySelection<'a> {
     pub sources: Vec<PhloFundingSource<'a>>,
@@ -92,14 +73,12 @@ pub(super) enum SourceAuthority<'b> {
 /// Added by G1-4b (DR-123): the permission test of
 /// `select_rooted_native_family`, which the gate shares. A resource key needs
 /// a signed permission equal to its wire key, and an on-chain purse also
-/// needs its observed ground authority. Each permission costs one
-/// verification operation.
+/// needs its observed ground authority.
 pub(super) fn source_permits(
     key: &PhloObligationKey<'_>,
     signed: &PhloSourcePolicyV1<'_>,
     authority: SourceAuthority<'_>,
     limits: NativeOfferedFamilyLimits,
-    budget: &HostWorkBudget,
 ) -> Result<bool, CasperError> {
     match key {
         PhloObligationKey::Fee => Ok(signed.fee_permitted()),
@@ -114,7 +93,6 @@ pub(super) fn source_permits(
                 .map_err(invalid)?;
             let mut allowed = false;
             for permission in signed.resources() {
-                reserve(budget, HostWorkDimension::VerificationOperations, 1)?;
                 if permission == &wire
                     && observed
                         .is_none_or(|bytes| wire.authority == [PhloAuthorityNode::Ground(bytes)])
@@ -146,8 +124,7 @@ pub(super) enum RootedSetupError {
 /// setup. It checks one snapshot source against its signed source and returns
 /// the source with its custody key. `select_rooted_native_family` and
 /// `GateFunding::from_snapshot` (`gate.rs`) call it once per source, each in
-/// its own loop. Each caller keeps its own host-work reservations around the
-/// step. The step reserves no host work.
+/// its own loop.
 pub(super) fn rooted_source<'a>(
     physical: &DirectWalletSource<'a>,
     signed: &PhloSourcePolicyV1<'_>,
@@ -169,19 +146,17 @@ pub(super) fn rooted_source<'a>(
 /// parameter. After execution, `select_rooted_native_family` passes the
 /// signed or the observed authority. Before execution, the check of `gate.rs`
 /// (`eligibility`) passes the signed authority or no observed authority (map
-/// gap fill G-5). The caller allocates the row and reserves its host work, so
-/// each caller keeps its own order. The step returns the first error of
-/// `source_permits`.
+/// gap fill G-5). The caller allocates the row. The step returns the first
+/// error of `source_permits`.
 pub(super) fn eligibility_row(
     row: &mut Vec<bool>,
     obligations: &CheckedPhloObligations<'_>,
     signed: &PhloSourcePolicyV1<'_>,
     authority: SourceAuthority<'_>,
     limits: NativeOfferedFamilyLimits,
-    budget: &HostWorkBudget,
 ) -> Result<(), CasperError> {
     for key in obligations.keys() {
-        row.push(source_permits(key, signed, authority, limits, budget)?);
+        row.push(source_permits(key, signed, authority, limits)?);
     }
     Ok(())
 }
@@ -189,7 +164,7 @@ pub(super) fn eligibility_row(
 /// Added by dedup (task 11415, D1): the cursor step of the rooted funding
 /// setup. It returns the canonical resource cursor and then the canonical fee
 /// cursor of the snapshot as source positions. An absent cursor is the
-/// initial cursor. The step reserves no host work.
+/// initial cursor.
 pub(super) fn rooted_cursors(
     snapshot: &DirectWalletPolicySnapshot<'_, OfferedFundedDeploy>,
     source_count: usize,
@@ -212,7 +187,6 @@ pub(crate) fn select_rooted_native_family<'a>(
     authority_events: &[AuthorityEvent<[u8; 32]>],
     authority_byte_events: &[AuthorityByteEvent],
     limits: NativeOfferedFamilyLimits,
-    budget: &HostWorkBudget,
 ) -> Result<NativeRootedFamilySelection<'a>, CasperError> {
     let onchain = snapshot.wallets().authorization().onchain_payers();
     let observed = if onchain.is_empty() {
@@ -232,29 +206,12 @@ pub(crate) fn select_rooted_native_family<'a>(
             ));
         }
         Some(
-            authority_funding_signatures_for_events_with_host_work(
-                authority_events,
-                authority_byte_events,
-                &[],
-                Some(budget),
-            )
-            .map_err(invalid)?,
+            authority_funding_signatures_for_events(authority_events, authority_byte_events, &[])
+                .map_err(invalid)?,
         )
     };
     let source_count = snapshot.wallets().sources().len();
     let columns = obligations.keys().len();
-    let cells = source_count
-        .checked_mul(columns)
-        .ok_or_else(|| invalid("native funding eligibility size overflow"))?;
-    reserve(
-        budget,
-        HostWorkDimension::SearchStateBytes,
-        source_count
-            .checked_mul(size_of::<PhloFundingSource<'_>>() + size_of::<Vec<bool>>())
-            .and_then(|n| n.checked_add(cells))
-            .ok_or_else(|| invalid("native funding eligibility size overflow"))?,
-    )?;
-    reserve(budget, HostWorkDimension::VerificationOperations, cells)?;
     let mut sources = Vec::new();
     let mut eligible = Vec::new();
     sources
@@ -348,7 +305,7 @@ pub(crate) fn select_rooted_native_family<'a>(
         // for key in obligations.keys() {
         //     row.push(source_permits(key, signed, authority, limits, budget)?);
         // }
-        eligibility_row(&mut row, obligations, signed, authority, limits, budget)?;
+        eligibility_row(&mut row, obligations, signed, authority, limits)?;
         eligible.push(row);
     }
     // Moved by dedup (task 11415) to `rooted_cursors` in
@@ -381,7 +338,6 @@ pub(crate) fn select_rooted_native_family<'a>(
             canonical_fee_cursor: fee_cursor,
         },
         limits.policy,
-        budget,
     )
     .map_err(invalid)?
     .ok_or_else(|| invalid("measured funding case has no feasible signed assignment"))?;
@@ -427,9 +383,7 @@ mod tests {
                 debit: authority_demand(&authority).unwrap(),
                 authority,
             };
-            let observed =
-                authority_funding_signatures_for_events_with_host_work(&[event], &[], &[], None)
-                    .unwrap();
+            let observed = authority_funding_signatures_for_events(&[event], &[], &[]).unwrap();
             assert_eq!(
                 verified_onchain_authority(&payer, &observed).is_ok(),
                 should_accept
@@ -445,7 +399,6 @@ mod tests {
         signed: &PhloSourcePolicyV1<'_>,
         onchain_authority: Option<&Vec<u8>>,
         limits: NativeOfferedFamilyLimits,
-        budget: &HostWorkBudget,
     ) -> Result<bool, CasperError> {
         Ok(match key {
             PhloObligationKey::Fee => signed.fee_permitted(),
@@ -456,7 +409,6 @@ mod tests {
                     .map_err(invalid)?;
                 let mut allowed = false;
                 for permission in signed.resources() {
-                    reserve(budget, HostWorkDimension::VerificationOperations, 1)?;
                     if permission == &wire
                         && onchain_authority.is_none_or(|bytes| {
                             wire.authority == [PhloAuthorityNode::Ground(bytes.as_slice())]
@@ -474,9 +426,9 @@ mod tests {
         #![proptest_config(proptest::prelude::ProptestConfig::with_cases(256))]
 
         /// Added by G1-4b (DR-123): `source_permits` decides every key as the
-        /// inline test did, with the same host-work charge, for signed
-        /// sources and for on-chain purses with an observed authority. An
-        /// on-chain purse without an observed authority funds the fee only.
+        /// inline test did, for signed sources and for on-chain purses with an
+        /// observed authority. An on-chain purse without an observed authority
+        /// funds the fee only.
         #[test]
         fn source_permits_decides_as_the_inline_test_did(
             permitted in proptest::collection::btree_set((0u8..3, 0usize..3), 0..5),
@@ -485,7 +437,6 @@ mod tests {
             fee in proptest::prelude::any::<bool>(),
             observed in proptest::option::of(0u8..3),
         ) {
-            use models::rust::host_work::{HostWorkLimit, HostWorkLimits};
             use models::rust::phlo_source::PhloSourceLimits;
             use models::rust::phlo_wire::PhloWireLimits;
             use rholang::rust::interpreter::accounting::phlo_execution::{
@@ -532,22 +483,16 @@ mod tests {
                 _ => PhloObligationKey::RetainedResource(resource(asked)),
             };
             let observed = observed.map(|tag| vec![tag + 1; 4]);
-            let budget = || HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(u64::MAX)));
-            let (refactored, inline) = (budget(), budget());
             let authority = match observed.as_ref() {
                 Some(bytes) => SourceAuthority::Observed(bytes),
                 None => SourceAuthority::Signed,
             };
-            let decided = source_permits(&key, &signed, authority, limits, &refactored)
+            let decided = source_permits(&key, &signed, authority, limits)
                 .expect("the refactored test decides");
-            let expected = inline_permission(&key, &signed, observed.as_ref(), limits, &inline)
+            let expected = inline_permission(&key, &signed, observed.as_ref(), limits)
                 .expect("the inline test decides");
             proptest::prop_assert_eq!(decided, expected);
-            proptest::prop_assert_eq!(
-                refactored.usages().into_array().map(|usage| usage.get()),
-                inline.usages().into_array().map(|usage| usage.get())
-            );
-            let before_execution = source_permits(&key, &signed, SourceAuthority::Unobserved, limits, &budget())
+            let before_execution = source_permits(&key, &signed, SourceAuthority::Unobserved, limits)
                 .expect("the pre-execution test decides");
             proptest::prop_assert_eq!(before_execution, kind == 0 && fee);
         }

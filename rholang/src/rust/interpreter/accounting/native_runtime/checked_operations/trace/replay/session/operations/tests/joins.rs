@@ -154,26 +154,21 @@ async fn joined_replay(
     let recording = budget.native_budget_recording().unwrap().unwrap();
     let rows = budget.native_operation_recording().unwrap().unwrap();
     let log = play.create_soft_checkpoint().await.log;
-    let host = config(limit, [0, 1, 1, 0]).host_work;
     let trace = with_contract(limit, [0, 1, 1, 0], |contract| {
         contract
-            .check_operation_journal(recording.session, &recording, rows, journal_limits(), &host)
+            .check_operation_journal(recording.session, &recording, rows, journal_limits())
             .unwrap()
     })
-    .bind_trace(
-        log.into(),
-        NativeOperationTraceLimits {
-            events: 10,
-            source_entries: 100,
-            source_bytes: 100_000,
-            telemetry_items: 100,
-            telemetry_bytes: 100_000,
-        },
-        &host,
-    )
+    .bind_trace(log.into(), NativeOperationTraceLimits {
+        events: 10,
+        source_entries: 100,
+        source_bytes: 100_000,
+        telemetry_items: 100,
+        telemetry_bytes: 100_000,
+    })
     .unwrap();
     let replay = trace
-        .into_session(history, Arc::new(Box::new(Matcher)), host)
+        .into_session(history, Arc::new(Box::new(Matcher)))
         .unwrap();
     let mut checkpoint = Some(replay.checkpoint().await.unwrap());
     if !produce {

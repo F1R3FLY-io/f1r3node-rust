@@ -60,11 +60,16 @@
    Rust correspondence: rspace++/src/rspace/hot_store/native.rs
    (native_continuation_views); rspace++/src/rspace/replay_rspace/
    native_session/history.rs (read_continuation_views,
-   prefetch_continuations); native_candidate/metered.rs (the selected
+   prefetch_continuations); native_candidate/selection.rs (the selected
    continuation is copied); hot_store/native.rs (native_data_view,
    native_insert_new_snapshot) for C2; hot_store/native.rs
    (native_data_uncached), rspace/ispace_impl.rs and replay_rspace.rs
    (get_data_metered) for D-C4. TLA+: NativeSharedReadCleanup.tla. *)
+
+(* DR-131: host work is removed, and get_data_metered is deleted. The read
+   charges of this file describe deleted code. The selection results still
+   hold, and IncomingDatumMove requires
+   shared_selection_equals_deep_selection. *)
 
 From Stdlib Require Import Lists.List Arith.PeanoNat Bool Lia.
 Import ListNotations.

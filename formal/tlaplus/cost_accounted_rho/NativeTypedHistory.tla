@@ -1,4 +1,7 @@
 -------------------- MODULE NativeTypedHistory --------------------
+\* DR-131: host work is removed. PaidDecoding, the SkipCredit constant and the
+\* credit variables model the deleted decode charges. PaidDecoding is no
+\* longer checked, and its refutation configuration is deleted.
 EXTENDS Naturals
 
 CONSTANTS

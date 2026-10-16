@@ -2,21 +2,17 @@ use std::collections::BTreeMap;
 use std::mem::size_of;
 
 use models::rhoapi::{CostSignature, ListParWithRandom, Par};
-use models::rust::host_work::HostWorkDimension;
 use prost::Message;
 use rholang::rust::interpreter::accounting::authority::{
-    cost_signature_to_sig_metered, funding_sig_channel_metered, reserve_authority_signature_tree,
-    AuthorityStackBirth,
+    cost_signature_to_sig, funding_sig_channel, AuthorityStackBirth,
 };
 use rholang::rust::interpreter::accounting::native_phlo_rules::NativePhloAcquisitionDemand;
-use rholang::rust::interpreter::host_work::HostWorkBudget;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::hashing::stable_hash_provider;
-use rspace_plus_plus::rspace::history::native_reader::{decode_record, NativeLeafKind};
+use rspace_plus_plus::rspace::history::native_reader::{decode_datum, NativeLeafKind};
 use rspace_plus_plus::rspace::internal::Datum;
-use shared::rust::clone_backing::BackingError;
 
-use super::snapshot::{native_read_error, reserve, ReceiptReadMeter};
+use super::snapshot::native_read_error;
 use super::*;
 use crate::rust::util::rholang::costacc::genesis_resource_policy::AdoptedResourcePolicy;
 use crate::rust::util::rholang::costacc::supply::{decode_purse_inventory, PurseStack};
@@ -79,93 +75,20 @@ impl<'a> CapturedPrepaidStacks<'a> {
     }
 }
 
-fn charge_bytes(
-    budget: &HostWorkBudget,
-    bytes: usize,
-    remaining: &mut usize,
-) -> Result<(), CasperError> {
+fn charge_bytes(bytes: usize, remaining: &mut usize) -> Result<(), CasperError> {
     *remaining = remaining
         .checked_sub(bytes)
         .ok_or_else(|| invalid("physical capture byte limit exceeded"))?;
-    reserve(budget, HostWorkDimension::VerificationOperations, bytes)?;
-    reserve(budget, HostWorkDimension::SearchStateBytes, bytes)?;
     Ok(())
 }
 
-fn reserve_inventory_decode(
-    data: &[Datum<ListParWithRandom>],
-    budget: &HostWorkBudget,
-) -> Result<(), CasperError> {
-    let encoded = data.iter().try_fold(0usize, |total, datum| {
-        total
-            .checked_add(datum.a.encoded_len())
-            .ok_or_else(|| invalid("physical inventory decode size overflow"))
-    })?;
-    let sorting = data
-        .len()
-        .checked_mul(1 + data.len().checked_ilog2().unwrap_or(0) as usize)
-        .and_then(|count| count.checked_mul(128))
-        .ok_or_else(|| invalid("physical inventory sorting work overflow"))?;
-    reserve(
-        budget,
-        HostWorkDimension::VerificationOperations,
-        encoded
-            .checked_mul(4)
-            .and_then(|count| count.checked_add(sorting))
-            .ok_or_else(|| invalid("physical inventory decode work overflow"))?,
-    )?;
-    reserve(
-        budget,
-        HostWorkDimension::SearchStateBytes,
-        encoded
-            .checked_mul(8)
-            .and_then(|count| {
-                data.len()
-                    .checked_mul(size_of::<PurseStack>() + 128)
-                    .and_then(|overhead| count.checked_add(overhead))
-            })
-            .ok_or_else(|| invalid("physical inventory decode backing overflow"))?,
-    )
-}
-
-fn measured_birth_channel(
-    head: &CostSignature,
-    budget: &HostWorkBudget,
-) -> Result<(Vec<u8>, Par), CasperError> {
-    let backing = |operations: usize, scanned: usize, allocation: usize| {
-        reserve(
-            budget,
-            HostWorkDimension::VerificationOperations,
-            operations,
-        )
-        .map_err(|_| BackingError::Rejected)?;
-        reserve(budget, HostWorkDimension::VerificationBytes, scanned)
-            .map_err(|_| BackingError::Rejected)?;
-        reserve(budget, HostWorkDimension::SearchStateBytes, allocation)
-            .map_err(|_| BackingError::Rejected)
-    };
-    let signature = cost_signature_to_sig_metered(head, &backing)
-        .map_err(|error| invalid(&error.to_string()))?;
+fn measured_birth_channel(head: &CostSignature) -> Result<(Vec<u8>, Par), CasperError> {
+    let signature = cost_signature_to_sig(head).map_err(|error| invalid(&error.to_string()))?;
     if !signature.is_funding_former() {
         return Err(invalid("measured birth head is not a funding former"));
     }
-    let channel = funding_sig_channel_metered(&signature, &backing)
-        .map_err(|error| invalid(&error.to_string()))?;
-    // Added by D-E3 (DR-110): `funding_sig_channel_metered` prepays only the
-    // release of its unsorted channel. The surplus of its per-level inspection
-    // paid the length computation below, so a block inspection prepays it
-    // here.
-    shared::rust::clone_backing::inspect_blocks(&channel, &backing)
-        .map_err(|_| invalid("measured birth channel inspection is rejected"))?;
+    let channel = funding_sig_channel(&signature).map_err(|error| invalid(&error.to_string()))?;
     let encoded_len = channel.encoded_len();
-    reserve(
-        budget,
-        HostWorkDimension::VerificationOperations,
-        encoded_len
-            .checked_mul(2)
-            .ok_or_else(|| invalid("measured birth channel work overflows"))?,
-    )?;
-    reserve(budget, HostWorkDimension::SearchStateBytes, encoded_len)?;
     let mut key = Vec::new();
     key.try_reserve_exact(encoded_len)
         .map_err(|_| invalid("measured birth channel allocation failed"))?;
@@ -181,9 +104,8 @@ impl RuntimeManager {
         pre_state_root: [u8; 32],
         demand: &NativePhloAcquisitionDemand<'_>,
         limits: PrepaidStackCaptureLimits,
-        budget: &HostWorkBudget,
     ) -> Result<Vec<PurseStack>, CasperError> {
-        self.read_measured_prepaid_stacks_with_births(pre_state_root, demand, &[], limits, budget)
+        self.read_measured_prepaid_stacks_with_births(pre_state_root, demand, &[], limits)
     }
 
     pub fn read_measured_prepaid_stacks_with_births(
@@ -192,7 +114,6 @@ impl RuntimeManager {
         demand: &NativePhloAcquisitionDemand<'_>,
         births: &[AuthorityStackBirth],
         limits: PrepaidStackCaptureLimits,
-        budget: &HostWorkBudget,
     ) -> Result<Vec<PurseStack>, CasperError> {
         let root = Blake2b256Hash::from_bytes(pre_state_root.to_vec());
         if !self
@@ -207,7 +128,6 @@ impl RuntimeManager {
         let mut bytes_left = limits.physical_bytes;
         let mut channels = BTreeMap::<&[u8], (&Par, &CostSignature)>::new();
         for (located, _) in demand.occurrences() {
-            reserve(budget, HostWorkDimension::VerificationOperations, 1)?;
             let purse = located.purse();
             if !purse.authority().is_funding_former() {
                 return Err(invalid("measured purse authority is not a funding former"));
@@ -231,7 +151,6 @@ impl RuntimeManager {
                 return Err(invalid("measured purse channel limit exceeded"));
             }
             charge_bytes(
-                budget,
                 key.len()
                     .checked_add(size_of::<(&Par, &CostSignature)>())
                     .and_then(|bytes| bytes.checked_add(128))
@@ -242,24 +161,11 @@ impl RuntimeManager {
         }
         let mut born_channels = BTreeMap::<Vec<u8>, (Par, &CostSignature)>::new();
         for birth in births {
-            reserve(budget, HostWorkDimension::VerificationOperations, 1)?;
             let head = birth
                 .cells
                 .first()
                 .ok_or_else(|| invalid("measured birth has no stack head"))?;
-            let (key, channel) = measured_birth_channel(head, budget)?;
-            let comparisons = channels
-                .len()
-                .checked_add(born_channels.len())
-                .and_then(|count| count.checked_add(1))
-                .ok_or_else(|| invalid("measured birth channel lookup overflows"))?;
-            reserve(
-                budget,
-                HostWorkDimension::VerificationOperations,
-                key.len()
-                    .checked_mul(comparisons)
-                    .ok_or_else(|| invalid("measured birth channel lookup overflows"))?,
-            )?;
+            let (key, channel) = measured_birth_channel(head)?;
             // Changed by H2 (bug 11419, DR-127): a birth head of another form
             // keeps the first head of its channel, as a measured head does.
             // if let Some((_, previous)) = channels.get(key.as_slice()) {
@@ -286,7 +192,6 @@ impl RuntimeManager {
                 return Err(invalid("measured purse channel limit exceeded"));
             }
             charge_bytes(
-                budget,
                 key.len()
                     .checked_add(size_of::<(Par, &CostSignature)>())
                     .and_then(|bytes| bytes.checked_add(128))
@@ -296,10 +201,8 @@ impl RuntimeManager {
             born_channels.insert(key, (channel, head));
         }
         let reader = self.history_repo.native_history_reader(pre_state_root);
-        let meter = ReceiptReadMeter(budget);
         let mut stacks_left = limits.stacks;
         let mut cells_left = limits.physical_cells;
-        let mut depth = 0;
         let mut stacks = Vec::new();
         for (channel, head) in channels.into_values().chain(
             born_channels
@@ -313,18 +216,10 @@ impl RuntimeManager {
                 .try_into()
                 .map_err(|_| invalid("measured purse channel hash is invalid"))?;
             let data = reader
-                .with_records(NativeLeafKind::Data, &channel_hash, &meter, |records| {
+                .with_records(NativeLeafKind::Data, &channel_hash, |records| {
                     if records.len() > stacks_left {
                         return Err(invalid("measured purse stack limit exceeded"));
                     }
-                    reserve(
-                        budget,
-                        HostWorkDimension::SearchStateBytes,
-                        records
-                            .len()
-                            .checked_mul(size_of::<Datum<ListParWithRandom>>())
-                            .ok_or_else(|| invalid("measured purse allocation overflow"))?,
-                    )?;
                     let mut data: Vec<Datum<ListParWithRandom>> = Vec::new();
                     data.try_reserve_exact(records.len())
                         .map_err(|_| invalid("measured purse allocation failed"))?;
@@ -333,7 +228,9 @@ impl RuntimeManager {
                         raw_left = raw_left
                             .checked_sub(raw.len())
                             .ok_or_else(|| invalid("measured purse byte limit exceeded"))?;
-                        data.push(decode_record(raw, &meter).map_err(native_read_error)?);
+                        data.push(
+                            decode_datum(raw).map_err(|error| native_read_error(error.into()))?,
+                        );
                     }
                     Ok(data)
                 })
@@ -347,13 +244,8 @@ impl RuntimeManager {
                     cells_left = cells_left
                         .checked_sub(stack.cells.len())
                         .ok_or_else(|| invalid("measured purse cell limit exceeded"))?;
-                    for cell in &stack.cells {
-                        reserve_authority_signature_tree(cell, budget, &mut depth)
-                            .map_err(|error| invalid(&error.to_string()))?;
-                    }
                 }
                 charge_bytes(
-                    budget,
                     datum
                         .a
                         .encoded_len()
@@ -363,21 +255,12 @@ impl RuntimeManager {
                     &mut bytes_left,
                 )?;
             }
-            reserve_inventory_decode(&data, budget)?;
             let inventory = decode_purse_inventory(&data, head)?;
             stacks
                 .try_reserve(inventory.stacks.len())
                 .map_err(|_| invalid("measured purse allocation failed"))?;
             stacks.extend(inventory.stacks);
         }
-        reserve(
-            budget,
-            HostWorkDimension::VerificationOperations,
-            stacks
-                .len()
-                .checked_mul(1 + stacks.len().checked_ilog2().unwrap_or(0) as usize)
-                .ok_or_else(|| invalid("measured purse sorting work overflow"))?,
-        )?;
         stacks.sort_unstable_by_key(|stack| stack.instance_id);
         if stacks
             .windows(2)
@@ -396,17 +279,14 @@ impl RuntimeManager {
         selected: &'a [PurseStack],
         policy: &'a AdoptedResourcePolicy,
         limits: PrepaidStackCaptureLimits,
-        budget: &HostWorkBudget,
     ) -> Result<CapturedPrepaidStacks<'a>, CasperError> {
         if selected.len() > limits.stacks {
             return Err(invalid("physical capture stack limit exceeded"));
         }
         let mut bytes_left = limits.physical_bytes;
-        let mut depth = 0;
         let mut channels = BTreeMap::<Vec<u8>, Vec<&PurseStack>>::new();
         let mut ordered = Vec::new();
         charge_bytes(
-            budget,
             selected
                 .len()
                 .checked_mul(size_of::<&PurseStack>())
@@ -420,10 +300,6 @@ impl RuntimeManager {
             if stack.stack.cells.is_empty() || stack.stack.cells.len() > limits.physical_cells {
                 return Err(invalid("physical capture cell count is out of range"));
             }
-            for cell in &stack.stack.cells {
-                reserve_authority_signature_tree(cell, budget, &mut depth)
-                    .map_err(|e| invalid(&e.to_string()))?;
-            }
             let bytes = stack
                 .channel
                 .encoded_len()
@@ -431,21 +307,13 @@ impl RuntimeManager {
                 .and_then(|n| n.checked_add(stack.random_state.len()))
                 .and_then(|n| n.checked_add(size_of::<PurseStack>()))
                 .ok_or_else(|| invalid("physical capture size overflow"))?;
-            charge_bytes(budget, bytes, &mut bytes_left)?;
+            charge_bytes(bytes, &mut bytes_left)?;
             channels
                 .entry(stack.channel.encode_to_vec())
                 .or_default()
                 .push(stack);
             ordered.push(stack);
         }
-        reserve(
-            budget,
-            HostWorkDimension::VerificationOperations,
-            ordered
-                .len()
-                .checked_mul(1 + ordered.len().checked_ilog2().unwrap_or(0) as usize)
-                .ok_or_else(|| invalid("physical sorting work overflow"))?,
-        )?;
         ordered.sort_unstable_by_key(|stack| stack.instance_id);
         if ordered
             .windows(2)
@@ -464,7 +332,6 @@ impl RuntimeManager {
             ));
         }
         let reader = self.history_repo.native_history_reader(pre_state_root);
-        let meter = ReceiptReadMeter(budget);
         let mut sources = BTreeMap::<[u8; 32], (usize, usize)>::new();
         let mut stacks_left = limits.stacks;
         let mut cells_left = limits.physical_cells;
@@ -477,18 +344,10 @@ impl RuntimeManager {
                 .try_into()
                 .map_err(|_| invalid("physical channel hash is invalid"))?;
             let data = reader
-                .with_records(NativeLeafKind::Data, &channel_hash, &meter, |records| {
+                .with_records(NativeLeafKind::Data, &channel_hash, |records| {
                     if records.len() > stacks_left {
                         return Err(invalid("physical inventory stack limit exceeded"));
                     }
-                    reserve(
-                        budget,
-                        HostWorkDimension::SearchStateBytes,
-                        records
-                            .len()
-                            .checked_mul(size_of::<Datum<ListParWithRandom>>())
-                            .ok_or_else(|| invalid("physical inventory allocation overflow"))?,
-                    )?;
                     let mut data: Vec<Datum<ListParWithRandom>> = Vec::new();
                     data.try_reserve_exact(records.len())
                         .map_err(|_| invalid("physical inventory allocation failed"))?;
@@ -497,7 +356,9 @@ impl RuntimeManager {
                         raw_left = raw_left
                             .checked_sub(raw.len())
                             .ok_or_else(|| invalid("physical inventory byte limit exceeded"))?;
-                        data.push(decode_record(raw, &meter).map_err(native_read_error)?);
+                        data.push(
+                            decode_datum(raw).map_err(|error| native_read_error(error.into()))?,
+                        );
                     }
                     Ok(data)
                 })
@@ -511,13 +372,8 @@ impl RuntimeManager {
                     cells_left = cells_left
                         .checked_sub(stack.cells.len())
                         .ok_or_else(|| invalid("physical inventory cell limit exceeded"))?;
-                    for cell in &stack.cells {
-                        reserve_authority_signature_tree(cell, budget, &mut depth)
-                            .map_err(|e| invalid(&e.to_string()))?;
-                    }
                 }
                 charge_bytes(
-                    budget,
                     datum
                         .a
                         .encoded_len()
@@ -527,7 +383,6 @@ impl RuntimeManager {
                     &mut bytes_left,
                 )?;
             }
-            reserve_inventory_decode(&data, budget)?;
             let inventory = decode_purse_inventory(&data, &first.stack.cells[0])?;
             let by_index = inventory
                 .stacks
@@ -562,20 +417,11 @@ impl RuntimeManager {
         if sources.len() > limits.receipts.entries {
             return Err(invalid("physical capture receipt limit exceeded"));
         }
-        reserve(
-            budget,
-            HostWorkDimension::SearchStateBytes,
-            sources
-                .len()
-                .checked_mul(size_of::<[u8; 32]>())
-                .ok_or_else(|| invalid("physical receipt key size overflow"))?,
-        )?;
         let mut keys = Vec::new();
         keys.try_reserve_exact(sources.len())
             .map_err(|_| invalid("physical receipt key allocation failed"))?;
         keys.extend(sources.keys().map(PrepaidReceiptBucket::key_for_source));
-        let receipts =
-            self.capture_prepaid_receipts(pre_state_root, &keys, limits.receipts, budget)?;
+        let receipts = self.capture_prepaid_receipts(pre_state_root, &keys, limits.receipts)?;
         let mut record_cells_left = limits.physical_cells;
         for (source, (occurrences, cells)) in sources {
             let key = PrepaidReceiptBucket::key_for_source(&source);
@@ -583,20 +429,6 @@ impl RuntimeManager {
                 .receipt(&pre_state_root, &key)?
                 .flatten()
                 .ok_or_else(|| invalid("physical source has no prepaid receipt"))?;
-            let decode_memory = bytes
-                .len()
-                .checked_mul(
-                    size_of::<models::rust::phlo_resource::PhloAuthorityNode<'_>>()
-                        + size_of::<NativePrepaidContribution>()
-                        + 2 * size_of::<&[u8]>(),
-                )
-                .ok_or_else(|| invalid("physical receipt decode size overflow"))?;
-            reserve(budget, HostWorkDimension::SearchStateBytes, decode_memory)?;
-            reserve(
-                budget,
-                HostWorkDimension::VerificationOperations,
-                decode_memory,
-            )?;
             let bucket = PrepaidReceiptBucket::decode(bytes, limits.bucket)?;
             bucket.check_occurrences(&source, occurrences)?;
             for record in bucket.receipts() {
@@ -626,55 +458,22 @@ impl RuntimeManager {
 #[cfg(test)]
 mod tests {
     use models::rhoapi::cost_signature::Value as CostSignatureValue;
-    use models::rust::host_work::{HostWorkLimit, HostWorkLimits};
 
     use super::*;
 
-    /// D-E3 (DR-110): the measured birth channel charges the conversion of
-    /// the head, the funding channel, one block inspection of the returned
-    /// channel for its length computation, and the key bytes. A budget that
-    /// runs the same steps charges the same in every dimension.
+    /// The measured birth channel of a head is the funding channel of its
+    /// signature, and its key is the encoding of that channel. DR-131 removed
+    /// the host-work charges that D-E3 (DR-110) tested here.
     #[test]
-    fn measured_birth_channel_inspects_the_returned_channel_once() {
+    fn measured_birth_channel_is_the_funding_channel_of_the_head() {
         let head = CostSignature {
             value: Some(CostSignatureValue::Ground(vec![9; 32])),
         };
-        let budget = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(u64::MAX)));
-        let (key, channel) = measured_birth_channel(&head, &budget).expect("a birth channel");
-        let mirror = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(u64::MAX)));
-        let backing = |operations: usize, scanned: usize, allocation: usize| {
-            reserve(
-                &mirror,
-                HostWorkDimension::VerificationOperations,
-                operations,
-            )
-            .map_err(|_| BackingError::Rejected)?;
-            reserve(&mirror, HostWorkDimension::VerificationBytes, scanned)
-                .map_err(|_| BackingError::Rejected)?;
-            reserve(&mirror, HostWorkDimension::SearchStateBytes, allocation)
-                .map_err(|_| BackingError::Rejected)
-        };
-        let signature = cost_signature_to_sig_metered(&head, &backing).expect("a signature");
-        let expected = funding_sig_channel_metered(&signature, &backing).expect("a channel");
-        shared::rust::clone_backing::inspect_blocks(&expected, &backing).expect("an inspection");
-        let encoded_len = expected.encoded_len();
-        reserve(
-            &mirror,
-            HostWorkDimension::VerificationOperations,
-            encoded_len * 2,
-        )
-        .expect("an unlimited budget");
-        reserve(&mirror, HostWorkDimension::SearchStateBytes, encoded_len)
-            .expect("an unlimited budget");
+        let (key, channel) = measured_birth_channel(&head).expect("a birth channel");
+        let signature = cost_signature_to_sig(&head).expect("a signature");
+        let expected = funding_sig_channel(&signature).expect("a channel");
         assert_eq!(channel, expected);
         assert_eq!(key, expected.encode_to_vec());
-        for dimension in HostWorkDimension::ALL {
-            assert_eq!(
-                budget.usage(dimension).get(),
-                mirror.usage(dimension).get(),
-                "{dimension:?}"
-            );
-        }
     }
 
     // Added by H2 (bug 11419, DR-127): the capture keeps the first head of
@@ -791,7 +590,6 @@ mod tests {
     ) -> Result<Vec<PurseStack>, CasperError> {
         let limits = offered_funded_v6_production_limits();
         let measured_limits = limits.family.measured;
-        let budget = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(u64::MAX)));
         let store = InMemoryStoreManager::new()
             .r_space_stores()
             .await
@@ -838,10 +636,10 @@ mod tests {
             .measure(&snapshot, measured_limits.observations)
             .expect("the observations measure");
         let regions = measurements
-            .region_demands(measured_limits.regions, &budget)
+            .region_demands(measured_limits.regions)
             .expect("the regions check");
         let located = regions
-            .locate_purses(measured_limits.purses, &budget)
+            .locate_purses(measured_limits.purses)
             .expect("the purses locate");
         let binding = PhloScheduleBinding::new(&schedule, PhloGenesisPolicy::LIMITS)
             .expect("the schedule binds");
@@ -849,7 +647,7 @@ mod tests {
             .encode(PhloGenesisPolicy::LIMITS)
             .expect("the schedule encodes");
         let demand = located
-            .prepare_acquisition_demand(&binding, &terms, measured_limits.acquisition, &budget)
+            .prepare_acquisition_demand(&binding, &terms, measured_limits.acquisition)
             .expect("the demand prepares");
         let births = born
             .iter()
@@ -864,7 +662,6 @@ mod tests {
             &demand,
             &births,
             limits.stack_capture,
-            &budget,
         )
     }
 
@@ -874,9 +671,8 @@ mod tests {
     fn both_authority_forms_of_a_lane_name_one_channel() {
         let [ground, name] = forms("foo");
         assert_ne!(ground, name, "the forms differ");
-        let budget = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(u64::MAX)));
-        let (ground_key, _) = measured_birth_channel(&ground, &budget).expect("a ground channel");
-        let (name_key, _) = measured_birth_channel(&name, &budget).expect("a name channel");
+        let (ground_key, _) = measured_birth_channel(&ground).expect("a ground channel");
+        let (name_key, _) = measured_birth_channel(&name).expect("a name channel");
         assert_eq!(ground_key, name_key);
         assert_eq!(
             cost_signature_to_sig(&ground)

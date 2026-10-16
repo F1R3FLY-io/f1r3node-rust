@@ -1,8 +1,6 @@
 use std::collections::BTreeSet;
-use std::mem::size_of;
 
 use prost::Message;
-use rholang::rust::interpreter::accounting::authority::reserve_authority_signature_tree;
 use rholang::rust::interpreter::accounting::native_phlo_rules::{
     NativePhloAcquisitionDemand, NativePhloLocatedDemand,
 };
@@ -70,15 +68,14 @@ impl NativePrepaidDemandBinding<'_> {
         retained: &[PhloResourceAmount<'_>],
         outcome: PhloOutcome<'_>,
         limits: NativeMeasuredSettlementLimits,
-        budget: &HostWorkBudget,
     ) -> Result<CheckedDirectWalletSettlement<'a, A>, CasperError> {
         check_wallet_root(&policy.snapshot().wallets().pre_state_root(), &self.root)?;
         let observed =
             check_counted_phlo_execution(self.controls, self.witness(), limits.matching.execution)
-                .and_then(|execution| execution.with_retained_acquisitions(retained, budget))
+                .and_then(|execution| execution.with_retained_acquisitions(retained))
                 .map_err(|error| invalid(&error.to_string()))?;
         policy
-            .capture_settlement(observed, outcome, limits.matching, limits.capture, budget)
+            .capture_settlement(observed, outcome, limits.matching, limits.capture)
             .map_err(|error| invalid(&error.to_string()))
     }
 }
@@ -121,7 +118,6 @@ fn select_prefixes<'r, Cell: 'r, Current: 'r, Occurrence>(
     stacks: impl IntoIterator<Item = SelectionStack<'r, Cell, Current>>,
     occurrences: &[Occurrence],
     draw_limit: usize,
-    budget: &HostWorkBudget,
     mut matches: impl FnMut(&Cell, &Current, &Occurrence) -> Result<bool, CasperError>,
 ) -> Result<CanonicalPrepaidSelection, CasperError> {
     let count = occurrences.len();
@@ -158,7 +154,6 @@ fn select_prefixes<'r, Cell: 'r, Current: 'r, Occurrence>(
         let mut best_index = None;
         best_positions.clear();
         for (receipt_index, record) in records.iter().enumerate() {
-            reserve(budget, HostWorkDimension::SearchCandidates, 1)?;
             if selected_receipts.contains(&(stack.source, receipt_index)) {
                 continue;
             }
@@ -175,7 +170,6 @@ fn select_prefixes<'r, Cell: 'r, Current: 'r, Occurrence>(
                 // so the positions of a prefix strictly increase.
                 // for (position, occurrence) in occurrences.iter().enumerate() {
                 for (position, occurrence) in occurrences.iter().enumerate().skip(floor) {
-                    reserve(budget, HostWorkDimension::SearchCandidates, 1)?;
                     if used[position] || candidate_used[position] {
                         continue;
                     }
@@ -209,11 +203,6 @@ fn select_prefixes<'r, Cell: 'r, Current: 'r, Occurrence>(
         }
         let count = u64::try_from(best_positions.len())
             .map_err(|_| invalid("prepaid selected prefix count overflow"))?;
-        reserve(
-            budget,
-            HostWorkDimension::SearchStateBytes,
-            size_of::<([u8; 32], usize)>() + 64,
-        )?;
         selected_receipts.insert((stack.source, receipt_index));
         draws.push(PrepaidStackPop {
             stack_id: stack.instance,
@@ -236,7 +225,6 @@ impl NativePrepaidInventory<'_, '_> {
         &self,
         demand: &NativePhloAcquisitionDemand<'_>,
         limits: NativePrepaidDemandLimits,
-        budget: &HostWorkBudget,
     ) -> Result<CanonicalPrepaidSelection, CasperError> {
         // Changed by C8 (DR-87): the entry limit applies to the distinct
         // demand keys, and the selection walks the located occurrences.
@@ -246,23 +234,6 @@ impl NativePrepaidInventory<'_, '_> {
             return Err(invalid("measured prepaid demand entry limit exceeded"));
         }
         let count = demand.occurrence_count();
-        reserve(
-            budget,
-            HostWorkDimension::SearchStateBytes,
-            count
-                .checked_mul(
-                    size_of::<(NativePhloLocatedDemand<'_>, PhloResourceAmount<'_>)>()
-                        + size_of::<bool>() * 2
-                        + size_of::<usize>() * 3,
-                )
-                .and_then(|size| {
-                    limits
-                        .draws
-                        .checked_mul(size_of::<PrepaidStackPop>())
-                        .and_then(|draws| size.checked_add(draws))
-                })
-                .ok_or_else(|| invalid("prepaid selection allocation overflow"))?,
-        )?;
         let mut origins = Vec::new();
         origins
             .try_reserve_exact(count)
@@ -395,20 +366,9 @@ impl NativePrepaidInventory<'_, '_> {
                 }),
             &origins,
             limits.draws,
-            budget,
             |cell: &NativePrepaidResource<'_>,
              current: &CostSignature,
              (origin, measured): &(NativePhloLocatedDemand<'_>, PhloResourceAmount<'_>)| {
-                let bytes = cell
-                    .receipt()
-                    .resource_bytes()
-                    .len()
-                    .checked_add(current.encoded_len())
-                    .and_then(|bytes| bytes.checked_add(measured.resource.location.len()))
-                    .and_then(|bytes| bytes.checked_add(measured.resource.acquisition_terms.len()))
-                    .ok_or_else(|| invalid("prepaid comparison work overflow"))?;
-                reserve(budget, HostWorkDimension::VerificationBytes, bytes)?;
-                reserve(budget, HostWorkDimension::VerificationOperations, bytes)?;
                 Ok(cell.resource() == measured.resource
                     && current == origin.purse().original_authority())
             },
@@ -419,7 +379,6 @@ impl NativePrepaidInventory<'_, '_> {
         &'a self,
         input: NativePrepaidDemandInput<'a>,
         limits: NativePrepaidDemandLimits,
-        budget: &HostWorkBudget,
     ) -> Result<NativePrepaidDemandBinding<'a>, CasperError> {
         if input.expected_root != self.root() {
             return Err(invalid(
@@ -434,7 +393,7 @@ impl NativePrepaidInventory<'_, '_> {
         self.captured
             .policy()
             .check_measured_acquisition(input.controls, input.demand)?;
-        let prefixes = self.prefixes(input.draws, limits.draws, budget)?;
+        let prefixes = self.prefixes(input.draws, limits.draws)?;
         let count = prefixes.iter().try_fold(0_usize, |count, prefix| {
             count
                 .checked_add(prefix.resources().len())
@@ -472,18 +431,6 @@ impl NativePrepaidInventory<'_, '_> {
         //     origins.push(origin);
         // }
         let occurrences = input.demand.occurrence_count();
-        reserve(
-            budget,
-            HostWorkDimension::SearchStateBytes,
-            count
-                .checked_mul(size_of::<MeasuredPhloPrepaidUse<'_>>())
-                .and_then(|size| {
-                    occurrences
-                        .checked_mul(size_of::<NativePhloLocatedDemand<'_>>() + size_of::<u64>())
-                        .and_then(|origins| size.checked_add(origins))
-                })
-                .ok_or_else(|| invalid("measured prepaid allocation overflow"))?,
-        )?;
         let mut origins = Vec::new();
         origins
             .try_reserve_exact(occurrences)
@@ -493,7 +440,6 @@ impl NativePrepaidInventory<'_, '_> {
             .try_reserve_exact(occurrences)
             .map_err(|_| invalid("measured prepaid occurrence allocation failed"))?;
         for (origin, amount) in input.demand.occurrences() {
-            reserve(budget, HostWorkDimension::VerificationOperations, 1)?;
             origins.push(origin);
             remaining.push(amount.quantity);
         }
@@ -503,10 +449,8 @@ impl NativePrepaidInventory<'_, '_> {
             .map_err(|_| invalid("measured prepaid assignment allocation failed"))?;
         let mut positions = input.demand_positions.iter();
         let mut authority_bytes = limits.authority_bytes;
-        let mut depth = 0;
         for prefix in &prefixes {
             for (cell, current) in prefix.resources().iter().zip(prefix.current_authorities()) {
-                reserve(budget, HostWorkDimension::VerificationOperations, 1)?;
                 let index = *positions
                     .next()
                     .ok_or_else(|| invalid("missing prepaid demand position"))?;
@@ -515,14 +459,10 @@ impl NativePrepaidInventory<'_, '_> {
                     .ok_or_else(|| invalid("prepaid demand position is out of range"))?;
                 let expected = origin.purse().original_authority();
                 for signature in [current, expected] {
-                    reserve_authority_signature_tree(signature, budget, &mut depth)
-                        .map_err(|error| invalid(&error.to_string()))?;
                     let length = signature.encoded_len();
                     authority_bytes = authority_bytes
                         .checked_sub(length)
                         .ok_or_else(|| invalid("prepaid demand authority byte limit exceeded"))?;
-                    reserve(budget, HostWorkDimension::VerificationBytes, length)?;
-                    reserve(budget, HostWorkDimension::VerificationOperations, length)?;
                 }
                 if current != expected {
                     return Err(invalid(
@@ -553,13 +493,9 @@ impl NativePrepaidInventory<'_, '_> {
                 });
             }
         }
-        let prepared = bind_measured_phlo_prepaid(
-            input.demand.resources(),
-            &assignments,
-            limits.execution,
-            budget,
-        )
-        .map_err(|error| invalid(&error.to_string()))?;
+        let prepared =
+            bind_measured_phlo_prepaid(input.demand.resources(), &assignments, limits.execution)
+                .map_err(|error| invalid(&error.to_string()))?;
         Ok(NativePrepaidDemandBinding {
             root: self.root(),
             controls: input.controls,
@@ -599,7 +535,6 @@ mod tests {
     use std::collections::BTreeMap;
 
     use models::rust::cost_protocol_limits::offered_funded_v6_limits;
-    use models::rust::host_work::{HostWorkLimit, HostWorkLimits};
     use models::rust::native_cost_evidence::{
         NativePrepaidDeltaV1, NativePrepaidDraw, NativeSectionError,
     };
@@ -620,10 +555,6 @@ mod tests {
         Forward,
     }
 
-    fn unlimited() -> HostWorkBudget {
-        HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(u64::MAX)))
-    }
-
     /// The selection of `rule`. Stack i has the instance [i + 1; 32], so the
     /// captured order is the instance order, as in `CapturedPrepaidStacks`.
     fn run(
@@ -633,7 +564,6 @@ mod tests {
         occurrences: &[(u8, u8)],
         draw_limit: usize,
     ) -> Result<CanonicalPrepaidSelection, CasperError> {
-        let budget = unlimited();
         let views = stacks
             .iter()
             .enumerate()
@@ -647,8 +577,8 @@ mod tests {
             Ok(*cell == occurrence.0 && *current == occurrence.1)
         };
         match rule {
-            Rule::Old => old_select_prefixes(views, occurrences, draw_limit, &budget, matches),
-            Rule::Forward => select_prefixes(views, occurrences, draw_limit, &budget, matches),
+            Rule::Old => old_select_prefixes(views, occurrences, draw_limit, matches),
+            Rule::Forward => select_prefixes(views, occurrences, draw_limit, matches),
         }
     }
 
@@ -694,7 +624,6 @@ mod tests {
         stacks: impl IntoIterator<Item = SelectionStack<'r, Cell, Current>>,
         occurrences: &[Occurrence],
         draw_limit: usize,
-        budget: &HostWorkBudget,
         mut matches: impl FnMut(&Cell, &Current, &Occurrence) -> Result<bool, CasperError>,
     ) -> Result<CanonicalPrepaidSelection, CasperError> {
         let count = occurrences.len();
@@ -712,7 +641,6 @@ mod tests {
             let mut best_index = None;
             best_positions.clear();
             for (receipt_index, record) in records.iter().enumerate() {
-                reserve(budget, HostWorkDimension::SearchCandidates, 1)?;
                 if selected_receipts.contains(&(stack.source, receipt_index)) {
                     continue;
                 }
@@ -723,7 +651,6 @@ mod tests {
                 for (cell, current) in record.iter().zip(stack.current) {
                     let mut matched = None;
                     for (position, occurrence) in occurrences.iter().enumerate() {
-                        reserve(budget, HostWorkDimension::SearchCandidates, 1)?;
                         if used[position] || candidate_used[position] {
                             continue;
                         }
@@ -755,11 +682,6 @@ mod tests {
             }
             let count = u64::try_from(best_positions.len())
                 .map_err(|_| invalid("prepaid selected prefix count overflow"))?;
-            reserve(
-                budget,
-                HostWorkDimension::SearchStateBytes,
-                size_of::<([u8; 32], usize)>() + 64,
-            )?;
             selected_receipts.insert((stack.source, receipt_index));
             draws.push(PrepaidStackPop {
                 stack_id: stack.instance,

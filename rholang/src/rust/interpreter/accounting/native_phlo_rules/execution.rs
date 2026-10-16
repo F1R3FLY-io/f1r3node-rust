@@ -1,9 +1,7 @@
-use std::mem::size_of;
 use std::sync::Arc;
 
 use models::rhoapi::cost_signature::Value;
 use models::rhoapi::CostSignature;
-use models::rust::host_work::HostWorkDimension;
 use thiserror::Error;
 
 use super::{
@@ -14,16 +12,13 @@ use crate::rust::interpreter::accounting::authority::AuthorityError;
 use crate::rust::interpreter::accounting::byte_receipts::{
     ByteObservation, ByteObservationSnapshot,
 };
-use crate::rust::interpreter::accounting::monetary_allocation::{reserve_work, FundingSearchError};
+use crate::rust::interpreter::accounting::monetary_allocation::FundingSearchError;
 use crate::rust::interpreter::accounting::phlo_controls::{
     CheckedPhloControls, PhloScheduleBinding,
 };
-use crate::rust::interpreter::host_work::HostWorkBudget;
 
 mod budget_trace;
-pub(in crate::rust::interpreter::accounting) use budget_trace::{
-    observation_comparison_bytes, CheckedNativeBudgetEvidence,
-};
+pub(in crate::rust::interpreter::accounting) use budget_trace::CheckedNativeBudgetEvidence;
 pub use budget_trace::{
     CheckedNativeBudgetTrace, NativeAttemptStage, NativeBudgetAttempt, NativeBudgetOccurrence,
     NativeBudgetReplayDecision, NativeBudgetTraceError, NativeBudgetTraceLimits,
@@ -153,9 +148,8 @@ impl<'a> NativePhloExecutionContract<'a> {
         &self,
         observation: Arc<ByteObservation>,
         limits: NativePhloRegionLimits,
-        budget: &HostWorkBudget,
     ) -> Result<PreparedNativePhloCharge, NativePhloExecutionError> {
-        self.policy.prepare(observation, limits, budget)
+        self.policy.prepare(observation, limits)
     }
 }
 
@@ -164,13 +158,7 @@ impl NativePhloExecutionPolicy {
         self: &Arc<Self>,
         observation: Arc<ByteObservation>,
         limits: NativePhloRegionLimits,
-        budget: &HostWorkBudget,
     ) -> Result<PreparedNativePhloCharge, NativePhloExecutionError> {
-        reserve_work(
-            budget,
-            HostWorkDimension::SearchStateBytes,
-            size_of::<Arc<ByteObservation>>(),
-        )?;
         let mut rows = Vec::new();
         rows.try_reserve_exact(1)
             .map_err(|_| FundingSearchError::AllocationFailed)?;
@@ -181,7 +169,7 @@ impl NativePhloExecutionPolicy {
             history_lost: false,
         };
         let measured = self.rules.measure(&snapshot, 1)?;
-        let regions = measured.region_demands(limits, budget)?;
+        let regions = measured.region_demands(limits)?;
         let mut usage = 0_u64;
         for demand in regions.occurrences() {
             let signature = demand
@@ -189,7 +177,7 @@ impl NativePhloExecutionPolicy {
                 .signature
                 .as_ref()
                 .ok_or(AuthorityError::MissingSignature)?;
-            let units = authority_units(signature, budget)?;
+            let units = authority_units(signature)?;
             let measurement = demand.measurement();
             let weight = self.weights[measurement.class()];
             // Changed by DR-113: a zero factor gives an exact zero charge, so
@@ -241,9 +229,8 @@ impl NativePhloReservation {
         &self,
         observation: Arc<ByteObservation>,
         limits: NativePhloRegionLimits,
-        budget: &HostWorkBudget,
     ) -> Result<PreparedNativePhloCharge, NativePhloExecutionError> {
-        self.policy.prepare(observation, limits, budget)
+        self.policy.prepare(observation, limits)
     }
 
     pub fn reserve(
@@ -265,9 +252,8 @@ impl NativePhloChargePreparer {
         &self,
         observation: Arc<ByteObservation>,
         limits: NativePhloRegionLimits,
-        budget: &HostWorkBudget,
     ) -> Result<PreparedNativePhloCharge, NativePhloExecutionError> {
-        self.policy.prepare(observation, limits, budget)
+        self.policy.prepare(observation, limits)
     }
 }
 
@@ -286,10 +272,7 @@ fn reserve_native_usage(
     Ok(())
 }
 
-fn authority_units(
-    signature: &CostSignature,
-    budget: &HostWorkBudget,
-) -> Result<u64, NativePhloExecutionError> {
+fn authority_units(signature: &CostSignature) -> Result<u64, NativePhloExecutionError> {
     // Moved by dedup (task 11415) to `signature_leaf_units` in this file. The
     // native meter keeps its charges in `NativeUnitsMeter` below.
     // let mut pending = Vec::new();
@@ -341,22 +324,15 @@ fn authority_units(
     //     }
     // }
     // Ok(units)
-    signature_leaf_units(signature, &NativeUnitsMeter { budget })
+    signature_leaf_units(signature, &NativeUnitsMeter)
 }
 
-/// Added by dedup (task 11415, D8): how a walk over the leaves of a cost
-/// signature meters its work. The native meter charges search-state bytes and
-/// verification operations. The metered estimate charges one structural item
-/// for each node, and the estimate charges nothing. Each meter keeps its own
-/// charges, at the same points of the walk as before.
+/// Added by dedup (task 11415, D8): the policy of a walk over the leaves of a
+/// cost signature. Changed by DR-131: no policy charges host work. The native
+/// policy rejects an unsupported node and checks the unit count for overflow.
+/// The estimate accepts the node and saturates the count.
 pub(crate) trait SignatureUnitsMeter {
     type Error;
-    /// Before the walk allocates its stack.
-    fn start(&self) -> Result<(), Self::Error>;
-    /// Before the walk reads a node.
-    fn node(&self) -> Result<(), Self::Error>;
-    /// Before the walk pushes the elements of a compound.
-    fn compound(&self, elements: usize) -> Result<(), Self::Error>;
     /// A node that is not a leaf, not a compound and not the true unit.
     fn other(&self) -> Result<(), Self::Error>;
     /// The units after one more leaf.
@@ -368,13 +344,12 @@ pub(crate) trait SignatureUnitsMeter {
 /// Added by dedup (task 11415, D8): the units of a lane, the number of Ground,
 /// Name and Quote leaves of its signature. The walk uses a heap stack
 /// (DR-67), so its stack depth does not grow with the nesting of the
-/// signature. The native meter (`authority_units`) and the two unit functions
-/// of the estimate (`delta_sigma/estimate.rs`) share it.
+/// signature. The native meter (`authority_units`) and the unit function of
+/// the estimate (`signature_units` in `delta_sigma/estimate.rs`) share it.
 pub(crate) fn signature_leaf_units<M: SignatureUnitsMeter>(
     signature: &CostSignature,
     meter: &M,
 ) -> Result<u64, M::Error> {
-    meter.start()?;
     let mut pending = Vec::new();
     pending
         .try_reserve_exact(1)
@@ -382,14 +357,12 @@ pub(crate) fn signature_leaf_units<M: SignatureUnitsMeter>(
     pending.push(signature);
     let mut units = 0_u64;
     while let Some(current) = pending.pop() {
-        meter.node()?;
         match current.value.as_ref() {
             Some(Value::Unit(true)) => {}
             Some(Value::Ground(_) | Value::Name(_) | Value::Quote(_)) => {
                 units = meter.add(units)?;
             }
             Some(Value::Compound(compound)) => {
-                meter.compound(compound.elements.len())?;
                 pending
                     .try_reserve(compound.elements.len())
                     .map_err(|_| meter.allocation())?;
@@ -401,49 +374,20 @@ pub(crate) fn signature_leaf_units<M: SignatureUnitsMeter>(
     Ok(units)
 }
 
-/// Added by dedup (task 11415, D8): the charges of `authority_units`, as the
-/// native meter made them before the walk moved.
-struct NativeUnitsMeter<'b> {
-    budget: &'b HostWorkBudget,
-}
+/// Added by dedup (task 11415, D8): the errors of `authority_units`, as the
+/// native meter reported them before the walk moved.
+struct NativeUnitsMeter;
 
-impl SignatureUnitsMeter for NativeUnitsMeter<'_> {
+impl SignatureUnitsMeter for NativeUnitsMeter {
     type Error = NativePhloExecutionError;
-
-    fn start(&self) -> Result<(), Self::Error> {
-        reserve_work(
-            self.budget,
-            HostWorkDimension::SearchStateBytes,
-            size_of::<&CostSignature>(),
-        )?;
-        Ok(())
-    }
-
-    fn node(&self) -> Result<(), Self::Error> {
-        reserve_work(self.budget, HostWorkDimension::VerificationOperations, 1)?;
-        Ok(())
-    }
-
-    fn compound(&self, elements: usize) -> Result<(), Self::Error> {
-        reserve_work(
-            self.budget,
-            HostWorkDimension::SearchStateBytes,
-            // DR-113: a sizing overflow is host work, never a charge.
-            elements
-                .checked_mul(size_of::<&CostSignature>())
-                .ok_or(FundingSearchError::AllocationFailed)?,
-        )?;
-        Ok(())
-    }
 
     fn other(&self) -> Result<(), Self::Error> {
         Err(AuthorityError::UnsupportedFundingSignature.into())
     }
 
     fn add(&self, units: u64) -> Result<u64, Self::Error> {
-        // DR-113: this overflow needs more than 2^64 signature leaves, and
-        // each leaf reserves one verification operation first, so the
-        // host-work budget rejects long before it.
+        // DR-113: this overflow needs more than 2^64 signature leaves, more
+        // than any signature in memory holds.
         units
             .checked_add(1)
             .ok_or(NativePhloExecutionError::Overflow)

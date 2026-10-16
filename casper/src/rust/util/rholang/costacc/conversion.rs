@@ -1,8 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
-use std::mem::size_of;
 
 use models::rust::cost_protocol_limits::offered_funded_v6_limits;
-use models::rust::host_work::{HostWorkDimension, HostWorkReservationError, HostWorkUnits};
 use models::rust::phlo_intent::{
     quote_evidence_commitment, PhloConversionCompositionV2, PhloFundingIntentV2,
 };
@@ -10,7 +8,6 @@ use models::rust::phlo_quote_v2::{
     PhloQuoteAmountV2, PhloQuoteEvidenceV2, PhloQuoteUseV2, PhloQuoteV2Error,
 };
 use models::rust::phlo_wire::PhloWireLimits;
-use rholang::rust::interpreter::host_work::HostWorkBudget;
 use thiserror::Error;
 
 mod accepted_trade;
@@ -106,8 +103,6 @@ pub enum ConversionPlanError {
     Overflow,
     #[error(transparent)]
     Quote(#[from] PhloQuoteV2Error),
-    #[error(transparent)]
-    HostBudget(#[from] HostWorkReservationError),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -146,18 +141,11 @@ pub struct ConversionContext<'a> {
 pub fn plan_atomic_quote_uses(
     context: ConversionContext<'_>,
     uses: &[AtomicQuoteUse<'_>],
-    budget: &HostWorkBudget,
 ) -> Result<Vec<PlannedAtomicQuoteUse>, ConversionPlanError> {
     let limits = offered_conversion_plan_limits();
     if uses.len() > limits.uses {
         return Err(ConversionPlanError::ProtocolLimit);
     }
-    reserve(budget, HostWorkDimension::SearchCandidates, uses.len())?;
-    let plan_bytes = uses
-        .len()
-        .checked_mul(size_of::<PlannedAtomicQuoteUse>() + 2048)
-        .ok_or(ConversionPlanError::Overflow)?;
-    reserve(budget, HostWorkDimension::SearchStateBytes, plan_bytes)?;
     let mut operations = BTreeSet::new();
     let mut quote_uses =
         BTreeMap::<[u8; 32], ([u8; 32], u128, &BTreeSet<[u8; 32]>, u128, usize)>::new();
@@ -167,7 +155,6 @@ pub fn plan_atomic_quote_uses(
         .try_reserve(uses.len())
         .map_err(|_| ConversionPlanError::Overflow)?;
     for use_ in uses {
-        reserve(budget, HostWorkDimension::VerificationOperations, 64)?;
         if !operations.insert(use_.operation_id) {
             return Err(ConversionPlanError::Duplicate);
         }
@@ -190,14 +177,6 @@ pub fn plan_atomic_quote_uses(
         if quote_evidence.len() > limits.quote_wire.total_bytes {
             return Err(ConversionPlanError::ProtocolLimit);
         }
-        reserve(
-            budget,
-            HostWorkDimension::VerificationBytes,
-            quote_evidence
-                .len()
-                .checked_mul(2)
-                .ok_or(ConversionPlanError::Overflow)?,
-        )?;
         let quote = PhloQuoteEvidenceV2::decode(quote_evidence, limits.quote_wire)?;
         let recipient = use_
             .intent
@@ -262,14 +241,6 @@ pub fn plan_atomic_quote_uses(
         {
             return Err(ConversionPlanError::ProtocolLimit);
         }
-        reserve(budget, HostWorkDimension::VerificationBytes, snapshot_bytes)?;
-        reserve(
-            budget,
-            HostWorkDimension::SearchStateBytes,
-            identity_bytes
-                .checked_mul(3)
-                .ok_or(ConversionPlanError::Overflow)?,
-        )?;
         if input.root != context.root
             || input.source.root != context.root
             || provider.root != context.root
@@ -364,16 +335,6 @@ pub fn plan_atomic_quote_uses(
     Ok(plans)
 }
 
-fn reserve(
-    budget: &HostWorkBudget,
-    dimension: HostWorkDimension,
-    amount: usize,
-) -> Result<(), ConversionPlanError> {
-    let units = u64::try_from(amount).map_err(|_| ConversionPlanError::Overflow)?;
-    budget.reserve(dimension, HostWorkUnits::new(units))?;
-    Ok(())
-}
-
 fn reserve_physical(
     physical: &mut BTreeMap<(Vec<u8>, Vec<u8>), ([u8; 32], u128, u128)>,
     source: &RootedPhysicalCapacity,
@@ -401,7 +362,6 @@ pub fn check_separate_prior(
     trade: &RootedAcceptedTrade,
     output: &RootedPhysicalCapacity,
     required_hold: u128,
-    budget: &HostWorkBudget,
 ) -> Result<(), ConversionPlanError> {
     let limits = offered_conversion_plan_limits();
     let provenance_bytes = trade
@@ -423,12 +383,6 @@ pub fn check_separate_prior(
     {
         return Err(ConversionPlanError::ProtocolLimit);
     }
-    reserve(
-        budget,
-        HostWorkDimension::VerificationBytes,
-        provenance_bytes,
-    )?;
-    reserve(budget, HostWorkDimension::VerificationOperations, 16)?;
     let PhloConversionCompositionV2::SeparatePrior {
         accepted_trade,
         output_source_index,

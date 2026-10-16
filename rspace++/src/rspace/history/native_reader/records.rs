@@ -11,8 +11,8 @@
 //! reports how many bytes it consumed, and the bounded tail decodes as one
 //! bincode tuple (`legacy_tail`).
 //!
-//! S6 of the host-work removal replaces the typed decoder (`typed.rs`) with
-//! these functions at every call site.
+//! S6 of the host-work removal replaced the typed decoder (`typed.rs`, now
+//! deleted) with these functions at every call site.
 
 use std::collections::BTreeSet;
 

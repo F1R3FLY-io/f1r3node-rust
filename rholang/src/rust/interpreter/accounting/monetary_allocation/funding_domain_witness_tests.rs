@@ -1,13 +1,8 @@
 use std::num::NonZeroUsize;
 
-use models::rust::host_work::{HostWorkLimit, HostWorkLimits};
 use proptest::prelude::*;
 
 use super::*;
-
-fn budget() -> HostWorkBudget {
-    HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(100_000_000)))
-}
 
 fn limits() -> FundingSearchLimits {
     FundingSearchLimits {
@@ -32,23 +27,16 @@ fn check(
             selected_obligations: selected,
         },
         limits(),
-        &budget(),
     )
 }
 
 #[test]
 fn combined_restriction_returns_the_formal_capped_counterexample() {
     let edges = [vec![false, false, true], vec![true, true, true]];
-    let witness = build_funding_domain_counterexample(
-        &[3, 6],
-        &[2, 2, 2],
-        &edges,
-        &[true, false],
-        limits(),
-        &budget(),
-    )
-    .unwrap()
-    .unwrap();
+    let witness =
+        build_funding_domain_counterexample(&[3, 6], &[2, 2, 2], &edges, &[true, false], limits())
+            .unwrap()
+            .unwrap();
     assert_eq!(witness.view().contributions, &[3, 3]);
     assert_eq!(witness.view().selected_obligations, &[true, true, false]);
     assert_eq!(
@@ -92,7 +80,6 @@ fn witnesses_preserve_wide_capacity_arithmetic_and_zero_semantics() {
         &edges,
         &[true, false],
         limits(),
-        &budget(),
     )
     .unwrap()
     .unwrap();
@@ -113,8 +100,7 @@ fn witnesses_preserve_wide_capacity_arithmetic_and_zero_semantics() {
             &[],
             &[vec![], vec![]],
             &[true, false],
-            limits(),
-            &budget()
+            limits()
         ),
         Ok(None)
     );
@@ -124,8 +110,7 @@ fn witnesses_preserve_wide_capacity_arithmetic_and_zero_semantics() {
             &[1, 1],
             &[vec![true, false], vec![true, true]],
             &[true, false],
-            limits(),
-            &budget()
+            limits()
         ),
         Ok(None)
     );
@@ -151,18 +136,11 @@ fn malformed_witnesses_and_insufficient_aggregate_capacity_are_explicit_errors()
         Err(FundingAssignmentError::EmptySources.into())
     );
     assert_eq!(
-        build_funding_domain_counterexample(
-            &[1, 1],
-            &[3],
-            &edges,
-            &[true, false],
-            limits(),
-            &budget()
-        ),
+        build_funding_domain_counterexample(&[1, 1], &[3], &edges, &[true, false], limits()),
         Err(FundingAssignmentError::InsufficientSourceCapacity.into())
     );
     assert_eq!(
-        build_funding_domain_counterexample(&[1, 1], &[1], &edges, &[true], limits(), &budget()),
+        build_funding_domain_counterexample(&[1, 1], &[1], &edges, &[true], limits()),
         Err(FundingAssignmentError::InvalidDimensions.into())
     );
     assert_eq!(
@@ -171,8 +149,7 @@ fn malformed_witnesses_and_insufficient_aggregate_capacity_are_explicit_errors()
             &[u64::MAX, 1],
             &[vec![true, true]],
             &[true],
-            limits(),
-            &budget()
+            limits()
         ),
         Err(FundingAssignmentError::Overflow.into())
     );
@@ -181,61 +158,13 @@ fn malformed_witnesses_and_insufficient_aggregate_capacity_are_explicit_errors()
         obligation_cap: NonZeroUsize::new(1).unwrap(),
     };
     assert_eq!(
-        build_funding_domain_counterexample(&[1, 1], &[1], &edges, &[true, false], tiny, &budget()),
+        build_funding_domain_counterexample(&[1, 1], &[1], &edges, &[true, false], tiny),
         Err(FundingAssignmentError::TooManySources.into())
     );
     assert_eq!(
-        build_funding_domain_counterexample(
-            &[1],
-            &[1, 1],
-            &[vec![true, true]],
-            &[true],
-            tiny,
-            &budget()
-        ),
+        build_funding_domain_counterexample(&[1], &[1, 1], &[vec![true, true]], &[true], tiny),
         Err(FundingAssignmentError::TooManyObligations.into())
     );
-}
-
-#[test]
-fn every_budget_prefix_returns_no_partial_witness() {
-    let capacity = [3, 6];
-    let demand = [2, 2, 2];
-    let edges = [vec![false, false, true], vec![true, true, true]];
-    let measured = budget();
-    assert!(build_funding_domain_counterexample(
-        &capacity,
-        &demand,
-        &edges,
-        &[true, false],
-        limits(),
-        &measured
-    )
-    .unwrap()
-    .is_some());
-    for dimension in [
-        HostWorkDimension::SearchCandidates,
-        HostWorkDimension::SearchStateBytes,
-        HostWorkDimension::VerificationOperations,
-    ] {
-        for amount in 0..measured.usage(dimension).get() {
-            let mut bounds = HostWorkLimits::uniform(HostWorkLimit::new(100_000_000));
-            bounds.set(dimension, HostWorkLimit::new(amount));
-            let work = HostWorkBudget::new(bounds);
-            assert!(matches!(
-                build_funding_domain_counterexample(
-                    &capacity,
-                    &demand,
-                    &edges,
-                    &[true, false],
-                    limits(),
-                    &work
-                ),
-                Err(FundingSearchError::HostWork(_))
-            ));
-            assert!(work.is_rejected());
-        }
-    }
 }
 
 proptest! {
@@ -253,7 +182,7 @@ proptest! {
         let selected = &selectors[..capacity.len()];
         let total: u128 = demand.iter().copied().map(u128::from).sum();
         let available: u128 = capacity.iter().copied().map(u128::from).sum();
-        let outcome = build_funding_domain_counterexample(&capacity, &demand, &edges, selected, limits(), &budget());
+        let outcome = build_funding_domain_counterexample(&capacity, &demand, &edges, selected, limits());
         if available < total {
             prop_assert_eq!(outcome, Err(FundingAssignmentError::InsufficientSourceCapacity.into()));
         } else {

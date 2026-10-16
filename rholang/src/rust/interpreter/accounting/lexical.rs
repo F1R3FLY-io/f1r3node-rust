@@ -11,16 +11,12 @@ use models::rhoapi::{
     Bundle, CostSignature, CostSignedTerm, CostStack, EVar, Expr, GPrivate, GUnforgeable, If,
     Match, MatchCase, New, Par, ReceiveBind, Send, Var,
 };
-use models::rust::host_work::{HostWorkDimension, HostWorkUnits};
 use models::rust::utils::union;
-use shared::rust::clone_backing::{self, BackingError, BackingMeter, CloneBacking};
-use shared::rust::collection_backing::hash_backing;
 
 use super::costs::Cost;
 use super::RuntimeBudget;
 use crate::rust::interpreter::env::Env;
 use crate::rust::interpreter::errors::InterpreterError;
-use crate::rust::interpreter::host_work::HostWorkBudget;
 use crate::rust::interpreter::metering::MeteredMachine;
 use crate::rust::interpreter::rho_type::{RhoExpression, RhoUnforgeable};
 use crate::rust::interpreter::substitute::Substitute;
@@ -33,8 +29,12 @@ use crate::rust::interpreter::util::{allocate_new_bindings, evaluation_terms};
 /// Resolves, for the funding analysis, the names that a deploy binds with
 /// `new` where the reducer allocates them from the deploy's own randomness.
 /// The resolved names replace the bound levels of the cost signatures that the
-/// analyzer reads. This entry is not metered. The pre-execution funding check
-/// uses [`resolve_lexical_names_for_funding_metered`].
+/// analyzer reads.
+///
+/// G1-2 (DR-67): the resolver visits each node once, keeps the bindings in one
+/// scope stack and resolves each cost signature once, so its work is linear in
+/// the size of the program. Its walk uses a heap work stack, so its stack depth
+/// does not grow with the nesting depth of the program.
 pub fn resolve_lexical_names_for_funding(
     program: &Par,
     rand: Blake2b512Random,
@@ -48,25 +48,7 @@ pub fn resolve_lexical_names_for_funding(
     //     metering: MeteredMachine::new(RuntimeBudget::new(Cost::unsafe_max())),
     // };
     // resolve_par(program.clone(), rand, urn_map, &substitute)
-    FundingResolver::new(urn_map, None).run(program, rand)
-}
-
-/// G1-2 (DR-67): the funding resolver of the pre-execution funding check. It
-/// runs on every incoming deploy before any payment, so it charges `host` for
-/// each unit of its work before it does the work, and it returns
-/// [`InterpreterError::HostWorkRejected`] when the budget is exhausted.
-///
-/// The resolver visits each node once, keeps the bindings in one scope stack
-/// and resolves each cost signature once, so its work is linear in the size of
-/// the program. Its walk uses a heap work stack, so its stack depth does not
-/// grow with the nesting depth of the program.
-pub fn resolve_lexical_names_for_funding_metered(
-    program: &Par,
-    rand: Blake2b512Random,
-    urn_map: &HashMap<String, Par>,
-    host: &HostWorkBudget,
-) -> Result<Par, InterpreterError> {
-    FundingResolver::new(urn_map, Some(host)).run(program, rand)
+    FundingResolver::new(urn_map).run(program, rand)
 }
 
 /// The randomness of a position. `Some` marks a position where the reducer
@@ -107,35 +89,6 @@ enum Task<'a> {
     /// and from its rebuilt children.
     Build(&'a Par),
 }
-
-/// The meter of copies and signature work: the reducer's mapping of
-/// operations, scanned bytes and backing bytes to the host-work dimensions.
-struct HostBacking<'h>(Option<&'h HostWorkBudget>);
-
-impl BackingMeter for HostBacking<'_> {
-    fn reserve(
-        &self,
-        operations: usize,
-        scanned: usize,
-        backing: usize,
-    ) -> Result<(), BackingError> {
-        let Some(host) = self.0 else {
-            return Ok(());
-        };
-        for (dimension, amount) in [
-            (HostWorkDimension::VerificationOperations, operations),
-            (HostWorkDimension::VerificationBytes, scanned),
-            (HostWorkDimension::SearchStateBytes, backing),
-        ] {
-            let amount = u64::try_from(amount).map_err(|_| BackingError::Overflow)?;
-            host.reserve(dimension, HostWorkUnits::new(amount))
-                .map_err(|_| BackingError::Rejected)?;
-        }
-        Ok(())
-    }
-}
-
-fn host_rejected(_: BackingError) -> InterpreterError { InterpreterError::HostWorkRejected }
 
 /// The number of evaluation terms of a node, as the reducer counts them
 /// (`util::evaluation_terms`). It reads the node without copying it.
@@ -320,9 +273,8 @@ pub(crate) fn dismantle(pars: Vec<Par>) { super::delta_sigma::estimate::dismantl
 /// position (DR-121): the reducer runs it with randomness that depends on the
 /// matched datum. The machine copies the fields that it does not walk and
 /// rewrites only cost signatures.
-struct FundingResolver<'u, 'h> {
+struct FundingResolver<'u> {
     urn_map: &'u HashMap<String, Par>,
-    host: Option<&'h HostWorkBudget>,
     substitute: Substitute,
     /// The binders in scope, outermost first. `Some` holds the value that the
     /// reducer binds, and `None` is a hole.
@@ -341,11 +293,10 @@ struct FundingResolver<'u, 'h> {
     levels: Vec<(usize, usize)>,
 }
 
-impl<'u, 'h> FundingResolver<'u, 'h> {
-    fn new(urn_map: &'u HashMap<String, Par>, host: Option<&'h HostWorkBudget>) -> Self {
+impl<'u> FundingResolver<'u> {
+    fn new(urn_map: &'u HashMap<String, Par>) -> Self {
         Self {
             urn_map,
-            host,
             substitute: Substitute {
                 metering: MeteredMachine::new(RuntimeBudget::new(Cost::unsafe_max())),
             },
@@ -356,27 +307,6 @@ impl<'u, 'h> FundingResolver<'u, 'h> {
             #[cfg(test)]
             levels: Vec::new(),
         }
-    }
-
-    fn charge(&self, dimension: HostWorkDimension, units: usize) -> Result<(), InterpreterError> {
-        let Some(host) = self.host else {
-            return Ok(());
-        };
-        let units = u64::try_from(units).map_err(|_| InterpreterError::HostWorkRejected)?;
-        host.reserve(dimension, HostWorkUnits::new(units))?;
-        Ok(())
-    }
-
-    fn backing(&self) -> HostBacking<'h> { HostBacking(self.host) }
-
-    /// Copies a field that the resolver does not walk. The charge prepays the
-    /// copy and its release, as the reducer does for its copies.
-    fn copy<T: Clone + CloneBacking>(&self, value: &T) -> Result<T, InterpreterError> {
-        if self.host.is_some() {
-            clone_backing::reserve_blocks_copy_and_cleanup(value, &self.backing())
-                .map_err(host_rejected)?;
-        }
-        Ok(value.clone())
     }
 
     fn run(mut self, program: &Par, rand: Blake2b512Random) -> Result<Par, InterpreterError> {
@@ -405,7 +335,6 @@ impl<'u, 'h> FundingResolver<'u, 'h> {
         task: Task<'a>,
         work: &mut Vec<Task<'a>>,
     ) -> Result<(), InterpreterError> {
-        self.charge(HostWorkDimension::StructuralItems, 1)?;
         match task {
             Task::Visit(par, position) => self.visit(par, position, work),
             Task::BindSignatures(binds, resolving) => {
@@ -467,10 +396,8 @@ impl<'u, 'h> FundingResolver<'u, 'h> {
         self.levels
             .push((par as *const Par as usize, self.bindings.len()));
         let mut ordered = Vec::with_capacity(scheduled_tasks(par));
-        self.charge(HostWorkDimension::StructuralItems, ordered.capacity())?;
         let terms = match position.as_ref() {
             Some(_) => {
-                self.charge(HostWorkDimension::StructuralItems, par.exprs.len())?;
                 let count = term_count(par);
                 if count > i16::MAX as usize {
                     return Err(InterpreterError::ReduceError(format!(
@@ -588,7 +515,6 @@ impl<'u, 'h> FundingResolver<'u, 'h> {
     }
 
     fn push_holes(&mut self, count: usize) -> Result<(), InterpreterError> {
-        self.charge(HostWorkDimension::SubstitutionBindings, count)?;
         self.bindings.reserve(count);
         self.bindings
             .extend(std::iter::repeat_with(|| None).take(count));
@@ -653,7 +579,6 @@ impl<'u, 'h> FundingResolver<'u, 'h> {
                 "new URI binding count exceeds the total binding count".to_string(),
             )
         })?;
-        self.charge(HostWorkDimension::SubstitutionBindings, bind_count)?;
         let mut values = Vec::with_capacity(bind_count);
         for _ in 0..simple_count {
             let name = Par::default().with_unforgeables(vec![GUnforgeable {
@@ -661,15 +586,11 @@ impl<'u, 'h> FundingResolver<'u, 'h> {
                     id: rand.next().into_iter().map(|byte| byte as u8).collect(),
                 })),
             }]);
-            if self.host.is_some() {
-                clone_backing::reserve_blocks_copy_and_cleanup(&name, &self.backing())
-                    .map_err(host_rejected)?;
-            }
             values.push(name);
         }
         for urn in &new.uri {
             let value = match self.urn_map.get(urn) {
-                Some(value) => self.copy(value)?,
+                Some(value) => value.clone(),
                 None => match new.injections.get(urn) {
                     Some(value) => {
                         if let Some(unforgeable) = RhoUnforgeable::unapply(value) {
@@ -678,18 +599,18 @@ impl<'u, 'h> FundingResolver<'u, 'h> {
                                     "unf_instance field is None".to_string(),
                                 )
                             })?;
-                            self.copy(&Par::default().with_unforgeables(vec![GUnforgeable {
+                            Par::default().with_unforgeables(vec![GUnforgeable {
                                 unf_instance: Some(instance),
-                            }]))?
+                            }])
                         } else if let Some(expression) = RhoExpression::unapply(value) {
                             let instance = expression.expr_instance.ok_or_else(|| {
                                 InterpreterError::BugFoundError(
                                     "expr_instance field is None".to_string(),
                                 )
                             })?;
-                            self.copy(&Par::default().with_exprs(vec![Expr {
+                            Par::default().with_exprs(vec![Expr {
                                 expr_instance: Some(instance),
-                            }]))?
+                            }])
                         } else {
                             return Err(InterpreterError::BugFoundError(
                                 "invalid injection".to_string(),
@@ -730,20 +651,14 @@ impl<'u, 'h> FundingResolver<'u, 'h> {
         resolving: bool,
     ) -> Result<CostSignature, InterpreterError> {
         if self.resolved_news == 0 {
-            return self.copy(signature);
+            return Ok(signature.clone());
         }
         if !resolving && self.quotes_a_free_level(signature)? {
-            return self.copy(signature);
+            return Ok(signature.clone());
         }
         let env = self.signature_env(signature)?;
-        let owned = self.copy(signature)?;
-        match self.host {
-            Some(_) => {
-                self.substitute
-                    .substitute_cost_signature_metered(owned, 0, &env, &self.backing())
-            }
-            None => self.substitute.substitute_cost_signature(owned, 0, &env),
-        }
+        self.substitute
+            .substitute_cost_signature(signature.clone(), 0, &env)
     }
 
     /// Added by the G1-4a fix (review H-1): whether a quoted or named process
@@ -753,13 +668,11 @@ impl<'u, 'h> FundingResolver<'u, 'h> {
     fn quotes_a_free_level(&self, signature: &CostSignature) -> Result<bool, InterpreterError> {
         let mut pending = vec![signature];
         while let Some(current) = pending.pop() {
-            self.charge(HostWorkDimension::StructuralItems, 1)?;
             match current.value.as_ref() {
                 Some(CostSignatureValue::Compound(compound)) => {
                     pending.extend(compound.elements.iter());
                 }
                 Some(CostSignatureValue::Quote(par)) | Some(CostSignatureValue::Name(par)) => {
-                    self.charge(HostWorkDimension::StructuralItems, par.locally_free.len())?;
                     if par.locally_free.iter().any(|free| *free != 0) {
                         return Ok(true);
                     }
@@ -785,7 +698,6 @@ impl<'u, 'h> FundingResolver<'u, 'h> {
         let mut referenced = Vec::new();
         let mut pending = vec![signature];
         while let Some(current) = pending.pop() {
-            self.charge(HostWorkDimension::StructuralItems, 1)?;
             match current.value.as_ref() {
                 Some(CostSignatureValue::BoundLevel(level)) => {
                     if let Ok(level) = usize::try_from(*level) {
@@ -796,7 +708,6 @@ impl<'u, 'h> FundingResolver<'u, 'h> {
                     pending.extend(compound.elements.iter());
                 }
                 Some(CostSignatureValue::Quote(par)) | Some(CostSignatureValue::Name(par)) => {
-                    self.charge(HostWorkDimension::StructuralItems, par.locally_free.len())?;
                     referenced.extend(
                         par.locally_free
                             .iter()
@@ -808,32 +719,28 @@ impl<'u, 'h> FundingResolver<'u, 'h> {
                 _ => {}
             }
         }
-        let level = i32::try_from(depth).map_err(|_| InterpreterError::HostWorkRejected)?;
+        let level = i32::try_from(depth).map_err(|_| {
+            InterpreterError::BugFoundError(
+                "funding resolver scope depth does not fit in i32".to_string(),
+            )
+        })?;
         let mut env = Env {
             env_map: HashMap::new(),
             level,
             shift: 0,
         };
-        if self.host.is_some() {
-            let (operations, backing) = hash_backing::<i32, Par>(referenced.len())
-                .ok_or(InterpreterError::HostWorkRejected)?;
-            self.backing()
-                .reserve(
-                    operations,
-                    referenced.len().saturating_mul(std::mem::size_of::<i32>()),
-                    backing,
-                )
-                .map_err(host_rejected)?;
-        }
         env.env_map.reserve(referenced.len());
         for level in referenced {
             let Some(binder) = depth.checked_sub(level + 1) else {
                 continue;
             };
             if let Some(Some(value)) = self.bindings.get(binder) {
-                let position =
-                    i32::try_from(binder).map_err(|_| InterpreterError::HostWorkRejected)?;
-                env.env_map.insert(position, self.copy(value)?);
+                let position = i32::try_from(binder).map_err(|_| {
+                    InterpreterError::BugFoundError(
+                        "funding resolver binder position does not fit in i32".to_string(),
+                    )
+                })?;
+                env.env_map.insert(position, value.clone());
             }
         }
         Ok(env)
@@ -844,10 +751,6 @@ impl<'u, 'h> FundingResolver<'u, 'h> {
     /// which the visit scheduled them.
     fn build(&mut self, par: &Par) -> Result<(), InterpreterError> {
         let (child_count, signature_count) = rebuilt_parts(par);
-        self.charge(
-            HostWorkDimension::StructuralItems,
-            child_count + signature_count,
-        )?;
         let child_start = self.pars.len().checked_sub(child_count).ok_or_else(|| {
             InterpreterError::BugFoundError("funding resolver lost a rebuilt child".to_string())
         })?;
@@ -875,10 +778,10 @@ impl<'u, 'h> FundingResolver<'u, 'h> {
                 data.push(children.next().ok_or_else(missing)?);
             }
             sends.push(Send {
-                chan: self.copy(&send.chan)?,
+                chan: send.chan.clone(),
                 data,
                 persistent: send.persistent,
-                locally_free: self.copy(&send.locally_free)?,
+                locally_free: send.locally_free.clone(),
                 connective_used: send.connective_used,
             });
         }
@@ -891,8 +794,8 @@ impl<'u, 'h> FundingResolver<'u, 'h> {
                     None => None,
                 };
                 binds.push(ReceiveBind {
-                    patterns: self.copy(&bind.patterns)?,
-                    source: self.copy(&bind.source)?,
+                    patterns: bind.patterns.clone(),
+                    source: bind.source.clone(),
                     remainder: bind.remainder,
                     free_count: bind.free_count,
                     cost_signature,
@@ -908,9 +811,9 @@ impl<'u, 'h> FundingResolver<'u, 'h> {
                 persistent: receive.persistent,
                 peek: receive.peek,
                 bind_count: receive.bind_count,
-                locally_free: self.copy(&receive.locally_free)?,
+                locally_free: receive.locally_free.clone(),
                 connective_used: receive.connective_used,
-                condition: self.copy(&receive.condition)?,
+                condition: receive.condition.clone(),
             });
         }
         let mut news = Vec::with_capacity(par.news.len());
@@ -922,9 +825,9 @@ impl<'u, 'h> FundingResolver<'u, 'h> {
             news.push(New {
                 bind_count: new.bind_count,
                 p,
-                uri: self.copy(&new.uri)?,
-                injections: self.copy(&new.injections)?,
-                locally_free: self.copy(&new.locally_free)?,
+                uri: new.uri.clone(),
+                injections: new.injections.clone(),
+                locally_free: new.locally_free.clone(),
             });
         }
         let mut matches = Vec::with_capacity(par.matches.len());
@@ -936,16 +839,16 @@ impl<'u, 'h> FundingResolver<'u, 'h> {
                     None => None,
                 };
                 cases.push(MatchCase {
-                    pattern: self.copy(&case.pattern)?,
+                    pattern: case.pattern.clone(),
                     source,
                     free_count: case.free_count,
-                    guard: self.copy(&case.guard)?,
+                    guard: case.guard.clone(),
                 });
             }
             matches.push(Match {
-                target: self.copy(&matched.target)?,
+                target: matched.target.clone(),
                 cases,
-                locally_free: self.copy(&matched.locally_free)?,
+                locally_free: matched.locally_free.clone(),
                 connective_used: matched.connective_used,
             });
         }
@@ -960,10 +863,10 @@ impl<'u, 'h> FundingResolver<'u, 'h> {
                 None => None,
             };
             conditionals.push(If {
-                condition: self.copy(&conditional.condition)?,
+                condition: conditional.condition.clone(),
                 if_true,
                 if_false,
-                locally_free: self.copy(&conditional.locally_free)?,
+                locally_free: conditional.locally_free.clone(),
                 connective_used: conditional.connective_used,
             });
         }
@@ -1011,11 +914,11 @@ impl<'u, 'h> FundingResolver<'u, 'h> {
             news,
             exprs,
             matches,
-            unforgeables: self.copy(&par.unforgeables)?,
+            unforgeables: par.unforgeables.clone(),
             bundles,
-            connectives: self.copy(&par.connectives)?,
+            connectives: par.connectives.clone(),
             conditionals,
-            locally_free: self.copy(&par.locally_free)?,
+            locally_free: par.locally_free.clone(),
             connective_used: par.connective_used,
             cost_signed_terms,
             cost_stacks,
@@ -1036,7 +939,6 @@ impl<'u, 'h> FundingResolver<'u, 'h> {
         &self,
         exprs: &[Expr],
     ) -> Result<(Vec<Expr>, Vec<Par>), InterpreterError> {
-        self.charge(HostWorkDimension::StructuralItems, exprs.len())?;
         let depth = self.bindings.len();
         let mut kept = Vec::with_capacity(exprs.len());
         let mut dequoted = Vec::new();
@@ -1055,8 +957,8 @@ impl<'u, 'h> FundingResolver<'u, 'h> {
                 _ => None,
             };
             match resolved {
-                Some(value) => dequoted.push(self.copy(value)?),
-                None => kept.push(self.copy(expr)?),
+                Some(value) => dequoted.push(value.clone()),
+                None => kept.push(expr.clone()),
             }
         }
         Ok((kept, dequoted))
@@ -1237,7 +1139,7 @@ pub(crate) fn resolver_levels(
     rand: Blake2b512Random,
     urn_map: &HashMap<String, Par>,
 ) -> Result<Vec<(usize, usize)>, InterpreterError> {
-    let mut resolver = FundingResolver::new(urn_map, None);
+    let mut resolver = FundingResolver::new(urn_map);
     let mut work = vec![Task::Visit(program, Some(rand))];
     while let Some(task) = work.pop() {
         if let Err(error) = resolver.step(task, &mut work) {

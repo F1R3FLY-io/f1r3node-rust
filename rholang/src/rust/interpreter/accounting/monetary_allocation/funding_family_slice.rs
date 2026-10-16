@@ -1,13 +1,8 @@
-use std::mem::size_of;
-
-use models::rust::host_work::HostWorkDimension;
-
 use super::{
-    filled_vec, reserve_work, solve_box_funding_feasibility, FundingAssignmentError,
-    FundingBoxFeasibility, FundingBoxProblem, FundingFamilyError, FundingFamilyLimits,
-    FundingFamilyOptimizationProblem, FundingOutcomeProblem, FundingSearchError,
+    filled_vec, solve_box_funding_feasibility, FundingAssignmentError, FundingBoxFeasibility,
+    FundingBoxProblem, FundingFamilyError, FundingFamilyLimits, FundingFamilyOptimizationProblem,
+    FundingOutcomeProblem, FundingSearchError,
 };
-use crate::rust::interpreter::host_work::HostWorkBudget;
 
 #[derive(Clone, Copy, Debug)]
 pub(super) enum FundingResourceConstraint<'a> {
@@ -22,19 +17,7 @@ pub(super) struct FundingFamilySliceWitness {
     pub(super) holds: Vec<u64>,
 }
 
-fn vector<T: Clone>(
-    count: usize,
-    value: T,
-    budget: &HostWorkBudget,
-) -> Result<Vec<T>, FundingSearchError> {
-    reserve_work(
-        budget,
-        HostWorkDimension::SearchStateBytes,
-        count
-            .checked_mul(size_of::<T>())
-            .ok_or(FundingSearchError::Overflow)?,
-    )?;
-    reserve_work(budget, HostWorkDimension::SearchCandidates, count)?;
+fn vector<T: Clone>(count: usize, value: T) -> Result<Vec<T>, FundingSearchError> {
     filled_vec(count, value)
 }
 
@@ -71,10 +54,9 @@ impl<'a> OutcomeCursor<'a> {
         constraint: FundingResourceConstraint<'a>,
         outcome: FundingOutcomeProblem<'_>,
         n: usize,
-        budget: &HostWorkBudget,
     ) -> Result<Self, FundingSearchError> {
-        let mut values = vector(n, 0_u64, budget)?;
-        let mut multiplicities = vector(n, 0_usize, budget)?;
+        let mut values = vector(n, 0_u64)?;
+        let mut multiplicities = vector(n, 0_usize)?;
         let mut distinct = 0;
         if let FundingResourceConstraint::Rank(rank) = constraint {
             for value in rank {
@@ -87,28 +69,21 @@ impl<'a> OutcomeCursor<'a> {
         }
         values.truncate(distinct);
         multiplicities.truncate(distinct);
-        reserve_work(
-            budget,
-            HostWorkDimension::VerificationOperations,
-            n.checked_mul(outcome.resources.obligations.len())
-                .ok_or(FundingSearchError::Overflow)?,
-        )?;
         Ok(Self {
             constraint,
-            remaining: vector(distinct, 0_usize, budget)?,
+            remaining: vector(distinct, 0_usize)?,
             values,
             multiplicities,
-            chosen: vector(n, 0_usize, budget)?,
-            next: vector(n, 0_usize, budget)?,
-            draws: vector(n, 0_u64, budget)?,
-            fees: vector(n, 0_u64, budget)?,
-            available: vector(n, 0_u64, budget)?,
-            lower: vector(n, 0_u64, budget)?,
-            upper: vector(n, 0_u64, budget)?,
+            chosen: vector(n, 0_usize)?,
+            next: vector(n, 0_usize)?,
+            draws: vector(n, 0_u64)?,
+            fees: vector(n, 0_u64)?,
+            available: vector(n, 0_u64)?,
+            lower: vector(n, 0_u64)?,
+            upper: vector(n, 0_u64)?,
             exposure: vector(
                 n.checked_add(1).ok_or(FundingSearchError::Overflow)?,
                 0_u128,
-                budget,
             )?,
             depth: 0,
             fee_next: 0,
@@ -136,11 +111,9 @@ impl<'a> OutcomeCursor<'a> {
         outcome: FundingOutcomeProblem<'_>,
         forced: Option<usize>,
         prior: &[u64],
-        budget: &HostWorkBudget,
     ) -> Result<bool, FundingSearchError> {
         let n = prior.len();
         loop {
-            reserve_work(budget, HostWorkDimension::SearchCandidates, 1)?;
             let payer = if let Some(eligible) = outcome.unit_fee_eligible {
                 let candidate = if let Some(forced) = forced {
                     if self.fee_next != 0 {
@@ -170,11 +143,6 @@ impl<'a> OutcomeCursor<'a> {
                 self.fee_next = 1;
                 None
             };
-            reserve_work(
-                budget,
-                HostWorkDimension::SearchCandidates,
-                n.checked_mul(4).ok_or(FundingSearchError::Overflow)?,
-            )?;
             self.fees.fill(0);
             if let Some(payer) = payer {
                 self.fees[payer] = 1;
@@ -207,17 +175,11 @@ impl<'a> OutcomeCursor<'a> {
         outcome: FundingOutcomeProblem<'_>,
         cursor: usize,
         limits: FundingFamilyLimits,
-        budget: &HostWorkBudget,
     ) -> Result<bool, FundingSearchError> {
         let n = self.draws.len();
         if self.all_edges {
             return Ok(true);
         }
-        reserve_work(
-            budget,
-            HostWorkDimension::SearchCandidates,
-            n.checked_mul(2).ok_or(FundingSearchError::Overflow)?,
-        )?;
         self.lower.fill(0);
         self.upper.copy_from_slice(&self.available);
         for depth in 0..self.depth {
@@ -246,7 +208,6 @@ impl<'a> OutcomeCursor<'a> {
                     eligible: outcome.resources.eligible,
                 },
                 limits.search,
-                budget,
             )?,
             FundingBoxFeasibility::Feasible { .. }
         ))
@@ -259,20 +220,14 @@ impl<'a> OutcomeCursor<'a> {
         forced: Option<usize>,
         prior: &[u64],
         limits: FundingFamilyLimits,
-        budget: &HostWorkBudget,
     ) -> Result<bool, FundingSearchError> {
         let n = prior.len();
         loop {
-            if !self.fee_active && !self.start_fee(problem, outcome, forced, prior, budget)? {
+            if !self.fee_active && !self.start_fee(problem, outcome, forced, prior)? {
                 return Ok(false);
             }
             if let FundingResourceConstraint::Fixed(fixed) = self.constraint {
                 self.fee_active = false;
-                reserve_work(
-                    budget,
-                    HostWorkDimension::SearchCandidates,
-                    n.checked_mul(2).ok_or(FundingSearchError::Overflow)?,
-                )?;
                 if fixed
                     .iter()
                     .zip(&self.available)
@@ -294,7 +249,7 @@ impl<'a> OutcomeCursor<'a> {
                 }
                 self.draws.copy_from_slice(fixed);
                 self.depth = n;
-                if self.flow_feasible(outcome, problem.resource_cursor, limits, budget)? {
+                if self.flow_feasible(outcome, problem.resource_cursor, limits)? {
                     return Ok(true);
                 }
                 continue;
@@ -305,7 +260,6 @@ impl<'a> OutcomeCursor<'a> {
                 self.remaining[self.chosen[self.depth]] += 1;
             }
             loop {
-                reserve_work(budget, HostWorkDimension::SearchCandidates, 1)?;
                 if self.depth == n {
                     self.yielded = true;
                     return Ok(true);
@@ -313,7 +267,6 @@ impl<'a> OutcomeCursor<'a> {
                 let source = cyclic(n, problem.resource_cursor, self.depth);
                 let mut found = false;
                 while self.next[self.depth] < self.values.len() {
-                    reserve_work(budget, HostWorkDimension::SearchCandidates, 1)?;
                     let choice = self.next[self.depth];
                     self.next[self.depth] += 1;
                     let value = self.values[choice];
@@ -336,7 +289,7 @@ impl<'a> OutcomeCursor<'a> {
                     self.remaining[choice] -= 1;
                     self.exposure[self.depth + 1] = exposure;
                     self.depth += 1;
-                    if self.flow_feasible(outcome, problem.resource_cursor, limits, budget)? {
+                    if self.flow_feasible(outcome, problem.resource_cursor, limits)? {
                         if self.depth < n {
                             self.next[self.depth] = 0;
                         }
@@ -366,7 +319,6 @@ pub(super) fn solve_funding_family_slice(
     constraints: &[FundingResourceConstraint<'_>],
     fixed_fee_payers: &[Option<usize>],
     limits: FundingFamilyLimits,
-    budget: &HostWorkBudget,
 ) -> Result<Option<FundingFamilySliceWitness>, FundingFamilyError> {
     let n = problem.capacities.len();
     let k = problem.outcomes.len();
@@ -388,7 +340,7 @@ pub(super) fn solve_funding_family_slice(
     if problem.resource_cursor >= n || problem.fee_cursor >= n {
         return Err(FundingSearchError::InvalidPriorityCursor.into());
     }
-    let zero = vector(n, 0_u64, budget)?;
+    let zero = vector(n, 0_u64)?;
     for ((outcome, constraint), forced) in problem
         .outcomes
         .iter()
@@ -408,7 +360,7 @@ pub(super) fn solve_funding_family_slice(
             obligations: outcome.resources.obligations,
             eligible: outcome.resources.eligible,
         }
-        .validate(limits.search, budget)?;
+        .validate(limits.search)?;
         if forced.is_some_and(|payer| payer >= n || outcome.unit_fee_eligible.is_none()) {
             return Err(FundingSearchError::InvalidAssignmentCell.into());
         }
@@ -420,13 +372,6 @@ pub(super) fn solve_funding_family_slice(
         if values.len() != n {
             return Err(FundingSearchError::from(FundingAssignmentError::InvalidDimensions).into());
         }
-        reserve_work(
-            budget,
-            HostWorkDimension::VerificationOperations,
-            n.checked_mul(2)
-                .and_then(|v| v.checked_add(outcome.resources.obligations.len()))
-                .ok_or(FundingSearchError::Overflow)?,
-        )?;
         if matches!(constraint, FundingResourceConstraint::Rank(_))
             && values.windows(2).any(|pair| pair[0] < pair[1])
         {
@@ -443,28 +388,21 @@ pub(super) fn solve_funding_family_slice(
             return Err(FundingSearchError::UnequalFundingTotals.into());
         }
     }
-    reserve_work(
-        budget,
-        HostWorkDimension::SearchStateBytes,
-        k.checked_mul(size_of::<OutcomeCursor<'_>>())
-            .ok_or(FundingSearchError::Overflow)?,
-    )?;
     let mut cursors = Vec::new();
     cursors
         .try_reserve_exact(k)
         .map_err(|_| FundingSearchError::AllocationFailed)?;
     for (outcome, constraint) in problem.outcomes.iter().zip(constraints) {
-        cursors.push(OutcomeCursor::new(*constraint, *outcome, n, budget)?);
+        cursors.push(OutcomeCursor::new(*constraint, *outcome, n)?);
     }
-    let mut draws = vector(k, Vec::new(), budget)?;
-    let mut fees = vector(k, Vec::new(), budget)?;
+    let mut draws = vector(k, Vec::new())?;
+    let mut fees = vector(k, Vec::new())?;
     let mut holds = vector(
         k.checked_add(1).ok_or(FundingSearchError::Overflow)?,
         Vec::new(),
-        budget,
     )?;
     for row in draws.iter_mut().chain(&mut fees).chain(&mut holds) {
-        *row = vector(n, 0_u64, budget)?;
+        *row = vector(n, 0_u64)?;
     }
     let mut depth = 0;
     while depth < k {
@@ -474,13 +412,7 @@ pub(super) fn solve_funding_family_slice(
             fixed_fee_payers[depth],
             &holds[depth],
             limits,
-            budget,
         )? {
-            reserve_work(
-                budget,
-                HostWorkDimension::SearchCandidates,
-                n.checked_mul(3).ok_or(FundingSearchError::Overflow)?,
-            )?;
             draws[depth].copy_from_slice(&cursors[depth].draws);
             fees[depth].copy_from_slice(&cursors[depth].fees);
             for i in 0..n {

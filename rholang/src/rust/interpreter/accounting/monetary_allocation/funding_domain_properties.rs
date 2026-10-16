@@ -1,4 +1,3 @@
-use models::rust::host_work::{HostWorkLimit, HostWorkLimits};
 use proptest::prelude::*;
 
 use super::super::{
@@ -6,22 +5,17 @@ use super::super::{
 };
 use super::*;
 
-fn work() -> HostWorkBudget {
-    HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(100_000_000)))
-}
-
 fn feasible(
     capacity: &[u64],
     demand: &[u64],
     eligible: &[Vec<bool>],
-    budget: &HostWorkBudget,
 ) -> Result<bool, FundingSearchError> {
     let limits = FundingSearchLimits {
         source_cap: NonZeroUsize::new(capacity.len().max(1)).unwrap(),
         obligation_cap: NonZeroUsize::new(demand.len().max(1)).unwrap(),
     };
     Ok(matches!(
-        solve_funding_feasibility(capacity, demand, eligible, limits, budget)?,
+        solve_funding_feasibility(capacity, demand, eligible, limits)?,
         FundingFeasibility::Feasible { .. }
     ))
 }
@@ -30,13 +24,12 @@ fn transposed_classification(
     capacity: &[u64],
     demand: &[u64],
     eligible: &[Vec<bool>],
-    budget: &HostWorkBudget,
 ) -> Result<Option<bool>, FundingSearchError> {
     let limits = FundingSearchLimits {
         source_cap: NonZeroUsize::new(capacity.len().max(1)).unwrap(),
         obligation_cap: NonZeroUsize::new(demand.len().max(1)).unwrap(),
     };
-    match classify_fixed_funding_domain(capacity, demand, eligible, limits, budget)? {
+    match classify_fixed_funding_domain(capacity, demand, eligible, limits)? {
         FundingDomainClassification::Infeasible {
             selected_obligations,
         } => {
@@ -86,14 +79,12 @@ fn transposed_classification(
                 demand,
                 eligible,
                 counterexample.view(),
-                limits,
-                &work()
+                limits
             )?);
             assert!(!feasible(
                 counterexample.view().contributions,
                 demand,
-                eligible,
-                &work()
+                eligible
             )?);
             Ok(Some(false))
         }
@@ -167,7 +158,7 @@ fn transposed_reduction_catches_combined_restrictions_missed_by_scalar_checks() 
         assert!(excluded <= 6 - demand[j]);
     }
     assert_eq!(
-        transposed_classification(&capacity, &demand, &eligible, &work()),
+        transposed_classification(&capacity, &demand, &eligible),
         Ok(Some(false))
     );
     assert_eq!(
@@ -191,7 +182,7 @@ fn redundant_missing_edges_do_not_select_the_restricted_policy() {
         Some(true)
     );
     assert_eq!(
-        transposed_classification(&capacity, &demand, &eligible, &work()),
+        transposed_classification(&capacity, &demand, &eligible),
         Ok(Some(true))
     );
 }
@@ -210,7 +201,7 @@ fn exhaustive_two_by_two_domains_match_all_integer_contribution_vectors() {
                         ]];
                         let expected = all_contribution_vectors(&[a, b], &[x, y], &eligible);
                         assert_eq!(
-                            transposed_classification(&[a, b], &[x, y], &eligible, &work()),
+                            transposed_classification(&[a, b], &[x, y], &eligible),
                             Ok(expected),
                             "capacity={:?}, demand={:?}, edges={eligible:?}",
                             [a, b],
@@ -230,46 +221,21 @@ fn transposed_reduction_handles_wide_capacities_zero_demands_and_large_cohorts()
     for count in [1, 2, 3, 64, 65, 129] {
         let capacity = vec![u64::MAX; count];
         assert_eq!(
-            transposed_classification(&capacity, &[], &vec![vec![]; count], &work()),
+            transposed_classification(&capacity, &[], &vec![vec![]; count]),
             Ok(Some(true))
         );
         assert_eq!(
-            transposed_classification(&capacity, &[u64::MAX], &vec![vec![true]; count], &work()),
+            transposed_classification(&capacity, &[u64::MAX], &vec![vec![true]; count]),
             Ok(Some(true))
         );
         if count > 1 {
             let mut eligible = vec![vec![true, true]; count];
             eligible[0][0] = false;
             assert_eq!(
-                transposed_classification(&capacity, &[1, u64::MAX - 1], &eligible, &work()),
+                transposed_classification(&capacity, &[1, u64::MAX - 1], &eligible),
                 Ok(Some(false))
             );
         }
-    }
-}
-
-#[test]
-fn transposed_solver_budget_failure_is_not_a_restricted_classification() {
-    let capacity = [1, 1];
-    let demand = [1, 1];
-    let eligible = [vec![true, false], vec![true, true]];
-    let measured = work();
-    assert!(feasible(&capacity, &demand, &eligible, &measured).unwrap());
-    for dimension in [
-        HostWorkDimension::SearchCandidates,
-        HostWorkDimension::SearchStateBytes,
-        HostWorkDimension::VerificationOperations,
-    ] {
-        let mut bounds = HostWorkLimits::uniform(HostWorkLimit::new(100_000_000));
-        bounds.set(
-            dimension,
-            HostWorkLimit::new(measured.usages().get(dimension).get()),
-        );
-        let limited = HostWorkBudget::new(bounds);
-        assert!(matches!(
-            transposed_classification(&capacity, &demand, &eligible, &limited),
-            Err(FundingSearchError::HostWork(_))
-        ));
     }
 }
 
@@ -280,69 +246,25 @@ fn classifier_preserves_dimension_overflow_and_source_limit_errors() {
         obligation_cap: NonZeroUsize::new(2).unwrap(),
     };
     assert_eq!(
-        classify_fixed_funding_domain(&[], &[], &[], limits, &work()),
+        classify_fixed_funding_domain(&[], &[], &[], limits),
         Err(FundingAssignmentError::EmptySources.into())
     );
     assert_eq!(
-        classify_fixed_funding_domain(&[1, 1], &[1], &[vec![true], vec![true]], limits, &work()),
+        classify_fixed_funding_domain(&[1, 1], &[1], &[vec![true], vec![true]], limits),
         Err(FundingAssignmentError::TooManySources.into())
     );
     assert_eq!(
-        classify_fixed_funding_domain(&[1], &[1, 1, 1], &[vec![true; 3]], limits, &work()),
+        classify_fixed_funding_domain(&[1], &[1, 1, 1], &[vec![true; 3]], limits),
         Err(FundingAssignmentError::TooManyObligations.into())
     );
     assert_eq!(
-        classify_fixed_funding_domain(&[1], &[1], &[vec![]], limits, &work()),
+        classify_fixed_funding_domain(&[1], &[1], &[vec![]], limits),
         Err(FundingAssignmentError::InvalidDimensions.into())
     );
     assert_eq!(
-        classify_fixed_funding_domain(
-            &[u64::MAX],
-            &[u64::MAX, 1],
-            &[vec![true; 2]],
-            limits,
-            &work()
-        ),
+        classify_fixed_funding_domain(&[u64::MAX], &[u64::MAX, 1], &[vec![true; 2]], limits),
         Err(FundingAssignmentError::Overflow.into())
     );
-}
-
-#[test]
-fn every_classifier_budget_prefix_rejects_without_changing_economic_policy() {
-    let limits = FundingSearchLimits {
-        source_cap: NonZeroUsize::new(2).unwrap(),
-        obligation_cap: NonZeroUsize::new(2).unwrap(),
-    };
-    for edges in [[vec![true, false], vec![true, true]], [
-        vec![true, false],
-        vec![false, true],
-    ]] {
-        let measured = work();
-        let expected =
-            classify_fixed_funding_domain(&[2, 2], &[1, 1], &edges, limits, &measured).unwrap();
-        for dimension in [
-            HostWorkDimension::SearchCandidates,
-            HostWorkDimension::SearchStateBytes,
-            HostWorkDimension::VerificationOperations,
-        ] {
-            let full = measured.usage(dimension).get();
-            for prefix in 0..=full {
-                let mut bounds = HostWorkLimits::uniform(HostWorkLimit::new(100_000_000));
-                bounds.set(dimension, HostWorkLimit::new(prefix));
-                let limited = HostWorkBudget::new(bounds);
-                let actual =
-                    classify_fixed_funding_domain(&[2, 2], &[1, 1], &edges, limits, &limited);
-                if prefix == full {
-                    assert_eq!(actual, Ok(expected.clone()));
-                } else {
-                    assert!(
-                        matches!(actual, Err(FundingSearchError::HostWork(_))),
-                        "dimension={dimension:?}, prefix={prefix}"
-                    );
-                }
-            }
-        }
-    }
 }
 
 proptest! {
@@ -357,11 +279,11 @@ proptest! {
         let eligible: Vec<Vec<bool>> = (0..capacity.len())
             .map(|i| (0..demand.len()).map(|j| bits[i * 3 + j]).collect()).collect();
         let expected = all_contribution_vectors(&capacity, &demand, &eligible);
-        prop_assert_eq!(transposed_classification(&capacity, &demand, &eligible, &work()), Ok(expected));
+        prop_assert_eq!(transposed_classification(&capacity, &demand, &eligible), Ok(expected));
         let reversed_capacity: Vec<_> = capacity.iter().rev().copied().collect();
         let reversed_demand: Vec<_> = demand.iter().rev().copied().collect();
         let reversed_edges: Vec<Vec<_>> = eligible.iter().rev()
             .map(|row| row.iter().rev().copied().collect()).collect();
-        prop_assert_eq!(transposed_classification(&reversed_capacity, &reversed_demand, &reversed_edges, &work()), Ok(expected));
+        prop_assert_eq!(transposed_classification(&reversed_capacity, &reversed_demand, &reversed_edges), Ok(expected));
     }
 }

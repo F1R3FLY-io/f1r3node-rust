@@ -23,13 +23,10 @@ use crypto::rust::public_key::PublicKey;
 use crypto::rust::signatures::signatures_alg::SignaturesAlg;
 use crypto::rust::signatures::signed::Cosigner;
 use models::rust::block::state_hash::StateHash;
-use models::rust::cost_protocol_limits::offered_funded_v6_host_work_limits;
 use models::rust::deploy_envelope::DeployEnvelopeRef;
-use models::rust::host_work::{HostWorkDimension, HostWorkUnits};
 use models::rust::native_cost_evidence::NativeFundingCaseV1;
 use rholang::rust::interpreter::accounting::native_phlo_rules::NativeBoundSource;
 use rholang::rust::interpreter::accounting::phlo_controls::PhloScheduleBinding;
-use rholang::rust::interpreter::host_work::HostWorkBudget;
 
 use super::*;
 use crate::helper::offered_deploy::{owner_offer_limited, OfferedDeploy};
@@ -255,10 +252,8 @@ async fn direct_decision(
     }
 }
 
-/// The check again, outside play and replay, on `node` at `root`: a fresh
-/// offered runtime and the check's own budget. The snapshot reads on a
-/// budget that is then exhausted, so an earlier use of a budget cannot reach
-/// the decision (DR-102, design §6.4).
+/// The check again, outside play and replay, on `node` at `root`, with a
+/// fresh offered runtime (DR-102, design §6.4).
 async fn direct_gate(
     node: &TestNode,
     genesis: &GenesisContext,
@@ -298,10 +293,9 @@ async fn direct_gate(
         },
     )
     .expect("the candidate prepares");
-    let spent = HostWorkBudget::new(offered_funded_v6_host_work_limits());
     let snapshot = node
         .runtime_manager
-        .read_direct_offered_wallet_snapshot(&envelope, root, None, &spent)
+        .read_direct_offered_wallet_snapshot(&envelope, root, None)
         .await
         .expect("the wallet snapshot reads");
     let selected = prepared
@@ -311,19 +305,9 @@ async fn direct_gate(
         .expect("the schedule binds");
     let runtime = node
         .runtime_manager
-        .spawn_offered_runtime(offered_grant_issue_call_limits(), spent.clone())
+        .spawn_offered_runtime(offered_grant_issue_call_limits())
         .await
         .expect("an offered runtime spawns");
-    for dimension in [
-        HostWorkDimension::VerificationOperations,
-        HostWorkDimension::SearchStateBytes,
-        HostWorkDimension::StructuralBytes,
-    ] {
-        let remaining = spent.limits().get(dimension).get() - spent.usage(dimension).get();
-        spent
-            .reserve(dimension, HostWorkUnits::new(remaining))
-            .expect("the unrelated budget is exhausted exactly");
-    }
     gate_offered_candidate(OfferedGateInput {
         envelope: &envelope,
         prepared: &prepared,
@@ -333,7 +317,6 @@ async fn direct_gate(
         snapshot: &snapshot,
         evaluator: &runtime.reducer,
         limits: offered_funded_v6_production_limits().family,
-        host_limits: offered_funded_v6_host_work_limits(),
     })
 }
 
@@ -367,10 +350,7 @@ async fn estimated_counts(
     let funding = funding_sig(signed);
     let runtime = node
         .runtime_manager
-        .spawn_offered_runtime(
-            offered_grant_issue_call_limits(),
-            HostWorkBudget::new(offered_funded_v6_host_work_limits()),
-        )
+        .spawn_offered_runtime(offered_grant_issue_call_limits())
         .await
         .expect("an offered runtime spawns");
     let estimate = estimate_offered_term(
@@ -380,7 +360,6 @@ async fn estimated_counts(
         &funding,
         &selected_schedule(),
         &runtime.reducer,
-        &HostWorkBudget::new(offered_funded_v6_host_work_limits()),
     )
     .expect("the estimate runs");
     // Changed by the G1-6 fix (DR-124): the caller derives the lanes from the
@@ -519,7 +498,7 @@ async fn an_underfunded_offer_never_enters_the_runtime_and_pays_no_fee() {
 /// A complete estimate holds B·phloPrice + 1 under `Certificate` with the
 /// bound B. An incomplete estimate holds phloLimit·phloPrice + 1 under
 /// `SignedLimit`. The producer and every validator reach the same decision
-/// and the same receipt. The decision does not depend on earlier budget use,
+/// and the same receipt. The check on a fresh runtime gives the same decision,
 /// and the evidence shows a hold equal to the debit with refund 0.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_complete_offer_holds_its_estimate_and_an_incomplete_offer_holds_its_limit() {
@@ -556,7 +535,7 @@ async fn a_complete_offer_holds_its_estimate_and_an_incomplete_offer_holds_its_l
         )
         .await,
         decision,
-        "the check gives the same decision on a fresh budget"
+        "the check gives the same decision on a fresh runtime"
     );
     evidence_holds_equal_debits(&nodes, &block, &payer).await;
 
@@ -589,7 +568,7 @@ async fn a_complete_offer_holds_its_estimate_and_an_incomplete_offer_holds_its_l
         )
         .await,
         decision,
-        "the check gives the same decision on a fresh budget"
+        "the check gives the same decision on a fresh runtime"
     );
     evidence_holds_equal_debits(&nodes, &block, &payer).await;
 }
@@ -800,15 +779,14 @@ async fn the_play_replay_and_native_replay_environments_share_one_urn_map() {
             "node {index} replays with the URN map of its check"
         );
     }
-    let budget = HostWorkBudget::new(offered_funded_v6_host_work_limits());
     let play = nodes[0]
         .runtime_manager
-        .spawn_offered_play_runtime(offered_grant_issue_call_limits(), budget.clone())
+        .spawn_offered_play_runtime(offered_grant_issue_call_limits())
         .await
         .expect("the offered play runtime spawns");
     let replay = nodes[1]
         .runtime_manager
-        .spawn_offered_runtime(offered_grant_issue_call_limits(), budget)
+        .spawn_offered_runtime(offered_grant_issue_call_limits())
         .await
         .expect("the offered replay runtime spawns");
     assert!(!play.reducer.urn_map.is_empty());

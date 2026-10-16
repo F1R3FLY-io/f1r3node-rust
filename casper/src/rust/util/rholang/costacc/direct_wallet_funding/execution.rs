@@ -2,7 +2,6 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use models::rust::block_hash::BlockHash;
-use models::rust::cost_protocol_limits::offered_funded_v6_host_work_limits;
 use models::rust::deploy_envelope::{DeployEnvelope, DeployEnvelopeRef};
 use models::rust::phlo_grant_creation::VerifiedGrantCreationV1;
 use models::rust::phlo_intent::PhloConversionCompositionV2;
@@ -14,7 +13,6 @@ use rholang::rust::interpreter::accounting::phlo_controls::{
     check_offered_phlo_controls, PhloControlsBinding, PhloOffer, PhloScheduleBinding,
 };
 use rholang::rust::interpreter::accounting::NativeRuntimeConfig;
-use rholang::rust::interpreter::host_work::HostWorkBudget;
 use rholang::rust::interpreter::interpreter::EvaluateResult;
 use rholang::rust::interpreter::rho_runtime::RhoRuntime;
 use rholang::rust::interpreter::system_processes::BlockData;
@@ -47,7 +45,6 @@ pub struct NativeFundedExecutionContext {
     pub block_data: BlockData,
     pub invalid_blocks: HashMap<BlockHash, Validator>,
     pub trace: NativeBudgetTraceLimits,
-    pub host_work: HostWorkBudget,
 }
 
 pub struct NativeFundedAttempt<'policy, 'a> {
@@ -128,7 +125,6 @@ impl<'preflight, 'a> NativeOfferedAttempt<'preflight, 'a> {
         manager: &RuntimeManager,
         family: NativeOfferedFamilyLimits,
         capture: PrepaidStackCaptureLimits,
-        budget: &HostWorkBudget,
     ) -> Result<Vec<PurseStack>, CasperError> {
         check_execution_root(
             &self.preflight.execution_root,
@@ -146,20 +142,15 @@ impl<'preflight, 'a> NativeOfferedAttempt<'preflight, 'a> {
             )
             .map_err(|error| CasperError::RuntimeError(error.to_string()))?;
         let regions = measured
-            .region_demands(family.measured.regions, budget)
+            .region_demands(family.measured.regions)
             .map_err(|error| CasperError::RuntimeError(error.to_string()))?;
         let located = regions
-            .locate_purses(family.measured.purses, budget)
+            .locate_purses(family.measured.purses)
             .map_err(|error| CasperError::RuntimeError(error.to_string()))?;
         let demand = located
-            .prepare_acquisition_demand(
-                &schedule,
-                selected.bytes(),
-                family.measured.acquisition,
-                budget,
-            )
+            .prepare_acquisition_demand(&schedule, selected.bytes(), family.measured.acquisition)
             .map_err(|error| CasperError::RuntimeError(error.to_string()))?;
-        manager.read_measured_prepaid_stacks(self.preflight.funding_root, &demand, capture, budget)
+        manager.read_measured_prepaid_stacks(self.preflight.funding_root, &demand, capture)
     }
 
     pub fn bind_policy<'policy>(
@@ -293,7 +284,6 @@ impl CheckedDirectWalletPolicy<'_, OfferedFundedDeploy> {
         adopted: &AdoptedResourcePolicy,
         schedule: &PhloScheduleBinding<'_>,
         limits: NativeBudgetTraceLimits,
-        budget: HostWorkBudget,
     ) -> Result<NativeRuntimeConfig, CasperError> {
         if !matches!(envelope.view(), DeployEnvelopeRef::OfferedFunded(_)) {
             return Err(CasperError::RuntimeError(
@@ -313,7 +303,7 @@ impl CheckedDirectWalletPolicy<'_, OfferedFundedDeploy> {
         // DR-113: this family path has no caller. It keeps the measured family
         // bound, unbilled as before.
         let contract = adopted.bind_execution_contract(controls, schedule, rholang::rust::interpreter::accounting::native_phlo_rules::NativeBoundSource::Certificate)?;
-        Ok(NativeRuntimeConfig::new(contract, limits, budget))
+        Ok(NativeRuntimeConfig::new(contract, limits))
     }
 }
 
@@ -368,7 +358,6 @@ impl RuntimeManager {
             OfferedUsageKind::CertificateCorrectnessFailure,
             envelope_identity,
             funding_root,
-            models::rust::host_work::HostWorkUsages::default(),
         );
     }
 
@@ -411,7 +400,6 @@ impl RuntimeManager {
             OfferedUsageKind::Check(role, record),
             envelope.identity().as_bytes(),
             funding_root,
-            models::rust::host_work::HostWorkUsages::default(),
         );
     }
 
@@ -420,12 +408,7 @@ impl RuntimeManager {
     /// did before G1-6. Other nodes still run the check.
     #[cfg(any(test, feature = "test-utils"))]
     pub fn skip_offered_check_for_tests(&self, deploy_id: &[u8]) {
-        self.record_offered_budget_usage(
-            OfferedUsageKind::SkipCheckHook,
-            deploy_id,
-            &[],
-            models::rust::host_work::HostWorkUsages::default(),
-        );
+        self.record_offered_budget_usage(OfferedUsageKind::SkipCheckHook, deploy_id, &[]);
     }
 
     /// Added by G1-6 (DR-124), test only: a hook of this node. The check of
@@ -433,12 +416,7 @@ impl RuntimeManager {
     /// under the certified bound 0 and passes it.
     #[cfg(any(test, feature = "test-utils"))]
     pub fn remove_offered_estimate_counts_for_tests(&self, deploy_id: &[u8]) {
-        self.record_offered_budget_usage(
-            OfferedUsageKind::ZeroEstimateHook,
-            deploy_id,
-            &[],
-            models::rust::host_work::HostWorkUsages::default(),
-        );
+        self.record_offered_budget_usage(OfferedUsageKind::ZeroEstimateHook, deploy_id, &[]);
     }
 
     pub async fn evaluate_native_offered<'preflight, 'a>(
@@ -495,9 +473,8 @@ impl RuntimeManager {
         // Changed by G1-6 (DR-124): the play runtime is spawned before the
         // controls, so the check reads the URN map of the runtime that executes
         // the offer (design §6.4). The check runs before any runtime entry.
-        let host_work = context.host_work.clone();
         let mut runtime = RuntimeOps::new(
-            self.spawn_offered_play_runtime(offered_grant_issue_call_limits(), host_work.clone())
+            self.spawn_offered_play_runtime(offered_grant_issue_call_limits())
                 .await?,
         );
         let gate = self.check_offered_before_execution(OfferedGateInput {
@@ -509,7 +486,6 @@ impl RuntimeManager {
             snapshot,
             evaluator: &runtime.runtime.reducer,
             limits: offered_funded_v6_production_limits().family,
-            host_limits: offered_funded_v6_host_work_limits(),
         });
         #[cfg(any(test, feature = "test-utils"))]
         self.record_offered_check(
@@ -562,7 +538,7 @@ impl RuntimeManager {
         //     self.spawn_offered_runtime(offered_grant_issue_call_limits(), host_work.clone())
         //         .await?,
         // );
-        let config = NativeRuntimeConfig::new(contract, context.trace, context.host_work)
+        let config = NativeRuntimeConfig::new(contract, context.trace)
             .with_record_room(native_record_room());
         // Changed by G1-6 (DR-124): the spawn moved above the controls.
         // let mut runtime = RuntimeOps::new(
@@ -591,7 +567,6 @@ impl RuntimeManager {
             OfferedUsageKind::PlayRuntimeEntry,
             envelope.identity().as_bytes(),
             &prepared.funding_root,
-            models::rust::host_work::HostWorkUsages::default(),
         );
         let evaluation = match runtime.evaluate_native_envelope(envelope, config).await {
             Ok(evaluation) => evaluation,
@@ -603,9 +578,8 @@ impl RuntimeManager {
         if !evaluation.byte_observations.has_complete_measurements() {
             runtime.runtime.revert_to_soft_checkpoint(checkpoint).await;
             return Err(CasperError::RuntimeError(format!(
-                "native offered execution has incomplete byte measurements: errors={:?}, host_rejection={:?}",
+                "native offered execution has incomplete byte measurements: errors={:?}",
                 evaluation.errors,
-                host_work.rejection(),
             )));
         }
         if evaluation.native_phlo_usage.is_none() {
@@ -630,7 +604,6 @@ impl RuntimeManager {
                     selected.schedule().shard,
                     offered_grant_issue_call_limits(),
                     offered_grant_transition_limits(),
-                    &host_work,
                 )
                 .await
             {
@@ -673,13 +646,7 @@ impl RuntimeManager {
         schedule: &PhloScheduleBinding<'_>,
         context: NativeFundedExecutionContext,
     ) -> Result<NativeFundedAttempt<'policy, 'a>, CasperError> {
-        let config = policy.prepare_execution(
-            envelope,
-            adopted,
-            schedule,
-            context.trace,
-            context.host_work,
-        )?;
+        let config = policy.prepare_execution(envelope, adopted, schedule, context.trace)?;
         let root = policy.snapshot().wallets().pre_state_root();
         let mut runtime = RuntimeOps::new(self.spawn_runtime().await?);
         runtime.runtime.set_block_data(context.block_data).await;

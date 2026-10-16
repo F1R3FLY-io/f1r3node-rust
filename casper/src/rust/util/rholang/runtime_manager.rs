@@ -3,7 +3,6 @@
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::hash::Hash;
-use std::mem::size_of;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -21,18 +20,13 @@ use models::rust::casper::protocol::casper_message::{
     SystemDeployData,
 };
 use models::rust::casper::protocol::offered_processed_deploy::OfferedProcessedDeploy;
-use models::rust::cost_protocol_limits::{
-    offered_funded_v6_host_work_limits, offered_funded_v6_limits,
-};
+use models::rust::cost_protocol_limits::offered_funded_v6_limits;
 use models::rust::deploy_envelope::DeployEnvelopeRef;
-use models::rust::deploy_id::DeployLookupId;
-use models::rust::host_work::{HostWorkDimension, HostWorkUnits};
 use models::rust::phlo_wire::PhloWireLimits;
 use models::rust::validator::Validator;
 use rholang::rust::interpreter::accounting::phlo_controls::PhloScheduleBinding;
 use rholang::rust::interpreter::accounting::NativeRecordingWireLimits;
 use rholang::rust::interpreter::external_services::ExternalServices;
-use rholang::rust::interpreter::host_work::HostWorkBudget;
 use rholang::rust::interpreter::matcher::r#match::Matcher;
 use rholang::rust::interpreter::merging::rholang_merging_logic::{
     DeployMergeableData, NumberChannel, RholangMergingLogic,
@@ -43,21 +37,20 @@ use rholang::rust::interpreter::rho_runtime::{
 use rholang::rust::interpreter::system_processes::{BlockData, Definition};
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::history::native_reader::{
-    decode_history_record, NativeLeafKind, NativeReadCharge, NativeReadError, NativeReadMeter,
+    decode_datum, NativeLeafKind, NativeReadError,
 };
 use rspace_plus_plus::rspace::internal::Datum;
 use rspace_plus_plus::rspace::merger::merging_logic::{NumberChannelsDiff, NumberChannelsEndVal};
 use rspace_plus_plus::rspace::replay_rspace::ReplayRSpace;
 use rspace_plus_plus::rspace::rspace::{RSpace, RSpaceStore};
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
-use shared::rust::clone_backing::{self, BackingError};
 use shared::rust::store::key_value_store::KvStoreError;
 use shared::rust::store::key_value_typed_store::KeyValueTypedStore;
 use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
 use shared::rust::ByteVector;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
-use crate::rust::errors::{CasperError, OfferedCandidateRejection};
+use crate::rust::errors::CasperError;
 use crate::rust::merging::block_index::BlockIndex;
 use crate::rust::metrics_constants::{
     BLOCK_INDEX_CACHE_SIZE_METRIC, BLOCK_REPLAY_RUNTIME_EXECUTE_TIME_METRIC,
@@ -77,7 +70,7 @@ use crate::rust::util::rholang::costacc::direct_wallet_funding::{
 use crate::rust::util::rholang::costacc::genesis_resource_policy::AdoptedResourcePolicy;
 #[cfg(any(test, feature = "test-utils"))]
 use crate::rust::util::rholang::costacc::offered_acceptance::{
-    usage_delta, OfferedBudgetRecorder, OfferedBudgetUsage, OfferedUsageKind,
+    OfferedBudgetRecorder, OfferedBudgetUsage, OfferedUsageKind,
 };
 use crate::rust::util::rholang::costacc::offered_grants::{
     grant_issue_definition, offered_grant_issue_call_limits, GrantIssueCallLimits,
@@ -280,7 +273,7 @@ pub struct RuntimeManager {
     exploratory_deploy_phlo_limit: i64,
     exploratory_deploy_execution_timeout: Duration,
     pub external_services: ExternalServices,
-    /// DR-102: test-only records of the final usage of each offered budget.
+    /// DR-102: test-only records of offered deploy attempts.
     #[cfg(any(test, feature = "test-utils"))]
     offered_budget_recorder: OfferedBudgetRecorder,
 }
@@ -289,89 +282,14 @@ pub struct RuntimeManager {
 // `casper/src/rust/util/rholang/costacc/direct_wallet_funding/execution/offered_block.rs`,
 // unchanged: `CertifiedOfferedDraft` and its impl.
 
-/// D-E4 (DR-111): the charge of the copy of the authority presentations into
-/// the candidate of an offered certificate. The copy is released with the
-/// certificate, so a block slice copy and cleanup prepays it. An empty slice
-/// charges nothing.
-pub(crate) fn reserve_presentation_copy(
-    presentations: &[models::rhoapi::CostSignature],
-    budget: &HostWorkBudget,
-) -> Result<(), CasperError> {
-    if presentations.is_empty() {
-        return Ok(());
-    }
-    let meter = |operations: usize, scanned: usize, backing: usize| {
-        for (dimension, amount) in [
-            (HostWorkDimension::VerificationOperations, operations),
-            (HostWorkDimension::VerificationBytes, scanned),
-            (HostWorkDimension::SearchStateBytes, backing),
-        ] {
-            budget
-                .reserve(
-                    dimension,
-                    HostWorkUnits::new(u64::try_from(amount).map_err(|_| BackingError::Overflow)?),
-                )
-                .map_err(|_| BackingError::Rejected)?;
-        }
-        Ok(())
-    };
-    clone_backing::reserve_blocks_slice_copy_and_cleanup(presentations, &meter).map_err(|error| {
-        CasperError::RuntimeError(format!(
-            "offered certificate presentation copy failed: {error:?}"
-        ))
-    })
-}
-
-struct MergeableReadMeter<'a>(&'a HostWorkBudget);
-
-impl NativeReadMeter for MergeableReadMeter<'_> {
-    type Error = CasperError;
-
-    fn reserve(&self, charge: NativeReadCharge) -> Result<(), Self::Error> {
-        for (dimension, amount) in [
-            (HostWorkDimension::VerificationOperations, charge.operations),
-            (HostWorkDimension::VerificationBytes, charge.scanned_bytes),
-            (HostWorkDimension::SearchStateBytes, charge.backing_bytes),
-        ] {
-            let units = u64::try_from(amount).map_err(|_| {
-                CasperError::RuntimeError("offered mergeable read work overflows".into())
-            })?;
-            self.0
-                .reserve(dimension, HostWorkUnits::new(units))
-                .map_err(|error| CasperError::RuntimeError(error.to_string()))?;
-        }
-        Ok(())
-    }
-}
-
 fn mergeable_read_error(error: NativeReadError<CasperError>) -> CasperError {
     match error {
-        NativeReadError::Host(error) | NativeReadError::Consumer(error) => error,
+        NativeReadError::Consumer(error) => error,
         NativeReadError::Store(error) => {
             CasperError::RuntimeError(format!("offered mergeable history read failed: {error}"))
         }
         NativeReadError::Invalid(error) => {
             CasperError::RuntimeError(format!("offered mergeable history is invalid: {error:?}"))
-        }
-    }
-}
-
-fn offered_vec_clone_bytes<T>(items: &[T]) -> Option<usize> {
-    items.len().checked_mul(size_of::<T>())
-}
-
-pub(crate) fn offered_event_clone_bytes(event: &Event) -> Option<usize> {
-    match event {
-        Event::Produce(produce) => offered_vec_clone_bytes(&produce.output_value),
-        Event::Consume(consume) => offered_vec_clone_bytes(&consume.channels_hashes),
-        Event::Comm(comm) => {
-            let mut total = offered_vec_clone_bytes(&comm.consume.channels_hashes)?
-                .checked_add(offered_vec_clone_bytes(&comm.produces)?)?
-                .checked_add(offered_vec_clone_bytes(&comm.peeks)?)?;
-            for produce in &comm.produces {
-                total = total.checked_add(offered_vec_clone_bytes(&produce.output_value)?)?;
-            }
-            Some(total)
         }
     }
 }
@@ -424,7 +342,7 @@ pub struct MergedPreState {
 pub type ParentsPostStateCacheVal = MergedPreState;
 
 impl RuntimeManager {
-    /// DR-102: test-only records of the final usage of each offered budget.
+    /// DR-102: test-only records of offered deploy attempts.
     #[cfg(any(test, feature = "test-utils"))]
     pub fn offered_budget_usages(&self) -> Vec<OfferedBudgetUsage> {
         self.offered_budget_recorder.records()
@@ -436,10 +354,9 @@ impl RuntimeManager {
         kind: OfferedUsageKind,
         deploy_id: &[u8],
         pre_state_root: &[u8],
-        usages: models::rust::host_work::HostWorkUsages,
     ) {
         self.offered_budget_recorder
-            .record(kind, deploy_id, pre_state_root, usages);
+            .record(kind, deploy_id, pre_state_root);
     }
 
     pub async fn read_direct_offered_wallet_snapshot<'a>(
@@ -447,7 +364,6 @@ impl RuntimeManager {
         envelope: &'a models::rust::deploy_envelope::DeployEnvelope,
         original_root: &StateHash,
         verified: Option<&VerifiedOfferedGrantSources>,
-        budget: &HostWorkBudget,
     ) -> Result<
         DirectWalletPolicySnapshot<'a, models::rust::signed_phlo_deploy::OfferedFundedDeploy>,
         CasperError,
@@ -458,25 +374,6 @@ impl RuntimeManager {
             ));
         };
         let protocol = offered_funded_v6_limits();
-        for (dimension, amount) in [
-            (
-                HostWorkDimension::VerificationBytes,
-                protocol.envelope.payload.signing.total_bytes,
-            ),
-            (
-                HostWorkDimension::SearchStateBytes,
-                protocol.envelope.payload.funding.wire.total_bytes,
-            ),
-        ] {
-            budget
-                .reserve(
-                    dimension,
-                    HostWorkUnits::new(u64::try_from(amount).map_err(|_| {
-                        CasperError::RuntimeError("offered wallet preflight bound overflows".into())
-                    })?),
-                )
-                .map_err(|error| CasperError::RuntimeError(error.to_string()))?;
-        }
         let limits = DirectWalletFundingLimits {
             members: protocol.envelope.members,
             funding: protocol.envelope.payload.funding,
@@ -489,12 +386,7 @@ impl RuntimeManager {
         }
         .map_err(|error| CasperError::RuntimeError(error.to_string()))?;
         authorization
-            .read_policy_snapshot(
-                self,
-                original_root.clone(),
-                std::num::NonZeroUsize::MIN,
-                budget,
-            )
+            .read_policy_snapshot(self, original_root.clone(), std::num::NonZeroUsize::MIN)
             .await
             .map_err(|error| CasperError::RuntimeError(error.to_string()))
     }
@@ -687,10 +579,9 @@ impl RuntimeManager {
     pub async fn spawn_offered_runtime(
         &self,
         limits: GrantIssueCallLimits,
-        budget: HostWorkBudget,
     ) -> Result<RhoRuntimeImpl, CasperError> {
         self.spawn_runtime_with(
-            vec![grant_issue_definition(limits, budget)],
+            vec![grant_issue_definition(limits)],
             ExternalServices::noop(),
         )
         .await
@@ -702,10 +593,9 @@ impl RuntimeManager {
     pub async fn spawn_offered_play_runtime(
         &self,
         limits: GrantIssueCallLimits,
-        budget: HostWorkBudget,
     ) -> Result<RhoRuntimeImpl, CasperError> {
         self.spawn_runtime_with(
-            vec![grant_issue_definition(limits, budget)],
+            vec![grant_issue_definition(limits)],
             self.external_services.clone(),
         )
         .await
@@ -740,10 +630,9 @@ impl RuntimeManager {
     pub async fn spawn_offered_replay_runtime(
         &self,
         limits: GrantIssueCallLimits,
-        budget: HostWorkBudget,
     ) -> Result<RhoRuntimeImpl, CasperError> {
         self.spawn_replay_runtime_with(
-            vec![grant_issue_definition(limits, budget)],
+            vec![grant_issue_definition(limits)],
             ExternalServices::noop(),
         )
         .await
@@ -920,22 +809,10 @@ impl RuntimeManager {
                 "offered proposal format is inactive under approved genesis".into(),
             ));
         }
-        let offered_budget = HostWorkBudget::new(offered_funded_v6_host_work_limits());
-
         let sender = block_data.sender.clone();
         let seq_num = block_data.seq_num;
-        // DR-102 (DR-72): a host-work rejection of the execution budget after the
-        // candidate step is attributable to the candidate, so the proposer
-        // quarantines the envelope instead of failing every later proposal.
-        let candidate_id = match terms.as_slice() {
-            [PendingDeployCandidate::Envelope(envelope)] => match envelope.identity() {
-                DeployLookupId::V6(deploy_id) => Some(*deploy_id),
-                _ => None,
-            },
-            _ => None,
-        };
         let runtime = self
-            .spawn_offered_runtime(offered_grant_issue_call_limits(), offered_budget.clone())
+            .spawn_offered_runtime(offered_grant_issue_call_limits())
             .await?;
         let mut runtime_ops = RuntimeOps::new(runtime);
         let (state_hash, user_results, system_results) = runtime_ops
@@ -948,46 +825,11 @@ impl RuntimeManager {
                 play_budget,
                 Some(adopted),
                 self,
-                Some(&offered_budget),
             )
             .await?;
         let (user_processed, user_mergeable): (Vec<_>, Vec<_>) = user_results.into_iter().unzip();
         let (system_processed, system_mergeable): (Vec<_>, Vec<_>) =
             system_results.into_iter().unzip();
-        let candidate_rejection = |error: CasperError| match candidate_id {
-            Some(deploy_id) if offered_budget.is_rejected() => {
-                CasperError::OfferedCandidateRejected(OfferedCandidateRejection {
-                    deploy_id,
-                    pre_state_root: start_hash.clone(),
-                    reason: error.to_string(),
-                })
-            }
-            _ => error,
-        };
-        #[cfg(any(test, feature = "test-utils"))]
-        let execution_before = offered_budget.usages();
-        let mergeable_count = user_mergeable
-            .len()
-            .checked_add(system_mergeable.len())
-            .ok_or_else(|| CasperError::RuntimeError("offered mergeable count overflows".into()))?;
-        offered_budget
-            .reserve(
-                HostWorkDimension::SearchStateBytes,
-                HostWorkUnits::new(
-                    u64::try_from(
-                        mergeable_count
-                            .checked_mul(size_of::<NumberChannelsEndVal>())
-                            .ok_or_else(|| {
-                                CasperError::RuntimeError("offered mergeable size overflows".into())
-                            })?,
-                    )
-                    .map_err(|_| {
-                        CasperError::RuntimeError("offered mergeable size overflows".into())
-                    })?,
-                ),
-            )
-            .map_err(|error| CasperError::RuntimeError(error.to_string()))
-            .map_err(candidate_rejection)?;
         let bonds = runtime_ops.compute_bonds(&state_hash).await?;
         self.save_mergeable_channels_metered(
             Blake2b256Hash::from_bytes_prost(&state_hash),
@@ -995,18 +837,7 @@ impl RuntimeManager {
             seq_num,
             user_mergeable.into_iter().chain(system_mergeable).collect(),
             &Blake2b256Hash::from_bytes_prost(start_hash),
-            &offered_budget,
-        )
-        .map_err(candidate_rejection)?;
-        #[cfg(any(test, feature = "test-utils"))]
-        if let Some(deploy_id) = candidate_id {
-            self.offered_budget_recorder.record(
-                OfferedUsageKind::ProducerMergeableExecution,
-                deploy_id.as_ref(),
-                start_hash,
-                usage_delta(execution_before, offered_budget.usages()),
-            );
-        }
+        )?;
         Ok((state_hash, user_processed, system_processed, bonds))
     }
 
@@ -1942,40 +1773,7 @@ impl RuntimeManager {
         seq_num: i32,
         channels_data: Vec<NumberChannelsEndVal>,
         pre_state_hash: &Blake2b256Hash,
-        budget: &HostWorkBudget,
     ) -> Result<(), CasperError> {
-        let entries = channels_data.iter().try_fold(0_usize, |count, map| {
-            count.checked_add(map.len()).ok_or_else(|| {
-                CasperError::RuntimeError("offered mergeable entry count overflows".into())
-            })
-        })?;
-        let bytes = entries
-            .checked_mul(1024)
-            .and_then(|count| count.checked_add(channels_data.len().checked_mul(512)?))
-            .and_then(|count| count.checked_add(creator.len().checked_mul(4)?))
-            .and_then(|count| count.checked_add(512))
-            .ok_or_else(|| {
-                CasperError::RuntimeError("offered mergeable work size overflows".into())
-            })?;
-        let scanned = entries
-            .checked_mul(256)
-            .and_then(|count| count.checked_add(creator.len().checked_mul(2)?))
-            .and_then(|count| count.checked_add(256))
-            .ok_or_else(|| {
-                CasperError::RuntimeError("offered mergeable scan size overflows".into())
-            })?;
-        let operations = entries
-            .checked_mul(256)
-            .and_then(|count| count.checked_add(channels_data.len().checked_mul(16)?))
-            .and_then(|count| count.checked_add(32))
-            .ok_or_else(|| {
-                CasperError::RuntimeError("offered mergeable operation count overflows".into())
-            })?;
-        MergeableReadMeter(budget).reserve(NativeReadCharge {
-            operations,
-            scanned_bytes: scanned,
-            backing_bytes: bytes,
-        })?;
         let root: [u8; 32] = pre_state_hash.0.as_slice().try_into().map_err(|_| {
             CasperError::RuntimeError("offered mergeable pre-state hash is invalid".into())
         })?;
@@ -1991,7 +1789,6 @@ impl RuntimeManager {
             ));
         }
         let reader = self.history_repo.native_history_reader(root);
-        let meter = MergeableReadMeter(budget);
         let unique_channels = channels_data
             .iter()
             .flat_map(|map| map.keys().cloned())
@@ -2002,7 +1799,7 @@ impl RuntimeManager {
                 CasperError::RuntimeError("offered mergeable channel hash is invalid".into())
             })?;
             let value = reader
-                .with_records(NativeLeafKind::Data, &hash, &meter, |records| {
+                .with_records(NativeLeafKind::Data, &hash, |records| {
                     if records.len() > 1 {
                         return Err(CasperError::RuntimeError(
                             "offered mergeable channel has multiple pre-state values".into(),
@@ -2011,13 +1808,13 @@ impl RuntimeManager {
                     let Some(raw) = records.iter().next() else {
                         return Ok(0);
                     };
-                    // Changed by D-S2 (DR-95): the row decodes in History mode,
-                    // which charges each node once and reserves only real
-                    // allocations.
+                    // Changed by D-S2 (DR-95) and DR-131 S6: the row decodes
+                    // through the cold-store decoder (`decode_datum`) instead
+                    // of the typed decoder.
                     // let datum: Datum<ListParWithRandom> =
                     //     decode_record(raw, &meter).map_err(mergeable_read_error)?;
                     let datum: Datum<ListParWithRandom> =
-                        decode_history_record(raw, &meter).map_err(mergeable_read_error)?;
+                        decode_datum(raw).map_err(|error| mergeable_read_error(error.into()))?;
                     RholangMergingLogic::try_get_number_with_rnd(&datum.a)
                         .map(|(number, _)| number)
                         .ok_or_else(|| {
@@ -2285,89 +2082,6 @@ mod tests {
     use tokio::sync::Semaphore;
 
     use super::{ExploratoryDeployConfig, ReplayLock, RuntimeManager};
-
-    /// D-E4 (DR-111): the copy of the authority presentations reserves one
-    /// block slice copy and the release of the copy, in the walker's
-    /// dimensions. An empty slice reserves nothing. The exact mirror at two
-    /// sizes is the growth check. The copy accepts its exact credit and is
-    /// rejected one unit short in each dimension that it uses.
-    #[test]
-    fn presentation_copy_charges_a_block_slice_copy_and_cleanup() {
-        use std::cell::Cell;
-
-        use models::rhoapi::cost_signature::Value;
-        use models::rhoapi::CostSignature;
-        use models::rust::host_work::{HostWorkDimension, HostWorkLimit, HostWorkLimits};
-        use rholang::rust::interpreter::host_work::HostWorkBudget;
-        use shared::rust::clone_backing::{self, BackingError};
-
-        use super::reserve_presentation_copy;
-
-        let walker = [
-            HostWorkDimension::VerificationOperations,
-            HostWorkDimension::VerificationBytes,
-            HostWorkDimension::SearchStateBytes,
-        ];
-        let walk = |presentations: &[CostSignature]| {
-            let used = Cell::new([0u64; 3]);
-            let meter =
-                |operations: usize, scanned: usize, backing: usize| -> Result<(), BackingError> {
-                    let [o, s, b] = used.get();
-                    used.set([
-                        o + operations as u64,
-                        s + scanned as u64,
-                        b + backing as u64,
-                    ]);
-                    Ok(())
-                };
-            clone_backing::reserve_blocks_slice_copy_and_cleanup(presentations, &meter)
-                .expect("an unlimited walk");
-            used.get()
-        };
-        let limited = |units: [u64; 3]| {
-            let mut limits = HostWorkLimits::uniform(HostWorkLimit::new(0));
-            for (dimension, limit) in walker.into_iter().zip(units) {
-                limits.set(dimension, HostWorkLimit::new(limit));
-            }
-            HostWorkBudget::new(limits)
-        };
-        let ground = |size: usize| CostSignature {
-            value: Some(Value::Ground(vec![8; size])),
-        };
-
-        let empty = limited([0; 3]);
-        reserve_presentation_copy(&[], &empty).expect("an empty copy reserves nothing");
-        for dimension in HostWorkDimension::ALL {
-            assert_eq!(empty.usage(dimension).get(), 0, "{dimension:?}");
-        }
-
-        for presentations in [vec![ground(32)], vec![ground(32), ground(4_096)]] {
-            let budget = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(u64::MAX)));
-            reserve_presentation_copy(&presentations, &budget).expect("an unlimited budget");
-            let expected = walk(&presentations);
-            for dimension in HostWorkDimension::ALL {
-                let units = walker
-                    .iter()
-                    .position(|walked| *walked == dimension)
-                    .map_or(0, |index| expected[index]);
-                assert_eq!(budget.usage(dimension).get(), units, "{dimension:?}");
-            }
-        }
-
-        let presentations = vec![ground(32), ground(4_096)];
-        let expected = walk(&presentations);
-        reserve_presentation_copy(&presentations, &limited(expected)).expect("the exact credit");
-        for dimension in 0..3 {
-            if expected[dimension] > 0 {
-                let mut short = expected;
-                short[dimension] -= 1;
-                assert!(
-                    reserve_presentation_copy(&presentations, &limited(short)).is_err(),
-                    "dimension {dimension}"
-                );
-            }
-        }
-    }
 
     #[test]
     fn exploratory_deploy_config_rejects_non_positive_values() {

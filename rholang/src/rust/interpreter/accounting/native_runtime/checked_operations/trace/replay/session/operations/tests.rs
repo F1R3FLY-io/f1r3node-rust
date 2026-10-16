@@ -25,58 +25,11 @@ fn unmeasured(authority: &CostAuthority) -> IntroductionRecord {
     }
 }
 
-#[tokio::test]
-async fn live_observer_preserves_host_rejection_without_mutating_tuples() {
-    for produce in [false, true] {
-        let mut stores = InMemoryStoreManager::new();
-        let (play, _) = RSpace::create_with_replay(
-            stores.r_space_stores().await.unwrap(),
-            Arc::new(Box::new(Matcher)),
-        )
-        .unwrap();
-        let before = play.create_checkpoint().await.unwrap();
-        let config = config(u64::MAX, [0, 1, 1, 0]);
-        let host = config.host_work();
-        let budget = RuntimeBudget::new(Cost::unsafe_max());
-        budget.reset_for_native_execution(config).unwrap();
-        let _scope = budget.enter_comm_accounting_scope();
-        play.set_accounting_observer(Some(test_accounting_observer(budget.clone())));
-        assert!(host
-            .reserve(HostWorkDimension::VerificationOperations, u64::MAX.into())
-            .is_err());
-        let rejected = operation_context::scope(
-            OperationOrder {
-                session: budget.deploy_id(),
-                path: vec![(0, 0)].into(),
-            },
-            async {
-                if produce {
-                    play.produce(Par::default(), ListParWithRandom::default(), false)
-                        .await
-                        .err()
-                } else {
-                    play.consume(
-                        vec![Par::default()],
-                        vec![BindPattern::default()],
-                        TaggedContinuation::default(),
-                        false,
-                        BTreeSet::new(),
-                    )
-                    .await
-                    .err()
-                }
-            },
-        )
-        .await
-        .expect("the host budget must reject the operation");
-        assert_eq!(
-            InterpreterError::from(rejected),
-            InterpreterError::HostWorkRejected
-        );
-        let after = play.create_checkpoint().await.unwrap();
-        assert_eq!(before.root, after.root);
-        assert!(after.log.is_empty());
-    }
+/// Changed by DR-131 S6: the error that a failing authority resolution
+/// returns. It was `RSpaceError::HostWorkRejected`, which is deleted. The
+/// replay returns the error of the resolution unchanged.
+fn authority_rejection() -> RSpaceError {
+    RSpaceError::BugFoundError("authority rejected".to_owned())
 }
 
 async fn exercise(
@@ -218,26 +171,21 @@ async fn exercise(
     );
     let recording = budget.native_budget_recording().unwrap().unwrap();
     let rows = budget.native_operation_recording().unwrap().unwrap();
-    let host = config(limit, [0, 1, 1, 0]).host_work;
     let trace = with_contract(limit, [0, 1, 1, 0], |contract| {
         contract
-            .check_operation_journal(recording.session, &recording, rows, journal_limits(), &host)
+            .check_operation_journal(recording.session, &recording, rows, journal_limits())
             .unwrap()
     })
-    .bind_trace(
-        log.into(),
-        NativeOperationTraceLimits {
-            events: 10,
-            source_entries: 100,
-            source_bytes: 100_000,
-            telemetry_items: 100,
-            telemetry_bytes: 100_000,
-        },
-        &host,
-    )
+    .bind_trace(log.into(), NativeOperationTraceLimits {
+        events: 10,
+        source_entries: 100,
+        source_bytes: 100_000,
+        telemetry_items: 100,
+        telemetry_bytes: 100_000,
+    })
     .unwrap();
     let replay = trace
-        .into_session(history, Arc::new(Box::new(Matcher)), host)
+        .into_session(history, Arc::new(Box::new(Matcher)))
         .unwrap();
     let mut checkpoint = Some(replay.checkpoint().await.unwrap());
     operation_context::scope(order(), async {
@@ -273,7 +221,7 @@ async fn exercise(
                 .inner
                 .produce_with_authority(channel.clone(), data.clone(), data_persistent, |source| {
                     assert_eq!(source.hash, producer.hash);
-                    Err::<IntroductionRecord, _>(RSpaceError::HostWorkRejected)
+                    Err::<IntroductionRecord, _>(authority_rejection())
                 })
                 .await
                 .map(|_| ())
@@ -288,7 +236,7 @@ async fn exercise(
                     BTreeSet::new(),
                     |source| {
                         assert_eq!(source, &consumer);
-                        Err::<IntroductionRecord, _>(RSpaceError::HostWorkRejected)
+                        Err::<IntroductionRecord, _>(authority_rejection())
                     },
                 )
                 .await
@@ -296,7 +244,7 @@ async fn exercise(
         }
     })
     .await;
-    assert!(matches!(rejected, Err(RSpaceError::HostWorkRejected)));
+    assert_eq!(rejected, Err(authority_rejection()));
     assert!(replay.check_complete().await.is_err());
     for round in 0..2 {
         let resolutions = std::cell::Cell::new(0);
@@ -423,23 +371,12 @@ impl Match<BindPattern, ListParWithRandom, TaggedContinuation> for OverlappingMa
         Matcher.get(pattern, data)
     }
 
-    fn get_metered(
-        &self,
-        pattern: &BindPattern,
-        data: &ListParWithRandom,
-        meter: &(dyn rspace_plus_plus::rspace::hashing::native_source::SourceMeter + Send + Sync),
-    ) -> Result<Option<ListParWithRandom>, RSpaceError> {
-        self.rendezvous();
-        Matcher.get_metered(pattern, data, meter)
-    }
-
-    fn check_commit_metered(
+    fn check_commit_by_reference(
         &self,
         continuation: &TaggedContinuation,
         matched: &[&ListParWithRandom],
-        meter: &(dyn rspace_plus_plus::rspace::hashing::native_source::SourceMeter + Send + Sync),
-    ) -> Result<bool, RSpaceError> {
-        Matcher.check_commit_metered(continuation, matched, meter)
+    ) -> bool {
+        Matcher.check_commit_by_reference(continuation, matched)
     }
 }
 
@@ -530,23 +467,18 @@ async fn exercise_readiness(shared_channel: bool, concurrent_matches: bool) {
         if shared_channel { &[0][..] } else { &[][..] }
     );
     let log = play.create_soft_checkpoint().await.log;
-    let host = config(u64::MAX, [0, 1, 1, 0]).host_work;
     let trace = with_contract(u64::MAX, [0, 1, 1, 0], |contract| {
         contract
-            .check_operation_journal(recording.session, &recording, rows, journal_limits(), &host)
+            .check_operation_journal(recording.session, &recording, rows, journal_limits())
             .unwrap()
     })
-    .bind_trace(
-        log.into(),
-        NativeOperationTraceLimits {
-            events: 10,
-            source_entries: 100,
-            source_bytes: 100_000,
-            telemetry_items: 100,
-            telemetry_bytes: 100_000,
-        },
-        &host,
-    )
+    .bind_trace(log.into(), NativeOperationTraceLimits {
+        events: 10,
+        source_entries: 100,
+        source_bytes: 100_000,
+        telemetry_items: 100,
+        telemetry_bytes: 100_000,
+    })
     .unwrap();
     assert_eq!(trace.journal_index(0), Some(1));
     let overlapping = Arc::new(OverlappingMatcher {
@@ -559,7 +491,7 @@ async fn exercise_readiness(shared_channel: bool, concurrent_matches: bool) {
         } else {
             Arc::new(Box::new(Matcher))
         };
-    let replay = trace.into_session(history, matcher, host).unwrap();
+    let replay = trace.into_session(history, matcher).unwrap();
     let root = replay.checkpoint().await.unwrap();
     if concurrent_matches {
         let replay = Arc::new(replay);
@@ -685,183 +617,16 @@ impl Match<BindPattern, ListParWithRandom, TaggedContinuation> for SharedMatcher
         self.0.get(pattern, data)
     }
 
-    fn get_metered(
-        &self,
-        pattern: &BindPattern,
-        data: &ListParWithRandom,
-        meter: &(dyn rspace_plus_plus::rspace::hashing::native_source::SourceMeter + Send + Sync),
-    ) -> Result<Option<ListParWithRandom>, RSpaceError> {
-        self.0.get_metered(pattern, data, meter)
-    }
-
-    fn check_commit_metered(
+    fn check_commit_by_reference(
         &self,
         continuation: &TaggedContinuation,
         matched: &[&ListParWithRandom],
-        meter: &(dyn rspace_plus_plus::rspace::hashing::native_source::SourceMeter + Send + Sync),
-    ) -> Result<bool, RSpaceError> {
-        self.0.check_commit_metered(continuation, matched, meter)
+    ) -> bool {
+        self.0.check_commit_by_reference(continuation, matched)
     }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn actual_private_session_runs_independent_matches_concurrently() {
     exercise_readiness(false, true).await;
-}
-
-/// D-E3 (DR-110): the operations, scanned bytes and backing bytes that a block
-/// walk of the shared walker reserves.
-fn shared_walk_usage(
-    walk: impl FnOnce(
-        &dyn shared::rust::clone_backing::BackingMeter,
-    ) -> Result<(), shared::rust::clone_backing::BackingError>,
-) -> [u64; 3] {
-    let used = std::cell::Cell::new([0u64; 3]);
-    let meter = |operations: usize, scanned: usize, backing: usize| {
-        let [o, s, b] = used.get();
-        used.set([
-            o + operations as u64,
-            s + scanned as u64,
-            b + backing as u64,
-        ]);
-        Ok::<(), shared::rust::clone_backing::BackingError>(())
-    };
-    walk(&meter).expect("an unlimited meter");
-    used.get()
-}
-
-fn walker_usage(host: &HostWorkBudget) -> [u64; 3] {
-    [
-        HostWorkDimension::VerificationOperations,
-        HostWorkDimension::VerificationBytes,
-        HostWorkDimension::SearchStateBytes,
-    ]
-    .map(|dimension| host.usage(dimension).get())
-}
-
-fn limited(usage: [u64; 3]) -> HostWorkBudget {
-    use models::rust::host_work::{HostWorkLimit, HostWorkLimits};
-    let mut limits = HostWorkLimits::uniform(HostWorkLimit::new(u64::MAX));
-    for (dimension, amount) in [
-        HostWorkDimension::VerificationOperations,
-        HostWorkDimension::VerificationBytes,
-        HostWorkDimension::SearchStateBytes,
-    ]
-    .into_iter()
-    .zip(usage)
-    {
-        limits.set(dimension, HostWorkLimit::new(amount));
-    }
-    HostWorkBudget::new(limits)
-}
-
-/// D-E3 (DR-110): a charge succeeds with exactly its usage and is rejected
-/// one unit short in each dimension that it uses.
-fn assert_exact_credit(
-    expected: [u64; 3],
-    charge: impl Fn(&HostWorkBudget) -> Result<(), InterpreterError>,
-) {
-    let exact = limited(expected);
-    charge(&exact).expect("the exact credit");
-    assert_eq!(walker_usage(&exact), expected);
-    for dimension in 0..3 {
-        if expected[dimension] == 0 {
-            continue;
-        }
-        let mut short = expected;
-        short[dimension] -= 1;
-        let rejected = limited(short);
-        assert!(matches!(
-            charge(&rejected),
-            Err(InterpreterError::HostWorkRejected)
-        ));
-        assert!(rejected.is_rejected());
-    }
-}
-
-fn add_usage(total: &mut [u64; 3], part: [u64; 3]) {
-    for (sum, amount) in total.iter_mut().zip(part) {
-        *sum += amount;
-    }
-}
-
-/// D-E3 (DR-110): the source preparation charges two block traversals of
-/// each value: the source pass, whose writer reserves only the bytes that it
-/// writes, and the release of the value after the operation. The expected
-/// charge comes from the shared block walks, for small values and for 4 KiB
-/// values.
-#[test]
-fn source_preparation_charges_two_block_traversals_of_each_value() {
-    use models::rhoapi::tagged_continuation::TaggedCont;
-    use models::rhoapi::ParWithRandom;
-    use models::rust::utils::new_gstring_par;
-    use shared::rust::clone_backing as walks;
-
-    for size in [1, 4_096] {
-        let text = "s".repeat(size);
-        let channel = new_gstring_par(text.clone(), Vec::new(), false);
-        let data = ListParWithRandom {
-            pars: vec![new_gstring_par(text.clone(), Vec::new(), false)],
-            random_state: vec![7; 64],
-            ..Default::default()
-        };
-        let mut expected = [0; 3];
-        for _ in 0..2 {
-            add_usage(
-                &mut expected,
-                shared_walk_usage(|meter| walks::inspect_blocks(&channel, meter)),
-            );
-            add_usage(
-                &mut expected,
-                shared_walk_usage(|meter| walks::inspect_blocks(&data, meter)),
-            );
-        }
-        let host = limited([u64::MAX; 3]);
-        super::charge_produce_source(&host, &channel, &data).expect("produce source charge");
-        assert_eq!(walker_usage(&host), expected);
-        assert_exact_credit(expected, |host| {
-            super::charge_produce_source(host, &channel, &data)
-        });
-
-        let channels = vec![
-            channel.clone(),
-            new_gstring_par(text.clone(), Vec::new(), false),
-        ];
-        let patterns = vec![
-            BindPattern {
-                patterns: vec![new_gstring_par(text.clone(), Vec::new(), false)],
-                ..Default::default()
-            },
-            BindPattern::default(),
-        ];
-        let continuation = TaggedContinuation {
-            tagged_cont: Some(TaggedCont::ParBody(ParWithRandom {
-                body: Some(new_gstring_par(text.clone(), Vec::new(), false)),
-                random_state: vec![9; 64],
-            })),
-            ..Default::default()
-        };
-        let mut expected = [0; 3];
-        for _ in 0..2 {
-            add_usage(
-                &mut expected,
-                shared_walk_usage(|meter| walks::inspect_blocks_slice(&channels, meter)),
-            );
-            add_usage(
-                &mut expected,
-                shared_walk_usage(|meter| walks::inspect_blocks_slice(&patterns, meter)),
-            );
-            add_usage(
-                &mut expected,
-                shared_walk_usage(|meter| walks::inspect_blocks(&continuation, meter)),
-            );
-        }
-        let host = limited([u64::MAX; 3]);
-        super::charge_consume_source(&host, &channels, &patterns, &continuation)
-            .expect("consume source charge");
-        assert_eq!(walker_usage(&host), expected);
-        assert_exact_credit(expected, |host| {
-            super::charge_consume_source(host, &channels, &patterns, &continuation)
-        });
-    }
 }

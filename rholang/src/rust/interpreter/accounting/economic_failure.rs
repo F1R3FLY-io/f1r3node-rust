@@ -1,13 +1,10 @@
-use std::mem::size_of;
 use std::sync::atomic::{AtomicU8, Ordering};
 
-use models::rust::host_work::{HostWorkDimension, HostWorkReservationError, HostWorkUnits};
 use rspace_plus_plus::rspace::errors::RSpaceError as SpaceError;
 use thiserror::Error;
 
 use super::phlo_execution::PhloFailure;
 use crate::rust::interpreter::errors::InterpreterError;
-use crate::rust::interpreter::host_work::HostWorkBudget;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct EvaluationFailureSummary {
@@ -67,29 +64,12 @@ impl<A: FailureAtomic> FailureRecorder<A> {
 
 #[derive(Debug, Error)]
 pub enum FailureClassificationError {
-    #[error(transparent)]
-    HostWork(#[from] HostWorkReservationError),
     #[error("failure classification allocation failed")]
     AllocationFailed,
-    #[error("failure classification work overflowed")]
-    Overflow,
-}
-
-fn reserve(
-    budget: Option<&HostWorkBudget>,
-    dimension: HostWorkDimension,
-    amount: usize,
-) -> Result<(), FailureClassificationError> {
-    if let Some(budget) = budget {
-        let amount = u64::try_from(amount).map_err(|_| FailureClassificationError::Overflow)?;
-        budget.reserve(dimension, HostWorkUnits::new(amount))?;
-    }
-    Ok(())
 }
 
 pub fn classify_errors(
     errors: &[InterpreterError],
-    budget: Option<&HostWorkBudget>,
 ) -> Result<EvaluationFailureSummary, FailureClassificationError> {
     let mut result = EvaluationFailureSummary::default();
     let mut pending: Vec<&[InterpreterError]> = Vec::new();
@@ -105,7 +85,6 @@ pub fn classify_errors(
             }
         };
         remaining = rest;
-        reserve(budget, HostWorkDimension::VerificationOperations, 1)?;
         use InterpreterError::*;
         let (failure, children) = match error {
             UserAbortError
@@ -184,11 +163,6 @@ pub fn classify_errors(
         }
         if let Some(children) = children.filter(|children| !children.is_empty()) {
             if !remaining.is_empty() {
-                reserve(
-                    budget,
-                    HostWorkDimension::SearchStateBytes,
-                    size_of::<&[InterpreterError]>(),
-                )?;
                 pending
                     .try_reserve(1)
                     .map_err(|_| FailureClassificationError::AllocationFailed)?;

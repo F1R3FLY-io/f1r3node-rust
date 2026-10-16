@@ -10,7 +10,7 @@ mod execution;
 pub use acquisition::{
     NativePhloAcquisitionDemand, NativePhloAcquisitionError, NativePhloAcquisitionLimits,
 };
-pub(super) use execution::{observation_comparison_bytes, CheckedNativeBudgetEvidence};
+pub(super) use execution::CheckedNativeBudgetEvidence;
 // Added by dedup (task 11415, D8): the leaf walk of the native meter, which the
 // estimate shares.
 pub(crate) use execution::{signature_leaf_units, SignatureUnitsMeter};

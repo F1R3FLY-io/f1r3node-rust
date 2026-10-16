@@ -1,20 +1,16 @@
 use std::collections::HashMap;
-use std::mem::size_of;
 
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
 use models::rhoapi::Par;
 use models::rust::casper::protocol::casper_message::Event;
-use models::rust::host_work::HostWorkDimension;
-use rholang::rust::interpreter::host_work::HostWorkBudget;
 use rholang::rust::interpreter::rho_runtime::RhoRuntime;
 use rholang::rust::interpreter::util::vault_address::VaultAddress;
 use rspace_plus_plus::rspace::history::Either;
 use rspace_plus_plus::rspace::merger::merging_logic::MergeType;
 
-use super::snapshot::reserve;
 use super::{
-    invalid, NativeRetainedBirthLimits, OwnedPrepaidReceiptChange, PrepaidReceiptChange,
-    PrepaidReceiptLimits, PreparedNativeRetainedReceipts,
+    invalid, NativeRetainedBirthLimits, OwnedPrepaidReceiptChange, PrepaidReceiptLimits,
+    PreparedNativeRetainedReceipts,
 };
 use crate::rust::errors::CasperError;
 use crate::rust::rholang::runtime::RuntimeOps;
@@ -41,7 +37,6 @@ impl RuntimeOps {
         fee_address: &VaultAddress,
         initial_rand: Blake2b512Random,
         limits: NativeRetainedSettlementLimits,
-        budget: &HostWorkBudget,
     ) -> Result<NativeRetainedSettlement, CasperError> {
         if super::consumption::used_resources(
             prepared.births().settlement().capture().scoped().capture(),
@@ -59,7 +54,6 @@ impl RuntimeOps {
             fee_address,
             initial_rand,
             limits,
-            budget,
         )
         .await
     }
@@ -71,7 +65,6 @@ impl RuntimeOps {
         fee_address: &VaultAddress,
         initial_rand: Blake2b512Random,
         limits: NativeRetainedSettlementLimits,
-        budget: &HostWorkBudget,
     ) -> Result<NativeRetainedSettlement, CasperError> {
         let births = prepared.births();
         births
@@ -82,7 +75,6 @@ impl RuntimeOps {
                 self,
                 limits.births.physical_cells,
                 limits.births.physical_bytes,
-                budget,
             )
             .await?;
         let count = prepared.changes().len();
@@ -91,13 +83,6 @@ impl RuntimeOps {
                 "retained settlement receipt count exceeds its limit",
             ));
         }
-        reserve(
-            budget,
-            HostWorkDimension::SearchStateBytes,
-            count
-                .checked_mul(size_of::<PrepaidReceiptChange>())
-                .ok_or_else(|| invalid("retained settlement allocation overflow"))?,
-        )?;
         let mut changes = Vec::new();
         changes
             .try_reserve_exact(count)
@@ -108,19 +93,19 @@ impl RuntimeOps {
             .try_reserve_exact(changes.len())
             .map_err(|_| invalid("retained receipt change allocation failed"))?;
         for change in &changes {
-            owned_changes.push(OwnedPrepaidReceiptChange::copy_from(*change, budget)?);
+            owned_changes.push(OwnedPrepaidReceiptChange::copy_from(*change)?);
         }
         let funding = births
             .funding()
             .capture()
-            .bind_retained_births(births.funding().births(), limits.births.funding, budget)
+            .bind_retained_births(births.funding().births(), limits.births.funding)
             .map_err(|error| invalid(&error.to_string()))?;
         let mut wallet = births
             .settlement()
-            .prepare_request(reservation_id, fee_address, initial_rand, budget)
+            .prepare_request(reservation_id, fee_address, initial_rand)
             .map_err(|error| invalid(&error.to_string()))?;
         if self
-            .capture_retained_birth_stacks(&funding, limits.births, budget)
+            .capture_retained_birth_stacks(&funding, limits.births)
             .await?
             != births.stacks()
         {
@@ -146,7 +131,7 @@ impl RuntimeOps {
                 settlement.mergeable = mergeable;
             }
             if self
-                .capture_retained_birth_stacks(&funding, limits.births, budget)
+                .capture_retained_birth_stacks(&funding, limits.births)
                 .await?
                 != births.stacks()
             {
@@ -159,11 +144,10 @@ impl RuntimeOps {
                     self,
                     limits.births.physical_cells,
                     limits.births.physical_bytes,
-                    budget,
                 )
                 .await?;
             settlement.log.extend(
-                self.replace_prepaid_receipts_metered(&changes, limits.receipts, budget)
+                self.replace_prepaid_receipts(&changes, limits.receipts)
                     .await?
                     .into_iter()
                     .map(event_converter::to_casper_event),

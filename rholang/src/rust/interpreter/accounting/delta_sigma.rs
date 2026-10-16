@@ -59,8 +59,7 @@
 //! H1): its work is not linear in the term. Each send or receive walks its whole
 //! chain of enclosing signed scopes, and each combine copies the lane map of a
 //! child and the supply of its parent, so the work grows with the term plus its
-//! region links and merged map entries. The estimate of `estimate.rs` counts
-//! that work and charges it to the host-work budget before it calls the plan.
+//! region links and merged map entries.
 //! Corrected by dedup (task 11415, D10): no live gate feeds a supply map
 //! `BTreeMap<SigKey, i64>` into this module. The merge `1d325b996` removed the
 //! native gate that did. The check before execution of G1 (DR-123, DR-124)

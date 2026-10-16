@@ -1178,7 +1178,7 @@ impl SystemProcesses {
     ) -> Result<Vec<Par>, InterpreterError> {
         match body_ref {
             BodyRefs::STDOUT | BodyRefs::STDOUT_ACK | BodyRefs::STDERR | BodyRefs::STDERR_ACK => {
-                self.native_print(body_ref, contract_args, cost).await
+                self.native_print(body_ref, contract_args).await
             }
             _ => {
                 self.native_recorded_call(body_ref, contract_args, cost)
@@ -1188,13 +1188,12 @@ impl SystemProcesses {
     }
 
     /// Added by DR-114: stdout and stderr in native funded execution. Play
-    /// prepays the formatting, formats and prints. Replay neither formats nor
-    /// prints. The acknowledged forms reply `Nil` in both.
+    /// formats and prints. Replay neither formats nor prints. The
+    /// acknowledged forms reply `Nil` in both.
     async fn native_print(
         &self,
         body_ref: BodyRef,
         contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),
-        cost: &RuntimeBudget,
     ) -> Result<Vec<Par>, InterpreterError> {
         let (name, acknowledged, to_stderr) = match body_ref {
             BodyRefs::STDOUT => ("std_out", false, false),
@@ -1212,7 +1211,6 @@ impl SystemProcesses {
             _ => return Err(illegal_argument_error(name)),
         };
         if !is_replay {
-            cost.reserve_native_print(message)?;
             let text = stacker::maybe_grow(1 << 20, 2 << 20, || {
                 PrettyPrinter::new().build_string_from_message(message)
             });
@@ -1265,7 +1263,6 @@ impl SystemProcesses {
             }
             previous_output
         } else {
-            cost.reserve_native_record_scan()?;
             match self.native_service_call(body_ref, request).await {
                 NativeCallOutcome::Reply(reply) => {
                     let bytes = reply.iter().try_fold(0_u64, |total, par| {

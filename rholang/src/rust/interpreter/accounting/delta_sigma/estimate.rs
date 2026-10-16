@@ -5,10 +5,9 @@
 //!
 //! The estimate runs four walks, each on a heap work stack (DR-67):
 //!
-//! 1. The metering pre-pass computes the message height, a length bound and
-//!    the variable count of every subterm once, bottom-up. It also counts the
-//!    work of the reused plan and of the vector fold. Each count is charged
-//!    to the host-work budget before the walk that does the work.
+//! 1. The pre-pass computes the message height, a length bound and the
+//!    variable count of every subterm once, bottom-up, and the peak binder
+//!    count that sizes the environment of pass 1.
 //! 2. `static_authority_plan` decides rule X1 and gives the compute row.
 //! 3. Pass 1 gives every de Bruijn level a binder kind, checks rules X2 to
 //!    X8, sizes every send and receive with the reducer's own evaluation,
@@ -18,8 +17,8 @@
 //!    branches take the componentwise maximum.
 //!
 //! The work of these walks grows with the term plus its region links, merged
-//! map entries and sized bytes (design §5.8), and the host-work budget bounds
-//! it. Data are evaluated only when every form in them has a known work limit
+//! map entries and sized bytes (design §5.8). Data are evaluated only when
+//! every form in them has a known work limit
 //! (arbitration H2), and only values whose message height fits the sizing
 //! bound reach a recursive function of the reducer.
 
@@ -35,7 +34,6 @@ use models::rhoapi::{
     BindPattern, Bundle, CostSignature, CostSignedTerm, EVar, Expr, GPrivate, GUnforgeable, If,
     Match, MatchCase, New, Par, Receive, ReceiveBind, Send, Var,
 };
-use models::rust::host_work::{HostWorkDimension, HostWorkUnits};
 use models::rust::phlo_schedule::PhloScheduleV1;
 use models::rust::rholang::implicits::single_bundle;
 use prost::Message;
@@ -50,7 +48,7 @@ use crate::rust::interpreter::accounting::byte_accounting::{
     message_field_bytes, par_with_random_bytes, produce_introduction_bytes, ByteAccountingError,
 };
 use crate::rust::interpreter::accounting::costs::Cost;
-use crate::rust::interpreter::accounting::lexical::resolve_lexical_names_for_funding_metered;
+use crate::rust::interpreter::accounting::lexical::resolve_lexical_names_for_funding;
 // Added by dedup (task 11415, D8): the leaf walk of the native meter.
 use crate::rust::interpreter::accounting::native_phlo_rules::{
     signature_leaf_units, SignatureUnitsMeter,
@@ -62,7 +60,6 @@ use crate::rust::interpreter::accounting::{RuntimeBudget, Sig};
 use crate::rust::interpreter::deterministic_reduction;
 use crate::rust::interpreter::env::Env;
 use crate::rust::interpreter::errors::InterpreterError;
-use crate::rust::interpreter::host_work::HostWorkBudget;
 use crate::rust::interpreter::interpreter::InterpreterImpl;
 use crate::rust::interpreter::metering::MeteredMachine;
 use crate::rust::interpreter::reduce::ReducerCore;
@@ -137,14 +134,11 @@ impl CostEstimate {
     /// the analysis: weight times units times count, with an overflow that
     /// gives `u64::MAX`. An estimate that loses a counted lane is incomplete
     /// with the reason `ForeignLane`, unless an earlier rule already made it
-    /// incomplete. The walk charges one verification operation for each
-    /// count and each signature, and one structural item for each node of a
-    /// kept signature.
+    /// incomplete.
     pub fn retain_client_lanes(
         self,
         client: &BTreeSet<SigKey>,
         schedule: &PhloScheduleV1<'_>,
-        host: &HostWorkBudget,
     ) -> Result<CostEstimate, InterpreterError> {
         let CostEstimate {
             quantities,
@@ -152,15 +146,10 @@ impl CostEstimate {
             completeness,
             ..
         } = self;
-        reserve(
-            host,
-            HostWorkDimension::VerificationOperations,
-            byte_count(quantities.len()).saturating_add(byte_count(signatures.len())),
-        )?;
         signatures.retain(|lane, _| client.contains(lane));
         let mut units = BTreeMap::new();
         for (lane, signature) in &signatures {
-            units.insert(*lane, signature_units_metered(signature, host)?);
+            units.insert(*lane, signature_units(signature));
         }
         // Changed by dedup (task 11415, D8): the B loop moved to `bound_over`,
         // which `assemble` shares. The loop below keeps the client quantities.
@@ -234,19 +223,8 @@ impl CostEstimate {
 /// under the lane domain (`Sig::lane_hash`). A resource permission names its
 /// lane by that encoded channel, so the lane key of a permission is the
 /// digest of its location. The check uses it to find the lanes that a source
-/// permits. The digest charges one verification operation and the bytes that
-/// it reads before it reads them.
-pub fn location_lane_key(
-    location: &[u8],
-    host: &HostWorkBudget,
-) -> Result<SigKey, InterpreterError> {
-    let domain = crate::rust::interpreter::accounting::SIGNATURE_LANE_DOMAIN;
-    reserve(host, HostWorkDimension::VerificationOperations, 1)?;
-    reserve(
-        host,
-        HostWorkDimension::VerificationBytes,
-        byte_count(domain.len()).saturating_add(byte_count(location.len())),
-    )?;
+/// permits.
+pub fn location_lane_key(location: &[u8]) -> SigKey {
     // Moved by dedup (task 11415) to `lane_digest` in
     // `rholang/src/rust/interpreter/accounting/mod.rs`.
     // let digest = crypto::rust::hash::blake2b256::Blake2b256::hash_parts([domain, location]);
@@ -254,7 +232,7 @@ pub fn location_lane_key(
     //     .as_slice()
     //     .try_into()
     //     .map_err(|_| InterpreterError::ReduceError("a lane digest is not 32 bytes".to_string()))
-    Ok(crate::rust::interpreter::accounting::lane_digest(location))
+    crate::rust::interpreter::accounting::lane_digest(location)
 }
 
 /// The per-message length bound of the pre-pass: a key, a length prefix and
@@ -266,16 +244,8 @@ const PAR_LEAF_HEIGHT: u32 = 5;
 const SIGNATURE_LEAF_HEIGHT: u32 = 3;
 /// The largest message height of a value that reaches a recursive function
 /// of the reducer: substitution, evaluation, sorting, measurement and drop.
-/// It is the depth bound of `SorterMeter::enter`.
+/// It was the depth bound of `SorterMeter::enter`, which DR-131 S7 deleted.
 pub(crate) const SIZING_HEIGHT_LIMIT: u32 = 256;
-
-/// Added by the second G1-4a fix (re-review MEDIUM-1): the copies or scans of
-/// the subtree of a compound expression at one nesting level of `eval_expr`.
-/// The evaluation builds the new value, `update_locally_free_par` clones each
-/// element (`reduce.rs:3496`), `reserve_host_primitive` measures the
-/// expression (`reduce.rs:288-302`, `:2261`), and a binary operator clones
-/// its operand (`reduce.rs:3339`).
-const EVALUATION_COPIES: u64 = 4;
 
 /// The wrapper messages around a sized value: the datum, the continuation,
 /// the random state and the seal.
@@ -299,38 +269,28 @@ const COMPUTE: usize = 0;
 
 /// The estimate of one resolved term, as design §5 specifies it.
 ///
-/// `resolved` is the output of the metered funding resolver, `funding` is the
-/// funding signature, and `evaluator` is a reducer whose URN map the offered
-/// runtime uses. The analysis evaluates with a copy of `evaluator` whose two
-/// meters are fresh, so the runtime's budget stays untouched (arbitration
-/// M1). An error means that the host-work budget ran out or that an input is
-/// malformed, and the check rejects the deploy without a charge.
+/// `resolved` is the output of the funding resolver, `funding` is the funding
+/// signature, and `evaluator` is a reducer whose URN map the offered runtime
+/// uses. The analysis evaluates with a copy of `evaluator` whose two meters
+/// are fresh, so the runtime's budget stays untouched (arbitration M1). An
+/// error means that an input is malformed, and the check rejects the deploy
+/// without a charge.
 pub fn linear_cost_estimate(
     resolved: &Par,
     funding: &Sig,
     schedule: &PhloScheduleV1<'_>,
     evaluator: &ReducerCore,
-    host: &HostWorkBudget,
 ) -> Result<CostEstimate, InterpreterError> {
-    // Changed by the G1-4a fix (review LOW 1): a live reduction session is an
-    // error in every build, because the reducer's host-work reservations
-    // would charge that session.
-    // debug_assert!(
-    //     deterministic_reduction::current().is_none(),
-    //     "the pre-execution estimate runs outside a reduction session"
-    // );
-    if deterministic_reduction::current().is_some() {
-        return Err(InterpreterError::BugFoundError(
-            "the pre-execution estimate must run outside a reduction session".to_string(),
-        ));
-    }
+    debug_assert!(
+        deterministic_reduction::current().is_none(),
+        "the pre-execution estimate runs outside a reduction session"
+    );
     let rules = NativePhloRules::resolve(schedule)
         .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
     let core = isolated_evaluator(evaluator);
     stacker::grow(SIZING_STACK_BYTES, || {
-        let mut estimator = Estimator::new(funding, &core, host)?;
-        let counts = estimator.measure(resolved)?;
-        estimator.charge_plan(&counts)?;
+        let mut estimator = Estimator::new(funding, &core)?;
+        estimator.measure(resolved)?;
         // Changed by the G1-4a fix (review M-2): the plan and the static
         // signature list canonicalize every signature recursively, so they
         // run only when no signature is taller than the sizing bound.
@@ -345,9 +305,7 @@ pub fn linear_cost_estimate(
         };
         estimator.walk(resolved)?;
         let tables = estimator.tables()?;
-        estimator.charge_fold(&counts)?;
         let vector = estimator.run(&tables)?;
-        estimator.charge_signatures(&counts)?;
         // let static_signatures = static_authority_signatures(resolved).ok();
         let static_signatures = match shallow {
             true => static_authority_signatures(resolved).ok(),
@@ -357,9 +315,9 @@ pub fn linear_cost_estimate(
     })
 }
 
-/// The estimate of an offered term: it parses the term with the host-work
-/// charge of replay, resolves its names with the metered funding resolver,
-/// estimates the resolved term, and drops both terms without recursion.
+/// The estimate of an offered term: it parses the term, resolves its names
+/// with the funding resolver, estimates the resolved term, and drops both
+/// terms without recursion.
 pub fn estimate_offered_term(
     term: &str,
     normalizer_env: HashMap<String, Par>,
@@ -367,27 +325,23 @@ pub fn estimate_offered_term(
     funding: &Sig,
     schedule: &PhloScheduleV1<'_>,
     evaluator: &ReducerCore,
-    host: &HostWorkBudget,
 ) -> Result<CostEstimate, InterpreterError> {
-    let parsed = InterpreterImpl::parse_source(term, normalizer_env, Some(host))?;
-    let resolved =
-        match resolve_lexical_names_for_funding_metered(&parsed, rand, &evaluator.urn_map, host) {
-            Ok(resolved) => resolved,
-            Err(error) => {
-                dismantle_term(parsed);
-                return Err(error);
-            }
-        };
-    let estimate = linear_cost_estimate(&resolved, funding, schedule, evaluator, host);
+    let parsed = InterpreterImpl::parse_source(term, normalizer_env)?;
+    let resolved = match resolve_lexical_names_for_funding(&parsed, rand, &evaluator.urn_map) {
+        Ok(resolved) => resolved,
+        Err(error) => {
+            dismantle_term(parsed);
+            return Err(error);
+        }
+    };
+    let estimate = linear_cost_estimate(&resolved, funding, schedule, evaluator);
     dismantle_term(parsed);
     dismantle_term(resolved);
     estimate
 }
 
 /// A copy of `core` whose metering and substitution meters are one fresh
-/// unlimited machine (arbitration M1). Outside a reduction session the
-/// reducer's host-work reservations do nothing, so the analysis charges its
-/// own host-work budget before each call.
+/// unlimited machine (arbitration M1).
 fn isolated_evaluator(core: &ReducerCore) -> ReducerCore {
     let metering = MeteredMachine::new(RuntimeBudget::new(Cost::unsafe_max()));
     ReducerCore {
@@ -398,20 +352,9 @@ fn isolated_evaluator(core: &ReducerCore) -> ReducerCore {
     }
 }
 
-fn reserve(
-    host: &HostWorkBudget,
-    dimension: HostWorkDimension,
-    units: u64,
-) -> Result<(), InterpreterError> {
-    host.reserve(dimension, HostWorkUnits::new(units))?;
-    Ok(())
-}
-
 fn byte_count(len: usize) -> u64 { u64::try_from(len).unwrap_or(u64::MAX) }
 
 fn is_closed(locally_free: &[u8]) -> bool { locally_free.iter().all(|free| *free == 0) }
-
-fn log2_ceil(value: u64) -> u64 { u64::from(64 - value.saturating_sub(1).leading_zeros()) }
 
 // ── The metering pre-pass ──────────────────────────────────────────────────
 
@@ -836,11 +779,10 @@ fn subterm_parts<'a>(subterm: Subterm<'a>, children: &mut Vec<(u32, Subterm<'a>)
 }
 
 /// Measures `root` and every nested subterm once, bottom-up, and records
-/// each result in `measures`. It charges two structural items per subterm.
+/// each result in `measures`.
 fn measure_subterm(
     root: Subterm<'_>,
     measures: &mut Measures,
-    host: &HostWorkBudget,
 ) -> Result<Metrics, InterpreterError> {
     enum Step<'a> {
         Enter(Subterm<'a>),
@@ -857,21 +799,11 @@ fn measure_subterm(
                 work.push(Step::Exit(subterm));
                 children.clear();
                 subterm_parts(subterm, &mut children);
-                reserve(
-                    host,
-                    HostWorkDimension::StructuralItems,
-                    scan_width(subterm, &children),
-                )?;
                 work.extend(children.drain(..).map(|(_, child)| Step::Enter(child)));
             }
             Step::Exit(subterm) => {
                 children.clear();
                 let mut metrics = subterm_parts(subterm, &mut children);
-                reserve(
-                    host,
-                    HostWorkDimension::StructuralItems,
-                    scan_width(subterm, &children),
-                )?;
                 for (offset, child) in children.drain(..) {
                     metrics.absorb(offset, measures.get(child));
                 }
@@ -926,9 +858,8 @@ fn private_name(id: Vec<u8>) -> Par {
     }])
 }
 
-/// The first marker in `root`, found without recursion. It charges one
-/// structural item per subterm.
-fn find_marker(root: &Par, host: &HostWorkBudget) -> Result<Option<Marker>, InterpreterError> {
+/// The first marker in `root`, found without recursion.
+fn find_marker(root: &Par) -> Result<Option<Marker>, InterpreterError> {
     let mut work = vec![Subterm::Par(root)];
     let mut children = Vec::new();
     while let Some(subterm) = work.pop() {
@@ -937,11 +868,6 @@ fn find_marker(root: &Par, host: &HostWorkBudget) -> Result<Option<Marker>, Inte
         // reserve(host, HostWorkDimension::StructuralItems, 1)?;
         children.clear();
         subterm_parts(subterm, &mut children);
-        reserve(
-            host,
-            HostWorkDimension::StructuralItems,
-            scan_width(subterm, &children),
-        )?;
         if let Subterm::Par(par) = subterm {
             if let Some(marker) = par.unforgeables.iter().find_map(marker_of) {
                 return Ok(Some(marker));
@@ -952,47 +878,10 @@ fn find_marker(root: &Par, host: &HostWorkBudget) -> Result<Option<Marker>, Inte
     Ok(None)
 }
 
-/// Added by the G1-4a fix (review LOW 3): the items that one scan of a node
-/// reads: the node, its top-level items and its nested children.
-fn scan_width(subterm: Subterm<'_>, children: &[(u32, Subterm<'_>)]) -> u64 {
-    let items = match subterm {
-        Subterm::Par(par) => {
-            par.sends.len()
-                + par.receives.len()
-                + par.news.len()
-                + par.exprs.len()
-                + par.matches.len()
-                + par.unforgeables.len()
-                + par.bundles.len()
-                + par.connectives.len()
-                + par.conditionals.len()
-                + par.cost_signed_terms.len()
-                + par.cost_stacks.len()
-        }
-        Subterm::Signature(_) => 0,
-    };
-    byte_count(items)
-        .saturating_add(byte_count(children.len()))
-        .saturating_add(1)
-}
-
-/// The work of the reused plan, of `static_authority_signatures` and of the
-/// vector fold, counted by one walk over the positions that the plan visits
-/// (arbitration H1). Each walk is charged before it runs.
+/// The binder bound of pass 1, counted by one walk over the positions that
+/// the plan visits (arbitration H1).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct WorkCounts {
-    /// The tasks of the plan's walk.
-    pub(crate) steps: u64,
-    /// The region links that the chain walks visit: the signed depth plus one
-    /// for each send and receive, the signed binds, and twice that for each
-    /// stack cell.
-    pub(crate) chain_links: u64,
-    /// The map entries that the combines, alternatives and supply copies of
-    /// the plan touch. A combine at a child touches at most the lanes of the
-    /// child and of the enclosing scopes and the supply of the parent.
-    pub(crate) merge_entries: u64,
-    /// The length bound of the signatures that the plan canonicalizes.
-    pub(crate) signature_bytes: u64,
     /// Added by the second G1-4a fix (re-review HIGH-1): an upper bound of the
     /// binders that pass 1 holds at once. The walk visits every position of
     /// pass 1 and adds the binders of each `new`, receive body and match case
@@ -1000,175 +889,33 @@ pub(crate) struct WorkCounts {
     pub(crate) peak_binders: usize,
 }
 
-fn count_plan_work(
-    root: &Par,
-    measures: &Measures,
-    host: &HostWorkBudget,
-) -> Result<WorkCounts, InterpreterError> {
-    // Changed by the second G1-4a fix (re-review HIGH-1): a step also carries
-    // the binders that pass 1 holds at its node.
-    // enum Step<'a> {
-    //     Enter(&'a Par, u64, bool),
-    //     Exit(&'a Par, u64, bool),
-    // }
-    enum Step<'a> {
-        Enter(&'a Par, u64, bool, usize),
-        Exit(&'a Par, u64, bool),
-    }
+fn count_plan_work(root: &Par) -> WorkCounts {
     let mut counts = WorkCounts::default();
-    let mut subtree = HashMap::<usize, (u64, u64)>::new();
-    // let mut work = vec![Step::Enter(root, 0, true)];
-    let mut work = vec![Step::Enter(root, 0, true, 0)];
+    let mut work = vec![(root, 0u64, true, 0usize)];
     let mut children = Vec::new();
-    let signature_bytes = |signature: &CostSignature| {
-        measures
-            .signature(signature)
-            .map_or(NODE_BYTES, |metrics| metrics.weight)
-    };
-    while let Some(step) = work.pop() {
-        reserve(host, HostWorkDimension::StructuralItems, 1)?;
-        match step {
-            Step::Enter(par, depth, execution, binders) => {
-                children.clear();
-                plan_children(par, depth, execution, &mut children);
-                counts.peak_binders = counts.peak_binders.max(binders);
-                for new in &par.news {
-                    counts.peak_binders = counts
-                        .peak_binders
-                        .max(binders.saturating_add(new_levels(new)));
-                }
-                let links = depth.saturating_add(1);
-                let binds = signed_binds(par);
-                let cells = stack_cells(par);
-                let items = plan_items(par, execution);
-                let exprs = if execution {
-                    byte_count(par.exprs.len())
-                } else {
-                    0
-                };
-                counts.steps = counts
-                    .steps
-                    .saturating_add(1)
-                    .saturating_add(items.saturating_mul(2))
-                    .saturating_add(byte_count(children.len()).saturating_mul(2))
-                    .saturating_add(exprs);
-                let introductions = byte_count(par.sends.len() + par.receives.len());
-                let mut chain = introductions.saturating_mul(links).saturating_add(binds);
-                if execution {
-                    chain = chain.saturating_add(cells.saturating_mul(links).saturating_mul(2));
-                }
-                counts.chain_links = counts.chain_links.saturating_add(chain);
-                for signed in &par.cost_signed_terms {
-                    counts.signature_bytes = counts
-                        .signature_bytes
-                        .saturating_add(signed.signature.as_ref().map_or(0, signature_bytes));
-                }
-                for receive in &par.receives {
-                    for bind in &receive.binds {
-                        counts.signature_bytes = counts.signature_bytes.saturating_add(
-                            bind.cost_signature.as_ref().map_or(0, signature_bytes),
-                        );
-                    }
-                }
-                for stack in &par.cost_stacks {
-                    for cell in &stack.cells {
-                        counts.signature_bytes =
-                            counts.signature_bytes.saturating_add(signature_bytes(cell));
-                    }
-                }
-                work.push(Step::Exit(par, depth, execution));
-                // work.extend(
-                //     children
-                //         .drain(..)
-                //         .map(|(child, child_depth, child_execution)| {
-                //             Step::Enter(child, child_depth, child_execution)
-                //         }),
-                // );
-                work.extend(children.drain(..).map(
-                    |(child, child_depth, child_execution, levels)| {
-                        Step::Enter(
-                            child,
-                            child_depth,
-                            child_execution,
-                            binders.saturating_add(levels),
-                        )
-                    },
-                ));
-            }
-            // Changed by the G1-4a fix (review H-2): a combine touches the
-            // lanes of the child, which its signed scopes and signed binds
-            // bound, and the supply of the node, which its stack cells bound.
-            // The count no longer adds one entry for every node of a subtree,
-            // so a wide term costs its width, not its width times its size.
-            // A case of a match or a branch of an `if` is merged twice: into
-            // its alternative, and then, inside the alternative, into the
-            // node. Each merge reads the lane map and the transfer map. So a
-            // child pays four entries for each of its lanes and for the
-            // deploy lane. The replaced lines follow.
-            // Step::Exit(par, depth, execution) => {
-            //     children.clear();
-            //     plan_children(par, depth, execution, &mut children);
-            //     let nested = children.iter().fold(0u64, |total, (child, _, _)| {
-            //         total.saturating_add(
-            //             subtree
-            //                 .get(&(*child as *const Par as usize))
-            //                 .copied()
-            //                 .unwrap_or(0),
-            //         )
-            //     });
-            //     let own = byte_count(par.cost_signed_terms.len())
-            //         .saturating_add(signed_binds(par))
-            //         .saturating_add(stack_cells(par))
-            //         .saturating_add(1);
-            //     let entries = own.saturating_add(nested);
-            //     subtree.insert(par as *const Par as usize, entries);
-            //     let base = depth
-            //         .saturating_add(1)
-            //         .saturating_mul(2)
-            //         .saturating_add(entries.saturating_mul(2))
-            //         .saturating_add(4);
-            //     let edges = plan_items(par, execution).saturating_add(byte_count(children.len()));
-            //     counts.merge_entries = counts
-            //         .merge_entries
-            //         .saturating_add(edges.saturating_mul(base))
-            //         .saturating_add(nested.saturating_mul(3));
-            // }
-            Step::Exit(par, depth, execution) => {
-                children.clear();
-                plan_children(par, depth, execution, &mut children);
-                let mut lanes_below = 0u64;
-                let mut cells_below = 0u64;
-                let mut child_lanes = 0u64;
-                for (child, _, _, _) in &children {
-                    let (lanes, cells) = subtree
-                        .get(&(*child as *const Par as usize))
-                        .copied()
-                        .unwrap_or((0, 0));
-                    lanes_below = lanes_below.saturating_add(lanes);
-                    cells_below = cells_below.saturating_add(cells);
-                    child_lanes = child_lanes.saturating_add(lanes.saturating_add(1));
-                }
-                let lanes = byte_count(par.cost_signed_terms.len())
-                    .saturating_add(signed_binds(par))
-                    .saturating_add(lanes_below);
-                let cells = stack_cells(par).saturating_add(cells_below);
-                subtree.insert(par as *const Par as usize, (lanes, cells));
-                let items = plan_items(par, execution);
-                let edges = items.saturating_add(byte_count(children.len()));
-                let base = depth
-                    .saturating_add(1)
-                    .saturating_mul(2)
-                    .saturating_add(cells.saturating_mul(2))
-                    .saturating_add(4);
-                counts.merge_entries = counts
-                    .merge_entries
-                    .saturating_add(edges.saturating_mul(base))
-                    .saturating_add(child_lanes.saturating_mul(4))
-                    .saturating_add(items.saturating_mul(2));
-            }
+    while let Some((par, depth, execution, binders)) = work.pop() {
+        children.clear();
+        plan_children(par, depth, execution, &mut children);
+        counts.peak_binders = counts.peak_binders.max(binders);
+        for new in &par.news {
+            counts.peak_binders = counts
+                .peak_binders
+                .max(binders.saturating_add(new_levels(new)));
         }
+        work.extend(
+            children
+                .drain(..)
+                .map(|(child, child_depth, child_execution, levels)| {
+                    (
+                        child,
+                        child_depth,
+                        child_execution,
+                        binders.saturating_add(levels),
+                    )
+                }),
+        );
     }
-    Ok(counts)
+    counts
 }
 
 /// The children that `signed_demand_par` visits, with the signed depth and
@@ -1235,60 +982,6 @@ fn plan_children<'a>(
 fn new_levels(new: &New) -> usize {
     let count = usize::try_from(new.bind_count).unwrap_or(0);
     count.max(new.uri.len())
-}
-
-/// Added by the second G1-4a fix (re-review HIGH-1): the bucket count of a
-/// hashbrown table sized for `capacity` entries of the environment map,
-/// after `capacity_to_buckets` of hashbrown 0.16. An entry holds a `Par`, so
-/// it is much larger than a control group, and the small-table minimum that
-/// depends on the group width does not apply. The charge reads this pure
-/// function, never the capacity of the live map.
-fn environment_buckets(capacity: usize) -> u64 {
-    let buckets = match capacity {
-        0..=3 => 4,
-        4..=7 => 8,
-        8..=14 => 16,
-        _ => capacity
-            .saturating_mul(8)
-            .checked_div(7)
-            .and_then(usize::checked_next_power_of_two)
-            .unwrap_or(usize::MAX),
-    };
-    byte_count(buckets)
-}
-
-fn plan_items(par: &Par, execution: bool) -> u64 {
-    let stacks = if execution { par.cost_stacks.len() } else { 0 };
-    byte_count(
-        par.cost_signed_terms.len()
-            + stacks
-            + par.sends.len()
-            + par.receives.len()
-            + par.news.len()
-            + par.matches.len()
-            + par.conditionals.len()
-            + par.bundles.len()
-            + usize::from(execution),
-    )
-}
-
-fn signed_binds(par: &Par) -> u64 {
-    byte_count(
-        par.receives
-            .iter()
-            .map(|receive| {
-                receive
-                    .binds
-                    .iter()
-                    .filter(|bind| bind.cost_signature.is_some())
-                    .count()
-            })
-            .sum(),
-    )
-}
-
-fn stack_cells(par: &Par) -> u64 {
-    byte_count(par.cost_stacks.iter().map(|stack| stack.cells.len()).sum())
 }
 
 // ── Pass 1: binder kinds, rules and sizes ──────────────────────────────────
@@ -1404,18 +1097,15 @@ struct Evaluated {
     growth: u64,
 }
 
-/// The charge of one evaluation: its primitive calls and its byte work.
+/// The output bound of one evaluation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct EvaluationBound {
-    pub(crate) calls: u64,
-    pub(crate) work: u64,
     /// The length bound of the evaluated value.
     pub(crate) output: u64,
 }
 
 pub(crate) struct Estimator<'e> {
     core: &'e ReducerCore,
-    host: &'e HostWorkBudget,
     pub(crate) measures: Measures,
     deploy_key: SigKey,
     deploy_signature: Option<CostSignature>,
@@ -1424,10 +1114,9 @@ pub(crate) struct Estimator<'e> {
     binders: Vec<Binder>,
     env: Env<Par>,
     /// Added by the second G1-4a fix (re-review HIGH-1): the peak binder count
-    /// of the pre-pass, and the bucket count of the environment map, which
-    /// `size_environment` sizes once from that peak.
+    /// of the pre-pass, from which `size_environment` sizes the environment
+    /// map once.
     peak_binders: usize,
-    env_buckets: u64,
     /// The largest height and length of a value in the sizing environment.
     env_height: u32,
     env_weight: u64,
@@ -1478,21 +1167,16 @@ enum Task<'a> {
 }
 
 impl<'e> Estimator<'e> {
-    pub(crate) fn new(
-        funding: &Sig,
-        core: &'e ReducerCore,
-        host: &'e HostWorkBudget,
-    ) -> Result<Self, InterpreterError> {
+    pub(crate) fn new(funding: &Sig, core: &'e ReducerCore) -> Result<Self, InterpreterError> {
         let deploy_signature = sig_to_cost_signature(funding)
             .ok()
             .and_then(|signature| canonical_cost_signature(&signature).ok());
         let deploy_seal = match deploy_signature.as_ref() {
-            Some(signature) => region_field_bytes(signature, 0, host)?,
+            Some(signature) => region_field_bytes(signature, 0),
             None => None,
         };
         let mut estimator = Self {
             core,
-            host,
             measures: Measures::default(),
             deploy_key: funding.lane_hash(),
             deploy_signature,
@@ -1500,7 +1184,6 @@ impl<'e> Estimator<'e> {
             binders: Vec::new(),
             env: Env::new(),
             peak_binders: 0,
-            env_buckets: environment_buckets(2),
             env_height: 0,
             env_weight: 0,
             env_bytes: 0,
@@ -1524,24 +1207,19 @@ impl<'e> Estimator<'e> {
         Ok(estimator)
     }
 
-    fn charge(&self, dimension: HostWorkDimension, units: u64) -> Result<(), InterpreterError> {
-        reserve(self.host, dimension, units)
-    }
-
     fn violate(&mut self, reason: IncompleteReason) {
         if self.reason.is_none() {
             self.reason = Some(reason);
         }
     }
 
-    /// The pre-pass: the metrics of every subterm and the counted work of the
-    /// plan and of the vector fold.
+    /// The pre-pass: the metrics of every subterm, and the environment sized
+    /// from the peak binder count.
     pub(crate) fn measure(&mut self, root: &Par) -> Result<WorkCounts, InterpreterError> {
-        measure_subterm(Subterm::Par(root), &mut self.measures, self.host)?;
+        measure_subterm(Subterm::Par(root), &mut self.measures)?;
         // Changed by the second G1-4a fix (re-review HIGH-1): the pre-pass also
         // sizes the environment map from the peak binder count.
-        // count_plan_work(root, &self.measures, self.host)
-        let counts = count_plan_work(root, &self.measures, self.host)?;
+        let counts = count_plan_work(root);
         self.size_environment(counts.peak_binders)?;
         Ok(counts)
     }
@@ -1550,10 +1228,7 @@ impl<'e> Estimator<'e> {
     /// environment map once for the whole walk, with room for twice the peak
     /// binder count. A table that runs out of room then rehashes in place,
     /// because it holds at most half of its capacity, so its bucket count
-    /// never changes. The capacity of a table after removals depends on the
-    /// hash seed and on the group width of the processor, so the charge of a
-    /// copy reads the fixed bucket count instead, a pure function of the term.
-    /// The slots are charged as bindings before the allocation.
+    /// never changes.
     pub(crate) fn size_environment(&mut self, peak: usize) -> Result<(), InterpreterError> {
         if !self.binders.is_empty() || self.env.level != 0 {
             return Err(InterpreterError::BugFoundError(
@@ -1561,64 +1236,13 @@ impl<'e> Estimator<'e> {
             ));
         }
         let capacity = peak.saturating_mul(2).saturating_add(2);
-        self.charge(
-            HostWorkDimension::SubstitutionBindings,
-            byte_count(capacity),
-        )?;
-        let mut map = HashMap::new();
-        map.try_reserve(capacity)
-            .map_err(|_| InterpreterError::HostWorkRejected)?;
-        self.env.env_map = map;
+        self.env.env_map = HashMap::with_capacity(capacity);
         self.peak_binders = peak;
-        self.env_buckets = environment_buckets(capacity);
         Ok(())
     }
 
-    pub(crate) fn charge_plan(&self, counts: &WorkCounts) -> Result<(), InterpreterError> {
-        self.charge(HostWorkDimension::StructuralItems, counts.steps)?;
-        self.charge(HostWorkDimension::AuthorityNodes, counts.chain_links)?;
-        self.charge(
-            HostWorkDimension::VerificationOperations,
-            counts.merge_entries,
-        )?;
-        self.charge(HostWorkDimension::VerificationBytes, counts.signature_bytes)
-    }
-
-    /// The charge of the vector fold. Changed by the G1-4a fix:
-    /// - `contribute` walks the chain of a receive up to three times (review
-    ///   LOW 3).
-    /// - The fold's maps hold lane entries, at most one for each region link.
-    ///   A merge moves the smaller map into the larger, so each entry moves at
-    ///   most a logarithmic number of times (review H-2).
-    pub(crate) fn charge_fold(&self, counts: &WorkCounts) -> Result<(), InterpreterError> {
-        self.charge(
-            HostWorkDimension::StructuralItems,
-            byte_count(self.program.len()),
-        )?;
-        // self.charge(HostWorkDimension::AuthorityNodes, counts.chain_links)?;
-        // self.charge(
-        //     HostWorkDimension::VerificationOperations,
-        //     counts.merge_entries.saturating_mul(4),
-        // )
-        self.charge(
-            HostWorkDimension::AuthorityNodes,
-            counts.chain_links.saturating_mul(3),
-        )?;
-        self.charge(
-            HostWorkDimension::VerificationOperations,
-            counts
-                .chain_links
-                .saturating_mul(log2_ceil(counts.chain_links.saturating_add(2)).saturating_add(1)),
-        )
-    }
-
-    pub(crate) fn charge_signatures(&self, counts: &WorkCounts) -> Result<(), InterpreterError> {
-        self.charge(HostWorkDimension::StructuralItems, counts.steps)?;
-        self.charge(HostWorkDimension::VerificationBytes, counts.signature_bytes)
-    }
-
     fn note_env_value(&mut self, value: &Par) -> Result<u64, InterpreterError> {
-        let metrics = measure_subterm(Subterm::Par(value), &mut Measures::default(), self.host)?;
+        let metrics = measure_subterm(Subterm::Par(value), &mut Measures::default())?;
         self.env_height = self.env_height.max(metrics.height);
         self.env_weight = self.env_weight.max(metrics.weight);
         Ok(metrics.weight)
@@ -1656,9 +1280,11 @@ impl<'e> Estimator<'e> {
             self.observed_peak = self.observed_peak.max(self.binders.len());
         }
         self.env_bytes = self.env_bytes.saturating_add(weight);
-        self.env
-            .push(value)
-            .map_err(|_| InterpreterError::HostWorkRejected)
+        self.env.push(value).ok_or_else(|| {
+            InterpreterError::BugFoundError(
+                "the estimate cannot bind a value: the environment level overflows".to_string(),
+            )
+        })
     }
 
     pub(crate) fn push_holes(
@@ -1666,7 +1292,6 @@ impl<'e> Estimator<'e> {
         count: usize,
         kind: BinderKind,
     ) -> Result<(), InterpreterError> {
-        self.charge(HostWorkDimension::SubstitutionBindings, byte_count(count))?;
         self.binders.reserve(count);
         for _ in 0..count {
             self.push_binder(
@@ -1688,10 +1313,6 @@ impl<'e> Estimator<'e> {
     ) -> Result<usize, InterpreterError> {
         let count = usize::try_from(new.bind_count).unwrap_or(0);
         let simple = count.saturating_sub(new.uri.len());
-        self.charge(
-            HostWorkDimension::SubstitutionBindings,
-            byte_count(simple + new.uri.len()),
-        )?;
         self.binders.reserve(simple + new.uri.len());
         let kind = if resolving {
             BinderKind::Fresh
@@ -1710,9 +1331,7 @@ impl<'e> Estimator<'e> {
                     None => (BinderKind::Unknown, private_name(vec![0; UNKNOWN_ID_BYTES])),
                 },
             };
-            let metrics =
-                measure_subterm(Subterm::Par(&value), &mut Measures::default(), self.host)?;
-            self.charge(HostWorkDimension::StructuralBytes, metrics.weight)?;
+            let metrics = measure_subterm(Subterm::Par(&value), &mut Measures::default())?;
             self.env_height = self.env_height.max(metrics.height);
             self.env_weight = self.env_weight.max(metrics.weight);
             self.push_binder(kind, value, metrics.weight)?;
@@ -1862,51 +1481,6 @@ impl<'e> Estimator<'e> {
         })
     }
 
-    /// The charge of one substitution, before it runs.
-    /// - Its bindings are the bucket count of the environment map once, for
-    ///   the call, and once more for each environment copy of the term. A
-    ///   copy clones every bucket of the map (review M-4). The bucket count is
-    ///   fixed for the whole walk (re-review HIGH-1).
-    /// - Its bytes are the input bound, the output bound, in which each
-    ///   variable can become the largest value of the environment, and the
-    ///   bytes of each environment copy. The marker scan and the measurement
-    ///   read the output once more.
-    /// - A sorted substitution also pays a logarithmic factor on its output
-    ///   for the sort (review LOW 4).
-    fn charge_substitution(&self, metrics: Metrics, sorted: bool) -> Result<(), InterpreterError> {
-        // Changed by the G1-4a fix (review M-4): the copies cost the capacity
-        // of the map, not its length.
-        // self.charge(
-        //     HostWorkDimension::SubstitutionBindings,
-        //     byte_count(self.env.env_map.len()).saturating_mul(metrics.shifts.saturating_add(1)),
-        // )?;
-        // Changed by the second G1-4a fix (re-review HIGH-1): the capacity of
-        // the live map depends on the hash seed and on the group width after
-        // removals, so two nodes could charge differently. The charge reads
-        // the fixed bucket count of the map that `size_environment` sized.
-        // let buckets = byte_count(self.env.env_map.capacity().max(self.env.env_map.len()));
-        let buckets = self.env_buckets;
-        self.charge(
-            HostWorkDimension::SubstitutionBindings,
-            buckets.saturating_mul(metrics.shifts.saturating_add(1)),
-        )?;
-        let output = metrics
-            .weight
-            .saturating_add(metrics.vars.saturating_mul(self.env_weight));
-        let sort = match sorted {
-            true => output.saturating_mul(log2_ceil(output.saturating_add(2))),
-            false => 0,
-        };
-        self.charge(
-            HostWorkDimension::SubstitutionBytes,
-            metrics
-                .weight
-                .saturating_add(output.saturating_mul(2))
-                .saturating_add(sort)
-                .saturating_add(metrics.shifts.saturating_mul(self.env_bytes)),
-        )
-    }
-
     /// The prost length of a channel as the reducer stores it: evaluated,
     /// substituted at depth 0 and unbundled (`eval_send`, `unbundle_receive`).
     fn channel_bytes(&self, channel: &Par, write: bool) -> Sizing<u64> {
@@ -1914,24 +1488,10 @@ impl<'e> Estimator<'e> {
         if !self.fits(metrics) {
             return Ok(Err(IncompleteReason::UnsizedValue));
         }
-        let (evaluated, output) = match self.evaluate(channel)? {
+        let (evaluated, _) = match self.evaluate(channel)? {
             Ok(evaluated) => evaluated,
             Err(reason) => return Ok(Err(reason)),
         };
-        let input = metrics.unwrap_or_default();
-        // Changed by the G1-4a fix (review H-3): the substitution reads the
-        // evaluated value, whose exact bound is `output`.
-        // self.charge_substitution(Metrics {
-        //     weight: input.weight.max(output),
-        //     ..input
-        // })?;
-        self.charge_substitution(
-            Metrics {
-                weight: output,
-                ..input
-            },
-            true,
-        )?;
         let Ok((substituted, _)) = self
             .core
             .substitute
@@ -1946,91 +1506,45 @@ impl<'e> Estimator<'e> {
             },
             None => substituted,
         };
-        match find_marker(&channel, self.host)? {
+        match find_marker(&channel)? {
             Some(Marker::Poison) => Ok(Err(IncompleteReason::ReceivedValueInIntroduction)),
             Some(Marker::Unknown) => Ok(Err(IncompleteReason::UnsizedValue)),
             None => Ok(Ok(byte_count(channel.encoded_len()))),
         }
     }
 
-    /// The pre-walk of arbitration H2. It returns the charge of evaluating
-    /// `root` when every evaluated form has a known work limit, and `None`
-    /// otherwise. Literals, collections, fixed-width arithmetic, comparisons,
-    /// boolean operators, `++` on strings, byte arrays and lists, and `%%`
-    /// with a literal map have one. A `%%` costs `t * (t + K * (g + 3))` for a
-    /// template of `t` bytes and `K` keys of at most `g` bytes, plus its
-    /// output bound.
-    ///
-    /// Changed by the second G1-4a fix (re-review MEDIUM-1): at each nesting
-    /// level of compound expressions, the reducer copies or scans the whole
-    /// subtree of each expression up to `EVALUATION_COPIES` times. The
-    /// expressions of one level have disjoint subtrees, so each level costs
-    /// at most that many copies of the exact input bytes plus the output
-    /// growth. The levels are the nesting depth plus one for the leaves. A
-    /// datum with a set, a map or a comparison also pays its height plus one,
-    /// times a logarithmic factor for sorting.
+    /// The pre-walk of arbitration H2. It returns the output bound of
+    /// evaluating `root` when every evaluated form has a known work limit, and
+    /// `None` otherwise. Literals, collections, fixed-width arithmetic,
+    /// comparisons, boolean operators, `++` on strings, byte arrays and lists,
+    /// and `%%` with a literal map have one.
     pub(crate) fn evaluation_bound(
         &self,
         root: &Par,
     ) -> Result<Option<EvaluationBound>, InterpreterError> {
-        // Changed by the second G1-4a fix (re-review MEDIUM-1): a `Par` and an
-        // `Expr` step carry their nesting depth of compound expressions.
-        // enum Step<'a> {
-        //     Par(&'a Par),
-        //     Expr(&'a Expr),
-        //     ParDone(&'a Par),
-        //     ExprDone(&'a Expr),
-        // }
         enum Step<'a> {
-            Par(&'a Par, u64),
-            Expr(&'a Expr, u64),
+            Par(&'a Par),
+            Expr(&'a Expr),
             ParDone(&'a Par),
             ExprDone(&'a Expr),
         }
-        let Some(metrics) = self.measures.par(root) else {
+        if self.measures.par(root).is_none() {
             return Ok(None);
-        };
-        // let mut work = vec![Step::Par(root)];
-        let mut work = vec![Step::Par(root, 0)];
+        }
+        let mut work = vec![Step::Par(root)];
         let mut values: Vec<Evaluated> = Vec::new();
-        let mut calls = 0u64;
-        let mut growth = 0u64;
-        let mut loops = 0u64;
-        let mut sorted = false;
-        let mut nesting = 0u64;
         while let Some(step) = work.pop() {
-            self.charge(HostWorkDimension::StructuralItems, 1)?;
             match step {
-                Step::Par(par, depth) => {
+                Step::Par(par) => {
                     work.push(Step::ParDone(par));
-                    work.extend(par.exprs.iter().rev().map(|expr| Step::Expr(expr, depth)));
+                    work.extend(par.exprs.iter().rev().map(Step::Expr));
                 }
-                Step::Expr(expr, depth) => {
-                    calls = calls.saturating_add(1);
-                    nesting = nesting.max(depth);
-                    sorted |= matches!(
-                        expr.expr_instance,
-                        Some(
-                            ExprInstance::ESetBody(_)
-                                | ExprInstance::EMapBody(_)
-                                | ExprInstance::ELtBody(_)
-                                | ExprInstance::ELteBody(_)
-                                | ExprInstance::EGtBody(_)
-                                | ExprInstance::EGteBody(_)
-                                | ExprInstance::EEqBody(_)
-                                | ExprInstance::ENeqBody(_)
-                        )
-                    );
+                Step::Expr(expr) => {
                     let Some(operands) = evaluated_operands(expr) else {
                         return Ok(None);
                     };
                     work.push(Step::ExprDone(expr));
-                    work.extend(
-                        operands
-                            .into_iter()
-                            .rev()
-                            .map(|operand| Step::Par(operand, depth.saturating_add(1))),
-                    );
+                    work.extend(operands.into_iter().rev().map(Step::Par));
                 }
                 Step::ParDone(par) => {
                     let start = values.len().checked_sub(par.exprs.len()).ok_or_else(|| {
@@ -2059,68 +1573,24 @@ impl<'e> Estimator<'e> {
                         )
                     })?;
                     let parts = values.split_off(start);
-                    let Some((value, interpolation)) = classify_expr(expr, &parts, self.env_weight)
-                    else {
+                    let Some(value) = classify_expr(expr, &parts, self.env_weight) else {
                         return Ok(None);
                     };
-                    growth = growth.saturating_add(value.growth);
-                    loops = loops.saturating_add(interpolation);
                     values.push(value);
                 }
             }
         }
-        // Changed by the G1-4a fix (review H-3): the length is the exact
-        // prost length, which the sizing bound keeps stack-safe, and only a
-        // datum with a set, a map or a comparison pays the height and the
-        // logarithmic factor of sorting and comparing. The replaced lines
-        // follow.
-        // let output = metrics
-        //     .weight
-        //     .saturating_add(values.last().map_or(0, |value| value.growth));
-        // let bytes = metrics.weight.saturating_add(growth);
-        // let work = bytes
-        //     .saturating_mul(u64::from(metrics.height).saturating_add(1))
-        //     .saturating_mul(log2_ceil(bytes.saturating_add(2)).saturating_add(1))
-        //     .saturating_add(loops);
-        self.charge(HostWorkDimension::VerificationBytes, metrics.weight)?;
         let exact = byte_count(root.encoded_len());
         let output = exact.saturating_add(values.last().map_or(0, |value| value.growth));
-        let bytes = exact.saturating_add(growth);
-        // Changed by the second G1-4a fix (re-review MEDIUM-1): the copies of
-        // each nesting level are charged, and the sort factor of the sorting
-        // forms adds to them.
-        // let factor = match sorted {
-        //     true => u64::from(metrics.height)
-        //         .saturating_add(1)
-        //         .saturating_mul(log2_ceil(bytes.saturating_add(2)).saturating_add(1)),
-        //     false => 1,
-        // };
-        // let work = bytes.saturating_mul(factor).saturating_add(loops);
-        let copies = nesting.saturating_add(1).saturating_mul(EVALUATION_COPIES);
-        let sort = match sorted {
-            true => u64::from(metrics.height)
-                .saturating_add(1)
-                .saturating_mul(log2_ceil(bytes.saturating_add(2)).saturating_add(1)),
-            false => 0,
-        };
-        let work = bytes
-            .saturating_mul(copies.saturating_add(sort))
-            .saturating_add(loops);
-        Ok(Some(EvaluationBound {
-            calls,
-            work,
-            output,
-        }))
+        Ok(Some(EvaluationBound { output }))
     }
 
     /// Evaluates `par` with the reducer's `eval_expr` after the pre-walk of
-    /// arbitration H2 and its charge.
+    /// arbitration H2.
     fn evaluate(&self, par: &Par) -> Sizing<(Par, u64)> {
         let Some(bound) = self.evaluation_bound(par)? else {
             return Ok(Err(IncompleteReason::DataEvaluation));
         };
-        self.charge(HostWorkDimension::PrimitiveCalls, bound.calls)?;
-        self.charge(HostWorkDimension::PrimitiveInputBytes, bound.work)?;
         match self.core.eval_expr(par, &self.env) {
             Ok(evaluated) => Ok(Ok((evaluated, bound.output))),
             Err(_) => Ok(Err(IncompleteReason::DataEvaluation)),
@@ -2134,24 +1604,10 @@ impl<'e> Estimator<'e> {
         if !self.fits(metrics) {
             return Ok(Err(IncompleteReason::UnsizedValue));
         }
-        let (evaluated, output) = match self.evaluate(datum)? {
+        let (evaluated, _) = match self.evaluate(datum)? {
             Ok(evaluated) => evaluated,
             Err(reason) => return Ok(Err(reason)),
         };
-        let input = metrics.unwrap_or_default();
-        // Changed by the G1-4a fix (review H-3): the substitution reads the
-        // evaluated value, whose exact bound is `output`.
-        // self.charge_substitution(Metrics {
-        //     weight: input.weight.max(output),
-        //     ..input
-        // })?;
-        self.charge_substitution(
-            Metrics {
-                weight: output,
-                ..input
-            },
-            true,
-        )?;
         match self
             .core
             .substitute
@@ -2213,7 +1669,6 @@ impl<'e> Estimator<'e> {
             if !self.fits(metrics) {
                 return Ok(Err(IncompleteReason::UnsizedValue));
             }
-            self.charge_substitution(metrics.unwrap_or_default(), true)?;
             let Ok(substituted) = self
                 .core
                 .substitute
@@ -2221,7 +1676,7 @@ impl<'e> Estimator<'e> {
             else {
                 return Ok(Err(IncompleteReason::UnsizedValue));
             };
-            match find_marker(&substituted, self.host)? {
+            match find_marker(&substituted)? {
                 Some(Marker::Poison) => {
                     return Ok(Err(IncompleteReason::ReceivedValueInIntroduction))
                 }
@@ -2244,8 +1699,9 @@ impl<'e> Estimator<'e> {
         if !self.fits(metrics) {
             return Ok(Err(IncompleteReason::UnsizedValue));
         }
-        self.charge_substitution(metrics.unwrap_or_default(), depth != 0)?;
-        let shift = i32::try_from(shift).map_err(|_| InterpreterError::HostWorkRejected)?;
+        let shift = i32::try_from(shift).map_err(|_| {
+            InterpreterError::BugFoundError("the estimate shift does not fit in i32".to_string())
+        })?;
         self.env.shift += shift;
         let substituted = if depth == 0 {
             self.core
@@ -2260,7 +1716,7 @@ impl<'e> Estimator<'e> {
         let Ok((substituted, len)) = substituted else {
             return Ok(Err(IncompleteReason::UnsizedValue));
         };
-        match find_marker(&substituted, self.host)? {
+        match find_marker(&substituted)? {
             Some(Marker::Poison) => Ok(Err(IncompleteReason::ReceivedValueInIntroduction)),
             Some(Marker::Unknown) => Ok(Err(IncompleteReason::UnsizedValue)),
             None => Ok(Ok(len)),
@@ -2345,8 +1801,6 @@ impl<'e> Estimator<'e> {
     ///   (review M-2).
     /// - A signature that still holds a variable names another lane at run
     ///   time, so its lane is dynamic too (review H-1).
-    /// - The conversion, the canonical form and its later clone are charged
-    ///   before they run (review LOW 3).
     fn lane_of(&mut self, signature: &CostSignature) -> Result<Lane, InterpreterError> {
         let metrics = match self.measures.signature(signature) {
             Some(metrics)
@@ -2365,11 +1819,6 @@ impl<'e> Estimator<'e> {
             ));
             return Ok(Lane::Dynamic);
         }
-        self.charge(
-            HostWorkDimension::VerificationBytes,
-            metrics.weight.saturating_mul(2),
-        )?;
-        self.charge(HostWorkDimension::StructuralBytes, metrics.weight)?;
         Ok(match cost_signature_to_sig(signature) {
             Ok(Sig::Unit) => Lane::Unit,
             Ok(sig) => {
@@ -2405,8 +1854,7 @@ impl<'e> Estimator<'e> {
                 Some(metrics)
                     if metrics.height.saturating_add(WRAPPER_MARGIN) <= SIZING_HEIGHT_LIMIT =>
                 {
-                    self.charge(HostWorkDimension::StructuralBytes, metrics.weight)?;
-                    region_field_bytes(signature, discriminator, self.host)
+                    Ok(region_field_bytes(signature, discriminator))
                 }
                 Some(_) | None => Ok(None),
             },
@@ -2419,7 +1867,6 @@ impl<'e> Estimator<'e> {
         term: &CostSignedTerm,
         parent: Option<usize>,
     ) -> Result<usize, InterpreterError> {
-        self.charge(HostWorkDimension::StructuralItems, 1)?;
         let (lane, region) = match term.signature.as_ref() {
             Some(signature) => {
                 let lane = self.lane_of(signature)?;
@@ -2449,7 +1896,6 @@ impl<'e> Estimator<'e> {
         send: &Send,
         scope: Option<usize>,
     ) -> Result<(), InterpreterError> {
-        self.charge(HostWorkDimension::StructuralItems, 1)?;
         let channel = self.fresh_channel(send.chan.as_ref());
         if channel.is_none() {
             self.violate(IncompleteReason::NonFreshChannel);
@@ -2477,7 +1923,6 @@ impl<'e> Estimator<'e> {
         receive: &Receive,
         scope: Option<usize>,
     ) -> Result<(), InterpreterError> {
-        self.charge(HostWorkDimension::StructuralItems, 1)?;
         if receive.peek {
             self.violate(IncompleteReason::PeekOrStack);
         }
@@ -2557,10 +2002,6 @@ impl<'e> Estimator<'e> {
     /// Rules X3 and X8 on the top-level expressions of an execution position.
     /// Rule X1 already covers a dequotation there.
     pub(crate) fn check_exprs(&mut self, par: &Par) -> Result<(), InterpreterError> {
-        self.charge(
-            HostWorkDimension::StructuralItems,
-            byte_count(par.exprs.len()),
-        )?;
         for expr in &par.exprs {
             match expr.expr_instance.as_ref() {
                 Some(ExprInstance::EMethodBody(_)) => {
@@ -2615,7 +2056,6 @@ impl<'e> Estimator<'e> {
     }
 
     pub(crate) fn enter_visit(&mut self, _par: &Par) -> Result<(), InterpreterError> {
-        self.charge(HostWorkDimension::StructuralItems, 1)?;
         #[cfg(test)]
         self.levels
             .push((_par as *const Par as usize, self.binders.len()));
@@ -2633,7 +2073,6 @@ impl<'e> Estimator<'e> {
             resolving: true,
         }];
         while let Some(task) = work.pop() {
-            self.charge(HostWorkDimension::StructuralItems, 1)?;
             match task {
                 Task::Visit {
                     par,
@@ -2838,10 +2277,6 @@ impl<'e> Estimator<'e> {
             transfer: vec![0; self.fresh],
             trace: vec![0; self.fresh],
         };
-        self.charge(
-            HostWorkDimension::StructuralItems,
-            byte_count(self.participants.len()),
-        )?;
         for participant in &self.participants {
             if let Participant::Send {
                 channel: Some(channel),
@@ -2855,10 +2290,6 @@ impl<'e> Estimator<'e> {
         }
         for participant in &self.participants {
             if let Participant::Receive { channels, .. } = participant {
-                self.charge(
-                    HostWorkDimension::StructuralItems,
-                    byte_count(channels.len()),
-                )?;
                 let Some(fresh) = channels.iter().copied().collect::<Option<Vec<_>>>() else {
                     continue;
                 };
@@ -3217,59 +2648,17 @@ pub(crate) fn signature_units(signature: &CostSignature) -> u64 {
     //     }
     // }
     // units
-    signature_leaf_units(signature, &EstimateUnits { host: None })
+    signature_leaf_units(signature, &EstimateUnits)
         .expect("the unmetered unit walk fails only when its stack does not fit in memory")
 }
 
-/// Added by G1-6 (DR-124): `signature_units` with one structural item charged
-/// for each signature node before the walk reads it. The walk uses a heap
-/// stack, as `signature_units` does (DR-67).
-pub(crate) fn signature_units_metered(
-    signature: &CostSignature,
-    host: &HostWorkBudget,
-) -> Result<u64, InterpreterError> {
-    // Moved by dedup (task 11415) to `signature_leaf_units` in
-    // `rholang/src/rust/interpreter/accounting/native_phlo_rules/execution.rs`.
-    // let mut pending = vec![signature];
-    // let mut units = 0u64;
-    // while let Some(current) = pending.pop() {
-    //     reserve(host, HostWorkDimension::StructuralItems, 1)?;
-    //     match current.value.as_ref() {
-    //         Some(CostSignatureValue::Ground(_))
-    //         | Some(CostSignatureValue::Name(_))
-    //         | Some(CostSignatureValue::Quote(_)) => units = units.saturating_add(1),
-    //         Some(CostSignatureValue::Compound(compound)) => {
-    //             pending.extend(compound.elements.iter())
-    //         }
-    //         Some(CostSignatureValue::Unit(_)) | Some(CostSignatureValue::BoundLevel(_)) | None => {}
-    //     }
-    // }
-    // Ok(units)
-    signature_leaf_units(signature, &EstimateUnits { host: Some(host) })
-}
+/// Added by dedup (task 11415, D8): the unit meter of `signature_units`. It
+/// counts every leaf with a saturating sum, and a node that is not a leaf or
+/// a compound adds nothing.
+struct EstimateUnits;
 
-/// Added by dedup (task 11415, D8): the charges of the two unit functions of
-/// the estimate. With a budget, the walk charges one structural item for each
-/// node before it reads the node (`signature_units_metered`). Without one, it
-/// charges nothing (`signature_units`). Both count every leaf with a
-/// saturating sum, and a node that is not a leaf or a compound adds nothing.
-struct EstimateUnits<'h> {
-    host: Option<&'h HostWorkBudget>,
-}
-
-impl SignatureUnitsMeter for EstimateUnits<'_> {
+impl SignatureUnitsMeter for EstimateUnits {
     type Error = InterpreterError;
-
-    fn start(&self) -> Result<(), Self::Error> { Ok(()) }
-
-    fn node(&self) -> Result<(), Self::Error> {
-        match self.host {
-            Some(host) => reserve(host, HostWorkDimension::StructuralItems, 1),
-            None => Ok(()),
-        }
-    }
-
-    fn compound(&self, _elements: usize) -> Result<(), Self::Error> { Ok(()) }
 
     fn other(&self) -> Result<(), Self::Error> { Ok(()) }
 
@@ -3283,15 +2672,10 @@ impl SignatureUnitsMeter for EstimateUnits<'_> {
 /// The field length of the region of `signature` inside a `CostAuthority`,
 /// from the reducer's own region constructor. The identity is a 32-byte hash
 /// for every entropy, so a zero entropy gives the run-time length.
-fn region_field_bytes(
-    signature: &CostSignature,
-    discriminator: u32,
-    host: &HostWorkBudget,
-) -> Result<Option<u64>, InterpreterError> {
-    reserve(host, HostWorkDimension::StructuralItems, 1)?;
-    Ok(cost_region(signature, &[0; 32], discriminator)
+fn region_field_bytes(signature: &CostSignature, discriminator: u32) -> Option<u64> {
+    cost_region(signature, &[0; 32], discriminator)
         .ok()
-        .and_then(|region| message_field_bytes(1, byte_count(region.encoded_len())).ok()))
+        .and_then(|region| message_field_bytes(1, byte_count(region.encoded_len())).ok())
 }
 
 /// The fresh name of a fresh serial: a private name with a 32-byte identity.
@@ -3413,8 +2797,8 @@ fn evaluated_operands(expr: &Expr) -> Option<Vec<&Par>> {
 /// The class and growth of one expression from its evaluated operands, and
 /// the loop work of a `%%`. `None` marks a combination without a known work
 /// limit (arbitration H2).
-fn classify_expr(expr: &Expr, operands: &[Evaluated], env_weight: u64) -> Option<(Evaluated, u64)> {
-    let value = |class: ValueClass, growth: u64| Some((Evaluated { class, growth }, 0));
+fn classify_expr(expr: &Expr, operands: &[Evaluated], env_weight: u64) -> Option<Evaluated> {
+    let value = |class: ValueClass, growth: u64| Some(Evaluated { class, growth });
     let operand_growth = operands
         .iter()
         .fold(0u64, |total, operand| total.saturating_add(operand.growth));
@@ -3499,21 +2883,15 @@ fn classify_expr(expr: &Expr, operands: &[Evaluated], env_weight: u64) -> Option
             let [ValueClass::Str(template), _] = operand_classes.as_slice() else {
                 return None;
             };
-            let (keys, key_bytes, value_bytes) = interpolation_map(body.p2.as_ref()?)?;
+            let (_, _, value_bytes) = interpolation_map(body.p2.as_ref()?)?;
             let template = *template;
             let output = template
                 .saturating_add((template / 3).saturating_mul(value_bytes))
                 .saturating_add(16);
-            let loop_work = template.saturating_mul(
-                template.saturating_add(keys.saturating_mul(key_bytes.saturating_add(3))),
-            );
-            Some((
-                Evaluated {
-                    class: ValueClass::Str(output),
-                    growth: operand_growth.saturating_add(output),
-                },
-                loop_work,
-            ))
+            Some(Evaluated {
+                class: ValueClass::Str(output),
+                growth: operand_growth.saturating_add(output),
+            })
         }
         ExprInstance::EListBody(_) => value(ValueClass::List, operand_growth),
         ExprInstance::ETupleBody(_) | ExprInstance::ESetBody(_) | ExprInstance::EMapBody(_) => {

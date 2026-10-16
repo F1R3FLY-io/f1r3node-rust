@@ -59,42 +59,44 @@ fn allocation_case(
     nodes: &dyn KeyValueStore,
     leaves: &dyn KeyValueStore,
     serialized: bool,
-) -> (usize, usize) {
+) -> usize {
     let rows = vec![vec![42_u8; 1_000_000]];
     let payload = bincode::serialize(&rows).unwrap();
     let (hash, bytes) = frame(NativeLeafKind::Data, &payload, &[]);
     let root = install(nodes, leaves, NativeLeafKind::Data, hash, bytes, serialized);
     let reader = NativeHistoryReader::new(root, nodes, leaves);
-    let meter = Meter::new(usize::MAX);
     let (result, actual) = measure(|| {
-        reader.with_records(NativeLeafKind::Data, &[7; 32], &meter, |view| {
+        reader.with_records(NativeLeafKind::Data, &[7; 32], |view| {
             let mut rows = view.iter();
             let row = rows.next().unwrap();
             assert_eq!(row.len(), 1_000_000);
             assert_eq!(row[0], 42);
             assert!(rows.next().is_none());
-            Ok(())
+            Ok::<_, &str>(())
         })
     });
     result.unwrap().unwrap();
-    (actual, meter.backing.load(Ordering::Relaxed))
+    actual
 }
 
 #[test]
 fn in_memory_framing_never_copies_the_cold_payload() {
     for serialized in [false, true] {
-        let (actual, reserved) = allocation_case(
+        let actual = allocation_case(
             &InMemoryKeyValueStore::new(),
             &InMemoryKeyValueStore::new(),
             serialized,
         );
         assert_eq!(actual, 40);
-        assert!(actual <= reserved);
     }
 }
 
+/// Changed by DR-131 S6: the test was
+/// `lmdb_framing_and_key_codec_fit_the_reserved_backing`. The reservation
+/// check went with host work. The test keeps its check that the reader
+/// frames the cold payload from LMDB under both key encodings.
 #[test]
-fn lmdb_framing_and_key_codec_fit_the_reserved_backing() {
+fn lmdb_framing_and_key_codec_read_the_cold_payload() {
     let parent = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .unwrap()
@@ -122,19 +124,6 @@ fn lmdb_framing_and_key_codec_fit_the_reserved_backing() {
         transaction.commit().unwrap();
         let nodes = LmdbKeyValueStore::new(Arc::clone(&env), nodes_db);
         let leaves = LmdbKeyValueStore::new(Arc::clone(&env), leaves_db);
-        let (actual, reserved) = allocation_case(&nodes, &leaves, serialized);
-        assert!(actual <= reserved, "{actual} allocated bytes exceed {reserved} reserved bytes");
+        allocation_case(&nodes, &leaves, serialized);
     }
-}
-
-#[test]
-fn host_rejection_precedes_reader_allocation() {
-    let nodes = InMemoryKeyValueStore::new();
-    let leaves = InMemoryKeyValueStore::new();
-    let reader = NativeHistoryReader::new([0; 32], &nodes, &leaves);
-    let meter = Meter::new(0);
-    let (result, bytes) =
-        measure(|| reader.with_records(NativeLeafKind::Data, &[0; 32], &meter, |_| Ok(())));
-    assert!(matches!(result, Err(NativeReadError::Host("exhausted"))));
-    assert_eq!(bytes, 0);
 }

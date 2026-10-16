@@ -9,7 +9,6 @@ use models::rhoapi::{
     EVar, Expr, If, Match, MatchCase, New, Par, Receive, ReceiveBind, Send, Var, VarRef,
 };
 use models::rust::bundle_ops::BundleOps;
-use models::rust::host_work::{HostWorkDimension, HostWorkUnits};
 use models::rust::par_map::ParMap;
 use models::rust::par_map_type_mapper::ParMapTypeMapper;
 use models::rust::par_set::ParSet;
@@ -26,18 +25,14 @@ use models::rust::rholang::sorter::sortable::Sortable;
 use models::rust::sorted_par_hash_set::SortedParHashSet;
 use models::rust::sorted_par_map::SortedParMap;
 use rspace_plus_plus::rspace::history::Either;
-use shared::rust::clone_backing::BackingMeter;
 
 use super::accounting::costs::Cost;
 use super::env::Env;
 use super::errors::InterpreterError;
 use super::metering::MeteredMachine;
+use super::unwrap_option_safe;
 use super::util::{prepend_connective, prepend_expr};
-use super::{deterministic_reduction, unwrap_option_safe};
 
-mod native_cost_signature;
-mod native_expr;
-mod native_par;
 // Added by DR-131 P1: the stack-safety tests of the cost-signature substitution.
 #[cfg(test)]
 mod cost_signature_stack_safety_tests;
@@ -60,61 +55,17 @@ pub struct Substitute {
 }
 
 impl Substitute {
-    pub(crate) fn substitute_cost_signature_metered(
-        &self,
-        signature: CostSignature,
-        depth: i32,
-        env: &Env<Par>,
-        backing: &dyn BackingMeter,
-    ) -> Result<CostSignature, InterpreterError> {
-        native_cost_signature::substitute_cost_signature_metered_with(
-            self,
-            signature,
-            depth,
-            env,
-            backing,
-            &Self::substitute_par_metered,
-        )
-    }
-
-    fn reserve_host_work<A: prost::Message>(
-        term: &A,
-        env: &Env<Par>,
-    ) -> Result<(), InterpreterError> {
-        let bindings = u64::try_from(env.env_map.len()).map_err(|_| {
-            InterpreterError::BugFoundError(
-                "substitution binding count does not fit in u64".to_string(),
-            )
-        })?;
-        let bytes = u64::try_from(term.encoded_len()).map_err(|_| {
-            InterpreterError::BugFoundError(
-                "substitution byte count does not fit in u64".to_string(),
-            )
-        })?;
-        deterministic_reduction::reserve_host_work(
-            HostWorkDimension::SubstitutionBindings,
-            HostWorkUnits::new(bindings),
-        )?;
-        deterministic_reduction::reserve_host_work(
-            HostWorkDimension::SubstitutionBytes,
-            HostWorkUnits::new(bytes),
-        )?;
-        Ok(())
-    }
-
     /// Added by D-F2 (DR-118): the charged substitution, which also returns
     /// the prost length of the substituted term. The phlo charge measures
     /// that length, so the reducer can reuse it for the introduction bytes.
     fn substitute_measured<A>(
         &self,
         term: &A,
-        env: &Env<Par>,
         substitute: impl FnOnce(A) -> Result<A, InterpreterError>,
     ) -> Result<(A, u64), InterpreterError>
     where
         A: Clone + prost::Message,
     {
-        Self::reserve_host_work(term, env)?;
         // scala 'charge' function built in here
         match substitute(term.clone()) {
             Ok(subst_term) => {
@@ -150,7 +101,7 @@ impl Substitute {
         Self: SubstituteTrait<A>,
         A: Clone + prost::Message,
     {
-        self.substitute_measured(term, env, |term| self.substitute(term, depth, env))
+        self.substitute_measured(term, |term| self.substitute(term, depth, env))
     }
 
     pub(crate) fn substitute_no_sort_and_measure<A>(
@@ -163,7 +114,7 @@ impl Substitute {
         Self: SubstituteTrait<A>,
         A: Clone + prost::Message,
     {
-        self.substitute_measured(term, env, |term| self.substitute_no_sort(term, depth, env))
+        self.substitute_measured(term, |term| self.substitute_no_sort(term, depth, env))
     }
 
     pub fn substitute_and_charge<A>(

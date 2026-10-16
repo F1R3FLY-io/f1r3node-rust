@@ -30,6 +30,11 @@
    correspondence with prost's derived lengths. The section variables of
    Part 3 become premises of its theorems, so no axiom is used. *)
 
+(* DR-131: host work is removed. The coverage results that reuse
+   ObservationReadCoverage, inspect_then_read_covered and
+   self_metered_then_covered, describe deleted charges. The measurement
+   results of the introduction still hold. *)
+
 From Stdlib Require Import Arith.PeanoNat Lists.List Lia.
 From CostAccountedRho Require ObservationReadCoverage.
 Import ListNotations.

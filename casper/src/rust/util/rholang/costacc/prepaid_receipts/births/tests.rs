@@ -3,7 +3,6 @@ use std::sync::Arc;
 
 use models::rhoapi::cost_signature::Value;
 use models::rhoapi::{CostSignature, CostSignatureCompound, CostStack, ListParWithRandom};
-use models::rust::host_work::{HostWorkLimit, HostWorkLimits};
 use models::rust::phlo_controls::{PhloControlsLimits, PhloControlsV1};
 use models::rust::phlo_intent::{PhloFundingIntentLimits, PhloFundingIntentV1};
 use models::rust::phlo_obligation::PhloObligationKeyLimits;
@@ -37,10 +36,6 @@ use crate::rust::util::rholang::costacc::prepaid_receipts::{
     PrepaidReceiptLimits,
 };
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
-
-fn budget() -> HostWorkBudget {
-    HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(1_000_000_000)))
-}
 
 async fn verify_live_birth_capture(
     wallets: usize,
@@ -231,7 +226,7 @@ async fn verify_live_birth_capture(
         work,
     )
     .unwrap()
-    .with_retained_acquisitions(&retained, &budget())
+    .with_retained_acquisitions(&retained)
     .unwrap();
     let obligations =
         project_phlo_obligations(execution, PhloOutcome::Accepted(&[]), cap(3)).unwrap();
@@ -288,21 +283,17 @@ async fn verify_live_birth_capture(
         )
         .unwrap();
     let capture = checked
-        .capture_case(
-            0,
-            PhloCaptureLimits {
-                funding: FundingSearchLimits {
-                    source_cap: cap(wallets),
-                    obligation_cap: cap(3),
-                },
-                key: PhloObligationKeyLimits {
-                    wire,
-                    authority_nodes: 65_536,
-                },
-                aggregate_key_bytes: 1_048_576,
+        .capture_case(0, PhloCaptureLimits {
+            funding: FundingSearchLimits {
+                source_cap: cap(wallets),
+                obligation_cap: cap(3),
             },
-            &budget(),
-        )
+            key: PhloObligationKeyLimits {
+                wire,
+                authority_nodes: 65_536,
+            },
+            aggregate_key_bytes: 1_048_576,
+        })
         .unwrap();
     let columns = capture
         .obligations()
@@ -340,10 +331,10 @@ async fn verify_live_birth_capture(
         physical_bytes: 1_048_576,
     };
     let funding = capture
-        .bind_retained_births(&claims, limits.funding, &budget())
+        .bind_retained_births(&claims, limits.funding)
         .unwrap();
     let actual = runtime
-        .capture_retained_birth_stacks(&funding, limits, &budget())
+        .capture_retained_birth_stacks(&funding, limits)
         .await
         .unwrap();
     let mut expected = selected.into_iter().cloned().collect::<Vec<_>>();
@@ -363,15 +354,9 @@ async fn verify_live_birth_capture(
         aggregate_bytes: 16_777_216,
     };
     let pre_state_root: [u8; 32] = empty.root.bytes().try_into().unwrap();
-    let records = encode_retained_records(
-        &context,
-        &funding,
-        pre_state_root,
-        [7; 32],
-        record_limits,
-        &budget(),
-    )
-    .unwrap();
+    let records =
+        encode_retained_records(&context, &funding, pre_state_root, [7; 32], record_limits)
+            .unwrap();
     assert_eq!(records.len(), 2);
     let mut totals = std::collections::BTreeMap::<([u8; 32], Vec<u8>), u64>::new();
     for (record, stack) in records.iter().zip(&expected) {
@@ -426,19 +411,12 @@ async fn verify_live_birth_capture(
     let mut reversed = claims.clone();
     reversed.reverse();
     let reordered = capture
-        .bind_retained_births(&reversed, limits.funding, &budget())
+        .bind_retained_births(&reversed, limits.funding)
         .unwrap();
     assert_eq!(
         records,
-        encode_retained_records(
-            &context,
-            &reordered,
-            pre_state_root,
-            [7; 32],
-            record_limits,
-            &budget()
-        )
-        .unwrap()
+        encode_retained_records(&context, &reordered, pre_state_root, [7; 32], record_limits)
+            .unwrap()
     );
     assert_eq!(
         runtime.runtime.create_checkpoint().await.root,
@@ -461,17 +439,10 @@ async fn verify_live_birth_capture(
         .map(|record| PrepaidReceiptBucket::key_for_source(record.source_hash()))
         .collect::<Vec<_>>();
     let absent = manager
-        .capture_prepaid_receipts(pre_state_root, &keys, receipt_limits, &budget())
+        .capture_prepaid_receipts(pre_state_root, &keys, receipt_limits)
         .unwrap();
-    let insertions = prepare_insertions(
-        &records,
-        pre_state_root,
-        &absent,
-        bucket,
-        receipt_limits,
-        &budget(),
-    )
-    .unwrap();
+    let insertions =
+        prepare_insertions(&records, pre_state_root, &absent, bucket, receipt_limits).unwrap();
     assert_eq!(insertions.len(), 2);
     assert!(insertions.windows(2).all(|pair| pair[0].0 < pair[1].0));
     for (key, bytes) in &insertions {
@@ -484,28 +455,26 @@ async fn verify_live_birth_capture(
         assert_eq!(parsed.receipts(), &[record.encoded_cells()]);
     }
     let unrequested = manager
-        .capture_prepaid_receipts(pre_state_root, &[], receipt_limits, &budget())
+        .capture_prepaid_receipts(pre_state_root, &[], receipt_limits)
         .unwrap();
     assert!(prepare_insertions(
         &records,
         pre_state_root,
         &unrequested,
         bucket,
-        receipt_limits,
-        &budget()
+        receipt_limits
     )
     .is_err());
     let current_root: [u8; 32] = checkpoint.root.bytes().try_into().unwrap();
     let other_root = manager
-        .capture_prepaid_receipts(current_root, &keys, receipt_limits, &budget())
+        .capture_prepaid_receipts(current_root, &keys, receipt_limits)
         .unwrap();
     assert!(prepare_insertions(
         &records,
         pre_state_root,
         &other_root,
         bucket,
-        receipt_limits,
-        &budget()
+        receipt_limits
     )
     .is_err());
     for bound in [
@@ -522,10 +491,7 @@ async fn verify_live_birth_capture(
             ..receipt_limits
         },
     ] {
-        assert!(
-            prepare_insertions(&records, pre_state_root, &absent, bucket, bound, &budget())
-                .is_err()
-        );
+        assert!(prepare_insertions(&records, pre_state_root, &absent, bucket, bound).is_err());
     }
     let changes = insertions
         .iter()
@@ -550,17 +516,11 @@ async fn verify_live_birth_capture(
     );
     let populated_root: [u8; 32] = populated.root.bytes().try_into().unwrap();
     let present = manager
-        .capture_prepaid_receipts(populated_root, &keys, receipt_limits, &budget())
+        .capture_prepaid_receipts(populated_root, &keys, receipt_limits)
         .unwrap();
-    assert!(prepare_insertions(
-        &records,
-        populated_root,
-        &present,
-        bucket,
-        receipt_limits,
-        &budget()
-    )
-    .is_err());
+    assert!(
+        prepare_insertions(&records, populated_root, &present, bucket, receipt_limits).is_err()
+    );
     runtime.runtime.reset(&checkpoint.root).await.unwrap();
     for limited in [
         NativeRetainedRecordLimits {
@@ -592,25 +552,10 @@ async fn verify_live_birth_capture(
             ..record_limits
         },
     ] {
-        assert!(encode_retained_records(
-            &context,
-            &funding,
-            pre_state_root,
-            [7; 32],
-            limited,
-            &budget()
-        )
-        .is_err());
+        assert!(
+            encode_retained_records(&context, &funding, pre_state_root, [7; 32], limited).is_err()
+        );
     }
-    assert!(encode_retained_records(
-        &context,
-        &funding,
-        pre_state_root,
-        [7; 32],
-        record_limits,
-        &HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(0)))
-    )
-    .is_err());
     for limited in [
         NativeRetainedBirthLimits {
             physical_cells: cells * 3 - 1,
@@ -622,18 +567,10 @@ async fn verify_live_birth_capture(
         },
     ] {
         assert!(runtime
-            .capture_retained_birth_stacks(&funding, limited, &budget())
+            .capture_retained_birth_stacks(&funding, limited)
             .await
             .is_err());
     }
-    assert!(runtime
-        .capture_retained_birth_stacks(
-            &funding,
-            limits,
-            &HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(0)))
-        )
-        .await
-        .is_err());
     for field in 0..2 {
         let mut altered = births.clone();
         if field == 0 {
@@ -650,16 +587,16 @@ async fn verify_live_birth_capture(
             })
             .collect::<Vec<_>>();
         let checked = capture
-            .bind_retained_births(&claims, limits.funding, &budget())
+            .bind_retained_births(&claims, limits.funding)
             .unwrap();
         assert!(runtime
-            .capture_retained_birth_stacks(&checked, limits, &budget())
+            .capture_retained_birth_stacks(&checked, limits)
             .await
             .is_err());
     }
     runtime.runtime.reset(&empty.root).await.unwrap();
     assert!(runtime
-        .capture_retained_birth_stacks(&funding, limits, &budget())
+        .capture_retained_birth_stacks(&funding, limits)
         .await
         .is_err());
     assert_eq!(runtime.runtime.create_checkpoint().await.root, empty.root);
@@ -673,14 +610,10 @@ async fn verify_live_birth_capture(
         .unwrap();
     let duplicate = runtime.runtime.create_checkpoint().await;
     assert!(runtime
-        .capture_retained_birth_stacks(
-            &funding,
-            NativeRetainedBirthLimits {
-                physical_cells: cells * 4,
-                ..limits
-            },
-            &budget()
-        )
+        .capture_retained_birth_stacks(&funding, NativeRetainedBirthLimits {
+            physical_cells: cells * 4,
+            ..limits
+        })
         .await
         .is_err());
     assert_eq!(

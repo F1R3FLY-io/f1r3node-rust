@@ -1,12 +1,7 @@
-use std::mem::size_of;
-
 use crypto::rust::hash::blake2b256::Blake2b256;
 use models::rust::casper::protocol::casper_message::Event as CasperEvent;
 use models::rust::casper::protocol::offered_processed_deploy::OfferedProcessedDeploy;
-use models::rust::cost_protocol_limits::{
-    offered_funded_v6_host_work_limits, offered_funded_v6_limits,
-};
-use models::rust::host_work::{HostWorkDimension, HostWorkUnits};
+use models::rust::cost_protocol_limits::offered_funded_v6_limits;
 use models::rust::native_cost_evidence::{
     NativeCostEvidenceV1, NativeFundingCaseLimits, NativeFundingCaseSource, NativeFundingCaseV1,
     NativeFundingObligation, NativePrepaidBirth, NativePrepaidDeltaLimits, NativePrepaidDeltaV1,
@@ -20,7 +15,6 @@ use rholang::rust::interpreter::accounting::{
     encode_native_budget_recording, encode_native_operation_journal, NativeBudgetRecording,
     NativeOperationRecord, NativeRecordingWireLimits,
 };
-use rholang::rust::interpreter::host_work::HostWorkBudget;
 use rholang::rust::interpreter::interpreter::EvaluateResult;
 use rspace_plus_plus::rspace::rspace_interface::RSpaceOperationCompletion;
 
@@ -44,32 +38,13 @@ pub struct EncodedNativeRuntimeRecording {
 pub fn encode_committed_native_evidence(
     evidence: &NativeCostEvidenceV1<'_>,
     limits: PhloWireLimits,
-    budget: &HostWorkBudget,
 ) -> Result<Vec<u8>, CasperError> {
-    let bytes = evidence
-        .encoded_len(limits)
-        .map_err(|error| invalid(&error.to_string()))?;
-    reserve(budget, HostWorkDimension::VerificationBytes, bytes)?;
-    reserve(budget, HostWorkDimension::SearchStateBytes, bytes)?;
-    reserve(budget, HostWorkDimension::VerificationOperations, 17)?;
     evidence
         .encode(limits)
         .map_err(|error| invalid(&error.to_string()))
 }
 
 fn invalid(reason: &str) -> CasperError { CasperError::RuntimeError(reason.to_owned()) }
-
-fn reserve(
-    budget: &HostWorkBudget,
-    dimension: HostWorkDimension,
-    amount: usize,
-) -> Result<(), CasperError> {
-    let units = u64::try_from(amount).map_err(|_| invalid("native evidence work overflows"))?;
-    budget
-        .reserve(dimension, HostWorkUnits::new(units))
-        .map_err(|error| invalid(&error.to_string()))?;
-    Ok(())
-}
 
 fn add(total: &mut usize, amount: usize) -> Result<(), CasperError> {
     *total = total
@@ -89,7 +64,6 @@ fn source_index(position: usize, original: &[usize]) -> Result<u32, CasperError>
 pub fn encode_measured_runtime_recording(
     evaluation: &EvaluateResult,
     limits: NativeRecordingWireLimits,
-    budget: &HostWorkBudget,
 ) -> Result<EncodedNativeRuntimeRecording, CasperError> {
     let used = evaluation
         .native_phlo_usage
@@ -108,9 +82,9 @@ pub fn encode_measured_runtime_recording(
         ));
     }
     Ok(EncodedNativeRuntimeRecording {
-        budget: encode_native_budget_recording(recording, limits, budget)
+        budget: encode_native_budget_recording(recording, limits)
             .map_err(|error| invalid(&error.to_string()))?,
-        journal: encode_native_operation_journal(journal, &recording.paths, limits, budget)
+        journal: encode_native_operation_journal(journal, &recording.paths, limits)
             .map_err(|error| invalid(&error.to_string()))?,
     })
 }
@@ -118,7 +92,6 @@ pub fn encode_measured_runtime_recording(
 pub fn decode_committed_runtime_recording(
     evidence: &NativeCostEvidenceV1<'_>,
     limits: NativeRecordingWireLimits,
-    budget: &HostWorkBudget,
 ) -> Result<
     (
         NativeBudgetRecording,
@@ -126,7 +99,7 @@ pub fn decode_committed_runtime_recording(
     ),
     CasperError,
 > {
-    let mut recording = decode_native_budget_recording(evidence.budget_recording, limits, budget)
+    let mut recording = decode_native_budget_recording(evidence.budget_recording, limits)
         .map_err(|error| invalid(&error.to_string()))?;
     if recording.used != evidence.phlo_used || recording.session != evidence.envelope_commitment {
         return Err(invalid(
@@ -134,7 +107,7 @@ pub fn decode_committed_runtime_recording(
         ));
     }
     let journal =
-        decode_native_operation_journal(evidence.operation_journal, &mut recording, limits, budget)
+        decode_native_operation_journal(evidence.operation_journal, &mut recording, limits)
             .map_err(|error| invalid(&error.to_string()))?;
     if journal
         .iter()
@@ -152,16 +125,7 @@ pub fn decode_committed_runtime_recording(
 pub(crate) fn native_user_event_count(
     operations: &[NativeOperationRecord],
     maximum: usize,
-    host: &HostWorkBudget,
 ) -> Result<usize, CasperError> {
-    host.reserve(
-        HostWorkDimension::VerificationOperations,
-        HostWorkUnits::new(
-            u64::try_from(operations.len())
-                .map_err(|_| invalid("native user event count overflows"))?,
-        ),
-    )
-    .map_err(|error| invalid(&error.to_string()))?;
     operations.iter().try_fold(0usize, |count, operation| {
         let width = match operation.completion {
             RSpaceOperationCompletion::Rejected => 0,
@@ -180,15 +144,10 @@ pub(crate) fn native_user_event_count(
 /// native user trace.
 pub fn committed_user_event_count(
     evidence: &NativeCostEvidenceV1<'_>,
-    budget: &HostWorkBudget,
 ) -> Result<usize, CasperError> {
     let (_recording, operations) =
-        decode_committed_runtime_recording(evidence, offered_funded_v6_recording_limits(), budget)?;
-    native_user_event_count(
-        &operations,
-        offered_funded_v6_replay_limits().trace.events,
-        budget,
-    )
+        decode_committed_runtime_recording(evidence, offered_funded_v6_recording_limits())?;
+    native_user_event_count(&operations, offered_funded_v6_replay_limits().trace.events)
 }
 
 /// Added by DR-115: the settlement suffix of a deploy log after its
@@ -223,11 +182,10 @@ pub fn failed_offered_committed_suffix(
             "a committed settlement suffix belongs only to a failed offered deploy",
         ));
     }
-    let budget = HostWorkBudget::new(offered_funded_v6_host_work_limits());
     let evidence = processed
         .evidence(offered_funded_v6_limits().evidence)
         .map_err(|error| invalid(&error))?;
-    let user_events = committed_user_event_count(&evidence, &budget)?;
+    let user_events = committed_user_event_count(&evidence)?;
     committed_settlement_suffix(processed.deploy_log(), user_events, &evidence)
 }
 
@@ -235,7 +193,6 @@ pub fn encode_measured_funding_case(
     capture: &CanonicalPhloFundingCapture<'_>,
     transition: &FundingOutcomeCursorTransition,
     limits: NativeFundingCaseLimits,
-    budget: &HostWorkBudget,
 ) -> Result<Vec<u8>, CasperError> {
     let n = capture.sources().len();
     let m = capture.obligation_keys().len();
@@ -251,12 +208,6 @@ pub fn encode_measured_funding_case(
             "native funding cursor source count differs from capture",
         ));
     }
-    reserve(
-        budget,
-        HostWorkDimension::VerificationOperations,
-        n.checked_mul(n)
-            .ok_or_else(|| invalid("native funding source permutation work overflows"))?,
-    )?;
     if original.iter().any(|position| *position >= n)
         || original
             .iter()
@@ -299,23 +250,6 @@ pub fn encode_measured_funding_case(
     if encoded_size > limits.wire.total_bytes {
         return Err(invalid("native funding case exceeds wire limit"));
     }
-    let allocated = n
-        .checked_mul(
-            size_of::<NativeFundingCaseSource<'_>>()
-                + size_of::<Vec<bool>>()
-                + size_of::<Vec<u64>>(),
-        )
-        .and_then(|bytes| bytes.checked_add(m * size_of::<NativeFundingObligation<'_>>()))
-        .and_then(|bytes| bytes.checked_add(cells * (size_of::<bool>() + size_of::<u64>())))
-        .and_then(|bytes| bytes.checked_add(n * (size_of::<bool>() + size_of::<u64>())))
-        .and_then(|bytes| bytes.checked_add(encoded_size))
-        .ok_or_else(|| invalid("native funding case allocation overflows"))?;
-    reserve(budget, HostWorkDimension::SearchStateBytes, allocated)?;
-    reserve(
-        budget,
-        HostWorkDimension::VerificationOperations,
-        n + m + cells + encoded_size,
-    )?;
     let mut sources = Vec::new();
     let mut obligations = Vec::new();
     let mut eligible = Vec::new();
@@ -407,7 +341,6 @@ pub fn encode_measured_prepaid_delta(
     retained: &[NativeRetainedStackRecord],
     changes: &[PrepaidReceiptChange<'_>],
     limits: NativePrepaidDeltaLimits,
-    budget: &HostWorkBudget,
 ) -> Result<Vec<u8>, CasperError> {
     if selection.draws().len() > limits.draws
         || selection.demand_positions().len() > limits.positions
@@ -452,18 +385,6 @@ pub fn encode_measured_prepaid_delta(
     if encoded_size > limits.wire.total_bytes {
         return Err(invalid("native prepaid delta exceeds wire limit"));
     }
-    let allocated = encoded_size
-        .checked_add(selection.draws().len() * size_of::<NativePrepaidDraw>())
-        .and_then(|bytes| bytes.checked_add(selection.demand_positions().len() * size_of::<u32>()))
-        .and_then(|bytes| bytes.checked_add(retained.len() * size_of::<NativePrepaidBirth>()))
-        .and_then(|bytes| bytes.checked_add(changes.len() * size_of::<NativePrepaidReplacement>()))
-        .ok_or_else(|| invalid("native prepaid allocation overflows"))?;
-    reserve(budget, HostWorkDimension::SearchStateBytes, allocated)?;
-    reserve(
-        budget,
-        HostWorkDimension::VerificationOperations,
-        encoded_size + retained.len() + changes.len(),
-    )?;
     let mut draws = Vec::new();
     draws
         .try_reserve_exact(selection.draws().len())
@@ -500,11 +421,6 @@ pub fn encode_measured_prepaid_delta(
         .try_reserve_exact(retained.len())
         .map_err(|_| invalid("prepaid birth allocation failed"))?;
     for record in retained {
-        reserve(
-            budget,
-            HostWorkDimension::VerificationBytes,
-            record.encoded_cells().len(),
-        )?;
         births.push(NativePrepaidBirth {
             stack_id: *record.stack_id(),
             source_hash: *record.source_hash(),
@@ -527,7 +443,6 @@ pub fn encode_measured_prepaid_delta(
             expected_hash: change
                 .expected
                 .map(|bytes| {
-                    reserve(budget, HostWorkDimension::VerificationBytes, bytes.len())?;
                     Blake2b256::hash_parts([PREPAID_RECEIPT_HASH_DOMAIN, bytes])
                         .as_slice()
                         .try_into()
@@ -537,7 +452,6 @@ pub fn encode_measured_prepaid_delta(
             replacement_hash: change
                 .replacement
                 .map(|bytes| {
-                    reserve(budget, HostWorkDimension::VerificationBytes, bytes.len())?;
                     Blake2b256::hash_parts([PREPAID_RECEIPT_HASH_DOMAIN, bytes])
                         .as_slice()
                         .try_into()
@@ -548,14 +462,6 @@ pub fn encode_measured_prepaid_delta(
                 .transpose()?,
         });
     }
-    reserve(
-        budget,
-        HostWorkDimension::VerificationOperations,
-        changes
-            .len()
-            .checked_mul(8)
-            .ok_or_else(|| invalid("prepaid replacement sort overflows"))?,
-    )?;
     replacements.sort_unstable_by_key(|replacement| replacement.receipt_id);
     let delta = NativePrepaidDeltaV1 {
         draws,

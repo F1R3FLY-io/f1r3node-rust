@@ -2,18 +2,15 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::mem::size_of;
 
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
-use models::rust::host_work::HostWorkDimension;
 use models::rust::phlo_resource::PhloResourceLimits;
 use prost::Message;
 use rholang::rust::interpreter::accounting::phlo_execution::{
     CanonicalPhloFundingCapture, PhloExecutionLimits, PhloExecutionResources, PhloFailure,
     PhloOutcome, PhloResourceAmount,
 };
-use rholang::rust::interpreter::host_work::HostWorkBudget;
 use rholang::rust::interpreter::rho_runtime::RhoRuntime;
 use rholang::rust::interpreter::util::vault_address::VaultAddress;
 
-use super::snapshot::reserve;
 use super::*;
 use crate::rust::util::event_converter;
 use crate::rust::util::rholang::costacc::supply::{decode_purse_inventory, PurseStack};
@@ -68,7 +65,6 @@ impl RuntimeOps {
         authenticated_funding_root: [u8; 32],
         expected_wallet_root: [u8; 32],
         limits: NativeRetainedSettlementLimits,
-        budget: &HostWorkBudget,
     ) -> Result<NativeRetainedSettlement, CasperError> {
         let checked = prepared.births().settlement();
         if checked.snapshot().wallets().pre_state_root() != authenticated_funding_root
@@ -90,7 +86,7 @@ impl RuntimeOps {
             return Err(invalid("receipt-only settlement limits differ"));
         }
         let capture = checked.capture().scoped().capture();
-        let mut stacks = consumption.check(capture, budget)?;
+        let mut stacks = consumption.check(capture)?;
         let mut sources = BTreeSet::new();
         for stack in &stacks {
             if sources.insert(stack.source_hash) {
@@ -102,11 +98,7 @@ impl RuntimeOps {
                     .flatten()
                     .ok_or_else(|| invalid("consumption source has no captured receipt"))?;
                 if self
-                    .read_prepaid_receipt_metered(
-                        &key,
-                        consumption.limits.receipts.value_bytes,
-                        budget,
-                    )
+                    .read_prepaid_receipt(&key, consumption.limits.receipts.value_bytes)
                     .await?
                     .as_deref()
                     != Some(expected)
@@ -120,20 +112,12 @@ impl RuntimeOps {
                 self,
                 limits.births.physical_cells,
                 limits.births.physical_bytes,
-                budget,
             )
             .await?;
         let count = prepared.changes().len();
         if count > limits.receipts.entries {
             return Err(invalid("retained receipt count exceeds the limit"));
         }
-        reserve(
-            budget,
-            HostWorkDimension::SearchStateBytes,
-            count
-                .checked_mul(size_of::<PrepaidReceiptChange<'_>>())
-                .ok_or_else(|| invalid("retained receipt reference size overflow"))?,
-        )?;
         let mut births = Vec::new();
         births
             .try_reserve_exact(count)
@@ -148,30 +132,16 @@ impl RuntimeOps {
         }
         let result = async {
             let birth_log = self
-                .replace_prepaid_receipts_metered(&births, limits.receipts, budget)
+                .replace_prepaid_receipts(&births, limits.receipts)
                 .await?;
-            consumption
-                .rebind_live_indices(self, &mut stacks, budget)
-                .await?;
+            consumption.rebind_live_indices(self, &mut stacks).await?;
             let pops = self
                 .apply_prepaid_stack_pops_with_changes(
                     &stacks,
                     consumption.draws,
                     consumption.limits,
-                    budget,
                 )
                 .await?;
-            let count = births
-                .len()
-                .checked_add(pops.changes().len())
-                .ok_or_else(|| invalid("composed receipt reference count overflow"))?;
-            reserve(
-                budget,
-                HostWorkDimension::SearchStateBytes,
-                count
-                    .checked_mul(size_of::<PrepaidReceiptChange<'_>>())
-                    .ok_or_else(|| invalid("composed receipt reference size overflow"))?,
-            )?;
             let mut first = Vec::new();
             first
                 .try_reserve_exact(births.len())
@@ -186,29 +156,19 @@ impl RuntimeOps {
                     .iter()
                     .map(OwnedPrepaidReceiptChange::as_change),
             );
-            let composed =
-                compose_prepaid_receipt_changes(&first, &second, limits.receipts, budget)?;
+            let composed = compose_prepaid_receipt_changes(&first, &second, limits.receipts)?;
             let mut owned = Vec::new();
             owned
                 .try_reserve_exact(composed.len())
                 .map_err(|_| invalid("composed receipt allocation failed"))?;
             for change in composed {
-                owned.push(OwnedPrepaidReceiptChange::copy_from(change, budget)?);
+                owned.push(OwnedPrepaidReceiptChange::copy_from(change)?);
             }
             let pop_log = pops.into_log();
             let log_count = birth_log
                 .len()
                 .checked_add(pop_log.len())
                 .ok_or_else(|| invalid("receipt-only log count overflow"))?;
-            reserve(
-                budget,
-                HostWorkDimension::SearchStateBytes,
-                log_count
-                    .checked_mul(size_of::<
-                        models::rust::casper::protocol::casper_message::Event,
-                    >())
-                    .ok_or_else(|| invalid("receipt-only log size overflow"))?,
-            )?;
             let mut log = Vec::new();
             log.try_reserve_exact(log_count)
                 .map_err(|_| invalid("receipt-only log allocation failed"))?;
@@ -236,7 +196,6 @@ impl RuntimeOps {
         consumption: NativePrepaidConsumption<'_, '_>,
         wallet: NativeWalletSettlement<'_>,
         limits: NativeRetainedSettlementLimits,
-        budget: &HostWorkBudget,
     ) -> Result<NativeRetainedSettlement, CasperError> {
         let checked = prepared.births().settlement();
         let root = checked.snapshot().wallets().pre_state_root();
@@ -256,7 +215,7 @@ impl RuntimeOps {
             ));
         }
         let capture = checked.capture().scoped().capture();
-        let mut stacks = consumption.check(capture, budget)?;
+        let mut stacks = consumption.check(capture)?;
         let mut sources = BTreeSet::new();
         for stack in &stacks {
             if sources.insert(stack.source_hash) {
@@ -268,11 +227,7 @@ impl RuntimeOps {
                     .flatten()
                     .ok_or_else(|| invalid("consumption source has no captured receipt"))?;
                 if self
-                    .read_prepaid_receipt_metered(
-                        &key,
-                        consumption.limits.receipts.value_bytes,
-                        budget,
-                    )
+                    .read_prepaid_receipt(&key, consumption.limits.receipts.value_bytes)
                     .await?
                     .as_deref()
                     != Some(expected)
@@ -290,32 +245,16 @@ impl RuntimeOps {
                     wallet.fee_address,
                     wallet.initial_rand,
                     limits,
-                    budget,
                 )
                 .await?;
-            consumption
-                .rebind_live_indices(self, &mut stacks, budget)
-                .await?;
+            consumption.rebind_live_indices(self, &mut stacks).await?;
             let pops = self
                 .apply_prepaid_stack_pops_with_changes(
                     &stacks,
                     consumption.draws,
                     consumption.limits,
-                    budget,
                 )
                 .await?;
-            let count = result
-                .prepaid_changes
-                .len()
-                .checked_add(pops.changes().len())
-                .ok_or_else(|| invalid("composed receipt reference count overflow"))?;
-            reserve(
-                budget,
-                HostWorkDimension::SearchStateBytes,
-                count
-                    .checked_mul(size_of::<PrepaidReceiptChange<'_>>())
-                    .ok_or_else(|| invalid("composed receipt reference size overflow"))?,
-            )?;
             let mut first = Vec::new();
             first
                 .try_reserve_exact(result.prepaid_changes.len())
@@ -335,14 +274,13 @@ impl RuntimeOps {
                     .iter()
                     .map(OwnedPrepaidReceiptChange::as_change),
             );
-            let composed =
-                compose_prepaid_receipt_changes(&first, &second, limits.receipts, budget)?;
+            let composed = compose_prepaid_receipt_changes(&first, &second, limits.receipts)?;
             let mut owned = Vec::new();
             owned
                 .try_reserve_exact(composed.len())
                 .map_err(|_| invalid("composed receipt allocation failed"))?;
             for change in composed {
-                owned.push(OwnedPrepaidReceiptChange::copy_from(change, budget)?);
+                owned.push(OwnedPrepaidReceiptChange::copy_from(change)?);
             }
             result.prepaid_changes = owned;
             result.log.extend(
@@ -377,22 +315,16 @@ impl NativePrepaidConsumption<'_, '_> {
         &self,
         runtime: &RuntimeOps,
         stacks: &mut [PurseStack],
-        budget: &HostWorkBudget,
     ) -> Result<(), CasperError> {
         let mut inventories = BTreeMap::new();
         let mut bytes_left = self.physical_bytes;
         let mut cells_left = self.physical_cells;
         for stack in stacks {
-            reserve(
-                budget,
-                HostWorkDimension::SearchStateBytes,
-                stack.channel.encoded_len(),
-            )?;
             let channel_key = stack.channel.encode_to_vec();
             if let std::collections::btree_map::Entry::Vacant(entry) =
                 inventories.entry(channel_key.clone())
             {
-                let data = super::read_live_data_metered(runtime, &stack.channel, budget).await?;
+                let data = super::read_live_data(runtime, &stack.channel).await;
                 if data.len() > cells_left {
                     return Err(invalid("consumption live inventory count limit exceeded"));
                 }
@@ -413,14 +345,6 @@ impl NativePrepaidConsumption<'_, '_> {
                     bytes_left = bytes_left
                         .checked_sub(bytes)
                         .ok_or_else(|| invalid("consumption live byte limit exceeded"))?;
-                    reserve(
-                        budget,
-                        HostWorkDimension::SearchStateBytes,
-                        bytes
-                            .checked_mul(4)
-                            .ok_or_else(|| invalid("consumption live allocation overflow"))?,
-                    )?;
-                    reserve(budget, HostWorkDimension::VerificationOperations, bytes)?;
                 }
                 let head = stack
                     .stack
@@ -448,15 +372,13 @@ impl NativePrepaidConsumption<'_, '_> {
     fn check(
         &self,
         capture: &CanonicalPhloFundingCapture<'_>,
-        budget: &HostWorkBudget,
     ) -> Result<Vec<PurseStack>, CasperError> {
-        self.check_resources(used_resources(capture), budget)
+        self.check_resources(used_resources(capture))
     }
 
     pub(in crate::rust::util::rholang::costacc) fn check_resources<'r>(
         &self,
         used: impl IntoIterator<Item = PhloResourceAmount<'r>>,
-        budget: &HostWorkBudget,
     ) -> Result<Vec<PurseStack>, CasperError> {
         if self.draws.len() > self.limits.draws {
             return Err(invalid("consumption draw limit exceeded"));
@@ -470,11 +392,6 @@ impl NativePrepaidConsumption<'_, '_> {
             if used.quantity == 0 {
                 return Err(invalid("consumption resource quantity must be positive"));
             }
-            reserve(
-                budget,
-                HostWorkDimension::VerificationOperations,
-                self.execution.authority_nodes,
-            )?;
             let key = used
                 .resource
                 .wire_key(self.execution)
@@ -490,33 +407,19 @@ impl NativePrepaidConsumption<'_, '_> {
             bytes_left = bytes_left
                 .checked_sub(key.len())
                 .ok_or_else(|| invalid("consumption key byte limit exceeded"))?;
-            reserve(
-                budget,
-                HostWorkDimension::SearchStateBytes,
-                key.len() + size_of::<(Vec<u8>, u64)>(),
-            )?;
             let quantity = expected.entry(key).or_default();
             *quantity = quantity
                 .checked_add(used.quantity)
                 .ok_or_else(|| invalid("consumption quantity overflow"))?;
         }
-        let inventory = self.captured.resource_inventory(
-            NativePrepaidInventoryLimits {
+        let inventory = self
+            .captured
+            .resource_inventory(NativePrepaidInventoryLimits {
                 cells: self.limits.cells,
                 cell: self.cell,
                 execution: self.execution,
-            },
-            budget,
-        )?;
-        let prefixes = inventory.prefixes(self.draws, self.limits.draws, budget)?;
-        reserve(
-            budget,
-            HostWorkDimension::SearchStateBytes,
-            self.draws
-                .len()
-                .checked_mul(size_of::<PurseStack>() + 128)
-                .ok_or_else(|| invalid("consumption allocation overflow"))?,
-        )?;
+            })?;
+        let prefixes = inventory.prefixes(self.draws, self.limits.draws)?;
         let mut stacks = Vec::new();
         stacks
             .try_reserve_exact(self.draws.len())
@@ -531,13 +434,6 @@ impl NativePrepaidConsumption<'_, '_> {
                     .checked_sub(1)
                     .ok_or_else(|| invalid("consumed resource exceeds checked execution"))?;
             }
-            let size = stack
-                .channel
-                .encoded_len()
-                .checked_add(stack.stack.encoded_len())
-                .and_then(|n| n.checked_add(stack.random_state.len()))
-                .ok_or_else(|| invalid("consumption physical size overflow"))?;
-            reserve(budget, HostWorkDimension::SearchStateBytes, size)?;
             stacks.push(stack.clone());
         }
         if expected.values().any(|quantity| *quantity != 0) {

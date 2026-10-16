@@ -206,7 +206,6 @@ async fn play_and_replay(call: Call<'_>, forge: impl FnOnce(&mut Vec<Event>)) ->
     let budget = RuntimeBudget::new(Cost::unsafe_max());
     budget.set_deploy_signature_funded(b"native-recorded-call", funding.authority());
     let settings = priced_config_from(limit, weights, price, source).with_record_room(call.room);
-    let host = settings.host_work();
     budget
         .reset_for_native_execution(settings)
         .expect("native play starts");
@@ -224,9 +223,7 @@ async fn play_and_replay(call: Call<'_>, forge: impl FnOnce(&mut Vec<Event>)) ->
     deploy_data.write().await.timestamp = 456;
     let rand = || Blake2b512Random::create_from_bytes(b"native-recorded-call");
     let scope = budget.enter_comm_accounting_scope();
-    let played = reducer
-        .inj_with_observation(parsed.clone(), rand(), Some(host))
-        .await;
+    let played = reducer.inj_with_observation(parsed.clone(), rand()).await;
     drop(scope);
     let recording = budget
         .native_budget_recording()
@@ -243,35 +240,23 @@ async fn play_and_replay(call: Call<'_>, forge: impl FnOnce(&mut Vec<Event>)) ->
     let mut log = play.create_soft_checkpoint().await.log;
     let records = records(&log);
     forge(&mut log);
-    let host = priced_config_from(limit, weights, price, source).host_work();
     let trace = with_priced_contract_from(limit, limit, weights, price, source, |contract| {
         contract
             .expect("the limit is an admissible bound")
-            .check_operation_journal(
-                recording.session,
-                &recording,
-                operations,
-                journal_limits(),
-                &host,
-            )
+            .check_operation_journal(recording.session, &recording, operations, journal_limits())
             .expect("the journal checks")
     })
-    .bind_trace(
-        log.into(),
-        NativeOperationTraceLimits {
-            events: 100,
-            source_entries: 1000,
-            source_bytes: 1_000_000,
-            telemetry_items: 100,
-            telemetry_bytes: 100_000,
-        },
-        &host,
-    )
+    .bind_trace(log.into(), NativeOperationTraceLimits {
+        events: 100,
+        source_entries: 1000,
+        source_bytes: 1_000_000,
+        telemetry_items: 100,
+        telemetry_bytes: 100_000,
+    })
     .expect("the trace binds");
     let replay_budget = RuntimeBudget::new(Cost::unsafe_max());
     replay_budget.set_deploy_signature_funded(b"native-recorded-call", funding.authority());
-    let mut replay_settings = priced_config_from(limit, weights, price, source);
-    replay_settings.host_work = host.clone();
+    let replay_settings = priced_config_from(limit, weights, price, source);
     replay_budget
         .reset_for_native_execution(replay_settings)
         .expect("native replay starts");
@@ -279,7 +264,6 @@ async fn play_and_replay(call: Call<'_>, forge: impl FnOnce(&mut Vec<Event>)) ->
         trace,
         history,
         Arc::new(Box::new(Matcher)),
-        host,
         Arc::new(RwLock::new(HashMap::new())),
         Arc::new(default_mergeable_tags()),
         &mut extra_processes(),

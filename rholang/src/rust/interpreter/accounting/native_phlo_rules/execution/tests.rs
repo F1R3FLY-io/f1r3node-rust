@@ -1,6 +1,5 @@
 use models::rhoapi::cost_signature::Value;
 use models::rhoapi::{CostAuthority, CostRegion, CostSignatureCompound};
-use models::rust::host_work::{HostWorkLimit, HostWorkLimits};
 use models::rust::phlo_schedule::PhloGenesisPolicy;
 use models::rust::rholang::sorter::cost_accounting_sorter::sort_signature;
 use proptest::prelude::*;
@@ -14,10 +13,6 @@ use crate::rust::interpreter::accounting::phlo_controls::{
 };
 
 mod budget_trace;
-
-fn budget() -> HostWorkBudget {
-    HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(100_000_000)))
-}
 
 fn limits() -> NativePhloRegionLimits {
     NativePhloRegionLimits {
@@ -122,9 +117,7 @@ fn arbitrary_authorities_and_distinct_regions_keep_every_occurrence() {
         for owners in [0, 1, 2, 3, 65, 1024] {
             for regions in [1, 2, 3] {
                 let observation = row(owners, regions, true, [11, 13, 17]);
-                let prepared = meter
-                    .prepare(Arc::clone(&observation), limits(), &budget())
-                    .unwrap();
+                let prepared = meter.prepare(Arc::clone(&observation), limits()).unwrap();
                 assert_eq!(
                     prepared.usage(),
                     (2 + 3 * 11 + 5 * 13 + 7 * 17) * owners as u64 * regions as u64
@@ -142,13 +135,13 @@ fn arbitrary_authorities_and_distinct_regions_keep_every_occurrence() {
 fn full_width_quantities_zero_prices_zero_valuations_and_limits_are_exact() {
     with_contract([0, 1, 0, 0], u64::MAX, u64::MAX, 0, |contract| {
         let maximum = contract
-            .prepare(row(1, 1, false, [u64::MAX, 0, 0]), limits(), &budget())
+            .prepare(row(1, 1, false, [u64::MAX, 0, 0]), limits())
             .unwrap();
         let zero = contract
-            .prepare(row(0, 1, true, [u64::MAX; 3]), limits(), &budget())
+            .prepare(row(0, 1, true, [u64::MAX; 3]), limits())
             .unwrap();
         let one = contract
-            .prepare(row(1, 1, false, [1, 0, 0]), limits(), &budget())
+            .prepare(row(1, 1, false, [1, 0, 0]), limits())
             .unwrap();
         let mut meter = contract.reservation();
         meter.reserve(&maximum).unwrap();
@@ -162,18 +155,18 @@ fn full_width_quantities_zero_prices_zero_valuations_and_limits_are_exact() {
     });
     with_contract([u64::MAX; 4], 0, 0, 0, |contract| {
         let zero = contract
-            .prepare(row(0, 1, true, [u64::MAX; 3]), limits(), &budget())
+            .prepare(row(0, 1, true, [u64::MAX; 3]), limits())
             .unwrap();
         let mut meter = contract.reservation();
         meter.reserve(&zero).unwrap();
         assert!(matches!(
-            meter.prepare(row(2, 1, true, [0; 3]), limits(), &budget()),
+            meter.prepare(row(2, 1, true, [0; 3]), limits()),
             Err(NativePhloExecutionError::Overflow)
         ));
     });
     with_contract([1; 4], 100, 3, 1, |contract| {
         let first = contract
-            .prepare(row(1, 1, true, [2, 0, 0]), limits(), &budget())
+            .prepare(row(1, 1, true, [2, 0, 0]), limits())
             .unwrap();
         let mut meter = contract.reservation();
         meter.reserve(&first).unwrap();
@@ -190,7 +183,7 @@ fn foreign_contracts_incomplete_measurements_and_bad_authorities_are_rejected() 
     with_contract([1; 4], 100, 100, 1, |contract| {
         let observation = row(3, 1, true, [1; 3]);
         let prepared = contract
-            .prepare(Arc::clone(&observation), limits(), &budget())
+            .prepare(Arc::clone(&observation), limits())
             .unwrap();
         with_contract([1; 4], 100, 100, 1, |other| {
             let mut meter = other.reservation();
@@ -216,32 +209,20 @@ fn foreign_contracts_incomplete_measurements_and_bad_authorities_are_rejected() 
                     .regions
                     .push(altered.authority.regions[0].clone()),
             }
-            assert!(contract
-                .prepare(Arc::new(altered), limits(), &budget())
-                .is_err());
+            assert!(contract.prepare(Arc::new(altered), limits()).is_err());
         }
         assert!(contract
-            .prepare(
-                Arc::clone(&observation),
-                NativePhloRegionLimits {
-                    regions: 0,
-                    ..limits()
-                },
-                &budget()
-            )
+            .prepare(Arc::clone(&observation), NativePhloRegionLimits {
+                regions: 0,
+                ..limits()
+            })
             .is_err());
         assert!(contract
-            .prepare(
-                Arc::clone(&observation),
-                NativePhloRegionLimits {
-                    encoded_authority_bytes: 0,
-                    ..limits()
-                },
-                &budget()
-            )
+            .prepare(Arc::clone(&observation), NativePhloRegionLimits {
+                encoded_authority_bytes: 0,
+                ..limits()
+            })
             .is_err());
-        let exhausted = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(0)));
-        assert!(contract.prepare(observation, limits(), &exhausted).is_err());
     });
 }
 
@@ -275,7 +256,7 @@ proptest! {
         limit in 0_u64..100_000, repeats in 0_usize..12,
     ) {
         with_contract(weights, limit, limit, 0, |contract| {
-            let charge = contract.prepare(row(owners, regions, comm, raw), limits(), &budget()).unwrap();
+            let charge = contract.prepare(row(owners, regions, comm, raw), limits()).unwrap();
             let expected = (u128::from(comm) * u128::from(weights[0]) +
                 raw.into_iter().zip(weights[1..].iter()).map(|(n,w)| u128::from(n) * u128::from(*w)).sum::<u128>()) * owners as u128 * regions as u128;
             assert_eq!(u128::from(charge.usage()), expected);
@@ -299,7 +280,7 @@ fn loom_reservation_and_receipt_publication_share_one_critical_section() {
             .map(|(identity, comm, transfer)| {
                 let mut observation = row(3, 1, comm, [0, transfer, 0]);
                 Arc::make_mut(&mut observation).event_id = [identity as u8; 32];
-                let charge = contract.prepare(observation, limits(), &budget()).unwrap();
+                let charge = contract.prepare(observation, limits()).unwrap();
                 (identity, charge)
             })
             .collect();

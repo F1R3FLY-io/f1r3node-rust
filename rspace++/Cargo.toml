@@ -15,7 +15,7 @@ bincode = { workspace = true }
 heed = { workspace = true }
 # `rc` is load-bearing, not incidental: the canonical candidate order of replay
 # (`candidate_order::canonical_order`, used by `native_candidate.rs` and
-# `native_candidate/metered.rs`) digests `Arc<WaitingContinuation>` candidates
+# `native_candidate/selection.rs`) digests `Arc<WaitingContinuation>` candidates
 # (Arc-wrapped by the sharded hot store), which needs serde's
 # `impl Serialize for Arc<T>`. Since DR-129 play shuffles at random again
 # (`shuffle_with_index`, as on dev) and serializes no candidate. Declaring it
@@ -63,9 +63,6 @@ features = [
 ]
 
 [dev-dependencies]
-# D-E5 (DR-112): the legacy per-level walker of shared, a test oracle only.
-shared = { path = "../shared", features = ["level-walker-oracle"] }
-loom = "=0.7.2"
 tempfile = { workspace = true }
 test-env-helpers = "0.2.2"
 metrics-util = { workspace = true }

@@ -1,5 +1,4 @@
 use std::marker::PhantomData;
-use std::mem::{align_of, size_of};
 use std::ops::Deref;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Instant;
@@ -17,7 +16,6 @@ use super::instances::rspace_history_reader_impl::RSpaceHistoryReaderImpl;
 use super::native_reader::NativeHistoryReader;
 use crate::rspace::errors::{HistoryError, RSpaceError};
 use crate::rspace::hashing::blake2b256_hash::Blake2b256Hash;
-use crate::rspace::hashing::native_source::SourceMeter;
 use crate::rspace::hashing::stable_hash_provider::{hash, hash_from_vec};
 use crate::rspace::history::cold_store::PersistedData;
 use crate::rspace::history::history::History;
@@ -151,14 +149,12 @@ where
 {
     /// D-C3 (D-S3, DR-97): stages a native checkpoint whose cold and history
     /// actions `prepare` builds: the atomic-root check, the radix
-    /// preparation, the root reservation and the backing, in the order of
-    /// the owned checkpoint.
+    /// preparation, the root and the backing, in the order of the owned
+    /// checkpoint.
     fn stage_native_checkpoint(
         &self,
         prepare: impl FnOnce() -> Result<NativeCheckpoint, RSpaceError>,
-        meter: &dyn SourceMeter,
     ) -> Result<NativeCheckpoint, RSpaceError> {
-        meter.reserve(1, 0, 0)?;
         if !self
             .roots_repository
             .lock()
@@ -170,32 +166,14 @@ where
             ));
         }
         let mut prepared = prepare()?;
-        meter.reserve(8, 0, 0)?;
         if !prepared.history_actions.is_empty() {
             let history = self.current_history.lock().expect("history lock");
             prepared.prepared_history =
-                Some(history.prepare_native(std::mem::take(&mut prepared.history_actions), meter)?);
+                Some(history.prepare_native(std::mem::take(&mut prepared.history_actions))?);
         }
         if let Some(staged) = &prepared.prepared_history {
-            let root = staged.next.root_ref();
-            self.roots_repository
-                .lock()
-                .expect("root lock")
-                .reserve_native_commit(root, meter)?;
-            meter.reserve(1, root.0.len(), root.0.len())?;
-            prepared.root = Some(root.clone());
+            prepared.root = Some(staged.next.root_ref().clone());
         }
-        let result_backing = size_of::<HistoryRepositoryImpl<C, P, A, K>>()
-            .checked_add(if prepared.prepared_history.is_some() {
-                size_of::<Mutex<Box<dyn History>>>()
-                    .checked_add(2 * size_of::<usize>())
-                    .and_then(|bytes| bytes.checked_add(align_of::<Mutex<Box<dyn History>>>() * 2))
-                    .ok_or(RSpaceError::HostWorkRejected)?
-            } else {
-                0
-            })
-            .ok_or(RSpaceError::HostWorkRejected)?;
-        meter.reserve(2, 0, result_backing)?;
         prepared.backing = Some(NativeCheckpointBacking {
             history: self.current_history.clone(),
             roots: self.roots_repository.clone(),
@@ -526,17 +504,15 @@ where
     fn prepare_native_checkpoint(
         &self,
         actions: Vec<HotStoreAction<C, P, A, K>>,
-        meter: &dyn SourceMeter,
     ) -> Result<NativeCheckpoint, RSpaceError> {
-        self.stage_native_checkpoint(|| NativeCheckpoint::prepare(actions, meter), meter)
+        self.stage_native_checkpoint(|| NativeCheckpoint::prepare(actions))
     }
 
     fn prepare_native_checkpoint_borrowed(
         &self,
         actions: &[NativeExportAction<'_, C, A, Arc<WaitingContinuation<P, K>>>],
-        meter: &dyn SourceMeter,
     ) -> Result<NativeCheckpoint, RSpaceError> {
-        self.stage_native_checkpoint(|| NativeCheckpoint::prepare_borrowed(actions, meter), meter)
+        self.stage_native_checkpoint(|| NativeCheckpoint::prepare_borrowed(actions))
     }
 
     fn commit_native_checkpoint(
@@ -789,16 +765,10 @@ where
 
     fn get_current_history_reader_native(
         &self,
-        meter: &dyn SourceMeter,
-    ) -> Result<Box<dyn HistoryReader<Blake2b256Hash, C, P, A, K>>, RSpaceError> {
+    ) -> Box<dyn HistoryReader<Blake2b256Hash, C, P, A, K>> {
         let history_lock = lock_current_history(&self.current_history, &HISTORY_LOCK_READER_SITE);
-        let history = history_lock.snapshot_native(meter)?;
-        let bytes = std::mem::size_of::<RSpaceHistoryReaderImpl<C, P, A, K>>()
-            .checked_add(std::mem::size_of::<Box<dyn History>>())
-            .and_then(|bytes| bytes.checked_add(2 * std::mem::size_of::<usize>()))
-            .ok_or(RSpaceError::HostWorkRejected)?;
-        meter.reserve(3, 0, bytes)?;
-        Ok(Box::new(RSpaceHistoryReaderImpl::new(history, self.leaf_store.clone())))
+        let history = history_lock.snapshot_native();
+        Box::new(RSpaceHistoryReaderImpl::new(history, self.leaf_store.clone()))
     }
 
     fn get_history_reader_struct(

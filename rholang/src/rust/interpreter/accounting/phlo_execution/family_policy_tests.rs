@@ -1,6 +1,5 @@
 use std::num::NonZeroUsize;
 
-use models::rust::host_work::{HostWorkLimit, HostWorkLimits};
 use models::rust::phlo_obligation::PhloObligationKeyLimits;
 use proptest::prelude::*;
 
@@ -57,10 +56,6 @@ const SCHEDULES: [PhloSchedule<'static>; 1] = [PhloSchedule {
 }];
 
 fn cap(value: usize) -> NonZeroUsize { NonZeroUsize::new(value).unwrap() }
-
-fn work() -> HostWorkBudget {
-    HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(1_000_000_000)))
-}
 
 fn limits() -> PhloFamilyFundingLimits {
     PhloFamilyFundingLimits {
@@ -208,7 +203,7 @@ fn complete_family_fits_exposure_when_independent_preferred_allocations_do_not()
             eligible: &alpha_edges,
         },
     ];
-    let selected = select_phlo_funding_family(input(&sources, &requirements, 4), limits(), &work())
+    let selected = select_phlo_funding_family(input(&sources, &requirements, 4), limits())
         .unwrap()
         .unwrap();
     assert_eq!(selected.canonical_outcome_positions(), &[1, 0]);
@@ -318,7 +313,7 @@ fn canonical_outcome_priority_couples_payers_despite_a_complete_later_projection
     }
     let standalone = [requirements[1]];
     let independently_selected =
-        select_phlo_funding_family(input(&sources, &standalone, 3), limits(), &work())
+        select_phlo_funding_family(input(&sources, &standalone, 3), limits())
             .unwrap()
             .unwrap();
     assert_eq!(independently_selected.assignments()[0], vec![
@@ -327,7 +322,7 @@ fn canonical_outcome_priority_couples_payers_despite_a_complete_later_projection
         vec![1, 0],
         vec![0, 0]
     ]);
-    let selected = select_phlo_funding_family(input(&sources, &requirements, 3), limits(), &work())
+    let selected = select_phlo_funding_family(input(&sources, &requirements, 3), limits())
         .unwrap()
         .unwrap();
     assert_eq!(selected.canonical_outcome_positions(), &[0, 1]);
@@ -417,7 +412,6 @@ fn family_coupling_changes_the_first_resource_draws_from_the_standalone_cursor_b
                 keys: limits().keys,
                 aggregate_key_bytes: limits().aggregate_key_bytes,
             },
-            &work(),
         )
         .unwrap()
         .unwrap();
@@ -460,7 +454,7 @@ fn family_coupling_changes_the_first_resource_draws_from_the_standalone_cursor_b
             eligible: &second_edges,
         },
     ];
-    let selected = select_phlo_funding_family(input(&sources, &requirements, 4), limits(), &work())
+    let selected = select_phlo_funding_family(input(&sources, &requirements, 4), limits())
         .unwrap()
         .unwrap();
     assert_eq!(selected.canonical_outcome_positions(), &[0, 1]);
@@ -547,10 +541,10 @@ fn duplicate_occurrences_and_duplicate_outcomes_are_retained_without_duplicate_h
     };
     let single = [requirement];
     let repeated = [requirement, requirement, requirement];
-    let one = select_phlo_funding_family(input(&sources, &single, 4), limits(), &work())
+    let one = select_phlo_funding_family(input(&sources, &single, 4), limits())
         .unwrap()
         .unwrap();
-    let three = select_phlo_funding_family(input(&sources, &repeated, 4), limits(), &work())
+    let three = select_phlo_funding_family(input(&sources, &repeated, 4), limits())
         .unwrap()
         .unwrap();
     assert_eq!(one.assignments(), &[vec![vec![1, 3]]]);
@@ -566,7 +560,7 @@ fn duplicate_occurrences_and_duplicate_outcomes_are_retained_without_duplicate_h
     positions.sort_unstable();
     assert_eq!(positions, vec![0, 1, 2]);
     assert!(
-        select_phlo_funding_family(input(&sources, &single, 3), limits(), &work())
+        select_phlo_funding_family(input(&sources, &single, 3), limits())
             .unwrap()
             .is_none()
     );
@@ -590,7 +584,7 @@ fn duplicate_multiwallet_outcomes_retain_one_canonical_cursor_transition() {
         canonical_fee_cursor: 2,
         ..input(&sources, &single, 3)
     };
-    let once = select_phlo_funding_family(single_input, limits(), &work())
+    let once = select_phlo_funding_family(single_input, limits())
         .unwrap()
         .unwrap();
     let repeated = select_phlo_funding_family(
@@ -599,7 +593,6 @@ fn duplicate_multiwallet_outcomes_retain_one_canonical_cursor_transition() {
             ..single_input
         },
         limits(),
-        &work(),
     )
     .unwrap()
     .unwrap();
@@ -651,7 +644,7 @@ fn fee_only_and_nonbillable_outcomes_have_exact_separate_charges() {
             eligible: &zero_edges,
         },
     ];
-    let selected = select_phlo_funding_family(input(&sources, &requirements, 1), limits(), &work())
+    let selected = select_phlo_funding_family(input(&sources, &requirements, 1), limits())
         .unwrap()
         .unwrap();
     assert_eq!(selected.assignments(), &[
@@ -687,7 +680,7 @@ fn funding_rejects_aliases_control_mismatch_and_obsolete_occurrence_dimensions()
     }];
     let aliases = [source(b"A", 4), source(b"A", 4)];
     assert!(matches!(
-        select_phlo_funding_family(input(&aliases, &requirements, 8), limits(), &work()),
+        select_phlo_funding_family(input(&aliases, &requirements, 8), limits()),
         Err(PhloFamilyFundingError::Identity(
             FundingIdentityError::DuplicateSource
         ))
@@ -698,7 +691,7 @@ fn funding_rejects_aliases_control_mismatch_and_obsolete_occurrence_dimensions()
         eligible: &edges,
     }];
     assert!(matches!(
-        select_phlo_funding_family(input(&sources, &mixed, 8), limits(), &work()),
+        select_phlo_funding_family(input(&sources, &mixed, 8), limits()),
         Err(PhloFamilyFundingError::Funding(
             PhloFundingError::DifferentControls
         ))
@@ -708,8 +701,8 @@ fn funding_rejects_aliases_control_mismatch_and_obsolete_occurrence_dimensions()
         obligations: &bill,
         eligible: &conflicting,
     }];
-    let error = select_phlo_funding_family(input(&sources, &requirements, 8), limits(), &work())
-        .unwrap_err();
+    let error =
+        select_phlo_funding_family(input(&sources, &requirements, 8), limits()).unwrap_err();
     assert!(matches!(
         error,
         PhloFamilyFundingError::Search(FundingSearchError::InvalidProblem(
@@ -746,12 +739,12 @@ fn grouping_preserves_expanded_outcome_priority_not_aggregate_amount_order() {
             eligible: &edges,
         },
     ];
-    let selected = select_phlo_funding_family(input(&sources, &requirements, 8), limits(), &work())
+    let selected = select_phlo_funding_family(input(&sources, &requirements, 8), limits())
         .unwrap()
         .unwrap();
     assert_eq!(selected.canonical_outcome_positions(), &[1, 0]);
     let reversed = [requirements[1], requirements[0]];
-    let permuted = select_phlo_funding_family(input(&sources, &reversed, 8), limits(), &work())
+    let permuted = select_phlo_funding_family(input(&sources, &reversed, 8), limits())
         .unwrap()
         .unwrap();
     assert_eq!(permuted.canonical_outcome_positions(), &[0, 1]);
@@ -789,14 +782,14 @@ fn exposure_and_debit_caps_apply_to_resource_plus_fee_not_resources_alone() {
         },
     ] {
         assert!(
-            select_phlo_funding_family(input(&[source], &requirements, 3), limits(), &work())
+            select_phlo_funding_family(input(&[source], &requirements, 3), limits())
                 .unwrap()
                 .is_none()
         );
     }
     let sources = [source(b"A", 3)];
     assert_eq!(
-        select_phlo_funding_family(input(&sources, &requirements, 3), limits(), &work())
+        select_phlo_funding_family(input(&sources, &requirements, 3), limits())
             .unwrap()
             .unwrap()
             .source_holds(),
@@ -843,16 +836,12 @@ fn typed_obligation_permutation_restores_the_original_columns() {
         obligations: &permuted_bill,
         eligible: &permuted_edges,
     }];
-    let original = select_phlo_funding_family(input(&sources, &requirements, 5), limits(), &work())
+    let original = select_phlo_funding_family(input(&sources, &requirements, 5), limits())
         .unwrap()
         .unwrap();
-    let permuted = select_phlo_funding_family(
-        input(&sources, &permuted_requirements, 5),
-        limits(),
-        &work(),
-    )
-    .unwrap()
-    .unwrap();
+    let permuted = select_phlo_funding_family(input(&sources, &permuted_requirements, 5), limits())
+        .unwrap()
+        .unwrap();
     assert_eq!(original.source_holds(), permuted.source_holds());
     for row in 0..sources.len() {
         assert_eq!(
@@ -880,7 +869,7 @@ fn funding_supports_more_than_two_wallets_without_fixed_width_identity_masks() {
         obligations: &bill,
         eligible: &edges,
     }];
-    let selected = select_phlo_funding_family(input(&sources, &requirements, 2), limits(), &work())
+    let selected = select_phlo_funding_family(input(&sources, &requirements, 2), limits())
         .unwrap()
         .unwrap();
     assert_eq!(selected.source_holds().len(), 129);
@@ -907,12 +896,12 @@ fn canonical_outcome_order_binds_permissions_not_only_obligation_keys() {
             eligible: &alpha_edges,
         },
     ];
-    let original = select_phlo_funding_family(input(&sources, &requirements, 3), limits(), &work())
+    let original = select_phlo_funding_family(input(&sources, &requirements, 3), limits())
         .unwrap()
         .unwrap();
     assert_eq!(original.canonical_outcome_positions(), &[1, 0]);
     let reversed = [requirements[1], requirements[0]];
-    let permuted = select_phlo_funding_family(input(&sources, &reversed, 3), limits(), &work())
+    let permuted = select_phlo_funding_family(input(&sources, &reversed, 3), limits())
         .unwrap()
         .unwrap();
     assert_eq!(permuted.canonical_outcome_positions(), &[0, 1]);
@@ -945,9 +934,7 @@ fn malformed_later_outcome_is_not_hidden_by_an_infeasible_earlier_outcome() {
             eligible: &malformed_edges,
         },
     ];
-    assert!(
-        select_phlo_funding_family(input(&sources, &requirements, 0), limits(), &work()).is_err()
-    );
+    assert!(select_phlo_funding_family(input(&sources, &requirements, 0), limits()).is_err());
 }
 
 #[test]
@@ -962,7 +949,7 @@ fn recomputation_accepts_only_the_canonical_complete_family_and_exact_holds() {
         eligible: &edges,
     }];
     let funding_input = input(&sources, &requirements, 4);
-    let selected = select_phlo_funding_family(funding_input, limits(), &work())
+    let selected = select_phlo_funding_family(funding_input, limits())
         .unwrap()
         .unwrap();
     assert_eq!(selected.assignments(), &[vec![vec![1, 1], vec![0, 0]]]);
@@ -972,8 +959,7 @@ fn recomputation_accepts_only_the_canonical_complete_family_and_exact_holds() {
             assignments: selected.assignments(),
             source_holds: selected.source_holds(),
         },
-        limits(),
-        &work()
+        limits()
     )
     .unwrap());
     assert!(!verify_phlo_funding_family(
@@ -982,8 +968,7 @@ fn recomputation_accepts_only_the_canonical_complete_family_and_exact_holds() {
             assignments: selected.assignments(),
             source_holds: &[2, 1],
         },
-        limits(),
-        &work()
+        limits()
     )
     .unwrap());
     let alternative = [vec![vec![0, 0], vec![1, 1]]];
@@ -1000,14 +985,13 @@ fn recomputation_accepts_only_the_canonical_complete_family_and_exact_holds() {
             assignments: &alternative,
             source_holds: checked.source_holds(),
         },
-        limits(),
-        &work()
+        limits()
     )
     .unwrap());
 }
 
 #[test]
-fn exhausted_host_work_and_key_storage_return_errors_not_infeasibility() {
+fn exhausted_key_storage_returns_an_error_not_infeasibility() {
     let authority = Sig::Ground(vec![1]);
     let fresh = [resource(&authority, b"slot")];
     let bill = obligations(&[], &fresh, &fresh, PhloOutcome::Accepted(&[]), 100);
@@ -1017,18 +1001,12 @@ fn exhausted_host_work_and_key_storage_return_errors_not_infeasibility() {
         obligations: &bill,
         eligible: &edges,
     }];
-    let zero_work = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(0)));
-    assert!(
-        select_phlo_funding_family(input(&sources, &requirements, 2), limits(), &zero_work)
-            .is_err()
-    );
     assert!(select_phlo_funding_family(
         input(&sources, &requirements, 2),
         PhloFamilyFundingLimits {
             aggregate_key_bytes: 0,
             ..limits()
-        },
-        &work()
+        }
     )
     .is_err());
 }
@@ -1070,7 +1048,7 @@ proptest! {
             canonical_fee_cursor: fee_seed % sources.len(),
             ..input(&sources, &requirements, exposure)
         };
-        let original = select_phlo_funding_family(original_input, limits(), &work()).unwrap();
+        let original = select_phlo_funding_family(original_input, limits()).unwrap();
         let mut order: Vec<_> = (0..sources.len()).collect();
         order.sort_by_key(|i| (source_order[*i], *i));
         let permuted_sources: Vec<_> = order.iter().map(|i| sources[*i]).collect();
@@ -1080,7 +1058,7 @@ proptest! {
         if reverse_outcomes { permuted_requirements.reverse(); }
         let permuted = select_phlo_funding_family(PhloFamilyFundingInput {
             sources: &permuted_sources, outcomes: &permuted_requirements, ..original_input
-        }, limits(), &work()).unwrap();
+        }, limits()).unwrap();
         prop_assert_eq!(original.is_some(), permuted.is_some());
         if let (Some(original), Some(permuted)) = (original, permuted) {
             prop_assert_eq!(original.total_held(), permuted.total_held());

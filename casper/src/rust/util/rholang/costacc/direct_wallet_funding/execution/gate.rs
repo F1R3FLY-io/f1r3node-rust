@@ -10,13 +10,11 @@
 //! may pay them (P2 `prop:local-suff`, P2:1520-1527).
 
 use std::collections::{BTreeMap, BTreeSet};
+
 // Moved by dedup (task 11415) with the cursors to `rooted_cursors` in
 // `family_selection.rs`.
 // use std::num::NonZeroUsize;
-use std::mem::size_of;
-
 use models::rust::deploy_envelope::{DeployEnvelope, DeployEnvelopeRef};
-use models::rust::host_work::{HostWorkDimension, HostWorkLimits, HostWorkUnits};
 use models::rust::normalizer_env::normalizer_env_from_envelope;
 use models::rust::phlo_controls::PhloControlsV1;
 use models::rust::phlo_source::PhloSourcePolicyV1;
@@ -45,7 +43,6 @@ use rholang::rust::interpreter::accounting::phlo_execution::{
 };
 use rholang::rust::interpreter::accounting::{funding_sig, Sig};
 use rholang::rust::interpreter::errors::InterpreterError;
-use rholang::rust::interpreter::host_work::HostWorkBudget;
 use rholang::rust::interpreter::reduce::ReducerCore;
 
 // Moved by dedup (task 11415) with the lane conversion to
@@ -60,7 +57,7 @@ use super::family_selection::{
 };
 // Changed by dedup (task 11415, D2): the shared lane conversion.
 // use super::producer::NativeOfferedFamilyLimits;
-use super::producer::{lane_location_metered, LaneLocationError, NativeOfferedFamilyLimits};
+use super::producer::{lane_location, LaneLocationError, NativeOfferedFamilyLimits};
 use crate::rust::util::rholang::acceptance::PreparedOfferedCandidate;
 use crate::rust::util::rholang::costacc::direct_wallet_funding::DirectWalletPolicySnapshot;
 use crate::rust::util::rholang::tools::Tools;
@@ -146,10 +143,6 @@ pub enum OfferedGateRejection {
     /// The holds do not fit (design §6.3 item 2).
     #[error("insufficient phlogiston: {0}")]
     InsufficientPhlogiston(InsufficientCause),
-    /// The host-work budget of the check ran out in the parser, the
-    /// resolver, the analysis or the selection (design §6.3 item 3).
-    #[error("the host-work budget of the check ran out")]
-    HostWork,
     /// The witness of the estimate, its obligations or its keys exceed the
     /// settlement limits, which settlement checks again (arbitration M3).
     #[error("the estimate exceeds the settlement limits: {0}")]
@@ -175,9 +168,6 @@ pub struct OfferedGateInput<'a> {
     pub evaluator: &'a ReducerCore,
     /// `offered_funded_v6_production_limits().family` (arbitration LOW 8).
     pub limits: NativeOfferedFamilyLimits,
-    /// `offered_funded_v6_host_work_limits()`. Each call builds its own budget
-    /// from them, so the outcome does not depend on earlier work (DR-102).
-    pub host_limits: HostWorkLimits,
 }
 
 /// The check of one offered deploy (design §6 and the chunks of §9 from
@@ -207,7 +197,6 @@ fn check_with_estimate(
     input: OfferedGateInput<'_>,
     hook: impl FnOnce(CostEstimate) -> CostEstimate,
 ) -> Result<OfferedGate, OfferedGateRejection> {
-    let host = HostWorkBudget::new(input.host_limits);
     let DeployEnvelopeRef::OfferedFunded(signed) = input.envelope.view() else {
         return Err(OfferedGateRejection::Invalid(
             "the check needs an offered envelope".to_string(),
@@ -219,28 +208,23 @@ fn check_with_estimate(
         &funding_signature,
         input.schedule,
         input.evaluator,
-        &host,
     )?);
-    let funding = GateFunding::from_snapshot(input.snapshot, &host)?;
+    let funding = GateFunding::from_snapshot(input.snapshot)?;
     // Added by G1-6 (DR-124): the check holds only the client's demand
     // (P1:2191-2200). The demand of every other lane leaves the estimate, and
     // the estimate is then incomplete.
     // Changed by the G1-6 fix (DR-124 correction): the client lanes are the
     // lanes that the sources may pay, so they include every lane that a
-    // source permits, and the permission digests charge the check's budget.
+    // source permits.
     // let client = client_lane_set(
     //     funding_signature.lane_hash(),
     //     source_lanes(input.snapshot)?,
     //     &host,
     // )?;
-    let client = client_lane_set(
-        funding_signature.lane_hash(),
-        source_lanes(input.snapshot, &host)?,
-        &host,
-    )?;
+    let client = client_lane_set(funding_signature.lane_hash(), source_lanes(input.snapshot)?);
     let estimate = estimate
-        .retain_client_lanes(&client, input.schedule.descriptor(), &host)
-        .map_err(|error| analysis_rejection(error, &host))?;
+        .retain_client_lanes(&client, input.schedule.descriptor())
+        .map_err(analysis_rejection)?;
     let onchain = !input
         .snapshot
         .wallets()
@@ -260,30 +244,7 @@ fn check_with_estimate(
         },
         &funding,
         input.limits,
-        &host,
     )
-}
-
-fn reserve(
-    host: &HostWorkBudget,
-    dimension: HostWorkDimension,
-    amount: usize,
-) -> Result<(), OfferedGateRejection> {
-    let units = u64::try_from(amount).map_err(|_| OfferedGateRejection::HostWork)?;
-    host.reserve(dimension, HostWorkUnits::new(units))
-        .map(|_| ())
-        .map_err(|_| OfferedGateRejection::HostWork)
-}
-
-/// A failure that the host-work budget caused is a host-work rejection.
-fn host_work_or(
-    host: &HostWorkBudget,
-    otherwise: impl FnOnce() -> OfferedGateRejection,
-) -> OfferedGateRejection {
-    match host.rejection() {
-        Some(_) => OfferedGateRejection::HostWork,
-        None => otherwise(),
-    }
 }
 
 /// ⟨read the inputs⟩, ⟨resolve the names of the deploy⟩ and ⟨run the linear
@@ -317,7 +278,6 @@ fn run_estimate(
     funding: &Sig,
     schedule: &PhloScheduleBinding<'_>,
     evaluator: &ReducerCore,
-    host: &HostWorkBudget,
 ) -> Result<CostEstimate, OfferedGateRejection> {
     estimate_term(
         &envelope.body().term,
@@ -326,7 +286,6 @@ fn run_estimate(
         funding,
         schedule,
         evaluator,
-        host,
     )
 }
 
@@ -336,21 +295,15 @@ fn run_estimate(
 /// `Sig::lane_hash` digests that supply channel, so the payer's `lane_key`
 /// names the location. Changed by the G1-6 fix: the result also holds the
 /// lane of each resource permission of each source (`permitted_lanes`).
-// Changed by the G1-6 fix (DR-124 correction): the function takes the
-// check's budget for the permission digests.
-// pub(super) fn source_lanes(
-//     snapshot: &DirectWalletPolicySnapshot<'_, OfferedFundedDeploy>,
-// ) -> Result<Vec<[u8; 32]>, OfferedGateRejection> {
 pub(super) fn source_lanes(
     snapshot: &DirectWalletPolicySnapshot<'_, OfferedFundedDeploy>,
-    host: &HostWorkBudget,
 ) -> Result<Vec<[u8; 32]>, OfferedGateRejection> {
     let authorization = snapshot.wallets().authorization();
     let sources = &authorization.record().sources;
     // Changed by the G1-6 fix (DR-124 correction): the room also covers the
     // permitted lanes.
     // let mut lanes = Vec::with_capacity(sources.len());
-    let permitted = permitted_lanes(sources, host)?;
+    let permitted = permitted_lanes(sources)?;
     let mut lanes = Vec::with_capacity(sources.len().saturating_add(permitted.len()));
     for source in sources {
         let custody: [u8; 32] = source.custody().try_into().map_err(|_| {
@@ -370,34 +323,22 @@ pub(super) fn source_lanes(
 /// lane a client lane. The client's own purse may pay that lane, so the
 /// lane's demand is the client's sponsored demand: P2 checks one local
 /// linear proof per purse (`prop:local-suff`, P2:1520-1527). The lane key of
-/// a permission is the digest of its location (`location_lane_key`). The
-/// function charges the room of the result and each digest before it
-/// computes them.
+/// a permission is the digest of its location (`location_lane_key`).
 pub(super) fn permitted_lanes(
     signed: &[PhloSourcePolicyV1<'_>],
-    host: &HostWorkBudget,
 ) -> Result<Vec<[u8; 32]>, OfferedGateRejection> {
     let count = signed
         .iter()
         .try_fold(0usize, |total, source| {
             total.checked_add(source.resources().len())
         })
-        .ok_or(OfferedGateRejection::HostWork)?;
-    reserve(
-        host,
-        HostWorkDimension::SearchStateBytes,
-        count
-            .checked_mul(size_of::<[u8; 32]>())
-            .ok_or(OfferedGateRejection::HostWork)?,
-    )?;
+        .ok_or_else(|| {
+            OfferedGateRejection::Invalid("the count of permitted lanes overflows".to_string())
+        })?;
     let mut lanes = Vec::with_capacity(count);
     for source in signed {
         for permission in source.resources() {
-            lanes.push(
-                location_lane_key(permission.location, host).map_err(|error| {
-                    host_work_or(host, || OfferedGateRejection::Invalid(error.to_string()))
-                })?,
-            );
+            lanes.push(location_lane_key(permission.location));
         }
     }
     Ok(lanes)
@@ -415,24 +356,11 @@ pub(super) fn permitted_lanes(
 pub(super) fn client_lane_set(
     deploy_lane: [u8; 32],
     source_lanes: Vec<[u8; 32]>,
-    host: &HostWorkBudget,
-) -> Result<BTreeSet<[u8; 32]>, OfferedGateRejection> {
-    let count = source_lanes
-        .len()
-        .checked_add(1)
-        .ok_or(OfferedGateRejection::HostWork)?;
-    reserve(host, HostWorkDimension::VerificationOperations, count)?;
-    reserve(
-        host,
-        HostWorkDimension::SearchStateBytes,
-        count
-            .checked_mul(size_of::<[u8; 32]>())
-            .ok_or(OfferedGateRejection::HostWork)?,
-    )?;
+) -> BTreeSet<[u8; 32]> {
     let mut lanes = BTreeSet::new();
     lanes.insert(deploy_lane);
     lanes.extend(source_lanes);
-    Ok(lanes)
+    lanes
 }
 
 /// The estimate of one term (`estimate_offered_term`, DR-122).
@@ -443,7 +371,6 @@ pub(super) fn estimate_term(
     funding: &Sig,
     schedule: &PhloScheduleBinding<'_>,
     evaluator: &ReducerCore,
-    host: &HostWorkBudget,
 ) -> Result<CostEstimate, OfferedGateRejection> {
     estimate_offered_term(
         term,
@@ -452,9 +379,8 @@ pub(super) fn estimate_term(
         funding,
         schedule.descriptor(),
         evaluator,
-        host,
     )
-    .map_err(|error| analysis_rejection(error, host))
+    .map_err(analysis_rejection)
 }
 
 /// The estimate of a resolved term (`linear_cost_estimate`, DR-122), with the
@@ -465,28 +391,20 @@ pub(super) fn estimate_resolved(
     funding: &Sig,
     schedule: &PhloScheduleBinding<'_>,
     evaluator: &ReducerCore,
-    host: &HostWorkBudget,
 ) -> Result<CostEstimate, OfferedGateRejection> {
     rholang::rust::interpreter::accounting::delta_sigma::estimate::linear_cost_estimate(
         resolved,
         funding,
         schedule.descriptor(),
         evaluator,
-        host,
     )
-    .map_err(|error| analysis_rejection(error, host))
+    .map_err(analysis_rejection)
 }
 
-/// A host-work error of the parser, the resolver or the analysis is a
-/// host-work rejection (design §6.3 item 3). Any other error means that the
-/// term does not parse or normalize, or that an input is malformed (DR-122).
-fn analysis_rejection(error: InterpreterError, host: &HostWorkBudget) -> OfferedGateRejection {
-    match error {
-        InterpreterError::HostWorkRejected => OfferedGateRejection::HostWork,
-        other => host_work_or(host, || {
-            OfferedGateRejection::Invalid(format!("the analysis rejects the term: {other}"))
-        }),
-    }
+/// An error of the parser, the resolver or the analysis means that the term
+/// does not parse or normalize, or that an input is malformed (DR-122).
+fn analysis_rejection(error: InterpreterError) -> OfferedGateRejection {
+    OfferedGateRejection::Invalid(format!("the analysis rejects the term: {error}"))
 }
 
 /// The funding side of the check, read from the wallet snapshot at R0.
@@ -509,7 +427,6 @@ pub(super) struct GateFunding<'f> {
 impl<'f> GateFunding<'f> {
     pub(super) fn from_snapshot(
         snapshot: &'f DirectWalletPolicySnapshot<'f, OfferedFundedDeploy>,
-        host: &HostWorkBudget,
     ) -> Result<Self, OfferedGateRejection> {
         let wallets = snapshot.wallets();
         let record = wallets.authorization().record();
@@ -519,18 +436,6 @@ impl<'f> GateFunding<'f> {
                 "the wallet snapshot differs from the signed sources".to_string(),
             ));
         }
-        reserve(
-            host,
-            HostWorkDimension::SearchStateBytes,
-            count
-                .checked_mul(size_of::<PhloFundingSource<'_>>() + 2 * size_of::<usize>() + 1)
-                .ok_or(OfferedGateRejection::HostWork)?,
-        )?;
-        reserve(
-            host,
-            HostWorkDimension::VerificationOperations,
-            count.checked_mul(3).ok_or(OfferedGateRejection::HostWork)?,
-        )?;
         let onchain_payers = wallets.authorization().onchain_payers();
         let mut sources = Vec::with_capacity(count);
         let mut onchain = Vec::with_capacity(count);
@@ -630,7 +535,6 @@ pub(super) fn decide(
     terms: &GateTerms<'_>,
     funding: &GateFunding<'_>,
     limits: NativeOfferedFamilyLimits,
-    host: &HostWorkBudget,
 ) -> Result<OfferedGate, OfferedGateRejection> {
     let kind = classify(&estimate.completeness, onchain);
     let estimate_phlo = estimate.bound_phlo;
@@ -650,14 +554,9 @@ pub(super) fn decide(
             u128::from(terms.limit - estimate_phlo) * u128::from(terms.price)
         }
     };
-    let placed = with_estimated_obligations(
-        estimate,
-        terms,
-        resource_bound,
-        limits,
-        host,
-        |obligations| {
-            let eligible = eligibility(obligations, funding, limits, host)?;
+    let placed =
+        with_estimated_obligations(estimate, terms, resource_bound, limits, |obligations| {
+            let eligible = eligibility(obligations, funding, limits)?;
             place_holds(
                 obligations,
                 &funding.sources,
@@ -668,10 +567,8 @@ pub(super) fn decide(
                 remainder,
                 &funding.fill_order,
                 limits.policy,
-                host,
             )
-        },
-    )?;
+        })?;
     let mut holds = Vec::with_capacity(funding.fill_order.len());
     for position in &funding.fill_order {
         let custody: [u8; 32] = funding.sources[*position].custody.try_into().map_err(|_| {
@@ -702,10 +599,9 @@ pub(super) fn with_estimated_obligations<R>(
     terms: &GateTerms<'_>,
     resource_bound: u64,
     limits: NativeOfferedFamilyLimits,
-    host: &HostWorkBudget,
     then: impl FnOnce(&CheckedPhloObligations<'_>) -> Result<R, OfferedGateRejection>,
 ) -> Result<R, OfferedGateRejection> {
-    let resources = EstimatedResources::new(estimate, host)?;
+    let resources = EstimatedResources::new(estimate)?;
     let amounts = resources.amounts(terms.selected_terms);
     let binding = PhloControlsBinding::new(terms.controls, limits.signed.intent.controls())
         .map_err(|error| OfferedGateRejection::Invalid(error.to_string()))?;
@@ -797,20 +693,12 @@ struct EstimatedResources {
 }
 
 impl EstimatedResources {
-    /// Changed by dedup (task 11415, D2): the conversion is
-    /// `lane_location_metered` (`producer.rs`), which `born_resource` also
-    /// calls. Its sorter stops at 256 nesting levels, so a deeper lane
-    /// signature fails here instead of recursing. The check then rejects the
-    /// offer with no charge.
-    fn new(estimate: &CostEstimate, host: &HostWorkBudget) -> Result<Self, OfferedGateRejection> {
+    /// Changed by dedup (task 11415, D2): the conversion is `lane_location`
+    /// (`producer.rs`), which `born_resource` also calls. Its sort runs on a
+    /// heap work stack (DR-131 P1), so a deep lane signature converts without
+    /// recursion.
+    fn new(estimate: &CostEstimate) -> Result<Self, OfferedGateRejection> {
         let count = estimate.quantities.len();
-        reserve(
-            host,
-            HostWorkDimension::SearchStateBytes,
-            count
-                .checked_mul(size_of::<([u8; 32], usize, u64)>())
-                .ok_or(OfferedGateRejection::HostWork)?,
-        )?;
         // Moved by dedup (task 11415) to `lane_location_metered` in
         // `casper/src/rust/util/rholang/costacc/direct_wallet_funding/execution/producer.rs`.
         // let backing = |operations: usize, scanned: usize, allocation: usize| {
@@ -823,9 +711,7 @@ impl EstimatedResources {
         //         .map_err(|_| BackingError::Rejected)
         // };
         let conversion = |error: String| {
-            host_work_or(host, || {
-                OfferedGateRejection::Invalid(format!("a lane signature does not convert: {error}"))
-            })
+            OfferedGateRejection::Invalid(format!("a lane signature does not convert: {error}"))
         };
         let mut lanes = BTreeMap::new();
         let mut entries = Vec::with_capacity(count);
@@ -866,17 +752,13 @@ impl EstimatedResources {
                 //     .encode(&mut location)
                 //     .map_err(|error| conversion(error.to_string()))?;
                 let (authority, location) =
-                    lane_location_metered(signature, host).map_err(|error| match error {
+                    lane_location(signature).map_err(|error| match error {
                         LaneLocationError::Authority(error) | LaneLocationError::Channel(error) => {
                             conversion(error.to_string())
                         }
                         LaneLocationError::NotFundingFormer => OfferedGateRejection::Invalid(
                             "a lane signature is not a funding former".to_string(),
                         ),
-                        LaneLocationError::Inspection(error) => conversion(format!("{error:?}")),
-                        LaneLocationError::WorkOverflow
-                        | LaneLocationError::Width
-                        | LaneLocationError::Rejected(_) => OfferedGateRejection::HostWork,
                         LaneLocationError::Allocation => OfferedGateRejection::Invalid(
                             "the location of a lane does not fit in memory".to_string(),
                         ),
@@ -917,16 +799,8 @@ fn eligibility(
     obligations: &CheckedPhloObligations<'_>,
     funding: &GateFunding<'_>,
     limits: NativeOfferedFamilyLimits,
-    host: &HostWorkBudget,
 ) -> Result<Vec<Vec<bool>>, OfferedGateRejection> {
     let columns = obligations.keys().len();
-    let cells = funding
-        .sources
-        .len()
-        .checked_mul(columns)
-        .ok_or(OfferedGateRejection::HostWork)?;
-    reserve(host, HostWorkDimension::SearchStateBytes, cells)?;
-    reserve(host, HostWorkDimension::VerificationOperations, cells)?;
     let mut eligible = Vec::with_capacity(funding.sources.len());
     for (signed, onchain) in funding.signed.iter().zip(&funding.onchain) {
         let authority = match onchain {
@@ -938,14 +812,13 @@ fn eligibility(
         // `casper/src/rust/util/rholang/costacc/direct_wallet_funding/execution/family_selection.rs`.
         // for key in obligations.keys() {
         //     row.push(
-        //         source_permits(key, signed, authority, limits, host).map_err(|error| {
+        //         source_permits(key, signed, authority, limits).map_err(|error| {
         //             host_work_or(host, || OfferedGateRejection::Invalid(error.to_string()))
         //         })?,
         //     );
         // }
-        eligibility_row(&mut row, obligations, signed, authority, limits, host).map_err(
-            |error| host_work_or(host, || OfferedGateRejection::Invalid(error.to_string())),
-        )?;
+        eligibility_row(&mut row, obligations, signed, authority, limits)
+            .map_err(|error| OfferedGateRejection::Invalid(error.to_string()))?;
         eligible.push(row);
     }
     Ok(eligible)
@@ -981,7 +854,6 @@ pub(super) fn place_holds(
     remainder: u128,
     fill_order: &[usize],
     limits: PhloFamilyFundingLimits,
-    host: &HostWorkBudget,
 ) -> Result<PlacedHolds, OfferedGateRejection> {
     let count = sources.len();
     if onchain.len() != count {
@@ -1012,20 +884,11 @@ pub(super) fn place_holds(
             canonical_fee_cursor: cursors.1,
         },
         limits,
-        host,
     )
-    .map_err(|error| host_work_or(host, || OfferedGateRejection::Invalid(error.to_string())))?
+    .map_err(|error| OfferedGateRejection::Invalid(error.to_string()))?
     .ok_or(OfferedGateRejection::InsufficientPhlogiston(
         InsufficientCause::NoPlacement,
     ))?;
-    reserve(
-        host,
-        HostWorkDimension::SearchStateBytes,
-        count
-            .checked_mul(size_of::<u128>() + size_of::<u64>())
-            .ok_or(OfferedGateRejection::HostWork)?,
-    )?;
-    reserve(host, HostWorkDimension::VerificationOperations, count)?;
     let known = selected.source_holds().to_vec();
     #[cfg(test)]
     let assignment =

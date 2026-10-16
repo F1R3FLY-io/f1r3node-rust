@@ -1,4 +1,7 @@
 -------------------- MODULE NativeCacheBacking --------------------
+\* DR-131: host work is removed. PaidCopies, the SkipCredit constant and the
+\* credit variables model the deleted copy charges. PaidCopies is no longer
+\* checked, and its refutation configuration is deleted.
 EXTENDS Naturals
 
 CONSTANTS

@@ -1,14 +1,9 @@
 use std::collections::BTreeSet;
 use std::num::NonZeroUsize;
 
-use models::rust::host_work::{HostWorkLimit, HostWorkLimits};
 use proptest::prelude::*;
 
 use super::*;
-
-fn work() -> HostWorkBudget {
-    HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(1_000_000_000)))
-}
 
 fn limits(problem: FundingMinimaxProblem<'_>) -> FundingSearchLimits {
     FundingSearchLimits {
@@ -101,7 +96,6 @@ fn assert_oracle(problem: FundingMinimaxProblem<'_>, fee_eligible: &[bool]) {
                 resource_cursor,
                 fee_cursor,
                 limits(problem),
-                &work(),
             )
             .unwrap();
             let expected = complete.iter().min_by(|a, b| order(a, b, resource_cursor));
@@ -235,10 +229,10 @@ fn independently_optimal_case_ties_do_not_define_a_joint_family_policy() {
         obligations: &[1, 2],
         eligible: &second_edges,
     };
-    let selected_first = select_funding_with_unit_fee(first, &fee, 0, 0, limits(first), &work())
+    let selected_first = select_funding_with_unit_fee(first, &fee, 0, 0, limits(first))
         .unwrap()
         .unwrap();
-    let selected_second = select_funding_with_unit_fee(second, &fee, 0, 0, limits(second), &work())
+    let selected_second = select_funding_with_unit_fee(second, &fee, 0, 0, limits(second))
         .unwrap()
         .unwrap();
     assert_eq!(selected_first.resource_totals().source_debits(), &[
@@ -332,7 +326,6 @@ fn arbitrary_cohorts_full_width_and_zero_resource_cursors() {
             count - 1,
             count - 1,
             limits(problem),
-            &work(),
         )
         .unwrap()
         .unwrap();
@@ -347,10 +340,9 @@ fn arbitrary_cohorts_full_width_and_zero_resource_cursors() {
         obligations: &[u64::MAX],
         eligible: &edges,
     };
-    let result =
-        select_funding_with_unit_fee(problem, &[true, false], 0, 0, limits(problem), &work())
-            .unwrap()
-            .unwrap();
+    let result = select_funding_with_unit_fee(problem, &[true, false], 0, 0, limits(problem))
+        .unwrap()
+        .unwrap();
     assert_eq!(result.resource_totals().source_debits(), &[u64::MAX - 1, 1]);
     assert_eq!(result.fee().debits, [1, 0]);
     assert!(!result.resource_unrestricted());
@@ -369,10 +361,9 @@ fn positive_resource_funding_has_no_two_wallet_or_machine_word_boundary() {
         };
         let mut fee = vec![false; count];
         fee[0] = true;
-        let selected =
-            select_funding_with_unit_fee(problem, &fee, 0, count - 1, limits(problem), &work())
-                .unwrap()
-                .unwrap();
+        let selected = select_funding_with_unit_fee(problem, &fee, 0, count - 1, limits(problem))
+            .unwrap()
+            .unwrap();
         assert_eq!(selected.resource_totals().source_debits()[0], 0);
         assert!(selected.resource_totals().source_debits()[1..]
             .iter()
@@ -384,55 +375,24 @@ fn positive_resource_funding_has_no_two_wallet_or_machine_word_boundary() {
 }
 
 #[test]
-fn errors_and_work_exhaustion_never_report_insolvency() {
+fn errors_never_report_insolvency() {
     let edges = [vec![true], vec![true]];
     let problem = FundingMinimaxProblem {
         capacities: &[1, 1],
         obligations: &[1],
         eligible: &edges,
     };
-    let baseline = work();
-    select_funding_with_unit_fee(problem, &[true, false], 0, 0, limits(problem), &baseline)
+    select_funding_with_unit_fee(problem, &[true, false], 0, 0, limits(problem))
         .unwrap()
         .unwrap();
-    for dimension in [
-        HostWorkDimension::SearchCandidates,
-        HostWorkDimension::SearchStateBytes,
-        HostWorkDimension::VerificationOperations,
-    ] {
-        let required = baseline.usage(dimension).get();
-        for limit in [0, required / 2, required - 1, required] {
-            let mut bounds = HostWorkLimits::uniform(HostWorkLimit::new(1_000_000_000));
-            bounds.set(dimension, HostWorkLimit::new(limit));
-            let result = select_funding_with_unit_fee(
-                problem,
-                &[true, false],
-                0,
-                0,
-                limits(problem),
-                &HostWorkBudget::new(bounds),
-            );
-            if limit == required {
-                assert!(result.unwrap().is_some());
-            } else {
-                assert!(matches!(result, Err(FundingSearchError::HostWork(_))));
-            }
-        }
-    }
-    assert!(
-        select_funding_with_unit_fee(problem, &[true], 0, 0, limits(problem), &work()).is_err()
-    );
-    assert!(
-        select_funding_with_unit_fee(problem, &[true; 2], 2, 0, limits(problem), &work()).is_err()
-    );
-    assert!(
-        select_funding_with_unit_fee(problem, &[true; 2], 0, 2, limits(problem), &work()).is_err()
-    );
+    assert!(select_funding_with_unit_fee(problem, &[true], 0, 0, limits(problem)).is_err());
+    assert!(select_funding_with_unit_fee(problem, &[true; 2], 2, 0, limits(problem)).is_err());
+    assert!(select_funding_with_unit_fee(problem, &[true; 2], 0, 2, limits(problem)).is_err());
     let bad = FundingMinimaxProblem {
         eligible: &[vec![], vec![]],
         ..problem
     };
-    assert!(select_funding_with_unit_fee(bad, &[false; 2], 0, 0, limits(bad), &work()).is_err());
+    assert!(select_funding_with_unit_fee(bad, &[false; 2], 0, 0, limits(bad)).is_err());
 }
 
 #[test]
@@ -446,15 +406,8 @@ fn parallel_fee_planners_preserve_private_assignments_and_cursor_scopes() {
     let fee = [true, false, true];
     let expected: Vec<_> = (0..3)
         .map(|cursor| {
-            select_funding_with_unit_fee(
-                problem,
-                &fee,
-                cursor,
-                (cursor + 1) % 3,
-                limits(problem),
-                &work(),
-            )
-            .unwrap()
+            select_funding_with_unit_fee(problem, &fee, cursor, (cursor + 1) % 3, limits(problem))
+                .unwrap()
         })
         .collect();
     std::thread::scope(|scope| {
@@ -467,7 +420,6 @@ fn parallel_fee_planners_preserve_private_assignments_and_cursor_scopes() {
                         cursor,
                         (cursor + 1) % 3,
                         limits(problem),
-                        &work(),
                     )
                     .unwrap()
                 })

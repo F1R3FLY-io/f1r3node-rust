@@ -12,21 +12,13 @@ use std::time::Instant;
 
 use async_trait::async_trait;
 use serde::Serialize;
-use serde::de::DeserializeOwned;
-use shared::rust::clone_backing::CloneBacking;
-use shared::rust::closed_decode::ClosedDecode;
 
 use super::RSpace;
 use super::locks::LOCK_SEQUENCE;
 use crate::rspace::checkpoint::{Checkpoint, SoftCheckpoint};
 use crate::rspace::errors::RSpaceError;
 use crate::rspace::hashing::blake2b256_hash::Blake2b256Hash;
-use crate::rspace::hashing::native_source::{SourceMeter, hash};
 use crate::rspace::history::instances::radix_history::RadixHistory;
-use crate::rspace::history::native_reader::{
-    NativeLeafKind, NativeReadCharge, NativeReadError, NativeReadFault, NativeReadMeter,
-    decode_history_record,
-};
 use crate::rspace::hot_store::HotStoreInstances;
 use crate::rspace::internal::*;
 use crate::rspace::metrics_constants::{
@@ -133,101 +125,6 @@ where
     }
 
     async fn get_data(&self, channel: &C) -> Vec<Datum<A>> { self.get_store().get_data(channel) }
-
-    async fn get_data_metered(
-        &self,
-        channel: &C,
-        meter: &(dyn SourceMeter + Sync),
-    ) -> Result<Vec<Datum<A>>, RSpaceError>
-    where
-        C: CloneBacking + DeserializeOwned,
-        A: CloneBacking + DeserializeOwned + ClosedDecode,
-    {
-        struct ReadMeter<'a>(&'a dyn SourceMeter);
-
-        impl NativeReadMeter for ReadMeter<'_> {
-            type Error = RSpaceError;
-
-            fn reserve(&self, charge: NativeReadCharge) -> Result<(), Self::Error> {
-                self.0
-                    .reserve(charge.operations, charge.scanned_bytes, charge.backing_bytes)
-            }
-        }
-
-        fn read_error(error: NativeReadError<RSpaceError>) -> RSpaceError {
-            match error {
-                NativeReadError::Host(error) | NativeReadError::Consumer(error) => error,
-                NativeReadError::Store(error) => error.into(),
-                NativeReadError::Invalid(
-                    NativeReadFault::Depth |
-                    NativeReadFault::Allocation |
-                    NativeReadFault::Overflow,
-                ) => RSpaceError::HostWorkRejected,
-                NativeReadError::Invalid(error) => {
-                    RSpaceError::InterpreterError(format!("native history: {error:?}"))
-                }
-            }
-        }
-
-        let history = self.get_history_repository();
-        let root: [u8; 32] = history
-            .root()
-            .0
-            .as_slice()
-            .try_into()
-            .map_err(|_| RSpaceError::HostWorkRejected)?;
-        // Changed by D-C4 (D-S5, DR-98): the metered read no longer fills the
-        // store. The cold fill inserted the decoded values with
-        // native_insert_new, whose charges read the whole shard, and grew the
-        // shard that every later lookup charges. A read now copies an entry
-        // only for an installed channel or a channel that the runtime wrote
-        // since its last reset or checkpoint.
-        // self.get_store().get_data_with_reader(
-        self.get_store().get_data_uncached_with_reader(
-            channel,
-            &|| {
-                let projection = hash(channel, &|operations, scanned, backing| {
-                    meter.reserve(operations, scanned, backing)
-                })?;
-                let projection: [u8; 32] = projection
-                    .0
-                    .as_slice()
-                    .try_into()
-                    .map_err(|_| RSpaceError::HostWorkRejected)?;
-                let reader = history.native_history_reader(root);
-                let read_meter = ReadMeter(meter);
-                reader
-                    .with_records(NativeLeafKind::Data, &projection, &read_meter, |rows| {
-                        meter.reserve(
-                            rows.len()
-                                .checked_mul(2)
-                                .and_then(|n| n.checked_add(1))
-                                .ok_or(RSpaceError::HostWorkRejected)?,
-                            0,
-                            rows.len()
-                                .checked_mul(std::mem::size_of::<Datum<A>>())
-                                .ok_or(RSpaceError::HostWorkRejected)?,
-                        )?;
-                        let mut values = Vec::new();
-                        values
-                            .try_reserve_exact(rows.len())
-                            .map_err(|_| RSpaceError::HostWorkRejected)?;
-                        for row in rows.iter() {
-                            // Changed by D-S2 (DR-95): the rows decode in History mode,
-                            // which charges each node once and reserves only real
-                            // allocations.
-                            // values.push(decode_record(row, &read_meter).map_err(read_error)?);
-                            values
-                                .push(decode_history_record(row, &read_meter).map_err(read_error)?);
-                        }
-                        Ok(values)
-                    })
-                    .map_err(read_error)
-                    .map(Option::unwrap_or_default)
-            },
-            meter,
-        )
-    }
 
     async fn get_waiting_continuations(&self, channels: Vec<C>) -> Vec<WaitingContinuation<P, K>> {
         self.get_store().get_continuations(&channels)

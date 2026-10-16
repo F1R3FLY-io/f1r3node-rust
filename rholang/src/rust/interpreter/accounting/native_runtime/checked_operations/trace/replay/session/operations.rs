@@ -23,77 +23,11 @@ fn decision(
         .map_err(error)
 }
 
-/// D-E3 (DR-110): the charge of the produce source preparation. The source
-/// pass hashes the channel and encodes the data with bincode, and its writer
-/// reserves only the bytes that it writes (`native_source::produce`). Each
-/// value is released once after the operation. A block inspection prepays one
-/// traversal, so each value gets two inspections: the source pass and the
-/// release.
-fn charge_produce_source(
-    host: &HostWorkBudget,
-    channel: &Par,
-    data: &ListParWithRandom,
-) -> Result<(), InterpreterError> {
-    use crate::rust::interpreter::accounting::native_runtime::clone_backing;
-    // Changed by D-O1 (DR-110): a per-level inspection charges each inline
-    // byte three times, which paid the source pass and the release.
-    // clone_backing::inspect(channel, &self.host).map_err(error)?;
-    // clone_backing::inspect(data, &self.host).map_err(error)
-    clone_backing::inspect_blocks(channel, host)?;
-    clone_backing::inspect_blocks(data, host)?;
-    // Added by D-E3 (DR-110): the release of each value.
-    clone_backing::inspect_blocks(channel, host)?;
-    clone_backing::inspect_blocks(data, host)
-}
-
-/// D-E3 (DR-110): the charge of the consume source preparation. The source
-/// pass hashes each channel and encodes each pattern and the continuation
-/// with bincode, and its writer reserves only the bytes that it writes
-/// (`native_source::consume_keys`). Each value is released once after the
-/// operation, so each value gets two block inspections, as in the produce.
-fn charge_consume_source(
-    host: &HostWorkBudget,
-    channels: &[Par],
-    patterns: &[BindPattern],
-    continuation: &TaggedContinuation,
-) -> Result<(), InterpreterError> {
-    use crate::rust::interpreter::accounting::native_runtime::clone_backing;
-    // Changed by D-O1 (DR-110): a per-level inspection charges each inline
-    // byte three times, which paid the source pass and the release.
-    // clone_backing::inspect_slice(channels, &self.host).map_err(error)?;
-    // clone_backing::inspect_slice(patterns, &self.host).map_err(error)?;
-    // clone_backing::inspect(continuation, &self.host).map_err(error)
-    clone_backing::inspect_blocks_slice(channels, host)?;
-    clone_backing::inspect_blocks_slice(patterns, host)?;
-    clone_backing::inspect_blocks(continuation, host)?;
-    // Added by D-E3 (DR-110): the release of each value.
-    clone_backing::inspect_blocks_slice(channels, host)?;
-    clone_backing::inspect_blocks_slice(patterns, host)?;
-    clone_backing::inspect_blocks(continuation, host)
-}
-
 #[async_trait::async_trait]
 impl NativeOperationEpoch<Par, BindPattern, ListParWithRandom, TaggedContinuation>
     for SessionEpoch
 {
     type Ticket = NativeReplayReservation;
-
-    fn prepare_produce_source(
-        &self,
-        channel: &Par,
-        data: &ListParWithRandom,
-    ) -> Result<(), RSpaceError> {
-        charge_produce_source(&self.host, channel, data).map_err(error)
-    }
-
-    fn prepare_consume_source(
-        &self,
-        channels: &[Par],
-        patterns: &[BindPattern],
-        continuation: &TaggedContinuation,
-    ) -> Result<(), RSpaceError> {
-        charge_consume_source(&self.host, channels, patterns, continuation).map_err(error)
-    }
 
     async fn wait_ready(&self, source: RSpaceOperationSource<'_>) -> Result<(), RSpaceError> {
         self.replay.wait_ready(source).await.map_err(error)
@@ -177,7 +111,7 @@ impl NativeOperationTicket<Par, BindPattern, ListParWithRandom, TaggedContinuati
         persistent: bool,
         data: &[ConsumeCandidate<Par, ListParWithRandom>],
     ) -> Result<NativeReplayDecision, RSpaceError> {
-        let mut participants = allocate(data.len(), &self.replay.inner.host).map_err(error)?;
+        let mut participants = Vec::with_capacity(data.len());
         participants.extend(
             data.iter()
                 .map(|candidate| (&candidate.datum.a, candidate.datum.persist)),
@@ -187,13 +121,10 @@ impl NativeOperationTicket<Par, BindPattern, ListParWithRandom, TaggedContinuati
 
     fn returned_produce(&self, source: &Produce) -> Result<Produce, RSpaceError> {
         let trace = &self.replay.inner.trace;
-        let host = &self.replay.inner.host;
-        let meter =
-            |operations, scanned, backing| reserve_source(host, operations, scanned, backing);
         if !self
             .operation()
             .source
-            .metered_matches(RSpaceOperationSource::Produce(source), &meter)?
+            .matches(RSpaceOperationSource::Produce(source))
         {
             return Err(error(NativeReplayError::Source));
         }
@@ -202,16 +133,6 @@ impl NativeOperationTicket<Par, BindPattern, ListParWithRandom, TaggedContinuati
             .ok_or_else(|| error(NativeReplayError::CommSource))?;
         let mut recorded = None;
         for candidate in &comm.produces {
-            let scanned = candidate
-                .hash
-                .0
-                .len()
-                .checked_add(source.hash.0.len())
-                .and_then(|bytes| bytes.checked_add(candidate.channel_hash.0.len()))
-                .and_then(|bytes| bytes.checked_add(source.channel_hash.0.len()))
-                .and_then(|bytes| bytes.checked_add(2))
-                .ok_or(RSpaceError::HostWorkRejected)?;
-            meter(1, scanned, 0)?;
             if candidate.hash == source.hash
                 && candidate.channel_hash == source.channel_hash
                 && candidate.persistent == source.persistent
@@ -221,13 +142,12 @@ impl NativeOperationTicket<Par, BindPattern, ListParWithRandom, TaggedContinuati
             }
         }
         if recorded.is_none() {
-            meter(1, 0, 0)?;
             if let Some(IOEvent::Produce(introduction)) = trace.introduction(self.slot) {
                 recorded = Some(introduction);
             }
         }
         let recorded = recorded.ok_or_else(|| error(NativeReplayError::Source))?;
-        rspace_plus_plus::rspace::hashing::native_source::clone_produce(recorded, &meter)
+        Ok(recorded.clone())
     }
 
     fn prepare(self, outcome: NativeReplayOutcome) -> Result<Self::Publication, RSpaceError> {

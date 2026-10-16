@@ -4,7 +4,6 @@ use crypto::rust::hash::blake2b512_random::Blake2b512Random;
 use models::rhoapi::Par;
 use models::rust::block::state_hash::StateHash;
 use models::rust::casper::protocol::casper_message::Event;
-use models::rust::host_work::{HostWorkDimension, HostWorkUnits};
 use models::rust::native_wallet_receipt::{
     NativeWalletReceiptLimits, NativeWalletReceiptRow, NativeWalletReceiptV1,
 };
@@ -20,7 +19,6 @@ use rholang::rust::interpreter::accounting::phlo_controls::PhloScheduleBinding;
 use rholang::rust::interpreter::accounting::phlo_execution::{
     check_counted_phlo_execution, PhloFailure, PhloOutcome, PhloResourceAmount,
 };
-use rholang::rust::interpreter::host_work::HostWorkBudget;
 use rholang::rust::interpreter::rho_runtime::RhoRuntime;
 use rholang::rust::interpreter::util::vault_address::VaultAddress;
 use rspace_plus_plus::rspace::history::Either;
@@ -117,10 +115,6 @@ pub(super) fn invalid(error: impl std::fmt::Display) -> CasperError {
 /// settlement and the held-capacity guard map each case to their own message.
 #[derive(Debug)]
 pub(super) enum CustodyDebitError {
-    /// The size of the debit map overflows.
-    Size,
-    /// The host-work budget rejects the debit map.
-    Rejected(models::rust::host_work::HostWorkReservationError),
     /// A custody key is not 32 bytes.
     Width,
     /// An acquisition is negative.
@@ -134,25 +128,14 @@ pub(super) enum CustodyDebitError {
 }
 
 /// Added by dedup (task 11415, D4): the debit of each custody in a settlement
-/// capture, the acquisition plus the fee. The map is charged to the host-work
-/// budget before it is built. Grant settlement (below) and the held-capacity
-/// guard (`held_capacity.rs`) share it, so both read the same debits.
+/// capture, the acquisition plus the fee. Grant settlement (below) and the
+/// held-capacity guard (`held_capacity.rs`) share it, so both read the same
+/// debits.
 pub(super) fn custody_debits(
     amounts: &[rholang::rust::interpreter::accounting::phlo_execution::NativePhloSourceAmounts<
         '_,
     >],
-    budget: &HostWorkBudget,
 ) -> Result<BTreeMap<[u8; 32], u128>, CustodyDebitError> {
-    let size = amounts
-        .len()
-        .checked_mul(std::mem::size_of::<([u8; 32], u128)>())
-        .ok_or(CustodyDebitError::Size)?;
-    budget
-        .reserve(
-            HostWorkDimension::SearchStateBytes,
-            HostWorkUnits::new(u64::try_from(size).map_err(|_| CustodyDebitError::Size)?),
-        )
-        .map_err(CustodyDebitError::Rejected)?;
     let mut debits = BTreeMap::new();
     for amount in amounts {
         let custody: [u8; 32] = amount
@@ -196,7 +179,6 @@ impl<'a> NativeFundedAttempt<'_, 'a> {
         receipt_limits: NativeWalletReceiptLimits,
         grants: Option<NativeGrantSettlementInput<'_>>,
         issuances: Option<NativeGrantIssuanceInput<'_>>,
-        budget: &HostWorkBudget,
     ) -> Result<NativeFundedSettlement, CasperError> {
         let permit = self.draft_permit.as_ref().ok_or_else(|| {
             invalid("native wallet settlement requires an authorized private draft permit")
@@ -217,7 +199,6 @@ impl<'a> NativeFundedAttempt<'_, 'a> {
                 receipt_limits,
                 grants,
                 issuances,
-                budget,
             )
             .await
     }
@@ -235,7 +216,6 @@ impl RuntimeOps {
         receipt_limits: NativeWalletReceiptLimits,
         grants: Option<NativeGrantSettlementInput<'_>>,
         issuances: Option<NativeGrantIssuanceInput<'_>>,
-        budget: &HostWorkBudget,
     ) -> Result<NativeFundedSettlement, CasperError> {
         self.settle_checked_wallet_inner(
             manager,
@@ -247,7 +227,6 @@ impl RuntimeOps {
             receipt_limits,
             grants,
             issuances,
-            budget,
         )
         .await
     }
@@ -263,7 +242,6 @@ impl RuntimeOps {
         receipt_limits: NativeWalletReceiptLimits,
         grants: Option<NativeGrantSettlementInput<'_>>,
         issuances: Option<NativeGrantIssuanceInput<'_>>,
-        budget: &HostWorkBudget,
     ) -> Result<NativeFundedSettlement, CasperError> {
         if self.runtime.get_root().await.bytes() != permit.settlement_runtime_root() {
             return Err(invalid(
@@ -282,7 +260,6 @@ impl RuntimeOps {
                 receipt_limits,
                 grants,
                 issuances,
-                budget,
             )
             .await?;
         let verified: Result<(), CasperError> = async {
@@ -315,7 +292,6 @@ impl RuntimeOps {
         receipt_limits: NativeWalletReceiptLimits,
         grants: Option<NativeGrantSettlementInput<'_>>,
         issuances: Option<NativeGrantIssuanceInput<'_>>,
-        budget: &HostWorkBudget,
     ) -> Result<NativeFundedSettlement, CasperError> {
         let identity = checked
             .capture()
@@ -331,13 +307,9 @@ impl RuntimeOps {
         }
         let mut prepared_issuances = if let Some(input) = &issuances {
             let original = checked.snapshot().wallets().pre_state_root();
-            let snapshot = manager.capture_offered_grant_issuances(
-                original,
-                input.verified,
-                input.limits,
-                budget,
-            )?;
-            Some(snapshot.prepare_issuances(original, input.verified, input.limits, budget)?)
+            let snapshot =
+                manager.capture_offered_grant_issuances(original, input.verified, input.limits)?;
+            Some(snapshot.prepare_issuances(original, input.verified, input.limits)?)
         } else {
             None
         };
@@ -390,17 +362,13 @@ impl RuntimeOps {
             //     }
             // }
             let debits =
-                custody_debits(checked.capture().amounts(), budget).map_err(
-                    |error| match error {
-                        CustodyDebitError::Size => invalid("grant debit projection size overflow"),
-                        CustodyDebitError::Rejected(error) => invalid(error),
-                        CustodyDebitError::Width => invalid("grant debit custody width"),
-                        CustodyDebitError::NegativeCharge => invalid("negative resource charge"),
-                        CustodyDebitError::NegativeFee => invalid("negative fee"),
-                        CustodyDebitError::Overflow => invalid("grant debit overflow"),
-                        CustodyDebitError::Duplicate => invalid("duplicate grant debit custody"),
-                    },
-                )?;
+                custody_debits(checked.capture().amounts()).map_err(|error| match error {
+                    CustodyDebitError::Width => invalid("grant debit custody width"),
+                    CustodyDebitError::NegativeCharge => invalid("negative resource charge"),
+                    CustodyDebitError::NegativeFee => invalid("negative fee"),
+                    CustodyDebitError::Overflow => invalid("grant debit overflow"),
+                    CustodyDebitError::Duplicate => invalid("duplicate grant debit custody"),
+                })?;
             let mut measured = Vec::new();
             measured
                 .try_reserve_exact(grant_uses.len())
@@ -426,7 +394,6 @@ impl RuntimeOps {
                     input.authenticated_time,
                     &measured,
                     input.limits,
-                    budget,
                 )?,
                 input.limits,
             ))
@@ -435,7 +402,7 @@ impl RuntimeOps {
         };
         checked.check_execution_root(&self.runtime.get_root().await.bytes())?;
         let mut prepared = checked
-            .prepare_request(reservation_id, fee_address, initial_rand, budget)
+            .prepare_request(reservation_id, fee_address, initial_rand)
             .map_err(invalid)?;
         let mut resource_rev = 0u128;
         let mut fee_rev = 0u128;
@@ -516,7 +483,7 @@ impl RuntimeOps {
                 .try_reserve_exact(payers.len())
                 .map_err(|_| invalid("wallet balance allocation failed"))?;
             for payer in payers.values() {
-                let inventory = reader.read_purse(&payer.signature, budget).await?;
+                let inventory = reader.read_purse(&payer.signature).await?;
                 let balance = inventory
                     .balance
                     .ok_or_else(|| invalid("wallet balance absent"))?;
@@ -621,7 +588,6 @@ impl<'a> NativeFundedAttempt<'_, 'a> {
         &self,
         input: NativeAttemptSettlementInput<'_, '_, '_>,
         limits: NativeAttemptSettlementLimits,
-        budget: &HostWorkBudget,
     ) -> Result<NativeCapturedSettlement<'a>, CasperError> {
         let controls = self
             .policy
@@ -645,18 +611,14 @@ impl<'a> NativeFundedAttempt<'_, 'a> {
             .native_rules()
             .measure(&self.evaluation.byte_observations, limits.observations)
             .map_err(invalid)?;
-        let regions = measured
-            .region_demands(limits.regions, budget)
-            .map_err(invalid)?;
-        let located = regions
-            .locate_purses(limits.purses, budget)
-            .map_err(invalid)?;
+        let regions = measured.region_demands(limits.regions).map_err(invalid)?;
+        let located = regions.locate_purses(limits.purses).map_err(invalid)?;
         let demand = located
-            .prepare_acquisition_demand(input.schedule, input.terms, limits.acquisition, budget)
+            .prepare_acquisition_demand(input.schedule, input.terms, limits.acquisition)
             .map_err(invalid)?;
         let selection = input
             .inventory
-            .select_measured_demand(&demand, limits.demand, budget)?;
+            .select_measured_demand(&demand, limits.demand)?;
         let binding = input.inventory.bind_measured_demand(
             NativePrepaidDemandInput {
                 expected_root: self.policy.snapshot().wallets().pre_state_root(),
@@ -666,7 +628,6 @@ impl<'a> NativeFundedAttempt<'_, 'a> {
                 demand_positions: selection.demand_positions(),
             },
             limits.demand,
-            budget,
         )?;
         let observed = check_counted_phlo_execution(
             controls,
@@ -674,7 +635,7 @@ impl<'a> NativeFundedAttempt<'_, 'a> {
             limits.settlement.matching.execution,
         )
         .map_err(invalid)?
-        .with_retained_acquisitions(input.retained, budget)
+        .with_retained_acquisitions(input.retained)
         .map_err(invalid)?;
         check_metered_usage(
             self.evaluation
@@ -686,7 +647,7 @@ impl<'a> NativeFundedAttempt<'_, 'a> {
         let summary = self
             .evaluation
             .economic_failures
-            .union(classify_errors(&self.evaluation.errors, Some(budget)).map_err(invalid)?);
+            .union(classify_errors(&self.evaluation.errors).map_err(invalid)?);
         let mut failures = [PhloFailure::User; 4];
         let mut count = 0;
         for failure in [
@@ -707,7 +668,6 @@ impl<'a> NativeFundedAttempt<'_, 'a> {
                 PhloOutcome::Accepted(&failures[..count]),
                 limits.settlement.matching,
                 limits.settlement.capture,
-                budget,
             )
             .map(|settlement| settlement.bind_execution_root(self.execution_root))
             .map_err(invalid)?;
@@ -720,25 +680,6 @@ impl<'a> NativeFundedAttempt<'_, 'a> {
             .cursor_transitions()
             .get(branch)
             .ok_or_else(|| invalid("captured funding branch has no cursor transition"))?;
-        let witness_bytes = transition
-            .resource_restriction_witness()
-            .map_or(Some(0), |witness| {
-                witness.len().checked_mul(std::mem::size_of::<u64>())
-            })
-            .ok_or_else(|| invalid("cursor transition copy size overflow"))?;
-        let bytes = std::mem::size_of::<FundingOutcomeCursorTransition>()
-            .checked_add(witness_bytes)
-            .and_then(|n| n.checked_add(transition.possible_fee_payers().len()))
-            .ok_or_else(|| invalid("cursor transition copy size overflow"))?;
-        budget
-            .reserve(
-                HostWorkDimension::SearchStateBytes,
-                HostWorkUnits::new(
-                    u64::try_from(bytes)
-                        .map_err(|_| invalid("cursor transition copy size overflow"))?,
-                ),
-            )
-            .map_err(invalid)?;
         Ok(NativeCapturedSettlement {
             checked,
             selection,

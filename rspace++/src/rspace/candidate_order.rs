@@ -10,12 +10,12 @@
 //! 2026-10-12). Play shuffles its candidates at random again
 //! (`RSpace::shuffle_with_index`), and replay follows the recorded pick. This
 //! order is now the internal order of replay only: directive replay
-//! (`native_candidate.rs`) and metered native replay
-//! (`native_candidate/metered.rs`), whose host-work charges must agree from
-//! replay to replay. Before DR-129, play, directive replay and metered native
-//! replay shared this function, so they chose the same candidate. A play join
-//! that names one channel twice orders that channel by source hash (E1 of
-//! DR-129, `space_matcher.rs`), which agrees with this order.
+//! (`native_candidate.rs`) and native replay (`native_candidate/selection.rs`),
+//! whose candidate choice must agree from replay to replay. Before DR-129,
+//! play, directive replay and native replay shared this function, so they
+//! chose the same candidate. A play join that names one channel twice orders
+//! that channel by source hash (E1 of DR-129, `space_matcher.rs`), which
+//! agrees with this order.
 //!
 //! Formal model:
 //! `formal/rocq/cost_accounted_rho/theories/CandidateSourceOrder.v`
@@ -24,8 +24,6 @@
 //! `filter_commutes_with_canonical_sort`) and
 //! `formal/tlaplus/cost_accounted_rho/NativeCandidateOrder.tla`.
 
-use std::cmp::Ordering;
-use std::convert::Infallible;
 use std::sync::Arc;
 
 use serde::Serialize;
@@ -53,136 +51,78 @@ impl<T: CandidateSource + ?Sized> CandidateSource for Arc<T> {
     fn source_hash(&self) -> &Blake2b256Hash { (**self).source_hash() }
 }
 
-/// The primitive work of the canonical order. [`Unmetered`] serves directive
-/// replay (and served play before DR-129). Metered native replay reserves host
-/// work before each primitive.
-pub(crate) trait OrderWork<D> {
-    type Error;
-
-    fn index_bound(&self, length: usize) -> Result<i32, Self::Error>;
-
-    fn buffer<T>(&self, length: usize) -> Result<Vec<T>, Self::Error>;
-
-    fn sort<T>(
-        &self,
-        values: &mut [T],
-        compare: impl Fn(&T, &T) -> Ordering,
-        scanned: impl Fn(&T) -> usize,
-    ) -> Result<(), Self::Error>;
-
-    fn scan(&self, left: &Blake2b256Hash, right: &Blake2b256Hash) -> Result<(), Self::Error>;
-
-    fn digest(&self, value: &D) -> Result<Blake2b256Hash, Self::Error>;
-}
-
 struct Entry<D> {
     value: D,
     index: i32,
     digest: Option<Blake2b256Hash>,
 }
 
-pub(crate) fn canonical_order<D: CandidateSource, W: OrderWork<D>>(
+/// Changed by DR-131 S6: the canonical order with the digest function as a
+/// parameter. It replaces the `OrderWork` trait, whose only other
+/// implementation reserved host work before each step. The tests pass a
+/// digest function that counts its calls.
+fn canonical_order<D: CandidateSource>(
     values: Vec<D>,
-    work: &W,
-) -> Result<Vec<(D, i32)>, W::Error> {
-    let count = work.index_bound(values.len())?;
+    digest: &impl Fn(&D) -> Blake2b256Hash,
+) -> Vec<(D, i32)> {
+    let count =
+        i32::try_from(values.len()).expect("an RSpace candidate list fits the i32 store index");
     if values.len() <= 1 {
-        let mut ordered = work.buffer(values.len())?;
+        let mut ordered = Vec::with_capacity(values.len());
         ordered.extend((0..count).zip(values).map(|(index, value)| (value, index)));
-        return Ok(ordered);
+        return ordered;
     }
-    let mut entries = work.buffer(values.len())?;
+    let mut entries = Vec::with_capacity(values.len());
     entries.extend((0..count).zip(values).map(|(index, value)| Entry {
         value,
         index,
         digest: None,
     }));
-    work.sort(
-        &mut entries,
-        |left, right| {
-            left.value
-                .source_hash()
-                .cmp(right.value.source_hash())
-                .then_with(|| left.index.cmp(&right.index))
-        },
-        |entry| entry.value.source_hash().0.len(),
-    )?;
+    entries.sort_unstable_by(|left, right| {
+        left.value
+            .source_hash()
+            .cmp(right.value.source_hash())
+            .then_with(|| left.index.cmp(&right.index))
+    });
     let mut start = 0;
     while start < entries.len() {
         let mut end = start + 1;
-        while end < entries.len() {
-            let previous = entries[end - 1].value.source_hash();
-            let next = entries[end].value.source_hash();
-            work.scan(previous, next)?;
-            if previous != next {
-                break;
-            }
+        while end < entries.len() &&
+            entries[end - 1].value.source_hash() == entries[end].value.source_hash()
+        {
             end += 1;
         }
         if end - start >= 2 {
-            settle_tie_run(&mut entries[start..end], work)?;
+            settle_tie_run(&mut entries[start..end], digest);
         }
         start = end;
     }
-    let mut ordered = work.buffer(entries.len())?;
+    let mut ordered = Vec::with_capacity(entries.len());
     ordered.extend(entries.into_iter().map(|entry| (entry.value, entry.index)));
-    Ok(ordered)
+    ordered
 }
 
-fn settle_tie_run<D, W: OrderWork<D>>(run: &mut [Entry<D>], work: &W) -> Result<(), W::Error> {
+fn settle_tie_run<D>(run: &mut [Entry<D>], digest: &impl Fn(&D) -> Blake2b256Hash) {
     for entry in run.iter_mut() {
-        entry.digest = Some(work.digest(&entry.value)?);
+        entry.digest = Some(digest(&entry.value));
     }
-    work.sort(
-        run,
-        |left, right| {
-            left.digest
-                .cmp(&right.digest)
-                .then_with(|| left.index.cmp(&right.index))
-        },
-        |entry| entry.digest.as_ref().map_or(0, |digest| digest.0.len()),
-    )
+    run.sort_unstable_by(|left, right| {
+        left.digest
+            .cmp(&right.digest)
+            .then_with(|| left.index.cmp(&right.index))
+    });
 }
 
-pub(crate) struct Unmetered;
-
-impl<D: Serialize> OrderWork<D> for Unmetered {
-    type Error = Infallible;
-
-    fn index_bound(&self, length: usize) -> Result<i32, Infallible> {
-        Ok(i32::try_from(length).expect("an RSpace candidate list fits the i32 store index"))
-    }
-
-    fn buffer<T>(&self, length: usize) -> Result<Vec<T>, Infallible> {
-        Ok(Vec::with_capacity(length))
-    }
-
-    fn sort<T>(
-        &self,
-        values: &mut [T],
-        compare: impl Fn(&T, &T) -> Ordering,
-        _scanned: impl Fn(&T) -> usize,
-    ) -> Result<(), Infallible> {
-        values.sort_unstable_by(compare);
-        Ok(())
-    }
-
-    fn scan(&self, _left: &Blake2b256Hash, _right: &Blake2b256Hash) -> Result<(), Infallible> {
-        Ok(())
-    }
-
-    fn digest(&self, value: &D) -> Result<Blake2b256Hash, Infallible> {
-        Ok(Blake2b256Hash::new(&bincode::serialize(value).unwrap_or_default()))
-    }
+/// The digest that settles a tie of source hashes: Blake2b-256 of the
+/// candidate's bincode encoding.
+fn candidate_digest<D: Serialize>(value: &D) -> Blake2b256Hash {
+    Blake2b256Hash::new(&bincode::serialize(value).unwrap_or_default())
 }
 
 pub(crate) fn canonical_candidates<D: CandidateSource + Serialize>(
     values: Vec<D>,
 ) -> Vec<(D, i32)> {
-    match canonical_order(values, &Unmetered) {
-        Ok(ordered) => ordered,
-        Err(never) => match never {},
-    }
+    canonical_order(values, &candidate_digest)
 }
 
 #[cfg(test)]
@@ -221,16 +161,6 @@ pub(crate) fn candidate_strategy() -> impl proptest::strategy::Strategy<Value = 
             })
             .collect()
     })
-}
-
-#[cfg(test)]
-pub(crate) fn encoded_order<D: Serialize>(ordered: &[(D, i32)]) -> Vec<(Vec<u8>, i32)> {
-    ordered
-        .iter()
-        .map(|(value, index)| {
-            (bincode::serialize(value).expect("test candidate serializes"), *index)
-        })
-        .collect()
 }
 
 // Moved by DR-129 from `space_matcher.rs` (a `dev` file), with no change in
@@ -318,49 +248,13 @@ mod tests {
 
     use super::*;
 
-    struct CountingWork {
-        digests: Cell<usize>,
-    }
-
-    impl<D: Serialize> OrderWork<D> for CountingWork {
-        type Error = Infallible;
-
-        fn index_bound(&self, length: usize) -> Result<i32, Infallible> {
-            <Unmetered as OrderWork<D>>::index_bound(&Unmetered, length)
-        }
-
-        fn buffer<T>(&self, length: usize) -> Result<Vec<T>, Infallible> {
-            <Unmetered as OrderWork<D>>::buffer(&Unmetered, length)
-        }
-
-        fn sort<T>(
-            &self,
-            values: &mut [T],
-            compare: impl Fn(&T, &T) -> Ordering,
-            scanned: impl Fn(&T) -> usize,
-        ) -> Result<(), Infallible> {
-            <Unmetered as OrderWork<D>>::sort(&Unmetered, values, compare, scanned)
-        }
-
-        fn scan(&self, left: &Blake2b256Hash, right: &Blake2b256Hash) -> Result<(), Infallible> {
-            <Unmetered as OrderWork<D>>::scan(&Unmetered, left, right)
-        }
-
-        fn digest(&self, value: &D) -> Result<Blake2b256Hash, Infallible> {
-            self.digests.set(self.digests.get() + 1);
-            Unmetered.digest(value)
-        }
-    }
-
     fn counted<D: CandidateSource + Serialize>(values: Vec<D>) -> (Vec<(D, i32)>, usize) {
-        let work = CountingWork {
-            digests: Cell::new(0),
-        };
-        let ordered = match canonical_order(values, &work) {
-            Ok(ordered) => ordered,
-            Err(never) => match never {},
-        };
-        (ordered, work.digests.get())
+        let digests = Cell::new(0);
+        let ordered = canonical_order(values, &|value: &D| {
+            digests.set(digests.get() + 1);
+            candidate_digest(value)
+        });
+        (ordered, digests.get())
     }
 
     /// Reference: sort by (source hash, full digest, index), digesting every

@@ -44,9 +44,21 @@
 
    Rust correspondence: rholang/src/rust/interpreter/matcher/has_locally_free.rs
    (HasLocallyFreeRef), models/src/rust/utils.rs (union, retain_no_frees),
-   rholang/src/rust/interpreter/matcher/spatial_matcher.rs
-   (MatcherWork::reserve_retain_no_frees, match_ground_par), list_match.rs and
-   fold_match.rs. *)
+   rholang/src/rust/interpreter/matcher/spatial_matcher.rs (match_ground_par),
+   list_match.rs and fold_match.rs. *)
+
+(* DR-131: the matcher no longer charges host work, and MatcherWork with
+   reserve_retain_no_frees is deleted. The results on reads still describe
+   the matcher: union_empty_iff, fold_union_empty_iff_all_empty,
+   retain_equals_filter, lockstep_reads_equal,
+   lockstep_reads_bounded_by_pattern, prefix_reads_decide and
+   membership_probe_reads_le_items. The results on charges describe the
+   deleted charges: retain_work_within_charge,
+   one_pass_charge_undercounts_retain,
+   two_pattern_inspections_cover_lockstep_reads,
+   target_inspection_grows_with_unread_target,
+   two_container_inspections_cover_membership_scan and
+   probe_and_container_inspections_undercount_scan. *)
 
 From Stdlib Require Import Lists.List Arith.PeanoNat Bool Lia.
 From CostAccountedRho Require MeteredComparison.

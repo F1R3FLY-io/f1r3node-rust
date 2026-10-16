@@ -1,35 +1,15 @@
-use std::mem::size_of;
-
-use models::rust::host_work::HostWorkDimension;
-use rholang::rust::interpreter::host_work::HostWorkBudget;
-
-use super::snapshot::reserve;
 use super::{invalid, ordered_changes, CasperError, PrepaidReceiptChange, PrepaidReceiptLimits};
 
 pub fn compose_prepaid_receipt_changes<'a>(
     first: &'a [PrepaidReceiptChange<'a>],
     second: &'a [PrepaidReceiptChange<'a>],
     limits: PrepaidReceiptLimits,
-    budget: &HostWorkBudget,
 ) -> Result<Vec<PrepaidReceiptChange<'a>>, CasperError> {
     let count = first
         .len()
         .checked_add(second.len())
         .filter(|count| *count <= limits.entries)
         .ok_or_else(|| invalid("composed receipt entry limit exceeded"))?;
-    let bytes = count
-        .checked_mul(
-            size_of::<PrepaidReceiptChange<'_>>() + 2 * size_of::<&PrepaidReceiptChange<'_>>(),
-        )
-        .ok_or_else(|| invalid("composed receipt allocation overflow"))?;
-    reserve(budget, HostWorkDimension::SearchStateBytes, bytes)?;
-    reserve(
-        budget,
-        HostWorkDimension::VerificationOperations,
-        count
-            .checked_mul(1 + count.checked_ilog2().unwrap_or(0) as usize)
-            .ok_or_else(|| invalid("composed receipt sorting work overflow"))?,
-    )?;
     let first = ordered_changes(first, limits)?;
     let second = ordered_changes(second, limits)?;
     let mut result = Vec::new();
@@ -66,14 +46,9 @@ pub fn compose_prepaid_receipt_changes<'a>(
 
 #[cfg(test)]
 mod tests {
-    use models::rust::host_work::{HostWorkLimit, HostWorkLimits};
     use models::rust::phlo_wire::PhloWireLimits;
 
     use super::*;
-
-    fn budget() -> HostWorkBudget {
-        HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(100_000)))
-    }
 
     fn limits() -> PrepaidReceiptLimits {
         PrepaidReceiptLimits {
@@ -95,8 +70,7 @@ mod tests {
             expected: Some(b"with-birth"),
             replacement: Some(b"after-pop"),
         }];
-        let composed =
-            compose_prepaid_receipt_changes(&first, &second, limits(), &budget()).unwrap();
+        let composed = compose_prepaid_receipt_changes(&first, &second, limits()).unwrap();
         assert_eq!(composed.len(), 1);
         assert_eq!(composed[0].expected, Some(b"old".as_slice()));
         assert_eq!(composed[0].replacement, Some(b"after-pop".as_slice()));
@@ -104,7 +78,7 @@ mod tests {
             expected: Some(b"other"),
             ..second[0]
         }];
-        assert!(compose_prepaid_receipt_changes(&first, &stale, limits(), &budget()).is_err());
+        assert!(compose_prepaid_receipt_changes(&first, &stale, limits()).is_err());
     }
 
     #[test]
@@ -145,16 +119,11 @@ mod tests {
             expected: Some(&with_birth),
             replacement: Some(&after_pop),
         }];
-        let composed = compose_prepaid_receipt_changes(
-            &births,
-            &pops,
-            PrepaidReceiptLimits {
-                entries: 2,
-                value_bytes: 1024,
-                batch_bytes: 4096,
-            },
-            &budget(),
-        )
+        let composed = compose_prepaid_receipt_changes(&births, &pops, PrepaidReceiptLimits {
+            entries: 2,
+            value_bytes: 1024,
+            batch_bytes: 4096,
+        })
         .unwrap();
         assert_eq!(composed.len(), 1);
         assert_eq!(composed[0].receipt_id, id);

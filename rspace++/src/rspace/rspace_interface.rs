@@ -3,15 +3,11 @@
 use std::collections::{BTreeSet, HashMap};
 
 use async_trait::async_trait;
-use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
-use shared::rust::clone_backing::CloneBacking;
-use shared::rust::closed_decode::ClosedDecode;
 
 use super::checkpoint::Checkpoint;
 use super::errors::RSpaceError;
 use super::hashing::blake2b256_hash::Blake2b256Hash;
-use super::hashing::native_source::SourceMeter;
 use super::internal::{Datum, ProduceCandidate, Row, WaitingContinuation};
 use super::trace::Log;
 use super::trace::event::{COMM, Consume, Produce};
@@ -153,19 +149,6 @@ pub trait ISpace<
     async fn create_checkpoint(&self) -> Result<Checkpoint, RSpaceError>;
 
     async fn get_data(&self, channel: &C) -> Vec<Datum<A>>;
-
-    async fn get_data_metered(
-        &self,
-        _channel: &C,
-        _meter: &(dyn SourceMeter + Sync),
-    ) -> Result<Vec<Datum<A>>, RSpaceError>
-    where
-        C: CloneBacking + DeserializeOwned,
-        // D-S2 (DR-95): the history rows decode in History mode.
-        A: CloneBacking + DeserializeOwned + ClosedDecode,
-    {
-        Err(RSpaceError::HostWorkRejected)
-    }
 
     async fn get_waiting_continuations(&self, channels: Vec<C>) -> Vec<WaitingContinuation<P, K>>;
 

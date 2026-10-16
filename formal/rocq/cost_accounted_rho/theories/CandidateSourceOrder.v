@@ -41,7 +41,7 @@
    Rust correspondence (since DR-129): rspace++/src/rspace/candidate_order.rs
    (the two-phase function), used by
    rspace++/src/rspace/replay_rspace/native_candidate.rs (directive replay)
-   and native_candidate/metered.rs (metered native replay). E1 of DR-129
+   and native_candidate/selection.rs (native replay). E1 of DR-129
    gives a play join that names one channel twice the order by source hash
    (rspace++/src/rspace/space_matcher.rs), which agrees with phase one.
 

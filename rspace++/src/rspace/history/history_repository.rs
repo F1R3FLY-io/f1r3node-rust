@@ -8,7 +8,6 @@ use super::instances::rspace_history_reader_impl::RSpaceHistoryReaderImpl;
 use super::native_checkpoint::NativeCheckpoint;
 use crate::rspace::errors::{HistoryError, HistoryRepositoryError, RSpaceError};
 use crate::rspace::hashing::blake2b256_hash::Blake2b256Hash;
-use crate::rspace::hashing::native_source::SourceMeter;
 use crate::rspace::history::history::{History, HistoryInstances};
 use crate::rspace::history::history_reader::HistoryReader;
 use crate::rspace::history::history_repository_impl::HistoryRepositoryImpl;
@@ -38,7 +37,6 @@ pub trait HistoryRepository<C: Clone, P: Clone, A: Clone, K: Clone>: Send + Sync
     fn prepare_native_checkpoint(
         &self,
         actions: Vec<HotStoreAction<C, P, A, K>>,
-        meter: &dyn SourceMeter,
     ) -> Result<NativeCheckpoint, RSpaceError>;
 
     /// D-C3 (D-S3, DR-97): the checkpoint of the native export's changes,
@@ -46,7 +44,6 @@ pub trait HistoryRepository<C: Clone, P: Clone, A: Clone, K: Clone>: Send + Sync
     fn prepare_native_checkpoint_borrowed(
         &self,
         actions: &[NativeExportAction<'_, C, A, Arc<WaitingContinuation<P, K>>>],
-        meter: &dyn SourceMeter,
     ) -> Result<NativeCheckpoint, RSpaceError>;
 
     fn commit_native_checkpoint(
@@ -72,8 +69,7 @@ pub trait HistoryRepository<C: Clone, P: Clone, A: Clone, K: Clone>: Send + Sync
 
     fn get_current_history_reader_native(
         &self,
-        meter: &dyn SourceMeter,
-    ) -> Result<Box<dyn HistoryReader<Blake2b256Hash, C, P, A, K>>, RSpaceError>;
+    ) -> Box<dyn HistoryReader<Blake2b256Hash, C, P, A, K>>;
 
     fn get_history_reader_struct(
         &self,

@@ -9,7 +9,6 @@ use models::rhoapi::expr::ExprInstance::{EMapBody, GByteArray};
 use models::rhoapi::tagged_continuation::TaggedCont;
 use models::rhoapi::{BindPattern, Bundle, Expr, ListParWithRandom, Par, TaggedContinuation, Var};
 use models::rust::block_hash::BlockHash;
-use models::rust::host_work::{HostWorkDimension, HostWorkLimits, HostWorkUnits};
 use models::rust::par_map::ParMap;
 use models::rust::par_map_type_mapper::ParMapTypeMapper;
 use models::rust::sorted_par_map::SortedParMap;
@@ -44,7 +43,6 @@ use super::dispatch::{RhoDispatch, RholangAndScalaDispatcher};
 use super::env::Env;
 use super::errors::InterpreterError;
 use super::execution_space::ExecutionSpace;
-use super::host_work::{HostWorkBudget, HostWorkReport};
 use super::interpreter::{EvaluateResult, Interpreter, InterpreterImpl};
 use super::reduce::{DebruijnInterpreter, ReducerCore};
 use super::registry::registry_bootstrap::ast;
@@ -286,8 +284,6 @@ impl RhoRuntimeImpl {
         config: NativeRuntimeConfig,
     ) -> Result<EvaluateResult, InterpreterError> {
         let start = Instant::now();
-        let checkpoint = self.reducer.space.create_soft_checkpoint().await;
-        let host_work = config.host_work();
         let interpreter = InterpreterImpl::new(self.cost.clone(), self.merge_chs.clone());
         let result = interpreter
             .inj_attempt_with_native_phlo(
@@ -299,19 +295,6 @@ impl RhoRuntimeImpl {
                 config,
             )
             .await;
-        if host_work.is_rejected()
-            || result.as_ref().map_or(true, |evaluation| {
-                evaluation
-                    .errors
-                    .iter()
-                    .any(|error| matches!(error, InterpreterError::HostWorkRejected))
-            })
-        {
-            self.reducer
-                .space
-                .revert_to_soft_checkpoint(checkpoint)
-                .await?;
-        }
         metrics::histogram!(EVALUATE_TIME_METRIC, "source" => RUNTIME_METRICS_SOURCE)
             .record(start.elapsed().as_secs_f64());
         result
@@ -363,87 +346,6 @@ impl RhoRuntimeImpl {
                 authority_allocation,
             )
             .await;
-        metrics::histogram!(EVALUATE_TIME_METRIC, "source" => RUNTIME_METRICS_SOURCE)
-            .record(start.elapsed().as_secs_f64());
-        result
-    }
-
-    pub async fn evaluate_with_host_work(
-        &self,
-        term: &str,
-        initial_phlo: Cost,
-        normalizer_env: HashMap<String, Par>,
-        rand: Blake2b512Random,
-        limits: HostWorkLimits,
-    ) -> Result<(EvaluateResult, HostWorkReport), InterpreterError> {
-        self.evaluate_with_authority_and_host_work(
-            term,
-            initial_phlo,
-            normalizer_env,
-            rand,
-            None,
-            limits,
-        )
-        .await
-    }
-
-    pub async fn evaluate_with_authority_and_host_work(
-        &self,
-        term: &str,
-        initial_phlo: Cost,
-        normalizer_env: HashMap<String, Par>,
-        rand: Blake2b512Random,
-        authority_allocation: Option<ResourceMultiset<[u8; 32]>>,
-        limits: HostWorkLimits,
-    ) -> Result<(EvaluateResult, HostWorkReport), InterpreterError> {
-        let host_work = HostWorkBudget::new(limits);
-        let result = self
-            .evaluate_with_authority_and_host_work_budget(
-                term,
-                initial_phlo,
-                normalizer_env,
-                rand,
-                authority_allocation,
-                host_work.clone(),
-            )
-            .await;
-        let report = host_work.report();
-        result.map(|evaluation| (evaluation, report))
-    }
-
-    pub async fn evaluate_with_authority_and_host_work_budget(
-        &self,
-        term: &str,
-        initial_phlo: Cost,
-        normalizer_env: HashMap<String, Par>,
-        rand: Blake2b512Random,
-        authority_allocation: Option<ResourceMultiset<[u8; 32]>>,
-        host_work: HostWorkBudget,
-    ) -> Result<EvaluateResult, InterpreterError> {
-        let start = Instant::now();
-        let checkpoint = self.reducer.space.create_soft_checkpoint().await;
-        let interpreter = InterpreterImpl::new(self.cost.clone(), self.merge_chs.clone());
-        let result = if host_work.is_rejected() {
-            Err(InterpreterError::HostWorkRejected)
-        } else {
-            interpreter
-                .inj_attempt_with_host_work(
-                    &self.reducer,
-                    term,
-                    initial_phlo,
-                    normalizer_env,
-                    rand,
-                    authority_allocation,
-                    host_work.clone(),
-                )
-                .await
-        };
-        if host_work.is_rejected() {
-            self.reducer
-                .space
-                .revert_to_soft_checkpoint(checkpoint)
-                .await?;
-        }
         metrics::histogram!(EVALUATE_TIME_METRIC, "source" => RUNTIME_METRICS_SOURCE)
             .record(start.elapsed().as_secs_f64());
         result
@@ -620,24 +522,6 @@ struct RhoCommObserver {
     budget: RuntimeBudget,
 }
 
-fn reserve_native_observation_work(
-    host: &HostWorkBudget,
-    operations: usize,
-    scanned: usize,
-    backing: usize,
-) -> Result<(), RSpaceError> {
-    for (dimension, amount) in [
-        (HostWorkDimension::VerificationOperations, operations),
-        (HostWorkDimension::VerificationBytes, scanned),
-        (HostWorkDimension::SearchStateBytes, backing),
-    ] {
-        let units = u64::try_from(amount).map_err(|_| RSpaceError::HostWorkRejected)?;
-        host.reserve(dimension, HostWorkUnits::new(units))
-            .map_err(|_| RSpaceError::HostWorkRejected)?;
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 pub(crate) fn test_accounting_observer(
     budget: RuntimeBudget,
@@ -677,21 +561,7 @@ impl RSpaceAccountingObserver<Par, BindPattern, ListParWithRandom, TaggedContinu
         if !self.budget.has_comm_accounting_scope() || self.budget.is_unmetered() {
             return Ok(());
         }
-        let host = self.budget.native_host_work();
-        let meter = |operations, scanned, backing| {
-            reserve_native_observation_work(
-                host.as_ref().ok_or(RSpaceError::HostWorkRejected)?,
-                operations,
-                scanned,
-                backing,
-            )
-        };
-        let identity = match host.as_ref() {
-            Some(_) => super::accounting::byte_accounting::produce_introduction_identity_metered(
-                source, &meter,
-            )?,
-            None => super::accounting::byte_accounting::produce_introduction_identity(source),
-        };
+        let identity = super::accounting::byte_accounting::produce_introduction_identity(source);
         // Changed by D-F2 (DR-118): the record also carries the reducer's
         // measurement, which the metered observation reuses.
         // let authority = self
@@ -718,19 +588,10 @@ impl RSpaceAccountingObserver<Par, BindPattern, ListParWithRandom, TaggedContinu
                 super::accounting::authority::AuthorityByteEventKind::ProduceIntroduction,
             )
             .map_err(RSpaceError::from)?;
-        let observed = match host.as_ref() {
-            Some(_) => {
-                super::accounting::observation_construction::produce_introduction_recorded_metered_with_identity(
-                    identity, channel, data, &record, &meter,
-                )?
-            }
-            None => super::accounting::observation_construction::produce_introduction(
-                source,
-                channel,
-                data,
-                &record.authority,
-            )?,
-        };
+        let observed =
+            super::accounting::observation_construction::produce_introduction_recorded_with_identity(
+                identity, channel, data, &record,
+            )?;
         self.budget
             .reserve_produce_introduction_measured(
                 observed.event_id,
@@ -756,21 +617,7 @@ impl RSpaceAccountingObserver<Par, BindPattern, ListParWithRandom, TaggedContinu
         self.budget
             .observe_native_consume_peeks(peeks)
             .map_err(RSpaceError::from)?;
-        let host = self.budget.native_host_work();
-        let meter = |operations, scanned, backing| {
-            reserve_native_observation_work(
-                host.as_ref().ok_or(RSpaceError::HostWorkRejected)?,
-                operations,
-                scanned,
-                backing,
-            )
-        };
-        let identity = match host.as_ref() {
-            Some(_) => super::accounting::byte_accounting::consume_introduction_identity_metered(
-                source, &meter,
-            )?,
-            None => super::accounting::byte_accounting::consume_introduction_identity(source),
-        };
+        let identity = super::accounting::byte_accounting::consume_introduction_identity(source);
         // Changed by D-F2 (DR-118): the record also carries the reducer's
         // measurement, which the metered observation reuses.
         // let authority = self
@@ -797,20 +644,14 @@ impl RSpaceAccountingObserver<Par, BindPattern, ListParWithRandom, TaggedContinu
                 super::accounting::authority::AuthorityByteEventKind::ConsumeIntroduction,
             )
             .map_err(RSpaceError::from)?;
-        let observed = match host.as_ref() {
-            Some(_) => {
-                super::accounting::observation_construction::consume_introduction_recorded_metered_with_identity(
-                    identity, channels, patterns, continuation, &record, &meter,
-                )?
-            }
-            None => super::accounting::observation_construction::consume_introduction(
-                source,
+        let observed =
+            super::accounting::observation_construction::consume_introduction_recorded_with_identity(
+                identity,
                 channels,
                 patterns,
                 continuation,
-                &record.authority,
-            )?,
-        };
+                &record,
+            )?;
         self.budget
             .reserve_consume_introduction_measured(
                 observed.event_id,
@@ -834,38 +675,19 @@ impl RSpaceAccountingObserver<Par, BindPattern, ListParWithRandom, TaggedContinu
         self.budget
             .observe_native_comm_source(comm)
             .map_err(RSpaceError::from)?;
-        let host = self.budget.native_host_work();
-        let meter = |operations, scanned, backing| {
-            reserve_native_observation_work(
-                host.as_ref().ok_or(RSpaceError::HostWorkRejected)?,
-                operations,
-                scanned,
-                backing,
-            )
-        };
         // DR-101: the deployment that resolves residue seals.
         let residue = super::accounting::authority::ResidueContext::new(
             &self.budget.signature(),
             self.budget.deploy_id(),
         )
         .map_err(|error| RSpaceError::InterpreterError(error.to_string()))?;
-        let observed = match host.as_ref() {
-            Some(_) => super::accounting::observation_construction::comm_metered(
-                comm,
-                continuation,
-                continuation_persistent,
-                data,
-                &residue,
-                &meter,
-            )?,
-            None => super::accounting::observation_construction::comm(
-                comm,
-                continuation,
-                continuation_persistent,
-                data,
-                &residue,
-            )?,
-        };
+        let observed = super::accounting::observation_construction::comm(
+            comm,
+            continuation,
+            continuation_persistent,
+            data,
+            &residue,
+        )?;
         // Changed by D-F1 (DR-117): the COMM authority is a canonical witness,
         // so the reservation moves it instead of canonicalizing it again.
         // self.budget
@@ -1704,29 +1526,11 @@ fn invalid_blocks_par(invalid_blocks: HashMap<BlockHash, Validator>) -> Par {
     }])
 }
 
-/// D-E3 (DR-110): the checkpoint copy of the mergeable channels. The block
-/// copy and cleanup prepays the copy of the map and the release of the copy.
-/// `evaluate`, the only caller of `checkpoint`, clears the map after the
-/// checkpoint, which releases the original entries, so one more block
-/// inspection prepays that release. A block walk charges the same for every
-/// iteration order of the map.
-fn copy_mergeable_for_checkpoint<
-    S: std::hash::BuildHasher + Clone + shared::rust::clone_backing::CloneBacking,
->(
-    mergeable: &HashMap<Par, MergeType, S>,
-    host: &HostWorkBudget,
-) -> Result<HashMap<Par, MergeType, S>, InterpreterError> {
-    super::accounting::clone_backing::reserve_blocks_copy_and_cleanup(mergeable, host)?;
-    super::accounting::clone_backing::inspect_blocks(mergeable, host)?;
-    Ok(mergeable.clone())
-}
-
 pub struct NativeReplayEnvironment {
     session:
         Arc<NativeRuntimeReplaySession<Par, BindPattern, ListParWithRandom, TaggedContinuation>>,
     reducer: Arc<ReducerCore>,
     budget: RuntimeBudget,
-    host: HostWorkBudget,
     unavailable: bool,
     evaluation_started: bool,
     merge_chs: Arc<tokio::sync::RwLock<HashMap<Par, MergeType>>>,
@@ -1794,11 +1598,7 @@ impl NativeReplayEnvironment {
         let authority = self.budget.native_authority_checkpoint()?;
         let session = self.session.checkpoint().await?;
         let mergeable = self.merge_chs.read().await;
-        // Changed by D-O1 (DR-110): the copy charges block walks, and it also
-        // prepays the release of the entries that `evaluate` clears.
-        // super::accounting::clone_backing::reserve_copy_and_cleanup(&*mergeable, &self.host)?;
-        // let mergeable = mergeable.clone();
-        let mergeable = copy_mergeable_for_checkpoint(&mergeable, &self.host)?;
+        let mergeable = mergeable.clone();
         Ok(NativeReplayEnvironmentCheckpoint {
             session,
             authority,
@@ -1840,50 +1640,25 @@ impl NativeReplayEnvironment {
         rand: Blake2b512Random,
     ) -> Result<EvaluateResult, InterpreterError> {
         self.ensure_fresh_evaluation()?;
-        let host = self.host.clone();
         let interpreter = InterpreterImpl::new(self.budget.clone(), self.merge_chs.clone());
-        if host.is_rejected() {
-            return interpreter.host_rejected_result(Default::default());
-        }
-        let checkpoint = match self.checkpoint().await {
-            Ok(checkpoint) => checkpoint,
-            Err(_) if host.is_rejected() => {
-                return interpreter.host_rejected_result(Default::default());
-            }
-            Err(error) => return Err(error),
-        };
+        let checkpoint = self.checkpoint().await?;
         self.unavailable = true;
         self.evaluation_started = true;
         self.merge_chs.write().await.clear();
         let scope = self.budget.enter_comm_accounting_scope();
-        let (execution, failures) = self
-            .reducer
-            .inj_with_observation(par, rand, Some(host.clone()))
-            .await;
+        let (execution, failures) = self.reducer.inj_with_observation(par, rand).await;
         drop(scope);
-        if host.is_rejected() {
-            let result = interpreter.host_rejected_result(failures);
-            self.restore_state(checkpoint).await?;
-            return result;
-        }
         let result = async {
             let evidence = self.session.completed_evidence().await?;
             let mergeable = self.merge_chs.read().await;
             // Changed by D-O1 (DR-94): block accounting charges inline bytes once per enclosing block.
             // super::accounting::clone_backing::reserve_copy_and_cleanup(&*mergeable, &host)?;
-            super::accounting::clone_backing::reserve_blocks_copy_and_cleanup(&*mergeable, &host)?;
             let mergeable = mergeable.clone();
-            if host.is_rejected() {
-                return Err(InterpreterError::HostWorkRejected);
-            }
             interpreter.complete_replay_result(execution, failures, mergeable, evidence)
         }
         .await;
         if result.is_err() {
             self.restore_state(checkpoint).await?;
-            if host.is_rejected() {
-                return interpreter.host_rejected_result(failures);
-            }
         }
         self.unavailable = false;
         result
@@ -1909,10 +1684,7 @@ impl NativeReplayEnvironment {
         self.unavailable = true;
         self.evaluation_started = true;
         let _scope = self.budget.enter_comm_accounting_scope();
-        let result = self
-            .reducer
-            .inj_with_observation(par, rand, Some(self.host.clone()))
-            .await;
+        let result = self.reducer.inj_with_observation(par, rand).await;
         self.unavailable = false;
         result
     }
@@ -1958,15 +1730,6 @@ impl NativeReplayEnvironment {
         self.session.get_data(channel).await
     }
 
-    pub async fn get_data_with_host_work(
-        &self,
-        channel: &Par,
-        host: &HostWorkBudget,
-    ) -> Result<Vec<Datum<ListParWithRandom>>, RSpaceError> {
-        self.ensure_available()?;
-        self.session.get_data_with_host_work(channel, host).await
-    }
-
     pub async fn get_joins(&self, channel: &Par) -> Result<Vec<Vec<Par>>, RSpaceError> {
         self.ensure_available()?;
         self.session.get_joins(channel).await
@@ -1977,7 +1740,6 @@ pub async fn create_native_replay_env(
     trace: CheckedNativeOperationTrace,
     history: RhoHistoryRepository,
     matcher: Arc<Box<dyn Match<BindPattern, ListParWithRandom, TaggedContinuation>>>,
-    host: HostWorkBudget,
     merge_chs: Arc<tokio::sync::RwLock<HashMap<Par, MergeType>>>,
     mergeable_tags: Arc<HashMap<Par, MergeType>>,
     extra_system_processes: &mut Vec<Definition>,
@@ -2001,13 +1763,8 @@ pub async fn create_native_replay_env(
         .into_iter()
         .map(system_process_install)
         .collect::<Result<Vec<_>, _>>()?;
-    let session = Arc::new(trace.into_runtime_session(
-        history,
-        matcher,
-        host.clone(),
-        installations,
-        cost.clone(),
-    )?);
+    let session =
+        Arc::new(trace.into_runtime_session(history, matcher, installations, cost.clone())?);
     let reducer = setup_reducer(
         session.execution_space(cost.clone()),
         block_data.clone(),
@@ -2029,7 +1786,6 @@ pub async fn create_native_replay_env(
         session,
         reducer,
         budget: cost,
-        host,
         unavailable: false,
         evaluation_started: false,
         merge_chs,
@@ -2331,163 +2087,4 @@ pub async fn create_runtime_from_kv_store(
         external_services,
     )
     .await
-}
-
-#[cfg(test)]
-mod mergeable_checkpoint_tests {
-    use std::collections::{BTreeSet, HashMap};
-
-    use models::rhoapi::expr::ExprInstance;
-    use models::rhoapi::{Expr, Par};
-    use models::rust::host_work::{HostWorkDimension, HostWorkLimit, HostWorkLimits};
-    use rspace_plus_plus::rspace::merger::merging_logic::MergeType;
-    use shared::rust::clone_backing::{self as walks, BackingError, CloneBacking, Walker};
-
-    use super::{copy_mergeable_for_checkpoint, HostWorkBudget};
-
-    /// D-E3 (DR-110): a hasher with a runtime seed, so that one test can build
-    /// equal maps with different iteration orders.
-    #[derive(Clone, Copy)]
-    pub(crate) struct Seeded(pub(crate) u64);
-
-    pub(crate) struct SeededHasher(u64);
-
-    impl std::hash::Hasher for SeededHasher {
-        fn write(&mut self, bytes: &[u8]) {
-            for byte in bytes {
-                self.0 = (self.0 ^ u64::from(*byte)).wrapping_mul(0x0000_0100_0000_01b3);
-            }
-        }
-
-        fn finish(&self) -> u64 { self.0 }
-    }
-
-    impl std::hash::BuildHasher for Seeded {
-        type Hasher = SeededHasher;
-
-        fn build_hasher(&self) -> SeededHasher {
-            SeededHasher(0xcbf2_9ce4_8422_2325 ^ self.0.wrapping_mul(0x9E37_79B9_7F4A_7C15))
-        }
-    }
-
-    impl CloneBacking for Seeded {
-        fn children<'a>(&'a self, _: &mut Walker<'a>) -> Result<(), BackingError> { Ok(()) }
-        fn inline() -> bool { true }
-    }
-
-    fn integers(values: impl IntoIterator<Item = i64>) -> Par {
-        Par {
-            exprs: values
-                .into_iter()
-                .map(|value| Expr {
-                    expr_instance: Some(ExprInstance::GInt(value)),
-                })
-                .collect(),
-            ..Default::default()
-        }
-    }
-
-    fn walker_usage(host: &HostWorkBudget) -> [u64; 3] {
-        [
-            HostWorkDimension::VerificationOperations,
-            HostWorkDimension::VerificationBytes,
-            HostWorkDimension::SearchStateBytes,
-        ]
-        .map(|dimension| host.usage(dimension).get())
-    }
-
-    fn walk_usage(
-        walk: impl FnOnce(&dyn walks::BackingMeter) -> Result<(), BackingError>,
-    ) -> [u64; 3] {
-        let used = std::cell::Cell::new([0u64; 3]);
-        let meter = |operations: usize, scanned: usize, backing: usize| {
-            let [o, s, b] = used.get();
-            used.set([
-                o + operations as u64,
-                s + scanned as u64,
-                b + backing as u64,
-            ]);
-            Ok::<(), BackingError>(())
-        };
-        walk(&meter).expect("an unlimited walk");
-        used.get()
-    }
-
-    fn unlimited() -> HostWorkBudget {
-        HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(u64::MAX)))
-    }
-
-    /// Seven small keys and one key with 25 expressions. The per-level walk
-    /// pushes every key first and then expands the keys in the reverse order.
-    /// Its pending peak passes 32 entries only when at least five other keys
-    /// still wait while the large key expands its expressions, so the peak
-    /// depends on the iteration order.
-    fn mergeable(seed: u64) -> HashMap<Par, MergeType, Seeded> {
-        let mut map = HashMap::with_hasher(Seeded(seed));
-        for value in 0..7 {
-            map.insert(integers([value]), MergeType::IntegerAdd);
-        }
-        map.insert(integers(100..125), MergeType::BitmaskOr);
-        map
-    }
-
-    /// D-E3 (DR-110): the checkpoint copy charges exactly a block copy and
-    /// cleanup of the map and one more block inspection for the release of
-    /// the entries that `evaluate` clears, and it returns an equal copy.
-    #[test]
-    fn replay_checkpoint_charges_mergeable_copy_and_clear() {
-        let mut map = mergeable(1);
-        map.insert(
-            models::rust::utils::new_gstring_par("m".repeat(4_096), Vec::new(), false),
-            MergeType::IntegerAdd,
-        );
-        let host = unlimited();
-        let copy = copy_mergeable_for_checkpoint(&map, &host).expect("an unlimited copy");
-        assert_eq!(copy, map);
-        let copy_charge = walk_usage(|meter| walks::reserve_blocks_copy_and_cleanup(&map, meter));
-        let clear_charge = walk_usage(|meter| walks::inspect_blocks(&map, meter));
-        assert_eq!(
-            walker_usage(&host),
-            [0, 1, 2].map(|index| copy_charge[index] + clear_charge[index])
-        );
-    }
-
-    /// D-E3 (DR-110): equal maps whose iteration orders differ charge the same
-    /// block copy. The per-level walk, the negative control, charges a
-    /// pending-vector growth that depends on the order (pgmcp bug
-    /// per-level-walks-of-randomstate-hashmaps-...-a8bd6b).
-    #[test]
-    fn mergeable_and_env_copies_are_independent_of_hash_order() {
-        let mut orders = BTreeSet::new();
-        let mut block_charges = BTreeSet::new();
-        let mut level_charges = BTreeSet::new();
-        let mut env_charges = BTreeSet::new();
-        for seed in 0..64 {
-            let map = mergeable(seed);
-            orders.insert(map.keys().map(|key| key.exprs.len()).collect::<Vec<_>>());
-            let host = unlimited();
-            copy_mergeable_for_checkpoint(&map, &host).expect("an unlimited copy");
-            block_charges.insert(walker_usage(&host));
-            level_charges.insert(walk_usage(|meter| {
-                walks::reserve_copy_and_cleanup(&map, meter)
-            }));
-            let mut env = HashMap::with_hasher(Seeded(seed));
-            for (index, key) in map.keys().enumerate() {
-                env.insert(index as i32, key.clone());
-            }
-            env_charges.insert(walk_usage(|meter| {
-                walks::reserve_blocks_copy_and_cleanup(&env, meter)
-            }));
-        }
-        assert!(
-            orders.len() > 1,
-            "the seeds must give different iteration orders"
-        );
-        assert_eq!(block_charges.len(), 1, "block charges {block_charges:?}");
-        assert!(
-            level_charges.len() > 1,
-            "per-level charges {level_charges:?}"
-        );
-        assert_eq!(env_charges.len(), 1, "environment charges {env_charges:?}");
-    }
 }

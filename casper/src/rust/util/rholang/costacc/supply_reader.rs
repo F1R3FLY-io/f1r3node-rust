@@ -1,24 +1,20 @@
 use std::future::Future;
-use std::mem::size_of;
 use std::num::NonZeroUsize;
 use std::pin::Pin;
 
 use models::rhoapi::{CostSignature, ListParWithRandom, Par};
 use models::rust::block::state_hash::StateHash;
-use models::rust::host_work::{HostWorkDimension, HostWorkUnits};
-use prost::Message;
 use rholang::rust::interpreter::accounting::authority::cost_signature_to_sig;
 use rholang::rust::interpreter::accounting::monetary_allocation::MonetaryCursor;
 use rholang::rust::interpreter::compiler::compiler::Compiler;
-use rholang::rust::interpreter::host_work::HostWorkBudget;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::hashing::stable_hash_provider;
 use rspace_plus_plus::rspace::history::native_reader::{
-    decode_record, NativeLeafKind, NativeReadCharge, NativeReadError, NativeReadMeter,
+    decode_datum, NativeLeafKind, NativeReadError,
 };
 use rspace_plus_plus::rspace::internal::Datum;
 
-use super::supply::{self, PurseInventory, PurseStack};
+use super::supply::{self, PurseInventory};
 use super::{monetary_cursor, vault_payer};
 use crate::rust::errors::CasperError;
 use crate::rust::rholang::runtime::RuntimeOps;
@@ -33,40 +29,12 @@ pub trait SupplyReader: Send + Sync {
         scope: [u8; 32],
         payer_count: NonZeroUsize,
     ) -> ReadFuture<'_, Option<MonetaryCursor>>;
-    fn read_purse<'a>(
-        &'a self,
-        signature: &'a CostSignature,
-        budget: &'a HostWorkBudget,
-    ) -> ReadFuture<'a, PurseInventory>;
-}
-
-struct SupplyReadMeter<'a>(&'a HostWorkBudget);
-
-impl NativeReadMeter for SupplyReadMeter<'_> {
-    type Error = CasperError;
-
-    fn reserve(&self, charge: NativeReadCharge) -> Result<(), Self::Error> {
-        for (dimension, amount) in [
-            (HostWorkDimension::VerificationOperations, charge.operations),
-            (HostWorkDimension::VerificationBytes, charge.scanned_bytes),
-            (HostWorkDimension::SearchStateBytes, charge.backing_bytes),
-        ] {
-            self.0
-                .reserve(
-                    dimension,
-                    HostWorkUnits::new(u64::try_from(amount).map_err(|_| {
-                        CasperError::RuntimeError("purse read work overflow".into())
-                    })?),
-                )
-                .map_err(|error| CasperError::RuntimeError(error.to_string()))?;
-        }
-        Ok(())
-    }
+    fn read_purse<'a>(&'a self, signature: &'a CostSignature) -> ReadFuture<'a, PurseInventory>;
 }
 
 fn native_read_error(error: NativeReadError<CasperError>) -> CasperError {
     match error {
-        NativeReadError::Host(error) | NativeReadError::Consumer(error) => error,
+        NativeReadError::Consumer(error) => error,
         NativeReadError::Store(error) => {
             CasperError::RuntimeError(format!("purse history read failed: {error}"))
         }
@@ -82,11 +50,7 @@ pub struct RuntimeManagerSupplyReader<'a> {
 }
 
 impl RuntimeManagerSupplyReader<'_> {
-    fn data_at_root(
-        &self,
-        channel: &Par,
-        budget: &HostWorkBudget,
-    ) -> Result<Vec<Datum<ListParWithRandom>>, CasperError> {
+    fn data_at_root(&self, channel: &Par) -> Result<Vec<Datum<ListParWithRandom>>, CasperError> {
         let root = Blake2b256Hash::from_bytes(self.pre_state_root().to_vec());
         let repo = &self.runtime_manager.history_repo;
         if !repo.contains_root(&root).map_err(|error| {
@@ -103,34 +67,16 @@ impl RuntimeManagerSupplyReader<'_> {
             .try_into()
             .map_err(|_| CasperError::RuntimeError("purse channel hash is invalid".into()))?;
         repo.native_history_reader(self.pre_state_root())
-            .with_records(
-                NativeLeafKind::Data,
-                &channel_hash,
-                &SupplyReadMeter(budget),
-                |records| {
-                    SupplyReadMeter(budget).reserve(NativeReadCharge {
-                        operations: records.len(),
-                        scanned_bytes: 0,
-                        backing_bytes: records
-                            .len()
-                            .checked_mul(size_of::<Datum<ListParWithRandom>>())
-                            .ok_or_else(|| {
-                                CasperError::RuntimeError("purse inventory size overflow".into())
-                            })?,
-                    })?;
-                    let mut data = Vec::new();
-                    data.try_reserve_exact(records.len()).map_err(|_| {
-                        CasperError::RuntimeError("purse inventory allocation failed".into())
-                    })?;
-                    for raw in records.iter() {
-                        data.push(
-                            decode_record(raw, &SupplyReadMeter(budget))
-                                .map_err(native_read_error)?,
-                        );
-                    }
-                    Ok(data)
-                },
-            )
+            .with_records(NativeLeafKind::Data, &channel_hash, |records| {
+                let mut data = Vec::new();
+                data.try_reserve_exact(records.len()).map_err(|_| {
+                    CasperError::RuntimeError("purse inventory allocation failed".into())
+                })?;
+                for raw in records.iter() {
+                    data.push(decode_datum(raw).map_err(|error| native_read_error(error.into()))?);
+                }
+                Ok(data)
+            })
             .map_err(native_read_error)
             .map(Option::unwrap_or_default)
     }
@@ -165,38 +111,13 @@ impl SupplyReader for RuntimeManagerSupplyReader<'_> {
         })
     }
 
-    fn read_purse<'a>(
-        &'a self,
-        signature: &'a CostSignature,
-        budget: &'a HostWorkBudget,
-    ) -> ReadFuture<'a, PurseInventory> {
+    fn read_purse<'a>(&'a self, signature: &'a CostSignature) -> ReadFuture<'a, PurseInventory> {
         Box::pin(async move {
             let payer = vault_payer::vault_payer(signature)
                 .map_err(|error| CasperError::RuntimeError(error.to_string()))?;
             let sig = cost_signature_to_sig(&payer.signature)
                 .map_err(|error| CasperError::RuntimeError(error.to_string()))?;
-            let data = self.data_at_root(&supply::supply_channel(&sig), budget)?;
-            let mut decoded_bytes = 0usize;
-            for datum in &data {
-                decoded_bytes = decoded_bytes
-                    .checked_add(datum.a.encoded_len())
-                    .ok_or_else(|| {
-                        CasperError::RuntimeError("purse inventory size overflow".into())
-                    })?;
-            }
-            let reserve_bytes = decoded_bytes
-                .checked_mul(8)
-                .and_then(|amount| {
-                    data.len()
-                        .checked_mul(size_of::<PurseStack>() + 128)
-                        .and_then(|overhead| amount.checked_add(overhead))
-                })
-                .ok_or_else(|| CasperError::RuntimeError("purse inventory size overflow".into()))?;
-            SupplyReadMeter(budget).reserve(NativeReadCharge {
-                operations: reserve_bytes,
-                scanned_bytes: decoded_bytes,
-                backing_bytes: reserve_bytes,
-            })?;
+            let data = self.data_at_root(&supply::supply_channel(&sig))?;
             let mut inventory = supply::decode_purse_inventory(&data, signature)?;
             let values = self
                 .query_at_root(vault_payer::balance_query_source(&payer.address))
@@ -229,7 +150,6 @@ mod tests {
 
     use models::rhoapi::cost_signature::Value;
     use models::rhoapi::CostStack;
-    use models::rust::host_work::{HostWorkLimit, HostWorkLimits};
     use rholang::rust::interpreter::accounting::Sig;
     use rholang::rust::interpreter::external_services::ExternalServices;
     use rholang::rust::interpreter::rho_runtime::RhoRuntime;
@@ -239,8 +159,11 @@ mod tests {
 
     use super::*;
 
+    /// Changed by DR-131: the exhaustion half went with host work. The test
+    /// keeps its checks that the rooted read matches the live records and
+    /// rejects another root.
     #[tokio::test]
-    async fn rooted_purse_reader_matches_live_records_and_rejects_exhaustion() {
+    async fn rooted_purse_reader_matches_live_records() {
         let stores = RSpaceStore {
             history: Arc::new(InMemoryKeyValueStore::new()),
             roots: Arc::new(InMemoryKeyValueStore::new()),
@@ -275,17 +198,13 @@ mod tests {
             runtime_manager: &manager,
             pre_state_hash: root.clone(),
         };
-        let ample = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(10_000_000)));
-        assert_eq!(reader.data_at_root(&channel, &ample).unwrap(), expected);
-        let exhausted = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(0)));
-        assert!(reader.data_at_root(&channel, &exhausted).is_err());
-        assert!(exhausted.is_rejected());
+        assert_eq!(reader.data_at_root(&channel).unwrap(), expected);
         let mut other = root.as_ref().to_vec();
         other[0] ^= 1;
         let wrong = RuntimeManagerSupplyReader {
             runtime_manager: &manager,
             pre_state_hash: other.into(),
         };
-        assert!(wrong.data_at_root(&channel, &ample).is_err());
+        assert!(wrong.data_at_root(&channel).is_err());
     }
 }

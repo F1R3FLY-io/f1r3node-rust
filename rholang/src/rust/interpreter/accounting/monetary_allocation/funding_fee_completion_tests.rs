@@ -1,14 +1,9 @@
-use models::rust::host_work::{HostWorkLimit, HostWorkLimits};
 use proptest::prelude::*;
 
 use super::super::{
     select_fixed_funding_policy, FundingMinimaxProblem, FundingPolicyResult, FundingSearchLimits,
 };
 use super::*;
-
-fn work() -> HostWorkBudget {
-    HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(1_000_000_000)))
-}
 
 fn cap(count: usize) -> NonZeroUsize { NonZeroUsize::new(count).unwrap() }
 
@@ -24,7 +19,6 @@ fn selected(capacities: &[u64], obligations: &[u64], eligible: &[Vec<bool>]) -> 
             source_cap: cap(capacities.len()),
             obligation_cap: cap(obligations.len()),
         },
-        &work(),
     )
     .unwrap();
     match result {
@@ -48,14 +42,14 @@ fn folding_the_fee_into_resource_fairness_changes_the_selected_resource_draws() 
 fn resource_only_selection_can_hide_a_jointly_feasible_plan() {
     let chosen = selected(&[1, 1], &[1], &[vec![true], vec![true]]);
     assert_eq!(chosen, vec![vec![1], vec![0]]);
-    assert!(!can_complete_unit_fee(&[1, 1], &[1, 0], &[true, false], cap(2), &work()).unwrap());
-    assert!(can_complete_unit_fee(&[1, 1], &[0, 1], &[true, false], cap(2), &work()).unwrap());
+    assert!(!can_complete_unit_fee(&[1, 1], &[1, 0], &[true, false], cap(2)).unwrap());
+    assert!(can_complete_unit_fee(&[1, 1], &[0, 1], &[true, false], cap(2)).unwrap());
 }
 
 #[test]
-fn fee_completion_checks_every_source_and_every_work_prefix() {
+fn fee_completion_checks_every_source() {
     assert!(matches!(
-        can_complete_unit_fee(&[2, 0], &[0, 1], &[true; 2], cap(2), &work()),
+        can_complete_unit_fee(&[2, 0], &[0, 1], &[true; 2], cap(2)),
         Err(FundingSearchError::InvalidProblem(
             FundingAssignmentError::InsufficientSourceCapacity
         ))
@@ -68,8 +62,7 @@ fn fee_completion_checks_every_source_and_every_work_prefix() {
                     &capacities,
                     &vec![0; count],
                     &vec![allowed; count],
-                    cap(count),
-                    &work()
+                    cap(count)
                 )
                 .unwrap(),
                 allowed
@@ -78,35 +71,15 @@ fn fee_completion_checks_every_source_and_every_work_prefix() {
                 &capacities,
                 &capacities,
                 &vec![allowed; count],
-                cap(count),
-                &work()
+                cap(count)
             )
             .unwrap());
         }
-        for prefix in 0..=count {
-            let mut bounds = HostWorkLimits::uniform(HostWorkLimit::new(1_000_000));
-            bounds.set(
-                HostWorkDimension::VerificationOperations,
-                HostWorkLimit::new(prefix as u64),
-            );
-            let result = can_complete_unit_fee(
-                &capacities,
-                &vec![0; count],
-                &vec![true; count],
-                cap(count),
-                &HostWorkBudget::new(bounds),
-            );
-            if prefix == count {
-                assert!(result.unwrap());
-            } else {
-                assert!(matches!(result, Err(FundingSearchError::HostWork(_))));
-            }
-        }
     }
-    assert!(can_complete_unit_fee(&[], &[], &[], cap(1), &work()).is_err());
-    assert!(can_complete_unit_fee(&[1, 1], &[0, 0], &[true; 2], cap(1), &work()).is_err());
-    assert!(can_complete_unit_fee(&[1, 1], &[0], &[true; 2], cap(2), &work()).is_err());
-    assert!(can_complete_unit_fee(&[1, 1], &[0, 0], &[true], cap(2), &work()).is_err());
+    assert!(can_complete_unit_fee(&[], &[], &[], cap(1)).is_err());
+    assert!(can_complete_unit_fee(&[1, 1], &[0, 0], &[true; 2], cap(1)).is_err());
+    assert!(can_complete_unit_fee(&[1, 1], &[0], &[true; 2], cap(2)).is_err());
+    assert!(can_complete_unit_fee(&[1, 1], &[0, 0], &[true], cap(2)).is_err());
 }
 
 proptest! {
@@ -121,6 +94,6 @@ proptest! {
         let remaining: u128 = rows.iter().map(|(capacity, draw, eligible)| if *eligible {
             u128::from(*capacity) - u128::from((*draw).min(*capacity))
         } else { 0 }).sum();
-        prop_assert_eq!(can_complete_unit_fee(&capacities, &draws, &eligible, cap(rows.len()), &work()).unwrap(), remaining > 0);
+        prop_assert_eq!(can_complete_unit_fee(&capacities, &draws, &eligible, cap(rows.len())).unwrap(), remaining > 0);
     }
 }

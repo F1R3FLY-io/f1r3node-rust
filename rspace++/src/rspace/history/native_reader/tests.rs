@@ -1,6 +1,5 @@
 use std::cell::Cell;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 use proptest::prelude::*;
 use shared::rust::store::lmdb_key_value_store::LmdbKeyValueStore;
@@ -12,69 +11,6 @@ use crate::rspace::history::instances::radix_history::RadixHistory;
 use crate::rspace::history::instances::rspace_history_reader_impl::RSpaceHistoryReaderImpl;
 use crate::rspace::history::radix_tree::{Item, decode, empty_node, encode};
 use crate::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore;
-
-struct Meter {
-    remaining: AtomicUsize,
-    calls: AtomicUsize,
-    backing: AtomicUsize,
-}
-
-impl Meter {
-    fn new(remaining: usize) -> Self {
-        Self {
-            remaining: AtomicUsize::new(remaining),
-            calls: AtomicUsize::new(0),
-            backing: AtomicUsize::new(0),
-        }
-    }
-}
-
-impl NativeReadMeter for Meter {
-    type Error = &'static str;
-    fn reserve(&self, charge: NativeReadCharge) -> Result<(), Self::Error> {
-        self.remaining
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| n.checked_sub(1))
-            .map_err(|_| "exhausted")?;
-        self.calls.fetch_add(1, Ordering::Relaxed);
-        self.backing
-            .fetch_add(charge.backing_bytes, Ordering::Relaxed);
-        Ok(())
-    }
-}
-
-struct ScanMeter {
-    limit: usize,
-    total: Cell<usize>,
-    last: Cell<usize>,
-}
-
-impl ScanMeter {
-    fn new(limit: usize) -> Self {
-        Self {
-            limit,
-            total: Cell::new(0),
-            last: Cell::new(0),
-        }
-    }
-}
-
-impl NativeReadMeter for ScanMeter {
-    type Error = &'static str;
-
-    fn reserve(&self, charge: NativeReadCharge) -> Result<(), Self::Error> {
-        let next = self
-            .total
-            .get()
-            .checked_add(charge.scanned_bytes)
-            .ok_or("scan overflow")?;
-        if next > self.limit {
-            return Err("scan exhausted");
-        }
-        self.total.set(next);
-        self.last.set(charge.scanned_bytes);
-        Ok(())
-    }
-}
 
 fn frame(kind: NativeLeafKind, payload: &[u8], trailing: &[u8]) -> ([u8; 32], Vec<u8>) {
     let tag = match kind {
@@ -118,9 +54,8 @@ fn install(
 fn read(
     reader: &NativeHistoryReader<'_>,
     kind: NativeLeafKind,
-    meter: &Meter,
 ) -> Result<Option<Vec<Vec<u8>>>, NativeReadError<&'static str>> {
-    reader.with_records(kind, &[7; 32], meter, |rows| Ok(rows.iter().map(<[u8]>::to_vec).collect()))
+    reader.with_records(kind, &[7; 32], |rows| Ok(rows.iter().map(<[u8]>::to_vec).collect()))
 }
 
 #[test]
@@ -135,7 +70,7 @@ fn all_leaf_kinds_and_both_key_encodings_match_legacy_framing() {
             let (hash, bytes) = frame(kind, &payload, &[91, 92, 93]);
             let root = install(nodes.as_ref(), leaves.as_ref(), kind, hash, bytes, serialized);
             let reader = NativeHistoryReader::new(root, nodes.as_ref(), leaves.as_ref());
-            assert_eq!(read(&reader, kind, &Meter::new(usize::MAX)).unwrap(), Some(rows.clone()));
+            assert_eq!(read(&reader, kind).unwrap(), Some(rows.clone()));
             let history = RadixHistory::create(Blake2b256Hash(root.to_vec()), nodes).unwrap();
             let legacy = RSpaceHistoryReaderImpl::<String, String, String, String>::new(
                 Box::new(history),
@@ -153,100 +88,30 @@ fn all_leaf_kinds_and_both_key_encodings_match_legacy_framing() {
     }
 }
 
+/// Changed by DR-131 S6: the test was
+/// `short_node_and_empty_leaf_prepay_digest_comparisons`. The charge checks
+/// went with host work. The test keeps its checks that a short node fails
+/// its hash check and that an empty leaf is present.
 #[test]
-fn every_reservation_rejection_prevents_the_consumer() {
-    for serialized in [false, true] {
-        let nodes = InMemoryKeyValueStore::new();
-        let leaves = InMemoryKeyValueStore::new();
-        let (hash, bytes) =
-            frame(NativeLeafKind::Data, &bincode::serialize(&vec![vec![1_u8]]).unwrap(), &[]);
-        let root = install(&nodes, &leaves, NativeLeafKind::Data, hash, bytes, serialized);
-        let reader = NativeHistoryReader::new(root, &nodes, &leaves);
-        let all = Meter::new(usize::MAX);
-        read(&reader, NativeLeafKind::Data, &all).unwrap();
-        for allowed in 0..all.calls.load(Ordering::Relaxed) {
-            let calls = Cell::new(0);
-            let result =
-                reader.with_records(NativeLeafKind::Data, &[7; 32], &Meter::new(allowed), |_| {
-                    calls.set(calls.get() + 1);
-                    Ok(())
-                });
-            assert!(matches!(result, Err(NativeReadError::Host("exhausted"))));
-            assert_eq!(calls.get(), 0);
-        }
-    }
-}
-
-#[test]
-fn node_lookup_rejection_precedes_scratch_copy_at_each_depth() {
-    let nodes = InMemoryKeyValueStore::new();
-    let leaves = InMemoryKeyValueStore::new();
-    let child = [11; 32];
-    let mut node = empty_node();
-    node[0] = Item::NodePtr {
-        prefix: Vec::new(),
-        ptr: child.to_vec(),
-    };
-    let bytes = encode(&node);
-    let root = digest(&bytes);
-    nodes.put_one(root.to_vec(), bytes).unwrap();
-    let reader = NativeHistoryReader::new(root, &nodes, &leaves);
-    let lookup = [0; 33];
-
-    let mut scratch = vec![9; 40];
-    assert!(matches!(
-        reader.leaf_pointer(&lookup, &mut scratch, &Meter::new(0)),
-        Err(NativeReadError::Host("exhausted"))
-    ));
-    assert_eq!(scratch, vec![9; 40]);
-
-    assert!(matches!(
-        reader.leaf_pointer(&lookup, &mut scratch, &Meter::new(2)),
-        Err(NativeReadError::Host("exhausted"))
-    ));
-    assert_eq!(scratch, root);
-}
-
-#[test]
-fn short_node_and_empty_leaf_prepay_digest_comparisons() {
+fn short_node_fails_its_hash_and_empty_leaf_is_present() {
     let nodes = InMemoryKeyValueStore::new();
     let leaves = InMemoryKeyValueStore::new();
     let root = [42; 32];
     let short_node = vec![3, 1, 9];
-    nodes.put_one(root.to_vec(), short_node.clone()).unwrap();
+    nodes.put_one(root.to_vec(), short_node).unwrap();
     let reader = NativeHistoryReader::new(root, &nodes, &leaves);
-    let full = ScanMeter::new(usize::MAX);
-    let result = reader.with_records(NativeLeafKind::Data, &[7; 32], &full, |_| Ok(()));
+    let result = reader.with_records(NativeLeafKind::Data, &[7; 32], |_| Ok::<_, &str>(()));
     assert!(matches!(result, Err(NativeReadError::Invalid(NativeReadFault::NodeHash))));
-    assert_eq!(full.last.get(), short_node.len() * 3 + root.len());
-    let short = ScanMeter::new(full.total.get() - 1);
-    assert!(matches!(
-        reader.with_records(NativeLeafKind::Data, &[7; 32], &short, |_| Ok(())),
-        Err(NativeReadError::Host("scan exhausted"))
-    ));
 
     let (pointer, leaf) = frame(NativeLeafKind::Data, &0_u64.to_le_bytes(), &[]);
-    let leaf_len = leaf.len();
     let root = install(&nodes, &leaves, NativeLeafKind::Data, pointer, leaf, false);
     let reader = NativeHistoryReader::new(root, &nodes, &leaves);
-    let full = ScanMeter::new(usize::MAX);
     assert!(
         reader
-            .with_records(NativeLeafKind::Data, &[7; 32], &full, |_| Ok(()))
+            .with_records(NativeLeafKind::Data, &[7; 32], |_| Ok::<_, &str>(()))
             .unwrap()
             .is_some()
     );
-    assert_eq!(full.last.get(), leaf_len * 3 + pointer.len());
-    let short = ScanMeter::new(full.total.get() - 1);
-    let called = Cell::new(false);
-    assert!(matches!(
-        reader.with_records(NativeLeafKind::Data, &[7; 32], &short, |_| {
-            called.set(true);
-            Ok(())
-        }),
-        Err(NativeReadError::Host("scan exhausted"))
-    ));
-    assert!(!called.get());
 }
 
 #[test]
@@ -259,11 +124,10 @@ fn invalid_final_record_is_rejected_before_any_consumer() {
     let root = install(&nodes, &leaves, NativeLeafKind::Data, hash, bytes, false);
     let reader = NativeHistoryReader::new(root, &nodes, &leaves);
     let calls = Cell::new(0);
-    let result =
-        reader.with_records(NativeLeafKind::Data, &[7; 32], &Meter::new(usize::MAX), |_| {
-            calls.set(calls.get() + 1);
-            Ok(())
-        });
+    let result = reader.with_records(NativeLeafKind::Data, &[7; 32], |_| {
+        calls.set(calls.get() + 1);
+        Ok::<_, &str>(())
+    });
     assert!(matches!(result, Err(NativeReadError::Invalid(NativeReadFault::Truncated))));
     assert_eq!(calls.get(), 0);
 }
@@ -287,19 +151,22 @@ fn overflowing_lengths_and_empty_rows_obey_the_framing_bounds() {
     assert_eq!(rows.iter().next(), None);
 }
 
+/// Changed by DR-131 S6: the test was
+/// `consumer_failure_is_not_a_host_or_storage_failure`. The host failure
+/// went with host work. The test keeps its check that a consumer failure is
+/// reported as the consumer's error.
 #[test]
-fn consumer_failure_is_not_a_host_or_storage_failure() {
+fn consumer_failure_is_not_a_storage_failure() {
     let nodes = InMemoryKeyValueStore::new();
     let leaves = InMemoryKeyValueStore::new();
     let (hash, bytes) = frame(NativeLeafKind::Data, &0_u64.to_le_bytes(), &[]);
     let root = install(&nodes, &leaves, NativeLeafKind::Data, hash, bytes, false);
     let reader = NativeHistoryReader::new(root, &nodes, &leaves);
     let calls = Cell::new(0);
-    let result: Result<Option<()>, _> =
-        reader.with_records(NativeLeafKind::Data, &[7; 32], &Meter::new(usize::MAX), |_| {
-            calls.set(calls.get() + 1);
-            Err("consumer refused")
-        });
+    let result: Result<Option<()>, _> = reader.with_records(NativeLeafKind::Data, &[7; 32], |_| {
+        calls.set(calls.get() + 1);
+        Err("consumer refused")
+    });
     assert!(matches!(result, Err(NativeReadError::Consumer("consumer refused"))));
     assert_eq!(calls.get(), 1);
 }
@@ -314,7 +181,7 @@ fn malformed_raw_leaf_does_not_fall_back_to_a_valid_serialized_key() {
     leaves.put_one(hash.to_vec(), vec![255]).unwrap();
     let reader = NativeHistoryReader::new(root, &nodes, &leaves);
     assert!(matches!(
-        read(&reader, NativeLeafKind::Data, &Meter::new(usize::MAX)),
+        read(&reader, NativeLeafKind::Data),
         Err(NativeReadError::Invalid(NativeReadFault::Truncated))
     ));
 }
@@ -323,14 +190,13 @@ fn malformed_raw_leaf_does_not_fall_back_to_a_valid_serialized_key() {
 fn missing_and_corrupt_storage_are_errors_not_absence() {
     let nodes = InMemoryKeyValueStore::new();
     let leaves = InMemoryKeyValueStore::new();
-    let meter = Meter::new(usize::MAX);
     assert_eq!(
-        read(&NativeHistoryReader::new(digest(&[]), &nodes, &leaves), NativeLeafKind::Data, &meter)
+        read(&NativeHistoryReader::new(digest(&[]), &nodes, &leaves), NativeLeafKind::Data)
             .unwrap(),
         None
     );
     assert!(matches!(
-        read(&NativeHistoryReader::new([9; 32], &nodes, &leaves), NativeLeafKind::Data, &meter),
+        read(&NativeHistoryReader::new([9; 32], &nodes, &leaves), NativeLeafKind::Data),
         Err(NativeReadError::Invalid(NativeReadFault::MissingNode))
     ));
     let (hash, bytes) =
@@ -339,26 +205,26 @@ fn missing_and_corrupt_storage_are_errors_not_absence() {
     leaves.delete(vec![hash.to_vec()]).unwrap();
     let reader = NativeHistoryReader::new(root, &nodes, &leaves);
     assert!(matches!(
-        read(&reader, NativeLeafKind::Data, &meter),
+        read(&reader, NativeLeafKind::Data),
         Err(NativeReadError::Invalid(NativeReadFault::MissingLeaf))
     ));
     let mut wrong_kind = bytes.clone();
     wrong_kind[0] = 0;
     leaves.put_one(hash.to_vec(), wrong_kind).unwrap();
     assert!(matches!(
-        read(&reader, NativeLeafKind::Data, &meter),
+        read(&reader, NativeLeafKind::Data),
         Err(NativeReadError::Invalid(NativeReadFault::LeafKind))
     ));
     let (_, wrong_hash) =
         frame(NativeLeafKind::Data, &bincode::serialize(&vec![vec![4_u8]]).unwrap(), &[]);
     leaves.put_one(hash.to_vec(), wrong_hash).unwrap();
     assert!(matches!(
-        read(&reader, NativeLeafKind::Data, &meter),
+        read(&reader, NativeLeafKind::Data),
         Err(NativeReadError::Invalid(NativeReadFault::LeafHash))
     ));
     nodes.put_one(root.to_vec(), vec![]).unwrap();
     assert!(matches!(
-        read(&reader, NativeLeafKind::Data, &meter),
+        read(&reader, NativeLeafKind::Data),
         Err(NativeReadError::Invalid(NativeReadFault::NodeHash))
     ));
 }
@@ -407,21 +273,14 @@ fn full_depth_traversal_consumes_the_key_and_does_not_read_an_exhausted_child() 
         nodes.put_one(pointer.to_vec(), bytes).unwrap();
     }
     let reader = NativeHistoryReader::new(pointer, &nodes, &leaves);
-    let meter = Meter::new(usize::MAX);
-    assert_eq!(read(&reader, NativeLeafKind::Data, &meter).unwrap(), Some(rows));
-    assert_eq!(meter.calls.load(Ordering::Relaxed), 1 + 2 * 33 + 2);
+    assert_eq!(read(&reader, NativeLeafKind::Data).unwrap(), Some(rows));
     let mut node = vec![0, 160];
     node.extend_from_slice(&[7; 32]);
     node.extend_from_slice(&[99; 32]);
     let root = digest(&node);
     nodes.put_one(root.to_vec(), node).unwrap();
     assert_eq!(
-        read(
-            &NativeHistoryReader::new(root, &nodes, &leaves),
-            NativeLeafKind::Data,
-            &Meter::new(usize::MAX)
-        )
-        .unwrap(),
+        read(&NativeHistoryReader::new(root, &nodes, &leaves), NativeLeafKind::Data).unwrap(),
         None
     );
 }
@@ -507,51 +366,15 @@ async fn native_factory_keeps_the_storage_handles_through_checkpoint_clone_and_r
     for history in [current.as_ref().as_ref(), cloned.as_ref(), reset.as_ref()] {
         let values = history
             .native_history_reader(root)
-            .with_records(NativeLeafKind::Data, &channel, &Meter::new(usize::MAX), |rows| {
-                Ok(rows
-                    .iter()
-                    .map(|bytes| bincode::deserialize::<Datum<String>>(bytes).unwrap().a)
-                    .collect::<Vec<_>>())
+            .with_records(NativeLeafKind::Data, &channel, |rows| {
+                Ok::<_, &str>(
+                    rows.iter()
+                        .map(|bytes| bincode::deserialize::<Datum<String>>(bytes).unwrap().a)
+                        .collect::<Vec<_>>(),
+                )
             })
             .unwrap()
             .unwrap();
         assert_eq!(values, ["v"]);
-    }
-}
-
-#[test]
-fn concurrent_readers_share_the_limit_without_publishing_unchecked_records() {
-    let nodes = InMemoryKeyValueStore::new();
-    let leaves = InMemoryKeyValueStore::new();
-    let (hash, bytes) =
-        frame(NativeLeafKind::Data, &bincode::serialize(&vec![vec![5_u8]]).unwrap(), &[]);
-    let root = install(&nodes, &leaves, NativeLeafKind::Data, hash, bytes, false);
-    let reader = NativeHistoryReader::new(root, &nodes, &leaves);
-    for _ in 0..32 {
-        let meter = Meter::new(5);
-        let consumers = AtomicUsize::new(0);
-        std::thread::scope(|scope| {
-            let workers: Vec<_> = (0..2)
-                .map(|_| {
-                    scope.spawn(|| {
-                        let result =
-                            reader.with_records(NativeLeafKind::Data, &[7; 32], &meter, |rows| {
-                                assert_eq!(rows.iter().next().unwrap(), [5]);
-                                consumers.fetch_add(1, Ordering::Relaxed);
-                                Ok(())
-                            });
-                        assert!(matches!(
-                            result,
-                            Ok(Some(())) | Err(NativeReadError::Host("exhausted"))
-                        ));
-                    })
-                })
-                .collect();
-            for worker in workers {
-                worker.join().unwrap();
-            }
-        });
-        assert_eq!(meter.calls.load(Ordering::Relaxed), 5);
-        assert!(consumers.load(Ordering::Relaxed) <= 1);
     }
 }

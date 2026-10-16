@@ -7,7 +7,7 @@ use models::rhoapi::{
 
 use crate::env::Env;
 use crate::error::EvalError;
-use crate::eval::{eval, eval_metered};
+use crate::eval::eval;
 
 fn par_of(instance: ExprInstance) -> Par {
     Par {
@@ -64,153 +64,26 @@ fn evar_resolves_from_env() {
     assert_int(&result, 7);
 }
 
+/// Changed by DR-131: the metered push and lookup went with host work. The
+/// test keeps its check that an owned push builds the map that `put` builds.
 #[test]
-fn owned_environment_push_matches_put_and_prepays_growth() {
-    use std::cell::Cell;
-
-    use shared::rust::clone_backing::BackingError;
-
+fn owned_environment_push_matches_put() {
     let mut owned = Env::<Par>::new();
     let mut copied = Env::<Par>::new();
     for value in 0..16 {
-        owned.push(gint(value)).unwrap();
+        owned.push(gint(value)).expect("a level below i32::MAX");
         copied = copied.put(gint(value));
         assert_eq!(owned.env_map, copied.env_map);
         assert_eq!(owned.level, copied.level);
     }
-    let used = Cell::new([0usize; 3]);
-    let full = |operations: usize, scanned: usize, backing: usize| {
-        let mut next = used.get();
-        for (total, amount) in next.iter_mut().zip([operations, scanned, backing]) {
-            *total += amount;
-        }
-        used.set(next);
-        Ok(())
-    };
-    let mut paid = Env::<Par>::new();
-    paid.push_metered(gint(7), &full).unwrap();
-    assert_eq!(paid.get(&0), Some(gint(7)));
-    let required = used.get();
-    assert!(required.iter().all(|value| *value > 0));
-    for dimension in 0..3 {
-        let mut limit = required;
-        limit[dimension] -= 1;
-        let spent = Cell::new([0usize; 3]);
-        let meter = |operations: usize, scanned: usize, backing: usize| {
-            let mut next = spent.get();
-            for (total, amount) in next.iter_mut().zip([operations, scanned, backing]) {
-                *total += amount;
-            }
-            if next.iter().zip(limit).any(|(value, max)| *value > max) {
-                return Err(BackingError::Rejected);
-            }
-            spent.set(next);
-            Ok(())
-        };
-        let mut empty = Env::<Par>::new();
-        assert_eq!(
-            empty.push_metered(gint(7), &meter),
-            Err(BackingError::Rejected)
-        );
-        assert!(empty.env_map.is_empty());
-        assert_eq!(empty.level, 0);
-    }
-
-    let lookup_used = Cell::new([0usize; 3]);
-    let lookup_full = |operations: usize, scanned: usize, backing: usize| {
-        let mut next = lookup_used.get();
-        for (total, amount) in next.iter_mut().zip([operations, scanned, backing]) {
-            *total += amount;
-        }
-        lookup_used.set(next);
-        Ok(())
-    };
-    assert_eq!(paid.get_metered(&0, &lookup_full), Ok(Some(gint(7))));
-    let lookup_required = lookup_used.get();
-    assert!(lookup_required.iter().all(|value| *value > 0));
-    for dimension in 0..3 {
-        let mut limit = lookup_required;
-        limit[dimension] -= 1;
-        let spent = Cell::new([0usize; 3]);
-        let meter = |operations: usize, scanned: usize, backing: usize| {
-            let mut next = spent.get();
-            for (total, amount) in next.iter_mut().zip([operations, scanned, backing]) {
-                *total += amount;
-            }
-            if next.iter().zip(limit).any(|(value, max)| *value > max) {
-                return Err(BackingError::Rejected);
-            }
-            spent.set(next);
-            Ok(())
-        };
-        assert_eq!(paid.get_metered(&0, &meter), Err(BackingError::Rejected));
-        assert_eq!(paid.get(&0), Some(gint(7)));
-    }
 }
 
+/// Changed by DR-131: the metered evaluation went with host work. The test
+/// keeps its check that a guard over a pushed binding evaluates to true.
 #[test]
-fn metered_environment_copy_rejects_unfunded_arc_cleanup() {
-    use std::cell::Cell;
-    use std::sync::Arc;
-
-    use shared::rust::clone_backing::{self, BackingError};
-
-    let value = Arc::<str>::from("payload".repeat(1024));
-    let mut env = Env::<Arc<str>>::new();
-    env.push(value.clone()).unwrap();
-    let copied_scans = Cell::new(0usize);
-    // Changed by D-O1 (DR-109): the lookup charges a block copy and cleanup.
-    // The limit pays the lookup and the block copy, so the cleanup is
-    // unfunded. The lookup passes only when the limit also pays the whole
-    // cleanup.
-    // clone_backing::reserve(&value, &|_, scanned, _| {
-    clone_backing::reserve_blocks(&value, &|_, scanned, _| {
-        copied_scans.set(copied_scans.get() + scanned);
-        Ok(())
-    })
-    .expect("an unlimited meter");
-    let cleanup_scans = Cell::new(0usize);
-    clone_backing::inspect_blocks(&value, &|_, scanned, _| {
-        cleanup_scans.set(cleanup_scans.get() + scanned);
-        Ok(())
-    })
-    .expect("an unlimited meter");
-    assert!(cleanup_scans.get() >= value.len());
-    let lookup_scans = env.env_map.capacity().max(1) * std::mem::size_of::<i32>();
-    let lookup_within = |limit: usize| {
-        let used = Cell::new(0usize);
-        let meter = |_: usize, scanned: usize, _: usize| {
-            let next = used.get() + scanned;
-            if next > limit {
-                Err(BackingError::Rejected)
-            } else {
-                used.set(next);
-                Ok(())
-            }
-        };
-        env.get_metered(&0, &meter)
-    };
-    let limit = lookup_scans + copied_scans.get();
-    assert_eq!(lookup_within(limit), Err(BackingError::Rejected));
-    assert_eq!(
-        lookup_within(limit + cleanup_scans.get() - 1),
-        Err(BackingError::Rejected)
-    );
-    assert_eq!(
-        lookup_within(limit + cleanup_scans.get()),
-        Ok(Some(value.clone()))
-    );
-    assert_eq!(env.get(&0), Some(value));
-}
-
-#[test]
-fn metered_guard_evaluation_preserves_results_and_rejects_each_short_dimension() {
-    use std::cell::Cell;
-
-    use shared::rust::clone_backing::BackingError;
-
+fn guard_evaluation_reads_a_pushed_binding() {
     let mut env = Env::<Par>::new();
-    env.push(gint(7)).unwrap();
+    env.push(gint(7)).expect("a level below i32::MAX");
     let guard = par_of(ExprInstance::EAndBody(EAnd {
         p1: Some(par_of(ExprInstance::EEqBody(EEq {
             p1: Some(evar(0)),
@@ -220,39 +93,6 @@ fn metered_guard_evaluation_preserves_results_and_rejects_each_short_dimension()
     }));
     let expected = eval(&guard, &env).unwrap();
     assert_bool(&expected, true);
-    let used = Cell::new([0usize; 3]);
-    let full = |operations: usize, scanned: usize, backing: usize| {
-        let mut next = used.get();
-        for (total, amount) in next.iter_mut().zip([operations, scanned, backing]) {
-            *total += amount;
-        }
-        used.set(next);
-        Ok(())
-    };
-    assert_eq!(eval_metered(&guard, &env, &full), Ok(expected));
-    let required = used.get();
-    assert!(required.iter().all(|value| *value > 0));
-    for dimension in 0..3 {
-        let mut limit = required;
-        limit[dimension] -= 1;
-        let spent = Cell::new([0usize; 3]);
-        let meter = |operations: usize, scanned: usize, backing: usize| {
-            let mut next = spent.get();
-            for (total, amount) in next.iter_mut().zip([operations, scanned, backing]) {
-                *total += amount;
-            }
-            if next.iter().zip(limit).any(|(value, max)| *value > max) {
-                return Err(BackingError::Rejected);
-            }
-            spent.set(next);
-            Ok(())
-        };
-        assert_eq!(
-            eval_metered(&guard, &env, &meter),
-            Err(EvalError::HostWork(BackingError::Rejected))
-        );
-        assert_eq!(env.get(&0), Some(gint(7)));
-    }
 }
 
 #[test]
@@ -675,118 +515,4 @@ fn determinism_same_input_same_output() {
     let r1 = eval(&expr, &env).unwrap();
     let r2 = eval(&expr, &env).unwrap();
     assert_eq!(r1, r2);
-}
-
-/// D-E2 (DR-109): the charge of one metered evaluation, by dimension.
-fn evaluation_charge(par: &Par, env: &Env<Par>) -> [usize; 3] {
-    walk_charge(|meter| {
-        eval_metered(par, env, meter).expect("an evaluation with an unlimited meter");
-        Ok(())
-    })
-}
-
-/// D-E2 (DR-109): the charge of one walk of the shared walker, by dimension.
-fn walk_charge(
-    walk: impl FnOnce(
-        &dyn shared::rust::clone_backing::BackingMeter,
-    ) -> Result<(), shared::rust::clone_backing::BackingError>,
-) -> [usize; 3] {
-    let used = std::cell::Cell::new([0usize; 3]);
-    let meter = |operations: usize, scanned: usize, backing: usize| {
-        let [o, s, b] = used.get();
-        used.set([o + operations, s + scanned, b + backing]);
-        Ok::<(), shared::rust::clone_backing::BackingError>(())
-    };
-    walk(&meter).expect("an unlimited meter");
-    used.get()
-}
-
-fn copy_charge(par: &Par) -> [usize; 3] {
-    walk_charge(|meter| shared::rust::clone_backing::reserve_blocks_copy_and_cleanup(par, meter))
-}
-
-fn inspection_charge(par: &Par) -> [usize; 3] {
-    walk_charge(|meter| shared::rust::clone_backing::inspect_blocks(par, meter))
-}
-
-fn total(parts: &[[usize; 3]]) -> [usize; 3] {
-    parts
-        .iter()
-        .fold([0; 3], |[o, s, b], [operations, scanned, backing]| {
-            [o + operations, s + scanned, b + backing]
-        })
-}
-
-/// D-E2 (DR-109): the charge of the outer evaluation of a Par with one
-/// expression whose arm returns `result`: the copy of the Par, the setup,
-/// the copy of the expression, the arm's setup, and the concatenation of
-/// the accumulator (the Par without its expressions) with the result.
-fn outer_charge(par: &Par, result: &Par) -> Vec<[usize; 3]> {
-    assert_eq!(par.exprs.len(), 1);
-    let par_setup = std::mem::size_of::<Par>() + std::mem::size_of::<Vec<Expr>>();
-    let expr_setup = std::mem::size_of::<Par>() + std::mem::size_of::<Expr>();
-    let accumulator = Par {
-        exprs: Vec::new(),
-        ..par.clone()
-    };
-    let unions = accumulator.locally_free.len() + result.locally_free.len();
-    vec![
-        copy_charge(par),
-        [1, par.exprs.len(), par_setup],
-        walk_charge(|meter| {
-            shared::rust::clone_backing::reserve_blocks_copy_and_cleanup(&par.exprs[0], meter)
-        }),
-        [4, 0, expr_setup],
-        copy_charge(&accumulator),
-        copy_charge(result),
-        [2, unions, 0],
-    ]
-}
-
-/// D-E2 (DR-109): an equality evaluates both operands and then traverses
-/// each owned result three times: the NaN scan, the comparison and the
-/// release. The charge is exactly the outer evaluation, the two operand
-/// evaluations and three block inspections of each result.
-#[test]
-fn equality_charges_three_traversals_of_each_operand() {
-    let env = Env::<Par>::new();
-    let left = gstr(&"a".repeat(4_096));
-    let right = gstr(&"a".repeat(4_096));
-    let equality = par_of(ExprInstance::EEqBody(EEq {
-        p1: Some(left.clone()),
-        p2: Some(right.clone()),
-    }));
-    let left_result = eval(&left, &env).expect("left operand");
-    let right_result = eval(&right, &env).expect("right operand");
-    let result = eval(&equality, &env).expect("equality");
-    assert_bool(&result, true);
-    let mut parts = outer_charge(&equality, &result);
-    parts.push(evaluation_charge(&left, &env));
-    parts.push(evaluation_charge(&right, &env));
-    for _ in 0..3 {
-        parts.push(inspection_charge(&left_result));
-        parts.push(inspection_charge(&right_result));
-    }
-    assert_eq!(evaluation_charge(&equality, &env), total(&parts));
-}
-
-/// D-E2 (DR-109): a unary operator evaluates its operand and extracts the
-/// single value of the owned result. The extraction charges a block copy
-/// and cleanup and one more inspection, which pays the release of the
-/// result.
-#[test]
-fn single_value_extraction_charges_a_copy_and_the_release_of_its_operand() {
-    let env = Env::<Par>::new();
-    let operand = gbool(true);
-    let negation = par_of(ExprInstance::ENotBody(ENot {
-        p: Some(operand.clone()),
-    }));
-    let operand_result = eval(&operand, &env).expect("operand");
-    let result = eval(&negation, &env).expect("negation");
-    assert_bool(&result, false);
-    let mut parts = outer_charge(&negation, &result);
-    parts.push(evaluation_charge(&operand, &env));
-    parts.push(copy_charge(&operand_result));
-    parts.push(inspection_charge(&operand_result));
-    assert_eq!(evaluation_charge(&negation, &env), total(&parts));
 }

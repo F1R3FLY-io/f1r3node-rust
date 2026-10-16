@@ -1,23 +1,16 @@
 #[cfg(test)]
 use std::cmp::Ordering;
-use std::mem::size_of;
 use std::sync::{Arc, Mutex};
 
-use models::rust::host_work::HostWorkDimension;
-use rspace_plus_plus::rspace::errors::RSpaceError;
 use rspace_plus_plus::rspace::operation_context::{self, CausalPath};
 use rspace_plus_plus::rspace::rspace_interface::{
     RSpaceOperationCompletion, RSpaceOperationSource,
 };
 use rspace_plus_plus::rspace::trace::event::COMM;
 use serde::Serialize;
-use shared::rust::clone_backing::arc_allocation_bytes;
 use thiserror::Error;
 
-use super::{
-    allocate, work, CheckedNativeOperationTrace, HostWorkBudget, InterpreterError,
-    NativeOperationRecord,
-};
+use super::{CheckedNativeOperationTrace, InterpreterError, NativeOperationRecord};
 use crate::rust::interpreter::accounting::byte_receipts::ByteObservation;
 use crate::rust::interpreter::accounting::native_phlo_rules::{
     NativeBudgetReplayDecision, NativeBudgetTraceError,
@@ -44,7 +37,7 @@ pub enum NativeReplayError {
     #[error(transparent)]
     Budget(#[from] NativeBudgetTraceError),
     #[error(transparent)]
-    Host(#[from] InterpreterError),
+    Interpreter(#[from] InterpreterError),
     #[error("native replay operation context is absent or does not occur in this trace")]
     Context,
     #[error("native replay introduction source differs from its occurrence")]
@@ -91,7 +84,6 @@ impl From<LedgerError> for NativeReplayError {
 struct ReplayInner {
     authority: Option<ReplayAuthorityBinding>,
     trace: CheckedNativeOperationTrace,
-    host: HostWorkBudget,
     identity: Arc<()>,
     max_path: usize,
     state: Mutex<ReplayState>,
@@ -166,28 +158,6 @@ fn compare_path(actual: &CausalPath, expected: &[(u64, u64)]) -> Ordering {
     order
 }
 
-fn checked_add(left: usize, right: usize) -> Result<usize, NativeReplayError> {
-    left.checked_add(right)
-        .ok_or(InterpreterError::HostWorkRejected.into())
-}
-
-fn checked_mul(left: usize, right: usize) -> Result<usize, NativeReplayError> {
-    left.checked_mul(right)
-        .ok_or(InterpreterError::HostWorkRejected.into())
-}
-
-fn reserve_source(
-    host: &HostWorkBudget,
-    operations: usize,
-    scanned: usize,
-    backing: usize,
-) -> Result<(), RSpaceError> {
-    work(host, HostWorkDimension::VerificationOperations, operations)?;
-    work(host, HostWorkDimension::VerificationBytes, scanned)?;
-    work(host, HostWorkDimension::SearchStateBytes, backing)?;
-    Ok(())
-}
-
 fn accepted_owner(
     link: NativeObservationLink,
     trace: &CheckedNativeOperationTrace,
@@ -214,41 +184,16 @@ fn accepted_owner(
 }
 
 impl CheckedNativeOperationTrace {
-    pub fn into_replay(
-        self,
-        host: HostWorkBudget,
-    ) -> Result<NativeOperationReplay, NativeReplayError> {
+    pub fn into_replay(self) -> Result<NativeOperationReplay, NativeReplayError> {
         let count = self.operation_count();
-        work(
-            &host,
-            HostWorkDimension::VerificationOperations,
-            checked_add(count, 4)?,
-        )?;
-        let inner_bytes =
-            arc_allocation_bytes::<ReplayInner>().ok_or(InterpreterError::HostWorkRejected)?;
-        let identity_bytes =
-            arc_allocation_bytes::<()>().ok_or(InterpreterError::HostWorkRejected)?;
-        work(
-            &host,
-            HostWorkDimension::SearchStateBytes,
-            checked_add(inner_bytes, identity_bytes)?,
-        )?;
-        let mut slots = allocate(count, &host)?;
-        slots.resize(count, SlotState::Available);
-        let undo = allocate(count, &host)?;
-        let mut journal_slots = allocate(count, &host)?;
-        journal_slots.resize(count, 0);
+        let slots = vec![SlotState::Available; count];
+        let undo = Vec::with_capacity(count);
+        let mut journal_slots = vec![0; count];
         for slot in 0..count {
             journal_slots[self.journal_index(slot).expect("checked journal index")] = slot;
         }
         let attempts = self.journal.recording.attempts.len();
-        work(
-            &host,
-            HostWorkDimension::VerificationOperations,
-            checked_add(checked_mul(count, 4)?, attempts)?,
-        )?;
-        let mut attempt_owners = allocate(attempts, &host)?;
-        attempt_owners.resize(attempts, None);
+        let mut attempt_owners = vec![None; attempts];
         for (journal, row) in self.journal.operations.iter().enumerate() {
             for link in [
                 Some(row.introduction),
@@ -264,7 +209,7 @@ impl CheckedNativeOperationTrace {
                 }
             }
         }
-        let mut retry_predecessors = allocate(count, &host)?;
+        let mut retry_predecessors = Vec::with_capacity(count);
         for slot in 0..count {
             let row = self.operation(slot).ok_or(NativeReplayError::Stage)?;
             let position = self.journal_index(slot).ok_or(NativeReplayError::Stage)?;
@@ -287,13 +232,7 @@ impl CheckedNativeOperationTrace {
             retry_predecessors.push([introduction, comm]);
         }
         let paths = &self.journal.recording.paths;
-        let mut slot_index = allocate::<(PathKey, u32)>(count, &host)?;
-        work(&host, HostWorkDimension::VerificationOperations, count)?;
-        work(
-            &host,
-            HostWorkDimension::VerificationBytes,
-            checked_mul(count, PathKey::BYTES)?,
-        )?;
+        let mut slot_index = Vec::<(PathKey, u32)>::with_capacity(count);
         for slot in 0..count {
             let row = self.operation(slot).ok_or(NativeReplayError::Stage)?;
             slot_index.push((
@@ -301,22 +240,7 @@ impl CheckedNativeOperationTrace {
                 u32::try_from(slot).map_err(|_| NativeReplayError::Stage)?,
             ));
         }
-        sort(&mut slot_index, |left, right| {
-            work(&host, HostWorkDimension::VerificationOperations, 1)?;
-            work(
-                &host,
-                HostWorkDimension::VerificationBytes,
-                2 * PathKey::BYTES,
-            )?;
-            Ok(left.0.cmp(&right.0))
-        })?;
-        let pairs = count.saturating_sub(1);
-        work(&host, HostWorkDimension::VerificationOperations, pairs)?;
-        work(
-            &host,
-            HostWorkDimension::VerificationBytes,
-            checked_mul(pairs, 2 * PathKey::BYTES)?,
-        )?;
+        sort(&mut slot_index, |left, right| Ok(left.0.cmp(&right.0)))?;
         if slot_index.windows(2).any(|pair| pair[0].0 == pair[1].0) {
             return Err(NativeReplayError::Context);
         }
@@ -332,7 +256,6 @@ impl CheckedNativeOperationTrace {
             inner: Arc::new(ReplayInner {
                 authority: None,
                 trace: self,
-                host,
                 identity: Arc::new(()),
                 max_path,
                 state: Mutex::new(ReplayState::new(slots, undo, total)),
@@ -394,29 +317,21 @@ impl NativeOperationReplay {
 
     fn ready(&self, state: &ReplayState, slot: usize) -> Result<bool, NativeReplayError> {
         state
-            .ready(slot, self.predecessors(slot)?)
+            .ready(slot, self.predecessors(slot))
             .map_err(Into::into)
     }
 
-    fn predecessors(
-        &self,
-        slot: usize,
-    ) -> Result<impl Iterator<Item = usize> + '_, NativeReplayError> {
+    fn predecessors(&self, slot: usize) -> impl Iterator<Item = usize> + '_ {
         let predecessors = &self
             .inner
             .trace
             .operation(slot)
             .expect("checked replay slot")
             .predecessors;
-        work(
-            &self.inner.host,
-            HostWorkDimension::VerificationOperations,
-            checked_add(predecessors.len(), 3)?,
-        )?;
-        Ok(predecessors
+        predecessors
             .iter()
             .map(|index| self.inner.journal_slots[*index])
-            .chain(self.inner.retry_predecessors[slot].into_iter().flatten()))
+            .chain(self.inner.retry_predecessors[slot].into_iter().flatten())
     }
 
     async fn wait_ready(&self, source: RSpaceOperationSource<'_>) -> Result<(), NativeReplayError> {
@@ -442,7 +357,7 @@ impl NativeOperationReplay {
         let slot = self.current_slot(source)?;
         let mut state = self.inner.state.lock().expect("native replay state");
         Ok(state
-            .reserve_ready(slot, self.predecessors(slot)?)?
+            .reserve_ready(slot, self.predecessors(slot))?
             .map(|serial| self.reservation(slot, serial)))
     }
 
@@ -456,12 +371,6 @@ impl NativeOperationReplay {
     }
 
     fn current_slot(&self, source: RSpaceOperationSource<'_>) -> Result<usize, NativeReplayError> {
-        work(
-            &self.inner.host,
-            HostWorkDimension::VerificationOperations,
-            1,
-        )?;
-        work(&self.inner.host, HostWorkDimension::VerificationBytes, 64)?;
         let current = operation_context::current().ok_or(NativeReplayError::Context)?;
         if current.session != self.inner.trace.journal.recording.session
             || current.path.len() > self.inner.max_path
@@ -508,13 +417,7 @@ impl NativeOperationReplay {
             .operation(slot)
             .expect("checked native replay slot")
             .source;
-        let meter = |operations, scanned, backing| {
-            reserve_source(&self.inner.host, operations, scanned, backing)
-        };
-        if !expected
-            .metered_matches(source, &meter)
-            .map_err(|error| NativeReplayError::Host(error.into()))?
-        {
+        if !expected.matches(source) {
             return Err(NativeReplayError::Source);
         }
         Ok(slot)
@@ -525,17 +428,6 @@ impl NativeOperationReplay {
         &self,
         path: &CausalPath,
     ) -> Result<usize, NativeReplayError> {
-        let comparisons = (usize::BITS - self.inner.slot_index.len().leading_zeros()) as usize;
-        work(
-            &self.inner.host,
-            HostWorkDimension::VerificationOperations,
-            comparisons,
-        )?;
-        work(
-            &self.inner.host,
-            HostWorkDimension::VerificationBytes,
-            checked_mul(comparisons, 2 * PathKey::BYTES)?,
-        )?;
         let key = PathKey::of(path);
         let position = self
             .inner
@@ -574,9 +466,7 @@ impl NativeOperationReplay {
 }
 
 impl NativeReplayReservation {
-    // Changed by D-E3 (DR-110): the footprint inspects each channel.
-    // pub fn authenticate_footprint<C: Serialize>(
-    pub fn authenticate_footprint<C: Serialize + shared::rust::clone_backing::CloneBacking>(
+    pub fn authenticate_footprint<C: Serialize>(
         &mut self,
         channels: &[C],
         joins: &[Vec<C>],
@@ -584,20 +474,8 @@ impl NativeReplayReservation {
         if self.stage != ObservationStage::Footprint {
             return Err(NativeReplayError::Stage);
         }
-        let actual = locked_footprint(channels, joins, &self.replay.inner.host)?;
+        let actual = locked_footprint(channels, joins)?;
         let expected = &self.operation().footprint;
-        work(
-            &self.replay.inner.host,
-            HostWorkDimension::VerificationOperations,
-            checked_add(actual.len(), 1)?,
-        )?;
-        for channel in &actual {
-            work(
-                &self.replay.inner.host,
-                HostWorkDimension::VerificationBytes,
-                channel.len(),
-            )?;
-        }
         if actual.as_slice() != expected.as_ref() {
             return Err(NativeReplayError::Footprint);
         }
@@ -645,14 +523,7 @@ impl NativeReplayReservation {
             .comm
             .as_ref()
             .ok_or(NativeReplayError::Stage)?;
-        let meter = |operations, scanned, backing| {
-            reserve_source(&self.replay.inner.host, operations, scanned, backing)
-        };
-        if !expected
-            .source
-            .metered_matches(source, &meter)
-            .map_err(|error| NativeReplayError::Host(error.into()))?
-        {
+        if !expected.source.matches(source) {
             return Err(NativeReplayError::CommSource);
         }
         Ok(())
@@ -671,9 +542,7 @@ impl NativeReplayReservation {
                 (journal.recording.retries[index].accepted_attempt, true)
             }
         };
-        let decision = journal
-            .budget
-            .authenticate(index, observation, &self.replay.inner.host)?;
+        let decision = journal.budget.authenticate(index, observation)?;
         let decision = match (decision, retry) {
             (NativeBudgetReplayDecision::Accepted { .. }, true) => {
                 NativeBudgetReplayDecision::Accepted { usage: 0 }
@@ -740,11 +609,6 @@ impl NativeReplayReservation {
         if self.stage != ObservationStage::Complete {
             return Err(NativeReplayError::Stage);
         }
-        work(
-            &self.replay.inner.host,
-            HostWorkDimension::VerificationOperations,
-            24,
-        )?;
         let authority = self
             .replay
             .inner

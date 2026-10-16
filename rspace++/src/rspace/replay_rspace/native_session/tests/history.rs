@@ -6,25 +6,9 @@ use crate::rspace::hashing::stable_hash_provider::{hash, hash_from_vec};
 use crate::rspace::history::history_reader::HistoryReaderBase;
 use crate::rspace::history::instances::radix_history::RadixHistory;
 use crate::rspace::history::native_reader::{
-    NativeLeafKind, NativeReadCharge, NativeReadMeter, decode_history_record,
+    NativeLeafKind, decode_continuation, decode_datum, decode_join,
 };
 use crate::rspace::history::radix_tree::{Item, empty_node, encode};
-
-struct ChargeCounter<'a> {
-    operations: &'a Cell<usize>,
-    scanned: &'a Cell<usize>,
-}
-
-impl NativeReadMeter for ChargeCounter<'_> {
-    type Error = RSpaceError;
-
-    fn reserve(&self, charge: NativeReadCharge) -> Result<(), Self::Error> {
-        self.operations
-            .set(self.operations.get() + charge.operations);
-        self.scanned.set(self.scanned.get() + charge.scanned_bytes);
-        Ok(())
-    }
-}
 
 struct ForbiddenReader;
 
@@ -68,88 +52,43 @@ async fn retained_history() -> History {
     play.get_history_repository()
 }
 
+/// Changed by DR-131 S6: the test was
+/// `cold_typed_rows_prepay_cleanup_before_cache_handoff`. The charge and
+/// rejection checks went with host work. The typed decoder is deleted, so
+/// the reference decode is bincode, the stored format. The test keeps its
+/// checks that the session decodes every stored row and that the read puts
+/// nothing in the cache.
 #[tokio::test]
-async fn cold_typed_rows_prepay_cleanup_before_cache_handoff() {
+async fn cold_rows_decode_without_a_cache_handoff() {
     let history = retained_history().await;
     let session = isolated(history.clone());
     let channel = "data".to_owned();
     let projection = hash(&channel);
     let key: [u8; 32] = projection.0.as_slice().try_into().unwrap();
-    let frame_operations = Cell::new(0);
-    let frame_scanned = Cell::new(0);
-    let decode_operations = Cell::new(0);
-    let decode_scanned = Cell::new(0);
     let rows_count = Cell::new(0);
     history
         .native_history_reader(session.root)
-        .with_records(
-            NativeLeafKind::Data,
-            &key,
-            &ChargeCounter {
-                operations: &frame_operations,
-                scanned: &frame_scanned,
-            },
-            |rows| {
-                rows_count.set(rows.len());
-                for row in rows.iter() {
-                    // Changed by D-S2 (DR-95): the session decodes its rows in
-                    // History mode, so the reference decode uses it too.
-                    // let datum: Datum<String> = decode_record(row, &ChargeCounter {
-                    let datum: Datum<String> = decode_history_record(row, &ChargeCounter {
-                        operations: &decode_operations,
-                        scanned: &decode_scanned,
-                    })
-                    .unwrap();
-                    assert_eq!(datum.a, "retained");
-                }
-                Ok::<_, RSpaceError>(())
-            },
-        )
+        .with_records(NativeLeafKind::Data, &key, |rows| {
+            rows_count.set(rows.len());
+            for row in rows.iter() {
+                let datum: Datum<String> = bincode::deserialize(row).unwrap();
+                assert_eq!(datum.a, "retained");
+            }
+            Ok::<_, RSpaceError>(())
+        })
         .unwrap()
         .unwrap();
-    let actual_operations = Cell::new(0);
-    let actual_scanned = Cell::new(0);
     let values = session
-        .read_records::<Datum<String>>(
+        .read_records(
             NativeLeafKind::Data,
             // Changed by D-C2d (D-S1, DR-96): the reader takes the digest's
             // 32 bytes.
             // projection,
             &key,
-            &|operations, scanned, _| {
-                actual_operations.set(actual_operations.get() + operations);
-                actual_scanned.set(actual_scanned.get() + scanned);
-                Ok(())
-            },
+            decode_datum::<String>,
         )
         .unwrap();
     assert_eq!(values.len(), rows_count.get());
-    assert!(decode_operations.get() > 0);
-    assert!(decode_scanned.get() > 0);
-    assert_eq!(
-        actual_operations.get(),
-        frame_operations.get() + 2 * rows_count.get() + 1 + 2 * decode_operations.get()
-    );
-    assert_eq!(actual_scanned.get(), frame_scanned.get() + 2 * decode_scanned.get());
-    let limit = actual_scanned.get() - 1;
-    let used = Cell::new(0usize);
-    let rejected = session.read_records::<Datum<String>>(
-        NativeLeafKind::Data,
-        // Changed by D-C2d (D-S1, DR-96): the reader takes the digest's 32
-        // bytes.
-        // hash(&channel),
-        &key,
-        &|_, scanned, _| {
-            let next = used.get() + scanned;
-            if next > limit {
-                Err(RSpaceError::HostWorkRejected)
-            } else {
-                used.set(next);
-                Ok(())
-            }
-        },
-    );
-    assert!(matches!(rejected, Err(RSpaceError::HostWorkRejected)));
     // Changed by D-C2c (D-S1, DR-96): the native session caches in its
     // digest-keyed store.
     // assert!(session.space.get_store().snapshot().data_flat().is_empty());
@@ -207,20 +146,17 @@ async fn cold_and_warm_native_queries_never_use_the_legacy_reader() {
     }
 }
 
+/// Changed by DR-131 S6: the test was
+/// `metered_current_root_reader_preserves_legacy_projection_values`. The
+/// charge check went with host work. The test keeps its checks of the root
+/// and of the projections.
 #[tokio::test]
-async fn metered_current_root_reader_preserves_legacy_projection_values() {
+async fn current_root_reader_preserves_legacy_projection_values() {
     let history = retained_history().await;
     let root = history.root();
-    let calls = AtomicUsize::new(0);
-    let native = history
-        .get_current_history_reader_native(&|_, _, _| {
-            calls.fetch_add(1, Ordering::Relaxed);
-            Ok(())
-        })
-        .unwrap();
+    let native = history.get_current_history_reader_native();
     let legacy = history.get_history_reader(&root).unwrap();
     assert_eq!(native.root(), root);
-    assert!(calls.load(Ordering::Relaxed) > 0);
     assert_eq!(
         native.get_data_proj_generic(&"data".to_owned()),
         legacy.get_data_proj_generic(&"data".to_owned())
@@ -269,95 +205,22 @@ async fn cold_reads_remain_on_the_session_root_after_repository_root_changes() {
     );
 }
 
-#[tokio::test]
-async fn every_cold_read_reservation_cut_leaves_no_partial_typed_cache() {
-    let history = retained_history().await;
-    let root = history.root();
-    for kind in 0..3 {
-        let baseline = isolated(history.clone());
-        let before = baseline.epoch.calls.load(Ordering::Relaxed);
-        query(&baseline, kind).await.unwrap();
-        let calls = baseline.epoch.calls.load(Ordering::Relaxed) - before;
-        for accepted in 0..calls {
-            let session = isolated(history.clone());
-            *session.epoch.remaining_calls.lock().unwrap() = Some(accepted);
-            assert!(query(&session, kind).await.is_err(), "kind={kind}, cut={accepted}");
-            // Changed by D-C2c (D-S1, DR-96): the native session caches in
-            // its digest-keyed store.
-            // let state = session.space.get_store().snapshot();
-            // assert!(state.data_flat().is_empty());
-            // assert!(state.joins_flat().is_empty());
-            // assert!(state.continuations_flat().is_empty());
-            let [data, continuations, _, joins, _] = session.store.entry_counts();
-            assert_eq!((data, continuations, joins), (0, 0, 0));
-            assert_eq!(*session.epoch.state.lock().unwrap(), (vec![], 0, false, false));
-            for lock in session
-                .space
-                .phase_a_locks
-                .iter()
-                .chain(session.space.phase_b_locks.iter())
-            {
-                assert!(lock.try_lock().is_ok());
-            }
-            *session.epoch.remaining_calls.lock().unwrap() = None;
-            query(&session, kind).await.unwrap();
-            assert_eq!(history.root(), root);
-        }
-    }
-}
-
-#[tokio::test]
-async fn every_current_root_snapshot_reservation_cut_rejects_before_session_creation() {
-    let history = retained_history().await;
-    let root = history.root();
-    let baseline_epoch = Epoch::default();
-    let baseline =
-        Session::new(history.clone(), Arc::new(Box::new(Matcher)), baseline_epoch.clone()).unwrap();
-    let calls = baseline_epoch.calls.load(Ordering::Relaxed);
-    assert!(calls > 1);
-    assert!(baseline_epoch.bytes.load(Ordering::Relaxed) > 0);
-    query(&baseline, 0).await.unwrap();
-    for accepted in 0..calls {
-        let epoch = Epoch::default();
-        *epoch.remaining_calls.lock().unwrap() = Some(accepted);
-        assert!(
-            Session::new(history.clone(), Arc::new(Box::new(Matcher)), epoch).is_err(),
-            "accepted={accepted}"
-        );
-        assert_eq!(history.root(), root);
-    }
-    let independent = isolated(history);
-    for kind in 0..3 {
-        query(&independent, kind).await.unwrap();
-    }
-}
-
+/// Changed by DR-131 S6: the test was
+/// `independent_native_readers_keep_separate_caches_and_exhaustion`. The
+/// exhaustion went with host work. The test keeps its check that a read of
+/// one session fills only that session's cache.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn independent_native_readers_keep_separate_caches_and_exhaustion() {
+async fn independent_native_readers_keep_separate_caches() {
     let history = retained_history().await;
     let left = isolated(history.clone());
     let right = isolated(history);
-    left.epoch.reject_work.store(true, Ordering::Release);
-    let (failed, successful) = tokio::join!(query(&left, 0), query(&right, 0));
-    assert!(failed.is_err());
-    successful.unwrap();
+    query(&right, 0).await.unwrap();
     // Changed by D-C2c (D-S1, DR-96): the native session caches in its
     // digest-keyed store.
     // assert!(left.space.get_store().snapshot().data_flat().is_empty());
     // assert_eq!(right.space.get_store().snapshot().data_flat().len(), 1);
     assert_eq!(left.store.entry_counts()[0], 0);
     assert_eq!(right.store.entry_counts()[0], 1);
-    let inspection = Epoch::default();
-    assert_eq!(
-        left.get_data_with_budget(&"data".to_owned(), |operations, bytes| {
-            inspection.reserve_work(operations, bytes)
-        })
-        .await
-        .unwrap()[0]
-            .a,
-        "retained"
-    );
-    assert!(left.get_data(&"data".to_owned()).await.is_err());
 }
 
 #[tokio::test]
@@ -425,19 +288,18 @@ async fn clean_cold_fill_is_not_exported() {
     assert!(absent.is_empty());
     let counts = session.store.entry_counts();
     assert_eq!([counts[0], counts[1], counts[3]], [2, 1, 1]);
-    let free = |_: usize, _: usize, _: usize| Ok::<(), RSpaceError>(());
-    let dirty = session.store.dirty_entries(&free).expect("a free meter");
-    let actions = dirty.actions(&free).expect("a free meter");
+    let dirty = session.store.dirty_entries();
+    let actions = dirty.actions();
     assert!(actions.is_empty());
-    let full = session.store.changes(&free).expect("a free meter");
+    let full = session.store.changes();
     assert_eq!(full.len(), 4);
     let prepared = history
-        .prepare_native_checkpoint(full, &free)
+        .prepare_native_checkpoint(full)
         .expect("the full export");
     assert_eq!(prepared.cold_actions.len(), 3);
     assert_eq!(prepared.root, Some(root.clone()));
     let borrowed = history
-        .prepare_native_checkpoint_borrowed(&actions, &free)
+        .prepare_native_checkpoint_borrowed(&actions)
         .expect("the dirty export");
     assert!(borrowed.cold_actions.is_empty());
     assert!(borrowed.prepared_history.is_none());
@@ -458,52 +320,40 @@ fn digest_bytes(digest: Blake2b256Hash) -> [u8; 32] {
 async fn cold_fill_reads_same_records_as_legacy() {
     let history = retained_history().await;
     let session = isolated(history);
-    let free = |_: usize, _: usize, _: usize| Ok::<(), RSpaceError>(());
     let data = "data".to_owned();
     let legacy_data = session
-        .read_records::<Datum<String>>(NativeLeafKind::Data, &digest_bytes(hash(&data)), &free)
+        .read_records(NativeLeafKind::Data, &digest_bytes(hash(&data)), decode_datum::<String>)
         .unwrap();
     assert_eq!(legacy_data.len(), 1);
-    let data_key = channel_key(&data, &free).unwrap();
-    assert_eq!(session.read_data_with(&data, data_key, &free).unwrap(), legacy_data);
+    let data_key = channel_key(&data).unwrap();
+    assert_eq!(session.read_data_with(&data, data_key).unwrap(), legacy_data);
     let group = vec!["left".to_owned(), "right".to_owned()];
     let legacy_continuations = session
-        .read_records::<WaitingContinuation<String, String>>(
+        .read_records(
             NativeLeafKind::Continuations,
             &digest_bytes(hash_from_vec(&group)),
-            &free,
+            decode_continuation::<String, String>,
         )
         .unwrap();
     assert_eq!(legacy_continuations.len(), 1);
-    let keys = GroupKeys::build(&group, &free).unwrap();
+    let keys = GroupKeys::build(&group).unwrap();
     assert_eq!(session.read_continuations(&group, &keys).unwrap(), legacy_continuations);
     let reversed: Vec<String> = group.iter().rev().cloned().collect();
-    let reversed_keys = GroupKeys::build(&reversed, &free).unwrap();
+    let reversed_keys = GroupKeys::build(&reversed).unwrap();
     assert_eq!(
-        channels_hash_from_keys(&reversed_keys.channels, &free).unwrap(),
-        channels_hash_from_keys(&keys.channels, &free).unwrap()
+        channels_hash_from_keys(&reversed_keys.channels),
+        channels_hash_from_keys(&keys.channels)
     );
     for channel in &group {
         let legacy_joins = session
-            .read_records::<Vec<String>>(NativeLeafKind::Joins, &digest_bytes(hash(channel)), &free)
+            .read_records(
+                NativeLeafKind::Joins,
+                &digest_bytes(hash(channel)),
+                decode_join::<String>,
+            )
             .unwrap();
         assert_eq!(legacy_joins, vec![group.clone()]);
-        let key = channel_key(channel, &free).unwrap();
+        let key = channel_key(channel).unwrap();
         assert_eq!(session.read_joins(channel, key).unwrap(), legacy_joins);
-    }
-}
-
-proptest! {
-    #![proptest_config(ProptestConfig::with_cases(32))]
-    #[test]
-    fn metered_continuation_projection_preserves_channel_order_and_duplicates(
-        channels in prop::collection::vec("[a-z]{0,12}", 0..20),
-    ) {
-        let epoch = Epoch::default();
-        let actual = crate::rspace::hashing::native_source::channels_hash(&channels, &|operations, scanned, backing| {
-            epoch.reserve_comparison(operations, scanned)?;
-            epoch.reserve_work(0, backing)
-        }).unwrap();
-        prop_assert_eq!(actual, hash_from_vec(&channels));
     }
 }

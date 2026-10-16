@@ -2,7 +2,7 @@
 //! covers each invariant: the hold sums, the placement, the caps, a
 //! brute-force oracle, determinism, feasibility and the on-chain rule. Unit
 //! tests cover the edges, the settlement limits (arbitration M3) and the
-//! host-work rejection of the analysis.
+//! analysis of deep terms, which runs to completion after DR-131.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
@@ -11,8 +11,6 @@ use models::rhoapi::cost_signature::Value as CostSignatureValue;
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::var::VarInstance;
 use models::rhoapi::{CostSignature, EVar, Expr, New, Par, Receive, ReceiveBind, Send, Var};
-use models::rust::cost_protocol_limits::offered_funded_v6_host_work_limits;
-use models::rust::host_work::{HostWorkLimit, HostWorkLimits};
 use models::rust::phlo_schedule::{PhloGenesisPolicy, PhloScheduleV1};
 use models::rust::phlo_source::PhloSourceLimits;
 use models::rust::phlo_wire::PhloWireLimits;
@@ -45,10 +43,6 @@ use crate::rust::util::rholang::costacc::production_limits::offered_funded_v6_pr
 const LANES: usize = 2;
 
 fn limits() -> NativeOfferedFamilyLimits { offered_funded_v6_production_limits().family }
-
-fn unlimited() -> HostWorkBudget {
-    HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(u64::MAX)))
-}
 
 /// The native schedule: compute, introduction, transfer and trace, each with
 /// weight 1.
@@ -336,7 +330,6 @@ fn decide_case(case: &Case, onchain: &[bool]) -> Result<OfferedGate, OfferedGate
             terms,
             funding,
             limits(),
-            &unlimited(),
         )
     })
 }
@@ -463,13 +456,12 @@ proptest! {
     ) {
         let onchain = signed_only(&case);
         let placed = with_instance(&case, &onchain, |estimate, terms, funding| {
-            let host = unlimited();
             let bound = match case.complete {
                 true => estimate.bound_phlo,
                 false => terms.limit,
             };
-            with_estimated_obligations(estimate, terms, bound, limits(), &host, |obligations| {
-                let eligible = eligibility(obligations, funding, limits(), &host)?;
+            with_estimated_obligations(estimate, terms, bound, limits(), |obligations| {
+                let eligible = eligibility(obligations, funding, limits())?;
                 let placed = place_holds(
                     obligations,
                     &funding.sources,
@@ -480,7 +472,6 @@ proptest! {
                     case.remainder(),
                     &funding.fill_order,
                     limits().policy,
-                    &host,
                 )?;
                 Ok((eligible, obligations.amounts().to_vec(), placed, funding.fill_order.clone()))
             })
@@ -549,21 +540,13 @@ proptest! {
     }
 
     /// Determinism (DR-102, design §6.4): the decision depends only on its
-    /// inputs, not on work that an earlier user of a budget did.
+    /// inputs.
     #[test]
-    fn the_decision_depends_only_on_its_inputs(case in arb_case(3), used in 1u64..1_000) {
+    fn the_decision_depends_only_on_its_inputs(case in arb_case(3)) {
         let onchain = signed_only(&case);
         let first = decide_case(&case, &onchain);
         let second = decide_case(&case, &onchain);
         prop_assert_eq!(&first, &second);
-        let worn = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(1 << 40)));
-        for dimension in models::rust::host_work::HostWorkDimension::ALL {
-            worn.reserve(dimension, HostWorkUnits::new(used)).expect("room for earlier work");
-        }
-        let after = with_instance(&case, &onchain, |estimate, terms, funding| {
-            decide(estimate, false, terms, funding, limits(), &worn)
-        });
-        prop_assert_eq!(&first, &after);
     }
 
     /// Feasibility (design §12): when realized use is at most the estimate for
@@ -612,9 +595,8 @@ proptest! {
                 ..realized_case
             };
             let settled = with_instance(&realized_case, &onchain, |estimate, terms, funding| {
-                let host = unlimited();
-                with_estimated_obligations(estimate, terms, estimate.bound_phlo, limits(), &host, |obligations| {
-                    let eligible = eligibility(obligations, funding, limits(), &host)?;
+                with_estimated_obligations(estimate, terms, estimate.bound_phlo, limits(), |obligations| {
+                    let eligible = eligibility(obligations, funding, limits())?;
                     place_holds(
                         obligations,
                         &funding.sources,
@@ -625,7 +607,6 @@ proptest! {
                         0,
                         &funding.fill_order,
                         limits().policy,
-                        &host,
                     )
                 })
             });
@@ -768,7 +749,7 @@ fn an_estimate_above_the_signed_limit_is_rejected() {
             limit: estimate.bound_phlo - 1,
             ..*terms
         };
-        decide(estimate, false, &short, funding, limits(), &unlimited())
+        decide(estimate, false, &short, funding, limits())
     });
     assert_eq!(
         decision,
@@ -866,7 +847,7 @@ fn a_witness_above_the_settlement_limits_rejects_before_execution() {
         .execution
         .resource_entries = 2 * case.counts.len() - 1;
     let decision = with_instance(&case, &signed_only(&case), |estimate, terms, funding| {
-        decide(estimate, false, terms, funding, narrow, &unlimited())
+        decide(estimate, false, terms, funding, narrow)
     });
     assert!(
         matches!(decision, Err(OfferedGateRejection::SettlementLimits(_))),
@@ -879,7 +860,7 @@ fn a_witness_above_the_settlement_limits_rejects_before_execution() {
         .execution
         .resource_entries = 2 * case.counts.len();
     let decision = with_instance(&case, &signed_only(&case), |estimate, terms, funding| {
-        decide(estimate, false, terms, funding, narrow, &unlimited())
+        decide(estimate, false, terms, funding, narrow)
     });
     assert!(decision.is_ok(), "{decision:?}");
 }
@@ -960,57 +941,29 @@ fn deep_chain(depth: usize) -> Par {
     par
 }
 
-/// The G1-4a finding: the analysis meters its walks (arbitration H1) and can
-/// exhaust a host-work dimension before the plan runs. The check maps that
-/// exhaustion to a rejection with no charge (design §6.3 item 3). The test
-/// keeps the offered limits except for 10,000 verification operations, so it
-/// holds for every merge count that charges at least one operation for each
-/// level of a 1,000-level chain.
+/// The G1-4a finding, after DR-131: the analysis of a 1,000-level chain runs
+/// to completion on its heap work stacks, and the check gets its estimate.
 #[test]
-fn a_deep_chain_exhausts_the_analysis_and_the_check_rejects_it() {
+fn a_deep_chain_is_analyzed_to_completion() {
     let term = deep_chain(1_000);
     let schedule = descriptor(1);
     let binding =
         PhloScheduleBinding::new(&schedule, PhloGenesisPolicy::LIMITS).expect("the schedule binds");
     let reducer = evaluator();
-    let mut limits = offered_funded_v6_host_work_limits();
-    limits.set(
-        models::rust::host_work::HostWorkDimension::VerificationOperations,
-        HostWorkLimit::new(10_000),
-    );
-    let host = HostWorkBudget::new(limits);
-    let estimate = estimate_resolved(&term, &funding(), &binding, &reducer, &host);
+    let estimate = estimate_resolved(&term, &funding(), &binding, &reducer);
     dismantle_term(term);
-    assert_eq!(estimate, Err(OfferedGateRejection::HostWork));
-    assert_eq!(
-        host.rejection().map(|rejection| rejection.dimension()),
-        Some(models::rust::host_work::HostWorkDimension::VerificationOperations)
-    );
+    assert!(estimate.is_ok(), "{estimate:?}");
 }
 
-/// A host-work error of the parser is a host-work rejection too, and a term
-/// that does not parse is invalid.
+/// A term that does not parse is invalid.
 #[test]
-fn the_parse_maps_host_work_and_syntax_errors_to_rejections() {
+fn a_term_that_does_not_parse_is_invalid() {
     let schedule = descriptor(1);
     let binding =
         PhloScheduleBinding::new(&schedule, PhloGenesisPolicy::LIMITS).expect("the schedule binds");
     let reducer = evaluator();
     let rand =
         || crypto::rust::hash::blake2b512_random::Blake2b512Random::create_from_bytes(b"gate");
-    let tiny = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(1)));
-    assert_eq!(
-        estimate_term(
-            "new x in { x!(0) | for (@n <- x) { Nil } }",
-            HashMap::new(),
-            rand(),
-            &funding(),
-            &binding,
-            &reducer,
-            &tiny
-        ),
-        Err(OfferedGateRejection::HostWork)
-    );
     assert!(matches!(
         estimate_term(
             "new x in {",
@@ -1019,7 +972,6 @@ fn the_parse_maps_host_work_and_syntax_errors_to_rejections() {
             &funding(),
             &binding,
             &reducer,
-            &unlimited()
         ),
         Err(OfferedGateRejection::Invalid(_))
     ));
@@ -1044,7 +996,6 @@ fn a_real_complete_estimate_holds_its_cost_plus_the_fee() {
         &funding(),
         &binding,
         &reducer,
-        &unlimited(),
     )
     .expect("the estimate runs");
     assert_eq!(estimate.completeness, Completeness::Complete);
@@ -1117,7 +1068,6 @@ fn a_real_complete_estimate_holds_its_cost_plus_the_fee() {
         },
         &funding_side,
         limits(),
-        &unlimited(),
     )
     .expect("the holds fit");
     assert_eq!(gate.bound_source(), NativeBoundSource::Certificate);
@@ -1146,12 +1096,12 @@ fn quoted_signature(levels: usize) -> CostSignature {
     }
 }
 
-/// The check converts lane signatures with the metered conversions of
-/// `born_resource`. A shallow quoted signature converts. A signature nested
-/// deeper than the sorter's bound of 256 levels fails the conversion instead
-/// of recursing, and the check rejects the offer with no charge.
+/// The check converts lane signatures with the conversion of `born_resource`.
+/// A shallow quoted signature and a signature nested 1,000 levels deep both
+/// convert to the location of their supply channel. The depth stop of the
+/// metered sorter left with DR-131.
 #[test]
-fn a_lane_signature_deeper_than_the_sorter_bound_is_rejected() {
+fn a_deep_lane_signature_converts_without_a_depth_stop() {
     let key = [42u8; 32];
     let estimate = |signature: CostSignature| CostEstimate {
         quantities: BTreeMap::from([((key, 0), 1)]),
@@ -1159,35 +1109,31 @@ fn a_lane_signature_deeper_than_the_sorter_bound_is_rejected() {
         signatures: BTreeMap::from([(key, signature)]),
         completeness: Completeness::Complete,
     };
-    let shallow = estimate(quoted_signature(8));
-    let converted = EstimatedResources::new(&shallow, &unlimited()).map(|resources| {
-        resources
-            .lanes
-            .get(&key)
-            .map(|(authority, location)| (authority.clone(), location.clone()))
-    });
-    let authority =
-        cost_signature_to_sig(&shallow.signatures[&key]).expect("a shallow lane is a Sig");
-    assert_eq!(
-        converted,
-        Ok(Some((
-            authority.clone(),
-            SignatureChannel::from_sig(&authority).par.encode_to_vec()
-        ))),
-        "the metered conversion gives the location of the measured path"
-    );
-    let mut deep = estimate(quoted_signature(1_000));
-    let rejected = EstimatedResources::new(&deep, &unlimited()).map(|_| ());
-    if let Some(CostSignature {
-        value: Some(CostSignatureValue::Quote(par)),
-    }) = deep.signatures.remove(&key)
-    {
-        dismantle_term(par);
+    for levels in [8, 1_000] {
+        let mut lane = estimate(quoted_signature(levels));
+        let converted = EstimatedResources::new(&lane).map(|resources| {
+            resources
+                .lanes
+                .get(&key)
+                .map(|(authority, location)| (authority.clone(), location.clone()))
+        });
+        let authority =
+            cost_signature_to_sig(&lane.signatures[&key]).expect("a lane signature is a Sig");
+        assert_eq!(
+            converted,
+            Ok(Some((
+                authority.clone(),
+                SignatureChannel::from_sig(&authority).par.encode_to_vec()
+            ))),
+            "the conversion gives the location of the supply channel at {levels} levels"
+        );
+        if let Some(CostSignature {
+            value: Some(CostSignatureValue::Quote(par)),
+        }) = lane.signatures.remove(&key)
+        {
+            dismantle_term(par);
+        }
     }
-    assert!(
-        matches!(rejected, Err(OfferedGateRejection::Invalid(_))),
-        "{rejected:?}"
-    );
 }
 
 // ── The client lanes (G1-6, DR-124) ────────────────────────────────────────
@@ -1199,12 +1145,11 @@ fn decide_restricted(
 ) -> Result<OfferedGate, OfferedGateRejection> {
     let onchain = signed_only(case);
     with_instance(case, &onchain, |estimate, terms, funding| {
-        let host = unlimited();
         let restricted = estimate
             .clone()
-            .retain_client_lanes(client, terms.schedule.descriptor(), &host)
-            .map_err(|error| analysis_rejection(error, &host))?;
-        decide(&restricted, false, terms, funding, limits(), &host)
+            .retain_client_lanes(client, terms.schedule.descriptor())
+            .map_err(analysis_rejection)?;
+        decide(&restricted, false, terms, funding, limits())
     })
 }
 
@@ -1257,22 +1202,10 @@ proptest! {
 }
 
 /// The client lanes are the deploy lane and the lanes of the located sources.
-/// The set charges its work before it builds the set.
 #[test]
 fn the_client_lanes_are_the_deploy_lane_and_the_located_sources() {
-    let host = unlimited();
-    let lanes =
-        client_lane_set([1; 32], vec![[2; 32], [1; 32], [3; 32]], &host).expect("a small set");
+    let lanes = client_lane_set([1; 32], vec![[2; 32], [1; 32], [3; 32]]);
     assert_eq!(lanes, BTreeSet::from([[1; 32], [2; 32], [3; 32]]));
-    assert_eq!(
-        host.usage(HostWorkDimension::VerificationOperations).get(),
-        4
-    );
-    let tiny = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(1)));
-    assert_eq!(
-        client_lane_set([1; 32], vec![[2; 32]], &tiny),
-        Err(OfferedGateRejection::HostWork)
-    );
 }
 
 /// The loophole control of DR-124. A source that permits only some classes of
@@ -1335,9 +1268,8 @@ fn permitted_of(case: &Case) -> BTreeSet<[u8; 32]> {
 /// permissions of the sources (`permitted_lanes`).
 fn client_of(case: &Case) -> BTreeSet<[u8; 32]> {
     with_instance(case, &signed_only(case), |_, _, funding| {
-        let host = unlimited();
-        let permitted = permitted_lanes(funding.signed, &host).expect("an unlimited digest");
-        client_lane_set(lane(1).key, permitted, &host).expect("an unlimited set")
+        let permitted = permitted_lanes(funding.signed).expect("the permitted lanes");
+        client_lane_set(lane(1).key, permitted)
     })
 }
 
@@ -1356,7 +1288,7 @@ proptest! {
     #![proptest_config(ProptestConfig::with_cases(256))]
 
     /// The permitted lanes are the lanes of the signed permissions, with one
-    /// digest for each permission. The work is charged before it is done.
+    /// lane for each permission.
     #[test]
     fn the_permitted_lanes_are_the_lanes_of_the_permissions(case in arb_case(3)) {
         let permissions = case
@@ -1366,14 +1298,9 @@ proptest! {
             .sum::<usize>();
         let expected = permitted_of(&case);
         with_instance(&case, &signed_only(&case), |_, _, funding| {
-            let host = unlimited();
-            let lanes = permitted_lanes(funding.signed, &host).expect("an unlimited digest");
+            let lanes = permitted_lanes(funding.signed).expect("the permitted lanes");
             prop_assert_eq!(lanes.len(), permissions);
             prop_assert_eq!(lanes.iter().copied().collect::<BTreeSet<_>>(), expected.clone());
-            prop_assert_eq!(
-                host.usage(HostWorkDimension::VerificationOperations).get(),
-                u64::try_from(permissions).expect("a small count")
-            );
             Ok(())
         })?;
     }
@@ -1667,10 +1594,9 @@ proptest! {
                 ..realized_case
             };
             let fitted = with_instance(&realized_case, &onchain, |estimate, terms, funding| {
-                let host = unlimited();
                 let placed =
-                    with_estimated_obligations(estimate, terms, estimate.bound_phlo, limits(), &host, |obligations| {
-                        let eligible = eligibility(obligations, funding, limits(), &host)?;
+                    with_estimated_obligations(estimate, terms, estimate.bound_phlo, limits(), |obligations| {
+                        let eligible = eligibility(obligations, funding, limits())?;
                         place_holds(
                             obligations,
                             &funding.sources,
@@ -1681,7 +1607,6 @@ proptest! {
                             0,
                             &funding.fill_order,
                             limits().policy,
-                            &host,
                         )
                     })?;
                 let mut balances = BTreeMap::new();

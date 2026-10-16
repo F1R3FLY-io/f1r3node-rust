@@ -28,7 +28,6 @@ use models::rust::casper::protocol::casper_message::{
 };
 use models::rust::deploy_envelope::{DeployEnvelope, DeployEnvelopeRef};
 use models::rust::deploy_id::DeployLookupId;
-use models::rust::host_work::{HostWorkDimension, HostWorkUnits};
 use models::rust::normalizer_env::normalizer_env_from_deploy;
 use models::rust::par_map_type_mapper::ParMapTypeMapper;
 use models::rust::par_set_type_mapper::ParSetTypeMapper;
@@ -45,7 +44,6 @@ use rholang::rust::interpreter::accounting::{self, NativeRuntimeConfig};
 use rholang::rust::interpreter::compiler::compiler::Compiler;
 use rholang::rust::interpreter::env::Env;
 use rholang::rust::interpreter::errors::InterpreterError;
-use rholang::rust::interpreter::host_work::HostWorkBudget;
 use rholang::rust::interpreter::interpreter::EvaluateResult;
 use rholang::rust::interpreter::merging::rholang_merging_logic::RholangMergingLogic;
 use rholang::rust::interpreter::rho_runtime::{bootstrap_registry, RhoRuntime, RhoRuntimeImpl};
@@ -72,7 +70,7 @@ use crate::rust::util::event_converter;
 use crate::rust::util::rholang::costacc::close_block_deploy::CloseBlockDeploy;
 use crate::rust::util::rholang::costacc::genesis_resource_policy::AdoptedResourcePolicy;
 use crate::rust::util::rholang::costacc::pre_charge_deploy::PreChargeDeploy;
-use crate::rust::util::rholang::costacc::prepaid_receipts::read_live_data_metered;
+use crate::rust::util::rholang::costacc::prepaid_receipts::read_live_data;
 use crate::rust::util::rholang::costacc::refund_deploy::RefundDeploy;
 use crate::rust::util::rholang::costacc::slash_deploy::SlashDeploy;
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
@@ -334,7 +332,6 @@ impl RuntimeOps {
         play_budget: Option<std::time::Duration>,
         adopted: Option<&AdoptedResourcePolicy>,
         manager: &RuntimeManager,
-        offered_budget: Option<&HostWorkBudget>,
     ) -> Result<
         (
             StateHash,
@@ -357,7 +354,6 @@ impl RuntimeOps {
                     play_budget,
                     adopted,
                     manager,
-                    offered_budget,
                 )
                 .await;
         }
@@ -758,7 +754,6 @@ impl RuntimeOps {
     pub(crate) async fn get_number_channels_data_metered(
         &self,
         channels: &HashMap<Par, MergeType>,
-        budget: &HostWorkBudget,
     ) -> Result<NumberChannelsEndVal, CasperError> {
         let protocol = models::rust::cost_protocol_limits::offered_funded_v6_limits();
         if channels.len() > protocol.deploy_log_items {
@@ -766,32 +761,6 @@ impl RuntimeOps {
                 "offered mergeable channel count exceeds protocol limit".to_string(),
             ));
         }
-        let hash_work =
-            HostWorkUnits::new(u64::try_from(protocol.deploy_log_bytes).map_err(|_| {
-                CasperError::RuntimeError("offered mergeable hash bound overflows".to_string())
-            })?);
-        for dimension in [
-            HostWorkDimension::VerificationBytes,
-            HostWorkDimension::VerificationOperations,
-        ] {
-            budget
-                .reserve(dimension, hash_work)
-                .map_err(|error| CasperError::RuntimeError(error.to_string()))?;
-        }
-        let order_bytes = channels
-            .len()
-            .checked_mul(mem::size_of::<(Blake2b256Hash, &Par, MergeType)>())
-            .ok_or_else(|| {
-                CasperError::RuntimeError("offered mergeable order size overflows".to_string())
-            })?;
-        budget
-            .reserve(
-                HostWorkDimension::SearchStateBytes,
-                HostWorkUnits::new(u64::try_from(order_bytes).map_err(|_| {
-                    CasperError::RuntimeError("offered mergeable order size overflows".to_string())
-                })?),
-            )
-            .map_err(|error| CasperError::RuntimeError(error.to_string()))?;
         let mut ordered = Vec::new();
         ordered.try_reserve_exact(channels.len()).map_err(|_| {
             CasperError::RuntimeError("offered mergeable order allocation failed".to_string())
@@ -810,28 +779,8 @@ impl RuntimeOps {
                     "offered mergeable channels exceed protocol byte limit".to_string(),
                 ));
             }
-            budget
-                .reserve(
-                    HostWorkDimension::VerificationOperations,
-                    HostWorkUnits::new(1),
-                )
-                .map_err(|error| CasperError::RuntimeError(error.to_string()))?;
             ordered.push((stable_hash_provider::hash(channel), channel, *merge_type));
         }
-        let sort_work = ordered
-            .len()
-            .checked_mul(1 + ordered.len().checked_ilog2().unwrap_or(0) as usize)
-            .ok_or_else(|| {
-                CasperError::RuntimeError("offered mergeable sort work overflows".to_string())
-            })?;
-        budget
-            .reserve(
-                HostWorkDimension::VerificationOperations,
-                HostWorkUnits::new(u64::try_from(sort_work).map_err(|_| {
-                    CasperError::RuntimeError("offered mergeable sort work overflows".to_string())
-                })?),
-            )
-            .map_err(|error| CasperError::RuntimeError(error.to_string()))?;
         ordered.sort_unstable_by(|left, right| left.0.cmp(&right.0));
         if ordered.windows(2).any(|pair| pair[0].0 == pair[1].0) {
             return Err(CasperError::RuntimeError(
@@ -840,17 +789,7 @@ impl RuntimeOps {
         }
         let mut result = BTreeMap::new();
         for (hash, channel, merge_type) in ordered {
-            let values = read_live_data_metered(self, channel, budget).await?;
-            budget
-                .reserve(
-                    HostWorkDimension::VerificationOperations,
-                    HostWorkUnits::new(u64::try_from(values.len()).map_err(|_| {
-                        CasperError::RuntimeError(
-                            "offered mergeable value count overflows".to_string(),
-                        )
-                    })?),
-                )
-                .map_err(|error| CasperError::RuntimeError(error.to_string()))?;
+            let values = read_live_data(self, channel).await;
             let number = if values.is_empty() {
                 None
             } else if values.len() == 1 {
@@ -872,9 +811,6 @@ impl RuntimeOps {
                 }
             };
             if let Some(number) = number {
-                budget
-                    .reserve(HostWorkDimension::SearchStateBytes, HostWorkUnits::new(512))
-                    .map_err(|error| CasperError::RuntimeError(error.to_string()))?;
                 result.insert(hash, (number, merge_type));
             }
         }
@@ -2030,7 +1966,7 @@ mod tests {
             ),
             5 => (
                 CasperError::InterpreterError(InterpreterError::RSpaceError(
-                    RSpaceError::HostWorkRejected,
+                    RSpaceError::SignedLimitExhausted,
                 )),
                 false,
             ),

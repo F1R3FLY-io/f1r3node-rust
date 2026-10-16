@@ -7,7 +7,6 @@ use models::rhoapi::{BindPattern, ListParWithRandom, Par, TaggedContinuation};
 use rspace_plus_plus::rspace::checkpoint::{Checkpoint, SoftCheckpoint};
 use rspace_plus_plus::rspace::errors::RSpaceError;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
-use rspace_plus_plus::rspace::hashing::native_source::SourceMeter;
 use rspace_plus_plus::rspace::internal::{Datum, Row, WaitingContinuation};
 use rspace_plus_plus::rspace::rspace_interface::{
     ContResult, ISpace, MaybeConsumeResult, MaybeProduceResult, RSpaceAccountingObserver,
@@ -166,14 +165,6 @@ impl ChargingRSpace {
 
             async fn get_data(&self, channel: &Par) -> Vec<Datum<ListParWithRandom>> {
                 self.space.get_data(channel).await
-            }
-
-            async fn get_data_metered(
-                &self,
-                channel: &Par,
-                meter: &(dyn SourceMeter + Sync),
-            ) -> Result<Vec<Datum<ListParWithRandom>>, RSpaceError> {
-                self.space.get_data_metered(channel, meter).await
             }
 
             async fn get_waiting_continuations(

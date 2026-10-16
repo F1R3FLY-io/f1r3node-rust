@@ -1,7 +1,6 @@
 use futures::FutureExt;
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::{Expr, Par};
-use models::rust::host_work::{HostWorkDimension, HostWorkUnits};
 use rspace_plus_plus::rspace::operation_context::{self, OperationOrder};
 use rspace_plus_plus::rspace::rspace_interface::{
     RSpaceOperationCompletion, RSpaceOperationSource,
@@ -41,27 +40,6 @@ fn introduce(budget: &RuntimeBudget, source: &Produce) {
             source.persistent,
         )
         .unwrap();
-}
-
-#[test]
-fn native_operation_start_meters_shallow_index_work() {
-    let budget = RuntimeBudget::new(Cost::unsafe_max());
-    let config = config(100, [0, 0, 1, 0]);
-    let host = config.host_work();
-    budget.reset_for_native_execution(config).unwrap();
-    let _accounting = budget.enter_comm_accounting_scope();
-    let channel = channel(1);
-    let source = Produce::create(&channel, &7u8, false);
-    scope(&budget, 0, || {
-        budget
-            .start_native_operation(
-                RSpaceOperationSource::Produce(&source),
-                std::slice::from_ref(&channel),
-                &[],
-            )
-            .unwrap();
-    });
-    assert!(host.usage(HostWorkDimension::VerificationBytes).get() < 1_000_000);
 }
 
 #[test]
@@ -145,32 +123,6 @@ fn native_operation_recording_rejects_incomplete_duplicate_and_mismatched_lifecy
             "failure case {failure}"
         );
     }
-}
-
-#[test]
-fn native_completion_exhaustion_invalidates_recording_before_publication() {
-    let budget = RuntimeBudget::new(Cost::unsafe_max());
-    let config = config(100, [0, 0, 1, 0]);
-    let host = config.host_work();
-    budget.reset_for_native_execution(config).unwrap();
-    let _accounting = budget.enter_comm_accounting_scope();
-    let channel = channel(1);
-    let source = Produce::create(&channel, &7u8, false);
-    scope(&budget, 0, || {
-        let reference = RSpaceOperationSource::Produce(&source);
-        budget
-            .start_native_operation(reference, std::slice::from_ref(&channel), &[])
-            .unwrap();
-        introduce(&budget, &source);
-        let dimension = HostWorkDimension::VerificationOperations;
-        let remaining = host.limits().get(dimension).get() - host.usage(dimension).get();
-        host.reserve(dimension, HostWorkUnits::new(remaining))
-            .unwrap();
-        budget.finish_native_operation(reference, RSpaceOperationCompletion::Stored);
-    });
-    assert!(host.is_rejected());
-    assert_eq!(budget.native_phlo_usage(), Some(1));
-    assert!(budget.native_operation_recording().is_err());
 }
 
 #[test]
@@ -356,9 +308,8 @@ proptest! {
         let records = budget.native_operation_recording().unwrap().unwrap();
         let charges = budget.native_budget_recording().unwrap().unwrap();
         with_contract(100, [0, 0, 1, 0], |contract| {
-            let host = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(100_000_000)));
             let checked = contract.check_operation_journal(
-                charges.session, &charges, Arc::clone(&records), journal_limits(), &host,
+                charges.session, &charges, Arc::clone(&records), journal_limits(),
             ).unwrap();
             assert_eq!(checked.total(), charges.used);
         });
@@ -378,89 +329,5 @@ proptest! {
                 prop_assert!(records[*predecessor].budget_end <= row.budget_start);
             }
         }
-    }
-}
-
-/// D-E3 (DR-110): the scheduler footprint inspects each channel once before
-/// its bincode pass, for the operation's channels and for each join channel.
-/// Bincode encodes `locally_free` as empty bytes, so padding it changes only
-/// the walker terms: the footprint charge grows by exactly one block
-/// inspection of the padding for every occurrence of the padded channel.
-#[test]
-fn footprint_charges_one_block_traversal_per_channel_and_join_channel() {
-    use shared::rust::clone_backing as walks;
-
-    let usage = |host: &HostWorkBudget| {
-        [
-            HostWorkDimension::VerificationOperations,
-            HostWorkDimension::VerificationBytes,
-            HostWorkDimension::SearchStateBytes,
-        ]
-        .map(|dimension| host.usage(dimension).get())
-    };
-    let walk = |par: &Par| {
-        let used = std::cell::Cell::new([0u64; 3]);
-        let meter = |operations: usize, scanned: usize, backing: usize| {
-            let [o, s, b] = used.get();
-            used.set([
-                o + operations as u64,
-                s + scanned as u64,
-                b + backing as u64,
-            ]);
-            Ok::<(), walks::BackingError>(())
-        };
-        walks::inspect_blocks(par, &meter).expect("an unlimited meter");
-        used.get()
-    };
-    let footprint = |channels: &[Par], joins: &[Vec<Par>]| {
-        let host = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(u64::MAX)));
-        let bytes = super::super::operations::locked_footprint(channels, joins, &host)
-            .expect("an unlimited footprint");
-        (bytes, usage(&host))
-    };
-    let plain = channel(7);
-    let padded = Par {
-        locally_free: vec![0xA5; 4_096],
-        ..plain.clone()
-    };
-    let other = channel(8);
-    let growth = {
-        let small = walk(&plain);
-        let large = walk(&padded);
-        [0, 1, 2].map(|index| large[index] - small[index])
-    };
-    assert!(growth[1] >= 4_096);
-    for (occurrences, channels, joins) in [
-        (1, vec![padded.clone()], Vec::new()),
-        (2, vec![padded.clone()], vec![vec![
-            padded.clone(),
-            other.clone(),
-        ]]),
-        (3, vec![padded.clone(), padded.clone()], vec![vec![
-            other.clone(),
-            padded.clone(),
-        ]]),
-    ] {
-        let unpadded = |values: &[Par]| -> Vec<Par> {
-            values
-                .iter()
-                .map(|value| {
-                    if value == &padded {
-                        plain.clone()
-                    } else {
-                        value.clone()
-                    }
-                })
-                .collect()
-        };
-        let plain_channels = unpadded(&channels);
-        let plain_joins: Vec<Vec<Par>> = joins.iter().map(|join| unpadded(join)).collect();
-        let (small_bytes, small) = footprint(&plain_channels, &plain_joins);
-        let (large_bytes, large) = footprint(&channels, &joins);
-        assert_eq!(small_bytes, large_bytes);
-        assert_eq!(
-            [0, 1, 2].map(|index| large[index] - small[index]),
-            growth.map(|amount| amount * occurrences)
-        );
     }
 }

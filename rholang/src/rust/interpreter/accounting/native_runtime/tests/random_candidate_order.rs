@@ -5,9 +5,9 @@
 //! `native_session_agreement` plays a term with native phlo and replays its
 //! checked trace twice through the native replay session, the path of
 //! protocol-6 validators. It compares what cost accounting reads: the fired
-//! COMMs, the phlo use, the evidence and the root, and the host work of the
-//! two replays. `legacy_replay_agreement` replays the same play through the
-//! recorded log of the legacy replay (`ReplayRSpace::rig`).
+//! COMMs, the phlo use, the evidence and the root of the two replays.
+//! `legacy_replay_agreement` replays the same play through the recorded log
+//! of the legacy replay (`ReplayRSpace::rig`).
 //!
 //! F4 covers E1 (a join that names one channel twice), F5 covers E3-a (the
 //! Stored check of a guarded consume), and F6 is the property test over the
@@ -202,7 +202,6 @@ async fn native_session_agreement(term: &str) -> Result<Vec<String>, String> {
     let budget = RuntimeBudget::new(Cost::unsafe_max());
     budget.set_deploy_signature_funded(SEED, Sig::Ground(vec![7]));
     let settings = config(LIMIT, WEIGHTS);
-    let play_host = settings.host_work();
     budget
         .reset_for_native_execution(settings)
         .map_err(|error| format!("play budget: {error}"))?;
@@ -218,9 +217,7 @@ async fn native_session_agreement(term: &str) -> Result<Vec<String>, String> {
     .map_err(|error| format!("play environment: {error}"))?;
     let scope = budget.enter_comm_accounting_scope();
     let rand = || Blake2b512Random::create_from_bytes(SEED);
-    let played = reducer
-        .inj_with_observation(parsed.clone(), rand(), Some(play_host))
-        .await;
+    let played = reducer.inj_with_observation(parsed.clone(), rand()).await;
     require(played.0.is_ok(), || format!("play failed: {played:?}"))?;
     let played_observations = budget.byte_observations();
     drop(scope);
@@ -234,25 +231,21 @@ async fn native_session_agreement(term: &str) -> Result<Vec<String>, String> {
         .ok_or("play has no operation journal")?;
     let log = play.create_soft_checkpoint().await.log;
     let play_root = play.create_checkpoint().await.expect("the post-state").root;
-    let mut host_work = Vec::with_capacity(2);
     for pass in 0..2 {
-        let host = config(LIMIT, WEIGHTS).host_work();
         let trace = with_contract(LIMIT, WEIGHTS, |contract| {
             contract.check_operation_journal(
                 recording.session,
                 &recording,
                 Arc::clone(&operations),
                 journal_limits(),
-                &host,
             )
         })
         .map_err(|error| format!("replay {pass} journal: {error:?}"))?
-        .bind_trace(log.clone().into(), TRACE_LIMITS, &host)
+        .bind_trace(log.clone().into(), TRACE_LIMITS)
         .map_err(|error| format!("replay {pass} trace: {error}"))?;
         let replay_budget = RuntimeBudget::new(Cost::unsafe_max());
         replay_budget.set_deploy_signature_funded(SEED, Sig::Ground(vec![7]));
-        let mut replay_settings = config(LIMIT, WEIGHTS);
-        replay_settings.host_work = host.clone();
+        let replay_settings = config(LIMIT, WEIGHTS);
         replay_budget
             .reset_for_native_execution(replay_settings)
             .map_err(|error| format!("replay {pass} budget: {error}"))?;
@@ -260,7 +253,6 @@ async fn native_session_agreement(term: &str) -> Result<Vec<String>, String> {
             trace,
             history.clone(),
             Arc::new(Box::new(Matcher)),
-            host.clone(),
             Arc::new(RwLock::new(HashMap::new())),
             Arc::new(default_mergeable_tags()),
             &mut Vec::new(),
@@ -316,14 +308,7 @@ async fn native_session_agreement(term: &str) -> Result<Vec<String>, String> {
                 export.root()
             )
         })?;
-        host_work.push(host.usages());
     }
-    require(host_work[0] == host_work[1], || {
-        format!(
-            "the two replays used host work {:?} and {:?}",
-            host_work[0], host_work[1]
-        )
-    })?;
     Ok(recorded_comms(&log))
 }
 
@@ -442,8 +427,8 @@ async fn a_stored_guarded_consume_replays_under_either_guard() {
 
 /// F6 (property, 512 cases): random play against the native replay session.
 /// A case plays one family's term, replays its trace twice, and requires
-/// equal fired COMMs, phlo use, evidence and root, and equal host work in the
-/// two replays. Every family must also show at least two different picks.
+/// equal fired COMMs, phlo use, evidence and root in the two replays. Every
+/// family must also show at least two different picks.
 #[test]
 fn random_play_agrees_with_native_replay() {
     use proptest::test_runner::{Config, RngAlgorithm, TestCaseError, TestRng, TestRunner};

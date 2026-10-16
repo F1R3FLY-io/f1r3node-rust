@@ -52,9 +52,9 @@
    universally quantified when the sections close.
 
    Rust correspondence:
-   rspace++/src/rspace/replay_rspace/native_candidate/metered.rs
-   (metered_channel_data, metered_match_data, fill_incoming,
-   prepare_metered_produce_candidate, ProduceSelection) and
+   rspace++/src/rspace/replay_rspace/native_candidate/selection.rs
+   (channel_data, match_data, fill_incoming, prepare_produce_candidate,
+   ProduceSelection) and
    rspace++/src/rspace/replay_rspace/native_session/operations.rs. *)
 
 From Stdlib Require Import Lists.List Arith.PeanoNat Bool Lia.

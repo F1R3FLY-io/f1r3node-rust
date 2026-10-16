@@ -1,4 +1,3 @@
-use models::rust::host_work::{HostWorkDimension, HostWorkLimit, HostWorkLimits};
 use proptest::prelude::*;
 use rholang_parser::{SourcePos, SourceSpan};
 use rspace_plus_plus::rspace::errors::{HistoryError, RSpaceError, RadixTreeError, RootError};
@@ -27,10 +26,6 @@ fn summary(bits: u8) -> EvaluationFailureSummary {
         .fold(EvaluationFailureSummary::default(), |summary, (_, kind)| {
             summary.union(EvaluationFailureSummary::single(*kind))
         })
-}
-
-fn budget() -> HostWorkBudget {
-    HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(1_000_000_000)))
 }
 
 fn span() -> SourceSpan {
@@ -164,7 +159,7 @@ fn typed_variants_define_charge_class_without_message_heuristics() {
     ] {
         for error in errors {
             assert_eq!(
-                classify_errors(std::slice::from_ref(&error), None).unwrap(),
+                classify_errors(std::slice::from_ref(&error)).unwrap(),
                 EvaluationFailureSummary::single(expected),
                 "{error:?}"
             );
@@ -174,15 +169,12 @@ fn typed_variants_define_charge_class_without_message_heuristics() {
 
 #[test]
 fn empty_success_is_distinct_from_an_empty_error_aggregate() {
-    let success = classify_errors(&[], None).unwrap();
+    let success = classify_errors(&[]).unwrap();
     assert_eq!(success, EvaluationFailureSummary::default());
     assert!(success.permits_retained_charge());
-    let empty_error = classify_errors(
-        &[InterpreterError::AggregateError {
-            interpreter_errors: vec![],
-        }],
-        None,
-    )
+    let empty_error = classify_errors(&[InterpreterError::AggregateError {
+        interpreter_errors: vec![],
+    }])
     .unwrap();
     assert_eq!(
         empty_error,
@@ -208,7 +200,7 @@ fn wrapper_platform_class_preserves_every_nested_failure_class() {
         }),
         output_not_produced: vec![vec![3]],
     }];
-    assert_eq!(bits(classify_errors(&errors, None).unwrap()), 15);
+    assert_eq!(bits(classify_errors(&errors).unwrap()), 15);
 }
 
 #[test]
@@ -234,7 +226,7 @@ fn all_summary_combinations_obey_union_and_fail_closed_retention() {
 }
 
 #[test]
-fn classification_budget_exhaustion_returns_no_partial_success() {
+fn an_aggregate_takes_the_union_of_its_user_certificate_and_platform_classes() {
     let errors = [InterpreterError::AggregateError {
         interpreter_errors: vec![
             InterpreterError::UserAbortError,
@@ -245,31 +237,7 @@ fn classification_budget_exhaustion_returns_no_partial_success() {
             InterpreterError::IoError("storage".to_string()),
         ],
     }];
-    let measured = budget();
-    let expected = classify_errors(&errors, Some(&measured)).unwrap();
-    assert_eq!(bits(expected), 7);
-    assert_eq!(classify_errors(&errors, None).unwrap(), expected);
-    let mut charged_dimensions = 0;
-    for dimension in HostWorkDimension::ALL {
-        let needed = measured.usage(dimension).get();
-        if needed == 0 {
-            continue;
-        }
-        charged_dimensions += 1;
-        for available in [0, needed - 1, needed] {
-            let mut limits = measured.limits();
-            limits.set(dimension, HostWorkLimit::new(available));
-            let constrained = HostWorkBudget::new(limits);
-            let result = classify_errors(&errors, Some(&constrained));
-            if available == needed {
-                assert_eq!(result.unwrap(), expected);
-            } else {
-                assert!(result.is_err());
-                assert!(constrained.is_rejected());
-            }
-        }
-    }
-    assert!(charged_dimensions > 0);
+    assert_eq!(bits(classify_errors(&errors).unwrap()), 7);
 }
 
 #[test]
@@ -394,12 +362,12 @@ proptest! {
     fn generated_nested_errors_preserve_union_under_permutation_and_duplication(forest in prop::collection::vec(error_tree(), 0..10)) {
         let expected = forest.iter().fold(0, |bits, tree| bits | tree.1);
         let errors: Vec<_> = forest.into_iter().map(|tree| tree.0).collect();
-        let actual = classify_errors(&errors, Some(&budget())).unwrap();
+        let actual = classify_errors(&errors).unwrap();
         prop_assert_eq!(bits(actual), expected);
         let reversed: Vec<_> = errors.iter().rev().cloned().collect();
-        prop_assert_eq!(classify_errors(&reversed, None).unwrap(), actual);
+        prop_assert_eq!(classify_errors(&reversed).unwrap(), actual);
         let doubled: Vec<_> = errors.iter().chain(&errors).cloned().collect();
-        prop_assert_eq!(classify_errors(&doubled, None).unwrap(), actual);
+        prop_assert_eq!(classify_errors(&doubled).unwrap(), actual);
         prop_assert_eq!(actual.permits_retained_charge(), expected & 14 == 0);
     }
 }

@@ -1,7 +1,6 @@
 // See rholang/src/main/scala/coop/rchain/rholang/interpreter/errors.scala
 use std::fmt;
 
-use models::rust::host_work::HostWorkReservationError;
 use rspace_plus_plus::rspace::errors::RSpaceError;
 
 // PartialEq here is needed for testing purposes
@@ -402,14 +401,9 @@ impl From<RSpaceError> for InterpreterError {
         match err {
             RSpaceError::OutOfPhlogistons => InterpreterError::OutOfPhlogistonsError,
             RSpaceError::SignedLimitExhausted => InterpreterError::SignedLimitExhausted,
-            RSpaceError::HostWorkRejected => InterpreterError::HostWorkRejected,
             other => InterpreterError::RSpaceError(other),
         }
     }
-}
-
-impl From<HostWorkReservationError> for InterpreterError {
-    fn from(_: HostWorkReservationError) -> Self { Self::HostWorkRejected }
 }
 
 impl From<InterpreterError> for RSpaceError {
@@ -417,7 +411,6 @@ impl From<InterpreterError> for RSpaceError {
         match error {
             InterpreterError::OutOfPhlogistonsError => Self::OutOfPhlogistons,
             InterpreterError::SignedLimitExhausted => Self::SignedLimitExhausted,
-            InterpreterError::HostWorkRejected => Self::HostWorkRejected,
             InterpreterError::RSpaceError(error) => error,
             other => Self::InterpreterError(other.to_string()),
         }
@@ -728,24 +721,20 @@ mod tests {
 
     #[test]
     fn resource_errors_keep_their_class_across_rspace() {
-        for expected in [
-            InterpreterError::HostWorkRejected,
-            InterpreterError::OutOfPhlogistonsError,
-        ] {
-            let transported = RSpaceError::from(expected.clone());
-            assert_eq!(InterpreterError::from(transported), expected);
-        }
+        let expected = InterpreterError::OutOfPhlogistonsError;
+        let transported = RSpaceError::from(expected.clone());
+        assert_eq!(InterpreterError::from(transported), expected);
     }
 
     proptest::proptest! {
         #[test]
         fn error_transport_preserves_class_at_every_hop(
-            host in proptest::bool::ANY,
+            signed_limit in proptest::bool::ANY,
             hops in 0usize..256,
             wrapped in proptest::bool::ANY,
         ) {
-            let expected = if host {
-                RSpaceError::HostWorkRejected
+            let expected = if signed_limit {
+                RSpaceError::SignedLimitExhausted
             } else {
                 RSpaceError::OutOfPhlogistons
             };

@@ -1,4 +1,3 @@
-use models::rust::host_work::{HostWorkLimit, HostWorkLimits};
 use proptest::prelude::*;
 
 use super::*;
@@ -12,13 +11,8 @@ use crate::rust::interpreter::accounting::native_runtime::{
 };
 
 fn recording(decisions: &[bool]) -> NativeBudgetRecording {
-    let budget = host(1 << 40);
-    let mut paths = NativePathTrie::new(4, &budget).expect("trie fits");
-    let mut node = |segment: (u64, u64)| {
-        paths
-            .intern(PathId::ROOT, &[segment], &budget)
-            .expect("path fits")
-    };
+    let mut paths = NativePathTrie::new(4);
+    let mut node = |segment: (u64, u64)| paths.intern(PathId::ROOT, &[segment]).expect("path fits");
     let attempt_paths = (0..decisions.len())
         .map(|index| node((index as u64, 0)))
         .collect::<Vec<_>>();
@@ -71,10 +65,6 @@ fn recording(decisions: &[bool]) -> NativeBudgetRecording {
     }
 }
 
-fn host(limit: u64) -> HostWorkBudget {
-    HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(limit)))
-}
-
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(64))]
     #[test]
@@ -83,7 +73,7 @@ proptest! {
         cut in any::<usize>(),
     ) {
         let input = recording(&decisions);
-        let output = granted_observations(&input, &host(1_000_000)).unwrap();
+        let output = granted_observations(&input);
         let expected: Vec<_> = input.attempts.iter().filter(|attempt| attempt.granted)
             .map(|attempt| Arc::clone(&attempt.observation)).collect();
         prop_assert_eq!(&output.rows, &expected);
@@ -97,29 +87,12 @@ proptest! {
         left.attempts = input.attempts[..split].to_vec().into();
         let mut right = input.clone();
         right.attempts = input.attempts[split..].to_vec().into();
-        let mut combined = granted_observations(&left, &host(1_000_000)).unwrap().rows;
-        combined.extend(granted_observations(&right, &host(1_000_000)).unwrap().rows);
+        let mut combined = granted_observations(&left).rows;
+        combined.extend(granted_observations(&right).rows);
         prop_assert_eq!(&combined, &expected);
         let mut reversed = input.clone();
         reversed.attempts = input.attempts.iter().cloned().rev().collect::<Vec<_>>().into();
-        let reversed = granted_observations(&reversed, &host(1_000_000)).unwrap().rows;
+        let reversed = granted_observations(&reversed).rows;
         prop_assert!(reversed.iter().eq(expected.iter().rev()));
-    }
-}
-
-#[test]
-fn completed_projection_requires_prepaid_iteration_and_backing() {
-    let input = recording(&[true, false, true]);
-    for dimension in [
-        HostWorkDimension::VerificationOperations,
-        HostWorkDimension::SearchStateBytes,
-    ] {
-        let mut limits = HostWorkLimits::uniform(HostWorkLimit::new(1_000_000));
-        limits.set(dimension, HostWorkLimit::new(0));
-        let budget = HostWorkBudget::new(limits);
-        assert!(granted_observations(&input, &budget).is_err());
-        assert!(budget.is_rejected());
-        assert_eq!(input.attempts.len(), 3);
-        assert_eq!(input.retries.len(), 2);
     }
 }

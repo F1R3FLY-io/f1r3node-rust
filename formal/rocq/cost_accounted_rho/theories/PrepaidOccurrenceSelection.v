@@ -40,6 +40,9 @@
    host work of the scan is outside this model: the forward scan reads fewer
    positions, and no evidence records host work. *)
 
+(* DR-131: host work is removed, so the remark on host work above is
+   historical. *)
+
 From Stdlib Require Import Arith Lia Bool List Sorted.
 Import ListNotations.
 

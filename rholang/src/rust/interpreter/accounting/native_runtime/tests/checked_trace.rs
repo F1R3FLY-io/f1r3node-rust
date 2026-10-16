@@ -96,7 +96,7 @@ fn bind(
 ) -> Result<CheckedNativeOperationTrace, NativeOperationTraceError> {
     check(recording, rows)
         .unwrap()
-        .bind_trace(log.into(), limits(), &host())
+        .bind_trace(log.into(), limits())
 }
 
 #[test]
@@ -104,7 +104,7 @@ fn trace_covers_every_event_and_keeps_original_journal_indexes() {
     let (recording, mut rows, _) = trace_fixture();
     let mut paths = fixture_paths().as_ref().clone();
     let deep = paths
-        .intern(fixture_path(1), &[(9, 0)], &host())
+        .intern(fixture_path(1), &[(9, 0)])
         .expect("fixture path fits");
     let rows_mut = Arc::make_mut(&mut rows);
     rows_mut[0].occurrence.path = fixture_path(9);
@@ -351,34 +351,26 @@ fn trace_preserves_event_local_metadata_but_rejects_incoherent_comm_copies() {
 }
 
 #[test]
-fn trace_bounds_include_empty_output_items_and_all_host_work() {
-    for dimension in 0..6 {
+fn trace_bounds_include_empty_output_items() {
+    for dimension in 0..5 {
         let (recording, rows, mut log) = trace_fixture();
         let Event::IoEvent(IOEvent::Produce(intro)) = &mut log[0] else {
             panic!()
         };
         intro.output_value = vec![vec![], vec![], vec![7]];
         let mut bound = limits();
-        let host = if dimension == 5 {
-            HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(0)))
-        } else {
-            host()
-        };
         match dimension {
             0 => bound.events = 3,
             1 => bound.source_entries = 0,
             2 => bound.source_bytes = 0,
             3 => bound.telemetry_items = 2,
             4 => bound.telemetry_bytes = 0,
-            _ => (),
+            _ => unreachable!(),
         }
         let result = check(&recording, rows)
             .unwrap()
-            .bind_trace(log.into(), bound, &host);
-        assert!(matches!(
-            result,
-            Err(NativeOperationTraceError::Limit | NativeOperationTraceError::Host(_))
-        ));
+            .bind_trace(log.into(), bound);
+        assert!(matches!(result, Err(NativeOperationTraceError::Limit)));
     }
 }
 
@@ -473,46 +465,6 @@ fn consume_trigger_must_match_its_comm_source() {
 }
 
 #[test]
-fn consume_source_comparisons_reserve_work_for_each_traversal() {
-    let imported = |channels, host: &HostWorkBudget| {
-        let (mut recording, mut rows, _) = trace_fixture();
-        let row = &mut Arc::make_mut(&mut rows)[1];
-        let source = Arc::make_mut(&mut row.comm.as_mut().unwrap().source);
-        source.consume.channels = vec![[1; 32]; channels].into();
-        row.source = NativeOperationSource::Consume(source.consume.clone());
-        row.consume_peeks = Some(Arc::clone(&source.peeks));
-        let attempt = &mut Arc::make_mut(&mut recording.attempts)[1];
-        attempt.occurrence.stage = NativeAttemptStage::ConsumeIntroduction;
-        Arc::make_mut(&mut attempt.observation).kind = AuthorityByteEventKind::ConsumeIntroduction;
-        let log = events(&rows);
-        check(&recording, rows)
-            .unwrap()
-            .bind_trace(log.into(), limits(), host)
-    };
-    let small = host();
-    imported(1, &small).unwrap();
-    let large = host();
-    imported(256, &large).unwrap();
-    let dimension = HostWorkDimension::VerificationBytes;
-    let increase = large.usage(dimension).get() - small.usage(dimension).get();
-    assert!(
-        increase >= 3 * 255 * 32,
-        "each of three source comparisons needs byte credit"
-    );
-    let mut limits = small.limits();
-    limits.set(
-        dimension,
-        HostWorkLimit::new(small.usage(dimension).get() + 2 * 255 * 32),
-    );
-    let tight = HostWorkBudget::new(limits);
-    assert!(matches!(
-        imported(256, &tight),
-        Err(NativeOperationTraceError::Host(_))
-    ));
-    assert!(tight.is_rejected());
-}
-
-#[test]
 fn denied_comm_owns_a_slot_but_no_committed_introduction() {
     let (mut recording, mut rows, _) = trace_fixture();
     let attempt = &mut Arc::make_mut(&mut recording.attempts)[2];
@@ -544,9 +496,9 @@ proptest! {
     ) {
         let mut rows = Vec::new();
         let mut attempts = Vec::new();
-        let mut trie = NativePathTrie::new(8, &host()).expect("trie fits");
+        let mut trie = NativePathTrie::new(8);
         for (index, segments) in paths.into_iter().rev().enumerate() {
-            let path = trie.intern(PathId::ROOT, &segments, &host()).expect("path fits");
+            let path = trie.intern(PathId::ROOT, &segments).expect("path fits");
             let outcome = outcomes[index];
             let start = attempts.len();
             let intro = observation(index as u8, AuthorityByteEventKind::ProduceIntroduction, 0);
@@ -610,11 +562,11 @@ proptest! {
         ),
         probes in prop::collection::vec(prop::collection::vec((0_u64..3, 0_u64..3), 0..7), 0..24),
     ) {
-        let mut trie = NativePathTrie::new(8, &host()).expect("trie fits");
+        let mut trie = NativePathTrie::new(8);
         let mut rows = Vec::new();
         let mut attempts = Vec::new();
         for (index, segments) in paths.iter().enumerate() {
-            let path = trie.intern(PathId::ROOT, segments, &host()).expect("path fits");
+            let path = trie.intern(PathId::ROOT, segments).expect("path fits");
             attempts.push(NativeBudgetAttempt {
                 occurrence: NativeBudgetOccurrence {
                     session: [0; 32],
@@ -638,7 +590,7 @@ proptest! {
         let log = events_in(&recording.paths, &rows);
         let replay = bind(&recording, rows.into(), log)
             .expect("journal binds")
-            .into_replay(host())
+            .into_replay()
             .expect("replay builds");
         let slots = (0..replay.trace().operation_count())
             .map(|slot| recording.paths.segments(replay.trace().operation(slot).expect("slot").occurrence.path))

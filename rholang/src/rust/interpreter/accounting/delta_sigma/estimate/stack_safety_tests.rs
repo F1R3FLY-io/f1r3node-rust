@@ -16,11 +16,10 @@ use models::rhoapi::{
     Connective, CostSignature, CostSignatureCompound, CostSignedTerm, CostStack, EList, EMap, EVar,
     Expr, KeyValuePair, New, Par, Receive, ReceiveBind, Send, Var, VarRef,
 };
-use models::rust::host_work::{HostWorkDimension, HostWorkLimit, HostWorkLimits};
 use proptest::prelude::*;
 
 use super::recursive_oracle::{analyze, analyze_iteratively, estimator_levels, peak_binders};
-use super::tests::{evaluator, funding, runtime_urn_map, schedule, stdout_urn_map, unlimited};
+use super::tests::{evaluator, funding, runtime_urn_map, schedule, stdout_urn_map};
 use super::*;
 use crate::rust::interpreter::accounting::lexical::{
     resolve_lexical_names_for_funding, resolver_levels,
@@ -406,8 +405,8 @@ fn assert_parity(source: &str, urn_map: &HashMap<String, Par>) -> Result<(), Tes
             .spawn_scoped(scope, || {
                 let schedule = schedule([2, 1, 1, 3]);
                 (
-                    analyze_iteratively(&resolved, &funding(), &schedule, &reducer, &unlimited()),
-                    analyze(&resolved, &funding(), &schedule, &reducer, &unlimited()),
+                    analyze_iteratively(&resolved, &funding(), &schedule, &reducer),
+                    analyze(&resolved, &funding(), &schedule, &reducer),
                 )
             })
             .expect("spawn the parity thread")
@@ -570,7 +569,7 @@ fn the_estimate_runs_a_term_nested_one_hundred_thousand_deep_on_a_small_stack() 
             .name("estimate-small-stack".to_string())
             .stack_size(SMALL_STACK_BYTES)
             .spawn_scoped(scope, || {
-                analyze_iteratively(&par, &funding(), &schedule([1; 4]), &reducer, &unlimited())
+                analyze_iteratively(&par, &funding(), &schedule([1; 4]), &reducer)
             })
             .expect("spawn the small-stack thread")
             .join();
@@ -578,7 +577,7 @@ fn the_estimate_runs_a_term_nested_one_hundred_thousand_deep_on_a_small_stack() 
             .name("estimate-entry".to_string())
             .stack_size(SMALL_STACK_BYTES)
             .spawn_scoped(scope, || {
-                linear_cost_estimate(&par, &funding(), &schedule([1; 4]), &reducer, &unlimited())
+                linear_cost_estimate(&par, &funding(), &schedule([1; 4]), &reducer)
             })
             .expect("spawn the entry thread")
             .join();
@@ -609,79 +608,6 @@ fn the_estimate_runs_a_term_nested_one_hundred_thousand_deep_on_a_small_stack() 
     assert_eq!(direct, iterative.estimate);
 }
 
-/// A `new` of 100,000 names gives the sizing environment 100,000 levels, and
-/// the reducer copies that environment at each binder of a substituted term.
-/// The receive body has 3,000 parallel `new` terms, so it fits the sizing
-/// bound and the plan fits the offered limits. Under those limits, the
-/// charge of the copies rejects the term before the copies run.
-#[test]
-fn the_offered_limits_reject_the_environment_copies_of_a_wide_environment() {
-    let nested = |_| New {
-        bind_count: 1,
-        p: Some(Par::default()),
-        uri: Vec::new(),
-        injections: BTreeMap::new(),
-        locally_free: Vec::new(),
-    };
-    let body = Par::default().with_news((0..3_000).map(nested).collect());
-    let mut level = Par::default();
-    level.sends.push(Send {
-        chan: Some(bound(0)),
-        data: vec![Par::default().with_exprs(vec![Expr {
-            expr_instance: Some(ExprInstance::GInt(1)),
-        }])],
-        persistent: false,
-        locally_free: vec![1],
-        connective_used: false,
-    });
-    level.receives.push(Receive {
-        binds: vec![ReceiveBind {
-            patterns: Vec::new(),
-            source: Some(bound(0)),
-            remainder: None,
-            free_count: 0,
-            cost_signature: None,
-        }],
-        body: Some(body),
-        persistent: false,
-        peek: false,
-        bind_count: 0,
-        locally_free: vec![1],
-        connective_used: false,
-        condition: None,
-    });
-    let channel = New {
-        bind_count: 1,
-        p: Some(level),
-        uri: Vec::new(),
-        injections: BTreeMap::new(),
-        locally_free: Vec::new(),
-    };
-    let par = Par::default().with_news(vec![New {
-        bind_count: 100_000,
-        p: Some(Par::default().with_news(vec![channel])),
-        uri: Vec::new(),
-        injections: BTreeMap::new(),
-        locally_free: Vec::new(),
-    }]);
-    let reducer = evaluator(HashMap::new());
-    let mut limits = HostWorkLimits::uniform(HostWorkLimit::new(268_435_456));
-    limits.set(
-        HostWorkDimension::SearchStateBytes,
-        HostWorkLimit::new(134_217_728),
-    );
-    let host = HostWorkBudget::new(limits);
-    let result = linear_cost_estimate(&par, &funding(), &schedule([1; 4]), &reducer, &host);
-    dismantle_term(par);
-    assert_eq!(result, Err(InterpreterError::HostWorkRejected));
-    assert_eq!(
-        host.rejection().map(|rejection| rejection.dimension()),
-        Some(HostWorkDimension::SubstitutionBindings),
-        "the copies of the receive body cost 100,001 bindings each: {:?}",
-        host.rejection()
-    );
-}
-
 /// The recursive oracle agrees with the work-stack passes on a term deep
 /// enough that its outer receive bodies exceed the sizing bound. The oracle
 /// recurses once per level, so this comparison uses a depth whose frames fit
@@ -695,7 +621,7 @@ fn the_oracle_agrees_on_a_term_above_the_sizing_bound() {
             .name("estimate-small-stack".to_string())
             .stack_size(SMALL_STACK_BYTES)
             .spawn_scoped(scope, || {
-                analyze_iteratively(&par, &funding(), &schedule([1; 4]), &reducer, &unlimited())
+                analyze_iteratively(&par, &funding(), &schedule([1; 4]), &reducer)
             })
             .expect("spawn the small-stack thread")
             .join();
@@ -703,7 +629,7 @@ fn the_oracle_agrees_on_a_term_above_the_sizing_bound() {
             .name("estimate-oracle".to_string())
             .stack_size(ORACLE_STACK_BYTES)
             .spawn_scoped(scope, || {
-                analyze(&par, &funding(), &schedule([1; 4]), &reducer, &unlimited())
+                analyze(&par, &funding(), &schedule([1; 4]), &reducer)
             })
             .expect("spawn the oracle thread")
             .join();
@@ -753,8 +679,7 @@ fn nested_list(depth: usize) -> Par {
 fn a_datum_at_the_sizing_bound_is_sized_on_a_small_stack() {
     let reducer = evaluator(HashMap::new());
     let core = isolated_evaluator(&reducer);
-    let host = unlimited();
-    let probe = Estimator::new(&funding(), &core, &host).expect("an estimator");
+    let probe = Estimator::new(&funding(), &core).expect("an estimator");
     let env_height = probe.env_height;
     let fits = |height: u32| height + env_height + WRAPPER_MARGIN <= SIZING_HEIGHT_LIMIT;
     let mut depth = 0usize;
@@ -787,7 +712,7 @@ fn a_datum_at_the_sizing_bound_is_sized_on_a_small_stack() {
                 .name("estimate-bound".to_string())
                 .stack_size(SMALL_STACK_BYTES)
                 .spawn_scoped(scope, || {
-                    analyze_iteratively(&par, &funding(), &schedule([1; 4]), &reducer, &unlimited())
+                    analyze_iteratively(&par, &funding(), &schedule([1; 4]), &reducer)
                 })
                 .expect("spawn the bound thread")
                 .join()
@@ -805,7 +730,7 @@ fn a_datum_at_the_sizing_bound_is_sized_on_a_small_stack() {
 
 fn measured_height(par: &Par) -> u32 {
     let mut measures = Measures::default();
-    measure_subterm(Subterm::Par(par), &mut measures, &unlimited())
+    measure_subterm(Subterm::Par(par), &mut measures)
         .expect("the value is measured")
         .height
 }
@@ -852,14 +777,8 @@ fn generated_programs_reach_both_analyses() {
             continue;
         };
         compiled += 1;
-        let estimate = linear_cost_estimate(
-            &resolved,
-            &funding(),
-            &schedule([1; 4]),
-            &reducer,
-            &unlimited(),
-        )
-        .expect("the estimate runs");
+        let estimate = linear_cost_estimate(&resolved, &funding(), &schedule([1; 4]), &reducer)
+            .expect("the estimate runs");
         dismantle_term(resolved);
         match estimate.completeness {
             Completeness::Complete => complete += 1,
@@ -1204,13 +1123,7 @@ fn assert_plan_dominates(
         return Ok(false);
     };
     let reducer = evaluator(urn_map.clone());
-    let analysis = analyze_iteratively(
-        &resolved,
-        &funding(),
-        &schedule([1; 4]),
-        &reducer,
-        &unlimited(),
-    );
+    let analysis = analyze_iteratively(&resolved, &funding(), &schedule([1; 4]), &reducer);
     let plan = static_authority_plan(&resolved, &funding());
     dismantle_term(resolved);
     let analysis = analysis.map_err(|error| TestCaseError::fail(format!("{source}: {error}")))?;

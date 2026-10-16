@@ -342,7 +342,7 @@ fn log_partial_clear_is_sticky_and_snapshots_retain_original_flags() {
     log.clear_partial_history(false);
     assert!(log.snapshot(true).history_lost);
     log.reset();
-    log.try_reserve(1).unwrap();
+    log.reserve(1);
     log.push(paired_row(1));
     let retained = log.snapshot(true);
     let cloned = log.clone();
@@ -368,7 +368,7 @@ fn loom_log_parallel_publication_retains_atomic_raw_and_legacy_pairs() {
             let row = Arc::clone(row);
             writers.push(loom::thread::spawn(move || {
                 let mut guard = log.lock().unwrap();
-                guard.try_reserve(1).unwrap();
+                guard.reserve(1);
                 guard.push(row);
             }));
         }
@@ -395,7 +395,7 @@ fn loom_owned_log_snapshot_survives_quiescent_reset_and_new_publication() {
     let second = paired_row(2);
     loom::model(move || {
         let mut initial = ByteObservationLog::default();
-        initial.try_reserve(1).unwrap();
+        initial.reserve(1);
         initial.push(Arc::clone(&first));
         let retained = initial.snapshot(true);
         let log = loom::sync::Arc::new(loom::sync::Mutex::new(initial));
@@ -404,7 +404,7 @@ fn loom_owned_log_snapshot_survives_quiescent_reset_and_new_publication() {
         let writer = loom::thread::spawn(move || {
             let mut guard = writer_log.lock().unwrap();
             guard.reset();
-            guard.try_reserve(1).unwrap();
+            guard.reserve(1);
             guard.push(second);
         });
         assert_component_pairs(&retained);

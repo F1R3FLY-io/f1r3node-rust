@@ -1383,17 +1383,17 @@ async fn a_third_signer_inserts_a_version_after_a_merge_with_a_writers_branch() 
     );
 }
 
-/// DR-102: on a small offered block, the producer's self-replay and every
-/// validator replay charge the same usage, and each role charges its own
-/// acceptance work to a separate budget. The block fits the committed caps.
+/// DR-102: a small offered block replays on the producer and on every
+/// validator. Changed by DR-131: the test no longer compares host-work usage,
+/// which went with host work.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn offered_replay_usage_is_identical_across_roles_on_a_small_block() {
+async fn offered_block_replays_on_every_role_on_a_small_block() {
     let genesis = offered_v6_genesis(3).await;
     let mut nodes = TestNode::create_network(genesis.clone(), 3, None, None, None, None)
         .await
         .unwrap();
     let signer = genesis.genesis_vaults[0].clone();
-    crate::helper::offered_replay_usage::propose_offer_with_identical_replay_usage(
+    crate::helper::offered_replay_usage::propose_offer_replayed_by_every_role(
         &mut nodes,
         owner_direct_offer(&signer, 1, "new x in { x!(0) }".to_string()),
         "small block",
@@ -1572,9 +1572,6 @@ async fn a_failed_offered_deploy_keeps_its_charge_when_its_block_is_a_merged_bra
     let user_events =
         casper::rust::util::rholang::costacc::offered_evidence::committed_user_event_count(
             &evidence,
-            &rholang::rust::interpreter::host_work::HostWorkBudget::new(
-                models::rust::cost_protocol_limits::offered_funded_v6_host_work_limits(),
-            ),
         )
         .expect("the committed journal decodes");
     assert_eq!(user_events, 3);
@@ -1600,9 +1597,6 @@ async fn a_failed_offered_deploy_keeps_its_charge_when_its_block_is_a_merged_bra
             casper::rust::util::rholang::costacc::offered_evidence::encode_committed_native_evidence(
                 &corrupted_evidence,
                 offered_funded_v6_limits().evidence,
-                &rholang::rust::interpreter::host_work::HostWorkBudget::new(
-                    models::rust::cost_protocol_limits::offered_funded_v6_host_work_limits(),
-                ),
             )
             .expect("the corrupted evidence encodes"),
             offered_funded_v6_limits().evidence,
@@ -2463,33 +2457,24 @@ async fn a_value_type_error_is_published_as_a_charged_user_failure() {
     .await;
 }
 
-// Disabled by DR-128 (bug 11414): under the committed caps the host-work
-// budget stops this run before the term count. The doubling needs more than
-// 268,435,456 verification bytes, the committed limit of
-// `offered_funded_v6_host_work_limits`. The producer then records "native
-// offered execution has incomplete byte measurements" with
-// `HostWorkRejected`. Under the provisional caps the run reaches the term
-// count, and the probe passes. The unit test
-// `a_process_with_too_many_terms_is_a_user_failure` (rholang) covers the
-// site with a hand-built process and with this doubling term.
-// /// Added by DR-128 (bug 11414): a process with more than 32767 terms is the
-// /// user failure `TermStructureError`. A contract doubles a one-send process
-// /// fifteen times through substitution, and the receiver then evaluates the
-// /// 32768 sends. The pre-execution count reads no send data, so only the
-// /// reducer sees the process.
-// #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-// async fn a_process_with_too_many_terms_is_published_as_a_charged_user_failure() {
-//     const WRITTEN: &str = "term-structure-written";
-//     assert_charged_user_failures(WRITTEN, &[format!(
-//         "new double, ret in {{ @\"{WRITTEN}\"!(1) | \
-//          contract double(@p, @n, r) = {{ \
-//            if (n == 0) {{ r!(p) }} else {{ double!(p | p, n - 1, *r) }} \
-//          }} | \
-//          double!(@\"t\"!(0), 15, *ret) | \
-//          for (@big <- ret) {{ big }} }}"
-//     )])
-//     .await;
-// }
+/// Added by DR-128 (bug 11414): a process with more than 32767 terms is the
+/// user failure `TermStructureError`. A contract doubles a one-send process
+/// fifteen times through substitution, and the receiver then evaluates the
+/// 32768 sends. The pre-execution count reads no send data, so only the
+/// reducer sees the process.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_process_with_too_many_terms_is_published_as_a_charged_user_failure() {
+    const WRITTEN: &str = "term-structure-written";
+    assert_charged_user_failures(WRITTEN, &[format!(
+        "new double, ret in {{ @\"{WRITTEN}\"!(1) | \
+         contract double(@p, @n, r) = {{ \
+           if (n == 0) {{ r!(p) }} else {{ double!(p | p, n - 1, *r) }} \
+         }} | \
+         double!(@\"t\"!(0), 15, *ret) | \
+         for (@big <- ret) {{ big }} }}"
+    )])
+    .await;
+}
 
 /// Added by DR-128 (bug 11414): two sites reuse existing user variants. A
 /// float modulo is `OperatorNotDefined`, and `nth` on an Int is
@@ -3246,8 +3231,7 @@ fn searched_signer(
 /// for each signer in `signers`. `GenesisBuilder::offered_v6` raises each of
 /// these vaults to `OFFERED_TEST_VAULT_BALANCE`, 10^12 (step F0 of gap G1).
 /// The signers follow the default keys in `genesis_vaults`. A genesis vault
-/// avoids a funding deploy, because a deploy that creates a vault exceeds the
-/// committed host-work budget.
+/// avoids a funding deploy.
 async fn offered_v6_genesis_with_signers(
     validators: usize,
     signers: &[(

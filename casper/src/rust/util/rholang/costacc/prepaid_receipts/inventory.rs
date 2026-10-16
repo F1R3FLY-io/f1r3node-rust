@@ -1,14 +1,10 @@
 use std::collections::{BTreeMap, BTreeSet};
-use std::mem::size_of;
 
 use models::rhoapi::CostSignature;
-use models::rust::host_work::HostWorkDimension;
 use rholang::rust::interpreter::accounting::phlo_execution::{
     PhloExecutionLimits, PhloResource, RestoredPhloResource,
 };
-use rholang::rust::interpreter::host_work::HostWorkBudget;
 
-use super::snapshot::reserve;
 use super::{
     invalid, CapturedPrepaidStacks, CasperError, NativePrepaidCell, NativePrepaidCellLimits,
     OrderedPrepaidCells, PrepaidCellLimits, PrepaidStackPop,
@@ -65,7 +61,6 @@ impl<'p> CapturedPrepaidStacks<'p> {
     pub fn resource_inventory<'s>(
         &'s self,
         limits: NativePrepaidInventoryLimits,
-        budget: &HostWorkBudget,
     ) -> Result<NativePrepaidInventory<'s, 'p>, CasperError> {
         let mut sources = BTreeMap::new();
         let mut cells_left = limits.cells.cells.min(limits.execution.resource_entries);
@@ -73,22 +68,12 @@ impl<'p> CapturedPrepaidStacks<'p> {
         let mut keys_left = limits.execution.key_bytes;
         let mut nodes_left = limits.execution.authority_nodes;
         for stack in self.stacks() {
-            reserve(budget, HostWorkDimension::VerificationOperations, 1)?;
             if sources.contains_key(&stack.source_hash) {
                 continue;
             }
             let bucket = self
                 .records_for_stack(&self.root(), &stack.instance_id)?
                 .ok_or_else(|| invalid("inventory stack has no rooted receipt bucket"))?;
-            reserve(
-                budget,
-                HostWorkDimension::SearchStateBytes,
-                bucket
-                    .receipts()
-                    .len()
-                    .checked_mul(size_of::<Vec<NativePrepaidResource<'_>>>())
-                    .ok_or_else(|| invalid("inventory receipt size overflow"))?,
-            )?;
             let mut records = Vec::new();
             records
                 .try_reserve_exact(bucket.receipts().len())
@@ -97,33 +82,10 @@ impl<'p> CapturedPrepaidStacks<'p> {
                 bytes_left = bytes_left
                     .checked_sub(record.len())
                     .ok_or_else(|| invalid("inventory aggregate record byte limit exceeded"))?;
-                let allocation = record
-                    .len()
-                    .checked_mul(
-                        size_of::<super::NativePrepaidContribution>()
-                            + size_of::<models::rust::phlo_resource::PhloAuthorityNode<'_>>()
-                            + 2 * size_of::<&[u8]>(),
-                    )
-                    .ok_or_else(|| invalid("inventory decode allocation overflow"))?;
-                reserve(budget, HostWorkDimension::SearchStateBytes, allocation)?;
-                reserve(
-                    budget,
-                    HostWorkDimension::VerificationOperations,
-                    record.len(),
-                )?;
                 let ordered = OrderedPrepaidCells::decode(record, limits.cells)?;
                 cells_left = cells_left
                     .checked_sub(ordered.cells().len())
                     .ok_or_else(|| invalid("inventory aggregate cell limit exceeded"))?;
-                reserve(
-                    budget,
-                    HostWorkDimension::SearchStateBytes,
-                    ordered
-                        .cells()
-                        .len()
-                        .checked_mul(size_of::<NativePrepaidResource<'_>>())
-                        .ok_or_else(|| invalid("inventory cell allocation overflow"))?,
-                )?;
                 let mut cells = Vec::new();
                 cells
                     .try_reserve_exact(ordered.cells().len())
@@ -140,7 +102,6 @@ impl<'p> CapturedPrepaidStacks<'p> {
                             key_bytes: receipt.resource_bytes().len(),
                             ..limits.execution
                         },
-                        budget,
                     )
                     .map_err(|error| invalid(&error.to_string()))?;
                     nodes_left = nodes_left
@@ -182,19 +143,10 @@ impl NativePrepaidInventory<'_, '_> {
         &self,
         draws: &[PrepaidStackPop],
         maximum_draws: usize,
-        budget: &HostWorkBudget,
     ) -> Result<Vec<NativePrepaidPrefix<'_>>, CasperError> {
         if draws.len() > maximum_draws {
             return Err(invalid("inventory selection draw limit exceeded"));
         }
-        reserve(
-            budget,
-            HostWorkDimension::SearchStateBytes,
-            draws
-                .len()
-                .checked_mul(size_of::<NativePrepaidPrefix<'_>>() + 128)
-                .ok_or_else(|| invalid("inventory selection allocation overflow"))?,
-        )?;
         let mut selected = BTreeSet::new();
         let mut occurrences = BTreeSet::new();
         let mut prefixes = Vec::new();
@@ -202,7 +154,6 @@ impl NativePrepaidInventory<'_, '_> {
             .try_reserve_exact(draws.len())
             .map_err(|_| invalid("inventory selection allocation failed"))?;
         for draw in draws {
-            reserve(budget, HostWorkDimension::VerificationOperations, 1)?;
             if !selected.insert(draw.stack_id) {
                 return Err(invalid("inventory selection repeats a physical stack"));
             }

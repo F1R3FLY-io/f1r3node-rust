@@ -1,6 +1,3 @@
-use std::mem::size_of;
-
-use models::rust::host_work::HostWorkDimension;
 use models::rust::signed_phlo_deploy::FundedDeploy;
 use thiserror::Error;
 
@@ -8,8 +5,7 @@ use super::{
     CheckedSignedPhloFamilyPolicy, NativePhloAmountError, NativePhloSourceAmounts,
     PhloCaptureLimits, PhloPolicyCaptureError, ScopedPhloFundingCapture,
 };
-use crate::rust::interpreter::accounting::monetary_allocation::{reserve_work, FundingSearchError};
-use crate::rust::interpreter::host_work::HostWorkBudget;
+use crate::rust::interpreter::accounting::monetary_allocation::FundingSearchError;
 
 #[derive(Clone, Debug)]
 pub struct CheckedNativeSignedPhloFamilyPolicy<'a, A = FundedDeploy> {
@@ -32,12 +28,7 @@ pub enum NativePhloPolicyError {
     Search(#[from] FundingSearchError),
 }
 
-fn check_native_holds(holds: &[u64], budget: &HostWorkBudget) -> Result<(), NativePhloPolicyError> {
-    reserve_work(
-        budget,
-        HostWorkDimension::VerificationOperations,
-        holds.len(),
-    )?;
+fn check_native_holds(holds: &[u64]) -> Result<(), NativePhloPolicyError> {
     if holds.iter().any(|hold| *hold > i64::MAX as u64) {
         return Err(NativePhloAmountError::OutOfRange.into());
     }
@@ -47,7 +38,6 @@ fn check_native_holds(holds: &[u64], budget: &HostWorkBudget) -> Result<(), Nati
 impl<'a, A> CheckedSignedPhloFamilyPolicy<'a, A> {
     pub fn into_native(
         self,
-        budget: &HostWorkBudget,
     ) -> Result<CheckedNativeSignedPhloFamilyPolicy<'a, A>, NativePhloPolicyError> {
         check_native_holds(
             self.signed_intent()
@@ -56,7 +46,6 @@ impl<'a, A> CheckedSignedPhloFamilyPolicy<'a, A> {
                 .consent()
                 .family()
                 .source_holds(),
-            budget,
         )?;
         Ok(CheckedNativeSignedPhloFamilyPolicy { policy: self })
     }
@@ -69,23 +58,9 @@ impl<'a, A> CheckedNativeSignedPhloFamilyPolicy<'a, A> {
         &self,
         branch: usize,
         limits: PhloCaptureLimits,
-        budget: &HostWorkBudget,
     ) -> Result<NativeScopedPhloFundingCapture<'a, A>, NativePhloPolicyError> {
-        let scoped = self.policy.capture_case(branch, limits, budget)?;
+        let scoped = self.policy.capture_case(branch, limits)?;
         let sources = scoped.capture().sources();
-        reserve_work(
-            budget,
-            HostWorkDimension::VerificationOperations,
-            sources.len(),
-        )?;
-        reserve_work(
-            budget,
-            HostWorkDimension::SearchStateBytes,
-            sources
-                .len()
-                .checked_mul(size_of::<NativePhloSourceAmounts<'a>>())
-                .ok_or(FundingSearchError::Overflow)?,
-        )?;
         let mut amounts = Vec::new();
         amounts
             .try_reserve_exact(sources.len())

@@ -61,6 +61,14 @@
    (MatcherWork::reserve_free_map_search and reserve_free_map_insert), and the
    call sites in list_match.rs and match.rs. *)
 
+(* DR-131: the matcher no longer charges host work. collection_backing.rs is
+   deleted, and the mergers of the remainder handler make no reservations.
+   Part 1 describes the deleted binding charges. In part 2,
+   in_place_merge_equals_copy_merge still describes the in-place merge: with
+   no reservation, every merger assigns last and the insert is admitted.
+   rejected_merge_leaves_map and assign_first_merge_changes_map_on_rejection
+   describe a rejected merge, which the matcher can no longer produce. *)
+
 From Stdlib Require Import Lists.List Arith.PeanoNat Bool Lia NArith.
 From CostAccountedRho Require OrderedLookupBound IncrementalTreeBacking.
 Import ListNotations.
