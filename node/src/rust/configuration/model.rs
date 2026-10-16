@@ -220,6 +220,20 @@ pub struct ApiServer {
 pub struct Storage {
     #[serde(rename = "data-dir")]
     pub data_dir: PathBuf,
+
+    /// File I/O FIP static provisioning: operator-declared
+    /// `oracle-static-files` / `oracle-static-dirs` /
+    /// `consensus-static-files` / `consensus-static-dirs` HOCON
+    /// blocks that assign Rholang-level logical names to on-disk
+    /// paths.  See `file_io_provisioning` for schema details,
+    /// mode-string whitelist, operator-ergonomic typo detector,
+    /// and size caps.  All four buckets default to empty so a
+    /// node config that doesn't provision any static entries
+    /// parses unchanged.  `#[serde(flatten)]` lands the four
+    /// kebab-case bucket keys directly under `storage {}` instead
+    /// of under an intermediate `storage.file-io-provisioning` block.
+    #[serde(default, flatten)]
+    pub file_io_provisioning: super::file_io_provisioning::FileIoProvisioning,
 }
 
 /// TLS configuration

@@ -714,6 +714,10 @@ mod tests {
                 heartbeat_advanced_empty_frontier_max_unfinalized_blocks: Some(444),
                 synchrony_finalized_baseline_enabled: Some(false),
                 synchrony_finalized_baseline_max_distance: Some(666666),
+                oracle_static_files: Vec::new(),
+                oracle_static_dirs: Vec::new(),
+                consensus_static_files: Vec::new(),
+                consensus_static_dirs: Vec::new(),
             })),
         };
 
@@ -776,6 +780,7 @@ mod tests {
             },
             storage: crate::rust::configuration::model::Storage {
                 data_dir: PathBuf::from("/var/lib/rnode"),
+                file_io_provisioning: Default::default(),
             },
             tls: crate::rust::configuration::model::TlsConf {
                 certificate_path: PathBuf::from("/var/lib/rnode/node.certificate.pem"),

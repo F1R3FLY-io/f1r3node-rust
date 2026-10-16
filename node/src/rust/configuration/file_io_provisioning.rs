@@ -41,11 +41,16 @@
 //! Invalid modes produce a serde deserialization error naming the
 //! allowed set.
 //!
-//! Path-content validation (absolute-path check, control-char
-//! rejection) remains deferred to a follow-up slice.
+//! Path-content validation (ops-6a) runs at deserialization time
+//! too: paths must be absolute UTF-8, and both path and mode
+//! strings must not contain NUL / ASCII controls / C1 controls /
+//! bidi overrides / BOM / line-paragraph separators (log-injection,
+//! Rholang-lexer, and FFI-NUL-truncation hazards).  Boot-time tree
+//! validation (symlink / hard-link walk) still lives in a
+//! follow-up slice.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::de::Error as _;
 use serde::{Deserialize, Deserializer, Serialize};
@@ -122,14 +127,78 @@ pub struct StaticDirEntry {
     pub mode: String,
 }
 
+/// Validate that `p` is a non-empty absolute UTF-8 path, per
+/// spec §1273-1274: "Every configured path must be absolute" and
+/// paths must be UTF-8 (necessary for the Rholang bundle-source
+/// splice downstream, and for log-safe reporting).
+///
+/// The UTF-8 branch is defensive: in the current pipeline a
+/// `PathBuf` is always constructed from a serde `String` and is
+/// therefore always valid UTF-8.  The check is kept so a future
+/// refactor that admits raw `OsString` doesn't silently bypass it.
+pub(crate) fn validate_absolute_path(p: &Path) -> Result<(), String> {
+    if p.as_os_str().is_empty() {
+        return Err("path is empty".into());
+    }
+    if !p.is_absolute() {
+        return Err(format!(
+            "path {p:?} is not absolute; static provisioning requires absolute host paths (spec §1273)"
+        ));
+    }
+    if p.to_str().is_none() {
+        return Err(format!(
+            "path {p:?} is not valid UTF-8; spec §1274 requires UTF-8 paths"
+        ));
+    }
+    Ok(())
+}
+
+/// Reject NUL, ASCII C0 controls (U+0000–U+001F), DEL (U+007F),
+/// C1 controls (U+0080–U+009F), bidirectional-override marks,
+/// line/paragraph separators, and BOM.  Operator-config values
+/// pass through `tracing::warn!` output, FFI boundaries, and the
+/// Rholang bundle-source splice; a control char in any of those
+/// contexts is a log-injection, NUL-truncation, visual-confusable,
+/// or lexer-break hazard.
+pub(crate) fn reject_forbidden_chars(kind: &str, value: &str) -> Result<(), String> {
+    if let Some((i, c)) = value.char_indices().find(|(_, c)| is_forbidden(*c)) {
+        return Err(format!(
+            "{kind} contains forbidden control character U+{:04X} at byte {i}",
+            c as u32
+        ));
+    }
+    Ok(())
+}
+
+fn is_forbidden(c: char) -> bool {
+    let cp = c as u32;
+    if cp < 0x20 || cp == 0x7F {
+        return true;
+    }
+    if (0x80..=0x9F).contains(&cp) {
+        return true;
+    }
+    matches!(
+        cp,
+        0x200E | 0x200F
+        | 0x202A..=0x202E
+        | 0x2028 | 0x2029
+        | 0xFEFF
+        | 0x2066..=0x2069
+    )
+}
+
 /// Shared deserialize-either-shape helper.  Returns the raw
 /// `(path, mode)` pair with `default_mode` substituted when the
-/// entry is bare-String; rejects any mode string that isn't in
-/// `mode_whitelist` with a `D::Error::custom` describing the
-/// allowed set.
+/// entry is bare-String.  Runs three validations in sequence:
 ///
-/// Path-content validation (absolute-path check, control-char
-/// rejection) lands in a follow-up slice.
+///   1. `validate_absolute_path` on the parsed path (spec §1273).
+///   2. `reject_forbidden_chars` on the path's UTF-8 string.
+///   3. `reject_forbidden_chars` on the mode string.
+///   4. Mode whitelist (`mode_whitelist`).
+///
+/// Any failure produces a `D::Error::custom` describing the
+/// offending value.
 fn deserialize_static_entry<'de, D>(
     deserializer: D,
     default_mode: &str,
@@ -150,6 +219,14 @@ where
         Wire::Object { path, mode } => (path, mode),
         Wire::Bare(s) => (PathBuf::from(s), default_mode.to_string()),
     };
+
+    validate_absolute_path(&path).map_err(D::Error::custom)?;
+
+    if let Some(s) = path.to_str() {
+        reject_forbidden_chars("static-provisioning path", s).map_err(D::Error::custom)?;
+    }
+
+    reject_forbidden_chars("static-provisioning mode", &mode).map_err(D::Error::custom)?;
 
     if !mode_whitelist.contains(&mode.as_str()) {
         return Err(D::Error::custom(format!(
@@ -589,6 +666,104 @@ mod tests {
         }
     }
 
+    /// Relative paths are rejected at deserialization.  Covers
+    /// bare-String and object-form entries, files and dirs.
+    #[test]
+    fn relative_path_rejected() {
+        for hocon in [
+            r#"oracle-static-files { "n" = "etc/foo" }"#,
+            r#"oracle-static-files { "n" = { path = "etc/foo", mode = "r" } }"#,
+            r#"oracle-static-dirs  { "d/" = "etc/foo" }"#,
+            r#"consensus-static-dirs { "d/" = { path = "etc/foo", mode = "r+" } }"#,
+        ] {
+            let err = parse_provisioning(hocon)
+                .err()
+                .unwrap_or_else(|| panic!("relative path should reject but parsed: {hocon}"));
+            assert!(
+                err.contains("is not absolute"),
+                "error must name the invariant; got {err:?}"
+            );
+        }
+    }
+
+    /// Empty paths are rejected at deserialization.
+    #[test]
+    fn empty_path_rejected() {
+        let err = parse_provisioning(r#"oracle-static-files { "n" = "" }"#)
+            .expect_err("empty path should reject");
+        assert!(
+            err.contains("path is empty"),
+            "error must name the empty-path invariant; got {err:?}"
+        );
+    }
+
+    /// NUL and ASCII control characters in the path value are
+    /// rejected (log-injection + FFI-NUL-truncation hazards).
+    /// Uses HOCON `\u` escapes so the control char reaches the
+    /// deserializer without breaking HOCON syntax.
+    #[test]
+    fn control_char_in_path_rejected() {
+        for esc in ["\\u0000", "\\u001B", "\\u007F", "\\u000A"] {
+            let hocon = format!(r#"oracle-static-files {{ "n" = "/a/{esc}b" }}"#);
+            let err = parse_provisioning(&hocon)
+                .err()
+                .unwrap_or_else(|| panic!("control-char path {esc} should reject"));
+            assert!(
+                err.contains("forbidden control character")
+                    && err.contains("static-provisioning path"),
+                "error must name the invariant and the field; got {err:?}"
+            );
+        }
+    }
+
+    /// Bidirectional-override characters in the path are rejected
+    /// (visual-confusable hazard in operator-facing logs).
+    #[test]
+    fn bidi_override_in_path_rejected() {
+        let hocon = format!(
+            "oracle-static-files {{ \"n\" = \"/a/{}b\" }}",
+            '\u{202E}' // RIGHT-TO-LEFT OVERRIDE
+        );
+        let err = parse_provisioning(&hocon).expect_err("bidi-override path should reject");
+        assert!(
+            err.contains("forbidden control character"),
+            "error must name the invariant; got {err:?}"
+        );
+    }
+
+    /// Control characters in the mode string are rejected.  The
+    /// mode whitelist already rejects most such strings as "not a
+    /// POSIX mode", but a mode of `"r\0"` would also smuggle a NUL
+    /// through FFI boundaries if the whitelist check happened first.
+    /// Pins the ordering: forbidden-char check runs before whitelist.
+    #[test]
+    fn control_char_in_mode_rejected() {
+        let hocon = r#"oracle-static-files { "n" = { path = "/p", mode = "r " } }"#;
+        let err = parse_provisioning(hocon).expect_err("control-char mode should reject");
+        assert!(
+            err.contains("forbidden control character") && err.contains("static-provisioning mode"),
+            "error must name the invariant and the field; got {err:?}"
+        );
+    }
+
+    /// `validate_absolute_path` happy path on a plain absolute UTF-8
+    /// path.  Pins that the three gates (empty, non-absolute,
+    /// non-UTF-8) all pass on a clean input.
+    #[test]
+    fn validate_absolute_path_accepts_absolute_utf8() {
+        assert!(validate_absolute_path(Path::new("/etc/myapp/full.json")).is_ok());
+    }
+
+    /// `reject_forbidden_chars` happy path on a plain ASCII mode
+    /// string.  Pins that the matcher doesn't false-positive on
+    /// legitimate values.
+    #[test]
+    fn reject_forbidden_chars_accepts_ascii_mode() {
+        for mode in ["r", "r+", "w", "w+", "a", "a+"] {
+            assert!(reject_forbidden_chars("mode", mode).is_ok());
+        }
+    }
+
     /// Known bucket names produce no warnings.  Pins that the
     /// detector doesn't flag the canonical keys as typos.
     #[test]
@@ -730,6 +905,68 @@ mod tests {
         });
         let err = validate_size_limits(&cfg).expect_err("over-cap key should fail cleanly");
         assert!(err.contains("cap of"), "error must name the cap, got {err}");
+    }
+
+    /// Flatten-into-Storage wire-up: parsing a full `Storage`
+    /// HOCON block carries the four provisioning buckets through
+    /// `#[serde(flatten)]`.  Pins ops-5's field addition.
+    #[test]
+    fn storage_flatten_carries_provisioning_through() {
+        use crate::rust::configuration::model::Storage;
+
+        let hocon = r#"
+            data-dir = "/var/lib/rnode"
+            oracle-static-files {
+              "cfg" = "/etc/myapp/cfg.json"
+            }
+            consensus-static-dirs {
+              "shared/" = { path = "/srv/shared", mode = "r+" }
+            }
+        "#;
+        let storage: Storage = hocon::HoconLoader::new()
+            .load_str(hocon)
+            .expect("load")
+            .resolve()
+            .expect("resolve");
+        assert_eq!(storage.data_dir, PathBuf::from("/var/lib/rnode"));
+        assert_eq!(
+            storage
+                .file_io_provisioning
+                .oracle_static_files
+                .get("cfg")
+                .map(|e| e.mode.as_str()),
+            Some("r")
+        );
+        assert_eq!(
+            storage
+                .file_io_provisioning
+                .consensus_static_dirs
+                .get("shared/")
+                .map(|e| (e.path.as_path(), e.mode.as_str())),
+            Some((std::path::Path::new("/srv/shared"), "r+"))
+        );
+        // Unprovisioned buckets stay empty.
+        assert!(storage.file_io_provisioning.oracle_static_dirs.is_empty());
+        assert!(storage
+            .file_io_provisioning
+            .consensus_static_files
+            .is_empty());
+    }
+
+    /// `Storage` without any provisioning entries parses unchanged
+    /// — operators who haven't opted into static provisioning get
+    /// the default-empty `FileIoProvisioning`.
+    #[test]
+    fn storage_without_provisioning_parses_with_empty_default() {
+        use crate::rust::configuration::model::Storage;
+
+        let storage: Storage = hocon::HoconLoader::new()
+            .load_str(r#"data-dir = "/var/lib/rnode""#)
+            .expect("load")
+            .resolve()
+            .expect("resolve");
+        assert_eq!(storage.data_dir, PathBuf::from("/var/lib/rnode"));
+        assert_eq!(storage.file_io_provisioning, FileIoProvisioning::default());
     }
 
     /// A single key longer than MAX_LOGICAL_KEY_LEN fails even if

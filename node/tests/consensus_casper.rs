@@ -511,6 +511,23 @@ async fn invalid_validator_keys_are_rejected_before_store_creation() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[should_panic(expected = "static-provisioning validation failed at boot")]
+async fn casper_adapter_rejects_invalid_file_provisioning() {
+    use node::rust::configuration::file_io_provisioning::StaticFileEntry;
+
+    let directory = tempfile::tempdir().unwrap();
+    let (mut conf, _) = config(directory.path());
+    conf.storage
+        .file_io_provisioning
+        .oracle_static_files
+        .insert("invalid".into(), StaticFileEntry {
+            path: "relative/path".into(),
+            mode: "r".into(),
+        });
+    let _ = prepare(conf).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn casper_runtime_reports_failed_genesis_initialization() {
     let directory = tempfile::tempdir().unwrap();
     let (conf, _) = config(directory.path());

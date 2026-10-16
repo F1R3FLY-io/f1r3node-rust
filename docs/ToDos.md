@@ -620,6 +620,21 @@ tasks:
       - "test-run-bench-segment.sh checks both compose files and the probe port with a fake docker and curl."
       - "The merged compose configuration publishes no host port at or above 32768."
       - "The next weekend soak has no bench segment that fails with address already in use."
+  - id: TASK-023-13
+    title: "Back-merge master into dev from a backmerge/* branch and reject pull requests with a protected head"
+    status: review
+    priority: p0
+    claimed_by: claude-session-dfac55a4
+    claimed_at: 2026-10-16T17:00:00Z
+    branch: fix/protected-head-branch
+    pull_request: 749
+    finding: "#747 was a back-merge with head master and base dev. Update branch on it merged dev into master through the OrganizationAdmin bypass of masterProtect (bf4915d57, pushed 2026-10-16T14:52:58Z), outside just promote. The maintainers accepted the result (#747 comment 6219901355). Back-merges #716 and #569 also used head master."
+    decision: "2026-10-16: the user chose the CI check and a local command first. The change of the human bypass actors of masterProtect and devProtect from always to pull_request is still open."
+    acceptance:
+      - "just backmerge creates backmerge/<UTC timestamp> at the origin/master commit and opens the pull request to dev. test-open-backmerge-pr.sh covers the nothing-to-back-merge cases, the created branch and pull request, and the branch delete after a failed pull request."
+      - "check-promotion-source.sh rejects a pull request from this repository with head master or dev, for every base, and accepts a fork pull request from the fork's master or dev. The Promotion Source job in ci.yml runs it with a read-only token. protected-head-guard.yml runs it from the base branch under pull_request_target and closes the pull request with the remedy and the reason. test-check-promotion-source.sh covers both events, the close, and a failed close."
+      - "just backmerge names an open backmerge/* pull request to dev and creates nothing. The branch name backmerge/master-<sha> makes a second run for the same master commit fail at branch creation."
+      - "docs/ci.md and CLAUDE.md name just backmerge and the reason."
   - id: TASK-023-5
     title: "Measure the disk admission failure rate after the fix"
     status: pending

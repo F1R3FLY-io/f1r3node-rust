@@ -617,6 +617,28 @@ pub async fn prepare<T: TransportLayer + Send + Sync + Clone + 'static>(
                 conf.protocol_server.disable_state_exporter,
                 heartbeat_signal_ref.clone(),
                 conf.standalone,
+                {
+                    let merged =
+                        crate::rust::configuration::provisioning_merge::merge_and_validate(
+                            conf.storage.file_io_provisioning.clone(),
+                            Vec::new(),
+                            Vec::new(),
+                            Vec::new(),
+                            Vec::new(),
+                        )
+                        .unwrap_or_else(|errs| {
+                            let msg = errs
+                                .iter()
+                                .map(|e| format!("  - {e}"))
+                                .collect::<Vec<_>>()
+                                .join("\n");
+                            panic!(
+                                "static-provisioning validation failed at boot; refusing \
+                             to proceed to genesis:\n{msg}"
+                            );
+                        });
+                    crate::rust::configuration::provisioning_merge::project_bundle(&merged)
+                },
                 Some(state_requester_handles.items_tx.clone()),
             )
             .with_background_tasks(task_spawner.clone()),
