@@ -53,13 +53,14 @@ git_quiet -C "$TMP/seed" checkout --quiet -b hotfix origin/master
 git_quiet -C "$TMP/seed" commit --allow-empty -m hotfix
 git_quiet -C "$TMP/seed" push --quiet origin HEAD:refs/heads/master
 master_sha="$(git -C "$TMP/seed" rev-parse HEAD)"
+branch="backmerge/master-${master_sha:0:12}"
 
 : >"$TMP/gh.log"
 out="$(run_tool 20261016-1602)"
-[[ "$out" == *"Created backmerge/20261016-1602 at ${master_sha:0:9}"* ]] || fail "the backmerge branch was not reported: $out"
-grep -Fxq "api repos/example/repo/git/refs -f ref=refs/heads/backmerge/20261016-1602 -f sha=$master_sha" "$TMP/gh.log" ||
+[[ "$out" == *"Created $branch at ${master_sha:0:9}"* ]] || fail "the backmerge branch was not reported: $out"
+grep -Fxq "api repos/example/repo/git/refs -f ref=refs/heads/$branch -f sha=$master_sha" "$TMP/gh.log" ||
 	fail "the backmerge branch was not created at the master commit: $(cat "$TMP/gh.log")"
-grep -q '^pr create --repo example/repo --base dev --head backmerge/20261016-1602 ' "$TMP/gh.log" ||
+grep -q "^pr create --repo example/repo --base dev --head $branch --title Back-merge master into dev (20261016-1602) " "$TMP/gh.log" ||
 	fail "the pull request was not opened from the backmerge branch to dev: $(cat "$TMP/gh.log")"
 if grep -q -- '--head master' "$TMP/gh.log"; then
 	fail "the pull request used master as its head branch"
@@ -72,7 +73,7 @@ if (cd "$TMP/work" && PATH="$TMP/bin:$PATH" GH_LOG="$TMP/gh.log" GH_FAIL_PR_CREA
 	BACKMERGE_TIMESTAMP=20261016-1603 bash "$TOOL") >/dev/null 2>"$TMP/err"; then
 	fail "a failed pull request creation did not fail the command"
 fi
-grep -Fxq "api -X DELETE repos/example/repo/git/refs/heads/backmerge/20261016-1603" "$TMP/gh.log" ||
+grep -Fxq "api -X DELETE repos/example/repo/git/refs/heads/$branch" "$TMP/gh.log" ||
 	fail "a failed pull request creation did not delete the backmerge branch: $(cat "$TMP/gh.log")"
 
 grep -q '^pr list --repo example/repo --base dev --state open ' "$TMP/gh.log" ||
@@ -101,9 +102,9 @@ if (cd "$TMP/work" && PATH="$TMP/bin:$PATH" GH_LOG="$TMP/gh.log" GH_FAIL_REF=1 B
 	BACKMERGE_TIMESTAMP=20261016-1606 bash "$TOOL") >/dev/null 2>"$TMP/err"; then
 	fail "a failed branch creation did not fail the command"
 fi
-grep -q 'backmerge/20261016-1606 was not created' "$TMP/err" || fail "a failed branch creation was not reported: $(cat "$TMP/err")"
+grep -q "$branch was not created" "$TMP/err" || fail "a failed branch creation was not reported: $(cat "$TMP/err")"
 if grep -q '^pr create' "$TMP/gh.log"; then
 	fail "a failed branch creation still opened a pull request: $(cat "$TMP/gh.log")"
 fi
 
-printf 'PASS: just backmerge opens the dev pull request from a backmerge/* branch at the master commit, skips when dev contains master, refuses a second open back-merge, reports a failed branch creation, and deletes the branch when the pull request fails.\n'
+printf 'PASS: just backmerge opens the dev pull request from backmerge/master-<sha> at the master commit, skips when dev contains master, refuses a second open back-merge, reports a failed branch creation for the same master commit, and deletes the branch when the pull request fails.\n'

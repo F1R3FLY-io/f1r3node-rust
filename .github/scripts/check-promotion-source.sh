@@ -9,9 +9,11 @@
 # protected head through the admin bypass of the ruleset (#747 pushed dev onto
 # master as bf4915d57, 2026-10-16).
 #
-# A failing check does not remove the button, and devProtect does not require
-# this check. A closed pull request has no "Update branch" button and cannot
-# merge, so the check also closes the pull request when PR_NUMBER is set.
+# ci.yml (event pull_request) runs this script with a read-only token and no
+# PR_NUMBER, so it only reports. protected-head-guard.yml (event
+# pull_request_target) runs it from the base branch with PR_NUMBER and a
+# pull-requests: write token, so it also closes the pull request. A closed
+# pull request has no "Update branch" button and cannot merge.
 #
 # A fork pull request from the fork's own master or dev is accepted.
 set -euo pipefail
@@ -22,12 +24,13 @@ head="${HEAD_REF:-}"
 head_repo="${HEAD_REPO:-}"
 repository="${REPOSITORY:-}"
 number="${PR_NUMBER:-}"
+reason="Reason: GitHub retargets the open pull requests of a merged head branch, and Update branch on a protected head writes to that branch through the admin bypass."
 
 reject() {
 	local message="$1"
 	echo "::error::$message"
 	if [[ "$number" =~ ^[0-9]+$ ]]; then
-		if gh pr close "$number" --repo "$repository" --comment "Closed by the Promotion Source check. $message"; then
+		if gh pr close "$number" --repo "$repository" --comment "Closed by the protected head guard. $message $reason"; then
 			echo "Closed pull request #$number."
 		else
 			echo "::warning::Pull request #$number was not closed. Close it by hand before anyone uses Update branch."
@@ -36,7 +39,8 @@ reject() {
 	exit 1
 }
 
-if [ "$event" = pull_request ] && [ -n "$repository" ] && [ "$head_repo" = "$repository" ]; then
+if { [ "$event" = pull_request ] || [ "$event" = pull_request_target ]; } &&
+	[ -n "$repository" ] && [ "$head_repo" = "$repository" ]; then
 	case "$head" in
 		dev)
 			if [ "$base" = master ]; then

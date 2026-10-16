@@ -40,9 +40,12 @@ if [ -n "$open_prs" ]; then
 fi
 
 count="$(git rev-list --count "$remote/dev..$sha")"
-branch="backmerge/$stamp"
+# The branch is named after the master commit. A second run for the same
+# commit, also a concurrent one, then fails at branch creation instead of
+# opening a second pull request.
+branch="backmerge/master-${sha:0:12}"
 if ! gh api "repos/$repo/git/refs" -f ref="refs/heads/$branch" -f sha="$sha" >/dev/null; then
-	echo "ERROR: $branch was not created. If the branch already exists, wait one second and run just backmerge again." >&2
+	echo "ERROR: $branch was not created. If the branch exists, a back-merge of this master commit is already in progress." >&2
 	exit 1
 fi
 echo "Created $branch at ${sha:0:9} ($remote/master, $count commits not on dev)."

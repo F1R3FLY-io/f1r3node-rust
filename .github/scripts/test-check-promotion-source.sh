@@ -58,10 +58,13 @@ expect_accept pull_request dev backmerge/20261016-1600 example/repo 12
 expect_accept pull_request master hotfix/x example/repo 12
 expect_accept push "" "" ""
 expect_accept merge_group "" "" ""
+expect_reject pull_request_target master dev example/repo
+expect_accept pull_request_target dev master other/fork 12
+expect_accept pull_request_target dev feature example/repo 12
 
-expect_reject pull_request dev master example/repo 747
-grep -q '^pr close 747 --repo example/repo --comment Closed by the Promotion Source check\. Do not open a back-merge with head master\.' "$TMP/gh.log" ||
-	fail "a rejected pull request was not closed with the reason: $(cat "$TMP/gh.log")"
+expect_reject pull_request_target dev master example/repo 747
+grep -q '^pr close 747 --repo example/repo --comment Closed by the protected head guard\. Do not open a back-merge with head master\..* Reason: ' "$TMP/gh.log" ||
+	fail "a rejected pull request was not closed with the remedy and the reason: $(cat "$TMP/gh.log")"
 [[ "$out" == *"Closed pull request #747."* ]] || fail "the close was not reported: $out"
 
 expect_reject pull_request dev master example/repo
@@ -79,4 +82,4 @@ set -e
 expect_reject pull_request dev master example/repo '1; rm'
 [[ ! -s "$TMP/gh.log" ]] || fail "a non-numeric PR_NUMBER called gh: $(cat "$TMP/gh.log")"
 
-printf 'PASS: Promotion Source rejects and closes a pull request with head master or dev from this repository, and accepts fork, temporary, and non-pull-request heads.\n'
+printf 'PASS: the protected-head check rejects a pull request with head master or dev from this repository under pull_request and pull_request_target, closes it with a reason when PR_NUMBER is set, and accepts fork, temporary, and non-pull-request heads.\n'

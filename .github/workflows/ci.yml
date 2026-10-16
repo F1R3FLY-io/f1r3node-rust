@@ -329,19 +329,17 @@ jobs:
   # (promotions from dev, 2026-10-04 and 2026-10-09). A protected head also
   # exposes "Update branch", which merges the base into the head through an
   # admin bypass: on #747 (head master, base dev) it pushed dev onto master
-  # outside promotion (bf4915d57, 2026-10-16). check-promotion-source.sh fails
-  # the check and closes such a pull request, because a failing check does not
-  # remove the button and devProtect does not require this check. `just
-  # promote` and `just backmerge` open these pull requests from temporary
-  # promote/* and backmerge/* branches. A fork pull request is accepted, and
-  # its token cannot close anything.
+  # outside promotion (bf4915d57, 2026-10-16). This job only reports, with a
+  # read-only token: the code it runs comes from the pull request. The
+  # protected-head-guard.yml workflow closes such a pull request with code
+  # from the base branch. `just promote` and `just backmerge` open these pull
+  # requests from temporary promote/* and backmerge/* branches.
   promotion_source:
     name: Promotion Source
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
       contents: read
-      pull-requests: write
     steps:
       - name: Checkout
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
@@ -349,16 +347,14 @@ jobs:
           persist-credentials: false
           sparse-checkout: .github/scripts
 
-      - name: Reject and close a pull request with head master or dev
+      - name: Reject a pull request with head master or dev
         shell: bash -euo pipefail {0}
         env:
-          GH_TOKEN: ${{ github.token }}
           EVENT_NAME: ${{ github.event_name }}
           BASE_REF: ${{ github.base_ref }}
           HEAD_REF: ${{ github.head_ref }}
           HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
           REPOSITORY: ${{ github.repository }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
         run: .github/scripts/check-promotion-source.sh
 
   # Commit identity policy for pull requests. This job reads the pull request
