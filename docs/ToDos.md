@@ -3785,6 +3785,7 @@ tasks:
     notes:
       - "2026-10-15: 1214adada (sync from f1r3node rust/staging at 6ee5c390) removed rho:rchain:revVault and rho:rchain:pos from the Registry.rho shorthand map. Upstream f1r3node 4812fce0 had added them for client compatibility, and upstream PR #468 (7fff0901) lost them when it copied the Scala Registry.rho. The Scala file never had them, and the upstream crate overview still lists them."
       - "f1r3wallet uses rho:rchain:revVault (check-balance.js, transfer-funds.js) and rho:rchain:pos (bond.js). The ASI Chain wallet uses rho:rchain:asiVault, which stays a maintainer decision."
+      - "2026-10-16: jeffrey-l-turner accepted the bounded-by-design classification of CLAIM-REGISTRY-URI-ALIASES-001 (refutation and construction not applicable). vault_uri_aliases_spec now pins all 15 shorthand map entries (S3). The normalizer_env.rs unit tests cover the deploy identity aliases (S4). The claim stays pending until the pull request review."
     acceptance:
       - "rho:rchain:revVault and rho:f1r3fly:revVault resolve to the rho:id of rho:vault:system, rho:rchain:pos and rho:f1r3fly:pos to that of rho:system:pos, and rho:f1r3fly:multiSigRevVault to that of rho:vault:multiSig. The rho:rchain forms are deprecated"
       - "A findOrCreate and transfer through rho:rchain:revVault or rho:f1r3fly:revVault moves the same balance as through rho:vault:system"

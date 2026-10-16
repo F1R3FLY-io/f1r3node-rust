@@ -24,6 +24,7 @@ match (
       testAliasesResolve,
       testFindOrCreateThroughAlias,
       testTransferThroughAlias,
+      testShorthandMapUnchanged,
       genesisVaultAndKey
     in {
       rl!(`rho:id:zphjgsfy13h1k85isc8rtwtgt3t9zzt5pjd5ihykfmyapfc4wt3x5h`, *RhoSpecCh) |
@@ -32,7 +33,8 @@ match (
           [
             ("Each alias resolves to the contract of its canonical URI", *testAliasesResolve),
             ("findOrCreate through each vault alias returns the canonical vault", *testFindOrCreateThroughAlias),
-            ("A transfer through each vault alias moves the same balance as through rho:vault:system", *testTransferThroughAlias)
+            ("A transfer through each vault alias moves the same balance as through rho:vault:system", *testTransferThroughAlias),
+            ("Every shorthand resolves to the value of its rho:id", *testShorthandMapUnchanged)
           ])
       } |
 
@@ -129,6 +131,45 @@ match (
               }
             }
           }
+        }
+      } |
+
+      // The complete shorthand map of Registry.rho. A lookup of each shorthand
+      // must return the value that a lookup of its rho:id returns. A missing
+      // entry never resolves, so the suite times out.
+      contract testShorthandMapUnchanged(rhoSpec, _, ackCh) = {
+        new check in {
+          contract check(@entries, @assertions) = {
+            match entries {
+              [] => rhoSpec!("assertMany", assertions, *ackCh)
+              [(shorthand, id, message) ...rest] => {
+                new shorthandCh, idCh in {
+                  rl!(shorthand, *shorthandCh) |
+                  rl!(id, *idCh) |
+                  for (@fromShorthand <- shorthandCh & @fromId <- idCh) {
+                    check!(rest, assertions ++ [((fromShorthand, "==", fromId), message)])
+                  }
+                }
+              }
+            }
+          } |
+          check!([
+            (`rho:lang:either`, `rho:id:qrh6mgfp5z6orgchgszyxnuonanz7hw3amgrprqtciia6astt66ypn`, "rho:lang:either"),
+            (`rho:lang:listOps`, `rho:id:6fzorimqngeedepkrizgiqms6zjt76zjeciktt1eifequy4osz35ks`, "rho:lang:listOps"),
+            (`rho:lang:nonNegativeNumber`, `rho:id:hxyadh1ffypra47ry9mk6b8r1i33ar1w9wjsez4khfe9huzrfcytx9`, "rho:lang:nonNegativeNumber"),
+            (`rho:lang:stack`, `rho:id:eb6a9iqn4tqr9gaa6dzspiuee9g3mt9c1umrfwcpaugp6ctuijbnwj`, "rho:lang:stack"),
+            (`rho:system:authKey`, `rho:id:1qw5ehmq1x49dey4eadr1h4ncm361w3536asho7dr38iyookwcsp6i`, "rho:system:authKey"),
+            (`rho:system:makeMint`, `rho:id:asysrwfgzf8bf7sxkiowp4b3tcsy4f8ombi3w96ysox4u3qdmn1wbc`, "rho:system:makeMint"),
+            (`rho:system:pos`, `rho:id:m3xk7h8r54dtqtwsrnxqzhe81baswey66nzw6m533nyd45ptyoybqr`, "rho:system:pos"),
+            (`rho:rchain:pos`, `rho:id:m3xk7h8r54dtqtwsrnxqzhe81baswey66nzw6m533nyd45ptyoybqr`, "rho:rchain:pos"),
+            (`rho:f1r3fly:pos`, `rho:id:m3xk7h8r54dtqtwsrnxqzhe81baswey66nzw6m533nyd45ptyoybqr`, "rho:f1r3fly:pos"),
+            (`rho:system:tokenMetadata`, `rho:id:jutz139igo7x5gpby3ri1dhwcwnbdghd6onuys3wfnqhhkwffxbfsn`, "rho:system:tokenMetadata"),
+            (`rho:vault:system`, `rho:id:6zcfqnwnaqcwpeyuysx1rm48ndr6sgsbbgjuwf45i5nor3io7dr76j`, "rho:vault:system"),
+            (`rho:rchain:revVault`, `rho:id:6zcfqnwnaqcwpeyuysx1rm48ndr6sgsbbgjuwf45i5nor3io7dr76j`, "rho:rchain:revVault"),
+            (`rho:f1r3fly:revVault`, `rho:id:6zcfqnwnaqcwpeyuysx1rm48ndr6sgsbbgjuwf45i5nor3io7dr76j`, "rho:f1r3fly:revVault"),
+            (`rho:vault:multiSig`, `rho:id:b9s6j3xeobgset4ndn64hje64grfcj7a43eekb3fh43yso5ujiecfn`, "rho:vault:multiSig"),
+            (`rho:f1r3fly:multiSigRevVault`, `rho:id:b9s6j3xeobgset4ndn64hje64grfcj7a43eekb3fh43yso5ujiecfn`, "rho:f1r3fly:multiSigRevVault")
+          ], [])
         }
       } |
 

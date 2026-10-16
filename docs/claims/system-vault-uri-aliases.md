@@ -10,6 +10,14 @@ artifacts:
 status: pending
 adapter: agentic
 mechanization: none
+refutation: not-applicable
+construction: not-applicable
+binding: recorded
+applicability_review:
+  classification: bounded-by-design
+  accepted_by: jeffrey-l-turner
+  accepted_at: 2026-10-16
+  scope: S1, S2, S3, and S4. See "Tier classification" below
 references:
   - F1R3FLY-io/f1r3node 4812fce0                    # upstream added rho:rchain:pos and rho:rchain:revVault for client compatibility
   - F1R3FLY-io/f1r3node 7fff0901 (PR #468)          # upstream lost both aliases in a Registry.rho sync with Scala
@@ -51,9 +59,20 @@ The deploy identity URIs `rho:rchain:deployId` and `rho:rchain:deployerId` alrea
 | Tier | Evidence | State |
 |---|---|---|
 | Binding | `vault_uri_aliases_spec` checks S1 and S2. It fails on the registry without the aliases | Recorded |
-| Binding | The existing registry and vault specs check S3 | Recorded |
-| Binding | S4 has no dedicated test yet | Pending |
-| Refutation | Not modeled | Pending classification |
-| Construction | Not modeled | Pending classification |
+| Binding | `vault_uri_aliases_spec` checks S3 for all 15 entries of the shorthand map: a lookup of each shorthand returns the value of its `rho:id`. A wrong `rho:id` for one entry fails the spec | Recorded |
+| Binding | `normalizer_env.rs` tests `with_deployer_id_should_include_legacy_alias` and `normalizer_env_from_deploy_should_include_legacy_aliases` check S4 | Recorded |
+| Refutation | None. See the tier classification | Not applicable |
+| Construction | None. See the tier classification | Not applicable |
 
-S1 to S3 are properties of a finite map. A named maintainer must decide whether `construction: not-applicable` applies, as `docs/cbc-verification-tiers.md` requires.
+## Tier classification
+
+The classification follows "Applicability per property" in `docs/cbc-verification-tiers.md`.
+
+- **Domain.** S1 and S3 cover the shorthand map in `Registry.rho`, which has 15 entries. S4 covers the two deploy identity aliases in `normalizer_env.rs`. The source fixes both maps. A deploy cannot change the registry map of a running shard, because the map is part of genesis state.
+- **Universal requirement.** "Each alias" and "every other shorthand" mean the 15 listed entries and the two deploy identity aliases. No other input, state, configuration, or execution history is in scope.
+- **Specification bounds.** The bounds are the entries in the source. A new entry changes `Registry.rho` or `normalizer_env.rs`, and both files are `cbc=mandatory`, so the change returns this claim to review.
+- **S2.** S2 follows from S1. The same `rho:id` gives the same contract object. The behavior of `findOrCreate` and `transfer` is a property of the vault contract, outside this claim. The binding test also checks S2 directly.
+- **Refutation.** These properties have no state machine and no interleaving. A model checker would explore one fixed map. The binding tests cover the complete permitted domain.
+- **Construction.** The properties are bounded by design. A kernel theorem would restate the 15-entry table and add no reduction in risk.
+- **Trusted assumptions.** The RhoSpec framework and the registry `lookup` contract behave as their own specs check.
+- **Review.** jeffrey-l-turner accepted the bounded-by-design classification and `construction: not-applicable` on 2026-10-16. This review does not accept the claim. The claim stays pending until the pull request review.
