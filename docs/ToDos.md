@@ -460,15 +460,17 @@ tasks:
       - "docs/ci.md and CLAUDE.md name just backmerge and the reason."
   - id: TASK-023-14
     title: "Harmonize the AI workflow guidance and record the tasking conventions"
-    status: blocked
+    status: in_progress
     priority: p2
     claimed_by: claude-session-dfac55a4
     claimed_at: 2026-10-16T23:00:00Z
     branch: chore/harmonize-ai-worklflows
-    blocked_by: ["top-level-gitlab-profile INBOX: harmonize regressions on f1r3node-rust (2026-10-16)"]
+    blocked_by: []
     finding: "On 2026-10-16, /harmonize on dev 38dac3c2f with profile 63050a9 removed the YAML frontmatter of three task files, replaced local STE prose with template prose, wrote a relative link that does not resolve here, and raised the CLAUDE.md STE Check findings from 1 to 14. The task files were restored. CLAUDE.md is kept unrestored as a fixture."
     notes:
       - "top-level-gitlab-profile-02 took the tooling fix. The regression fixture is in that repository under docs/work-logs/harmonize-regressions-f1r3node-rust-2026-10-16/."
+      - "2026-10-16: profile commit 7942385 fixes R1 to R5, R7 Slash Commands, and R8. A run on 38dac3c2f gave 0 errors and kept the frontmatter and the local STE prose. Commit 2d7152602 holds that run. The profile takes the two semicolon fixes upstream as a follow-up."
+      - "2026-10-16: CLAUDE.md moves Key Principles and the claim steps into a Project Workflow section, adds Tasking Conventions, and records the value stream on the user story. AGENTS.md gains condensed Project Workflow, Cross-Repository References, and Development Modes sections."
       - "No guidance file links epic-task-structure.md or user-stories-standard.md, or states the repository conventions: TASK-NNN-N identifiers, task-level acceptance, and the notes, branch, pr_base_branch, pull_request, finding, and decision fields. No file defines where a value stream is recorded."
       - "Harmonize derives AGENTS.md only when the file is missing (process_agents_md in harmonize-markdown.sh, intended since bef5869). After the next run, update AGENTS.md by hand to match the new CLAUDE.md sections. The tooling owner takes a WARN or a new derivation to its maintainer as a follow-up."
     acceptance:

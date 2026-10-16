@@ -226,6 +226,10 @@ This repo was extracted from `F1R3FLY-io/f1r3fly` (`rust/dev` branch). Key diffe
 - **Kept**: All 10 Rust crates, Cargo workspace, protobuf definitions, Docker configs, docs
 - **Added**: Native dependency install instructions (Homebrew, apt)
 
+## Project Workflow
+
+This section gives the coordination and tasking rules of this repository. The Stigmergic Collaboration section below gives the workspace standard.
+
 ### Key Principles
 
 1. **Stigmergic Collaboration**: Coordinate with other agents through shared `.md` files
@@ -284,6 +288,65 @@ next_steps:
 ---
 ```
 
+### Tasking Conventions
+
+Three workspace standards define the task files. This repository adds the conventions below to them.
+
+- The Epic Task Structure Reference defines the epic and task YAML.
+- The User Stories Standard defines the story format and its acceptance criteria.
+- The ToDos MR/PR Tracking Standard defines the `docs/ToDos.md` frontmatter.
+
+```yaml cross-reference
+reference:
+  purpose: current
+  repository: https://gitlab.com/smart-assets.io/gitlab-profile
+  checkout: ../../SA/top-level-gitlab-profile
+  revision: master
+  path: docs/common/epic-task-structure.md
+  url: https://gitlab.com/smart-assets.io/gitlab-profile/-/blob/master/docs/common/epic-task-structure.md
+```
+
+```yaml cross-reference
+reference:
+  purpose: current
+  repository: https://gitlab.com/smart-assets.io/gitlab-profile
+  checkout: ../../SA/top-level-gitlab-profile
+  revision: master
+  path: docs/common/user-stories-standard.md
+  url: https://gitlab.com/smart-assets.io/gitlab-profile/-/blob/master/docs/common/user-stories-standard.md
+```
+
+```yaml cross-reference
+reference:
+  purpose: current
+  repository: https://gitlab.com/smart-assets.io/gitlab-profile
+  checkout: ../../SA/top-level-gitlab-profile
+  revision: master
+  path: docs/common/todos-mr_pr-tracking-standard.md
+  url: https://gitlab.com/smart-assets.io/gitlab-profile/-/blob/master/docs/common/todos-mr_pr-tracking-standard.md
+```
+
+**Epics.** Write each epic as a fenced YAML block with `epic_id: EPIC-NNN`, `title`, `status`, `priority`, `user_story`, and `tasks`. Set `user_story` to the identifier of the story that the epic implements.
+
+**Tasks.** Use the identifier form `TASK-NNN-N`, where `NNN` is the epic number. This repository does not use the `TODO-NNN-NNN` form of the standard.
+
+**Acceptance criteria.** Give each task an `acceptance` list of measurable conditions.
+
+- The user story keeps the business-level criteria.
+- The task criteria state the technical evidence that closes the task, for example a test name, a metric, or a soak result.
+
+**Optional task fields.** Use these fields when they apply:
+
+| Field | Content |
+|---|---|
+| `notes` | Context that another agent needs |
+| `branch`, `pr_base_branch`, `pull_request` | The branch, its target, and the pull request number |
+| `blocked_by` | Task identifiers, pull requests, or external entries that block the task |
+| `finding` | The observed defect or evidence that started the task |
+| `decision` | A maintainer decision, with its date |
+
+**Value streams.** Record the value stream on the user story, in a `**Value Stream:**` line after `**Implemented in:**`. An epic gets its value stream through its `user_story` field. The workspace glossary defines a value stream as the end-to-end sequence that delivers a discrete unit of value.
+
 ### Configuration File Conventions
 
 When creating or modifying configuration files, follow these conventions to respect existing project preferences:
@@ -317,6 +380,8 @@ ls biome.json biome.jsonc biome.json5 2>/dev/null
 ```
 
 This applies to all slash commands and scripts that create configuration files.
+
+### Slash Command Quick Reference
 
 #### Git Operations
 - `/quick-commit` - Stage and commit changes (required in safe mode)
