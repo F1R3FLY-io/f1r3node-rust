@@ -111,6 +111,144 @@ fn deploy_is_block_expired(
     )?)
 }
 
+#[derive(Default)]
+pub(crate) struct ProposeCoalescer {
+    pending: std::sync::atomic::AtomicBool,
+    running: std::sync::atomic::AtomicBool,
+}
+
+impl ProposeCoalescer {
+    pub(crate) fn request(&self) -> bool {
+        self.pending.store(true, Ordering::SeqCst);
+        self.running
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+    }
+
+    pub(crate) fn take_pending(&self) -> bool { self.pending.swap(false, Ordering::SeqCst) }
+
+    pub(crate) fn finish(&self) -> bool {
+        self.running.store(false, Ordering::SeqCst);
+        self.pending.load(Ordering::SeqCst)
+            && self
+                .running
+                .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+                .is_ok()
+    }
+
+    pub(crate) async fn drain<F, Fut>(&self, mut propose: F)
+    where
+        F: FnMut() -> Fut,
+        Fut: Future<Output = ()>,
+    {
+        loop {
+            while self.take_pending() {
+                propose().await;
+            }
+            if !self.finish() {
+                break;
+            }
+        }
+    }
+}
+
+fn coalescer_for(tp: &Arc<ProposeFunction>) -> Arc<ProposeCoalescer> {
+    static COALESCERS: std::sync::OnceLock<
+        std::sync::Mutex<HashMap<usize, Arc<ProposeCoalescer>>>,
+    > = std::sync::OnceLock::new();
+    let key = Arc::as_ptr(tp) as *const () as usize;
+    let mut map = COALESCERS
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    map.entry(key).or_default().clone()
+}
+
+fn request_deploy_propose(tp: Arc<ProposeFunction>, casper: Arc<dyn MultiParentCasper + Send + Sync>) {
+    let coalescer = coalescer_for(&tp);
+    if !coalescer.request() {
+        return;
+    }
+    tokio::spawn(async move {
+        coalescer
+            .drain(|| deploy_propose_with_retries(tp.clone(), casper.clone()))
+            .await;
+    });
+}
+
+async fn deploy_propose_with_retries(
+    tp: Arc<ProposeFunction>,
+    casper: Arc<dyn MultiParentCasper + Send + Sync>,
+) {
+    let max_attempts = deploy_propose_max_attempts();
+    let retry_delay = deploy_propose_retry_delay();
+    let mut attempt = 1u32;
+    loop {
+        match tp(casper.clone(), false).await {
+            Ok(proposer_result) => match proposer_result {
+                ProposerResult::Failure(status, seq_number) => {
+                    if should_retry_deploy_propose(&status)
+                        && attempt < max_attempts
+                    {
+                        tracing::info!(
+                            "Deploy-triggered propose transient failure (attempt {}/{}, seqNum {}): {}; retrying in {:?}",
+                            attempt,
+                            max_attempts,
+                            seq_number,
+                            status,
+                            retry_delay
+                        );
+                        attempt += 1;
+                        tokio::time::sleep(retry_delay).await;
+                        continue;
+                    }
+
+                    if let Some(msg) = recoverable_propose_failure_message(&status)
+                    {
+                        tracing::info!("{} (seqNum {})", msg, seq_number);
+                    } else {
+                        tracing::error!(
+                            "Failure: {} (seqNum {})",
+                            status,
+                            seq_number
+                        );
+                    }
+                }
+                ProposerResult::Empty => {
+                    tracing::debug!("Propose already in progress");
+                }
+                ProposerResult::Started(seq_number) => {
+                    tracing::debug!("Propose started (seqNum {})", seq_number);
+                }
+                ProposerResult::Success(_, block) => {
+                    let block_hash_hex =
+                        PrettyPrinter::build_string_no_limit(&block.block_hash);
+                    tracing::info!(
+                        "Success! Block {} created and added.",
+                        block_hash_hex
+                    );
+                }
+            },
+            Err(err) => {
+                if attempt < max_attempts {
+                    tracing::warn!(
+                        "Deploy-triggered propose call failed (attempt {}/{}): {}; retrying in {:?}",
+                        attempt,
+                        max_attempts,
+                        err,
+                        retry_delay
+                    );
+                    attempt += 1;
+                    tokio::time::sleep(retry_delay).await;
+                    continue;
+                }
+                tracing::error!(error = %err, "deploy-triggered propose failed");
+            }
+        }
+        break;
+    }
+}
+
 fn should_retry_deploy_propose(status: &ProposeStatus) -> bool {
     match status {
         ProposeStatus::Failure(ProposeFailure::InternalDeployError)
@@ -497,81 +635,8 @@ impl BlockAPI {
                 Either::Right(deploy_id) => deploy_id,
             };
 
-            // Trigger propose asynchronously for deploy path to keep do_deploy latency bounded.
-            // Deploy success should not block on proposal completion; finalization is checked via
-            // propose/finalization APIs separately in integration flows.
             if let Some(tp) = trigger_propose {
-                let tp = Arc::clone(tp);
-                let casper_for_propose = casper.clone();
-                let max_attempts = deploy_propose_max_attempts();
-                let retry_delay = deploy_propose_retry_delay();
-                tokio::spawn(async move {
-                    let mut attempt = 1u32;
-                    loop {
-                        match tp(casper_for_propose.clone(), true).await {
-                            Ok(proposer_result) => match proposer_result {
-                                ProposerResult::Failure(status, seq_number) => {
-                                    if should_retry_deploy_propose(&status)
-                                        && attempt < max_attempts
-                                    {
-                                        tracing::info!(
-                                            "Deploy-triggered propose transient failure (attempt {}/{}, seqNum {}): {}; retrying in {:?}",
-                                            attempt,
-                                            max_attempts,
-                                            seq_number,
-                                            status,
-                                            retry_delay
-                                        );
-                                        attempt += 1;
-                                        tokio::time::sleep(retry_delay).await;
-                                        continue;
-                                    }
-
-                                    if let Some(msg) = recoverable_propose_failure_message(&status)
-                                    {
-                                        tracing::info!("{} (seqNum {})", msg, seq_number);
-                                    } else {
-                                        tracing::error!(
-                                            "Failure: {} (seqNum {})",
-                                            status,
-                                            seq_number
-                                        );
-                                    }
-                                }
-                                ProposerResult::Empty => {
-                                    tracing::debug!("Propose already in progress");
-                                }
-                                ProposerResult::Started(seq_number) => {
-                                    tracing::debug!("Propose started (seqNum {})", seq_number);
-                                }
-                                ProposerResult::Success(_, block) => {
-                                    let block_hash_hex =
-                                        PrettyPrinter::build_string_no_limit(&block.block_hash);
-                                    tracing::info!(
-                                        "Success! Block {} created and added.",
-                                        block_hash_hex
-                                    );
-                                }
-                            },
-                            Err(err) => {
-                                if attempt < max_attempts {
-                                    tracing::warn!(
-                                        "Deploy-triggered propose call failed (attempt {}/{}): {}; retrying in {:?}",
-                                        attempt,
-                                        max_attempts,
-                                        err,
-                                        retry_delay
-                                    );
-                                    attempt += 1;
-                                    tokio::time::sleep(retry_delay).await;
-                                    continue;
-                                }
-                                tracing::error!(error = %err, "deploy-triggered propose failed");
-                            }
-                        }
-                        break;
-                    }
-                });
+                request_deploy_propose(Arc::clone(tp), casper.clone());
             }
 
             Ok(format!(
@@ -2122,10 +2187,83 @@ impl BlockAPI {
 
 #[cfg(test)]
 mod tests {
+    use super::ProposeCoalescer;
     use std::future::pending;
     use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
     use std::sync::Arc;
     use std::time::Duration;
+
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn many_deploys_during_a_proposal_coalesce_into_one_more_proposal() {
+        let coalescer = Arc::new(ProposeCoalescer::default());
+        let proposals = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        assert!(coalescer.request(), "the first request starts the drain");
+        let drain = {
+            let coalescer = coalescer.clone();
+            let proposals = proposals.clone();
+            tokio::spawn(async move {
+                coalescer
+                    .drain(|| {
+                        let proposals = proposals.clone();
+                        async move {
+                            proposals.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                            tokio::time::sleep(Duration::from_millis(100)).await;
+                        }
+                    })
+                    .await;
+            })
+        };
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        for _ in 0..50 {
+            assert!(!coalescer.request(), "a running drain absorbs the request");
+        }
+        drain.await.unwrap();
+        assert_eq!(proposals.load(std::sync::atomic::Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn no_request_is_lost_under_concurrent_arrivals() {
+        let coalescer = Arc::new(ProposeCoalescer::default());
+        let served = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let requested = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut handles = Vec::new();
+        for _ in 0..200 {
+            let coalescer = coalescer.clone();
+            let served = served.clone();
+            let requested = requested.clone();
+            handles.push(tokio::spawn(async move {
+                let seen = requested.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+                if coalescer.request() {
+                    coalescer
+                        .drain(|| {
+                            let served = served.clone();
+                            let requested = requested.clone();
+                            async move {
+                                tokio::task::yield_now().await;
+                                served.fetch_max(
+                                    requested.load(std::sync::atomic::Ordering::SeqCst),
+                                    std::sync::atomic::Ordering::SeqCst,
+                                );
+                            }
+                        })
+                        .await;
+                }
+                seen
+            }));
+        }
+        for handle in handles {
+            handle.await.unwrap();
+        }
+        while coalescer.running.load(std::sync::atomic::Ordering::SeqCst) {
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(
+            served.load(std::sync::atomic::Ordering::SeqCst),
+            200,
+            "the last proposal starts after the last request"
+        );
+    }
 
     use tokio::sync::Semaphore;
 
