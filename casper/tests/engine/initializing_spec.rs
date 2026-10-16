@@ -108,12 +108,14 @@ impl InitializingSpec {
             ),
             String,
         > {
-            let (history_store_items, data_store_items) = RSpaceExporterItems::get_history_and_data(
-                genesis_exporter,
-                start_path,
-                exporter_params.skip,
-                exporter_params.take,
-            );
+            let (history_store_items, data_store_items) =
+                RSpaceExporterItems::get_history_and_data(
+                    genesis_exporter,
+                    start_path,
+                    exporter_params.skip,
+                    exporter_params.take,
+                )
+                .map_err(|e| e.to_string())?;
             Ok((
                 history_store_items.items,
                 data_store_items.items,
