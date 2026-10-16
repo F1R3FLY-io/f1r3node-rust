@@ -448,6 +448,8 @@ mod tests {
             .unwrap();
 
         assert_eq!(cell.read().unwrap().into_vec(), vec![peer("good")]);
-        assert_eq!(*transport.disconnected.lock().unwrap(), vec![peer("foreign")]);
+        assert_eq!(*transport.disconnected.lock().unwrap(), vec![peer(
+            "foreign"
+        )]);
     }
 }

@@ -215,13 +215,14 @@ impl StreamHandler {
     ///
     /// This method processes a stream of chunks using the circuit breaker pattern
     /// and provides proper cleanup in all scenarios (success, failure, errors).
-    pub async fn handle_stream<S>(
+    pub async fn handle_stream<S, F>(
         stream: S,
-        circuit_breaker: CircuitBreaker,
+        circuit_breaker: F,
         cache: &StreamCache,
     ) -> Result<StreamMessage, StreamError>
     where
         S: Stream<Item = Chunk> + Unpin,
+        F: Fn(&Streamed) -> Circuit,
     {
         // Initialize streaming state
         let init_stmd = match Self::init(cache) {
@@ -253,14 +254,15 @@ impl StreamHandler {
     }
 
     /// Process stream with automatic cleanup (internal helper)
-    async fn process_stream_with_cleanup<S>(
+    async fn process_stream_with_cleanup<S, F>(
         init_stmd: Streamed,
         stream: S,
-        circuit_breaker: CircuitBreaker,
+        circuit_breaker: F,
         cache: &StreamCache,
     ) -> Result<StreamMessage, StreamError>
     where
         S: Stream<Item = Chunk> + Unpin,
+        F: Fn(&Streamed) -> Circuit,
     {
         let key = init_stmd.key.clone(); // Store key for cleanup
 
@@ -301,14 +303,15 @@ impl StreamHandler {
     /// - Header chunks: Creates Header and updates Streamed state
     /// - Data chunks: Appends data to cache and updates read count
     /// - Unknown chunks: Sets an error
-    pub async fn collect<S>(
+    pub async fn collect<S, F>(
         init: Streamed,
         mut stream: S,
-        circuit_breaker: CircuitBreaker,
+        circuit_breaker: F,
         cache: &StreamCache,
     ) -> Result<Streamed, StreamError>
     where
         S: Stream<Item = Chunk> + Unpin,
+        F: Fn(&Streamed) -> Circuit,
     {
         let mut current_state = init;
 
@@ -334,9 +337,11 @@ impl StreamHandler {
             }
         }
 
-        // Check final state - if circuit is opened, return the error
-        match &current_state.circuit {
-            Circuit::Opened { error } => Err(error.clone()),
+        // Apply the circuit breaker once more at the end of the stream: what it
+        // checks (for example this node's chain identity) can change while the
+        // stream waits for its end.
+        match circuit_breaker(&current_state) {
+            Circuit::Opened { error } => Err(error),
             Circuit::Closed => Ok(current_state),
         }
     }
@@ -357,6 +362,7 @@ impl StreamHandler {
                     sender,
                     type_id: packet_type,
                     content_length,
+                    chain_id,
                     compressed,
                     ..
                 } = header;
@@ -365,6 +371,7 @@ impl StreamHandler {
                 let stream_message = StreamMessage::new(
                     sender.clone(),
                     packet_type.clone(),
+                    chain_id.clone(),
                     streamed.key.clone(),
                     *compressed,
                     *content_length,
@@ -449,6 +456,14 @@ impl StreamHandler {
         cache: &StreamCache,
     ) -> Result<ChunkProcessResult, StreamError> {
         match chunk.content {
+            // The header is checked before any data is accepted, so a stream
+            // carries exactly one header and it comes first.
+            Some(Content::Header(_)) if streamed.header.is_some() => Ok(ChunkProcessResult::Error(
+                StreamError::unexpected("Stream sent a second header chunk".to_string()),
+            )),
+            Some(Content::Data(_)) if streamed.header.is_none() => Ok(ChunkProcessResult::Error(
+                StreamError::not_full_message("Data chunk arrived before the header".to_string()),
+            )),
             Some(Content::Header(chunk_header)) => {
                 // Process header chunk
                 let ChunkHeader {
@@ -550,6 +565,7 @@ mod tests {
         let msg = StreamMessage::new(
             create_test_peer(),
             "TestPacket".to_string(),
+            Bytes::new(),
             key.clone(),
             true,
             1024,

@@ -42,47 +42,98 @@ fn calculate_hash(bytes: &[u8]) -> u64 {
     hasher.finish()
 }
 
-struct CircuitParams {
+/// What an incoming stream is checked against.
+///
+/// The stream handler owns one for each stream and applies it after every
+/// chunk and at the end of the stream, so the checks do not depend on the
+/// thread that polls the stream. `chain_id` is the node's shared cell, not a
+/// copy: a chain identity learned while the stream is open applies to the
+/// rest of the stream.
+struct StreamValidation {
     network_id: String,
     chain_id: ChainIdCell,
     max_size: u64,
 }
 
-// Circuit breaker parameters for thread-local storage
-thread_local! {
-    static CIRCUIT_BREAKER_PARAMS: std::cell::RefCell<Option<CircuitParams>> = const { std::cell::RefCell::new(None) };
-}
-
-/// Circuit breaker function that uses thread-local parameters
-fn circuit_breaker_with_params(streamed: &Streamed) -> Circuit {
-    CIRCUIT_BREAKER_PARAMS.with(|params| {
-        if let Some(params) = params.borrow().as_ref() {
-            if let Some(header) = &streamed.header {
-                if header.network_id != params.network_id {
-                    return Circuit::opened(StreamError::wrong_network_id());
-                }
-
-                if let Err(error) = params.chain_id.check(
-                    &header.sender.to_string(),
-                    &header.chain_id,
-                    Some(&header.type_id),
-                ) {
-                    metrics::counter!(
-                        FOREIGN_CHAIN_REFUSED_METRIC,
-                        "source" => TRANSPORT_METRICS_SOURCE
-                    )
-                    .increment(1);
-                    return Circuit::opened(StreamError::wrong_chain_id(error.to_string()));
-                }
+impl StreamValidation {
+    fn check(&self, streamed: &Streamed) -> Circuit {
+        if let Some(header) = &streamed.header {
+            if header.network_id != self.network_id {
+                return Circuit::opened(StreamError::wrong_network_id());
             }
 
-            if streamed.read_so_far > params.max_size {
-                return Circuit::opened(StreamError::circuit_opened());
+            if let Err(error) = self.chain_id.check(
+                &header.sender.to_string(),
+                &header.chain_id,
+                Some(&header.type_id),
+            ) {
+                metrics::counter!(
+                    FOREIGN_CHAIN_REFUSED_METRIC,
+                    "source" => TRANSPORT_METRICS_SOURCE
+                )
+                .increment(1);
+                return Circuit::opened(StreamError::wrong_chain_id(error.to_string()));
             }
         }
 
+        if streamed.read_so_far > self.max_size {
+            return Circuit::opened(StreamError::circuit_opened());
+        }
+
         Circuit::closed()
-    })
+    }
+}
+
+/// Check a queued message against this node's chain identity again, just
+/// before it is dispatched.
+///
+/// A message is checked when it arrives, and a node that does not know its
+/// chain yet accepts every peer. The identity can become known while the
+/// message waits in the peer's queue, so the earlier decision must not let a
+/// message of another chain through after that.
+fn admit_queued(
+    chain_id: &ChainIdCell,
+    sender: &str,
+    sender_chain_id: &[u8],
+    type_id: Option<&str>,
+) -> bool {
+    match chain_id.check(sender, sender_chain_id, type_id) {
+        Ok(()) => true,
+        Err(error) => {
+            metrics::counter!(
+                FOREIGN_CHAIN_REFUSED_METRIC,
+                "source" => TRANSPORT_METRICS_SOURCE
+            )
+            .increment(1);
+            tracing::warn!(
+                peer = %sender,
+                error = %error,
+                "Dropped a queued message from a peer of another chain"
+            );
+            false
+        }
+    }
+}
+
+/// `admit_queued` for a unary message. A message without a header or a
+/// sender never reaches the queue, so one that does is refused here too.
+fn admit_queued_send(chain_id: &ChainIdCell, send: &CommSend) -> bool {
+    let Some(header) = send.msg.header.as_ref() else {
+        return false;
+    };
+    let Some(sender) = header.sender.as_ref() else {
+        return false;
+    };
+    let type_id = match &send.msg.message {
+        Some(models::routing::protocol::Message::Packet(packet)) => Some(packet.type_id.as_str()),
+        _ => None,
+    };
+    admit_queued(
+        chain_id,
+        &protocol_helper::to_peer_node(sender).to_string(),
+        &header.chain_id,
+        type_id,
+    )
 }
 
 /// Type alias for message buffers using Arc for shared access
@@ -323,8 +374,12 @@ impl TransportLayerService {
 
         // Set up background processing
         let tell_handler = message_handlers.0.clone();
+        let tell_chain_id = self.rp_config.chain_id.clone();
         let tell_cancellable = tokio::spawn(async move {
             tell_subscription
+                .filter(move |send_msg| {
+                    std::future::ready(admit_queued_send(&tell_chain_id, send_msg))
+                })
                 .map(|send_msg| {
                     let handler = tell_handler.clone();
                     tokio::spawn(async move {
@@ -339,8 +394,22 @@ impl TransportLayerService {
         });
 
         let blob_handler = message_handlers.1.clone();
+        let blob_chain_id = self.rp_config.chain_id.clone();
+        let blob_cache = self.cache.clone();
         let blob_cancellable = tokio::spawn(async move {
             blob_subscription
+                .filter(move |stream_msg| {
+                    let admitted = admit_queued(
+                        &blob_chain_id,
+                        &stream_msg.sender.to_string(),
+                        &stream_msg.chain_id,
+                        Some(&stream_msg.type_id),
+                    );
+                    if !admitted {
+                        blob_cache.remove(&stream_msg.key);
+                    }
+                    std::future::ready(admitted)
+                })
                 .map(|stream_msg| {
                     let handler = blob_handler.clone();
                     tokio::spawn(async move {
@@ -402,35 +471,17 @@ impl TransportLayerService {
         }
     }
 
-    /// Handle stream using the public StreamHandler API with thread-local parameters
-    async fn handle_stream_with_params<S>(
-        &self,
-        stream: S,
-        network_id: &str,
-        max_size: u64,
-    ) -> Result<StreamMessage, StreamError>
-    where
-        S: futures::stream::Stream<Item = Chunk> + Unpin,
-    {
-        // Set thread-local parameters for the circuit breaker
-        CIRCUIT_BREAKER_PARAMS.with(|params| {
-            *params.borrow_mut() = Some(CircuitParams {
-                network_id: network_id.to_string(),
-                chain_id: self.rp_config.chain_id.clone(),
-                max_size,
-            });
-        });
-
-        // Use the public StreamHandler API
-        let result =
-            StreamHandler::handle_stream(stream, circuit_breaker_with_params, &self.cache).await;
-
-        // Clear thread-local parameters
-        CIRCUIT_BREAKER_PARAMS.with(|params| {
-            *params.borrow_mut() = None;
-        });
-
-        result
+    /// Collect an incoming stream, checking it against this node's network,
+    /// chain identity, and stream size limit
+    async fn handle_validated_stream<S>(&self, stream: S) -> Result<StreamMessage, StreamError>
+    where S: futures::stream::Stream<Item = Chunk> + Unpin {
+        let validation = StreamValidation {
+            network_id: self.network_id.clone(),
+            chain_id: self.rp_config.chain_id.clone(),
+            max_size: self.max_stream_message_size,
+        };
+        StreamHandler::handle_stream(stream, |streamed| validation.check(streamed), &self.cache)
+            .await
     }
 }
 
@@ -571,10 +622,7 @@ impl TransportLayer for TransportLayerService {
             }
         });
 
-        // Use our custom handler with parameters
-        let stream_result = self
-            .handle_stream_with_params(chunk_stream, &self.network_id, self.max_stream_message_size)
-            .await;
+        let stream_result = self.handle_validated_stream(chunk_stream).await;
 
         let response = match stream_result {
             Err(StreamError::Unexpected { ref error }) => {
@@ -758,8 +806,11 @@ impl GrpcTransportReceiver {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use prost::bytes::Bytes;
 
+    use super::super::stream_handler::Header;
     use super::*;
     use crate::rust::peer_node::{Endpoint, NodeIdentifier};
     use crate::rust::test_instances::create_rp_conf_ask;
@@ -821,55 +872,300 @@ mod tests {
         }
     }
 
-    #[test]
-    fn circuit_breaker_opens_on_wrong_network_and_oversize() {
-        use super::super::stream_handler::{Header as StreamHeader, Streamed};
+    fn stream_header(network_id: &str, type_id: &str, chain_id: &[u8]) -> Header {
+        Header::new(
+            peer("sender"),
+            type_id.to_string(),
+            10,
+            network_id.to_string(),
+            Bytes::copy_from_slice(chain_id),
+            false,
+        )
+    }
 
-        fn stream_header(network_id: &str) -> StreamHeader {
-            StreamHeader::new(
-                PeerNode {
-                    id: NodeIdentifier {
-                        key: Bytes::from(b"sender".to_vec()),
-                    },
-                    endpoint: Endpoint::new("host".to_string(), 40400, 40404),
-                },
-                "BlockMessage".to_string(),
-                10,
-                network_id.to_string(),
-                Bytes::new(),
-                false,
-            )
+    fn validation(chain_id: ChainIdCell) -> StreamValidation {
+        StreamValidation {
+            network_id: "expected-net".to_string(),
+            chain_id,
+            max_size: 100,
         }
+    }
 
-        CIRCUIT_BREAKER_PARAMS.with(|params| {
-            *params.borrow_mut() = Some(CircuitParams {
-                network_id: "expected-net".to_string(),
-                chain_id: ChainIdCell::unknown(),
-                max_size: 100,
-            });
-        });
+    fn streamed_with(header: Header, read_so_far: u64) -> Streamed {
+        Streamed::new("key".to_string())
+            .with_header(header)
+            .with_read_so_far(read_so_far)
+    }
 
-        let mut streamed = Streamed::new("key".to_string());
-        streamed.header = Some(stream_header("other-net"));
+    fn chunks(chain_id: &[u8], type_id: &str) -> Vec<Chunk> {
+        let blob = crate::rust::transport::transport_layer::Blob {
+            sender: peer("sender"),
+            packet: models::routing::Packet {
+                type_id: type_id.to_string(),
+                content: Bytes::from(vec![7u8; 64]),
+            },
+        };
+        super::super::chunker::Chunker::chunk_it(
+            "test",
+            Bytes::copy_from_slice(chain_id),
+            &blob,
+            2 * 1024 + 16,
+        )
+    }
+
+    fn poll_once<F: Future>(future: Pin<&mut F>) -> std::task::Poll<F::Output> {
+        future.poll(&mut std::task::Context::from_waker(
+            futures::task::noop_waker_ref(),
+        ))
+    }
+
+    #[test]
+    fn stream_validation_opens_on_wrong_network_and_oversize() {
+        let validation = validation(ChainIdCell::unknown());
+
         assert_eq!(
-            circuit_breaker_with_params(&streamed),
+            validation.check(&streamed_with(
+                stream_header("other-net", "BlockMessage", b""),
+                0
+            )),
             Circuit::opened(StreamError::wrong_network_id())
         );
-
-        streamed.header = Some(stream_header("expected-net"));
-        streamed.read_so_far = 101;
         assert_eq!(
-            circuit_breaker_with_params(&streamed),
+            validation.check(&streamed_with(
+                stream_header("expected-net", "BlockMessage", b""),
+                101
+            )),
             Circuit::opened(StreamError::circuit_opened())
         );
+        assert_eq!(
+            validation.check(&streamed_with(
+                stream_header("expected-net", "BlockMessage", b""),
+                50
+            )),
+            Circuit::closed()
+        );
+        assert_eq!(
+            validation.check(&Streamed::new("key".to_string()).with_read_so_far(101)),
+            Circuit::opened(StreamError::circuit_opened()),
+            "the size limit applies before the header arrives"
+        );
+    }
 
-        streamed.read_so_far = 50;
-        assert_eq!(circuit_breaker_with_params(&streamed), Circuit::closed());
+    #[test]
+    fn stream_validation_applies_the_chain_identity_rules() {
+        let unknown = validation(ChainIdCell::unknown());
+        assert_eq!(
+            unknown.check(&streamed_with(
+                stream_header("expected-net", "BlockMessage", b"old-chain"),
+                0
+            )),
+            Circuit::closed(),
+            "a node that does not know its chain yet accepts every peer"
+        );
 
-        CIRCUIT_BREAKER_PARAMS.with(|params| {
-            *params.borrow_mut() = None;
+        let known = validation(ChainIdCell::known(Bytes::from_static(b"our-chain")));
+        let verdict = |type_id: &str, chain_id: &[u8]| {
+            known.check(&streamed_with(
+                stream_header("expected-net", type_id, chain_id),
+                0,
+            ))
+        };
+        assert!(verdict("BlockMessage", b"old-chain").broken());
+        assert!(verdict("BlockRequest", b"old-chain").broken());
+        assert!(verdict("BlockMessage", b"").broken());
+        assert_eq!(verdict("BlockRequest", b""), Circuit::closed());
+        assert_eq!(verdict("BlockMessage", b"our-chain"), Circuit::closed());
+    }
+
+    #[test]
+    fn stream_checks_do_not_depend_on_the_thread_that_polls_the_stream() {
+        let service = service(Arc::new(Mutex::new(HashMap::new())));
+        service
+            .rp_config
+            .chain_id
+            .set_once(Bytes::from_static(b"our-chain"))
+            .unwrap();
+        let (tx, rx) = futures::channel::mpsc::unbounded::<Chunk>();
+        let mut stream = Box::pin(service.handle_validated_stream(rx));
+
+        std::thread::scope(|scope| {
+            scope
+                .spawn(|| assert!(poll_once(stream.as_mut()).is_pending()))
+                .join()
+                .unwrap();
         });
-        assert_eq!(circuit_breaker_with_params(&streamed), Circuit::closed());
+        for chunk in chunks(b"old-chain", "BlockMessage") {
+            tx.unbounded_send(chunk).unwrap();
+        }
+        drop(tx);
+        let result = std::thread::scope(|scope| {
+            scope
+                .spawn(|| futures::executor::block_on(stream))
+                .join()
+                .unwrap()
+        });
+
+        assert!(
+            matches!(result, Err(StreamError::WrongChainId { .. })),
+            "a stream of another chain must be refused on any thread, got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn a_chain_identity_learned_mid_stream_applies_to_the_rest_of_it() {
+        let service = service(Arc::new(Mutex::new(HashMap::new())));
+        let mut chunks = chunks(b"old-chain", "BlockMessage").into_iter();
+        let (tx, rx) = futures::channel::mpsc::unbounded::<Chunk>();
+        let mut stream = Box::pin(service.handle_validated_stream(rx));
+
+        tx.unbounded_send(chunks.next().unwrap()).unwrap();
+        assert!(
+            poll_once(stream.as_mut()).is_pending(),
+            "the header is accepted while this node does not know its chain"
+        );
+
+        service
+            .rp_config
+            .chain_id
+            .set_once(Bytes::from_static(b"our-chain"))
+            .unwrap();
+        for chunk in chunks {
+            tx.unbounded_send(chunk).unwrap();
+        }
+        drop(tx);
+
+        assert!(matches!(
+            futures::executor::block_on(stream),
+            Err(StreamError::WrongChainId { .. })
+        ));
+        assert!(service.cache.is_empty());
+    }
+
+    #[test]
+    fn a_chain_identity_learned_before_the_stream_ends_is_checked() {
+        let service = service(Arc::new(Mutex::new(HashMap::new())));
+        let (tx, rx) = futures::channel::mpsc::unbounded::<Chunk>();
+        let mut stream = Box::pin(service.handle_validated_stream(rx));
+
+        for chunk in chunks(b"old-chain", "BlockMessage") {
+            tx.unbounded_send(chunk).unwrap();
+        }
+        assert!(
+            poll_once(stream.as_mut()).is_pending(),
+            "every chunk is accepted while this node does not know its chain"
+        );
+
+        service
+            .rp_config
+            .chain_id
+            .set_once(Bytes::from_static(b"our-chain"))
+            .unwrap();
+        drop(tx);
+
+        assert!(matches!(
+            futures::executor::block_on(stream),
+            Err(StreamError::WrongChainId { .. })
+        ));
+        assert!(service.cache.is_empty());
+    }
+
+    #[test]
+    fn a_queued_message_is_checked_against_the_current_chain_identity() {
+        let chain_id = ChainIdCell::unknown();
+        let packet = |chain: &'static [u8], type_id: &str| CommSend {
+            msg: protocol_helper::packet(
+                &peer("sender"),
+                "test",
+                Bytes::from_static(chain),
+                models::routing::Packet {
+                    type_id: type_id.to_string(),
+                    content: Bytes::new(),
+                },
+            ),
+        };
+
+        assert!(admit_queued_send(
+            &chain_id,
+            &packet(b"old-chain", "BlockMessage")
+        ));
+
+        chain_id.set_once(Bytes::from_static(b"our-chain")).unwrap();
+        assert!(!admit_queued_send(
+            &chain_id,
+            &packet(b"old-chain", "BlockMessage")
+        ));
+        assert!(!admit_queued_send(&chain_id, &packet(b"", "BlockMessage")));
+        assert!(admit_queued_send(&chain_id, &packet(b"", "BlockRequest")));
+        assert!(admit_queued_send(
+            &chain_id,
+            &packet(b"our-chain", "BlockMessage")
+        ));
+        assert!(!admit_queued_send(&chain_id, &CommSend {
+            msg: models::routing::Protocol {
+                header: None,
+                message: None,
+            },
+        }));
+    }
+
+    #[tokio::test]
+    async fn a_queued_stream_of_another_chain_is_dropped_and_its_data_released() {
+        let (dispatched_tx, mut dispatched_rx) = tokio::sync::mpsc::unbounded_channel();
+        let handlers: MessageHandlers = (
+            Arc::new(
+                |_send: CommSend| -> Pin<Box<dyn Future<Output = Result<(), CommError>> + Send>> {
+                    Box::pin(async { Ok(()) })
+                },
+            ),
+            Arc::new(
+                move |stream: StreamMessage| -> Pin<
+                    Box<dyn Future<Output = Result<(), CommError>> + Send>,
+                > {
+                    let _ = dispatched_tx.send(stream.key);
+                    Box::pin(async { Ok(()) })
+                },
+            ),
+        );
+        let service = TransportLayerService::new(
+            "test".to_string(),
+            create_rp_conf_ask(peer("local"), None, None),
+            1024,
+            Arc::new(Mutex::new(HashMap::new())),
+            handlers,
+            Arc::new(dashmap::DashMap::new()),
+            1,
+        );
+        let blob_buffer = service.get_blob_buffer(&peer("sender")).await.unwrap();
+        service
+            .rp_config
+            .chain_id
+            .set_once(Bytes::from_static(b"our-chain"))
+            .unwrap();
+
+        let queued = |chain: &'static [u8], key: &str| {
+            service.cache.insert(key.to_string(), vec![1, 2, 3]);
+            StreamMessage::new(
+                peer("sender"),
+                "BlockMessage".to_string(),
+                Bytes::from_static(chain),
+                key.to_string(),
+                false,
+                3,
+            )
+        };
+        assert!(blob_buffer.push_next(queued(b"old-chain", "stale")));
+        assert!(blob_buffer.push_next(queued(b"our-chain", "current")));
+
+        let dispatched = tokio::time::timeout(Duration::from_secs(5), dispatched_rx.recv())
+            .await
+            .expect("the message of this chain must be dispatched");
+        assert_eq!(dispatched.as_deref(), Some("current"));
+        assert!(
+            !service.cache.contains_key("stale"),
+            "the dropped stream's data must be released"
+        );
+        assert!(dispatched_rx.try_recv().is_err());
     }
 
     #[tokio::test]

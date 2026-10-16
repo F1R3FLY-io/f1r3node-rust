@@ -109,7 +109,10 @@ A joining node sends the snapshot and WAL payload requests before it knows its c
 | Path | Site | Effect |
 | --- | --- | --- |
 | Unary message (all types) | `TransportLayerService::send` | refused before it is acknowledged or enqueued; the sender gets gRPC status `FailedPrecondition`, which maps to `CommError::WrongChainId` |
-| Chunk stream | circuit breaker in `grpc_transport_receiver.rs` | the stream is cut at its header chunk |
+| Chunk stream | `StreamValidation` in `grpc_transport_receiver.rs`, applied after every chunk and at the end of the stream | the stream is cut at the first chunk that fails, and its data is released |
+| Queued message (unary or stream) | per-peer queue in `TransportLayerService`, just before dispatch | dropped if the chain identity became known while the message waited and now refuses it |
+
+Each stream gets its own `StreamValidation`. It holds the `networkId`, the stream size limit, and the node's shared `ChainIdCell`, not a copy of it. The checks thus do not depend on the thread that polls the stream, and an identity learned while a stream is open applies to the rest of the stream. A stream has exactly one header chunk, and it must come first. A data chunk before the header, or a second header, stops the stream.
 
 **What a node does with a refusal**:
 
@@ -126,7 +129,6 @@ A joining node sends the snapshot and WAL payload requests before it knows its c
 **Rollout**: this is a breaking protocol change. A node without it names no chain, so every push from it is refused. All nodes of a network must upgrade together. There is no compatibility setting.
 
 **Known gaps**:
-- The stream-path checks run with parameters in thread-local storage and can be skipped when the stream task resumes on another worker thread (#664).
 - A joining node adopts its identity only from unary messages, because a stream sender is not bound to the TLS certificate (#663).
 - Before a node learns its identity (for example during the genesis ceremony), it accepts any peer. A peer of another chain that connects in that window is dropped by the first refused heartbeat or broadcast after the identity is known.
 - A peer on an older build names no chain. Its handshake and heartbeat are pulls and are accepted, so it stays connected, and its pushes are refused.
@@ -137,7 +139,7 @@ A joining node sends the snapshot and WAL payload requests before it knows its c
 - Compress if content > 500KB
 - Split into fragments (max_message_size - 2KB buffer)
 - Header chunk with metadata + data chunks
-- Circuit breaker pattern for error detection
+- Circuit breaker pattern for error detection: the receiver checks the `networkId`, the chain identity, and the size limit after every chunk (see [Chain identity](#chain-identity))
 
 ## UPnP
 
