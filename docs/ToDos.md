@@ -115,6 +115,8 @@ tasks:
     status: pending
     claimed_by: null
     blocked_by: []
+    notes:
+      - "2026-10-16: the user identified the stall-loop design (publications cost-accounting/stall-loop-design.pdf, draft of 2026-10-16) as the outcome of the Zoom discussion. Its three recorded decisions name no approvers, so they are provisional evidence. The registry must record its revision and authority scope."
     acceptance:
       - "The registry locates the original paper, historical proposal, current candidate documents, applicable approved FIPs, and any shareable Zoom record."
       - "Each source records its repository or publisher, full revision or version, path, authority scope, owner, and review status."
@@ -125,6 +127,8 @@ tasks:
     status: pending
     claimed_by: null
     blocked_by: [TASK-028-1]
+    notes:
+      - "2026-10-16: the stall-loop design reviews the PR #216 head branch feature/cost-accounted-rho, but it pins only the merge base 93e38575. The head was ccbee9287 on 2026-10-16. The plan maps its provisional answers to questions 1 to 7 (cost-accounting-direction.md, Provisional answers from the stall-loop design)."
     acceptance:
       - "The comparison distinguishes the original proposal, the recorded D-12 requirements, and a pinned current PR #216 head."
       - "The comparison covers cost fields, authenticated supply, admission reservations, COMM charges, settlement, and shared funding."

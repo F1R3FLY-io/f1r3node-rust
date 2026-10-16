@@ -14,11 +14,13 @@ A switch from completed evaluations to funded or multisigned execution fragments
 
 The existing model does not guarantee successful completion of every deploy. Execution errors and resource exhaustion remain possible.
 
-This conclusion is provisional, not a rejection or approval of the intended direction. The current PR #216 head and relevant approved proposals remain to be examined.
+This conclusion is provisional, not a rejection or approval of the intended direction. The relevant approved proposals remain to be examined.
 
-The user reports that a Zoom discussion prompted this interpretation. No transcript, meeting date, participant approvals, or exact statement accompanies this record.
+The user reports that a Zoom discussion prompted this interpretation. On 2026-10-16 the user identified the [stall-loop design](https://github.com/F1R3FLY-io/publications/blob/main/cost-accounting/stall-loop-design.pdf) as the outcome of that discussion.
 
-That discussion is not presumed to be the ratification meeting of 2026-09-16. The user's recollection supplies a question, not proof of a protocol decision.
+The design is a draft for discussion, dated 2026-10-16. It records three decisions, but it names no approvers. This plan treats those decisions as provisional evidence, not as ratified protocol decisions.
+
+That discussion is not presumed to be the ratification meeting of 2026-09-16. The [Casper decision ledger](../casper/design/decision-ledger/README.md) remains the only record of ratified Casper decisions.
 
 ## Questions to resolve
 
@@ -34,15 +36,35 @@ A block can record settlement without becoming the payment unit. A funding signa
 
 The proposed funding-or-signatures alternative needs an explicit rule. The future analysis must determine whether funding and signatures are alternatives, combined conditions, or separate obligations.
 
+## Provisional answers from the stall-loop design
+
+The stall-loop design reads the PR #216 head branch, `feature/cost-accounted-rho`. It proposes cost-accounted order-then-execute for shards whose genesis policy activates offered execution (v6 shards). Legacy shards keep the current pipeline.
+
+Its answers apply only to that v6 proposal. They are inputs to TASK-028-2 to TASK-028-4, not dispositions.
+
+| Question | Provisional answer in the design | Status |
+|---|---|---|
+| 1. Resource authorization while reductions finish | Yes, within one block. One runner injects every accepted envelope of a block into one RSpace session. The envelopes reduce until each one quiesces or exhausts its limit. | Proposed |
+| 2. Stop and resume across blocks | No. Holds live within one block's execution. No reservation table survives across blocks, and the rule against escrow stays. | Proposed |
+| 3. Unit of funding | A gate checks each envelope before execution, with linear-estimate holds (DR-64) and shared-purse groups (DR-65). The run charges every COMM to the signature of each participant. | Proposed |
+| 4. Signature authority | The deploy signature funds the work and marks its conflicts. The block signature keeps its consensus role. One runner records the execution, and other nodes replay and attest the record. | Proposed |
+| 5. Several roles for one party | The design does not address this question. | Open |
+| 6. Payer of a stored continuation | A race for a datum or a continuation draws on the signature that owns the contested process. Metering of settlement log-channel continuations is an activation condition. | Partly answered |
+| 7. Economic and physical bounds | Each charge becomes a function of its recorded event, within the protocol-6 host-work caps. Two known determinism gaps must close before activation. | Proposed |
+
+The design also changes two execution boundaries for v6 shards. The proposer does not execute deploys, and execution follows finality. Finality then precedes the known post-state of a block.
+
+The platform reference and the Casper binding describe current shards. They identify these v6 differences as proposals, not current behavior.
+
 ## Evidence states and comparison scope
 
 | Target | Evidence available at planning time | Required follow-up |
 |---|---|---|
 | Original proposal | D-12 records a historical comparison of PR #216 at `3980ed402`. That comparison is not necessarily the first proposal. | Locate the original paper and proposal revision. Record full immutable identities. |
 | Recorded requirements | D-12's Decision section preserves the signed cost fields and existing protections. | Identify any later accepted amendment and its exact scope. |
-| Current PR #216 | No current head review supports this conclusion. | Pin the head, documentation, code, and tests in one comparison record. |
+| Current PR #216 | The stall-loop design reviews the head branch `feature/cost-accounted-rho`, but it pins only the merge base `93e38575`. On 2026-10-16 the head was `ccbee9287`. | Pin the head, documentation, code, and tests in one comparison record. Confirm which head the design read. |
 | Approved FIPs | The user supplied the approved-directory location. No individual proposal was reviewed for this plan. | Identify relevant proposals, approval records, revisions, and activation conditions. |
-| Zoom discussion | User-reported interpretation only. | Obtain a shareable meeting record or maintainer-approved summary, if available. |
+| Zoom discussion | The user identified the stall-loop design as its outcome. The design names no approvers. | Record any maintainer approval of the three design decisions under the ledger process. |
 
 FIP means F1R3FLY Improvement Proposal. Directory placement alone does not identify which rule governs this question.
 
@@ -61,7 +83,7 @@ Each conclusion must identify its source and revision. Missing evidence stays un
 | Candidate implementation | [PR #216](https://github.com/F1R3FLY-io/f1r3node-rust/pull/216) | Mutable candidate. Future comparisons must pin its head and branch-only document paths. |
 | Approved proposals | [FIPS approved directory](https://github.com/F1R3FLY-io/FIPS/tree/main/approved) | External proposal location. Exact applicable documents and approval scope remain unidentified. |
 | Original accounting paper | No verified location recorded yet. | TASK-028-1 must establish title, authorship, version, location, and authority scope. |
-| Zoom record | No shareable reference recorded yet. | TASK-028-1 must record availability without exposing private meeting data. |
+| Zoom record | The [stall-loop design](https://github.com/F1R3FLY-io/publications/blob/main/cost-accounting/stall-loop-design.pdf), draft of 2026-10-16, is the outcome record. | Review evidence and proposals, not a normative source. TASK-028-1 must record its revision and authority scope. |
 | Work tracking | [docs/ToDos.md](../ToDos.md#epic-028-cost-accounting-direction-and-reference-authority) | Epic, dependencies, acceptance criteria, and completion evidence. |
 
 Shared accounting definitions belong in the platform reference and [platform glossary](../Glossary.md). Casper-specific validity and activation conditions belong in the Casper binding and decision ledger.

@@ -19,7 +19,9 @@ Execution and accounting are platform functions. A replication mechanism orders 
 
 The [platform glossary](./Glossary.md#execution-attempt) defines execution attempts and atomic COMMs. PR #627 proposes the glossary term commit. A CbC Casper block is one kind of commit. An RGB peer-clique commit holds one transaction and has no block.
 
-A node that produces a commit executes its deploys and records the post-state. Other nodes replay the deploys and compare the result with the recorded post-state.
+On current shards, a node that produces a commit executes its deploys and records the post-state. Other nodes replay the deploys and compare the result with the recorded post-state.
+
+The stall-loop design proposes another order for v6 shards. The mechanism orders commits first, and one runner executes them after finality. The [cost-accounting plan](./plans/cost-accounting-direction.md#provisional-answers-from-the-stall-loop-design) records this proposal and its status.
 
 ## Completion boundaries
 
@@ -75,7 +77,7 @@ Neither function selects CPU workers, removes dependencies, or establishes final
 | Concern | Existing contract or recorded proposal | Limit of the claim |
 |---|---|---|
 | Existing deploy budget | The client signs `phloLimit` and `phloPrice`. Prepayment, refund, and exhaustion apply. | A phlogiston limit is not a direct memory or elapsed-time limit. |
-| Historical PR #216 accounting | Signature-indexed supply authorizes atomic COMM costs. The proposal uses reservations and settlement. | A COMM count alone does not bound the work inside each operation. |
+| Historical PR #216 accounting | Signature-indexed supply authorizes atomic COMM costs. The proposal uses reservations and settlement. The stall-loop design limits each hold to the execution of one block. | A COMM count alone does not bound the work inside each operation. |
 | Physical execution cost | Interpreter operations, native calls, storage, replay, and scheduling consume physical resources. | Economic authorization does not establish bounded physical execution. |
 | Node protection | Admission bounds, replay permits, and operational resource controls constrain different resource uses. | A host timeout or resource breach is not a successful execution result. |
 
@@ -98,11 +100,12 @@ Neither record changes this reference's completion boundaries or activates a pro
 
 ## Relationship to proposed designs
 
-Two draft designs use these terms. Neither is approved, so this document cites them by pull request number.
+Three draft designs use these terms. None is approved, so this document cites them by pull request number or location.
 
 | Design | Relationship |
 |---|---|
 | Replication boundary, PR #627 | The execution port is the only path from a mechanism to Rholang and RSpace++. Its `play` and `replay` operations are execution attempts on a commit. Its `merge` operation is execution code, not mechanism code. The commit and the finality event are the mechanism-neutral units of section [Units of work](#units-of-work). |
+| Stall-loop design, [publications `cost-accounting/stall-loop-design.pdf`](https://github.com/F1R3FLY-io/publications/blob/main/cost-accounting/stall-loop-design.pdf) | For v6 shards, it proposes execution after ordering, concurrent envelopes within one block, and charges that are functions of recorded events. These proposals change the units of work and the completion boundaries of this document for v6 shards only. |
 | Adaptive execution, PR #714 | The bound on local replay and merge concurrency and the admission bounds of section [Accounting versus resource protection](#accounting-versus-resource-protection) become node-local controls inside a tier profile. No control may change commit validity. An overload rejection is a typed error, not a successful execution result. |
 
 When a design is approved, its terms replace the descriptions in this section, and its documents become link targets.

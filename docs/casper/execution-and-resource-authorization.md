@@ -19,7 +19,9 @@ Accounting authority version 8 is independent of Casper protocol 7, as [D-01](./
 
 The [Casper glossary](./GLOSSARY.md#block) defines these terms. The [platform glossary](../Glossary.md#execution-attempt) defines deploys, execution attempts, and atomic COMMs.
 
-A proposer executes selected deploys and records results in a block. Receiving validators replay the block's deploys and check the state commitment.
+On current shards, a proposer executes selected deploys and records results in a block. Receiving validators replay the block's deploys and check the state commitment.
+
+For v6 shards, the stall-loop design proposes that a proposer does not execute deploys. One runner executes finalized blocks in a canonical order, and other validators replay its record. The [cost-accounting plan](../plans/cost-accounting-direction.md#provisional-answers-from-the-stall-loop-design) records this proposal and its status.
 
 Validators can propose different blocks concurrently. Their validation work overlaps because each validator checks received blocks, rather than trusting another validator's execution alone.
 
@@ -42,7 +44,7 @@ Evaluation completion and application completion have the same meaning as in the
 |---|---|---|
 | Between validators | Validators can propose and validate concurrently. | Replicated validation is not exclusive workload partitioning. |
 | Between local block replays | The runtime manager permits bounded overlapping replay work. | Separate replay runtimes do not imply parallel deploy execution within one runtime. |
-| Between deploys in one block | The current play and replay paths await user deploys sequentially. | A new deploy begins after the preceding execution attempt returns. |
+| Between deploys in one block | The current play and replay paths await user deploys sequentially. The stall-loop design proposes concurrent envelopes within one block for v6 shards. | On current shards, a new deploy begins after the preceding execution attempt returns. |
 | Within one execution attempt | Rholang parallel composition can schedule concurrent branches and enabled continuations. | `P \| Q` does not promise linear CPU scaling. |
 | Between finalization evaluations | [D-05](./design/decision-ledger/05-finalization-publication.md) keeps single-flight as the default. Parallel evaluation remains conditional. | Evaluation overlap is distinct from publication order. |
 
