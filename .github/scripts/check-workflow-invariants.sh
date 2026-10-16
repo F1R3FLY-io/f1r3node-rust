@@ -621,8 +621,10 @@ fi
 #     rejects the expression when it loads the action, not when a workflow is
 #     parsed. Soak 38773128084 passed its 2.5 h preflight and then failed on
 #     `vars.SOAK_IO_DIAGNOSTICS` in soak-segment. Pass the value as an input or
-#     as job-level env. Comment lines are skipped. The scan first tests itself.
-action_context_pattern='\$\{\{([^}]*[^A-Za-z0-9_.])?(vars|secrets)\.'
+#     as job-level env. The dot and bracket forms both count. Only full-line
+#     comments are skipped, so a trailing comment that names the context still
+#     fails, which is safe. The scan first tests itself.
+action_context_pattern='\$\{\{([^}]*[^A-Za-z0-9_.])?(vars|secrets)[.[]'
 action_context_hits() {
 	grep -HnE "$action_context_pattern" "$@" | grep -vE '^[^:]+:[0-9]+:[[:space:]]*#' || true
 }
@@ -631,14 +633,16 @@ printf '%s\n' \
 	"  A: \${{ vars.X == '1' && '1' || '0' }}" \
 	"  B: \${{secrets.TOKEN}}" \
 	"  # C: \${{ vars.X }}" \
-	"  D: \${{ inputs.myvars.x }}" >"$action_probe"
+	"  D: \${{ inputs.myvars.x }}" \
+	"  E: \${{ vars['X'] }}" \
+	"  F: \${{ secrets[\"TOKEN\"] }}" >"$action_probe"
 action_probe_hits="$(action_context_hits "$action_probe" | cut -d: -f2 | tr '\n' ' ')"
 rm -f "$action_probe"
-if [ "$action_probe_hits" != "1 2 " ]; then
-	err "invariant 10 self-test failed: flagged lines '$action_probe_hits', expected '1 2 '"
+if [ "$action_probe_hits" != "1 2 5 6 " ]; then
+	err "invariant 10 self-test failed: flagged lines '$action_probe_hits', expected '1 2 5 6 '"
 else
 	action_files=()
-	while IFS= read -r file; do action_files+=("$file"); done < <(find .github/actions -name 'action.yml' -o -name 'action.yaml' | sort)
+	while IFS= read -r file; do action_files+=("$file"); done < <(find .github/actions \( -name 'action.yml' -o -name 'action.yaml' \) | sort)
 	action_context_errors=""
 	if [ "${#action_files[@]}" -gt 0 ]; then
 		action_context_errors="$(action_context_hits "${action_files[@]}")"
