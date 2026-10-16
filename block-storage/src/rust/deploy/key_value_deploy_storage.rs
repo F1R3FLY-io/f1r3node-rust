@@ -13,6 +13,7 @@ use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
 use shared::rust::ByteString;
 
 const DEPLOY_STORE_SIZE_METRIC: &str = "deploy.store.size";
+const DEPLOY_STORE_READ_ALL_DECODED_METRIC: &str = "deploy-store.read-all.decoded";
 
 pub trait DeployStoreName {
     const NAME: &'static str;
@@ -120,6 +121,8 @@ impl<N: DeployStoreName> KeyValueDeployStore<N> {
         let all: HashSet<Signed<DeployData>> =
             self.store.to_map().map(|map| map.into_values().collect())?;
         metrics::gauge!(DEPLOY_STORE_SIZE_METRIC, "store" => N::NAME).set(all.len() as f64);
+        metrics::counter!(DEPLOY_STORE_READ_ALL_DECODED_METRIC, "store" => N::NAME)
+            .increment(all.len() as u64);
         if let Some(limit) = N::SIZE_WARNING_THRESHOLD {
             if all.len() > limit {
                 tracing::warn!(
@@ -270,6 +273,45 @@ mod tests {
             HashMap::from([
                 ("deploy_storage".to_string(), 2.0),
                 ("rejected_deploy_buffer".to_string(), 1.0),
+            ])
+        );
+    }
+
+    #[tokio::test]
+    async fn read_all_counts_each_decoded_deploy_of_each_store() {
+        let mut kvm = InMemoryStoreManager::new();
+        let mut storage = KeyValueDeployStorage::new(&mut kvm).await.unwrap();
+        let mut buffer = KeyValueRejectedDeployBuffer::new(&mut kvm).await.unwrap();
+        storage.add(vec![deploy(1), deploy(2)]).unwrap();
+        buffer.add(vec![deploy(3)]).unwrap();
+
+        let recorder = DebuggingRecorder::new();
+        let snapshotter = recorder.snapshotter();
+        metrics::with_local_recorder(&recorder, || {
+            storage.read_all().unwrap();
+            storage.read_all().unwrap();
+            buffer.read_all().unwrap();
+        });
+
+        let decoded: HashMap<String, u64> = snapshotter
+            .snapshot()
+            .into_vec()
+            .into_iter()
+            .filter(|(key, ..)| key.key().name() == DEPLOY_STORE_READ_ALL_DECODED_METRIC)
+            .filter_map(|(key, _, _, value)| match value {
+                DebugValue::Counter(count) => key
+                    .key()
+                    .labels()
+                    .find(|label| label.key() == "store")
+                    .map(|label| (label.value().to_string(), count)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            decoded,
+            HashMap::from([
+                ("deploy_storage".to_string(), 4),
+                ("rejected_deploy_buffer".to_string(), 1),
             ])
         );
     }

@@ -34,6 +34,12 @@ cmp "$tmp/once.py" "$tmp/metrics.py"
 
 for metric in \
     dag_merge_relation_items \
+    deploy_pool_lock_wait_time \
+    deploy_pool_lock_hold_time \
+    proposer_queue_depth \
+    runtime_scheduler_delay_time \
+    compute_parents_post_state_floor_distance \
+    deploy_store_read_all_decoded \
     proposer_create_time \
     proposer_effect_time \
     deploy_lifecycle_observe_time \
