@@ -11072,7 +11072,7 @@
       ]
     },
     "p10": {
-      "description": "Phase P10, the formal-verification closure, the documents, the examples, the benchmarks and the FIPS matrix (design v2, plan decision 85). It extends campaign and restates the edits and the new files of p9. Step S1 adds the aggregate gate scripts/check-reified-rspaces-ALL.sh and the tracked checker list scripts/verify-reified/checker-commands.txt. Step S7 adds Checkpoint.v, the axiom control fixture, the model map of P10 and the property tests of Checkpoint.v. Step S2 adds the example programs of examples/reified_rspaces/, their harness rholang/tests/reified_examples_execute.rs, the invalid syntax corpus test-vectors/reified-syntax-invalid-v1.json and the test files of the fixtures of the manifest rule of doc_lint. Step S5 rewrites chapter 21 and adds the Reified sections of chapters 02, 06, 07, 08 and 10, the anchor of the Reified section of chromadb.md, and the Reified entries of docs/rholang/README.md and examples/README.md. Their edits are replaced blocks against the base. It also adds three examples. Step S6 adds the diagram 07b of the LFS export and import. Step S5 adds security.md and its diagram 55.",
+      "description": "Phase P10, the formal-verification closure, the documents, the examples, the benchmarks and the FIPS matrix (design v2, plan decision 85). It extends campaign and restates the edits and the new files of p9. Step S1 adds the aggregate gate scripts/check-reified-rspaces-ALL.sh and the tracked checker list scripts/verify-reified/checker-commands.txt. Step S7 adds Checkpoint.v, the axiom control fixture, the model map of P10 and the property tests of Checkpoint.v. Step S2 adds the example programs of examples/reified_rspaces/, their harness rholang/tests/reified_examples_execute.rs, the invalid syntax corpus test-vectors/reified-syntax-invalid-v1.json and the test files of the fixtures of the manifest rule of doc_lint. Step S5 rewrites chapter 21 and adds the Reified sections of chapters 02, 06, 07, 08 and 10, the anchor of the Reified section of chromadb.md, and the Reified entries of docs/rholang/README.md and examples/README.md. Their edits are replaced blocks against the base. It also adds three examples. Step S6 adds the diagram 07b of the LFS export and import. Step S5 adds security.md and its diagram 55. Step S8 adds the benchmarks, their shared module and the bench entries of rholang/Cargo.toml, the frozen contract of the benchmarks, the benchmark driver, the restored P0 archives with their capture scripts, provenance and check, performance.md and its diagrams 56 and 57.",
       "extends": "campaign",
       "unchanged": [
         "**"
@@ -12678,6 +12678,30 @@
               ]
             ]
           ]
+        },
+        {
+          "path": "rholang/Cargo.toml",
+          "replaced_blocks": [
+            [
+              [
+                "[features]",
+                "chromadb = [\"dep:chroma\", \"dep:fastembed\"]"
+              ],
+              [
+                "[features]",
+                "chromadb = [\"dep:chroma\", \"dep:fastembed\"]",
+                "",
+                "# The benchmarks of Reified RSpaces (P10 step S8).",
+                "[[bench]]",
+                "name = \"reified_spaces\"",
+                "harness = false",
+                "",
+                "[[bench]]",
+                "name = \"reified_persistence\"",
+                "harness = false"
+              ]
+            ]
+          ]
         }
       ],
       "allowed_new_files": [
@@ -13413,7 +13437,33 @@
         "docs/rspace/reified-rspaces/fips-conformance-matrix.json",
         "docs/rspace/reified-rspaces/fips-conformance-matrix.md",
         "scripts/verify-reified/check-fips-matrix.py",
-        "scripts/verify-reified/tests/test_fips_matrix.py"
+        "scripts/verify-reified/tests/test_fips_matrix.py",
+        "rholang/benches/common/mod.rs",
+        "rholang/benches/reified_spaces.rs",
+        "rholang/benches/reified_persistence.rs",
+        "scripts/bench/reified-benchmark-with-perf.sh",
+        "scripts/bench/check-p0-archives.py",
+        "scripts/bench/summarize-cost-base-baselines.py",
+        "scripts/bench/export-reified-samples.py",
+        "scripts/run-cost-base-capture.py",
+        "scripts/cost-base-models-capture.rs",
+        "scripts/cost-base-rspace-capture.rs",
+        "scripts/verify-reified/tests/test_p0_archives.py",
+        "test-vectors/reified-bench-contract-v1.json",
+        "test-vectors/legacy-spaces-benchmark-ff479042.json",
+        "test-vectors/legacy-spaces-benchmark-ff479042.tar.gz",
+        "test-vectors/cost-base-baselines-068d.json",
+        "test-vectors/cost-base-model-lmdb-068d.tar.gz",
+        "test-vectors/cost-base-rspace-068d.tar.gz",
+        "test-vectors/reified-workspace-bench-e748426.json",
+        "test-vectors/reified-workspace-bench-e748426.tar.gz",
+        "test-vectors/benchmarks/reified-rspaces-protocol-v1.json",
+        "test-vectors/benchmarks/p0-archives-provenance.json",
+        "docs/rspace/reified-rspaces/performance.md",
+        "docs/rspace/reified-rspaces/diagrams/56-benchmark-case-path.puml",
+        "docs/rspace/reified-rspaces/diagrams/56-benchmark-case-path.svg",
+        "docs/rspace/reified-rspaces/diagrams/57-receive-host-work.puml",
+        "docs/rspace/reified-rspaces/diagrams/57-receive-host-work.svg"
       ]
     }
   }

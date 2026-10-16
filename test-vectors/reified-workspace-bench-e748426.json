@@ -1,0 +1,28 @@
+{
+  "source_head": "e748426830a2da3ce874d94beda986499956f52a",
+  "source_state": "uncommitted Reified RSpaces worktree",
+  "toolchain": "nightly-2026-02-09",
+  "command": "cargo +nightly-2026-02-09 bench --workspace --offline --locked",
+  "cpu_affinity": [0, 1],
+  "cpu_governor": "performance",
+  "pre_run_idle_percent_by_cpu": {
+    "0": 84.20,
+    "1": 85.41
+  },
+  "memory_limit_bytes": 17179869184,
+  "time_max_rss_kib": 2196344,
+  "elapsed_seconds": 596.28,
+  "exit_code": 0,
+  "criterion_cases": 23,
+  "raw_samples": 2300,
+  "result_scope": "Workspace execution gate; host load prevents baseline comparison.",
+  "archive": {
+    "path": "test-vectors/reified-workspace-bench-e748426.tar.gz",
+    "sha256": "2d7901a041bff8ab1c1a53630a04ded1fc7d98bc58d85f037d190241322a580e"
+  },
+  "logs_sha256": {
+    "build": "86559c1b642e080ae2d6616f39a6a1c6d9100a208f19385cec2e252496c60ef8",
+    "idle": "04d3b541fee2c91abd1055de2e71696ea6e4ad6b1efaba3da21f2d33ba385fba",
+    "run": "80a7f3d767547215ac01b7aaf21a12159c766420e5cd3fb99c657b6d7597fc17"
+  }
+}

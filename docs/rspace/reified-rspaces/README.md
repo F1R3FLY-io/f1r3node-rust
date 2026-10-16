@@ -25,7 +25,7 @@ This README is the index and the reading order of the documents.
 2. Read the [decision register](decision-register.md) for the normative decisions and their reasons.
 3. Read the [specification](specification.md), the [syntax contract](syntax-contract.md), and the [agent API](agent-api.md) for the behavior of spaces.
 4. Read the [design](design.md), the [PathMap delivery](pathmap-prefix-delivery.md), and the [theory seam](theory-seam.md) for the structure of the implementation.
-5. Read the [security](security.md), performance, and [verification](verification.md) documents and the [FIPS matrix](fips-conformance-matrix.md) for the evidence.
+5. Read the [security](security.md), [performance](performance.md), and [verification](verification.md) documents and the [FIPS matrix](fips-conformance-matrix.md) for the evidence.
 6. Read the [F1r3lang integration](f1r3lang-integration.md) document for the merge path of phase P12.
 7. Read the [TensorLogic design](tensor-logic/README.md) for the tensor language that P12 installs.
 8. Read the [design record](design-record/README.md) last, as history of the early design.
@@ -49,7 +49,7 @@ A document that a later step of P10 writes shows the step as "planned in P10" wi
 | [syntax-contract.md](syntax-contract.md) | The surface syntax, the marker-tuple encoding table, the Par builders, and the dual-frontend corpus. | Written. P3 wrote the surface sections, P4 the meaning at run time, and P6 the VectorDB params. P10 step S5 added an invalid row under each grammar form. P12 adds the Rholang 1.4 productions. |
 | [verification.md](verification.md) | The verification dossier: Rocq headlines, TLA invariants, negative controls, property tests, regression suites, the realignment closure, and later the example gate. | Written for every phase: P1 in sections 1 to 10, P4 in 11, P5 in 12, decision 47 in 13, P6 in 14 to 26, P7 in 27 to 32, P8 in 33, P9 in 34 and P10 in 35 (`rrs-doc-verification-dossier`). |
 | [security.md](security.md) | The threat model: assets, adversaries, trust boundaries, the controls SC-1 to SC-22 with their rejected inputs and evidence, the failure behavior, and the residual risks. | Written in P10 step S5 (`rrs-perf-docs-final-spec-design-security`) |
-| `performance.md` | Benchmarks of the space operations against frozen baselines, with any regressions. | Planned in P10 step S8 (`rrs-perf-docs-final-benchmarks`) |
+| [performance.md](performance.md) | The cost of the space operations in time, phlo and host work: the method, the results of each benchmark, the comparison with the legacy branch and the host program, the examples from end to end, and the findings with the candidate optimizations. | Written in P10 step S8 (`rrs-perf-docs-final-benchmarks`, `rrs-bench-matching`, `rrs-bench-lmdb`) |
 | [f1r3lang-integration.md](f1r3lang-integration.md) | The F1r3lang merge: the theory seam after the merge, installed theories, guard composition, and the Rholang 1.4 productions. | The theory part is written in P7 step 4, and P10 step S5 checked it. P12 extends it after the readiness signal (`rrs-doc-theory-seam`). |
 | [tensor-logic/README.md](tensor-logic/README.md) | The TensorLogic design for P12: the design in five points, the reading order, the findings of the design pass and the binding decisions. | A proposal for P12, written in P9. The grammar waits for the approval of the user ([decision 64](decision-register.md#decision-64)), and P12 waits for the readiness signal SIG-F ([decision 65](decision-register.md#decision-65)). |
 | [tensor-logic/concepts.md](tensor-logic/concepts.md) | The terms of TensorLogic: tensors, indices, joins, projections, rules, normalization, exact numbers, reflection and fragments. | A proposal for P12, written in P9. P12 waits for the readiness signal SIG-F ([decision 65](decision-register.md#decision-65)). |
@@ -140,6 +140,8 @@ Update `fonts.lock`, render every diagram again, and review the images.
 | 53 | [The diagnostic codes of TensorLogic](diagrams/53-tl-error-codes.svg) (mind map) | Drawn in P9 for the TensorLogic design of P12 |
 | 54 | [The verification pipeline of TensorLogic](diagrams/54-tl-verification-pipeline.svg) (component) | Drawn in P9 for the TensorLogic design of P12 |
 | 55 | [Trust boundaries and their controls](diagrams/55-security-trust-boundaries.svg) (component) | Drawn in P10 step S5 for `security.md` |
+| 56 | [The path of one benchmark case](diagrams/56-benchmark-case-path.svg) (activity) | Drawn in P10 step S8 for `performance.md` |
+| 57 | [The host work of one receive against its collection](diagrams/57-receive-host-work.svg) (chart) | Drawn in P10 step S8 for `performance.md`, from the contract of the benchmarks |
 
 ## Campaign phases
 

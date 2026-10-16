@@ -93,3 +93,12 @@ loom = "=0.7.2"
 
 [features]
 chromadb = ["dep:chroma", "dep:fastembed"]
+
+# The benchmarks of Reified RSpaces (P10 step S8).
+[[bench]]
+name = "reified_spaces"
+harness = false
+
+[[bench]]
+name = "reified_persistence"
+harness = false

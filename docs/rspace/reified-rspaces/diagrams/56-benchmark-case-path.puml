@@ -1,0 +1,120 @@
+' 56 The path of one benchmark case: its setup, its reference play with the
+' contract check, and its timed iterations.
+'
+' Source of Figure 1 of ../performance.md (section 1). The figure restates
+' bench_case, prepare and observe of rholang/benches/common/mod.rs, and the
+' metered view reads of the staged view (NativeViewReads::data in
+' rspace++/src/rspace/space_store_handle.rs). It adds no new fact.
+'
+' Reading order:
+'   1. The setup builds the pre-state on a new chain: setup deploys, then
+'      fill deploys of ten sends, or of one send when ten do not fit. Each
+'      fill deploy that succeeds ends with a checkpoint. A fill that cannot
+'      store one more send ends the case: the collection is full.
+'   2. The reference play evaluates the measured deploy once. It reads the
+'      values on the result channel, the phlo and the host work, takes the
+'      checkpoint, and compares the four with the contract.
+'   3. A deploy that fails, for example with HostWorkRejected, is recorded
+'      and not timed.
+'   4. Each timed iteration resets the chain to the pre-state outside the
+'      timer, then evaluates the deploy, with the checkpoint only when the
+'      case includes it.
+'   5. Inside the evaluation, each space job reads its staged view through
+'      metered view reads. A read reserves the host work of the key and of
+'      the whole loaded value before it loads, so a read of a channel of n
+'      records reserves work in proportion to n.
+'
+' Colors come from concept-colors.iuml (aliases of the shared palette).
+' Render: ./render.sh 56-benchmark-case-path.puml   Check: ./render.sh --check
+
+@startuml 56-benchmark-case-path
+!include ../../../casper/theory/diagrams/palette.iuml
+!include concept-colors.iuml
+$ca_base_skin()
+skinparam ArrowColor $rrs_relation
+skinparam ActivityBorderColor $rrs_relation
+skinparam ActivityDiamondBorderColor $rrs_relation
+skinparam ActivityDiamondBackgroundColor $ca_note_amber
+skinparam PartitionBorderColor $rrs_relation
+skinparam NoteBorderColor $rrs_relation
+title The path of one benchmark case
+
+start
+partition "Setup: not timed (prepare)" {
+  :a new test chain over an in-memory store
+  the system processes, the funded deploy key; <<$rrs_host>>
+  :setup deploys: the factory call of the space
+  each one checked for no error, then a checkpoint; <<$rrs_factory>>
+  while (records left to store?) is (yes)
+    :a fill deploy of ten sends in a use block
+    or of one send after ten did not fit; <<$rrs_storage>>
+    if (the deploy fits the v6 limits?) then (yes)
+      :checkpoint: the new pre-state root; <<$rrs_storage>>
+    else (no)
+      if (the deploy had more than one send?) then (yes)
+        :reset to the last root
+        continue with one send in each deploy; <<$rrs_host>>
+      else (no)
+        :record **the collection is full at r records**
+        the contract holds this outcome; <<$rrs_reject>>
+        stop
+      endif
+    endif
+  endwhile (no)
+}
+partition "Reference play: checked, not timed (observe)" {
+  :evaluate the measured deploy once
+  with a fresh v6 host-work budget and a phlo limit of <latex>10^{9}</latex>; <<$rrs_agent>>
+  :read the values on the result channel, the phlo
+  and the used host work of each dimension; <<$rrs_host>>
+  :checkpoint: the root after the deploy; <<$rrs_storage>>
+  if (result, phlo, root and host work equal the contract?) then (yes)
+  else (no)
+    :the run fails: the contract does not hold; <<$rrs_reject>>
+    stop
+  endif
+  :append the record line: the observed values,
+  the setup time and the reference time; <<$rrs_host>>
+  if (the deploy failed, for example with HostWorkRejected?) then (yes)
+    :no timing: the series stops at this count; <<$rrs_reject>>
+    stop
+  else (no)
+  endif
+}
+partition "Timed iterations (iter_custom)" {
+  repeat
+    :reset the chain to the pre-state root
+    outside the timer; <<$rrs_host>>
+    :start the timer; <<$rrs_system>>
+    :parse and normalize the source text
+    recognize the marker tuples of use and of the params; <<$rrs_syntax>>
+    :reduce: each space operation runs as a space job
+    under the deterministic operation order; <<$rrs_agent>>
+    :metered view reads: reserve the key and the whole loaded value
+    then load the records of the channel into the staged view; <<$rrs_substrate>>
+    :match, stage and commit: the events
+    and the observer calls that charge the phlo; <<$rrs_substrate>>
+    if (the case includes the checkpoint?) then (yes)
+      :checkpoint of the history trie; <<$rrs_storage>>
+    else (no)
+    endif
+    :stop the timer: one iteration of the sample; <<$rrs_system>>
+  repeat while (iterations left in the sample?) is (yes)
+  ->no;
+}
+:Criterion: ten samples of equal iterations (flat sampling)
+the median and its 95 % bootstrap interval; <<$rrs_system>>
+stop
+
+legend bottom
+**Concept colors**
+|<$rrs_host>       | host code at the baseline and the test chain |
+|<$rrs_factory>    | the factory call of a space |
+|<$rrs_storage>    | records, the history trie and checkpoints |
+|<$rrs_agent>      | evaluation and space jobs |
+|<$rrs_substrate>  | substrate: metered view reads, staging and commit |
+|<$rrs_syntax>     | syntax: parse, normalization and marker tuples |
+|<$rrs_system>     | timer and statistics |
+|<$rrs_reject>     | an outcome without timing, or a failed run |
+endlegend
+@enduml

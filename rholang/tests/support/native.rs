@@ -607,6 +607,40 @@ impl NativeChain {
             .expect("reset the chain to the root");
     }
 
+    /// Evaluates `term` as one native deploy with the random state of `label`, the phlo limit
+    /// `limit` and the host-work limits of protocol version 6. It takes no soft checkpoint, scans
+    /// no store and takes no checkpoint, so a benchmark measures the deploy alone (P10 step S8).
+    /// A deploy that the host-work check rejects after its last operation gives
+    /// `Err(HostWorkRejected)`.
+    pub async fn evaluate(
+        &mut self,
+        term: &str,
+        label: &str,
+        limit: u64,
+    ) -> Result<EvaluateResult, InterpreterError> {
+        self.evaluate_with(term, label, limit, host_work()).await
+    }
+
+    /// Evaluates `term` like [`NativeChain::evaluate`], with the host-work budget `host`. The
+    /// caller keeps a clone of `host` to read the host work of the deploy (P10 step S8).
+    pub async fn evaluate_with(
+        &mut self,
+        term: &str,
+        label: &str,
+        limit: u64,
+        host: HostWorkBudget,
+    ) -> Result<EvaluateResult, InterpreterError> {
+        let random = Blake2b512Random::create_from_bytes(label.as_bytes());
+        self.runtime
+            .evaluate_with_native_phlo(term, Injections::new(), random, None, config(limit, host))
+            .await
+    }
+
+    /// Creates the checkpoint of the chain's runtime and returns its root (P10 step S8).
+    pub async fn checkpoint(&mut self) -> Blake2b256Hash {
+        self.runtime.create_checkpoint().await.root
+    }
+
     /// The space-scoped channels of the durability `durability` that hold records or waiting
     /// continuations in the hot store of the chain's runtime (P7).
     pub async fn space_channels(&self, durability: Durability) -> Vec<Par> {

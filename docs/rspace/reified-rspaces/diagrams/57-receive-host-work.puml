@@ -1,0 +1,37 @@
+' 57 The VerificationBytes of one receive against the records of its
+' collection, for each discipline, with the host-work limit of protocol
+' version 6.
+'
+' Source of Figure 2 of ../performance.md (section 3.3). The measured points
+' are the receive_from_n cases of test-vectors/reified-bench-contract-v1.json
+' that fit the limit. Each line is the least-squares line of Table 5 of that
+' document, drawn from 0 records to the size where it reaches the limit:
+'     bag: 1,267 records
+'     set: 907 records
+'     queue and stack: 1,136 records
+'     priority queue: 993 records
+'     VectorDB: 433 records
+' The queue and the stack have one line, because their lines differ by less
+' than 0.1 %. The host program reserves 0.36 million at every size, so
+' the chart does not draw it apart from the axis. The numbers come from the
+' contract, so a new contract needs a new source and a new rendering.
+'
+' Colors come from the shared palette.
+' Render: ./render.sh 57-receive-host-work.puml   Check: ./render.sh --check
+
+@startchart 57-receive-host-work
+!include ../../../casper/theory/diagrams/palette.iuml
+!include concept-colors.iuml
+$ca_base_skin()
+title The VerificationBytes of one receive against the records of its collection
+h-axis "records of the collection" 0 --> 1400 spacing 200
+v-axis "millions of VerificationBytes" 0 --> 300 spacing 50 grid
+line "v6 limit" [(0, 268.44), (1400, 268.44)] $ca_neutral
+line "bag" [(0, 3.06), (1267, 268.44)] $ca_instantiate
+line "set" [(0, 3.13), (907, 268.44)] $ca_debit
+line "queue and stack" [(0, 5.18), (1136, 268.44)] $ca_credit
+line "priority queue" [(0, 5.21), (993, 268.44)] $ca_rejectfill
+line "VectorDB" [(0, 5.94), (433, 268.44)] $ca_gate
+scatter <<circle>> "measured" [(10, 5.29), (100, 23.87), (1000, 212.54), (10, 6.05), (100, 32.39), (10, 7.50), (100, 28.34), (1000, 236.82), (10, 7.50), (100, 28.35), (1000, 236.82), (10, 7.86), (100, 31.72), (10, 12.00), (100, 66.55)] $ca_neutral
+legend right
+@endchart

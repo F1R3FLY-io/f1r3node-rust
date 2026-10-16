@@ -1,0 +1,96 @@
+{
+  "schema": "reified-rspaces-p0-archive-provenance/1",
+  "note": "P10 step S8 restored the P0 benchmark archives from the backup of 2026-10-04. Their logs held the workspace path of the capture host, so the restore replaced it. Each summary JSON keeps its original archive digest, and this file maps it to the digest of the committed archive.",
+  "rule": {
+    "replace": [
+      [
+        "<the workspace root of the capture host>/",
+        "[WORKSPACE_ROOT]/"
+      ],
+      [
+        "<the home directory of the capture host>",
+        "[HOME]"
+      ]
+    ],
+    "reason": "The project rules forbid absolute paths with user names in committed files."
+  },
+  "archives": [
+    {
+      "archive": "test-vectors/legacy-spaces-benchmark-ff479042.tar.gz",
+      "summary": "test-vectors/legacy-spaces-benchmark-ff479042.json",
+      "original_sha256": "bb707ec6c08a74c9f4421bfd616c87a9ef5d84230388013e9854d4442ebab5cf",
+      "redacted_sha256": "39d69bce84d052c5f8aa0a58d19edadd8c32cc3e49c09807bfc64c5384c2d942",
+      "changed_members": [
+        {
+          "member": "legacy-benchmark-run.log",
+          "original_sha256": "77e29a07fec6e090021821f3b821f6a3e3edfcc3953c3c23fe109fcf1345618a",
+          "redacted_sha256": "d1c56aa84f9fcff76fb83845fdf42109637d16e46cc1f4b82185f8be0d242ce8"
+        }
+      ]
+    },
+    {
+      "archive": "test-vectors/cost-base-model-lmdb-068d.tar.gz",
+      "summary": "test-vectors/cost-base-baselines-068d.json",
+      "original_sha256": "59a7f2f9a88ba840f3c387711e0d66ff3bdba2f3c9cfe5c4ebde23599c774464",
+      "redacted_sha256": "b04c0a3f15ca2af0064c48266f2fa6854b3c6a3a2301770e23ddda295ea14c17",
+      "changed_members": [
+        {
+          "member": "cost-base-model-timed-run.log",
+          "original_sha256": "516f392dd7670de9f9e1727a116306e86bcab1fc890a0249a0bf4b7c93fd63d9",
+          "redacted_sha256": "af0599af19311fcf7e4a60f7df7cb68d3c71f6b233376a125192a227517eae8f"
+        },
+        {
+          "member": "cost-base-lmdb-timed-run.log",
+          "original_sha256": "3b58527b5005b5fd9cc81fe22406961ef8c75d4c35dea3fe88d8e95cc12d7848",
+          "redacted_sha256": "e8ced1866151cfdb33fc22222f0e1ecbb482a672d0a3f5dedf7cfdc1f211af39"
+        },
+        {
+          "member": "cost-base-bench-release-build-final.log",
+          "original_sha256": "292ed41e581b9509b4893519d064a30c1a16a471f0fe9d78f3ff6f3fd1f5363a",
+          "redacted_sha256": "379fc979923b688350f781a0929c493d3dee4c60bf3d1e24415712f13dc6796d"
+        }
+      ]
+    },
+    {
+      "archive": "test-vectors/cost-base-rspace-068d.tar.gz",
+      "summary": "test-vectors/cost-base-baselines-068d.json",
+      "original_sha256": "a2bb55cf5ea33963ebf255b0b95105451bd17ac7dee5bce66875403907692237",
+      "redacted_sha256": "7427e7a0f984b24048369e8683e1565806a342018ea6658b7d0f03b62259e540",
+      "changed_members": [
+        {
+          "member": "cost-base-rspace-timed-run.log",
+          "original_sha256": "1ff0152a94bd2cbcb833c7b915b7753ac0d9509287b292b424d04f2943fff938",
+          "redacted_sha256": "fc9db06801d7d39af3102299de0d68065e90bb5550ac7d2a7517f1aae8a237bc"
+        },
+        {
+          "member": "cost-base-rspace-bench-smoke-v2.log",
+          "original_sha256": "2a445acc35f2b26477c45917a28814c582c824055f8531e57147f0e307bd7d96",
+          "redacted_sha256": "7d7a00b71d646b2b0cf35c88e6fcecf59102d13fbb4617e68c53d165260f575f"
+        },
+        {
+          "member": "cost-base-bench-preparation-rspace-v2.log",
+          "original_sha256": "80ea737b703f949cd8cfe4be920289789c46aa9125b2c9e0034e5496e3aab8f4",
+          "redacted_sha256": "927fecbccb4168492bcb5413116c34a47f299ac7975fcc9ede16e15e96cdbb30"
+        }
+      ]
+    },
+    {
+      "archive": "test-vectors/reified-workspace-bench-e748426.tar.gz",
+      "summary": "test-vectors/reified-workspace-bench-e748426.json",
+      "original_sha256": "2d7901a041bff8ab1c1a53630a04ded1fc7d98bc58d85f037d190241322a580e",
+      "redacted_sha256": "3d39361b48373f2f7f2657d36cd5dd6c6921e75d4bd8c4a66727610b4f24039e",
+      "changed_members": [
+        {
+          "member": "workspace-bench-run.log",
+          "original_sha256": "80a7f3d767547215ac01b7aaf21a12159c766420e5cd3fb99c657b6d7597fc17",
+          "redacted_sha256": "b3710f485564de22f6dfd68cce7303e80dd82f7cb31a3359513c5b35c16e43d2"
+        },
+        {
+          "member": "workspace-bench-release-build.log",
+          "original_sha256": "86559c1b642e080ae2d6616f39a6a1c6d9100a208f19385cec2e252496c60ef8",
+          "redacted_sha256": "a71dd13eb35f49268f8b77b784afefc3886e3cd7e4163a0bf0bd3a38778b72d7"
+        }
+      ]
+    }
+  ]
+}

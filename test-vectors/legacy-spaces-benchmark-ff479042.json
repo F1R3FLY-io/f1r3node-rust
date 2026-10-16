@@ -1,0 +1,40 @@
+{
+  "source_revision": "ff479042964a123bf6a084439b3c026881ad19a5",
+  "source_file": "rholang/benches/spaces_benchmark.rs",
+  "source_file_sha256": "550c6961742c6d82d851fee01523a176a4622965616f6eddc8c527b4148daf65",
+  "group_coverage": {
+    "present": ["Bag", "Set", "Queue", "Stack", "VectorDB"],
+    "absent": {
+      "Cell": "The pinned spaces_benchmark.rs source has no Cell import or benchmark case.",
+      "PriorityQueue": "The pinned spaces_benchmark.rs source has no PriorityQueue import or benchmark case."
+    },
+    "evidence": "git show ff479042964a123bf6a084439b3c026881ad19a5:rholang/benches/spaces_benchmark.rs"
+  },
+  "toolchain": {
+    "rustc": "rustc 1.91.0-nightly (f34ba774c 2025-08-03)",
+    "cargo": "cargo 1.91.0-nightly (840b83a10 2025-07-30)"
+  },
+  "run": {
+    "command": "cargo +nightly-2025-08-04 bench --manifest-path target/verification/reified-rspaces/legacy-benchmark-checkout/Cargo.toml -p rholang --bench spaces_benchmark --offline --locked -- --warm-up-time 3 --measurement-time 5 --sample-size 100",
+    "exit_code": 0,
+    "cpu_affinity": [0, 1],
+    "cpu_governor": "performance",
+    "pre_run_idle_percent": [90.68, 94.2],
+    "cpu_model": "AMD Ryzen Threadripper PRO 5975WX 32-Cores",
+    "cargo_build_jobs": 2,
+    "incremental_compilation": false,
+    "memory_limit_bytes": 17179869184,
+    "sampled_memory_peak_bytes": 2661621760,
+    "case_count": 92,
+    "samples_per_case": 100,
+    "total_samples": 9200
+  },
+  "archive": {
+    "path": "test-vectors/legacy-spaces-benchmark-ff479042.tar.gz",
+    "sha256": "bb707ec6c08a74c9f4421bfd616c87a9ef5d84230388013e9854d4442ebab5cf",
+    "contents": "Criterion raw samples, estimates, reports, run log, CPU sample, memory sample, source pin",
+    "run_log_sha256": "77e29a07fec6e090021821f3b821f6a3e3edfcc3953c3c23fe109fcf1345618a",
+    "pre_run_idle_path": "test-vectors/legacy-spaces-benchmark-ff479042-idle.log",
+    "pre_run_idle_sha256": "2add641e0212fa5752ffc4515499fd97611a71126afd9e3171c92933644579aa"
+  }
+}

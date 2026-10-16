@@ -1,0 +1,149 @@
+{
+  "version": 1,
+  "sources": {
+    "legacy_pre_feature": {
+      "repository": "../f1r3node",
+      "revision": "95be4feb6b3594333b1675c6231d7b2bcffd51a6"
+    },
+    "legacy_reified": {
+      "repository": "../f1r3node",
+      "revision": "ff479042964a123bf6a084439b3c026881ad19a5"
+    },
+    "cost_base": {
+      "repository": "../f1r3node-rust",
+      "revision": "068d51c650fa93fbb6cc2a09ddd9af3dff2c126a"
+    },
+    "parser_dependency": {
+      "repository": "https://github.com/F1R3FLY-io/rholang-rs",
+      "revision": "02cef80d32214ecdac3ee7d3b91c3786a34174d5"
+    },
+    "metta_compiler": {
+      "repository": "../MeTTa-Compiler",
+      "revision": "5b2635dc7510e90b0a7ea7a0666027a07de60d84"
+    },
+    "legacy_bridge_node": {
+      "repository": "../f1r3node-mettatron",
+      "revision": "0843a735e21cf4e1385d406e85956dfd956099d0"
+    },
+    "legacy_bridge_compiler": {
+      "repository": "../MeTTa-Compiler",
+      "revision": "e8103a38854efc94dc00f1ee1ebc5c3f02d4347d"
+    },
+    "legacy_bridge_mork": {
+      "repository": "../MORK",
+      "revision": "2ba43a60cb809045948b7d7b1404ab158de987d7"
+    },
+    "legacy_bridge_pathmap": {
+      "repository": "../PathMap",
+      "revision": "3063c112eb2b59cce4578d0d11540a5e41dbb200"
+    }
+  },
+  "inputs": {
+    "symbol_format": "One ASCII symbol per line: atom000001 through atom100000, inclusive.",
+    "atoms_10000": {
+      "path": "test-vectors/benchmarks/atoms-10000.metta",
+      "count": 10000,
+      "bytes": 110000,
+      "sha256": "5384f9edad0d46654e824be6c2b95ba5e7c48eaffd25652c4391b1921ba69ad6"
+    },
+    "atoms_100000": {
+      "path": "test-vectors/benchmarks/atoms-100000.metta",
+      "count": 100000,
+      "bytes": 1100000,
+      "sha256": "8018affec3a2e55d630fd29c05a95d1a86b806006cb6c65bc89726a02417e7a0"
+    }
+  },
+  "execution": {
+    "worktree": ".",
+    "scratch_root": "target/verification/reified-rspaces",
+    "cpu_affinity": [0, 1],
+    "minimum_pre_run_idle_percent_per_cpu": 90,
+    "pre_run_idle_sample_seconds": 5,
+    "cpu_governor": "performance",
+    "memory_limit_bytes": 17179869184,
+    "cargo_build_jobs": 2,
+    "cargo_incremental": false,
+    "cargo_offline": true,
+    "cargo_locked": true,
+    "criterion_warmup_seconds": 3,
+    "criterion_measurement_seconds": 5,
+    "criterion_sample_size": 100,
+    "raw_samples_required": true,
+    "log_sha256_required": true,
+    "peak_rss_required": true,
+    "build_cleanup_required": true,
+    "idle_check_command": "mpstat -P 0,1 1 5",
+    "governor_check_command": "cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor /sys/devices/system/cpu/cpu1/cpufreq/scaling_governor",
+    "affinity_command": "taskset -c 0,1",
+    "memory_limit_command": "systemd-run --user --scope -p MemoryMax=16G",
+    "peak_rss_command": "/usr/bin/time -v",
+    "host_cpu_architecture": "x86_64",
+    "legacy_rustc_version": "rustc 1.91.0-nightly (f34ba774c 2025-08-03)",
+    "legacy_cargo_version": "cargo 1.91.0-nightly (840b83a10 2025-07-30)",
+    "cost_base_rustc_version": "rustc 1.95.0-nightly (6efa357bf 2026-02-08)",
+    "cost_base_cargo_version": "cargo 1.95.0-nightly (fe2f314ae 2026-01-30)",
+    "source_revision_command": "git -C target/verification/reified-rspaces/<checkout> rev-parse HEAD",
+    "observed_cpu_governors": ["performance", "performance"]
+  },
+  "case_groups": [
+    "par_clone",
+    "protobuf_codec",
+    "bincode_codec",
+    "spatial_matcher",
+    "rspace_produce_read_consume_checkpoint",
+    "lmdb_read_write",
+    "metta_bridge_round_trip"
+  ],
+  "case_inputs": {
+    "model_codec": "One Par with 10000 or 100000 GString expressions from the fixed symbol files.",
+    "lmdb": "One LMDB store with 10000 or 100000 symbol key/value rows. Read and replace the midpoint key.",
+    "rspace": "Use an empty RSpace for produce. Use one persistent channel for 10000 or 100000 symbol data for read and consume. Use distinct channels for full checkpoint.",
+    "legacy_metta_bridge": "One accumulated Environment with 10000 or 100000 symbols. Run one compiled atom000001 expression.",
+    "legacy_spaces": "Use every fixture and case in the pinned legacy spaces_benchmark.rs source."
+  },
+  "legacy_spaces_harness": {
+    "source_revision": "ff479042964a123bf6a084439b3c026881ad19a5",
+    "source": "rholang/benches/spaces_benchmark.rs",
+    "sha256": "550c6961742c6d82d851fee01523a176a4622965616f6eddc8c527b4148daf65",
+    "command": "cargo +nightly-2025-08-04 bench --manifest-path target/verification/reified-rspaces/legacy-benchmark-checkout/Cargo.toml -p rholang --bench spaces_benchmark --offline --locked -- --warm-up-time 3 --measurement-time 5 --sample-size 100",
+    "archive": "test-vectors/legacy-spaces-benchmark-ff479042.tar.gz",
+    "archive_sha256": "bb707ec6c08a74c9f4421bfd616c87a9ef5d84230388013e9854d4442ebab5cf",
+    "pre_run_idle": "test-vectors/legacy-spaces-benchmark-ff479042-idle.log",
+    "pre_run_idle_sha256": "2add641e0212fa5752ffc4515499fd97611a71126afd9e3171c92933644579aa"
+  },
+  "model_codec_harness": {
+    "source": "rholang/benches/reified_model_codec.rs",
+    "sha256": "6c725ee707781f08f926f9df260193887af04dda7f058a03165dc43db1a98973",
+    "toolchain": "nightly-2026-02-09",
+    "preparation_command": "python3 scripts/bench/prepare-reified-model-bench.py cost_base",
+    "cost_base_command": "cargo +nightly-2026-02-09 bench --manifest-path target/verification/reified-rspaces/cost_base-bench-checkout/Cargo.toml -p rholang --bench reified_model_codec --offline --locked -- --warm-up-time 3 --measurement-time 5 --sample-size 100"
+  },
+  "lmdb_harness": {
+    "source": "rholang/benches/reified_lmdb.rs",
+    "sha256": "7457f979de1440a81bd22eb01fb432ad945e3647adf1594b6d23d76aabe51c96",
+    "toolchain": "nightly-2026-02-09",
+    "scratch_environment": "RRS_BENCH_SCRATCH=$PWD/target/verification/reified-rspaces/lmdb-scratch",
+    "cost_base_command": "cargo +nightly-2026-02-09 bench --manifest-path target/verification/reified-rspaces/cost_base-bench-checkout/Cargo.toml -p rholang --bench reified_lmdb --offline --locked -- --warm-up-time 3 --measurement-time 5 --sample-size 100"
+  },
+  "rspace_harness": {
+    "source": "rholang/benches/reified_rspace_ops.rs",
+    "sha256": "291f4a9bf44e0b0e88d2b01ea78750cac36b0582871319f3d9c71de04112a61e",
+    "cost_base_prepared_sha256": "6a567d46d2bc573e3ce87d94e13a34890987308e54afd3b6e65a819e2f2db2f4",
+    "cost_base_api_transform": "Remove the priority argument from two produce calls for the pinned three-argument API.",
+    "toolchain": "nightly-2026-02-09",
+    "cost_base_command": "cargo +nightly-2026-02-09 bench --manifest-path target/verification/reified-rspaces/cost_base-bench-checkout/Cargo.toml -p rholang --bench reified_rspace_ops --offline --locked -- --warm-up-time 3 --measurement-time 5 --sample-size 100"
+  },
+  "legacy_metta_bridge_harness": {
+    "source": "scripts/bench/legacy_metta_bridge.rs",
+    "sha256": "b50a12eaab80bc23737117082f0fb571b6599ce9294bf4ba7f2331adc44edefc",
+    "toolchain": "nightly-2025-08-04",
+    "preparation_command": "python3 scripts/bench/prepare-legacy-metta-bridge.py",
+    "node_lock_source": "test-vectors/benchmarks/legacy-bridge-node-Cargo.lock",
+    "node_lock_sha256": "a627865cf1c5ac922a0734668060fefdcc6380018ed817f774fcb3a5aa04ec1d",
+    "compiler_lock_source": "test-vectors/benchmarks/legacy-bridge-compiler-Cargo.lock",
+    "compiler_lock_sha256": "5b6ced5765df09b9b0bfc0fa19760cb652baa10ccf46c80b3b697f18c04b4af9",
+    "scratch_environment": "TMPDIR=$PWD/target/verification/reified-rspaces/tmp",
+    "input_environment": "RRS_BENCH_INPUT_ROOT=$PWD/test-vectors/benchmarks",
+    "command": "cargo +nightly-2025-08-04 bench --manifest-path target/verification/reified-rspaces/legacy-bridge-checkout/MeTTa-Compiler/Cargo.toml -p mettatron --bench legacy_metta_bridge --offline --locked -- --warm-up-time 3 --measurement-time 5 --sample-size 100"
+  }
+}

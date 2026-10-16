@@ -1,0 +1,250 @@
+{
+  "source_revision": "068d51c650fa93fbb6cc2a09ddd9af3dff2c126a",
+  "toolchain": "rustc 1.95.0-nightly (6efa357bf 2026-02-08)",
+  "cpu_affinity": [
+    0,
+    1
+  ],
+  "cpu_governor": "performance",
+  "memory_limit_bytes": 17179869184,
+  "input_sha256": {
+    "10000": "5384f9edad0d46654e824be6c2b95ba5e7c48eaffd25652c4391b1921ba69ad6",
+    "100000": "8018affec3a2e55d630fd29c05a95d1a86b806006cb6c65bc89726a02417e7a0"
+  },
+  "harness_sha256": {
+    "model_codec": "6c725ee707781f08f926f9df260193887af04dda7f058a03165dc43db1a98973",
+    "lmdb": "7457f979de1440a81bd22eb01fb432ad945e3647adf1594b6d23d76aabe51c96",
+    "rspace_source": "291f4a9bf44e0b0e88d2b01ea78750cac36b0582871319f3d9c71de04112a61e",
+    "rspace_prepared": "6a567d46d2bc573e3ce87d94e13a34890987308e54afd3b6e65a819e2f2db2f4"
+  },
+  "commands": {
+    "model": "cargo +nightly-2026-02-09 bench --manifest-path target/verification/reified-rspaces/cost_base-bench-checkout/Cargo.toml -p rholang --bench reified_model_codec --offline --locked -- --warm-up-time 3 --measurement-time 5 --sample-size 100",
+    "lmdb": "cargo +nightly-2026-02-09 bench --manifest-path target/verification/reified-rspaces/cost_base-bench-checkout/Cargo.toml -p rholang --bench reified_lmdb --offline --locked -- --warm-up-time 3 --measurement-time 5 --sample-size 100",
+    "rspace": "cargo +nightly-2026-02-09 bench --manifest-path target/verification/reified-rspaces/cost_base-bench-checkout/Cargo.toml -p rholang --bench reified_rspace_ops --offline --locked -- --warm-up-time 3 --measurement-time 5 --sample-size 100"
+  },
+  "runs": {
+    "model": {
+      "exit_code": 0,
+      "run_log_sha256": "516f392dd7670de9f9e1727a116306e86bcab1fc890a0249a0bf4b7c93fd63d9",
+      "idle_log_sha256": "564651069d50e8084c9dd1482ab957939165c20711ad0eefe8b38b40cbb6e013",
+      "pre_run_idle_percent_by_cpu": {
+        "0": 92.28,
+        "1": 95.27
+      },
+      "time_max_rss_kib": 233232
+    },
+    "lmdb": {
+      "exit_code": 0,
+      "run_log_sha256": "3b58527b5005b5fd9cc81fe22406961ef8c75d4c35dea3fe88d8e95cc12d7848",
+      "idle_log_sha256": "a599d7ecda96813a8e04709a72b99b5bd8bc551bfd3acd47eabeed528a38e21d",
+      "pre_run_idle_percent_by_cpu": {
+        "0": 91.11,
+        "1": 94.07
+      },
+      "time_max_rss_kib": 119288
+    },
+    "rspace": {
+      "exit_code": 0,
+      "run_log_sha256": "1ff0152a94bd2cbcb833c7b915b7753ac0d9509287b292b424d04f2943fff938",
+      "idle_log_sha256": "8158e7a3ffbc14243180ce7af9e63328c5ac08aef7fb3dc5932cb42a553ce2c7",
+      "pre_run_idle_percent_by_cpu": {
+        "0": 90.67,
+        "1": 93.27
+      },
+      "time_max_rss_kib": 748356
+    }
+  },
+  "archives": {
+    "model_lmdb": {
+      "path": "test-vectors/cost-base-model-lmdb-068d.tar.gz",
+      "sha256": "59a7f2f9a88ba840f3c387711e0d66ff3bdba2f3c9cfe5c4ebde23599c774464",
+      "cases": 16,
+      "raw_samples": 1600
+    },
+    "rspace": {
+      "path": "test-vectors/cost-base-rspace-068d.tar.gz",
+      "sha256": "a2bb55cf5ea33963ebf255b0b95105451bd17ac7dee5bce66875403907692237",
+      "cases": 7,
+      "raw_samples": 700
+    }
+  },
+  "cases": [
+    {
+      "name": "bincode_codec/decode/10000",
+      "raw_sample_path": "bincode_codec/decode/10000/new/sample.json",
+      "sample_count": 100,
+      "mean_ns": 765569.3460057625,
+      "median_ns": 744080.0329545455
+    },
+    {
+      "name": "bincode_codec/decode/100000",
+      "raw_sample_path": "bincode_codec/decode/100000/new/sample.json",
+      "sample_count": 100,
+      "mean_ns": 39693215.67,
+      "median_ns": 35462314.5
+    },
+    {
+      "name": "bincode_codec/encode/10000",
+      "raw_sample_path": "bincode_codec/encode/10000/new/sample.json",
+      "sample_count": 100,
+      "mean_ns": 108396.89626898764,
+      "median_ns": 105714.4056680162
+    },
+    {
+      "name": "bincode_codec/encode/100000",
+      "raw_sample_path": "bincode_codec/encode/100000/new/sample.json",
+      "sample_count": 100,
+      "mean_ns": 1100141.6742886794,
+      "median_ns": 1076358.4554052087
+    },
+    {
+      "name": "lmdb_key_value/read/10000",
+      "raw_sample_path": "lmdb_key_value/read/10000/new/sample.json",
+      "sample_count": 100,
+      "mean_ns": 271.47339730359704,
+      "median_ns": 257.32409313659315
+    },
+    {
+      "name": "lmdb_key_value/read/100000",
+      "raw_sample_path": "lmdb_key_value/read/100000/new/sample.json",
+      "sample_count": 100,
+      "mean_ns": 311.0889288680473,
+      "median_ns": 300.19522852030127
+    },
+    {
+      "name": "lmdb_key_value/write/10000",
+      "raw_sample_path": "lmdb_key_value/write/10000/new/sample.json",
+      "sample_count": 100,
+      "mean_ns": 51030.39094288013,
+      "median_ns": 50454.61328125
+    },
+    {
+      "name": "lmdb_key_value/write/100000",
+      "raw_sample_path": "lmdb_key_value/write/100000/new/sample.json",
+      "sample_count": 100,
+      "mean_ns": 53243.32656733347,
+      "median_ns": 52439.81115390101
+    },
+    {
+      "name": "par_clone/10000",
+      "raw_sample_path": "par_clone/10000/new/sample.json",
+      "sample_count": 100,
+      "mean_ns": 601504.4215603089,
+      "median_ns": 585187.4593764761
+    },
+    {
+      "name": "par_clone/100000",
+      "raw_sample_path": "par_clone/100000/new/sample.json",
+      "sample_count": 100,
+      "mean_ns": 19435907.219999995,
+      "median_ns": 15186681.6
+    },
+    {
+      "name": "par_sort_matcher/10000",
+      "raw_sample_path": "par_sort_matcher/10000/new/sample.json",
+      "sample_count": 100,
+      "mean_ns": 1930777.7116,
+      "median_ns": 1816243.74
+    },
+    {
+      "name": "par_sort_matcher/100000",
+      "raw_sample_path": "par_sort_matcher/100000/new/sample.json",
+      "sample_count": 100,
+      "mean_ns": 79602526.05,
+      "median_ns": 84395187.0
+    },
+    {
+      "name": "protobuf_codec/decode/10000",
+      "raw_sample_path": "protobuf_codec/decode/10000/new/sample.json",
+      "sample_count": 100,
+      "mean_ns": 730877.266347801,
+      "median_ns": 718256.5208333333
+    },
+    {
+      "name": "protobuf_codec/decode/100000",
+      "raw_sample_path": "protobuf_codec/decode/100000/new/sample.json",
+      "sample_count": 100,
+      "mean_ns": 31563336.465,
+      "median_ns": 31508498.5
+    },
+    {
+      "name": "protobuf_codec/encode/10000",
+      "raw_sample_path": "protobuf_codec/encode/10000/new/sample.json",
+      "sample_count": 100,
+      "mean_ns": 183711.48472262642,
+      "median_ns": 176561.5852272727
+    },
+    {
+      "name": "protobuf_codec/encode/100000",
+      "raw_sample_path": "protobuf_codec/encode/100000/new/sample.json",
+      "sample_count": 100,
+      "mean_ns": 1908719.9999503193,
+      "median_ns": 1808712.2855093256
+    },
+    {
+      "name": "rspace_consume_persistent/10000",
+      "raw_sample_path": "rspace_consume_persistent/10000/new/sample.json",
+      "sample_count": 100,
+      "mean_ns": 73044611.85,
+      "median_ns": 72602703.0
+    },
+    {
+      "name": "rspace_consume_persistent/100000",
+      "raw_sample_path": "rspace_consume_persistent/100000/new/sample.json",
+      "sample_count": 100,
+      "mean_ns": 1068664009.37,
+      "median_ns": 1046941522.0
+    },
+    {
+      "name": "rspace_full_checkpoint/10000",
+      "raw_sample_path": "rspace_full_checkpoint/10000/new/sample.json",
+      "sample_count": 100,
+      "mean_ns": 43596576.36,
+      "median_ns": 42366649.5
+    },
+    {
+      "name": "rspace_full_checkpoint/100000",
+      "raw_sample_path": "rspace_full_checkpoint/100000/new/sample.json",
+      "sample_count": 100,
+      "mean_ns": 639987292.47,
+      "median_ns": 635516476.5
+    },
+    {
+      "name": "rspace_get_data/10000",
+      "raw_sample_path": "rspace_get_data/10000/new/sample.json",
+      "sample_count": 100,
+      "mean_ns": 811044.3776830252,
+      "median_ns": 800773.4181469871
+    },
+    {
+      "name": "rspace_get_data/100000",
+      "raw_sample_path": "rspace_get_data/100000/new/sample.json",
+      "sample_count": 100,
+      "mean_ns": 9954646.924999995,
+      "median_ns": 9789887.083333332
+    },
+    {
+      "name": "rspace_produce_empty/one_datum",
+      "raw_sample_path": "rspace_produce_empty/one_datum/new/sample.json",
+      "sample_count": 100,
+      "mean_ns": 119419.71128801654,
+      "median_ns": 116480.16738696808
+    }
+  ],
+  "shape_coverage": {
+    "measured": [
+      "wide flat Par",
+      "shared symbol prefix",
+      "ordered Par expression sequence"
+    ],
+    "unsupported": [
+      "deep nested Par",
+      "duplicate-heavy Par",
+      "stable-tie sorter"
+    ],
+    "source_evidence": [
+      "rholang/benches/reified_model_codec.rs",
+      "rholang/benches/reified_rspace_ops.rs"
+    ]
+  }
+}

@@ -1,0 +1,3582 @@
+{
+  "schema": "reified-rspaces-bench-contract/1",
+  "note": "The result, phlo, root and host work of the measured deploy of each benchmark case (P10 step S8). Every benchmark run checks its cases against this file.",
+  "cases": {
+    "commit/bag/10": {
+      "result": [],
+      "phlo": 14512,
+      "root": "e4b321d2a74b39fbf60d2d9a07e2188263e2b9b902093692303d708e3398520a",
+      "host_work": {
+        "AuthorityDepth": 28,
+        "AuthorityNodes": 30,
+        "PrimitiveCalls": 13,
+        "PrimitiveInputBytes": 166,
+        "ReductionSteps": 15,
+        "ReductionTermBytes": 1598,
+        "SearchStateBytes": 1289175,
+        "StructuralBytes": 1539,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 29,
+        "SubstitutionBytes": 823,
+        "VerificationBytes": 20500537,
+        "VerificationOperations": 609280
+      }
+    },
+    "commit/priorityqueue/10": {
+      "result": [],
+      "phlo": 49065,
+      "root": "011996386b36df6582006c36e63c0dc7f7c8fd85a2de6ffa3e3cedd035b9ccb6",
+      "host_work": {
+        "AuthorityDepth": 90,
+        "AuthorityNodes": 112,
+        "PrimitiveCalls": 43,
+        "PrimitiveInputBytes": 936,
+        "ReductionSteps": 15,
+        "ReductionTermBytes": 3718,
+        "SearchStateBytes": 4009585,
+        "StructuralBytes": 4157,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 39,
+        "SubstitutionBytes": 1863,
+        "VerificationBytes": 43342685,
+        "VerificationOperations": 1452400
+      }
+    },
+    "commit/queue/10": {
+      "result": [],
+      "phlo": 48495,
+      "root": "d9e90af990c7b8edc9c778b6143f10ced35336edf2a06cbe497e9bbc969cab2c",
+      "host_work": {
+        "AuthorityDepth": 90,
+        "AuthorityNodes": 112,
+        "PrimitiveCalls": 13,
+        "PrimitiveInputBytes": 166,
+        "ReductionSteps": 15,
+        "ReductionTermBytes": 1598,
+        "SearchStateBytes": 3902677,
+        "StructuralBytes": 3507,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 29,
+        "SubstitutionBytes": 823,
+        "VerificationBytes": 40002917,
+        "VerificationOperations": 1388641
+      }
+    },
+    "commit/set/10": {
+      "result": [],
+      "phlo": 14512,
+      "root": "6a9a242991fdf7205621c9e0871d79ef0fbd5cfe4fb2b527177e10a62355ea4f",
+      "host_work": {
+        "AuthorityDepth": 28,
+        "AuthorityNodes": 30,
+        "PrimitiveCalls": 13,
+        "PrimitiveInputBytes": 166,
+        "ReductionSteps": 15,
+        "ReductionTermBytes": 1598,
+        "SearchStateBytes": 1319155,
+        "StructuralBytes": 1539,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 29,
+        "SubstitutionBytes": 823,
+        "VerificationBytes": 20627061,
+        "VerificationOperations": 611282
+      }
+    },
+    "commit/stack/10": {
+      "result": [],
+      "phlo": 48495,
+      "root": "82297656092899c4b0f62c8bc5be70929eef8a9ac8b77c5a2f98fd62bd58b883",
+      "host_work": {
+        "AuthorityDepth": 90,
+        "AuthorityNodes": 112,
+        "PrimitiveCalls": 13,
+        "PrimitiveInputBytes": 166,
+        "ReductionSteps": 15,
+        "ReductionTermBytes": 1598,
+        "SearchStateBytes": 3954461,
+        "StructuralBytes": 3507,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 29,
+        "SubstitutionBytes": 823,
+        "VerificationBytes": 40164112,
+        "VerificationOperations": 1473194
+      }
+    },
+    "commit/vectordb/10": {
+      "result": [],
+      "phlo": 15302,
+      "root": "4c08553d97dd5d883b381a55a0f4089ada08df61aa7d014e7aed98f4ac5db8c7",
+      "host_work": {
+        "AuthorityDepth": 28,
+        "AuthorityNodes": 30,
+        "PrimitiveCalls": 23,
+        "PrimitiveInputBytes": 436,
+        "ReductionSteps": 15,
+        "ReductionTermBytes": 2598,
+        "SearchStateBytes": 2003089,
+        "StructuralBytes": 1899,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 29,
+        "SubstitutionBytes": 1323,
+        "VerificationBytes": 36337039,
+        "VerificationOperations": 768923
+      }
+    },
+    "concurrency/many_channels/8": {
+      "result": [],
+      "phlo": 12314,
+      "root": "175e730d54e85101e780305e315ba856bb19aeaa10d907c94b2c1a656dca5f36",
+      "host_work": {
+        "AuthorityDepth": 24,
+        "AuthorityNodes": 26,
+        "PrimitiveCalls": 11,
+        "PrimitiveInputBytes": 134,
+        "ReductionSteps": 13,
+        "ReductionTermBytes": 1378,
+        "SearchStateBytes": 860023,
+        "StructuralBytes": 1355,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 25,
+        "SubstitutionBytes": 723,
+        "VerificationBytes": 12908742,
+        "VerificationOperations": 373582
+      }
+    },
+    "concurrency/many_spaces/8": {
+      "result": [],
+      "phlo": 29288,
+      "root": "1d29fb41d4d66c50f8bae0424e1928dd302fe0fec0b7d129be6d5527ba54807e",
+      "host_work": {
+        "AuthorityDepth": 64,
+        "AuthorityNodes": 80,
+        "PrimitiveCalls": 32,
+        "PrimitiveInputBytes": 528,
+        "ReductionSteps": 32,
+        "ReductionTermBytes": 2192,
+        "SearchStateBytes": 1504639,
+        "StructuralBytes": 4077,
+        "StructuralItems": 8,
+        "SubstitutionBindings": 40,
+        "SubstitutionBytes": 2320,
+        "VerificationBytes": 15962322,
+        "VerificationOperations": 635241
+      }
+    },
+    "concurrency/mixed_one_channel/8": {
+      "result": [],
+      "phlo": 15498,
+      "root": "4c1208c8e0ac4b875a28680f99c6919db98142ae9d77ee484483270c4a6ef23b",
+      "host_work": {
+        "AuthorityDepth": 32,
+        "AuthorityNodes": 42,
+        "PrimitiveCalls": 3,
+        "PrimitiveInputBytes": 6,
+        "ReductionSteps": 17,
+        "ReductionTermBytes": 1454,
+        "SearchStateBytes": 1508707,
+        "StructuralBytes": 1719,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 33,
+        "SubstitutionBytes": 787,
+        "VerificationBytes": 18718661,
+        "VerificationOperations": 515950
+      }
+    },
+    "concurrency/one_channel/8": {
+      "result": [],
+      "phlo": 10369,
+      "root": "3c2697ba77113ee9b08eebca371f4b815b424b93824e2b4b3d865e46a96ef62a",
+      "host_work": {
+        "AuthorityDepth": 24,
+        "AuthorityNodes": 26,
+        "PrimitiveCalls": 3,
+        "PrimitiveInputBytes": 6,
+        "ReductionSteps": 13,
+        "ReductionTermBytes": 959,
+        "SearchStateBytes": 977623,
+        "StructuralBytes": 1210,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 25,
+        "SubstitutionBytes": 514,
+        "VerificationBytes": 15492909,
+        "VerificationOperations": 421810
+      }
+    },
+    "factory/hashmap_bag": {
+      "result": [],
+      "phlo": 7144,
+      "root": "498dfe2974e5a76df25c9b44e1eafd369bbccfcf52ee0b03eb98bc8c3715168c",
+      "host_work": {
+        "AuthorityDepth": 18,
+        "AuthorityNodes": 20,
+        "PrimitiveCalls": 4,
+        "PrimitiveInputBytes": 8,
+        "ReductionSteps": 5,
+        "ReductionTermBytes": 489,
+        "SearchStateBytes": 286913,
+        "StructuralBytes": 775,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 14,
+        "SubstitutionBytes": 235,
+        "VerificationBytes": 2039308,
+        "VerificationOperations": 106568
+      }
+    },
+    "factory/hashmap_vectordb": {
+      "result": [],
+      "phlo": 7352,
+      "root": "0097735b7f232575b00b954bd826b37fd3c4592ba7658a5d63be00b99530daf9",
+      "host_work": {
+        "AuthorityDepth": 18,
+        "AuthorityNodes": 20,
+        "PrimitiveCalls": 7,
+        "PrimitiveInputBytes": 135,
+        "ReductionSteps": 5,
+        "ReductionTermBytes": 728,
+        "SearchStateBytes": 295151,
+        "StructuralBytes": 892,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 16,
+        "SubstitutionBytes": 311,
+        "VerificationBytes": 2532744,
+        "VerificationOperations": 109606
+      }
+    },
+    "lmdb_commit/bag/10": {
+      "result": [],
+      "phlo": 12082,
+      "root": "1589cf044fa51c336c04e05baea9c449b59ee564855f7e46185b2902e43608fe",
+      "host_work": {
+        "AuthorityDepth": 28,
+        "AuthorityNodes": 30,
+        "PrimitiveCalls": 3,
+        "PrimitiveInputBytes": 6,
+        "ReductionSteps": 15,
+        "ReductionTermBytes": 1078,
+        "SearchStateBytes": 1236275,
+        "StructuralBytes": 1359,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 29,
+        "SubstitutionBytes": 563,
+        "VerificationBytes": 20243703,
+        "VerificationOperations": 552808
+      }
+    },
+    "matcher/bag_first/10": {
+      "result": [
+        "1"
+      ],
+      "phlo": 8379,
+      "root": "2e3f879a0e5ec5e3fe57a2dcc35b0aa47447ffcc5463c801b4312fe67de2becd",
+      "host_work": {
+        "AuthorityDepth": 18,
+        "AuthorityNodes": 24,
+        "PrimitiveCalls": 5,
+        "PrimitiveInputBytes": 10,
+        "ReductionSteps": 9,
+        "ReductionTermBytes": 1092,
+        "SearchStateBytes": 562906,
+        "StructuralBytes": 1068,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 17,
+        "SubstitutionBytes": 604,
+        "VerificationBytes": 5289635,
+        "VerificationOperations": 205026
+      }
+    },
+    "matcher/bag_first/100": {
+      "result": [
+        "97"
+      ],
+      "phlo": 8385,
+      "root": "4624a8fc8a3199ca7d536566e4ce2965dd4fa877c7acadc3a2157ea95b044d51",
+      "host_work": {
+        "AuthorityDepth": 18,
+        "AuthorityNodes": 24,
+        "PrimitiveCalls": 5,
+        "PrimitiveInputBytes": 10,
+        "ReductionSteps": 9,
+        "ReductionTermBytes": 1092,
+        "SearchStateBytes": 1588954,
+        "StructuralBytes": 1068,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 17,
+        "SubstitutionBytes": 606,
+        "VerificationBytes": 23866251,
+        "VerificationOperations": 818595
+      }
+    },
+    "matcher/bag_first/1000": {
+      "result": [
+        "152"
+      ],
+      "phlo": 8385,
+      "root": "b8e9fcf064fb6c2bc3ff1f02d6d81b2f7262e3694419675306fee9b23ec4b088",
+      "host_work": {
+        "AuthorityDepth": 18,
+        "AuthorityNodes": 24,
+        "PrimitiveCalls": 5,
+        "PrimitiveInputBytes": 10,
+        "ReductionSteps": 9,
+        "ReductionTermBytes": 1092,
+        "SearchStateBytes": 11841242,
+        "StructuralBytes": 1068,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 17,
+        "SubstitutionBytes": 606,
+        "VerificationBytes": 212533883,
+        "VerificationOperations": 6959819
+      }
+    },
+    "matcher/bag_first/10000": {
+      "result": [
+        "error the collection is full at 2667 records"
+      ],
+      "phlo": null,
+      "root": "",
+      "host_work": {}
+    },
+    "matcher/bag_scan_miss/10": {
+      "result": [],
+      "phlo": 4571,
+      "root": "30372fbbbc5ed47d40bfe09791b3ec53ba689eb29b1faa97c9f64f37e98e5bc6",
+      "host_work": {
+        "AuthorityDepth": 10,
+        "AuthorityNodes": 12,
+        "PrimitiveCalls": 3,
+        "PrimitiveInputBytes": 6,
+        "ReductionSteps": 6,
+        "ReductionTermBytes": 795,
+        "SearchStateBytes": 351422,
+        "StructuralBytes": 770,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 12,
+        "SubstitutionBytes": 456,
+        "VerificationBytes": 4330802,
+        "VerificationOperations": 143260
+      }
+    },
+    "matcher/bag_scan_miss/100": {
+      "result": [],
+      "phlo": 4571,
+      "root": "731aceca7c67c07301bc53cd2f731fb120643a564ab028b07968082ecd44c81d",
+      "host_work": {
+        "AuthorityDepth": 10,
+        "AuthorityNodes": 12,
+        "PrimitiveCalls": 3,
+        "PrimitiveInputBytes": 6,
+        "ReductionSteps": 6,
+        "ReductionTermBytes": 795,
+        "SearchStateBytes": 1658966,
+        "StructuralBytes": 770,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 12,
+        "SubstitutionBytes": 456,
+        "VerificationBytes": 24533474,
+        "VerificationOperations": 791726
+      }
+    },
+    "matcher/bag_scan_miss/1000": {
+      "result": [],
+      "phlo": 4571,
+      "root": "4b33dcd7076adf3d6a62754a45ce6a417c6c9e1aef6b1355b940f502e8c60d66",
+      "host_work": {
+        "AuthorityDepth": 10,
+        "AuthorityNodes": 12,
+        "PrimitiveCalls": 3,
+        "PrimitiveInputBytes": 6,
+        "ReductionSteps": 6,
+        "ReductionTermBytes": 795,
+        "SearchStateBytes": 14730310,
+        "StructuralBytes": 770,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 12,
+        "SubstitutionBytes": 456,
+        "VerificationBytes": 229487985,
+        "VerificationOperations": 7282127
+      }
+    },
+    "matcher/bag_scan_miss/10000": {
+      "result": [
+        "error the collection is full at 2667 records"
+      ],
+      "phlo": null,
+      "root": "",
+      "host_work": {}
+    },
+    "matcher/join_two/10": {
+      "result": [
+        "[9, 6]"
+      ],
+      "phlo": 11149,
+      "root": "166a3a77dcc9bde598da027f15934dd9484c5927ff363a0de470f5190b57713c",
+      "host_work": {
+        "AuthorityDepth": 18,
+        "AuthorityNodes": 26,
+        "PrimitiveCalls": 8,
+        "PrimitiveInputBytes": 63,
+        "ReductionSteps": 9,
+        "ReductionTermBytes": 1396,
+        "SearchStateBytes": 825264,
+        "StructuralBytes": 1195,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 22,
+        "SubstitutionBytes": 742,
+        "VerificationBytes": 8621329,
+        "VerificationOperations": 317031
+      }
+    },
+    "matcher/join_two/100": {
+      "result": [
+        "[25, 36]"
+      ],
+      "phlo": 11149,
+      "root": "583f58b56eeefba1f5a2cf6094ab6dc5fe843d3f2866a45824e3e96b30be2a8f",
+      "host_work": {
+        "AuthorityDepth": 18,
+        "AuthorityNodes": 26,
+        "PrimitiveCalls": 8,
+        "PrimitiveInputBytes": 63,
+        "ReductionSteps": 9,
+        "ReductionTermBytes": 1396,
+        "SearchStateBytes": 2883120,
+        "StructuralBytes": 1195,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 22,
+        "SubstitutionBytes": 742,
+        "VerificationBytes": 45761539,
+        "VerificationOperations": 1544319
+      }
+    },
+    "matcher/join_two/1000": {
+      "result": [
+        "error HostWorkRejected"
+      ],
+      "phlo": null,
+      "root": "a249ec977d2a7d012833708cd220790db66919daf648c6fce25a5f305d09444b",
+      "host_work": {
+        "AuthorityDepth": 8,
+        "AuthorityNodes": 10,
+        "PrimitiveCalls": 3,
+        "PrimitiveInputBytes": 6,
+        "ReductionSteps": 6,
+        "ReductionTermBytes": 1102,
+        "SearchStateBytes": 17392009,
+        "StructuralBytes": 811,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 14,
+        "SubstitutionBytes": 596,
+        "VerificationBytes": 268434908,
+        "VerificationOperations": 8521695
+      }
+    },
+    "matcher/join_two/10000": {
+      "result": [
+        "error the collection is full at 5334 records"
+      ],
+      "phlo": null,
+      "root": "",
+      "host_work": {}
+    },
+    "matcher/queue_head/10": {
+      "result": [
+        "0"
+      ],
+      "phlo": 11280,
+      "root": "b0d59d94e1732a228586b506495f7b68973aa3f46331d2b5a43e4b713348d4eb",
+      "host_work": {
+        "AuthorityDepth": 24,
+        "AuthorityNodes": 32,
+        "PrimitiveCalls": 5,
+        "PrimitiveInputBytes": 10,
+        "ReductionSteps": 9,
+        "ReductionTermBytes": 1092,
+        "SearchStateBytes": 819081,
+        "StructuralBytes": 1260,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 17,
+        "SubstitutionBytes": 604,
+        "VerificationBytes": 7495202,
+        "VerificationOperations": 275190
+      }
+    },
+    "matcher/queue_head/100": {
+      "result": [
+        "0"
+      ],
+      "phlo": 11285,
+      "root": "ce49ff01be8d3ab5bbcfd4aa881c73c0b78ab5174e147cd8b932c9dd1d412df2",
+      "host_work": {
+        "AuthorityDepth": 24,
+        "AuthorityNodes": 32,
+        "PrimitiveCalls": 5,
+        "PrimitiveInputBytes": 10,
+        "ReductionSteps": 9,
+        "ReductionTermBytes": 1092,
+        "SearchStateBytes": 1873209,
+        "StructuralBytes": 1260,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 17,
+        "SubstitutionBytes": 604,
+        "VerificationBytes": 28343006,
+        "VerificationOperations": 915032
+      }
+    },
+    "matcher/queue_head/1000": {
+      "result": [
+        "0"
+      ],
+      "phlo": 11285,
+      "root": "9a06a63d7d7e02646a48da649d6f4d0b386e7be8009434ecb045a6b1a7915832",
+      "host_work": {
+        "AuthorityDepth": 24,
+        "AuthorityNodes": 32,
+        "PrimitiveCalls": 5,
+        "PrimitiveInputBytes": 10,
+        "ReductionSteps": 9,
+        "ReductionTermBytes": 1092,
+        "SearchStateBytes": 12406297,
+        "StructuralBytes": 1260,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 17,
+        "SubstitutionBytes": 604,
+        "VerificationBytes": 236816983,
+        "VerificationOperations": 7313132
+      }
+    },
+    "matcher/queue_head/10000": {
+      "result": [
+        "error the collection is full at 2648 records"
+      ],
+      "phlo": null,
+      "root": "",
+      "host_work": {}
+    },
+    "matcher/send_fires_waiter/10": {
+      "result": [],
+      "phlo": 5564,
+      "root": "257edd1c4cf705651349f29c51e60322a88c47fa070f78f314573b4ba961021d",
+      "host_work": {
+        "AuthorityDepth": 12,
+        "AuthorityNodes": 16,
+        "PrimitiveCalls": 3,
+        "PrimitiveInputBytes": 6,
+        "ReductionSteps": 7,
+        "ReductionTermBytes": 609,
+        "SearchStateBytes": 546823,
+        "StructuralBytes": 785,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 12,
+        "SubstitutionBytes": 390,
+        "VerificationBytes": 6097880,
+        "VerificationOperations": 191084
+      }
+    },
+    "matcher/send_fires_waiter/100": {
+      "result": [],
+      "phlo": 5564,
+      "root": "5a2aa051605983fe79916f855579393a9e3acaec33c2586950b2b5a38ed1fb4b",
+      "host_work": {
+        "AuthorityDepth": 12,
+        "AuthorityNodes": 16,
+        "PrimitiveCalls": 3,
+        "PrimitiveInputBytes": 6,
+        "ReductionSteps": 7,
+        "ReductionTermBytes": 609,
+        "SearchStateBytes": 2307223,
+        "StructuralBytes": 785,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 12,
+        "SubstitutionBytes": 390,
+        "VerificationBytes": 35864408,
+        "VerificationOperations": 941045
+      }
+    },
+    "matcher/send_fires_waiter/1000": {
+      "result": [
+        "error HostWorkRejected"
+      ],
+      "phlo": null,
+      "root": "f83d41a12334c128cebfa4fd83fd1b8580a121c6490823a34217fd20d266a158",
+      "host_work": {
+        "AuthorityDepth": 8,
+        "AuthorityNodes": 10,
+        "PrimitiveCalls": 3,
+        "PrimitiveInputBytes": 6,
+        "ReductionSteps": 6,
+        "ReductionTermBytes": 546,
+        "SearchStateBytes": 15647681,
+        "StructuralBytes": 641,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 11,
+        "SubstitutionBytes": 344,
+        "VerificationBytes": 268435422,
+        "VerificationOperations": 6408928
+      }
+    },
+    "matcher/send_fires_waiter/10000": {
+      "result": [
+        "error the collection is full at 1726 records"
+      ],
+      "phlo": null,
+      "root": "",
+      "host_work": {}
+    },
+    "merge/bag_two_branches/10": {
+      "result": [],
+      "phlo": null,
+      "root": "f74cb026c832dcaf57fe04959834358b96b73a02a78be26c7f34ad52c264a0b5",
+      "host_work": {}
+    },
+    "queue_ordering/send_and_drain/1": {
+      "result": [],
+      "phlo": 12919,
+      "root": "e519ec8ffb40692d8b7af51320127c6306e8fc1301b43d383715ccee68557b91",
+      "host_work": {
+        "AuthorityDepth": 31,
+        "AuthorityNodes": 39,
+        "PrimitiveCalls": 3,
+        "PrimitiveInputBytes": 6,
+        "ReductionSteps": 8,
+        "ReductionTermBytes": 735,
+        "SearchStateBytes": 1008922,
+        "StructuralBytes": 1372,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 15,
+        "SubstitutionBytes": 438,
+        "VerificationBytes": 8908585,
+        "VerificationOperations": 306054
+      }
+    },
+    "queue_ordering/send_and_drain/10": {
+      "result": [],
+      "phlo": 57446,
+      "root": "ca2fe84d1274fd88ac7f3dd731a05af079837ef91071b575cab82aa7812b94bb",
+      "host_work": {
+        "AuthorityDepth": 148,
+        "AuthorityNodes": 192,
+        "PrimitiveCalls": 3,
+        "PrimitiveInputBytes": 6,
+        "ReductionSteps": 26,
+        "ReductionTermBytes": 1834,
+        "SearchStateBytes": 6262299,
+        "StructuralBytes": 5066,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 42,
+        "SubstitutionBytes": 1071,
+        "VerificationBytes": 62257327,
+        "VerificationOperations": 2117699
+      }
+    },
+    "queue_ordering/send_and_drain/31": {
+      "result": [],
+      "phlo": 161333,
+      "root": "662cec3be125abaf59855a327f02bc057f2a1e1b1db515c15bbd8f1b5dc93c2c",
+      "host_work": {
+        "AuthorityDepth": 421,
+        "AuthorityNodes": 549,
+        "PrimitiveCalls": 3,
+        "PrimitiveInputBytes": 6,
+        "ReductionSteps": 68,
+        "ReductionTermBytes": 4375,
+        "SearchStateBytes": 22235842,
+        "StructuralBytes": 13697,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 105,
+        "SubstitutionBytes": 2541,
+        "VerificationBytes": 259997336,
+        "VerificationOperations": 8871608
+      }
+    },
+    "queue_ordering/send_and_drain/32": {
+      "result": [
+        "error HostWorkRejected"
+      ],
+      "phlo": null,
+      "root": "7350b30b860fab47c8ae5a81d0b9e09a9388741cf10b93de0719d9ec0a888119",
+      "host_work": {
+        "AuthorityDepth": 429,
+        "AuthorityNodes": 559,
+        "PrimitiveCalls": 3,
+        "PrimitiveInputBytes": 6,
+        "ReductionSteps": 38,
+        "ReductionTermBytes": 2480,
+        "SearchStateBytes": 22623130,
+        "StructuralBytes": 13964,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 76,
+        "SubstitutionBytes": 1139,
+        "VerificationBytes": 268435273,
+        "VerificationOperations": 9160134
+      }
+    },
+    "receive_from_n/bag/10": {
+      "result": [
+        "6"
+      ],
+      "phlo": 8379,
+      "root": "74b8e0ba86c11562e0bc08412f664e35306fee6faee22cc9f153e10562e9106b",
+      "host_work": {
+        "AuthorityDepth": 18,
+        "AuthorityNodes": 24,
+        "PrimitiveCalls": 5,
+        "PrimitiveInputBytes": 10,
+        "ReductionSteps": 9,
+        "ReductionTermBytes": 1092,
+        "SearchStateBytes": 562906,
+        "StructuralBytes": 1068,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 17,
+        "SubstitutionBytes": 604,
+        "VerificationBytes": 5290131,
+        "VerificationOperations": 205027
+      }
+    },
+    "receive_from_n/bag/100": {
+      "result": [
+        "95"
+      ],
+      "phlo": 8385,
+      "root": "e8a63cfea0bfc44b2d09e07b21375abde6e383399ef02a43e58b214f7d4ee1ab",
+      "host_work": {
+        "AuthorityDepth": 18,
+        "AuthorityNodes": 24,
+        "PrimitiveCalls": 5,
+        "PrimitiveInputBytes": 10,
+        "ReductionSteps": 9,
+        "ReductionTermBytes": 1092,
+        "SearchStateBytes": 1588954,
+        "StructuralBytes": 1068,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 17,
+        "SubstitutionBytes": 606,
+        "VerificationBytes": 23866747,
+        "VerificationOperations": 818596
+      }
+    },
+    "receive_from_n/bag/1000": {
+      "result": [
+        "959"
+      ],
+      "phlo": 8385,
+      "root": "e137e9100db6fcb1d4e72af06b948b2131c33048eaa2b81ef5e44591fe65f7b3",
+      "host_work": {
+        "AuthorityDepth": 18,
+        "AuthorityNodes": 24,
+        "PrimitiveCalls": 5,
+        "PrimitiveInputBytes": 10,
+        "ReductionSteps": 9,
+        "ReductionTermBytes": 1092,
+        "SearchStateBytes": 11841242,
+        "StructuralBytes": 1068,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 17,
+        "SubstitutionBytes": 606,
+        "VerificationBytes": 212535867,
+        "VerificationOperations": 6959823
+      }
+    },
+    "receive_from_n/bag/10000": {
+      "result": [
+        "error the collection is full at 2667 records"
+      ],
+      "phlo": null,
+      "root": "",
+      "host_work": {}
+    },
+    "receive_from_n/host/10": {
+      "result": [
+        "2"
+      ],
+      "phlo": 2585,
+      "root": "1afa955db60dfc3e025f513ea6e7b44dde02ca8a56be3f239a9a7bd7bdee8220",
+      "host_work": {
+        "AuthorityDepth": 6,
+        "AuthorityNodes": 8,
+        "PrimitiveCalls": 1,
+        "PrimitiveInputBytes": 2,
+        "ReductionSteps": 2,
+        "ReductionTermBytes": 105,
+        "SearchStateBytes": 95789,
+        "StructuralBytes": 304,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 2,
+        "SubstitutionBytes": 81,
+        "VerificationBytes": 360523,
+        "VerificationOperations": 28257
+      }
+    },
+    "receive_from_n/host/100": {
+      "result": [
+        "72"
+      ],
+      "phlo": 2588,
+      "root": "9f87a508c421b52b7f6b32be89e8b97557e59b397934987560f856867ce273a2",
+      "host_work": {
+        "AuthorityDepth": 6,
+        "AuthorityNodes": 8,
+        "PrimitiveCalls": 1,
+        "PrimitiveInputBytes": 2,
+        "ReductionSteps": 2,
+        "ReductionTermBytes": 105,
+        "SearchStateBytes": 95789,
+        "StructuralBytes": 304,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 2,
+        "SubstitutionBytes": 82,
+        "VerificationBytes": 360523,
+        "VerificationOperations": 28257
+      }
+    },
+    "receive_from_n/host/1000": {
+      "result": [
+        "528"
+      ],
+      "phlo": 2588,
+      "root": "d60a17276428e0a8500038a57ae2fc11c38afab8233c67580d4ffafdf9433197",
+      "host_work": {
+        "AuthorityDepth": 6,
+        "AuthorityNodes": 8,
+        "PrimitiveCalls": 1,
+        "PrimitiveInputBytes": 2,
+        "ReductionSteps": 2,
+        "ReductionTermBytes": 105,
+        "SearchStateBytes": 95789,
+        "StructuralBytes": 304,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 2,
+        "SubstitutionBytes": 82,
+        "VerificationBytes": 360523,
+        "VerificationOperations": 28257
+      }
+    },
+    "receive_from_n/host/10000": {
+      "result": [
+        "4748"
+      ],
+      "phlo": 2588,
+      "root": "214cec0b84e8d8d85756cfa307114543e0e73f6fcfe0eb88236d1f6fe20a9525",
+      "host_work": {
+        "AuthorityDepth": 6,
+        "AuthorityNodes": 8,
+        "PrimitiveCalls": 1,
+        "PrimitiveInputBytes": 2,
+        "ReductionSteps": 2,
+        "ReductionTermBytes": 105,
+        "SearchStateBytes": 95789,
+        "StructuralBytes": 304,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 2,
+        "SubstitutionBytes": 82,
+        "VerificationBytes": 360523,
+        "VerificationOperations": 28257
+      }
+    },
+    "receive_from_n/priorityqueue/10": {
+      "result": [
+        "0"
+      ],
+      "phlo": 11280,
+      "root": "4dc3c28e1aa695362daaddbbde3207414ca5f51f3b4a2476fa7ec83ead08282f",
+      "host_work": {
+        "AuthorityDepth": 24,
+        "AuthorityNodes": 32,
+        "PrimitiveCalls": 5,
+        "PrimitiveInputBytes": 10,
+        "ReductionSteps": 9,
+        "ReductionTermBytes": 1092,
+        "SearchStateBytes": 834365,
+        "StructuralBytes": 1260,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 17,
+        "SubstitutionBytes": 604,
+        "VerificationBytes": 7862222,
+        "VerificationOperations": 278260
+      }
+    },
+    "receive_from_n/priorityqueue/100": {
+      "result": [
+        "0"
+      ],
+      "phlo": 11285,
+      "root": "26b6bef2f3b5379ceecc87c29837e941aa5f348552ecaca2ac689b97ee364850",
+      "host_work": {
+        "AuthorityDepth": 24,
+        "AuthorityNodes": 32,
+        "PrimitiveCalls": 5,
+        "PrimitiveInputBytes": 10,
+        "ReductionSteps": 9,
+        "ReductionTermBytes": 1092,
+        "SearchStateBytes": 1995053,
+        "StructuralBytes": 1260,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 17,
+        "SubstitutionBytes": 604,
+        "VerificationBytes": 31721033,
+        "VerificationOperations": 925298
+      }
+    },
+    "receive_from_n/priorityqueue/1000": {
+      "result": [
+        "error HostWorkRejected"
+      ],
+      "phlo": null,
+      "root": "0490fe84f168c1fc2f57a80f3b4ef6539fa88ac7a260d85361ac94b54c0d25a5",
+      "host_work": {
+        "AuthorityDepth": 14,
+        "AuthorityNodes": 18,
+        "PrimitiveCalls": 3,
+        "PrimitiveInputBytes": 6,
+        "ReductionSteps": 6,
+        "ReductionTermBytes": 864,
+        "SearchStateBytes": 13384690,
+        "StructuralBytes": 924,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 12,
+        "SubstitutionBytes": 486,
+        "VerificationBytes": 268435420,
+        "VerificationOperations": 7292718
+      }
+    },
+    "receive_from_n/priorityqueue/10000": {
+      "result": [
+        "error the collection is full at 1741 records"
+      ],
+      "phlo": null,
+      "root": "",
+      "host_work": {}
+    },
+    "receive_from_n/queue/10": {
+      "result": [
+        "0"
+      ],
+      "phlo": 11280,
+      "root": "be2a27aed14e10210068bc410b191bff76c00d14ea3af441a3368c9c6b5b78aa",
+      "host_work": {
+        "AuthorityDepth": 24,
+        "AuthorityNodes": 32,
+        "PrimitiveCalls": 5,
+        "PrimitiveInputBytes": 10,
+        "ReductionSteps": 9,
+        "ReductionTermBytes": 1092,
+        "SearchStateBytes": 819081,
+        "StructuralBytes": 1260,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 17,
+        "SubstitutionBytes": 604,
+        "VerificationBytes": 7495268,
+        "VerificationOperations": 275198
+      }
+    },
+    "receive_from_n/queue/100": {
+      "result": [
+        "0"
+      ],
+      "phlo": 11285,
+      "root": "becbcabd2cb181a51587c0adbb9804eec05f0fd8f058b53835503cd03393cd0b",
+      "host_work": {
+        "AuthorityDepth": 24,
+        "AuthorityNodes": 32,
+        "PrimitiveCalls": 5,
+        "PrimitiveInputBytes": 10,
+        "ReductionSteps": 9,
+        "ReductionTermBytes": 1092,
+        "SearchStateBytes": 1873209,
+        "StructuralBytes": 1260,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 17,
+        "SubstitutionBytes": 604,
+        "VerificationBytes": 28343039,
+        "VerificationOperations": 915036
+      }
+    },
+    "receive_from_n/queue/1000": {
+      "result": [
+        "0"
+      ],
+      "phlo": 11285,
+      "root": "747f043bb27c0021299f51c9f46c3b4a25558c751ffc313d7de1e63db4a01b4b",
+      "host_work": {
+        "AuthorityDepth": 24,
+        "AuthorityNodes": 32,
+        "PrimitiveCalls": 5,
+        "PrimitiveInputBytes": 10,
+        "ReductionSteps": 9,
+        "ReductionTermBytes": 1092,
+        "SearchStateBytes": 12406297,
+        "StructuralBytes": 1260,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 17,
+        "SubstitutionBytes": 604,
+        "VerificationBytes": 236816983,
+        "VerificationOperations": 7313132
+      }
+    },
+    "receive_from_n/queue/10000": {
+      "result": [
+        "error the collection is full at 2648 records"
+      ],
+      "phlo": null,
+      "root": "",
+      "host_work": {}
+    },
+    "receive_from_n/set/10": {
+      "result": [
+        "8"
+      ],
+      "phlo": 8379,
+      "root": "067c29c167f65a10b179dd163ff101bc74c48bdfdcfb6774707c2384efc0afd4",
+      "host_work": {
+        "AuthorityDepth": 18,
+        "AuthorityNodes": 24,
+        "PrimitiveCalls": 5,
+        "PrimitiveInputBytes": 10,
+        "ReductionSteps": 9,
+        "ReductionTermBytes": 1092,
+        "SearchStateBytes": 641934,
+        "StructuralBytes": 1068,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 17,
+        "SubstitutionBytes": 604,
+        "VerificationBytes": 6053253,
+        "VerificationOperations": 239747
+      }
+    },
+    "receive_from_n/set/100": {
+      "result": [
+        "44"
+      ],
+      "phlo": 8379,
+      "root": "041304b7cb24d8d950db8bcbe04586d9a1cdcf149a6e770b83e1221a32b66a30",
+      "host_work": {
+        "AuthorityDepth": 18,
+        "AuthorityNodes": 24,
+        "PrimitiveCalls": 5,
+        "PrimitiveInputBytes": 10,
+        "ReductionSteps": 9,
+        "ReductionTermBytes": 1092,
+        "SearchStateBytes": 2417322,
+        "StructuralBytes": 1068,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 17,
+        "SubstitutionBytes": 604,
+        "VerificationBytes": 32385448,
+        "VerificationOperations": 1191767
+      }
+    },
+    "receive_from_n/set/1000": {
+      "result": [
+        "error HostWorkRejected"
+      ],
+      "phlo": null,
+      "root": "fb13febcf01412e30ddd4808f11da533093d0742a23abe90f33b885ee4461c63",
+      "host_work": {
+        "AuthorityDepth": 8,
+        "AuthorityNodes": 10,
+        "PrimitiveCalls": 3,
+        "PrimitiveInputBytes": 6,
+        "ReductionSteps": 6,
+        "ReductionTermBytes": 864,
+        "SearchStateBytes": 19960115,
+        "StructuralBytes": 732,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 12,
+        "SubstitutionBytes": 486,
+        "VerificationBytes": 268434027,
+        "VerificationOperations": 9536747
+      }
+    },
+    "receive_from_n/set/10000": {
+      "result": [
+        "error the collection is full at 2667 records"
+      ],
+      "phlo": null,
+      "root": "",
+      "host_work": {}
+    },
+    "receive_from_n/stack/10": {
+      "result": [
+        "9"
+      ],
+      "phlo": 11280,
+      "root": "908547304f1054dc61eb316313da2b132d41d16e75a20756c540d87711aeec32",
+      "host_work": {
+        "AuthorityDepth": 24,
+        "AuthorityNodes": 32,
+        "PrimitiveCalls": 5,
+        "PrimitiveInputBytes": 10,
+        "ReductionSteps": 9,
+        "ReductionTermBytes": 1092,
+        "SearchStateBytes": 819961,
+        "StructuralBytes": 1260,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 17,
+        "SubstitutionBytes": 604,
+        "VerificationBytes": 7501336,
+        "VerificationOperations": 276300
+      }
+    },
+    "receive_from_n/stack/100": {
+      "result": [
+        "99"
+      ],
+      "phlo": 11291,
+      "root": "87c9eafea2a8a6b8ec8ef94c8d3bb02a3fb4a71a000563871272a9af0b6204e6",
+      "host_work": {
+        "AuthorityDepth": 24,
+        "AuthorityNodes": 32,
+        "PrimitiveCalls": 5,
+        "PrimitiveInputBytes": 10,
+        "ReductionSteps": 9,
+        "ReductionTermBytes": 1092,
+        "SearchStateBytes": 1874089,
+        "StructuralBytes": 1260,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 17,
+        "SubstitutionBytes": 606,
+        "VerificationBytes": 28349173,
+        "VerificationOperations": 916146
+      }
+    },
+    "receive_from_n/stack/1000": {
+      "result": [
+        "999"
+      ],
+      "phlo": 11291,
+      "root": "6acf09787b8f8f31e807b26071900483c4369b60f765f76db370c45826f17acc",
+      "host_work": {
+        "AuthorityDepth": 24,
+        "AuthorityNodes": 32,
+        "PrimitiveCalls": 5,
+        "PrimitiveInputBytes": 10,
+        "ReductionSteps": 9,
+        "ReductionTermBytes": 1092,
+        "SearchStateBytes": 12407177,
+        "StructuralBytes": 1260,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 17,
+        "SubstitutionBytes": 606,
+        "VerificationBytes": 236823051,
+        "VerificationOperations": 7314234
+      }
+    },
+    "receive_from_n/stack/10000": {
+      "result": [
+        "error the collection is full at 2648 records"
+      ],
+      "phlo": null,
+      "root": "",
+      "host_work": {}
+    },
+    "receive_from_n/vectordb/10": {
+      "result": [
+        "[1, 1, 1, 1]"
+      ],
+      "phlo": 8638,
+      "root": "66959445e015c65c92b34aeff0504047ee6f5212524b0e2335b49d40fb8940ff",
+      "host_work": {
+        "AuthorityDepth": 18,
+        "AuthorityNodes": 24,
+        "PrimitiveCalls": 11,
+        "PrimitiveInputBytes": 193,
+        "ReductionSteps": 9,
+        "ReductionTermBytes": 1350,
+        "SearchStateBytes": 871075,
+        "StructuralBytes": 1151,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 17,
+        "SubstitutionBytes": 782,
+        "VerificationBytes": 12002112,
+        "VerificationOperations": 264919
+      }
+    },
+    "receive_from_n/vectordb/100": {
+      "result": [
+        "[1, 1, 1, 1]"
+      ],
+      "phlo": 8638,
+      "root": "efd14a061a81886691cceb19e62eddbd5ce008f90c941a793cccd363085ad001",
+      "host_work": {
+        "AuthorityDepth": 18,
+        "AuthorityNodes": 24,
+        "PrimitiveCalls": 11,
+        "PrimitiveInputBytes": 193,
+        "ReductionSteps": 9,
+        "ReductionTermBytes": 1350,
+        "SearchStateBytes": 3648979,
+        "StructuralBytes": 1151,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 17,
+        "SubstitutionBytes": 782,
+        "VerificationBytes": 66553531,
+        "VerificationOperations": 1306804
+      }
+    },
+    "receive_from_n/vectordb/1000": {
+      "result": [
+        "error HostWorkRejected"
+      ],
+      "phlo": null,
+      "root": "ecf2fc3b024262132a4c4ff3ee8dfeb3c0dbf805ed95b8d44fc5443c59543d27",
+      "host_work": {
+        "AuthorityDepth": 8,
+        "AuthorityNodes": 10,
+        "PrimitiveCalls": 7,
+        "PrimitiveInputBytes": 135,
+        "ReductionSteps": 6,
+        "ReductionTermBytes": 1122,
+        "SearchStateBytes": 13764328,
+        "StructuralBytes": 815,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 12,
+        "SubstitutionBytes": 614,
+        "VerificationBytes": 268435069,
+        "VerificationOperations": 4482753
+      }
+    },
+    "receive_from_n/vectordb/10000": {
+      "result": [
+        "error the collection is full at 1030 records"
+      ],
+      "phlo": null,
+      "root": "",
+      "host_work": {}
+    },
+    "replay/queue_two_blocks/10": {
+      "result": [
+        "reproduced"
+      ],
+      "phlo": 41695,
+      "root": "6273501a66006bd0fe96dcb6a61ffe699b12f8690e7e621f60b3a49e13c13ed8",
+      "host_work": {}
+    },
+    "restart_attach/bag/100": {
+      "result": [
+        "13"
+      ],
+      "phlo": 8379,
+      "root": "5b3667f12e6e33300a145b5a897de036a23d3acd5d4619cffa5e2c6b2d2aa804",
+      "host_work": {
+        "AuthorityDepth": 18,
+        "AuthorityNodes": 24,
+        "PrimitiveCalls": 5,
+        "PrimitiveInputBytes": 10,
+        "ReductionSteps": 9,
+        "ReductionTermBytes": 1092,
+        "SearchStateBytes": 1588954,
+        "StructuralBytes": 1068,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 17,
+        "SubstitutionBytes": 604,
+        "VerificationBytes": 23862746,
+        "VerificationOperations": 818584
+      }
+    },
+    "send/array_bag/1": {
+      "result": [],
+      "phlo": 7107,
+      "root": "a7ac57c955cc0fb289f5ddb7fc3141b0381266ee0e67277db4f7d1cd4c144ef8",
+      "host_work": {
+        "AuthorityDepth": 16,
+        "AuthorityNodes": 20,
+        "PrimitiveCalls": 4,
+        "PrimitiveInputBytes": 8,
+        "ReductionSteps": 7,
+        "ReductionTermBytes": 645,
+        "SearchStateBytes": 508792,
+        "StructuralBytes": 910,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 13,
+        "SubstitutionBytes": 409,
+        "VerificationBytes": 5609903,
+        "VerificationOperations": 151016
+      }
+    },
+    "send/array_bag/10": {
+      "result": [],
+      "phlo": 15276,
+      "root": "0b4efe1b4d0a6ae5e49c8c77248b5cd7c9a8003a68e4b174089ccf74975ec92b",
+      "host_work": {
+        "AuthorityDepth": 34,
+        "AuthorityNodes": 38,
+        "PrimitiveCalls": 13,
+        "PrimitiveInputBytes": 26,
+        "ReductionSteps": 16,
+        "ReductionTermBytes": 1769,
+        "SearchStateBytes": 1614044,
+        "StructuralBytes": 1645,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 49,
+        "SubstitutionBytes": 1134,
+        "VerificationBytes": 25728154,
+        "VerificationOperations": 655910
+      }
+    },
+    "send/array_bag/57": {
+      "result": [],
+      "phlo": 57905,
+      "root": "73c91c5ddb99f4c5133a535ce6dda0f944518d82532c59e9af768a423e59b93e",
+      "host_work": {
+        "AuthorityDepth": 128,
+        "AuthorityNodes": 132,
+        "PrimitiveCalls": 60,
+        "PrimitiveInputBytes": 120,
+        "ReductionSteps": 63,
+        "ReductionTermBytes": 7550,
+        "SearchStateBytes": 14435893,
+        "StructuralBytes": 5499,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 237,
+        "SubstitutionBytes": 4894,
+        "VerificationBytes": 262618219,
+        "VerificationOperations": 7896304
+      }
+    },
+    "send/array_bag/58": {
+      "result": [
+        "error HostWorkRejected"
+      ],
+      "phlo": null,
+      "root": "4a358b463a2b5b68d22e92ffad70bc44e9830903d15306e8fcbf2ac5cc679647",
+      "host_work": {
+        "AuthorityDepth": 128,
+        "AuthorityNodes": 132,
+        "PrimitiveCalls": 61,
+        "PrimitiveInputBytes": 122,
+        "ReductionSteps": 64,
+        "ReductionTermBytes": 7673,
+        "SearchStateBytes": 14624806,
+        "StructuralBytes": 5533,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 241,
+        "SubstitutionBytes": 4974,
+        "VerificationBytes": 268434638,
+        "VerificationOperations": 8071324
+      }
+    },
+    "send/bag/1": {
+      "result": [],
+      "phlo": 4374,
+      "root": "9e7dc6a18572f63b35c818e3805a8c37c10521ff87a97f3bff7f5ee8622dbfbd",
+      "host_work": {
+        "AuthorityDepth": 10,
+        "AuthorityNodes": 12,
+        "PrimitiveCalls": 3,
+        "PrimitiveInputBytes": 6,
+        "ReductionSteps": 6,
+        "ReductionTermBytes": 546,
+        "SearchStateBytes": 203661,
+        "StructuralBytes": 689,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 11,
+        "SubstitutionBytes": 344,
+        "VerificationBytes": 1989604,
+        "VerificationOperations": 74103
+      }
+    },
+    "send/bag/10": {
+      "result": [],
+      "phlo": 12082,
+      "root": "9a1b04fe13df34b2f485d96a6e2ef29b3ad82ce2e60c6022e8b521c5b9dd7a31",
+      "host_work": {
+        "AuthorityDepth": 28,
+        "AuthorityNodes": 30,
+        "PrimitiveCalls": 3,
+        "PrimitiveInputBytes": 6,
+        "ReductionSteps": 15,
+        "ReductionTermBytes": 1078,
+        "SearchStateBytes": 1236275,
+        "StructuralBytes": 1359,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 29,
+        "SubstitutionBytes": 563,
+        "VerificationBytes": 20243769,
+        "VerificationOperations": 552816
+      }
+    },
+    "send/bag/59": {
+      "result": [],
+      "phlo": 54026,
+      "root": "04dab68aef2d4868fb5aed875f543e9f94381801acfb4eddad095075816292b8",
+      "host_work": {
+        "AuthorityDepth": 126,
+        "AuthorityNodes": 128,
+        "PrimitiveCalls": 3,
+        "PrimitiveInputBytes": 6,
+        "ReductionSteps": 64,
+        "ReductionTermBytes": 3920,
+        "SearchStateBytes": 14530005,
+        "StructuralBytes": 5034,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 127,
+        "SubstitutionBytes": 1739,
+        "VerificationBytes": 261934176,
+        "VerificationOperations": 8145477
+      }
+    },
+    "send/bag/60": {
+      "result": [
+        "error HostWorkRejected"
+      ],
+      "phlo": null,
+      "root": "39bbfcdd53238639a3a77fc94278fa88ef1815300a3885b923ad9f950525b189",
+      "host_work": {
+        "AuthorityDepth": 128,
+        "AuthorityNodes": 130,
+        "PrimitiveCalls": 3,
+        "PrimitiveInputBytes": 6,
+        "ReductionSteps": 65,
+        "ReductionTermBytes": 3978,
+        "SearchStateBytes": 14834305,
+        "StructuralBytes": 5109,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 129,
+        "SubstitutionBytes": 1763,
+        "VerificationBytes": 268434630,
+        "VerificationOperations": 8361740
+      }
+    },
+    "send/cell/1": {
+      "result": [],
+      "phlo": 8351,
+      "root": "0fd6da4f985043513ac6734a4c456b1340827be261f96accb8eabd62d0ad3152",
+      "host_work": {
+        "AuthorityDepth": 18,
+        "AuthorityNodes": 22,
+        "PrimitiveCalls": 4,
+        "PrimitiveInputBytes": 22,
+        "ReductionSteps": 6,
+        "ReductionTermBytes": 598,
+        "SearchStateBytes": 492228,
+        "StructuralBytes": 947,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 11,
+        "SubstitutionBytes": 370,
+        "VerificationBytes": 4111381,
+        "VerificationOperations": 163078
+      }
+    },
+    "send/cell/10": {
+      "result": [],
+      "phlo": 51852,
+      "root": "5f808bae95bb7901cd32816e5d1e0ada661c77ad71c66dd40011a003b554f267",
+      "host_work": {
+        "AuthorityDepth": 108,
+        "AuthorityNodes": 130,
+        "PrimitiveCalls": 13,
+        "PrimitiveInputBytes": 166,
+        "ReductionSteps": 15,
+        "ReductionTermBytes": 1598,
+        "SearchStateBytes": 3869121,
+        "StructuralBytes": 3939,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 29,
+        "SubstitutionBytes": 823,
+        "VerificationBytes": 37010815,
+        "VerificationOperations": 1441583
+      }
+    },
+    "send/cell/72": {
+      "result": [],
+      "phlo": 351555,
+      "root": "510c64bc595f8dd6d736bbbf4bbf8b071d21a17fb277cb9d873db200ef9a5ea9",
+      "host_work": {
+        "AuthorityDepth": 728,
+        "AuthorityNodes": 874,
+        "PrimitiveCalls": 75,
+        "PrimitiveInputBytes": 1166,
+        "ReductionSteps": 77,
+        "ReductionTermBytes": 8482,
+        "SearchStateBytes": 27115463,
+        "StructuralBytes": 24663,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 153,
+        "SubstitutionBytes": 3955,
+        "VerificationBytes": 266338920,
+        "VerificationOperations": 11838257
+      }
+    },
+    "send/cell/73": {
+      "result": [
+        "error HostWorkRejected"
+      ],
+      "phlo": null,
+      "root": "d66916bbecf754670390a167a6ae02aa616a8688830304b526096b8bf289abb3",
+      "host_work": {
+        "AuthorityDepth": 738,
+        "AuthorityNodes": 886,
+        "PrimitiveCalls": 76,
+        "PrimitiveInputBytes": 1183,
+        "ReductionSteps": 78,
+        "ReductionTermBytes": 8600,
+        "SearchStateBytes": 27231443,
+        "StructuralBytes": 24999,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 155,
+        "SubstitutionBytes": 4009,
+        "VerificationBytes": 268435357,
+        "VerificationOperations": 11967067
+      }
+    },
+    "send/hashset_bag/1": {
+      "result": [],
+      "phlo": 7491,
+      "root": "0e5751c026e543b2e8ab2eb06099daa1d1e5df47778f7787faab45cdf12fe3a8",
+      "host_work": {
+        "AuthorityDepth": 18,
+        "AuthorityNodes": 20,
+        "PrimitiveCalls": 5,
+        "PrimitiveInputBytes": 24,
+        "ReductionSteps": 6,
+        "ReductionTermBytes": 557,
+        "SearchStateBytes": 359006,
+        "StructuralBytes": 790,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 14,
+        "SubstitutionBytes": 244,
+        "VerificationBytes": 3501259,
+        "VerificationOperations": 136241
+      }
+    },
+    "send/hashset_bag/10": {
+      "result": [],
+      "phlo": 17278,
+      "root": "0e5751c026e543b2e8ab2eb06099daa1d1e5df47778f7787faab45cdf12fe3a8",
+      "host_work": {
+        "AuthorityDepth": 36,
+        "AuthorityNodes": 38,
+        "PrimitiveCalls": 14,
+        "PrimitiveInputBytes": 168,
+        "ReductionSteps": 15,
+        "ReductionTermBytes": 1545,
+        "SearchStateBytes": 1178785,
+        "StructuralBytes": 1560,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 23,
+        "SubstitutionBytes": 607,
+        "VerificationBytes": 17338716,
+        "VerificationOperations": 523803
+      }
+    },
+    "send/hashset_bag/170": {
+      "result": [],
+      "phlo": 191304,
+      "root": "0e5751c026e543b2e8ab2eb06099daa1d1e5df47778f7787faab45cdf12fe3a8",
+      "host_work": {
+        "AuthorityDepth": 356,
+        "AuthorityNodes": 358,
+        "PrimitiveCalls": 174,
+        "PrimitiveInputBytes": 2834,
+        "ReductionSteps": 175,
+        "ReductionTermBytes": 19355,
+        "SearchStateBytes": 15845025,
+        "StructuralBytes": 15496,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 183,
+        "SubstitutionBytes": 7219,
+        "VerificationBytes": 268236963,
+        "VerificationOperations": 8376825
+      }
+    },
+    "send/hashset_bag/171": {
+      "result": [
+        "error HostWorkRejected"
+      ],
+      "phlo": null,
+      "root": "0e5751c026e543b2e8ab2eb06099daa1d1e5df47778f7787faab45cdf12fe3a8",
+      "host_work": {
+        "AuthorityDepth": 358,
+        "AuthorityNodes": 360,
+        "PrimitiveCalls": 175,
+        "PrimitiveInputBytes": 2851,
+        "ReductionSteps": 176,
+        "ReductionTermBytes": 19468,
+        "SearchStateBytes": 15738974,
+        "StructuralBytes": 15584,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 184,
+        "SubstitutionBytes": 7261,
+        "VerificationBytes": 268433508,
+        "VerificationOperations": 8395194
+      }
+    },
+    "send/host/1": {
+      "result": [],
+      "phlo": 664,
+      "root": "bc28563ae014638cc716610ffddc3863b0fccfd1f7322b8befd0c49e53088706",
+      "host_work": {
+        "AuthorityDepth": 2,
+        "AuthorityNodes": 2,
+        "ReductionSteps": 1,
+        "ReductionTermBytes": 13,
+        "SearchStateBytes": 20387,
+        "StructuralBytes": 71,
+        "StructuralItems": 1,
+        "SubstitutionBytes": 9,
+        "VerificationBytes": 54361,
+        "VerificationOperations": 6719
+      }
+    },
+    "send/host/10": {
+      "result": [],
+      "phlo": 6640,
+      "root": "8c6d45a7c50bd53684dffda6f65787f5daf8c45513ec2d83b2b7ba4d43195c3d",
+      "host_work": {
+        "AuthorityDepth": 20,
+        "AuthorityNodes": 20,
+        "ReductionSteps": 10,
+        "ReductionTermBytes": 130,
+        "SearchStateBytes": 177502,
+        "StructuralBytes": 737,
+        "StructuralItems": 10,
+        "SubstitutionBytes": 90,
+        "VerificationBytes": 633303,
+        "VerificationOperations": 98890
+      }
+    },
+    "send/host/3224": {
+      "result": [],
+      "phlo": 2143896,
+      "root": "49ac72137e40745a9394a7f9da9cff51d028caacad4eedb649900e3860e842c0",
+      "host_work": {
+        "AuthorityDepth": 6448,
+        "AuthorityNodes": 6448,
+        "ReductionSteps": 3224,
+        "ReductionTermBytes": 45072,
+        "SearchStateBytes": 55585347,
+        "StructuralBytes": 250295,
+        "StructuralItems": 3224,
+        "SubstitutionBytes": 32176,
+        "VerificationBytes": 268434862,
+        "VerificationOperations": 72855952
+      }
+    },
+    "send/host/3225": {
+      "result": [
+        "error HostWorkRejected"
+      ],
+      "phlo": null,
+      "root": "0e5751c026e543b2e8ab2eb06099daa1d1e5df47778f7787faab45cdf12fe3a8",
+      "host_work": {
+        "AuthorityDepth": 6450,
+        "AuthorityNodes": 6450,
+        "ReductionSteps": 3225,
+        "ReductionTermBytes": 45086,
+        "SearchStateBytes": 54154399,
+        "StructuralBytes": 250373,
+        "StructuralItems": 3225,
+        "SubstitutionBytes": 32186,
+        "VerificationBytes": 268434757,
+        "VerificationOperations": 72871590
+      }
+    },
+    "send/pathmap_bag/1": {
+      "result": [],
+      "phlo": 9245,
+      "root": "ab93138ca4a474672cb512b1c13e029f34bb2140b34fcb37a853774752b2923c",
+      "host_work": {
+        "AuthorityDepth": 22,
+        "AuthorityNodes": 26,
+        "PrimitiveCalls": 4,
+        "PrimitiveInputBytes": 21,
+        "ReductionSteps": 6,
+        "ReductionTermBytes": 594,
+        "SearchStateBytes": 591745,
+        "StructuralBytes": 1040,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 11,
+        "SubstitutionBytes": 368,
+        "VerificationBytes": 5024750,
+        "VerificationOperations": 192072
+      }
+    },
+    "send/pathmap_bag/10": {
+      "result": [],
+      "phlo": 60792,
+      "root": "20f37e51a1946a6a5d05910c8822d141f730effea63b8bc8620e4248e3069637",
+      "host_work": {
+        "AuthorityDepth": 148,
+        "AuthorityNodes": 170,
+        "PrimitiveCalls": 13,
+        "PrimitiveInputBytes": 156,
+        "ReductionSteps": 15,
+        "ReductionTermBytes": 1558,
+        "SearchStateBytes": 6979374,
+        "StructuralBytes": 4869,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 29,
+        "SubstitutionBytes": 803,
+        "VerificationBytes": 84866740,
+        "VerificationOperations": 2944695
+      }
+    },
+    "send/pathmap_bag/20": {
+      "result": [],
+      "phlo": 118062,
+      "root": "8c7eef986c3ae219657fd4c72b28fdfe3a48c1ec4a2d766ed0c9d5265ae43d24",
+      "host_work": {
+        "AuthorityDepth": 288,
+        "AuthorityNodes": 330,
+        "PrimitiveCalls": 23,
+        "PrimitiveInputBytes": 306,
+        "ReductionSteps": 25,
+        "ReductionTermBytes": 2618,
+        "SearchStateBytes": 18350329,
+        "StructuralBytes": 9129,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 49,
+        "SubstitutionBytes": 1283,
+        "VerificationBytes": 255040777,
+        "VerificationOperations": 8560188
+      }
+    },
+    "send/pathmap_bag/21": {
+      "result": [
+        "error HostWorkRejected"
+      ],
+      "phlo": null,
+      "root": "168cb641b8cfd4cbe3448601e6dcf3d82946986a75da27de936f3a9bf9b4ac9a",
+      "host_work": {
+        "AuthorityDepth": 288,
+        "AuthorityNodes": 330,
+        "PrimitiveCalls": 24,
+        "PrimitiveInputBytes": 321,
+        "ReductionSteps": 26,
+        "ReductionTermBytes": 2724,
+        "SearchStateBytes": 18908956,
+        "StructuralBytes": 9171,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 51,
+        "SubstitutionBytes": 1331,
+        "VerificationBytes": 268434448,
+        "VerificationOperations": 8911951
+      }
+    },
+    "send/priorityqueue/1": {
+      "result": [],
+      "phlo": 7936,
+      "root": "9ad38f2b5a9839e4174b0e348719c6ba1d2e36f929f0605060ef8258b1305e14",
+      "host_work": {
+        "AuthorityDepth": 18,
+        "AuthorityNodes": 22,
+        "PrimitiveCalls": 6,
+        "PrimitiveInputBytes": 83,
+        "ReductionSteps": 6,
+        "ReductionTermBytes": 760,
+        "SearchStateBytes": 483943,
+        "StructuralBytes": 995,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 12,
+        "SubstitutionBytes": 448,
+        "VerificationBytes": 4170901,
+        "VerificationOperations": 153557
+      }
+    },
+    "send/priorityqueue/10": {
+      "result": [],
+      "phlo": 42265,
+      "root": "64d54a9f7b98aa7d9fed776d18aeefe6607c72eaba9958dd4163ecac751ccb34",
+      "host_work": {
+        "AuthorityDepth": 90,
+        "AuthorityNodes": 112,
+        "PrimitiveCalls": 33,
+        "PrimitiveInputBytes": 776,
+        "ReductionSteps": 15,
+        "ReductionTermBytes": 3198,
+        "SearchStateBytes": 3862845,
+        "StructuralBytes": 3977,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 39,
+        "SubstitutionBytes": 1603,
+        "VerificationBytes": 42951136,
+        "VerificationOperations": 1311300
+      }
+    },
+    "send/priorityqueue/40": {
+      "result": [],
+      "phlo": 156685,
+      "root": "ff40596fe45138b002e4c9acd615cdc4ca8a9bddb752ee0baf8f2435561e183b",
+      "host_work": {
+        "AuthorityDepth": 330,
+        "AuthorityNodes": 412,
+        "PrimitiveCalls": 123,
+        "PrimitiveInputBytes": 3086,
+        "ReductionSteps": 45,
+        "ReductionTermBytes": 11298,
+        "SearchStateBytes": 19086265,
+        "StructuralBytes": 13937,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 129,
+        "SubstitutionBytes": 5443,
+        "VerificationBytes": 261616173,
+        "VerificationOperations": 7686190
+      }
+    },
+    "send/priorityqueue/41": {
+      "result": [
+        "error HostWorkRejected"
+      ],
+      "phlo": null,
+      "root": "861787756f049a33b506de9e3cc158cfe4b93f1513cb5305c8c0dce60bf916b7",
+      "host_work": {
+        "AuthorityDepth": 332,
+        "AuthorityNodes": 414,
+        "PrimitiveCalls": 126,
+        "PrimitiveInputBytes": 3163,
+        "ReductionSteps": 46,
+        "ReductionTermBytes": 11568,
+        "SearchStateBytes": 19266064,
+        "StructuralBytes": 14077,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 132,
+        "SubstitutionBytes": 5571,
+        "VerificationBytes": 268435064,
+        "VerificationOperations": 7838946
+      }
+    },
+    "send/queue/1": {
+      "result": [],
+      "phlo": 7878,
+      "root": "2e335b3d029a790b7a9e6a23a1271e765e2e6276d8aa6430abc2ca97237c8895",
+      "host_work": {
+        "AuthorityDepth": 18,
+        "AuthorityNodes": 22,
+        "PrimitiveCalls": 3,
+        "PrimitiveInputBytes": 6,
+        "ReductionSteps": 6,
+        "ReductionTermBytes": 546,
+        "SearchStateBytes": 481671,
+        "StructuralBytes": 929,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 11,
+        "SubstitutionBytes": 344,
+        "VerificationBytes": 4074773,
+        "VerificationOperations": 151815
+      }
+    },
+    "send/queue/10": {
+      "result": [],
+      "phlo": 41695,
+      "root": "028ff99d671145bd2457e6f069fbd9a8d360db5242486ca9be105cb398509276",
+      "host_work": {
+        "AuthorityDepth": 90,
+        "AuthorityNodes": 112,
+        "PrimitiveCalls": 3,
+        "PrimitiveInputBytes": 6,
+        "ReductionSteps": 15,
+        "ReductionTermBytes": 1078,
+        "SearchStateBytes": 3755937,
+        "StructuralBytes": 3327,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 29,
+        "SubstitutionBytes": 563,
+        "VerificationBytes": 39629144,
+        "VerificationOperations": 1265719
+      }
+    },
+    "send/queue/46": {
+      "result": [],
+      "phlo": 176947,
+      "root": "12417454d879ef912576a3b9311268cb248c797929c7ea9fff6cf047da3fdda6",
+      "host_work": {
+        "AuthorityDepth": 378,
+        "AuthorityNodes": 472,
+        "PrimitiveCalls": 3,
+        "PrimitiveInputBytes": 6,
+        "ReductionSteps": 51,
+        "ReductionTermBytes": 3166,
+        "SearchStateBytes": 21211163,
+        "StructuralBytes": 12939,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 101,
+        "SubstitutionBytes": 1427,
+        "VerificationBytes": 263476819,
+        "VerificationOperations": 8926522
+      }
+    },
+    "send/queue/47": {
+      "result": [
+        "error HostWorkRejected"
+      ],
+      "phlo": null,
+      "root": "8d05336d13369fed51aedae359ef6c184facd0fcd9c7ec522f06b0342aa88cf9",
+      "host_work": {
+        "AuthorityDepth": 380,
+        "AuthorityNodes": 474,
+        "PrimitiveCalls": 3,
+        "PrimitiveInputBytes": 6,
+        "ReductionSteps": 52,
+        "ReductionTermBytes": 3224,
+        "SearchStateBytes": 21365172,
+        "StructuralBytes": 13014,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 103,
+        "SubstitutionBytes": 1451,
+        "VerificationBytes": 268425221,
+        "VerificationOperations": 9078661
+      }
+    },
+    "send/set/1": {
+      "result": [],
+      "phlo": 4374,
+      "root": "1c689017b7a87aec700bed8d148facb71ab61eb151b886fbc6b453e1344862dd",
+      "host_work": {
+        "AuthorityDepth": 10,
+        "AuthorityNodes": 12,
+        "PrimitiveCalls": 3,
+        "PrimitiveInputBytes": 6,
+        "ReductionSteps": 6,
+        "ReductionTermBytes": 546,
+        "SearchStateBytes": 206659,
+        "StructuralBytes": 689,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 11,
+        "SubstitutionBytes": 344,
+        "VerificationBytes": 2002296,
+        "VerificationOperations": 74308
+      }
+    },
+    "send/set/10": {
+      "result": [],
+      "phlo": 12082,
+      "root": "530649f8e9cc99ad19677a1629f9216bd607aa78c12fe6dcf44fe9f27f363d45",
+      "host_work": {
+        "AuthorityDepth": 28,
+        "AuthorityNodes": 30,
+        "PrimitiveCalls": 3,
+        "PrimitiveInputBytes": 6,
+        "ReductionSteps": 15,
+        "ReductionTermBytes": 1078,
+        "SearchStateBytes": 1266255,
+        "StructuralBytes": 1359,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 29,
+        "SubstitutionBytes": 563,
+        "VerificationBytes": 20370227,
+        "VerificationOperations": 554810
+      }
+    },
+    "send/set/59": {
+      "result": [],
+      "phlo": 54026,
+      "root": "251d43e4f5d9a30935baa16e7a9b8467be8cc8d4fc1cbff9a0aef492f02746fc",
+      "host_work": {
+        "AuthorityDepth": 126,
+        "AuthorityNodes": 128,
+        "PrimitiveCalls": 3,
+        "PrimitiveInputBytes": 6,
+        "ReductionSteps": 64,
+        "ReductionTermBytes": 3920,
+        "SearchStateBytes": 14706887,
+        "StructuralBytes": 5034,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 127,
+        "SubstitutionBytes": 1739,
+        "VerificationBytes": 262681552,
+        "VerificationOperations": 8157396
+      }
+    },
+    "send/set/60": {
+      "result": [
+        "error HostWorkRejected"
+      ],
+      "phlo": null,
+      "root": "71350c0a21ad84148b5bd4aeea12b038eb88a19547fa953d976beca128ddf27a",
+      "host_work": {
+        "AuthorityDepth": 126,
+        "AuthorityNodes": 128,
+        "PrimitiveCalls": 3,
+        "PrimitiveInputBytes": 6,
+        "ReductionSteps": 65,
+        "ReductionTermBytes": 3978,
+        "SearchStateBytes": 14905425,
+        "StructuralBytes": 5061,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 129,
+        "SubstitutionBytes": 1763,
+        "VerificationBytes": 268435138,
+        "VerificationOperations": 8334116
+      }
+    },
+    "send/stack/1": {
+      "result": [],
+      "phlo": 7878,
+      "root": "11c23f876a376045d1e78e5c347d8d23a8ee7acb54c471e4312dd95275a2dd81",
+      "host_work": {
+        "AuthorityDepth": 18,
+        "AuthorityNodes": 22,
+        "PrimitiveCalls": 3,
+        "PrimitiveInputBytes": 6,
+        "ReductionSteps": 6,
+        "ReductionTermBytes": 546,
+        "SearchStateBytes": 482551,
+        "StructuralBytes": 929,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 11,
+        "SubstitutionBytes": 344,
+        "VerificationBytes": 4080874,
+        "VerificationOperations": 152921
+      }
+    },
+    "send/stack/10": {
+      "result": [],
+      "phlo": 41695,
+      "root": "b9aee20e4adabe16eaff1137f67cee553ce7eb16ec60affc8e71fab4c0471ae4",
+      "host_work": {
+        "AuthorityDepth": 90,
+        "AuthorityNodes": 112,
+        "PrimitiveCalls": 3,
+        "PrimitiveInputBytes": 6,
+        "ReductionSteps": 15,
+        "ReductionTermBytes": 1078,
+        "SearchStateBytes": 3807721,
+        "StructuralBytes": 3327,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 29,
+        "SubstitutionBytes": 563,
+        "VerificationBytes": 39766354,
+        "VerificationOperations": 1324072
+      }
+    },
+    "send/stack/46": {
+      "result": [],
+      "phlo": 176947,
+      "root": "1a7e22a5fd1826d0f9891d62680d015b53bf181377775da8020cb81d76194e3c",
+      "host_work": {
+        "AuthorityDepth": 378,
+        "AuthorityNodes": 472,
+        "PrimitiveCalls": 3,
+        "PrimitiveInputBytes": 6,
+        "ReductionSteps": 51,
+        "ReductionTermBytes": 3166,
+        "SearchStateBytes": 21466563,
+        "StructuralBytes": 12939,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 101,
+        "SubstitutionBytes": 1427,
+        "VerificationBytes": 264138498,
+        "VerificationOperations": 9213867
+      }
+    },
+    "send/stack/47": {
+      "result": [
+        "error HostWorkRejected"
+      ],
+      "phlo": null,
+      "root": "c1ddec1430539330e4c3a01e73357a5392cf8773193535b39dd77b685ab5ff34",
+      "host_work": {
+        "AuthorityDepth": 378,
+        "AuthorityNodes": 472,
+        "PrimitiveCalls": 3,
+        "PrimitiveInputBytes": 6,
+        "ReductionSteps": 52,
+        "ReductionTermBytes": 3224,
+        "SearchStateBytes": 21549119,
+        "StructuralBytes": 12966,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 103,
+        "SubstitutionBytes": 1451,
+        "VerificationBytes": 268435081,
+        "VerificationOperations": 9323295
+      }
+    },
+    "send/vector_bag/1": {
+      "result": [],
+      "phlo": 7107,
+      "root": "46edf6f320b270968d27fc7e5efb2116ee19257b423aa3bce647b2cb0c9e4082",
+      "host_work": {
+        "AuthorityDepth": 16,
+        "AuthorityNodes": 20,
+        "PrimitiveCalls": 4,
+        "PrimitiveInputBytes": 8,
+        "ReductionSteps": 7,
+        "ReductionTermBytes": 645,
+        "SearchStateBytes": 497254,
+        "StructuralBytes": 910,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 13,
+        "SubstitutionBytes": 409,
+        "VerificationBytes": 5204770,
+        "VerificationOperations": 148632
+      }
+    },
+    "send/vector_bag/10": {
+      "result": [],
+      "phlo": 15276,
+      "root": "1e13df0df4a439eebb90176859003c3fb4f5b779b1d2d36b48d3fca5b6d978d7",
+      "host_work": {
+        "AuthorityDepth": 34,
+        "AuthorityNodes": 38,
+        "PrimitiveCalls": 13,
+        "PrimitiveInputBytes": 26,
+        "ReductionSteps": 16,
+        "ReductionTermBytes": 1769,
+        "SearchStateBytes": 1550585,
+        "StructuralBytes": 1645,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 49,
+        "SubstitutionBytes": 1134,
+        "VerificationBytes": 23499972,
+        "VerificationOperations": 642804
+      }
+    },
+    "send/vector_bag/59": {
+      "result": [],
+      "phlo": 59719,
+      "root": "bb19493f853c04d4437ad5baa387d801475489f9067fff20cd1cb9585c957296",
+      "host_work": {
+        "AuthorityDepth": 132,
+        "AuthorityNodes": 136,
+        "PrimitiveCalls": 62,
+        "PrimitiveInputBytes": 124,
+        "ReductionSteps": 65,
+        "ReductionTermBytes": 7796,
+        "SearchStateBytes": 14944519,
+        "StructuralBytes": 5663,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 245,
+        "SubstitutionBytes": 5054,
+        "VerificationBytes": 265464110,
+        "VerificationOperations": 8303353
+      }
+    },
+    "send/vector_bag/60": {
+      "result": [
+        "error HostWorkRejected"
+      ],
+      "phlo": null,
+      "root": "4a5d016026e4f3f5e75e2b3b3f94c34e8f02292106e46e3cff02c1cf42d37ec8",
+      "host_work": {
+        "AuthorityDepth": 132,
+        "AuthorityNodes": 136,
+        "PrimitiveCalls": 63,
+        "PrimitiveInputBytes": 126,
+        "ReductionSteps": 66,
+        "ReductionTermBytes": 7919,
+        "SearchStateBytes": 15117115,
+        "StructuralBytes": 5697,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 249,
+        "SubstitutionBytes": 5134,
+        "VerificationBytes": 268433882,
+        "VerificationOperations": 8387479
+      }
+    },
+    "send/vectordb/1": {
+      "result": [],
+      "phlo": 4453,
+      "root": "b0a42d177ddc50b2b060be1d19a5f86d56a7ec6a3731c0fdda43a6f7033efe3a",
+      "host_work": {
+        "AuthorityDepth": 10,
+        "AuthorityNodes": 12,
+        "PrimitiveCalls": 4,
+        "PrimitiveInputBytes": 33,
+        "ReductionSteps": 6,
+        "ReductionTermBytes": 646,
+        "SearchStateBytes": 239994,
+        "StructuralBytes": 725,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 11,
+        "SubstitutionBytes": 394,
+        "VerificationBytes": 2860916,
+        "VerificationOperations": 84860
+      }
+    },
+    "send/vectordb/10": {
+      "result": [],
+      "phlo": 12872,
+      "root": "3060725cb0da3cc57dd6701fc57d60d61316d6d5fc175ffaa1d58e95d0dcc750",
+      "host_work": {
+        "AuthorityDepth": 28,
+        "AuthorityNodes": 30,
+        "PrimitiveCalls": 13,
+        "PrimitiveInputBytes": 276,
+        "ReductionSteps": 15,
+        "ReductionTermBytes": 2078,
+        "SearchStateBytes": 1950189,
+        "StructuralBytes": 1719,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 29,
+        "SubstitutionBytes": 1063,
+        "VerificationBytes": 36073239,
+        "VerificationOperations": 705543
+      }
+    },
+    "send/vectordb/37": {
+      "result": [],
+      "phlo": 38117,
+      "root": "eb466290f8adea2bf3d224d600010299cd25b3db6e220af3500c7cbf3996ff1c",
+      "host_work": {
+        "AuthorityDepth": 82,
+        "AuthorityNodes": 84,
+        "PrimitiveCalls": 40,
+        "PrimitiveInputBytes": 1005,
+        "ReductionSteps": 42,
+        "ReductionTermBytes": 6344,
+        "SearchStateBytes": 13490799,
+        "StructuralBytes": 4689,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 83,
+        "SubstitutionBytes": 3061,
+        "VerificationBytes": 261310401,
+        "VerificationOperations": 4779833
+      }
+    },
+    "send/vectordb/38": {
+      "result": [
+        "error HostWorkRejected"
+      ],
+      "phlo": null,
+      "root": "4adeb6124c0a5b6a890076f0d3d32b7e88d64997f83972625625913ea7c66a2d",
+      "host_work": {
+        "AuthorityDepth": 82,
+        "AuthorityNodes": 84,
+        "PrimitiveCalls": 41,
+        "PrimitiveInputBytes": 1032,
+        "ReductionSteps": 43,
+        "ReductionTermBytes": 6502,
+        "SearchStateBytes": 13968047,
+        "StructuralBytes": 4751,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 85,
+        "SubstitutionBytes": 3135,
+        "VerificationBytes": 268435397,
+        "VerificationOperations": 4886397
+      }
+    },
+    "send_receive/bag/1": {
+      "result": [],
+      "phlo": 6512,
+      "root": "59ae1a578ca1c6d4707d23725ac36938ba9458c50009c61c763b667a01ab0b02",
+      "host_work": {
+        "AuthorityDepth": 14,
+        "AuthorityNodes": 18,
+        "PrimitiveCalls": 3,
+        "PrimitiveInputBytes": 6,
+        "ReductionSteps": 8,
+        "ReductionTermBytes": 727,
+        "SearchStateBytes": 436064,
+        "StructuralBytes": 890,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 15,
+        "SubstitutionBytes": 436,
+        "VerificationBytes": 4581934,
+        "VerificationOperations": 140013
+      }
+    },
+    "send_receive/bag/10": {
+      "result": [],
+      "phlo": 33462,
+      "root": "f3142fe764633aaa3125391cf6827ffda89a33cb47af9c441ce7c38563097b09",
+      "host_work": {
+        "AuthorityDepth": 68,
+        "AuthorityNodes": 90,
+        "PrimitiveCalls": 3,
+        "PrimitiveInputBytes": 6,
+        "ReductionSteps": 35,
+        "ReductionTermBytes": 2888,
+        "SearchStateBytes": 4112559,
+        "StructuralBytes": 3369,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 69,
+        "SubstitutionBytes": 1483,
+        "VerificationBytes": 55199751,
+        "VerificationOperations": 1570411
+      }
+    },
+    "send_receive/bag/30": {
+      "result": [],
+      "phlo": 93342,
+      "root": "863890eab69544a4e52307b6d94b684b03b7d5aa98c5748abc378f706c32c111",
+      "host_work": {
+        "AuthorityDepth": 188,
+        "AuthorityNodes": 250,
+        "PrimitiveCalls": 3,
+        "PrimitiveInputBytes": 6,
+        "ReductionSteps": 95,
+        "ReductionTermBytes": 7668,
+        "SearchStateBytes": 17077019,
+        "StructuralBytes": 8889,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 189,
+        "SubstitutionBytes": 3803,
+        "VerificationBytes": 256312748,
+        "VerificationOperations": 7860227
+      }
+    },
+    "send_receive/bag/31": {
+      "result": [
+        "error HostWorkRejected"
+      ],
+      "phlo": null,
+      "root": "7925c4fe28c9229584a9a53271bb96e3db20d6cfbb0d490984a84803f212d61f",
+      "host_work": {
+        "AuthorityDepth": 194,
+        "AuthorityNodes": 258,
+        "PrimitiveCalls": 3,
+        "PrimitiveInputBytes": 6,
+        "ReductionSteps": 98,
+        "ReductionTermBytes": 7907,
+        "SearchStateBytes": 17799838,
+        "StructuralBytes": 9165,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 195,
+        "SubstitutionBytes": 3919,
+        "VerificationBytes": 268433946,
+        "VerificationOperations": 8250730
+      }
+    },
+    "send_receive/host/1": {
+      "result": [],
+      "phlo": 2532,
+      "root": "0e5751c026e543b2e8ab2eb06099daa1d1e5df47778f7787faab45cdf12fe3a8",
+      "host_work": {
+        "AuthorityDepth": 6,
+        "AuthorityNodes": 8,
+        "ReductionSteps": 2,
+        "ReductionTermBytes": 41,
+        "SearchStateBytes": 97437,
+        "StructuralBytes": 272,
+        "StructuralItems": 2,
+        "SubstitutionBytes": 25,
+        "VerificationBytes": 343578,
+        "VerificationOperations": 28254
+      }
+    },
+    "send_receive/host/10": {
+      "result": [],
+      "phlo": 25320,
+      "root": "0e5751c026e543b2e8ab2eb06099daa1d1e5df47778f7787faab45cdf12fe3a8",
+      "host_work": {
+        "AuthorityDepth": 60,
+        "AuthorityNodes": 80,
+        "ReductionSteps": 20,
+        "ReductionTermBytes": 410,
+        "SearchStateBytes": 954492,
+        "StructuralBytes": 2747,
+        "StructuralItems": 20,
+        "SubstitutionBytes": 250,
+        "VerificationBytes": 3574437,
+        "VerificationOperations": 386039
+      }
+    },
+    "send_receive/host/682": {
+      "result": [],
+      "phlo": 1728678,
+      "root": "0e5751c026e543b2e8ab2eb06099daa1d1e5df47778f7787faab45cdf12fe3a8",
+      "host_work": {
+        "AuthorityDepth": 4092,
+        "AuthorityNodes": 5456,
+        "ReductionSteps": 1364,
+        "ReductionTermBytes": 28580,
+        "SearchStateBytes": 64909691,
+        "StructuralBytes": 189419,
+        "StructuralItems": 1364,
+        "SubstitutionBytes": 17668,
+        "VerificationBytes": 267898911,
+        "VerificationOperations": 43572729
+      }
+    },
+    "send_receive/host/683": {
+      "result": [
+        "error HostWorkRejected"
+      ],
+      "phlo": null,
+      "root": "0e5751c026e543b2e8ab2eb06099daa1d1e5df47778f7787faab45cdf12fe3a8",
+      "host_work": {
+        "AuthorityDepth": 4098,
+        "AuthorityNodes": 5464,
+        "ReductionSteps": 1366,
+        "ReductionTermBytes": 28622,
+        "SearchStateBytes": 65893944,
+        "StructuralBytes": 189697,
+        "StructuralItems": 1366,
+        "SubstitutionBytes": 17694,
+        "VerificationBytes": 268435148,
+        "VerificationOperations": 43628188
+      }
+    },
+    "send_receive/priorityqueue/1": {
+      "result": [],
+      "phlo": 12976,
+      "root": "5af1b326e2de9051af045f402ba92150be9501ed93f89c6881ba1cb4590e4f57",
+      "host_work": {
+        "AuthorityDepth": 28,
+        "AuthorityNodes": 36,
+        "PrimitiveCalls": 6,
+        "PrimitiveInputBytes": 83,
+        "ReductionSteps": 8,
+        "ReductionTermBytes": 943,
+        "SearchStateBytes": 975885,
+        "StructuralBytes": 1389,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 16,
+        "SubstitutionBytes": 541,
+        "VerificationBytes": 8773523,
+        "VerificationOperations": 292680
+      }
+    },
+    "send_receive/priorityqueue/10": {
+      "result": [],
+      "phlo": 92655,
+      "root": "5882556b4eb577acdc4c2cfb4751cdde00545fbb865f5a2a7aebe4a43755fc15",
+      "host_work": {
+        "AuthorityDepth": 190,
+        "AuthorityNodes": 252,
+        "PrimitiveCalls": 33,
+        "PrimitiveInputBytes": 776,
+        "ReductionSteps": 35,
+        "ReductionTermBytes": 5008,
+        "SearchStateBytes": 9316819,
+        "StructuralBytes": 7907,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 79,
+        "SubstitutionBytes": 2523,
+        "VerificationBytes": 101110763,
+        "VerificationOperations": 3202175
+      }
+    },
+    "send_receive/priorityqueue/21": {
+      "result": [],
+      "phlo": 190038,
+      "root": "4cf6b0a74e43d68c87464a2430f01f6adb33c13af6d289dc8c1de0fba811110d",
+      "host_work": {
+        "AuthorityDepth": 388,
+        "AuthorityNodes": 516,
+        "PrimitiveCalls": 66,
+        "PrimitiveInputBytes": 1623,
+        "ReductionSteps": 68,
+        "ReductionTermBytes": 9969,
+        "SearchStateBytes": 21777385,
+        "StructuralBytes": 15882,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 156,
+        "SubstitutionBytes": 4943,
+        "VerificationBytes": 260076714,
+        "VerificationOperations": 8166403
+      }
+    },
+    "send_receive/priorityqueue/22": {
+      "result": [
+        "error HostWorkRejected"
+      ],
+      "phlo": null,
+      "root": "6bf21bca282479f3487ecefa5e1956839c7ca014fb6894e5a41f864287e39853",
+      "host_work": {
+        "AuthorityDepth": 388,
+        "AuthorityNodes": 514,
+        "PrimitiveCalls": 69,
+        "PrimitiveInputBytes": 1700,
+        "ReductionSteps": 49,
+        "ReductionTermBytes": 9034,
+        "SearchStateBytes": 21961721,
+        "StructuralBytes": 15983,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 141,
+        "SubstitutionBytes": 4151,
+        "VerificationBytes": 268435436,
+        "VerificationOperations": 8357485
+      }
+    },
+    "send_receive/queue/1": {
+      "result": [],
+      "phlo": 12917,
+      "root": "4db85c8888e69fc6867118e583a537b5033e9415ab8ca2820960e76d4ed67b41",
+      "host_work": {
+        "AuthorityDepth": 28,
+        "AuthorityNodes": 36,
+        "PrimitiveCalls": 3,
+        "PrimitiveInputBytes": 6,
+        "ReductionSteps": 8,
+        "ReductionTermBytes": 727,
+        "SearchStateBytes": 969257,
+        "StructuralBytes": 1322,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 15,
+        "SubstitutionBytes": 436,
+        "VerificationBytes": 8611752,
+        "VerificationOperations": 288598
+      }
+    },
+    "send_receive/queue/10": {
+      "result": [],
+      "phlo": 92085,
+      "root": "ea97a7269a77e546be8b86f20e7e07c6a23078d3b11a0baf70256bd967b73b5f",
+      "host_work": {
+        "AuthorityDepth": 190,
+        "AuthorityNodes": 252,
+        "PrimitiveCalls": 3,
+        "PrimitiveInputBytes": 6,
+        "ReductionSteps": 35,
+        "ReductionTermBytes": 2888,
+        "SearchStateBytes": 9111575,
+        "StructuralBytes": 7257,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 69,
+        "SubstitutionBytes": 1483,
+        "VerificationBytes": 95625138,
+        "VerificationOperations": 3129517
+      }
+    },
+    "send_receive/queue/22": {
+      "result": [],
+      "phlo": 197637,
+      "root": "628968f53b04853563291d45d7705e7647c42241bd3bb26a390d710693fd6b9b",
+      "host_work": {
+        "AuthorityDepth": 406,
+        "AuthorityNodes": 540,
+        "PrimitiveCalls": 3,
+        "PrimitiveInputBytes": 6,
+        "ReductionSteps": 71,
+        "ReductionTermBytes": 5756,
+        "SearchStateBytes": 22213928,
+        "StructuralBytes": 15177,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 141,
+        "SubstitutionBytes": 2875,
+        "VerificationBytes": 253689042,
+        "VerificationOperations": 8483515
+      }
+    },
+    "send_receive/queue/23": {
+      "result": [
+        "error HostWorkRejected"
+      ],
+      "phlo": null,
+      "root": "909ba381d8aec5c209d8fc82b765a77a2577cf307928ffea79fbdae9d48da7ff",
+      "host_work": {
+        "AuthorityDepth": 424,
+        "AuthorityNodes": 564,
+        "PrimitiveCalls": 3,
+        "PrimitiveInputBytes": 6,
+        "ReductionSteps": 74,
+        "ReductionTermBytes": 5995,
+        "SearchStateBytes": 23319084,
+        "StructuralBytes": 15837,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 147,
+        "SubstitutionBytes": 2991,
+        "VerificationBytes": 268435248,
+        "VerificationOperations": 8985266
+      }
+    },
+    "send_receive/set/1": {
+      "result": [],
+      "phlo": 6512,
+      "root": "778068e9197b88f2d5d64a95c4acde2f7f0e6ed4d446d76d2ddb5619d36b9865",
+      "host_work": {
+        "AuthorityDepth": 14,
+        "AuthorityNodes": 18,
+        "PrimitiveCalls": 3,
+        "PrimitiveInputBytes": 6,
+        "ReductionSteps": 8,
+        "ReductionTermBytes": 727,
+        "SearchStateBytes": 442940,
+        "StructuralBytes": 890,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 15,
+        "SubstitutionBytes": 436,
+        "VerificationBytes": 4610846,
+        "VerificationOperations": 141136
+      }
+    },
+    "send_receive/set/10": {
+      "result": [],
+      "phlo": 33462,
+      "root": "3317f7611c233ef290ae48ce0ee7f350e3060ce2d3e0f9abd9a63c322a69483c",
+      "host_work": {
+        "AuthorityDepth": 68,
+        "AuthorityNodes": 90,
+        "PrimitiveCalls": 3,
+        "PrimitiveInputBytes": 6,
+        "ReductionSteps": 35,
+        "ReductionTermBytes": 2888,
+        "SearchStateBytes": 4557933,
+        "StructuralBytes": 3369,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 69,
+        "SubstitutionBytes": 1483,
+        "VerificationBytes": 59214996,
+        "VerificationOperations": 1750574
+      }
+    },
+    "send_receive/set/28": {
+      "result": [],
+      "phlo": 87354,
+      "root": "be80ff7899749762b3a1c0e35170b7dd6e38ff93d5395c0dfb25dd8d1412bc16",
+      "host_work": {
+        "AuthorityDepth": 176,
+        "AuthorityNodes": 234,
+        "PrimitiveCalls": 3,
+        "PrimitiveInputBytes": 6,
+        "ReductionSteps": 89,
+        "ReductionTermBytes": 7190,
+        "SearchStateBytes": 18835882,
+        "StructuralBytes": 8337,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 177,
+        "SubstitutionBytes": 3571,
+        "VerificationBytes": 263213842,
+        "VerificationOperations": 8495302
+      }
+    },
+    "send_receive/set/29": {
+      "result": [
+        "error HostWorkRejected"
+      ],
+      "phlo": null,
+      "root": "01b6b2362e6205531a0b9239c4b9e4c38431653e6958db655a4b6efd8c636534",
+      "host_work": {
+        "AuthorityDepth": 170,
+        "AuthorityNodes": 224,
+        "PrimitiveCalls": 3,
+        "PrimitiveInputBytes": 6,
+        "ReductionSteps": 63,
+        "ReductionTermBytes": 5602,
+        "SearchStateBytes": 18885510,
+        "StructuralBytes": 8181,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 154,
+        "SubstitutionBytes": 2353,
+        "VerificationBytes": 268434647,
+        "VerificationOperations": 8703878
+      }
+    },
+    "send_receive/stack/1": {
+      "result": [],
+      "phlo": 12917,
+      "root": "fbe66f5f151d74efc54c87e51628848ef355ed7e38b519bec0249aafab11a27b",
+      "host_work": {
+        "AuthorityDepth": 28,
+        "AuthorityNodes": 36,
+        "PrimitiveCalls": 3,
+        "PrimitiveInputBytes": 6,
+        "ReductionSteps": 8,
+        "ReductionTermBytes": 727,
+        "SearchStateBytes": 971017,
+        "StructuralBytes": 1322,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 15,
+        "SubstitutionBytes": 436,
+        "VerificationBytes": 8624086,
+        "VerificationOperations": 290826
+      }
+    },
+    "send_receive/stack/10": {
+      "result": [],
+      "phlo": 92085,
+      "root": "b95640ef029d939c6513b08e143a37e7466352dfe75a479d15e939ef54987086",
+      "host_work": {
+        "AuthorityDepth": 190,
+        "AuthorityNodes": 252,
+        "PrimitiveCalls": 3,
+        "PrimitiveInputBytes": 6,
+        "ReductionSteps": 35,
+        "ReductionTermBytes": 2888,
+        "SearchStateBytes": 9172159,
+        "StructuralBytes": 7257,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 69,
+        "SubstitutionBytes": 1483,
+        "VerificationBytes": 95823688,
+        "VerificationOperations": 3198970
+      }
+    },
+    "send_receive/stack/22": {
+      "result": [],
+      "phlo": 197637,
+      "root": "3f616011c0c76245804d09b66b0eb951483073becf25e9cc82dbdb2a64b5590a",
+      "host_work": {
+        "AuthorityDepth": 406,
+        "AuthorityNodes": 540,
+        "PrimitiveCalls": 3,
+        "PrimitiveInputBytes": 6,
+        "ReductionSteps": 71,
+        "ReductionTermBytes": 5756,
+        "SearchStateBytes": 22352944,
+        "StructuralBytes": 15177,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 141,
+        "SubstitutionBytes": 2875,
+        "VerificationBytes": 254136232,
+        "VerificationOperations": 8642644
+      }
+    },
+    "send_receive/stack/23": {
+      "result": [
+        "error HostWorkRejected"
+      ],
+      "phlo": null,
+      "root": "376d894da4ebdd07996e6ccabae36e1a89b81e15d4604391b05b885d45b53d07",
+      "host_work": {
+        "AuthorityDepth": 424,
+        "AuthorityNodes": 564,
+        "PrimitiveCalls": 3,
+        "PrimitiveInputBytes": 6,
+        "ReductionSteps": 74,
+        "ReductionTermBytes": 5995,
+        "SearchStateBytes": 23396392,
+        "StructuralBytes": 15837,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 147,
+        "SubstitutionBytes": 2991,
+        "VerificationBytes": 268435423,
+        "VerificationOperations": 9136628
+      }
+    },
+    "send_receive/vectordb/1": {
+      "result": [],
+      "phlo": 6755,
+      "root": "e6544794a82c61df4b44b579750be457cb4bf28e14b4c4ea52b6ad40aea0c7e7",
+      "host_work": {
+        "AuthorityDepth": 14,
+        "AuthorityNodes": 18,
+        "PrimitiveCalls": 8,
+        "PrimitiveInputBytes": 162,
+        "ReductionSteps": 8,
+        "ReductionTermBytes": 1085,
+        "SearchStateBytes": 609110,
+        "StructuralBytes": 1009,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 15,
+        "SubstitutionBytes": 613,
+        "VerificationBytes": 8482995,
+        "VerificationOperations": 175819
+      }
+    },
+    "send_receive/vectordb/10": {
+      "result": [],
+      "phlo": 35852,
+      "root": "0772d57303b80abf8a0ba39cc2434c64a2e1ab9749328505b2a9186e50e6a429",
+      "host_work": {
+        "AuthorityDepth": 68,
+        "AuthorityNodes": 90,
+        "PrimitiveCalls": 53,
+        "PrimitiveInputBytes": 1566,
+        "ReductionSteps": 35,
+        "ReductionTermBytes": 6368,
+        "SearchStateBytes": 7011619,
+        "StructuralBytes": 4519,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 69,
+        "SubstitutionBytes": 3223,
+        "VerificationBytes": 119171080,
+        "VerificationOperations": 2139022
+      }
+    },
+    "send_receive/vectordb/17": {
+      "result": [],
+      "phlo": 58483,
+      "root": "68aaed18fb6dcb93b7fd115f0581a6b28dcc1078170ef949aad78ae059972ec5",
+      "host_work": {
+        "AuthorityDepth": 110,
+        "AuthorityNodes": 146,
+        "PrimitiveCalls": 88,
+        "PrimitiveInputBytes": 2658,
+        "ReductionSteps": 56,
+        "ReductionTermBytes": 10477,
+        "SearchStateBytes": 14381899,
+        "StructuralBytes": 7249,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 111,
+        "SubstitutionBytes": 5253,
+        "VerificationBytes": 253569548,
+        "VerificationOperations": 4557813
+      }
+    },
+    "send_receive/vectordb/18": {
+      "result": [
+        "error HostWorkRejected"
+      ],
+      "phlo": null,
+      "root": "c78dde72af44212841700d72aba50ada73cdada512a1211e4714304fccbc4a8b",
+      "host_work": {
+        "AuthorityDepth": 108,
+        "AuthorityNodes": 142,
+        "PrimitiveCalls": 93,
+        "PrimitiveInputBytes": 2814,
+        "ReductionSteps": 41,
+        "ReductionTermBytes": 9930,
+        "SearchStateBytes": 14985540,
+        "StructuralBytes": 7351,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 99,
+        "SubstitutionBytes": 4715,
+        "VerificationBytes": 268434411,
+        "VerificationOperations": 4791860
+      }
+    },
+    "send_to_n/bag/10": {
+      "result": [],
+      "phlo": 4374,
+      "root": "7c6cdcb01677cb0e6f11576e131c1d09f3c0985b11d1b7f940baaa0e93b6d3b2",
+      "host_work": {
+        "AuthorityDepth": 10,
+        "AuthorityNodes": 12,
+        "PrimitiveCalls": 3,
+        "PrimitiveInputBytes": 6,
+        "ReductionSteps": 6,
+        "ReductionTermBytes": 546,
+        "SearchStateBytes": 258773,
+        "StructuralBytes": 690,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 11,
+        "SubstitutionBytes": 344,
+        "VerificationBytes": 2989112,
+        "VerificationOperations": 108137
+      }
+    },
+    "send_to_n/bag/100": {
+      "result": [],
+      "phlo": 4376,
+      "root": "6a604782e06e02b678639d1e948a8ee0ea19ded23b1135cce9199b7a11d857a5",
+      "host_work": {
+        "AuthorityDepth": 10,
+        "AuthorityNodes": 12,
+        "PrimitiveCalls": 3,
+        "PrimitiveInputBytes": 6,
+        "ReductionSteps": 6,
+        "ReductionTermBytes": 550,
+        "SearchStateBytes": 744797,
+        "StructuralBytes": 692,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 11,
+        "SubstitutionBytes": 346,
+        "VerificationBytes": 11980844,
+        "VerificationOperations": 414153
+      }
+    },
+    "send_to_n/bag/1000": {
+      "result": [],
+      "phlo": 4376,
+      "root": "1716dbcbce9772374d78e7c5534534ff095c26b405ee57aceaa8f24cc4792251",
+      "host_work": {
+        "AuthorityDepth": 10,
+        "AuthorityNodes": 12,
+        "PrimitiveCalls": 3,
+        "PrimitiveInputBytes": 6,
+        "ReductionSteps": 6,
+        "ReductionTermBytes": 550,
+        "SearchStateBytes": 5600941,
+        "StructuralBytes": 693,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 11,
+        "SubstitutionBytes": 346,
+        "VerificationBytes": 101896116,
+        "VerificationOperations": 3474151
+      }
+    },
+    "send_to_n/bag/10000": {
+      "result": [
+        "error the collection is full at 2667 records"
+      ],
+      "phlo": null,
+      "root": "",
+      "host_work": {}
+    },
+    "send_to_n/host/10": {
+      "result": [],
+      "phlo": 664,
+      "root": "b7c345d2d95a9c722869634c73f37816ae052bc14deedf473322f5556597368b",
+      "host_work": {
+        "AuthorityDepth": 2,
+        "AuthorityNodes": 2,
+        "ReductionSteps": 1,
+        "ReductionTermBytes": 13,
+        "SearchStateBytes": 20387,
+        "StructuralBytes": 72,
+        "StructuralItems": 1,
+        "SubstitutionBytes": 9,
+        "VerificationBytes": 54361,
+        "VerificationOperations": 6719
+      }
+    },
+    "send_to_n/host/100": {
+      "result": [],
+      "phlo": 665,
+      "root": "08142f8d9066e8dc9d138a2b5ddb064938f8b7a5f2914a28bb25d239cfb5b4b4",
+      "host_work": {
+        "AuthorityDepth": 2,
+        "AuthorityNodes": 2,
+        "ReductionSteps": 1,
+        "ReductionTermBytes": 14,
+        "SearchStateBytes": 20387,
+        "StructuralBytes": 74,
+        "StructuralItems": 1,
+        "SubstitutionBytes": 10,
+        "VerificationBytes": 54361,
+        "VerificationOperations": 6719
+      }
+    },
+    "send_to_n/host/1000": {
+      "result": [],
+      "phlo": 665,
+      "root": "9eb084de9965aab0f776f5d32b06a986050309cf3e150a9ced642bcec33286b0",
+      "host_work": {
+        "AuthorityDepth": 2,
+        "AuthorityNodes": 2,
+        "ReductionSteps": 1,
+        "ReductionTermBytes": 14,
+        "SearchStateBytes": 20387,
+        "StructuralBytes": 75,
+        "StructuralItems": 1,
+        "SubstitutionBytes": 10,
+        "VerificationBytes": 54361,
+        "VerificationOperations": 6719
+      }
+    },
+    "send_to_n/host/10000": {
+      "result": [],
+      "phlo": 666,
+      "root": "c4c30ba13deaf6cddd16fd23d3a8dac2bdf31ddad78e6a24261e1c0e3189b856",
+      "host_work": {
+        "AuthorityDepth": 2,
+        "AuthorityNodes": 2,
+        "ReductionSteps": 1,
+        "ReductionTermBytes": 15,
+        "SearchStateBytes": 20387,
+        "StructuralBytes": 77,
+        "StructuralItems": 1,
+        "SubstitutionBytes": 11,
+        "VerificationBytes": 54361,
+        "VerificationOperations": 6719
+      }
+    },
+    "send_to_n/priorityqueue/10": {
+      "result": [],
+      "phlo": 7333,
+      "root": "f6ec57aaab32030f1c014fea3f762bd896e78d01f63b66c1d7aad8191596967d",
+      "host_work": {
+        "AuthorityDepth": 16,
+        "AuthorityNodes": 20,
+        "PrimitiveCalls": 6,
+        "PrimitiveInputBytes": 83,
+        "ReductionSteps": 6,
+        "ReductionTermBytes": 760,
+        "SearchStateBytes": 522639,
+        "StructuralBytes": 948,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 12,
+        "SubstitutionBytes": 448,
+        "VerificationBytes": 5528807,
+        "VerificationOperations": 174039
+      }
+    },
+    "send_to_n/priorityqueue/100": {
+      "result": [],
+      "phlo": 7340,
+      "root": "1be0138eed9ec315f223c68a32bf77c80343fe8a0564d8673fe478dddfbbb43a",
+      "host_work": {
+        "AuthorityDepth": 16,
+        "AuthorityNodes": 20,
+        "PrimitiveCalls": 6,
+        "PrimitiveInputBytes": 83,
+        "ReductionSteps": 6,
+        "ReductionTermBytes": 764,
+        "SearchStateBytes": 1143303,
+        "StructuralBytes": 950,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 12,
+        "SubstitutionBytes": 450,
+        "VerificationBytes": 19203533,
+        "VerificationOperations": 512537
+      }
+    },
+    "send_to_n/priorityqueue/1000": {
+      "result": [],
+      "phlo": 7340,
+      "root": "3a57c421f029819f092f920f87356b263c63b53e2420f45effc8870efc5e15a1",
+      "host_work": {
+        "AuthorityDepth": 16,
+        "AuthorityNodes": 20,
+        "PrimitiveCalls": 6,
+        "PrimitiveInputBytes": 83,
+        "ReductionSteps": 6,
+        "ReductionTermBytes": 764,
+        "SearchStateBytes": 7345847,
+        "StructuralBytes": 951,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 12,
+        "SubstitutionBytes": 450,
+        "VerificationBytes": 155949471,
+        "VerificationOperations": 3897443
+      }
+    },
+    "send_to_n/priorityqueue/10000": {
+      "result": [
+        "error the collection is full at 1741 records"
+      ],
+      "phlo": null,
+      "root": "",
+      "host_work": {}
+    },
+    "send_to_n/queue/10": {
+      "result": [],
+      "phlo": 7275,
+      "root": "a3ca85bf5a4fc4f3644ff95cf36f814005ded1d6d76dfd3147c9b331ccc04383",
+      "host_work": {
+        "AuthorityDepth": 16,
+        "AuthorityNodes": 20,
+        "PrimitiveCalls": 3,
+        "PrimitiveInputBytes": 6,
+        "ReductionSteps": 6,
+        "ReductionTermBytes": 546,
+        "SearchStateBytes": 504683,
+        "StructuralBytes": 882,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 11,
+        "SubstitutionBytes": 344,
+        "VerificationBytes": 4911995,
+        "VerificationOperations": 168481
+      }
+    },
+    "send_to_n/queue/100": {
+      "result": [],
+      "phlo": 7282,
+      "root": "c46602067a2c955f3fa1f7cfccc5a9a954af8aa6ddca14f53a4b589963226713",
+      "host_work": {
+        "AuthorityDepth": 16,
+        "AuthorityNodes": 20,
+        "PrimitiveCalls": 3,
+        "PrimitiveInputBytes": 6,
+        "ReductionSteps": 6,
+        "ReductionTermBytes": 550,
+        "SearchStateBytes": 990707,
+        "StructuralBytes": 884,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 11,
+        "SubstitutionBytes": 346,
+        "VerificationBytes": 13903727,
+        "VerificationOperations": 474497
+      }
+    },
+    "send_to_n/queue/1000": {
+      "result": [],
+      "phlo": 7282,
+      "root": "ace94ef9e5e71bc6c75d94df4a89b08285ac8c5e06f4e46edde2404e7d5008bd",
+      "host_work": {
+        "AuthorityDepth": 16,
+        "AuthorityNodes": 20,
+        "PrimitiveCalls": 3,
+        "PrimitiveInputBytes": 6,
+        "ReductionSteps": 6,
+        "ReductionTermBytes": 550,
+        "SearchStateBytes": 5846851,
+        "StructuralBytes": 885,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 11,
+        "SubstitutionBytes": 346,
+        "VerificationBytes": 103819065,
+        "VerificationOperations": 3534503
+      }
+    },
+    "send_to_n/queue/10000": {
+      "result": [
+        "error the collection is full at 2648 records"
+      ],
+      "phlo": null,
+      "root": "",
+      "host_work": {}
+    },
+    "send_to_n/set/10": {
+      "result": [],
+      "phlo": 4374,
+      "root": "8a4baa3a5032265bb515a3219f187be6d384a2188ac9dd2afac6f7c55de79f4c",
+      "host_work": {
+        "AuthorityDepth": 10,
+        "AuthorityNodes": 12,
+        "PrimitiveCalls": 3,
+        "PrimitiveInputBytes": 6,
+        "ReductionSteps": 6,
+        "ReductionTermBytes": 546,
+        "SearchStateBytes": 261771,
+        "StructuralBytes": 690,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 11,
+        "SubstitutionBytes": 344,
+        "VerificationBytes": 3001771,
+        "VerificationOperations": 108338
+      }
+    },
+    "send_to_n/set/100": {
+      "result": [],
+      "phlo": 4376,
+      "root": "cf520c9c4f4931b79c95374b1c16a72007ba0b563e0d1ad867a8e135f17953e0",
+      "host_work": {
+        "AuthorityDepth": 10,
+        "AuthorityNodes": 12,
+        "PrimitiveCalls": 3,
+        "PrimitiveInputBytes": 6,
+        "ReductionSteps": 6,
+        "ReductionTermBytes": 550,
+        "SearchStateBytes": 747795,
+        "StructuralBytes": 692,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 11,
+        "SubstitutionBytes": 346,
+        "VerificationBytes": 11993536,
+        "VerificationOperations": 414358
+      }
+    },
+    "send_to_n/set/1000": {
+      "result": [],
+      "phlo": 4376,
+      "root": "cb6dc5edaafd010444adf6de4521ee7c486e1f05cf8fbc780b7adea9cebe7581",
+      "host_work": {
+        "AuthorityDepth": 10,
+        "AuthorityNodes": 12,
+        "PrimitiveCalls": 3,
+        "PrimitiveInputBytes": 6,
+        "ReductionSteps": 6,
+        "ReductionTermBytes": 550,
+        "SearchStateBytes": 5603939,
+        "StructuralBytes": 693,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 11,
+        "SubstitutionBytes": 346,
+        "VerificationBytes": 101908775,
+        "VerificationOperations": 3474352
+      }
+    },
+    "send_to_n/set/10000": {
+      "result": [
+        "error the collection is full at 2667 records"
+      ],
+      "phlo": null,
+      "root": "",
+      "host_work": {}
+    },
+    "send_to_n/stack/10": {
+      "result": [],
+      "phlo": 7275,
+      "root": "6ef913a55ce58556c395394c28b251c99352d986db5cb9a69645f341f1b1b150",
+      "host_work": {
+        "AuthorityDepth": 16,
+        "AuthorityNodes": 20,
+        "PrimitiveCalls": 3,
+        "PrimitiveInputBytes": 6,
+        "ReductionSteps": 6,
+        "ReductionTermBytes": 546,
+        "SearchStateBytes": 510339,
+        "StructuralBytes": 882,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 11,
+        "SubstitutionBytes": 344,
+        "VerificationBytes": 4926548,
+        "VerificationOperations": 174840
+      }
+    },
+    "send_to_n/stack/100": {
+      "result": [],
+      "phlo": 7282,
+      "root": "1b7adbc9fd60c922b6d5652f89b2a9435b9a86c519d7bf0a6630baf9c13a131e",
+      "host_work": {
+        "AuthorityDepth": 16,
+        "AuthorityNodes": 20,
+        "PrimitiveCalls": 3,
+        "PrimitiveInputBytes": 6,
+        "ReductionSteps": 6,
+        "ReductionTermBytes": 550,
+        "SearchStateBytes": 996363,
+        "StructuralBytes": 884,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 11,
+        "SubstitutionBytes": 346,
+        "VerificationBytes": 13918313,
+        "VerificationOperations": 480860
+      }
+    },
+    "send_to_n/stack/1000": {
+      "result": [],
+      "phlo": 7282,
+      "root": "9c565ca37266698be0ba70d142143bab77b58a1dbdd23f8e5b8e28ec3a046356",
+      "host_work": {
+        "AuthorityDepth": 16,
+        "AuthorityNodes": 20,
+        "PrimitiveCalls": 3,
+        "PrimitiveInputBytes": 6,
+        "ReductionSteps": 6,
+        "ReductionTermBytes": 550,
+        "SearchStateBytes": 5852507,
+        "StructuralBytes": 885,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 11,
+        "SubstitutionBytes": 346,
+        "VerificationBytes": 103833585,
+        "VerificationOperations": 3540858
+      }
+    },
+    "send_to_n/stack/10000": {
+      "result": [
+        "error the collection is full at 2648 records"
+      ],
+      "phlo": null,
+      "root": "",
+      "host_work": {}
+    },
+    "send_to_n/vectordb/10": {
+      "result": [],
+      "phlo": 4453,
+      "root": "1d273f28f4cd1f3f447d412a7af227ab5d326a9541ee085dbcbc71cf4e2f35c7",
+      "host_work": {
+        "AuthorityDepth": 10,
+        "AuthorityNodes": 12,
+        "PrimitiveCalls": 4,
+        "PrimitiveInputBytes": 33,
+        "ReductionSteps": 6,
+        "ReductionTermBytes": 646,
+        "SearchStateBytes": 374834,
+        "StructuralBytes": 725,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 11,
+        "SubstitutionBytes": 394,
+        "VerificationBytes": 5442815,
+        "VerificationOperations": 128996
+      }
+    },
+    "send_to_n/vectordb/100": {
+      "result": [],
+      "phlo": 4453,
+      "root": "1b3744aefb1d935e83e4b70b2a22c0a9ae41a6da4336e915bc6fe9beb6797167",
+      "host_work": {
+        "AuthorityDepth": 10,
+        "AuthorityNodes": 12,
+        "PrimitiveCalls": 4,
+        "PrimitiveInputBytes": 33,
+        "ReductionSteps": 6,
+        "ReductionTermBytes": 646,
+        "SearchStateBytes": 1557930,
+        "StructuralBytes": 725,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 11,
+        "SubstitutionBytes": 394,
+        "VerificationBytes": 28666123,
+        "VerificationOperations": 525306
+      }
+    },
+    "send_to_n/vectordb/1000": {
+      "result": [],
+      "phlo": 4453,
+      "root": "bc513009355568e5e1d1b80164f3eb8cda30b5466673304e2660991a2e6bea49",
+      "host_work": {
+        "AuthorityDepth": 10,
+        "AuthorityNodes": 12,
+        "PrimitiveCalls": 4,
+        "PrimitiveInputBytes": 33,
+        "ReductionSteps": 6,
+        "ReductionTermBytes": 646,
+        "SearchStateBytes": 13405274,
+        "StructuralBytes": 725,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 11,
+        "SubstitutionBytes": 394,
+        "VerificationBytes": 260907395,
+        "VerificationOperations": 4488904
+      }
+    },
+    "send_to_n/vectordb/10000": {
+      "result": [
+        "error the collection is full at 1030 records"
+      ],
+      "phlo": null,
+      "root": "",
+      "host_work": {}
+    },
+    "vectordb_query/best/10": {
+      "result": [
+        "[1, 1, 1, 1]"
+      ],
+      "phlo": 8638,
+      "root": "925fc20cb38ba304836924a4aec80ae11fdc9af88022b1c131bff8b34fab7787",
+      "host_work": {
+        "AuthorityDepth": 18,
+        "AuthorityNodes": 24,
+        "PrimitiveCalls": 11,
+        "PrimitiveInputBytes": 193,
+        "ReductionSteps": 9,
+        "ReductionTermBytes": 1350,
+        "SearchStateBytes": 871555,
+        "StructuralBytes": 1151,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 17,
+        "SubstitutionBytes": 782,
+        "VerificationBytes": 12003441,
+        "VerificationOperations": 265358
+      }
+    },
+    "vectordb_query/best/100": {
+      "result": [
+        "[1, 1, 1, 1]"
+      ],
+      "phlo": 8638,
+      "root": "fce42c4aea94fd6360447214b0504ddbf224511dd1d85fac052d418e01e6df0c",
+      "host_work": {
+        "AuthorityDepth": 18,
+        "AuthorityNodes": 24,
+        "PrimitiveCalls": 11,
+        "PrimitiveInputBytes": 193,
+        "ReductionSteps": 9,
+        "ReductionTermBytes": 1350,
+        "SearchStateBytes": 3648019,
+        "StructuralBytes": 1151,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 17,
+        "SubstitutionBytes": 782,
+        "VerificationBytes": 66562892,
+        "VerificationOperations": 1305963
+      }
+    },
+    "vectordb_query/best/1000": {
+      "result": [
+        "error HostWorkRejected"
+      ],
+      "phlo": null,
+      "root": "de82d2abc37ba0bf8a48fe6f053c857710d754bdfb2a140d1ac1afb81fde88b5",
+      "host_work": {
+        "AuthorityDepth": 8,
+        "AuthorityNodes": 10,
+        "PrimitiveCalls": 7,
+        "PrimitiveInputBytes": 135,
+        "ReductionSteps": 6,
+        "ReductionTermBytes": 1122,
+        "SearchStateBytes": 13764328,
+        "StructuralBytes": 815,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 12,
+        "SubstitutionBytes": 614,
+        "VerificationBytes": 268435102,
+        "VerificationOperations": 4482757
+      }
+    },
+    "vectordb_query/best/10000": {
+      "result": [
+        "error the collection is full at 1030 records"
+      ],
+      "phlo": null,
+      "root": "",
+      "host_work": {}
+    },
+    "vectordb_query/k8/10": {
+      "result": [
+        "[[1, 1, 1, 1], [2, 2, 2, 1], [1, 3, 2, 1], [4, 4, 1, 1], [0, 2, 1, 1], [3, 3, 0, 1], [2, 4, 0, 1], [5, 0, 2, 1]]"
+      ],
+      "phlo": 50839,
+      "root": "943a48543430cfc84b8255a3c9e9d1c3ac0d6a3a330ad4c756803fba7ce29979",
+      "host_work": {
+        "AuthorityDepth": 18,
+        "AuthorityNodes": 36,
+        "PrimitiveCalls": 27,
+        "PrimitiveInputBytes": 1105,
+        "ReductionSteps": 9,
+        "ReductionTermBytes": 1410,
+        "SearchStateBytes": 1746755,
+        "StructuralBytes": 1461,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 17,
+        "SubstitutionBytes": 1264,
+        "VerificationBytes": 29431200,
+        "VerificationOperations": 494818
+      }
+    },
+    "vectordb_query/k8/100": {
+      "result": [
+        "[[1, 1, 1, 1], [2, 2, 2, 1], [1, 2, 2, 1], [2, 2, 1, 1], [2, 1, 2, 1], [2, 1, 1, 1], [1, 2, 1, 1], [1, 1, 2, 1]]"
+      ],
+      "phlo": 50839,
+      "root": "dc30e1a6a9fbbfc5172d832d07c11b9c721b0ae8f889a4caaf4cb992fcc943ba",
+      "host_work": {
+        "AuthorityDepth": 18,
+        "AuthorityNodes": 36,
+        "PrimitiveCalls": 27,
+        "PrimitiveInputBytes": 1105,
+        "ReductionSteps": 9,
+        "ReductionTermBytes": 1410,
+        "SearchStateBytes": 4525299,
+        "StructuralBytes": 1461,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 17,
+        "SubstitutionBytes": 1264,
+        "VerificationBytes": 83992649,
+        "VerificationOperations": 1537288
+      }
+    },
+    "vectordb_query/k8/1000": {
+      "result": [
+        "error HostWorkRejected"
+      ],
+      "phlo": null,
+      "root": "0f930c6abaccd9e98cb50cd76ba0a85bcb580696cc18a513dd86cc2a3fad1714",
+      "host_work": {
+        "AuthorityDepth": 8,
+        "AuthorityNodes": 10,
+        "PrimitiveCalls": 7,
+        "PrimitiveInputBytes": 165,
+        "ReductionSteps": 6,
+        "ReductionTermBytes": 1182,
+        "SearchStateBytes": 13768426,
+        "StructuralBytes": 837,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 12,
+        "SubstitutionBytes": 644,
+        "VerificationBytes": 268435246,
+        "VerificationOperations": 4483270
+      }
+    },
+    "vectordb_query/k8/10000": {
+      "result": [
+        "error the collection is full at 1030 records"
+      ],
+      "phlo": null,
+      "root": "",
+      "host_work": {}
+    },
+    "vectordb_query/list_all/10": {
+      "result": [
+        "[[2, 4, 0, 1], [2, 2, 2, 1], [5, 0, 2, 1], [0, 2, 1, 1], [0, 0, 0, 1], [6, 1, 0, 1], [4, 4, 1, 1], [3, 3, 0, 1], [1, 1, 1, 1], [1, 3, 2, 1]]"
+      ],
+      "phlo": 74730,
+      "root": "3b170248c89e74c1c06ef4e11336c7393a70de2bd539399d3685b6f714da34c0",
+      "host_work": {
+        "AuthorityDepth": 18,
+        "AuthorityNodes": 40,
+        "PrimitiveCalls": 30,
+        "PrimitiveInputBytes": 1266,
+        "ReductionSteps": 9,
+        "ReductionTermBytes": 1322,
+        "SearchStateBytes": 1928615,
+        "StructuralBytes": 1533,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 17,
+        "SubstitutionBytes": 1344,
+        "VerificationBytes": 32811622,
+        "VerificationOperations": 539211
+      }
+    },
+    "vectordb_query/list_all/100": {
+      "result": [
+        "error HostWorkRejected"
+      ],
+      "phlo": null,
+      "root": "0018fec362a10fa709fc337f6a70801c728c124b6f8016d2dbe5b1c19bd2c8fb",
+      "host_work": {
+        "AuthorityDepth": 10,
+        "AuthorityNodes": 12,
+        "PrimitiveCalls": 6,
+        "PrimitiveInputBytes": 94,
+        "ReductionSteps": 6,
+        "ReductionTermBytes": 1094,
+        "SearchStateBytes": 13585586,
+        "StructuralBytes": 861,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 12,
+        "SubstitutionBytes": 600,
+        "VerificationBytes": 268435311,
+        "VerificationOperations": 3579517
+      }
+    },
+    "vectordb_query/list_all/1000": {
+      "result": [
+        "error HostWorkRejected"
+      ],
+      "phlo": null,
+      "root": "01874066cebd826cf9cfd3947f2923be4a577f22a3798f0c6f6079078e7112f4",
+      "host_work": {
+        "AuthorityDepth": 8,
+        "AuthorityNodes": 10,
+        "PrimitiveCalls": 6,
+        "PrimitiveInputBytes": 94,
+        "ReductionSteps": 6,
+        "ReductionTermBytes": 1094,
+        "SearchStateBytes": 13753994,
+        "StructuralBytes": 813,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 12,
+        "SubstitutionBytes": 600,
+        "VerificationBytes": 268435238,
+        "VerificationOperations": 4482145
+      }
+    },
+    "vectordb_query/list_all/10000": {
+      "result": [
+        "error the collection is full at 1030 records"
+      ],
+      "phlo": null,
+      "root": "",
+      "host_work": {}
+    },
+    "vectordb_query/threshold/10": {
+      "result": [
+        "[1, 1, 1, 1]"
+      ],
+      "phlo": 8700,
+      "root": "5c2b93c6227ffadf1da1ba3440e000a7d5db98f64ce845d10bb0b429584281b5",
+      "host_work": {
+        "AuthorityDepth": 18,
+        "AuthorityNodes": 24,
+        "PrimitiveCalls": 11,
+        "PrimitiveInputBytes": 255,
+        "ReductionSteps": 9,
+        "ReductionTermBytes": 1474,
+        "SearchStateBytes": 880615,
+        "StructuralBytes": 1197,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 17,
+        "SubstitutionBytes": 844,
+        "VerificationBytes": 12266850,
+        "VerificationOperations": 268209
+      }
+    },
+    "vectordb_query/threshold/100": {
+      "result": [
+        "[1, 1, 1, 1]"
+      ],
+      "phlo": 8700,
+      "root": "46cf58924ace220107b5e7015cb5b7d191ac1a47fd9d016927372bbcb88df846",
+      "host_work": {
+        "AuthorityDepth": 18,
+        "AuthorityNodes": 24,
+        "PrimitiveCalls": 11,
+        "PrimitiveInputBytes": 255,
+        "ReductionSteps": 9,
+        "ReductionTermBytes": 1474,
+        "SearchStateBytes": 3671479,
+        "StructuralBytes": 1197,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 17,
+        "SubstitutionBytes": 844,
+        "VerificationBytes": 66841146,
+        "VerificationOperations": 1321766
+      }
+    },
+    "vectordb_query/threshold/1000": {
+      "result": [
+        "error HostWorkRejected"
+      ],
+      "phlo": null,
+      "root": "1fee92d036ae1b79c24c6a8608ac3fbefd4d3c44a50c7960b0d026acce5b8d38",
+      "host_work": {
+        "AuthorityDepth": 8,
+        "AuthorityNodes": 10,
+        "PrimitiveCalls": 7,
+        "PrimitiveInputBytes": 197,
+        "ReductionSteps": 6,
+        "ReductionTermBytes": 1246,
+        "SearchStateBytes": 13768506,
+        "StructuralBytes": 861,
+        "StructuralItems": 1,
+        "SubstitutionBindings": 12,
+        "SubstitutionBytes": 676,
+        "VerificationBytes": 268435453,
+        "VerificationOperations": 4483285
+      }
+    },
+    "vectordb_query/threshold/10000": {
+      "result": [
+        "error the collection is full at 1030 records"
+      ],
+      "phlo": null,
+      "root": "",
+      "host_work": {}
+    }
+  }
+}
