@@ -21,6 +21,13 @@ set -euo pipefail
 #   verdict.json                soak regression verdict
 #   maintainer-review.json      optional, accepts a regress verdict
 #   maintainer-review-permission.json  GET collaborators/{reviewer}/permission
+#   shard-soak-in-evidence.json published by the Shard soak-in (section 12.1)
+#   shard-soak-in-run.json      GET actions/runs/{id} for that document's run
+#
+# RELEASE_SHARD_SOAK_IN_GATE (the repository variable of the same name in
+# release.yml) sets the shard_soak_in gate. Unset, empty, or advisory passes
+# the gate until section 12.1 is ratified and the test net runs; enforced
+# requires the Shard soak-in evidence; any other value fails the gate.
 #
 # Release assets are mutable by anyone with contents: write, so a gate
 # document alone proves nothing about the run it names. The workflow fetches
@@ -297,6 +304,42 @@ gate_regression_verdict() {
 	esac
 }
 
+gate_shard_soak_in() {
+	local dir="$1" evidence="$2" repository="$3" doc="$dir/shard-soak-in-evidence.json" policy reason
+	policy="${RELEASE_SHARD_SOAK_IN_GATE:-advisory}"
+	case "$policy" in
+	advisory)
+		gate_result shard_soak_in pass "Shard soak-in gate is advisory until docs/release-process.md section 12.1 is ratified"
+		return
+		;;
+	enforced) ;;
+	*)
+		gate_result shard_soak_in fail "Shard soak-in policy is $policy, not advisory or enforced"
+		return
+		;;
+	esac
+	[ -f "$doc" ] || { gate_result shard_soak_in hold "shard-soak-in-evidence.json is absent"; return; }
+	reason="$(candidate_binding_reason "$doc" "$evidence" shard_soak_in)"
+	[ -z "$reason" ] || { gate_result shard_soak_in fail "$reason"; return; }
+	reason="$(run_identity_reason "$doc" "$dir/shard-soak-in-run.json" .github/workflows/soak-in.yml "$repository")"
+	case "$reason" in
+	hold:*) gate_result shard_soak_in hold "${reason#hold:}"; return ;;
+	fail:*) gate_result shard_soak_in fail "${reason#fail:}"; return ;;
+	esac
+	reason="$(jq -r --slurpfile ev "$evidence" '
+		if .workflow_run.path != ".github/workflows/soak-in.yml" then "Shard soak-in ran from workflow " + (.workflow_run.path // "null")
+		elif .consensus_model != ($ev[0].consensus_model // "cbc-casper") then "Shard soak-in ran in consensus model " + (.consensus_model // "null")
+		elif (.path | IN("joined", "new_shard") | not) then "Shard soak-in path is " + (.path // "null")
+		elif .completed != true then "the soak period did not complete"
+		elif (.anchor_criteria | type != "array" or length == 0) then "Shard soak-in records no Anchor criteria"
+		elif ([.anchor_criteria[] | select(.status != "pass")] | length) > 0 then "an Anchor criterion did not pass"
+		elif .anchor_promoted != true then "the soaking node did not gain the Anchor role"
+		else ""
+		end' "$doc")"
+	[ -z "$reason" ] || { gate_result shard_soak_in fail "$reason"; return; }
+	gate_result shard_soak_in pass "Shard soak-in completed and the soaking node gained the Anchor role"
+}
+
 gate_train_gates() {
 	local evidence="$1" train_id
 	train_id="$(jq -r '.train_id' "$evidence")"
@@ -337,10 +380,11 @@ evaluate() {
 	run_gate soak_preflight gate_soak_preflight "$dir" "$evidence"
 	run_gate stability_soak gate_stability_soak "$dir" "$evidence" "$repository"
 	run_gate regression_verdict gate_regression_verdict "$dir" "$evidence"
+	run_gate shard_soak_in gate_shard_soak_in "$dir" "$evidence" "$repository"
 	run_gate train_gates gate_train_gates "$evidence"
 	gates="$(jq -s '.' "$results_file")"
 	rm -f "$results_file"
-	jq -e '[.[].id] == ["full_ci", "heavy_integration", "slashing", "oci_validation", "soak_preflight", "stability_soak", "regression_verdict", "train_gates"]' <<<"$gates" >/dev/null ||
+	jq -e '[.[].id] == ["full_ci", "heavy_integration", "slashing", "oci_validation", "soak_preflight", "stability_soak", "regression_verdict", "shard_soak_in", "train_gates"]' <<<"$gates" >/dev/null ||
 		fail "gate set is incomplete or out of order"
 	mkdir -p "$(dirname "$output")"
 	jq -n \
@@ -369,6 +413,70 @@ evaluate() {
 	esac
 }
 
+# Test net entry (section 12.1). The marker must bind to the candidate and to
+# the soak run that produced it, and the same stability, preflight, and
+# regression gates that promotion uses must pass for that run.
+verify_test_net_candidate() {
+	local dir="$1" repository="$2" output="$3"
+	local evidence="$dir/release-evidence.json" doc="$dir/test-net-candidate.json"
+	local status=pass reason="" gate gate_status model
+	require_file "$evidence"
+	"$EVIDENCE_TOOL" validate "$evidence"
+	[ "$(jq -r '.publication_mode' "$evidence")" = canary ] ||
+		fail "test net entry requires canary evidence with published images"
+	model="$(jq -r '.consensus_model // "cbc-casper"' "$evidence")"
+	tnc_reason() {
+		local reason
+		[ -f "$doc" ] || { printf 'hold:test-net-candidate.json is absent'; return; }
+		reason="$(candidate_binding_reason "$doc" "$evidence" test_net_candidate)"
+		[ -z "$reason" ] || { printf 'fail:%s' "$reason"; return; }
+		reason="$(run_identity_reason "$doc" "$dir/soak-run.json" .github/workflows/merge-recovery-soak.yml "$repository")"
+		[ -z "$reason" ] || { printf '%s' "$reason"; return; }
+		jq -e --arg model "$model" '.consensus_model == $model' "$doc" >/dev/null ||
+			{ printf 'fail:marker consensus model %s is not the candidate model %s' "$(jq -r '.consensus_model // "null"' "$doc")" "$model"; return; }
+		[ -f "$dir/soak-evidence.json" ] || { printf 'hold:soak-evidence.json is absent'; return; }
+		[ "$(jq -r '.soak_evidence_sha256' "$doc")" = "$(sha256sum "$dir/soak-evidence.json" | awk '{print $1}')" ] ||
+			{ printf 'fail:the soak document differs from the one the marker recorded'; return; }
+		jq -e --slurpfile soak "$dir/soak-evidence.json" '.workflow_run.id == $soak[0].workflow_run.id' "$doc" >/dev/null ||
+			{ printf 'fail:the marker and the soak document name different runs'; return; }
+		for gate in gate_soak_preflight gate_stability_soak gate_regression_verdict; do
+			gate_status="$("$gate" "$dir" "$evidence" "$repository" 2>/dev/null)" || gate_status=""
+			jq -e '.status | IN("pass", "hold", "fail")' <<<"$gate_status" >/dev/null 2>&1 ||
+				{ printf 'fail:%s did not complete' "$gate"; return; }
+			case "$(jq -r '.status' <<<"$gate_status")" in
+			hold) printf 'hold:%s' "$(jq -r '.reason' <<<"$gate_status")"; return ;;
+			fail) printf 'fail:%s' "$(jq -r '.reason' <<<"$gate_status")"; return ;;
+			esac
+		done
+	}
+	reason="$(tnc_reason)" || reason="fail:test net candidate verification did not complete"
+	case "$reason" in
+	hold:*) status=hold reason="${reason#hold:}" ;;
+	fail:*) status=fail reason="${reason#fail:}" ;;
+	*) reason="the canary is a test net candidate for the $model test net" ;;
+	esac
+	mkdir -p "$(dirname "$output")"
+	jq -n \
+		--arg candidate_tag "$(jq -r '.candidate_tag' "$evidence")" \
+		--arg source_sha "$(jq -r '.source_sha' "$evidence")" \
+		--arg model "$model" --arg status "$status" --arg reason "$reason" '
+		{
+			schema_version: 1,
+			candidate_tag: $candidate_tag,
+			source_sha: $source_sha,
+			consensus_model: $model,
+			status: $status,
+			reason: $reason,
+			eligible: ($status == "pass")
+		}' >"$output"
+	printf 'test net entry for %s: %s (%s)\n' "$(jq -r '.candidate_tag' "$output")" "$status" "$reason" >&2
+	case "$status" in
+	pass) return "$EXIT_PROMOTABLE" ;;
+	hold) return "$EXIT_HELD" ;;
+	fail) return "$EXIT_FAILED" ;;
+	esac
+}
+
 summarize() {
 	local report="$1"
 	require_file "$report"
@@ -388,8 +496,10 @@ usage() {
 	printf '%s\n' \
 		"usage: $0 evaluate GATES_DIR REPOSITORY OUTPUT" \
 		"       $0 summarize GATE_REPORT" \
+		"       $0 verify-test-net-candidate GATES_DIR REPOSITORY OUTPUT" \
 		"" \
-		"evaluate exits 0 when promotable, $EXIT_HELD when held, $EXIT_FAILED when a gate failed." >&2
+		"evaluate exits 0 when promotable, $EXIT_HELD when held, $EXIT_FAILED when a gate failed." \
+		"verify-test-net-candidate exits 0 when the canary may enroll, $EXIT_HELD when held, $EXIT_FAILED when refused." >&2
 	exit 2
 }
 
@@ -402,6 +512,10 @@ evaluate)
 summarize)
 	[ "$#" -eq 2 ] || usage
 	summarize "$2"
+	;;
+verify-test-net-candidate)
+	[ "$#" -eq 4 ] || usage
+	verify_test_net_candidate "$2" "$3" "$4"
 	;;
 *) usage ;;
 esac

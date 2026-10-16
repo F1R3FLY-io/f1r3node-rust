@@ -7,6 +7,7 @@ TOOL="$ROOT/.github/scripts/release-gates.sh"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 REPOSITORY=example/repository
+unset RELEASE_SHARD_SOAK_IN_GATE
 PIN=0123456789abcdef0123456789abcdef01234567
 
 # --- Candidate evidence fixture, produced by the real evidence tool -------
@@ -105,7 +106,8 @@ expect_exit 0 'all gates pass' "$TOOL" evaluate "$GATES" "$REPOSITORY" "$REPORT"
 jq -e --arg tag "$CANDIDATE_TAG" --arg sha "$SOURCE_SHA" '
 	.schema_version == 1 and .candidate_tag == $tag and .source_sha == $sha
 	and .promotable == true and .held == false and .failed == false
-	and (.gates | length) == 8
+	and (.gates | length) == 9
+	and ([.gates[] | select(.id == "shard_soak_in")][0].reason | test("advisory"))
 	and ([.gates[] | select(.status != "pass")] | length) == 0' "$REPORT" >/dev/null
 "$TOOL" evaluate "$GATES" "$REPOSITORY" "$TMP/gate-report-repeat.json" >/dev/null 2>&1
 cmp "$REPORT" "$TMP/gate-report-repeat.json"
@@ -182,7 +184,7 @@ malformed_case() {
 	cp -R "$GATES" "$dir"
 	printf '%s' "$content" >"$dir/$file"
 	expect_exit 20 "$label" "$TOOL" evaluate "$dir" "$REPOSITORY" "$dir/report.json"
-	jq -e --arg gate "$gate" '(.gates | length) == 8 and ([.gates[] | select(.id == $gate)][0].status == "fail") and .promotable == false' "$dir/report.json" >/dev/null ||
+	jq -e --arg gate "$gate" '(.gates | length) == 9 and ([.gates[] | select(.id == $gate)][0].status == "fail") and .promotable == false' "$dir/report.json" >/dev/null ||
 		{ printf 'malformed %s did not fail closed for %s\n' "$file" "$label" >&2; exit 1; }
 }
 malformed_case 'truncated OCI document' oci-validation-evidence.json '{"schema_version": 1, "gate": "oci_validation"' oci_validation
@@ -198,6 +200,46 @@ cp -R "$GATES" "$UNVERIFIED"
 rm "$UNVERIFIED/oci-validation-run.json" "$UNVERIFIED/soak-run.json"
 expect_exit 10 'gate documents without API run verification' "$TOOL" evaluate "$UNVERIFIED" "$REPOSITORY" "$TMP/unverified-report.json"
 jq -e '([.gates[] | select(.status == "hold") | .id] | sort) == ["oci_validation", "stability_soak"]' "$TMP/unverified-report.json" >/dev/null
+
+# --- Shard soak-in gate: advisory unless the repository variable enforces it -
+SHARD="$TMP/shard"
+cp -R "$GATES" "$SHARD"
+RELEASE_SHARD_SOAK_IN_GATE=enforced expect_exit 10 'enforced gate without Shard soak-in evidence' \
+	"$TOOL" evaluate "$SHARD" "$REPOSITORY" "$TMP/shard-held.json"
+jq -e '([.gates[] | select(.status == "hold") | .id]) == ["shard_soak_in"]' "$TMP/shard-held.json" >/dev/null
+binding shard_soak_in .github/workflows/soak-in.yml 999 | jq '. + {
+	consensus_model: "cbc-casper", test_net_shard: "cbc-casper-1", path: "joined", completed: true,
+	soak_period_seconds: 432000, anchor_promoted: true,
+	anchor_criteria: [{id: "no_unplanned_restart", status: "pass"}, {id: "no_slashing", status: "pass"}]}' \
+	>"$SHARD/shard-soak-in-evidence.json"
+RELEASE_SHARD_SOAK_IN_GATE=enforced expect_exit 10 'enforced gate before API run verification' \
+	"$TOOL" evaluate "$SHARD" "$REPOSITORY" "$TMP/shard-unverified.json"
+run_doc .github/workflows/soak-in.yml 999 1 "$SOURCE_SHA" workflow_dispatch master >"$SHARD/shard-soak-in-run.json"
+RELEASE_SHARD_SOAK_IN_GATE=enforced expect_exit 0 'enforced gate with a completed Shard soak-in' \
+	"$TOOL" evaluate "$SHARD" "$REPOSITORY" "$TMP/shard-pass.json"
+shard_fail_case() {
+	local label="$1" filter="$2" dir="$TMP/shard-fail-$RANDOM"
+	cp -R "$SHARD" "$dir"
+	jq "$filter" "$SHARD/shard-soak-in-evidence.json" >"$dir/shard-soak-in-evidence.json"
+	RELEASE_SHARD_SOAK_IN_GATE=enforced expect_exit 20 "$label" "$TOOL" evaluate "$dir" "$REPOSITORY" "$dir/report.json"
+	jq -e '[.gates[] | select(.id == "shard_soak_in")][0].status == "fail"' "$dir/report.json" >/dev/null ||
+		{ printf 'shard_soak_in did not fail for %s\n' "$label" >&2; exit 1; }
+}
+shard_fail_case 'Shard soak-in in another consensus model' '.consensus_model = "other-model"'
+shard_fail_case 'Shard soak-in without completion' '.completed = false'
+shard_fail_case 'Shard soak-in without Anchor promotion' '.anchor_promoted = false'
+shard_fail_case 'Shard soak-in with a failed Anchor criterion' '.anchor_criteria[1].status = "fail"'
+shard_fail_case 'Shard soak-in with no Anchor criteria' '.anchor_criteria = []'
+shard_fail_case 'Shard soak-in with an unknown path' '.path = "elsewhere"'
+shard_fail_case 'Shard soak-in on another image' '.image_index_digest = "sha256:0000000000000000000000000000000000000000000000000000000000000000"'
+RELEASE_SHARD_SOAK_IN_GATE=advisory expect_exit 0 'explicit advisory gate' \
+	"$TOOL" evaluate "$GATES" "$REPOSITORY" "$TMP/advisory-report.json"
+RELEASE_SHARD_SOAK_IN_GATE= expect_exit 0 'empty variable is advisory' \
+	"$TOOL" evaluate "$GATES" "$REPOSITORY" "$TMP/empty-policy-report.json"
+RELEASE_SHARD_SOAK_IN_GATE=sometimes expect_exit 20 'unknown Shard soak-in policy' \
+	"$TOOL" evaluate "$GATES" "$REPOSITORY" "$TMP/bad-policy-report.json"
+RELEASE_SHARD_SOAK_IN_GATE=Enforced expect_exit 20 'policy values are case-sensitive' \
+	"$TOOL" evaluate "$GATES" "$REPOSITORY" "$TMP/case-policy-report.json"
 
 # --- Evidence-only candidates cannot be promoted -----------------------------
 NOIMG="$TMP/noimg"

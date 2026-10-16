@@ -3,6 +3,13 @@
 # Sourced by oci-provision.sh and oci-destroy.sh.
 set -euo pipefail
 
+# --- Optional profile (e.g. TESTBED_PROFILE=testnet loads testnet.env) ---
+if [[ -n "${TESTBED_PROFILE:-}" ]]; then
+  [[ "$TESTBED_PROFILE" =~ ^[a-z0-9-]+$ ]] || { echo "invalid TESTBED_PROFILE: $TESTBED_PROFILE" >&2; exit 1; }
+  # shellcheck source=/dev/null
+  source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/${TESTBED_PROFILE}.env"
+fi
+
 # --- Configuration (overridable via env) ---
 : "${OCI_REGION:=us-sanjose-1}"
 : "${OCI_COMPARTMENT_ID:=ocid1.compartment.oc1..aaaaaaaagxeazaquqkvniko2zq5m7i7mxa37fz5u6gyjny4svupgwh4ao3fa}"

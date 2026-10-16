@@ -104,6 +104,14 @@ vps-down:
     scripts/remote/teardown.sh --apply
     scripts/remote/oci-destroy.sh --apply --force
 
+# Dry-run the CBC Casper test net VMs (2x amd64 E5.Flex); never applies (EPIC-014)
+testnet-plan:
+    TESTBED_PROFILE=testnet scripts/remote/oci-provision.sh --dry-run
+
+# Validate a test net slot file: digest pins, one consensus model, soaking slot rules
+testnet-check-slots file:
+    scripts/remote/testnet-slots.sh check {{file}}
+
 # Run a latency benchmark against the shard (local if host="", remote via SSH otherwise)
 vps-bench-latency host="" duration="60" rate="2":
     scripts/bench/latency-benchmark.sh --host {{host}} --duration {{duration}} --rate {{rate}} --apply
