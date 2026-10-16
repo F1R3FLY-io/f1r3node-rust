@@ -200,7 +200,7 @@ Both settings take effect at the next session start.
 - `dev` is the integration branch. Feature and fix pull requests target this branch.
 - Feature branches (`feature/`, `fix/`, `docs/`, `perf/`, `chore/`) branch from and target `dev`
 - `hotfix/` branches from and target `master`, then `master` is merged back into `dev`
-- `just backmerge` opens the back-merge from a temporary `backmerge/*` branch. Do not open a pull request with head `master` or `dev`. Its **Update branch** button merges the base into the protected head through the admin bypass. The `Promotion Source` check rejects such a pull request.
+- `just backmerge` opens the back-merge from a temporary `backmerge/*` branch. Do not open a pull request with head `master` or `dev`. Its **Update branch** button merges the base into the protected head through the admin bypass. The `Promotion Source` check rejects and closes such a pull request.
 - There is no `main` branch, and `staging` is deprecated (fully contained in `dev`)
 
 ### Continuous Integration and Deployment

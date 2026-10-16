@@ -27,9 +27,24 @@ if git merge-base --is-ancestor "$sha" "$remote/dev"; then
 	exit 0
 fi
 
+# One back-merge at a time. A second pull request would merge the same master
+# commits twice and split the review.
+if ! open_prs="$(gh pr list --repo "$repo" --base dev --state open --json number,headRefName \
+	--jq '[.[] | select(.headRefName | startswith("backmerge/")) | "#\(.number)"] | join(" ")')"; then
+	echo "ERROR: the open pull requests to dev could not be listed." >&2
+	exit 1
+fi
+if [ -n "$open_prs" ]; then
+	echo "A back-merge pull request is already open: $open_prs. Merge or close it, then run just backmerge again."
+	exit 0
+fi
+
 count="$(git rev-list --count "$remote/dev..$sha")"
 branch="backmerge/$stamp"
-gh api "repos/$repo/git/refs" -f ref="refs/heads/$branch" -f sha="$sha" >/dev/null
+if ! gh api "repos/$repo/git/refs" -f ref="refs/heads/$branch" -f sha="$sha" >/dev/null; then
+	echo "ERROR: $branch was not created. If the branch already exists, wait one second and run just backmerge again." >&2
+	exit 1
+fi
 echo "Created $branch at ${sha:0:9} ($remote/master, $count commits not on dev)."
 
 if ! gh pr create --repo "$repo" --base dev --head "$branch" \

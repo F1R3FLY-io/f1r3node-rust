@@ -147,6 +147,10 @@ Do not open a promotion with head `dev`. The repository deletes the head branch 
 
 After a `hotfix/` pull request merges into `master`, merge `master` back into `dev`. Run `just backmerge` to open the back-merge pull request. The command runs `.github/scripts/open-backmerge-pr.sh`. It creates a temporary `backmerge/<UTC timestamp>` branch at the `origin/master` commit and opens the pull request to `dev` with your `gh` login. If `dev` already contains `master`, the command does nothing.
 
+If a `backmerge/*` pull request to `dev` is open, the command names it and does nothing. Merge or close that pull request first.
+
 Do not open a back-merge with head `master`. A pull request with a protected head shows the **Update branch** button. That button merges the base into the head through the admin bypass of the ruleset. On #747 (head `master`, base `dev`), it pushed `dev` onto `master` outside promotion (`bf4915d57`, 2026-10-16).
 
-The `Promotion Source` check rejects every pull request with head `master` or `dev` from this repository, whatever its base. A pull request from the `master` or `dev` branch of a fork is accepted. `devProtect` does not require `Promotion Source`, so on a `dev` pull request the check reports the problem but does not block the merge.
+The `Promotion Source` check runs `.github/scripts/check-promotion-source.sh`. The script rejects every pull request with head `master` or `dev` from this repository, whatever its base. It also closes the pull request with a comment that gives the reason. A pull request from the `master` or `dev` branch of a fork is accepted.
+
+A failing check alone does not remove the **Update branch** button, and `devProtect` does not require `Promotion Source`. A closed pull request has no **Update branch** button and cannot merge. The close happens a few seconds after the pull request opens. Only a ruleset blocks a direct push to `master` or `dev` at all times. The change of the human bypass actors from `always` to `pull_request` is still open (TASK-023-13).
