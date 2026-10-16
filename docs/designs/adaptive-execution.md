@@ -3,10 +3,10 @@
 - **Status:** draft for architect ratification (section 2.1, TASK-027-1, EPIC-027). Created on 2026-10-13.
 - **Story:** [US-012](../UserStories.md) Shards that adapt to the hardware of each node
 - **Branch:** `perf/issue-24-adaptive-execution`
-- **Closes:** issue #24, "perf: block replay pipeline bottleneck limits sustained deploy throughput"
+- **Closes:** issue #24, "perf: block replay pipeline bottleneck limits sustained deploy throughput". Open question Q8 asks whether the close-out waits for this design.
 - **Depends on:** the replication boundary of EPIC-025 (design PR #627, decision D7) and the lifecycle runtime of PR #651
 - **Mechanisms:** F1r3fly CbC Casper (`cbc-casper`) first. The RGB peer clique (`peer-clique`), Casanova (`casanova`), and Cordial Miners (`cordial-miners`) have provisions in section 11.
-- **Evidence source:** EPIC-021 and the issue #24 comments from 2026-08-27 to 2026-10-10
+- **Evidence source:** EPIC-021 and the issue #24 comments from 2026-08-27 to 2026-10-16
 - **Vocabulary:** [docs/Glossary.md](../Glossary.md). The new terms in section 20 go into the glossary when this design is approved.
 
 ---
@@ -57,17 +57,21 @@ The open questions of section 19 do not block ratification. Each question names 
 
 ## 3. Evidence from issue #24
 
-The issue #24 history gives five facts that this design must use.
+The issue #24 history gives seven facts that this design must use.
 
 | Fact | Source | Effect on the design |
 |---|---|---|
-| In the high phase, non-leader validators use a fixed fallback cap of 8 deploys per block. The cap rises to 16 or 32 only after the oldest fresh deploy waits 120 s or 300 s. The test fails at 45 s. | Issue #24 comment 6094239136 | A fixed escalation table cannot follow the real arrival rate. The cap must follow measured backlog and capacity. |
-| All three high-phase failures in soak 37996403003 ran on Docker. Docker shards had about twice the left-out deploys and twice the selection age of subprocess shards. | Comment 6094531369 | The same code behaves differently on different hosts. A tier profile and a closed loop are necessary. |
+| In the high phase, non-leader validators used a fixed fallback cap of 8 deploys per block. The cap rose to 16 or 32 only after a wait of 120 s or 300 s, but the test fails at 45 s. PR #695 made the cap follow the local backlog, and the high-phase inclusion p95 fell below 10 s (soak 38300649650). | Issue #24 comments 6094239136 and 6148770562 | A fixed escalation table cannot follow the real arrival rate. The cap must follow measured backlog and capacity. |
+| All three high-phase failures in soak 37996403003 ran on Docker. Docker shards had about twice the left-out deploys and twice the selection age of subprocess shards. After PR #695, Docker had 0 failures in 43 iterations. | Comments 6094531369 and 6148770562 | The same code behaved differently on different hosts. PR #695 removed this difference for the high phase. |
 | The sustained-phase failures have a different cause. The deploys enter blocks in 2 to 2.6 s and then wait for finalization. | Comment 6094531369 | An admission controller alone does not close issue #24. The delay from inclusion to finality needs its own signal and its own control (section 10.3). |
 | PR #473 removed an earlier "adaptive deploy cap". | Issue #24 description | That cap was a fixed table. This design uses a closed loop with bounds, hysteresis, and telemetry for each step (section 7). |
-| The checkpoint fsync is about 1 percent of the cost. Replay runtime spawn takes 3.8 ms in the soak. | Comments 6016872961 and 6043103631 | The controller must not assume that disk or spawn cost is the bottleneck. It acts only on measured signals. |
+| On Docker, the checkpoint fsync is about 1 percent of the cost, and the replay runtime spawn takes 3.8 ms. On the subprocess provider, the replay checkpoint takes 483 ms against 64 ms on Docker, with jemalloc on both. | Comments 6016872961, 6043103631, and 6171089126 | The controller must not assume that disk or spawn cost is the bottleneck. Storage cost depends on the host class, so the probe measures disk latency (section 6). The controller acts only on measured signals. |
+| Without jemalloc, the subprocess provider failed 28 of 42 iterations (67%) in soak 38300649650. Its storage stages were 3 to 23 times slower than on Docker. | Comment 6148770562 | The allocator is part of the host class (section 14.3). A configuration defect can look like a slow hardware tier. |
+| With jemalloc on the subprocess provider (`fd3d97a84`), soak 38501465484 failed 1 of 52 iterations (1.9%): 0 of 26 on Docker and 1 of 26 on subprocess. The failure is in the sustained phase, and the soak ran 8 hours only. | Comment 6171089126 | Without a controller, the measured rate is inside the gate of section 14.1, but 26 sessions on each provider cannot prove the gate. Open question Q8 follows from this fact. |
 
 PR #695 already makes the non-leader fresh-admission cap follow the local backlog. This design keeps that change and puts its bounds under the controller (section 10.1).
+
+No full-length soak on the code with both PR #695 and the jemalloc hotfix exists yet. The soaks of 2026-10-15 and 2026-10-16 stopped on a workflow defect before the first iteration ([issue #24 comment 6217970582](https://github.com/F1R3FLY-io/f1r3node-rust/issues/24#issuecomment-6217970582)). Hotfix PR #741 repairs that defect.
 
 ---
 
@@ -377,7 +381,7 @@ The `cbc-casper` profile closes issue #24 with these gates:
 2. The gate holds separately for the Docker host class and the subprocess host class.
 3. The gate holds on a constrained tier run with cgroup CPU and memory limits.
 4. No run shows an out-of-memory stop, a watchdog stop, or a guardian stop.
-5. The controller records show at least one step down and one step up in the high phase. This proves that the loop acts.
+5. On the constrained tier run of gate 3, the controller records show at least one step down and one step up in the high phase. This proves that the loop acts. A run on a larger tier can pass without a controller action. PR #695 already keeps the high phase inside its deadline on both host classes.
 
 The other mechanisms supply their profiles with their adapters:
 
@@ -525,6 +529,7 @@ No question blocks ratification (section 2.1). The Blocks column names the first
 | Q5 | Is a mixed-tier shard test in CI possible on the current runners, or does it need the test net of EPIC-014? | The mixed-tier test of TASK-027-4 | Run the CI test in one process with the multi-node harness of `casper/tests/multi_node`. Give each node different control values. Run a full mixed-tier shard on the EPIC-014 test net. |
 | Q6 | Who owns the adaptation descriptors and soak profiles of the RGB peer clique, Casanova, and Cordial Miners? EPIC-014 gives each mechanism its own test net and design record. | TASK-027-9 | The owner of each adapter owns its descriptor and its soak profile. EPIC-027 owns the controller and the `cbc-casper` binding. |
 | Q7 | Should F1r3fly CbC Casper reward timely participation? `PoS.rhox` pays epoch rewards in proportion to bond only, but Ethereum makes timely work profitable through rewards (section 16). A timeliness reward changes replicated state, so it needs its own design and a CbC claim (decision A2). | No EPIC-027 task | Leave it open, and start a separate design if the shard needs a timeliness incentive. |
+| Q8 | Does the close-out of issue #24 wait for this design? Decisions A5 and A6 give it to EPIC-027, but soak 38501465484 measured 1.9% without a controller (section 3). | TASK-027-8 | Keep A5 and A6 for ratification, and decide Q8 after the first full-length soak with PR #741. If that soak meets gates 1 and 2 of section 14.1 and TASK-021-13 resolves Q1, close issue #24 under EPIC-021 and keep EPIC-027 for US-012. |
 
 ---
 
