@@ -3180,6 +3180,7 @@ tasks:
       - "2026-10-06: dry-run tooling on PR #654: scripts/remote/testnet.env (TESTBED_PROFILE=testnet, 2x amd64 E5.Flex 4 OCPU/24 GB), just testnet-plan, scripts/remote/testnet-slots.sh with its test, docker/testnet.vm-a.yml and testnet.vm-b.yml, validator3 and soaking-slot remote configs."
       - "Blockers before the first --apply (docs/plans/test-net.md section 14): narrow the security list (SSH and 40400-40455 are open to all addresses), move validator keys to OCI Vault, teach deploy.sh the test net compose files, slot file, and keys. No --apply without maintainer approval."
       - "2026-10-15: the test net genesis must fund the faucet wallet (TASK-014-10). docker/testnet.vm-a.yml and testnet.vm-b.yml mount the shared docker/genesis/wallets.txt today. The first --apply needs a test net wallets file that holds the faucet address, because a running shard cannot add a genesis balance."
+      - "2026-10-15 (decided): the VCN needs a private faucet subnet with a load balancer in the public subnet, and an NSG rule that opens the Anchor HTTP API ports 40413, 40423, and 40433 to the faucet subnet only. Both join blocker 1 in docs/plans/test-net.md section 14."
   - id: TASK-014-3
     title: "Wire Shard soak-in enrollment and Anchor promotion into the test net"
     status: pending
@@ -3250,7 +3251,9 @@ tasks:
     notes:
       - "2026-10-15: the repository holds only a README (intent, proposed TypeScript and Tailwind stack, model adapter interface getShards, getStatus, validateAddress, getBalance, fund). The code, the deployment, and the operations are this task."
       - "The faucet code lives in F1r3Faucet. This epic tracks what the test net must supply: the genesis funding, the shard registry, the deploy endpoint, the key in OCI Vault, and the hosting."
-      - "Open: which endpoint accepts the faucet deploys. Partner access is read-only on the observer (TASK-014-4), and partners never reach a validator. The faucet needs a deploy path that operators expose only to the faucet."
+      - "2026-10-15 (decided, deploy target): the faucet sends transfer deploys to the three Anchors only, with failover between them, and never to the soaking slot. Deploys are node-local and never gossip (list_pending_deploys in casper/src/rust/api/block_api.rs), and a node proposes the deploys that it accepts, so a deploy-enabled observer would hold a deploy until it expires. An NSG rule opens the Anchor HTTP API ports to the faucet subnet only. Partners still reach only the observer (TASK-014-4)."
+      - "2026-10-15 (decided, placement): for the CbC Casper test net, the faucet runs in a new private subnet of the test net VCN, behind a load balancer in the public subnet. The layout for more than one test net (one faucet VCN connected through a DRG, or one faucet API in each test net VCN) is decided before the second test net starts."
+      - "2026-10-15: the faucet reads node status for the version and the capabilities (F1r3Faucet docs/designs/node-compatibility.md). PR #743 proposes the status fields (TASK-013-8)."
     acceptance:
       - "Each test net shard funds a faucet wallet at genesis. Its key lives in OCI Vault and never appears in either repository"
       - "The test net publishes a shard registry: each live shard, its consensus model, its genesis, its status, and its observer endpoints. The faucet reads the registry and hard-codes no shard"
@@ -3258,7 +3261,9 @@ tasks:
       - "The cbc-casper adapter validates a REV address, reads a balance through the observer, and funds an address with a transfer deploy whose receipt the site can track"
       - "Rate limits and abuse controls bound the tokens for each address and each client, and an alert fires when a faucet wallet balance drops below a threshold"
       - "The website lists each test net with its consensus model, its shards, their status, and their connection details"
-      - "The faucet runs on OCI beside the test net with the existing monitoring and alerts"
+      - "The cbc-casper adapter sends each funding deploy to one of the three Anchors and fails over to the next Anchor. It never sends a deploy to the soaking slot or the observer"
+      - "The faucet runs in a private subnet of the test net VCN behind a load balancer in the public subnet, with the existing monitoring and alerts. Only the faucet subnet reaches the Anchor HTTP API ports"
+      - "The faucet reads the node version and the capabilities from the node status before it uses a node"
       - "An adapter for a further model (Casanova, Cordial Miners, RGB) follows the design record of that model (TASK-014-9). Adding it does not change the other adapters"
 ---
 ```

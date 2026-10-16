@@ -1,6 +1,6 @@
 # F1r3fly CbC Casper Test Net Design (EPIC-014)
 
-- **Status:** Draft for review, 2026-10-06. Updated 2026-10-11 with candidate selection, the first shard, the soaking slot queue, the resolved questions, and the consensus model provisions. Updated 2026-10-15 with the F1r3Faucet test token faucet (Section 12.4)
+- **Status:** Draft for review, 2026-10-06. Updated 2026-10-11 with candidate selection, the first shard, the soaking slot queue, the resolved questions, and the consensus model provisions. Updated 2026-10-15 with the F1r3Faucet test token faucet (Section 12.4), its deploy target, and its placement (Sections 10, 12.4, and 14)
 - **Task:** TASK-014-1 in `docs/ToDos.md`
 - **User story:** US-010 in `docs/UserStories.md`
 - **Governing text:** `docs/release-process.md` Section 12 and the proposed Section 12.1 amendment, Section 12.2, and the Section 10 candidate selection (pending ratification as TASK-014-5)
@@ -203,6 +203,7 @@ The promotion controller checks this document as it checks other gate documents.
 - TASK-014-4 opens read-only observer endpoints to partners. Partners never receive validator access.
 - **First partner access (decided 2026-10-11):** Partners get read-only access to the gRPC and HTTP API of the observer on the main shard. They reach no validator, no Prometheus, and no SSH. Partners see mixed-release behavior, including the soaking candidate.
 - **Faucet (added 2026-10-15):** The F1r3Faucet wallet key lives in OCI Vault. The faucet is the only client that gets a deploy path. Partners get test tokens through the faucet, not through deploy access (Section 12.4).
+- **Faucet network rule (decided 2026-10-15):** A network security group (NSG) rule opens the HTTP API port of each Anchor to the faucet subnet only. These ports are 40413, 40423, and 40433. The rule opens no port of the soaking slot, the bootstrap node, or Prometheus. Partners still reach only the observer.
 
 ## 11. Cost
 
@@ -254,28 +255,31 @@ Developers and partners get test tokens from [F1r3Faucet](https://github.com/F1R
 
 The faucet code lives in F1r3Faucet. Each test net supplies these items:
 
-1. **Genesis funding:** The genesis of each shard funds a faucet wallet. A running shard cannot add a genesis balance, so a new shard with a fresh genesis (Section 6) funds its own faucet wallet. The test net uses its own wallets file. The compose files must not mount the shared development file `docker/genesis/wallets.txt`.
+1. **Genesis funding:** The genesis of each shard funds a faucet wallet. A running shard cannot add a genesis balance, so a new shard with a fresh genesis (Section 6) funds its own faucet wallet. The test net uses its own wallets file, and the faucet wallet is an entry in that file. The compose files must not mount the shared development file `docker/genesis/wallets.txt`.
 2. **Shard registry:** The test net publishes each live shard with its consensus model, genesis, status, and observer endpoints. The faucet reads this registry and hard-codes no shard. A retired shard leaves the registry.
-3. **Deploy path:** The faucet submits transfer deploys. Partners get read-only observer access only (Section 10), so operators expose a deploy endpoint to the faucet alone. Section 13.2 keeps this endpoint open.
+3. **Deploy target (decided 2026-10-15):** The faucet sends transfer deploys to the three Anchors only, with failover between them. It never sends a deploy to the soaking slot. Deploys are node-local and never gossip (the `list_pending_deploys` doc comment in `casper/src/rust/api/block_api.rs`). A node that accepts a deploy proposes it itself, so a non-validating observer would hold a deploy until the deploy expires. Section 10 defines the network rule.
 4. **Key custody:** The faucet wallet key lives in OCI Vault, as the validator keys do (Section 10).
-5. **Operation:** The faucet runs on OCI beside the test net. An alert fires when a faucet wallet balance drops below a threshold. Rate limits bound the tokens for each address and each client.
+5. **Operation (placement decided 2026-10-15):** For the CbC Casper test net, the faucet runs in a new private subnet of the test net VCN. A load balancer in the public subnet is its only public entry point. An alert fires when a faucet wallet balance drops below a threshold. Rate limits bound the tokens for each address and each client.
+
+   The layout for more than one test net is decided before the second test net starts. One option is one faucet VCN that connects to each test net VCN through a dynamic routing gateway (DRG). The other option is one faucet API in each test net VCN.
+6. **Node status:** The faucet reads the node status for the node version and the capabilities. F1r3Faucet [`docs/designs/node-compatibility.md`](https://github.com/F1R3FLY-io/F1r3Faucet/blob/dev/docs/designs/node-compatibility.md) defines how the faucet uses them. The status fields are proposed in PR #743 (TASK-013-8).
 
 Each model's design record defines how the faucet funds an address on that model: the address format, the funding transfer, and the receipt. The CbC Casper adapter funds a REV address with a transfer deploy. RGB uses client-side validation, so its design record defines its own funding flow.
 
 ## 13. Questions
 
-### 13.1 Resolved (2026-10-11)
+### 13.1 Resolved (2026-10-11 and 2026-10-15)
 
 1. **Rollback:** Releases fix forward. An operator can revert an Anchor slot only when the release declares no storage-format change (Section 4.1).
 2. **Bonding:** Genesis bonds four fixed slot keys. Only digests change. Promotion moves the candidate digest into the oldest Anchor slot (Section 4).
 3. **First partner access:** Read-only observer API on the main shard (Section 10). A stable-only partner shard with deploy access stays open for TASK-014-4.
 4. **Deployment Trains:** Train candidates use the same shard and soaking slot. The queue keeps the newest waiting candidate of each release line (Section 4).
+5. **Faucet deploy target (2026-10-15):** The faucet sends its deploys to the three Anchors only, through an NSG rule that admits only the faucet subnet. A deploy-enabled observer is not used, because an observer does not propose the deploys that it accepts (Section 12.4).
 
 ### 13.2 Open
 
 1. Which partners get access first, and when does a partner need deploy access?
 2. Does one f1r3node release that carries more than one consensus model soak in the test net of each model before stable promotion?
-3. Which endpoint accepts the F1r3Faucet deploys (Section 12.4)? The candidates are a validator API that only the faucet can reach and a separate deploy-enabled observer.
 
 ## 14. Implementation state
 
@@ -292,7 +296,9 @@ PR #654 implements these parts:
 
 These items block the first `--apply` (TASK-014-2):
 
-1. The testbed security list opens SSH and ports 40400 to 40455 to all addresses. Section 10 needs SSH limited to the operator network.
+1. The testbed security list opens SSH and ports 40400 to 40455 to all addresses. Section 10 needs SSH limited to the operator network. The VCN also needs these faucet items (Section 12.4):
+   - a private subnet for the faucet, with a load balancer in the public subnet
+   - the NSG rule that opens the Anchor HTTP API ports 40413, 40423, and 40433 to the faucet subnet only
 2. Validator keys reach the nodes as command-line arguments from `.env.remote`. Section 10 needs the keys in OCI Vault.
 3. `deploy.sh` ships only the testbed compose files and key set. It must ship the test net compose files, the slot file, and the Anchor 3 and soaking-slot keys.
 4. No workflow publishes `shard-soak-in-evidence.json` yet (TASK-014-3).
