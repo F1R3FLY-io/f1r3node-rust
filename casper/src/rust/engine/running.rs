@@ -887,8 +887,22 @@ impl<T: TransportLayer + Send + Sync> Running<T> {
 
         let exporter = self.casper.get_history_exporter().await;
 
-        let (history, data) =
-            RSpaceExporterItems::get_history_and_data(exporter, start_path.clone(), skip, take);
+        let (history, data) = match RSpaceExporterItems::get_history_and_data(
+            exporter,
+            start_path.clone(),
+            skip,
+            take,
+        ) {
+            Ok(items) => items,
+            Err(error) => {
+                tracing::warn!(
+                    %error,
+                    %peer,
+                    "StoreItemsMessageRequest for an unknown or malformed start path; ignoring"
+                );
+                return Ok(());
+            }
+        };
         let resp = casper_message::StoreItemsMessage {
             start_path,
             last_path: history.last_path,
