@@ -115,6 +115,19 @@ fn admit_queued(
     }
 }
 
+/// The gRPC status for a stream refused for its network or chain.
+///
+/// These are the statuses the unary path uses, so the sender maps both to
+/// `CommError::WrongNetwork` or `CommError::WrongChainId` the same way. Other
+/// stream errors stay an `InternalServerError` payload.
+fn refusal_status(error: &StreamError) -> Option<Status> {
+    match error {
+        StreamError::WrongNetworkId => Some(Status::permission_denied(error.message())),
+        StreamError::WrongChainId { .. } => Some(Status::failed_precondition(error.message())),
+        _ => None,
+    }
+}
+
 /// `admit_queued` for a unary message. A message without a header or a
 /// sender never reaches the queue, so one that does is refused here too.
 fn admit_queued_send(chain_id: &ChainIdCell, send: &CommSend) -> bool {
@@ -624,6 +637,13 @@ impl TransportLayer for TransportLayerService {
 
         let stream_result = self.handle_validated_stream(chunk_stream).await;
 
+        if let Err(error) = &stream_result {
+            if let Some(status) = refusal_status(error) {
+                tracing::warn!("Stream refused: {}", error.message());
+                return Err(status);
+            }
+        }
+
         let response = match stream_result {
             Err(StreamError::Unexpected { ref error }) => {
                 tracing::error!(error = %error, "blob stream processing failed");
@@ -1068,6 +1088,27 @@ mod tests {
             Err(StreamError::WrongChainId { .. })
         ));
         assert!(service.cache.is_empty());
+    }
+
+    #[test]
+    fn a_stream_refusal_reaches_the_sender_as_a_typed_error() {
+        use crate::rust::transport::grpc_transport::GrpcTransport;
+
+        let at_sender = |error: StreamError| {
+            let status = refusal_status(&error).expect("a refusal has a status");
+            GrpcTransport::process_response(&peer("receiver"), Err(status))
+        };
+
+        assert!(matches!(
+            at_sender(StreamError::wrong_chain_id("another chain".to_string())),
+            Err(CommError::WrongChainId(..))
+        ));
+        assert!(matches!(
+            at_sender(StreamError::wrong_network_id()),
+            Err(CommError::WrongNetwork(..))
+        ));
+        assert!(refusal_status(&StreamError::circuit_opened()).is_none());
+        assert!(refusal_status(&StreamError::unexpected("boom".to_string())).is_none());
     }
 
     #[test]

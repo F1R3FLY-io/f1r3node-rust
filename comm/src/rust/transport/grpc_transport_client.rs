@@ -511,6 +511,17 @@ impl GrpcTransportClient {
                     Ok(()) => {
                         tracing::debug!("Streamed packet {} to {}", key, peer.to_address());
                     }
+                    // The result of a stream does not reach the caller, so the
+                    // peer is not dropped here: it refuses the next heartbeat
+                    // too, and `clear_connections` evicts it then.
+                    Err(error @ (CommError::WrongNetwork(..) | CommError::WrongChainId(..))) => {
+                        tracing::warn!(
+                            "Stream of packet {} to {} refused: {}",
+                            key,
+                            peer.to_address(),
+                            error
+                        );
+                    }
                     Err(error) => {
                         tracing::debug!(
                             "Error while streaming packet to {} (timeout: {}ms): {}",

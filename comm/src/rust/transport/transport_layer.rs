@@ -216,6 +216,12 @@ pub trait TransportLayer {
                     info!("Successfully sent {} to {}", msg_type_name, peer);
                     return Ok(());
                 }
+                // The peer is on another network or chain and refuses every
+                // retry until one of the two nodes restarts.
+                Err(error @ (CommError::WrongNetwork(..) | CommError::WrongChainId(..))) => {
+                    warn!("{} to {} refused: {}", msg_type_name, peer, error);
+                    return Err(error);
+                }
                 Err(error) => {
                     warn!(
                         "Failed to send {} to {} because of {}. Retrying in {:?}...",
@@ -451,5 +457,71 @@ mod tests {
         assert_eq!(*transport.disconnected.lock().unwrap(), vec![peer(
             "foreign"
         )]);
+    }
+
+    fn request_packet() -> Packet {
+        Packet {
+            type_id: "ApprovedBlockRequest".to_string(),
+            content: Bytes::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn send_with_retry_stops_at_a_network_or_chain_refusal() {
+        let refusals = [
+            CommError::WrongNetwork("bootstrap".to_string(), "network mismatch".to_string()),
+            CommError::WrongChainId("bootstrap".to_string(), "another chain".to_string()),
+        ];
+
+        for refusal in refusals {
+            let transport = crate::rust::test_instances::TransportLayerStub::new();
+            let response = refusal.clone();
+            transport.set_responses(move |_, _| Err(response.clone()));
+            let conf = create_rp_conf_ask(peer("local"), None, None);
+
+            let result = tokio::time::timeout(
+                Duration::from_secs(5),
+                transport.send_with_retry(
+                    &conf,
+                    request_packet(),
+                    &peer("bootstrap"),
+                    Duration::from_secs(3600),
+                    "ApprovedBlockRequest",
+                ),
+            )
+            .await
+            .expect("a refusal must end the retry loop");
+
+            assert_eq!(result, Err(refusal));
+            assert_eq!(transport.request_count(), 1);
+        }
+    }
+
+    #[tokio::test]
+    async fn send_with_retry_retries_a_transient_failure() {
+        let transport = crate::rust::test_instances::TransportLayerStub::new();
+        let attempts = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = attempts.clone();
+        transport.set_responses(move |_, _| {
+            if counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+                Err(CommError::TimeOut)
+            } else {
+                Ok(())
+            }
+        });
+        let conf = create_rp_conf_ask(peer("local"), None, None);
+
+        transport
+            .send_with_retry(
+                &conf,
+                request_packet(),
+                &peer("bootstrap"),
+                Duration::from_millis(1),
+                "ApprovedBlockRequest",
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(transport.request_count(), 2);
     }
 }

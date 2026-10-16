@@ -121,8 +121,10 @@ Each stream gets its own `StreamValidation`. It holds the `networkId`, the strea
 | Our handshake (`find_and_connect`) | evict the peer from the routing table at once and suppress its rediscovery for 5 minutes |
 | Our heartbeat (`clear_connections`) | evict the peer from the connections at once, without a failure streak. Also remove the peer from the routing table and close its channel. |
 | Our broadcast (`send_packet_to_peers`) | drop the peer from the connections and close its channel |
+| Our stream (`stream`, `stream_mult`) | log the refusal. The stream result does not reach the caller, so the next heartbeat to the peer is refused and evicts it, at most one `cleanup-interval` later. |
+| Our request with retry (`send_with_retry`, for example `ApprovedBlockRequest`) | stop retrying and return the error |
 
-`CommError::WrongNetwork` (a `networkId` mismatch, gRPC status `PermissionDenied`) gets the same handling.
+`CommError::WrongNetwork` (a `networkId` mismatch, gRPC status `PermissionDenied`) gets the same handling. A refused stream gets the same gRPC status as a refused unary message, so the sender gets `WrongChainId` or `WrongNetwork` for it too, not a generic error.
 
 **Pinned bootstrap**: the configured bootstrap peer stays in the routing table after a failure, so the node can find it again. A refusal is the exception: after `WrongNetwork` or `WrongChainId`, `find_and_connect` and `clear_connections` evict the pinned bootstrap too. A timeout and all other errors keep the pin. The network ID comes from configuration, and the chain identity is write-once. So a bootstrap on another network or chain cannot serve this node until one of the two nodes restarts. Until then, a dial every `lookup-interval` only adds refusals to the logs of both nodes. A joining node does not get `WrongChainId` from its bootstrap: it sends an empty chain identity, and a handshake or a heartbeat is a pull.
 
@@ -131,7 +133,9 @@ Each stream gets its own `StreamValidation`. It holds the `networkId`, the strea
 **Known gaps**:
 - A joining node adopts its identity only from unary messages, because a stream sender is not bound to the TLS certificate (#663).
 - Before a node learns its identity (for example during the genesis ceremony), it accepts any peer. A peer of another chain that connects in that window is dropped by the first refused heartbeat or broadcast after the identity is known.
-- A peer on an older build names no chain. Its handshake and heartbeat are pulls and are accepted, so it stays connected, and its pushes are refused.
+- A peer on an older build names no chain. Its handshake and heartbeat are pulls and are accepted, so it stays connected, and its pushes are refused. Each refused push costs one check before the message is enqueued, so the cost is bounded, but the receiver does not penalize or disconnect the peer. The receiver cannot attribute the push safely in all cases:
+  - A stream sender is not bound to the TLS certificate (#663), so a stream header can name any peer.
+  - A unary sender is bound to the certificate, but a fresh node also names no chain, and it can send a push, for example a response to a request. A penalty for an unnamed push would disconnect fresh nodes.
 
 ## Stream Processing (Large Payloads)
 

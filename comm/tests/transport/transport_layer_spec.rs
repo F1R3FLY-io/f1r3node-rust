@@ -739,3 +739,48 @@ async fn handshake_from_another_chain_is_refused_before_it_is_acknowledged() {
         "the refused handshake must not reach the message handler"
     );
 }
+
+#[tokio::test]
+async fn stream_of_a_push_that_names_no_chain_is_refused_and_a_pull_is_delivered() {
+    init_logger();
+
+    let runtime = TransportLayerTestRuntime::new("test".to_string())
+        .with_server_chain_id(Bytes::from_static(b"genesis-of-this-chain"));
+    let stream_dispatcher = TestStreamDispatcher::new();
+    let content = create_big_content(runtime.max_message_size);
+
+    let result = runtime
+        .run_two_nodes_test(
+            |transport, local, remote| async move {
+                let blob = |type_id: &str| Blob {
+                    sender: local.clone(),
+                    packet: Packet {
+                        type_id: type_id.to_string(),
+                        content: content.clone(),
+                    },
+                };
+                (
+                    transport.stream(&remote, &blob("BlockMessage")).await,
+                    transport.stream(&remote, &blob("BlockRequest")).await,
+                )
+            },
+            None,
+            Some(stream_dispatcher.clone()),
+            true,
+        )
+        .await
+        .expect("Test should succeed");
+
+    let (push, pull) = result.result;
+    assert!(push.is_ok() && pull.is_ok(), "both streams are enqueued");
+    let received: Vec<String> = stream_dispatcher
+        .received()
+        .into_iter()
+        .map(|(_, blob)| blob.packet.type_id)
+        .collect();
+    assert_eq!(
+        received,
+        vec!["BlockRequest".to_string()],
+        "a push that names no chain must not reach the stream handler"
+    );
+}
