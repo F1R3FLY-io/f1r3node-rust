@@ -625,6 +625,38 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
             conf.protocol_server.disable_state_exporter,
             heartbeat_signal_ref.clone(),
             conf.standalone,
+            {
+                // Project the merged FileIoProvisioning into the
+                // bundle format `fs_generator` consumes.  Combines
+                // config-file entries with (future ops-9) CLI
+                // `--*-static-*` flags and runs boot-time invariants
+                // (canonicity, mode whitelist, PB-M-16 bucket
+                // disjointness, forbidden chars, cross-source name
+                // conflicts).  On validation failure we panic: an
+                // invalid provisioning would yield a genesis block
+                // no validator could accept, so failing loud at boot
+                // is the correct outcome.  CLI vecs are empty until
+                // ops-9 lands the clap wire-up.
+                let merged = crate::rust::configuration::provisioning_merge::merge_and_validate(
+                    conf.storage.file_io_provisioning.clone(),
+                    Vec::new(),
+                    Vec::new(),
+                    Vec::new(),
+                    Vec::new(),
+                )
+                .unwrap_or_else(|errs| {
+                    let msg = errs
+                        .iter()
+                        .map(|e| format!("  - {e}"))
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    panic!(
+                        "static-provisioning validation failed at boot; refusing \
+                             to proceed to genesis:\n{msg}"
+                    );
+                });
+                crate::rust::configuration::provisioning_merge::project_bundle(&merged)
+            },
             Some(state_requester_handles.items_tx.clone()),
         )) as Arc<dyn CasperLaunch>
     };

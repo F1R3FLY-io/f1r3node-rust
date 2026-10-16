@@ -3,6 +3,7 @@
 use shared::rust::Byte;
 use shared::rust::store::key_value_store::KvStoreError;
 
+use crate::rspace::errors::RadixTreeError;
 use crate::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 
 // Type of the key to uniquely defines the trie / in RSpace this is the hash of
@@ -19,7 +20,12 @@ pub type Value = Vec<u8>;
 pub trait TrieExporter {
     // Get trie nodes with offset from start path and number of nodes
     // - skipping nodes can be expensive as taking nodes
-    fn get_nodes(&self, start_path: NodePath, skip: i32, take: i32) -> Vec<TrieNode<KeyHash>>;
+    fn get_nodes(
+        &self,
+        start_path: NodePath,
+        skip: i32,
+        take: i32,
+    ) -> Result<Vec<TrieNode<KeyHash>>, RadixTreeError>;
 
     // Get history values / from branch nodes in the trie
     fn get_history_items(&self, keys: Vec<KeyHash>) -> Result<Vec<(KeyHash, Value)>, KvStoreError>;
