@@ -88,6 +88,12 @@ A relaunched network can reuse its `networkId`, so `networkId` cannot separate t
 - First launch: when the node enters the Running state (`engine::transition_to_running`).
 - Joining node: adopted from the header of a unary message from the configured bootstrap peer, then verified against the genesis that the node records.
 
+**Where the genesis hash comes from**: `BlockDagKeyValueStorage::genesis_hash` gives the value. It is the held height-0 block, or the hash that the node learned and recorded with `record_genesis_hash`. The register is write-once and persists across restarts. A node that ran the genesis ceremony, or restored from a genesis-anchored approved block, holds the genesis block. A node that restored from an approved block above genesis holds no height-0 block. It learns the hash from the bootstrap's `FloorCacheResponse`. The identity is never the hash of the approved block or of a snapshot anchor.
+
+**A node does not run without its identity**: `transition_to_running` publishes the genesis hash from storage before the node enters the Running state. It fails if the hash is missing or unreadable, or if it differs from an identity that the node already published. An identity adopted from the bootstrap does not replace the stored genesis hash, because nothing has verified it yet. A restore anchored above genesis asks the bootstrap for the hash again for up to 5 minutes. If it still did not learn the hash, the restore fails before its replay, and the bounded restore retry asks for the approved state again. A restart on data without a genesis hash fails at startup, so the operator must resync the node. Before the Running state, a joining node does not need its identity: it sends an empty chain identity, and its handshakes, heartbeats, and requests are pulls.
+
+**What the identity does not prove**: a peer names its chain in a header, and nothing checks that claim against block content. The check stops a node that runs with the state of another chain by mistake. It does not stop a peer that names this node's chain falsely. Block validation stays the defense against such a peer: it keeps blocks of another chain out of the DAG. It does not prevent the cost of buffering such blocks and fetching their dependencies.
+
 **Decision rules** (`ChainIdCell::check`):
 
 | Peer's chain_id | Pull (requests, handshake, heartbeat, disconnect) | Push (blocks, gossip, responses) |
@@ -132,6 +138,7 @@ Each stream gets its own `StreamValidation`. It holds the `networkId`, the strea
 
 **Known gaps**:
 - A joining node adopts its identity only from unary messages, because a stream sender is not bound to the TLS certificate (#663).
+- A node that restores from an approved block above genesis records the genesis hash from the `FloorCacheResponse`. That response arrives as a stream, and a stream sender is not bound to the TLS certificate (#663). Until #663 is fixed, a peer that can send this node a stream can claim to be the bootstrap and give a false genesis hash. If the node adopted an identity from the real bootstrap first, a false hash differs from it, and the node stops instead of running on that hash.
 - Before a node learns its identity (for example during the genesis ceremony), it accepts any peer. A peer of another chain that connects in that window is dropped by the first refused heartbeat or broadcast after the identity is known.
 - A peer on an older build names no chain. Its handshake and heartbeat are pulls and are accepted, so it stays connected, and its pushes are refused. Each refused push costs one check before the message is enqueued, so the cost is bounded, but the receiver does not penalize or disconnect the peer. The receiver cannot attribute the push safely in all cases:
   - A stream sender is not bound to the TLS certificate (#663), so a stream header can name any peer.
