@@ -126,26 +126,35 @@ impl<'a> HasLocallyFree<Par> for SpatialMatcherContext<'a> {
 fn signature_locally_free(signature: &CostSignature) -> Vec<u8> {
     use models::rhoapi::cost_signature::Value;
 
-    match &signature.value {
-        Some(Value::BoundLevel(level)) if *level >= 0 => create_bit_vector(&[*level as usize]),
-        Some(Value::Quote(par)) | Some(Value::Name(par)) => par.locally_free.clone(),
-        Some(Value::Compound(compound)) => compound
-            .elements
-            .iter()
-            .map(signature_locally_free)
-            .fold(Vec::new(), union),
-        _ => Vec::new(),
+    let mut pending = vec![signature];
+    let mut free = Vec::new();
+    while let Some(current) = pending.pop() {
+        match &current.value {
+            Some(Value::BoundLevel(level)) if *level >= 0 => {
+                free = union(free, create_bit_vector(&[*level as usize]));
+            }
+            Some(Value::Quote(par)) | Some(Value::Name(par)) => {
+                free = union(free, par.locally_free.clone());
+            }
+            Some(Value::Compound(compound)) => pending.extend(compound.elements.iter()),
+            _ => {}
+        }
     }
+    free
 }
 
 fn signature_connective_used(signature: &CostSignature) -> bool {
     use models::rhoapi::cost_signature::Value;
 
-    match &signature.value {
-        Some(Value::Quote(par)) | Some(Value::Name(par)) => par.connective_used,
-        Some(Value::Compound(compound)) => compound.elements.iter().any(signature_connective_used),
-        _ => false,
+    let mut pending = vec![signature];
+    while let Some(current) = pending.pop() {
+        match &current.value {
+            Some(Value::Quote(par)) | Some(Value::Name(par)) if par.connective_used => return true,
+            Some(Value::Compound(compound)) => pending.extend(compound.elements.iter()),
+            _ => {}
+        }
     }
+    false
 }
 
 impl<'a> HasLocallyFree<If> for SpatialMatcherContext<'a> {
@@ -190,15 +199,26 @@ impl<'a> HasLocallyFree<CostSignedTerm> for SpatialMatcherContext<'a> {
 
 impl<'a> HasLocallyFree<CostStack> for SpatialMatcherContext<'a> {
     fn connective_used(&self, source: CostStack) -> bool {
-        source.cells.iter().any(signature_connective_used)
+        let mut pending = vec![&source];
+        while let Some(stack) = pending.pop() {
+            if stack.cells.iter().any(signature_connective_used) {
+                return true;
+            }
+            pending.extend(stack.parallel_tail.iter());
+        }
+        false
     }
 
     fn locally_free(&self, source: CostStack, _depth: i32) -> Vec<u8> {
-        source
-            .cells
-            .iter()
-            .map(signature_locally_free)
-            .fold(Vec::new(), union)
+        let mut pending = vec![&source];
+        let mut free = Vec::new();
+        while let Some(stack) = pending.pop() {
+            for signature in &stack.cells {
+                free = union(free, signature_locally_free(signature));
+            }
+            pending.extend(stack.parallel_tail.iter());
+        }
+        free
     }
 }
 
@@ -227,6 +247,11 @@ impl<'a> HasLocallyFree<Expr> for SpatialMatcherContext<'a> {
         match e.expr_instance {
             Some(GBool(_)) => false,
             Some(GInt(_)) => false,
+            Some(GUint64(_)) => false,
+            Some(GInt32(_)) => false,
+            Some(GUint32(_)) => false,
+            Some(GUint16(_)) => false,
+            Some(GUint8(_)) => false,
             Some(GDouble(_)) => false,
             Some(GFloat32(_)) => false,
             Some(GBigInt(_)) => false,
@@ -313,6 +338,11 @@ impl<'a> HasLocallyFree<Expr> for SpatialMatcherContext<'a> {
         match e.expr_instance {
             Some(GBool(_)) => Default::default(),
             Some(GInt(_)) => Default::default(),
+            Some(GUint64(_)) => Default::default(),
+            Some(GInt32(_)) => Default::default(),
+            Some(GUint32(_)) => Default::default(),
+            Some(GUint16(_)) => Default::default(),
+            Some(GUint8(_)) => Default::default(),
             Some(GDouble(_)) => Default::default(),
             Some(GFloat32(_)) => Default::default(),
             Some(GBigInt(_)) => Default::default(),
@@ -573,6 +603,11 @@ impl HasLocallyFree<Expr> for Expr {
         match e.expr_instance {
             Some(GBool(_)) => false,
             Some(GInt(_)) => false,
+            Some(GUint64(_)) => false,
+            Some(GInt32(_)) => false,
+            Some(GUint32(_)) => false,
+            Some(GUint16(_)) => false,
+            Some(GUint8(_)) => false,
             Some(GDouble(_)) => false,
             Some(GFloat32(_)) => false,
             Some(GBigInt(_)) => false,
@@ -662,6 +697,11 @@ impl HasLocallyFree<Expr> for Expr {
         match e.expr_instance {
             Some(GBool(_)) => Default::default(),
             Some(GInt(_)) => Default::default(),
+            Some(GUint64(_)) => Default::default(),
+            Some(GInt32(_)) => Default::default(),
+            Some(GUint32(_)) => Default::default(),
+            Some(GUint16(_)) => Default::default(),
+            Some(GUint8(_)) => Default::default(),
             Some(GDouble(_)) => Default::default(),
             Some(GFloat32(_)) => Default::default(),
             Some(GBigInt(_)) => Default::default(),
@@ -849,6 +889,11 @@ pub fn expr_locally_free_ref(expr: &Expr, depth: i32) -> Vec<u8> {
     match &expr.expr_instance {
         Some(GBool(_)) => Vec::new(),
         Some(GInt(_)) => Vec::new(),
+        Some(GUint64(_)) => Vec::new(),
+        Some(GInt32(_)) => Vec::new(),
+        Some(GUint32(_)) => Vec::new(),
+        Some(GUint16(_)) => Vec::new(),
+        Some(GUint8(_)) => Vec::new(),
         Some(GDouble(_)) => Vec::new(),
         Some(GFloat32(_)) => Vec::new(),
         Some(GBigInt(_)) => Vec::new(),
@@ -916,7 +961,8 @@ fn lf2(p1: &Option<Par>, p2: &Option<Par>) -> Vec<u8> {
 /// Every arm reads the same cached field the by-value form reads.
 pub fn expr_connective_used_ref(expr: &Expr) -> bool {
     match &expr.expr_instance {
-        Some(GBool(_)) | Some(GInt(_)) | Some(GDouble(_)) | Some(GFloat32(_))
+        Some(GBool(_)) | Some(GInt(_)) | Some(GUint64(_)) | Some(GInt32(_)) | Some(GUint32(_))
+        | Some(GUint16(_)) | Some(GUint8(_)) | Some(GDouble(_)) | Some(GFloat32(_))
         | Some(GBigInt(_)) | Some(GBigRat(_)) | Some(GFixedPoint(_)) | Some(GString(_))
         | Some(GUri(_)) | Some(GByteArray(_)) => false,
 

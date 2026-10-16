@@ -7,7 +7,6 @@ use crate::rust::estimator::Estimator;
 pub struct UnlimitedParentsEstimatorFixture;
 
 impl UnlimitedParentsEstimatorFixture {
-    /// Create estimator like in Scala: Estimator[Task](Estimator.UnlimitedParents, None)
-    /// where Estimator.UnlimitedParents = Int.MaxValue
-    pub fn create_estimator() -> Estimator { Estimator::apply(Estimator::UNLIMITED_PARENTS, None) }
+    /// Fork-choice bounds are supplied by each caller's shard configuration.
+    pub fn create_estimator() -> Estimator { Estimator::apply() }
 }

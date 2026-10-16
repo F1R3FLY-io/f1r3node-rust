@@ -1,0 +1,81 @@
+' One replay charge for every role (DR-102, Phase D item D-C5b).
+' certify_offered_draft owns the replay budget R. The producer and every
+' validator run it on the same inputs, so they charge the same usage U(B) and
+' reach the same replay verdict. Each role's acceptance work after the
+' certified replay goes to its own acceptance budget A, whose limits are at
+' least the producer's execution limits.
+'
+' Source of truth: docs/casper/theory/cost-accounting-decision-records.md (DR-102);
+'                  formal/rocq/cost_accounted_rho/theories/ReplayRoleAttribution.v.
+' Palette:  roles = supply blue · certify and the replay budget = gate teal ·
+'           execution = process lilac · acceptance = delta amber ·
+'           charges = red arrows · results = blue arrows
+' Render:  plantuml -tsvg docs/casper/theory/diagrams/offered-replay-role-attribution.puml
+'          (or: ./render.sh offered-replay-role-attribution.puml)
+
+@startuml offered-replay-role-attribution
+!include palette.iuml
+$ca_base_skin()
+skinparam sequence {
+  ArrowColor $ca_neutral
+  LifeLineBorderColor #666666
+  ParticipantBorderColor #333333
+  BoxBorderColor #999999
+}
+title One replay charge for every role (DR-102)
+
+actor "Producer\n(proposer)" as Producer $ca_supply
+participant "Execution budget E\n(producer)" as Execution $ca_process
+participant "certify_offered_draft\nreplay budget R" as Certify $ca_gate
+participant "Acceptance budget A_p\n(producer)" as ProducerAcceptance $ca_delta
+actor "Validator" as Validator $ca_supply
+participant "Acceptance budget A_v\n(validator)" as ValidatorAcceptance $ca_delta
+
+== Proposal ==
+Producer -[$ca_debit]-> Execution : play the candidate
+Producer -> Certify : certify the candidate\n(borrowed block context)
+Certify -[$ca_debit]-> Certify : charge the context copy (canonical bytes)\nand the certified replay: <latex>U(B)</latex>
+Certify -[$ca_instantiate]-> Producer : certificate with the certified mergeable map
+Producer -[$ca_debit]-> ProducerAcceptance : publication comparison\n<latex>C = 14{,}417{,}920</latex> VB and VOps
+Producer -[$ca_debit]-> Execution : system deploys, mergeable vector and\nsave of the certified map: <latex>V'</latex>
+note right of Execution $ca_note_amber
+  A host-work rejection of E in this
+  step quarantines the envelope (DR-72)
+  instead of failing every later proposal.
+end note
+
+== Block processing ==
+Validator -[$ca_debit]-> Validator : preflight (bounded by protocol limits)
+Validator -> Certify : certify the decoded block\n(same inputs)
+Certify -[$ca_debit]-> Certify : charge the context copy and the\ncertified replay: <latex>U(B)</latex>
+Certify -[$ca_instantiate]-> Validator : certificate with the certified mergeable map
+Validator -[$ca_debit]-> ValidatorAcceptance : system continuation, mergeable vector and\nsave of the certified map: <latex>V = V'</latex>
+
+note over Certify $ca_note_grey
+  <latex>R_p = R_v = U(B)</latex>: every role reaches the same replay verdict.
+end note
+
+note over ValidatorAcceptance $ca_note_green
+  <latex>V = V' \le E \le L_E \le L_A</latex>, so a block that the
+  producer publishes never exhausts a validator's
+  acceptance budget.
+end note
+
+note over Producer $ca_note_red
+  Before DR-102: <latex>R_p</latex> also held the comparison and the copy,
+  and <latex>R_v</latex> held the validator's acceptance work. A validator
+  charged about 0.24 MB more search-state bytes, so a block
+  near the cap was published and then dropped by every validator.
+end note
+
+legend bottom
+  |= colour |= meaning |
+  |<$ca_supply>| roles |
+  |<$ca_gate>| certify_offered_draft and the replay budget R |
+  |<$ca_process>| producer execution budget E |
+  |<$ca_delta>| role-local acceptance budgets |
+  |<$ca_debit>| host-work charge |
+  |<$ca_instantiate>| certificate returned |
+endlegend
+
+@enduml

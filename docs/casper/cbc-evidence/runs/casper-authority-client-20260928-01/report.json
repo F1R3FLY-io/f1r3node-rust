@@ -1,0 +1,76 @@
+{
+  "schema_version": 1,
+  "task": "TASK-017-12",
+  "claim_id": "CLAIM-CASPER-AUTHORITY-CLIENT-001",
+  "status": "pending",
+  "scope": "controlled-observer-transport",
+  "source_head_revision": "211a4e73a6c1c8c4e4d3de35f2debdf1869ab74b",
+  "working_tree": true,
+  "source_digests": {
+    "scripts/casper-soak/src/authority_observer.rs": "71e960dea70de39f7f532dc3097aef2a6a271d729f3ab1f7ab62bcccb34951de",
+    "scripts/casper-soak/src/bin/casper-authority-observe.rs": "3b64e0c68dd46f410fcd98716decc99032aaf416c2a95912fa3343cd3a46572f",
+    "scripts/casper-soak/tests/authority_observer.rs": "5ebcdfa5fdb86e823d46b2d7994f556cb2179f288e350070684167ad76b1ffb8",
+    "scripts/casper-soak/src/lib.rs": "a70f76a28de8ef8010eb7f8876b5e947ce94bf35752bbd70b086983383ee7a8f",
+    "scripts/casper-soak/src/manifest.rs": "d9606d542cfb9bc058f691196244ae2e6055e6c84c02b5c2581ee07e70c03000",
+    "scripts/casper-soak/Cargo.toml": "0389290c18cb725d108ce3709018f92d9f04fdf84a62eb97d905c53874f43139",
+    "Cargo.lock": "9da684952a74e56706dfd0fcc9165a02e05529443d963f5040aec61b2a6a0f75",
+    "node/src/rust/soak_observer.rs": "5aaf012f08b16c4ac05fdc95713ed364ee0339fb4d95f2173d51a6828bf38ded",
+    "casper/src/rust/soak_observer/evaluation.rs": "3834185fb6dbcebecf6a676af46bc49d6c7ca8abe1052a53ef10a5115cfdb56f"
+  },
+  "checks": {
+    "linux_client": {
+      "passed": 8,
+      "failed": 0,
+      "architecture": "aarch64",
+      "network": "none"
+    },
+    "native_client": {
+      "passed": 4,
+      "failed": 0
+    },
+    "existing_synthetic_authority_profile": {
+      "passed": 7,
+      "failed": 0
+    },
+    "native_clippy": "passed",
+    "linux_clippy": "passed"
+  },
+  "log_digests": {
+    "target/task-017-12-authority-client-20260928/linux-tests-complete.log": "a7128236b5d607d9347f00a91c7446477375c240bdbff64b4e85d1b320d8eceb",
+    "target/task-017-12-authority-client-20260928/native-client-final.log": "7b4e5c05cda8dad2c784bbf5c1731ee9be7619b8fdbd2264af87a52ce07b187c",
+    "target/task-017-12-authority-client-20260928/native-tests.log": "8c9acfed3dda3759332b2f32449f9a49459f3a87ccfb016e7950e95ce6d2a796",
+    "target/task-017-12-authority-client-20260928/native-clippy.log": "71b8c72a33763cd2458a54d7785c5ba37b1314e9abf1a6edd7a2ecf4594ae820",
+    "target/task-017-12-authority-client-20260928/linux-clippy.log": "ec86ecc78b92bc6b86f79b632ae9f93dceada70c1788c54bb79ef25e3e100eee",
+    "target/task-017-12-authority-client-20260928/native-cfg-tests.log": "43f3e8b5dda8da29d1bb609d5510009ceec0955951665c56d536762c4e9064db",
+    "target/task-017-12-authority-client-20260928/native-cfg-clippy.log": "bb51a17dbb799974fcb6896df18bc225c15886160bfe47a75ef032aa80f42296",
+    "target/task-017-12-authority-client-20260928/native-cfg-all-targets-clippy.log": "59639588a6f1826f129cbcd121edc07279dab94786f5fa5bde6b3439b2e845cc"
+  },
+  "retained_attempts": {
+    "initial_native_compile": "failed: Serde derive unavailable; replaced with checked JSON parsing",
+    "initial_linux_tests": "failed: binding field count; corrected from ten to nine",
+    "initial_native_clippy": "failed: complex test closure type; replaced with function pointers",
+    "linux_tests_trickle": "failed: one-second whole-call test included evidence hashing; final five-second allowance retains the 500-millisecond socket deadline",
+    "sandbox_log_capture": "failed: Docker socket permission; isolated test rerun succeeded"
+  },
+  "qualification": "pending",
+  "profile_verdict": "pending",
+  "soak_verdict": "non_passing",
+  "node_launch_count": 0,
+  "cloud_launch_count": 0,
+  "limitations": [
+    "Controlled socket fixtures do not establish node candidate qualification.",
+    "The existing synthetic profile still rejects live requests.",
+    "No scenario mapping, cloud deployment, campaign dispatch, or claim acceptance occurred.",
+    "Filesystem operations and process scheduling remain external timing assumptions."
+  ],
+  "portability_correction": {
+    "previous_source_sha256": "6d9695d0d9171fc10892d3c9f7993d8b65965f8977a788b94dbb2cd5456b2a95",
+    "change": "Allow unused request helpers only on non-Linux targets.",
+    "linux_behavior_changed": false,
+    "linux_checks": "Retained from the previous source. The new attributes apply only to non-Linux targets.",
+    "native_client_tests_passed": 4,
+    "synthetic_authority_tests_passed": 7,
+    "native_all_targets_clippy": "passed",
+    "rustfmt": "passed"
+  }
+}

@@ -258,7 +258,8 @@ use crate::rust::rholang::bincode_schema_tables::{
     EX_E_MULT_BODY, EX_E_NEG_BODY, EX_E_NEQ_BODY, EX_E_NOT_BODY, EX_E_OR_BODY, EX_E_PATHMAP_BODY,
     EX_E_PERCENT_PERCENT_BODY, EX_E_PLUS_BODY, EX_E_PLUS_PLUS_BODY, EX_E_SET_BODY, EX_E_TUPLE_BODY,
     EX_E_VAR_BODY, EX_E_ZIPPER_BODY, EX_G_BIG_INT, EX_G_BIG_RAT, EX_G_BOOL, EX_G_BYTE_ARRAY,
-    EX_G_DOUBLE, EX_G_FIXED_POINT, EX_G_FLOAT32, EX_G_INT, EX_G_STRING, EX_G_URI,
+    EX_G_DOUBLE, EX_G_FIXED_POINT, EX_G_FLOAT32, EX_G_INT, EX_G_INT32, EX_G_STRING, EX_G_UINT16,
+    EX_G_UINT32, EX_G_UINT64, EX_G_UINT8, EX_G_URI,
     TAGGED_CONT_VARIANT_COUNT as TAGGED_CONT_VARIANTS_LEN,
     UNF_INSTANCE_VARIANT_COUNT as UNF_INSTANCE_VARIANTS_LEN,
     VALUE_VARIANT_COUNT as COST_VALUE_VARIANTS_LEN,
@@ -705,8 +706,12 @@ enum Op {
         has_signature: bool,
     },
     CostStackStart,
+    CostStackParallelTail {
+        n_cells: usize,
+    },
     CostStackBuild {
-        count: usize,
+        n_cells: usize,
+        n_branches: usize,
     },
     CostRegionStart,
     CostRegionBuild {
@@ -947,9 +952,16 @@ struct NewFrame {
 // §E  The machine
 // ===========================================================================
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DecodeLayout {
+    Legacy,
+    CostV1,
+    CostV2,
+}
+
 struct Machine<'a> {
     r: Reader<'a>,
-    legacy_layout: bool,
+    layout: DecodeLayout,
     ops: Vec<Op>,
 
     // per-type value stacks
@@ -994,12 +1006,6 @@ struct Machine<'a> {
     trie_snapshots: Vec<&'a [u8]>,
 }
 
-/// Take the last `n` values off a stack, **preserving stream order**.
-///
-/// `split_off` is exactly the right primitive: the children were pushed in
-/// stream order, so the tail slice already *is* the sibling list. Reversing a
-/// popped sequence would be an easy and silent way to permute siblings — which
-/// changes the term, hence its protobuf bytes, hence the signature over them.
 fn take_n<T>(stack: &mut Vec<T>, n: usize, what: &'static str) -> Res<Vec<T>> {
     if stack.len() < n {
         return Err(ColdStoreDecodeError::MachineInvariant(what));
@@ -1026,7 +1032,7 @@ impl<'a> Machine<'a> {
     fn new(bytes: &'a [u8]) -> Self {
         Machine {
             r: Reader::new(bytes),
-            legacy_layout: false,
+            layout: DecodeLayout::CostV2,
             ops: Vec::with_capacity(64),
             pars: Vec::new(),
             sends: Vec::new(),
@@ -1063,7 +1069,13 @@ impl<'a> Machine<'a> {
 
     fn new_legacy(bytes: &'a [u8]) -> Self {
         let mut machine = Self::new(bytes);
-        machine.legacy_layout = true;
+        machine.layout = DecodeLayout::Legacy;
+        machine
+    }
+
+    fn new_cost_v1(bytes: &'a [u8]) -> Self {
+        let mut machine = Self::new(bytes);
+        machine.layout = DecodeLayout::CostV1;
         machine
     }
 
@@ -1174,291 +1186,189 @@ impl<'a> Machine<'a> {
         Ok(())
     }
 
-    fn step(&mut self, op: Op) -> Res<()> {
-        match op {
-            // ---------------------------------------------------------------
-            Op::Rep { kind, remaining } => {
-                // `remaining` is stream-controlled and may be enormous; this
-                // costs O(1) memory per iteration and fails on the first
-                // element that runs out of input.
-                if remaining > 0 {
-                    self.ops.push(Op::Rep {
-                        kind,
-                        remaining: remaining - 1,
-                    });
-                    self.ops.push(kind.start());
-                }
+    /// Executes the Expr start field program off the main dispatch frame.
+    /// For this Op, reader, value stacks, side frames, op worklist and errors
+    /// are exactly those of the original inline arm.
+    #[inline(never)]
+    fn step_expr_start(&mut self) -> Res<()> {
+        if !self.r.option_tag()? {
+            self.exprs.push(Expr {
+                expr_instance: None,
+            });
+            return Ok(());
+        }
+        let variant = self
+            .r
+            .variant("ExprInstance", EXPR_INSTANCE_VARIANT_COUNT as u32)?;
+        match variant {
+            // ---- grounds and the variable arm: bounded, read inline
+            EX_G_BOOL => {
+                let v = self.r.bool()?;
+                self.push_expr(ExprInstance::GBool(v));
+            }
+            EX_G_INT => {
+                let v = self.r.i64()?;
+                self.push_expr(ExprInstance::GInt(v));
+            }
+            EX_G_STRING => {
+                let v = self.r.string()?;
+                self.push_expr(ExprInstance::GString(v));
+            }
+            EX_G_URI => {
+                let v = self.r.string()?;
+                self.push_expr(ExprInstance::GUri(v));
+            }
+            EX_G_BYTE_ARRAY => {
+                let v = self.r.byte_seq()?;
+                self.push_expr(ExprInstance::GByteArray(v));
+            }
+            EX_G_DOUBLE => {
+                // `fixed64` carrying the raw IEEE-754 bits.
+                let v = self.r.u64()?;
+                self.push_expr(ExprInstance::GDouble(v));
+            }
+            EX_G_FLOAT32 => {
+                let v = self.r.u32()?;
+                self.push_expr(ExprInstance::GFloat32(v));
+            }
+            EX_G_UINT64 => {
+                let v = self.r.u64()?;
+                self.push_expr(ExprInstance::GUint64(v));
+            }
+            EX_G_INT32 => {
+                let v = self.r.i32()?;
+                self.push_expr(ExprInstance::GInt32(v));
+            }
+            EX_G_UINT32 => {
+                let v = self.r.u32()?;
+                self.push_expr(ExprInstance::GUint32(v));
+            }
+            EX_G_UINT16 => {
+                let v = self.r.u32()?;
+                self.push_expr(ExprInstance::GUint16(v));
+            }
+            EX_G_UINT8 => {
+                let v = self.r.u32()?;
+                self.push_expr(ExprInstance::GUint8(v));
+            }
+            EX_G_BIG_INT => {
+                let v = self.r.byte_seq()?;
+                self.push_expr(ExprInstance::GBigInt(v));
+            }
+            EX_G_BIG_RAT => {
+                let numerator = self.r.byte_seq()?;
+                let denominator = self.r.byte_seq()?;
+                self.push_expr(ExprInstance::GBigRat(GBigRational {
+                    numerator,
+                    denominator,
+                }));
+            }
+            EX_G_FIXED_POINT => {
+                let unscaled = self.r.byte_seq()?;
+                let scale = self.r.u32()?;
+                self.push_expr(ExprInstance::GFixedPoint(GFixedPoint { unscaled, scale }));
+            }
+            EX_E_VAR_BODY => {
+                let v = self.r.opt_var()?;
+                self.push_expr(ExprInstance::EVarBody(EVar { v }));
             }
 
-            // ---------------------------------------------------------------
-            // Par
-            // ---------------------------------------------------------------
-            Op::ParStart => {
-                self.par_frames.push(ParFrame::default());
-                self.ops.push(Op::ParField { field: 0 });
+            // ---- unary
+            EX_E_NOT_BODY | EX_E_NEG_BODY => {
+                let has_p = self.r.option_tag()?;
+                self.ops.push(Op::ExprUnaryBuild { variant, has_p });
+                self.opt_par_child(has_p);
             }
-            Op::ParField { field } => {
-                // The eight repeated `Par`-bearing fields, in declaration
-                // order. `unforgeables` sits between indices 4 and 5 and is a
-                // bounded leaf, so it is read inline rather than scheduled.
-                const KINDS: [Kind; 8] = [
-                    Kind::Send,
-                    Kind::Receive,
-                    Kind::New,
-                    Kind::Expr,
-                    Kind::Match,
-                    Kind::Bundle,
-                    Kind::Connective,
-                    Kind::If,
-                ];
-                if field as usize == KINDS.len() {
-                    self.ops.push(Op::ParCostSigned);
-                    return Ok(());
-                }
-                if field == 5 {
-                    let unforgeables = self.r.unforgeable_seq()?;
-                    self.par_frame()?.unforgeables = unforgeables;
-                }
+
+            // ---- collections
+            EX_E_LIST_BODY | EX_E_SET_BODY => {
                 let n = self.r.len()?;
-                self.par_frame()?.counts[field as usize] = n;
-                self.ops.push(Op::ParField { field: field + 1 });
-                self.repeat(KINDS[field as usize], n);
+                self.ops.push(Op::ExprSeqBuild { variant, n });
+                self.repeat(Kind::Par, n);
             }
-            Op::ParCostSigned => {
-                let locally_free = self.r.byte_seq()?;
-                let connective_used = self.r.bool()?;
-                let frame = self.par_frame()?;
-                frame.locally_free = locally_free;
-                frame.connective_used = connective_used;
-                if self.legacy_layout {
-                    self.ops.push(Op::ParBuild);
-                    return Ok(());
-                }
-                let count = self.r.len()?;
-                let frame = self.par_frame()?;
-                frame.n_cost_signed_terms = count;
-                self.ops.push(Op::ParCostStacks);
-                self.repeat(Kind::CostSignedTerm, count);
+            EX_E_TUPLE_BODY => {
+                let n = self.r.len()?;
+                self.ops.push(Op::ExprTupleBuild { n });
+                self.repeat(Kind::Par, n);
             }
-            Op::ParCostStacks => {
-                let count = self.r.len()?;
-                self.par_frame()?.n_cost_stacks = count;
-                self.ops.push(Op::ParBuild);
-                self.repeat(Kind::CostStack, count);
-            }
-            Op::ParBuild => {
-                let frame = self
-                    .par_frames
-                    .pop()
-                    .ok_or(ColdStoreDecodeError::MachineInvariant("Par frame"))?;
-                let cost_stacks = take_n(
-                    &mut self.cost_stacks,
-                    frame.n_cost_stacks,
-                    "Par.cost_stacks",
-                )?;
-                let cost_signed_terms = take_n(
-                    &mut self.cost_signed_terms,
-                    frame.n_cost_signed_terms,
-                    "Par.cost_signed_terms",
-                )?;
-                // Each of these lives on its OWN stack, so the drains are
-                // independent; the order below simply mirrors declaration
-                // order read backwards for legibility.
-                let conditionals = take_n(&mut self.ifs, frame.counts[7], "Par.conditionals")?;
-                let connectives =
-                    take_n(&mut self.connectives, frame.counts[6], "Par.connectives")?;
-                let bundles = take_n(&mut self.bundles, frame.counts[5], "Par.bundles")?;
-                let matches = take_n(&mut self.matches, frame.counts[4], "Par.matches")?;
-                let exprs = take_n(&mut self.exprs, frame.counts[3], "Par.exprs")?;
-                let news = take_n(&mut self.news, frame.counts[2], "Par.news")?;
-                let receives = take_n(&mut self.receives, frame.counts[1], "Par.receives")?;
-                let sends = take_n(&mut self.sends, frame.counts[0], "Par.sends")?;
-                self.pars.push(Par {
-                    sends,
-                    receives,
-                    news,
-                    exprs,
-                    matches,
-                    unforgeables: frame.unforgeables,
-                    bundles,
-                    connectives,
-                    conditionals,
-                    locally_free: frame.locally_free,
-                    connective_used: frame.connective_used,
-                    cost_signed_terms,
-                    cost_stacks,
-                });
+            EX_E_MAP_BODY => {
+                let n = self.r.len()?;
+                self.ops.push(Op::ExprMapBuild { n });
+                self.repeat(Kind::Kv, n);
             }
 
-            // ---------------------------------------------------------------
-            // Send
-            // ---------------------------------------------------------------
-            Op::SendStart => {
-                let has_chan = self.r.option_tag()?;
-                self.ops.push(Op::SendData { has_chan });
-                self.opt_par_child(has_chan);
-            }
-            Op::SendData { has_chan } => {
-                let n_data = self.r.len()?;
-                self.ops.push(Op::SendBuild { has_chan, n_data });
-                self.repeat(Kind::Par, n_data);
-            }
-            Op::SendBuild { has_chan, n_data } => {
-                let persistent = self.r.bool()?;
-                let locally_free = self.r.byte_seq()?;
-                let connective_used = self.r.bool()?;
-                // `chan` was pushed BEFORE the `data` elements, so it must be
-                // taken AFTER them.
-                let data = take_n(&mut self.pars, n_data, "Send.data")?;
-                let chan = take_opt_par(&mut self.pars, has_chan, "Send.chan")?;
-                self.sends.push(Send {
-                    chan,
-                    data,
-                    persistent,
-                    locally_free,
-                    connective_used,
-                });
+            // ---- method: the name is read FIRST and must survive two
+            //      descents, so it goes on a side stack.
+            EX_E_METHOD_BODY => {
+                let name = self.r.string()?;
+                self.method_names.push(name);
+                let has_target = self.r.option_tag()?;
+                self.ops.push(Op::ExprMethodArgs { has_target });
+                self.opt_par_child(has_target);
             }
 
-            // ---------------------------------------------------------------
-            // Receive
-            // ---------------------------------------------------------------
-            Op::ReceiveStart => {
-                let n_binds = self.r.len()?;
-                self.ops.push(Op::ReceiveBody { n_binds });
-                self.repeat(Kind::Bind, n_binds);
+            // ---- the two path-map arms (wire shape 3)
+            EX_E_PATHMAP_BODY => {
+                self.ops.push(Op::ExprFromPathmap);
+                self.ops.push(Op::PathmapStart);
             }
-            Op::ReceiveBody { n_binds } => {
-                let has_body = self.r.option_tag()?;
-                self.ops.push(Op::ReceiveCondition { n_binds, has_body });
-                self.opt_par_child(has_body);
-            }
-            Op::ReceiveCondition { n_binds, has_body } => {
-                // These five must survive the `condition` descent.
-                let tail = ReceiveTail {
-                    persistent: self.r.bool()?,
-                    peek: self.r.bool()?,
-                    bind_count: self.r.i32()?,
-                    locally_free: self.r.byte_seq()?,
-                    connective_used: self.r.bool()?,
-                };
-                self.receive_tails.push(tail);
-                let has_condition = self.r.option_tag()?;
-                self.ops.push(Op::ReceiveBuild {
-                    n_binds,
-                    has_body,
-                    has_condition,
-                });
-                self.opt_par_child(has_condition);
-            }
-            Op::ReceiveBuild {
-                n_binds,
-                has_body,
-                has_condition,
-            } => {
-                let tail = self
-                    .receive_tails
-                    .pop()
-                    .ok_or(ColdStoreDecodeError::MachineInvariant("Receive tail"))?;
-                let condition = take_opt_par(&mut self.pars, has_condition, "Receive.condition")?;
-                let body = take_opt_par(&mut self.pars, has_body, "Receive.body")?;
-                let binds = take_n(&mut self.binds, n_binds, "Receive.binds")?;
-                self.receives.push(Receive {
-                    binds,
-                    body,
-                    persistent: tail.persistent,
-                    peek: tail.peek,
-                    bind_count: tail.bind_count,
-                    locally_free: tail.locally_free,
-                    connective_used: tail.connective_used,
-                    condition,
-                });
-            }
-
-            // ---------------------------------------------------------------
-            // ReceiveBind: patterns, source, remainder, free_count
-            // ---------------------------------------------------------------
-            Op::BindStart => {
-                let n_patterns = self.r.len()?;
-                self.ops.push(Op::BindSource { n_patterns });
-                self.repeat(Kind::Par, n_patterns);
-            }
-            Op::BindSource { n_patterns } => {
-                let has_source = self.r.option_tag()?;
-                self.ops.push(Op::BindBuild {
-                    n_patterns,
-                    has_source,
-                });
-                self.opt_par_child(has_source);
-            }
-            Op::BindBuild {
-                n_patterns,
-                has_source,
-            } => {
-                let remainder = self.r.opt_var()?;
-                let free_count = self.r.i32()?;
-                let has_signature = if self.legacy_layout {
-                    false
-                } else {
-                    self.r.option_tag()?
-                };
-                self.bind_tails.push(BindTail {
-                    remainder,
-                    free_count,
-                });
-                self.ops.push(Op::BindCostBuild {
-                    n_patterns,
-                    has_source,
-                    has_signature,
-                });
-                if has_signature {
-                    self.ops.push(Op::CostSignatureStart);
+            EX_E_ZIPPER_BODY => {
+                let has_pathmap = self.r.option_tag()?;
+                self.ops.push(Op::ExprZipperBuild { has_pathmap });
+                if has_pathmap {
+                    self.ops.push(Op::PathmapStart);
                 }
             }
-            Op::BindCostBuild {
-                n_patterns,
-                has_source,
-                has_signature,
-            } => {
-                let cost_signature = if has_signature {
-                    Some(take_one(
-                        &mut self.cost_signatures,
-                        "ReceiveBind.cost_signature",
-                    )?)
-                } else {
-                    None
-                };
-                let tail = take_one(&mut self.bind_tails, "ReceiveBind tail")?;
-                // `source` was pushed AFTER the patterns, so it comes off first.
-                let source = take_opt_par(&mut self.pars, has_source, "ReceiveBind.source")?;
-                let patterns = take_n(&mut self.pars, n_patterns, "ReceiveBind.patterns")?;
-                self.binds.push(ReceiveBind {
-                    patterns,
-                    source,
-                    remainder: tail.remainder,
-                    free_count: tail.free_count,
-                    cost_signature,
-                });
-            }
 
+            // ---- the seventeen `(Option<Par>, Option<Par>)` arms
+            _ => {
+                if !BINARY_EXPR_VARIANTS.contains(&variant) {
+                    return Err(ColdStoreDecodeError::MachineInvariant(
+                        "ExprInstance arm not covered by the decoder",
+                    ));
+                }
+                let t1 = self.r.option_tag()?;
+                self.ops.push(Op::ExprBinaryAfter1 { variant, t1 });
+                self.opt_par_child(t1);
+            }
+        }
+        Ok(())
+    }
+
+    /// Cost-field Op arms retain their original reader, stack, worklist, and
+    /// charge order; only their fixed native dispatch frame is separated.
+    #[inline(never)]
+    fn step_cost(&mut self, op: Op) -> Res<()> {
+        match op {
             Op::CostSignatureStart => {
                 if !self.r.option_tag()? {
-                    self.cost_signatures.push(CostSignature { value: None });
+                    self.cost_signatures.push(CostSignature {
+                        value: None,
+                    });
                     return Ok(());
                 }
                 let variant = self
                     .r
                     .variant("CostSignature.Value", COST_VALUE_VARIANT_COUNT)?;
                 match variant {
-                    CS_GROUND => self.cost_signatures.push(CostSignature {
-                        value: Some(CostValue::Ground(self.r.byte_seq()?)),
-                    }),
-                    CS_BOUND_LEVEL => self.cost_signatures.push(CostSignature {
-                        value: Some(CostValue::BoundLevel(self.r.i32()?)),
-                    }),
-                    CS_UNIT => self.cost_signatures.push(CostSignature {
-                        value: Some(CostValue::Unit(self.r.bool()?)),
-                    }),
+                    CS_GROUND => {
+                        let ground = self.r.byte_seq()?;
+                        self.cost_signatures.push(CostSignature {
+                            value: Some(CostValue::Ground(ground)),
+                        });
+                    }
+                    CS_BOUND_LEVEL => {
+                        let level = self.r.i32()?;
+                        self.cost_signatures.push(CostSignature {
+                            value: Some(CostValue::BoundLevel(level)),
+                        });
+                    }
+                    CS_UNIT => {
+                        let unit = self.r.bool()?;
+                        self.cost_signatures.push(CostSignature {
+                            value: Some(CostValue::Unit(unit)),
+                        });
+                    }
                     CS_QUOTE | CS_NAME => {
                         self.ops.push(Op::CostSignatureParBuild { variant });
                         self.ops.push(Op::ParStart);
@@ -1482,15 +1392,12 @@ impl<'a> Machine<'a> {
                         ))
                     }
                 };
-                self.cost_signatures
-                    .push(CostSignature { value: Some(value) });
+                self.cost_signatures.push(CostSignature {
+                    value: Some(value),
+                });
             }
             Op::CostSignatureCompoundBuild { count } => {
-                let elements = take_n(
-                    &mut self.cost_signatures,
-                    count,
-                    "CostSignatureCompound.elements",
-                )?;
+                let elements = take_n(&mut self.cost_signatures, count, "CostSignatureCompound.elements")?;
                 self.cost_signatures.push(CostSignature {
                     value: Some(CostValue::Compound(CostSignatureCompound { elements })),
                 });
@@ -1523,17 +1430,40 @@ impl<'a> Machine<'a> {
                     None
                 };
                 let body = take_opt_par(&mut self.pars, has_body, "CostSignedTerm.body")?;
-                self.cost_signed_terms
-                    .push(CostSignedTerm { body, signature });
+                self.cost_signed_terms.push(CostSignedTerm {
+                    body,
+                    signature,
+                });
             }
             Op::CostStackStart => {
-                let count = self.r.len()?;
-                self.ops.push(Op::CostStackBuild { count });
-                self.repeat(Kind::CostSignature, count);
+                let n_cells = self.r.len()?;
+                self.ops.push(Op::CostStackParallelTail { n_cells });
+                self.repeat(Kind::CostSignature, n_cells);
             }
-            Op::CostStackBuild { count } => {
-                let cells = take_n(&mut self.cost_signatures, count, "CostStack.cells")?;
-                self.cost_stacks.push(CostStack { cells });
+            Op::CostStackParallelTail { n_cells } => {
+                // The parallel tail was introduced only in CostV2; both
+                // earlier layouts end immediately after the cells sequence.
+                let n_branches = if self.layout == DecodeLayout::CostV2 {
+                    self.r.len()?
+                } else {
+                    0
+                };
+                self.ops.push(Op::CostStackBuild {
+                    n_cells,
+                    n_branches,
+                });
+                self.repeat(Kind::CostStack, n_branches);
+            }
+            Op::CostStackBuild {
+                n_cells,
+                n_branches,
+            } => {
+                let parallel_tail = take_n(&mut self.cost_stacks, n_branches, "CostStack.parallel_tail")?;
+                let cells = take_n(&mut self.cost_signatures, n_cells, "CostStack.cells")?;
+                self.cost_stacks.push(CostStack {
+                    cells,
+                    parallel_tail,
+                });
             }
             Op::CostRegionStart => {
                 let instance_id = self.r.byte_seq()?;
@@ -1563,12 +1493,20 @@ impl<'a> Machine<'a> {
             }
             Op::CostAuthorityBuild { count } => {
                 let regions = take_n(&mut self.cost_regions, count, "CostAuthority.regions")?;
-                self.cost_authorities.push(CostAuthority { regions });
+                self.cost_authorities.push(CostAuthority {
+                    regions,
+                });
             }
+            _ => unreachable!("step_cost received a non-cost Op"),
+        }
+        Ok(())
+    }
 
-            // ---------------------------------------------------------------
-            // New — wire shape 1 lives here
-            // ---------------------------------------------------------------
+    /// Ordinary expression and map Op arms are frame-isolated without
+    /// changing the single-step machine transition.
+    #[inline(never)]
+    fn step_mid(&mut self, op: Op) -> Res<()> {
+        match op {
             Op::NewStart => {
                 let bind_count = self.r.i32()?;
                 let has_p = self.r.option_tag()?;
@@ -1583,10 +1521,11 @@ impl<'a> Machine<'a> {
             Op::NewAfterP { has_p } => {
                 let uri = self.r.string_seq()?;
                 let n_entries = self.r.len()?;
+                let keys = Vec::with_capacity(cautious_capacity::<String>(n_entries));
                 {
                     let frame = self.new_frame()?;
                     frame.uri = uri;
-                    frame.keys = Vec::with_capacity(cautious_capacity::<String>(n_entries));
+                    frame.keys = keys;
                 }
                 self.ops.push(Op::NewBuild { has_p, n_entries });
                 self.ops.push(Op::NewEntry {
@@ -1599,7 +1538,11 @@ impl<'a> Machine<'a> {
                 // is why this is a resume point rather than a loop.
                 if remaining > 0 {
                     let key = self.r.string()?;
-                    self.new_frame()?.keys.push(key);
+                    let frame = self
+                        .new_frames
+                        .last_mut()
+                        .ok_or(ColdStoreDecodeError::MachineInvariant("New frame"))?;
+                    frame.keys.push(key);
                     self.ops.push(Op::NewEntry {
                         remaining: remaining - 1,
                     });
@@ -1761,129 +1704,7 @@ impl<'a> Machine<'a> {
             // ---------------------------------------------------------------
             // Expr — wire shapes 3 and 4 live here
             // ---------------------------------------------------------------
-            Op::ExprStart => {
-                if !self.r.option_tag()? {
-                    self.exprs.push(Expr {
-                        expr_instance: None,
-                    });
-                    return Ok(());
-                }
-                let variant = self
-                    .r
-                    .variant("ExprInstance", EXPR_INSTANCE_VARIANT_COUNT as u32)?;
-                match variant {
-                    // ---- grounds and the variable arm: bounded, read inline
-                    EX_G_BOOL => {
-                        let v = self.r.bool()?;
-                        self.push_expr(ExprInstance::GBool(v));
-                    }
-                    EX_G_INT => {
-                        let v = self.r.i64()?;
-                        self.push_expr(ExprInstance::GInt(v));
-                    }
-                    EX_G_STRING => {
-                        let v = self.r.string()?;
-                        self.push_expr(ExprInstance::GString(v));
-                    }
-                    EX_G_URI => {
-                        let v = self.r.string()?;
-                        self.push_expr(ExprInstance::GUri(v));
-                    }
-                    EX_G_BYTE_ARRAY => {
-                        let v = self.r.byte_seq()?;
-                        self.push_expr(ExprInstance::GByteArray(v));
-                    }
-                    EX_G_DOUBLE => {
-                        // `fixed64` carrying the raw IEEE-754 bits.
-                        let v = self.r.u64()?;
-                        self.push_expr(ExprInstance::GDouble(v));
-                    }
-                    EX_G_FLOAT32 => {
-                        let v = self.r.u32()?;
-                        self.push_expr(ExprInstance::GFloat32(v));
-                    }
-                    EX_G_BIG_INT => {
-                        let v = self.r.byte_seq()?;
-                        self.push_expr(ExprInstance::GBigInt(v));
-                    }
-                    EX_G_BIG_RAT => {
-                        let numerator = self.r.byte_seq()?;
-                        let denominator = self.r.byte_seq()?;
-                        self.push_expr(ExprInstance::GBigRat(GBigRational {
-                            numerator,
-                            denominator,
-                        }));
-                    }
-                    EX_G_FIXED_POINT => {
-                        let unscaled = self.r.byte_seq()?;
-                        let scale = self.r.u32()?;
-                        self.push_expr(ExprInstance::GFixedPoint(GFixedPoint { unscaled, scale }));
-                    }
-                    EX_E_VAR_BODY => {
-                        let v = self.r.opt_var()?;
-                        self.push_expr(ExprInstance::EVarBody(EVar { v }));
-                    }
-
-                    // ---- unary
-                    EX_E_NOT_BODY | EX_E_NEG_BODY => {
-                        let has_p = self.r.option_tag()?;
-                        self.ops.push(Op::ExprUnaryBuild { variant, has_p });
-                        self.opt_par_child(has_p);
-                    }
-
-                    // ---- collections
-                    EX_E_LIST_BODY | EX_E_SET_BODY => {
-                        let n = self.r.len()?;
-                        self.ops.push(Op::ExprSeqBuild { variant, n });
-                        self.repeat(Kind::Par, n);
-                    }
-                    EX_E_TUPLE_BODY => {
-                        let n = self.r.len()?;
-                        self.ops.push(Op::ExprTupleBuild { n });
-                        self.repeat(Kind::Par, n);
-                    }
-                    EX_E_MAP_BODY => {
-                        let n = self.r.len()?;
-                        self.ops.push(Op::ExprMapBuild { n });
-                        self.repeat(Kind::Kv, n);
-                    }
-
-                    // ---- method: the name is read FIRST and must survive two
-                    //      descents, so it goes on a side stack.
-                    EX_E_METHOD_BODY => {
-                        let name = self.r.string()?;
-                        self.method_names.push(name);
-                        let has_target = self.r.option_tag()?;
-                        self.ops.push(Op::ExprMethodArgs { has_target });
-                        self.opt_par_child(has_target);
-                    }
-
-                    // ---- the two path-map arms (wire shape 3)
-                    EX_E_PATHMAP_BODY => {
-                        self.ops.push(Op::ExprFromPathmap);
-                        self.ops.push(Op::PathmapStart);
-                    }
-                    EX_E_ZIPPER_BODY => {
-                        let has_pathmap = self.r.option_tag()?;
-                        self.ops.push(Op::ExprZipperBuild { has_pathmap });
-                        if has_pathmap {
-                            self.ops.push(Op::PathmapStart);
-                        }
-                    }
-
-                    // ---- the seventeen `(Option<Par>, Option<Par>)` arms
-                    _ => {
-                        if !BINARY_EXPR_VARIANTS.contains(&variant) {
-                            return Err(ColdStoreDecodeError::MachineInvariant(
-                                "ExprInstance arm not covered by the decoder",
-                            ));
-                        }
-                        let t1 = self.r.option_tag()?;
-                        self.ops.push(Op::ExprBinaryAfter1 { variant, t1 });
-                        self.opt_par_child(t1);
-                    }
-                }
-            }
+            Op::ExprStart => self.step_expr_start()?,
             Op::ExprUnaryBuild { variant, has_p } => {
                 let p = take_opt_par(&mut self.pars, has_p, "unary ExprInstance operand")?;
                 let instance = match variant {
@@ -1967,7 +1788,8 @@ impl<'a> Machine<'a> {
             Op::ExprMethodBuild { has_target, n_args } => {
                 let locally_free = self.r.byte_seq()?;
                 let connective_used = self.r.bool()?;
-                let arguments = take_n(&mut self.pars, n_args, "EMethod.arguments")?;
+                let arguments =
+                    take_n(&mut self.pars, n_args, "EMethod.arguments")?;
                 let target = take_opt_par(&mut self.pars, has_target, "EMethod.target")?;
                 let method_name = take_one(&mut self.method_names, "EMethod.method_name")?;
                 self.push_expr(ExprInstance::EMethodBody(EMethod {
@@ -2050,10 +1872,16 @@ impl<'a> Machine<'a> {
                 let key = take_opt_par(&mut self.pars, t_key, "KeyValuePair.key")?;
                 self.kvs.push(KeyValuePair { key, value });
             }
+            _ => unreachable!("step_mid received an unrelated Op"),
+        }
+        Ok(())
+    }
 
-            // ---------------------------------------------------------------
-            // Connective
-            // ---------------------------------------------------------------
+    /// Continuation and trailing root Op arms are frame-isolated while
+    /// preserving the exact explicit-worklist transition for each variant.
+    #[inline(never)]
+    fn step_tail(&mut self, op: Op) -> Res<()> {
+        match op {
             Op::ConnStart => {
                 if !self.r.option_tag()? {
                     self.connectives.push(Connective {
@@ -2135,7 +1963,7 @@ impl<'a> Machine<'a> {
                 self.opt_par_child(t_guard);
             }
             Op::TaggedContinuationCont { t_guard } => {
-                let has_authority = if self.legacy_layout {
+                let has_authority = if self.layout == DecodeLayout::Legacy {
                     false
                 } else {
                     self.r.option_tag()?
@@ -2196,10 +2024,13 @@ impl<'a> Machine<'a> {
                     None
                 };
                 self.tagged_continuations.push(TaggedContinuation {
-                    guard,
-                    tagged_cont: Some(TaggedCont::ParBody(ParWithRandom { body, random_state })),
-                    cost_authority,
-                });
+                        guard,
+                        tagged_cont: Some(TaggedCont::ParBody(ParWithRandom {
+                            body,
+                            random_state,
+                        })),
+                        cost_authority,
+                    });
             }
             Op::TaggedContinuationScala {
                 t_guard,
@@ -2216,10 +2047,10 @@ impl<'a> Machine<'a> {
                     None
                 };
                 self.tagged_continuations.push(TaggedContinuation {
-                    guard,
-                    tagged_cont: Some(TaggedCont::ScalaBodyRef(value)),
-                    cost_authority,
-                });
+                        guard,
+                        tagged_cont: Some(TaggedCont::ScalaBodyRef(value)),
+                        cost_authority,
+                    });
             }
             Op::TaggedContinuationAbsent {
                 t_guard,
@@ -2235,10 +2066,10 @@ impl<'a> Machine<'a> {
                     None
                 };
                 self.tagged_continuations.push(TaggedContinuation {
-                    guard,
-                    tagged_cont: None,
-                    cost_authority,
-                });
+                        guard,
+                        tagged_cont: None,
+                        cost_authority,
+                    });
             }
             // ---------------------------------------------------------------
             // ListParWithRandom / ParWithRandom
@@ -2252,17 +2083,16 @@ impl<'a> Machine<'a> {
                 let pars = take_n(&mut self.pars, n, "ListParWithRandom.pars")?;
                 let random_state = self.r.byte_seq()?;
                 self.list_par_with_randoms.push(ListParWithRandom {
-                    pars,
-                    random_state,
-                    cost_authority: None,
-                    cost_stack: None,
-                });
-                if self.legacy_layout {
+                        pars,
+                        random_state,
+                        cost_authority: None,
+                        cost_stack: None,
+                    });
+                if self.layout == DecodeLayout::Legacy {
                     return Ok(());
                 }
                 let has_authority = self.r.option_tag()?;
-                self.ops
-                    .push(Op::ListParWithRandomCostStack { has_authority });
+                self.ops.push(Op::ListParWithRandomCostStack { has_authority });
                 if has_authority {
                     self.ops.push(Op::CostAuthorityStart);
                 }
@@ -2308,8 +2138,10 @@ impl<'a> Machine<'a> {
             Op::ParWithRandomBuild { has_body } => {
                 let random_state = self.r.byte_seq()?;
                 let body = take_opt_par(&mut self.pars, has_body, "ParWithRandom.body")?;
-                self.par_with_randoms
-                    .push(ParWithRandom { body, random_state });
+                self.par_with_randoms.push(ParWithRandom {
+                    body,
+                    random_state,
+                });
             }
 
             // ---------------------------------------------------------------
@@ -2337,8 +2169,354 @@ impl<'a> Machine<'a> {
             }
             Op::ListBindPatternsBuild { n } => {
                 let patterns = take_n(&mut self.bind_patterns, n, "ListBindPatterns.patterns")?;
-                self.list_bind_patterns.push(ListBindPatterns { patterns });
+                self.list_bind_patterns.push(ListBindPatterns {
+                    patterns,
+                });
             }
+            _ => unreachable!("step_tail received an unrelated Op"),
+        }
+        Ok(())
+    }
+
+    fn step(&mut self, op: Op) -> Res<()> {
+        match op {
+            // ---------------------------------------------------------------
+            Op::Rep { kind, remaining } => {
+                // `remaining` is stream-controlled and may be enormous; this
+                // costs O(1) memory per iteration and fails on the first
+                // element that runs out of input.
+                if remaining > 0 {
+                    self.ops.push(Op::Rep {
+                        kind,
+                        remaining: remaining - 1,
+                    });
+                    self.ops.push(kind.start());
+                }
+            }
+
+            // ---------------------------------------------------------------
+            // Par
+            // ---------------------------------------------------------------
+            Op::ParStart => {
+                self.par_frames.push(ParFrame::default());
+                self.ops.push(Op::ParField { field: 0 });
+            }
+            Op::ParField { field } => {
+                // The eight repeated `Par`-bearing fields, in declaration
+                // order. `unforgeables` sits between indices 4 and 5 and is a
+                // bounded leaf, so it is read inline rather than scheduled.
+                const KINDS: [Kind; 8] = [
+                    Kind::Send,
+                    Kind::Receive,
+                    Kind::New,
+                    Kind::Expr,
+                    Kind::Match,
+                    Kind::Bundle,
+                    Kind::Connective,
+                    Kind::If,
+                ];
+                if field as usize == KINDS.len() {
+                    self.ops.push(Op::ParCostSigned);
+                    return Ok(());
+                }
+                if field == 5 {
+                    let unforgeables = self.r.unforgeable_seq()?;
+                    self.par_frame()?.unforgeables = unforgeables;
+                }
+                let n = self.r.len()?;
+                self.par_frame()?.counts[field as usize] = n;
+                self.ops.push(Op::ParField { field: field + 1 });
+                self.repeat(KINDS[field as usize], n);
+            }
+            Op::ParCostSigned => {
+                let locally_free = self.r.byte_seq()?;
+                let connective_used = self.r.bool()?;
+                let frame = self.par_frame()?;
+                frame.locally_free = locally_free;
+                frame.connective_used = connective_used;
+                if self.layout == DecodeLayout::Legacy {
+                    self.ops.push(Op::ParBuild);
+                    return Ok(());
+                }
+                let count = self.r.len()?;
+                let frame = self.par_frame()?;
+                frame.n_cost_signed_terms = count;
+                self.ops.push(Op::ParCostStacks);
+                self.repeat(Kind::CostSignedTerm, count);
+            }
+            Op::ParCostStacks => {
+                let count = self.r.len()?;
+                self.par_frame()?.n_cost_stacks = count;
+                self.ops.push(Op::ParBuild);
+                self.repeat(Kind::CostStack, count);
+            }
+            Op::ParBuild => {
+                let frame = self
+                    .par_frames
+                    .pop()
+                    .ok_or(ColdStoreDecodeError::MachineInvariant("Par frame"))?;
+                let cost_stacks = take_n(&mut self.cost_stacks, frame.n_cost_stacks, "Par.cost_stacks")?;
+                let cost_signed_terms = take_n(&mut self.cost_signed_terms, frame.n_cost_signed_terms, "Par.cost_signed_terms")?;
+                // Each of these lives on its OWN stack, so the drains are
+                // independent; the order below simply mirrors declaration
+                // order read backwards for legibility.
+                let conditionals =
+                    take_n(&mut self.ifs, frame.counts[7], "Par.conditionals")?;
+                let connectives = take_n(&mut self.connectives, frame.counts[6], "Par.connectives")?;
+                let bundles =
+                    take_n(&mut self.bundles, frame.counts[5], "Par.bundles")?;
+                let matches =
+                    take_n(&mut self.matches, frame.counts[4], "Par.matches")?;
+                let exprs = take_n(&mut self.exprs, frame.counts[3], "Par.exprs")?;
+                let news = take_n(&mut self.news, frame.counts[2], "Par.news")?;
+                let receives =
+                    take_n(&mut self.receives, frame.counts[1], "Par.receives")?;
+                let sends = take_n(&mut self.sends, frame.counts[0], "Par.sends")?;
+                self.pars.push(Par {
+                    sends,
+                    receives,
+                    news,
+                    exprs,
+                    matches,
+                    unforgeables: frame.unforgeables,
+                    bundles,
+                    connectives,
+                    conditionals,
+                    locally_free: frame.locally_free,
+                    connective_used: frame.connective_used,
+                    cost_signed_terms,
+                    cost_stacks,
+                });
+            }
+
+            // ---------------------------------------------------------------
+            // Send
+            // ---------------------------------------------------------------
+            Op::SendStart => {
+                let has_chan = self.r.option_tag()?;
+                self.ops.push(Op::SendData { has_chan });
+                self.opt_par_child(has_chan);
+            }
+            Op::SendData { has_chan } => {
+                let n_data = self.r.len()?;
+                self.ops.push(Op::SendBuild { has_chan, n_data });
+                self.repeat(Kind::Par, n_data);
+            }
+            Op::SendBuild { has_chan, n_data } => {
+                let persistent = self.r.bool()?;
+                let locally_free = self.r.byte_seq()?;
+                let connective_used = self.r.bool()?;
+                // `chan` was pushed BEFORE the `data` elements, so it must be
+                // taken AFTER them.
+                let data = take_n(&mut self.pars, n_data, "Send.data")?;
+                let chan = take_opt_par(&mut self.pars, has_chan, "Send.chan")?;
+                self.sends.push(Send {
+                    chan,
+                    data,
+                    persistent,
+                    locally_free,
+                    connective_used,
+                });
+            }
+
+            // ---------------------------------------------------------------
+            // Receive
+            // ---------------------------------------------------------------
+            Op::ReceiveStart => {
+                let n_binds = self.r.len()?;
+                self.ops.push(Op::ReceiveBody { n_binds });
+                self.repeat(Kind::Bind, n_binds);
+            }
+            Op::ReceiveBody { n_binds } => {
+                let has_body = self.r.option_tag()?;
+                self.ops.push(Op::ReceiveCondition { n_binds, has_body });
+                self.opt_par_child(has_body);
+            }
+            Op::ReceiveCondition { n_binds, has_body } => {
+                // These five must survive the `condition` descent.
+                let tail = ReceiveTail {
+                    persistent: self.r.bool()?,
+                    peek: self.r.bool()?,
+                    bind_count: self.r.i32()?,
+                    locally_free: self.r.byte_seq()?,
+                    connective_used: self.r.bool()?,
+                };
+                self.receive_tails.push(tail);
+                let has_condition = self.r.option_tag()?;
+                self.ops.push(Op::ReceiveBuild {
+                    n_binds,
+                    has_body,
+                    has_condition,
+                });
+                self.opt_par_child(has_condition);
+            }
+            Op::ReceiveBuild {
+                n_binds,
+                has_body,
+                has_condition,
+            } => {
+                let tail = self
+                    .receive_tails
+                    .pop()
+                    .ok_or(ColdStoreDecodeError::MachineInvariant("Receive tail"))?;
+                let condition = take_opt_par(&mut self.pars, has_condition, "Receive.condition")?;
+                let body = take_opt_par(&mut self.pars, has_body, "Receive.body")?;
+                let binds = take_n(&mut self.binds, n_binds, "Receive.binds")?;
+                self.receives.push(Receive {
+                    binds,
+                    body,
+                    persistent: tail.persistent,
+                    peek: tail.peek,
+                    bind_count: tail.bind_count,
+                    locally_free: tail.locally_free,
+                    connective_used: tail.connective_used,
+                    condition,
+                });
+            }
+
+            // ---------------------------------------------------------------
+            // ReceiveBind: patterns, source, remainder, free_count
+            // ---------------------------------------------------------------
+            Op::BindStart => {
+                let n_patterns = self.r.len()?;
+                self.ops.push(Op::BindSource { n_patterns });
+                self.repeat(Kind::Par, n_patterns);
+            }
+            Op::BindSource { n_patterns } => {
+                let has_source = self.r.option_tag()?;
+                self.ops.push(Op::BindBuild {
+                    n_patterns,
+                    has_source,
+                });
+                self.opt_par_child(has_source);
+            }
+            Op::BindBuild {
+                n_patterns,
+                has_source,
+            } => {
+                let remainder = self.r.opt_var()?;
+                let free_count = self.r.i32()?;
+                let has_signature = if self.layout == DecodeLayout::Legacy {
+                    false
+                } else {
+                    self.r.option_tag()?
+                };
+                self.bind_tails.push(BindTail {
+                    remainder,
+                    free_count,
+                });
+                self.ops.push(Op::BindCostBuild {
+                    n_patterns,
+                    has_source,
+                    has_signature,
+                });
+                if has_signature {
+                    self.ops.push(Op::CostSignatureStart);
+                }
+            }
+            Op::BindCostBuild {
+                n_patterns,
+                has_source,
+                has_signature,
+            } => {
+                let cost_signature = if has_signature {
+                    Some(take_one(
+                        &mut self.cost_signatures,
+                        "ReceiveBind.cost_signature",
+                    )?)
+                } else {
+                    None
+                };
+                let tail = take_one(&mut self.bind_tails, "ReceiveBind tail")?;
+                // `source` was pushed AFTER the patterns, so it comes off first.
+                let source = take_opt_par(&mut self.pars, has_source, "ReceiveBind.source")?;
+                let patterns =
+                    take_n(&mut self.pars, n_patterns, "ReceiveBind.patterns")?;
+                self.binds.push(ReceiveBind {
+                    patterns,
+                    source,
+                    remainder: tail.remainder,
+                    free_count: tail.free_count,
+                    cost_signature,
+                });
+            }
+
+            Op::CostSignatureStart
+            | Op::CostSignatureParBuild { .. }
+            | Op::CostSignatureCompoundBuild { .. }
+            | Op::CostSignedTermStart
+            | Op::CostSignedTermSignature { .. }
+            | Op::CostSignedTermBuild { .. }
+            | Op::CostStackStart
+            | Op::CostStackParallelTail { .. }
+            | Op::CostStackBuild { .. }
+            | Op::CostRegionStart
+            | Op::CostRegionBuild { .. }
+            | Op::CostAuthorityStart
+            | Op::CostAuthorityBuild { .. }
+                => self.step_cost(op)?,
+
+            // ---------------------------------------------------------------
+            // New — wire shape 1 lives here
+            // ---------------------------------------------------------------
+            Op::NewStart
+            | Op::NewAfterP { .. }
+            | Op::NewEntry { .. }
+            | Op::NewBuild { .. }
+            | Op::MatchStart
+            | Op::MatchCases { .. }
+            | Op::MatchBuild { .. }
+            | Op::CaseStart
+            | Op::CaseAfterPattern { .. }
+            | Op::CaseAfterSource { .. }
+            | Op::CaseBuild { .. }
+            | Op::IfStart
+            | Op::IfAfterCondition { .. }
+            | Op::IfAfterTrue { .. }
+            | Op::IfBuild { .. }
+            | Op::BundleStart
+            | Op::BundleBuild { .. }
+            | Op::ExprStart
+            | Op::ExprUnaryBuild { .. }
+            | Op::ExprBinaryAfter1 { .. }
+            | Op::ExprBinaryBuild { .. }
+            | Op::ExprSeqBuild { .. }
+            | Op::ExprTupleBuild { .. }
+            | Op::ExprMapBuild { .. }
+            | Op::ExprMethodArgs { .. }
+            | Op::ExprMethodBuild { .. }
+            | Op::ExprFromPathmap
+            | Op::ExprZipperBuild { .. }
+            | Op::PathmapStart
+            | Op::PathmapBuild
+            | Op::KvStart
+            | Op::KvAfterKey { .. }
+            | Op::KvBuild { .. }
+                => self.step_mid(op)?,
+
+            // ---------------------------------------------------------------
+            // Connective
+            // ---------------------------------------------------------------
+            Op::ConnStart
+            | Op::ConnBodyBuild { .. }
+            | Op::ConnNotBuild
+            | Op::TaggedContinuationStart
+            | Op::TaggedContinuationCont { .. }
+            | Op::TaggedContinuationTagged { .. }
+            | Op::TaggedContinuationParBody { .. }
+            | Op::TaggedContinuationScala { .. }
+            | Op::TaggedContinuationAbsent { .. }
+            | Op::ListParWithRandomStart
+            | Op::ListParWithRandomBuild { .. }
+            | Op::ListParWithRandomCostStack { .. }
+            | Op::ListParWithRandomFinish { .. }
+            | Op::ParWithRandomStart
+            | Op::ParWithRandomBuild { .. }
+            | Op::BindPatternStart
+            | Op::BindPatternBuild { .. }
+            | Op::ListBindPatternsStart
+            | Op::ListBindPatternsBuild { .. }
+                => self.step_tail(op)?,
         }
         Ok(())
     }
@@ -2509,6 +2687,7 @@ impl<'a> Machine<'a> {
         if !loose_cost_signatures.is_empty() {
             root.cost_stacks.push(CostStack {
                 cells: loose_cost_signatures,
+                parallel_tail: Vec::new(),
             });
         }
         loose.push(root);
@@ -2546,6 +2725,15 @@ impl ColdStoreDecode for Par {
         let consumed = machine.r.consumed();
         Ok((take_one(&mut machine.pars, "legacy Par (root)")?, consumed))
     }
+
+    fn cold_decode_cost_v1_prefix(bytes: &[u8]) -> Res<(Self, usize)> {
+        let mut machine = Machine::new_cost_v1(bytes);
+        machine.ops.push(Op::ParStart);
+        machine.run()?;
+        machine.assert_drained(DrainedRoot::Par)?;
+        let consumed = machine.r.consumed();
+        Ok((take_one(&mut machine.pars, "CostV1 Par (root)")?, consumed))
+    }
 }
 
 impl ColdStoreDecode for ListParWithRandom {
@@ -2574,6 +2762,21 @@ impl ColdStoreDecode for ListParWithRandom {
             take_one(
                 &mut machine.list_par_with_randoms,
                 "legacy ListParWithRandom (root)",
+            )?,
+            consumed,
+        ))
+    }
+
+    fn cold_decode_cost_v1_prefix(bytes: &[u8]) -> Res<(Self, usize)> {
+        let mut machine = Machine::new_cost_v1(bytes);
+        machine.ops.push(Op::ListParWithRandomStart);
+        machine.run()?;
+        machine.assert_drained(DrainedRoot::ListParWithRandom)?;
+        let consumed = machine.r.consumed();
+        Ok((
+            take_one(
+                &mut machine.list_par_with_randoms,
+                "CostV1 ListParWithRandom (root)",
             )?,
             consumed,
         ))
@@ -2607,6 +2810,18 @@ impl ColdStoreDecode for BindPattern {
             consumed,
         ))
     }
+
+    fn cold_decode_cost_v1_prefix(bytes: &[u8]) -> Res<(Self, usize)> {
+        let mut machine = Machine::new_cost_v1(bytes);
+        machine.ops.push(Op::BindPatternStart);
+        machine.run()?;
+        machine.assert_drained(DrainedRoot::BindPattern)?;
+        let consumed = machine.r.consumed();
+        Ok((
+            take_one(&mut machine.bind_patterns, "CostV1 BindPattern (root)")?,
+            consumed,
+        ))
+    }
 }
 
 impl ColdStoreDecode for TaggedContinuation {
@@ -2635,6 +2850,21 @@ impl ColdStoreDecode for TaggedContinuation {
             take_one(
                 &mut machine.tagged_continuations,
                 "legacy TaggedContinuation (root)",
+            )?,
+            consumed,
+        ))
+    }
+
+    fn cold_decode_cost_v1_prefix(bytes: &[u8]) -> Res<(Self, usize)> {
+        let mut machine = Machine::new_cost_v1(bytes);
+        machine.ops.push(Op::TaggedContinuationStart);
+        machine.run()?;
+        machine.assert_drained(DrainedRoot::TaggedContinuation)?;
+        let consumed = machine.r.consumed();
+        Ok((
+            take_one(
+                &mut machine.tagged_continuations,
+                "CostV1 TaggedContinuation (root)",
             )?,
             consumed,
         ))

@@ -60,8 +60,8 @@ fn verified_onchain_authority(
             "on-chain purse has no independently observed private-name authority",
         ));
     }
-    match signature {
-        rholang::rust::interpreter::accounting::Sig::Ground(bytes) => Ok(bytes),
+    match &signature {
+        rholang::rust::interpreter::accounting::Sig::Ground(bytes) => Ok(bytes.clone()),
         _ => Err(invalid("on-chain private-name authority is not grounded")),
     }
 }

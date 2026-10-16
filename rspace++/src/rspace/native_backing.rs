@@ -11,7 +11,7 @@ use super::hashing::blake2b256_hash::Blake2b256Hash;
 use super::hashing::native_source::SourceMeter;
 use super::internal::{Datum, Install, WaitingContinuation};
 use super::merger::merging_logic::MergeType;
-use super::trace::event::{COMM, Consume, Event, IOEvent, Produce};
+use super::trace::event::{COMM, Consume, Event, IOEvent, Produce, RestingCOMM};
 
 pub(crate) fn dashmap_shard_bytes<K: Eq + Hash, V>() -> usize {
     fn shard_bytes<K: Eq + Hash, V, T>(_: for<'a> fn(&'a DashMap<K, V>) -> &'a [T]) -> usize {
@@ -100,6 +100,59 @@ pub(crate) fn inspect_slice<T: CloneBacking>(
     walk(meter, |reserve| clone_backing::inspect_slice(values, reserve))
 }
 
+/// D-O1 (DR-94): the block-mode inspection (DR-92): it prepays exactly one
+/// linear traversal of `value`.
+pub(crate) fn inspect_blocks<T: CloneBacking>(
+    value: &T,
+    meter: &dyn SourceMeter,
+) -> Result<(), RSpaceError> {
+    walk(meter, |reserve| clone_backing::inspect_blocks(value, reserve))
+}
+
+/// Block-mode copy and eventual cleanup, charged before the copy.
+pub(crate) fn reserve_blocks_copy_and_cleanup<T: CloneBacking>(
+    value: &T,
+    meter: &dyn SourceMeter,
+) -> Result<(), RSpaceError> {
+    walk(meter, |reserve| clone_backing::reserve_blocks_copy_and_cleanup(value, reserve))
+}
+
+pub(crate) fn reserve_blocks_slice_copy_and_cleanup<T: CloneBacking>(
+    values: &[T],
+    meter: &dyn SourceMeter,
+) -> Result<(), RSpaceError> {
+    walk(meter, |reserve| clone_backing::reserve_blocks_slice_copy_and_cleanup(values, reserve))
+}
+
+pub(crate) fn inspect_blocks_slice<T: CloneBacking>(
+    values: &[T],
+    meter: &dyn SourceMeter,
+) -> Result<(), RSpaceError> {
+    walk(meter, |reserve| clone_backing::inspect_blocks_slice(values, reserve))
+}
+
+pub(crate) fn reserve_blocks_cleanup<T: CloneBacking>(
+    value: &T,
+    meter: &dyn SourceMeter,
+) -> Result<(), RSpaceError> {
+    inspect_blocks(value, meter)
+}
+
+pub(crate) fn reserve_shared_blocks_copy_and_cleanup<T: CloneBacking>(
+    values: &Vec<std::sync::Arc<T>>,
+    meter: &dyn SourceMeter,
+) -> Result<(), RSpaceError> {
+    walk(meter, |reserve| clone_backing::reserve_blocks(values, reserve))?;
+    walk(meter, |reserve| clone_backing::inspect_shared_pointers_blocks(values, reserve))
+}
+
+pub(crate) fn reserve_shared_blocks_cleanup<T: CloneBacking>(
+    value: &std::sync::Arc<T>,
+    meter: &dyn SourceMeter,
+) -> Result<(), RSpaceError> {
+    walk(meter, |reserve| clone_backing::inspect_shared_pointers_blocks(value, reserve))
+}
+
 impl CloneBacking for Blake2b256Hash {
     fn children<'a>(&'a self, walker: &mut Walker<'a>) -> Result<(), BackingError> {
         walker.push(&self.0)
@@ -176,11 +229,19 @@ fields!(COMM {
     peeks,
     times_repeated
 });
+fields!(RestingCOMM {
+    consume,
+    continuation_index,
+    ordered_produces,
+    ordered_data_indices,
+    peeks
+});
 impl CloneBacking for Event {
     fn children<'a>(&'a self, walker: &mut Walker<'a>) -> Result<(), BackingError> {
         match self {
             Self::Comm(value) => walker.push(value),
             Self::IoEvent(value) => walker.push(value),
+            Self::RestingComm(value) => walker.push(value),
         }
     }
 }

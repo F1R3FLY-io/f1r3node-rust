@@ -4,6 +4,7 @@ use std::sync::{Arc, Mutex};
 
 use rspace_plus_plus::rspace::errors::RSpaceError;
 use rspace_plus_plus::rspace::hashing::native_source::SourceMeter;
+use rspace_plus_plus::rspace::hashing::stable_hash_provider::StableHashSerialize;
 use rspace_plus_plus::rspace::r#match::Match;
 use rspace_plus_plus::rspace::replay_rspace::ReplayRSpace;
 use rspace_plus_plus::rspace::rspace::RSpace;
@@ -23,6 +24,8 @@ mod native_directive;
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 struct Any;
+
+impl StableHashSerialize for Any {}
 
 impl rspace_plus_plus::rspace::serializers::cold_store_decode::ColdStoreDecode for Any {
     fn cold_decode_prefix(
@@ -100,6 +103,9 @@ fn operation_source_bytes(source: RSpaceOperationSource<'_>) -> Vec<u8> {
     let event = match source {
         RSpaceOperationSource::Produce(produce) => IOEvent::Produce(produce.clone()),
         RSpaceOperationSource::Consume(consume) => IOEvent::Consume(consume.clone()),
+        RSpaceOperationSource::Resting(_) => {
+            panic!("legacy IO observer test must not encode a resting commit as IO")
+        }
     };
     bincode::serialize(&event).unwrap()
 }
@@ -318,12 +324,19 @@ async fn produce_triggered_join_rejection_is_state_trace_and_counter_atomic() {
     assert_eq!(observer.count.load(Ordering::Acquire), 1);
     assert_eq!(observer.consumes.load(Ordering::Acquire), 1);
     assert_eq!(observer.produces.load(Ordering::Acquire), 2);
-    assert_eq!(space.get_data(&"left".to_string()).await.len(), 1);
-    assert!(space.get_data(&"right".to_string()).await.is_empty());
+    assert_eq!(space.get_data(&"left".to_string()).await.unwrap().len(), 1);
+    assert!(
+        space
+            .get_data(&"right".to_string())
+            .await
+            .unwrap()
+            .is_empty()
+    );
     assert_eq!(
         space
             .get_waiting_continuations(channels.clone())
             .await
+            .unwrap()
             .len(),
         1
     );
@@ -338,9 +351,27 @@ async fn produce_triggered_join_rejection_is_state_trace_and_counter_atomic() {
     );
     assert_eq!(observer.count.load(Ordering::Acquire), 2);
     assert_eq!(observer.produces.load(Ordering::Acquire), 3);
-    assert!(space.get_data(&"left".to_string()).await.is_empty());
-    assert!(space.get_data(&"right".to_string()).await.is_empty());
-    assert!(space.get_waiting_continuations(channels).await.is_empty());
+    assert!(
+        space
+            .get_data(&"left".to_string())
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        space
+            .get_data(&"right".to_string())
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        space
+            .get_waiting_continuations(channels)
+            .await
+            .unwrap()
+            .is_empty()
+    );
     {
         let observed = observer.observed.lock().unwrap();
         assert_eq!(observed[1].times_repeated.len(), 2);
@@ -375,12 +406,13 @@ async fn consume_triggered_join_rejection_is_state_and_trace_atomic() {
         Err(RSpaceError::OutOfPhlogistons)
     );
     assert_eq!(observer.count.load(Ordering::Acquire), 1);
-    assert_eq!(space.get_data(&"left".to_string()).await.len(), 1);
-    assert_eq!(space.get_data(&"right".to_string()).await.len(), 1);
+    assert_eq!(space.get_data(&"left".to_string()).await.unwrap().len(), 1);
+    assert_eq!(space.get_data(&"right".to_string()).await.unwrap().len(), 1);
     assert!(
         space
             .get_waiting_continuations(channels.clone())
             .await
+            .unwrap()
             .is_empty()
     );
 
@@ -394,9 +426,27 @@ async fn consume_triggered_join_rejection_is_state_and_trace_atomic() {
     );
     assert_eq!(observer.count.load(Ordering::Acquire), 2);
     assert_eq!(observer.consumes.load(Ordering::Acquire), 2);
-    assert!(space.get_data(&"left".to_string()).await.is_empty());
-    assert!(space.get_data(&"right".to_string()).await.is_empty());
-    assert!(space.get_waiting_continuations(channels).await.is_empty());
+    assert!(
+        space
+            .get_data(&"left".to_string())
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        space
+            .get_data(&"right".to_string())
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        space
+            .get_waiting_continuations(channels)
+            .await
+            .unwrap()
+            .is_empty()
+    );
     {
         let observed = observer.observed.lock().unwrap();
         assert_eq!(observed[1].times_repeated.len(), 2);
@@ -505,7 +555,13 @@ async fn peek_removal_does_not_refund_or_recharge_an_introduction() {
             .is_some()
     );
 
-    assert!(space.get_data(&"peek".to_string()).await.is_empty());
+    assert!(
+        space
+            .get_data(&"peek".to_string())
+            .await
+            .unwrap()
+            .is_empty()
+    );
     assert_eq!(observer.produces.load(Ordering::Acquire), 1);
     assert_eq!(observer.consumes.load(Ordering::Acquire), 1);
     assert_eq!(observer.count.load(Ordering::Acquire), 1);
@@ -523,7 +579,13 @@ async fn operation_rejection_precedes_store_and_trace_mutation() {
             .await,
         Err(RSpaceError::OutOfPhlogistons)
     );
-    assert!(space.get_data(&"channel".to_string()).await.is_empty());
+    assert!(
+        space
+            .get_data(&"channel".to_string())
+            .await
+            .unwrap()
+            .is_empty()
+    );
     assert!(space.take_event_log().await.is_empty());
 
     assert_eq!(
@@ -542,6 +604,7 @@ async fn operation_rejection_precedes_store_and_trace_mutation() {
         space
             .get_waiting_continuations(vec!["channel".to_string()])
             .await
+            .unwrap()
             .is_empty()
     );
     assert!(space.take_event_log().await.is_empty());
@@ -653,11 +716,15 @@ async fn operation_lifecycle_covers_storage_matches_and_both_rejection_stages() 
                 if rejected {
                     assert!(log.iter().all(|event| !matches!(event, Event::Comm(_))));
                     assert_eq!(
-                        space.get_data(&channels[0]).await.len(),
+                        space.get_data(&channels[0]).await.unwrap().len(),
                         usize::from(!produce_trigger)
                     );
                     assert_eq!(
-                        space.get_waiting_continuations(channels).await.len(),
+                        space
+                            .get_waiting_continuations(channels)
+                            .await
+                            .unwrap()
+                            .len(),
                         usize::from(produce_trigger)
                     );
                 }
@@ -694,11 +761,18 @@ async fn operation_start_rejection_precedes_all_observations_and_mutations() {
     assert_eq!(observer.count.load(Ordering::Acquire), 0);
     assert!(observer.operations.lock().unwrap().is_empty());
     assert!(space.take_event_log().await.is_empty());
-    assert!(space.get_data(&"channel".to_string()).await.is_empty());
+    assert!(
+        space
+            .get_data(&"channel".to_string())
+            .await
+            .unwrap()
+            .is_empty()
+    );
     assert!(
         space
             .get_waiting_continuations(vec!["channel".to_string()])
             .await
+            .unwrap()
             .is_empty()
     );
 }
@@ -946,13 +1020,14 @@ async fn replay_operation_lifecycle_covers_storage_matches_and_rejections() {
             } else {
                 assert!(replay.check_replay_data().await.is_err());
                 assert_eq!(
-                    replay.get_data(&"channel".to_string()).await.len(),
+                    replay.get_data(&"channel".to_string()).await.unwrap().len(),
                     usize::from(!produce_trigger)
                 );
                 assert_eq!(
                     replay
                         .get_waiting_continuations(vec!["channel".to_string()])
                         .await
+                        .unwrap()
                         .len(),
                     usize::from(produce_trigger)
                 );

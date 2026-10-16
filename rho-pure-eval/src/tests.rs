@@ -68,6 +68,29 @@ fn ground_float32_preserves_bits_through_evaluation() {
 }
 
 #[test]
+fn sized_numeric_grounds_pass_through_without_coercion() {
+    let env = Env::<Par>::new();
+    let reserve = |_: usize, _: usize, _: usize| Ok(());
+    for instance in [
+        ExprInstance::GUint64(u64::MAX),
+        ExprInstance::GInt32(i32::MIN),
+        ExprInstance::GUint32(u32::MAX),
+        ExprInstance::GUint16(u16::MAX.into()),
+        ExprInstance::GUint8(u8::MAX.into()),
+    ] {
+        let value = par_of(instance);
+        assert_eq!(eval(&value, &env), Ok(value.clone()));
+        assert_eq!(eval_metered(&value, &env, &reserve), Ok(value));
+    }
+
+    let cross_width = par_of(ExprInstance::EEqBody(EEq {
+        p1: Some(par_of(ExprInstance::GInt32(1))),
+        p2: Some(gint(1)),
+    }));
+    assert_bool(&eval(&cross_width, &env).unwrap(), false);
+}
+
+#[test]
 fn evar_resolves_from_env() {
     let mut env = Env::<Par>::new();
     let env = env.put(gint(7));
@@ -1196,6 +1219,15 @@ fn every_variant() -> Vec<(&'static str, Par, Option<&'static str>)> {
         ),
         ("GDouble", gdouble(1.0), None),
         ("GFloat32", gfloat32_bits(1.0_f32.to_bits()), None),
+        ("GUint64", par_of(ExprInstance::GUint64(u64::MAX)), None),
+        ("GInt32", par_of(ExprInstance::GInt32(i32::MIN)), None),
+        ("GUint32", par_of(ExprInstance::GUint32(u32::MAX)), None),
+        (
+            "GUint16",
+            par_of(ExprInstance::GUint16(u16::MAX.into())),
+            None,
+        ),
+        ("GUint8", par_of(ExprInstance::GUint8(u8::MAX.into())), None),
         ("GBigInt", par_of(ExprInstance::GBigInt(vec![1])), None),
         (
             "GBigRat",
@@ -1411,17 +1443,28 @@ fn every_variant() -> Vec<(&'static str, Par, Option<&'static str>)> {
 fn the_corpus_covers_every_expr_instance_variant() {
     // ⚠ ANTI-VACUITY. Every differential below is only as good as the
     // corpus it ranges over, so the corpus size is pinned against the
-    // number of `ExprInstance` variants counted from RhoTypes.proto's
-    // `oneof expr_instance`: 10 grounds + 4 collections + EVar + 15
-    // operators + EMatches + 6 undecidable = 37. Adding a variant to the
+    // generated `ExprInstance` variant count. Adding a variant to the
     // protobuf without adding a row here fails HERE, before it can fail
     // silently in production.
+    let corpus = every_variant();
+    let distinct: std::collections::HashSet<_> = corpus
+        .iter()
+        .map(|(_, par, _)| {
+            std::mem::discriminant(
+                par.exprs[0]
+                    .expr_instance
+                    .as_ref()
+                    .expect("corpus Expr instance"),
+            )
+        })
+        .collect();
     assert_eq!(
-        every_variant().len(),
-        37,
+        distinct.len(),
+        models::rust::rholang::par_children::EXPR_INSTANCE_VARIANT_COUNT,
         "the differential corpus must carry one representative of every \
          ExprInstance variant"
     );
+    assert_eq!(corpus.len(), distinct.len(), "one row per ExprInstance arm");
 }
 
 #[test]

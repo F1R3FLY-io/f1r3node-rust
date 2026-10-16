@@ -24,8 +24,8 @@ use costs::Cost;
 use crossbeam_queue::SegQueue;
 use crypto::rust::hash::blake2b256::Blake2b256;
 use models::rhoapi::g_unforgeable::UnfInstance;
-use models::rhoapi::{CostAuthority, CostSignature, GPrivate, GUnforgeable, Par};
-use models::rust::host_work::{HostWorkDimension, HostWorkUnits};
+use models::rhoapi::{CostAuthority, CostSignature, CostStack, GPrivate, GUnforgeable, Par};
+use models::rust::host_work::{HostWorkDimension, HostWorkLimits, HostWorkUnits};
 use models::rust::rholang::implicits::concatenate_pars;
 use models::rust::rholang::sorter::par_sort_matcher::ParSortMatcher;
 use models::rust::rholang::sorter::sortable::Sortable;
@@ -41,6 +41,7 @@ pub mod cost_accounting;
 pub mod costs;
 pub mod delta_sigma;
 pub mod has_cost;
+pub mod noop;
 pub mod lexical;
 pub mod oslf;
 pub mod resource_logic;
@@ -60,17 +61,20 @@ mod native_runtime;
 pub(crate) use native_runtime::clone_backing::tests::measured as measured_allocations;
 pub(crate) use native_runtime::{clone_backing, NativeAuthorityCheckpoint};
 pub use native_runtime::{
-    decode_native_budget_recording, decode_native_operation_journal,
-    encode_native_budget_recording, encode_native_operation_journal, CheckedNativeOperationJournal,
-    CheckedNativeOperationTrace, NativeBudgetRecording, NativeBudgetRetry, NativeCommRecord,
-    NativeCommSource, NativeConsumeSource, NativeObservationLink, NativeOperationJournalError,
-    NativeOperationJournalLimits, NativeOperationOccurrence, NativeOperationRecord,
+    decode_native_budget_recording, decode_native_budget_recording_v3,
+    decode_native_operation_journal, decode_native_operation_journal_v3,
+    encode_native_budget_recording, encode_native_budget_recording_v3,
+    encode_native_operation_journal, encode_native_operation_journal_v3,
+    CheckedNativeOperationJournal, CheckedNativeOperationTrace, NativeBudgetRecording,
+    NativeBudgetRetry, NativeCommRecord, NativeCommSource, NativeConsumeSource,
+    NativeObservationLink, NativeOperationJournalError, NativeOperationJournalLimits,
+    NativeOperationOccurrence, NativeOperationRecord, NativeOperationRecordV3,
     NativeOperationReplay, NativeOperationSource, NativeOperationTraceError,
     NativeOperationTraceLimits, NativeProduceSource, NativeRecordingWireLimits,
     NativeReplayAccountingSnapshot, NativeReplayBoundary, NativeReplayCheckpoint,
     NativeReplayError, NativeReplayOutcome, NativeReplayPublication, NativeReplayReservation,
-    NativeReplayRestore, NativeRuntimeConfig, NativeRuntimeReplayCheckpoint,
-    NativeRuntimeReplaySession,
+    NativeReplayRestore, NativeRestingRecordV3, NativeRestingSource, NativeRuntimeConfig,
+    NativeRuntimeReplayCheckpoint, NativeRuntimeReplaySession,
 };
 
 const DEPLOY_SIGNATURE_DOMAIN: &[u8] = b"f1r3node:cost-accounted-rho:deploy-signature:v1";
@@ -201,6 +205,9 @@ impl Drop for LegacyBudgetScope {
 #[derive(Default)]
 struct AuthorityRuntimeState {
     native: Option<NativeRuntimeConfig>,
+    /// Trusted local lookahead only. This is cleared on every budget reset and
+    /// may not coexist with an adopted native execution/replay configuration.
+    standalone_resting_comm: Option<HostWorkLimits>,
     allocation: authority::ResourceMultiset<[u8; 32]>,
     enforce_allocation: bool,
     events: BTreeMap<[u8; 32], AuthorityRuntimeEvent>,
@@ -539,13 +546,36 @@ fn reserve_authority_clone(
     if let Some(host) = host {
         let backing =
             |operations, scanned, bytes| reserve_native_backing(host, operations, scanned, bytes);
-        shared_clone_backing::reserve_copy_and_cleanup(authority, &backing)
+        // Changed by D-O1 (DR-94): block accounting charges inline bytes once per enclosing block.
+        // shared_clone_backing::reserve_copy_and_cleanup(authority, &backing)
+        //     .map_err(|_| InterpreterError::HostWorkRejected)?;
+        shared_clone_backing::reserve_blocks_copy_and_cleanup(authority, &backing)
             .map_err(|_| InterpreterError::HostWorkRejected)?;
     }
     Ok(())
 }
 
 fn inspect_authority(
+    authority: &CostAuthority,
+    host: Option<&HostWorkBudget>,
+) -> Result<(), InterpreterError> {
+    if let Some(host) = host {
+        let backing =
+            |operations, scanned, bytes| reserve_native_backing(host, operations, scanned, bytes);
+        // Changed by D-O1 (DR-94): block accounting charges inline bytes once per enclosing block.
+        // shared_clone_backing::inspect(authority, &backing)
+        //     .map_err(|_| InterpreterError::HostWorkRejected)?;
+        shared_clone_backing::inspect_blocks(authority, &backing)
+            .map_err(|_| InterpreterError::HostWorkRejected)?;
+    }
+    Ok(())
+}
+
+/// D-O1 (DR-94): the legacy inspection of an owned authority that the site
+/// drops after the comparison. The legacy per-level charge also pays that
+/// release; the block mode would pay only the comparison, so these sites stay
+/// legacy until Stage B (D-E3) decides how releases are prepaid.
+fn inspect_owned_authority(
     authority: &CostAuthority,
     host: Option<&HostWorkBudget>,
 ) -> Result<(), InterpreterError> {
@@ -565,7 +595,10 @@ fn inspect_observation(
     if let Some(host) = host {
         let backing =
             |operations, scanned, bytes| reserve_native_backing(host, operations, scanned, bytes);
-        shared_clone_backing::inspect(observation, &backing)
+        // Changed by D-O1 (DR-94): block accounting charges inline bytes once per enclosing block.
+        // shared_clone_backing::inspect(observation, &backing)
+        //     .map_err(|_| InterpreterError::HostWorkRejected)?;
+        shared_clone_backing::inspect_blocks(observation, &backing)
             .map_err(|_| InterpreterError::HostWorkRejected)?;
     }
     Ok(())
@@ -838,6 +871,9 @@ fn reserve_stack_rollback_work(
 }
 
 impl RuntimeBudget {
+    pub(crate) fn same_identity(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.initial_tokens, &other.initial_tokens)
+    }
     fn resolve_max_log_entries() -> usize { 1024 }
 
     pub fn new(initial_value: Cost) -> Self {
@@ -1068,7 +1104,8 @@ impl RuntimeBudget {
         match authorities.get(&(identity, kind)) {
             Some(existing) => {
                 inspect_authority(existing, host.as_ref())?;
-                inspect_authority(&canonical, host.as_ref())?;
+                // Kept legacy by D-O1 (DR-94): `canonical` is dropped here.
+                inspect_owned_authority(&canonical, host.as_ref())?;
                 if existing == &canonical {
                     Ok(())
                 } else {
@@ -1328,7 +1365,13 @@ impl RuntimeBudget {
         cost_authority: &CostAuthority,
         byte_cost: u64,
     ) -> Result<(), InterpreterError> {
-        self.reserve_authority_identity(identity, cost_authority, byte_cost, None)
+        self.reserve_authority_identity(
+            identity,
+            authority::AuthorityByteEventKind::Comm,
+            cost_authority,
+            byte_cost,
+            None,
+        )
     }
 
     pub fn reserve_comm_authority_measured(
@@ -1338,13 +1381,99 @@ impl RuntimeBudget {
         measurement: byte_accounting::ByteCharge,
     ) -> Result<(), InterpreterError> {
         let cost = self.measured_legacy_cost(measurement)?;
-        self.reserve_authority_identity(identity, cost_authority, cost, Some(measurement))
+        self.reserve_authority_identity(
+            identity,
+            authority::AuthorityByteEventKind::Comm,
+            cost_authority,
+            cost,
+            Some(measurement),
+        )
+    }
+
+    pub(crate) fn reserve_resting_authority_measured(
+        &self,
+        identity: [u8; 32],
+        cost_authority: &CostAuthority,
+        measurement: byte_accounting::ByteCharge,
+    ) -> Result<(), InterpreterError> {
+        if !self.has_comm_accounting_scope()
+            || self.is_unmetered()
+            || self.native_event_codec_epoch()
+            != Some(
+                rspace_plus_plus::rspace::hashing::stable_hash_provider::EventCodecEpoch::CostV2,
+            )
+        {
+            return Err(InterpreterError::HostWorkRejected);
+        }
+        let cost = self.measured_legacy_cost(measurement)?;
+        self.reserve_authority_identity(
+            identity,
+            authority::AuthorityByteEventKind::RestingComm,
+            cost_authority,
+            cost,
+            Some(measurement),
+        )
     }
 
     pub fn prepare_authority_stack_transfer(
         &self,
         produce_hash: [u8; 32],
         cells: Vec<CostSignature>,
+        cost_authority: &CostAuthority,
+    ) -> Result<AuthorityStackTransferReservation, InterpreterError> {
+        self.prepare_authority_stack_transfer_inner(produce_hash, cells, None, cost_authority)
+    }
+
+    /// Preserve the authored gate tree while retaining the historical flat
+    /// transfer-event sequence (one event per physical cell). An empty tail
+    /// uses the original linear path and therefore the original witness bytes.
+    pub fn prepare_authority_stack_tree_transfer(
+        &self,
+        produce_hash: [u8; 32],
+        mut stack: CostStack,
+        cost_authority: &CostAuthority,
+    ) -> Result<AuthorityStackTransferReservation, InterpreterError> {
+        if stack.cells.is_empty() {
+            return Err(InterpreterError::ReduceError(
+                authority::AuthorityError::MissingSignature.to_string(),
+            ));
+        }
+        if stack.parallel_tail.is_empty() {
+            return self.prepare_authority_stack_transfer(
+                produce_hash,
+                std::mem::take(&mut stack.cells),
+                cost_authority,
+            );
+        }
+        let host = self
+            .authority_state
+            .lock()
+            .expect("authority state")
+            .native
+            .as_ref()
+            .map(NativeRuntimeConfig::host_work);
+        let cells = if let Some(host) = host.as_ref() {
+            let backing = |operations, scanned, bytes| {
+                reserve_owned_backing(host, operations, scanned, bytes)
+            };
+            authority::stack_flat_cells_metered(&stack, &backing)
+        } else {
+            authority::stack_flat_cells(&stack)
+        }
+        .map_err(native_authority_error)?;
+        self.prepare_authority_stack_transfer_inner(
+            produce_hash,
+            cells,
+            Some(stack),
+            cost_authority,
+        )
+    }
+
+    fn prepare_authority_stack_transfer_inner(
+        &self,
+        produce_hash: [u8; 32],
+        cells: Vec<CostSignature>,
+        stack: Option<CostStack>,
         cost_authority: &CostAuthority,
     ) -> Result<AuthorityStackTransferReservation, InterpreterError> {
         if !self.has_comm_accounting_scope() || self.unmetered.load(Ordering::Acquire) != 0 {
@@ -1395,6 +1524,7 @@ impl RuntimeBudget {
         let birth = authority::AuthorityStackBirth {
             produce_hash,
             cells,
+            stack,
         };
         let mut state = self.authority_state.lock().expect("authority state");
         // Disabled by C13 (DR-80): one charge on the summed size covered two
@@ -1725,6 +1855,7 @@ impl RuntimeBudget {
     fn reserve_authority_identity(
         &self,
         identity: [u8; 32],
+        byte_kind: authority::AuthorityByteEventKind,
         cost_authority: &CostAuthority,
         comm_byte_cost: u64,
         measurement: Option<byte_accounting::ByteCharge>,
@@ -1741,7 +1872,7 @@ impl RuntimeBudget {
         reserve_observation_birth(host.as_ref())?;
         let observation = Arc::new(byte_receipts::ByteObservation {
             event_id: identity,
-            kind: authority::AuthorityByteEventKind::Comm,
+            kind: byte_kind,
             authority: canonical_authority.clone(),
             measurement,
             legacy_amount,
@@ -1776,7 +1907,8 @@ impl RuntimeBudget {
                 return self.record_native_retry(&mut state, prepared.as_ref());
             }
             inspect_authority(&existing.authority, host.as_ref())?;
-            inspect_authority(&canonical_authority, host.as_ref())?;
+            // Kept legacy by D-O1 (DR-94): `canonical_authority` is dropped here.
+            inspect_owned_authority(&canonical_authority, host.as_ref())?;
             if let Some(row) = existing.byte_observation.as_ref() {
                 inspect_observation(row, host.as_ref())?;
             }
@@ -2416,6 +2548,7 @@ impl RuntimeBudget {
         {
             let mut authority = self.authority_state.lock().expect("authority state");
             authority.native = None;
+            authority.standalone_resting_comm = None;
             authority.allocation = authority::ResourceMultiset::default();
             authority.enforce_allocation = false;
             authority.events.clear();
@@ -2596,9 +2729,28 @@ impl RuntimeBudget {
         Ok(())
     }
 
-    pub fn set_deploy_id_funded(&self, deploy_id: [u8; 32], funding_sig: Sig) {
+    /// DR-101: a funded deployment never pays as system authority. A `Unit`
+    /// payer would make its own regions, and the residue of its system bodies,
+    /// cost nothing.
+    pub fn set_deploy_id_funded(
+        &self,
+        deploy_id: [u8; 32],
+        funding_sig: Sig,
+    ) -> Result<(), InterpreterError> {
+        if funding_sig == Sig::Unit {
+            return Err(InterpreterError::BugFoundError(
+                "a funded deployment cannot pay as system authority".to_string(),
+            ));
+        }
         *self.deploy_id.lock().expect("deploy id lock") = deploy_id;
         *self.signature.lock().expect("signature lock") = funding_sig;
+        Ok(())
+    }
+
+    /// I3/DR-101: system deploys pay as system authority with no deployment.
+    pub fn set_system_payer(&self) {
+        *self.deploy_id.lock().expect("deploy id lock") = [0; 32];
+        *self.signature.lock().expect("signature lock") = Sig::Unit;
     }
 
     pub fn signature(&self) -> Sig { self.signature.lock().expect("signature lock").clone() }
@@ -2641,6 +2793,14 @@ impl RuntimeBudget {
         CommAccountingScope {
             budget: self.clone(),
         }
+    }
+
+    pub(crate) fn enter_comm_accounting_scope_for_epoch(
+        &self,
+        epoch: rspace_plus_plus::rspace::hashing::stable_hash_provider::EventCodecEpoch,
+    ) -> Option<CommAccountingScope> {
+        (epoch != rspace_plus_plus::rspace::hashing::stable_hash_provider::EventCodecEpoch::Legacy)
+            .then(|| self.enter_comm_accounting_scope())
     }
 
     pub fn has_comm_accounting_scope(&self) -> bool {
@@ -4774,7 +4934,9 @@ mod runtime_budget_tests {
             Box::new(Sig::Ground(vec![11; 37])),
             Box::new(Sig::Quote(vec![23; 41])),
         );
-        budget.set_deploy_id_funded([19; 32], signature.clone());
+        budget
+            .set_deploy_id_funded([19; 32], signature.clone())
+            .expect("a ground payer funds the deployment");
         let unlimited = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(u64::MAX)));
         assert_eq!(
             budget.signature_with_host_work(&unlimited).unwrap(),
@@ -5495,7 +5657,7 @@ mod runtime_budget_tests {
             proptest::prop_assert_eq!(budget.authority_realized().get(&lane), cell_count);
             proptest::prop_assert_eq!(budget.authority_events().len(), cells.len());
             proptest::prop_assert_eq!(budget.authority_stack_births(),
-                vec![authority::AuthorityStackBirth { produce_hash: [1; 32], cells }]);
+                vec![authority::AuthorityStackBirth { produce_hash: [1; 32], cells, stack: None }]);
             proptest::prop_assert_eq!(budget.total_cost().value, 0);
         }
 
@@ -5574,6 +5736,7 @@ mod runtime_budget_tests {
                 let spent = committed.values().map(|birth| birth.cells.len() as u64).sum::<u64>();
                 let expected_births = committed.iter().map(|(id, birth)| authority::AuthorityStackBirth {
                     produce_hash: [*id; 32], cells: birth.cells.clone(),
+                    stack: None,
                 }).collect::<Vec<_>>();
                 proptest::prop_assert_eq!(budget.authority_stack_births(), expected_births);
                 proptest::prop_assert_eq!(budget.authority_events().len() as u64, spent);

@@ -507,7 +507,6 @@ pub fn create_set_pathmap_from_elements(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::rust::path_map_encoder::SExpr;
     use crate::rust::utils::{new_elist_par, new_gint_par, new_gstring_par};
 
     fn gint(value: i64) -> Par { new_gint_par(value, Vec::new(), false) }
@@ -518,7 +517,7 @@ mod tests {
     fn par_to_path_encodes_non_list_par_as_single_segment() {
         let segments = par_to_path(&gint(42));
         assert_eq!(segments.len(), 1);
-        assert_eq!(segments[0], SExpr::Symbol("42".to_string()).encode());
+        assert_eq!(segments[0], [0x03, 0x54]); // GInt tag, zigzag-varint(42)
     }
 
     #[test]

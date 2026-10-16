@@ -1,6 +1,6 @@
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::operation_context::{CausalPath, OperationOrder};
-use rspace_plus_plus::rspace::trace::event::{Consume, Event, IOEvent, Produce, COMM};
+use rspace_plus_plus::rspace::trace::event::{Consume, Event, IOEvent, Produce, RestingCOMM, COMM};
 
 use super::*;
 
@@ -59,6 +59,9 @@ fn events_in(paths: &NativePathTrie, rows: &[NativeOperationRecord]) -> Vec<Even
         result.push(Event::IoEvent(match &row.source {
             NativeOperationSource::Produce(source) => IOEvent::Produce(producer(source)),
             NativeOperationSource::Consume(source) => IOEvent::Consume(consumer(source)),
+            NativeOperationSource::Resting(_) => {
+                panic!("historical fixture cannot contain Resting")
+            }
         }));
         if row.completion == RSpaceOperationCompletion::Matched {
             let source = &row.comm.as_ref().unwrap().source;
@@ -97,6 +100,25 @@ fn bind(
     check(recording, rows)
         .unwrap()
         .bind_trace(log.into(), limits(), &host())
+}
+
+#[test]
+fn legacy_native_trace_refuses_resting_event_without_io_coercion() {
+    let (recording, rows, mut log) = trace_fixture();
+    let source = &rows[1].comm.as_ref().unwrap().source;
+    log.push(Event::RestingComm(Arc::new(RestingCOMM {
+        consume: consumer(&source.consume),
+        continuation_index: 0,
+        ordered_produces: source.produces.iter().map(producer).collect(),
+        ordered_data_indices: (0..source.produces.len())
+            .map(|index| i32::try_from(index).unwrap())
+            .collect(),
+        peeks: source.peeks.iter().copied().collect(),
+    })));
+    assert!(matches!(
+        bind(&recording, rows, log),
+        Err(NativeOperationTraceError::Coverage)
+    ));
 }
 
 #[test]

@@ -119,7 +119,13 @@ impl<'preflight, 'a> NativeOfferedAttempt<'preflight, 'a> {
                 budget,
             )
             .map_err(|error| CasperError::RuntimeError(error.to_string()))?;
-        manager.read_measured_prepaid_stacks(self.preflight.funding_root, &demand, capture, budget)
+        manager.read_measured_prepaid_stacks(
+            self.preflight.funding_root,
+            &demand,
+            &self.adopted,
+            capture,
+            budget,
+        )
     }
 
     pub fn bind_policy<'policy>(
@@ -247,7 +253,8 @@ impl CheckedDirectWalletPolicy<'_, OfferedFundedDeploy> {
             .execution()
             .controls();
         let contract = adopted.bind_execution_contract(controls, schedule)?;
-        Ok(NativeRuntimeConfig::new(contract, limits, budget))
+        Ok(NativeRuntimeConfig::new(contract, limits, budget)
+            .with_event_codec_epoch(adopted.event_codec_epoch()))
     }
 }
 
@@ -330,10 +337,15 @@ impl RuntimeManager {
             .adopted()
             .bind_execution_contract(checked.controls(), &schedule)?;
         let host_work = context.host_work.clone();
-        let config = NativeRuntimeConfig::new(contract, context.trace, context.host_work);
+        let config = NativeRuntimeConfig::new(contract, context.trace, context.host_work)
+            .with_event_codec_epoch(selected.adopted().event_codec_epoch());
         let mut runtime = RuntimeOps::new(
-            self.spawn_offered_runtime(offered_grant_issue_call_limits(), host_work.clone())
-                .await?,
+            self.spawn_offered_runtime(
+                selected.adopted().event_codec_epoch(),
+                offered_grant_issue_call_limits(),
+                host_work.clone(),
+            )
+            .await?,
         );
         let block_data = context.block_data.clone();
         runtime.runtime.set_block_data(context.block_data).await;

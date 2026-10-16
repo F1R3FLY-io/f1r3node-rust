@@ -299,21 +299,71 @@ pub fn sort_stack_metered(
     stack: &CostStack,
     meter: &SorterMeter<'_>,
 ) -> Result<ScoredTerm<CostStack>, BackingError> {
-    meter.reserve(1, std::mem::size_of::<CostStack>(), 0)?;
-    let mut cells = meter.vec(stack.cells.len())?;
-    for cell in &stack.cells {
-        cells.push(sort_signature_metered(cell, meter)?);
+    // The protobuf tree may be arbitrarily deep. Schedule child visits on the
+    // heap and finish each stack after all of its parallel-tail branches.
+    enum Work<'a> {
+        Visit(&'a CostStack),
+        Finish(&'a CostStack),
     }
-    let mut terms = meter.vec(cells.len())?;
-    let mut scores = meter.vec(cells.len())?;
-    for cell in cells {
-        terms.push(cell.term);
-        scores.push(cell.score);
+    let mut work = meter.vec(1)?;
+    let mut values = meter.vec(1)?;
+    work.push(Work::Visit(stack));
+    while let Some(job) = work.pop() {
+        match job {
+            Work::Visit(node) => {
+                meter.reserve(1, std::mem::size_of::<CostStack>(), 0)?;
+                meter.push(&mut work, Work::Finish(node))?;
+                for branch in node.parallel_tail.iter().rev() {
+                    meter.push(&mut work, Work::Visit(branch))?;
+                }
+            }
+            Work::Finish(node) => {
+                let mut branches = meter.vec(node.parallel_tail.len())?;
+                for _ in 0..node.parallel_tail.len() {
+                    branches.push(values.pop().ok_or(BackingError::Rejected)?);
+                }
+                branches.reverse();
+                if !branches.is_empty() {
+                    ScoredTerm::sort_vec_metered(&mut branches, meter)?;
+                }
+                let mut cells = meter.vec(node.cells.len())?;
+                for cell in &node.cells {
+                    cells.push(sort_signature_metered(cell, meter)?);
+                }
+                let mut terms = meter.vec(cells.len())?;
+                let mut scores = meter.vec(cells.len() + usize::from(!branches.is_empty()))?;
+                for cell in cells {
+                    terms.push(cell.term);
+                    scores.push(cell.score);
+                }
+                let mut parallel_tail = meter.vec(branches.len())?;
+                if !branches.is_empty() {
+                    let mut branch_scores = meter.vec(branches.len())?;
+                    for branch in branches {
+                        parallel_tail.push(branch.term);
+                        branch_scores.push(branch.score);
+                    }
+                    scores.push(Tree::<ScoreAtom>::create_node_from_i32_metered(
+                        Score::COST_STACK_PARALLEL,
+                        branch_scores,
+                        meter,
+                    )?);
+                }
+                meter.push(&mut values, ScoredTerm {
+                    term: CostStack {
+                        cells: terms,
+                        parallel_tail,
+                    },
+                    score: Tree::<ScoreAtom>::create_node_from_i32_metered(
+                        Score::COST_STACK,
+                        scores,
+                        meter,
+                    )?,
+                })?;
+            }
+        }
     }
-    Ok(ScoredTerm {
-        term: CostStack { cells: terms },
-        score: Tree::<ScoreAtom>::create_node_from_i32_metered(Score::COST_STACK, scores, meter)?,
-    })
+    values.pop().ok_or(BackingError::Rejected)
 }
 
 #[cfg(test)]
@@ -472,6 +522,7 @@ mod metered_tests {
         };
         let stack = CostStack {
             cells: vec![signature.clone(), signature.clone()],
+            parallel_tail: Vec::new(),
         };
         let reserve = |_: usize, _: usize, _: usize| Ok(());
         let meter = SorterMeter::new(&reserve);
@@ -546,6 +597,7 @@ mod metered_tests {
                     let mut par = Par::default();
                     par.cost_stacks.push(CostStack {
                         cells: vec![signature],
+                        parallel_tail: Vec::new(),
                     });
                     signature = CostSignature {
                         value: Some(Value::Quote(par)),

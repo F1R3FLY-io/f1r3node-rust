@@ -13,6 +13,108 @@ fn limits() -> PhloScheduleLimits {
 }
 
 #[test]
+fn historical_policy_layouts_preserve_their_exact_fields() {
+    for version in [0, 5, 6, 7, 8, u64::MAX] {
+        let mut candidate = schedule();
+        candidate.protocol_version = version;
+        let base = PhloGenesisPolicy::from_schedule(&candidate).expect("valid schedule");
+        let historical = pack(&[
+            PHLO_GENESIS_POLICY_V1_DOMAIN.to_vec(),
+            base.schedule_bytes.clone(),
+        ]);
+        assert_eq!(base.encode().expect("valid historical policy"), historical);
+        assert_eq!(PhloGenesisPolicy::decode(&historical).expect("valid historical wire"), base);
+        let activated = base.clone().with_offered_funded_active();
+        if matches!(version, 6 | 7) {
+            let domain = if version == 6 { PHLO_GENESIS_POLICY_V2_DOMAIN } else { PHLO_GENESIS_POLICY_V3_DOMAIN };
+            let historical = pack(&[domain.to_vec(), base.schedule_bytes.clone(), vec![1]]);
+            assert_eq!(activated.encode().expect("valid active policy"), historical);
+            assert_eq!(PhloGenesisPolicy::decode(&historical).expect("valid active wire"), activated);
+        } else {
+            assert_eq!(activated.encode(), Err(PhloScheduleError::GenesisPolicyActivation));
+        }
+    }
+}
+
+#[test]
+fn former_v4_policy_domain_is_unsupported() {
+    for version in [6, 7] {
+        let mut candidate = schedule();
+        candidate.protocol_version = version;
+        let policy = PhloGenesisPolicy::from_schedule(&candidate).expect("valid schedule");
+        let fields = [
+            b"f1r3node:genesis-resource-policy:v4".to_vec(),
+            policy.schedule_bytes.clone(),
+            vec![1],
+            b"f1r3lang:host-work:v1".to_vec(),
+        ];
+        for count in 1..=fields.len() {
+            assert_eq!(PhloGenesisPolicy::decode(&pack(&fields[..count])), Err(PhloScheduleError::FormatDomain));
+        }
+        for supported in [policy.clone(), policy.with_offered_funded_active()] {
+            let mut fields = unpack(&supported.encode().expect("valid supported policy"));
+            fields.push(b"f1r3lang:host-work:v1".to_vec());
+            assert_eq!(PhloGenesisPolicy::decode(&pack(&fields)), Err(PhloWireError::TrailingBytes.into()));
+        }
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(128))]
+
+    #[test]
+    fn active_policy_envelopes_preserve_economic_bytes(
+        version in 6u64..=7,
+        price in any::<u64>(),
+        scale in any::<u8>(),
+        network in prop::collection::vec(any::<u8>(), 1..33),
+        rules in prop::collection::vec((any::<u64>(), any::<[u8; 32]>(), any::<[u8; 32]>()), 1..33),
+        compatibility in any::<[u8; 32]>(),
+    ) {
+        let identities: Vec<_> = (0..rules.len()).map(|index| (index as u32).to_be_bytes()).collect();
+        let mut candidate = PhloScheduleV1 {
+            protocol_version: version, network: &network, decimal_scale: scale, actual_price: price,
+            compatibility_rule: compatibility,
+            classes: rules.iter().zip(&identities).map(|((weight, measurement, valuation), identity)| PhloResourceClassV1 {
+                identity, measurement_unit: b"raw unit", measurement_rule: *measurement,
+                valuation_rule: *valuation, weight: *weight,
+            }).collect(),
+            ..schedule()
+        };
+        let policy = PhloGenesisPolicy::from_schedule(&candidate)
+            .expect("valid generated schedule").with_offered_funded_active();
+        candidate.actual_price = 0;
+        let economic_bytes = candidate.encode(limits()).expect("valid normalized schedule");
+        let economic_digest = candidate.digest(limits()).expect("valid normalized digest");
+        prop_assert_eq!(&policy.schedule_bytes, &economic_bytes);
+        prop_assert_eq!(policy.schedule().expect("valid schedule"), candidate);
+        prop_assert_eq!(policy.schedule().expect("valid schedule").digest(limits()).expect("valid digest"), economic_digest);
+        let wire = policy.encode().expect("valid policy");
+        let domain = if version == 6 { PHLO_GENESIS_POLICY_V2_DOMAIN } else { PHLO_GENESIS_POLICY_V3_DOMAIN };
+        prop_assert_eq!(&wire, &pack(&[domain.to_vec(), economic_bytes, vec![1]]));
+        prop_assert_eq!(PhloGenesisPolicy::decode(&wire).expect("valid wire"), policy);
+    }
+
+    #[test]
+    fn former_v4_policy_never_selects_an_epoch(
+        version in any::<u64>(),
+        active in any::<bool>(),
+        tag in prop::collection::vec(any::<u8>(), 0..65),
+    ) {
+        let mut candidate = schedule();
+        candidate.protocol_version = version;
+        let policy = PhloGenesisPolicy::from_schedule(&candidate).expect("valid schedule");
+        let wire = pack(&[
+            b"f1r3node:genesis-resource-policy:v4".to_vec(),
+            policy.schedule_bytes,
+            vec![u8::from(active)],
+            tag,
+        ]);
+        prop_assert_eq!(PhloGenesisPolicy::decode(&wire), Err(PhloScheduleError::FormatDomain));
+    }
+}
+
+#[test]
 fn genesis_policy_rejects_schedule_bytes_prices_and_trailing_data() {
     let original = schedule();
     let policy = PhloGenesisPolicy::from_schedule(&original).unwrap();
@@ -52,16 +154,18 @@ fn genesis_policy_rejects_schedule_bytes_prices_and_trailing_data() {
 }
 
 #[test]
-fn offered_funded_activation_requires_canonical_fresh_genesis_v2_policy() {
+fn offered_funded_activation_uses_version_disjoint_genesis_policy_domains() {
     let historical = PhloGenesisPolicy::from_schedule(&schedule()).unwrap();
     let historical_wire = historical.encode().unwrap();
-    assert!(!historical.offered_funded_v6_active());
-    assert!(!PhloGenesisPolicy::decode(&historical_wire)
-        .unwrap()
-        .offered_funded_v6_active());
-    let offered = historical.clone().with_offered_funded_v6_active();
+    assert!(!historical.offered_funded_active());
+    assert!(
+        !PhloGenesisPolicy::decode(&historical_wire)
+            .unwrap()
+            .offered_funded_active()
+    );
+    let offered = historical.clone().with_offered_funded_active();
     let offered_wire = offered.encode().unwrap();
-    assert!(offered.offered_funded_v6_active());
+    assert!(offered.offered_funded_active());
     assert_eq!(PhloGenesisPolicy::decode(&offered_wire).unwrap(), offered);
     assert_ne!(historical_wire, offered_wire);
     let invalid_false = pack(&[
@@ -73,23 +177,59 @@ fn offered_funded_activation_requires_canonical_fresh_genesis_v2_policy() {
         PhloGenesisPolicy::decode(&invalid_false),
         Err(PhloScheduleError::GenesisPolicyActivation)
     );
-    let mut wrong_version = schedule();
-    wrong_version.protocol_version = 7;
-    let wrong_version_policy = PhloGenesisPolicy::from_schedule(&wrong_version).unwrap();
+
+    let mut current_schedule = schedule();
+    current_schedule.protocol_version = 7;
+    let current_policy = PhloGenesisPolicy::from_schedule(&current_schedule).unwrap();
+    let current = current_policy.clone().with_offered_funded_active();
+    let current_wire = current.encode().unwrap();
+    assert_eq!(PhloGenesisPolicy::decode(&current_wire).unwrap(), current);
     assert_eq!(
-        wrong_version_policy
+        current_wire,
+        pack(&[
+            PHLO_GENESIS_POLICY_V3_DOMAIN.to_vec(),
+            current_policy.schedule_bytes.clone(),
+            vec![1],
+        ])
+    );
+
+    let mut unsupported = schedule();
+    unsupported.protocol_version = 8;
+    let unsupported_policy = PhloGenesisPolicy::from_schedule(&unsupported).unwrap();
+    assert_eq!(
+        unsupported_policy
             .clone()
-            .with_offered_funded_v6_active()
+            .with_offered_funded_active()
             .encode(),
         Err(PhloScheduleError::GenesisPolicyActivation)
     );
-    let wrong_version_wire = pack(&[
+    let v2_with_v7_schedule = pack(&[
         PHLO_GENESIS_POLICY_V2_DOMAIN.to_vec(),
-        wrong_version_policy.schedule_bytes,
+        current_policy.schedule_bytes,
         vec![1],
     ]);
     assert_eq!(
-        PhloGenesisPolicy::decode(&wrong_version_wire),
+        PhloGenesisPolicy::decode(&v2_with_v7_schedule),
+        Err(PhloScheduleError::GenesisPolicyActivation)
+    );
+    let v3_with_v6_schedule = pack(&[
+        PHLO_GENESIS_POLICY_V3_DOMAIN.to_vec(),
+        historical.schedule_bytes.clone(),
+        vec![1],
+    ]);
+    assert_eq!(
+        PhloGenesisPolicy::decode(&v3_with_v6_schedule),
+        Err(PhloScheduleError::GenesisPolicyActivation)
+    );
+    let v3_with_false_marker = pack(&[
+        PHLO_GENESIS_POLICY_V3_DOMAIN.to_vec(),
+        PhloGenesisPolicy::from_schedule(&current_schedule)
+            .unwrap()
+            .schedule_bytes,
+        vec![0],
+    ]);
+    assert_eq!(
+        PhloGenesisPolicy::decode(&v3_with_false_marker),
         Err(PhloScheduleError::GenesisPolicyActivation)
     );
     let invalid_extra = pack(&[
@@ -98,6 +238,37 @@ fn offered_funded_activation_requires_canonical_fresh_genesis_v2_policy() {
         vec![1],
     ]);
     assert!(PhloGenesisPolicy::decode(&invalid_extra).is_err());
+}
+
+proptest! {
+    #[test]
+    fn activated_policy_domain_matches_schedule_version_exactly(version in 1u64..=10) {
+        let mut candidate = schedule();
+        candidate.protocol_version = version;
+        let base = PhloGenesisPolicy::from_schedule(&candidate).unwrap();
+        let activated = base.clone().with_offered_funded_active();
+        match version {
+            6 | 7 => {
+                let domain = if version == 6 {
+                    PHLO_GENESIS_POLICY_V2_DOMAIN
+                } else {
+                    PHLO_GENESIS_POLICY_V3_DOMAIN
+                };
+                let bytes = activated.encode().unwrap();
+                prop_assert_eq!(
+                    bytes.clone(),
+                    pack(&[domain.to_vec(), base.schedule_bytes, vec![1]])
+                );
+                prop_assert_eq!(PhloGenesisPolicy::decode(&bytes).unwrap(), activated);
+            }
+            _ => {
+                prop_assert_eq!(
+                    activated.encode(),
+                    Err(PhloScheduleError::GenesisPolicyActivation)
+                );
+            }
+        }
+    }
 }
 
 proptest! {

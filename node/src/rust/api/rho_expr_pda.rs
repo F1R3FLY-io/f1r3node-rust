@@ -248,6 +248,11 @@ fn drive(root: Work) -> Option<RhoExpr> {
                 match instance {
                     ExprInstance::GBool(data) => values.push(Some(RhoExpr::ExprBool { data })),
                     ExprInstance::GInt(data) => values.push(Some(RhoExpr::ExprInt { data })),
+                    ExprInstance::GUint64(data) => values.push(Some(RhoExpr::ExprUint64 { data })),
+                    ExprInstance::GInt32(data) => values.push(Some(RhoExpr::ExprInt32 { data })),
+                    ExprInstance::GUint32(data) => values.push(Some(RhoExpr::ExprUint32 { data })),
+                    ExprInstance::GUint16(data) => values.push(Some(RhoExpr::ExprUint16 { data })),
+                    ExprInstance::GUint8(data) => values.push(Some(RhoExpr::ExprUint8 { data })),
                     ExprInstance::GString(data) => {
                         values.push(Some(RhoExpr::ExprString { data }));
                     }
@@ -651,6 +656,11 @@ fn clone_rho_expr(root: &RhoExpr) -> RhoExpr {
                 }
                 RhoExpr::ExprBool { data } => values.push(RhoExpr::ExprBool { data: *data }),
                 RhoExpr::ExprInt { data } => values.push(RhoExpr::ExprInt { data: *data }),
+                RhoExpr::ExprUint64 { data } => values.push(RhoExpr::ExprUint64 { data: *data }),
+                RhoExpr::ExprInt32 { data } => values.push(RhoExpr::ExprInt32 { data: *data }),
+                RhoExpr::ExprUint32 { data } => values.push(RhoExpr::ExprUint32 { data: *data }),
+                RhoExpr::ExprUint16 { data } => values.push(RhoExpr::ExprUint16 { data: *data }),
+                RhoExpr::ExprUint8 { data } => values.push(RhoExpr::ExprUint8 { data: *data }),
                 RhoExpr::ExprString { data } => {
                     values.push(RhoExpr::ExprString { data: data.clone() });
                 }
@@ -661,6 +671,7 @@ fn clone_rho_expr(root: &RhoExpr) -> RhoExpr {
                     values.push(RhoExpr::ExprBytes { data: data.clone() });
                 }
                 RhoExpr::ExprFloat { data } => values.push(RhoExpr::ExprFloat { data: *data }),
+                RhoExpr::ExprFloat32 { data } => values.push(RhoExpr::ExprFloat32 { data: *data }),
                 RhoExpr::ExprBigInt { data } => {
                     values.push(RhoExpr::ExprBigInt { data: data.clone() });
                 }
@@ -907,10 +918,16 @@ fn take_children(expr: &mut RhoExpr, out: &mut Vec<RhoExpr>) {
         }
         RhoExpr::ExprBool { .. }
         | RhoExpr::ExprInt { .. }
+        | RhoExpr::ExprUint64 { .. }
+        | RhoExpr::ExprInt32 { .. }
+        | RhoExpr::ExprUint32 { .. }
+        | RhoExpr::ExprUint16 { .. }
+        | RhoExpr::ExprUint8 { .. }
         | RhoExpr::ExprString { .. }
         | RhoExpr::ExprUri { .. }
         | RhoExpr::ExprBytes { .. }
         | RhoExpr::ExprFloat { .. }
+        | RhoExpr::ExprFloat32 { .. }
         | RhoExpr::ExprBigInt { .. }
         | RhoExpr::ExprBigRat { .. }
         | RhoExpr::ExprFixedPoint { .. }
@@ -930,8 +947,10 @@ enum JsonWork<'a> {
     String(&'a str),
     Bool(bool),
     I64(i64),
+    U64(u64),
     U32(u32),
     F64(f64),
+    F32(f32),
 }
 
 fn json_push_expr_array<'a>(work: &mut Vec<JsonWork<'a>>, data: &'a [RhoExpr]) {
@@ -983,8 +1002,12 @@ fn rho_expr_json(root: &RhoExpr) -> String {
             ),
             JsonWork::Bool(value) => output.push_str(if value { "true" } else { "false" }),
             JsonWork::I64(value) => output.push_str(&value.to_string()),
+            JsonWork::U64(value) => output.push_str(&value.to_string()),
             JsonWork::U32(value) => output.push_str(&value.to_string()),
             JsonWork::F64(value) => output.push_str(
+                &serde_json::to_string(&value).expect("serializing one JSON float cannot fail"),
+            ),
+            JsonWork::F32(value) => output.push_str(
                 &serde_json::to_string(&value).expect("serializing one JSON float cannot fail"),
             ),
             JsonWork::Expr(expr) => match expr {
@@ -1036,6 +1059,31 @@ fn rho_expr_json(root: &RhoExpr) -> String {
                     work.push(JsonWork::Text("}}"));
                     work.push(JsonWork::I64(*data));
                 }
+                RhoExpr::ExprUint64 { data } => {
+                    output.push_str("{\"ExprUint64\":{\"data\":");
+                    work.push(JsonWork::Text("}}"));
+                    work.push(JsonWork::U64(*data));
+                }
+                RhoExpr::ExprInt32 { data } => {
+                    output.push_str("{\"ExprInt32\":{\"data\":");
+                    work.push(JsonWork::Text("}}"));
+                    work.push(JsonWork::I64(i64::from(*data)));
+                }
+                RhoExpr::ExprUint32 { data } => {
+                    output.push_str("{\"ExprUint32\":{\"data\":");
+                    work.push(JsonWork::Text("}}"));
+                    work.push(JsonWork::U32(*data));
+                }
+                RhoExpr::ExprUint16 { data } => {
+                    output.push_str("{\"ExprUint16\":{\"data\":");
+                    work.push(JsonWork::Text("}}"));
+                    work.push(JsonWork::U32(*data));
+                }
+                RhoExpr::ExprUint8 { data } => {
+                    output.push_str("{\"ExprUint8\":{\"data\":");
+                    work.push(JsonWork::Text("}}"));
+                    work.push(JsonWork::U32(*data));
+                }
                 RhoExpr::ExprString { data } => {
                     output.push_str("{\"ExprString\":{\"data\":");
                     work.push(JsonWork::Text("}}"));
@@ -1055,6 +1103,11 @@ fn rho_expr_json(root: &RhoExpr) -> String {
                     output.push_str("{\"ExprFloat\":{\"data\":");
                     work.push(JsonWork::Text("}}"));
                     work.push(JsonWork::F64(*data));
+                }
+                RhoExpr::ExprFloat32 { data } => {
+                    output.push_str("{\"ExprFloat32\":{\"data\":");
+                    work.push(JsonWork::Text("}}"));
+                    work.push(JsonWork::F32(*data));
                 }
                 RhoExpr::ExprBigInt { data } => {
                     output.push_str("{\"ExprBigInt\":{\"data\":");
@@ -1277,6 +1330,21 @@ fn rho_expr_json(root: &RhoExpr) -> String {
                     output.push_str("{\"UnforgDeployer\":{\"data\":");
                     work.push(JsonWork::Text("}}"));
                     work.push(JsonWork::String(data));
+                }
+                super::RhoUnforg::UnforgAuthority { data } => {
+                    output.push_str("{\"UnforgAuthority\":{\"data\":");
+                    work.push(JsonWork::Text("}}"));
+                    work.push(JsonWork::String(data));
+                }
+                super::RhoUnforg::UnforgPrincipal {
+                    key_family,
+                    public_key,
+                } => {
+                    output.push_str("{\"UnforgPrincipal\":{\"key_family\":");
+                    work.push(JsonWork::Text("}}"));
+                    work.push(JsonWork::String(public_key));
+                    work.push(JsonWork::Text(",\"public_key\":"));
+                    work.push(JsonWork::U32(*key_family));
                 }
                 super::RhoUnforg::UnforgSysAuthToken => {
                     output.push_str("\"UnforgSysAuthToken\"");

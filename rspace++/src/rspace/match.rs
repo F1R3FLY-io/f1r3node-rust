@@ -86,6 +86,19 @@ pub trait Match<P, A, K>: Send + Sync {
         self.check_commit(k, matched).then(PreparedCommit::default)
     }
 
+    /// A resting rendezvous must revalidate its guard under an explicit host
+    /// budget before any store mutation. Stateful authority matchers override
+    /// this with a metered lease; the default refuses rather than silently
+    /// falling back to the unmetered guard path.
+    fn prepare_commit_metered(
+        &self,
+        _k: &K,
+        _matched: &[&A],
+        _meter: &(dyn SourceMeter + Send + Sync),
+    ) -> Result<Option<PreparedCommit>, RSpaceError> {
+        Err(RSpaceError::HostWorkRejected)
+    }
+
     /// Metered `check_commit`. D-M1 (DR-88): an implementation reserves every
     /// read of the continuation (in practice its guard) and of the matched
     /// data on `meter` before it performs the read, so a caller does not

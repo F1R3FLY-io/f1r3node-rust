@@ -2,6 +2,7 @@ mod multi_parent_casper_bonding_spec;
 mod multi_parent_casper_communication_spec;
 mod multi_parent_casper_deploy_spec;
 mod multi_parent_casper_finalization_spec;
+mod silent_bonded_validator_spec;
 mod multi_parent_casper_merge_spec;
 mod minority_fork_recovery_spec;
 mod multi_parent_casper_reporting_spec;

@@ -51,6 +51,7 @@ impl TestContext {
 
 async fn create_engine_cell(node: &TestNode) -> EngineCell {
     let casper_for_engine = Arc::new(MultiParentCasperImpl {
+        observer: std::sync::OnceLock::new(),
         divergence_monitor: node.casper.divergence_monitor.clone(),
         block_retriever: node.casper.block_retriever.clone(),
         event_publisher: node.casper.event_publisher.clone(),
@@ -66,6 +67,7 @@ async fn create_engine_cell(node: &TestNode) -> EngineCell {
         casper_shard_conf: node.casper.casper_shard_conf.clone(),
         approved_block: node.casper.approved_block.clone(),
         offered_funded_active: node.casper.offered_funded_active,
+        adopted_resource_policy: node.casper.adopted_resource_policy.clone(),
         finalization_in_progress: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         finalizer_task_in_progress: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         finalizer_task_queued: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),

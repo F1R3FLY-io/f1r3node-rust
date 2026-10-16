@@ -1,17 +1,66 @@
 use std::collections::HashMap;
 
 use models::rhoapi::Par;
+use models::rust::rholang::protobuf_encoder;
 
 use super::compiler::compiler::Compiler;
 
 pub const PREPARED_PROGRAM_ABI_V1: u16 = 1;
+pub const PREPARATION_BINDING_V1: u16 = 1;
 
 pub struct PreparedProgram {
     process: Par,
+    source_binding: Option<PreparedSourceBinding>,
+}
+
+struct PreparedSourceBinding {
+    source: Vec<u8>,
+    language_identity: Vec<u8>,
+    output: Vec<u8>,
 }
 
 impl PreparedProgram {
-    pub fn from_normalized(process: Par) -> Self { Self { process } }
+    pub fn from_normalized(process: Par) -> Self {
+        Self {
+            process,
+            source_binding: None,
+        }
+    }
+
+    pub fn from_normalized_with_binding(
+        process: Par,
+        source: Vec<u8>,
+        language_identity: Vec<u8>,
+        output: Vec<u8>,
+    ) -> Result<Self, PreparationError> {
+        if protobuf_encoder::encode_to_vec(&process) != output {
+            return Err(PreparationError::new(
+                "Prepared program output does not match its source binding",
+            ));
+        }
+        Ok(Self {
+            process,
+            source_binding: Some(PreparedSourceBinding {
+                source,
+                language_identity,
+                output,
+            }),
+        })
+    }
+
+    pub fn source_binding(&self) -> Option<(&[u8], &[u8], &[u8])> {
+        self.source_binding.as_ref().map(|binding| {
+            (
+                binding.source.as_slice(),
+                binding.language_identity.as_slice(),
+                binding.output.as_slice(),
+            )
+        })
+    }
+
+    pub fn binding_version(&self) -> Option<u16> {
+        self.source_binding.as_ref().map(|_| PREPARATION_BINDING_V1)
+    }
 
     pub fn as_par(&self) -> &Par { &self.process }
 
@@ -37,6 +86,8 @@ impl PreparationError {
 pub trait ProgramFrontend: Send + Sync {
     fn abi_version(&self) -> u16;
 
+    fn language_identity(&self) -> Option<&[u8]> { None }
+
     fn prepare(
         &self,
         source: &str,
@@ -55,7 +106,34 @@ pub fn prepare_program(
             "Unsupported frontend ABI: expected {PREPARED_PROGRAM_ABI_V1}, got {actual}"
         )));
     }
-    frontend.prepare(source, environment)
+    let expected_language = frontend.language_identity();
+    let prepared = frontend.prepare(source, environment)?;
+    match (expected_language, prepared.source_binding()) {
+        (None, None) => {}
+        (Some(_), None) => {
+            return Err(PreparationError::new(
+                "Frontend requires a prepared program source binding",
+            ));
+        }
+        (None, Some(_)) => {
+            return Err(PreparationError::new(
+                "Frontend does not declare a language identity for the prepared program",
+            ));
+        }
+        (Some(expected), Some((bound_source, bound_language, _))) => {
+            if bound_source != source.as_bytes() {
+                return Err(PreparationError::new(
+                    "Prepared program source does not match the requested source",
+                ));
+            }
+            if bound_language != expected {
+                return Err(PreparationError::new(
+                    "Prepared program language identity does not match the frontend",
+                ));
+            }
+        }
+    }
+    Ok(prepared)
 }
 
 pub(crate) struct LegacyCompilerFrontend;

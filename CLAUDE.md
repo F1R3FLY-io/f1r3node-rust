@@ -97,6 +97,7 @@ docker compose -f docker/shard.yml up
 
 ### Rust Guidelines
 - **No comments** unless explicitly requested by user
+- **Rust and bash only for new work.** Do not add Python, Ruby, or other languages. Legacy Python remains in the z3 witnesses under `formal/` and in a few inline `python3` calls in older scripts. It leaves when that code is next touched. One scoped exception stays: `scripts/bench/extend-issue24-metrics.py` and its test. They edit and verify the external system-integration harness's own Python module, and they run only where that harness runs.
 - Zero-cost abstractions, proper ownership
 - Async/await with Tokio runtime
 - Error handling: `eyre` for application errors, `thiserror` for library errors

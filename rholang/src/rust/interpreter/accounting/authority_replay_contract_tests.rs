@@ -102,7 +102,7 @@ proptest! {
             prop_assert!(allocation.dominates(&reserved));
             prop_assert_eq!(budget.total_cost().value, comms.len() as i64);
             prop_assert_eq!(budget.authority_stack_births(), committed.iter().map(|(id, (_, cells))| {
-                AuthorityStackBirth { produce_hash: [*id; 32], cells: cells.clone() }
+                AuthorityStackBirth { produce_hash: [*id; 32], cells: cells.clone(), stack: None }
             }).collect::<Vec<_>>());
             let state = budget.authority_state.lock().unwrap();
             prop_assert_eq!(&state.reserved, &reserved);

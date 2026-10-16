@@ -22,6 +22,7 @@ use rholang::rust::interpreter::accounting::phlo_execution::{
 };
 use rholang::rust::interpreter::external_services::ExternalServices;
 use rholang::rust::interpreter::rho_runtime::RhoRuntime;
+use rspace_plus_plus::rspace::hashing::stable_hash_provider::EventCodecEpoch;
 use rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore;
 use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
@@ -78,6 +79,7 @@ async fn verify_live_birth_capture(
         cost_authority: None,
         cost_stack: Some(CostStack {
             cells: vec![signature.clone(); cells],
+            parallel_tail: Vec::new(),
         }),
     };
     for random in [1, 2, 3] {
@@ -90,8 +92,11 @@ async fn verify_live_birth_capture(
             .unwrap();
     }
     let checkpoint = runtime.runtime.create_checkpoint().await;
-    let inventory =
-        decode_purse_inventory(&runtime.get_data_datums(&channel).await, &signature).unwrap();
+    let inventory = decode_purse_inventory(
+        &runtime.get_data_datums(&channel).await.unwrap(),
+        &signature,
+    )
+    .unwrap();
     let selected = inventory
         .stacks
         .iter()
@@ -100,10 +105,17 @@ async fn verify_live_birth_capture(
     assert_eq!(selected.len(), 2);
     let mut births = selected
         .iter()
-        .map(|stack| AuthorityBornStack {
-            stack_id: stack.instance_id,
-            produce_hash: stack.source_hash,
-            cells: stack.stack.cells.clone(),
+        .map(|stack| {
+            assert!(
+                stack.stack.parallel_tail.is_empty(),
+                "fixture births are flat stacks"
+            );
+            AuthorityBornStack {
+                stack_id: stack.instance_id,
+                produce_hash: stack.source_hash,
+                cells: stack.stack.cells.clone(),
+                stack: None,
+            }
         })
         .collect::<Vec<_>>();
     if reverse {
@@ -461,7 +473,13 @@ async fn verify_live_birth_capture(
         .map(|record| PrepaidReceiptBucket::key_for_source(record.source_hash()))
         .collect::<Vec<_>>();
     let absent = manager
-        .capture_prepaid_receipts(pre_state_root, &keys, receipt_limits, &budget())
+        .capture_prepaid_receipts(
+            pre_state_root,
+            EventCodecEpoch::Legacy,
+            &keys,
+            receipt_limits,
+            &budget(),
+        )
         .unwrap();
     let insertions = prepare_insertions(
         &records,
@@ -484,7 +502,13 @@ async fn verify_live_birth_capture(
         assert_eq!(parsed.receipts(), &[record.encoded_cells()]);
     }
     let unrequested = manager
-        .capture_prepaid_receipts(pre_state_root, &[], receipt_limits, &budget())
+        .capture_prepaid_receipts(
+            pre_state_root,
+            EventCodecEpoch::Legacy,
+            &[],
+            receipt_limits,
+            &budget(),
+        )
         .unwrap();
     assert!(prepare_insertions(
         &records,
@@ -497,7 +521,13 @@ async fn verify_live_birth_capture(
     .is_err());
     let current_root: [u8; 32] = checkpoint.root.bytes().try_into().unwrap();
     let other_root = manager
-        .capture_prepaid_receipts(current_root, &keys, receipt_limits, &budget())
+        .capture_prepaid_receipts(
+            current_root,
+            EventCodecEpoch::Legacy,
+            &keys,
+            receipt_limits,
+            &budget(),
+        )
         .unwrap();
     assert!(prepare_insertions(
         &records,
@@ -550,7 +580,13 @@ async fn verify_live_birth_capture(
     );
     let populated_root: [u8; 32] = populated.root.bytes().try_into().unwrap();
     let present = manager
-        .capture_prepaid_receipts(populated_root, &keys, receipt_limits, &budget())
+        .capture_prepaid_receipts(
+            populated_root,
+            EventCodecEpoch::Legacy,
+            &keys,
+            receipt_limits,
+            &budget(),
+        )
         .unwrap();
     assert!(prepare_insertions(
         &records,

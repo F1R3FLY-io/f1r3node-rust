@@ -47,7 +47,10 @@ fields!(CostRegion {
 fields!(CostSignature { value });
 fields!(CostSignatureCompound { elements });
 fields!(CostSignedTerm { body, signature });
-fields!(CostStack { cells });
+fields!(CostStack {
+    cells,
+    parallel_tail
+});
 fields!(ListParWithRandom {
     pars,
     random_state,
@@ -259,7 +262,12 @@ variants!(
     GFloat32,
     GBigInt,
     GBigRat,
-    GFixedPoint
+    GFixedPoint,
+    GUint64,
+    GInt32,
+    GUint32,
+    GUint16,
+    GUint8
 );
 variants!(
     connective::ConnectiveInstance,

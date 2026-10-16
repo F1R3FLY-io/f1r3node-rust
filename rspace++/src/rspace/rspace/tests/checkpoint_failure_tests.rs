@@ -441,7 +441,8 @@ async fn check_generated_retry(payloads: &[i32], failures: usize) {
     let installed_channels = vec!["installed-service".to_string()];
     let installs = replay
         .get_waiting_continuations(installed_channels.clone())
-        .await;
+        .await
+        .expect("continuation read");
     assert!(!installs.is_empty());
     let actions = hot_store.changes();
     for attempt in 1..=failures {
@@ -458,6 +459,7 @@ async fn check_generated_retry(payloads: &[i32], failures: usize) {
             replay
                 .get_waiting_continuations(installed_channels.clone())
                 .await
+                .expect("continuation read")
         );
         replay.check_replay_data().await.unwrap();
     }

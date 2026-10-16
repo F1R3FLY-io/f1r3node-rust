@@ -115,11 +115,18 @@ impl NativeReplayReservation {
         let meter = |operations, scanned, backing| {
             reserve_source(&self.replay.inner.host, operations, scanned, backing)
         };
+        // DR-101: the bound deployment resolves residue seals as play did. An
+        // unbound replay resolves none, so a play that resolved one fails closed.
+        let residue = match self.replay.inner.authority.as_ref() {
+            Some(binding) => binding.residue_context().map_err(NativeReplayError::Host)?,
+            None => crate::rust::interpreter::accounting::authority::ResidueContext::system(),
+        };
         let observed = observation_construction::comm_metered(
             source,
             continuation,
             continuation_persistent,
             data,
+            &residue,
             &meter,
         )
         .map_err(construction_error)?

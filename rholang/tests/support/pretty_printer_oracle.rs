@@ -573,6 +573,11 @@ impl PrettyPrinter {
 
                 ExprInstance::GBool(b) => Ok(b.to_string()),
                 ExprInstance::GInt(i) => Ok(i.to_string()),
+                ExprInstance::GUint64(i) => Ok(format!("{i}u64")),
+                ExprInstance::GInt32(i) => Ok(format!("{i}i32")),
+                ExprInstance::GUint32(i) => Ok(format!("{i}u32")),
+                ExprInstance::GUint16(i) => Ok(format!("{i}u16")),
+                ExprInstance::GUint8(i) => Ok(format!("{i}u8")),
                 ExprInstance::GString(s) => Ok(format!("\"{}\"", s)),
                 ExprInstance::GUri(u) => Ok(format!("`{}`", u)),
                 ExprInstance::EMethodBody(method) => {

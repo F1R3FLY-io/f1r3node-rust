@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
@@ -28,6 +28,24 @@ struct Cont;
 impl crate::rspace::hashing::stable_hash_provider::StableHashSerialize for Wildcard {}
 impl crate::rspace::hashing::stable_hash_provider::StableHashSerialize for Cont {}
 
+impl shared::rust::clone_backing::CloneBacking for Wildcard {
+    fn children<'a>(
+        &'a self,
+        _: &mut shared::rust::clone_backing::Walker<'a>,
+    ) -> Result<(), shared::rust::clone_backing::BackingError> {
+        Ok(())
+    }
+}
+
+impl shared::rust::clone_backing::CloneBacking for Cont {
+    fn children<'a>(
+        &'a self,
+        _: &mut shared::rust::clone_backing::Walker<'a>,
+    ) -> Result<(), shared::rust::clone_backing::BackingError> {
+        Ok(())
+    }
+}
+
 // Bounded-depth test doubles; production Rholang terms use the iterative
 // decoder.
 impl ColdStoreDecode for Wildcard {
@@ -48,10 +66,544 @@ impl Match<Wildcard, String, Cont> for AlwaysMatch {
     fn get(&self, _: &Wildcard, a: &String) -> Option<String> { Some(a.clone()) }
 }
 
+struct MeteredAlwaysMatch;
+
+impl Match<Wildcard, String, Cont> for MeteredAlwaysMatch {
+    fn get(&self, _: &Wildcard, a: &String) -> Option<String> { Some(a.clone()) }
+
+    fn get_metered(
+        &self,
+        _: &Wildcard,
+        a: &String,
+        meter: &(dyn crate::rspace::hashing::native_source::SourceMeter + Send + Sync),
+    ) -> Result<Option<String>, crate::rspace::errors::RSpaceError> {
+        meter.reserve(1, a.len(), a.len())?;
+        Ok(Some(a.clone()))
+    }
+
+    fn prepare_commit_metered(
+        &self,
+        _: &Cont,
+        _: &[&String],
+        meter: &(dyn crate::rspace::hashing::native_source::SourceMeter + Send + Sync),
+    ) -> Result<Option<crate::rspace::r#match::PreparedCommit>, crate::rspace::errors::RSpaceError>
+    {
+        meter.reserve(1, 0, 0)?;
+        Ok(Some(crate::rspace::r#match::PreparedCommit::default()))
+    }
+}
+
 async fn make_rspace() -> RSpace<String, Wildcard, String, Cont> {
     let mut kvm = InMemoryStoreManager::new();
     let store = kvm.r_space_stores().await.unwrap();
     RSpace::create(store, Arc::new(Box::new(AlwaysMatch))).unwrap()
+}
+
+#[tokio::test]
+async fn authenticated_epoch_stays_bound_across_play_replay_spawn_and_checkpoint() {
+    use crate::rspace::hashing::stable_hash_provider::EventCodecEpoch;
+
+    for epoch in [EventCodecEpoch::Legacy, EventCodecEpoch::CostV1, EventCodecEpoch::CostV2] {
+        let mut kvm = InMemoryStoreManager::new();
+        let store = kvm.r_space_stores().await.unwrap();
+        let matcher = Arc::new(Box::new(AlwaysMatch) as Box<dyn Match<Wildcard, String, Cont>>);
+        let (play, replay) = RSpace::create_with_replay_for_epoch(epoch, store, matcher).unwrap();
+        assert_eq!(play.codec_epoch(), epoch);
+        assert_eq!(replay.codec_epoch(), epoch);
+        let play_interface: &dyn ISpace<String, Wildcard, String, Cont> = &play;
+        let replay_interface: &dyn ISpace<String, Wildcard, String, Cont> = &replay;
+        assert_eq!(play_interface.codec_epoch(), epoch);
+        assert_eq!(replay_interface.codec_epoch(), epoch);
+        assert_eq!(play.spawn().unwrap().codec_epoch(), epoch);
+        assert_eq!(replay.spawn().unwrap().codec_epoch(), epoch);
+
+        let channel = "ordinary".to_owned();
+        let value = "value".to_owned();
+        play.produce(channel.clone(), value.clone(), false)
+            .await
+            .unwrap();
+        let checkpoint = play.create_checkpoint().await.unwrap();
+        let reader = play
+            .get_history_repository()
+            .get_history_reader_for_epoch(&checkpoint.root, epoch)
+            .unwrap();
+        let channel_hash =
+            crate::rspace::hashing::stable_hash_provider::channel_hash_for_epoch(epoch, &channel)
+                .unwrap();
+        assert_eq!(
+            reader.get_data(&channel).unwrap(),
+            reader.get_data_by_hash(&channel_hash).unwrap()
+        );
+        play.reset(&checkpoint.root).await.unwrap();
+        replay.reset(&checkpoint.root).await.unwrap();
+        assert_eq!(play.codec_epoch(), epoch);
+        assert_eq!(replay.codec_epoch(), epoch);
+        assert_eq!(play.get_data(&channel).await.unwrap()[0].a.as_ref(), &value);
+        assert_eq!(replay.get_data(&channel).await.unwrap()[0].a.as_ref(), &value);
+        let expected = Produce::create_for_epoch(epoch, &channel, &value, false).unwrap();
+        let legacy =
+            Produce::create_for_epoch(EventCodecEpoch::Legacy, &channel, &value, false).unwrap();
+        assert_eq!(expected.channel_hash, legacy.channel_hash);
+        if epoch == EventCodecEpoch::Legacy {
+            assert_eq!(expected.hash, legacy.hash);
+        } else {
+            assert_ne!(expected.hash, legacy.hash);
+        }
+    }
+}
+
+#[tokio::test]
+async fn cost_epoch_metered_cold_read_rejects_while_legacy_reader_remains_available() {
+    use crate::rspace::hashing::stable_hash_provider::EventCodecEpoch;
+
+    let legacy = make_rspace().await;
+    let cost = legacy.spawn_for_epoch(EventCodecEpoch::CostV1).unwrap();
+    assert_eq!(legacy.codec_epoch(), EventCodecEpoch::Legacy);
+    assert_eq!(cost.codec_epoch(), EventCodecEpoch::CostV1);
+    let channel = "ordinary".to_owned();
+    let free = |_: usize, _: usize, _: usize| Ok(());
+    assert!(
+        legacy
+            .get_data_metered(&channel, &free)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert!(matches!(
+        cost.get_data_metered(&channel, &free).await,
+        Err(crate::rspace::errors::RSpaceError::HostWorkRejected)
+    ));
+    assert!(cost.get_store().snapshot().data_flat().is_empty());
+}
+
+#[tokio::test]
+async fn resting_hot_read_accepts_installed_only_waiter_and_refuses_cold_miss() {
+    use std::sync::Mutex;
+
+    use crate::rspace::errors::RSpaceError;
+    use crate::rspace::hashing::stable_hash_provider::EventCodecEpoch;
+    use crate::rspace::internal::{Datum, WaitingContinuation};
+
+    let play = make_rspace()
+        .await
+        .spawn_for_epoch(EventCodecEpoch::CostV2)
+        .unwrap();
+    let channel = "installed-only".to_owned();
+    let channels = vec![channel.clone()];
+    let patterns = vec![Wildcard];
+    let waiter = WaitingContinuation::create_for_epoch(
+        EventCodecEpoch::CostV2,
+        &channels,
+        &patterns,
+        &Cont,
+        true,
+        Default::default(),
+    )
+    .unwrap();
+    play.get_store()
+        .install_continuation(&channels, waiter)
+        .unwrap();
+    play.get_store().install_join(&channel, &channels).unwrap();
+    play.get_store()
+        .put_datum(
+            &channel,
+            Datum::create_for_epoch(EventCodecEpoch::CostV2, &channel, "payload".to_owned(), false)
+                .unwrap(),
+        )
+        .unwrap();
+    let candidate = play.enabled_rendezvous().unwrap().remove(0);
+    assert_eq!(candidate.continuation_index, 0);
+
+    let remaining = Mutex::new([1_000_000usize; 3]);
+    let meter = |operations: usize, scanned: usize, backing: usize| {
+        let mut remaining = remaining.lock().unwrap();
+        for (left, spend) in remaining.iter_mut().zip([operations, scanned, backing]) {
+            *left = left
+                .checked_sub(spend)
+                .ok_or(RSpaceError::HostWorkRejected)?;
+        }
+        Ok(())
+    };
+    let read = play.read_resting_hot(&candidate, &meter).unwrap();
+    assert_eq!(read.waiters.len(), 1);
+    assert_eq!(read.data.len(), 1);
+    assert_eq!(read.data[0][0].a.as_ref(), "payload");
+
+    let cold = make_rspace()
+        .await
+        .spawn_for_epoch(EventCodecEpoch::CostV2)
+        .unwrap();
+    assert!(matches!(
+        cold.read_resting_hot(&candidate, &meter),
+        Err(RSpaceError::HostWorkRejected)
+    ));
+    assert!(cold.get_store().snapshot().data_flat().is_empty());
+    assert!(cold.get_store().snapshot().continuations_flat().is_empty());
+}
+
+#[tokio::test]
+async fn resting_commit_logs_no_io_and_replay_explicitly_refuses_until_supported() {
+    use crate::rspace::errors::RSpaceError;
+    use crate::rspace::hashing::stable_hash_provider::EventCodecEpoch;
+    use crate::rspace::internal::{Datum, WaitingContinuation};
+
+    let mut kvm = InMemoryStoreManager::new();
+    let store = kvm.r_space_stores().await.unwrap();
+    let matcher = Arc::new(Box::new(MeteredAlwaysMatch) as Box<dyn Match<Wildcard, String, Cont>>);
+    let (play, replay) =
+        RSpace::create_with_replay_for_epoch(EventCodecEpoch::CostV2, store, matcher).unwrap();
+    let channel = "installed-resting".to_owned();
+    let channels = vec![channel.clone()];
+    let waiter = WaitingContinuation::create_for_epoch(
+        EventCodecEpoch::CostV2,
+        &channels,
+        &vec![Wildcard],
+        &Cont,
+        true,
+        Default::default(),
+    )
+    .unwrap();
+    play.get_store()
+        .install_continuation(&channels, waiter)
+        .unwrap();
+    play.get_store().install_join(&channel, &channels).unwrap();
+    play.get_store()
+        .put_datum(
+            &channel,
+            Datum::create_for_epoch(EventCodecEpoch::CostV2, &channel, "payload".to_owned(), false)
+                .unwrap(),
+        )
+        .unwrap();
+    let candidate = play.enabled_rendezvous().unwrap().remove(0);
+    let calls = AtomicU64::new(0);
+    let meter = |_: usize, _: usize, _: usize| {
+        calls.fetch_add(1, Ordering::Relaxed);
+        Ok(())
+    };
+    let (continuation, rows) = play
+        .commit_enabled_rendezvous(&candidate, &meter)
+        .await
+        .unwrap()
+        .expect("resting commit");
+    assert_eq!(continuation.continuation, Cont);
+    assert_eq!(rows[0].matched_datum, "payload");
+    assert!(calls.load(Ordering::Relaxed) > 0);
+    assert!(
+        play.get_store()
+            .snapshot()
+            .data_flat()
+            .get(&channel)
+            .is_none_or(Vec::is_empty)
+    );
+    assert!(
+        play.get_store()
+            .snapshot()
+            .installed_continuations_flat()
+            .contains_key(&channels)
+    );
+    assert!(
+        play.commit_enabled_rendezvous(&candidate, &meter)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let checkpoint = play.create_checkpoint().await.unwrap();
+    assert_eq!(checkpoint.log.len(), 1);
+    let Event::RestingComm(event) = &checkpoint.log[0] else {
+        panic!("resting commit must not fabricate IO");
+    };
+    assert_eq!(event.ordered_data_indices, vec![0]);
+    assert_ne!(
+        event.cost_v2_identity_metered(&meter).unwrap(),
+        crate::rspace::trace::event::COMM {
+            consume: event.consume.clone(),
+            produces: event.ordered_produces.clone(),
+            peeks: event.peeks.clone(),
+            times_repeated: Default::default(),
+        }
+        .cost_identity()
+    );
+    assert_eq!(replay.rig(checkpoint.log).await, Err(RSpaceError::ProduceCommitProtocolViolation));
+    for epoch in [EventCodecEpoch::Legacy, EventCodecEpoch::CostV1] {
+        let old = play.spawn_for_epoch(epoch).unwrap();
+        assert_eq!(
+            old.commit_enabled_rendezvous(&candidate, &meter).await,
+            Err(RSpaceError::ProduceCommitProtocolViolation)
+        );
+    }
+}
+
+#[derive(Default)]
+struct RestingChargeProbe {
+    starts: AtomicUsize,
+    restings: AtomicUsize,
+    finishes: AtomicUsize,
+    reject_resting: AtomicBool,
+}
+
+impl crate::rspace::rspace_interface::RSpaceAccountingObserver<String, Wildcard, String, Cont>
+    for RestingChargeProbe
+{
+    fn observe_operation_start(
+        &self,
+        _: crate::rspace::rspace_interface::RSpaceOperationSource<'_>,
+        _: &[String],
+        _: &[Vec<String>],
+    ) -> Result<(), crate::rspace::errors::RSpaceError> {
+        self.starts.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+
+    fn observe_operation_finish(
+        &self,
+        _: crate::rspace::rspace_interface::RSpaceOperationSource<'_>,
+        _: crate::rspace::rspace_interface::RSpaceOperationCompletion,
+    ) {
+        self.finishes.fetch_add(1, Ordering::SeqCst);
+    }
+
+    fn observe_produce(
+        &self,
+        _: &crate::rspace::trace::event::Produce,
+        _: &String,
+        _: &String,
+        _: bool,
+    ) -> Result<(), crate::rspace::errors::RSpaceError> {
+        Ok(())
+    }
+
+    fn observe_consume(
+        &self,
+        _: &crate::rspace::trace::event::Consume,
+        _: &[String],
+        _: &[Wildcard],
+        _: &Cont,
+        _: bool,
+        _: &std::collections::BTreeSet<i32>,
+    ) -> Result<(), crate::rspace::errors::RSpaceError> {
+        Ok(())
+    }
+
+    fn observe_comm(
+        &self,
+        _: &crate::rspace::trace::event::COMM,
+        _: &Cont,
+        _: bool,
+        _: &[(&String, bool)],
+    ) -> Result<(), crate::rspace::errors::RSpaceError> {
+        Ok(())
+    }
+
+    fn observe_resting_comm(
+        &self,
+        _: &crate::rspace::hashing::blake2b256_hash::Blake2b256Hash,
+        _: &crate::rspace::trace::event::RestingCOMM,
+        _: &Cont,
+        _: bool,
+        _: &[(&String, bool)],
+    ) -> Result<(), crate::rspace::errors::RSpaceError> {
+        self.restings.fetch_add(1, Ordering::SeqCst);
+        if self.reject_resting.load(Ordering::SeqCst) {
+            Err(crate::rspace::errors::RSpaceError::HostWorkRejected)
+        } else {
+            Ok(())
+        }
+    }
+}
+
+async fn make_ready_resting_commit() -> (
+    RSpace<String, Wildcard, String, Cont>,
+    crate::rspace::internal::ProduceCandidate<String, Wildcard, String, Cont>,
+) {
+    use crate::rspace::hashing::stable_hash_provider::EventCodecEpoch;
+    use crate::rspace::internal::{Datum, WaitingContinuation};
+
+    let mut kvm = InMemoryStoreManager::new();
+    let store = kvm.r_space_stores().await.unwrap();
+    let matcher = Arc::new(Box::new(MeteredAlwaysMatch) as Box<dyn Match<Wildcard, String, Cont>>);
+    let play = RSpace::create_for_epoch(EventCodecEpoch::CostV2, store, matcher).unwrap();
+    let channel = "late-budget-resting".to_owned();
+    let channels = vec![channel.clone()];
+    let waiter = WaitingContinuation::create_for_epoch(
+        EventCodecEpoch::CostV2,
+        &channels,
+        &vec![Wildcard],
+        &Cont,
+        true,
+        Default::default(),
+    )
+    .unwrap();
+    play.get_store()
+        .install_continuation(&channels, waiter)
+        .unwrap();
+    play.get_store().install_join(&channel, &channels).unwrap();
+    play.get_store()
+        .put_datum(
+            &channel,
+            Datum::create_for_epoch(EventCodecEpoch::CostV2, &channel, "payload".to_owned(), false)
+                .unwrap(),
+        )
+        .unwrap();
+    let candidate = play.enabled_rendezvous().unwrap().remove(0);
+    (play, candidate)
+}
+
+#[tokio::test]
+async fn resting_event_slot_survives_other_log_writers_in_both_destinations() {
+    use crate::rspace::errors::RSpaceError;
+
+    let (play, candidate) = make_ready_resting_commit().await;
+    let event = Event::IoEvent(IOEvent::Produce(candidate.data_candidates[0].datum.source.clone()));
+    let free = |_: usize, _: usize, _: usize| Ok::<(), RSpaceError>(());
+
+    let slot = play.reserve_resting_event_slot(&free).unwrap();
+    play.push_event(event.clone());
+    {
+        let log = play.event_log.lock().unwrap();
+        assert!(log.len() < log.capacity(), "ordinary append preserved the lease");
+    }
+    slot.publish(event.clone());
+    assert_eq!(play.event_log.lock().unwrap().len(), 2);
+    assert_eq!(play.event_log_reservations.lock().unwrap().plain, 0);
+
+    let order = OperationOrder {
+        session: [7; 32],
+        path: Default::default(),
+    };
+    operation_context::scope(order.clone(), async {
+        let slot = play.reserve_resting_event_slot(&free).unwrap();
+        play.push_event(event.clone());
+        {
+            let logs = play.ordered_event_log.lock().unwrap();
+            let log = &logs[&order];
+            assert!(log.len() < log.capacity(), "ordered append preserved the lease");
+        }
+        slot.publish(event.clone());
+        assert_eq!(play.ordered_event_log.lock().unwrap()[&order].len(), 2);
+
+        let refused = play.reserve_resting_event_slot(&free).unwrap();
+        drop(refused);
+        assert!(
+            play.event_log_reservations
+                .lock()
+                .unwrap()
+                .ordered
+                .is_empty()
+        );
+        assert_eq!(play.ordered_event_log.lock().unwrap()[&order].len(), 2);
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn resting_late_host_budget_refusal_does_not_debit_observer_or_publish() {
+    use crate::rspace::errors::RSpaceError;
+
+    let (baseline, candidate) = make_ready_resting_commit().await;
+    let baseline_probe = Arc::new(RestingChargeProbe::default());
+    baseline.set_accounting_observer(Some(baseline_probe.clone()));
+    let unlimited = CutMeter::new(u64::MAX);
+    assert!(
+        baseline
+            .commit_enabled_rendezvous(&candidate, &unlimited)
+            .await
+            .unwrap()
+            .is_some()
+    );
+    let calls = unlimited.calls.load(Ordering::SeqCst);
+    assert!(calls > 1);
+    assert_eq!(baseline_probe.starts.load(Ordering::SeqCst), 1);
+    assert_eq!(baseline_probe.restings.load(Ordering::SeqCst), 1);
+    assert_eq!(baseline_probe.finishes.load(Ordering::SeqCst), 1);
+
+    let (play, candidate) = make_ready_resting_commit().await;
+    let observer = Arc::new(RestingChargeProbe::default());
+    play.set_accounting_observer(Some(observer.clone()));
+    let before = play.get_store().snapshot();
+    let rejected = CutMeter::new(calls - 1);
+    assert_eq!(
+        play.commit_enabled_rendezvous(&candidate, &rejected).await,
+        Err(RSpaceError::HostWorkRejected)
+    );
+    assert_eq!(rejected.calls.load(Ordering::SeqCst), calls);
+    assert_eq!(observer.starts.load(Ordering::SeqCst), 0);
+    assert_eq!(observer.restings.load(Ordering::SeqCst), 0);
+    assert_eq!(observer.finishes.load(Ordering::SeqCst), 0);
+    let after = play.get_store().snapshot();
+    assert_eq!(after.data_flat(), before.data_flat());
+    assert_eq!(after.continuations_flat(), before.continuations_flat());
+    assert_eq!(after.installed_continuations_flat(), before.installed_continuations_flat());
+    assert!(play.event_log.lock().unwrap().is_empty());
+
+    let (play, candidate) = make_ready_resting_commit().await;
+    let refusing_observer = Arc::new(RestingChargeProbe::default());
+    refusing_observer
+        .reject_resting
+        .store(true, Ordering::SeqCst);
+    play.set_accounting_observer(Some(refusing_observer.clone()));
+    let before = play.get_store().snapshot();
+    assert_eq!(
+        play.commit_enabled_rendezvous(&candidate, &CutMeter::new(u64::MAX))
+            .await,
+        Err(RSpaceError::HostWorkRejected)
+    );
+    assert_eq!(refusing_observer.starts.load(Ordering::SeqCst), 1);
+    assert_eq!(refusing_observer.restings.load(Ordering::SeqCst), 1);
+    assert_eq!(refusing_observer.finishes.load(Ordering::SeqCst), 1);
+    let after = play.get_store().snapshot();
+    assert_eq!(after.data_flat(), before.data_flat());
+    assert_eq!(after.installed_continuations_flat(), before.installed_continuations_flat());
+    assert!(play.event_log.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn cold_decode_metered_read_serves_hot_and_absent_entries_before_cold_refusal() {
+    use crate::rspace::hashing::stable_hash_provider::EventCodecEpoch;
+
+    for epoch in [EventCodecEpoch::Legacy, EventCodecEpoch::CostV1] {
+        let mut kvm = InMemoryStoreManager::new();
+        let store = kvm.r_space_stores().await.expect("stores");
+        let matcher = Arc::new(Box::new(AlwaysMatch) as Box<dyn Match<Wildcard, String, Cont>>);
+        let (play, _) = RSpace::create_with_replay_for_epoch(epoch, store, matcher).expect("space");
+        let calls = AtomicU64::new(0);
+        let meter = |_: usize, _: usize, _: usize| {
+            calls.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        };
+        let channel = "metered".to_owned();
+        assert!(
+            play.get_data_cold_decode_metered(&channel, &meter)
+                .await
+                .expect("absent read")
+                .is_empty()
+        );
+        assert!(calls.load(Ordering::Relaxed) > 0);
+
+        let value = "resident".to_owned();
+        play.produce(channel.clone(), value.clone(), false)
+            .await
+            .expect("produce");
+        let hot = play
+            .get_data_cold_decode_metered(&channel, &meter)
+            .await
+            .expect("hot read");
+        assert_eq!(hot.len(), 1);
+        assert_eq!(hot[0].a.as_ref(), &value);
+
+        let checkpoint = play.create_checkpoint().await.expect("checkpoint");
+        play.reset(&checkpoint.root).await.expect("reset");
+        assert!(matches!(
+            play.get_data_cold_decode_metered(&channel, &meter).await,
+            Err(crate::rspace::errors::RSpaceError::HostWorkRejected)
+        ));
+        assert!(play.get_store().snapshot().data_flat().is_empty());
+        assert_eq!(
+            play.get_data(&channel).await.expect("unmetered cold read")[0]
+                .a
+                .as_ref(),
+            &value
+        );
+    }
 }
 
 fn order(step: u64) -> OperationOrder {
@@ -588,4 +1140,264 @@ async fn get_store_read_lock_isolated_cost_at_rholang_par_scale() {
          ({seq_ms}ms) at {PAR_BRANCHES} branches x {OPS_PER_BRANCH} ops x2 calls/op — see issue \
          #50"
     );
+}
+
+// ── D-S2 (DR-95): metered cold data reads in History mode ────────────────
+
+/// A meter that counts the reservations and rejects the reservation at index
+/// `reject_at`.
+struct CutMeter {
+    calls: AtomicU64,
+    reject_at: u64,
+}
+
+impl CutMeter {
+    fn new(reject_at: u64) -> Self {
+        Self {
+            calls: AtomicU64::new(0),
+            reject_at,
+        }
+    }
+}
+
+impl crate::rspace::hashing::native_source::SourceMeter for CutMeter {
+    fn reserve(
+        &self,
+        _operations: usize,
+        _scanned: usize,
+        _backing: usize,
+    ) -> Result<(), crate::rspace::errors::RSpaceError> {
+        if self.calls.fetch_add(1, Ordering::SeqCst) == self.reject_at {
+            return Err(crate::rspace::errors::RSpaceError::HostWorkRejected);
+        }
+        Ok(())
+    }
+}
+
+/// From a cold hot store at `root`, the metered data read of `channel`
+/// returns the data that the unmetered read returns. Every rejected
+/// reservation returns the host error and leaves the read retryable with the
+/// same data.
+async fn assert_metered_cold_read<S: ISpace<String, Wildcard, String, Cont>>(
+    space: &S,
+    root: &crate::rspace::hashing::blake2b256_hash::Blake2b256Hash,
+    channel: &String,
+) {
+    space.reset(root).await.unwrap();
+    let expected = space.get_data(channel).await.unwrap();
+    assert_eq!(expected.len(), 5);
+    space.reset(root).await.unwrap();
+    let meter = CutMeter::new(u64::MAX);
+    let metered = space.get_data_metered(channel, &meter).await.unwrap();
+    assert_eq!(metered, expected);
+    let total = meter.calls.load(Ordering::SeqCst);
+    assert!(total > 0);
+    for cut in 0..total {
+        space.reset(root).await.unwrap();
+        let rejected = space.get_data_metered(channel, &CutMeter::new(cut)).await;
+        assert!(
+            matches!(rejected, Err(crate::rspace::errors::RSpaceError::HostWorkRejected)),
+            "cut {cut}"
+        );
+        let retried = space
+            .get_data_metered(channel, &CutMeter::new(u64::MAX))
+            .await
+            .unwrap();
+        assert_eq!(retried, expected, "cut {cut}");
+    }
+}
+
+/// D-S2 (DR-95): the play and replay spaces decode their cold data rows in
+/// History mode, with the values of the unmetered read at every reservation
+/// cut.
+#[tokio::test]
+async fn metered_cold_data_reads_match_unmetered_reads_at_every_cut() {
+    let mut kvm = InMemoryStoreManager::new();
+    let store = kvm.r_space_stores().await.unwrap();
+    let (play, replay) =
+        RSpace::create_with_replay(store, Arc::new(Box::new(AlwaysMatch))).unwrap();
+    let channel = "history-data".to_string();
+    for index in 0..5 {
+        play.produce(channel.clone(), "x".repeat(1 + 7 * index), false)
+            .await
+            .unwrap();
+    }
+    let root = play.create_checkpoint().await.unwrap().root;
+    assert_metered_cold_read(&play, &root, &channel).await;
+    assert_metered_cold_read(&replay, &root, &channel).await;
+}
+
+// ── D-C4 (D-S5, DR-98): metered data reads without the cold fill ─────────
+
+type TestStore = Arc<Box<dyn HotStore<String, Wildcard, String, Cont>>>;
+type TestDatum = crate::rspace::internal::Datum<String>;
+type RootHash = crate::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+
+/// A meter that sums the reserved operations, scanned bytes and backing.
+#[derive(Default)]
+struct SumMeter {
+    operations: AtomicU64,
+    scanned: AtomicU64,
+    backing: AtomicU64,
+}
+
+impl SumMeter {
+    fn totals(&self) -> (u64, u64, u64) {
+        (
+            self.operations.load(Ordering::SeqCst),
+            self.scanned.load(Ordering::SeqCst),
+            self.backing.load(Ordering::SeqCst),
+        )
+    }
+}
+
+impl crate::rspace::hashing::native_source::SourceMeter for SumMeter {
+    fn reserve(
+        &self,
+        operations: usize,
+        scanned: usize,
+        backing: usize,
+    ) -> Result<(), crate::rspace::errors::RSpaceError> {
+        self.operations
+            .fetch_add(operations as u64, Ordering::SeqCst);
+        self.scanned.fetch_add(scanned as u64, Ordering::SeqCst);
+        self.backing.fetch_add(backing as u64, Ordering::SeqCst);
+        Ok(())
+    }
+}
+
+async fn summed_read<S: ISpace<String, Wildcard, String, Cont>>(
+    space: &S,
+    channel: &String,
+) -> (Vec<TestDatum>, (u64, u64, u64)) {
+    let meter = SumMeter::default();
+    let data = space
+        .get_data_metered(channel, &meter)
+        .await
+        .expect("the metered read succeeds");
+    (data, meter.totals())
+}
+
+/// A play or replay space at `root`: a metered read returns the history
+/// values, leaves no entry in the store, and is charged the same on a second
+/// read. After a write, the metered read returns the resident values and
+/// leaves the store unchanged.
+async fn assert_uncached_metered_reads<S: ISpace<String, Wildcard, String, Cont>>(
+    space: &S,
+    store: impl Fn() -> TestStore,
+    root: &RootHash,
+    data_channel: &String,
+    empty_channel: &String,
+) {
+    space.reset(root).await.expect("reset to the root");
+    let expected = space.get_data(data_channel).await.unwrap();
+    assert_eq!(expected.len(), 5);
+    space.reset(root).await.expect("reset to the root");
+    let (first, first_totals) = summed_read(space, data_channel).await;
+    assert_eq!(first, expected);
+    let (empty, empty_totals) = summed_read(space, empty_channel).await;
+    assert!(empty.is_empty());
+    let resident = store().snapshot().data_flat();
+    assert!(!resident.contains_key(data_channel), "a metered read filled the store");
+    assert!(!resident.contains_key(empty_channel), "a metered read filled the store");
+    let (second, second_totals) = summed_read(space, data_channel).await;
+    assert_eq!(second, expected);
+    assert_eq!(second_totals, first_totals, "the first read changed the charge");
+    let (empty_again, empty_again_totals) = summed_read(space, empty_channel).await;
+    assert!(empty_again.is_empty());
+    assert_eq!(empty_again_totals, empty_totals, "the first read changed the charge");
+
+    let written = TestDatum::create(data_channel, "written".to_string(), false);
+    store().put_datum(data_channel, written.clone()).unwrap();
+    let before = store().snapshot().data_flat();
+    let (resident_values, _) = summed_read(space, data_channel).await;
+    assert_eq!(resident_values.len(), expected.len() + 1);
+    assert_eq!(resident_values[0], written);
+    assert_eq!(resident_values, store().get_data(data_channel).unwrap());
+    assert_eq!(store().snapshot().data_flat(), before, "a resident read changed the store");
+}
+
+/// D-C4 (D-S5, DR-98; `NativeSharedReads.uncached_cold_read_equals_read`):
+/// the play and replay spaces read metered data without the cold fill.
+#[tokio::test]
+async fn metered_play_read_returns_history_values_without_fill() {
+    let mut kvm = InMemoryStoreManager::new();
+    let store = kvm.r_space_stores().await.expect("in-memory stores");
+    let (play, replay) = RSpace::create_with_replay(store, Arc::new(Box::new(AlwaysMatch)))
+        .expect("play and replay spaces");
+    let data_channel = "history-data".to_string();
+    let empty_channel = "history-empty".to_string();
+    for index in 0..5 {
+        play.produce(data_channel.clone(), "x".repeat(1 + 7 * index), false)
+            .await
+            .expect("produce");
+    }
+    let root = play.create_checkpoint().await.expect("checkpoint").root;
+    assert_uncached_metered_reads(&play, || play.get_store(), &root, &data_channel, &empty_channel)
+        .await;
+    assert_uncached_metered_reads(
+        &replay,
+        || replay.get_store(),
+        &root,
+        &data_channel,
+        &empty_channel,
+    )
+    .await;
+}
+
+/// D-C4 (D-S5, DR-98; `NativeSharedReads.uncached_reads_leave_writes_only`):
+/// metered reads export no change, so a checkpoint keeps the root. The
+/// legacy filling read exports its fills, with the same root. After a write,
+/// the reads do not change the root of the write.
+#[tokio::test]
+async fn checkpoint_root_unchanged_by_uncached_read() {
+    let mut kvm = InMemoryStoreManager::new();
+    let store = kvm.r_space_stores().await.expect("in-memory stores");
+    let (play, replay) = RSpace::create_with_replay(store, Arc::new(Box::new(AlwaysMatch)))
+        .expect("play and replay spaces");
+    let data_channel = "history-data".to_string();
+    let empty_channel = "history-empty".to_string();
+    for index in 0..5 {
+        play.produce(data_channel.clone(), "x".repeat(1 + 7 * index), false)
+            .await
+            .expect("produce");
+    }
+    let root = play.create_checkpoint().await.expect("checkpoint").root;
+
+    play.reset(&root).await.expect("reset to the root");
+    for channel in [&data_channel, &empty_channel, &data_channel, &empty_channel] {
+        summed_read(&play, channel).await;
+    }
+    assert!(play.get_store().changes().is_empty(), "a metered read exported a change");
+    let checkpoint = play.create_checkpoint().await.expect("checkpoint");
+    assert_eq!(checkpoint.root, root);
+    assert!(checkpoint.log.is_empty());
+
+    play.reset(&root).await.expect("reset to the root");
+    play.get_data(&data_channel).await.unwrap();
+    play.get_data(&empty_channel).await.unwrap();
+    assert!(!play.get_store().changes().is_empty(), "the legacy read fills the store");
+    assert_eq!(play.create_checkpoint().await.expect("checkpoint").root, root);
+
+    play.reset(&root).await.expect("reset to the root");
+    play.produce(data_channel.clone(), "z".to_string(), false)
+        .await
+        .expect("produce");
+    let written_root = play.create_checkpoint().await.expect("checkpoint").root;
+    assert_ne!(written_root, root);
+    play.reset(&root).await.expect("reset to the root");
+    play.produce(data_channel.clone(), "z".to_string(), false)
+        .await
+        .expect("produce");
+    for channel in [&data_channel, &empty_channel] {
+        summed_read(&play, channel).await;
+    }
+    assert_eq!(play.create_checkpoint().await.expect("checkpoint").root, written_root);
+
+    replay.reset(&root).await.expect("reset to the root");
+    for channel in [&data_channel, &empty_channel, &data_channel] {
+        summed_read(&replay, channel).await;
+    }
+    assert!(replay.get_store().changes().is_empty(), "a metered read exported a change");
+    assert_eq!(replay.create_checkpoint().await.expect("checkpoint").root, root);
 }

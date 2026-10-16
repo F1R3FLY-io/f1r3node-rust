@@ -10,13 +10,14 @@ use models::casper::v1::{
     BlockInfoResponse, BlockResponse, BondStatusResponse, ContinuationAtNameResponse,
     DeployFinalizationStatusResponse, DeployResponse, EventInfoResponse, ExploratoryDeployResponse,
     FindDeployResponse, IsFinalizedResponse, LastFinalizedBlockResponse, MachineVerifyResponse,
-    PrivateNamePreviewResponse, RhoDataResponse, StatusResponse, VisualizeBlocksResponse,
+    PendingDeploysResponse, PrivateNamePreviewResponse, RhoDataResponse, StatusResponse,
+    VisualizeBlocksResponse,
 };
 use models::casper::{
     BlockQuery, BlocksQuery, BlocksQueryByHeight, BondStatusQuery, ContinuationAtNameQuery,
     DataAtNameByBlockQuery, DeployDataProto, DeployFinalizationStatusQuery, ExploratoryDeployQuery,
     FindDeployQuery, IsFinalizedQuery, LastFinalizedBlockQuery, MachineVerifyQuery,
-    PrivateNamePreviewQuery, ReportQuery, VisualizeDagQuery,
+    PendingDeploysQuery, PrivateNamePreviewQuery, ReportQuery, VisualizeDagQuery,
 };
 use node::rust::api::grpc_package::acquire_external_server;
 use tonic::{Code, Request, Response, Status};
@@ -84,6 +85,7 @@ impl_deploy_probe! {
         exploratory_deploy: ExploratoryDeployQuery => ExploratoryDeployResponse,
         get_event_by_hash: ReportQuery => EventInfoResponse,
         status: () => StatusResponse,
+        get_pending_deploys: PendingDeploysQuery => PendingDeploysResponse,
     }
     stream {
         visualize_dag: VisualizeDagQuery => visualizeDagStream,

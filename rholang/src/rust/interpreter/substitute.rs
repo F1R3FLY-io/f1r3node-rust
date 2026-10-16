@@ -30,7 +30,7 @@
 //! a *configuration* of the live one, and quietly promoted it.
 
 use models::rhoapi::{
-    Bundle, CostSignature, Expr, If, Match, New, Par, Receive, Send, Var, VarRef,
+    Bundle, CostSignature, CostStack, Expr, If, Match, New, Par, Receive, Send, Var, VarRef,
 };
 use models::rust::host_work::{HostWorkDimension, HostWorkUnits};
 use models::rust::rholang::par_children::dismantle;
@@ -45,9 +45,9 @@ use rspace_plus_plus::rspace::history::Either;
 use shared::rust::clone_backing::BackingMeter;
 
 use super::accounting::costs::Cost;
-use super::deterministic_reduction;
 use super::env::Env;
 use super::errors::InterpreterError;
+use super::host_work::HostWorkBudget;
 use super::metering::MeteredMachine;
 use super::substitute_drive::{
     maybe_substitute_var_ref_view, maybe_substitute_var_view, EnvView, SubCtx, SubVal, SubWork,
@@ -84,19 +84,22 @@ impl Substitute {
     fn reserve_host_work<A: prost::Message>(
         term: &A,
         env: &Env<Par>,
+        host_work: Option<&HostWorkBudget>,
     ) -> Result<(), InterpreterError> {
         let bindings =
             u64::try_from(env.env_map.len()).map_err(|_| InterpreterError::HostWorkRejected)?;
         let bytes =
             u64::try_from(term.encoded_len()).map_err(|_| InterpreterError::HostWorkRejected)?;
-        deterministic_reduction::reserve_host_work(
-            HostWorkDimension::SubstitutionBindings,
-            HostWorkUnits::new(bindings),
-        )?;
-        deterministic_reduction::reserve_host_work(
-            HostWorkDimension::SubstitutionBytes,
-            HostWorkUnits::new(bytes),
-        )?;
+        if let Some(host_work) = host_work {
+            host_work.reserve(
+                HostWorkDimension::SubstitutionBindings,
+                HostWorkUnits::new(bindings),
+            )?;
+            host_work.reserve(
+                HostWorkDimension::SubstitutionBytes,
+                HostWorkUnits::new(bytes),
+            )?;
+        }
         Ok(())
     }
 
@@ -132,6 +135,35 @@ impl Substitute {
         )? {
             SubVal::Signature(signature) => Ok(signature),
             _ => unreachable!("metered signature substitution produced a different value"),
+        }
+    }
+
+    pub(crate) fn substitute_cost_stack(
+        &self,
+        stack: CostStack,
+        depth: i32,
+        env: &Env<Par>,
+    ) -> Result<CostStack, InterpreterError> {
+        match self.sub_drive(SubWork::Stack(stack, SubCtx::root(depth)), env)? {
+            SubVal::Stack(stack) => Ok(stack),
+            _ => unreachable!("stack substitution produced a different value"),
+        }
+    }
+
+    pub(crate) fn substitute_cost_stack_metered(
+        &self,
+        stack: CostStack,
+        depth: i32,
+        env: &Env<Par>,
+        backing: &dyn BackingMeter,
+    ) -> Result<CostStack, InterpreterError> {
+        match self.sub_drive_with_backing(
+            SubWork::Stack(stack, SubCtx::root(depth)),
+            env,
+            Some(backing),
+        )? {
+            SubVal::Stack(stack) => Ok(stack),
+            _ => unreachable!("metered stack substitution produced a different value"),
         }
     }
 
@@ -221,12 +253,13 @@ impl Substitute {
         term: A,
         depth: i32,
         env: &Env<Par>,
+        host_work: Option<&HostWorkBudget>,
     ) -> Result<A, InterpreterError>
     where
         Self: SubstituteTrait<A>,
         A: prost::Message,
     {
-        Self::reserve_host_work(&term, env)?;
+        Self::reserve_host_work(&term, env, host_work)?;
         // scala 'charge' function built in here
         //
         // ⚠ BEFORE the move — see this method's documentation. The error arm
@@ -263,12 +296,13 @@ impl Substitute {
         term: A,
         depth: i32,
         env: &Env<Par>,
+        host_work: Option<&HostWorkBudget>,
     ) -> Result<A, InterpreterError>
     where
         Self: SubstituteTrait<A>,
         A: prost::Message,
     {
-        Self::reserve_host_work(&term, env)?;
+        Self::reserve_host_work(&term, env, host_work)?;
         // scala 'charge' function built in here
         let minimum = i64::from(!self.metering.budget().is_legacy());
         let input_len = (term.encoded_len() as i64).max(minimum);

@@ -406,6 +406,7 @@ struct Written {
 fn produces_of(event: &Event) -> &[Produce] {
     match event {
         Event::Comm(comm) => &comm.produces,
+        Event::RestingComm(comm) => &comm.ordered_produces,
         Event::IoEvent(IOEvent::Produce(produce)) => std::slice::from_ref(produce),
         Event::IoEvent(IOEvent::Consume(_)) => &[],
     }

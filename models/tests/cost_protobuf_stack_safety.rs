@@ -193,6 +193,7 @@ fn standalone_compound_message_and_alternating_quote_par_round_trip_are_stack_sa
                 let mut quoted = Par::default();
                 quoted.cost_stacks = vec![CostStack {
                     cells: vec![signature],
+                    parallel_tail: Vec::new(),
                 }];
                 signature = CostSignature {
                     value: Some(Value::Quote(quoted)),
@@ -206,4 +207,101 @@ fn standalone_compound_message_and_alternating_quote_par_round_trip_are_stack_sa
         .expect("spawn small-stack compound/alternating roundtrip")
         .join()
         .expect("cost/Par cycles must use explicit protobuf stacks");
+}
+
+#[test]
+fn shallow_parallel_stack_wire_matches_unmodified_prost() {
+    let stack = CostStack {
+        cells: vec![CostSignature {
+            value: Some(Value::BoundLevel(3)),
+        }],
+        parallel_tail: vec![CostStack::default(), CostStack {
+            cells: vec![CostSignature {
+                value: Some(Value::Ground(vec![1, 2])),
+            }],
+            parallel_tail: Vec::new(),
+        }],
+    };
+    let bytes = stack.encode_to_vec();
+    let oracle = recursive_oracle::CostStack::decode(bytes.as_slice()).unwrap();
+    assert_eq!(bytes, oracle.encode_to_vec());
+    for cut in 0..=bytes.len() {
+        match (
+            CostStack::decode(&bytes[..cut]),
+            recursive_oracle::CostStack::decode(&bytes[..cut]),
+        ) {
+            (Ok(actual), Ok(expected)) => {
+                assert_eq!(actual.encode_to_vec(), expected.encode_to_vec());
+            }
+            (Err(actual), Err(expected)) => assert_eq!(actual, expected),
+            (actual, expected) => {
+                panic!("parallel stack protobuf prefix {cut} differs: {actual:?} vs {expected:?}")
+            }
+        }
+    }
+}
+
+#[test]
+fn standalone_parallel_stack_message_merge_and_clear_are_stack_safe() {
+    std::thread::Builder::new()
+        .stack_size(SMALL_STACK)
+        .spawn(|| {
+            let mut stack = CostStack {
+                cells: vec![CostSignature {
+                    value: Some(Value::BoundLevel(7)),
+                }],
+                parallel_tail: Vec::new(),
+            };
+            for _ in 0..DEPTH {
+                stack = CostStack {
+                    cells: Vec::new(),
+                    parallel_tail: vec![stack],
+                };
+            }
+            let bytes = stack.encode_to_vec();
+            assert_eq!(stack.encoded_len(), bytes.len());
+            let mut decoded = CostStack::decode(bytes.as_slice()).expect("deep stack decode");
+            let mut framed = CostStack::decode_length_delimited(
+                stack.encode_length_delimited_to_vec().as_slice(),
+            )
+            .expect("deep framed stack decode");
+            let mut merged = CostStack::default();
+            merged.merge(bytes.as_slice()).expect("deep stack merge");
+            assert_eq!(decoded.encode_to_vec(), bytes);
+            assert_eq!(framed.encode_to_vec(), bytes);
+            assert_eq!(merged.encode_to_vec(), bytes);
+            let mut current = &decoded;
+            for _ in 0..DEPTH {
+                assert!(current.cells.is_empty());
+                assert_eq!(current.parallel_tail.len(), 1);
+                current = &current.parallel_tail[0];
+            }
+            assert_eq!(current.cells.len(), 1);
+            for value in [&mut stack, &mut decoded, &mut framed, &mut merged] {
+                Message::clear(value);
+                assert!(value.cells.is_empty() && value.parallel_tail.is_empty());
+            }
+        })
+        .expect("spawn small-stack parallel codec worker")
+        .join()
+        .expect("CostStack protobuf API must use explicit stacks");
+}
+
+#[test]
+fn ordinary_parallel_stack_drop_is_stack_safe() {
+    std::thread::Builder::new()
+        .stack_size(SMALL_STACK)
+        .spawn(|| {
+            let mut stack = CostStack::default();
+            for _ in 0..DEPTH {
+                stack = CostStack {
+                    cells: Vec::new(),
+                    parallel_tail: vec![stack],
+                };
+            }
+            drop(stack);
+        })
+        .expect("spawn small-stack drop worker")
+        .join()
+        .expect("ordinary CostStack drop must use an explicit worklist");
 }

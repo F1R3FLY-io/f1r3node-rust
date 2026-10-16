@@ -5,6 +5,7 @@ use models::rhoapi::CostAuthority;
 use models::rust::host_work::HostWorkDimension;
 use models::rust::phlo_wire::{PhloWireDecoder, PhloWireEncoder, PhloWireLimits};
 use prost::Message;
+use rspace_plus_plus::rspace::hashing::stable_hash_provider::EventCodecEpoch;
 use rspace_plus_plus::rspace::rspace_interface::RSpaceOperationCompletion;
 
 use super::path_trie::{NativePathTrie, PathId};
@@ -12,7 +13,8 @@ use super::recording::{recording_error, work};
 use super::{
     ByteObservation, HostWorkBudget, InterpreterError, NativeBudgetRecording, NativeBudgetRetry,
     NativeCommRecord, NativeCommSource, NativeConsumeSource, NativeObservationLink,
-    NativeOperationOccurrence, NativeOperationRecord, NativeOperationSource, NativeProduceSource,
+    NativeOperationOccurrence, NativeOperationRecord, NativeOperationRecordV3,
+    NativeOperationSource, NativeProduceSource, NativeRestingRecordV3,
 };
 use crate::rust::interpreter::accounting::authority::AuthorityByteEventKind;
 use crate::rust::interpreter::accounting::byte_accounting::ByteCharge;
@@ -23,7 +25,9 @@ use crate::rust::interpreter::accounting::native_phlo_rules::{
 const BUDGET_DOMAIN: &[u8] = b"f1r3node:native-budget-recording:v1";
 const JOURNAL_DOMAIN: &[u8] = b"f1r3node:native-operation-journal:v1";
 const BUDGET_DOMAIN_V2: &[u8] = b"f1r3node:native-budget-recording:v2";
+const BUDGET_DOMAIN_V3: &[u8] = b"f1r3node:native-budget-recording:v3";
 const JOURNAL_DOMAIN_V2: &[u8] = b"f1r3node:native-operation-journal:v2";
+const JOURNAL_DOMAIN_V3: &[u8] = b"f1r3node:native-operation-journal:v3";
 
 #[derive(Clone, Copy, Debug)]
 pub struct NativeRecordingWireLimits {
@@ -149,19 +153,22 @@ impl<'a> Reader<'a> {
     fn finish(self) -> Result<(), InterpreterError> { self.wire.finish().map_err(|_| malformed()) }
 }
 
-fn stage_tag(stage: NativeAttemptStage) -> u8 {
+fn stage_tag(stage: NativeAttemptStage, cost_v2: bool) -> Result<u8, InterpreterError> {
     match stage {
-        NativeAttemptStage::ProduceIntroduction => 0,
-        NativeAttemptStage::ConsumeIntroduction => 1,
-        NativeAttemptStage::Comm => 2,
+        NativeAttemptStage::ProduceIntroduction => Ok(0),
+        NativeAttemptStage::ConsumeIntroduction => Ok(1),
+        NativeAttemptStage::Comm => Ok(2),
+        NativeAttemptStage::RestingComm if cost_v2 => Ok(3),
+        NativeAttemptStage::RestingComm => Err(malformed()),
     }
 }
 
-fn stage(value: u8) -> Result<NativeAttemptStage, InterpreterError> {
+fn stage(value: u8, cost_v2: bool) -> Result<NativeAttemptStage, InterpreterError> {
     match value {
         0 => Ok(NativeAttemptStage::ProduceIntroduction),
         1 => Ok(NativeAttemptStage::ConsumeIntroduction),
         2 => Ok(NativeAttemptStage::Comm),
+        3 if cost_v2 => Ok(NativeAttemptStage::RestingComm),
         _ => Err(malformed()),
     }
 }
@@ -171,6 +178,7 @@ fn kind(value: NativeAttemptStage) -> AuthorityByteEventKind {
         NativeAttemptStage::ProduceIntroduction => AuthorityByteEventKind::ProduceIntroduction,
         NativeAttemptStage::ConsumeIntroduction => AuthorityByteEventKind::ConsumeIntroduction,
         NativeAttemptStage::Comm => AuthorityByteEventKind::Comm,
+        NativeAttemptStage::RestingComm => AuthorityByteEventKind::RestingComm,
     }
 }
 
@@ -344,13 +352,14 @@ fn write_occurrence(
 ) -> Result<(), InterpreterError> {
     wire.bytes(&occurrence.session)?;
     write_path(wire, &paths.segments(occurrence.path), limits.path_segments)?;
-    wire.u8(stage_tag(occurrence.stage))
+    wire.u8(stage_tag(occurrence.stage, false)?)
 }
 
 fn read_occurrence(
     wire: &mut Reader<'_>,
     paths: &mut NativePathTrie,
     limits: NativeRecordingWireLimits,
+    cost_v2: bool,
 ) -> Result<NativeBudgetOccurrence, InterpreterError> {
     Ok(NativeBudgetOccurrence {
         session: wire.fixed32()?,
@@ -360,7 +369,7 @@ fn read_occurrence(
             limits.budget.path_segments,
             limits.total_path_segments,
         )?,
-        stage: stage(wire.u8()?)?,
+        stage: stage(wire.u8()?, cost_v2)?,
     })
 }
 
@@ -370,10 +379,11 @@ fn write_occurrence_delta(
     occurrence: &NativeBudgetOccurrence,
     previous: PathId,
     limits: NativeBudgetTraceLimits,
+    cost_v2: bool,
 ) -> Result<(), InterpreterError> {
     wire.bytes(&occurrence.session)?;
     write_path_delta(wire, paths, occurrence.path, previous, limits.path_segments)?;
-    wire.u8(stage_tag(occurrence.stage))
+    wire.u8(stage_tag(occurrence.stage, cost_v2)?)
 }
 
 fn read_occurrence_delta(
@@ -381,6 +391,7 @@ fn read_occurrence_delta(
     paths: &mut NativePathTrie,
     previous: PathId,
     limits: NativeRecordingWireLimits,
+    cost_v2: bool,
 ) -> Result<NativeBudgetOccurrence, InterpreterError> {
     Ok(NativeBudgetOccurrence {
         session: wire.fixed32()?,
@@ -391,16 +402,17 @@ fn read_occurrence_delta(
             limits.budget.path_segments,
             limits.total_path_segments,
         )?,
-        stage: stage(wire.u8()?)?,
+        stage: stage(wire.u8()?, cost_v2)?,
     })
 }
 
 fn write_observation(
     wire: &mut Writer<'_>,
     observation: &ByteObservation,
+    cost_v2: bool,
 ) -> Result<(), InterpreterError> {
     wire.bytes(&observation.event_id)?;
-    wire.u8(stage_tag(observation.kind.into()))?;
+    wire.u8(stage_tag(observation.kind.into(), cost_v2)?)?;
     let size = observation.authority.encoded_len();
     wire.reserve(
         size.checked_mul(2)
@@ -426,9 +438,12 @@ fn write_observation(
     Ok(())
 }
 
-fn read_observation(wire: &mut Reader<'_>) -> Result<Arc<ByteObservation>, InterpreterError> {
+fn read_observation(
+    wire: &mut Reader<'_>,
+    cost_v2: bool,
+) -> Result<Arc<ByteObservation>, InterpreterError> {
     let event_id = wire.fixed32()?;
-    let kind = kind(stage(wire.u8()?)?);
+    let kind = kind(stage(wire.u8()?, cost_v2)?);
     let authority_bytes = wire.bytes()?;
     work(
         wire.host,
@@ -488,6 +503,27 @@ pub fn encode_native_budget_recording(
     limits: NativeRecordingWireLimits,
     host: &HostWorkBudget,
 ) -> Result<Vec<u8>, InterpreterError> {
+    encode_native_budget_recording_inner(recording, limits, host, false)
+}
+
+pub fn encode_native_budget_recording_v3(
+    epoch: EventCodecEpoch,
+    recording: &NativeBudgetRecording,
+    limits: NativeRecordingWireLimits,
+    host: &HostWorkBudget,
+) -> Result<Vec<u8>, InterpreterError> {
+    if epoch != EventCodecEpoch::CostV2 {
+        return Err(malformed());
+    }
+    encode_native_budget_recording_inner(recording, limits, host, true)
+}
+
+fn encode_native_budget_recording_inner(
+    recording: &NativeBudgetRecording,
+    limits: NativeRecordingWireLimits,
+    host: &HostWorkBudget,
+    cost_v2: bool,
+) -> Result<Vec<u8>, InterpreterError> {
     if recording
         .attempts
         .len()
@@ -501,7 +537,11 @@ pub fn encode_native_budget_recording(
         wire: PhloWireEncoder::new(limits.wire),
         host,
     };
-    wire.bytes(BUDGET_DOMAIN_V2)?;
+    wire.bytes(if cost_v2 {
+        BUDGET_DOMAIN_V3
+    } else {
+        BUDGET_DOMAIN_V2
+    })?;
     wire.bytes(&recording.session)?;
     wire.u64(recording.used)?;
     wire.u64(length(recording.attempts.len())?)?;
@@ -514,6 +554,7 @@ pub fn encode_native_budget_recording(
             &attempt.occurrence,
             previous,
             limits.budget,
+            cost_v2,
         )?;
         previous = attempt.occurrence.path;
         if attempt.occurrence.session != recording.session
@@ -521,19 +562,26 @@ pub fn encode_native_budget_recording(
         {
             return Err(malformed());
         }
-        write_observation(&mut wire, &attempt.observation)?;
+        write_observation(&mut wire, &attempt.observation, cost_v2)?;
         wire.u8(u8::from(attempt.granted))?;
     }
     wire.u64(length(recording.retries.len())?)?;
     for retry in recording.retries.iter() {
-        write_occurrence_delta(&mut wire, paths, &retry.occurrence, previous, limits.budget)?;
+        write_occurrence_delta(
+            &mut wire,
+            paths,
+            &retry.occurrence,
+            previous,
+            limits.budget,
+            cost_v2,
+        )?;
         previous = retry.occurrence.path;
         if retry.occurrence.session != recording.session
             || NativeAttemptStage::from(retry.observation.kind) != retry.occurrence.stage
         {
             return Err(malformed());
         }
-        write_observation(&mut wire, &retry.observation)?;
+        write_observation(&mut wire, &retry.observation, cost_v2)?;
         wire.u64(length(retry.accepted_attempt)?)?;
         wire.u64(length(retry.fresh_before)?)?;
     }
@@ -545,10 +593,31 @@ pub fn decode_native_budget_recording(
     limits: NativeRecordingWireLimits,
     host: &HostWorkBudget,
 ) -> Result<NativeBudgetRecording, InterpreterError> {
+    decode_native_budget_recording_inner(input, limits, host, false)
+}
+
+pub fn decode_native_budget_recording_v3(
+    epoch: EventCodecEpoch,
+    input: &[u8],
+    limits: NativeRecordingWireLimits,
+    host: &HostWorkBudget,
+) -> Result<NativeBudgetRecording, InterpreterError> {
+    if epoch != EventCodecEpoch::CostV2 {
+        return Err(malformed());
+    }
+    decode_native_budget_recording_inner(input, limits, host, true)
+}
+
+fn decode_native_budget_recording_inner(
+    input: &[u8],
+    limits: NativeRecordingWireLimits,
+    host: &HostWorkBudget,
+    cost_v2: bool,
+) -> Result<NativeBudgetRecording, InterpreterError> {
     let mut wire = Reader::new(input, limits.wire, host)?;
-    let delta = match wire.bytes()? {
-        BUDGET_DOMAIN => false,
-        BUDGET_DOMAIN_V2 => true,
+    let delta = match (wire.bytes()?, cost_v2) {
+        (BUDGET_DOMAIN, false) => false,
+        (BUDGET_DOMAIN_V2, false) | (BUDGET_DOMAIN_V3, true) => true,
         _ => return Err(malformed()),
     };
     let session = wire.fixed32()?;
@@ -561,11 +630,11 @@ pub fn decode_native_budget_recording(
             .last()
             .map_or(PathId::ROOT, |attempt| attempt.occurrence.path);
         let occurrence = if delta {
-            read_occurrence_delta(&mut wire, &mut paths, previous, limits)?
+            read_occurrence_delta(&mut wire, &mut paths, previous, limits, cost_v2)?
         } else {
-            read_occurrence(&mut wire, &mut paths, limits)?
+            read_occurrence(&mut wire, &mut paths, limits, cost_v2)?
         };
-        let observation = read_observation(&mut wire)?;
+        let observation = read_observation(&mut wire, cost_v2)?;
         let granted = match wire.u8()? {
             0 => false,
             1 => true,
@@ -589,11 +658,11 @@ pub fn decode_native_budget_recording(
             .or_else(|| attempts.last().map(|attempt| attempt.occurrence.path))
             .unwrap_or(PathId::ROOT);
         let occurrence = if delta {
-            read_occurrence_delta(&mut wire, &mut paths, previous, limits)?
+            read_occurrence_delta(&mut wire, &mut paths, previous, limits, cost_v2)?
         } else {
-            read_occurrence(&mut wire, &mut paths, limits)?
+            read_occurrence(&mut wire, &mut paths, limits, cost_v2)?
         };
-        let observation = read_observation(&mut wire)?;
+        let observation = read_observation(&mut wire, cost_v2)?;
         let accepted_attempt = bounded_count(wire.u64()?, attempts_count.saturating_sub(1))?;
         let fresh_before = bounded_count(wire.u64()?, attempts_count)?;
         if occurrence.session != session
@@ -854,6 +923,7 @@ pub fn encode_native_operation_journal(
                 wire.u8(1)?;
                 write_consume(&mut wire, source, &mut sources, limits)?;
             }
+            NativeOperationSource::Resting(_) => return Err(malformed()),
         }
         match &row.consume_peeks {
             None => wire.u8(0)?,
@@ -1004,6 +1074,277 @@ pub fn decode_native_operation_journal(
     Ok(operations.into())
 }
 
+fn validate_resting_v3(
+    row: &NativeRestingRecordV3,
+    host: &HostWorkBudget,
+) -> Result<(), InterpreterError> {
+    let count = row.ordered_produces.len();
+    work(
+        host,
+        HostWorkDimension::VerificationOperations,
+        count
+            .checked_mul(4)
+            .and_then(|n| n.checked_add(row.peeks.len()))
+            .ok_or(InterpreterError::HostWorkRejected)?,
+    )?;
+    work(
+        host,
+        HostWorkDimension::VerificationBytes,
+        count
+            .checked_mul(64)
+            .ok_or(InterpreterError::HostWorkRejected)?,
+    )?;
+    if row.consume.channels.len() != count
+        || row.ordered_data_indices.len() != count
+        || row.continuation_index < 0
+        || row.ordered_data_indices.iter().any(|index| *index < 0)
+        || row.budget_start > row.budget_end
+        || row.completion == RSpaceOperationCompletion::Stored
+        || (row.completion == RSpaceOperationCompletion::Matched
+            && (row.observation.is_none() || row.identity.is_none()))
+        || (row.observation.is_some() && row.identity.is_none())
+    {
+        return Err(malformed());
+    }
+    for (channel, produce) in row.consume.channels.iter().zip(row.ordered_produces.iter()) {
+        if channel != &produce.channel {
+            return Err(malformed());
+        }
+    }
+    let mut previous = None;
+    for index in row.peeks.iter().copied() {
+        let slot = usize::try_from(index).map_err(|_| malformed())?;
+        if slot >= count || previous.is_some_and(|prior| index <= prior) {
+            return Err(malformed());
+        }
+        previous = Some(index);
+    }
+    Ok(())
+}
+
+/// Additive CostV2 journal. Historical rows are embedded with the unchanged
+/// V2 codec as an exact length-delimited subrecord; Resting rows have their
+/// own tag and no introduction field. The historical decoder never accepts
+/// this domain, and this entry point is selected only by an adopted CostV2
+/// native configuration, never by inspecting event payloads.
+pub fn encode_native_operation_journal_v3(
+    epoch: EventCodecEpoch,
+    operations: &[NativeOperationRecordV3],
+    paths: &NativePathTrie,
+    limits: NativeRecordingWireLimits,
+    host: &HostWorkBudget,
+) -> Result<Vec<u8>, InterpreterError> {
+    if epoch != EventCodecEpoch::CostV2 {
+        return Err(malformed());
+    }
+    if operations.len() > limits.operations {
+        return Err(malformed());
+    }
+    let mut wire = Writer {
+        wire: PhloWireEncoder::new(limits.wire),
+        host,
+    };
+    wire.bytes(JOURNAL_DOMAIN_V3)?;
+    wire.u64(length(operations.len())?)?;
+    for row in operations {
+        match row {
+            NativeOperationRecordV3::Historical(row) => {
+                wire.u8(0)?;
+                let historical = encode_native_operation_journal(
+                    std::slice::from_ref(row),
+                    paths,
+                    limits,
+                    host,
+                )?;
+                wire.bytes(&historical)?;
+            }
+            NativeOperationRecordV3::Resting(row) => {
+                validate_resting_v3(row, host)?;
+                wire.u8(1)?;
+                wire.bytes(&row.occurrence.session)?;
+                write_path_delta(
+                    &mut wire,
+                    paths,
+                    row.occurrence.path,
+                    PathId::ROOT,
+                    limits.budget.path_segments,
+                )?;
+                match row.identity {
+                    Some(identity) => {
+                        wire.u8(1)?;
+                        wire.bytes(&identity)?;
+                    }
+                    None => wire.u8(0)?,
+                }
+                let mut sources = 1;
+                write_consume(&mut wire, &row.consume, &mut sources, limits)?;
+                write_i32(&mut wire, row.continuation_index)?;
+                wire.u64(length(row.ordered_produces.len())?)?;
+                for source in row.ordered_produces.iter() {
+                    add_count(&mut sources, 1, limits.source_entries)?;
+                    write_produce(&mut wire, source)?;
+                }
+                wire.u64(length(row.ordered_data_indices.len())?)?;
+                for &index in row.ordered_data_indices.iter() {
+                    write_i32(&mut wire, index)?;
+                }
+                wire.u64(length(row.peeks.len())?)?;
+                for &index in row.peeks.iter() {
+                    write_i32(&mut wire, index)?;
+                }
+                if row.footprint.len() > limits.footprint_entries
+                    || row.predecessors.len() > limits.predecessor_edges
+                {
+                    return Err(malformed());
+                }
+                wire.u64(length(row.footprint.len())?)?;
+                let mut footprint_bytes = 0;
+                for channel in row.footprint.iter() {
+                    add_count(&mut footprint_bytes, channel.len(), limits.footprint_bytes)?;
+                    wire.bytes(channel)?;
+                }
+                wire.u64(length(row.predecessors.len())?)?;
+                for &index in row.predecessors.iter() {
+                    if index >= operations.len() {
+                        return Err(malformed());
+                    }
+                    wire.u64(length(index)?)?;
+                }
+                match row.observation {
+                    Some(link) => {
+                        wire.u8(1)?;
+                        write_link(&mut wire, link)?;
+                    }
+                    None => wire.u8(0)?,
+                }
+                wire.u8(completion_tag(row.completion))?;
+                wire.u64(length(row.budget_start)?)?;
+                wire.u64(length(row.budget_end)?)?;
+            }
+        }
+    }
+    Ok(wire.finish())
+}
+
+pub fn decode_native_operation_journal_v3(
+    epoch: EventCodecEpoch,
+    input: &[u8],
+    recording: &mut NativeBudgetRecording,
+    limits: NativeRecordingWireLimits,
+    host: &HostWorkBudget,
+) -> Result<Arc<[NativeOperationRecordV3]>, InterpreterError> {
+    if epoch != EventCodecEpoch::CostV2 {
+        return Err(malformed());
+    }
+    let mut wire = Reader::new(input, limits.wire, host)?;
+    if wire.bytes()? != JOURNAL_DOMAIN_V3 {
+        return Err(malformed());
+    }
+    let count = bounded_count(wire.u64()?, limits.operations)?;
+    let mut rows = reserve_vec::<NativeOperationRecordV3>(count, host)?;
+    for _ in 0..count {
+        let row = match wire.u8()? {
+            0 => {
+                let nested = wire.bytes()?;
+                let decoded = decode_native_operation_journal(nested, recording, limits, host)?;
+                let [row] = decoded.as_ref() else {
+                    return Err(malformed());
+                };
+                work(host, HostWorkDimension::VerificationOperations, 1)?;
+                NativeOperationRecordV3::Historical(row.clone())
+            }
+            1 => {
+                let occurrence = NativeOperationOccurrence {
+                    session: wire.fixed32()?,
+                    path: read_path_delta(
+                        &mut wire,
+                        Arc::get_mut(&mut recording.paths).ok_or_else(malformed)?,
+                        PathId::ROOT,
+                        limits.budget.path_segments,
+                        limits.total_path_segments,
+                    )?,
+                };
+                let identity = match wire.u8()? {
+                    0 => None,
+                    1 => Some(wire.fixed32()?),
+                    _ => return Err(malformed()),
+                };
+                let mut sources = 1;
+                let consume = read_consume(&mut wire, &mut sources, limits)?;
+                let continuation_index = read_i32(&mut wire)?;
+                let count = bounded_count(wire.u64()?, limits.source_entries)?;
+                add_count(&mut sources, count, limits.source_entries)?;
+                let mut produces = reserve_vec(count, host)?;
+                for _ in 0..count {
+                    produces.push(read_produce(&mut wire)?);
+                }
+                let count = bounded_count(wire.u64()?, limits.source_entries)?;
+                let mut data_indices = reserve_vec(count, host)?;
+                for _ in 0..count {
+                    data_indices.push(read_i32(&mut wire)?);
+                }
+                let count = bounded_count(wire.u64()?, limits.source_entries)?;
+                let mut peeks = reserve_vec(count, host)?;
+                for _ in 0..count {
+                    peeks.push(read_i32(&mut wire)?);
+                }
+                let count = bounded_count(wire.u64()?, limits.footprint_entries)?;
+                let mut footprint = reserve_vec(count, host)?;
+                let mut footprint_bytes = 0;
+                for _ in 0..count {
+                    let bytes = wire.bytes()?;
+                    add_count(&mut footprint_bytes, bytes.len(), limits.footprint_bytes)?;
+                    work(host, HostWorkDimension::SearchStateBytes, bytes.len())?;
+                    footprint.push(Arc::from(bytes));
+                }
+                let count = bounded_count(wire.u64()?, limits.predecessor_edges)?;
+                let mut predecessors = reserve_vec(count, host)?;
+                for _ in 0..count {
+                    predecessors.push(bounded_count(wire.u64()?, limits.operations)?);
+                }
+                let observation = match wire.u8()? {
+                    0 => None,
+                    1 => Some(read_link(&mut wire, limits.budget)?),
+                    _ => return Err(malformed()),
+                };
+                let completion = completion(wire.u8()?)?;
+                let budget_start = bounded_count(wire.u64()?, limits.budget.attempts)?;
+                let budget_end = bounded_count(wire.u64()?, limits.budget.attempts)?;
+                let row = NativeRestingRecordV3 {
+                    occurrence,
+                    identity,
+                    consume,
+                    continuation_index,
+                    ordered_produces: produces.into(),
+                    ordered_data_indices: data_indices.into(),
+                    peeks: peeks.into(),
+                    footprint: footprint.into(),
+                    predecessors: predecessors.into(),
+                    observation,
+                    completion,
+                    budget_start,
+                    budget_end,
+                };
+                validate_resting_v3(&row, host)?;
+                NativeOperationRecordV3::Resting(row)
+            }
+            _ => return Err(malformed()),
+        };
+        rows.push(row);
+    }
+    wire.finish()?;
+    for row in &rows {
+        let predecessors = match row {
+            NativeOperationRecordV3::Historical(row) => row.predecessors.as_ref(),
+            NativeOperationRecordV3::Resting(row) => row.predecessors.as_ref(),
+        };
+        if predecessors.iter().any(|index| *index >= rows.len()) {
+            return Err(malformed());
+        }
+    }
+    Ok(rows.into())
+}
+
 #[cfg(test)]
 mod tests {
     use models::rust::host_work::{HostWorkLimit, HostWorkLimits};
@@ -1148,6 +1489,197 @@ mod tests {
     }
 
     #[test]
+    fn cost_v2_resting_journal_is_distinct_and_old_epochs_refuse_it() {
+        let budget = host(1_000_000);
+        let source_recording = recording();
+        let historical = journal(&source_recording)[0].clone();
+        let resting = NativeRestingRecordV3 {
+            occurrence: NativeOperationOccurrence {
+                session: [1; 32],
+                path: source_recording.paths.find(&[(7, 9)]).unwrap(),
+            },
+            identity: Some([42; 32]),
+            consume: NativeConsumeSource {
+                channels: vec![[3; 32]].into(),
+                hash: [7; 32],
+                persistent: false,
+            },
+            continuation_index: 128,
+            ordered_produces: vec![NativeProduceSource {
+                channel: [3; 32],
+                hash: [8; 32],
+                persistent: false,
+            }]
+            .into(),
+            ordered_data_indices: vec![128].into(),
+            peeks: vec![0].into(),
+            footprint: vec![Arc::from(&b"channel"[..])].into(),
+            predecessors: vec![0].into(),
+            observation: Some(NativeObservationLink::Attempt(0)),
+            completion: RSpaceOperationCompletion::Matched,
+            budget_start: 0,
+            budget_end: 1,
+        };
+        let rows = vec![
+            NativeOperationRecordV3::Historical(historical.clone()),
+            NativeOperationRecordV3::Resting(resting.clone()),
+        ];
+        let old_wire = encode_native_operation_journal(
+            std::slice::from_ref(&historical),
+            &source_recording.paths,
+            limits(),
+            &budget,
+        )
+        .unwrap();
+        let wire = encode_native_operation_journal_v3(
+            EventCodecEpoch::CostV2,
+            &rows,
+            &source_recording.paths,
+            limits(),
+            &budget,
+        )
+        .unwrap();
+        let recording_wire =
+            encode_native_budget_recording(&source_recording, limits(), &budget).unwrap();
+        let mut decoded_recording =
+            decode_native_budget_recording(&recording_wire, limits(), &budget).unwrap();
+        let decoded = decode_native_operation_journal_v3(
+            EventCodecEpoch::CostV2,
+            &wire,
+            &mut decoded_recording,
+            limits(),
+            &budget,
+        )
+        .unwrap();
+        assert_eq!(decoded.as_ref(), rows.as_slice());
+        assert!(encode_native_operation_journal_v3(
+            EventCodecEpoch::CostV1,
+            &rows,
+            &source_recording.paths,
+            limits(),
+            &budget,
+        )
+        .is_err());
+        assert!(decode_native_operation_journal_v3(
+            EventCodecEpoch::Legacy,
+            &wire,
+            &mut decoded_recording,
+            limits(),
+            &budget,
+        )
+        .is_err());
+        assert!(
+            decode_native_operation_journal(&wire, &mut decoded_recording, limits(), &budget,)
+                .is_err()
+        );
+        assert_eq!(
+            encode_native_operation_journal(
+                std::slice::from_ref(&historical),
+                &source_recording.paths,
+                limits(),
+                &budget,
+            )
+            .unwrap(),
+            old_wire,
+        );
+        let mut reversed = rows;
+        if let NativeOperationRecordV3::Resting(row) = &mut reversed[1] {
+            row.ordered_data_indices = vec![127].into();
+        }
+        assert_ne!(
+            encode_native_operation_journal_v3(
+                EventCodecEpoch::CostV2,
+                &reversed,
+                &source_recording.paths,
+                limits(),
+                &budget,
+            )
+            .unwrap(),
+            wire,
+            "the bind-ordered store address must be identity-bearing",
+        );
+        let mut unmatched = resting.clone();
+        unmatched.identity = None;
+        assert!(
+            encode_native_operation_journal_v3(
+                EventCodecEpoch::CostV2,
+                &[NativeOperationRecordV3::Resting(unmatched.clone())],
+                &source_recording.paths,
+                limits(),
+                &budget,
+            )
+            .is_err(),
+            "matched Resting must carry the checked identity"
+        );
+        unmatched.observation = None;
+        unmatched.completion = RSpaceOperationCompletion::Rejected;
+        let refused = encode_native_operation_journal_v3(
+            EventCodecEpoch::CostV2,
+            &[NativeOperationRecordV3::Resting(unmatched.clone())],
+            &source_recording.paths,
+            limits(),
+            &budget,
+        )
+        .unwrap();
+        let mut decoded_recording =
+            decode_native_budget_recording(&recording_wire, limits(), &budget).unwrap();
+        let decoded = decode_native_operation_journal_v3(
+            EventCodecEpoch::CostV2,
+            &refused,
+            &mut decoded_recording,
+            limits(),
+            &budget,
+        )
+        .unwrap();
+        assert_eq!(decoded.as_ref(), &[NativeOperationRecordV3::Resting(
+            unmatched
+        )]);
+        let mut mismatched = resting;
+        Arc::make_mut(&mut mismatched.ordered_produces)[0].channel = [9; 32];
+        assert!(encode_native_operation_journal_v3(
+            EventCodecEpoch::CostV2,
+            &[NativeOperationRecordV3::Resting(mismatched)],
+            &source_recording.paths,
+            limits(),
+            &budget,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn cost_v2_resting_budget_stage_has_separate_domain_and_old_codec_refuses_it() {
+        let budget = host(1_000_000);
+        let mut source = recording();
+        source.retries = Arc::from([]);
+        let attempt = &mut Arc::make_mut(&mut source.attempts)[0];
+        attempt.occurrence.stage = NativeAttemptStage::RestingComm;
+        Arc::make_mut(&mut attempt.observation).kind = AuthorityByteEventKind::RestingComm;
+        assert!(encode_native_budget_recording(&source, limits(), &budget).is_err());
+        assert!(encode_native_budget_recording_v3(
+            EventCodecEpoch::CostV1,
+            &source,
+            limits(),
+            &budget,
+        )
+        .is_err());
+        let bytes =
+            encode_native_budget_recording_v3(EventCodecEpoch::CostV2, &source, limits(), &budget)
+                .unwrap();
+        assert!(decode_native_budget_recording(&bytes, limits(), &budget).is_err());
+        assert!(decode_native_budget_recording_v3(
+            EventCodecEpoch::Legacy,
+            &bytes,
+            limits(),
+            &budget,
+        )
+        .is_err());
+        let decoded =
+            decode_native_budget_recording_v3(EventCodecEpoch::CostV2, &bytes, limits(), &budget)
+                .unwrap();
+        assert_eq!(decoded.attempts.as_ref(), source.attempts.as_ref());
+    }
+
+    #[test]
     fn canonical_recording_and_journal_round_trip() {
         let budget = host(1_000_000);
         let original = recording();
@@ -1203,7 +1735,7 @@ mod tests {
             limits().budget,
         )
         .unwrap();
-        write_observation(&mut writer, &attempt.observation).unwrap();
+        write_observation(&mut writer, &attempt.observation, false).unwrap();
         writer.u8(u8::from(attempt.granted)).unwrap();
         writer.u64(1).unwrap();
         let retry = &original.retries[0];
@@ -1214,7 +1746,7 @@ mod tests {
             limits().budget,
         )
         .unwrap();
-        write_observation(&mut writer, &retry.observation).unwrap();
+        write_observation(&mut writer, &retry.observation, false).unwrap();
         writer.u64(retry.accepted_attempt as u64).unwrap();
         writer.u64(retry.fresh_before as u64).unwrap();
         let decoded = decode_native_budget_recording(&writer.finish(), limits(), &budget).unwrap();

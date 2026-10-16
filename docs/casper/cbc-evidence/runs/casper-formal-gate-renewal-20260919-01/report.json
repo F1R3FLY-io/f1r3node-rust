@@ -1,0 +1,252 @@
+{
+  "schema_version": 1,
+  "status": "renewed-bounded-harness-binding",
+  "claim_ids": [
+    "CLAIM-CASPER-SOAK-001"
+  ],
+  "claim_discharge": "discharged",
+  "scope": "bounded-harness-only",
+  "phase": "pre_pr216_merge",
+  "base_commit": "191e184be556c1f190748143377ab369586c53b6",
+  "working_tree": true,
+  "recorded_at": "2026-09-19T22:43:31Z",
+  "source_digests": {
+    ".github/workflows/merge-recovery-soak.yml": "38f2cf89278bdff9b9e74ba900726267b27d5cc6b1dab16c8fec919bbe84330b",
+    ".github/workflows/slashing-tests.yml": "1821ac5e6d95226e323423806efb1de9ceda8f423b5fa19bdc7572bf2209cc3b",
+    "formal/tlaplus/casper_soak/CasperSoakHarness.tla": "e08ce354f1e09b9f0873e6f730e509c4be6b394acc0bce7ff5ef53805d91b0c4",
+    "formal/tlaplus/casper_soak/MC_CasperSoakHarness.cfg": "cc4438b578ccc5c898897e7b66b7472253d2532093f8a5338bf8d924002e197b",
+    "formal/tlaplus/casper_soak/MC_CasperSoakHarness_cleanup_unsafe.cfg": "94510f73bec2b328dc9ccebe5d0d97b6ef3af93570991dfee557a37c3ba5a3a0",
+    "formal/tlaplus/casper_soak/MC_CasperSoakHarness_control_unsafe.cfg": "4fcf3c1b1b609a7a557a28da8daa7e908911a669d51bbb4abb1affeb5f2f90d9",
+    "formal/tlaplus/casper_soak/MC_CasperSoakHarness_evidence_unsafe.cfg": "08524a7d33f9f1fe35e6a070fd3e1257319223868af006854bc596314f12e4a4",
+    "formal/tlaplus/casper_soak/MC_CasperSoakHarness_failure_unsafe.cfg": "a8dcf9479e5087738f503ac87c5b425e0c3dbca339924ce56fa7806e8446718a",
+    "formal/tlaplus/casper_soak/MC_CasperSoakHarness_identity_unsafe.cfg": "25c5689dee8138b46406741b6f4a74ed41dddc2c43824c810c7670bc9af3186e",
+    "formal/tlaplus/casper_soak/MC_CasperSoakHarness_merge_unsafe.cfg": "f71a9822b0499a7a115e20c30076da785e997fa636ca0605adc54ee6003ac9f1",
+    "formal/tlaplus/casper_soak/MC_CasperSoakHarness_policy_unsafe.cfg": "f051c46dbdcb9ba8854043ac84bb74866f42b3c73aaa387fa9962ac212c1c131",
+    "formal/tlaplus/casper_soak/MC_CasperSoakHarness_resume_unsafe.cfg": "fa2f527570a3687de48dcac826538e3aa6a9edb2332d5051a936fa34c3c4ca63",
+    "formal/tlaplus/casper_soak/MC_CasperSoakHarness_samples_unsafe.cfg": "6937418bcfafd33557d27359f34e5e53e78fcfd68b43e68bfb3617d86cb6022b",
+    "formal/tlaplus/casper_soak/MC_CasperSoakHarness_stop_unsafe.cfg": "5d7947fadd81556a4cfea4f4dae3a9cf3893dc3b360889c3938aff047a0c5f4b",
+    "scripts/bench/casper-soak.sh": "19b6e0c9ff481428955c68631fc1224ec2506502d01a3c3f1bf6634d8a64f353",
+    "scripts/bench/fixtures/casper-lifecycle-executor.sh": "a2af2205b89c03b7ab503ca5c312e9b2300040540781ada37c33c849a3b94704",
+    "scripts/bench/test-run-merge-recovery-soak.sh": "c5089c13fa8cf127cae071a515409e8d23c45c3441f2d973563e379d6406a030",
+    "scripts/bench/test-soak-disk-admission.sh": "c11c1bb9d13a4c334e2e46862e45de849dbe8ff76491209bc7d01e07c873dcc1",
+    "scripts/bench/write-soak-summary.sh": "4ae6cf85bddd0f1e96a7b50da1db7e1033952d40244f697ab584846b857ff3e1",
+    "scripts/casper-soak/Cargo.toml": "f6082e839d8bb20e5b2988a9ed92ffe5d1cd79a0e578e10d68582593ea3d13cb",
+    "scripts/casper-soak/src/bin/check-casper-bindings.rs": "73f02925700815dddaecd3a5353b4a5a161cb77955ada1f06b76626dcb1e6c0a",
+    "scripts/casper-soak/src/bin/check-casper-claims.rs": "3a5f28efc587b0306a9b49eb6b7e5e97be74cd91e405520e9cf63d923d5c1e55",
+    "scripts/casper-soak/src/host_control.rs": "933e9cd7d05e763fea581d53f255ddba08fe3737c2046d3bbe6e996a06859aa9",
+    "scripts/casper-soak/src/lib.rs": "a70f76a28de8ef8010eb7f8876b5e947ce94bf35752bbd70b086983383ee7a8f",
+    "scripts/casper-soak/src/main.rs": "23d092ca695cde2aa3a78b242c13435c2f1cf73ac3532b8a0a96688b441696e8",
+    "scripts/casper-soak/src/manifest.rs": "d9606d542cfb9bc058f691196244ae2e6055e6c84c02b5c2581ee07e70c03000",
+    "scripts/casper-soak/src/models.rs": "99e3f736aa9e753b73edced77049ab206f993d612870bb1d866f6d5c0655983f",
+    "scripts/casper-soak/src/runtime.rs": "7fd98a56a01d42af70d2c0a988da27a9ef35b861c1d164663d75ac675743f85a",
+    "scripts/casper-soak/task-complete.sh": "89245a31460c48bf066e58c1329538baa57791ced13a01c4761aa2c62afdb912",
+    "scripts/casper-soak/tests/bindings.rs": "c2d593f6c6a9ddb5c9f5aa769d6f8b884256a5cecef4fc30afdec3bb0c50eab5",
+    "scripts/casper-soak/tests/claims.rs": "8813eba982f56f4fd45e339e61f5ee4b70c29e67bc28b1b2e85c0633b5eeb7d2",
+    "scripts/casper-soak/tests/driver.rs": "8e4bc9c2b58f0613a164b48caeb1dd74c1d6c480d58af5c5dfaf3fe426c73fa5",
+    "scripts/casper-soak/tests/interruption.rs": "1e7d64c7392fabf43e1a1e2d2ba7c77297694b7c893e0827d69103fe7a52f006",
+    "scripts/casper-soak/tests/manifest.rs": "0a7d2add0978931c2656cb667690f5d959487c4f2afbe3f0545ee00021b575b0",
+    "scripts/casper-soak/tests/models.rs": "b495e3705c1d38f3c74cea761e69b4f462d32c4fe62921e43e76f461faa36e60",
+    "scripts/ci/check-casper-soak-bindings.sh": "2077865b8f68e8dfde219c54548b528fbf318eeb24143765294f890aa4432a76",
+    "scripts/ci/check-casper-soak-models.sh": "2fdebbbd283fa26cb6a69f90ad651971db1d3f6c694ef39b9c21ab476e2c5342",
+    "scripts/ci/check-tla-invariants.sh": "41849481aeafbf7b98ec690fc44d209139c8b1749cd99e8de43ebb5ffc876baf",
+    "scripts/run-merge-recovery-soak.sh": "dbc71f8ee9e8cd3ec0f68af3588094f5c9577193cc0f004654ebab49d5b44049"
+  },
+  "claim_digests": {
+    "docs/claims/casper-soak-harness.md": "c1f6b7473f790a60ab964ce7fd7277841cd6cee5718e9853ad96cf4c671d5932"
+  },
+  "tiers": {
+    "refutation": "bounded-safety-pass",
+    "construction": "not-applicable",
+    "binding": "passed"
+  },
+  "authorization": {
+    "request": "proceed with  the closure requirements:  fresh hosted verification, Claim001/documentation renewal, and separately authorized protection-rule changes.",
+    "continuation": "it is pushed. Procced with next steps",
+    "scope": "Renew the existing bounded harness and documentation bindings. Do not change protection rules."
+  },
+  "previous_acceptance": {
+    "ref": "docs/casper/cbc-evidence/runs/casper-binding-inventory-renewal-20260919-01/report.json",
+    "sha256": "6a0cd52a9153f128cadef74c5469b02a3580e25a53e44fb45cf15d678186e889"
+  },
+  "previous_metadata": {
+    "path": "docs/casper/cbc-evidence/runs/casper-formal-gate-renewal-20260919-01/previous-metadata.tar.gz",
+    "sha256": "855516a6685384190c8a4f427ff547fc2c8a0f2b6d894849d26dea9fde91b6d9",
+    "selected_ledgers": 39,
+    "additional_historical_ledgers": 2,
+    "hosted_specification_sha256": "0ed5732c15eb02caa8d16d52d83cd156a371710b2a8c2a6281f1f921fe4cdef1"
+  },
+  "change": {
+    "path": ".github/workflows/slashing-tests.yml",
+    "before": "b040baafa3723c789aa762fef0e925702504e1a70c7a0a47ccc2d2a39b25c336",
+    "after": "1821ac5e6d95226e323423806efb1de9ceda8f423b5fa19bdc7572bf2209cc3b",
+    "unchanged_other_artifacts": 38,
+    "runtime_changed": false,
+    "assertions_changed": false,
+    "claim_update": "Status and evidence references only. The H01-H10 contract and artifact inventory are unchanged."
+  },
+  "hosted": {
+    "run_id": 35473280388,
+    "attempt": 1,
+    "event": "pull_request",
+    "conclusion": "success",
+    "head_sha": "191e184be556c1f190748143377ab369586c53b6",
+    "tested_sha": "c6db95ceb950ad8ebfcd31c0411964b71ff31387",
+    "workflow_sha": "c6db95ceb950ad8ebfcd31c0411964b71ff31387",
+    "workflow_ref": "F1R3FLY-io/f1r3node-rust/.github/workflows/slashing-tests.yml@refs/pull/436/merge",
+    "tested_parents": [
+      {
+        "sha": "4ce87b0bb751653a750049934f91318667a265c8",
+        "url": "https://api.github.com/repos/F1R3FLY-io/f1r3node-rust/git/commits/4ce87b0bb751653a750049934f91318667a265c8"
+      },
+      {
+        "sha": "191e184be556c1f190748143377ab369586c53b6",
+        "url": "https://api.github.com/repos/F1R3FLY-io/f1r3node-rust/git/commits/191e184be556c1f190748143377ab369586c53b6"
+      }
+    ],
+    "pr_base_sha": "6940a5beb4aa806d3d75f6df3be9f238512fcc2f",
+    "tested_first_parent_relation": {
+      "ahead_by": 2,
+      "behind_by": 0,
+      "merge_base": "6940a5beb4aa806d3d75f6df3be9f238512fcc2f",
+      "status": "ahead",
+      "total_commits": 2
+    },
+    "job_ids": [
+      105978029786,
+      105978029962,
+      105978459517,
+      105978576163
+    ],
+    "source_identities": 572,
+    "exact_provenance_pairs": 2,
+    "artifacts": [
+      {
+        "id": 10594176181,
+        "name": "formal-provenance-tla-35473280388-1",
+        "digest": "sha256:8b05f04765fbfac2e58b9055c33321205c1d129b7b532896b6f4dbd9a3a3155e",
+        "size_in_bytes": 55149,
+        "expired": false,
+        "workflow_run": {
+          "id": 35473280388,
+          "repository_id": 1137711560,
+          "head_repository_id": 1137711560,
+          "head_branch": "formal/soak-casper-consensus",
+          "head_sha": "191e184be556c1f190748143377ab369586c53b6"
+        }
+      },
+      {
+        "id": 10594131418,
+        "name": "tla-invariant-logs-35473280388-1",
+        "digest": "sha256:8c5b1552ecf4d74e57cddbdb59bb22fa7c3a1645e58df70b3fd48cc56ad1eac3",
+        "size_in_bytes": 126277,
+        "expired": false,
+        "workflow_run": {
+          "id": 35473280388,
+          "repository_id": 1137711560,
+          "head_repository_id": 1137711560,
+          "head_branch": "formal/soak-casper-consensus",
+          "head_sha": "191e184be556c1f190748143377ab369586c53b6"
+        }
+      },
+      {
+        "id": 10593707203,
+        "name": "casper-driver-bindings-35473280388-1",
+        "digest": "sha256:04bda65b2116c2ac859f7fb3ce23bbd5ace4a47f7d04d86606c14cd058e1739f",
+        "size_in_bytes": 342236,
+        "expired": false,
+        "workflow_run": {
+          "id": 35473280388,
+          "repository_id": 1137711560,
+          "head_repository_id": 1137711560,
+          "head_branch": "formal/soak-casper-consensus",
+          "head_sha": "191e184be556c1f190748143377ab369586c53b6"
+        }
+      },
+      {
+        "id": 10593086999,
+        "name": "formal-provenance-rocq-35473280388-1",
+        "digest": "sha256:db71be0589c9f0f9d5352579e333124ed4076fa1016a54c793b9e93aa4b7ae64",
+        "size_in_bytes": 55133,
+        "expired": false,
+        "workflow_run": {
+          "id": 35473280388,
+          "repository_id": 1137711560,
+          "head_repository_id": 1137711560,
+          "head_branch": "formal/soak-casper-consensus",
+          "head_sha": "191e184be556c1f190748143377ab369586c53b6"
+        }
+      }
+    ],
+    "identity_limit": "The run tests a synthetic merge commit. Its first parent is two commits ahead of the PR API base. All 572 verification sources and 314 binding inputs match the branch snapshot."
+  },
+  "verification": {
+    "isolated": {
+      "schema_version": 1,
+      "status": "passed",
+      "exit_code": 0,
+      "image": "sha256:2ac0cfcb1d0691596a8a57951166cd509b693b60ea6d76d48d03fc3c1ecd8d71",
+      "target": "x86_64-unknown-linux-musl",
+      "test_opt_level": 1,
+      "container_timeout_seconds": 550,
+      "attach_timeout_seconds": 600,
+      "evidence_kind": "synthetic_fixture",
+      "node_execution": false,
+      "claim_discharge": "pending"
+    },
+    "registered_cases": 48,
+    "driver_invocations": 91,
+    "isolated_passed_tests": 29,
+    "unprivileged_root_test_ignored": 1,
+    "root_control_evidence": "The previous accepted root suite remains historical evidence for unchanged host-control sources. This hosted job does not rerun it.",
+    "counts_sha256": "dfbda691843923fbfe2f92b2ba9818eb30a2c032dfa6fad7e07bed7bc7bf2053",
+    "source_inventory_sha256": "70f51b52b0f0855c229659e2c942f4bc7cc2d996cea296dc82cb69d58967ced0",
+    "models": {
+      "report_sha256": "a27ad188c5cba8af1144b35400570078d4120d98a368a2fdae74b5a005a4c13f",
+      "configurations": 11,
+      "positive_exit": 0,
+      "negative_exits": [
+        12,
+        12,
+        12,
+        12,
+        12,
+        12,
+        12,
+        12,
+        12,
+        12
+      ],
+      "clean_states_generated": 66208,
+      "clean_distinct_states": 43424,
+      "tlc_sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88"
+    },
+    "new_formal_gate_refusal_controls": 47
+  },
+  "bounds": {
+    "candidates": 2,
+    "segments": 2,
+    "iterations_total": 4,
+    "active_children": 1
+  },
+  "retained_limitations": [
+    "The initial OOM failure has logs but no complete source snapshot.",
+    "The marker regression uses an extracted function and controlled exit receipt.",
+    "The PID fixture does not force numeric PID reuse.",
+    "Host language-server checks exclude Linux-only code. Linux compilation and execution are retained separately.",
+    "The owner scan is not an atomic inventory of future processes.",
+    "B44 and inherited containment limits remain unresolved.",
+    "No hosted workflow or live node campaign ran."
+  ],
+  "other_claims": "Unchanged independent discharges.",
+  "governance_claim": {
+    "id": "CLAIM-SOAK-GATE-001",
+    "status": "pending",
+    "required_check_enforcement": "pending-separate-authorization"
+  },
+  "soak": "pending",
+  "live_adapters": "unqualified",
+  "node_execution": false,
+  "policy_activation": false,
+  "post_merge_execution": "blocked",
+  "waiver": null
+}

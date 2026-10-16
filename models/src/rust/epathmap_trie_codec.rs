@@ -296,6 +296,14 @@ pub(crate) type OwnedPendingEpmDecode = PendingEpmDecode<Bytes>;
 
 impl<S: AsRef<[u8]>> PendingEpmDecode<S> {
     pub(crate) fn new(snapshot: S) -> Result<Self, TrieCodecError> {
+        Self::start(snapshot, true)
+    }
+
+    fn new_progressive(snapshot: S) -> Result<Self, TrieCodecError> {
+        Self::start(snapshot, false)
+    }
+
+    fn start(snapshot: S, preflight: bool) -> Result<Self, TrieCodecError> {
         let bytes = snapshot.as_ref();
         let mut cursor = 0usize;
         let magic = take(bytes, &mut cursor, EPM_MAGIC.len(), "EPM1 magic")?;
@@ -328,12 +336,14 @@ impl<S: AsRef<[u8]>> PendingEpmDecode<S> {
         }
 
         let next_value_at = cursor;
-        for _ in 0..value_count {
-            let len = read_len(bytes, &mut cursor, "map value length")?;
-            take(bytes, &mut cursor, len, "map value payload")?;
-        }
-        if cursor != bytes.len() {
-            return Err(TrieCodecError::new("trailing bytes after EPM1 payload"));
+        if preflight {
+            for _ in 0..value_count {
+                let len = read_len(bytes, &mut cursor, "map value length")?;
+                take(bytes, &mut cursor, len, "map value payload")?;
+            }
+            if cursor != bytes.len() {
+                return Err(TrieCodecError::new("trailing bytes after EPM1 payload"));
+            }
         }
 
         Ok(Self {
@@ -440,14 +450,13 @@ fn build_repr(
             }
             let mut map = PathMap::<()>::new();
             visit_act(arena, |path, ordinal| {
-                if !path.is_empty() {
-                    map.create_path(path);
-                }
                 if let Some(ordinal) = ordinal {
                     if ordinal != 0 {
                         return Err(TrieCodecError::new("set ACTree value ordinal is not zero"));
                     }
                     map.insert(path, ());
+                } else if !path.is_empty() {
+                    map.create_path(path);
                 }
                 Ok(())
             })?;
@@ -461,10 +470,10 @@ fn build_repr(
         EPathMapMode::Map => {
             let mut map = PathMap::<Par>::new();
             visit_act(arena, |path, ordinal| {
-                if !path.is_empty() {
-                    map.create_path(path);
-                }
                 let Some(ordinal) = ordinal else {
+                    if !path.is_empty() {
+                        map.create_path(path);
+                    }
                     return Ok(());
                 };
                 let index = usize::try_from(ordinal)
@@ -498,6 +507,22 @@ fn build_repr(
 /// trie, malformed ACT offsets, duplicate/missing value ordinals, and trailing
 /// bytes.
 fn decode_with(
+    bytes: &[u8],
+    decode_value: fn(&[u8]) -> Result<Par, prost::DecodeError>,
+) -> Result<EPathMapRepr<Par>, TrieCodecError> {
+    let mut pending = PendingEpmDecode::new_progressive(bytes)?;
+    while let Some(range) = pending.next_value_range()? {
+        let ordinal = pending.values.len();
+        let value = decode_value(&bytes[range]).map_err(|error| {
+            TrieCodecError::new(format!("map value {ordinal} is not a Par: {error}"))
+        })?;
+        pending.push_value(value)?;
+    }
+    pending.finish(true)
+}
+
+#[cfg(test)]
+fn decode_with_reference(
     bytes: &[u8],
     decode_value: fn(&[u8]) -> Result<Par, prost::DecodeError>,
 ) -> Result<EPathMapRepr<Par>, TrieCodecError> {
@@ -746,7 +771,7 @@ fn parse_act_tree(bytes: &[u8]) -> Result<ParsedAct, TrieCodecError> {
         if semantic_nodes.contains_key(&id) {
             continue;
         }
-        let semantic = semantic_act_node(id, root_id, &nodes)?;
+        let semantic = semantic_act_node(id, &nodes)?;
         semantic_work.extend(semantic.children.iter().map(|(_, child)| *child));
         semantic_nodes.insert(id, semantic);
     }
@@ -925,7 +950,6 @@ fn branch_children(
 /// by PathMap's jumping catamorphism.
 fn semantic_act_node(
     id: usize,
-    root_id: usize,
     nodes: &HashMap<usize, ActNode>,
 ) -> Result<SemanticActNode, TrieCodecError> {
     let node = nodes
@@ -985,15 +1009,6 @@ fn semantic_act_node(
     if semantic.value.is_none() && semantic.children.len() == 1 {
         return Err(TrieCodecError::new(
             "ACTree03 contains an uncompressed value-free unary branch",
-        ));
-    }
-    if id != root_id
-        && semantic.line.is_none()
-        && semantic.value.is_none()
-        && semantic.children.is_empty()
-    {
-        return Err(TrieCodecError::new(
-            "ACTree03 contains an uncompressed empty non-root branch",
         ));
     }
     if semantic.wrapper.is_some() && semantic.children.is_empty() {
@@ -1480,6 +1495,436 @@ mod tests {
     use crate::rhoapi::expr::ExprInstance;
     use crate::rhoapi::{Expr, Par};
 
+    use proptest::prelude::*;
+
+    #[derive(Debug, PartialEq, Eq)]
+    struct DecodeObservation {
+        mode: EPathMapMode,
+        topology: Vec<u8>,
+        values: Vec<(Vec<u8>, Vec<u8>)>,
+    }
+
+    fn decode_outcome(
+        result: Result<EPathMapRepr<Par>, TrieCodecError>,
+    ) -> Result<DecodeObservation, String> {
+        result.map(|repr| {
+            let (topology, values) = match &repr {
+                EPathMapRepr::Empty => (Vec::new(), Vec::new()),
+                EPathMapRepr::Set(map) => (
+                    ArenaCompactTree::from_zipper(map.read_zipper(), |_| 0)
+                        .get_data().to_vec(),
+                    Vec::new(),
+                ),
+                EPathMapRepr::Map(map) => (
+                    ArenaCompactTree::from_zipper(map.read_zipper(), |_| 0)
+                        .get_data().to_vec(),
+                    map.iter().map(|(key, value)| {
+                        (key, protobuf_encoder::encode_to_vec(value))
+                    }).collect(),
+                ),
+            };
+            DecodeObservation { mode: repr.mode(), topology, values }
+        }).map_err(|error| error.to_string())
+    }
+
+    #[derive(Debug, PartialEq, Eq)]
+    struct InspectionObservation {
+        mode: EPathMapMode,
+        keys: Vec<(Option<Range<usize>>, Vec<u8>)>,
+        value_bodies: Vec<Range<usize>>,
+    }
+
+    fn inspection_outcome(
+        bytes: &[u8],
+        result: Result<CanonicalSnapshotInspection, TrieCodecError>,
+    ) -> Result<InspectionObservation, String> {
+        result.map(|inspection| InspectionObservation {
+            mode: inspection.mode,
+            keys: inspection.keys.into_iter().map(|key| match key {
+                CanonicalSnapshotKey::Relative(range) => {
+                    (Some(range.clone()), bytes[range].to_vec())
+                }
+                CanonicalSnapshotKey::Owned(key) => (None, key),
+            }).collect(),
+            value_bodies: inspection.value_bodies,
+        }).map_err(|error| error.to_string())
+    }
+
+    #[derive(Debug, PartialEq, Eq)]
+    struct PendingObservation {
+        mode: EPathMapMode,
+        arena: Range<usize>,
+        next_value_at: usize,
+        remaining_values: usize,
+        expected_values: usize,
+        capacity: usize,
+        values: Vec<Option<Vec<u8>>>,
+    }
+
+    fn pending_observation<S: AsRef<[u8]>>(pending: &PendingEpmDecode<S>) -> PendingObservation {
+        PendingObservation {
+            mode: pending.mode,
+            arena: pending.arena.clone(),
+            next_value_at: pending.next_value_at,
+            remaining_values: pending.remaining_values,
+            expected_values: pending.expected_values,
+            capacity: pending.values.capacity(),
+            values: pending.values.iter().map(|value|
+                value.as_ref().map(protobuf_encoder::encode_to_vec)).collect(),
+        }
+    }
+
+    fn assert_direct_driver_parity(bytes: &[u8]) {
+        let decoders: [fn(&[u8]) -> Result<Par, prost::DecodeError>; 2] = [
+            |bytes| protobuf_decoder::decode_par(bytes),
+            |bytes| protobuf_decoder::decode_par_deferred_epathmap_validation(bytes),
+        ];
+        for decode_value in decoders {
+            assert_eq!(
+                decode_outcome(decode_with(bytes, decode_value)),
+                decode_outcome(decode_with_reference(bytes, decode_value)),
+                "shared EPM1 driver changed decoding for {bytes:?}",
+            );
+        }
+    }
+
+    fn raw_value_snapshot(arena: &[u8], count: usize, bodies: &[u8]) -> Vec<u8> {
+        let mut bytes = EPM_MAGIC.to_vec();
+        bytes.push(EPM_VERSION);
+        bytes.push(EPathMapMode::Map as u8);
+        push_varint(&mut bytes, arena.len() as u64);
+        bytes.extend_from_slice(arena);
+        push_varint(&mut bytes, count as u64);
+        bytes.extend_from_slice(bodies);
+        bytes
+    }
+
+    #[test]
+    fn shared_driver_preserves_body_error_before_later_framing_error() {
+        let topology = arena(16, &[ACT_VALUE_FLAG, 0]);
+        for snapshot in [
+            raw_value_snapshot(&topology, 1, &[1, 0, 0]),
+            raw_value_snapshot(&topology, 2, &[1, 0, 0x80]),
+        ] {
+            let error = decode_outcome(decode(&snapshot))
+                .expect_err("invalid first protobuf body must fail");
+            assert!(error.starts_with("map value 0 is not a Par:"));
+            let eager_error = match PendingEpmDecode::new(snapshot.as_slice()) {
+                Ok(_) => panic!("preflight must reject the later malformed framing"),
+                Err(error) => error.to_string(),
+            };
+            assert_ne!(error, eager_error);
+            assert_direct_driver_parity(&snapshot);
+        }
+    }
+
+    #[test]
+    fn shared_driver_does_not_decode_after_first_body_failure() {
+        fn reject_body(_: &[u8]) -> Result<Par, prost::DecodeError> {
+            Err(prost::DecodeError::new("sentinel body failure"))
+        }
+        let topology = arena(16, &[ACT_VALUE_FLAG, 0]);
+        let snapshot = raw_value_snapshot(&topology, 2, &[0, 0x80]);
+        let actual = decode_outcome(decode_with(&snapshot, reject_body));
+        let expected = decode_outcome(decode_with_reference(&snapshot, reject_body));
+        assert_eq!(actual, expected);
+        assert!(actual.expect_err("body refusal must propagate").contains("sentinel body failure"));
+    }
+
+    #[test]
+    fn shared_driver_preserves_root_value_and_dangling_topology() {
+        let mut map = PathMap::new();
+        map.insert([], 0u64);
+        map.create_path(b"dangling");
+        let topology = ArenaCompactTree::from_zipper(map.read_zipper(), |ordinal| *ordinal);
+        let snapshot = map_snapshot_from_arena(topology.get_data(), &[int(7)]);
+        assert_direct_driver_parity(&snapshot);
+        let decoded = decode_outcome(decode(&snapshot)).expect("root value is valid EPM1");
+        assert_eq!(decoded.values, vec![(Vec::new(), protobuf_encoder::encode_to_vec(&int(7)))]);
+        assert_eq!(decoded.topology, topology.get_data());
+    }
+
+    fn assert_endpoint_roundtrip(endpoints: &std::collections::BTreeMap<Vec<u8>, bool>) {
+        let mut original = PathMap::new();
+        let mut values = Vec::new();
+        for (path, has_value) in endpoints {
+            if *has_value {
+                original.insert(path, values.len() as u64);
+                values.push(int(values.len() as i64));
+            } else if !path.is_empty() {
+                original.create_path(path);
+            }
+        }
+        for mode in [EPathMapMode::Map, EPathMapMode::Set] {
+            let topology = ArenaCompactTree::from_zipper(original.read_zipper(), |ordinal| {
+                if mode == EPathMapMode::Map { *ordinal } else { 0 }
+            });
+            let mut visits = Vec::new();
+            visit_act(topology.get_data(), |path, ordinal| {
+                visits.push((path.to_vec(), ordinal));
+                Ok(())
+            }).unwrap();
+            for (index, (path, ordinal)) in visits.iter().enumerate() {
+                if ordinal.is_none() {
+                    assert!(visits[index + 1..].iter().all(|(later, _)|
+                        later.len() <= path.len() || !later.starts_with(path)));
+                }
+            }
+            let bodies = if mode == EPathMapMode::Map { &values[..] } else { &[] };
+            let mut snapshot = map_snapshot_from_arena(topology.get_data(), bodies);
+            snapshot[5] = mode as u8;
+            let decoded = decode(&snapshot).expect("endpoint reconstruction must succeed");
+            let rebuilt = match &decoded {
+                EPathMapRepr::Map(map) => {
+                    assert_eq!(map.val_count(), values.len());
+                    for (path, ordinal) in original.iter() {
+                        assert_eq!(map.get(path), Some(&values[*ordinal as usize]));
+                    }
+                    ArenaCompactTree::from_zipper(map.read_zipper(), |value| {
+                        let Some(ExprInstance::GInt(ordinal)) = value.exprs[0].expr_instance else {
+                            panic!("fixture value must retain its integer ordinal");
+                        };
+                        ordinal as u64
+                    }).get_data().to_vec()
+                }
+                EPathMapRepr::Set(map) => {
+                    assert_eq!(map.val_count(), values.len());
+                    for (path, _) in original.iter() {
+                        assert_eq!(map.get(path), Some(&()));
+                    }
+                    ArenaCompactTree::from_zipper(map.read_zipper(), |_| 0).get_data().to_vec()
+                }
+                EPathMapRepr::Empty => panic!("fixture must retain its typed topology"),
+            };
+            assert_eq!(rebuilt, topology.get_data());
+        }
+    }
+
+    #[test]
+    fn reconstruction_preserves_dense_value_prefixes() {
+        let mut endpoints = std::collections::BTreeMap::from([(Vec::new(), true)]);
+        for byte in 0..=u8::MAX {
+            endpoints.insert(vec![byte], true);
+            endpoints.insert(vec![byte, 0], true);
+            endpoints.insert(vec![byte, 255], true);
+        }
+        assert_endpoint_roundtrip(&endpoints);
+    }
+
+    #[test]
+    fn reconstruction_preserves_one_byte_dangling_children() {
+        for endpoints in [
+            vec![(Vec::new(), true), (vec![127], false)],
+            vec![(vec![0], false), (vec![255], false)],
+            vec![(vec![1, 2, 3], true), (vec![1, 2, 3, 127], false)],
+        ] {
+            assert_endpoint_roundtrip(&endpoints.into_iter().collect());
+        }
+    }
+
+    #[test]
+    fn reconstruction_preserves_dense_value_prefixes_and_dangling_leaves() {
+        let mut endpoints = std::collections::BTreeMap::new();
+        endpoints.insert(Vec::new(), true);
+        for byte in 0..=u8::MAX {
+            endpoints.insert(vec![byte], true);
+            endpoints.insert(vec![byte, 0], true);
+            endpoints.insert(vec![byte, 127], false);
+            endpoints.insert(vec![byte, 255], true);
+        }
+        endpoints.insert(vec![255; 4096], true);
+        let mut dangling = vec![255; 4096];
+        dangling.push(0);
+        endpoints.insert(dangling, false);
+        assert_endpoint_roundtrip(&endpoints);
+    }
+
+    #[test]
+    fn pending_framing_keeps_eager_and_progressive_error_order() {
+        let topology = arena(16, &[ACT_VALUE_FLAG, 0]);
+        let snapshot = raw_value_snapshot(&topology, 2, &[1, 0, 0x80]);
+        let eager = PendingEpmDecode::new(snapshot.as_slice())
+            .err().expect("eager framing rejects the second length");
+        assert_eq!(eager.to_string(), "truncated map value length");
+        let mut pending = PendingEpmDecode::new_progressive(snapshot.as_slice())
+            .expect("progressive framing must not read the second length yet");
+        let body = pending.next_value_range().unwrap().unwrap();
+        assert_eq!(&snapshot[body.clone()], &[0]);
+        assert!(protobuf_decoder::decode_par(&snapshot[body]).is_err());
+        assert_eq!(pending.remaining_values, 1);
+        assert!(pending.values.is_empty());
+    }
+
+    #[test]
+    fn pending_range_errors_preserve_partial_cursor_advance_and_remaining_count() {
+        let topology = arena(16, &[ACT_VALUE_FLAG, 0]);
+        for (body, advanced, error_text) in [
+            (vec![0x80], 1, "truncated map value length"),
+            (vec![0x80, 0], 2, "non-canonical map value length"),
+            (vec![2, 0], 1, "truncated map value payload"),
+            (vec![0xff; 10], 10, "overflowing map value length"),
+        ] {
+            let bytes = raw_value_snapshot(&topology, 1, &body);
+            let mut pending = PendingEpmDecode::new_progressive(bytes.as_slice())
+                .unwrap();
+            let start = pending.next_value_at;
+            let error = pending.next_value_range().unwrap_err();
+            assert_eq!(error.to_string(), error_text);
+            assert_eq!(pending.next_value_at, start + advanced);
+            assert_eq!(pending.remaining_values, 1);
+            assert!(pending.values.is_empty());
+        }
+    }
+
+    #[test]
+    fn pending_yields_and_pushes_keep_the_original_independent_ordering() {
+        let bytes = map_snapshot_from_entries(&std::collections::BTreeMap::from([
+            (Vec::new(), 3), (b"a".to_vec(), 5), (b"b".to_vec(), 8),
+        ]));
+        for schedule in [
+            [true, true, true, false, false, false],
+            [false, false, true, true, false, true],
+            [false, true, false, true, false, true],
+        ] {
+            let mut actual = PendingEpmDecode::new_progressive(bytes.as_slice())
+                .unwrap();
+            let initial_pointer = actual.values.as_ptr();
+            let initial_capacity = actual.values.capacity();
+            assert_eq!(initial_capacity, 3);
+            let mut pushes = 0;
+            let mut yields = 0;
+            for push in schedule {
+                if push {
+                    let value = [3, 5, 8][pushes];
+                    actual.push_value(int(value)).unwrap();
+                    pushes += 1;
+                } else {
+                    assert!(actual.next_value_range().unwrap().is_some());
+                    yields += 1;
+                }
+                assert_eq!(actual.values.len(), pushes);
+                assert_eq!(actual.remaining_values + yields, actual.expected_values);
+                assert_eq!(actual.values.capacity(), initial_capacity);
+                assert_eq!(actual.values.as_ptr(), initial_pointer);
+            }
+            assert!(actual.next_value_range().unwrap().is_none());
+            let error = actual.push_value(int(13)).unwrap_err();
+            assert_eq!(error.to_string(), "more map values were decoded than the EPM1 value count");
+            assert_eq!(actual.values.capacity(), initial_capacity);
+            assert_eq!(actual.values.as_ptr(), initial_pointer);
+        }
+    }
+
+    #[test]
+    fn pending_shared_body_ranges_are_zero_copy_after_unmetered_decode() {
+        let topology = arena(16, &[ACT_VALUE_FLAG, 0]);
+        let bytes = raw_value_snapshot(&topology, 3, &[1, 0x2a, 0, 2, 0x08, 0x07]);
+        let mut reference = PendingEpmDecode::new_progressive(bytes.as_slice()).unwrap();
+        let snapshot = Bytes::from(bytes.clone());
+        let storage = snapshot.as_ptr();
+        let mut pending = PendingEpmDecode::new_progressive(snapshot).unwrap();
+        for _ in 0..3 {
+            let expected = reference.next_value_range().unwrap().unwrap();
+            let body = pending.next_value_bytes().unwrap().unwrap();
+            assert_eq!(body.as_ref(), &bytes[expected.clone()]);
+            if !expected.is_empty() {
+                assert_eq!(body.as_ptr(), storage.wrapping_add(expected.start));
+            }
+            assert_eq!(pending_observation(&pending), pending_observation(&reference));
+        }
+        assert!(pending.next_value_bytes().unwrap().is_none());
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(128))]
+
+        #[test]
+        fn reconstruction_preserves_generated_endpoint_topology(
+            mut endpoints in proptest::collection::btree_map(
+                proptest::collection::vec(any::<u8>(), 0..24), any::<bool>(), 1..32,
+            ),
+        ) {
+            let value_prefixes: Vec<_> = endpoints.keys().zip(endpoints.keys().skip(1))
+                .filter(|(path, next)| next.starts_with(path))
+                .map(|(path, _)| path.clone()).collect();
+            for path in value_prefixes {
+                endpoints.insert(path, true);
+            }
+            if endpoints.len() == 1 && endpoints.get(&Vec::new()) == Some(&false) {
+                prop_assert!(matches!(decode(&encode(&EPathMapRepr::Empty)),
+                    Ok(EPathMapRepr::Empty)));
+            } else {
+                assert_endpoint_roundtrip(&endpoints);
+            }
+        }
+
+        #[test]
+        fn shared_driver_preserves_generated_maps_and_mutations(
+            entries in proptest::collection::btree_map(
+                proptest::collection::vec(any::<u8>(), 0..24), any::<i64>(), 1..12,
+            ),
+            mutation_index in any::<usize>(),
+            mutation_byte in any::<u8>(),
+        ) {
+            let mut map = PathMap::new();
+            let mut values = Vec::new();
+            for (ordinal, (key, value)) in entries.into_iter().enumerate() {
+                map.insert(key, ordinal as u64);
+                values.push(int(value));
+            }
+            let topology = ArenaCompactTree::from_zipper(map.read_zipper(), |ordinal| *ordinal);
+            let bytes = map_snapshot_from_arena(topology.get_data(), &values);
+            prop_assert!(decode(&bytes).is_ok());
+            assert_direct_driver_parity(&bytes);
+            let mut mutation = bytes.clone();
+            mutation[mutation_index % bytes.len()] ^= mutation_byte;
+            assert_direct_driver_parity(&mutation);
+            assert_direct_driver_parity(&bytes[..mutation_index % bytes.len()]);
+            let mut trailing = bytes;
+            trailing.push(mutation_byte);
+            assert_direct_driver_parity(&trailing);
+        }
+
+        #[test]
+        fn shared_driver_preserves_arbitrary_input_errors(
+            bytes in proptest::collection::vec(any::<u8>(), 0..256),
+        ) {
+            assert_direct_driver_parity(&bytes);
+        }
+
+        #[test]
+        fn shared_driver_retains_exact_body_cursor_and_ordinal(
+            values in proptest::collection::vec(any::<i64>(), 0..32),
+        ) {
+            let bodies: Vec<_> = values.iter().map(|value| int(*value)).collect();
+            let snapshot = map_snapshot_from_arena(&[], &bodies);
+            let mut pending = PendingEpmDecode::new_progressive(snapshot.as_slice())
+                .expect("generated body framing is valid");
+            let mut cursor = pending.next_value_at;
+            let expected = values.len();
+            for (ordinal, value) in values.into_iter().enumerate() {
+                prop_assert_eq!(pending.values.len(), ordinal);
+                prop_assert_eq!(pending.remaining_values + pending.values.len(), expected);
+                let len = read_len(&snapshot, &mut cursor, "test body length")
+                    .expect("generated length is valid");
+                let range = pending.next_value_range().expect("body range is valid")
+                    .expect("one body remains");
+                prop_assert_eq!(range.clone(), cursor..cursor + len);
+                let decoded = protobuf_decoder::decode_par(&snapshot[range])
+                    .expect("generated body is valid");
+                prop_assert_eq!(protobuf_encoder::encode_to_vec(&decoded),
+                    protobuf_encoder::encode_to_vec(&int(value)));
+                pending.push_value(decoded).expect("one ordinal slot remains");
+                cursor += len;
+            }
+            prop_assert!(pending.next_value_range().expect("completed framing is valid").is_none());
+            prop_assert_eq!(pending.values.len(), expected);
+            prop_assert_eq!(pending.next_value_at, snapshot.len());
+        }
+
+    }
+
+
     fn int(value: i64) -> Par {
         Par::default().with_exprs(vec![Expr {
             expr_instance: Some(ExprInstance::GInt(value)),
@@ -1507,6 +1952,19 @@ mod tests {
             protobuf_encoder::encode_length_delimited_body_into(value, &mut snapshot);
         }
         snapshot
+    }
+
+    fn map_snapshot_from_entries(
+        entries: &std::collections::BTreeMap<Vec<u8>, i64>,
+    ) -> Vec<u8> {
+        let mut map = PathMap::new();
+        let mut values = Vec::new();
+        for (ordinal, (key, value)) in entries.iter().enumerate() {
+            map.insert(key, ordinal as u64);
+            values.push(int(*value));
+        }
+        let topology = ArenaCompactTree::from_zipper(map.read_zipper(), |ordinal| *ordinal);
+        map_snapshot_from_arena(topology.get_data(), &values)
     }
 
     fn arena(root: usize, body: &[u8]) -> Vec<u8> {
@@ -1715,6 +2173,16 @@ mod tests {
     }
 
     #[test]
+    fn direct_act_replay_rejects_empty_line_suffix_and_childless_line_wrapper() {
+        let empty_suffix = arena(17, &[0, ACT_LINE_FLAG, 1]);
+        let error = visit_act(&empty_suffix, |_, _| Ok(())).unwrap_err();
+        assert_eq!(error.to_string(), "ACTree03 line suffix is empty");
+        let empty_wrapper = arena(19, &[1, b'x', 0, ACT_LINE_FLAG | 1, 1, 3]);
+        let error = visit_act(&empty_wrapper, |_, _| Ok(())).unwrap_err();
+        assert_eq!(error.to_string(), "ACTree03 line branch wrapper has no children");
+    }
+
+    #[test]
     fn direct_act_replay_requires_pathmap_line_reuse_exactly() {
         // Both keys end in "x". The canonical writer stores the line data once
         // at byte 16 and points both leaf nodes at it.
@@ -1737,6 +2205,8 @@ mod tests {
             decode(&snapshot).is_ok(),
             "the canonical reused line was rejected"
         );
+        assert_eq!(inspection_outcome(&snapshot, inspect_canonical_snapshot(&snapshot))
+            .unwrap().keys, vec![(None, b"ax".to_vec()), (None, b"bx".to_vec())]);
 
         // The same semantic trie with a duplicate second line-data object.
         // Every offset remains well-formed, but PathMap's deterministic line
@@ -1757,10 +2227,12 @@ mod tests {
             b'a',
             b'b',
         ]);
+        let duplicate_snapshot = map_snapshot_from_arena(&duplicate, &[int(1), int(2)]);
         assert!(
-            decode(&map_snapshot_from_arena(&duplicate, &[int(1), int(2)])).is_err(),
+            decode(&duplicate_snapshot).is_err(),
             "duplicate line data bypassed the canonical PathMap reuse rule"
         );
+        assert!(inspect_canonical_snapshot(&duplicate_snapshot).is_err());
     }
 
     #[test]

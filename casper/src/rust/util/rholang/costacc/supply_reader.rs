@@ -13,8 +13,9 @@ use rholang::rust::interpreter::compiler::compiler::Compiler;
 use rholang::rust::interpreter::host_work::HostWorkBudget;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::hashing::stable_hash_provider;
+use rspace_plus_plus::rspace::hashing::stable_hash_provider::EventCodecEpoch;
 use rspace_plus_plus::rspace::history::native_reader::{
-    decode_record, NativeLeafKind, NativeReadCharge, NativeReadError, NativeReadMeter,
+    decode_datum_record_metered, NativeLeafKind, NativeReadCharge, NativeReadError, NativeReadMeter,
 };
 use rspace_plus_plus::rspace::internal::Datum;
 
@@ -79,6 +80,7 @@ fn native_read_error(error: NativeReadError<CasperError>) -> CasperError {
 pub struct RuntimeManagerSupplyReader<'a> {
     pub runtime_manager: &'a RuntimeManager,
     pub pre_state_hash: StateHash,
+    pub event_codec_epoch: EventCodecEpoch,
 }
 
 impl RuntimeManagerSupplyReader<'_> {
@@ -124,8 +126,12 @@ impl RuntimeManagerSupplyReader<'_> {
                     })?;
                     for raw in records.iter() {
                         data.push(
-                            decode_record(raw, &SupplyReadMeter(budget))
-                                .map_err(native_read_error)?,
+                            decode_datum_record_metered(
+                                raw,
+                                self.event_codec_epoch,
+                                &SupplyReadMeter(budget),
+                            )
+                            .map_err(native_read_error)?,
                         );
                     }
                     Ok(data)
@@ -261,7 +267,10 @@ mod tests {
             pars: Vec::new(),
             random_state: vec![9],
             cost_authority: None,
-            cost_stack: Some(CostStack { cells: vec![head] }),
+            cost_stack: Some(CostStack {
+                cells: vec![head],
+                parallel_tail: Vec::new(),
+            }),
         };
         runtime
             .reducer
@@ -269,11 +278,17 @@ mod tests {
             .produce(channel.clone(), datum, false)
             .await
             .unwrap();
-        let expected = runtime.reducer.space.get_data(&channel).await;
+        let expected = runtime
+            .reducer
+            .space
+            .get_data(&channel)
+            .await
+            .expect("read the live supply data");
         let root = runtime.create_checkpoint().await.root.to_bytes_prost();
         let reader = RuntimeManagerSupplyReader {
             runtime_manager: &manager,
             pre_state_hash: root.clone(),
+            event_codec_epoch: EventCodecEpoch::Legacy,
         };
         let ample = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(10_000_000)));
         assert_eq!(reader.data_at_root(&channel, &ample).unwrap(), expected);
@@ -285,6 +300,7 @@ mod tests {
         let wrong = RuntimeManagerSupplyReader {
             runtime_manager: &manager,
             pre_state_hash: other.into(),
+            event_codec_epoch: EventCodecEpoch::Legacy,
         };
         assert!(wrong.data_at_root(&channel, &ample).is_err());
     }

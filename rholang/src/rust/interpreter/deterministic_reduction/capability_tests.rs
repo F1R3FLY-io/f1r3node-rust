@@ -20,6 +20,10 @@ struct RejectedJoinReads {
 
 #[async_trait]
 impl ExecutionBackend for RejectedJoinReads {
+    fn codec_epoch(&self) -> rspace_plus_plus::rspace::hashing::stable_hash_provider::EventCodecEpoch {
+        self.inner.codec_epoch()
+    }
+
     fn step_gate(&self) -> Option<Arc<StepGate>> { self.inner.step_gate() }
 
     fn observe_reduction(&self, redex: &Par, kind: ReductionKind) {
@@ -88,6 +92,8 @@ async fn rejected_frontier(rejections: &[bool]) {
     .unwrap();
     let raw: RhoISpace = Arc::new(Box::new(play.clone()));
     let channel = |index: usize| models::rust::utils::new_gint_par(index as i64, Vec::new(), false);
+    let coordinator = ReductionCoordinator::default();
+    let budget = RuntimeBudget::new(Cost::unsafe_max());
     let space = scheduled_execution(ExecutionSpace::new(RejectedJoinReads {
         inner: raw.into(),
         reject: rejections
@@ -96,14 +102,13 @@ async fn rejected_frontier(rejections: &[bool]) {
             .filter(|(_, reject)| **reject)
             .map(|(index, _)| channel(index))
             .collect(),
-    }));
-    let coordinator = ReductionCoordinator::default();
+    }), coordinator.clone(), budget.clone());
     let core = ReducerCore::new(
         space,
         Arc::new(HashMap::new()),
         Arc::new(RwLock::new(HashMap::new())),
         Arc::new(HashMap::new()),
-        RuntimeBudget::new(Cost::unsafe_max()),
+        budget,
         coordinator.clone(),
     );
     let source = (0..rejections.len())
@@ -129,7 +134,10 @@ async fn rejected_frontier(rejections: &[bool]) {
     }
     for (index, rejected) in rejections.iter().enumerate() {
         assert_eq!(
-            play.get_data(&channel(index)).await.len(),
+            play.get_data(&channel(index))
+                .await
+                .expect("frontier query")
+                .len(),
             usize::from(!rejected)
         );
     }

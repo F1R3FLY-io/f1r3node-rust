@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
+use shared::rust::closed_decode::ClosedDecode;
 
 use crate::rspace::errors::RSpaceError;
 use crate::rspace::hashing::blake2b256_hash::Blake2b256Hash;
@@ -15,7 +16,9 @@ use crate::rspace::hashing::native_source::{self, SourceMeter};
 use crate::rspace::hashing::stable_hash_provider::{
     EventCodecEpoch, StableHashSerialize, event_leg_bytes_for_epoch,
 };
-use crate::rspace::history::native_reader::{NativeReadError, NativeReadMeter, decode_record};
+use crate::rspace::history::native_reader::{
+    NativeReadError, NativeReadMeter, decode_history_record,
+};
 use crate::rspace::internal::{Datum, WaitingContinuation};
 use crate::rspace::serializers::cold_store_decode::{
     ColdStoreDecode, ColdStoreDecodeError, cold_decode_vec_prefix,
@@ -99,6 +102,7 @@ pub(crate) struct WaitingContinuationOracleDe<P, K> {
     pub patterns: Vec<P>,
     pub continuation: K,
     pub persist: bool,
+    #[serde(deserialize_with = "crate::rspace::history::native_reader::tree_set")]
     pub peeks: BTreeSet<i32>,
     pub source: Consume,
 }
@@ -265,7 +269,8 @@ pub fn decode_datum_for_epoch<A: Clone + ColdStoreDecode>(
 ) -> Result<Datum<A>, ColdStoreDecodeError> {
     let (a, consumed) = match epoch {
         EventCodecEpoch::Legacy => A::cold_decode_legacy_prefix(bytes)?,
-        EventCodecEpoch::CostV1 => A::cold_decode_prefix(bytes)?,
+        EventCodecEpoch::CostV1 => A::cold_decode_cost_v1_prefix(bytes)?,
+        EventCodecEpoch::CostV2 => A::cold_decode_prefix(bytes)?,
     };
     let (persist, source): (bool, Produce) = legacy_tail(&bytes[consumed..])?;
     Ok(Datum {
@@ -415,7 +420,8 @@ where
     let (patterns, mut consumed) = cold_decode_vec_prefix_for_epoch::<P>(epoch, bytes)?;
     let (continuation, used) = match epoch {
         EventCodecEpoch::Legacy => K::cold_decode_legacy_prefix(&bytes[consumed..])?,
-        EventCodecEpoch::CostV1 => K::cold_decode_prefix(&bytes[consumed..])?,
+        EventCodecEpoch::CostV1 => K::cold_decode_cost_v1_prefix(&bytes[consumed..])?,
+        EventCodecEpoch::CostV2 => K::cold_decode_prefix(&bytes[consumed..])?,
     };
     consumed += used;
     let (persist, peeks, source): (bool, BTreeSet<i32>, Consume) = legacy_tail(&bytes[consumed..])?;
@@ -433,7 +439,7 @@ where
 /// value-shaped twins preserve the visitor's field layout and `size_of` charges
 /// while materializing the target's Arc-backed hot-store records afterward.
 pub(crate) trait NativeRecordDecode: Sized {
-    type Wire: DeserializeOwned;
+    type Wire: DeserializeOwned + ClosedDecode;
 
     fn decode_native<M: NativeReadMeter + ?Sized>(
         bytes: &[u8],
@@ -441,19 +447,32 @@ pub(crate) trait NativeRecordDecode: Sized {
     ) -> Result<Self, NativeReadError<M::Error>>;
 }
 
-impl<A: Clone + DeserializeOwned> NativeRecordDecode for Datum<A> {
+impl<A: Clone + DeserializeOwned + ClosedDecode> NativeRecordDecode for Datum<A> {
     type Wire = DatumOracleDe<A>;
 
     fn decode_native<M: NativeReadMeter + ?Sized>(
         bytes: &[u8],
         meter: &M,
     ) -> Result<Self, NativeReadError<M::Error>> {
-        decode_record::<DatumOracleDe<A>, M>(bytes, meter).map(Into::into)
+        let decoded = decode_history_record::<DatumOracleDe<A>, M>(bytes, meter)?;
+        let backing = crate::rspace::native_backing::arc_allocation_bytes::<A>().ok_or(
+            NativeReadError::Invalid(
+                crate::rspace::history::native_reader::NativeReadFault::Overflow,
+            ),
+        )?;
+        meter
+            .reserve(crate::rspace::history::native_reader::NativeReadCharge {
+                operations: 1,
+                scanned_bytes: 0,
+                backing_bytes: backing,
+            })
+            .map_err(NativeReadError::Host)?;
+        Ok(decoded.into())
     }
 }
 
-impl<P: Clone + DeserializeOwned, K: Clone + DeserializeOwned> NativeRecordDecode
-    for WaitingContinuation<P, K>
+impl<P: Clone + DeserializeOwned + ClosedDecode, K: Clone + DeserializeOwned + ClosedDecode>
+    NativeRecordDecode for WaitingContinuation<P, K>
 {
     type Wire = WaitingContinuationOracleDe<P, K>;
 
@@ -461,18 +480,33 @@ impl<P: Clone + DeserializeOwned, K: Clone + DeserializeOwned> NativeRecordDecod
         bytes: &[u8],
         meter: &M,
     ) -> Result<Self, NativeReadError<M::Error>> {
-        decode_record::<WaitingContinuationOracleDe<P, K>, M>(bytes, meter).map(Into::into)
+        let decoded = decode_history_record::<WaitingContinuationOracleDe<P, K>, M>(bytes, meter)?;
+        let backing = crate::rspace::native_backing::arc_allocation_bytes::<Vec<P>>()
+            .and_then(|bytes| {
+                bytes.checked_add(crate::rspace::native_backing::arc_allocation_bytes::<K>()?)
+            })
+            .ok_or(NativeReadError::Invalid(
+                crate::rspace::history::native_reader::NativeReadFault::Overflow,
+            ))?;
+        meter
+            .reserve(crate::rspace::history::native_reader::NativeReadCharge {
+                operations: 2,
+                scanned_bytes: 0,
+                backing_bytes: backing,
+            })
+            .map_err(NativeReadError::Host)?;
+        Ok(decoded.into())
     }
 }
 
-impl<C: DeserializeOwned> NativeRecordDecode for Vec<C> {
+impl<C: DeserializeOwned + ClosedDecode> NativeRecordDecode for Vec<C> {
     type Wire = Vec<C>;
 
     fn decode_native<M: NativeReadMeter + ?Sized>(
         bytes: &[u8],
         meter: &M,
     ) -> Result<Self, NativeReadError<M::Error>> {
-        decode_record(bytes, meter)
+        decode_history_record(bytes, meter)
     }
 }
 
@@ -603,6 +637,7 @@ mod tests {
     use super::*;
     use crate::rspace::hashing::blake2b256_hash::Blake2b256Hash;
     use crate::rspace::history::native_reader::{NativeReadCharge, NativeReadFault};
+    use crate::rspace::native_backing::arc_allocation_bytes;
 
     // These are the committed source branch's value-shaped record layouts.
     // Their derived visitor is the independent native-meter oracle.
@@ -613,14 +648,19 @@ mod tests {
         source: Produce,
     }
 
+    unsafe impl<A: ClosedDecode> ClosedDecode for LegacyDatum<A> {}
+
     #[derive(Serialize, Deserialize)]
     struct LegacyContinuation<P, K> {
         patterns: Vec<P>,
         continuation: K,
         persist: bool,
+        #[serde(deserialize_with = "crate::rspace::history::native_reader::tree_set")]
         peeks: BTreeSet<i32>,
         source: Consume,
     }
+
+    unsafe impl<P: ClosedDecode, K: ClosedDecode> ClosedDecode for LegacyContinuation<P, K> {}
 
     struct TraceMeter {
         charges: RefCell<Vec<NativeReadCharge>>,
@@ -709,18 +749,26 @@ mod tests {
 
         let source = TraceMeter::new(None);
         let source_datum: LegacyDatum<String> =
-            decode_record(&datum_bytes, &source).expect("source datum");
+            decode_history_record(&datum_bytes, &source).expect("source datum");
         let integrated = TraceMeter::new(None);
         let integrated_datum =
             Datum::<String>::decode_native(&datum_bytes, &integrated).expect("integrated datum");
         assert_eq!(integrated_datum.a.as_ref(), &source_datum.a);
         assert_eq!(integrated_datum.persist, source_datum.persist);
         assert_eq!(integrated_datum.source, source_datum.source);
-        assert_eq!(*integrated.charges.borrow(), *source.charges.borrow());
+        let integrated_charges = integrated.charges.borrow();
+        let source_charges = source.charges.borrow();
+        assert_eq!(&integrated_charges[..source_charges.len()], source_charges.as_slice());
+        assert_eq!(integrated_charges[source_charges.len()], NativeReadCharge {
+            operations: 1,
+            scanned_bytes: 0,
+            backing_bytes: arc_allocation_bytes::<String>().unwrap(),
+        });
+        assert_eq!(integrated_charges.len(), source_charges.len() + 1);
 
         let source_cont = TraceMeter::new(None);
         let source_wire: LegacyContinuation<String, String> =
-            decode_record(&continuation_bytes, &source_cont).expect("source continuation");
+            decode_history_record(&continuation_bytes, &source_cont).expect("source continuation");
         let integrated_cont = TraceMeter::new(None);
         let integrated_wire = WaitingContinuation::<String, String>::decode_native(
             &continuation_bytes,
@@ -732,13 +780,22 @@ mod tests {
         assert_eq!(integrated_wire.persist, source_wire.persist);
         assert_eq!(integrated_wire.peeks, source_wire.peeks);
         assert_eq!(integrated_wire.source, source_wire.source);
-        assert_eq!(*integrated_cont.charges.borrow(), *source_cont.charges.borrow());
+        let integrated_charges = integrated_cont.charges.borrow();
+        let source_charges = source_cont.charges.borrow();
+        assert_eq!(&integrated_charges[..source_charges.len()], source_charges.as_slice());
+        assert_eq!(integrated_charges[source_charges.len()], NativeReadCharge {
+            operations: 2,
+            scanned_bytes: 0,
+            backing_bytes: arc_allocation_bytes::<Vec<String>>().unwrap() +
+                arc_allocation_bytes::<String>().unwrap(),
+        });
+        assert_eq!(integrated_charges.len(), source_charges.len() + 1);
 
         let limit = source.charges.borrow().len() / 2;
         let source_limited = TraceMeter::new(Some(limit));
         let integrated_limited = TraceMeter::new(Some(limit));
         assert!(matches!(
-            decode_record::<LegacyDatum<String>, _>(&datum_bytes, &source_limited),
+            decode_history_record::<LegacyDatum<String>, _>(&datum_bytes, &source_limited),
             Err(NativeReadError::Host("budget"))
         ));
         assert!(matches!(
@@ -784,14 +841,16 @@ mod tests {
     #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
     enum Nested {
         End,
-        Next(Box<Nested>),
+        Next(Vec<Nested>),
     }
+
+    unsafe impl ClosedDecode for Nested {}
 
     #[test]
     fn native_record_adapter_preserves_source_depth_rejection() {
         let mut shallow = Nested::End;
         for _ in 0..8 {
-            shallow = Nested::Next(Box::new(shallow));
+            shallow = Nested::Next(vec![shallow]);
         }
         let shallow_datum = Datum {
             a: Arc::new(shallow),
@@ -801,16 +860,19 @@ mod tests {
         let shallow_bytes = encode_datum(&shallow_datum);
         let shallow_source = TraceMeter::new(None);
         let source_value: LegacyDatum<Nested> =
-            decode_record(&shallow_bytes, &shallow_source).expect("shallow source datum");
+            decode_history_record(&shallow_bytes, &shallow_source).expect("shallow source datum");
         let shallow_integrated = TraceMeter::new(None);
         let integrated_value = Datum::<Nested>::decode_native(&shallow_bytes, &shallow_integrated)
             .expect("shallow integrated datum");
         assert_eq!(integrated_value.a.as_ref(), &source_value.a);
-        assert_eq!(*shallow_integrated.charges.borrow(), *shallow_source.charges.borrow());
+        let integrated_charges = shallow_integrated.charges.borrow();
+        let source_charges = shallow_source.charges.borrow();
+        assert_eq!(&integrated_charges[..source_charges.len()], source_charges.as_slice());
+        assert_eq!(integrated_charges.len(), source_charges.len() + 1);
 
         let mut nested = Nested::End;
         for _ in 0..256 {
-            nested = Nested::Next(Box::new(nested));
+            nested = Nested::Next(vec![nested]);
         }
         let datum = Datum {
             a: Arc::new(nested),
@@ -821,7 +883,7 @@ mod tests {
         let source = TraceMeter::new(None);
         let integrated = TraceMeter::new(None);
         assert!(matches!(
-            decode_record::<LegacyDatum<Nested>, _>(&bytes, &source),
+            decode_history_record::<LegacyDatum<Nested>, _>(&bytes, &source),
             Err(NativeReadError::Invalid(NativeReadFault::Depth))
         ));
         assert!(matches!(

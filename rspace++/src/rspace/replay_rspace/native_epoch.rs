@@ -1,5 +1,6 @@
 use super::RSpaceError;
 use crate::rspace::hashing::native_source::SourceMeter;
+use crate::rspace::hashing::stable_hash_provider::EventCodecEpoch;
 use crate::rspace::internal::ConsumeCandidate;
 use crate::rspace::rspace_interface::RSpaceOperationSource;
 use crate::rspace::trace::event::{COMM, Consume, Produce};
@@ -126,6 +127,8 @@ pub trait NativeReplayBoundary: Send {
 
 pub trait NativeReplayEpoch: Send + Sync {
     type Boundary: NativeReplayBoundary;
+
+    fn codec_epoch(&self) -> EventCodecEpoch { EventCodecEpoch::Legacy }
 
     fn begin_boundary(&self) -> Result<Self::Boundary, RSpaceError>;
     fn reserve_work(&self, operations: usize, bytes: usize) -> Result<(), RSpaceError>;

@@ -49,6 +49,11 @@ fn inspect_metered(
     result.map_err(|_| RSpaceError::HostWorkRejected)
 }
 
+// Kept legacy by D-O1 (DR-94) for the channel inspections (the produce
+// channel and the consume channels). The RSpace source preparation reads the
+// same channels again for the scheduler footprint and the cold-read keys
+// without reservations of its own, and the legacy per-level charge of these
+// inspections is part of what pays those reads until Stage B (D-E3).
 fn inspect_value<T: CloneBacking>(value: &T, meter: &dyn SourceMeter) -> Result<(), RSpaceError> {
     inspect_metered(meter, |backing| clone_backing::inspect(value, backing))
 }
@@ -59,6 +64,30 @@ fn inspect_slice<T: CloneBacking>(
 ) -> Result<(), RSpaceError> {
     inspect_metered(meter, |backing| {
         clone_backing::inspect_slice(values, backing)
+    })
+}
+
+// D-O1 (DR-94): the block-mode inspections of the data, the patterns, the
+// continuation and the COMM data. Each caller's inspection prepays exactly
+// one linear traversal: the prost length computation of the byte charge, or
+// a field read and that length (DR-76). The other reads of these values have
+// their own reservations, and their releases are paid by the legacy source
+// preparation.
+fn inspect_value_blocks<T: CloneBacking>(
+    value: &T,
+    meter: &dyn SourceMeter,
+) -> Result<(), RSpaceError> {
+    inspect_metered(meter, |backing| {
+        clone_backing::inspect_blocks(value, backing)
+    })
+}
+
+fn inspect_slice_blocks<T: CloneBacking>(
+    values: &[T],
+    meter: &dyn SourceMeter,
+) -> Result<(), RSpaceError> {
+    inspect_metered(meter, |backing| {
+        clone_backing::inspect_blocks_slice(values, backing)
     })
 }
 
@@ -166,7 +195,9 @@ pub(crate) fn produce_introduction_metered_with_identity<'a>(
     meter: &dyn SourceMeter,
 ) -> Result<MeasuredRSpaceObservation<'a>, RSpaceError> {
     inspect_value(channel, meter)?;
-    inspect_value(data, meter)?;
+    // Changed by D-O1 (DR-94): block accounting charges inline bytes once per enclosing block.
+    // inspect_value(data, meter)?;
+    inspect_value_blocks(data, meter)?;
     Ok(MeasuredRSpaceObservation {
         event_id: identity,
         kind: AuthorityByteEventKind::ProduceIntroduction,
@@ -220,8 +251,12 @@ pub(crate) fn consume_introduction_metered_with_identity<'a>(
     meter: &dyn SourceMeter,
 ) -> Result<MeasuredRSpaceObservation<'a>, RSpaceError> {
     inspect_slice(channels, meter)?;
-    inspect_slice(patterns, meter)?;
-    inspect_value(continuation, meter)?;
+    // Changed by D-O1 (DR-94): block accounting charges inline bytes once per enclosing block.
+    // inspect_slice(patterns, meter)?;
+    inspect_slice_blocks(patterns, meter)?;
+    // Changed by D-O1 (DR-94): block accounting charges inline bytes once per enclosing block.
+    // inspect_value(continuation, meter)?;
+    inspect_value_blocks(continuation, meter)?;
     Ok(MeasuredRSpaceObservation {
         event_id: identity,
         kind: AuthorityByteEventKind::ConsumeIntroduction,
@@ -236,6 +271,7 @@ pub(crate) fn comm(
     continuation: &TaggedContinuation,
     continuation_persistent: bool,
     data: &[(&ListParWithRandom, bool)],
+    residue: &authority::ResidueContext,
 ) -> Result<MeasuredRSpaceObservation<'static>, RSpaceError> {
     let identity: [u8; 32] = comm
         .cost_identity()
@@ -243,12 +279,14 @@ pub(crate) fn comm(
         .as_slice()
         .try_into()
         .map_err(|_| RSpaceError::BugFoundError("invalid COMM identity length".to_owned()))?;
-    comm_with_identity(
-        comm,
+    observation_with_identity(
         continuation,
         continuation_persistent,
         data,
         identity,
+        AuthorityByteEventKind::Comm,
+        byte_accounting::comm_charge(comm, data).map_err(construction_error)?,
+        residue,
         None,
     )
 }
@@ -258,6 +296,7 @@ pub(crate) fn comm_metered(
     continuation: &TaggedContinuation,
     continuation_persistent: bool,
     data: &[(&ListParWithRandom, bool)],
+    residue: &authority::ResidueContext,
     meter: &dyn SourceMeter,
 ) -> Result<MeasuredRSpaceObservation<'static>, RSpaceError> {
     // Disabled by C12 (DR-76): cost_identity_metered inspects the consume,
@@ -271,7 +310,9 @@ pub(crate) fn comm_metered(
     // never read, so walking it charged work that no step performs.
     // inspect_value(continuation, meter)?;
     for (datum, _) in data {
-        inspect_value(*datum, meter)?;
+        // Changed by D-O1 (DR-94): block accounting charges inline bytes once per enclosing block.
+        // inspect_value(*datum, meter)?;
+        inspect_value_blocks(*datum, meter)?;
     }
     let identity: [u8; 32] = comm
         .cost_identity_metered(meter)?
@@ -279,12 +320,42 @@ pub(crate) fn comm_metered(
         .as_slice()
         .try_into()
         .map_err(|_| RSpaceError::BugFoundError("invalid COMM identity length".to_owned()))?;
-    comm_with_identity(
-        comm,
+    observation_with_identity(
         continuation,
         continuation_persistent,
         data,
         identity,
+        AuthorityByteEventKind::Comm,
+        byte_accounting::comm_charge(comm, data).map_err(construction_error)?,
+        residue,
+        Some(meter),
+    )
+}
+
+pub(crate) fn resting_metered(
+    event: &rspace_plus_plus::rspace::trace::event::RestingCOMM,
+    checked_identity: [u8; 32],
+    continuation: &TaggedContinuation,
+    continuation_persistent: bool,
+    data: &[(&ListParWithRandom, bool)],
+    residue: &authority::ResidueContext,
+    meter: &dyn SourceMeter,
+) -> Result<MeasuredRSpaceObservation<'static>, RSpaceError> {
+    for (datum, _) in data {
+        inspect_value_blocks(*datum, meter)?;
+    }
+    // The separately proved Resting constructor uses the exact canonical v7
+    // EventProto arm length. Its already-checked RSpace identity is passed
+    // unchanged; this path never rehashes nor fabricates arriving IO.
+    let measurement = byte_accounting::resting_comm_charge_metered(event, data, meter)?;
+    observation_with_identity(
+        continuation,
+        continuation_persistent,
+        data,
+        checked_identity,
+        AuthorityByteEventKind::RestingComm,
+        measurement,
+        residue,
         Some(meter),
     )
 }
@@ -326,40 +397,106 @@ fn extend_persistent_regions(
     Ok(())
 }
 
-fn comm_with_identity(
-    comm: &COMM,
+/// DR-101: the authority that a stored seal charges in the deployment of `residue`.
+fn resolved_seal<'a>(
+    seal: &'a CostAuthority,
+    entropy: &[u8],
+    residue: &authority::ResidueContext,
+    meter: Option<&dyn SourceMeter>,
+) -> Result<Cow<'a, CostAuthority>, RSpaceError> {
+    match meter {
+        Some(meter) => authority_metered(meter, |backing| {
+            authority::resolve_system_residue_metered(seal, entropy, residue, backing)
+        }),
+        None => {
+            authority::resolve_system_residue(seal, entropy, residue).map_err(construction_error)
+        }
+    }
+}
+
+fn continuation_entropy(continuation: &TaggedContinuation) -> &[u8] {
+    match continuation.tagged_cont.as_ref() {
+        Some(models::rhoapi::tagged_continuation::TaggedCont::ParBody(body)) => &body.random_state,
+        _ => &[],
+    }
+}
+
+fn observation_with_identity(
     continuation: &TaggedContinuation,
     continuation_persistent: bool,
     data: &[(&ListParWithRandom, bool)],
     identity: [u8; 32],
+    kind: AuthorityByteEventKind,
+    measurement: byte_accounting::ByteCharge,
+    residue: &authority::ResidueContext,
     meter: Option<&dyn SourceMeter>,
 ) -> Result<MeasuredRSpaceObservation<'static>, RSpaceError> {
     let mut authorities = Vec::<&CostAuthority>::new();
+    let mut datum_seals = Vec::<Option<Cow<'_, CostAuthority>>>::new();
     if let Some(meter) = meter {
         let capacity = data
             .len()
             .checked_add(1)
             .ok_or(RSpaceError::HostWorkRejected)?;
         meter.reserve(
-            capacity,
+            capacity
+                .checked_mul(2)
+                .ok_or(RSpaceError::HostWorkRejected)?,
             0,
             capacity
-                .checked_mul(std::mem::size_of::<&CostAuthority>())
+                .checked_mul(
+                    std::mem::size_of::<&CostAuthority>()
+                        + std::mem::size_of::<Option<Cow<'_, CostAuthority>>>(),
+                )
                 .ok_or(RSpaceError::HostWorkRejected)?,
         )?;
         authorities
             .try_reserve_exact(capacity)
             .map_err(|_| RSpaceError::HostWorkRejected)?;
+        datum_seals
+            .try_reserve_exact(data.len())
+            .map_err(|_| RSpaceError::HostWorkRejected)?;
+    }
+    // Changed by DR-101: every participant's seal, the incoming one included,
+    // is charged as this deployment resolves it, so a COMM never charges the
+    // payer of an earlier deployment for system residue.
+    // if let Some(authority) = continuation.cost_authority.as_ref() {
+    //     authorities.push(authority);
+    //     if continuation_persistent {
+    //         extend_persistent_regions(&mut persistent_regions, authority, meter)?;
+    //     }
+    // }
+    // for (datum, persistent) in data {
+    //     if let Some(authority) = datum.cost_authority.as_ref() {
+    //         authorities.push(authority);
+    //         if *persistent {
+    //             extend_persistent_regions(&mut persistent_regions, authority, meter)?;
+    //         }
+    //     }
+    // }
+    let continuation_seal = continuation
+        .cost_authority
+        .as_ref()
+        .map(|seal| resolved_seal(seal, continuation_entropy(continuation), residue, meter))
+        .transpose()?;
+    for (datum, _) in data {
+        datum_seals.push(
+            datum
+                .cost_authority
+                .as_ref()
+                .map(|seal| resolved_seal(seal, &datum.random_state, residue, meter))
+                .transpose()?,
+        );
     }
     let mut persistent_regions = BTreeSet::new();
-    if let Some(authority) = continuation.cost_authority.as_ref() {
+    if let Some(authority) = continuation_seal.as_deref() {
         authorities.push(authority);
         if continuation_persistent {
             extend_persistent_regions(&mut persistent_regions, authority, meter)?;
         }
     }
-    for (datum, persistent) in data {
-        if let Some(authority) = datum.cost_authority.as_ref() {
+    for ((_, persistent), seal) in data.iter().zip(&datum_seals) {
+        if let Some(authority) = seal.as_deref() {
             authorities.push(authority);
             if *persistent {
                 extend_persistent_regions(&mut persistent_regions, authority, meter)?;
@@ -388,9 +525,9 @@ fn comm_with_identity(
     };
     Ok(MeasuredRSpaceObservation {
         event_id: identity,
-        kind: AuthorityByteEventKind::Comm,
+        kind,
         authority: Cow::Owned(authority),
-        measurement: byte_accounting::comm_charge(comm, data).map_err(construction_error)?,
+        measurement,
     })
 }
 

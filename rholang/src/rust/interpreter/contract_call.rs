@@ -334,7 +334,11 @@ mod tests {
             assert_eq!(invocations.load(Ordering::SeqCst), 0);
             drop(unpolled);
             assert_eq!(invocations.load(Ordering::SeqCst), 0);
-            assert!(raw_space.get_data(&channel).await.is_empty());
+            assert!(raw_space
+                .get_data(&channel)
+                .await
+                .expect("pre-call query")
+                .is_empty());
             let future = prepare();
             *live.write().expect("revoke after future creation") = false;
             assert!(matches!(
@@ -345,11 +349,16 @@ mod tests {
             ));
             assert_eq!(invocations.load(Ordering::SeqCst), 1);
             assert_eq!(received.load(Ordering::SeqCst), 0);
-            assert!(raw_space.get_data(&channel).await.is_empty());
+            assert!(raw_space
+                .get_data(&channel)
+                .await
+                .expect("revoked-call query")
+                .is_empty());
             assert_eq!(
                 raw_space
                     .get_waiting_continuations(vec![channel.clone()])
                     .await
+                    .expect("continuation query")
                     .len(),
                 usize::from(matched)
             );
@@ -358,7 +367,7 @@ mod tests {
             assert!(prepare().await.expect("authorized reply").is_empty());
             assert_eq!(invocations.load(Ordering::SeqCst), 2);
             assert_eq!(received.load(Ordering::SeqCst), usize::from(matched));
-            let stored = raw_space.get_data(&channel).await;
+            let stored = raw_space.get_data(&channel).await.expect("post-call query");
             if matched {
                 assert!(stored.is_empty());
                 assert!(!*live.read().expect("receiver revoked authority"));
@@ -443,7 +452,7 @@ mod tests {
                 produce(&values, &channel).await.unwrap()
             };
             assert!(output.is_empty());
-            let stored = raw_space.get_data(&query).await;
+            let stored = raw_space.get_data(&query).await.expect("result query");
             assert_eq!(stored.len(), 1);
             assert_eq!(stored[0].a.pars, expected);
             assert_eq!(stored[0].a.random_state, random_state);

@@ -38,7 +38,11 @@ async fn out_count(prefix: &str, program: &str) -> usize {
             .evaluate(&program, Cost::unsafe_max(), HashMap::new(), fixed_rand())
             .await
             .expect("evaluate must not fail structurally");
-        runtime.get_data(&gstring_channel("out")).await.len()
+        runtime
+            .get_data(&gstring_channel("out"))
+            .await
+            .expect("output query")
+            .len()
     })
     .await
 }

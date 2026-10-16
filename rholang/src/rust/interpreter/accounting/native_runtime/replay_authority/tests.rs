@@ -1,4 +1,5 @@
 use proptest::prelude::*;
+use rspace_plus_plus::rspace::hashing::stable_hash_provider::EventCodecEpoch;
 
 use super::*;
 use crate::rust::interpreter::accounting::costs::Cost;
@@ -8,11 +9,22 @@ mod sparse_ledger;
 mod backing;
 
 fn budget() -> RuntimeBudget {
+    budget_for_epoch(EventCodecEpoch::Legacy)
+}
+
+fn budget_for_epoch(epoch: EventCodecEpoch) -> RuntimeBudget {
     let budget = RuntimeBudget::new(Cost::unsafe_max());
     budget
-        .reset_for_native_execution(config(1_000_000, [0, 1, 1, 0]))
-        .unwrap();
+        .reset_for_native_execution(
+            config(1_000_000, [0, 1, 1, 0])
+                .with_event_codec_epoch(epoch),
+        )
+        .expect("valid native configuration");
     budget
+}
+
+fn execution_epochs() -> [EventCodecEpoch; 3] {
+    [EventCodecEpoch::Legacy, EventCodecEpoch::CostV1, EventCodecEpoch::CostV2]
 }
 
 fn row(id: u8, owners: usize, granted: bool, retry: bool) -> ReplayAuthorityObservation {
@@ -26,6 +38,79 @@ fn row(id: u8, owners: usize, granted: bool, retry: bool) -> ReplayAuthorityObse
         }),
         granted,
         retry,
+    }
+}
+
+#[test]
+fn replay_authority_checkpoint_preserves_the_codec_epoch() {
+    for epoch in execution_epochs() {
+        let budget = budget_for_epoch(epoch);
+        let binding = ReplayAuthorityBinding::new(budget.clone(), budget.deploy_id())
+            .expect("fresh runtime binding");
+        let checkpoint = budget.native_authority_checkpoint().expect("idle checkpoint");
+        let scope = budget.enter_comm_accounting_scope();
+        binding.prepare([None, Some(row(1, 2, true, false))])
+            .expect("valid publication").publish();
+        assert_eq!(budget.authority_events().len(), 1);
+        assert_eq!(budget.byte_observations().rows.len(), 1);
+        drop(scope);
+        budget.restore_native_authority(checkpoint).expect("same-generation restore");
+        assert_eq!(budget.native_event_codec_epoch(), Some(epoch));
+        assert!(budget.authority_events().is_empty());
+        assert!(budget.authority_realized().0.is_empty());
+        assert!(budget.byte_observations().rows.is_empty());
+        let _scope = budget.enter_comm_accounting_scope();
+        binding.prepare([None, Some(row(2, 3, true, false))])
+            .expect("restored binding remains valid").publish();
+        assert_eq!(budget.native_event_codec_epoch(), Some(epoch));
+        assert_eq!(budget.authority_events().len(), 1);
+        assert_eq!(budget.authority_realized(), authority::authority_demand(&authority(3))
+            .expect("valid authority demand"));
+    }
+}
+
+#[test]
+fn replay_authority_reset_invalidates_all_prior_context_checkpoints_and_bindings() {
+    for old_epoch in execution_epochs() {
+        for new_epoch in execution_epochs() {
+            let budget = budget_for_epoch(old_epoch);
+            let old_binding = ReplayAuthorityBinding::new(budget.clone(), budget.deploy_id())
+                .expect("fresh old binding");
+            let scope = budget.enter_comm_accounting_scope();
+            old_binding.prepare([None, Some(row(1, 2, true, false))])
+                .expect("valid old publication").publish();
+            drop(scope);
+            let old_checkpoint = budget.native_authority_checkpoint().expect("old checkpoint");
+            budget.reset_for_native_execution(
+                config(1_000_000, [0, 1, 1, 0])
+                    .with_event_codec_epoch(new_epoch),
+            ).expect("idle context replacement");
+            assert_eq!(budget.native_event_codec_epoch(), Some(new_epoch));
+            let current_binding = ReplayAuthorityBinding::new(budget.clone(), budget.deploy_id())
+                .expect("fresh replacement binding");
+            let scope = budget.enter_comm_accounting_scope();
+            current_binding.prepare([None, Some(row(2, 1, true, false))])
+                .expect("valid replacement publication").publish();
+            drop(scope);
+            let before = (
+                budget.native_event_codec_epoch(),
+                budget.authority_realized(),
+                budget.byte_observations(),
+            );
+            assert!(budget.restore_native_authority(old_checkpoint).is_err());
+            assert_eq!(
+                (budget.native_event_codec_epoch(), budget.authority_realized(), budget.byte_observations()),
+                before
+            );
+            let _scope = budget.enter_comm_accounting_scope();
+            let before_attempt = budget.byte_observations();
+            assert!(old_binding.prepare([None, Some(row(3, 3, true, false))]).is_err());
+            assert_eq!(budget.byte_observations(), before_attempt);
+            current_binding.prepare([None, Some(row(3, 1, true, false))])
+                .expect("replacement binding remains valid").publish();
+            assert_eq!(budget.authority_events().len(), 2);
+            assert_eq!(budget.native_event_codec_epoch(), Some(new_epoch));
+        }
     }
 }
 

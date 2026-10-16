@@ -258,6 +258,13 @@ pub trait ColdStoreDecode: Sized {
         Self::cold_decode_prefix(bytes)
     }
 
+    /// Decode the protocol-v6 cost layout. Types whose positional schema did
+    /// not change in v7 use the current decoder; recursive rhoapi roots
+    /// override this to omit only v7-only CostStack parallel tails.
+    fn cold_decode_cost_v1_prefix(bytes: &[u8]) -> Result<(Self, usize), ColdStoreDecodeError> {
+        Self::cold_decode_prefix(bytes)
+    }
+
     /// Decode a value from `bytes`, **permitting trailing bytes** — the
     /// `allow_trailing_bytes()` half of `bincode::deserialize`'s configuration.
     /// Tightening this would narrow the accepted language and fork.
@@ -268,7 +275,12 @@ pub trait ColdStoreDecode: Sized {
     fn cold_decode_legacy(bytes: &[u8]) -> Result<Self, ColdStoreDecodeError> {
         Self::cold_decode_legacy_prefix(bytes).map(|(value, _consumed)| value)
     }
+
+    fn cold_decode_cost_v1(bytes: &[u8]) -> Result<Self, ColdStoreDecodeError> {
+        Self::cold_decode_cost_v1_prefix(bytes).map(|(value, _consumed)| value)
+    }
 }
+
 
 /// The delegating prefix decode for **bounded-depth** types: run bincode over
 /// an `io::Cursor` and report the cursor's final position as the consumed
@@ -399,7 +411,8 @@ pub fn cold_decode_vec_prefix_for_epoch<T: ColdStoreDecode>(
     for _ in 0..count {
         let (value, used) = match epoch {
             EventCodecEpoch::Legacy => T::cold_decode_legacy_prefix(&bytes[consumed..])?,
-            EventCodecEpoch::CostV1 => T::cold_decode_prefix(&bytes[consumed..])?,
+            EventCodecEpoch::CostV1 => T::cold_decode_cost_v1_prefix(&bytes[consumed..])?,
+            EventCodecEpoch::CostV2 => T::cold_decode_prefix(&bytes[consumed..])?,
         };
         consumed += used;
         out.push(value);
@@ -433,6 +446,7 @@ impl ColdStoreDecode for u8 {
     }
 }
 
+
 /// `String` is one of the rspace++ **test-double** instantiations
 /// (`RSpace<String, Pattern, String, StringsCaptor>` in
 /// `rspace++/tests/storage_actions_test.rs`), and it is a `std` type, so the
@@ -444,6 +458,7 @@ impl ColdStoreDecode for String {
         legacy_prefix(bytes)
     }
 }
+
 
 /// `Vec<u8>` — the raw-channel test-double instantiation used by the history
 /// and exporter suites. Bounded by definition.

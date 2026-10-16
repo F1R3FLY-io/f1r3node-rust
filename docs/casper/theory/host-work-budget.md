@@ -24,6 +24,7 @@ A **budget** contains one schedule, sixteen atomic counters, and one sticky reje
 
 A **reservation** checks and adds work before the related operation allocates or changes state.
 A **deployment boundary** contains all attempts, settlement work, and replay work for one deployment.
+For an offered deployment, it also contains the acceptance work of each role, which a separate acceptance budget measures (DR-102).
 
 ## Dimensions and units
 
@@ -107,6 +108,11 @@ The play path uses the following order:
 The replay path creates one budget for each recorded deployment.
 It applies the same schedule to the recorded witness and the repeated execution.
 
+For an offered deployment, `certify_offered_draft` owns the replay budget (DR-102).
+The producer and every validator run it on the same inputs, so they charge the same usage.
+Each role charges its acceptance work after the certified replay to a separate acceptance budget.
+The acceptance limits are a protocol constant, and they are at least the execution limits in every dimension.
+
 Bounded replay bypasses the replay-result cache.
 A cache hit cannot skip a required host-work check.
 
@@ -174,6 +180,10 @@ The consensus result does not expose validator-local timing or memory data.
 The web API maps this error to HTTP 422 with error kind `host_work_rejected`.
 This deterministic rejection differs from temporary node capacity failure and insufficient economic funding.
 The same canonical execution exceeds the same schedule on every validator.
+
+A validator acceptance exhaustion invalidates the block, like a replay exhaustion.
+A producer acceptance exhaustion quarantines the candidate (DR-72).
+With the DR-102 limits, a block that its producer publishes never exhausts a validator's acceptance budget.
 
 The following data must never control the verdict:
 

@@ -4,6 +4,10 @@
    Values. A value is a tree of nodes:
    - Field s: an inline scalar of s bytes (or a shared pointer); it lies in
      its enclosing region and the walker does not push it;
+   - Empty s: an empty container of s bytes (an empty vector, string or
+     map, or a None); it lies in its enclosing region, and the walker reads
+     at most its own bytes (its length or discriminant) and does not push it
+     (DR-94);
    - Entry s cs: an inline aggregate of s bytes (a struct, an enum, a vector
      header); it lies in its enclosing region and the walker pushes it on the
      worklist and visits it;
@@ -20,7 +24,8 @@
    worklist (one write and one read of p bytes), reads the entry's own bytes
    (those not inside an inline child: a discriminant, a pointer, a length)
    and may re-read one word of w bytes that an enclosing enum shares with
-   the entry as a niche. One linear consumer traversal (a clone, a
+   the entry as a niche. It reads at most the own bytes of an empty
+   container to find that the container is empty. One linear consumer traversal (a clone, a
    comparison, a drop, an encoding of a flat message) reads every block
    once and may re-read one word of each node. A clone also writes every
    block, the root into its destination and every other block into a new
@@ -63,7 +68,10 @@
      vector (one read and one write of 24 bytes each) take at most 8 bytes
      per entry;
    - rust_entry_constant_covers_header_moves: the Rust constant meets the
-     hypothesis on E and its slack pays the header moves.
+     hypothesis on E and its slack pays the header moves;
+   - worklist_charge_covers_peak_for_slot and
+     rust_depth_entry_constant_covers_header_moves (D-O6, DR-93): the same
+     bounds for the 24-byte entries of a depth walk.
 
    Rust correspondence: shared/src/rust/clone_backing.rs (Walker in block
    mode: push_block_entry, block, referent_block, ChunkedWorklist; the
@@ -78,11 +86,12 @@ Import ListNotations.
 
 Inductive node :=
   | Field (size : nat)
+  | Empty (size : nat)
   | Entry (size : nat) (children : list node)
   | Block (bytes : nat) (visited : bool) (children : list node).
 
 Definition inline_size (n : node) : nat :=
-  match n with Field s => s | Entry s _ => s | Block _ _ _ => 0 end.
+  match n with Field s => s | Empty s => s | Entry s _ => s | Block _ _ _ => 0 end.
 
 Definition children_inline (cs : list node) : nat :=
   fold_right (fun c total => inline_size c + total) 0 cs.
@@ -92,6 +101,7 @@ Definition is_field (n : node) : Prop := match n with Field _ => True | _ => Fal
 Fixpoint well_formed (n : node) : Prop :=
   match n with
   | Field _ => True
+  | Empty _ => True
   | Entry s cs =>
       children_inline cs <= s /\ fold_right (fun c rest => well_formed c /\ rest) True cs
   | Block b v cs =>
@@ -105,6 +115,7 @@ Fixpoint well_formed (n : node) : Prop :=
 Fixpoint inline_visit_reads (n : node) : nat :=
   match n with
   | Field _ => 0
+  | Empty s => s
   | Entry s cs =>
       (s - children_inline cs) + fold_right (fun c total => inline_visit_reads c + total) 0 cs
   | Block _ _ _ => 0
@@ -112,7 +123,8 @@ Fixpoint inline_visit_reads (n : node) : nat :=
 
 Lemma inline_reads_le_inline_size : forall n, well_formed n -> inline_visit_reads n <= inline_size n.
 Proof.
-  fix IH 1. intros [s | s cs | b v cs] wf; cbn in *.
+  fix IH 1. intros [s | s | s cs | b v cs] wf; cbn in *.
+  - lia.
   - lia.
   - destruct wf as [fits children_wf]. unfold children_inline in *.
     assert (children : fold_right (fun c total => inline_visit_reads c + total) 0 cs
@@ -146,7 +158,7 @@ Lemma fields_have_no_visit_reads : forall cs,
   fold_right (fun c total => inline_visit_reads c + total) 0 cs = 0.
 Proof.
   induction cs as [| c rest IHrest]; cbn; [reflexivity |].
-  intros [field rest_fields]. destruct c as [s | s cs | b v cs]; cbn in field; try contradiction.
+  intros [field rest_fields]. destruct c as [s | s | s cs | b v cs]; cbn in field; try contradiction.
   cbn. rewrite (IHrest rest_fields). reflexivity.
 Qed.
 
@@ -161,6 +173,7 @@ Proof. intros f cs cs' perm. induction perm; cbn; lia. Qed.
 Fixpoint clone_allocations (n : node) : list nat :=
   match n with
   | Field _ => []
+  | Empty _ => []
   | Entry _ cs => flat_map clone_allocations cs
   | Block b _ cs => b :: flat_map clone_allocations cs
   end.
@@ -183,6 +196,7 @@ Hypothesis field_covers : w <= F.
 Fixpoint block_charge (n : node) : nat :=
   match n with
   | Field _ => F
+  | Empty _ => F
   | Entry _ cs => E + fold_right (fun c total => block_charge c + total) 0 cs
   | Block b v cs => (if v then 2 * b else b) + fold_right (fun c total => block_charge c + total) 0 cs
   end.
@@ -190,6 +204,7 @@ Fixpoint block_charge (n : node) : nat :=
 Fixpoint copy_charge (n : node) : nat :=
   match n with
   | Field _ => F
+  | Empty _ => F
   | Entry _ cs => E + fold_right (fun c total => copy_charge c + total) 0 cs
   | Block b v cs => (if v then 3 * b else 2 * b) + fold_right (fun c total => copy_charge c + total) 0 cs
   end.
@@ -197,15 +212,16 @@ Fixpoint copy_charge (n : node) : nat :=
 Fixpoint copy_backing (n : node) : nat :=
   match n with
   | Field _ => 0
+  | Empty _ => 0
   | Entry _ cs => fold_right (fun c total => copy_backing c + total) 0 cs
   | Block b _ cs => b + fold_right (fun c total => copy_backing c + total) 0 cs
   end.
 
 Definition root_inspection (n : node) : nat :=
-  match n with Field s => s | Entry s _ => 2 * s | Block _ _ _ => 0 end.
+  match n with Field s => s | Empty s => 2 * s | Entry s _ => 2 * s | Block _ _ _ => 0 end.
 
 Definition root_copy (n : node) : nat :=
-  match n with Field s => 2 * s | Entry s _ => 3 * s | Block _ _ _ => 0 end.
+  match n with Field s => 2 * s | Empty s => 3 * s | Entry s _ => 3 * s | Block _ _ _ => 0 end.
 
 Definition inspection_charge (n : node) : nat := root_inspection n + block_charge n.
 Definition full_copy_charge (n : node) : nat := root_copy n + copy_charge n.
@@ -215,6 +231,7 @@ Definition full_copy_charge (n : node) : nat := root_copy n + copy_charge n.
 Fixpoint walk_reads (n : node) : nat :=
   match n with
   | Field _ => 0
+  | Empty s => s
   | Entry s cs =>
       2 * p + w + (s - children_inline cs) + fold_right (fun c total => walk_reads c + total) 0 cs
   | Block _ _ cs => fold_right (fun c total => walk_reads c + total) 0 cs
@@ -224,6 +241,7 @@ Fixpoint walk_reads (n : node) : nat :=
 Fixpoint traversal_reads (n : node) : nat :=
   match n with
   | Field _ => w
+  | Empty _ => w
   | Entry _ cs => w + fold_right (fun c total => traversal_reads c + total) 0 cs
   | Block b _ cs => b + fold_right (fun c total => traversal_reads c + total) 0 cs
   end.
@@ -231,7 +249,8 @@ Fixpoint traversal_reads (n : node) : nat :=
 Lemma node_covers : forall n, well_formed n ->
   walk_reads n + traversal_reads n <= block_charge n + inline_visit_reads n.
 Proof.
-  fix IH 1. intros [s | s cs | b v cs] wf; cbn in wf |- *.
+  fix IH 1. intros [s | s | s cs | b v cs] wf; cbn in wf |- *.
+  - lia.
   - lia.
   - destruct wf as [_ children_wf].
     assert (children : fold_right (fun c total => walk_reads c + total) 0 cs
@@ -260,13 +279,14 @@ Theorem block_inspection_covers_walk_and_traversal : forall n, well_formed n ->
 Proof.
   intros n wf. unfold inspection_charge.
   pose proof (node_covers n wf). pose proof (inline_reads_le_inline_size n wf).
-  destruct n as [s | s cs | b v cs]; cbn [root_inspection inline_size inline_visit_reads] in *; lia.
+  destruct n as [s | s | s cs | b v cs]; cbn [root_inspection inline_size inline_visit_reads] in *; lia.
 Qed.
 
 Lemma node_copy_covers : forall n, well_formed n ->
   walk_reads n + traversal_reads n + allocated n <= copy_charge n + inline_visit_reads n.
 Proof.
-  unfold allocated. fix IH 1. intros [s | s cs | b v cs] wf; cbn in wf |- *.
+  unfold allocated. fix IH 1. intros [s | s | s cs | b v cs] wf; cbn in wf |- *.
+  - lia.
   - lia.
   - destruct wf as [_ children_wf].
     assert (children : fold_right (fun c total => walk_reads c + total) 0 cs
@@ -299,13 +319,13 @@ Theorem block_copy_covers_walk_and_clone : forall n, well_formed n ->
 Proof.
   intros n wf. unfold full_copy_charge.
   pose proof (node_copy_covers n wf). pose proof (inline_reads_le_inline_size n wf).
-  destruct n as [s | s cs | b v cs]; cbn [root_copy inline_size inline_visit_reads] in *; lia.
+  destruct n as [s | s | s cs | b v cs]; cbn [root_copy inline_size inline_visit_reads] in *; lia.
 Qed.
 
 (* The backing charge is the total of the clone's allocation trace. *)
 Lemma backing_is_allocated : forall n, copy_backing n = allocated n.
 Proof.
-  unfold allocated. fix IH 1. intros [s | s cs | b v cs]; cbn; [reflexivity | |].
+  unfold allocated. fix IH 1. intros [s | s | s cs | b v cs]; cbn; [reflexivity | reflexivity | |].
   - induction cs as [| c rest IHrest]; cbn; [reflexivity |].
     rewrite allocation_sum_app, (IH c), IHrest. reflexivity.
   - assert (children : fold_right (fun c total => copy_backing c + total) 0 cs
@@ -320,7 +340,8 @@ Proof. intros n. rewrite backing_is_allocated. lia. Qed.
 
 Lemma node_inspection_le_copy : forall n, block_charge n <= copy_charge n.
 Proof.
-  fix IH 1. intros [s | s cs | b v cs]; cbn.
+  fix IH 1. intros [s | s | s cs | b v cs]; cbn.
+  - lia.
   - lia.
   - assert (children : fold_right (fun c total => block_charge c + total) 0 cs
                        <= fold_right (fun c total => copy_charge c + total) 0 cs).
@@ -336,7 +357,7 @@ Theorem block_inspection_fits_block_copy : forall n, inspection_charge n <= full
 Proof.
   intros n. unfold inspection_charge, full_copy_charge.
   pose proof (node_inspection_le_copy n).
-  destruct n as [s | s cs | b v cs]; cbn [root_inspection root_copy]; lia.
+  destruct n as [s | s | s cs | b v cs]; cbn [root_inspection root_copy]; lia.
 Qed.
 
 Theorem block_charge_independent_of_sibling_order : forall s b v cs cs',
@@ -356,6 +377,7 @@ Qed.
 Definition own_charge (n : node) : nat :=
   match n with
   | Field _ => F
+  | Empty _ => F
   | Entry _ _ => E
   | Block b v _ => if v then 2 * b else b
   end.
@@ -363,6 +385,7 @@ Definition own_charge (n : node) : nat :=
 Definition own_walk_read (n : node) : nat :=
   match n with
   | Field _ => 0
+  | Empty s => s
   | Entry s cs => 2 * p + w + (s - children_inline cs)
   | Block _ _ _ => 0
   end.
@@ -370,6 +393,7 @@ Definition own_walk_read (n : node) : nat :=
 Fixpoint walk_trace (n : node) : list event :=
   match n with
   | Field _ => [Reserve (own_charge n); Read (own_walk_read n)]
+  | Empty _ => [Reserve (own_charge n); Read (own_walk_read n)]
   | Entry _ cs => [Reserve (own_charge n); Read (own_walk_read n)] ++ flat_map walk_trace cs
   | Block _ _ cs => [Reserve (own_charge n); Read (own_walk_read n)] ++ flat_map walk_trace cs
   end.
@@ -397,7 +421,8 @@ Lemma trace_totals : forall n,
   total read_units (walk_trace n) = walk_reads n /\
   total reserved_units (walk_trace n) = block_charge n.
 Proof.
-  fix IH 1. intros [s | s cs | b v cs]; cbn [walk_trace walk_reads block_charge].
+  fix IH 1. intros [s | s | s cs | b v cs]; cbn [walk_trace walk_reads block_charge].
+  - rewrite pair_total_reads, pair_total_reserves. cbn. split; reflexivity.
   - rewrite pair_total_reads, pair_total_reserves. cbn. split; reflexivity.
   - assert (children : forall cs',
       total read_units (flat_map walk_trace cs')
@@ -443,8 +468,9 @@ Proof.
       + apply IH; [exact c_wf | lia].
       + rewrite reads, reserves. lia.
       + apply IHrest; [exact rest_wf |]. rewrite reads, reserves. lia. }
-  destruct n as [s | s cs | b v cs]; cbn [walk_trace].
+  destruct n as [s | s | s cs | b v cs]; cbn [walk_trace].
   - apply reserve_then_read_covered. cbn. lia.
+  - apply reserve_then_read_covered. cbn in enough |- *. lia.
   - cbn in wf, enough. destruct wf as [_ children_wf].
     apply covered_from_app.
     + apply reserve_then_read_covered. cbn. lia.
@@ -471,7 +497,7 @@ Proof.
   pose proof (node_covers n wf) as covers.
   destruct (trace_totals n) as [reads reserves].
   assert (root_room : inline_visit_reads n + inline_size n <= root_inspection n).
-  { destruct n as [s | s cs | b v cs]; cbn [root_inspection inline_size inline_visit_reads] in *; lia. }
+  { destruct n as [s | s | s cs | b v cs]; cbn [root_inspection inline_size inline_visit_reads] in *; lia. }
   apply covered_from_app.
   - change [Reserve (root_inspection n)] with (map Reserve [root_inspection n]). apply reserves_covered.
   - unfold total. cbn. lia.
@@ -488,6 +514,7 @@ End Charges.
 Fixpoint entries (n : node) : nat :=
   match n with
   | Field _ => 0
+  | Empty _ => 0
   | Entry _ cs => 1 + fold_right (fun c total => entries c + total) 0 cs
   | Block _ _ cs => fold_right (fun c total => entries c + total) 0 cs
   end.
@@ -614,6 +641,56 @@ Proof.
   destruct (worklist_charge_covers_entries fuel k peak entry_count reach bounded). lia.
 Qed.
 
+(* D-O6 (DR-93): the depth walk keeps 24-byte entries (a value and its
+   depth) in the same chunked worklist. The allocation bound holds for every
+   entry size of at least 16 bytes; the header moves do not depend on it. *)
+Definition worklist_allocated_bytes_for (slot fuel k : nat) : nat :=
+  slot * chunk_slots k
+  + (if k =? 0 then 0 else 24 * fold_right Nat.add 0 (doubling_capacities fuel 4 k)).
+
+Theorem worklist_charge_covers_peak_for_slot : forall slot fuel k peak,
+  16 <= slot ->
+  (k = 0 /\ 1 <= peak) \/ (1 <= k /\ 4 * (2 ^ k - 1) < peak) ->
+  worklist_allocated_bytes_for slot fuel k <= 4 * slot * peak.
+Proof.
+  intros slot fuel k peak wide [[zero positive] | [positive reached]];
+    unfold worklist_allocated_bytes_for.
+  - subst k. cbn [chunk_slots Nat.eqb]. nia.
+  - destruct (Nat.eqb_spec k 0) as [zero | nonzero]; [lia |].
+    pose proof (chunk_slots_closed k) as slots.
+    pose proof (doubling_sum_bound fuel 4 k) as headers.
+    pose proof (exponential_dominates k positive) as dominates.
+    assert (power : 2 <= 2 ^ k).
+    { replace 2 with (2 ^ 1) at 1 by reflexivity. apply Nat.pow_le_mono_r; lia. }
+    remember (2 ^ k) as x eqn:x_def.
+    remember (chunk_slots k) as slots_k eqn:slots_def.
+    remember (fold_right Nat.add 0 (doubling_capacities fuel 4 k)) as header_sum eqn:header_def.
+    assert (header_bound : header_sum <= 4 * k) by lia.
+    assert (chunk_bytes : slot * slots_k + 4 * slot = 8 * (slot * x)).
+    { assert (scaled : slot * (slots_k + 4) = slot * (8 * x)) by (rewrite slots; reflexivity).
+      rewrite Nat.mul_add_distr_l in scaled. lia. }
+    assert (peak_bytes : 16 * (slot * x) <= 4 * (slot * peak) + 12 * slot).
+    { assert (4 * x <= peak + 3) by lia.
+      replace (16 * (slot * x)) with (4 * (slot * (4 * x))) by lia.
+      replace (4 * (slot * peak) + 12 * slot) with (4 * (slot * (peak + 3))) by lia.
+      apply Nat.mul_le_mono_l, Nat.mul_le_mono_l. assumption. }
+    assert (wide_bytes : 16 * x + slot <= slot * x + 16) by nia.
+    lia.
+Qed.
+
+(* The Rust constant of a depth entry: E = 2p + 3w with p = 24 and w = 8. *)
+Corollary rust_depth_entry_constant_covers_header_moves : forall fuel k peak entry_count,
+  (k = 0 /\ 1 <= peak) \/ (1 <= k /\ 4 * (2 ^ k - 1) < peak) ->
+  peak <= entry_count ->
+  2 * 24 + 2 * 8 <= 2 * 24 + 3 * 8 /\
+  (2 * 24 + 2 * 8) * entry_count + worklist_moved_bytes fuel k <= (2 * 24 + 3 * 8) * entry_count /\
+  worklist_allocated_bytes_for 24 fuel k <= 4 * 24 * entry_count.
+Proof.
+  intros fuel k peak entry_count reach bounded.
+  destruct (worklist_charge_covers_entries fuel k peak entry_count reach bounded) as [_ moves].
+  pose proof (worklist_charge_covers_peak_for_slot 24 fuel k peak ltac:(lia) reach). nia.
+Qed.
+
 (* Negative control: a chain of d entries of size s, each nested inline in
    the previous one. The legacy per-push charge 3 * size counts the same
    bytes at every level; the block charge counts them once (in the root's
@@ -627,6 +704,7 @@ Fixpoint nested_chain (depth size : nat) : node :=
 Fixpoint legacy_charge (n : node) : nat :=
   match n with
   | Field s => 3 * s
+  | Empty s => 3 * s
   | Entry s cs => 3 * s + fold_right (fun c total => legacy_charge c + total) 0 cs
   | Block b _ cs => 2 * b + fold_right (fun c total => legacy_charge c + total) 0 cs
   end.
@@ -667,6 +745,8 @@ Print Assumptions worklist_charge_independent_of_traversal_order.
 Print Assumptions worklist_charge_covers_peak.
 Print Assumptions worklist_charge_covers_entries.
 Print Assumptions rust_entry_constant_covers_header_moves.
+Print Assumptions worklist_charge_covers_peak_for_slot.
+Print Assumptions rust_depth_entry_constant_covers_header_moves.
 Print Assumptions level_charge_counts_inline_bytes_per_level.
 Print Assumptions nested_chain_well_formed.
 Print Assumptions level_charge_example.

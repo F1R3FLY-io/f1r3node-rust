@@ -657,7 +657,7 @@ fn decode_data(
     else {
         return Err(invalid("stored value is not bytes"));
     };
-    if value.persist || value.a != datum(bytes) {
+    if value.persist || value.a.as_ref() != &datum(bytes) {
         return Err(invalid("noncanonical stored value"));
     }
     match kind {
@@ -1426,7 +1426,8 @@ impl RuntimeOps {
                 .reducer
                 .space
                 .get_data(&channel(change.slot))
-                .await;
+                .await
+                .map_err(|error| CasperError::InterpreterError(error.into()))?;
             if decode_data(&data, change.slot.kind)? != change.expected.as_deref() {
                 return Err(invalid("grant value differs from captured root"));
             }
@@ -1813,6 +1814,7 @@ mod tests {
                 .space
                 .get_data(&grant_issue_journal_channel())
                 .await
+                .expect("read the retained grant issue journal")
                 .len(),
             1
         );
@@ -1835,6 +1837,7 @@ mod tests {
             .space
             .get_data(&grant_issue_journal_channel())
             .await
+            .expect("read the consumed grant issue journal")
             .is_empty());
         assert!(!runtime.runtime.take_event_log().await.is_empty());
     }

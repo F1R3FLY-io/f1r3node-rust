@@ -140,7 +140,12 @@ fn expr_instance_child_pars_with<'a>(
         | ExprInstance::GDouble(_)
         | ExprInstance::GBigInt(_)
         | ExprInstance::GBigRat(_)
-        | ExprInstance::GFixedPoint(_) => {}
+        | ExprInstance::GFixedPoint(_)
+        | ExprInstance::GUint64(_)
+        | ExprInstance::GInt32(_)
+        | ExprInstance::GUint32(_)
+        | ExprInstance::GUint16(_)
+        | ExprInstance::GUint8(_) => {}
         ExprInstance::GFloat32(_) => {}
 
         // ---- a variable is a `Var`, not a `Par` ----
@@ -282,6 +287,16 @@ fn cost_signature_child_pars<'a>(signature: &'a CostSignature, out: &mut Vec<&'a
     }
 }
 
+fn cost_stack_child_pars<'a>(stack: &'a CostStack, out: &mut Vec<&'a Par>) {
+    let mut work = vec![stack];
+    while let Some(stack) = work.pop() {
+        for signature in &stack.cells {
+            cost_signature_child_pars(signature, out);
+        }
+        work.extend(stack.parallel_tail.iter().rev());
+    }
+}
+
 /// Append every child `Par` of `p`, in traversal order.
 ///
 /// Field order matches `SubstituteTrait<Par>::substitute_no_sort`: exprs,
@@ -345,9 +360,7 @@ fn par_child_pars_with<'a>(
         }
     }
     for stack in &p.cost_stacks {
-        for signature in &stack.cells {
-            cost_signature_child_pars(signature, out);
-        }
+        cost_stack_child_pars(stack, out);
     }
 }
 
@@ -407,7 +420,12 @@ fn take_expr_instance_child_pars_with(
         | ExprInstance::GDouble(_)
         | ExprInstance::GBigInt(_)
         | ExprInstance::GBigRat(_)
-        | ExprInstance::GFixedPoint(_) => {}
+        | ExprInstance::GFixedPoint(_)
+        | ExprInstance::GUint64(_)
+        | ExprInstance::GInt32(_)
+        | ExprInstance::GUint32(_)
+        | ExprInstance::GUint16(_)
+        | ExprInstance::GUint8(_) => {}
         ExprInstance::GFloat32(_) => {}
 
         ExprInstance::EVarBody(_) => {}
@@ -537,6 +555,29 @@ fn take_cost_signature_child_pars(signature: CostSignature, out: &mut Vec<Par>) 
     }
 }
 
+fn take_cost_stack_child_pars(stack: CostStack, out: &mut Vec<Par>) {
+    let mut work = vec![stack];
+    while let Some(mut stack) = work.pop() {
+        for signature in std::mem::take(&mut stack.cells) {
+            take_cost_signature_child_pars(signature, out);
+        }
+        work.extend(std::mem::take(&mut stack.parallel_tail).into_iter().rev());
+    }
+}
+
+/// Dismantle a standalone cost stack without recursing through nested
+/// parallel tails or quoted/name `Par` values during unwind cleanup.
+pub fn dismantle_cost_stack(stack: CostStack) {
+    let mut pars = Vec::new();
+    take_cost_stack_child_pars(stack, &mut pars);
+    dismantle_all(pars);
+}
+
+pub(crate) fn dismantle_cost_stack_in_place(stack: &mut CostStack) {
+    let owned = std::mem::take(stack);
+    dismantle_cost_stack(owned);
+}
+
 /// By-move twin of [`par_child_pars`]: strips `p` of every child `Par`.
 fn take_par_child_pars_with(
     p: &mut Par,
@@ -595,9 +636,7 @@ fn take_par_child_pars_with(
         }
     }
     for stack in std::mem::take(&mut p.cost_stacks) {
-        for signature in stack.cells {
-            take_cost_signature_child_pars(signature, out);
-        }
+        take_cost_stack_child_pars(stack, out);
     }
 }
 
@@ -928,7 +967,7 @@ pub fn dismantle_all<I: IntoIterator<Item = Par>>(pars: I) {
 
 pub fn dismantle_cost_signature(signature: CostSignature) {
     dismantle(par_from_default! {
-        cost_stacks: vec![CostStack { cells: vec![signature] }],
+        cost_stacks: vec![CostStack { cells: vec![signature], parallel_tail: Vec::new() }],
         ..Default::default()
     });
 }
@@ -941,7 +980,7 @@ pub(crate) fn dismantle_cost_signature_in_place(signature: &mut CostSignature) {
 
 pub fn dismantle_cost_signature_compound(compound: CostSignatureCompound) {
     dismantle(par_from_default! {
-        cost_stacks: vec![CostStack { cells: compound.elements }],
+        cost_stacks: vec![CostStack { cells: compound.elements, parallel_tail: Vec::new() }],
         ..Default::default()
     });
 }
@@ -988,6 +1027,11 @@ pub fn substitute_descends_into(e: &ExprInstance) -> bool {
         | ExprInstance::GBigInt(_)
         | ExprInstance::GBigRat(_)
         | ExprInstance::GFixedPoint(_)
+        | ExprInstance::GUint64(_)
+        | ExprInstance::GInt32(_)
+        | ExprInstance::GUint32(_)
+        | ExprInstance::GUint16(_)
+        | ExprInstance::GUint8(_)
         | ExprInstance::GFloat32(_)
         | ExprInstance::EVarBody(_) => false,
 
@@ -1090,6 +1134,11 @@ pub fn spatial_match_descends_into(e: &ExprInstance) -> bool {
         | ExprInstance::GBigInt(_)
         | ExprInstance::GBigRat(_)
         | ExprInstance::GFixedPoint(_)
+        | ExprInstance::GUint64(_)
+        | ExprInstance::GInt32(_)
+        | ExprInstance::GUint32(_)
+        | ExprInstance::GUint16(_)
+        | ExprInstance::GUint8(_)
         | ExprInstance::GFloat32(_)
         | ExprInstance::EVarBody(_) => false,
 
@@ -1195,6 +1244,11 @@ pub fn expr_instance_variant_index(e: &ExprInstance) -> u32 {
         ExprInstance::GBigRat(_) => 34,
         ExprInstance::GFixedPoint(_) => 35,
         ExprInstance::GFloat32(_) => 36,
+        ExprInstance::GUint64(_) => 37,
+        ExprInstance::GInt32(_) => 38,
+        ExprInstance::GUint32(_) => 39,
+        ExprInstance::GUint16(_) => 40,
+        ExprInstance::GUint8(_) => 41,
     }
 }
 
@@ -1288,6 +1342,11 @@ mod tests {
                 vec![],
             ),
             (ExprInstance::GFloat32(1.0f32.to_bits()), vec![]),
+            (ExprInstance::GUint64(u64::MAX), vec![]),
+            (ExprInstance::GInt32(i32::MIN), vec![]),
+            (ExprInstance::GUint32(u32::MAX), vec![]),
+            (ExprInstance::GUint16(u16::MAX.into()), vec![]),
+            (ExprInstance::GUint8(u8::MAX.into()), vec![]),
             (
                 ExprInstance::EVarBody(EVar {
                     v: Some(Var::default()),
@@ -1790,7 +1849,7 @@ mod tests {
             }],
             cost_stacks: vec![CostStack { cells: vec![CostSignature {
                 value: Some(Value::Quote(tagged(4))),
-            }] }],
+            }], parallel_tail: Vec::new() }],
             ..Default::default()
         };
         let mut borrowed = Vec::new();

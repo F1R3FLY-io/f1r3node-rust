@@ -87,6 +87,7 @@ fn reserve_slot(
     let source = match &row.source {
         NativeOperationSource::Produce(source) => IOEvent::Produce(producer(source)),
         NativeOperationSource::Consume(source) => IOEvent::Consume(consumer(source)),
+        NativeOperationSource::Resting(_) => panic!("historical fixture cannot contain Resting"),
     };
     operation_context::scope(
         OperationOrder {

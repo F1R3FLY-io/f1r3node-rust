@@ -83,6 +83,21 @@ impl Match<u8, u8, u8> for Matcher {
 
 type Space = ReplayRSpace<u8, u8, u8, u8>;
 
+fn incoming(value: u8, persist: bool, source: &Produce) -> Datum<u8> {
+    Datum {
+        a: Arc::new(value),
+        persist,
+        source: source.clone(),
+    }
+}
+
+fn matched(selection: ProduceSelection<u8, u8, u8, u8>) -> PreparedProduceCandidate<u8, u8, u8, u8> {
+    match selection {
+        ProduceSelection::Matched { prepared, .. } => prepared,
+        ProduceSelection::Unmatched(_) => panic!("expected a prepared produce candidate"),
+    }
+}
+
 async fn space() -> Space {
     let mut stores = InMemoryStoreManager::new();
     RSpace::create_with_replay(stores.r_space_stores().await.unwrap(), Arc::new(Box::new(Matcher)))
@@ -95,12 +110,14 @@ fn with_reader<T>(
     meter: &Meter,
     action: impl FnOnce(&CandidateReader<'_, u8, u8, u8, u8>) -> T,
 ) -> T {
-    let data = |channel: &u8| {
+    // Changed by D-C2c (D-S1, DR-96): the readers receive the keys; these
+    // fixtures read the space's legacy store.
+    let data = |channel: &u8, _key: StoreKey| {
         space
             .get_store()
             .get_data_view_with_reader(channel, &|| Ok(Vec::new()), meter)
     };
-    let continuations = |channels: &[u8]| {
+    let continuations = |channels: &[u8], _keys: &GroupKeys| {
         space
             .get_store()
             .get_continuation_views_with_reader(channels, &|| Ok(Vec::new()), meter)
@@ -112,10 +129,29 @@ fn with_reader<T>(
     })
 }
 
+/// D-C2c (DR-96): channel keys on an unlimited meter, computed before the
+/// metered work under test.
+fn channel_keys(channels: &[u8]) -> Vec<StoreKey> {
+    let free = |_: usize, _: usize, _: usize| Ok::<(), RSpaceError>(());
+    channels
+        .iter()
+        .map(|channel| native_source::channel_key(channel, &free).expect("an unlimited meter"))
+        .collect()
+}
+
+/// D-C2c (DR-96): the keys of the join groups on an unlimited meter.
+fn operation_keys(joins: &[Vec<u8>]) -> OperationKeys {
+    let free = |_: usize, _: usize, _: usize| Ok::<(), RSpaceError>(());
+    OperationKeys::build(joins, &free).expect("an unlimited meter")
+}
+
 fn put(space: &Space, channel: u8, value: u8, persistent: bool) {
     let datum = Datum::create(&channel, value, persistent);
     space.increment_produce_counter(&datum.source, persistent);
-    space.get_store().put_datum(&channel, datum);
+    space
+        .get_store()
+        .put_datum(&channel, datum)
+        .expect("hot datum write");
 }
 
 fn waiting(space: &Space, channels: &[u8], patterns: Vec<u8>, body: u8) -> Consume {
@@ -128,7 +164,8 @@ fn waiting(space: &Space, channels: &[u8], patterns: Vec<u8>, body: u8) -> Consu
             persist: false,
             peeks: BTreeSet::new(),
             source: source.clone(),
-        });
+        })
+        .expect("hot continuation write");
     source
 }
 
@@ -246,15 +283,28 @@ async fn counter_preparation_prepays_nested_source_cleanup() {
             .unwrap();
         meter.used.get()[0]
     };
-    let copy_work = |source: &Produce| {
+    let copy_and_release_work = |source: &Produce| {
         let meter = Meter::default();
-        native_backing::reserve(source, &meter).unwrap();
+        native_backing::reserve_blocks_copy_and_cleanup(source, &meter).unwrap();
         meter.used.get()[0]
+    };
+    let copy_work = |source: &Produce| {
+        let operations = std::cell::Cell::new(0_usize);
+        shared::rust::clone_backing::reserve_blocks(source, &|added, _, _| {
+            operations.set(operations.get() + added);
+            Ok(())
+        })
+        .expect("block copy charge");
+        operations.get()
     };
     let added_work = measure(&large) - measure(&small);
     let added_copy_work = copy_work(&large) - copy_work(&small);
     assert!(added_copy_work > 0);
-    assert!(added_work >= added_copy_work * 2);
+    assert_eq!(
+        added_work,
+        copy_and_release_work(&large) - copy_and_release_work(&small)
+    );
+    assert!(added_work > added_copy_work);
     assert!(space.produce_counter.lock().unwrap().is_empty());
 }
 
@@ -273,7 +323,7 @@ async fn counter_charge_is_logarithmic() {
         [bound, bound * 2 * hash_bytes, 0]
     };
     let copy = Meter::default();
-    native_backing::reserve_copy_and_cleanup(&probe, &copy).expect("copy charge");
+    native_backing::reserve_blocks_copy_and_cleanup(&probe, &copy).expect("copy charge");
     let copy = copy.used.get();
     for size in [0_usize, 1, 10, 11, 70, 71, 430, 431, 2_000] {
         {
@@ -361,9 +411,10 @@ proptest! {
             for value in values { put(&space, 1, value, persistent); }
             let channels = vec![1; patterns.len()];
             let source = Consume::create(&channels, &patterns, &9u8, false);
-            let expected = space.prepare_native_consume_candidate(&channels, &patterns, &9, &source, &BTreeSet::new(), None);
+            let expected = space.prepare_native_consume_candidate(&channels, &patterns, &9, &source, &BTreeSet::new(), None).expect("candidate preparation");
             let meter = Meter::default();
-            let actual = with_reader(&space, &meter, |reader| space.prepare_metered_consume_candidate(&channels, &patterns, &9, &source, &BTreeSet::new(), None, reader)).unwrap();
+            let keys = channel_keys(&channels);
+            let actual = with_reader(&space, &meter, |reader| space.prepare_metered_consume_candidate(&channels, &keys, &patterns, &9, &source, &BTreeSet::new(), None, reader)).unwrap();
             assert_eq!(actual.is_some(), expected.is_some());
             if let (Some(actual), Some(expected)) = (actual, expected) {
                 same_data(&actual.data, &expected.data);
@@ -386,16 +437,17 @@ proptest! {
             let patterns = vec![0; values.len()];
             let peeks = if peek { BTreeSet::from([0]) } else { BTreeSet::new() };
             let consume = Consume::create(&channels, &patterns, &9u8, false);
-            space.get_store().put_continuation(&channels, WaitingContinuation { patterns: Arc::new(patterns), continuation: Arc::new(9), persist: false, peeks, source: consume });
+            space.get_store().put_continuation(&channels, WaitingContinuation { patterns: Arc::new(patterns), continuation: Arc::new(9), persist: false, peeks, source: consume }).expect("hot continuation write");
             let source = Produce::create(&1u8, &incoming, persistent);
             let expected = space.prepare_native_produce_candidate(&1, &incoming, persistent, &source, vec![channels.clone()], None).unwrap().unwrap();
             let before = state(&space);
             let meter = Meter::default();
-            let actual = with_reader(&space, &meter, |reader| space.prepare_metered_produce_candidate(&1, &incoming, persistent, &source, vec![channels.clone()], None, reader)).unwrap().unwrap();
+            let keys = operation_keys(&[channels.clone()]);
+            let actual = matched(with_reader(&space, &meter, |reader| space.prepare_metered_produce_candidate(&1, self::incoming(incoming, persistent, &source), vec![channels.clone()], &keys, None, reader)).unwrap());
             same_data(&actual.candidate.data_candidates, &expected.candidate.data_candidates);
             assert_eq!(bincode::serialize(&actual.comm).unwrap(), bincode::serialize(&expected.comm).unwrap());
             let identity = Logical(expected.comm);
-            let selected = with_reader(&space, &meter, |reader| space.prepare_metered_produce_candidate(&1, &incoming, persistent, &source, vec![channels], Some(&identity), reader)).unwrap().unwrap();
+            let selected = matched(with_reader(&space, &meter, |reader| space.prepare_metered_produce_candidate(&1, self::incoming(incoming, persistent, &source), vec![channels], &keys, Some(&identity), reader)).unwrap());
             same_data(&selected.candidate.data_candidates, &actual.candidate.data_candidates);
             assert_eq!(state(&space), before);
         });
@@ -523,11 +575,16 @@ async fn every_consume_cut_preserves_warm_state_and_prepays_coordinator_allocati
     let channels = [1, 1, 1];
     let patterns = [0, 0, 0];
     let source = Consume::create(&channels.to_vec(), &patterns.to_vec(), &9u8, false);
-    space.get_store().get_continuations(&channels);
+    space
+        .get_store()
+        .get_continuations(&channels)
+        .expect("hot continuation read");
+    let keys = channel_keys(&channels);
     let baseline = Meter::default();
     with_reader(&space, &baseline, |reader| {
         space.prepare_metered_consume_candidate(
             &channels,
+            &keys,
             &patterns,
             &9,
             &source,
@@ -548,7 +605,7 @@ async fn every_consume_cut_preserves_warm_state_and_prepays_coordinator_allocati
         let (result, actual) = measure_allocations(|| {
             with_reader(&space, &meter, |reader| {
                 space.prepare_metered_consume_candidate(
-                    &channels, &patterns, &9, &source, &peeks, None, reader,
+                    &channels, &keys, &patterns, &9, &source, &peeks, None, reader,
                 )
             })
         });
@@ -576,11 +633,19 @@ async fn produce_rolls_back_each_failed_probe_and_preserves_legacy_selection() {
         .prepare_native_produce_candidate(&1, &6, false, &source, joins.clone(), None)
         .unwrap()
         .unwrap();
+    let keys = operation_keys(&joins);
     let baseline = Meter::default();
     let actual = with_reader(&space, &baseline, |reader| {
-        space.prepare_metered_produce_candidate(&1, &6, false, &source, joins.clone(), None, reader)
+        space.prepare_metered_produce_candidate(
+            &1,
+            incoming(6, false, &source),
+            joins.clone(),
+            &keys,
+            None,
+            reader,
+        )
     })
-    .unwrap()
+    .map(matched)
     .unwrap();
     same_data(&actual.candidate.data_candidates, &expected.candidate.data_candidates);
     assert_eq!(actual.candidate.continuation_index, expected.candidate.continuation_index);
@@ -595,13 +660,16 @@ async fn produce_rolls_back_each_failed_probe_and_preserves_legacy_selection() {
     let before = state(&space);
     for reject in 0..baseline.calls.get() {
         let input = joins.clone();
+        let datum = incoming(6, false, &source);
         let meter = Meter {
             reject: Some(reject),
             ..Default::default()
         };
         let (result, actual) = measure_allocations(|| {
             with_reader(&space, &meter, |reader| {
-                space.prepare_metered_produce_candidate(&1, &6, false, &source, input, None, reader)
+                space.prepare_metered_produce_candidate(
+                    &1, datum, input, &keys, None, reader,
+                )
             })
         });
         assert!(matches!(result, Err(RSpaceError::HostWorkRejected)), "cut {reject}");
@@ -657,7 +725,8 @@ async fn exact_identity_rejection_and_counter_overflow_preserve_state() {
     let source = waiting(&space, &[1], vec![0], 9);
     let candidate = space
         .prepare_native_consume_candidate(&[1], &[0], &9, &source, &BTreeSet::new(), None)
-        .unwrap();
+        .unwrap()
+        .expect("candidate");
     let before = state(&space);
     for field in 0..8 {
         let mut changed = candidate.comm.clone();
@@ -677,9 +746,11 @@ async fn exact_identity_rejection_and_counter_overflow_preserve_state() {
             _ => changed.times_repeated.clear(),
         }
         let meter = Meter::default();
+        let keys = channel_keys(&[1]);
         assert!(
             with_reader(&space, &meter, |reader| space.prepare_metered_consume_candidate(
                 &[1],
+                &keys,
                 &[0],
                 &9,
                 &source,
@@ -701,9 +772,13 @@ async fn exact_identity_rejection_and_counter_overflow_preserve_state() {
     let before = state(&space);
     let meter = Meter::default();
     let input = vec![vec![1]];
+    let keys = operation_keys(&input);
+    let datum = incoming(8, false, &trigger);
     let (result, bytes) = measure_allocations(|| {
         with_reader(&space, &meter, |reader| {
-            space.prepare_metered_produce_candidate(&1, &8, false, &trigger, input, None, reader)
+            space.prepare_metered_produce_candidate(
+                &1, datum, input, &keys, None, reader,
+            )
         })
     });
     assert!(matches!(result, Err(RSpaceError::InterpreterError(_))));
@@ -767,13 +842,14 @@ fn match_data_charge(
 ) -> (bool, [usize; 3]) {
     let channel = "channel".to_string();
     let data = vec![ChannelData {
-        channel: channel.clone(),
+        channel: &channel,
         values: vec![(Cow::Borrowed(datum), 0)],
     }];
     let meter = Meter::default();
     let matched = space
         .metered_match_data(
             std::slice::from_ref(&channel),
+            &[0],
             &[pattern.to_string()],
             &continuation.to_string(),
             &data,

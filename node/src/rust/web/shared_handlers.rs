@@ -361,7 +361,10 @@ fn classify_interpreter_error(ie: &InterpreterError) -> (StatusCode, &'static st
     use InterpreterError::*;
     use StatusCode as S;
 
-    match ie {
+    // HTTP mapping is a function of the leaf error, not the number of
+    // detached-branch location wrappers. `root_cause` peels them iteratively;
+    // diagnostics below still format `ie` so the outer path is retained.
+    match ie.root_cause() {
         // === 400 Bad Request — term rejected before execution ===
         SyntaxError(_)
         | LexerError(_)
@@ -379,6 +382,7 @@ fn classify_interpreter_error(ie: &InterpreterError) -> (StatusCode, &'static st
         | UnboundVariableRefPos { .. }
         | ReceiveOnSameChannelsError { .. }
         | PatternReceiveError(_)
+        | UndecidableGuard { .. }
         | UnexpectedBundleContent(_) => (S::BAD_REQUEST, "rholang_bad_term", ie.to_string()),
 
         // Bad arguments to a system process (e.g. rho:io:stdout) — client error
@@ -442,6 +446,13 @@ fn classify_interpreter_error(ie: &InterpreterError) -> (StatusCode, &'static st
                 .join("; ");
             (S::UNPROCESSABLE_ENTITY, "aggregate_error", msg)
         }
+        // Unreachable under the `root_cause` contract; fail closed if that
+        // contract changes rather than silently treating a wrapper as a term.
+        Located { .. } => (
+            S::INTERNAL_SERVER_ERROR,
+            "interpreter_internal_error",
+            ie.to_string(),
+        ),
     }
 }
 
@@ -758,7 +769,7 @@ mod tests {
         use casper::rust::errors::CasperError;
         use rholang::rust::interpreter::errors::InterpreterError;
 
-        use super::super::classify_error;
+        use super::super::{classify_error, classify_interpreter_error};
 
         fn classify(err: impl std::error::Error + Send + Sync + 'static) -> (StatusCode, String) {
             let (status, kind, _message) = classify_error(&eyre::Report::new(err));
@@ -908,11 +919,30 @@ mod tests {
                 InterpreterError::LexerError("boom".to_string()),
                 InterpreterError::ParserError("boom".to_string()),
                 InterpreterError::PatternReceiveError("boom".to_string()),
+                InterpreterError::UndecidableGuard {
+                    clause: "where",
+                    obstructions: vec!["unsupported method".to_string()],
+                },
             ] {
                 let (status, kind) = classify(CasperError::InterpreterError(err));
                 assert_eq!(status, StatusCode::BAD_REQUEST);
                 assert_eq!(kind, "rholang_bad_term");
             }
+        }
+
+        #[test]
+        fn nested_located_interpreter_error_keeps_leaf_classification_and_outer_path() {
+            let error = InterpreterError::Located {
+                path: vec![1],
+                source: Box::new(InterpreterError::Located {
+                    path: vec![2],
+                    source: Box::new(InterpreterError::HostWorkRejected),
+                }),
+            };
+            let (status, kind, detail) = classify_interpreter_error(&error);
+            assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+            assert_eq!(kind, "host_work_rejected");
+            assert_eq!(detail, error.to_string());
         }
 
         #[test]

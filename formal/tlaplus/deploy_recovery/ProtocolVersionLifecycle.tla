@@ -26,8 +26,9 @@ CONSTANTS
     RejectUnsupportedApprovedVersion
 
 LegacyProtocol == 1
-CurrentProtocol == 3
-UnsupportedProtocol == 4
+\* Ratified D-01 selects 7 after FIP approval; 6 is the retired PR #216 value.
+CurrentProtocol == 7
+UnsupportedProtocol == 6
 NoVersion == 0
 Versions == {LegacyProtocol, CurrentProtocol, UnsupportedProtocol}
 SupportedVersions == {CurrentProtocol}

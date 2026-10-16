@@ -553,6 +553,9 @@ impl NativePhloExecutionContract<'_> {
             let stage = match row.source {
                 NativeOperationSource::Produce(_) => NativeAttemptStage::ProduceIntroduction,
                 NativeOperationSource::Consume(_) => NativeAttemptStage::ConsumeIntroduction,
+                NativeOperationSource::Resting(_) => {
+                    return Err(NativeOperationJournalError::Peeks)
+                }
             };
             let intro = check_link(row, row.introduction, stage, recording, &mut owned, host)?;
             let comm = row

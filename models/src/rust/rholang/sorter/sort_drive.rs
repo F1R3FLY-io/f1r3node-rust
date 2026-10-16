@@ -294,6 +294,7 @@ pub(crate) enum SortKont<'t> {
     },
     CostStackK {
         n_cells: usize,
+        n_branches: usize,
     },
 }
 
@@ -364,7 +365,10 @@ impl SortKont<'_> {
             SortKont::CostSignedTermK { term } => {
                 usize::from(term.body.is_some()) + usize::from(term.signature.is_some())
             }
-            SortKont::CostStackK { n_cells } => *n_cells,
+            SortKont::CostStackK {
+                n_cells,
+                n_branches,
+            } => n_cells + n_branches,
         }
     }
 }
@@ -923,10 +927,12 @@ fn descend_cost_stack<'t>(
 ) {
     let kont = SortKont::CostStackK {
         n_cells: stack.cells.len(),
+        n_branches: stack.parallel_tail.len(),
     };
     let mut next = kont.arity() as u32;
     work.push(Step::Combine(IxKont { idx, kont }));
     push_reversed(work, &mut next, &stack.cells, NodeKind::CostSignature);
+    push_reversed(work, &mut next, &stack.parallel_tail, NodeKind::CostStack);
     debug_assert_eq!(next, 0, "descend_cost_stack: slot list and arity disagree");
 }
 
@@ -1126,7 +1132,10 @@ fn run_combine(k: SortKont<'_>, vals: &mut Vec<ValItem>) -> SortVal {
         SortKont::ExprK { expr, n } => combine_expr_k(expr, n, vals),
         SortKont::CostSignatureK { signature, n } => combine_cost_signature_k(signature, n, vals),
         SortKont::CostSignedTermK { term } => combine_cost_signed_term_k(term, vals),
-        SortKont::CostStackK { n_cells } => combine_cost_stack_k(n_cells, vals),
+        SortKont::CostStackK {
+            n_cells,
+            n_branches,
+        } => combine_cost_stack_k(n_cells, n_branches, vals),
     }
 }
 
@@ -1378,16 +1387,33 @@ fn combine_cost_signed_term_k(term: &CostSignedTerm, vals: &mut Vec<ValItem>) ->
 }
 
 #[inline(never)]
-fn combine_cost_stack_k(n_cells: usize, vals: &mut Vec<ValItem>) -> SortVal {
+fn combine_cost_stack_k(n_cells: usize, n_branches: usize, vals: &mut Vec<ValItem>) -> SortVal {
     let cells = pop_n_cost_signature(vals, n_cells);
+    let mut branches = pop_n_cost_stack(vals, n_branches);
     let mut terms = Vec::with_capacity(n_cells);
     let mut scores = Vec::with_capacity(n_cells);
     for cell in cells {
         terms.push(cell.term);
         scores.push(cell.score);
     }
+    let mut parallel_tail = Vec::with_capacity(n_branches);
+    if n_branches > 0 {
+        ScoredTerm::sort_vec(&mut branches);
+        let mut branch_scores = Vec::with_capacity(n_branches);
+        for branch in branches {
+            parallel_tail.push(branch.term);
+            branch_scores.push(branch.score);
+        }
+        scores.push(Tree::<ScoreAtom>::create_node_from_i32(
+            Score::COST_STACK_PARALLEL,
+            branch_scores,
+        ));
+    }
     SortVal::CostStack(ScoredTerm {
-        term: CostStack { cells: terms },
+        term: CostStack {
+            cells: terms,
+            parallel_tail,
+        },
         score: Tree::<ScoreAtom>::create_node_from_i32(Score::COST_STACK, scores),
     })
 }

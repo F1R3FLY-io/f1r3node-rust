@@ -236,11 +236,17 @@ async fn fixture(
 async fn fingerprint(
     replay: &TestReplaySpace,
 ) -> (String, Vec<u8>, String, Vec<String>, Vec<Vec<String>>) {
-    replay.get_data(&"channel".to_string()).await;
-    let mut joins = replay.get_joins("channel".into()).await;
+    replay
+        .get_data(&"channel".to_string())
+        .await
+        .expect("data read");
+    let mut joins = replay.get_joins("channel".into()).await.expect("join read");
     joins.push(vec!["channel".to_string()]);
     for channels in joins {
-        replay.get_waiting_continuations(channels).await;
+        replay
+            .get_waiting_continuations(channels)
+            .await
+            .expect("continuation read");
     }
     let mut rows: Vec<_> = replay
         .to_map()
@@ -268,7 +274,7 @@ async fn fingerprint(
         bincode::serialize(&checkpoint.produce_counter).unwrap(),
         format!("{:?}", checkpoint.log),
         bindings,
-        replay.get_joins("channel".into()).await,
+        replay.get_joins("channel".into()).await.expect("join read"),
     )
 }
 
@@ -724,18 +730,13 @@ async fn store_preserves_future_bindings_and_counts_introduction_once() {
 }
 
 #[tokio::test]
-async fn store_consumes_greedy_guard_veto_without_exhaustive_search() {
+async fn store_directive_cannot_suppress_a_guard_backtrack_match() {
     use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
     use rspace_plus_plus::rspace::internal::Datum;
     let channel = "channel".to_string();
     let mut values = vec!["one".to_string(), "two".to_string()];
-    // I1 (DR-75): play orders candidates by (source hash, digest, index), not
-    // by digest alone, so the fixture predicts the play order with that
-    // key. values.sort_by_key(|value| {
-    //     Blake2b256Hash::new(
-    //         &bincode::serialize(&Datum::create(&channel, value.clone(),
-    // false)).unwrap(),     )
-    // });
+    // Play orders candidates by (source hash, digest, index). The guard vetoes
+    // the first datum, so the complete search must select the second.
     values.sort_by_key(|value| {
         let datum = Datum::create(&channel, value.clone(), false);
         let digest = Blake2b256Hash::new(&datum.candidate_ordering_bytes());
@@ -753,27 +754,26 @@ async fn store_consumes_greedy_guard_veto_without_exhaustive_search() {
             .unwrap();
     }
     let before = play.create_checkpoint().await.unwrap();
-    assert!(
-        play.consume(vec![channel.clone()], vec![Any], "body".into(), false, BTreeSet::new())
-            .await
-            .unwrap()
-            .is_none()
-    );
-    let expected = play.to_map().await;
+    let (_, selected) = play
+        .consume(vec![channel.clone()], vec![Any], "body".into(), false, BTreeSet::new())
+        .await
+        .unwrap()
+        .expect("guard backtracking finds the second datum");
+    assert_eq!(selected[0].matched_datum, values[1]);
+    let recorded = play.create_checkpoint().await.unwrap();
     replay
-        .rig_and_reset(before.root, play.create_checkpoint().await.unwrap().log)
+        .rig_and_reset(before.root, recorded.log)
         .await
         .unwrap();
     replay.set_accounting_observer(Some(store_observer()));
-    assert!(
-        replay
-            .consume(vec![channel.clone()], vec![Any], "body".into(), false, BTreeSet::new())
-            .await
-            .unwrap()
-            .is_none()
-    );
-    assert_eq!(replay.to_map().await, expected);
-    assert_eq!(replay.get_data(&channel).await.len(), 2);
+    let replay_result = replay
+        .consume(vec![channel.clone()], vec![Any], "body".into(), false, BTreeSet::new())
+        .await;
+    assert!(matches!(
+        replay_result,
+        Err(RSpaceError::InterpreterError(message)) if message == "Native replay directive does not match execution"
+    ));
+    assert_eq!(replay.get_data(&channel).await.expect("data read").len(), 2);
 }
 
 struct NamedGuard {

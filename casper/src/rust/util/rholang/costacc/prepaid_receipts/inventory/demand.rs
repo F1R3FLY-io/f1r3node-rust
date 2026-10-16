@@ -242,11 +242,262 @@ impl NativePrepaidInventory<'_, '_> {
         })
     }
 
+    /// Select the receipt occurrence for an already checked physical trace.
+    /// Every branch pop is matched, in authenticated tree preorder, against
+    /// disjoint cells in one original source occurrence. Unlike the legacy
+    /// selector, this cannot invent a child draw from cumulative demand.
+    pub fn select_verified_measured_demand(
+        &self,
+        verified: &VerifiedPurseStackPops<'_>,
+        demand: &NativePhloAcquisitionDemand<'_>,
+        limits: NativePrepaidDemandLimits,
+        budget: &HostWorkBudget,
+    ) -> Result<CanonicalPrepaidSelection, CasperError> {
+        if self.root() != verified.live_root()
+            || demand.resources().len() > limits.execution.resource_entries
+            || verified.pops().len() > limits.draws
+        {
+            return Err(invalid(
+                "verified prepaid selection root or entry limit differs",
+            ));
+        }
+        let occurrence_count = demand.occurrence_count();
+        reserve(
+            budget,
+            HostWorkDimension::SearchStateBytes,
+            occurrence_count
+                .checked_mul(
+                    size_of::<(NativePhloLocatedDemand<'_>, PhloResourceAmount<'_>)>()
+                        + size_of::<bool>() * 2
+                        + size_of::<usize>() * 2,
+                )
+                .and_then(|bytes| {
+                    bytes.checked_add(verified.pops().len().checked_mul(
+                        size_of::<PrepaidStackPop>() + size_of::<([u8; 32], usize)>(),
+                    )?)
+                })
+                .ok_or_else(|| invalid("verified prepaid selection allocation overflow"))?,
+        )?;
+        let mut origins = Vec::new();
+        origins
+            .try_reserve_exact(occurrence_count)
+            .map_err(|_| invalid("verified prepaid origin allocation failed"))?;
+        origins.extend(demand.occurrences());
+        let mut used = Vec::new();
+        used.try_reserve_exact(occurrence_count)
+            .map_err(|_| invalid("verified prepaid marker allocation failed"))?;
+        used.resize(occurrence_count, false);
+        let mut candidate_used = Vec::new();
+        candidate_used
+            .try_reserve_exact(occurrence_count)
+            .map_err(|_| invalid("verified prepaid marker allocation failed"))?;
+        candidate_used.resize(occurrence_count, false);
+        let mut candidate_positions = Vec::new();
+        candidate_positions
+            .try_reserve_exact(occurrence_count)
+            .map_err(|_| invalid("verified prepaid position allocation failed"))?;
+        let mut draws = Vec::new();
+        draws
+            .try_reserve_exact(verified.pops().len())
+            .map_err(|_| invalid("verified prepaid draw allocation failed"))?;
+        let mut demand_positions = Vec::new();
+        demand_positions
+            .try_reserve_exact(occurrence_count)
+            .map_err(|_| invalid("verified prepaid position allocation failed"))?;
+        let mut selected_occurrences = Vec::new();
+        selected_occurrences
+            .try_reserve_exact(verified.pops().len())
+            .map_err(|_| invalid("verified prepaid occurrence allocation failed"))?;
+        let backing = |operations: usize, scanned: usize, bytes: usize| {
+            for (dimension, amount) in [
+                (HostWorkDimension::VerificationOperations, operations),
+                (HostWorkDimension::VerificationBytes, scanned),
+                (HostWorkDimension::SearchStateBytes, bytes),
+            ] {
+                reserve(budget, dimension, amount)
+                    .map_err(|_| shared::rust::clone_backing::BackingError::Rejected)?;
+            }
+            Ok(())
+        };
+        for stack in self.captured.stacks() {
+            reserve(budget, HostWorkDimension::VerificationOperations, 1)?;
+            let branches = stack_branches_metered(stack.instance_id, &stack.stack, &backing)
+                .map_err(|error| invalid(&error.to_string()))?;
+            reserve(
+                budget,
+                HostWorkDimension::VerificationOperations,
+                branches
+                    .len()
+                    .checked_mul(2)
+                    .ok_or_else(|| invalid("verified prepaid branch work overflow"))?,
+            )?;
+            let total = branches.iter().try_fold(0_usize, |sum, branch| {
+                sum.checked_add(branch.stack.cells.len())
+                    .ok_or_else(|| invalid("verified prepaid transfer length overflow"))
+            })?;
+            let selected_count =
+                branches.iter().try_fold(0_usize, |sum, branch| {
+                    match verified.pops().get(&branch.stack_id) {
+                        Some(pop) => sum
+                            .checked_add(
+                                usize::try_from(*pop).map_err(|_| {
+                                    invalid("verified prepaid branch count overflow")
+                                })?,
+                            )
+                            .ok_or_else(|| invalid("verified prepaid selected count overflow")),
+                        None => Ok(sum),
+                    }
+                })?;
+            if selected_count == 0 {
+                continue;
+            }
+            if selected_count > occurrence_count || selected_count > candidate_positions.capacity()
+            {
+                return Err(invalid(
+                    "verified prepaid demand cannot cover all selected cells",
+                ));
+            }
+            let records = self
+                .sources
+                .get(&stack.source_hash)
+                .ok_or_else(|| invalid("verified prepaid stack has no rooted receipt inventory"))?;
+            let mut chosen_index = None;
+            for (receipt_index, record) in records.iter().enumerate() {
+                reserve(budget, HostWorkDimension::SearchCandidates, 1)?;
+                reserve(
+                    budget,
+                    HostWorkDimension::SearchCandidates,
+                    selected_occurrences.len(),
+                )?;
+                if record.len() != total
+                    || selected_occurrences.contains(&(stack.source_hash, receipt_index))
+                {
+                    continue;
+                }
+                reserve(budget, HostWorkDimension::SearchCandidates, branches.len())?;
+                candidate_positions.clear();
+                let mut matched_all = true;
+                'branches: for branch in &branches {
+                    let Some(pop) = verified.pops().get(&branch.stack_id) else {
+                        continue;
+                    };
+                    let pop = usize::try_from(*pop)
+                        .map_err(|_| invalid("verified prepaid branch count overflow"))?;
+                    if pop == 0 || pop > branch.stack.cells.len() {
+                        return Err(invalid("verified prepaid pop exceeds its branch prefix"));
+                    }
+                    for cell_index in 0..pop {
+                        let offset = branch
+                            .transfer_offset
+                            .checked_add(cell_index)
+                            .ok_or_else(|| invalid("verified prepaid branch offset overflow"))?;
+                        let cell = &record[offset];
+                        let current = &branch.stack.cells[cell_index];
+                        let mut matched = None;
+                        for (position, (origin, measured)) in origins.iter().enumerate() {
+                            reserve(budget, HostWorkDimension::SearchCandidates, 1)?;
+                            if used[position] || candidate_used[position] {
+                                continue;
+                            }
+                            let bytes = cell
+                                .receipt()
+                                .resource_bytes()
+                                .len()
+                                .checked_add(current.encoded_len())
+                                .and_then(|bytes| {
+                                    bytes.checked_add(measured.resource.location.len())
+                                })
+                                .and_then(|bytes| {
+                                    bytes.checked_add(measured.resource.acquisition_terms.len())
+                                })
+                                .ok_or_else(|| invalid("verified prepaid comparison overflow"))?;
+                            reserve(budget, HostWorkDimension::VerificationBytes, bytes)?;
+                            reserve(budget, HostWorkDimension::VerificationOperations, bytes)?;
+                            if cell.resource() == measured.resource
+                                && current == origin.purse().original_authority()
+                            {
+                                matched = Some(position);
+                                break;
+                            }
+                        }
+                        let Some(position) = matched else {
+                            matched_all = false;
+                            break 'branches;
+                        };
+                        candidate_used[position] = true;
+                        candidate_positions.push(position);
+                    }
+                }
+                for position in &candidate_positions {
+                    candidate_used[*position] = false;
+                }
+                if matched_all {
+                    chosen_index = Some(receipt_index);
+                    break;
+                }
+            }
+            let receipt_index = chosen_index.ok_or_else(|| {
+                invalid(
+                    "verified prepaid physical draw has no matching original receipt occurrence",
+                )
+            })?;
+            selected_occurrences.push((stack.source_hash, receipt_index));
+            for branch in &branches {
+                let Some(pop) = verified.pops().get(&branch.stack_id) else {
+                    continue;
+                };
+                if draws.len() >= limits.draws {
+                    return Err(invalid("verified prepaid selection exceeds draw limit"));
+                }
+                draws.push(PrepaidStackPop {
+                    stack_id: branch.stack_id,
+                    receipt_index,
+                    count: *pop,
+                });
+            }
+            for position in candidate_positions.drain(..) {
+                used[position] = true;
+                demand_positions.push(position);
+            }
+        }
+        if draws.len() != verified.pops().len() {
+            return Err(invalid(
+                "verified prepaid selection omitted a physical branch draw",
+            ));
+        }
+        Ok(CanonicalPrepaidSelection {
+            draws,
+            demand_positions,
+        })
+    }
+
     pub fn bind_measured_demand<'a>(
         &'a self,
         input: NativePrepaidDemandInput<'a>,
         limits: NativePrepaidDemandLimits,
         budget: &HostWorkBudget,
+    ) -> Result<NativePrepaidDemandBinding<'a>, CasperError> {
+        let prefixes = self.prefixes(input.draws, limits.draws, budget)?;
+        self.bind_measured_demand_with_prefixes(input, limits, budget, prefixes)
+    }
+
+    pub fn bind_measured_demand_verified<'a>(
+        &'a self,
+        input: NativePrepaidDemandInput<'a>,
+        verified: &VerifiedPurseStackPops<'_>,
+        limits: NativePrepaidDemandLimits,
+        budget: &HostWorkBudget,
+    ) -> Result<NativePrepaidDemandBinding<'a>, CasperError> {
+        let prefixes = self.prefixes_verified(input.draws, verified, limits.draws, budget)?;
+        self.bind_measured_demand_with_prefixes(input, limits, budget, prefixes)
+    }
+
+    fn bind_measured_demand_with_prefixes<'a>(
+        &'a self,
+        input: NativePrepaidDemandInput<'a>,
+        limits: NativePrepaidDemandLimits,
+        budget: &HostWorkBudget,
+        prefixes: Vec<NativePrepaidPrefix<'a>>,
     ) -> Result<NativePrepaidDemandBinding<'a>, CasperError> {
         if input.expected_root != self.root() {
             return Err(invalid(
@@ -261,7 +512,6 @@ impl NativePrepaidInventory<'_, '_> {
         self.captured
             .policy()
             .check_measured_acquisition(input.controls, input.demand)?;
-        let prefixes = self.prefixes(input.draws, limits.draws, budget)?;
         let count = prefixes.iter().try_fold(0_usize, |count, prefix| {
             count
                 .checked_add(prefix.resources().len())

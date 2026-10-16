@@ -2,7 +2,6 @@
 // Moved from casper/tests/util/rholang/resources.rs to casper/src/rust/test_utils/util/rholang/resources.rs
 // All imports fixed for library crate context
 
-use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicU64;
@@ -12,12 +11,10 @@ use std::{fs, io};
 use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
 use block_storage::rust::dag::block_metadata_store::BlockMetadataStore;
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
-use dashmap::DashSet;
 use models::rhoapi::Par;
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::protocol::casper_message::BlockMessage;
 use parking_lot::RwLock;
-use prost::bytes::Bytes;
 use rholang::rust::interpreter::rho_runtime::RhoHistoryRepository;
 use rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore;
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
@@ -29,7 +26,7 @@ use shared::rust::test_scratch::{self, ProcessScratchDir};
 use tempfile::Builder;
 use uuid::Uuid;
 
-use crate::rust::casper::{CasperShardConf, CasperSnapshot, OnChainCasperState};
+use crate::rust::casper::CasperSnapshot;
 use crate::rust::errors::CasperError;
 use crate::rust::genesis::genesis::Genesis;
 use crate::rust::storage::rnode_key_value_store_manager::rnode_db_mapping;
@@ -460,23 +457,18 @@ pub async fn block_dag_storage_from_dyn(
     let invalid_blocks_db: KeyValueTypedStoreImpl<BlockHashSerde, BlockMetadata> =
         KeyValueTypedStoreImpl::new(invalid_blocks_kv_store);
 
-    let deploy_index_kv_store = kvm.store("deploy-index".to_string()).await.map_err(|e| {
-        shared::rust::store::key_value_store::KvStoreError::IoError(format!(
-            "Failed to get deploy-index store: {:?}",
-            e
-        ))
-    })?;
-    let deploy_index_db: KeyValueTypedStoreImpl<
-        block_storage::rust::dag::block_dag_key_value_storage::DeployId,
-        BlockHashSerde,
-    > = KeyValueTypedStoreImpl::new(deploy_index_kv_store);
+    let floor_index_db: KeyValueTypedStoreImpl<BlockHashSerde, BlockHashSerde> =
+        KeyValueTypedStoreImpl::new(kvm.store("floor-index".to_string()).await?);
+    let frontier_index_db: KeyValueTypedStoreImpl<BlockHashSerde, BlockHashSerde> =
+        KeyValueTypedStoreImpl::new(kvm.store("frontier-index".to_string()).await?);
 
     Ok(BlockDagKeyValueStorage::from_parts(
         Arc::new(RwLock::new(())),
         latest_messages_db,
         Arc::new(RwLock::new(block_metadata_store)),
-        Arc::new(RwLock::new(deploy_index_db)),
         invalid_blocks_db,
+        floor_index_db,
+        frontier_index_db,
         equivocation_tracker_store,
         Arc::new(AtomicU64::new(0)),
     ))
@@ -502,9 +494,13 @@ pub async fn key_value_deploy_storage_from_dyn(
     })?;
     let deploy_storage_db: KeyValueTypedStoreImpl<ByteString, Signed<DeployData>> =
         KeyValueTypedStoreImpl::new(deploy_storage_kv_store);
+    let envelope_storage_db =
+        KeyValueTypedStoreImpl::new(kvm.store("deploy_envelope_storage".to_string()).await?);
 
     Ok(KeyValueDeployStorage {
         store: deploy_storage_db,
+        envelope_store: envelope_storage_db,
+        envelope_rejections: Default::default(),
     })
 }
 
@@ -681,31 +677,17 @@ fn new_key_value_dag_representation() -> KeyValueDagRepresentation {
         last_finalized_block_hash: BlockHash::new(),
         finalized_blocks_set: imbl::HashSet::new(),
         block_metadata_index: Arc::new(RwLock::new(BlockMetadataStore::new(block_metadata_store))),
-        deploy_index: Arc::new(RwLock::new(KeyValueTypedStoreImpl::new(Arc::new(
-            InMemoryKeyValueStore::new(),
-        )))),
+        floor_index: KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
+        frontier_index: KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
+        lifecycle: Arc::new(RwLock::new(
+            block_storage::rust::dag::deploy_lifecycle_types::DeployLifecycleTables::in_memory(),
+        )),
+        carrier_index: Arc::new(RwLock::new(
+            block_storage::rust::dag::carrier_index::CarrierIndex::in_memory(),
+        )),
     }
 }
 
 pub fn mk_dummy_casper_snapshot() -> CasperSnapshot {
-    let dag = new_key_value_dag_representation();
-
-    CasperSnapshot {
-        dag,
-        last_finalized_block: Bytes::new(),
-        lca: Bytes::new(),
-        tips: Vec::new(),
-        parents: Vec::new(),
-        justifications: HashSet::new(),
-        invalid_blocks: HashMap::new(),
-        deploys_in_scope: Arc::new(DashSet::new()),
-        rejected_in_scope: Arc::new(DashSet::new()),
-        max_block_num: 0,
-        max_seq_nums: HashMap::new(),
-        on_chain_state: OnChainCasperState {
-            shard_conf: CasperShardConf::new(),
-            bonds_map: HashMap::new(),
-            active_validators: Vec::new(),
-        },
-    }
+    CasperSnapshot::new(new_key_value_dag_representation())
 }

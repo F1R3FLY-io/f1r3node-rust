@@ -85,11 +85,18 @@ fn metered_demand(
 }
 
 impl ReplayAuthorityBinding {
+    /// DR-101: the payer and deployment that resolve residue seals.
+    pub(super) fn residue_context(&self) -> Result<authority::ResidueContext, InterpreterError> {
+        authority::ResidueContext::new(&self.budget.signature(), self.budget.deploy_id())
+            .map_err(|error| recording_error(&error.to_string()))
+    }
+
     pub(super) fn new(budget: RuntimeBudget, session: [u8; 32]) -> Result<Self, InterpreterError> {
         let mut state = budget.authority_state.lock().expect("authority state");
         let native = state.native.as_ref().ok_or_else(invalid)?;
         if native.replay_bound
             || native.session != session
+            || state.standalone_resting_comm.is_some()
             || budget.has_comm_accounting_scope()
             || budget.is_unmetered()
             || !state.events.is_empty()
@@ -155,9 +162,13 @@ impl ReplayAuthorityBinding {
                 match (state.events.get(&id), row.retry) {
                     (Some(existing), true) if row.granted => {
                         let saved = existing.byte_observation.as_deref().ok_or_else(invalid)?;
-                        clone_backing::inspect(saved, &host)?;
+                        // Changed by D-O1 (DR-94): block accounting charges inline bytes once per enclosing block.
+                        // clone_backing::inspect(saved, &host)?;
+                        clone_backing::inspect_blocks(saved, &host)?;
                         // D-O5 (DR-89): the comparison reads the recorded observation.
-                        clone_backing::inspect(row.observation.as_ref(), &host)?;
+                        // Changed by D-O1 (DR-94): block accounting charges inline bytes once per enclosing block.
+                        // clone_backing::inspect(row.observation.as_ref(), &host)?;
+                        clone_backing::inspect_blocks(row.observation.as_ref(), &host)?;
                         if saved != row.observation.as_ref() {
                             return Err(invalid());
                         }
@@ -166,8 +177,14 @@ impl ReplayAuthorityBinding {
                         // D-O5 (DR-89): the granted event copies the authority now;
                         // a frontier row copies it at publication. Both keep a
                         // shared pointer to the recorded observation.
-                        clone_backing::reserve_copy_and_cleanup(&row.observation.authority, &host)?;
-                        clone_backing::reserve(&row.observation, &host)?;
+                        // Changed by D-O1 (DR-94): block accounting charges inline bytes once per enclosing block.
+                        // clone_backing::reserve_copy_and_cleanup(&row.observation.authority, &host)?;
+                        // clone_backing::reserve(&row.observation, &host)?;
+                        clone_backing::reserve_blocks_copy_and_cleanup(
+                            &row.observation.authority,
+                            &host,
+                        )?;
+                        clone_backing::reserve_blocks(&row.observation, &host)?;
                         if row.granted {
                             let demand = metered_demand(&row.observation.authority, &host)?;
                             event = Some((id, AuthorityRuntimeEvent {
@@ -354,16 +371,22 @@ impl RuntimeBudget {
         // or the shared byte-observation payloads.
         // clone_backing::reserve_copy_and_cleanup(&state.events, &host)?;
         backing::reserve_event_copies(&state, &host)?;
-        clone_backing::reserve_copy_and_cleanup(&state.realized, &host)?;
-        clone_backing::reserve_copy_and_cleanup(&state.stack_births, &host)?;
+        // Changed by D-O1 (DR-94): block accounting charges inline bytes once per enclosing block.
+        // clone_backing::reserve_copy_and_cleanup(&state.realized, &host)?;
+        // clone_backing::reserve_copy_and_cleanup(&state.stack_births, &host)?;
+        clone_backing::reserve_blocks_copy_and_cleanup(&state.realized, &host)?;
+        clone_backing::reserve_blocks_copy_and_cleanup(&state.stack_births, &host)?;
         // Disabled by D-O4 (DR-89): a replay with evidence copies no rows, and
         // play copies shared pointers whose payload releases were prepaid when
         // the rows were born (the C5 rule, DR-83).
         // clone_backing::reserve_slice_copy_and_cleanup(state.byte_observations.rows(), &host)?;
         if copies_rows {
             let rows = state.byte_observations.rows();
-            clone_backing::reserve_slice(rows, &host)?;
-            clone_backing::inspect_shared_pointer_slice(rows, &host)?;
+            // Changed by D-O1 (DR-94): block accounting charges inline bytes once per enclosing block.
+            // clone_backing::reserve_slice(rows, &host)?;
+            // clone_backing::inspect_shared_pointer_slice(rows, &host)?;
+            clone_backing::reserve_blocks_slice(rows, &host)?;
+            clone_backing::inspect_shared_pointer_slice_blocks(rows, &host)?;
         }
         backing::reserve_result_vectors(&state, &host)
     }

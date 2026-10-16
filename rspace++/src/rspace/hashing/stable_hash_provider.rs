@@ -9,10 +9,11 @@ use crate::rspace::hashing::native_source::SourceMeter;
 
 /// Authenticated consensus context supplied by the caller. This is never
 /// selected by inspecting a payload or by trying one decoder after another.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum EventCodecEpoch {
     Legacy,
     CostV1,
+    CostV2,
 }
 
 pub const COST_EVENT_DOMAIN_V1: &[u8] = b"f1r3node:rspace-event-cost:v1";
@@ -74,9 +75,18 @@ pub trait StableHashSerialize: Serialize {
     /// the default is correct only for types whose layout never changed.
     fn stable_hash_legacy_bytes(&self) -> Vec<u8> { self.stable_hash_bytes() }
 
+    /// Protocol-v6 cost layout. The default is correct for types unchanged by
+    /// protocol 7; schema-extended models roots override it to omit only the
+    /// v7-only fields while retaining all original cost fields.
+    fn stable_hash_cost_v1_bytes(&self) -> Vec<u8> { self.stable_hash_bytes() }
+
     /// Cost fields anywhere in this canonical event leg. An invalid encoded
     /// key is an error, not evidence that the value is ordinary.
     fn stable_hash_contains_cost(&self) -> Result<bool, RSpaceError> { Ok(false) }
+
+    /// CostV1 cannot encode v7-only structure. Schema-extended roots override
+    /// this to refuse a nonempty parallel tail before the v6 layout is emitted.
+    fn stable_hash_validate_cost_v1(&self) -> Result<(), RSpaceError> { Ok(()) }
 
     /// Native validation hook. Bounded historical/test values need no extra
     /// traversal; models overrides for canonical Par and its event wrappers.
@@ -85,6 +95,13 @@ pub trait StableHashSerialize: Serialize {
         _meter: &dyn SourceMeter,
     ) -> Result<bool, RSpaceError> {
         self.stable_hash_contains_cost()
+    }
+
+    fn stable_hash_validate_cost_v1_metered(
+        &self,
+        _meter: &dyn SourceMeter,
+    ) -> Result<(), RSpaceError> {
+        self.stable_hash_validate_cost_v1()
     }
 
     /// Emit bincode's exact write chunks into a charge-before-write sink.
@@ -107,6 +124,13 @@ pub trait StableHashSerialize: Serialize {
     ) -> Result<(), RSpaceError> {
         self.stable_hash_write_metered(sink)
     }
+
+    fn stable_hash_write_cost_v1_metered(
+        &self,
+        sink: &mut dyn BincodeByteSink,
+    ) -> Result<(), RSpaceError> {
+        self.stable_hash_write_metered(sink)
+    }
 }
 
 // Reference forwarding: `&T` hashes as `T` (serde serializes through
@@ -118,8 +142,14 @@ impl<T: StableHashSerialize + ?Sized> StableHashSerialize for &T {
 
     fn stable_hash_legacy_bytes(&self) -> Vec<u8> { (**self).stable_hash_legacy_bytes() }
 
+    fn stable_hash_cost_v1_bytes(&self) -> Vec<u8> { (**self).stable_hash_cost_v1_bytes() }
+
     fn stable_hash_contains_cost(&self) -> Result<bool, RSpaceError> {
         (**self).stable_hash_contains_cost()
+    }
+
+    fn stable_hash_validate_cost_v1(&self) -> Result<(), RSpaceError> {
+        (**self).stable_hash_validate_cost_v1()
     }
 
     fn stable_hash_contains_cost_metered(
@@ -127,6 +157,13 @@ impl<T: StableHashSerialize + ?Sized> StableHashSerialize for &T {
         meter: &dyn SourceMeter,
     ) -> Result<bool, RSpaceError> {
         (**self).stable_hash_contains_cost_metered(meter)
+    }
+
+    fn stable_hash_validate_cost_v1_metered(
+        &self,
+        meter: &dyn SourceMeter,
+    ) -> Result<(), RSpaceError> {
+        (**self).stable_hash_validate_cost_v1_metered(meter)
     }
 
     fn stable_hash_write_metered(&self, sink: &mut dyn BincodeByteSink) -> Result<(), RSpaceError> {
@@ -138,6 +175,13 @@ impl<T: StableHashSerialize + ?Sized> StableHashSerialize for &T {
         sink: &mut dyn BincodeByteSink,
     ) -> Result<(), RSpaceError> {
         (**self).stable_hash_write_legacy_metered(sink)
+    }
+
+    fn stable_hash_write_cost_v1_metered(
+        &self,
+        sink: &mut dyn BincodeByteSink,
+    ) -> Result<(), RSpaceError> {
+        (**self).stable_hash_write_cost_v1_metered(sink)
     }
 }
 
@@ -159,7 +203,11 @@ pub fn event_leg_bytes_for_epoch<T: StableHashSerialize>(
             }
             Ok(value.stable_hash_legacy_bytes())
         }
-        EventCodecEpoch::CostV1 => Ok(value.stable_hash_bytes()),
+        EventCodecEpoch::CostV1 => {
+            value.stable_hash_validate_cost_v1()?;
+            Ok(value.stable_hash_cost_v1_bytes())
+        }
+        EventCodecEpoch::CostV2 => Ok(value.stable_hash_bytes()),
     }
 }
 
@@ -180,7 +228,7 @@ pub fn channel_hash_for_epoch<C: StableHashSerialize>(
         return Ok(Blake2b256Hash::new(&channel.stable_hash_legacy_bytes()));
     }
     let tagged =
-        bincode::serialize(&vec![COST_CHANNEL_KEY_DOMAIN_V1.to_vec(), channel.stable_hash_bytes()])
+        bincode::serialize(&vec![COST_CHANNEL_KEY_DOMAIN_V1.to_vec(), event_leg_bytes_for_epoch(epoch, channel)?])
             .expect("channel key domain preimage serialization");
     Ok(Blake2b256Hash::new(&tagged))
 }
@@ -210,7 +258,7 @@ pub fn channel_tuple_hash_for_epoch<C: StableHashSerialize>(
 }
 
 fn event_preimage_for_epoch(epoch: EventCodecEpoch, mut legs: Vec<Vec<u8>>) -> Vec<u8> {
-    if epoch == EventCodecEpoch::CostV1 {
+    if epoch != EventCodecEpoch::Legacy {
         legs.insert(0, COST_EVENT_DOMAIN_V1.to_vec());
     }
     bincode::serialize(&legs).expect("event-domain preimage serialization")

@@ -185,11 +185,18 @@ async fn assert_refused_publication_is_atomic(
     space: &dyn ISpace<String, Pattern, String, GuardedContinuation>,
     authority: &PublicationAuthority,
 ) {
-    space.get_joins("reply".to_owned()).await;
-    space.get_data(&"reply".to_owned()).await;
+    space
+        .get_joins("reply".to_owned())
+        .await
+        .expect("join read");
+    space
+        .get_data(&"reply".to_owned())
+        .await
+        .expect("data read");
     space
         .get_waiting_continuations(vec!["reply".to_owned()])
-        .await;
+        .await
+        .expect("continuation read");
     let before = space.create_soft_checkpoint().await;
     space
         .revert_to_soft_checkpoint(before.clone())
@@ -498,11 +505,18 @@ async fn publication_observer_can_revoke_after_commit() {
     );
     assert_eq!(observer.calls.load(Ordering::SeqCst), 1);
     assert!(!*authority.live.read().expect("revoked authority"));
-    assert!(space.get_data(&"reply".to_owned()).await.is_empty());
+    assert!(
+        space
+            .get_data(&"reply".to_owned())
+            .await
+            .expect("data read")
+            .is_empty()
+    );
     assert!(
         space
             .get_waiting_continuations(vec!["reply".to_owned()])
             .await
+            .expect("continuation read")
             .is_empty()
     );
     assert_refused_publication_is_atomic(&space, &authority).await;
@@ -579,6 +593,7 @@ async fn resting(space: &TestSpace, channel: &str) -> Vec<i64> {
     space
         .get_data(&channel.to_string())
         .await
+        .expect("data read")
         .iter()
         .map(|datum| as_int(&datum.a))
         .collect()
@@ -589,6 +604,7 @@ async fn waiting(space: &TestSpace, channels: &[&str]) -> usize {
     space
         .get_waiting_continuations(channels.iter().map(|c| c.to_string()).collect())
         .await
+        .expect("continuation read")
         .len()
 }
 
@@ -802,8 +818,8 @@ async fn the_produce_path_backtracks_across_a_join() {
 async fn a_guard_free_join_no_longer_strands_on_a_spatial_dead_end() {
     let (space, _replay, _matcher) = fixture().await;
 
-    // Canonical order on channel "ch": "1" must come before "7".
-    const DATA: [&str; 2] = ["7", "1"];
+    // Canonical order on channel "ch": "1" must come before "9".
+    const DATA: [&str; 2] = ["9", "1"];
     assert_eq!(
         canonical_position("ch", &DATA, "1"),
         0,
@@ -830,7 +846,7 @@ async fn a_guard_free_join_no_longer_strands_on_a_spatial_dead_end() {
         .await
         .expect("consume")
         .expect(
-            "(x = 7, \"1\") is a rendezvous the rho calculus enables; the wildcard bind must give \
+            "(x = 9, \"1\") is a rendezvous the rho calculus enables; the wildcard bind must give \
              the \"1\" back rather than stranding the receive",
         );
 
@@ -839,7 +855,7 @@ async fn a_guard_free_join_no_longer_strands_on_a_spatial_dead_end() {
         .iter()
         .map(|result| result.matched_datum.clone())
         .collect();
-    assert_eq!(matched, vec!["7".to_string(), "1".to_string()]);
+    assert_eq!(matched, vec!["9".to_string(), "1".to_string()]);
     assert!(resting(&space, "ch").await.is_empty(), "both data were consumed by the one COMM");
 }
 
@@ -958,13 +974,13 @@ async fn a_produce_completing_a_same_channel_join_removes_both() {
 async fn play_and_replay_agree_on_a_guarded_selection() {
     let (space, replay_space, _matcher) = fixture().await;
 
-    // Canonical order: 88, 42, 68, 77, 44, 91 — so the first spatial pick (88)
+    // Canonical order: 50, 68, 91, 88, 42, 77 — so the first spatial pick (50)
     // is INADMISSIBLE and the selection is reached only by backtracking.
     // Pinned below so a change to the ordering bytes cannot quietly turn
     // this into a test of the easy case.
-    const OFFERS: [&str; 6] = ["91", "42", "77", "44", "68", "88"];
+    const OFFERS: [&str; 6] = ["91", "42", "77", "50", "68", "88"];
     assert_eq!(
-        canonical_position("offer", &OFFERS, "88"),
+        canonical_position("offer", &OFFERS, "50"),
         0,
         "this test requires an inadmissible datum FIRST in the canonical order"
     );
@@ -1039,12 +1055,12 @@ async fn play_and_replay_agree_on_a_guarded_selection() {
 async fn play_and_replay_agree_when_the_guard_permutes_a_repeated_channel() {
     let (space, replay_space, _matcher) = fixture().await;
 
-    // Canonical order: 8 then 3 — DESCENDING, so the spatial-first assignment
-    // `(8, 3)` is the one the guard refuses and the admissible assignment
-    // is the permuted `(3, 8)`.
-    const BOOK: [&str; 2] = ["3", "8"];
+    // Canonical order: 27 then 3 — DESCENDING, so the spatial-first assignment
+    // `(27, 3)` is the one the guard refuses and the admissible assignment
+    // is the permuted `(3, 27)`.
+    const BOOK: [&str; 2] = ["3", "27"];
     assert_eq!(
-        canonical_position("book", &BOOK, "8"),
+        canonical_position("book", &BOOK, "27"),
         0,
         "this test requires the LARGER datum first in the canonical order, so that the guard and \
          the spatial order disagree about the assignment"
@@ -1068,7 +1084,7 @@ async fn play_and_replay_agree_when_the_guard_permutes_a_repeated_channel() {
         )
         .await
         .expect("consume")
-        .expect("(3, 8) is admissible, so the COMM is enabled");
+        .expect("(3, 27) is admissible, so the COMM is enabled");
 
     let play_matched: Vec<String> = play_result
         .1
@@ -1077,7 +1093,7 @@ async fn play_and_replay_agree_when_the_guard_permutes_a_repeated_channel() {
         .collect();
     assert_eq!(
         play_matched,
-        vec!["3".to_string(), "8".to_string()],
+        vec!["3".to_string(), "27".to_string()],
         "the guard chose the increasing ASSIGNMENT, not merely the pair"
     );
     let rig_point = space.create_checkpoint().await.expect("checkpoint");
@@ -1362,12 +1378,12 @@ fn the_canonical_candidate_order_is_a_pure_function_of_the_candidates() {
 /// themselves determine the order.)
 #[tokio::test]
 async fn the_guarded_selection_is_stable_across_repetitions() {
-    // Canonical order: 88, 42, 77, 63, 44 — an inadmissible datum first (so the
+    // Canonical order: 50, 44, 63, 42, 77 — an inadmissible datum first (so the
     // answer is reached by backtracking) and TWO admissible ones (so "which
     // one" is a real question).
-    const OFFERS: [&str; 5] = ["63", "42", "77", "44", "88"];
+    const OFFERS: [&str; 5] = ["63", "42", "77", "44", "50"];
     assert_eq!(
-        canonical_position("offer", &OFFERS, "88"),
+        canonical_position("offer", &OFFERS, "50"),
         0,
         "this test requires an inadmissible datum FIRST in the canonical order"
     );
@@ -1603,7 +1619,7 @@ async fn selector_and_enumerator_are_stack_safe_at_twenty_thousand_binds() {
                 .expect("one datum per channel forms one admissible selection");
             assert_eq!(fired.1.len(), BINDS);
 
-            let selections = enumeration_space.enabled_rendezvous();
+            let selections = enumeration_space.enabled_rendezvous().unwrap();
             assert_eq!(selections.len(), 1);
             assert_eq!(selections[0].data_candidates.len(), BINDS);
         })

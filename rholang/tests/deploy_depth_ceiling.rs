@@ -195,7 +195,10 @@ async fn run_deploy_and_check(source: String, depth: usize) {
              recorded as 'survived' at a depth the runtime never actually carried.",
                 result.errors
             );
-            let data = runtime.get_data(&gstring_channel("out")).await;
+            let data = runtime
+                .get_data(&gstring_channel("out"))
+                .await
+                .expect("output query");
             assert_eq!(
                 data.len(),
                 1,

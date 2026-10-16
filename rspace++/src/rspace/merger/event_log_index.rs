@@ -193,6 +193,18 @@ impl EventLogIndex {
                     let has_peeks = !comm.peeks.is_empty();
                     all_comms.push((comm.consume.clone(), comm.produces.clone(), has_peeks));
                 }
+                Event::RestingComm(resting) => {
+                    // The event is a COMM-class state transition but has no
+                    // introduced IO leg. Preserve ordered bindings in the
+                    // event itself; the merge index needs only the consumed
+                    // source sets for conflict classification.
+                    let has_peeks = !resting.peeks.is_empty();
+                    all_comms.push((
+                        resting.consume.clone(),
+                        resting.ordered_produces.clone(),
+                        has_peeks,
+                    ));
+                }
             }
         }
 

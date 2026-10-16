@@ -15,8 +15,12 @@ use rspace_plus_plus::rspace::hashing::stable_hash_provider::{
     BincodeByteSink, StableHashSerialize,
 };
 
+use crate::rhoapi::cost_signature::Value as CostValue;
 use crate::rhoapi::tagged_continuation::TaggedCont;
-use crate::rhoapi::{BindPattern, ListParWithRandom, Par, ParWithRandom, TaggedContinuation};
+use crate::rhoapi::{
+    BindPattern, CostAuthority, CostSignature, CostStack, ListParWithRandom, Par, ParWithRandom,
+    TaggedContinuation,
+};
 use crate::rust::canonical_path::CodecError;
 use crate::rust::rholang::bincode_encoder::{self, ColdStoreEncode};
 use crate::rust::rholang::par_children::{
@@ -26,6 +30,199 @@ use crate::rust::rholang::par_children::{
 
 fn invalid_canonical_channel(error: CodecError) -> RSpaceError {
     RSpaceError::HistoryError(HistoryError::DecodeError(error.to_string()))
+}
+
+fn invalid_cost_v1_branch() -> RSpaceError {
+    RSpaceError::InterpreterError(
+        "CostStack.parallel_tail requires the CostV2 event codec epoch".into(),
+    )
+}
+
+fn charge_canonical_visit(
+    step: CanonicalVisitStep,
+    meter: &dyn SourceMeter,
+) -> Result<(), RSpaceError> {
+    match step {
+        CanonicalVisitStep::BorrowedPar => Ok(()),
+        CanonicalVisitStep::DecodedKeyPar => meter.reserve(1, size_of::<Par>(), 0),
+        CanonicalVisitStep::EncodedKey(bytes) => {
+            let backing = bytes
+                .checked_mul(size_of::<Par>())
+                .ok_or(RSpaceError::HostWorkRejected)?;
+            meter.reserve(1, bytes, backing)
+        }
+    }
+}
+
+/// Inspect every canonical Par reached through ordinary fields, cost
+/// signatures, and EPathMap keys/values. A branch at any depth makes the
+/// protocol-v6 positional layout lossy and must be rejected before writing.
+fn validate_par_cost_v1(root: &Par) -> Result<(), RSpaceError> {
+    let mut branched = false;
+    visit_canonical_par_tree(root, |par| {
+        branched |= par
+            .cost_stacks
+            .iter()
+            .any(|stack| !stack.parallel_tail.is_empty());
+    })
+    .map_err(invalid_canonical_channel)?;
+    if branched {
+        Err(invalid_cost_v1_branch())
+    } else {
+        Ok(())
+    }
+}
+
+fn validate_par_cost_v1_metered(root: &Par, meter: &dyn SourceMeter) -> Result<(), RSpaceError> {
+    let mut branched = false;
+    visit_canonical_par_tree_charged(
+        root,
+        |par| {
+            branched |= par
+                .cost_stacks
+                .iter()
+                .any(|stack| !stack.parallel_tail.is_empty());
+        },
+        |step| charge_canonical_visit(step, meter),
+    )
+    .map_err(|error| match error {
+        CanonicalVisitFailure::Codec(error) => invalid_canonical_channel(error),
+        CanonicalVisitFailure::Charge(error) => error,
+    })?;
+    if branched {
+        Err(invalid_cost_v1_branch())
+    } else {
+        Ok(())
+    }
+}
+
+/// A signature may quote a Par containing a CostStack. Traverse arbitrarily
+/// nested compound signatures iteratively, then use the canonical Par visitor
+/// for the quote; this also covers signature roots held directly by a datum
+/// stack or by CostAuthority.
+fn validate_signatures_cost_v1<'a>(
+    roots: impl IntoIterator<Item = &'a CostSignature>,
+    meter: Option<&dyn SourceMeter>,
+) -> Result<(), RSpaceError> {
+    let mut work: Vec<&CostSignature> = Vec::new();
+    for signature in roots {
+        if let Some(meter) = meter {
+            meter.reserve(1, size_of::<&CostSignature>(), size_of::<&CostSignature>())?;
+        }
+        work.try_reserve_exact(1)
+            .map_err(|_| RSpaceError::HostWorkRejected)?;
+        work.push(signature);
+    }
+    while let Some(signature) = work.pop() {
+        match &signature.value {
+            Some(CostValue::Quote(par) | CostValue::Name(par)) => {
+                if let Some(meter) = meter {
+                    validate_par_cost_v1_metered(par, meter)?;
+                } else {
+                    validate_par_cost_v1(par)?;
+                }
+            }
+            Some(CostValue::Compound(compound)) => {
+                for element in &compound.elements {
+                    if let Some(meter) = meter {
+                        meter.reserve(
+                            1,
+                            size_of::<&CostSignature>(),
+                            size_of::<&CostSignature>(),
+                        )?;
+                    }
+                    work.try_reserve_exact(1)
+                        .map_err(|_| RSpaceError::HostWorkRejected)?;
+                    work.push(element);
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+fn validate_authority_cost_v1(
+    authority: &CostAuthority,
+    meter: Option<&dyn SourceMeter>,
+) -> Result<(), RSpaceError> {
+    validate_signatures_cost_v1(
+        authority
+            .regions
+            .iter()
+            .filter_map(|region| region.signature.as_ref()),
+        meter,
+    )
+}
+
+fn validate_direct_stack_cost_v1(
+    stack: &CostStack,
+    meter: Option<&dyn SourceMeter>,
+) -> Result<(), RSpaceError> {
+    if !stack.parallel_tail.is_empty() {
+        return Err(invalid_cost_v1_branch());
+    }
+    validate_signatures_cost_v1(stack.cells.iter(), meter)
+}
+
+fn validate_datum_cost_v1(
+    datum: &ListParWithRandom,
+    meter: Option<&dyn SourceMeter>,
+) -> Result<(), RSpaceError> {
+    if let Some(stack) = &datum.cost_stack {
+        validate_direct_stack_cost_v1(stack, meter)?;
+    }
+    if let Some(authority) = &datum.cost_authority {
+        validate_authority_cost_v1(authority, meter)?;
+    }
+    for par in &datum.pars {
+        if let Some(meter) = meter {
+            validate_par_cost_v1_metered(par, meter)?;
+        } else {
+            validate_par_cost_v1(par)?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_pattern_cost_v1(
+    pattern: &BindPattern,
+    meter: Option<&dyn SourceMeter>,
+) -> Result<(), RSpaceError> {
+    for par in &pattern.patterns {
+        if let Some(meter) = meter {
+            validate_par_cost_v1_metered(par, meter)?;
+        } else {
+            validate_par_cost_v1(par)?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_continuation_cost_v1(
+    continuation: &TaggedContinuation,
+    meter: Option<&dyn SourceMeter>,
+) -> Result<(), RSpaceError> {
+    if let Some(authority) = &continuation.cost_authority {
+        validate_authority_cost_v1(authority, meter)?;
+    }
+    if let Some(par) = &continuation.guard {
+        if let Some(meter) = meter {
+            validate_par_cost_v1_metered(par, meter)?;
+        } else {
+            validate_par_cost_v1(par)?;
+        }
+    }
+    if let Some(TaggedCont::ParBody(body)) = &continuation.tagged_cont {
+        if let Some(par) = &body.body {
+            if let Some(meter) = meter {
+                validate_par_cost_v1_metered(par, meter)?;
+            } else {
+                validate_par_cost_v1(par)?;
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Whether the complete canonical channel contains any cost-accounting field.
@@ -172,6 +369,26 @@ impl StableHashSerialize for ListParWithRandom {
 
     fn stable_hash_legacy_bytes(&self) -> Vec<u8> { bincode_encoder::encode_legacy(self) }
 
+    fn stable_hash_cost_v1_bytes(&self) -> Vec<u8> { bincode_encoder::encode_cost_v1(self) }
+
+    fn stable_hash_validate_cost_v1(&self) -> Result<(), RSpaceError> {
+        validate_datum_cost_v1(self, None)
+    }
+
+    fn stable_hash_validate_cost_v1_metered(
+        &self,
+        meter: &dyn SourceMeter,
+    ) -> Result<(), RSpaceError> {
+        validate_datum_cost_v1(self, Some(meter))
+    }
+
+    fn stable_hash_write_cost_v1_metered(
+        &self,
+        sink: &mut dyn BincodeByteSink,
+    ) -> Result<(), RSpaceError> {
+        bincode_encoder::encode_cost_v1_metered_into(self, sink)
+    }
+
     fn stable_hash_contains_cost(&self) -> Result<bool, RSpaceError> {
         datum_contains_cost(self).map_err(invalid_canonical_channel)
     }
@@ -200,6 +417,26 @@ impl StableHashSerialize for BindPattern {
 
     fn stable_hash_legacy_bytes(&self) -> Vec<u8> { bincode_encoder::encode_legacy(self) }
 
+    fn stable_hash_cost_v1_bytes(&self) -> Vec<u8> { bincode_encoder::encode_cost_v1(self) }
+
+    fn stable_hash_validate_cost_v1(&self) -> Result<(), RSpaceError> {
+        validate_pattern_cost_v1(self, None)
+    }
+
+    fn stable_hash_validate_cost_v1_metered(
+        &self,
+        meter: &dyn SourceMeter,
+    ) -> Result<(), RSpaceError> {
+        validate_pattern_cost_v1(self, Some(meter))
+    }
+
+    fn stable_hash_write_cost_v1_metered(
+        &self,
+        sink: &mut dyn BincodeByteSink,
+    ) -> Result<(), RSpaceError> {
+        bincode_encoder::encode_cost_v1_metered_into(self, sink)
+    }
+
     fn stable_hash_contains_cost(&self) -> Result<bool, RSpaceError> {
         pattern_contains_cost(self).map_err(invalid_canonical_channel)
     }
@@ -227,6 +464,26 @@ impl StableHashSerialize for TaggedContinuation {
     fn stable_hash_bytes(&self) -> Vec<u8> { event_hash_bytes_tagged_continuation(self) }
 
     fn stable_hash_legacy_bytes(&self) -> Vec<u8> { bincode_encoder::encode_legacy(self) }
+
+    fn stable_hash_cost_v1_bytes(&self) -> Vec<u8> { bincode_encoder::encode_cost_v1(self) }
+
+    fn stable_hash_validate_cost_v1(&self) -> Result<(), RSpaceError> {
+        validate_continuation_cost_v1(self, None)
+    }
+
+    fn stable_hash_validate_cost_v1_metered(
+        &self,
+        meter: &dyn SourceMeter,
+    ) -> Result<(), RSpaceError> {
+        validate_continuation_cost_v1(self, Some(meter))
+    }
+
+    fn stable_hash_write_cost_v1_metered(
+        &self,
+        sink: &mut dyn BincodeByteSink,
+    ) -> Result<(), RSpaceError> {
+        bincode_encoder::encode_cost_v1_metered_into(self, sink)
+    }
 
     fn stable_hash_contains_cost(&self) -> Result<bool, RSpaceError> {
         continuation_contains_cost(self).map_err(invalid_canonical_channel)
@@ -259,6 +516,24 @@ impl StableHashSerialize for Par {
     }
 
     fn stable_hash_legacy_bytes(&self) -> Vec<u8> { bincode_encoder::encode_legacy(self) }
+
+    fn stable_hash_cost_v1_bytes(&self) -> Vec<u8> { bincode_encoder::encode_cost_v1(self) }
+
+    fn stable_hash_validate_cost_v1(&self) -> Result<(), RSpaceError> { validate_par_cost_v1(self) }
+
+    fn stable_hash_validate_cost_v1_metered(
+        &self,
+        meter: &dyn SourceMeter,
+    ) -> Result<(), RSpaceError> {
+        validate_par_cost_v1_metered(self, meter)
+    }
+
+    fn stable_hash_write_cost_v1_metered(
+        &self,
+        sink: &mut dyn BincodeByteSink,
+    ) -> Result<(), RSpaceError> {
+        bincode_encoder::encode_cost_v1_metered_into(self, sink)
+    }
 
     fn stable_hash_contains_cost(&self) -> Result<bool, RSpaceError> {
         channel_contains_cost(self).map_err(invalid_canonical_channel)
@@ -294,6 +569,32 @@ impl StableHashSerialize for ParWithRandom {
     }
 
     fn stable_hash_legacy_bytes(&self) -> Vec<u8> { bincode_encoder::encode_legacy(self) }
+
+    fn stable_hash_cost_v1_bytes(&self) -> Vec<u8> { bincode_encoder::encode_cost_v1(self) }
+
+    fn stable_hash_validate_cost_v1(&self) -> Result<(), RSpaceError> {
+        match &self.body {
+            Some(par) => validate_par_cost_v1(par),
+            None => Ok(()),
+        }
+    }
+
+    fn stable_hash_validate_cost_v1_metered(
+        &self,
+        meter: &dyn SourceMeter,
+    ) -> Result<(), RSpaceError> {
+        match &self.body {
+            Some(par) => validate_par_cost_v1_metered(par, meter),
+            None => Ok(()),
+        }
+    }
+
+    fn stable_hash_write_cost_v1_metered(
+        &self,
+        sink: &mut dyn BincodeByteSink,
+    ) -> Result<(), RSpaceError> {
+        bincode_encoder::encode_cost_v1_metered_into(self, sink)
+    }
 
     fn stable_hash_contains_cost(&self) -> Result<bool, RSpaceError> {
         self.body
@@ -337,7 +638,7 @@ mod tests {
     use rspace_plus_plus::rspace::hashing::native_source;
     use rspace_plus_plus::rspace::hashing::stable_hash_provider::{
         channel_hash_for_epoch, channel_tuple_hash_for_epoch, hash_consume_for_epoch,
-        hash_from_vec, hash_produce_for_epoch, EventCodecEpoch,
+        hash_from_hashes, hash_produce_for_epoch, EventCodecEpoch,
     };
     use rspace_plus_plus::rspace::internal::{Datum, WaitingContinuation};
 
@@ -347,10 +648,29 @@ mod tests {
     use crate::rust::epathmap_trie_codec::{self, EPathMapRepr};
 
     fn cost_par() -> Par {
-        Par {
-            cost_stacks: vec![CostStack { cells: Vec::new() }],
-            ..Par::default()
-        }
+        let mut par = Par::default();
+        par.cost_stacks = vec![CostStack {
+            cells: Vec::new(),
+            parallel_tail: Vec::new(),
+        }];
+        par
+    }
+
+    fn deferred_invalid_utf8_set_snapshot() -> Vec<u8> {
+        let mut raw = PathMap::<()>::new();
+        // Structurally declared as GString, but the payload is not UTF-8.
+        // Deferred construction may cache topology; the charged canonical
+        // visitor must reject the payload before using the channel key.
+        raw.insert(&[0x04, 0x01, 0xff], ());
+        epathmap_trie_codec::encode(&EPathMapRepr::Set(raw))
+    }
+
+    fn legacy_tuple_hash(channels: &[Par]) -> Blake2b256Hash {
+        let hashes = channels
+            .iter()
+            .map(|channel| Blake2b256Hash::new(&bincode_encoder::encode_legacy(channel)))
+            .collect();
+        hash_from_hashes(&hashes)
     }
 
     fn pathmap_par(map: EPathMap) -> Par {
@@ -411,9 +731,7 @@ mod tests {
 
     #[test]
     fn channel_cost_fold_rejects_malformed_canonical_key() {
-        let mut raw = PathMap::<()>::new();
-        raw.insert(&[0xff], ());
-        let snapshot = epathmap_trie_codec::encode(&EPathMapRepr::Set(raw));
+        let snapshot = deferred_invalid_utf8_set_snapshot();
         let mut map = EPathMap::default();
         map.replace_trie_snapshot_deferred_key_validation(&snapshot)
             .expect("deferred key validation is intentionally available to the decoder");
@@ -466,9 +784,14 @@ mod tests {
         };
         native_source::channel_hash_for_epoch(EventCodecEpoch::CostV1, &channel, &route_meter)
             .unwrap();
-        assert!(route_trace.borrow().starts_with(&trace));
+        let route_trace = route_trace.into_inner();
+        // CostV1 admission first classifies the complete canonical channel,
+        // then checks that no nested CostStack branch would be lost by its
+        // cells-only positional layout. Both are charged key walks. Encoding
+        // after those walks must not introduce a third key decode.
+        assert_eq!(&route_trace[..trace.len()], trace.as_slice());
+        assert_eq!(&route_trace[trace.len()..2 * trace.len()], trace.as_slice());
         let key_charges = route_trace
-            .borrow()
             .iter()
             .filter(|(operations, scanned, backing)| {
                 *operations == 1
@@ -477,8 +800,9 @@ mod tests {
             })
             .count();
         assert_eq!(
-            key_charges, 2,
-            "key validation must not be repeated by encoding"
+            key_charges,
+            2 * expected_lengths.len(),
+            "encoding must not add a third raw-key validation walk"
         );
         for reject_at in 0..trace.len() {
             let calls = Cell::new(0);
@@ -498,9 +822,7 @@ mod tests {
             assert_eq!(calls.get(), reject_at + 1);
         }
 
-        let mut raw = PathMap::<()>::new();
-        raw.insert(&[0xff], ());
-        let snapshot = epathmap_trie_codec::encode(&EPathMapRepr::Set(raw));
+        let snapshot = deferred_invalid_utf8_set_snapshot();
         let mut map = EPathMap::default();
         map.replace_trie_snapshot_deferred_key_validation(&snapshot)
             .unwrap();
@@ -511,7 +833,7 @@ mod tests {
             Ok(())
         };
         assert!(channel_contains_cost_metered(&malformed, &meter).is_err());
-        assert_eq!(charges.into_inner(), vec![(1, 1, size_of::<Par>())]);
+        assert_eq!(charges.into_inner(), vec![(1, 3, 3 * size_of::<Par>())]);
     }
 
     #[test]
@@ -606,17 +928,17 @@ mod tests {
         let ordinary_tuple = vec![ordinary.clone(), Par::default()];
         assert_eq!(
             channel_tuple_hash_for_epoch(EventCodecEpoch::Legacy, &ordinary_tuple).unwrap(),
-            hash_from_vec(&ordinary_tuple),
+            legacy_tuple_hash(&ordinary_tuple),
         );
         assert_eq!(
             channel_tuple_hash_for_epoch(EventCodecEpoch::CostV1, &ordinary_tuple).unwrap(),
-            hash_from_vec(&ordinary_tuple),
+            legacy_tuple_hash(&ordinary_tuple),
         );
         let cost_tuple = vec![ordinary, key_only_cost];
         assert!(channel_tuple_hash_for_epoch(EventCodecEpoch::Legacy, &cost_tuple).is_err());
         assert_ne!(
             channel_tuple_hash_for_epoch(EventCodecEpoch::CostV1, &cost_tuple).unwrap(),
-            hash_from_vec(&cost_tuple),
+            legacy_tuple_hash(&cost_tuple),
         );
     }
 
@@ -708,9 +1030,7 @@ mod tests {
             false
         )
         .is_err());
-        let mut raw = PathMap::<()>::new();
-        raw.insert(&[0xff], ());
-        let snapshot = epathmap_trie_codec::encode(&EPathMapRepr::Set(raw));
+        let snapshot = deferred_invalid_utf8_set_snapshot();
         let mut malformed_map = EPathMap::default();
         malformed_map
             .replace_trie_snapshot_deferred_key_validation(&snapshot)

@@ -51,14 +51,12 @@ where
         + Sync
         + Send,
 {
-    pub(super) fn restore_installs(&self) {
-        // Move out the install map to avoid cloning the whole structure on each
-        // restore.
-        let installs = std::mem::take(&mut *self.installs.lock().unwrap());
+    pub(super) fn restore_installs(&self) -> Result<(), RSpaceError> {
+        let installs = self.installs.lock().unwrap().clone();
         for (channels, install) in installs {
-            self.locked_install_internal(channels, install.patterns, install.continuation)
-                .unwrap();
+            self.locked_install_internal(channels, install.patterns, install.continuation)?;
         }
+        Ok(())
     }
 
     pub(super) fn locked_install_internal(
@@ -68,10 +66,13 @@ where
         continuation: K,
     ) -> Result<Option<(K, Vec<A>)>, RSpaceError> {
         if channels.len() != patterns.len() {
-            panic!("RUST ERROR: channels.length must equal patterns.length");
+            return Err(RSpaceError::BugFoundError(
+                "RUST ERROR: channels.length must equal patterns.length".to_string(),
+            ));
         }
-        let consume_ref = Consume::create(&channels, &patterns, &continuation, true);
-        let mut channel_to_indexed_data = self.fetch_channel_to_index_data(&channels);
+        let consume_ref =
+            Consume::create_for_epoch(self.epoch, &channels, &patterns, &continuation, true)?;
+        let mut channel_to_indexed_data = self.fetch_channel_to_index_data(&channels)?;
         let zipped: Vec<(&C, &P)> = channels.iter().zip(patterns.iter()).collect();
         let options: Option<Vec<ConsumeCandidate<C, A>>> = self
             .extract_data_candidates(&self.matcher, &zipped, &mut channel_to_indexed_data)

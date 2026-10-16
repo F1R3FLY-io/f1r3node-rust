@@ -2,7 +2,9 @@ use std::fmt::Debug;
 use std::hash::Hash;
 
 use rspace_plus_plus::rspace::errors::RSpaceError;
-use rspace_plus_plus::rspace::hashing::stable_hash_provider::StableHashSerialize;
+use rspace_plus_plus::rspace::hashing::stable_hash_provider::{
+    EventCodecEpoch, StableHashSerialize,
+};
 use rspace_plus_plus::rspace::history::history_repository::HistoryRepository;
 use rspace_plus_plus::rspace::history::native_reader::{NativeReadCharge, NativeReadMeter};
 use rspace_plus_plus::rspace::internal::{Datum, Install, WaitingContinuation};
@@ -13,6 +15,7 @@ use rspace_plus_plus::rspace::replay_rspace::native_epoch::{
 use rspace_plus_plus::rspace::replay_rspace::native_session::{
     NativeReplayExport, NativeReplaySession, NativeSessionCheckpoint,
 };
+use rspace_plus_plus::rspace::serializers::cold_store_decode::ColdStoreDecode;
 use serde::Serialize;
 use shared::rust::clone_backing::CloneBacking;
 
@@ -32,6 +35,7 @@ mod errors;
 struct SessionEpoch {
     replay: NativeOperationReplay,
     host: HostWorkBudget,
+    codec_epoch: EventCodecEpoch,
 }
 
 impl NativeReadMeter for HostWorkBudget {
@@ -75,6 +79,8 @@ fn error(error: impl Into<NativeReplayError>) -> RSpaceError {
 
 impl NativeReplayEpoch for SessionEpoch {
     type Boundary = NativeReplayBoundary;
+
+    fn codec_epoch(&self) -> EventCodecEpoch { self.codec_epoch }
 
     fn invalidate(&self) { self.replay.invalidate(); }
 
@@ -137,7 +143,10 @@ impl EpochRestore for NativeReplayRestore {
     fn publish(self) { NativeReplayRestore::publish(self) }
 }
 
-pub struct NativeRuntimeReplaySession<C, P, A, K> {
+// Changed by D-C2c (D-S1, DR-96): the native session's digest-keyed store
+// holds data, continuations and patterns, which need Clone.
+// pub struct NativeRuntimeReplaySession<C, P, A, K> {
+pub struct NativeRuntimeReplaySession<C, P: Clone, A: Clone, K: Clone> {
     inner: NativeReplaySession<C, P, A, K, SessionEpoch>,
 }
 
@@ -160,6 +169,8 @@ impl CheckedNativeOperationTrace {
             + StableHashSerialize
             + CloneBacking
             + serde::de::DeserializeOwned
+            + shared::rust::closed_decode::ClosedDecode
+            + ColdStoreDecode
             + Hash
             + Ord
             + Eq
@@ -173,6 +184,8 @@ impl CheckedNativeOperationTrace {
             + StableHashSerialize
             + CloneBacking
             + serde::de::DeserializeOwned
+            + shared::rust::closed_decode::ClosedDecode
+            + ColdStoreDecode
             + 'static
             + Sync
             + Send,
@@ -183,6 +196,8 @@ impl CheckedNativeOperationTrace {
             + StableHashSerialize
             + CloneBacking
             + serde::de::DeserializeOwned
+            + shared::rust::closed_decode::ClosedDecode
+            + ColdStoreDecode
             + 'static
             + Sync
             + Send,
@@ -193,11 +208,82 @@ impl CheckedNativeOperationTrace {
             + StableHashSerialize
             + CloneBacking
             + serde::de::DeserializeOwned
+            + shared::rust::closed_decode::ClosedDecode
+            + ColdStoreDecode
             + 'static
             + Sync
             + Send,
     {
         self.into_installed_session(history, matcher, host, std::iter::empty())
+    }
+
+    pub fn into_session_for_epoch<C, P, A, K>(
+        self,
+        codec_epoch: EventCodecEpoch,
+        history: Arc<Box<dyn HistoryRepository<C, P, A, K> + Send + Sync + 'static>>,
+        matcher: Arc<Box<dyn Match<P, A, K>>>,
+        host: HostWorkBudget,
+    ) -> Result<NativeRuntimeReplaySession<C, P, A, K>, RSpaceError>
+    where
+        C: Clone
+            + Debug
+            + Default
+            + Serialize
+            + StableHashSerialize
+            + CloneBacking
+            + serde::de::DeserializeOwned
+            + shared::rust::closed_decode::ClosedDecode
+            + ColdStoreDecode
+            + Hash
+            + Ord
+            + Eq
+            + 'static
+            + Sync
+            + Send,
+        P: Clone
+            + Debug
+            + Default
+            + Serialize
+            + StableHashSerialize
+            + CloneBacking
+            + serde::de::DeserializeOwned
+            + shared::rust::closed_decode::ClosedDecode
+            + ColdStoreDecode
+            + 'static
+            + Sync
+            + Send,
+        A: Clone
+            + Debug
+            + Default
+            + Serialize
+            + StableHashSerialize
+            + CloneBacking
+            + serde::de::DeserializeOwned
+            + shared::rust::closed_decode::ClosedDecode
+            + ColdStoreDecode
+            + 'static
+            + Sync
+            + Send,
+        K: Clone
+            + Debug
+            + Default
+            + Serialize
+            + StableHashSerialize
+            + CloneBacking
+            + serde::de::DeserializeOwned
+            + shared::rust::closed_decode::ClosedDecode
+            + ColdStoreDecode
+            + 'static
+            + Sync
+            + Send,
+    {
+        self.into_installed_session_for_epoch(
+            codec_epoch,
+            history,
+            matcher,
+            host,
+            std::iter::empty(),
+        )
     }
 
     pub fn into_installed_session<C, P, A, K>(
@@ -215,6 +301,8 @@ impl CheckedNativeOperationTrace {
             + StableHashSerialize
             + CloneBacking
             + serde::de::DeserializeOwned
+            + shared::rust::closed_decode::ClosedDecode
+            + ColdStoreDecode
             + Hash
             + Ord
             + Eq
@@ -228,6 +316,8 @@ impl CheckedNativeOperationTrace {
             + StableHashSerialize
             + CloneBacking
             + serde::de::DeserializeOwned
+            + shared::rust::closed_decode::ClosedDecode
+            + ColdStoreDecode
             + 'static
             + Sync
             + Send,
@@ -238,6 +328,8 @@ impl CheckedNativeOperationTrace {
             + StableHashSerialize
             + CloneBacking
             + serde::de::DeserializeOwned
+            + shared::rust::closed_decode::ClosedDecode
+            + ColdStoreDecode
             + 'static
             + Sync
             + Send,
@@ -248,11 +340,90 @@ impl CheckedNativeOperationTrace {
             + StableHashSerialize
             + CloneBacking
             + serde::de::DeserializeOwned
+            + shared::rust::closed_decode::ClosedDecode
+            + ColdStoreDecode
             + 'static
             + Sync
             + Send,
     {
-        self.build_session(history, matcher, host, installations, None)
+        self.into_installed_session_for_epoch(
+            EventCodecEpoch::Legacy,
+            history,
+            matcher,
+            host,
+            installations,
+        )
+    }
+
+    pub fn into_installed_session_for_epoch<C, P, A, K>(
+        self,
+        codec_epoch: EventCodecEpoch,
+        history: Arc<Box<dyn HistoryRepository<C, P, A, K> + Send + Sync + 'static>>,
+        matcher: Arc<Box<dyn Match<P, A, K>>>,
+        host: HostWorkBudget,
+        installations: impl IntoIterator<Item = (Vec<C>, Install<P, K>)>,
+    ) -> Result<NativeRuntimeReplaySession<C, P, A, K>, RSpaceError>
+    where
+        C: Clone
+            + Debug
+            + Default
+            + Serialize
+            + StableHashSerialize
+            + CloneBacking
+            + serde::de::DeserializeOwned
+            + shared::rust::closed_decode::ClosedDecode
+            + ColdStoreDecode
+            + Hash
+            + Ord
+            + Eq
+            + 'static
+            + Sync
+            + Send,
+        P: Clone
+            + Debug
+            + Default
+            + Serialize
+            + StableHashSerialize
+            + CloneBacking
+            + serde::de::DeserializeOwned
+            + shared::rust::closed_decode::ClosedDecode
+            + ColdStoreDecode
+            + 'static
+            + Sync
+            + Send,
+        A: Clone
+            + Debug
+            + Default
+            + Serialize
+            + StableHashSerialize
+            + CloneBacking
+            + serde::de::DeserializeOwned
+            + shared::rust::closed_decode::ClosedDecode
+            + ColdStoreDecode
+            + 'static
+            + Sync
+            + Send,
+        K: Clone
+            + Debug
+            + Default
+            + Serialize
+            + StableHashSerialize
+            + CloneBacking
+            + serde::de::DeserializeOwned
+            + shared::rust::closed_decode::ClosedDecode
+            + ColdStoreDecode
+            + 'static
+            + Sync
+            + Send,
+    {
+        self.build_session(
+            history,
+            matcher,
+            host,
+            installations,
+            None,
+            codec_epoch,
+        )
     }
 
     pub(crate) fn into_runtime_session<C, P, A, K>(
@@ -262,6 +433,7 @@ impl CheckedNativeOperationTrace {
         host: HostWorkBudget,
         installations: impl IntoIterator<Item = (Vec<C>, Install<P, K>)>,
         budget: RuntimeBudget,
+        codec_epoch: EventCodecEpoch,
     ) -> Result<NativeRuntimeReplaySession<C, P, A, K>, RSpaceError>
     where
         C: Clone
@@ -271,6 +443,8 @@ impl CheckedNativeOperationTrace {
             + StableHashSerialize
             + CloneBacking
             + serde::de::DeserializeOwned
+            + shared::rust::closed_decode::ClosedDecode
+            + ColdStoreDecode
             + Hash
             + Ord
             + Eq
@@ -284,6 +458,8 @@ impl CheckedNativeOperationTrace {
             + StableHashSerialize
             + CloneBacking
             + serde::de::DeserializeOwned
+            + shared::rust::closed_decode::ClosedDecode
+            + ColdStoreDecode
             + 'static
             + Sync
             + Send,
@@ -294,6 +470,8 @@ impl CheckedNativeOperationTrace {
             + StableHashSerialize
             + CloneBacking
             + serde::de::DeserializeOwned
+            + shared::rust::closed_decode::ClosedDecode
+            + ColdStoreDecode
             + 'static
             + Sync
             + Send,
@@ -304,11 +482,26 @@ impl CheckedNativeOperationTrace {
             + StableHashSerialize
             + CloneBacking
             + serde::de::DeserializeOwned
+            + shared::rust::closed_decode::ClosedDecode
+            + ColdStoreDecode
             + 'static
             + Sync
             + Send,
     {
-        self.build_session(history, matcher, host, installations, Some(budget))
+        let bound_epoch = budget
+            .native_event_codec_epoch()
+            .ok_or(RSpaceError::HostWorkRejected)?;
+        if bound_epoch != codec_epoch {
+            return Err(RSpaceError::HostWorkRejected);
+        }
+        self.build_session(
+            history,
+            matcher,
+            host,
+            installations,
+            Some(budget),
+            codec_epoch,
+        )
     }
 
     fn build_session<C, P, A, K>(
@@ -318,7 +511,8 @@ impl CheckedNativeOperationTrace {
         host: HostWorkBudget,
         installations: impl IntoIterator<Item = (Vec<C>, Install<P, K>)>,
         budget: Option<RuntimeBudget>,
-    ) -> Result<NativeRuntimeReplaySession<C, P, A, K>, RSpaceError>
+        codec_epoch: EventCodecEpoch,
+        ) -> Result<NativeRuntimeReplaySession<C, P, A, K>, RSpaceError>
     where
         C: Clone
             + Debug
@@ -327,6 +521,8 @@ impl CheckedNativeOperationTrace {
             + StableHashSerialize
             + CloneBacking
             + serde::de::DeserializeOwned
+            + shared::rust::closed_decode::ClosedDecode
+            + ColdStoreDecode
             + Hash
             + Ord
             + Eq
@@ -340,6 +536,8 @@ impl CheckedNativeOperationTrace {
             + StableHashSerialize
             + CloneBacking
             + serde::de::DeserializeOwned
+            + shared::rust::closed_decode::ClosedDecode
+            + ColdStoreDecode
             + 'static
             + Sync
             + Send,
@@ -350,6 +548,8 @@ impl CheckedNativeOperationTrace {
             + StableHashSerialize
             + CloneBacking
             + serde::de::DeserializeOwned
+            + shared::rust::closed_decode::ClosedDecode
+            + ColdStoreDecode
             + 'static
             + Sync
             + Send,
@@ -360,20 +560,31 @@ impl CheckedNativeOperationTrace {
             + StableHashSerialize
             + CloneBacking
             + serde::de::DeserializeOwned
+            + shared::rust::closed_decode::ClosedDecode
+            + ColdStoreDecode
             + 'static
             + Sync
             + Send,
     {
         let replay = self.into_replay(host.clone()).map_err(error)?;
         let replay = match budget {
-            Some(budget) => replay.bind_runtime(budget).map_err(error)?,
+            Some(budget) => {
+                if budget.native_event_codec_epoch() != Some(codec_epoch) {
+                    return Err(RSpaceError::HostWorkRejected);
+                }
+                replay.bind_runtime(budget).map_err(error)?
+            }
             None => replay,
         };
         Ok(NativeRuntimeReplaySession {
             inner: NativeReplaySession::new_with_installs(
                 history,
                 matcher,
-                SessionEpoch { replay, host },
+                SessionEpoch {
+                    replay,
+                    host,
+                    codec_epoch,
+                },
                 installations,
             )?,
         })
@@ -389,6 +600,7 @@ where
         + StableHashSerialize
         + CloneBacking
         + serde::de::DeserializeOwned
+        + shared::rust::closed_decode::ClosedDecode
         + Hash
         + Ord
         + Eq
@@ -402,6 +614,7 @@ where
         + StableHashSerialize
         + CloneBacking
         + serde::de::DeserializeOwned
+        + shared::rust::closed_decode::ClosedDecode
         + 'static
         + Sync
         + Send,
@@ -412,6 +625,7 @@ where
         + StableHashSerialize
         + CloneBacking
         + serde::de::DeserializeOwned
+        + shared::rust::closed_decode::ClosedDecode
         + 'static
         + Sync
         + Send,
@@ -422,6 +636,7 @@ where
         + StableHashSerialize
         + CloneBacking
         + serde::de::DeserializeOwned
+        + shared::rust::closed_decode::ClosedDecode
         + 'static
         + Sync
         + Send,

@@ -131,6 +131,10 @@ fn oracle_below(tree: &Tree, copy: bool, totals: &mut [usize; 3]) {
     };
     match tree {
         Tree::Leaf(_) => add(totals, field),
+        // D-O1 (DR-94): an empty container is charged as an inline field.
+        Tree::Bytes(bytes) if bytes.is_empty() => add(totals, field),
+        Tree::Text(text) if text.is_empty() => add(totals, field),
+        Tree::Node(children) if children.is_empty() => add(totals, field),
         Tree::Bytes(bytes) => {
             add(totals, entry);
             add(totals, [2 * bytes.len(), 0, 0]);
@@ -346,7 +350,9 @@ fn worklist_chunks_follow_the_chunk_model() {
         let tree = Tree::Node(vec![Tree::Node(Vec::new()); count]);
         let (charged, allocated) = measured(|| usage(|meter| inspect_blocks(&tree, meter)));
         assert_eq!(allocated, chunk_model_bytes(count), "{count} children");
-        let entries = 2 * count + 2;
+        // The root and its child vector, and one entry per child: each
+        // child's empty vector is a field (DR-94).
+        let entries = if count == 0 { 1 } else { count + 2 };
         assert_eq!(
             charged[2],
             entries * BLOCK_ENTRY_BACKING,
@@ -361,7 +367,7 @@ fn worklist_chunks_follow_the_chunk_model() {
 #[test]
 fn chunked_worklist_reuses_chunks_and_pops_in_order() {
     let values: Vec<u64> = (0..64).collect();
-    let mut worklist = ChunkedWorklist::new();
+    let mut worklist: ChunkedWorklist<&dyn CloneBacking> = ChunkedWorklist::new();
     let ((), grown) = measured(|| {
         for value in &values[..29] {
             worklist.push(value).expect("push");
@@ -436,4 +442,141 @@ fn node_local_shared_root_bumps_charge_only_copy_headers() {
         usage(|meter| inspect(&empty, meter)),
         usage(|meter| inspect(&three, meter))
     );
+}
+
+/// D-O6 (DR-93): the nesting depth of the deepest entry when `tree` is an
+/// entry at depth 1, by an independent recursion.
+fn entry_depth(tree: &Tree) -> usize {
+    match tree {
+        Tree::Leaf(_) => 1,
+        Tree::Bytes(bytes) if bytes.is_empty() => 1,
+        Tree::Text(text) if text.is_empty() => 1,
+        Tree::Bytes(_) | Tree::Text(_) => 2,
+        Tree::Node(children) => children
+            .iter()
+            .map(|child| 2 + entry_depth(child))
+            .max()
+            .unwrap_or(1),
+        Tree::Boxed(child) => 2 + entry_depth(child),
+    }
+}
+
+/// The usage and the result of a depth walk.
+fn depth_walk(tree: &Tree) -> ([usize; 3], BlockWalk) {
+    let walked = Cell::new(None);
+    let charged = usage(|meter| {
+        walked.set(Some(inspect_blocks_depth(tree, meter)?));
+        Ok(())
+    });
+    (charged, walked.get().expect("walk"))
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(256))]
+
+    /// D-O6 (DR-93): a depth walk charges the block charge with the depth
+    /// entry constants, reports the scanned bytes it reserved, and finds the
+    /// depth of an independent recursion.
+    #[test]
+    fn depth_walk_matches_block_walk_with_depth_entries(tree in tree_strategy()) {
+        let block = usage(|meter| inspect_blocks(&tree, meter));
+        let (charged, walk) = depth_walk(&tree);
+        prop_assert_eq!(walk.depth, entry_depth(&tree));
+        prop_assert_eq!(walk.scanned, charged[1]);
+        prop_assert_eq!(charged[0], block[0]);
+        let entries = block[2] / BLOCK_ENTRY_BACKING;
+        prop_assert_eq!(block[2], entries * BLOCK_ENTRY_BACKING);
+        prop_assert_eq!(charged[2], entries * BLOCK_DEPTH_ENTRY_BACKING);
+        prop_assert_eq!(
+            charged[1],
+            block[1] + entries * (BLOCK_DEPTH_ENTRY_SCANNED - BLOCK_ENTRY_SCANNED)
+        );
+    }
+
+    /// D-O6 (DR-93): the depth walk's worklist allocates at most the backing
+    /// that it charges.
+    #[test]
+    fn depth_walk_allocations_within_charge(tree in tree_strategy()) {
+        let (charged, allocated) = measured(|| depth_walk(&tree).0);
+        prop_assert!(allocated <= charged[2], "allocated {} charged {}", allocated, charged[2]);
+    }
+}
+
+/// D-O6 (DR-93): the nested-encode reservation is the depth walk, then
+/// `depth` more traversals of the walk's scanned charge and the output bytes.
+#[test]
+fn nested_encode_reservation_adds_depth_traversals_and_output() {
+    let tree = Tree::Boxed(Box::new(Tree::Node(vec![
+        Tree::Leaf(3),
+        Tree::Text("abc".to_owned()),
+        Tree::Boxed(Box::new(Tree::Bytes(vec![1; 9]))),
+    ])));
+    let (walk_usage, walk) = depth_walk(&tree);
+    assert_eq!(walk.depth, entry_depth(&tree));
+    let encode = usage(|meter| reserve_nested_encode(&tree, 100, meter));
+    assert_eq!(encode, [
+        walk_usage[0],
+        walk_usage[1] + walk.depth * walk.scanned + 100,
+        walk_usage[2],
+    ]);
+}
+
+/// D-O1 (DR-94): a block-mode copy of a slice of shared pointers charges the
+/// pointer bytes as an opaque block and the strong-count update of every
+/// pointer; its shared-pointer cleanup does not walk the payloads.
+#[test]
+fn block_slice_copy_of_shared_pointers_charges_each_strong_count() {
+    let shared: Vec<Arc<Big>> = (0..5).map(|index| Arc::new(Big([index; 64]))).collect();
+    let pointers = shared.len() * size_of::<Arc<Big>>();
+    let copy = usage(|meter| reserve_blocks_slice(&shared, meter));
+    assert_eq!(copy, [
+        2 * shared.len(),
+        2 * pointers + shared.len() * BLOCK_SHARED_HEADER_SCANNED,
+        pointers,
+    ]);
+    let cleanup = usage(|meter| inspect_shared_pointer_slice_blocks(&shared, meter));
+    assert!(cleanup[1] < size_of::<Big>(), "{cleanup:?}");
+    let legacy = usage(|meter| reserve_slice(&shared, meter));
+    assert_eq!(legacy[1], 2 * pointers);
+}
+
+/// D-O1 (DR-94): in block mode an empty container is charged as an inline
+/// field (three operations and one word, no worklist entry and no backing);
+/// the same container with content is a worklist entry.
+#[test]
+fn empty_containers_are_charged_as_fields() {
+    fn inspected<T: CloneBacking>(value: &T) -> [usize; 3] {
+        usage(|meter| inspect_blocks(value, meter))
+    }
+    let root = |size: usize| 2 * size;
+    let field = BLOCK_FIELD_SCANNED;
+    let entry = BLOCK_ENTRY_SCANNED;
+    let backing = BLOCK_ENTRY_BACKING;
+    let size = size_of::<Option<Vec<u64>>>();
+    assert_eq!(inspected(&None::<Vec<u64>>), [3, root(size) + field, 0]);
+    assert_eq!(inspected(&Some(Vec::<u64>::new())), [
+        6,
+        root(size) + entry + field,
+        backing
+    ]);
+    let size = size_of::<Option<String>>();
+    assert_eq!(inspected(&Some(String::new())), [
+        6,
+        root(size) + entry + field,
+        backing
+    ]);
+    let size = size_of::<Option<BTreeMap<u64, u64>>>();
+    assert_eq!(inspected(&Some(BTreeMap::<u64, u64>::new())), [
+        6,
+        root(size) + entry + field,
+        backing
+    ]);
+    let size = size_of::<Option<BTreeSet<u64>>>();
+    assert_eq!(inspected(&Some(BTreeSet::<u64>::new())), [
+        6,
+        root(size) + entry + field,
+        backing
+    ]);
+    let full = inspected(&Some(vec![1_u64]));
+    assert_eq!(full[2], 2 * backing);
 }

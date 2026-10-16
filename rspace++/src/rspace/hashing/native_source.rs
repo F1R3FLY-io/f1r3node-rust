@@ -15,6 +15,9 @@ use crate::rspace::trace::event::{Consume, Produce};
 
 type Result<T> = std::result::Result<T, RSpaceError>;
 
+pub mod keys;
+pub use keys::*;
+
 pub trait SourceMeter {
     fn reserve(&self, operations: usize, scanned: usize, backing: usize) -> Result<()>;
 }
@@ -107,7 +110,7 @@ fn serialize<T: Serialize + ?Sized, M: SourceMeter>(
 
 fn stable_output<T: StableHashSerialize + ?Sized, M: SourceMeter>(
     value: &T,
-    legacy: bool,
+    epoch: EventCodecEpoch,
     output: Output,
     meter: &M,
 ) -> Result<Output> {
@@ -119,10 +122,10 @@ fn stable_output<T: StableHashSerialize + ?Sized, M: SourceMeter>(
         output,
         error: None,
     };
-    if legacy {
-        value.stable_hash_write_legacy_metered(&mut writer)?;
-    } else {
-        value.stable_hash_write_metered(&mut writer)?;
+    match epoch {
+        EventCodecEpoch::Legacy => value.stable_hash_write_legacy_metered(&mut writer)?,
+        EventCodecEpoch::CostV1 => value.stable_hash_write_cost_v1_metered(&mut writer)?,
+        EventCodecEpoch::CostV2 => value.stable_hash_write_metered(&mut writer)?,
     }
     Ok(writer.output)
 }
@@ -140,7 +143,10 @@ pub fn encode_for_epoch<T: StableHashSerialize + ?Sized>(
             "cost-bearing event leg is invalid in the Legacy codec epoch".into(),
         ));
     }
-    encode_validated_layout(value, epoch == EventCodecEpoch::Legacy, meter)
+    if epoch == EventCodecEpoch::CostV1 {
+        value.stable_hash_validate_cost_v1_metered(meter)?;
+    }
+    encode_validated_layout(value, epoch, meter)
 }
 
 /// Only callers holding the result of the immediately preceding complete
@@ -148,12 +154,12 @@ pub fn encode_for_epoch<T: StableHashSerialize + ?Sized>(
 /// key a second time when Route A builds a tagged cost-bearing channel key.
 fn encode_validated_layout<T: StableHashSerialize + ?Sized>(
     value: &T,
-    legacy: bool,
+    epoch: EventCodecEpoch,
     meter: &impl SourceMeter,
 ) -> Result<Vec<u8>> {
     match stable_output(
         value,
-        legacy,
+        epoch,
         Output::Bytes {
             bytes: Vec::new(),
             paid: 0,
@@ -167,10 +173,10 @@ fn encode_validated_layout<T: StableHashSerialize + ?Sized>(
 
 fn hash_stable_layout<T: StableHashSerialize + ?Sized>(
     value: &T,
-    legacy: bool,
+    epoch: EventCodecEpoch,
     meter: &impl SourceMeter,
 ) -> Result<Blake2b256Hash> {
-    match stable_output(value, legacy, Output::Hash(Blake2b::<U32>::new()), meter)? {
+    match stable_output(value, epoch, Output::Hash(Blake2b::<U32>::new()), meter)? {
         Output::Hash(hash) => {
             let mut bytes = vector(32, meter)?;
             bytes.extend_from_slice(&hash.finalize());
@@ -194,10 +200,13 @@ pub fn channel_hash_for_epoch<C: StableHashSerialize>(
             "cost-bearing channel is invalid in the Legacy codec epoch".into(),
         ));
     }
-    if !contains_cost {
-        return hash_stable_layout(channel, true, meter);
+    if epoch == EventCodecEpoch::CostV1 {
+        channel.stable_hash_validate_cost_v1_metered(meter)?;
     }
-    let encoded = encode_validated_layout(channel, false, meter)?;
+    if !contains_cost {
+        return hash_stable_layout(channel, EventCodecEpoch::Legacy, meter);
+    }
+    let encoded = encode_validated_layout(channel, epoch, meter)?;
     let parts = [COST_CHANNEL_KEY_DOMAIN_V1, encoded.as_slice()];
     hash(parts.as_slice(), meter)
 }
@@ -326,7 +335,7 @@ pub fn produce_for_epoch<C: StableHashSerialize, A: StableHashSerialize>(
             let parts = [channel_hash.0.as_slice(), data.as_slice(), persist.as_slice()];
             hash(parts.as_slice(), meter)?
         }
-        EventCodecEpoch::CostV1 => {
+        EventCodecEpoch::CostV1 | EventCodecEpoch::CostV2 => {
             let parts = [
                 COST_EVENT_DOMAIN_V1,
                 channel_hash.0.as_slice(),
@@ -340,7 +349,7 @@ pub fn produce_for_epoch<C: StableHashSerialize, A: StableHashSerialize>(
 }
 
 pub fn clone_produce(source: &Produce, meter: &dyn SourceMeter) -> Result<Produce> {
-    crate::rspace::native_backing::reserve_copy_and_cleanup(source, meter)?;
+    crate::rspace::native_backing::reserve_blocks_copy_and_cleanup(source, meter)?;
     Ok(source.clone())
 }
 
@@ -351,9 +360,40 @@ pub fn consume<C: Serialize, P: Serialize, K: Serialize>(
     persistent: bool,
     meter: &impl SourceMeter,
 ) -> Result<Consume> {
+    consume_with(channels, patterns, continuation, persistent, None, meter)
+}
+
+/// D-S1 (D-C2a, DR-96): a consume source and the store keys of its channels,
+/// in channel order. The keys are the channel digests that the source
+/// computes before it sorts them, so no channel is hashed twice.
+pub fn consume_keys<C: Serialize, P: Serialize, K: Serialize>(
+    channels: &[C],
+    patterns: &[P],
+    continuation: &K,
+    persistent: bool,
+    meter: &impl SourceMeter,
+) -> Result<(Consume, Vec<StoreKey>)> {
+    let mut keys = vector(channels.len(), meter)?;
+    let source =
+        consume_with(channels, patterns, continuation, persistent, Some(&mut keys), meter)?;
+    Ok((source, keys))
+}
+
+fn consume_with<C: Serialize, P: Serialize, K: Serialize>(
+    channels: &[C],
+    patterns: &[P],
+    continuation: &K,
+    persistent: bool,
+    mut keys: Option<&mut Vec<StoreKey>>,
+    meter: &impl SourceMeter,
+) -> Result<Consume> {
     let mut channel_hashes = vector(channels.len(), meter)?;
     for channel in channels {
-        channel_hashes.push(hash(channel, meter)?);
+        let digest = hash(channel, meter)?;
+        if let Some(keys) = keys.as_deref_mut() {
+            keys.push(StoreKey::from_digest(&digest, meter)?);
+        }
+        channel_hashes.push(digest);
     }
     sort(&mut channel_hashes, |hash| &hash.0, meter)?;
     let mut encoded_patterns = vector(patterns.len(), meter)?;
@@ -391,9 +431,29 @@ pub fn consume_for_epoch<C: StableHashSerialize, P: StableHashSerialize, K: Stab
     persistent: bool,
     meter: &impl SourceMeter,
 ) -> Result<Consume> {
+    consume_for_epoch_with(epoch, channels, patterns, continuation, persistent, None, meter)
+}
+
+fn consume_for_epoch_with<
+    C: StableHashSerialize,
+    P: StableHashSerialize,
+    K: StableHashSerialize,
+>(
+    epoch: EventCodecEpoch,
+    channels: &[C],
+    patterns: &[P],
+    continuation: &K,
+    persistent: bool,
+    mut keys: Option<&mut Vec<StoreKey>>,
+    meter: &impl SourceMeter,
+) -> Result<Consume> {
     let mut channel_hashes = vector(channels.len(), meter)?;
     for channel in channels {
-        channel_hashes.push(channel_hash_for_epoch(epoch, channel, meter)?);
+        let digest = channel_hash_for_epoch(epoch, channel, meter)?;
+        if let Some(keys) = keys.as_deref_mut() {
+            keys.push(StoreKey::from_digest(&digest, meter)?);
+        }
+        channel_hashes.push(digest);
     }
     sort(&mut channel_hashes, |hash| &hash.0, meter)?;
     let mut encoded_patterns = vector(patterns.len(), meter)?;
@@ -403,14 +463,14 @@ pub fn consume_for_epoch<C: StableHashSerialize, P: StableHashSerialize, K: Stab
     sort(&mut encoded_patterns, Vec::as_slice, meter)?;
     let continuation = encode_for_epoch(epoch, continuation, meter)?;
     let persist = [u8::from(persistent)];
-    let extra = usize::from(epoch == EventCodecEpoch::CostV1);
+    let extra = usize::from(epoch != EventCodecEpoch::Legacy);
     let count = channels
         .len()
         .checked_add(patterns.len())
         .and_then(|n| n.checked_add(2 + extra))
         .ok_or(RSpaceError::HostWorkRejected)?;
     let mut parts = vector(count, meter)?;
-    if epoch == EventCodecEpoch::CostV1 {
+    if epoch != EventCodecEpoch::Legacy {
         parts.push(COST_EVENT_DOMAIN_V1);
     }
     parts.extend(channel_hashes.iter().map(|hash| hash.0.as_slice()));
@@ -423,6 +483,31 @@ pub fn consume_for_epoch<C: StableHashSerialize, P: StableHashSerialize, K: Stab
         hash: source_hash,
         persistent,
     })
+}
+
+pub fn consume_keys_for_epoch<
+    C: StableHashSerialize,
+    P: StableHashSerialize,
+    K: StableHashSerialize,
+>(
+    epoch: EventCodecEpoch,
+    channels: &[C],
+    patterns: &[P],
+    continuation: &K,
+    persistent: bool,
+    meter: &impl SourceMeter,
+) -> Result<(Consume, Vec<StoreKey>)> {
+    let mut keys = vector(channels.len(), meter)?;
+    let source = consume_for_epoch_with(
+        epoch,
+        channels,
+        patterns,
+        continuation,
+        persistent,
+        Some(&mut keys),
+        meter,
+    )?;
+    Ok((source, keys))
 }
 
 #[cfg(test)]

@@ -112,10 +112,16 @@ fn every_expr_instance() -> Vec<Expr> {
         // grounds
         ExprInstance::GBool(true),
         ExprInstance::GInt(42),
+        ExprInstance::GUint64(u64::MAX),
+        ExprInstance::GInt32(i32::MIN),
+        ExprInstance::GUint32(u32::MAX),
+        ExprInstance::GUint16(u16::MAX.into()),
+        ExprInstance::GUint8(u8::MAX.into()),
         ExprInstance::GString("s".to_string()),
         ExprInstance::GUri("rho:id:x".to_string()),
         ExprInstance::GByteArray(vec![1, 2, 3]),
         ExprInstance::GDouble(1.5f64.to_bits()),
+        ExprInstance::GFloat32(1.5f32.to_bits()),
         ExprInstance::GBigInt(vec![1, 2, 3, 4]),
         ExprInstance::GBigRat(GBigRational {
             numerator: vec![1],

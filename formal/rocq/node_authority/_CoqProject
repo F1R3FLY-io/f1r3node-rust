@@ -1,0 +1,9 @@
+-Q theories NodeAuthority
+theories/AuthorityObserver.v
+theories/AuthorityWork.v
+theories/DisplayProjection.v
+theories/LegacyEpochScope.v
+theories/DetachedParticipantFork.v
+theories/ReductionDomainIsolation.v
+theories/ReducerTailMachine.v
+theories/MainTheorem.v

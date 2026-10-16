@@ -198,7 +198,7 @@ fn schedule_layer<'ast>(
         None => {
             let mut par = input.par;
             if !cells.is_empty() {
-                par.cost_stacks.push(CostStack { cells });
+                par.cost_stacks.push(CostStack { cells, parallel_tail: Vec::new() });
             }
             Step::Done(NormVal::Proc(
                 crate::rust::interpreter::compiler::normalize::ProcVisitOutputs {

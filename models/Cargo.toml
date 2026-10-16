@@ -40,7 +40,7 @@ unexpected_cfgs = { level = "warn", check-cfg = ["cfg(kani)"] }
 crypto = { path = "../crypto" }
 rspace_plus_plus = { path = "../rspace++" }
 shared = { path = "../shared" }
-pathmap = { version = "0.2.2", features = ["arena_compact"] }
+pathmap = { version = "=0.2.2", features = ["arena_compact"] }
 hex = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }

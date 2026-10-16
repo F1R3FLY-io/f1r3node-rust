@@ -15,12 +15,12 @@ use comm::rust::peer_node::PeerNode;
 use comm::rust::rp::connect::ConnectionsCell;
 use comm::rust::rp::rp_conf::RPConf;
 use comm::rust::transport::transport_layer::TransportLayer;
-use models::rust::block_hash::BlockHash;
 use models::rust::casper::protocol::casper_message::{ApprovedBlock, BlockMessage, CasperMessage};
 use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
 use tokio::sync::mpsc;
 use tokio::time::sleep;
 
+use crate::rust::blocks::block_processor::{BlockQueueItem, InFlightBlocks};
 use crate::rust::casper::{hash_set_casper, CasperShardConf, MultiParentCasper};
 use crate::rust::engine::approve_block_protocol::ApproveBlockProtocolImpl;
 use crate::rust::engine::block_retriever::BlockRetriever;
@@ -77,11 +77,8 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> GenesisCeremonyMaster<T>
         runtime_manager: Arc<RuntimeManager>,
         estimator: Estimator,
         // Explicit parameters from Scala (in same order as Scala signature)
-        block_processing_queue_tx: mpsc::Sender<(
-            Arc<dyn MultiParentCasper + Send + Sync>,
-            BlockMessage,
-        )>,
-        blocks_in_processing: Arc<DashSet<BlockHash>>,
+        block_processing_queue_tx: mpsc::Sender<BlockQueueItem>,
+        blocks_in_processing: Arc<InFlightBlocks>,
         casper_shard_conf: CasperShardConf,
         validator_id: Option<ValidatorIdentity>,
         disable_state_exporter: bool,
@@ -252,4 +249,3 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> Engine for GenesisCeremo
 
     fn with_casper(&self) -> Option<Arc<dyn MultiParentCasper + Send + Sync>> { None }
 }
-use dashmap::DashSet;

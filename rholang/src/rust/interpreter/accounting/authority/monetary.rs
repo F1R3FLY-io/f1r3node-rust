@@ -13,13 +13,19 @@ pub fn monetary_funding_signatures_with_host_work(
     )?;
     let mut authorized = ResourceMultiset::default();
     let mut atom_signatures = BTreeMap::new();
-    for atom in event_atoms(funding)? {
-        add_signature_atoms(&mut authorized, &mut atom_signatures, &atom, 1)?;
+    for atom in event_atoms_with_host_work(funding, host_work)? {
+        add_signature_atoms(&mut authorized, &mut atom_signatures, &atom, 1, host_work)?;
     }
     let mut eligible = BTreeMap::new();
     for (key, signature) in discovered {
         let mut required = ResourceMultiset::default();
-        add_signature_atoms(&mut required, &mut atom_signatures, &signature, 1)?;
+        add_signature_atoms(
+            &mut required,
+            &mut atom_signatures,
+            &signature,
+            1,
+            host_work,
+        )?;
         if !required.0.is_empty()
             && required
                 .0

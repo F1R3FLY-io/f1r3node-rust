@@ -16,9 +16,13 @@ fn test_deploy_response_full_view_includes_all_fields() {
         cost: 500,
         errored: false,
         is_finalized: true,
+        finalization_state: "finalized".to_string(),
+        rejection_count: 0,
         deployer: Some("deployer1".to_string()),
         term: Some("new ret in { ret!(42) }".to_string()),
         system_deploy_error: Some(String::new()),
+        phlo_price: Some(1),
+        phlo_limit: Some(1_000_000),
         sig_algorithm: Some("secp256k1".to_string()),
         valid_after_block_number: Some(0),
         transfers: Some(vec![]),
@@ -33,9 +37,10 @@ fn test_deploy_response_full_view_includes_all_fields() {
     assert_eq!(json["isFinalized"], true);
     assert!(json.get("deployer").is_some());
     assert!(json.get("term").is_some());
-    // D3 (DR-9): no phloPrice / phloLimit in the response.
-    assert!(json.get("phloPrice").is_none());
-    assert!(json.get("phloLimit").is_none());
+    assert_eq!(json["finalizationState"], "finalized");
+    assert_eq!(json["rejectionCount"], 0);
+    assert_eq!(json["phloPrice"], 1);
+    assert_eq!(json["phloLimit"], 1_000_000);
     assert!(json.get("transfers").is_some());
 }
 
@@ -49,9 +54,13 @@ fn test_deploy_response_summary_view_omits_optional_fields() {
         cost: 500,
         errored: false,
         is_finalized: true,
+        finalization_state: "finalized".to_string(),
+        rejection_count: 0,
         deployer: None,
         term: None,
         system_deploy_error: None,
+        phlo_price: None,
+        phlo_limit: None,
         sig_algorithm: None,
         valid_after_block_number: None,
         transfers: None,
@@ -81,6 +90,8 @@ fn test_deploy_request_serialization() {
         data: DeployData {
             term: "contract".to_string(),
             time_stamp: 1234567890,
+            phlo_price: 1,
+            phlo_limit: 1_000_000,
             valid_after_block_number: 0,
             shard_id: "".to_string(),
             expiration_timestamp: None,
@@ -88,7 +99,6 @@ fn test_deploy_request_serialization() {
         deployer: "0123456789abcdef".to_string(),
         signature: "fedcba9876543210".to_string(),
         sig_algorithm: "secp256k1".to_string(),
-        cosigners: Vec::new(),
     };
 
     let json = serde_json::to_string(&request).unwrap();

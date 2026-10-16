@@ -41,6 +41,7 @@ implicit unlimited evaluation budget. The source program cannot change them.
 | Setting | Meaning |
 | --- | --- |
 | `F1R3LANG_EVAL_PHLO` | Positive host-funded token grant per evaluation, below the maximum signed 64-bit value |
+| `F1R3LANG_LOOKAHEAD_HOST_WORK` | Positive finite native work cap per lookahead request and dimension, below the maximum unsigned 64-bit value; separate from phlogiston and preparation work |
 | `F1R3LANG_MAX_SOURCE_BYTES` | Source byte limit, checked before the blocking-worker source copy |
 | `F1R3LANG_MAX_IMPORT_ENTRIES` | Maximum caller-import entries |
 | `F1R3LANG_MAX_IMPORT_NODES` | Maximum admitted import structural occurrences |
@@ -54,6 +55,7 @@ recommendations:
 
 ```sh
 export F1R3LANG_EVAL_PHLO=10000000
+export F1R3LANG_LOOKAHEAD_HOST_WORK=100000000
 export F1R3LANG_MAX_SOURCE_BYTES=1048576
 export F1R3LANG_MAX_IMPORT_ENTRIES=1024
 export F1R3LANG_MAX_IMPORT_NODES=1000000
@@ -61,6 +63,15 @@ export F1R3LANG_MAX_IMPORT_BYTES=16777216
 export F1R3LANG_PREPARATION_WORK=100000000
 export F1R3LANG_PREPARATION_UNITS=100000000
 ```
+
+The node's trusted standalone composition supplies the lookahead work cap,
+then binds those immutable limits once to the evaluation runtime together
+with the deploy's phlogiston budget. Each request receives a fresh native
+host-work budget with those limits. The scalar above is expanded to the native
+host-work dimensions; search candidates and scanned/backing bytes draw on the
+search dimensions. Source code cannot set or raise it. This local authorization is
+only for the standalone evaluator and is not a consensus event-epoch choice:
+block execution and replay require the separately adopted genesis policy.
 
 This feature requires the native-operation profile audited by MeTTaIL's
 `runtime/build.rs`: the standard x86-64, 64-bit Rust compiler at commit

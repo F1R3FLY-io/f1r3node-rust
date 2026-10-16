@@ -43,7 +43,7 @@ before that condition holds.
 
 A **causal operation order** is the lexicographic pair of the evaluation
 session identity and a tree path. A path segment `(step, 0)` identifies an
-operation. Splitting appends `(step, 1)` and a child index. Consequently, an
+operation. Splitting appends one `(step, child index + 1)` segment. Consequently, an
 operation before a split precedes every child operation, and every child
 operation precedes the parent's first operation after the join.
 
@@ -75,6 +75,51 @@ transitive.
 An **evaluation permit** is a shared permit held for the complete lifetime of
 an evaluation. Checkpoint, reset, rollback, and replay-boundary operations take
 the exclusive permit.
+
+## Detached continuations with a live parent
+
+A host contract can publish several data items during one call. A publication
+can match a Rholang continuation and start a detached child evaluation. The
+host contract still has work to do after that child starts.
+
+The standard `split` operation replaces the parent participant with children.
+It is correct when the parent returns after the handoff. It is incorrect for a
+continuing publisher: the next publication would submit an intent under a
+parent that the session no longer registers.
+
+The `fork_detached_child` operation keeps the parent registered. It registers
+one fresh child under the same session lock. The parent and child can then
+submit their own intents. Their causal paths use the same monotone step source
+as a standard split. A child uses the segment `(step, 1)`, and the parent's
+next operation uses a later `(step, 0)` segment.
+
+Let $`P`$ be the set of registered participants, $`p`$ the continuing parent,
+and $`c`$ a fresh child. The fork requires $`p \in P`$ and $`c \notin P`$.
+Its registration transition is:
+
+```math
+P' = P \cup \{c\}, \qquad p \in P', \qquad c \in P'.
+```
+
+Completion removes only the participant that completes. The evaluation permit
+stays held until both branches and all scheduled intents become quiescent. When
+the parent waits for its detached children, it **parks**: it remains registered
+and retains the permit, but does not block a frontier containing a child's
+waiting RSpace intent. The parent resumes before its caller can publish again,
+and completes only after that caller returns. An all-parked roster cannot start
+a driver, because a ready frontier must contain at least one intent.
+
+The [Rocq fork model](../../../../formal/rocq/node_authority/theories/DetachedParticipantFork.v)
+proves parent retention, child registration, uniqueness, independent
+completion, and the park/resume registration invariant. It also proves that a
+replacing split cannot support a continuing parent and that a running idle
+parent blocks a child's complete frontier. Focused runtime tests cover later
+parent sends and detached-child progress while the parent is parked. The Regex
+application test checks the full boundary through the public evaluation route.
+
+![A host publisher forks a detached Rholang continuation while retaining its participant. The parent parks during the child join, resumes before publishing again, and releases the evaluation permit only after both participants finish.](../diagrams/detached-participant-fork.svg)
+
+(*Source: [`detached-participant-fork.puml`](../diagrams/detached-participant-fork.puml).*)
 
 ## Minimal counterexample
 

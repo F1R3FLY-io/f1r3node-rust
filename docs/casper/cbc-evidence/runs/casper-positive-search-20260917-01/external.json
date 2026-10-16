@@ -1,0 +1,21 @@
+{
+ "schema_version": 2,
+ "package": "casper-positive-search-20260917-01",
+ "task": "TASK-017-14",
+ "recorded_on": "2026-10-03",
+ "store": {
+  "kind": "github-release",
+  "repository": "F1R3FLY-io/f1r3node-rust",
+  "tag": "cbc-evidence-epic-017"
+ },
+ "assets": [
+  {
+   "asset": "casper-positive-search-20260917-01.external.tar.gz",
+   "sha256": "51961ea4a6c1492ab8579c76efd1ac071c81d1b692cfc95aa12442169faf8c9f",
+   "bytes": 81593,
+   "members": 120,
+   "bundle_created": "2026-09-19",
+   "inner_manifest": "external-manifest.json"
+  }
+ ]
+}

@@ -9,12 +9,13 @@ use async_trait::async_trait;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use shared::rust::clone_backing::CloneBacking;
+use shared::rust::closed_decode::ClosedDecode;
 
 use super::checkpoint::{Checkpoint, SoftCheckpoint};
 use super::errors::RSpaceError;
 use super::hashing::blake2b256_hash::Blake2b256Hash;
-use super::hashing::stable_hash_provider::StableHashSerialize;
 use super::hashing::native_source::SourceMeter;
+use super::hashing::stable_hash_provider::StableHashSerialize;
 use super::history::history_repository::HistoryRepository;
 use super::hot_store::HotStore;
 use super::internal::{ConsumeCandidate, Datum, Row, WaitingContinuation};
@@ -371,6 +372,10 @@ where
         + ColdStoreDecode
         + 'static,
 {
+    fn codec_epoch(&self) -> crate::rspace::hashing::stable_hash_provider::EventCodecEpoch {
+        self.replay_rspace.codec_epoch()
+    }
+
     fn set_accounting_observer(
         &self,
         observer: Option<Arc<dyn RSpaceAccountingObserver<C, P, A, K>>>,
@@ -382,7 +387,7 @@ where
         ReportingRspace::create_checkpoint(self).await
     }
 
-    async fn get_data(&self, channel: &C) -> Vec<Datum<A>> {
+    async fn get_data(&self, channel: &C) -> Result<Vec<Datum<A>>, RSpaceError> {
         self.replay_rspace.get_data(channel).await
     }
 
@@ -393,16 +398,33 @@ where
     ) -> Result<Vec<Datum<A>>, RSpaceError>
     where
         C: CloneBacking + DeserializeOwned,
-        A: CloneBacking + DeserializeOwned,
+        A: CloneBacking + DeserializeOwned + ClosedDecode,
     {
         self.replay_rspace.get_data_metered(channel, meter).await
     }
 
-    async fn get_waiting_continuations(&self, channels: Vec<C>) -> Vec<WaitingContinuation<P, K>> {
+    async fn get_data_cold_decode_metered(
+        &self,
+        channel: &C,
+        meter: &(dyn SourceMeter + Sync),
+    ) -> Result<Vec<Datum<A>>, RSpaceError>
+    where
+        C: CloneBacking,
+        A: CloneBacking + ColdStoreDecode,
+    {
+        self.replay_rspace
+            .get_data_cold_decode_metered(channel, meter)
+            .await
+    }
+
+    async fn get_waiting_continuations(
+        &self,
+        channels: Vec<C>,
+    ) -> Result<Vec<WaitingContinuation<P, K>>, RSpaceError> {
         self.replay_rspace.get_waiting_continuations(channels).await
     }
 
-    async fn get_joins(&self, channel: C) -> Vec<Vec<C>> {
+    async fn get_joins(&self, channel: C) -> Result<Vec<Vec<C>>, RSpaceError> {
         self.replay_rspace.get_joins(channel).await
     }
 

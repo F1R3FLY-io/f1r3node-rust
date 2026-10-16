@@ -154,7 +154,12 @@ fn unsupported_kind(instance: &ExprInstance, spatial: SpatialSupport) -> Option<
         | ExprInstance::GFloat32(_)
         | ExprInstance::GBigInt(_)
         | ExprInstance::GBigRat(_)
-        | ExprInstance::GFixedPoint(_) => None,
+        | ExprInstance::GFixedPoint(_)
+        | ExprInstance::GUint64(_)
+        | ExprInstance::GInt32(_)
+        | ExprInstance::GUint32(_)
+        | ExprInstance::GUint16(_)
+        | ExprInstance::GUint8(_) => None,
 
         // Collections — passed through unchanged, interiors never evaluated.
         ExprInstance::EListBody(_)
@@ -313,6 +318,11 @@ fn push_expr<'g>(
         | ExprInstance::GBigInt(_)
         | ExprInstance::GBigRat(_)
         | ExprInstance::GFixedPoint(_)
+        | ExprInstance::GUint64(_)
+        | ExprInstance::GInt32(_)
+        | ExprInstance::GUint32(_)
+        | ExprInstance::GUint16(_)
+        | ExprInstance::GUint8(_)
         | ExprInstance::EListBody(_)
         | ExprInstance::ETupleBody(_)
         | ExprInstance::ESetBody(_)

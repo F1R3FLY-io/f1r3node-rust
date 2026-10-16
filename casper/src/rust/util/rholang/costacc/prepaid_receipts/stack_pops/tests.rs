@@ -1,4 +1,5 @@
 use models::rhoapi::cost_signature::Value;
+use models::rust::host_work::{HostWorkLimit, HostWorkLimits};
 use models::rust::phlo_wire::PhloWireLimits;
 use rholang::rust::interpreter::accounting::Sig;
 use rholang::rust::interpreter::test_utils::resources::create_runtimes;
@@ -30,6 +31,53 @@ const LIMITS: PrepaidStackPopLimits = PrepaidStackPopLimits {
     },
 };
 
+#[test]
+fn frontier_receipts_partition_original_preorder_occurrences() {
+    let make_publication = |branch: u8, indices: Vec<usize>| PlannedPurseStackPublication {
+        original_root_id: [1; 32],
+        original_branch_id: [branch; 32],
+        original_transfer_indices: indices,
+        channel: Par::default(),
+        datum: ListParWithRandom {
+            pars: Vec::new(),
+            random_state: Vec::new(),
+            cost_authority: None,
+            cost_stack: Some(CostStack {
+                cells: vec![signature(branch)],
+                parallel_tail: Vec::new(),
+            }),
+        },
+        persistent: false,
+        source_hash: [branch; 32],
+    };
+    let left = make_publication(2, vec![1]);
+    let right = make_publication(3, vec![2]);
+    let original = [
+        b"prefix".as_slice(),
+        b"left".as_slice(),
+        b"right".as_slice(),
+    ];
+    let budget = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(1_000_000)));
+    let records =
+        partition_frontier_receipt(&original, &[&left, &right], 1, LIMITS.cells, &budget).unwrap();
+    assert_eq!(
+        OrderedPrepaidCells::decode(&records[0], LIMITS.cells)
+            .unwrap()
+            .cells(),
+        &[b"left".as_slice()]
+    );
+    assert_eq!(
+        OrderedPrepaidCells::decode(&records[1], LIMITS.cells)
+            .unwrap()
+            .cells(),
+        &[b"right".as_slice()]
+    );
+    assert!(
+        partition_frontier_receipt(&original, &[&left, &left], 1, LIMITS.cells, &budget).is_err()
+    );
+    assert!(partition_frontier_receipt(&original, &[&left], 1, LIMITS.cells, &budget).is_err());
+}
+
 fn signature(value: u8) -> CostSignature {
     CostSignature {
         value: Some(Value::Ground(vec![value])),
@@ -43,7 +91,8 @@ async fn inventory(runtime: &RuntimeOps, head: u8) -> Vec<PurseStack> {
             .reducer
             .space
             .get_data(&supply::supply_channel(&Sig::Ground(vec![head])))
-            .await,
+            .await
+            .expect("read the supply inventory"),
         &signature(head),
     )
     .unwrap()
@@ -75,6 +124,7 @@ async fn fixture() -> (
                         cost_authority: None,
                         cost_stack: Some(CostStack {
                             cells: (head..=3).map(signature).collect(),
+                            parallel_tail: Vec::new(),
                         }),
                     },
                     false,
@@ -338,6 +388,31 @@ async fn complete_consumption_removes_receipts_and_new_tails_create_buckets() {
         .apply_prepaid_stack_pops(&stacks[..2], &draws[..2], LIMITS)
         .await
         .is_err());
+    // D-C4 (DR-98) premise P_join: after removals and tail releases, no join
+    // group contains a supply channel or a receipt channel, so a settlement
+    // produce fetches no other channel's data.
+    for head in 1..=3u8 {
+        let channel = supply::supply_channel(&Sig::Ground(vec![head]));
+        assert!(native
+            .runtime
+            .reducer
+            .space
+            .get_joins(channel)
+            .await
+            .expect("read supply channel joins")
+            .is_empty());
+    }
+    for stack in &stacks {
+        let channel = receipt_channel(&PrepaidReceiptBucket::key_for_source(&stack.source_hash));
+        assert!(native
+            .runtime
+            .reducer
+            .space
+            .get_joins(channel)
+            .await
+            .expect("read receipt channel joins")
+            .is_empty());
+    }
 }
 
 #[tokio::test]

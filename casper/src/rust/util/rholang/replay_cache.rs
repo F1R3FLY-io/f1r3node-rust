@@ -5,6 +5,7 @@ use std::sync::{Arc, Mutex};
 use indexmap::IndexMap;
 use models::rust::block::state_hash::StateHash;
 use models::rust::casper::protocol::casper_message::{Event, Peek, ProduceEvent};
+use rspace_plus_plus::rspace::hashing::stable_hash_provider::EventCodecEpoch;
 
 /// Cache key: parent state + block identity (sender, seqNum) + replay payload fingerprint.
 /// Including a payload fingerprint prevents unsafe cache hits for mutated deploy content
@@ -15,6 +16,7 @@ pub struct ReplayCacheKey {
     pub sender_pk: Vec<u8>,
     pub seq_num: i64,
     pub payload_hash: Vec<u8>,
+    pub codec_epoch: EventCodecEpoch,
 }
 
 impl ReplayCacheKey {
@@ -24,11 +26,28 @@ impl ReplayCacheKey {
         seq_num: i64,
         payload_hash: Vec<u8>,
     ) -> Self {
+        Self::new_for_epoch(
+            parent_state,
+            sender_pk,
+            seq_num,
+            payload_hash,
+            EventCodecEpoch::Legacy,
+        )
+    }
+
+    pub fn new_for_epoch(
+        parent_state: StateHash,
+        sender_pk: Vec<u8>,
+        seq_num: i64,
+        payload_hash: Vec<u8>,
+        codec_epoch: EventCodecEpoch,
+    ) -> Self {
         Self {
             parent_state,
             sender_pk,
             seq_num,
             payload_hash,
+            codec_epoch,
         }
     }
 
@@ -98,6 +117,15 @@ impl ReplayCacheEntry {
                     Self::normalize_produce(produce);
                 }
             }
+            Event::RestingComm(resting) => {
+                for channels_hash in &mut resting.consume.channels_hashes {
+                    *channels_hash = owned_bytes(channels_hash);
+                }
+                resting.consume.hash = owned_bytes(&resting.consume.hash);
+                for produce in &mut resting.ordered_produces {
+                    Self::normalize_produce(produce);
+                }
+            }
         }
     }
 
@@ -153,6 +181,17 @@ impl ReplayCacheEntry {
                         .capacity()
                         .saturating_mul(std::mem::size_of::<Peek>()),
                 ),
+            Event::RestingComm(resting) => resting
+                .consume
+                .channels_hashes
+                .capacity()
+                .saturating_mul(std::mem::size_of::<prost::bytes::Bytes>())
+                .saturating_add(resting.consume.channels_hashes.iter().map(prost::bytes::Bytes::len).sum::<usize>())
+                .saturating_add(resting.consume.hash.len())
+                .saturating_add(resting.ordered_produces.capacity().saturating_mul(std::mem::size_of::<ProduceEvent>()))
+                .saturating_add(resting.ordered_produces.iter().map(Self::produce_heap_bytes).sum::<usize>())
+                .saturating_add(resting.ordered_data_indices.capacity().saturating_mul(std::mem::size_of::<u64>()))
+                .saturating_add(resting.peeks.capacity().saturating_mul(std::mem::size_of::<Peek>())),
         }
     }
 
@@ -332,6 +371,23 @@ mod tests {
         let cache = InMemoryReplayCache::default_capacity();
         let key = make_key("unknown", "sender", 42);
         assert!(cache.get(&key).is_none());
+    }
+
+    #[test]
+    fn test_replay_cache_never_aliases_codec_epochs() {
+        let cache = InMemoryReplayCache::default_capacity();
+        let legacy = make_key("parent", "sender", 1);
+        let cost_v1 = ReplayCacheKey::new_for_epoch(
+            legacy.parent_state.clone(),
+            legacy.sender_pk.clone(),
+            legacy.seq_num,
+            legacy.payload_hash.clone(),
+            EventCodecEpoch::CostV1,
+        );
+        assert_ne!(legacy, cost_v1);
+        assert!(cache.put(legacy.clone(), make_entry("legacy-post-state")));
+        assert!(cache.get(&legacy).is_some());
+        assert!(cache.get(&cost_v1).is_none());
     }
 
     #[test]

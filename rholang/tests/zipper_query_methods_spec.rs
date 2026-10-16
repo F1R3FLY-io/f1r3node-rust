@@ -717,7 +717,7 @@ mod native_query_runtime_tests {
         let channel = Par::default().with_exprs(vec![Expr {
             expr_instance: Some(ExprInstance::GString(channel_name.to_string())),
         }]);
-        let data = runtime.get_data(&channel).await;
+        let data = runtime.get_data(&channel).await.expect("zipper query");
         assert_eq!(
             data.len(),
             1,

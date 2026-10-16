@@ -64,3 +64,5 @@ loom = "=0.7.2"
 tempfile = { workspace = true }
 test-env-helpers = "0.2.2"
 metrics-util = { workspace = true }
+# Dev also added this dependency; it is already declared above, and a TOML table cannot repeat a key.
+# tempfile = { workspace = true }

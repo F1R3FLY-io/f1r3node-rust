@@ -56,14 +56,14 @@ impl BlockError {
         use rholang::rust::interpreter::errors::InterpreterError;
         use rspace_plus_plus::rspace::errors::{HistoryError, RSpaceError, RootError};
 
+        if let CasperError::InterpreterError(InterpreterError::RSpaceError(
+            RSpaceError::HistoryError(HistoryError::RootError(RootError::RootNotFound(root))),
+        )) = &error
+        {
+            return BlockError::AwaitingState(root.clone());
+        }
         match error {
             CasperError::BlockNotHeld(hash, _) => BlockError::Undecidable(hash),
-            // The state twin: a replay that needed a root this node never
-            // fetched. The chain is fully typed from rspace up, so absence
-            // keeps its name without a string search.
-            CasperError::InterpreterError(InterpreterError::RSpaceError(
-                RSpaceError::HistoryError(HistoryError::RootError(RootError::RootNotFound(root))),
-            )) => BlockError::AwaitingState(root),
             other => BlockError::BlockException(other),
         }
     }

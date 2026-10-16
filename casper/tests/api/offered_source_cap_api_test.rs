@@ -228,7 +228,7 @@ async fn offered_funding_uses_all_64_sources_with_one_fee_across_validators() {
     assert_eq!(parameters.1.len(), 67);
     let policy = PhloGenesisPolicy::from_schedule(&schedule())
         .unwrap()
-        .with_offered_funded_v6_active();
+        .with_offered_funded_active();
     let genesis = GenesisBuilder::new()
         .with_resource_policy(policy)
         .build_genesis_with_parameters(Some(parameters))

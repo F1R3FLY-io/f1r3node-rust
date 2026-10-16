@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
-use models::rust::host_work::HostWorkDimension;
+use models::rust::host_work::{HostWorkDimension, HostWorkLimits};
+use rspace_plus_plus::rspace::hashing::stable_hash_provider::EventCodecEpoch;
 use rspace_plus_plus::rspace::operation_context;
 
 use super::byte_accounting::{ByteCharge, BYTE_COST_SCHEDULE_V1};
@@ -32,20 +33,25 @@ pub use checked_operations::{
 };
 pub use operation_sources::{
     NativeCommSource, NativeConsumeSource, NativeOperationSource, NativeProduceSource,
+    NativeRestingSource,
 };
 pub use operations::{
     NativeCommRecord, NativeObservationLink, NativeOperationOccurrence, NativeOperationRecord,
+    NativeOperationRecordV3, NativeRestingRecordV3,
 };
 pub use path_trie::{NativePathTrie, PathId};
 use recording::{recording_error, work, NativeBudgetRecorder, NativeObservationPreparation};
 pub use recording::{NativeBudgetRecording, NativeBudgetRetry};
 pub(crate) use replay_authority::NativeAuthorityCheckpoint;
 pub use wire::{
-    decode_native_budget_recording, decode_native_operation_journal,
-    encode_native_budget_recording, encode_native_operation_journal, NativeRecordingWireLimits,
+    decode_native_budget_recording, decode_native_budget_recording_v3,
+    decode_native_operation_journal, decode_native_operation_journal_v3,
+    encode_native_budget_recording, encode_native_budget_recording_v3,
+    encode_native_operation_journal, encode_native_operation_journal_v3, NativeRecordingWireLimits,
 };
 
 pub struct NativeRuntimeConfig {
+    event_codec_epoch: EventCodecEpoch,
     replay_bound: bool,
     reservation: NativePhloReservation,
     limits: NativeBudgetTraceLimits,
@@ -59,12 +65,22 @@ pub struct NativeRuntimeConfig {
 impl NativeRuntimeConfig {
     pub(crate) fn host_work(&self) -> HostWorkBudget { self.host_work.clone() }
 
+    /// The caller must obtain this epoch from its authenticated host policy.
+    /// Guest terms, event bytes, and cost grades are not epoch selectors.
+    pub fn with_event_codec_epoch(mut self, epoch: EventCodecEpoch) -> Self {
+        self.event_codec_epoch = epoch;
+        self
+    }
+
+    pub fn event_codec_epoch(&self) -> EventCodecEpoch { self.event_codec_epoch }
+
     pub fn new(
         contract: NativePhloExecutionContract<'_>,
         limits: NativeBudgetTraceLimits,
         host_work: HostWorkBudget,
     ) -> Self {
         Self {
+            event_codec_epoch: EventCodecEpoch::Legacy,
             replay_bound: false,
             reservation: contract.reservation(),
             limits,
@@ -78,6 +94,44 @@ impl NativeRuntimeConfig {
 }
 
 impl RuntimeBudget {
+    /// Grant one explicitly local, non-replay CostV2 lookahead budget the
+    /// ability to account RestingCOMM. Only trusted host construction may call
+    /// this; source syntax and event bytes are not authority selectors.
+    pub fn enable_standalone_resting_comm(
+        &self,
+        limits: HostWorkLimits,
+    ) -> Result<(), InterpreterError> {
+        if self.is_unmetered() || self.is_legacy() || self.has_comm_accounting_scope() {
+            return Err(InterpreterError::HostWorkRejected);
+        }
+        if HostWorkDimension::ALL.iter().any(|dimension| {
+            let cap = limits.get(*dimension).get();
+            cap == 0 || cap == u64::MAX
+        }) {
+            return Err(InterpreterError::HostWorkRejected);
+        }
+        let mut state = self.authority_state.lock().expect("authority state");
+        if state.native.is_some() {
+            return Err(InterpreterError::HostWorkRejected);
+        }
+        state.standalone_resting_comm = Some(limits);
+        Ok(())
+    }
+
+    pub fn standalone_resting_comm_enabled(&self) -> bool {
+        let state = self.authority_state.lock().expect("authority state");
+        state.standalone_resting_comm.is_some()
+    }
+
+    pub fn native_event_codec_epoch(&self) -> Option<EventCodecEpoch> {
+        self.authority_state
+            .lock()
+            .expect("authority state")
+            .native
+            .as_ref()
+            .map(NativeRuntimeConfig::event_codec_epoch)
+    }
+
     pub fn native_execution_active(&self) -> bool {
         self.authority_state
             .lock()
@@ -100,7 +154,10 @@ impl RuntimeBudget {
         &self,
         mut config: NativeRuntimeConfig,
     ) -> Result<(), InterpreterError> {
-        if self.has_comm_accounting_scope() || self.is_unmetered() {
+        if self.has_comm_accounting_scope()
+            || self.is_unmetered()
+            || self.standalone_resting_comm_enabled()
+        {
             return Err(InterpreterError::ReduceError(
                 "native execution requires an idle metered budget".to_owned(),
             ));

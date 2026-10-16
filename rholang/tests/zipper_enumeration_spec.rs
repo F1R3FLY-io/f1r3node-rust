@@ -69,7 +69,7 @@ async fn read_single_expr(runtime: &RhoRuntimeImpl, channel_name: &str) -> ExprI
     let channel = Par::default().with_exprs(vec![Expr {
         expr_instance: Some(ExprInstance::GString(channel_name.to_string())),
     }]);
-    let data = runtime.get_data(&channel).await;
+    let data = runtime.get_data(&channel).await.expect("zipper query");
     assert_eq!(
         data.len(),
         1,
@@ -268,7 +268,7 @@ async fn counted_walk_collects_every_trace() {
         let channel = Par::default().with_exprs(vec![Expr {
             expr_instance: Some(ExprInstance::GString("traces".to_string())),
         }]);
-        let data = runtime.get_data(&channel).await;
+        let data = runtime.get_data(&channel).await.expect("trace query");
         assert_eq!(data.len(), 1, "the walk must terminate and report once");
         let collected = &data[0].a.pars[0];
         match collected
@@ -693,7 +693,7 @@ async fn bare_counted_walk_collects_every_entry() {
         let channel = Par::default().with_exprs(vec![Expr {
             expr_instance: Some(ExprInstance::GString("bareTraces".to_string())),
         }]);
-        let data = runtime.get_data(&channel).await;
+        let data = runtime.get_data(&channel).await.expect("bare trace query");
         assert_eq!(data.len(), 1, "the counted walk must report once");
         let collected = &data[0].a.pars[0];
         match collected

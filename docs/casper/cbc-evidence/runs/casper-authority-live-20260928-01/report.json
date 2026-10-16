@@ -1,0 +1,146 @@
+{
+  "schema_version": 1,
+  "claim_ids": [
+    "CLAIM-CASPER-AUTHORITY-LIVE-001",
+    "CLAIM-CASPER-AUTHORITY-ADAPTER-001",
+    "CLAIM-CASPER-AUTHORITY-CLIENT-001"
+  ],
+  "task": "TASK-017-12",
+  "status": "controlled-verification-passed",
+  "claim_discharge": "pending",
+  "phase": "pre_pr216_merge",
+  "source_head_revision": "b1e33bbaccd289326321ff62759d079f9cbaa177",
+  "working_tree": true,
+  "source_digests": {
+    "scripts/casper-soak/src/authority_live.rs": "84dd343a3ac72a90a65abc7d0b1c3ab574f32ff0c818e51b6ab953b370859504",
+    "scripts/casper-soak/src/bin/casper-authority-live.rs": "b50320266f6a1ceae4a5b54bf142122245df458a88f970ad2cc9a04587bdba09",
+    "scripts/casper-soak/tests/authority_live.rs": "73c098228571307170218f0803d6f7ad536a3008f12f71708eb1ab4d9a7abc2e",
+    "scripts/casper-soak/check-authority-live.sh": "3fc3e06bc76a7c9646f235ade508280884854403e77e776976d804fd8541a93b",
+    "scripts/casper-soak/src/authority_observer.rs": "9c475f185cbd829d37fbb33fa408358564a2500ea9582ff234f6c51bf9a72d6f",
+    "scripts/casper-soak/src/authority_mapping.rs": "924368389ea7c341dcea8aae021384f95ab1c9ec6bdda6251aced31cb17e909f",
+    "scripts/casper-soak/src/bin/casper-authority-observe.rs": "3b64e0c68dd46f410fcd98716decc99032aaf416c2a95912fa3343cd3a46572f",
+    "scripts/casper-soak/src/lib.rs": "a70f76a28de8ef8010eb7f8876b5e947ce94bf35752bbd70b086983383ee7a8f",
+    "scripts/casper-soak/src/manifest.rs": "d9606d542cfb9bc058f691196244ae2e6055e6c84c02b5c2581ee07e70c03000",
+    "scripts/casper-soak/Cargo.toml": "0389290c18cb725d108ce3709018f92d9f04fdf84a62eb97d905c53874f43139",
+    "Cargo.lock": "9da684952a74e56706dfd0fcc9165a02e05529443d963f5040aec61b2a6a0f75",
+    ".github/workflows/casper-authority-adapter.yml": "bebe95a7d16c8ff447fe6d916a8abad55130b40d4c12f9044db718bba75c8246",
+    "docs/claims/casper-authority-live-executor.md": "4bae2bef46c423f32bd14395ae2482beab4df9d25adf4fbe1072a47e67bdacd2",
+    "docs/casper/design/authority-live-executor.md": "5de103ccd513f09c4a02efaa46fe80ced90e0a2a5cd2891958599afece4e0b66",
+    "rust-toolchain.toml": "cef5cc010fbd237ab34a4d07129372406e11ff8595c2efc1126d9c93e039aed4",
+    ".cargo/config.toml": "da7e626941c437575405e8eade493a1994483236d0f775c39800b2b2e93f230f",
+    "scripts/casper-soak/process_faults.py": "c1e66e1054b1868555366de7a4330ba58e4adbb506c8058bc6da143aa361eba3",
+    "scripts/casper-soak/tests/authority_mapping.rs": "98a31c69949eae51f9913f65ea7700b128dcd5d3e3c437e72bbce098e9fdaa59",
+    "scripts/casper-soak/tests/authority_observer.rs": "90d99e1650586e72f49fbc6fefd3834b0be951e07d2afca4e33f6abe637677af",
+    "scripts/casper-soak/tests/test_process_faults.py": "774fc10e1f082ec90c52f01eedf48920f3e809177a68aed7f6efe33fdb90b434",
+    "scripts/casper-soak/check-authority-adapter.sh": "ea2cd3e89d37827a518eea4c1b65e2a81faa59b885b1b92ef28e4b6b353337a9",
+    "docs/claims/casper-authority-adapter.md": "5d13e8d1bd319566fe682bd8e02a32d4b16992222203dfdb1184fc38d3f921b0",
+    "docs/claims/casper-authority-observer-client.md": "04d8f77c611fd94a1ea7ee0a658720a099ec9777b385a299e1e240646fea8c80"
+  },
+  "claim_digests": {
+    "docs/claims/casper-authority-live-executor.md": "4bae2bef46c423f32bd14395ae2482beab4df9d25adf4fbe1072a47e67bdacd2",
+    "docs/claims/casper-authority-adapter.md": "5d13e8d1bd319566fe682bd8e02a32d4b16992222203dfdb1184fc38d3f921b0",
+    "docs/claims/casper-authority-observer-client.md": "04d8f77c611fd94a1ea7ee0a658720a099ec9777b385a299e1e240646fea8c80"
+  },
+  "tiers": {
+    "refutation": "pending",
+    "construction": "pending",
+    "binding": "pending"
+  },
+  "verification": {
+    "linux_live_gate": {
+      "exit": 0,
+      "tests_passed": 8,
+      "ignored_provider_helper": 1,
+      "clippy_exit": 0,
+      "source_inventory_unchanged": true,
+      "path": "target/task-017-12-live-executor-20260928/gate-02"
+    },
+    "linux_adapter_regression": {
+      "exit": 0,
+      "observer_tests": 9,
+      "mapping_tests": 8,
+      "process_receipt_tests": 10,
+      "clippy_exit": 0,
+      "source_inventory_unchanged": true,
+      "path": "target/task-017-12-live-executor-20260928/adapter-regression"
+    },
+    "native_clippy": {
+      "exit": 0,
+      "log": "target/task-017-12-live-executor-20260928/native-clippy-final.log"
+    },
+    "workflow_security": {
+      "exit": 0,
+      "log": "target/task-017-12-live-executor-20260928/workflow-security.log"
+    },
+    "strict_claim_audit": {
+      "exit": 4,
+      "report": "target/task-017-12-live-executor-20260928/claims-final.json",
+      "meaning": "pending-claims"
+    },
+    "failure_history": [
+      {
+        "gate": "target/task-017-12-live-executor-20260928/gate-01",
+        "exit": 101,
+        "cause": "The PID fixture used a scalar JSON value. The artifact parser requires an object.",
+        "resolution": "The fixture now retains a PID object. The final timeout test verifies that the child process exits."
+      }
+    ],
+    "container": {
+      "image": "sha256:1696356fe6e6a15941983171fa4ca663b1f53686d3840f6787aca0b10ec5edc6",
+      "architecture": "arm64",
+      "network": "none",
+      "repository_mount": "readonly",
+      "cargo_test_opt_level": 1
+    }
+  },
+  "log_digests": {
+    "target/task-017-12-live-executor-20260928/adapter-regression/clippy.txt": "4292a780c312cb0a1268a35c667cf545d64b341dc10dfc9636ae079c27605401",
+    "target/task-017-12-live-executor-20260928/adapter-regression/process-tests.txt": "ae2d1dd17319526aa6d1a7b0235dcfc0d5ab87e3d1b8b51e6b8d745ab615533a",
+    "target/task-017-12-live-executor-20260928/adapter-regression/report.json": "277c878e536a729aaff1efa7d9073251e90ba39dfe57a007ba865d4564c5c506",
+    "target/task-017-12-live-executor-20260928/adapter-regression/rust-tests.txt": "82b6cb01729ddf194081ec85b9a54f3a037eb1a33321fb37d22cb726a91ef1e2",
+    "target/task-017-12-live-executor-20260928/adapter-regression/source-after.sha256": "53e3930c8cdda990308ca7969d37f3d1278146ef8c0aa0278a19548b5b1af22d",
+    "target/task-017-12-live-executor-20260928/adapter-regression/source-before.sha256": "53e3930c8cdda990308ca7969d37f3d1278146ef8c0aa0278a19548b5b1af22d",
+    "target/task-017-12-live-executor-20260928/claims-final.json": "4c8f2a687db2f91dac2581657952e997825e50ea9ba5c737125a15b1b378ced6",
+    "target/task-017-12-live-executor-20260928/gate-01/report.json": "48e641698134a3c8593a341d4239a7aba8584284c2042efc207e4dc3bed8a96c",
+    "target/task-017-12-live-executor-20260928/gate-01/source-before.sha256": "d7b3f2bc4e0ed4a80490090cf35fd2c9033133e15dd52d2a548f4b1b1a52af7a",
+    "target/task-017-12-live-executor-20260928/gate-01/tests.txt": "9b4f61bb233486f5c8853d000b629fbecd13e97f1d873e132f8219c74de7d918",
+    "target/task-017-12-live-executor-20260928/gate-02/clippy.txt": "149fd3eb6a29ffcd04c96a123b4b0d573b3b24fed5677085cf9b5f85ba08b3cd",
+    "target/task-017-12-live-executor-20260928/gate-02/report.json": "6fa73f8fb9760c1732436e5ab15158e36d1961ecf74840a397e9830bf4b1b1e6",
+    "target/task-017-12-live-executor-20260928/gate-02/source-after.sha256": "5952ef37a7a7d1744cb79c45e54cf66af21059c05e5fbacc4d343eb9be46ccf5",
+    "target/task-017-12-live-executor-20260928/gate-02/source-before.sha256": "5952ef37a7a7d1744cb79c45e54cf66af21059c05e5fbacc4d343eb9be46ccf5",
+    "target/task-017-12-live-executor-20260928/gate-02/tests.txt": "99def3b972132ecd92b3f9df08f985f93206208e6a6d3aecddf5f0f0f75d6f1d",
+    "target/task-017-12-live-executor-20260928/native-clippy-final.log": "cc85c81a526133c943c6d76d71221c58c48fd439cd4aacc0b87fc47a94106fe6",
+    "target/task-017-12-live-executor-20260928/native-clippy.log": "2102842c2099b808fdc5ce98ce8f21024289d8cfaa07c207e91c096b82af34d2",
+    "target/task-017-12-live-executor-20260928/workflow-security.log": "58aaa9d3aa8ec252a7e93ba60dea09172058b7c4e30e5a36e54a8b57657424ab"
+  },
+  "retained_fixture_artifacts": {
+    "ref": "target/task-017-12-live-executor-20260928/fixture-artifacts.json",
+    "sha256": "0ebf8752779ccdfdfa6ebebc61ab6ebba48b26bab12f77d2c392db9818791af0",
+    "count": 687
+  },
+  "qualification": "pending",
+  "live_campaign_admission": "blocked",
+  "soak_verdict": "non_passing",
+  "blockchain_node_launches": 0,
+  "cloud_dispatches": 0,
+  "implemented": [
+    "Pinned native workload invocation with bounded lifetime and process group cleanup.",
+    "Observer identity checks before and after each operation.",
+    "Input export and snapshot correlation.",
+    "Separate bounded and reference observations without invented measurements.",
+    "Atomic partial execution inventories with chained receipts."
+  ],
+  "remaining": [
+    "Supply and qualify a candidate-specific fixture driver through supported node interfaces.",
+    "Add paired fork-choice observations and exact input and traversal exports.",
+    "Connect the owned process receipt adapter and bind restart incarnations.",
+    "Run hosted verification and obtain source-bound acceptance.",
+    "Qualify the selected live candidate before campaign admission."
+  ],
+  "limitations": [
+    "Driver input exports are assertions that require separate provider qualification.",
+    "The tests use a Unix socket fixture and native workload fixture. They do not establish node correctness.",
+    "Stdout and stderr monitoring does not establish a hard storage quota.",
+    "Process group cleanup does not contain escaped processes."
+  ]
+}

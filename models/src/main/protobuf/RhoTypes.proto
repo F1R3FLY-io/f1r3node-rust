@@ -79,7 +79,13 @@ message CostAuthority {
 }
 
 message CostStack {
+  // The authored linear prefix.  Existing linear stacks keep their exact wire
+  // bytes and interpretation when parallel_tail is empty.
   repeated CostSignature cells = 1;
+  // A nonempty parallel tail is released together only after the shared
+  // prefix has been consumed.  Each branch is a separate stack; no prefix
+  // signature is copied into a branch.
+  repeated CostStack parallel_tail = 2;
 }
 
 /**
@@ -310,6 +316,11 @@ message Expr {
     GBigRational g_big_rat = 36;   // Exact rational number
     GFixedPoint g_fixed_point = 37; // Fixed-point decimal
     fixed32 g_float32 = 39;        // IEEE 754 f32 stored as raw bits (f32 suffix)
+    uint64 g_uint64 = 38;          // Unsigned 64-bit integer (u64 suffix)
+    int32 g_int32 = 40;            // Signed 32-bit integer (i32 suffix)
+    uint32 g_uint32 = 41;          // Unsigned 32-bit integer (u32 suffix)
+    uint32 g_uint16 = 42;          // Unsigned 16-bit integer (u16 suffix), always <= u16::MAX
+    uint32 g_uint8 = 43;           // Unsigned 8-bit integer (u8 suffix), always <= u8::MAX
   }
 }
 

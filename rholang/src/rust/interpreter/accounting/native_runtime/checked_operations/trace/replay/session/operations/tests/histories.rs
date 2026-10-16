@@ -32,7 +32,8 @@ async fn replay_history(inputs: &[(u8, u8)], persistent: bool) {
         })
         .collect();
     let mut stores = InMemoryStoreManager::new();
-    let (play, _) = RSpace::create_with_replay(
+    let (play, _) = RSpace::create_with_replay_for_epoch(
+        EventCodecEpoch::CostV1,
         stores.r_space_stores().await.unwrap(),
         Arc::new(Box::new(Matcher)),
     )
@@ -53,7 +54,8 @@ async fn replay_history(inputs: &[(u8, u8)], persistent: bool) {
     for (index, (channel, _)) in inputs.iter().enumerate() {
         let channel = &channels[usize::from(*channel % 4)];
         let datum = &data[index];
-        let source = Produce::create(channel, datum, persistent);
+        let source = Produce::create_for_epoch(play.codec_epoch(), channel, datum, persistent)
+            .expect("cost-bearing history source");
         let observation =
             observation_construction::produce_introduction(&source, channel, datum, &auth).unwrap();
         budget
@@ -97,7 +99,12 @@ async fn replay_history(inputs: &[(u8, u8)], persistent: bool) {
     .unwrap();
     let replay = Arc::new(
         trace
-            .into_session(history, Arc::new(Box::new(Matcher)), host)
+            .into_session_for_epoch(
+                play.codec_epoch(),
+                history,
+                Arc::new(Box::new(Matcher)),
+                host,
+            )
             .unwrap(),
     );
     let root = replay.checkpoint().await.unwrap();
@@ -148,7 +155,7 @@ async fn replay_history(inputs: &[(u8, u8)], persistent: bool) {
     for channel in &channels {
         assert_eq!(
             replay.get_data(channel).await.unwrap(),
-            play.get_data(channel).await
+            play.get_data(channel).await.expect("live data query")
         );
     }
     let abandoned = replay.checkpoint().await.unwrap();
@@ -176,7 +183,7 @@ async fn replay_history(inputs: &[(u8, u8)], persistent: bool) {
     for channel in &channels {
         assert_eq!(
             replay.get_data(channel).await.unwrap(),
-            play.get_data(channel).await
+            play.get_data(channel).await.expect("live data query")
         );
     }
 }

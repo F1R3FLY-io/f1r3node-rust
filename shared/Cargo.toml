@@ -38,6 +38,9 @@ thiserror = { workspace = true }
 indexmap = { workspace = true }
 metrics = { workspace = true }
 
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(kani)"] }
+
 [dev-dependencies]
 # Behavioural guards for `rust::test_scratch` (shared/tests/scratch_dir_lifecycle.rs) give each
 # case a private base directory owned by a `TempDir` the *test* drops, so no case ever scans a

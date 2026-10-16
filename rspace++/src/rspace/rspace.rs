@@ -40,6 +40,7 @@ mod locks;
 mod ops_consume;
 mod ops_install;
 mod ops_produce;
+mod ops_resting;
 mod setup;
 #[cfg(test)]
 mod tests;
@@ -57,6 +58,7 @@ pub struct RSpaceStore {
 #[repr(C)]
 #[derive(Clone)]
 pub struct RSpace<C, P, A, K> {
+    epoch: crate::rspace::hashing::stable_hash_provider::EventCodecEpoch,
     // Left as RwLock, unlike store below: its only reader is spawn() (rare,
     // not on the produce/consume hot path), so it doesn't have that field's
     // problem.
@@ -74,6 +76,12 @@ pub struct RSpace<C, P, A, K> {
     installs: Arc<std::sync::Mutex<HashMap<Vec<C>, Install<P, K>>>>,
     event_log: Arc<std::sync::Mutex<Log>>,
     ordered_event_log: Arc<std::sync::Mutex<BTreeMap<OperationOrder, Log>>>,
+    event_log_reservations: Arc<std::sync::Mutex<trace_log::EventLogReservations>>,
+    /// A resting event-slot lease must not straddle a checkpoint, reset, or
+    /// soft-log drain. Those transitions take the write side before changing
+    /// the store or the log; a resting commit holds the read side through its
+    /// atomic retirement and event publication.
+    resting_checkpoint_barrier: Arc<tokio::sync::RwLock<()>>,
     // Striped like phase_a/phase_b_locks below: NUM_LOCK_STRIPES independent
     // shards keyed by channel_hash(produce) % NUM_LOCK_STRIPES, instead of
     // one global std::sync::Mutex<BTreeMap>. The hot path (log_produce/
@@ -141,9 +149,15 @@ where
 {
     pub fn get_store(&self) -> Arc<Box<dyn HotStore<C, P, A, K>>> { self.store.load_full() }
 
+    pub fn codec_epoch(&self) -> crate::rspace::hashing::stable_hash_provider::EventCodecEpoch {
+        self.epoch
+    }
+
     /// Read-only canonical rendezvous enumeration, shared with replay through
     /// the same `SpaceMatcher` default implementation.
-    pub fn enabled_rendezvous(&self) -> Vec<ProduceCandidate<C, P, A, K>> {
+    pub fn enabled_rendezvous(
+        &self,
+    ) -> Result<Vec<ProduceCandidate<C, P, A, K>>, crate::rspace::errors::RSpaceError> {
         self.enumerate_enabled_rendezvous(&self.matcher, &self.get_store())
     }
 

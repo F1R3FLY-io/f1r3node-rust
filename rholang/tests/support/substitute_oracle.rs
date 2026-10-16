@@ -121,10 +121,15 @@ fn signed_recursive(
     Ok(CostSignedTerm { body: Some(body), signature: Some(signature) })
 }
 
-fn stack_recursive(term: CostStack, ctx: SubCtx, env: EnvView<'_>) -> Result<CostStack, InterpreterError> {
-    Ok(CostStack { cells: term.cells.into_iter()
-        .map(|cell| signature_recursive(cell, ctx, env))
-        .collect::<Result<Vec<_>, _>>()? })
+fn stack_recursive(mut term: CostStack, ctx: SubCtx, env: EnvView<'_>) -> Result<CostStack, InterpreterError> {
+    Ok(CostStack {
+        cells: std::mem::take(&mut term.cells).into_iter()
+            .map(|cell| signature_recursive(cell, ctx, env))
+            .collect::<Result<Vec<_>, _>>()?,
+        parallel_tail: std::mem::take(&mut term.parallel_tail).into_iter()
+            .map(|branch| stack_recursive(branch, ctx, env))
+            .collect::<Result<Vec<_>, _>>()?,
+    })
 }
 
 pub(crate) fn par_recursive(
@@ -785,7 +790,7 @@ mod differential_substitute_worklist {
             // here feeds the production call without disturbing what the oracle
             // was computed from — it is the harness owning a second copy, not
             // the wrapper copying its input.
-            let tr = production.substitute_and_charge(case.term.clone(), case.depth, &env);
+            let tr = production.substitute_and_charge(case.term.clone(), case.depth, &env, None);
             let trace_tr = trace_of(&production, tr);
 
             assert_eq!(
@@ -815,7 +820,7 @@ mod differential_substitute_worklist {
 
             let production_ns = subject();
             let tr_ns =
-                production_ns.substitute_no_sort_and_charge(case.term.clone(), case.depth, &env);
+                production_ns.substitute_no_sort_and_charge(case.term.clone(), case.depth, &env, None);
             let trace_tr_ns = trace_of(&production_ns, tr_ns);
 
             assert_eq!(
@@ -853,7 +858,7 @@ mod differential_substitute_worklist {
             let trace_rec = trace_of(&oracle, rec);
 
             let production = subject();
-            let tr = production.substitute_and_charge(term.clone(), depth, &env);
+            let tr = production.substitute_and_charge(term.clone(), depth, &env, None);
             let trace_tr = trace_of(&production, tr);
             assert_eq!(
                 trace_rec, trace_tr,
@@ -873,7 +878,7 @@ mod differential_substitute_worklist {
             let trace_rec_ns = trace_of(&oracle_ns, rec_ns);
 
             let production_ns = subject();
-            let tr_ns = production_ns.substitute_no_sort_and_charge(term.clone(), depth, &env);
+            let tr_ns = production_ns.substitute_no_sort_and_charge(term.clone(), depth, &env, None);
             let trace_tr_ns = trace_of(&production_ns, tr_ns);
             assert_eq!(
                 trace_rec_ns, trace_tr_ns,

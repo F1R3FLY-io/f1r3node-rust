@@ -147,7 +147,7 @@ async fn private_initialization_rejects_matching_prestate_without_consuming_it()
     );
     assert_eq!(
         fresh.get_data(&"occupied".to_owned()).await.unwrap(),
-        play.get_data(&"occupied".to_owned()).await
+        play.get_data(&"occupied".to_owned()).await.unwrap()
     );
 }
 
@@ -271,8 +271,8 @@ async fn later_installation_replaces_the_same_continuation_key() {
         .await
         .unwrap();
     assert_eq!(continuations.len(), 1);
-    assert_eq!(continuations[0].patterns, ["second"]);
-    assert_eq!(continuations[0].continuation, "second body");
+    assert_eq!(continuations[0].patterns.as_ref(), &vec!["second".to_owned()]);
+    assert_eq!(continuations[0].continuation.as_str(), "second body");
     assert_eq!(initialized.get_joins(&channel).await.unwrap(), vec![vec![channel]]);
 }
 

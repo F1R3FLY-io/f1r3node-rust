@@ -9,6 +9,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use proptest::prelude::*;
+use rspace_plus_plus::rspace::hashing::stable_hash_provider::StableHashSerialize;
 use rspace_plus_plus::rspace::r#match::Match;
 use rspace_plus_plus::rspace::replay_rspace::ReplayRSpace;
 use rspace_plus_plus::rspace::rspace::RSpace;
@@ -23,6 +24,9 @@ struct WildcardPattern;
 
 #[derive(Clone, Debug, Serialize, Deserialize, Default, PartialEq)]
 struct StringCont;
+
+impl StableHashSerialize for WildcardPattern {}
+impl StableHashSerialize for StringCont {}
 
 // These test doubles have bounded nesting; the production decoder stays
 // explicit.
@@ -111,11 +115,12 @@ async fn assert_replay_branch(
         let values = reader
             .get_data(&format!("branch-{candidate}"))
             .await
+            .unwrap()
             .into_iter()
             .map(|datum| datum.a)
             .collect::<Vec<_>>();
         if candidate == branch {
-            assert_eq!(values, vec![format!("value-{candidate}")]);
+            assert_eq!(values, vec![Arc::new(format!("value-{candidate}"))]);
         } else {
             assert!(values.is_empty());
         }
@@ -165,22 +170,36 @@ async fn spawned_checkpoints_remain_recorded_and_state_isolated() {
         left_reader
             .get_data(&"left".to_string())
             .await
+            .unwrap()
             .into_iter()
             .map(|datum| datum.a)
             .collect::<Vec<_>>(),
-        vec!["left-value".to_string()]
+        vec![Arc::new("left-value".to_string())]
     );
-    assert!(left_reader.get_data(&"right".to_string()).await.is_empty());
+    assert!(
+        left_reader
+            .get_data(&"right".to_string())
+            .await
+            .unwrap()
+            .is_empty()
+    );
     assert_eq!(
         right_reader
             .get_data(&"right".to_string())
             .await
+            .unwrap()
             .into_iter()
             .map(|datum| datum.a)
             .collect::<Vec<_>>(),
-        vec!["right-value".to_string()]
+        vec![Arc::new("right-value".to_string())]
     );
-    assert!(right_reader.get_data(&"left".to_string()).await.is_empty());
+    assert!(
+        right_reader
+            .get_data(&"left".to_string())
+            .await
+            .unwrap()
+            .is_empty()
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

@@ -82,6 +82,7 @@ use prost::Message;
 mod par_corpus;
 use par_corpus as corpus;
 
+
 fn recursive_oracle_len_from(node: &dyn ProtobufNode, from: usize) -> u64 {
     let (bounded, descent) = node.protobuf_len_step(from);
     bounded
@@ -592,6 +593,14 @@ fn par_encoded_in_order(par: &Par, order: &[&str]) -> Vec<u8> {
                 conditionals: par.conditionals.clone(),
                 ..Default::default()
             },
+            "cost_signed_terms" => models::par_from_default! {
+                cost_signed_terms: par.cost_signed_terms.clone(),
+                ..Default::default()
+            },
+            "cost_stacks" => models::par_from_default! {
+                cost_stacks: par.cost_stacks.clone(),
+                ..Default::default()
+            },
             other => panic!("par_encoded_in_order: unknown field `{other}`"),
         };
         out.extend_from_slice(&recursive_oracle_encode(&single));
@@ -606,8 +615,6 @@ fn par_encoded_in_order(par: &Par, order: &[&str]) -> Vec<u8> {
 /// that rejected everything would fail here too.
 #[test]
 fn the_protobuf_differential_can_go_red() {
-    // ── the fixture: a `Par` whose 11 fields are ALL populated, so every
-    //    re-ordering is observable ──
     let par = models::par_from_default! {
         sends: vec![Send {
             chan: Some(corpus::gint(1)),
@@ -631,6 +638,8 @@ fn the_protobuf_differential_can_go_red() {
         }],
         locally_free: vec![0xAA, 0xBB],
         connective_used: true,
+        cost_signed_terms: vec![Default::default()],
+        cost_stacks: vec![Default::default()],
         ..Default::default()
     };
     let truth = recursive_oracle_encode(&par);
@@ -659,6 +668,8 @@ fn the_protobuf_differential_can_go_red() {
         "conditionals",
         "locally_free",
         "connective_used",
+        "cost_signed_terms",
+        "cost_stacks",
     ];
     let tag_order = [
         "sends",
@@ -672,6 +683,8 @@ fn the_protobuf_differential_can_go_red() {
         "connective_used",
         "bundles",
         "conditionals",
+        "cost_signed_terms",
+        "cost_stacks",
     ];
     // ★ THE MUTATION MUST ASSERT IT APPLIED — against the GENERATED table, so
     // "declaration order" and "tag order" are not two names this test invented.
@@ -894,14 +907,14 @@ fn the_generated_protobuf_table_is_not_degenerate() {
     );
     assert_eq!(
         PAR_PROTOBUF_PROGRAM.len(),
-        11,
-        "`Par` has eleven fields; a shorter program means the generator dropped one and the \
+        13,
+        "`Par` has thirteen fields; a shorter program means the generator dropped one and the \
          encoder would silently omit it"
     );
     assert_eq!(
         TAGGEDCONTINUATION_PROTOBUF_PROGRAM.len(),
-        2,
-        "`TaggedContinuation` is `guard` plus one oneof"
+        3,
+        "`TaggedContinuation` has its oneof, guard, and cost_authority"
     );
 }
 

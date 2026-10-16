@@ -16,6 +16,33 @@ if ! [[ "$DURATION_SECONDS" =~ ^[1-9][0-9]*$ ]]; then
 	exit 2
 fi
 PROVIDERS=(docker subprocess)
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+export SOAK_HARNESS_BIN="${SOAK_HARNESS_BIN:-$SCRIPT_DIR/../target/debug/casper-soak}"
+host_control() {
+	"$SOAK_HARNESS_BIN" host-control "$@"
+}
+CASPER_MANIFEST_DIGEST=""
+CASPER_RUNTIME=0
+CASPER_TERMINATION=completed
+casper_runtime() {
+	bash "$SCRIPT_DIR/bench/casper-soak.sh" "$@" --output "$OUTPUT_DIR"
+}
+if [ -n "${SOAK_INPUT_DIR:-}" ]; then
+	CASPER_ADMISSION="$(casper_runtime admit)"
+	CASPER_STATUS=$?
+	if [ "$CASPER_STATUS" -ne 0 ]; then
+		printf '%s\n' "$CASPER_ADMISSION" >&2
+		exit "$CASPER_STATUS"
+	fi
+	CASPER_RUNTIME=1
+	CASPER_LIMIT="$(printf '%s' "$CASPER_ADMISSION" | jq -er .iterations)" || exit 2
+	CASPER_SEGMENT_LIMIT="$(printf '%s' "$CASPER_ADMISSION" | jq -er .iterations_per_segment)" || exit 2
+	CASPER_PROVIDER="$(printf '%s' "$CASPER_ADMISSION" | jq -er .provider)" || exit 2
+	CASPER_DEADLINE="$(printf '%s' "$CASPER_ADMISSION" | jq -er .deadline)" || exit 2
+fi
+if [ -n "${SOAK_MANIFEST_PATH:-}" ] || [ -e "$OUTPUT_DIR/.casper-manifest.json" ] || [ -L "$OUTPUT_DIR/.casper-manifest.json" ]; then
+	CASPER_MANIFEST_DIGEST="$(bash "$SCRIPT_DIR/bench/casper-soak.sh" bind --manifest "${SOAK_MANIFEST_PATH:-}" --output "$OUTPUT_DIR")" || exit 2
+fi
 
 # A soak is run as one or more segments so results can be published part-way
 # through: a single 22h invocation cannot be interrupted to publish, but three
@@ -26,11 +53,55 @@ PROVIDERS=(docker subprocess)
 # directories and silently discard its metrics.
 mkdir -p "$OUTPUT_DIR"
 STATE_FILE="$OUTPUT_DIR/.soak-state"
+MANIFEST_BOUND=0
+RUNTIME_BOUND=0
+if [ "$CASPER_RUNTIME" -eq 1 ]; then
+	exec 9>"$OUTPUT_DIR/.casper-lock" || exit 2
+	flock -n 9 || exit 2
+fi
 INFLIGHT_ITERATION=0
 INFLIGHT_BENCHMARK=0
-if [ -f "$STATE_FILE" ]; then
-	# shellcheck source=/dev/null
-	. "$STATE_FILE"
+if [ -e "$STATE_FILE" ] || [ -L "$STATE_FILE" ]; then
+	if [ ! -f "$STATE_FILE" ] || [ -L "$STATE_FILE" ] || [ "$(wc -c <"$STATE_FILE")" -gt 4096 ]; then
+		printf 'The saved soak state must be a regular file of at most 4096 bytes.\n' >&2
+		exit 2
+	fi
+	saved_keys=""
+	while IFS= read -r saved_line || [ -n "$saved_line" ]; do
+		saved_key="${saved_line%%=*}"
+		saved_value="${saved_line#*=}"
+		case "$saved_key" in
+			STARTED_AT|ITERATIONS|FAILURES|SEGMENT|BENCH_SEGMENTS|BENCH_FAILURES|INFLIGHT_ITERATION|INFLIGHT_BENCHMARK|MANIFEST_BOUND|RUNTIME_BOUND) ;;
+			*) printf 'The saved soak state contains an unknown field.\n' >&2; exit 2 ;;
+		esac
+		if [[ " $saved_keys " == *" $saved_key "* ]] ||
+			! [[ "$saved_value" =~ ^(0|[1-9][0-9]*)$ ]] || [ "${#saved_value}" -gt 18 ]; then
+			printf 'The saved soak state contains a duplicate or invalid numeric field.\n' >&2
+			exit 2
+		fi
+		saved_keys+=" $saved_key"
+		printf -v "$saved_key" '%s' "$saved_value"
+	done <"$STATE_FILE"
+	for saved_key in STARTED_AT ITERATIONS FAILURES SEGMENT; do
+		if [[ " $saved_keys " != *" $saved_key "* ]]; then
+			printf 'The saved soak state lacks a required field.\n' >&2
+			exit 2
+		fi
+	done
+	if [ "$STARTED_AT" -lt 1 ] || [ "$SEGMENT" -lt 1 ]; then
+		printf 'The saved start time and segment must be positive.\n' >&2
+		exit 2
+	fi
+	if { [ "$MANIFEST_BOUND" -ne 0 ] && [ "$MANIFEST_BOUND" -ne 1 ]; } ||
+		{ [ "$MANIFEST_BOUND" -eq 1 ] && [ -z "$CASPER_MANIFEST_DIGEST" ]; } ||
+		{ [ "$MANIFEST_BOUND" -eq 0 ] && [ -n "$CASPER_MANIFEST_DIGEST" ]; }; then
+		printf 'The saved manifest binding is missing or invalid.\n' >&2
+		exit 2
+	fi
+	if [ "$RUNTIME_BOUND" -ne "$CASPER_RUNTIME" ]; then
+		printf 'The saved profile execution mode differs.\n' >&2
+		exit 2
+	fi
 	SEGMENT="$((SEGMENT + 1))"
 	printf 'resuming soak: segment %s, %s iterations so far, started %s\n' \
 		"$SEGMENT" "$ITERATIONS" "$(date -d "@$STARTED_AT" '+%F %T %Z' 2>/dev/null || date -r "$STARTED_AT")"
@@ -84,7 +155,22 @@ if [ -f "$OUTPUT_DIR/early-exit.txt" ]; then
 	DEADLINE=0
 fi
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ "$CASPER_RUNTIME" -eq 0 ] && [ -n "$CASPER_MANIFEST_DIGEST" ] && [ "$(date +%s)" -lt "$DEADLINE" ]; then
+	printf 'Casper profile dispatch remains blocked until its adapter is qualified.\n' >&2
+	exit 2
+fi
+
+CASPER_SEGMENT_START="$ITERATIONS"
+if [ "$CASPER_RUNTIME" -eq 1 ]; then
+	if [ "$INFLIGHT_ITERATION" -eq 0 ]; then
+		casper_runtime history --iteration "$ITERATIONS" --failures "$FAILURES" || exit 2
+	fi
+	[ "$CASPER_DEADLINE" -ge "$DEADLINE" ] || DEADLINE="$CASPER_DEADLINE"
+	if [ -e "$OUTPUT_DIR/finalize-requested" ] || [ "$ITERATIONS" -ge "$CASPER_LIMIT" ]; then
+		DEADLINE=0
+	fi
+fi
+
 # Harness telemetry roots. Subprocess sessions write monitor artifacts and
 # node logs under .subprocess-data/; docker sessions write them under
 # log-archive/ (the provider's host-visible per-session dir —
@@ -92,12 +178,36 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # remains for harness versions that write logs there. Every search for monitor
 # output, node logs, breach markers or SOAK_METRIC lines must cover all roots.
 # Created up front so multi-root find never ENOENTs.
+HARNESS_DATA_DIR="$SYSTEM_INTEGRATION_DIR/integration-tests/data"
+HARNESS_ARCHIVE_DIR="$SYSTEM_INTEGRATION_DIR/integration-tests/log-archive"
 HARNESS_TELEMETRY_DIRS=(
-	"$SYSTEM_INTEGRATION_DIR/integration-tests/data"
-	"$SYSTEM_INTEGRATION_DIR/integration-tests/log-archive"
+	"$HARNESS_DATA_DIR"
+	"$HARNESS_ARCHIVE_DIR"
 	"$SYSTEM_INTEGRATION_DIR/integration-tests/.subprocess-data"
 )
 mkdir -p "${HARNESS_TELEMETRY_DIRS[@]}"
+
+# The harness keeps one directory per session under data/ and log-archive/ and
+# never removes them. Every reader of these roots filters by the iteration's
+# .started marker, so a completed iteration's sessions are dead weight. Left in
+# place they grew the root by about 200MB per iteration, and the unfiltered
+# failure-evidence copy duplicated all of them into each failed iteration:
+# run 37153082817 reached the disk floor after 15 iterations with 13.6GB of
+# copies. The workflow resets the same two roots after the preflight.
+# The reset runs only after every reader of the roots, and a breach leaves the
+# loop before it, so breach evidence stays in place. Each deletion runs under
+# the emergency deadline. A failure is logged and is not fatal, because the
+# disk guardian still enforces the floor.
+reset_harness_archives() {
+	local root error
+	for root in "$HARNESS_DATA_DIR" "$HARNESS_ARCHIVE_DIR"; do
+		[ -d "$root" ] || continue
+		error="$(session_bounded "$EMERGENCY_DEADLINE_SECONDS" find "$root" -mindepth 1 -delete 2>&1 >/dev/null)" &&
+			continue
+		printf 'harness archive reset incomplete for %s (non-fatal; the disk guardian still enforces the floor): %s\n' \
+			"$root" "$(printf '%s\n' "${error:-deletion timed out}" | head -1)" >&2
+	done
+}
 RUN_BENCHMARKS="${SOAK_RUN_BENCHMARKS:-false}"
 BENCH_EVERY="${SOAK_BENCH_EVERY:-4}"
 BENCH_DURATION="${SOAK_BENCH_DURATION:-300}"
@@ -207,6 +317,30 @@ if [ "$DISK_HYGIENE_BAND_MB" -gt "$((DISK_INTEGER_MAX - DISK_FREE_FLOOR_MB))" ];
 	printf 'SOAK_DISK_FREE_FLOOR_MB plus SOAK_DISK_HYGIENE_BAND_MB must not exceed 9223372036854775807\n' >&2
 	exit 2
 fi
+# Node log budgets (TASK-020-4, docs/casper/design/soak-log-budget-guardian.md).
+# EPIC-020 bounds both node log sinks at the source: 100 MiB per file and
+# 2 GiB per directory for the node file sink, and 3 files of 100 MiB for the
+# container json-file log. The guardian checks those caps instead of assuming
+# them. The defaults add one rotation of slack. 0 disables a probe.
+if ! CONTAINER_LOG_BUDGET_MB="$(disk_setting_decimal "${SOAK_CONTAINER_LOG_BUDGET_MB:-400}")"; then
+	printf 'SOAK_CONTAINER_LOG_BUDGET_MB must be a non-negative integer no larger than 9223372036854775807\n' >&2
+	exit 2
+fi
+if ! NODE_LOG_BUDGET_MB="$(disk_setting_decimal "${SOAK_NODE_LOG_BUDGET_MB:-2560}")"; then
+	printf 'SOAK_NODE_LOG_BUDGET_MB must be a non-negative integer no larger than 9223372036854775807\n' >&2
+	exit 2
+fi
+LOG_PROBE_EVERY="${SOAK_LOG_PROBE_EVERY:-3}"
+if ! [[ "$LOG_PROBE_EVERY" =~ ^[1-3]$ ]]; then
+	printf 'SOAK_LOG_PROBE_EVERY must be an integer from 1 through 3\n' >&2
+	exit 2
+fi
+LOG_PROBE_SECONDS="${SOAK_LOG_PROBE_SECONDS:-4}"
+if ! [[ "$LOG_PROBE_SECONDS" =~ ^[1-4]$ ]]; then
+	printf 'SOAK_LOG_PROBE_SECONDS must be an integer from 1 through 4\n' >&2
+	exit 2
+fi
+NODE_LOG_DIR=/var/lib/rnode/logs
 # Where harness sessions leave their compose and genesis files (the
 # `test-*` sweep below), and where the runner keeps _diag and _work. Both are
 # overridable so the driver test can sweep and measure a private tree instead
@@ -327,43 +461,9 @@ process_identity() {
 	[[ "${20}" =~ ^[0-9]+$ ]] || return 1
 	printf '%s\n' "${20}"
 }
-process_gone() {
-	local current
-	current="$(process_identity "$1")" || return 0
-	[ "$current" != "$2" ]
-}
-record_entry_trusted() {
-	local uid mode kind
-	read -r uid mode kind < <(stat -c '%u %a %F' -- "$1" 2>/dev/null) || return 1
-	[ "$kind" = "$2" ] && [ "$uid" = 0 ] && [ $((8#$mode & 8#022)) -eq 0 ]
-}
 run_domain_verified() {
 	[ "$CONTAINMENT" = required ] || return 0
-	local path="$RUN_DOMAIN_RECORD" prefix="" rest part size cgroup
-	[ -n "$path" ] && [[ "$path" == /* && "$path" != *"/."* && "$path" != */ ]] || return 1
-	record_entry_trusted / directory || return 1
-	rest="${path#/}"
-	while [ -n "$rest" ]; do
-		part="${rest%%/*}"
-		if [ "$part" = "$rest" ]; then rest=""; else rest="${rest#*/}"; fi
-		[ -n "$part" ] || return 1
-		prefix="$prefix/$part"
-		if [ -n "$rest" ]; then
-			record_entry_trusted "$prefix" directory || return 1
-		else
-			record_entry_trusted "$prefix" "regular file" || return 1
-		fi
-	done
-	size="$(stat -c %s -- "$path" 2>/dev/null)" || return 1
-	[[ "$size" =~ ^[0-9]+$ ]] && [ "$size" -le 65536 ] || return 1
-	[ "$(wc -l </proc/self/cgroup)" -eq 1 ] || return 1
-	IFS= read -r cgroup </proc/self/cgroup || return 1
-	jq -es --arg uid "$(id -ur)" --arg cgroup "$cgroup" '
-		length == 1 and (.[0] | type == "object"
-			and .uid == ($uid | tonumber)
-			and (.unit | type == "string" and length > 0 and (contains("/") | not))
-			and (.cgroup | type == "string" and startswith("/"))
-			and $cgroup == ("0::" + .cgroup))' "$path" >/dev/null 2>&1
+	host_control verify-domain "$RUN_DOMAIN_RECORD"
 }
 
 # Free MB on the filesystem the soak actually fills. OUTPUT_DIR, the harness
@@ -378,6 +478,117 @@ disk_free_mb() {
 	[[ "$mb" =~ ^[0-9]+$ ]] || return 1
 	printf '%s\n' "$mb"
 }
+
+log_budgets_enabled() {
+	[ "$CONTAINER_LOG_BUDGET_MB" -gt 0 ] || [ "$NODE_LOG_BUDGET_MB" -gt 0 ]
+}
+
+# Size of one file, read directly or through passwordless sudo: the Docker
+# json-file log lives under /var/lib/docker, which the runner user may not be
+# able to read. Prints nothing and fails when neither read works.
+log_file_bytes() {
+	local bytes
+	bytes="$(stat -c %s "$1" 2>/dev/null)" || bytes="$(sudo -n stat -c %s "$1" 2>/dev/null)" || return 1
+	[[ "$bytes" =~ ^[0-9]{1,18}$ ]] || return 1
+	printf '%s\n' "$bytes"
+}
+
+# Whether a file exists, checked directly or through passwordless sudo, for the
+# same reason as log_file_bytes. A rotated file that exists but cannot be read
+# fails the sample. A rotated file that does not exist is skipped.
+log_file_present() {
+	[ -e "$1" ] || sudo -n test -e "$1" 2>/dev/null
+}
+
+# Whether an owned container still runs. A container that left the running
+# owned set between the listing and its probes stopped writing, so the sample
+# skips it. When docker ps fails, the container counts as running and the
+# probe failure stands.
+log_container_running() {
+	local listed
+	listed="$(docker ps -q --no-trunc --filter "label=io.f1r3fly.soak.owner=$SOAK_WRITER_OWNER" --filter "id=$1" 2>/dev/null)" || return 0
+	[ "$listed" = "$1" ]
+}
+
+# One line for each owned node container: "<id> <container MiB> <node MiB>",
+# with "-" for a disabled probe. A probe that cannot be read fails the sample
+# and names itself on stderr. A container that stopped during the sample
+# is skipped. A missing node log directory counts as 0: a node on the stdout
+# sink writes no file log. Call it through log_budget_probe.
+log_budget_sample() {
+	local ids cid inspected owner path suffix bytes total container_mb node_mb
+	ids="$(docker ps -q --no-trunc --filter "label=io.f1r3fly.soak.owner=$SOAK_WRITER_OWNER" 2>/dev/null)" || {
+		printf 'log probe unavailable: docker ps\n' >&2
+		return 1
+	}
+	while IFS= read -r cid; do
+		[ -n "$cid" ] || continue
+		if ! [[ "$cid" =~ ^[a-f0-9]{64}$ ]]; then
+			printf 'log probe unavailable: container id\n' >&2
+			return 1
+		fi
+		inspected="$(docker inspect --format '{{index .Config.Labels "io.f1r3fly.soak.owner"}} {{.LogPath}}' "$cid" 2>/dev/null)" || {
+			log_container_running "$cid" || continue
+			printf 'log probe unavailable: docker inspect %s\n' "${cid:0:12}" >&2
+			return 1
+		}
+		owner="${inspected%% *}"
+		path="${inspected#* }"
+		[ "$owner" = "$SOAK_WRITER_OWNER" ] || continue
+		container_mb=-
+		node_mb=-
+		if [ "$CONTAINER_LOG_BUDGET_MB" -gt 0 ]; then
+			if [[ "$path" != /* ]] || ! total="$(log_file_bytes "$path")"; then
+				log_container_running "$cid" || continue
+				printf 'log probe unavailable: container log of %s\n' "${cid:0:12}" >&2
+				return 1
+			fi
+			for suffix in 1 2 3 4 5 6 7 8 9; do
+				log_file_present "$path.$suffix" || continue
+				if ! bytes="$(log_file_bytes "$path.$suffix")"; then
+					log_file_present "$path.$suffix" || continue
+					log_container_running "$cid" || continue 2
+					printf 'log probe unavailable: container log of %s\n' "${cid:0:12}" >&2
+					return 1
+				fi
+				total="$((total + bytes))"
+			done
+			container_mb="$(((total + 1048575) / 1048576))"
+		fi
+		if [ "$NODE_LOG_BUDGET_MB" -gt 0 ]; then
+			bytes="$(docker exec "$cid" sh -c 'if [ -d "$1" ]; then du -sb "$1"; else printf "0\t%s\n" "$1"; fi' sh "$NODE_LOG_DIR" 2>/dev/null |
+				awk 'NR == 1 && $1 ~ /^[0-9]+$/ { print $1 }')"
+			if ! [[ "$bytes" =~ ^[0-9]{1,18}$ ]]; then
+				log_container_running "$cid" || continue
+				printf 'log probe unavailable: node log directory of %s\n' "${cid:0:12}" >&2
+				return 1
+			fi
+			node_mb="$(((bytes + 1048575) / 1048576))"
+		fi
+		printf '%s %s %s\n' "${cid:0:12}" "$container_mb" "$node_mb"
+	done <<<"$ids"
+}
+
+# Admission check for the log probes: prints the reason and succeeds when a
+# probe cannot read a running owned container. With no owned container the
+# check passes, and the guardian performs it on its first sample with one.
+log_budget_refusal() {
+	local reason
+	log_budgets_enabled || return 1
+	reason="$(log_budget_probe 2>&1 >/dev/null)" && return 1
+	printf '%s\n' "${reason:-log probe unavailable}"
+}
+
+log_budget_probe() (
+	export SOAK_WRITER_OWNER CONTAINER_LOG_BUDGET_MB NODE_LOG_BUDGET_MB NODE_LOG_DIR
+	export -f log_file_bytes log_file_present log_container_running log_budget_sample
+	timeout --signal=TERM --kill-after=1 "$LOG_PROBE_SECONDS" bash -c 'log_budget_sample' ||
+		{
+			status=$?
+			[ "$status" -ne 124 ] || printf 'log probe unavailable: deadline %ss\n' "$LOG_PROBE_SECONDS" >&2
+			exit 1
+		}
+)
 
 guardian_clock_seconds() {
 	local uptime _unused
@@ -403,69 +614,12 @@ guardian_progress_fresh() {
 	[ "$last" -le "$now" ] && [ "$((now - last))" -le "$GUARDIAN_MAX_SILENCE_SECONDS" ]
 }
 
-owned_host_processes() {
-	local marker="SOAK_PROCESS_OWNER=$1" entry pid identity item status=0
-	local -a environment pids
-	mapfile -t pids < <(printf '%s\n' /proc/[0-9]* | sed 's|^/proc/||' | sort -n)
-	for pid in "${pids[@]}"; do
-		entry="/proc/$pid"
-		[[ -O "$entry" ]] || continue
-		identity="$(process_identity "$pid")" || continue
-		environment=()
-		if ! mapfile -d '' -t environment 2>/dev/null <"$entry/environ"; then
-			[ ! -d "$entry" ] || status=1
-			continue
-		fi
-		for item in "${environment[@]}"; do
-			if [ "$item" = "$marker" ]; then
-				printf '%s %s\n' "$pid" "$identity"
-				break
-			fi
-		done
-	done
-	return "$status"
-}
-
 stop_owned_host_writers() {
-	local listing pid identity index waited=0 all_gone status=0
-	local -a pending_pids=() pending_identities=()
-	listing="$(owned_host_processes "$SOAK_WRITER_OWNER")" || status=1
-	while read -r pid identity; do
-		[ -n "$pid" ] || continue
-		process_gone "$pid" "$identity" && continue
-		pending_pids+=("$pid")
-		pending_identities+=("$identity")
-	done <<<"$listing"
-	[ "${#pending_pids[@]}" -eq 0 ] || kill -KILL "${pending_pids[@]}" 2>/dev/null || true
-	while :; do
-		all_gone=1
-		for index in "${!pending_pids[@]}"; do
-			process_gone "${pending_pids[index]}" "${pending_identities[index]}" || {
-				all_gone=0
-				break
-			}
-		done
-		[ "$all_gone" -eq 0 ] || break
-		if [ "$waited" -ge 750 ]; then
-			status=1
-			break
-		fi
-		sleep 0.05
-		waited=$((waited + 50))
-	done
-	return "$status"
+	host_control stop-owned "$SOAK_WRITER_OWNER"
 }
 
 mark_owned_oom_preferred() {
-	local listing pid identity status=0
-	listing="$(owned_host_processes "$SOAK_WRITER_OWNER")" || status=1
-	while read -r pid identity; do
-		[ -n "$pid" ] || continue
-		if ! printf '1000\n' 2>/dev/null >"/proc/$pid/oom_score_adj"; then
-			process_gone "$pid" "$identity" || status=1
-		fi
-	done <<<"$listing"
-	return "$status"
+	host_control prefer-oom "$SOAK_WRITER_OWNER"
 }
 
 stop_node_writer_commands() {
@@ -495,17 +649,20 @@ stop_node_writer_commands() {
 
 stop_node_writers() (
 	export SOAK_WRITER_OWNER
-	export -f process_identity process_gone owned_host_processes stop_owned_host_writers stop_node_writer_commands
+	export -f host_control stop_owned_host_writers stop_node_writer_commands
 	timeout --signal=TERM --kill-after=1 "$DISK_STOP_SECONDS" \
 		bash -c 'trap "" TERM; stop_node_writer_commands "$@"' bash "$@"
 )
 
 crash_monitor() {
-	local driver="$1" identity="$2" directory="$3" output="$4" status=0 marker
-	printf '%s\n' "$$" >"$directory/ready"
-	until process_gone "$driver" "$identity"; do sleep 0.1; done
-	marker="$(head -c 8 "$directory/handled-exit" 2>/dev/null; printf x)"
-	[ "$marker" != $'handled\nx' ] || exit 0
+	local driver="$1" identity="$2" directory="$3" output="$4" status=0
+	if ! host_control watch "$driver" "$identity" "$directory/ready"; then
+		printf 'Driver exit monitoring is unconfirmed.\n' >"$output/writer-stop-failure.txt" 2>/dev/null || true
+		stop_node_writers -q kill || true
+		printf '2\n' >"$directory/exit-code.txt"
+		exit 2
+	fi
+	if host_control handled "$directory/handled-exit" >/dev/null 2>&1; then exit 0; fi
 	stop_node_writers -q kill || status=$?
 	if [ "$status" -ne 0 ]; then
 		printf 'Writer termination is unconfirmed after the driver exited.\n' >"$output/writer-stop-failure.txt" 2>/dev/null || true
@@ -521,7 +678,7 @@ start_crash_monitor() {
 	CRASH_MONITOR_DIR="$directory"
 	(
 		export SOAK_WRITER_OWNER DISK_STOP_SECONDS
-		export -f process_identity process_gone owned_host_processes stop_owned_host_writers stop_node_writer_commands stop_node_writers crash_monitor
+		export -f host_control stop_owned_host_writers stop_node_writer_commands stop_node_writers crash_monitor
 		exec setsid bash -c 'crash_monitor "$@"' soak-crash-monitor "$$" "$identity" "$directory" "$OUTPUT_DIR"
 	) >"$directory/monitor.log" 2>&1 &
 	monitor=$!
@@ -707,6 +864,12 @@ if [ -n "$NODE_REPO_DIR" ] && [ -f "$NODE_REPO_DIR/node/Cargo.toml" ]; then
 fi
 
 emit_soak_state() {
+	if [ "$CASPER_RUNTIME" -eq 1 ]; then
+		printf 'RUNTIME_BOUND=1\n'
+	fi
+	if [ -n "$CASPER_MANIFEST_DIGEST" ]; then
+		printf 'MANIFEST_BOUND=1\n'
+	fi
 	printf 'STARTED_AT=%s\n' "$STARTED_AT"
 	printf 'ITERATIONS=%s\n' "$ITERATIONS"
 	printf 'INFLIGHT_ITERATION=%s\n' "$INFLIGHT_ITERATION"
@@ -725,6 +888,7 @@ persist_soak_state() {
 		--arg target_ref "$TARGET_REF" \
 		--arg target_sha "$TARGET_SHA" \
 		--arg trigger_source "$TRIGGER_SOURCE" \
+		--arg manifest_digest "$CASPER_MANIFEST_DIGEST" \
 		--argjson slot_delay "$SLOT_DELAY_SECONDS" \
 		--arg version "$VERSION" \
 		--argjson started_at "$STARTED_AT" \
@@ -735,6 +899,7 @@ persist_soak_state() {
 		--argjson bench_failures "$BENCH_FAILURES" \
 		'{target_ref: $target_ref, target_sha: $target_sha,
       trigger_source: $trigger_source, slot_delay_seconds: $slot_delay,
+      manifest_digest: (if $manifest_digest == "" then null else $manifest_digest end),
       version: $version, started_at: $started_at,
       requested_seconds: $requested_seconds, iterations: $iterations,
       failures: $failures, bench_segments: $bench_segments,
@@ -1165,6 +1330,16 @@ run_bench_segment() {
 			return 1
 		fi
 	fi
+	local log_refusal
+	if log_refusal="$(log_budget_refusal)"; then
+		EARLY_EXIT_REASON="host_protection_breach"
+		DEADLINE=0
+		FAILURES="$((FAILURES + 1))"
+		publish_record -t "$OUTPUT_DIR/protection-breach.txt" printf 'The log probe is unavailable before benchmark admission (%s). Set SOAK_CONTAINER_LOG_BUDGET_MB=0 and SOAK_NODE_LOG_BUDGET_MB=0 to run without the log guardian. The driver refused work.\n' \
+			"$log_refusal"
+		publish_record "$OUTPUT_DIR/early-exit.txt" printf 'host_protection_breach: %s before benchmark admission\n' "$log_refusal"
+		return 1
+	fi
 	if [ ! -s "$HOST_GUARDIAN_BREACH" ] && ! run_domain_verified; then
 		publish_record "$HOST_GUARDIAN_BREACH" printf 'The run domain is unverified before benchmark admission. The driver refused work.\n'
 	fi
@@ -1313,8 +1488,8 @@ if [ -s "$HOST_GUARDIAN_BREACH" ]; then
 	persist_soak_state
 	printf 'The previous guardian breach prevents this segment from starting work.\n'
 fi
-if ! process_identity "$$" >/dev/null; then
-	printf 'Host writer ownership requires a readable Linux proc filesystem. The driver refused work.\n' >&2
+if ! host_control probe; then
+	printf 'Host writer ownership requires the Rust harness and Linux pidfd support. The driver refused work.\n' >&2
 	exit 2
 fi
 read -r SOAK_WRITER_OWNER </proc/sys/kernel/random/uuid || exit 2
@@ -1424,7 +1599,7 @@ if [ "$DEADLINE" -gt "$(date +%s)" ] && ! start_crash_monitor; then
 	printf 'The crash monitor is unavailable. The driver refused work.\n' >&2
 	exit 2
 fi
-if { [ "$HOST_FREE_FLOOR_MB" -gt 0 ] && [ -r /proc/meminfo ]; } || [ "$DISK_FREE_FLOOR_MB" -gt 0 ]; then
+if { [ "$HOST_FREE_FLOOR_MB" -gt 0 ] && [ -r /proc/meminfo ]; } || [ "$DISK_FREE_FLOOR_MB" -gt 0 ] || log_budgets_enabled; then
 	if ! guardian_record_progress; then
 		printf 'The host guardian progress record is unavailable. The driver refused work.\n' >&2
 		exit 2
@@ -1458,7 +1633,7 @@ if { [ "$HOST_FREE_FLOOR_MB" -gt 0 ] && [ -r /proc/meminfo ]; } || [ "$DISK_FREE
 		guardian_mark_workload_oom_preferred() {
 			local failed=0
 			export SOAK_WRITER_OWNER
-			export -f process_identity process_gone owned_host_processes mark_owned_oom_preferred
+			export -f host_control mark_owned_oom_preferred
 			if ! timeout --signal=TERM --kill-after=1 "$DISK_STOP_SECONDS" bash -c 'mark_owned_oom_preferred'; then
 				failed=1
 			fi
@@ -1497,6 +1672,28 @@ if { [ "$HOST_FREE_FLOOR_MB" -gt 0 ] && [ -r /proc/meminfo ]; } || [ "$DISK_FREE
 		warn_floor_mb=$((HOST_FREE_FLOOR_MB + ${SOAK_HOST_WARN_BAND_MB:-4096}))
 		disk_over=0
 		disk_hard_floor_mb=$((DISK_FREE_FLOOR_MB / 2))
+		log_sample_n=0
+		container_log_over=0
+		node_log_over=0
+		# The disk floor rule for one log probe: a sample over the budget is a
+		# strike, and three consecutive strikes or one sample at two times the
+		# budget is a breach. The comparison avoids doubling a 64-bit budget.
+		guardian_log_breached() {
+			local probe="$1" budget="$2" worst="$3" mb="$4" strikes_var="$5" strikes
+			strikes="${!strikes_var}"
+			if [ "$budget" -le 0 ] || [ "$mb" = - ] || [ "$mb" -le "$budget" ]; then
+				printf -v "$strikes_var" '%s' 0
+				return 1
+			fi
+			strikes=$((strikes + 1))
+			printf -v "$strikes_var" '%s' "$strikes"
+			[ "$strikes" -ge 3 ] || [ "$((mb - budget))" -ge "$budget" ] || return 1
+			publish_record "$HOST_GUARDIAN_BREACH" printf 'The log guardian detected the %s of container %s at %s MiB over budget %s MiB (consecutive samples %s). Workload termination is unconfirmed.\n' \
+				"$probe" "$worst" "$mb" "$budget" "$strikes"
+			stop_node_writers -q kill || true
+			guardian_stamp_health_tag breach na "log:$probe:$worst:${mb}MiB"
+			return 0
+		}
 		[ "$disk_hard_floor_mb" -ge 1 ] || disk_hard_floor_mb=1
 		last_stamp=0
 		sample_n=0
@@ -1531,6 +1728,28 @@ if { [ "$HOST_FREE_FLOOR_MB" -gt 0 ] && [ -r /proc/meminfo ]; } || [ "$DISK_FREE
 				fi
 			fi
 			guardian_record_progress || exit 1
+			# Every LOG_PROBE_EVERY samples (15s by default): each log probe is
+			# a Docker round trip for each owned container.
+			if log_budgets_enabled && [ $((log_sample_n % LOG_PROBE_EVERY)) -eq 0 ]; then
+				if ! log_sample="$(log_budget_probe 2>"$OUTPUT_DIR/.log-probe-error")"; then
+					log_reason="$(head -1 "$OUTPUT_DIR/.log-probe-error" 2>/dev/null)"
+					publish_record "$HOST_GUARDIAN_BREACH" printf 'The log guardian probe is unavailable during execution (%s). Workload termination is unconfirmed.\n' \
+						"${log_reason:-log probe unavailable}"
+					stop_node_writers -q kill || true
+					guardian_stamp_health_tag breach na "log probe unavailable"
+					exit 0
+				fi
+				read -r container_worst container_mb < <(printf '%s\n' "$log_sample" |
+					awk '$2 ~ /^[0-9]+$/ && ($2 + 0 > max + 0 || id == "") { max = $2; id = $1 } END { print (id == "" ? "- -" : id " " max) }')
+				read -r node_worst node_mb < <(printf '%s\n' "$log_sample" |
+					awk '$3 ~ /^[0-9]+$/ && ($3 + 0 > max + 0 || id == "") { max = $3; id = $1 } END { print (id == "" ? "- -" : id " " max) }')
+				if guardian_log_breached 'container log' "$CONTAINER_LOG_BUDGET_MB" "$container_worst" "$container_mb" container_log_over ||
+					guardian_log_breached 'node log directory' "$NODE_LOG_BUDGET_MB" "$node_worst" "$node_mb" node_log_over; then
+					exit 0
+				fi
+				guardian_record_progress || exit 1
+			fi
+			log_sample_n=$((log_sample_n + 1))
 			if [ "$HOST_FREE_FLOOR_MB" -le 0 ]; then
 				continue
 			fi
@@ -1567,6 +1786,8 @@ if { [ "$HOST_FREE_FLOOR_MB" -gt 0 ] && [ -r /proc/meminfo ]; } || [ "$DISK_FREE
 		done
 	) &
 	HOST_GUARDIAN_PID=$!
+	printf 'orchestrator log guardian budgets: container log %sMB, node log directory %sMB (0 disables), probe every %s samples\n' \
+		"$CONTAINER_LOG_BUDGET_MB" "$NODE_LOG_BUDGET_MB" "$LOG_PROBE_EVERY"
 	printf 'orchestrator host guardian watching MemAvailable floor %sMB (hard floor %sMB, warn %sMB) and disk free floor %sMB (hard floor %sMB); pid %s\n' \
 		"$HOST_FREE_FLOOR_MB" "$((HOST_FREE_FLOOR_MB / 2))" "$((HOST_FREE_FLOOR_MB + 4096))" \
 		"$DISK_FREE_FLOOR_MB" "$((DISK_FREE_FLOOR_MB / 2))" "$HOST_GUARDIAN_PID"
@@ -1582,6 +1803,15 @@ if [ "$RUN_BENCHMARKS" = "true" ] && [ "$SEGMENT" -eq 1 ] &&
 fi
 
 while [ "$(date +%s)" -lt "$DEADLINE" ]; do
+	if [ "$CASPER_RUNTIME" -eq 1 ]; then
+		if [ -e "$FINALIZE_MARKER" ] || [ -L "$FINALIZE_MARKER" ]; then
+			CASPER_TERMINATION=cancelled
+			break
+		fi
+		[ "$ITERATIONS" -lt "$CASPER_LIMIT" ] || break
+		[ "$((ITERATIONS - CASPER_SEGMENT_START))" -lt "$CASPER_SEGMENT_LIMIT" ] || break
+		casper_runtime history --iteration "$ITERATIONS" --failures "$FAILURES" || exit 2
+	fi
 	# The orchestrator guardian can fire outside a failing iteration — during a
 	# bench segment, or after an iteration that still exited 0. Never start new
 	# work once the host has been defended.
@@ -1660,6 +1890,14 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
 			break
 		fi
 	fi
+	if LOG_REFUSAL="$(log_budget_refusal)"; then
+		EARLY_EXIT_REASON="host_protection_breach"
+		publish_record -t "$OUTPUT_DIR/protection-breach.txt" printf 'The log probe is unavailable before admission (%s). Set SOAK_CONTAINER_LOG_BUDGET_MB=0 and SOAK_NODE_LOG_BUDGET_MB=0 to run without the log guardian. The driver refused work.\n' \
+			"$LOG_REFUSAL"
+		publish_record "$OUTPUT_DIR/early-exit.txt" printf 'host_protection_breach: %s before admission\n' "$LOG_REFUSAL"
+		FAILURES="$((FAILURES + 1))"
+		break
+	fi
 	if [ ! -s "$HOST_GUARDIAN_BREACH" ] && ! run_domain_verified; then
 		publish_record "$HOST_GUARDIAN_BREACH" printf 'The run domain is unverified before iteration admission. The driver refused work.\n'
 	fi
@@ -1694,7 +1932,11 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
 			;;
 		finalize)
 			printf 'finalize signalled after iteration %s; ending the run\n' "$ITERATIONS"
-			printf '%s\n' "finalize signalled after iteration $ITERATIONS" >"$FINALIZE_MARKER"
+			if [ "$CASPER_RUNTIME" -eq 1 ]; then
+				casper_runtime stop || exit 2
+			else
+				printf '%s\n' "finalize signalled after iteration $ITERATIONS" >"$FINALIZE_MARKER"
+			fi
 			break
 			;;
 		'')
@@ -1705,11 +1947,12 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
 		esac
 	fi
 	PROVIDER="${PROVIDERS[$((ITERATIONS % ${#PROVIDERS[@]}))]}"
+	if [ "$CASPER_RUNTIME" -eq 1 ]; then PROVIDER="$CASPER_PROVIDER"; fi
 	ITERATIONS="$((ITERATIONS + 1))"
 	INFLIGHT_ITERATION=1
 	persist_soak_state || exit 2
 	ITERATION_DIR="$OUTPUT_DIR/iteration-$(printf '%05d' "$ITERATIONS")-$PROVIDER"
-	mkdir -p "$ITERATION_DIR"
+	mkdir "$ITERATION_DIR" || exit 2
 	REMAINING="$((DEADLINE - $(date +%s)))"
 	if [ "$REMAINING" -le 0 ]; then
 		INFLIGHT_ITERATION=0
@@ -1728,6 +1971,11 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
 		export SOAK_WRITER_OWNER SOAK_DOCKER_REAL SOAK_DOCKER_OWNER_DIR
 		export SOAK_PROCESS_OWNER="$SOAK_WRITER_OWNER"
 		export PATH="$SOAK_WORKLOAD_PATH"
+		if [ "$CASPER_RUNTIME" -eq 1 ]; then
+			exec timeout --signal=TERM --kill-after=30 "${REMAINING}s" \
+				bash "$SCRIPT_DIR/bench/casper-soak.sh" run --output "$OUTPUT_DIR" \
+				--directory "$ITERATION_DIR" --iteration "$ITERATIONS" --segment "$SEGMENT"
+		fi
 		exec timeout --signal=TERM --kill-after=30 "${REMAINING}s" \
 			poetry run pytest \
 			integration-tests/test/tests/custom/test_load.py \
@@ -1739,8 +1987,10 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
 			--timeout=1200
 	) >"$ITERATION_FIFO" 2>&1 &
 	ITERATION_PID=$!
-	snapshot_iteration_monitor_outputs "$ITERATION_DIR" &
-	ITERATION_SNAPSHOT_PID=$!
+	if [ "$CASPER_RUNTIME" -eq 0 ]; then
+		snapshot_iteration_monitor_outputs "$ITERATION_DIR" &
+		ITERATION_SNAPSHOT_PID=$!
+	fi
 	GUARDIAN_INTERRUPTED=0
 	while kill -0 "$ITERATION_PID" 2>/dev/null; do
 		if ! jobs -pr | grep -Fxq "$CRASH_MONITOR_PID" && [ ! -s "$HOST_GUARDIAN_BREACH" ]; then
@@ -1781,7 +2031,14 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
 	fi
 	if [ "$GUARDIAN_INTERRUPTED" -eq 1 ]; then
 		STATUS=1
-		stop_node_writers -aq rm -f >/dev/null 2>&1 || true
+		if [ "$CASPER_RUNTIME" -eq 1 ]; then
+			stop_node_writers -q kill >/dev/null 2>&1 || true
+		else
+			stop_node_writers -aq rm -f >/dev/null 2>&1 || true
+		fi
+	fi
+	if [ "$CASPER_RUNTIME" -eq 1 ]; then
+		stop_node_writers -q kill >/dev/null 2>&1 || true
 	fi
 	if [ -n "$EMERGENCY_DEADLINE_EPOCH" ]; then
 		while kill -0 "$ITERATION_TEE_PID" 2>/dev/null && [ "$(emergency_remaining)" -gt 0 ]; do
@@ -1790,8 +2047,10 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
 		kill "$ITERATION_TEE_PID" 2>/dev/null || true
 	fi
 	wait "$ITERATION_TEE_PID" 2>/dev/null || true
-	kill "$ITERATION_SNAPSHOT_PID" 2>/dev/null || true
-	wait "$ITERATION_SNAPSHOT_PID" 2>/dev/null || true
+	if [ -n "$ITERATION_SNAPSHOT_PID" ]; then
+		kill "$ITERATION_SNAPSHOT_PID" 2>/dev/null || true
+		wait "$ITERATION_SNAPSHOT_PID" 2>/dev/null || true
+	fi
 	rm -f "$ITERATION_FIFO"
 	ITERATION_PID=""
 	ITERATION_TEE_PID=""
@@ -1803,6 +2062,25 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
 	# iteration leaves nothing to sample, which killed every segment mid-loop
 	# before the state file or rollup could be written (run 30516534214).
 	ITER_FINISHED="$(date +%s)"
+	if [ "$CASPER_RUNTIME" -eq 1 ]; then
+		CASPER_TERMINATION=completed
+		if [ "$GUARDIAN_INTERRUPTED" -eq 1 ]; then CASPER_TERMINATION=resource_stop;
+		elif [ "$STATUS" -eq 124 ]; then CASPER_TERMINATION=deadline;
+		elif [ "$STATUS" -ne 0 ]; then CASPER_TERMINATION=tool_error; fi
+		casper_runtime finish --directory "$ITERATION_DIR" --iteration "$ITERATIONS" \
+			--segment "$SEGMENT" --status "$STATUS" --termination "$CASPER_TERMINATION"
+		CASPER_STATUS=$?
+		INFLIGHT_ITERATION=0
+		if [ "$CASPER_STATUS" -ne 0 ]; then FAILURES="$((FAILURES + 1))"; fi
+		if [ "$CASPER_STATUS" -gt 1 ]; then INFLIGHT_ITERATION=2; fi
+		if [ "$CASPER_TERMINATION" != completed ]; then
+			printf '%s\n' "$CASPER_TERMINATION" >"$OUTPUT_DIR/early-exit.txt"
+		fi
+		persist_soak_state || exit 2
+		if [ "$CASPER_STATUS" -gt 1 ] || [ "$CASPER_TERMINATION" != completed ]; then break; fi
+		if ! jq -e '.capture_complete == true' "$OUTPUT_DIR/casper-history/$(printf '%08d' "$ITERATIONS").json" >/dev/null; then break; fi
+		continue
+	fi
 	emit_iteration_metrics "$ITERATION_DIR" "$ITERATIONS" "$PROVIDER" \
 		"$ITER_STARTED" "$ITER_FINISHED" "$STATUS" || true
 	INFLIGHT_ITERATION=0
@@ -1834,10 +2112,10 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
 			fi
 			session_bounded "$copy_budget" bash -c '
 				cd "$1" &&
-					find . -type f \( -name "*.log" -o -name "*.csv" -o -name "*.txt" \
+					find . -type f -newer "$3" \( -name "*.log" -o -name "*.csv" -o -name "*.txt" \
 						-o -name "*.json" -o -name "*.conf" -o -name "*.toml" \) -print0 |
 					tar --null -T - -cf - |
-					tar -xf - -C "$2"' bash "$evidence_root" "$ITERATION_DIR/$evidence_name" ||
+					tar -xf - -C "$2"' bash "$evidence_root" "$ITERATION_DIR/$evidence_name" "$ITERATION_DIR/.started" ||
 				printf 'failure-evidence copy incomplete (non-fatal)\n' >&2
 			printf 'failure evidence preserved in %ss\n' "$(($(date +%s) - COPY_STARTED))"
 		done
@@ -1890,6 +2168,9 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
 		sleep 30
 	fi
 	persist_soak_state || exit 2
+	# Keep this after the metrics, the failure-evidence copy, and the breach
+	# checks above. Moving it earlier deletes the evidence they read.
+	reset_harness_archives
 
 	if target_ref_moved; then
 		EARLY_EXIT_REASON="target_advanced"
@@ -1995,6 +2276,13 @@ if command -v jq >/dev/null; then
           degraded: "full summary emission failed; sampled metrics missing"}' ||
 				printf 'fallback summary emission failed too (non-fatal)\n' >&2
 		}
+fi
+
+if [ "$CASPER_RUNTIME" -eq 1 ]; then
+	if [ "${EARLY_EXIT_REASON:-}" = host_protection_breach ]; then CASPER_TERMINATION=resource_stop;
+	elif [ -e "$OUTPUT_DIR/finalize-requested" ]; then CASPER_TERMINATION=cancelled;
+	elif [ "$(date +%s)" -ge "$CASPER_DEADLINE" ]; then CASPER_TERMINATION=deadline; fi
+	publish_record "$OUTPUT_DIR/casper-result.json" casper_runtime publish --termination "$CASPER_TERMINATION" || exit 2
 fi
 
 # Durability is a bounded step so a stalled storage sync never blocks the

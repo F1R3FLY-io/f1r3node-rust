@@ -2,6 +2,7 @@ use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 use std::hash::{Hash, Hasher};
 use std::mem::size_of;
+use std::sync::Arc;
 
 use proptest_derive::Arbitrary;
 use serde::{Deserialize, Serialize};
@@ -21,6 +22,113 @@ use crate::rspace::native_backing;
 pub enum Event {
     Comm(COMM),
     IoEvent(IOEvent),
+    RestingComm(Arc<RestingCOMM>),
+}
+
+/// A commit of data and a continuation that were both already resting in the
+/// store. Unlike `COMM`, this event has no arriving Produce or Consume IO leg.
+/// Bind order and store indices are part of its identity: sorting the sources
+/// would alias distinct repeated-channel selections.
+#[derive(Debug, Clone)]
+pub struct RestingCOMM {
+    pub consume: Consume,
+    pub continuation_index: i32,
+    pub ordered_produces: Vec<Produce>,
+    pub ordered_data_indices: Vec<i32>,
+    pub peeks: BTreeSet<i32>,
+}
+
+impl PartialEq for RestingCOMM {
+    fn eq(&self, other: &Self) -> bool {
+        self.consume == other.consume &&
+            self.continuation_index == other.continuation_index &&
+            self.ordered_data_indices == other.ordered_data_indices &&
+            self.peeks == other.peeks &&
+            self.ordered_produces.len() == other.ordered_produces.len() &&
+            self.ordered_produces
+                .iter()
+                .zip(&other.ordered_produces)
+                .all(|(left, right)| {
+                    left.channel_hash == right.channel_hash &&
+                        left.hash == right.hash &&
+                        left.persistent == right.persistent
+                })
+    }
+}
+
+impl Eq for RestingCOMM {}
+
+impl Hash for RestingCOMM {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.consume.hash(state);
+        self.continuation_index.hash(state);
+        self.ordered_data_indices.hash(state);
+        self.peeks.hash(state);
+        self.ordered_produces.len().hash(state);
+        for produce in &self.ordered_produces {
+            produce.channel_hash.hash(state);
+            produce.hash.hash(state);
+            produce.persistent.hash(state);
+        }
+    }
+}
+
+impl RestingCOMM {
+    /// Protocol-7-only identity. Existing `COMM` and IO event hashes remain
+    /// byte-for-byte unchanged in both CostV1 and CostV2.
+    pub fn cost_v2_identity_metered(
+        &self,
+        meter: &dyn SourceMeter,
+    ) -> Result<Blake2b256Hash, RSpaceError> {
+        const DOMAIN: &[u8] = b"f1r3node:rspace-resting-comm:v1";
+        type OrderedSource<'a> = (&'a Blake2b256Hash, &'a Blake2b256Hash, bool, i32);
+
+        let count = self.ordered_produces.len();
+        if count != self.ordered_data_indices.len() {
+            return Err(RSpaceError::ProduceCommitProtocolViolation);
+        }
+        native_backing::inspect_blocks(&self.consume, meter)?;
+        native_backing::inspect_blocks(&self.peeks, meter)?;
+        let bytes = count
+            .checked_mul(size_of::<OrderedSource<'_>>())
+            .ok_or(RSpaceError::HostWorkRejected)?;
+        meter.reserve(count.checked_add(1).ok_or(RSpaceError::HostWorkRejected)?, bytes, bytes)?;
+        let mut ordered = Vec::new();
+        ordered
+            .try_reserve_exact(count)
+            .map_err(|_| RSpaceError::HostWorkRejected)?;
+        for (produce, index) in self
+            .ordered_produces
+            .iter()
+            .zip(self.ordered_data_indices.iter().copied())
+        {
+            meter.reserve(
+                1,
+                produce
+                    .channel_hash
+                    .0
+                    .len()
+                    .checked_add(produce.hash.0.len())
+                    .and_then(|n| n.checked_add(size_of::<bool>() + size_of::<i32>()))
+                    .ok_or(RSpaceError::HostWorkRejected)?,
+                0,
+            )?;
+            ordered.push((&produce.channel_hash, &produce.hash, produce.persistent, index));
+        }
+        let forward = |operations, scanned, backing| meter.reserve(operations, scanned, backing);
+        native_source::hash(
+            &(
+                DOMAIN,
+                &self.consume.channel_hashes,
+                &self.consume.hash,
+                self.consume.persistent,
+                self.continuation_index,
+                &ordered,
+                &self.peeks,
+            ),
+            &forward,
+        )
+    }
 }
 
 #[derive(Debug, PartialEq, Eq, Hash, Clone, Serialize, Deserialize)]
@@ -112,9 +220,13 @@ impl COMM {
     ) -> Result<Blake2b256Hash, RSpaceError> {
         type ProduceIdentity<'a> = (&'a Blake2b256Hash, &'a Blake2b256Hash, bool, i32);
 
-        native_backing::inspect(&self.consume, meter)?;
-        native_backing::inspect(&self.peeks, meter)?;
-        native_backing::inspect(&self.times_repeated, meter)?;
+        // Changed by D-O1 (DR-94): block accounting charges inline bytes once
+        // per enclosing block. native_backing::inspect_blocks(&self.consume,
+        // meter)?; native_backing::inspect_blocks(&self.peeks, meter)?;
+        // native_backing::inspect_blocks(&self.times_repeated, meter)?;
+        native_backing::inspect_blocks(&self.consume, meter)?;
+        native_backing::inspect_blocks(&self.peeks, meter)?;
+        native_backing::inspect_blocks(&self.times_repeated, meter)?;
         let map_hash_bytes = self
             .times_repeated
             .keys()
@@ -410,10 +522,30 @@ pub fn recorded_removal<C: StableHashSerialize>(
     datum_source: &Produce,
     operation_id: &[u8],
 ) -> (Consume, COMM) {
+    recorded_removal_with_hash(hash(channel), datum_source, operation_id)
+}
+
+pub fn recorded_removal_for_epoch<C: StableHashSerialize>(
+    epoch: EventCodecEpoch,
+    channel: &C,
+    datum_source: &Produce,
+    operation_id: &[u8],
+) -> Result<(Consume, COMM), RSpaceError> {
+    Ok(recorded_removal_with_hash(
+        channel_hash_for_epoch(epoch, channel)?,
+        datum_source,
+        operation_id,
+    ))
+}
+
+fn recorded_removal_with_hash(
+    channel_hash: Blake2b256Hash,
+    datum_source: &Produce,
+    operation_id: &[u8],
+) -> (Consume, COMM) {
     const PRODUCE_DOMAIN: &[u8] = b"f1r3node:rspace:recorded-removal:produce:v1";
     const CONSUME_DOMAIN: &[u8] = b"f1r3node:rspace:recorded-removal:consume:v1";
 
-    let channel_hash = hash(channel);
     let mut produce_identity = Vec::with_capacity(
         PRODUCE_DOMAIN.len() + datum_source.hash.bytes().len() + operation_id.len(),
     );
@@ -562,6 +694,33 @@ mod tests {
     }
 
     #[test]
+    fn resting_comm_identity_is_domain_separated_and_binds_repeated_channel_order() {
+        let ordinary = comm();
+        let mut resting = RestingCOMM {
+            consume: ordinary.consume.clone(),
+            continuation_index: 0,
+            ordered_produces: vec![ordinary.produces[0].clone(), ordinary.produces[0].clone()],
+            ordered_data_indices: vec![0, 1],
+            peeks: BTreeSet::new(),
+        };
+        let free = |_: usize, _: usize, _: usize| Ok(());
+        let identity = resting.cost_v2_identity_metered(&free).unwrap();
+        assert_ne!(identity, ordinary.cost_identity());
+
+        resting.ordered_data_indices.reverse();
+        assert_ne!(identity, resting.cost_v2_identity_metered(&free).unwrap());
+        resting.ordered_data_indices.reverse();
+        resting.continuation_index = 1;
+        assert_ne!(identity, resting.cost_v2_identity_metered(&free).unwrap());
+
+        resting.continuation_index = 0;
+        resting.ordered_produces[0] = resting.ordered_produces[0]
+            .clone()
+            .mark_as_non_deterministic(vec![b"telemetry".to_vec()]);
+        assert_eq!(identity, resting.cost_v2_identity_metered(&free).unwrap());
+    }
+
+    #[test]
     fn metered_cost_identity_preserves_canonical_bytes() {
         let mut original = comm();
         let second = Produce::new(
@@ -577,6 +736,48 @@ mod tests {
         let unlimited = |_: usize, _: usize, _: usize| Ok(());
         assert_eq!(original.cost_identity_metered(&unlimited).unwrap(), original.cost_identity());
         assert_eq!(reversed.cost_identity_metered(&unlimited).unwrap(), original.cost_identity());
+    }
+
+    /// D-O1 (DR-94): the metered COMM identity reserves its exact credit
+    /// before its work: it accepts the credit that it uses and rejects one
+    /// unit less in any dimension.
+    #[test]
+    fn metered_cost_identity_accepts_exact_credit() {
+        let mut value = comm();
+        let second = Produce::new(
+            Blake2b256Hash::new(b"channel-2"),
+            Blake2b256Hash::new(b"produce-2"),
+            true,
+        );
+        value.produces.push(second.clone());
+        value.times_repeated.insert(second, 3);
+        value.peeks.insert(0);
+        let run = |limit: [usize; 3]| {
+            let used = std::cell::Cell::new([0_usize; 3]);
+            let meter = |operations: usize, scanned: usize, backing: usize| {
+                let [total_operations, total_scanned, total_backing] = used.get();
+                let next = [
+                    total_operations + operations,
+                    total_scanned + scanned,
+                    total_backing + backing,
+                ];
+                if next.iter().zip(limit).any(|(total, bound)| *total > bound) {
+                    return Err(RSpaceError::HostWorkRejected);
+                }
+                used.set(next);
+                Ok(())
+            };
+            value.cost_identity_metered(&meter).map(|_| used.get())
+        };
+        let exact = run([usize::MAX; 3]).expect("unlimited");
+        assert_eq!(run(exact).expect("exact"), exact);
+        for dimension in 0..3 {
+            if exact[dimension] > 0 {
+                let mut smaller = exact;
+                smaller[dimension] -= 1;
+                assert!(matches!(run(smaller), Err(RSpaceError::HostWorkRejected)));
+            }
+        }
     }
 
     #[test]

@@ -3,6 +3,10 @@ use std::mem::size_of;
 
 use models::rhoapi::CostSignature;
 use models::rust::host_work::HostWorkDimension;
+use rholang::rust::interpreter::accounting::authority::{
+    allocate_physical_settlement_with_host_work, cost_signature_to_sig_metered,
+    stack_branches_metered, AuthorityEvent, AuthorityPhysicalEventDraw, AuthorityPhysicalInventory,
+};
 use rholang::rust::interpreter::accounting::phlo_execution::{
     PhloExecutionLimits, PhloResource, RestoredPhloResource,
 };
@@ -13,7 +17,10 @@ use super::{
     invalid, CapturedPrepaidStacks, CasperError, NativePrepaidCell, NativePrepaidCellLimits,
     OrderedPrepaidCells, PrepaidCellLimits, PrepaidStackPop,
 };
-use crate::rust::util::rholang::costacc::supply::PurseStack;
+use crate::rust::util::rholang::costacc::direct_wallet_funding::DirectWalletSnapshot;
+use crate::rust::util::rholang::costacc::supply::{
+    verify_purse_stack_pops, PurseStack, VerifiedPurseStackPops,
+};
 
 mod demand;
 pub use demand::{
@@ -45,20 +52,52 @@ pub struct NativePrepaidInventory<'s, 'p> {
     sources: BTreeMap<[u8; 32], Vec<Vec<NativePrepaidResource<'s>>>>,
 }
 
+/// One selected physical trace over the evaluator's original chronological
+/// authority events and the authenticated pre-state inventory. It is not a
+/// second event stream. A fresh sealed witness is derived from this immutable
+/// trace at selection and again after wallet settlement rebinds stack indices.
+pub struct CheckedPrepaidPhysicalTrace<'e> {
+    pre_state_root: [u8; 32],
+    events: &'e [AuthorityEvent<[u8; 32]>],
+    signatures: BTreeMap<[u8; 32], CostSignature>,
+    inventory: AuthorityPhysicalInventory<[u8; 32]>,
+    draws: Vec<AuthorityPhysicalEventDraw<[u8; 32]>>,
+}
+
+impl CheckedPrepaidPhysicalTrace<'_> {
+    pub fn pre_state_root(&self) -> [u8; 32] { self.pre_state_root }
+
+    pub fn verify_live<'a>(
+        &self,
+        live_root: [u8; 32],
+        stacks: &'a [PurseStack],
+        budget: &HostWorkBudget,
+    ) -> Result<VerifiedPurseStackPops<'a>, CasperError> {
+        verify_purse_stack_pops(
+            live_root,
+            stacks,
+            self.events,
+            &self.signatures,
+            &self.inventory,
+            &self.draws,
+            budget,
+        )
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct NativePrepaidPrefix<'a> {
     stack: &'a PurseStack,
     receipt_index: usize,
     resources: &'a [NativePrepaidResource<'a>],
+    current_authorities: &'a [CostSignature],
 }
 
 impl<'a> NativePrepaidPrefix<'a> {
     pub fn stack(&self) -> &PurseStack { self.stack }
     pub fn receipt_index(&self) -> usize { self.receipt_index }
     pub fn resources(&self) -> &'a [NativePrepaidResource<'a>] { self.resources }
-    pub fn current_authorities(&self) -> &'a [CostSignature] {
-        &self.stack.stack.cells[..self.resources.len()]
-    }
+    pub fn current_authorities(&self) -> &'a [CostSignature] { self.current_authorities }
 }
 
 impl<'p> CapturedPrepaidStacks<'p> {
@@ -164,6 +203,172 @@ impl NativePrepaidInventory<'_, '_> {
 
     pub fn captured(&self) -> &CapturedPrepaidStacks<'_> { self.captured }
 
+    pub fn has_branched_stacks(&self, budget: &HostWorkBudget) -> Result<bool, CasperError> {
+        reserve(
+            budget,
+            HostWorkDimension::VerificationOperations,
+            self.captured.stacks().len(),
+        )?;
+        Ok(self
+            .captured
+            .stacks()
+            .iter()
+            .any(|stack| !stack.stack.parallel_tail.is_empty()))
+    }
+
+    pub fn clone_captured_stacks(
+        &self,
+        budget: &HostWorkBudget,
+    ) -> Result<Vec<PurseStack>, CasperError> {
+        let count = self.captured.stacks().len();
+        reserve(
+            budget,
+            HostWorkDimension::SearchStateBytes,
+            count
+                .checked_mul(size_of::<PurseStack>())
+                .ok_or_else(|| invalid("physical capture clone size overflow"))?,
+        )?;
+        let mut owned = Vec::new();
+        owned
+            .try_reserve_exact(count)
+            .map_err(|_| invalid("physical capture clone allocation failed"))?;
+        let backing = |operations: usize, scanned: usize, bytes: usize| {
+            for (dimension, amount) in [
+                (HostWorkDimension::VerificationOperations, operations),
+                (HostWorkDimension::VerificationBytes, scanned),
+                (HostWorkDimension::SearchStateBytes, bytes),
+            ] {
+                reserve(budget, dimension, amount)
+                    .map_err(|_| shared::rust::clone_backing::BackingError::Rejected)?;
+            }
+            Ok(())
+        };
+        for stack in self.captured.stacks() {
+            shared::rust::clone_backing::reserve_copy_and_cleanup(&stack.channel, &backing)
+                .and_then(|_| {
+                    shared::rust::clone_backing::reserve_copy_and_cleanup(&stack.stack, &backing)
+                })
+                .map_err(|_| invalid("physical stack clone host work rejected"))?;
+            reserve(
+                budget,
+                HostWorkDimension::SearchStateBytes,
+                stack.random_state.len(),
+            )?;
+            reserve(
+                budget,
+                HostWorkDimension::VerificationBytes,
+                stack.random_state.len(),
+            )?;
+            owned.push((**stack).clone());
+        }
+        Ok(owned)
+    }
+
+    pub fn checked_physical_trace<'e, A>(
+        &self,
+        wallets: &DirectWalletSnapshot<'_, A>,
+        events: &'e [AuthorityEvent<[u8; 32]>],
+        budget: &HostWorkBudget,
+    ) -> Result<CheckedPrepaidPhysicalTrace<'e>, CasperError> {
+        if wallets.pre_state_root() != self.root() {
+            return Err(invalid(
+                "physical trace wallet and prepaid captures have different roots",
+            ));
+        }
+        let backing = |operations: usize, scanned: usize, bytes: usize| {
+            for (dimension, amount) in [
+                (HostWorkDimension::VerificationOperations, operations),
+                (HostWorkDimension::VerificationBytes, scanned),
+                (HostWorkDimension::SearchStateBytes, bytes),
+            ] {
+                reserve(budget, dimension, amount)
+                    .map_err(|_| shared::rust::clone_backing::BackingError::Rejected)?;
+            }
+            Ok(())
+        };
+        let mut inventory = AuthorityPhysicalInventory::default();
+        let mut signatures = BTreeMap::new();
+        for source in wallets.sources() {
+            reserve(budget, HostWorkDimension::VerificationOperations, 1)?;
+            let custody: [u8; 32] = source
+                .source()
+                .custody
+                .try_into()
+                .map_err(|_| invalid("physical wallet custody width"))?;
+            let payer = wallets
+                .authorization()
+                .payers()
+                .get(&custody)
+                .ok_or_else(|| invalid("physical wallet source has no authenticated payer"))?;
+            let lane = cost_signature_to_sig_metered(&payer.signature, &backing)
+                .map_err(|error| invalid(&error.to_string()))?
+                .lane_hash();
+            reserve(
+                budget,
+                HostWorkDimension::SearchStateBytes,
+                4096 + size_of::<([u8; 32], CostSignature)>() + size_of::<([u8; 32], [u8; 32])>(),
+            )?;
+            if let Some(existing) = signatures.get(&lane) {
+                if existing != &payer.signature {
+                    return Err(invalid("physical wallet lane has conflicting signatures"));
+                }
+            } else {
+                shared::rust::clone_backing::reserve_copy_and_cleanup(&payer.signature, &backing)
+                    .map_err(|_| invalid("physical signature clone host work rejected"))?;
+                signatures.insert(lane, payer.signature.clone());
+            }
+            inventory
+                .insert_balance_lane(lane, custody, source.source().capacity)
+                .map_err(|error| invalid(&error.to_string()))?;
+        }
+        for stack in self.captured.stacks() {
+            reserve(budget, HostWorkDimension::VerificationOperations, 1)?;
+            reserve(
+                budget,
+                HostWorkDimension::SearchStateBytes,
+                4096 + size_of::<([u8; 32], Vec<CostSignature>)>()
+                    + if stack.stack.parallel_tail.is_empty() {
+                        0
+                    } else {
+                        size_of::<([u8; 32], models::rhoapi::CostStack)>()
+                    },
+            )?;
+            shared::rust::clone_backing::reserve_slice_copy_and_cleanup(
+                &stack.stack.cells,
+                &backing,
+            )
+            .map_err(|_| invalid("physical root prefix clone host work rejected"))?;
+            if inventory
+                .stacks
+                .insert(stack.instance_id, stack.stack.cells.clone())
+                .is_some()
+            {
+                return Err(invalid("physical capture repeats a rooted stack identity"));
+            }
+            if !stack.stack.parallel_tail.is_empty() {
+                shared::rust::clone_backing::reserve_copy_and_cleanup(&stack.stack, &backing)
+                    .map_err(|_| invalid("physical tree clone host work rejected"))?;
+                inventory
+                    .stack_trees
+                    .insert(stack.instance_id, stack.stack.clone());
+            }
+        }
+        let settlement = allocate_physical_settlement_with_host_work(
+            events,
+            &signatures,
+            &inventory,
+            Some(budget),
+        )
+        .map_err(|error| invalid(&error.to_string()))?;
+        Ok(CheckedPrepaidPhysicalTrace {
+            pre_state_root: self.root(),
+            events,
+            signatures,
+            inventory,
+            draws: settlement.draws,
+        })
+    }
+
     pub fn records_for_stack(
         &self,
         stack_id: &[u8; 32],
@@ -229,6 +434,165 @@ impl NativePrepaidInventory<'_, '_> {
                 stack,
                 receipt_index: draw.receipt_index,
                 resources: &record[..count],
+                current_authorities: &stack.stack.cells[..count],
+            });
+        }
+        Ok(prefixes)
+    }
+
+    /// Bind a branch draw only through a sealed chronological physical witness.
+    /// Siblings share one original receipt occurrence, while each selected
+    /// branch owns a disjoint contiguous preorder slice of that receipt.
+    pub fn prefixes_verified(
+        &self,
+        draws: &[PrepaidStackPop],
+        verified: &VerifiedPurseStackPops<'_>,
+        maximum_draws: usize,
+        budget: &HostWorkBudget,
+    ) -> Result<Vec<NativePrepaidPrefix<'_>>, CasperError> {
+        if self.root() != verified.live_root()
+            || draws.len() > maximum_draws
+            || draws.len() != verified.pops().len()
+        {
+            return Err(invalid(
+                "verified inventory selection has another root or exceeds its draw limit",
+            ));
+        }
+        reserve(
+            budget,
+            HostWorkDimension::SearchStateBytes,
+            draws
+                .len()
+                .checked_mul(
+                    size_of::<NativePrepaidPrefix<'_>>()
+                        + size_of::<[u8; 32]>()
+                        + size_of::<([u8; 32], [u8; 32], usize)>(),
+                )
+                .ok_or_else(|| invalid("verified inventory selection allocation overflow"))?,
+        )?;
+        let mut selected = Vec::new();
+        selected
+            .try_reserve_exact(draws.len())
+            .map_err(|_| invalid("verified inventory marker allocation failed"))?;
+        let mut occurrences = Vec::new();
+        occurrences
+            .try_reserve_exact(draws.len())
+            .map_err(|_| invalid("verified inventory occurrence allocation failed"))?;
+        let mut prefixes = Vec::new();
+        prefixes
+            .try_reserve_exact(draws.len())
+            .map_err(|_| invalid("verified inventory selection allocation failed"))?;
+        for draw in draws {
+            reserve(budget, HostWorkDimension::VerificationOperations, 1)?;
+            reserve(budget, HostWorkDimension::SearchCandidates, selected.len())?;
+            if selected.contains(&draw.stack_id) {
+                return Err(invalid("verified inventory selection repeats a branch"));
+            }
+            selected.push(draw.stack_id);
+            let count = usize::try_from(draw.count)
+                .map_err(|_| invalid("verified inventory selection count overflow"))?;
+            if count == 0 || verified.pops().get(&draw.stack_id).copied() != Some(draw.count) {
+                return Err(invalid(
+                    "verified inventory draw differs from the chronological physical witness",
+                ));
+            }
+            let root_id = verified
+                .root_for_branch(&draw.stack_id)
+                .ok_or_else(|| invalid("verified inventory branch has no original root"))?;
+            let root_index = self
+                .captured
+                .stacks()
+                .binary_search_by_key(&root_id, |stack| stack.instance_id)
+                .map_err(|_| invalid("verified inventory root is absent from capture"))?;
+            let stack = self.captured.stacks()[root_index];
+            reserve(
+                budget,
+                HostWorkDimension::SearchCandidates,
+                verified.stacks().len(),
+            )?;
+            let witnessed = verified
+                .stacks()
+                .iter()
+                .find(|candidate| candidate.instance_id == root_id)
+                .ok_or_else(|| invalid("verified inventory root is absent from witness"))?;
+            let backing = |operations: usize, scanned: usize, bytes: usize| {
+                for (dimension, amount) in [
+                    (HostWorkDimension::VerificationOperations, operations),
+                    (HostWorkDimension::VerificationBytes, scanned),
+                    (HostWorkDimension::SearchStateBytes, bytes),
+                ] {
+                    reserve(budget, dimension, amount)
+                        .map_err(|_| shared::rust::clone_backing::BackingError::Rejected)?;
+                }
+                Ok(())
+            };
+            shared::rust::clone_backing::inspect(&stack.stack, &backing)
+                .and_then(|_| shared::rust::clone_backing::inspect(&witnessed.stack, &backing))
+                .map_err(|_| invalid("verified inventory comparison host work rejected"))?;
+            if stack.source_hash != witnessed.source_hash || stack.stack != witnessed.stack {
+                return Err(invalid(
+                    "verified inventory root differs from the captured stack",
+                ));
+            }
+            let branches = stack_branches_metered(root_id, &stack.stack, &backing)
+                .map_err(|error| invalid(&error.to_string()))?;
+            reserve(budget, HostWorkDimension::SearchCandidates, branches.len())?;
+            let branch = branches
+                .iter()
+                .find(|branch| branch.stack_id == draw.stack_id)
+                .ok_or_else(|| {
+                    invalid("verified inventory branch is absent from the captured tree")
+                })?;
+            if count > branch.stack.cells.len() {
+                return Err(invalid(
+                    "verified inventory branch count exceeds its prefix",
+                ));
+            }
+            reserve(
+                budget,
+                HostWorkDimension::VerificationOperations,
+                branches.len(),
+            )?;
+            let total = branches.iter().try_fold(0_usize, |sum, branch| {
+                sum.checked_add(branch.stack.cells.len())
+                    .ok_or_else(|| invalid("verified inventory transfer length overflow"))
+            })?;
+            let record = self
+                .sources
+                .get(&stack.source_hash)
+                .and_then(|records| records.get(draw.receipt_index))
+                .ok_or_else(|| invalid("verified inventory receipt occurrence is out of range"))?;
+            if record.len() != total {
+                return Err(invalid(
+                    "verified inventory receipt differs from tree preorder",
+                ));
+            }
+            let end = branch
+                .transfer_offset
+                .checked_add(count)
+                .ok_or_else(|| invalid("verified inventory branch offset overflow"))?;
+            reserve(
+                budget,
+                HostWorkDimension::SearchCandidates,
+                occurrences.len(),
+            )?;
+            if let Some((_, source, receipt_index)) = occurrences
+                .iter()
+                .find(|(candidate, _, _)| *candidate == root_id)
+            {
+                if *source != stack.source_hash || *receipt_index != draw.receipt_index {
+                    return Err(invalid(
+                        "verified inventory siblings name different original receipts",
+                    ));
+                }
+            } else {
+                occurrences.push((root_id, stack.source_hash, draw.receipt_index));
+            }
+            prefixes.push(NativePrepaidPrefix {
+                stack,
+                receipt_index: draw.receipt_index,
+                resources: &record[branch.transfer_offset..end],
+                current_authorities: &branch.stack.cells[..count],
             });
         }
         Ok(prefixes)

@@ -12,6 +12,8 @@ pub struct SoftCheckpoint<C: Eq + Hash, P: Clone, A: Clone, K: Clone> {
     pub cache_snapshot: HotStoreState<C, P, A, K>,
     pub log: Log,
     pub produce_counter: BTreeMap<Produce, i32>,
+    /// Present only for an authenticated CostV2 ordered replay session.
+    pub replay_cursor: Option<(u64, usize)>,
 }
 
 pub struct Checkpoint {

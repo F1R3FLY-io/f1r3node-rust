@@ -200,6 +200,7 @@ impl<'preflight, 'a> NativeOfferedAttempt<'preflight, 'a> {
         let original_stacks = manager.read_measured_prepaid_stacks(
             funding_root,
             &demand,
+            &adopted,
             production.stack_capture,
             budget,
         )?;
@@ -215,6 +216,7 @@ impl<'preflight, 'a> NativeOfferedAttempt<'preflight, 'a> {
             settlement_root,
             &demand,
             &self.evaluation.authority_stack_births,
+            &adopted,
             production.stack_capture,
             budget,
         )?;
@@ -246,19 +248,52 @@ impl<'preflight, 'a> NativeOfferedAttempt<'preflight, 'a> {
             limits.retained.funding.cells,
             budget,
         )?;
-        let selection =
-            inventory.select_measured_demand(&demand, limits.measured.demand, budget)?;
-        let binding = inventory.bind_measured_demand(
-            NativePrepaidDemandInput {
-                expected_root: funding_root,
-                controls,
-                demand: &demand,
-                draws: selection.draws(),
-                demand_positions: selection.demand_positions(),
-            },
-            limits.measured.demand,
-            budget,
-        )?;
+        let branched = inventory.has_branched_stacks(budget)?;
+        let physical_trace = if branched {
+            Some(inventory.checked_physical_trace(
+                snapshot.wallets(),
+                &self.evaluation.authority_events,
+                budget,
+            )?)
+        } else {
+            None
+        };
+        let captured_for_trace = if branched {
+            Some(inventory.clone_captured_stacks(budget)?)
+        } else {
+            None
+        };
+        let verified_pre_state = match (&physical_trace, &captured_for_trace) {
+            (Some(trace), Some(stacks)) => Some(trace.verify_live(funding_root, stacks, budget)?),
+            _ => None,
+        };
+        let selection = if let Some(verified) = verified_pre_state.as_ref() {
+            inventory.select_verified_measured_demand(
+                verified,
+                &demand,
+                limits.measured.demand,
+                budget,
+            )?
+        } else {
+            inventory.select_measured_demand(&demand, limits.measured.demand, budget)?
+        };
+        let demand_input = NativePrepaidDemandInput {
+            expected_root: funding_root,
+            controls,
+            demand: &demand,
+            draws: selection.draws(),
+            demand_positions: selection.demand_positions(),
+        };
+        let binding = if let Some(verified) = verified_pre_state.as_ref() {
+            inventory.bind_measured_demand_verified(
+                demand_input,
+                verified,
+                limits.measured.demand,
+                budget,
+            )?
+        } else {
+            inventory.bind_measured_demand(demand_input, limits.measured.demand, budget)?
+        };
         let observed = check_counted_phlo_execution(
             controls,
             binding.witness(),
@@ -411,8 +446,13 @@ impl<'preflight, 'a> NativeOfferedAttempt<'preflight, 'a> {
         )?;
         receipt_ids.sort_unstable();
         receipt_ids.dedup();
-        let receipt_snapshot =
-            manager.capture_prepaid_receipts(funding_root, &receipt_ids, receipt_limits, budget)?;
+        let receipt_snapshot = manager.capture_prepaid_receipts(
+            funding_root,
+            self.adopted.event_codec_epoch(),
+            &receipt_ids,
+            receipt_limits,
+            budget,
+        )?;
         let prepared_receipts = records.prepare_insertions(
             &receipt_snapshot,
             production.receipt_bucket,
@@ -436,12 +476,14 @@ impl<'preflight, 'a> NativeOfferedAttempt<'preflight, 'a> {
         let trace_limits = offered_funded_v6_replay_limits().trace;
         let wallet_events = checked_replay_events(
             wallet_events,
+            self.adopted.event_codec_epoch(),
             trace_limits,
             offered_funded_v6_limits().deploy_log_bytes,
             budget,
         )?;
         let receipt_events = checked_replay_events(
             receipt_events,
+            self.adopted.event_codec_epoch(),
             trace_limits,
             offered_funded_v6_limits().deploy_log_bytes,
             budget,
@@ -452,7 +494,11 @@ impl<'preflight, 'a> NativeOfferedAttempt<'preflight, 'a> {
             .map_err(|_| invalid("offered wallet replay log allocation failed"))?;
         wallet_log.extend(wallet_events.iter().cloned());
         let mut replay_runtime = manager
-            .spawn_offered_replay_runtime(offered_grant_issue_call_limits(), budget.clone())
+            .spawn_offered_replay_runtime(
+                self.adopted.event_codec_epoch(),
+                offered_grant_issue_call_limits(),
+                budget.clone(),
+            )
             .await?;
         replay_runtime.set_block_data(self.block_data.clone()).await;
         replay_runtime
@@ -483,6 +529,7 @@ impl<'preflight, 'a> NativeOfferedAttempt<'preflight, 'a> {
             .runtime
             .prepare_replayed_wallet_settlement(
                 manager,
+                &self.adopted,
                 &checked,
                 &permit,
                 context.reservation_id,
@@ -518,6 +565,7 @@ impl<'preflight, 'a> NativeOfferedAttempt<'preflight, 'a> {
             let consumption = NativePrepaidConsumption {
                 captured: inventory.captured(),
                 draws: selection.draws(),
+                checked_physical: physical_trace.as_ref(),
                 limits: production.stack_pop,
                 execution: production.execution,
                 cell: production.prepaid_cell,
@@ -713,6 +761,7 @@ impl<'policy, 'a> ReplayedNativeFundedUser<'policy, 'a> {
         manager.read_measured_prepaid_stacks(
             self.attempt.policy.snapshot().wallets().pre_state_root(),
             &demand,
+            &self.attempt.adopted,
             capture,
             budget,
         )
@@ -772,6 +821,7 @@ impl<'policy, 'a> ReplayedNativeFundedUser<'policy, 'a> {
             .runtime
             .prepare_replayed_wallet_settlement(
                 manager,
+                &self.attempt.adopted,
                 captured.checked(),
                 &permit,
                 settlement_context.reservation_id,
@@ -1020,6 +1070,32 @@ fn event_bytes(event: &CasperEvent) -> Result<usize, CasperError> {
                     })
                     .and_then(|overhead| bytes.checked_add(overhead))
             }),
+        CasperEvent::RestingComm(resting) => consume_bytes(&resting.consume)
+            .and_then(|initial| {
+                resting
+                    .ordered_produces
+                    .iter()
+                    .try_fold(initial, |sum, produce| {
+                        sum.checked_add(produce_bytes(produce)?)
+                    })
+            })
+            .and_then(|bytes| {
+                resting
+                    .ordered_produces
+                    .len()
+                    .checked_mul(128)
+                    .and_then(|overhead| overhead.checked_add(resting.peeks.len().checked_mul(16)?))
+                    .and_then(|overhead| {
+                        overhead.checked_add(
+                            resting
+                                .ordered_data_indices
+                                .len()
+                                .checked_add(1)?
+                                .checked_mul(8)?,
+                        )
+                    })
+                    .and_then(|overhead| bytes.checked_add(overhead))
+            }),
     };
     bytes.ok_or_else(|| invalid("offered replay event byte size overflows"))
 }
@@ -1032,6 +1108,17 @@ fn event_items(event: &CasperEvent) -> Option<usize> {
             let mut items = comm.consume.channels_hashes.len().checked_add(1)?;
             items = items.checked_add(comm.peeks.len())?;
             for produce in &comm.produces {
+                items = items.checked_add(produce.output_value.len().checked_add(1)?)?;
+            }
+            Some(items)
+        }
+        CasperEvent::RestingComm(resting) => {
+            let mut items = resting.consume.channels_hashes.len().checked_add(1)?;
+            items = items
+                .checked_add(resting.peeks.len())?
+                .checked_add(resting.ordered_data_indices.len())?
+                .checked_add(1)?;
+            for produce in &resting.ordered_produces {
                 items = items.checked_add(produce.output_value.len().checked_add(1)?)?;
             }
             Some(items)
@@ -1050,11 +1137,20 @@ fn event_top_items(event: &CasperEvent) -> Option<usize> {
             .checked_add(comm.peeks.len())
             .and_then(|count| count.checked_add(comm.produces.len()))
             .and_then(|count| count.checked_add(1)),
+        CasperEvent::RestingComm(resting) => resting
+            .consume
+            .channels_hashes
+            .len()
+            .checked_add(resting.peeks.len())
+            .and_then(|count| count.checked_add(resting.ordered_produces.len()))
+            .and_then(|count| count.checked_add(resting.ordered_data_indices.len()))
+            .and_then(|count| count.checked_add(2)),
     }
 }
 
 fn checked_replay_events(
     events: &[CasperEvent],
+    epoch: rspace_plus_plus::rspace::hashing::stable_hash_provider::EventCodecEpoch,
     limits: NativeOperationTraceLimits,
     bytes_cap: usize,
     host: &rholang::rust::interpreter::host_work::HostWorkBudget,
@@ -1140,7 +1236,9 @@ fn checked_replay_events(
     replayed
         .try_reserve_exact(events.len())
         .map_err(|_| invalid("offered replay event allocation failed"))?;
-    replayed.extend(events.iter().map(event_converter::to_rspace_event));
+    for event in events {
+        replayed.push(event_converter::to_rspace_event_for_epoch(event, epoch)?);
+    }
     Ok(replayed.into())
 }
 
@@ -1214,7 +1312,9 @@ impl RuntimeManager {
             return Err(invalid("committed native evidence exceeds protocol limit"));
         }
         reserve_offered_evidence_decode(processed, wire_limits, &host)?;
-        processed.validate(wire_limits).map_err(invalid)?;
+        processed
+            .validate_for_epoch(wire_limits, adopted.event_codec_epoch())
+            .map_err(invalid)?;
         let evidence = processed.evidence(wire_limits).map_err(invalid)?;
         if evidence.original_funding_root != policy.snapshot().wallets().pre_state_root() {
             return Err(invalid(
@@ -1238,6 +1338,7 @@ impl RuntimeManager {
             .ok_or_else(|| invalid("committed deploy log omits native user events"))?;
         let events = checked_replay_events(
             event_prefix,
+            adopted.event_codec_epoch(),
             replay_limits.trace,
             wire_limits.total_bytes,
             &host,
@@ -1300,6 +1401,7 @@ impl RuntimeManager {
             .ok_or_else(|| invalid("committed deploy log omits grant issue events"))?;
         let expected_grant_log = checked_replay_events(
             expected_grant_events,
+            adopted.event_codec_epoch(),
             replay_limits.trace,
             wire_limits.total_bytes,
             &host,
@@ -1418,7 +1520,8 @@ impl RuntimeManager {
         )
         .map_err(invalid)?;
         let contract = adopted.bind_execution_contract(checked.controls(), schedule)?;
-        let config = NativeRuntimeConfig::new(contract, context.trace, context.host_work.clone());
+        let config = NativeRuntimeConfig::new(contract, context.trace, context.host_work.clone())
+            .with_event_codec_epoch(adopted.event_codec_epoch());
         let (recording, operations) =
             decode_committed_runtime_recording(&evidence, recording_limits, &host)?;
         let user_events = native_user_event_count(&operations, replay_limits.trace.events, &host)?;
@@ -1428,6 +1531,7 @@ impl RuntimeManager {
             .ok_or_else(|| invalid("committed deploy log omits native user events"))?;
         let events = checked_replay_events(
             user_prefix,
+            adopted.event_codec_epoch(),
             replay_limits.trace,
             wire_limits.total_bytes,
             &host,
@@ -1450,7 +1554,8 @@ impl RuntimeManager {
         InterpreterImpl::reserve_prepared_structure(prepared_source.as_par(), source_bytes, &host)?;
         let parsed = prepared_source.into_par();
         let cost = RuntimeBudget::new(Cost::unsafe_max());
-        cost.set_deploy_id_funded(identity, funding_sig(signed));
+        cost.set_deploy_id_funded(identity, funding_sig(signed))
+            .map_err(|error| invalid(error.to_string()))?;
         cost.reset_for_native_execution(config)?;
         let before = Blake2b256Hash::from_bytes(prepared.execution_root.to_vec());
         let history = Arc::new(self.history_repo.reset(&before).map_err(invalid)?);
@@ -1460,6 +1565,7 @@ impl RuntimeManager {
             host.clone(),
         )];
         let mut replay = create_native_replay_env(
+            adopted.event_codec_epoch(),
             trace,
             history,
             Arc::new(Box::new(Matcher)),
@@ -1498,8 +1604,12 @@ impl RuntimeManager {
         let exported = replay.export().await?;
         let root = settlement_root(before, exported.root().clone(), user_failure);
         let mut runtime = RuntimeOps::new(
-            self.spawn_offered_runtime(offered_grant_issue_call_limits(), host.clone())
-                .await?,
+            self.spawn_offered_runtime(
+                adopted.event_codec_epoch(),
+                offered_grant_issue_call_limits(),
+                host.clone(),
+            )
+            .await?,
         );
         runtime
             .runtime
@@ -1555,12 +1665,12 @@ impl RuntimeManager {
         grant_casper
             .try_reserve_exact(grant_log.len())
             .map_err(|_| invalid("offered witness grant log allocation failed"))?;
-        grant_casper.extend(
-            grant_log
-                .iter()
-                .cloned()
-                .map(event_converter::to_casper_event),
-        );
+        for event in grant_log.iter().cloned() {
+            grant_casper.push(event_converter::to_casper_event_for_epoch(
+                event,
+                adopted.event_codec_epoch(),
+            )?);
+        }
         if processed.deploy_log().get(user_events..grant_end) != Some(grant_casper.as_slice()) {
             return Err(invalid(
                 "native offered witness grant log differs from commitment",
@@ -1635,7 +1745,8 @@ impl RuntimeManager {
         InterpreterImpl::reserve_prepared_structure(prepared_source.as_par(), source_bytes, &host)?;
         let parsed = prepared_source.into_par();
         let cost = RuntimeBudget::new(Cost::unsafe_max());
-        cost.set_deploy_id_funded(identity, funding_sig(signed));
+        cost.set_deploy_id_funded(identity, funding_sig(signed))
+            .map_err(|error| invalid(error.to_string()))?;
         cost.reset_for_native_execution(config)?;
         let before =
             Blake2b256Hash::from_bytes(policy.snapshot().wallets().pre_state_root().to_vec());
@@ -1647,6 +1758,7 @@ impl RuntimeManager {
         )];
         let settlement_host = host.clone();
         let mut replay = create_native_replay_env(
+            adopted.event_codec_epoch(),
             trace,
             history,
             Arc::new(Box::new(Matcher)),
@@ -1673,8 +1785,12 @@ impl RuntimeManager {
             !evaluation.errors.is_empty(),
         );
         let mut runtime = RuntimeOps::new(
-            self.spawn_offered_runtime(offered_grant_issue_call_limits(), settlement_host)
-                .await?,
+            self.spawn_offered_runtime(
+                adopted.event_codec_epoch(),
+                offered_grant_issue_call_limits(),
+                settlement_host,
+            )
+            .await?,
         );
         runtime.runtime.set_block_data(context.block_data).await;
         runtime
@@ -1730,7 +1846,14 @@ mod tests {
             telemetry_items: 1,
             telemetry_bytes: 100,
         };
-        assert!(checked_replay_events(&events, limits, 100, &host).is_err());
+        assert!(checked_replay_events(
+            &events,
+            rspace_plus_plus::rspace::hashing::stable_hash_provider::EventCodecEpoch::Legacy,
+            limits,
+            100,
+            &host,
+        )
+        .is_err());
         assert_eq!(host.usage(HostWorkDimension::SearchStateBytes).get(), 0);
     }
 

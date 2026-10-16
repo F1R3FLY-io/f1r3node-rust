@@ -1,29 +1,51 @@
+use std::sync::Arc;
+
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
 use models::rhoapi::cost_signature::Value;
 use models::rhoapi::{CostSignature, CostStack, Par};
 use models::rust::rholang::sorter::par_sort_matcher::ParSortMatcher;
 use models::rust::rholang::sorter::sortable::Sortable;
 use models::rust::utils::new_gstring_par;
+use proptest::prelude::*;
 use rholang::rust::interpreter::accounting::authority::{
     authority_demand, cost_signature_to_sig, AuthorityByteEventKind,
+};
+use rholang::rust::interpreter::accounting::byte_accounting::{
+    consume_introduction_identity, produce_introduction_identity,
 };
 use rholang::rust::interpreter::accounting::costs::Cost;
 use rholang::rust::interpreter::accounting::{BillableKind, Sig, SignatureChannel};
 use rholang::rust::interpreter::compiler::compiler::Compiler;
 use rholang::rust::interpreter::env::Env;
-use rholang::rust::interpreter::rho_runtime::{RhoRuntime, RhoRuntimeImpl};
-use rholang::rust::interpreter::test_utils::resources::create_runtimes;
+use rholang::rust::interpreter::external_services::ExternalServices;
+use rholang::rust::interpreter::matcher::r#match::Matcher;
+use rholang::rust::interpreter::merging::mergeable_tags::default_mergeable_tags;
+use rholang::rust::interpreter::rho_runtime::{
+    create_runtime_from_kv_store_for_epoch, RhoRuntime, RhoRuntimeImpl,
+};
+use rspace_plus_plus::rspace::hashing::stable_hash_provider::EventCodecEpoch;
 use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
-use rspace_plus_plus::rspace::trace::event::{Event as RSpaceEvent, IOEvent};
+use rspace_plus_plus::rspace::trace::event::{Event as RSpaceEvent, IOEvent, Produce};
 
 mod transfer_properties;
 
-async fn runtime() -> RhoRuntimeImpl {
+async fn runtime() -> RhoRuntimeImpl { runtime_for_epoch(EventCodecEpoch::CostV1).await }
+
+async fn runtime_for_epoch(epoch: EventCodecEpoch) -> RhoRuntimeImpl {
     let mut manager = InMemoryStoreManager::new();
     let stores = manager.r_space_stores().await.unwrap();
-    let (runtime, _, _) = create_runtimes(stores, false, &mut Vec::new()).await;
-    runtime
+    create_runtime_from_kv_store_for_epoch(
+        epoch,
+        stores,
+        Arc::new(default_mergeable_tags()),
+        false,
+        &mut Vec::new(),
+        Arc::new(Box::new(Matcher)),
+        ExternalServices::noop(),
+    )
+    .await
+    .expect("located authority runtime uses the cost-bearing event format")
 }
 
 fn lane(signature: &str) -> [u8; 32] {
@@ -74,7 +96,7 @@ async fn peek_restoration_preserves_neutral_data_and_charges_the_active_deploy()
         )
         .await
         .unwrap();
-    let before = runtime.get_data(&channel).await;
+    let before = runtime.get_data(&channel).await.expect("before query");
     assert_eq!(before.len(), 1);
     assert!(before[0].a.cost_authority.is_none());
 
@@ -91,7 +113,7 @@ async fn peek_restoration_preserves_neutral_data_and_charges_the_active_deploy()
         .unwrap();
 
     assert!(result.errors.is_empty(), "{:?}", result.errors);
-    let after = runtime.get_data(&channel).await;
+    let after = runtime.get_data(&channel).await.expect("after query");
     assert_eq!(after.len(), 1);
     assert!(after[0].a.cost_authority.is_none());
     assert_eq!(
@@ -181,7 +203,8 @@ async fn metered_unmatched_send_persists_its_payer_authority() {
 
     let data = runtime
         .get_data(&new_gstring_par("waiting".to_string(), Vec::new(), false))
-        .await;
+        .await
+        .expect("waiting query");
     let authority = data[0].a.cost_authority.as_ref().unwrap();
     assert_eq!(authority.regions.len(), 1);
     assert_eq!(
@@ -248,6 +271,128 @@ fn stack_birth_and_first_comm_positions(
         .position(|event| matches!(event, RSpaceEvent::Comm(_)))
         .unwrap();
     (birth, comm)
+}
+
+async fn check_epoch_introduction_identity(epoch: EventCodecEpoch, payer: u8, payload: i32) {
+    let mut runtime = runtime_for_epoch(epoch).await;
+    assert_eq!(runtime.reducer.space.codec_epoch(), epoch);
+    runtime.cost.set_deploy_signature_funded(
+        b"epoch introduction identity deploy",
+        Sig::Ground(vec![payer; 32]),
+    );
+    let outer = format!("outer{payer}");
+    let inner = format!("inner{payer}");
+    let source = format!(
+        "{{% for(@value <- @\"epoch-input\") {{ {inner} :: () | @\"epoch-output\"!(value) }} %}}[ {outer} -o {inner} ] | @\"epoch-input\"!({payload})"
+    );
+    let result = runtime
+        .evaluate_with_phlo(
+            &source,
+            Cost::create(1_000_000, "epoch introduction identity"),
+        )
+        .await
+        .expect("epoch introduction evaluation");
+    assert!(result.errors.is_empty(), "{epoch:?}: {:?}", result.errors);
+    assert_eq!(result.authority_stack_births.len(), 1);
+    let trace = runtime.take_event_log().await;
+    let consume = trace
+        .iter()
+        .find_map(|event| match event {
+            RSpaceEvent::IoEvent(IOEvent::Consume(source)) => Some(source),
+            _ => None,
+        })
+        .expect("signed receive introduction appears in trace");
+    let assert_introduction = |identity, kind, payer| {
+        let events: Vec<_> = result
+            .authority_byte_events
+            .iter()
+            .filter(|event| event.event_id == identity && event.kind == kind)
+            .collect();
+        assert_eq!(events.len(), 1, "{epoch:?}: introduction {identity:?}");
+        let event = events[0];
+        event
+            .verify_authority()
+            .expect("canonical introduction authority");
+        let demand = authority_demand(&event.authority).expect("introduction demand");
+        assert_eq!(demand.get(&payer), 1);
+        assert_eq!(demand.0.len(), 1);
+        assert!(event.amount > 0);
+    };
+    assert_introduction(
+        consume_introduction_identity(consume),
+        AuthorityByteEventKind::ConsumeIntroduction,
+        lane(&outer),
+    );
+    let stack = Compiler::source_to_adt(&format!("{inner} :: ()"))
+        .expect("stack source")
+        .cost_stacks
+        .remove(0);
+    let channel = SignatureChannel::from_sig(
+        &cost_signature_to_sig(stack.cells.first().expect("stack head"))
+            .expect("stack head signature"),
+    )
+    .par;
+    let data = runtime.get_data(&channel).await.expect("stack query");
+    assert_eq!(data.len(), 1);
+    assert_eq!(data[0].a.cost_stack.as_ref(), Some(&stack));
+    assert!(data[0].a.cost_authority.is_none());
+    let expected = Produce::create_for_epoch(epoch, &channel, data[0].a.as_ref(), false)
+        .expect("epoch stack source");
+    assert_eq!(data[0].source.hash, expected.hash);
+    assert_eq!(data[0].source.channel_hash, expected.channel_hash);
+    let birth = &result.authority_stack_births[0];
+    assert_eq!(
+        birth.produce_hash.as_slice(),
+        expected.hash.bytes().as_slice()
+    );
+    let (birth_position, comm_position) =
+        stack_birth_and_first_comm_positions(&trace, &birth.produce_hash);
+    assert!(comm_position < birth_position, "{epoch:?}: {trace:?}");
+    assert_introduction(
+        produce_introduction_identity(&expected),
+        AuthorityByteEventKind::ProduceIntroduction,
+        lane(&inner),
+    );
+    let output = runtime
+        .get_data(&new_gstring_par(
+            "epoch-output".to_string(),
+            Vec::new(),
+            false,
+        ))
+        .await
+        .expect("output query");
+    assert_eq!(output.len(), 1);
+    assert_eq!(output[0].a.pars, vec![Compiler::source_to_adt(
+        &payload.to_string()
+    )
+    .expect("payload source")]);
+    assert_introduction(
+        produce_introduction_identity(&output[0].source),
+        AuthorityByteEventKind::ProduceIntroduction,
+        lane(&inner),
+    );
+}
+
+#[tokio::test]
+async fn cost_v2_introductions_keep_payers_and_stack_birth_identity() {
+    check_epoch_introduction_identity(EventCodecEpoch::CostV2, 7, -42).await;
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(16))]
+
+    #[test]
+    fn generated_introductions_keep_epoch_identity_and_exact_payer(
+        payer in any::<u8>(), payload in any::<i32>(),
+    ) {
+        let executor = tokio::runtime::Builder::new_current_thread()
+            .enable_all().build().expect("property runtime");
+        executor.block_on(async {
+            for epoch in [EventCodecEpoch::CostV1, EventCodecEpoch::CostV2] {
+                check_epoch_introduction_identity(epoch, payer, payload).await;
+            }
+        });
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -336,7 +481,7 @@ async fn continuation_cost_stack_introduction_is_charged_to_continuation_authori
     let channel =
         SignatureChannel::from_sig(&cost_signature_to_sig(stack.cells.first().unwrap()).unwrap())
             .par;
-    let data = runtime.get_data(&channel).await;
+    let data = runtime.get_data(&channel).await.expect("signature query");
     assert_eq!(data.len(), 1);
     assert_eq!(data[0].a.cost_stack.as_ref(), Some(&stack));
     assert!(data[0].a.cost_authority.is_none());
@@ -374,7 +519,8 @@ async fn lollipop_receiver_introduction_is_paid_by_its_outer_authority() {
             Vec::new(),
             false,
         )])
-        .await;
+        .await
+        .expect("continuation query");
     assert_eq!(continuations.len(), 1);
     let interaction = continuations[0]
         .continuation
@@ -529,6 +675,7 @@ async fn unit_cannot_be_materialized_as_a_stack_cell() {
         cells: vec![CostSignature {
             value: Some(Value::Unit(true)),
         }],
+        parallel_tail: Vec::new(),
     });
     let result = runtime
         .inj(
@@ -573,7 +720,8 @@ async fn bound_slot_identity_is_the_runtime_unforgeable_name() {
     .await;
     let published = runtime
         .get_data(&new_gstring_par("published".to_string(), Vec::new(), false))
-        .await;
+        .await
+        .expect("published query");
     let normalized = ParSortMatcher::sort_match(&published[0].a.pars[0]).term;
     let expected = rholang::rust::interpreter::accounting::Sig::Ground(
         prost::Message::encode_to_vec(&normalized),
@@ -606,7 +754,8 @@ async fn token_stack_send_payload_retains_order_when_received_and_run() {
     let signature = cost_signature_to_sig(&stack.cells[0]).unwrap();
     let data = runtime
         .get_data(&SignatureChannel::from_sig(&signature).par)
-        .await;
+        .await
+        .expect("signature channel query");
     assert_eq!(data.len(), 1);
     assert_eq!(data[0].a.cost_stack.as_ref(), Some(&stack));
 }
@@ -624,8 +773,11 @@ async fn checkpoint_reset_preserves_payload_sorts_and_continuation_authority() {
     let waiting = new_gstring_par("waiting".to_string(), Vec::new(), false);
     let expected_signed = Compiler::source_to_adt(r#"{% Nil %}[ payload ]"#).unwrap();
     let expected_stack = Compiler::source_to_adt(r#"first :: second :: ()"#).unwrap();
-    let before_data = runtime.get_data(&carrier).await;
-    let before_continuations = runtime.get_continuations(vec![waiting.clone()]).await;
+    let before_data = runtime.get_data(&carrier).await.expect("carrier query");
+    let before_continuations = runtime
+        .get_continuations(vec![waiting.clone()])
+        .await
+        .expect("waiting query");
 
     assert_eq!(before_data.len(), 1);
     assert_eq!(before_data[0].a.pars.len(), 2);
@@ -646,9 +798,18 @@ async fn checkpoint_reset_preserves_payload_sorts_and_continuation_authority() {
     let checkpoint = runtime.create_checkpoint().await;
     runtime.reset(&checkpoint.root).await.unwrap();
 
-    assert_eq!(runtime.get_data(&carrier).await, before_data);
     assert_eq!(
-        runtime.get_continuations(vec![waiting]).await,
+        runtime
+            .get_data(&carrier)
+            .await
+            .expect("reset carrier query"),
+        before_data
+    );
+    assert_eq!(
+        runtime
+            .get_continuations(vec![waiting])
+            .await
+            .expect("reset waiting query"),
         before_continuations
     );
 }
@@ -670,17 +831,28 @@ async fn derived_timeout_race_emits_one_signed_error_and_cannot_fire_late_fundin
     let errors = new_gstring_par("errors".to_string(), Vec::new(), false);
     let funded = new_gstring_par("funded".to_string(), Vec::new(), false);
     let expected = Compiler::source_to_adt(r#"{% @"ErrNoTokens"!(0) %}[ validator ]"#).unwrap();
-    let before = runtime.get_data(&errors).await;
+    let before = runtime.get_data(&errors).await.expect("error query");
     assert_eq!(before.len(), 1);
     assert_eq!(
         before[0].a.pars[0].cost_signed_terms,
         expected.cost_signed_terms
     );
-    assert!(runtime.get_data(&funded).await.is_empty());
+    assert!(runtime
+        .get_data(&funded)
+        .await
+        .expect("funded query")
+        .is_empty());
 
     evaluate(&mut runtime, r#"@"funds"!(0)"#).await;
-    assert_eq!(runtime.get_data(&errors).await, before);
-    assert!(runtime.get_data(&funded).await.is_empty());
+    assert_eq!(
+        runtime.get_data(&errors).await.expect("error query"),
+        before
+    );
+    assert!(runtime
+        .get_data(&funded)
+        .await
+        .expect("funded query")
+        .is_empty());
 }
 
 #[tokio::test]
@@ -699,11 +871,22 @@ async fn derived_timeout_race_emits_one_funded_result_and_cannot_fire_late_timeo
 
     let errors = new_gstring_par("errors".to_string(), Vec::new(), false);
     let funded = new_gstring_par("funded".to_string(), Vec::new(), false);
-    let before = runtime.get_data(&funded).await;
+    let before = runtime.get_data(&funded).await.expect("funded query");
     assert_eq!(before.len(), 1);
-    assert!(runtime.get_data(&errors).await.is_empty());
+    assert!(runtime
+        .get_data(&errors)
+        .await
+        .expect("error query")
+        .is_empty());
 
     evaluate(&mut runtime, r#"@"timeout"!(0)"#).await;
-    assert_eq!(runtime.get_data(&funded).await, before);
-    assert!(runtime.get_data(&errors).await.is_empty());
+    assert_eq!(
+        runtime.get_data(&funded).await.expect("funded query"),
+        before
+    );
+    assert!(runtime
+        .get_data(&errors)
+        .await
+        .expect("error query")
+        .is_empty());
 }

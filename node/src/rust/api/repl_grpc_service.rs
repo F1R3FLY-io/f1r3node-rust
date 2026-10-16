@@ -194,7 +194,10 @@ mod prepared_route_tests {
     use rholang::rust::interpreter::frontend::{
         PreparationError, PreparedProgram, ProgramFrontend, PREPARED_PROGRAM_ABI_V1,
     };
-    use rholang::rust::interpreter::rho_runtime::create_runtime_from_kv_store;
+    use rholang::rust::interpreter::rho_runtime::{
+        create_runtime_from_kv_store, create_runtime_from_kv_store_for_epoch,
+    };
+    use rspace_plus_plus::rspace::hashing::stable_hash_provider::EventCodecEpoch;
     use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
     use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
 
@@ -229,6 +232,7 @@ mod prepared_route_tests {
             ExternalServices::noop(),
         )
         .await
+        .expect("test RSpace runtime initializes")
     }
 
     #[tokio::test]
@@ -237,13 +241,19 @@ mod prepared_route_tests {
         let calls = Arc::new(AtomicUsize::new(0));
         let runtime = runtime(matcher.clone()).await;
         let lookahead = LookaheadEngine::new();
-        assert!(lookahead.bind_host(runtime.cost().clone()));
+        let lookahead_host_work = models::rust::host_work::HostWorkLimits::uniform(
+            models::rust::host_work::HostWorkLimit::new(10_000),
+        );
+        assert!(lookahead
+            .bind_standalone_host(runtime.cost().clone(), lookahead_host_work.clone())
+            .expect("finite test host-work policy"));
         let service = ReplGrpcServiceImpl::with_f1r3lang(
             runtime,
             crate::rust::runtime::f1r3lang::F1r3langEvaluation {
                 frontend: Arc::new(CountingFrontend(calls.clone())),
                 max_source_bytes: 4096,
                 funding: Cost::create(10_000, "test host grant"),
+                lookahead_host_work,
                 matcher,
                 lookahead,
             },
@@ -300,10 +310,14 @@ mod prepared_route_tests {
                 lowering: LoweringOptions::NO_DISCHARGE,
             },
             funding,
+            models::rust::host_work::HostWorkLimits::uniform(
+                models::rust::host_work::HostWorkLimit::new(10_000_000),
+            ),
         )
         .unwrap();
         let mut stores = InMemoryStoreManager::new();
-        let runtime = create_runtime_from_kv_store(
+        let runtime = create_runtime_from_kv_store_for_epoch(
+            EventCodecEpoch::CostV2,
             stores.r_space_stores().await.unwrap(),
             Arc::new(HashMap::new()),
             false,
@@ -311,11 +325,16 @@ mod prepared_route_tests {
             Arc::new(Box::new(composition.evaluation.matcher.clone())),
             ExternalServices::noop(),
         )
-        .await;
+        .await
+        .expect("public-route test runtime initializes");
         assert!(composition
             .evaluation
             .lookahead
-            .bind_host(runtime.cost().clone()));
+            .bind_standalone_host(
+                runtime.cost().clone(),
+                composition.evaluation.lookahead_host_work.clone(),
+            )
+            .expect("finite test host-work policy"));
         ReplGrpcServiceImpl::with_f1r3lang(runtime, composition.evaluation)
     }
 
@@ -339,6 +358,7 @@ mod prepared_route_tests {
             .await
             .get_data(&channel)
             .await
+            .expect("public channel read")
             .into_iter()
             .flat_map(|datum| datum.a.pars.clone())
             .collect()
@@ -502,7 +522,10 @@ mod prepared_route_tests {
 
         async fn observation(runtime: &RhoRuntimeImpl, name: &str) -> Par {
             let channel = scalar(ExprInstance::GString(name.to_owned()));
-            let data = runtime.get_data(&channel).await;
+            let data = runtime
+                .get_data(&channel)
+                .await
+                .expect("observation channel read");
             assert_eq!(data.len(), 1, "expected exactly one observation on {name}");
             assert_eq!(data[0].a.pars.len(), 1, "expected one payload on {name}");
             data[0].a.pars[0].clone()
@@ -577,6 +600,9 @@ mod prepared_route_tests {
                 lowering: LoweringOptions::NO_DISCHARGE,
             },
             100_000_000,
+            models::rust::host_work::HostWorkLimits::uniform(
+                models::rust::host_work::HostWorkLimit::new(100_000_000),
+            ),
         )
         .unwrap();
         let declaration_source = include_str!(concat!(
@@ -606,7 +632,8 @@ mod prepared_route_tests {
         );
         let mut stores = InMemoryStoreManager::new();
         let store = stores.eval_stores().await.unwrap();
-        let mut runtime = create_runtime_from_kv_store(
+        let mut runtime = create_runtime_from_kv_store_for_epoch(
+            EventCodecEpoch::CostV2,
             store,
             Arc::new(HashMap::new()),
             false,
@@ -614,14 +641,19 @@ mod prepared_route_tests {
             Arc::new(Box::new(composition.evaluation.matcher.clone())),
             ExternalServices::noop(),
         )
-        .await;
+        .await
+        .expect("Regex application test runtime initializes");
         crate::rust::runtime::f1r3lang::ensure_eval_registry(&mut runtime)
             .await
             .expect("the production eval registry installs");
         assert!(composition
             .evaluation
             .lookahead
-            .bind_host(runtime.cost().clone()));
+            .bind_standalone_host(
+                runtime.cost().clone(),
+                composition.evaluation.lookahead_host_work.clone(),
+            )
+            .expect("finite test host-work policy"));
         let service = ReplGrpcServiceImpl::with_f1r3lang(runtime, composition.evaluation);
         let source = include_str!(concat!(env!("CARGO_MANIFEST_DIR"),
             "/../../mettail-module-dev/mettail-rust/rholang-runtime/tests/fixtures/regex_gslt_application.rho"));
@@ -647,7 +679,11 @@ mod prepared_route_tests {
         let runtime = service.runtime.lock().await;
         let nullable_channel = scalar(ExprInstance::GString("regex.nullable".into()));
         assert!(
-            !runtime.get_data(&nullable_channel).await.is_empty(),
+            !runtime
+                .get_data(&nullable_channel)
+                .await
+                .expect("nullable channel read")
+                .is_empty(),
             "Regex application produced no nullable observation; storage:\n{}",
             response.output
         );
@@ -815,7 +851,10 @@ mod prepared_route_tests {
         let speculation_error_channel = scalar(ExprInstance::GString(
             mettail_rholang_runtime::lookahead::SPEC_ERR_CHANNEL.into(),
         ));
-        let speculation_errors = runtime.get_data(&speculation_error_channel).await;
+        let speculation_errors = runtime
+            .get_data(&speculation_error_channel)
+            .await
+            .expect("speculation error channel read");
         let rendered_errors = speculation_errors
             .iter()
             .flat_map(|datum| datum.a.pars.iter())
@@ -828,7 +867,10 @@ mod prepared_route_tests {
         let request_channel = scalar(ExprInstance::GString(
             mettail_rholang_runtime::lookahead::SPEC_ALL_V2_CHANNEL.into(),
         ));
-        let pending_requests = runtime.get_data(&request_channel).await;
+        let pending_requests = runtime
+            .get_data(&request_channel)
+            .await
+            .expect("lookahead request channel read");
         let pending_requests = pending_requests
             .iter()
             .flat_map(|datum| datum.a.pars.iter())
@@ -845,6 +887,7 @@ mod prepared_route_tests {
             runtime
                 .get_data(&composite_request_channel)
                 .await
+                .expect("mixed lookahead request channel read")
                 .is_empty(),
             "unserved v3 mixed request"
         );
@@ -889,7 +932,10 @@ mod prepared_route_tests {
         let truncated_channel = scalar(ExprInstance::GString(
             mettail_rholang_runtime::lookahead::SPEC_TRUNCATED_V2_CHANNEL.into(),
         ));
-        let reports = runtime.get_data(&truncated_channel).await;
+        let reports = runtime
+            .get_data(&truncated_channel)
+            .await
+            .expect("truncated report channel read");
         assert_eq!(
             reports.len(),
             9,

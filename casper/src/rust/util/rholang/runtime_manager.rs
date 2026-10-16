@@ -26,6 +26,7 @@ use models::rust::cost_protocol_limits::{
     offered_funded_v6_host_work_limits, offered_funded_v6_limits,
 };
 use models::rust::deploy_envelope::DeployEnvelopeRef;
+use models::rust::deploy_id::DeployLookupId;
 use models::rust::host_work::{HostWorkDimension, HostWorkUnits};
 use models::rust::native_cost_evidence::NativeCostEvidenceV1;
 use models::rust::phlo_intent::{PhloConversionCompositionV2, PhloFundingIntentV2Limits};
@@ -47,7 +48,7 @@ use rholang::rust::interpreter::system_processes::{BlockData, Definition};
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::hashing::stable_hash_provider::EventCodecEpoch;
 use rspace_plus_plus::rspace::history::native_reader::{
-    decode_record, NativeLeafKind, NativeReadCharge, NativeReadError, NativeReadMeter,
+    decode_datum_record_metered, NativeLeafKind, NativeReadCharge, NativeReadError, NativeReadMeter,
 };
 use rspace_plus_plus::rspace::internal::Datum;
 use rspace_plus_plus::rspace::merger::merging_logic::{NumberChannelsDiff, NumberChannelsEndVal};
@@ -61,12 +62,14 @@ use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
 use shared::rust::ByteVector;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
-use crate::rust::errors::CasperError;
+use crate::rust::errors::{CasperError, OfferedCandidateRejection};
 use crate::rust::merging::block_index::BlockIndex;
 use crate::rust::metrics_constants::{
-    BLOCK_INDEX_CACHE_SIZE_METRIC, CASPER_METRICS_SOURCE, PARENTS_POST_STATE_CACHE_SIZE_METRIC,
-    REPLAY_CACHE_ENTRIES_METRIC, REPLAY_CACHE_RETAINED_BYTES_METRIC,
-    RUNTIME_SPAWN_REPLAY_CALLS_METRIC, RUNTIME_SPAWN_REPLAY_TIME_METRIC, RUNTIME_SPAWN_TIME_METRIC,
+    BLOCK_INDEX_CACHE_SIZE_METRIC, BLOCK_REPLAY_RUNTIME_EXECUTE_TIME_METRIC,
+    BLOCK_REPLAY_RUNTIME_LOCK_WAIT_TIME_METRIC, BLOCK_REPLAY_RUNTIME_SAVE_MERGEABLE_TIME_METRIC,
+    CASPER_METRICS_SOURCE, PARENTS_POST_STATE_CACHE_SIZE_METRIC, REPLAY_CACHE_ENTRIES_METRIC,
+    REPLAY_CACHE_RETAINED_BYTES_METRIC, RUNTIME_SPAWN_REPLAY_CALLS_METRIC,
+    RUNTIME_SPAWN_REPLAY_TIME_METRIC, RUNTIME_SPAWN_TIME_METRIC,
 };
 use crate::rust::rholang::replay_runtime::{validate_offered_replay_preflight, ReplayRuntimeOps};
 use crate::rust::rholang::runtime::RuntimeOps;
@@ -79,6 +82,13 @@ use crate::rust::util::rholang::costacc::direct_wallet_funding::{
 };
 use crate::rust::util::rholang::costacc::genesis_resource_policy::{
     AdoptedResourcePolicy, OFFERED_PRODUCTION_READY,
+};
+use crate::rust::util::rholang::costacc::offered_acceptance::{
+    offered_replay_context_copy_bytes, OfferedAcceptanceBudget,
+};
+#[cfg(any(test, feature = "test-utils"))]
+use crate::rust::util::rholang::costacc::offered_acceptance::{
+    usage_delta, OfferedBudgetRecorder, OfferedBudgetUsage, OfferedUsageKind,
 };
 use crate::rust::util::rholang::costacc::offered_grants::{
     grant_issue_definition, offered_grant_issue_call_limits, offered_grant_transition_limits,
@@ -330,6 +340,9 @@ pub struct RuntimeManager {
     /// Node composition supplies the MeTTaIL implementation; absence fails
     /// closed before an offered runtime is spawned or checkpointed.
     program_frontend: Option<Arc<dyn ProgramFrontend>>,
+    /// DR-102: test-only records of the final usage of each offered budget.
+    #[cfg(any(test, feature = "test-utils"))]
+    offered_budget_recorder: OfferedBudgetRecorder,
 }
 
 pub(crate) struct CertifiedOfferedDraft {
@@ -337,10 +350,22 @@ pub(crate) struct CertifiedOfferedDraft {
     envelope_identity: [u8; 32],
     candidate: OfferedProcessedDeploy,
     user_mergeable: NumberChannelsEndVal,
+    #[cfg(any(test, feature = "test-utils"))]
+    replay_usages: models::rust::host_work::HostWorkUsages,
 }
 
 impl CertifiedOfferedDraft {
     pub(crate) fn settled_root(&self) -> [u8; 32] { self.settled_root }
+
+    /// DR-102: the certified mergeable map, which the producer and every
+    /// validator store for this deploy.
+    pub(crate) fn into_user_mergeable(self) -> NumberChannelsEndVal { self.user_mergeable }
+
+    /// DR-102: the final usage of the replay budget that certify owns.
+    #[cfg(any(test, feature = "test-utils"))]
+    pub(crate) fn replay_usages(&self) -> models::rust::host_work::HostWorkUsages {
+        self.replay_usages
+    }
 
     pub(crate) fn envelope_identity(&self) -> [u8; 32] { self.envelope_identity }
 
@@ -396,6 +421,16 @@ fn offered_event_clone_bytes(event: &Event) -> Option<usize> {
                 .checked_add(offered_vec_clone_bytes(&comm.produces)?)?
                 .checked_add(offered_vec_clone_bytes(&comm.peeks)?)?;
             for produce in &comm.produces {
+                total = total.checked_add(offered_vec_clone_bytes(&produce.output_value)?)?;
+            }
+            Some(total)
+        }
+        Event::RestingComm(resting) => {
+            let mut total = offered_vec_clone_bytes(&resting.consume.channels_hashes)?
+                .checked_add(offered_vec_clone_bytes(&resting.ordered_produces)?)?
+                .checked_add(offered_vec_clone_bytes(&resting.ordered_data_indices)?)?
+                .checked_add(offered_vec_clone_bytes(&resting.peeks)?)?;
+            for produce in &resting.ordered_produces {
                 total = total.checked_add(offered_vec_clone_bytes(&produce.output_value)?)?;
             }
             Some(total)
@@ -465,9 +500,28 @@ impl RuntimeManager {
         })
     }
 
+    /// DR-102: test-only records of the final usage of each offered budget.
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn offered_budget_usages(&self) -> Vec<OfferedBudgetUsage> {
+        self.offered_budget_recorder.records()
+    }
+
+    #[cfg(any(test, feature = "test-utils"))]
+    pub(crate) fn record_offered_budget_usage(
+        &self,
+        kind: OfferedUsageKind,
+        deploy_id: &[u8],
+        pre_state_root: &[u8],
+        usages: models::rust::host_work::HostWorkUsages,
+    ) {
+        self.offered_budget_recorder
+            .record(kind, deploy_id, pre_state_root, usages);
+    }
+
     pub async fn read_direct_offered_wallet_snapshot<'a>(
         &self,
         envelope: &'a models::rust::deploy_envelope::DeployEnvelope,
+        adopted: &AdoptedResourcePolicy,
         original_root: &StateHash,
         verified: Option<&VerifiedOfferedGrantSources>,
         budget: &HostWorkBudget,
@@ -514,6 +568,7 @@ impl RuntimeManager {
         authorization
             .read_policy_snapshot(
                 self,
+                adopted,
                 original_root.clone(),
                 std::num::NonZeroUsize::MIN,
                 budget,
@@ -703,16 +758,25 @@ impl RuntimeManager {
     }
 
     pub async fn spawn_runtime(&self) -> Result<RhoRuntimeImpl, CasperError> {
-        self.spawn_runtime_with(Vec::new(), self.external_services.clone())
+        self.spawn_runtime_for_epoch(EventCodecEpoch::Legacy).await
+    }
+
+    pub async fn spawn_runtime_for_epoch(
+        &self,
+        epoch: EventCodecEpoch,
+    ) -> Result<RhoRuntimeImpl, CasperError> {
+        self.spawn_runtime_with(epoch, Vec::new(), self.external_services.clone())
             .await
     }
 
     pub async fn spawn_offered_runtime(
         &self,
+        epoch: EventCodecEpoch,
         limits: GrantIssueCallLimits,
         budget: HostWorkBudget,
     ) -> Result<RhoRuntimeImpl, CasperError> {
         self.spawn_runtime_with(
+            epoch,
             vec![grant_issue_definition(limits, budget)],
             ExternalServices::noop(),
         )
@@ -721,11 +785,15 @@ impl RuntimeManager {
 
     async fn spawn_runtime_with(
         &self,
+        epoch: EventCodecEpoch,
         mut definitions: Vec<Definition>,
         services: ExternalServices,
     ) -> Result<RhoRuntimeImpl, CasperError> {
         let start = std::time::Instant::now();
-        let new_space = self.space.spawn().expect("Failed to spawn RSpace");
+        let new_space = self
+            .space
+            .spawn_for_epoch(epoch)
+            .map_err(|error| CasperError::RuntimeError(error.to_string()))?;
         let runtime = rho_runtime::create_rho_runtime(
             new_space,
             self.mergeable_tags.clone(),
@@ -741,16 +809,26 @@ impl RuntimeManager {
     }
 
     pub async fn spawn_replay_runtime(&self) -> Result<RhoRuntimeImpl, CasperError> {
-        self.spawn_replay_runtime_with(Vec::new(), self.external_services.clone())
+        self.spawn_replay_runtime_for_epoch(EventCodecEpoch::Legacy)
+            .await
+    }
+
+    pub async fn spawn_replay_runtime_for_epoch(
+        &self,
+        epoch: EventCodecEpoch,
+    ) -> Result<RhoRuntimeImpl, CasperError> {
+        self.spawn_replay_runtime_with(epoch, Vec::new(), self.external_services.clone())
             .await
     }
 
     pub async fn spawn_offered_replay_runtime(
         &self,
+        epoch: EventCodecEpoch,
         limits: GrantIssueCallLimits,
         budget: HostWorkBudget,
     ) -> Result<RhoRuntimeImpl, CasperError> {
         self.spawn_replay_runtime_with(
+            epoch,
             vec![grant_issue_definition(limits, budget)],
             ExternalServices::noop(),
         )
@@ -759,14 +837,15 @@ impl RuntimeManager {
 
     async fn spawn_replay_runtime_with(
         &self,
+        epoch: EventCodecEpoch,
         mut definitions: Vec<Definition>,
         services: ExternalServices,
     ) -> Result<RhoRuntimeImpl, CasperError> {
         let start = std::time::Instant::now();
         let new_replay_space = self
             .replay_space
-            .spawn()
-            .expect("Failed to spawn ReplayRSpace");
+            .spawn_for_epoch(epoch)
+            .map_err(|error| CasperError::RuntimeError(error.to_string()))?;
 
         let runtime = rho_runtime::create_replay_rho_runtime(
             new_replay_space,
@@ -845,11 +924,12 @@ impl RuntimeManager {
                 Self::replay_payload_hash(&usr_processed, &sys_processed, false);
 
             if !all_logs.is_empty() && all_logs.len() <= replay_cache_event_log_cap {
-                let key = ReplayCacheKey::new(
+                let key = ReplayCacheKey::new_for_epoch(
                     start_hash.clone(),
                     sender.bytes.to_vec(),
                     seq_num as i64,
                     replay_payload_hash,
+                    EventCodecEpoch::Legacy,
                 );
                 let entry = ReplayCacheEntry::new(all_logs, state_hash.clone());
                 let replay_cached = cache.put(key, entry);
@@ -890,8 +970,8 @@ impl RuntimeManager {
         ),
         CasperError,
     > {
-        let _epoch = Self::require_consensus_event_epoch(adopted)?;
-        self.compute_state_with_bonds_envelopes(
+        let epoch = Self::require_consensus_event_epoch(adopted)?;
+        self.compute_state_with_bonds_envelopes_for_epoch(
             start_hash,
             terms,
             system_deploys,
@@ -899,6 +979,7 @@ impl RuntimeManager {
             invalid_blocks,
             play_budget,
             adopted,
+            epoch,
         )
         .await
     }
@@ -935,6 +1016,41 @@ impl RuntimeManager {
         ),
         CasperError,
     > {
+        let epoch = adopted
+            .map(AdoptedResourcePolicy::event_codec_epoch)
+            .unwrap_or(EventCodecEpoch::Legacy);
+        self.compute_state_with_bonds_envelopes_for_epoch(
+            start_hash,
+            terms,
+            system_deploys,
+            block_data,
+            invalid_blocks,
+            play_budget,
+            adopted,
+            epoch,
+        )
+        .await
+    }
+
+    async fn compute_state_with_bonds_envelopes_for_epoch(
+        &self,
+        start_hash: &StateHash,
+        terms: Vec<PendingDeployCandidate>,
+        system_deploys: Vec<super::system_deploy_enum::SystemDeployEnum>,
+        block_data: BlockData,
+        invalid_blocks: Option<HashMap<BlockHash, Validator>>,
+        play_budget: Option<std::time::Duration>,
+        adopted: Option<&AdoptedResourcePolicy>,
+        epoch: EventCodecEpoch,
+    ) -> Result<
+        (
+            StateHash,
+            Vec<ProcessedUserDeploy>,
+            Vec<ProcessedSystemDeploy>,
+            Vec<Bond>,
+        ),
+        CasperError,
+    > {
         if terms.iter().all(|candidate| {
             matches!(
                 candidate,
@@ -943,13 +1059,14 @@ impl RuntimeManager {
         }) {
             let (legacy, checked) = project_legacy_candidates(terms)?;
             let (state, deploys, system_deploys, bonds) = self
-                .compute_state_with_bonds(
+                .compute_state_with_bonds_for_epoch(
                     start_hash,
                     legacy,
                     system_deploys,
                     block_data,
                     invalid_blocks,
                     play_budget,
+                    epoch,
                 )
                 .await?;
             if deploys.len() > checked.len() {
@@ -978,7 +1095,7 @@ impl RuntimeManager {
                 "offered proposal requires authenticated approved-genesis policy".into(),
             )
         })?;
-        if !adopted.offered_funded_v6_active() {
+        if !adopted.offered_funded_active() {
             return Err(CasperError::RuntimeError(
                 "offered proposal format is inactive under approved genesis".into(),
             ));
@@ -987,8 +1104,22 @@ impl RuntimeManager {
 
         let sender = block_data.sender.clone();
         let seq_num = block_data.seq_num;
+        // DR-102 (DR-72): a host-work rejection of the execution budget after the
+        // candidate step is attributable to the candidate, so the proposer
+        // quarantines the envelope instead of failing every later proposal.
+        let candidate_id = match terms.as_slice() {
+            [PendingDeployCandidate::Envelope(envelope)] => match envelope.identity() {
+                DeployLookupId::V6(deploy_id) => Some(*deploy_id),
+                _ => None,
+            },
+            _ => None,
+        };
         let runtime = self
-            .spawn_offered_runtime(offered_grant_issue_call_limits(), offered_budget.clone())
+            .spawn_offered_runtime(
+                epoch,
+                offered_grant_issue_call_limits(),
+                offered_budget.clone(),
+            )
             .await?;
         let mut runtime_ops = RuntimeOps::new(runtime);
         let (state_hash, user_results, system_results) = runtime_ops
@@ -1007,6 +1138,18 @@ impl RuntimeManager {
         let (user_processed, user_mergeable): (Vec<_>, Vec<_>) = user_results.into_iter().unzip();
         let (system_processed, system_mergeable): (Vec<_>, Vec<_>) =
             system_results.into_iter().unzip();
+        let candidate_rejection = |error: CasperError| match candidate_id {
+            Some(deploy_id) if offered_budget.is_rejected() => {
+                CasperError::OfferedCandidateRejected(OfferedCandidateRejection {
+                    deploy_id,
+                    pre_state_root: start_hash.clone(),
+                    reason: error.to_string(),
+                })
+            }
+            _ => error,
+        };
+        #[cfg(any(test, feature = "test-utils"))]
+        let execution_before = offered_budget.usages();
         let mergeable_count = user_mergeable
             .len()
             .checked_add(system_mergeable.len())
@@ -1027,7 +1170,8 @@ impl RuntimeManager {
                     })?,
                 ),
             )
-            .map_err(|error| CasperError::RuntimeError(error.to_string()))?;
+            .map_err(|error| CasperError::RuntimeError(error.to_string()))
+            .map_err(candidate_rejection)?;
         let bonds = runtime_ops.compute_bonds(&state_hash).await?;
         self.save_mergeable_channels_metered(
             Blake2b256Hash::from_bytes_prost(&state_hash),
@@ -1035,8 +1179,19 @@ impl RuntimeManager {
             seq_num,
             user_mergeable.into_iter().chain(system_mergeable).collect(),
             &Blake2b256Hash::from_bytes_prost(start_hash),
+            epoch,
             &offered_budget,
-        )?;
+        )
+        .map_err(candidate_rejection)?;
+        #[cfg(any(test, feature = "test-utils"))]
+        if let Some(deploy_id) = candidate_id {
+            self.offered_budget_recorder.record(
+                OfferedUsageKind::ProducerMergeableExecution,
+                deploy_id.as_ref(),
+                start_hash,
+                usage_delta(execution_before, offered_budget.usages()),
+            );
+        }
         Ok((state_hash, user_processed, system_processed, bonds))
     }
 
@@ -1057,12 +1212,42 @@ impl RuntimeManager {
         ),
         CasperError,
     > {
+        self.compute_state_with_bonds_for_epoch(
+            start_hash,
+            terms,
+            system_deploys,
+            block_data,
+            invalid_blocks,
+            play_budget,
+            EventCodecEpoch::Legacy,
+        )
+        .await
+    }
+
+    async fn compute_state_with_bonds_for_epoch(
+        &self,
+        start_hash: &StateHash,
+        terms: Vec<Signed<DeployData>>,
+        system_deploys: Vec<super::system_deploy_enum::SystemDeployEnum>,
+        block_data: BlockData,
+        invalid_blocks: Option<HashMap<BlockHash, Validator>>,
+        play_budget: Option<std::time::Duration>,
+        epoch: EventCodecEpoch,
+    ) -> Result<
+        (
+            StateHash,
+            Vec<ProcessedDeploy>,
+            Vec<ProcessedSystemDeploy>,
+            Vec<Bond>,
+        ),
+        CasperError,
+    > {
         if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
             tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "start", rss_kb);
         }
 
         let invalid_blocks = invalid_blocks.unwrap_or_default();
-        let runtime = self.spawn_runtime().await?;
+        let runtime = self.spawn_runtime_for_epoch(epoch).await?;
         if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
             tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "after_spawn_runtime", rss_kb);
         }
@@ -1123,11 +1308,12 @@ impl RuntimeManager {
                 Self::replay_payload_hash(&usr_processed, &sys_processed, false);
 
             if !all_logs.is_empty() && all_logs.len() <= replay_cache_event_log_cap {
-                let key = ReplayCacheKey::new(
+                let key = ReplayCacheKey::new_for_epoch(
                     start_hash.clone(),
                     sender.bytes.to_vec(),
                     seq_num as i64,
                     replay_payload_hash,
+                    epoch,
                 );
                 let entry = ReplayCacheEntry::new(all_logs, state_hash.clone());
                 let replay_cached = cache.put(key, entry);
@@ -1199,16 +1385,39 @@ impl RuntimeManager {
         invalid_blocks: Option<HashMap<BlockHash, Validator>>,
         is_genesis: bool, // FIXME have a better way of knowing this. Pass the replayDeploy function maybe? - OLD
     ) -> Result<StateHash, CasperError> {
+        self.replay_compute_state_for_epoch(
+            start_hash,
+            terms,
+            system_deploys,
+            block_data,
+            invalid_blocks,
+            is_genesis,
+            EventCodecEpoch::Legacy,
+        )
+        .await
+    }
+
+    async fn replay_compute_state_for_epoch(
+        &self,
+        start_hash: &StateHash,
+        terms: Vec<ProcessedDeploy>,
+        system_deploys: Vec<ProcessedSystemDeploy>,
+        block_data: &BlockData,
+        invalid_blocks: Option<HashMap<BlockHash, Validator>>,
+        is_genesis: bool,
+        epoch: EventCodecEpoch,
+    ) -> Result<StateHash, CasperError> {
         let sender = block_data.sender.clone();
         let seq_num = block_data.seq_num;
         let replay_payload_hash = Self::replay_payload_hash(&terms, &system_deploys, is_genesis);
 
         // Step 1: Check replay cache (deterministic replay delta)
-        let replay_cache_key = ReplayCacheKey::new(
+        let replay_cache_key = ReplayCacheKey::new_for_epoch(
             start_hash.clone(),
             sender.bytes.to_vec(),
             seq_num as i64,
             replay_payload_hash,
+            epoch,
         );
         if let Some(ref cache) = self.replay_cache {
             if let Some(entry) = cache.get(&replay_cache_key) {
@@ -1234,12 +1443,16 @@ impl RuntimeManager {
                     tracing::info!("[CACHE] ReplayCache hit for sender seq={}", seq_num);
 
                     // Rig the replay runtime with cached event log
-                    let replay_runtime = self.spawn_replay_runtime().await?;
+                    let replay_runtime = self.spawn_replay_runtime_for_epoch(epoch).await?;
                     let rspace_events: Vec<_> = entry
                         .event_log
                         .iter()
-                        .map(crate::rust::util::event_converter::to_rspace_event)
-                        .collect();
+                        .map(|event| {
+                            crate::rust::util::event_converter::to_rspace_event_for_epoch(
+                                event, epoch,
+                            )
+                        })
+                        .collect::<Result<Vec<_>, _>>()?;
                     replay_runtime.rig(rspace_events).await?;
 
                     return Ok(entry.post_state);
@@ -1253,17 +1466,19 @@ impl RuntimeManager {
         }
 
         // Step 2: Full replay (cache miss)
-        let _replay_permit = self
-            .replay_lock
-            .acquire_consensus()
-            .await
+        let lock_start = std::time::Instant::now();
+        let replay_permit = self.replay_lock.acquire_consensus().await;
+        metrics::histogram!(BLOCK_REPLAY_RUNTIME_LOCK_WAIT_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
+            .record(lock_start.elapsed().as_secs_f64());
+        let _replay_permit = replay_permit
             .map_err(|error| CasperError::Other(format!("Replay semaphore closed: {}", error)))?;
         let invalid_blocks = invalid_blocks.unwrap_or_default();
-        let replay_runtime = self.spawn_replay_runtime().await?;
+        let replay_runtime = self.spawn_replay_runtime_for_epoch(epoch).await?;
         let runtime_ops = RuntimeOps::new(replay_runtime);
         let mut replay_runtime_ops = ReplayRuntimeOps::new(runtime_ops);
 
-        let (state_hash, mergeable_chs) = replay_runtime_ops
+        let execute_start = std::time::Instant::now();
+        let replay_result = replay_runtime_ops
             .replay_compute_state(
                 start_hash,
                 terms,
@@ -1272,7 +1487,10 @@ impl RuntimeManager {
                 Some(invalid_blocks),
                 is_genesis,
             )
-            .await?;
+            .await;
+        metrics::histogram!(BLOCK_REPLAY_RUNTIME_EXECUTE_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
+            .record(execute_start.elapsed().as_secs_f64());
+        let (state_hash, mergeable_chs) = replay_result?;
 
         // Convert from final to diff values and persist mergeable (number) channels for post-state hash
         let pre_state_hash = Blake2b256Hash::from_bytes_prost(start_hash);
@@ -1284,30 +1502,45 @@ impl RuntimeManager {
         // unhelpful "task panicked" log; the typed Result lets the
         // caller decide how to react (likely abort the proposal, not
         // the whole node).
-        self.save_mergeable_channels(
+        let save_start = std::time::Instant::now();
+        let save_result = self.save_mergeable_channels(
             state_hash.clone(),
             sender.bytes,
             seq_num,
             mergeable_chs,
             &pre_state_hash,
-        )
-        .map_err(|e| {
+        );
+        metrics::histogram!(BLOCK_REPLAY_RUNTIME_SAVE_MERGEABLE_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
+            .record(save_start.elapsed().as_secs_f64());
+        save_result.map_err(|e| {
             CasperError::RuntimeError(format!("Failed to save mergeable channels: {:?}", e))
         })?;
 
         Ok(post_state)
     }
 
+    // Changed by DR-102: certify owns the replay budget, so every role charges
+    // exactly the certified replay to it, and it borrows the block context.
+    // pub(crate) async fn certify_offered_draft(
+    //     &self,
+    //     processed: &OfferedProcessedDeploy,
+    //     start_hash: &StateHash,
+    //     block_data: &BlockData,
+    //     invalid_blocks: HashMap<BlockHash, Validator>,
+    //     adopted: &AdoptedResourcePolicy,
+    //     budget: &HostWorkBudget,
+    // ) -> Result<CertifiedOfferedDraft, CasperError> {
     pub(crate) async fn certify_offered_draft(
         &self,
         processed: &OfferedProcessedDeploy,
         start_hash: &StateHash,
         block_data: &BlockData,
-        invalid_blocks: HashMap<BlockHash, Validator>,
+        invalid_blocks: &HashMap<BlockHash, Validator>,
         adopted: &AdoptedResourcePolicy,
-        budget: &HostWorkBudget,
     ) -> Result<CertifiedOfferedDraft, CasperError> {
-        if !adopted.offered_funded_v6_active() {
+        let replay_budget = HostWorkBudget::new(offered_funded_v6_host_work_limits());
+        let budget = &replay_budget;
+        if !adopted.offered_funded_active() {
             return Err(CasperError::RuntimeError(
                 "offered-funded replay is not active for this block".to_string(),
             ));
@@ -1359,7 +1592,7 @@ impl RuntimeManager {
             )
             .map_err(|error| CasperError::RuntimeError(error.to_string()))?;
         processed
-            .validate(protocol.evidence)
+            .validate_for_epoch(protocol.evidence, adopted.event_codec_epoch())
             .map_err(CasperError::RuntimeError)?;
         let evidence = processed
             .evidence(protocol.evidence)
@@ -1438,6 +1671,7 @@ impl RuntimeManager {
         let snapshot = self
             .read_direct_offered_wallet_snapshot(
                 processed.envelope(),
+                adopted,
                 start_hash,
                 grant_context.as_ref().map(|(_, verified, _)| verified),
                 budget,
@@ -1467,6 +1701,25 @@ impl RuntimeManager {
                     .to_string(),
             ));
         }
+        // DR-102: every role charges the copy of the block context here, before
+        // the copy. The producer charged it before certify and the validator
+        // did not charge it.
+        budget
+            .reserve(
+                HostWorkDimension::SearchStateBytes,
+                HostWorkUnits::new(
+                    u64::try_from(offered_replay_context_copy_bytes(
+                        block_data,
+                        invalid_blocks,
+                    )?)
+                    .map_err(|_| {
+                        CasperError::RuntimeError(
+                            "offered replay context copy overflows".to_string(),
+                        )
+                    })?,
+                ),
+            )
+            .map_err(|error| CasperError::RuntimeError(error.to_string()))?;
         let witness = self
             .replay_native_offered_witness(
                 &prepared,
@@ -1475,7 +1728,9 @@ impl RuntimeManager {
                 &schedule,
                 NativeFundedExecutionContext {
                     block_data: block_data.clone(),
-                    invalid_blocks,
+                    // Changed by DR-102: certify borrows the block context.
+                    // invalid_blocks,
+                    invalid_blocks: invalid_blocks.clone(),
                     trace: offered_funded_v6_trace_limits(),
                     host_work: budget.clone(),
                 },
@@ -1507,8 +1762,12 @@ impl RuntimeManager {
             .await?;
         let settled_root = settlement.final_root;
         let mut runtime = RuntimeOps::new(
-            self.spawn_offered_runtime(offered_grant_issue_call_limits(), budget.clone())
-                .await?,
+            self.spawn_offered_runtime(
+                adopted.event_codec_epoch(),
+                offered_grant_issue_call_limits(),
+                budget.clone(),
+            )
+            .await?,
         );
         runtime
             .runtime
@@ -1607,6 +1866,8 @@ impl RuntimeManager {
             envelope_identity: prepared.envelope_identity,
             candidate: processed.clone(),
             user_mergeable,
+            #[cfg(any(test, feature = "test-utils"))]
+            replay_usages: replay_budget.usages(),
         })
     }
 
@@ -1617,10 +1878,11 @@ impl RuntimeManager {
         block_data: &BlockData,
         invalid_blocks: HashMap<BlockHash, Validator>,
         budget: &HostWorkBudget,
+        epoch: EventCodecEpoch,
     ) -> Result<(Blake2b256Hash, Vec<NumberChannelsEndVal>), CasperError> {
         let candidate_root = StateHash::copy_from_slice(&certificate.settled_root());
         let runtime = self
-            .spawn_offered_replay_runtime(offered_grant_issue_call_limits(), budget.clone())
+            .spawn_offered_replay_runtime(epoch, offered_grant_issue_call_limits(), budget.clone())
             .await?;
         let mut replay = ReplayRuntimeOps::new_from_runtime(runtime);
         replay
@@ -1668,6 +1930,9 @@ impl RuntimeManager {
         adopted: Option<&AdoptedResourcePolicy>,
         expected_post_state: Option<&StateHash>,
     ) -> Result<StateHash, CasperError> {
+        let epoch = adopted
+            .map(AdoptedResourcePolicy::event_codec_epoch)
+            .unwrap_or(EventCodecEpoch::Legacy);
         if validate_offered_replay_preflight(start_hash, &terms)? {
             let adopted = adopted.ok_or_else(|| {
                 CasperError::RuntimeError(
@@ -1675,7 +1940,7 @@ impl RuntimeManager {
                         .to_string(),
                 )
             })?;
-            if is_genesis || !adopted.offered_funded_v6_active() {
+            if is_genesis || !adopted.offered_funded_active() {
                 return Err(CasperError::RuntimeError(
                     "offered-funded replay is not active for this block".to_string(),
                 ));
@@ -1685,17 +1950,35 @@ impl RuntimeManager {
                     "offered-funded replay requires one isolated user candidate".to_string(),
                 ));
             };
-            let budget = HostWorkBudget::new(offered_funded_v6_host_work_limits());
+            // Changed by DR-102: certify owns the replay budget. The work that this
+            // validator does after the certified replay to accept the block is
+            // charged to its own acceptance budget, as the producer charges its
+            // counterpart to its execution budget.
+            // let budget = HostWorkBudget::new(offered_funded_v6_host_work_limits());
+            // let certificate = self
+            //     .certify_offered_draft(
+            //         processed,
+            //         start_hash,
+            //         block_data,
+            //         invalid_blocks.clone().unwrap_or_default(),
+            //         adopted,
+            //         &budget,
+            //     )
+            //     .await?;
+            let acceptance = OfferedAcceptanceBudget::new();
+            let budget = acceptance.meter().clone();
+            let no_invalid_blocks = HashMap::new();
             let certificate = self
                 .certify_offered_draft(
                     processed,
                     start_hash,
                     block_data,
-                    invalid_blocks.clone().unwrap_or_default(),
+                    invalid_blocks.as_ref().unwrap_or(&no_invalid_blocks),
                     adopted,
-                    &budget,
                 )
                 .await?;
+            #[cfg(any(test, feature = "test-utils"))]
+            let replay_usages = certificate.replay_usages();
             let (post_root, system_mergeable) = self
                 .replay_offered_system_continuation(
                     &certificate,
@@ -1703,6 +1986,7 @@ impl RuntimeManager {
                     block_data,
                     invalid_blocks.unwrap_or_default(),
                     &budget,
+                    epoch,
                 )
                 .await?;
             let expected = expected_post_state.ok_or_else(|| {
@@ -1761,6 +2045,7 @@ impl RuntimeManager {
                 block_data.seq_num,
                 mergeable_values,
                 &Blake2b256Hash::from_bytes_prost(start_hash),
+                epoch,
                 &budget,
             )
             .map_err(|error| {
@@ -1769,6 +2054,21 @@ impl RuntimeManager {
                     error
                 ))
             })?;
+            #[cfg(any(test, feature = "test-utils"))]
+            {
+                self.offered_budget_recorder.record(
+                    OfferedUsageKind::ValidatorReplay,
+                    processed.identity_bytes(),
+                    start_hash,
+                    replay_usages,
+                );
+                self.offered_budget_recorder.record(
+                    OfferedUsageKind::ValidatorAcceptance,
+                    processed.identity_bytes(),
+                    start_hash,
+                    budget.usages(),
+                );
+            }
             return Ok(post_root.to_bytes_prost());
         }
         let legacy = terms
@@ -1784,13 +2084,14 @@ impl RuntimeManager {
                 }
             })
             .collect::<Result<Vec<_>, _>>()?;
-        self.replay_compute_state(
+        self.replay_compute_state_for_epoch(
             start_hash,
             legacy,
             system_deploys,
             block_data,
             invalid_blocks,
             is_genesis,
+            epoch,
         )
         .await
     }
@@ -1811,7 +2112,7 @@ impl RuntimeManager {
     ) -> Result<ReplayedNativeFundedUser<'policy, 'a>, CasperError> {
         let evidence_limits: PhloWireLimits = offered_funded_v6_limits().evidence;
         processed
-            .validate(evidence_limits)
+            .validate_for_epoch(evidence_limits, adopted.event_codec_epoch())
             .map_err(CasperError::RuntimeError)?;
         let evidence = processed
             .evidence(evidence_limits)
@@ -1828,7 +2129,7 @@ impl RuntimeManager {
             evidence.original_funding_root,
             candidate_limits,
         )?;
-        if !adopted.offered_funded_v6_active()
+        if !adopted.offered_funded_active()
             || evidence.genesis_policy_commitment != adopted.genesis_policy_commitment()?
             || evidence.schedule_commitment != schedule.schedule().commitment
             || evidence.phlo_price != schedule.schedule().actual_price
@@ -2011,7 +2312,7 @@ impl RuntimeManager {
             .await?;
 
         let runtime_ops = RuntimeOps::new(runtime);
-        let computed = runtime_ops.get_data_par(channel).await;
+        let computed = runtime_ops.get_data_par(channel).await?;
         Ok(computed)
     }
 
@@ -2027,7 +2328,7 @@ impl RuntimeManager {
             .await?;
 
         let runtime_ops = RuntimeOps::new(runtime);
-        let computed = runtime_ops.get_continuation_par(channels).await;
+        let computed = runtime_ops.get_continuation_par(channels).await?;
         Ok(computed)
     }
 
@@ -2049,6 +2350,7 @@ impl RuntimeManager {
         &self,
         block_hash: &BlockHash,
         block_number: i64,
+        epoch: EventCodecEpoch,
         usr_processed_deploys: &[D],
         sys_processed_deploys: &Vec<ProcessedSystemDeploy>,
         pre_state_hash: &Blake2b256Hash,
@@ -2056,16 +2358,19 @@ impl RuntimeManager {
         mergeable_chs: &Vec<NumberChannelsDiff>,
     ) -> Result<BlockIndex, CasperError> {
         if let Some(cached) = self.block_index_cache.get(block_hash) {
-            Self::touch_cache_key(&self.block_index_cache_order, block_hash);
-            metrics::gauge!(BLOCK_INDEX_CACHE_SIZE_METRIC, "source" => CASPER_METRICS_SOURCE)
-                .set(self.block_index_cache.len() as f64);
-            return Ok(cached.clone());
+            if cached.event_epoch == epoch {
+                Self::touch_cache_key(&self.block_index_cache_order, block_hash);
+                metrics::gauge!(BLOCK_INDEX_CACHE_SIZE_METRIC, "source" => CASPER_METRICS_SOURCE)
+                    .set(self.block_index_cache.len() as f64);
+                return Ok(cached.clone());
+            }
         }
 
         // Cache miss - compute the BlockIndex.
         let block_index = crate::rust::merging::block_index::new(
             block_hash,
             block_number,
+            epoch,
             usr_processed_deploys,
             sys_processed_deploys,
             pre_state_hash,
@@ -2077,7 +2382,9 @@ impl RuntimeManager {
         // Keep index cache bounded for long-running validators.
         // Avoid DashMap re-entrant calls while holding an entry guard.
         let max_entries = Self::max_block_index_cache_entries();
-        if self.block_index_cache.len() >= max_entries {
+        if !self.block_index_cache.contains_key(block_hash)
+            && self.block_index_cache.len() >= max_entries
+        {
             Self::evict_fifo_entry(&self.block_index_cache, &self.block_index_cache_order);
         }
 
@@ -2381,6 +2688,7 @@ impl RuntimeManager {
         seq_num: i32,
         channels_data: Vec<NumberChannelsEndVal>,
         pre_state_hash: &Blake2b256Hash,
+        event_codec_epoch: EventCodecEpoch,
         budget: &HostWorkBudget,
     ) -> Result<(), CasperError> {
         let entries = channels_data.iter().try_fold(0_usize, |count, map| {
@@ -2450,8 +2758,11 @@ impl RuntimeManager {
                     let Some(raw) = records.iter().next() else {
                         return Ok(0);
                     };
+                    // The authenticated epoch selects the cold-store field
+                    // program; decoding charges before each allocation.
                     let datum: Datum<ListParWithRandom> =
-                        decode_record(raw, &meter).map_err(mergeable_read_error)?;
+                        decode_datum_record_metered(raw, event_codec_epoch, &meter)
+                            .map_err(mergeable_read_error)?;
                     RholangMergingLogic::try_get_number_with_rnd(&datum.a)
                         .map(|(number, _)| number)
                         .ok_or_else(|| {
@@ -2622,6 +2933,8 @@ impl RuntimeManager {
             exploratory_deploy_execution_timeout: exploratory_deploy_config.execution_timeout,
             external_services,
             program_frontend: None,
+            #[cfg(any(test, feature = "test-utils"))]
+            offered_budget_recorder: OfferedBudgetRecorder::default(),
         }
     }
 

@@ -59,6 +59,7 @@ fn accounted_datum(unit: bool, stack: bool) -> Datum<ListParWithRandom> {
         }),
         stack.then(|| CostStack {
             cells: vec![signature],
+            parallel_tail: Vec::new(),
         }),
     )
 }

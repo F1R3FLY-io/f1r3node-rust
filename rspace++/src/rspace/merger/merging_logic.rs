@@ -2196,13 +2196,14 @@ mod merge_algebra_gap3_tests {
 
     fn mk_hash(byte: u8) -> Blake2b256Hash { Blake2b256Hash::from_bytes(vec![byte; 32]) }
 
-    // base datum `id`: identity is its `hash` (Produce::eq is hash-only), so the
+    // base datum `id`: identity is its `hash` (Produce::eq is hash-only), so
     // same `id` in two branches is the SAME shared base produce.
     fn mk_produce(id: u8, persistent: bool) -> Produce {
         Produce::new(mk_hash(id), mk_hash(id), persistent)
     }
 
-    // spec[i] = (in_a_pc, in_b_pc, in_a_pm, in_b_pm, persistent) for base datum i.
+    // spec[i] = (in_a_pc, in_b_pc, in_a_pm, in_b_pm, persistent) for base datum
+    // i.
     fn build(specs: &[[bool; 5]], pick_pc: usize, pick_pm: usize) -> EventLogIndex {
         let mut e = EventLogIndex::empty();
         let mut pc: HashSet<Produce> = HashSet::new();

@@ -129,6 +129,16 @@ use crate::rust::rholang::bincode_schema::{
     NO_RESUME,
 };
 
+/// Authenticated positional layouts. CostV1 preserves the protocol-v6
+/// cells-only CostStack while retaining every pre-v7 cost field; CostV2 adds
+/// the branch-tail field. Payload shape must never select the layout.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BincodeLayout {
+    Legacy,
+    CostV1,
+    CostV2,
+}
+
 /// The traversal is shared; only bounded primitive emission differs.
 trait DriverSink {
     type Error;
@@ -136,7 +146,7 @@ trait DriverSink {
         &mut self,
         node: &'a dyn BincodeNode,
         field: usize,
-        legacy: bool,
+        layout: BincodeLayout,
     ) -> Result<Descent<'a>, Self::Error>;
     fn put_bytes(&mut self, bytes: &[u8]) -> Result<(), Self::Error>;
 }
@@ -148,12 +158,12 @@ impl DriverSink for Vec<u8> {
         &mut self,
         node: &'a dyn BincodeNode,
         field: usize,
-        legacy: bool,
+        layout: BincodeLayout,
     ) -> Result<Descent<'a>, Infallible> {
-        Ok(if legacy {
-            node.bincode_emit_legacy(field, self)
-        } else {
-            node.bincode_emit(field, self)
+        Ok(match layout {
+            BincodeLayout::Legacy => node.bincode_emit_legacy(field, self),
+            BincodeLayout::CostV1 => node.bincode_emit_cost_v1(field, self),
+            BincodeLayout::CostV2 => node.bincode_emit(field, self),
         })
     }
 
@@ -172,12 +182,12 @@ impl DriverSink for MeteredSink<'_> {
         &mut self,
         node: &'a dyn BincodeNode,
         field: usize,
-        legacy: bool,
+        layout: BincodeLayout,
     ) -> Result<Descent<'a>, RSpaceError> {
-        if legacy {
-            node.bincode_emit_legacy_metered(field, self.0)
-        } else {
-            node.bincode_emit_metered(field, self.0)
+        match layout {
+            BincodeLayout::Legacy => node.bincode_emit_legacy_metered(field, self.0),
+            BincodeLayout::CostV1 => node.bincode_emit_cost_v1_metered(field, self.0),
+            BincodeLayout::CostV2 => node.bincode_emit_metered(field, self.0),
         }
     }
 
@@ -275,7 +285,7 @@ crate::pooled_stack! {
 
 struct Machine<'a> {
     ops: Vec<Op<'a>>,
-    legacy_layout: bool,
+    layout: BincodeLayout,
     /// One live iterator per ancestor `New` (the `injections` map).
     map_iters: Vec<btree_map::Iter<'a, String, Par>>,
     /// Op-stack high-water mark, tracked only when `TRACK` is on.
@@ -295,7 +305,7 @@ impl<'a> Machine<'a> {
     fn new() -> Self {
         Machine {
             ops: take_ops(),
-            legacy_layout: false,
+            layout: BincodeLayout::CostV2,
             map_iters: Vec::new(),
             high_water: 0,
         }
@@ -303,7 +313,13 @@ impl<'a> Machine<'a> {
 
     fn new_legacy() -> Self {
         let mut machine = Self::new();
-        machine.legacy_layout = true;
+        machine.layout = BincodeLayout::Legacy;
+        machine
+    }
+
+    fn new_cost_v1() -> Self {
+        let mut machine = Self::new();
+        machine.layout = BincodeLayout::CostV1;
         machine
     }
 
@@ -394,7 +410,7 @@ impl<'a> Machine<'a> {
                 return Ok(());
             }
         }
-        let descent = out.emit(node, field, self.legacy_layout)?;
+        let descent = out.emit(node, field, self.layout)?;
         match descent {
             Descent::Done => {}
             Descent::Node {
@@ -553,6 +569,27 @@ pub fn encode_legacy<T: BincodeNode>(value: &T) -> Vec<u8> {
     out
 }
 
+/// Emit the exact protocol-v6 cost layout. The event codec must first reject
+/// any nonempty CostStack branch tail; this infallible primitive cannot erase
+/// a v7 topology on behalf of the caller.
+pub fn encode_cost_v1_into<T: BincodeNode>(value: &T, out: &mut Vec<u8>) {
+    let mut machine = Machine::new_cost_v1();
+    machine.ops.push(Op::Node {
+        node: value,
+        field: 0,
+    });
+    machine
+        .run::<false, _>(out)
+        .unwrap_or_else(|never| match never {});
+    debug_assert!(machine.map_iters.is_empty());
+}
+
+pub fn encode_cost_v1<T: BincodeNode>(value: &T) -> Vec<u8> {
+    let mut out = Vec::with_capacity(OUT_CAPACITY);
+    encode_cost_v1_into(value, &mut out);
+    out
+}
+
 /// Stream either positional epoch layout through the same explicit worklist
 /// used by the Vec fast path. The caller authenticates the epoch and refuses
 /// cost-bearing values in Legacy before invoking this emitter.
@@ -566,6 +603,23 @@ pub fn encode_metered_into<T: BincodeNode>(
     } else {
         Machine::new()
     };
+    machine.ops.push(Op::Node {
+        node: value,
+        field: 0,
+    });
+    machine.run::<false, _>(&mut MeteredSink(sink))?;
+    debug_assert!(machine.map_iters.is_empty());
+    Ok(())
+}
+
+/// Fallible charge-before-write protocol-v6 cost layout. Validation of the
+/// complete canonical root (including encoded map keys) is performed before
+/// this call by the authenticated event/cold-store route.
+pub fn encode_cost_v1_metered_into<T: BincodeNode>(
+    value: &T,
+    sink: &mut dyn BincodeByteSink,
+) -> Result<(), RSpaceError> {
+    let mut machine = Machine::new_cost_v1();
     machine.ops.push(Op::Node {
         node: value,
         field: 0,

@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "report_sha256": "abd1403dde113356fffaf2f5e091c6a6d0b35205d6336d2d44ba08c4ec7db505",
+  "source_hashes_match": true,
+  "claim_hashes_match": true,
+  "evidence_hashes_match": true,
+  "mandatory_records": 13,
+  "strict_cbc_exit": 4,
+  "strict_cbc_pending": 13,
+  "source_manifest_unchanged": true,
+  "passing_test_executions": 976,
+  "claim_acceptance": false,
+  "task_complete": false
+}

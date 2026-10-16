@@ -114,7 +114,7 @@ where
             .increment(t0.elapsed().as_nanos() as u64);
 
         let t1 = Instant::now();
-        let mut channel_to_indexed_data = self.fetch_channel_to_index_data(channels);
+        let mut channel_to_indexed_data = self.fetch_channel_to_index_data(channels)?;
         metrics::counter!("rspace.consume.fetch_data_ns", "source" => RSPACE_METRICS_SOURCE)
             .increment(t1.elapsed().as_nanos() as u64);
 
@@ -151,11 +151,14 @@ where
                 );
                 Self::observe_comm(observer, &comm, continuation, persist, &data_candidates)?;
                 let notification = self.step_observer.as_ref().map(|_| comm.clone());
+                for candidate in &data_candidates {
+                    self.get_store().get_joins(&candidate.channel)?;
+                }
                 let result = prepared.commit(|| {
                     self.log_consume(consume_ref);
                     self.log_comm(comm, CONSUME_COMM_LABEL);
-                    self.store_persistent_data(&data_candidates);
-                    self.wrap_result(channels, &wk, &data_candidates)
+                    self.store_persistent_data(&data_candidates)?;
+                    Ok(self.wrap_result(channels, &wk, &data_candidates))
                 })?;
                 if let Some(comm) = notification {
                     self.observe_step_comm(
@@ -169,12 +172,16 @@ where
                 metrics::counter!("rspace.consume.process_match_ns", "source" => RSPACE_METRICS_SOURCE)
                     .increment(t3.elapsed().as_nanos() as u64);
                 tracing::trace!(target: "f1r3fly.rspace.ops", mark = "finished-locked-consume", "locked_consume");
-                Ok(result)
+                result
             }
             _ => {
                 let t3 = Instant::now();
+                self.get_store().get_continuations(channels)?;
+                for channel in channels {
+                    self.get_store().get_joins(channel)?;
+                }
+                self.store_waiting_continuation(channels.to_vec(), wk)?;
                 self.log_consume(consume_ref);
-                self.store_waiting_continuation(channels.to_vec(), wk);
                 metrics::counter!("rspace.consume.store_continuation_ns", "source" => RSPACE_METRICS_SOURCE)
                     .increment(t3.elapsed().as_nanos() as u64);
                 tracing::trace!(target: "f1r3fly.rspace.ops", mark = "finished-locked-consume", "locked_consume");
@@ -195,40 +202,43 @@ where
     pub(super) fn fetch_channel_to_index_data(
         &self,
         channels: &[C],
-    ) -> HashMap<C, Vec<(Datum<A>, i32)>> {
+    ) -> Result<HashMap<C, Vec<(Datum<A>, i32)>>, RSpaceError> {
         let store = self.get_store();
         let mut map = HashMap::with_capacity(channels.len());
         for c in channels {
-            let data = store.get_data(c);
+            let data = store.get_data(c)?;
             let shuffled_data = self.shuffle_with_index(data);
             map.insert(c.clone(), shuffled_data);
         }
-        map
+        Ok(map)
     }
 
     fn store_waiting_continuation(
         &self,
         channels: Vec<C>,
         wc: WaitingContinuation<P, K>,
-    ) -> MaybeConsumeResult<C, P, A, K> {
+    ) -> Result<(), RSpaceError> {
         let store = self.get_store();
-        let _ = store.put_continuation(&channels, wc);
+        store.put_continuation(&channels, wc)?;
         for channel in channels.iter() {
-            store.put_join(channel, &channels);
+            store.put_join(channel, &channels)?;
         }
-        None
+        Ok(())
     }
 
-    fn store_persistent_data(&self, data_candidates: &[ConsumeCandidate<C, A>]) {
+    fn store_persistent_data(
+        &self,
+        data_candidates: &[ConsumeCandidate<C, A>],
+    ) -> Result<(), RSpaceError> {
         let mut sorted_candidates: Vec<_> = data_candidates.iter().collect();
         sorted_candidates.sort_by_key(|candidate| std::cmp::Reverse(candidate.datum_index));
         let store = self.get_store();
         for consume_candidate in sorted_candidates {
             if !consume_candidate.datum.persist {
-                let _ =
-                    store.remove_datum(&consume_candidate.channel, consume_candidate.datum_index);
+                store.remove_datum(&consume_candidate.channel, consume_candidate.datum_index)?;
             }
         }
+        Ok(())
     }
 
     pub(super) fn wrap_result(

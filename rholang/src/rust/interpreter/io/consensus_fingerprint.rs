@@ -124,7 +124,7 @@ const _: () = assert!(
 ///     order 14 — `FD_ENTROPY_HEADROOM_BITS` (u64_be)
 ///   PR 2.17 (`snapshot` encoder — first `u8_raw`):
 ///     order 15 — `SNAPSHOT_FORMAT_VERSION`  (u8_raw)
-const EXPECTED_ENTRY_COUNT: usize = 15;
+const EXPECTED_ENTRY_COUNT: usize = 17;
 
 /// A single consensus-observable constant's contribution to the
 /// fingerprint fold.
@@ -444,7 +444,21 @@ mod tests {
         //  `WalSnapshotWrite` — a validator running a different
         //  version byte produces different root bytes for
         //  identical WAL contents and silently forks.)
-        const EXPECTED_FOR_CURRENT: &str = "5491728f5f89dc4f";
+        // Wave 4 PR 4.31 (fs_entries migration) → `b77e82a7474172bb`.
+        // Adds order 16:
+        //    16  MAX_ENTRIES              = 65_536           (u64_be)
+        // (Consensus-observable: divergent caps fork at the
+        //  `FSERR_QUOTA_EXCEEDED` boundary — a validator with a
+        //  lower cap rejects a 50_000-entry directory call that
+        //  another validator accepts, producing different Rholang
+        //  reply bytes for identical inputs.)
+        // Wave 4 PR 4.38 (fs_write migration) → `7133cf8a9b60f538`.
+        // Adds order 17:
+        //    17  MAX_WRITE_BYTES          = 64 * 1024 * 1024 (u64_be)
+        // (Consensus-observable: divergent caps fork at the
+        //  `FSERR_QUOTA_EXCEEDED` boundary — a validator with a
+        //  lower cap rejects a 32-MiB write that another accepts.)
+        const EXPECTED_FOR_CURRENT: &str = "7133cf8a9b60f538";
         assert_eq!(
             fp, EXPECTED_FOR_CURRENT,
             "fingerprint changed — a `register_consensus_constant!` \

@@ -4,12 +4,12 @@
 // worklist) and the per-arm assembly to `sort_combine` (single-sourced with the
 // recursive oracle). This file keeps what a caller sees.
 
-use super::sort_combine::split_scored_terms as split_scored_terms_impl;
-use super::sort_drive::sort_par;
 use shared::rust::clone_backing::BackingError;
 
 use super::metered::SorterMeter;
 use super::send_sort_matcher::SendSortMatcher;
+use super::sort_combine::split_scored_terms as split_scored_terms_impl;
+use super::sort_drive::sort_par;
 use super::sortable::Sortable;
 use crate::rhoapi::{
     Bundle, Connective, CostSignedTerm, CostStack, Expr, GUnforgeable, If, Match, New, Par,
@@ -17,13 +17,15 @@ use crate::rhoapi::{
 };
 use crate::rust::rholang::sorter::bundle_sort_matcher::BundleSortMatcher;
 use crate::rust::rholang::sorter::connective_sort_matcher::ConnectiveSortMatcher;
-use crate::rust::rholang::sorter::cost_accounting_sorter::{sort_signed_term_metered, sort_stack_metered};
+use crate::rust::rholang::sorter::cost_accounting_sorter::{
+    sort_signed_term_metered, sort_stack_metered,
+};
 use crate::rust::rholang::sorter::expr_sort_matcher::ExprSortMatcher;
 use crate::rust::rholang::sorter::if_sort_matcher::IfSortMatcher;
 use crate::rust::rholang::sorter::match_sort_matcher::MatchSortMatcher;
 use crate::rust::rholang::sorter::new_sort_matcher::NewSortMatcher;
 use crate::rust::rholang::sorter::receive_sort_matcher::ReceiveSortMatcher;
-use crate::rust::rholang::sorter::score_tree::{Score, ScoreAtom, ScoredTerm, Tree};
+use crate::rust::rholang::sorter::score_tree::{EmittedBytes, Score, ScoreAtom, ScoredTerm, Tree};
 use crate::rust::rholang::sorter::unforgeable_sort_matcher::UnforgeableSortMatcher;
 
 pub struct ParSortMatcher;
@@ -124,6 +126,7 @@ fn sort_group<T, F>(
     mut sort: F,
 ) -> Result<(Vec<T>, Vec<Tree<ScoreAtom>>), BackingError>
 where
+    T: EmittedBytes,
     F: FnMut(&T, &SorterMeter<'_>) -> Result<ScoredTerm<T>, BackingError>,
 {
     let mut scored = meter.vec(values.len())?;

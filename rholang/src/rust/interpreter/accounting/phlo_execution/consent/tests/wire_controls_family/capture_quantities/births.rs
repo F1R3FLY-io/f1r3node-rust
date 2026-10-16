@@ -25,6 +25,7 @@ fn check_births(capture: &CanonicalPhloFundingCapture<'_>, failures: bool) {
                     sig_to_cost_signature(resource.authority).unwrap();
                     column.quantity() as usize
                 ],
+                stack: None,
             })
         })
         .collect::<Vec<_>>();

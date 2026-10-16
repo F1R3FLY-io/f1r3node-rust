@@ -9,11 +9,14 @@ use rspace_plus_plus::rspace::operation_context::{self, OperationOrder};
 use rspace_plus_plus::rspace::rspace_interface::{
     RSpaceOperationCompletion, RSpaceOperationSource,
 };
-use rspace_plus_plus::rspace::trace::event::COMM;
+use rspace_plus_plus::rspace::trace::event::{RestingCOMM, COMM};
 use serde::Serialize;
 
 use super::index::{reserve_vector, IndexKey, NativeIndex};
-use super::operation_sources::{allocate, channel_bytes, NativeCommSource, NativeOperationSource};
+use super::operation_sources::{
+    allocate, channel_bytes, NativeCommSource, NativeConsumeSource, NativeOperationSource,
+    NativeProduceSource,
+};
 use super::path_trie::{NativePathTrie, PathId};
 use super::recording::{recording_error, work, RecordedOccurrence};
 use super::{InterpreterError, NativeRuntimeConfig, RuntimeBudget};
@@ -68,6 +71,37 @@ pub struct NativeOperationRecord {
     pub completion: RSpaceOperationCompletion,
     pub budget_start: usize,
     pub budget_end: usize,
+}
+
+/// A CostV2-only resting transition has no arriving IO introduction. Its
+/// checked identity and bind-ordered address are retained separately from a
+/// historical operation row; no dummy Consume or Produce may stand in for it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NativeRestingRecordV3 {
+    pub occurrence: NativeOperationOccurrence,
+    /// Checked identity exists only after the Resting observer runs. A
+    /// pre-observation refusal must not manufacture an identity.
+    pub identity: Option<[u8; 32]>,
+    pub consume: NativeConsumeSource,
+    pub continuation_index: i32,
+    pub ordered_produces: Arc<[NativeProduceSource]>,
+    pub ordered_data_indices: Arc<[i32]>,
+    pub peeks: Arc<[i32]>,
+    pub footprint: Arc<[Arc<[u8]>]>,
+    pub predecessors: Arc<[usize]>,
+    pub observation: Option<NativeObservationLink>,
+    pub completion: RSpaceOperationCompletion,
+    pub budget_start: usize,
+    pub budget_end: usize,
+}
+
+/// The additive V3 journal preserves the old operation row as one full arm.
+/// The old V1/V2 encoder still accepts only `NativeOperationRecord` and cannot
+/// accidentally serialize `Resting` under a historical domain.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum NativeOperationRecordV3 {
+    Historical(NativeOperationRecord),
+    Resting(NativeRestingRecordV3),
 }
 
 #[derive(Clone)]
@@ -168,6 +202,8 @@ struct PendingOperation {
     introduction: Option<PublishedObservation>,
     comm_source: Option<Arc<NativeCommSource>>,
     comm: Option<PublishedObservation>,
+    resting_identity: Option<[u8; 32]>,
+    resting: Option<PublishedObservation>,
     completion: Option<RSpaceOperationCompletion>,
     budget_start: usize,
     budget_end: usize,
@@ -264,7 +300,11 @@ impl NativeRuntimeConfig {
         if self.operations.index.get(&key, &self.host_work)?.is_some() {
             return Err(recording_error("native operation occurrence is duplicated"));
         }
-        let source = NativeOperationSource::capture(source, &self.host_work)?;
+        let source = NativeOperationSource::capture_for_epoch(
+            source,
+            self.event_codec_epoch,
+            &self.host_work,
+        )?;
         let footprint = locked_footprint(channels, joins, &self.host_work)?;
         let mut predecessors = allocate(footprint.len(), &self.host_work)?;
         for channel in &footprint {
@@ -313,6 +353,8 @@ impl NativeRuntimeConfig {
             introduction: None,
             comm_source: None,
             comm: None,
+            resting_identity: None,
+            resting: None,
             completion: None,
             budget_start: self.recording.attempts.len(),
             budget_end: self.recording.attempts.len(),
@@ -395,6 +437,62 @@ impl NativeRuntimeConfig {
         Ok(())
     }
 
+    fn observe_resting_source(
+        &mut self,
+        identity: [u8; 32],
+        source: &RestingCOMM,
+    ) -> Result<(), InterpreterError> {
+        if self.event_codec_epoch
+            != rspace_plus_plus::rspace::hashing::stable_hash_provider::EventCodecEpoch::CostV2
+        {
+            return Err(recording_error("Resting source requires CostV2"));
+        }
+        let key = self.operation_key()?;
+        let index = self
+            .operations
+            .index
+            .get(&key, &self.host_work)?
+            .copied()
+            .ok_or_else(|| recording_error("native Resting has no started operation"))?;
+        let row = &self.operations.rows[index];
+        if row.completion.is_some() || row.resting_identity.is_some() || row.resting.is_some() {
+            return Err(recording_error(
+                "native Resting observation is out of order",
+            ));
+        }
+        let meter = |operations, scanned, backing| -> Result<(), RSpaceError> {
+            work(
+                &self.host_work,
+                HostWorkDimension::VerificationOperations,
+                operations,
+            )
+            .map_err(|_| RSpaceError::HostWorkRejected)?;
+            work(
+                &self.host_work,
+                HostWorkDimension::VerificationBytes,
+                scanned,
+            )
+            .map_err(|_| RSpaceError::HostWorkRejected)?;
+            work(
+                &self.host_work,
+                HostWorkDimension::SearchStateBytes,
+                backing,
+            )
+            .map_err(|_| RSpaceError::HostWorkRejected)
+        };
+        if !row
+            .source
+            .metered_matches(RSpaceOperationSource::Resting(source), &meter)
+            .map_err(|_| InterpreterError::HostWorkRejected)?
+        {
+            return Err(recording_error(
+                "native Resting source differs from started operation",
+            ));
+        }
+        self.operations.rows[index].resting_identity = Some(identity);
+        Ok(())
+    }
+
     pub(super) fn operation_stage_slot(
         &self,
         occurrence: &RecordedOccurrence,
@@ -433,6 +531,11 @@ impl NativeRuntimeConfig {
                     && row.comm.is_none()
                     && row.introduction.is_some_and(|intro| intro.granted)
             }
+            NativeAttemptStage::RestingComm => {
+                matches!(row.source, NativeOperationSource::Resting(_))
+                    && row.resting_identity.is_some()
+                    && row.resting.is_none()
+            }
         };
         if !valid {
             return Err(recording_error("native charge stage is out of order"));
@@ -449,10 +552,11 @@ impl NativeRuntimeConfig {
     ) {
         if let Some(index) = slot {
             let row = &mut self.operations.rows[index];
-            let target = if stage == NativeAttemptStage::Comm {
-                &mut row.comm
-            } else {
-                &mut row.introduction
+            let target = match stage {
+                NativeAttemptStage::Comm => &mut row.comm,
+                NativeAttemptStage::RestingComm => &mut row.resting,
+                NativeAttemptStage::ProduceIntroduction
+                | NativeAttemptStage::ConsumeIntroduction => &mut row.introduction,
             };
             *target = Some(PublishedObservation { link, granted });
         }
@@ -501,6 +605,28 @@ impl NativeRuntimeConfig {
         if row.completion.is_some() || !row.source.metered_matches(source, &meter).unwrap_or(false)
         {
             return false;
+        }
+        if matches!(row.source, NativeOperationSource::Resting(_)) {
+            let valid = match completion {
+                RSpaceOperationCompletion::Stored => false,
+                RSpaceOperationCompletion::Matched => {
+                    row.resting_identity.is_some()
+                        && row.resting.is_some_and(|observation| observation.granted)
+                }
+                RSpaceOperationCompletion::Rejected => {
+                    row.resting.is_none_or(|observation| !observation.granted)
+                }
+            };
+            if !valid
+                || row.introduction.is_some()
+                || row.comm.is_some()
+                || row.comm_source.is_some()
+            {
+                return false;
+            }
+            row.completion = Some(completion);
+            row.budget_end = self.recording.attempts.len();
+            return true;
         }
         let Some(intro) = row.introduction else {
             return false;
@@ -558,6 +684,11 @@ impl NativeRuntimeConfig {
     }
 
     fn capture_operations(&self) -> Result<Arc<[NativeOperationRecord]>, InterpreterError> {
+        if self.event_codec_epoch
+            == rspace_plus_plus::rspace::hashing::stable_hash_provider::EventCodecEpoch::CostV2
+        {
+            return Err(recording_error("CostV2 operations require the V3 journal"));
+        }
         self.ensure_recording_complete()?;
         let paths = self.capture_paths()?;
         let mut result = allocate(self.operations.rows.len(), &self.host_work)?;
@@ -609,6 +740,106 @@ impl NativeRuntimeConfig {
         }
         Ok(result.into())
     }
+
+    fn capture_operations_v3(&self) -> Result<Arc<[NativeOperationRecordV3]>, InterpreterError> {
+        if self.event_codec_epoch
+            != rspace_plus_plus::rspace::hashing::stable_hash_provider::EventCodecEpoch::CostV2
+        {
+            return Err(recording_error("V3 journal requires CostV2"));
+        }
+        self.ensure_recording_complete()?;
+        let paths = self.capture_paths()?;
+        let mut result = allocate(self.operations.rows.len(), &self.host_work)?;
+        let mut linked = 0usize;
+        for (row, path) in self.operations.rows.iter().zip(&paths.rows) {
+            let completion = row
+                .completion
+                .ok_or_else(|| recording_error("native operation did not complete"))?;
+            let occurrence = NativeOperationOccurrence {
+                session: row.occurrence.session,
+                path: *path,
+            };
+            let captured = match &row.source {
+                NativeOperationSource::Resting(source) => {
+                    if row.introduction.is_some()
+                        || row.comm.is_some()
+                        || row.comm_source.is_some()
+                        || row.consume_peeks.is_some()
+                    {
+                        return Err(recording_error(
+                            "Resting row contains historical IO evidence",
+                        ));
+                    }
+                    linked = linked
+                        .checked_add(usize::from(row.resting.is_some()))
+                        .ok_or(InterpreterError::HostWorkRejected)?;
+                    NativeOperationRecordV3::Resting(NativeRestingRecordV3 {
+                        occurrence,
+                        identity: row.resting_identity,
+                        consume: source.consume.clone(),
+                        continuation_index: source.continuation_index,
+                        ordered_produces: Arc::clone(&source.ordered_produces),
+                        ordered_data_indices: Arc::clone(&source.ordered_data_indices),
+                        peeks: Arc::clone(&source.peeks),
+                        footprint: Arc::clone(&row.footprint),
+                        predecessors: Arc::clone(&row.predecessors),
+                        observation: row.resting.map(|observation| observation.link),
+                        completion,
+                        budget_start: row.budget_start,
+                        budget_end: row.budget_end,
+                    })
+                }
+                NativeOperationSource::Produce(_) | NativeOperationSource::Consume(_) => {
+                    if row.resting_identity.is_some() || row.resting.is_some() {
+                        return Err(recording_error("historical row contains Resting evidence"));
+                    }
+                    let introduction = row.introduction.ok_or_else(|| {
+                        recording_error("native operation lacks introduction evidence")
+                    })?;
+                    linked = linked
+                        .checked_add(1 + usize::from(row.comm.is_some()))
+                        .ok_or(InterpreterError::HostWorkRejected)?;
+                    let comm = match (&row.comm_source, row.comm) {
+                        (Some(source), Some(observation)) => Some(NativeCommRecord {
+                            source: Arc::clone(source),
+                            observation: observation.link,
+                        }),
+                        (None, None) => None,
+                        _ => {
+                            return Err(recording_error(
+                                "native COMM source and observation differ",
+                            ))
+                        }
+                    };
+                    NativeOperationRecordV3::Historical(NativeOperationRecord {
+                        occurrence,
+                        source: row.source.clone(),
+                        consume_peeks: row.consume_peeks.clone(),
+                        footprint: Arc::clone(&row.footprint),
+                        predecessors: Arc::clone(&row.predecessors),
+                        introduction: introduction.link,
+                        comm,
+                        completion,
+                        budget_start: row.budget_start,
+                        budget_end: row.budget_end,
+                    })
+                }
+            };
+            result.push(captured);
+        }
+        let publications = self
+            .recording
+            .attempts
+            .len()
+            .checked_add(self.recording.retries.len())
+            .ok_or(InterpreterError::HostWorkRejected)?;
+        if linked != publications {
+            return Err(recording_error(
+                "V3 operation evidence does not cover budget publications",
+            ));
+        }
+        Ok(result.into())
+    }
 }
 
 impl RuntimeBudget {
@@ -643,6 +874,14 @@ impl RuntimeBudget {
         self.update_native_operations(|native| native.observe_comm_source(source))
     }
 
+    pub(crate) fn observe_native_resting_source(
+        &self,
+        identity: [u8; 32],
+        source: &RestingCOMM,
+    ) -> Result<(), InterpreterError> {
+        self.update_native_operations(|native| native.observe_resting_source(identity, source))
+    }
+
     pub(crate) fn observe_native_consume_peeks(
         &self,
         peeks: &BTreeSet<i32>,
@@ -674,6 +913,17 @@ impl RuntimeBudget {
             .native
             .as_ref()
             .map(NativeRuntimeConfig::capture_operations)
+            .transpose()
+    }
+
+    pub fn native_operation_recording_v3(
+        &self,
+    ) -> Result<Option<Arc<[NativeOperationRecordV3]>>, InterpreterError> {
+        let state = self.authority_state.lock().expect("authority state");
+        state
+            .native
+            .as_ref()
+            .map(NativeRuntimeConfig::capture_operations_v3)
             .transpose()
     }
 }

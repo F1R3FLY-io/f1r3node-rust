@@ -18,7 +18,7 @@ use models::rhoapi::Par;
 use models::rust::block_hash::BlockHash;
 use models::rust::block_metadata::BlockMetadata;
 use models::rust::casper::pretty_printer::PrettyPrinter;
-use models::rust::casper::protocol::casper_message::{BlockMessage, DeployData};
+use models::rust::casper::protocol::casper_message::{BlockMessage, DeployData, Event};
 use models::rust::cost_protocol_limits::offered_funded_v6_limits;
 use models::rust::deploy_envelope::{DeployEnvelope, DeployEnvelopeFormat, DeployEnvelopeRef};
 use models::rust::native_wallet_receipt::{NativeWalletReceiptLimits, NativeWalletReceiptV1};
@@ -33,7 +33,6 @@ use prost::bytes::Bytes;
 use prost::Message;
 use rspace_plus_plus::rspace::hashing::stable_hash_provider;
 use rspace_plus_plus::rspace::history::Either;
-use rspace_plus_plus::rspace::trace::event::{Event as RspaceEvent, IOEvent};
 use shared::rust::store::key_value_store::KvStoreError;
 use shared::rust::ByteString;
 
@@ -53,7 +52,7 @@ use crate::rust::util::rholang::costacc::genesis_resource_policy::{
 };
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 use crate::rust::util::rholang::tools::Tools;
-use crate::rust::util::{event_converter, proto_util};
+use crate::rust::util::proto_util;
 use crate::rust::ProposeFunction;
 pub struct BlockAPI;
 
@@ -122,7 +121,7 @@ fn check_offered_submission_policy(
     envelope: &DeployEnvelope,
     policy: &AdoptedResourcePolicy,
 ) -> ApiErr<()> {
-    if !policy.offered_funded_v6_active() {
+    if !policy.offered_funded_active() {
         return Err(offered_validation_error(
             "offered-funded deploy format is not active under the approved genesis policy",
         ));
@@ -889,13 +888,19 @@ impl BlockAPI {
         let casper = eng
             .with_casper()
             .ok_or_else(|| offered_validation_error("Casper instance was not available"))?;
-        let adopted = AdoptedResourcePolicy::load(
-            &casper.runtime_manager(),
-            casper.get_approved_block()?,
-            casper.casper_shard_conf(),
-        )
-        .await?;
-        check_offered_submission_policy(&envelope, &adopted)?;
+        // Changed by DR-99 (joined-node policy adoption): admission uses the
+        // policy adopted at start, because an LFS-joined node's approved block
+        // is its restore anchor, not genesis.
+        // let adopted = AdoptedResourcePolicy::load(
+        //     &casper.runtime_manager(),
+        //     casper.get_approved_block()?,
+        //     casper.casper_shard_conf(),
+        // )
+        // .await?;
+        let adopted = casper
+            .adopted_resource_policy()
+            .ok_or_else(|| offered_validation_error("this shard has no genesis resource policy"))?;
+        check_offered_submission_policy(&envelope, adopted)?;
         let DeployEnvelopeRef::OfferedFunded(offer) = envelope.view() else {
             return Err(offered_validation_error("expected offered-funded envelope"));
         };
@@ -915,7 +920,7 @@ impl BlockAPI {
                 "offered-funded deploy is outside the block lifespan",
             ));
         }
-        let deploy_id = match casper.deploy_envelope(envelope, &adopted)? {
+        let deploy_id = match casper.deploy_envelope(envelope, adopted)? {
             Either::Left(error) => return Err(error.into()),
             Either::Right(deploy_id) => deploy_id,
         };
@@ -1248,20 +1253,13 @@ impl BlockAPI {
     }
 
     fn is_listening_name_reduced(block: &BlockMessage, sorted_listening_name: &[Par]) -> bool {
-        let serialized_log: Vec<_> = block
+        block
             .body
             .deploys
             .iter()
             .flat_map(|pd| pd.deploy_log().iter())
-            .collect();
-
-        let log: Vec<RspaceEvent> = serialized_log
-            .iter()
-            .map(|event| event_converter::to_rspace_event(event))
-            .collect();
-
-        log.iter().any(|event| match event {
-            RspaceEvent::IoEvent(IOEvent::Produce(produce)) => {
+            .any(|event| match event {
+            Event::Produce(produce) => {
                 // Produce can only have one channel, so skip if searching for multiple
                 // Scala has the same assertion but it works there because exists() finds
                 // matching Consume event before iterating to Produce events
@@ -1269,39 +1267,54 @@ impl BlockAPI {
                     return false;
                 }
                 // channelHash == JNAInterfaceLoader.hashChannel(sortedListeningName.head)
-                produce.channel_hash == stable_hash_provider::hash(&sorted_listening_name[0])
+                produce.channels_hash == stable_hash_provider::hash(&sorted_listening_name[0]).to_bytes_prost()
             }
-            RspaceEvent::IoEvent(IOEvent::Consume(consume)) => {
+            Event::Consume(consume) => {
                 let mut expected_hashes: Vec<_> = sorted_listening_name
                     .iter()
-                    .map(|name| stable_hash_provider::hash(name))
+                    .map(|name| stable_hash_provider::hash(name).to_bytes_prost())
                     .collect();
                 expected_hashes.sort();
 
-                let mut actual_hashes = consume.channel_hashes.clone();
+                let mut actual_hashes = consume.channels_hashes.clone();
                 actual_hashes.sort();
 
                 actual_hashes == expected_hashes
             }
 
-            RspaceEvent::Comm(comm) => {
+            Event::Comm(comm) => {
                 let mut expected_hashes: Vec<_> = sorted_listening_name
                     .iter()
-                    .map(|name| stable_hash_provider::hash(name))
+                    .map(|name| stable_hash_provider::hash(name).to_bytes_prost())
                     .collect();
                 expected_hashes.sort();
 
-                let mut consume_hashes = comm.consume.channel_hashes.clone();
+                let mut consume_hashes = comm.consume.channels_hashes.clone();
                 consume_hashes.sort();
 
                 let consume_matches = consume_hashes == expected_hashes;
 
                 let produce_matches = comm.produces.iter().any(|produce| {
-                    produce.channel_hash
-                        == stable_hash_provider::hash_from_vec(&sorted_listening_name.to_vec())
+                    produce.channels_hash
+                        == stable_hash_provider::hash_from_vec(&sorted_listening_name.to_vec()).to_bytes_prost()
                 });
 
                 consume_matches || produce_matches
+            }
+            Event::RestingComm(resting) => {
+                let mut expected_hashes: Vec<_> = sorted_listening_name
+                    .iter()
+                    .map(|name| stable_hash_provider::hash(name).to_bytes_prost())
+                    .collect();
+                expected_hashes.sort();
+                let mut consume_hashes = resting.consume.channels_hashes.clone();
+                consume_hashes.sort();
+                consume_hashes == expected_hashes
+                    || resting.ordered_produces.iter().any(|produce| {
+                        produce.channels_hash
+                            == stable_hash_provider::hash_from_vec(&sorted_listening_name.to_vec())
+                                .to_bytes_prost()
+                    })
             }
         })
     }
@@ -1903,7 +1916,10 @@ impl BlockAPI {
             .collect();
 
         let initial_fault = casper.normalized_initial_fault(weights_u64)?;
-        let fault_tolerance = normalized_fault_tolerance - initial_fault;
+        let fault_tolerance = crate::rust::safety::initial_fault::display_projection(
+            normalized_fault_tolerance,
+            initial_fault,
+        );
 
         let block_info = constructor(block, fault_tolerance, is_finalized);
         Ok(block_info)

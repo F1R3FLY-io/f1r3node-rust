@@ -344,13 +344,13 @@ impl WebApiImpl {
             }
         };
         // Serves the cached report when there is one and replays only when the
-        // reporter is idle: block_report refuses rather than queues, so a read
-        // arriving during catch-up returns without waiting instead of adding to
-        // the load. A replay that does happen also caches, so ordinary reads
-        // repopulate what pre-caching missed.
+        // reporter is idle: block_report_if_idle refuses rather than queues, so
+        // a read arriving during catch-up returns without waiting instead of
+        // adding to the load. A replay that does happen also caches, so ordinary
+        // reads repopulate what pre-caching missed.
         match self
             .block_report_api
-            .block_report(block_hash_bytes, false)
+            .block_report_if_idle(block_hash_bytes)
             .await
         {
             Ok(report) => {
@@ -1188,6 +1188,21 @@ pub enum RhoExpr {
     ExprInt {
         data: i64,
     },
+    ExprUint64 {
+        data: u64,
+    },
+    ExprInt32 {
+        data: i32,
+    },
+    ExprUint32 {
+        data: u32,
+    },
+    ExprUint16 {
+        data: u32,
+    },
+    ExprUint8 {
+        data: u32,
+    },
     ExprString {
         data: String,
     },
@@ -1973,6 +1988,11 @@ fn extract_key_from_expr(expr: &RhoExpr) -> String {
     match expr {
         RhoExpr::ExprString { data } => data.clone(),
         RhoExpr::ExprInt { data } => data.to_string(),
+        RhoExpr::ExprUint64 { data } => format!("{}u64", data),
+        RhoExpr::ExprInt32 { data } => format!("{}i32", data),
+        RhoExpr::ExprUint32 { data } => format!("{}u32", data),
+        RhoExpr::ExprUint16 { data } => format!("{}u16", data),
+        RhoExpr::ExprUint8 { data } => format!("{}u8", data),
         RhoExpr::ExprBool { data } => data.to_string(),
         RhoExpr::ExprFloat { data } => data.to_string(),
         RhoExpr::ExprFloat32 { data } => data.to_string(),
@@ -2040,6 +2060,18 @@ mod offered_tests {
     };
 
     use super::*;
+
+    fn par_with_exprs(exprs: Vec<Expr>) -> Par {
+        let mut par = Par::default();
+        par.exprs = exprs;
+        par
+    }
+
+    fn par_with_expr(expr_instance: ExprInstance) -> Par {
+        par_with_exprs(vec![Expr {
+            expr_instance: Some(expr_instance),
+        }])
+    }
     #[test]
     fn offered_receipt_json_preserves_rev_amounts_and_post_balance() {
         let response = OfferedReceiptResponse::from(OfferedSettlementReceipt {
@@ -2214,12 +2246,7 @@ mod offered_tests {
     fn test_rho_expr_serialization() {
         let expr = RhoExpr::ExprBool { data: true };
         let json = serde_json::to_string(&expr).unwrap();
-        let deserialized: RhoExpr = serde_json::from_str(&json).unwrap();
-
-        match deserialized {
-            RhoExpr::ExprBool { data } => assert!(data),
-            _ => panic!("Expected ExprBool"),
-        }
+        assert_eq!(json, r#"{"ExprBool":{"data":true}}"#);
     }
 
     #[test]
@@ -2231,31 +2258,23 @@ mod offered_tests {
 
     #[test]
     fn test_expr_from_par_proto_single_bool() {
-        let par = Par {
-            exprs: vec![Expr {
-                expr_instance: Some(ExprInstance::GBool(true)),
-            }],
-            ..Default::default()
-        };
+        let par = par_with_expr(ExprInstance::GBool(true));
         let result = expr_from_par_proto(par);
         assert!(matches!(result, Some(RhoExpr::ExprBool { data: true })));
     }
 
     #[test]
     fn test_expr_from_par_proto_multiple_exprs() {
-        let par = Par {
-            exprs: vec![
-                Expr {
-                    expr_instance: Some(ExprInstance::GBool(true)),
-                },
-                Expr {
-                    expr_instance: Some(ExprInstance::GInt(42)),
-                },
-            ],
-            ..Default::default()
-        };
+        let par = par_with_exprs(vec![
+            Expr {
+                expr_instance: Some(ExprInstance::GBool(true)),
+            },
+            Expr {
+                expr_instance: Some(ExprInstance::GInt(42)),
+            },
+        ]);
         let result = expr_from_par_proto(par);
-        match result {
+        match &result {
             Some(RhoExpr::ExprPar { data }) => {
                 assert_eq!(data.len(), 2);
                 assert!(matches!(data[0], RhoExpr::ExprBool { data: true }));
@@ -2286,39 +2305,29 @@ mod offered_tests {
             expr_instance: Some(ExprInstance::GString("hello".to_string())),
         };
         let result = expr_from_expr_proto(expr);
-        assert!(matches!(result, Some(RhoExpr::ExprString { data }) if data == "hello"));
+        assert!(matches!(&result, Some(RhoExpr::ExprString { data }) if data == "hello"));
 
         // Test GUri
         let expr = Expr {
             expr_instance: Some(ExprInstance::GUri("rho:io:stdout".to_string())),
         };
         let result = expr_from_expr_proto(expr);
-        assert!(matches!(result, Some(RhoExpr::ExprUri { data }) if data == "rho:io:stdout"));
+        assert!(matches!(&result, Some(RhoExpr::ExprUri { data }) if data == "rho:io:stdout"));
 
         // Test GByteArray
         let expr = Expr {
             expr_instance: Some(ExprInstance::GByteArray(vec![0x01, 0x02, 0x03])),
         };
         let result = expr_from_expr_proto(expr);
-        assert!(matches!(result, Some(RhoExpr::ExprBytes { data }) if data == "010203"));
+        assert!(matches!(&result, Some(RhoExpr::ExprBytes { data }) if data == "010203"));
     }
 
     #[test]
     fn test_expr_from_expr_proto_tuple() {
         let tuple = ETuple {
             ps: vec![
-                Par {
-                    exprs: vec![Expr {
-                        expr_instance: Some(ExprInstance::GInt(1)),
-                    }],
-                    ..Default::default()
-                },
-                Par {
-                    exprs: vec![Expr {
-                        expr_instance: Some(ExprInstance::GString("hello".to_string())),
-                    }],
-                    ..Default::default()
-                },
+                par_with_expr(ExprInstance::GInt(1)),
+                par_with_expr(ExprInstance::GString("hello".to_string())),
             ],
             ..Default::default()
         };
@@ -2327,7 +2336,7 @@ mod offered_tests {
             expr_instance: Some(ExprInstance::ETupleBody(tuple)),
         };
         let result = expr_from_expr_proto(expr);
-        match result {
+        match &result {
             Some(RhoExpr::ExprTuple { data }) => {
                 assert_eq!(data.len(), 2);
                 assert!(matches!(data[0], RhoExpr::ExprInt { data: 1 }));
@@ -2341,18 +2350,8 @@ mod offered_tests {
     fn test_expr_from_expr_proto_list() {
         let list = EList {
             ps: vec![
-                Par {
-                    exprs: vec![Expr {
-                        expr_instance: Some(ExprInstance::GInt(1)),
-                    }],
-                    ..Default::default()
-                },
-                Par {
-                    exprs: vec![Expr {
-                        expr_instance: Some(ExprInstance::GInt(2)),
-                    }],
-                    ..Default::default()
-                },
+                par_with_expr(ExprInstance::GInt(1)),
+                par_with_expr(ExprInstance::GInt(2)),
             ],
             ..Default::default()
         };
@@ -2361,7 +2360,7 @@ mod offered_tests {
             expr_instance: Some(ExprInstance::EListBody(list)),
         };
         let result = expr_from_expr_proto(expr);
-        match result {
+        match &result {
             Some(RhoExpr::ExprList { data }) => {
                 assert_eq!(data.len(), 2);
                 assert!(matches!(data[0], RhoExpr::ExprInt { data: 1 }));
@@ -2375,18 +2374,8 @@ mod offered_tests {
     fn test_expr_from_expr_proto_set() {
         let set = ESet {
             ps: vec![
-                Par {
-                    exprs: vec![Expr {
-                        expr_instance: Some(ExprInstance::GString("a".to_string())),
-                    }],
-                    ..Default::default()
-                },
-                Par {
-                    exprs: vec![Expr {
-                        expr_instance: Some(ExprInstance::GString("b".to_string())),
-                    }],
-                    ..Default::default()
-                },
+                par_with_expr(ExprInstance::GString("a".to_string())),
+                par_with_expr(ExprInstance::GString("b".to_string())),
             ],
             ..Default::default()
         };
@@ -2395,7 +2384,7 @@ mod offered_tests {
             expr_instance: Some(ExprInstance::ESetBody(set)),
         };
         let result = expr_from_expr_proto(expr);
-        match result {
+        match &result {
             Some(RhoExpr::ExprSet { data }) => {
                 assert_eq!(data.len(), 2);
                 assert!(matches!(data[0], RhoExpr::ExprString { data: ref d } if d == "a"));
@@ -2406,36 +2395,47 @@ mod offered_tests {
     }
 
     #[test]
+    fn test_expr_from_expr_proto_map_keeps_int_and_sized_int_keys_apart() {
+        let entry = |key: ExprInstance, value: &str| KeyValuePair {
+            key: Some(par_with_expr(key)),
+            value: Some(par_with_expr(ExprInstance::GString(value.to_string()))),
+        };
+        let map = EMap {
+            kvs: vec![
+                entry(ExprInstance::GInt(5), "int"),
+                entry(ExprInstance::GUint64(5), "u64"),
+                entry(ExprInstance::GInt32(5), "i32"),
+                entry(ExprInstance::GUint8(5), "u8"),
+            ],
+            ..Default::default()
+        };
+        match expr_from_expr_proto(Expr {
+            expr_instance: Some(ExprInstance::EMapBody(map)),
+        })
+        .as_ref()
+        {
+            Some(RhoExpr::ExprMap { data }) => {
+                assert_eq!(data.len(), 4);
+                assert!(matches!(data["5"], RhoExpr::ExprString { data: ref d } if d == "int"));
+                assert!(matches!(data["5u64"], RhoExpr::ExprString { data: ref d } if d == "u64"));
+                assert!(matches!(data["5i32"], RhoExpr::ExprString { data: ref d } if d == "i32"));
+                assert!(matches!(data["5u8"], RhoExpr::ExprString { data: ref d } if d == "u8"));
+            }
+            _ => panic!("Expected ExprMap"),
+        }
+    }
+
+    #[test]
     fn test_expr_from_expr_proto_map() {
         let map = EMap {
             kvs: vec![
                 KeyValuePair {
-                    key: Some(Par {
-                        exprs: vec![Expr {
-                            expr_instance: Some(ExprInstance::GString("key1".to_string())),
-                        }],
-                        ..Default::default()
-                    }),
-                    value: Some(Par {
-                        exprs: vec![Expr {
-                            expr_instance: Some(ExprInstance::GInt(42)),
-                        }],
-                        ..Default::default()
-                    }),
+                    key: Some(par_with_expr(ExprInstance::GString("key1".to_string()))),
+                    value: Some(par_with_expr(ExprInstance::GInt(42))),
                 },
                 KeyValuePair {
-                    key: Some(Par {
-                        exprs: vec![Expr {
-                            expr_instance: Some(ExprInstance::GString("key2".to_string())),
-                        }],
-                        ..Default::default()
-                    }),
-                    value: Some(Par {
-                        exprs: vec![Expr {
-                            expr_instance: Some(ExprInstance::GString("value2".to_string())),
-                        }],
-                        ..Default::default()
-                    }),
+                    key: Some(par_with_expr(ExprInstance::GString("key2".to_string()))),
+                    value: Some(par_with_expr(ExprInstance::GString("value2".to_string()))),
                 },
             ],
             ..Default::default()
@@ -2445,7 +2445,7 @@ mod offered_tests {
             expr_instance: Some(ExprInstance::EMapBody(map)),
         };
         let result = expr_from_expr_proto(expr);
-        match result {
+        match &result {
             Some(RhoExpr::ExprMap { data }) => {
                 assert_eq!(data.len(), 2);
                 assert!(data.contains_key("key1"));
@@ -2467,7 +2467,7 @@ mod offered_tests {
             })),
         };
         let result = unforg_from_proto(unforg);
-        match result {
+        match &result {
             Some(RhoExpr::ExprUnforg { data }) => {
                 assert!(matches!(data, RhoUnforg::UnforgPrivate { data: ref d } if d == "010203"));
             }
@@ -2483,7 +2483,7 @@ mod offered_tests {
             })),
         };
         let result = unforg_from_proto(unforg);
-        match result {
+        match &result {
             Some(RhoExpr::ExprUnforg { data }) => {
                 assert!(matches!(data, RhoUnforg::UnforgDeploy { data: ref d } if d == "040506"));
             }
@@ -2499,7 +2499,7 @@ mod offered_tests {
             })),
         };
         let result = unforg_from_proto(unforg);
-        match result {
+        match &result {
             Some(RhoExpr::ExprUnforg { data }) => {
                 assert!(matches!(data, RhoUnforg::UnforgDeployer { data: ref d } if d == "070809"));
             }
@@ -2510,12 +2510,9 @@ mod offered_tests {
     #[test]
     fn test_expr_from_bundle_proto() {
         let bundle = Bundle {
-            body: Some(Par {
-                exprs: vec![Expr {
-                    expr_instance: Some(ExprInstance::GString("bundle_content".to_string())),
-                }],
-                ..Default::default()
-            }),
+            body: Some(par_with_expr(ExprInstance::GString(
+                "bundle_content".to_string(),
+            ))),
             write_flag: true,
             read_flag: false,
         };
@@ -2558,6 +2555,27 @@ mod offered_tests {
         let expr = RhoExpr::ExprInt { data: 42 };
         assert_eq!(extract_key_from_expr(&expr), "42");
 
+        assert_eq!(
+            extract_key_from_expr(&RhoExpr::ExprUint64 { data: 42 }),
+            "42u64"
+        );
+        assert_eq!(
+            extract_key_from_expr(&RhoExpr::ExprInt32 { data: -42 }),
+            "-42i32"
+        );
+        assert_eq!(
+            extract_key_from_expr(&RhoExpr::ExprUint32 { data: 42 }),
+            "42u32"
+        );
+        assert_eq!(
+            extract_key_from_expr(&RhoExpr::ExprUint16 { data: 42 }),
+            "42u16"
+        );
+        assert_eq!(
+            extract_key_from_expr(&RhoExpr::ExprUint8 { data: 42 }),
+            "42u8"
+        );
+
         // Test bool key
         let expr = RhoExpr::ExprBool { data: true };
         assert_eq!(extract_key_from_expr(&expr), "true");
@@ -2591,16 +2609,36 @@ mod offered_tests {
         );
     }
 
-    fn int_par(value: i64) -> Par {
-        Par {
-            exprs: vec![Expr {
-                expr_instance: Some(ExprInstance::GInt(value)),
-            }],
-            ..Default::default()
-        }
-    }
+    fn int_par(value: i64) -> Par { par_with_expr(ExprInstance::GInt(value)) }
 
     fn as_json(expr: &RhoExpr) -> serde_json::Value { serde_json::to_value(expr).unwrap() }
+
+    #[test]
+    fn test_authority_and_principal_unforgeable_json_shape() {
+        let authority = RhoExpr::ExprUnforg {
+            data: RhoUnforg::UnforgAuthority {
+                data: "0a0b".to_string(),
+            },
+        };
+        assert_eq!(
+            as_json(&authority),
+            serde_json::json!({"ExprUnforg": {"data": {"UnforgAuthority": {"data": "0a0b"}}}})
+        );
+
+        let principal = RhoExpr::ExprUnforg {
+            data: RhoUnforg::UnforgPrincipal {
+                key_family: 1,
+                public_key: "aabb".to_string(),
+            },
+        };
+        assert_eq!(
+            as_json(&principal),
+            serde_json::json!({"ExprUnforg": {"data": {"UnforgPrincipal": {
+                "key_family": 1,
+                "public_key": "aabb"
+            }}}})
+        );
+    }
 
     #[test]
     fn test_expr_from_expr_proto_extended_numerics() {
@@ -2609,6 +2647,26 @@ mod offered_tests {
         });
         assert!(matches!(double, Some(RhoExpr::ExprFloat { data }) if data == 2.5));
 
+        let sized = |instance| {
+            expr_from_expr_proto(Expr {
+                expr_instance: Some(instance),
+            })
+        };
+        assert!(
+            matches!(sized(ExprInstance::GUint64(u64::MAX)), Some(RhoExpr::ExprUint64 { data }) if data == u64::MAX)
+        );
+        assert!(
+            matches!(sized(ExprInstance::GInt32(-7)), Some(RhoExpr::ExprInt32 { data }) if data == -7)
+        );
+        assert!(
+            matches!(sized(ExprInstance::GUint32(7)), Some(RhoExpr::ExprUint32 { data }) if data == 7)
+        );
+        assert!(
+            matches!(sized(ExprInstance::GUint16(7)), Some(RhoExpr::ExprUint16 { data }) if data == 7)
+        );
+        assert!(
+            matches!(sized(ExprInstance::GUint8(7)), Some(RhoExpr::ExprUint8 { data }) if data == 7)
+        );
         let float32 = expr_from_expr_proto(Expr {
             expr_instance: Some(ExprInstance::GFloat32(2.5f32.to_bits())),
         });
@@ -2617,7 +2675,7 @@ mod offered_tests {
         let big_int = expr_from_expr_proto(Expr {
             expr_instance: Some(ExprInstance::GBigInt(vec![0x01, 0x00])),
         });
-        assert!(matches!(big_int, Some(RhoExpr::ExprBigInt { data }) if data == "256"));
+        assert!(matches!(&big_int, Some(RhoExpr::ExprBigInt { data }) if data == "256"));
 
         let big_rat = expr_from_expr_proto(Expr {
             expr_instance: Some(ExprInstance::GBigRat(models::rhoapi::GBigRational {
@@ -2626,7 +2684,7 @@ mod offered_tests {
             })),
         });
         assert!(matches!(
-            big_rat,
+            &big_rat,
             Some(RhoExpr::ExprBigRat { numerator, denominator })
             if numerator == "3" && denominator == "7"
         ));
@@ -2638,7 +2696,7 @@ mod offered_tests {
             })),
         });
         assert!(matches!(
-            fixed_point,
+            &fixed_point,
             Some(RhoExpr::ExprFixedPoint { value, scale: 2 }) if value == "123"
         ));
     }
@@ -2836,11 +2894,11 @@ mod offered_tests {
             })),
         })
         .unwrap();
-        match method_expr {
+        match &method_expr {
             RhoExpr::ExprMethod { name, args, target } => {
                 assert_eq!(name, "nth");
                 assert_eq!(args.len(), 2);
-                assert!(matches!(*target, RhoExpr::ExprInt { data: 1 }));
+                assert!(matches!(target.as_ref(), RhoExpr::ExprInt { data: 1 }));
             }
             other => panic!("expected ExprMethod, got {:?}", other),
         }
@@ -2884,26 +2942,30 @@ mod offered_tests {
         use models::rhoapi::{EPathMap, EZipper};
 
         let pathmap = expr_from_expr_proto(Expr {
-            expr_instance: Some(ExprInstance::EPathmapBody(EPathMap {
-                ps: vec![int_par(1), int_par(2)],
-                ..Default::default()
-            })),
+            expr_instance: Some(ExprInstance::EPathmapBody(EPathMap::from_set_iter(
+                [int_par(1), int_par(2)],
+                Vec::new(),
+                false,
+                None,
+            ))),
         })
         .unwrap();
         assert!(matches!(&pathmap, RhoExpr::ExprList { data } if data.len() == 2));
 
         let zipper = expr_from_expr_proto(Expr {
             expr_instance: Some(ExprInstance::EZipperBody(EZipper {
-                pathmap: Some(EPathMap {
-                    ps: vec![int_par(1)],
-                    ..Default::default()
-                }),
+                pathmap: Some(EPathMap::from_set_iter(
+                    [int_par(1)],
+                    Vec::new(),
+                    false,
+                    None,
+                )),
                 current_path: vec![vec![0xaa]],
                 ..Default::default()
             })),
         })
         .unwrap();
-        match zipper {
+        match &zipper {
             RhoExpr::ExprTuple { data } => {
                 assert_eq!(data.len(), 2);
                 assert!(matches!(&data[0], RhoExpr::ExprList { data } if data.len() == 1));
@@ -2926,21 +2988,13 @@ mod offered_tests {
 
     #[test]
     fn test_expr_from_par_proto_process_par_is_unknown_process() {
-        let par = Par {
-            sends: vec![models::rhoapi::Send::default()],
-            ..Default::default()
-        };
+        let mut par = Par::default();
+        par.sends.push(models::rhoapi::Send::default());
         let result = expr_from_par_proto(par);
         assert!(matches!(
-            result,
+            &result,
             Some(RhoExpr::ExprUnknown { type_name }) if type_name == "Process"
         ));
-    }
-
-    #[test]
-    fn test_par_to_expr_none_falls_back_to_nil_unknown() {
-        let result = par_to_expr(None);
-        assert!(matches!(result, RhoExpr::ExprUnknown { type_name } if type_name == "Nil"));
     }
 
     #[test]

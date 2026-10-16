@@ -9,12 +9,14 @@ use models::rust::phlo_intent::{
 use models::rust::phlo_schedule::{PhloGenesisPolicy, PhloScheduleV1};
 use models::rust::signed_phlo_deploy::OfferedFundedDeploy;
 use rholang::rust::interpreter::accounting::monetary_allocation::MonetaryCursor;
-use rholang::rust::interpreter::host_work::HostWorkBudget;
 
+// Changed by DR-102: the publication comparison takes the producer's acceptance budget.
+// use rholang::rust::interpreter::host_work::HostWorkBudget;
 use crate::rust::errors::CasperError;
 use crate::rust::util::rholang::costacc::genesis_resource_policy::{
     AdoptedResourcePolicy, CompatibleAcquisitionTerms, OFFERED_PRODUCTION_READY,
 };
+use crate::rust::util::rholang::costacc::offered_acceptance::OfferedAcceptanceBudget;
 use crate::rust::util::rholang::runtime_manager::CertifiedOfferedDraft;
 
 const FIXED_FEE_REV: u128 = 1;
@@ -443,7 +445,11 @@ impl PreparedOfferedCandidate<'_> {
         processed: &OfferedProcessedDeploy,
         candidate_root: [u8; 32],
         certificate: &CertifiedOfferedDraft,
-        budget: &HostWorkBudget,
+        // Changed by DR-102: only the producer compares its candidate with the
+        // certified replay, so the comparison is producer acceptance work, not
+        // replay work.
+        // budget: &HostWorkBudget,
+        acceptance: &OfferedAcceptanceBudget,
     ) -> Result<CandidatePublicationPermit, CasperError> {
         let protocol = offered_funded_v6_limits();
         let compare_bound = protocol
@@ -462,7 +468,8 @@ impl PreparedOfferedCandidate<'_> {
             HostWorkDimension::VerificationBytes,
             HostWorkDimension::VerificationOperations,
         ] {
-            budget
+            acceptance
+                .meter()
                 .reserve(dimension, units)
                 .map_err(|error| invalid(&error.to_string()))?;
         }

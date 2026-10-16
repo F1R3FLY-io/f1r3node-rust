@@ -183,7 +183,7 @@ where
             )?;
             for (target_index, assignment) in assignments.iter().enumerate() {
                 if assignment.is_some() {
-                    work.reserve_clone(&targets[target_index])?;
+                    work.reserve_blocks_copy_and_cleanup(&targets[target_index])?;
                 }
             }
         }
@@ -208,8 +208,8 @@ where
         ordered.sort_by(|left, right| left.0.cmp(&right.0));
         if let Some(work) = work {
             for (target, pattern_index, _) in &ordered {
-                work.reserve_clone(&patterns[*pattern_index])?;
-                work.reserve_inspect(&target.value)?;
+                work.reserve_blocks_copy_and_cleanup(&patterns[*pattern_index])?;
+                work.inspect_blocks(&target.value)?;
             }
         }
         Some(
@@ -350,8 +350,8 @@ where
                     continue;
                 }
                 if let Some(work) = work {
-                    work.reserve_inspect(&patterns[frame.pattern_index])?;
-                    work.reserve_inspect(&targets[target_index])?;
+                    work.inspect_blocks(&patterns[frame.pattern_index])?;
+                    work.inspect_blocks(&targets[target_index])?;
                 }
                 self.stats.edge_evaluations += 1;
                 if let Some(result) =
@@ -379,8 +379,8 @@ where
         while let Some(target_index) = relation.next_unscanned(frame.pattern_index, targets.len()) {
             if let Some(work) = work {
                 work.reserve(1, 0, 0)?;
-                work.reserve_inspect(&patterns[frame.pattern_index])?;
-                work.reserve_inspect(&targets[target_index])?;
+                work.inspect_blocks(&patterns[frame.pattern_index])?;
+                work.inspect_blocks(&targets[target_index])?;
             }
             self.stats.edge_evaluations += 1;
             let Some(result) =

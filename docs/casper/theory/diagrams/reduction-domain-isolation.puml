@@ -1,0 +1,33 @@
+@startuml
+skinparam backgroundColor #FFFFFF
+skinparam shadowing false
+skinparam ArrowColor #263238
+skinparam ParticipantBorderColor #263238
+skinparam ParticipantFontColor #102027
+
+participant "Host runtime A" as A #C8E6C9
+participant "Task-local context" as C #BBDEFB
+participant "Sandbox runtime B" as B #FFF9C4
+participant "Host RSpace A" as S #F8BBD0
+
+== Failure before domain admission ==
+A -> C: Install participant A
+A -> B: Enter lookahead
+B -> C: Read ambient context A
+C --> B: Return participant A
+B -> C: Split participant A for sandbox fanout
+A -> S: Submit guarded publication
+S --> A: Participant A is not registered
+
+== Domain-indexed admission ==
+A -> C: Install participant A with domain A
+A -> B: Enter lookahead with domain B
+B -> C: Compare space, budget, coordinator
+C --> B: Domain mismatch
+B -> C: Install participant B in nested scope
+B -> C: Split participant B for sandbox fanout
+B -> C: Leave nested scope
+C --> A: Restore participant A
+A -> S: Submit guarded publication
+S --> A: Publication admitted
+@enduml

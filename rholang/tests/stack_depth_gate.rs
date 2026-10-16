@@ -1841,7 +1841,7 @@ fn substitute_no_sort_body(depth: usize) {
 /// shift a reading by 60%, so before this subject was committed all four
 /// plausible spellings of the PRE-REPAIR body were measured against each other —
 /// `mem::forget` on both values, `dismantle` on both, `drop` on both, and the
-/// fresh-temporary `s.substitute_and_charge(&nested_list(depth), 0, &env)
+/// fresh-temporary `s.substitute_and_charge(nested_list(depth), 0, &env, None)
 /// .map(drop)`. Bisected 2026-07-28, at depths 16 and 128:
 ///
 /// | spelling                | release            | debug                  |
@@ -1878,7 +1878,7 @@ fn subst_and_charge_body(depth: usize) {
     let s = substitute_instance();
     let env: Env<Par> = Env::new();
     let out = s
-        .substitute_and_charge(t, 0, &env)
+        .substitute_and_charge(t, 0, &env, None)
         .expect("stack_depth_gate: substitute_and_charge failed");
     std::mem::forget(out);
 }

@@ -38,6 +38,8 @@ use models::rust::utils::{
 };
 use prost::Message;
 use rspace_plus_plus::rspace::errors::RSpaceError;
+use rspace_plus_plus::rspace::hashing::native_source;
+use rspace_plus_plus::rspace::hashing::stable_hash_provider::EventCodecEpoch;
 use rspace_plus_plus::rspace::logging::ReductionKind;
 use rspace_plus_plus::rspace::merger::merging_logic::MergeType;
 use rspace_plus_plus::rspace::trace::event::{Consume, Produce};
@@ -50,7 +52,8 @@ use typed_arena::Arena;
 use super::accounting::authority::{
     cost_region, cost_region_metered, cost_signature_to_sig, cost_signature_to_sig_metered,
     extend_authority, funding_sig_channel_metered, merge_authorities_metered,
-    sig_to_cost_signature, sig_to_cost_signature_metered, AuthorityError,
+    resolve_system_residue, sig_to_cost_signature, sig_to_cost_signature_metered,
+    system_residue_authority, AuthorityError, ResidueContext,
 };
 use super::accounting::costs::{
     bigint_comparison_cost, bigint_division_cost, bigint_modulo_cost, bigint_multiplication_cost,
@@ -81,7 +84,7 @@ use super::metrics_constants::{
     REDUCER_EVAL_SEND_CALLS_METRIC, REDUCER_EVAL_SEND_TIME_NS_METRIC, RHOLANG_METRICS_SOURCE,
 };
 use super::rho_runtime::RhoISpace;
-use super::substitute::Substitute;
+use super::substitute::{Substitute, SubstituteTrait};
 use super::unwrap_option_safe;
 use super::util::{
     allocate_new_bindings, evaluation_random, owned_evaluation_terms, GeneratedMessage,
@@ -454,6 +457,25 @@ pub struct EvalWorkStats {
     pub spawned_eval_tasks: u64,
 }
 
+enum EvalInput {
+    Process(Par),
+    Term(GeneratedMessage),
+}
+
+struct EvalTail {
+    process: Par,
+    environment: Option<Env<Par>>,
+    random: Blake2b512Random,
+    authority: CostAuthority,
+    path: SmallVec<[u32; 8]>,
+    clear_residue_seal: bool,
+}
+
+enum EvalControl {
+    Complete,
+    Continue(EvalTail),
+}
+
 #[derive(Clone)]
 pub struct DebruijnInterpreter {
     pub space: RhoISpace,
@@ -485,6 +507,7 @@ pub struct ReducerCore {
     /// (not `pub`); holds an `idle` placeholder until `inj` seeds it. `std::sync::RwLock` is spelled
     /// out to avoid clashing with the `tokio::sync::RwLock` import above.
     pub(crate) drive: Arc<std::sync::RwLock<Arc<DriveState>>>,
+    pub(crate) residue_seal: bool,
 }
 
 type Application = Option<(
@@ -934,6 +957,59 @@ pub(crate) fn cursor_kind_of(zipper: &EZipper) -> Result<CursorKind, Interpreter
 }
 
 impl ReducerCore {
+    fn current_context(&self) -> Option<deterministic_reduction::ReductionContext> {
+        deterministic_reduction::current_for_domain(
+            &self.space,
+            &self.metering.budget(),
+            &self.reduction_coordinator,
+        )
+    }
+
+    fn host_work_budget(&self) -> Option<HostWorkBudget> {
+        self.current_context().and_then(|context| context.host_work_budget())
+    }
+
+    fn reserve_host_work(
+        &self,
+        dimension: HostWorkDimension,
+        units: HostWorkUnits,
+    ) -> Result<(), InterpreterError> {
+        if let Some(host) = self.host_work_budget() {
+            host.reserve(dimension, units)?;
+        }
+        Ok(())
+    }
+
+    fn substitute_and_charge<A>(
+        &self,
+        term: A,
+        depth: i32,
+        env: &Env<Par>,
+    ) -> Result<A, InterpreterError>
+    where
+        Substitute: SubstituteTrait<A>,
+        A: Message,
+    {
+        let host_work = self.host_work_budget();
+        self.substitute
+            .substitute_and_charge(term, depth, env, host_work.as_ref())
+    }
+
+    fn substitute_no_sort_and_charge<A>(
+        &self,
+        term: A,
+        depth: i32,
+        env: &Env<Par>,
+    ) -> Result<A, InterpreterError>
+    where
+        Substitute: SubstituteTrait<A>,
+        A: Message,
+    {
+        let host_work = self.host_work_budget();
+        self.substitute
+            .substitute_no_sort_and_charge(term, depth, env, host_work.as_ref())
+    }
+
     pub fn eval_work_stats(&self) -> EvalWorkStats {
         EvalWorkStats {
             single_term_evaluations: self.single_term_evaluations.load(Ordering::Relaxed),
@@ -948,17 +1024,29 @@ impl ReducerCore {
         self.spawned_eval_tasks.store(0, Ordering::Relaxed);
     }
 
+    fn without_residue_seal(&self) -> std::borrow::Cow<'_, Self> {
+        if self.residue_seal {
+            std::borrow::Cow::Owned(Self {
+                residue_seal: false,
+                ..self.clone()
+            })
+        } else {
+            std::borrow::Cow::Borrowed(self)
+        }
+    }
+
+
     fn reserve_host_primitive<M: Message>(&self, input: &M) -> Result<(), InterpreterError> {
         let input_bytes = u64::try_from(input.encoded_len()).map_err(|_| {
             InterpreterError::BugFoundError(
                 "primitive input byte count does not fit in u64".to_string(),
             )
         })?;
-        deterministic_reduction::reserve_host_work(
+        self.reserve_host_work(
             HostWorkDimension::PrimitiveCalls,
             HostWorkUnits::new(1),
         )?;
-        deterministic_reduction::reserve_host_work(
+        self.reserve_host_work(
             HostWorkDimension::PrimitiveInputBytes,
             HostWorkUnits::new(input_bytes),
         )?;
@@ -979,8 +1067,8 @@ impl ReducerCore {
     /// root eval at coordinate [], drops the root guard, DRAINS (awaits live -> 0), then sort+aggregates
     /// the Located-wrapped error sink. This is what makes a top-level `eval` await ALL its detached
     /// descendants. Top-level evals (deploys via `inj`, direct callers) are serialized => one live driver
-    /// at a time; internal recursion + the dispatch ParBody re-entry use `eval_with_path` (the AMBIENT
-    /// drive), never this entry — so there is no nested re-seed.
+    /// at a time; dispatch ParBody re-entry uses a counted child on the ambient drive, never this
+    /// entry, so there is no nested re-seed.
     pub fn eval<'a>(
         &'a self,
         par: Par,
@@ -1018,6 +1106,7 @@ impl ReducerCore {
         })
     }
 
+
     fn finish_detached_errors(
         &self,
         result: Result<(), InterpreterError>,
@@ -1049,26 +1138,11 @@ impl ReducerCore {
             );
         }
         drop(root);
+        let _parked = deterministic_reduction::park_current_participant_for_join();
         let _ = rx.await;
         let mut errors = std::mem::take(&mut *drive.sink.lock().expect("DriveState.sink mutex poisoned"));
         errors.sort_by(|a, b| located_path(a).cmp(located_path(b)));
         self.aggregate_evaluator_errors(errors).map(|_| ())
-    }
-
-    /// Coordinate-threaded reduction entry (async counter driver). `path` is this eval task's position
-    /// in the parallel-reduction tree; the width-N terms in `eval_inner` fan out at `path + [i]`.
-    pub(crate) fn eval_with_path<'a>(
-        &'a self,
-        par: Par,
-        env: &'a Env<Par>,
-        rand: Blake2b512Random,
-        path: SmallVec<[u32; 8]>,
-    ) -> Pin<
-        Box<
-            dyn std::future::Future<Output = Result<(), InterpreterError>> + std::marker::Send + 'a,
-        >,
-    > {
-        self.eval_with_path_authority(par, env, rand, path, CostAuthority::default())
     }
 
     pub(crate) async fn eval_continuation(
@@ -1076,25 +1150,36 @@ impl ReducerCore {
         par: Par,
         env: Env<Par>,
         rand: Blake2b512Random,
-        authority: CostAuthority,
+        system_body: bool,
         path: SmallVec<[u32; 8]>,
     ) -> Result<(), InterpreterError> {
-        let Some(parent) = deterministic_reduction::current() else {
-            let (result, _, errors) = deterministic_reduction::root_with_observation(
-                self.space.clone(),
-                self.metering.budget(),
-                self.reduction_coordinator.clone(),
-                None,
-                self.eval_drive_root(par, &env, rand, authority),
-            ).await;
-            return self.finish_detached_errors(result, errors);
+        let reducer = if system_body == self.residue_seal {
+            self.clone()
+        } else {
+            Arc::new(Self {
+                residue_seal: system_body,
+                ..(**self).clone()
+            })
         };
-        let context = parent.split(1).pop().expect("one continuation context");
+        let Some(parent) = deterministic_reduction::current_for_domain(
+            &reducer.space,
+            &reducer.metering.budget(),
+            &reducer.reduction_coordinator,
+        ) else {
+            let (result, _, errors) = deterministic_reduction::root_with_observation(
+                reducer.space.clone(),
+                reducer.metering.budget(),
+                reducer.reduction_coordinator.clone(),
+                None,
+                reducer.eval_drive_root(par, &env, rand, CostAuthority::default()),
+            ).await;
+            return reducer.finish_detached_errors(result, errors);
+        };
+        let context = parent.fork_detached_child();
         let drive = self.drive.read().expect("drive cell poisoned").clone();
-        let reducer = self.clone();
         let child_path = path.clone();
         spawn_detached(&drive, child_path, Box::pin(async move {
-            reducer.eval_inner(par, &env, rand, authority, path).await
+            reducer.eval_inner(par, &env, rand, CostAuthority::default(), path).await
         }), context);
         Ok(())
     }
@@ -1121,88 +1206,138 @@ impl ReducerCore {
         // detached branch's error is localizable. Display-only (NOT consensus).
         path: SmallVec<[u32; 8]>,
     ) -> Result<(), InterpreterError> {
-        let terms = owned_evaluation_terms(par);
-        let term_split_limit = i16::MAX;
-        if terms.len() > term_split_limit.try_into().unwrap() {
-            Err(InterpreterError::ReduceError(format!(
-                "The number of terms in the Par is {}, which exceeds the limit of {}",
-                terms.len(),
-                i16::MAX
-            )))
-        } else {
-            let term_count = terms.len();
-            let (stack_terms, reduction_terms): (Vec<_>, Vec<_>) = terms
-                .into_iter()
-                .enumerate()
-                .partition(|(_, term)| matches!(term, GeneratedMessage::CostStack(_)));
+        self.eval_machine(EvalInput::Process(par), env, rand, authority, path).await
+    }
 
-            let mut declaration_errors = Vec::new();
-            for (index, term) in stack_terms {
-                let reducer = self.with_metering_child(index);
-                let rand_split = evaluation_random(&rand, index, term_count)
-                    .expect("term count and index were validated");
-                let mut child = path.clone();
-                child.push(index as u32);
-                if let Err(error) = reducer
-                    .generated_message_eval(term, env, rand_split, authority.clone(), child)
-                    .await
-                {
-                    declaration_errors.push(error);
+    async fn eval_machine(
+        &self,
+        mut input: EvalInput,
+        env: &Env<Par>,
+        mut rand: Blake2b512Random,
+        mut authority: CostAuthority,
+        mut path: SmallVec<[u32; 8]>,
+    ) -> Result<(), InterpreterError> {
+        let mut reducer = std::borrow::Cow::Borrowed(self);
+        let mut env = std::borrow::Cow::Borrowed(env);
+        loop {
+            match input {
+                EvalInput::Process(par) => {
+                    let terms = owned_evaluation_terms(par);
+                    let term_split_limit = i16::MAX;
+                    if terms.len() > term_split_limit.try_into().unwrap() {
+                        return Err(InterpreterError::ReduceError(format!(
+                            "The number of terms in the Par is {}, which exceeds the limit of {}",
+                            terms.len(),
+                            i16::MAX
+                        )));
+                    }
+                    let term_count = terms.len();
+                    let (stack_terms, reduction_terms): (Vec<_>, Vec<_>) = terms
+                        .into_iter()
+                        .enumerate()
+                        .partition(|(_, term)| matches!(term, GeneratedMessage::CostStack(_)));
+
+                    let mut declaration_errors = Vec::new();
+                    for (index, term) in stack_terms {
+                        let child_reducer = reducer.with_metering_child(index);
+                        let rand_split = evaluation_random(&rand, index, term_count)
+                            .expect("term count and index were validated");
+                        let mut child_path = path.clone();
+                        child_path.push(index as u32);
+                        match child_reducer
+                            .generated_message_eval(
+                                term,
+                                env.as_ref(),
+                                rand_split,
+                                authority.clone(),
+                                child_path,
+                            )
+                            .await
+                        {
+                            Ok(EvalControl::Complete) => {}
+                            Ok(EvalControl::Continue(_)) => declaration_errors.push(
+                                InterpreterError::BugFoundError(
+                                    "cost-stack declaration returned a process continuation".into(),
+                                ),
+                            ),
+                            Err(error) => declaration_errors.push(error),
+                        }
+                    }
+                    reducer.aggregate_evaluator_errors(declaration_errors)?;
+
+                    metrics::counter!("reducer.eval_par.calls", "source" => "rholang").increment(1);
+                    metrics::counter!("reducer.eval_par.term_count", "source" => "rholang")
+                        .increment(term_count as u64);
+
+                    if reduction_terms.len() == 1 {
+                        let (index, term) = reduction_terms.into_iter().next().expect("one term");
+                        let evaluation = reducer.single_term_evaluations.fetch_add(1, Ordering::Relaxed) + 1;
+                        if evaluation.is_multiple_of(SINGLE_TERM_YIELD_INTERVAL) {
+                            reducer.yielded_single_term_evaluations.fetch_add(1, Ordering::Relaxed);
+                            tokio::task::yield_now().await;
+                        }
+                        let rand_split = evaluation_random(&rand, index, term_count)?;
+                        reducer = std::borrow::Cow::Owned(reducer.with_metering_child(index));
+                        rand = rand_split;
+                        input = EvalInput::Term(term);
+                        continue;
+                    }
+
+                    let futures: Vec<Pin<Box<dyn Future<Output = Result<(), InterpreterError>> + std::marker::Send + 'static>>> =
+                        reduction_terms.into_iter().map(|(index, term)| {
+                            let child_reducer = reducer.with_metering_child(index);
+                            let child_env = env.as_ref().clone();
+                            let child_authority = authority.clone();
+                            let rand_split = evaluation_random(&rand, index, term_count)
+                                .expect("term count and index were validated");
+                            let mut child_path = path.clone();
+                            child_path.push(index as u32);
+                            Box::pin(async move {
+                                child_reducer
+                                    .eval_machine(EvalInput::Term(term), &child_env, rand_split, child_authority, child_path)
+                                    .await
+                            }) as Pin<Box<dyn Future<Output = Result<(), InterpreterError>> + std::marker::Send + 'static>>
+                        }).collect();
+                    reducer.spawned_eval_tasks.fetch_add(futures.len() as u64, Ordering::Relaxed);
+
+                    metrics::counter!("reducer.eval_par.calls", "source" => "rholang").increment(1);
+                    metrics::counter!("reducer.eval_par.term_count", "source" => "rholang")
+                        .increment(futures.len() as u64);
+
+                    let drive = reducer.drive.read().expect("drive cell poisoned").clone();
+                    let parent_context = reducer.current_context()
+                        .expect("parallel evaluation requires a reduction context");
+                    let contexts = parent_context.split(futures.len());
+                    for ((index, fut), context) in futures.into_iter().enumerate().zip(contexts) {
+                        let mut child = path.clone();
+                        child.push(index as u32);
+                        spawn_detached(&drive, child, fut, context);
+                    }
+                    return Ok(());
+                }
+                EvalInput::Term(term) => {
+                    let control = reducer
+                        .generated_message_eval(term, env.as_ref(), rand, authority, path)
+                        .await?;
+                    match control {
+                        EvalControl::Complete => return Ok(()),
+                        EvalControl::Continue(next) => {
+                            if let Some(next_env) = next.environment {
+                                env = std::borrow::Cow::Owned(next_env);
+                            }
+                            if next.clear_residue_seal && reducer.residue_seal {
+                                reducer = std::borrow::Cow::Owned(
+                                    reducer.without_residue_seal().into_owned(),
+                                );
+                            }
+                            rand = next.random;
+                            authority = next.authority;
+                            path = next.path;
+                            input = EvalInput::Process(next.process);
+                        }
+                    }
                 }
             }
-            self.aggregate_evaluator_errors(declaration_errors)?;
-
-            metrics::counter!("reducer.eval_par.calls", "source" => "rholang").increment(1);
-            metrics::counter!("reducer.eval_par.term_count", "source" => "rholang")
-                .increment(term_count as u64);
-
-            if reduction_terms.len() == 1 {
-                let (index, term) = reduction_terms.into_iter().next().expect("one term");
-                let evaluation = self.single_term_evaluations.fetch_add(1, Ordering::Relaxed) + 1;
-                if evaluation.is_multiple_of(SINGLE_TERM_YIELD_INTERVAL) {
-                    self.yielded_single_term_evaluations.fetch_add(1, Ordering::Relaxed);
-                    tokio::task::yield_now().await;
-                }
-                let reducer = self.with_metering_child(index);
-                let rand_split = evaluation_random(&rand, index, term_count)?;
-                return reducer.generated_message_eval(term, env, rand_split, authority, path).await;
-            }
-
-            let futures: Vec<Pin<Box<dyn Future<Output = Result<(), InterpreterError>> + std::marker::Send + 'static>>> =
-                reduction_terms.into_iter().map(|(index, term)| {
-                    let reducer = self.with_metering_child(index);
-                    let env = env.clone();
-                    let authority = authority.clone();
-                    let rand_split = evaluation_random(&rand, index, term_count)
-                        .expect("term count and index were validated");
-                    let mut child = path.clone();
-                    child.push(index as u32);
-                    Box::pin(async move {
-                        reducer.generated_message_eval(term, &env, rand_split, authority, child).await
-                    }) as Pin<Box<dyn Future<Output = Result<(), InterpreterError>> + std::marker::Send + 'static>>
-                }).collect();
-            self.spawned_eval_tasks.fetch_add(futures.len() as u64, Ordering::Relaxed);
-
-            metrics::counter!("reducer.eval_par.calls", "source" => "rholang").increment(1);
-            metrics::counter!("reducer.eval_par.term_count", "source" => "rholang")
-                .increment(futures.len() as u64);
-
-            // SITE 1 (eval_inner par-join) — DETACHED. Instead of `tokio::spawn` + `await` (which pins
-            // an O(N) parked-parent chain), detach each parallel branch as a COUNTED task on the deploy's
-            // drive: errors flow to the drive sink (Located at the branch coordinate) and surface at
-            // `inj` drain. Concurrency is UNCHANGED (still one task per branch) => COMM order unchanged
-            // => no consensus divergence (proven by the differential harness). The parent returns
-            // immediately with Ok(()).
-            let drive = self.drive.read().expect("drive cell poisoned").clone();
-            let parent_context = deterministic_reduction::current()
-                .expect("parallel evaluation requires a reduction context");
-            let contexts = parent_context.split(futures.len());
-            for ((index, fut), context) in futures.into_iter().enumerate().zip(contexts) {
-                let mut child = path.clone();
-                child.push(index as u32);
-                spawn_detached(&drive, child, fut, context);
-            }
-            Ok(())
         }
     }
 
@@ -1295,7 +1430,8 @@ impl ReducerCore {
         path: SmallVec<[u32; 8]>,
     ) -> Result<DispatchType, InterpreterError> {
         self.update_mergeable_channels(&chan).await;
-        let source = Produce::create(&chan, &data, persistent);
+        let source =
+            Produce::create_for_epoch(self.space.codec_epoch(), &chan, &data, persistent)?;
         self.metering.budget().register_introduction_authority(
             super::accounting::byte_accounting::produce_introduction_identity(&source),
             super::accounting::authority::AuthorityByteEventKind::ProduceIntroduction,
@@ -1423,7 +1559,13 @@ impl ReducerCore {
             guard: guard.clone(),
             cost_authority: (!authority.regions.is_empty()).then_some(authority.clone()),
         };
-        let source = Consume::create(&sources, &patterns, &continuation, persistent);
+        let source = Consume::create_for_epoch(
+            self.space.codec_epoch(),
+            &sources,
+            &patterns,
+            &continuation,
+            persistent,
+        )?;
         self.metering.budget().register_introduction_authority(
             super::accounting::byte_accounting::consume_introduction_identity(&source),
             super::accounting::authority::AuthorityByteEventKind::ConsumeIntroduction,
@@ -1827,8 +1969,21 @@ impl ReducerCore {
             .map(|(index, (chan, _, removed_data, _))| {
                 let self_clone = self.with_metering_child(start_component + index);
                 let path_peek = path.clone();
-                let introduction_authority = removed_data.cost_authority.clone().unwrap_or_default();
                 Box::pin(async move {
+                    let introduction_authority = match removed_data.cost_authority.as_ref() {
+                        Some(seal) => {
+                            let budget = self_clone.metering.budget();
+                            let context =
+                                ResidueContext::new(&budget.signature(), budget.deploy_id())
+                                    .map_err(|error| {
+                                        InterpreterError::ReduceError(error.to_string())
+                                    })?;
+                            resolve_system_residue(seal, &removed_data.random_state, &context)
+                                .map_err(|error| InterpreterError::ReduceError(error.to_string()))?
+                                .into_owned()
+                        }
+                        None => CostAuthority::default(),
+                    };
                     self_clone
                         .produce(chan, removed_data, false, introduction_authority, path_peek)
                         .await
@@ -1868,7 +2023,7 @@ impl ReducerCore {
         // collapses the parked-parent chain while preserving concurrency (same spawns) => COMM order
         // unchanged => no consensus divergence.
         let drive = self.drive.read().expect("drive cell poisoned").clone();
-        let parent_context = deterministic_reduction::current()
+        let parent_context = self.current_context()
             .expect("parallel dispatch requires a reduction context");
         let contexts = parent_context.split(futures.len());
         for ((index, fut), context) in futures.into_iter().enumerate().zip(contexts) {
@@ -1947,7 +2102,12 @@ impl ReducerCore {
         &self,
         errors: Vec<InterpreterError>,
     ) -> Result<DispatchType, InterpreterError> {
-        deterministic_reduction::record_evaluator_failures(&errors);
+        deterministic_reduction::record_evaluator_failures(
+            &self.space,
+            &self.metering.budget(),
+            &self.reduction_coordinator,
+            &errors,
+        );
         match errors.as_slice() {
             // No errors
             [] => Ok(DispatchType::Skip),
@@ -2015,8 +2175,8 @@ impl ReducerCore {
         rand: Blake2b512Random,
         authority: CostAuthority,
         path: SmallVec<[u32; 8]>,
-    ) -> Result<(), InterpreterError> {
-        deterministic_reduction::reserve_host_work(
+    ) -> Result<EvalControl, InterpreterError> {
+        self.reserve_host_work(
             HostWorkDimension::ReductionSteps,
             HostWorkUnits::new(1),
         )?;
@@ -2025,7 +2185,7 @@ impl ReducerCore {
                 "reduction term byte count does not fit in u64".to_string(),
             )
         })?;
-        deterministic_reduction::reserve_host_work(
+        self.reserve_host_work(
             HostWorkDimension::ReductionTermBytes,
             HostWorkUnits::new(term_bytes),
         )?;
@@ -2037,7 +2197,7 @@ impl ReducerCore {
                 let result = self.eval_send(term, env, rand, &authority, path).await;
                 metrics::counter!(REDUCER_EVAL_SEND_TIME_NS_METRIC, "source" => RHOLANG_METRICS_SOURCE)
                     .increment(start.elapsed().as_nanos() as u64);
-                result
+                result.map(|_| EvalControl::Complete)
             }
             GeneratedMessage::Receive(term) => {
                 metrics::counter!(REDUCER_EVAL_RECEIVE_CALLS_METRIC, "source" => RHOLANG_METRICS_SOURCE)
@@ -2046,13 +2206,13 @@ impl ReducerCore {
                 let result = self.eval_receive(term, env, rand, &authority, path).await;
                 metrics::counter!(REDUCER_EVAL_RECEIVE_TIME_NS_METRIC, "source" => RHOLANG_METRICS_SOURCE)
                     .increment(start.elapsed().as_nanos() as u64);
-                result
+                result.map(|_| EvalControl::Complete)
             }
             GeneratedMessage::New(term) => {
                 metrics::counter!(REDUCER_EVAL_NEW_CALLS_METRIC, "source" => RHOLANG_METRICS_SOURCE)
                     .increment(1);
                 let start = std::time::Instant::now();
-                let result = self.eval_new(term, env.clone(), rand, &authority, path).await;
+                let result = self.eval_new(term, env, rand, &authority, path).await;
                 metrics::counter!(REDUCER_EVAL_NEW_TIME_NS_METRIC, "source" => RHOLANG_METRICS_SOURCE)
                     .increment(start.elapsed().as_nanos() as u64);
                 result
@@ -2068,17 +2228,26 @@ impl ReducerCore {
             }
             GeneratedMessage::If(term) => self.eval_if(term, env, rand, &authority, path).await,
             GeneratedMessage::Bundle(term) => self.eval_bundle(term, env, rand, &authority, path).await,
-            GeneratedMessage::CostSignedTerm(term) => self.eval_cost_signed_term(term, env, rand, &authority, path).await,
-            GeneratedMessage::CostStack(term) => self.eval_cost_stack(term, env, rand, &authority, path).await,
+            GeneratedMessage::CostSignedTerm(term) => self.eval_cost_signed_term(term, env, rand, &authority, path).await.map(|_| EvalControl::Complete),
+            GeneratedMessage::CostStack(term) => self.eval_cost_stack(term, env, rand, &authority, path).await.map(|_| EvalControl::Complete),
             GeneratedMessage::Expr(term) => match term.expr_instance {
                 Some(expr_instance) => match expr_instance {
+                    // DR-101 (P1 rem:signed-subst): a process held in a variable
+                    // keeps its sender's provenance, so it never runs as a system body.
                     ExprInstance::EVarBody(e) => {
                         let res =
                             self.eval_var(&e.v.expect("EVar.v: normalizer post-condition"), env)?;
                         // Reactive per-reduction seam: dereference `*N` — `res` is the resolved quoted
                         // process about to be evaluated. Two `is_none` checks, no alloc in production.
                         self.observe_and_pause(&res, ReductionKind::Deref).await?;
-                        self.eval_with_path_authority(res, env, rand, path, authority).await
+                        Ok(EvalControl::Continue(EvalTail {
+                            process: res,
+                            environment: None,
+                            random: rand,
+                            authority,
+                            path,
+                            clear_residue_seal: true,
+                        }))
                     }
                     ExprInstance::EMethodBody(e) => {
                         let res = self.eval_expr_to_par(
@@ -2089,7 +2258,14 @@ impl ReducerCore {
                         )?;
                         // Reactive per-reduction seam: method call re-eval. None-op in production.
                         self.observe_and_pause(&res, ReductionKind::Method).await?;
-                        self.eval_with_path_authority(res, env, rand, path, authority).await
+                        Ok(EvalControl::Continue(EvalTail {
+                            process: res,
+                            environment: None,
+                            random: rand,
+                            authority,
+                            path,
+                            clear_residue_seal: true,
+                        }))
                     }
                     other => Err(InterpreterError::BugFoundError(format!(
                         "Undefined term: {:?}",
@@ -2134,9 +2310,10 @@ impl ReducerCore {
         } = send;
 
         self.metering.reserve_primitive(send_eval_cost())?;
-        let authority = if authority.regions.is_empty()
-            && self.metering.budget().has_comm_accounting_scope()
-        {
+        let opens_region = authority.regions.is_empty()
+            && self.space.codec_epoch() != EventCodecEpoch::Legacy
+            && self.metering.budget().has_comm_accounting_scope();
+        let authority = if opens_region {
             let signature = sig_to_cost_signature(&self.metering.budget().signature())
                 .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
             let region = cost_region(&signature, &rand.to_bytes(), 0)
@@ -2146,8 +2323,14 @@ impl ReducerCore {
         } else {
             authority.clone()
         };
+        let seal = if opens_region && self.residue_seal {
+            system_residue_authority(&authority, &self.metering.budget().deploy_id())
+                .map_err(|error| InterpreterError::ReduceError(error.to_string()))?
+        } else {
+            authority.clone()
+        };
         let eval_chan = self.eval_expr(&unwrap_option_safe(chan)?, env)?;
-        let sub_chan = self.substitute.substitute_and_charge(eval_chan, 0, env)?;
+        let sub_chan = self.substitute_and_charge(eval_chan, 0, env)?;
         let unbundled = match single_bundle(&sub_chan) {
             Some(value) => {
                 if !value.write_flag {
@@ -2165,7 +2348,7 @@ impl ReducerCore {
             .iter()
             .map(|expr| {
                 let evaluated = self.eval_expr(expr, env)?;
-                self.substitute.substitute_and_charge(evaluated, 0, env)
+                self.substitute_and_charge(evaluated, 0, env)
             })
             .collect::<Result<Vec<_>, InterpreterError>>()?;
 
@@ -2174,7 +2357,7 @@ impl ReducerCore {
             ListParWithRandom {
                 pars: subst_data,
                 random_state: rand.to_bytes(),
-                cost_authority: (!authority.regions.is_empty()).then_some(authority.clone()),
+                cost_authority: (!seal.regions.is_empty()).then_some(seal),
                 cost_stack: None,
             },
             persistent,
@@ -2224,9 +2407,10 @@ impl ReducerCore {
                 "cost-accounting: a join must sign either every receive clause or none".to_string(),
             ));
         }
-        let introduction_authority = if authority.regions.is_empty()
-            && self.metering.budget().has_comm_accounting_scope()
-        {
+        let opens_region = authority.regions.is_empty()
+            && self.space.codec_epoch() != EventCodecEpoch::Legacy
+            && self.metering.budget().has_comm_accounting_scope();
+        let introduction_authority = if opens_region {
             let signature = sig_to_cost_signature(&self.metering.budget().signature())
                 .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
             let region = cost_region(&signature, &entropy, 0)
@@ -2237,7 +2421,15 @@ impl ReducerCore {
             authority.clone()
         };
         let base_authority = if signed_binds == 0 {
-            introduction_authority.clone()
+            if opens_region && self.residue_seal {
+                system_residue_authority(
+                    &introduction_authority,
+                    &self.metering.budget().deploy_id(),
+                )
+                .map_err(|error| InterpreterError::ReduceError(error.to_string()))?
+            } else {
+                introduction_authority.clone()
+            }
         } else {
             authority.clone()
         };
@@ -2265,7 +2457,7 @@ impl ReducerCore {
         // an owned value instead of through a reference.
         let subst_guard = match condition {
             Some(c) if c != Par::default() => {
-                Some(self.substitute.substitute_and_charge(c, 1, env)?)
+                Some(self.substitute_and_charge(c, 1, env)?)
             }
             _ => None,
         };
@@ -2313,7 +2505,7 @@ impl ReducerCore {
                 let q = self.unbundle_receive(source, env)?;
                 let subst_patterns = patterns
                     .into_iter()
-                    .map(|pattern| self.substitute.substitute_and_charge(pattern, 1, env))
+                    .map(|pattern| self.substitute_and_charge(pattern, 1, env))
                     .collect::<Result<Vec<_>, InterpreterError>>()?;
 
                 Ok((
@@ -2333,7 +2525,7 @@ impl ReducerCore {
         // most expensive copy on the receive path — the body is the largest term
         // a receive touches — and it existed only because `receive` was
         // borrowed.
-        let subst_body = self.substitute.substitute_no_sort_and_charge(
+        let subst_body = self.substitute_no_sort_and_charge(
             body.expect("Receive.body: normalizer post-condition"),
             0,
             &env.shift(bind_count),
@@ -2397,7 +2589,7 @@ impl ReducerCore {
         rand: Blake2b512Random,
         authority: &CostAuthority,
         path: SmallVec<[u32; 8]>,
-    ) -> Result<(), InterpreterError> {
+    ) -> Result<EvalControl, InterpreterError> {
         fn add_to_env(env: &Env<Par>, free_map: BTreeMap<i32, Par>, free_count: i32) -> Env<Par> {
             (0..free_count).fold(env.clone(), |mut acc, e| {
                 let value = free_map.get(&e).unwrap_or(&Par::default()).clone();
@@ -2435,15 +2627,14 @@ impl ReducerCore {
                         ..
                     } = single_case;
 
-                    let pattern = self.substitute.substitute_and_charge(
+                    let pattern = self.substitute_and_charge(
                         unwrap_option_safe(pattern)?,
                         1,
                         env,
                     )?;
 
                     let match_result = {
-                        let host = deterministic_reduction::current()
-                            .and_then(|context| context.host_work_budget());
+                        let host = self.host_work_budget();
                         let meter = |operations, scanned, backing| {
                             reserve_matcher_host_work(
                                 host.as_ref().expect("metered matcher has a host budget"),
@@ -2541,15 +2732,19 @@ impl ReducerCore {
                             // None-op in production.
                             self.observe_and_pause(&case_body, ReductionKind::Match)
                                 .await?;
-                            self.eval_with_path_authority(case_body, &case_env, rand, path.clone(), authority.clone())
-                                .await?;
-
-                            return Ok(());
+                            return Ok(EvalControl::Continue(EvalTail {
+                                process: case_body,
+                                environment: Some(case_env),
+                                random: rand,
+                                authority: authority.clone(),
+                                path: path.clone(),
+                                clear_residue_seal: false,
+                            }));
                         }
                     }
                 }
 
-                Ok(())
+                Ok(EvalControl::Complete)
             },
         );
 
@@ -2562,9 +2757,7 @@ impl ReducerCore {
         self.metering.reserve_primitive(match_eval_cost())?;
         let target = target.expect("Match.target: normalizer post-condition");
         let evaled_target = self.eval_expr(&target, env)?;
-        let subst_target = self
-            .substitute
-            .substitute_and_charge(evaled_target, 0, env)?;
+        let subst_target = self.substitute_and_charge(evaled_target, 0, env)?;
 
         first_match(subst_target, cases, rand).await
     }
@@ -2576,7 +2769,7 @@ impl ReducerCore {
         rand: Blake2b512Random,
         authority: &CostAuthority,
         path: SmallVec<[u32; 8]>,
-    ) -> Result<(), InterpreterError> {
+    ) -> Result<EvalControl, InterpreterError> {
         // Destructured by move. Both branch clones were deep copies of a whole
         // process term, and exactly one branch is ever taken — so the taken one
         // is moved and the other is simply dropped.
@@ -2592,20 +2785,34 @@ impl ReducerCore {
         self.metering.reserve_primitive(match_eval_cost())?;
         let condition = condition.expect("If.condition: normalizer post-condition");
         let evaled_cond = self.eval_expr(&condition, env)?;
-        let subst_cond = self.substitute.substitute_and_charge(evaled_cond, 0, env)?;
+        let subst_cond = self.substitute_and_charge(evaled_cond, 0, env)?;
 
         match extract_bool(&subst_cond) {
             Some(true) => {
                 let branch = if_true.expect("If.if_true: normalizer post-condition");
                 // Reactive per-reduction seam: an `if` true-branch firing. None-op in production.
                 self.observe_and_pause(&branch, ReductionKind::If).await?;
-                self.eval_with_path_authority(branch, env, rand, path, authority.clone()).await
+                Ok(EvalControl::Continue(EvalTail {
+                    process: branch,
+                    environment: None,
+                    random: rand,
+                    authority: authority.clone(),
+                    path,
+                    clear_residue_seal: false,
+                }))
             }
             Some(false) => {
                 let branch = if_false.expect("If.if_false: normalizer post-condition");
                 // Reactive per-reduction seam: an `if` false-branch firing. None-op in production.
                 self.observe_and_pause(&branch, ReductionKind::If).await?;
-                self.eval_with_path_authority(branch, env, rand, path, authority.clone()).await
+                Ok(EvalControl::Continue(EvalTail {
+                    process: branch,
+                    environment: None,
+                    random: rand,
+                    authority: authority.clone(),
+                    path,
+                    clear_residue_seal: false,
+                }))
             }
             None => Err(InterpreterError::IfConditionTypeError {
                 actual_type: describe_par_type(&subst_cond),
@@ -2621,16 +2828,23 @@ impl ReducerCore {
     async fn eval_new(
         &self,
         mut new: New,
-        env: Env<Par>,
+        env: &Env<Par>,
         mut rand: Blake2b512Random,
         authority: &CostAuthority,
         path: SmallVec<[u32; 8]>,
-    ) -> Result<(), InterpreterError> {
+    ) -> Result<EvalControl, InterpreterError> {
         self.metering.reserve_primitive(new_bindings_cost(new.bind_count as i64))?;
-        let new_env = allocate_new_bindings(&new, &env, &mut rand, &self.urn_map)?;
+        let new_env = allocate_new_bindings(&new, env, &mut rand, &self.urn_map)?;
         let body = unwrap_option_safe(new.p.take())?;
         self.observe_and_pause(&body, ReductionKind::New).await?;
-        self.eval_with_path_authority(body, &new_env, rand, path, authority.clone()).await
+        Ok(EvalControl::Continue(EvalTail {
+            process: body,
+            environment: Some(new_env),
+            random: rand,
+            authority: authority.clone(),
+            path,
+            clear_residue_seal: false,
+        }))
     }
 
     /// Resolve a bind's source channel: evaluate it, substitute it, and strip a
@@ -2647,7 +2861,7 @@ impl ReducerCore {
         env: &Env<Par>,
     ) -> Result<Par, InterpreterError> {
         let eval_src = self.eval_expr(&unwrap_option_safe(source)?, env)?;
-        let subst = self.substitute.substitute_and_charge(eval_src, 0, env)?;
+        let subst = self.substitute_and_charge(eval_src, 0, env)?;
         // Check if we try to read from bundled channel
         let unbndl = match single_bundle(&subst) {
             Some(value) => {
@@ -2668,17 +2882,24 @@ impl ReducerCore {
     async fn eval_bundle(
         &self,
         bundle: Bundle,
-        env: &Env<Par>,
+        _env: &Env<Par>,
         rand: Blake2b512Random,
         authority: &CostAuthority,
         path: SmallVec<[u32; 8]>,
-    ) -> Result<(), InterpreterError> {
+    ) -> Result<EvalControl, InterpreterError> {
         // `bundle.body.clone()` deep-copied the bundled process; `bundle` is
         // owned now, so the body is moved out.
         let body = unwrap_option_safe(bundle.body)?;
         // Reactive per-reduction seam: a `bundle` body, after unwrapping. None-op in production.
         self.observe_and_pause(&body, ReductionKind::Bundle).await?;
-        self.eval_with_path_authority(body, env, rand, path, authority.clone()).await
+        Ok(EvalControl::Continue(EvalTail {
+            process: body,
+            environment: None,
+            random: rand,
+            authority: authority.clone(),
+            path,
+            clear_residue_seal: false,
+        }))
     }
 
     async fn eval_cost_signed_term(
@@ -2689,8 +2910,7 @@ impl ReducerCore {
         authority: &CostAuthority,
         path: SmallVec<[u32; 8]>,
     ) -> Result<(), InterpreterError> {
-        let host =
-            deterministic_reduction::current().and_then(|context| context.host_work_budget());
+        let host = self.host_work_budget();
         let backing = |operations: usize, scanned: usize, bytes: usize| {
             let Some(host) = host.as_ref() else {
                 return Ok(());
@@ -2757,7 +2977,7 @@ impl ReducerCore {
                 .map_err(|_| InterpreterError::HostWorkRejected)?;
         }
         let body = unwrap_option_safe(term.body)?;
-        let context = deterministic_reduction::current()
+        let context = self.current_context()
             .expect("signed reduction requires a reduction context")
             .split(1)
             .pop()
@@ -2783,8 +3003,7 @@ impl ReducerCore {
         authority: &CostAuthority,
         path: SmallVec<[u32; 8]>,
     ) -> Result<(), InterpreterError> {
-        let host =
-            deterministic_reduction::current().and_then(|context| context.host_work_budget());
+        let host = self.host_work_budget();
         let backing = |operations: usize, scanned: usize, bytes: usize| {
             let Some(host) = host.as_ref() else {
                 return Ok(());
@@ -2811,6 +3030,9 @@ impl ReducerCore {
             let Some(host) = host.as_ref() else {
                 return Ok(());
             };
+            let operations = operations
+                .checked_mul(2)
+                .ok_or(RSpaceError::HostWorkRejected)?;
             for (dimension, amount) in [
                 (HostWorkDimension::VerificationOperations, operations),
                 (HostWorkDimension::VerificationBytes, scanned),
@@ -2827,39 +3049,54 @@ impl ReducerCore {
             other => InterpreterError::ReduceError(other.to_string()),
         };
         if host.is_some() {
-            clone_backing::inspect(&stack.cells, &backing)
+            clone_backing::inspect(&stack, &backing)
                 .map_err(|_| InterpreterError::HostWorkRejected)?;
-            clone_backing::reserve(&stack.cells, &owned_backing)
+            clone_backing::reserve(&stack, &owned_backing)
                 .map_err(|_| InterpreterError::HostWorkRejected)?;
         }
-        let stack = CostStack {
-            cells: stack
-                .cells
-                .into_iter()
-                .map(|signature| {
-                    if host.is_some() {
-                        self.substitute
-                            .substitute_cost_signature_metered(signature, 0, env, &backing)
-                    } else {
-                        self.substitute.substitute_cost_signature(signature, 0, env)
-                    }
-                })
-                .collect::<Result<Vec<_>, _>>()?,
+        let stack = if host.is_some() {
+            self.substitute
+                .substitute_cost_stack_metered(stack, 0, env, &backing)?
+        } else {
+            self.substitute.substitute_cost_stack(stack, 0, env)?
         };
         let head = stack.cells.first().ok_or_else(|| {
             InterpreterError::ReduceError("cost-accounting: empty token stack".to_string())
         })?;
-        for cell in &stack.cells {
-            let cell_signature = if host.is_some() {
-                cost_signature_to_sig_metered(cell, &backing).map_err(native_error)?
-            } else {
-                cost_signature_to_sig(cell).map_err(native_error)?
-            };
-            if cell_signature == super::accounting::Sig::Unit {
-                return Err(InterpreterError::ReduceError(
-                    "cost-accounting: unit cannot be stored as a token-stack cell".to_string(),
-                ));
+        if host.is_some() {
+            backing(1, 0, std::mem::size_of::<&CostStack>())
+                .map_err(|_| InterpreterError::HostWorkRejected)?;
+        }
+        let mut stack_work = Vec::new();
+        stack_work
+            .try_reserve(1)
+            .map_err(|_| InterpreterError::HostWorkRejected)?;
+        stack_work.push(&stack);
+        while let Some(node) = stack_work.pop() {
+            for cell in &node.cells {
+                let cell_signature = if host.is_some() {
+                    cost_signature_to_sig_metered(cell, &backing).map_err(native_error)?
+                } else {
+                    cost_signature_to_sig(cell).map_err(native_error)?
+                };
+                if cell_signature == super::accounting::Sig::Unit {
+                    return Err(InterpreterError::ReduceError(
+                        "cost-accounting: unit cannot be stored as a token-stack cell".to_string(),
+                    ));
+                }
             }
+            let branch_count = node.parallel_tail.len();
+            if host.is_some() {
+                let bytes = branch_count
+                    .checked_mul(std::mem::size_of::<&CostStack>())
+                    .ok_or(InterpreterError::HostWorkRejected)?;
+                backing(branch_count, 0, bytes)
+                    .map_err(|_| InterpreterError::HostWorkRejected)?;
+            }
+            stack_work
+                .try_reserve(branch_count)
+                .map_err(|_| InterpreterError::HostWorkRejected)?;
+            stack_work.extend(node.parallel_tail.iter().rev());
         }
         let signature = if host.is_some() {
             cost_signature_to_sig_metered(head, &backing).map_err(native_error)?
@@ -2867,6 +3104,7 @@ impl ReducerCore {
             cost_signature_to_sig(head).map_err(native_error)?
         };
         let authority = if authority.regions.is_empty()
+            && self.space.codec_epoch() != EventCodecEpoch::Legacy
             && self.metering.budget().has_comm_accounting_scope()
         {
             let payer = if let Some(host) = host.as_ref() {
@@ -2908,34 +3146,37 @@ impl ReducerCore {
         };
         if host.is_some() {
             reserve_reducer_random_bytes(&rand, &owned_backing)?;
+            clone_backing::inspect(&stack, &backing)
+                .map_err(|_| InterpreterError::HostWorkRejected)?;
+            clone_backing::reserve(&stack, &owned_backing)
+                .map_err(|_| InterpreterError::HostWorkRejected)?;
         }
+        let transfer_stack = stack.clone();
         let datum = ListParWithRandom {
             pars: Vec::new(),
             random_state: rand.to_bytes(),
             cost_authority: None,
             cost_stack: Some(stack),
         };
-        let datum_cells = &datum.cost_stack.as_ref().expect("cost stack").cells;
-        if host.is_some() {
-            clone_backing::inspect(datum_cells, &backing)
-                .map_err(|_| InterpreterError::HostWorkRejected)?;
-            clone_backing::reserve(datum_cells, &owned_backing)
-                .map_err(|_| InterpreterError::HostWorkRejected)?;
-        }
-        let cells = datum_cells.clone();
         let source = if host.is_some() {
-            Produce::create_metered(&channel, &datum, false, &source_meter)?
+            native_source::produce_for_epoch(
+                self.space.codec_epoch(),
+                &channel,
+                &datum,
+                false,
+                &source_meter,
+            )?
         } else {
-            Produce::create(&channel, &datum, false)
+            Produce::create_for_epoch(self.space.codec_epoch(), &channel, &datum, false)?
         };
         let produce_hash: [u8; 32] = source
             .hash
             .bytes()
             .try_into()
             .expect("RSpace produce hash length");
-        let reservation = self.metering.budget().prepare_authority_stack_transfer(
+        let reservation = self.metering.budget().prepare_authority_stack_tree_transfer(
             produce_hash,
-            cells,
+            transfer_stack,
             &authority,
         )?;
         self.produce(channel, datum, false, authority, path).await?;
@@ -3471,6 +3712,36 @@ impl ReducerCore {
             ExprInstance::GInt(x) => {
                 vals.push(EvVal::Expr(Expr {
                     expr_instance: Some(ExprInstance::GInt(*x)),
+                }));
+                Ok(())
+            }
+            ExprInstance::GUint64(x) => {
+                vals.push(EvVal::Expr(Expr {
+                    expr_instance: Some(ExprInstance::GUint64(*x)),
+                }));
+                Ok(())
+            }
+            ExprInstance::GInt32(x) => {
+                vals.push(EvVal::Expr(Expr {
+                    expr_instance: Some(ExprInstance::GInt32(*x)),
+                }));
+                Ok(())
+            }
+            ExprInstance::GUint32(x) => {
+                vals.push(EvVal::Expr(Expr {
+                    expr_instance: Some(ExprInstance::GUint32(*x)),
+                }));
+                Ok(())
+            }
+            ExprInstance::GUint16(x) => {
+                vals.push(EvVal::Expr(Expr {
+                    expr_instance: Some(ExprInstance::GUint16(*x)),
+                }));
+                Ok(())
+            }
+            ExprInstance::GUint8(x) => {
+                vals.push(EvVal::Expr(Expr {
+                    expr_instance: Some(ExprInstance::GUint8(*x)),
                 }));
                 Ok(())
             }
@@ -4170,6 +4441,28 @@ impl ReducerCore {
     // lives in exactly one place.
     // =======================================================================
 
+    fn combine_sized_int(
+        &self,
+        lhs: &ExprInstance,
+        rhs: &ExprInstance,
+        op: SizedIntOp,
+    ) -> Result<Option<Expr>, InterpreterError> {
+        if !is_sized_int_pair(lhs, rhs) {
+            return Ok(None);
+        }
+        let cost = match op {
+            SizedIntOp::Add => sum_cost(),
+            SizedIntOp::Sub => subtraction_cost(),
+            SizedIntOp::Mul => multiplication_cost(),
+            SizedIntOp::Div => division_cost(),
+            SizedIntOp::Mod => modulo_cost(),
+        };
+        self.metering.reserve_primitive(cost)?;
+        Ok(Some(Expr {
+            expr_instance: Some(eval_sized_int_op(op, lhs, rhs)?),
+        }))
+    }
+
     // relop (ELt/ELte/EGt/EGte). v1,v2 already `eval_single_expr`'d.
     fn combine_relop(
         &self,
@@ -4179,10 +4472,15 @@ impl ReducerCore {
         relopi: fn(i64, i64) -> bool,
         relops: fn(String, String) -> bool,
     ) -> Result<Expr, InterpreterError> {
-        match (
-            v1.expr_instance.clone().unwrap(),
-            v2.expr_instance.clone().unwrap(),
-        ) {
+        let lhs = v1.expr_instance.clone().unwrap();
+        let rhs = v2.expr_instance.clone().unwrap();
+        if let Some(order) = compare_sized_int(&lhs, &rhs) {
+            self.metering.reserve_primitive(comparison_cost())?;
+            return Ok(Expr {
+                expr_instance: Some(ExprInstance::GBool(relopi(order as i64, 0))),
+            });
+        }
+        match (lhs, rhs) {
             (ExprInstance::GBool(b1), ExprInstance::GBool(b2)) => {
                 self.metering.reserve_primitive(comparison_cost())?;
                 Ok(Expr {
@@ -4266,6 +4564,14 @@ impl ReducerCore {
                     expr_instance: Some(ExprInstance::GInt(result)),
                 })
             }
+            ExprInstance::GInt32(i) => {
+                let result = i.checked_neg().ok_or_else(|| {
+                    InterpreterError::ReduceError("Arithmetic overflow in negation".to_string())
+                })?;
+                Ok(Expr {
+                    expr_instance: Some(ExprInstance::GInt32(result)),
+                })
+            }
             ExprInstance::GDouble(bits) => {
                 let f = f64::from_bits(bits);
                 Ok(Expr {
@@ -4308,7 +4614,12 @@ impl ReducerCore {
 
     // EMult. v1,v2 already `eval_single_expr`'d.
     fn combine_mult(&self, v1: Expr, v2: Expr) -> Result<Expr, InterpreterError> {
-        match (v1.expr_instance.unwrap(), v2.expr_instance.unwrap()) {
+        let lhs = v1.expr_instance.unwrap();
+        let rhs = v2.expr_instance.unwrap();
+        if let Some(value) = self.combine_sized_int(&lhs, &rhs, SizedIntOp::Mul)? {
+            return Ok(value);
+        }
+        match (lhs, rhs) {
             (ExprInstance::GInt(lhs), ExprInstance::GInt(rhs)) => {
                 self.metering.reserve_primitive(multiplication_cost())?;
                 let result = lhs.checked_mul(rhs).ok_or_else(|| {
@@ -4376,7 +4687,12 @@ impl ReducerCore {
 
     // EDiv. v1,v2 already `eval_single_expr`'d.
     fn combine_div(&self, v1: Expr, v2: Expr) -> Result<Expr, InterpreterError> {
-        match (v1.expr_instance.unwrap(), v2.expr_instance.unwrap()) {
+        let lhs = v1.expr_instance.unwrap();
+        let rhs = v2.expr_instance.unwrap();
+        if let Some(value) = self.combine_sized_int(&lhs, &rhs, SizedIntOp::Div)? {
+            return Ok(value);
+        }
+        match (lhs, rhs) {
             (ExprInstance::GInt(lhs), ExprInstance::GInt(rhs)) => {
                 self.metering.reserve_primitive(division_cost())?;
                 if rhs == 0 {
@@ -4464,7 +4780,12 @@ impl ReducerCore {
 
     // EMod. v1,v2 already `eval_single_expr`'d.
     fn combine_mod(&self, v1: Expr, v2: Expr) -> Result<Expr, InterpreterError> {
-        match (v1.expr_instance.unwrap(), v2.expr_instance.unwrap()) {
+        let lhs = v1.expr_instance.unwrap();
+        let rhs = v2.expr_instance.unwrap();
+        if let Some(value) = self.combine_sized_int(&lhs, &rhs, SizedIntOp::Mod)? {
+            return Ok(value);
+        }
+        match (lhs, rhs) {
             (ExprInstance::GInt(lhs), ExprInstance::GInt(rhs)) => {
                 self.metering.reserve_primitive(modulo_cost())?;
                 if rhs == 0 {
@@ -4553,7 +4874,12 @@ impl ReducerCore {
         v2: Expr,
         env: &Env<Par>,
     ) -> Result<EvalSingleStep, InterpreterError> {
-        let completed = match (v1.expr_instance.unwrap(), v2.expr_instance.unwrap()) {
+        let lhs = v1.expr_instance.unwrap();
+        let rhs = v2.expr_instance.unwrap();
+        if let Some(value) = self.combine_sized_int(&lhs, &rhs, SizedIntOp::Add)? {
+            return Ok(EvalSingleStep::Complete(value));
+        }
+        let completed = match (lhs, rhs) {
             // ★ CHECKED, not wrapping — see `combine_minus` for the full rationale and the
             // self-contradiction this closes.
             (ExprInstance::GInt(lhs), ExprInstance::GInt(rhs)) => {
@@ -4633,6 +4959,11 @@ impl ReducerCore {
             }
 
             (ExprInstance::GInt(_), other)
+            | (ExprInstance::GUint64(_), other)
+            | (ExprInstance::GInt32(_), other)
+            | (ExprInstance::GUint32(_), other)
+            | (ExprInstance::GUint16(_), other)
+            | (ExprInstance::GUint8(_), other)
             | (ExprInstance::GDouble(_), other)
             | (ExprInstance::GBigInt(_), other)
             | (ExprInstance::GBigRat(_), other)
@@ -4659,7 +4990,12 @@ impl ReducerCore {
         v2: Expr,
         env: &Env<Par>,
     ) -> Result<EvalSingleStep, InterpreterError> {
-        let completed = match (v1.expr_instance.unwrap(), v2.expr_instance.unwrap()) {
+        let lhs = v1.expr_instance.unwrap();
+        let rhs = v2.expr_instance.unwrap();
+        if let Some(value) = self.combine_sized_int(&lhs, &rhs, SizedIntOp::Sub)? {
+            return Ok(EvalSingleStep::Complete(value));
+        }
+        let completed = match (lhs, rhs) {
             // ★★ CHECKED, not wrapping — the reducer used to disagree with ITSELF about `Int`.
             //
             // Until 2026-07-29 `+` and `-` on `GInt` were `wrapping_add` / `wrapping_sub` while
@@ -4781,6 +5117,11 @@ impl ReducerCore {
             }
 
             (ExprInstance::GInt(_), other)
+            | (ExprInstance::GUint64(_), other)
+            | (ExprInstance::GInt32(_), other)
+            | (ExprInstance::GUint32(_), other)
+            | (ExprInstance::GUint16(_), other)
+            | (ExprInstance::GUint8(_), other)
             | (ExprInstance::GDouble(_), other)
             | (ExprInstance::GBigInt(_), other)
             | (ExprInstance::GBigRat(_), other)
@@ -4803,8 +5144,8 @@ impl ReducerCore {
     // EEq. v1,v2 already `eval_expr`'d (substitution + NaN-aware compare; substitute is NOT SCC).
     fn combine_eq(&self, v1: Par, v2: Par, env: &Env<Par>) -> Result<Expr, InterpreterError> {
         // TODO: build an equality operator that takes in an environment. - OLD
-        let sv1 = self.substitute.substitute_and_charge(v1, 0, env)?;
-        let sv2 = self.substitute.substitute_and_charge(v2, 0, env)?;
+        let sv1 = self.substitute_and_charge(v1, 0, env)?;
+        let sv2 = self.substitute_and_charge(v2, 0, env)?;
         self.metering
             .reserve_primitive(equality_check_cost(&sv1, &sv2))?;
 
@@ -4820,8 +5161,8 @@ impl ReducerCore {
 
     // ENeq.
     fn combine_neq(&self, v1: Par, v2: Par, env: &Env<Par>) -> Result<Expr, InterpreterError> {
-        let sv1 = self.substitute.substitute_and_charge(v1, 0, env)?;
-        let sv2 = self.substitute.substitute_and_charge(v2, 0, env)?;
+        let sv1 = self.substitute_and_charge(v1, 0, env)?;
+        let sv2 = self.substitute_and_charge(v2, 0, env)?;
         self.metering
             .reserve_primitive(equality_check_cost(&sv1, &sv2))?;
 
@@ -4842,11 +5183,8 @@ impl ReducerCore {
         pattern: &Par,
         env: &Env<Par>,
     ) -> Result<Expr, InterpreterError> {
-        let subst_target = self
-            .substitute
-            .substitute_and_charge(evaled_target, 0, env)?;
-        let host = deterministic_reduction::current()
-            .and_then(|context| context.host_work_budget());
+        let subst_target = self.substitute_and_charge(evaled_target, 0, env)?;
+        let host = self.host_work_budget();
         if let Some(host) = host.as_ref() {
             let backing = |operations, scanned, bytes| {
                 reserve_matcher_host_work(host, operations, scanned, bytes)
@@ -4858,9 +5196,7 @@ impl ReducerCore {
         // ★ A VISIBLE, ATTRIBUTABLE COPY. `pattern` is a borrowed `&Par` — see
         // this function's own signature comment — so substituting it requires a
         // copy. It is written here rather than hidden inside the wrapper.
-        let subst_pattern = self
-            .substitute
-            .substitute_and_charge(pattern.clone(), 1, env)?;
+        let subst_pattern = self.substitute_and_charge(pattern.clone(), 1, env)?;
 
         let meter = |operations, scanned, backing| {
             reserve_matcher_host_work(
@@ -5524,9 +5860,7 @@ impl ReducerCore {
 
                 let expr_evaled = prepared.next_par();
                 let expr_subst =
-                    self.outer
-                        .substitute
-                        .substitute_and_charge(expr_evaled, 0, env)?;
+                    self.outer.substitute_and_charge(expr_evaled, 0, env)?;
 
                 self.outer
                     .metering
@@ -9705,6 +10039,7 @@ impl DebruijnInterpreter {
         let space: RhoISpace = Arc::new(Box::new(DeterministicRSpace::new(
             space,
             reduction_coordinator.clone(),
+            cost.clone(),
         )));
         let core = ReducerCore::new(
             space.clone().into(),
@@ -9744,9 +10079,11 @@ impl ReducerCore {
             substitute: Substitute { metering },
             drive: idle_drive_cell(),
             reduction_coordinator,
+            residue_seal: false,
             single_term_evaluations: Arc::new(AtomicU64::new(0)),
             yielded_single_term_evaluations: Arc::new(AtomicU64::new(0)),
             spawned_eval_tasks: Arc::new(AtomicU64::new(0)),
+
         });
 
         reducer_cell.set(Arc::downgrade(&core)).ok().unwrap();
@@ -9778,6 +10115,11 @@ fn get_type(expr_instance: ExprInstance) -> String {
     match expr_instance {
         ExprInstance::GBool(_) => String::from("bool"),
         ExprInstance::GInt(_) => String::from("int"),
+        ExprInstance::GUint64(_) => String::from("uint64"),
+        ExprInstance::GInt32(_) => String::from("int32"),
+        ExprInstance::GUint32(_) => String::from("uint32"),
+        ExprInstance::GUint16(_) => String::from("uint16"),
+        ExprInstance::GUint8(_) => String::from("uint8"),
         ExprInstance::GDouble(_) => String::from("float"),
         ExprInstance::GFloat32(_) => String::from("float32"),
         ExprInstance::GBigInt(_) => String::from("bigint"),
@@ -9814,6 +10156,133 @@ fn get_type(expr_instance: ExprInstance) -> String {
         ExprInstance::EMinusMinusBody(_) => String::from("minus minus"),
         ExprInstance::EModBody(_) => String::from("mod"),
     }
+}
+
+#[derive(Clone, Copy)]
+enum SizedIntOp {
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Mod,
+}
+
+impl SizedIntOp {
+    fn name(self) -> &'static str {
+        match self {
+            SizedIntOp::Add => "addition",
+            SizedIntOp::Sub => "subtraction",
+            SizedIntOp::Mul => "multiplication",
+            SizedIntOp::Div => "division",
+            SizedIntOp::Mod => "modulo",
+        }
+    }
+
+    fn symbol(self) -> &'static str {
+        match self {
+            SizedIntOp::Add => "+",
+            SizedIntOp::Sub => "-",
+            SizedIntOp::Mul => "*",
+            SizedIntOp::Div => "/",
+            SizedIntOp::Mod => "%",
+        }
+    }
+}
+
+fn is_sized_int_pair(lhs: &ExprInstance, rhs: &ExprInstance) -> bool {
+    matches!(
+        (lhs, rhs),
+        (ExprInstance::GUint64(_), ExprInstance::GUint64(_))
+            | (ExprInstance::GInt32(_), ExprInstance::GInt32(_))
+            | (ExprInstance::GUint32(_), ExprInstance::GUint32(_))
+            | (ExprInstance::GUint16(_), ExprInstance::GUint16(_))
+            | (ExprInstance::GUint8(_), ExprInstance::GUint8(_))
+    )
+}
+
+fn compare_sized_int(
+    lhs: &ExprInstance,
+    rhs: &ExprInstance,
+) -> Option<std::cmp::Ordering> {
+    match (lhs, rhs) {
+        (ExprInstance::GUint64(a), ExprInstance::GUint64(b)) => Some(a.cmp(b)),
+        (ExprInstance::GInt32(a), ExprInstance::GInt32(b)) => Some(a.cmp(b)),
+        (ExprInstance::GUint32(a), ExprInstance::GUint32(b)) => Some(a.cmp(b)),
+        (ExprInstance::GUint16(a), ExprInstance::GUint16(b)) => Some(a.cmp(b)),
+        (ExprInstance::GUint8(a), ExprInstance::GUint8(b)) => Some(a.cmp(b)),
+        _ => None,
+    }
+}
+
+macro_rules! sized_int_op {
+    ($t:ty, $suffix:literal, $op:expr, $lhs:expr, $rhs:expr) => {{
+        let out_of_range = |v: String| {
+            InterpreterError::ReduceError(format!("Value {} is out of range for {}", v, $suffix))
+        };
+        let a = <$t>::try_from($lhs).map_err(|_| out_of_range($lhs.to_string()))?;
+        let b = <$t>::try_from($rhs).map_err(|_| out_of_range($rhs.to_string()))?;
+        let overflow = || {
+            InterpreterError::ReduceError(format!(
+                "Arithmetic overflow in {}: {}{} {} {}{}",
+                $op.name(),
+                a,
+                $suffix,
+                $op.symbol(),
+                b,
+                $suffix
+            ))
+        };
+        let result: $t = match $op {
+            SizedIntOp::Add => a.wrapping_add(b),
+            SizedIntOp::Sub => a.wrapping_sub(b),
+            SizedIntOp::Mul => a.checked_mul(b).ok_or_else(overflow)?,
+            SizedIntOp::Div => {
+                if b == 0 {
+                    return Err(InterpreterError::ReduceError(
+                        "Division by zero".to_string(),
+                    ));
+                }
+                a.checked_div(b).ok_or_else(overflow)?
+            }
+            SizedIntOp::Mod => {
+                if b == 0 {
+                    return Err(InterpreterError::ReduceError("Modulo by zero".to_string()));
+                }
+                a.checked_rem(b).ok_or_else(overflow)?
+            }
+        };
+        result.into()
+    }};
+}
+
+fn eval_sized_int_op(
+    op: SizedIntOp,
+    lhs: &ExprInstance,
+    rhs: &ExprInstance,
+) -> Result<ExprInstance, InterpreterError> {
+    Ok(match (lhs, rhs) {
+        (ExprInstance::GUint64(a), ExprInstance::GUint64(b)) => {
+            ExprInstance::GUint64(sized_int_op!(u64, "u64", op, *a, *b))
+        }
+        (ExprInstance::GInt32(a), ExprInstance::GInt32(b)) => {
+            ExprInstance::GInt32(sized_int_op!(i32, "i32", op, *a, *b))
+        }
+        (ExprInstance::GUint32(a), ExprInstance::GUint32(b)) => {
+            ExprInstance::GUint32(sized_int_op!(u32, "u32", op, *a, *b))
+        }
+        (ExprInstance::GUint16(a), ExprInstance::GUint16(b)) => {
+            ExprInstance::GUint16(sized_int_op!(u16, "u16", op, *a, *b))
+        }
+        (ExprInstance::GUint8(a), ExprInstance::GUint8(b)) => {
+            ExprInstance::GUint8(sized_int_op!(u8, "u8", op, *a, *b))
+        }
+        _ => {
+            return Err(InterpreterError::BugFoundError(
+                "eval_sized_int_op called on operands that are not a sized integer pair"
+                    .to_string(),
+            ))
+        }
+    })
 }
 
 fn get_unforgeable_type(inf_instance: &UnfInstance) -> String {
@@ -10067,7 +10536,15 @@ fn describe_par_type(par: &Par) -> String {
         match par.exprs[0].expr_instance.as_ref() {
             Some(ExprInstance::GBool(_)) => "Bool".to_string(),
             Some(ExprInstance::GInt(_)) => "Int".to_string(),
+            Some(ExprInstance::GUint64(_)) => "UInt64".to_string(),
+            Some(ExprInstance::GInt32(_)) => "Int32".to_string(),
+            Some(ExprInstance::GUint32(_)) => "UInt32".to_string(),
+            Some(ExprInstance::GUint16(_)) => "UInt16".to_string(),
+            Some(ExprInstance::GUint8(_)) => "UInt8".to_string(),
+            Some(ExprInstance::GDouble(_)) => "Float".to_string(),
             Some(ExprInstance::GBigInt(_)) => "BigInt".to_string(),
+            Some(ExprInstance::GBigRat(_)) => "BigRat".to_string(),
+            Some(ExprInstance::GFixedPoint(_)) => "FixedPoint".to_string(),
             Some(ExprInstance::GString(_)) => "String".to_string(),
             Some(ExprInstance::GUri(_)) => "Uri".to_string(),
             Some(ExprInstance::GByteArray(_)) => "ByteArray".to_string(),
@@ -10105,6 +10582,10 @@ fn describe_par_type(par: &Par) -> String {
 //   (3) identical aggregate `total_cost`.
 // Any divergence is a trampoline bug (or a genuine can't-fold fork -> STOP).
 // ===========================================================================
+#[cfg(test)]
+#[path = "reduce_economic_failure_tests.rs"]
+mod economic_failure_tests;
+
 #[cfg(test)]
 mod differential_trampoline {
     use models::rhoapi::expr::ExprInstance;
@@ -10702,6 +11183,76 @@ mod differential_trampoline {
             .expect("spawn fixed-stack reducer probe")
             .join()
             .expect("fixed-stack reducer probe panicked");
+    }
+
+    #[test]
+    fn mixed_process_tail_forms_depth_4032_use_a_fixed_small_native_stack() {
+        std::thread::Builder::new()
+            .name("mixed-process-tail-depth-4032".to_owned())
+            .stack_size(512 * 1024)
+            .spawn(|| {
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("build current-thread runtime");
+                runtime.block_on(async {
+                    let reducer = build().await;
+                    let mut process = Par::default();
+                    for _ in 0..3_072 {
+                        process = Par::default().with_bundles(vec![Bundle {
+                            body: Some(process),
+                            write_flag: true,
+                            read_flag: true,
+                        }]);
+                    }
+                    for index in 0..960 {
+                        process = match index % 3 {
+                            0 => Par::default().with_bundles(vec![Bundle {
+                                body: Some(process),
+                                write_flag: true,
+                                read_flag: true,
+                            }]),
+                            1 => {
+                                let mut branch = Par::default();
+                                branch.conditionals.push(If {
+                                    condition: Some(new_gbool_par(true, Vec::new(), false)),
+                                    if_true: Some(process),
+                                    if_false: Some(Par::default()),
+                                    locally_free: Vec::new(),
+                                    connective_used: false,
+                                });
+                                branch
+                            },
+                            _ => Par::default().with_news(vec![New {
+                                p: Some(process),
+                                ..Default::default()
+                            }]),
+                        };
+                    }
+
+                    reducer
+                        .eval(
+                            process,
+                            &Env::new(),
+                            Blake2b512Random::create_from_bytes(&[9u8; 32]),
+                        )
+                        .await
+                        .unwrap_or_else(|error| {
+                            let budget = reducer.metering.budget();
+                            panic!(
+                                "the machine must exhaust every process continuation: {error:?}; evaluated={}; total={:?}; remaining={:?}; oop={:?}",
+                                reducer.eval_work_stats().single_term_evaluations,
+                                budget.total_cost(),
+                                budget.remaining(),
+                                budget.last_oop_event()
+                            )
+                        });
+                    assert_eq!(reducer.eval_work_stats().single_term_evaluations, 4_032);
+                });
+            })
+            .expect("spawn fixed-stack mixed-tail probe")
+            .join()
+            .expect("fixed-stack mixed-tail probe panicked");
     }
 
     #[test]

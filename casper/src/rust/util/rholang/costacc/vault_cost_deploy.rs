@@ -365,8 +365,9 @@ impl SystemDeployTrait for ApplyCostDeploy {
         );
         let cursor = match &self.fee_cursor {
             None => RhoNil::create_par(),
-            Some((transition, count)) => Par {
-                exprs: vec![Expr {
+            Some((transition, count)) => {
+                let mut par = Par::default();
+                par.exprs.push(Expr {
                     expr_instance: Some(ExprInstance::ETupleBody(ETuple {
                         ps: vec![
                             RhoByteArray::create_par(transition.scope().to_vec()),
@@ -378,9 +379,9 @@ impl SystemDeployTrait for ApplyCostDeploy {
                         ],
                         ..Default::default()
                     })),
-                }],
-                ..Default::default()
-            },
+                });
+                par
+            }
         };
         env.insert(
             "sys:casper:costFeeCursor".to_string(),

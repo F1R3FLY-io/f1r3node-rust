@@ -121,7 +121,10 @@ impl NativeCandidateIdentity for Logical {
 fn put(space: &Space, channel: u8, value: u8, persistent: bool) -> Produce {
     let datum = Datum::create(&channel, value, persistent);
     let source = datum.source.clone();
-    space.get_store().put_datum(&channel, datum);
+    space
+        .get_store()
+        .put_datum(&channel, datum)
+        .expect("hot datum write");
     space.increment_produce_counter(&source, persistent);
     source
 }
@@ -137,17 +140,24 @@ fn waiting(space: &Space, channels: &[u8], persistent: bool, body: u8) -> Consum
             persist: persistent,
             peeks: BTreeSet::new(),
             source: source.clone(),
-        });
+        })
+        .expect("hot continuation write");
     for channel in channels {
-        space.get_store().put_join(channel, channels);
+        space
+            .get_store()
+            .put_join(channel, channels)
+            .expect("hot join write");
     }
     source
 }
 
 fn fingerprint(space: &Space) -> (String, String, Vec<u8>, String, i64) {
-    space.get_store().get_data(&1);
-    space.get_store().get_joins(&1);
-    space.get_store().get_continuations(&[1]);
+    space.get_store().get_data(&1).expect("hot data read");
+    space.get_store().get_joins(&1).expect("hot joins read");
+    space
+        .get_store()
+        .get_continuations(&[1])
+        .expect("hot continuation read");
     let mut rows: Vec<_> = space
         .get_store()
         .to_map()
@@ -174,8 +184,9 @@ async fn native_candidate_preparation_does_not_need_participant_bindings_or_muta
     let before = fingerprint(&space);
     let candidate = space
         .prepare_native_consume_candidate(&[1], &[0], &9, &source, &BTreeSet::new(), None)
-        .unwrap();
-    assert_eq!(candidate.data[0].datum.a, 7);
+        .unwrap()
+        .expect("candidate");
+    assert_eq!(*candidate.data[0].datum.a, 7);
     let identity = Logical(candidate.comm);
     assert!(
         space
@@ -187,6 +198,7 @@ async fn native_candidate_preparation_does_not_need_participant_bindings_or_muta
                 &BTreeSet::new(),
                 Some(&identity)
             )
+            .expect("candidate preparation")
             .is_some()
     );
     assert!(space.replay_data.lock().unwrap().is_empty());
@@ -200,7 +212,8 @@ async fn native_candidate_can_select_prestate_data_without_selecting_the_produce
     let source = waiting(&space, &[1], false, 9);
     let expected = space
         .prepare_native_consume_candidate(&[1], &[0], &9, &source, &BTreeSet::new(), None)
-        .unwrap();
+        .unwrap()
+        .expect("candidate");
     let before = fingerprint(&space);
     let trigger = Produce::create(&1u8, &8u8, false);
     let identity = Logical(expected.comm);
@@ -208,7 +221,7 @@ async fn native_candidate_can_select_prestate_data_without_selecting_the_produce
         .prepare_native_produce_candidate(&1, &8, false, &trigger, vec![vec![1]], Some(&identity))
         .unwrap()
         .unwrap();
-    assert_eq!(prepared.candidate.data_candidates[0].datum.a, 7);
+    assert_eq!(*prepared.candidate.data_candidates[0].datum.a, 7);
     assert!(prepared.candidate.data_candidates[0].datum_index >= 0);
     assert!(!prepared.comm.produces.contains(&trigger));
     assert_eq!(fingerprint(&space), before);
@@ -285,12 +298,12 @@ proptest! {
             let source = Consume::create(&channels, &patterns, &9u8, false);
             let peeks = if peek { BTreeSet::from([0]) } else { BTreeSet::new() };
             let before = fingerprint(&space);
-            let prepared = space.prepare_native_consume_candidate(&channels, &patterns, &9, &source, &peeks, None).unwrap();
+            let prepared = space.prepare_native_consume_candidate(&channels, &patterns, &9, &source, &peeks, None).unwrap().expect("candidate");
             prop_assert_eq!(prepared.data.len(), values.len());
             let indices: BTreeSet<_> = prepared.data.iter().map(|datum| datum.datum_index).collect();
             prop_assert_eq!(indices.len(), if persistent { 1 } else { values.len() });
             let identity = Logical(prepared.comm);
-            let selected = space.prepare_native_consume_candidate(&channels, &patterns, &9, &source, &peeks, Some(&identity)).unwrap();
+            let selected = space.prepare_native_consume_candidate(&channels, &patterns, &9, &source, &peeks, Some(&identity)).unwrap().expect("candidate");
             prop_assert_eq!(selected.data.iter().map(|d| d.datum_index).collect::<Vec<_>>(), prepared.data.iter().map(|d| d.datum_index).collect::<Vec<_>>());
             prop_assert_eq!(fingerprint(&space), before);
             Ok(())
@@ -303,7 +316,7 @@ proptest! {
             let space = space().await;
             put(&space, 1, 7, false);
             let source = waiting(&space, &[1], false, 9);
-            let candidate = space.prepare_native_consume_candidate(&[1], &[0], &9, &source, &BTreeSet::new(), None).unwrap();
+            let candidate = space.prepare_native_consume_candidate(&[1], &[0], &9, &source, &BTreeSet::new(), None).unwrap().expect("candidate");
             let mut changed = candidate.comm;
             match field {
                 0 => changed.consume.persistent = true,
@@ -316,7 +329,7 @@ proptest! {
                 _ => { changed.times_repeated.clear(); },
             }
             let before = fingerprint(&space);
-            prop_assert!(space.prepare_native_consume_candidate(&[1], &[0], &9, &source, &BTreeSet::new(), Some(&Logical(changed))).is_none());
+            prop_assert!(space.prepare_native_consume_candidate(&[1], &[0], &9, &source, &BTreeSet::new(), Some(&Logical(changed))).unwrap().is_none());
             prop_assert_eq!(fingerprint(&space), before);
             Ok(())
         })?;

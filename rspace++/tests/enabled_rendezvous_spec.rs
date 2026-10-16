@@ -1,24 +1,21 @@
-//! **`E(S)` — the enabled rendezvous set**, and the named firing that consumes
-//! it.
+//! **`E(S)` — the enabled rendezvous set**, and public selection of its values.
 //!
 //! # What is being added, and why it needs its own spec
 //!
 //! `RSpace::consume` and `RSpace::produce` answer *one* question: "is there an
 //! admissible selection, and if so what is the least one?" A speculative
 //! evaluator has to answer a strictly larger one: "what are **all** the
-//! rendezvous this state admits?" — and then fire a **named** member of that
-//! answer, not whichever one a fresh search would rediscover.
+//! rendezvous this state admits?" This spec also selects a non-head value
+//! through the public `consume` API with an exact pattern.
 //!
-//! Two things are therefore exported:
+//! The read-only enumeration is exported:
 //!
 //! | export | what it does |
 //! |---|---|
 //! | [`SpaceMatcher::enumerate_enabled_rendezvous`] (bound as `RSpace::enabled_rendezvous` / `ReplayRSpace::enabled_rendezvous`) | read-only: every (continuation × admissible selection) pair the current hot store admits |
-//! | `RSpace::process_match_found` (visibility only — the body is untouched) | fire one named rendezvous: remove its data and continuation by store index, drop the joins, emit the `COMM` |
 //!
-//! Both are consensus surfaces, so this file pins them the way a consensus
-//! surface has to be pinned — by measurement against the production selector,
-//! not by restating the implementation.
+//! The tests pin it by measurement against the production selector, not by
+//! restating the implementation.
 //!
 //! # The tests
 //!
@@ -29,7 +26,7 @@
 //! | [`t2_the_enumeration_is_complete`] | every resting datum that matches appears; a guard removes exactly the ones it rejects |
 //! | [`t3_the_query_is_read_only`] | store, event log and produce counter are untouched by the query |
 //! | [`t4_the_enumeration_is_deterministic`] | repeated calls agree, and insertion order does not change the answer |
-//! | [`t5_a_named_non_least_selection_fires_exactly_itself`] | ★ firing `E(S)[k]`, `k > 0`, consumes the datum NAMED — the thing a re-search cannot express |
+//! | [`t5_a_non_head_value_can_be_selected_by_public_consume`] | ★ a non-head value named by `E(S)` can be consumed through an exact public pattern, leaving only the other data |
 //! | [`t6_play_and_replay_enumerate_identically`] | ★ the D1 lesson: one enumeration, two spaces |
 //! | [`t7_teeth_an_unsatisfiable_state_enumerates_to_nothing`] | the query can say NO |
 //! | [`t8_a_join_enumerates_its_cross_product`] | multi-bind selections, and the guard filtering them |
@@ -168,19 +165,14 @@ async fn play_space() -> TestSpace { fixture().await.0 }
 
 /// The `AtMost(45)` corpus, chosen by MEASUREMENT rather than by eye.
 ///
-/// THE canonical candidate order is a Blake2b hash of the serialized candidate
-/// (`candidate_order::deterministic_candidate_hash`), so which of two data
-/// comes first has nothing to do with their numeric values. The first pair
-/// written here was `["55", "42"]` — and `t0` measured that the canonical order
-/// puts the *admissible* `42` first, which would have made every "the guard and
-/// the enumeration agree" assertion below vacuous: no backtracking would ever
-/// have been entered.
+/// The canonical candidate order compares source hashes first, so which of
+/// two data comes first has nothing to do with their numeric values. A prior
+/// pair put the admissible value first, making guard backtracking vacuous.
 ///
-/// A sweep of the 54 × 45 rejected/admitted pairs on channel `"offer"` found
-/// 1115 pairs whose REJECTED member sorts first; `("46", "2")` is the least of
-/// them. `t0` re-measures this on every run, so the corpus cannot silently
-/// become vacuous again if the serializer or the hash changes.
-const REJECTED_FIRST: [&str; 2] = ["46", "2"];
+/// Under the current source-hash-first order, `"46"` precedes `"1"` on
+/// channel `"offer"`. `t0` re-measures this on every run, so the corpus cannot
+/// silently become vacuous again if the serializer or the hash changes.
+const REJECTED_FIRST: [&str; 2] = ["46", "1"];
 
 /// Rest `values` on `channel` — each `produce` finds no continuation (none is
 /// installed yet), so each deposits.
@@ -235,7 +227,7 @@ fn selected(enabled: &[TestRendezvous]) -> Vec<(String, Vec<i64>)> {
 
 fn resting_ints(state: &TestState, channel: &str) -> Vec<i64> {
     state
-        .data
+        .data_flat()
         .get(&channel.to_string())
         .map(|data| data.iter().map(|datum| as_int(&datum.a)).collect())
         .unwrap_or_default()
@@ -245,7 +237,7 @@ fn resting_ints(state: &TestState, channel: &str) -> Vec<i64> {
 // T0 — teeth
 // ════════════════════════════════════════════════════════════════════════════
 
-/// The corpus below leans on `["55", "42"]` under `AtMost(45)`. If `"42"`
+/// The corpus below leans on `["46", "1"]` under `AtMost(45)`. If `"1"`
 /// happened to be first in THE canonical candidate order the guard would never
 /// backtrack and "the enumeration agrees with the selector" would be vacuously
 /// true.
@@ -259,7 +251,10 @@ async fn t0_teeth_the_fixture_puts_the_admissible_datum_off_the_front() {
     let space = play_space().await;
     rest_data(&space, "offer", &REJECTED_FIRST).await;
 
-    let pool = space.get_store().get_data(&"offer".to_string());
+    let pool = space
+        .get_store()
+        .get_data(&"offer".to_string())
+        .expect("hot store read");
     let canonical: Vec<i64> =
         rspace_plus_plus::rspace::candidate_order::order_candidates_with_index(pool)
             .iter()
@@ -330,7 +325,7 @@ async fn t1_the_enumeration_head_is_the_selector_choice() {
         );
         store.put_join(&"offer".to_string(), &["offer".to_string()]);
 
-        let enabled = staged.enabled_rendezvous();
+        let enabled = staged.enabled_rendezvous().unwrap();
         assert!(!enabled.is_empty(), "{label}: the staged state must admit a rendezvous");
         let head: Vec<i64> = enabled[0]
             .data_candidates
@@ -385,7 +380,7 @@ async fn t2_the_enumeration_is_complete() {
             BTreeSet::new(),
         ),
     );
-    let mut widths: Vec<i64> = selected(&space.enabled_rendezvous())
+    let mut widths: Vec<i64> = selected(&space.enabled_rendezvous().unwrap())
         .into_iter()
         .map(|(_, data)| data[0])
         .collect();
@@ -409,7 +404,7 @@ async fn t2_the_enumeration_is_complete() {
             BTreeSet::new(),
         ),
     );
-    let mut admitted: Vec<i64> = selected(&guarded.enabled_rendezvous())
+    let mut admitted: Vec<i64> = selected(&guarded.enabled_rendezvous().unwrap())
         .into_iter()
         .map(|(_, data)| data[0])
         .collect();
@@ -431,7 +426,7 @@ async fn t2_the_enumeration_is_complete() {
             ),
         );
     }
-    let mut pairs = selected(&two.enabled_rendezvous());
+    let mut pairs = selected(&two.enabled_rendezvous().unwrap());
     pairs.sort();
     assert_eq!(
         pairs,
@@ -475,8 +470,8 @@ async fn t3_the_query_is_read_only() {
         .await
         .expect("revert must succeed");
 
-    let first = space.enabled_rendezvous();
-    let second = space.enabled_rendezvous();
+    let first = space.enabled_rendezvous().unwrap();
+    let second = space.enabled_rendezvous().unwrap();
     assert_eq!(first.len(), 2);
     assert_eq!(selected(&first), selected(&second));
 
@@ -532,7 +527,7 @@ async fn t4_the_enumeration_is_deterministic() {
                 ),
             );
         }
-        selected(&space.enabled_rendezvous())
+        selected(&space.enabled_rendezvous().unwrap())
     }
 
     let forward = enumerate(&["alpha", "beta", "gamma"], &["10", "20"]).await;
@@ -552,12 +547,10 @@ async fn t4_the_enumeration_is_deterministic() {
 // T5 — ★ firing a NAMED selection
 // ════════════════════════════════════════════════════════════════════════════
 
-/// **The reason `process_match_found` is exported.** `E(S)` is enumerated, a
-/// member other than the head is named, and firing it must consume exactly the
-/// datum that member names — which is precisely what re-running the search
-/// cannot do, because the search always returns the head.
+/// A non-head value named by `E(S)` can be selected by an exact public
+/// `consume`; that COMM must contain the named datum and remove only it.
 #[tokio::test]
-async fn t5_a_named_non_least_selection_fires_exactly_itself() {
+async fn t5_a_non_head_value_can_be_selected_by_public_consume() {
     let space = play_space().await;
     rest_data(&space, "c", &["10", "20", "30"]).await;
     space.get_store().put_continuation(
@@ -574,7 +567,7 @@ async fn t5_a_named_non_least_selection_fires_exactly_itself() {
         .get_store()
         .put_join(&"c".to_string(), &["c".to_string()]);
 
-    let enabled = space.enabled_rendezvous();
+    let enabled = space.enabled_rendezvous().unwrap();
     assert_eq!(enabled.len(), 3, "three resting data, one wildcard bind");
 
     // Name the LAST selection — by construction not the one a search returns.
@@ -586,16 +579,26 @@ async fn t5_a_named_non_least_selection_fires_exactly_itself() {
         "teeth: the named selection must differ from the head, or the test proves nothing"
     );
 
-    let fired = space
-        .process_match_found(chosen)
-        .expect("firing a named rendezvous must produce a result");
+    let selecting = play_space().await;
+    rest_data(&selecting, "c", &["10", "20", "30"]).await;
+    let fired = selecting
+        .consume(
+            vec!["c".to_string()],
+            vec![Pattern::StringMatch(named.to_string())],
+            GuardedContinuation::unguarded("k"),
+            false,
+            BTreeSet::new(),
+        )
+        .await
+        .expect("an exact public consume must not error")
+        .expect("the named datum must be selectable");
     assert_eq!(
         as_int(&fired.1[0].matched_datum),
         named,
         "the fired COMM must carry the datum that was NAMED"
     );
 
-    let after = space.get_store().snapshot();
+    let after = selecting.get_store().snapshot();
     let mut remaining = resting_ints(&after, "c");
     remaining.sort();
     let mut expected: Vec<i64> = vec![10, 20, 30]
@@ -606,7 +609,7 @@ async fn t5_a_named_non_least_selection_fires_exactly_itself() {
     assert_eq!(remaining, expected, "exactly the named datum is gone from the store");
     assert!(
         after
-            .continuations
+            .continuations_flat()
             .get(&vec!["c".to_string()])
             .map(|group| group.is_empty())
             .unwrap_or(true),
@@ -641,8 +644,8 @@ async fn t6_play_and_replay_enumerate_identically() {
     let state = play.get_store().snapshot();
     replay.get_store().set_state(state);
 
-    let from_play = selected(&play.enabled_rendezvous());
-    let from_replay = selected(&replay.enabled_rendezvous());
+    let from_play = selected(&play.enabled_rendezvous().unwrap());
+    let from_replay = selected(&replay.enabled_rendezvous().unwrap());
     assert_eq!(
         from_play, from_replay,
         "play and replay must enumerate the same rendezvous in the same order"
@@ -667,13 +670,16 @@ async fn t7_teeth_an_unsatisfiable_state_enumerates_to_nothing() {
         rest_receive(&lonely, &["c"], vec![Pattern::Wildcard], GuardedContinuation::unguarded("k"))
             .await;
     assert!(!fired, "no data rests, so the consume installs");
-    assert!(lonely.enabled_rendezvous().is_empty(), "a continuation with no datum is not enabled");
+    assert!(
+        lonely.enabled_rendezvous().unwrap().is_empty(),
+        "a continuation with no datum is not enabled"
+    );
 
     // (b) data with no continuation.
     let mute = play_space().await;
     rest_data(&mute, "c", &["10"]).await;
     assert!(
-        mute.enabled_rendezvous().is_empty(),
+        mute.enabled_rendezvous().unwrap().is_empty(),
         "a datum with no continuation is not a rendezvous"
     );
 
@@ -691,7 +697,7 @@ async fn t7_teeth_an_unsatisfiable_state_enumerates_to_nothing() {
         ),
     );
     assert!(
-        refused.enabled_rendezvous().is_empty(),
+        refused.enabled_rendezvous().unwrap().is_empty(),
         "a guard that refuses every resting datum leaves nothing enabled"
     );
 
@@ -709,7 +715,7 @@ async fn t7_teeth_an_unsatisfiable_state_enumerates_to_nothing() {
         ),
     );
     assert!(
-        mismatched.enabled_rendezvous().is_empty(),
+        mismatched.enabled_rendezvous().unwrap().is_empty(),
         "a spatial mismatch leaves nothing enabled"
     );
 }
@@ -743,7 +749,7 @@ async fn t8_a_join_enumerates_its_cross_product() {
         for channel in channels.iter() {
             space.get_store().put_join(channel, &channels);
         }
-        selected(&space.enabled_rendezvous())
+        selected(&space.enabled_rendezvous().unwrap())
             .into_iter()
             .map(|(_, data)| data)
             .collect()
@@ -780,7 +786,7 @@ async fn t8_a_join_enumerates_its_cross_product() {
             BTreeSet::new(),
         ),
     );
-    let admitted: Vec<Vec<i64>> = selected(&space.enabled_rendezvous())
+    let admitted: Vec<Vec<i64>> = selected(&space.enabled_rendezvous().unwrap())
         .into_iter()
         .map(|(_, data)| data)
         .collect();

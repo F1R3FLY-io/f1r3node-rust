@@ -141,8 +141,8 @@ fn concatenate(mut a: Par, mut b: Par) -> Par {
 
 fn concatenate_metered(a: Par, b: Par, meter: Option<&dyn BackingMeter>) -> Result<Par, EvalError> {
     if let Some(meter) = meter {
-        clone_backing::reserve_copy_and_cleanup(&a, meter)?;
-        clone_backing::reserve_copy_and_cleanup(&b, meter)?;
+        clone_backing::reserve_blocks_copy_and_cleanup(&a, meter)?;
+        clone_backing::reserve_blocks_copy_and_cleanup(&b, meter)?;
         let scanned = a
             .locally_free
             .len()
@@ -185,7 +185,12 @@ fn eval_expr_to_par_recursive(
         | ExprInstance::GFloat32(_)
         | ExprInstance::GBigInt(_)
         | ExprInstance::GBigRat(_)
-        | ExprInstance::GFixedPoint(_) => Ok(par_with_expr(expr.clone())),
+        | ExprInstance::GFixedPoint(_)
+        | ExprInstance::GUint64(_)
+        | ExprInstance::GInt32(_)
+        | ExprInstance::GUint32(_)
+        | ExprInstance::GUint16(_)
+        | ExprInstance::GUint8(_) => Ok(par_with_expr(expr.clone())),
 
         // Collections - pass through unchanged. Their elements were
         // already values when the Par was constructed.
@@ -434,7 +439,10 @@ fn single_expr_instance_metered(
     meter: Option<&dyn BackingMeter>,
 ) -> Result<ExprInstance, EvalError> {
     if let Some(meter) = meter {
-        clone_backing::reserve_copy_and_cleanup(par, meter)?;
+        clone_backing::reserve_blocks_copy_and_cleanup(par, meter)?;
+        // The owned evaluator result is released after extracting its one
+        // expression; charge that traversal before the clone.
+        clone_backing::inspect_blocks(par, meter)?;
     }
     single_expr_instance(par)
 }
@@ -597,6 +605,11 @@ fn type_name(instance: &ExprInstance) -> &'static str {
     match instance {
         ExprInstance::GBool(_) => "Bool",
         ExprInstance::GInt(_) => "Int",
+        ExprInstance::GUint64(_) => "UInt64",
+        ExprInstance::GInt32(_) => "Int32",
+        ExprInstance::GUint32(_) => "UInt32",
+        ExprInstance::GUint16(_) => "UInt16",
+        ExprInstance::GUint8(_) => "UInt8",
         ExprInstance::GBigInt(_) => "BigInt",
         ExprInstance::GBigRat(_) => "BigRat",
         ExprInstance::GFixedPoint(_) => "FixedPoint",
@@ -817,7 +830,7 @@ impl<'e> Traversal for EvalTraversal<'e> {
             // rejection depend on a later child instead of the current one.
             EvNode::Eval { par, extract } => {
                 if let Some(meter) = self.meter {
-                    clone_backing::reserve_copy_and_cleanup(par, meter)?;
+                    clone_backing::reserve_blocks_copy_and_cleanup(par, meter)?;
                     meter.reserve(
                         1,
                         par.exprs.len(),
@@ -845,7 +858,7 @@ impl<'e> Traversal for EvalTraversal<'e> {
             }
             EvNode::Expr(expr) => {
                 if let Some(meter) = self.meter {
-                    clone_backing::reserve_copy_and_cleanup(expr, meter)?;
+                    clone_backing::reserve_blocks_copy_and_cleanup(expr, meter)?;
                     meter.reserve(
                         4,
                         0,
@@ -957,8 +970,12 @@ fn combine_eq(
     meter: Option<&dyn BackingMeter>,
 ) -> Result<Par, EvalError> {
     if let Some(meter) = meter {
-        clone_backing::inspect(&lhs, meter)?;
-        clone_backing::inspect(&rhs, meter)?;
+        // The NaN scan, equality comparison, and release each traverse both
+        // owned operands once. Prepay all three block walks.
+        for _ in 0..3 {
+            clone_backing::inspect_blocks(&lhs, meter)?;
+            clone_backing::inspect_blocks(&rhs, meter)?;
+        }
     }
     // IEEE 754: any comparison involving NaN is false (so == is false and
     // != is true). Mirrors `par_contains_nan_double` in the full reducer.
@@ -1051,7 +1068,12 @@ fn descend_ev_expr<'t, 'e>(
         | ExprInstance::GFloat32(_)
         | ExprInstance::GBigInt(_)
         | ExprInstance::GBigRat(_)
-        | ExprInstance::GFixedPoint(_) => {
+        | ExprInstance::GFixedPoint(_)
+        | ExprInstance::GUint64(_)
+        | ExprInstance::GInt32(_)
+        | ExprInstance::GUint32(_)
+        | ExprInstance::GUint16(_)
+        | ExprInstance::GUint8(_) => {
             vals.push(EvVal::Par(par_with_expr(expr.clone())));
             Ok(())
         }

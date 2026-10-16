@@ -62,7 +62,10 @@ async fn out_pathmap(prefix: &str, program: &str) -> EPathMap {
             result.errors
         );
 
-        let data = runtime.get_data(&gstring("out")).await;
+        let data = runtime
+            .get_data(&gstring("out"))
+            .await
+            .expect("output query");
         assert_eq!(data.len(), 1, "expected exactly one datum at @\"out\"");
         let pars = &data[0].a.pars;
         assert_eq!(pars.len(), 1, "expected a single Par at @\"out\"");

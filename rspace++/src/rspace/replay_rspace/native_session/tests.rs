@@ -5,7 +5,9 @@ use proptest::prelude::*;
 
 use super::backing::tree_backing;
 use super::*;
-use crate::rspace::hashing::native_source::SourceMeter;
+use crate::rspace::hashing::native_source::{SourceMeter, channel_key};
+use crate::rspace::hashing::stable_hash_provider::EventCodecEpoch;
+use crate::rspace::history::native_reader::NativeLeafKind;
 use crate::rspace::replay_rspace::native_epoch::{
     NativeCandidateIdentity, NativeOperationEpoch, NativeOperationPublication,
     NativeOperationTicket, NativeReplayDecision, NativeReplayOutcome,
@@ -29,7 +31,14 @@ async fn legacy_query_lock_path_has_no_native_reservation() {
         .space
         .consume_lock(&[striped_locks::channel_hash(&channel)])
         .await;
-    assert!(session.space.get_store().get_data(&channel).is_empty());
+    assert!(
+        session
+            .space
+            .get_store()
+            .get_data(&channel)
+            .unwrap()
+            .is_empty()
+    );
     assert_eq!(calls, session.epoch.calls.load(Ordering::Relaxed));
 }
 
@@ -107,7 +116,10 @@ async fn every_two_phase_lock_preparation_cut_releases_all_guards() {
         let session = self::session().await;
         let before = session.epoch.calls.load(Ordering::Relaxed);
         let result = if produce {
-            session.produce_lock(&channel).await
+            // Changed by D-C2c (D-S1, DR-96): the lock reads the joins by the
+            // channel key.
+            // session.produce_lock(&channel).await
+            session.produce_lock(&channel, free_key(&channel)).await
         } else {
             session.consume_lock(&[0, 1, 1]).await
         };
@@ -117,7 +129,8 @@ async fn every_two_phase_lock_preparation_cut_releases_all_guards() {
             let session = self::session().await;
             *session.epoch.remaining_calls.lock().unwrap() = Some(accepted);
             let result = if produce {
-                session.produce_lock(&channel).await
+                // session.produce_lock(&channel).await
+                session.produce_lock(&channel, free_key(&channel)).await
             } else {
                 session.consume_lock(&[0, 1, 1]).await
             };
@@ -143,6 +156,7 @@ async fn every_two_phase_lock_preparation_cut_releases_all_guards() {
 
 #[derive(Clone, Default)]
 struct Epoch {
+    codec: Option<EventCodecEpoch>,
     state: Arc<Mutex<(Vec<u64>, u64, bool, bool)>>,
     reject_work: Arc<AtomicBool>,
     reject_restore: Arc<AtomicBool>,
@@ -161,6 +175,8 @@ struct Restore(Boundary, usize);
 
 impl NativeReplayEpoch for Epoch {
     type Boundary = Boundary;
+
+    fn codec_epoch(&self) -> EventCodecEpoch { self.codec.unwrap_or(EventCodecEpoch::Legacy) }
 
     fn invalidate(&self) { self.state.lock().unwrap().3 = true; }
 
@@ -391,6 +407,7 @@ impl NativeOperationEpoch<String, String, String, String> for Epoch {
             }
             RSpaceOperationSource::Produce(_) => Ok(None),
             RSpaceOperationSource::Consume(_) => Err(RSpaceError::HostWorkRejected),
+            RSpaceOperationSource::Resting(_) => Err(RSpaceError::HostWorkRejected),
         }
     }
 }
@@ -579,14 +596,44 @@ async fn session_creation_prepays_its_allocations() {
 
 async fn put(session: &Session, value: &str) { put_at(session, "c", value).await; }
 
+/// D-C2c (DR-96): the store key of a channel, on an unlimited meter.
+fn free_key(channel: &String) -> crate::rspace::hashing::native_source::StoreKey {
+    channel_key(channel, &|_: usize, _: usize, _: usize| Ok::<(), RSpaceError>(()))
+        .expect("an unlimited meter")
+}
+
 async fn put_at(session: &Session, channel: &str, value: &str) {
     let _shared = session.gate.read().await;
     session.ensure_open().unwrap();
+    // Changed by D-C2c (D-S1, DR-96): the session's state is its digest-keyed
+    // store, so the fixture fills the channel's entry and puts the datum
+    // there, as a stored produce does.
+    // session
+    //     .space
+    //     .produce(channel.into(), value.into(), false)
+    //     .await
+    //     .unwrap();
+    let free = |_: usize, _: usize, _: usize| Ok::<(), RSpaceError>(());
+    let owned = channel.to_owned();
+    let key = free_key(&owned);
+    session
+        .store
+        .data_view(
+            &owned,
+            key,
+            // Changed by D-C2d (D-S1, DR-96): the reader takes the key's digest.
+            // &|| session.read_records(NativeLeafKind::Data, hash(&owned, &free)?, &free),
+            &|| session.read_records(NativeLeafKind::Data, &key.0, &free),
+            &free,
+        )
+        .unwrap();
+    let datum = Datum::create(&owned, value.to_owned(), false);
     session
         .space
-        .produce(channel.into(), value.into(), false)
-        .await
-        .unwrap();
+        .increment_produce_counter(&datum.source, false);
+    // Changed by D-C2e (D-S1, DR-96): the publication takes the channel.
+    // session.store.put_datum(key, datum, &free).unwrap();
+    session.store.put_datum(&owned, key, datum, &free).unwrap();
     session
         .space
         .event_log
@@ -905,17 +952,29 @@ fn checkpoint_metadata_prepays_clone_and_cleanup() {
     produce.output_value = vec![vec![7; 512]];
     let log = vec![Event::IoEvent(IOEvent::Produce(produce.clone()))];
     let counters = BTreeMap::from([(produce, 1)]);
-    let clone_only = Epoch::default();
-    let clone_meter = |operations, scanned, backing| {
-        clone_only.reserve_comparison(operations, scanned)?;
-        clone_only.reserve_work(0, backing)
+    let reference = |include_release: bool| {
+        use shared::rust::clone_backing::{inspect_blocks, reserve_blocks};
+        let used = std::cell::Cell::new([0_usize; 3]);
+        let meter = |operations: usize, scanned: usize, backing: usize| {
+            let [work, read, held] = used.get();
+            used.set([work + operations, read + scanned, held + backing]);
+            Ok(())
+        };
+        reserve_blocks(&log, &meter).unwrap();
+        reserve_blocks(&counters, &meter).unwrap();
+        if include_release {
+            inspect_blocks(&log, &meter).unwrap();
+            inspect_blocks(&counters, &meter).unwrap();
+        }
+        used.get()
     };
-    crate::rspace::native_backing::reserve(&log, &clone_meter).unwrap();
-    crate::rspace::native_backing::reserve(&counters, &clone_meter).unwrap();
     let prepaid = Epoch::default();
     reserve_checkpoint_metadata(&prepaid, &log, &counters).unwrap();
-    assert!(prepaid.work.load(Ordering::Relaxed) >= clone_only.work.load(Ordering::Relaxed) * 2);
-    assert!(prepaid.bytes.load(Ordering::Relaxed) >= clone_only.bytes.load(Ordering::Relaxed));
+    let copy_only = reference(false);
+    let copy_and_release = reference(true);
+    assert_eq!(prepaid.work.load(Ordering::Relaxed), copy_and_release[0]);
+    assert_eq!(prepaid.bytes.load(Ordering::Relaxed), copy_and_release[1] + copy_and_release[2]);
+    assert!(copy_and_release[0] > copy_only[0] && copy_and_release[1] > copy_only[1]);
 }
 
 proptest! {

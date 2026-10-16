@@ -308,7 +308,10 @@ async fn the_refusal_does_not_half_write() {
          be rolled back."
     );
     assert!(
-        play.get_store().get_continuations(&channels).is_empty(),
+        play.get_store()
+            .get_continuations(&channels)
+            .unwrap()
+            .is_empty(),
         "★★ the refused consume installed a waiting continuation on {channels:?}"
     );
 }

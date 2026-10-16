@@ -57,7 +57,7 @@ async fn cell_total(runtime: &RhoRuntimeImpl, names: &[&str]) -> i64 {
         let channel = Par::default().with_exprs(vec![Expr {
             expr_instance: Some(ExprInstance::GString(name.to_string())),
         }]);
-        let data = runtime.get_data(&channel).await;
+        let data = runtime.get_data(&channel).await.expect("cost output query");
         let value: i64 = data
             .iter()
             .flat_map(|datum| datum.a.pars.iter())

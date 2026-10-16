@@ -280,6 +280,11 @@ pub fn every_expr_instance() -> Vec<(&'static str, ExprInstance)> {
             }),
         ),
         ("GFloat32", ExprInstance::GFloat32(0x7FC0_DEAD)),
+        ("GUint64", ExprInstance::GUint64(u64::MAX)),
+        ("GInt32", ExprInstance::GInt32(i32::MIN)),
+        ("GUint32", ExprInstance::GUint32(u32::MAX)),
+        ("GUint16", ExprInstance::GUint16(u16::MAX.into())),
+        ("GUint8", ExprInstance::GUint8(u8::MAX.into())),
     ]
 }
 

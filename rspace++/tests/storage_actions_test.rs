@@ -146,10 +146,16 @@ async fn produce_should_persist_data_in_store() {
     let r = rspace
         .produce(key[0].clone(), "datum".to_string(), false)
         .await;
-    let data = rspace.get_store().get_data(&channel);
+    let data = rspace
+        .get_store()
+        .get_data(&channel)
+        .expect("hot store read");
     assert_eq!(data, vec![Datum::create(&channel, "datum".to_string(), false)]);
 
-    let cont = rspace.get_store().get_continuations(&key);
+    let cont = rspace
+        .get_store()
+        .get_continuations(&key)
+        .expect("hot store read");
     assert_eq!(cont.len(), 0);
     assert!(r.unwrap().is_none());
 
@@ -180,23 +186,35 @@ async fn producing_twice_on_same_channel_should_persist_two_pieces_of_data_in_st
     let r1 = rspace
         .produce(key[0].clone(), "datum1".to_string(), false)
         .await;
-    let d1 = rspace.get_store().get_data(&channel);
+    let d1 = rspace
+        .get_store()
+        .get_data(&channel)
+        .expect("hot store read");
     assert_eq!(d1, vec![Datum::create(&channel, "datum1".to_string(), false)]);
 
-    let wc1 = rspace.get_store().get_continuations(&key.clone());
+    let wc1 = rspace
+        .get_store()
+        .get_continuations(&key.clone())
+        .expect("hot store read");
     assert_eq!(wc1.len(), 0);
     assert!(r1.unwrap().is_none());
 
     let r2 = rspace
         .produce(key[0].clone(), "datum2".to_string(), false)
         .await;
-    let d2 = rspace.get_store().get_data(&channel);
+    let d2 = rspace
+        .get_store()
+        .get_data(&channel)
+        .expect("hot store read");
     assert!(check_same_elements(d2, vec![
         Datum::create(&channel, "datum1".to_string(), false),
         Datum::create(&channel, "datum2".to_string(), false)
     ]));
 
-    let wc2 = rspace.get_store().get_continuations(&key.clone());
+    let wc2 = rspace
+        .get_store()
+        .get_continuations(&key.clone())
+        .expect("hot store read");
     assert_eq!(wc2.len(), 0);
     assert!(r2.unwrap().is_none());
 
@@ -228,10 +246,16 @@ async fn consuming_on_one_channel_should_persist_continuation_in_store() {
     let r = rspace
         .consume(key.clone(), patterns, StringsCaptor::new(), false, BTreeSet::default())
         .await;
-    let d1 = rspace.get_store().get_data(&channel);
+    let d1 = rspace
+        .get_store()
+        .get_data(&channel)
+        .expect("hot store read");
     assert_eq!(d1.len(), 0);
 
-    let c1 = rspace.get_store().get_continuations(&key.clone());
+    let c1 = rspace
+        .get_store()
+        .get_continuations(&key.clone())
+        .expect("hot store read");
     assert_ne!(c1.len(), 0);
     assert!(r.unwrap().is_none());
 
@@ -262,12 +286,18 @@ async fn consuming_on_three_channels_should_persist_continuation_in_store() {
     let r = rspace
         .consume(key.clone(), patterns, StringsCaptor::new(), false, BTreeSet::default())
         .await;
-    let results: Vec<_> = key.iter().map(|k| rspace.get_store().get_data(k)).collect();
+    let results: Vec<_> = key
+        .iter()
+        .map(|k| rspace.get_store().get_data(k).expect("hot store read"))
+        .collect();
     for seq in &results {
         assert!(seq.is_empty(), "d should be empty");
     }
 
-    let c1 = rspace.get_store().get_continuations(&key);
+    let c1 = rspace
+        .get_store()
+        .get_continuations(&key)
+        .expect("hot store read");
     assert_ne!(c1.len(), 0);
     assert!(r.unwrap().is_none());
 
@@ -291,10 +321,16 @@ async fn producing_then_consuming_on_same_channel_should_return_continuation_and
     let r1 = rspace
         .produce(channel.clone(), "datum".to_string(), false)
         .await;
-    let d1 = rspace.get_store().get_data(&channel);
+    let d1 = rspace
+        .get_store()
+        .get_data(&channel)
+        .expect("hot store read");
     assert_eq!(d1, vec![Datum::create(&channel, "datum".to_string(), false)]);
 
-    let c1 = rspace.get_store().get_continuations(&key.clone());
+    let c1 = rspace
+        .get_store()
+        .get_continuations(&key.clone())
+        .expect("hot store read");
     assert_eq!(c1.len(), 0);
     assert!(r1.unwrap().is_none());
 
@@ -307,10 +343,16 @@ async fn producing_then_consuming_on_same_channel_should_return_continuation_and
             BTreeSet::default(),
         )
         .await;
-    let d2 = rspace.get_store().get_data(&channel);
+    let d2 = rspace
+        .get_store()
+        .get_data(&channel)
+        .expect("hot store read");
     assert_eq!(d2.len(), 0);
 
-    let c2 = rspace.get_store().get_continuations(&key);
+    let c2 = rspace
+        .get_store()
+        .get_continuations(&key)
+        .expect("hot store read");
     assert_eq!(c2.len(), 0);
     assert!(r2.clone().unwrap().is_some());
 
@@ -338,10 +380,16 @@ async fn producing_then_consuming_on_same_channel_with_peek_should_return_contin
     let r1 = rspace
         .produce(channel.clone(), "datum".to_string(), false)
         .await;
-    let d1 = rspace.get_store().get_data(&channel);
+    let d1 = rspace
+        .get_store()
+        .get_data(&channel)
+        .expect("hot store read");
     assert_eq!(d1, vec![Datum::create(&channel, "datum".to_string(), false)]);
 
-    let c1 = rspace.get_store().get_continuations(&key.clone());
+    let c1 = rspace
+        .get_store()
+        .get_continuations(&key.clone())
+        .expect("hot store read");
     assert_eq!(c1.len(), 0);
     assert!(r1.unwrap().is_none());
 
@@ -354,10 +402,16 @@ async fn producing_then_consuming_on_same_channel_with_peek_should_return_contin
             std::iter::once(0).collect(),
         )
         .await;
-    let d2 = rspace.get_store().get_data(&channel);
+    let d2 = rspace
+        .get_store()
+        .get_data(&channel)
+        .expect("hot store read");
     assert_eq!(d2.len(), 0);
 
-    let c2 = rspace.get_store().get_continuations(&key);
+    let c2 = rspace
+        .get_store()
+        .get_continuations(&key)
+        .expect("hot store read");
     assert_eq!(c2.len(), 0);
     assert!(r2.clone().unwrap().is_some());
 
@@ -392,16 +446,25 @@ async fn consuming_then_producing_on_same_channel_with_peek_should_return_contin
         )
         .await;
     assert!(r1.unwrap().is_none());
-    let c1 = rspace.get_store().get_continuations(&key.clone());
+    let c1 = rspace
+        .get_store()
+        .get_continuations(&key.clone())
+        .expect("hot store read");
     assert_eq!(c1.len(), 1);
 
     let r2 = rspace
         .produce(channel.clone(), "datum".to_string(), false)
         .await;
-    let d1 = rspace.get_store().get_data(&channel);
+    let d1 = rspace
+        .get_store()
+        .get_data(&channel)
+        .expect("hot store read");
     assert!(d1.is_empty());
 
-    let c2 = rspace.get_store().get_continuations(&key);
+    let c2 = rspace
+        .get_store()
+        .get_continuations(&key)
+        .expect("hot store read");
     assert_eq!(c2.len(), 0);
     assert!(r2.clone().unwrap().is_some());
 
@@ -436,16 +499,25 @@ async fn consuming_then_producing_on_same_channel_with_persistent_flag_should_re
         )
         .await;
     assert!(r1.unwrap().is_none());
-    let c1 = rspace.get_store().get_continuations(&key.clone());
+    let c1 = rspace
+        .get_store()
+        .get_continuations(&key.clone())
+        .expect("hot store read");
     assert_eq!(c1.len(), 1);
 
     let r2 = rspace
         .produce(channel.clone(), "datum".to_string(), true)
         .await;
-    let d1 = rspace.get_store().get_data(&channel);
+    let d1 = rspace
+        .get_store()
+        .get_data(&channel)
+        .expect("hot store read");
     assert!(d1.is_empty());
 
-    let c2 = rspace.get_store().get_continuations(&key);
+    let c2 = rspace
+        .get_store()
+        .get_continuations(&key)
+        .expect("hot store read");
     assert_eq!(c2.len(), 0);
     assert!(r2.clone().unwrap().is_some());
 
@@ -555,10 +627,16 @@ async fn producing_on_channel_then_consuming_on_that_channel_and_another_then_pr
     let r1 = rspace
         .produce(produce_key_1[0].clone(), "datum1".to_string(), false)
         .await;
-    let d1 = rspace.get_store().get_data(&produce_key_1[0]);
+    let d1 = rspace
+        .get_store()
+        .get_data(&produce_key_1[0])
+        .expect("hot store read");
     assert_eq!(d1, vec![Datum::create(&produce_key_1[0], "datum1".to_string(), false)]);
 
-    let c1 = rspace.get_store().get_continuations(&produce_key_1.clone());
+    let c1 = rspace
+        .get_store()
+        .get_continuations(&produce_key_1.clone())
+        .expect("hot store read");
     assert!(c1.is_empty());
     assert!(r1.unwrap().is_none());
 
@@ -571,12 +649,24 @@ async fn producing_on_channel_then_consuming_on_that_channel_and_another_then_pr
             BTreeSet::default(),
         )
         .await;
-    let d2 = rspace.get_store().get_data(&produce_key_1[0]);
+    let d2 = rspace
+        .get_store()
+        .get_data(&produce_key_1[0])
+        .expect("hot store read");
     assert_eq!(d2, vec![Datum::create(&produce_key_1[0], "datum1".to_string(), false)]);
 
-    let c2 = rspace.get_store().get_continuations(&produce_key_1.clone());
-    let d3 = rspace.get_store().get_data(&produce_key_2[0]);
-    let c3 = rspace.get_store().get_continuations(&consume_key.clone());
+    let c2 = rspace
+        .get_store()
+        .get_continuations(&produce_key_1.clone())
+        .expect("hot store read");
+    let d3 = rspace
+        .get_store()
+        .get_data(&produce_key_2[0])
+        .expect("hot store read");
+    let c3 = rspace
+        .get_store()
+        .get_continuations(&consume_key.clone())
+        .expect("hot store read");
     assert!(c2.is_empty());
     assert!(d3.is_empty());
     assert_ne!(c3.len(), 0);
@@ -585,9 +675,18 @@ async fn producing_on_channel_then_consuming_on_that_channel_and_another_then_pr
     let r3 = rspace
         .produce(produce_key_2[0].clone(), "datum2".to_string(), false)
         .await;
-    let c4 = rspace.get_store().get_continuations(&consume_key);
-    let d4 = rspace.get_store().get_data(&produce_key_1[0]);
-    let d5 = rspace.get_store().get_data(&produce_key_2[0]);
+    let c4 = rspace
+        .get_store()
+        .get_continuations(&consume_key)
+        .expect("hot store read");
+    let d4 = rspace
+        .get_store()
+        .get_data(&produce_key_1[0])
+        .expect("hot store read");
+    let d5 = rspace
+        .get_store()
+        .get_data(&produce_key_2[0])
+        .expect("hot store read");
     assert!(c4.is_empty());
     assert!(d4.is_empty());
     assert!(d5.is_empty());
@@ -622,30 +721,48 @@ async fn producing_on_three_channels_then_consuming_once_should_return_cont_and_
     let r1 = rspace
         .produce(produce_key_1[0].clone(), "datum1".to_string(), false)
         .await;
-    let d1 = rspace.get_store().get_data(&produce_key_1[0]);
+    let d1 = rspace
+        .get_store()
+        .get_data(&produce_key_1[0])
+        .expect("hot store read");
     assert_eq!(d1, vec![Datum::create(&produce_key_1[0], "datum1".to_string(), false)]);
 
-    let c1 = rspace.get_store().get_continuations(&produce_key_1);
+    let c1 = rspace
+        .get_store()
+        .get_continuations(&produce_key_1)
+        .expect("hot store read");
     assert!(c1.is_empty());
     assert!(r1.unwrap().is_none());
 
     let r2 = rspace
         .produce(produce_key_2[0].clone(), "datum2".to_string(), false)
         .await;
-    let d2 = rspace.get_store().get_data(&produce_key_2[0]);
+    let d2 = rspace
+        .get_store()
+        .get_data(&produce_key_2[0])
+        .expect("hot store read");
     assert_eq!(d2, vec![Datum::create(&produce_key_2[0], "datum2".to_string(), false)]);
 
-    let c2 = rspace.get_store().get_continuations(&produce_key_2);
+    let c2 = rspace
+        .get_store()
+        .get_continuations(&produce_key_2)
+        .expect("hot store read");
     assert!(c2.is_empty());
     assert!(r2.unwrap().is_none());
 
     let r3 = rspace
         .produce(produce_key_3[0].clone(), "datum3".to_string(), false)
         .await;
-    let d3 = rspace.get_store().get_data(&produce_key_3[0]);
+    let d3 = rspace
+        .get_store()
+        .get_data(&produce_key_3[0])
+        .expect("hot store read");
     assert_eq!(d3, vec![Datum::create(&produce_key_3[0], "datum3".to_string(), false)]);
 
-    let c3 = rspace.get_store().get_continuations(&produce_key_3);
+    let c3 = rspace
+        .get_store()
+        .get_continuations(&produce_key_3)
+        .expect("hot store read");
     assert!(c3.is_empty());
     assert!(r3.unwrap().is_none());
 
@@ -654,14 +771,17 @@ async fn producing_on_three_channels_then_consuming_once_should_return_cont_and_
         .await;
     let d4: Vec<_> = consume_key
         .iter()
-        .map(|k| rspace.get_store().get_data(k))
+        .map(|k| rspace.get_store().get_data(k).expect("hot store read"))
         .collect();
     // let d4: Vec<Vec<Datum<String>>> = futures::future::join_all(futures);
     for seq in &d4 {
         assert!(seq.is_empty(), "d should be empty");
     }
 
-    let c4 = rspace.get_store().get_continuations(&consume_key);
+    let c4 = rspace
+        .get_store()
+        .get_continuations(&consume_key)
+        .expect("hot store read");
     assert!(c4.is_empty());
     assert!(r4.clone().unwrap().is_some());
 
@@ -712,7 +832,10 @@ async fn producing_then_consuming_three_times_on_same_channel_should_return_thre
     let r6 = rspace
         .consume(key.clone(), vec![Pattern::Wildcard], captor, false, BTreeSet::default())
         .await;
-    let c1 = rspace.get_store().get_continuations(&key);
+    let c1 = rspace
+        .get_store()
+        .get_continuations(&key)
+        .expect("hot store read");
     assert!(c1.is_empty());
 
     let continuations =
@@ -1053,18 +1176,31 @@ async fn consuming_and_producing_with_non_trivial_matches_should_work() {
     assert!(r1.unwrap().is_none());
     assert!(r2.unwrap().is_none());
 
-    let d1 = rspace.get_store().get_data(&"ch2".to_string());
+    let d1 = rspace
+        .get_store()
+        .get_data(&"ch2".to_string())
+        .expect("hot store read");
     assert!(d1.is_empty());
-    let d2 = rspace.get_store().get_data(&"ch1".to_string());
+    let d2 = rspace
+        .get_store()
+        .get_data(&"ch1".to_string())
+        .expect("hot store read");
     assert_eq!(d2, vec![Datum::create(&"ch1".to_string(), "datum1".to_string(), false)]);
 
     let c1 = rspace
         .get_store()
-        .get_continuations(&["ch1".to_string(), "ch2".to_string()]);
+        .get_continuations(&["ch1".to_string(), "ch2".to_string()])
+        .expect("hot store read");
     assert!(!c1.is_empty());
-    let j1 = rspace.get_store().get_joins(&"ch1".to_string());
+    let j1 = rspace
+        .get_store()
+        .get_joins(&"ch1".to_string())
+        .expect("hot store read");
     assert_eq!(j1, vec![vec!["ch1".to_string(), "ch2".to_string()]]);
-    let j2 = rspace.get_store().get_joins(&"ch2".to_string());
+    let j2 = rspace
+        .get_store()
+        .get_joins(&"ch2".to_string())
+        .expect("hot store read");
     assert_eq!(j2, vec![vec!["ch1".to_string(), "ch2".to_string()]]);
 
     let insert_actions: Vec<InsertAction<_, _, _, _>> =
@@ -1108,9 +1244,15 @@ async fn consuming_and_producing_twice_with_non_trivial_matches_should_work() {
         .produce("ch2".to_string(), "datum2".to_string(), false)
         .await;
 
-    let d1 = rspace.get_store().get_data(&"ch1".to_string());
+    let d1 = rspace
+        .get_store()
+        .get_data(&"ch1".to_string())
+        .expect("hot store read");
     assert!(d1.is_empty());
-    let d2 = rspace.get_store().get_data(&"ch2".to_string());
+    let d2 = rspace
+        .get_store()
+        .get_data(&"ch2".to_string())
+        .expect("hot store read");
     assert!(d2.is_empty());
 
     assert!(check_same_elements(run_produce_k(r3.unwrap()), vec![vec!["datum1".to_string()]]));
@@ -1160,25 +1302,44 @@ async fn consuming_on_two_channels_then_consuming_on_one_then_producing_on_both_
 
     let c1 = rspace
         .get_store()
-        .get_continuations(&["ch1".to_string(), "ch2".to_string()]);
+        .get_continuations(&["ch1".to_string(), "ch2".to_string()])
+        .expect("hot store read");
     assert!(!c1.is_empty());
-    let c2 = rspace.get_store().get_continuations(&["ch1".to_string()]);
+    let c2 = rspace
+        .get_store()
+        .get_continuations(&["ch1".to_string()])
+        .expect("hot store read");
     assert!((c2.is_empty()));
-    let c3 = rspace.get_store().get_continuations(&["ch2".to_string()]);
+    let c3 = rspace
+        .get_store()
+        .get_continuations(&["ch2".to_string()])
+        .expect("hot store read");
     assert!(c3.is_empty());
 
-    let d1 = rspace.get_store().get_data(&"ch1".to_string());
+    let d1 = rspace
+        .get_store()
+        .get_data(&"ch1".to_string())
+        .expect("hot store read");
     assert!(d1.is_empty());
-    let d2 = rspace.get_store().get_data(&"ch2".to_string());
+    let d2 = rspace
+        .get_store()
+        .get_data(&"ch2".to_string())
+        .expect("hot store read");
     assert_eq!(d2, vec![Datum::create(&"ch2".to_string(), "datum2".to_string(), false)]);
 
     assert!(r3.clone().unwrap().is_some());
     assert!(r4.unwrap().is_none());
     assert!(check_same_elements(run_produce_k(r3.unwrap()), vec![vec!["datum1".to_string()]]));
 
-    let j1 = rspace.get_store().get_joins(&"ch1".to_string());
+    let j1 = rspace
+        .get_store()
+        .get_joins(&"ch1".to_string())
+        .expect("hot store read");
     assert_eq!(j1, vec![vec!["ch1".to_string(), "ch2".to_string()]]);
-    let j2 = rspace.get_store().get_joins(&"ch2".to_string());
+    let j2 = rspace
+        .get_store()
+        .get_joins(&"ch2".to_string())
+        .expect("hot store read");
     assert_eq!(j2, vec![vec!["ch1".to_string(), "ch2".to_string()]]);
 
     let insert_actions: Vec<InsertAction<_, _, _, _>> =
@@ -1202,9 +1363,15 @@ async fn producing_then_persistent_consume_on_same_channel_should_return_cont_an
     let r1 = rspace
         .produce(key[0].clone(), "datum".to_string(), false)
         .await;
-    let d1 = rspace.get_store().get_data(&key[0]);
+    let d1 = rspace
+        .get_store()
+        .get_data(&key[0])
+        .expect("hot store read");
     assert_eq!(d1, vec![Datum::create(&key[0], "datum".to_string(), false)]);
-    let c1 = rspace.get_store().get_continuations(&key.clone());
+    let c1 = rspace
+        .get_store()
+        .get_continuations(&key.clone())
+        .expect("hot store read");
     assert!(c1.is_empty());
     assert!(r1.unwrap().is_none());
 
@@ -1240,9 +1407,15 @@ async fn producing_then_persistent_consume_on_same_channel_should_return_cont_an
             BTreeSet::default(),
         )
         .await;
-    let d2 = rspace.get_store().get_data(&key[0]);
+    let d2 = rspace
+        .get_store()
+        .get_data(&key[0])
+        .expect("hot store read");
     assert!(d2.is_empty());
-    let c2 = rspace.get_store().get_continuations(&key);
+    let c2 = rspace
+        .get_store()
+        .get_continuations(&key)
+        .expect("hot store read");
     assert!(!c2.is_empty());
     assert!(r3.unwrap().is_none());
 }
@@ -1256,9 +1429,15 @@ async fn producing_then_persistent_consume_then_producing_again_on_same_channel_
     let r1 = rspace
         .produce(key[0].clone(), "datum1".to_string(), false)
         .await;
-    let d1 = rspace.get_store().get_data(&key[0]);
+    let d1 = rspace
+        .get_store()
+        .get_data(&key[0])
+        .expect("hot store read");
     assert_eq!(d1, vec![Datum::create(&key[0], "datum1".to_string(), false)]);
-    let c1 = rspace.get_store().get_continuations(&key.clone());
+    let c1 = rspace
+        .get_store()
+        .get_continuations(&key.clone())
+        .expect("hot store read");
     assert!(c1.is_empty());
     assert!(r1.unwrap().is_none());
 
@@ -1295,18 +1474,30 @@ async fn producing_then_persistent_consume_then_producing_again_on_same_channel_
         .await;
     assert!(r3.unwrap().is_none());
 
-    let d2 = rspace.get_store().get_data(&key[0]);
+    let d2 = rspace
+        .get_store()
+        .get_data(&key[0])
+        .expect("hot store read");
     assert!(d2.is_empty());
-    let c2 = rspace.get_store().get_continuations(&key.clone());
+    let c2 = rspace
+        .get_store()
+        .get_continuations(&key.clone())
+        .expect("hot store read");
     assert!(!c2.is_empty());
 
     let r4 = rspace
         .produce(key[0].clone(), "datum2".to_string(), false)
         .await;
     assert!(r4.clone().unwrap().is_some());
-    let d3 = rspace.get_store().get_data(&key[0]);
+    let d3 = rspace
+        .get_store()
+        .get_data(&key[0])
+        .expect("hot store read");
     assert!(d3.is_empty());
-    let c3 = rspace.get_store().get_continuations(&key);
+    let c3 = rspace
+        .get_store()
+        .get_continuations(&key)
+        .expect("hot store read");
     assert!(!c3.is_empty());
     assert!(check_same_elements(run_produce_k(r4.clone().unwrap()), vec![vec![
         "datum2".to_string()
@@ -1326,18 +1517,30 @@ async fn doing_persistent_consume_and_producing_multiple_times_should_work() {
             BTreeSet::default(),
         )
         .await;
-    let d1 = rspace.get_store().get_data(&"ch1".to_string());
+    let d1 = rspace
+        .get_store()
+        .get_data(&"ch1".to_string())
+        .expect("hot store read");
     assert!(d1.is_empty());
-    let c1 = rspace.get_store().get_continuations(&["ch1".to_string()]);
+    let c1 = rspace
+        .get_store()
+        .get_continuations(&["ch1".to_string()])
+        .expect("hot store read");
     assert!(!c1.is_empty());
     assert!(r1.unwrap().is_none());
 
     let r2 = rspace
         .produce("ch1".to_string(), "datum1".to_string(), false)
         .await;
-    let d2 = rspace.get_store().get_data(&"ch1".to_string());
+    let d2 = rspace
+        .get_store()
+        .get_data(&"ch1".to_string())
+        .expect("hot store read");
     assert!(d2.is_empty());
-    let c2 = rspace.get_store().get_continuations(&["ch1".to_string()]);
+    let c2 = rspace
+        .get_store()
+        .get_continuations(&["ch1".to_string()])
+        .expect("hot store read");
     assert!(!c2.is_empty());
     assert!(r2.clone().unwrap().is_some());
     assert!(check_same_elements(run_produce_k(r2.unwrap().clone()), vec![vec![
@@ -1347,9 +1550,15 @@ async fn doing_persistent_consume_and_producing_multiple_times_should_work() {
     let r3 = rspace
         .produce("ch1".to_string(), "datum2".to_string(), false)
         .await;
-    let d3 = rspace.get_store().get_data(&"ch1".to_string());
+    let d3 = rspace
+        .get_store()
+        .get_data(&"ch1".to_string())
+        .expect("hot store read");
     assert!(d3.is_empty());
-    let c3 = rspace.get_store().get_continuations(&["ch1".to_string()]);
+    let c3 = rspace
+        .get_store()
+        .get_continuations(&["ch1".to_string()])
+        .expect("hot store read");
     assert!(!c3.is_empty());
     assert!(r3.clone().unwrap().is_some());
 
@@ -1404,9 +1613,15 @@ async fn consuming_and_doing_persistent_produce_should_work() {
         .produce("ch1".to_string(), "datum1".to_string(), true)
         .await;
     assert!(r3.unwrap().is_none());
-    let d1 = rspace.get_store().get_data(&"ch1".to_string());
+    let d1 = rspace
+        .get_store()
+        .get_data(&"ch1".to_string())
+        .expect("hot store read");
     assert_eq!(d1, vec![Datum::create(&"ch1".to_string(), "datum1".to_string(), true)]);
-    let c1 = rspace.get_store().get_continuations(&["ch1".to_string()]);
+    let c1 = rspace
+        .get_store()
+        .get_continuations(&["ch1".to_string()])
+        .expect("hot store read");
     assert!(c1.is_empty());
 }
 
@@ -1445,9 +1660,15 @@ async fn consuming_then_persistent_produce_then_consuming_should_work() {
         .produce("ch1".to_string(), "datum1".to_string(), true)
         .await;
     assert!(r3.unwrap().is_none());
-    let d1 = rspace.get_store().get_data(&"ch1".to_string());
+    let d1 = rspace
+        .get_store()
+        .get_data(&"ch1".to_string())
+        .expect("hot store read");
     assert_eq!(d1, vec![Datum::create(&"ch1".to_string(), "datum1".to_string(), true)]);
-    let c1 = rspace.get_store().get_continuations(&["ch1".to_string()]);
+    let c1 = rspace
+        .get_store()
+        .get_continuations(&["ch1".to_string()])
+        .expect("hot store read");
     assert!(c1.is_empty());
 
     let r4 = rspace
@@ -1460,9 +1681,15 @@ async fn consuming_then_persistent_produce_then_consuming_should_work() {
         )
         .await;
     assert!(r4.clone().unwrap().is_some());
-    let d2 = rspace.get_store().get_data(&"ch1".to_string());
+    let d2 = rspace
+        .get_store()
+        .get_data(&"ch1".to_string())
+        .expect("hot store read");
     assert_eq!(d2, vec![Datum::create(&"ch1".to_string(), "datum1".to_string(), true)]);
-    let c2 = rspace.get_store().get_continuations(&["ch1".to_string()]);
+    let c2 = rspace
+        .get_store()
+        .get_continuations(&["ch1".to_string()])
+        .expect("hot store read");
     assert!(c2.is_empty());
     assert!(check_same_elements(run_k(r4.unwrap()), vec![vec!["datum1".to_string()]]))
 }
@@ -1474,9 +1701,15 @@ async fn doing_persistent_produce_and_consuming_twice_should_work() {
     let r1 = rspace
         .produce("ch1".to_string(), "datum1".to_string(), true)
         .await;
-    let d1 = rspace.get_store().get_data(&"ch1".to_string());
+    let d1 = rspace
+        .get_store()
+        .get_data(&"ch1".to_string())
+        .expect("hot store read");
     assert_eq!(d1, vec![Datum::create(&"ch1".to_string(), "datum1".to_string(), true)]);
-    let c1 = rspace.get_store().get_continuations(&["ch1".to_string()]);
+    let c1 = rspace
+        .get_store()
+        .get_continuations(&["ch1".to_string()])
+        .expect("hot store read");
     assert!(c1.is_empty());
     assert!(r1.unwrap().is_none());
 
@@ -1489,9 +1722,15 @@ async fn doing_persistent_produce_and_consuming_twice_should_work() {
             BTreeSet::default(),
         )
         .await;
-    let d2 = rspace.get_store().get_data(&"ch1".to_string());
+    let d2 = rspace
+        .get_store()
+        .get_data(&"ch1".to_string())
+        .expect("hot store read");
     assert_eq!(d2, vec![Datum::create(&"ch1".to_string(), "datum1".to_string(), true)]);
-    let c2 = rspace.get_store().get_continuations(&["ch1".to_string()]);
+    let c2 = rspace
+        .get_store()
+        .get_continuations(&["ch1".to_string()])
+        .expect("hot store read");
     assert!(c2.is_empty());
     assert!(r2.clone().unwrap().is_some());
     assert!(check_same_elements(run_k(r2.unwrap()), vec![vec!["datum1".to_string()]]));
@@ -1505,9 +1744,15 @@ async fn doing_persistent_produce_and_consuming_twice_should_work() {
             BTreeSet::default(),
         )
         .await;
-    let d3 = rspace.get_store().get_data(&"ch1".to_string());
+    let d3 = rspace
+        .get_store()
+        .get_data(&"ch1".to_string())
+        .expect("hot store read");
     assert_eq!(d3, vec![Datum::create(&"ch1".to_string(), "datum1".to_string(), true)]);
-    let c3 = rspace.get_store().get_continuations(&["ch1".to_string()]);
+    let c3 = rspace
+        .get_store()
+        .get_continuations(&["ch1".to_string()])
+        .expect("hot store read");
     assert!(c3.is_empty());
     assert!(r3.clone().unwrap().is_some());
     assert!(check_same_elements(run_k(r3.unwrap()), vec![vec!["datum1".to_string()]]));
@@ -1546,9 +1791,15 @@ async fn producing_three_times_then_doing_persistent_consume_should_work() {
             BTreeSet::default(),
         )
         .await;
-    let d1 = rspace.get_store().get_data(&"ch1".to_string());
+    let d1 = rspace
+        .get_store()
+        .get_data(&"ch1".to_string())
+        .expect("hot store read");
     assert!(expected_data.iter().any(|datum| d1.contains(datum)));
-    let c1 = rspace.get_store().get_continuations(&["ch1".to_string()]);
+    let c1 = rspace
+        .get_store()
+        .get_continuations(&["ch1".to_string()])
+        .expect("hot store read");
     assert!(c1.is_empty());
     assert!(r4.clone().unwrap().is_some());
     let cont_results_r4 = run_k(r4.unwrap());
@@ -1567,9 +1818,15 @@ async fn producing_three_times_then_doing_persistent_consume_should_work() {
             BTreeSet::default(),
         )
         .await;
-    let d2 = rspace.get_store().get_data(&"ch1".to_string());
+    let d2 = rspace
+        .get_store()
+        .get_data(&"ch1".to_string())
+        .expect("hot store read");
     assert!(expected_data.iter().any(|datum| d2.contains(datum)));
-    let c2 = rspace.get_store().get_continuations(&["ch1".to_string()]);
+    let c2 = rspace
+        .get_store()
+        .get_continuations(&["ch1".to_string()])
+        .expect("hot store read");
     assert!(c2.is_empty());
     assert!(r5.clone().unwrap().is_some());
     let cont_results_r5 = run_k(r5.unwrap());
@@ -1616,9 +1873,15 @@ async fn producing_three_times_then_doing_persistent_consume_should_work() {
             BTreeSet::default(),
         )
         .await;
-    let d3 = rspace.get_store().get_data(&"ch1".to_string());
+    let d3 = rspace
+        .get_store()
+        .get_data(&"ch1".to_string())
+        .expect("hot store read");
     assert!(d3.is_empty());
-    let c3 = rspace.get_store().get_continuations(&["ch1".to_string()]);
+    let c3 = rspace
+        .get_store()
+        .get_continuations(&["ch1".to_string()])
+        .expect("hot store read");
     assert!(!c3.is_empty());
     assert!(r7.unwrap().is_none());
 }
@@ -1952,6 +2215,7 @@ async fn consuming_with_different_pattern_and_channel_lengths_should_error() {
         rspace
             .get_store()
             .get_continuations(&vec!["ch1".to_string(), "ch2".to_string()])
+            .expect("hot store read")
             .is_empty(),
         "★★ the refused consume installed a waiting continuation on [ch1, ch2]"
     );

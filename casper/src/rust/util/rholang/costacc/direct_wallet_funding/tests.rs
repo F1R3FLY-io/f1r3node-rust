@@ -225,15 +225,15 @@ impl rholang::rust::interpreter::frontend::ProgramFrontend for TrustedCostTestFr
                 "trusted test frontend received the wrong source or deploy environment",
             ));
         }
+        let mut process = Par::default();
+        process.cost_stacks = vec![models::rhoapi::CostStack {
+            cells: vec![CostSignature {
+                value: Some(Value::Name(Par::default())),
+            }],
+            parallel_tail: Vec::new(),
+        }];
         Ok(
-            rholang::rust::interpreter::frontend::PreparedProgram::from_normalized(Par {
-                cost_stacks: vec![models::rhoapi::CostStack {
-                    cells: vec![CostSignature {
-                        value: Some(Value::Name(Par::default())),
-                    }],
-                }],
-                ..Par::default()
-            }),
+            rholang::rust::interpreter::frontend::PreparedProgram::from_normalized(process),
         )
     }
 }

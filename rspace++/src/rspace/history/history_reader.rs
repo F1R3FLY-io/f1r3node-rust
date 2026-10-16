@@ -21,7 +21,7 @@ use crate::rspace::serializers::serializers::{
  *
  * See rspace/src/main/scala/coop/rchain/rspace/history/HistoryReader.scala
  */
-pub trait HistoryReader<Key, C: Clone, P: Clone, A: Clone, K: Clone> {
+pub trait HistoryReader<Key, C: Clone, P: Clone, A: Clone, K: Clone>: Send + Sync {
     // Get current root which reader reads from
     fn root(&self) -> Key;
 
@@ -80,11 +80,14 @@ pub trait HistoryReader<Key, C: Clone, P: Clone, A: Clone, K: Clone> {
  * hashed keys
  */
 pub trait HistoryReaderBase<C: Clone, P: Clone, A: Clone, K: Clone>: Sync + Send {
-    fn get_data_proj(&self, key: &C) -> Vec<Datum<A>>;
+    fn get_data_proj(&self, key: &C) -> Result<Vec<Datum<A>>, RSpaceError>;
 
-    fn get_continuations_proj(&self, key: &Vec<C>) -> Vec<WaitingContinuation<P, K>>;
+    fn get_continuations_proj(
+        &self,
+        key: &Vec<C>,
+    ) -> Result<Vec<WaitingContinuation<P, K>>, RSpaceError>;
 
-    fn get_joins_proj(&self, key: &C) -> Vec<Vec<C>>;
+    fn get_joins_proj(&self, key: &C) -> Result<Vec<Vec<C>>, RSpaceError>;
 
     /**                                                                      
      *                                                                      
@@ -93,13 +96,16 @@ pub trait HistoryReaderBase<C: Clone, P: Clone, A: Clone, K: Clone>: Sync + Send
      *                                                                      
      *
      */
-    fn get_data(&self, key: &C) -> Vec<Datum<A>> { self.get_data_proj(key) }
+    fn get_data(&self, key: &C) -> Result<Vec<Datum<A>>, RSpaceError> { self.get_data_proj(key) }
 
-    fn get_continuations(&self, key: &Vec<C>) -> Vec<WaitingContinuation<P, K>> {
+    fn get_continuations(
+        &self,
+        key: &Vec<C>,
+    ) -> Result<Vec<WaitingContinuation<P, K>>, RSpaceError> {
         self.get_continuations_proj(key)
     }
 
-    fn get_joins(&self, key: &C) -> Vec<Vec<C>> { self.get_joins_proj(key) }
+    fn get_joins(&self, key: &C) -> Result<Vec<Vec<C>>, RSpaceError> { self.get_joins_proj(key) }
 }
 
 /// A history reader bound to one authenticated codec epoch for its lifetime.
@@ -127,21 +133,27 @@ impl<C: Clone, P: Clone, A: Clone, K: Clone> EpochHistoryReader<C, P, A, K> {
 
 impl<C, P, A, K> EpochHistoryReader<C, P, A, K>
 where
-    C: Clone + StableHashSerialize,
-    P: Clone,
-    A: Clone,
-    K: Clone,
+    C: Clone + StableHashSerialize + ColdStoreDecode + Send + Sync + 'static,
+    P: Clone + ColdStoreDecode + Send + Sync + 'static,
+    A: Clone + ColdStoreDecode + Send + Sync + 'static,
+    K: Clone + ColdStoreDecode + Send + Sync + 'static,
 {
-    fn decode_error(error: ColdStoreDecodeError) -> RSpaceError {
-        RSpaceError::HistoryError(HistoryError::DecodeError(error.to_string()))
+    fn decode_error(error: ColdStoreDecodeError) -> HistoryError {
+        HistoryError::DecodeError(error.to_string())
     }
 
-    pub fn get_data(&self, channel: &C) -> Result<Vec<Datum<A>>, RSpaceError>
-    where A: ColdStoreDecode {
+    pub fn get_data(&self, channel: &C) -> Result<Vec<Datum<A>>, RSpaceError> {
         let key = channel_hash_for_epoch(self.epoch, channel)?;
+        self.get_data_by_hash(&key)
+            .map_err(RSpaceError::HistoryError)
+    }
+
+    /// Decode a value at an event-carried key already authenticated as hashed
+    /// under this reader's epoch. The caller must establish that provenance;
+    /// this method cannot recover it from a hash. It does not hash again.
+    pub fn get_data_by_hash(&self, key: &Blake2b256Hash) -> Result<Vec<Datum<A>>, HistoryError> {
         self.reader
-            .get_data_proj_binary(&key)
-            .map_err(RSpaceError::HistoryError)?
+            .get_data_proj_binary(key)?
             .iter()
             .map(|bytes| decode_datum_for_epoch(self.epoch, bytes).map_err(Self::decode_error))
             .collect()
@@ -150,15 +162,20 @@ where
     pub fn get_continuations(
         &self,
         channels: &[C],
-    ) -> Result<Vec<WaitingContinuation<P, K>>, RSpaceError>
-    where
-        P: ColdStoreDecode,
-        K: ColdStoreDecode,
-    {
+    ) -> Result<Vec<WaitingContinuation<P, K>>, RSpaceError> {
         let key = channel_tuple_hash_for_epoch(self.epoch, channels)?;
+        self.get_continuations_by_hash(&key)
+            .map_err(RSpaceError::HistoryError)
+    }
+
+    /// Decode continuations at an already-authenticated tuple hash without
+    /// changing the codec epoch selected for this reader.
+    pub fn get_continuations_by_hash(
+        &self,
+        key: &Blake2b256Hash,
+    ) -> Result<Vec<WaitingContinuation<P, K>>, HistoryError> {
         self.reader
-            .get_continuations_proj_binary(&key)
-            .map_err(RSpaceError::HistoryError)?
+            .get_continuations_proj_binary(key)?
             .iter()
             .map(|bytes| {
                 decode_continuation_for_epoch(self.epoch, bytes).map_err(Self::decode_error)
@@ -166,12 +183,17 @@ where
             .collect()
     }
 
-    pub fn get_joins(&self, channel: &C) -> Result<Vec<Vec<C>>, RSpaceError>
-    where C: ColdStoreDecode {
+    pub fn get_joins(&self, channel: &C) -> Result<Vec<Vec<C>>, RSpaceError> {
         let key = channel_hash_for_epoch(self.epoch, channel)?;
+        self.get_joins_by_hash(&key)
+            .map_err(RSpaceError::HistoryError)
+    }
+
+    /// Decode joins at an already-authenticated channel hash under the bound
+    /// epoch.
+    pub fn get_joins_by_hash(&self, key: &Blake2b256Hash) -> Result<Vec<Vec<C>>, HistoryError> {
         self.reader
-            .get_joins_proj_binary(&key)
-            .map_err(RSpaceError::HistoryError)?
+            .get_joins_proj_binary(key)?
             .iter()
             .map(|bytes| {
                 crate::rspace::serializers::cold_store_decode::cold_decode_vec_prefix_for_epoch::<C>(
@@ -182,4 +204,33 @@ where
             })
             .collect()
     }
+
+    pub fn base(self) -> Box<dyn HistoryReaderBase<C, P, A, K>> { Box::new(self) }
+
+    pub fn base_metered(
+        self,
+        meter: &dyn SourceMeter,
+    ) -> Result<Box<dyn HistoryReaderBase<C, P, A, K>>, RSpaceError> {
+        meter.reserve(1, 0, std::mem::size_of::<Self>())?;
+        Ok(self.base())
+    }
+}
+
+impl<C, P, A, K> HistoryReaderBase<C, P, A, K> for EpochHistoryReader<C, P, A, K>
+where
+    C: Clone + StableHashSerialize + ColdStoreDecode + Send + Sync + 'static,
+    P: Clone + ColdStoreDecode + Send + Sync + 'static,
+    A: Clone + ColdStoreDecode + Send + Sync + 'static,
+    K: Clone + ColdStoreDecode + Send + Sync + 'static,
+{
+    fn get_data_proj(&self, key: &C) -> Result<Vec<Datum<A>>, RSpaceError> { self.get_data(key) }
+
+    fn get_continuations_proj(
+        &self,
+        key: &Vec<C>,
+    ) -> Result<Vec<WaitingContinuation<P, K>>, RSpaceError> {
+        self.get_continuations(key)
+    }
+
+    fn get_joins_proj(&self, key: &C) -> Result<Vec<Vec<C>>, RSpaceError> { self.get_joins(key) }
 }

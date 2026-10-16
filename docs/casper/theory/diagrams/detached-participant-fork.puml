@@ -1,0 +1,38 @@
+@startuml
+!theme plain
+skinparam backgroundColor #FFFFFF
+skinparam sequenceArrowThickness 2
+skinparam participantBorderColor #34495E
+skinparam noteBackgroundColor #FFF8E1
+skinparam noteBorderColor #B7950B
+
+participant "Host publisher\nparent p" as Host #D6EAF8
+participant "Reduction session" as Session #D5F5E3
+participant "Rholang continuation\nchild c" as Child #FADBD8
+
+Host -> Session: Matched publication under p
+Session --> Host: Continuation can start
+Host -> Session: fork_detached_child(p, c)
+activate Session
+Session -> Session: Keep p and register fresh c
+Session -> Child: Start under c
+deactivate Session
+
+par Continuing host call
+  Host -> Session: Next publication under p
+else Detached continuation
+  Child -> Session: RSpace intent under c
+end
+
+Host -> Session: Park p while joining child
+Session -> Session: Ready frontier: c waiting, p parked
+Session --> Child: Commit child intent
+Child -> Session: Complete c
+Session --> Host: Child join resolves
+Host -> Session: Resume p before caller continues
+Host -> Session: Complete p after caller returns
+note over Session #FFF8E1
+  Release the evaluation permit only after
+  both participants and all intents finish.
+end note
+@enduml

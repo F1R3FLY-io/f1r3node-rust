@@ -42,8 +42,8 @@ impl<'a> FoldMatch<Par, Par> for SpatialMatcherContext<'a> {
 
         let n = tlist.len().min(plist.len());
         for i in 0..n {
-            self.reserve_inspect(&tlist[i])?;
-            self.reserve_inspect(&plist[i])?;
+            self.inspect_blocks(&tlist[i])?;
+            self.inspect_blocks(&plist[i])?;
             self.spatial_match_par_ref(&tlist[i], &plist[i])?;
         }
 
@@ -97,13 +97,13 @@ impl<'a> FoldMatch<Par, Par> for SpatialMatcherContext<'a> {
             // `p.locally_free` (has_locally_free.rs:49-53) —
             // read the precomputed field instead of cloning the whole Par
             // to feed the consuming signature. Byte-identical semantics.
-            self.reserve_inspect(item)?;
+            self.inspect_blocks(item)?;
             if !item.locally_free.is_empty() {
                 // The recursive form returned `None` from the first offending
                 // element without visiting the rest; so does this.
                 return None;
             }
-            self.reserve_clone(item)?;
+            self.reserve_blocks_copy_and_cleanup(item)?;
             self.reserve_vec(&mut acc, 1)?;
             acc.push(item.clone());
         }
@@ -123,8 +123,8 @@ impl<'a> FoldMatch<MatchCase, MatchCase> for SpatialMatcherContext<'a> {
         // cost-identical).
         let n = tlist.len().min(plist.len());
         for i in 0..n {
-            self.reserve_clone(&tlist[i])?;
-            self.reserve_clone(&plist[i])?;
+            self.reserve_blocks_copy_and_cleanup(&tlist[i])?;
+            self.reserve_blocks_copy_and_cleanup(&plist[i])?;
             let __clone_start = std::time::Instant::now();
             let t_owned = tlist[i].clone();
             let p_owned = plist[i].clone();
@@ -159,11 +159,11 @@ impl<'a> FoldMatch<MatchCase, MatchCase> for SpatialMatcherContext<'a> {
         mut acc: Vec<MatchCase>,
     ) -> Option<Vec<MatchCase>> {
         for item in trem {
-            self.reserve_clone(item)?;
+            self.reserve_blocks_copy_and_cleanup(item)?;
             if !self.locally_free(item.to_owned(), 0).is_empty() {
                 return None;
             }
-            self.reserve_clone(item)?;
+            self.reserve_blocks_copy_and_cleanup(item)?;
             self.reserve_vec(&mut acc, 1)?;
             acc.push(item.clone());
         }

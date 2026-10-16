@@ -112,6 +112,14 @@ pub(super) fn from_expr(expr: Expr) -> Option<RhoExpr> {
         ExprInstance::GDouble(bits) => RhoExpr::ExprFloat {
             data: f64::from_bits(bits),
         },
+        ExprInstance::GFloat32(bits) => RhoExpr::ExprFloat32 {
+            data: f32::from_bits(bits),
+        },
+        ExprInstance::GUint64(data) => RhoExpr::ExprUint64 { data },
+        ExprInstance::GInt32(data) => RhoExpr::ExprInt32 { data },
+        ExprInstance::GUint32(data) => RhoExpr::ExprUint32 { data },
+        ExprInstance::GUint16(data) => RhoExpr::ExprUint16 { data },
+        ExprInstance::GUint8(data) => RhoExpr::ExprUint8 { data },
         ExprInstance::GBigInt(bytes) => RhoExpr::ExprBigInt {
             data: BigInt::from_signed_bytes_be(&bytes).to_string(),
         },

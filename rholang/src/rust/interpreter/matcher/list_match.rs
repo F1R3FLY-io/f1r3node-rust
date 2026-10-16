@@ -3,7 +3,6 @@ use std::collections::HashSet;
 use models::rhoapi::Par;
 use models::rust::utils::FreeMap;
 use shared::rust::clone_backing::{BackingError, CloneBacking, Walker};
-use shared::rust::collection_backing::tree_backing;
 
 use super::spatial_matcher::MatcherWork;
 
@@ -108,7 +107,7 @@ macro_rules! list_match {
                     Some(())
                 } else if plen == 0 && remainder.is_some() {
                     for target in &tlist {
-                        self.reserve_clone(target)?;
+                        self.reserve_blocks_copy_and_cleanup(target)?;
                         if !self.locally_free(target.to_owned(), 0).is_empty() {
                             return None;
                         }
@@ -147,7 +146,7 @@ macro_rules! list_match {
 
                 // println!("\nlist_match all_patterns: {:?}", all_patterns);
 
-                self.reserve_clone(&self.free_map)?;
+                self.reserve_blocks_copy_and_cleanup(&self.free_map)?;
                 let mut cloned_self = self.clone();
                 self.reserve(1, 0, std::mem::size_of::<SpatialMatcherContext<'_>>() + 2 * std::mem::size_of::<usize>())?;
                 let _match_function: Box<
@@ -178,7 +177,7 @@ macro_rules! list_match {
 
                 // println!("\ncurrent free_map: {:?}", self.free_map);
 
-                self.reserve_clone(&targets)?;
+                self.reserve_blocks_copy_and_cleanup(&targets)?;
                 let work = self.work()?;
                 let matches = maximum_bipartite_match
                     .find_indexed_matches_metered(all_patterns, targets.clone(), &work)?;
@@ -188,12 +187,12 @@ macro_rules! list_match {
 
                 let mut free_maps: Vec<FreeMap> = Vec::new();
                 for (_, _, _, free_map) in &matches {
-                    self.reserve_clone(free_map)?;
+                    self.reserve_blocks_copy_and_cleanup(free_map)?;
                     self.reserve_vec(&mut free_maps, 1)?;
                     free_maps.push(free_map.clone());
                 }
 
-                self.reserve_clone(&self.free_map)?;
+                self.reserve_blocks_copy_and_cleanup(&self.free_map)?;
                 let updated_free_map = aggregate_updates_metered(self.free_map.clone(), free_maps, &work)?;
                 // println!("\nsetting free_map in list_match");
                 self.free_map = updated_free_map;
@@ -209,9 +208,9 @@ macro_rules! list_match {
 
                 let mut remainder_targets_sorted: Vec<$type> = Vec::new();
                 for (target_index, target) in targets.iter().enumerate() {
-                    self.reserve_inspect(target)?;
+                    self.inspect_blocks(target)?;
                     if remainder_target_indices[target_index] {
-                        self.reserve_clone(target)?;
+                        self.reserve_blocks_copy_and_cleanup(target)?;
                         self.reserve_vec(&mut remainder_targets_sorted, 1)?;
                         remainder_targets_sorted.push(target.clone());
                     }
@@ -236,16 +235,10 @@ macro_rules! list_match {
                   level: i32,
                   merger: &dyn Fn(Par, Vec<$type>, &MatcherWork<'_>) -> Option<Par>,
               ) -> Option<()> {
-                // println!("\nhit handle_remainder");
-                // println!("remainder_targets: {:#?}", remainder_targets);
-                // println!("level: {:#?}", level);
-                // let merger_type_name = std::any::type_name::<&dyn Fn(Par, Vec<$type>) -> Par>();
-                // println!("merger: {:?}\n", merger_type_name);
-
-                self.reserve_inspect(&self.free_map)?;
+                self.reserve_free_map_search(self.free_map.len())?;
                 let remainder_par = match self.free_map.get(&level) {
                     Some(par) => {
-                        self.reserve_clone(par)?;
+                        self.reserve_blocks_copy_and_cleanup(par)?;
                         par.clone()
                     }
                     None => vector_par(Vec::new(), false),
@@ -256,12 +249,7 @@ macro_rules! list_match {
                 let work = self.work()?;
                 let remainder_par_updated = merger(remainder_par, remainder_targets, &work)?;
 
-                // println!("\nremainder_par_updated: {:#?}", remainder_par_updated);
-
-                // println!("\nmodifying free_map in handle_remainder");
-                let entries = self.free_map.len().checked_add(1)?;
-                let (operations, bytes) = tree_backing::<i32, Par>(entries)?;
-                self.reserve(operations, bytes, bytes)?;
+                self.reserve_free_map_insert(self.free_map.len())?;
                 self.free_map.insert(level, remainder_par_updated);
                 // println!("\ncurrent free_map: {:#?}", self.free_map);
 
@@ -310,20 +298,20 @@ macro_rules! list_match {
               fn match_function_ref(&mut self, pattern: &Pattern<$type>, t: &$type) -> Option<FreeMap> {
                 match pattern {
                   Pattern::Term(p) => {
-                     self.reserve_clone(p)?;
+                     self.reserve_blocks_copy_and_cleanup(p)?;
                      if !self.connective_used(p.clone()) {
                          // Pure arm: no write to `free_map` is reachable from here, so
                          // the pre-attempt and post-attempt maps are the same map and
                          // no snapshot is needed.
-                         self.reserve_inspect(t)?;
-                         self.reserve_inspect(p)?;
+                         self.inspect_blocks(t)?;
+                         self.inspect_blocks(p)?;
                          guard(t == p)?;
-                         self.reserve_clone(&self.free_map)?;
+                         self.reserve_blocks_copy_and_cleanup(&self.free_map)?;
                          Some(self.free_map.clone())
                       } else {
                          // `initState <- get` — the ONLY new clone this fix introduces.
                          let __isolate_start = std::time::Instant::now();
-                         self.reserve_clone(&self.free_map)?;
+                         self.reserve_blocks_copy_and_cleanup(&self.free_map)?;
                          let init_state = self.free_map.clone();
                          ::metrics::counter!(
                              $crate::rust::interpreter::metrics_constants::RHOLANG_MATCHER_ISOLATE_STATE_CLONE_ENTRIES_METRIC,
@@ -336,8 +324,8 @@ macro_rules! list_match {
                          )
                          .increment(__isolate_start.elapsed().as_nanos() as u64);
 
-                         self.reserve_clone(t)?;
-                         self.reserve_clone(p)?;
+                         self.reserve_blocks_copy_and_cleanup(t)?;
+                         self.reserve_blocks_copy_and_cleanup(p)?;
                          let effect = self.spatial_match(t.clone(), p.clone());
 
                          // `resultState <- get; set(initState); yield resultState` as
@@ -354,9 +342,9 @@ macro_rules! list_match {
                   // `self`, in `handle_remainder`.
                   Pattern::Remainder(_) =>
                       {
-                          self.reserve_clone(t)?;
+                          self.reserve_blocks_copy_and_cleanup(t)?;
                           guard(self.locally_free(t.clone(), 0).is_empty())?;
-                          self.reserve_clone(&self.free_map)?;
+                          self.reserve_blocks_copy_and_cleanup(&self.free_map)?;
                           Some(self.free_map.clone())
                       },
                 }
@@ -427,13 +415,286 @@ fn aggregate_updates_inner(
     for free_map in free_maps {
         for (level, value) in free_map {
             if let Some(work) = work {
-                work.reserve_inspect(&current_free_map)?;
-                let entries = current_free_map.len().checked_add(1)?;
-                let (operations, bytes) = tree_backing::<i32, Par>(entries)?;
-                work.reserve(operations, bytes, bytes)?;
+                work.reserve_free_map_insert(current_free_map.len())?;
             }
             current_free_map.insert(level, value);
         }
     }
     Some(current_free_map)
+}
+
+#[cfg(test)]
+mod metered_tests {
+    use std::cell::Cell;
+    use std::sync::Mutex;
+
+    use rspace_plus_plus::rspace::errors::RSpaceError;
+
+    use super::super::spatial_matcher::SpatialMatcherContext;
+    use super::*;
+
+    fn run(context: &mut SpatialMatcherContext<'_>) -> Option<()> {
+        context.list_match_single_(
+            vec![Par::default(); 2],
+            vec![Par::default()],
+            &|par, _, _| Some(par),
+            Some(0),
+            false,
+        )
+    }
+
+    #[test]
+    fn remainder_assignment_preserves_free_map_and_rejects_short_credit() {
+        let mut ordinary = SpatialMatcherContext::new();
+        assert!(run(&mut ordinary).is_some());
+        let expected = ordinary.free_map;
+        let used = Mutex::new([0usize; 3]);
+        let unlimited = |operations: usize, scanned: usize, backing: usize| {
+            let mut totals = used.lock().unwrap();
+            for (total, amount) in totals.iter_mut().zip([operations, scanned, backing]) {
+                *total += amount;
+            }
+            Ok(())
+        };
+        let mut context = SpatialMatcherContext::with_meter(&unlimited).unwrap();
+        assert!(run(&mut context).is_some());
+        assert_eq!(context.free_map, expected);
+        assert!(context.take_error().is_none());
+        let required = *used.lock().unwrap();
+        assert!(required.iter().all(|value| *value > 0));
+        for dimension in 0..3 {
+            let mut limit = required;
+            limit[dimension] -= 1;
+            let spent = Mutex::new([0usize; 3]);
+            let meter = |operations: usize, scanned: usize, backing: usize| {
+                let mut next = spent.lock().unwrap();
+                let amounts = [operations, scanned, backing];
+                if next
+                    .iter()
+                    .zip(amounts)
+                    .zip(limit)
+                    .any(|((used, add), max)| *used + add > max)
+                {
+                    return Err(RSpaceError::HostWorkRejected);
+                }
+                for (used, add) in next.iter_mut().zip(amounts) {
+                    *used += add;
+                }
+                Ok(())
+            };
+            match SpatialMatcherContext::with_meter(&meter) {
+                Ok(mut context) => {
+                    assert!(run(&mut context).is_none());
+                    assert!(matches!(
+                        context.take_error(),
+                        Some(RSpaceError::HostWorkRejected)
+                    ));
+                }
+                Err(RSpaceError::HostWorkRejected) => {}
+                Err(error) => panic!("unexpected matcher error: {error}"),
+            }
+        }
+    }
+
+    #[test]
+    fn remainder_merger_rejects_before_payload_materialization_or_publication() {
+        let meter = |_: usize, _: usize, backing: usize| {
+            if backing >= 4096 {
+                Err(RSpaceError::HostWorkRejected)
+            } else {
+                Ok(())
+            }
+        };
+        let mut context = SpatialMatcherContext::with_meter(&meter).unwrap();
+        let materialized = Cell::new(false);
+        let merger = |par: Par, _: Vec<Par>, work: &MatcherWork<'_>| {
+            work.reserve(1, 0, 4096)?;
+            materialized.set(true);
+            Some(par)
+        };
+        assert!(context
+            .handle_remainder(vec![Par::default()], 0, &merger)
+            .is_none());
+        assert!(!materialized.get());
+        assert!(context.free_map.is_empty());
+        assert!(matches!(
+            context.take_error(),
+            Some(RSpaceError::HostWorkRejected)
+        ));
+    }
+
+    /// The three totals that a metered closure receives during `action`.
+    fn charge_of(action: impl FnOnce(&mut SpatialMatcherContext<'_>)) -> [usize; 3] {
+        let totals = Mutex::new([0usize; 3]);
+        let meter = |operations: usize, scanned: usize, backing: usize| {
+            let mut sum = totals.lock().expect("totals lock");
+            for (total, amount) in sum.iter_mut().zip([operations, scanned, backing]) {
+                *total += amount;
+            }
+            Ok(())
+        };
+        let mut context = SpatialMatcherContext::with_meter(&meter).expect("metered context");
+        let before = *totals.lock().expect("totals lock");
+        action(&mut context);
+        assert!(context.take_error().is_none());
+        let after = *totals.lock().expect("totals lock");
+        [
+            after[0] - before[0],
+            after[1] - before[1],
+            after[2] - before[2],
+        ]
+    }
+
+    fn payload(size: usize) -> Par {
+        let mut par = Par::default();
+        par.exprs = vec![models::rust::utils::new_gint_expr(7); size];
+        par
+    }
+
+    fn bindings(levels: &[i32], size: usize) -> FreeMap {
+        levels.iter().map(|level| (*level, payload(size))).collect()
+    }
+
+    fn remainder_charge(free_map: FreeMap) -> [usize; 3] {
+        charge_of(|context| {
+            context.free_map = free_map;
+            context
+                .handle_remainder(vec![Par::default()], 0, &|par, _, _| Some(par))
+                .expect("the remainder binds");
+        })
+    }
+
+    /// D-D1a (DR-103): a remainder binding charges one search and one insert,
+    /// whatever the size of the other bindings in the free map.
+    #[test]
+    fn remainder_charge_is_independent_of_other_bindings() {
+        for target_present in [false, true] {
+            let charges = [1usize, 16].map(|scale| {
+                let mut free_map = bindings(&[1, 2, 3, 4], 8 * scale);
+                if target_present {
+                    free_map.insert(0, payload(3));
+                }
+                remainder_charge(free_map)
+            });
+            assert_eq!(charges[0], charges[1], "target present: {target_present}");
+            assert!(charges[0][0] > 0 && charges[0][1] > 0);
+        }
+    }
+
+    /// The charge before D-D1a: a walk of the whole map, then the backing of
+    /// the whole tree as scanned and as backing bytes.
+    fn legacy_remainder_charge(free_map: &FreeMap) -> [usize; 3] {
+        let totals = Mutex::new([0usize; 3]);
+        let meter = |operations: usize, scanned: usize, backing: usize| {
+            let mut sum = totals.lock().expect("totals lock");
+            for (total, amount) in sum.iter_mut().zip([operations, scanned, backing]) {
+                *total += amount;
+            }
+            Ok::<(), BackingError>(())
+        };
+        shared::rust::clone_backing::inspect(free_map, &meter).expect("legacy inspection");
+        let (operations, bytes) =
+            shared::rust::collection_backing::tree_backing::<i32, Par>(free_map.len() + 1)
+                .expect("legacy tree backing");
+        let mut sum = totals.into_inner().expect("totals lock");
+        sum[0] += operations;
+        sum[1] += bytes;
+        sum[2] += bytes;
+        sum
+    }
+
+    /// Negative control: the legacy charge grew with the other bindings.
+    #[test]
+    fn legacy_remainder_charge_grew_with_other_bindings() {
+        let small = legacy_remainder_charge(&bindings(&[1, 2, 3, 4], 8));
+        let large = legacy_remainder_charge(&bindings(&[1, 2, 3, 4], 128));
+        assert!(large[0] > small[0]);
+        assert!(large[1] > small[1]);
+    }
+
+    /// D-D1a (DR-103): the exact search and insert charges at the sizes where
+    /// the height bound changes.
+    #[test]
+    fn free_map_charges_at_boundary_sizes() {
+        use shared::rust::collection_backing::{
+            tree_insert_moves, tree_insert_transient_backing, tree_search_bound,
+        };
+
+        for entries in [0usize, 1, 5, 9, 10, 11, 70, 71, 430, 431] {
+            let search = tree_search_bound(entries);
+            let (growth_operations, growth_bytes) =
+                tree_insert_transient_backing::<i32, Par>(entries)
+                    .expect("transient insert backing");
+            let moves = tree_insert_moves::<i32, Par>(entries + 1).expect("insert moves");
+            assert_eq!(
+                charge_of(|context| context
+                    .reserve_free_map_search(entries)
+                    .expect("search charge")),
+                [search, 8 * search, 0],
+                "search at {entries}"
+            );
+            assert_eq!(
+                charge_of(|context| context
+                    .reserve_free_map_insert(entries)
+                    .expect("insert charge")),
+                [
+                    search + 1 + growth_operations,
+                    8 * search + moves,
+                    growth_bytes
+                ],
+                "insert at {entries}"
+            );
+        }
+        assert_eq!(
+            charge_of(|context| context.reserve_free_map_insert(0).expect("insert charge")),
+            [5, 3_832, 3_472]
+        );
+        assert_eq!(
+            charge_of(|context| context.reserve_free_map_insert(10).expect("insert charge")),
+            [18, 7_752, 6_944]
+        );
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig::with_cases(64))]
+
+        /// D-D1a (DR-103): from an empty map or a charged clone, the insert
+        /// charges cover every node that the std `BTreeMap` allocates.
+        #[test]
+        fn free_map_insert_reservation_covers_std_btree_allocations(
+            keys in proptest::collection::vec(proptest::prelude::any::<i32>(), 1..600),
+            base in 0usize..40,
+        ) {
+            let original: FreeMap = (0..base as i32).map(|key| (key, Par::default())).collect();
+            let totals = Mutex::new([0usize; 3]);
+            let meter = |operations: usize, scanned: usize, backing: usize| {
+                let mut sum = totals.lock().expect("totals lock");
+                for (total, amount) in sum.iter_mut().zip([operations, scanned, backing]) {
+                    *total += amount;
+                }
+                Ok(())
+            };
+            let context = SpatialMatcherContext::with_meter(&meter).expect("metered context");
+            let start = totals.lock().expect("totals lock")[2];
+            context.reserve_blocks_copy_and_cleanup(&original).expect("clone charge");
+            let (mut map, mut allocated) =
+                crate::rust::interpreter::accounting::measured_allocations(|| original.clone());
+            for key in keys {
+                context.reserve_free_map_insert(map.len()).expect("insert charge");
+                let (_, used) = crate::rust::interpreter::accounting::measured_allocations(|| {
+                    map.insert(key, Par::default());
+                });
+                allocated += used;
+                let reserved = totals.lock().expect("totals lock")[2] - start;
+                proptest::prop_assert!(
+                    allocated <= reserved,
+                    "allocated {} > reserved {} at {} entries",
+                    allocated,
+                    reserved,
+                    map.len()
+                );
+            }
+            proptest::prop_assert!(allocated > 0, "the counting allocator saw the nodes");
+        }
+    }
 }

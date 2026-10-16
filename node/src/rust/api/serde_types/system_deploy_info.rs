@@ -445,12 +445,11 @@ mod tests {
     }
 
     fn sample_par() -> Par {
-        Par {
-            exprs: vec![models::rhoapi::Expr {
-                expr_instance: Some(models::rhoapi::expr::ExprInstance::GInt(7)),
-            }],
-            ..Default::default()
-        }
+        let mut par = Par::default();
+        par.exprs = vec![models::rhoapi::Expr {
+            expr_instance: Some(models::rhoapi::expr::ExprInstance::GInt(7)),
+        }];
+        par
     }
 
     fn sample_produce() -> ReportProduceProto {

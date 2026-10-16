@@ -442,6 +442,7 @@ pub(crate) enum SubKont {
     SignedK,
     StackK {
         n: usize,
+        n_branches: usize,
     },
 }
 
@@ -942,12 +943,14 @@ fn descend_signed(term: CostSignedTerm, ctx: SubCtx, work: &mut Vec<SubWork>) {
     work.push(SubWork::Par(term.body, ctx));
 }
 
-fn descend_stack(term: CostStack, ctx: SubCtx, work: &mut Vec<SubWork>) {
+fn descend_stack(mut term: CostStack, ctx: SubCtx, work: &mut Vec<SubWork>) {
     work.push(SubWork::Combine(SubKont::StackK {
         n: term.cells.len(),
+        n_branches: term.parallel_tail.len(),
     }));
     let count = term.cells.len();
-    push_reversed(work, term.cells, |cell| SubWork::Signature(Some(cell), ctx));
+    push_reversed(work, std::mem::take(&mut term.cells), |cell| SubWork::Signature(Some(cell), ctx));
+    push_reversed(work, std::mem::take(&mut term.parallel_tail), |branch| SubWork::Stack(branch, ctx));
     work.push(SubWork::MeterCollect {
         count,
         element_size: std::mem::size_of::<CostSignature>(),
@@ -1885,9 +1888,10 @@ fn combine(
                 signature: Some(signature),
             }));
         }
-        SubKont::StackK { n } => {
+        SubKont::StackK { n, n_branches } => {
             let cells = pop_n_signature(vals, n);
-            vals.push(SubVal::Stack(CostStack { cells }));
+            let parallel_tail = pop_n_stack(vals, n_branches);
+            vals.push(SubVal::Stack(CostStack { cells, parallel_tail }));
         }
     }
     Ok(())

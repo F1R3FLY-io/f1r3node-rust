@@ -4,7 +4,7 @@ use models::rhoapi::connective::ConnectiveInstance;
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::var::VarInstance;
 use models::rhoapi::{
-    Bundle, Connective, ConnectiveBody, CostSignedTerm, CostStack, EVar, Expr, If, Match,
+    Bundle, Connective, ConnectiveBody, CostSignature, CostSignedTerm, CostStack, EVar, Expr, If, Match,
     MatchCase, New, Par, Receive, ReceiveBind, Send,
 };
 use models::rust::rholang::sorter::metered::SorterMeter;
@@ -788,17 +788,57 @@ impl Substitute {
         env: &Env<Par>,
         backing: &dyn BackingMeter,
     ) -> Result<CostStack, InterpreterError> {
-        let cells = collect_metered(term.cells.into_iter(), backing, |signature| {
-            substitute_cost_signature_metered_with(
-                self,
-                signature,
-                depth,
-                env,
-                backing,
-                &Substitute::substitute_par_metered,
-            )
-        })?;
-        Ok(CostStack { cells })
+        enum Work {
+            Visit(CostStack),
+            Finish { cells: Vec<CostSignature>, branches: usize },
+        }
+        let mut work = vec![Work::Visit(term)];
+        let mut values = Vec::<CostStack>::new();
+        while let Some(job) = work.pop() {
+            match job {
+                Work::Visit(mut stack) => {
+                    let branches = stack.parallel_tail.len();
+                    let entries = branches
+                        .checked_add(1)
+                        .ok_or(InterpreterError::HostWorkRejected)?;
+                    let bytes = entries
+                        .checked_mul(size_of::<Work>())
+                        .ok_or(InterpreterError::HostWorkRejected)?;
+                    cleanup_meter(backing)
+                        .reserve(entries, bytes, bytes)
+                        .map_err(rejected)?;
+                    work.try_reserve(entries)
+                        .map_err(|_| InterpreterError::HostWorkRejected)?;
+                    work.push(Work::Finish { cells: std::mem::take(&mut stack.cells), branches });
+                    work.extend(std::mem::take(&mut stack.parallel_tail).into_iter().rev().map(Work::Visit));
+                }
+                Work::Finish { cells, branches } => {
+                    let mut parallel_tail = collect_metered(
+                        0..branches,
+                        backing,
+                        |_| values.pop().ok_or(InterpreterError::HostWorkRejected),
+                    )?;
+                    parallel_tail.reverse();
+                    let cells = collect_metered(cells.into_iter(), backing, |signature| {
+                        substitute_cost_signature_metered_with(
+                            self,
+                            signature,
+                            depth,
+                            env,
+                            backing,
+                            &Substitute::substitute_par_metered,
+                        )
+                    })?;
+                    cleanup_meter(backing)
+                        .reserve(1, size_of::<CostStack>(), size_of::<CostStack>())
+                        .map_err(rejected)?;
+                    values.try_reserve(1)
+                        .map_err(|_| InterpreterError::HostWorkRejected)?;
+                    values.push(CostStack { cells, parallel_tail });
+                }
+            }
+        }
+        values.pop().ok_or(InterpreterError::HostWorkRejected)
     }
 }
 
@@ -881,6 +921,7 @@ mod tests {
             cells: vec![CostSignature {
                 value: Some(CostSignatureValue::Ground(vec![2, 3])),
             }],
+            parallel_tail: Vec::new(),
         };
         models::par_from_default! {
             sends: vec![send],

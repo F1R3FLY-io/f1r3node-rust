@@ -8,6 +8,7 @@ use casper::rust::util::rholang::costacc::close_block_deploy::CloseBlockDeploy;
 use casper::rust::util::rholang::system_deploy_util;
 use rholang::rust::interpreter::system_processes::BlockData;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+use rspace_plus_plus::rspace::hashing::stable_hash_provider::EventCodecEpoch;
 use rspace_plus_plus::rspace::merger::merging_logic;
 
 use crate::util::rholang::resources::with_runtime_manager;
@@ -100,10 +101,12 @@ async fn two_deploys_executed_inside_single_state_transition_should_be_dependent
             .map(|(d, merge_chs)| {
                 block_index::create_event_log_index(
                     &d.deploy_log,
+                    EventCodecEpoch::Legacy,
                     runtime_manager.get_history_repo(),
                     &Blake2b256Hash::from_bytes_prost(&base_state),
                     merge_chs,
                 )
+                .expect("ordinary merging case has a valid legacy event log")
             })
             .collect::<Vec<_>>();
 

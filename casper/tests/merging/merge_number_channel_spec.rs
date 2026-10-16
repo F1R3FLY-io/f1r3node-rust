@@ -19,6 +19,7 @@ use rholang::rust::interpreter::merging::rholang_merging_logic::RholangMergingLo
 use rholang::rust::interpreter::rho_runtime::{RhoRuntime, RhoRuntimeImpl};
 use rholang::rust::interpreter::rho_type::RhoNumber;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+use rspace_plus_plus::rspace::hashing::stable_hash_provider::EventCodecEpoch;
 use rspace_plus_plus::rspace::hot_store_trie_action::HotStoreTrieAction;
 use rspace_plus_plus::rspace::merger::channel_change::ChannelChange;
 use rspace_plus_plus::rspace::merger::event_log_index::EventLogIndex;
@@ -174,13 +175,16 @@ async fn test_case(
                     .map(|event: &rspace_plus_plus::rspace::trace::event::Event| {
                         event_converter::to_casper_event(event.clone())
                     })
-                    .collect::<Vec<_>>();
+                    .collect::<Result<Vec<_>, _>>()
+                    .expect("ordinary merge fixture has only deploy-log event kinds");
                 let event_log_index = block_index::create_event_log_index(
                     &casper_events,
+                    EventCodecEpoch::Legacy,
                     rm.get_history_repo(),
                     &pre_state,
                     number_chan_diff,
-                );
+                )
+                .expect("ordinary merge fixture has a valid legacy event log");
 
                 let sig_bs = make_sig_pb(deploy.sig.as_str());
                 DeployIndex {

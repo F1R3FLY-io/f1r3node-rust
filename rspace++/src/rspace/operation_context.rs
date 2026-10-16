@@ -148,9 +148,27 @@ impl CausalPath {
         }
 
         match left.segment.cmp(&right.segment) {
-            Ordering::Equal => self.to_vec().cmp(&other.to_vec()),
+            Ordering::Equal => self.exact_cmp_no_alloc(other),
             ordering => ordering,
         }
+    }
+
+    /// Lexicographic root-to-leaf comparison without materializing paths.
+    /// The ordered event-log lease compares `OperationOrder` keys after its
+    /// store transaction; an allocation here would invalidate that boundary.
+    /// Lifting to each depth is slower than `to_vec()` for unrelated roots but
+    /// keeps the exact ordering while using only Arc pointer copies.
+    fn exact_cmp_no_alloc(&self, other: &Self) -> Ordering {
+        let common_depth = self.tail.depth.min(other.tail.depth);
+        for depth in 1..=common_depth {
+            let left = Self::lift(self.tail.clone(), self.tail.depth - depth);
+            let right = Self::lift(other.tail.clone(), other.tail.depth - depth);
+            match left.segment.cmp(&right.segment) {
+                Ordering::Equal => {}
+                ordering => return ordering,
+            }
+        }
+        self.tail.depth.cmp(&other.tail.depth)
     }
 }
 
@@ -192,7 +210,7 @@ impl Ord for CausalPath {
         if self.shared_root(other) {
             self.shared_cmp(other)
         } else {
-            self.to_vec().cmp(&other.to_vec())
+            self.exact_cmp_no_alloc(other)
         }
     }
 }

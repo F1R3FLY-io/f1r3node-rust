@@ -15,9 +15,30 @@ Its activation remains subject to the accounting compatibility contract and requ
 
 [`PhloGenesisPolicy`](../../../../models/src/rust/phlo_schedule.rs) contains a canonical schedule with a zero price field.
 Zero is a representation marker here, not an offered price, free execution, or permission to ignore minimum-price validation.
-The wrapper uses the distinct domain `f1r3node:genesis-resource-policy:v1`.
-Both wrapper fields use the existing length-prefixed phlo encoding.
-The first field contains the domain. The second contains the complete canonical schedule.
+The wrapper uses the existing length-prefixed phlo encoding. Its first field is a domain, and its second field is the complete canonical schedule. Activated records have a third field containing the single byte `01`.
+
+| Domain | Required schedule protocol | Offered-funded admission | Event codec epoch |
+| --- | ---: | --- | --- |
+| `f1r3node:genesis-resource-policy:v1` | Historical, policy-defined | Inactive | Legacy |
+| `f1r3node:genesis-resource-policy:v2` | 6 | Active | CostV1 |
+| `f1r3node:genesis-resource-policy:v3` | 7 | Active | CostV2 |
+
+An *event codec epoch* is the authenticated choice of event and cold-store encodings used by live execution and replay. It is sealed when the approved genesis policy is adopted; neither a term nor a stored event selects its own epoch. The distinct v3 domain permits the [ratified protocol-7 fresh-genesis release](../../design/decision-ledger/01-protocol-version-authority.md) to add event forms without reinterpreting protocol-6 v2 bytes. Protocol-7 activation remains subject to the required FIP approval; decoding a v3 record does not itself approve a network upgrade.
+
+CostV1 must preserve the exact protocol-6 positional event bytes. Its `CostStack` layout contains only `cells`, so it rejects a nonempty `parallel_tail` rather than dropping it. CostV2 encodes that additional branch field and separately domain-tags its new resting-communication event. Unchanged event legs retain their CostV1 encoding and ordinary channels retain their historical keys; an event containing a `CostStack` can have different CostV1 and CostV2 bytes even when its branch tail is empty. The policy domain and event epoch make that difference explicit rather than letting a schema edit silently change a protocol-6 hash.
+
+Because ordinary channel keys deliberately remain unchanged, a bare key or positional cold-store record does not identify its own epoch. The approved genesis policy binds the chain's state root to the epoch, and both live execution and replay must use that same adopted context. A local standalone evaluator has a separate, non-consensus context; it cannot authorize block application or replay. The decoder must not guess the epoch from a payload, and it must not narrow protocol-6's historical trailing-byte acceptance merely to distinguish a protocol-7 encoding.
+
+The encoder selects a domain from the authenticated schedule and explicit activation request:
+
+```text
+if offered funding is inactive: use v1
+else if schedule protocol is 6: use v2 and append 01
+else if schedule protocol is 7: use v3 and append 01
+else: reject
+```
+
+The decoder checks the inverse rule before accepting a record. It rejects a v2 domain paired with protocol 7, a v3 domain paired with protocol 6, a missing or different activation byte, and any trailing bytes. It re-encodes the complete record to require canonical bytes; an activated record cannot be retagged between protocols 6 and 7 by changing only its domain or only its schedule.
 
 | Policy field | Meaning |
 | --- | --- |
@@ -28,7 +49,7 @@ The first field contains the domain. The second contains the complete canonical 
 | Fixed schedule fee | Preserves the separate one-unit fee policy. |
 
 The decoder rejects priced policy records, duplicate classes, empty required identifiers, malformed widths, unsupported domains, and trailing bytes.
-Version 1 permits at most 4,096 classes, 1,048,576 total bytes, and 524,288 bytes per field.
+Every policy version permits at most 4,096 classes, 1,048,576 total bytes, and 524,288 bytes per field.
 Nested encoding must satisfy the same field limits.
 These are representation limits, not wallet-count limits or economic prices.
 
@@ -40,7 +61,7 @@ The approved genesis commitment authenticates that selection and the complete re
 ## Genesis construction and storage
 
 The genesis configuration accepts `resource-policy` as hexadecimal canonical record bytes.
-`PhloGenesisPolicy::from_schedule` creates the record from a complete schedule and removes only its actual price.
+`PhloGenesisPolicy::from_schedule` creates an inactive v1 record from a complete schedule and removes only its actual price. `with_offered_funded_active` explicitly requests activation; encoding then selects v2 or v3 from the schedule protocol as specified above.
 The record does not supply default tariff values or derive resource rules from token display metadata.
 
 The bootstrap and ceremony validators decode the configured record.
@@ -62,15 +83,25 @@ This distinction preserves existing fixtures and declared historical formats wit
 
 [`GenesisResourcePolicy::load`](https://github.com/F1R3FLY-io/f1r3node-rust/blob/f9bd3895dbcb3df41984498bac864887e8d1c9ea/casper/src/rust/util/rholang/costacc/genesis_resource_policy.rs) requires the approved genesis block from the existing authority chain.
 The caller must establish approval before this call. The loader is not a block-signature or ceremony verifier.
-The loader rejects a block with parents and queries only its genesis post-state root.
-It requires exactly one canonical byte-array result and checks the record against the genesis protocol, shard, and on-chain decimal scale.
-The loader also reads the minimum phlo price from the PoS contract at that same root.
+The loader rejects a block with parents.
+`GenesisResourcePolicy::load` queries the genesis post-state root.
+`GenesisResourcePolicy::load_at` (DR-99) queries a held state of the same chain instead, because a node that joined after genesis does not hold the genesis post-state.
+The loader requires exactly one canonical byte-array result and checks the record against the genesis protocol, shard, and on-chain decimal scale.
+The loader also reads the minimum phlo price from the PoS contract at that same state.
 It publishes the loaded value only after all reads and checks succeed.
+
+The policy record, the PoS consensus parameters, and the token metadata are sealed genesis constants.
+Genesis registers each of them as a contract template under nonce `i64::MAX`, and no deploy can change them.
+So every state of the chain returns the genesis values, and a read at a later held state gives the same policy.
+The identity of the loaded value is always the genesis post-state root, whichever state the reads used.
 
 The loaded value retains the genesis root, its minimum price, and an immutable owned record.
 Load the policy during accounting initialization and retain the value for funding checks.
-Restart requires the authenticated genesis state or its verified recovery.
-The loader does not accept a current wallet root, current finalized root, or local tariff as a replacement authority.
+Restart requires an authenticated copy of the genesis block and a held state of the same chain (DR-99).
+A genesis participant holds the genesis state.
+A node that joined after genesis holds the state of its restore anchor and the genesis copy that it received during the restore.
+The loader does not accept a current wallet root, current finalized root, or local tariff as a replacement identity.
+It reads the sealed constants at a held state only because no deploy can change them.
 Missing state or malformed data returns an error.
 The caller must recover required state or reject the operation, not construct a replacement policy.
 A local read failure does not prove that a block is invalid.
@@ -81,12 +112,46 @@ Its fields are private. Later changes to a configuration value cannot change the
 The native family binding accepts this retained context instead of separate policy and configuration arguments.
 It checks the captured execution parameters and the selected schedule before checking signed family consent and allocation.
 
+`hash_set_casper` adopts the policy once, when Casper starts, and stores it in the Casper instance (DR-99).
+Running Casper exposes the stored context through `Casper::adopted_resource_policy()`.
+Block validation, offered admission, and proposals use the stored context and run no new exploratory evaluation.
+A proposal checks the stored context against the shard configuration of its snapshot with `GenesisResourcePolicy::adopt`.
+Offered admission compares the identity of the submitted context with the identity of the stored context.
+Other Casper instances adopt independently. This mechanism does not serialize execution or establish a cross-validator lock.
+A chain without a policy record stores no context, so historical paths do not require a policy record merely to construct Casper.
+
+Initialization finds the genesis block with `resolve_policy_genesis`.
+
+- A parentless approved block is the genesis block itself.
+- A node that joined after genesis approves its restore anchor, which has parents.
+  Its genesis hash comes from the genesis register of the DAG, or from the held height-0 block.
+  Its genesis block comes from the block store.
+- The block must re-hash to the learned hash, carry that hash, have no parents, and belong to the shard of the anchor.
+- Without such a block, Casper does not start.
+  Initialization never uses the restore anchor as the genesis block, because the post-state of the anchor is not the genesis identity.
+
+A joined node adopts the header version of its anchor, as every node adopts the header version of its approved block.
+`adopt` then requires the protocol version of the genesis schedule.
+So a joined node runs the genesis version or does not start (`GenesisVersionAdoption.joined_node_runs_the_genesis_version`).
+
+<details>
+<summary>Text before DR-99</summary>
+
 Running Casper exposes this context through `accounting_context()`.
 Concurrent requests share one successful initialization within that Casper instance.
 Failed initialization does not publish a context or prevent a later retry.
 Other Casper instances initialize independently. This mechanism does not serialize execution or establish a cross-validator lock.
 Initialization queries the original approved genesis, not the latest finalized state or candidate wallet state.
 Historical paths that do not request offered funding do not require a policy record merely to construct Casper.
+
+The loader rejects a block with parents and queries only its genesis post-state root.
+Restart requires the authenticated genesis state or its verified recovery.
+The loader does not accept a current wallet root, current finalized root, or local tariff as a replacement authority.
+
+These rules took the approved block as the genesis block.
+An LFS-joined node approves its restore anchor, so it could not start on a chain with a policy (bug 9954).
+
+</details>
 
 ### Executable native rules
 

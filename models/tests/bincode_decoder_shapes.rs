@@ -142,6 +142,8 @@ fn shape_1_duplicate_and_unsorted_map_keys_behave_like_btreemap_insert() {
     par_bytes.extend_from_slice(&0u64.to_le_bytes()); // conditionals
     par_bytes.extend_from_slice(&0u64.to_le_bytes()); // locally_free
     par_bytes.push(0); // connective_used
+    par_bytes.extend_from_slice(&0u64.to_le_bytes()); // cost_signed_terms
+    par_bytes.extend_from_slice(&0u64.to_le_bytes()); // cost_stacks
 
     let oracle: Par = bincode::deserialize(&par_bytes)
         .expect("the derived decoder must ACCEPT an unsorted map with duplicates");
@@ -210,6 +212,16 @@ fn shape_2_locally_free_is_written_empty_and_read_as_a_real_sequence() {
     hand.extend_from_slice(&3u64.to_le_bytes()); // locally_free: THREE bytes
     hand.extend_from_slice(&[0xAA, 0xBB, 0xCC]);
     hand.push(1); // connective_used
+
+    // This exact prefix is the old positional Par schema. Its historical
+    // decoder must still read it, while the current decoder requires the two
+    // appended cost sequences rather than inferring their absence from EOF.
+    let legacy = Par::cold_decode_legacy(&hand).expect("legacy Par reads old field layout");
+    assert_eq!(legacy.locally_free, vec![0xAA, 0xBB, 0xCC]);
+    assert!(legacy.connective_used);
+    assert!(Par::cold_decode(&hand).is_err());
+    hand.extend_from_slice(&0u64.to_le_bytes()); // cost_signed_terms
+    hand.extend_from_slice(&0u64.to_le_bytes()); // cost_stacks
 
     let oracle: Par = bincode::deserialize(&hand).expect("oracle reads real bytes");
     let machine = Par::cold_decode(&hand).expect("machine reads real bytes");
@@ -382,6 +394,10 @@ fn shape_3_ezipper_wraps_the_pathmap_in_an_option() {
 /// as serde indices would silently mis-decode 12 of the 37 arms.
 #[test]
 fn shape_4_oneofs_are_an_option_tag_then_a_u32_variant_index() {
+    // GFloat32 predates the sized integers. Keep its historical bincode
+    // discriminant even though GUint64 has the lower protobuf field number.
+    assert_eq!(expr_instance_variant_index(&ExprInstance::GFloat32(0)), 36);
+    assert_eq!(expr_instance_variant_index(&ExprInstance::GUint64(0)), 37);
     for (name, instance) in corpus::every_expr_instance() {
         let expected = expr_instance_variant_index(&instance);
         let bytes = bincode::serialize(&Expr {

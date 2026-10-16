@@ -167,6 +167,21 @@ macro_rules! reducer_expression_oracle_methods {
                     ExprInstance::GInt(x) => Ok(Expr {
                         expr_instance: Some(ExprInstance::GInt(*x)),
                     }),
+                    ExprInstance::GUint64(x) => Ok(Expr {
+                        expr_instance: Some(ExprInstance::GUint64(*x)),
+                    }),
+                    ExprInstance::GInt32(x) => Ok(Expr {
+                        expr_instance: Some(ExprInstance::GInt32(*x)),
+                    }),
+                    ExprInstance::GUint32(x) => Ok(Expr {
+                        expr_instance: Some(ExprInstance::GUint32(*x)),
+                    }),
+                    ExprInstance::GUint16(x) => Ok(Expr {
+                        expr_instance: Some(ExprInstance::GUint16(*x)),
+                    }),
+                    ExprInstance::GUint8(x) => Ok(Expr {
+                        expr_instance: Some(ExprInstance::GUint8(*x)),
+                    }),
                     ExprInstance::GString(x) => Ok(Expr {
                         expr_instance: Some(ExprInstance::GString(x.clone())),
                     }),

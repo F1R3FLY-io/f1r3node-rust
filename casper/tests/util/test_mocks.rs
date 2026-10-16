@@ -177,7 +177,9 @@ impl KeyValueStore for EmptyKeyValueStore {
     }
 
     fn put_one_if_absent(&self, _key: Vec<u8>, _value: Vec<u8>) -> Result<bool, KvStoreError> {
-        Ok(true)
+        Err(KvStoreError::InvalidArgument(
+            "empty fixture store cannot persist an atomic insertion".to_string(),
+        ))
     }
 
     fn delete(&self, _keys: Vec<Vec<u8>>) -> Result<usize, KvStoreError> {

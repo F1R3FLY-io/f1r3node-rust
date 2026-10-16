@@ -7,7 +7,9 @@ use block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStora
 use block_storage::rust::deploy::key_value_deploy_storage::KeyValueDeployStorage;
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use casper::rust::block_status::BlockStatus;
-use casper::rust::blocks::block_processor::{BlockProcessor, BlockProcessorDependencies};
+use casper::rust::blocks::block_processor::{
+    BlockProcessor, BlockProcessorDependencies, BlockQueueItem, InFlightBlocks,
+};
 use casper::rust::blocks::proposer::block_creator;
 use casper::rust::blocks::proposer::propose_result::BlockCreatorResult;
 use casper::rust::blocks::proposer::proposer::new_proposer;
@@ -36,7 +38,6 @@ use comm::rust::transport::grpc_transport_server::TransportLayerServer;
 use comm::rust::transport::transport_layer::Blob;
 use crypto::rust::private_key::PrivateKey;
 use crypto::rust::signatures::signed::Signed;
-use dashmap::DashSet;
 use models::routing::Protocol;
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::protocol::casper_message::{
@@ -115,8 +116,11 @@ impl TestNode {
         })?;
 
         // Create block using block_creator
-        block_creator::create_with_approved_genesis(
-            self.casper.get_approved_block()?,
+        // Changed by DR-99: a proposal takes the policy adopted at start.
+        // block_creator::create_with_approved_genesis(
+        //     self.casper.get_approved_block()?,
+        block_creator::create_with_adopted_policy(
+            self.casper.adopted_resource_policy.as_ref(),
             self.casper.offered_funded_active,
             &snapshot,
             &validator,
@@ -1107,7 +1111,7 @@ impl TestNode {
         // - Sender: Non-blocking, cloneable, used to enqueue blocks for processing
         // - Receiver: Thread-safe (Arc<Mutex>), used to dequeue blocks from processing pipeline
         let (block_processor_queue_tx, block_processor_queue_rx) =
-            mpsc::channel::<(Arc<dyn MultiParentCasper + Send + Sync>, BlockMessage)>(1024);
+            mpsc::channel::<BlockQueueItem>(1024);
         let block_processor_queue = (
             block_processor_queue_tx,
             Arc::new(Mutex::new(block_processor_queue_rx)),
@@ -1155,7 +1159,27 @@ impl TestNode {
             ..CasperShardConf::new()
         };
 
+        // DR-99: the harness adopts the genesis policy once, as hash_set_casper
+        // does. A shard configuration that differs from the genesis policy
+        // leaves no adopted policy, so such a test fails only when it uses the
+        // offered path, as it did when the policy was loaded at each use.
+        let adopted_resource_policy = match runtime_manager
+            .find_genesis_resource_policy(&genesis.body.state.post_state_hash)
+            .await
+            .expect("test genesis resource policy query must succeed")
+        {
+            Some(_) => casper::rust::util::rholang::costacc::genesis_resource_policy::AdoptedResourcePolicy::load(
+                &runtime_manager,
+                &genesis,
+                &shard_conf,
+            )
+            .await
+            .ok(),
+            None => None,
+        };
+
         let casper_impl = MultiParentCasperImpl {
+            observer: std::sync::OnceLock::new(),
             divergence_monitor: std::sync::Arc::new(
                 casper::rust::engine::multi_parent_casper::DivergenceMonitor::default(),
             ),
@@ -1178,7 +1202,8 @@ impl TestNode {
                 .find_genesis_resource_policy(&genesis.body.state.post_state_hash)
                 .await
                 .expect("test genesis resource policy query must succeed")
-                .is_some_and(|policy| policy.offered_funded_v6_active()),
+                .is_some_and(|policy| policy.offered_funded_active()),
+            adopted_resource_policy,
             finalization_in_progress: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(
                 false,
             )),
@@ -1209,7 +1234,7 @@ impl TestNode {
 
         let running_engine = Running::new(
             block_processor_queue.0.clone(), // block_processing_queue_tx
-            Arc::new(DashSet::new()),        // blocks_in_processing
+            Arc::new(InFlightBlocks::new()), // blocks_in_processing
             casper.clone() as Arc<dyn MultiParentCasper + Send + Sync>, // casper
             _approved_block.clone(),         // approved_block
             the_init,                        // the_init

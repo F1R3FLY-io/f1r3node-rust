@@ -836,16 +836,13 @@ impl ReplayRuntimeOps {
 
     pub async fn rig(&self, processed_deploy: &ProcessedDeploy) -> Result<(), CasperError> {
         let rig_start = Instant::now();
-        self.runtime_ops
-            .runtime
-            .rig(
-                processed_deploy
-                    .deploy_log
-                    .iter()
-                    .map(event_converter::to_rspace_event)
-                    .collect(),
-            )
-            .await?;
+        let epoch = self.runtime_ops.runtime.reducer.space.codec_epoch();
+        let log = processed_deploy
+            .deploy_log
+            .iter()
+            .map(|event| event_converter::to_rspace_event_for_epoch(event, epoch))
+            .collect::<Result<Vec<_>, _>>()?;
+        self.runtime_ops.runtime.rig(log).await?;
         metrics::histogram!(BLOCK_REPLAY_SYSDEPLOY_RIG_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
             .record(rig_start.elapsed().as_secs_f64());
         Ok(())
@@ -860,16 +857,12 @@ impl ReplayRuntimeOps {
             ProcessedSystemDeploy::Failed { event_list, .. } => event_list,
         };
 
-        Ok(self
-            .runtime_ops
-            .runtime
-            .rig(
-                event_list
-                    .iter()
-                    .map(|event: &Event| event_converter::to_rspace_event(event))
-                    .collect(),
-            )
-            .await?)
+        let epoch = self.runtime_ops.runtime.reducer.space.codec_epoch();
+        let log = event_list
+            .iter()
+            .map(|event: &Event| event_converter::to_rspace_event_for_epoch(event, epoch))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(self.runtime_ops.runtime.rig(log).await?)
     }
 
     pub async fn check_replay_data_with_fix(

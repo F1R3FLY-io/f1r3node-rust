@@ -14,6 +14,7 @@ use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
 
 use super::*;
 use crate::rust::rholang::runtime::RuntimeOps;
+use crate::rust::util::rholang::costacc::genesis_resource_policy::tests::retained_record_context;
 
 fn budget() -> HostWorkBudget {
     HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(10_000_000)))
@@ -79,6 +80,7 @@ async fn fixture() -> (RuntimeManager, RuntimeOps) {
 #[tokio::test]
 async fn accepted_trade_reader_requires_a_protected_rooted_receipt() {
     let (manager, mut runtime) = fixture().await;
+    let adopted = retained_record_context();
     let empty_root: [u8; 32] = runtime
         .runtime
         .create_checkpoint()
@@ -88,7 +90,7 @@ async fn accepted_trade_reader_requires_a_protected_rooted_receipt() {
         .try_into()
         .unwrap();
     assert_eq!(
-        manager.read_accepted_trade_receipt(empty_root, [7; 32], &budget()),
+        manager.read_accepted_trade_receipt(&adopted, empty_root, [7; 32], &budget()),
         Err(AcceptedTradeStateError::IssuerUnavailable)
     );
     let encoded = receipt().encode().unwrap();
@@ -118,11 +120,11 @@ async fn accepted_trade_reader_requires_a_protected_rooted_receipt() {
         .try_into()
         .unwrap();
     assert_eq!(
-        manager.read_accepted_trade_receipt([99; 32], [7; 32], &budget()),
+        manager.read_accepted_trade_receipt(&adopted, [99; 32], [7; 32], &budget()),
         Err(AcceptedTradeStateError::Root)
     );
     let trade = manager
-        .read_accepted_trade_receipt(root, [7; 32], &budget())
+        .read_accepted_trade_receipt(&adopted, root, [7; 32], &budget())
         .unwrap();
     assert_eq!(trade.root, root);
     assert_eq!(trade.output_source_identity, [8; 32]);
@@ -131,7 +133,7 @@ async fn accepted_trade_reader_requires_a_protected_rooted_receipt() {
     assert_eq!(trade.unspent_output, 5);
     let exhausted = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(0)));
     assert!(matches!(
-        manager.read_accepted_trade_receipt(root, [7; 32], &exhausted),
+        manager.read_accepted_trade_receipt(&adopted, root, [7; 32], &exhausted),
         Err(AcceptedTradeStateError::HostBudget(_))
     ));
     assert!(exhausted.is_rejected());
@@ -160,7 +162,7 @@ async fn accepted_trade_reader_requires_a_protected_rooted_receipt() {
         .try_into()
         .unwrap();
     assert_eq!(
-        manager.read_accepted_trade_receipt(malformed_root, [7; 32], &budget()),
+        manager.read_accepted_trade_receipt(&adopted, malformed_root, [7; 32], &budget()),
         Err(AcceptedTradeStateError::Record)
     );
 }

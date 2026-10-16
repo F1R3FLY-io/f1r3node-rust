@@ -188,6 +188,7 @@ impl<'a, A> DirectWalletFunding<'a, A> {
     pub async fn read_policy_snapshot(
         self,
         runtime_manager: &RuntimeManager,
+        adopted: &AdoptedResourcePolicy,
         pre_state_hash: StateHash,
         parallel_reads: NonZeroUsize,
         budget: &HostWorkBudget,
@@ -246,6 +247,7 @@ impl<'a, A> DirectWalletFunding<'a, A> {
         let reader = RuntimeManagerSupplyReader {
             runtime_manager,
             pre_state_hash,
+            event_codec_epoch: adopted.event_codec_epoch(),
         };
         let wallets = self
             .read_snapshot(&reader, expected, parallel_reads, budget)

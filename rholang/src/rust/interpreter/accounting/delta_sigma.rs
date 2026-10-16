@@ -325,7 +325,7 @@ enum DemandTask<'a> {
     Visit(&'a Par, Option<usize>, bool),
     Signed(&'a CostSignedTerm, Option<usize>),
     SignedFinish(Option<SigKey>),
-    Stack(&'a CostStack, Option<usize>),
+    Stack(&'a CostStack, Option<usize>, bool),
     Send(&'a Send, Option<usize>),
     Receive(&'a Receive, Option<usize>),
     New(&'a New, Option<usize>, bool),
@@ -352,7 +352,7 @@ fn signed_demand_par(par: &Par, deploy_key: SigKey, execution_position: bool) ->
                 }
                 if execution {
                     for stack in &par.cost_stacks {
-                        ordered.push(DemandTask::Stack(stack, scope));
+                        ordered.push(DemandTask::Stack(stack, scope, false));
                     }
                 }
                 for send in &par.sends {
@@ -421,9 +421,9 @@ fn signed_demand_par(par: &Par, deploy_key: SigKey, execution_position: bool) ->
                 let parent = values.pop().expect("signed parent demand");
                 values.push(parent.combine(child));
             }
-            DemandTask::Stack(stack, scope) => {
+            DemandTask::Stack(stack, scope, nested) => {
                 let result = values.last_mut().expect("stack parent demand");
-                if stack.cells.is_empty() {
+                if stack.cells.is_empty() && stack.parallel_tail.is_empty() && !nested {
                     result.reject(UnprovableDemand::UnsupportedSyntax);
                     continue;
                 }
@@ -448,6 +448,13 @@ fn signed_demand_par(par: &Par, deploy_key: SigKey, execution_position: bool) ->
                         Err(reason) => result.reject(reason),
                     }
                 }
+                work.extend(
+                    stack
+                        .parallel_tail
+                        .iter()
+                        .rev()
+                        .map(|branch| DemandTask::Stack(branch, scope, true)),
+                );
             }
             DemandTask::Send(send, scope) => {
                 let result = values.last_mut().expect("send parent demand");
@@ -622,7 +629,7 @@ pub fn static_authority_signatures(
         Par(&'a Par),
         RequiredSignature(Option<&'a CostSignature>),
         RequiredBody(Option<&'a Par>),
-        Stack(&'a CostStack),
+        Stack(&'a CostStack, bool),
     }
 
     fn collect(
@@ -639,7 +646,7 @@ pub fn static_authority_signatures(
                         ordered.push(CollectTask::RequiredBody(term.body.as_ref()));
                     }
                     for stack in &par.cost_stacks {
-                        ordered.push(CollectTask::Stack(stack));
+                        ordered.push(CollectTask::Stack(stack, false));
                     }
                     for send in &par.sends {
                         for datum in &send.data {
@@ -694,13 +701,20 @@ pub fn static_authority_signatures(
                         body.ok_or(AuthorityError::MissingAuthority)?,
                     ));
                 }
-                CollectTask::Stack(stack) => {
-                    if stack.cells.is_empty() {
+                CollectTask::Stack(stack, nested) => {
+                    if stack.cells.is_empty() && stack.parallel_tail.is_empty() && !nested {
                         return Err(AuthorityError::MissingSignature);
                     }
                     for cell in &stack.cells {
                         insert(signatures, cell)?;
                     }
+                    work.extend(
+                        stack
+                            .parallel_tail
+                            .iter()
+                            .rev()
+                            .map(|branch| CollectTask::Stack(branch, true)),
+                    );
                 }
             }
         }
@@ -1240,6 +1254,7 @@ mod tests {
         let par = models::par_from_default! {
             cost_stacks: vec![CostStack {
                 cells: vec![target.clone(), target.clone(), target.clone()],
+                parallel_tail: Vec::new(),
             }],
             ..Par::default()
         };
@@ -1262,6 +1277,7 @@ mod tests {
         let body = models::par_from_default! {
             cost_stacks: vec![CostStack {
                 cells: vec![target.clone(), target],
+                parallel_tail: Vec::new(),
             }],
             ..Par::default()
         };
@@ -1286,6 +1302,7 @@ mod tests {
         let body = models::par_from_default! {
             cost_stacks: vec![CostStack {
                 cells: vec![dynamic],
+                parallel_tail: Vec::new(),
             }],
             ..Par::default()
         };
@@ -1304,7 +1321,7 @@ mod tests {
     #[test]
     fn empty_and_unit_stack_cells_are_unprovable() {
         let empty = models::par_from_default! {
-            cost_stacks: vec![CostStack { cells: Vec::new() }],
+            cost_stacks: vec![CostStack { cells: Vec::new(), parallel_tail: Vec::new() }],
             ..Par::default()
         };
         let unit = models::par_from_default! {
@@ -1312,6 +1329,7 @@ mod tests {
                 cells: vec![CostSignature {
                     value: Some(CostSignatureValue::Unit(true)),
                 }],
+                parallel_tail: Vec::new(),
             }],
             ..Par::default()
         };
@@ -1339,6 +1357,7 @@ mod tests {
             data: vec![models::par_from_default! {
                 cost_stacks: vec![CostStack {
                     cells: vec![target],
+                    parallel_tail: Vec::new(),
                 }],
                 ..Par::default()
             }],
@@ -1362,6 +1381,7 @@ mod tests {
             models::par_from_default! {
                 cost_stacks: vec![CostStack {
                     cells: vec![target.clone()],
+                    parallel_tail: Vec::new(),
                 }],
                 ..Par::default()
             },
@@ -1397,6 +1417,7 @@ mod tests {
             models::par_from_default! {
                 cost_stacks: vec![CostStack {
                     cells: vec![target.clone()],
+                    parallel_tail: Vec::new(),
                 }],
                 ..Par::default()
             },

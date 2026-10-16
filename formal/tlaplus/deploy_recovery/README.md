@@ -117,9 +117,12 @@ Consequently, the merge algebra remains coherent if it is presented with a
 current-protocol scope and a historically encoded floor: a sibling tombstone or
 duplicate occurrence cannot mask an effect already materialized in the floor
 state. This is a defensive state-composition invariant, not an in-place upgrade
-path. The D3 wire migration is fresh-genesis: this binary admits only protocol 3
-as an approved running protocol and rejects protocols 1 and 2 before Casper
-starts. Protocol 2 remains the historical exact rejected-deploy threshold.
+path. This finite activation-coherence model retains protocols 1, 2, and 3 as
+historical examples of legacy, exact rejected-deploy, and state-effect wire
+formats; those example values are not the supported running-version set for
+the ratified protocol-7 release. Fresh genesis is the activation boundary,
+not a block-height switch. Protocol 2 remains the historical exact
+rejected-deploy threshold.
 
 | Configuration | Expected result | Defect isolated |
 | --- | --- | --- |
@@ -131,10 +134,14 @@ starts. Protocol 2 remains the historical exact rejected-deploy threshold.
 `ProtocolVersionLifecycle.tla` closes the lifecycle that the activation model
 intentionally abstracts away. It follows the version from genesis candidate
 construction through validator approval, approved-block admission, node-wide
-adoption, proposal, and peer reception. The configured current version is 3;
-the supported active set is exactly `{3}`. A current ceremony therefore reaches
+adoption, proposal, and peer reception. Following
+[ratified decision D-01](../../../docs/casper/design/decision-ledger/01-protocol-version-authority.md), the
+model's configured release version is 7 and its supported active set is exactly
+`{7}`; approval of the corresponding F1R3FLY Improvement Proposal (FIP)
+remains a release precondition. A current ceremony
+therefore reaches
 running consensus with every node using one adopted version, while recovery from
-a protocol-1, protocol-2, or otherwise unsupported approved block fails closed before any
+a protocol-1, retired protocol-6, or otherwise unsupported approved block fails closed before any
 proposal can be made. There is no feature flag or block-height transition
 between two consensus protocols.
 
@@ -147,9 +154,9 @@ unsupported-version admission.
 
 | Configuration | Expected result | Defect isolated |
 | --- | --- | --- |
-| `MC_ProtocolVersionLifecycle.cfg` | pass | current ceremony, approval, adoption, proposal, and reception use protocol 3 end to end |
+| `MC_ProtocolVersionLifecycle.cfg` | pass | current ceremony, approval, adoption, proposal, and reception use protocol 7 end to end |
 | `MC_ProtocolVersionLifecycle_legacy_rejected.cfg` | pass | a protocol-1 approved block fails closed before running |
-| `MC_ProtocolVersionLifecycle_unsupported_rejected.cfg` | pass | an unknown approved version fails closed before running |
+| `MC_ProtocolVersionLifecycle_unsupported_rejected.cfg` | pass | a retired protocol-6 approved version fails closed before running |
 | `MC_ProtocolVersionLifecycle_ceremony_unsafe.cfg` | violate `Inv_CeremonyCandidateCurrent` | genesis construction emits a stale protocol version |
 | `MC_ProtocolVersionLifecycle_adoption_unsafe.cfg` | violate `Inv_RunningNodesAdoptApproved` | nodes retain local configuration instead of adopting the approved version |
 | `MC_ProtocolVersionLifecycle_proposer_unsafe.cfg` | violate `Inv_ProposalUsesApprovedVersion` | proposal construction bypasses the adopted running version |

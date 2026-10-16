@@ -25,15 +25,16 @@ async fn native_signed_term_respects_host_rejection_and_preserves_nil_execution(
     for (limit, succeeds) in [(0, false), (1_000_000, true)] {
         let host = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(limit)));
         let result = deterministic_reduction::root_with_host_work(
-            reducer.space.clone(),
+            reducer.core.space.clone(),
             reducer.metering.budget(),
             reducer.reduction_coordinator.clone(),
             Some(host.clone()),
             reducer.eval_cost_signed_term(
-                &term,
+                term.clone(),
                 &Env::new(),
                 Blake2b512Random::create_from_length(128),
                 &CostAuthority::default(),
+                SmallVec::new(),
             ),
         )
         .await;
@@ -53,7 +54,7 @@ async fn economic_observation_preserves_fault_hidden_by_legacy_abort() {
         create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
             .await;
     let (legacy, observed, _) = deterministic_reduction::root_with_observation(
-        reducer.space.clone(),
+        reducer.core.space.clone(),
         reducer.metering.budget(),
         reducer.reduction_coordinator.clone(),
         None,
@@ -82,7 +83,7 @@ async fn economic_observation_quota_does_not_change_execution_budget_or_legacy_e
     let execution = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(0)));
     let before = execution.report();
     let (legacy, observed, _) = deterministic_reduction::root_with_observation(
-        reducer.space.clone(),
+        reducer.core.space.clone(),
         reducer.metering.budget(),
         reducer.reduction_coordinator.clone(),
         Some(execution.clone()),
@@ -116,7 +117,7 @@ async fn economic_observation_joins_nested_faults_without_reusing_the_previous_r
             errors.reverse();
         }
         let (legacy, observed, _) = deterministic_reduction::root_with_observation(
-            reducer.space.clone(),
+            reducer.core.space.clone(),
             reducer.metering.budget(),
             reducer.reduction_coordinator.clone(),
             None,
@@ -131,7 +132,7 @@ async fn economic_observation_joins_nested_faults_without_reusing_the_previous_r
                 .union(EvaluationFailureSummary::single(PhloFailure::Unclassified))
         );
         let (legacy, next, _) = deterministic_reduction::root_with_observation(
-            reducer.space.clone(),
+            reducer.core.space.clone(),
             reducer.metering.budget(),
             reducer.reduction_coordinator.clone(),
             None,
@@ -144,6 +145,117 @@ async fn economic_observation_joins_nested_faults_without_reusing_the_previous_r
     }
 }
 
+#[tokio::test]
+async fn nested_failure_is_recorded_by_its_reducer_not_the_ambient_runtime() {
+    let (_, outer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let (_, inner) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    assert_eq!(outer.metering.budget().deploy_id(), inner.metering.budget().deploy_id());
+
+    let (_, outer_summary, _) = deterministic_reduction::root_with_observation(
+        outer.core.space.clone(),
+        outer.metering.budget(),
+        outer.reduction_coordinator.clone(),
+        None,
+        async {
+            let (_, inner_summary, _) = Box::pin(deterministic_reduction::root_with_observation(
+                inner.core.space.clone(),
+                inner.metering.budget(),
+                inner.reduction_coordinator.clone(),
+                None,
+                async {
+                    let _ = outer.aggregate_evaluator_errors(vec![
+                        InterpreterError::BugFoundError("outer runtime failure".into()),
+                    ]);
+                    let _ = inner.aggregate_evaluator_errors(vec![InterpreterError::UserAbortError]);
+                },
+            ))
+            .await;
+            assert_eq!(inner_summary, EvaluationFailureSummary::single(PhloFailure::User));
+        },
+    )
+    .await;
+    assert_eq!(outer_summary, EvaluationFailureSummary::single(PhloFailure::Platform));
+}
+
+#[tokio::test]
+async fn nested_host_work_charges_its_reducer_not_the_ambient_runtime() {
+    let (_, outer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let (_, inner) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    assert_eq!(outer.metering.budget().deploy_id(), inner.metering.budget().deploy_id());
+    let outer_host = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(0)));
+    let inner_host = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(1_000_000)));
+    let _ = deterministic_reduction::root_with_observation(
+        outer.core.space.clone(),
+        outer.metering.budget(),
+        outer.reduction_coordinator.clone(),
+        Some(outer_host.clone()),
+        async {
+            let _ = Box::pin(deterministic_reduction::root_with_observation(
+                inner.core.space.clone(),
+                inner.metering.budget(),
+                inner.reduction_coordinator.clone(),
+                Some(inner_host.clone()),
+                async {
+                    assert!(matches!(
+                        outer.reserve_host_primitive(&Par::default()),
+                        Err(InterpreterError::HostWorkRejected)
+                    ));
+                },
+            ))
+            .await;
+        },
+    )
+    .await;
+    assert!(outer_host.report().rejection.is_some());
+    assert!(inner_host.report().rejection.is_none());
+}
+
+#[tokio::test]
+async fn nested_substitution_charges_its_reducer_not_the_ambient_runtime() {
+    let (_, outer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let (_, inner) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    assert_eq!(outer.metering.budget().deploy_id(), inner.metering.budget().deploy_id());
+    let outer_host = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(0)));
+    let inner_host = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(1_000_000)));
+    let _ = deterministic_reduction::root_with_observation(
+        outer.core.space.clone(),
+        outer.metering.budget(),
+        outer.reduction_coordinator.clone(),
+        Some(outer_host.clone()),
+        async {
+            let _ = Box::pin(deterministic_reduction::root_with_observation(
+                inner.core.space.clone(),
+                inner.metering.budget(),
+                inner.reduction_coordinator.clone(),
+                Some(inner_host.clone()),
+                async {
+                    let term = new_gint_par(7, Vec::new(), false);
+                    assert!(matches!(
+                        outer.substitute_and_charge(term, 0, &Env::new()),
+                        Err(InterpreterError::HostWorkRejected)
+                    ));
+                },
+            ))
+            .await;
+        },
+    )
+    .await;
+    assert!(outer_host.report().rejection.is_some());
+    assert!(inner_host.report().rejection.is_none());
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn economic_observation_keeps_faults_collapsed_inside_parallel_children() {
     let (_, reducer) =
@@ -152,7 +264,7 @@ async fn economic_observation_keeps_faults_collapsed_inside_parallel_children() 
     let child_a = reducer.clone();
     let child_b = reducer.clone();
     let (legacy, observed, detached_errors) = deterministic_reduction::root_with_observation(
-        reducer.space.clone(),
+        reducer.core.space.clone(),
         reducer.metering.budget(),
         reducer.reduction_coordinator.clone(),
         None,
@@ -172,13 +284,20 @@ async fn economic_observation_keeps_faults_collapsed_inside_parallel_children() 
                             InterpreterError::OutOfPhlogistonsError,
                         ])
                     }),
-                ])
+                ], SmallVec::new())
                 .await
         },
     )
     .await;
+    assert!(detached_errors.is_empty());
+    let drive_errors = {
+        let drive = reducer.drive.read().expect("drive cell poisoned").clone();
+        let mut sink = drive.sink.lock().expect("drive sink poisoned");
+        std::mem::take(&mut *sink)
+    };
+    assert_eq!(drive_errors.len(), 2);
     assert!(matches!(
-        reducer.finish_detached_errors(legacy.map(|_| ()), detached_errors),
+        reducer.finish_detached_errors(legacy.map(|_| ()), drive_errors),
         Err(InterpreterError::UserAbortError)
     ));
     assert_eq!(
@@ -197,14 +316,17 @@ async fn economic_observation_cancellation_does_not_leak_into_the_next_root() {
     let (reported, observed) = tokio::sync::oneshot::channel();
     {
         let canceled = deterministic_reduction::root_with_observation(
-            reducer.space.clone(),
+            reducer.core.space.clone(),
             reducer.metering.budget(),
             reducer.reduction_coordinator.clone(),
             None,
             async {
-                deterministic_reduction::record_evaluator_failures(&[
-                    InterpreterError::BugFoundError("canceled root failure".into()),
-                ]);
+                deterministic_reduction::record_evaluator_failures(
+                    &reducer.core.space,
+                    &reducer.metering.budget(),
+                    &reducer.reduction_coordinator,
+                    &[InterpreterError::BugFoundError("canceled root failure".into())],
+                );
                 reported.send(()).unwrap();
                 std::future::pending::<()>().await;
             },
@@ -218,7 +340,7 @@ async fn economic_observation_cancellation_does_not_leak_into_the_next_root() {
     let (_, next, _) = tokio::time::timeout(
         std::time::Duration::from_secs(2),
         deterministic_reduction::root_with_observation(
-            reducer.space.clone(),
+            reducer.core.space.clone(),
             reducer.metering.budget(),
             reducer.reduction_coordinator.clone(),
             None,

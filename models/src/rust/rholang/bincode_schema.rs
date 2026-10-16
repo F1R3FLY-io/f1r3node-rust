@@ -364,6 +364,21 @@ pub trait BincodeNode {
         self.bincode_emit_metered(from, out)
     }
 
+    /// Protocol-v6 positional layout. Every pre-v7 field is retained; only
+    /// `CostStack.parallel_tail` is absent. A caller must reject nonempty
+    /// parallel tails before selecting this necessarily infallible emitter.
+    fn bincode_emit_cost_v1(&self, from: usize, out: &mut Vec<u8>) -> Descent<'_> {
+        self.bincode_emit(from, out)
+    }
+
+    fn bincode_emit_cost_v1_metered(
+        &self,
+        from: usize,
+        out: &mut dyn BincodeByteSink,
+    ) -> Result<Descent<'_>, RSpaceError> {
+        self.bincode_emit_metered(from, out)
+    }
+
     /// ⚠ **The one node whose field 0 must be CONSTRUCTED, not borrowed.**
     ///
     /// `EPathMap` overrides this; every generated impl inherits `None`.

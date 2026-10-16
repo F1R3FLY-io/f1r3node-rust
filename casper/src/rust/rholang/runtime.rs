@@ -77,6 +77,9 @@ use crate::rust::util::rholang::costacc::direct_wallet_funding::{
     NativeFundedExecutionContext, NativeGrantSettlementInput,
 };
 use crate::rust::util::rholang::costacc::genesis_resource_policy::AdoptedResourcePolicy;
+use crate::rust::util::rholang::costacc::offered_acceptance::OfferedAcceptanceBudget;
+#[cfg(any(test, feature = "test-utils"))]
+use crate::rust::util::rholang::costacc::offered_acceptance::OfferedUsageKind;
 use crate::rust::util::rholang::costacc::offered_grants::offered_grant_transition_limits;
 use crate::rust::util::rholang::costacc::pre_charge_deploy::PreChargeDeploy;
 use crate::rust::util::rholang::costacc::prepaid_receipts::read_live_data_metered;
@@ -187,7 +190,8 @@ impl RuntimeOps {
         self.runtime.cost.set_unmetered(false);
         self.runtime
             .cost
-            .set_deploy_id_funded(identity, accounting::funding_sig(signed));
+            .set_deploy_id_funded(identity, accounting::funding_sig(signed))
+            .map_err(|error| CasperError::RuntimeError(error.to_string()))?;
         self.runtime
             .evaluate_prepared_with_native_phlo(
                 prepared,
@@ -396,7 +400,10 @@ impl RuntimeOps {
                     "offered proposal requires a 32-byte original root".to_string(),
                 )
             })?;
-            let candidate = async {
+            // Changed by DR-102: the candidate step also returns the certified
+            // mergeable map, which the producer stores like every validator.
+            // let candidate = async {
+            let (candidate, certified_mergeable) = async {
                 let DeployEnvelopeRef::OfferedFunded(signed) = envelope.view() else {
                     return Err(CasperError::RuntimeError(
                         "offered proposal has an unexpected envelope format".to_string(),
@@ -464,6 +471,7 @@ impl RuntimeOps {
                 let snapshot = manager
                     .read_direct_offered_wallet_snapshot(
                         envelope,
+                        adopted,
                         start_hash,
                         grant_context.as_ref().map(|(_, verified, _)| verified),
                         budget,
@@ -558,36 +566,72 @@ impl RuntimeOps {
                         budget,
                     )
                     .await?;
-                let replay_budget = HostWorkBudget::new(
-                    models::rust::cost_protocol_limits::offered_funded_v6_host_work_limits(),
-                );
-                replay_budget
-                    .reserve(
-                        HostWorkDimension::SearchStateBytes,
-                        HostWorkUnits::new(u64::try_from(context_copy_bytes).map_err(|_| {
-                            CasperError::RuntimeError(
-                                "offered replay context copy overflows".to_string(),
-                            )
-                        })?),
-                    )
-                    .map_err(|error| CasperError::RuntimeError(error.to_string()))?;
+                // Changed by DR-102: certify owns the replay budget and charges the
+                // block-context copy itself, so the producer's self-replay charges
+                // exactly what every validator's replay charges. The publication
+                // comparison is producer-only acceptance work.
+                // let replay_budget = HostWorkBudget::new(
+                //     models::rust::cost_protocol_limits::offered_funded_v6_host_work_limits(),
+                // );
+                // replay_budget
+                //     .reserve(
+                //         HostWorkDimension::SearchStateBytes,
+                //         HostWorkUnits::new(u64::try_from(context_copy_bytes).map_err(|_| {
+                //             CasperError::RuntimeError(
+                //                 "offered replay context copy overflows".to_string(),
+                //             )
+                //         })?),
+                //     )
+                //     .map_err(|error| CasperError::RuntimeError(error.to_string()))?;
+                // let certificate = manager
+                //     .certify_offered_draft(
+                //         &candidate.processed,
+                //         start_hash,
+                //         &block_data,
+                //         invalid_blocks.clone(),
+                //         adopted,
+                //         &replay_budget,
+                //     )
+                //     .await?;
+                // let _publication = prepared.authorize_publication_after_replay(
+                //     &candidate.processed,
+                //     candidate.final_root,
+                //     &certificate,
+                //     &replay_budget,
+                // )?;
+                // Ok(candidate)
                 let certificate = manager
                     .certify_offered_draft(
                         &candidate.processed,
                         start_hash,
                         &block_data,
-                        invalid_blocks.clone(),
+                        &invalid_blocks,
                         adopted,
-                        &replay_budget,
                     )
                     .await?;
+                let acceptance = OfferedAcceptanceBudget::new();
                 let _publication = prepared.authorize_publication_after_replay(
                     &candidate.processed,
                     candidate.final_root,
                     &certificate,
-                    &replay_budget,
+                    &acceptance,
                 )?;
-                Ok(candidate)
+                #[cfg(any(test, feature = "test-utils"))]
+                {
+                    manager.record_offered_budget_usage(
+                        OfferedUsageKind::ProducerSelfReplay,
+                        candidate.processed.identity_bytes(),
+                        start_hash,
+                        certificate.replay_usages(),
+                    );
+                    manager.record_offered_budget_usage(
+                        OfferedUsageKind::ProducerAcceptance,
+                        candidate.processed.identity_bytes(),
+                        start_hash,
+                        acceptance.meter().usages(),
+                    );
+                }
+                Ok((candidate, certificate.into_user_mergeable()))
             }
             .await
             .map_err(|error| offered_candidate_rejection(envelope, start_hash, error))?;
@@ -595,9 +639,13 @@ impl RuntimeOps {
             self.runtime
                 .reset(&Blake2b256Hash::from_bytes(candidate.final_root.to_vec()))
                 .await?;
-            let mergeable = self
-                .get_number_channels_data_metered(&candidate.mergeable, budget)
-                .await?;
+            // Changed by DR-102: the producer stores the certified mergeable map,
+            // the map that every validator stores, instead of reading the map of
+            // its own play again on the execution budget.
+            // let mergeable = self
+            //     .get_number_channels_data_metered(&candidate.mergeable, budget)
+            //     .await?;
+            let mergeable = certified_mergeable;
             let (post_root, extra_users, systems) = self
                 .compute_state(
                     &candidate_root,
@@ -970,10 +1018,17 @@ impl RuntimeOps {
         let mut deploy_result =
             ProcessedDeploy::empty(deploy).map_err(CasperError::RuntimeError)?;
         deploy_result.cost = Cost::to_proto(eval_result.cost);
-        deploy_result.deploy_log = deploy_log
+        deploy_result.deploy_log = match deploy_log
             .into_iter()
-            .map(|event| event_converter::to_casper_event(event))
-            .collect();
+            .map(event_converter::to_casper_event)
+            .collect::<Result<Vec<_>, _>>()
+        {
+            Ok(log) => log,
+            Err(error) => {
+                self.runtime.revert_to_soft_checkpoint(fallback).await;
+                return Err(error);
+            }
+        };
         deploy_result.is_failed = !eval_succeeded;
 
         if !eval_succeeded {
@@ -1151,7 +1206,7 @@ impl RuntimeOps {
         channel: &Par,
         merge_type: MergeType,
     ) -> Result<Option<(Blake2b256Hash, i64)>, CasperError> {
-        let ch_values = self.runtime.get_data(channel).await;
+        let ch_values = self.runtime.get_data(channel).await?;
 
         if ch_values.is_empty() {
             Ok(None)
@@ -1292,7 +1347,7 @@ impl RuntimeOps {
         let log = log
             .into_iter()
             .map(event_converter::to_casper_event)
-            .collect();
+            .collect::<Result<Vec<_>, _>>()?;
         if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
             tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "after_convert_event_log", rss_kb);
         }
@@ -1499,7 +1554,7 @@ impl RuntimeOps {
                 metrics::histogram!(BONDS_CACHE_INJ_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
                     .record(__inj_start.elapsed().as_secs_f64());
                 let __get_data_start = std::time::Instant::now();
-                let data = self.get_data_par(&return_name).await;
+                let data = self.get_data_par(&return_name).await?;
                 metrics::histogram!(BONDS_CACHE_GET_DATA_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
                     .record(__get_data_start.elapsed().as_secs_f64());
                 if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
@@ -1610,7 +1665,7 @@ impl RuntimeOps {
         }
 
         let cost = eval_res.cost.value.max(0) as u64;
-        Ok((self.get_data_par(name).await, cost))
+        Ok((self.get_data_par(name).await?, cost))
     }
 
     /* Evaluates Rholang source code */
@@ -1698,6 +1753,9 @@ impl RuntimeOps {
             tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "before_runtime_evaluate", rss_kb);
         }
         let wrapper_pre = wrapper_pre_start.elapsed();
+        // I3/DR-101: a system deploy pays as system authority, never as the
+        // payer of a deployment that this runtime evaluated earlier.
+        self.runtime.cost.set_system_payer();
         let result = self
             .runtime
             .evaluate(
@@ -1721,26 +1779,32 @@ impl RuntimeOps {
         Ok(result)
     }
 
-    pub async fn get_data_par(&self, channel: &Par) -> Vec<Par> {
-        self.runtime
+    pub async fn get_data_par(&self, channel: &Par) -> Result<Vec<Par>, CasperError> {
+        Ok(self
+            .runtime
             .get_data(channel)
-            .await
+            .await?
             .into_iter()
             .flat_map(|datum| std::sync::Arc::unwrap_or_clone(datum.a).pars)
-            .collect()
+            .collect())
     }
 
     pub async fn get_data_datums(
         &self,
         channel: &Par,
-    ) -> Vec<rspace_plus_plus::rspace::internal::Datum<ListParWithRandom>> {
-        self.runtime.get_data(channel).await
+    ) -> Result<Vec<rspace_plus_plus::rspace::internal::Datum<ListParWithRandom>>, CasperError>
+    {
+        Ok(self.runtime.get_data(channel).await?)
     }
 
-    pub async fn get_continuation_par(&self, channels: Vec<Par>) -> Vec<(Vec<BindPattern>, Par)> {
-        self.runtime
+    pub async fn get_continuation_par(
+        &self,
+        channels: Vec<Par>,
+    ) -> Result<Vec<(Vec<BindPattern>, Par)>, CasperError> {
+        Ok(self
+            .runtime
             .get_continuations(channels)
-            .await
+            .await?
             .into_iter()
             .filter_map(|wk| {
                 // Materialize the Arc-shaped payloads at the cold-readback boundary.
@@ -1754,7 +1818,7 @@ impl RuntimeOps {
                     None
                 }
             })
-            .collect()
+            .collect())
     }
 
     pub async fn consume_result(
@@ -1985,13 +2049,9 @@ impl RuntimeOps {
                 "genesis must return exactly one resource policy".to_string(),
             ));
         };
-        if par.exprs.len() != 1
-            || *par
-                != (Par {
-                    exprs: par.exprs.clone(),
-                    ..Par::default()
-                })
-        {
+        let mut expected = Par::default();
+        expected.exprs = par.exprs.clone();
+        if par.exprs.len() != 1 || *par != expected {
             return Err(CasperError::RuntimeError(
                 "genesis resource policy must be a byte array".to_string(),
             ));
@@ -2263,6 +2323,227 @@ mod tests {
             .expect("body envelope signs"),
         )
         .expect("body envelope builds")
+    }
+
+    fn preparation_offered_envelope(source: &str, price: i64, limit: i64) -> DeployEnvelope {
+        use crypto::rust::signatures::signed::Cosigned;
+        use models::rust::cost_deploy_data::DeployData as CostDeployData;
+        use models::rust::cost_protocol_limits::offered_funded_v6_limits;
+        use models::rust::phlo_controls::PhloControlsV1;
+        use models::rust::phlo_intent::PhloFundingIntentV1;
+        use models::rust::phlo_schedule::{PhloResourceClassV1, PhloScheduleV1};
+        use models::rust::phlo_source::{PhloSourceLimits, PhloSourcePolicyV1};
+        use models::rust::signed_phlo_deploy::OfferedFundedDeploy;
+
+        let limits = offered_funded_v6_limits().envelope;
+        let schedule = PhloScheduleV1 {
+            protocol_version: 6,
+            network: b"test",
+            shard: b"root",
+            settlement_asset: b"REV",
+            settlement_unit: b"atomic-REV",
+            decimal_scale: 8,
+            classes: vec![PhloResourceClassV1 {
+                identity: b"compute",
+                measurement_unit: b"phlo",
+                measurement_rule: [1; 32],
+                valuation_rule: [2; 32],
+                weight: 1,
+            }],
+            actual_price: 1,
+            compatibility_rule: [3; 32],
+        };
+        let funding = PhloFundingIntentV1 {
+            schedule_commitment: schedule
+                .digest(limits.payload.funding.controls().schedule(1))
+                .expect("schedule commitment"),
+            controls: PhloControlsV1 {
+                limit: 100,
+                price_ceiling: 3,
+                required_owner_ceilings: vec![3],
+                permitted_schedules: vec![schedule],
+            },
+            total_exposure: 300,
+            sources: vec![PhloSourcePolicyV1::new(
+                b"custody",
+                300,
+                300,
+                true,
+                vec![],
+                PhloSourceLimits {
+                    wire: limits.payload.funding.wire,
+                    resource_permissions: 0,
+                    authority_nodes: 0,
+                },
+            )
+            .expect("source policy")],
+        }
+        .encode(limits.payload.funding)
+        .expect("canonical funding intent");
+        let body = CostDeployData {
+            term: source.to_owned(),
+            language: "rholang".to_owned(),
+            time_stamp: 1,
+            valid_after_block_number: 0,
+            shard_id: "root".to_owned(),
+            expiration_timestamp: None,
+            authority_presentations: Vec::new(),
+        };
+        let payload = OfferedFundedDeploy::new(body, funding, limit, price, limits.payload)
+            .expect("offered payload");
+        let signed = Cosigned::create_single_envelope(
+            payload,
+            Box::new(Secp256k1),
+            PrivateKey::from_bytes(&[2; 32]),
+        )
+        .expect("signed offered payload");
+        DeployEnvelope::from_proto(
+            OfferedFundedDeploy::to_proto(&signed).expect("offered protobuf"),
+            limits,
+        )
+        .expect("authenticated offered envelope")
+    }
+
+    #[derive(Clone, Copy)]
+    enum PreparationBindingCase {
+        Exact,
+        Missing,
+        WrongSource,
+        WrongLanguage,
+        WrongOutput,
+    }
+
+    struct BoundPreparationFrontend {
+        case: PreparationBindingCase,
+        expected_environment: HashMap<String, Par>,
+        calls: std::sync::atomic::AtomicUsize,
+    }
+
+    impl ProgramFrontend for BoundPreparationFrontend {
+        fn abi_version(&self) -> u16 {
+            rholang::rust::interpreter::frontend::PREPARED_PROGRAM_ABI_V1
+        }
+
+        fn language_identity(&self) -> Option<&[u8]> { Some(b"test-full-language-definition-v1") }
+
+        fn prepare(
+            &self,
+            source: &str,
+            environment: HashMap<String, Par>,
+        ) -> Result<PreparedProgram, rholang::rust::interpreter::frontend::PreparationError>
+        {
+            use std::sync::atomic::Ordering;
+
+            use models::rust::rholang::protobuf_encoder;
+
+            assert_eq!(environment, self.expected_environment);
+            self.calls.fetch_add(1, Ordering::Relaxed);
+            let process = Par::default();
+            if matches!(self.case, PreparationBindingCase::Missing) {
+                return Ok(PreparedProgram::from_normalized(process));
+            }
+            let source = match self.case {
+                PreparationBindingCase::WrongSource => format!("{source} ").into_bytes(),
+                _ => source.as_bytes().to_vec(),
+            };
+            let language = match self.case {
+                PreparationBindingCase::WrongLanguage => {
+                    b"test-full-language-definition-v2".to_vec()
+                }
+                _ => self
+                    .language_identity()
+                    .expect("declared language")
+                    .to_vec(),
+            };
+            let output = match self.case {
+                PreparationBindingCase::WrongOutput => vec![1],
+                _ => protobuf_encoder::encode_to_vec(&process),
+            };
+            PreparedProgram::from_normalized_with_binding(process, source, language, output)
+        }
+    }
+
+    #[test]
+    fn offered_source_preparation_rejects_bad_bindings_before_returning_a_program() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let envelope = preparation_offered_envelope("Nil", 2, 10);
+        let original = envelope.to_proto().expect("original offered bytes");
+        for (case, diagnostic) in [
+            (
+                PreparationBindingCase::Missing,
+                "requires a prepared program source binding",
+            ),
+            (PreparationBindingCase::WrongSource, "source does not match"),
+            (
+                PreparationBindingCase::WrongLanguage,
+                "language identity does not match",
+            ),
+            (PreparationBindingCase::WrongOutput, "output does not match"),
+        ] {
+            let frontend = BoundPreparationFrontend {
+                case,
+                expected_environment: models::rust::normalizer_env::normalizer_env_from_envelope(
+                    &envelope,
+                ),
+                calls: AtomicUsize::new(0),
+            };
+            for _ in 0..2 {
+                let error = prepare_offered_source(&frontend, &envelope)
+                    .err()
+                    .expect("invalid binding must not produce a prepared program");
+                assert!(error.to_string().contains(diagnostic), "{error}");
+            }
+            assert_eq!(frontend.calls.load(Ordering::Relaxed), 2);
+            assert_eq!(envelope.to_proto().expect("unchanged envelope"), original);
+        }
+    }
+
+    #[test]
+    fn offered_source_preparation_rejects_other_envelopes_without_calling_the_frontend() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let frontend = BoundPreparationFrontend {
+            case: PreparationBindingCase::Exact,
+            expected_environment: HashMap::new(),
+            calls: AtomicUsize::new(0),
+        };
+        assert!(prepare_offered_source(&frontend, &rejection_envelope()).is_err());
+        assert_eq!(frontend.calls.load(Ordering::Relaxed), 0);
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig::with_cases(16))]
+
+        #[test]
+        fn offered_preparation_is_repeatable_and_preserves_signed_controls(
+            trailing_spaces in 0usize..8,
+            price in 1i64..=3,
+            limit in 1i64..=100,
+        ) {
+            use std::sync::atomic::{AtomicUsize, Ordering};
+
+            let source = format!("Nil{}", " ".repeat(trailing_spaces));
+            let envelope = preparation_offered_envelope(&source, price, limit);
+            let original = envelope.to_proto().expect("original envelope");
+            let frontend = BoundPreparationFrontend {
+                case: PreparationBindingCase::Exact,
+                expected_environment: models::rust::normalizer_env::normalizer_env_from_envelope(&envelope),
+                calls: AtomicUsize::new(0),
+            };
+            let (first, first_bytes) = prepare_offered_source(&frontend, &envelope).expect("live preparation");
+            let (replayed, replay_bytes) = prepare_offered_source(&frontend, &envelope).expect("replay preparation");
+            proptest::prop_assert_eq!(first_bytes, source.len() as u64);
+            proptest::prop_assert_eq!(replay_bytes, first_bytes);
+            proptest::prop_assert_eq!(first.source_binding(), replayed.source_binding());
+            proptest::prop_assert_eq!(first.source_binding().expect("receipt").0, source.as_bytes());
+            proptest::prop_assert_eq!(first.as_par(), replayed.as_par());
+            proptest::prop_assert_eq!(frontend.calls.load(Ordering::Relaxed), 2);
+            let final_envelope = envelope.to_proto().expect("unchanged envelope");
+            proptest::prop_assert_eq!(final_envelope.phlo_price, price);
+            proptest::prop_assert_eq!(final_envelope.phlo_limit, limit);
+            proptest::prop_assert_eq!(final_envelope, original);
+        }
     }
 
     /// Returns one error of the selected class and whether the class is an

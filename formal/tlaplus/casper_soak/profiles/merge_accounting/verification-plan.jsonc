@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "claim": "CLAIM-CASPER-SOAK-005",
+  "model": "formal/tlaplus/casper_soak/profiles/merge_accounting/MergeAccounting.tla",
+  "scope": "bounded-merge-accounting-classification-only",
+  "construction": "not-applicable",
+  "bounds": {"scenarios": 2, "observations_per_scenario": 3},
+  "assumptions": [
+    "Each scenario observes two independent execution identities with equal effects, then repeats the first identity.",
+    "Compatibility abstracts exact schema, epoch, accounting mode, record version, and token-domain matching.",
+    "Settlement presence abstracts complete required settlement measurements.",
+    "Auxiliary fields and applied receipts are valid, and independent product failures are absent.",
+    "The model does not compute node accounting, rejection closure, or merge results.",
+    "Executable fixtures separately check malformed evidence, faults, filesystem behavior, and independent failures."
+  ],
+  "positive_control": {
+    "configuration": "MC_MergeAccounting.cfg",
+    "expected_exit": 0,
+    "properties": ["MultiplicityMeasured", "SettlementCoverageRequired", "CompatibilityLabeled"]
+  },
+  "negative_controls": [
+    {"configuration": "MC_MergeAccounting_multiplicity_unsafe.cfg", "expected_exit": 12, "property": "MultiplicityMeasured", "knob": "DeduplicateByEffectValue", "fixture": "accounting_multiplicity"},
+    {"configuration": "MC_MergeAccounting_settlement_unsafe.cfg", "expected_exit": 12, "property": "SettlementCoverageRequired", "knob": "TreatMissingSettlementAsZero", "fixture": "accounting_settlement_missing"},
+    {"configuration": "MC_MergeAccounting_epoch_unsafe.cfg", "expected_exit": 12, "property": "CompatibilityLabeled", "knob": "MixProtocolProfiles", "fixture": "accounting_epoch_mismatch"}
+  ]
+}

@@ -1,0 +1,135 @@
+{
+  "kind": "partial-source-bound-verification-not-discharge",
+  "status": "blocked",
+  "checkout_base": "3b1d2465a39b020426b3caa02bf5313d2b9fac5b",
+  "working_tree": true,
+  "executed_commit": null,
+  "scope": "challenge-allocation-within-one-observer-lifetime",
+  "claims": {
+    "CLAIM-CASPER-NODE-OBSERVATION-001": "pending",
+    "CLAIM-CASPER-NODE-OBSERVATION-002": "pending"
+  },
+  "input_files": 41,
+  "claim_artifacts": 31,
+  "mandatory_artifacts": 20,
+  "source_manifest_sha256": "00e6a172e4d039ddd07e0061e8e62f464c085c92cf35549f7b22c7ed6ce7e90d",
+  "bulk": "target/node-observation-verification-3b1d2465a-NIXDOR",
+  "green_source_archive_sha256": "1713e129cc2a5c95c67001efd968a8c3cff1626542b9eb385d123ebdb8131b5a",
+  "previous_records_archive_sha256": "9db249e7c5de99ab2d9274ac9e0e8555922dcb7708a64cd9911576634fc1cb36",
+  "provenance": {
+    "green_archive": "The rebuild archive predates later gate and claim documentation edits. Rust input equality is checked separately.",
+    "binding_source": "The driver uses the same Rust bytes and a separately identified source copy.",
+    "index": "The index changed externally. The assistant issued no staging or commit command."
+  },
+  "rust": {
+    "image": "sha256:70e057d54eb606661197319a1fedcd6e824b3abdb2cd9162225fa104d62d4623",
+    "red": {
+      "exit": 101,
+      "passed": 1,
+      "failed": 1,
+      "scope": "Original random-only behavior with an explicit private entropy seam.",
+      "source": "red/observer-before-fix.rs",
+      "log": "red/build/tests.log"
+    },
+    "green": {
+      "exit": 0,
+      "storage_executions": 304,
+      "node_library_executions": 257,
+      "interface_executions": 19,
+      "total_executions": 580,
+      "ignored": 1,
+      "cache_files_verified": 21779,
+      "host_project_objects_imported": false,
+      "fresh_target": false,
+      "clippy": 0,
+      "workspace_check": 0,
+      "formatting": 0
+    },
+    "binding_driver": {
+      "exit": 0,
+      "executions": 276,
+      "unique_additional_behaviors": false,
+      "cache_files_verified": 23304,
+      "configuration": "The retained vendor configuration is mounted as Cargo global configuration."
+    },
+    "interface": {
+      "raw_bytes": 551199488,
+      "executed_derived_bytes": 18952880,
+      "allocated_sections_match": true,
+      "program_headers_match": true,
+      "whole_file_identities_equal": false
+    }
+  },
+  "refutation": {
+    "scope": "Challenge allocation and stale-token rejection only.",
+    "positive_exit": 0,
+    "generated_states": 199,
+    "distinct_states": 127,
+    "max_sessions": 3,
+    "random_values": 2,
+    "negative_exit": 12,
+    "expected_invariant": "FreshChallenges",
+    "log_directory": "formal-03",
+    "combined_claim": "pending"
+  },
+  "construction": {
+    "scope": "Abstract allocation over arbitrary finite event histories and natural-number random values.",
+    "prover": "Coq 8.16.1",
+    "image": "sha256:94ef660b2d199df5fc82033ec7bd9ce209e25d8111866574fc527b02b5231c77",
+    "kernel_check": "passed",
+    "assumptions": {
+      "observer_challenges_unique": 0,
+      "observer_replay_refused": 0,
+      "observer_counter_exhaustion_refused": 0,
+      "observer_checked_allocation_valid": 0
+    },
+    "full_existing_rocq_suite_rerun": false,
+    "combined_claim": "pending"
+  },
+  "gates": {
+    "tlc_positive_configurations": 14,
+    "tlc_expected_violations": 62,
+    "tlc_exit": 0,
+    "registry_fixture_exit": 0,
+    "registry_fixture_controls": 62,
+    "actionlint_version": "1.7.12",
+    "actionlint_exit": 0,
+    "cbc_status_audit": {
+      "exit": 4,
+      "total": 20,
+      "gaps": 20
+    }
+  },
+  "diagnostics": {
+    "active_checks": 7,
+    "confirmed_clean": 0,
+    "timed_out": 2,
+    "silent_on_clean": 5,
+    "complete_coverage": false,
+    "legacy_yaml_findings": "Retained. No full clean diagnostic claim."
+  },
+  "retained_failures": [
+    "The first Rocq build failed on an unsimplified projection.",
+    "Host Java required an unavailable container glibc version.",
+    "The first fixture copied ignored TLC state files and exhausted tmpfs.",
+    "Fixture attempts 2 and 3 failed. Attempt 3 identifies a non-executable tmpfs.",
+    "The first Actionlint run found two legacy unquoted opam substitutions.",
+    "The first formatting check failed on new formatting.",
+    "Gate-ledger setup refused to overwrite the historical gate record.",
+    "The first recorder refused a leading-dot slug error before writing the report."
+  ],
+  "remaining": [
+    "Cross-incarnation identity and freshness.",
+    "The other Batch A properties and complete applicability review.",
+    "Batch B1 refutation and construction inputs.",
+    "Kani arithmetic harnesses and complete Rust correspondence.",
+    "Inherited finality and formal-gate obligations.",
+    "Named maintainer acceptance of the final revision and package."
+  ],
+  "maintainer_acceptance": null,
+  "hosted_verification": false,
+  "b2_planning": "blocked",
+  "task_complete": false,
+  "human_ste_review": "not-recorded",
+  "full_ste_conformance": "not-claimed"
+}

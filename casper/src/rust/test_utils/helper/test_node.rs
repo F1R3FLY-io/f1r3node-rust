@@ -40,7 +40,9 @@ use crate::rust::block_status::BlockStatus;
 use crate::rust::blocks::block_processor::{BlockProcessor, BlockProcessorDependencies};
 use crate::rust::blocks::proposer::block_creator;
 use crate::rust::blocks::proposer::propose_result::BlockCreatorResult;
-use crate::rust::blocks::proposer::proposer::{new_proposer, ProductionProposer, ProposerResult};
+use crate::rust::blocks::proposer::proposer::{
+    new_proposer, DeploySelection, ProductionProposer, ProposerResult,
+};
 use crate::rust::casper::{Casper, CasperShardConf, MultiParentCasper};
 use crate::rust::engine::block_retriever::{BlockRetriever, RequestState, RequestedBlocks};
 use crate::rust::engine::engine_cell::EngineCell;
@@ -164,21 +166,16 @@ impl TestNode {
             CasperError::RuntimeError("No validator identity available".to_string())
         })?;
 
-        // Create block using block_creator. Pending-cosigner-metadata
-        // sidecar is empty here because this is a test-helper entry path
-        // that doesn't admit multi-sig deploys through admit_deploy_cosigned.
-        let empty_cosigner_metadata =
-            std::sync::Arc::new(parking_lot::Mutex::new(std::collections::HashMap::new()));
+        // Exercise the same standard deploy selection as a normal proposer.
         block_creator::create(
             &snapshot,
             &validator,
             None, // dummy_deploy_opt
             self.deploy_storage.clone(),
             self.rejected_deploy_buffer.clone(),
-            empty_cosigner_metadata,
             &mut self.runtime_manager.clone(),
             &mut self.block_store.clone(),
-            false,
+            DeploySelection::Standard,
         )
         .await
     }
@@ -231,7 +228,7 @@ impl TestNode {
             .block_processor
             .check_if_of_interest(self.casper.clone(), &block)?;
 
-        if !is_of_interest {
+        if !is_of_interest.is_fresh() {
             return Ok(Either::Left(BlockStatus::not_of_interest()));
         }
 
@@ -848,7 +845,7 @@ impl TestNode {
 
                             // Convert Node to PeerNode
                             let peer = PeerNode {
-                                id: NodeIdentifier::new(hex::encode(&sender_node.id)),
+                                id: NodeIdentifier::new(&hex::encode(&sender_node.id))?,
                                 endpoint: Endpoint::new(
                                     String::from_utf8_lossy(&sender_node.host).to_string(),
                                     sender_node.tcp_port,
@@ -1084,7 +1081,7 @@ impl TestNode {
 
         let connections_cell = ConnectionsCell::new();
         let clique_oracle = CliqueOracleImpl;
-        let estimator = Estimator::apply(max_number_of_parents, max_parent_depth);
+        let estimator = Estimator::apply();
         let rp_conf = create_rp_conf_ask(current_peer_node.clone(), None, None);
         let event_publisher = F1r3flyEvents::new();
         // Scala: implicit val requestedBlocks: RequestedBlocks[F] = Ref.unsafe[F, Map[BlockHash, RequestState]](Map.empty)
@@ -1098,12 +1095,6 @@ impl TestNode {
         );
 
         let _ = test_network.add_peer(&current_peer_node);
-
-        // Multi-sig cosigner-metadata sidecar (§1.9.5). Shared `Arc` between
-        // the MultiParentCasperImpl and the proposer's ProductionBlockCreator
-        // so admission-time writes are visible at proposal-time reads.
-        let pending_cosigner_metadata =
-            Arc::new(parking_lot::Mutex::new(std::collections::HashMap::new()));
 
         // Proposer
         let validator_id_opt = if is_read_only {
@@ -1120,7 +1111,6 @@ impl TestNode {
                 block_store.clone(),
                 deploy_storage.clone(),
                 rejected_deploy_buffer.clone(),
-                pending_cosigner_metadata.clone(),
                 block_retriever.clone(),
                 tle.clone(),
                 connections_cell.clone(),
@@ -1139,6 +1129,7 @@ impl TestNode {
             tle.clone(),
             connections_cell.clone(),
             rp_conf.clone(),
+            None,
         );
 
         let block_processor = BlockProcessor::new(bp_dependencies);
@@ -1164,6 +1155,7 @@ impl TestNode {
                 required_sigs: 0,
             },
             sigs: vec![],
+            floor_seed: None,
         };
 
         let shard_conf = CasperShardConf {
@@ -1179,13 +1171,11 @@ impl TestNode {
             // Required to enable protection from re-submitting duplicate deploys
             deploy_lifespan: 50,
             casper_version: 1,
-            config_version: 1,
             bond_minimum: 0,
             bond_maximum: i64::MAX,
             epoch_length: 10000,
             quarantine_length: 20000,
             min_phlo_price: 1,
-            disable_late_block_filtering: true,
             deploy_heartbeat_wake_enabled: false,
             disable_validator_progress_check: false,
             enable_mergeable_channel_gc: false,
@@ -1194,6 +1184,10 @@ impl TestNode {
         };
 
         let casper_impl = MultiParentCasperImpl {
+            observer: std::sync::OnceLock::new(),
+            divergence_monitor: Arc::new(
+                crate::rust::engine::multi_parent_casper::finalization_runner::DivergenceMonitor::default(),
+            ),
             block_retriever: block_retriever.clone(),
             event_publisher: event_publisher.clone(),
             runtime_manager: Arc::new(runtime_manager.clone()),
@@ -1201,21 +1195,23 @@ impl TestNode {
             block_store: block_store.clone(),
             block_dag_storage: block_dag_storage.clone(),
             deploy_storage: deploy_storage.clone(),
-            pending_cosigner_metadata: pending_cosigner_metadata.clone(),
             rejected_deploy_buffer: rejected_deploy_buffer.clone(),
+            deploy_lifecycle: Arc::new(
+                crate::rust::finality::deploy_lifecycle::DeployLifecycle::default(),
+            ),
             casper_buffer_storage: casper_buffer_storage.clone(),
             validator_id: validator_id_opt.clone(),
             casper_shard_conf: shard_conf,
             approved_block: genesis.clone(),
+            offered_funded_active: false,
+            adopted_resource_policy: None,
             finalization_in_progress: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(
                 false,
             )),
             finalizer_task_in_progress: Arc::new(AtomicBool::new(false)),
             finalizer_task_queued: Arc::new(AtomicBool::new(false)),
             heartbeat_signal_ref: crate::rust::heartbeat_signal::new_heartbeat_signal_ref(),
-            deploys_in_scope_cache: Arc::new(parking_lot::Mutex::new(
-                None::<(u64, BlockHash, Arc<DashSet<Bytes>>, Arc<DashSet<Bytes>>)>,
-            )),
+            deploys_in_scope_cache: Arc::new(parking_lot::Mutex::new(None)),
             active_validators_cache: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
         };
 
@@ -1227,6 +1223,8 @@ impl TestNode {
         let casper_for_engine = {
             let casper_guard = casper.clone();
             Arc::new(MultiParentCasperImpl {
+                observer: std::sync::OnceLock::new(),
+                divergence_monitor: casper_guard.divergence_monitor.clone(),
                 block_retriever: casper_guard.block_retriever.clone(),
                 event_publisher: casper_guard.event_publisher.clone(),
                 runtime_manager: casper_guard.runtime_manager.clone(),
@@ -1234,12 +1232,14 @@ impl TestNode {
                 block_store: casper_guard.block_store.clone(),
                 block_dag_storage: casper_guard.block_dag_storage.clone(),
                 deploy_storage: casper_guard.deploy_storage.clone(),
-                pending_cosigner_metadata: casper_guard.pending_cosigner_metadata.clone(),
                 rejected_deploy_buffer: casper_guard.rejected_deploy_buffer.clone(),
+                deploy_lifecycle: casper_guard.deploy_lifecycle.clone(),
                 casper_buffer_storage: casper_guard.casper_buffer_storage.clone(),
                 validator_id: casper_guard.validator_id.clone(),
                 casper_shard_conf: casper_guard.casper_shard_conf.clone(),
                 approved_block: casper_guard.approved_block.clone(),
+                offered_funded_active: casper_guard.offered_funded_active,
+                adopted_resource_policy: casper_guard.adopted_resource_policy.clone(),
                 finalization_in_progress: casper_guard.finalization_in_progress.clone(),
                 finalizer_task_in_progress: casper_guard.finalizer_task_in_progress.clone(),
                 finalizer_task_queued: casper_guard.finalizer_task_queued.clone(),
@@ -1297,9 +1297,14 @@ impl TestNode {
 
     /// Creates a PeerNode with the given name and port
     fn peer_node(name: &str, port: u32) -> PeerNode {
-        // Convert name bytes to hex string for NodeIdentifier
-        let name_hex = hex::encode(name.as_bytes());
-        let node_id = NodeIdentifier::new(name_hex);
+        // Fixture names may have any length; node IDs must be exactly 20
+        // nonzero bytes. Domain-separate their deterministic test identities.
+        let digest = crypto::rust::hash::blake2b256::Blake2b256::hash_parts([
+            b"f1r3node:test-peer-id:v1".as_slice(),
+            name.as_bytes(),
+        ]);
+        let node_id = NodeIdentifier::new(&hex::encode(&digest[..20]))
+            .expect("domain-separated fixture peer ID is valid");
         let endpoint = Self::endpoint(port);
 
         PeerNode {

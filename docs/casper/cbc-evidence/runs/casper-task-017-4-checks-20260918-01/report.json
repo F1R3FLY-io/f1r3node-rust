@@ -1,0 +1,107 @@
+{
+  "schema_version": 1,
+  "run_id": "casper-task-017-4-checks-20260918-01",
+  "task": "TASK-017-4",
+  "claim_ids": [
+    "CLAIM-CASPER-SOAK-001"
+  ],
+  "phase": "pre_pr216_merge",
+  "base_revision": "b84aa0eb8570ff5b33219e546c3d60509ad5ff81",
+  "worktree_dirty": true,
+  "status": "verification-passed-claim-pending",
+  "claim_discharge": "pending",
+  "construction": "not-applicable",
+  "node_execution": false,
+  "git_publication": false,
+  "source_manifest": {
+    "path": "sources.sha256",
+    "sha256": "3f044fd9340ffdf10713319e4842b94cfdf4fb64db04ca4fb88f79e8bf6f5972"
+  },
+  "evidence_archive": {
+    "path": "evidence.tar.gz",
+    "sha256": "2db0b91ffe5c94d163107d3b2b2978a35adaec4ff347b2c84b00a75f051db420"
+  },
+  "verification": {
+    "current_driver_run": "full-final-source",
+    "linux_tests": 22,
+    "registered_cases": 48,
+    "driver_invocations": 91,
+    "matched_exits": true,
+    "casper_positive": 1,
+    "casper_negative": 10,
+    "shared_positive": 14,
+    "shared_negative": 71,
+    "disk_scenarios": 42,
+    "legacy_suite": "passed",
+    "active_lsp_files": 11,
+    "active_lsp_errors": 0
+  },
+  "cycles": [
+    {
+      "name": "terminal-transition",
+      "red_exit": 101,
+      "green_exit": 0
+    },
+    {
+      "name": "active-stop",
+      "red_exit": 101,
+      "green_exit": 0
+    },
+    {
+      "name": "claim-source-binding",
+      "red_exit": 101,
+      "green_exit": 0
+    },
+    {
+      "name": "canonical-ledger-name",
+      "red_exit": 101,
+      "green_exit": 0
+    },
+    {
+      "name": "complete-claim-inventory",
+      "red_exit": 101,
+      "green_exit": 0
+    }
+  ],
+  "failures_retained": [
+    {
+      "path": "retention-timeout",
+      "classification": "packaging-timeout",
+      "accepted": false,
+      "reason": "The outer 120-second limit interrupted per-file hashing. The retry batches file hashes."
+    },
+    {
+      "path": "models-current",
+      "classification": "setup-error",
+      "reason": "Unrelated build-directory permissions blocked the source copy."
+    },
+    {
+      "path": "models-retry",
+      "classification": "fixture-input-error",
+      "reason": "The shared-gate fixture lacked its workflow input. Model checks passed, but the complete suite did not."
+    }
+  ],
+  "completion": {
+    "claim_audit": "pending",
+    "strict_claim_exit": 4,
+    "strict_cbc_exit": 4,
+    "mandatory_artifacts": 39,
+    "completion_exit": 4,
+    "tracker_changed": false
+  },
+  "normalization": {
+    "archive_owners": "numeric-zero",
+    "extended_attributes": "omitted",
+    "text_redactions": "Exact workspace and home prefixes only. redactions.tsv records original and retained hashes.",
+    "historical_results": "Earlier source snapshots and failures remain distinct from current verification.",
+    "binary_hashes": "Captured after the run, without a subsequent Cargo source rebuild."
+  },
+  "limits": [
+    "Binding inventory is not semantic claim discharge.",
+    "The Docker-boundary interruption fixture does not verify the Docker daemon.",
+    "Cooperating terminal writers must use the transition lock.",
+    "B44 and inherited containment assumptions remain open.",
+    "No node campaign or profile qualification occurred.",
+    "Human review and required ratification remain pending."
+  ]
+}

@@ -6,7 +6,10 @@ use tokio::sync::RwLock;
 
 use super::native_epoch::{NativeReplayBoundary, NativeReplayEpoch, NativeReplayRestore};
 use super::*;
+use crate::rspace::hashing::native_source::{GroupKeys, StoreKey, channel_key_for_epoch};
+use crate::rspace::hashing::stable_hash_provider::EventCodecEpoch;
 use crate::rspace::hot_store::HotStoreState;
+use crate::rspace::hot_store::native_store::{NativeHotStore, NativeStoreState};
 
 #[cfg(test)]
 mod backing;
@@ -30,14 +33,19 @@ where
 {
     identity: Arc<()>,
     epoch: EpochCheckpoint<E>,
-    state: HotStoreState<C, P, A, K>,
+    // Changed by D-C2c (D-S1, DR-96): the native session uses its
+    // digest-keyed store.
+    // state: HotStoreState<C, P, A, K>,
+    state: NativeStoreState<C, P, A, K>,
     log: Log,
     counters: BTreeMap<Produce, i32>,
     waiting: i64,
 }
 
-pub struct NativeReplaySession<C, P, A, K, E> {
+pub struct NativeReplaySession<C, P: Clone, A: Clone, K: Clone, E> {
     space: ReplayRSpace<C, P, A, K>,
+    /// D-C2c (D-S1, DR-96): the session's digest-keyed store.
+    store: Arc<NativeHotStore<C, P, A, K>>,
     root: [u8; 32],
     epoch: E,
     identity: Arc<()>,
@@ -57,6 +65,10 @@ impl<E> NativeReplayExport<E> {
     pub fn evidence(&self) -> &E { &self.evidence }
 
     pub fn into_parts(self) -> (Blake2b256Hash, E) { (self.root, self.evidence) }
+}
+
+impl<C, P: Clone, A: Clone, K: Clone, E: NativeReplayEpoch> NativeReplaySession<C, P, A, K, E> {
+    pub fn execution_context(&self) -> EventCodecEpoch { self.epoch.codec_epoch() }
 }
 
 fn unavailable() -> RSpaceError {
@@ -82,8 +94,8 @@ fn reserve_checkpoint_metadata<E: NativeReplayEpoch>(
         epoch.reserve_comparison(operations, scanned)?;
         epoch.reserve_work(0, backing)
     };
-    crate::rspace::native_backing::reserve_copy_and_cleanup(log, &meter)?;
-    crate::rspace::native_backing::reserve_copy_and_cleanup(counters, &meter)
+    crate::rspace::native_backing::reserve_blocks_copy_and_cleanup(log, &meter)?;
+    crate::rspace::native_backing::reserve_blocks_copy_and_cleanup(counters, &meter)
 }
 
 impl<C, P, A, K, E> NativeReplaySession<C, P, A, K, E>
@@ -95,6 +107,7 @@ where
         + StableHashSerialize
         + CloneBacking
         + serde::de::DeserializeOwned
+        + shared::rust::closed_decode::ClosedDecode
         + Hash
         + Ord
         + Eq
@@ -108,6 +121,7 @@ where
         + StableHashSerialize
         + CloneBacking
         + serde::de::DeserializeOwned
+        + shared::rust::closed_decode::ClosedDecode
         + 'static
         + Sync
         + Send,
@@ -118,6 +132,7 @@ where
         + StableHashSerialize
         + CloneBacking
         + serde::de::DeserializeOwned
+        + shared::rust::closed_decode::ClosedDecode
         + 'static
         + Sync
         + Send,
@@ -128,6 +143,7 @@ where
         + StableHashSerialize
         + CloneBacking
         + serde::de::DeserializeOwned
+        + shared::rust::closed_decode::ClosedDecode
         + 'static
         + Sync
         + Send,
@@ -137,12 +153,19 @@ where
         history: Arc<Box<dyn HistoryRepository<C, P, A, K> + Send + Sync + 'static>>,
         matcher: Arc<Box<dyn Match<P, A, K>>>,
         epoch: E,
-    ) -> Result<Self, RSpaceError> {
+    ) -> Result<Self, RSpaceError>
+    where
+        C: crate::rspace::serializers::cold_store_decode::ColdStoreDecode,
+        P: crate::rspace::serializers::cold_store_decode::ColdStoreDecode,
+        A: crate::rspace::serializers::cold_store_decode::ColdStoreDecode,
+        K: crate::rspace::serializers::cold_store_decode::ColdStoreDecode,
+    {
         let meter = |operations, scanned, backing| {
             epoch.reserve_comparison(operations, scanned)?;
             epoch.reserve_work(0, backing)
         };
-        let reader = history.get_current_history_reader_native(&meter)?;
+        let reader =
+            history.get_current_history_reader_native_for_epoch(epoch.codec_epoch(), &meter)?;
         meter(1, 0, 32)?;
         let root = reader
             .root()
@@ -162,9 +185,20 @@ where
         let (replay_operations, replay_bytes) =
             ReplayRSpace::<C, P, A, K>::native_constructor_layout(cache_shards)
                 .ok_or(RSpaceError::HostWorkRejected)?;
+        let (native_store_operations, native_store_bytes) =
+            NativeHotStore::<C, P, A, K>::constructor_layout()
+                .ok_or(RSpaceError::HostWorkRejected)?;
+        // Changed by D-C2c (D-S1, DR-96): the session also builds its
+        // digest-keyed store.
+        // let fixed_operations = store_operations
+        //     .checked_add(lock_operations)
+        //     .and_then(|value| value.checked_add(replay_operations))
+        //     .and_then(|value| value.checked_add(2))
+        //     .ok_or(RSpaceError::HostWorkRejected)?;
         let fixed_operations = store_operations
             .checked_add(lock_operations)
             .and_then(|value| value.checked_add(replay_operations))
+            .and_then(|value| value.checked_add(native_store_operations))
             .and_then(|value| value.checked_add(2))
             .ok_or(RSpaceError::HostWorkRejected)?;
         let operations = shards
@@ -182,11 +216,19 @@ where
             .and_then(|value| value.checked_add(lock_bytes))
             .and_then(|value| value.checked_add(replay_bytes))
             .and_then(|value| value.checked_add(wrapper_bytes))
+            .and_then(|value| value.checked_add(native_store_bytes))
             .ok_or(RSpaceError::HostWorkRejected)?;
         epoch.reserve_work(operations, bytes)?;
         let store = HotStoreInstances::create_from_hr_native(base, cache_shards);
         Ok(Self {
-            space: ReplayRSpace::apply_native(history, Arc::new(store), matcher, cache_shards),
+            space: ReplayRSpace::apply_native(
+                epoch.codec_epoch(),
+                history,
+                Arc::new(store),
+                matcher,
+                cache_shards,
+            ),
+            store: Arc::new(NativeHotStore::new()),
             root,
             epoch,
             identity: Arc::new(()),
@@ -200,7 +242,13 @@ where
         matcher: Arc<Box<dyn Match<P, A, K>>>,
         epoch: E,
         installations: impl IntoIterator<Item = (Vec<C>, Install<P, K>)>,
-    ) -> Result<Self, RSpaceError> {
+    ) -> Result<Self, RSpaceError>
+    where
+        C: crate::rspace::serializers::cold_store_decode::ColdStoreDecode,
+        P: crate::rspace::serializers::cold_store_decode::ColdStoreDecode,
+        A: crate::rspace::serializers::cold_store_decode::ColdStoreDecode,
+        K: crate::rspace::serializers::cold_store_decode::ColdStoreDecode,
+    {
         let session = Self::new(history, matcher, epoch)?;
         for (channels, install) in installations {
             session.install(channels, install)?;
@@ -220,7 +268,8 @@ where
     where E: super::native_epoch::NativeOperationEpoch<C, P, A, K> {
         self.ensure_open()?;
         self.epoch.prepare_produce_source(channel, data)?;
-        crate::rspace::hashing::native_source::produce(
+        crate::rspace::hashing::native_source::produce_for_epoch(
+            self.epoch.codec_epoch(),
             channel,
             data,
             persist,
@@ -231,20 +280,26 @@ where
         )
     }
 
+    /// The consume source and the store keys of its channels, in channel
+    /// order (D-C2c, D-S1, DR-96).
     fn consume_source(
         &self,
         channels: &[C],
         patterns: &[P],
         continuation: &K,
         persist: bool,
-    ) -> Result<Consume, RSpaceError>
+    ) -> Result<(Consume, Vec<StoreKey>), RSpaceError>
     where
         E: super::native_epoch::NativeOperationEpoch<C, P, A, K>,
     {
         self.ensure_open()?;
         self.epoch
             .prepare_consume_source(channels, patterns, continuation)?;
-        crate::rspace::hashing::native_source::consume(
+        // Changed by D-C2c (D-S1, DR-96): the source also returns the keys of
+        // its channels.
+        // crate::rspace::hashing::native_source::consume(
+        crate::rspace::hashing::native_source::consume_keys_for_epoch(
+            self.epoch.codec_epoch(),
             channels,
             patterns,
             continuation,
@@ -260,7 +315,10 @@ where
         let _exclusive = self.gate.write().await;
         self.ensure_open()?;
         let boundary = self.epoch.begin_boundary()?;
-        let (shards, bytes) = HotStoreState::<C, P, A, K>::snapshot_layout();
+        // Changed by D-C2c (D-S1, DR-96): the native session uses its
+        // digest-keyed store.
+        // let (shards, bytes) = HotStoreState::<C, P, A, K>::snapshot_layout();
+        let (shards, bytes) = NativeHotStore::<C, P, A, K>::snapshot_layout();
         let operations = shards
             .checked_mul(2)
             .and_then(|count| count.checked_add(16))
@@ -276,7 +334,10 @@ where
         Ok(NativeSessionCheckpoint {
             identity: Arc::clone(&self.identity),
             epoch: boundary.checkpoint(),
-            state: self.space.get_store().snapshot(),
+            // Changed by D-C2c (D-S1, DR-96): the native session uses its
+            // digest-keyed store.
+            // state: self.space.get_store().snapshot(),
+            state: self.store.snapshot(),
             log: log.clone(),
             counters: counters.clone(),
             waiting: self
@@ -299,7 +360,9 @@ where
             .epoch
             .begin_boundary()?
             .prepare_restore(&checkpoint.epoch)?;
-        let store = self.space.get_store();
+        // Changed by D-C2c (D-S1, DR-96): the native session uses its
+        // digest-keyed store.
+        // let store = self.space.get_store();
         let mut log = self.space.event_log.lock().expect("native replay log");
         let mut counters = self
             .space
@@ -308,7 +371,8 @@ where
             .expect("native replay counters");
         let publication =
             PublicationGuard::with_invalidation(&self.unavailable, || self.epoch.invalidate());
-        store.set_state(checkpoint.state);
+        // store.set_state(checkpoint.state);
+        self.store.restore(checkpoint.state);
         *log = checkpoint.log;
         *counters = checkpoint.counters;
         self.space
@@ -354,17 +418,34 @@ where
         let preparation =
             PublicationGuard::with_invalidation(&self.unavailable, || self.epoch.invalidate());
         let prepared_result = (|| {
-            let changes =
-                self.space
-                    .get_store()
-                    .changes_metered(&|operations, scanned, backing| {
-                        self.history_reserve(operations, scanned, backing)
-                    })?;
+            // Changed by D-C2c (D-S1, DR-96): the native session uses its
+            // digest-keyed store.
+            // let changes =
+            //     self.space
+            //         .get_store()
+            //         .changes_metered(&|operations, scanned, backing| {
+            //             self.history_reserve(operations, scanned, backing)
+            //         })?;
+            // Changed by D-C3 (D-S3, DR-97): the export borrows cached values
+            // and emits dirty keys only.
+            // let changes = self.store.changes(&|operations, scanned, backing|
+            // {     self.history_reserve(operations, scanned,
+            // backing) })?;
+            // let history = self.space.get_history_repository();
+            // let prepared = history
+            //     .prepare_native_checkpoint(changes, &|operations, scanned,
+            // backing| {         self.history_reserve(operations,
+            // scanned, backing)     })?;
+            let reserve =
+                |operations, scanned, backing| self.history_reserve(operations, scanned, backing);
+            let dirty = self.store.dirty_entries(&reserve)?;
+            let changes = dirty.actions(&reserve)?;
             let history = self.space.get_history_repository();
-            let prepared = history
-                .prepare_native_checkpoint(changes, &|operations, scanned, backing| {
-                    self.history_reserve(operations, scanned, backing)
-                })?;
+            let prepared = history.prepare_native_checkpoint_borrowed_for_epoch(
+                self.epoch.codec_epoch(),
+                &changes,
+                &reserve,
+            )?;
             let root = prepared
                 .root
                 .as_ref()
@@ -445,26 +526,42 @@ where
         let _shared = self.gate.read().await;
         self.ensure_open()?;
         reserve(1, 0, 0)?;
-        crate::rspace::native_backing::inspect(channel, &reserve)?;
+        crate::rspace::native_backing::inspect_blocks(channel, &reserve)?;
         let hashes = [striped_locks::channel_hash(channel)];
         let _channels = self
             .consume_lock_with(&hashes, |operations, bytes| reserve(operations, 0, bytes))
             .await?;
         self.ensure_open()?;
-        self.read_data_with(channel, &reserve)
+        // Changed by D-C2c (D-S1, DR-96): the store reads by the channel key.
+        // self.read_data_with(channel, &reserve)
+        // The lock hash and the epoch-bound store key each traverse the
+        // channel. A block inspection prepays one traversal only.
+        crate::rspace::native_backing::inspect_blocks(channel, &reserve)?;
+        let key = channel_key_for_epoch(self.epoch.codec_epoch(), channel, &reserve)?;
+        self.read_data_with(channel, key, &reserve)
     }
 
     pub async fn get_joins(&self, channel: &C) -> Result<Vec<Vec<C>>, RSpaceError> {
         let _shared = self.gate.read().await;
         self.ensure_open()?;
         self.epoch.reserve_work(1, 0)?;
-        crate::rspace::native_backing::inspect(channel, &|operations, scanned, backing| {
+        crate::rspace::native_backing::inspect_blocks(channel, &|operations, scanned, backing| {
             self.history_reserve(operations, scanned, backing)
         })?;
         let hashes = [striped_locks::channel_hash(channel)];
         let _channels = self.consume_lock(&hashes).await?;
         self.ensure_open()?;
-        self.read_joins(channel)
+        // Changed by D-C2c (D-S1, DR-96): the store reads by the channel key.
+        // self.read_joins(channel)
+        crate::rspace::native_backing::inspect_blocks(channel, &|operations, scanned, backing| {
+            self.history_reserve(operations, scanned, backing)
+        })?;
+        let key = channel_key_for_epoch(
+            self.epoch.codec_epoch(),
+            channel,
+            &|operations, scanned, backing| self.history_reserve(operations, scanned, backing),
+        )?;
+        self.read_joins(channel, key)
     }
 
     pub async fn get_continuations(
@@ -476,7 +573,18 @@ where
         let hashes = self.channel_hashes(channels, channels.len())?;
         let _channels = self.consume_lock(&hashes).await?;
         self.ensure_open()?;
-        self.read_continuations(channels)
+        crate::rspace::native_backing::inspect_blocks_slice(
+            channels,
+            &|operations, scanned, backing| self.history_reserve(operations, scanned, backing),
+        )?;
+        // Changed by D-C2c (D-S1, DR-96): the store reads by the group keys.
+        // self.read_continuations(channels)
+        let keys = GroupKeys::build_for_epoch(
+            self.epoch.codec_epoch(),
+            channels,
+            &|operations, scanned, backing| self.history_reserve(operations, scanned, backing),
+        )?;
+        self.read_continuations(channels, &keys)
     }
 }
 

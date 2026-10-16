@@ -518,6 +518,7 @@ mod tests {
     use std::collections::{BTreeMap, HashMap};
 
     use super::*;
+    use crate::rspace::errors::RSpaceError;
     use crate::rspace::history::history_reader::HistoryReaderBase;
     use crate::rspace::internal::{Datum, WaitingContinuation};
 
@@ -531,13 +532,16 @@ mod tests {
     struct EmptyHistoryReaderBase;
 
     impl HistoryReaderBase<(), (), (), ()> for EmptyHistoryReaderBase {
-        fn get_data_proj(&self, _key: &()) -> Vec<Datum<()>> { vec![] }
+        fn get_data_proj(&self, _key: &()) -> Result<Vec<Datum<()>>, RSpaceError> { Ok(vec![]) }
 
-        fn get_continuations_proj(&self, _key: &Vec<()>) -> Vec<WaitingContinuation<(), ()>> {
-            vec![]
+        fn get_continuations_proj(
+            &self,
+            _key: &Vec<()>,
+        ) -> Result<Vec<WaitingContinuation<(), ()>>, RSpaceError> {
+            Ok(vec![])
         }
 
-        fn get_joins_proj(&self, _key: &()) -> Vec<Vec<()>> { vec![] }
+        fn get_joins_proj(&self, _key: &()) -> Result<Vec<Vec<()>>, RSpaceError> { Ok(vec![]) }
     }
 
     impl HistoryReader<Blake2b256Hash, (), (), (), ()> for StubHistoryReaderBinary {
@@ -1104,6 +1108,7 @@ mod branch_tests {
     use std::collections::{BTreeMap, HashMap};
 
     use super::*;
+    use crate::rspace::errors::RSpaceError;
     use crate::rspace::history::history_reader::HistoryReaderBase;
     use crate::rspace::internal::{Datum, WaitingContinuation};
     use crate::rspace::merger::merging_logic::MergeType;
@@ -1117,13 +1122,16 @@ mod branch_tests {
     struct EmptyBase;
 
     impl HistoryReaderBase<(), (), (), ()> for EmptyBase {
-        fn get_data_proj(&self, _key: &()) -> Vec<Datum<()>> { vec![] }
+        fn get_data_proj(&self, _key: &()) -> Result<Vec<Datum<()>>, RSpaceError> { Ok(vec![]) }
 
-        fn get_continuations_proj(&self, _key: &Vec<()>) -> Vec<WaitingContinuation<(), ()>> {
-            vec![]
+        fn get_continuations_proj(
+            &self,
+            _key: &Vec<()>,
+        ) -> Result<Vec<WaitingContinuation<(), ()>>, RSpaceError> {
+            Ok(vec![])
         }
 
-        fn get_joins_proj(&self, _key: &()) -> Vec<Vec<()>> { vec![] }
+        fn get_joins_proj(&self, _key: &()) -> Result<Vec<Vec<()>>, RSpaceError> { Ok(vec![]) }
     }
 
     impl HistoryReader<Blake2b256Hash, (), (), (), ()> for MapHistoryReader {

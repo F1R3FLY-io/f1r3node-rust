@@ -106,8 +106,9 @@ impl SystemDeployTrait for ApplyPhloCostDeploy {
         let mut env = self.amounts.env();
         let resource = match &self.resource_cursor {
             None => RhoNil::create_par(),
-            Some((transition, count)) => Par {
-                exprs: vec![Expr {
+            Some((transition, count)) => {
+                let mut par = Par::default();
+                par.exprs.push(Expr {
                     expr_instance: Some(ExprInstance::ETupleBody(ETuple {
                         ps: vec![
                             RhoByteArray::create_par(transition.scope().to_vec()),
@@ -119,9 +120,9 @@ impl SystemDeployTrait for ApplyPhloCostDeploy {
                         ],
                         ..Default::default()
                     })),
-                }],
-                ..Default::default()
-            },
+                });
+                par
+            }
         };
         env.insert(
             "sys:casper:costResourceCursor".to_string(),

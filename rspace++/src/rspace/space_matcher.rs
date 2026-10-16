@@ -6,8 +6,8 @@ use std::sync::Arc;
 use serde::Serialize;
 
 use super::r#match::{Match, PreparedCommit};
-use super::rspace_interface::ISpace;
 use crate::rspace::candidate_order::order_candidates_with_index;
+use crate::rspace::errors::RSpaceError;
 use crate::rspace::hashing::stable_hash_provider::StableHashSerialize;
 use crate::rspace::hot_store::HotStore;
 use crate::rspace::internal::{ConsumeCandidate, Datum, ProduceCandidate, WaitingContinuation};
@@ -229,7 +229,7 @@ pub(crate) fn deterministic_candidates<D: serde::Serialize>(data: Vec<D>) -> Vec
         .collect()
 }
 
-pub trait SpaceMatcher<C, P, A, K>: ISpace<C, P, A, K>
+pub trait SpaceMatcher<C, P, A, K>
 where
     C: Clone + std::hash::Hash + Eq + Send + Sync,
     P: Clone + Send + Sync,
@@ -799,7 +799,7 @@ where
         &self,
         matcher: &Box<dyn Match<P, A, K>>,
         store: &Arc<Box<dyn HotStore<C, P, A, K>>>,
-    ) -> Vec<ProduceCandidate<C, P, A, K>>
+    ) -> Result<Vec<ProduceCandidate<C, P, A, K>>, RSpaceError>
     where
         C: Ord + Serialize,
         P: Serialize + StableHashSerialize,
@@ -848,7 +848,7 @@ where
                 if !pools.contains_key(channel) {
                     pools.insert(
                         channel.clone(),
-                        order_candidates_with_index(store.get_data(channel)),
+                        order_candidates_with_index(store.get_data(channel)?),
                     );
                 }
             }
@@ -856,7 +856,7 @@ where
 
         let mut enabled: Vec<ProduceCandidate<C, P, A, K>> = Vec::new();
         for channels in groups.iter() {
-            let candidates = order_candidates_with_index(store.get_continuations(channels));
+            let candidates = order_candidates_with_index(store.get_continuations(channels)?);
             for (cont, continuation_index) in candidates.iter() {
                 let channel_pattern_pairs: Vec<(&C, &P)> =
                     channels.iter().zip(cont.patterns.iter()).collect();
@@ -897,7 +897,7 @@ where
                 }
             }
         }
-        enabled
+        Ok(enabled)
     }
 }
 

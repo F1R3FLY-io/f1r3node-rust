@@ -106,8 +106,8 @@ fn warm_cache_copy_prepays_cleanup_before_caller_rejection() {
     let key = CollisionKey(7, "warm".to_owned());
     let payload = vec!["nested".to_owned(); 512];
     map.insert(key.clone(), payload.clone());
-    let one_copy = Meter::new(usize::MAX);
-    native_backing::reserve(&payload, &one_copy).unwrap();
+    let copy_and_release = Meter::new(usize::MAX);
+    native_backing::reserve_blocks_copy_and_cleanup(&payload, &copy_and_release).unwrap();
     let baseline = Meter::new(usize::MAX);
     assert_eq!(map.native_get(&key, &baseline).unwrap(), Some(payload.clone()));
     let rejecting = Meter::new(baseline.calls.get());
@@ -117,7 +117,8 @@ fn warm_cache_copy_prepays_cleanup_before_caller_rejection() {
         Ok::<_, RSpaceError>(value)
     })();
     assert_eq!(result, Err(RSpaceError::HostWorkRejected));
-    assert!(rejecting.operations.get() >= one_copy.operations.get() * 2);
+    assert!(rejecting.operations.get() >= copy_and_release.operations.get());
+    assert!(rejecting.scanned.get() >= copy_and_release.scanned.get());
     assert_eq!(map.get(&key), Some(payload));
 }
 
@@ -125,13 +126,14 @@ fn warm_cache_copy_prepays_cleanup_before_caller_rejection() {
 fn shared_map_insertion_prepays_copied_entry_cleanup() {
     let small = vec!["payload".to_owned()];
     let large = vec!["payload".to_owned(); 512];
-    let copy_work = |value: &Vec<String>| {
+    let copy_and_release_work = |value: &Vec<String>| {
         let meter = Meter::new(usize::MAX);
-        native_backing::reserve(value, &meter).unwrap();
+        native_backing::reserve_blocks_copy_and_cleanup(value, &meter).unwrap();
         meter.operations.get()
     };
-    let added_copy_work = copy_work(&large) - copy_work(&small);
-    assert!(added_copy_work > 0);
+    let added_copy_and_release_work =
+        copy_and_release_work(&large) - copy_and_release_work(&small);
+    assert!(added_copy_and_release_work > 0);
     for replace in [false, true] {
         let work = |value: Vec<String>| {
             let map = map();
@@ -147,7 +149,7 @@ fn shared_map_insertion_prepays_copied_entry_cleanup() {
             }
             meter.operations.get()
         };
-        assert!(work(large.clone()) - work(small.clone()) >= added_copy_work * 2);
+        assert!(work(large.clone()) - work(small.clone()) >= added_copy_and_release_work);
     }
 }
 
@@ -257,11 +259,24 @@ proptest! {
 struct EmptyReader;
 
 impl HistoryReaderBase<String, String, String, String> for EmptyReader {
-    fn get_data_proj(&self, _: &String) -> Vec<Datum<String>> { vec![] }
-    fn get_continuations_proj(&self, _: &Vec<String>) -> Vec<WaitingContinuation<String, String>> {
-        vec![]
+    fn get_data_proj(
+        &self,
+        _: &String,
+    ) -> Result<Vec<Datum<String>>, crate::rspace::errors::RSpaceError> {
+        Ok(vec![])
     }
-    fn get_joins_proj(&self, _: &String) -> Vec<Vec<String>> { vec![] }
+    fn get_continuations_proj(
+        &self,
+        _: &Vec<String>,
+    ) -> Result<Vec<WaitingContinuation<String, String>>, crate::rspace::errors::RSpaceError> {
+        Ok(vec![])
+    }
+    fn get_joins_proj(
+        &self,
+        _: &String,
+    ) -> Result<Vec<Vec<String>>, crate::rspace::errors::RSpaceError> {
+        Ok(vec![])
+    }
 }
 
 type Store = Box<dyn HotStore<String, String, String, String>>;
@@ -285,7 +300,7 @@ fn native_datum_publication_reserves_before_mutation_and_preserves_snapshots() {
         measure_allocations(|| baseline.put_datum_metered(&channel, candidate, &meter));
     result.unwrap();
     assert!(allocated <= meter.backing.get());
-    assert_eq!(baseline.get_data(&channel).len(), 2);
+    assert_eq!(baseline.get_data(&channel).unwrap().len(), 2);
     assert_eq!(original.data_flat().get(&channel).unwrap().len(), 1);
     for accepted in 0..meter.calls.get() {
         let (store, snapshot) = prepare();
@@ -295,7 +310,7 @@ fn native_datum_publication_reserves_before_mutation_and_preserves_snapshots() {
             measure_allocations(|| store.put_datum_metered(&channel, candidate, &meter));
         assert_eq!(result, Err(RSpaceError::HostWorkRejected), "cut={accepted}");
         assert!(allocated <= meter.backing.get());
-        assert_eq!(store.get_data(&channel), snapshot.data_flat()[&channel]);
+        assert_eq!(store.get_data(&channel).unwrap(), snapshot.data_flat()[&channel]);
     }
     let absent = store();
     assert!(
@@ -341,10 +356,10 @@ fn stored_consume_reserves_all_continuation_and_join_writes_before_mutation() {
         measure_allocations(|| baseline.store_consume_metered(&channels, candidate, &meter));
     assert_eq!(result.unwrap(), (true, 2));
     assert!(allocated <= meter.backing.get());
-    assert_eq!(baseline.get_continuations(&channels), vec![waiting.clone(), old.clone()]);
+    assert_eq!(baseline.get_continuations(&channels).unwrap(), vec![waiting.clone(), old.clone()]);
     assert_eq!(original.continuations_flat()[&channels], vec![old.clone()]);
     for channel in &channels {
-        assert_eq!(baseline.get_joins(channel), vec![channels.clone()]);
+        assert_eq!(baseline.get_joins(channel).unwrap(), vec![channels.clone()]);
     }
     let duplicate = Meter::new(usize::MAX);
     assert_eq!(
@@ -353,7 +368,7 @@ fn stored_consume_reserves_all_continuation_and_join_writes_before_mutation() {
             .unwrap(),
         (false, 2)
     );
-    assert_eq!(baseline.get_continuations(&channels).len(), 2);
+    assert_eq!(baseline.get_continuations(&channels).unwrap().len(), 2);
     for accepted in 0..meter.calls.get() {
         let (store, snapshot) = prepare();
         let meter = Meter::new(accepted);
@@ -581,6 +596,71 @@ fn matched_produce_retirement_preserves_persistent_and_installed_joins() {
     }
 }
 
+#[test]
+fn installed_only_persistent_retirement_needs_no_ordinary_continuation_row() {
+    let channel = "installed-only".repeat(4);
+    let channels = vec![channel.clone()];
+    let prepare = || {
+        let store = store();
+        let waiting = WaitingContinuation {
+            patterns: vec!["pattern".to_owned()].into(),
+            continuation: "body".to_owned().into(),
+            persist: true,
+            peeks: Default::default(),
+            source: Consume::default(),
+        };
+        store.install_continuation(&channels, waiting);
+        store.install_join(&channel, &channels);
+        store
+            .put_datum(&channel, Datum::create(&channel, "payload".to_owned(), false))
+            .unwrap();
+        store
+    };
+    let data = vec![RSpaceResult {
+        channel: channel.clone(),
+        matched_datum: String::new(),
+        removed_datum: String::new(),
+        persistent: false,
+    }];
+    let baseline = prepare();
+    let meter = Meter::new(usize::MAX);
+    let (result, allocated) = measure_allocations(|| {
+        baseline.retire_produce_match_metered(&channels, 0, true, &data, &[(0, 0)], &meter)
+    });
+    result.unwrap();
+    assert!(allocated <= meter.backing.get());
+    let state = baseline.snapshot();
+    assert!(state.data_flat().get(&channel).is_none_or(Vec::is_empty));
+    assert!(
+        state
+            .continuations_flat()
+            .get(&channels)
+            .is_none_or(Vec::is_empty)
+    );
+    assert!(state.installed_continuations_flat().contains_key(&channels));
+    assert!(state.installed_joins_flat().contains_key(&channel));
+
+    for accepted in 0..meter.calls.get() {
+        let store = prepare();
+        let before = store.snapshot();
+        let rejected = Meter::new(accepted);
+        assert_eq!(
+            store.retire_produce_match_metered(&channels, 0, true, &data, &[(0, 0)], &rejected),
+            Err(RSpaceError::HostWorkRejected),
+            "cut={accepted}"
+        );
+        let after = store.snapshot();
+        assert_eq!(after.data_flat(), before.data_flat(), "cut={accepted}");
+        assert_eq!(after.continuations_flat(), before.continuations_flat(), "cut={accepted}");
+        assert_eq!(
+            after.installed_continuations_flat(),
+            before.installed_continuations_flat(),
+            "cut={accepted}"
+        );
+        assert_eq!(after.installed_joins_flat(), before.installed_joins_flat(), "cut={accepted}");
+    }
+}
+
 struct Rows {
     data: Vec<Datum<String>>,
     continuations: Vec<WaitingContinuation<String, String>>,
@@ -718,9 +798,11 @@ fn export_store() -> Store {
     });
     store.put_join(&channel, std::slice::from_ref(&channel));
     let empty = "empty-export-row".to_owned();
-    store.get_data(&empty);
-    store.get_continuations(std::slice::from_ref(&empty));
-    store.get_joins(&empty);
+    store.get_data(&empty).unwrap();
+    store
+        .get_continuations(std::slice::from_ref(&empty))
+        .unwrap();
+    store.get_joins(&empty).unwrap();
     store
 }
 
@@ -1107,6 +1189,118 @@ fn every_data_view_cut_rejects_without_filling_the_cache() {
     }
 }
 
+fn uncached_data(
+    store: &Store,
+    rows: &Rows,
+    reads: &Cell<usize>,
+    meter: &Meter,
+) -> Result<Vec<Datum<String>>, RSpaceError> {
+    store.get_data_uncached_with_reader(
+        &String::new(),
+        &|| {
+            reads.set(reads.get() + 1);
+            native_backing::reserve_copy_and_cleanup(&rows.data, meter)?;
+            Ok(rows.data.clone())
+        },
+        meter,
+    )
+}
+
+fn totals(meter: &Meter) -> (usize, usize, usize, usize) {
+    (meter.calls.get(), meter.operations.get(), meter.scanned.get(), meter.backing.get())
+}
+
+/// D-C4 (D-S5, DR-98; `NativeSharedReads.uncached_cold_read_equals_read`): a
+/// cold uncached data read returns the history values within its prepaid
+/// backing and stores nothing, so a second read is charged the same. Every
+/// reservation cut rejects without changing the store, and a retry succeeds.
+/// A warm read copies the resident entry with the charges of the legacy warm
+/// read and does not read the history.
+#[test]
+fn uncached_data_read_covers_allocations_and_rejects_without_mutation() {
+    let rows = Rows::new();
+    let cold = installed();
+    let before = cold.snapshot();
+    let reads = Cell::new(0);
+    let first = Meter::new(usize::MAX);
+    let (result, allocated) = measure_allocations(|| uncached_data(&cold, &rows, &reads, &first));
+    assert_eq!(result.expect("cold uncached read"), rows.data);
+    assert!(
+        allocated <= first.backing.get(),
+        "allocated={allocated}, paid={}",
+        first.backing.get()
+    );
+    let second = Meter::new(usize::MAX);
+    assert_eq!(uncached_data(&cold, &rows, &reads, &second).expect("second cold read"), rows.data);
+    assert_eq!(reads.get(), 2, "each cold read decodes the history");
+    assert_eq!(totals(&second), totals(&first), "the first read changed the charge");
+    let after = cold.snapshot();
+    assert!(after.data_flat().is_empty(), "a cold uncached read fills the store");
+    assert_eq!(after.continuations_flat(), before.continuations_flat());
+    assert_eq!(after.joins_flat(), before.joins_flat());
+    assert_eq!(after.installed_continuations_flat(), before.installed_continuations_flat());
+    assert_eq!(after.installed_joins_flat(), before.installed_joins_flat());
+
+    for cut in 0..first.calls.get() {
+        let cut_store = installed();
+        let before = cut_store.snapshot();
+        let limited = Meter::new(cut);
+        let (result, allocated) =
+            measure_allocations(|| uncached_data(&cut_store, &rows, &Cell::new(0), &limited));
+        assert_eq!(result, Err(RSpaceError::HostWorkRejected), "cut {cut}");
+        assert!(
+            allocated <= limited.backing.get(),
+            "cut {cut}, allocated={allocated}, paid={}",
+            limited.backing.get()
+        );
+        let after = cut_store.snapshot();
+        assert_eq!(after.data_flat(), before.data_flat(), "cut {cut}");
+        assert_eq!(after.continuations_flat(), before.continuations_flat(), "cut {cut}");
+        assert_eq!(after.joins_flat(), before.joins_flat(), "cut {cut}");
+        assert_eq!(
+            uncached_data(&cut_store, &rows, &Cell::new(0), &Meter::new(usize::MAX)),
+            Ok(rows.data.clone()),
+            "retry after cut {cut}"
+        );
+    }
+
+    let added = Datum {
+        a: Arc::new("written".to_owned()),
+        persist: false,
+        source: Produce::default(),
+    };
+    let warm = |read_uncached: bool| {
+        let store = store();
+        owned_data(&store, &rows.data, &Meter::new(usize::MAX));
+        store.put_datum(&String::new(), added.clone());
+        let resident = store.snapshot().data_flat();
+        let reads = Cell::new(0);
+        let meter = Meter::new(usize::MAX);
+        let (result, allocated) = measure_allocations(|| {
+            if read_uncached {
+                uncached_data(&store, &rows, &reads, &meter)
+            } else {
+                store.get_data_with_reader(
+                    &String::new(),
+                    &|| {
+                        reads.set(reads.get() + 1);
+                        Ok(rows.data.clone())
+                    },
+                    &meter,
+                )
+            }
+        });
+        let values = result.expect("warm read");
+        assert_eq!(values.len(), rows.data.len() + 1);
+        assert_eq!(values[0], added);
+        assert_eq!(reads.get(), 0, "a warm read reads the history");
+        assert!(allocated <= meter.backing.get());
+        assert_eq!(store.snapshot().data_flat(), resident, "a warm read changed the store");
+        (values, totals(&meter))
+    };
+    assert_eq!(warm(true), warm(false), "warm uncached and legacy reads differ");
+}
+
 fn charge(reserve: impl FnOnce(&Meter) -> Result<(), RSpaceError>) -> (usize, usize, usize) {
     let meter = Meter::new(usize::MAX);
     reserve(&meter).expect("charge");
@@ -1331,4 +1525,32 @@ fn legacy_duplicate_check_formatted_every_stored_continuation() {
         meter.scanned.get()
     };
     assert!(formatted(4_096) > formatted(1) + 4 * 4_000);
+}
+
+/// D-S1 (D-C2b, DR-96), negative control: the legacy native charges read the
+/// population of a shard. Two schedules that keep the order of each key's
+/// operations, [insert a, read a, insert b] and [insert a, insert b, read a],
+/// therefore have different totals. The digest index gives them equal totals
+/// (native_index::tests::native_store_charges_are_schedule_independent).
+#[test]
+fn legacy_population_charges_depend_on_schedule() {
+    let run = |schedule: &[(&str, bool)]| {
+        let map: ShardedMap<CollisionKey, Vec<String>> = map();
+        let meter = Meter::new(usize::MAX);
+        for (name, insert) in schedule {
+            let key = CollisionKey(name.len(), (*name).to_owned());
+            if *insert {
+                map.native_insert_new(&key, vec!["value".to_owned()], &meter)
+                    .expect("an absent key");
+            } else {
+                map.native_get(&key, &meter)
+                    .expect("an unlimited meter")
+                    .expect("a present key");
+            }
+        }
+        (meter.operations.get(), meter.scanned.get(), meter.backing.get())
+    };
+    let first = run(&[("a", true), ("a", false), ("b", true)]);
+    let second = run(&[("a", true), ("b", true), ("a", false)]);
+    assert_ne!(first, second);
 }

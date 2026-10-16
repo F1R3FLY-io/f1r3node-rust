@@ -8,7 +8,9 @@ use shared::rust::collection_backing::{tree_backing, tree_growth, tree_search_bo
 use super::*;
 use crate::rspace::candidate_order::{CandidateSource, OrderWork, canonical_order};
 use crate::rspace::hashing::blake2b256_hash::Blake2b256Hash;
-use crate::rspace::hashing::native_source::{self, SourceMeter};
+use crate::rspace::hashing::native_source::{
+    self, GroupKeys, OperationKeys, SourceMeter, StoreKey,
+};
 use crate::rspace::hot_store::NativeDataView;
 use crate::rspace::native_backing;
 use crate::rspace::serializers::serializers::CandidateOrderingBytes;
@@ -16,12 +18,17 @@ use crate::rspace::serializers::serializers::CandidateOrderingBytes;
 type Result<T> = std::result::Result<T, RSpaceError>;
 // Changed by C2 (DR-82): the reader returns a copy-free view.
 // type DataReader<'a, C, A> = &'a dyn Fn(&C) -> Result<Vec<Datum<A>>>;
-type DataReader<'a, C, A> = &'a dyn Fn(&C) -> Result<NativeDataView<C, A>>;
+// Changed by D-C2c (D-S1, DR-96): the reader receives the channel key.
+// type DataReader<'a, C, A> = &'a dyn Fn(&C) -> Result<NativeDataView<C, A>>;
+type DataReader<'a, C, A> = &'a dyn Fn(&C, StoreKey) -> Result<NativeDataView<C, A>>;
 // Changed by C1 (DR-81): the reader returns shared views.
 // type ContinuationReader<'a, C, P, K> = &'a dyn Fn(&[C]) ->
 // Result<Vec<WaitingContinuation<P, K>>>;
+// Changed by D-C2c (D-S1, DR-96): the reader receives the group keys.
+// type ContinuationReader<'a, C, P, K> =
+//     &'a dyn Fn(&[C]) -> Result<Vec<Arc<WaitingContinuation<P, K>>>>;
 type ContinuationReader<'a, C, P, K> =
-    &'a dyn Fn(&[C]) -> Result<Vec<Arc<WaitingContinuation<P, K>>>>;
+    &'a dyn Fn(&[C], &GroupKeys) -> Result<Vec<Arc<WaitingContinuation<P, K>>>>;
 
 pub(in crate::rspace::replay_rspace) struct CandidateReader<'a, C, P: Clone, A: Clone, K: Clone> {
     pub(in crate::rspace::replay_rspace) meter: &'a (dyn SourceMeter + Send + Sync),
@@ -41,6 +48,35 @@ fn buffer<T>(length: usize, meter: &dyn SourceMeter) -> Result<Vec<T>> {
     Ok(values)
 }
 
+/// One input-derived position for each join channel. The fixed eight-byte
+/// charge covers every supported `usize` representation and its vector slot.
+const POSITION_BYTES: usize = 8;
+const _: () = assert!(size_of::<usize>() <= POSITION_BYTES);
+
+fn position_buffer(length: usize, meter: &dyn SourceMeter) -> Result<Vec<usize>> {
+    let bytes = length
+        .checked_mul(POSITION_BYTES)
+        .ok_or(RSpaceError::HostWorkRejected)?;
+    meter.reserve(length.checked_add(1).ok_or(RSpaceError::HostWorkRejected)?, bytes, bytes)?;
+    let mut positions = Vec::new();
+    positions
+        .try_reserve_exact(length)
+        .map_err(|_| RSpaceError::HostWorkRejected)?;
+    Ok(positions)
+}
+
+/// The incoming datum is owned by selection and returned intact when no
+/// continuation can be committed. A match retains its `Arc<A>` through the
+/// selected candidates and gives the source back to the replay session.
+pub(in crate::rspace::replay_rspace) enum ProduceSelection<C, P: Clone, A: Clone, K: Clone> {
+    Unmatched(Datum<A>),
+    Matched {
+        prepared: PreparedProduceCandidate<C, P, A, K>,
+        group: usize,
+        source: Produce,
+    },
+}
+
 // Legacy metered (digest, index) order: it inspected and hashed every candidate
 // on every operation. Disabled by I1 (DR-75); the canonical order below
 // digests only tie runs and matches play's
@@ -53,7 +89,7 @@ fn buffer<T>(length: usize, meter: &dyn SourceMeter) -> Result<Vec<T>> {
 //     }
 //     let mut indexed = buffer(values.len(), meter)?;
 //     for (index, value) in values.into_iter().enumerate() {
-//         native_backing::inspect(&value, meter)?;
+//         native_backing::inspect_blocks(&value, meter)?;
 //         let digest = native_source::hash(&value, &|operations, scanned,
 // backing| {             meter.reserve(operations, scanned, backing)
 //         })?;
@@ -122,7 +158,7 @@ impl<D: CandidateOrderingBytes + CloneBacking> OrderWork<D> for MeteredOrder<'_>
     }
 
     fn digest(&self, value: &D) -> Result<Blake2b256Hash> {
-        native_backing::inspect(value, self.0)?;
+        native_backing::inspect_blocks(value, self.0)?;
         value.metered_candidate_hash(self.0)
     }
 }
@@ -173,7 +209,7 @@ fn sort<T>(
 //     values: Vec<(Datum<A>, i32)>,
 // }
 struct ChannelData<'v, C, A: Clone> {
-    channel: C,
+    channel: &'v C,
     values: Vec<(Cow<'v, Datum<A>>, i32)>,
 }
 
@@ -196,10 +232,10 @@ fn channel_position<C: Eq + CloneBacking, A: Clone>(
     meter: &dyn SourceMeter,
 ) -> Result<Option<usize>> {
     for (position, existing) in channels.iter().enumerate() {
-        native_backing::inspect(channel, meter)?;
-        native_backing::inspect(&existing.channel, meter)?;
+        native_backing::inspect_blocks(channel, meter)?;
+        native_backing::inspect_blocks(existing.channel, meter)?;
         meter.reserve(1, 0, 0)?;
-        if channel == &existing.channel {
+        if channel == existing.channel {
             return Ok(Some(position));
         }
     }
@@ -303,7 +339,7 @@ where
             .unwrap_or(0)
             .checked_add(1)
             .ok_or(RSpaceError::HostWorkRejected)?;
-        native_backing::reserve_copy_and_cleanup(source, meter)?;
+        native_backing::reserve_blocks_copy_and_cleanup(source, meter)?;
         // Disabled by C13 (DR-77): the produce-counter map lives for the whole
         // replay, so charging its whole backing on every produce charged a
         // quadratic total.
@@ -354,7 +390,7 @@ where
         let Some(expected) = expected else {
             return Ok(true);
         };
-        native_backing::inspect(&datum.source, meter)?;
+        native_backing::inspect_blocks(&datum.source, meter)?;
         if !expected.metered_matches_produce(&datum.source, meter)? {
             return Ok(false);
         }
@@ -388,28 +424,34 @@ where
         })
     }
 
-    /// One copy-free view of the cached data of each channel (C2, DR-82).
+    /// One copy-free view of the cached data of each channel (C2, DR-82),
+    /// read by the channel's key (D-C2c, DR-96).
     fn metered_data_views(
         &self,
         channels: &[C],
+        keys: &[StoreKey],
         reader: &CandidateReader<'_, C, P, A, K>,
     ) -> Result<Vec<NativeDataView<C, A>>> {
+        if keys.len() != channels.len() {
+            return Err(RSpaceError::HostWorkRejected);
+        }
         let mut views = buffer(channels.len(), reader.meter)?;
-        for channel in channels {
-            views.push((reader.data)(channel)?);
+        for (channel, key) in channels.iter().zip(keys) {
+            views.push((reader.data)(channel, *key)?);
         }
         Ok(views)
     }
 
     fn metered_channel_data<'v>(
         &self,
-        channels: &[C],
+        channels: &'v [C],
         views: &'v [NativeDataView<C, A>],
-        incoming: Option<(&C, &A, bool, &Produce)>,
+        incoming: Option<(&C, &'v Datum<A>)>,
         expected: Option<&dyn NativeCandidateIdentity>,
         reader: &CandidateReader<'_, C, P, A, K>,
-    ) -> Result<Vec<ChannelData<'v, C, A>>> {
+    ) -> Result<(Vec<ChannelData<'v, C, A>>, Vec<usize>)> {
         let mut result = buffer(channels.len(), reader.meter)?;
+        let mut positions = position_buffer(channels.len(), reader.meter)?;
         for (channel, view) in channels.iter().zip(views) {
             // Changed by C2 (DR-82): the candidates borrow the cached data.
             // let mut values = sorted((reader.data)(channel)?, reader.meter)?;
@@ -419,33 +461,26 @@ where
                 borrowed.push(Cow::Borrowed(datum));
             }
             let mut values = sorted(borrowed, reader.meter)?;
-            if let Some((trigger, data, persist, source)) = incoming {
-                native_backing::inspect(channel, reader.meter)?;
-                native_backing::inspect(trigger, reader.meter)?;
+            if let Some((trigger, datum)) = incoming {
+                native_backing::inspect_blocks(channel, reader.meter)?;
+                native_backing::inspect_blocks(trigger, reader.meter)?;
                 if channel == trigger {
                     let count = values
                         .len()
                         .checked_add(1)
                         .ok_or(RSpaceError::HostWorkRejected)?;
                     let mut all = buffer(count, reader.meter)?;
-                    native_backing::reserve_copy_and_cleanup(data, reader.meter)?;
-                    native_backing::reserve_copy_and_cleanup(source, reader.meter)?;
-                    all.push((
-                        Cow::Owned(Datum {
-                            a: Arc::new(data.clone()),
-                            persist,
-                            source: source.clone(),
-                        }),
-                        -1,
-                    ));
+                    reader.meter.reserve(1, size_of::<Cow<'v, Datum<A>>>(), 0)?;
+                    all.push((Cow::Borrowed(datum), -1));
                     all.extend(values);
                     values = all;
                 }
             }
             let mut position = 0;
             while position < values.len() {
-                let source =
-                    incoming.and_then(|(_, _, persist, source)| (!persist).then_some(source));
+                let source = incoming.and_then(|(_, datum)| {
+                    (!datum.persist).then_some(&datum.source)
+                });
                 if self.metered_candidate_matches(
                     &values[position].0,
                     expected,
@@ -467,36 +502,40 @@ where
             }
             if let Some(position) = channel_position(&result, channel, reader.meter)? {
                 result[position].values = values;
+                positions.push(position);
             } else {
-                native_backing::reserve_copy_and_cleanup(channel, reader.meter)?;
+                positions.push(result.len());
                 result.push(ChannelData {
-                    channel: channel.clone(),
+                    channel,
                     values,
                 });
             }
         }
-        Ok(result)
+        Ok((result, positions))
     }
 
     fn metered_match_data(
         &self,
         channels: &[C],
+        positions: &[usize],
         patterns: &[P],
         continuation: &K,
         data: &[ChannelData<'_, C, A>],
         meter: &(dyn SourceMeter + Send + Sync),
     ) -> Result<Option<Vec<ConsumeCandidate<C, A>>>> {
+        if positions.len() != channels.len() {
+            return Err(RSpaceError::HostWorkRejected);
+        }
         let count = channels.len().min(patterns.len());
         let mut chosen = buffer::<(usize, usize)>(count, meter)?;
         let mut candidates = buffer(count, meter)?;
         let mut complete = true;
-        for (channel, pattern) in channels.iter().zip(patterns) {
-            let Some(channel_index) = channel_position(data, channel, meter)? else {
-                complete = false;
-                continue;
-            };
+        for ((channel, pattern), recorded) in channels.iter().zip(patterns).zip(positions) {
+            meter.reserve(1, POSITION_BYTES, 0)?;
+            let channel_index = *recorded;
+            let entry = data.get(channel_index).ok_or(RSpaceError::HostWorkRejected)?;
             let mut found = false;
-            for (position, (datum, index)) in data[channel_index].values.iter().enumerate() {
+            for (position, (datum, index)) in entry.values.iter().enumerate() {
                 meter.reserve(
                     chosen
                         .len()
@@ -513,14 +552,17 @@ where
                 }
                 // Disabled by D-M1 (DR-88): get_metered reserves every read of
                 // the pattern and the datum; this walk read nothing.
-                // native_backing::inspect(pattern, meter)?;
-                // native_backing::inspect(&datum.a, meter)?;
+                // native_backing::inspect_blocks(pattern, meter)?;
+                // native_backing::inspect_blocks(&datum.a, meter)?;
                 let Some(matched) = self.matcher.get_metered(pattern, &datum.a, meter)? else {
                     continue;
                 };
-                native_backing::reserve_copy_and_cleanup(channel, meter)?;
-                native_backing::reserve_copy_and_cleanup(&datum.source, meter)?;
-                native_backing::reserve_copy_and_cleanup(&datum.a, meter)?;
+                native_backing::reserve_blocks_copy_and_cleanup(channel, meter)?;
+                native_backing::reserve_blocks_copy_and_cleanup(&datum.source, meter)?;
+                native_backing::reserve_blocks_copy_and_cleanup(&datum.a, meter)?;
+                let backing = native_backing::arc_allocation_bytes::<A>()
+                    .ok_or(RSpaceError::HostWorkRejected)?;
+                meter.reserve(1, 0, backing)?;
                 candidates.push(ConsumeCandidate {
                     channel: channel.clone(),
                     datum: Datum {
@@ -548,7 +590,7 @@ where
         // reference, so they are not copied.
         // let mut matched = buffer(candidates.len(), meter)?;
         // for candidate in &candidates {
-        //     native_backing::reserve_copy_and_cleanup(&candidate.datum.a,
+        //     native_backing::reserve_blocks_copy_and_cleanup(&candidate.datum.a,
         // meter)?;     matched.push(candidate.datum.a.clone());
         // }
         let mut matched = buffer::<&A>(candidates.len(), meter)?;
@@ -557,7 +599,7 @@ where
         }
         // Disabled by D-M1 (DR-88): check_commit_metered reserves every read
         // of the continuation (its guard); this walk read nothing.
-        // native_backing::inspect(continuation, meter)?;
+        // native_backing::inspect_blocks(continuation, meter)?;
         if !self
             .matcher
             .check_commit_metered(continuation, &matched, meter)?
@@ -577,7 +619,7 @@ where
     ) -> Result<COMM> {
         let mut indexed = buffer(data.len(), meter)?;
         for (index, candidate) in data.iter().enumerate() {
-            native_backing::reserve_copy_and_cleanup(&candidate.datum.source, meter)?;
+            native_backing::reserve_blocks_copy_and_cleanup(&candidate.datum.source, meter)?;
             indexed.push((candidate.datum.source.clone(), index));
         }
         sort(
@@ -659,11 +701,11 @@ where
             //     meter.reserve(1, key.hash.0.len(), 0)?;
             // }
             reserve_ordered_lookup(times_repeated.len(), source.hash.0.len(), meter)?;
-            native_backing::reserve_copy_and_cleanup(source, meter)?;
+            native_backing::reserve_blocks_copy_and_cleanup(source, meter)?;
             times_repeated.insert(source.clone(), count);
         }
-        native_backing::reserve_copy_and_cleanup(consume, meter)?;
-        native_backing::reserve_copy_and_cleanup(peeks, meter)?;
+        native_backing::reserve_blocks_copy_and_cleanup(consume, meter)?;
+        native_backing::reserve_blocks_copy_and_cleanup(peeks, meter)?;
         Ok(COMM {
             consume: consume.clone(),
             produces,
@@ -672,9 +714,11 @@ where
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(in crate::rspace::replay_rspace) fn prepare_metered_consume_candidate(
         &self,
         channels: &[C],
+        keys: &[StoreKey],
         patterns: &[P],
         continuation: &K,
         consume: &Consume,
@@ -682,19 +726,17 @@ where
         expected: Option<&dyn NativeCandidateIdentity>,
         reader: &CandidateReader<'_, C, P, A, K>,
     ) -> Result<Option<PreparedConsumeCandidate<C, A>>> {
-        native_backing::inspect(consume, reader.meter)?;
+        native_backing::inspect_blocks(consume, reader.meter)?;
         if let Some(identity) = expected {
             if !identity.metered_matches_consume(consume, reader.meter)? {
                 return Ok(None);
             }
         }
         // Changed by C2 (DR-82): the channel data borrow copy-free views.
-        // let data = self.metered_channel_data(channels, None, expected,
-        // reader)?;
-        let views = self.metered_data_views(channels, reader)?;
-        let data = self.metered_channel_data(channels, &views, None, expected, reader)?;
+        let views = self.metered_data_views(channels, keys, reader)?;
+        let (data, positions) = self.metered_channel_data(channels, &views, None, expected, reader)?;
         let Some(data) =
-            self.metered_match_data(channels, patterns, continuation, &data, reader.meter)?
+            self.metered_match_data(channels, &positions, patterns, continuation, &data, reader.meter)?
         else {
             return Ok(None);
         };
@@ -711,20 +753,26 @@ where
         }))
     }
 
+    /// The produce candidate and the index of its join group in
+    /// `grouped_channels` (D-C2c, DR-96: the retirement uses that group's
+    /// keys).
+    #[allow(clippy::too_many_arguments)]
     pub(in crate::rspace::replay_rspace) fn prepare_metered_produce_candidate(
         &self,
         channel: &C,
-        value: &A,
-        persist: bool,
-        source: &Produce,
+        incoming: Datum<A>,
         grouped_channels: Vec<Vec<C>>,
+        keys: &OperationKeys,
         expected: Option<&dyn NativeCandidateIdentity>,
         reader: &CandidateReader<'_, C, P, A, K>,
-    ) -> Result<Option<PreparedProduceCandidate<C, P, A, K>>> {
-        let next = if persist {
+    ) -> Result<ProduceSelection<C, P, A, K>> {
+        if keys.groups.len() != grouped_channels.len() {
+            return Err(RSpaceError::HostWorkRejected);
+        }
+        let next = if incoming.persist {
             None
         } else {
-            let count = self.metered_produce_count(source, reader.meter)?;
+            let count = self.metered_produce_count(&incoming.source, reader.meter)?;
             let Some(next) = count.checked_add(1) else {
                 let message = "Native replay produce counter overflow";
                 reader.meter.reserve(1, message.len(), message.len())?;
@@ -732,19 +780,22 @@ where
             };
             Some(next)
         };
-        for channels in grouped_channels {
-            let continuations = sorted((reader.continuations)(&channels)?, reader.meter)?;
+        for (group, (channels, group_keys)) in
+            grouped_channels.into_iter().zip(&keys.groups).enumerate()
+        {
+            let continuations =
+                sorted((reader.continuations)(&channels, group_keys)?, reader.meter)?;
             // Changed by C2 (DR-82): the channel data borrow copy-free views.
-            let views = self.metered_data_views(&channels, reader)?;
-            let data = self.metered_channel_data(
+            let views = self.metered_data_views(&channels, &group_keys.channels, reader)?;
+            let (data, positions) = self.metered_channel_data(
                 &channels,
                 &views,
-                Some((channel, value, persist, source)),
+                Some((channel, &incoming)),
                 expected,
                 reader,
             )?;
             for (continuation, index) in continuations {
-                native_backing::inspect(&continuation.source, reader.meter)?;
+                native_backing::inspect_blocks(&continuation.source, reader.meter)?;
                 if let Some(identity) = expected {
                     if !identity.metered_matches_consume(&continuation.source, reader.meter)? {
                         continue;
@@ -752,6 +803,7 @@ where
                 }
                 let Some(data_candidates) = self.metered_match_data(
                     &channels,
+                    &positions,
                     &continuation.patterns,
                     &continuation.continuation,
                     &data,
@@ -764,16 +816,16 @@ where
                     &data_candidates,
                     &continuation.source,
                     &continuation.peeks,
-                    next.map(|next| (source, next)),
+                    next.map(|next| (&incoming.source, next)),
                     reader.meter,
                 )?;
                 if let Some(identity) = expected {
                     if !identity.metered_matches_comm(&comm, reader.meter)? {
-                        return Ok(None);
+                        return Ok(ProduceSelection::Unmatched(incoming));
                     }
                 }
                 // C1 (DR-81): only the selected continuation is copied.
-                native_backing::reserve_copy_and_cleanup(continuation.as_ref(), reader.meter)?;
+                native_backing::reserve_blocks_copy_and_cleanup(continuation.as_ref(), reader.meter)?;
                 let continuation = continuation.as_ref().clone();
                 let candidate = ProduceCandidate {
                     channels,
@@ -782,10 +834,14 @@ where
                     data_candidates,
                     commit: Some(crate::rspace::r#match::PreparedCommit::default()),
                 };
-                return Ok(Some(PreparedProduceCandidate { candidate, comm }));
+                return Ok(ProduceSelection::Matched {
+                    prepared: PreparedProduceCandidate { candidate, comm },
+                    group,
+                    source: incoming.source,
+                });
             }
         }
-        Ok(None)
+        Ok(ProduceSelection::Unmatched(incoming))
     }
 }
 

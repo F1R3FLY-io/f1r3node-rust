@@ -545,7 +545,7 @@ proptest! {
                 let mut expected: Vec<_> = prefix.iter().chain(suffix.iter().filter(|_| !restore))
                     .filter(|(key, _)| *key == channel).map(|(_, value)| value.clone()).collect();
                 let mut actual: Vec<_> = reader.get_data(&channel.to_string()).await.unwrap().into_iter()
-                    .map(|datum| datum.a).collect();
+                    .map(|datum| datum.a.as_ref().clone()).collect();
                 expected.sort(); actual.sort();
                 assert_eq!(actual, expected);
             }

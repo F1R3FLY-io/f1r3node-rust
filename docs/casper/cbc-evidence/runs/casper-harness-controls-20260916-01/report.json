@@ -1,0 +1,823 @@
+{
+  "scope": "bounded-harness-refutation-only",
+  "status": "passed",
+  "construction": "not-applicable",
+  "driver_binding": "pending",
+  "profile_verification": "pending",
+  "seed": 1,
+  "workers": 1,
+  "heap_limit_mb": 512,
+  "timeout_seconds": 120,
+  "results": [
+    {
+      "configuration": "MC_CasperSoakHarness.cfg",
+      "expected_property": null,
+      "expected_exit": 0,
+      "exit": 0,
+      "outcome": "passed",
+      "log": "MC_CasperSoakHarness.txt",
+      "constant_assignments": [
+        [
+          "Candidates",
+          "{candidate1, candidate2}"
+        ],
+        [
+          "MaxSegments",
+          "2"
+        ],
+        [
+          "MaxIterations",
+          "4"
+        ],
+        [
+          "AllowIdentityDrift",
+          "FALSE"
+        ],
+        [
+          "AllowHistoryReset",
+          "FALSE"
+        ],
+        [
+          "AllowFailureErasure",
+          "FALSE"
+        ],
+        [
+          "AllowIncompletePass",
+          "FALSE"
+        ],
+        [
+          "AllowLaunchAfterStop",
+          "FALSE"
+        ],
+        [
+          "AllowEarlyCleanup",
+          "FALSE"
+        ],
+        [
+          "AllowPolicyLeak",
+          "FALSE"
+        ],
+        [
+          "AllowMissingAsZero",
+          "FALSE"
+        ],
+        [
+          "AllowUnmergedPostRun",
+          "FALSE"
+        ],
+        [
+          "AllowWrongControlVerdict",
+          "FALSE"
+        ]
+      ],
+      "model_sha256": "e08ce354f1e09b9f0873e6f730e509c4be6b394acc0bce7ff5ef53805d91b0c4",
+      "configuration_sha256": "cc4438b578ccc5c898897e7b66b7472253d2532093f8a5338bf8d924002e197b",
+      "tlc_sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88",
+      "tlc_version": "TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)",
+      "states_generated": 66208,
+      "distinct_states": 43424,
+      "elapsed_seconds": 0.831,
+      "log_sha256": "272981919efeecae1a0431da19640fc136776520cdce48802df53cabb1be2daa",
+      "original_log_sha256": "d9811fcd3e376c03c1848817797e6d3a21c17e049e88789373152520c9f8a192"
+    },
+    {
+      "configuration": "MC_CasperSoakHarness_identity_unsafe.cfg",
+      "expected_property": "IdentityPinned",
+      "expected_exit": 12,
+      "exit": 12,
+      "outcome": "passed",
+      "log": "MC_CasperSoakHarness_identity_unsafe.txt",
+      "constant_assignments": [
+        [
+          "Candidates",
+          "{candidate1, candidate2}"
+        ],
+        [
+          "MaxSegments",
+          "2"
+        ],
+        [
+          "MaxIterations",
+          "4"
+        ],
+        [
+          "AllowIdentityDrift",
+          "TRUE"
+        ],
+        [
+          "AllowHistoryReset",
+          "FALSE"
+        ],
+        [
+          "AllowFailureErasure",
+          "FALSE"
+        ],
+        [
+          "AllowIncompletePass",
+          "FALSE"
+        ],
+        [
+          "AllowLaunchAfterStop",
+          "FALSE"
+        ],
+        [
+          "AllowEarlyCleanup",
+          "FALSE"
+        ],
+        [
+          "AllowPolicyLeak",
+          "FALSE"
+        ],
+        [
+          "AllowMissingAsZero",
+          "FALSE"
+        ],
+        [
+          "AllowUnmergedPostRun",
+          "FALSE"
+        ],
+        [
+          "AllowWrongControlVerdict",
+          "FALSE"
+        ]
+      ],
+      "model_sha256": "e08ce354f1e09b9f0873e6f730e509c4be6b394acc0bce7ff5ef53805d91b0c4",
+      "configuration_sha256": "25c5689dee8138b46406741b6f4a74ed41dddc2c43824c810c7670bc9af3186e",
+      "tlc_sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88",
+      "tlc_version": "TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)",
+      "states_generated": 20,
+      "distinct_states": 17,
+      "elapsed_seconds": 0.585,
+      "log_sha256": "049c3cb97fb6951bb07ed4da8d097178676da8d7725a7d88cfe42620ec3c528c",
+      "original_log_sha256": "4730009073a5a011a020c07e7870f4b071fa476ef82cc9dbee51ede3b5f551b2"
+    },
+    {
+      "configuration": "MC_CasperSoakHarness_resume_unsafe.cfg",
+      "expected_property": "ResumePreservesHistory",
+      "expected_exit": 12,
+      "exit": 12,
+      "outcome": "passed",
+      "log": "MC_CasperSoakHarness_resume_unsafe.txt",
+      "constant_assignments": [
+        [
+          "Candidates",
+          "{candidate1, candidate2}"
+        ],
+        [
+          "MaxSegments",
+          "2"
+        ],
+        [
+          "MaxIterations",
+          "4"
+        ],
+        [
+          "AllowIdentityDrift",
+          "FALSE"
+        ],
+        [
+          "AllowHistoryReset",
+          "TRUE"
+        ],
+        [
+          "AllowFailureErasure",
+          "FALSE"
+        ],
+        [
+          "AllowIncompletePass",
+          "FALSE"
+        ],
+        [
+          "AllowLaunchAfterStop",
+          "FALSE"
+        ],
+        [
+          "AllowEarlyCleanup",
+          "FALSE"
+        ],
+        [
+          "AllowPolicyLeak",
+          "FALSE"
+        ],
+        [
+          "AllowMissingAsZero",
+          "FALSE"
+        ],
+        [
+          "AllowUnmergedPostRun",
+          "FALSE"
+        ],
+        [
+          "AllowWrongControlVerdict",
+          "FALSE"
+        ]
+      ],
+      "model_sha256": "e08ce354f1e09b9f0873e6f730e509c4be6b394acc0bce7ff5ef53805d91b0c4",
+      "configuration_sha256": "fa2f527570a3687de48dcac826538e3aa6a9edb2332d5051a936fa34c3c4ca63",
+      "tlc_sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88",
+      "tlc_version": "TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)",
+      "states_generated": 456,
+      "distinct_states": 346,
+      "elapsed_seconds": 0.604,
+      "log_sha256": "9a4cafe52e16179f0b6bff99050cd3c99e68a449c54fa3ba1f712f982396cc0c",
+      "original_log_sha256": "3bd0b2f50a16957fdf69b9f0951b821c02178df64a40af7bfc78ac793e5d57b9"
+    },
+    {
+      "configuration": "MC_CasperSoakHarness_failure_unsafe.cfg",
+      "expected_property": "ProductFailureMonotone",
+      "expected_exit": 12,
+      "exit": 12,
+      "outcome": "passed",
+      "log": "MC_CasperSoakHarness_failure_unsafe.txt",
+      "constant_assignments": [
+        [
+          "Candidates",
+          "{candidate1, candidate2}"
+        ],
+        [
+          "MaxSegments",
+          "2"
+        ],
+        [
+          "MaxIterations",
+          "4"
+        ],
+        [
+          "AllowIdentityDrift",
+          "FALSE"
+        ],
+        [
+          "AllowHistoryReset",
+          "FALSE"
+        ],
+        [
+          "AllowFailureErasure",
+          "TRUE"
+        ],
+        [
+          "AllowIncompletePass",
+          "FALSE"
+        ],
+        [
+          "AllowLaunchAfterStop",
+          "FALSE"
+        ],
+        [
+          "AllowEarlyCleanup",
+          "FALSE"
+        ],
+        [
+          "AllowPolicyLeak",
+          "FALSE"
+        ],
+        [
+          "AllowMissingAsZero",
+          "FALSE"
+        ],
+        [
+          "AllowUnmergedPostRun",
+          "FALSE"
+        ],
+        [
+          "AllowWrongControlVerdict",
+          "FALSE"
+        ]
+      ],
+      "model_sha256": "e08ce354f1e09b9f0873e6f730e509c4be6b394acc0bce7ff5ef53805d91b0c4",
+      "configuration_sha256": "a8dcf9479e5087738f503ac87c5b425e0c3dbca339924ce56fa7806e8446718a",
+      "tlc_sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88",
+      "tlc_version": "TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)",
+      "states_generated": 478,
+      "distinct_states": 368,
+      "elapsed_seconds": 0.598,
+      "log_sha256": "ef4efc22f601add7f466bf18ee6ca3e880d8132210ee2801bd4a50947ede59a8",
+      "original_log_sha256": "91dff808e262064c37d9e5826db675b9a1e006089c2d34338017bb1d2ac53f2f"
+    },
+    {
+      "configuration": "MC_CasperSoakHarness_evidence_unsafe.cfg",
+      "expected_property": "PassRequiresEvidence",
+      "expected_exit": 12,
+      "exit": 12,
+      "outcome": "passed",
+      "log": "MC_CasperSoakHarness_evidence_unsafe.txt",
+      "constant_assignments": [
+        [
+          "Candidates",
+          "{candidate1, candidate2}"
+        ],
+        [
+          "MaxSegments",
+          "2"
+        ],
+        [
+          "MaxIterations",
+          "4"
+        ],
+        [
+          "AllowIdentityDrift",
+          "FALSE"
+        ],
+        [
+          "AllowHistoryReset",
+          "FALSE"
+        ],
+        [
+          "AllowFailureErasure",
+          "FALSE"
+        ],
+        [
+          "AllowIncompletePass",
+          "TRUE"
+        ],
+        [
+          "AllowLaunchAfterStop",
+          "FALSE"
+        ],
+        [
+          "AllowEarlyCleanup",
+          "FALSE"
+        ],
+        [
+          "AllowPolicyLeak",
+          "FALSE"
+        ],
+        [
+          "AllowMissingAsZero",
+          "FALSE"
+        ],
+        [
+          "AllowUnmergedPostRun",
+          "FALSE"
+        ],
+        [
+          "AllowWrongControlVerdict",
+          "FALSE"
+        ]
+      ],
+      "model_sha256": "e08ce354f1e09b9f0873e6f730e509c4be6b394acc0bce7ff5ef53805d91b0c4",
+      "configuration_sha256": "08524a7d33f9f1fe35e6a070fd3e1257319223868af006854bc596314f12e4a4",
+      "tlc_sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88",
+      "tlc_version": "TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)",
+      "states_generated": 57803,
+      "distinct_states": 35019,
+      "elapsed_seconds": 0.824,
+      "log_sha256": "49c78a1d95a26c4de254ec27c7df2357f9b478244cd01dbe7deb3f1575a06677",
+      "original_log_sha256": "81a524a7608715a777cbe419bf82322f50130c463df842ef01d8957ab02ae9b0"
+    },
+    {
+      "configuration": "MC_CasperSoakHarness_stop_unsafe.cfg",
+      "expected_property": "StopPreventsLaunch",
+      "expected_exit": 12,
+      "exit": 12,
+      "outcome": "passed",
+      "log": "MC_CasperSoakHarness_stop_unsafe.txt",
+      "constant_assignments": [
+        [
+          "Candidates",
+          "{candidate1, candidate2}"
+        ],
+        [
+          "MaxSegments",
+          "2"
+        ],
+        [
+          "MaxIterations",
+          "4"
+        ],
+        [
+          "AllowIdentityDrift",
+          "FALSE"
+        ],
+        [
+          "AllowHistoryReset",
+          "FALSE"
+        ],
+        [
+          "AllowFailureErasure",
+          "FALSE"
+        ],
+        [
+          "AllowIncompletePass",
+          "FALSE"
+        ],
+        [
+          "AllowLaunchAfterStop",
+          "TRUE"
+        ],
+        [
+          "AllowEarlyCleanup",
+          "FALSE"
+        ],
+        [
+          "AllowPolicyLeak",
+          "FALSE"
+        ],
+        [
+          "AllowMissingAsZero",
+          "FALSE"
+        ],
+        [
+          "AllowUnmergedPostRun",
+          "FALSE"
+        ],
+        [
+          "AllowWrongControlVerdict",
+          "FALSE"
+        ]
+      ],
+      "model_sha256": "e08ce354f1e09b9f0873e6f730e509c4be6b394acc0bce7ff5ef53805d91b0c4",
+      "configuration_sha256": "5d7947fadd81556a4cfea4f4dae3a9cf3893dc3b360889c3938aff047a0c5f4b",
+      "tlc_sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88",
+      "tlc_version": "TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)",
+      "states_generated": 164,
+      "distinct_states": 128,
+      "elapsed_seconds": 0.564,
+      "log_sha256": "8460fdd27154ba2ff82d2e1b5ad611dd7b793c7d20ed5bfadb6dd1527983025f",
+      "original_log_sha256": "09a3810f3c738f7e22c9f378e0c51db5078df5fd35d87c64db6439ddf527b5a5"
+    },
+    {
+      "configuration": "MC_CasperSoakHarness_cleanup_unsafe.cfg",
+      "expected_property": "EvidenceBeforeCleanup",
+      "expected_exit": 12,
+      "exit": 12,
+      "outcome": "passed",
+      "log": "MC_CasperSoakHarness_cleanup_unsafe.txt",
+      "constant_assignments": [
+        [
+          "Candidates",
+          "{candidate1, candidate2}"
+        ],
+        [
+          "MaxSegments",
+          "2"
+        ],
+        [
+          "MaxIterations",
+          "4"
+        ],
+        [
+          "AllowIdentityDrift",
+          "FALSE"
+        ],
+        [
+          "AllowHistoryReset",
+          "FALSE"
+        ],
+        [
+          "AllowFailureErasure",
+          "FALSE"
+        ],
+        [
+          "AllowIncompletePass",
+          "FALSE"
+        ],
+        [
+          "AllowLaunchAfterStop",
+          "FALSE"
+        ],
+        [
+          "AllowEarlyCleanup",
+          "TRUE"
+        ],
+        [
+          "AllowPolicyLeak",
+          "FALSE"
+        ],
+        [
+          "AllowMissingAsZero",
+          "FALSE"
+        ],
+        [
+          "AllowUnmergedPostRun",
+          "FALSE"
+        ],
+        [
+          "AllowWrongControlVerdict",
+          "FALSE"
+        ]
+      ],
+      "model_sha256": "e08ce354f1e09b9f0873e6f730e509c4be6b394acc0bce7ff5ef53805d91b0c4",
+      "configuration_sha256": "94510f73bec2b328dc9ccebe5d0d97b6ef3af93570991dfee557a37c3ba5a3a0",
+      "tlc_sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88",
+      "tlc_version": "TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)",
+      "states_generated": 150,
+      "distinct_states": 130,
+      "elapsed_seconds": 0.566,
+      "log_sha256": "691520151b70a0a6ee80d84b5ffacc4b96e07ecc4deb022927729f4abef363fc",
+      "original_log_sha256": "25f50bba00d69daca6f4df7d5c47784326923c4024930af51cb5b1eb17993a24"
+    },
+    {
+      "configuration": "MC_CasperSoakHarness_policy_unsafe.cfg",
+      "expected_property": "PolicyIsolation",
+      "expected_exit": 12,
+      "exit": 12,
+      "outcome": "passed",
+      "log": "MC_CasperSoakHarness_policy_unsafe.txt",
+      "constant_assignments": [
+        [
+          "Candidates",
+          "{candidate1, candidate2}"
+        ],
+        [
+          "MaxSegments",
+          "2"
+        ],
+        [
+          "MaxIterations",
+          "4"
+        ],
+        [
+          "AllowIdentityDrift",
+          "FALSE"
+        ],
+        [
+          "AllowHistoryReset",
+          "FALSE"
+        ],
+        [
+          "AllowFailureErasure",
+          "FALSE"
+        ],
+        [
+          "AllowIncompletePass",
+          "FALSE"
+        ],
+        [
+          "AllowLaunchAfterStop",
+          "FALSE"
+        ],
+        [
+          "AllowEarlyCleanup",
+          "FALSE"
+        ],
+        [
+          "AllowPolicyLeak",
+          "TRUE"
+        ],
+        [
+          "AllowMissingAsZero",
+          "FALSE"
+        ],
+        [
+          "AllowUnmergedPostRun",
+          "FALSE"
+        ],
+        [
+          "AllowWrongControlVerdict",
+          "FALSE"
+        ]
+      ],
+      "model_sha256": "e08ce354f1e09b9f0873e6f730e509c4be6b394acc0bce7ff5ef53805d91b0c4",
+      "configuration_sha256": "f051c46dbdcb9ba8854043ac84bb74866f42b3c73aaa387fa9962ac212c1c131",
+      "tlc_sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88",
+      "tlc_version": "TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)",
+      "states_generated": 19,
+      "distinct_states": 17,
+      "elapsed_seconds": 0.574,
+      "log_sha256": "a6619123736b24d79d0d30069527f7c7da4512b7e42158a5eb04a21ab999c913",
+      "original_log_sha256": "4ad5f0639bf8f8fe9ba4d4dc331440e927786cc8e09a1f84d02595360881b9fd"
+    },
+    {
+      "configuration": "MC_CasperSoakHarness_samples_unsafe.cfg",
+      "expected_property": "MissingIsUnknown",
+      "expected_exit": 12,
+      "exit": 12,
+      "outcome": "passed",
+      "log": "MC_CasperSoakHarness_samples_unsafe.txt",
+      "constant_assignments": [
+        [
+          "Candidates",
+          "{candidate1, candidate2}"
+        ],
+        [
+          "MaxSegments",
+          "2"
+        ],
+        [
+          "MaxIterations",
+          "4"
+        ],
+        [
+          "AllowIdentityDrift",
+          "FALSE"
+        ],
+        [
+          "AllowHistoryReset",
+          "FALSE"
+        ],
+        [
+          "AllowFailureErasure",
+          "FALSE"
+        ],
+        [
+          "AllowIncompletePass",
+          "FALSE"
+        ],
+        [
+          "AllowLaunchAfterStop",
+          "FALSE"
+        ],
+        [
+          "AllowEarlyCleanup",
+          "FALSE"
+        ],
+        [
+          "AllowPolicyLeak",
+          "FALSE"
+        ],
+        [
+          "AllowMissingAsZero",
+          "TRUE"
+        ],
+        [
+          "AllowUnmergedPostRun",
+          "FALSE"
+        ],
+        [
+          "AllowWrongControlVerdict",
+          "FALSE"
+        ]
+      ],
+      "model_sha256": "e08ce354f1e09b9f0873e6f730e509c4be6b394acc0bce7ff5ef53805d91b0c4",
+      "configuration_sha256": "6937418bcfafd33557d27359f34e5e53e78fcfd68b43e68bfb3617d86cb6022b",
+      "tlc_sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88",
+      "tlc_version": "TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)",
+      "states_generated": 89,
+      "distinct_states": 87,
+      "elapsed_seconds": 0.593,
+      "log_sha256": "28111f933dbedce3573dd308fad37a666159df71564d8a0d8cc5bc20e4c3aac8",
+      "original_log_sha256": "4da068ce1fac9253096d86ab819573c5b1dce4324b4160cecd6ecc765cc28271"
+    },
+    {
+      "configuration": "MC_CasperSoakHarness_merge_unsafe.cfg",
+      "expected_property": "PostMergeGate",
+      "expected_exit": 12,
+      "exit": 12,
+      "outcome": "passed",
+      "log": "MC_CasperSoakHarness_merge_unsafe.txt",
+      "constant_assignments": [
+        [
+          "Candidates",
+          "{candidate1, candidate2}"
+        ],
+        [
+          "MaxSegments",
+          "2"
+        ],
+        [
+          "MaxIterations",
+          "4"
+        ],
+        [
+          "AllowIdentityDrift",
+          "FALSE"
+        ],
+        [
+          "AllowHistoryReset",
+          "FALSE"
+        ],
+        [
+          "AllowFailureErasure",
+          "FALSE"
+        ],
+        [
+          "AllowIncompletePass",
+          "FALSE"
+        ],
+        [
+          "AllowLaunchAfterStop",
+          "FALSE"
+        ],
+        [
+          "AllowEarlyCleanup",
+          "FALSE"
+        ],
+        [
+          "AllowPolicyLeak",
+          "FALSE"
+        ],
+        [
+          "AllowMissingAsZero",
+          "FALSE"
+        ],
+        [
+          "AllowUnmergedPostRun",
+          "TRUE"
+        ],
+        [
+          "AllowWrongControlVerdict",
+          "FALSE"
+        ]
+      ],
+      "model_sha256": "e08ce354f1e09b9f0873e6f730e509c4be6b394acc0bce7ff5ef53805d91b0c4",
+      "configuration_sha256": "f71a9822b0499a7a115e20c30076da785e997fa636ca0605adc54ee6003ac9f1",
+      "tlc_sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88",
+      "tlc_version": "TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)",
+      "states_generated": 13,
+      "distinct_states": 11,
+      "elapsed_seconds": 0.582,
+      "log_sha256": "6dd7c0db7ed59b06c0cecc0d2cfa9353ec6ca668385411502e70d8892f80992a",
+      "original_log_sha256": "5b8f592567ed9b273b2105e3f4a26334776407a287e06b112989bfac8efe6efa"
+    },
+    {
+      "configuration": "MC_CasperSoakHarness_control_unsafe.cfg",
+      "expected_property": "ControlVerdictExact",
+      "expected_exit": 12,
+      "exit": 12,
+      "outcome": "passed",
+      "log": "MC_CasperSoakHarness_control_unsafe.txt",
+      "constant_assignments": [
+        [
+          "Candidates",
+          "{candidate1, candidate2}"
+        ],
+        [
+          "MaxSegments",
+          "2"
+        ],
+        [
+          "MaxIterations",
+          "4"
+        ],
+        [
+          "AllowIdentityDrift",
+          "FALSE"
+        ],
+        [
+          "AllowHistoryReset",
+          "FALSE"
+        ],
+        [
+          "AllowFailureErasure",
+          "FALSE"
+        ],
+        [
+          "AllowIncompletePass",
+          "FALSE"
+        ],
+        [
+          "AllowLaunchAfterStop",
+          "FALSE"
+        ],
+        [
+          "AllowEarlyCleanup",
+          "FALSE"
+        ],
+        [
+          "AllowPolicyLeak",
+          "FALSE"
+        ],
+        [
+          "AllowMissingAsZero",
+          "FALSE"
+        ],
+        [
+          "AllowUnmergedPostRun",
+          "FALSE"
+        ],
+        [
+          "AllowWrongControlVerdict",
+          "TRUE"
+        ]
+      ],
+      "model_sha256": "e08ce354f1e09b9f0873e6f730e509c4be6b394acc0bce7ff5ef53805d91b0c4",
+      "configuration_sha256": "4fcf3c1b1b609a7a557a28da8daa7e908911a669d51bbb4abb1affeb5f2f90d9",
+      "tlc_sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88",
+      "tlc_version": "TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)",
+      "states_generated": 20,
+      "distinct_states": 18,
+      "elapsed_seconds": 0.568,
+      "log_sha256": "4781204363007b65a7991e19b4aac5fcebf2916ff5f511fb26378fba86946d75",
+      "original_log_sha256": "85989b5f1f2d8f13f0433aae8666316481048f730d318c58a7a4d9c45ba9646c"
+    }
+  ],
+  "run_id": "casper-harness-controls-20260916-01",
+  "started_at": "2026-09-16T22:31:18.043382+00:00",
+  "runner_sha256": "d2ba76df6eb3b3a17d821d9e35d64b2a57e790546cff3243c0d66420bdfec7ca",
+  "python_version": "3.14.5 (main, May 10 2026, 10:21:34) [Clang 21.0.0 (clang-2100.0.123.102)]",
+  "plan_sha256": "7a80b5e98ce3d8e2c238129de28e307b35d0ac178e2c4f56fa09064ca7a538fa",
+  "model": "formal/tlaplus/casper_soak/CasperSoakHarness.tla",
+  "bounds_source": "Per-control constant_assignments and configuration digests.",
+  "log_redaction": "Repository, home, and temporary standard-library paths are replaced with placeholders. Original log digests are retained.",
+  "source_revision": "cc7e84b482887f0647277ccbacd6f65ae3cf749d",
+  "working_tree_dirty": true,
+  "runner_tests": {
+    "exit": 0,
+    "count": 12,
+    "log": "runner-tests.txt",
+    "source": "scripts/ci/tests/test_casper_soak_model_runner.py",
+    "original_log_sha256": "2c73194e572e476f7a3dc318068ee762020bc8cfbe569f3da0f89d99ad8a4c75",
+    "log_sha256": "2c73194e572e476f7a3dc318068ee762020bc8cfbe569f3da0f89d99ad8a4c75",
+    "source_sha256": "1d7050a908a06e632bd88dfeb1c32fc94e21418bbe47bb99ad44c0a5526c7fb4"
+  },
+  "prior_attempts": [
+    {
+      "outcome": "tool_error",
+      "exit": 1,
+      "reason": "Default Java launcher selected an incompatible architecture. The successful run used an explicit native Java binary.",
+      "log": "java-launcher-error.txt",
+      "original_log_sha256": "5ea79eaf9afd03bbfbfd103c3ac0a744275f7d1aaeef2df4370907b2ebb498e0",
+      "log_sha256": "5ea79eaf9afd03bbfbfd103c3ac0a744275f7d1aaeef2df4370907b2ebb498e0"
+    }
+  ]
+}

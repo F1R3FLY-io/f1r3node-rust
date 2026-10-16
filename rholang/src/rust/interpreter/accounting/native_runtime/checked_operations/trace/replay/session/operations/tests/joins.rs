@@ -48,8 +48,22 @@ async fn joined_replay(
     let persistent = |index: usize| persistence & (1_u8 << index) != 0;
     let continuation_persistent = persistence & (1 << arity) != 0;
     let trigger = arity - 1;
-    let source = Produce::create(&channels[trigger], &data[trigger], persistent(trigger));
-    let consumer = Consume::create(&channels, &patterns, &continuation, continuation_persistent);
+    let epoch = EventCodecEpoch::CostV1;
+    let source = Produce::create_for_epoch(
+        epoch,
+        &channels[trigger],
+        &data[trigger],
+        persistent(trigger),
+    )
+    .expect("cost-bearing join produce source");
+    let consumer = Consume::create_for_epoch(
+        epoch,
+        &channels,
+        &patterns,
+        &continuation,
+        continuation_persistent,
+    )
+    .expect("cost-bearing join consume source");
     let introduction = if produce {
         observation_construction::produce_introduction(
             &source,
@@ -73,7 +87,8 @@ async fn joined_replay(
         _ => u64::MAX,
     };
     let mut stores = InMemoryStoreManager::new();
-    let (play, _) = RSpace::create_with_replay(
+    let (play, _) = RSpace::create_with_replay_for_epoch(
+        epoch,
         stores.r_space_stores().await.unwrap(),
         Arc::new(Box::new(Matcher)),
     )
@@ -173,7 +188,12 @@ async fn joined_replay(
     )
     .unwrap();
     let replay = trace
-        .into_session(history, Arc::new(Box::new(Matcher)), host)
+        .into_session_for_epoch(
+            play.codec_epoch(),
+            history,
+            Arc::new(Box::new(Matcher)),
+            host,
+        )
         .unwrap();
     let mut checkpoint = Some(replay.checkpoint().await.unwrap());
     if !produce {
@@ -230,12 +250,14 @@ async fn joined_replay(
         for channel in &channels {
             assert_eq!(
                 replay.get_data(channel).await.unwrap(),
-                play.get_data(channel).await
+                play.get_data(channel).await.expect("live data query")
             );
         }
         assert_eq!(
             replay.get_continuations(&channels).await.unwrap(),
-            play.get_store().get_continuations(&channels)
+            play.get_store()
+                .get_continuations(&channels)
+                .expect("live continuation query")
         );
         if round == 0 {
             replay.restore(checkpoint.take().unwrap()).await.unwrap();

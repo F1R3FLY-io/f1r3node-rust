@@ -1,3 +1,5 @@
+use rspace_plus_plus::rspace::hashing::stable_hash_provider::EventCodecEpoch;
+
 use crate::casper::{event_proto, EventProto, ProcessedDeployProto};
 use crate::rhoapi::PCost;
 use crate::rust::casper::protocol::casper_message::{ConsumeEvent, Event, ProduceEvent};
@@ -100,6 +102,25 @@ impl OfferedProcessedDeploy {
     pub fn validate(&self, limits: PhloWireLimits) -> Result<(), String> {
         check_event_log(&self.deploy_log)?;
         self.evidence(limits)?;
+        Ok(())
+    }
+
+    /// Structural decoding alone does not authorize a v7-only event. The
+    /// caller supplies the epoch adopted from the authenticated genesis.
+    pub fn validate_for_epoch(
+        &self,
+        limits: PhloWireLimits,
+        epoch: EventCodecEpoch,
+    ) -> Result<(), String> {
+        self.validate(limits)?;
+        if epoch != EventCodecEpoch::CostV2
+            && self
+                .deploy_log
+                .iter()
+                .any(|event| matches!(event, Event::RestingComm(_)))
+        {
+            return Err("resting COMM is not active in this event codec epoch".to_string());
+        }
         Ok(())
     }
 
@@ -253,6 +274,57 @@ fn check_event_log(events: &[Event]) -> Result<(), String> {
                 }
                 (count, size)
             }
+            Event::RestingComm(resting) => {
+                resting.validate()?;
+                if resting.ordered_produces.len() > limits.deploy_log_items
+                    || resting.ordered_data_indices.len() > limits.deploy_log_items
+                    || resting.peeks.len() > limits.deploy_log_items
+                {
+                    return Err(
+                        "processed funded resting event items exceed protocol limit".to_string()
+                    );
+                }
+                let (mut count, mut size) = consume_shape(&resting.consume)?;
+                count = count
+                    .checked_add(resting.peeks.len())
+                    .and_then(|n| n.checked_add(resting.ordered_data_indices.len()))
+                    .and_then(|n| n.checked_add(1))
+                    .ok_or_else(|| {
+                        "processed funded resting event item count overflows".to_string()
+                    })?;
+                size = size
+                    .checked_add(
+                        resting
+                            .ordered_data_indices
+                            .len()
+                            .checked_add(1)
+                            .and_then(|n| n.checked_mul(8))
+                            .ok_or_else(|| {
+                                "processed funded resting index bytes overflow".to_string()
+                            })?,
+                    )
+                    .ok_or_else(|| "processed funded resting event bytes overflow".to_string())?;
+                for produce in &resting.ordered_produces {
+                    let (next_count, next_size) = produce_shape(produce)?;
+                    count = count.checked_add(next_count).ok_or_else(|| {
+                        "processed funded resting event item count overflows".to_string()
+                    })?;
+                    size = size.checked_add(next_size).ok_or_else(|| {
+                        "processed funded resting event bytes overflow".to_string()
+                    })?;
+                    if count > limits.deploy_log_items
+                        || count
+                            .checked_mul(64)
+                            .and_then(|overhead| overhead.checked_add(size))
+                            .is_none_or(|total| total > limits.deploy_log_bytes)
+                    {
+                        return Err(
+                            "processed funded resting event exceeds protocol limit".to_string()
+                        );
+                    }
+                }
+                (count, size)
+            }
         };
         items = items
             .checked_add(event_items)
@@ -393,6 +465,80 @@ fn check_proto_event_log(events: &[EventProto]) -> Result<(), String> {
                     {
                         return Err(
                             "processed funded deploy event exceeds protocol limit".to_string()
+                        );
+                    }
+                }
+                (count, payload)
+            }
+            Some(event_proto::EventInstance::RestingComm(resting)) => {
+                let consume = resting
+                    .consume
+                    .as_ref()
+                    .ok_or_else(|| "processed funded resting event lacks consume".to_string())?;
+                if consume.channels_hashes.len() > limits.deploy_log_items
+                    || resting.ordered_produces.len() > limits.deploy_log_items
+                    || resting.ordered_data_indices.len() > limits.deploy_log_items
+                    || resting.peeks.len() > limits.deploy_log_items
+                {
+                    return Err(
+                        "processed funded resting event items exceed protocol limit".to_string()
+                    );
+                }
+                let mut count = consume
+                    .channels_hashes
+                    .len()
+                    .checked_add(1)
+                    .and_then(|n| n.checked_add(resting.peeks.len()))
+                    .and_then(|n| n.checked_add(resting.ordered_data_indices.len()))
+                    .and_then(|n| n.checked_add(1))
+                    .ok_or_else(|| "processed funded resting event items overflow".to_string())?;
+                let mut payload = consume
+                    .channels_hashes
+                    .iter()
+                    .try_fold(consume.hash.len(), |size, hash| {
+                        size.checked_add(hash.len())
+                    })
+                    .and_then(|size| {
+                        size.checked_add(
+                            resting
+                                .ordered_data_indices
+                                .len()
+                                .checked_add(1)?
+                                .checked_mul(8)?,
+                        )
+                    })
+                    .ok_or_else(|| "processed funded resting event bytes overflow".to_string())?;
+                for produce in &resting.ordered_produces {
+                    count = count
+                        .checked_add(produce.output_value.len().checked_add(1).ok_or_else(
+                            || "processed funded resting event items overflow".to_string(),
+                        )?)
+                        .ok_or_else(|| {
+                            "processed funded resting event items overflow".to_string()
+                        })?;
+                    payload = produce
+                        .output_value
+                        .iter()
+                        .try_fold(
+                            payload
+                                .checked_add(produce.channels_hash.len())
+                                .and_then(|size| size.checked_add(produce.hash.len()))
+                                .ok_or_else(|| {
+                                    "processed funded resting event bytes overflow".to_string()
+                                })?,
+                            |size, value| size.checked_add(value.len()),
+                        )
+                        .ok_or_else(|| {
+                            "processed funded resting event bytes overflow".to_string()
+                        })?;
+                    if count > limits.deploy_log_items
+                        || count
+                            .checked_mul(64)
+                            .and_then(|overhead| overhead.checked_add(payload))
+                            .is_none_or(|total| total > limits.deploy_log_bytes)
+                    {
+                        return Err(
+                            "processed funded resting event exceeds protocol limit".to_string()
                         );
                     }
                 }

@@ -848,6 +848,7 @@ fn cost_schema_fields_match_derived_bincode_decoder() {
     };
     let stack = CostStack {
         cells: vec![CostSignature { value: None }, unit, compound.clone()],
+        parallel_tail: Vec::new(),
     };
     let par = models::par_from_default! {
         receives: vec![Receive {

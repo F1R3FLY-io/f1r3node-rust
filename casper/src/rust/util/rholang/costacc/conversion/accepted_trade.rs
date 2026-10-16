@@ -9,7 +9,7 @@ use rholang::rust::interpreter::rho_type::{RhoByteArray, RhoList};
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::hashing::stable_hash_provider;
 use rspace_plus_plus::rspace::history::native_reader::{
-    decode_record, NativeLeafKind, NativeReadCharge, NativeReadError, NativeReadMeter,
+    decode_datum_record_metered, NativeLeafKind, NativeReadCharge, NativeReadError, NativeReadMeter,
 };
 use rspace_plus_plus::rspace::internal::Datum;
 use thiserror::Error;
@@ -18,6 +18,7 @@ use super::{
     check_separate_prior, offered_conversion_plan_limits, ConversionPlanError, RootedAcceptedTrade,
     RootedPhysicalCapacity,
 };
+use crate::rust::util::rholang::costacc::genesis_resource_policy::AdoptedResourcePolicy;
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 
 const ACCEPTED_TRADE_DOMAIN: &[u8] = b"f1r3node:accepted-conversion-trade:v1";
@@ -194,6 +195,7 @@ fn read_error(error: NativeReadError<AcceptedTradeStateError>) -> AcceptedTradeS
 impl RuntimeManager {
     pub fn read_accepted_trade_receipt(
         &self,
+        adopted: &AdoptedResourcePolicy,
         root: [u8; 32],
         trade_id: [u8; 32],
         budget: &HostWorkBudget,
@@ -229,7 +231,8 @@ impl RuntimeManager {
                     .next()
                     .ok_or(AcceptedTradeStateError::Record)?;
                 let datum: Datum<ListParWithRandom> =
-                    decode_record(raw, &Meter(budget)).map_err(read_error)?;
+                    decode_datum_record_metered(raw, adopted.event_codec_epoch(), &Meter(budget))
+                        .map_err(read_error)?;
                 let [par] = datum.a.pars.as_slice() else {
                     return Err(AcceptedTradeStateError::Record);
                 };

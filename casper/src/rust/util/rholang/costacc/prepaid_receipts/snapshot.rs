@@ -5,8 +5,9 @@ use models::rust::host_work::{HostWorkDimension, HostWorkUnits};
 use rholang::rust::interpreter::host_work::HostWorkBudget;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::hashing::stable_hash_provider;
+use rspace_plus_plus::rspace::hashing::stable_hash_provider::EventCodecEpoch;
 use rspace_plus_plus::rspace::history::native_reader::{
-    decode_record, NativeLeafKind, NativeReadCharge, NativeReadError, NativeReadMeter,
+    decode_datum_record_metered, NativeLeafKind, NativeReadCharge, NativeReadError, NativeReadMeter,
 };
 use rspace_plus_plus::rspace::internal::Datum;
 
@@ -85,6 +86,7 @@ impl RuntimeManager {
     pub fn capture_prepaid_receipts(
         &self,
         pre_state_root: [u8; 32],
+        event_codec_epoch: EventCodecEpoch,
         receipt_ids: &[[u8; 32]],
         limits: PrepaidReceiptLimits,
         budget: &HostWorkBudget,
@@ -151,7 +153,8 @@ impl RuntimeManager {
                         return Ok(None);
                     };
                     let datum: Datum<ListParWithRandom> =
-                        decode_record(raw, &meter).map_err(native_read_error)?;
+                        decode_datum_record_metered(raw, event_codec_epoch, &meter)
+                            .map_err(native_read_error)?;
                     let Some(bytes) = decode_receipt_data(
                         std::slice::from_ref(&datum),
                         limits.value_bytes.min(remaining_bytes),

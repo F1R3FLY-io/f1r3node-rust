@@ -23,8 +23,10 @@ use rholang::rust::interpreter::accounting::phlo_execution::{
 use rholang::rust::interpreter::host_work::HostWorkBudget;
 use rholang::rust::interpreter::rho_runtime::RhoRuntime;
 use rholang::rust::interpreter::util::vault_address::VaultAddress;
+use rspace_plus_plus::rspace::hashing::stable_hash_provider::EventCodecEpoch;
 use rspace_plus_plus::rspace::history::Either;
 use rspace_plus_plus::rspace::merger::merging_logic::MergeType;
+use rspace_plus_plus::rspace::trace::event::Event as RspaceEvent;
 
 use super::NativeFundedAttempt;
 use crate::rust::errors::CasperError;
@@ -33,6 +35,7 @@ use crate::rust::util::rholang::acceptance::{
     CandidateDraftSettlementPermit, CandidateReplayPermit,
 };
 use crate::rust::util::rholang::costacc::direct_wallet_funding::CheckedDirectWalletSettlement;
+use crate::rust::util::rholang::costacc::genesis_resource_policy::AdoptedResourcePolicy;
 use crate::rust::util::rholang::costacc::offered_grants::{
     OfferedGrantChange, OfferedGrantLimits, OfferedGrantSnapshot, VerifiedOfferedGrantSources,
 };
@@ -50,6 +53,33 @@ pub struct NativeAttemptSettlementInput<'r, 's, 'p> {
     pub schedule: &'r PhloScheduleBinding<'r>,
     pub terms: &'r [u8],
     pub retained: &'r [PhloResourceAmount<'r>],
+}
+
+fn append_epoch_events(
+    log: &mut Vec<Event>,
+    events: Vec<RspaceEvent>,
+    epoch: EventCodecEpoch,
+    budget: &HostWorkBudget,
+) -> Result<(), CasperError> {
+    let bytes = events
+        .len()
+        .checked_mul(std::mem::size_of::<Event>())
+        .ok_or_else(|| invalid("grant event projection size overflow"))?;
+    budget
+        .reserve(
+            HostWorkDimension::SearchStateBytes,
+            HostWorkUnits::new(
+                u64::try_from(bytes)
+                    .map_err(|_| invalid("grant event projection size overflow"))?,
+            ),
+        )
+        .map_err(invalid)?;
+    log.try_reserve_exact(events.len())
+        .map_err(|_| invalid("grant event projection allocation failed"))?;
+    for event in events {
+        log.push(crate::rust::util::event_converter::to_casper_event_for_epoch(event, epoch)?);
+    }
+    Ok(())
 }
 
 pub struct NativeGrantSettlementInput<'a> {
@@ -144,6 +174,7 @@ impl<'a> NativeFundedAttempt<'_, 'a> {
         self.runtime
             .settle_checked_wallet_and_capture_balances(
                 manager,
+                &self.adopted,
                 checked,
                 permit,
                 reservation_id,
@@ -162,6 +193,7 @@ impl RuntimeOps {
     pub(crate) async fn settle_checked_wallet_and_capture_balances<'a>(
         &mut self,
         manager: &RuntimeManager,
+        adopted: &AdoptedResourcePolicy,
         checked: &CheckedDirectWalletSettlement<'a, OfferedFundedDeploy>,
         permit: &CandidateDraftSettlementPermit,
         reservation_id: [u8; 32],
@@ -174,6 +206,7 @@ impl RuntimeOps {
     ) -> Result<NativeFundedSettlement, CasperError> {
         self.settle_checked_wallet_inner(
             manager,
+            adopted,
             checked,
             &permit.envelope_identity(),
             reservation_id,
@@ -190,6 +223,7 @@ impl RuntimeOps {
     pub(super) async fn prepare_replayed_wallet_settlement<'a>(
         &mut self,
         manager: &RuntimeManager,
+        adopted: &AdoptedResourcePolicy,
         checked: &CheckedDirectWalletSettlement<'a, OfferedFundedDeploy>,
         permit: &CandidateReplayPermit<'_>,
         reservation_id: [u8; 32],
@@ -209,6 +243,7 @@ impl RuntimeOps {
         let settled = self
             .settle_checked_wallet_inner(
                 manager,
+                adopted,
                 checked,
                 permit.envelope_identity(),
                 reservation_id,
@@ -242,6 +277,7 @@ impl RuntimeOps {
     async fn settle_checked_wallet_inner<'a>(
         &mut self,
         manager: &RuntimeManager,
+        adopted: &AdoptedResourcePolicy,
         checked: &CheckedDirectWalletSettlement<'a, OfferedFundedDeploy>,
         authorized_identity: &[u8],
         reservation_id: [u8; 32],
@@ -405,11 +441,12 @@ impl RuntimeOps {
                         input.limits,
                     )
                     .await?;
-                settlement_log.extend(
-                    grant_log
-                        .into_iter()
-                        .map(crate::rust::util::event_converter::to_casper_event),
-                );
+                append_epoch_events(
+                    &mut settlement_log,
+                    grant_log,
+                    adopted.event_codec_epoch(),
+                    budget,
+                )?;
             }
             if let Some((prepared, limits)) = &prepared_grants {
                 let grant_log = self
@@ -419,17 +456,19 @@ impl RuntimeOps {
                         *limits,
                     )
                     .await?;
-                settlement_log.extend(
-                    grant_log
-                        .into_iter()
-                        .map(crate::rust::util::event_converter::to_casper_event),
-                );
+                append_epoch_events(
+                    &mut settlement_log,
+                    grant_log,
+                    adopted.event_codec_epoch(),
+                    budget,
+                )?;
             }
             let root = self.runtime.create_checkpoint().await.root.to_bytes_prost();
             committed = true;
             let reader = RuntimeManagerSupplyReader {
                 runtime_manager: manager,
                 pre_state_hash: root.clone(),
+                event_codec_epoch: adopted.event_codec_epoch(),
             };
             let mut wallet_balances = Vec::new();
             let payers = checked.snapshot().wallets().authorization().payers();
@@ -573,20 +612,60 @@ impl<'a> NativeFundedAttempt<'_, 'a> {
         let demand = located
             .prepare_acquisition_demand(input.schedule, input.terms, limits.acquisition, budget)
             .map_err(invalid)?;
-        let selection = input
-            .inventory
-            .select_measured_demand(&demand, limits.demand, budget)?;
-        let binding = input.inventory.bind_measured_demand(
-            NativePrepaidDemandInput {
-                expected_root: self.policy.snapshot().wallets().pre_state_root(),
-                controls,
-                demand: &demand,
-                draws: selection.draws(),
-                demand_positions: selection.demand_positions(),
-            },
-            limits.demand,
-            budget,
-        )?;
+        let branched = input.inventory.has_branched_stacks(budget)?;
+        let physical_trace = if branched {
+            Some(input.inventory.checked_physical_trace(
+                self.policy.snapshot().wallets(),
+                &self.evaluation.authority_events,
+                budget,
+            )?)
+        } else {
+            None
+        };
+        let captured_for_trace = if branched {
+            Some(input.inventory.clone_captured_stacks(budget)?)
+        } else {
+            None
+        };
+        let verified_pre_state = match (&physical_trace, &captured_for_trace) {
+            (Some(trace), Some(stacks)) => Some(trace.verify_live(
+                self.policy.snapshot().wallets().pre_state_root(),
+                stacks,
+                budget,
+            )?),
+            _ => None,
+        };
+        let selection = if let Some(verified) = verified_pre_state.as_ref() {
+            input.inventory.select_verified_measured_demand(
+                verified,
+                &demand,
+                limits.demand,
+                budget,
+            )?
+        } else {
+            input
+                .inventory
+                .select_measured_demand(&demand, limits.demand, budget)?
+        };
+        let demand_input = NativePrepaidDemandInput {
+            expected_root: self.policy.snapshot().wallets().pre_state_root(),
+            controls,
+            demand: &demand,
+            draws: selection.draws(),
+            demand_positions: selection.demand_positions(),
+        };
+        let binding = if let Some(verified) = verified_pre_state.as_ref() {
+            input.inventory.bind_measured_demand_verified(
+                demand_input,
+                verified,
+                limits.demand,
+                budget,
+            )?
+        } else {
+            input
+                .inventory
+                .bind_measured_demand(demand_input, limits.demand, budget)?
+        };
         let observed = check_counted_phlo_execution(
             controls,
             binding.witness(),

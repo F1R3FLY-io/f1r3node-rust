@@ -1,0 +1,258 @@
+{
+  "schema_version": 1,
+  "task": "TASK-017-12",
+  "scope": "source-inventory-and-prelaunch-admission",
+  "status": "blocked-before-node-launch",
+  "observed_at": "2026-09-19T23:52:06Z",
+  "phase": "pre_pr216_merge",
+  "base_revision": "7509c831c881ae6bbd284a5f2121da0ce7ae5605",
+  "provenance_path": "provenance.json",
+  "checkout_revision_at_each_earlier_command_recorded": false,
+  "node_revision": "6940a5beb4aa806d3d75f6df3be9f238512fcc2f",
+  "candidate_identity_report": "docs/casper/cbc-evidence/runs/casper-candidate-repin-20260919-01/report.json",
+  "candidate_identity_report_sha256": "0aa3063c7947210b98bae8f1ea0aba1184f0cc76883d1d0bed25559b764cd911",
+  "candidate_pin_origin": "previously-verified-images-and-binaries",
+  "registry_index_snapshot_unchanged": true,
+  "node_revision_unchanged_during_review": true,
+  "pr216": {
+    "state": "open",
+    "merged": false,
+    "merge_commit_sha": null
+  },
+  "candidate_api_sources": {
+    "models/src/main/protobuf/DeployServiceV1.proto": "5111189f3fdfe184cb980a2bec221c914a9423a1fe447faba1526c6101cec8d9",
+    "models/src/main/protobuf/DeployServiceCommon.proto": "2b0d8d7803d36e2f835c617c5fc464c80a695a0df1470a0fbdeb40e1c78ae3f8",
+    "node/src/rust/web/web_api_routes.rs": "a3be33ebb4775f65a8d7857591743cf22c3f5f7576e368567ec859be918b6f34",
+    "node/src/rust/web/web_api_routes_v1.rs": "7915b2c413f77af014bc9ba97543b8d8d672c0a56fbd262a8ca40456eb41ad2b",
+    "node/src/rust/web/admin_web_api_routes.rs": "1ee6ba339bd36bfeb6f7aea07f422105dd6244c5777f8a5dcfb380de50b43a58"
+  },
+  "legacy_workload": {
+    "path": "legacy-load-workload.json",
+    "sha256": "c4b360a4a92f499433c4aeed2e8dd9eb62ad23727af1a397ee352fb1392def34",
+    "qualified_for_ratified_casper_baseline": false
+  },
+  "suite_source_inventory": {
+    "path": "suite-sources.sha256",
+    "sha256": "5623c8be54bb5e9d94461b393cf82771822b2b4702b9784225c11f92fee9cf64",
+    "files": 269,
+    "git_blob_and_size_checks": 269,
+    "archive_inventory_complete": true
+  },
+  "profile_execution": {
+    "source_bytes_match_revision": "7509c831c881ae6bbd284a5f2121da0ce7ae5605",
+    "authority_rust_tests": 8,
+    "publication_rust_tests": 6,
+    "retained_fixture_invocations": 148,
+    "evidence_kind": "synthetic_fixture",
+    "authority_identity": {
+      "executable_sha256": "cbee8b042e46ce601512beda1ae0393c6b3941effbecb9fcf56c9d1cc28530bd",
+      "profile_digest": "18a1a18cebe632dc5f87483784e08a00c11f3870116f3a3b54766bbf68c45e47",
+      "profile_id": "authority-finality",
+      "source_digests": {
+        "scripts/casper-soak/src/bin/casper-authority-finality.rs": "93caa3d4c8909d8c8befe4ec3a1b551ca470d75fe39bf14ba7a45100310d1718",
+        "scripts/casper-soak/src/lib.rs": "a70f76a28de8ef8010eb7f8876b5e947ce94bf35752bbd70b086983383ee7a8f",
+        "scripts/casper-soak/src/manifest.rs": "d9606d542cfb9bc058f691196244ae2e6055e6c84c02b5c2581ee07e70c03000",
+        "scripts/casper-soak/src/models.rs": "99e3f736aa9e753b73edced77049ab206f993d612870bb1d866f6d5c0655983f",
+        "scripts/casper-soak/src/profiles/authority_finality.rs": "18a1a18cebe632dc5f87483784e08a00c11f3870116f3a3b54766bbf68c45e47"
+      },
+      "version": "0.1.0"
+    },
+    "publication_identity": {
+      "executable_sha256": "986d7186c6d6a7705202850209f35c5f256f5eaa5911db333598de204b45d2f1",
+      "profile_digest": "7cde33e0be93a9b4a655e4053adcad01ef7e3f755cf4afea0d0c3ab36eaa7aee",
+      "profile_id": "publication",
+      "source_digests": {
+        "scripts/casper-soak/src/bin/casper-publication.rs": "2f0e7767e52c0d9decdf1572ddfb38ae41849088aadeed643e7d6ec9b02fb687",
+        "scripts/casper-soak/src/lib.rs": "a70f76a28de8ef8010eb7f8876b5e947ce94bf35752bbd70b086983383ee7a8f",
+        "scripts/casper-soak/src/manifest.rs": "d9606d542cfb9bc058f691196244ae2e6055e6c84c02b5c2581ee07e70c03000",
+        "scripts/casper-soak/src/models.rs": "99e3f736aa9e753b73edced77049ab206f993d612870bb1d866f6d5c0655983f",
+        "scripts/casper-soak/src/profiles/publication.rs": "7cde33e0be93a9b4a655e4053adcad01ef7e3f755cf4afea0d0c3ab36eaa7aee"
+      },
+      "version": "0.1.0"
+    }
+  },
+  "admission_probes": [
+    {
+      "profile_id": "authority-finality",
+      "candidate_id": "dev-amd64",
+      "node_revision": "6940a5beb4aa806d3d75f6df3be9f238512fcc2f",
+      "node_binary_digest": "5e3c3b3181fb24e04ee1e1da183c4bf03069bbca31e7ad9e4bbda7e3215863af",
+      "image_digest": "607751b4db7ecf3e1e3354b2163bf84b5cfb918ad1a780539b374f3ada368663",
+      "harness_revision": "7509c831c881ae6bbd284a5f2121da0ce7ae5605",
+      "requested_provider": "docker",
+      "requested_evidence_kind": "node_observation",
+      "input_kind": "controlled-fixture",
+      "exit": 3,
+      "scenario_verdict": "blocked",
+      "soak_verdict": "non_passing",
+      "blocked_reasons": [
+        "live_adapter_unqualified",
+        "same-dag-evaluation",
+        "electorate-context",
+        "finality-decision",
+        "original-ft-projection",
+        "traversal-counters"
+      ],
+      "node_launch_count": 0,
+      "node_observations_present": false,
+      "manifest_sha256": "9a4abcf96da3aac1986d37718b4516b024d872ec29301a38d1028e3abaf14911",
+      "request_sha256": "baf5bc4850175534fe88a92f4ecc7c7f210714c474345499a9a2d13ca6ee8910",
+      "profile_binary_sha256": "cbee8b042e46ce601512beda1ae0393c6b3941effbecb9fcf56c9d1cc28530bd",
+      "raw_report": {
+        "path": "target/task-017-12/linux-continuation-7509c831c-01/admission-probes/authority-finality-dev-amd64/result/report.json",
+        "sha256": "3c508bffbe8773f022e7cfb65fcef6b3d8a4a2de1613086f5550f2615da2b7ce"
+      }
+    },
+    {
+      "profile_id": "authority-finality",
+      "candidate_id": "dev-arm64",
+      "node_revision": "6940a5beb4aa806d3d75f6df3be9f238512fcc2f",
+      "node_binary_digest": "b078605600cbfda69922cbf32adb60512d93c9917c07fa56669b7ba03d4936f3",
+      "image_digest": "4f944006f0f5288bc10fe0a2ee1bea7b60728982c2a2ca4278d5aa43d12f743c",
+      "harness_revision": "7509c831c881ae6bbd284a5f2121da0ce7ae5605",
+      "requested_provider": "docker",
+      "requested_evidence_kind": "node_observation",
+      "input_kind": "controlled-fixture",
+      "exit": 3,
+      "scenario_verdict": "blocked",
+      "soak_verdict": "non_passing",
+      "blocked_reasons": [
+        "live_adapter_unqualified",
+        "same-dag-evaluation",
+        "electorate-context",
+        "finality-decision",
+        "original-ft-projection",
+        "traversal-counters"
+      ],
+      "node_launch_count": 0,
+      "node_observations_present": false,
+      "manifest_sha256": "6ba932dce71ff78cf68a519c73b33157d7026eacdcd5c7dbaf6e8d1fc6e33378",
+      "request_sha256": "a82979d0db9f6d24f39baa2846e7d2ffa278b2dabddcfb743c9a1683049337d2",
+      "profile_binary_sha256": "cbee8b042e46ce601512beda1ae0393c6b3941effbecb9fcf56c9d1cc28530bd",
+      "raw_report": {
+        "path": "target/task-017-12/linux-continuation-7509c831c-01/admission-probes/authority-finality-dev-arm64/result/report.json",
+        "sha256": "32afe02beabd0b843be10889cdb291c11882c16847ae813a856645ec8e204cfa"
+      }
+    },
+    {
+      "profile_id": "publication",
+      "candidate_id": "dev-amd64",
+      "node_revision": "6940a5beb4aa806d3d75f6df3be9f238512fcc2f",
+      "node_binary_digest": "5e3c3b3181fb24e04ee1e1da183c4bf03069bbca31e7ad9e4bbda7e3215863af",
+      "image_digest": "607751b4db7ecf3e1e3354b2163bf84b5cfb918ad1a780539b374f3ada368663",
+      "harness_revision": "7509c831c881ae6bbd284a5f2121da0ce7ae5605",
+      "requested_provider": "docker",
+      "requested_evidence_kind": "node_observation",
+      "input_kind": "controlled-fixture",
+      "exit": 3,
+      "scenario_verdict": "blocked",
+      "soak_verdict": "non_passing",
+      "blocked_reasons": [
+        "live_adapters_unqualified",
+        "publication-cut-point",
+        "process-exit",
+        "linked-restart",
+        "atomic-publication-snapshot",
+        "durable-work-inventory"
+      ],
+      "node_launch_count": 0,
+      "node_observations_present": false,
+      "manifest_sha256": "4ed0ae526035536c53b3cf5e01eeac71690a6d50e784e51b7ce402a28e024330",
+      "request_sha256": "cfeea03cdda6167d560d1b4d0c55abe11659b278670c7aa3e487eb3cb46932c1",
+      "profile_binary_sha256": "986d7186c6d6a7705202850209f35c5f256f5eaa5911db333598de204b45d2f1",
+      "raw_report": {
+        "path": "target/task-017-12/linux-continuation-7509c831c-01/admission-probes/publication-dev-amd64/result/report.json",
+        "sha256": "5b6323d69753660c7f72fd5506f5ce4d6b6a14b4ef764759a1c79711fd942bde"
+      }
+    },
+    {
+      "profile_id": "publication",
+      "candidate_id": "dev-arm64",
+      "node_revision": "6940a5beb4aa806d3d75f6df3be9f238512fcc2f",
+      "node_binary_digest": "b078605600cbfda69922cbf32adb60512d93c9917c07fa56669b7ba03d4936f3",
+      "image_digest": "4f944006f0f5288bc10fe0a2ee1bea7b60728982c2a2ca4278d5aa43d12f743c",
+      "harness_revision": "7509c831c881ae6bbd284a5f2121da0ce7ae5605",
+      "requested_provider": "docker",
+      "requested_evidence_kind": "node_observation",
+      "input_kind": "controlled-fixture",
+      "exit": 3,
+      "scenario_verdict": "blocked",
+      "soak_verdict": "non_passing",
+      "blocked_reasons": [
+        "live_adapters_unqualified",
+        "publication-cut-point",
+        "process-exit",
+        "linked-restart",
+        "atomic-publication-snapshot",
+        "durable-work-inventory"
+      ],
+      "node_launch_count": 0,
+      "node_observations_present": false,
+      "manifest_sha256": "8d124d8c18516cbf857e97a4cc3883d20d5634c48adfdedee95aa654d052ce8c",
+      "request_sha256": "c6e0839ce78337e8c55040b7f66c80e45c2833c3f4738d2a9251de42befbc6f7",
+      "profile_binary_sha256": "986d7186c6d6a7705202850209f35c5f256f5eaa5911db333598de204b45d2f1",
+      "raw_report": {
+        "path": "target/task-017-12/linux-continuation-7509c831c-01/admission-probes/publication-dev-arm64/result/report.json",
+        "sha256": "0926198735d2835f545b14baa06c98bc563fdc3fd33a8fe899e4956ff56860b0"
+      }
+    }
+  ],
+  "campaign_helper_verification": {
+    "execution_source": "working-tree",
+    "source_patch_sha256": "5ccb33e2f03b1880a4cc3f7d7f2c657ee7b324407aeac90d495a719f8288ca3c",
+    "source_digests": {
+      "scripts/casper-soak/campaign.sh": "43ffb4bc249d3d6ff75e0c860821170940680174f3b0c7f93a3dc5aa5a8d46ae",
+      "scripts/casper-soak/test-campaign.sh": "821798d3dfc0c2ca339726959319f96ec6c71beea14995e434cc7143cbed6745"
+    },
+    "native_checks": 34,
+    "isolated_checks": 34,
+    "json_stream_negative_control": {
+      "prior_exit": 0,
+      "expected_exit": 2,
+      "regression_suite_exit": 1,
+      "corrected_suite_exit": 0
+    },
+    "claim_registration": "registered",
+    "claim_id": "CLAIM-CASPER-CAMPAIGN-001",
+    "claim_specification": "docs/claims/casper-soak-campaign.md",
+    "claim_specification_sha256": "70575b8b455b81bd8a02b5c83eb59b7bd43437dc07468557e8a24da11bb66f4a",
+    "claim_discharge": "pending"
+  },
+  "existing_claim_audit": {
+    "claim_count": 8,
+    "claim_discharge": "discharged",
+    "scope": "claim-ledger-audit",
+    "proof_execution": false,
+    "report_sha256": "79f98eacb31fa16728f7c1a5dd1c30a4c833570850b21356bfd37bd7d578df23"
+  },
+  "matrix": {
+    "status": "not-dispatchable",
+    "existing_pins_checked": 179,
+    "stale_pins": [
+      "formal/tlaplus/casper_soak/verification-plan.jsonc"
+    ],
+    "campaign_inventory_complete": false,
+    "ratified_workload_pins_complete": false
+  },
+  "workflow_changed": false,
+  "runtime_or_profiles_changed": false,
+  "binding_inventory_changed": false,
+  "live_adapters_qualified": false,
+  "workflow_integration_complete": false,
+  "cloud_readiness_verified": false,
+  "workflow_dispatch_count": 0,
+  "cloud_runners_launched": 0,
+  "node_launch_count": 0,
+  "soak_campaign_executed": false,
+  "soak_verdict": "non_passing",
+  "task_complete": false,
+  "limits": [
+    "Admission probes use controlled inputs and exact candidate identities, not observations from running nodes.",
+    "The arm64 host executes both profile binaries. Candidate platform labels do not establish node execution on either platform.",
+    "The inspection covers the retained API surfaces. It does not prove that every possible interface is absent.",
+    "The legacy workload remains separate from the required Casper baseline.",
+    "No prior execution is relabeled as execution at the current revision.",
+    "The eight-claim audit does not cover the two campaign helpers. Their separate claim remains pending.",
+    "The proposed additional stability-runner limits remain unconfirmed."
+  ]
+}

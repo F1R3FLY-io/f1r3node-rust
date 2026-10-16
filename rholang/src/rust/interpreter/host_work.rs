@@ -25,6 +25,10 @@ pub struct HostWorkBudget {
 }
 
 impl HostWorkBudget {
+    pub(crate) fn same_identity(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.state, &other.state)
+    }
+
     pub fn new(limits: HostWorkLimits) -> Self {
         Self {
             state: Arc::new(HostWorkBudgetState {

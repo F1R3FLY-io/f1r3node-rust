@@ -59,7 +59,10 @@ async fn check_parallel_chains(chains: &[Vec<u8>], reverse_sends: bool, payload:
     );
     for chain in 0..chains.len() {
         let output = new_gstring_par(format!("output{chain}"), Vec::new(), false);
-        let data = runtime.get_data(&output).await;
+        let data = runtime
+            .get_data(&output)
+            .await
+            .expect("transfer output query");
         assert_eq!(data.len(), 1);
         let expected_payload = Compiler::source_to_adt(&payload.to_string()).unwrap();
         assert_eq!(data[0].a.pars, vec![expected_payload]);
@@ -117,7 +120,7 @@ async fn check_staged_chains(chains: &[Vec<u8>], priorities: &[u16], payload: i3
         }
         for (index, payers) in chains.iter().enumerate() {
             let output = new_gstring_par(format!("output{index}"), Vec::new(), false);
-            let data = runtime.get_data(&output).await;
+            let data = runtime.get_data(&output).await.expect("chain output query");
             if positions[index] == payers.len() {
                 assert_eq!(data.len(), 1);
                 assert_eq!(data[0].a.pars, vec![Compiler::source_to_adt(

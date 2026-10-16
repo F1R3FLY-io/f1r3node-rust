@@ -18,6 +18,7 @@ use models::rust::validator::Validator;
 use rspace_plus_plus::rspace::checkpoint::{Checkpoint, SoftCheckpoint};
 use rspace_plus_plus::rspace::errors::RSpaceError;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+use rspace_plus_plus::rspace::hashing::stable_hash_provider::EventCodecEpoch;
 use rspace_plus_plus::rspace::history::history_repository::HistoryRepository;
 use rspace_plus_plus::rspace::internal::{Datum, Install, Row, WaitingContinuation};
 use rspace_plus_plus::rspace::merger::merging_logic::MergeType;
@@ -27,7 +28,7 @@ use rspace_plus_plus::rspace::rspace::{RSpace, RSpaceStore};
 use rspace_plus_plus::rspace::rspace_interface::{
     ISpace, RSpaceAccountingObserver, RSpaceOperationCompletion, RSpaceOperationSource,
 };
-use rspace_plus_plus::rspace::trace::event::{Consume, Produce, COMM};
+use rspace_plus_plus::rspace::trace::event::{Consume, Produce, RestingCOMM, COMM};
 use rspace_plus_plus::rspace::trace::Log;
 use rspace_plus_plus::rspace::tuplespace_interface::Tuplespace;
 
@@ -49,7 +50,7 @@ use super::host_work::{HostWorkBudget, HostWorkReport};
 use super::interpreter::{EvaluateResult, Interpreter, InterpreterImpl};
 use super::reduce::{DebruijnInterpreter, ReducerCore};
 use super::registry::registry_bootstrap::ast;
-use super::storage::charging_rspace::ChargingRSpace;
+use super::storage::charging_rspace::{finite_native_replay_meter, ChargingRSpace};
 use super::substitute::Substitute;
 use super::system_processes::{
     Arity, BlockData, BodyRef, Definition, DeployData, InvalidBlocks, Name, ProcessContext,
@@ -213,9 +214,12 @@ pub trait RhoRuntime: HasCost {
      *
      * This function would not change the state in the runtime
      */
-    async fn get_data(&self, channel: &Par) -> Vec<Datum<ListParWithRandom>>;
+    async fn get_data(
+        &self,
+        channel: &Par,
+    ) -> Result<Vec<Datum<ListParWithRandom>>, InterpreterError>;
 
-    async fn get_joins(&self, channel: Par) -> Vec<Vec<Par>>;
+    async fn get_joins(&self, channel: Par) -> Result<Vec<Vec<Par>>, InterpreterError>;
 
     /**
      * get continuation directly from history repository
@@ -225,7 +229,7 @@ pub trait RhoRuntime: HasCost {
     async fn get_continuations(
         &self,
         channels: Vec<Par>,
-    ) -> Vec<WaitingContinuation<BindPattern, TaggedContinuation>>;
+    ) -> Result<Vec<WaitingContinuation<BindPattern, TaggedContinuation>>, InterpreterError>;
 
     /**
      * Set the runtime block data environment.
@@ -253,6 +257,16 @@ pub trait RhoRuntime: HasCost {
     /* Replay functions */
 
     async fn rig(&self, log: Log) -> Result<(), InterpreterError>;
+
+    /// Protocol-7 replay rig is a separate host-authorized entrypoint. The
+    /// adopted policy selects CostV2 and supplies a finite meter before any
+    /// event decoding or cursor installation; event bytes cannot select it.
+    async fn rig_cost_v2_metered(
+        &self,
+        start_root: Blake2b256Hash,
+        log: Log,
+        host_work: HostWorkBudget,
+    ) -> Result<(), InterpreterError>;
 
     async fn check_replay_data(&self) -> Result<(), InterpreterError>;
 }
@@ -629,19 +643,26 @@ impl RhoRuntime for RhoRuntimeImpl {
         Ok(self.reducer.space.consume_result(channel, pattern).await?)
     }
 
-    async fn get_data(&self, channel: &Par) -> Vec<Datum<ListParWithRandom>> {
-        self.reducer.space.get_data(channel).await
+    async fn get_data(
+        &self,
+        channel: &Par,
+    ) -> Result<Vec<Datum<ListParWithRandom>>, InterpreterError> {
+        Ok(self.reducer.space.get_data(channel).await?)
     }
 
-    async fn get_joins(&self, channel: Par) -> Vec<Vec<Par>> {
-        self.reducer.space.get_joins(channel).await
+    async fn get_joins(&self, channel: Par) -> Result<Vec<Vec<Par>>, InterpreterError> {
+        Ok(self.reducer.space.get_joins(channel).await?)
     }
 
     async fn get_continuations(
         &self,
         channels: Vec<Par>,
-    ) -> Vec<WaitingContinuation<BindPattern, TaggedContinuation>> {
-        self.reducer.space.get_waiting_continuations(channels).await
+    ) -> Result<Vec<WaitingContinuation<BindPattern, TaggedContinuation>>, InterpreterError> {
+        Ok(self
+            .reducer
+            .space
+            .get_waiting_continuations(channels)
+            .await?)
     }
 
     async fn set_block_data(&self, block_data: BlockData) -> () {
@@ -668,6 +689,23 @@ impl RhoRuntime for RhoRuntimeImpl {
 
     async fn rig(&self, log: Log) -> Result<(), InterpreterError> {
         self.reducer.space.rig(log).await?;
+        Ok(())
+    }
+
+    async fn rig_cost_v2_metered(
+        &self,
+        start_root: Blake2b256Hash,
+        log: Log,
+        host_work: HostWorkBudget,
+    ) -> Result<(), InterpreterError> {
+        if self.cost.native_event_codec_epoch() != Some(EventCodecEpoch::CostV2) {
+            return Err(InterpreterError::HostWorkRejected);
+        }
+        let meter = finite_native_replay_meter(host_work)?;
+        self.reducer
+            .space
+            .rig_cost_v2_metered(start_root, log, &meter)
+            .await?;
         Ok(())
     }
 
@@ -884,12 +922,19 @@ impl RSpaceAccountingObserver<Par, BindPattern, ListParWithRandom, TaggedContinu
                 backing,
             )
         };
+        // DR-101: the deployment that resolves residue seals.
+        let residue = super::accounting::authority::ResidueContext::new(
+            &self.budget.signature(),
+            self.budget.deploy_id(),
+        )
+        .map_err(|error| RSpaceError::InterpreterError(error.to_string()))?;
         let observed = match host.as_ref() {
             Some(_) => super::accounting::observation_construction::comm_metered(
                 comm,
                 continuation,
                 continuation_persistent,
                 data,
+                &residue,
                 &meter,
             )?,
             None => super::accounting::observation_construction::comm(
@@ -897,6 +942,7 @@ impl RSpaceAccountingObserver<Par, BindPattern, ListParWithRandom, TaggedContinu
                 continuation,
                 continuation_persistent,
                 data,
+                &residue,
             )?,
         };
         self.budget
@@ -907,6 +953,78 @@ impl RSpaceAccountingObserver<Par, BindPattern, ListParWithRandom, TaggedContinu
             )
             .map_err(RSpaceError::from)?;
         Ok(())
+    }
+
+    fn observe_resting_comm(
+        &self,
+        identity: &Blake2b256Hash,
+        event: &RestingCOMM,
+        continuation: &TaggedContinuation,
+        continuation_persistent: bool,
+        data: &[(&ListParWithRandom, bool)],
+    ) -> Result<(), RSpaceError> {
+        // The RSpace commit computed this domain-separated identity under the
+        // caller's finite SourceMeter before entering its atomic publication
+        // closure. This observer never rehashes without a meter and never
+        // manufactures a Produce/Consume introduction.
+        //
+        // Until the additive V3 native journal is installed, only a trusted
+        // standalone sandbox with an explicit local authorization may charge
+        // this transition. A CostV2 RSpace in a consensus runtime, an
+        // unmetered budget, or a call outside the COMM scope must fail closed.
+        if !self.budget.has_comm_accounting_scope() || self.budget.is_unmetered() {
+            return Err(RSpaceError::HostWorkRejected);
+        }
+        let event_id: [u8; 32] = identity
+            .0
+            .as_slice()
+            .try_into()
+            .map_err(|_| RSpaceError::ProduceCommitProtocolViolation)?;
+        if self.budget.native_execution_active() {
+            if self.budget.native_event_codec_epoch() != Some(EventCodecEpoch::CostV2)
+                || self.budget.standalone_resting_comm_enabled()
+            {
+                return Err(RSpaceError::HostWorkRejected);
+            }
+            self.budget
+                .observe_native_resting_source(event_id, event)
+                .map_err(RSpaceError::from)?;
+            let host = self
+                .budget
+                .native_host_work()
+                .ok_or(RSpaceError::HostWorkRejected)?;
+            let meter = |operations, scanned, backing| {
+                reserve_native_observation_work(&host, operations, scanned, backing)
+            };
+            let residue = super::accounting::authority::ResidueContext::new(
+                &self.budget.signature(),
+                self.budget.deploy_id(),
+            )
+            .map_err(|error| RSpaceError::InterpreterError(error.to_string()))?;
+            let observed = super::accounting::observation_construction::resting_metered(
+                event,
+                event_id,
+                continuation,
+                continuation_persistent,
+                data,
+                &residue,
+                &meter,
+            )?;
+            return self
+                .budget
+                .reserve_resting_authority_measured(
+                    observed.event_id,
+                    &observed.authority,
+                    observed.measurement,
+                )
+                .map_err(RSpaceError::from);
+        }
+        if !self.budget.standalone_resting_comm_enabled() {
+            return Err(RSpaceError::HostWorkRejected);
+        }
+        self.budget
+            .reserve_comm_identity(event_id)
+            .map_err(RSpaceError::from)
     }
 }
 
@@ -1635,6 +1753,7 @@ async fn setup_reducer(
         yielded_single_term_evaluations: Arc::new(AtomicU64::new(0)),
         spawned_eval_tasks: Arc::new(AtomicU64::new(0)),
         reduction_coordinator,
+        residue_seal: false,
     });
 
     reducer_cell.set(Arc::downgrade(&core)).ok().unwrap();
@@ -1954,7 +2073,9 @@ impl NativeReplayEnvironment {
         self.unavailable = true;
         self.evaluation_started = true;
         self.merge_chs.write().await.clear();
-        let scope = self.budget.enter_comm_accounting_scope();
+        let scope = self
+            .budget
+            .enter_comm_accounting_scope_for_epoch(self.reducer.space.codec_epoch());
         let (execution, failures) = self
             .reducer
             .inj_with_observation(par, rand, Some(host.clone()))
@@ -1968,7 +2089,9 @@ impl NativeReplayEnvironment {
         let result = async {
             let evidence = self.session.completed_evidence().await?;
             let mergeable = self.merge_chs.read().await;
-            super::accounting::clone_backing::reserve_copy_and_cleanup(&*mergeable, &host)?;
+            // Changed by D-O1 (DR-94): block accounting charges inline bytes once per enclosing block.
+            // super::accounting::clone_backing::reserve_copy_and_cleanup(&*mergeable, &host)?;
+            super::accounting::clone_backing::reserve_blocks_copy_and_cleanup(&*mergeable, &host)?;
             let mergeable = mergeable.clone();
             if host.is_rejected() {
                 return Err(InterpreterError::HostWorkRejected);
@@ -2005,7 +2128,9 @@ impl NativeReplayEnvironment {
         }
         self.unavailable = true;
         self.evaluation_started = true;
-        let _scope = self.budget.enter_comm_accounting_scope();
+        let _scope = self
+            .budget
+            .enter_comm_accounting_scope_for_epoch(self.reducer.space.codec_epoch());
         let result = self
             .reducer
             .inj_with_observation(par, rand, Some(self.host.clone()))
@@ -2071,6 +2196,7 @@ impl NativeReplayEnvironment {
 }
 
 pub async fn create_native_replay_env(
+    codec_epoch: EventCodecEpoch,
     trace: CheckedNativeOperationTrace,
     history: RhoHistoryRepository,
     matcher: Arc<Box<dyn Match<BindPattern, ListParWithRandom, TaggedContinuation>>>,
@@ -2081,6 +2207,9 @@ pub async fn create_native_replay_env(
     cost: RuntimeBudget,
     external_services: ExternalServices,
 ) -> Result<NativeReplayEnvironment, InterpreterError> {
+    if cost.native_event_codec_epoch() != Some(codec_epoch) {
+        return Err(InterpreterError::HostWorkRejected);
+    }
     if !cost.has_exclusive_authority_owner() {
         return Err(InterpreterError::ReduceError(
             "native replay environment requires exclusive runtime-budget ownership".to_owned(),
@@ -2104,9 +2233,11 @@ pub async fn create_native_replay_env(
         host.clone(),
         installations,
         cost.clone(),
+        codec_epoch,
     )?);
+    let reduction_coordinator = ReductionCoordinator::default();
     let reducer = setup_reducer(
-        session.execution_space(cost.clone()),
+        session.execution_space(cost.clone(), reduction_coordinator.clone()),
         block_data.clone(),
         invalid_blocks.clone(),
         deploy_data.clone(),
@@ -2119,7 +2250,7 @@ pub async fn create_native_replay_env(
         external_services.grpc_client,
         external_services.chroma,
         cost.clone(),
-        ReductionCoordinator::default(),
+        reduction_coordinator,
     )
     .await;
     Ok(NativeReplayEnvironment {
@@ -2172,10 +2303,12 @@ where
         budget: cost.clone(),
     })));
     let reduction_coordinator = ReductionCoordinator::default();
-    let scheduled_rspace: RhoISpace = Arc::new(Box::new(DeterministicRSpace::new(
-        raw_rspace,
-        reduction_coordinator.clone(),
-    )));
+    let scheduled_rspace: RhoISpace =
+        Arc::new(Box::new(DeterministicRSpace::new_with_native_replay(
+            raw_rspace,
+            reduction_coordinator.clone(),
+            cost.clone(),
+        )));
     let charging_rspace: RhoISpace = Arc::new(Box::new(ChargingRSpace::charging_rspace(
         scheduled_rspace,
         cost.clone(),
@@ -2417,8 +2550,33 @@ pub async fn create_runtime_from_kv_store(
     matcher: Arc<Box<dyn Match<BindPattern, ListParWithRandom, TaggedContinuation>>>,
     external_services: ExternalServices,
 ) -> Result<RhoRuntimeImpl, InterpreterError> {
+    create_runtime_from_kv_store_for_epoch(
+        EventCodecEpoch::Legacy,
+        stores,
+        mergeable_tags,
+        init_registry,
+        additional_system_processes,
+        matcher,
+        external_services,
+    )
+    .await
+}
+
+/// Build a live runtime with an explicitly selected event grammar. Standalone
+/// F1R3Lang evaluation selects CostV2 for its cost-bearing definitions; callers
+/// without that authority continue through the Legacy wrapper above.
+pub async fn create_runtime_from_kv_store_for_epoch(
+    epoch: EventCodecEpoch,
+    stores: RSpaceStore,
+    mergeable_tags: Arc<HashMap<Par, MergeType>>,
+    init_registry: bool,
+    additional_system_processes: &mut Vec<Definition>,
+    matcher: Arc<Box<dyn Match<BindPattern, ListParWithRandom, TaggedContinuation>>>,
+    external_services: ExternalServices,
+) -> Result<RhoRuntimeImpl, InterpreterError> {
     let space: RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation> =
-        RSpace::create(stores, matcher).unwrap();
+        RSpace::create_for_epoch(epoch, stores, matcher)
+            .map_err(|error| InterpreterError::SetupError(error.to_string()))?;
 
     create_rho_runtime(
         space,
@@ -2428,6 +2586,67 @@ pub async fn create_runtime_from_kv_store(
         external_services,
     )
     .await
+}
+
+#[cfg(test)]
+mod kv_store_epoch_tests {
+    use super::*;
+    use crate::rust::interpreter::matcher::r#match::Matcher;
+    use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
+    use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
+
+    #[tokio::test]
+    async fn explicit_epoch_is_preserved_and_default_constructor_stays_legacy() {
+        let mut cost_stores = InMemoryStoreManager::new();
+        let cost_runtime = create_runtime_from_kv_store_for_epoch(
+            EventCodecEpoch::CostV2,
+            cost_stores
+                .r_space_stores()
+                .await
+                .expect("CostV2 test stores"),
+            Arc::new(HashMap::new()),
+            false,
+            &mut Vec::new(),
+            Arc::new(Box::new(Matcher)),
+            ExternalServices::noop(),
+        )
+        .await
+        .expect("CostV2 runtime initializes");
+        assert_eq!(
+            cost_runtime.reducer.space.codec_epoch(),
+            EventCodecEpoch::CostV2
+        );
+
+        let mut legacy_stores = InMemoryStoreManager::new();
+        let legacy_runtime = create_runtime_from_kv_store(
+            legacy_stores
+                .r_space_stores()
+                .await
+                .expect("Legacy test stores"),
+            Arc::new(HashMap::new()),
+            false,
+            &mut Vec::new(),
+            Arc::new(Box::new(Matcher)),
+            ExternalServices::noop(),
+        )
+        .await
+        .expect("Legacy runtime initializes");
+        assert_eq!(
+            legacy_runtime.reducer.space.codec_epoch(),
+            EventCodecEpoch::Legacy
+        );
+
+        let evaluated = legacy_runtime
+            .evaluate(
+                "new c in { c!(1) | for (@x <- c) { Nil } }",
+                Cost::create(1_000_000, "Legacy communication"),
+                HashMap::new(),
+                Blake2b512Random::create_from_bytes(&[17; 128]),
+            )
+            .await
+            .expect("Legacy communication returns a result");
+        assert!(evaluated.errors.is_empty(), "{:?}", evaluated.errors);
+    }
 }
 
 #[cfg(test)]

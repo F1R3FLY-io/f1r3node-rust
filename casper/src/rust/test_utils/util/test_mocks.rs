@@ -2,10 +2,11 @@
 // Moved from casper/tests/util/test_mocks.rs to casper/src/rust/test_utils/util/test_mocks.rs
 // All imports fixed for library crate context
 
+use std::collections::hash_map::Entry;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
 
-use shared::rust::store::key_value_store::{KeyValueStore, KvStoreError};
+use shared::rust::store::key_value_store::{EntryReader, KeyValueStore, KvStoreError, ValueReader};
 
 /// A mock KeyValueStore implementation for testing that uses in-memory HashMap storage.
 /// This implementation is thread-safe and supports cloning for use in multi-threaded tests.
@@ -46,6 +47,21 @@ impl MockKeyValueStore {
 }
 
 impl KeyValueStore for MockKeyValueStore {
+    fn as_any(&self) -> &dyn std::any::Any { self }
+
+    fn with_value(&self, key: &Vec<u8>, reader: &mut ValueReader<'_>) -> Result<(), KvStoreError> {
+        let data = self.data.lock().unwrap();
+        reader(data.get(key).map(Vec::as_slice))
+    }
+
+    fn visit_entries(&self, reader: &mut EntryReader<'_>) -> Result<(), KvStoreError> {
+        let data = self.data.lock().unwrap();
+        for (key, value) in data.iter() {
+            reader(key, value)?;
+        }
+        Ok(())
+    }
+
     fn get(&self, keys: &Vec<Vec<u8>>) -> Result<Vec<Option<Vec<u8>>>, KvStoreError> {
         let data = self.data.lock().unwrap();
         let results: Vec<Option<Vec<u8>>> = keys.iter().map(|key| data.get(key).cloned()).collect();
@@ -58,6 +74,17 @@ impl KeyValueStore for MockKeyValueStore {
             data.insert(key, value);
         }
         Ok(())
+    }
+
+    fn put_one_if_absent(&self, key: Vec<u8>, value: Vec<u8>) -> Result<bool, KvStoreError> {
+        let mut data = self.data.lock().unwrap();
+        match data.entry(key) {
+            Entry::Occupied(_) => Ok(false),
+            Entry::Vacant(slot) => {
+                slot.insert(value);
+                Ok(true)
+            }
+        }
     }
 
     fn delete(&self, keys: Vec<Vec<u8>>) -> Result<usize, KvStoreError> {
@@ -132,12 +159,26 @@ impl KeyValueStore for MockKeyValueStore {
 pub struct EmptyKeyValueStore;
 
 impl KeyValueStore for EmptyKeyValueStore {
+    fn as_any(&self) -> &dyn std::any::Any { self }
+
+    fn with_value(&self, _key: &Vec<u8>, reader: &mut ValueReader<'_>) -> Result<(), KvStoreError> {
+        reader(None)
+    }
+
+    fn visit_entries(&self, _reader: &mut EntryReader<'_>) -> Result<(), KvStoreError> { Ok(()) }
+
     fn get(&self, keys: &Vec<Vec<u8>>) -> Result<Vec<Option<Vec<u8>>>, KvStoreError> {
         Ok(vec![None; keys.len()])
     }
 
     fn put(&self, _kv_pairs: Vec<(Vec<u8>, Vec<u8>)>) -> Result<(), KvStoreError> {
         Ok(()) // No-op
+    }
+
+    fn put_one_if_absent(&self, _key: Vec<u8>, _value: Vec<u8>) -> Result<bool, KvStoreError> {
+        Err(KvStoreError::InvalidArgument(
+            "empty fixture store cannot persist an atomic insertion".to_string(),
+        ))
     }
 
     fn delete(&self, _keys: Vec<Vec<u8>>) -> Result<usize, KvStoreError> {
@@ -225,6 +266,36 @@ mod tests {
     }
 
     #[test]
+    fn mock_store_borrowed_reads_and_atomic_insert_preserve_values() {
+        let store = MockKeyValueStore::new();
+        let key = b"shared".to_vec();
+        assert!(store
+            .put_one_if_absent(key.clone(), b"first".to_vec())
+            .unwrap());
+        assert!(!store
+            .put_one_if_absent(key.clone(), b"second".to_vec())
+            .unwrap());
+
+        let mut seen = None;
+        store
+            .with_value(&key, &mut |value| {
+                seen = value.map(<[u8]>::to_vec);
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(seen, Some(b"first".to_vec()));
+
+        let mut entries = Vec::new();
+        store
+            .visit_entries(&mut |entry_key, value| {
+                entries.push((entry_key.to_vec(), value.to_vec()));
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(entries, vec![(key, b"first".to_vec())]);
+    }
+
+    #[test]
     fn test_empty_key_value_store() {
         let store = EmptyKeyValueStore;
 
@@ -236,5 +307,8 @@ mod tests {
         assert_eq!(contains_results, vec![false]);
 
         assert_eq!(store.size_bytes(), 0);
+        assert!(store
+            .put_one_if_absent(b"key".to_vec(), b"value".to_vec())
+            .is_err());
     }
 }

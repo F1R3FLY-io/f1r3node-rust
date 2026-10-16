@@ -62,7 +62,7 @@ Definition sufficient_check
   if Nat.leb (observed_demand observation surface)
              (observed_supply observation surface)
   then OSatisfied
-  else OUnsatisfied.
+  else if demand_is_exact observation then OUnsatisfied else OIndeterminate.
 
 Definition spend_check
     (observation : oslf_observation) (surface : sig) (amount : nat)
@@ -328,6 +328,66 @@ Proof.
   apply Nat.leb_le in Hfund. lia.
 Qed.
 
+Theorem sufficient_check_satisfied_iff : forall observation surface,
+  sufficient_check observation surface = OSatisfied <->
+  observed_demand observation surface <= observed_supply observation surface.
+Proof.
+  intros observation surface. unfold sufficient_check.
+  destruct (Nat.leb (observed_demand observation surface)
+    (observed_supply observation surface)) eqn:Hle.
+  - apply Nat.leb_le in Hle. split; auto.
+  - apply Nat.leb_gt in Hle.
+    destruct (demand_is_exact observation); split; intro H; try discriminate; lia.
+Qed.
+
+Theorem sufficient_check_unsatisfied_iff : forall observation surface,
+  sufficient_check observation surface = OUnsatisfied <->
+  demand_is_exact observation = true /\
+  observed_supply observation surface < observed_demand observation surface.
+Proof.
+  intros observation surface. unfold sufficient_check.
+  destruct (Nat.leb (observed_demand observation surface)
+    (observed_supply observation surface)) eqn:Hle.
+  - apply Nat.leb_le in Hle. split; [discriminate | intros [_ H]; lia].
+  - apply Nat.leb_gt in Hle.
+    destruct (demand_is_exact observation); split; intro H;
+      try discriminate; try (split; auto); try reflexivity.
+    destruct H as [H _]. discriminate.
+Qed.
+
+Theorem upper_bound_shortage_is_indeterminate : forall supply upper surface,
+  supply surface < upper surface ->
+  sufficient_check (mk_oslf_observation supply upper false) surface = OIndeterminate.
+Proof.
+  intros supply upper surface Hunder. unfold sufficient_check. simpl.
+  destruct (Nat.leb (upper surface) (supply surface)) eqn:Hle.
+  - apply Nat.leb_le in Hle. lia.
+  - reflexivity.
+Qed.
+
+Theorem upper_bound_shortage_negation_is_indeterminate : forall supply upper surface,
+  supply surface < upper surface ->
+  verdict_not (sufficient_check (mk_oslf_observation supply upper false) surface)
+    = OIndeterminate.
+Proof.
+  intros supply upper surface Hunder.
+  rewrite upper_bound_shortage_is_indeterminate by assumption. reflexivity.
+Qed.
+
+Theorem upper_bound_shortage_has_both_concretizations : forall supply upper surface,
+  supply surface < upper surface ->
+  exists funded unfunded : located_purse,
+    (forall location, funded location <= upper location) /\
+    (forall location, unfunded location <= upper location) /\
+    sufficient_check (mk_oslf_observation supply funded true) surface = OSatisfied /\
+    sufficient_check (mk_oslf_observation supply unfunded true) surface = OUnsatisfied.
+Proof.
+  intros supply upper surface Hunder. exists (fun _ => 0), upper.
+  split; [intro; lia |]. split; [intro; lia |]. split.
+  - apply sufficient_check_satisfied_iff. simpl. lia.
+  - apply sufficient_check_unsatisfied_iff. simpl. auto.
+Qed.
+
 Theorem upper_bound_cannot_assert_modal_spend : forall supply upper surface,
   1 <= supply surface -> 1 <= upper surface ->
   spend_check (mk_oslf_observation supply upper false) surface 1 = OIndeterminate.
@@ -358,13 +418,10 @@ Theorem authenticated_supply_excludes_candidate_credit :
   forall (authenticated candidate upper : located_purse) surface,
     upper surface > authenticated surface ->
     sufficient_check
-      (mk_oslf_observation authenticated upper false) surface = OUnsatisfied.
+      (mk_oslf_observation authenticated upper false) surface = OIndeterminate.
 Proof.
   intros authenticated candidate upper surface Hunder.
-  unfold sufficient_check. simpl.
-  destruct (Nat.leb (upper surface) (authenticated surface)) eqn:Hfund.
-  - apply Nat.leb_le in Hfund. lia.
-  - reflexivity.
+  apply upper_bound_shortage_is_indeterminate. exact Hunder.
 Qed.
 
 Theorem every_native_oslf_check_is_decidable : forall observation surface,
@@ -426,6 +483,11 @@ Print Assumptions located_observation_isolates_other_surface.
 Print Assumptions spatial_is_commutative.
 Print Assumptions spatial_local_sufficiency_composes.
 Print Assumptions conservative_sufficiency_is_sound.
+Print Assumptions sufficient_check_satisfied_iff.
+Print Assumptions sufficient_check_unsatisfied_iff.
+Print Assumptions upper_bound_shortage_is_indeterminate.
+Print Assumptions upper_bound_shortage_negation_is_indeterminate.
+Print Assumptions upper_bound_shortage_has_both_concretizations.
 Print Assumptions upper_bound_cannot_assert_modal_spend.
 Print Assumptions upper_bound_insufficient_supply_rejects.
 Print Assumptions authenticated_supply_excludes_candidate_credit.

@@ -1787,11 +1787,10 @@ fn tarjan_scc(adjacency: &[Vec<usize>]) -> Vec<Vec<usize>> {
 ///
 /// ★ A **typed exception table**, not a list somebody keeps in step. If a panic
 /// unwinds out of the driver, the pooled value stack still owns cloned terms, and
-/// releasing them with `Vec::clear` would run `drop_in_place::<Par>` — itself
-/// Θ(depth), the one destructor this campaign measured and deliberately did NOT
-/// convert (`rholang/tests/stack_depth_gate.rs`, subject `par_drop`; `impl Drop
-/// for Par` produces 353 diagnostics across 61 unique lines in `models` alone).
-/// So every cut-set member must name a teardown that is iterative.
+/// releasing them with `Vec::clear` would once have run recursive destruction.
+/// `Par`, `CostSignature`, and `CostStack` now have generated iterative `Drop`,
+/// and the clone driver's explicit unwind still requires one teardown per
+/// cut-set member. The table makes that obligation schema-checked.
 ///
 /// [`ClonePlan::build`] **panics** if the derived cut set acquires a member with
 /// no entry here, naming the member and what it needs. A `_ =>` arm in the
@@ -1805,6 +1804,10 @@ const ITERATIVE_TEARDOWN: &[(&str, &str)] = &[
     (
         "CostSignatureCompound",
         "crate::rust::rholang::par_children::dismantle_cost_signature_compound",
+    ),
+    (
+        "CostStack",
+        "crate::rust::rholang::par_children::dismantle_cost_stack",
     ),
 ];
 
@@ -2649,9 +2652,9 @@ fn emit_bincode_message(
     }
     src.push_str("    }\n");
 
-    // The pre-cost cold-store layout is a POSITIONAL serde struct layout, not
-    // protobuf tag order. These are the only fields the cost schema added to
-    // pre-existing nodes. In particular TaggedContinuation's cost_authority
+    // The legacy cold-store layout is a POSITIONAL serde struct layout, not
+    // protobuf tag order. These are the only fields added after each node's
+    // legacy layout. In particular TaggedContinuation's cost_authority
     // sits between two old fields, so a generic trailing-byte truncation is
     // invalid. Keep the omission list exact and fail generation on drift.
     let omitted: &[&str] = match leaf_name {
@@ -2659,6 +2662,7 @@ fn emit_bincode_message(
         "ReceiveBind" => &["cost_signature"],
         "ListParWithRandom" => &["cost_authority", "cost_stack"],
         "TaggedContinuation" => &["cost_authority"],
+        "CostStack" => &["parallel_tail"],
         _ => &[],
     };
     if !omitted.is_empty() {
@@ -2701,6 +2705,17 @@ fn emit_bincode_message(
             .expect("write");
         }
         src.push_str("        Ok(Descent::Done)\n    }\n");
+    }
+    if leaf_name == "CostStack" {
+        // Protocol v6 already had `cells`; only v7 appends `parallel_tail`.
+        // Reuse the generated cells-only program, not a byte truncation: a
+        // nested cell can contain arbitrarily many positional bytes.
+        src.push_str(
+            "    fn bincode_emit_cost_v1(&self, from: usize, out: &mut Vec<u8>) -> Descent<'_> {\n\
+                     self.bincode_emit_legacy(from, out)\n    }\n\
+                 fn bincode_emit_cost_v1_metered(&self, from: usize, out: &mut dyn BincodeByteSink) -> Result<Descent<'_>, RSpaceError> {\n\
+                     self.bincode_emit_legacy_metered(from, out)\n    }\n",
+        );
     }
     src.push_str("}\n\n");
 }
@@ -4109,6 +4124,10 @@ fn emit_term_ops_source(
             .get("CostSignatureCompound")
             .copied()
             .expect("schema: CostSignatureCompound must have resolved fields"),
+        fields_of
+            .get("CostStack")
+            .copied()
+            .expect("schema: CostStack must have resolved fields"),
     );
 
     // ── §F  the retained oracle ──
@@ -4193,6 +4212,7 @@ fn emit_cost_message_impls(
     oneofs: &[Oneof],
     signature: &[Field],
     compound: &[Field],
+    stack: &[Field],
 ) {
     assert!(
         signature.len() == 1
@@ -4207,6 +4227,16 @@ fn emit_cost_message_impls(
             && matches!(&compound[0].shape, Shape::RepeatedMessage { leaf } if leaf == "CostSignature")
             && compound[0].min_tag() == 1,
         "schema: CostSignatureCompound Message merge expects repeated CostSignature at tag 1"
+    );
+    assert!(
+        stack.len() == 2
+            && stack[0].rust_name == "cells"
+            && matches!(&stack[0].shape, Shape::RepeatedMessage { leaf } if leaf == "CostSignature")
+            && stack[0].min_tag() == 1
+            && stack[1].rust_name == "parallel_tail"
+            && matches!(&stack[1].shape, Shape::RepeatedMessage { leaf } if leaf == "CostStack")
+            && stack[1].min_tag() == 2,
+        "schema: CostStack Message merge expects cells at tag 1 and parallel_tail at tag 2"
     );
     let value = decoder_oneof(messages, oneofs, "CostSignature", "value");
     let actual: Vec<(&str, u32)> = value
@@ -4357,6 +4387,61 @@ impl prost::Message for CostSignatureCompound {
 "#,
         );
     }
+    if plan.in_cut("CostStack") {
+        src.push_str(
+            r#"
+impl Default for CostStack {
+    fn default() -> Self {
+        Self { cells: Vec::new(), parallel_tail: Vec::new() }
+    }
+}
+
+impl prost::Message for CostStack {
+    fn encode_raw(&self, buf: &mut impl prost::bytes::BufMut) {
+        crate::rust::rholang::protobuf_encoder::encode_into(self, buf);
+    }
+
+    fn merge(&mut self, buf: impl prost::bytes::Buf) -> Result<(), prost::DecodeError> {
+        crate::rust::rholang::protobuf_decoder::merge_cost_stack(self, buf)
+    }
+
+    fn merge_field(
+        &mut self,
+        tag: u32,
+        wire_type: prost::encoding::WireType,
+        buf: &mut impl prost::bytes::Buf,
+        _ctx: prost::encoding::DecodeContext,
+    ) -> Result<(), prost::DecodeError> {
+        match tag {
+            1 => {
+                let child = crate::rust::rholang::protobuf_decoder::decode_delimited_cost_signature(
+                    wire_type, buf,
+                )?;
+                self.cells.push(child);
+                Ok(())
+            }
+            2 => {
+                let child = crate::rust::rholang::protobuf_decoder::decode_delimited_cost_stack(
+                    wire_type, buf,
+                )?;
+                self.parallel_tail.push(child);
+                Ok(())
+            }
+            _ => crate::rust::rholang::protobuf_decoder::skip_unknown_field(wire_type, tag, buf),
+        }
+    }
+
+    fn encoded_len(&self) -> usize {
+        crate::rust::rholang::protobuf_encoder::encoded_len(self)
+    }
+
+    fn clear(&mut self) {
+        crate::rust::rholang::par_children::dismantle_cost_stack_in_place(self);
+    }
+}
+"#,
+        );
+    }
 }
 
 fn term_ops_header(src: &mut String, plan: &ClonePlan, graph: &SchemaGraph) {
@@ -4437,6 +4522,16 @@ fn term_ops_header(src: &mut String, plan: &ClonePlan, graph: &SchemaGraph) {
              #[inline]\n\
              fn drop(&mut self) {\n\
                  crate::rust::rholang::par_children::dismantle_cost_signature_in_place(self);\n\
+             }\n\
+         }\n\
+         \n\
+         impl Drop for CostStack {\n\
+             #[inline]\n\
+             fn drop(&mut self) {\n\
+                 // Empty shells must not recursively re-enter teardown.\n\
+                 if !self.cells.is_empty() || !self.parallel_tail.is_empty() {\n\
+                     crate::rust::rholang::par_children::dismantle_cost_stack_in_place(self);\n\
+                 }\n\
              }\n\
          }\n\
          \n",
@@ -6281,7 +6376,7 @@ fn emit_debug_oracle(
 
     assert_eq!(
         plan.cut.iter().map(String::as_str).collect::<Vec<_>>(),
-        vec!["Par", "CostSignature"],
+        vec!["Par", "CostSignature", "CostStack"],
         "schema: Debug differential roots must track the descriptor-derived cut set"
     );
     src.push_str(
@@ -7654,7 +7749,7 @@ fn emit_eq_oracle(
     }
     assert_eq!(
         plan.cut.iter().map(String::as_str).collect::<Vec<_>>(),
-        vec!["Par", "CostSignature"],
+        vec!["Par", "CostSignature", "CostStack"],
         "schema: Eq differential root must track the descriptor-derived cut set"
     );
     src.push_str(
@@ -8235,7 +8330,7 @@ fn emit_hash_oracle(
     }
     assert_eq!(
         plan.cut.iter().map(String::as_str).collect::<Vec<_>>(),
-        vec!["Par", "CostSignature"],
+        vec!["Par", "CostSignature", "CostStack"],
         "schema: Hash differential root must track the descriptor-derived cut set"
     );
     src.push_str(
@@ -8461,7 +8556,7 @@ fn emit_ord_oracle(
 
     assert_eq!(
         plan.cut.iter().map(String::as_str).collect::<Vec<_>>(),
-        vec!["Par", "CostSignature"],
+        vec!["Par", "CostSignature", "CostStack"],
         "schema: Ord differential roots must track the descriptor-derived cut set"
     );
     src.push_str(
@@ -10910,33 +11005,58 @@ impl<B> Machine<B> {
             .expect("write CostSignature Drop-safe salvage arm");
             continue;
         }
-        let ty = msg.rust_path();
-        writeln!(
-            src,
-            "                Value::{owner}(value) => {{\n\
-                                 let crate::rhoapi::{ty} {{"
-        )
-        .expect("write salvage destructure header");
-        for field in fields.iter() {
-            let name = &field.rust_name;
-            match field.shape {
-                Shape::Message { .. }
-                | Shape::RepeatedMessage { .. }
-                | Shape::Map { .. }
-                | Shape::Oneof => {
-                    writeln!(src, "                        {name},")
-                        .expect("write salvage owned field");
-                }
-                Shape::Scalar(_)
-                | Shape::EmptyBytes
-                | Shape::RepeatedString
-                | Shape::RepeatedBytes => {
-                    writeln!(src, "                        {name}: _,")
-                        .expect("write salvage bounded field");
+        // A generated Drop implementation forbids moving fields directly out
+        // of the shell. Detach its recursive fields in place; when the shell
+        // leaves this arm, its own Drop sees only empty children.
+        let drop_bearing = msg.leaf_name() == "CostStack";
+        if drop_bearing {
+            writeln!(src, "                Value::{owner}(mut value) => {{")
+                .expect("write Drop-safe salvage header");
+            for field in fields.iter() {
+                let name = &field.rust_name;
+                if matches!(
+                    field.shape,
+                    Shape::Message { .. }
+                        | Shape::RepeatedMessage { .. }
+                        | Shape::Map { .. }
+                        | Shape::Oneof
+                ) {
+                    writeln!(
+                        src,
+                        "                    let {name} = mem::take(&mut value.{name});"
+                    )
+                    .expect("write Drop-safe salvage field");
                 }
             }
+        } else {
+            let ty = msg.rust_path();
+            writeln!(
+                src,
+                "                Value::{owner}(value) => {{\n\
+                                     let crate::rhoapi::{ty} {{"
+            )
+            .expect("write salvage destructure header");
+            for field in fields.iter() {
+                let name = &field.rust_name;
+                match field.shape {
+                    Shape::Message { .. }
+                    | Shape::RepeatedMessage { .. }
+                    | Shape::Map { .. }
+                    | Shape::Oneof => {
+                        writeln!(src, "                        {name},")
+                            .expect("write salvage owned field");
+                    }
+                    Shape::Scalar(_)
+                    | Shape::EmptyBytes
+                    | Shape::RepeatedString
+                    | Shape::RepeatedBytes => {
+                        writeln!(src, "                        {name}: _,")
+                            .expect("write salvage bounded field");
+                    }
+                }
+            }
+            src.push_str("                    } = value;\n");
         }
-        src.push_str("                    } = value;\n");
         for field in fields.iter() {
             let name = &field.rust_name;
             match &field.shape {
@@ -11124,6 +11244,40 @@ pub fn merge_cost_signature_compound<B: Buf>(
     }
 }
 
+/// Merge a standalone recursive CostStack on the heterogeneous decoder PDA.
+/// A native call per parallel-tail level would overflow on valid deep trees.
+pub fn merge_cost_stack<B: Buf>(
+    value: &mut crate::rhoapi::CostStack,
+    buf: B,
+) -> Result<(), DecodeError> {
+    let mut machine = Machine::new(
+        buf,
+        Node::CostStack {
+            value: value.clone(),
+            limit: 0,
+        },
+        true,
+    );
+    machine.run()?;
+    if machine.values.len() != 1 {
+        panic!(
+            "protobuf decoder invariant: CostStack merge left {} root values",
+            machine.values.len()
+        );
+    }
+    match machine.values.pop().expect("the single checked root value exists") {
+        Value::CostStack(merged) => {
+            *value = merged;
+            Ok(())
+        }
+        other => {
+            let found = other.kind_name();
+            machine.values.push(other);
+            panic!("protobuf decoder invariant: expected CostStack, found {found}");
+        }
+    }
+}
+
 /// One length-delimited CostSignature child. The `Take` buffer is the exact
 /// protobuf field boundary; no nested call to a Prost `merge_field` is made.
 pub fn decode_delimited_cost_signature<B: Buf>(
@@ -11137,6 +11291,23 @@ pub fn decode_delimited_cost_signature<B: Buf>(
     }
     let mut child = (&mut *buf).take(len as usize);
     let value = decode_cost_signature(&mut child)?;
+    if child.remaining() != 0 {
+        return Err(delimited_length_exceeded());
+    }
+    Ok(value)
+}
+
+pub fn decode_delimited_cost_stack<B: Buf>(
+    wire_type: WireType,
+    buf: &mut B,
+) -> Result<crate::rhoapi::CostStack, DecodeError> {
+    encoding::check_wire_type(WireType::LengthDelimited, wire_type)?;
+    let len = decode_varint(buf)?;
+    if len > buf.remaining() as u64 {
+        return Err(buffer_underflow());
+    }
+    let mut child = (&mut *buf).take(len as usize);
+    let value = decode_cost_stack(&mut child)?;
     if child.remaining() != 0 {
         return Err(delimited_length_exceeded());
     }

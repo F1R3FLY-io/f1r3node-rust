@@ -85,14 +85,14 @@ impl CheckedNativeOperationTrace {
     pub fn introduction(&self, slot: usize) -> Option<&IOEvent> {
         match self.events(slot)?.first()? {
             Event::IoEvent(source) => Some(source),
-            Event::Comm(_) => None,
+            Event::Comm(_) | Event::RestingComm(_) => None,
         }
     }
 
     pub fn comm(&self, slot: usize) -> Option<&COMM> {
         match self.events(slot)?.get(1)? {
             Event::Comm(source) => Some(source),
-            Event::IoEvent(_) => None,
+            Event::IoEvent(_) | Event::RestingComm(_) => None,
         }
     }
 }
@@ -367,6 +367,9 @@ impl CheckedNativeOperationJournal {
                 Event::IoEvent(IOEvent::Produce(source)) => size.produce(source)?,
                 Event::IoEvent(IOEvent::Consume(source)) => size.consume(source)?,
                 Event::Comm(source) => size.comm(source)?,
+                // The V1/V2 native trace cannot interpret a resting commit as
+                // an IO-triggered COMM. Its additive CostV2 journal is distinct.
+                Event::RestingComm(_) => return Err(NativeOperationTraceError::Coverage),
             }
         }
         let mut slots = allocate(self.operations.len(), host)?;
@@ -462,7 +465,9 @@ impl CheckedNativeOperationJournal {
                     Event::IoEvent(IOEvent::Consume(source)) => {
                         RSpaceOperationSource::Consume(source)
                     }
-                    Event::Comm(_) => return Err(NativeOperationTraceError::Coverage),
+                    Event::Comm(_) | Event::RestingComm(_) => {
+                        return Err(NativeOperationTraceError::Coverage)
+                    }
                 };
                 if !row
                     .source

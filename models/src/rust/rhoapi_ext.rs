@@ -3107,3 +3107,63 @@ mod pathmap_native_semantics_tests {
         }
     }
 }
+
+#[cfg(test)]
+mod epathmap_cold_acquisition_tests {
+    use super::*;
+
+    fn assert_cold_empty(value: &EPathMap) {
+        assert!(matches!(&value.ps.repr, EPathMapRepr::Empty));
+        assert_eq!(value.ps.len, 0);
+        assert!(value.ps.entries_stable);
+        assert!(value.ps.entries_reducer_eval_identity);
+        assert!(value.ps.union_locally_free.is_empty());
+        assert_eq!(value.ps.union_locally_free.capacity(), 0);
+        assert!(!value.ps.any_connective_used);
+        assert!(value.ps.trie_snapshot.get().is_none());
+        assert!(value.ps.epm_layout.get().is_none());
+        assert_eq!(Arc::strong_count(&value.ps.trie_snapshot), 1);
+        assert_eq!(Arc::strong_count(&value.ps.epm_layout), 1);
+        assert_eq!(Arc::weak_count(&value.ps.trie_snapshot), 0);
+        assert_eq!(Arc::weak_count(&value.ps.epm_layout), 0);
+    }
+
+    #[test]
+    fn cold_default_keeps_caches_uninitialized_and_headers_unique() {
+        let value = EPathMap::default();
+        assert_cold_empty(&value);
+        assert!(value.locally_free.is_empty());
+        assert_eq!(value.locally_free.capacity(), 0);
+        assert!(!value.connective_used);
+        assert!(value.remainder.is_none());
+    }
+
+    #[test]
+    fn cold_owned_header_transfer_preserves_cache_identity_without_cloning() {
+        let entries = EntryTrie::default();
+        let snapshot = Arc::as_ptr(&entries.trie_snapshot);
+        let layout = Arc::as_ptr(&entries.epm_layout);
+        let value = EPathMap::new(entries, vec![3, 5], true, Some(Var::default()));
+        assert_cold_empty(&value);
+        assert_eq!(Arc::as_ptr(&value.ps.trie_snapshot), snapshot);
+        assert_eq!(Arc::as_ptr(&value.ps.epm_layout), layout);
+        let EPathMap {
+            ps,
+            locally_free,
+            connective_used,
+            remainder,
+        } = value;
+        let transferred = EPathMap::new(ps, locally_free, connective_used, remainder);
+        assert_cold_empty(&transferred);
+        assert_eq!(Arc::as_ptr(&transferred.ps.trie_snapshot), snapshot);
+        assert_eq!(Arc::as_ptr(&transferred.ps.epm_layout), layout);
+        assert_eq!(transferred.locally_free, [3, 5]);
+        assert!(transferred.connective_used);
+        assert!(transferred.remainder.is_some());
+        let mut drained = Vec::new();
+        transferred.drain_owned_pars(&mut drained);
+        assert!(drained.is_empty());
+        assert_eq!(drained.capacity(), 0);
+    }
+
+}

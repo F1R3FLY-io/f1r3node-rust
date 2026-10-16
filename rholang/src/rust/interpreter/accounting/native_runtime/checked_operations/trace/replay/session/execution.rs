@@ -14,7 +14,7 @@ use crate::rust::interpreter::accounting::byte_accounting::{
     consume_introduction_identity, produce_introduction_identity,
 };
 use crate::rust::interpreter::accounting::RuntimeBudget;
-use crate::rust::interpreter::deterministic_reduction::scheduled_execution;
+use crate::rust::interpreter::deterministic_reduction::{scheduled_execution, ReductionCoordinator};
 use crate::rust::interpreter::execution_space::{
     ConsumeResult, ExecutionBackend, ExecutionSpace, ProduceResult,
 };
@@ -27,16 +27,24 @@ struct NativeExecution {
 }
 
 impl Session {
-    pub(crate) fn execution_space(self: &Arc<Self>, budget: RuntimeBudget) -> ExecutionSpace {
+    pub(crate) fn execution_space(
+        self: &Arc<Self>,
+        budget: RuntimeBudget,
+        coordinator: ReductionCoordinator,
+    ) -> ExecutionSpace {
         scheduled_execution(ExecutionSpace::new(NativeExecution {
             session: self.clone(),
-            budget,
-        }))
+            budget: budget.clone(),
+        }), coordinator, budget)
     }
 }
 
 #[async_trait]
 impl ExecutionBackend for NativeExecution {
+    fn codec_epoch(&self) -> rspace_plus_plus::rspace::hashing::stable_hash_provider::EventCodecEpoch {
+        self.budget.native_event_codec_epoch().expect("native replay budget must bind its codec epoch")
+    }
+
     fn step_gate(&self) -> Option<Arc<StepGate>> {
         // NativeReplaySession wraps ReplayRSpace, which has no live
         // StepCommObserver or step gate. Its deterministic COMM evidence is

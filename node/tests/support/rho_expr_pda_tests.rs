@@ -29,7 +29,7 @@ fn json(value: &RhoExpr) -> String {
 #[test]
 fn conversion_pda_matches_recursive_oracle_for_every_expr_variant() {
     let corpus = par_corpus::every_expr_instance();
-    assert_eq!(corpus.len(), 36, "corpus must cover every ExprInstance arm");
+    assert_eq!(corpus.len(), 41, "corpus must cover every ExprInstance arm");
 
     for (name, instance) in corpus {
         let input = Expr {

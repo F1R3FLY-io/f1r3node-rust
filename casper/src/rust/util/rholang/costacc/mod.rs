@@ -4,6 +4,7 @@ pub mod conversion;
 pub mod direct_wallet_funding;
 pub mod genesis_resource_policy;
 pub mod monetary_cursor;
+pub mod offered_acceptance;
 pub mod offered_candidate;
 pub mod offered_context;
 pub mod offered_grants;

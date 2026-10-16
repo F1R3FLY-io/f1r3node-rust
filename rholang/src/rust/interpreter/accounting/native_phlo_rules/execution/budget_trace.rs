@@ -20,6 +20,7 @@ pub enum NativeAttemptStage {
     ProduceIntroduction,
     ConsumeIntroduction,
     Comm,
+    RestingComm,
 }
 
 impl From<AuthorityByteEventKind> for NativeAttemptStage {
@@ -28,6 +29,7 @@ impl From<AuthorityByteEventKind> for NativeAttemptStage {
             AuthorityByteEventKind::ProduceIntroduction => Self::ProduceIntroduction,
             AuthorityByteEventKind::ConsumeIntroduction => Self::ConsumeIntroduction,
             AuthorityByteEventKind::Comm => Self::Comm,
+            AuthorityByteEventKind::RestingComm => Self::RestingComm,
         }
     }
 }

@@ -2,6 +2,7 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Component, Path};
 
+use chrono::NaiveDate;
 use eyre::{ensure, eyre, Result};
 use serde_json::{json, Value};
 
@@ -227,6 +228,25 @@ pub fn scan_all(root: &Path, policy: &Policy, tool: &str, runner: &impl Runner) 
     Ok(all.errors.is_empty())
 }
 
+pub const REVIEW_WARNING_DAYS: i64 = 7;
+
+pub fn review_warnings(policy: &Policy, today: NaiveDate, annotate: bool) -> Result<Vec<String>> {
+    Ok(policy::reviews_due(policy, today, REVIEW_WARNING_DAYS)?
+        .into_iter()
+        .map(|(id, deadline)| {
+            let message = format!(
+                "{id}: the exception review is due before {deadline} ({} days). Renew it in supply-chain/policy.toml; see supply-chain/README.md.",
+                (deadline - today).num_days()
+            );
+            if annotate {
+                format!("::warning title=Supply-chain review due::{message}")
+            } else {
+                format!("Supply-chain warning: {message}")
+            }
+        })
+        .collect())
+}
+
 pub fn check(root: &Path, policy: &Policy, tool: &str, runner: &impl Runner) -> Result<bool> {
     let version = successful(runner.output(root, tool, &["--version"])?)?;
     ensure!(
@@ -234,7 +254,11 @@ pub fn check(root: &Path, policy: &Policy, tool: &str, runner: &impl Runner) -> 
         "Install the cargo-deny version specified in supply-chain/policy.toml."
     );
     let deny = toml::from_str(&fs::read_to_string(root.join("deny.toml"))?)?;
-    policy::validate(policy, &deny, chrono::Utc::now().date_naive())?;
+    let today = chrono::Utc::now().date_naive();
+    policy::validate(policy, &deny, today)?;
+    for line in review_warnings(policy, today, std::env::var_os("GITHUB_ACTIONS").is_some())? {
+        eprintln!("{line}");
+    }
     validate_manifests(root, &policy.manifests, runner)?;
     scan_all(root, policy, tool, runner)
 }

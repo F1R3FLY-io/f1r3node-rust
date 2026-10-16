@@ -17,8 +17,9 @@ use crate::rspace::history::history_repository_impl::HistoryRepositoryImpl;
 use crate::rspace::history::native_reader::NativeHistoryReader;
 use crate::rspace::history::root_repository::RootRepository;
 use crate::rspace::history::roots_store::RootsStoreInstances;
-use crate::rspace::hot_store_action::HotStoreAction;
+use crate::rspace::hot_store_action::{HotStoreAction, NativeExportAction};
 use crate::rspace::hot_store_trie_action::HotStoreTrieAction;
+use crate::rspace::internal::WaitingContinuation;
 use crate::rspace::serializers::cold_store_decode::ColdStoreDecode;
 use crate::rspace::state::instances::rspace_exporter_store::RSpaceExporterStore;
 use crate::rspace::state::instances::rspace_importer_store::RSpaceImporterStore;
@@ -55,7 +56,34 @@ pub trait HistoryRepository<C: Clone, P: Clone, A: Clone, K: Clone>: Send + Sync
         &self,
         actions: Vec<HotStoreAction<C, P, A, K>>,
         meter: &dyn SourceMeter,
-    ) -> Result<NativeCheckpoint, RSpaceError>;
+    ) -> Result<NativeCheckpoint, RSpaceError>
+    where
+        P: StableHashSerialize,
+        A: StableHashSerialize,
+        K: StableHashSerialize;
+
+    /// D-C3 (D-S3, DR-97): the checkpoint of the native export's changes,
+    /// borrowed from the native store.
+    fn prepare_native_checkpoint_borrowed(
+        &self,
+        actions: &[NativeExportAction<'_, C, A, Arc<WaitingContinuation<P, K>>>],
+        meter: &dyn SourceMeter,
+    ) -> Result<NativeCheckpoint, RSpaceError>
+    where
+        P: StableHashSerialize,
+        A: StableHashSerialize,
+        K: StableHashSerialize;
+
+    fn prepare_native_checkpoint_borrowed_for_epoch(
+        &self,
+        epoch: EventCodecEpoch,
+        actions: &[NativeExportAction<'_, C, A, Arc<WaitingContinuation<P, K>>>],
+        meter: &dyn SourceMeter,
+    ) -> Result<NativeCheckpoint, RSpaceError>
+    where
+        P: StableHashSerialize,
+        A: StableHashSerialize,
+        K: StableHashSerialize;
 
     fn commit_native_checkpoint(
         &self,
@@ -114,7 +142,7 @@ pub trait HistoryRepository<C: Clone, P: Clone, A: Clone, K: Clone>: Send + Sync
     fn native_history_reader(&self, state_hash: [u8; 32]) -> NativeHistoryReader<'_>;
 
     /// Record a root hash in the roots store so that subsequent `reset` calls
-    /// can find it via `validate_and_set_current_root`. This is needed during
+    /// can find it via `validate_root`. This is needed during
     /// LFS bootstrap to register `emptyStateHashFixed` before genesis replay.
     fn record_root(&self, root: &Blake2b256Hash) -> Result<(), HistoryError>;
 

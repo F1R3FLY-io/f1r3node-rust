@@ -192,6 +192,38 @@ fn count_native_event(
             }
             (items, payload, map_bytes)
         }
+        Event::RestingComm(resting) => {
+            if resting.ordered_produces.len() != resting.ordered_data_indices.len()
+                || resting.ordered_produces.len() != resting.consume.channel_hashes.len()
+                || resting.ordered_produces.len() > offered_funded_v6_limits().deploy_log_items
+                || resting.peeks.len() > offered_funded_v6_limits().deploy_log_items
+            {
+                return Err(invalid("offered resting bind address exceeds protocol limits"));
+            }
+            reserve(budget, HostWorkDimension::VerificationOperations,
+                resting.ordered_produces.len().checked_add(resting.peeks.len())
+                    .and_then(|n| n.checked_add(resting.ordered_data_indices.len()))
+                    .ok_or_else(|| invalid("offered resting scan work overflows"))?)?;
+            let (mut items, mut payload) = consume_shape(&resting.consume)?;
+            add(&mut items, resting.peeks.len())?;
+            add(&mut items, resting.ordered_data_indices.len())?;
+            add(&mut items, 1)?;
+            add(&mut payload, resting.ordered_data_indices.len().checked_add(1)
+                .and_then(|n| n.checked_mul(8))
+                .ok_or_else(|| invalid("offered resting index bytes overflow"))?)?;
+            for produce in &resting.ordered_produces {
+                let (next_items, next_payload) = produce_shape(produce, budget)?;
+                add(&mut items, next_items)?;
+                add(&mut payload, next_payload)?;
+                if items > offered_funded_v6_limits().deploy_log_items
+                    || items.checked_mul(64).and_then(|n| n.checked_add(payload))
+                        .is_none_or(|n| n > offered_funded_v6_limits().deploy_log_bytes)
+                {
+                    return Err(invalid("offered resting event exceeds protocol log limit"));
+                }
+            }
+            (items, payload, 0)
+        }
     };
     let envelope = items
         .checked_mul(64)
@@ -305,6 +337,32 @@ fn count_casper_event(
                         .is_none_or(|size| size > offered_funded_v6_limits().deploy_log_bytes)
                 {
                     return Err(invalid("offered settled COMM exceeds protocol log limits"));
+                }
+            }
+            (items, payload)
+        }
+        CasperEvent::RestingComm(resting) => {
+            resting.validate().map_err(|reason| invalid(&reason))?;
+            reserve(budget, HostWorkDimension::VerificationOperations,
+                resting.ordered_produces.len().checked_add(resting.peeks.len())
+                    .and_then(|n| n.checked_add(resting.ordered_data_indices.len()))
+                    .ok_or_else(|| invalid("offered settled resting scan work overflows"))?)?;
+            let (mut items, mut payload) = casper_consume_shape(&resting.consume, budget)?;
+            add(&mut items, resting.peeks.len())?;
+            add(&mut items, resting.ordered_data_indices.len())?;
+            add(&mut items, 1)?;
+            add(&mut payload, resting.ordered_data_indices.len().checked_add(1)
+                .and_then(|n| n.checked_mul(8))
+                .ok_or_else(|| invalid("offered settled resting index bytes overflow"))?)?;
+            for produce in &resting.ordered_produces {
+                let (next_items, next_payload) = casper_produce_shape(produce, budget)?;
+                add(&mut items, next_items)?;
+                add(&mut payload, next_payload)?;
+                if items > offered_funded_v6_limits().deploy_log_items
+                    || items.checked_mul(64).and_then(|n| n.checked_add(payload))
+                        .is_none_or(|n| n > offered_funded_v6_limits().deploy_log_bytes)
+                {
+                    return Err(invalid("offered settled resting event exceeds protocol log limit"));
                 }
             }
             (items, payload)
@@ -436,7 +494,10 @@ pub fn assemble_offered_processed_deploy(
         .iter()
         .chain(prepared.grant_drain_log.iter())
     {
-        deploy_log.push(event_converter::to_casper_event(event.clone()));
+        deploy_log.push(event_converter::to_casper_event_for_epoch(
+            event.clone(),
+            adopted.event_codec_epoch(),
+        )?);
     }
     deploy_log.extend(prepared.settlement_log);
     OfferedProcessedDeploy::new(
@@ -490,7 +551,7 @@ mod tests {
         let mut committed = LogShape::default();
         let limits = HostWorkLimits::uniform(HostWorkLimit::new(10_000));
         count_native_event(&mut native, &native_event, &HostWorkBudget::new(limits)).unwrap();
-        let converted = event_converter::to_casper_event(native_event);
+        let converted = event_converter::to_casper_event(native_event).unwrap();
         count_casper_event(&mut committed, &converted, &HostWorkBudget::new(limits)).unwrap();
         assert_eq!(
             (native.events, native.items, native.bytes),

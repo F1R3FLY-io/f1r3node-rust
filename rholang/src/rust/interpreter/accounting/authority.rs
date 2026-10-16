@@ -5,7 +5,8 @@ use crypto::rust::hash::blake2b256::Blake2b256;
 use models::rhoapi::cost_signature::Value as CostSignatureValue;
 use models::rhoapi::g_unforgeable::UnfInstance;
 use models::rhoapi::{
-    CostAuthority, CostRegion, CostSignature, CostSignatureCompound, GPrivate, GUnforgeable, Par,
+    CostAuthority, CostRegion, CostSignature, CostSignatureCompound, CostStack, GPrivate,
+    GUnforgeable, Par,
 };
 use models::rust::host_work::{HostWorkDimension, HostWorkUnits};
 use models::rust::rholang::sorter::cost_accounting_sorter::{
@@ -25,17 +26,273 @@ use crate::rust::interpreter::host_work::HostWorkBudget;
 
 mod fallback_metered;
 mod monetary;
+mod residue;
 mod valuation;
 pub use fallback_metered::{cost_region_metered, sig_to_cost_signature_metered};
 pub use monetary::monetary_funding_signatures_with_host_work;
+pub use residue::{
+    is_system_seal, is_unit_cost_signature, resolve_system_residue, resolve_system_residue_metered,
+    system_residue_authority, system_residue_region, ResidueContext,
+};
 pub use valuation::AuthorityResourceDemand;
 
 const CERTIFICATE_DOMAIN: &[u8] = b"f1r3node:authority-funding-certificate:v9";
 const WITNESS_DOMAIN: &[u8] = b"f1r3node:authority-cost-witness:v9";
+const WITNESS_STACK_TREE_DOMAIN: &[u8] = b"f1r3node:authority-cost-witness:cost-stack-tree:v1";
 pub const AUTHORITY_ACCOUNTING_PROTOCOL_VERSION: u32 = 9;
 const REGION_DOMAIN: &[u8] = b"f1r3node:cost-accounted-rho:region:v1";
 const REGION_OCCURRENCE_DOMAIN: &[u8] = b"f1r3node:cost-accounted-rho:region-occurrence:v1";
 const STACK_TRANSFER_EVENT_DOMAIN: &[u8] = b"f1r3node:cost-accounted-rho:stack-transfer-event:v1";
+const STACK_BRANCH_DOMAIN: &[u8] = b"f1r3node:cost-accounted-rho:stack-branch:v1";
+const STACK_BRANCH_PREIMAGE_LEN: usize = STACK_BRANCH_DOMAIN.len() + 32 + 8;
+
+/// A child identity is bound to its parent's authenticated identity and its
+/// authored child index. This lets an iterative walker derive nested IDs in
+/// linear space; neither a local counter nor search order influences them.
+pub fn stack_child_id(parent_id: &[u8; 32], child_index: u64) -> [u8; 32] {
+    let child_index = child_index.to_le_bytes();
+    Blake2b256::hash_parts([STACK_BRANCH_DOMAIN, parent_id.as_slice(), &child_index])
+        .try_into()
+        .expect("Blake2b-256 digest length")
+}
+
+pub fn stack_child_id_metered(
+    parent_id: &[u8; 32],
+    child_index: u64,
+    backing: &dyn BackingMeter,
+) -> Result<[u8; 32], AuthorityError> {
+    SorterMeter::new(backing)
+        .reserve(1, STACK_BRANCH_PREIMAGE_LEN, 32)
+        .map_err(authority_backing_error)?;
+    Ok(stack_child_id(parent_id, child_index))
+}
+
+/// Empty path preserves the historical root ID. Every nonempty path is
+/// domain-separated and cryptographically committed to the full ancestry.
+pub fn stack_branch_id(root_id: &[u8; 32], path: &[u64]) -> [u8; 32] {
+    path.iter()
+        .fold(*root_id, |parent, index| stack_child_id(&parent, *index))
+}
+
+/// One node of the authenticated stack tree. `parent_gate` says that this
+/// branch may draw only after the named parent's entire current prefix is
+/// consumed. Applying the same rule at every ancestor enforces a shared
+/// prefix exactly once, then makes siblings independent.
+#[derive(Clone, Copy, Debug)]
+pub struct StackBranchRef<'a> {
+    pub stack_id: [u8; 32],
+    pub parent_gate: Option<([u8; 32], usize)>,
+    pub transfer_offset: usize,
+    pub stack: &'a CostStack,
+}
+
+/// Canonical pre-order of a stack tree, matching the transfer-event cell
+/// indices. A child ID depends on the authenticated root and authored path;
+/// no signature or prefix cell is duplicated in the returned view.
+pub fn stack_branches<'a>(
+    root_id: [u8; 32],
+    root: &'a CostStack,
+) -> Result<Vec<StackBranchRef<'a>>, AuthorityError> {
+    stack_branches_with_backing(root_id, root, None)
+}
+
+pub fn stack_branches_metered<'a>(
+    root_id: [u8; 32],
+    root: &'a CostStack,
+    backing: &dyn BackingMeter,
+) -> Result<Vec<StackBranchRef<'a>>, AuthorityError> {
+    stack_branches_with_backing(root_id, root, Some(backing))
+}
+
+fn stack_branches_with_backing<'a>(
+    root_id: [u8; 32],
+    root: &'a CostStack,
+    backing: Option<&dyn BackingMeter>,
+) -> Result<Vec<StackBranchRef<'a>>, AuthorityError> {
+    let meter = backing.map(SorterMeter::new);
+    if let Some(meter) = meter.as_ref() {
+        meter
+            .reserve(
+                1,
+                0,
+                std::mem::size_of::<([u8; 32], Option<([u8; 32], usize)>, &CostStack)>(),
+            )
+            .map_err(authority_backing_error)?;
+    }
+    let mut pending = vec![(root_id, None, root)];
+    let mut branches = Vec::new();
+    let mut next_cell = 0usize;
+    while let Some((stack_id, parent_gate, stack)) = pending.pop() {
+        if let Some(meter) = meter.as_ref() {
+            meter
+                .reserve(1, 0, std::mem::size_of::<StackBranchRef>())
+                .map_err(authority_backing_error)?;
+        }
+        branches
+            .try_reserve(1)
+            .map_err(|_| AuthorityError::ArithmeticOverflow)?;
+        branches.push(StackBranchRef {
+            stack_id,
+            parent_gate,
+            transfer_offset: next_cell,
+            stack,
+        });
+        next_cell = next_cell
+            .checked_add(stack.cells.len())
+            .ok_or(AuthorityError::ArithmeticOverflow)?;
+        if let Some(meter) = meter.as_ref() {
+            let bytes = stack
+                .parallel_tail
+                .len()
+                .checked_mul(std::mem::size_of::<(
+                    [u8; 32],
+                    Option<([u8; 32], usize)>,
+                    &CostStack,
+                )>())
+                .ok_or(AuthorityError::ArithmeticOverflow)?;
+            meter
+                .reserve(stack.parallel_tail.len(), 0, bytes)
+                .map_err(authority_backing_error)?;
+        }
+        pending
+            .try_reserve(stack.parallel_tail.len())
+            .map_err(|_| AuthorityError::ArithmeticOverflow)?;
+        for (index, child) in stack.parallel_tail.iter().enumerate().rev() {
+            let index = u64::try_from(index).map_err(|_| AuthorityError::ArithmeticOverflow)?;
+            let child_id = if let Some(backing) = backing {
+                stack_child_id_metered(&stack_id, index, backing)?
+            } else {
+                stack_child_id(&stack_id, index)
+            };
+            pending.push((child_id, Some((stack_id, stack.cells.len())), child));
+        }
+    }
+    Ok(branches)
+}
+
+/// Flatten only the authored cell occurrences, in the same pre-order as
+/// `stack_branches`; the tree remains the independent source of gate topology.
+pub fn stack_flat_cells(tree: &CostStack) -> Result<Vec<CostSignature>, AuthorityError> {
+    stack_flat_cells_with_backing(tree, None)
+}
+
+pub fn stack_flat_cells_metered(
+    tree: &CostStack,
+    backing: &dyn BackingMeter,
+) -> Result<Vec<CostSignature>, AuthorityError> {
+    stack_flat_cells_with_backing(tree, Some(backing))
+}
+
+fn stack_flat_cells_with_backing(
+    tree: &CostStack,
+    backing: Option<&dyn BackingMeter>,
+) -> Result<Vec<CostSignature>, AuthorityError> {
+    let meter = backing.map(SorterMeter::new);
+    if let Some(meter) = meter.as_ref() {
+        meter
+            .reserve(1, 0, std::mem::size_of::<&CostStack>())
+            .map_err(authority_backing_error)?;
+    }
+    let mut cells = Vec::new();
+    let mut work = vec![tree];
+    while let Some(node) = work.pop() {
+        if let Some(meter) = meter.as_ref() {
+            let bytes = node
+                .cells
+                .len()
+                .checked_mul(std::mem::size_of::<CostSignature>())
+                .ok_or(AuthorityError::ArithmeticOverflow)?;
+            meter
+                .reserve(node.cells.len(), 0, bytes)
+                .map_err(authority_backing_error)?;
+        }
+        cells
+            .try_reserve(node.cells.len())
+            .map_err(|_| AuthorityError::ArithmeticOverflow)?;
+        for cell in &node.cells {
+            if let Some(backing) = backing {
+                shared::rust::clone_backing::reserve(cell, backing)
+                    .map_err(authority_backing_error)?;
+            }
+            cells.push(cell.clone());
+        }
+        if let Some(meter) = meter.as_ref() {
+            let bytes = node
+                .parallel_tail
+                .len()
+                .checked_mul(std::mem::size_of::<&CostStack>())
+                .ok_or(AuthorityError::ArithmeticOverflow)?;
+            meter
+                .reserve(node.parallel_tail.len(), 0, bytes)
+                .map_err(authority_backing_error)?;
+        }
+        work.try_reserve(node.parallel_tail.len())
+            .map_err(|_| AuthorityError::ArithmeticOverflow)?;
+        work.extend(node.parallel_tail.iter().rev());
+    }
+    Ok(cells)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StackBirthShape {
+    pub cell_count: usize,
+    pub branch_count: usize,
+}
+
+/// Check the redundant flat transfer-event list against the authenticated
+/// tree without cloning it. `None` is the exact historical linear form.
+pub fn validate_stack_birth(
+    cells: &[CostSignature],
+    tree: Option<&CostStack>,
+    backing: Option<&dyn BackingMeter>,
+) -> Result<StackBirthShape, AuthorityError> {
+    let Some(tree) = tree else {
+        return if cells.is_empty() {
+            Err(AuthorityError::MissingSignature)
+        } else {
+            Ok(StackBirthShape {
+                cell_count: cells.len(),
+                branch_count: 0,
+            })
+        };
+    };
+    if tree.cells.is_empty() || tree.parallel_tail.is_empty() {
+        return Err(AuthorityError::InvalidStackBirth);
+    }
+    if let Some(backing) = backing {
+        shared::rust::clone_backing::inspect(tree, backing).map_err(authority_backing_error)?;
+        shared::rust::clone_backing::inspect_slice(cells, backing)
+            .map_err(authority_backing_error)?;
+    }
+    let branches = if let Some(backing) = backing {
+        stack_branches_metered([0; 32], tree, backing)?
+    } else {
+        stack_branches([0; 32], tree)?
+    };
+    let mut index = 0usize;
+    for branch in &branches {
+        for cell in &branch.stack.cells {
+            if let Some(backing) = backing {
+                SorterMeter::new(backing)
+                    .reserve(1, std::mem::size_of::<CostSignature>(), 0)
+                    .map_err(authority_backing_error)?;
+            }
+            if cells.get(index) != Some(cell) {
+                return Err(AuthorityError::InvalidStackBirth);
+            }
+            index = index
+                .checked_add(1)
+                .ok_or(AuthorityError::ArithmeticOverflow)?;
+        }
+    }
+    if index != cells.len() {
+        return Err(AuthorityError::InvalidStackBirth);
+    }
+    Ok(StackBirthShape {
+        cell_count: index,
+        branch_count: branches.len() - 1,
+    })
+}
 
 pub fn stack_transfer_event_id(produce_hash: &[u8; 32], cell_index: u64) -> [u8; 32] {
     let mut bytes = Vec::with_capacity(
@@ -140,7 +397,11 @@ pub fn canonical_cost_signature_metered(
         .term;
     validate_cost_signature_metered(&canonical, &meter)?;
     meter.inspect(&canonical).map_err(authority_backing_error)?;
-    meter.inspect(signature).map_err(authority_backing_error)?;
+    // Changed by D-O1 (DR-94): block accounting charges inline bytes once per enclosing block.
+    // meter.inspect(signature).map_err(authority_backing_error)?;
+    meter
+        .inspect_blocks(signature)
+        .map_err(authority_backing_error)?;
     if &canonical != signature {
         return Err(AuthorityError::NonCanonicalSignature);
     }
@@ -170,7 +431,12 @@ fn validate_cost_signature_metered(
             Some(CostSignatureValue::Quote(par)) | Some(CostSignatureValue::Name(par)) => {
                 let sorted = ParSortMatcher::sort_match_metered(par, meter)
                     .map_err(authority_backing_error)?;
-                meter.inspect(par).map_err(authority_backing_error)?;
+                // Changed by D-O1 (DR-94): block accounting charges inline bytes once per enclosing block.
+                // meter.inspect(par).map_err(authority_backing_error)?;
+                meter.inspect_blocks(par).map_err(authority_backing_error)?;
+                // Kept legacy by D-O1 (DR-94): the owned `sorted` is dropped at
+                // the end of this arm, and the legacy per-level charge also pays
+                // that release.
                 meter
                     .inspect(&sorted.term)
                     .map_err(authority_backing_error)?;
@@ -293,8 +559,12 @@ fn cost_atom_to_sig_metered(
         Some(CostSignatureValue::Unit(true)) => Ok(Sig::Unit),
         Some(CostSignatureValue::Quote(par)) => {
             meter.inspect(&par).map_err(authority_backing_error)?;
+            let encoded_len = par.encoded_len();
             let mut bytes = meter
-                .vec::<u8>(par.encoded_len())
+                .vec::<u8>(encoded_len)
+                .map_err(authority_backing_error)?;
+            meter
+                .nested_encode(&par, encoded_len)
                 .map_err(authority_backing_error)?;
             par.encode(&mut bytes)
                 .map_err(|_| AuthorityError::HostWorkRejected)?;
@@ -302,8 +572,12 @@ fn cost_atom_to_sig_metered(
         }
         Some(CostSignatureValue::Name(par)) => {
             meter.inspect(&par).map_err(authority_backing_error)?;
+            let encoded_len = par.encoded_len();
             let mut bytes = meter
-                .vec::<u8>(par.encoded_len())
+                .vec::<u8>(encoded_len)
+                .map_err(authority_backing_error)?;
+            meter
+                .nested_encode(&par, encoded_len)
                 .map_err(authority_backing_error)?;
             par.encode(&mut bytes)
                 .map_err(|_| AuthorityError::HostWorkRejected)?;
@@ -436,7 +710,14 @@ pub fn canonical_authority_metered(
             .map_err(authority_backing_error)?;
         match regions.get(&region.instance_id) {
             Some(existing) => {
-                meter.inspect(existing).map_err(authority_backing_error)?;
+                // Changed by D-O1 (DR-94): block accounting charges inline bytes once per enclosing block.
+                // meter.inspect(existing).map_err(authority_backing_error)?;
+                meter
+                    .inspect_blocks(existing)
+                    .map_err(authority_backing_error)?;
+                // Kept legacy by D-O1 (DR-94): the owned `signature` is dropped
+                // at the end of this iteration, and the legacy per-level charge
+                // also pays that release.
                 meter.inspect(&signature).map_err(authority_backing_error)?;
                 if existing != &signature {
                     return Err(AuthorityError::RegionIdentityConflict);
@@ -444,8 +725,12 @@ pub fn canonical_authority_metered(
             }
             None => {
                 reserve_authority_tree_insert::<Vec<u8>, CostSignature>(&meter, regions.len())?;
+                // Changed by D-O1 (DR-94): block accounting charges inline bytes once per enclosing block.
+                // let instance_id = meter
+                //     .clone(&region.instance_id)
+                //     .map_err(authority_backing_error)?;
                 let instance_id = meter
-                    .clone(&region.instance_id)
+                    .clone_blocks(&region.instance_id)
                     .map_err(authority_backing_error)?;
                 regions.insert(instance_id, signature);
             }
@@ -507,8 +792,15 @@ where
             .reserve(1, std::mem::size_of::<CostAuthority>(), 0)
             .map_err(authority_backing_error)?;
         for region in &authority.regions {
-            meter.inspect(region).map_err(authority_backing_error)?;
-            let copied = meter.clone(region).map_err(authority_backing_error)?;
+            // Disabled by D-O1 (DR-94): nothing reads `region` before the copy
+            // below, whose copy-and-cleanup reservation prepays its own reads
+            // and the release of the copy.
+            // meter.inspect(region).map_err(authority_backing_error)?;
+            // Changed by D-O1 (DR-94): block accounting charges inline bytes once per enclosing block.
+            // let copied = meter.clone(region).map_err(authority_backing_error)?;
+            let copied = meter
+                .clone_blocks(region)
+                .map_err(authority_backing_error)?;
             meter
                 .push(&mut merged.regions, copied)
                 .map_err(authority_backing_error)?;
@@ -584,9 +876,17 @@ fn cost_signature_lane_metered(
                 append_signature_channel_atom_metered(bytes, &mut channel, meter)?;
             }
             Some(CostSignatureValue::Quote(par)) | Some(CostSignatureValue::Name(par)) => {
-                meter.inspect(par).map_err(authority_backing_error)?;
+                // Changed by D-O1 (DR-94): block accounting charges inline bytes
+                // once per enclosing block. `par` is borrowed, and the
+                // inspection prepays only the length computation below.
+                // meter.inspect(par).map_err(authority_backing_error)?;
+                meter.inspect_blocks(par).map_err(authority_backing_error)?;
+                let encoded_len = par.encoded_len();
                 let mut bytes = meter
-                    .vec::<u8>(par.encoded_len())
+                    .vec::<u8>(encoded_len)
+                    .map_err(authority_backing_error)?;
+                meter
+                    .nested_encode(par, encoded_len)
                     .map_err(authority_backing_error)?;
                 par.encode(&mut bytes)
                     .map_err(|_| AuthorityError::HostWorkRejected)?;
@@ -618,8 +918,12 @@ fn cost_signature_lane_metered(
         .map_err(authority_backing_error)?
         .term;
     meter.inspect(&channel).map_err(authority_backing_error)?;
+    let encoded_len = channel.encoded_len();
     let mut encoded = meter
-        .vec::<u8>(channel.encoded_len())
+        .vec::<u8>(encoded_len)
+        .map_err(authority_backing_error)?;
+    meter
+        .nested_encode(&channel, encoded_len)
         .map_err(authority_backing_error)?;
     channel
         .encode(&mut encoded)
@@ -740,19 +1044,65 @@ pub fn authority_regions_metered(
 }
 
 fn signature_atoms(signature: &CostSignature) -> Result<Vec<CostSignature>, AuthorityError> {
-    let signature = canonical_cost_signature(signature)?;
-    match signature.value.as_ref() {
-        Some(CostSignatureValue::Unit(true)) => Ok(Vec::new()),
-        Some(CostSignatureValue::Compound(compound)) => {
-            let mut atoms = Vec::new();
-            for element in &compound.elements {
-                atoms.extend(signature_atoms(element)?);
-            }
-            Ok(atoms)
-        }
-        Some(_) => Ok(vec![signature]),
-        None => Err(AuthorityError::MissingSignature),
+    signature_atoms_with_backing(signature, None)
+}
+
+fn signature_atoms_with_backing(
+    signature: &CostSignature,
+    backing: Option<&dyn BackingMeter>,
+) -> Result<Vec<CostSignature>, AuthorityError> {
+    let signature = if let Some(backing) = backing {
+        canonical_cost_signature_metered(signature, backing)?
+    } else {
+        canonical_cost_signature(signature)?
+    };
+    let meter = backing.map(SorterMeter::new);
+    if let Some(meter) = meter.as_ref() {
+        meter
+            .reserve(1, 0, std::mem::size_of::<&CostSignature>())
+            .map_err(authority_backing_error)?;
     }
+    let mut pending = vec![&signature];
+    let mut atoms = Vec::new();
+    while let Some(current) = pending.pop() {
+        match current.value.as_ref() {
+            Some(CostSignatureValue::Unit(true)) => {}
+            Some(CostSignatureValue::Compound(compound)) => {
+                if let Some(meter) = meter.as_ref() {
+                    meter
+                        .reserve(
+                            compound.elements.len(),
+                            0,
+                            compound
+                                .elements
+                                .len()
+                                .checked_mul(std::mem::size_of::<&CostSignature>())
+                                .ok_or(AuthorityError::ArithmeticOverflow)?,
+                        )
+                        .map_err(authority_backing_error)?;
+                }
+                pending
+                    .try_reserve(compound.elements.len())
+                    .map_err(|_| AuthorityError::ArithmeticOverflow)?;
+                pending.extend(compound.elements.iter().rev());
+            }
+            Some(_) => {
+                if let Some(backing) = backing {
+                    shared::rust::clone_backing::reserve(current, backing)
+                        .map_err(authority_backing_error)?;
+                    SorterMeter::new(backing)
+                        .reserve(1, 0, std::mem::size_of::<CostSignature>())
+                        .map_err(authority_backing_error)?;
+                }
+                atoms
+                    .try_reserve(1)
+                    .map_err(|_| AuthorityError::ArithmeticOverflow)?;
+                atoms.push(current.clone());
+            }
+            None => return Err(AuthorityError::MissingSignature),
+        }
+    }
+    Ok(atoms)
 }
 
 fn signature_from_atoms(atoms: &[CostSignature]) -> Result<CostSignature, AuthorityError> {
@@ -773,10 +1123,57 @@ fn signature_from_atoms(atoms: &[CostSignature]) -> Result<CostSignature, Author
 }
 
 fn event_atoms(event: &AuthorityEvent<[u8; 32]>) -> Result<Vec<CostSignature>, AuthorityError> {
-    event.verify_authority()?;
+    event_atoms_with_host_work(event, None)
+}
+
+fn event_atoms_with_host_work(
+    event: &AuthorityEvent<[u8; 32]>,
+    host_work: Option<&HostWorkBudget>,
+) -> Result<Vec<CostSignature>, AuthorityError> {
+    let backing = |operations: usize, scanned: usize, bytes: usize| {
+        let Some(host_work) = host_work else {
+            return Ok(());
+        };
+        for (dimension, amount) in [
+            (HostWorkDimension::VerificationOperations, operations),
+            (HostWorkDimension::VerificationBytes, scanned),
+            (HostWorkDimension::SearchStateBytes, bytes),
+        ] {
+            let amount = u64::try_from(amount).map_err(|_| BackingError::Overflow)?;
+            host_work
+                .reserve(dimension, HostWorkUnits::new(amount))
+                .map_err(|_| BackingError::Rejected)?;
+        }
+        Ok(())
+    };
+    let metered = host_work.map(|_| &backing as &dyn BackingMeter);
+    if let Some(backing) = metered {
+        if canonical_authority_metered(&event.authority, backing)? != event.authority {
+            return Err(AuthorityError::NonCanonicalAuthority);
+        }
+        if authority_demand_metered(&event.authority, backing)? != event.debit {
+            return Err(AuthorityError::EventDebitMismatch);
+        }
+    } else {
+        event.verify_authority()?;
+    }
     let mut signatures = BTreeMap::<[u8; 32], CostSignature>::new();
-    for signature in authority_regions(&event.authority)?.into_values() {
-        let key = cost_signature_to_sig(&signature)?.lane_hash();
+    let regions = if let Some(backing) = metered {
+        authority_regions_metered(&event.authority, backing)?
+    } else {
+        authority_regions(&event.authority)?
+    };
+    for signature in regions.into_values() {
+        let key = if let Some(backing) = metered {
+            cost_signature_to_sig_metered(&signature, backing)?.lane_hash()
+        } else {
+            cost_signature_to_sig(&signature)?.lane_hash()
+        };
+        reserve_search_work(
+            host_work,
+            HostWorkDimension::SearchStateBytes,
+            std::mem::size_of::<([u8; 32], CostSignature)>() as u64,
+        )?;
         match signatures.get(&key) {
             Some(existing) if existing != &signature => {
                 return Err(AuthorityError::EventSignatureConflict);
@@ -787,21 +1184,68 @@ fn event_atoms(event: &AuthorityEvent<[u8; 32]>) -> Result<Vec<CostSignature>, A
             }
         }
     }
-    let mut atoms = Vec::new();
+    let mut keyed_atoms = Vec::new();
     for (key, amount) in &event.debit.0 {
         let signature = signatures
             .get(key)
             .ok_or(AuthorityError::EventDebitMismatch)?;
-        let signature_atoms = signature_atoms(signature)?;
+        let signature_atoms = signature_atoms_with_backing(signature, metered)?;
+        let count = usize::try_from(*amount)
+            .map_err(|_| AuthorityError::ArithmeticOverflow)?
+            .checked_mul(signature_atoms.len())
+            .ok_or(AuthorityError::ArithmeticOverflow)?;
+        let bytes = count
+            .checked_mul(std::mem::size_of::<([u8; 32], CostSignature)>())
+            .ok_or(AuthorityError::ArithmeticOverflow)?;
+        reserve_search_work(
+            host_work,
+            HostWorkDimension::SearchStateBytes,
+            u64::try_from(bytes).map_err(|_| AuthorityError::ArithmeticOverflow)?,
+        )?;
+        keyed_atoms
+            .try_reserve(count)
+            .map_err(|_| AuthorityError::ArithmeticOverflow)?;
         for _ in 0..*amount {
-            atoms.extend(signature_atoms.iter().cloned());
+            for atom in &signature_atoms {
+                if let Some(backing) = metered {
+                    shared::rust::clone_backing::reserve(atom, backing)
+                        .map_err(authority_backing_error)?;
+                }
+                let atom_key = if let Some(backing) = metered {
+                    cost_signature_to_sig_metered(atom, backing)?.lane_hash()
+                } else {
+                    cost_signature_to_sig(atom)?.lane_hash()
+                };
+                keyed_atoms.push((atom_key, atom.clone()));
+            }
         }
     }
-    atoms.sort_by_key(|signature| {
-        cost_signature_to_sig(signature)
-            .expect("validated cost signature")
-            .lane_hash()
-    });
+    let sorting = keyed_atoms
+        .len()
+        .checked_mul(1 + keyed_atoms.len().checked_ilog2().unwrap_or(0) as usize)
+        .ok_or(AuthorityError::ArithmeticOverflow)?;
+    reserve_search_work(
+        host_work,
+        HostWorkDimension::VerificationOperations,
+        u64::try_from(sorting).map_err(|_| AuthorityError::ArithmeticOverflow)?,
+    )?;
+    keyed_atoms.sort_by_key(|(key, _)| *key);
+    reserve_search_work(
+        host_work,
+        HostWorkDimension::SearchStateBytes,
+        u64::try_from(
+            keyed_atoms
+                .len()
+                .checked_mul(std::mem::size_of::<CostSignature>())
+                .ok_or(AuthorityError::ArithmeticOverflow)?,
+        )
+        .map_err(|_| AuthorityError::ArithmeticOverflow)?,
+    )?;
+    let mut atoms = Vec::new();
+    atoms
+        .try_reserve_exact(keyed_atoms.len())
+        .map_err(|_| AuthorityError::ArithmeticOverflow)?;
+    atoms.extend(keyed_atoms.into_iter().map(|(_, atom)| atom));
     Ok(atoms)
 }
 
@@ -1507,6 +1951,238 @@ pub struct AuthorityPhysicalInventory<K: Ord = [u8; 32]> {
     pub stacks: BTreeMap<[u8; 32], Vec<CostSignature>>,
     #[serde(default)]
     pub born_stacks: BTreeMap<[u8; 32], [u8; 32]>,
+    /// Only branched stacks appear here. The `stacks` entry for the same root
+    /// retains its historical linear prefix; all child lanes and readiness
+    /// gates are derived from this authenticated tree on demand.
+    #[serde(default)]
+    pub stack_trees: BTreeMap<[u8; 32], CostStack>,
+}
+
+#[derive(Clone, Copy)]
+struct PhysicalStackLane<'a> {
+    root_id: [u8; 32],
+    cells: &'a [CostSignature],
+    parent_gate: Option<([u8; 32], usize)>,
+}
+
+fn physical_stack_lanes<'a, K: Ord>(
+    inventory: &'a AuthorityPhysicalInventory<K>,
+) -> Result<BTreeMap<[u8; 32], PhysicalStackLane<'a>>, AuthorityError> {
+    physical_stack_lanes_with_host(inventory, None)
+}
+
+fn physical_stack_lanes_with_host<'a, K: Ord>(
+    inventory: &'a AuthorityPhysicalInventory<K>,
+    host_work: Option<&HostWorkBudget>,
+) -> Result<BTreeMap<[u8; 32], PhysicalStackLane<'a>>, AuthorityError> {
+    let mut lanes = BTreeMap::new();
+    for (root_id, cells) in &inventory.stacks {
+        if let Some(tree) = inventory.stack_trees.get(root_id) {
+            if tree.parallel_tail.is_empty() || tree.cells != *cells {
+                return Err(AuthorityError::PhysicalAuthorityMismatch);
+            }
+            let branches = if let Some(host_work) = host_work {
+                let backing = |operations: usize, scanned: usize, bytes: usize| {
+                    for (dimension, amount) in [
+                        (HostWorkDimension::VerificationOperations, operations),
+                        (HostWorkDimension::VerificationBytes, scanned),
+                        (HostWorkDimension::SearchStateBytes, bytes),
+                    ] {
+                        let amount = u64::try_from(amount).map_err(|_| BackingError::Rejected)?;
+                        host_work
+                            .reserve(dimension, HostWorkUnits::new(amount))
+                            .map_err(|_| BackingError::Rejected)?;
+                    }
+                    Ok(())
+                };
+                stack_branches_metered(*root_id, tree, &backing)?
+            } else {
+                stack_branches(*root_id, tree)?
+            };
+            for branch in branches {
+                reserve_search_work(
+                    host_work,
+                    HostWorkDimension::SearchStateBytes,
+                    std::mem::size_of::<([u8; 32], PhysicalStackLane<'_>)>() as u64,
+                )?;
+                if lanes
+                    .insert(branch.stack_id, PhysicalStackLane {
+                        root_id: *root_id,
+                        cells: &branch.stack.cells,
+                        parent_gate: branch.parent_gate,
+                    })
+                    .is_some()
+                {
+                    return Err(AuthorityError::EventIdentityConflict);
+                }
+            }
+        } else {
+            reserve_search_work(
+                host_work,
+                HostWorkDimension::SearchStateBytes,
+                std::mem::size_of::<([u8; 32], PhysicalStackLane<'_>)>() as u64,
+            )?;
+            if lanes
+                .insert(*root_id, PhysicalStackLane {
+                    root_id: *root_id,
+                    cells,
+                    parent_gate: None,
+                })
+                .is_some()
+            {
+                return Err(AuthorityError::EventIdentityConflict);
+            }
+        }
+    }
+    if inventory
+        .stack_trees
+        .keys()
+        .chain(inventory.born_stacks.keys())
+        .any(|id| !inventory.stacks.contains_key(id))
+    {
+        return Err(AuthorityError::UnknownStackResource);
+    }
+    Ok(lanes)
+}
+
+/// Find a synthetic branch before mutating inventory. The DFS frame and path
+/// vectors are charged before growth, and each visited node/hash is charged
+/// before evaluation. Returning authored indices lets settlement apply a
+/// validated path without another allocation or a post-mutation refusal.
+fn stack_branch_path_with_host(
+    root_id: [u8; 32],
+    root: &CostStack,
+    target_id: &[u8; 32],
+    host_work: Option<&HostWorkBudget>,
+) -> Result<Option<Vec<usize>>, AuthorityError> {
+    let frame_bytes = std::mem::size_of::<([u8; 32], &CostStack, usize)>() as u64;
+    reserve_search_work(host_work, HostWorkDimension::SearchStateBytes, frame_bytes)?;
+    let mut frames = Vec::new();
+    frames
+        .try_reserve(1)
+        .map_err(|_| AuthorityError::ArithmeticOverflow)?;
+    frames.push((root_id, root, 0usize));
+    let mut path = Vec::new();
+    reserve_search_work(host_work, HostWorkDimension::SearchCandidates, 1)?;
+    while let Some((id, node, next_child)) = frames.last_mut() {
+        if id == target_id {
+            return Ok(Some(path));
+        }
+        if let Some(child) = node.parallel_tail.get(*next_child) {
+            let index = *next_child;
+            *next_child = next_child
+                .checked_add(1)
+                .ok_or(AuthorityError::ArithmeticOverflow)?;
+            let index_u64 = u64::try_from(index).map_err(|_| AuthorityError::ArithmeticOverflow)?;
+            reserve_search_work(host_work, HostWorkDimension::VerificationOperations, 1)?;
+            reserve_search_work(
+                host_work,
+                HostWorkDimension::VerificationBytes,
+                STACK_BRANCH_PREIMAGE_LEN as u64,
+            )?;
+            reserve_search_work(host_work, HostWorkDimension::SearchStateBytes, 32)?;
+            let child_id = stack_child_id(id, index_u64);
+            reserve_search_work(
+                host_work,
+                HostWorkDimension::SearchStateBytes,
+                frame_bytes + std::mem::size_of::<usize>() as u64,
+            )?;
+            frames
+                .try_reserve(1)
+                .map_err(|_| AuthorityError::ArithmeticOverflow)?;
+            path.try_reserve(1)
+                .map_err(|_| AuthorityError::ArithmeticOverflow)?;
+            path.push(index);
+            frames.push((child_id, child, 0));
+            reserve_search_work(host_work, HostWorkDimension::SearchCandidates, 1)?;
+        } else {
+            frames.pop();
+            if !frames.is_empty() {
+                path.pop();
+            }
+        }
+    }
+    Ok(None)
+}
+
+fn stack_lane_ready(
+    lanes: &BTreeMap<[u8; 32], PhysicalStackLane<'_>>,
+    positions: &BTreeMap<[u8; 32], usize>,
+    drawn_this_event: &BTreeSet<[u8; 32]>,
+    stack_id: &[u8; 32],
+    host_work: Option<&HostWorkBudget>,
+) -> Result<bool, AuthorityError> {
+    let mut current = *stack_id;
+    while let Some((parent, required)) = lanes
+        .get(&current)
+        .ok_or(AuthorityError::UnknownStackResource)?
+        .parent_gate
+    {
+        reserve_search_work(host_work, HostWorkDimension::SearchCandidates, 1)?;
+        let before_event = positions
+            .get(&parent)
+            .copied()
+            .unwrap_or_default()
+            .saturating_sub(usize::from(drawn_this_event.contains(&parent)));
+        if before_event < required {
+            return Ok(false);
+        }
+        current = parent;
+    }
+    Ok(true)
+}
+
+fn born_stack_availability(
+    events: &[AuthorityEvent<[u8; 32]>],
+    inventory: &AuthorityPhysicalInventory<[u8; 32]>,
+    lanes: &BTreeMap<[u8; 32], PhysicalStackLane<'_>>,
+    host_work: Option<&HostWorkBudget>,
+) -> Result<BTreeMap<[u8; 32], usize>, AuthorityError> {
+    reserve_search_work(
+        host_work,
+        HostWorkDimension::SearchStateBytes,
+        u64::try_from(
+            events
+                .len()
+                .checked_mul(std::mem::size_of::<([u8; 32], usize)>())
+                .ok_or(AuthorityError::ArithmeticOverflow)?,
+        )
+        .map_err(|_| AuthorityError::ArithmeticOverflow)?,
+    )?;
+    let event_positions = events
+        .iter()
+        .enumerate()
+        .map(|(index, event)| (event.event_id, index))
+        .collect::<BTreeMap<_, _>>();
+    let mut available = BTreeMap::new();
+    for (root_id, produce_hash) in &inventory.born_stacks {
+        reserve_search_work(
+            host_work,
+            HostWorkDimension::SearchStateBytes,
+            std::mem::size_of::<([u8; 32], usize)>() as u64,
+        )?;
+        let cell_count = lanes
+            .values()
+            .filter(|lane| lane.root_id == *root_id)
+            .try_fold(0usize, |count, lane| count.checked_add(lane.cells.len()))
+            .ok_or(AuthorityError::ArithmeticOverflow)?;
+        if cell_count == 0 {
+            return Err(AuthorityError::MissingSignature);
+        }
+        let mut latest = 0usize;
+        for index in 0..cell_count {
+            reserve_search_work(host_work, HostWorkDimension::VerificationOperations, 1)?;
+            let index = u64::try_from(index).map_err(|_| AuthorityError::ArithmeticOverflow)?;
+            let transfer = stack_transfer_event_id(produce_hash, index);
+            latest = latest.max(
+                *event_positions
+                    .get(&transfer)
+                    .ok_or(AuthorityError::SettlementPresentationMismatch)?,
+            );
+        }
+        available.insert(*root_id, latest);
+    }
+    Ok(available)
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1612,9 +2288,36 @@ fn add_signature_atoms(
     signatures: &mut BTreeMap<[u8; 32], CostSignature>,
     signature: &CostSignature,
     amount: u64,
+    host_work: Option<&HostWorkBudget>,
 ) -> Result<(), AuthorityError> {
-    for atom in signature_atoms(signature)? {
-        let key = cost_signature_to_sig(&atom)?.lane_hash();
+    let backing = |operations: usize, scanned: usize, bytes: usize| {
+        let Some(host_work) = host_work else {
+            return Ok(());
+        };
+        for (dimension, amount) in [
+            (HostWorkDimension::VerificationOperations, operations),
+            (HostWorkDimension::VerificationBytes, scanned),
+            (HostWorkDimension::SearchStateBytes, bytes),
+        ] {
+            let amount = u64::try_from(amount).map_err(|_| BackingError::Overflow)?;
+            host_work
+                .reserve(dimension, HostWorkUnits::new(amount))
+                .map_err(|_| BackingError::Rejected)?;
+        }
+        Ok(())
+    };
+    let metered = host_work.map(|_| &backing as &dyn BackingMeter);
+    for atom in signature_atoms_with_backing(signature, metered)? {
+        let key = if let Some(backing) = metered {
+            cost_signature_to_sig_metered(&atom, backing)?.lane_hash()
+        } else {
+            cost_signature_to_sig(&atom)?.lane_hash()
+        };
+        reserve_search_work(
+            host_work,
+            HostWorkDimension::SearchStateBytes,
+            std::mem::size_of::<([u8; 32], CostSignature)>() as u64,
+        )?;
         match signatures.get(&key) {
             Some(existing) if existing != &atom => {
                 return Err(AuthorityError::EventSignatureConflict);
@@ -1639,41 +2342,73 @@ pub fn verify_physical_settlement(
     inventory: &AuthorityPhysicalInventory<[u8; 32]>,
     draws: &[AuthorityPhysicalEventDraw<[u8; 32]>],
 ) -> Result<AuthorityPhysicalSettlement<[u8; 32]>, AuthorityError> {
+    verify_physical_settlement_with_host_work(events, signatures, inventory, draws, None)
+}
+
+/// Recheck a caller-selected physical trace against the exact inventory and
+/// chronological authority events. The branch-only production path supplies a
+/// budget; the historical linear verifier retains its original charge path.
+pub fn verify_physical_settlement_with_host_work(
+    events: &[AuthorityEvent<[u8; 32]>],
+    signatures: &BTreeMap<[u8; 32], CostSignature>,
+    inventory: &AuthorityPhysicalInventory<[u8; 32]>,
+    draws: &[AuthorityPhysicalEventDraw<[u8; 32]>],
+    host_work: Option<&HostWorkBudget>,
+) -> Result<AuthorityPhysicalSettlement<[u8; 32]>, AuthorityError> {
     if events.len() != draws.len() {
         return Err(AuthorityError::SettlementPresentationMismatch);
+    }
+    if host_work.is_some() {
+        let mut cloned_draw_bytes = draws
+            .len()
+            .checked_mul(std::mem::size_of::<AuthorityPhysicalEventDraw<[u8; 32]>>())
+            .ok_or(AuthorityError::ArithmeticOverflow)?;
+        for draw in draws {
+            cloned_draw_bytes = cloned_draw_bytes
+                .checked_add(
+                    draw.stack_ids
+                        .len()
+                        .checked_mul(std::mem::size_of::<[u8; 32]>())
+                        .ok_or(AuthorityError::ArithmeticOverflow)?,
+                )
+                .and_then(|bytes| {
+                    draw.balances
+                        .0
+                        .len()
+                        .checked_mul(std::mem::size_of::<([u8; 32], u64)>())
+                        .and_then(|map| bytes.checked_add(map))
+                })
+                .ok_or(AuthorityError::ArithmeticOverflow)?;
+        }
+        reserve_search_work(
+            host_work,
+            HostWorkDimension::SearchStateBytes,
+            u64::try_from(cloned_draw_bytes).map_err(|_| AuthorityError::ArithmeticOverflow)?,
+        )?;
+        let map_entries = events
+            .len()
+            .checked_mul(3)
+            .and_then(|count| count.checked_add(inventory.stacks.len()))
+            .ok_or(AuthorityError::ArithmeticOverflow)?;
+        let map_bytes = map_entries
+            .checked_mul(std::mem::size_of::<([u8; 32], u64)>())
+            .ok_or(AuthorityError::ArithmeticOverflow)?;
+        reserve_search_work(
+            host_work,
+            HostWorkDimension::SearchStateBytes,
+            u64::try_from(map_bytes).map_err(|_| AuthorityError::ArithmeticOverflow)?,
+        )?;
     }
     let mut remaining = inventory.balances.clone();
     let mut stack_positions = BTreeMap::<[u8; 32], usize>::new();
     let mut balance_debit = ResourceMultiset::default();
     let mut custody_debit = ResourceMultiset::default();
     let mut stack_pops = BTreeMap::<[u8; 32], u64>::new();
-    let event_positions = events
-        .iter()
-        .enumerate()
-        .map(|(index, event)| (event.event_id, index))
-        .collect::<BTreeMap<_, _>>();
-    let mut born_available_after = BTreeMap::new();
-    for (stack_id, produce_hash) in &inventory.born_stacks {
-        let cells = inventory
-            .stacks
-            .get(stack_id)
-            .ok_or(AuthorityError::UnknownStackResource)?;
-        let mut available_after = None;
-        for index in 0..cells.len() {
-            let transfer = stack_transfer_event_id(produce_hash, index as u64);
-            let position = *event_positions
-                .get(&transfer)
-                .ok_or(AuthorityError::SettlementPresentationMismatch)?;
-            available_after =
-                Some(available_after.map_or(position, |prior: usize| prior.max(position)));
-        }
-        born_available_after.insert(
-            *stack_id,
-            available_after.ok_or(AuthorityError::MissingSignature)?,
-        );
-    }
+    let lanes = physical_stack_lanes_with_host(inventory, host_work)?;
+    let born_available_after = born_stack_availability(events, inventory, &lanes, host_work)?;
 
     for (event_index, (event, draw)) in events.iter().zip(draws).enumerate() {
+        reserve_search_work(host_work, HostWorkDimension::VerificationOperations, 1)?;
         event.verify_authority()?;
         if event.event_id != draw.event_id {
             return Err(AuthorityError::SettlementPresentationMismatch);
@@ -1688,13 +2423,16 @@ pub fn verify_physical_settlement(
 
         let mut expected = ResourceMultiset::default();
         let mut expected_signatures = BTreeMap::new();
-        for atom in event_atoms(event)? {
-            add_signature_atoms(&mut expected, &mut expected_signatures, &atom, 1)?;
+        for atom in event_atoms_with_host_work(event, host_work)? {
+            reserve_search_work(host_work, HostWorkDimension::VerificationOperations, 1)?;
+            add_signature_atoms(&mut expected, &mut expected_signatures, &atom, 1, host_work)?;
         }
 
         let mut presented = ResourceMultiset::default();
         let mut presented_signatures = BTreeMap::new();
+        let mut drawn_this_event = BTreeSet::new();
         for (key, amount) in &draw.balances.0 {
+            reserve_search_work(host_work, HostWorkDimension::VerificationOperations, 1)?;
             let signature = signatures
                 .get(key)
                 .ok_or(AuthorityError::UnknownPhysicalSignature)?;
@@ -1706,26 +2444,44 @@ pub fn verify_physical_settlement(
                 &mut presented_signatures,
                 signature,
                 *amount,
+                host_work,
             )?;
         }
         for stack_id in &draw.stack_ids {
-            if born_available_after
+            reserve_search_work(host_work, HostWorkDimension::VerificationOperations, 1)?;
+            let lane = lanes
                 .get(stack_id)
+                .ok_or(AuthorityError::UnknownStackResource)?;
+            if born_available_after
+                .get(&lane.root_id)
                 .is_some_and(|available_after| event_index <= *available_after)
             {
                 return Err(AuthorityError::PhysicalAuthorityMismatch);
             }
-            let cells = inventory
-                .stacks
-                .get(stack_id)
-                .ok_or(AuthorityError::UnknownStackResource)?;
+            if !stack_lane_ready(
+                &lanes,
+                &stack_positions,
+                &drawn_this_event,
+                stack_id,
+                host_work,
+            )? {
+                return Err(AuthorityError::PhysicalAuthorityMismatch);
+            }
             let position = stack_positions.entry(*stack_id).or_default();
-            let signature = cells
+            let signature = lane
+                .cells
                 .get(*position)
                 .ok_or(AuthorityError::ExhaustedStackResource)?;
-            add_signature_atoms(&mut presented, &mut presented_signatures, signature, 1)?;
+            add_signature_atoms(
+                &mut presented,
+                &mut presented_signatures,
+                signature,
+                1,
+                host_work,
+            )?;
             *position += 1;
             *stack_pops.entry(*stack_id).or_default() += 1;
+            drawn_this_event.insert(*stack_id);
         }
         if presented != expected || presented_signatures != expected_signatures {
             return Err(AuthorityError::PhysicalAuthorityMismatch);
@@ -1883,6 +2639,7 @@ fn search_physical_settlement(
     balance_atoms: &BTreeMap<[u8; 32], ResourceMultiset<[u8; 32]>>,
     balance_custody: &BTreeMap<[u8; 32], [u8; 32]>,
     stack_atoms: &BTreeMap<[u8; 32], Vec<ResourceMultiset<[u8; 32]>>>,
+    stack_lanes: &BTreeMap<[u8; 32], PhysicalStackLane<'_>>,
     event_index: usize,
     event_remaining: ResourceMultiset<[u8; 32]>,
     balances: ResourceMultiset<[u8; 32]>,
@@ -2032,13 +2789,25 @@ fn search_physical_settlement(
         }
         for (stack_id, cells) in stack_atoms {
             reserve_search_work(host_work, HostWorkDimension::SearchCandidates, 1)?;
+            let lane = stack_lanes
+                .get(stack_id)
+                .ok_or(AuthorityError::UnknownStackResource)?;
             if node.event_stacks.contains(stack_id) {
                 continue;
             }
             if born_available_after
-                .get(stack_id)
+                .get(&lane.root_id)
                 .is_some_and(|available_after| node.event_index <= *available_after)
             {
+                continue;
+            }
+            if !stack_lane_ready(
+                stack_lanes,
+                &node.stack_positions,
+                &node.event_stacks,
+                stack_id,
+                host_work,
+            )? {
                 continue;
             }
             let position = node
@@ -2146,8 +2915,8 @@ pub fn allocate_physical_settlement_with_host_work(
     for event in events {
         event.verify_authority()?;
         let mut atoms = ResourceMultiset::default();
-        for atom in event_atoms(event)? {
-            add_signature_atoms(&mut atoms, &mut atom_signatures, &atom, 1)?;
+        for atom in event_atoms_with_host_work(event, host_work)? {
+            add_signature_atoms(&mut atoms, &mut atom_signatures, &atom, 1, host_work)?;
         }
         expected.push(atoms);
     }
@@ -2160,50 +2929,28 @@ pub fn allocate_physical_settlement_with_host_work(
             return Err(AuthorityError::EventSignatureConflict);
         }
         let mut atoms = ResourceMultiset::default();
-        add_signature_atoms(&mut atoms, &mut atom_signatures, signature, 1)?;
+        add_signature_atoms(&mut atoms, &mut atom_signatures, signature, 1, host_work)?;
         balance_atoms.insert(*key, atoms);
     }
+    let stack_lanes = physical_stack_lanes_with_host(inventory, host_work)?;
     let mut stack_atoms = BTreeMap::new();
-    for (stack_id, cells) in &inventory.stacks {
-        let mut prepared = Vec::with_capacity(cells.len());
-        for cell in cells {
+    for (stack_id, lane) in &stack_lanes {
+        let mut prepared = Vec::with_capacity(lane.cells.len());
+        for cell in lane.cells {
             let mut atoms = ResourceMultiset::default();
-            add_signature_atoms(&mut atoms, &mut atom_signatures, cell, 1)?;
+            add_signature_atoms(&mut atoms, &mut atom_signatures, cell, 1, host_work)?;
             prepared.push(atoms);
         }
         stack_atoms.insert(*stack_id, prepared);
     }
-    let event_positions = events
-        .iter()
-        .enumerate()
-        .map(|(index, event)| (event.event_id, index))
-        .collect::<BTreeMap<_, _>>();
-    let mut born_available_after = BTreeMap::new();
-    for (stack_id, produce_hash) in &inventory.born_stacks {
-        let cells = inventory
-            .stacks
-            .get(stack_id)
-            .ok_or(AuthorityError::UnknownStackResource)?;
-        let mut available_after = None;
-        for index in 0..cells.len() {
-            let transfer = stack_transfer_event_id(produce_hash, index as u64);
-            let position = *event_positions
-                .get(&transfer)
-                .ok_or(AuthorityError::SettlementPresentationMismatch)?;
-            available_after =
-                Some(available_after.map_or(position, |prior: usize| prior.max(position)));
-        }
-        born_available_after.insert(
-            *stack_id,
-            available_after.ok_or(AuthorityError::MissingSignature)?,
-        );
-    }
+    let born_available_after = born_stack_availability(events, inventory, &stack_lanes, host_work)?;
     let draws = search_physical_settlement(
         events,
         &expected,
         &balance_atoms,
         &inventory.balance_custody,
         &stack_atoms,
+        &stack_lanes,
         0,
         expected.first().cloned().unwrap_or_default(),
         inventory.balances.clone(),
@@ -2215,27 +2962,345 @@ pub fn allocate_physical_settlement_with_host_work(
         host_work,
     )?
     .ok_or(AuthorityError::InsufficientAuthority)?;
-    verify_physical_settlement(events, signatures, inventory, &draws)
+    verify_physical_settlement_with_host_work(events, signatures, inventory, &draws, host_work)
 }
 
 pub fn apply_physical_settlement(
     inventory: &mut AuthorityPhysicalInventory<[u8; 32]>,
     settlement: &AuthorityPhysicalSettlement<[u8; 32]>,
 ) -> Result<(), AuthorityError> {
-    inventory.balances = inventory.balances.checked_sub(&settlement.custody_debit)?;
+    apply_physical_settlement_with_host_work(inventory, settlement, None)
+}
+
+/// Precharge all tree-dependent lane construction, branch lookup, and
+/// temporary path storage before mutating inventory. Linear stacks take the
+/// historical path with zero new host-work reservations.
+pub fn apply_physical_settlement_with_host_work(
+    inventory: &mut AuthorityPhysicalInventory<[u8; 32]>,
+    settlement: &AuthorityPhysicalSettlement<[u8; 32]>,
+    host_work: Option<&HostWorkBudget>,
+) -> Result<(), AuthorityError> {
+    let balances = inventory.balances.checked_sub(&settlement.custody_debit)?;
+    if inventory.stack_trees.is_empty() {
+        if inventory
+            .born_stacks
+            .keys()
+            .any(|id| !inventory.stacks.contains_key(id))
+        {
+            return Err(AuthorityError::UnknownStackResource);
+        }
+        for (stack_id, pop_count) in &settlement.stack_pops {
+            let cells = inventory
+                .stacks
+                .get(stack_id)
+                .ok_or(AuthorityError::UnknownStackResource)?;
+            let pop_count =
+                usize::try_from(*pop_count).map_err(|_| AuthorityError::ArithmeticOverflow)?;
+            if pop_count > cells.len() {
+                return Err(AuthorityError::ExhaustedStackResource);
+            }
+        }
+        inventory.balances = balances;
+        for (stack_id, pop_count) in &settlement.stack_pops {
+            inventory
+                .stacks
+                .get_mut(stack_id)
+                .expect("validated linear stack")
+                .drain(..usize::try_from(*pop_count).expect("validated pop count"));
+        }
+        return Ok(());
+    }
+
+    let lanes = physical_stack_lanes_with_host(inventory, host_work)?;
+    let mut prepared = Vec::new();
     for (stack_id, pop_count) in &settlement.stack_pops {
-        let cells = inventory
-            .stacks
-            .get_mut(stack_id)
+        let lane = lanes
+            .get(stack_id)
             .ok_or(AuthorityError::UnknownStackResource)?;
         let pop_count =
             usize::try_from(*pop_count).map_err(|_| AuthorityError::ArithmeticOverflow)?;
-        if pop_count > cells.len() {
+        if pop_count > lane.cells.len() {
             return Err(AuthorityError::ExhaustedStackResource);
         }
-        cells.drain(..pop_count);
+        let path = if *stack_id == lane.root_id {
+            None
+        } else {
+            let tree = inventory
+                .stack_trees
+                .get(&lane.root_id)
+                .expect("synthetic lane has a validated rooted tree");
+            Some(
+                stack_branch_path_with_host(lane.root_id, tree, stack_id, host_work)?
+                    .ok_or(AuthorityError::UnknownStackResource)?,
+            )
+        };
+        reserve_search_work(
+            host_work,
+            HostWorkDimension::SearchStateBytes,
+            std::mem::size_of::<([u8; 32], [u8; 32], usize, Option<Vec<usize>>)>() as u64,
+        )?;
+        prepared
+            .try_reserve(1)
+            .map_err(|_| AuthorityError::ArithmeticOverflow)?;
+        prepared.push((*stack_id, lane.root_id, pop_count, path));
+    }
+    drop(lanes);
+    inventory.balances = balances;
+    for (stack_id, root_id, pop_count, path) in prepared {
+        if let Some(path) = path {
+            let mut branch = inventory
+                .stack_trees
+                .get_mut(&root_id)
+                .expect("validated rooted tree");
+            for index in path {
+                branch = branch
+                    .parallel_tail
+                    .get_mut(index)
+                    .expect("validated authored branch path");
+            }
+            branch.cells.drain(..pop_count);
+        } else if let Some(tree) = inventory.stack_trees.get_mut(&stack_id) {
+            tree.cells.drain(..pop_count);
+            inventory
+                .stacks
+                .get_mut(&stack_id)
+                .expect("checked branched root stack")
+                .drain(..pop_count);
+        } else if let Some(cells) = inventory.stacks.get_mut(&stack_id) {
+            cells.drain(..pop_count);
+        } else {
+            unreachable!("validated stack lane disappeared during settlement");
+        }
     }
     Ok(())
+}
+
+/// One independently publishable residual subtree after a branched stack's
+/// settlement. IDs and `authored_path` refer to the original receipt/root;
+/// republishing this subtree in RSpace may assign a fresh source identity.
+/// `original_transfer_indices` name precisely the surviving cell occurrences
+/// in the birth's preorder transfer-event list, in that same authored order.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StackFrontierPublication {
+    pub original_root_id: [u8; 32],
+    pub original_branch_id: [u8; 32],
+    pub authored_path: Vec<u64>,
+    pub residual: CostStack,
+    pub original_transfer_indices: Vec<usize>,
+}
+
+impl StackFrontierPublication {
+    /// Borrow the publication channel head without duplicating a signature
+    /// occurrence in the owned result.
+    pub fn head(&self) -> Option<&CostSignature> { self.residual.cells.first() }
+}
+
+/// Pure, iterative settlement-scope partition of one authenticated branched
+/// stack. Every supplied pop is checked against an original branch before a
+/// copy is made; the residual is a stack-safe charged copy, never a mutation
+/// of `original`. Empty prefixes release all authored children independently.
+/// The caller must already have verified event-order gates with
+/// `verify_physical_settlement`; this planner receives cumulative pop counts,
+/// not an event timeline, and cannot itself authorize a same-event child pop.
+/// The historical linear path does not call this planner and retains its old
+/// byte/hash/host-budget behavior.
+pub fn plan_stack_frontier_with_host_work(
+    root_id: [u8; 32],
+    original: &CostStack,
+    pops: &BTreeMap<[u8; 32], u64>,
+    host_work: Option<&HostWorkBudget>,
+) -> Result<Vec<StackFrontierPublication>, AuthorityError> {
+    if original.cells.is_empty() || original.parallel_tail.is_empty() {
+        return Err(AuthorityError::InvalidStackBirth);
+    }
+    let backing = |operations: usize, scanned: usize, bytes: usize| {
+        let Some(host_work) = host_work else {
+            return Ok(());
+        };
+        for (dimension, amount) in [
+            (HostWorkDimension::VerificationOperations, operations),
+            (HostWorkDimension::VerificationBytes, scanned),
+            (HostWorkDimension::SearchStateBytes, bytes),
+        ] {
+            let amount = u64::try_from(amount).map_err(|_| BackingError::Overflow)?;
+            host_work
+                .reserve(dimension, HostWorkUnits::new(amount))
+                .map_err(|_| BackingError::Rejected)?;
+        }
+        Ok(())
+    };
+    let branches = if host_work.is_some() {
+        stack_branches_metered(root_id, original, &backing)?
+    } else {
+        stack_branches(root_id, original)?
+    };
+    let mut originals = BTreeMap::new();
+    for branch in &branches {
+        reserve_search_work(
+            host_work,
+            HostWorkDimension::SearchStateBytes,
+            std::mem::size_of::<([u8; 32], (usize, usize, usize))>() as u64,
+        )?;
+        let count = usize::try_from(pops.get(&branch.stack_id).copied().unwrap_or_default())
+            .map_err(|_| AuthorityError::ArithmeticOverflow)?;
+        if count > branch.stack.cells.len() {
+            return Err(AuthorityError::ExhaustedStackResource);
+        }
+        if originals
+            .insert(
+                branch.stack_id,
+                (branch.transfer_offset, branch.stack.cells.len(), count),
+            )
+            .is_some()
+        {
+            return Err(AuthorityError::EventIdentityConflict);
+        }
+    }
+    for stack_id in pops.keys() {
+        reserve_search_work(host_work, HostWorkDimension::VerificationOperations, 1)?;
+        if !originals.contains_key(stack_id) {
+            return Err(AuthorityError::UnknownStackResource);
+        }
+    }
+    if host_work.is_some() {
+        shared::rust::clone_backing::reserve_copy_and_cleanup(original, &backing)
+            .map_err(authority_backing_error)?;
+    }
+    let mut residual = original.clone();
+    for (stack_id, count) in pops {
+        let count = usize::try_from(*count).map_err(|_| AuthorityError::ArithmeticOverflow)?;
+        if count == 0 {
+            continue;
+        }
+        let path = stack_branch_path_with_host(root_id, &residual, stack_id, host_work)?
+            .ok_or(AuthorityError::UnknownStackResource)?;
+        let mut branch = &mut residual;
+        for index in path {
+            branch = branch
+                .parallel_tail
+                .get_mut(index)
+                .expect("validated original branch path");
+        }
+        reserve_search_work(
+            host_work,
+            HostWorkDimension::VerificationOperations,
+            u64::try_from(branch.cells.len()).map_err(|_| AuthorityError::ArithmeticOverflow)?,
+        )?;
+        branch.cells.drain(..count);
+    }
+
+    type PendingFrontier = ([u8; 32], Vec<u64>, CostStack);
+    reserve_search_work(
+        host_work,
+        HostWorkDimension::SearchStateBytes,
+        std::mem::size_of::<PendingFrontier>() as u64,
+    )?;
+    let mut pending = Vec::new();
+    pending
+        .try_reserve_exact(1)
+        .map_err(|_| AuthorityError::ArithmeticOverflow)?;
+    pending.push((root_id, Vec::new(), residual));
+    let mut publications = Vec::new();
+    while let Some((branch_id, path, mut node)) = pending.pop() {
+        reserve_search_work(host_work, HostWorkDimension::SearchCandidates, 1)?;
+        if node.cells.is_empty() {
+            let children = std::mem::take(&mut node.parallel_tail);
+            let bytes = children
+                .len()
+                .checked_mul(std::mem::size_of::<PendingFrontier>())
+                .ok_or(AuthorityError::ArithmeticOverflow)?;
+            reserve_search_work(
+                host_work,
+                HostWorkDimension::SearchStateBytes,
+                u64::try_from(bytes).map_err(|_| AuthorityError::ArithmeticOverflow)?,
+            )?;
+            pending
+                .try_reserve_exact(children.len())
+                .map_err(|_| AuthorityError::ArithmeticOverflow)?;
+            for (index, child) in children.into_iter().enumerate().rev() {
+                let index = u64::try_from(index).map_err(|_| AuthorityError::ArithmeticOverflow)?;
+                let child_id = if host_work.is_some() {
+                    stack_child_id_metered(&branch_id, index, &backing)?
+                } else {
+                    stack_child_id(&branch_id, index)
+                };
+                let path_len = path
+                    .len()
+                    .checked_add(1)
+                    .ok_or(AuthorityError::ArithmeticOverflow)?;
+                let path_bytes = path_len
+                    .checked_mul(std::mem::size_of::<u64>())
+                    .ok_or(AuthorityError::ArithmeticOverflow)?;
+                reserve_search_work(
+                    host_work,
+                    HostWorkDimension::SearchStateBytes,
+                    u64::try_from(path_bytes).map_err(|_| AuthorityError::ArithmeticOverflow)?,
+                )?;
+                let mut child_path = Vec::new();
+                child_path
+                    .try_reserve_exact(path_len)
+                    .map_err(|_| AuthorityError::ArithmeticOverflow)?;
+                child_path.extend_from_slice(&path);
+                child_path.push(index);
+                pending.push((child_id, child_path, child));
+            }
+            continue;
+        }
+
+        let surviving = if host_work.is_some() {
+            stack_branches_metered(branch_id, &node, &backing)?
+        } else {
+            stack_branches(branch_id, &node)?
+        };
+        let mut indices = Vec::new();
+        for branch in surviving {
+            reserve_search_work(host_work, HostWorkDimension::VerificationOperations, 1)?;
+            let (offset, original_count, popped) = originals
+                .get(&branch.stack_id)
+                .copied()
+                .ok_or(AuthorityError::UnknownStackResource)?;
+            let remaining = original_count
+                .checked_sub(popped)
+                .ok_or(AuthorityError::ArithmeticOverflow)?;
+            if branch.stack.cells.len() != remaining {
+                return Err(AuthorityError::PhysicalAuthorityMismatch);
+            }
+            let start = offset
+                .checked_add(popped)
+                .ok_or(AuthorityError::ArithmeticOverflow)?;
+            let end = offset
+                .checked_add(original_count)
+                .ok_or(AuthorityError::ArithmeticOverflow)?;
+            let index_bytes = remaining
+                .checked_mul(std::mem::size_of::<usize>())
+                .ok_or(AuthorityError::ArithmeticOverflow)?;
+            reserve_search_work(
+                host_work,
+                HostWorkDimension::SearchStateBytes,
+                u64::try_from(index_bytes).map_err(|_| AuthorityError::ArithmeticOverflow)?,
+            )?;
+            indices
+                .try_reserve_exact(remaining)
+                .map_err(|_| AuthorityError::ArithmeticOverflow)?;
+            indices.extend(start..end);
+        }
+        reserve_search_work(
+            host_work,
+            HostWorkDimension::SearchStateBytes,
+            std::mem::size_of::<StackFrontierPublication>() as u64,
+        )?;
+        publications
+            .try_reserve_exact(1)
+            .map_err(|_| AuthorityError::ArithmeticOverflow)?;
+        publications.push(StackFrontierPublication {
+            original_root_id: root_id,
+            original_branch_id: branch_id,
+            authored_path: path,
+            residual: node,
+            original_transfer_indices: indices,
+        });
+    }
+    Ok(publications)
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -2508,6 +3573,9 @@ pub enum AuthorityByteEventKind {
     ProduceIntroduction,
     ConsumeIntroduction,
     Comm,
+    /// CostV2-only atomic match between already resting sources. This is not
+    /// an arriving Produce or Consume, and must retain its own evidence tag.
+    RestingComm,
 }
 
 impl AuthorityByteEventKind {
@@ -2516,6 +3584,7 @@ impl AuthorityByteEventKind {
             Self::ProduceIntroduction => 0,
             Self::ConsumeIntroduction => 1,
             Self::Comm => 2,
+            Self::RestingComm => 3,
         }
     }
 
@@ -2524,6 +3593,7 @@ impl AuthorityByteEventKind {
             0 => Ok(Self::ProduceIntroduction),
             1 => Ok(Self::ConsumeIntroduction),
             2 => Ok(Self::Comm),
+            3 => Ok(Self::RestingComm),
             _ => Err(AuthorityError::InvalidByteEventKind),
         }
     }
@@ -2572,6 +3642,10 @@ impl AuthorityByteEvent {
 pub struct AuthorityStackBirth {
     pub produce_hash: [u8; 32],
     pub cells: Vec<CostSignature>,
+    /// None is the historical linear form. Some authenticates a shared-prefix
+    /// tree; `cells` still lists every cell once for transfer-event identity.
+    #[serde(default)]
+    pub stack: Option<CostStack>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -2579,6 +3653,8 @@ pub struct AuthorityBornStack {
     pub stack_id: [u8; 32],
     pub produce_hash: [u8; 32],
     pub cells: Vec<CostSignature>,
+    #[serde(default)]
+    pub stack: Option<CostStack>,
 }
 
 impl AuthorityEvent<[u8; 32]> {
@@ -2687,9 +3763,7 @@ impl<K: CanonicalAuthorityKey + Ord + Clone + Eq> AuthorityCostWitness<K> {
             .map(|event| event.event_id)
             .collect::<BTreeSet<_>>();
         for birth in &self.born_stacks {
-            if birth.cells.is_empty() {
-                return Err(AuthorityError::MissingSignature);
-            }
+            validate_stack_birth(&birth.cells, birth.stack.as_ref(), None)?;
             for (index, cell) in birth.cells.iter().enumerate() {
                 let cell = canonical_cost_signature(cell)?;
                 if cost_signature_to_sig(&cell)? == Sig::Unit {
@@ -2761,18 +3835,31 @@ impl<K: CanonicalAuthorityKey + Ord + Clone + Eq> AuthorityCostWitness<K> {
                     .ok_or(AuthorityError::ArithmeticOverflow)?;
             }
         }
+        let mut born_cells_by_id = BTreeMap::new();
+        for birth in &self.born_stacks {
+            if let Some(tree) = &birth.stack {
+                for branch in stack_branches(birth.stack_id, tree)? {
+                    if born_cells_by_id
+                        .insert(branch.stack_id, branch.stack.cells.len() as u64)
+                        .is_some()
+                    {
+                        return Err(AuthorityError::EventIdentityConflict);
+                    }
+                }
+            } else if born_cells_by_id
+                .insert(birth.stack_id, birth.cells.len() as u64)
+                .is_some()
+            {
+                return Err(AuthorityError::EventIdentityConflict);
+            }
+        }
         if stack_pops.iter().any(|(stack_id, count)| {
             let reserved = certificate
                 .stack_reservations
                 .get(stack_id)
                 .copied()
                 .unwrap_or_default();
-            let born = self
-                .born_stacks
-                .iter()
-                .find(|birth| birth.stack_id == *stack_id)
-                .map(|birth| birth.cells.len() as u64)
-                .unwrap_or_default();
+            let born = born_cells_by_id.get(stack_id).copied().unwrap_or_default();
             reserved
                 .checked_add(born)
                 .is_none_or(|available| available < *count)
@@ -2798,7 +3885,12 @@ impl<K: CanonicalAuthorityKey + Ord + Clone + Eq> AuthorityCostWitness<K> {
 
     pub fn witness_id(&self) -> [u8; 32] {
         let mut bytes = Vec::new();
-        bytes.extend_from_slice(WITNESS_DOMAIN);
+        let has_stack_tree = self.born_stacks.iter().any(|birth| birth.stack.is_some());
+        bytes.extend_from_slice(if has_stack_tree {
+            WITNESS_STACK_TREE_DOMAIN
+        } else {
+            WITNESS_DOMAIN
+        });
         bytes.extend_from_slice(&self.protocol_version.to_le_bytes());
         bytes.extend_from_slice(&self.certificate_id);
         bytes.extend_from_slice(&self.pre_state_root);
@@ -2835,6 +3927,16 @@ impl<K: CanonicalAuthorityKey + Ord + Clone + Eq> AuthorityCostWitness<K> {
                     .encode_to_vec();
                 bytes.extend_from_slice(&(encoded.len() as u64).to_le_bytes());
                 bytes.extend_from_slice(&encoded);
+            }
+            if has_stack_tree {
+                if let Some(tree) = &birth.stack {
+                    let encoded = tree.encode_to_vec();
+                    bytes.push(1);
+                    bytes.extend_from_slice(&(encoded.len() as u64).to_le_bytes());
+                    bytes.extend_from_slice(&encoded);
+                } else {
+                    bytes.push(0);
+                }
             }
         }
         bytes.extend_from_slice(&self.byte_cost_schedule_version.to_le_bytes());
@@ -2944,6 +4046,8 @@ pub enum AuthorityError {
     ExhaustedStackResource,
     #[error("physical settlement does not exactly realize the event authority")]
     PhysicalAuthorityMismatch,
+    #[error("stack birth cells do not match the authenticated stack tree")]
+    InvalidStackBirth,
 }
 
 impl From<models::rust::host_work::HostWorkReservationError> for AuthorityError {
@@ -3067,6 +4171,175 @@ mod tests {
         CostSignature {
             value: Some(CostSignatureValue::Ground(bytes.to_vec())),
         }
+    }
+
+    #[test]
+    fn shared_prefix_gate_releases_siblings_only_after_a_prior_pop() {
+        let prefix = ground(b"prefix");
+        let left = ground(b"left");
+        let right = ground(b"right");
+        let root_id = [71; 32];
+        let linear = CostStack {
+            cells: vec![prefix.clone()],
+            parallel_tail: Vec::new(),
+        };
+        let linear_branches = stack_branches(root_id, &linear).unwrap();
+        assert_eq!(linear_branches.len(), 1);
+        assert_eq!(linear_branches[0].stack_id, root_id);
+        assert_eq!(linear_branches[0].parent_gate, None);
+        assert_eq!(
+            validate_stack_birth(std::slice::from_ref(&prefix), None, None).unwrap(),
+            StackBirthShape {
+                cell_count: 1,
+                branch_count: 0
+            },
+        );
+        let tree = CostStack {
+            cells: vec![prefix.clone()],
+            parallel_tail: vec![
+                CostStack {
+                    cells: vec![left.clone()],
+                    parallel_tail: Vec::new(),
+                },
+                CostStack {
+                    cells: vec![right.clone()],
+                    parallel_tail: Vec::new(),
+                },
+            ],
+        };
+        let left_id = stack_branch_id(&root_id, &[0]);
+        let right_id = stack_branch_id(&root_id, &[1]);
+        let branches = stack_branches(root_id, &tree).unwrap();
+        assert_eq!(
+            branches
+                .iter()
+                .map(|branch| branch.transfer_offset)
+                .collect::<Vec<_>>(),
+            vec![0, 1, 2]
+        );
+        assert_eq!(branches[1].parent_gate, Some((root_id, 1)));
+        assert_eq!(branches[2].parent_gate, Some((root_id, 1)));
+        let flat = vec![prefix.clone(), left.clone(), right.clone()];
+        assert_eq!(
+            validate_stack_birth(&flat, Some(&tree), None).unwrap(),
+            StackBirthShape {
+                cell_count: 3,
+                branch_count: 2
+            },
+        );
+        let mut forged = flat.clone();
+        forged.swap(1, 2);
+        assert_eq!(
+            validate_stack_birth(&forged, Some(&tree), None),
+            Err(AuthorityError::InvalidStackBirth)
+        );
+
+        let inventory = AuthorityPhysicalInventory {
+            balances: ResourceMultiset::default(),
+            balance_custody: BTreeMap::new(),
+            stacks: BTreeMap::from([(root_id, vec![prefix.clone()])]),
+            born_stacks: BTreeMap::new(),
+            stack_trees: BTreeMap::from([(root_id, tree)]),
+        };
+        let mut first = event(&[prefix.clone()]);
+        first.event_id = [1; 32];
+        let mut second = event(&[right.clone()]);
+        second.event_id = [2; 32];
+        let mut third = event(&[left.clone()]);
+        third.event_id = [3; 32];
+        let events = [first.clone(), second.clone(), third.clone()];
+        let draw = |event_id, stack_id| AuthorityPhysicalEventDraw {
+            event_id,
+            balances: ResourceMultiset::default(),
+            stack_ids: vec![stack_id],
+        };
+        let draws = [
+            draw(first.event_id, root_id),
+            draw(second.event_id, right_id),
+            draw(third.event_id, left_id),
+        ];
+        let settlement = verify_physical_settlement(&events, &BTreeMap::new(), &inventory, &draws)
+            .expect("right sibling may pop before left after shared prefix");
+        let metered = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(10_000_000)));
+        assert_eq!(
+            verify_physical_settlement_with_host_work(
+                &events,
+                &BTreeMap::new(),
+                &inventory,
+                &draws,
+                Some(&metered),
+            )
+            .unwrap(),
+            settlement,
+        );
+        let refused = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(0)));
+        assert_eq!(
+            verify_physical_settlement_with_host_work(
+                &events,
+                &BTreeMap::new(),
+                &inventory,
+                &draws,
+                Some(&refused),
+            ),
+            Err(AuthorityError::HostWorkRejected),
+        );
+        assert_eq!(settlement.stack_pops.len(), 3);
+        assert_eq!(
+            allocate_physical_settlement(&events, &BTreeMap::new(), &inventory)
+                .unwrap()
+                .stack_pops,
+            settlement.stack_pops,
+        );
+
+        let before_prefix = [second.clone(), first.clone()];
+        let before_draws = [
+            draw(second.event_id, right_id),
+            draw(first.event_id, root_id),
+        ];
+        assert_eq!(
+            verify_physical_settlement(&before_prefix, &BTreeMap::new(), &inventory, &before_draws),
+            Err(AuthorityError::PhysicalAuthorityMismatch),
+        );
+        let mut both_siblings = event(&[left.clone(), right.clone()]);
+        both_siblings.event_id = [5; 32];
+        let mut sibling_ids = vec![left_id, right_id];
+        sibling_ids.sort();
+        assert!(
+            verify_physical_settlement(
+                &[first.clone(), both_siblings.clone()],
+                &BTreeMap::new(),
+                &inventory,
+                &[draw(first.event_id, root_id), AuthorityPhysicalEventDraw {
+                    event_id: both_siblings.event_id,
+                    balances: ResourceMultiset::default(),
+                    stack_ids: sibling_ids,
+                },],
+            )
+            .is_ok(),
+            "ready siblings may pop together after the prior prefix event"
+        );
+        let mut same_event = event(&[prefix, right]);
+        same_event.event_id = [4; 32];
+        let mut simultaneous = vec![root_id, right_id];
+        simultaneous.sort();
+        assert_eq!(
+            verify_physical_settlement(&[same_event.clone()], &BTreeMap::new(), &inventory, &[
+                AuthorityPhysicalEventDraw {
+                    event_id: same_event.event_id,
+                    balances: ResourceMultiset::default(),
+                    stack_ids: simultaneous,
+                }
+            ],),
+            Err(AuthorityError::PhysicalAuthorityMismatch),
+        );
+
+        let mut residual = inventory;
+        apply_physical_settlement(&mut residual, &settlement).unwrap();
+        assert!(residual.stacks[&root_id].is_empty());
+        assert!(residual.stack_trees[&root_id]
+            .parallel_tail
+            .iter()
+            .all(|branch| branch.cells.is_empty()));
     }
 
     #[test]
@@ -3510,6 +4783,7 @@ mod tests {
             balance_custody: BTreeMap::from([(exposed_key, exposed_key)]),
             stacks: BTreeMap::new(),
             born_stacks: BTreeMap::new(),
+            stack_trees: BTreeMap::new(),
         };
 
         assert_eq!(
@@ -3581,6 +4855,7 @@ mod tests {
                 balance_custody: BTreeMap::from([(exposed_key, exposed_key)]),
                 stacks: BTreeMap::new(),
                 born_stacks: BTreeMap::new(),
+                stack_trees: BTreeMap::new(),
             };
 
             prop_assert_eq!(
@@ -3817,6 +5092,7 @@ mod tests {
             balance_custody: balances.0.keys().map(|key| (*key, *key)).collect(),
             stacks: BTreeMap::new(),
             born_stacks: BTreeMap::new(),
+            stack_trees: BTreeMap::new(),
         };
         let draws = vec![AuthorityPhysicalEventDraw {
             event_id: event.event_id,
@@ -3851,6 +5127,7 @@ mod tests {
             balance_custody: BTreeMap::from([(key, key)]),
             stacks: BTreeMap::new(),
             born_stacks: BTreeMap::new(),
+            stack_trees: BTreeMap::new(),
         };
         let original = inventory.clone();
         let mut limits = HostWorkLimits::uniform(HostWorkLimit::new(10_000));
@@ -3885,6 +5162,7 @@ mod tests {
             balance_custody: BTreeMap::from([(key, key)]),
             stacks: BTreeMap::new(),
             born_stacks: BTreeMap::new(),
+            stack_trees: BTreeMap::new(),
         };
         let expected = allocate_physical_settlement(
             std::slice::from_ref(&authority_event),
@@ -3922,6 +5200,7 @@ mod tests {
             balance_custody: BTreeMap::from([(default_key, default_key)]),
             stacks: BTreeMap::new(),
             born_stacks: BTreeMap::new(),
+            stack_trees: BTreeMap::new(),
         };
 
         assert_eq!(
@@ -3938,6 +5217,7 @@ mod tests {
             balance_custody: BTreeMap::from([(default_key, default_key)]),
             stacks: BTreeMap::from([(stack_id, vec![explicit])]),
             born_stacks: BTreeMap::new(),
+            stack_trees: BTreeMap::new(),
         };
         let settlement = allocate_physical_settlement(
             std::slice::from_ref(&authority_event),
@@ -3970,6 +5250,7 @@ mod tests {
             balance_custody: BTreeMap::from([(key, key)]),
             stacks: BTreeMap::new(),
             born_stacks: BTreeMap::new(),
+            stack_trees: BTreeMap::new(),
         };
         let settlement =
             allocate_physical_settlement(&events, &BTreeMap::from([(key, signature)]), &inventory)
@@ -4053,6 +5334,7 @@ mod tests {
             balance_custody: BTreeMap::from([(lane_a, custody), (lane_b, custody)]),
             stacks: BTreeMap::new(),
             born_stacks: BTreeMap::new(),
+            stack_trees: BTreeMap::new(),
         };
         let draws = [
             AuthorityPhysicalEventDraw {
@@ -4164,6 +5446,7 @@ mod tests {
             balance_custody: BTreeMap::from([(ab_key, ab_key)]),
             stacks: BTreeMap::new(),
             born_stacks: BTreeMap::new(),
+            stack_trees: BTreeMap::new(),
         };
         let draws = vec![AuthorityPhysicalEventDraw {
             event_id: event.event_id,
@@ -4196,6 +5479,7 @@ mod tests {
             balance_custody: BTreeMap::new(),
             stacks: BTreeMap::from([(stack_id, vec![a, b])]),
             born_stacks: BTreeMap::new(),
+            stack_trees: BTreeMap::new(),
         };
         let draws = vec![
             AuthorityPhysicalEventDraw {
@@ -4266,6 +5550,7 @@ mod tests {
             balance_custody: BTreeMap::new(),
             stacks: BTreeMap::from([(stack_id, vec![a.clone()])]),
             born_stacks: BTreeMap::from([(stack_id, produce_hash)]),
+            stack_trees: BTreeMap::new(),
         };
 
         assert_eq!(
@@ -4904,6 +6189,7 @@ mod tests {
                 balance_custody: balances.0.keys().map(|key| (*key, *key)).collect(),
                 stacks: BTreeMap::new(),
                 born_stacks: BTreeMap::new(),
+                stack_trees: BTreeMap::new(),
             };
             let draw = AuthorityPhysicalEventDraw {
                 event_id: join.event_id,
@@ -4940,6 +6226,7 @@ mod tests {
                 balance_custody: grouped_balances.0.keys().map(|key| (*key, *key)).collect(),
                 stacks: BTreeMap::new(),
                 born_stacks: BTreeMap::new(),
+                stack_trees: BTreeMap::new(),
             };
             let grouped_draw = AuthorityPhysicalEventDraw {
                 event_id: join.event_id,
@@ -4982,6 +6269,7 @@ mod tests {
                 balance_custody: BTreeMap::from([(payer_lane, payer_lane)]),
                 stacks: BTreeMap::from([(stack_id, cells.clone())]),
                 born_stacks: BTreeMap::from([(stack_id, produce_hash)]),
+                stack_trees: BTreeMap::new(),
             };
             let signatures = BTreeMap::from([(payer_lane, payer.clone())]);
             let mut creation_order = (0..cells.len()).collect::<Vec<_>>();
@@ -5065,6 +6353,7 @@ mod tests {
                 balance_custody: BTreeMap::new(),
                 stacks: stacks.clone(),
                 born_stacks: BTreeMap::new(),
+                stack_trees: BTreeMap::new(),
             };
             let mut counts = BTreeMap::<[u8; 32], u64>::new();
             let mut events = Vec::new();
@@ -5111,6 +6400,7 @@ mod tests {
                 balance_custody: BTreeMap::new(),
                 stacks: residual_stacks,
                 born_stacks: BTreeMap::new(),
+                stack_trees: BTreeMap::new(),
             };
             let suffix = verify_physical_settlement(&events[split..], &BTreeMap::new(), &residual, &draws[split..]).unwrap();
             for (id, expected) in &counts {
@@ -5172,6 +6462,7 @@ mod tests {
                 stacks: split_stacks.clone().into_iter()
                     .chain(std::iter::once((untouched_id, untouched.clone()))).collect(),
                 born_stacks: BTreeMap::new(),
+                stack_trees: BTreeMap::new(),
             };
             let grouped_inventory = AuthorityPhysicalInventory {
                 stacks: BTreeMap::from([(group_id, grouped_cells), (untouched_id, untouched)]),
@@ -5291,6 +6582,7 @@ mod tests {
                 balance_custody: BTreeMap::from([(key, key)]),
                 stacks: BTreeMap::new(),
                 born_stacks: BTreeMap::new(),
+                stack_trees: BTreeMap::new(),
             };
             let expected = allocate_physical_settlement(&events, &signatures, &inventory);
             let host_work = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(
@@ -5339,6 +6631,7 @@ mod tests {
                 balance_custody: balances.0.keys().map(|key| (*key, *key)).collect(),
                 stacks: BTreeMap::new(),
                 born_stacks: BTreeMap::new(),
+                stack_trees: BTreeMap::new(),
             };
             let settlement = allocate_physical_settlement(
                 &events,
@@ -5387,6 +6680,7 @@ mod tests {
                 balance_custody: balances.0.keys().map(|key| (*key, *key)).collect(),
                 stacks: BTreeMap::new(),
                 born_stacks: BTreeMap::new(),
+                stack_trees: BTreeMap::new(),
             };
             let draws = vec![AuthorityPhysicalEventDraw {
                 event_id: event.event_id,
@@ -5526,6 +6820,155 @@ mod tests {
             prop_assert_eq!(debit.get(&outer_key), outer_amount);
             prop_assert_eq!(debit.get(&continuation_key), continuation_amount);
             prop_assert!(available.dominates(&debit));
+        }
+    }
+
+    /// A Par nested `depth` levels deep through sends.
+    fn send_chain(depth: usize) -> Par {
+        let mut par = Par::default();
+        for _ in 0..depth {
+            let mut next = Par::default();
+            next.sends.push(models::rhoapi::Send {
+                chan: Some(Par::default()),
+                data: vec![par],
+                ..Default::default()
+            });
+            par = next;
+        }
+        par
+    }
+
+    fn quoted_chain(depth: usize) -> CostSignature {
+        CostSignature {
+            value: Some(CostSignatureValue::Quote(send_chain(depth))),
+        }
+    }
+
+    fn scanned_by(charge: impl FnOnce(&dyn BackingMeter) -> Result<(), AuthorityError>) -> usize {
+        let scanned = std::cell::Cell::new(0_usize);
+        let meter = |_: usize, bytes: usize, _: usize| {
+            scanned.set(scanned.get() + bytes);
+            Ok(())
+        };
+        charge(&meter).expect("charge");
+        scanned.get()
+    }
+
+    /// D-O6 (DR-93): the sites that encode a quoted Par reserve
+    /// depth-weighted traversals, so their charge grows quadratically with
+    /// the nesting depth; the results are unchanged.
+    #[test]
+    fn nested_encode_sites_charge_quadratically_in_depth() {
+        let conversion = |depth: usize| {
+            scanned_by(|meter| cost_signature_to_sig_metered(&quoted_chain(depth), meter).map(drop))
+        };
+        let lane = |depth: usize| {
+            scanned_by(|meter| {
+                cost_signature_lane_metered(&quoted_chain(depth), &SorterMeter::new(meter))
+                    .map(drop)
+            })
+        };
+        let region = |depth: usize| {
+            scanned_by(|meter| {
+                cost_region_metered(&quoted_chain(depth), b"identity", 0, meter).map(drop)
+            })
+        };
+        let sites: [&dyn Fn(usize) -> usize; 3] = [&conversion, &lane, &region];
+        for charge in sites {
+            let (small, medium, large) = (charge(8), charge(16), charge(32));
+            assert!(
+                large - medium > 3 * (medium - small),
+                "{small} {medium} {large}"
+            );
+        }
+        for depth in [0, 3, 9] {
+            let signature = quoted_chain(depth);
+            assert_eq!(
+                cost_signature_to_sig_metered(&signature, &|_, _, _| Ok(())).unwrap(),
+                cost_signature_to_sig(&signature).unwrap()
+            );
+            assert_eq!(
+                cost_region_metered(&signature, b"identity", 0, &|_, _, _| Ok(())).unwrap(),
+                cost_region(&signature, b"identity", 0).unwrap()
+            );
+        }
+    }
+    /// The usage that `charge` reserves when every running total must stay
+    /// within `limit`.
+    fn run_within(
+        limit: [usize; 3],
+        charge: &dyn Fn(&dyn BackingMeter) -> Result<(), AuthorityError>,
+    ) -> Result<[usize; 3], AuthorityError> {
+        let used = std::cell::Cell::new([0_usize; 3]);
+        let meter = |operations: usize, scanned: usize, backing: usize| {
+            let [total_operations, total_scanned, total_backing] = used.get();
+            let next = [
+                total_operations + operations,
+                total_scanned + scanned,
+                total_backing + backing,
+            ];
+            if next.iter().zip(limit).any(|(total, bound)| *total > bound) {
+                return Err(BackingError::Rejected);
+            }
+            used.set(next);
+            Ok(())
+        };
+        charge(&meter)?;
+        Ok(used.get())
+    }
+
+    fn assert_exact_credit(
+        site: &str,
+        charge: &dyn Fn(&dyn BackingMeter) -> Result<(), AuthorityError>,
+    ) {
+        let exact = run_within([usize::MAX; 3], charge).expect("unlimited");
+        assert_eq!(run_within(exact, charge).expect("exact"), exact, "{site}");
+        for dimension in 0..3 {
+            if exact[dimension] > 0 {
+                let mut smaller = exact;
+                smaller[dimension] -= 1;
+                assert!(
+                    matches!(
+                        run_within(smaller, charge),
+                        Err(AuthorityError::HostWorkRejected)
+                    ),
+                    "{site}: dimension {dimension}"
+                );
+            }
+        }
+    }
+
+    /// D-O1 (DR-94): the block-mode authority sites reserve their exact
+    /// credit before their work: each accepts the credit that it uses and
+    /// rejects one unit less in any dimension.
+    #[test]
+    fn block_mode_authority_sites_accept_exact_credit() {
+        for depth in [0, 2, 5] {
+            let signature = quoted_chain(depth);
+            let authority = CostAuthority {
+                regions: vec![
+                    CostRegion {
+                        instance_id: vec![1; 32],
+                        signature: Some(signature.clone()),
+                    },
+                    CostRegion {
+                        instance_id: vec![2; 32],
+                        signature: Some(signature.clone()),
+                    },
+                ],
+            };
+            assert_exact_credit("conversion", &|meter| {
+                cost_signature_to_sig_metered(&signature, meter).map(drop)
+            });
+            assert_exact_credit("region", &|meter| {
+                cost_region_metered(&signature, b"identity", 0, meter).map(drop)
+            });
+            assert_exact_credit("demand", &|meter| {
+                authority_demand_metered(&authority, meter).map(drop)
+            });
+            assert_exact_credit("merge", &|meter| {
+                merge_authorities_metered([&authority, &authority], meter).map(drop)
+            });
         }
     }
 }

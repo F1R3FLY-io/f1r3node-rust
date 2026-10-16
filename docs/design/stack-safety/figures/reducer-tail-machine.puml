@@ -1,0 +1,37 @@
+@startuml reducer-tail-machine
+skinparam backgroundColor #FAFAFA
+skinparam defaultFontName "DejaVu Sans"
+skinparam shadowing false
+skinparam roundcorner 8
+skinparam ArrowThickness 1.5
+
+title Process-reducer tail continuations: native stack to explicit state
+
+package "Before: one native polling chain" #FFEBEE {
+  rectangle "Process(Par)\nselect one term" as old_process #FFCDD2
+  rectangle "evaluate Bundle / If / New / Match / variable / method" as old_term #EF9A9A
+  rectangle "await the next Process future\nwithout returning from this poll" as old_await #FFCDD2
+  old_process -[#C62828,thickness=2]-> old_term
+  old_term -[#C62828,thickness=2]-> old_await
+  old_await -[#C62828,thickness=2]-> old_process : nested poll
+}
+
+package "After: one iterative process machine" #E8F5E9 {
+  rectangle "EvalInput::Process(Par)\nselect and meter one term" as process #C8E6C9
+  rectangle "EvalInput::Term(GeneratedMessage)\nevaluate and observe" as term #A5D6A7
+  rectangle "EvalControl::Continue(EvalTail)\ncarry environment, randomness,\nauthority, path, and seal" as tail #80CBC4
+  rectangle "EvalControl::Complete / error\nreturn to completion drive" as done #B2DFDB
+  process -[#2E7D32,thickness=2]-> term
+  term -[#00897B,thickness=2]-> tail : tail form
+  tail -[#2E7D32,thickness=2]-> process : loop, no nested poll
+  term -[#00897B,thickness=2]-> done : terminal form
+}
+
+old_await -[#455A64,thickness=2]down-> process : replace only the tail edge
+
+note bottom of done #FFF3E0
+  Parallel children and signed terms retain their existing
+  counted detached-task boundary. The process loop preserves
+  each metering child and the prior observation order.
+end note
+@enduml

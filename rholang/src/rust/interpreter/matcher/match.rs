@@ -6,10 +6,11 @@ use models::rust::utils::{new_elist_expr, FreeMap};
 use rho_pure_eval::{Env as PureEnv, EvalError, SpatialMatch};
 use rspace_plus_plus::rspace::errors::RSpaceError;
 use rspace_plus_plus::rspace::hashing::native_source::SourceMeter;
-use rspace_plus_plus::rspace::r#match::Match;
+use rspace_plus_plus::rspace::r#match::{Match, PreparedCommit};
 use shared::rust::clone_backing::{self, BackingError, BackingMeter};
-use shared::rust::collection_backing::tree_backing;
 
+// Changed by D-D1a (D-M2, DR-103): whole-tree backing is no longer charged here.
+// use shared::rust::collection_backing::tree_backing;
 use super::exports::*;
 use super::fold_match::FoldMatch;
 use super::spatial_matcher::SpatialMatcherContext;
@@ -26,7 +27,7 @@ impl Matcher {
         if data.cost_stack.is_some() {
             return None;
         }
-        spatial_matcher.reserve_clone(&pattern.remainder)?;
+        spatial_matcher.reserve_blocks_copy_and_cleanup(&pattern.remainder)?;
         let caught_rem =
             spatial_matcher.fold_match(&data.pars, &pattern.patterns, pattern.remainder.clone())?;
         let mut free_map = std::mem::take(&mut spatial_matcher.free_map);
@@ -39,14 +40,18 @@ impl Matcher {
             remainder
                 .exprs
                 .push(new_elist_expr(caught_rem, Vec::new(), false, None));
-            spatial_matcher.reserve_inspect(&free_map)?;
-            let Some(entries) = free_map.len().checked_add(1) else {
-                return spatial_matcher.reject(RSpaceError::HostWorkRejected);
-            };
-            let Some((operations, bytes)) = tree_backing::<i32, Par>(entries) else {
-                return spatial_matcher.reject(RSpaceError::HostWorkRejected);
-            };
-            spatial_matcher.reserve(operations, bytes, bytes)?;
+            // Changed by D-D1a (D-M2, DR-103): one insert charges its search, its
+            // moves and the growth of the tree, not a whole-map walk and the
+            // whole-tree backing.
+            // spatial_matcher.reserve_inspect(&free_map)?;
+            // let Some(entries) = free_map.len().checked_add(1) else {
+            //     return spatial_matcher.reject(RSpaceError::HostWorkRejected);
+            // };
+            // let Some((operations, bytes)) = tree_backing::<i32, Par>(entries) else {
+            //     return spatial_matcher.reject(RSpaceError::HostWorkRejected);
+            // };
+            // spatial_matcher.reserve(operations, bytes, bytes)?;
+            spatial_matcher.reserve_free_map_insert(free_map.len())?;
             free_map.insert(*level, remainder);
         }
         // Changed by D-M4 (DR-91): the owned free map is consumed in key order;
@@ -63,8 +68,8 @@ impl Matcher {
         //     }
         // }
         let bound_pars = Self::extract_bound_pars(free_map, pattern.free_count, spatial_matcher)?;
-        spatial_matcher.reserve_clone(&data.random_state)?;
-        spatial_matcher.reserve_clone(&data.cost_authority)?;
+        spatial_matcher.reserve_blocks_copy_and_cleanup(&data.random_state)?;
+        spatial_matcher.reserve_blocks_copy_and_cleanup(&data.cost_authority)?;
         Some(ListParWithRandom {
             pars: bound_pars,
             random_state: data.random_state.clone(),
@@ -191,7 +196,7 @@ impl Match<BindPattern, ListParWithRandom, TaggedContinuation> for Matcher {
             }
         };
         let result = (|| {
-            clone_backing::inspect(guard, &backing)?;
+            clone_backing::inspect_blocks(guard, &backing)?;
             if is_empty_par(guard) {
                 Ok(true)
             } else {
@@ -202,6 +207,16 @@ impl Match<BindPattern, ListParWithRandom, TaggedContinuation> for Matcher {
             return Err(error);
         }
         result.map_err(|_| RSpaceError::HostWorkRejected)
+    }
+
+    fn prepare_commit_metered(
+        &self,
+        k: &TaggedContinuation,
+        matched: &[&ListParWithRandom],
+        meter: &(dyn SourceMeter + Send + Sync),
+    ) -> Result<Option<PreparedCommit>, RSpaceError> {
+        self.check_commit_metered(k, matched, meter)
+            .map(|accepted| accepted.then(PreparedCommit::default))
     }
 }
 
@@ -254,8 +269,8 @@ impl SpatialMatch for SpatialMatcherOracle {
         };
         let mut context =
             SpatialMatcherContext::with_meter(&bridge).map_err(|_| BackingError::Rejected)?;
-        clone_backing::reserve_copy_and_cleanup(target, meter)?;
-        clone_backing::reserve_copy_and_cleanup(pattern, meter)?;
+        clone_backing::reserve_blocks_copy_and_cleanup(target, meter)?;
+        clone_backing::reserve_blocks_copy_and_cleanup(pattern, meter)?;
         let matched = context
             .spatial_match_result(target.clone(), pattern.clone())
             .is_some();
@@ -417,13 +432,16 @@ fn guard_passes_metered(
     for binding in matched {
         meter.reserve(1, 0, 0)?;
         for par in &binding.pars {
-            clone_backing::reserve_copy_and_cleanup(par, meter)?;
+            clone_backing::reserve_blocks_copy_and_cleanup(par, meter)?;
             env.push_metered(par.clone(), meter)?;
         }
     }
     match rho_pure_eval::eval_metered(condition, &env, meter) {
         Ok(result) => {
-            clone_backing::inspect(&result, meter)?;
+            // One walk extracts the verdict; a second pays the owned result's
+            // release after this arm.
+            clone_backing::inspect_blocks(&result, meter)?;
+            clone_backing::inspect_blocks(&result, meter)?;
             Ok(extract_bool(&result) == Some(true))
         }
         Err(rho_pure_eval::EvalError::HostWork(error)) => Err(error),
@@ -699,6 +717,21 @@ mod metered_tests {
             matcher.check_commit_metered(&false_guard, &[], &full),
             Ok(false)
         );
+        assert!(matcher
+            .prepare_commit_metered(&continuation, &[], &full)
+            .unwrap()
+            .is_some());
+        assert!(matcher
+            .prepare_commit_metered(&false_guard, &[], &full)
+            .unwrap()
+            .is_none());
+        let refused = |_: usize, _: usize, _: usize| -> Result<(), RSpaceError> {
+            Err(RSpaceError::HostWorkRejected)
+        };
+        assert!(matches!(
+            matcher.prepare_commit_metered(&continuation, &[], &refused),
+            Err(RSpaceError::HostWorkRejected)
+        ));
     }
 
     fn bool_par(value: bool) -> Par {
@@ -779,8 +812,9 @@ mod metered_tests {
             trace.borrow_mut().push((operations, scanned, backing));
             Ok(())
         };
-        clone_backing::reserve_copy_and_cleanup(target, &meter).expect("target copy charge");
-        clone_backing::reserve_copy_and_cleanup(pattern, &meter).expect("pattern copy charge");
+        clone_backing::reserve_blocks_copy_and_cleanup(target, &meter).expect("target copy charge");
+        clone_backing::reserve_blocks_copy_and_cleanup(pattern, &meter)
+            .expect("pattern copy charge");
         trace.into_inner()
     }
 

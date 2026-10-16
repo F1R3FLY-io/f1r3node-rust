@@ -52,7 +52,8 @@ async fn history_repository_should_process_insert_one_datum() {
     let data = history_reader
         .unwrap()
         .base()
-        .get_data(&test_channel_data_prefix());
+        .get_data(&test_channel_data_prefix())
+        .expect("history read");
     let fetched = data.first().unwrap().clone();
 
     assert_eq!(fetched, test_datum);
@@ -89,9 +90,11 @@ async fn history_repository_should_allow_insert_of_joins_datum_continuation_on_s
     let history_reader = next_repo.get_history_reader(&next_repo.root());
     let reader = history_reader.as_ref().unwrap().base();
 
-    let fetched_data = reader.get_data(&channel);
-    let fetched_continuation = reader.get_continuations(&vec![channel.clone()]);
-    let fetched_joins = reader.get_joins(&channel);
+    let fetched_data = reader.get_data(&channel).expect("history read");
+    let fetched_continuation = reader
+        .get_continuations(&vec![channel.clone()])
+        .expect("history read");
+    let fetched_joins = reader.get_joins(&channel).expect("history read");
 
     assert_eq!(fetched_data.len(), 1);
     assert_eq!(fetched_data.first().unwrap().clone(), test_datum);
@@ -158,7 +161,7 @@ async fn history_repository_should_process_insert_and_delete_of_thirty_mixed_ele
     let fetched_data: Vec<Vec<Datum<String>>> = data
         .1
         .iter()
-        .map(|d| next_reader.get_data(&d.channel))
+        .map(|d| next_reader.get_data(&d.channel).expect("history read"))
         .collect();
     assert_eq!(
         fetched_data,
@@ -172,7 +175,11 @@ async fn history_repository_should_process_insert_and_delete_of_thirty_mixed_ele
     let fetched_conts: Vec<Vec<WaitingContinuation<String, String>>> = conts
         .1
         .iter()
-        .map(|c| next_reader.get_continuations(&c.channels))
+        .map(|c| {
+            next_reader
+                .get_continuations(&c.channels)
+                .expect("history read")
+        })
         .collect();
     assert_eq!(
         fetched_conts,
@@ -187,7 +194,7 @@ async fn history_repository_should_process_insert_and_delete_of_thirty_mixed_ele
     let fetched_joins: Vec<Vec<Vec<String>>> = joins
         .1
         .iter()
-        .map(|j| next_reader.get_joins(&j.channel))
+        .map(|j| next_reader.get_joins(&j.channel).expect("history read"))
         .collect();
     let all_joins = HashSet::<String>::from_iter(fetched_joins.into_iter().flatten().flatten());
     let expected_joins: HashSet<String> = joins
@@ -208,7 +215,7 @@ async fn history_repository_should_process_insert_and_delete_of_thirty_mixed_ele
     let fetched_data: Vec<Vec<Datum<String>>> = data
         .1
         .iter()
-        .map(|d| next_reader.get_data(&d.channel))
+        .map(|d| next_reader.get_data(&d.channel).expect("history read"))
         .collect();
     assert_eq!(
         fetched_data,
@@ -222,7 +229,11 @@ async fn history_repository_should_process_insert_and_delete_of_thirty_mixed_ele
     let fetched_conts: Vec<Vec<WaitingContinuation<String, String>>> = conts
         .1
         .iter()
-        .map(|c| next_reader.get_continuations(&c.channels))
+        .map(|c| {
+            next_reader
+                .get_continuations(&c.channels)
+                .expect("history read")
+        })
         .collect();
     assert_eq!(
         fetched_conts,
@@ -237,7 +248,7 @@ async fn history_repository_should_process_insert_and_delete_of_thirty_mixed_ele
     let fetched_joins: Vec<Vec<Vec<String>>> = joins
         .1
         .iter()
-        .map(|j| next_reader.get_joins(&j.channel))
+        .map(|j| next_reader.get_joins(&j.channel).expect("history read"))
         .collect();
     let all_joins = HashSet::<String>::from_iter(fetched_joins.into_iter().flatten().flatten());
     assert_eq!(all_joins, expected_joins);
@@ -245,14 +256,18 @@ async fn history_repository_should_process_insert_and_delete_of_thirty_mixed_ele
     let fetched_data: Vec<Vec<Datum<String>>> = data
         .1
         .iter()
-        .map(|d| deleted_reader.get_data(&d.channel))
+        .map(|d| deleted_reader.get_data(&d.channel).expect("history read"))
         .collect();
     assert!(fetched_data.iter().flatten().collect::<Vec<_>>().is_empty());
 
     let fetched_conts: Vec<Vec<WaitingContinuation<String, String>>> = conts
         .1
         .iter()
-        .map(|c| deleted_reader.get_continuations(&c.channels))
+        .map(|c| {
+            deleted_reader
+                .get_continuations(&c.channels)
+                .expect("history read")
+        })
         .collect();
     assert!(
         fetched_conts
@@ -265,7 +280,7 @@ async fn history_repository_should_process_insert_and_delete_of_thirty_mixed_ele
     let fetched_joins: Vec<Vec<Vec<String>>> = joins
         .1
         .iter()
-        .map(|j| deleted_reader.get_joins(&j.channel))
+        .map(|j| deleted_reader.get_joins(&j.channel).expect("history read"))
         .collect();
     assert!(
         fetched_joins
@@ -309,6 +324,70 @@ async fn history_repository_should_record_next_root_as_valid() {
     let binding = next_repo.history();
     let next_repo_history = binding.lock().expect("Failed to acquire history lock");
     let _ = repo.reset(&next_repo_history.root());
+}
+
+#[test]
+fn checkpoint_attribution_preserves_roots_and_records_only_executed_stages() {
+    use metrics_util::debugging::{DebugValue, DebuggingRecorder};
+
+    for count in [0, 1, 256] {
+        let actions: Vec<HotStoreTrieAction<String, String, String, String>> = (0..count)
+            .map(|index| {
+                HotStoreTrieAction::TrieInsertAction(TrieInsertAction::TrieInsertBinaryProduce(
+                    TrieInsertBinaryProduce {
+                        hash: hash(&index),
+                        data: vec![vec![index as u8; 8]],
+                    },
+                ))
+            })
+            .collect();
+        let expected = create_empty_repository()
+            .do_checkpoint(actions.clone())
+            .root();
+        let repo = create_empty_repository();
+        let recorder = DebuggingRecorder::new();
+        let snapshotter = recorder.snapshotter();
+        let actual = metrics::with_local_recorder(&recorder, || repo.do_checkpoint(actions));
+        assert_eq!(actual.root(), expected);
+        let snapshot = snapshotter.snapshot().into_vec();
+        let samples = |name: &str| -> Vec<f64> {
+            snapshot
+                .iter()
+                .filter(|(key, _, _, _)| key.key().name() == name)
+                .flat_map(|(_, _, _, value)| match value {
+                    DebugValue::Histogram(values) => {
+                        values.iter().map(|value| value.into_inner()).collect()
+                    }
+                    _ => Vec::new(),
+                })
+                .collect()
+        };
+        assert_eq!(samples("history.checkpoint.actions"), vec![count as f64]);
+        assert_eq!(samples("history.checkpoint.time").len(), 1);
+        for stage in [
+            "storage-actions",
+            "partition",
+            "serialize",
+            "leaf-write",
+            "history-lock-wait",
+            "history-process",
+            "roots-lock-wait",
+            "root-commit",
+        ] {
+            let values = samples(&format!("history.checkpoint.{stage}.time"));
+            assert_eq!(values.len(), usize::from(count > 0), "{stage}, actions={count}");
+            assert!(
+                values
+                    .iter()
+                    .all(|value| value.is_finite() && *value >= 0.0)
+            );
+        }
+        let bytes = samples("history.checkpoint.serialized-bytes");
+        assert_eq!(bytes.len(), usize::from(count > 0));
+        if count > 0 {
+            assert!(bytes[0] > 0.0);
+        }
+    }
 }
 
 #[tokio::test]
@@ -410,6 +489,75 @@ async fn record_root_makes_root_visible_to_contains_root() {
     );
 }
 
+#[test]
+fn reset_does_not_move_the_current_root_pointer() {
+    let repo = create_empty_repository();
+    let (first, _) = insert_datum(1);
+    let (second, _) = insert_datum(2);
+    let first_root = repo.checkpoint(vec![first]).root();
+    let second_root = repo.checkpoint(vec![second]).root();
+    let current = || {
+        repo.roots_repository
+            .lock()
+            .unwrap()
+            .roots_store
+            .current_root()
+            .unwrap()
+    };
+    assert_eq!(current(), Some(second_root.clone()));
+
+    let next = repo.reset(&first_root).unwrap();
+
+    assert_eq!(next.root(), first_root);
+    assert_eq!(current(), Some(second_root));
+}
+
+#[test]
+fn lock_site_metrics_count_each_call_site_separately() {
+    use metrics_util::debugging::{DebugValue, DebuggingRecorder};
+
+    let repo = create_empty_repository();
+    let recorder = DebuggingRecorder::new();
+    let snapshotter = recorder.snapshotter();
+    metrics::with_local_recorder(&recorder, || {
+        let (insert, _) = insert_datum(1);
+        let next = repo.checkpoint(vec![insert]);
+        let root = next.root();
+        repo.record_root(&root).unwrap();
+        assert!(repo.contains_root(&root).unwrap());
+        repo.reset(&root).unwrap();
+        repo.get_history_reader(&root).unwrap();
+        repo.get_history_reader_struct(&root).unwrap();
+    });
+    let snapshot = snapshotter.snapshot().into_vec();
+    let counter = |name: &str| -> Option<u64> {
+        snapshot
+            .iter()
+            .find(|(key, _, _, _)| key.key().name() == name)
+            .and_then(|(_, _, _, value)| match value {
+                DebugValue::Counter(value) => Some(*value),
+                _ => None,
+            })
+    };
+    for (lock, site, calls) in [
+        ("roots_repository", "checkpoint", 1),
+        ("roots_repository", "record_root", 1),
+        ("roots_repository", "contains_root", 1),
+        ("roots_repository", "reset", 1),
+        ("current_history", "checkpoint", 1),
+        ("current_history", "reset", 1),
+        ("current_history", "history_reader", 2),
+        ("current_history", "root", 1),
+    ] {
+        let prefix = format!("history.repository.{lock}.{site}");
+        assert_eq!(counter(&format!("{prefix}.calls")), Some(calls), "{prefix}");
+        assert!(counter(&format!("{prefix}.wait_ns")).is_some(), "{prefix}");
+        assert!(counter(&format!("{prefix}.hold_ns")).is_some(), "{prefix}");
+    }
+    assert_eq!(counter("history.repository.roots_repository.lock_calls"), Some(4));
+    assert_eq!(counter("history.repository.current_history.lock_calls"), Some(5));
+}
+
 #[tokio::test]
 async fn history_reader_generic_getters_return_inserted_values() {
     let repo = create_empty_repository();
@@ -475,7 +623,9 @@ async fn checkpoint_handles_large_action_batches() {
     let reader = next.get_history_reader(&next.root()).unwrap().base();
 
     for i in [0usize, 137, 299] {
-        let fetched = reader.get_data(&format!("bulk-channel-{}", i));
+        let fetched = reader
+            .get_data(&format!("bulk-channel-{}", i))
+            .expect("history read");
         assert_eq!(fetched, vec![datums[i].clone()]);
     }
 }
@@ -581,21 +731,6 @@ struct InmemRootsStore {
 impl RootsStore for InmemRootsStore {
     fn current_root(&self) -> Result<Option<Blake2b256Hash>, RootError> {
         Ok(self.maybe_current_root.lock().unwrap().clone())
-    }
-
-    fn validate_and_set_current_root(
-        &self,
-        key: Blake2b256Hash,
-    ) -> Result<Option<Blake2b256Hash>, RootError> {
-        let roots_lock = self.roots.lock().unwrap();
-        let mut maybe_current_root_lock = self.maybe_current_root.lock().unwrap();
-
-        if roots_lock.contains(&key) {
-            *maybe_current_root_lock = Some(key);
-            Ok(maybe_current_root_lock.clone())
-        } else {
-            Ok(None)
-        }
     }
 
     fn record_root(&self, key: &Blake2b256Hash) -> Result<(), RootError> {

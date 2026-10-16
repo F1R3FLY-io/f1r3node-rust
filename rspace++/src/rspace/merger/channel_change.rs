@@ -139,7 +139,8 @@ mod tests {
     // formal/z3/merge_algebra/channel_netting_monoid.py). A per-datum change is
     // (added multiplicity, removed multiplicity); `combine` is max-multiset
     // union then cancel_common. These pin the legacy inline-normalization
-    // counterexample and both order-independent deferred-normalization algebras.
+    // counterexample and both order-independent deferred-normalization
+    // algebras.
 
     fn sorted<T: Ord + Clone>(v: &[T]) -> Vec<T> {
         let mut w = v.to_vec();

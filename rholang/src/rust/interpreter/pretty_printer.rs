@@ -2728,6 +2728,11 @@ mod drive {
             ExprInstance::EVarBody(_)
             | ExprInstance::GBool(_)
             | ExprInstance::GInt(_)
+            | ExprInstance::GUint64(_)
+            | ExprInstance::GInt32(_)
+            | ExprInstance::GUint32(_)
+            | ExprInstance::GUint16(_)
+            | ExprInstance::GUint8(_)
             | ExprInstance::GString(_)
             | ExprInstance::GUri(_)
             | ExprInstance::GByteArray(_)
@@ -2964,6 +2969,11 @@ mod drive {
 
             ExprInstance::GBool(b) => Ok(b.to_string()),
             ExprInstance::GInt(i) => Ok(i.to_string()),
+            ExprInstance::GUint64(i) => Ok(format!("{i}u64")),
+            ExprInstance::GInt32(i) => Ok(format!("{i}i32")),
+            ExprInstance::GUint32(i) => Ok(format!("{i}u32")),
+            ExprInstance::GUint16(i) => Ok(format!("{i}u16")),
+            ExprInstance::GUint8(i) => Ok(format!("{i}u8")),
             ExprInstance::GString(s) => Ok(format!("\"{}\"", s)),
             ExprInstance::GUri(u) => Ok(format!("`{}`", u)),
             ExprInstance::GByteArray(bs) => Ok(hex::encode(bs)),
@@ -6860,6 +6870,15 @@ mod tests {
             );
             assert_eq!(print_expr(ExprInstance::GBigInt(vec![0x00, 0xFF])), "255n");
             assert_eq!(print_expr(ExprInstance::GBigInt(vec![])), "0n");
+            assert_eq!(print_expr(ExprInstance::GUint64(5)), "5u64");
+            assert_eq!(print_expr(ExprInstance::GInt32(-5)), "-5i32");
+            assert_eq!(print_expr(ExprInstance::GUint32(5)), "5u32");
+            assert_eq!(print_expr(ExprInstance::GUint16(65535)), "65535u16");
+            assert_eq!(print_expr(ExprInstance::GUint8(255)), "255u8");
+            assert_eq!(
+                print_expr(ExprInstance::GUint64(u64::MAX)),
+                "18446744073709551615u64"
+            );
             assert_eq!(
                 print_expr(ExprInstance::GBigRat(GBigRational {
                     numerator: vec![1],

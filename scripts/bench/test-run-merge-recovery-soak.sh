@@ -152,6 +152,7 @@ status=$?
 set -e
 DRIVER_PID=""
 [ "$status" -eq 1 ]
+test -s "$TMP/system-integration/integration-tests/log-archive/session/validator1.log"
 
 test "$(find "$TMP/output" -maxdepth 1 -type d -name 'iteration-*' | wc -l | tr -d ' ')" = 1
 grep -q '^host_protection_breach:' "$TMP/output/early-exit.txt"
@@ -309,4 +310,103 @@ grep -q "$TMP/tmp3/test-live" "$TMP/output3/disk-floor-breach.txt"
 test "$(find "$TMP/output3" -maxdepth 1 -type d -name 'iteration-*' | wc -l | tr -d ' ')" = 0
 test ! -e "$TMP/fake-poetry-3.pid"
 
-printf 'soak driver tests passed (fail-closed + deadline + disk-band paths)\n'
+# Scenario 4: two failed iterations. Each fake session writes its own archive
+# directory and exits 1. The second iteration's failure evidence must hold only
+# its own session, and the harness archive must not keep the first session:
+# run 37153082817 copied every earlier session into each failed iteration and
+# reached the disk floor after 15 iterations.
+mkdir -p "$TMP/bin4" "$TMP/si4"
+cat >"$TMP/bin4/poetry" <<'SH'
+#!/usr/bin/env bash
+count="$(($(cat "$FAKE_SESSION_COUNTER" 2>/dev/null || printf 0) + 1))"
+printf '%s\n' "$count" >"$FAKE_SESSION_COUNTER"
+mkdir -p "$FAKE_ARCHIVE_DIR/session-$count"
+printf 'session %s log\n' "$count" >"$FAKE_ARCHIVE_DIR/session-$count/validator1.log"
+printf 'fake pytest session %s failed\n' "$count"
+exit 1
+SH
+chmod +x "$TMP/bin4/poetry"
+status=0
+timeout --signal=TERM --kill-after=5 150 env PATH="$TMP/bin4:$TMP/bin:$PATH" \
+	FAKE_POETRY_PID_FILE="$TMP/fake-poetry-4.pid" \
+	FAKE_SESSION_COUNTER="$TMP/fake-session-counter" \
+	FAKE_ARCHIVE_DIR="$TMP/si4/integration-tests/log-archive" \
+	SOAK_DURATION_SECONDS=40 \
+	SYSTEM_INTEGRATION_DIR="$TMP/si4" \
+	SOAK_OUTPUT_DIR="$TMP/output4" \
+	SOAK_RSS_CEILING_MB=0 \
+	SOAK_HOST_FREE_FLOOR_MB=0 \
+	SOAK_DISK_FREE_FLOOR_MB=0 \
+	SOAK_GUARDIAN_POLL_SECONDS=1 \
+	SOAK_MONITOR_SNAPSHOT_SECONDS=0.1 \
+	"$ROOT/scripts/run-merge-recovery-soak.sh" >"$TMP/driver4.log" 2>&1 || status=$?
+[ "$status" -ne 124 ] || { cat "$TMP/driver4.log" >&2; echo 'soak driver did not finish the two-failure scenario' >&2; exit 1; }
+second="$(find "$TMP/output4" -maxdepth 1 -type d -name 'iteration-00002-*' | head -1)"
+[ -n "$second" ] || { cat "$TMP/driver4.log" >&2; echo 'the two-failure scenario ran fewer than two iterations' >&2; exit 1; }
+test -s "$second/log-archive/session-2/validator1.log"
+test ! -e "$second/log-archive/session-1"
+test ! -e "$TMP/si4/integration-tests/log-archive/session-1"
+test -z "$(ls -A "$TMP/si4/integration-tests/log-archive")"
+jq -e '.failures >= 2' "$TMP/output4/summary.json" >/dev/null
+
+# Scenario 5: the archive reset cannot delete. The driver must log the failed
+# reset with its root and continue, and the session stays in place.
+mkdir -p "$TMP/bin5" "$TMP/si5"
+cat >"$TMP/bin5/find" <<SH
+#!/usr/bin/env bash
+for argument in "\$@"; do
+	[ "\$argument" != -delete ] || { echo 'find: cannot delete: Permission denied' >&2; exit 1; }
+done
+exec $(command -v find) "\$@"
+SH
+chmod +x "$TMP/bin5/find"
+status=0
+timeout --signal=TERM --kill-after=5 120 env PATH="$TMP/bin5:$TMP/bin4:$TMP/bin:$PATH" \
+	FAKE_POETRY_PID_FILE="$TMP/fake-poetry-5.pid" \
+	FAKE_SESSION_COUNTER="$TMP/fake-session-counter-5" \
+	FAKE_ARCHIVE_DIR="$TMP/si5/integration-tests/log-archive" \
+	SOAK_DURATION_SECONDS=5 \
+	SYSTEM_INTEGRATION_DIR="$TMP/si5" \
+	SOAK_OUTPUT_DIR="$TMP/output5" \
+	SOAK_RSS_CEILING_MB=0 \
+	SOAK_HOST_FREE_FLOOR_MB=0 \
+	SOAK_DISK_FREE_FLOOR_MB=0 \
+	SOAK_GUARDIAN_POLL_SECONDS=1 \
+	SOAK_MONITOR_SNAPSHOT_SECONDS=0.1 \
+	"$ROOT/scripts/run-merge-recovery-soak.sh" >"$TMP/driver5.log" 2>&1 || status=$?
+[ "$status" -ne 124 ] || { cat "$TMP/driver5.log" >&2; echo 'soak driver did not finish the failed-reset scenario' >&2; exit 1; }
+grep -q "harness archive reset incomplete for $TMP/si5/integration-tests/log-archive .*Permission denied" "$TMP/driver5.log" ||
+	{ cat "$TMP/driver5.log" >&2; echo 'the failed archive reset was not logged' >&2; exit 1; }
+test -s "$TMP/si5/integration-tests/log-archive/session-1/validator1.log"
+
+for state_case in valid executable duplicate unknown missing overflow; do
+	state_output="$TMP/state-$state_case"
+	mkdir -p "$state_output"
+	printf 'STARTED_AT=1\nITERATIONS=0\nFAILURES=0\nSEGMENT=1\n' >"$state_output/.soak-state"
+	case "$state_case" in
+		executable) printf 'printf executed >"$OUTPUT_DIR/executed"\nexit 2\n' >>"$state_output/.soak-state" ;;
+		duplicate) printf 'ITERATIONS=0\n' >>"$state_output/.soak-state" ;;
+		unknown) printf 'UNRECOGNIZED=0\n' >>"$state_output/.soak-state" ;;
+		missing) printf 'STARTED_AT=1\nITERATIONS=0\nFAILURES=0\n' >"$state_output/.soak-state" ;;
+		overflow) printf 'STARTED_AT=1\nITERATIONS=0\nFAILURES=0\nSEGMENT=99999999999999999999\n' >"$state_output/.soak-state" ;;
+	esac
+	cp "$state_output/.soak-state" "$state_output/before.txt"
+	status=0
+	timeout --signal=TERM --kill-after=2 15 env PATH="$TMP/bin:$PATH" \
+		FAKE_POETRY_PID_FILE="$TMP/state-child.pid" \
+		SOAK_DURATION_SECONDS=1 SYSTEM_INTEGRATION_DIR="$TMP/system-integration" \
+		SOAK_OUTPUT_DIR="$state_output" SOAK_RSS_CEILING_MB=0 \
+		SOAK_HOST_FREE_FLOOR_MB=0 SOAK_DISK_FREE_FLOOR_MB=0 \
+		"$ROOT/scripts/run-merge-recovery-soak.sh" >"$TMP/state-$state_case.log" 2>&1 || status=$?
+	if [ "$state_case" = valid ]; then
+		[ "$status" -eq 0 ] || { cat "$TMP/state-$state_case.log" >&2; exit 1; }
+		grep -q '^SEGMENT=2$' "$state_output/.soak-state"
+	else
+		[ "$status" -eq 2 ] || { printf 'Invalid state accepted: %s (exit %s)\n' "$state_case" "$status" >&2; exit 1; }
+		[ ! -e "$state_output/executed" ] || { printf 'Saved state executed shell input.\n' >&2; exit 1; }
+		cmp "$state_output/before.txt" "$state_output/.soak-state"
+	fi
+	[ ! -e "$TMP/state-child.pid" ]
+done
+
+printf 'legacy soak driver tests passed (fail-closed + deadline + disk-band + evidence scope + failed reset + restart state)\n'

@@ -42,9 +42,23 @@ fn inputs(size: usize) -> (Par, ListParWithRandom, TaggedContinuation, COMM) {
 fn metered_comm_construction_preserves_identity_and_measurement() {
     let (_, data, continuation, comm) = inputs(17);
     let unlimited = |_: usize, _: usize, _: usize| Ok(());
-    let ordinary = build::comm(&comm, &continuation, false, &[(&data, false)]).unwrap();
-    let metered =
-        build::comm_metered(&comm, &continuation, false, &[(&data, false)], &unlimited).unwrap();
+    let ordinary = build::comm(
+        &comm,
+        &continuation,
+        false,
+        &[(&data, false)],
+        &system_residue(),
+    )
+    .unwrap();
+    let metered = build::comm_metered(
+        &comm,
+        &continuation,
+        false,
+        &[(&data, false)],
+        &system_residue(),
+        &unlimited,
+    )
+    .unwrap();
     assert_eq!(ordinary.event_id, metered.event_id);
     assert_eq!(ordinary.measurement, metered.measurement);
     assert_eq!(ordinary.authority, metered.authority);
@@ -331,10 +345,13 @@ fn native_comm_construction_matches_recorded_measurements_for_every_persistence_
             );
             comm.produces = vec![producer.clone()];
             comm.times_repeated = [(producer, 1)].into_iter().collect();
-            let observed = build::comm(&comm, &continuation, continuation_persistent, &[(
-                &data,
-                data_persistent,
-            )])
+            let observed = build::comm(
+                &comm,
+                &continuation,
+                continuation_persistent,
+                &[(&data, data_persistent)],
+                &system_residue(),
+            )
             .unwrap()
             .into_native()
             .unwrap();
@@ -356,10 +373,13 @@ fn native_comm_construction_matches_recorded_measurements_for_every_persistence_
             let before_usage = budget.native_phlo_usage();
             let before_rows = budget.byte_observations();
             assert_eq!(
-                build::comm(&comm, &continuation, continuation_persistent, &[(
-                    &data,
-                    data_persistent
-                )])
+                build::comm(
+                    &comm,
+                    &continuation,
+                    continuation_persistent,
+                    &[(&data, data_persistent)],
+                    &system_residue()
+                )
                 .unwrap()
                 .into_native()
                 .unwrap(),
@@ -405,7 +425,14 @@ fn native_observation_construction_rejects_empty_and_conflicting_authority_but_p
         .is_empty());
     continuation.cost_authority.as_mut().unwrap().regions[0].signature =
         unit.regions[0].signature.clone();
-    assert!(build::comm(&comm, &continuation, true, &[(&data, false)]).is_err());
+    assert!(build::comm(
+        &comm,
+        &continuation,
+        true,
+        &[(&data, false)],
+        &system_residue()
+    )
+    .is_err());
 }
 
 #[test]
@@ -442,10 +469,16 @@ fn native_observation_preserves_legacy_measurements_without_legacy_amounts() {
         );
         recorded.legacy_amount = None;
         assert_eq!(recorded, native);
-        let native = build::comm(&comm, &continuation, false, &[(&data, false)])
-            .unwrap()
-            .into_native()
-            .unwrap();
+        let native = build::comm(
+            &comm,
+            &continuation,
+            false,
+            &[(&data, false)],
+            &system_residue(),
+        )
+        .unwrap()
+        .into_native()
+        .unwrap();
         budget
             .reserve_comm_authority_measured(
                 native.event_id,
@@ -480,10 +513,16 @@ async fn native_typed_replay_preserves_denied_comm_and_accepted_introduction_usa
         }
         .into_native()
         .unwrap();
-        let comm_observation = build::comm(&comm, &continuation, false, &[(&data, false)])
-            .unwrap()
-            .into_native()
-            .unwrap();
+        let comm_observation = build::comm(
+            &comm,
+            &continuation,
+            false,
+            &[(&data, false)],
+            &system_residue(),
+        )
+        .unwrap()
+        .into_native()
+        .unwrap();
         let limit = introduction.measurement.unwrap().introduction_bytes;
         let budget = RuntimeBudget::new(Cost::unsafe_max());
         budget
@@ -663,8 +702,15 @@ fn metered_comm_charge(
         totals.set([o + operations, s + scanned, b + backing]);
         Ok(())
     };
-    build::comm_metered(comm, continuation, false, &[(data, false)], &meter)
-        .expect("metered COMM observation");
+    build::comm_metered(
+        comm,
+        continuation,
+        false,
+        &[(data, false)],
+        &system_residue(),
+        &meter,
+    )
+    .expect("metered COMM observation");
     totals.get()
 }
 
@@ -717,8 +763,8 @@ proptest! {
         let continuation = continuation_with(body, guard);
         let comm = comm_for(&channel, &data, &continuation);
         let unlimited = |_: usize, _: usize, _: usize| Ok(());
-        let ordinary = build::comm(&comm, &continuation, false, &[(&data, false)]).unwrap();
-        let metered = build::comm_metered(&comm, &continuation, false, &[(&data, false)], &unlimited).unwrap();
+        let ordinary = build::comm(&comm, &continuation, false, &[(&data, false)], &system_residue()).unwrap();
+        let metered = build::comm_metered(&comm, &continuation, false, &[(&data, false)], &system_residue(), &unlimited).unwrap();
         prop_assert_eq!(ordinary.event_id, metered.event_id);
         prop_assert_eq!(ordinary.measurement, metered.measurement);
         prop_assert_eq!(ordinary.authority, metered.authority);
@@ -747,7 +793,7 @@ proptest! {
                 used.set(next);
                 Ok(())
             };
-            build::comm_metered(&comm, &continuation, false, &[(&data, false)], &meter)
+            build::comm_metered(&comm, &continuation, false, &[(&data, false)], &system_residue(), &meter)
         };
         prop_assert!(run(exact).is_ok());
         if exact[dimension] > 0 {
@@ -806,5 +852,101 @@ proptest! {
         let observed = build::consume_introduction(&consume, &channels, &patterns, &continuation, &auth).unwrap().into_native().unwrap();
         let messages: usize = channels.iter().map(Message::encoded_len).sum::<usize>() + patterns.iter().map(Message::encoded_len).sum::<usize>() + continuation.encoded_len();
         prop_assert_eq!(observed.measurement.unwrap().introduction_bytes, messages as u64 + 32 + 32 * owners as u64);
+    }
+}
+
+fn system_residue() -> crate::rust::interpreter::accounting::authority::ResidueContext {
+    crate::rust::interpreter::accounting::authority::ResidueContext::system()
+}
+
+/// DR-101: a datum stored as residue of `payer` in deployment `[9; 32]`, and a
+/// COMM that consumes it.
+fn residue_inputs(payer: &Sig) -> (ListParWithRandom, TaggedContinuation, COMM) {
+    let channel = Par::default();
+    let entropy = vec![7; 17];
+    let payer_region = authority::cost_region(
+        &authority::sig_to_cost_signature(payer).unwrap(),
+        &entropy,
+        0,
+    )
+    .unwrap();
+    let seal = authority::system_residue_authority(
+        &CostAuthority {
+            regions: vec![payer_region],
+        },
+        &[9; 32],
+    )
+    .unwrap();
+    let data = ListParWithRandom {
+        random_state: entropy,
+        cost_authority: Some(seal),
+        ..Default::default()
+    };
+    let continuation = TaggedContinuation {
+        cost_authority: Some(authority(1)),
+        ..Default::default()
+    };
+    let producer = Produce::create(&channel, &data, false);
+    let source = COMM {
+        consume: Consume::create(
+            &vec![channel.clone()],
+            &vec![BindPattern::default()],
+            &continuation,
+            false,
+        ),
+        produces: vec![producer.clone()],
+        peeks: Default::default(),
+        times_repeated: [(producer, 1)].into_iter().collect(),
+    };
+    (data, continuation, source)
+}
+
+/// DR-101: play and replay resolve residue with the same deployment context.
+/// A replay with another deployment, another payer or no binding builds
+/// another observation, which the recorded-observation check rejects
+/// (`NativeBudgetTrace::authenticate`).
+#[test]
+fn a_replay_in_another_residue_context_observes_another_comm() {
+    use crate::rust::interpreter::accounting::authority::ResidueContext;
+
+    let payer = Sig::Ground(vec![3; 33]);
+    let (data, continuation, comm) = residue_inputs(&payer);
+    let unlimited = |_: usize, _: usize, _: usize| Ok(());
+    let in_deploy = ResidueContext::new(&payer, [9; 32]).unwrap();
+    let played = build::comm(&comm, &continuation, false, &[(&data, false)], &in_deploy)
+        .unwrap()
+        .into_native()
+        .unwrap();
+    let replayed = build::comm_metered(
+        &comm,
+        &continuation,
+        false,
+        &[(&data, false)],
+        &in_deploy,
+        &unlimited,
+    )
+    .unwrap()
+    .into_native()
+    .unwrap();
+    assert!(played == replayed);
+    for context in [
+        ResidueContext::new(&payer, [10; 32]).unwrap(),
+        ResidueContext::new(&Sig::Ground(vec![4; 33]), [9; 32]).unwrap(),
+        ResidueContext::system(),
+    ] {
+        let other = build::comm_metered(
+            &comm,
+            &continuation,
+            false,
+            &[(&data, false)],
+            &context,
+            &unlimited,
+        )
+        .unwrap()
+        .into_native()
+        .unwrap();
+        assert_eq!(other.event_id, played.event_id);
+        assert!(other.authority != played.authority);
+        assert!(other != played);
     }
 }

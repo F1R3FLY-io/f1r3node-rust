@@ -118,8 +118,8 @@ fn assert_root_equivalent<T>(
 
 #[test]
 fn exhaustive_valid_corpora_decode_identically() {
-    assert_eq!(GENERATED_PROTOBUF_MESSAGE_COUNT, 57);
-    assert_eq!(GENERATED_PROTOBUF_ONEOF_COUNT, 5);
+    assert_eq!(GENERATED_PROTOBUF_MESSAGE_COUNT, 65);
+    assert_eq!(GENERATED_PROTOBUF_ONEOF_COUNT, 6);
 
     let pars = corpus::par_corpus();
     assert!(

@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use shared::rust::store::key_value_store::KeyValueStore;
 
-use crate::rspace::errors::HistoryError;
+use crate::rspace::errors::{HistoryError, RSpaceError};
 use crate::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use crate::rspace::hashing::stable_hash_provider::{StableHashSerialize, hash, hash_from_vec};
 use crate::rspace::history::cold_store::PersistedData;
@@ -217,22 +217,21 @@ where
             A: Clone + ColdStoreDecode + 'static + Sync + Send,
             K: Clone + ColdStoreDecode + 'static + Sync + Send,
         {
-            fn get_data_proj(&self, key: &C) -> Vec<Datum<A>> {
-                self.outer
-                    .get_data_proj(&hash(key))
-                    .expect("Failed to get data proj")
+            fn get_data_proj(&self, key: &C) -> Result<Vec<Datum<A>>, RSpaceError> {
+                self.outer.get_data_proj(&hash(key)).map_err(Into::into)
             }
 
-            fn get_continuations_proj(&self, key: &Vec<C>) -> Vec<WaitingContinuation<P, K>> {
+            fn get_continuations_proj(
+                &self,
+                key: &Vec<C>,
+            ) -> Result<Vec<WaitingContinuation<P, K>>, RSpaceError> {
                 self.outer
                     .get_continuations_proj(&hash_from_vec(key))
-                    .expect("Failed to get continuations proj")
+                    .map_err(Into::into)
             }
 
-            fn get_joins_proj(&self, key: &C) -> Vec<Vec<C>> {
-                self.outer
-                    .get_joins_proj(&hash(key))
-                    .expect("Failed to get joins proj")
+            fn get_joins_proj(&self, key: &C) -> Result<Vec<Vec<C>>, RSpaceError> {
+                self.outer.get_joins_proj(&hash(key)).map_err(Into::into)
             }
         }
 

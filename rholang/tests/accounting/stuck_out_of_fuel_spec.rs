@@ -53,6 +53,7 @@ async fn cell_values(runtime: &RhoRuntimeImpl, name: &str) -> Vec<i64> {
     runtime
         .get_data(&channel)
         .await
+        .expect("stuck output query")
         .iter()
         .flat_map(|datum| datum.a.pars.iter())
         .flat_map(|par| par.exprs.iter())

@@ -61,35 +61,37 @@ where
         consume_ref: &Consume,
         peeks: &BTreeSet<i32>,
         expected: Option<&dyn NativeCandidateIdentity>,
-    ) -> Option<PreparedConsumeCandidate<C, A>> {
+    ) -> Result<Option<PreparedConsumeCandidate<C, A>>, RSpaceError> {
         if expected.is_some_and(|identity| !identity.matches_consume(consume_ref)) {
-            return None;
+            return Ok(None);
         }
         let mut candidates: HashMap<_, _> = channels
             .iter()
             .map(|channel| {
-                (channel.clone(), canonical_candidates(self.get_store().get_data(channel)))
+                Ok((channel.clone(), canonical_candidates(self.get_store().get_data(channel)?)))
             })
-            .collect();
+            .collect::<Result<_, RSpaceError>>()?;
         if let Some(expected) = expected {
             for entries in candidates.values_mut() {
                 entries.retain(|(datum, _)| self.candidate_matches(datum, expected, None));
             }
         }
         let pairs: Vec<_> = channels.iter().zip(patterns.iter()).collect();
-        let (data, commit) = self.extract_prepared_data_candidates(
+        let Some((data, commit)) = self.extract_prepared_data_candidates(
             &self.matcher,
             &pairs,
             continuation,
             &mut candidates,
-        )?;
+        ) else {
+            return Ok(None);
+        };
         let comm = COMM::new(&data, consume_ref.clone(), peeks.clone(), |produces| {
             self.produce_counters(produces)
         });
         if expected.is_some_and(|identity| !identity.matches_comm(&comm)) {
-            return None;
+            return Ok(None);
         }
-        Some(PreparedConsumeCandidate { data, comm, commit })
+        Ok(Some(PreparedConsumeCandidate { data, comm, commit }))
     }
 
     pub(super) fn prepare_native_produce_candidate(
@@ -117,15 +119,15 @@ where
         let candidate = self.run_matcher_for_channels(
             grouped_channels,
             |channels| {
-                canonical_candidates(self.get_store().get_continuations_arc(&channels))
+                Ok(canonical_candidates(self.get_store().get_continuations_arc(&channels)?)
                     .into_iter()
                     .filter(|(waiting, _)| {
                         expected.is_none_or(|identity| identity.matches_consume(&waiting.source))
                     })
-                    .collect()
+                    .collect())
             },
             |c| {
-                let mut entries = canonical_candidates(self.get_store().get_data(&c));
+                let mut entries = canonical_candidates(self.get_store().get_data(&c)?);
                 if &c == channel {
                     entries.insert(
                         0,
@@ -148,9 +150,9 @@ where
                         )
                     });
                 }
-                (c, entries)
+                Ok((c, entries))
             },
-        );
+        )?;
         let Some(candidate) = candidate else {
             return Ok(None);
         };

@@ -5,10 +5,12 @@ use comm::rust::rp::protocol_helper;
 use models::casper::{
     ApprovedBlockProto, ApprovedBlockRequestProto, BlockApprovalProto, BlockHashMessageProto,
     BlockMessageProto, BlockRequestProto, FloorCacheRequestProto, FloorCacheResponseProto,
-    ForkChoiceTipRequestProto, GetSnapshotChunkRequestProto, HasBlockProto, HasBlockRequestProto,
-    HasSnapshotProto, HasSnapshotRequestProto, MergeableEntryRequestProto,
+    ForkChoiceTipRequestProto, GetSnapshotChunkRequestProto, GetWalPayloadRequestProto,
+    HasBlockProto, HasBlockRequestProto, HasSnapshotProto, HasSnapshotRequestProto,
+    HasWalPayloadProto, HasWalPayloadRequestProto, MergeableEntryRequestProto,
     MergeableEntryResponseProto, NoApprovedBlockAvailableProto, SnapshotChunkResponseProto,
     StoreItemsMessageProto, StoreItemsMessageRequestProto, UnapprovedBlockProto,
+    WalPayloadResponseProto,
 };
 use models::routing::{Packet, Protocol};
 use models::rust::block_hash::BlockHash;
@@ -81,6 +83,11 @@ pub enum CasperMessageProto {
     SnapshotChunkResponse(SnapshotChunkResponseProto),
     HasSnapshotRequest(HasSnapshotRequestProto),
     HasSnapshot(HasSnapshotProto),
+    // Between-snapshot WAL payload fetch (Wave 3, Phase 7b-2).
+    GetWalPayloadRequest(GetWalPayloadRequestProto),
+    WalPayloadResponse(WalPayloadResponseProto),
+    HasWalPayloadRequest(HasWalPayloadRequestProto),
+    HasWalPayload(HasWalPayloadProto),
 }
 
 /// Extract a Packet from a Protocol message
@@ -118,6 +125,15 @@ pub fn to_casper_message_proto(packet: &Packet) -> PacketParseResult<CasperMessa
             .map(CasperMessageProto::HasSnapshotRequest),
         "HasSnapshot" => {
             parse_packet::<HasSnapshotProto>(packet).map(CasperMessageProto::HasSnapshot)
+        }
+        "GetWalPayloadRequest" => parse_packet::<GetWalPayloadRequestProto>(packet)
+            .map(CasperMessageProto::GetWalPayloadRequest),
+        "WalPayloadResponse" => parse_packet::<WalPayloadResponseProto>(packet)
+            .map(CasperMessageProto::WalPayloadResponse),
+        "HasWalPayloadRequest" => parse_packet::<HasWalPayloadRequestProto>(packet)
+            .map(CasperMessageProto::HasWalPayloadRequest),
+        "HasWalPayload" => {
+            parse_packet::<HasWalPayloadProto>(packet).map(CasperMessageProto::HasWalPayload)
         }
         _ => PacketParseResult::IllegalPacket(format!("Unrecognized typeId: {}", packet.type_id)),
     }
@@ -175,6 +191,16 @@ pub fn casper_message_from_proto(proto: CasperMessageProto) -> Result<CasperMess
             Ok(CasperMessage::from_has_snapshot_request(proto))
         }
         CasperMessageProto::HasSnapshot(proto) => Ok(CasperMessage::from_has_snapshot(proto)),
+        CasperMessageProto::GetWalPayloadRequest(proto) => {
+            Ok(CasperMessage::from_get_wal_payload_request(proto))
+        }
+        CasperMessageProto::WalPayloadResponse(proto) => {
+            Ok(CasperMessage::from_wal_payload_response(proto))
+        }
+        CasperMessageProto::HasWalPayloadRequest(proto) => {
+            Ok(CasperMessage::from_has_wal_payload_request(proto))
+        }
+        CasperMessageProto::HasWalPayload(proto) => Ok(CasperMessage::from_has_wal_payload(proto)),
     }
 }
 
@@ -603,5 +629,169 @@ mod tests {
         let domain = casper_message_from_proto(CasperMessageProto::HasSnapshot(resp))
             .expect("bridge must succeed");
         assert!(matches!(domain, DomainMessage::HasSnapshot(_)));
+    }
+
+    // --- WAL payload fetch (Wave 3, PR 3.3) --------------------
+    //
+    // Parallel to the chunk-fetch tests: pin type_id, parse
+    // roundtrip, dispatch, and bridge for both new messages.
+
+    #[test]
+    fn get_wal_payload_request_parse_roundtrip() {
+        let proto = GetWalPayloadRequestProto {
+            payload_hash: prost::bytes::Bytes::from(vec![0xAB; 32]),
+        };
+        let packet = proto.clone().mk_packet();
+        assert_eq!(packet.type_id, "GetWalPayloadRequest");
+
+        let parsed = parse_packet::<GetWalPayloadRequestProto>(&packet)
+            .get()
+            .expect("parse must succeed");
+        assert_eq!(parsed.payload_hash, proto.payload_hash);
+    }
+
+    #[test]
+    fn wal_payload_response_parse_roundtrip() {
+        let proto = WalPayloadResponseProto {
+            payload_hash: prost::bytes::Bytes::from(vec![0xAB; 32]),
+            payload_bytes: prost::bytes::Bytes::from(vec![0xCD; 1024]),
+        };
+        let packet = proto.clone().mk_packet();
+        assert_eq!(packet.type_id, "WalPayloadResponse");
+
+        let parsed = parse_packet::<WalPayloadResponseProto>(&packet)
+            .get()
+            .expect("parse must succeed");
+        assert_eq!(parsed.payload_hash, proto.payload_hash);
+        assert_eq!(parsed.payload_bytes, proto.payload_bytes);
+    }
+
+    #[test]
+    fn to_casper_message_proto_dispatches_get_wal_payload_request() {
+        let proto = GetWalPayloadRequestProto {
+            payload_hash: prost::bytes::Bytes::from(vec![0xAB; 32]),
+        };
+        let packet = proto.mk_packet();
+        let result = to_casper_message_proto(&packet)
+            .get()
+            .expect("dispatch must succeed");
+        assert!(matches!(
+            result,
+            CasperMessageProto::GetWalPayloadRequest(_)
+        ));
+    }
+
+    #[test]
+    fn to_casper_message_proto_dispatches_wal_payload_response() {
+        let proto = WalPayloadResponseProto {
+            payload_hash: prost::bytes::Bytes::from(vec![0xAB; 32]),
+            payload_bytes: prost::bytes::Bytes::new(),
+        };
+        let packet = proto.mk_packet();
+        let result = to_casper_message_proto(&packet)
+            .get()
+            .expect("dispatch must succeed");
+        assert!(matches!(result, CasperMessageProto::WalPayloadResponse(_)));
+    }
+
+    #[test]
+    fn casper_message_from_proto_bridges_wal_payload_variants() {
+        use models::rust::casper::protocol::casper_message::CasperMessage as DomainMessage;
+        let req = GetWalPayloadRequestProto {
+            payload_hash: prost::bytes::Bytes::from(vec![0xAB; 32]),
+        };
+        let domain = casper_message_from_proto(CasperMessageProto::GetWalPayloadRequest(req))
+            .expect("bridge must succeed");
+        assert!(matches!(domain, DomainMessage::GetWalPayloadRequest(_)));
+
+        let resp = WalPayloadResponseProto {
+            payload_hash: prost::bytes::Bytes::from(vec![0xAB; 32]),
+            payload_bytes: prost::bytes::Bytes::new(),
+        };
+        let domain = casper_message_from_proto(CasperMessageProto::WalPayloadResponse(resp))
+            .expect("bridge must succeed");
+        assert!(matches!(domain, DomainMessage::WalPayloadResponse(_)));
+    }
+
+    // --- HasWalPayload lookup pair (Wave 3, PR 3.4) ------------
+    //
+    // Mirrors HasSnapshot (PR 3.2) but keyed on payload_hash
+    // instead of block_hash.  Last of the proto slices.
+
+    #[test]
+    fn has_wal_payload_request_parse_roundtrip() {
+        let proto = HasWalPayloadRequestProto {
+            payload_hash: prost::bytes::Bytes::from(vec![0xAB; 32]),
+        };
+        let packet = proto.clone().mk_packet();
+        assert_eq!(packet.type_id, "HasWalPayloadRequest");
+
+        let parsed = parse_packet::<HasWalPayloadRequestProto>(&packet)
+            .get()
+            .expect("parse must succeed");
+        assert_eq!(parsed.payload_hash, proto.payload_hash);
+    }
+
+    #[test]
+    fn has_wal_payload_parse_roundtrip() {
+        let proto = HasWalPayloadProto {
+            payload_hash: prost::bytes::Bytes::from(vec![0xAB; 32]),
+            payload_size: 65536,
+        };
+        let packet = proto.clone().mk_packet();
+        assert_eq!(packet.type_id, "HasWalPayload");
+
+        let parsed = parse_packet::<HasWalPayloadProto>(&packet)
+            .get()
+            .expect("parse must succeed");
+        assert_eq!(parsed.payload_hash, proto.payload_hash);
+        assert_eq!(parsed.payload_size, proto.payload_size);
+    }
+
+    #[test]
+    fn to_casper_message_proto_dispatches_has_wal_payload_request() {
+        let proto = HasWalPayloadRequestProto {
+            payload_hash: prost::bytes::Bytes::from(vec![0xAB; 32]),
+        };
+        let packet = proto.mk_packet();
+        let result = to_casper_message_proto(&packet)
+            .get()
+            .expect("dispatch must succeed");
+        assert!(matches!(
+            result,
+            CasperMessageProto::HasWalPayloadRequest(_)
+        ));
+    }
+
+    #[test]
+    fn to_casper_message_proto_dispatches_has_wal_payload() {
+        let proto = HasWalPayloadProto {
+            payload_hash: prost::bytes::Bytes::from(vec![0xAB; 32]),
+            payload_size: 0,
+        };
+        let packet = proto.mk_packet();
+        let result = to_casper_message_proto(&packet)
+            .get()
+            .expect("dispatch must succeed");
+        assert!(matches!(result, CasperMessageProto::HasWalPayload(_)));
+    }
+
+    #[test]
+    fn casper_message_from_proto_bridges_has_wal_payload_variants() {
+        use models::rust::casper::protocol::casper_message::CasperMessage as DomainMessage;
+        let req = HasWalPayloadRequestProto {
+            payload_hash: prost::bytes::Bytes::from(vec![0xAB; 32]),
+        };
+        let domain = casper_message_from_proto(CasperMessageProto::HasWalPayloadRequest(req))
+            .expect("bridge must succeed");
+        assert!(matches!(domain, DomainMessage::HasWalPayloadRequest(_)));
+
+        let resp = HasWalPayloadProto {
+            payload_hash: prost::bytes::Bytes::from(vec![0xAB; 32]),
+            payload_size: 1024,
+        };
+        let domain = casper_message_from_proto(CasperMessageProto::HasWalPayload(resp))
+            .expect("bridge must succeed");
+        assert!(matches!(domain, DomainMessage::HasWalPayload(_)));
     }
 }

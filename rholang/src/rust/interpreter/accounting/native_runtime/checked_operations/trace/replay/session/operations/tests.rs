@@ -1,3 +1,4 @@
+use rspace_plus_plus::rspace::hashing::stable_hash_provider::EventCodecEpoch;
 use rspace_plus_plus::rspace::operation_context::{self, OperationOrder};
 use rspace_plus_plus::rspace::rspace::RSpace;
 use rspace_plus_plus::rspace::rspace_interface::ISpace;
@@ -10,13 +11,202 @@ use crate::rust::interpreter::accounting::costs::Cost;
 use crate::rust::interpreter::accounting::native_runtime::tests::{
     authority, config, journal_limits, with_contract,
 };
-use crate::rust::interpreter::accounting::native_runtime::NativeOperationTraceLimits;
-use crate::rust::interpreter::accounting::{observation_construction, RuntimeBudget};
+use crate::rust::interpreter::accounting::native_runtime::{
+    CheckedNativeOperationTrace, NativeOperationTraceLimits,
+};
+use crate::rust::interpreter::accounting::{
+    observation_construction, NativeBudgetRecording, RuntimeBudget,
+};
 use crate::rust::interpreter::matcher::r#match::Matcher;
 use crate::rust::interpreter::rho_runtime::test_accounting_observer;
 
 mod histories;
 mod joins;
+
+fn empty_trace(host: &HostWorkBudget) -> CheckedNativeOperationTrace {
+    let recording = NativeBudgetRecording {
+        session: [0; 32],
+        attempts: Arc::from([]),
+        retries: Arc::from([]),
+        used: 0,
+        paths: crate::rust::interpreter::accounting::native_runtime::tests::fixture_paths(),
+    };
+    with_contract(u64::MAX, [0, 1, 1, 0], |contract| {
+        contract.check_operation_journal(
+            recording.session,
+            &recording,
+            Arc::from([]),
+            journal_limits(),
+            host,
+        )
+    })
+    .expect("empty checked journal")
+    .bind_trace(
+        Arc::from([]),
+        NativeOperationTraceLimits {
+            events: 10,
+            source_entries: 100,
+            source_bytes: 100_000,
+            telemetry_items: 100,
+            telemetry_bytes: 100_000,
+        },
+        host,
+    )
+    .expect("empty checked trace")
+}
+
+#[tokio::test]
+async fn replay_constructors_preserve_selected_source_epoch_and_legacy_defaults() {
+    for selected in [
+        None,
+        Some(EventCodecEpoch::Legacy),
+        Some(EventCodecEpoch::CostV1),
+        Some(EventCodecEpoch::CostV2),
+    ] {
+        for installed in [false, true] {
+            let epoch = selected.unwrap_or(EventCodecEpoch::Legacy);
+            let host = config(u64::MAX, [0, 1, 1, 0]).host_work;
+            let trace = empty_trace(&host);
+            let mut stores = InMemoryStoreManager::new();
+            let matcher: Arc<Box<dyn Match<BindPattern, ListParWithRandom, TaggedContinuation>>> =
+                Arc::new(Box::new(Matcher));
+            let (play, _) = RSpace::create_with_replay_for_epoch(
+                epoch,
+                stores.r_space_stores().await.expect("in-memory stores"),
+                matcher.clone(),
+            )
+            .expect("epoch-bound live space");
+            let history = play.get_history_repository();
+            let replay = match (selected, installed) {
+                (None, false) => trace.into_session(history, matcher, host),
+                (None, true) => {
+                    trace.into_installed_session(history, matcher, host, std::iter::empty())
+                }
+                (Some(epoch), false) => trace.into_session_for_epoch(epoch, history, matcher, host),
+                (Some(epoch), true) => trace.into_installed_session_for_epoch(
+                    epoch,
+                    history,
+                    matcher,
+                    host,
+                    std::iter::empty(),
+                ),
+            }
+            .expect("epoch-bound replay session");
+            assert_eq!(replay.inner.execution_context(), epoch);
+            let mut channel = Par::default();
+            if epoch != EventCodecEpoch::Legacy {
+                channel
+                    .cost_stacks
+                    .push(models::rhoapi::CostStack::default());
+            }
+            let cost_authority = (epoch != EventCodecEpoch::Legacy).then(|| authority(1));
+            let data = ListParWithRandom {
+                random_state: vec![7; 17],
+                cost_authority: cost_authority.clone(),
+                ..Default::default()
+            };
+            let continuation = TaggedContinuation {
+                cost_authority,
+                ..Default::default()
+            };
+            let producer = Produce::create_for_epoch(epoch, &channel, &data, false)
+                .expect("expected epoch-bound produce");
+            let channels = vec![channel.clone()];
+            let patterns = vec![BindPattern::default()];
+            let consumer =
+                Consume::create_for_epoch(epoch, &channels, &patterns, &continuation, false)
+                    .expect("expected epoch-bound consume");
+            let producer_seen = std::cell::Cell::new(false);
+            let result = replay
+                .inner
+                .produce_with_authority(channel, data, false, |source| {
+                    assert_eq!(source, &producer);
+                    producer_seen.set(true);
+                    Err::<CostAuthority, _>(RSpaceError::HostWorkRejected)
+                })
+                .await;
+            assert_eq!(result, Err(RSpaceError::HostWorkRejected));
+            assert!(producer_seen.get());
+            let consumer_seen = std::cell::Cell::new(false);
+            let result = replay
+                .inner
+                .consume_with_authority(
+                    channels,
+                    patterns,
+                    continuation,
+                    false,
+                    BTreeSet::new(),
+                    |source| {
+                        assert_eq!(source, &consumer);
+                        consumer_seen.set(true);
+                        Err::<CostAuthority, _>(RSpaceError::HostWorkRejected)
+                    },
+                )
+                .await;
+            assert_eq!(result, Err(RSpaceError::HostWorkRejected));
+            assert!(consumer_seen.get());
+            replay
+                .check_complete()
+                .await
+                .expect("no operation published");
+        }
+    }
+}
+
+#[tokio::test]
+async fn runtime_replay_constructor_requires_the_exact_budget_execution_context() {
+    for context in [
+        None,
+        Some(EventCodecEpoch::Legacy),
+        Some(EventCodecEpoch::CostV1),
+        Some(EventCodecEpoch::CostV2),
+    ] {
+        for requested_epoch in [EventCodecEpoch::Legacy, EventCodecEpoch::CostV1, EventCodecEpoch::CostV2] {
+            let settings = config(u64::MAX, [0, 1, 1, 0]);
+            let host = settings.host_work();
+            let budget = RuntimeBudget::new(Cost::unsafe_max());
+            if let Some(epoch) = context {
+                budget.reset_for_native_execution(
+                    settings.with_event_codec_epoch(epoch),
+                ).expect("valid native configuration");
+            }
+            let trace = empty_trace(&host);
+            let mut stores = InMemoryStoreManager::new();
+            let matcher: Arc<Box<dyn Match<BindPattern, ListParWithRandom, TaggedContinuation>>> =
+                Arc::new(Box::new(Matcher));
+            let (play, _) = RSpace::<Par, BindPattern, ListParWithRandom, TaggedContinuation>::create_with_replay_for_epoch(
+                context.unwrap_or(EventCodecEpoch::Legacy),
+                stores.r_space_stores().await.expect("in-memory stores"),
+                matcher.clone(),
+            ).expect("epoch-bound live space");
+            let host_before: Vec<_> = HostWorkDimension::ALL.iter()
+                .map(|dimension| host.usage(*dimension)).collect();
+            let result = trace.into_runtime_session(
+                play.get_history_repository(), matcher, host.clone(), std::iter::empty(),
+                budget.clone(), requested_epoch,
+            );
+            if let Some(expected) = context.filter(|epoch| *epoch == requested_epoch) {
+                let replay = result.expect("matching execution context");
+                assert_eq!(replay.inner.execution_context(), expected);
+                assert_eq!(budget.native_event_codec_epoch(), Some(expected));
+                let checkpoint = replay.checkpoint().await.expect("empty replay checkpoint");
+                replay.restore(checkpoint).await.expect("same-session restore");
+                assert_eq!(replay.inner.execution_context(), expected);
+                assert_eq!(budget.native_event_codec_epoch(), Some(expected));
+                replay.check_complete().await.expect("empty trace is complete");
+                assert_eq!(replay.completed_usage().await.expect("empty replay usage"), 0);
+            } else {
+                assert!(matches!(result, Err(RSpaceError::HostWorkRejected)));
+                assert_eq!(budget.native_event_codec_epoch(), context);
+                assert_eq!(budget.native_phlo_usage(), context.map(|_| 0));
+                assert!(budget.byte_observations().rows.is_empty());
+                let host_after: Vec<_> = HostWorkDimension::ALL.iter()
+                    .map(|dimension| host.usage(*dimension)).collect();
+                assert_eq!(host_after, host_before);
+            }
+        }
+    }
+}
 
 #[tokio::test]
 async fn live_observer_preserves_host_rejection_without_mutating_tuples() {
@@ -101,8 +291,17 @@ async fn exercise(
         free_count: 1,
         remainder: None,
     }];
-    let producer = Produce::create(&channel, &data, data_persistent);
-    let consumer = Consume::create(&channels, &patterns, &continuation, continuation_persistent);
+    let epoch = EventCodecEpoch::CostV1;
+    let producer = Produce::create_for_epoch(epoch, &channel, &data, data_persistent)
+        .expect("cost-bearing produce source");
+    let consumer = Consume::create_for_epoch(
+        epoch,
+        &channels,
+        &patterns,
+        &continuation,
+        continuation_persistent,
+    )
+    .expect("cost-bearing consume source");
     let intro = if produce {
         observation_construction::produce_introduction(&producer, &channel, &data, &auth)
     } else {
@@ -121,7 +320,8 @@ async fn exercise(
         _ => u64::MAX,
     };
     let mut stores = InMemoryStoreManager::new();
-    let (play, _) = RSpace::create_with_replay(
+    let (play, _) = RSpace::create_with_replay_for_epoch(
+        epoch,
         stores.r_space_stores().await.unwrap(),
         Arc::new(Box::new(Matcher)),
     )
@@ -230,7 +430,12 @@ async fn exercise(
     )
     .unwrap();
     let replay = trace
-        .into_session(history, Arc::new(Box::new(Matcher)), host)
+        .into_session_for_epoch(
+            play.codec_epoch(),
+            history,
+            Arc::new(Box::new(Matcher)),
+            host,
+        )
         .unwrap();
     let mut checkpoint = Some(replay.checkpoint().await.unwrap());
     operation_context::scope(order(), async {
@@ -359,11 +564,13 @@ async fn exercise(
         replay.check_complete().await.unwrap();
         assert_eq!(
             replay.get_data(&channel).await.unwrap(),
-            play.get_data(&channel).await
+            play.get_data(&channel).await.expect("live data query")
         );
         assert_eq!(
             replay.get_continuations(&channels).await.unwrap(),
-            play.get_store().get_continuations(&channels)
+            play.get_store()
+                .get_continuations(&channels)
+                .expect("live continuation query")
         );
         if round == 0 {
             replay.restore(checkpoint.take().unwrap()).await.unwrap();
@@ -463,7 +670,8 @@ async fn exercise_readiness(shared_channel: bool, concurrent_matches: bool) {
         })
         .collect();
     let mut stores = InMemoryStoreManager::new();
-    let (play, _) = RSpace::create_with_replay(
+    let (play, _) = RSpace::create_with_replay_for_epoch(
+        EventCodecEpoch::CostV1,
         stores.r_space_stores().await.unwrap(),
         Arc::new(Box::new(Matcher)),
     )
@@ -498,7 +706,8 @@ async fn exercise_readiness(shared_channel: bool, concurrent_matches: bool) {
     };
     for (index, datum) in data.iter().enumerate() {
         let channel = &channels[index];
-        let source = Produce::create(channel, datum, false);
+        let source = Produce::create_for_epoch(play.codec_epoch(), channel, datum, false)
+            .expect("cost-bearing readiness source");
         let observation =
             observation_construction::produce_introduction(&source, channel, datum, &auth).unwrap();
         budget
@@ -552,7 +761,9 @@ async fn exercise_readiness(shared_channel: bool, concurrent_matches: bool) {
         } else {
             Arc::new(Box::new(Matcher))
         };
-    let replay = trace.into_session(history, matcher, host).unwrap();
+    let replay = trace
+        .into_session_for_epoch(play.codec_epoch(), history, matcher, host)
+        .unwrap();
     let root = replay.checkpoint().await.unwrap();
     if concurrent_matches {
         let replay = Arc::new(replay);
@@ -576,7 +787,7 @@ async fn exercise_readiness(shared_channel: bool, concurrent_matches: bool) {
         for channel in &channels {
             assert_eq!(
                 replay.get_data(channel).await.unwrap(),
-                play.get_data(channel).await
+                play.get_data(channel).await.expect("live data query")
             );
             assert_eq!(
                 replay
@@ -585,6 +796,7 @@ async fn exercise_readiness(shared_channel: bool, concurrent_matches: bool) {
                     .unwrap(),
                 play.get_store()
                     .get_continuations(std::slice::from_ref(channel))
+                    .expect("live continuation query")
             );
         }
         replay.restore(root).await.unwrap();
@@ -637,7 +849,7 @@ async fn exercise_readiness(shared_channel: bool, concurrent_matches: bool) {
     for channel in &channels {
         assert_eq!(
             replay.get_data(channel).await.unwrap(),
-            play.get_data(channel).await
+            play.get_data(channel).await.expect("live data query")
         );
     }
     drop(checkpoint);

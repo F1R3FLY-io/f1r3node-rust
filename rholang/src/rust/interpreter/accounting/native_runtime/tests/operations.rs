@@ -1,12 +1,12 @@
 use futures::FutureExt;
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::{Expr, Par};
-use models::rust::host_work::{HostWorkDimension, HostWorkUnits};
+use models::rust::host_work::{HostWorkDimension, HostWorkLimit, HostWorkLimits, HostWorkUnits};
 use rspace_plus_plus::rspace::operation_context::{self, OperationOrder};
 use rspace_plus_plus::rspace::rspace_interface::{
     RSpaceOperationCompletion, RSpaceOperationSource,
 };
-use rspace_plus_plus::rspace::trace::event::{Consume, Produce, COMM};
+use rspace_plus_plus::rspace::trace::event::{Consume, Produce, RestingCOMM, COMM};
 
 use super::*;
 
@@ -62,6 +62,95 @@ fn native_operation_start_meters_shallow_index_work() {
             .unwrap();
     });
     assert!(host.usage(HostWorkDimension::VerificationBytes).get() < 1_000_000);
+}
+
+#[test]
+fn resting_comm_refuses_v1_native_journal_without_fabricating_introduction() {
+    let budget = RuntimeBudget::new(Cost::unsafe_max());
+    budget
+        .reset_for_native_execution(config(100, [0, 0, 1, 0]))
+        .unwrap();
+    let _accounting = budget.enter_comm_accounting_scope();
+    let channel = channel(1);
+    let waiter = Consume::create(&vec![channel.clone()], &vec![0u8], &7u8, false);
+    let event = RestingCOMM {
+        consume: waiter,
+        continuation_index: 0,
+        ordered_produces: Vec::new(),
+        ordered_data_indices: Vec::new(),
+        peeks: Default::default(),
+    };
+    scope(&budget, 0, || {
+        assert!(matches!(
+            budget.start_native_operation(
+                RSpaceOperationSource::Resting(&event),
+                std::slice::from_ref(&channel),
+                &[],
+            ),
+            Err(InterpreterError::HostWorkRejected)
+        ));
+    });
+    let observer = crate::rust::interpreter::rho_runtime::test_accounting_observer(budget);
+    let identity = event
+        .cost_v2_identity_metered(&|_, _, _| Ok(()))
+        .expect("checked resting identity");
+    assert!(matches!(
+        observer.observe_resting_comm(
+            &identity,
+            &event,
+            &models::rhoapi::TaggedContinuation::default(),
+            false,
+            &[],
+        ),
+        Err(rspace_plus_plus::rspace::errors::RSpaceError::HostWorkRejected)
+    ));
+}
+
+#[test]
+fn resting_comm_requires_local_capability_and_charges_before_publication() {
+    let budget = RuntimeBudget::new(Cost::create(100, "local resting test"));
+    let channel = channel(1);
+    let event = RestingCOMM {
+        consume: Consume::create(&vec![channel], &vec![0u8], &7u8, false),
+        continuation_index: 0,
+        ordered_produces: Vec::new(),
+        ordered_data_indices: Vec::new(),
+        peeks: Default::default(),
+    };
+    let identity = event
+        .cost_v2_identity_metered(&|_, _, _| Ok(()))
+        .expect("checked resting identity");
+    let observer = crate::rust::interpreter::rho_runtime::test_accounting_observer(budget.clone());
+    let _accounting = budget.enter_comm_accounting_scope();
+    assert!(matches!(
+        observer.observe_resting_comm(
+            &identity,
+            &event,
+            &models::rhoapi::TaggedContinuation::default(),
+            false,
+            &[],
+        ),
+        Err(rspace_plus_plus::rspace::errors::RSpaceError::HostWorkRejected)
+    ));
+    assert_eq!(budget.total_cost().value, 0);
+    drop(_accounting);
+    budget
+        .enable_standalone_resting_comm(HostWorkLimits::uniform(HostWorkLimit::new(1000)))
+        .unwrap();
+    assert!(budget
+        .reset_for_native_execution(config(100, [0, 0, 1, 0]))
+        .is_err());
+    let _accounting = budget.enter_comm_accounting_scope();
+    observer
+        .observe_resting_comm(
+            &identity,
+            &event,
+            &models::rhoapi::TaggedContinuation::default(),
+            false,
+            &[],
+        )
+        .expect("trusted local resting charge");
+    assert_eq!(budget.total_cost().value, 1);
 }
 
 #[test]

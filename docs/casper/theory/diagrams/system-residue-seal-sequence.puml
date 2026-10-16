@@ -1,0 +1,90 @@
+' System residue seal (DR-101, bug 10056).
+' A system body (the body of a continuation whose seal has only Unit regions)
+' runs for the deployment that fires it and charges that deployment's payer
+' region P. The datum or continuation that the body stores keeps a residue
+' region R: a Unit region bound to the paying deployment and to P. Inside the
+' same deployment, R resolves to P again, so the old charges stay. In every
+' other deployment, R stays a Unit region with no demand, so no deployment pays
+' for the system residue of another.
+'
+' Source of truth: docs/casper/theory/cost-accounting-decision-records.md (DR-101);
+'                  publications/cost-accounting/cost-accounted-rho.tex
+'                  (ex:cross-party, def:funding-proof, def:token-demand,
+'                  rem:signed-subst, Rule 4, free infrastructure).
+' Palette:  signers = supply blue · reducer = process lilac · proposer, validators
+'           and funding = gate teal · shared system state = surface rose ·
+'           resolution = delta amber · debit = red arrows · resolution = blue arrows
+' Render:  plantuml -tsvg docs/casper/theory/diagrams/system-residue-seal-sequence.puml
+'          (or: ./render.sh system-residue-seal-sequence.puml)
+
+@startuml system-residue-seal-sequence
+!include palette.iuml
+$ca_base_skin()
+skinparam sequence {
+  ArrowColor $ca_neutral
+  LifeLineBorderColor #666666
+  ParticipantBorderColor #333333
+  BoxBorderColor #999999
+}
+title System residue keeps a system seal outside its deployment (DR-101)
+
+actor "Signer A\n(writer)" as A $ca_supply
+actor "Signer B\n(reader)" as B $ca_supply
+participant "Proposer and\nvalidators" as Node $ca_gate
+participant "Reducer\n(dispatch and eval)" as Reducer $ca_process
+participant "Seal resolution\n(COMM and peek)" as Resolve $ca_delta
+participant "Shared system state\n(registry node)" as State $ca_surface
+participant "Funding family\nselection" as Family $ca_gate
+
+== Deployment A (block n) ==
+A -> Node : offered deploy (registry insert),\ndeployment identity <latex>d_A</latex>
+Node -> Reducer : execute the term of A
+Reducer -> Reducer : the send matches a genesis contract\n(seal has only Unit regions: system body)
+Reducer -> Reducer : run the body in residue mode
+Reducer -[$ca_debit]-> Node : charge the body's work to\n<latex>P_A = \mathrm{cost\_region}(A, e, 0)</latex>
+Reducer -> State : store the node with the residue seal\n<latex>R_A = \{\mathit{id} = H(\delta \Vert d_A \Vert P_A.\mathit{id}),\ \mathit{sig} = \mathsf{Unit}\}</latex>
+Reducer -> Resolve : a COMM of deployment A consumes the node
+Resolve -[$ca_instantiate]-> Resolve : <latex>R_A</latex> matches (A, <latex>d_A</latex>, <latex>e</latex>):\nresolve to <latex>P_A</latex>
+Resolve -[$ca_debit]-> Node : charge the COMM to A,\nas under the inheritance rule (DR-41)
+
+== Deployment B (block n + 1) ==
+B -> Node : offered deploy (registry lookup),\ndeployment identity <latex>d_B</latex>
+Node -> Reducer : execute the term of B
+Reducer -> Resolve : a COMM consumes the node that deployment A stored
+Resolve -[$ca_instantiate]-> Resolve : <latex>R_A</latex> does not match (B, <latex>d_B</latex>, <latex>e</latex>):\nstays a Unit region with no demand
+Resolve -> Family : obligations only in the regions of B
+Family -> Node : feasible assignment from the sources of B
+Node -[$ca_debit]-> B : debit the purse of B only;\nreceipt with one purse row
+
+note right of State $ca_note_red
+  Before DR-101 the node kept <latex>P_A</latex>.
+  The COMM of B then had demand in the
+  lane of A, which no source of B can fund:
+  "measured funding case has no feasible
+  signed assignment".
+end note
+
+note over Reducer $ca_note_amber
+  A process held in a variable (EVar) or produced by
+  a method (EMethod) runs outside residue mode
+  (P1 rem:signed-subst). It is the caller's code,
+  so its residue keeps <latex>P</latex> and the caller's token.
+end note
+
+note over Node $ca_note_grey
+  Genesis and system deploys run with the Unit payer,
+  so they store <latex>R = P</latex>: their seals do not change.
+end note
+
+legend bottom
+  |= colour |= meaning |
+  |<$ca_supply>| signing clients |
+  |<$ca_gate>| proposer, validators, and funding selection |
+  |<$ca_process>| reducer (dispatch, eval_send, eval_receive) |
+  |<$ca_delta>| seal resolution (resolve_system_residue) |
+  |<$ca_surface>| shared system state written by system bodies |
+  |<$ca_debit>| charge or debit |
+  |<$ca_instantiate>| seal resolution result |
+endlegend
+
+@enduml

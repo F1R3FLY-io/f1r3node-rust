@@ -61,7 +61,10 @@ where
 
     // Sub-phase timing (issue #50) — see
     // issues/02-intra-deploy-par-mutex-rspace.md.
-    pub(super) async fn produce_lock(&self, channel: &C) -> (ChannelLockGuard, ChannelLockGuard) {
+    pub(super) async fn produce_lock(
+        &self,
+        channel: &C,
+    ) -> Result<(ChannelLockGuard, ChannelLockGuard), crate::rspace::errors::RSpaceError> {
         let phase_a_start = Instant::now();
         let channel_hash = striped_locks::channel_hash(channel);
         let phase_a = striped_locks::acquire_locks(&self.phase_a_locks, &[channel_hash]).await;
@@ -71,7 +74,7 @@ where
         let joins_start = Instant::now();
         let store = self.get_store();
         let join_hashes: Vec<u64> = store
-            .get_joins(channel)
+            .get_joins(channel)?
             .into_iter()
             .flatten()
             .map(|ch| striped_locks::channel_hash(&ch))
@@ -84,6 +87,6 @@ where
         metrics::counter!("rspace.produce.phase_b_wait_ns", "source" => RSPACE_METRICS_SOURCE)
             .increment(phase_b_start.elapsed().as_nanos() as u64);
 
-        (phase_a, phase_b)
+        Ok((phase_a, phase_b))
     }
 }

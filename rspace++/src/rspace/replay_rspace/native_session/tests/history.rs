@@ -1,13 +1,15 @@
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 
 use super::*;
+use crate::rspace::hashing::native_source::{GroupKeys, channel_key, channels_hash_from_keys};
 use crate::rspace::hashing::stable_hash_provider::{hash, hash_from_vec};
 use crate::rspace::history::history_reader::HistoryReaderBase;
 use crate::rspace::history::instances::radix_history::RadixHistory;
 use crate::rspace::history::native_reader::{
-    NativeLeafKind, NativeReadCharge, NativeReadMeter, decode_record,
+    NativeLeafKind, NativeReadCharge, NativeReadError, NativeReadMeter, decode_history_record,
 };
 use crate::rspace::history::radix_tree::{Item, empty_node, encode};
+use crate::rspace::serializers::serializers::NativeRecordDecode;
 
 struct ChargeCounter<'a> {
     operations: &'a Cell<usize>,
@@ -28,20 +30,214 @@ impl NativeReadMeter for ChargeCounter<'_> {
 struct ForbiddenReader;
 
 impl HistoryReaderBase<String, String, String, String> for ForbiddenReader {
-    fn get_data_proj(&self, _: &String) -> Vec<Datum<String>> { panic!("legacy datum read") }
-    fn get_continuations_proj(&self, _: &Vec<String>) -> Vec<WaitingContinuation<String, String>> {
+    fn get_data_proj(
+        &self,
+        _: &String,
+    ) -> Result<Vec<Datum<String>>, crate::rspace::errors::RSpaceError> {
+        panic!("legacy datum read")
+    }
+    fn get_continuations_proj(
+        &self,
+        _: &Vec<String>,
+    ) -> Result<Vec<WaitingContinuation<String, String>>, crate::rspace::errors::RSpaceError> {
         panic!("legacy continuation read")
     }
-    fn get_joins_proj(&self, _: &String) -> Vec<Vec<String>> { panic!("legacy join read") }
+    fn get_joins_proj(
+        &self,
+        _: &String,
+    ) -> Result<Vec<Vec<String>>, crate::rspace::errors::RSpaceError> {
+        panic!("legacy join read")
+    }
 }
 
 type History = Arc<Box<dyn HistoryRepository<String, String, String, String> + Send + Sync>>;
 
-fn isolated(history: History) -> Session {
-    let session = Session::new(history, Arc::new(Box::new(Matcher)), Epoch::default()).unwrap();
+fn isolated(history: History) -> Session { isolated_for_epoch(history, EventCodecEpoch::Legacy) }
+
+fn isolated_for_epoch(history: History, codec: EventCodecEpoch) -> Session {
+    let session = Session::new(history, Arc::new(Box::new(Matcher)), Epoch {
+        codec: Some(codec),
+        ..Epoch::default()
+    })
+    .expect("create isolated native session");
     *session.space.store.write().unwrap() =
         Arc::new(HotStoreInstances::create_from_hr(Box::new(ForbiddenReader)));
     session
+}
+
+#[derive(Debug)]
+struct UndecodedRecord;
+
+impl NativeRecordDecode for UndecodedRecord {
+    type Wire = u8;
+
+    fn decode_native<M: NativeReadMeter + ?Sized>(
+        _: &[u8],
+        _: &M,
+    ) -> Result<Self, NativeReadError<M::Error>> {
+        panic!("the history boundary must not decode this record")
+    }
+}
+
+async fn framed_history(
+    kind: NativeLeafKind,
+    payload: Option<&[u8]>,
+    corrupt_hash: bool,
+) -> (History, [u8; 32]) {
+    let mut stores = InMemoryStoreManager::new();
+    let storage = stores
+        .r_space_stores()
+        .await
+        .expect("create history stores");
+    let nodes = storage.history.clone();
+    let leaves = storage.cold.clone();
+    let (play, _) = RSpace::<String, String, String, String>::create_with_replay(
+        storage,
+        Arc::new(Box::new(Matcher)),
+    )
+    .expect("create history fixture");
+    let (prefix, tag, projection) = match kind {
+        NativeLeafKind::Data => (0, 1_u32, hash(&"data".to_owned())),
+        NativeLeafKind::Continuations => (1, 2_u32, hash_from_vec(&vec!["data".to_owned()])),
+        NativeLeafKind::Joins => (2, 0_u32, hash(&"data".to_owned())),
+    };
+    let key = digest_bytes(projection.clone());
+    let history = play.get_history_repository();
+    let Some(payload) = payload else {
+        return (history, key);
+    };
+    let body = bincode::serialize(payload).expect("encode leaf payload");
+    let pointer = if corrupt_hash {
+        Blake2b256Hash::new(b"different leaf")
+    } else {
+        Blake2b256Hash::new(&body)
+    };
+    let mut stored = tag.to_le_bytes().to_vec();
+    stored.extend_from_slice(&body);
+    leaves
+        .put_one(pointer.0.clone(), stored)
+        .expect("store framed leaf");
+    let mut node = empty_node();
+    node[prefix] = Item::Leaf {
+        prefix: projection.0,
+        value: pointer.0,
+    };
+    let bytes = encode(&node);
+    let root = Blake2b256Hash::new(&bytes);
+    nodes
+        .put_one(root.0.clone(), bytes)
+        .expect("store history node");
+    history.record_root(&root).expect("record fixture root");
+    (Arc::new(history.reset(&root).expect("select fixture root")), key)
+}
+
+async fn boundary_query(session: &Session, kind: NativeLeafKind) -> Result<(), RSpaceError> {
+    match kind {
+        NativeLeafKind::Data => session.get_data(&"data".to_owned()).await.map(|_| ()),
+        NativeLeafKind::Continuations => session
+            .get_continuations(&["data".to_owned()])
+            .await
+            .map(|_| ()),
+        NativeLeafKind::Joins => session.get_joins(&"data".to_owned()).await.map(|_| ()),
+    }
+}
+
+#[tokio::test]
+async fn absent_and_zero_row_history_preserves_epoch_independent_reservations() {
+    for kind in [NativeLeafKind::Data, NativeLeafKind::Continuations, NativeLeafKind::Joins] {
+        for payload in [None, Some(&[0_u8; 8][..])] {
+            let (history, key) = framed_history(kind, payload, false).await;
+            let mut legacy_charges = None;
+            for codec in [EventCodecEpoch::Legacy, EventCodecEpoch::CostV1, EventCodecEpoch::CostV2]
+            {
+                let session = isolated_for_epoch(history.clone(), codec);
+                let charges = RefCell::new(Vec::new());
+                let values = session
+                    .read_records::<UndecodedRecord>(kind, &key, &|operations, scanned, backing| {
+                        charges.borrow_mut().push((operations, scanned, backing));
+                        Ok(())
+                    })
+                    .expect("empty history needs no typed decoder");
+                assert!(values.is_empty());
+                let charges = charges.into_inner();
+                assert!(!charges.is_empty());
+                if let Some(expected) = &legacy_charges {
+                    assert_eq!(&charges, expected, "kind={kind:?}, codec={codec:?}");
+                } else {
+                    legacy_charges = Some(charges.clone());
+                }
+                for cut in 0..charges.len() {
+                    let calls = Cell::new(0);
+                    let result = session.read_records::<UndecodedRecord>(kind, &key, &|_, _, _| {
+                        let call = calls.get();
+                        calls.set(call + 1);
+                        if call == cut {
+                            Err(RSpaceError::HostWorkRejected)
+                        } else {
+                            Ok(())
+                        }
+                    });
+                    assert!(matches!(result, Err(RSpaceError::HostWorkRejected)));
+                    assert_eq!(session.store.entry_counts(), [0; 5]);
+                }
+                let calls = session.epoch.calls.load(Ordering::Relaxed);
+                boundary_query(&session, kind)
+                    .await
+                    .expect("query empty history");
+                let accepted = session.epoch.calls.load(Ordering::Relaxed) - calls;
+                for cut in 0..accepted {
+                    let rejected = isolated_for_epoch(history.clone(), codec);
+                    *rejected
+                        .epoch
+                        .remaining_calls
+                        .lock()
+                        .expect("read budget lock") = Some(cut);
+                    assert!(boundary_query(&rejected, kind).await.is_err());
+                    assert_eq!(rejected.store.entry_counts(), [0; 5]);
+                }
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn unsupported_nonempty_history_refuses_before_typed_decoding() {
+    for kind in [NativeLeafKind::Data, NativeLeafKind::Continuations, NativeLeafKind::Joins] {
+        for rows in [vec![Vec::<u8>::new()], vec![vec![0], vec![255; 3]]] {
+            let payload = bincode::serialize(&rows).expect("encode nonempty rows");
+            let (history, key) = framed_history(kind, Some(&payload), false).await;
+            for codec in [EventCodecEpoch::CostV1, EventCodecEpoch::CostV2] {
+                let session = isolated_for_epoch(history.clone(), codec);
+                let result = session.read_records::<UndecodedRecord>(kind, &key, &|_, _, _| Ok(()));
+                assert!(matches!(result, Err(RSpaceError::HostWorkRejected)));
+                assert_eq!(
+                    boundary_query(&session, kind).await,
+                    Err(RSpaceError::HostWorkRejected)
+                );
+                assert_eq!(session.store.entry_counts(), [0; 5]);
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn empty_history_boundary_preserves_malformed_and_hash_failures() {
+    for kind in [NativeLeafKind::Data, NativeLeafKind::Continuations, NativeLeafKind::Joins] {
+        for (payload, corrupt_hash, fault) in
+            [(vec![0_u8; 7], false, "Truncated"), (vec![0_u8; 8], true, "LeafHash")]
+        {
+            let (history, key) = framed_history(kind, Some(&payload), corrupt_hash).await;
+            for codec in [EventCodecEpoch::Legacy, EventCodecEpoch::CostV1, EventCodecEpoch::CostV2]
+            {
+                let session = isolated_for_epoch(history.clone(), codec);
+                let expected = RSpaceError::InterpreterError(format!("native history: {fault}"));
+                let result = session.read_records::<UndecodedRecord>(kind, &key, &|_, _, _| Ok(()));
+                assert_eq!(result.expect_err("reject invalid authenticated history"), expected);
+                assert_eq!(boundary_query(&session, kind).await, Err(expected));
+                assert_eq!(session.store.entry_counts(), [0; 5]);
+            }
+        }
+    }
 }
 
 async fn retained_history() -> History {
@@ -109,7 +305,10 @@ async fn cold_typed_rows_prepay_cleanup_before_cache_handoff() {
     let values = session
         .read_records::<Datum<String>>(
             NativeLeafKind::Data,
-            projection,
+            // Changed by D-C2d (D-S1, DR-96): the reader takes the digest's
+            // 32 bytes.
+            // projection,
+            &key,
             &|operations, scanned, _| {
                 actual_operations.set(actual_operations.get() + operations);
                 actual_scanned.set(actual_scanned.get() + scanned);
@@ -129,7 +328,10 @@ async fn cold_typed_rows_prepay_cleanup_before_cache_handoff() {
     let used = Cell::new(0usize);
     let rejected = session.read_records::<Datum<String>>(
         NativeLeafKind::Data,
-        hash(&channel),
+        // Changed by D-C2d (D-S1, DR-96): the reader takes the digest's 32
+        // bytes.
+        // hash(&channel),
+        &key,
         &|_, scanned, _| {
             let next = used.get() + scanned;
             if next > limit {
@@ -141,7 +343,10 @@ async fn cold_typed_rows_prepay_cleanup_before_cache_handoff() {
         },
     );
     assert!(matches!(rejected, Err(RSpaceError::HostWorkRejected)));
-    assert!(session.space.get_store().snapshot().data_flat().is_empty());
+    // Changed by D-C2c (D-S1, DR-96): the native session caches in its
+    // digest-keyed store.
+    // assert!(session.space.get_store().snapshot().data_flat().is_empty());
+    assert_eq!(session.store.entry_counts()[0], 0);
 }
 
 async fn query(session: &Session, kind: usize) -> Result<(), RSpaceError> {
@@ -180,7 +385,10 @@ async fn cold_and_warm_native_queries_never_use_the_legacy_reader() {
         }
     }
     session.restore(checkpoint).await.unwrap();
-    assert!(session.space.get_store().snapshot().data_flat().is_empty());
+    // Changed by D-C2c (D-S1, DR-96): the native session caches in its
+    // digest-keyed store.
+    // assert!(session.space.get_store().snapshot().data_flat().is_empty());
+    assert_eq!(session.store.entry_counts()[0], 0);
     for kind in 0..3 {
         query(&session, kind).await.unwrap();
     }
@@ -267,10 +475,14 @@ async fn every_cold_read_reservation_cut_leaves_no_partial_typed_cache() {
             let session = isolated(history.clone());
             *session.epoch.remaining_calls.lock().unwrap() = Some(accepted);
             assert!(query(&session, kind).await.is_err(), "kind={kind}, cut={accepted}");
-            let state = session.space.get_store().snapshot();
-            assert!(state.data_flat().is_empty());
-            assert!(state.joins_flat().is_empty());
-            assert!(state.continuations_flat().is_empty());
+            // Changed by D-C2c (D-S1, DR-96): the native session caches in
+            // its digest-keyed store.
+            // let state = session.space.get_store().snapshot();
+            // assert!(state.data_flat().is_empty());
+            // assert!(state.joins_flat().is_empty());
+            // assert!(state.continuations_flat().is_empty());
+            let [data, continuations, _, joins, _] = session.store.entry_counts();
+            assert_eq!((data, continuations, joins), (0, 0, 0));
             assert_eq!(*session.epoch.state.lock().unwrap(), (vec![], 0, false, false));
             for lock in session
                 .space
@@ -322,8 +534,12 @@ async fn independent_native_readers_keep_separate_caches_and_exhaustion() {
     let (failed, successful) = tokio::join!(query(&left, 0), query(&right, 0));
     assert!(failed.is_err());
     successful.unwrap();
-    assert!(left.space.get_store().snapshot().data_flat().is_empty());
-    assert_eq!(right.space.get_store().snapshot().data_flat().len(), 1);
+    // Changed by D-C2c (D-S1, DR-96): the native session caches in its
+    // digest-keyed store.
+    // assert!(left.space.get_store().snapshot().data_flat().is_empty());
+    // assert_eq!(right.space.get_store().snapshot().data_flat().len(), 1);
+    assert_eq!(left.store.entry_counts()[0], 0);
+    assert_eq!(right.store.entry_counts()[0], 1);
     let inspection = Epoch::default();
     assert_eq!(
         left.get_data_with_budget(&"data".to_owned(), |operations, bytes| {
@@ -376,13 +592,124 @@ async fn malformed_authenticated_records_never_publish_a_partial_cache_or_fall_b
     for _ in 0..3 {
         let error = session.get_data(&"data".to_owned()).await.unwrap_err();
         assert_eq!(error, RSpaceError::InterpreterError("native history: TypedRecord".to_owned()));
-        assert!(session.space.get_store().snapshot().data_flat().is_empty());
+        // Changed by D-C2c (D-S1, DR-96): the native session caches in its
+        // digest-keyed store.
+        // assert!(session.space.get_store().snapshot().data_flat().is_empty());
+        assert_eq!(session.store.entry_counts()[0], 0);
         assert_eq!(history.root(), root);
+    }
+}
+
+/// D-S3 (D-C3, DR-97): clean cold fills are not exported. The full export of
+/// the same entries re-inserts the stored leaves and deletes an absent key,
+/// which keeps the root. The dirty export has no action, and the session's
+/// export keeps the root.
+#[tokio::test]
+async fn clean_cold_fill_is_not_exported() {
+    let history = retained_history().await;
+    let root = history.root();
+    let session = isolated(history.clone());
+    for kind in 0..3 {
+        query(&session, kind).await.expect("a cold fill");
+    }
+    let absent = session
+        .get_data(&"absent".to_owned())
+        .await
+        .expect("an empty cold fill");
+    assert!(absent.is_empty());
+    let counts = session.store.entry_counts();
+    assert_eq!([counts[0], counts[1], counts[3]], [2, 1, 1]);
+    let free = |_: usize, _: usize, _: usize| Ok::<(), RSpaceError>(());
+    let dirty = session.store.dirty_entries(&free).expect("a free meter");
+    let actions = dirty.actions(&free).expect("a free meter");
+    assert!(actions.is_empty());
+    let full = session.store.changes(&free).expect("a free meter");
+    assert_eq!(full.len(), 4);
+    let prepared = history
+        .prepare_native_checkpoint(full, &free)
+        .expect("the full export");
+    assert_eq!(prepared.cold_actions.len(), 3);
+    assert_eq!(prepared.root, Some(root.clone()));
+    let borrowed = history
+        .prepare_native_checkpoint_borrowed(&actions, &free)
+        .expect("the dirty export");
+    assert!(borrowed.cold_actions.is_empty());
+    assert!(borrowed.prepared_history.is_none());
+    let export = session.export().await.expect("the export");
+    assert_eq!(export.root(), &root);
+    assert_eq!(history.root(), root);
+}
+
+fn digest_bytes(digest: Blake2b256Hash) -> [u8; 32] {
+    digest.0.as_slice().try_into().expect("a 32-byte digest")
+}
+
+/// D-S1 (D-C2d, DR-96): the cold fills read the history by the store keys.
+/// For data, joins and continuations they return the records that a read by
+/// the legacy projections returns, which hashed every channel again. The
+/// continuation projection does not depend on the channel order.
+#[tokio::test]
+async fn cold_fill_reads_same_records_as_legacy() {
+    let history = retained_history().await;
+    let session = isolated(history);
+    let free = |_: usize, _: usize, _: usize| Ok::<(), RSpaceError>(());
+    let data = "data".to_owned();
+    let legacy_data = session
+        .read_records::<Datum<String>>(NativeLeafKind::Data, &digest_bytes(hash(&data)), &free)
+        .unwrap();
+    assert_eq!(legacy_data.len(), 1);
+    let data_key = channel_key(&data, &free).unwrap();
+    assert_eq!(session.read_data_with(&data, data_key, &free).unwrap(), legacy_data);
+    let group = vec!["left".to_owned(), "right".to_owned()];
+    let legacy_continuations = session
+        .read_records::<WaitingContinuation<String, String>>(
+            NativeLeafKind::Continuations,
+            &digest_bytes(hash_from_vec(&group)),
+            &free,
+        )
+        .unwrap();
+    assert_eq!(legacy_continuations.len(), 1);
+    let keys = GroupKeys::build(&group, &free).unwrap();
+    assert_eq!(session.read_continuations(&group, &keys).unwrap(), legacy_continuations);
+    let reversed: Vec<String> = group.iter().rev().cloned().collect();
+    let reversed_keys = GroupKeys::build(&reversed, &free).unwrap();
+    assert_eq!(
+        channels_hash_from_keys(&reversed_keys.channels, &free).unwrap(),
+        channels_hash_from_keys(&keys.channels, &free).unwrap()
+    );
+    for channel in &group {
+        let legacy_joins = session
+            .read_records::<Vec<String>>(NativeLeafKind::Joins, &digest_bytes(hash(channel)), &free)
+            .unwrap();
+        assert_eq!(legacy_joins, vec![group.clone()]);
+        let key = channel_key(channel, &free).unwrap();
+        assert_eq!(session.read_joins(channel, key).unwrap(), legacy_joins);
     }
 }
 
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(32))]
+
+    #[test]
+    fn generated_nonempty_rows_never_enter_an_unsupported_decoder(
+        kind_index in 0usize..3,
+        cost_v2 in any::<bool>(),
+        rows in prop::collection::vec(prop::collection::vec(any::<u8>(), 0..48), 1..5),
+    ) {
+        let kind = [NativeLeafKind::Data, NativeLeafKind::Continuations, NativeLeafKind::Joins][kind_index];
+        let codec = if cost_v2 { EventCodecEpoch::CostV2 } else { EventCodecEpoch::CostV1 };
+        let payload = bincode::serialize(&rows).expect("encode generated records");
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("create property runtime");
+        let result = runtime.block_on(async {
+            let (history, key) = framed_history(kind, Some(&payload), false).await;
+            let session = isolated_for_epoch(history, codec);
+            session.read_records::<UndecodedRecord>(kind, &key, &|_, _, _| Ok(()))
+        });
+        prop_assert!(matches!(result, Err(RSpaceError::HostWorkRejected)));
+    }
+
     #[test]
     fn metered_continuation_projection_preserves_channel_order_and_duplicates(
         channels in prop::collection::vec("[a-z]{0,12}", 0..20),

@@ -153,11 +153,12 @@ struct Pass {
     spliced: usize,
 }
 
-/// Every `Produce` reachable in one log entry: the COMM's participants, and the
-/// standalone `IoEvent::Produce` rows. `rig` reads both.
+/// Every `Produce` reachable in one log entry: COMM participants, ordered
+/// resting-COMM participants, and standalone `IoEvent::Produce` rows.
 fn produces_of(event: &mut Event) -> &mut [Produce] {
     match event {
         Event::Comm(comm) => &mut comm.produces,
+        Event::RestingComm(comm) => &mut std::sync::Arc::make_mut(comm).ordered_produces,
         Event::IoEvent(IOEvent::Produce(produce)) => std::slice::from_mut(produce),
         Event::IoEvent(IOEvent::Consume(_)) => &mut [],
     }

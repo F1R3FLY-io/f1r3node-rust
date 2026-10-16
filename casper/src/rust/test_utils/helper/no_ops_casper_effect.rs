@@ -9,7 +9,7 @@ use async_trait::async_trait;
 use block_storage::rust::dag::block_dag_key_value_storage::{DeployId, KeyValueDagRepresentation};
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use crypto::rust::signatures::signed::Signed;
-use models::rust::block_hash::{BlockHash, BlockHashSerde};
+use models::rust::block_hash::BlockHash;
 use models::rust::block_implicits::get_random_block_default;
 use models::rust::block_metadata::BlockMetadata;
 use models::rust::casper::protocol::casper_message::{BlockMessage, DeployData};
@@ -286,22 +286,19 @@ impl NoOpsCasperEffect {
             }
             drop(metadata_guard);
 
-            // Add deploy mappings
-            let deploy_hashes: Vec<DeployId> = block
-                .body
-                .deploys
-                .iter()
-                .map(|deploy| deploy.identity_bytes().to_vec().into())
-                .collect();
-            let deploy_entries: Vec<(DeployId, BlockHashSerde)> = deploy_hashes
-                .into_iter()
-                .map(|deploy_id| (deploy_id, BlockHashSerde(block.block_hash.clone())))
-                .collect();
-            let deploy_index_guard = self.block_dag_storage.deploy_index.write();
-            if let Err(e) = deploy_index_guard.put(deploy_entries) {
-                tracing::error!("Failed to add deploy mappings to DAG storage: {:?}", e);
+            // Mirror the production carrier index for every body deploy.
+            // Rejected deploys are deliberately excluded there as well.
+            let carrier_guard = self.block_dag_storage.carrier_index.write();
+            for deploy in &block.body.deploys {
+                if let Err(error) = carrier_guard.record_once(
+                    deploy.identity_bytes(),
+                    block.body.state.block_number,
+                    block.block_hash.to_vec(),
+                ) {
+                    tracing::error!("Failed to add deploy carrier to DAG storage: {:?}", error);
+                }
             }
-            drop(deploy_index_guard);
+            drop(carrier_guard);
 
             // Update latest messages following BlockDagKeyValueStorage.insert logic
 

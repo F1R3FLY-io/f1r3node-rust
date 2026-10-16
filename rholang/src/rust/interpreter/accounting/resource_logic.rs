@@ -80,12 +80,15 @@ pub trait OslfResourceLogic<G: GsltPresentation> {
 
     fn verify_demand_bound(
         &self,
-        _canonical: &G::CanonicalProgram,
-        _deploy_sig: &G::Signature,
+        canonical: &G::CanonicalProgram,
+        deploy_sig: &G::Signature,
         bound: &DemandBound<<G::Signature as ResourceSignature>::Key>,
     ) -> Option<ResourceMultiset<<G::Signature as ResourceSignature>::Key>> {
-        match bound {
-            DemandBound::Exact(reservation) => Some(reservation.clone()),
+        let DemandBound::Exact(claimed) = bound else {
+            return None;
+        };
+        match self.demand_bound(canonical, deploy_sig) {
+            DemandBound::Exact(expected) if claimed == &expected => Some(expected),
             _ => None,
         }
     }
@@ -778,6 +781,265 @@ mod resource_logic_conformance {
             },),
             Err(CheckError::Unprovable(UnprovableDemand::UnsupportedSyntax)),
         );
+    }
+
+    mod generic_demand_verification_properties {
+        use proptest::prelude::*;
+
+        use super::*;
+
+        struct FiniteSequence;
+
+        impl GsltPresentation for FiniteSequence {
+            type Program = Vec<(u8, u8)>;
+            type CanonicalProgram = Vec<(u8, u8)>;
+            type Signature = FakeSig;
+
+            fn canonicalize_for_funding(
+                &self,
+                program: &Self::Program,
+            ) -> Result<Self::CanonicalProgram, UnprovableDemand> {
+                Ok(program.clone())
+            }
+        }
+
+        struct ExactSequenceLogic;
+
+        impl OslfResourceLogic<FiniteSequence> for ExactSequenceLogic {
+            fn demand(&self, canonical: &Vec<(u8, u8)>, _: &FakeSig) -> DemandEntry {
+                DemandEntry {
+                    certified_upper_bound: canonical
+                        .iter()
+                        .map(|(_, units)| i64::from(*units))
+                        .sum(),
+                    unknown: false,
+                }
+            }
+
+            fn demand_bound(
+                &self,
+                canonical: &Vec<(u8, u8)>,
+                signature: &FakeSig,
+            ) -> DemandBound<u8> {
+                let mut reservation = ResourceMultiset::default();
+                for &(offset, units) in canonical {
+                    if units > 0 {
+                        let amount = reservation
+                            .0
+                            .entry(signature.key() ^ offset)
+                            .or_insert(0u64);
+                        *amount = amount
+                            .checked_add(u64::from(units))
+                            .expect("finite sequence demand fits in u64");
+                    }
+                }
+                DemandBound::Exact(reservation)
+            }
+
+            fn is_funded(&self, analysis: &DemandEntry, supply: i64) -> bool {
+                delta_sigma::is_funded(analysis, supply)
+            }
+        }
+
+        fn execution_events(program: &[(u8, u8)], signature: u8) -> Vec<u8> {
+            let mut events = Vec::new();
+            for &(offset, count) in program {
+                for _ in 0..count {
+                    events.push(signature ^ offset);
+                }
+            }
+            events
+        }
+
+        fn realized_demand(program: &[(u8, u8)], signature: u8) -> ResourceMultiset<u8> {
+            let mut realized = ResourceMultiset::default();
+            for surface in execution_events(program, signature) {
+                *realized.0.entry(surface).or_insert(0) += 1;
+            }
+            realized
+        }
+
+        fn arbitrary_reservation() -> impl Strategy<Value = ResourceMultiset<u8>> {
+            proptest::collection::btree_map(
+                any::<u8>(),
+                prop_oneof![Just(0u64), Just(u64::MAX), 0u64..128],
+                0..8,
+            )
+            .prop_map(ResourceMultiset)
+        }
+
+        proptest! {
+            #[test]
+            fn generic_exact_claim_authentication_matches_finite_execution(
+                program in proptest::collection::vec((0u8..4, 0u8..8), 0..20),
+                signature in any::<u8>(),
+                claimed in arbitrary_reservation(),
+            ) {
+                let canonical = FiniteSequence
+                    .canonicalize_for_funding(&program)
+                    .expect("finite sequences canonicalize");
+                let actual = realized_demand(&program, signature);
+                let signature = FakeSig(signature);
+                let verified = ExactSequenceLogic.verify_demand_bound(
+                    &canonical,
+                    &signature,
+                    &DemandBound::Exact(claimed.clone()),
+                );
+                prop_assert_eq!(verified.is_some(), claimed == actual);
+                if let Some(reservation) = verified {
+                    prop_assert_eq!(reservation, actual.clone());
+                }
+                let checked = DemandBound::Exact(actual.clone());
+                prop_assert_eq!(
+                    ExactSequenceLogic.verify_demand_bound(&canonical, &signature, &checked),
+                    Some(actual.clone()),
+                );
+                prop_assert_eq!(
+                    ExactSequenceLogic.resource_observation(&canonical, &signature, &actual),
+                    Ok(ResourceObservation::exact(actual.clone(), actual)),
+                );
+            }
+
+            #[test]
+            fn generic_funding_tracks_finite_execution_per_surface(
+                program in proptest::collection::vec((0u8..4, 0u8..8), 0..20),
+                signature in any::<u8>(),
+                supply in arbitrary_reservation(),
+            ) {
+                let actual = realized_demand(&program, signature);
+                let signature = FakeSig(signature);
+                let claim = DemandBound::Exact(actual.clone());
+                prop_assert_eq!(
+                    ExactSequenceLogic.is_funded_bound(&program, &signature, &claim, &supply),
+                    actual.0.iter().all(|(surface, count)| supply.get(surface) >= *count),
+                );
+                prop_assert!(ExactSequenceLogic.is_funded_bound(
+                    &program, &signature, &claim, &actual,
+                ));
+                let extra = actual
+                    .checked_add(&ResourceMultiset::singleton(signature.key(), 1))
+                    .expect("finite fixture supply has room for one extra unit");
+                prop_assert!(ExactSequenceLogic.is_funded_bound(
+                    &program, &signature, &claim, &extra,
+                ));
+                for (&surface, &count) in &actual.0 {
+                    let mut deficient = extra.clone();
+                    deficient.0.insert(surface, count - 1);
+                    prop_assert!(!ExactSequenceLogic.is_funded_bound(
+                        &program, &signature, &claim, &deficient,
+                    ));
+                }
+            }
+
+            #[test]
+            fn generic_exact_claim_rechecks_program_and_signature(
+                mut program in proptest::collection::vec((0u8..4, 0u8..8), 0..20),
+                signature in any::<u8>(),
+            ) {
+                let actual = realized_demand(&program, signature);
+                let claim = DemandBound::Exact(actual.clone());
+                if !actual.0.is_empty() {
+                    prop_assert_eq!(
+                        ExactSequenceLogic.verify_demand_bound(
+                            &program, &FakeSig(signature ^ 128), &claim,
+                        ),
+                        None,
+                    );
+                }
+                program.push((0, 1));
+                prop_assert_eq!(
+                    ExactSequenceLogic.verify_demand_bound(&program, &FakeSig(signature), &claim),
+                    None,
+                );
+            }
+
+            #[test]
+            fn generic_uncertified_provider_rejects_every_exact_claim(
+                program in any::<u32>(),
+                signature in any::<u8>(),
+                claimed in arbitrary_reservation(),
+            ) {
+                let canonical = FakeGslt
+                    .canonicalize_for_funding(&program)
+                    .expect("fake programs canonicalize");
+                let signature = FakeSig(signature);
+                let claim = DemandBound::Exact(claimed.clone());
+                prop_assert_eq!(
+                    UncertifiedLogic.verify_demand_bound(&canonical, &signature, &claim),
+                    None,
+                );
+                prop_assert!(!UncertifiedLogic.is_funded_bound(
+                    &canonical, &signature, &claim, &claimed,
+                ));
+            }
+
+            #[test]
+            fn generic_finite_analysis_cannot_be_relabelled_exact(
+                program in any::<u32>(),
+                signature in any::<u8>(),
+            ) {
+                let canonical = FakeGslt
+                    .canonicalize_for_funding(&program)
+                    .expect("fake programs canonicalize");
+                let signature = FakeSig(signature);
+                let bound = ResourceMultiset::singleton(signature.key(), 1);
+                prop_assert_eq!(
+                    ForgedFiniteLogic.verify_demand_bound(
+                        &canonical, &signature, &DemandBound::Exact(bound.clone()),
+                    ),
+                    None,
+                );
+                prop_assert!(!ForgedFiniteLogic.is_funded_bound(
+                    &canonical, &signature, &DemandBound::Exact(bound.clone()), &bound,
+                ));
+            }
+        }
+
+        #[test]
+        fn generic_unproved_zero_reservation_is_rejected() {
+            let signature = FakeSig(3);
+            let empty = ResourceMultiset::default();
+            assert!(!UncertifiedLogic.is_funded_bound(
+                &14,
+                &signature,
+                &DemandBound::Exact(empty.clone()),
+                &empty,
+            ));
+        }
+
+        #[test]
+        fn native_finite_verifier_authenticates_proof_bytes() {
+            let canonical = Par::default();
+            let signature = Sig::Ground(b"proof-integrity".to_vec());
+            let certified = DefaultResourceLogic.demand_bound(&canonical, &signature);
+            let DemandBound::FiniteUpperBound { bound, proof } = certified else {
+                panic!("native structural analysis provides a finite bound");
+            };
+            assert_eq!(
+                DefaultResourceLogic.verify_demand_bound(
+                    &canonical,
+                    &signature,
+                    &DemandBound::FiniteUpperBound {
+                        bound: bound.clone(),
+                        proof: proof.clone()
+                    },
+                ),
+                Some(bound.clone()),
+            );
+            for forged_proof in [Vec::new(), [proof.as_slice(), &[255]].concat()] {
+                assert_eq!(
+                    DefaultResourceLogic.verify_demand_bound(
+                        &canonical,
+                        &signature,
+                        &DemandBound::FiniteUpperBound {
+                            bound: bound.clone(),
+                            proof: forged_proof,
+                        },
+                    ),
+                    None,
+                );
+            }
+        }
     }
 
     #[test]

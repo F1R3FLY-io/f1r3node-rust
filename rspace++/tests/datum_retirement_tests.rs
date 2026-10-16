@@ -163,6 +163,7 @@ async fn exercise(selected: &[bool], produce: bool, native: bool, persistent: bo
     let mut remaining: Vec<_> = play
         .get_data(&channel)
         .await
+        .expect("data read")
         .into_iter()
         .map(|d| d.a.as_ref().clone())
         .collect();
@@ -217,6 +218,7 @@ async fn exercise(selected: &[bool], produce: bool, native: bool, persistent: bo
     let mut remaining: Vec<_> = replay
         .get_data(&channel)
         .await
+        .expect("data read")
         .into_iter()
         .map(|d| d.a.as_ref().clone())
         .collect();
@@ -298,15 +300,22 @@ async fn denied_trigger_need_not_be_a_selected_comm_participant() {
         denied: true,
         ..Capture::default()
     })));
-    let before = replay.get_data(&channel).await;
+    let before = replay.get_data(&channel).await.expect("data read");
     assert_eq!(
         replay
             .produce(channel.clone(), "unused".to_string(), false)
             .await,
         Err(RSpaceError::OutOfPhlogistons)
     );
-    assert_eq!(replay.get_data(&channel).await, before);
-    assert_eq!(replay.get_waiting_continuations(channels).await.len(), 1);
+    assert_eq!(replay.get_data(&channel).await.expect("data read"), before);
+    assert_eq!(
+        replay
+            .get_waiting_continuations(channels)
+            .await
+            .expect("continuation read")
+            .len(),
+        1
+    );
     assert!(
         replay
             .create_soft_checkpoint()

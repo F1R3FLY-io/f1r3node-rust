@@ -65,6 +65,7 @@ async fn data_at(runtime: &RhoRuntimeImpl, name: &str) -> Vec<Par> {
     runtime
         .get_data(&string_channel(name))
         .await
+        .expect("data query")
         .into_iter()
         .flat_map(|d| d.a.pars.clone())
         .collect()
@@ -308,7 +309,7 @@ async fn registry_lookup_serves_legacy_and_delegates_versioned_urns() {
             "new rl(`rho:internal:registry_lookup`) in { rl!(\"rho:lib:1.0.0:abc123:myproj:1.0.0\", \"ver-out\") }",
         )
         .await;
-        let delegated = runtime.get_data(&FixedChannels::reg_v1_internal()).await;
+        let delegated = runtime.get_data(&FixedChannels::reg_v1_internal()).await.expect("registry query");
         assert!(
             !delegated.is_empty(),
             "versioned URN lookup should park a lookupVersion request on the v1 internal channel"

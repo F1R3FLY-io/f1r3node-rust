@@ -1,25 +1,27 @@
 use std::collections::BTreeMap;
 use std::mem::size_of;
 
-use models::rhoapi::{CostSignature, ListParWithRandom, Par};
+use models::rhoapi::{CostSignature, CostStack, ListParWithRandom, Par};
 use models::rust::host_work::HostWorkDimension;
 use prost::Message;
 use rholang::rust::interpreter::accounting::authority::{
     cost_signature_to_sig_metered, funding_sig_channel_metered, reserve_authority_signature_tree,
-    AuthorityStackBirth,
+    stack_branches_metered, AuthorityStackBirth,
 };
 use rholang::rust::interpreter::accounting::native_phlo_rules::NativePhloAcquisitionDemand;
 use rholang::rust::interpreter::host_work::HostWorkBudget;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::hashing::stable_hash_provider;
-use rspace_plus_plus::rspace::history::native_reader::{decode_record, NativeLeafKind};
+use rspace_plus_plus::rspace::history::native_reader::{
+    decode_datum_record_metered, NativeLeafKind,
+};
 use rspace_plus_plus::rspace::internal::Datum;
 use shared::rust::clone_backing::BackingError;
 
 use super::snapshot::{native_read_error, reserve, ReceiptReadMeter};
 use super::*;
 use crate::rust::util::rholang::costacc::genesis_resource_policy::AdoptedResourcePolicy;
-use crate::rust::util::rholang::costacc::supply::{decode_purse_inventory, PurseStack};
+use crate::rust::util::rholang::costacc::supply::{decode_purse_inventory_metered, PurseStack};
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -128,6 +130,51 @@ fn reserve_inventory_decode(
     )
 }
 
+fn measured_stack_cell_count(
+    stack: &CostStack,
+    budget: &HostWorkBudget,
+    depth: &mut u64,
+    check_signatures: bool,
+) -> Result<usize, CasperError> {
+    // Preserve the exact historical per-cell charge for linear stacks.
+    if stack.parallel_tail.is_empty() {
+        if check_signatures {
+            for cell in &stack.cells {
+                reserve_authority_signature_tree(cell, budget, depth)
+                    .map_err(|error| invalid(&error.to_string()))?;
+            }
+        }
+        return Ok(stack.cells.len());
+    }
+    let backing = |operations: usize, scanned: usize, bytes: usize| {
+        reserve(
+            budget,
+            HostWorkDimension::VerificationOperations,
+            operations,
+        )
+        .map_err(|_| BackingError::Rejected)?;
+        reserve(budget, HostWorkDimension::VerificationBytes, scanned)
+            .map_err(|_| BackingError::Rejected)?;
+        reserve(budget, HostWorkDimension::SearchStateBytes, bytes)
+            .map_err(|_| BackingError::Rejected)
+    };
+    let mut count = 0usize;
+    for branch in stack_branches_metered([0; 32], stack, &backing)
+        .map_err(|error| invalid(&error.to_string()))?
+    {
+        count = count
+            .checked_add(branch.stack.cells.len())
+            .ok_or_else(|| invalid("physical stack cell count overflow"))?;
+        if check_signatures {
+            for cell in &branch.stack.cells {
+                reserve_authority_signature_tree(cell, budget, depth)
+                    .map_err(|error| invalid(&error.to_string()))?;
+            }
+        }
+    }
+    Ok(count)
+}
+
 fn measured_birth_channel(
     head: &CostSignature,
     budget: &HostWorkBudget,
@@ -174,10 +221,18 @@ impl RuntimeManager {
         &self,
         pre_state_root: [u8; 32],
         demand: &NativePhloAcquisitionDemand<'_>,
+        policy: &AdoptedResourcePolicy,
         limits: PrepaidStackCaptureLimits,
         budget: &HostWorkBudget,
     ) -> Result<Vec<PurseStack>, CasperError> {
-        self.read_measured_prepaid_stacks_with_births(pre_state_root, demand, &[], limits, budget)
+        self.read_measured_prepaid_stacks_with_births(
+            pre_state_root,
+            demand,
+            &[],
+            policy,
+            limits,
+            budget,
+        )
     }
 
     pub fn read_measured_prepaid_stacks_with_births(
@@ -185,6 +240,7 @@ impl RuntimeManager {
         pre_state_root: [u8; 32],
         demand: &NativePhloAcquisitionDemand<'_>,
         births: &[AuthorityStackBirth],
+        policy: &AdoptedResourcePolicy,
         limits: PrepaidStackCaptureLimits,
         budget: &HostWorkBudget,
     ) -> Result<Vec<PurseStack>, CasperError> {
@@ -314,7 +370,10 @@ impl RuntimeManager {
                         raw_left = raw_left
                             .checked_sub(raw.len())
                             .ok_or_else(|| invalid("measured purse byte limit exceeded"))?;
-                        data.push(decode_record(raw, &meter).map_err(native_read_error)?);
+                        data.push(
+                            decode_datum_record_metered(raw, policy.event_codec_epoch(), &meter)
+                                .map_err(native_read_error)?,
+                        );
                     }
                     Ok(data)
                 })
@@ -325,13 +384,10 @@ impl RuntimeManager {
                 .ok_or_else(|| invalid("measured purse stack limit exceeded"))?;
             for datum in &data {
                 if let Some(stack) = &datum.a.cost_stack {
+                    let cells = measured_stack_cell_count(stack, budget, &mut depth, true)?;
                     cells_left = cells_left
-                        .checked_sub(stack.cells.len())
+                        .checked_sub(cells)
                         .ok_or_else(|| invalid("measured purse cell limit exceeded"))?;
-                    for cell in &stack.cells {
-                        reserve_authority_signature_tree(cell, budget, &mut depth)
-                            .map_err(|error| invalid(&error.to_string()))?;
-                    }
                 }
                 charge_bytes(
                     budget,
@@ -345,7 +401,7 @@ impl RuntimeManager {
                 )?;
             }
             reserve_inventory_decode(&data, budget)?;
-            let inventory = decode_purse_inventory(&data, head)?;
+            let inventory = decode_purse_inventory_metered(&data, head, budget)?;
             stacks
                 .try_reserve(inventory.stacks.len())
                 .map_err(|_| invalid("measured purse allocation failed"))?;
@@ -478,7 +534,10 @@ impl RuntimeManager {
                         raw_left = raw_left
                             .checked_sub(raw.len())
                             .ok_or_else(|| invalid("physical inventory byte limit exceeded"))?;
-                        data.push(decode_record(raw, &meter).map_err(native_read_error)?);
+                        data.push(
+                            decode_datum_record_metered(raw, policy.event_codec_epoch(), &meter)
+                                .map_err(native_read_error)?,
+                        );
                     }
                     Ok(data)
                 })
@@ -489,13 +548,10 @@ impl RuntimeManager {
                 .ok_or_else(|| invalid("physical inventory stack limit exceeded"))?;
             for datum in &data {
                 if let Some(stack) = &datum.a.cost_stack {
+                    let cells = measured_stack_cell_count(stack, budget, &mut depth, true)?;
                     cells_left = cells_left
-                        .checked_sub(stack.cells.len())
+                        .checked_sub(cells)
                         .ok_or_else(|| invalid("physical inventory cell limit exceeded"))?;
-                    for cell in &stack.cells {
-                        reserve_authority_signature_tree(cell, budget, &mut depth)
-                            .map_err(|e| invalid(&e.to_string()))?;
-                    }
                 }
                 charge_bytes(
                     budget,
@@ -509,7 +565,7 @@ impl RuntimeManager {
                 )?;
             }
             reserve_inventory_decode(&data, budget)?;
-            let inventory = decode_purse_inventory(&data, &first.stack.cells[0])?;
+            let inventory = decode_purse_inventory_metered(&data, &first.stack.cells[0], budget)?;
             let by_index = inventory
                 .stacks
                 .iter()
@@ -517,11 +573,11 @@ impl RuntimeManager {
                 .collect::<BTreeMap<_, _>>();
             let mut counts = BTreeMap::<[u8; 32], (usize, usize)>::new();
             for stack in &inventory.stacks {
-                let entry = counts
-                    .entry(stack.source_hash)
-                    .or_insert((0, stack.stack.cells.len()));
+                let cell_count =
+                    measured_stack_cell_count(&stack.stack, budget, &mut depth, false)?;
+                let entry = counts.entry(stack.source_hash).or_insert((0, cell_count));
                 entry.0 += 1;
-                if entry.1 != stack.stack.cells.len() {
+                if entry.1 != cell_count {
                     return Err(invalid("one physical source has conflicting cell counts"));
                 }
             }
@@ -555,8 +611,13 @@ impl RuntimeManager {
         keys.try_reserve_exact(sources.len())
             .map_err(|_| invalid("physical receipt key allocation failed"))?;
         keys.extend(sources.keys().map(PrepaidReceiptBucket::key_for_source));
-        let receipts =
-            self.capture_prepaid_receipts(pre_state_root, &keys, limits.receipts, budget)?;
+        let receipts = self.capture_prepaid_receipts(
+            pre_state_root,
+            policy.event_codec_epoch(),
+            &keys,
+            limits.receipts,
+            budget,
+        )?;
         let mut record_cells_left = limits.physical_cells;
         for (source, (occurrences, cells)) in sources {
             let key = PrepaidReceiptBucket::key_for_source(&source);

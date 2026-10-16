@@ -160,7 +160,15 @@ Definition OSLF_Spatial_Modal_Logic_Sound : Prop :=
   /\ (forall supply upper surface amount,
       supply surface < amount ->
       spend_check (mk_oslf_observation supply upper false) surface amount =
-        OUnsatisfied).
+        OUnsatisfied)
+  /\ (forall observation surface,
+      sufficient_check observation surface = OUnsatisfied <->
+      demand_is_exact observation = true /\
+      observed_supply observation surface < observed_demand observation surface)
+  /\ (forall supply upper surface,
+      supply surface < upper surface ->
+      verdict_not (sufficient_check (mk_oslf_observation supply upper false) surface)
+        = OIndeterminate).
 
 Theorem oslf_spatial_modal_logic_sound : OSLF_Spatial_Modal_Logic_Sound.
 Proof.
@@ -179,7 +187,11 @@ Proof.
            ++ exact conservative_sufficiency_is_sound.
            ++ split.
               ** exact upper_bound_cannot_assert_modal_spend.
-              ** exact upper_bound_insufficient_supply_rejects.
+              ** split.
+                 --- exact upper_bound_insufficient_supply_rejects.
+                 --- split.
+                     +++ exact sufficient_check_unsatisfied_iff.
+                     +++ exact upper_bound_shortage_negation_is_indeterminate.
 Qed.
 
 (* ═══════════════════════════════ Capstone ════════════════════════════════

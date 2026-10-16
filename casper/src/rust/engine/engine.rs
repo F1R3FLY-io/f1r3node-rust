@@ -14,7 +14,6 @@ use comm::rust::peer_node::PeerNode;
 use comm::rust::rp::connect::ConnectionsCell;
 use comm::rust::rp::rp_conf::RPConf;
 use comm::rust::transport::transport_layer::{Blob, TransportLayer};
-use models::rust::block_hash::BlockHash;
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::{
     ApprovedBlock, BlockMessage, CasperMessage, MergeableEntryResponse, NoApprovedBlockAvailable,
@@ -26,6 +25,7 @@ use shared::rust::shared::f1r3fly_event::F1r3flyEvent;
 use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
 use tokio::sync::mpsc;
 
+use crate::rust::blocks::block_processor::{BlockQueueItem, InFlightBlocks};
 use crate::rust::casper::{CasperShardConf, MultiParentCasper};
 use crate::rust::engine::block_retriever::BlockRetriever;
 use crate::rust::engine::engine_cell::EngineCell;
@@ -198,11 +198,8 @@ pub async fn send_no_approved_block_available<T: TransportLayer + Send + Sync + 
 // NOTE: Changed to use trait object (dyn MultiParentCasper) instead of generic T
 // based on discussion with Steven for TestFixture compatibility
 pub async fn transition_to_running<U: TransportLayer + Send + Sync + Clone + 'static>(
-    block_processing_queue_tx: mpsc::Sender<(
-        Arc<dyn MultiParentCasper + Send + Sync>,
-        BlockMessage,
-    )>,
-    blocks_in_processing: Arc<DashSet<BlockHash>>,
+    block_processing_queue_tx: mpsc::Sender<BlockQueueItem>,
+    blocks_in_processing: Arc<InFlightBlocks>,
     casper: Arc<dyn MultiParentCasper + Send + Sync>,
     approved_block: ApprovedBlock,
     the_init: Arc<
@@ -276,11 +273,8 @@ pub async fn transition_to_running<U: TransportLayer + Send + Sync + Clone + 'st
 // NOTE: Parameter types adapted to match GenesisValidator changes (Arc wrappers, trait objects)
 // based on discussion with Steven for TestFixture compatibility
 pub async fn transition_to_initializing<U: TransportLayer + Send + Sync + Clone + 'static>(
-    block_processing_queue_tx: &mpsc::Sender<(
-        Arc<dyn MultiParentCasper + Send + Sync>,
-        BlockMessage,
-    )>,
-    blocks_in_processing: &Arc<DashSet<BlockHash>>,
+    block_processing_queue_tx: &mpsc::Sender<BlockQueueItem>,
+    blocks_in_processing: &Arc<InFlightBlocks>,
     casper_shard_conf: &CasperShardConf,
     validator_id: &Option<ValidatorIdentity>,
     init: Arc<
@@ -357,4 +351,3 @@ pub async fn transition_to_initializing<U: TransportLayer + Send + Sync + Clone 
 
     Ok(())
 }
-use dashmap::DashSet;

@@ -258,6 +258,11 @@ pub fn expr_child_pars<'t>(e: &'t Expr, out: &mut Vec<&'t Par>) {
         | ExprInstance::GBigInt(_)
         | ExprInstance::GBigRat(_)
         | ExprInstance::GFixedPoint(_)
+        | ExprInstance::GUint64(_)
+        | ExprInstance::GInt32(_)
+        | ExprInstance::GUint32(_)
+        | ExprInstance::GUint16(_)
+        | ExprInstance::GUint8(_)
         | ExprInstance::GFloat32(_)
         | ExprInstance::EVarBody(_) => {}
 
@@ -1496,6 +1501,40 @@ pub fn combine_expr(e: &Expr, kids: Vec<ScoredTerm<Par>>) -> ScoredTerm<Expr> {
                 score: Tree::<ScoreAtom>::create_node_from_i64s(vec![
                     Score::FLOAT32 as i64,
                     *bits as i64,
+                ]),
+            },
+            ExprInstance::GUint64(value) => ScoredTerm {
+                term: e.clone(),
+                score: Tree::<ScoreAtom>::create_node_from_i32(Score::UINT64, vec![
+                    Tree::<ScoreAtom>::create_leaf_from_bytes(value.to_be_bytes().to_vec()),
+                ]),
+            },
+            ExprInstance::GInt32(value) => ScoredTerm {
+                term: e.clone(),
+                score: Tree::<ScoreAtom>::create_node_from_i64s(vec![
+                    Score::INT32 as i64,
+                    i64::from(*value),
+                ]),
+            },
+            ExprInstance::GUint32(value) => ScoredTerm {
+                term: e.clone(),
+                score: Tree::<ScoreAtom>::create_node_from_i64s(vec![
+                    Score::UINT32 as i64,
+                    i64::from(*value),
+                ]),
+            },
+            ExprInstance::GUint16(value) => ScoredTerm {
+                term: e.clone(),
+                score: Tree::<ScoreAtom>::create_node_from_i64s(vec![
+                    Score::UINT16 as i64,
+                    i64::from(*value),
+                ]),
+            },
+            ExprInstance::GUint8(value) => ScoredTerm {
+                term: e.clone(),
+                score: Tree::<ScoreAtom>::create_node_from_i64s(vec![
+                    Score::UINT8 as i64,
+                    i64::from(*value),
                 ]),
             },
             ExprInstance::GBigInt(bytes) => combine_gbigint(e, bytes),

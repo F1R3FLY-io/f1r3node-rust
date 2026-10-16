@@ -27,11 +27,49 @@ pub struct NativeWalletSettlement<'a> {
 pub struct NativePrepaidConsumption<'a, 'b> {
     pub captured: &'a CapturedPrepaidStacks<'b>,
     pub draws: &'a [PrepaidStackPop],
+    pub checked_physical: Option<&'a CheckedPrepaidPhysicalTrace<'a>>,
     pub limits: PrepaidStackPopLimits,
     pub execution: PhloExecutionLimits,
     pub cell: NativePrepaidCellLimits,
     pub physical_cells: usize,
     pub physical_bytes: usize,
+}
+
+impl NativePrepaidConsumption<'_, '_> {
+    async fn apply_checked_stack_pops(
+        &self,
+        runtime_ops: &mut RuntimeOps,
+        stacks: &[PurseStack],
+        budget: &HostWorkBudget,
+    ) -> Result<NativePrepaidPopResult, CasperError> {
+        let Some(trace) = self.checked_physical else {
+            return runtime_ops
+                .apply_prepaid_stack_pops_with_changes(stacks, self.draws, self.limits, budget)
+                .await;
+        };
+        if trace.pre_state_root() != self.captured.root() {
+            return Err(invalid(
+                "prepaid physical trace belongs to another capture root",
+            ));
+        }
+        let live_root: [u8; 32] = runtime_ops
+            .runtime
+            .get_root()
+            .await
+            .bytes()
+            .as_slice()
+            .try_into()
+            .map_err(|_| invalid("live prepaid root width"))?;
+        let verified = trace.verify_live(live_root, stacks, budget)?;
+        runtime_ops
+            .apply_prepaid_stack_pops_verified_with_changes(
+                &verified,
+                self.draws,
+                self.limits,
+                budget,
+            )
+            .await
+    }
 }
 
 pub(super) fn used_resources<'a>(
@@ -153,13 +191,8 @@ impl RuntimeOps {
             consumption
                 .rebind_live_indices(self, &mut stacks, budget)
                 .await?;
-            let pops = self
-                .apply_prepaid_stack_pops_with_changes(
-                    &stacks,
-                    consumption.draws,
-                    consumption.limits,
-                    budget,
-                )
+            let pops = consumption
+                .apply_checked_stack_pops(self, &stacks, budget)
                 .await?;
             let count = births
                 .len()
@@ -212,8 +245,18 @@ impl RuntimeOps {
             let mut log = Vec::new();
             log.try_reserve_exact(log_count)
                 .map_err(|_| invalid("receipt-only log allocation failed"))?;
-            log.extend(birth_log.into_iter().map(event_converter::to_casper_event));
-            log.extend(pop_log.into_iter().map(event_converter::to_casper_event));
+            log.extend(
+                birth_log
+                    .into_iter()
+                    .map(event_converter::to_casper_event)
+                    .collect::<Result<Vec<_>, _>>()?,
+            );
+            log.extend(
+                pop_log
+                    .into_iter()
+                    .map(event_converter::to_casper_event)
+                    .collect::<Result<Vec<_>, _>>()?,
+            );
             Ok::<_, CasperError>(NativeRetainedSettlement {
                 log,
                 mergeable: HashMap::new(),
@@ -282,6 +325,19 @@ impl RuntimeOps {
             }
         }
         let checkpoint = self.runtime.create_soft_checkpoint().await;
+        let checkpoint_log = match checkpoint
+            .log
+            .iter()
+            .cloned()
+            .map(event_converter::to_casper_event)
+            .collect::<Result<Vec<_>, _>>()
+        {
+            Ok(log) => log,
+            Err(error) => {
+                self.runtime.revert_to_soft_checkpoint(checkpoint).await;
+                return Err(error);
+            }
+        };
         let result = async {
             let mut result = self
                 .apply_retained_wallet_settlement_internal(
@@ -296,13 +352,8 @@ impl RuntimeOps {
             consumption
                 .rebind_live_indices(self, &mut stacks, budget)
                 .await?;
-            let pops = self
-                .apply_prepaid_stack_pops_with_changes(
-                    &stacks,
-                    consumption.draws,
-                    consumption.limits,
-                    budget,
-                )
+            let pops = consumption
+                .apply_checked_stack_pops(self, &stacks, budget)
                 .await?;
             let count = result
                 .prepaid_changes
@@ -348,18 +399,15 @@ impl RuntimeOps {
             result.log.extend(
                 pops.into_log()
                     .into_iter()
-                    .map(event_converter::to_casper_event),
+                    .map(event_converter::to_casper_event)
+                    .collect::<Result<Vec<_>, _>>()?,
             );
             Ok::<_, CasperError>(result)
         }
         .await;
         match result {
             Ok(mut result) => {
-                let mut log: Vec<_> = checkpoint
-                    .log
-                    .into_iter()
-                    .map(event_converter::to_casper_event)
-                    .collect();
+                let mut log = checkpoint_log;
                 log.append(&mut result.log);
                 result.log = log;
                 Ok(result)
@@ -508,7 +556,25 @@ impl NativePrepaidConsumption<'_, '_> {
             },
             budget,
         )?;
-        let prefixes = inventory.prefixes(self.draws, self.limits.draws, budget)?;
+        let captured_for_trace = if self.checked_physical.is_some() {
+            Some(inventory.clone_captured_stacks(budget)?)
+        } else {
+            None
+        };
+        let verified_pre_state = match (self.checked_physical, captured_for_trace.as_ref()) {
+            (Some(trace), Some(stacks)) => {
+                if trace.pre_state_root() != self.captured.root() {
+                    return Err(invalid("consumption trace belongs to another capture root"));
+                }
+                Some(trace.verify_live(self.captured.root(), stacks, budget)?)
+            }
+            _ => None,
+        };
+        let prefixes = if let Some(verified) = verified_pre_state.as_ref() {
+            inventory.prefixes_verified(self.draws, verified, self.limits.draws, budget)?
+        } else {
+            inventory.prefixes(self.draws, self.limits.draws, budget)?
+        };
         reserve(
             budget,
             HostWorkDimension::SearchStateBytes,
@@ -530,6 +596,15 @@ impl NativePrepaidConsumption<'_, '_> {
                 *quantity = quantity
                     .checked_sub(1)
                     .ok_or_else(|| invalid("consumed resource exceeds checked execution"))?;
+            }
+            if verified_pre_state.is_some() {
+                reserve(budget, HostWorkDimension::SearchCandidates, stacks.len())?;
+                if stacks
+                    .iter()
+                    .any(|selected: &PurseStack| selected.instance_id == stack.instance_id)
+                {
+                    continue;
+                }
             }
             let size = stack
                 .channel
@@ -575,9 +650,12 @@ mod tests {
             let captured = PurseStack {
                 instance_id: [1; 32], source_hash: [2; 32], channel: Par::default(),
                 datum_index: old, random_state: vec![3], persistent: false,
-                stack: models::rhoapi::CostStack { cells: vec![models::rhoapi::CostSignature {
-                    value: Some(models::rhoapi::cost_signature::Value::Ground(vec![4])),
-                }] },
+                stack: models::rhoapi::CostStack {
+                    cells: vec![models::rhoapi::CostSignature {
+                        value: Some(models::rhoapi::cost_signature::Value::Ground(vec![4])),
+                    }],
+                    parallel_tail: Vec::new(),
+                },
             };
             let mut live = captured.clone();
             live.datum_index = new;

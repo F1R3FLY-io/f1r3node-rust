@@ -266,7 +266,7 @@ impl RhoTrieTraverser {
         runtime: &R,
     ) -> Result<Option<Result<i64, ParMap>>, InterpreterError> {
         let query = Self::node_map_list(map_par, nyb_list);
-        let result = runtime.get_data(&query).await;
+        let result = runtime.get_data(&query).await?;
 
         if let Some(first) = result.first() {
             if let Some(head_par) = first.a.pars.first() {

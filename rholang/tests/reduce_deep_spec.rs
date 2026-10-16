@@ -39,6 +39,7 @@ async fn data_at(runtime: &RhoRuntimeImpl, name: &str) -> Vec<Par> {
     runtime
         .get_data(&string_channel(name))
         .await
+        .expect("data query")
         .into_iter()
         .flat_map(|d| d.a.pars.clone())
         .collect()

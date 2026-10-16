@@ -127,6 +127,19 @@ impl RuntimeOps {
             return Err(invalid("retained settlement physical capture is stale"));
         }
         let checkpoint = self.runtime.create_soft_checkpoint().await;
+        let checkpoint_log = match checkpoint
+            .log
+            .iter()
+            .cloned()
+            .map(event_converter::to_casper_event)
+            .collect::<Result<Vec<_>, _>>()
+        {
+            Ok(log) => log,
+            Err(error) => {
+                self.runtime.revert_to_soft_checkpoint(checkpoint).await;
+                return Err(error);
+            }
+        };
         let result = async {
             let mut settlement = NativeRetainedSettlement {
                 log: Vec::new(),
@@ -166,18 +179,15 @@ impl RuntimeOps {
                 self.replace_prepaid_receipts_metered(&changes, limits.receipts, budget)
                     .await?
                     .into_iter()
-                    .map(event_converter::to_casper_event),
+                    .map(event_converter::to_casper_event)
+                    .collect::<Result<Vec<_>, _>>()?,
             );
             Ok(settlement)
         }
         .await;
         match result {
             Ok(mut settlement) => {
-                let mut log: Vec<_> = checkpoint
-                    .log
-                    .into_iter()
-                    .map(event_converter::to_casper_event)
-                    .collect();
+                let mut log = checkpoint_log;
                 log.append(&mut settlement.log);
                 settlement.log = log;
                 Ok(settlement)

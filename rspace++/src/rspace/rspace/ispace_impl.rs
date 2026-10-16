@@ -14,13 +14,14 @@ use async_trait::async_trait;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use shared::rust::clone_backing::CloneBacking;
+use shared::rust::closed_decode::ClosedDecode;
 
 use super::RSpace;
 use super::locks::LOCK_SEQUENCE;
 use crate::rspace::checkpoint::{Checkpoint, SoftCheckpoint};
 use crate::rspace::errors::RSpaceError;
 use crate::rspace::hashing::blake2b256_hash::Blake2b256Hash;
-use crate::rspace::hashing::native_source::{SourceMeter, hash};
+use crate::rspace::hashing::native_source::{SourceMeter, channel_hash_for_epoch};
 use crate::rspace::history::instances::radix_history::RadixHistory;
 use crate::rspace::history::native_reader::{
     NativeLeafKind, NativeReadCharge, NativeReadError, NativeReadFault, NativeReadMeter,
@@ -37,7 +38,7 @@ use crate::rspace::rspace_interface::{
 use crate::rspace::serializers::serializers::{DatumOracleDe, NativeRecordDecode};
 use crate::rspace::striped_locks;
 use crate::rspace::trace::Log;
-use crate::rspace::trace::event::{Consume, Event, IOEvent, Produce, recorded_removal};
+use crate::rspace::trace::event::{Consume, Event, IOEvent, Produce, recorded_removal_for_epoch};
 
 #[async_trait]
 impl<C, P, A, K> ISpace<C, P, A, K> for RSpace<C, P, A, K>
@@ -47,6 +48,7 @@ where
         + Default
         + Serialize
         + crate::rspace::hashing::stable_hash_provider::StableHashSerialize
+        + crate::rspace::serializers::cold_store_decode::ColdStoreDecode
         + Hash
         + Ord
         + Eq
@@ -58,6 +60,7 @@ where
         + Default
         + Serialize
         + crate::rspace::hashing::stable_hash_provider::StableHashSerialize
+        + crate::rspace::serializers::cold_store_decode::ColdStoreDecode
         + 'static
         + Sync
         + Send,
@@ -66,6 +69,7 @@ where
         + Default
         + Serialize
         + crate::rspace::hashing::stable_hash_provider::StableHashSerialize
+        + crate::rspace::serializers::cold_store_decode::ColdStoreDecode
         + 'static
         + Sync
         + Send,
@@ -74,10 +78,15 @@ where
         + Default
         + Serialize
         + crate::rspace::hashing::stable_hash_provider::StableHashSerialize
+        + crate::rspace::serializers::cold_store_decode::ColdStoreDecode
         + 'static
         + Sync
         + Send,
 {
+    fn codec_epoch(&self) -> crate::rspace::hashing::stable_hash_provider::EventCodecEpoch {
+        self.epoch
+    }
+
     fn set_accounting_observer(
         &self,
         observer: Option<Arc<dyn RSpaceAccountingObserver<C, P, A, K>>>,
@@ -101,6 +110,7 @@ where
     }
 
     async fn create_checkpoint(&self) -> Result<Checkpoint, RSpaceError> {
+        let _resting_barrier = self.resting_checkpoint_barrier.write().await;
         // Span[F].withMarks("create-checkpoint") from Scala - works because
         // this is NOT async
         let _span = tracing::info_span!(target: "f1r3fly.rspace", CREATE_CHECKPOINT_SPAN).entered();
@@ -117,16 +127,18 @@ where
         let next_history = {
             let _history_span =
                 tracing::info_span!(target: "f1r3fly.rspace", HISTORY_CHECKPOINT_SPAN).entered();
-            self.get_history_repository().checkpoint(changes)
+            self.get_history_repository()
+                .checkpoint_for_epoch(self.epoch, changes)?
         };
-        let history_reader = next_history.get_history_reader(&next_history.root())?;
+        let history_reader =
+            next_history.get_history_reader_for_epoch(&next_history.root(), self.epoch)?;
         *self.history_repository.write().expect("history write lock") = Arc::new(next_history);
 
         let log = self.take_ordered_event_log();
         self.reset_produce_counter();
 
         self.create_new_hot_store(history_reader);
-        self.restore_installs();
+        self.restore_installs()?;
 
         // Mark the completion of create-checkpoint
         tracing::trace!(target: "f1r3fly.rspace.ops", mark = "finished-create-checkpoint", "create_checkpoint");
@@ -138,8 +150,10 @@ where
     }
 
     async fn reset(&self, root: &Blake2b256Hash) -> Result<(), RSpaceError> {
+        let _resting_barrier = self.resting_checkpoint_barrier.write().await;
         let _span = tracing::info_span!(target: "f1r3fly.rspace", RESET_SPAN).entered();
         let next_history = self.get_history_repository().reset(root)?;
+        let history_reader = next_history.get_history_reader_for_epoch(root, self.epoch)?;
         *self.history_repository.write().expect("history write lock") = Arc::new(next_history);
 
         *self.event_log.lock().expect("event log lock") = Vec::new();
@@ -149,9 +163,8 @@ where
         // Striped locks are fixed-size and stateless (Mutex<()>); nothing to
         // clear on reset — they are reused across checkpoints.
 
-        let history_reader = self.get_history_repository().get_history_reader(root)?;
         self.create_new_hot_store(history_reader);
-        self.restore_installs();
+        self.restore_installs()?;
 
         Ok(())
     }
@@ -174,7 +187,9 @@ where
         }))
     }
 
-    async fn get_data(&self, channel: &C) -> Vec<Datum<A>> { self.get_store().get_data(channel) }
+    async fn get_data(&self, channel: &C) -> Result<Vec<Datum<A>>, RSpaceError> {
+        self.get_store().get_data(channel)
+    }
 
     async fn get_data_metered(
         &self,
@@ -183,8 +198,13 @@ where
     ) -> Result<Vec<Datum<A>>, RSpaceError>
     where
         C: CloneBacking + DeserializeOwned,
-        A: CloneBacking + DeserializeOwned,
+        A: CloneBacking + DeserializeOwned + ClosedDecode,
     {
+        // CostV1's stack-safe positional decoder is not yet metered. Refuse
+        // this cold path until the separate metered decoder is available.
+        if self.epoch != crate::rspace::hashing::stable_hash_provider::EventCodecEpoch::Legacy {
+            return Err(RSpaceError::HostWorkRejected);
+        }
         struct ReadMeter<'a>(&'a dyn SourceMeter);
 
         impl NativeReadMeter for ReadMeter<'_> {
@@ -218,12 +238,21 @@ where
             .as_slice()
             .try_into()
             .map_err(|_| RSpaceError::HostWorkRejected)?;
-        self.get_store().get_data_with_reader(
+        // Changed by D-C4 (D-S5, DR-98): the metered read no longer fills the
+        // store. The cold fill inserted the decoded values with
+        // native_insert_new, whose charges read the whole shard, and grew the
+        // shard that every later lookup charges. A read now copies an entry
+        // only for an installed channel or a channel that the runtime wrote
+        // since its last reset or checkpoint.
+        // self.get_store().get_data_with_reader(
+        self.get_store().get_data_uncached_with_reader(
             channel,
             &|| {
-                let projection = hash(channel, &|operations, scanned, backing| {
-                    meter.reserve(operations, scanned, backing)
-                })?;
+                let projection = channel_hash_for_epoch(
+                    self.epoch,
+                    channel,
+                    &|operations, scanned, backing| meter.reserve(operations, scanned, backing),
+                )?;
                 let projection: [u8; 32] = projection
                     .0
                     .as_slice()
@@ -261,14 +290,86 @@ where
         )
     }
 
-    async fn get_waiting_continuations(&self, channels: Vec<C>) -> Vec<WaitingContinuation<P, K>> {
+    async fn get_data_cold_decode_metered(
+        &self,
+        channel: &C,
+        meter: &(dyn SourceMeter + Sync),
+    ) -> Result<Vec<Datum<A>>, RSpaceError>
+    where
+        C: CloneBacking,
+        A: CloneBacking + crate::rspace::serializers::cold_store_decode::ColdStoreDecode,
+    {
+        struct ReadMeter<'a>(&'a dyn SourceMeter);
+
+        impl NativeReadMeter for ReadMeter<'_> {
+            type Error = RSpaceError;
+
+            fn reserve(&self, charge: NativeReadCharge) -> Result<(), Self::Error> {
+                self.0
+                    .reserve(charge.operations, charge.scanned_bytes, charge.backing_bytes)
+            }
+        }
+
+        fn read_error(error: NativeReadError<RSpaceError>) -> RSpaceError {
+            match error {
+                NativeReadError::Host(error) | NativeReadError::Consumer(error) => error,
+                NativeReadError::Store(error) => error.into(),
+                NativeReadError::Invalid(
+                    NativeReadFault::Depth |
+                    NativeReadFault::Allocation |
+                    NativeReadFault::Overflow,
+                ) => RSpaceError::HostWorkRejected,
+                NativeReadError::Invalid(error) => {
+                    RSpaceError::InterpreterError(format!("native history: {error:?}"))
+                }
+            }
+        }
+
+        self.get_store().get_data_uncached_with_reader(
+            channel,
+            &|| {
+                let history = self.get_history_repository();
+                let root: [u8; 32] = history
+                    .root()
+                    .0
+                    .as_slice()
+                    .try_into()
+                    .map_err(|_| RSpaceError::HostWorkRejected)?;
+                let projection = channel_hash_for_epoch(
+                    self.epoch,
+                    channel,
+                    &|operations, scanned, backing| meter.reserve(operations, scanned, backing),
+                )?;
+                let projection: [u8; 32] = projection
+                    .0
+                    .as_slice()
+                    .try_into()
+                    .map_err(|_| RSpaceError::HostWorkRejected)?;
+                history
+                    .native_history_reader(root)
+                    .with_records(NativeLeafKind::Data, &projection, &ReadMeter(meter), |_| {
+                        Err(RSpaceError::HostWorkRejected)
+                    })
+                    .map_err(read_error)
+                    .map(Option::unwrap_or_default)
+            },
+            meter,
+        )
+    }
+
+    async fn get_waiting_continuations(
+        &self,
+        channels: Vec<C>,
+    ) -> Result<Vec<WaitingContinuation<P, K>>, RSpaceError> {
         self.get_store().get_continuations(&channels)
     }
 
-    async fn get_joins(&self, channel: C) -> Vec<Vec<C>> { self.get_store().get_joins(&channel) }
+    async fn get_joins(&self, channel: C) -> Result<Vec<Vec<C>>, RSpaceError> {
+        self.get_store().get_joins(&channel)
+    }
 
     async fn remove_all_data(&self, channel: &C) -> Result<(), RSpaceError> {
-        let len = self.get_store().get_data(channel).len();
+        let len = self.get_store().get_data(channel)?.len();
         for index in (0..len).rev() {
             self.get_store().remove_datum(channel, index as i32)?;
         }
@@ -287,15 +388,17 @@ where
     ) -> Result<(), RSpaceError> {
         let channel_hash = striped_locks::channel_hash(channel);
         let _guard = self.consume_lock(&[channel_hash]).await;
+        let data = self.get_store().get_data(channel)?;
         let datum = usize::try_from(index)
             .ok()
-            .and_then(|index| self.get_store().get_data(channel).get(index).cloned())
+            .and_then(|index| data.get(index).cloned())
             .ok_or_else(|| {
                 RSpaceError::BugFoundError(
                     "recorded removal references a missing datum".to_string(),
                 )
             })?;
-        let (consume, comm) = recorded_removal(channel, &datum.source, operation_id);
+        let (consume, comm) =
+            recorded_removal_for_epoch(self.epoch, channel, &datum.source, operation_id)?;
         self.get_store().remove_datum(channel, index)?;
         self.push_event(Event::IoEvent(IOEvent::Consume(consume)));
         self.push_event(Event::Comm(comm));
@@ -303,11 +406,11 @@ where
     }
 
     async fn remove_all_continuations(&self, channels: Vec<C>) -> Result<(), RSpaceError> {
-        let len = self.get_store().get_continuations(&channels).len();
+        let len = self.get_store().get_continuations(&channels)?.len();
         for index in (0..len).rev() {
             let _ = self
                 .get_store()
-                .remove_continuation(&channels, index as i32);
+                .remove_continuation(&channels, index as i32)?;
         }
         Ok(())
     }
@@ -321,6 +424,7 @@ where
     async fn to_map(&self) -> HashMap<Vec<C>, Row<P, A, K>> { self.get_store().to_map() }
 
     async fn create_soft_checkpoint(&self) -> SoftCheckpoint<C, P, A, K> {
+        let _resting_barrier = self.resting_checkpoint_barrier.write().await;
         let cache_snapshot = self.get_store().snapshot();
         let curr_event_log = self.take_ordered_event_log();
         let curr_produce_counter = self.take_produce_counter();
@@ -329,10 +433,12 @@ where
             cache_snapshot,
             log: curr_event_log,
             produce_counter: curr_produce_counter,
+            replay_cursor: None,
         }
     }
 
     async fn take_event_log(&self) -> Log {
+        let _resting_barrier = self.resting_checkpoint_barrier.write().await;
         let curr_event_log = self.take_ordered_event_log();
         self.reset_produce_counter();
         curr_event_log
@@ -342,10 +448,11 @@ where
         &self,
         checkpoint: SoftCheckpoint<C, P, A, K>,
     ) -> Result<(), RSpaceError> {
+        let _resting_barrier = self.resting_checkpoint_barrier.write().await;
         let _span =
             tracing::info_span!(target: "f1r3fly.rspace", REVERT_SOFT_CHECKPOINT_SPAN).entered();
         let history = self.get_history_repository();
-        let history_reader = history.get_history_reader(&history.root())?;
+        let history_reader = history.get_history_reader_for_epoch(&history.root(), self.epoch)?;
         let hot_store = HotStoreInstances::create_from_hs_and_hr(
             checkpoint.cache_snapshot,
             history_reader.base(),
@@ -373,12 +480,17 @@ where
         peeks: BTreeSet<i32>,
     ) -> Result<MaybeConsumeResult<C, P, A, K>, RSpaceError> {
         if channels.is_empty() {
-            panic!("RUST ERROR: channels can't be empty");
+            return Err(RSpaceError::BugFoundError(
+                "RUST ERROR: channels can't be empty".to_string(),
+            ));
         }
         if channels.len() != patterns.len() {
-            panic!("RUST ERROR: channels.length must equal patterns.length");
+            return Err(RSpaceError::BugFoundError(
+                "RUST ERROR: channels.length must equal patterns.length".to_string(),
+            ));
         }
-        let consume_ref = Consume::create(&channels, &patterns, &continuation, persist);
+        let consume_ref =
+            Consume::create_for_epoch(self.epoch, &channels, &patterns, &continuation, persist)?;
 
         let lock_start = Instant::now();
         let channel_hashes: Vec<u64> = channels
@@ -409,10 +521,10 @@ where
         data: A,
         persist: bool,
     ) -> Result<MaybeProduceResult<C, P, A, K>, RSpaceError> {
-        let produce_ref = Produce::create(&channel, &data, persist);
+        let produce_ref = Produce::create_for_epoch(self.epoch, &channel, &data, persist)?;
 
         let lock_start = Instant::now();
-        let _lock_guard = self.produce_lock(&channel).await;
+        let _lock_guard = self.produce_lock(&channel).await?;
         if tracing::enabled!(target: "f1r3fly.rspace.lock_order", tracing::Level::TRACE) {
             let seq = LOCK_SEQUENCE.fetch_add(1, AtomicOrdering::Relaxed);
             tracing::trace!(target: "f1r3fly.rspace.lock_order", seq = seq, op = "produce", hash = striped_locks::channel_hash(&channel), "lock acquired");
@@ -436,8 +548,8 @@ where
         persist: bool,
         guard: &dyn ProduceCommitGuard,
     ) -> Result<MaybeProduceResult<C, P, A, K>, RSpaceError> {
-        let produce_ref = Produce::create(&channel, &data, persist);
-        let _lock_guard = self.produce_lock(&channel).await;
+        let produce_ref = Produce::create_for_epoch(self.epoch, &channel, &data, persist)?;
+        let _lock_guard = self.produce_lock(&channel).await?;
         self.locked_produce(channel, data, persist, &produce_ref, Some(guard))
     }
 
@@ -507,6 +619,14 @@ where
                     }
                 }
 
+                Event::RestingComm(resting) => {
+                    for produce in &mut std::sync::Arc::make_mut(resting).ordered_produces {
+                        if produce.hash == produce_ref.hash {
+                            *produce = produce_ref.clone();
+                        }
+                    }
+                }
+
                 _ => continue,
             }
         }
@@ -544,6 +664,13 @@ where
                                     }
                                 })
                                 .collect();
+                        }
+                    }
+                    Event::RestingComm(resting) => {
+                        for produce in &mut std::sync::Arc::make_mut(resting).ordered_produces {
+                            if produce.hash == produce_ref.hash {
+                                *produce = produce_ref.clone();
+                            }
                         }
                     }
                     _ => {}

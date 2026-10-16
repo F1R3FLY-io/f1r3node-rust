@@ -36,12 +36,35 @@
      drops) from a state where every live payload is prepaid releases no
      payload unpaid.
 
+   D-C4 (D-S5, decision record DR-98) reads the data of a play or replay
+   store without the cold fill. A resident entry is read as before. A cold
+   read returns the decoded history values and stores nothing:
+   - fill_unobservable and uncached_cold_read_equals_read: a fill stores
+     the history value, so no later read can observe it, and the uncached
+     read returns what the filling read returns.
+   - uncached_reads_leave_writes_only: without fills, the store after any
+     trace depends only on the writes of the trace.
+   - cache_state_independent_charge: so the charge of a read (a probe of
+     the store, plus a copy of a resident entry or a cold read) depends on
+     the earlier writes and not on the earlier reads.
+   - filling_reads_change_later_charge: a negative control. With the fill,
+     an earlier read changes the charge of a later read.
+   - history_only_read_is_stale_after_write: a negative control. A read that
+     skips the store returns the history value after a write, so a read
+     cannot skip the probe.
+   The model's write touches only its own key. In the Rust store this is
+   premise P_join: no join group contains a prepaid receipt channel or a
+   supply channel, so a play produce on a settlement channel fetches no
+   other channel's data.
+
    Rust correspondence: rspace++/src/rspace/hot_store/native.rs
    (native_continuation_views); rspace++/src/rspace/replay_rspace/
    native_session/history.rs (read_continuation_views,
    prefetch_continuations); native_candidate/metered.rs (the selected
    continuation is copied); hot_store/native.rs (native_data_view,
-   native_insert_new_snapshot) for C2. TLA+: NativeSharedReadCleanup.tla. *)
+   native_insert_new_snapshot) for C2; hot_store/native.rs
+   (native_data_uncached), rspace/ispace_impl.rs and replay_rspace.rs
+   (get_data_metered) for D-C4. TLA+: NativeSharedReadCleanup.tla. *)
 
 From Stdlib Require Import Lists.List Arith.PeanoNat Bool Lia.
 Import ListNotations.
@@ -162,6 +185,96 @@ End Cache.
 Example insert_first_fills_cache_on_rejection :
   snd (read_insert_first (fun _ => [1]) (fun _ => None) 0 2 1) 0 = Some [1].
 Proof. vm_compute. reflexivity. Qed.
+
+(* D-C4 (D-S5, DR-98): the metered play read without the cold fill. *)
+Section UncachedRead.
+  Variable decode : nat -> list nat.
+
+  (* A resident entry is returned. Otherwise the history value is decoded and
+     returned, and the store is not changed. *)
+  Definition read_uncached (store : cache) (key : nat) : list nat :=
+    match store key with Some views => views | None => decode key end.
+
+  (* A fill stores the history value, so no later read observes it. *)
+  Lemma fill_unobservable : forall store key other,
+    read_uncached (snd (read decode store key)) other = read_uncached store other.
+  Proof.
+    intros store key other. unfold read.
+    destruct (store key) as [views |] eqn:cached; [reflexivity |]. cbn [snd].
+    unfold read_uncached at 1, update.
+    destruct (Nat.eqb key other) eqn:same; [| reflexivity].
+    apply Nat.eqb_eq in same. subst other. unfold read_uncached. rewrite cached. reflexivity.
+  Qed.
+
+  Theorem uncached_cold_read_equals_read : forall store key,
+    read_uncached store key = fst (read decode store key) /\
+    (forall other, read_uncached (snd (read decode store key)) other = read_uncached store other).
+  Proof.
+    intros store key. split.
+    - unfold read_uncached, read. destruct (store key); reflexivity.
+    - intros other. apply fill_unobservable.
+  Qed.
+
+  (* A settlement trace: writes (recorded removals and produces) and reads. *)
+  Inductive settlement_op :=
+  | WriteKey (target : nat) (views : list nat)
+  | ReadKey (target : nat).
+
+  Definition is_write (operation : settlement_op) : bool :=
+    match operation with WriteKey _ _ => true | ReadKey _ => false end.
+
+  Definition step_uncached (current : cache) (operation : settlement_op) : cache :=
+    match operation with WriteKey target views => update current target views | ReadKey _ => current end.
+
+  (* The legacy read, which fills the store. *)
+  Definition step_filling (current : cache) (operation : settlement_op) : cache :=
+    match operation with
+    | WriteKey target views => update current target views
+    | ReadKey target => snd (read decode current target)
+    end.
+
+  Theorem uncached_reads_leave_writes_only : forall trace store,
+    fold_left step_uncached trace store = fold_left step_uncached (filter is_write trace) store.
+  Proof.
+    induction trace as [| [target views | target] rest IH]; intros store; cbn;
+      [reflexivity | apply IH | apply IH].
+  Qed.
+
+  (* The charge of a read: the probe of the store, plus the copy of a resident
+     entry or the cold read of the history. *)
+  Variable probe : cache -> nat -> nat.
+  Variable copy : list nat -> nat.
+  Variable cold : nat -> nat.
+
+  Definition uncached_charge (store : cache) (key : nat) : nat :=
+    probe store key + match store key with Some views => copy views | None => cold key end.
+
+  Corollary cache_state_independent_charge : forall left right store key,
+    filter is_write left = filter is_write right ->
+    uncached_charge (fold_left step_uncached left store) key =
+    uncached_charge (fold_left step_uncached right store) key.
+  Proof.
+    intros left right store key same.
+    rewrite (uncached_reads_leave_writes_only left), (uncached_reads_leave_writes_only right), same.
+    reflexivity.
+  Qed.
+End UncachedRead.
+
+(* Negative control: with the legacy fill, an earlier read of key 0 makes the
+   later read of key 0 a copy (charge 1) instead of a cold read (charge 5). *)
+Example filling_reads_change_later_charge :
+  uncached_charge (fun _ _ => 0) (fun _ => 1) (fun _ => 5)
+    (fold_left (step_filling (fun _ => [1])) [ReadKey 0] (fun _ => None)) 0 <>
+  uncached_charge (fun _ _ => 0) (fun _ => 1) (fun _ => 5)
+    (fold_left (step_filling (fun _ => [1])) [] (fun _ => None)) 0.
+Proof. vm_compute. intro equal. discriminate equal. Qed.
+
+(* Negative control: after a write of [2] to key 0, a read that skips the
+   store returns the history value [1], but the store holds [2]. *)
+Example history_only_read_is_stale_after_write :
+  (fun _ : nat => [1]) 0 <>
+  read_uncached (fun _ => [1]) (fold_left step_uncached [WriteKey 0 [2]] (fun _ => None)) 0.
+Proof. vm_compute. intro equal. discriminate equal. Qed.
 
 Section Release.
   (* Pointer counts and prepayment flags of the payloads. *)
@@ -290,3 +403,9 @@ Print Assumptions rejected_cold_read_leaves_cache.
 Print Assumptions accepted_cold_read_equals_read.
 Print Assumptions insert_first_fills_cache_on_rejection.
 Print Assumptions shared_replace_needs_no_payload_cleanup.
+Print Assumptions fill_unobservable.
+Print Assumptions uncached_cold_read_equals_read.
+Print Assumptions uncached_reads_leave_writes_only.
+Print Assumptions cache_state_independent_charge.
+Print Assumptions filling_reads_change_later_charge.
+Print Assumptions history_only_read_is_stale_after_write.

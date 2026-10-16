@@ -55,6 +55,10 @@ pub struct EvaluateResult {
     pub native_budget_recording: Option<NativeBudgetRecording>,
     pub native_operation_recording:
         Option<std::sync::Arc<[super::accounting::NativeOperationRecord]>>,
+    /// Additive CostV2 journal. Historical epochs retain the original field
+    /// and bytes; the choice is made by trusted native configuration only.
+    pub native_operation_recording_v3:
+        Option<std::sync::Arc<[super::accounting::NativeOperationRecordV3]>>,
 }
 
 #[allow(async_fn_in_trait)]
@@ -277,6 +281,7 @@ impl InterpreterImpl {
                 native_phlo_usage: None,
                 native_budget_recording: None,
                 native_operation_recording: None,
+                native_operation_recording_v3: None,
             });
         }
 
@@ -342,7 +347,9 @@ impl InterpreterImpl {
             // Phase: reduce-term — execute the parsed AST through RSpace.
             let phase_start = Instant::now();
             event!(Level::DEBUG, mark = "started-reduce-term", "inj_attempt");
-            let _comm_accounting_scope = self.c.enter_comm_accounting_scope();
+            let _comm_accounting_scope = self
+                .c
+                .enter_comm_accounting_scope_for_epoch(reducer.space.codec_epoch());
             let (reduce_result, mut economic_failures) = reducer
                 .inj_with_observation(parsed, rand, host_work.clone())
                 .await;
@@ -535,6 +542,7 @@ impl InterpreterImpl {
                 native_phlo_usage: None,
                 native_budget_recording: None,
                 native_operation_recording: None,
+                native_operation_recording_v3: None,
             });
         }
 
@@ -590,22 +598,42 @@ impl InterpreterImpl {
             native_phlo_usage,
             native_budget_recording,
             native_operation_recording,
+            native_operation_recording_v3,
         ) = match evidence {
             Some(evidence) => {
+                if self.c.native_event_codec_epoch()
+                    == Some(rspace_plus_plus::rspace::hashing::stable_hash_provider::EventCodecEpoch::CostV2)
+                {
+                    return Err(InterpreterError::HostWorkRejected);
+                }
                 let (recording, operations, observations) = evidence.into_parts();
                 (
                     observations,
                     Some(recording.used),
                     Some(recording),
                     Some(operations),
+                    None,
                 )
             }
-            None => (
-                self.c.byte_observations(),
-                self.c.native_phlo_usage(),
-                self.c.native_budget_recording()?,
-                self.c.native_operation_recording()?,
-            ),
+            None => {
+                let cost_v2 = self.c.native_event_codec_epoch()
+                    == Some(rspace_plus_plus::rspace::hashing::stable_hash_provider::EventCodecEpoch::CostV2);
+                (
+                    self.c.byte_observations(),
+                    self.c.native_phlo_usage(),
+                    self.c.native_budget_recording()?,
+                    if cost_v2 {
+                        None
+                    } else {
+                        self.c.native_operation_recording()?
+                    },
+                    if cost_v2 {
+                        self.c.native_operation_recording_v3()?
+                    } else {
+                        None
+                    },
+                )
+            }
         };
         let authority_byte_events = self.c.result_legacy_events(&byte_observations)?;
         let quantitative_byte_cost = authority_byte_events
@@ -626,6 +654,7 @@ impl InterpreterImpl {
             native_phlo_usage,
             native_budget_recording,
             native_operation_recording,
+            native_operation_recording_v3,
         })
     }
 }

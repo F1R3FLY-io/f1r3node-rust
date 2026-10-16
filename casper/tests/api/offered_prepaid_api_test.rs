@@ -178,7 +178,7 @@ async fn offered_retained_birth_funds_later_prepaid_draw_across_validators() {
     parameters.2.proof_of_stake.min_phlo_price = 1;
     let policy = PhloGenesisPolicy::from_schedule(&schedule())
         .unwrap()
-        .with_offered_funded_v6_active();
+        .with_offered_funded_active();
     let genesis = GenesisBuilder::new()
         .with_resource_policy(policy)
         .build_genesis_with_parameters(Some(parameters))
@@ -194,7 +194,7 @@ async fn offered_retained_birth_funds_later_prepaid_draw_across_validators() {
     )
     .await
     .unwrap();
-    assert!(adopted.offered_funded_v6_active());
+    assert!(adopted.offered_funded_active());
     let owner_secret = genesis.genesis_vaults[0].0.clone();
     let owner_public = &genesis.genesis_vaults[0].1;
     let owner_address = VaultAddress::from_public_key(owner_public).unwrap();

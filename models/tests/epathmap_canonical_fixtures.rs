@@ -416,7 +416,8 @@ fn event_hash_goldens_produce() {
         cost_authority: None,
         cost_stack: None,
     };
-    let produce1 = Produce::create(&channel, &datum1, true);
+    let produce1 = Produce::create_for_epoch(EventCodecEpoch::Legacy, &channel, &datum1, true)
+        .expect("historical produce fixture must remain admissible");
 
     check_pinned_hex(
         "INDEX_CHANNEL_HASH_HEX",
@@ -441,7 +442,8 @@ fn event_hash_goldens_produce() {
         cost_authority: None,
         cost_stack: None,
     };
-    let produce2 = Produce::create(&channel, &datum2, true);
+    let produce2 = Produce::create_for_epoch(EventCodecEpoch::Legacy, &channel, &datum2, true)
+        .expect("historical produce fixture must remain admissible");
     assert_ne!(
         produce1.hash, produce2.hash,
         "random_state must participate in the produce hash"
@@ -453,7 +455,9 @@ fn event_hash_goldens_produce() {
     );
 
     // Persist participates too (hash_produce's third leg).
-    let produce_nonpersist = Produce::create(&channel, &datum1, false);
+    let produce_nonpersist =
+        Produce::create_for_epoch(EventCodecEpoch::Legacy, &channel, &datum1, false)
+            .expect("historical produce fixture must remain admissible");
     assert_ne!(produce1.hash, produce_nonpersist.hash);
 
     // ── END-TO-END `locally_free` invisibility, at BOTH levels ──────────────
@@ -467,7 +471,8 @@ fn event_hash_goldens_produce() {
     // and each is a separate `Produce` so a failure names which level moved.
     let mut map_tagged_par = epathmap_par(e6a_index_epathmap());
     map_tagged_par.locally_free = create_bit_vector(&[0]);
-    let produce_map_tagged = Produce::create(
+    let produce_map_tagged = Produce::create_for_epoch(
+        EventCodecEpoch::Legacy,
         &channel,
         &ListParWithRandom {
             pars: vec![map_tagged_par],
@@ -476,7 +481,8 @@ fn event_hash_goldens_produce() {
             cost_stack: None,
         },
         true,
-    );
+    )
+    .expect("historical produce fixture must remain admissible");
     assert_eq!(
         produce1.hash, produce_map_tagged.hash,
         "MAP-level locally_free must be invisible to event hashes \
@@ -510,7 +516,8 @@ fn event_hash_goldens_produce() {
         "★ THE CONTROL IS INERT: tagging an entry must change the map's STORED key \
          stream, or the hash comparison below is comparing a map with itself"
     );
-    let produce_entry_tagged = Produce::create(
+    let produce_entry_tagged = Produce::create_for_epoch(
+        EventCodecEpoch::Legacy,
         &channel,
         &ListParWithRandom {
             pars: vec![epathmap_par(entry_tagged_map)],
@@ -519,7 +526,8 @@ fn event_hash_goldens_produce() {
             cost_stack: None,
         },
         true,
-    );
+    )
+    .expect("historical produce fixture must remain admissible");
     assert_ne!(
         produce1.hash, produce_entry_tagged.hash,
         "entry-level locally_free changes the canonical EPM1 identity and therefore the event \
@@ -545,7 +553,14 @@ fn event_hash_goldens_consume() {
         guard: None,
         cost_authority: None,
     };
-    let consume = Consume::create(&vec![channel.clone()], &patterns, &continuation, false);
+    let consume = Consume::create_for_epoch(
+        EventCodecEpoch::Legacy,
+        &vec![channel.clone()],
+        &patterns,
+        &continuation,
+        false,
+    )
+    .expect("historical consume fixture must remain admissible");
 
     assert_eq!(consume.channel_hashes.len(), 1);
     check_pinned_hex(
@@ -683,7 +698,8 @@ fn event_hash_goldens_produce_with_filled_cell_splices_identically() {
         0,
         "fixture must serialize"
     );
-    let produce = Produce::create(&channel, &datum, true);
+    let produce = Produce::create_for_epoch(EventCodecEpoch::Legacy, &channel, &datum, true)
+        .expect("historical produce fixture must remain admissible");
 
     check_pinned_hex(
         "PRODUCE_INDEX_RS1_HASH_HEX (spliced)",
@@ -720,7 +736,14 @@ fn event_hash_goldens_consume_with_filled_cell_splices_identically() {
         guard: None,
         cost_authority: None,
     };
-    let consume = Consume::create(&vec![channel.clone()], &patterns, &continuation, false);
+    let consume = Consume::create_for_epoch(
+        EventCodecEpoch::Legacy,
+        &vec![channel.clone()],
+        &patterns,
+        &continuation,
+        false,
+    )
+    .expect("historical consume fixture must remain admissible");
     check_pinned_hex(
         "CONSUME_DISCOVERY_HASH_HEX (trait plumbing)",
         pinned::CONSUME_DISCOVERY_HASH_HEX,
@@ -742,12 +765,14 @@ fn event_hash_goldens_consume_with_filled_cell_splices_identically() {
         guard: None,
         cost_authority: None,
     };
-    let spliced = Consume::create(
+    let spliced = Consume::create_for_epoch(
+        EventCodecEpoch::Legacy,
         &vec![channel.clone()],
         &map_pattern,
         &map_continuation,
         false,
-    );
+    )
+    .expect("historical consume fixture must remain admissible");
 
     // Rebuild the SAME values with UNFILLED cells (fresh construction —
     // never interned) so Consume::create takes the direct path.
@@ -764,7 +789,14 @@ fn event_hash_goldens_consume_with_filled_cell_splices_identically() {
         guard: None,
         cost_authority: None,
     };
-    let direct = Consume::create(&vec![channel], &direct_pattern, &direct_continuation, false);
+    let direct = Consume::create_for_epoch(
+        EventCodecEpoch::Legacy,
+        &vec![channel],
+        &direct_pattern,
+        &direct_continuation,
+        false,
+    )
+    .expect("historical consume fixture must remain admissible");
     assert_eq!(
         spliced.hash, direct.hash,
         "spliced and direct consume hashes must be identical for identical values"

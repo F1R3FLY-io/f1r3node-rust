@@ -148,6 +148,7 @@ impl HasLocallyFree<Expr> for SpatialMatcherContext {
         match e.expr_instance {
             Some(GBool(_)) => false,
             Some(GInt(_)) => false,
+            Some(GUint64(_) | GInt32(_) | GUint32(_) | GUint16(_) | GUint8(_)) => false,
             Some(GDouble(_)) => false,
             Some(GFloat32(_)) => false,
             Some(GBigInt(_)) => false,
@@ -234,6 +235,9 @@ impl HasLocallyFree<Expr> for SpatialMatcherContext {
         match e.expr_instance {
             Some(GBool(_)) => Default::default(),
             Some(GInt(_)) => Default::default(),
+            Some(GUint64(_) | GInt32(_) | GUint32(_) | GUint16(_) | GUint8(_)) => {
+                Default::default()
+            }
             Some(GDouble(_)) => Default::default(),
             Some(GFloat32(_)) => Default::default(),
             Some(GBigInt(_)) => Default::default(),
@@ -494,6 +498,7 @@ impl HasLocallyFree<Expr> for Expr {
         match e.expr_instance {
             Some(GBool(_)) => false,
             Some(GInt(_)) => false,
+            Some(GUint64(_) | GInt32(_) | GUint32(_) | GUint16(_) | GUint8(_)) => false,
             Some(GDouble(_)) => false,
             Some(GFloat32(_)) => false,
             Some(GBigInt(_)) => false,
@@ -583,6 +588,9 @@ impl HasLocallyFree<Expr> for Expr {
         match e.expr_instance {
             Some(GBool(_)) => Default::default(),
             Some(GInt(_)) => Default::default(),
+            Some(GUint64(_) | GInt32(_) | GUint32(_) | GUint16(_) | GUint8(_)) => {
+                Default::default()
+            }
             Some(GDouble(_)) => Default::default(),
             Some(GFloat32(_)) => Default::default(),
             Some(GBigInt(_)) => Default::default(),
@@ -770,6 +778,7 @@ pub fn expr_locally_free_ref(expr: &Expr, depth: i32) -> Vec<u8> {
     match &expr.expr_instance {
         Some(GBool(_)) => Vec::new(),
         Some(GInt(_)) => Vec::new(),
+        Some(GUint64(_) | GInt32(_) | GUint32(_) | GUint16(_) | GUint8(_)) => Vec::new(),
         Some(GDouble(_)) => Vec::new(),
         Some(GFloat32(_)) => Vec::new(),
         Some(GBigInt(_)) => Vec::new(),
@@ -837,7 +846,8 @@ fn lf2(p1: &Option<Par>, p2: &Option<Par>) -> Vec<u8> {
 /// Every arm reads the same cached field the by-value form reads.
 pub fn expr_connective_used_ref(expr: &Expr) -> bool {
     match &expr.expr_instance {
-        Some(GBool(_)) | Some(GInt(_)) | Some(GDouble(_)) | Some(GFloat32(_))
+        Some(GBool(_)) | Some(GInt(_)) | Some(GUint64(_)) | Some(GInt32(_)) | Some(GUint32(_))
+        | Some(GUint16(_)) | Some(GUint8(_)) | Some(GDouble(_)) | Some(GFloat32(_))
         | Some(GBigInt(_)) | Some(GBigRat(_)) | Some(GFixedPoint(_)) | Some(GString(_))
         | Some(GUri(_)) | Some(GByteArray(_)) => false,
 

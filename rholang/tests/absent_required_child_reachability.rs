@@ -387,7 +387,7 @@ use rholang::rust::interpreter::test_utils::resources::create_runtimes_with_serv
 use rspace_plus_plus::rspace::history::history_repository::HistoryRepository;
 use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
-use rspace_plus_plus::rspace::trace::event::{Event, IOEvent, Produce};
+use rspace_plus_plus::rspace::trace::event::{Consume, Event, IOEvent, Produce, RestingCOMM};
 
 fn ollama_services() -> ExternalServices {
     ExternalServices {
@@ -408,9 +408,39 @@ fn ollama_services() -> ExternalServices {
 fn produces_of(event: &mut Event) -> &mut [Produce] {
     match event {
         Event::Comm(comm) => &mut comm.produces,
+        Event::RestingComm(comm) => &mut std::sync::Arc::make_mut(comm).ordered_produces,
         Event::IoEvent(IOEvent::Produce(p)) => std::slice::from_mut(p),
         Event::IoEvent(IOEvent::Consume(_)) => &mut [],
     }
+}
+
+#[test]
+fn resting_comm_output_splice_does_not_mutate_a_shared_event() {
+    let original = std::sync::Arc::new(RestingCOMM {
+        consume: Consume {
+            channel_hashes: Vec::new(),
+            hash: Default::default(),
+            persistent: false,
+        },
+        continuation_index: 0,
+        ordered_produces: vec![Produce {
+            channel_hash: Default::default(),
+            hash: Default::default(),
+            persistent: false,
+            is_deterministic: true,
+            output_value: vec![vec![1]],
+            failed: false,
+        }],
+        ordered_data_indices: vec![0],
+        peeks: Default::default(),
+    });
+    let mut event = Event::RestingComm(original.clone());
+    produces_of(&mut event)[0].output_value = vec![vec![2]];
+    assert_eq!(original.ordered_produces[0].output_value, vec![vec![1]]);
+    let Event::RestingComm(spliced) = event else {
+        panic!("resting event changed variant");
+    };
+    assert_eq!(spliced.ordered_produces[0].output_value, vec![vec![2]]);
 }
 
 /// The malformed payload, byte-identical to M1's.

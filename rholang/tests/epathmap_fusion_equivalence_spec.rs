@@ -172,7 +172,7 @@ async fn observe(
             let channel = Par::default().with_exprs(vec![Expr {
                 expr_instance: Some(ExprInstance::GString(channel_name.clone())),
             }]);
-            let data = runtime.get_data(&channel).await;
+            let data = runtime.get_data(&channel).await.expect("channel query");
             channel_observations.push(ChannelObservation {
                 channel: channel_name.clone(),
                 par_bytes: data

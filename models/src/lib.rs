@@ -378,14 +378,6 @@ impl Hash for CostAuthority {
     fn hash<H: Hasher>(&self, state: &mut H) { self.regions.hash(state); }
 }
 
-impl PartialEq for CostStack {
-    fn eq(&self, other: &Self) -> bool { self.cells == other.cells }
-}
-
-impl Hash for CostStack {
-    fn hash<H: Hasher>(&self, state: &mut H) { self.cells.hash(state); }
-}
-
 impl PartialEq for TaggedContinuation {
     fn eq(&self, other: &Self) -> bool {
         self.tagged_cont == other.tagged_cont
@@ -730,6 +722,11 @@ impl PartialEq for expr::ExprInstance {
             (ExprInstance::GBigInt(a), ExprInstance::GBigInt(b)) => a == b,
             (ExprInstance::GBigRat(a), ExprInstance::GBigRat(b)) => a == b,
             (ExprInstance::GFixedPoint(a), ExprInstance::GFixedPoint(b)) => a == b,
+            (ExprInstance::GUint64(a), ExprInstance::GUint64(b)) => a == b,
+            (ExprInstance::GInt32(a), ExprInstance::GInt32(b)) => a == b,
+            (ExprInstance::GUint32(a), ExprInstance::GUint32(b)) => a == b,
+            (ExprInstance::GUint16(a), ExprInstance::GUint16(b)) => a == b,
+            (ExprInstance::GUint8(a), ExprInstance::GUint8(b)) => a == b,
             (ExprInstance::GFloat32(a), ExprInstance::GFloat32(b)) => a == b,
 
             // The residue: self is one variant and other is a different one.
@@ -769,6 +766,11 @@ impl PartialEq for expr::ExprInstance {
             | (ExprInstance::GBigInt(_), _)
             | (ExprInstance::GBigRat(_), _)
             | (ExprInstance::GFixedPoint(_), _)
+            | (ExprInstance::GUint64(_), _)
+            | (ExprInstance::GInt32(_), _)
+            | (ExprInstance::GUint32(_), _)
+            | (ExprInstance::GUint16(_), _)
+            | (ExprInstance::GUint8(_), _)
             | (ExprInstance::GFloat32(_), _) => false,
         }
     }
@@ -813,6 +815,11 @@ impl Hash for expr::ExprInstance {
             ExprInstance::GBigInt(a) => a.hash(state),
             ExprInstance::GBigRat(a) => a.hash(state),
             ExprInstance::GFixedPoint(a) => a.hash(state),
+            ExprInstance::GUint64(a) => a.hash(state),
+            ExprInstance::GInt32(a) => a.hash(state),
+            ExprInstance::GUint32(a) => a.hash(state),
+            ExprInstance::GUint16(a) => a.hash(state),
+            ExprInstance::GUint8(a) => a.hash(state),
             ExprInstance::GFloat32(a) => a.hash(state),
         }
     }

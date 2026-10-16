@@ -94,6 +94,30 @@ pub(super) fn priced_config(limit: u64, weights: [u64; 4], price: u64) -> Native
     })
 }
 
+#[test]
+fn native_runtime_defaults_keep_the_legacy_codec_epoch() {
+    let settings = config(100, [0; 4]);
+    assert_eq!(settings.event_codec_epoch(), EventCodecEpoch::Legacy);
+    let budget = RuntimeBudget::new(Cost::create(17, "epoch defaults"));
+    assert_eq!(budget.native_event_codec_epoch(), None);
+    assert!(!budget.native_execution_active());
+    budget.reset_for_native_execution(settings).expect("valid default configuration");
+    assert_eq!(budget.native_event_codec_epoch(), Some(EventCodecEpoch::Legacy));
+    assert!(budget.native_execution_active());
+}
+
+#[test]
+fn native_runtime_preserves_each_selected_codec_epoch() {
+    for epoch in [EventCodecEpoch::Legacy, EventCodecEpoch::CostV1, EventCodecEpoch::CostV2] {
+        let budget = RuntimeBudget::new(Cost::create(17, "codec epochs"));
+        let settings = config(100, [0; 4]).with_event_codec_epoch(epoch);
+        assert_eq!(settings.event_codec_epoch(), epoch);
+        budget.reset_for_native_execution(settings).expect("supported runtime configuration");
+        assert_eq!(budget.native_event_codec_epoch(), Some(epoch));
+        assert_eq!(budget.native_phlo_usage(), Some(0));
+    }
+}
+
 /// The path trie of the journal test fixtures: the one-segment paths
 /// [(k, 0)] for k in 0..64, interned in order (C7b, DR-86).
 pub(super) fn fixture_paths() -> Arc<NativePathTrie> {
@@ -620,7 +644,7 @@ async fn native_runtime_ceiling_stops_comm_before_its_continuation_runs() {
         let output = Par::default().with_exprs(vec![Expr {
             expr_instance: Some(ExprInstance::GString("native-result".to_owned())),
         }]);
-        assert!(runtime.get_data(&output).await.is_empty());
+        assert!(runtime.get_data(&output).await.expect("output query").is_empty());
     })
     .await;
 }
@@ -827,3 +851,9 @@ mod operation_source_tests;
 
 #[path = "tests/observation_construction.rs"]
 mod observation_construction_tests;
+
+#[path = "tests/history_decode.rs"]
+mod history_decode_tests;
+
+#[path = "tests/store_keys.rs"]
+mod store_key_tests;

@@ -92,7 +92,10 @@ impl RholangAndScalaDispatcher {
         // Inherent method (no trait change). Display-only (NOT consensus).
         path: SmallVec<[u32; 8]>,
     ) -> Result<DispatchType, InterpreterError> {
-        let continuation_authority = continuation.cost_authority.clone().unwrap_or_default();
+        let system_body = continuation
+            .cost_authority
+            .as_ref()
+            .is_some_and(crate::rust::interpreter::accounting::authority::is_system_seal);
         match continuation.tagged_cont {
             Some(cont) => match cont {
                 TaggedCont::ParBody(par_with_rand) => {
@@ -115,7 +118,7 @@ impl RholangAndScalaDispatcher {
                     let body = unwrap_option_safe(par_with_rand.body)?;
                     let merged_rand = Blake2b512Random::merge(randoms);
                     reducer
-                        .eval_continuation(body, env, merged_rand, continuation_authority, path)
+                        .eval_continuation(body, env, merged_rand, system_body, path)
                         .await?;
 
                     Ok(DispatchType::DeterministicCall)

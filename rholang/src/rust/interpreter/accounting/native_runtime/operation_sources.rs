@@ -5,9 +5,10 @@ use std::sync::Arc;
 use models::rust::host_work::HostWorkDimension;
 use rspace_plus_plus::rspace::errors::RSpaceError;
 use rspace_plus_plus::rspace::hashing::native_source::SourceMeter;
+use rspace_plus_plus::rspace::hashing::stable_hash_provider::EventCodecEpoch;
 use rspace_plus_plus::rspace::replay_rspace::native_epoch::NativeCandidateIdentity;
 use rspace_plus_plus::rspace::rspace_interface::RSpaceOperationSource;
-use rspace_plus_plus::rspace::trace::event::{Consume, Produce, COMM};
+use rspace_plus_plus::rspace::trace::event::{Consume, Produce, RestingCOMM, COMM};
 use serde::Serialize;
 
 use super::recording::{recording_error, work};
@@ -31,6 +32,16 @@ pub struct NativeConsumeSource {
 pub enum NativeOperationSource {
     Produce(NativeProduceSource),
     Consume(NativeConsumeSource),
+    Resting(NativeRestingSource),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NativeRestingSource {
+    pub consume: NativeConsumeSource,
+    pub continuation_index: i32,
+    pub ordered_produces: Arc<[NativeProduceSource]>,
+    pub ordered_data_indices: Arc<[i32]>,
+    pub peeks: Arc<[i32]>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -167,9 +178,101 @@ impl NativeConsumeSource {
     }
 }
 
+impl NativeRestingSource {
+    fn capture(source: &RestingCOMM, budget: &HostWorkBudget) -> Result<Self, InterpreterError> {
+        let count = source.ordered_produces.len();
+        if source.consume.channel_hashes.len() != count
+            || source.ordered_data_indices.len() != count
+            || source.continuation_index < 0
+            || source.ordered_data_indices.iter().any(|index| *index < 0)
+            || source
+                .peeks
+                .iter()
+                .any(|index| usize::try_from(*index).map_or(true, |index| index >= count))
+        {
+            return Err(recording_error(
+                "resting source has invalid ordered address",
+            ));
+        }
+        let consume = NativeConsumeSource::capture(&source.consume, budget)?;
+        let mut produces = allocate(count, budget)?;
+        for (channel, produce) in source
+            .consume
+            .channel_hashes
+            .iter()
+            .zip(&source.ordered_produces)
+        {
+            work(budget, HostWorkDimension::VerificationBytes, 64)?;
+            if channel.0.as_slice() != produce.channel_hash.0.as_slice() {
+                return Err(recording_error(
+                    "resting source ordered channel differs from waiter",
+                ));
+            }
+            produces.push(NativeProduceSource::capture(produce)?);
+        }
+        let mut indices = allocate(count, budget)?;
+        indices.extend_from_slice(&source.ordered_data_indices);
+        let mut peeks = allocate(source.peeks.len(), budget)?;
+        peeks.extend(source.peeks.iter().copied());
+        Ok(Self {
+            consume,
+            continuation_index: source.continuation_index,
+            ordered_produces: produces.into(),
+            ordered_data_indices: indices.into(),
+            peeks: peeks.into(),
+        })
+    }
+
+    fn metered_matches(
+        &self,
+        actual: &RestingCOMM,
+        meter: &dyn SourceMeter,
+    ) -> Result<bool, RSpaceError> {
+        meter.reserve(1, 16, 0)?;
+        if self.continuation_index != actual.continuation_index
+            || self.ordered_produces.len() != actual.ordered_produces.len()
+            || self.ordered_data_indices.len() != actual.ordered_data_indices.len()
+            || self.peeks.len() != actual.peeks.len()
+            || !self.consume.metered_matches(&actual.consume, meter)?
+        {
+            return Ok(false);
+        }
+        for (expected, actual) in self.ordered_produces.iter().zip(&actual.ordered_produces) {
+            if !expected.metered_matches(actual, meter)? {
+                return Ok(false);
+            }
+        }
+        for (expected, actual) in self
+            .ordered_data_indices
+            .iter()
+            .zip(&actual.ordered_data_indices)
+        {
+            meter.reserve(1, std::mem::size_of::<i32>() * 2, 0)?;
+            if expected != actual {
+                return Ok(false);
+            }
+        }
+        for (expected, actual) in self.peeks.iter().zip(&actual.peeks) {
+            meter.reserve(1, std::mem::size_of::<i32>() * 2, 0)?;
+            if expected != actual {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+}
+
 impl NativeOperationSource {
     pub(super) fn capture(
         source: RSpaceOperationSource<'_>,
+        budget: &HostWorkBudget,
+    ) -> Result<Self, InterpreterError> {
+        Self::capture_for_epoch(source, EventCodecEpoch::Legacy, budget)
+    }
+
+    pub(super) fn capture_for_epoch(
+        source: RSpaceOperationSource<'_>,
+        epoch: EventCodecEpoch,
         budget: &HostWorkBudget,
     ) -> Result<Self, InterpreterError> {
         work(budget, HostWorkDimension::VerificationBytes, 128)?;
@@ -185,6 +288,10 @@ impl NativeOperationSource {
                 )?;
                 Ok(Self::Consume(NativeConsumeSource::capture(source, budget)?))
             }
+            RSpaceOperationSource::Resting(source) if epoch == EventCodecEpoch::CostV2 => {
+                Ok(Self::Resting(NativeRestingSource::capture(source, budget)?))
+            }
+            RSpaceOperationSource::Resting(_) => Err(InterpreterError::HostWorkRejected),
         }
     }
 
@@ -198,6 +305,9 @@ impl NativeOperationSource {
                 expected.metered_matches(actual, meter)
             }
             (Self::Consume(expected), RSpaceOperationSource::Consume(actual)) => {
+                expected.metered_matches(actual, meter)
+            }
+            (Self::Resting(expected), RSpaceOperationSource::Resting(actual)) => {
                 expected.metered_matches(actual, meter)
             }
             _ => {

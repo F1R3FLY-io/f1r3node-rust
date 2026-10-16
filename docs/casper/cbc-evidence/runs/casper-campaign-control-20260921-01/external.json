@@ -1,0 +1,21 @@
+{
+ "schema_version": 2,
+ "package": "casper-campaign-control-20260921-01",
+ "task": "TASK-017-14",
+ "recorded_on": "2026-10-03",
+ "store": {
+  "kind": "github-release",
+  "repository": "F1R3FLY-io/f1r3node-rust",
+  "tag": "cbc-evidence-epic-017"
+ },
+ "assets": [
+  {
+   "asset": "casper-campaign-control-20260921-01.external.tar.gz",
+   "sha256": "670ebf3f8364bf37f143dedf8958737a814c0dfc326f71a31efc42a65bea7cfc",
+   "bytes": 973,
+   "members": 1,
+   "bundle_created": "2026-10-03",
+   "inner_manifest": "external-manifest.json"
+  }
+ ]
+}

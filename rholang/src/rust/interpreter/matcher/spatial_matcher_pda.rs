@@ -199,8 +199,8 @@ impl MatchPair {
     fn reserve_inspections(&self, context: &SpatialMatcherContext) -> Option<()> {
         macro_rules! inspect {
             ($target:expr, $pattern:expr) => {{
-                context.reserve_inspect($target)?;
-                context.reserve_inspect($pattern)
+                context.inspect_blocks($target)?;
+                context.inspect_blocks($pattern)
             }};
         }
         match self {
@@ -297,6 +297,12 @@ fn resume(
         }
         Frame::BindOnSuccess { level, value } => {
             if result {
+                if context
+                    .reserve_free_map_insert(context.free_map.len())
+                    .is_none()
+                {
+                    return Job::Return(false);
+                }
                 context.free_map.insert(level, *value);
             }
             Job::Return(result)
@@ -339,6 +345,14 @@ fn resume(
                 // The final fold already owns the attempt baseline. Retain
                 // only writes that differ from it instead of duplicating the
                 // complete FreeMap once per successful relation edge.
+                for _ in 0..produced.len() {
+                    if context
+                        .reserve_free_map_search(context.free_map.len())
+                        .is_none()
+                    {
+                        return Job::Return(false);
+                    }
+                }
                 produced.retain(|level, value| context.free_map.get(level) != Some(value));
                 let produced = if produced.is_empty() {
                     machine.relation.record_shared_success(
@@ -399,7 +413,13 @@ fn evaluate_pair(
     frames: &mut FrameStack,
 ) -> Job {
     match pair {
-        MatchPair::Par(target, pattern) => evaluate_par(target, pattern),
+        MatchPair::Par(target, pattern) => {
+            if let Some(level) = free_variable_level(&pattern) {
+                bind_free_variable_owned(context, target, level)
+            } else {
+                evaluate_par(target, pattern)
+            }
+        }
         MatchPair::ParPair((tk, tv), (pk, pv)) => start_jobs(
             pair_jobs([MatchPair::Par(tk, pk), MatchPair::Par(tv, pv)]),
             frames,
@@ -444,6 +464,237 @@ struct ConnectiveCandidates {
     candidates: Vec<(Par, Par)>,
     next: usize,
     free_map_is_unreachable: bool,
+}
+
+/// Exactly the sole free-variable expression, with no other pattern field.
+/// The explicit field census includes cost terms and parallel stack tails.
+fn free_variable_level(pattern: &Par) -> Option<i32> {
+    if !pattern.connective_used
+        || !pattern.sends.is_empty()
+        || !pattern.receives.is_empty()
+        || !pattern.news.is_empty()
+        || !pattern.matches.is_empty()
+        || !pattern.bundles.is_empty()
+        || !pattern.unforgeables.is_empty()
+        || !pattern.connectives.is_empty()
+        || !pattern.conditionals.is_empty()
+        || !pattern.cost_signed_terms.is_empty()
+        || !pattern.cost_stacks.is_empty()
+    {
+        return None;
+    }
+    match pattern.exprs.as_slice() {
+        [Expr {
+            expr_instance:
+                Some(EVarBody(EVar {
+                    v:
+                        Some(Var {
+                            var_instance: Some(FreeVar(level)),
+                        }),
+                })),
+        }] => Some(*level),
+        _ => None,
+    }
+}
+
+fn cost_stack_closed_metered(context: &SpatialMatcherContext, root: &CostStack) -> Option<bool> {
+    use models::rhoapi::cost_signature::Value;
+    enum Pending<'a> {
+        Stack(&'a CostStack),
+        Signature(&'a CostSignature),
+    }
+    let mut pending = Vec::new();
+    context.reserve_vec(&mut pending, 1)?;
+    pending.push(Pending::Stack(root));
+    while let Some(next) = pending.pop() {
+        context.reserve(1, 0, 0)?;
+        match next {
+            Pending::Stack(stack) => {
+                let Some(children) = stack.cells.len().checked_add(stack.parallel_tail.len())
+                else {
+                    return context
+                        .reject(rspace_plus_plus::rspace::errors::RSpaceError::HostWorkRejected);
+                };
+                context.reserve_vec(&mut pending, children)?;
+                pending.extend(stack.parallel_tail.iter().map(Pending::Stack));
+                pending.extend(stack.cells.iter().map(Pending::Signature));
+            }
+            Pending::Signature(signature) => match &signature.value {
+                Some(Value::BoundLevel(level)) if *level >= 0 => return Some(false),
+                Some(Value::Quote(par)) | Some(Value::Name(par))
+                    if !par.locally_free.is_empty() =>
+                {
+                    return Some(false)
+                }
+                Some(Value::Compound(compound)) => {
+                    context.reserve_vec(&mut pending, compound.elements.len())?;
+                    pending.extend(compound.elements.iter().map(Pending::Signature));
+                }
+                _ => {}
+            },
+        }
+    }
+    Some(true)
+}
+
+fn bind_field_owned<T: Clone + shared::rust::clone_backing::CloneBacking>(
+    context: &mut SpatialMatcherContext,
+    values: Vec<T>,
+    level: i32,
+    closed: impl Fn(&SpatialMatcherContext, &T) -> Option<bool>,
+    assign: impl Fn(&mut Par, Vec<T>),
+) -> Option<()> {
+    for value in &values {
+        context.inspect_blocks(value)?;
+        if !closed(context, value)? {
+            return None;
+        }
+    }
+    context.reserve_free_map_search(context.free_map.len())?;
+    if let Some(bound) = context.free_map.get_mut(&level) {
+        assign(bound, values);
+    } else {
+        context.reserve_free_map_insert(context.free_map.len())?;
+        let mut bound = Par::default();
+        assign(&mut bound, values);
+        context.free_map.insert(level, bound);
+    }
+    Some(())
+}
+
+fn bind_field_borrowed<T: Clone + shared::rust::clone_backing::CloneBacking>(
+    context: &mut SpatialMatcherContext,
+    values: &[T],
+    level: i32,
+    closed: impl Fn(&SpatialMatcherContext, &T) -> Option<bool>,
+    assign: impl Fn(&mut Par, Vec<T>),
+) -> Option<()> {
+    for value in values {
+        context.inspect_blocks(value)?;
+        if !closed(context, value)? {
+            return None;
+        }
+    }
+    context.reserve_blocks_slice_copy_and_cleanup(values)?;
+    bind_field_owned(context, values.to_vec(), level, closed, assign)
+}
+
+fn closed_by_value<T: Clone>(
+    context: &SpatialMatcherContext,
+    value: &T,
+    check: impl Fn(&SpatialMatcherContext, T) -> Vec<u8>,
+) -> Option<bool>
+where
+    T: shared::rust::clone_backing::CloneBacking,
+{
+    context.reserve_blocks_copy_and_cleanup(value)?;
+    Some(check(context, value.clone()).is_empty())
+}
+
+fn bind_free_variable_owned(
+    context: &mut SpatialMatcherContext,
+    mut target: Par,
+    level: i32,
+) -> Job {
+    macro_rules! field {
+        ($name:ident, $closed:expr) => {
+            if bind_field_owned(
+                context,
+                std::mem::take(&mut target.$name),
+                level,
+                $closed,
+                |par, values| par.$name = values,
+            )
+            .is_none()
+            {
+                return Job::Return(false);
+            }
+        };
+    }
+    field!(sends, |_, value: &Send| Some(value.locally_free.is_empty()));
+    field!(receives, |_, value: &Receive| Some(
+        value.locally_free.is_empty()
+    ));
+    field!(news, |_, value: &New| Some(value.locally_free.is_empty()));
+    field!(exprs, |c: &SpatialMatcherContext, value: &Expr| {
+        closed_by_value(c, value, |c, v| c.locally_free(v, 0))
+    });
+    field!(matches, |_, value: &Match| Some(
+        value.locally_free.is_empty()
+    ));
+    field!(bundles, |_, value: &Bundle| Some(
+        value
+            .body
+            .as_ref()
+            .expect("Bundle.body")
+            .locally_free
+            .is_empty()
+    ));
+    field!(unforgeables, |_, _: &GUnforgeable| Some(true));
+    field!(conditionals, |c: &SpatialMatcherContext, value: &If| {
+        closed_by_value(c, value, |c, v| c.locally_free(v, 0))
+    });
+    field!(
+        cost_signed_terms,
+        |c: &SpatialMatcherContext, value: &CostSignedTerm| closed_by_value(c, value, |c, v| c
+            .locally_free(v, 0))
+    );
+    field!(cost_stacks, |c: &SpatialMatcherContext,
+                         value: &CostStack| {
+        cost_stack_closed_metered(c, value)
+    });
+    Job::Return(true)
+}
+
+pub(super) fn bind_free_variable_borrowed(
+    context: &mut SpatialMatcherContext,
+    target: &Par,
+    level: i32,
+) -> Option<()> {
+    macro_rules! field {
+        ($name:ident, $closed:expr) => {
+            bind_field_borrowed(context, &target.$name, level, $closed, |par, values| {
+                par.$name = values
+            })?;
+        };
+    }
+    field!(sends, |_, value: &Send| Some(value.locally_free.is_empty()));
+    field!(receives, |_, value: &Receive| Some(
+        value.locally_free.is_empty()
+    ));
+    field!(news, |_, value: &New| Some(value.locally_free.is_empty()));
+    field!(exprs, |c: &SpatialMatcherContext, value: &Expr| {
+        closed_by_value(c, value, |c, v| c.locally_free(v, 0))
+    });
+    field!(matches, |_, value: &Match| Some(
+        value.locally_free.is_empty()
+    ));
+    field!(bundles, |_, value: &Bundle| Some(
+        value
+            .body
+            .as_ref()
+            .expect("Bundle.body")
+            .locally_free
+            .is_empty()
+    ));
+    field!(unforgeables, |_, _: &GUnforgeable| Some(true));
+    field!(conditionals, |c: &SpatialMatcherContext, value: &If| {
+        closed_by_value(c, value, |c, v| c.locally_free(v, 0))
+    });
+    field!(
+        cost_signed_terms,
+        |c: &SpatialMatcherContext, value: &CostSignedTerm| closed_by_value(c, value, |c, v| c
+            .locally_free(v, 0))
+    );
+    field!(cost_stacks, |c: &SpatialMatcherContext,
+                         value: &CostStack| {
+        cost_stack_closed_metered(c, value)
+    });
+    Some(())
+}
+
+pub(super) fn free_variable_level_borrowed(pattern: &Par) -> Option<i32> {
+    free_variable_level(pattern)
 }
 
 fn evaluate_par(target: Par, mut pattern: Par) -> Job {
@@ -534,7 +785,11 @@ fn step_par_connectives(
     let Some(plan) = state.plans.get(state.next) else {
         return start_par_fields(state, frames);
     };
-    if context.reserve(1, 0, 0).is_none() || context.reserve_clone(&plan.connective).is_none() {
+    if context.reserve(1, 0, 0).is_none()
+        || context
+            .reserve_blocks_copy_and_cleanup(&plan.connective)
+            .is_none()
+    {
         return Job::Return(false);
     }
     let plan = plan.clone();
@@ -582,16 +837,25 @@ fn step_connective_candidates(
     let Some(pair) = state.candidates.get(state.next) else {
         return Job::Return(false);
     };
-    if context.reserve_clone(&pair.0).is_none() || context.reserve_clone(&pair.1).is_none() {
+    if context.reserve_blocks_copy_and_cleanup(&pair.0).is_none()
+        || context.reserve_blocks_copy_and_cleanup(&pair.1).is_none()
+    {
         return Job::Return(false);
     }
     let (candidate, remainder) = pair.clone();
     state.next += 1;
-    if !state.free_map_is_unreachable && context.reserve_clone(&context.free_map).is_none() {
+    if !state.free_map_is_unreachable
+        && context
+            .reserve_blocks_copy_and_cleanup(&context.free_map)
+            .is_none()
+    {
         return Job::Return(false);
     }
     let snapshot = (!state.free_map_is_unreachable).then(|| context.free_map.clone());
-    if context.reserve_clone(&state.connective).is_none() {
+    if context
+        .reserve_blocks_copy_and_cleanup(&state.connective)
+        .is_none()
+    {
         return Job::Return(false);
     }
     let connective = state.connective.clone();
@@ -1137,6 +1401,36 @@ enum MatchValue {
 }
 
 impl MatchValue {
+    fn inspect(&self, context: &SpatialMatcherContext) -> Option<()> {
+        match self {
+            MatchValue::Par(value) => context.inspect_blocks(value),
+            MatchValue::ParPair(value) => context.inspect_blocks(value),
+            MatchValue::Send(value) => context.inspect_blocks(value),
+            MatchValue::Receive(value) => context.inspect_blocks(value),
+            MatchValue::New(value) => context.inspect_blocks(value),
+            MatchValue::Expr(value) => context.inspect_blocks(value),
+            MatchValue::Match(value) => context.inspect_blocks(value),
+            MatchValue::Bundle(value) => context.inspect_blocks(value),
+            MatchValue::Unforgeable(value) => context.inspect_blocks(value),
+            MatchValue::ReceiveBind(value) => context.inspect_blocks(value),
+        }
+    }
+
+    fn reserve_copy(&self, context: &SpatialMatcherContext) -> Option<()> {
+        match self {
+            MatchValue::Par(value) => context.reserve_blocks_copy_and_cleanup(value),
+            MatchValue::ParPair(value) => context.reserve_blocks_copy_and_cleanup(value),
+            MatchValue::Send(value) => context.reserve_blocks_copy_and_cleanup(value),
+            MatchValue::Receive(value) => context.reserve_blocks_copy_and_cleanup(value),
+            MatchValue::New(value) => context.reserve_blocks_copy_and_cleanup(value),
+            MatchValue::Expr(value) => context.reserve_blocks_copy_and_cleanup(value),
+            MatchValue::Match(value) => context.reserve_blocks_copy_and_cleanup(value),
+            MatchValue::Bundle(value) => context.reserve_blocks_copy_and_cleanup(value),
+            MatchValue::Unforgeable(value) => context.reserve_blocks_copy_and_cleanup(value),
+            MatchValue::ReceiveBind(value) => context.reserve_blocks_copy_and_cleanup(value),
+        }
+    }
+
     fn connective_used(&self, _context: &SpatialMatcherContext) -> bool {
         match self {
             MatchValue::Par(value) => value.connective_used,
@@ -1212,8 +1506,9 @@ impl MatchValue {
 fn expr_connective_used(expr: &Expr) -> bool {
     match expr.expr_instance.as_ref() {
         Some(
-            GBool(_) | GInt(_) | GDouble(_) | GFloat32(_) | GBigInt(_) | GBigRat(_)
-            | GFixedPoint(_) | GString(_) | GUri(_) | GByteArray(_),
+            GBool(_) | GInt(_) | GUint64(_) | GInt32(_) | GUint32(_) | GUint16(_) | GUint8(_)
+            | GDouble(_) | GFloat32(_) | GBigInt(_) | GBigRat(_) | GFixedPoint(_) | GString(_)
+            | GUri(_) | GByteArray(_),
         )
         | None => false,
         Some(EListBody(value)) => value.connective_used,
@@ -1273,44 +1568,96 @@ enum Merger {
 }
 
 impl Merger {
-    fn merge(self, par: Par, values: Vec<MatchValue>) -> Par {
+    /// Prepare a complete replacement field before changing an existing
+    /// binding. No metering refusal can observe a partially assigned Par.
+    fn merge_in_place(
+        self,
+        par: &mut Par,
+        values: Vec<MatchValue>,
+        work: &super::spatial_matcher::MatcherWork<'_>,
+    ) -> Option<()> {
         macro_rules! typed {
-            ($variant:ident) => {
-                values
-                    .into_iter()
-                    .map(|value| match value {
+            ($variant:ident) => {{
+                let mut collected = Vec::new();
+                work.reserve_vec(&mut collected, values.len())?;
+                for value in values {
+                    collected.push(match value {
                         MatchValue::$variant(value) => value,
                         _ => panic!(concat!("list merger expected ", stringify!($variant))),
-                    })
-                    .collect::<Vec<_>>()
-            };
+                    });
+                }
+                collected
+            }};
         }
 
         match self {
-            Merger::Identity => par,
-            Merger::ParSends => par.with_sends(typed!(Send)),
-            Merger::ParReceives => par.with_receives(typed!(Receive)),
-            Merger::ParNews => par.with_news(typed!(New)),
-            Merger::ParExprs => par.with_exprs(typed!(Expr)),
-            Merger::ParMatches => par.with_matches(typed!(Match)),
-            Merger::ParBundles => par.with_bundles(typed!(Bundle)),
-            Merger::ParUnforgeables => par.with_unforgeables(typed!(Unforgeable)),
+            Merger::Identity => {}
+            Merger::ParSends => par.sends = typed!(Send),
+            Merger::ParReceives => par.receives = typed!(Receive),
+            Merger::ParNews => par.news = typed!(New),
+            Merger::ParExprs => par.exprs = typed!(Expr),
+            Merger::ParMatches => par.matches = typed!(Match),
+            Merger::ParBundles => par.bundles = typed!(Bundle),
+            Merger::ParUnforgeables => par.unforgeables = typed!(Unforgeable),
             Merger::ESet => {
-                par.with_exprs(vec![new_eset_expr(typed!(Par), Vec::new(), false, None)])
+                let mut unique = Vec::new();
+                for element in typed!(Par) {
+                    work.inspect_blocks(&element)?;
+                    work.inspect_blocks(&unique)?;
+                    if !unique.contains(&element) {
+                        work.reserve_vec(&mut unique, 1)?;
+                        unique.push(element);
+                    }
+                }
+                let mut exprs = Vec::new();
+                work.reserve_vec(&mut exprs, 1)?;
+                exprs.push(Expr {
+                    expr_instance: Some(ESetBody(ESet {
+                        ps: unique,
+                        locally_free: Vec::new(),
+                        connective_used: false,
+                        remainder: None,
+                    })),
+                });
+                par.exprs = exprs;
             }
-            Merger::EMap => par.with_exprs(vec![new_emap_expr(
-                typed!(ParPair)
-                    .into_iter()
-                    .map(|(key, value)| KeyValuePair {
+            Merger::EMap => {
+                let mut unique = Vec::new();
+                for (key, value) in typed!(ParPair) {
+                    work.inspect_blocks(&key)?;
+                    work.inspect_blocks(&unique)?;
+                    if let Some(index) = unique
+                        .iter()
+                        .position(|(prior, _): &(Par, Par)| prior == &key)
+                    {
+                        unique[index].1 = value;
+                    } else {
+                        work.reserve_vec(&mut unique, 1)?;
+                        unique.push((key, value));
+                    }
+                }
+                let mut kvs = Vec::new();
+                work.reserve_vec(&mut kvs, unique.len())?;
+                for (key, value) in unique {
+                    kvs.push(KeyValuePair {
                         key: Some(key),
                         value: Some(value),
-                    })
-                    .collect(),
-                Vec::new(),
-                false,
-                None,
-            )]),
+                    });
+                }
+                let mut exprs = Vec::new();
+                work.reserve_vec(&mut exprs, 1)?;
+                exprs.push(Expr {
+                    expr_instance: Some(EMapBody(EMap {
+                        kvs,
+                        locally_free: Vec::new(),
+                        connective_used: false,
+                        remainder: None,
+                    })),
+                });
+                par.exprs = exprs;
+            }
         }
+        Some(())
     }
 }
 
@@ -1405,6 +1752,13 @@ fn init_list(
     }
     if pattern_len == 0 {
         if let Some(level) = request.remainder {
+            if request
+                .targets
+                .iter()
+                .any(|value| value.reserve_copy(context).is_none())
+            {
+                return Job::Return(false);
+            }
             if !request
                 .targets
                 .iter()
@@ -1412,14 +1766,37 @@ fn init_list(
             {
                 return Job::Return(false);
             }
-            let prior = context
-                .free_map
-                .get(&level)
-                .cloned()
-                .unwrap_or_else(|| vector_par(Vec::new(), false));
-            context
-                .free_map
-                .insert(level, request.merger.merge(prior, request.targets));
+            let Some(work) = context.work() else {
+                return Job::Return(false);
+            };
+            if work
+                .reserve_free_map_search(context.free_map.len())
+                .is_none()
+            {
+                return Job::Return(false);
+            }
+            if let Some(prior) = context.free_map.get_mut(&level) {
+                if request
+                    .merger
+                    .merge_in_place(prior, request.targets, &work)
+                    .is_none()
+                {
+                    return Job::Return(false);
+                }
+            } else {
+                let mut prior = vector_par(Vec::new(), false);
+                if request
+                    .merger
+                    .merge_in_place(&mut prior, request.targets, &work)
+                    .is_none()
+                    || work
+                        .reserve_free_map_insert(context.free_map.len())
+                        .is_none()
+                {
+                    return Job::Return(false);
+                }
+                context.free_map.insert(level, prior);
+            }
             return Job::Return(true);
         }
     }
@@ -1644,6 +2021,42 @@ fn step_list(
     }
 }
 
+/// Legacy projection law: retain every original occurrence whose VALUE is
+/// equal to one of the index-distinct targets assigned to a remainder row.
+/// This runs only after the complete relation has been selected; it never
+/// prunes an alternative edge during search.
+fn project_remainder_value_closed(
+    context: &SpatialMatcherContext,
+    targets: &[MatchValue],
+    remainder_target_indices: &[bool],
+) -> Option<Vec<MatchValue>> {
+    if targets.len() != remainder_target_indices.len() {
+        return context.reject(rspace_plus_plus::rspace::errors::RSpaceError::HostWorkRejected);
+    }
+    let mut projected = Vec::new();
+    for target in targets {
+        let mut selected = false;
+        for (matched_index, matched) in targets.iter().enumerate() {
+            if !remainder_target_indices[matched_index] {
+                continue;
+            }
+            context.reserve(1, 0, 0)?;
+            target.inspect(context)?;
+            matched.inspect(context)?;
+            if target == matched {
+                selected = true;
+                break;
+            }
+        }
+        if selected {
+            target.reserve_copy(context)?;
+            context.reserve_vec(&mut projected, 1)?;
+            projected.push(target.clone());
+        }
+    }
+    Some(projected)
+}
+
 fn finish_list(context: &mut SpatialMatcherContext, machine: ListMachine) -> Job {
     let ListMachine {
         targets,
@@ -1676,13 +2089,11 @@ fn finish_list(context: &mut SpatialMatcherContext, machine: ListMachine) -> Job
             remainder_target_indices[*target_index] = true;
         }
     }
-    let remainder_sorted = targets
-        .iter()
-        .enumerate()
-        .filter(|(target_index, _)| remainder_target_indices[*target_index])
-        .map(|(_, target)| target)
-        .cloned()
-        .collect::<Vec<_>>();
+    let Some(remainder_sorted) =
+        project_remainder_value_closed(context, &targets, &remainder_target_indices)
+    else {
+        return Job::Return(false);
+    };
     let maps = ordered
         .into_iter()
         .map(|(_, assignment)| assignment.free_map.into_owned())
@@ -1690,26 +2101,48 @@ fn finish_list(context: &mut SpatialMatcherContext, machine: ListMachine) -> Job
     let Some(work) = context.work() else {
         return Job::Return(false);
     };
-    if context.reserve_clone(&context.free_map).is_none() {
+    if context
+        .reserve_blocks_copy_and_cleanup(&context.free_map)
+        .is_none()
+    {
         return Job::Return(false);
     }
-    let Some(updated) = aggregate_updates_metered(context.free_map.clone(), maps, &work) else {
+    let Some(mut updated) = aggregate_updates_metered(context.free_map.clone(), maps, &work) else {
         return Job::Return(false);
     };
-    context.free_map = updated;
 
     match remainder {
-        None if wildcard || remainder_sorted.is_empty() => Job::Return(true),
-        None => Job::Return(false),
+        None if wildcard || remainder_sorted.is_empty() => {
+            context.free_map = updated;
+            Job::Return(true)
+        }
+        None => {
+            context.free_map = updated;
+            Job::Return(false)
+        }
         Some(level) => {
-            let prior = context
-                .free_map
-                .get(&level)
-                .cloned()
-                .unwrap_or_else(|| vector_par(Vec::new(), false));
-            context
-                .free_map
-                .insert(level, merger.merge(prior, remainder_sorted));
+            if work.reserve_free_map_search(updated.len()).is_none() {
+                return Job::Return(false);
+            }
+            if let Some(prior) = updated.get_mut(&level) {
+                if merger
+                    .merge_in_place(prior, remainder_sorted, &work)
+                    .is_none()
+                {
+                    return Job::Return(false);
+                }
+            } else {
+                let mut prior = vector_par(Vec::new(), false);
+                if merger
+                    .merge_in_place(&mut prior, remainder_sorted, &work)
+                    .is_none()
+                    || work.reserve_free_map_insert(updated.len()).is_none()
+                {
+                    return Job::Return(false);
+                }
+                updated.insert(level, prior);
+            }
+            context.free_map = updated;
             Job::Return(true)
         }
     }
@@ -2082,23 +2515,38 @@ fn finish_path(context: &mut SpatialMatcherContext, machine: PathMachine) -> Job
     let Some(work) = context.work() else {
         return Job::Return(false);
     };
-    if context.reserve_clone(&context.free_map).is_none() {
+    if context
+        .reserve_blocks_copy_and_cleanup(&context.free_map)
+        .is_none()
+    {
         return Job::Return(false);
     }
     let Some(updated) = aggregate_updates_metered(context.free_map.clone(), maps, &work) else {
         return Job::Return(false);
     };
-    context.free_map = updated;
     if let PathRemainder::Free(level) = machine.remainder {
-        let bound = context
-            .free_map
+        if context.reserve_free_map_search(updated.len()).is_none()
+            || context.reserve_free_map_insert(updated.len()).is_none()
+        {
+            return Job::Return(false);
+        }
+        if let Some(existing) = updated.get(&level) {
+            if context.reserve_blocks_copy_and_cleanup(existing).is_none() {
+                return Job::Return(false);
+            }
+        }
+        let bound = updated
             .get(&level)
             .cloned()
             .unwrap_or_default()
             .with_exprs(vec![Expr {
                 expr_instance: Some(EPathmapBody(remainder_map)),
             }]);
-        context.free_map.insert(level, bound);
+        let mut updated = updated;
+        updated.insert(level, bound);
+        context.free_map = updated;
+    } else {
+        context.free_map = updated;
     }
     Job::Return(true)
 }
@@ -2195,7 +2643,174 @@ fn next_dynamic_path_pattern(pattern: &EPathMap, after: &[u8]) -> Option<(Vec<u8
 
 #[cfg(test)]
 mod layout_tests {
+    use models::rhoapi::cost_signature::Value as CostValue;
+    use models::rhoapi::var::VarInstance;
+
     use super::*;
+
+    fn free_pattern(level: i32) -> Par {
+        let mut pattern = Par::default();
+        pattern.connective_used = true;
+        pattern.exprs.push(Expr {
+            expr_instance: Some(EVarBody(EVar {
+                v: Some(Var {
+                    var_instance: Some(VarInstance::FreeVar(level)),
+                }),
+            })),
+        });
+        pattern
+    }
+
+    #[test]
+    fn nested_cost_stack_tail_is_not_missed_by_free_variable_binding() {
+        let mut target = Par::default();
+        target.cost_stacks.push(CostStack {
+            cells: Vec::new(),
+            parallel_tail: vec![CostStack {
+                cells: vec![CostSignature {
+                    value: Some(CostValue::BoundLevel(0)),
+                }],
+                parallel_tail: Vec::new(),
+            }],
+        });
+        let mut owned = SpatialMatcherContext::new();
+        assert!(matches!(
+            bind_free_variable_owned(&mut owned, target.clone(), 3),
+            Job::Return(false)
+        ));
+        assert!(owned
+            .free_map
+            .get(&3)
+            .is_some_and(|par| par.cost_stacks.is_empty()));
+        let mut borrowed = SpatialMatcherContext::new();
+        assert!(bind_free_variable_borrowed(&mut borrowed, &target, 3).is_none());
+        assert!(borrowed
+            .free_map
+            .get(&3)
+            .is_some_and(|par| par.cost_stacks.is_empty()));
+
+        let mut quoted = Par::default();
+        quoted.connective_used = true;
+        let nested_connective = CostStack {
+            cells: Vec::new(),
+            parallel_tail: vec![CostStack {
+                cells: vec![CostSignature {
+                    value: Some(CostValue::Quote(quoted)),
+                }],
+                parallel_tail: Vec::new(),
+            }],
+        };
+        assert!(owned.connective_used(nested_connective));
+
+        let mut closed = Par::default();
+        closed.cost_stacks.push(CostStack {
+            cells: Vec::new(),
+            parallel_tail: vec![CostStack::default()],
+        });
+        let mut owned = SpatialMatcherContext::new();
+        let mut borrowed = SpatialMatcherContext::new();
+        assert!(matches!(
+            bind_free_variable_owned(&mut owned, closed.clone(), 3),
+            Job::Return(true)
+        ));
+        assert!(bind_free_variable_borrowed(&mut borrowed, &closed, 3).is_some());
+        assert_eq!(owned.free_map, borrowed.free_map);
+        assert_eq!(free_variable_level(&free_pattern(3)), Some(3));
+    }
+
+    #[test]
+    fn in_place_remainder_refusal_preserves_existing_binding() {
+        let calls = std::cell::Cell::new(0usize);
+        let reject = |_: usize, _: usize, _: usize| {
+            let next = calls.get() + 1;
+            calls.set(next);
+            if next <= 2 {
+                Ok(())
+            } else {
+                Err(rspace_plus_plus::rspace::errors::RSpaceError::HostWorkRejected)
+            }
+        };
+        let context = SpatialMatcherContext::with_meter(&reject).expect("context construction");
+        let mut prior = Par::default();
+        prior.exprs.push(Expr {
+            expr_instance: Some(GInt(7)),
+        });
+        let snapshot = prior.clone();
+        let work = context.work().expect("work lease");
+        assert!(Merger::ESet
+            .merge_in_place(&mut prior, vec![MatchValue::Par(Par::default())], &work,)
+            .is_none());
+        assert_eq!(prior, snapshot);
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig::with_cases(64))]
+
+        #[test]
+        fn remainder_projection_is_value_closure_with_original_multiplicity(
+            source in proptest::collection::vec((proptest::prelude::any::<i8>(), proptest::prelude::any::<bool>()), 0..24),
+        ) {
+            let targets: Vec<_> = source.iter().map(|(value, _)| {
+                MatchValue::Expr(Expr { expr_instance: Some(GInt(i64::from(*value))) })
+            }).collect();
+            let selected: Vec<_> = source.iter().map(|(_, selected)| *selected).collect();
+            let expected: Vec<_> = source.iter()
+                .filter(|(value, _)| source.iter().any(|(candidate, selected)| *selected && candidate == value))
+                .map(|(value, _)| i64::from(*value))
+                .collect();
+            let context = SpatialMatcherContext::new();
+            let actual = project_remainder_value_closed(&context, &targets, &selected)
+                .expect("unmetered projection")
+                .into_iter()
+                .map(|value| match value {
+                    MatchValue::Expr(Expr { expr_instance: Some(GInt(number)) }) => number,
+                    _ => panic!("numeric projection changed variant"),
+                })
+                .collect::<Vec<_>>();
+            proptest::prop_assert_eq!(actual, expected);
+        }
+    }
+
+    #[test]
+    fn remainder_projection_refuses_before_partial_publication() {
+        let calls = std::cell::Cell::new(0usize);
+        let meter = |_: usize, _: usize, _: usize| {
+            let next = calls.get() + 1;
+            calls.set(next);
+            if next == 1 {
+                Ok(())
+            } else {
+                Err(rspace_plus_plus::rspace::errors::RSpaceError::HostWorkRejected)
+            }
+        };
+        let context = SpatialMatcherContext::with_meter(&meter).expect("context reserve");
+        let targets = vec![MatchValue::Expr(Expr {
+            expr_instance: Some(GInt(7)),
+        })];
+        let before = context.free_map.clone();
+        assert!(project_remainder_value_closed(&context, &targets, &[true]).is_none());
+        assert_eq!(context.free_map, before);
+        assert_eq!(
+            context.take_error(),
+            Some(rspace_plus_plus::rspace::errors::RSpaceError::HostWorkRejected)
+        );
+    }
+
+    #[test]
+    fn sized_numeric_grounds_never_mark_connectives() {
+        for instance in [
+            GUint64(u64::MAX),
+            GInt32(i32::MIN),
+            GUint32(u32::MAX),
+            GUint16(u16::MAX.into()),
+            GUint8(u8::MAX.into()),
+        ] {
+            let expr = Expr {
+                expr_instance: Some(instance),
+            };
+            assert!(!expr_connective_used(&expr));
+        }
+    }
 
     #[test]
     fn machine_layout_stays_compact() {

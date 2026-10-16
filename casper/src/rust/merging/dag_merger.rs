@@ -2353,7 +2353,7 @@ mod tests {
             failed: false,
         };
         serializers::encode_datum(&Datum {
-            a: par_with_rnd,
+            a: Arc::new(par_with_rnd),
             persist: false,
             source: produce,
         })

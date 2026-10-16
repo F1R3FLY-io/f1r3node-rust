@@ -229,11 +229,19 @@ where
                     &consume_ref,
                     &peeks,
                     None,
-                )
+                )?
                 .is_some()
             {
                 return Err(mismatch());
             }
+            let result =
+                self.store_waiting_continuation(channels.clone(), WaitingContinuation {
+                    patterns: Arc::new(patterns.clone()),
+                    continuation: Arc::new(continuation.clone()),
+                    persist,
+                    peeks: peeks.clone(),
+                    source: consume_ref.clone(),
+                })?;
             self.log_consume(
                 consume_ref.clone(),
                 &channels,
@@ -242,13 +250,7 @@ where
                 persist,
                 &peeks,
             );
-            return Ok(self.store_waiting_continuation(channels, WaitingContinuation {
-                patterns: Arc::new(patterns),
-                continuation: Arc::new(continuation),
-                persist,
-                peeks,
-                source: consume_ref,
-            }));
+            return Ok(result);
         }
         if matches!(directive, ReplayOperationDirective::RejectedIntroduction) {
             return require_denial(Self::observe_consume(
@@ -282,7 +284,7 @@ where
                 &consume_ref,
                 &peeks,
                 Some(&LegacyCandidateIdentity(&expected)),
-            )
+            )?
             .ok_or_else(mismatch)?;
         let data = prepared.data;
         let actual = prepared.comm;
@@ -302,7 +304,8 @@ where
             peeks,
             source: consume_ref.clone(),
         };
-        permit.commit(|| {
+        let result = permit.commit(|| -> Result<_, RSpaceError> {
+            self.store_persistent_data(&data)?;
             self.log_consume(
                 consume_ref.clone(),
                 &channels,
@@ -312,10 +315,10 @@ where
                 &waiting.peeks,
             );
             self.log_comm(&data, &channels, waiting.clone(), actual.clone(), "comm.consume");
-            self.store_persistent_data(&data);
             self.remove_bindings_for(actual);
-            self.wrap_result(channels, waiting, consume_ref, data)
-        })
+            Ok(self.wrap_result(channels, waiting, consume_ref, data))
+        })??;
+        Ok(result)
     }
 
     pub(super) fn replay_native_produce(
@@ -345,10 +348,15 @@ where
                 return Err(mismatch());
             }
             return crate::rspace::rspace_interface::commit_produce(guard, || {
-                self.increment_produce_counter(&produce_ref, persist);
-                self.log_produce(produce_ref.clone(), &channel, &data, persist);
-                self.store_data(channel, Arc::new(data), persist, produce_ref)
-            });
+                let result = self.store_data(
+                    channel.clone(),
+                    Arc::new(data.clone()),
+                    persist,
+                    produce_ref.clone(),
+                )?;
+                self.log_produce(produce_ref, &channel, &data, persist);
+                Ok(result)
+            })?;
         }
         if matches!(directive, ReplayOperationDirective::RejectedIntroduction) {
             return require_denial(Self::observe_produce(
@@ -393,9 +401,16 @@ where
             return require_denial(observed);
         }
         require_grant(observed)?;
+        for selected in &candidate.data_candidates {
+            self.get_store().get_joins(&selected.channel)?;
+        }
         let permit = candidate.commit.clone().unwrap_or_default();
-        permit.commit_with(guard, || {
-            self.increment_produce_counter(&produce_ref, persist);
+        let result = permit.commit_with(guard, || -> Result<_, RSpaceError> {
+            if !candidate.continuation.persist {
+                self.get_store()
+                    .remove_continuation(&candidate.channels, candidate.continuation_index)?;
+            }
+            self.remove_matched_datum_and_join(&candidate.channels, &candidate.data_candidates)?;
             self.log_produce(produce_ref.clone(), &channel, &data, persist);
             self.log_comm(
                 &candidate.data_candidates,
@@ -404,20 +419,17 @@ where
                 actual.clone(),
                 "comm.produce",
             );
-            if !candidate.continuation.persist {
-                self.get_store()
-                    .remove_continuation(&candidate.channels, candidate.continuation_index);
-            }
             self.mark_replay_waiting_continuation_match();
-            self.remove_matched_datum_and_join(&candidate.channels, &candidate.data_candidates);
             self.remove_bindings_for(actual);
-            self.wrap_result(
-                candidate.channels,
-                candidate.continuation.clone(),
-                candidate.continuation.source.clone(),
-                candidate.data_candidates,
-            )
-            .map(|(continuation, data)| (continuation, data, returned_produce))
-        })
+            Ok(self
+                .wrap_result(
+                    candidate.channels,
+                    candidate.continuation.clone(),
+                    candidate.continuation.source.clone(),
+                    candidate.data_candidates,
+                )
+                .map(|(continuation, data)| (continuation, data, returned_produce)))
+        })??;
+        Ok(result)
     }
 }

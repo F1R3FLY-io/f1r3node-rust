@@ -1,15 +1,18 @@
 // See casper/src/main/scala/coop/rchain/casper/merging/BlockIndex.scala
 
+use std::collections::HashMap;
+
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::protocol::casper_message::{
     Event, ProcessedDeploy, ProcessedSystemDeploy, ProcessedUserDeploy, SystemDeployData,
 };
 use rholang::rust::interpreter::rho_runtime::RhoHistoryRepository;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+use rspace_plus_plus::rspace::hashing::stable_hash_provider::EventCodecEpoch;
 use rspace_plus_plus::rspace::merger::event_log_index::EventLogIndex;
 use rspace_plus_plus::rspace::merger::merging_logic;
 use rspace_plus_plus::rspace::merger::merging_logic::NumberChannelsDiff;
-use rspace_plus_plus::rspace::trace::event::Produce;
+use rspace_plus_plus::rspace::trace::event::{Event as RspaceEvent, IOEvent, Produce};
 
 use crate::rust::errors::CasperError;
 use crate::rust::merging::deploy_chain_index::DeployChainIndex;
@@ -19,6 +22,7 @@ use crate::rust::util::event_converter;
 #[derive(Clone)]
 pub struct BlockIndex {
     pub block_hash: BlockHash,
+    pub event_epoch: EventCodecEpoch,
     pub deploy_chains: Vec<DeployChainIndex>,
 }
 
@@ -50,40 +54,61 @@ impl ProcessedIndexDeploy for ProcessedUserDeploy {
 
 pub fn create_event_log_index(
     events: &[Event],
+    epoch: EventCodecEpoch,
     history_repository: RhoHistoryRepository,
     pre_state_hash: &Blake2b256Hash,
     mergeable_chs: NumberChannelsDiff,
-) -> EventLogIndex {
+) -> Result<EventLogIndex, CasperError> {
+    let events = events
+        .iter()
+        .map(|event| event_converter::to_rspace_event_for_epoch(event, epoch))
+        .collect::<Result<Vec<_>, _>>()?;
     let pre_state_reader = history_repository
-        .get_history_reader(pre_state_hash)
-        .unwrap();
+        .get_history_reader_for_epoch(pre_state_hash, epoch)
+        .map_err(CasperError::HistoryError)?;
 
-    let produce_exists_in_pre_state = |p: &Produce| {
-        pre_state_reader
-            .get_data(&p.channel_hash)
-            .is_ok_and(|data| data.iter().any(|d| d.source == *p))
-    };
+    // Event channel hashes are already computed in the adopted namespace.
+    // Use the epoch-bound reader's by-hash accessors to avoid hashing them a
+    // second time while decoding values under the same adopted epoch.
+    let mut prestate_flags = HashMap::new();
+    for event in &events {
+        let RspaceEvent::IoEvent(IOEvent::Produce(produce)) = event else {
+            continue;
+        };
+        if prestate_flags.contains_key(&produce.hash) {
+            continue;
+        }
 
-    let produce_touches_pre_state_join = |p: &Produce| {
-        pre_state_reader
-            .get_joins(&p.channel_hash)
-            .is_ok_and(|joins| joins.iter().any(|j| j.len() > 1))
-    };
-
-    EventLogIndex::new(
-        events
+        let exists = pre_state_reader
+            .get_data_by_hash(&produce.channel_hash)
+            .map_err(CasperError::HistoryError)?
             .iter()
-            .map(event_converter::to_rspace_event)
-            .collect(),
+            .any(|datum| datum.source == *produce);
+
+        let touches_join = pre_state_reader
+            .get_joins_by_hash(&produce.channel_hash)
+            .map_err(CasperError::HistoryError)?
+            .iter()
+            .any(|join| join.len() > 1);
+        prestate_flags.insert(produce.hash.clone(), (exists, touches_join));
+    }
+
+    let produce_exists_in_pre_state =
+        |p: &Produce| prestate_flags.get(&p.hash).is_some_and(|flags| flags.0);
+    let produce_touches_pre_state_join =
+        |p: &Produce| prestate_flags.get(&p.hash).is_some_and(|flags| flags.1);
+    Ok(EventLogIndex::new(
+        events,
         produce_exists_in_pre_state,
         produce_touches_pre_state_join,
         mergeable_chs,
-    )
+    ))
 }
 
 pub fn new<D: ProcessedIndexDeploy>(
     block_hash: &BlockHash,
     block_number: i64,
+    epoch: EventCodecEpoch,
     usr_processed_deploys: &[D],
     sys_processed_deploys: &Vec<ProcessedSystemDeploy>,
     pre_state_hash: &Blake2b256Hash,
@@ -130,10 +155,11 @@ pub fn new<D: ProcessedIndexDeploy>(
         if !deploy.is_failed() {
             let event_log_index = create_event_log_index(
                 deploy.deploy_log(),
+                epoch,
                 history_repository.clone(),
                 pre_state_hash,
                 merge_chs.clone(),
-            );
+            )?;
 
             let deploy_index = DeployIndex {
                 deploy_id: deploy.identity_bytes().to_vec().into(),
@@ -173,10 +199,11 @@ pub fn new<D: ProcessedIndexDeploy>(
 
                 let event_log_index = create_event_log_index(
                     event_list,
+                    epoch,
                     history_repository.clone(),
                     pre_state_hash,
                     merge_chs.clone(),
-                );
+                )?;
 
                 let deploy_index = DeployIndex {
                     deploy_id: sig,
@@ -236,6 +263,7 @@ pub fn new<D: ProcessedIndexDeploy>(
 
     Ok(BlockIndex {
         block_hash: block_hash.clone(),
+        event_epoch: epoch,
         deploy_chains: deploy_chain_indices,
     })
 }

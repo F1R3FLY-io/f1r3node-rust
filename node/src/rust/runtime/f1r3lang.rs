@@ -13,6 +13,7 @@ use mettail_rholang_runtime::language_install::{
 use mettail_rholang_runtime::rholang_ast::{RholangPreparationPolicy, RholangProgramFrontend};
 use mettail_rholang_runtime::speculation::server::LookaheadEngine;
 use mettail_rholang_runtime::{EmptyFltResolver, LanguageRight, LanguageRights, RuntimePolicy};
+use models::rust::host_work::{HostWorkLimit, HostWorkLimits};
 use rholang::rust::interpreter::accounting::costs::Cost;
 use rholang::rust::interpreter::frontend::{PreparedProgram, ProgramFrontend};
 use rholang::rust::interpreter::rho_runtime::{
@@ -52,7 +53,9 @@ fn classify_eval_registry(
     Err("eval registry contains a partial or unexpected fixed-channel installation".into())
 }
 
-async fn observe_eval_registry(runtime: &RhoRuntimeImpl) -> [Vec<(bool, usize, usize)>; 5] {
+async fn observe_eval_registry(
+    runtime: &RhoRuntimeImpl,
+) -> Result<[Vec<(bool, usize, usize)>; 5], String> {
     let channels = [
         FixedChannels::reg_lookup(),
         FixedChannels::reg_insert_random(),
@@ -65,6 +68,7 @@ async fn observe_eval_registry(runtime: &RhoRuntimeImpl) -> [Vec<(bool, usize, u
         *shape = runtime
             .get_continuations(vec![channel])
             .await
+            .map_err(|error| format!("eval registry read failed: {error}"))?
             .into_iter()
             .map(|continuation| {
                 (
@@ -79,11 +83,11 @@ async fn observe_eval_registry(runtime: &RhoRuntimeImpl) -> [Vec<(bool, usize, u
             .collect();
         shape.sort_unstable();
     }
-    shapes
+    Ok(shapes)
 }
 
 pub(crate) async fn ensure_eval_registry(runtime: &mut RhoRuntimeImpl) -> Result<(), String> {
-    let initial = classify_eval_registry(&observe_eval_registry(runtime).await)?;
+    let initial = classify_eval_registry(&observe_eval_registry(runtime).await?)?;
     if initial == EvalRegistryState::Installed {
         return Ok(());
     }
@@ -98,9 +102,14 @@ pub(crate) async fn ensure_eval_registry(runtime: &mut RhoRuntimeImpl) -> Result
     let checkpoint = runtime.create_soft_checkpoint().await;
     if initial == EvalRegistryState::Fresh {
         bootstrap_registry(runtime).await;
-        if classify_eval_registry(&observe_eval_registry(runtime).await)
-            != Ok(EvalRegistryState::Bootstrapped)
-        {
+        let bootstrapped_shapes = match observe_eval_registry(runtime).await {
+            Ok(shapes) => shapes,
+            Err(error) => {
+                runtime.revert_to_soft_checkpoint(checkpoint).await;
+                return Err(error);
+            }
+        };
+        if classify_eval_registry(&bootstrapped_shapes) != Ok(EvalRegistryState::Bootstrapped) {
             runtime.revert_to_soft_checkpoint(checkpoint).await;
             return Err("trusted eval registry bootstrap did not install all forwarders".into());
         }
@@ -122,7 +131,13 @@ pub(crate) async fn ensure_eval_registry(runtime: &mut RhoRuntimeImpl) -> Result
             ));
         }
     };
-    let installed_shapes = observe_eval_registry(runtime).await;
+    let installed_shapes = match observe_eval_registry(runtime).await {
+        Ok(shapes) => shapes,
+        Err(error) => {
+            runtime.revert_to_soft_checkpoint(checkpoint).await;
+            return Err(error);
+        }
+    };
     if !result.errors.is_empty()
         || classify_eval_registry(&installed_shapes) != Ok(EvalRegistryState::Installed)
     {
@@ -166,6 +181,7 @@ pub struct F1r3langEvaluation {
     pub(crate) frontend: Arc<dyn ProgramFrontend>,
     pub(crate) max_source_bytes: usize,
     pub(crate) funding: Cost,
+    pub(crate) lookahead_host_work: HostWorkLimits,
     pub(crate) matcher: SubstrateGuardMatcher,
     pub(crate) lookahead: LookaheadEngine,
 }
@@ -192,12 +208,13 @@ impl F1r3langComposition {
     /// This initial route supports inline modules; registry reads remain unavailable.
     pub fn from_environment() -> Result<Self, String> {
         let read = |name: &str| std::env::var(name).ok();
-        let (preparation, funding) = host_policy(&read)?;
+        let (preparation, funding, lookahead_work) = host_policy(&read)?;
         Self::new(
             Arc::new(EmptyRegistrySnapshot),
             inline_language_install_policy(),
             preparation,
             funding,
+            lookahead_work,
         )
     }
 
@@ -207,9 +224,19 @@ impl F1r3langComposition {
         policy: LanguageInstallPolicy,
         preparation: RholangPreparationPolicy,
         funding: i64,
+        lookahead_work: HostWorkLimits,
     ) -> Result<Self, String> {
         if funding <= 0 || funding == i64::MAX {
             return Err("F1R3Lang requires a positive finite host-funded evaluation budget".into());
+        }
+        if lookahead_work
+            .into_array()
+            .iter()
+            .any(|limit| limit.get() == 0 || limit.get() == u64::MAX)
+        {
+            return Err(
+                "F1R3Lang requires finite positive standalone lookahead host-work limits".into(),
+            );
         }
         let service = Arc::new(LanguageInstallService::new(snapshot, policy));
         let runtime = Arc::new(RholangLanguageRuntime::new(service));
@@ -227,6 +254,7 @@ impl F1r3langComposition {
                     Arc::new(EmptyFltResolver),
                 )),
                 funding: Cost::create(funding, "F1R3Lang host evaluation policy"),
+                lookahead_host_work: lookahead_work,
                 matcher,
                 lookahead,
             },
@@ -247,7 +275,7 @@ fn positive(name: &str, read: &impl Fn(&str) -> Option<String>) -> Result<u64, S
 
 fn host_policy(
     read: &impl Fn(&str) -> Option<String>,
-) -> Result<(RholangPreparationPolicy, i64), String> {
+) -> Result<(RholangPreparationPolicy, i64, HostWorkLimits), String> {
     let size = |name| {
         usize::try_from(positive(name, read)?)
             .map_err(|_| format!("Host policy {name} exceeds this platform's size limit"))
@@ -256,6 +284,10 @@ fn host_policy(
         .map_err(|_| "F1R3LANG_EVAL_PHLO exceeds the signed budget domain".to_owned())?;
     if funding == i64::MAX {
         return Err("F1R3LANG_EVAL_PHLO may not select the unlimited sentinel".into());
+    }
+    let lookahead_work = positive("F1R3LANG_LOOKAHEAD_HOST_WORK", read)?;
+    if lookahead_work == u64::MAX {
+        return Err("F1R3LANG_LOOKAHEAD_HOST_WORK may not select the unlimited sentinel".into());
     }
     Ok((
         RholangPreparationPolicy {
@@ -268,20 +300,23 @@ fn host_policy(
             lowering: LoweringOptions::NO_DISCHARGE,
         },
         funding,
+        HostWorkLimits::uniform(HostWorkLimit::new(lookahead_work)),
     ))
 }
 
 #[cfg(test)]
 mod tests {
     use rholang::rust::interpreter::external_services::ExternalServices;
-    use rholang::rust::interpreter::rho_runtime::create_runtime_from_kv_store;
+    use rholang::rust::interpreter::rho_runtime::create_runtime_from_kv_store_for_epoch;
+    use rspace_plus_plus::rspace::hashing::stable_hash_provider::EventCodecEpoch;
     use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
     use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
 
     use super::*;
 
     async fn test_eval_runtime(stores: &mut InMemoryStoreManager) -> RhoRuntimeImpl {
-        create_runtime_from_kv_store(
+        create_runtime_from_kv_store_for_epoch(
+            EventCodecEpoch::CostV2,
             stores.eval_stores().await.unwrap(),
             Arc::new(std::collections::HashMap::new()),
             false,
@@ -290,6 +325,7 @@ mod tests {
             ExternalServices::noop(),
         )
         .await
+        .expect("test evaluation runtime initializes")
     }
 
     #[test]
@@ -331,13 +367,13 @@ mod tests {
         let mut stores = InMemoryStoreManager::new();
         let mut runtime = test_eval_runtime(&mut stores).await;
         assert_eq!(
-            classify_eval_registry(&observe_eval_registry(&runtime).await),
+            classify_eval_registry(&observe_eval_registry(&runtime).await.unwrap()),
             Ok(EvalRegistryState::Fresh)
         );
         ensure_eval_registry(&mut runtime).await.unwrap();
         let root = runtime.get_root().await;
         assert_eq!(
-            classify_eval_registry(&observe_eval_registry(&runtime).await),
+            classify_eval_registry(&observe_eval_registry(&runtime).await.unwrap()),
             Ok(EvalRegistryState::Installed)
         );
         ensure_eval_registry(&mut runtime).await.unwrap();
@@ -346,7 +382,7 @@ mod tests {
 
         let mut restarted = test_eval_runtime(&mut stores).await;
         assert_eq!(
-            classify_eval_registry(&observe_eval_registry(&restarted).await),
+            classify_eval_registry(&observe_eval_registry(&restarted).await.unwrap()),
             Ok(EvalRegistryState::Installed)
         );
         ensure_eval_registry(&mut restarted).await.unwrap();
@@ -360,7 +396,7 @@ mod tests {
         bootstrap_registry(&runtime).await;
         runtime.create_checkpoint().await;
         assert_eq!(
-            classify_eval_registry(&observe_eval_registry(&runtime).await),
+            classify_eval_registry(&observe_eval_registry(&runtime).await.unwrap()),
             Ok(EvalRegistryState::Bootstrapped)
         );
         drop(runtime);
@@ -368,7 +404,7 @@ mod tests {
         let mut restarted = test_eval_runtime(&mut stores).await;
         ensure_eval_registry(&mut restarted).await.unwrap();
         assert_eq!(
-            classify_eval_registry(&observe_eval_registry(&restarted).await),
+            classify_eval_registry(&observe_eval_registry(&restarted).await.unwrap()),
             Ok(EvalRegistryState::Installed)
         );
     }
@@ -384,7 +420,8 @@ mod tests {
         use comm::rust::p2p::packet_handler::PacketHandler;
         use comm::rust::peer_node::{Endpoint, NodeIdentifier, PeerNode};
         let peer = PeerNode {
-            id: NodeIdentifier::new("00".into()),
+            id: NodeIdentifier::new("0000000000000000000000000000000000000001")
+                .expect("20-byte nonzero test peer ID"),
             endpoint: Endpoint::new("127.0.0.1".into(), 1, 2),
         };
         assert!(UnactivatedCasperPackets
@@ -408,17 +445,41 @@ mod tests {
 
     #[test]
     fn host_funding_and_preparation_limits_are_retained_exactly() {
-        let (policy, funding) = host_policy(&|_| Some("1234".into())).unwrap();
+        let (policy, funding, lookahead_work) = host_policy(&|_| Some("1234".into())).unwrap();
         assert_eq!(funding, 1234);
         assert_eq!(policy.max_source_bytes, 1234);
         assert_eq!(policy.max_preparation_work, 1234);
         assert_eq!(policy.max_preparation_units, 1234);
         assert_eq!(policy.lowering, LoweringOptions::NO_DISCHARGE);
+        assert_eq!(
+            lookahead_work
+                .get(models::rust::host_work::HostWorkDimension::SearchCandidates)
+                .get(),
+            1234
+        );
+    }
+
+    #[test]
+    fn standalone_lookahead_host_work_is_required_finite_and_independent() {
+        for invalid in ["0", "-1", "18446744073709551615"] {
+            assert!(host_policy(&|name| {
+                if name == "F1R3LANG_LOOKAHEAD_HOST_WORK" {
+                    Some(invalid.into())
+                } else {
+                    Some("1234".into())
+                }
+            })
+            .is_err());
+        }
+        assert!(host_policy(&|name| {
+            (name != "F1R3LANG_LOOKAHEAD_HOST_WORK").then(|| "1234".into())
+        })
+        .is_err());
     }
 
     #[test]
     fn provider_definitions_pass_real_node_registration_checks() {
-        let (policy, funding) = host_policy(&|_| Some("1234".into())).unwrap();
+        let (policy, funding, lookahead_work) = host_policy(&|_| Some("1234".into())).unwrap();
         let composition = F1r3langComposition::new(
             Arc::new(EmptyRegistrySnapshot),
             LanguageInstallPolicy::new(
@@ -428,6 +489,7 @@ mod tests {
             ),
             policy,
             funding,
+            lookahead_work,
         )
         .unwrap();
         assert!(!composition.definitions.is_empty());
@@ -448,12 +510,13 @@ mod tests {
     fn trusted_node_frontend_preserves_cost_name_and_hash_principals() {
         use models::rhoapi::cost_signature::Value as CostValue;
 
-        let (policy, funding) = host_policy(&|_| Some("1000000".into())).unwrap();
+        let (policy, funding, lookahead_work) = host_policy(&|_| Some("1000000".into())).unwrap();
         let composition = F1r3langComposition::new(
             Arc::new(EmptyRegistrySnapshot),
             inline_language_install_policy(),
             policy,
             funding,
+            lookahead_work,
         )
         .unwrap();
         let prepare = |source| {

@@ -3,8 +3,8 @@
 use std::cmp::Ordering;
 use std::mem::size_of;
 
-use shared::rust::clone_backing::BackingError;
 use shared::rust::ByteString;
+use shared::rust::clone_backing::{BackingError, CloneBacking};
 
 use super::metered::SorterMeter;
 
@@ -413,6 +413,21 @@ pub fn compare_score(s1: &Tree<ScoreAtom>, s2: &Tree<ScoreAtom>) -> std::cmp::Or
 pub trait EmittedBytes {
     /// The bytes the enclosing message will emit for this element.
     fn emitted_bytes(&self) -> Vec<u8>;
+
+    /// The same bytes, with all walks and the output allocation reserved first.
+    fn emitted_bytes_metered(&self, meter: &SorterMeter<'_>) -> Result<Vec<u8>, BackingError>;
+}
+
+fn prost_bytes_metered<T: prost::Message + CloneBacking>(
+    value: &T,
+    meter: &SorterMeter<'_>,
+) -> Result<Vec<u8>, BackingError> {
+    // Reserve the nested traversal before `encoded_len` builds its work table;
+    // the output length is not known until that metered measurement finishes.
+    meter.nested_encode(value, 0)?;
+    let len = value.encoded_len();
+    meter.reserve(1, len, len)?;
+    Ok(value.encode_to_vec())
 }
 
 /// Every sortable node type is a prost message, and its emitted bytes are its own encoding.
@@ -422,6 +437,14 @@ macro_rules! emitted_bytes_via_prost {
             impl EmittedBytes for $t {
                 fn emitted_bytes(&self) -> Vec<u8> {
                     prost::Message::encode_to_vec(self)
+                }
+
+
+                fn emitted_bytes_metered(
+                    &self,
+                    meter: &SorterMeter<'_>,
+                ) -> Result<Vec<u8>, BackingError> {
+                    prost_bytes_metered(self, meter)
                 }
             }
         )*
@@ -456,6 +479,14 @@ impl EmittedBytes for (crate::rhoapi::Par, crate::rhoapi::Par) {
             value: Some(self.1.clone()),
         })
     }
+
+    fn emitted_bytes_metered(&self, meter: &SorterMeter<'_>) -> Result<Vec<u8>, BackingError> {
+        let pair = crate::rhoapi::KeyValuePair {
+            key: Some(meter.clone_blocks(&self.0)?),
+            value: Some(meter.clone_blocks(&self.1)?),
+        };
+        prost_bytes_metered(&pair, meter)
+    }
 }
 
 /// ★ The twelfth `sort_vec` site — `rholang`'s `pre_sort_binds`, which sorts
@@ -476,11 +507,20 @@ impl EmittedBytes for (crate::rhoapi::Par, crate::rhoapi::Par) {
 /// injectivity — if the emitted bytes are identical, swapping them is invisible.
 impl<X> EmittedBytes for (crate::rhoapi::ReceiveBind, X) {
     fn emitted_bytes(&self) -> Vec<u8> { prost::Message::encode_to_vec(&self.0) }
+
+    fn emitted_bytes_metered(&self, meter: &SorterMeter<'_>) -> Result<Vec<u8>, BackingError> {
+        prost_bytes_metered(&self.0, meter)
+    }
 }
 
 /// ⚠ Used only by `ScoredTerm<String>` in the sorter's own tests. Real terms never reach it.
 impl EmittedBytes for String {
     fn emitted_bytes(&self) -> Vec<u8> { self.as_bytes().to_vec() }
+
+    fn emitted_bytes_metered(&self, meter: &SorterMeter<'_>) -> Result<Vec<u8>, BackingError> {
+        meter.reserve(1, self.len(), self.len())?;
+        Ok(self.as_bytes().to_vec())
+    }
 }
 
 /// ⚠ Test-only, and its presence is deliberate rather than incidental.
@@ -493,6 +533,11 @@ impl EmittedBytes for String {
 /// so a tie between two markers breaks the same way a reader would expect.
 impl EmittedBytes for usize {
     fn emitted_bytes(&self) -> Vec<u8> { self.to_be_bytes().to_vec() }
+
+    fn emitted_bytes_metered(&self, meter: &SorterMeter<'_>) -> Result<Vec<u8>, BackingError> {
+        meter.reserve(1, size_of::<usize>(), size_of::<usize>())?;
+        Ok(self.to_be_bytes().to_vec())
+    }
 }
 
 impl<T: EmittedBytes> ScoredTerm<T> {
@@ -526,7 +571,7 @@ impl<T: EmittedBytes> ScoredTerm<T> {
  *
  * The general order is ground, vars, arithmetic, comparisons, logical, and then others
  */
-impl<T> ScoredTerm<T> {
+impl<T: EmittedBytes> ScoredTerm<T> {
     pub fn sort_vec_metered(
         scored_terms: &mut Vec<ScoredTerm<T>>,
         meter: &SorterMeter<'_>,
@@ -555,7 +600,7 @@ impl<T> ScoredTerm<T> {
     }
 }
 
-fn sift_down<T>(
+fn sift_down<T: EmittedBytes>(
     indices: &mut [usize],
     mut root: usize,
     end: usize,
@@ -583,7 +628,7 @@ fn sift_down<T>(
     Ok(())
 }
 
-fn compare_index<T>(
+fn compare_index<T: EmittedBytes>(
     scored_terms: &[ScoredTerm<T>],
     left: usize,
     right: usize,
@@ -591,11 +636,16 @@ fn compare_index<T>(
 ) -> Result<Ordering, BackingError> {
     let order =
         compare_score_metered(&scored_terms[left].score, &scored_terms[right].score, meter)?;
-    Ok(if order == Ordering::Equal {
-        left.cmp(&right)
-    } else {
-        order
-    })
+    if order != Ordering::Equal {
+        return Ok(order);
+    }
+    // Match `sort_vec`'s emitted-byte tie-break. The index is only the stable
+    // fallback for byte-identical terms; `scored_terms` is untouched until all
+    // comparisons and the final output reservation succeed.
+    let left_bytes = scored_terms[left].term.emitted_bytes_metered(meter)?;
+    let right_bytes = scored_terms[right].term.emitted_bytes_metered(meter)?;
+    let emitted_order = compare_bytes_metered(&left_bytes, &right_bytes, meter)?;
+    Ok(emitted_order.then_with(|| left.cmp(&right)))
 }
 
 fn compare_score_metered(
@@ -715,6 +765,11 @@ impl Score {
     pub const BIG_INT: i32 = 15;
     pub const BIG_RAT: i32 = 16;
     pub const FIXED_POINT: i32 = 17;
+    pub const UINT64: i32 = 24;
+    pub const INT32: i32 = 25;
+    pub const UINT32: i32 = 26;
+    pub const UINT16: i32 = 27;
+    pub const UINT8: i32 = 28;
     pub const FLOAT32: i32 = 19;
 
     // Vars
@@ -769,6 +824,7 @@ impl Score {
     pub const COST_STACK: i32 = 315;
     pub const COST_SIG_NAME: i32 = 316;
     pub const COST_SIG_UNIT: i32 = 317;
+    pub const COST_STACK_PARALLEL: i32 = 318;
 
     pub const CONNECTIVE_NOT: i32 = 400;
     pub const CONNECTIVE_AND: i32 = 401;
@@ -816,6 +872,11 @@ mod score_tag_tests {
             ("BIG_INT", Score::BIG_INT),
             ("BIG_RAT", Score::BIG_RAT),
             ("FIXED_POINT", Score::FIXED_POINT),
+            ("UINT64", Score::UINT64),
+            ("INT32", Score::INT32),
+            ("UINT32", Score::UINT32),
+            ("UINT16", Score::UINT16),
+            ("UINT8", Score::UINT8),
             ("FLOAT32", Score::FLOAT32),
             ("BOUND_VAR", Score::BOUND_VAR),
             ("FREE_VAR", Score::FREE_VAR),
@@ -863,6 +924,7 @@ mod score_tag_tests {
             ("COST_STACK", Score::COST_STACK),
             ("COST_SIG_NAME", Score::COST_SIG_NAME),
             ("COST_SIG_UNIT", Score::COST_SIG_UNIT),
+            ("COST_STACK_PARALLEL", Score::COST_STACK_PARALLEL),
             ("CONNECTIVE_NOT", Score::CONNECTIVE_NOT),
             ("CONNECTIVE_AND", Score::CONNECTIVE_AND),
             ("CONNECTIVE_OR", Score::CONNECTIVE_OR),
@@ -906,6 +968,11 @@ mod score_tag_tests {
         assert_eq!(Score::AUTHORITY_ID, 18);
         assert_eq!(Score::FLOAT32, 19);
         assert_eq!(Score::PRINCIPAL_ID, 20);
+        assert_eq!(Score::UINT64, 24);
+        assert_eq!(Score::INT32, 25);
+        assert_eq!(Score::UINT32, 26);
+        assert_eq!(Score::UINT16, 27);
+        assert_eq!(Score::UINT8, 28);
     }
 }
 
@@ -914,10 +981,12 @@ mod score_tag_tests {
 mod score_tree_oracle;
 #[cfg(test)]
 mod metered_tests {
+    use proptest::prelude::*;
+
     use super::*;
 
     #[test]
-    fn metered_sort_preserves_score_order_and_equal_score_input_order() {
+    fn metered_sort_preserves_score_order_and_equal_score_emitted_bytes_order() {
         let mut ordinary = vec![
             ScoredTerm {
                 term: 3,
@@ -946,7 +1015,84 @@ mod metered_tests {
                 .into_iter()
                 .map(|item| item.term)
                 .collect::<Vec<_>>(),
-            [2, 1, 3, 4]
+            [1, 2, 3, 4]
         );
+    }
+
+    #[derive(Clone, Debug, PartialEq)]
+    struct MarkedBytes {
+        emitted: Vec<u8>,
+        input_index: usize,
+    }
+
+    impl EmittedBytes for MarkedBytes {
+        fn emitted_bytes(&self) -> Vec<u8> { self.emitted.clone() }
+
+        fn emitted_bytes_metered(&self, meter: &SorterMeter<'_>) -> Result<Vec<u8>, BackingError> {
+            meter.reserve(1, self.emitted.len(), self.emitted.len())?;
+            Ok(self.emitted.clone())
+        }
+    }
+
+    proptest! {
+        #[test]
+        fn metered_tie_order_agrees_with_ordinary_and_stabilizes_identical_bytes(
+            items in proptest::collection::vec((-2_i64..=2, proptest::collection::vec(any::<u8>(), 0..5)), 0..24)
+        ) {
+            let mut ordinary = items.iter().enumerate().map(|(input_index, (score, emitted))| {
+                ScoredTerm {
+                    term: MarkedBytes { emitted: emitted.clone(), input_index },
+                    score: Tree::<ScoreAtom>::create_leaf_from_i64(*score),
+                }
+            }).collect::<Vec<_>>();
+            let mut metered = ordinary.clone();
+            ScoredTerm::sort_vec(&mut ordinary);
+            let backing = |_: usize, _: usize, _: usize| Ok(());
+            ScoredTerm::sort_vec_metered(&mut metered, &SorterMeter::new(&backing)).unwrap();
+            prop_assert_eq!(&metered, &ordinary);
+            for pair in metered.windows(2) {
+                if compare_score(&pair[0].score, &pair[1].score) == Ordering::Equal
+                    && pair[0].term.emitted == pair[1].term.emitted
+                {
+                    prop_assert!(pair[0].term.input_index < pair[1].term.input_index);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn metered_tie_refusal_leaves_terms_unchanged() {
+        let mut terms = vec![
+            ScoredTerm {
+                term: MarkedBytes {
+                    emitted: vec![2],
+                    input_index: 0,
+                },
+                score: Tree::<ScoreAtom>::create_leaf_from_i64(1),
+            },
+            ScoredTerm {
+                term: MarkedBytes {
+                    emitted: vec![1],
+                    input_index: 1,
+                },
+                score: Tree::<ScoreAtom>::create_leaf_from_i64(1),
+            },
+        ];
+        let before = terms.clone();
+        let rejected_tie_bytes = std::cell::Cell::new(false);
+        let backing = |_: usize, scanned: usize, backing: usize| {
+            if scanned == 1 && backing == 1 {
+                rejected_tie_bytes.set(true);
+                Err(BackingError::Rejected)
+            } else {
+                Ok(())
+            }
+        };
+        assert_eq!(
+            ScoredTerm::sort_vec_metered(&mut terms, &SorterMeter::new(&backing)),
+            Err(BackingError::Rejected)
+        );
+        assert!(rejected_tie_bytes.get());
+        assert_eq!(terms, before);
     }
 }

@@ -423,7 +423,7 @@ fn run_probe(what: &str, depth: usize) {
             let t = nested_list(depth);
             let s = substitute_instance();
             let out = s
-                .substitute_and_charge(t, 0, &env)
+                .substitute_and_charge(t, 0, &env, None)
                 .expect("stack_depth_probe: substitute_and_charge failed");
             std::mem::forget(out);
         }

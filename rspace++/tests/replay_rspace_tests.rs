@@ -328,7 +328,13 @@ async fn recorded_data_removal_replays_and_commits_the_same_root() {
         .await
         .unwrap();
     let post_state = space.create_checkpoint().await.unwrap();
-    assert!(space.get_data(&channel).await.is_empty());
+    assert!(
+        space
+            .get_data(&channel)
+            .await
+            .expect("data read")
+            .is_empty()
+    );
     assert_eq!(post_state.log.len(), 2);
     assert!(matches!(post_state.log[0], Event::IoEvent(IOEvent::Consume(_))));
     assert!(matches!(post_state.log[1], Event::Comm(_)));
@@ -344,7 +350,13 @@ async fn recorded_data_removal_replays_and_commits_the_same_root() {
     let replay_post_state = replay_space.create_checkpoint().await.unwrap();
 
     assert_eq!(replay_post_state.root, post_state.root);
-    assert!(replay_space.get_data(&channel).await.is_empty());
+    assert!(
+        replay_space
+            .get_data(&channel)
+            .await
+            .expect("data read")
+            .is_empty()
+    );
 }
 
 #[test]
@@ -419,8 +431,21 @@ async fn replay_observer_rejection_preserves_rspace_and_trace() {
     );
 
     assert_eq!(observer.0.load(Ordering::Acquire), 1);
-    assert!(replay_space.get_data(&channels[0]).await.is_empty());
-    assert_eq!(replay_space.get_waiting_continuations(channels).await.len(), 1);
+    assert!(
+        replay_space
+            .get_data(&channels[0])
+            .await
+            .expect("data read")
+            .is_empty()
+    );
+    assert_eq!(
+        replay_space
+            .get_waiting_continuations(channels)
+            .await
+            .expect("continuation read")
+            .len(),
+        1
+    );
     let log = replay_space.take_event_log().await;
     assert!(log.is_empty());
 }
@@ -444,6 +469,7 @@ async fn replay_operation_rejection_precedes_store_and_trace_mutation() {
         replay_space
             .get_data(&"channel".to_string())
             .await
+            .expect("data read")
             .is_empty()
     );
     assert!(replay_space.take_event_log().await.is_empty());
@@ -464,6 +490,7 @@ async fn replay_operation_rejection_precedes_store_and_trace_mutation() {
         replay_space
             .get_waiting_continuations(vec!["channel".to_string()])
             .await
+            .expect("continuation read")
             .is_empty()
     );
     assert!(replay_space.take_event_log().await.is_empty());
@@ -1186,7 +1213,7 @@ async fn a_matched_continuation_defined_for_multiple_channels_some_peeked_should
 
     for i in 0..amount_of_channels {
         let ch = format!("channel{}", i);
-        let data = space.get_store().get_data(&ch);
+        let data = space.get_store().get_data(&ch).expect("hot store read");
         if !peeks.contains(&i) {
             assert_eq!(data.len(), 0);
         }

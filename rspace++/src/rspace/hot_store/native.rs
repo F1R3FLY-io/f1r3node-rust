@@ -11,7 +11,7 @@ fn inspect_key<K: CloneBacking>(
     repetitions: usize,
     meter: &dyn SourceMeter,
 ) -> Result<(), RSpaceError> {
-    native_backing::inspect(key, &|operations: usize, scanned: usize, backing| {
+    native_backing::inspect_blocks(key, &|operations: usize, scanned: usize, backing| {
         meter.reserve(
             operations
                 .checked_mul(repetitions)
@@ -36,7 +36,7 @@ fn lookup<K: Clone + Hash + Eq + CloneBacking, V: Clone>(
     meter.reserve(steps.checked_mul(32).ok_or(RSpaceError::HostWorkRejected)?, 0, 0)?;
     inspect_key(key, steps, meter)?;
     for existing in map.keys() {
-        native_backing::inspect(existing, meter)?;
+        native_backing::inspect_blocks(existing, meter)?;
     }
     Ok(())
 }
@@ -51,7 +51,7 @@ where
     V: Clone + CloneBacking,
 {
     reserve_replace_with(map, key, meter, |value, meter| {
-        native_backing::reserve_copy_and_cleanup(value, meter)
+        native_backing::reserve_blocks_copy_and_cleanup(value, meter)
     })
 }
 
@@ -68,7 +68,7 @@ where
     T: CloneBacking,
 {
     reserve_replace_with(map, key, meter, |values, meter| {
-        native_backing::reserve_shared_copy_and_cleanup(values, meter)
+        native_backing::reserve_shared_blocks_copy_and_cleanup(values, meter)
     })
 }
 
@@ -95,10 +95,10 @@ where
         .checked_mul(3)
         .ok_or(RSpaceError::HostWorkRejected)?;
     inspect_key(key, count.checked_mul(3).ok_or(RSpaceError::HostWorkRejected)?, meter)?;
-    native_backing::reserve_copy_and_cleanup(key, meter)?;
+    native_backing::reserve_blocks_copy_and_cleanup(key, meter)?;
     for (existing, value) in map.iter() {
         inspect_key(existing, repetitions, meter)?;
-        native_backing::reserve_copy_and_cleanup(existing, meter)?;
+        native_backing::reserve_blocks_copy_and_cleanup(existing, meter)?;
         reserve_value(value, meter)?;
     }
     Ok(())
@@ -144,14 +144,14 @@ impl Write for IdentityWriter<'_> {
     }
 }
 
-fn continuation_identity_metered<
+pub(super) fn continuation_identity_metered<
     P: Clone + Debug + CloneBacking,
     K: Clone + Debug + CloneBacking,
 >(
     waiting: &WaitingContinuation<P, K>,
     meter: &dyn SourceMeter,
 ) -> Result<String, RSpaceError> {
-    native_backing::inspect(waiting, meter)?;
+    native_backing::inspect_blocks(waiting, meter)?;
     let mut writer = IdentityWriter {
         value: String::new(),
         meter,
@@ -184,7 +184,7 @@ where
         meter: &dyn SourceMeter,
         action: impl FnOnce(Option<&V>) -> Result<R, RSpaceError>,
     ) -> Result<R, RSpaceError> {
-        native_backing::inspect(key, meter)?;
+        native_backing::inspect_blocks(key, meter)?;
         let guard = self.shards[shard_of(key)].read().expect("shard read lock");
         lookup(&guard, key, meter)?;
         action(guard.get(key))
@@ -197,7 +197,7 @@ where
         key: &K,
         meter: &dyn SourceMeter,
     ) -> Result<imbl::HashMap<K, V>, RSpaceError> {
-        native_backing::inspect(key, meter)?;
+        native_backing::inspect_blocks(key, meter)?;
         let guard = self.shards[shard_of(key)].read().expect("shard read lock");
         lookup(&guard, key, meter)?;
         let bytes = size_of::<imbl::HashMap<K, V>>();
@@ -209,7 +209,7 @@ where
         self.native_with(key, meter, |value| {
             value
                 .map(|value| {
-                    native_backing::reserve_copy_and_cleanup(value, meter)?;
+                    native_backing::reserve_blocks_copy_and_cleanup(value, meter)?;
                     Ok(value.clone())
                 })
                 .transpose()
@@ -246,7 +246,7 @@ where
         snapshot: bool,
         meter: &dyn SourceMeter,
     ) -> Result<Option<imbl::HashMap<K, V>>, RSpaceError> {
-        native_backing::inspect(key, meter)?;
+        native_backing::inspect_blocks(key, meter)?;
         let mut guard = self.shards[shard_of(key)]
             .write()
             .expect("shard write lock");
@@ -266,11 +266,11 @@ where
             .checked_mul(3)
             .ok_or(RSpaceError::HostWorkRejected)?;
         inspect_key(key, count.checked_mul(3).ok_or(RSpaceError::HostWorkRejected)?, meter)?;
-        native_backing::reserve_copy_and_cleanup(key, meter)?;
+        native_backing::reserve_blocks_copy_and_cleanup(key, meter)?;
         for (existing, value) in guard.iter() {
             inspect_key(existing, repetitions, meter)?;
-            native_backing::reserve_copy_and_cleanup(existing, meter)?;
-            native_backing::reserve_copy_and_cleanup(value, meter)?;
+            native_backing::reserve_blocks_copy_and_cleanup(existing, meter)?;
+            native_backing::reserve_blocks_copy_and_cleanup(value, meter)?;
         }
         if snapshot {
             let bytes = size_of::<imbl::HashMap<K, V>>();
@@ -286,7 +286,7 @@ where
         value: V,
         meter: &dyn SourceMeter,
     ) -> Result<(), RSpaceError> {
-        native_backing::inspect(key, meter)?;
+        native_backing::inspect_blocks(key, meter)?;
         let mut guard = self.shards[shard_of(key)]
             .write()
             .expect("shard write lock");
@@ -296,7 +296,7 @@ where
     }
 }
 
-fn buffer<T>(length: usize, meter: &dyn SourceMeter) -> Result<Vec<T>, RSpaceError> {
+pub(super) fn buffer<T>(length: usize, meter: &dyn SourceMeter) -> Result<Vec<T>, RSpaceError> {
     let bytes = length
         .checked_mul(size_of::<T>())
         .ok_or(RSpaceError::HostWorkRejected)?;
@@ -308,7 +308,11 @@ fn buffer<T>(length: usize, meter: &dyn SourceMeter) -> Result<Vec<T>, RSpaceErr
     Ok(result)
 }
 
-fn merge<T>(left: Vec<T>, right: Vec<T>, meter: &dyn SourceMeter) -> Result<Vec<T>, RSpaceError> {
+pub(super) fn merge<T>(
+    left: Vec<T>,
+    right: Vec<T>,
+    meter: &dyn SourceMeter,
+) -> Result<Vec<T>, RSpaceError> {
     let count = left
         .len()
         .checked_add(right.len())
@@ -399,7 +403,7 @@ where
                 .get(*position)
                 .ok_or(RSpaceError::HostWorkRejected)?
                 .channel;
-            native_backing::inspect(channel, meter)?;
+            native_backing::inspect_blocks(channel, meter)?;
             meter.reserve(64, 0, 0)?;
             requested[shard_of(channel)] = true;
         }
@@ -434,8 +438,8 @@ where
             let channel = &data[*position].channel;
             let mut staged = None;
             for (index, (_, existing, _)) in updates.iter().enumerate() {
-                native_backing::inspect(existing, meter)?;
-                native_backing::inspect(channel, meter)?;
+                native_backing::inspect_blocks(existing, meter)?;
+                native_backing::inspect_blocks(channel, meter)?;
                 meter.reserve(1, 0, 0)?;
                 if existing == channel {
                     staged = Some(index);
@@ -445,7 +449,7 @@ where
             let staged = if let Some(index) = staged {
                 index
             } else {
-                native_backing::inspect(channel, meter)?;
+                native_backing::inspect_blocks(channel, meter)?;
                 let shard_index = shard_of(channel);
                 meter.reserve(shards.len(), 0, 0)?;
                 let (_, shard) = shards
@@ -459,8 +463,8 @@ where
                     )
                 })?;
                 reserve_replace(shard, channel, meter)?;
-                native_backing::reserve_copy_and_cleanup(values, meter)?;
-                native_backing::reserve_copy_and_cleanup(channel, meter)?;
+                native_backing::reserve_blocks_copy_and_cleanup(values, meter)?;
+                native_backing::reserve_blocks_copy_and_cleanup(channel, meter)?;
                 updates.push((shard_index, channel.clone(), values.clone()));
                 updates.len() - 1
             };
@@ -471,7 +475,7 @@ where
                 ));
             }
             let index = *datum_index as usize;
-            native_backing::reserve_cleanup(&values[index], meter)?;
+            native_backing::reserve_blocks_cleanup(&values[index], meter)?;
             let moved = values
                 .len()
                 .checked_sub(index)
@@ -500,25 +504,89 @@ where
         A: CloneBacking,
         K: CloneBacking,
     {
+        self.native_retire_match(
+            channels,
+            continuation_index,
+            continuation_persistent,
+            data,
+            retirement,
+            meter,
+            None,
+        )
+    }
+
+    pub(super) fn native_retire_resting_match(
+        &self,
+        channels: &[C],
+        continuation_index: i32,
+        continuation_persistent: bool,
+        data: &[RSpaceResult<C, A>],
+        retirement: &[(usize, i32)],
+        meter: &dyn SourceMeter,
+        authorization: &mut dyn RestingRetirementAuthorization,
+    ) -> Result<(), RSpaceError>
+    where
+        C: CloneBacking,
+        P: CloneBacking,
+        A: CloneBacking,
+        K: CloneBacking,
+    {
+        self.native_retire_match(
+            channels,
+            continuation_index,
+            continuation_persistent,
+            data,
+            retirement,
+            meter,
+            Some(authorization),
+        )
+    }
+
+    fn native_retire_match(
+        &self,
+        channels: &[C],
+        continuation_index: i32,
+        continuation_persistent: bool,
+        data: &[RSpaceResult<C, A>],
+        retirement: &[(usize, i32)],
+        meter: &dyn SourceMeter,
+        authorization: Option<&mut dyn RestingRetirementAuthorization>,
+    ) -> Result<(), RSpaceError>
+    where
+        C: CloneBacking,
+        P: CloneBacking,
+        A: CloneBacking,
+        K: CloneBacking,
+    {
         let mut data_update = self.prepare_native_retire_data(data, retirement, meter)?;
-        native_backing::reserve_slice_copy_and_cleanup(channels, meter)?;
+        native_backing::reserve_blocks_slice_copy_and_cleanup(channels, meter)?;
         let key = channels.to_vec();
         let installed = self
             .installed_continuations
             .native_with(&key, meter, |value| Ok(value.is_some()))?;
-        native_backing::inspect(&key, meter)?;
+        native_backing::inspect_blocks(&key, meter)?;
         let mut continuation_shard = self.continuations.shards[shard_of(&key)]
             .write()
             .expect("shard write lock");
         lookup(&continuation_shard, &key, meter)?;
-        let existing = continuation_shard.get(&key).ok_or_else(|| {
-            RSpaceError::InterpreterError(
+        let existing = continuation_shard.get(&key);
+        // An installed-only persistent continuation has no ordinary hot row.
+        // It remains installed after this match, so there is no row to retire.
+        // Every other candidate must have been brought into the hot cache by
+        // the metered preflight before any data update may be published.
+        if existing.is_none() && !installed {
+            return Err(RSpaceError::InterpreterError(
                 "native continuation cache is absent at match retirement".to_owned(),
-            )
-        })?;
+            ));
+        }
         let continuation_update = if continuation_persistent {
             None
         } else {
+            let existing = existing.ok_or_else(|| {
+                RSpaceError::InterpreterError(
+                    "native continuation cache is absent at match retirement".to_owned(),
+                )
+            })?;
             let index = continuation_index
                 .checked_sub(i32::from(installed))
                 .ok_or(RSpaceError::HostWorkRejected)?;
@@ -530,13 +598,13 @@ where
             // Changed by C5 (DR-83): the continuation shard holds store-owned
             // shared pointers whose payload releases were prepaid at entry.
             // reserve_replace(&continuation_shard, &key, meter)?;
-            // native_backing::reserve_copy_and_cleanup(existing, meter)?;
+            // native_backing::reserve_blocks_copy_and_cleanup(existing, meter)?;
             reserve_replace_shared(&continuation_shard, &key, meter)?;
-            native_backing::reserve_shared_copy_and_cleanup(existing, meter)?;
+            native_backing::reserve_shared_blocks_copy_and_cleanup(existing, meter)?;
             let mut values = existing.clone();
             let index = index as usize;
-            // native_backing::reserve_cleanup(&values[index], meter)?;
-            native_backing::reserve_shared_cleanup(&values[index], meter)?;
+            // native_backing::reserve_blocks_cleanup(&values[index], meter)?;
+            native_backing::reserve_shared_blocks_cleanup(&values[index], meter)?;
             let moved = values
                 .len()
                 .checked_sub(index)
@@ -548,7 +616,9 @@ where
             values.remove(index);
             Some(values)
         };
-        let regular_count = continuation_update.as_ref().unwrap_or(existing).len();
+        let regular_count = continuation_update
+            .as_ref()
+            .map_or_else(|| existing.map_or(0, Vec::len), Vec::len);
         let join_update = if !installed && regular_count == 0 {
             self.prepare_native_retire_joins(data, channels, meter)?
         } else {
@@ -557,6 +627,11 @@ where
                 updates: Vec::new(),
             }
         };
+        // No SourceMeter call, validation, or fallible staging follows this
+        // authorization. A refusal leaves every staged shard unpublished.
+        if let Some(authorization) = authorization {
+            authorization.authorize()?;
+        }
         data_update.publish();
         if let Some(values) = continuation_update {
             continuation_shard.insert(key, values);
@@ -577,7 +652,7 @@ where
     {
         let mut requested = [false; NUM_SHARDS];
         for datum in data {
-            native_backing::inspect(&datum.channel, meter)?;
+            native_backing::inspect_blocks(&datum.channel, meter)?;
             meter.reserve(64, 0, 0)?;
             requested[shard_of(&datum.channel)] = true;
         }
@@ -612,8 +687,8 @@ where
             let channel = &datum.channel;
             let mut repeated = false;
             for (_, previous, _) in &updates {
-                native_backing::inspect(previous, meter)?;
-                native_backing::inspect(channel, meter)?;
+                native_backing::inspect_blocks(previous, meter)?;
+                native_backing::inspect_blocks(channel, meter)?;
                 meter.reserve(1, 0, 0)?;
                 if previous == channel {
                     repeated = true;
@@ -623,7 +698,7 @@ where
             if repeated {
                 continue;
             }
-            native_backing::inspect(channel, meter)?;
+            native_backing::inspect_blocks(channel, meter)?;
             let index = shard_of(channel);
             meter.reserve(shards.len(), 0, 0)?;
             let (_, shard) = shards
@@ -638,8 +713,8 @@ where
             })?;
             let mut position = None;
             for (candidate, value) in existing.iter().enumerate() {
-                native_backing::inspect_slice(value, meter)?;
-                native_backing::inspect_slice(join, meter)?;
+                native_backing::inspect_blocks_slice(value, meter)?;
+                native_backing::inspect_blocks_slice(join, meter)?;
                 meter.reserve(1, 0, 0)?;
                 if value.as_slice() == join {
                     position = Some(candidate);
@@ -648,9 +723,9 @@ where
             }
             if let Some(position) = position {
                 reserve_replace(shard, channel, meter)?;
-                native_backing::reserve_copy_and_cleanup(existing, meter)?;
+                native_backing::reserve_blocks_copy_and_cleanup(existing, meter)?;
                 let mut values = existing.clone();
-                native_backing::reserve_cleanup(&values[position], meter)?;
+                native_backing::reserve_blocks_cleanup(&values[position], meter)?;
                 let moved = values
                     .len()
                     .checked_sub(position)
@@ -660,7 +735,7 @@ where
                     .ok_or(RSpaceError::HostWorkRejected)?;
                 meter.reserve(moved, bytes, 0)?;
                 values.remove(position);
-                native_backing::reserve_copy_and_cleanup(channel, meter)?;
+                native_backing::reserve_blocks_copy_and_cleanup(channel, meter)?;
                 updates.push((index, channel.clone(), values));
             }
         }
@@ -678,8 +753,8 @@ where
         P: CloneBacking,
         K: CloneBacking,
     {
-        native_backing::reserve_cleanup(&waiting, meter)?;
-        native_backing::reserve_slice_copy_and_cleanup(channels, meter)?;
+        native_backing::reserve_blocks_cleanup(&waiting, meter)?;
+        native_backing::reserve_blocks_slice_copy_and_cleanup(channels, meter)?;
         let key = channels.to_vec();
         // Changed by D-S4 (DR-90): the new identity is built only when a stored
         // continuation has the same source hash (see the loop below).
@@ -758,9 +833,9 @@ where
             // Changed by C5 (DR-83): the continuation shard holds store-owned
             // shared pointers whose payload releases were prepaid at entry.
             // reserve_replace(&continuation_shard, &key, meter)?;
-            // native_backing::reserve_copy_and_cleanup(existing, meter)?;
+            // native_backing::reserve_blocks_copy_and_cleanup(existing, meter)?;
             reserve_replace_shared(&continuation_shard, &key, meter)?;
-            native_backing::reserve_shared_copy_and_cleanup(existing, meter)?;
+            native_backing::reserve_shared_blocks_copy_and_cleanup(existing, meter)?;
             let mut values = existing.clone();
             let count = values
                 .len()
@@ -781,7 +856,7 @@ where
             Some(values)
         };
 
-        native_backing::inspect_slice(channels, meter)?;
+        native_backing::inspect_blocks_slice(channels, meter)?;
         meter.reserve(
             channels
                 .len()
@@ -825,8 +900,8 @@ where
         for channel in channels {
             let mut repeated = false;
             for (_, prior, _) in &join_updates {
-                native_backing::inspect(prior, meter)?;
-                native_backing::inspect(channel, meter)?;
+                native_backing::inspect_blocks(prior, meter)?;
+                native_backing::inspect_blocks(channel, meter)?;
                 meter.reserve(1, 0, 0)?;
                 if prior == channel {
                     repeated = true;
@@ -844,7 +919,7 @@ where
                 0,
                 0,
             )?;
-            native_backing::inspect(channel, meter)?;
+            native_backing::inspect_blocks(channel, meter)?;
             let index = shard_of(channel);
             meter.reserve(join_shards.len(), 0, 0)?;
             let (_, shard) = join_shards
@@ -859,8 +934,8 @@ where
             })?;
             let mut present = false;
             for join in values {
-                native_backing::inspect_slice(join, meter)?;
-                native_backing::inspect_slice(channels, meter)?;
+                native_backing::inspect_blocks_slice(join, meter)?;
+                native_backing::inspect_blocks_slice(channels, meter)?;
                 meter.reserve(1, 0, 0)?;
                 if join.as_slice() == channels {
                     present = true;
@@ -871,7 +946,7 @@ where
                 continue;
             }
             reserve_replace(shard, channel, meter)?;
-            native_backing::reserve_copy_and_cleanup(values, meter)?;
+            native_backing::reserve_blocks_copy_and_cleanup(values, meter)?;
             let mut updated = values.clone();
             let count = updated
                 .len()
@@ -884,9 +959,9 @@ where
             updated
                 .try_reserve_exact(1)
                 .map_err(|_| RSpaceError::HostWorkRejected)?;
-            native_backing::reserve_slice_copy_and_cleanup(channels, meter)?;
+            native_backing::reserve_blocks_slice_copy_and_cleanup(channels, meter)?;
             updated.insert(0, channels.to_vec());
-            native_backing::reserve_copy_and_cleanup(channel, meter)?;
+            native_backing::reserve_blocks_copy_and_cleanup(channel, meter)?;
             join_updates.push((index, channel.clone(), updated));
         }
         if let Some(values) = continuation_update {
@@ -912,7 +987,7 @@ where
         C: CloneBacking,
         A: CloneBacking,
     {
-        native_backing::inspect(channel, meter)?;
+        native_backing::inspect_blocks(channel, meter)?;
         let mut shard = self.data.shards[shard_of(channel)]
             .write()
             .expect("shard write lock");
@@ -928,7 +1003,7 @@ where
             .checked_mul(size_of::<Datum<A>>())
             .ok_or(RSpaceError::HostWorkRejected)?;
         meter.reserve(count, vector_bytes, vector_bytes)?;
-        native_backing::reserve_cleanup(&datum, meter)?;
+        native_backing::reserve_blocks_cleanup(&datum, meter)?;
         reserve_replace(&shard, channel, meter)?;
         shard
             .get_mut(channel)
@@ -948,8 +1023,8 @@ where
         P: CloneBacking,
         K: CloneBacking,
     {
-        native_backing::reserve_cleanup(&value, meter)?;
-        native_backing::reserve_slice_copy_and_cleanup(channels, meter)?;
+        native_backing::reserve_blocks_cleanup(&value, meter)?;
+        native_backing::reserve_blocks_slice_copy_and_cleanup(channels, meter)?;
         let key = channels.to_vec();
         self.installed_continuations
             .native_insert_replace(&key, value, meter)
@@ -969,8 +1044,8 @@ where
             .native_get(channel, meter)?
             .unwrap_or_default();
         for existing in &values {
-            native_backing::inspect_slice(existing, meter)?;
-            native_backing::inspect_slice(join, meter)?;
+            native_backing::inspect_blocks_slice(existing, meter)?;
+            native_backing::inspect_blocks_slice(join, meter)?;
             meter.reserve(1, 0, 0)?;
             if existing.as_slice() == join {
                 return Ok(());
@@ -987,7 +1062,7 @@ where
         values
             .try_reserve_exact(1)
             .map_err(|_| RSpaceError::HostWorkRejected)?;
-        native_backing::reserve_slice_copy_and_cleanup(join, meter)?;
+        native_backing::reserve_blocks_slice_copy_and_cleanup(join, meter)?;
         values.insert(0, join.to_vec());
         self.installed_joins
             .native_insert_replace(channel, values, meter)
@@ -1040,7 +1115,7 @@ where
             let guard = shard.read().expect("shard read lock");
             for (channels, values) in guard.iter() {
                 meter.reserve(1, 0, 0)?;
-                native_backing::reserve_copy_and_cleanup(channels, meter)?;
+                native_backing::reserve_blocks_copy_and_cleanup(channels, meter)?;
                 let channels = channels.clone();
                 if values.is_empty() {
                     actions.push(HotStoreAction::Delete(DeleteAction::DeleteContinuations(
@@ -1049,7 +1124,7 @@ where
                 } else {
                     let mut continuations = buffer(values.len(), meter)?;
                     for value in values {
-                        native_backing::reserve_copy_and_cleanup(value.as_ref(), meter)?;
+                        native_backing::reserve_blocks_copy_and_cleanup(value.as_ref(), meter)?;
                         continuations.push(value.as_ref().clone());
                     }
                     actions.push(HotStoreAction::Insert(InsertAction::InsertContinuations(
@@ -1065,14 +1140,14 @@ where
             let guard = shard.read().expect("shard read lock");
             for (channel, values) in guard.iter() {
                 meter.reserve(1, 0, 0)?;
-                native_backing::reserve_copy_and_cleanup(channel, meter)?;
+                native_backing::reserve_blocks_copy_and_cleanup(channel, meter)?;
                 let channel = channel.clone();
                 if values.is_empty() {
                     actions.push(HotStoreAction::Delete(DeleteAction::DeleteData(DeleteData {
                         channel,
                     })));
                 } else {
-                    native_backing::reserve_copy_and_cleanup(values, meter)?;
+                    native_backing::reserve_blocks_copy_and_cleanup(values, meter)?;
                     actions.push(HotStoreAction::Insert(InsertAction::InsertData(InsertData {
                         channel,
                         data: values.clone(),
@@ -1084,14 +1159,14 @@ where
             let guard = shard.read().expect("shard read lock");
             for (channel, values) in guard.iter() {
                 meter.reserve(1, 0, 0)?;
-                native_backing::reserve_copy_and_cleanup(channel, meter)?;
+                native_backing::reserve_blocks_copy_and_cleanup(channel, meter)?;
                 let channel = channel.clone();
                 if values.is_empty() {
                     actions.push(HotStoreAction::Delete(DeleteAction::DeleteJoins(DeleteJoins {
                         channel,
                     })));
                 } else {
-                    native_backing::reserve_copy_and_cleanup(values, meter)?;
+                    native_backing::reserve_blocks_copy_and_cleanup(values, meter)?;
                     actions.push(HotStoreAction::Insert(InsertAction::InsertJoins(InsertJoins {
                         channel,
                         joins: values.clone(),
@@ -1116,9 +1191,35 @@ where
             return Ok(values);
         }
         let values = read()?;
-        native_backing::reserve_copy_and_cleanup(&values, meter)?;
+        native_backing::reserve_blocks_copy_and_cleanup(&values, meter)?;
         let cached = values.clone();
         self.data.native_insert_new(channel, cached, meter)?;
+        Ok(values)
+    }
+
+    /// D-C4 (D-S5, DR-98): `native_data` without the cold fill. A warm read
+    /// copies the resident entry exactly as `native_data` does. A cold read
+    /// prepays the release of the decoded history values and returns them
+    /// without `native_insert_new`: no write lock, no whole-shard copy
+    /// charge, and the shard population that later lookups charge stays
+    /// unchanged. An entry is resident only for an installed channel or a
+    /// channel that the runtime wrote since its last reset or checkpoint, so
+    /// a read never observes an earlier read.
+    pub(super) fn native_data_uncached(
+        &self,
+        channel: &C,
+        read: &dyn Fn() -> Result<Vec<Datum<A>>, RSpaceError>,
+        meter: &dyn SourceMeter,
+    ) -> Result<Vec<Datum<A>>, RSpaceError>
+    where
+        C: CloneBacking,
+        A: CloneBacking,
+    {
+        if let Some(values) = self.data.native_get(channel, meter)? {
+            return Ok(values);
+        }
+        let values = read()?;
+        native_backing::reserve_blocks_cleanup(&values, meter)?;
         Ok(values)
     }
 
@@ -1138,19 +1239,22 @@ where
     {
         let shard = self.data.native_snapshot(channel, meter)?;
         let shard = if shard.contains_key(channel) {
-            native_backing::reserve_copy_and_cleanup(channel, meter)?;
+            native_backing::reserve_blocks_copy_and_cleanup(channel, meter)?;
             shard
         } else {
             let values = read()?;
-            native_backing::reserve_cleanup(&values, meter)?;
-            native_backing::reserve_copy_and_cleanup(channel, meter)?;
+            native_backing::reserve_blocks_cleanup(&values, meter)?;
+            native_backing::reserve_blocks_copy_and_cleanup(channel, meter)?;
             self.data
                 .native_insert_new_snapshot(channel, values, meter)?
         };
-        Ok(super::NativeDataView {
-            shard,
-            channel: channel.clone(),
-        })
+        // Changed by D-C2c (D-S1, DR-96): the view type has a constructor per
+        // store.
+        // Ok(super::NativeDataView {
+        //     shard,
+        //     channel: channel.clone(),
+        // })
+        Ok(super::NativeDataView::from_shard(shard, channel.clone()))
     }
 
     pub(super) fn native_continuations(
@@ -1164,7 +1268,7 @@ where
         P: CloneBacking,
         K: CloneBacking,
     {
-        native_backing::reserve_slice_copy_and_cleanup(channels, meter)?;
+        native_backing::reserve_blocks_slice_copy_and_cleanup(channels, meter)?;
         let key = channels.to_vec();
         let installed = self.installed_continuations.native_get(&key, meter)?;
         let mut prefix = buffer(usize::from(installed.is_some()), meter)?;
@@ -1176,7 +1280,7 @@ where
                 .map(|values| {
                     let mut result = buffer(values.len(), meter)?;
                     for value in values {
-                        native_backing::reserve_copy_and_cleanup(value.as_ref(), meter)?;
+                        native_backing::reserve_blocks_copy_and_cleanup(value.as_ref(), meter)?;
                         result.push(value.as_ref().clone());
                     }
                     Ok(result)
@@ -1189,7 +1293,7 @@ where
         let values = read()?;
         let mut cached = buffer(values.len(), meter)?;
         for value in &values {
-            native_backing::reserve_copy_and_cleanup(value, meter)?;
+            native_backing::reserve_blocks_copy_and_cleanup(value, meter)?;
             let bytes =
                 shared::rust::clone_backing::arc_allocation_bytes::<WaitingContinuation<P, K>>()
                     .ok_or(RSpaceError::HostWorkRejected)?;
@@ -1216,7 +1320,7 @@ where
         P: CloneBacking,
         K: CloneBacking,
     {
-        native_backing::reserve_slice_copy_and_cleanup(channels, meter)?;
+        native_backing::reserve_blocks_slice_copy_and_cleanup(channels, meter)?;
         let key = channels.to_vec();
         let pointer = size_of::<Arc<WaitingContinuation<P, K>>>();
         let allocation =
@@ -1247,7 +1351,7 @@ where
         let mut shared = buffer(values.len(), meter)?;
         let mut cached = buffer(values.len(), meter)?;
         for value in values {
-            native_backing::reserve_cleanup(&value, meter)?;
+            native_backing::reserve_blocks_cleanup(&value, meter)?;
             meter.reserve(2, allocation, allocation)?;
             let value = Arc::new(value);
             meter.reserve(1, pointer, 0)?;
@@ -1257,6 +1361,31 @@ where
         let result = merge(prefix, shared, meter)?;
         self.continuations.native_insert_new(&key, cached, meter)?;
         Ok(result)
+    }
+
+    pub(super) fn native_installed_continuation_view(
+        &self,
+        channels: &[C],
+        meter: &dyn SourceMeter,
+    ) -> Result<Option<Arc<WaitingContinuation<P, K>>>, RSpaceError>
+    where
+        C: CloneBacking,
+        P: CloneBacking,
+        K: CloneBacking,
+    {
+        native_backing::reserve_blocks_slice_copy_and_cleanup(channels, meter)?;
+        let key = channels.to_vec();
+        let installed = self.installed_continuations.native_get(&key, meter)?;
+        installed
+            .map(|value| {
+                let allocation = shared::rust::clone_backing::arc_allocation_bytes::<
+                    WaitingContinuation<P, K>,
+                >()
+                .ok_or(RSpaceError::HostWorkRejected)?;
+                meter.reserve(2, allocation, allocation)?;
+                Ok(Arc::new(value))
+            })
+            .transpose()
     }
 
     pub(super) fn native_joins(
@@ -1276,7 +1405,7 @@ where
             return merge(installed, values, meter);
         }
         let values = read()?;
-        native_backing::reserve_copy_and_cleanup(&values, meter)?;
+        native_backing::reserve_blocks_copy_and_cleanup(&values, meter)?;
         let cached = values.clone();
         let result = merge(installed, values, meter)?;
         self.joins.native_insert_new(channel, cached, meter)?;

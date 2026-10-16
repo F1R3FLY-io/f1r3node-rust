@@ -17,7 +17,8 @@ use models::rust::signed_phlo_deploy::OfferedFundedDeploy;
 use prost::Message;
 use rholang::rust::interpreter::accounting::authority::{
     cost_signature_to_sig, cost_signature_to_sig_metered, funding_sig_channel_metered,
-    reserve_authority_signature_tree, AuthorityBornStack, AuthorityStackBirth,
+    reserve_authority_signature_tree, validate_stack_birth, AuthorityBornStack,
+    AuthorityStackBirth,
 };
 use rholang::rust::interpreter::accounting::economic_failure::classify_errors;
 use rholang::rust::interpreter::accounting::phlo_controls::{
@@ -147,6 +148,23 @@ fn reserve(
         .map_err(invalid)
 }
 
+fn funding_backing_meter(
+    budget: &HostWorkBudget,
+) -> impl Fn(usize, usize, usize) -> Result<(), BackingError> + '_ {
+    move |operations, scanned, allocation| {
+        reserve(
+            budget,
+            HostWorkDimension::VerificationOperations,
+            operations.checked_mul(2).ok_or(BackingError::Overflow)?,
+        )
+        .map_err(|_| BackingError::Rejected)?;
+        reserve(budget, HostWorkDimension::VerificationBytes, scanned)
+            .map_err(|_| BackingError::Rejected)?;
+        reserve(budget, HostWorkDimension::SearchStateBytes, allocation)
+            .map_err(|_| BackingError::Rejected)
+    }
+}
+
 fn match_birth_claims(
     observed: &[AuthorityStackBirth],
     claims: &[RetainedBirthFunding<'_>],
@@ -164,7 +182,18 @@ fn match_birth_claims(
         .try_reserve_exact(claims.len())
         .map_err(|_| invalid("retained birth match allocation failed"))?;
     matched.resize(claims.len(), false);
+    let backing = funding_backing_meter(budget);
+    for claim in claims {
+        validate_stack_birth(
+            &claim.birth.cells,
+            claim.birth.stack.as_ref(),
+            Some(&backing),
+        )
+        .map_err(invalid)?;
+    }
     for birth in observed {
+        validate_stack_birth(&birth.cells, birth.stack.as_ref(), Some(&backing))
+            .map_err(invalid)?;
         let mut selected = None;
         let mut depth = 0;
         for (index, claim) in claims.iter().enumerate() {
@@ -179,7 +208,14 @@ fn match_birth_claims(
                 .ok_or_else(|| invalid("retained birth comparison work overflow"))?;
             reserve(budget, HostWorkDimension::VerificationOperations, bytes)?;
             reserve(budget, HostWorkDimension::SearchCandidates, 1)?;
-            if birth.produce_hash == claim.birth.produce_hash && birth.cells == claim.birth.cells {
+            if let Some(tree) = claim.birth.stack.as_ref() {
+                clone_backing::inspect(tree, &backing)
+                    .map_err(|_| invalid("retained birth tree comparison work rejected"))?;
+            }
+            if birth.produce_hash == claim.birth.produce_hash
+                && birth.cells == claim.birth.cells
+                && birth.stack == claim.birth.stack
+            {
                 if selected.is_some() || matched[index] {
                     return Err(invalid("retained birth has no unique native claim"));
                 }
@@ -216,11 +252,23 @@ pub(super) fn derive_live_born_stacks(
     births
         .try_reserve_exact(observed.len())
         .map_err(|_| invalid("native birth allocation failed"))?;
+    let backing = funding_backing_meter(budget);
     for birth in observed {
+        validate_stack_birth(&birth.cells, birth.stack.as_ref(), Some(&backing))
+            .map_err(invalid)?;
         let mut found = None;
         for stack in rooted_stacks {
             reserve(budget, HostWorkDimension::VerificationOperations, 1)?;
-            if stack.source_hash != birth.produce_hash || stack.stack.cells != birth.cells {
+            if let Some(tree) = birth.stack.as_ref() {
+                clone_backing::inspect(&stack.stack, &backing)
+                    .map_err(|_| invalid("native rooted tree comparison work rejected"))?;
+                if stack.stack != *tree {
+                    continue;
+                }
+            } else if !stack.stack.parallel_tail.is_empty() || stack.stack.cells != birth.cells {
+                continue;
+            }
+            if stack.source_hash != birth.produce_hash {
                 continue;
             }
             if found.replace(stack).is_some() {
@@ -235,10 +283,15 @@ pub(super) fn derive_live_born_stacks(
         let cell_bytes = cell_bytes.ok_or_else(|| invalid("native birth cells overflow"))?;
         reserve(budget, HostWorkDimension::SearchStateBytes, cell_bytes)?;
         reserve(budget, HostWorkDimension::VerificationBytes, cell_bytes)?;
+        if let Some(tree) = birth.stack.as_ref() {
+            clone_backing::reserve(tree, &backing)
+                .map_err(|_| invalid("native birth tree clone work rejected"))?;
+        }
         births.push(AuthorityBornStack {
             stack_id: stack.instance_id,
             produce_hash: birth.produce_hash,
             cells: birth.cells.clone(),
+            stack: birth.stack.clone(),
         });
     }
     Ok(births)
@@ -645,8 +698,13 @@ impl NativeOfferedAttempt<'_, '_> {
         )?;
         receipt_ids.sort_unstable();
         receipt_ids.dedup();
-        let receipt_snapshot =
-            manager.capture_prepaid_receipts(funding_root, &receipt_ids, receipt_limits, budget)?;
+        let receipt_snapshot = manager.capture_prepaid_receipts(
+            funding_root,
+            self.adopted.event_codec_epoch(),
+            &receipt_ids,
+            receipt_limits,
+            budget,
+        )?;
         let selected = preflight.selected_terms(&adopted)?;
         let schedule = PhloScheduleBinding::new(selected.schedule(), PhloGenesisPolicy::LIMITS)
             .map_err(invalid)?;
@@ -833,6 +891,7 @@ impl NativeOfferedAttempt<'_, '_> {
             settlement_root,
             &demand,
             &self.evaluation.authority_stack_births,
+            &self.adopted,
             production.stack_capture,
             budget,
         )?;
@@ -883,21 +942,58 @@ impl NativeOfferedAttempt<'_, '_> {
                 }
             }
         }
-        let selection =
+        let branched = input.inventory.has_branched_stacks(budget)?;
+        let physical_trace = if branched {
+            Some(input.inventory.checked_physical_trace(
+                snapshot.wallets(),
+                &self.evaluation.authority_events,
+                budget,
+            )?)
+        } else {
+            None
+        };
+        let captured_for_trace = if branched {
+            Some(input.inventory.clone_captured_stacks(budget)?)
+        } else {
+            None
+        };
+        let verified_pre_state = match (&physical_trace, &captured_for_trace) {
+            (Some(trace), Some(stacks)) => {
+                Some(trace.verify_live(self.preflight.funding_root, stacks, budget)?)
+            }
+            _ => None,
+        };
+        let selection = if let Some(verified) = verified_pre_state.as_ref() {
+            input.inventory.select_verified_measured_demand(
+                verified,
+                &demand,
+                limits.measured.demand,
+                budget,
+            )?
+        } else {
             input
                 .inventory
-                .select_measured_demand(&demand, limits.measured.demand, budget)?;
-        let binding = input.inventory.bind_measured_demand(
-            NativePrepaidDemandInput {
-                expected_root: self.preflight.funding_root,
-                controls,
-                demand: &demand,
-                draws: selection.draws(),
-                demand_positions: selection.demand_positions(),
-            },
-            limits.measured.demand,
-            budget,
-        )?;
+                .select_measured_demand(&demand, limits.measured.demand, budget)?
+        };
+        let demand_input = NativePrepaidDemandInput {
+            expected_root: self.preflight.funding_root,
+            controls,
+            demand: &demand,
+            draws: selection.draws(),
+            demand_positions: selection.demand_positions(),
+        };
+        let binding = if let Some(verified) = verified_pre_state.as_ref() {
+            input.inventory.bind_measured_demand_verified(
+                demand_input,
+                verified,
+                limits.measured.demand,
+                budget,
+            )?
+        } else {
+            input
+                .inventory
+                .bind_measured_demand(demand_input, limits.measured.demand, budget)?
+        };
         let observed = check_counted_phlo_execution(
             controls,
             binding.witness(),
@@ -1108,6 +1204,7 @@ impl NativeOfferedAttempt<'_, '_> {
             let consumption = NativePrepaidConsumption {
                 captured: input.inventory.captured(),
                 draws: selection.draws(),
+                checked_physical: physical_trace.as_ref(),
                 limits: production.stack_pop,
                 execution: production.execution,
                 cell: production.prepaid_cell,
@@ -1118,6 +1215,7 @@ impl NativeOfferedAttempt<'_, '_> {
                 .runtime
                 .settle_checked_wallet_and_capture_balances(
                     manager,
+                    &self.adopted,
                     &checked,
                     &permit,
                     reservation_id,
@@ -1283,6 +1381,7 @@ mod tests {
     use models::rhoapi::cost_signature::Value;
     use models::rhoapi::{CostSignature, CostStack, Par};
     use models::rust::host_work::{HostWorkLimit, HostWorkLimits};
+    use proptest::prelude::*;
     use rholang::rust::interpreter::accounting::authority::AuthorityBornStack;
 
     use super::*;
@@ -1299,6 +1398,7 @@ mod tests {
         let observed = [AuthorityStackBirth {
             produce_hash: [3; 32],
             cells: vec![cell.clone()],
+            stack: None,
         }];
         let stack = PurseStack {
             instance_id: [4; 32],
@@ -1307,12 +1407,136 @@ mod tests {
             datum_index: 0,
             random_state: Vec::new(),
             persistent: false,
-            stack: CostStack { cells: vec![cell] },
+            stack: CostStack {
+                cells: vec![cell],
+                parallel_tail: Vec::new(),
+            },
         };
         let derived = derive_live_born_stacks(&observed, &[stack.clone()], 1, &budget()).unwrap();
         assert_eq!(derived[0].stack_id, [4; 32]);
+        assert_eq!(derived[0].stack, None);
         assert!(derive_live_born_stacks(&observed, &[], 1, &budget()).is_err());
         assert!(derive_live_born_stacks(&observed, &[stack.clone(), stack], 2, &budget()).is_err());
+    }
+
+    #[test]
+    fn born_stack_claims_authenticate_branch_topology_not_only_flat_cells() {
+        let signature = |value| CostSignature {
+            value: Some(Value::Ground(vec![value])),
+        };
+        let prefix = signature(1);
+        let left = signature(2);
+        let right = signature(3);
+        let cells = vec![prefix.clone(), left.clone(), right.clone()];
+        let tree = CostStack {
+            cells: vec![prefix.clone()],
+            parallel_tail: vec![
+                CostStack {
+                    cells: vec![left.clone()],
+                    parallel_tail: Vec::new(),
+                },
+                CostStack {
+                    cells: vec![right.clone()],
+                    parallel_tail: Vec::new(),
+                },
+            ],
+        };
+        let regrouped = CostStack {
+            cells: vec![prefix],
+            parallel_tail: vec![
+                CostStack {
+                    cells: vec![left, right],
+                    parallel_tail: Vec::new(),
+                },
+                CostStack {
+                    cells: Vec::new(),
+                    parallel_tail: Vec::new(),
+                },
+            ],
+        };
+        let observed = [AuthorityStackBirth {
+            produce_hash: [3; 32],
+            cells: cells.clone(),
+            stack: Some(tree.clone()),
+        }];
+        let rooted = PurseStack {
+            instance_id: [4; 32],
+            source_hash: [3; 32],
+            channel: Par::default(),
+            datum_index: 0,
+            random_state: Vec::new(),
+            persistent: false,
+            stack: tree.clone(),
+        };
+        let derived = derive_live_born_stacks(&observed, &[rooted.clone()], 1, &budget()).unwrap();
+        assert_eq!(derived[0].stack, Some(tree));
+
+        let mut false_root = rooted.clone();
+        false_root.stack = regrouped.clone();
+        assert!(derive_live_born_stacks(&observed, &[false_root], 1, &budget()).is_err());
+
+        let mut reordered_root = rooted.clone();
+        reordered_root.stack.parallel_tail.swap(0, 1);
+        assert!(derive_live_born_stacks(&observed, &[reordered_root], 1, &budget()).is_err());
+
+        let mut false_claim = derived[0].clone();
+        false_claim.stack = Some(regrouped);
+        let claims = [RetainedBirthFunding {
+            birth: &false_claim,
+            obligation_positions: &[1],
+        }];
+        assert!(match_birth_claims(&observed, &claims, 1, &budget()).is_err());
+
+        let mut false_flat = observed[0].clone();
+        false_flat.cells.swap(1, 2);
+        assert!(derive_live_born_stacks(&[false_flat], &[rooted], 1, &budget()).is_err());
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(32))]
+
+        #[test]
+        fn branch_tree_identity_is_required_even_when_flat_cells_match(
+            prefix in any::<u8>(), left in any::<u8>(), right in any::<u8>()
+        ) {
+            let signature = |value| CostSignature { value: Some(Value::Ground(vec![value])) };
+            let prefix = signature(prefix);
+            let left = signature(left);
+            let right = signature(right);
+            let cells = vec![prefix.clone(), left.clone(), right.clone()];
+            let tree = CostStack {
+                cells: vec![prefix.clone()],
+                parallel_tail: vec![
+                    CostStack { cells: vec![left.clone()], parallel_tail: Vec::new() },
+                    CostStack { cells: vec![right.clone()], parallel_tail: Vec::new() },
+                ],
+            };
+            let flat_alias = CostStack {
+                cells: vec![prefix],
+                parallel_tail: vec![
+                    CostStack { cells: vec![left, right], parallel_tail: Vec::new() },
+                    CostStack { cells: Vec::new(), parallel_tail: Vec::new() },
+                ],
+            };
+            let birth = AuthorityStackBirth {
+                produce_hash: [3; 32],
+                cells,
+                stack: Some(tree.clone()),
+            };
+            prop_assert!(validate_stack_birth(&birth.cells, Some(&flat_alias), None).is_ok());
+            let rooted = PurseStack {
+                instance_id: [4; 32],
+                source_hash: birth.produce_hash,
+                channel: Par::default(),
+                datum_index: 0,
+                random_state: Vec::new(),
+                persistent: false,
+                stack: tree,
+            };
+            prop_assert!(derive_live_born_stacks(&[birth.clone()], &[rooted.clone()], 1, &budget()).is_ok());
+            let forged = PurseStack { stack: flat_alias, ..rooted };
+            prop_assert!(derive_live_born_stacks(&[birth], &[forged], 1, &budget()).is_err());
+        }
     }
 
     #[test]
@@ -1354,6 +1578,7 @@ mod tests {
             stack_id: [3; 32],
             produce_hash: [4; 32],
             cells: vec![cell],
+            stack: None,
         };
         let work = budget();
         let one = vec![RestoredPhloResource::from_wire_key(&first, limits, &work).unwrap()];
@@ -1383,11 +1608,13 @@ mod tests {
         let observed = [AuthorityStackBirth {
             produce_hash: [3; 32],
             cells: vec![cell.clone()],
+            stack: None,
         }];
         let claimed = AuthorityBornStack {
             stack_id: [4; 32],
             produce_hash: [3; 32],
             cells: vec![cell.clone()],
+            stack: None,
         };
         let claims = [RetainedBirthFunding {
             birth: &claimed,
@@ -1402,6 +1629,7 @@ mod tests {
             stack_id: [8; 32],
             produce_hash: [8; 32],
             cells: vec![cell.clone()],
+            stack: None,
         };
         let claims_with_unobserved = [claims[0], RetainedBirthFunding {
             birth: &unobserved_claim,

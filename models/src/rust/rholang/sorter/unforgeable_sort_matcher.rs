@@ -3,13 +3,14 @@
 // A `GUnforgeable` carries bytes, never a `Par`, so it is a LEAF and needs no
 // driver. The implementation lives in `sort_combine`.
 
-use super::sort_combine::sort_unforgeable;
 use shared::rust::clone_backing::BackingError;
 
 use super::metered::SorterMeter;
 use super::score_tree::{Score, ScoreAtom, ScoredTerm, Tree};
+use super::sort_combine::sort_unforgeable;
 use super::sortable::Sortable;
-use crate::rhoapi::{g_unforgeable::UnfInstance, GUnforgeable};
+use crate::rhoapi::g_unforgeable::UnfInstance;
+use crate::rhoapi::GUnforgeable;
 
 pub struct UnforgeableSortMatcher;
 

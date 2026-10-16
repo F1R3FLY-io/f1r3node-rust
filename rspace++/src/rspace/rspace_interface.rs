@@ -6,14 +6,16 @@ use async_trait::async_trait;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use shared::rust::clone_backing::CloneBacking;
+use shared::rust::closed_decode::ClosedDecode;
 
 use super::checkpoint::Checkpoint;
 use super::errors::RSpaceError;
 use super::hashing::blake2b256_hash::Blake2b256Hash;
 use super::hashing::native_source::SourceMeter;
 use super::internal::{Datum, ProduceCandidate, Row, WaitingContinuation};
+use super::serializers::cold_store_decode::ColdStoreDecode;
 use super::trace::Log;
-use super::trace::event::{COMM, Consume, Produce};
+use super::trace::event::{COMM, Consume, Produce, RestingCOMM};
 use crate::rspace::checkpoint::SoftCheckpoint;
 
 #[derive(Serialize, Deserialize, Debug, Clone, Eq, PartialEq, Hash)]
@@ -66,6 +68,8 @@ pub fn commit_produce<T>(
 pub enum RSpaceOperationSource<'a> {
     Produce(&'a Produce),
     Consume(&'a Consume),
+    /// Protocol-7 resting commit; it is not a new IO introduction.
+    Resting(&'a RestingCOMM),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -142,6 +146,20 @@ pub trait RSpaceAccountingObserver<C, P, A, K>: Send + Sync {
         continuation_persistent: bool,
         data: &[(&A, bool)],
     ) -> Result<(), RSpaceError>;
+
+    /// A pre-existing waiter matches pre-existing data. The default refuses
+    /// so older observers cannot accidentally charge it as an ordinary COMM
+    /// attached to fabricated Produce/Consume IO.
+    fn observe_resting_comm(
+        &self,
+        _identity: &Blake2b256Hash,
+        _event: &RestingCOMM,
+        _continuation: &K,
+        _continuation_persistent: bool,
+        _data: &[(&A, bool)],
+    ) -> Result<(), RSpaceError> {
+        Err(RSpaceError::HostWorkRejected)
+    }
 }
 
 /** The interface for RSpace
@@ -163,6 +181,8 @@ pub trait ISpace<
     K: Clone + Send + Sync,
 >: Send + Sync
 {
+    fn codec_epoch(&self) -> super::hashing::stable_hash_provider::EventCodecEpoch;
+
     fn set_accounting_observer(
         &self,
         observer: Option<std::sync::Arc<dyn RSpaceAccountingObserver<C, P, A, K>>>,
@@ -174,7 +194,7 @@ pub trait ISpace<
      */
     async fn create_checkpoint(&self) -> Result<Checkpoint, RSpaceError>;
 
-    async fn get_data(&self, channel: &C) -> Vec<Datum<A>>;
+    async fn get_data(&self, channel: &C) -> Result<Vec<Datum<A>>, RSpaceError>;
 
     async fn get_data_metered(
         &self,
@@ -183,14 +203,30 @@ pub trait ISpace<
     ) -> Result<Vec<Datum<A>>, RSpaceError>
     where
         C: CloneBacking + DeserializeOwned,
-        A: CloneBacking + DeserializeOwned,
+        // D-S2 (DR-95): the history rows decode in History mode.
+        A: CloneBacking + DeserializeOwned + ClosedDecode,
     {
         Err(RSpaceError::HostWorkRejected)
     }
 
-    async fn get_waiting_continuations(&self, channels: Vec<C>) -> Vec<WaitingContinuation<P, K>>;
+    async fn get_data_cold_decode_metered(
+        &self,
+        _channel: &C,
+        _meter: &(dyn SourceMeter + Sync),
+    ) -> Result<Vec<Datum<A>>, RSpaceError>
+    where
+        C: CloneBacking,
+        A: CloneBacking + ColdStoreDecode,
+    {
+        Err(RSpaceError::HostWorkRejected)
+    }
 
-    async fn get_joins(&self, channel: C) -> Vec<Vec<C>>;
+    async fn get_waiting_continuations(
+        &self,
+        channels: Vec<C>,
+    ) -> Result<Vec<WaitingContinuation<P, K>>, RSpaceError>;
+
+    async fn get_joins(&self, channel: C) -> Result<Vec<Vec<C>>, RSpaceError>;
 
     async fn remove_all_data(&self, channel: &C) -> Result<(), RSpaceError>;
 
@@ -357,6 +393,58 @@ pub trait ISpace<
     async fn rig_and_reset(&self, start_root: Blake2b256Hash, log: Log) -> Result<(), RSpaceError>;
 
     async fn rig(&self, log: Log) -> Result<(), RSpaceError>;
+
+    /// The authenticated protocol-7 replay entrypoints require a finite
+    /// caller-owned host-work meter. Defaults refuse; a legacy `ISpace`
+    /// implementation must never infer CostV2 authority from an event body.
+    async fn rig_cost_v2_metered(
+        &self,
+        _start_root: Blake2b256Hash,
+        _log: Log,
+        _meter: &(dyn SourceMeter + Send + Sync),
+    ) -> Result<(), RSpaceError> {
+        Err(RSpaceError::ProduceCommitProtocolViolation)
+    }
+
+    async fn replay_produce_cost_v2_metered(
+        &self,
+        _channel: C,
+        _data: A,
+        _persist: bool,
+        _guard: Option<&dyn ProduceCommitGuard>,
+        _meter: &(dyn SourceMeter + Send + Sync),
+    ) -> Result<MaybeProduceResult<C, P, A, K>, RSpaceError>
+    where
+        C: 'static,
+        A: 'static,
+    {
+        Err(RSpaceError::ProduceCommitProtocolViolation)
+    }
+
+    async fn replay_consume_cost_v2_metered(
+        &self,
+        _channels: Vec<C>,
+        _patterns: Vec<P>,
+        _continuation: K,
+        _persist: bool,
+        _peeks: BTreeSet<i32>,
+        _meter: &(dyn SourceMeter + Send + Sync),
+    ) -> Result<MaybeConsumeResult<C, P, A, K>, RSpaceError>
+    where
+        C: 'static,
+        P: 'static,
+        K: 'static,
+    {
+        Err(RSpaceError::ProduceCommitProtocolViolation)
+    }
+
+    async fn replay_resting_cost_v2_metered(
+        &self,
+        _candidate: &ProduceCandidate<C, P, A, K>,
+        _meter: &(dyn SourceMeter + Send + Sync),
+    ) -> Result<MaybeConsumeResult<C, P, A, K>, RSpaceError> {
+        Err(RSpaceError::ProduceCommitProtocolViolation)
+    }
 
     async fn check_replay_data(&self) -> Result<(), RSpaceError>;
 

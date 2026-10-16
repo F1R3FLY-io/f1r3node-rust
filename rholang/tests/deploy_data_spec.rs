@@ -79,7 +79,7 @@ impl TestDeployDataFixture {
             expr_instance: Some(ExprInstance::GInt(0)),
         }]);
 
-        let data = runtime.get_data(&channel).await;
+        let data = runtime.get_data(&channel).await.expect("deploy data query");
 
         let result: Vec<Par> = if !data.is_empty() {
             data.into_iter()

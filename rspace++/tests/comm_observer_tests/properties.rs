@@ -36,8 +36,8 @@ proptest! {
                     }
                 }
                 for index in 0..3 {
-                    assert_eq!(space.get_data(&index.to_string()).await.len(), data[index]);
-                    assert_eq!(space.get_waiting_continuations(vec![index.to_string()]).await.len(), continuations[index]);
+                    assert_eq!(space.get_data(&index.to_string()).await.expect("data read").len(), data[index]);
+                    assert_eq!(space.get_waiting_continuations(vec![index.to_string()]).await.expect("continuation read").len(), continuations[index]);
                 }
                 let trace = space.take_event_log().await;
                 assert_eq!(trace.len(), if rejected { 0 } else if matching { 2 } else { 1 });
