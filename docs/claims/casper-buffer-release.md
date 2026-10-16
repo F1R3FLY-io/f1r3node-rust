@@ -15,7 +15,7 @@ artifacts:
 status: pending
 adapter: agentic
 mechanization: none   # planned in the discharge plan below
-task: TASK-021-12
+task: TASK-021-12, TASK-021-18
 tdd_plan: docs/tdd-plans/issue-24-parked-block-release-2026-10-07.md
 references:
   - https://github.com/F1R3FLY-io/f1r3node-rust/issues/24   # sustained finalization lag
@@ -29,6 +29,11 @@ A received block parks in the casper buffer while one of its dependencies (a par
 A code trace on 2026-10-07 found three release-path causes. A released block re-enters the tail of the one shared processing queue, behind gossip. The release scan reads every buffered block after every processed block. A block with a stale parent link can be dropped as already processed and stay parked until the 180 s stale prune.
 
 TASK-021-12 changes the release path. This claim states the properties that the change must preserve or establish. The claim is pending: no code change for TASK-021-12 starts before this file exists (EPIC-021 `cbc_policy`).
+
+TASK-021-18 (stall-loop item A7) extends the claim with C5 and C6. A code reading of `dev` on 2026-10-16 found two defects that do not depend on load:
+
+- The overflow prune of the buffer sorts dependency-free entries youngest first and removes the first one. It removes the newest block, which is often the block that just became ready.
+- A recovery re-request for a buffered block gets a duplicate copy as its reply. The copy has the verdict `AlreadyProcessed`, and its disposal calls `ack_processed`. That call clears the re-fetch cooldown, the retry counter, and the quarantine of the block. The retry budget then never runs out.
 
 ## Definitions
 
@@ -47,6 +52,10 @@ TASK-021-12 changes the release path. This claim states the properties that the 
 
 **C4. Verdict invariance.** The validation verdict of a block, and the resulting DAG, do not depend on the order in which ready blocks are processed. C3 changes only the order and the latency of processing, never a validation result.
 
+**C5. Eviction order.** When the buffer is over its node limit, the overflow prune removes dependency-free entries oldest first. Age is the time since the buffer first saw the hash. One prune pass tries each hash at most once and removes at most `max_prune_batch` entries.
+
+**C6. Re-fetch rate limit.** A block can wait in the buffer. A duplicate copy of that block does not reset its re-fetch cooldown, its retry counter, or its quarantine. A duplicate copy of a block that is already in the DAG clears all tracking of the block, as before.
+
 ## Seam premises (documented, not proven)
 
 - **Dependency closure.** A block is processed only after all its dependencies are validated. C4 depends on this premise: validation of a block reads only the block and its validated dependencies.
@@ -64,3 +73,7 @@ The status of each item is recorded here as the TDD cycles complete.
 5. C4: a bounded model or a property test processes one set of ready blocks in every order or in generated orders. It compares the resulting DAG and verdicts with the FIFO order. **Open.**
 6. Record the evidence in `docs/casper/cbc-evidence/` for each `cbc=mandatory` artifact and cite this claim id. **Open.**
 7. Run a comparison soak of the branch against a `dev` soak on the same base. The soak reports park time, release queue wait, sustained finalization p95, and the `test_load` failure count. The maintainer accepts the evidence before PR #653 leaves draft. **Open.**
+8. C5: a unit test adds two dependency-free entries at different times and runs the overflow prune with a limit of one node. The older entry is removed and the newer entry stays. The test fails on the old order. **Done 2026-10-16:** `the_overflow_prune_removes_the_oldest_dependency_free_entry_first` failed on the old order and passed after the fix. The prune now sorts once, oldest first, and tries each hash once.
+9. C6: a `TestNode` spec buffers a block, sends a recovery request for it, and disposes a duplicate copy of it. A second recovery request inside the cooldown sends nothing, and the retriever keeps tracking the block. The spec fails on the old disposal. **Done 2026-10-16:** `a_duplicate_copy_of_a_buffered_block_keeps_its_refetch_cooldown` (`casper/tests/sync/refetch_cooldown_spec.rs`) failed on the old disposal: the second request sent one more message.
+   - After the fix, `dispose_not_of_interest` does not acknowledge a duplicate copy of a block that waits in the buffer. The cleanup that cleared the cooldown also cleared the retry counter and the quarantine, so the fix keeps all three.
+   - `cargo test --release --no-fail-fast -p casper -p node -p block-storage` passed 2,385 tests and ignored 14.

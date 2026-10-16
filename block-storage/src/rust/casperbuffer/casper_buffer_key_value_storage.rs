@@ -327,31 +327,22 @@ impl CasperBufferKeyValueStorage {
 
         let mut overflow_pruned = 0usize;
         let mut approx_nodes = self.approx_node_count();
-        let mut attempts = 0usize;
-        while overflow_pruned < max_prune_batch
-            && attempts < max_prune_batch
-            && approx_nodes > max_approx_nodes
-        {
-            let mut oldest_nodes: Vec<(u64, BlockHashSerde)> = self
-                .dependency_free_nodes_with_age_ms(now)
-                .into_iter()
-                .collect();
-            oldest_nodes.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+        if approx_nodes > max_approx_nodes {
+            let mut oldest_nodes = self.dependency_free_nodes_with_age_ms(now);
+            oldest_nodes.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
 
-            let Some((_, hash)) = oldest_nodes.into_iter().next() else {
-                break;
-            };
-
-            let removed = self.remove(hash);
-            attempts += 1;
-
-            match removed {
-                Ok(_) => {
-                    overflow_pruned += 1;
-                    approx_nodes = self.approx_node_count();
+            for (_, hash) in oldest_nodes.into_iter().take(max_prune_batch) {
+                if approx_nodes <= max_approx_nodes {
+                    break;
                 }
-                Err(KvStoreError::InvalidArgument(_)) => {}
-                Err(e) => return Err(e),
+                match self.remove(hash) {
+                    Ok(_) => {
+                        overflow_pruned += 1;
+                        approx_nodes = self.approx_node_count();
+                    }
+                    Err(KvStoreError::InvalidArgument(_)) => {}
+                    Err(e) => return Err(e),
+                }
             }
         }
 
@@ -499,6 +490,38 @@ mod tests {
         assert!(casper_buffer.parents_store.get_one(&block)?.is_none());
         assert!(!casper_buffer.requested_as_dependency(&valid_parent));
         assert!(casper_buffer.first_seen_ms.get(&valid_parent).is_none());
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn the_overflow_prune_removes_the_oldest_dependency_free_entry_first(
+    ) -> Result<(), KvStoreError> {
+        let mut kvm = InMemoryStoreManager::new();
+        let store = kvm.store("parents-map".to_string()).await?;
+        let typed_store = KeyValueTypedStoreImpl::new(store);
+        let casper_buffer = CasperBufferKeyValueStorage::new_from_kv_store(typed_store).await?;
+
+        let old_parent = create_block_hash(b"old-parent");
+        let old_child = create_block_hash(b"old-child");
+        let new_parent = create_block_hash(b"new-parent");
+        let new_child = create_block_hash(b"new-child");
+
+        casper_buffer.add_relation(old_parent.clone(), old_child.clone())?;
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        casper_buffer.add_relation(new_parent.clone(), new_child.clone())?;
+
+        let (stale_pruned, overflow_pruned) = casper_buffer.enforce_limits(2, u64::MAX, 1, 0)?;
+
+        assert_eq!((stale_pruned, overflow_pruned), (0, 1));
+        assert!(
+            casper_buffer.get_children(&old_parent).is_none(),
+            "the oldest dependency-free entry must be removed first"
+        );
+        assert!(
+            casper_buffer.get_children(&new_parent).is_some(),
+            "the newer dependency-free entry must stay"
+        );
 
         Ok(())
     }
