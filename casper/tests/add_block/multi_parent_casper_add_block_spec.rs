@@ -15,7 +15,9 @@ use crypto::rust::signatures::secp256k1::Secp256k1;
 use crypto::rust::signatures::signatures_alg::SignaturesAlg;
 use crypto::rust::signatures::signed::Signed;
 use models::rhoapi::PCost;
-use models::rust::casper::protocol::casper_message::{BlockMessage, DeployData, ProcessedDeploy};
+use models::rust::casper::protocol::casper_message::{
+    BlockMessage, DeployData, Justification, ProcessedDeploy,
+};
 use models::rust::validator::Validator;
 use prost::bytes::Bytes;
 use rspace_plus_plus::rspace::history::Either;
@@ -280,20 +282,70 @@ async fn multi_parent_casper_should_reject_blocks_not_from_bonded_validators() {
     let status = node.process_block(ill_signed_block).await.unwrap();
 
     // The forged block (a bonded validator's block re-signed by a fresh,
-    // unbonded key) MUST be rejected. The Scala original asserted
-    // `InvalidSender`, but `block_sender_has_weight` (the sender/weight check
-    // that yields `InvalidSender`) is defined-but-unwired in BOTH the Scala
-    // reference (`Validate.blockSenderHasWeight` has no callers) and this Rust
-    // port — which is why the Scala test itself was `ignore`d. Re-signing only
-    // swaps the sender+signature; it does not touch the block's justifications,
-    // so the sequence-number validator (which runs in `block_summary`) sees a
-    // block claiming seq 1 from a sender whose creator-justification seq is -1
-    // and rejects it first. The security property under test — a block forged
-    // by an unbonded key is not accepted — holds; the deterministic rejection
-    // reason under the current multi-parent design is `InvalidSequenceNumber`.
+    // unbonded key) is dropped at admission: its main parent (genesis) is in
+    // the DAG and gives the new key zero weight.
     assert_eq!(
         status,
-        Either::Left(BlockError::Invalid(InvalidBlock::InvalidSequenceNumber))
+        Either::Left(BlockError::Invalid(InvalidBlock::InvalidSender))
+    );
+}
+
+/// Seq 0 passes the sequence-number check for a sender with no creator
+/// justification, so only a bond check can stop this block. Admission must
+/// drop it before the store write and before it asks for the unknown
+/// justification.
+#[tokio::test]
+async fn multi_parent_casper_should_drop_unbonded_sender_at_admission() {
+    let ctx = TestContext::new().await;
+    let mut node = TestNode::standalone(ctx.genesis.clone()).await.unwrap();
+
+    let deploy = construct_deploy::basic_deploy_data(0, None, Some(ctx.shard_id.clone())).unwrap();
+    let mut block = node.create_block_unsafe(&[deploy]).await.unwrap();
+    block.seq_num = 0;
+    let unknown_hash = Bytes::from(vec![7u8; 32]);
+    block.justifications.push(Justification {
+        validator: Bytes::from(vec![9u8; 65]),
+        latest_block_hash: unknown_hash.clone(),
+    });
+
+    let (sk, _pk) = Secp256k1.new_key_pair();
+    let forged = ValidatorIdentity::new(&sk).sign_block(&block);
+
+    let status = node.process_block(forged.clone()).await.unwrap();
+
+    assert_eq!(
+        status,
+        Either::Left(BlockError::Invalid(InvalidBlock::InvalidSender))
+    );
+    assert!(!node.contains(&forged.block_hash));
+    assert!(node.block_store.get(&forged.block_hash).unwrap().is_none());
+    assert!(!node
+        .requested_blocks
+        .lock()
+        .unwrap()
+        .contains_key(&unknown_hash));
+}
+
+/// Full validation must reach the same verdict on its own, before the
+/// replay, for a block that admission could not judge.
+#[tokio::test]
+async fn multi_parent_casper_validate_should_reject_unbonded_sender_before_replay() {
+    let ctx = TestContext::new().await;
+    let mut node = TestNode::standalone(ctx.genesis.clone()).await.unwrap();
+
+    let deploy = construct_deploy::basic_deploy_data(0, None, Some(ctx.shard_id.clone())).unwrap();
+    let mut block = node.create_block_unsafe(&[deploy]).await.unwrap();
+    block.seq_num = 0;
+
+    let (sk, _pk) = Secp256k1.new_key_pair();
+    let forged = ValidatorIdentity::new(&sk).sign_block(&block);
+
+    let mut snapshot = node.casper.get_snapshot().await.unwrap();
+    let status = node.casper.validate(&forged, &mut snapshot).await.unwrap();
+
+    assert_eq!(
+        status,
+        Either::Left(BlockError::Invalid(InvalidBlock::InvalidSender))
     );
 }
 

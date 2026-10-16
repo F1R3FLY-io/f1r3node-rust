@@ -8,7 +8,7 @@ use block_storage::rust::deploy::key_value_deploy_storage::KeyValueDeployStorage
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use casper::rust::block_status::BlockStatus;
 use casper::rust::blocks::block_processor::{
-    BlockProcessor, BlockProcessorDependencies, BlockQueueItem, InFlightBlocks,
+    BlockProcessor, BlockProcessorDependencies, BlockQueueItem, InFlightBlocks, SenderAuthorization,
 };
 use casper::rust::blocks::proposer::block_creator;
 use casper::rust::blocks::proposer::propose_result::BlockCreatorResult;
@@ -182,6 +182,11 @@ impl TestNode {
 
         if !verdict.is_fresh() {
             return Ok(Either::Left(BlockStatus::not_of_interest()));
+        }
+
+        if block_processor.check_sender_authorization(&block)? == SenderAuthorization::Unauthorized
+        {
+            return Ok(Either::Left(BlockStatus::invalid_sender()));
         }
 
         // Check if well-formed and store
