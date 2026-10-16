@@ -963,6 +963,10 @@ pub(crate) async fn ensure_scope_mergeable_present(
 /// substituting one parent's post-state and dropping the others' writes.
 pub(crate) const MAX_FLOOR_DISTANCE_BLOCKS: i64 = 256;
 
+pub(crate) fn floor_pacing_engaged(floor_distance: i64, pacing_distance: i64) -> bool {
+    floor_distance > pacing_distance
+}
+
 /// Advisory cap on the merge scope `|visible_blocks|`. This is NOT node-
 /// deterministic (branch width differs across each node's view), so it MUST NOT
 /// gate admission — a divergent reject would fork. Recorded as a metric/warning
@@ -2260,9 +2264,9 @@ mod backstop_tests {
 
     use super::{
         block_in_base_merge_scope, canonical_dispositions, canonical_won_sigs,
-        merge_scope_backstop_exceeded, rejected_sig_has_visible_non_source_win,
-        retain_recoverable_rejected_deploys_for_buffer, suppress_already_recorded_rejections,
-        MAX_FLOOR_DISTANCE_BLOCKS,
+        floor_pacing_engaged, merge_scope_backstop_exceeded,
+        rejected_sig_has_visible_non_source_win, retain_recoverable_rejected_deploys_for_buffer,
+        suppress_already_recorded_rejections, MAX_FLOOR_DISTANCE_BLOCKS,
     };
     use crate::rust::util::construct_deploy;
 
@@ -2275,6 +2279,18 @@ mod backstop_tests {
         // validate rejects), never a silent lossy single-parent substitution.
         assert!(merge_scope_backstop_exceeded(MAX_FLOOR_DISTANCE_BLOCKS + 1));
         assert!(merge_scope_backstop_exceeded(i64::MAX));
+    }
+
+    #[test]
+    fn pacing_engages_before_the_backstop() {
+        let pacing = crate::rust::casper::PROPOSAL_PACING_FLOOR_DISTANCE_DEFAULT;
+        assert!(!floor_pacing_engaged(0, pacing));
+        assert!(!floor_pacing_engaged(pacing, pacing));
+        assert!(floor_pacing_engaged(pacing + 1, pacing));
+        assert!(pacing < MAX_FLOOR_DISTANCE_BLOCKS);
+        assert!((pacing + 1..=MAX_FLOOR_DISTANCE_BLOCKS)
+            .all(|d| floor_pacing_engaged(d, pacing) && !merge_scope_backstop_exceeded(d)));
+        assert_eq!(pacing, MAX_FLOOR_DISTANCE_BLOCKS / 2);
     }
 
     #[test]

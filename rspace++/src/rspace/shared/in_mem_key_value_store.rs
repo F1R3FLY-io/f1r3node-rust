@@ -100,6 +100,8 @@ impl KeyValueStore for InMemoryKeyValueStore {
     }
 
     fn non_empty(&self) -> Result<bool, KvStoreError> { Ok(!self.state.is_empty()) }
+
+    fn entry_count(&self) -> Result<Option<usize>, KvStoreError> { Ok(Some(self.state.len())) }
 }
 
 impl InMemoryKeyValueStore {

@@ -50,6 +50,10 @@ pub const FINALIZER_DERIVATION_BUDGET_DEFAULT: Duration = Duration::from_secs(15
 
 pub const FINALIZER_STEP_BACKSTOP_DEFAULT: Duration = Duration::from_secs(60);
 
+pub const DEPLOY_POOL_BLOCKS_OF_BACKLOG_DEFAULT: usize = 64;
+
+pub const PROPOSAL_PACING_FLOOR_DISTANCE_DEFAULT: i64 = 128;
+
 pub const FINALIZER_CURSOR_MAX_INVALIDATIONS_DEFAULT: u32 =
     crate::rust::finality::floor_runner::MAX_CONSECUTIVE_INVALIDATIONS;
 
@@ -71,6 +75,7 @@ pub enum DeployError {
     UnknownSignatureAlgorithm(String),
     SignatureVerificationFailed,
     DuplicateDeploy(DeployId),
+    PoolFull { pending: usize, cap: usize },
 }
 
 impl DeployError {
@@ -84,6 +89,8 @@ impl DeployError {
 
     pub fn signature_verification_failed() -> Self { DeployError::SignatureVerificationFailed }
     pub fn duplicate_deploy(deploy_id: DeployId) -> Self { DeployError::DuplicateDeploy(deploy_id) }
+
+    pub fn pool_full(pending: usize, cap: usize) -> Self { DeployError::PoolFull { pending, cap } }
 }
 
 impl Display for DeployError {
@@ -98,6 +105,11 @@ impl Display for DeployError {
             DeployError::DuplicateDeploy(deploy_id) => {
                 write!(f, "Deploy already known: {}", hex::encode(deploy_id))
             }
+            DeployError::PoolFull { pending, cap } => write!(
+                f,
+                "Deploy pool is full ({} pending, cap {}); retry later",
+                pending, cap
+            ),
         }
     }
 }
@@ -585,6 +597,8 @@ pub struct CasperShardConf {
     pub finalizer_derivation_budget: Duration,
     pub finalizer_step_backstop: Duration,
     pub finalizer_cursor_max_invalidations: u32,
+    pub deploy_pool_blocks_of_backlog: usize,
+    pub proposal_pacing_floor_distance: i64,
 }
 
 impl CasperShardConf {
@@ -628,6 +642,8 @@ impl CasperShardConf {
             finalizer_derivation_budget: FINALIZER_DERIVATION_BUDGET_DEFAULT,
             finalizer_step_backstop: FINALIZER_STEP_BACKSTOP_DEFAULT,
             finalizer_cursor_max_invalidations: FINALIZER_CURSOR_MAX_INVALIDATIONS_DEFAULT,
+            deploy_pool_blocks_of_backlog: DEPLOY_POOL_BLOCKS_OF_BACKLOG_DEFAULT,
+            proposal_pacing_floor_distance: PROPOSAL_PACING_FLOOR_DISTANCE_DEFAULT,
         }
     }
 }

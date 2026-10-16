@@ -179,6 +179,18 @@ pub struct CasperConf {
         default = "default_finalizer_cursor_max_invalidations"
     )]
     pub finalizer_cursor_max_invalidations: u32,
+
+    #[serde(
+        rename = "deploy-pool-blocks-of-backlog",
+        default = "default_deploy_pool_blocks_of_backlog"
+    )]
+    pub deploy_pool_blocks_of_backlog: usize,
+
+    #[serde(
+        rename = "proposal-pacing-floor-distance",
+        default = "default_proposal_pacing_floor_distance"
+    )]
+    pub proposal_pacing_floor_distance: i64,
 }
 
 fn default_deploy_play_budget() -> Duration { Duration::ZERO }
@@ -234,6 +246,14 @@ pub fn default_finalizer_step_backstop() -> Duration {
 
 pub fn default_finalizer_cursor_max_invalidations() -> u32 {
     crate::rust::casper::FINALIZER_CURSOR_MAX_INVALIDATIONS_DEFAULT
+}
+
+pub fn default_deploy_pool_blocks_of_backlog() -> usize {
+    crate::rust::casper::DEPLOY_POOL_BLOCKS_OF_BACKLOG_DEFAULT
+}
+
+pub fn default_proposal_pacing_floor_distance() -> i64 {
+    crate::rust::casper::PROPOSAL_PACING_FLOOR_DISTANCE_DEFAULT
 }
 
 /// Round robin dispatcher configuration

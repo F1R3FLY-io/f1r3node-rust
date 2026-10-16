@@ -2185,11 +2185,12 @@ impl BlockAPI {
 
 #[cfg(test)]
 mod tests {
-    use super::ProposeCoalescer;
     use std::future::pending;
     use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
     use std::sync::Arc;
     use std::time::Duration;
+
+    use super::ProposeCoalescer;
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn many_deploys_during_a_proposal_coalesce_into_one_more_proposal() {
