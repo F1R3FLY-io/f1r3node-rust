@@ -1,7 +1,8 @@
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use shared::rust::{Byte, ByteVector};
 
+use crate::rspace::errors::RadixTreeError;
 use crate::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use crate::rspace::state::rspace_exporter::RSpaceExporter;
 
@@ -15,91 +16,23 @@ pub struct StoreItems<KeyHash, Value> {
 pub struct RSpaceExporterItems;
 
 impl RSpaceExporterItems {
-    pub fn get_history(
-        &self,
-        exporter: Arc<Mutex<Box<dyn RSpaceExporter>>>,
-        start_path: Vec<(Blake2b256Hash, Option<Byte>)>,
-        skip: i32,
-        take: i32,
-    ) -> StoreItems<Blake2b256Hash, ByteVector> {
-        let exporter = exporter.lock().unwrap();
-
-        let nodes = exporter.get_nodes(start_path.clone(), skip, take);
-
-        // Empty traversal: subtree exhausted (start_path is a leaf or unknown).
-        // Return last_path == start_path so the requester treats it as a
-        // terminal cursor (no follow-up request, chunk -> Done).
-        let Some(last_entry) = nodes.last() else {
-            return StoreItems {
-                items: vec![],
-                last_path: start_path,
-            };
-        };
-
-        let history_keys: Vec<_> = nodes.iter().filter(|node| !node.is_leaf).collect();
-        let keys: Vec<Blake2b256Hash> = history_keys
-            .iter()
-            .map(|key| key.hash.clone())
-            .collect::<std::collections::HashSet<_>>()
-            .into_iter()
-            .collect();
-        let items = exporter
-            .get_history_items(keys)
-            .expect("Failed to get history items in rspace_exporter_items");
-
-        let mut last_path = last_entry.path.clone();
-        last_path.push((last_entry.hash.clone(), None));
-        StoreItems { items, last_path }
-    }
-
-    pub fn get_data(
-        &self,
-        exporter: Arc<Mutex<Box<dyn RSpaceExporter>>>,
-        start_path: Vec<(Blake2b256Hash, Option<Byte>)>,
-        skip: i32,
-        take: i32,
-    ) -> StoreItems<Blake2b256Hash, ByteVector> {
-        let exporter = exporter.lock().unwrap();
-
-        let nodes = exporter.get_nodes(start_path.clone(), skip, take);
-
-        // Empty traversal: subtree exhausted (start_path is a leaf or unknown).
-        // Return last_path == start_path so the requester treats it as a
-        // terminal cursor (no follow-up request, chunk -> Done).
-        let Some(last_entry) = nodes.last() else {
-            return StoreItems {
-                items: vec![],
-                last_path: start_path,
-            };
-        };
-
-        let data_keys: Vec<_> = nodes.iter().filter(|node| !node.is_leaf).collect();
-        let keys: Vec<Blake2b256Hash> = data_keys
-            .iter()
-            .map(|key| key.hash.clone())
-            .collect::<std::collections::HashSet<_>>()
-            .into_iter()
-            .collect();
-        let items = exporter
-            .get_data_items(keys)
-            .expect("Failed to get history items in rspace_exporter_items");
-
-        let mut last_path = last_entry.path.clone();
-        last_path.push((last_entry.hash.clone(), None));
-        StoreItems { items, last_path }
-    }
-
     pub fn get_history_and_data(
         exporter: Arc<dyn RSpaceExporter>,
         start_path: Vec<(Blake2b256Hash, Option<Byte>)>,
         skip: i32,
         take: i32,
-    ) -> (StoreItems<Blake2b256Hash, ByteVector>, StoreItems<Blake2b256Hash, ByteVector>) {
+    ) -> Result<
+        (StoreItems<Blake2b256Hash, ByteVector>, StoreItems<Blake2b256Hash, ByteVector>),
+        RadixTreeError,
+    > {
         // Traverse and collect tuple space nodes
-        let nodes = exporter.get_nodes(start_path, skip, take);
+        let nodes = exporter.get_nodes(start_path, skip, take)?;
 
-        // Get last entry / raise exception if empty (partial function)
-        let last_entry = nodes.last().expect("EmptyHistoryException");
+        let Some(last_entry) = nodes.last() else {
+            return Err(RadixTreeError::KeyNotFound(
+                "RSpace Exporter: empty history for the requested start path".to_string(),
+            ));
+        };
 
         // Split by leaf nodes
         let (leafs, non_leafs): (Vec<_>, Vec<_>) = nodes.iter().partition(|node| node.is_leaf);
@@ -119,10 +52,10 @@ impl RSpaceExporterItems {
         // Load all history and data items
         let history_items = exporter
             .get_history_items(history_keys)
-            .expect("Failed to get history items in rspace_exporter_items");
+            .map_err(RadixTreeError::KvStoreError)?;
         let data_items = exporter
             .get_data_items(data_keys)
-            .expect("Failed to get history items in rspace_exporter_items");
+            .map_err(RadixTreeError::KvStoreError)?;
 
         let mut history_last_path = last_entry.path.clone();
         history_last_path.push((last_entry.hash.clone(), None));
@@ -138,6 +71,6 @@ impl RSpaceExporterItems {
             last_path: data_last_path,
         };
 
-        (history, data)
+        Ok((history, data))
     }
 }

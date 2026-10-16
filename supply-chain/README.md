@@ -11,6 +11,7 @@ The pre-commit hook runs only `cargo deny check`, which reads `deny.toml`. It do
 | `manifests` | The Cargo manifests that the check scans: the workspace, `fuzz/`, and `scripts/soak-charts/`. |
 | `[scanner]` | The pinned `cargo-deny` version and the sha256 of each release binary. |
 | `[exceptions.<advisory>]` | One record for each RustSec advisory that the check accepts for a time. |
+| `[yanked."<name>@<version>"]` | One record for each yanked crate version that the check accepts for a time. |
 
 Each exception record has these fields:
 
@@ -19,6 +20,16 @@ Each exception record has these fields:
 - `review-by`: the date of the next review.
 
 Each exception must also appear in `advisories.ignore` in `deny.toml` with a reason. The checker refuses a policy when the two lists differ.
+
+### Yanked crates
+
+The check denies a yanked crate in a lock file. When no unyanked version is compatible, a `[yanked."<name>@<version>"]` record accepts that one exact version for a time. The record has an `owner` and a `review-by` date, with the same lifecycle as an advisory exception.
+
+The same spec must appear in `advisories.ignore` in `deny.toml` as `{ crate = "<name>@<version>", reason = "..." }`. The checker fails in these conditions:
+
+- The two lists differ.
+- A spec has no exact version.
+- No scanned manifest contains the yanked version.
 
 ## Exception lifecycle
 
