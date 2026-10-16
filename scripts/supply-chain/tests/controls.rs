@@ -200,6 +200,115 @@ fn ignored_advisories_require_matching_review_records_and_reasons() {
     assert!(policy::validate(&p, &d, today()).is_err());
 }
 
+fn yanked_index(d: &toml::Value, spec: &str) -> usize {
+    d["advisories"]["ignore"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .position(|e| e.get("crate").and_then(toml::Value::as_str) == Some(spec))
+        .unwrap()
+}
+
+#[test]
+fn yanked_crates_require_matching_review_records_reasons_and_exact_versions() {
+    let p = policy();
+    assert!(p.yanked.contains_key("zip@3.0.0"));
+    let mut d = deny();
+    let index = yanked_index(&d, "zip@3.0.0");
+    d["advisories"]["ignore"]
+        .as_array_mut()
+        .unwrap()
+        .remove(index);
+    assert!(policy::validate(&p, &d, today()).is_err());
+    let mut d = deny();
+    let index = yanked_index(&d, "zip@3.0.0");
+    d["advisories"]["ignore"][index]["reason"] = toml::Value::String(" ".into());
+    assert!(policy::validate(&p, &d, today()).is_err());
+    for spec in ["zip", "zip@3", "zip@*", "@3.0.0"] {
+        let mut d = deny();
+        let index = yanked_index(&d, "zip@3.0.0");
+        d["advisories"]["ignore"][index]["crate"] = toml::Value::String(spec.into());
+        assert!(policy::validate(&p, &d, today()).is_err(), "{spec}");
+    }
+    let mut d = deny();
+    let index = yanked_index(&d, "zip@3.0.0");
+    d["advisories"]["ignore"][index]
+        .as_table_mut()
+        .unwrap()
+        .insert("id".into(), toml::Value::String("RUSTSEC-2026-0258".into()));
+    assert!(policy::validate(&p, &d, today()).is_err());
+    let mut p = policy();
+    p.yanked.get_mut("zip@3.0.0").unwrap().owner = " ".into();
+    assert!(policy::validate(&p, &deny(), today()).is_err());
+    let mut p = policy();
+    p.yanked.get_mut("zip@3.0.0").unwrap().review_by = "2026-09-06".parse().unwrap();
+    assert!(policy::validate(&p, &deny(), today()).is_err());
+}
+
+#[test]
+fn yanked_crate_reviews_are_reported_when_due() {
+    let mut p = policy();
+    for entry in p.exceptions.values_mut() {
+        entry.review_by = "2026-12-01".parse().unwrap();
+    }
+    for entry in p.yanked.values_mut() {
+        entry.review_by = "2026-12-01".parse().unwrap();
+    }
+    p.yanked.get_mut("zip@3.0.0").unwrap().review_by = "2026-09-10".parse().unwrap();
+    let due = policy::reviews_due(&p, today(), scan::REVIEW_WARNING_DAYS).unwrap();
+    let ids: Vec<&str> = due.iter().map(|(id, _)| id.as_str()).collect();
+    assert_eq!(ids, ["zip@3.0.0"]);
+}
+
+fn yanked_not_detected(spec: &str) -> Value {
+    json!({"type":"diagnostic","fields":{"severity":"warning","code":"yanked-not-detected","message":"yanked crate was not encountered","labels":[{"span":spec}]}})
+}
+
+#[test]
+fn reports_record_yanked_crates_that_were_not_encountered() {
+    let p = policy();
+    let result = report::validate(&report(&[yanked_not_detected("zip@0.6.6")]), &p.exceptions);
+    assert!(result.errors.is_empty());
+    assert!(result.yanked_not_detected.contains("zip@0.6.6"));
+    let mut malformed = yanked_not_detected("zip@0.6.6");
+    malformed["fields"]["labels"] = json!([]);
+    assert!(!report::validate(&report(&[malformed]), &p.exceptions)
+        .errors
+        .is_empty());
+}
+
+#[test]
+fn unused_yanked_exceptions_fail_only_when_no_manifest_uses_them() {
+    for (unused_everywhere, expected) in [(false, true), (true, false)] {
+        let dir = tempfile::tempdir().unwrap();
+        let mut p = policy();
+        p.exceptions.clear();
+        p.yanked.retain(|spec, _| spec == "zip@3.0.0");
+        fs::create_dir_all(dir.path().join("supply-chain")).unwrap();
+        fs::write(dir.path().join("deny.toml"), "").unwrap();
+        fs::write(dir.path().join("supply-chain/policy.toml"), "").unwrap();
+        let mut outputs = vec![];
+        for (index, manifest) in p.manifests.iter().enumerate() {
+            let lock = dir.path().join(manifest).with_file_name("Cargo.lock");
+            fs::create_dir_all(lock.parent().unwrap()).unwrap();
+            fs::write(lock, "version = 4\n").unwrap();
+            outputs.push(output(0, json!({"packages":[]}).to_string(), ""));
+            let records = if index == 0 && !unused_everywhere {
+                vec![]
+            } else {
+                vec![yanked_not_detected("zip@3.0.0")]
+            };
+            outputs.push(output(0, "", report(&records)));
+        }
+        let fake = FakeRunner::new(outputs);
+        assert_eq!(
+            scan::scan_all(dir.path(), &p, "cargo-deny", &fake).unwrap(),
+            expected,
+            "unused everywhere: {unused_everywhere}"
+        );
+    }
+}
+
 #[test]
 fn weakened_controls_are_rejected() {
     for (section, key, value) in [

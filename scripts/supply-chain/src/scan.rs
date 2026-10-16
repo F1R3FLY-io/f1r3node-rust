@@ -184,9 +184,19 @@ pub fn scan_all(root: &Path, policy: &Policy, tool: &str, runner: &impl Runner) 
     let reports = root.join("target/supply-chain");
     fs::create_dir_all(&reports)?;
     let mut all = Report::default();
+    let mut yanked_used = BTreeSet::new();
     for manifest in &policy.manifests {
         let report = match scan_manifest(root, manifest, tool, &reports, policy, runner) {
-            Ok(report) => report,
+            Ok(report) => {
+                yanked_used.extend(
+                    policy
+                        .yanked
+                        .keys()
+                        .filter(|spec| !report.yanked_not_detected.contains(*spec))
+                        .cloned(),
+                );
+                report
+            }
             Err(error) => {
                 let message = format!("{manifest}: {error}");
                 let evidence = json!({"manifest": manifest, "errors": [&message]});
@@ -222,6 +232,17 @@ pub fn scan_all(root: &Path, policy: &Policy, tool: &str, runner: &impl Runner) 
         .collect();
     if !unused.is_empty() {
         let message = format!("Unused advisory exceptions: {}", unused.join(", "));
+        eprintln!("{message}");
+        all.errors.push(message);
+    }
+    let unused: Vec<_> = policy
+        .yanked
+        .keys()
+        .filter(|spec| !yanked_used.contains(*spec))
+        .cloned()
+        .collect();
+    if !unused.is_empty() {
+        let message = format!("Unused yanked-crate exceptions: {}", unused.join(", "));
         eprintln!("{message}");
         all.errors.push(message);
     }
