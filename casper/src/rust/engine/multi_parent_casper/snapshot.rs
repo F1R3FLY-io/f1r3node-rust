@@ -601,10 +601,19 @@ pub(crate) async fn get_on_chain_state<T: TransportLayer + Send + Sync>(
         });
     }
 
-    let fetched = this
-        .runtime_manager
-        .get_active_validators(&block.body.state.post_state_hash)
-        .await?;
+    let root_held = this.v6.is_none()
+        || this.runtime_manager.has_root(
+            &rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash::from_bytes_prost(
+                &block.body.state.post_state_hash,
+            ),
+        )?;
+    let fetched = if root_held {
+        this.runtime_manager
+            .get_active_validators(&block.body.state.post_state_hash)
+            .await?
+    } else {
+        block.body.state.bonds.iter().map(|b| b.validator.clone()).collect()
+    };
 
     let av = {
         let mut cache = this.active_validators_cache.lock().await;

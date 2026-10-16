@@ -118,6 +118,8 @@ pub struct CasperConf {
         default = "default_enable_mergeable_channel_gc"
     )]
     pub enable_mergeable_channel_gc: bool,
+    #[serde(rename = "v6-order-then-execute", default)]
+    pub v6_order_then_execute: bool,
 
     /// Interval for garbage collecting mergeable channels (only when GC enabled).
     /// Background process that safely deletes mergeable data when provably unreachable.

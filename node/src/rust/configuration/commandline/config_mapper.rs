@@ -844,6 +844,7 @@ mod tests {
                     ..casper::rust::casper_conf::HeartbeatConf::default()
                 },
                 enable_mergeable_channel_gc: false,
+                v6_order_then_execute: false,
                 mergeable_channels_gc_interval: Duration::from_secs(5 * 60),
                 mergeable_channels_gc_depth_buffer: 10,
                 synchrony_recovery_stall_window: Duration::from_secs(60),
