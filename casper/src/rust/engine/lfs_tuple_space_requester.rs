@@ -64,8 +64,8 @@ pub trait TupleSpaceRequesterOps {
 
     fn validate_tuple_space_items(
         &self,
-        history_items: Vec<(Blake2b256Hash, Vec<u8>)>,
-        data_items: Vec<(Blake2b256Hash, Vec<u8>)>,
+        history_items: &[(Blake2b256Hash, Vec<u8>)],
+        data_items: &[(Blake2b256Hash, Vec<u8>)],
         start_path: StatePartPath,
         page_size: i32,
         skip: i32,
@@ -274,8 +274,8 @@ impl<T: TupleSpaceRequesterOps> TupleSpaceStreamProcessor<T> {
         );
         // Scala: validateTupleSpaceItems(...)
         if let Err(err) = self.request_ops.validate_tuple_space_items(
-            history_items.clone(),
-            data_items.clone(),
+            &history_items,
+            &data_items,
             start_path.clone(),
             PAGE_SIZE,
             0, // offset
@@ -605,6 +605,7 @@ pub async fn stream<T: TupleSpaceRequesterOps>(
         // resets to request_timeout when a response is received.
         let mut current_timeout = request_timeout;
         let mut idle_timeout = Box::pin(tokio::time::sleep(current_timeout));
+        let mut no_progress_deadline = Box::pin(tokio::time::sleep(overall_deadline));
         let mut last_progress = std::time::Instant::now();
         let mut last_done: usize = 0;
 
@@ -614,6 +615,22 @@ pub async fn stream<T: TupleSpaceRequesterOps>(
                 // IMPORTANT: biased prevents starvation - ensures fair scheduling between arms
                 // Without this, request_rx could starve tuple_space_message_receiver
                 biased;
+
+                // Polled before the responses: a peer that keeps the response queue
+                // non-empty must not hold off the no-progress deadline.
+                _ = &mut no_progress_deadline => {
+                    tracing::error!(
+                        "LFS tuple-space: no progress for {:?} (deadline {:?}); giving up",
+                        last_progress.elapsed(),
+                        overall_deadline
+                    );
+                    *last_error_for_stream.lock().expect("last_error lock") =
+                        Some(CasperError::RuntimeError(format!(
+                            "LFS tuple-space: peer made no progress within {:?}",
+                            overall_deadline
+                        )));
+                    break;
+                }
 
                 // Prioritize incoming responses over new requests for better flow
                 // Response stream processing (Scala: responseStream) - check FIRST for fairness
@@ -656,6 +673,9 @@ pub async fn stream<T: TupleSpaceRequesterOps>(
                     if done > last_done {
                         last_done = done;
                         last_progress = std::time::Instant::now();
+                        no_progress_deadline
+                            .as_mut()
+                            .reset(tokio::time::Instant::now() + overall_deadline);
                     }
 
                     // Check termination condition
@@ -721,19 +741,6 @@ pub async fn stream<T: TupleSpaceRequesterOps>(
                 // Timeout handling with exponential backoff (Scala: .onIdleWithBackoff)
                 _ = &mut idle_timeout => {
                     let stalled_for = last_progress.elapsed();
-                    if stalled_for >= overall_deadline {
-                        tracing::error!(
-                            "LFS tuple-space: no progress for {:?} (deadline {:?}); giving up",
-                            stalled_for,
-                            overall_deadline
-                        );
-                        *last_error_for_stream.lock().expect("last_error lock") =
-                            Some(CasperError::RuntimeError(format!(
-                                "LFS tuple-space: peer made no progress within {:?}",
-                                overall_deadline
-                            )));
-                        break;
-                    }
                     let next_timeout = current_timeout.saturating_mul(2).min(max_request_timeout);
                     tracing::warn!(
                         "No tuple space state responses for {:?} (stalled {:?} of {:?}). Resending requests. (backoff: {:?} -> {:?})",

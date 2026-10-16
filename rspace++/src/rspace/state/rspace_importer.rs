@@ -2,7 +2,6 @@ use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
 use std::sync::Arc;
 
-use rayon::ThreadPoolBuilder;
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use shared::rust::ByteVector;
 
@@ -62,8 +61,8 @@ pub struct RSpaceImporterInstance;
 
 impl RSpaceImporterInstance {
     pub fn validate_state_items(
-        history_items: Vec<(Blake2b256Hash, ByteVector)>,
-        data_items: Vec<(Blake2b256Hash, ByteVector)>,
+        history_items: &[(Blake2b256Hash, ByteVector)],
+        data_items: &[(Blake2b256Hash, ByteVector)],
         start_path: Vec<(Blake2b256Hash, Option<u8>)>,
         chunk_size: i32,
         skip: i32,
@@ -88,10 +87,10 @@ impl RSpaceImporterInstance {
         // Validate history hashes
         let get_and_validate_history_items = || {
             let mut validated_items = Vec::new();
-            for (hash, trie_bytes) in history_items.clone() {
-                let trie_hash = Blake2b256Hash::new(&trie_bytes);
-                if hash == trie_hash {
-                    validated_items.push((trie_hash.bytes(), trie_bytes));
+            for (hash, trie_bytes) in history_items {
+                let trie_hash = Blake2b256Hash::new(trie_bytes);
+                if *hash == trie_hash {
+                    validated_items.push((trie_hash.bytes(), trie_bytes.clone()));
                 } else {
                     return Err(StateItemsError::HistoryHashMismatch {
                         key: hex::encode(hash.bytes()),
@@ -103,37 +102,33 @@ impl RSpaceImporterInstance {
         };
 
         // Validate data hashes
-        let validate_data_items_hashes = {
-            let pool = ThreadPoolBuilder::new().num_threads(64).build().unwrap();
-            pool.install(|| {
-                data_items.par_iter().try_for_each(|(hash, value_bytes)| {
-                    let persisted_data: PersistedData =
-                        bincode::deserialize(value_bytes).map_err(|e| {
-                            format!(
-                                "Data item does not decode, key: {}: {}",
-                                hex::encode(hash.bytes()),
-                                e
-                            )
-                        })?;
-                    let bytes = match persisted_data {
-                        PersistedData::Joins(ref leaf) => bincode::serialize(leaf),
-                        PersistedData::Data(ref leaf) => bincode::serialize(leaf),
-                        PersistedData::Continuations(ref leaf) => bincode::serialize(leaf),
-                    }
-                    .map_err(|e| e.to_string())?;
-                    let data_hash = Blake2b256Hash::new(&bytes);
-                    if *hash != data_hash {
-                        Err(format!(
-                            "Data hash does not match decoded data, key: {}, decoded: {}.",
+        let validate_data_items_hashes =
+            data_items.par_iter().try_for_each(|(hash, value_bytes)| {
+                let persisted_data: PersistedData =
+                    bincode::deserialize(value_bytes).map_err(|e| {
+                        format!(
+                            "Data item does not decode, key: {}: {}",
                             hex::encode(hash.bytes()),
-                            hex::encode(data_hash.bytes())
-                        ))
-                    } else {
-                        Ok(())
-                    }
-                })
-            })
-        };
+                            e
+                        )
+                    })?;
+                let bytes = match persisted_data {
+                    PersistedData::Joins(ref leaf) => bincode::serialize(leaf),
+                    PersistedData::Data(ref leaf) => bincode::serialize(leaf),
+                    PersistedData::Continuations(ref leaf) => bincode::serialize(leaf),
+                }
+                .map_err(|e| e.to_string())?;
+                let data_hash = Blake2b256Hash::new(&bytes);
+                if *hash != data_hash {
+                    Err(format!(
+                        "Data hash does not match decoded data, key: {}, decoded: {}.",
+                        hex::encode(hash.bytes()),
+                        hex::encode(data_hash.bytes())
+                    ))
+                } else {
+                    Ok(())
+                }
+            });
 
         // Validate chunk size.
         validate_history_size()?;
@@ -169,14 +164,14 @@ impl RSpaceImporterInstance {
         // Validate keys / cryptographic proof that store chunk is not corrupted or
         // modified.
         let history_item_keys: Vec<Blake2b256Hash> =
-            history_items.into_iter().map(|item| item.0).collect();
+            history_items.iter().map(|item| item.0.clone()).collect();
         // TODO: This might need to check ordering too
         if !check_same_elements(history_item_keys, history_keys) {
             return Err(StateItemsError::HistoryItemsCorrupted);
         }
 
         let data_item_keys: Vec<Blake2b256Hash> =
-            data_items.clone().into_iter().map(|item| item.0).collect();
+            data_items.iter().map(|item| item.0.clone()).collect();
         // TODO: This might need to check ordering too
         if !check_same_elements(data_item_keys, data_keys) {
             return Err(StateItemsError::DataItemsCorrupted);

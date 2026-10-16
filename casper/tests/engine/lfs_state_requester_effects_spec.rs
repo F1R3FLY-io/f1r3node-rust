@@ -253,8 +253,8 @@ impl TupleSpaceRequesterOps for MockTupleSpaceRequesterOps {
 
     fn validate_tuple_space_items(
         &self,
-        history_items: Vec<(Blake2b256Hash, Vec<u8>)>,
-        data_items: Vec<(Blake2b256Hash, Vec<u8>)>,
+        history_items: &[(Blake2b256Hash, Vec<u8>)],
+        data_items: &[(Blake2b256Hash, Vec<u8>)],
         start_path: StatePartPath,
         page_size: i32,
         skip: i32,
@@ -262,12 +262,12 @@ impl TupleSpaceRequesterOps for MockTupleSpaceRequesterOps {
     ) -> Result<(), CasperError> {
         // Convert to test format and delegate to MockRSpaceImporter
         let history_bytes: Vec<(Blake2b256Hash, Bytes)> = history_items
-            .into_iter()
-            .map(|(hash, data)| (hash, Bytes::from(data)))
+            .iter()
+            .map(|(hash, data)| (hash.clone(), Bytes::copy_from_slice(data)))
             .collect();
         let data_bytes: Vec<(Blake2b256Hash, Bytes)> = data_items
-            .into_iter()
-            .map(|(hash, data)| (hash, Bytes::from(data)))
+            .iter()
+            .map(|(hash, data)| (hash.clone(), Bytes::copy_from_slice(data)))
             .collect();
 
         // Use the existing mock validation logic
@@ -309,6 +309,9 @@ pub struct ValidationState {
     /// Invalid items that should trigger validation failure
     /// Scala equivalent: val invalidItems = invalidHistory.map(_.map(bv => ByteVector(bv.toByteArray)))
     invalid_items: Vec<(Blake2b256Hash, Bytes)>,
+
+    validation_delay: std::time::Duration,
+    validations: usize,
 }
 
 impl ValidationState {
@@ -316,6 +319,8 @@ impl ValidationState {
         Self {
             should_fail_validation: false,
             invalid_items: Vec::new(),
+            validation_delay: std::time::Duration::ZERO,
+            validations: 0,
         }
     }
 
@@ -359,13 +364,23 @@ impl MockRSpaceImporter {
         _chunk_size: i32,
         _skip: i32,
     ) -> Result<(), CasperError> {
-        let validation_state = self
-            .validation_state
-            .lock()
-            .map_err(|_| CasperError::StreamError("Validation state lock error".to_string()))?;
+        let (should_fail, delay) = {
+            let mut validation_state = self
+                .validation_state
+                .lock()
+                .map_err(|_| CasperError::StreamError("Validation state lock error".to_string()))?;
+            validation_state.validations += 1;
+            (
+                validation_state.should_fail(&history_items),
+                validation_state.validation_delay,
+            )
+        };
+        if !delay.is_zero() {
+            std::thread::sleep(delay);
+        }
 
         // Scala equivalent: if (historyItems != invalidItems) ().pure[F] else exceptionInvalidState.raiseError
-        if validation_state.should_fail(&history_items) {
+        if should_fail {
             return Err(CasperError::StreamError(
                 "Fake invalid state received.".to_string(),
             ));
@@ -1161,6 +1176,60 @@ mod tests {
                 let final_state = last_state.expect("stream must yield a final state");
                 assert!(!final_state.is_finished());
                 assert!(mock.err_handle.lock().unwrap().is_some());
+                Ok(())
+            },
+        )
+        .await
+        .expect("Test harness should complete");
+    }
+
+    /// A peer that keeps the response queue full of chunks that fail validation
+    /// must not hold off the no-progress deadline: the response branch is
+    /// polled first, so a deadline checked only on the idle timer never fires
+    /// while the queue stays non-empty.
+    #[tokio::test]
+    async fn a_flood_of_invalid_chunks_does_not_hold_off_the_deadline() {
+        init_logger();
+
+        const FLOOD: usize = 1000;
+        create_mock(
+            std::time::Duration::from_millis(5),
+            std::time::Duration::from_millis(50),
+            |mut mock| async move {
+                {
+                    let validation_state = mock.setup();
+                    let mut state = validation_state.lock().unwrap();
+                    state.set_invalid_items(invalid_history());
+                    state.validation_delay = std::time::Duration::from_millis(1);
+                }
+
+                let forged = StoreItemsMessage {
+                    start_path: history_path_1(),
+                    last_path: history_path_2(),
+                    history_items: invalid_history(),
+                    data_items: data_1(),
+                };
+                for _ in 0..FLOOD {
+                    mock.store_items_sender
+                        .try_send(forged.clone())
+                        .expect("the response queue has room for the flood");
+                }
+
+                let mut stream_rx = mock.stream.take().expect("stream receiver present");
+                tokio::time::timeout(std::time::Duration::from_secs(10), async {
+                    while stream_rx.recv().await.is_some() {}
+                })
+                .await
+                .expect("tuple-space sync must terminate via the progress deadline");
+
+                assert!(mock.err_handle.lock().unwrap().is_some());
+                let validations = mock.setup().lock().unwrap().validations;
+                assert!(
+                    validations < FLOOD,
+                    "the deadline fired only after the whole flood was validated ({} of {})",
+                    validations,
+                    FLOOD
+                );
                 Ok(())
             },
         )

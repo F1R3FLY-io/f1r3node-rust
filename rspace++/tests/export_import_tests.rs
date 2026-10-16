@@ -81,8 +81,8 @@ async fn export_and_import_of_one_page_should_works_correctly() {
 
     // Validate exporting page
     RSpaceImporterInstance::validate_state_items(
-        history_items.clone(),
-        data_items.clone(),
+        &history_items,
+        &data_items,
         init_start_path,
         page_size,
         start_skip,
@@ -154,8 +154,8 @@ async fn multipage_export_should_work_correctly() {
 
         // Validate exporting page
         RSpaceImporterInstance::validate_state_items(
-            history_items_page.clone(),
-            data_items_page.clone(),
+            &history_items_page,
+            &data_items_page,
             start_path,
             page_size,
             start_skip,
@@ -272,8 +272,8 @@ async fn multipage_export_with_skip_should_work_correctly() {
 
         // Validate exporting page
         RSpaceImporterInstance::validate_state_items(
-            history_items_page.clone(),
-            data_items_page.clone(),
+            &history_items_page,
+            &data_items_page,
             start_path.clone(),
             page_size,
             skip,
