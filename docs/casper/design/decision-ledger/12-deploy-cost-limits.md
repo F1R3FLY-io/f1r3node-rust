@@ -4,6 +4,8 @@
 
 **Kind.** Protocol and economics boundary. The removal changes a block-validity rule and the client deploy contract.
 
+**Follow-up status.** Section 10 is a proposed documentation follow-up, recorded 2026-10-14. It does not amend the Decision section.
+
 **Sources.**
 
 - dev [Consensus Protocol](../../CONSENSUS_PROTOCOL.md) section 4 step 8, [cost model](../../../rholang/13-cost-model.md), [deployment workflow](../../../rholang/18-deployment-workflow.md), and `models/src/main/protobuf/CasperMessage.proto`.
@@ -24,6 +26,8 @@
 - The review finding in section 4 stands as history.
 
 **Edits that follow.** No `dev` specification edit. On `feature/cost-accounted-rho`, the fields, the validation rule, and the client contract return before that branch merges into `dev`. The token validity layer needs its own FIP and its own row.
+
+See [Execution and Resource Authorization](../../execution-and-resource-authorization.md#accounting-versus-resource-protection) for the distinction between funding authority, economic cost units, and physical work bounds.
 
 ## 1. Question
 
@@ -127,3 +131,46 @@ This entry follows principle P2. Admission derives from authenticated on-chain s
 3. Does the `min_phlo_price` floor apply to each selected lane or to the deploy as a whole?
 4. How does the balanced policy apply to three or more selected wallets? The shape is then a nested fold. The sources define the draw for a left side and a right side only.
 5. If a client selects a sequential policy, who states the wallet order, and does the order survive a change of the selected subset?
+
+## 10. Provisional direction follow-up
+
+**Status.** Proposed follow-up. No new accounting or execution rule is ratified here.
+
+**Tracking.** [EPIC-028](../../../ToDos.md#epic-028-cost-accounting-direction-and-reference-authority).
+The [direction plan](../../../plans/cost-accounting-direction.md) records reference locations, evidence gaps, owners to establish, and completion gates.
+
+### 10.1 Provisional conclusion
+
+The historical comparison supports a shift toward authenticated, potentially shared accounting authority. A switch to funded or multisigned execution fragments remains unverified.
+
+Accounting can authorize expenditure without changing evaluation completion. Payment or additional signatures do not establish correct execution, replay equivalence, termination, or finality.
+
+The user reports a Zoom discussion as the source of the question. No transcript or exact approval record accompanies this follow-up.
+The current PR #216 head and applicable approved FIPs remain to be examined under EPIC-028.
+
+### 10.2 Questions for a future decision
+
+| Topic | Required clarification | Task |
+|---|---|---|
+| Funding unit | Does funding attach to a deploy, COMM, execution fragment, or block? | TASK-028-3 |
+| Signature scope | Which object and action do deployer, payer, cosigner, owner, proposer, and validator signatures authorize? | TASK-028-3 |
+| Combined conditions | Are funding and signatures alternatives, combined conditions, or separate obligations? | TASK-028-3 |
+| Continuation funding | Who pays when a later deploy enables a stored continuation? | TASK-028-3 |
+| Shared settlement | How do reservations, failure, exhaustion, refunds, and repeated settlement affect each payer? | TASK-028-3 |
+| Execution boundary | Does an evaluation finish enabled reductions, or can active work stop and resume across blocks? | TASK-028-4 |
+| Replay and publication | What state, receipts, and deterministic rules govern any proposed execution fragment? | TASK-028-4 |
+| Physical bounds | What bounds work within a COMM, native calls, storage, replay, and concurrent execution? | TASK-028-4 |
+
+A stored receive awaiting a later message is not proof of paused active execution. A block that records settlement is not necessarily the payment unit.
+
+### 10.3 Reference authority and disposition
+
+The [reference registry](../../../plans/cost-accounting-direction.md#reference-locations-and-ownership) separates canonical explanations, historical comparisons, candidate documents, and external approval sources.
+
+TASK-028-2 compares the original proposal, recorded requirements, and a pinned current candidate. TASK-028-5 obtains maintainer dispositions before TASK-028-6 publishes accepted rules.
+
+The existing Decision section remains in force for this record. The follow-up does not approve cost-field removal, shared funding, or partial execution.
+
+Any amendment needs linked approval under the [ledger's authority rules](./README.md#21-ratification-authority-and-proof). An applicable approved FIP needs an explicit mapping to affected rules.
+
+Documentation completion does not establish implementation acceptance or protocol activation.

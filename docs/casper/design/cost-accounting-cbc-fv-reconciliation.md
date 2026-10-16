@@ -2,6 +2,10 @@
 
 **Status.** Review record. This document decides nothing.
 
+See [Execution and Resource Authorization](../execution-and-resource-authorization.md) for the canonical explanation of completion, concurrency, and accounting boundaries.
+The comparison below describes the recorded revisions, not the current PR #216 head.
+The ledger's Decision sections control the recorded dispositions.
+
 **Date.** 2026-09-05
 
 **Compared.** `dev` at the PR #382 merge (`231067178`), PR #387 at `30c428335`, and PR #216 (`feature/cost-accounted-rho`) at `3980ed402`.

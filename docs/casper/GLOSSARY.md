@@ -201,6 +201,23 @@ fixed point computed over it.
 *Avoid*: "evidence graph" unqualified (the report action mutates which
 edges are *active*; the neglect graph is the specific active-edge structure).
 
+### Block
+
+A block is a signed consensus artifact with parents, justifications, deploy results, and state commitments.
+It is the CbC Casper form of a commit, the unit that a replication mechanism orders and finalizes.
+
+**Preferred usage.** Use this term for the artifact that [block proposal](#block-proposal) constructs and [block validation](#block-validation) checks.
+Distinguish a block from a CPU task, an execution attempt, and an application lifetime.
+See [Execution and Resource Authorization](./execution-and-resource-authorization.md#units-of-work).
+
+### Validator workload
+
+A validator workload is the proposal, replay, validation, merge, and finalization work that one validator performs.
+
+**Preferred usage.** Name the specific work when discussing concurrency or performance.
+Do not use this term for an exclusive portion of execution assigned across validators.
+See the [concurrency levels](./execution-and-resource-authorization.md#concurrency-levels).
+
 ### Block proposal
 
 Block proposal is the end-to-end process of selecting parents and deploys,
