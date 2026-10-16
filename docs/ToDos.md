@@ -249,12 +249,6 @@ tasks:
       - "The R5 warnings report no override, duplicate, unanchored single-file pattern, or ambient attribute source."
       - "cbc discharge --strict gives the same result at the branch base and the branch head."
       - "The independent verifier in top-level-gitlab-profile confirms the result."
-  - id: TASK-026-6
-    title: "Set the evidence directory per path"
-    status: deferred
-    blocked_by: ["R7 approval as a separate interface change"]
-    notes:
-      - "2026-10-12: deferred. R7 is a separate change in top-level-gitlab-profile. The consumer auditors (check-casper-claims.rs, check-casper-soak-bindings.sh) use fixed paths, so the migration does not need R7."
 ---
 ```
 
@@ -293,7 +287,9 @@ evidence:
 tasks:
   - id: TASK-023-1
     title: "Remove the wait that keeps log-probe-vanished near its driver timeout"
-    status: review
+    status: in_progress
+    review_requested_at: 2026-10-08
+    review_type: human
     priority: p0
     claimed_by: claude-session-dfac55a4
     claimed_at: 2026-10-08T17:00:00Z
@@ -306,7 +302,9 @@ tasks:
       - "No scenario changes its behavioral verdict, and the driver timeouts stay unchanged unless a measurement justifies a change."
   - id: TASK-023-2
     title: "Make a disk admission fixture failure diagnosable from the CI log"
-    status: review
+    status: in_progress
+    review_requested_at: 2026-10-08
+    review_type: human
     priority: p0
     claimed_by: claude-session-dfac55a4
     claimed_at: 2026-10-08T15:10:00Z
@@ -318,7 +316,9 @@ tasks:
       - "The output contains no secret and no host path outside the evidence directory."
   - id: TASK-023-3
     title: "Measure the 20 s driver cap of the short full-iteration scenarios under CI load"
-    status: review
+    status: in_progress
+    review_requested_at: 2026-10-08
+    review_type: human
     priority: p0
     claimed_by: null
     blocked_by: []
@@ -372,7 +372,9 @@ tasks:
       - "The analysis states whether the stall is in run-merge-recovery-soak.sh or in a fixture command, with the evidence."
   - id: TASK-023-8
     title: "Update CLAIM-SOAK-001 and fix the driver stall"
-    status: review
+    status: in_progress
+    review_requested_at: 2026-10-08
+    review_type: human
     priority: p0
     claimed_by: claude-session-dfac55a4
     claimed_at: 2026-10-08T19:00:00Z
@@ -440,7 +442,9 @@ tasks:
       - "The cause of the compose failures is diagnosed separately from bench-segment-00011 and bench-segment-00013/compose-up.log in the run artifact."
   - id: TASK-023-12
     title: "Move the soak bench shard host ports below the ephemeral range"
-    status: review
+    status: in_progress
+    review_requested_at: 2026-10-12
+    review_type: human
     priority: p1
     claimed_by: claude-session-dfac55a4
     claimed_at: 2026-10-12T17:30:00Z
@@ -540,7 +544,9 @@ evidence:
 tasks:
   - id: TASK-022-1
     title: "Send an email when the tenancy spend of one UTC day is above 70 USD"
-    status: review
+    status: in_progress
+    review_requested_at: 2026-10-07
+    review_type: human
     claimed_by: claude-session-dfac55a4
     claimed_at: 2026-10-07T21:00:00Z
     blocked_by: []
@@ -559,7 +565,9 @@ tasks:
     notes: "At 70 USD the alert would have fired on 36 of the 67 days from 2026-08-01 to 2026-10-06 (median day 72 USD). The Usage API lags by hours, so the alert reports the previous day and does not stop resources."
   - id: TASK-022-2
     title: "Run the ephemeral runner reaper from an OCI Function on the OCI Resource Scheduler"
-    status: review
+    status: in_progress
+    review_requested_at: 2026-10-07
+    review_type: human
     claimed_by: claude-session-dfac55a4
     claimed_at: 2026-10-07T23:30:00Z
     blocked_by: []
@@ -583,7 +591,9 @@ tasks:
       - "Over 24 hours after deployment, the invoke log shows at least 44 of 48 scheduled sweeps."
   - id: TASK-022-3
     title: "Tag each heavy-pipeline runner VM with its GitHub run at launch"
-    status: review
+    status: in_progress
+    review_requested_at: 2026-10-07
+    review_type: human
     claimed_by: claude-session-dfac55a4
     claimed_at: 2026-10-08T00:30:00Z
     blocked_by: []
@@ -599,7 +609,9 @@ tasks:
       - "No change to the system-integration repository is necessary."
   - id: TASK-022-4
     title: "Terminate the VMs of a heavy CI run when the run ends for any reason"
-    status: review
+    status: in_progress
+    review_requested_at: 2026-10-07
+    review_type: human
     claimed_by: claude-session-dfac55a4
     claimed_at: 2026-10-08T01:30:00Z
     blocked_by: [TASK-022-3]
@@ -675,7 +687,9 @@ execution_contract:
 tasks:
   - id: TASK-027-1
     title: "Write and approve the adaptive execution design"
-    status: review
+    status: in_progress
+    review_requested_at: 2026-10-13
+    review_type: human
     claimed_by: claude-session-dfac55a4
     claimed_at: 2026-10-13T15:00:00Z
     blocked_by: []
@@ -993,7 +1007,9 @@ tasks:
       - "The changed workflow and claim artifacts have a review package and maintainer acceptance under their claims."
   - id: TASK-021-10
     title: "Write the checkpoint nodes and root in one LMDB transaction (contention reduction)"
-    status: review
+    status: in_progress
+    review_requested_at: 2026-10-07
+    review_type: human
     priority: p0
     claimed_by: null
     blocked_by: []
@@ -1065,7 +1081,9 @@ tasks:
       - "The maintainer accepts the evidence. PR #653 is merged, so this acceptance is a post-merge obligation."
   - id: TASK-021-12
     title: "Release parked blocks without queue, scan, and stale-link delays (issue #24)"
-    status: review
+    status: in_progress
+    review_requested_at: 2026-10-07
+    review_type: human
     priority: p0
     claimed_by: claude-session-dfac55a4
     claimed_at: 2026-10-07T00:40:00Z
@@ -1152,7 +1170,9 @@ tasks:
     candidate_fix_api_lfb: "If the measurement implicates the API path, bond_status and exploratory_deploy read the stored LFB (dag.last_finalized_block) instead of computing it. This changes cbc=mandatory casper code, so it needs a pending claim and a TDD cycle first, with a test that two overlapping LFB requests apply the finalization effect once for each block."
   - id: TASK-021-14
     title: "Run subprocess soak nodes on the jemalloc build of the image (allocator parity)"
-    status: review
+    status: in_progress
+    review_requested_at: 2026-10-13
+    review_type: human
     claimed_by: claude-session-dfac55a4
     claimed_at: 2026-10-13T16:00:00Z
     branch: hotfix/subprocess-allocator-parity
@@ -3858,7 +3878,9 @@ source_head: fb59611fbf2be202a6d6450850de1435c9dec7a4
 tasks:
   - id: TASK-004-1
     title: "Sync Rust workspace crates from f1r3node rust/staging"
-    status: review
+    status: in_progress
+    review_requested_at: 2026-04-17
+    review_type: human
     claimed_by: claude-session-epic004
     claimed_at: 2026-04-17T19:19:55Z
     completed_at: 2026-04-29T18:50:45Z
@@ -4106,7 +4128,9 @@ claimed_at: 2026-04-13T19:00:00Z
 tasks:
   - id: TASK-009-1
     title: "OCI VPS provisioning scripts"
-    status: review
+    status: in_progress
+    review_requested_at: 2026-04-13
+    review_type: human
     claimed_by: claude-session-epic009
     completed_at: 2026-04-13T19:05:00Z
     acceptance:
@@ -4122,7 +4146,9 @@ tasks:
 
   - id: TASK-009-2
     title: "Image distribution via docker save + scp + load"
-    status: review
+    status: in_progress
+    review_requested_at: 2026-04-13
+    review_type: human
     claimed_by: claude-session-epic009
     blocked_by: [TASK-009-1]
     completed_at: 2026-04-13T19:10:00Z
@@ -4137,7 +4163,9 @@ tasks:
 
   - id: TASK-009-3
     title: "Distributed compose file split"
-    status: review
+    status: in_progress
+    review_requested_at: 2026-04-13
+    review_type: human
     claimed_by: claude-session-epic009
     claimed_at: 2026-04-13T19:15:00Z
     completed_at: 2026-04-13T19:30:00Z
@@ -4155,7 +4183,9 @@ tasks:
 
   - id: TASK-009-4
     title: "Justfile recipes for end-to-end orchestration"
-    status: review
+    status: in_progress
+    review_requested_at: 2026-04-13
+    review_type: human
     claimed_by: claude-session-epic009
     claimed_at: 2026-04-13T19:40:00Z
     completed_at: 2026-04-13T19:58:00Z
@@ -4175,7 +4205,9 @@ tasks:
 
   - id: TASK-009-5
     title: "Port latency benchmark (Scala -> native grpcurl/curl)"
-    status: review
+    status: in_progress
+    review_requested_at: 2026-04-13
+    review_type: human
     claimed_by: claude-session-epic009
     claimed_at: 2026-04-13T21:19:00Z
     completed_at: 2026-04-13T21:25:00Z
@@ -4299,7 +4331,9 @@ tasks:
 
   - id: TASK-010-8
     title: "De-duplicate the CI runner compartment OCID without weakening the reaper"
-    status: review
+    status: in_progress
+    review_requested_at: 2026-07-30
+    review_type: human
     claimed_by: claude-session-9f68c6fa
     completed_at: 2026-07-30T22:20:00Z
     branch: chore/reaper-compartment-invariant
