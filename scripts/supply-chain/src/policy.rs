@@ -75,11 +75,19 @@ pub fn validate(policy: &Policy, deny: &Value, today: NaiveDate) -> Result<()> {
         .as_array()
         .ok_or_else(|| eyre!("Invalid advisory exceptions."))?;
     let mut ids = BTreeSet::new();
+    let mut yanked = BTreeSet::new();
     for entry in ignored {
-        let id = entry
-            .get("id")
-            .and_then(Value::as_str)
-            .ok_or_else(|| eyre!("Every advisory exception requires an ID."))?;
+        let id = match (
+            entry.get("id").and_then(Value::as_str),
+            entry.get("crate").and_then(Value::as_str),
+        ) {
+            (Some(id), None) => id,
+            (None, Some(krate)) => {
+                yanked.insert(krate.to_string());
+                krate
+            }
+            _ => return Err(eyre!("Every advisory exception requires an ID or a crate.")),
+        };
         ensure!(
             entry
                 .get("reason")
@@ -108,6 +116,12 @@ pub fn validate(policy: &Policy, deny: &Value, today: NaiveDate) -> Result<()> {
                     .iter()
                     .all(|v| semver::Version::parse(v).is_ok()),
             "{id}: exact package versions are required."
+        );
+        ensure!(
+            !yanked.contains(id)
+                || (entry.versions.len() == 1
+                    && *id == format!("{}@{}", entry.package, entry.versions[0])),
+            "{id}: a yanked crate exception requires one exact package version."
         );
         ensure!(
             review_date(id, entry)? > today,

@@ -182,9 +182,12 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> GenesisCeremonyMaster<T>
                 .await?;
 
                 // Scala: CommUtil[F].sendForkChoiceTipRequest
-                transport_layer
+                if let Err(e) = transport_layer
                     .send_fork_choice_tip_request(&connections_cell, &rp_conf_ask)
-                    .await?;
+                    .await
+                {
+                    tracing::warn!(error = %e, "Fork choice tip request after genesis failed");
+                }
 
                 Ok(())
             }

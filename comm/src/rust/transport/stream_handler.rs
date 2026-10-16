@@ -3,6 +3,7 @@
 use futures::StreamExt;
 use models::routing::chunk::Content;
 use models::routing::{Chunk, ChunkData, ChunkHeader};
+use prost::bytes::Bytes;
 use shared::rust::shared::compression::Compression;
 use tokio_stream::Stream;
 use tracing;
@@ -32,6 +33,8 @@ pub struct Header {
     pub content_length: i32,
     /// Network ID for validation
     pub network_id: String,
+    /// Genesis hash of the sender's chain
+    pub chain_id: Bytes,
     /// Whether the content is compressed
     pub compressed: bool,
 }
@@ -43,6 +46,7 @@ impl Header {
         type_id: String,
         content_length: i32,
         network_id: String,
+        chain_id: Bytes,
         compressed: bool,
     ) -> Self {
         Self {
@@ -50,6 +54,7 @@ impl Header {
             type_id,
             content_length,
             network_id,
+            chain_id,
             compressed,
         }
     }
@@ -80,6 +85,9 @@ impl Circuit {
 pub enum StreamError {
     /// Wrong network ID detected
     WrongNetworkId,
+    /// The sender belongs to a different chain, or pushed chain data without
+    /// naming a chain.
+    WrongChainId { reason: String },
     /// Maximum size reached
     MaxSizeReached,
     /// Incomplete message received
@@ -94,6 +102,9 @@ impl StreamError {
         match self {
             StreamError::WrongNetworkId => {
                 "Could not receive stream! Wrong network id.".to_string()
+            }
+            StreamError::WrongChainId { reason } => {
+                format!("Could not receive stream! {}", reason)
             }
             StreamError::MaxSizeReached => "Max message size was reached.".to_string(),
             StreamError::NotFullMessage { streamed } => {
@@ -110,6 +121,9 @@ impl StreamError {
 
     /// Create a WrongNetworkId error
     pub fn wrong_network_id() -> Self { StreamError::WrongNetworkId }
+
+    /// Create a WrongChainId error
+    pub fn wrong_chain_id(reason: String) -> Self { StreamError::WrongChainId { reason } }
 
     /// Create a MaxSizeReached error (circuit opened)
     pub fn circuit_opened() -> Self { StreamError::MaxSizeReached }
@@ -201,13 +215,14 @@ impl StreamHandler {
     ///
     /// This method processes a stream of chunks using the circuit breaker pattern
     /// and provides proper cleanup in all scenarios (success, failure, errors).
-    pub async fn handle_stream<S>(
+    pub async fn handle_stream<S, F>(
         stream: S,
-        circuit_breaker: CircuitBreaker,
+        circuit_breaker: F,
         cache: &StreamCache,
     ) -> Result<StreamMessage, StreamError>
     where
         S: Stream<Item = Chunk> + Unpin,
+        F: Fn(&Streamed) -> Circuit,
     {
         // Initialize streaming state
         let init_stmd = match Self::init(cache) {
@@ -239,14 +254,15 @@ impl StreamHandler {
     }
 
     /// Process stream with automatic cleanup (internal helper)
-    async fn process_stream_with_cleanup<S>(
+    async fn process_stream_with_cleanup<S, F>(
         init_stmd: Streamed,
         stream: S,
-        circuit_breaker: CircuitBreaker,
+        circuit_breaker: F,
         cache: &StreamCache,
     ) -> Result<StreamMessage, StreamError>
     where
         S: Stream<Item = Chunk> + Unpin,
+        F: Fn(&Streamed) -> Circuit,
     {
         let key = init_stmd.key.clone(); // Store key for cleanup
 
@@ -287,14 +303,15 @@ impl StreamHandler {
     /// - Header chunks: Creates Header and updates Streamed state
     /// - Data chunks: Appends data to cache and updates read count
     /// - Unknown chunks: Sets an error
-    pub async fn collect<S>(
+    pub async fn collect<S, F>(
         init: Streamed,
         mut stream: S,
-        circuit_breaker: CircuitBreaker,
+        circuit_breaker: F,
         cache: &StreamCache,
     ) -> Result<Streamed, StreamError>
     where
         S: Stream<Item = Chunk> + Unpin,
+        F: Fn(&Streamed) -> Circuit,
     {
         let mut current_state = init;
 
@@ -320,9 +337,11 @@ impl StreamHandler {
             }
         }
 
-        // Check final state - if circuit is opened, return the error
-        match &current_state.circuit {
-            Circuit::Opened { error } => Err(error.clone()),
+        // Apply the circuit breaker once more at the end of the stream: what it
+        // checks (for example this node's chain identity) can change while the
+        // stream waits for its end.
+        match circuit_breaker(&current_state) {
+            Circuit::Opened { error } => Err(error),
             Circuit::Closed => Ok(current_state),
         }
     }
@@ -343,6 +362,7 @@ impl StreamHandler {
                     sender,
                     type_id: packet_type,
                     content_length,
+                    chain_id,
                     compressed,
                     ..
                 } = header;
@@ -351,6 +371,7 @@ impl StreamHandler {
                 let stream_message = StreamMessage::new(
                     sender.clone(),
                     packet_type.clone(),
+                    chain_id.clone(),
                     streamed.key.clone(),
                     *compressed,
                     *content_length,
@@ -435,11 +456,20 @@ impl StreamHandler {
         cache: &StreamCache,
     ) -> Result<ChunkProcessResult, StreamError> {
         match chunk.content {
+            // The header is checked before any data is accepted, so a stream
+            // carries exactly one header and it comes first.
+            Some(Content::Header(_)) if streamed.header.is_some() => Ok(ChunkProcessResult::Error(
+                StreamError::unexpected("Stream sent a second header chunk".to_string()),
+            )),
+            Some(Content::Data(_)) if streamed.header.is_none() => Ok(ChunkProcessResult::Error(
+                StreamError::not_full_message("Data chunk arrived before the header".to_string()),
+            )),
             Some(Content::Header(chunk_header)) => {
                 // Process header chunk
                 let ChunkHeader {
                     sender,
                     type_id,
+                    chain_id,
                     compressed,
                     content_length,
                     network_id,
@@ -456,8 +486,14 @@ impl StreamHandler {
                 };
 
                 // Create header
-                let header =
-                    Header::new(peer_sender, type_id, content_length, network_id, compressed);
+                let header = Header::new(
+                    peer_sender,
+                    type_id,
+                    content_length,
+                    network_id,
+                    chain_id,
+                    compressed,
+                );
 
                 // Update streamed state with header
                 let new_streamed = streamed.with_header(header);
@@ -529,6 +565,7 @@ mod tests {
         let msg = StreamMessage::new(
             create_test_peer(),
             "TestPacket".to_string(),
+            Bytes::new(),
             key.clone(),
             true,
             1024,

@@ -358,6 +358,47 @@ fn reports_accept_only_reviewed_package_versions() {
 }
 
 #[test]
+fn ignored_yanked_crates_are_recorded_and_require_reviewed_versions() {
+    let p = policy();
+    let yanked = json!({"type":"diagnostic","fields":{"severity":"note","code":"yanked-ignored","graphs":[{"Krate":{"name":"zip","version":"0.6.6"}}]}});
+    let result = report::validate(&report(&[yanked.clone()]), &p.exceptions);
+    assert!(result.errors.is_empty());
+    assert!(result.encountered.contains("zip@0.6.6"));
+    let mut malformed = yanked;
+    malformed["fields"]["graphs"] = json!([]);
+    assert!(!report::validate(&report(&[malformed]), &p.exceptions)
+        .errors
+        .is_empty());
+}
+
+#[test]
+fn yanked_crate_exceptions_require_one_matching_version() {
+    let d = deny();
+    let mut p = policy();
+    p.exceptions.get_mut("zip@0.6.6").unwrap().versions = vec!["0.6.5".into()];
+    assert!(policy::validate(&p, &d, today()).is_err());
+    let mut p = policy();
+    p.exceptions
+        .get_mut("zip@0.6.6")
+        .unwrap()
+        .versions
+        .push("0.6.5".into());
+    assert!(policy::validate(&p, &d, today()).is_err());
+    let mut d = deny();
+    let entry = d["advisories"]["ignore"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|e| e.get("crate").is_some())
+        .unwrap();
+    entry
+        .as_table_mut()
+        .unwrap()
+        .insert("id".into(), toml::Value::String("zip@0.6.6".into()));
+    assert!(policy::validate(&policy(), &d, today()).is_err());
+}
+
+#[test]
 fn internal_bugs_errors_and_invalid_lines_fail_closed() {
     let p = policy();
     for record in [

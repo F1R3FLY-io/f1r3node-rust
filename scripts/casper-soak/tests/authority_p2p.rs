@@ -13,6 +13,7 @@ use std::time::Duration;
 
 use casper_soak::{encoded, hash};
 use comm::rust::peer_node::PeerNode;
+use comm::rust::rp::chain_id::ChainIdCell;
 use comm::rust::rp::rp_conf::RPConf;
 use comm::rust::transport::communication_response::CommunicationResponse;
 use comm::rust::transport::grpc_transport_server::{GrpcTransportServer, TransportLayerServer};
@@ -57,6 +58,7 @@ async fn production_transport_delivers_exact_blocks_and_rejects_a_foreign_networ
         RPConf::new(
             remote.clone(),
             "soak-test".into(),
+            ChainIdCell::unknown(),
             None,
             Duration::from_secs(2),
             4,
@@ -146,7 +148,41 @@ async fn production_transport_delivers_exact_blocks_and_rejects_a_foreign_networ
     };
     assert_eq!(packet.type_id, "BlockMessage");
     assert_eq!(packet.content.as_ref(), block);
+    assert!(messages[0].header.as_ref().unwrap().chain_id.is_empty());
     drop(messages);
+    fixture["members"]["bounded"]["chain_id"] = "ab".repeat(32).into();
+    request["inputs"]["fixture"] = save(root.path(), "named.json", &encoded(&fixture).unwrap());
+    let output = root.path().join("named");
+    fs::create_dir(&output).unwrap();
+    let result = p2p::execute(&encoded(&request).unwrap(), &output)
+        .await
+        .unwrap();
+    assert_eq!(
+        result["transport"]["deliveries"][0]["transport_acknowledged"],
+        true
+    );
+    for _ in 0..100 {
+        if received.lock().await.len() == 2 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    assert_eq!(
+        received.lock().await[1]
+            .header
+            .as_ref()
+            .unwrap()
+            .chain_id
+            .as_ref(),
+        [0xab; 32]
+    );
+    fixture["members"]["bounded"]["chain_id"] = "AB".repeat(32).into();
+    request["inputs"]["fixture"] = save(root.path(), "upper.json", &encoded(&fixture).unwrap());
+    assert!(p2p::prepare(&request).is_err());
+    fixture["members"]["bounded"]
+        .as_object_mut()
+        .unwrap()
+        .remove("chain_id");
     fixture["members"]["bounded"]["network_id"] = "foreign".into();
     request["inputs"]["fixture"] = save(root.path(), "foreign.json", &encoded(&fixture).unwrap());
     let output = root.path().join("foreign");
@@ -155,11 +191,11 @@ async fn production_transport_delivers_exact_blocks_and_rejects_a_foreign_networ
         .await
         .unwrap();
     assert_eq!(result["reason"], "transport_failed");
-    assert_eq!(received.lock().await.len(), 1);
+    assert_eq!(received.lock().await.len(), 2);
     fixture["members"]["bounded"]["operations"]["load_fixture"][0]["sha256"] =
         "0".repeat(64).into();
     request["inputs"]["fixture"] = save(root.path(), "changed.json", &encoded(&fixture).unwrap());
     assert!(p2p::prepare(&request).is_err());
-    assert_eq!(received.lock().await.len(), 1);
+    assert_eq!(received.lock().await.len(), 2);
     handle.abort();
 }
