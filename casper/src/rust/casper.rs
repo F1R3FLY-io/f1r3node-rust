@@ -389,6 +389,7 @@ pub async fn hash_set_casper<T: TransportLayer + Send + Sync>(
         finalization_in_progress: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         finalizer_task_in_progress: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         finalizer_task_queued: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        finalizer_oracle_cache: crate::rust::safety::clique_oracle::CliqueOracle::new_shared_cache(),
         heartbeat_signal_ref,
         deploys_in_scope_cache: Arc::new(parking_lot::Mutex::new(None)),
         active_validators_cache: Arc::new(tokio::sync::Mutex::new(HashMap::new())),

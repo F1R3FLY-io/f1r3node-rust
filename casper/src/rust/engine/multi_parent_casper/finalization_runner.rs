@@ -211,6 +211,7 @@ pub(crate) struct FinalizationContext {
     pub(crate) enable_mergeable_channel_gc: bool,
     pub(crate) ftt: crate::rust::safety::clique_oracle::FtThreshold,
     pub(crate) divergence_monitor: Arc<DivergenceMonitor>,
+    pub(crate) oracle_cache: Arc<crate::rust::safety::clique_oracle::SharedOracleCache>,
 }
 
 /// Build a `FinalizationContext` from a `MultiParentCasperImpl`. Single
@@ -236,6 +237,7 @@ pub(crate) fn build_finalization_context<
             this.casper_shard_conf.fault_tolerance_threshold_ppm,
         ),
         divergence_monitor: this.divergence_monitor.clone(),
+        oracle_cache: this.finalizer_oracle_cache.clone(),
     }
 }
 
@@ -260,6 +262,8 @@ pub(crate) async fn run_queued_finalizer(
 
 /// The queued-run loop of `run_queued_finalizer`, generic over the compute
 /// step so its cycle accounting is testable without a casper instance.
+const MAX_TIMEOUT_RERUNS: u32 = 3;
+
 pub(crate) async fn drive_finalizer_runs<T, E, F, Fut>(
     timeout: std::time::Duration,
     finalizer_task_queued: &AtomicBool,
@@ -273,9 +277,11 @@ pub(crate) async fn drive_finalizer_runs<T, E, F, Fut>(
         CASPER_METRICS_SOURCE, FINALIZER_RUN_FAILURES_METRIC, FINALIZER_RUN_RERUNS_METRIC,
         FINALIZER_RUN_TIMEOUTS_METRIC, FINALIZER_RUN_TIME_METRIC,
     };
+    let mut timeout_reruns = 0u32;
     loop {
         let cycle_started = std::time::Instant::now();
         let outcome = tokio::time::timeout(timeout, compute()).await;
+        let timed_out = outcome.is_err();
         metrics::histogram!(FINALIZER_RUN_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
             .record(cycle_started.elapsed().as_secs_f64());
         match outcome {
@@ -289,13 +295,17 @@ pub(crate) async fn drive_finalizer_runs<T, E, F, Fut>(
                 metrics::counter!(FINALIZER_RUN_TIMEOUTS_METRIC, "source" => CASPER_METRICS_SOURCE)
                     .increment(1);
                 tracing::warn!(
-                    "finalizer-run timed out after {:?}; skipping this cycle to avoid blocking propose",
+                    "finalizer-run timed out after {:?}; its oracle work is kept and the next cycle resumes from it",
                     timeout
                 );
             }
         }
 
-        if finalizer_task_queued.swap(false, Ordering::SeqCst) {
+        let retry_after_timeout = timed_out && timeout_reruns < MAX_TIMEOUT_RERUNS;
+        if retry_after_timeout {
+            timeout_reruns += 1;
+        }
+        if finalizer_task_queued.swap(false, Ordering::SeqCst) || retry_after_timeout {
             metrics::counter!(FINALIZER_RUN_RERUNS_METRIC, "source" => CASPER_METRICS_SOURCE)
                 .increment(1);
             tracing::debug!("finalizer-run-queued; continuing finalizer loop");
@@ -358,6 +368,7 @@ pub(crate) async fn compute_last_finalized_block(
         enable_mergeable_channel_gc,
         ftt,
         divergence_monitor,
+        oracle_cache,
     } = ctx;
     let observation_operation = observer.as_ref().and_then(|observer| observer.operation());
     let lfb_lookup_started = std::time::Instant::now();
@@ -500,8 +511,15 @@ pub(crate) async fn compute_last_finalized_block(
         hash: last_finalized_block_hash.clone(),
         block_number: last_finalized_block_height,
     };
-    let derivation =
-        crate::rust::finality::floor::floor_of_view(&dag, &block_store, &current, ftt).await;
+    let meter = crate::rust::safety::clique_oracle::OracleCacheMeter::new(oracle_cache);
+    let derivation = crate::rust::finality::floor::floor_of_view_metered(
+        &meter,
+        &dag,
+        &block_store,
+        &current,
+        ftt,
+    )
+    .await;
     if let Some(observer) = &observer {
         use crate::rust::finality::floor::FloorOfView;
         use crate::rust::soak_observer::{EventKind, FloorOutcome};
@@ -862,6 +880,50 @@ mod finalizer_run_metric_tests {
         assert_eq!(recorded.counter(FINALIZER_RUN_FAILURES_METRIC), 1);
         assert_eq!(recorded.counter(FINALIZER_RUN_TIMEOUTS_METRIC), 1);
         assert_eq!(recorded.counter(FINALIZER_RUN_RERUNS_METRIC), 2);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_timed_out_run_resumes_without_a_trigger_up_to_the_cap() {
+        let recorder = DebuggingRecorder::new();
+        let snapshotter = recorder.snapshotter();
+        let _guard = metrics::set_default_local_recorder(&recorder);
+
+        let queued = AtomicBool::new(false);
+        let mut cycle = 0u32;
+        drive_finalizer_runs(Duration::from_millis(20), &queued, || {
+            cycle += 1;
+            async move {
+                tokio::time::sleep(Duration::from_millis(200)).await;
+                Ok::<(), &str>(())
+            }
+        })
+        .await;
+
+        let recorded = Recorded::take(&snapshotter);
+        assert_eq!(cycle, 1 + MAX_TIMEOUT_RERUNS, "each timeout resumes until the cap");
+        assert_eq!(
+            recorded.counter(FINALIZER_RUN_TIMEOUTS_METRIC),
+            u64::from(1 + MAX_TIMEOUT_RERUNS)
+        );
+        assert_eq!(recorded.counter(FINALIZER_RUN_RERUNS_METRIC), u64::from(MAX_TIMEOUT_RERUNS));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_run_that_finishes_after_a_timeout_stops_resuming() {
+        let queued = AtomicBool::new(false);
+        let mut cycle = 0u32;
+        drive_finalizer_runs(Duration::from_millis(20), &queued, || {
+            cycle += 1;
+            let this_cycle = cycle;
+            async move {
+                if this_cycle == 1 {
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+                }
+                Ok::<(), &str>(())
+            }
+        })
+        .await;
+        assert_eq!(cycle, 2, "the resumed run finishes and no further cycle runs");
     }
 
     #[tokio::test(flavor = "current_thread")]

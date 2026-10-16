@@ -1215,6 +1215,7 @@ impl TestNode {
                 false,
             )),
             finalizer_task_queued: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            finalizer_oracle_cache: casper::rust::safety::clique_oracle::CliqueOracle::new_shared_cache(),
             heartbeat_signal_ref: casper::rust::heartbeat_signal::new_heartbeat_signal_ref(),
             deploys_in_scope_cache: std::sync::Arc::new(parking_lot::Mutex::new(None)),
             active_validators_cache: std::sync::Arc::new(tokio::sync::Mutex::new(
