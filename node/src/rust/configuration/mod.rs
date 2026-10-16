@@ -1038,6 +1038,14 @@ mod embedded_defaults_tests {
             cfg.casper.finalizer_cursor_max_invalidations,
             casper::rust::casper_conf::default_finalizer_cursor_max_invalidations()
         );
+        assert_eq!(
+            cfg.casper.deploy_pool_blocks_of_backlog,
+            casper::rust::casper_conf::default_deploy_pool_blocks_of_backlog()
+        );
+        assert_eq!(
+            cfg.casper.proposal_pacing_floor_distance,
+            casper::rust::casper_conf::default_proposal_pacing_floor_distance()
+        );
     }
 
     /// I5: the stale-recovery interval must exceed the heartbeat tick, or

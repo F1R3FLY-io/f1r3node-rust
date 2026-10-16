@@ -883,6 +883,10 @@ mod tests {
                     casper::rust::casper_conf::default_finalizer_step_backstop(),
                 finalizer_cursor_max_invalidations:
                     casper::rust::casper_conf::default_finalizer_cursor_max_invalidations(),
+                deploy_pool_blocks_of_backlog:
+                    casper::rust::casper_conf::default_deploy_pool_blocks_of_backlog(),
+                proposal_pacing_floor_distance:
+                    casper::rust::casper_conf::default_proposal_pacing_floor_distance(),
             },
             metrics: crate::rust::configuration::model::Metrics {
                 prometheus: false,

@@ -221,6 +221,8 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             finalizer_derivation_budget: conf.finalizer_derivation_budget,
             finalizer_step_backstop: conf.finalizer_step_backstop,
             finalizer_cursor_max_invalidations: conf.finalizer_cursor_max_invalidations,
+            deploy_pool_blocks_of_backlog: conf.deploy_pool_blocks_of_backlog,
+            proposal_pacing_floor_distance: conf.proposal_pacing_floor_distance,
         };
 
         Self {

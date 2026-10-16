@@ -102,7 +102,7 @@ pub struct ApiErrorResponse {
     /// `comm_error`, `external_service_error`
     ///
     /// **503 Service Unavailable:**
-    /// `observer_busy` — carries `Retry-After`
+    /// `observer_busy`, `deploy_pool_full` — carry `Retry-After`
     ///
     /// **504 Gateway Timeout:**
     /// `exploratory_timeout`
@@ -110,6 +110,8 @@ pub struct ApiErrorResponse {
     /// Human-readable description of the error.
     pub message: String,
 }
+
+const DEPLOY_POOL_FULL_RETRY_AFTER_SECS: u64 = 5;
 
 pub struct AppError(pub eyre::Error);
 
@@ -149,6 +151,14 @@ impl IntoResponse for AppError {
 /// variant rather than recomputed from the rendered message, so the header and
 /// the body cannot disagree.
 fn retry_after_secs(err: &eyre::Error) -> Option<u64> {
+    if err.chain().any(|cause| {
+        matches!(
+            cause.downcast_ref::<DeployError>(),
+            Some(DeployError::PoolFull { .. })
+        )
+    }) {
+        return Some(DEPLOY_POOL_FULL_RETRY_AFTER_SECS);
+    }
     match ExploratoryDeployRejection::classify(err) {
         Some(ExploratoryDeployRejection::Busy { retry_after_secs }) => Some(retry_after_secs),
         Some(ExploratoryDeployRejection::Timeout { .. }) | None => None,
@@ -254,6 +264,13 @@ fn classify_error(err: &eyre::Error) -> (StatusCode, &'static str, String) {
         }
         if let Some(DeployError::DuplicateDeploy(_)) = cause.downcast_ref::<DeployError>() {
             return (StatusCode::CONFLICT, "duplicate_deploy", cause.to_string());
+        }
+        if let Some(DeployError::PoolFull { .. }) = cause.downcast_ref::<DeployError>() {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "deploy_pool_full",
+                cause.to_string(),
+            );
         }
         if cause.downcast_ref::<DeployNotFoundError>().is_some() {
             return (StatusCode::NOT_FOUND, "deploy_not_found", cause.to_string());
@@ -675,6 +692,18 @@ mod tests {
                 .and_then(|value| value.to_str().ok()),
             Some("15")
         );
+    }
+
+    #[test]
+    fn a_full_deploy_pool_is_service_unavailable_with_retry_after() {
+        let error = eyre::Report::new(casper::rust::casper::DeployError::pool_full(8192, 8192));
+        let (status, kind, _) = classify_error(&error);
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(kind, "deploy_pool_full");
+
+        let response = AppError(error).into_response();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert!(response.headers().get(header::RETRY_AFTER).is_some());
     }
 
     #[test]

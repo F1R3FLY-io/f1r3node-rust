@@ -416,6 +416,7 @@ pub const MERGE_SCOPE_BACKSTOP_ERROR_METRIC: &str =
 // backstop keys on and the ratchet driver we bound; watching its distribution
 // is how an operator sees finality lag before it approaches the backstop.
 pub const FLOOR_DISTANCE_METRIC: &str = "compute-parents-post-state.floor-distance";
+pub const FLOOR_PACING_ENGAGED_METRIC: &str = "block-creator.floor-pacing-engaged";
 
 // Histogram of the merge scope size (|visible_blocks| in the unfinalized band).
 // Demoted from a reject condition to an observability metric: unlike the floor
