@@ -2953,8 +2953,30 @@ pub async fn create_with_progress(
     // bonds packaging exactly as before.
     let floor_ctx = derive_floor_context(casper_snapshot, block_store).await?;
 
+    let floor_paced = floor_ctx.as_ref().is_some_and(|ctx| {
+        let floor_distance = casper_snapshot.max_block_num - ctx.floor.block_number;
+        let engaged =
+            crate::rust::util::rholang::interpreter_util::floor_pacing_engaged(floor_distance);
+        if engaged {
+            metrics::counter!(
+                crate::rust::metrics_constants::FLOOR_PACING_ENGAGED_METRIC,
+                "source" => crate::rust::metrics_constants::CASPER_METRICS_SOURCE
+            )
+            .increment(1);
+            tracing::info!(
+                target: "f1r3fly.casper.recovery",
+                floor_distance,
+                next_block = next_block_num,
+                "floor distance over the pacing threshold; proposing without user deploys"
+            );
+        }
+        engaged
+    });
+
     // Prepare deploys
-    let (user_deploys, _, _) = if selection == super::proposer::DeploySelection::RecoveryEmpty {
+    let (user_deploys, _, _) = if selection == super::proposer::DeploySelection::RecoveryEmpty
+        || floor_paced
+    {
         (HashSet::new(), 0usize, false)
     } else {
         let t = std::time::Instant::now();

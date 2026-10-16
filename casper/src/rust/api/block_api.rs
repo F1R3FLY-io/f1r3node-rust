@@ -164,7 +164,10 @@ fn coalescer_for(tp: &Arc<ProposeFunction>) -> Arc<ProposeCoalescer> {
     map.entry(key).or_default().clone()
 }
 
-fn request_deploy_propose(tp: Arc<ProposeFunction>, casper: Arc<dyn MultiParentCasper + Send + Sync>) {
+fn request_deploy_propose(
+    tp: Arc<ProposeFunction>,
+    casper: Arc<dyn MultiParentCasper + Send + Sync>,
+) {
     let coalescer = coalescer_for(&tp);
     if !coalescer.request() {
         return;
@@ -187,9 +190,7 @@ async fn deploy_propose_with_retries(
         match tp(casper.clone(), false).await {
             Ok(proposer_result) => match proposer_result {
                 ProposerResult::Failure(status, seq_number) => {
-                    if should_retry_deploy_propose(&status)
-                        && attempt < max_attempts
-                    {
+                    if should_retry_deploy_propose(&status) && attempt < max_attempts {
                         tracing::info!(
                             "Deploy-triggered propose transient failure (attempt {}/{}, seqNum {}): {}; retrying in {:?}",
                             attempt,
@@ -203,15 +204,10 @@ async fn deploy_propose_with_retries(
                         continue;
                     }
 
-                    if let Some(msg) = recoverable_propose_failure_message(&status)
-                    {
+                    if let Some(msg) = recoverable_propose_failure_message(&status) {
                         tracing::info!("{} (seqNum {})", msg, seq_number);
                     } else {
-                        tracing::error!(
-                            "Failure: {} (seqNum {})",
-                            status,
-                            seq_number
-                        );
+                        tracing::error!("Failure: {} (seqNum {})", status, seq_number);
                     }
                 }
                 ProposerResult::Empty => {
@@ -221,12 +217,8 @@ async fn deploy_propose_with_retries(
                     tracing::debug!("Propose started (seqNum {})", seq_number);
                 }
                 ProposerResult::Success(_, block) => {
-                    let block_hash_hex =
-                        PrettyPrinter::build_string_no_limit(&block.block_hash);
-                    tracing::info!(
-                        "Success! Block {} created and added.",
-                        block_hash_hex
-                    );
+                    let block_hash_hex = PrettyPrinter::build_string_no_limit(&block.block_hash);
+                    tracing::info!("Success! Block {} created and added.", block_hash_hex);
                 }
             },
             Err(err) => {
@@ -2187,12 +2179,12 @@ impl BlockAPI {
 
 #[cfg(test)]
 mod tests {
-    use super::ProposeCoalescer;
     use std::future::pending;
     use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
     use std::sync::Arc;
     use std::time::Duration;
 
+    use super::ProposeCoalescer;
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn many_deploys_during_a_proposal_coalesce_into_one_more_proposal() {

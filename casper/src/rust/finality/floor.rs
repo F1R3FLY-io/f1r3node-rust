@@ -3717,8 +3717,9 @@ mod frontier_determinism_tests {
 
     #[tokio::test]
     async fn a_shared_oracle_cache_gives_the_same_frontiers_across_snapshots() {
-        use crate::rust::safety::clique_oracle::{CliqueOracle, OracleCacheMeter};
         use models::rust::casper::protocol::casper_message::Justification;
+
+        use crate::rust::safety::clique_oracle::{CliqueOracle, OracleCacheMeter};
 
         let validators = [h(100), h(101), h(102)];
         let weights: Vec<(Bytes, i64)> = validators.iter().map(|v| (v.clone(), 1)).collect();
@@ -3746,14 +3747,16 @@ mod frontier_determinism_tests {
         for round in 0..2 {
             for snapshot in &history[3..] {
                 for parent in 1..=9u8 {
-                    let fresh = cold_parent_frontier_metered(&NoopWork, &dag, &h(parent), snapshot, thr)
-                        .await
-                        .map(|f| (f.hash, f.block_number))
-                        .map_err(|e| e.to_string());
-                    let shared = cold_parent_frontier_metered(&meter, &dag, &h(parent), snapshot, thr)
-                        .await
-                        .map(|f| (f.hash, f.block_number))
-                        .map_err(|e| e.to_string());
+                    let fresh =
+                        cold_parent_frontier_metered(&NoopWork, &dag, &h(parent), snapshot, thr)
+                            .await
+                            .map(|f| (f.hash, f.block_number))
+                            .map_err(|e| e.to_string());
+                    let shared =
+                        cold_parent_frontier_metered(&meter, &dag, &h(parent), snapshot, thr)
+                            .await
+                            .map(|f| (f.hash, f.block_number))
+                            .map_err(|e| e.to_string());
                     assert_eq!(fresh, shared, "round {round}, parent {parent}");
                 }
             }

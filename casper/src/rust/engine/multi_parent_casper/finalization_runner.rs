@@ -900,12 +900,19 @@ mod finalizer_run_metric_tests {
         .await;
 
         let recorded = Recorded::take(&snapshotter);
-        assert_eq!(cycle, 1 + MAX_TIMEOUT_RERUNS, "each timeout resumes until the cap");
+        assert_eq!(
+            cycle,
+            1 + MAX_TIMEOUT_RERUNS,
+            "each timeout resumes until the cap"
+        );
         assert_eq!(
             recorded.counter(FINALIZER_RUN_TIMEOUTS_METRIC),
             u64::from(1 + MAX_TIMEOUT_RERUNS)
         );
-        assert_eq!(recorded.counter(FINALIZER_RUN_RERUNS_METRIC), u64::from(MAX_TIMEOUT_RERUNS));
+        assert_eq!(
+            recorded.counter(FINALIZER_RUN_RERUNS_METRIC),
+            u64::from(MAX_TIMEOUT_RERUNS)
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -923,7 +930,10 @@ mod finalizer_run_metric_tests {
             }
         })
         .await;
-        assert_eq!(cycle, 2, "the resumed run finishes and no further cycle runs");
+        assert_eq!(
+            cycle, 2,
+            "the resumed run finishes and no further cycle runs"
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]

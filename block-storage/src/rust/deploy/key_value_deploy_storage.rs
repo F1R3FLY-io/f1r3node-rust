@@ -135,6 +135,10 @@ impl<N: DeployStoreName> KeyValueDeployStore<N> {
 
     /// Check if the storage contains any pending deploys. O(1) time and space.
     pub fn non_empty(&self) -> Result<bool, KvStoreError> { self.store.non_empty() }
+
+    pub fn pending_count(&self) -> Result<Option<usize>, KvStoreError> {
+        self.store.raw_store().entry_count()
+    }
 }
 
 #[cfg(test)]

@@ -55,6 +55,7 @@ pub enum DeployError {
     UnknownSignatureAlgorithm(String),
     SignatureVerificationFailed,
     DuplicateDeploy(DeployId),
+    PoolFull { pending: usize, cap: usize },
 }
 
 impl DeployError {
@@ -68,6 +69,8 @@ impl DeployError {
 
     pub fn signature_verification_failed() -> Self { DeployError::SignatureVerificationFailed }
     pub fn duplicate_deploy(deploy_id: DeployId) -> Self { DeployError::DuplicateDeploy(deploy_id) }
+
+    pub fn pool_full(pending: usize, cap: usize) -> Self { DeployError::PoolFull { pending, cap } }
 }
 
 impl Display for DeployError {
@@ -82,6 +85,11 @@ impl Display for DeployError {
             DeployError::DuplicateDeploy(deploy_id) => {
                 write!(f, "Deploy already known: {}", hex::encode(deploy_id))
             }
+            DeployError::PoolFull { pending, cap } => write!(
+                f,
+                "Deploy pool is full ({} pending, cap {}); retry later",
+                pending, cap
+            ),
         }
     }
 }

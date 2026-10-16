@@ -43,7 +43,8 @@ async fn bonded_status(public_key: &PublicKey, node: &TestNode) -> bool {
         finalization_in_progress: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         finalizer_task_in_progress: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         finalizer_task_queued: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-        finalizer_oracle_cache: casper::rust::safety::clique_oracle::CliqueOracle::new_shared_cache(),
+        finalizer_oracle_cache: casper::rust::safety::clique_oracle::CliqueOracle::new_shared_cache(
+        ),
         heartbeat_signal_ref: casper::rust::heartbeat_signal::new_heartbeat_signal_ref(),
         deploys_in_scope_cache: Arc::new(parking_lot::Mutex::new(None)),
         active_validators_cache: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
