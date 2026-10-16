@@ -203,6 +203,23 @@ Both settings take effect at the next session start.
 - `just backmerge` opens the back-merge from a temporary `backmerge/*` branch. Do not open a pull request with head `master` or `dev`. Its **Update branch** button merges the base into the protected head through the admin bypass. The `Promotion Source` check rejects such a pull request.
 - There is no `main` branch, and `staging` is deprecated (fully contained in `dev`)
 
+### Continuous Integration and Deployment
+- A push to a pull request runs only the GitHub-hosted checks: static checks, script tests, and unit tests.
+- The heavy Integration Pipeline runs on OCI runners for these events:
+  - every merge group
+  - a push to `dev`, `master`, or a tag
+  - a pull request with the `ci-heavy` label
+- Add the `ci-heavy` label to a pull request to `dev` when the change can break the integration tests. Examples:
+  - Rust code in a workspace crate
+  - `Cargo.toml` or `Cargo.lock`
+  - `node/src/main/resources/defaults.conf`
+  - `node/Dockerfile` or the files in `docker/`
+- Do not add `ci-heavy` for a change to documentation, CI scripts, or workflows only. The merge queue runs the heavy pipeline for that change anyway.
+- The label shows an integration failure before the merge queue. A merge group can contain several pull requests, so a failure in the queue does not always identify its cause.
+- When the merge group tree equals the pull request head, the queue reuses the heavy result of the pull request.
+- Add the label once, after the last planned push. A push, a label change, or a `gh pr edit` cancels a running heavy run.
+- `docs/ci.md` describes the jobs, the required checks, and the merge queue.
+
 ## Relationship to f1r3node
 This repo was extracted from `F1R3FLY-io/f1r3fly` (`rust/dev` branch). Key differences:
 - **Removed**: Nix flake, SBT build, Scala source, `.envrc`, JVM tooling
