@@ -760,7 +760,7 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessor<T> {
             Ok(())
         } else {
             tracing::info!(
-                "Block {} is already processed or in recovery. Duplicate copy dropped.",
+                "Block {} is already in the DAG. Duplicate copy dropped.",
                 PrettyPrinter::build_string_bytes(&block.block_hash)
             );
             self.ack_processed(block).await
