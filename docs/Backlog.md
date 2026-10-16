@@ -105,6 +105,27 @@ Future features that have been identified but aren't yet prioritized.
 
 ---
 
+#### BACKLOG-FI-004: Opt-in central aggregation of hardware-tagged node telemetry
+
+```yaml
+---
+backlog_id: BACKLOG-FI-004
+title: "Opt-in, anonymous push of hardware-tagged adaptive telemetry from operator nodes to a F1R3FLY collector"
+status: deferred
+origin: "EPIC-027 design decision A4 (2026-10-13)"
+repo_scope: f1r3node-rust (exporter), collector to be decided
+---
+```
+
+The adaptive execution design (`docs/designs/adaptive-execution.md`) keeps
+telemetry local: Prometheus metrics and structured records, collected by soak
+and test net runs. A central collector would find regressions on rare or old
+hardware tiers. It needs an opt-in rule, a data minimization review, and an
+owner for the collector. Promote this item after EPIC-027 closes and the test
+net of EPIC-014 runs.
+
+---
+
 #### BACKLOG-FI-003: Per-core CPU sampling in the soak harness monitor
 
 ```yaml

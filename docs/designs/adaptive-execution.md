@@ -1,12 +1,13 @@
 # Adaptive Execution Design
 
-- **Status:** initial draft for maintainer review (TASK-027-1, EPIC-027). Created on 2026-10-13.
+- **Status:** draft for architect ratification (section 2.1, TASK-027-1, EPIC-027). Created on 2026-10-13.
 - **Story:** [US-012](../UserStories.md) Shards that adapt to the hardware of each node
 - **Branch:** `perf/issue-24-adaptive-execution`
-- **Closes:** issue #24, "perf: block replay pipeline bottleneck limits sustained deploy throughput"
+- **Closes:** issue #24, "perf: block replay pipeline bottleneck limits sustained deploy throughput". Open question Q8 asks whether the close-out waits for this design.
 - **Depends on:** the replication boundary of EPIC-025 (design PR #627, decision D7) and the lifecycle runtime of PR #651
 - **Mechanisms:** F1r3fly CbC Casper (`cbc-casper`) first. The RGB peer clique (`peer-clique`), Casanova (`casanova`), and Cordial Miners (`cordial-miners`) have provisions in section 11.
-- **Evidence source:** EPIC-021 and the issue #24 comments from 2026-08-27 to 2026-10-10
+- **Evidence source:** EPIC-021 and the issue #24 comments from 2026-08-27 to 2026-10-16
+- **Related design:** [Breaking the Validator Stall Loop](https://github.com/F1R3FLY-io/publications/blob/main/cost-accounting/stall-loop-design.pdf) (draft, 2026-10-16). Section 10.4 gives its effect on this design.
 - **Vocabulary:** [docs/Glossary.md](../Glossary.md). The new terms in section 20 go into the glossary when this design is approved.
 
 ---
@@ -42,21 +43,36 @@ The implementation on this branch closes issue #24 for the F1r3fly CbC Casper me
 | A7 | The design is written now against decision D7. The implementation starts after PR #651 merges into `dev`. | 2026-10-13 |
 | A8 | The design adopts two node-local practices from Ethereum. They are published hardware targets for each tier (section 14.3) and a probe warning when the host is below a target (section 6). Neither practice enforces a minimum or enters replicated state. Section 16 gives the comparison. | 2026-10-13 |
 
+### 2.1 Ratification
+
+The architects ratify these parts of the design before TASK-027-2 starts:
+
+1. Decisions A1 to A8.
+2. Invariants I1 to I6 (section 12).
+3. The degradation levels and their order (section 8).
+4. The F1r3fly CbC Casper controls and signals (sections 10.1 and 10.2).
+
+The open questions of section 19 do not block ratification. Each question names the task that it blocks and gives a recommended answer. The architects can accept a recommendation, or they can leave the question open until that task starts.
+
 ---
 
 ## 3. Evidence from issue #24
 
-The issue #24 history gives five facts that this design must use.
+The issue #24 history gives seven facts that this design must use.
 
 | Fact | Source | Effect on the design |
 |---|---|---|
-| In the high phase, non-leader validators use a fixed fallback cap of 8 deploys per block. The cap rises to 16 or 32 only after the oldest fresh deploy waits 120 s or 300 s. The test fails at 45 s. | Issue #24 comment 6094239136 | A fixed escalation table cannot follow the real arrival rate. The cap must follow measured backlog and capacity. |
-| All three high-phase failures in soak 37996403003 ran on Docker. Docker shards had about twice the left-out deploys and twice the selection age of subprocess shards. | Comment 6094531369 | The same code behaves differently on different hosts. A tier profile and a closed loop are necessary. |
+| In the high phase, non-leader validators used a fixed fallback cap of 8 deploys per block. The cap rose to 16 or 32 only after a wait of 120 s or 300 s, but the test fails at 45 s. PR #695 made the cap follow the local backlog, and the high-phase inclusion p95 fell below 10 s (soak 38300649650). | Issue #24 comments 6094239136 and 6148770562 | A fixed escalation table cannot follow the real arrival rate. The cap must follow measured backlog and capacity. |
+| All three high-phase failures in soak 37996403003 ran on Docker. Docker shards had about twice the left-out deploys and twice the selection age of subprocess shards. After PR #695, Docker had 0 failures in 43 iterations. | Comments 6094531369 and 6148770562 | The same code behaved differently on different hosts. PR #695 removed this difference for the high phase. |
 | The sustained-phase failures have a different cause. The deploys enter blocks in 2 to 2.6 s and then wait for finalization. | Comment 6094531369 | An admission controller alone does not close issue #24. The delay from inclusion to finality needs its own signal and its own control (section 10.3). |
 | PR #473 removed an earlier "adaptive deploy cap". | Issue #24 description | That cap was a fixed table. This design uses a closed loop with bounds, hysteresis, and telemetry for each step (section 7). |
-| The checkpoint fsync is about 1 percent of the cost. Replay runtime spawn takes 3.8 ms in the soak. | Comments 6016872961 and 6043103631 | The controller must not assume that disk or spawn cost is the bottleneck. It acts only on measured signals. |
+| On Docker, the checkpoint fsync is about 1 percent of the cost, and the replay runtime spawn takes 3.8 ms. On the subprocess provider, the replay checkpoint takes 483 ms against 64 ms on Docker, with jemalloc on both. | Comments 6016872961, 6043103631, and 6171089126 | The controller must not assume that disk or spawn cost is the bottleneck. Storage cost depends on the host class, so the probe measures disk latency (section 6). The controller acts only on measured signals. |
+| Without jemalloc, the subprocess provider failed 28 of 42 iterations (67%) in soak 38300649650. Its storage stages were 3 to 23 times slower than on Docker. | Comment 6148770562 | The allocator is part of the host class (section 14.3). A configuration defect can look like a slow hardware tier. |
+| With jemalloc on the subprocess provider (`fd3d97a84`), soak 38501465484 failed 1 of 52 iterations (1.9%): 0 of 26 on Docker and 1 of 26 on subprocess. The failure is in the sustained phase, and the soak ran 8 hours only. | Comment 6171089126 | Without a controller, the measured rate is inside the gate of section 14.1, but 26 sessions on each provider cannot prove the gate. Open question Q8 follows from this fact. |
 
 PR #695 already makes the non-leader fresh-admission cap follow the local backlog. This design keeps that change and puts its bounds under the controller (section 10.1).
+
+No full-length soak on the code with both PR #695 and the jemalloc hotfix exists yet. The soaks of 2026-10-15 and 2026-10-16 stopped on a workflow defect before the first iteration ([issue #24 comment 6217970582](https://github.com/F1R3FLY-io/f1r3node-rust/issues/24#issuecomment-6217970582)). Hotfix PR #741 repairs that defect.
 
 ---
 
@@ -173,6 +189,7 @@ pub struct ControlUpdate {
 - `HostClass` records the container or process context, for example `docker` or `subprocess`. The soak evidence shows that this class changes the result.
 - A `TierProfile` gives the floor and the ceiling of each control for one tier. A mechanism supplies default profiles. An operator can narrow them in the configuration, but cannot widen them.
 - `Direction` states whether a higher value means more work or less work.
+- The least-work bound of a control is its floor when a higher value means more work. It is the ceiling when a higher value means less work. Section 8 uses this bound.
 - The probe compares the `HardwareProfile` with the published targets of section 14.3. With a named tier, the probe uses the targets of that tier. With `tier = "auto"`, it uses the `Constrained` targets.
 - If the host is below the targets, the node writes a warning record and sets the gauge `adaptive_probe_below_target` to 1. The record names each value that is below its target.
 - The node starts normally after the warning. The warning enforces nothing. This follows the informational model of EIP-7870 (section 16).
@@ -208,7 +225,7 @@ N, M, the interval, and the cooldown are tier profile values. Soak data sets the
 
 ## 8. Degradation levels
 
-The levels go from normal operation to the protection of liveness. The node changes level when the controller reaches the floor of every control in the current level.
+The levels go from normal operation to the protection of liveness. The node changes level when every control in the current level is at its least-work bound (section 6).
 
 | Level | Name | Action |
 |---|---|---|
@@ -261,6 +278,9 @@ The `cbc-casper` adapter supplies the first `AdaptationDescriptor`. The binding 
 | Fresh-deploy escalation delays | 120 s and 300 s | Derived from the measured selection age against the deadline of the active soak profile, or removed if the closed loop replaces them |
 | Heartbeat wait before a proposal | Fixed by configuration | Bounded control. Shorter when deploys wait, longer when the node is idle. |
 | Merge and replay concurrency | Fixed | Bounded control, from the CPU signals |
+| Proposal coalescing and heartbeat debounce | None. Each deploy queues its own proposal (stall-loop A2). | First a fixed rule (TASK-021-20). Later a bounded control, with the measured TASK-021-20 values as tier bounds. |
+| Floor-distance pacing and pool admission cap | None. The 256-block floor cap refuses the merge (stall-loop A3). | First fixed thresholds (TASK-021-21). Later bounded controls, with those thresholds as tier bounds. |
+| Work off the async runtime | Replay, merge, and checkpoint run on tokio workers (stall-loop A6). | First a fixed pool size (TASK-021-22). Later a bounded control from the CPU and scheduler-delay signals. |
 
 The deploy cap is a proposer choice. Other validators do not check it. So a change of the cap does not change block validity (decision A2). The design adds a CbC claim for this property (TASK-027-4).
 
@@ -271,12 +291,31 @@ The deploy cap is a proposer choice. Other validators do not check it. So a chan
 | Deploy age at selection | Time from submission to selection. This separated failing iterations with AUC 0.94 in soak 37996403003. |
 | Left-out ordinary candidates | `block-creator.ordinary-deploys.deferred` |
 | Last finalized block lag | Blocks between the tip and the last finalized block |
-| Block replay time | Time to validate a peer block |
+| Block replay time | Time to validate a peer block. On a v6 shard, the executed-root lag replaces it (section 10.4). |
 | Inclusion to finality time | Time from the first block that includes a deploy to its finalization |
 
 ### 10.3 The sustained phase
 
 In the sustained-phase failures, deploys wait after inclusion. Admission controls do not reduce this wait. TASK-021-13 attribution must find the stage first. Then the binding adds a control or a fix for that stage. This design does not choose that fix (open question Q1).
+
+### 10.4 Relation to the stall-loop design
+
+The draft design [Breaking the Validator Stall Loop](https://github.com/F1R3FLY-io/publications/blob/main/cost-accounting/stall-loop-design.pdf) (2026-10-16) traces stalls under load to one feedback loop on the finality lag. It proposes two tracks:
+
+- **Track A** (A1 to A9) fixes the loop on `dev` without cost accounting.
+- **Track B** lands cost-accounted order-then-execute for v6 shards, in about ten months.
+
+The design is a code reading, without profiling. Decisions of 2026-10-16 for issue #24:
+
+| Topic | Decision |
+|---|---|
+| Ownership of Track A | Issue #24 owns Track A. EPIC-021 holds the tasks (TASK-021-16 to TASK-021-23). |
+| Order of the work | Each Track A item is measured first (TASK-021-17). The measured rank sets the order. Soaks so far measured finalizer runs at 6 to 15 ms with no timeouts, and merger buckets at about 45 ms for each merge. |
+| Overlapping knobs (A2, A3, A6) | Fixed, measured thresholds land first. This design later puts them under the controller, with those values as tier bounds (section 10.1). |
+| Files of the cost-accounting merge | Issue #24 fixes avoid the 38 files that Track B step B1 expects to conflict where possible. A fix inside one of them carries a note for the cost-accounting lane. |
+| Cost-accounting scope in `dev` | Not decided. TASK-021-16 records a baseline before it lands, and TASK-021-23 repeats the soak after it lands. |
+
+v6 shards are outside the scope of this design (section 17). On a v6 shard, structural validity checks the sum of the phlo limits of a block against a per-block demand cap. A future v6 descriptor must therefore keep each admission ceiling at or below that protocol cap. Its replay signal becomes the lag of the executed root behind the last finalized block. Open question Q9 records this.
 
 ---
 
@@ -348,7 +387,8 @@ adaptive {
 ```
 
 - With `enabled = false`, each control keeps the default value of the tier profile. This gives the current behavior for comparison runs.
-- `tier = "auto"` uses the probe result. A named tier skips the probe and records the choice.
+- `tier = "auto"` selects the tier profile from the probe result. A named tier selects that profile, and the node records the choice.
+- The probe runs in both cases, because the probe warning of section 6 needs the measured `HardwareProfile`.
 
 ---
 
@@ -364,7 +404,7 @@ The `cbc-casper` profile closes issue #24 with these gates:
 2. The gate holds separately for the Docker host class and the subprocess host class.
 3. The gate holds on a constrained tier run with cgroup CPU and memory limits.
 4. No run shows an out-of-memory stop, a watchdog stop, or a guardian stop.
-5. The controller records show at least one step down and one step up in the high phase. This proves that the loop acts.
+5. On the constrained tier run of gate 3, the controller records show at least one step down and one step up in the high phase. This proves that the loop acts. A run on a larger tier can pass without a controller action. PR #695 already keeps the high phase inside its deadline on both host classes.
 
 The other mechanisms supply their profiles with their adapters:
 
@@ -406,8 +446,8 @@ The allocator is part of the host class. Soak 38300649650 showed that the same b
 
 | Step | Task | Change | Condition |
 |---|---|---|---|
-| 1 | TASK-027-1 | This design | Maintainer approval |
-| 2 | TASK-027-2 | Telemetry signals and records, with no control changes | PR #651 merged into `dev` |
+| 1 | TASK-027-1 | This design | Architect ratification (section 2.1) |
+| 2 | TASK-027-2 | Telemetry signals and records, with no control changes. It reuses the Track A metrics of TASK-021-17. | PR #651 merged into `dev` |
 | 3 | TASK-027-3 | Hardware probe, tier profiles, and the probe warning | Step 2 |
 | 4 | TASK-027-4 | Controller and degradation levels, and the CbC claim for I1 to I6 | Step 3 |
 | 5 | TASK-027-5 | F1r3fly CbC Casper (`cbc-casper`) binding of the admission controls | Step 4 |
@@ -480,6 +520,7 @@ The Ethereum values were checked on 2026-10-13 against the `master` branch of th
 ## 17. Non-goals
 
 - Changes to consensus parameters or block validity rules.
+- v6 shards with cost-accounted order-then-execute (section 10.4, open question Q9).
 - Shard-wide coordination of tiers between validators.
 - Central collection of telemetry.
 - GPU or accelerator tiers.
@@ -501,15 +542,19 @@ The Ethereum values were checked on 2026-10-13 against the `master` branch of th
 
 ## 19. Open questions
 
-| ID | Question |
-|---|---|
-| Q1 | Which stage causes the sustained-phase wait from inclusion to finality? TASK-021-13 must answer this before TASK-027-6. |
-| Q2 | Which values of N, M, the interval, and the cooldown fit each tier? Step 2 telemetry sets the first values. |
-| Q3 | Does the heartbeat wait belong to the controller, or does a separate fix remove the empty-block cost (issue #24 item 4)? |
-| Q4 | The replication boundary design leaves deploy pool ownership open (its question Q8). If the node owns the pool, API intake and admission are one control. If the adapter owns the pool, they are two controls. |
-| Q5 | Is a mixed-tier shard test in CI possible on the current runners, or does it need the test net of EPIC-014? |
-| Q6 | Who owns the adaptation descriptors and soak profiles of the RGB peer clique, Casanova, and Cordial Miners? EPIC-014 gives each mechanism its own test net and design record. |
-| Q7 | Should F1r3fly CbC Casper reward timely participation? `PoS.rhox` pays epoch rewards in proportion to bond, with no participation term. Ethereum makes timely work profitable through rewards (section 16). A timeliness reward changes replicated state, so it is outside this design (decision A2). It needs its own design and a CbC claim. |
+No question blocks ratification (section 2.1). The Blocks column names the first task that needs the answer.
+
+| ID | Question | Blocks | Recommended answer |
+|---|---|---|---|
+| Q1 | Which stage causes the sustained-phase wait from inclusion to finality? TASK-021-13 must answer this before TASK-027-6. | TASK-027-6 and the close-out | Keep it open. The TASK-021-13 attribution answers it with soak evidence. |
+| Q2 | Which values of N, M, the interval, and the cooldown fit each tier? Step 2 telemetry sets the first values. | The first tier profile values in TASK-027-3 | Keep the values open until the step 2 telemetry exists. Ratify only the rule that M is larger than N. |
+| Q3 | Does the heartbeat wait belong to the controller, or does a separate fix remove the empty-block cost (issue #24 item 4)? | The heartbeat control in TASK-027-5 | Keep the heartbeat wait as a bounded control (section 10.1). Track the empty-block cost as a separate fix under issue #24 item 4. |
+| Q4 | Who owns the deploy pool, which the replication boundary design leaves open (its question Q8)? The owner decides whether API intake and admission are one control or two. | TASK-027-5 | Use two controls. They work for both owners, and the binding moves them together when the node owns the pool. |
+| Q5 | Is a mixed-tier shard test in CI possible on the current runners, or does it need the test net of EPIC-014? | The mixed-tier test of TASK-027-4 | Run the CI test in one process with the multi-node harness of `casper/tests/multi_node`. Give each node different control values. Run a full mixed-tier shard on the EPIC-014 test net. |
+| Q6 | Who owns the adaptation descriptors and soak profiles of the RGB peer clique, Casanova, and Cordial Miners? EPIC-014 gives each mechanism its own test net and design record. | TASK-027-9 | The owner of each adapter owns its descriptor and its soak profile. EPIC-027 owns the controller and the `cbc-casper` binding. |
+| Q7 | Should F1r3fly CbC Casper reward timely participation? `PoS.rhox` pays epoch rewards in proportion to bond only, but Ethereum makes timely work profitable through rewards (section 16). A timeliness reward changes replicated state, so it needs its own design and a CbC claim (decision A2). | No EPIC-027 task | Leave it open, and start a separate design if the shard needs a timeliness incentive. |
+| Q8 | Does the close-out of issue #24 wait for this design? Decisions A5 and A6 give it to EPIC-027, but soak 38501465484 measured 1.9% without a controller (section 3). | TASK-027-8 | Keep A5 and A6 for ratification, and decide Q8 after the first full-length soak with PR #741. If that soak meets gates 1 and 2 of section 14.1 and TASK-021-13 resolves Q1, close issue #24 under EPIC-021 and keep EPIC-027 for US-012. |
+| Q9 | Does a v6 shard get its own adaptation descriptor? Under cost-accounted order-then-execute, the per-block demand cap is a validity rule, and replay leaves the consensus path (section 10.4). | A v6 binding, outside EPIC-027 | Decide when the cost-accounting scope in `dev` is decided. A v6 descriptor keeps each admission ceiling at or below the protocol demand cap. |
 
 ---
 
