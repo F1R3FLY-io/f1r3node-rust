@@ -548,4 +548,46 @@ mod tests {
         assert!(!connections.read().unwrap().as_slice().contains(&peer("A")));
         assert_eq!(discovery.get_removed_keys(), vec![peer("A").id.key]);
     }
+
+    #[tokio::test]
+    async fn test_clear_connections_evicts_a_pinned_bootstrap_that_refuses_our_network_or_chain() {
+        let refusals = [
+            CommError::WrongNetwork("A".to_string(), "network mismatch".to_string()),
+            CommError::WrongChainId("A".to_string(), "peer is on another chain".to_string()),
+        ];
+
+        for refusal in refusals {
+            let connections = mk_connections(&[peer("A"), peer("B")]);
+            let rp_conf = conf(5, Some(2), Some(peer("A")));
+            let transport = TransportLayerStub::new();
+            let response = refusal.clone();
+            transport.set_responses(move |remote, protocol| {
+                if remote.id.key == peer("A").id.key {
+                    Err(response.clone())
+                } else {
+                    always_success(remote, protocol)
+                }
+            });
+            let discovery = TrackingNodeDiscovery::new();
+
+            let (cleared, failed_peers) = clear_connections(
+                &connections,
+                &rp_conf,
+                &transport,
+                &discovery,
+                &mut PeerLivenessTracker::new(3).unwrap(),
+            )
+            .await
+            .unwrap();
+
+            assert_eq!(cleared, 1, "{refusal:?}");
+            assert_eq!(failed_peers, vec![peer("A")], "{refusal:?}");
+            assert!(!connections.read().unwrap().as_slice().contains(&peer("A")));
+            assert_eq!(
+                discovery.get_removed_keys(),
+                vec![peer("A").id.key],
+                "{refusal:?} kept the pinned bootstrap in the routing table"
+            );
+        }
+    }
 }

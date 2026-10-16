@@ -1029,7 +1029,8 @@ async fn node_discovery_loop(
 ///
 /// The clear_connections function handles the full cleanup cycle:
 /// 1. Removes peers from ConnectionsCell
-/// 2. Removes peers from KademliaStore (except bootstrap, which is pinned)
+/// 2. Removes peers from KademliaStore (except bootstrap, which is pinned
+///    unless it refuses this node's network or chain)
 /// 3. Disconnects the gRPC channel immediately (via transport.disconnect)
 async fn clear_connections_loop(
     connections: comm::rust::rp::connect::ConnectionsCell,

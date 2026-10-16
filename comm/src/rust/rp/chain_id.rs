@@ -53,7 +53,11 @@ pub fn classify(type_id: Option<&str>) -> MessageClass {
             | "ForkChoiceTipRequest"
             | "StoreItemsMessageRequest"
             | "MergeableEntryRequest"
-            | "FloorCacheRequest",
+            | "FloorCacheRequest"
+            | "GetSnapshotChunkRequest"
+            | "HasSnapshotRequest"
+            | "GetWalPayloadRequest"
+            | "HasWalPayloadRequest",
         ) => MessageClass::Pull,
         // Default deny: an unrecognized type counts as a push, so a message
         // type added later is guarded before anyone remembers this list.

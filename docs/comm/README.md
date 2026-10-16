@@ -1,4 +1,4 @@
-> Last updated: 2026-03-23
+> Last updated: 2026-10-16
 
 # Crate: comm (P2P Networking)
 
@@ -97,7 +97,12 @@ A relaunched network can reuse its `networkId`, so `networkId` cannot separate t
 | Empty | accepted | refused |
 | Ours not known yet | accepted | accepted |
 
-A message type that is not in the pull list counts as a push.
+The pull list (`classify` in `rp/chain_id.rs`) holds the control messages without a packet (handshake, heartbeat, disconnect) and these request types:
+- `ApprovedBlockRequest`, `BlockRequest`, `HasBlockRequest`, `ForkChoiceTipRequest`, `StoreItemsMessageRequest`, `MergeableEntryRequest`, `FloorCacheRequest`
+- snapshot requests: `GetSnapshotChunkRequest`, `HasSnapshotRequest`
+- write-ahead log (WAL) payload requests: `GetWalPayloadRequest`, `HasWalPayloadRequest`
+
+A joining node sends the snapshot and WAL payload requests before it knows its chain. A message type that is not in the pull list counts as a push.
 
 **Where the check runs**:
 
@@ -110,11 +115,13 @@ A message type that is not in the pull list counts as a push.
 
 | Refused message | Action |
 | --- | --- |
-| Our handshake (`find_and_connect`) | evict the peer from the routing table at once and suppress its rediscovery for 5 minutes. The configured bootstrap stays pinned. |
-| Our heartbeat (`clear_connections`) | evict the peer from the connections at once, without a failure streak |
+| Our handshake (`find_and_connect`) | evict the peer from the routing table at once and suppress its rediscovery for 5 minutes |
+| Our heartbeat (`clear_connections`) | evict the peer from the connections at once, without a failure streak. Also remove the peer from the routing table and close its channel. |
 | Our broadcast (`send_packet_to_peers`) | drop the peer from the connections and close its channel |
 
 `CommError::WrongNetwork` (a `networkId` mismatch, gRPC status `PermissionDenied`) gets the same handling.
+
+**Pinned bootstrap**: the configured bootstrap peer stays in the routing table after a failure, so the node can find it again. A refusal is the exception: after `WrongNetwork` or `WrongChainId`, `find_and_connect` and `clear_connections` evict the pinned bootstrap too. A timeout and all other errors keep the pin. The network ID comes from configuration, and the chain identity is write-once. So a bootstrap on another network or chain cannot serve this node until one of the two nodes restarts. Until then, a dial every `lookup-interval` only adds refusals to the logs of both nodes. A joining node does not get `WrongChainId` from its bootstrap: it sends an empty chain identity, and a handshake or a heartbeat is a pull.
 
 **Rollout**: this is a breaking protocol change. A node without it names no chain, so every push from it is refused. All nodes of a network must upgrade together. There is no compatibility setting.
 

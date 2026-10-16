@@ -283,7 +283,10 @@ impl ConnectionsCell {
 ///
 /// The bootstrap peer is kept in the routing table so `findAndConnect` can
 /// re-establish the connection on the next discovery cycle. Removing it is
-/// irreversible and strands the node if no other peers are known.
+/// irreversible and strands the node if no other peers are known. A bootstrap
+/// that refuses this node's network or chain (`WrongNetwork`, `WrongChainId`)
+/// cannot serve this node until one of the two nodes restarts, so it is
+/// removed like any other peer.
 ///
 /// A peer is removed only after `liveness` records enough consecutive failures;
 /// the tracker must outlive the call for that streak to accumulate.
@@ -322,6 +325,7 @@ where
 
     let mut retained_peers = Vec::new();
     let mut failed_peers = Vec::new();
+    let mut refused_peers = HashSet::new();
 
     for (peer, result) in results {
         match result {
@@ -333,6 +337,7 @@ where
             // waiting for a failure streak only delays the inevitable.
             Err(error @ (CommError::WrongNetwork(..) | CommError::WrongChainId(..))) => {
                 warn!("Heartbeat to {} refused; evicting: {}", peer, error);
+                refused_peers.insert(peer.id.key.clone());
                 failed_peers.push(peer);
             }
             Err(error) => match liveness.record_failure(&peer.id.key) {
@@ -353,10 +358,12 @@ where
     // table is irreversible and strands the node if no other peers are
     // known.  The bootstrap is still removed from ConnectionsCell and
     // its gRPC channel is disconnected (the TCP connection IS broken).
+    // A bootstrap that refused this node's network or chain is removed from
+    // the routing table too.
     let bootstrap_key = conf.bootstrap.as_ref().map(|b| &b.id.key);
     let removable_peers: Vec<&PeerNode> = failed_peers
         .iter()
-        .filter(|p| bootstrap_key != Some(&p.id.key))
+        .filter(|p| bootstrap_key != Some(&p.id.key) || refused_peers.contains(&p.id.key))
         .collect();
 
     if failed_peers.len() > removable_peers.len() {
@@ -442,8 +449,9 @@ where
                     error,
                     CommError::WrongNetwork(..) | CommError::WrongChainId(..)
                 );
+                let pinned = bootstrap.is_some_and(|pinned| pinned.id == peer.id) && !refused;
                 if !matches!(error, CommError::ConfigError(_))
-                    && bootstrap.is_none_or(|pinned| pinned.id != peer.id)
+                    && !pinned
                     && (refused || failures.record_failure(&peer))
                 {
                     match node_discovery.evict_unreachable_peer(&peer) {
