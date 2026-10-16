@@ -336,6 +336,7 @@ tasks:
     decision: "2026-10-08: the user chose the two-step switch. Step 1 adds Static Checks, Script Tests, and Soak Harness Tests, renames the misleading jobs, and keeps temporary jobs with the old required names. TASK-023-9 is step 2."
     blocked_by: []
     branch_note: "Separate branch, because the change moves jobs that the merge queue and the branch rulesets require."
+    hygiene_note: "2026-10-16 hygiene: PRs #687 and #689 merged, and the rulesets name the new jobs. Open: no record shows that the total CI time grew by at most one job setup."
     acceptance:
       - "An inventory lists every job and step of ci.yml and _integration-pipeline.yml with what it runs: static check, unit test, script behavioral test, Docker soak harness test, build, integration test, or gate. The inventory is recorded in docs/ci.md."
       - "Each job holds one purpose. Lint keeps only static checks: cargo fmt, clippy, the workflow invariants, and the supply-chain controls."
@@ -344,7 +345,9 @@ tasks:
       - "check-workflow-invariants.sh passes, and the change does not increase the total CI time by more than the measured cost of one extra job setup."
   - id: TASK-023-6
     title: "Relabel the CI jobs and steps so that each name states what it runs"
-    status: in_progress
+    status: complete
+    completed_at: 2026-10-16
+    completion_evidence: "PR #687 merged. docs/ci.md maps each old job name to its new name, and the rulesets use the new names."
     priority: p0
     claimed_by: claude-session-dfac55a4
     claimed_at: 2026-10-08T21:00:00Z
@@ -385,7 +388,9 @@ tasks:
       - "If the stall is in a fixture command, the claim is not changed, and the task records that decision."
   - id: TASK-023-9
     title: "Switch the rulesets to the new check names and remove the temporary jobs (step 2)"
-    status: in_progress
+    status: complete
+    completed_at: 2026-10-16
+    completion_evidence: "PR #689 merged. devProtect and masterProtect require Static Checks, Script Tests, Soak Harness Tests, and the integration and test gates. masterProtect has no required_deployments rule. ci.yml has no Lint job."
     priority: p0
     claimed_by: claude-session-dfac55a4
     claimed_at: 2026-10-09T02:00:00Z
@@ -403,7 +408,9 @@ tasks:
       - "A merge group with the change passes the queue. docs/ci.md describes the result without the switch section."
   - id: TASK-023-10
     title: "Promote dev to master from a promote/* branch and reject promotions with head dev"
-    status: review
+    status: complete
+    completed_at: 2026-10-16
+    completion_evidence: "PR #689 merged. masterProtect requires Promotion Source. The promotions #694, #723, #727, and #732 used promote/* heads, so no promotion retargeted an open pull request."
     priority: p0
     claimed_by: claude-session-dfac55a4
     claimed_at: 2026-10-09T10:00:00Z
@@ -418,7 +425,9 @@ tasks:
       - "The next promotion retargets no open pull request."
   - id: TASK-023-11
     title: "Make failed bench segments visible in the soak log and report"
-    status: review
+    status: complete
+    completed_at: 2026-10-16
+    completion_evidence: "PR #701 merged. TASK-023-12 diagnosed the compose failures as host port conflicts in the ephemeral range."
     priority: p1
     claimed_by: claude-session-dfac55a4
     claimed_at: 2026-10-12T15:30:00Z
@@ -438,6 +447,7 @@ tasks:
     branch: hotfix/soak-bench-port-range
     pr_base_branch: master
     finding: "Soak 38184406100 artifact: bench segments 11 and 13 failed with failed to bind host port 0.0.0.0:40452/tcp and 0.0.0.0:40412/tcp: address already in use. docker/shard.yml publishes 40400-40455, inside the kernel ephemeral range 32768-60999, so an outbound connection on the soak runner can hold the port. CI already avoids this with docker/ci-ports.shard.yml, but run-bench-segment.sh did not use it."
+    hygiene_note: "2026-10-16 hygiene: PR #702 merged. Open: the next weekend soak must show no bench segment that fails with address already in use."
     acceptance:
       - "run-bench-segment.sh starts the bench shard with docker/shard.yml and docker/ci-ports.shard.yml, and probes and benchmarks validator1 on host port 14413."
       - "test-run-bench-segment.sh checks both compose files and the probe port with a fake docker and curl."
@@ -445,7 +455,9 @@ tasks:
       - "The next weekend soak has no bench segment that fails with address already in use."
   - id: TASK-023-13
     title: "Back-merge master into dev from a backmerge/* branch and reject pull requests with a protected head"
-    status: review
+    status: complete
+    completed_at: 2026-10-16
+    completion_evidence: "PR #749 merged into dev on 2026-10-16 with just backmerge, the Promotion Source check for a protected head, and the Protected Head Guard workflow."
     priority: p0
     claimed_by: claude-session-dfac55a4
     claimed_at: 2026-10-16T17:00:00Z
@@ -1014,6 +1026,7 @@ tasks:
       - rspace++/src/rspace/history/root_repository.rs
       - rspace++/src/rspace/history/history_repository.rs
       - rspace++/tests/history/roots_lock_contention_tests.rs
+    hygiene_note: "2026-10-16 hygiene: PR #653 merged. Open: the post-merge soak comparison and CLAIM-RSPACE-002 (TASK-021-11)."
     acceptance:
       - "A checkpoint advances the last_txn_id of the rspace/history LMDB environment by exactly 1, in a real-LMDB test through the history repository interface."
       - "A checkpoint with actions makes exactly one CheckpointWriter write, an empty checkpoint makes none, and the written root equals the root of the new history, in tests through the repository interface with a recording adapter."
@@ -1086,6 +1099,7 @@ tasks:
       - block-storage/src/rust/casperbuffer/casper_buffer_key_value_storage.rs
       - block-storage/src/rust/dag/buffer_dag_transition.rs
       - scripts/bench/extend-issue24-metrics.sh
+    hygiene_note: "2026-10-16 hygiene: PR #653 merged. Open: a soak that passes the integration preflight, CLAIM-CASPER-BUFFER-001 items 2 to 7, and maintainer acceptance."
     acceptance:
       - "docs/claims/casper-buffer-release.md registers CLAIM-CASPER-BUFFER-001 as pending before any code change (EPIC-021 cbc_policy)."
       - "Each plan behavior has a test that fails before its change and passes after it. B5 reproduces the stale-link hold on the current code."
@@ -1146,6 +1160,7 @@ tasks:
     blocked_by: []
     origin: "Soak 38300649650 segment 2 (master e5a0531a6): 28 of 86 iterations failed test_load, all on the subprocess provider (28 of 42), none on Docker (0 of 43). The subprocess checkpoint and trie-apply stages were 3 to 23 times slower. The Docker entrypoint preloads jemalloc, and the subprocess binary runs on glibc malloc (issue #24 comment 6148770562)."
     change: "The merge-recovery-soak workflow extracts the jemalloc library of the image with the binary and starts subprocess nodes through a wrapper that preloads it. The step fails when the wrapper does not run the node on jemalloc."
+    hygiene_note: "2026-10-16 hygiene: PR #715 merged. Open: the soak values for the subprocess checkpoint times, the test_load gate on each provider, and the subprocess RSS."
     acceptance:
       - "The Extract subprocess binary step reports the jemalloc version of the image."
       - "In the sustained phase, the subprocess replay checkpoint and apply_trie_actions times are near the Docker values (about 270 ms and 13 ms)."
@@ -1188,6 +1203,7 @@ tasks:
     notes:
       - "Plan step 1. Issue #24 owns Track A (decision of 2026-10-16). TASK-027-2 reuses these metrics."
       - "Avoid the 38 files that stall-loop step B1 expects to conflict where possible."
+    hygiene_note: "2026-10-16 hygiene: PR #751 merged the Track A metrics. Open: one soak that ranks the Track A items, and the issue #24 report of the rank."
     acceptance:
       - "ISSUE24_METRICS records the deploy-pool lock hold time and the signature checks for each proposal (A4), the proposer queue depth and the empty-block rate (A2), the floor distance (A3), the tokio worker saturation (A6), and the finalizer run time against its 15 s deadline (A1)."
       - "One soak ranks the Track A items by measured cost, and the issue #24 report records the rank."
@@ -3175,7 +3191,9 @@ tasks:
       - "release-evidence.yml generates exact-run evidence; release.yml and soak-in.yml are held-state stubs; release-evidence.sh plus unit tests and the test-release-workflows.sh contract guard are in place."
   - id: TASK-013-3
     title: "Phase 2: canary publication (canary-publish.yml)"
-    status: in_progress
+    status: complete
+    completed_at: 2026-10-16
+    completion_evidence: "canary-publish.yml publishes canary prereleases from master runs, for example v0.4.46-canary.3730 on 2026-10-16."
     branch: feature/release-phase2-canary-publication
     blocked_by: []
     notes:
@@ -3195,6 +3213,7 @@ tasks:
       - "promote-release.sh and release.yml copy the stable tag and latest into OCIR as well as Docker Hub."
       - "The regress alert reuses the soak's existing ONS verdict email; promotion holds until maintainer-review.json is uploaded."
       - "2026-08-22 multi-agent review of PR #325: gate documents carry candidate_evidence_sha256 and are written from the evidence file the run kept as a same-run artifact, never a re-downloaded release asset; release-gates.sh requires that digest to equal the evidence under evaluation. A candidate soak restart must name restart_of_run_id and match the original run's soak-window artifact (candidate, attempt 0, weekend, end epoch); coverage_preserved is true only for a verified restart."
+    hygiene_note: "2026-10-16 hygiene: PR #325 merged. Open: one exact-candidate OCI validation run and one candidate weekend soak with Section 8.1 documents."
     acceptance:
       - "merge-recovery-soak.yml and oci-validation.yml consume the candidate image digest without rebuilding"
       - "The canary publisher publishes the same index digest to OCIR and Docker Hub, and evidence records the OCIR digest"
@@ -3210,6 +3229,7 @@ tasks:
       - "Section 8.1 defines the gate-evidence contract that Phase 3 must publish as candidate prerelease assets. Until Phase 3 lands, the OCI, soak, and verdict gates hold, so no candidate is promotable end to end."
       - "The regress-verdict OCI Notifications alert belongs to the soak workflow (Phase 3); the controller holds on regress until maintainer-review.json accepts it."
       - "2026-08-22 multi-agent review of PR #323: fail-closed gate evaluation (a malformed document fails its gate, the report always holds all eight gates), API-verified run identity for the OCI and soak documents, API-verified reviewer permission for maintainer-review.json, resume verifies existing release assets and refuses when a newer stable exists, latest is verified after the move, the next-version step is idempotent and keeps the token out of the remote URL, and the workflow_run resume is bound to a default-branch dispatch of a gate workflow whose marker names the evidence source. Concurrency was already serialized by the concurrency group; documented in Section 11.1."
+    hygiene_note: "2026-10-16 hygiene: PR #323 merged. Open: one live promotion of a candidate to a stable tag. Only canary prereleases exist."
     acceptance:
       - "release.yml performs exact-candidate promotion via release-gates.sh and promote-release.sh"
       - "A regress verdict publishes an OCI Notifications alert to the soak-report list and holds promotion for documented maintainer review"
@@ -3230,6 +3250,7 @@ tasks:
       - "ci.yml runs pull-request CI for bases dev, master, staging, trying, and feature/**. A member whose base is outside that set (fix/**, formal/**) gets no pull-request run; train setup requires one successful ci.yml run for head_sha from any event and dispatches one when none exists (Section 13.2 step 9)."
       - "Rehearsal candidate for the stack-train step: the key-contention stack PR #299 -> #312 -> #319 -> #311 (EPIC-016), non-publishing, no version reservation."
       - "2026-08-23 multi-agent review of PR #328: plan-ci also requires head_repository.full_name to match (the run list reports the base repository for every run); a merged member proves merge-commit reachability from integration_branch through a reach-<N>.json compare document; a member whose predecessor has merged may target integration_branch, because GitHub retargets the pull request when the merged branch is deleted; setup fails fast on a member head outside this repository. 23 rejection cases plus merged and retargeted acceptance paths."
+    hygiene_note: "2026-10-16 hygiene: PRs #328 and #321 merged. Open: the single-train and stack-train rehearsals. deployment-train.yml has no run."
     acceptance:
       - "deployment-train.yml validates manifests under .github/deployment-trains/ and starts trains"
       - "The validator accepts schema_version 1 and 2, and rejects a stack member with a foreign base, broken head ancestry, or a squash or rebase merge"
