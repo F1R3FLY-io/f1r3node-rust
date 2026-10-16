@@ -7,6 +7,7 @@
 - **Depends on:** the replication boundary of EPIC-025 (design PR #627, decision D7) and the lifecycle runtime of PR #651
 - **Mechanisms:** F1r3fly CbC Casper (`cbc-casper`) first. The RGB peer clique (`peer-clique`), Casanova (`casanova`), and Cordial Miners (`cordial-miners`) have provisions in section 11.
 - **Evidence source:** EPIC-021 and the issue #24 comments from 2026-08-27 to 2026-10-16
+- **Related design:** [Breaking the Validator Stall Loop](https://github.com/F1R3FLY-io/publications/blob/main/cost-accounting/stall-loop-design.pdf) (draft, 2026-10-16). Section 10.4 gives its effect on this design.
 - **Vocabulary:** [docs/Glossary.md](../Glossary.md). The new terms in section 20 go into the glossary when this design is approved.
 
 ---
@@ -277,6 +278,9 @@ The `cbc-casper` adapter supplies the first `AdaptationDescriptor`. The binding 
 | Fresh-deploy escalation delays | 120 s and 300 s | Derived from the measured selection age against the deadline of the active soak profile, or removed if the closed loop replaces them |
 | Heartbeat wait before a proposal | Fixed by configuration | Bounded control. Shorter when deploys wait, longer when the node is idle. |
 | Merge and replay concurrency | Fixed | Bounded control, from the CPU signals |
+| Proposal coalescing and heartbeat debounce | None. Each deploy queues its own proposal (stall-loop A2). | First a fixed rule (TASK-021-20). Later a bounded control, with the measured TASK-021-20 values as tier bounds. |
+| Floor-distance pacing and pool admission cap | None. The 256-block floor cap refuses the merge (stall-loop A3). | First fixed thresholds (TASK-021-21). Later bounded controls, with those thresholds as tier bounds. |
+| Work off the async runtime | Replay, merge, and checkpoint run on tokio workers (stall-loop A6). | First a fixed pool size (TASK-021-22). Later a bounded control from the CPU and scheduler-delay signals. |
 
 The deploy cap is a proposer choice. Other validators do not check it. So a change of the cap does not change block validity (decision A2). The design adds a CbC claim for this property (TASK-027-4).
 
@@ -287,12 +291,31 @@ The deploy cap is a proposer choice. Other validators do not check it. So a chan
 | Deploy age at selection | Time from submission to selection. This separated failing iterations with AUC 0.94 in soak 37996403003. |
 | Left-out ordinary candidates | `block-creator.ordinary-deploys.deferred` |
 | Last finalized block lag | Blocks between the tip and the last finalized block |
-| Block replay time | Time to validate a peer block |
+| Block replay time | Time to validate a peer block. On a v6 shard, the executed-root lag replaces it (section 10.4). |
 | Inclusion to finality time | Time from the first block that includes a deploy to its finalization |
 
 ### 10.3 The sustained phase
 
 In the sustained-phase failures, deploys wait after inclusion. Admission controls do not reduce this wait. TASK-021-13 attribution must find the stage first. Then the binding adds a control or a fix for that stage. This design does not choose that fix (open question Q1).
+
+### 10.4 Relation to the stall-loop design
+
+The draft design [Breaking the Validator Stall Loop](https://github.com/F1R3FLY-io/publications/blob/main/cost-accounting/stall-loop-design.pdf) (2026-10-16) traces stalls under load to one feedback loop on the finality lag. It proposes two tracks:
+
+- **Track A** (A1 to A9) fixes the loop on `dev` without cost accounting.
+- **Track B** lands cost-accounted order-then-execute for v6 shards, in about ten months.
+
+The design is a code reading, without profiling. Decisions of 2026-10-16 for issue #24:
+
+| Topic | Decision |
+|---|---|
+| Ownership of Track A | Issue #24 owns Track A. EPIC-021 holds the tasks (TASK-021-16 to TASK-021-23). |
+| Order of the work | Each Track A item is measured first (TASK-021-17). The measured rank sets the order. Soaks so far measured finalizer runs at 6 to 15 ms with no timeouts, and merger buckets at about 45 ms for each merge. |
+| Overlapping knobs (A2, A3, A6) | Fixed, measured thresholds land first. This design later puts them under the controller, with those values as tier bounds (section 10.1). |
+| Files of the cost-accounting merge | Issue #24 fixes avoid the 38 files that Track B step B1 expects to conflict where possible. A fix inside one of them carries a note for the cost-accounting lane. |
+| Cost-accounting scope in `dev` | Not decided. TASK-021-16 records a baseline before it lands, and TASK-021-23 repeats the soak after it lands. |
+
+v6 shards are outside the scope of this design (section 17). On a v6 shard, structural validity checks the sum of the phlo limits of a block against a per-block demand cap. A future v6 descriptor must therefore keep each admission ceiling at or below that protocol cap. Its replay signal becomes the lag of the executed root behind the last finalized block. Open question Q9 records this.
 
 ---
 
@@ -424,7 +447,7 @@ The allocator is part of the host class. Soak 38300649650 showed that the same b
 | Step | Task | Change | Condition |
 |---|---|---|---|
 | 1 | TASK-027-1 | This design | Architect ratification (section 2.1) |
-| 2 | TASK-027-2 | Telemetry signals and records, with no control changes | PR #651 merged into `dev` |
+| 2 | TASK-027-2 | Telemetry signals and records, with no control changes. It reuses the Track A metrics of TASK-021-17. | PR #651 merged into `dev` |
 | 3 | TASK-027-3 | Hardware probe, tier profiles, and the probe warning | Step 2 |
 | 4 | TASK-027-4 | Controller and degradation levels, and the CbC claim for I1 to I6 | Step 3 |
 | 5 | TASK-027-5 | F1r3fly CbC Casper (`cbc-casper`) binding of the admission controls | Step 4 |
@@ -497,6 +520,7 @@ The Ethereum values were checked on 2026-10-13 against the `master` branch of th
 ## 17. Non-goals
 
 - Changes to consensus parameters or block validity rules.
+- v6 shards with cost-accounted order-then-execute (section 10.4, open question Q9).
 - Shard-wide coordination of tiers between validators.
 - Central collection of telemetry.
 - GPU or accelerator tiers.
@@ -530,6 +554,7 @@ No question blocks ratification (section 2.1). The Blocks column names the first
 | Q6 | Who owns the adaptation descriptors and soak profiles of the RGB peer clique, Casanova, and Cordial Miners? EPIC-014 gives each mechanism its own test net and design record. | TASK-027-9 | The owner of each adapter owns its descriptor and its soak profile. EPIC-027 owns the controller and the `cbc-casper` binding. |
 | Q7 | Should F1r3fly CbC Casper reward timely participation? `PoS.rhox` pays epoch rewards in proportion to bond only, but Ethereum makes timely work profitable through rewards (section 16). A timeliness reward changes replicated state, so it needs its own design and a CbC claim (decision A2). | No EPIC-027 task | Leave it open, and start a separate design if the shard needs a timeliness incentive. |
 | Q8 | Does the close-out of issue #24 wait for this design? Decisions A5 and A6 give it to EPIC-027, but soak 38501465484 measured 1.9% without a controller (section 3). | TASK-027-8 | Keep A5 and A6 for ratification, and decide Q8 after the first full-length soak with PR #741. If that soak meets gates 1 and 2 of section 14.1 and TASK-021-13 resolves Q1, close issue #24 under EPIC-021 and keep EPIC-027 for US-012. |
+| Q9 | Does a v6 shard get its own adaptation descriptor? Under cost-accounted order-then-execute, the per-block demand cap is a validity rule, and replay leaves the consensus path (section 10.4). | A v6 binding, outside EPIC-027 | Decide when the cost-accounting scope in `dev` is decided. A v6 descriptor keeps each admission ceiling at or below the protocol demand cap. |
 
 ---
 
