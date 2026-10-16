@@ -1883,6 +1883,12 @@ jobs:
       # other.
       group: merge-recovery-soak-${{ needs.schedule_gate.outputs.preflight_only == 'true' && format('preflight-only-{0}', github.run_id) || needs.schedule_gate.outputs.kind }}
       cancel-in-progress: true
+    # A composite action cannot read the vars context, so the soak-segment
+    # action inherits this value from the job. The node I/O sampler
+    # (scripts/bench/sample-node-io.sh, issue #24) runs only when the
+    # repository variable SOAK_IO_DIAGNOSTICS is 1.
+    env:
+      SOAK_IO_DIAGNOSTICS: ${{ vars.SOAK_IO_DIAGNOSTICS == '1' && '1' || '0' }}
     steps:
       - name: Record soak job start
         shell: bash -euo pipefail {0}
