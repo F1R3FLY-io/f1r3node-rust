@@ -21,6 +21,7 @@
 
 @startuml native-external-record-replay-sequence
 !include palette.iuml
+footer DR-131: host-work metering is removed (75de2dc39). The host-work parts of this diagram are historical.
 !theme plain
 $ca_base_skin()
 

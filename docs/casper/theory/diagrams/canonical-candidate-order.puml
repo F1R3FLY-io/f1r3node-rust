@@ -29,6 +29,7 @@ skinparam ActivityBorderColor #333333
 skinparam ActivityDiamondBackgroundColor $ca_control
 skinparam ActivityDiamondBorderColor #333333
 title Canonical candidate order of replay: source hash first, digest only for ties (DR-75, DR-129)
+footer DR-131: host-work metering is removed (75de2dc39). The host-work parts of this diagram are historical.
 
 start
 :read the candidates of one channel (or channel group)

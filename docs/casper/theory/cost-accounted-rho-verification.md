@@ -1,5 +1,7 @@
 # Formal Verification of Cost-Accounted Rho Calculus
 
+**Note (DR-131).** Host-work metering is removed (`75de2dc39`). The host-work content of this document is historical. Restore: `git revert 75de2dc39`.
+
 > **Branch scope.** This record covers formal and native verification on
 > `feature/cost-accounted-rho`. The current worktree connects direct-REV
 > ingress, guarded publication, the evidence codec, and independent node

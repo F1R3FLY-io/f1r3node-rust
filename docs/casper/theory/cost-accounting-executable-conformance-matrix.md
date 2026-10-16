@@ -1,5 +1,7 @@
 # Executable Conformance Matrix for Cost-Accounted Rho
 
+**Note (DR-131).** Host-work metering is removed (`75de2dc39`). The host-work content of this document is historical. Restore: `git revert 75de2dc39`.
+
 ## Scope
 
 This matrix tracks the native rho instance of the cost construction described

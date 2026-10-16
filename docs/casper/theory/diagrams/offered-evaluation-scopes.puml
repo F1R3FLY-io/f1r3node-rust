@@ -19,6 +19,7 @@ skinparam rectangle {
 skinparam ArrowColor $ca_neutral
 left to right direction
 title Evaluation scopes without the legacy meter (DR-66)
+footer DR-131: host-work metering is removed (75de2dc39). The host-work parts of this diagram are historical.
 
 rectangle "**Historical body-only**\nlegacy deploy body" as LegacyReq $ca_supply
 rectangle "**Genesis replay**\nvalidator replay of genesis" as GenesisReplayReq $ca_supply

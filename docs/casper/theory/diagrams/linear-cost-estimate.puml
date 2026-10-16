@@ -30,6 +30,7 @@ skinparam ActivityDiamondBackgroundColor $ca_control
 skinparam ActivityDiamondBorderColor #333333
 skinparam PartitionBackgroundColor #FAFAFA
 title The linear pre-execution cost estimate of one offered deploy
+footer DR-131: host-work metering is removed (75de2dc39). The host-work parts of this diagram are historical.
 
 start
 partition "1 · Inputs (the producer and every validator)" {

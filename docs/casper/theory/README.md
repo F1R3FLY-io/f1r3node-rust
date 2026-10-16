@@ -28,5 +28,7 @@ is their umbrella index.
 
 The [deterministic host-work specification](./host-work-budget.md) defines
 the node-work limits that protect cost-accounted play and replay.
+**Removed by DR-131 (`75de2dc39`).** This branch no longer meters host
+work. Restore: `git revert 75de2dc39`.
 
 [← Back to the Casper documentation map](../README.md)

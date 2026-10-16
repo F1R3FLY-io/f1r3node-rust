@@ -38,6 +38,10 @@ Native accounting uses stable arena positions and reserves lookup, growth, and i
 **Preferred usage.** Use this term for the private native-accounting indexes.
 *Distinguish from* the immutable sorted indexes used to check imported budget traces.
 
+**Note (DR-131).** This branch removed host-work metering (`75de2dc39`). The
+three host-work terms below name the host-work API that `dev` keeps. Restore
+the metering of this branch with `git revert 75de2dc39`.
+
 ### Host-work unit
 
 A host-work unit measures one deterministic part of node work.

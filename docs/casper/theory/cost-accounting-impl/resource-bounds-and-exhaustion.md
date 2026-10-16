@@ -1,5 +1,7 @@
 # Resource bounds and exhaustion
 
+**Note (DR-131).** Host-work metering is removed (`75de2dc39`). The host-work content of this document is historical. Restore: `git revert 75de2dc39`.
+
 ## Purpose
 
 A signed spending limit is consent, not proof that an operation has sufficient resources.

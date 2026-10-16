@@ -4306,6 +4306,8 @@ item 1, and the decision above stays.
 
 ## DR-66 — Protocol-6 test genesis is activated, and the legacy meter is retired
 
+**Note (DR-131).** Host-work metering is removed (`75de2dc39`). The mentions of host work in this record are historical.
+
 **Status.** Adopted 2026-10-03 as decision D3 of epic 8946, by the user
 directive "Activate tests; offered-only". Batch B5 (gap G4) implements the
 test activation in stages. The offered-only production rule is implemented.
@@ -4366,6 +4368,8 @@ suite passes on the activated harness.
 `ofp-3-test-activation`.
 
 ## DR-67 — Stack safety covers the recursion that cost accounting adds
+
+**Note (DR-131).** Host-work metering is removed (`75de2dc39`). The mentions of host work in this record are historical.
 
 **Status.** Adopted 2026-10-03 as decision D4 of epic 8946 ("cost-accounting
 only"). Batch B2 implements it.
@@ -4741,6 +4745,8 @@ out with a reason.
 
 ## DR-71 — The exploratory cost estimate is a native unfunded dry run
 
+**Note (DR-131).** Host-work metering is removed (`75de2dc39`). The mentions of host work in this record are historical.
+
 **Status.** Adopted 2026-10-03 as decision D8 of epic 8946. Batch B5
 implements it.
 
@@ -4760,6 +4766,8 @@ root unchanged.
 **Cross-refs.** DR-64, DR-66. Leaf `ofp-5-exploratory-dry-run`.
 
 ## DR-72 — A failing offered candidate is quarantined, and the proposer tries the next one
+
+**Note (DR-131).** Host-work metering is removed (`75de2dc39`). The mentions of host work in this record are historical.
 
 **Status.** Implemented 2026-10-04 for register item I4 of epic 8946 (batch
 B0).
@@ -4945,6 +4953,8 @@ checks the adopted version against the real `GenesisResourcePolicy::adopt`.
 
 ## DR-74 — Native evidence encodes each causal path as a delta from the previous path
 
+**Note (DR-131).** Host-work metering is removed (`75de2dc39`). The mentions of host work in this record are historical.
+
 **Status.** Implemented 2026-10-04 for register item I7 of epic 8946 (batch
 B0).
 
@@ -5062,6 +5072,8 @@ The example tests `canonical_recording_and_journal_round_trip`,
 `ofp-2-limit-envelope`, and `ofp-1-baseline-verify-codec`.
 
 ## DR-75 — RSpace candidates are ordered by source hash, and only ties are digested
+
+**Note (DR-131).** Host-work metering is removed (`75de2dc39`). The mentions of host work in this record are historical.
 
 **Status.** Implemented 2026-10-04 for register item I1 of epic 8946 (batch
 B1).
@@ -5281,6 +5293,8 @@ changes:
 
 ## DR-76 — The metered COMM observation charges only what it reads
 
+**Superseded by DR-131.** Host-work metering is removed (`75de2dc39`). The charge rules of this record no longer apply. Restore: `git revert 75de2dc39`.
+
 **Status.** Implemented 2026-10-04 for cap root cause C12 of epic 8946
 (batch B1, phase A).
 
@@ -5385,6 +5399,8 @@ fails at the gateway call, as before. That failure is register item G3.
 `ofp-2-cap-root-causes`.
 
 ## DR-77 — Tree growth charges the increment of the tree backing
+
+**Superseded by DR-131.** Host-work metering is removed (`75de2dc39`). The charge rules of this record no longer apply. Restore: `git revert 75de2dc39`.
 
 **Status.** Implemented 2026-10-04 for cap root cause C13 of epic 8946
 (batch B1, phase A).
@@ -5507,6 +5523,8 @@ move bound.
 `ofp-2-cap-root-causes`.
 
 ## DR-78 — Produce-counter lookups charge the B-tree search bound
+
+**Superseded by DR-131.** Host-work metering is removed (`75de2dc39`). The charge rules of this record no longer apply. Restore: `git revert 75de2dc39`.
 
 **Status.** Implemented 2026-10-04 for cap root cause C3 of epic 8946
 (batch B1, phase A).
@@ -5705,6 +5723,8 @@ show that every reservation comes before the state changes.
 `ofp-2-cap-root-causes`.
 
 ## DR-79 — Replay authority tree visits charge the B-tree bound of the live map size
+
+**Superseded by DR-131.** Host-work metering is removed (`75de2dc39`). The charge rules of this record no longer apply. Restore: `git revert 75de2dc39`.
 
 **Status.** Implemented 2026-10-04 for cap root cause C14 of epic 8946
 (batch B1, phase A).
@@ -5932,6 +5952,8 @@ stays recorded in pgmcp, and this change does not alter it.
 
 ## DR-81 — Native continuation reads share the cached payloads
 
+**Changed by DR-131.** Host-work metering is removed (`75de2dc39`). The host-work charges of this record no longer apply. Its other parts stay. Restore: `git revert 75de2dc39`.
+
 **Status.** Implemented 2026-10-04 for cap root cause C1 of epic 8946
 (batch B1, phase B).
 
@@ -5999,6 +6021,8 @@ Tests in `hot_store/native/tests.rs`:
 **Cross-refs.** DR-75, DR-79. Leaf `ofp-2-cap-c1-shared-continuation-reads`.
 
 ## DR-82 — Native data reads use copy-free shard snapshots
+
+**Changed by DR-131.** Host-work metering is removed (`75de2dc39`). The host-work charges of this record no longer apply. Its other parts stay. Restore: `git revert 75de2dc39`.
 
 **Status.** Implemented 2026-10-05 for cap root cause C2 of epic 8946
 (batch B1, phase B).
@@ -6069,6 +6093,8 @@ incoming value into its result (DR-107).
 **Cross-refs.** DR-81. Leaf `ofp-2-cap-c2-data-views`.
 
 ## DR-83 — Continuation-shard replaces count store-owned pointers inline
+
+**Changed by DR-131.** Host-work metering is removed (`75de2dc39`). The host-work charges of this record no longer apply. Its other parts stay. Restore: `git revert 75de2dc39`.
 
 **Status.** Implemented 2026-10-05 for cap root cause C5 of epic 8946
 (batch B1, phase B). Its gate H8 holds: in the phase A probe,
@@ -6232,6 +6258,8 @@ Tests:
 
 ## DR-85 — Causal paths carry a chained digest, and the recording index compares digests
 
+**Changed by DR-131.** Host-work metering is removed (`75de2dc39`). The host-work charges of this record no longer apply. Its other parts stay. Restore: `git revert 75de2dc39`.
+
 **Status.** Implemented 2026-10-05 for cap root cause C7a of epic 8946
 (batch B1, phase C). Its gate H5 holds: in the phase B probe, the recording
 occurrence index was 33.6% of the producer execution budget's
@@ -6306,6 +6334,8 @@ Tests:
 **Cross-refs.** DR-74, DR-84. Leaf `ofp-2-cap-c7a-path-digests`.
 
 ## DR-86 — Native evidence interns its causal paths in one hash-consed trie
+
+**Changed by DR-131.** Host-work metering is removed (`75de2dc39`). The host-work charges of this record no longer apply. Its other parts stay. Restore: `git revert 75de2dc39`.
 
 **Status.** Implemented 2026-10-05 for cap root cause C7b of epic 8946
 (batch B1, phase C).
@@ -6488,6 +6518,8 @@ gateway funding flow itself is measured in the phase C probe.
 
 ## DR-88 — Candidate selection charges only what the matcher reads
 
+**Superseded by DR-131.** Host-work metering is removed (`75de2dc39`). The charge rules of this record no longer apply. Restore: `git revert 75de2dc39`.
+
 **Status.** Implemented 2026-10-05 for Phase D item D-A1 of epic 8946
 (D-M1 and D-M6 of the Phase D plan).
 
@@ -6575,6 +6607,8 @@ owned result, with a second block inspection (DR-109, decision 5).
 observation), DR-81, DR-82. Leaf `ofp-2-cap-d-a1-commit-check-reads`.
 
 ## DR-89 — Replay authority charges only the reads and copies it makes
+
+**Superseded by DR-131.** Host-work metering is removed (`75de2dc39`). The charge rules of this record no longer apply. Restore: `git revert 75de2dc39`.
 
 **Status.** Implemented 2026-10-05 for Phase D item D-A2 of epic 8946
 (D-O4 and D-O5 of the Phase D plan).
@@ -6675,6 +6709,8 @@ slot at birth.
 
 ## DR-90 — The stored consume's duplicate check compares source hashes first
 
+**Note (DR-131).** Host-work metering is removed (`75de2dc39`). The mentions of host work in this record are historical.
+
 **Status.** Implemented 2026-10-05 for Phase D item D-A4 of epic 8946
 (D-S4 of the Phase D plan; the conditional fix C11 of phase B, whose gate is
 now met).
@@ -6735,6 +6771,8 @@ The existing stored-consume test, which stores continuations with equal
 
 ## DR-91 — Bound values move out of the owned free map
 
+**Note (DR-131).** Host-work metering is removed (`75de2dc39`). The mentions of host work in this record are historical.
+
 **Status.** Implemented 2026-10-05 for Phase D item D-A3 of epic 8946 (D-M4
 of the Phase D plan).
 
@@ -6791,6 +6829,8 @@ Tests in `matcher/match.rs`:
 **Cross-refs.** DR-88. Leaf `ofp-2-cap-d-a3-bound-values-by-move`.
 
 ## DR-92 — Walker block accounting and the chunked worklist
+
+**Superseded by DR-131.** Host-work metering is removed (`75de2dc39`). The charge rules of this record no longer apply. Restore: `git revert 75de2dc39`.
 
 **Status.** Implemented 2026-10-05 for Phase D items D-B1 and D-B3 of epic
 8946 (D-O1 parts 1 and 3 of the Phase D plan). No call site uses the block
@@ -6966,6 +7006,8 @@ releases). Leaves `ofp-2-cap-d-b1-walker-block-api` and
 
 ## DR-93 — Nested prost encodes charged by depth
 
+**Superseded by DR-131.** Host-work metering is removed (`75de2dc39`). The charge rules of this record no longer apply. Restore: `git revert 75de2dc39`.
+
 **Status.** Implemented 2026-10-05 for Phase D item D-B2 of epic 8946
 (D-O6 of the Phase D plan). This item is a soundness prerequisite of the
 walker block mode (DR-92) at encode sites.
@@ -7101,6 +7143,8 @@ reservation (DR-110, recorded gaps).
 **Cross-refs.** DR-92. Leaf `ofp-2-cap-d-b2-nested-encode-charge`.
 
 ## DR-94 — Stage A walker sites in block mode
+
+**Superseded by DR-131.** Host-work metering is removed (`75de2dc39`). The charge rules of this record no longer apply. Restore: `git revert 75de2dc39`.
 
 **Status.** Implemented 2026-10-06 for Phase D item D-B4 of epic 8946 (D-O1
 Stage A of the Phase D plan).
@@ -7302,6 +7346,8 @@ birth (Rule S, DR-111, decision 4).
 `ofp-2-cap-d-b4-walker-stage-a`.
 
 ## DR-95 — History decode charged by the decoded structure
+
+**Superseded by DR-131.** Host-work metering is removed (`75de2dc39`). The charge rules of this record no longer apply. Restore: `git revert 75de2dc39`.
 
 **Status.** Implemented for Phase D item D-C1 of epic 8946 (D-S2 of the
 Phase D plan): part 1 (D-C1a), part 2 (D-C1b) and part 3 (D-C1c),
@@ -7529,6 +7575,8 @@ the same certified mergeable map. See DR-102.
 `ofp-2-cap-d-c1b-exact-decode-model` and `ofp-2-cap-d-c1c-switch-decode-sites`.
 
 ## DR-96 — Digest-keyed ordered index for the native session store
+
+**Changed by DR-131.** Host-work metering is removed (`75de2dc39`). The host-work charges of this record no longer apply. Its other parts stay. Restore: `git revert 75de2dc39`.
 
 **Status.** Implemented for Phase D item D-C2 of epic 8946 (D-S1 of the
 Phase D plan). Parts 1 to 5 (D-C2a to D-C2e) implemented 2026-10-06.
@@ -7947,6 +7995,8 @@ DR-110 reserves that pass (decision 5).
 
 ## DR-97 — Dirty-key export of the native session store by reference
 
+**Changed by DR-131.** Host-work metering is removed (`75de2dc39`). The host-work charges of this record no longer apply. Its other parts stay. Restore: `git revert 75de2dc39`.
+
 **Status.** Implemented for Phase D item D-C3 of epic 8946 (D-S3 of the
 Phase D plan) on 2026-10-06.
 
@@ -8092,6 +8142,8 @@ this change on 2026-10-06, with the provisional caps.
 `ofp-2-cap-d-c3-dirty-export`.
 
 ## DR-98 — Metered settlement reads without the cold fill
+
+**Superseded by DR-131.** Host-work metering is removed (`75de2dc39`). The charge rules of this record no longer apply. Restore: `git revert 75de2dc39`.
 
 **Status.** Implemented for Phase D item D-C4 of epic 8946 (D-S5 of the
 Phase D plan) on 2026-10-06.
@@ -8404,6 +8456,8 @@ Tests:
 
 ## DR-100 — Replay charges that depend on neither the schedule nor a random shard
 
+**Superseded by DR-131.** Host-work metering is removed (`75de2dc39`). The charge rules of this record no longer apply. Restore: `git revert 75de2dc39`.
+
 **Status.** Implemented for Phase D item D-C5a of epic 8946 on 2026-10-06.
 The user amended the leaf: the two measured causes replace the trace-known
 bounds that the plan proposed.
@@ -8536,6 +8590,8 @@ here.
 **Cross-refs.** DR-79, DR-96, DR-98. Leaf `ofp-2-cap-d-c5a-trace-known-bounds`.
 
 ## DR-101 — System residue is never charged to an earlier deployment
+
+**Note (DR-131).** Host-work metering is removed (`75de2dc39`). The mentions of host work in this record are historical.
 
 **Status.** Implemented for bug 10056 in Phase D of epic 8946 on 2026-10-06.
 The user chose to review the design before the implementation. One
@@ -8842,6 +8898,8 @@ re-enabled and passes.
 
 ## DR-102 — One replay charge for every role, and acceptance work on its own budget
 
+**Superseded by DR-131.** Host-work metering is removed (`75de2dc39`). The charge rules of this record no longer apply. Restore: `git revert 75de2dc39`.
+
 **Status.** Implemented for Phase D item D-C5b of epic 8946 on 2026-10-07.
 The user chose to review the design before the implementation. A design
 pass and one independent review approved the design with changes. This
@@ -9093,6 +9151,8 @@ amendment of DR-100 states both causes.
 `ofp-2-cap-d-c5b-acceptance-attribution-test`.
 
 ## DR-103 — Free-map bindings charge B-tree bounds, not whole-map walks
+
+**Superseded by DR-131.** Host-work metering is removed (`75de2dc39`). The charge rules of this record no longer apply. Restore: `git revert 75de2dc39`.
 
 **Status.** Part 1 implemented 2026-10-07 for Phase D item D-D1a of epic
 8946 (D-D1 of the Phase D plan). Part 2, the in-place merge of a remainder
@@ -9487,6 +9547,8 @@ start from the backing of the cloned map.
 
 ## DR-104 — The matcher reads by reference instead of copying
 
+**Changed by DR-131.** Host-work metering is removed (`75de2dc39`). The host-work charges of this record no longer apply. Its other parts stay. Restore: `git revert 75de2dc39`.
+
 **Status.** Implemented 2026-10-07 for Phase D item D-D2 of epic 8946 (D-M8
 of the Phase D plan). A read-only design pass checked the approved design
 against the current code and corrected it in four places. This record
@@ -9689,6 +9751,8 @@ moves the matcher's walker calls to block mode. Leaf
 
 ## DR-105 — A free-variable pattern binds its target directly
 
+**Changed by DR-131.** Host-work metering is removed (`75de2dc39`). The host-work charges of this record no longer apply. Its other parts stay. Restore: `git revert 75de2dc39`.
+
 **Status.** Implemented 2026-10-07 for Phase D item D-D3 of epic 8946 (D-M9
 of the Phase D plan). A read-only design pass checked the approved design
 against the code after DR-103 and DR-104 and corrected it in five places.
@@ -9871,6 +9935,8 @@ copies (DR-109, decision 2).
 `ofp-2-cap-d-d3-free-variable-fast-path`.
 
 ## DR-106 — The selection reads recorded channel positions, and the entries borrow their channels
+
+**Changed by DR-131.** Host-work metering is removed (`75de2dc39`). The host-work charges of this record no longer apply. Its other parts stay. Restore: `git revert 75de2dc39`.
 
 **Status.** Implemented 2026-10-07 for Phase D item D-D4 of epic 8946 (D-M7
 of the Phase D plan). A read-only design pass checked the approved design
@@ -10074,6 +10140,8 @@ to 4.38 in VerificationBytes and 1.04 in SearchStateBytes.
 `ofp-2-cap-d-d4-channel-positions`.
 
 ## DR-107 — The produce selection borrows its incoming datum and moves the value into the result
+
+**Changed by DR-131.** Host-work metering is removed (`75de2dc39`). The host-work charges of this record no longer apply. Its other parts stay. Restore: `git revert 75de2dc39`.
 
 **Status.** Implemented 2026-10-07 for Phase D item D-D5 of epic 8946 (D-M5
 of the Phase D plan). A read-only design pass checked the approved design
@@ -10316,6 +10384,8 @@ original SearchStateBytes cap.
 `ofp-2-cap-d-d5-incoming-datum`.
 
 ## DR-108 — The chained worklist slot, the shared-pointer release and the RSpace walker sites in block mode
+
+**Superseded by DR-131.** Host-work metering is removed (`75de2dc39`). The charge rules of this record no longer apply. Restore: `git revert 75de2dc39`.
 
 **Status.** Part 1, the walker (decisions 1 and 2), implemented 2026-10-07
 for Phase D item D-E1 of epic 8946 (D-O1 Stage B). Part 2, the walker sites
@@ -10791,6 +10861,8 @@ and the footprint pass over the join channels without a payment.
 `ofp-2-cap-d-e1-rspace-sites`.
 
 ## DR-109 — The matcher walker sites in block mode, with second traversals for membership scans
+
+**Superseded by DR-131.** Host-work metering is removed (`75de2dc39`). The charge rules of this record no longer apply. Restore: `git revert 75de2dc39`.
 
 **Status.** Part 1, the walker sites of the rholang matcher (decisions 1 to
 6), implemented 2026-10-08 for Phase D item D-E2 of epic 8946 (D-O1 Stage
@@ -11307,6 +11379,8 @@ bug 475811 stays open.
 
 ## DR-110 — The accounting and interpreter walker sites in block mode, with reservations of their own for the RSpace footprint and the join keys
 
+**Superseded by DR-131.** Host-work metering is removed (`75de2dc39`). The charge rules of this record no longer apply. Restore: `git revert 75de2dc39`.
+
 **Status.** Implemented 2026-10-08 for Phase D item D-E3 of epic 8946 (D-O1
 Stage B). A read-only design pass took the inventory of the walker sites in
 the rholang accounting and interpreter code and audited each site against
@@ -11721,6 +11795,8 @@ DR-109. Leaf `ofp-2-cap-d-e3-accounting-sites`. Bug
 
 ## DR-111 — The sorter, set and map construction and Casper walker sites in block mode, with the score-tree release prepaid at birth
 
+**Superseded by DR-131.** Host-work metering is removed (`75de2dc39`). The charge rules of this record no longer apply. Restore: `git revert 75de2dc39`.
+
 **Status.** Implemented 2026-10-08 for Phase D item D-E4 of epic 8946 (D-O1
 Stage B). A read-only design pass took the inventory of the remaining
 per-level walker calls and audited each site against DR-94. The
@@ -12062,6 +12138,8 @@ equality.
 
 ## DR-112 — The per-level walker becomes a test oracle (the global switch)
 
+**Superseded by DR-131.** Host-work metering is removed (`75de2dc39`). The charge rules of this record no longer apply. Restore: `git revert 75de2dc39`.
+
 **Status.** Implemented 2026-10-08 for Phase D item D-E5 of epic 8946, the
 last item of D-O1 Stage B. By user decision, the oracle stays reachable
 through a cargo feature that only test builds enable ("Feature for test
@@ -12211,6 +12289,8 @@ predicts.
 
 ## DR-113 — Exhaustion of the signed limit is a classified user failure
 
+**Note (DR-131).** Host-work metering is removed (`75de2dc39`). The mentions of host work in this record are historical.
+
 **Status.** Implemented 2026-10-09 for epic 8946. It implements the exhaustion
 row that DR-64 adopted. By user decision it follows DR-115 ("Fix R1 first") and
 comes before DR-114 ("DR-64, then the ban removal").
@@ -12312,6 +12392,8 @@ caller keep `Certificate`.
 `cost-accounting-impl/economic-failure-policy-decisions.md`.
 
 ## DR-114 — Native funded execution records and replays external-service replies
+
+**Changed by DR-131.** Host-work metering is removed (`75de2dc39`). The host-work charges of this record no longer apply. Its other parts stay. Restore: `git revert 75de2dc39`.
 
 **Status.** Implemented 2026-10-09 for epic 8946 (pgmcp item 10904). By user
 decision it follows DR-115 ("Fix R1 first") and DR-113 ("DR-64, then the ban
@@ -12642,6 +12724,8 @@ repetition key together, so E1 sees equal copies.
 `cost-accounting-impl/economic-failure-observation.md`.
 
 ## DR-115 — A failed offered deploy keeps its committed settlement in the merge index
+
+**Note (DR-131).** Host-work metering is removed (`75de2dc39`). The mentions of host work in this record are historical.
 
 **Status.** Implemented 2026-10-08 for bug 10986 (R1) of epic 8946. By user
 decision it lands before DR-113 and DR-114 ("Fix R1 first"). The numbers
@@ -12988,6 +13072,8 @@ These tests stay on legacy deploys:
 
 ## DR-117 — Each COMM authority region is validated once (the canonical authority witness)
 
+**Changed by DR-131.** Host-work metering is removed (`75de2dc39`). The host-work charges of this record no longer apply. Its other parts stay. Restore: `git revert 75de2dc39`.
+
 **Status.** Implemented 2026-10-09 for Phase D item D-F1 of epic 8946
 (`ofp-2-cap-d-f1-canonical-authority`). The user chose the core scope: "Core
 only (Recommended)".
@@ -13145,6 +13231,8 @@ Validations of one region of a granted COMM:
 **Cross-refs.** DR-94, DR-101, DR-110, DR-112. Phase D (`ofp-2-cap-phase-d`).
 
 ## DR-118 — An introduction reuses the reducer's measurement of its value
+
+**Changed by DR-131.** Host-work metering is removed (`75de2dc39`). The host-work charges of this record no longer apply. Its other parts stay. Restore: `git revert 75de2dc39`.
 
 **Status.** Implemented 2026-10-09 for Phase D item D-F2 of epic 8946
 (`ofp-2-cap-d-f2-introduction-measurement`). The user approved the design
@@ -13308,6 +13396,8 @@ commit for D-F2a and D-F2b ("One commit (Recommended)").
 **Cross-refs.** DR-76, DR-94, DR-110, DR-117. Phase D (`ofp-2-cap-phase-d`).
 
 ## DR-119 — Cost cursors take a creation lock per bucket, and an existing cursor takes no lock (bug 11004)
+
+**Note (DR-131).** Host-work metering is removed (`75de2dc39`). The mentions of host work in this record are historical.
 
 **Status.** Implemented 2026-10-10 for bug 11004 of epic 8946, as design v4
 of `G9 and bug 11004` specifies (commit C2). The user approved it on
@@ -13913,6 +14003,8 @@ allocates. DR-119 and DR-120 stay reserved.
 
 ## DR-122 — The linear pre-execution cost estimate (G1-4a)
 
+**Changed by DR-131.** Host-work metering is removed (`75de2dc39`). The host-work charges of this record no longer apply. Its other parts stay. Restore: `git revert 75de2dc39`.
+
 **Status.** Implemented 2026-10-11 for step G1-4a of gap G1 of epic 8946. It
 follows [the linear cost estimate design](cost-accounting-impl/linear-cost-estimate.md)
 and the binding amendments of 2026-10-11 to implementation map v5. The user
@@ -14474,6 +14566,8 @@ lane in every run.
 
 ## DR-123 — The check before execution of an offered deploy (G1-4b)
 
+**Changed by DR-131.** Host-work metering is removed (`75de2dc39`). The host-work charges of this record no longer apply. Its other parts stay. Restore: `git revert 75de2dc39`.
+
 **Status.** Implemented 2026-10-11 for step G1-4b of gap G1 of epic 8946. It
 follows section 6 of
 [the linear cost estimate design](cost-accounting-impl/linear-cost-estimate.md)
@@ -14703,6 +14797,8 @@ restores its pre-state and pays nothing.
 **Cross-refs.** DR-5, DR-64, DR-65, DR-102, DR-113, DR-122, DR-124.
 
 ## DR-124 — The live check holds only the client's demand (G1-6)
+
+**Note (DR-131).** Host-work metering is removed (`75de2dc39`). The mentions of host work in this record are historical.
 
 **Status.** Implemented 2026-10-11 for step G1-6 of gap G1 of epic 8946. It
 makes the check of DR-123 live in play and in every replay. It amends DR-113
@@ -15063,6 +15159,8 @@ Design sections 5.3, 6, 7, 9 and 16 of
 
 ## DR-125 — A call of an unknown method is a classified user failure (bug 11008)
 
+**Note (DR-131).** Host-work metering is removed (`75de2dc39`). The mentions of host work in this record are historical.
+
 **Status.** Implemented 2026-10-12 for bug 11008 of epic 8946. The user chose
 "Reuse MethodNotDefined (Recommended)", option B of the root-cause plan.
 
@@ -15188,6 +15286,8 @@ and
 [the economic failure policy decisions](cost-accounting-impl/economic-failure-policy-decisions.md).
 
 ## DR-126 — The prepaid selection searches forward (bug 11420)
+
+**Note (DR-131).** Host-work metering is removed (`75de2dc39`). The mentions of host work in this record are historical.
 
 **Status.** Implemented 2026-10-12 for bug 11420 of epic 8946. Step H1 of G3
 design v5 (section 1.1) is the design, and the user approved the step.
@@ -15316,6 +15416,8 @@ theorem with `Print Assumptions`.
 
 ## DR-127 — The capture keys measured purse heads by lane (bug 11419)
 
+**Note (DR-131).** Host-work metering is removed (`75de2dc39`). The mentions of host work in this record are historical.
+
 **Status.** Implemented 2026-10-12 for bug 11419 of epic 8946. Step H2 of G3
 design v5 (section 1.2) is the design, and the user approved the step.
 
@@ -15419,6 +15521,8 @@ receipts, their discharge and the aggregated demand.
 [Prepaid receipt storage](cost-accounting-impl/prepaid-receipt-storage.md).
 
 ## DR-128 — Deterministic user reducer errors are classified user failures (bug 11414)
+
+**Note (DR-131).** Host-work metering is removed (`75de2dc39`). The mentions of host work in this record are historical. DR-131 runs the 32,768-term test of this record again.
 
 **Status.** Implemented 2026-10-12 for bug 11414 of epic 8946. The user
 approved the design `design-v1` with one change: the site of a partly signed
@@ -15605,6 +15709,8 @@ and
 [the economic failure policy decisions](cost-accounting-impl/economic-failure-policy-decisions.md).
 
 ## DR-129 — Play picks at random again, and replay keeps the canonical order (M34)
+
+**Note (DR-131).** Host-work metering is removed (`75de2dc39`). The mentions of host work in this record are historical.
 
 **Status.** Implemented 2026-10-13 for the M34 recheck of epic 8946. The
 user approved the M34 restoration plan on 2026-10-12, with these items:
@@ -15921,3 +16027,176 @@ approach".
 
 **Cross-refs.** DR-2, DR-129. The report to `dev` and the audit are local
 artifacts and are not in the repository.
+
+## DR-131 — Host-work metering is removed, and COMMs are the only metered operation
+
+**Status.** Decided by the user on 2026-10-14 for epic 8946. The user
+said: "Remove it entirely", "it seems the host-work metering was
+unintentional cruft and needs to be removed entirely", and "COMMs are the
+only metered operation! Bytes are metered for storage costs, but COMMs are
+the only metered form of operation!" Nothing replaces host work. The user
+also said: "prominently declare the removal of the host work meter and such
+in the commit message so it can be restored, quickly, if needed".
+
+**Terms.**
+
+- *Host work* is the second meter that this branch added beside phlo. It
+  charged the work of the node itself (copies, decodes, sorts, matches,
+  searches and comparisons) to budgets with dimensions such as
+  `SearchStateBytes`, `SearchCandidates`, `VerificationOperations` and
+  `AuthorityDepth`. A charge above a committed limit rejected the deploy or
+  the block (`HostWorkRejected`).
+- *Phlo* is the meter of the paper. It charges COMMs, and bytes for
+  storage. This record does not change phlo.
+- The *committed arm* is a copy of `HEAD` with the changes of the removal
+  and the committed size limits. The *working tree* has the provisional
+  size limits, which are not committed.
+
+**Context.**
+
+- The committed host-work limits were 268,435,456 units for each
+  dimension, 134,217,728 for `SearchStateBytes`, 1,048,576 for
+  `AuthorityDepth` and 1,073,741,824 for `VerificationOperations`
+  (`offered_funded_v6_host_work_limits`, deleted).
+- Host work rejected work that phlo accepted:
+  - Replay of a deploy on a channel with many records charged more than
+    play (bugs 11451 to 11453). The replay growth in `SearchStateBytes` was
+    107,502,390 for sends (10 to 10,000 records), 15,702,830 for receives
+    (to 1,400) and 92,364,838 for fires (to 4,000). Play growth was 0. The
+    producer's own replay then kept such deploys out of every block.
+  - The replay charge depended on the CPU count of the node (bug 11450):
+    6,375,105, 6,407,873 and 6,473,409 `VerificationBytes` at 16, 32 and
+    64 CPUs.
+  - The dense 64-source offer of `offered_source_cap_api_test.rs` never
+    reached a block.
+  - The 32,768-term test of DR-128 stopped at the verification-byte limit.
+- Bugs 11450 to 11455, 10812 and 10814 concern host-work charges. Each
+  bug gets the run evidence of this record. The user decides their status.
+
+**Decision.**
+
+1. Remove every host-work meter, budget, reservation, verdict and error of
+   this branch, in the runtime, the interpreter, rspace++, models, shared,
+   rho-pure-eval and Casper.
+2. Keep the host-work code of `dev`: `models/src/rust/host_work.rs`,
+   `rholang/src/rust/interpreter/host_work.rs` (now equal to `dev`),
+   `InterpreterError::HostWorkRejected` and its transports, as on `dev`.
+3. Keep every protocol size limit, for example the evidence limit
+   (4 MiB), the log-event limit (65,536), the 64 funding sources and the
+   65,536 assignment cells.
+4. Remove the two depth stops that host work needed: the 128-level stop of
+   the typed history decoder (D-A) and the 256-level stop of the sorter
+   meter (D-G). The recursions that they guarded became explicit-stack
+   machines before the removal (see **Conversions**).
+5. Add the early exit of the funding search (D-J). When the largest case
+   charge exceeds the exposure limit, `optimize_funding_family` returns no
+   allocation at once. Host work was the only stop of that path.
+6. Keep `fallible_sort` (D-F), the by-reference commit check of the
+   matcher (D-I) and the two-phase checkpoint.
+7. On data, an overflow keeps the error class of its site. An allocation
+   failure aborts the node, as on `dev` (D-H). Where a removed reservation
+   sized a vector, the vector uses `Vec::with_capacity`.
+
+**Conversions.** Three commits before the removal hold the stack-safe
+forms. A revert of the removal keeps them.
+
+- `254136806` (P1): the flatten and the substitution of cost signatures
+  run on an explicit stack. `StackSafeSignatureSort.v` proves that the
+  machine equals the recursive sort for every scoring function.
+- `2538d1f82` (P2a): the cold-store decode boundary for native history
+  rows.
+- `d4a3b73e1` (P2b): the explicit-stack decoder of native history rows.
+  `StackSafeHistoryDecode.v` proves that the machine and the recursive
+  decoder give the same value and the same remainder, or both fail.
+
+**The removal, step by step** (commit `75de2dc39`).
+
+| Step | Area | Result |
+|---|---|---|
+| S1 | Casper charges and verdicts | 10 files, +45/−869 |
+| S2 | Funding and settlement, with D-J | about 102 files, +1,269/−5,372 |
+| S3 | Authority, lexical, observations, estimate, failure classes, gate, producer | 45 files, +632/−6,409 |
+| S4 | Runtime, interpreter, reduce, substitution, system processes | 115 files, +1,265/−13,815 |
+| S5 | Matcher and rho-pure-eval | 13 files, +461/−3,892 |
+| S6 | rspace++ meters, and the records decoder at 7 call sites | 86 files, +1,611/−15,383 |
+| S7 | models sorter, Par types and the v6 host-work limits | 34 files, +70/−4,343 |
+| S8 | shared walker and its feature | 13 files, +14/−2,207 |
+| S9 | Tests | 4 files, +158/−47 |
+| S10 | Formal artifacts and gates | 71 files, +322/−5,391 |
+
+**Behavior after the removal.**
+
+- Replay accepts the deploys of bugs 11451 to 11453. Its phlo equals the
+  phlo of play for each shape and size (`large_channel.rs`).
+- The replay charge has no host-work part, so it no longer depends on the
+  CPU count (bug 11450).
+- The dense 64-source offer is in the next block. Every node accepts the
+  block, the receipts of the producer and a validator are equal, and the
+  fee is 1.
+- The 32,768-term test of DR-128 runs again. It passes with the committed
+  limits and with the provisional limits.
+- A map pair without a key or a value in a matched target panics, as on
+  `dev` (`par_map_type_mapper.rs:96`). Before, it was `HostWorkRejected`.
+
+**Formal artifacts.**
+
+- Retired: the Rocq and TLA+ host-work packages,
+  `check-host-work-budget-formal.sh` and `loom_host_work_budget.rs` (D-E);
+  eight Rocq theories (`WalkerBlockCharge`, `NestedEncodeCost`,
+  `NativeDecodeBacking`, `ResultBackingCoverage`,
+  `ReplayAuthorityPrepareCoverage`, `ReplayChargeScheduleInvariance`,
+  `CandidateReadCoverage`, `ReplayRoleAttribution`); the TLA+ models
+  `NativeDigestIndexCharge` and `ReplayChargeScheduleInvariance`; and the
+  invariants `PaidCopies`, `PaidDecoding`, `LivePrepaid`, `EntriesPrepaid`
+  and `EveryReleasePrepaid` with their refutation configurations.
+- Kept with a DR-131 note, because other proofs need them or because they
+  also hold results on reads: `MatcherReadsByReference`, `FreeMapBindings`,
+  `ObservationReadCoverage`, `IncrementalTreeBacking`,
+  `NativeCheckpointBacking`, `OrderedLookupBound`, `NativeSharedReads`,
+  `NativeDigestIndex`, `SerializedNativeFrontier`,
+  `PrepaidOccurrenceSelection`, `IntroductionMeasurementReuse`,
+  `ChannelPositions`, and the TLA+ models `NativeCacheBacking`,
+  `NativeTypedHistory` and `NativeSharedReadCleanup`.
+- New: `FundingFamilyEarlyExit.v` (D-J). The padded sum of every node is
+  at least the charge of each case, so a charge above the exposure limit
+  admits no node. The negative control replaces the maximum with the
+  minimum.
+- The proof gate covers 287 modules, 112,412 lines and 5,782 proof terms,
+  with 3,290 closed assumption queries. TLC, Apalache and Loom pass on the
+  changed models.
+
+**The worst case of the funding search (D-K).** The ignored test
+`funding_search_time_at_the_protocol_size_limits` times one search with
+64 sources, dense eligibility, one case and the committed obligation
+limit. One run, in the committed arm, pinned to one core:
+
+| Obligations | Cells | Time of one search |
+|---|---|---|
+| 16 | 1,024 | 46.1 s |
+| 64 | 4,096 | 266.3 s |
+| 256 | 16,384 | 14,098.5 s |
+
+- The sweep stopped after 256 obligations, because that point took more
+  than 600 s. The load of the host rose from 20 to 46 during that point,
+  so its time is an upper value for this host.
+- Production reaches at most the first row with dense eligibility. A
+  source pays an obligation only if its permissions hold the exact key of
+  the obligation (`consent.rs:331-346`). Obligations are merged by key
+  (`obligations.rs:205-224`). The protocol allows 1,024 permissions in
+  total (`phlo_intent.rs:165-172`).
+- Before the removal, the flow solver charged host work for each edge that
+  it visited, so host work rejected such a search early. Now the search
+  runs to the end on the producer and on every validator.
+- The user decided to optimize after all the edits are complete and the
+  bugs are fixed ("we can optimize after all the edits are complete and
+  bugs fixed").
+
+**Restore.** `git revert 75de2dc39` restores host work. Revert the
+documentation commit of this record with it. The stack-safe conversions
+stay, because they do not depend on host work.
+
+**Cross-refs.** DR-76 to DR-79, DR-88, DR-89, DR-92 to DR-95, DR-98,
+DR-100, DR-102, DR-103 and DR-108 to DR-112 adopted host-work charge rules
+that this record removes. DR-128 (the restored test), DR-129 and DR-130.
+DR-132 follows: the deterministic scheduler returns to the racing
+evaluation of `dev`.

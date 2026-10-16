@@ -23,6 +23,7 @@ skinparam sequence {
   BoxBorderColor #999999
 }
 title One replay charge for every role (DR-102)
+footer DR-131: host-work metering is removed (75de2dc39). The host-work parts of this diagram are historical.
 
 actor "Producer\n(proposer)" as Producer $ca_supply
 participant "Execution budget E\n(producer)" as Execution $ca_process

@@ -1,5 +1,7 @@
 # Linear pre-execution cost estimate of an offered deploy
 
+**Note (DR-131).** Host-work metering is removed (`75de2dc39`). The host-work content of this document is historical. Restore: `git revert 75de2dc39`.
+
 **Status.**
 
 - The user adopted this design on 2026-10-10.
