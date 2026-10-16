@@ -20,6 +20,8 @@ Each exception record has these fields:
 
 Each exception must also appear in `advisories.ignore` in `deny.toml` with a reason. The checker refuses a policy when the two lists differ.
 
+A yanked crate uses the key `<package>@<version>`, for example `[exceptions."zip@0.6.6"]`. Its `deny.toml` entry uses `crate = "zip@0.6.6"` instead of `id`. The record must list exactly that one version.
+
 ## Exception lifecycle
 
 An exception is temporary. It records a known advisory that the project cannot fix yet, and the reason why.
