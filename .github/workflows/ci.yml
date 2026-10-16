@@ -323,26 +323,49 @@ jobs:
             exit 1
           fi
 
-  # A promotion pull request into master must not use dev as its head branch.
-  # The repository deletes the head branch of a merged pull request, and GitHub
-  # then retargets every open pull request based on that branch to master. Two
-  # promotions from dev did that to every open dev pull request (2026-10-04 and
-  # 2026-10-09). `just promote` opens the promotion from a promote/* branch.
+  # A pull request must not use master or dev of this repository as its head
+  # branch. The repository deletes the head branch of a merged pull request,
+  # and GitHub then retargets every open pull request based on that branch.
+  # Two promotions from dev did that to every open dev pull request
+  # (2026-10-04 and 2026-10-09). A protected head also exposes "Update
+  # branch", which merges the base into the head through an admin bypass: on
+  # #747 (head master, base dev) it pushed dev onto master outside promotion
+  # (bf4915d57, 2026-10-16). `just promote` and `just backmerge` open these
+  # pull requests from temporary promote/* and backmerge/* branches. A fork
+  # pull request from the fork's own master or dev is accepted.
   promotion_source:
     name: Promotion Source
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions: {}
     steps:
-      - name: Reject a pull request from dev to master
+      - name: Reject a pull request with head master or dev
         env:
           EVENT_NAME: ${{ github.event_name }}
           BASE_REF: ${{ github.base_ref }}
           HEAD_REF: ${{ github.head_ref }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          REPOSITORY: ${{ github.repository }}
         run: |
-          if [ "$EVENT_NAME" = pull_request ] && [ "$BASE_REF" = master ] && [ "$HEAD_REF" = dev ]; then
-            echo "::error::Do not open a promotion with head dev. Run 'just promote' to open it from a promote/* branch."
-            exit 1
+          if [ "$EVENT_NAME" = pull_request ] && [ "$HEAD_REPO" = "$REPOSITORY" ]; then
+            case "$HEAD_REF" in
+              dev)
+                if [ "$BASE_REF" = master ]; then
+                  echo "::error::Do not open a promotion with head dev. Run 'just promote' to open it from a promote/* branch."
+                else
+                  echo "::error::Do not open a pull request with head dev. Open it from a temporary branch at the dev commit."
+                fi
+                exit 1
+                ;;
+              master)
+                if [ "$BASE_REF" = dev ]; then
+                  echo "::error::Do not open a back-merge with head master. Run 'just backmerge' to open it from a backmerge/* branch."
+                else
+                  echo "::error::Do not open a pull request with head master. Open it from a temporary branch at the master commit."
+                fi
+                exit 1
+                ;;
+            esac
           fi
           echo "Promotion source accepted: event=$EVENT_NAME base=${BASE_REF:-none} head=${HEAD_REF:-none}"
 
@@ -535,6 +558,10 @@ jobs:
       - name: Verify promotion pull request opener
         shell: bash -euo pipefail {0}
         run: .github/scripts/test-open-promotion-pr.sh
+
+      - name: Verify back-merge pull request opener
+        shell: bash -euo pipefail {0}
+        run: .github/scripts/test-open-backmerge-pr.sh
 
       - name: Verify release promotion
         shell: bash -euo pipefail {0}
