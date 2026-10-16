@@ -120,6 +120,10 @@ repin-system-integration sha:
 promote:
     bash .github/scripts/open-promotion-pr.sh
 
+# Open a master to dev back-merge PR from a temporary backmerge/* branch
+backmerge:
+    bash .github/scripts/open-backmerge-pr.sh
+
 # =================================================================
 # HELP
 # =================================================================
