@@ -280,6 +280,42 @@ fn ordered_user_deploys(deploys: &HashSet<Signed<DeployData>>) -> Vec<Signed<Dep
 
 /// Ordinary admission accounting for one deploy preparation: a disabled
 /// lane, and the ordinary candidates the selection left out.
+struct TimedDeployPoolGuard<'a> {
+    guard: parking_lot::MutexGuard<'a, KeyValueDeployStorage>,
+    acquired_at: std::time::Instant,
+}
+
+impl std::ops::Deref for TimedDeployPoolGuard<'_> {
+    type Target = KeyValueDeployStorage;
+    fn deref(&self) -> &Self::Target { &self.guard }
+}
+
+impl std::ops::DerefMut for TimedDeployPoolGuard<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target { &mut self.guard }
+}
+
+impl Drop for TimedDeployPoolGuard<'_> {
+    fn drop(&mut self) {
+        use crate::rust::metrics_constants::{
+            CASPER_METRICS_SOURCE, DEPLOY_POOL_LOCK_HOLD_TIME_METRIC,
+        };
+        metrics::histogram!(DEPLOY_POOL_LOCK_HOLD_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
+            .record(self.acquired_at.elapsed().as_secs_f64());
+    }
+}
+
+fn lock_deploy_pool(pool: &parking_lot::Mutex<KeyValueDeployStorage>) -> TimedDeployPoolGuard<'_> {
+    use crate::rust::metrics_constants::{
+        CASPER_METRICS_SOURCE, DEPLOY_POOL_LOCK_WAIT_TIME_METRIC,
+    };
+    let requested_at = std::time::Instant::now();
+    let guard = pool.lock();
+    let acquired_at = std::time::Instant::now();
+    metrics::histogram!(DEPLOY_POOL_LOCK_WAIT_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
+        .record(acquired_at.duration_since(requested_at).as_secs_f64());
+    TimedDeployPoolGuard { guard, acquired_at }
+}
+
 pub(crate) fn record_ordinary_admission(
     lane_enabled: bool,
     ordinary_candidates: usize,
@@ -587,7 +623,7 @@ async fn prepare_user_deploys_with_policy(
     let allow_ordinary_deploys = admission_policy.allow_ordinary && ordinary_cap > 0;
     let allow_in_scope_recovery =
         admission_policy.allow_in_scope_recovery && in_scope_recovery_cap > 0;
-    let mut deploy_storage_guard = deploy_storage.lock();
+    let mut deploy_storage_guard = lock_deploy_pool(&deploy_storage);
 
     let stored_unfinalized: HashSet<Signed<DeployData>> =
         if allow_ordinary_deploys || allow_in_scope_recovery {
@@ -7452,6 +7488,36 @@ mod stage_metric_tests {
         assert_eq!(count(BLOCK_CREATOR_CAP_SOURCE_HARD_METRIC), 2);
         assert_eq!(count(BLOCK_CREATOR_CAP_SOURCE_SOFT_BACKLOG_METRIC), 1);
         assert_eq!(count(BLOCK_CREATOR_CAP_SOURCE_SOFT_STALLED_METRIC), 0);
+    }
+
+    #[tokio::test]
+    async fn the_deploy_pool_lock_records_one_wait_and_one_hold_for_each_acquire() {
+        use crate::rust::metrics_constants::{
+            DEPLOY_POOL_LOCK_HOLD_TIME_METRIC, DEPLOY_POOL_LOCK_WAIT_TIME_METRIC,
+        };
+        let mut kvm =
+            rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager::new();
+        let pool = parking_lot::Mutex::new(KeyValueDeployStorage::new(&mut kvm).await.unwrap());
+        let recorder = DebuggingRecorder::new();
+        let snapshotter = recorder.snapshotter();
+        let _guard = metrics::set_default_local_recorder(&recorder);
+
+        {
+            let held = lock_deploy_pool(&pool);
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            drop(held);
+        }
+        drop(lock_deploy_pool(&pool));
+
+        let recorded = take(&snapshotter);
+        let samples = |name: &str| recorded.get(name).map(|v| v.1.clone()).unwrap_or_default();
+        assert_eq!(samples(DEPLOY_POOL_LOCK_WAIT_TIME_METRIC).len(), 2);
+        let holds = samples(DEPLOY_POOL_LOCK_HOLD_TIME_METRIC);
+        assert_eq!(holds.len(), 2);
+        assert!(
+            holds[0] >= 0.02,
+            "the first hold covers the 20 ms sleep: {holds:?}"
+        );
     }
 
     #[test]

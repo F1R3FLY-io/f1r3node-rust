@@ -10,10 +10,14 @@ artifacts:
   - casper/src/rust/finality/deploy_lifecycle.rs                        # observe and carrier-prune histograms
   - node/src/rust/instances/heartbeat_proposer.rs                       # heartbeat wake and proposal metrics
   - casper/src/rust/metrics_constants.rs                                # metric names
+  - block-storage/src/rust/deploy/key_value_deploy_storage.rs           # decoded-deploy counter of read_all (TASK-021-17)
+  - node/src/rust/instances/proposer_instance.rs                        # proposer queue depth histogram (TASK-021-17)
+  - node/src/rust/diagnostics/scheduler_delay.rs                        # runtime scheduler delay probe (TASK-021-17)
+  - scripts/bench/extend-issue24-metrics.sh                             # ISSUE24_METRICS names
 status: pending
 adapter: agentic
 mechanization: none
-task: TASK-021-13
+task: TASK-021-13, TASK-021-17
 references:
   - https://github.com/F1R3FLY-io/f1r3node-rust/issues/24   # test_load deploys not finalized within 45 s
   - GitHub Actions run 37640235959                          # 24-hour soak: high and sustained phase failures
@@ -24,6 +28,15 @@ references:
 Soak 37640235959 failed `test_load` in two phases. In the high phase, deploys waited too long for inclusion. In the sustained phase, included deploys waited too long for finalization. The soak metrics cover block replay, repeat-deploy validation, and merge selection only, so they cannot name the stage that holds a deploy.
 
 TASK-021-13 adds counters and histograms for both phases. They cover the deploy age at inclusion, the admission deferral, the empty-block skip, and the heartbeat. They also cover the finalizer runs and the LFB computation of the API. The soak harness reads counters and histograms only. This claim states that the new metrics observe the node and do not change it. The claim is pending, and no code change for these metrics starts before this file exists (EPIC-021 `cbc_policy`).
+
+TASK-021-17 (2026-10-16) extends the claim for the Track A items of the stall-loop design. Those items need four more measurements:
+
+- the wait and hold time of the deploy-pool lock
+- the signature checks of the pool reads
+- the proposer queue depth
+- the delay of the async runtime
+
+The floor distance histogram already exists, and TASK-021-17 adds it to `ISSUE24_METRICS`.
 
 ## Definitions
 
@@ -40,6 +53,8 @@ TASK-021-13 adds counters and histograms for both phases. They cover the deploy 
 
 **S2. No new shared state.** The metrics add no lock, no shared map, and no field to a consensus type. The deploy age uses the timestamp that the deploy already carries. The overlap count reads the existing `finalizer_task_in_progress` flag without a write.
 
+The pool-lock timer reads the clock only, and it does not change when the lock is taken or released. The scheduler delay probe is one task that sleeps and reads the clock. It reads no consensus state, takes no lock, and sends no message.
+
 **S3. Counting accuracy.** Each counter increments once for each event that its name states, and each histogram records one value for each measured interval:
 - `block-creator.ordinary-deploys.deferred` adds the number of ordinary candidates that the selection leaves out.
 - `finalizer.run.timeouts` adds one for each run that the 15 s backstop abandons.
@@ -47,6 +62,10 @@ TASK-021-13 adds counters and histograms for both phases. They cover the deploy 
 - `block-creator.deploy-admission.cap-source.<source>` adds one for each admission decision, under the source of its ordinary cap. The sources are normal, base, backlog, soft-backlog, soft-stalled, stale, and hard.
 - `proposer.constraints.time`, `proposer.create.time`, `proposer.validate.time`, and `proposer.effect.time` each record one value in seconds for each proposal.
 - `deploy-lifecycle.observe.time` records one value in seconds for each observed block. `deploy-lifecycle.carrier-prune.time` records one value only when the adopted floor advanced, because only then does the observe call the carrier prune.
+- `deploy-pool.lock-wait.time` records one value in seconds for each proposal preparation: the time to acquire the deploy-pool lock. `deploy-pool.lock-hold.time` records one value in seconds for the same preparation: the time from the acquire to the release.
+- `deploy-store.read-all.decoded` adds, for each `read_all` call, the number of deploys that the call decodes. The label `store` names the store. A decode in the current format verifies one signature (`deploy_codec::decode`, `DeployData::from_proto`). A legacy-format decode does not, and its existing counter counts it. The difference is the number of signature checks of the pool reads.
+- `proposer.queue.depth` records one value for each propose request that the proposer takes from its queue: the number of pending requests before the take.
+- `runtime.scheduler.delay.time` records one value in seconds for each wake of the probe: the time by which the wake is later than its 100 ms interval.
 
 **S4. Preserved properties.** The metrics do not change the properties of these existing claims on the same files:
 - CLAIM-CASPER-NODE-OBSERVATION-003 and -005 (`dispatch.rs`, `finalization_runner.rs`)
@@ -66,4 +85,6 @@ TASK-021-13 adds counters and histograms for both phases. They cover the deploy 
 3. S1 and S2: the review of the diff shows that each change adds metric calls only. The existing tests of each artifact pass without change. **Done 2026-10-07:** the diff adds metric calls, metric constants, and tests. The one restructure moves the queued-run loop of the finalizer into `drive_finalizer_runs`, with the same timeout, logs, and rerun rule. `cargo test --release -p casper -p node` passed: 1,896 tests, 0 failures, 21 ignored.
 4. S4: the existing tests of the named claims pass without change. **Done 2026-10-07:** the same run includes the heartbeat decision tests and the finalizer divergence tests, and all pass.
 5. S3 for the proposal and lifecycle metrics (PR #695): each metric has a test with a `DebuggingRecorder`. **Done 2026-10-10:** `each_ordinary_cap_decision_is_counted_under_its_source` (`block_creator.rs`), `each_propose_step_records_one_sample_in_seconds` (`proposer.rs`), and `an_observe_records_its_time_and_the_carrier_prune_only_when_it_ran` (`deploy_lifecycle.rs`). Each test failed on the missing metric before its change and passed after it. `scripts/bench/extend-issue24-metrics.sh` adds the names, so the soak reports them for each phase.
-6. Record the evidence in `docs/casper/cbc-evidence/` for each changed `cbc=mandatory` artifact and cite this claim id. **Open, after the soak.** The records of `dispatch.rs` (discharged), `heartbeat_proposer.rs` (discharged), and `block_creator.rs` (waived) pin the old file digests. New records for the four changed files supersede them.
+6. S3 for the TASK-021-17 metrics: each metric has a test with a `DebuggingRecorder`, and `test-extend-issue24-metrics.sh` checks the new names. **Open.**
+7. S1 and S2 for the TASK-021-17 metrics: the review of the diff shows metric calls, the timer, the probe task, and tests only. The existing tests of each artifact pass without change. **Open.**
+8. Record the evidence in `docs/casper/cbc-evidence/` for each changed `cbc=mandatory` artifact and cite this claim id. **Open, after the soak.** The records of `dispatch.rs` (discharged), `heartbeat_proposer.rs` (discharged), and `block_creator.rs` (waived) pin the old file digests. New records for the four changed files supersede them.

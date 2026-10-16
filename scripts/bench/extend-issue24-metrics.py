@@ -48,7 +48,7 @@ def _issue24_metric_report(metrics):
             unit = "seconds"
         elif name.endswith("_bytes"):
             unit = "bytes"
-        elif name == "block_arrival_depth":
+        elif name in ("block_arrival_depth", "compute_parents_post_state_floor_distance"):
             unit = "blocks"
         else:
             unit = "items"

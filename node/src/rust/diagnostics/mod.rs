@@ -1,6 +1,7 @@
 pub mod batch_influx_db_reporter;
 pub mod new_prometheus_reporter;
 pub mod prometheus_config;
+pub mod scheduler_delay;
 pub mod sigar_reporter;
 pub mod udp_influx_db_reporter;
 pub mod zipkin_reporter;
@@ -24,6 +25,9 @@ pub fn initialize_diagnostics(
 
     let prometheus_reporter = if conf.metrics.prometheus {
         let reporter = new_prometheus_reporter::NewPrometheusReporter::initialize()?;
+        if scheduler_delay::start_scheduler_delay_probe() {
+            info!("Runtime scheduler delay probe started.");
+        }
         Some(reporter)
     } else {
         None
