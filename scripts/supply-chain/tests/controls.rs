@@ -224,7 +224,15 @@ fn yanked_crates_require_matching_review_records_reasons_and_exact_versions() {
     let index = yanked_index(&d, "zip@3.0.0");
     d["advisories"]["ignore"][index]["reason"] = toml::Value::String(" ".into());
     assert!(policy::validate(&p, &d, today()).is_err());
-    for spec in ["zip", "zip@3", "zip@*", "@3.0.0"] {
+    for spec in [
+        "zip",
+        "zip@3",
+        "zip@*",
+        "@3.0.0",
+        " zip@3.0.0",
+        "zip @3.0.0",
+        "zip@ 3.0.0",
+    ] {
         let mut d = deny();
         let index = yanked_index(&d, "zip@3.0.0");
         d["advisories"]["ignore"][index]["crate"] = toml::Value::String(spec.into());
@@ -260,21 +268,23 @@ fn yanked_crate_reviews_are_reported_when_due() {
     assert_eq!(ids, ["zip@3.0.0"]);
 }
 
-fn yanked_not_detected(spec: &str) -> Value {
-    json!({"type":"diagnostic","fields":{"severity":"warning","code":"yanked-not-detected","message":"yanked crate was not encountered","labels":[{"span":spec}]}})
+fn package(name: &str, version: &str, source: Value) -> Value {
+    json!({"name":name,"version":version,"source":source})
 }
 
+fn crates_io() -> Value { json!("registry+https://github.com/rust-lang/crates.io-index") }
+
 #[test]
-fn reports_record_yanked_crates_that_were_not_encountered() {
+fn yanked_crates_are_present_only_as_exact_registry_packages() {
     let p = policy();
-    let result = report::validate(&report(&[yanked_not_detected("zip@0.6.6")]), &p.exceptions);
-    assert!(result.errors.is_empty());
-    assert!(result.yanked_not_detected.contains("zip@0.6.6"));
-    let mut malformed = yanked_not_detected("zip@0.6.6");
-    malformed["fields"]["labels"] = json!([]);
-    assert!(!report::validate(&report(&[malformed]), &p.exceptions)
-        .errors
-        .is_empty());
+    let metadata = json!({"packages":[
+        package("zip", "3.0.0", crates_io()),
+        package("zip", "0.6.7", crates_io()),
+        package("zip", "0.6.6", Value::Null),
+    ]});
+    let present: Vec<String> = scan::yanked_present(&metadata, &p).into_iter().collect();
+    assert_eq!(present, ["zip@3.0.0"]);
+    assert!(scan::yanked_present(&json!({"packages":[]}), &p).is_empty());
 }
 
 #[test]
@@ -292,13 +302,13 @@ fn unused_yanked_exceptions_fail_only_when_no_manifest_uses_them() {
             let lock = dir.path().join(manifest).with_file_name("Cargo.lock");
             fs::create_dir_all(lock.parent().unwrap()).unwrap();
             fs::write(lock, "version = 4\n").unwrap();
-            outputs.push(output(0, json!({"packages":[]}).to_string(), ""));
-            let records = if index == 0 && !unused_everywhere {
-                vec![]
+            let packages = if index == 0 && !unused_everywhere {
+                vec![package("zip", "3.0.0", crates_io())]
             } else {
-                vec![yanked_not_detected("zip@3.0.0")]
+                vec![]
             };
-            outputs.push(output(0, "", report(&records)));
+            outputs.push(output(0, json!({"packages":packages}).to_string(), ""));
+            outputs.push(output(0, "", report(&[])));
         }
         let fake = FakeRunner::new(outputs);
         assert_eq!(

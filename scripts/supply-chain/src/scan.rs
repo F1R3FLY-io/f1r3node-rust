@@ -95,6 +95,33 @@ pub fn validate_metadata(metadata: &Value) -> Result<()> {
     Ok(())
 }
 
+pub fn yanked_present(metadata: &Value, policy: &Policy) -> BTreeSet<String> {
+    let resolved: BTreeSet<String> = metadata
+        .get("packages")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|p| {
+            p.get("source")
+                .and_then(Value::as_str)
+                .is_some_and(|s| s.starts_with("registry+"))
+        })
+        .filter_map(|p| {
+            Some(format!(
+                "{}@{}",
+                p.get("name")?.as_str()?,
+                p.get("version")?.as_str()?
+            ))
+        })
+        .collect();
+    policy
+        .yanked
+        .keys()
+        .filter(|spec| resolved.contains(*spec))
+        .cloned()
+        .collect()
+}
+
 fn prefix(manifest: &str) -> String {
     if manifest == "Cargo.toml" {
         "workspace".into()
@@ -156,6 +183,7 @@ fn scan_manifest(
     bytes.extend(output.stderr);
     fs::write(reports.join(format!("{prefix}-deny.jsonl")), &bytes)?;
     let mut report = report::validate(std::str::from_utf8(&bytes)?, &policy.exceptions);
+    report.yanked_present = yanked_present(&parsed, policy);
     if !output.status.success() {
         report
             .errors
@@ -188,13 +216,7 @@ pub fn scan_all(root: &Path, policy: &Policy, tool: &str, runner: &impl Runner) 
     for manifest in &policy.manifests {
         let report = match scan_manifest(root, manifest, tool, &reports, policy, runner) {
             Ok(report) => {
-                yanked_used.extend(
-                    policy
-                        .yanked
-                        .keys()
-                        .filter(|spec| !report.yanked_not_detected.contains(*spec))
-                        .cloned(),
-                );
+                yanked_used.extend(report.yanked_present.iter().cloned());
                 report
             }
             Err(error) => {

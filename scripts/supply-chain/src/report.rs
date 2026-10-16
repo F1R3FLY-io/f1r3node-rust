@@ -9,7 +9,7 @@ use crate::CHECKS;
 pub struct Report {
     pub errors: Vec<String>,
     pub encountered: BTreeSet<String>,
-    pub yanked_not_detected: BTreeSet<String>,
+    pub yanked_present: BTreeSet<String>,
 }
 
 fn advisory(
@@ -100,21 +100,6 @@ pub fn validate(text: &str, exceptions: &BTreeMap<String, Exception>) -> Report 
             ));
         }
         advisory(fields, exceptions, &mut result);
-        if fields.get("code").and_then(Value::as_str) == Some("yanked-not-detected") {
-            match fields
-                .get("labels")
-                .and_then(|l| l.get(0))
-                .and_then(|l| l.get("span"))
-                .and_then(Value::as_str)
-            {
-                Some(spec) => {
-                    result.yanked_not_detected.insert(spec.into());
-                }
-                None => result
-                    .errors
-                    .push("The scanner produced an invalid yanked-crate record.".into()),
-            }
-        }
     }
     match summary {
         Some(summary)

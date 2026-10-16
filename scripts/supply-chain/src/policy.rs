@@ -86,7 +86,9 @@ pub fn reviews_due(
 
 fn exact_crate_spec(spec: &str) -> bool {
     spec.split_once('@').is_some_and(|(name, version)| {
-        !name.trim().is_empty() && semver::Version::parse(version).is_ok()
+        !name.is_empty()
+            && !name.chars().any(char::is_whitespace)
+            && semver::Version::parse(version).is_ok()
     })
 }
 
