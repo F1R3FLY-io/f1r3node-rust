@@ -45,6 +45,7 @@ async fn bonded_status(public_key: &PublicKey, node: &TestNode) -> bool {
         finalizer_task_queued: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         heartbeat_signal_ref: casper::rust::heartbeat_signal::new_heartbeat_signal_ref(),
         deploys_in_scope_cache: Arc::new(parking_lot::Mutex::new(None)),
+        v6: None,
         active_validators_cache: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
     });
     let engine = EngineWithCasper::new(casper_for_engine);
