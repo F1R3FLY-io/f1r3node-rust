@@ -72,7 +72,8 @@ async fn export_and_import_of_one_page_should_works_correctly() {
         init_start_path.clone(),
         start_skip,
         page_size,
-    );
+    )
+    .unwrap();
     let history_items = export_data.0.items;
     let data_items = export_data.1.items;
 
@@ -144,7 +145,8 @@ async fn multipage_export_should_work_correctly() {
             start_path.clone(),
             start_skip,
             page_size,
-        );
+        )
+        .unwrap();
 
         let history_items_page = export_data.0.items;
         let data_items_page = export_data.1.items;
@@ -262,7 +264,8 @@ async fn multipage_export_with_skip_should_work_correctly() {
             start_path.clone(),
             skip,
             page_size,
-        );
+        )
+        .unwrap();
 
         let history_items_page = export_data.0.items;
         let data_items_page = export_data.1.items;
@@ -347,6 +350,62 @@ async fn multipage_export_with_skip_should_work_correctly() {
     }
     let end_point = space2.create_checkpoint().await.unwrap();
     assert_eq!(end_point.root, RadixHistory::empty_root_node_hash())
+}
+
+#[tokio::test]
+async fn export_with_an_unknown_or_malformed_start_path_returns_an_error() {
+    let (space1, exporter1, _, _, _, _) = test_setup().await;
+    for i in 0..10 {
+        space1
+            .produce(format!("ch{}", i), format!("data{}", i), false)
+            .await
+            .unwrap();
+    }
+    let root = space1.create_checkpoint().await.unwrap().root;
+    let filled = |b: u8| Blake2b256Hash::from_bytes(vec![b; 32]);
+
+    let honest = RSpaceExporterItems::get_history_and_data(
+        exporter1.clone(),
+        vec![(root.clone(), None)],
+        0,
+        750,
+    )
+    .expect("an honest root request must export");
+    assert!(!honest.1.items.is_empty());
+
+    let mut prefix_size = vec![32u8];
+    prefix_size.extend(vec![0u8; 31]);
+    let malformed = [
+        vec![],
+        vec![(filled(0x42), None)],
+        vec![(root.clone(), None), (filled(1), None), (filled(2), None)],
+        vec![
+            (root.clone(), None),
+            (Blake2b256Hash::from_bytes(prefix_size), None),
+            (filled(0xFF), None),
+            (filled(0), None),
+            (filled(0), None),
+            (filled(0), None),
+        ],
+        vec![(Blake2b256Hash::from_bytes(vec![1, 2, 3]), None)],
+        vec![
+            (root.clone(), None),
+            (Blake2b256Hash::from_bytes(vec![]), None),
+            (filled(0), None),
+            (filled(0), None),
+            (filled(0), None),
+            (filled(0), None),
+        ],
+    ];
+    for start_path in malformed {
+        let len = start_path.len();
+        let result =
+            RSpaceExporterItems::get_history_and_data(exporter1.clone(), start_path, 0, 750);
+        assert!(
+            result.is_err(),
+            "a {len}-element bad start path must be an error, not a panic or an export"
+        );
+    }
 }
 
 async fn test_setup() -> (

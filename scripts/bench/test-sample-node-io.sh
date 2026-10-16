@@ -5,7 +5,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 TOOL="$ROOT/scripts/bench/sample-node-io.sh"
 TMP="$(mktemp -d)"
 SAMPLER=""
-trap '[ -z "$SAMPLER" ] || kill "$SAMPLER" 2>/dev/null; rm -rf "$TMP"' EXIT
+trap '[ -z "$SAMPLER" ] || kill "$SAMPLER" 2>/dev/null || true; rm -rf "$TMP"' EXIT
 
 fail() {
 	printf 'FAIL: %s\n' "$*" >&2
