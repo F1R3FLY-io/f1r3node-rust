@@ -250,7 +250,11 @@ where
 
         let step_start = std::time::Instant::now();
         let block_result = match casper.v6_engine() {
-            Some(engine) => engine.create_block(casper_snapshot, &self.validator, selection).await?,
+            Some(engine) => {
+                engine
+                    .create_block(casper_snapshot, &self.validator, selection)
+                    .await?
+            }
             None => {
                 self.block_creator
                     .create_block(

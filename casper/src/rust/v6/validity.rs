@@ -102,14 +102,13 @@ pub fn check_structure(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::rust::v6::body::{Attestation, Record};
     use models::rust::casper::protocol::casper_message::{Body, F1r3flyState, Header};
     use prost::bytes::Bytes;
 
-    fn h(s: &str) -> Bytes {
-        Bytes::copy_from_slice(s.as_bytes())
-    }
+    use super::*;
+    use crate::rust::v6::body::{Attestation, Record};
+
+    fn h(s: &str) -> Bytes { Bytes::copy_from_slice(s.as_bytes()) }
 
     fn block(ext: &V6Body, pre: &str, post: &str) -> BlockMessage {
         BlockMessage {
@@ -162,9 +161,7 @@ mod tests {
         }
     }
 
-    fn record(target: &str) -> Record {
-        Record::empty(h(target), h("p"), h("q"))
-    }
+    fn record(target: &str) -> Record { Record::empty(h(target), h("p"), h("q")) }
 
     #[test]
     fn a_well_formed_block_passes() {

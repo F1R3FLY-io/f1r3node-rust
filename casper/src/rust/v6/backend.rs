@@ -15,6 +15,7 @@ use rholang::rust::interpreter::rho_runtime::{RhoRuntime, RhoRuntimeImpl};
 use rholang::rust::interpreter::system_processes::BlockData;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 
+use super::body::{Record, StateHash};
 use crate::rust::errors::CasperError;
 use crate::rust::util::event_converter;
 use crate::rust::util::rholang::costacc::close_block_deploy::CloseBlockDeploy;
@@ -22,8 +23,6 @@ use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 use crate::rust::util::rholang::system_deploy_enum::SystemDeployEnum;
 use crate::rust::util::rholang::system_deploy_util;
 use crate::rust::util::rholang::tools::Tools;
-
-use super::body::{Record, StateHash};
 
 #[async_trait]
 pub trait ExecutionBackend: Send + Sync {
@@ -169,13 +168,9 @@ fn close_block(block: &BlockMessage) -> SystemDeployEnum {
     })
 }
 
-fn interp(error: InterpreterError) -> CasperError {
-    CasperError::InterpreterError(error)
-}
+fn interp(error: InterpreterError) -> CasperError { CasperError::InterpreterError(error) }
 
-fn root(hash: &StateHash) -> Blake2b256Hash {
-    Blake2b256Hash::from_bytes_prost(hash)
-}
+fn root(hash: &StateHash) -> Blake2b256Hash { Blake2b256Hash::from_bytes_prost(hash) }
 
 #[async_trait]
 impl ExecutionBackend for ConcurrentBackend {

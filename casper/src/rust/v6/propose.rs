@@ -15,9 +15,7 @@ pub struct SelectionContext<'a> {
 }
 
 pub fn select_envelopes<I>(pool: I, ctx: &SelectionContext) -> Vec<Signed<DeployData>>
-where
-    I: IntoIterator<Item = Signed<DeployData>>,
-{
+where I: IntoIterator<Item = Signed<DeployData>> {
     let earliest = ctx.next_block_number - ctx.deploy_lifespan;
     let mut candidates: Vec<Signed<DeployData>> = pool
         .into_iter()
@@ -49,10 +47,11 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crypto::rust::private_key::PrivateKey;
     use crypto::rust::signatures::secp256k1::Secp256k1;
     use crypto::rust::signatures::signatures_alg::SignaturesAlg;
+
+    use super::*;
 
     fn deploy(ts: i64, valid_after: i64, phlo_limit: i64) -> Signed<DeployData> {
         let (sk, _) = Secp256k1.new_key_pair();

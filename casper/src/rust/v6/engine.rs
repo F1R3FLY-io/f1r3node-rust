@@ -13,6 +13,12 @@ use models::rust::casper::protocol::casper_message::{
 use prost::bytes::Bytes;
 use shared::rust::store::key_value_store::KvStoreError;
 
+use super::backend::{ConcurrentBackend, ExecutionBackend};
+use super::body::{Attestation, V6Body};
+use super::core::{Action, CoreParams, EmittedBlock, Evidence, ExecutorCore};
+use super::linearizer::{Advance, Linearizer};
+use super::propose::{select_envelopes, SelectionContext};
+use super::validity::{check_structure, Limits};
 use crate::rust::blocks::proposer::propose_result::BlockCreatorResult;
 use crate::rust::blocks::proposer::proposer::DeploySelection;
 use crate::rust::casper::CasperSnapshot;
@@ -21,13 +27,6 @@ use crate::rust::finality::floor::floor_committee;
 use crate::rust::util::proto_util;
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 use crate::rust::validator_identity::ValidatorIdentity;
-
-use super::backend::{ConcurrentBackend, ExecutionBackend};
-use super::body::{Attestation, V6Body};
-use super::core::{Action, CoreParams, EmittedBlock, Evidence, ExecutorCore};
-use super::linearizer::{Advance, Linearizer};
-use super::propose::{select_envelopes, SelectionContext};
-use super::validity::{check_structure, Limits};
 
 pub struct V6Engine {
     core: parking_lot::Mutex<ExecutorCore>,
@@ -117,25 +116,17 @@ impl V6Engine {
         });
     }
 
-    pub fn wake(&self) {
-        self.wake.notify_one();
-    }
+    pub fn wake(&self) { self.wake.notify_one(); }
 
-    pub fn attestation(&self) -> Attestation {
-        self.core.lock().attestation()
-    }
+    pub fn attestation(&self) -> Attestation { self.core.lock().attestation() }
 
     pub fn executed(&self, block: &BlockHash) -> Option<Bytes> {
         self.core.lock().executed(block).cloned()
     }
 
-    pub fn evidence(&self) -> Vec<Evidence> {
-        self.core.lock().evidence().to_vec()
-    }
+    pub fn evidence(&self) -> Vec<Evidence> { self.core.lock().evidence().to_vec() }
 
-    pub fn canonical_len(&self) -> usize {
-        self.core.lock().canonical_len()
-    }
+    pub fn canonical_len(&self) -> usize { self.core.lock().canonical_len() }
 
     pub fn check_block(
         &self,
@@ -275,18 +266,15 @@ impl V6Engine {
 
         let pool = self.deploy_storage.lock().read_all()?;
         let in_scope = |sig: &Bytes| snapshot.deploys_in_scope.contains(sig);
-        let envelopes = select_envelopes(
-            pool,
-            &SelectionContext {
-                next_block_number,
-                deploy_lifespan: conf.deploy_lifespan,
-                now_millis,
-                shard_id: &conf.shard_name,
-                min_phlo_price: conf.min_phlo_price,
-                in_scope: &in_scope,
-                limits: &self.limits,
-            },
-        );
+        let envelopes = select_envelopes(pool, &SelectionContext {
+            next_block_number,
+            deploy_lifespan: conf.deploy_lifespan,
+            now_millis,
+            shard_id: &conf.shard_name,
+            min_phlo_price: conf.min_phlo_price,
+            in_scope: &in_scope,
+            limits: &self.limits,
+        });
         if envelopes.is_empty() && records.is_empty() && !selection.allows_empty() {
             return Ok(BlockCreatorResult::NoNewDeploys);
         }

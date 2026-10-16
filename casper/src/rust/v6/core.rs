@@ -131,25 +131,15 @@ impl ExecutorCore {
         }
     }
 
-    pub fn executed(&self, block: &BlockHash) -> Option<&StateHash> {
-        self.executed.get(block)
-    }
+    pub fn executed(&self, block: &BlockHash) -> Option<&StateHash> { self.executed.get(block) }
 
-    pub fn canonical_len(&self) -> usize {
-        self.canon_pos
-    }
+    pub fn canonical_len(&self) -> usize { self.canon_pos }
 
-    pub fn emitted_len(&self) -> usize {
-        self.order.len()
-    }
+    pub fn emitted_len(&self) -> usize { self.order.len() }
 
-    pub fn speculation_len(&self) -> usize {
-        self.spec.len()
-    }
+    pub fn speculation_len(&self) -> usize { self.spec.len() }
 
-    pub fn evidence(&self) -> &[Evidence] {
-        &self.evidence
-    }
+    pub fn evidence(&self) -> &[Evidence] { &self.evidence }
 
     pub fn next_action(&mut self) -> Action {
         loop {
@@ -331,9 +321,7 @@ impl ExecutorCore {
 mod tests {
     use super::*;
 
-    fn h(s: &str) -> Bytes {
-        Bytes::copy_from_slice(s.as_bytes())
-    }
+    fn h(s: &str) -> Bytes { Bytes::copy_from_slice(s.as_bytes()) }
 
     fn rec(target: &str, pre: &str, post: &str) -> Record {
         Record::empty(h(target), h(pre), h(post))
@@ -349,14 +337,10 @@ mod tests {
     }
 
     fn core() -> ExecutorCore {
-        ExecutorCore::new(
-            h("g"),
-            h("r0"),
-            CoreParams {
-                max_speculation: 4,
-                fallback_distance: 2,
-            },
-        )
+        ExecutorCore::new(h("g"), h("r0"), CoreParams {
+            max_speculation: 4,
+            fallback_distance: 2,
+        })
     }
 
     #[test]
@@ -364,21 +348,15 @@ mod tests {
         let mut c = core();
         c.emit(block("b1", "v1", vec![]));
         c.emit(block("b2", "v2", vec![]));
-        assert_eq!(
-            c.next_action(),
-            Action::Execute {
-                target: h("b1"),
-                pre_root: h("r0")
-            }
-        );
+        assert_eq!(c.next_action(), Action::Execute {
+            target: h("b1"),
+            pre_root: h("r0")
+        });
         c.apply_execute(rec("b1", "r0", "r1"));
-        assert_eq!(
-            c.next_action(),
-            Action::Execute {
-                target: h("b2"),
-                pre_root: h("r1")
-            }
-        );
+        assert_eq!(c.next_action(), Action::Execute {
+            target: h("b2"),
+            pre_root: h("r1")
+        });
     }
 
     #[test]
@@ -412,13 +390,10 @@ mod tests {
         c.apply_replay(&target, &citer, &record, Ok(h("theirs")));
         assert_eq!(c.executed(&h("b1")), Some(&h("theirs")));
         assert_eq!(c.speculation_len(), 0);
-        assert_eq!(
-            c.next_action(),
-            Action::Execute {
-                target: h("b2"),
-                pre_root: h("theirs")
-            }
-        );
+        assert_eq!(c.next_action(), Action::Execute {
+            target: h("b2"),
+            pre_root: h("theirs")
+        });
     }
 
     #[test]
@@ -511,20 +486,14 @@ mod tests {
     fn attestations_are_checked_when_the_root_is_fixed() {
         let mut c = core();
         c.emit(block("b1", "v1", vec![]));
-        c.observe_attestation(
-            &h("x"),
-            &Attestation {
-                block_hash: h("b1"),
-                root: h("wrong"),
-            },
-        );
-        c.observe_attestation(
-            &h("y"),
-            &Attestation {
-                block_hash: h("b1"),
-                root: h("r1"),
-            },
-        );
+        c.observe_attestation(&h("x"), &Attestation {
+            block_hash: h("b1"),
+            root: h("wrong"),
+        });
+        c.observe_attestation(&h("y"), &Attestation {
+            block_hash: h("b1"),
+            root: h("r1"),
+        });
         c.emit(block("b2", "v2", vec![rec("b1", "r0", "r1")]));
         let Action::Replay {
             target,

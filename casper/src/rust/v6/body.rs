@@ -177,9 +177,7 @@ impl V6Body {
 mod tests {
     use super::*;
 
-    fn b(s: &str) -> Bytes {
-        Bytes::copy_from_slice(s.as_bytes())
-    }
+    fn b(s: &str) -> Bytes { Bytes::copy_from_slice(s.as_bytes()) }
 
     #[test]
     fn empty_extra_bytes_is_not_a_v6_body() {

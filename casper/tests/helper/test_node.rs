@@ -802,7 +802,10 @@ impl TestNode {
         network_size: usize,
     ) -> Result<Vec<TestNode>, CasperError> {
         V6_ORDER_THEN_EXECUTE
-            .scope(true, Self::create_network(genesis, network_size, None, None, None, None))
+            .scope(
+                true,
+                Self::create_network(genesis, network_size, None, None, None, None),
+            )
             .await
     }
 

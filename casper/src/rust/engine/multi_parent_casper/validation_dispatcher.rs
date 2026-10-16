@@ -121,7 +121,9 @@ async fn run_validation_steps<T: TransportLayer + Send + Sync>(
                     %reason,
                     "v6 structural validity failed"
                 );
-                return Ok(Either::Left(BlockError::Invalid(InvalidBlock::InvalidFormat)));
+                return Ok(Either::Left(BlockError::Invalid(
+                    InvalidBlock::InvalidFormat,
+                )));
             }
         }
     }

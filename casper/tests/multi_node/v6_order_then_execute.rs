@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::Duration;
 
 use casper::rust::blocks::proposer::propose_result::BlockCreatorResult;
@@ -10,16 +11,12 @@ use casper::rust::v6::V6Engine;
 use crypto::rust::signatures::signed::Signed;
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::protocol::casper_message::{BlockMessage, DeployData};
-use std::sync::Arc;
-
 use rspace_plus_plus::rspace::history::Either;
 
 use crate::helper::test_node::TestNode;
 use crate::util::genesis_builder::GenesisBuilder;
 
-fn engine(node: &TestNode) -> Arc<V6Engine> {
-    node.casper.v6.clone().expect("v6 engine")
-}
+fn engine(node: &TestNode) -> Arc<V6Engine> { node.casper.v6.clone().expect("v6 engine") }
 
 async fn propose(node: &mut TestNode, deploys: &[Signed<DeployData>]) -> BlockMessage {
     for deploy in deploys {

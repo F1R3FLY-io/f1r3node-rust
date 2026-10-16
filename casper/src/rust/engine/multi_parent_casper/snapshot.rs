@@ -612,7 +612,13 @@ pub(crate) async fn get_on_chain_state<T: TransportLayer + Send + Sync>(
             .get_active_validators(&block.body.state.post_state_hash)
             .await?
     } else {
-        block.body.state.bonds.iter().map(|b| b.validator.clone()).collect()
+        block
+            .body
+            .state
+            .bonds
+            .iter()
+            .map(|b| b.validator.clone())
+            .collect()
     };
 
     let av = {
