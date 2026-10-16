@@ -1,7 +1,7 @@
 # Release Process and Deployment Train Strategy
 
-**Status:** Ratified 2026-08-19 (all Section 19 items; two items carry recorded amendments)  
-**Last updated:** 2026-08-19
+**Status:** Ratified 2026-08-19 (all Section 19 items; two items carry recorded amendments). Sections 5.1 to 5.5 are proposed 2026-10-15 and wait for ratification.  
+**Last updated:** 2026-10-15
 
 ## 1. Purpose
 
@@ -144,6 +144,72 @@ A full CI run is release-eligible when these conditions are true:
 4. No stable tag exists for the source version.
 
 This lifecycle keeps the runtime version equal to the candidate version. Stable promotion does not need a release-only source commit.
+
+### 5.1 Version increase rules (proposed 2026-10-15)
+
+**Status:** Proposed. Sections 5.1 to 5.5 wait for ratification (Section 19, decisions V1 to V3). Source: the F1r3Faucet node compatibility proposal ([`docs/designs/node-compatibility.md`](https://github.com/F1R3FLY-io/F1r3Faucet/blob/dev/docs/designs/node-compatibility.md), Section 3).
+
+Section 5 lets a maintainer choose a patch, minor, or major increase. It does not say which change needs which increase. Clients such as F1r3Faucet, wallets, and explorers must know when a node can break them. This section adds that rule.
+
+A client depends on four compatibility surfaces:
+
+| Surface | Examples | Who sees a change |
+|---------|----------|-------------------|
+| Client API | HTTP routes, JSON fields, gRPC messages, status values | Faucet, wallets, explorers |
+| Deploy format | Signed `DeployData` fields, signature algorithms, `validAfterBlockNumber` rules | Every client that signs deploys |
+| System contracts | Registry URIs such as `rho:vault:system`, method names, return shapes | Every client that builds Rholang terms |
+| Shard protocol | Wire format, block format, genesis state, storage format, consensus model | Node operators. Clients see a new shard |
+
+The target version of a candidate must follow this table:
+
+| Change in the release | Before 1.0.0 | From 1.0.0 |
+|-----------------------|--------------|------------|
+| Breaking change to the client API, the deploy format, or a system contract | MINOR | MAJOR |
+| `requires_fresh_genesis: true` (wire, block, or genesis state change) | MINOR | MAJOR |
+| Additive change: new optional field, new capability, new system contract, new alias | PATCH (decision V2) | MINOR |
+| Fix with no interface change | PATCH | PATCH |
+
+A change is breaking when a client that worked with the previous stable release can fail with the new release. Removal, rename, a new required field, and a changed meaning are breaking changes.
+
+`storage_format_changed: true` alone does not need a MINOR or MAJOR increase. Clients do not see the storage format. The field controls only the Anchor slot revert of the test net.
+
+The test net design (`docs/plans/test-net.md` Section 6, on PR #654) defines `requires_fresh_genesis` and `storage_format_changed` as candidate evidence fields. Until those fields exist, the author of the pull request states the change class in the pull request description.
+
+**Decision V2.** Before 1.0.0, an additive change is a PATCH increase in this proposal. The maintainers can choose MINOR instead. With MINOR, each new capability gets its own minor version, and the minor number increases faster.
+
+### 5.2 Client API version
+
+1. The node reports one client API version. It is a whole number. It increases only for a breaking change to the client API or the deploy format.
+2. An additive change does not increase the client API version. The node adds a capability name instead (Section 5.3).
+3. When the client API version increases, the node also serves the previous version for an overlap window (decision V3). HTTP routes then get a version prefix, for example `/api/v2/...`. gRPC uses a new package, for example `casper.v2`.
+4. The status response lists every client API version that the node serves.
+
+Today `/api/status` and the gRPC `status` call return `version.api` with the fixed value `"1"`. They also return `version.node`, the build version. No capability list exists. The design record [`docs/designs/node-status-versioning.md`](designs/node-status-versioning.md) specifies the status changes.
+
+### 5.3 Capabilities
+
+The status response lists the optional features of the node by stable capability names. A client checks a capability before it uses an optional feature. A node that removes a capability makes a breaking change (Section 5.1).
+
+The capability names are decision V4. The maintainers of f1r3node-rust and F1r3Faucet agree on them together.
+
+### 5.4 System contract names and aliases
+
+1. A PATCH release never removes or renames a system contract URI.
+2. A renamed URI keeps its previous name as an alias for the overlap window (decision V3).
+3. The capability list shows the aliases that the node registers.
+4. A registry alias is part of genesis state. A new alias reaches only shards that start after the release. A running shard keeps the registry of its genesis.
+
+Commit 1214adada (code sync from f1r3node `rust/staging`) removed `rho:rchain:revVault` and `rho:rchain:pos` from `Registry.rho` without an alias. f1r3wallet uses both names. Pull request #733 restores them as deprecated aliases. Under this section, that removal is a breaking change.
+
+### 5.5 Decisions
+
+| ID | Decision | Owner |
+|----|----------|-------|
+| V1 | Adopt Sections 5.1 to 5.4 | f1r3node-rust maintainers |
+| V2 | MINOR or PATCH for an additive change before 1.0.0 (Section 5.1) | f1r3node-rust maintainers |
+| V3 | Overlap window for a previous client API version and for a contract alias. The proposal is one MINOR release before 1.0.0 and one MAJOR release from 1.0.0 | f1r3node-rust maintainers |
+| V4 | Capability names (Section 5.3) | f1r3node-rust and F1r3Faucet maintainers |
+| V5 | Node release ranges that each faucet adapter supports at launch | F1r3Faucet maintainer |
 
 ## 6. Candidate creation
 
@@ -716,7 +782,7 @@ The manifest validator and the stack checks (Section 13.2 steps 4 to 6) depend o
 
 ## 19. Ratification checklist
 
-Maintainers must ratify these decisions before stable automation is enabled. All items were ratified on 2026-08-19; amendments are recorded inline and in the affected sections.
+Maintainers must ratify these decisions before stable automation is enabled. All items were ratified on 2026-08-19; amendments are recorded inline and in the affected sections. The three items added on 2026-10-15 do not block stable automation.
 
 - [x] Canary tag formats — ratified 2026-08-19
 - [x] Source version lifecycle — ratified 2026-08-19
@@ -731,3 +797,6 @@ Maintainers must ratify these decisions before stable automation is enabled. All
 - [x] Version reservation and ordering rules — ratified 2026-08-19
 - [x] First Deployment Train selection — ratified 2026-08-19: cost-accounting (PR #216), after the Phase 5 non-publishing rehearsal
 - [x] Shard soak-in and Anchor promotion policy — ratified 2026-08-19 as a skeleton: period length, Anchor criteria, and test net composition deferred to Phase 6
+- [ ] Version increase rules and client compatibility (Sections 5.1 to 5.4, decision V1) — proposed 2026-10-15
+- [ ] MINOR or PATCH for an additive change before 1.0.0 (Section 5.1, decision V2) — proposed 2026-10-15
+- [ ] Overlap window for a previous client API version and a contract alias (Sections 5.2 and 5.4, decision V3) — proposed 2026-10-15
