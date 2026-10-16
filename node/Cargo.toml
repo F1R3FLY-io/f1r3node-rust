@@ -83,6 +83,7 @@ tower = { workspace = true }
 serial_test = { workspace = true }
 proptest = { workspace = true }
 metrics-util = { workspace = true }
+tempfile = { workspace = true }
 
 [build-dependencies]
 tonic-prost-build = { workspace = true }
