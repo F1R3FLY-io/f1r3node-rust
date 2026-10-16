@@ -651,7 +651,7 @@ tasks:
     acceptance:
       - "docs/designs/adaptive-execution.md records decisions A1 to A8, the issue #24 evidence, the controller rules, the degradation levels, the invariants I1 to I6, the F1r3fly CbC Casper binding, the provisions for the RGB peer clique, Casanova, and Cordial Miners, and the soak profile for each mechanism, and the comparison with Ethereum with cited sources (section 16)."
       - "The design uses the names of the D7 boundary layers and states which names change when PR #651 merges."
-      - "The maintainer approves the design, or the review comments are resolved."
+      - "The architects ratify the parts listed in design section 2.1, or the review comments are resolved. Design section 19 gives the task that each open question blocks and a recommended answer."
       - "The new terms of design section 20 are in docs/Glossary.md."
   - id: TASK-027-2
     title: "Add the adaptive telemetry signals and records with no behavior change"
@@ -668,7 +668,7 @@ tasks:
     blocked_by: [TASK-027-2]
     acceptance:
       - "The probe reads the CPU cores, the cgroup memory limit, the disk write latency, and the host class at startup."
-      - "tier = auto selects a profile from the probe. A named tier skips the probe, and the node records the choice."
+      - "tier = auto selects a profile from the probe. A named tier selects that profile, and the node records the choice. The probe runs in both cases."
       - "An operator override can narrow a bound and cannot widen it. A test proves both cases."
       - "The probe compares the host with the published targets of design section 14.3: the named tier, or the Constrained targets when tier = auto."
       - "Below a target, the node writes a warning record that names each value below its target and sets the gauge adaptive_probe_below_target to 1. The node still starts. A test proves both the warning and the normal start."
@@ -745,7 +745,7 @@ status: in_progress
 priority: p0
 user_story: null
 issues: [24]
-closed_out_by: "EPIC-027 (2026-10-13). This epic keeps its measurement and fix history. Its open tasks, TASK-021-13 first, are inputs to EPIC-027."
+closed_out_by: "EPIC-027 (2026-10-13). This epic keeps its measurement and fix history. Its open tasks, TASK-021-13 first, are inputs to EPIC-027. Since 2026-10-16 it also holds the stall-loop Track A plan (TASK-021-16 to TASK-021-23, adaptive-execution.md section 10.4)."
 blocked_by: []
 created_at: 2026-10-03
 updated_at: 2026-10-06
@@ -1145,6 +1145,100 @@ tasks:
       - "The arm64 build sets a page size that works on 64 KiB page hosts, and the Dockerfile cross-compile builds the allocator."
       - "cargo deny passes with the new dependency."
       - "The issue #244 memory ceiling (TASK-012-25) is measured before and after the change."
+  - id: TASK-021-16
+    title: "Record the pre-cost-accounting baseline soak"
+    status: pending
+    claimed_by: null
+    pr_base_branch: null
+    blocked_by: ["PR #741 on master", "PR #748 on master"]
+    notes:
+      - "Plan step 0 of 2026-10-16 (adaptive-execution.md section 10.4). The stall-loop design (https://github.com/F1R3FLY-io/publications/blob/main/cost-accounting/stall-loop-design.pdf) is a code reading without profiling, so the plan measures first."
+      - "PR #748 removes the 8-hour merge exit, so a daily soak runs its full window."
+    acceptance:
+      - "A full-length soak on current dev with the node I/O sampler gives at least 100 test_load sessions on each provider."
+      - "The issue #24 report records the failure rate, the phase of each failure, and the stage metrics as the baseline for TASK-021-23."
+      - "The result answers Q8 of adaptive-execution.md."
+  - id: TASK-021-17
+    title: "Measure each stall-loop Track A item in the soak"
+    status: in_progress
+    claimed_by: claude-session-dfac55a4
+    claimed_at: 2026-10-16T19:00:00Z
+    branch: feat/issue-24-track-a-metrics
+    pr_base_branch: dev
+    blocked_by: []
+    notes:
+      - "Plan step 1. Issue #24 owns Track A (decision of 2026-10-16). TASK-027-2 reuses these metrics."
+      - "Avoid the 38 files that stall-loop step B1 expects to conflict where possible."
+    acceptance:
+      - "ISSUE24_METRICS records the deploy-pool lock hold time and the signature checks for each proposal (A4), the proposer queue depth and the empty-block rate (A2), the floor distance (A3), the tokio worker saturation (A6), and the finalizer run time against its 15 s deadline (A1)."
+      - "One soak ranks the Track A items by measured cost, and the issue #24 report records the rank."
+  - id: TASK-021-18
+    title: "Fix the buffer eviction order and the re-fetch cooldown (stall-loop A7)"
+    status: pending
+    claimed_by: null
+    pr_base_branch: dev
+    blocked_by: []
+    notes:
+      - "Plan step 2. Both defects are independent of load. casper_buffer_key_value_storage.rs computes age as now - first_seen, sorts ascending, and removes the first entry, which is the youngest pendant (verified on dev 555a5e442)."
+    acceptance:
+      - "Eviction removes the oldest dependency-free entry. A unit test fails on the old order."
+      - "A duplicate reply to a re-fetch keeps the cooldown and the retry counter. A unit test fails on the old behavior."
+  - id: TASK-021-19
+    title: "Keep finalizer progress at the run deadline (stall-loop A1)"
+    status: pending
+    claimed_by: null
+    pr_base_branch: dev
+    blocked_by: [TASK-021-17]
+    notes:
+      - "Plan step 4. finalization_runner.rs drops a run that exceeds 15 s, so a later run starts again over a larger cone."
+    acceptance:
+      - "A run that reaches its deadline adopts the highest candidate proven so far. One oracle run cache is shared across a frontier derivation."
+      - "finalizer.run.timeouts stays 0 in a 60-hour soak, and the last finalized block never stalls."
+  - id: TASK-021-20
+    title: "Coalesce proposals and stop empty deploy-triggered blocks (stall-loop A2, issue #24 item 4)"
+    status: pending
+    claimed_by: null
+    pr_base_branch: dev
+    blocked_by: [TASK-021-17]
+    notes:
+      - "Plan step 4. A fixed rule first. adaptive-execution.md section 10.1 later puts it under the controller, with these values as tier bounds."
+    acceptance:
+      - "Deploy-triggered proposal requests coalesce into one pending proposal, and the proposer queue depth stays at most 1."
+      - "A deploy-triggered proposal never builds an empty block, and the empty-block rate under load falls against TASK-021-16."
+  - id: TASK-021-21
+    title: "Pace proposals by floor distance and cap pool admission (stall-loop A3)"
+    status: pending
+    claimed_by: null
+    pr_base_branch: dev
+    blocked_by: [TASK-021-17]
+    notes:
+      - "Plan step 4. Fixed thresholds first, set from TASK-021-17 data. The controller later uses them as tier bounds."
+    acceptance:
+      - "Above a floor-distance threshold well below 256, proposals include no ordinary deploys and only advance finality."
+      - "The deploy pool rejects new deploys above a size threshold with a typed, retryable busy error."
+      - "Floor distance stays bounded under the burst phase of test_load."
+  - id: TASK-021-22
+    title: "Fix the remaining Track A items in measured order (stall-loop A4, A5, A6, A8, A9)"
+    status: pending
+    claimed_by: null
+    pr_base_branch: dev
+    blocked_by: [TASK-021-17]
+    notes:
+      - "Plan step 5. TASK-021-17 sets the order. A9 (merging_logic.rs) and the hot-channel representation touch files near the cost-accounting merge, so they come last and carry a note for the cost-accounting lane."
+    acceptance:
+      - "Each item meets the exit criterion of the stall-loop design, for example prepare time flat in pool size for A4."
+      - "Each fix outside the 38 conflict files, or a recorded reason with a note to the cost-accounting lane."
+  - id: TASK-021-23
+    title: "Repeat the baseline soak after cost accounting lands in dev"
+    status: pending
+    claimed_by: null
+    pr_base_branch: null
+    blocked_by: [TASK-021-16, "cost accounting in dev (PR #216 or stall-loop B1)"]
+    notes:
+      - "Plan step 6. The scope that lands is not decided (2026-10-16). PR #216 as it stands costs legacy shards 15 to 23 percent more CPU on its own profiles. Stall-loop B1 keeps the legacy path byte-identical and within 3 percent."
+    acceptance:
+      - "The same soak profile as TASK-021-16 runs on dev with cost accounting."
+      - "The issue #24 report compares both runs and records new baselines if legacy cost changed."
 ---
 ```
 
