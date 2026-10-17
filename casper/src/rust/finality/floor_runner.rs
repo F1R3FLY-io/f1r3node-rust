@@ -142,11 +142,7 @@ impl Phase {
     }
 }
 
-fn compat_phase(
-    parents: Vec<BlockHash>,
-    inherited: Vec<Floor>,
-    frontiers: Vec<Floor>,
-) -> Phase {
+fn compat_phase(parents: Vec<BlockHash>, inherited: Vec<Floor>, frontiers: Vec<Floor>) -> Phase {
     let mut candidates = inherited.clone();
     candidates.extend(frontiers);
     let mut ordered = candidates.clone();
@@ -510,9 +506,13 @@ impl FloorCursor {
                     }
                 }
             }
-            Phase::Containment { derived } => {
-                finish(view_outcome_metered(meter, dag, block_store, derived, current))
-            }
+            Phase::Containment { derived } => finish(view_outcome_metered(
+                meter,
+                dag,
+                block_store,
+                derived,
+                current,
+            )),
             done @ Phase::Done(_) => done,
         };
     }

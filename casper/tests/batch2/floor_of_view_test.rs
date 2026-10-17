@@ -9,7 +9,7 @@ use std::time::Instant;
 
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use block_storage::rust::test::indexed_block_dag_storage::IndexedBlockDagStorage;
-use casper::rust::finality::floor::{floor_of_view, Floor};
+use casper::rust::finality::floor::Floor;
 use casper::rust::safety::clique_oracle::FtThreshold;
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::protocol::casper_message::{BlockMessage, Bond};
@@ -18,6 +18,7 @@ use models::rust::validator::Validator;
 use crate::helper::block_dag_storage_fixture::with_storage;
 use crate::helper::block_generator::{create_block, create_genesis_block};
 use crate::helper::block_util::generate_validator;
+use crate::util::floor_cursor_check::floor_of_view;
 
 fn create_block_creator<'a>(
     bonds: &'a [Bond],
@@ -430,4 +431,80 @@ async fn floor_of_view_growth_feedback_loop_stale_justification_chain() {
     })
     .await
     .expect("growth feedback test should complete successfully");
+}
+
+#[tokio::test]
+async fn a_fifty_validator_view_finalizes_after_many_resumptions() {
+    use casper::rust::finality::floor::FloorOfView;
+    use casper::rust::finality::floor_runner::Budget;
+
+    use crate::util::floor_cursor_check::run_cursor;
+
+    with_storage(|mut store, mut dag_store| async move {
+        let validators: Vec<Validator> = (0..50)
+            .map(|i| generate_validator(Some(&format!("Validator {i}"))))
+            .collect();
+        let bonds: Vec<Bond> = validators
+            .iter()
+            .map(|v| Bond {
+                validator: v.clone(),
+                stake: 10,
+            })
+            .collect();
+        let genesis = create_genesis_block(
+            &mut store,
+            &mut dag_store,
+            None,
+            Some(bonds.clone()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        let creators: Vec<_> = validators
+            .iter()
+            .map(|v| create_block_creator(&bonds, &genesis, v))
+            .collect();
+
+        let mut latest: Vec<BlockMessage> = vec![genesis.clone(); validators.len()];
+        let b1 = {
+            let justifications: HashMap<&Validator, &BlockMessage> =
+                validators.iter().zip(latest.iter()).collect();
+            creators[0](&mut store, &mut dag_store, vec![&genesis], &justifications)
+        };
+        latest[0] = b1.clone();
+        for round in 0..3 {
+            let snapshot = latest.clone();
+            let justifications: HashMap<&Validator, &BlockMessage> =
+                validators.iter().zip(snapshot.iter()).collect();
+            for (index, creator) in creators.iter().enumerate() {
+                let parent = if round == 0 { &b1 } else { &snapshot[index] };
+                latest[index] = creator(&mut store, &mut dag_store, vec![parent], &justifications);
+            }
+        }
+
+        let dag = dag_store.get_representation().expect("dag representation");
+        let thr = FtThreshold::from_f32_lossy(0.1);
+        let reference =
+            casper::rust::finality::floor::floor_of_view(&dag, &store, &at(&genesis), thr)
+                .await
+                .expect("reference derivation");
+        assert!(
+            matches!(reference, FloorOfView::Advance(_)),
+            "the fixture must finalize past genesis, got {reference:?}"
+        );
+        let (resumable, resumptions) =
+            run_cursor(&dag, &store, &at(&genesis), thr, Budget::Steps(4)).await;
+        assert!(
+            resumptions >= 10,
+            "a four-step budget forces at least ten resumptions, got {resumptions}"
+        );
+        assert_eq!(resumable.expect("resumable derivation"), reference);
+
+        Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
+    })
+    .await
+    .expect("fifty-validator resumption test should complete");
 }
