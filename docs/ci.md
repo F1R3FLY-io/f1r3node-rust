@@ -142,3 +142,26 @@ A pull request opened with `GITHUB_TOKEN` starts no CI, so the workflow opens th
 The app is the pull request author. The user who started the workflow can therefore approve the pull request. CI does not prevent this approval. The rule that a different maintainer approves is a convention. The pull request body names the user who started the workflow and asks a different member of `@F1R3FLY-io/ci-maintainers` to approve.
 
 Do not open a promotion with head `dev`. The repository deletes the head branch of a merged pull request. GitHub then retargets every open pull request based on that branch to the base of the merged pull request. Two promotions from `dev` moved every open `dev` pull request to `master` (2026-10-04 and 2026-10-09). The `Promotion Source` check rejects a pull request from `dev` to `master`.
+
+## Back-merge from master to dev
+
+After a `hotfix/` pull request merges into `master`, merge `master` back into `dev`. Run `just backmerge` to open the back-merge pull request. The command runs `.github/scripts/open-backmerge-pr.sh`. It creates a temporary `backmerge/master-<12-character SHA>` branch at the `origin/master` commit. It then opens the pull request to `dev` with your `gh` login. If `dev` already contains `master`, the command does nothing.
+
+If a `backmerge/*` pull request to `dev` is open, the command names it and does nothing. Merge or close that pull request first. The branch name contains the `master` commit. A second run for the same commit therefore fails at branch creation, also when both runs are concurrent.
+
+Merge the back-merge pull request with a merge commit. Do not squash or rebase it, because `dev` must keep the `master` history. The `dev` merge queue uses merge commits.
+
+Do not open a back-merge with head `master`. A pull request with a protected head shows the **Update branch** button. That button merges the base into the head through the admin bypass of the ruleset. On #747 (head `master`, base `dev`), it pushed `dev` onto `master` outside promotion (`bf4915d57`, 2026-10-16).
+
+## Protected head guard
+
+`.github/scripts/check-promotion-source.sh` rejects every pull request from this repository with head `master` or `dev`, whatever its base. A pull request from the `master` or `dev` branch of a fork is accepted. Two workflows run the script:
+
+| Workflow | Event | Token | Action |
+|---|---|---|---|
+| `ci.yml`, job `Promotion Source` | `pull_request` | read-only | Fails the check. `masterProtect` requires this check. |
+| `protected-head-guard.yml`, job `Protected Head Guard` | `pull_request_target` | `pull-requests: write` | Closes the pull request with a comment that gives the remedy and the reason. |
+
+The guard runs the workflow file and the script from the base branch, not from the pull request. Code that a pull request changes therefore never runs with the write token. The guard also runs when the pull request has a merge conflict, and `pull_request` workflows do not. A closed pull request has no **Update branch** button and cannot merge, so the guard also covers `dev`, where `Promotion Source` is not required.
+
+The guard uses the workflow of the base branch. It protects pull requests to `dev` after this workflow is on `dev`, and pull requests to `master` after the next promotion. The close happens a few seconds after the pull request opens. Only a ruleset blocks a direct push to `master` or `dev` at all times. The change of the human bypass actors from `always` to `pull_request` is still open (TASK-023-13).
