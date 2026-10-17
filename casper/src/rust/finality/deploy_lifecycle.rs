@@ -51,7 +51,6 @@ use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::protocol::casper_message::BlockMessage;
 use prost::bytes::Bytes;
-use shared::rust::store::key_value_store::MissingBlockContext;
 
 use super::block_facts::{block_facts, LineageNext};
 use super::floor::{in_floor_closure, Floor};
@@ -97,61 +96,98 @@ fn effect_in_state_of_above(
     min_height: i64,
     checked_below: Option<&BlockHash>,
 ) -> Result<bool, CasperError> {
-    let mut cur = block_hash.clone();
-    loop {
-        if checked_below == Some(&cur) {
-            return Ok(false);
+    let probe = MembershipProbe {
+        sig: sig.clone(),
+        min_height,
+        checked_below: checked_below.cloned(),
+    };
+    lineage_membership(block_store, block_hash, vec![probe])
+        .remove(sig)
+        .unwrap_or(Ok(false))
+}
+
+pub(crate) struct MembershipProbe {
+    pub(crate) sig: Bytes,
+    pub(crate) min_height: i64,
+    pub(crate) checked_below: Option<BlockHash>,
+}
+
+/// Answers every probe with one walk of `top`'s state lineage. Each probe
+/// stops exactly where its own walk would stop: at its memo hash, below its
+/// height bound, at genesis, or at the first block whose state holds it.
+/// An absent body answers every probe still open with `BlockNotHeld`, and a
+/// multi-parent block without a recorded base answers them with an error.
+/// Absence is a statement about THIS node's history (a truncated node lacks
+/// bodies below its restore horizon), never a judgement. A failed execution's
+/// deploy is in the body while its effect is NOT in the state: only
+/// `applied_sigs` count. A multi-parent block's state parent is NOT derivable
+/// from the header alone, so its absence is a malformed block, never a guess.
+pub(crate) fn lineage_membership(
+    block_store: &KeyValueBlockStore,
+    top: &BlockHash,
+    probes: Vec<MembershipProbe>,
+) -> HashMap<Bytes, Result<bool, CasperError>> {
+    let mut answers: HashMap<Bytes, Result<bool, CasperError>> =
+        HashMap::with_capacity(probes.len());
+    let mut open: HashMap<Bytes, MembershipProbe> =
+        probes.into_iter().map(|probe| (probe.sig.clone(), probe)).collect();
+    let mut cur = top.clone();
+    while !open.is_empty() {
+        open.retain(|sig, probe| {
+            let stop = probe.checked_below.as_ref() == Some(&cur);
+            if stop {
+                answers.insert(sig.clone(), Ok(false));
+            }
+            !stop
+        });
+        if open.is_empty() {
+            break;
         }
-        // Absence is a statement about THIS node's history (a truncated
-        // node lacks bodies below its restore horizon), never a judgement:
-        // typed so every availability classifier downstream can defer,
-        // fetch, or abstain instead of laundering it into a verdict.
-        let Some(block) = block_store.get(&cur)? else {
-            return Err(CasperError::BlockNotHeld(
-                cur,
-                MissingBlockContext::new("membership carrier-body read"),
-            ));
-        };
-        if block.body.state.block_number < min_height {
-            return Ok(false);
-        }
-        // A failed execution's deploy is in the body while its effect is
-        // NOT in the state — only successful executions count.
-        if block
-            .body
-            .deploys
-            .iter()
-            .any(|pd| pd.deploy.sig == *sig && !pd.is_failed)
-        {
-            return Ok(true);
-        }
-        if block.body.applied_from_scope.iter().any(|s| s == sig) {
-            return Ok(true);
-        }
-        cur = if !block.body.merge_base.is_empty() {
-            block.body.merge_base.clone()
-        } else {
-            match block.header.parents_hash_list.as_slice() {
-                // Genesis: the lineage is exhausted.
-                [] => return Ok(false),
-                // Single parent: the base is the sole parent, already
-                // consensus data in the header — not re-recorded.
-                [parent] => parent.clone(),
-                // A multi-parent block's state parent is NOT derivable from
-                // the header alone (merged: the floor; fast-path: the
-                // covering parent). Its absence is a malformed block, never
-                // a guess.
-                _ => {
-                    return Err(CasperError::Other(format!(
-                        "effect_in_state_of: multi-parent block {} carries \
-                         no recorded merge_base — refusing to guess its \
-                         state lineage",
-                        hex::encode(&cur[..8.min(cur.len())]),
-                    )))
+        let facts = match block_facts(block_store, &cur, "membership carrier-body read") {
+            Ok(facts) => facts,
+            Err(error) => {
+                for (sig, _) in open.drain() {
+                    answers.insert(sig, Err(error.clone()));
                 }
+                break;
+            }
+        };
+        open.retain(|sig, probe| {
+            let answer = if facts.block_number < probe.min_height {
+                Some(false)
+            } else if facts.applied_sigs.contains(sig) {
+                Some(true)
+            } else {
+                None
+            };
+            if let Some(answer) = answer {
+                answers.insert(sig.clone(), Ok(answer));
+            }
+            answer.is_none()
+        });
+        cur = match &facts.lineage_next {
+            LineageNext::Base(next) => next.clone(),
+            LineageNext::Genesis => {
+                for (sig, _) in open.drain() {
+                    answers.insert(sig, Ok(false));
+                }
+                break;
+            }
+            LineageNext::MalformedMultiParent => {
+                let error = CasperError::Other(format!(
+                    "effect_in_state_of: multi-parent block {} carries \
+                     no recorded merge_base — refusing to guess its \
+                     state lineage",
+                    hex::encode(&cur[..8.min(cur.len())]),
+                ));
+                for (sig, _) in open.drain() {
+                    answers.insert(sig, Err(error.clone()));
+                }
+                break;
             }
         };
     }
+    answers
 }
 
 /// One walk, every sig: the applied-sig union of `block_hash`'s state
@@ -414,6 +450,26 @@ impl DeployLifecycle {
         due.sort();
         let due_count = due.len();
         let evaluate_start = std::time::Instant::now();
+        let mut memberships = match schedule.max_floor.clone() {
+            Some(max_floor) => {
+                let mut probes = Vec::with_capacity(due.len());
+                for sig in &due {
+                    let valid_after = dag
+                        .deploy_lifecycle_events(sig)
+                        .map_err(CasperError::from)?
+                        .and_then(|row| row.valid_after);
+                    if let Some(min_height) = valid_after {
+                        probes.push(MembershipProbe {
+                            sig: sig.clone(),
+                            min_height,
+                            checked_below: schedule.checked.get(sig).cloned(),
+                        });
+                    }
+                }
+                lineage_membership(block_store, &max_floor.hash, probes)
+            }
+            None => HashMap::new(),
+        };
         let mut terminalized: Vec<Bytes> = Vec::new();
         for sig in due {
             evaluate(
@@ -424,6 +480,7 @@ impl DeployLifecycle {
                 deploy_lifespan,
                 citability_horizon,
                 &mut terminalized,
+                &mut memberships,
             )?;
         }
         let evaluate_ms = evaluate_start.elapsed().as_millis();
@@ -456,6 +513,7 @@ fn evaluate(
     deploy_lifespan: i64,
     citability_horizon: Option<i64>,
     terminalized: &mut Vec<Bytes>,
+    memberships: &mut HashMap<Bytes, Result<bool, CasperError>>,
 ) -> Result<(), CasperError> {
     let Some(row) = dag
         .deploy_lifecycle_events(sig)
@@ -478,14 +536,17 @@ fn evaluate(
     // floor-covered effect is in every future merge base), so the first
     // true answer is the verdict. The memo bounds the walk to the lineage
     // segment above the last floor already answered false.
-    let checked_below = schedule.checked.get(sig).cloned();
-    let member = match effect_in_state_of_above(
-        block_store,
-        &max_floor.hash,
-        sig,
-        valid_after,
-        checked_below.as_ref(),
-    ) {
+    let membership = memberships.remove(sig).unwrap_or_else(|| {
+        let checked_below = schedule.checked.get(sig).cloned();
+        effect_in_state_of_above(
+            block_store,
+            &max_floor.hash,
+            sig,
+            valid_after,
+            checked_below.as_ref(),
+        )
+    });
+    let member = match membership {
         Ok(member) => member,
         // The walk crossed the restore horizon: the sig's verdict is
         // unknowable on this node, and that is a fact about the node,
@@ -1229,6 +1290,153 @@ mod tests {
             TerminalState::Finalized,
             "a readable re-application must still finalize a horizon-blocked sig"
         );
+    }
+
+    fn decoding_effect_in_state_of_above(
+        block_store: &KeyValueBlockStore,
+        block_hash: &BlockHash,
+        sig: &Bytes,
+        min_height: i64,
+        checked_below: Option<&BlockHash>,
+    ) -> Result<bool, CasperError> {
+        let mut cur = block_hash.clone();
+        loop {
+            if checked_below == Some(&cur) {
+                return Ok(false);
+            }
+            let Some(block) = block_store.get(&cur)? else {
+                return Err(CasperError::BlockNotHeld(
+                    cur,
+                    shared::rust::store::key_value_store::MissingBlockContext::new(
+                        "membership carrier-body read",
+                    ),
+                ));
+            };
+            if block.body.state.block_number < min_height {
+                return Ok(false);
+            }
+            if block
+                .body
+                .deploys
+                .iter()
+                .any(|pd| pd.deploy.sig == *sig && !pd.is_failed)
+            {
+                return Ok(true);
+            }
+            if block.body.applied_from_scope.iter().any(|s| s == sig) {
+                return Ok(true);
+            }
+            cur = if !block.body.merge_base.is_empty() {
+                block.body.merge_base.clone()
+            } else {
+                match block.header.parents_hash_list.as_slice() {
+                    [] => return Ok(false),
+                    [parent] => parent.clone(),
+                    _ => return Err(CasperError::Other("malformed".to_string())),
+                }
+            };
+        }
+    }
+
+    #[tokio::test]
+    async fn batched_membership_matches_the_decoding_walk_on_generated_lineages() {
+        let store = store().await;
+        let mut lcg: u64 = 0x0a5e_ba7c_0000_0001;
+        let mut rand = move |modulo: u32| -> u32 {
+            lcg = lcg
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            ((lcg >> 33) as u32) % modulo
+        };
+        let mut deploy_n: i32 = 5000;
+        let mut seq: i32 = 9000;
+        let mut applied_n: u32 = 0;
+        let mut compared = 0usize;
+
+        for _config in 0..24 {
+            let len: i64 = 4 + i64::from(rand(7));
+            let gap_at = (rand(3) == 0).then(|| 1 + i64::from(rand(len as u32 - 1)));
+            let malformed_at = (rand(4) == 0).then(|| 2 + i64::from(rand(len as u32 - 2)));
+            let mut probe_sigs: Vec<Bytes> = vec![Bytes::from_static(b"never-seen")];
+            let mut lineage: Vec<BlockHash> = Vec::new();
+            seq += 1;
+            let genesis = block_at(0, vec![], seq);
+            store.put_block_message(&genesis).expect("store genesis");
+            lineage.push(genesis.block_hash.clone());
+            let mut prev = genesis;
+            for h in 1..=len {
+                seq += 1;
+                let mut b = if malformed_at == Some(h) {
+                    seq += 1;
+                    let side = block_at(h, vec![prev.block_hash.clone()], seq);
+                    store.put_block_message(&side).expect("store side");
+                    seq += 1;
+                    block_at(h, vec![prev.block_hash.clone(), side.block_hash.clone()], seq)
+                } else {
+                    block_at(h, vec![prev.block_hash.clone()], seq)
+                };
+                for _ in 0..rand(3) {
+                    deploy_n += 1;
+                    let (sig, pd) = processed(deploy_n, rand(4) == 0);
+                    b.body.deploys.push(pd);
+                    probe_sigs.push(sig);
+                }
+                for _ in 0..rand(2) {
+                    applied_n += 1;
+                    let sig = Bytes::from(format!("membership-{}", applied_n).into_bytes());
+                    b.body.applied_from_scope.push(sig.clone());
+                    probe_sigs.push(sig);
+                }
+                if gap_at != Some(h) {
+                    store.put_block_message(&b).expect("store block");
+                }
+                lineage.push(b.block_hash.clone());
+                prev = b;
+            }
+            let tip = prev.block_hash.clone();
+            for _pass in 0..2 {
+                let probes: Vec<(Bytes, i64, Option<BlockHash>)> = probe_sigs
+                    .iter()
+                    .map(|sig| {
+                        let bound = i64::from(rand(len as u32 + 2));
+                        let memo = (rand(3) == 0)
+                            .then(|| lineage[rand(lineage.len() as u32) as usize].clone());
+                        (sig.clone(), bound, memo)
+                    })
+                    .collect();
+                let batched = lineage_membership(
+                    &store,
+                    &tip,
+                    probes
+                        .iter()
+                        .map(|(sig, bound, memo)| MembershipProbe {
+                            sig: sig.clone(),
+                            min_height: *bound,
+                            checked_below: memo.clone(),
+                        })
+                        .collect(),
+                );
+                assert_eq!(batched.len(), probes.len());
+                for (sig, bound, memo) in &probes {
+                    let reference =
+                        decoding_effect_in_state_of_above(&store, &tip, sig, *bound, memo.as_ref());
+                    let answer = batched.get(sig).expect("every probe is answered");
+                    match (&reference, answer) {
+                        (Ok(expected), Ok(got)) => assert_eq!(expected, got),
+                        (
+                            Err(CasperError::BlockNotHeld(expected, _)),
+                            Err(CasperError::BlockNotHeld(got, _)),
+                        ) => assert_eq!(expected, got),
+                        (Err(CasperError::Other(_)), Err(CasperError::Other(_))) => {}
+                        (expected, got) => panic!(
+                            "batched membership diverged: reference {expected:?}, batched {got:?}"
+                        ),
+                    }
+                    compared += 1;
+                }
+            }
+        }
+        assert!(compared > 200, "the generator must exercise many probes");
     }
 
     /// CLAIM-FINALITY-001 C2 bridge (discharge plan item 2): on generated
