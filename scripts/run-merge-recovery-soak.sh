@@ -2100,17 +2100,21 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
 		kill "$ITERATION_SNAPSHOT_PID" 2>/dev/null || true
 		wait "$ITERATION_SNAPSHOT_PID" 2>/dev/null || true
 	fi
-	# The node-metrics copy is 40-190MB per iteration and nothing reads it
-	# after the snapshot loop stops. Uncompressed, 93 iterations of weekend
-	# run 38995239992 left 10GB in OUTPUT_DIR and tripped the disk floor at
-	# 16.7h of 57.5h; gzip keeps all rows at about 1/20 of the size. Skipped
-	# under an emergency deadline, which has no seconds to spare.
-	if [ -z "$EMERGENCY_DEADLINE_EPOCH" ] && [ -f "$ITERATION_DIR/node-metrics-timeseries.csv" ]; then
-		gzip -6 -f "$ITERATION_DIR/node-metrics-timeseries.csv" 2>/dev/null || true
-	fi
 	if [ -n "$ITERATION_IO_SAMPLER_PID" ]; then
 		kill "$ITERATION_IO_SAMPLER_PID" 2>/dev/null || true
 		wait "$ITERATION_IO_SAMPLER_PID" 2>/dev/null || true
+	fi
+	# The node-metrics copy is 40-190MB per iteration and nothing reads it
+	# after the snapshot loop stops. Uncompressed, 93 iterations of weekend
+	# run 38995239992 left 10GB in OUTPUT_DIR and tripped the disk floor at
+	# 16.7h of 57.5h; gzip keeps all rows at about 1/20 of the size. It runs
+	# after the I/O sampler stops so its I/O stays out of io.tsv, and it is
+	# skipped under an emergency deadline, which has no seconds to spare. A
+	# failure keeps the soak going but is logged: a silent one would bring
+	# the disk growth back with no trace.
+	if [ -z "$EMERGENCY_DEADLINE_EPOCH" ] && [ -f "$ITERATION_DIR/node-metrics-timeseries.csv" ]; then
+		gzip -6 -f "$ITERATION_DIR/node-metrics-timeseries.csv" ||
+			printf 'node-metrics gzip failed for iteration %s; the uncompressed CSV remains\n' "$ITERATIONS" >&2
 	fi
 	rm -f "$ITERATION_FIFO"
 	ITERATION_PID=""
