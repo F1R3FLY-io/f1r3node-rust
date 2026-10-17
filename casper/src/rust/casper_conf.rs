@@ -191,6 +191,12 @@ pub struct CasperConf {
         default = "default_proposal_pacing_floor_distance"
     )]
     pub proposal_pacing_floor_distance: i64,
+
+    #[serde(
+        rename = "deploy-verified-encodings-cap",
+        default = "default_deploy_verified_encodings_cap"
+    )]
+    pub deploy_verified_encodings_cap: usize,
 }
 
 fn default_deploy_play_budget() -> Duration { Duration::ZERO }
@@ -254,6 +260,10 @@ pub fn default_deploy_pool_blocks_of_backlog() -> usize {
 
 pub fn default_proposal_pacing_floor_distance() -> i64 {
     crate::rust::casper::PROPOSAL_PACING_FLOOR_DISTANCE_DEFAULT
+}
+
+pub fn default_deploy_verified_encodings_cap() -> usize {
+    block_storage::rust::deploy::key_value_deploy_storage::VERIFIED_ENCODINGS_CAP_DEFAULT
 }
 
 /// Round robin dispatcher configuration

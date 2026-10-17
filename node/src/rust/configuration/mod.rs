@@ -1046,6 +1046,10 @@ mod embedded_defaults_tests {
             cfg.casper.proposal_pacing_floor_distance,
             casper::rust::casper_conf::default_proposal_pacing_floor_distance()
         );
+        assert_eq!(
+            cfg.casper.deploy_verified_encodings_cap,
+            casper::rust::casper_conf::default_deploy_verified_encodings_cap()
+        );
     }
 
     /// I5: the stale-recovery interval must exceed the heartbeat tick, or

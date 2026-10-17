@@ -160,26 +160,41 @@ fn deploy_is_known<T: TransportLayer + Send + Sync>(
         .map_err(Into::into)
 }
 
+enum Reservation {
+    Added,
+    Duplicate,
+    PoolFull(DeployError),
+}
+
 fn reserve_deploy<T: TransportLayer + Send + Sync>(
     this: &MultiParentCasperImpl<T>,
     deploy: Signed<DeployData>,
-) -> Result<bool, CasperError> {
+) -> Result<Reservation, CasperError> {
     let deploy_id = deploy.sig.to_vec();
     if this
         .block_dag_storage
         .deploy_canonical_appearance(&deploy_id)?
         .is_some()
     {
-        return Ok(false);
+        return Ok(Reservation::Duplicate);
     }
 
     let rejected_deploys = this.rejected_deploy_buffer.lock()?;
     if rejected_deploys.contains_sig(&deploy_id)? {
-        return Ok(false);
+        return Ok(Reservation::Duplicate);
     }
-    this.deploy_storage
-        .add_if_absent(deploy)
-        .map_err(Into::into)
+    let cap = deploy_pool_cap(
+        this.casper_shard_conf.max_user_deploys_per_block,
+        this.casper_shard_conf.deploy_pool_blocks_of_backlog,
+    );
+    if let Some(error) = pool_admission(this.deploy_storage.pending_count()?, cap) {
+        return Ok(Reservation::PoolFull(error));
+    }
+    if this.deploy_storage.add_if_absent(deploy)? {
+        Ok(Reservation::Added)
+    } else {
+        Ok(Reservation::Duplicate)
+    }
 }
 
 pub(crate) async fn admit_handle_valid_block<T: TransportLayer + Send + Sync>(
@@ -245,8 +260,19 @@ pub(crate) fn add_deploy<T: TransportLayer + Send + Sync>(
     deploy: Signed<DeployData>,
 ) -> Result<Either<DeployError, DeployId>, CasperError> {
     let deploy_id = deploy.sig.to_vec();
-    if !reserve_deploy(this, deploy.clone())? {
-        return Ok(Either::Left(DeployError::duplicate_deploy(deploy_id)));
+    match reserve_deploy(this, deploy.clone())? {
+        Reservation::Added => {}
+        Reservation::Duplicate => {
+            return Ok(Either::Left(DeployError::duplicate_deploy(deploy_id)));
+        }
+        Reservation::PoolFull(error) => {
+            tracing::info!(
+                target: "f1r3fly.casper.deploy_lifecycle",
+                event = "pool_full",
+                "deploy lifecycle"
+            );
+            return Ok(Either::Left(error));
+        }
     }
 
     // Log the received deploy

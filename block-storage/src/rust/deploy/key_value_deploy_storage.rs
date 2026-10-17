@@ -166,6 +166,12 @@ impl<N: DeployStoreName> KeyValueDeployStore<N> {
     }
 }
 
+pub use super::deploy_codec::VERIFIED_ENCODINGS_CAP_DEFAULT;
+
+pub fn set_verified_encodings_cap(cap: usize) {
+    super::deploy_codec::set_verified_encodings_cap(cap)
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
