@@ -11,7 +11,7 @@ use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresenta
 use block_storage::rust::dag::block_metadata_store::BlockMetadataStore;
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use casper::rust::estimator::Estimator;
-use casper::rust::finality::floor::{floor_of_view, Floor, FloorOfView};
+use casper::rust::finality::floor::{Floor, FloorOfView};
 use casper::rust::safety::clique_oracle::{CliqueOracle, FtThreshold};
 use models::rust::block_hash::BlockHash;
 use models::rust::block_implicits::get_random_block_default;
@@ -23,6 +23,7 @@ use rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueSt
 use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
 
 use crate::helper::block_util::generate_validator;
+use crate::util::floor_cursor_check::floor_of_view;
 
 fn bonded_block(
     number: i64,

@@ -272,9 +272,7 @@ impl BlockMetadataStore {
         for hash in indirectly {
             dag_state_guard.finalized_block_set.insert(hash);
         }
-        dag_state_guard
-            .finalized_block_set
-            .insert(directly.clone());
+        dag_state_guard.finalized_block_set.insert(directly.clone());
         if dag_state_guard
             .last_finalized_block
             .as_ref()
@@ -285,7 +283,9 @@ impl BlockMetadataStore {
         Self::prune_finalized_cache_if_needed(&mut dag_state_guard);
     }
 
-    pub(crate) fn raw_store(&self) -> &Arc<dyn shared::rust::store::key_value_store::KeyValueStore> {
+    pub(crate) fn raw_store(
+        &self,
+    ) -> &Arc<dyn shared::rust::store::key_value_store::KeyValueStore> {
         self.store.raw_store()
     }
 
