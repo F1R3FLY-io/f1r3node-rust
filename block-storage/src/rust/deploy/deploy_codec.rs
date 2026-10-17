@@ -1,3 +1,7 @@
+use std::collections::HashSet;
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+use crypto::rust::hash::blake2b256::Blake2b256;
 use crypto::rust::signatures::signed::Signed;
 use models::casper::DeployDataProto;
 use models::rust::casper::protocol::casper_message::DeployData;
@@ -31,11 +35,38 @@ pub(super) fn encode(deploy: &Signed<DeployData>) -> Result<BitVector, KvStoreEr
     Ok(bytes)
 }
 
+pub const VERIFIED_ENCODINGS_CAP_DEFAULT: usize = 262_144;
+
+static VERIFIED_ENCODINGS_CAP: AtomicUsize = AtomicUsize::new(VERIFIED_ENCODINGS_CAP_DEFAULT);
+
+pub(super) fn set_verified_encodings_cap(cap: usize) {
+    VERIFIED_ENCODINGS_CAP.store(cap, Ordering::Relaxed);
+    if cap == 0 {
+        VERIFIED_ENCODINGS.lock().clear();
+    }
+}
+
+static VERIFIED_ENCODINGS: std::sync::LazyLock<parking_lot::Mutex<HashSet<Vec<u8>>>> =
+    std::sync::LazyLock::new(|| parking_lot::Mutex::new(HashSet::new()));
+
 pub(super) fn decode(bytes: &BitVector) -> Result<Signed<DeployData>, KvStoreError> {
     if let Some(payload) = bytes.strip_prefix(PREFIX) {
         let proto = DeployDataProto::decode(payload)
             .map_err(|error| KvStoreError::SerializationError(error.to_string()))?;
-        return DeployData::from_proto(proto).map_err(KvStoreError::SerializationError);
+        let digest = Blake2b256::hash(payload.to_vec());
+        if VERIFIED_ENCODINGS.lock().contains(&digest) {
+            return DeployData::from_stored_proto(proto).map_err(KvStoreError::SerializationError);
+        }
+        let deploy = DeployData::from_proto(proto).map_err(KvStoreError::SerializationError)?;
+        let cap = VERIFIED_ENCODINGS_CAP.load(Ordering::Relaxed);
+        if cap > 0 {
+            let mut verified = VERIFIED_ENCODINGS.lock();
+            if verified.len() >= cap {
+                verified.clear();
+            }
+            verified.insert(digest);
+        }
+        return Ok(deploy);
     }
     metrics::counter!(LEGACY_DECODE_METRIC).increment(1);
     let legacy: Signed<LegacyDeployData> = bincode::deserialize(bytes)?;
@@ -121,6 +152,26 @@ mod tests {
             let proto = DeployDataProto::decode(bytes.strip_prefix(PREFIX).unwrap()).unwrap();
             assert_eq!(proto, DeployData::to_proto_ref(&deploy));
             assert_eq!(decode(&bytes).unwrap(), deploy);
+        }
+    }
+
+    #[test]
+    fn a_verified_encoding_is_trusted_on_later_reads_and_nothing_else_is() {
+        let deploy = signed(Vec::new());
+        let bytes = encode(&deploy).unwrap();
+        let digest = Blake2b256::hash(bytes.strip_prefix(PREFIX).unwrap().to_vec());
+        assert_eq!(decode(&bytes).unwrap(), deploy);
+        assert!(VERIFIED_ENCODINGS.lock().contains(&digest));
+        assert_eq!(decode(&bytes).unwrap(), deploy);
+
+        let mut tampered = deploy.clone();
+        tampered.data.phlo_limit += 1;
+        let tampered_bytes = encode(&tampered).unwrap();
+        for _ in 0..2 {
+            assert!(matches!(
+                decode(&tampered_bytes),
+                Err(KvStoreError::SerializationError(error)) if error == "Invalid signature"
+            ));
         }
     }
 

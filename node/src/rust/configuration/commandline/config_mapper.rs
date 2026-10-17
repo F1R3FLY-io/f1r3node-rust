@@ -887,6 +887,8 @@ mod tests {
                     casper::rust::casper_conf::default_deploy_pool_blocks_of_backlog(),
                 proposal_pacing_floor_distance:
                     casper::rust::casper_conf::default_proposal_pacing_floor_distance(),
+                deploy_verified_encodings_cap:
+                    casper::rust::casper_conf::default_deploy_verified_encodings_cap(),
             },
             metrics: crate::rust::configuration::model::Metrics {
                 prometheus: false,

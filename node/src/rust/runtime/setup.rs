@@ -416,8 +416,11 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
 
     // Deploy storage
     let (deploy_storage, deploy_storage_arc) = {
-        use block_storage::rust::deploy::key_value_deploy_storage::KeyValueDeployStorage;
+        use block_storage::rust::deploy::key_value_deploy_storage::{
+            set_verified_encodings_cap, KeyValueDeployStorage,
+        };
 
+        set_verified_encodings_cap(conf.casper.deploy_verified_encodings_cap);
         let deploy_storage = KeyValueDeployStorage::new(&mut rnode_store_manager).await?;
         let deploy_storage_arc = Arc::new(deploy_storage.clone());
         (deploy_storage, deploy_storage_arc)
