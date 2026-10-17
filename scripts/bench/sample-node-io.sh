@@ -23,7 +23,10 @@
 #                   A node that ran at sampler start is never the target: the
 #                   iteration starts its shard after the sampler, and a benchmark
 #                   shard that runs across iterations has the same roles
-#                   (run 38995239992, iterations 84 to 93).
+#                   (run 38995239992, iterations 84 to 93). The sampler knows
+#                   those nodes by PID; a PID reused inside one iteration is
+#                   assumed not to occur. Until a node of the iteration has the
+#                   role, the file holds a "waiting:" line.
 #
 # Test seams: PROC_ROOT, SOAK_IO_SUDO, SOAK_IO_DOCKER, SOAK_IO_STRACE.
 set -uo pipefail
@@ -43,6 +46,7 @@ PYTEST_LOG="$ITERATION_DIR/pytest.log"
 
 mkdir -p "$OUT" || exit 0
 STRACE_PID=""
+PREEXISTING=" "
 ROLE_CACHE="$OUT/.roles"
 : >"$ROLE_CACHE"
 stop() {
@@ -164,12 +168,13 @@ run_strace() {
 	rm -f "$target.direct" "$target.sudo"
 }
 
+PREEXISTING=" $(discover_nodes | cut -f1 | tr '\n' ' ')"
 printf 'ts\tpid\trole\trchar\twchar\tsyscr\tsyscw\tread_bytes\twrite_bytes\tcancelled_write_bytes\tminflt\tmajflt\n' >"$OUT/io.tsv"
 describe_host
-PREEXISTING=" $(discover_nodes | cut -f1 | tr '\n' ' ')"
 started="$(date +%s)"
 described=" "
 straced=0
+waiting_noted=0
 sustained_at=""
 while :; do
 	nodes="$(discover_nodes)"
@@ -192,6 +197,10 @@ while :; do
 					run_strace "$pid" "$trigger" &
 					STRACE_PID=$!
 					straced=1
+				elif [ "$waiting_noted" -eq 0 ] &&
+					awk -F'\t' -v r="$STRACE_ROLE" '{ n = split($2, part, "."); if ($2 == r || part[n] == r) found = 1 } END { exit !found }' <<<"$nodes"; then
+					printf 'role: %s\nwaiting: only nodes that ran at sampler start match the role\n' "$STRACE_ROLE" >"$OUT/strace-$STRACE_ROLE.txt"
+					waiting_noted=1
 				fi
 			fi
 		fi

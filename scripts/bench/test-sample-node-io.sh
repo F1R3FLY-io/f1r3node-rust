@@ -85,13 +85,16 @@ run_sampler() {  # run_sampler ITERATION_DIR SUDO EXTRA_ENV...
 }
 
 # The iteration starts its shard after the sampler: node 202 appears only after
-# the first sample.
+# the sampler has seen the benchmark node 120 alone and has not traced it.
 hide_iteration_node() { mv "$PROC/202" "$TMP/node-202"; }
-start_iteration_node() {  # start_iteration_node IO_TSV
+start_iteration_node() {  # start_iteration_node IO_DIAGNOSTICS_DIR
 	for _ in $(seq 1 50); do
-		[ -f "$1" ] && [ "$(wc -l <"$1")" -ge 2 ] && break
+		grep -Fxq 'waiting: only nodes that ran at sampler start match the role' "$1/strace-validator1.txt" 2>/dev/null && break
 		sleep 0.1
 	done
+	grep -Fxq 'waiting: only nodes that ran at sampler start match the role' "$1/strace-validator1.txt" 2>/dev/null ||
+		fail "no waiting note while only the benchmark node matched: $(cat "$1/strace-validator1.txt" 2>/dev/null)"
+	[ ! -s "$TMP/strace.log" ] || fail "strace ran before the iteration node started: $(cat "$TMP/strace.log")"
 	mv "$TMP/node-202" "$PROC/202"
 }
 
@@ -103,7 +106,7 @@ printf -- '--- Phase: low ---\n--- Phase: sustained ---\n' >"$ITER/pytest.log"
 hide_iteration_node
 run_sampler "$ITER" "" STRACE_SLEEP=6
 OUT="$ITER/io-diagnostics"
-start_iteration_node "$OUT/io.tsv"
+start_iteration_node "$OUT"
 for _ in $(seq 1 50); do
 	[ -s "$TMP/strace.log" ] && [ "$(awk -F'\t' '$2 == 202' "$OUT/io.tsv" | wc -l)" -ge 4 ] && break
 	sleep 0.2
@@ -151,7 +154,7 @@ printf -- '--- Phase: sustained ---\n' >"$ITER2/pytest.log"
 : >"$TMP/strace.log"
 hide_iteration_node
 run_sampler "$ITER2" "$TMP/bin/fake-sudo -n" STRACE_NEEDS_SUDO=1
-start_iteration_node "$ITER2/io-diagnostics/io.tsv"
+start_iteration_node "$ITER2/io-diagnostics"
 for _ in $(seq 1 50); do
 	grep -q fdatasync "$ITER2/io-diagnostics/strace-validator1.txt" 2>/dev/null && break
 	sleep 0.2
