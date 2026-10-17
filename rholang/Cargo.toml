@@ -4,9 +4,6 @@ version = "0.1.0"
 edition = "2021"
 publish = false
 
-[lib]
-crate-type = ["cdylib", "rlib"]
-
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ["cfg(kani)", "cfg(verus_keep_ghost)"] }
 
@@ -34,7 +31,6 @@ itertools = { workspace = true }
 serde = { workspace = true }
 tokio = { workspace = true }
 crossbeam-queue = "0.3"
-dashmap = { workspace = true }
 tree-sitter = "0.25.8"
 tree-sitter-rust = "0.24"
 hex = { workspace = true }
@@ -85,7 +81,6 @@ async-trait = { workspace = true }
 pretty_assertions = "1.3.0"
 proptest = { workspace = true }
 rand = { workspace = true }
-criterion = { version = "0.5", features = ["html_reports"] }
 loom = "=0.7.2"
 
 [features]

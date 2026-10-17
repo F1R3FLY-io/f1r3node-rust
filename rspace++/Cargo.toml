@@ -24,7 +24,7 @@ heed = { workspace = true }
 # without those siblings).
 serde = { workspace = true, features = ["rc"] }
 serde_json = { workspace = true }
-dashmap = { workspace = true, features = ["raw-api"] }
+dashmap = { workspace = true }
 arc-swap = { workspace = true }
 imbl = { workspace = true }
 prost = { workspace = true }
@@ -63,8 +63,6 @@ features = [
 ]
 
 [dev-dependencies]
-tempfile = { workspace = true }
 test-env-helpers = "0.2.2"
 metrics-util = { workspace = true }
-# Dev also added this dependency; it is already declared above, and a TOML table cannot repeat a key.
-# tempfile = { workspace = true }
+tempfile = { workspace = true }
