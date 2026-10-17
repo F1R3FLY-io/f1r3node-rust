@@ -27,6 +27,21 @@ fn scope<T>(budget: &RuntimeBudget, index: usize, action: impl FnOnce() -> T) ->
     .unwrap()
 }
 
+// Added by DR-132 (D1-A, T11): the row name that the start of a native
+// operation returns. The tests run the later hooks under this name, as RSpace
+// runs the rest of a locked operation.
+fn start_row(
+    budget: &RuntimeBudget,
+    source: RSpaceOperationSource<'_>,
+    channels: &[Par],
+    joins: &[Vec<Par>],
+) -> OperationOrder {
+    budget
+        .start_native_operation(source, channels, joins)
+        .expect("native operation start")
+        .expect("native accounting names each row")
+}
+
 fn introduce(budget: &RuntimeBudget, source: &Produce) {
     budget
         .reserve_produce_introduction_measured(
@@ -53,17 +68,27 @@ fn native_consume_metadata_rejects_invalid_indexes_and_repeated_capture_before_d
         let channels = vec![channel(0)];
         let source = Consume::create(&channels, &vec![0u8], &7u8, false);
         scope(&budget, 0, || {
-            budget
-                .start_native_operation(RSpaceOperationSource::Consume(&source), &channels, &[])
-                .unwrap();
-            if invalid == [0] {
-                budget
-                    .observe_native_consume_peeks(&std::collections::BTreeSet::new())
-                    .unwrap();
-            }
-            assert!(budget
-                .observe_native_consume_peeks(&invalid.into_iter().collect())
-                .is_err());
+            // Changed by DR-132 (D1-A, T11): the later hooks run under the row
+            // name that the start returns.
+            // budget
+            //     .start_native_operation(RSpaceOperationSource::Consume(&source), &channels, &[])
+            //     .unwrap();
+            let name = start_row(
+                &budget,
+                RSpaceOperationSource::Consume(&source),
+                &channels,
+                &[],
+            );
+            operation_context::sync_scope(name, || {
+                if invalid == [0] {
+                    budget
+                        .observe_native_consume_peeks(&std::collections::BTreeSet::new())
+                        .expect("the consume observes its peeks");
+                }
+                assert!(budget
+                    .observe_native_consume_peeks(&invalid.into_iter().collect())
+                    .is_err());
+            });
         });
         assert_eq!(budget.native_phlo_usage(), Some(0));
         assert!(budget.native_operation_recording().is_err());
@@ -82,41 +107,52 @@ fn native_operation_recording_rejects_incomplete_duplicate_and_mismatched_lifecy
         let source = Produce::create(&channel, &7u8, false);
         scope(&budget, 0, || {
             let reference = RSpaceOperationSource::Produce(&source);
-            budget
-                .start_native_operation(reference, std::slice::from_ref(&channel), &[])
-                .unwrap();
-            assert!(budget.native_operation_recording().is_err());
-            if failure == 0 {
-                return;
-            }
-            if failure == 1 {
-                assert!(budget.start_native_operation(reference, &[], &[]).is_err());
-                return;
-            }
-            if failure != 2 {
-                introduce(&budget, &source);
-            }
-            let mut changed = source.clone();
-            changed.persistent = !changed.persistent;
-            let final_source = if failure == 3 {
-                RSpaceOperationSource::Produce(&changed)
-            } else {
-                reference
-            };
-            budget.finish_native_operation(
-                final_source,
-                if failure == 4 {
-                    RSpaceOperationCompletion::Matched
-                } else if failure == 6 {
-                    RSpaceOperationCompletion::Rejected
+            // Changed by DR-132 (D1-A, T11): the later hooks run under the row
+            // name that the start returns.
+            // budget
+            //     .start_native_operation(reference, std::slice::from_ref(&channel), &[])
+            //     .unwrap();
+            let name = start_row(&budget, reference, std::slice::from_ref(&channel), &[]);
+            operation_context::sync_scope(name, || {
+                assert!(budget.native_operation_recording().is_err());
+                if failure == 0 {
+                    return;
+                }
+                if failure == 1 {
+                    // Changed by DR-132 (D1-A): each start names a new row by
+                    // its journal index, so a second start cannot repeat a
+                    // name. It records a second open row, and the recording
+                    // stays incomplete.
+                    // assert!(budget.start_native_operation(reference, &[], &[]).is_err());
+                    let second = start_row(&budget, reference, &[], &[]);
+                    assert_eq!(second.path.to_vec(), vec![(1, 0)]);
+                    return;
+                }
+                if failure != 2 {
+                    introduce(&budget, &source);
+                }
+                let mut changed = source.clone();
+                changed.persistent = !changed.persistent;
+                let final_source = if failure == 3 {
+                    RSpaceOperationSource::Produce(&changed)
                 } else {
-                    RSpaceOperationCompletion::Stored
-                },
-            );
-            if failure == 5 {
-                assert!(budget.native_operation_recording().is_ok());
-                budget.finish_native_operation(reference, RSpaceOperationCompletion::Stored);
-            }
+                    reference
+                };
+                budget.finish_native_operation(
+                    final_source,
+                    if failure == 4 {
+                        RSpaceOperationCompletion::Matched
+                    } else if failure == 6 {
+                        RSpaceOperationCompletion::Rejected
+                    } else {
+                        RSpaceOperationCompletion::Stored
+                    },
+                );
+                if failure == 5 {
+                    assert!(budget.native_operation_recording().is_ok());
+                    budget.finish_native_operation(reference, RSpaceOperationCompletion::Stored);
+                }
+            });
         });
         assert!(
             budget.native_operation_recording().is_err(),
@@ -142,12 +178,23 @@ fn native_operation_recording_allows_independent_operations_to_overlap() {
                     let channel = channel(index as i64);
                     let source = Produce::create(&channel, &7u8, false);
                     let reference = RSpaceOperationSource::Produce(&source);
-                    budget
-                        .start_native_operation(reference, &[channel], &[])
-                        .unwrap();
-                    introduce(budget, &source);
-                    barrier.wait();
-                    budget.finish_native_operation(reference, RSpaceOperationCompletion::Stored);
+                    // Changed by DR-132 (D1-A, T11): the threads start in any
+                    // order, so the row name of a thread can differ from its
+                    // outer name. The later hooks run under the row name that
+                    // the start returns.
+                    // budget
+                    //     .start_native_operation(reference, &[channel], &[])
+                    //     .unwrap();
+                    // introduce(budget, &source);
+                    // barrier.wait();
+                    // budget.finish_native_operation(reference, RSpaceOperationCompletion::Stored);
+                    let name = start_row(budget, reference, &[channel], &[]);
+                    operation_context::sync_scope(name, || {
+                        introduce(budget, &source);
+                        barrier.wait();
+                        budget
+                            .finish_native_operation(reference, RSpaceOperationCompletion::Stored);
+                    })
                 })
             });
         }
@@ -169,14 +216,23 @@ fn native_operation_recording_rejects_overlapping_conflicting_operations() {
     let channel = channel(1);
     let source = Produce::create(&channel, &7u8, false);
     scope(&budget, 0, || {
-        budget
-            .start_native_operation(
-                RSpaceOperationSource::Produce(&source),
-                std::slice::from_ref(&channel),
-                &[],
-            )
-            .unwrap();
-        introduce(&budget, &source);
+        // Changed by DR-132 (D1-A, T11): the later hooks run under the row name
+        // that the start returns.
+        // budget
+        //     .start_native_operation(
+        //         RSpaceOperationSource::Produce(&source),
+        //         std::slice::from_ref(&channel),
+        //         &[],
+        //     )
+        //     .unwrap();
+        // introduce(&budget, &source);
+        let name = start_row(
+            &budget,
+            RSpaceOperationSource::Produce(&source),
+            std::slice::from_ref(&channel),
+            &[],
+        );
+        operation_context::sync_scope(name, || introduce(&budget, &source));
     });
     scope(&budget, 1, || {
         assert!(budget
@@ -209,42 +265,59 @@ fn native_operation_completion_accepts_exactly_model_outcomes() {
                 let source = Produce::create(&channel, &7u8, false);
                 scope(&budget, 0, || {
                     let reference = RSpaceOperationSource::Produce(&source);
-                    budget
-                        .start_native_operation(reference, std::slice::from_ref(&channel), &[])
-                        .unwrap();
-                    if let Some(granted) = intro {
-                        let result = budget.reserve_produce_introduction_measured(
-                            source.hash.0.as_slice().try_into().unwrap(),
-                            &authority(1),
-                            ByteCharge {
-                                introduction_bytes: 0,
-                                transfer_bytes: 1,
-                                trace_bytes: 0,
-                            },
-                            false,
-                        );
-                        assert_eq!(result.is_ok(), granted);
-                    }
-                    if let Some(granted) = comm {
-                        let event = COMM {
-                            consume: Consume::create(&vec![channel], &vec![0u8], &7u8, false),
-                            produces: vec![source.clone()],
-                            peeks: Default::default(),
-                            times_repeated: Default::default(),
-                        };
-                        budget.observe_native_comm_source(&event).unwrap();
-                        let result = budget.reserve_comm_authority_measured(
-                            event.cost_identity().0.as_slice().try_into().unwrap(),
-                            &authority(1),
-                            ByteCharge {
-                                introduction_bytes: 0,
-                                transfer_bytes: u64::from(!granted),
-                                trace_bytes: 0,
-                            },
-                        );
-                        assert_eq!(result.is_ok(), granted);
-                    }
-                    budget.finish_native_operation(reference, completion);
+                    // Changed by DR-132 (D1-A, T11): the later hooks run under
+                    // the row name that the start returns.
+                    // budget
+                    //     .start_native_operation(reference, std::slice::from_ref(&channel), &[])
+                    //     .unwrap();
+                    let name = start_row(&budget, reference, std::slice::from_ref(&channel), &[]);
+                    operation_context::sync_scope(name, || {
+                        if let Some(granted) = intro {
+                            let result = budget.reserve_produce_introduction_measured(
+                                source
+                                    .hash
+                                    .0
+                                    .as_slice()
+                                    .try_into()
+                                    .expect("a produce hash has 32 bytes"),
+                                &authority(1),
+                                ByteCharge {
+                                    introduction_bytes: 0,
+                                    transfer_bytes: 1,
+                                    trace_bytes: 0,
+                                },
+                                false,
+                            );
+                            assert_eq!(result.is_ok(), granted);
+                        }
+                        if let Some(granted) = comm {
+                            let event = COMM {
+                                consume: Consume::create(&vec![channel], &vec![0u8], &7u8, false),
+                                produces: vec![source.clone()],
+                                peeks: Default::default(),
+                                times_repeated: Default::default(),
+                            };
+                            budget
+                                .observe_native_comm_source(&event)
+                                .expect("the COMM source is observed");
+                            let result = budget.reserve_comm_authority_measured(
+                                event
+                                    .cost_identity()
+                                    .0
+                                    .as_slice()
+                                    .try_into()
+                                    .expect("a COMM identity has 32 bytes"),
+                                &authority(1),
+                                ByteCharge {
+                                    introduction_bytes: 0,
+                                    transfer_bytes: u64::from(!granted),
+                                    trace_bytes: 0,
+                                },
+                            );
+                            assert_eq!(result.is_ok(), granted);
+                        }
+                        budget.finish_native_operation(reference, completion);
+                    });
                 });
                 let expected = match completion {
                     RSpaceOperationCompletion::Stored => intro == Some(true) && comm.is_none(),
@@ -300,9 +373,16 @@ proptest! {
             expected.push((predecessors, start, fresh, link));
             scope(&budget, index, || {
                 let reference = RSpaceOperationSource::Produce(&source);
-                budget.start_native_operation(reference, &channels[..1], &[channels.clone()]).unwrap();
-                introduce(&budget, &source);
-                budget.finish_native_operation(reference, RSpaceOperationCompletion::Stored);
+                // Changed by DR-132 (D1-A, T11): the later hooks run under the
+                // row name that the start returns.
+                // budget.start_native_operation(reference, &channels[..1], &[channels.clone()]).unwrap();
+                // introduce(&budget, &source);
+                // budget.finish_native_operation(reference, RSpaceOperationCompletion::Stored);
+                let name = start_row(&budget, reference, &channels[..1], &[channels.clone()]);
+                operation_context::sync_scope(name, || {
+                    introduce(&budget, &source);
+                    budget.finish_native_operation(reference, RSpaceOperationCompletion::Stored);
+                });
             });
         }
         let records = budget.native_operation_recording().unwrap().unwrap();

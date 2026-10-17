@@ -57,7 +57,8 @@ use crate::rust::interpreter::accounting::native_phlo_rules::{
     NativePhloDimension, NativePhloRules,
 };
 use crate::rust::interpreter::accounting::{RuntimeBudget, Sig};
-use crate::rust::interpreter::deterministic_reduction;
+// Changed by DR-132 (P17): the deterministic scheduler is gone (D3-A).
+// use crate::rust::interpreter::deterministic_reduction;
 use crate::rust::interpreter::env::Env;
 use crate::rust::interpreter::errors::InterpreterError;
 use crate::rust::interpreter::interpreter::InterpreterImpl;
@@ -281,10 +282,12 @@ pub fn linear_cost_estimate(
     schedule: &PhloScheduleV1<'_>,
     evaluator: &ReducerCore,
 ) -> Result<CostEstimate, InterpreterError> {
-    debug_assert!(
-        deterministic_reduction::current().is_none(),
-        "the pre-execution estimate runs outside a reduction session"
-    );
+    // Changed by DR-132 (P17): no reduction session exists after the revert,
+    // so the estimate cannot run inside one.
+    // debug_assert!(
+    //     deterministic_reduction::current().is_none(),
+    //     "the pre-execution estimate runs outside a reduction session"
+    // );
     let rules = NativePhloRules::resolve(schedule)
         .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
     let core = isolated_evaluator(evaluator);

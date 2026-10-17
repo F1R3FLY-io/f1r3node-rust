@@ -9,6 +9,7 @@ use super::checkpoint::Checkpoint;
 use super::errors::RSpaceError;
 use super::hashing::blake2b256_hash::Blake2b256Hash;
 use super::internal::{Datum, ProduceCandidate, Row, WaitingContinuation};
+use super::operation_context::OperationOrder;
 use super::trace::Log;
 use super::trace::event::{COMM, Consume, Produce};
 use crate::rspace::checkpoint::SoftCheckpoint;
@@ -75,13 +76,19 @@ pub trait RSpaceAccountingObserver<C, P, A, K>: Send + Sync {
         Ok(None)
     }
 
+    // Changed by DR-132: the start hook returns the name of the recorded
+    // operation, and RSpace runs the rest of the locked operation under it.
+    // Racing evaluation sets no outer name.
+    // ) -> Result<(), RSpaceError> {
+    //     Ok(())
+    // }
     fn observe_operation_start(
         &self,
         _source: RSpaceOperationSource<'_>,
         _channels: &[C],
         _joins: &[Vec<C>],
-    ) -> Result<(), RSpaceError> {
-        Ok(())
+    ) -> Result<Option<OperationOrder>, RSpaceError> {
+        Ok(None)
     }
 
     fn observe_operation_finish(
@@ -117,6 +124,11 @@ pub trait RSpaceAccountingObserver<C, P, A, K>: Send + Sync {
         data: &[(&A, bool)],
     ) -> Result<(), RSpaceError>;
 }
+
+/// Added by DR-132: the accounting observer of a locked operation and the
+/// name of its recorded row. The rest of the operation runs under the name.
+pub type AccountingStart<C, P, A, K> =
+    (Option<std::sync::Arc<dyn RSpaceAccountingObserver<C, P, A, K>>>, Option<OperationOrder>);
 
 /** The interface for RSpace
  *

@@ -927,73 +927,93 @@ run_expected_violation merge-tag-binding-envelope-derived-unsafe \
   "deriving the integer-add merge tag from the protocol envelope is independently refuted" \
   Inv_UriRegistryAgreement \
   --config=MergeTagBindingEnvelopeDerivedUnsafeApalache.cfg --length=1 MergeTagBinding.tla || overall=1
-run_check deterministic-parallel-reduction \
-  "complete causal frontiers preserve canonical COMM results, located-authority exclusion, and disjoint parallelism" \
-  --config=../deterministic_parallel_reduction/MC_DeterministicParallelReduction.cfg --length=10 ../deterministic_parallel_reduction/DeterministicParallelReduction.tla || overall=1
-run_expected_violation deterministic-parallel-reduction-arrival-unsafe \
-  "committing an incomplete arrival frontier is independently refuted" \
-  Inv_CommitRequiresCompleteFrontier \
-  --config=../deterministic_parallel_reduction/MC_DeterministicParallelReduction_arrival_unsafe_Apalache.cfg --length=2 ../deterministic_parallel_reduction/DeterministicParallelReduction.tla || overall=1
-run_expected_violation deterministic-parallel-reduction-order-unsafe \
-  "arbitrary commitment inside a conflict component is independently refuted" \
-  Inv_ConflictComponentCommitsInOrder \
-  --config=../deterministic_parallel_reduction/MC_DeterministicParallelReduction_order_unsafe_Apalache.cfg --length=6 ../deterministic_parallel_reduction/DeterministicParallelReduction.tla || overall=1
-run_expected_violation deterministic-parallel-reduction-checkpoint-unsafe \
-  "checkpointing before the reduction frontier is quiescent is independently refuted" \
-  Inv_CheckpointAtQuiescence \
-  --config=../deterministic_parallel_reduction/MC_DeterministicParallelReduction_checkpoint_unsafe_Apalache.cfg --length=1 ../deterministic_parallel_reduction/DeterministicParallelReduction.tla || overall=1
-run_expected_violation deterministic-parallel-reduction-serial-unsafe \
-  "global serialization that discards independent branch concurrency is independently refuted" \
-  Inv_FirstCommitRetainsDisjointParallelism \
-  --config=../deterministic_parallel_reduction/MC_DeterministicParallelReduction_serial_unsafe_Apalache.cfg --length=6 ../deterministic_parallel_reduction/DeterministicParallelReduction.tla || overall=1
-run_expected_violation deterministic-parallel-reduction-authority-unsafe \
-  "classifying operations with an overlapping purse region as disjoint is independently refuted" \
-  Inv_SharedAuthorityNeverRunsAsDisjoint \
-  --config=../deterministic_parallel_reduction/MC_DeterministicParallelReduction_authority_unsafe_Apalache.cfg --length=7 ../deterministic_parallel_reduction/DeterministicParallelReduction.tla || overall=1
-run_check deterministic-reduction-driver-lifecycle \
-  "an inline first poll transfers pending work before cancellation and preserves exact driver ownership" \
-  --config=../deterministic_parallel_reduction/MC_ReductionDriverLifecycle_Apalache.cfg --length=6 ../deterministic_parallel_reduction/ReductionDriverLifecycle.tla || overall=1
-run_expected_violation deterministic-reduction-driver-claim-unsafe \
-  "separating frontier submission from driver ownership creates an unowned ready frontier" \
-  Inv_ReadyHasDriver \
-  --config=../deterministic_parallel_reduction/MC_ReductionDriverLifecycle_claim_unsafe_Apalache.cfg --length=3 ../deterministic_parallel_reduction/ReductionDriverLifecycle.tla || overall=1
-run_expected_violation deterministic-reduction-driver-transfer-unsafe \
-  "yielding inline work without transferring driver ownership leaves a cancellation-sensitive frontier" \
-  Inv_PendingInlineIsTransferable \
-  --config=../deterministic_parallel_reduction/MC_ReductionDriverLifecycle_transfer_unsafe_Apalache.cfg --length=3 ../deterministic_parallel_reduction/ReductionDriverLifecycle.tla || overall=1
-run_expected_violation deterministic-reduction-driver-reentry-unsafe \
-  "executing an internal RSpace commit through the external scheduler is independently refuted" \
-  Inv_InternalExecutionNeverResubmits \
-  --config=../deterministic_parallel_reduction/MC_ReductionDriverLifecycle_reentry_unsafe_Apalache.cfg --length=4 ../deterministic_parallel_reduction/ReductionDriverLifecycle.tla || overall=1
-run_check deterministic-single-participant-fast-path \
-  "direct execution refines scheduled commitment only after one live participant remains" \
-  --config=../deterministic_parallel_reduction/MC_SingleParticipantFastPath_Apalache.cfg --length=4 ../deterministic_parallel_reduction/SingleParticipantFastPath.tla || overall=1
-run_expected_violation deterministic-single-participant-fast-path-unsafe \
-  "direct ownership with two live participants is independently refuted" \
-  Inv_DirectOwnerRequiresSingleton \
-  --config=../deterministic_parallel_reduction/MC_SingleParticipantFastPath_unsafe_Apalache.cfg --length=1 ../deterministic_parallel_reduction/SingleParticipantFastPath.tla || overall=1
-run_check deterministic-evaluation-boundary \
-  "structured cancellation aborts child tasks before the evaluation permit permits a checkpoint" \
-  --config=../deterministic_parallel_reduction/MC_EvaluationBoundary_Apalache.cfg --length=4 ../deterministic_parallel_reduction/EvaluationBoundary.tla || overall=1
-run_expected_violation deterministic-evaluation-boundary-cancel-unsafe \
-  "detaching child tasks and releasing the evaluation permit is independently refuted" \
-  Inv_CheckpointAtEvaluationQuiescence \
-  --config=../deterministic_parallel_reduction/MC_EvaluationBoundary_cancel_unsafe_Apalache.cfg --length=2 ../deterministic_parallel_reduction/EvaluationBoundary.tla || overall=1
-run_check counted-detached-reduction \
-  "counted child tasks preserve selected replay, exact charges, failures, and the evaluation permit" \
-  --config=../deterministic_parallel_reduction/MC_CountedDetachedReduction_Apalache.cfg --length=8 ../deterministic_parallel_reduction/CountedDetachedReduction.tla || overall=1
-run_expected_violation counted-detached-reduction-count-unsafe \
-  "counting child tasks after parent completion is independently refuted" \
+# DR-132 (decision D2-B): the stall rule of native replay. Each control runs
+# at the length of its minimum TLC counterexample (one TLC worker).
+run_expected_violation native-replay-stall-park-after-unlock-unsafe \
+  "a park counted after the unlock declares a false stall" \
+  NoFalseStall \
+  --config=NativeReplayStallParkAfterUnlockUnsafe.cfg --length=11 NativeReplayStall.tla || overall=1
+run_expected_violation native-replay-stall-park-after-unlock-leave-unsafe \
+  "a park counted after the unlock leaves a fresh registration on a ready row" \
+  NoFreshLeave \
+  --config=NativeReplayStallParkAfterUnlockLeaveUnsafe.cfg --length=11 NativeReplayStall.tla || overall=1
+run_expected_violation native-replay-stall-skip-reset-unsafe \
+  "a change that keeps the parked count declares a false stall" \
+  NoFalseStall \
+  --config=NativeReplayStallSkipResetUnsafe.cfg --length=11 NativeReplayStall.tla || overall=1
+run_expected_violation native-replay-stall-reset-after-unlock-unsafe \
+  "a count reset after the unlock loses a park and hangs replay" \
+  NoHang \
+  --config=NativeReplayStallResetAfterUnlockUnsafe.cfg --length=12 NativeReplayStall.tla || overall=1
+run_expected_violation native-replay-stall-skip-version-unsafe \
+  "a wake without a change counts one waiter twice" \
   CountExact \
-  --config=../deterministic_parallel_reduction/MC_CountedDetachedReduction_count_unsafe_Apalache.cfg --length=2 ../deterministic_parallel_reduction/CountedDetachedReduction.tla || overall=1
-run_expected_violation counted-detached-reduction-charge-unsafe \
-  "a changed detached-task charge is independently refuted" \
-  ChargeEqual \
-  --config=../deterministic_parallel_reduction/MC_CountedDetachedReduction_charge_unsafe_Apalache.cfg --length=2 ../deterministic_parallel_reduction/CountedDetachedReduction.tla || overall=1
-run_expected_violation counted-detached-reduction-permit-unsafe \
-  "early evaluation-permit release is independently refuted" \
-  PermitUntilQuiescence \
-  --config=../deterministic_parallel_reduction/MC_CountedDetachedReduction_permit_unsafe_Apalache.cfg --length=2 ../deterministic_parallel_reduction/CountedDetachedReduction.tla || overall=1
+  --config=NativeReplayStallSkipVersionUnsafe.cfg --length=12 NativeReplayStall.tla || overall=1
+run_expected_violation native-replay-stall-count-in-child-unsafe \
+  "a child that counts itself lets its parent declare a false stall" \
+  NoFalseStall \
+  --config=NativeReplayStallCountInChildUnsafe.cfg --length=7 NativeReplayStall.tla || overall=1
+run_expected_violation native-replay-stall-notified-after-check-unsafe \
+  "a notification registered after the check is lost" \
+  NoLostWakeup \
+  --config=NativeReplayStallNotifiedAfterCheckUnsafe.cfg --length=9 NativeReplayStall.tla || overall=1
+run_expected_violation native-replay-stall-root-uncounted-unsafe \
+  "an uncounted root lets its waiter declare a false stall" \
+  NoFalseStall \
+  --config=NativeReplayStallRootUncountedUnsafe.cfg --length=3 NativeReplayStall.tla || overall=1
+run_expected_violation native-replay-stall-admit-uncounted-unsafe \
+  "an admitted uncounted task makes a declared stall false" \
+  NoFalseStall \
+  --config=NativeReplayStallAdmitUncountedUnsafe.cfg --length=5 NativeReplayStall.tla || overall=1
+run_expected_violation native-replay-stall-boundary-while-armed-unsafe \
+  "a boundary opened during an evaluation declares a false stall" \
+  NoFalseStall \
+  --config=NativeReplayStallBoundaryWhileArmedUnsafe.cfg --length=6 NativeReplayStall.tla || overall=1
+# The safe checks run to the largest length that fits half of the gate's
+# timeout (measured 2026-10-16: pair 531 s at length 14, missing pair 613 s
+# at 13, lifecycle 453 s at 7). TLC checks every reachable state of these
+# configurations (depths 18, 17 and 23).
+run_check native-replay-stall-pair \
+  "a waiter and its root: the stall protocol through length 14" \
+  --config=NativeReplayStallPair.cfg --length=14 NativeReplayStall.tla || overall=1
+run_check native-replay-stall-missingpair \
+  "a waiter on a row that no task performs: the stall protocol through length 13" \
+  --config=NativeReplayStallMissingPair.cfg --length=13 NativeReplayStall.tla || overall=1
+run_expected_violation native-replay-stall-pair-completion-reachable \
+  "an honest pair completes every row" \
+  NoHonestCompletion \
+  --config=NativeReplayStallPairCompletionReachable.cfg --length=15 NativeReplayStall.tla || overall=1
+run_expected_violation native-replay-stall-missingpair-verdict-reachable \
+  "a missing row ends in a declared stall" \
+  NoStallVerdict \
+  --config=NativeReplayStallMissingPairVerdictReachable.cfg --length=12 NativeReplayStall.tla || overall=1
+run_expected_violation native-replay-stall-uncounted-verdict-reachable \
+  "a refused uncounted task ends in a declared stall" \
+  NoStallVerdict \
+  --config=NativeReplayStallUncountedVerdictReachable.cfg --length=9 NativeReplayStall.tla || overall=1
+run_check native-replay-stall-lifecycle \
+  "panics, cancellation, the root token and a second evaluation through length 7" \
+  --config=NativeReplayStallLifecycle.cfg --length=7 NativeReplayStallLifecycle.tla || overall=1
+run_expected_violation native-replay-stall-lifecycle-no-leave-on-drop-unsafe \
+  "a dropped wait that keeps its registration breaks the parked count" \
+  CountExact \
+  --config=NativeReplayStallLifecycleNoLeaveOnDropUnsafe.cfg --length=4 NativeReplayStallLifecycle.tla || overall=1
+run_expected_violation native-replay-stall-lifecycle-finish-before-drop-unsafe \
+  "a token that drops before the wait declares a false stall" \
+  NoFalseStall \
+  --config=NativeReplayStallLifecycleFinishBeforeDropUnsafe.cfg --length=4 NativeReplayStallLifecycle.tla || overall=1
+run_expected_violation native-replay-stall-lifecycle-begin-nonzero-unsafe \
+  "a begin on a busy word counts the tasks of another evaluation" \
+  LiveExact \
+  --config=NativeReplayStallLifecycleBeginNonZeroUnsafe.cfg --length=2 NativeReplayStallLifecycle.tla || overall=1
+run_expected_violation native-replay-stall-lifecycle-abort-before-close-unsafe \
+  "aborts before the close declare a stall during a cancel" \
+  NoLateStall \
+  --config=NativeReplayStallLifecycleAbortBeforeCloseUnsafe.cfg --length=4 NativeReplayStallLifecycle.tla || overall=1
+run_expected_violation native-replay-stall-lifecycle-hold-root-through-drain-unsafe \
+  "a root token held through the drain hides a stall" \
+  NoHang \
+  --config=NativeReplayStallLifecycleHoldRootThroughDrainUnsafe.cfg --length=6 NativeReplayStallLifecycle.tla || overall=1
 run_check block-heap-lifecycle \
   "concurrent block completion bounds reclaimable heap without changing committed semantics" \
   --config=BlockHeapLifecycleApalache.cfg --length=12 BlockHeapLifecycle.tla || overall=1

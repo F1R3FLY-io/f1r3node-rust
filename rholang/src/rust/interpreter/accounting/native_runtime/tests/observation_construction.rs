@@ -436,41 +436,57 @@ async fn native_typed_replay_preserves_denied_comm_and_accepted_introduction_usa
             path: vec![(0, 0)].into(),
         };
         operation_context::scope(order(), async {
-            budget
+            // Changed by DR-132 (D1-A, T11): the later hooks run under the row
+            // name that the start returns.
+            // budget
+            //     .start_native_operation(source, &channels, &[])
+            //     .unwrap();
+            let name = budget
                 .start_native_operation(source, &channels, &[])
-                .unwrap();
-            if produce {
+                .expect("native operation start")
+                .expect("native accounting names each row");
+            operation_context::sync_scope(name, || {
+                if produce {
+                    budget
+                        .reserve_produce_introduction_measured(
+                            introduction.event_id,
+                            &auth,
+                            introduction
+                                .measurement
+                                .expect("the introduction carries its measurement"),
+                            false,
+                        )
+                        .expect("the produce introduction reserves");
+                } else {
+                    budget
+                        .observe_native_consume_peeks(&std::collections::BTreeSet::new())
+                        .expect("the consume observes its peeks");
+                    budget
+                        .reserve_consume_introduction_measured(
+                            introduction.event_id,
+                            &auth,
+                            introduction
+                                .measurement
+                                .expect("the introduction carries its measurement"),
+                            false,
+                        )
+                        .expect("the consume introduction reserves");
+                }
                 budget
-                    .reserve_produce_introduction_measured(
-                        introduction.event_id,
-                        &auth,
-                        introduction.measurement.unwrap(),
-                        false,
-                    )
-                    .unwrap();
-            } else {
-                budget
-                    .observe_native_consume_peeks(&std::collections::BTreeSet::new())
-                    .unwrap();
-                budget
-                    .reserve_consume_introduction_measured(
-                        introduction.event_id,
-                        &auth,
-                        introduction.measurement.unwrap(),
-                        false,
-                    )
-                    .unwrap();
-            }
-            budget.observe_native_comm_source(&comm).unwrap();
-            assert!(matches!(
-                budget.reserve_comm_authority_measured(
-                    comm_observation.event_id,
-                    &comm_observation.authority,
-                    comm_observation.measurement.unwrap()
-                ),
-                Err(InterpreterError::OutOfPhlogistonsError)
-            ));
-            budget.finish_native_operation(source, RSpaceOperationCompletion::Rejected);
+                    .observe_native_comm_source(&comm)
+                    .expect("the COMM source is observed");
+                assert!(matches!(
+                    budget.reserve_comm_authority_measured(
+                        comm_observation.event_id,
+                        &comm_observation.authority,
+                        comm_observation
+                            .measurement
+                            .expect("the COMM observation carries its measurement")
+                    ),
+                    Err(InterpreterError::OutOfPhlogistonsError)
+                ));
+                budget.finish_native_operation(source, RSpaceOperationCompletion::Rejected);
+            });
         })
         .await;
         let recording = budget.native_budget_recording().unwrap().unwrap();

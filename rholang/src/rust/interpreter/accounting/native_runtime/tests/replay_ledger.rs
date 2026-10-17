@@ -726,37 +726,236 @@ fn concurrent_duplicate_reservations_have_one_owner() {
 /// with host work. The test keeps its check that authentication precedes the
 /// reservation.
 #[test]
-fn context_and_full_source_authentication_precede_reservation() {
+// Changed by DR-132 (D1-A, T11): native replay finds each row by its recorded
+// source and reads no operation name. A missing or changed name is no longer
+// an error (FF-3), so the test keeps only the source mutations.
+// fn context_and_full_source_authentication_precede_reservation() {
+//     let replay = replay_fixture();
+//     let source = producer(&produce(0));
+//     assert!(matches!(
+//         replay.reserve_current(RSpaceOperationSource::Produce(&source)),
+//         Err(NativeReplayError::Context)
+//     ));
+//     for mutation in 0..5 {
+//         let mut source = source.clone();
+//         let mut order = OperationOrder {
+//             session: [0; 32],
+//             path: vec![(0, 0)].into(),
+//         };
+//         match mutation {
+//             0 => order.session[0] = 1,
+//             1 => order.path.push_back((0, 0)),
+//             2 => order.path = vec![(8, 0)].into(),
+//             3 => source.channel_hash.0[0] ^= 1,
+//             _ => source.persistent = !source.persistent,
+//         }
+//         let result = operation_context::scope(order, async {
+//             replay.reserve_current(RSpaceOperationSource::Produce(&source))
+//         })
+//         .now_or_never()
+//         .unwrap();
+//         assert!(matches!(
+//             result,
+//             Err(NativeReplayError::Context | NativeReplayError::Source)
+//         ));
+//     }
+//     publish_slot(&replay, 0);
+// }
+fn full_source_authentication_precedes_reservation() {
     let replay = replay_fixture();
     let source = producer(&produce(0));
-    assert!(matches!(
-        replay.reserve_current(RSpaceOperationSource::Produce(&source)),
-        Err(NativeReplayError::Context)
-    ));
-    for mutation in 0..5 {
+    for mutation in 0..2 {
         let mut source = source.clone();
-        let mut order = OperationOrder {
-            session: [0; 32],
-            path: vec![(0, 0)].into(),
-        };
         match mutation {
-            0 => order.session[0] = 1,
-            1 => order.path.push_back((0, 0)),
-            2 => order.path = vec![(8, 0)].into(),
-            3 => source.channel_hash.0[0] ^= 1,
+            0 => source.channel_hash.0[0] ^= 1,
             _ => source.persistent = !source.persistent,
         }
-        let result = operation_context::scope(order, async {
-            replay.reserve_current(RSpaceOperationSource::Produce(&source))
-        })
-        .now_or_never()
-        .unwrap();
         assert!(matches!(
-            result,
-            Err(NativeReplayError::Context | NativeReplayError::Source)
+            replay.reserve_current(RSpaceOperationSource::Produce(&source)),
+            Err(NativeReplayError::Source)
         ));
     }
     publish_slot(&replay, 0);
+}
+
+/// Added by DR-132 (FF-3, failing first): with no outer operation name, native
+/// replay finds each recorded row by its RSpace source. Racing evaluation sets
+/// no name, so the source is the only key. Before DR-132 the replay needed the
+/// name of the deterministic scheduler and failed with `Context`.
+#[test]
+fn native_replay_finds_each_row_by_its_source() {
+    let replay = replay_fixture();
+    for slot in 0..4 {
+        let row = replay.trace().operation(slot).expect("the fixture row");
+        let NativeOperationSource::Produce(recorded) = &row.source else {
+            panic!("every fixture row is a produce");
+        };
+        let source = producer(recorded);
+        let ticket = replay
+            .reserve_current(RSpaceOperationSource::Produce(&source))
+            .expect("the replay finds the row by its source");
+        assert_eq!(ticket.slot(), slot);
+        let ticket = authenticate(ticket);
+        let expected = ticket.expected_outcome();
+        ticket
+            .prepare_completion(expected)
+            .expect("the recorded outcome completes")
+            .publish();
+    }
+    replay.check_complete().expect("every row completes");
+}
+
+/// Added by DR-132 (P-2): the number of sources of the generated journals.
+/// Each source has its own channel.
+const P2_SOURCES: u8 = 6;
+
+/// Added by DR-132 (P-2): a journal in which row `i` has the source and the
+/// channel `sources[i]`. Each row lists the row before it on its channel as
+/// its predecessor, so the rows of one source form a chain among unrelated
+/// rows.
+fn source_chain_fixture(sources: &[u8]) -> (NativeOperationReplay, NativeBudgetRecording) {
+    let attempts: Vec<_> = (0..sources.len())
+        .map(|id| NativeBudgetAttempt {
+            occurrence: occurrence(id as u64, NativeAttemptStage::ProduceIntroduction),
+            observation: observation(id as u8, AuthorityByteEventKind::ProduceIntroduction, 1),
+            granted: true,
+        })
+        .collect();
+    let mut latest = [None; P2_SOURCES as usize];
+    let rows: Vec<_> = sources
+        .iter()
+        .enumerate()
+        .map(|(id, source)| {
+            let mut row = operation(id as u64, id, id + 1, NativeObservationLink::Attempt(id));
+            row.source = NativeOperationSource::Produce(produce(*source));
+            row.footprint = Arc::from([Arc::from([*source])]);
+            row.predecessors = latest[usize::from(*source)]
+                .into_iter()
+                .collect::<Vec<_>>()
+                .into();
+            latest[usize::from(*source)] = Some(id);
+            row
+        })
+        .collect();
+    let log = events(&rows);
+    let recording = NativeBudgetRecording {
+        session: [0; 32],
+        attempts: attempts.into(),
+        retries: Arc::from([]),
+        used: sources.len() as u64,
+        paths: fixture_paths(),
+    };
+    let replay = bind(&recording, rows.into(), log)
+        .expect("the generated journal binds")
+        .into_replay()
+        .expect("the generated journal replays");
+    (replay, recording)
+}
+
+/// Added by DR-132 (P-2): one live call of `source` with no outer name.
+fn reserve_source(
+    replay: &NativeOperationReplay,
+    source: u8,
+) -> Result<NativeReplayReservation, NativeReplayError> {
+    let live = producer(&produce(source));
+    replay.reserve_current(RSpaceOperationSource::Produce(&live))
+}
+
+/// Added by DR-132 (P-2): completes a reservation of `source` with the
+/// recorded introduction of its row.
+fn complete_source(
+    mut ticket: NativeReplayReservation,
+    source: u8,
+    recording: &NativeBudgetRecording,
+) {
+    let slot = ticket.slot();
+    ticket
+        .authenticate_footprint(&[source], &[])
+        .expect("the footprint of the source");
+    ticket
+        .observe_introduction(&recording.attempts[slot].observation)
+        .expect("the recorded introduction");
+    ticket
+        .prepare_completion(NativeReplayOutcome::Stored)
+        .expect("the recorded outcome")
+        .publish();
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(128))]
+
+    /// Added by DR-132 (P-2): native replay binds each live occurrence of a
+    /// source to the first open row of that source, in journal order. The
+    /// generated journals hold chains of one source among unrelated rows.
+    /// Each case replays them in a random interleaving that keeps the order
+    /// of each channel, and it races two live calls of one source for two
+    /// rows. The k-th completed occurrence of a source takes its k-th row,
+    /// and no call meets `Unavailable`. It replaces the test of the removed
+    /// digest index of paths (`replay_digest_lookup_equals_binary_search`).
+    #[test]
+    fn replay_binds_each_source_occurrence_to_the_first_open_row(
+        sources in prop::collection::vec(0_u8..P2_SOURCES, 1..41),
+        picks in prop::collection::vec(any::<prop::sample::Index>(), 0..80),
+        race in any::<prop::sample::Index>(),
+    ) {
+        let (replay, recording) = source_chain_fixture(&sources);
+        let mut rows: Vec<std::collections::VecDeque<usize>> =
+            vec![std::collections::VecDeque::new(); usize::from(P2_SOURCES)];
+        for (slot, source) in sources.iter().enumerate() {
+            rows[usize::from(*source)].push_back(slot);
+        }
+        let with_rows = |rows: &Vec<std::collections::VecDeque<usize>>, least: usize| -> Vec<u8> {
+            (0..P2_SOURCES)
+                .filter(|source| rows[usize::from(*source)].len() >= least)
+                .collect()
+        };
+        let racing = with_rows(&rows, 2);
+        if !racing.is_empty() {
+            let source = racing[race.index(racing.len())];
+            let barrier = Barrier::new(2);
+            let results: Vec<_> = std::thread::scope(|scope| {
+                let workers: Vec<_> = (0..2)
+                    .map(|_| scope.spawn(|| {
+                        barrier.wait();
+                        reserve_source(&replay, source)
+                    }))
+                    .collect();
+                workers.into_iter().map(|worker| worker.join().expect("the racing call joins")).collect()
+            });
+            let first = rows[usize::from(source)][0];
+            let mut winners = 0;
+            for result in results {
+                match result {
+                    Ok(ticket) => {
+                        prop_assert_eq!(ticket.slot(), first);
+                        complete_source(ticket, source, &recording);
+                        winners += 1;
+                    }
+                    Err(error) => prop_assert!(
+                        matches!(error, NativeReplayError::Dependency),
+                        "the losing call met {:?}", error
+                    ),
+                }
+            }
+            prop_assert_eq!(winners, 1);
+            rows[usize::from(source)].pop_front();
+        }
+        let mut picks = picks.into_iter();
+        loop {
+            let open = with_rows(&rows, 1);
+            if open.is_empty() {
+                break;
+            }
+            let source = open[picks.next().map_or(0, |pick| pick.index(open.len()))];
+            let expected = rows[usize::from(source)].pop_front().expect("an open row");
+            let ticket = reserve_source(&replay, source);
+            prop_assert!(ticket.is_ok(), "source {} met {:?}", source, ticket.as_ref().err());
+            let ticket = ticket.expect("checked above");
+            prop_assert_eq!(ticket.slot(), expected);
+            complete_source(ticket, source, &recording);
+        }
+        prop_assert!(replay.check_complete().is_ok());
+    }
 }
 
 proptest! {
@@ -813,4 +1012,59 @@ proptest! {
             prop_assert_eq!(replay.completed_usage(), expected_usage);
         }
     }
+}
+
+/// Added by DR-132 (D2-B, review m5): an aborted task that holds a
+/// reservation cancels it, and its live token drops after the reservation,
+/// because the counted wrapper binds the token first. The counts stay exact,
+/// no stall is declared, and the slot opens again.
+#[tokio::test]
+async fn an_aborted_task_releases_its_reservation_before_its_count() {
+    use crate::rust::interpreter::execution_space::EvaluationProgress;
+    use crate::rust::interpreter::reduce::{spawn_counted, with_counted_evaluation};
+
+    let replay = replay_fixture();
+    let progress: Arc<dyn EvaluationProgress> = Arc::new(replay.clone());
+    let observed = replay.clone();
+    let ((), errors) = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        with_counted_evaluation(progress, async move {
+            let (reserved, held) = tokio::sync::oneshot::channel::<()>();
+            let holder = replay.clone();
+            let abort = spawn_counted(async move {
+                let ticket = reserve_slot(&holder, 0).expect("slot 0 reserves");
+                reserved
+                    .send(())
+                    .expect("the root waits for the reservation");
+                std::future::pending::<()>().await;
+                drop(ticket);
+                Ok(())
+            });
+            held.await.expect("the task reserved slot 0");
+            assert_eq!(replay.progress_counts(), (2, 0));
+            assert!(matches!(
+                reserve_slot(&replay, 0),
+                Err(NativeReplayError::Unavailable)
+            ));
+            abort.abort();
+            let mut polls = 0;
+            while replay.progress_counts().0 != 1 {
+                polls += 1;
+                assert!(polls < 1_000, "the aborted task never finished");
+                tokio::task::yield_now().await;
+            }
+            assert_eq!(replay.progress_counts(), (1, 0));
+            drop(reserve_slot(&replay, 0).expect("the slot is open again"));
+        }),
+    )
+    .await
+    .expect("the evaluation ends")
+    .expect("the evaluation begins");
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    assert!(
+        format!("{errors:?}").contains("task cancelled"),
+        "{errors:?}"
+    );
+    assert!(!observed.progress_stalled());
+    assert!(observed.progress_idle());
 }

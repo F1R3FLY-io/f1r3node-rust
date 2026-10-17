@@ -12,9 +12,10 @@ use crate::rust::interpreter::accounting::byte_accounting::{
     consume_introduction_identity, produce_introduction_identity,
 };
 use crate::rust::interpreter::accounting::RuntimeBudget;
-use crate::rust::interpreter::deterministic_reduction::scheduled_execution;
+// Changed by DR-132 (P18): the deterministic scheduler is gone (D3-A).
+// use crate::rust::interpreter::deterministic_reduction::scheduled_execution;
 use crate::rust::interpreter::execution_space::{
-    ConsumeResult, ExecutionBackend, ExecutionSpace, ProduceResult,
+    ConsumeResult, EvaluationProgress, ExecutionBackend, ExecutionSpace, ProduceResult,
 };
 
 type Session = NativeRuntimeReplaySession<Par, BindPattern, ListParWithRandom, TaggedContinuation>;
@@ -26,10 +27,16 @@ struct NativeExecution {
 
 impl Session {
     pub(crate) fn execution_space(self: &Arc<Self>, budget: RuntimeBudget) -> ExecutionSpace {
-        scheduled_execution(ExecutionSpace::new(NativeExecution {
+        // Changed by DR-132 (P18): the native execution space runs without
+        // the scheduler wrapper.
+        // scheduled_execution(ExecutionSpace::new(NativeExecution {
+        //     session: self.clone(),
+        //     budget,
+        // }))
+        ExecutionSpace::new(NativeExecution {
             session: self.clone(),
             budget,
-        }))
+        })
     }
 }
 
@@ -126,6 +133,12 @@ impl ExecutionBackend for NativeExecution {
     }
 
     async fn is_replay(&self) -> bool { true }
+
+    /// Added by DR-132 (D2-B): native replay counts the tasks of each
+    /// evaluation for its stall rule.
+    fn evaluation_progress(&self) -> Option<Arc<dyn EvaluationProgress>> {
+        Some(self.session.evaluation_progress())
+    }
 
     async fn update_produce(
         &self,

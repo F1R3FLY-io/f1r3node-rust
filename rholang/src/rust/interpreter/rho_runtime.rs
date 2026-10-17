@@ -38,7 +38,8 @@ use super::accounting::{
     BillableTokenEvent, CheckedNativeOperationTrace, NativeRuntimeConfig,
     NativeRuntimeReplaySession, RuntimeBudget,
 };
-use super::deterministic_reduction::{DeterministicRSpace, ReductionCoordinator};
+// Changed by DR-132 (P16): the deterministic scheduler is gone (D3-A).
+// use super::deterministic_reduction::{DeterministicRSpace, ReductionCoordinator};
 use super::dispatch::{RhoDispatch, RholangAndScalaDispatcher};
 use super::env::Env;
 use super::errors::InterpreterError;
@@ -532,12 +533,15 @@ pub(crate) fn test_accounting_observer(
 impl RSpaceAccountingObserver<Par, BindPattern, ListParWithRandom, TaggedContinuation>
     for RhoCommObserver
 {
+    // Changed by DR-132: the start returns the name of the recorded row.
+    // ) -> Result<(), RSpaceError> {
     fn observe_operation_start(
         &self,
         source: RSpaceOperationSource<'_>,
         channels: &[Par],
         joins: &[Vec<Par>],
-    ) -> Result<(), RSpaceError> {
+    ) -> Result<Option<rspace_plus_plus::rspace::operation_context::OperationOrder>, RSpaceError>
+    {
         self.budget
             .start_native_operation(source, channels, joins)
             .map_err(RSpaceError::from)
@@ -1372,7 +1376,8 @@ async fn setup_reducer(
     grpc_client_service: GrpcClientService,
     chromadb_service: SharedChromaDBService,
     cost: RuntimeBudget,
-    reduction_coordinator: ReductionCoordinator,
+    // Changed by DR-132 (P16): no coordinator (D3-A).
+    // reduction_coordinator: ReductionCoordinator,
 ) -> Arc<ReducerCore> {
     let reducer_cell = Arc::new(std::sync::OnceLock::new());
 
@@ -1419,7 +1424,8 @@ async fn setup_reducer(
         single_term_evaluations: Arc::new(AtomicU64::new(0)),
         yielded_single_term_evaluations: Arc::new(AtomicU64::new(0)),
         spawned_eval_tasks: Arc::new(AtomicU64::new(0)),
-        reduction_coordinator,
+        // Changed by DR-132 (P16): no coordinator (D3-A).
+        // reduction_coordinator,
         residue_seal: false,
     });
 
@@ -1689,6 +1695,22 @@ impl NativeReplayEnvironment {
         result
     }
 
+    /// Added by DR-132 (D2-B): the progress word of the session is idle.
+    #[cfg(test)]
+    pub(crate) fn progress_idle(&self) -> bool { self.session.progress_idle() }
+
+    /// Added by DR-132 (D2-B): a new evaluation can begin on the session, and
+    /// its end leaves the word idle again.
+    #[cfg(test)]
+    pub(crate) fn progress_begins_again(&self) -> bool {
+        let progress = self.session.evaluation_progress();
+        if progress.begin().is_err() {
+            return false;
+        }
+        progress.finish();
+        self.session.progress_idle()
+    }
+
     pub fn urn_map(&self) -> &HashMap<String, Par> { &self.reducer.urn_map }
 
     pub fn mergeable_tags(&self) -> &HashMap<Par, MergeType> { &self.reducer.mergeable_tags }
@@ -1779,7 +1801,8 @@ pub async fn create_native_replay_env(
         external_services.grpc_client,
         external_services.chroma,
         cost.clone(),
-        ReductionCoordinator::default(),
+        // Changed by DR-132 (P16): no coordinator (D3-A).
+        // ReductionCoordinator::default(),
     )
     .await;
     Ok(NativeReplayEnvironment {
@@ -1830,13 +1853,20 @@ where
     raw_rspace.set_accounting_observer(Some(Arc::new(RhoCommObserver {
         budget: cost.clone(),
     })));
-    let reduction_coordinator = ReductionCoordinator::default();
-    let scheduled_rspace: RhoISpace = Arc::new(Box::new(DeterministicRSpace::new(
-        raw_rspace,
-        reduction_coordinator.clone(),
-    )));
+    // Changed by DR-132 (P16): dev's wiring, `ChargingRSpace` over the
+    // observed raw space (dev `rho_runtime.rs:1688-1691`). The scheduler space
+    // and its coordinator are gone (D3-A).
+    // let reduction_coordinator = ReductionCoordinator::default();
+    // let scheduled_rspace: RhoISpace = Arc::new(Box::new(DeterministicRSpace::new(
+    //     raw_rspace,
+    //     reduction_coordinator.clone(),
+    // )));
+    // let charging_rspace: RhoISpace = Arc::new(Box::new(ChargingRSpace::charging_rspace(
+    //     scheduled_rspace,
+    //     cost.clone(),
+    // )));
     let charging_rspace: RhoISpace = Arc::new(Box::new(ChargingRSpace::charging_rspace(
-        scheduled_rspace,
+        raw_rspace,
         cost.clone(),
     )));
 
@@ -1859,7 +1889,8 @@ where
         grpc_client_service,
         chromadb_service,
         cost,
-        reduction_coordinator,
+        // Changed by DR-132 (P16): no coordinator (D3-A).
+        // reduction_coordinator,
     )
     .await;
     let reducer = Arc::new(DebruijnInterpreter {

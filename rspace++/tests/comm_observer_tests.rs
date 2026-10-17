@@ -87,7 +87,11 @@ impl RSpaceAccountingObserver<String, Any, String, String> for Observer {
         source: RSpaceOperationSource<'_>,
         channels: &[String],
         joins: &[Vec<String>],
-    ) -> Result<(), RSpaceError> {
+        // Changed by DR-132: the start hook returns the name of a recorded row.
+        // This observer records no row, so it returns `None`.
+        // ) -> Result<(), RSpaceError> {
+    ) -> Result<Option<rspace_plus_plus::rspace::operation_context::OperationOrder>, RSpaceError>
+    {
         if self.reject_start.load(Ordering::Acquire) {
             return Err(RSpaceError::OutOfPhlogistons);
         }
@@ -100,7 +104,7 @@ impl RSpaceAccountingObserver<String, Any, String, String> for Observer {
         if let Some(on_start) = on_start {
             on_start();
         }
-        Ok(())
+        Ok(None)
     }
 
     fn observe_operation_finish(

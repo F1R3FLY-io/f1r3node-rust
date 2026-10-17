@@ -775,6 +775,15 @@ mod random_candidate_order_tests;
 #[path = "tests/large_channel.rs"]
 mod large_channel_tests;
 
+// Added by DR-132: native evaluation without the deterministic scheduler.
+#[path = "tests/racing_evaluation.rs"]
+mod racing_evaluation_tests;
+
+// Added by DR-132 (F4): native variants of dev's deferral specs, and the
+// reply-chain and re-issue loops.
+#[path = "tests/deferral.rs"]
+mod deferral_tests;
+
 /// DR-113: a native charge past a signed limit is the classified user failure
 /// `SignedLimitExhausted`, and its charge is retained. The same charge past a
 /// certified bound stays the certificate failure `OutOfPhlogistonsError`.

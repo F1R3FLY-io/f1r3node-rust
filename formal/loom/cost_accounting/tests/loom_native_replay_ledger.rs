@@ -44,6 +44,40 @@ fn duplicate_reservations_have_exactly_one_publisher() {
             1
         );
         ledger.lock().unwrap().check_complete().unwrap();
+        // Added by DR-132 (D2-B): the one publication is the one change, and
+        // the refused reservation changes nothing.
+        assert_eq!(ledger.lock().expect("the ledger lock").version(), 1);
+    });
+}
+
+/// Added by DR-132 (D2-B): a stall closes the ledger for a reservation that
+/// races it. The reservation either comes first and publishes, or meets the
+/// stall. Each change bumps the version once.
+#[test]
+fn a_stall_refuses_a_racing_reservation() {
+    loom::model(|| {
+        let ledger = Arc::new(Mutex::new(state(1)));
+        let stalling = {
+            let ledger = Arc::clone(&ledger);
+            thread::spawn(move || ledger.lock().expect("the ledger lock").stall())
+        };
+        let reserved = ledger.lock().expect("the ledger lock").reserve(0);
+        let published = match reserved {
+            Ok(serial) => {
+                ledger
+                    .lock()
+                    .expect("the ledger lock")
+                    .publish(0, serial, 1);
+                true
+            }
+            Err(LedgerError::Stalled) => false,
+            Err(error) => panic!("{error:?}"),
+        };
+        stalling.join().expect("the stalling thread ends");
+        let ledger = ledger.lock().expect("the ledger lock");
+        assert_eq!(ledger.open(), Err(LedgerError::Stalled));
+        assert_eq!(ledger.check_complete(), Err(LedgerError::Stalled));
+        assert_eq!(ledger.version(), if published { 2 } else { 1 });
     });
 }
 

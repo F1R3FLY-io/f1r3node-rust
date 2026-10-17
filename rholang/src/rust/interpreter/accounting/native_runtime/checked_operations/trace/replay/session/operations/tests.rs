@@ -480,7 +480,12 @@ async fn exercise_readiness(shared_channel: bool, concurrent_matches: bool) {
         telemetry_bytes: 100_000,
     })
     .unwrap();
-    assert_eq!(trace.journal_index(0), Some(1));
+    // Changed by DR-132 (D1-A): the recorder names each row by its journal
+    // index and ignores the reversed names of this play, so the slot order is
+    // the journal order. The test still submits row 1 before row 0.
+    // assert_eq!(trace.journal_index(0), Some(1));
+    assert_eq!(trace.journal_index(0), Some(0));
+    assert_eq!(trace.journal_index(1), Some(1));
     let overlapping = Arc::new(OverlappingMatcher {
         arrivals: std::sync::Mutex::new(0),
         changed: std::sync::Condvar::new(),

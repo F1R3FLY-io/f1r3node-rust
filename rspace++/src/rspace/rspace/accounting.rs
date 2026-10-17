@@ -1,13 +1,14 @@
 use std::collections::BTreeSet;
 use std::fmt::Debug;
 use std::hash::Hash;
-use std::sync::Arc;
 
 use serde::Serialize;
 
 use super::RSpace;
 use crate::rspace::errors::RSpaceError;
-use crate::rspace::rspace_interface::{RSpaceAccountingObserver, RSpaceOperationSource};
+use crate::rspace::rspace_interface::{
+    AccountingStart, RSpaceAccountingObserver, RSpaceOperationSource,
+};
 use crate::rspace::trace::event::{COMM, Consume, Produce};
 
 impl<C, P, A, K> RSpace<C, P, A, K>
@@ -17,21 +18,30 @@ where
     A: Clone + Debug + Default + Serialize + 'static + Sync + Send,
     K: Clone + Debug + Default + Serialize + 'static + Sync + Send,
 {
+    // Changed by DR-132: the start returns the observer and the name of the
+    // recorded operation. The locked operation runs its rest under that name.
+    // ) -> Result<Option<Arc<dyn RSpaceAccountingObserver<C, P, A, K>>>,
+    // RSpaceError> {     ...
+    //     if let Some(observer) = &observer {
+    //         observer.observe_operation_start(source, channels, joins)?;
+    //     }
+    //     Ok(observer)
     pub(super) fn start_accounting_operation(
         &self,
         source: RSpaceOperationSource<'_>,
         channels: &[C],
         joins: &[Vec<C>],
-    ) -> Result<Option<Arc<dyn RSpaceAccountingObserver<C, P, A, K>>>, RSpaceError> {
+    ) -> Result<AccountingStart<C, P, A, K>, RSpaceError> {
         let observer = self
             .accounting_observer
             .read()
             .expect("accounting observer read lock")
             .clone();
-        if let Some(observer) = &observer {
-            observer.observe_operation_start(source, channels, joins)?;
-        }
-        Ok(observer)
+        let name = match &observer {
+            Some(observer) => observer.observe_operation_start(source, channels, joins)?,
+            None => None,
+        };
+        Ok((observer, name))
     }
 
     pub(super) fn observe_comm(

@@ -49,24 +49,35 @@ where
             .increment(t0.elapsed().as_nanos() as u64);
 
         let source = RSpaceOperationSource::Produce(produce_ref);
-        let observer = self.start_accounting_operation(
+        // Changed by DR-132: the observer names the recorded row, and the rest
+        // of the locked produce runs under that name.
+        // let observer = self.start_accounting_operation(
+        //     source,
+        //     std::slice::from_ref(&channel),
+        //     &grouped_channels,
+        // )?;
+        let (observer, name) = self.start_accounting_operation(
             source,
             std::slice::from_ref(&channel),
             &grouped_channels,
         )?;
-        let result = self.locked_produce_observed(
-            channel,
-            data,
-            persist,
-            produce_ref,
-            grouped_channels,
-            observer.as_deref(),
-        );
-        if let Some(observer) = observer {
-            observer
-                .observe_operation_finish(source, RSpaceOperationCompletion::from_result(&result));
-        }
-        result
+        crate::rspace::operation_context::named(name, move || {
+            let result = self.locked_produce_observed(
+                channel,
+                data,
+                persist,
+                produce_ref,
+                grouped_channels,
+                observer.as_deref(),
+            );
+            if let Some(observer) = observer {
+                observer.observe_operation_finish(
+                    source,
+                    RSpaceOperationCompletion::from_result(&result),
+                );
+            }
+            result
+        })
     }
 
     fn locked_produce_observed(

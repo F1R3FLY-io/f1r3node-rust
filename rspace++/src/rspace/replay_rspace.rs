@@ -119,7 +119,16 @@ where
             .map(|ch| striped_locks::channel_hash(&ch))
             .collect();
 
-        let phase_b = striped_locks::acquire_locks(&self.phase_b_locks, &join_hashes).await;
+        // Changed by DR-132 (F1): phase B also covers the produce channel, so
+        // every operation holds phase B on its whole recorded footprint. Under
+        // racing evaluation, a produce whose joins another produce had just
+        // removed read no joins and took no phase-B lock. One call takes every
+        // hash, so a stripe collision cannot deadlock.
+        // let phase_b = striped_locks::acquire_locks(&self.phase_b_locks,
+        // &join_hashes).await;
+        let mut phase_b_hashes = join_hashes;
+        phase_b_hashes.push(channel_hash);
+        let phase_b = striped_locks::acquire_locks(&self.phase_b_locks, &phase_b_hashes).await;
         (phase_a, phase_b)
     }
 
@@ -704,21 +713,29 @@ where
         tracing::trace!(target: "f1r3fly.rspace.ops", channels = ?consume_ref.channel_hashes, persist, "replay.consume ENTER");
 
         let source = RSpaceOperationSource::Consume(&consume_ref);
-        let observer = self.start_accounting_operation(source, &channels, &[])?;
-        let result = self.locked_consume_observed(
-            channels,
-            patterns,
-            continuation,
-            persist,
-            peeks,
-            consume_ref.clone(),
-            observer.as_deref(),
-        );
-        if let Some(observer) = observer {
-            observer
-                .observe_operation_finish(source, RSpaceOperationCompletion::from_result(&result));
-        }
-        result
+        // Changed by DR-132: the observer names the recorded row, and the rest
+        // of the locked consume runs under that name. The legacy replay of a
+        // native deploy records rows, so the name is required here too.
+        // let observer = self.start_accounting_operation(source, &channels, &[])?;
+        let (observer, name) = self.start_accounting_operation(source, &channels, &[])?;
+        crate::rspace::operation_context::named(name, || {
+            let result = self.locked_consume_observed(
+                channels,
+                patterns,
+                continuation,
+                persist,
+                peeks,
+                consume_ref.clone(),
+                observer.as_deref(),
+            );
+            if let Some(observer) = observer {
+                observer.observe_operation_finish(
+                    source,
+                    RSpaceOperationCompletion::from_result(&result),
+                );
+            }
+            result
+        })
     }
 
     fn locked_consume_observed(
@@ -998,24 +1015,35 @@ where
 
         let grouped_channels = self.get_store().get_joins(&channel);
         let source = RSpaceOperationSource::Produce(&produce_ref);
-        let observer = self.start_accounting_operation(
+        // Changed by DR-132: the observer names the recorded row, and the rest
+        // of the locked produce runs under that name.
+        // let observer = self.start_accounting_operation(
+        //     source,
+        //     std::slice::from_ref(&channel),
+        //     &grouped_channels,
+        // )?;
+        let (observer, name) = self.start_accounting_operation(
             source,
             std::slice::from_ref(&channel),
             &grouped_channels,
         )?;
-        let result = self.locked_produce_observed(
-            channel,
-            data,
-            persist,
-            produce_ref.clone(),
-            grouped_channels,
-            observer.as_deref(),
-        );
-        if let Some(observer) = observer {
-            observer
-                .observe_operation_finish(source, RSpaceOperationCompletion::from_result(&result));
-        }
-        result
+        crate::rspace::operation_context::named(name, || {
+            let result = self.locked_produce_observed(
+                channel,
+                data,
+                persist,
+                produce_ref.clone(),
+                grouped_channels,
+                observer.as_deref(),
+            );
+            if let Some(observer) = observer {
+                observer.observe_operation_finish(
+                    source,
+                    RSpaceOperationCompletion::from_result(&result),
+                );
+            }
+            result
+        })
     }
 
     fn locked_produce_observed(
@@ -1279,21 +1307,30 @@ where
         Ok(self.wrap_result(channels, continuation.clone(), consume_ref.clone(), data_candidates))
     }
 
+    // Changed by DR-132: the start returns the observer and the name of the
+    // recorded operation, as in `RSpace`.
+    // ) -> Result<Option<Arc<dyn RSpaceAccountingObserver<C, P, A, K>>>,
+    // RSpaceError> {     ...
+    //     if let Some(observer) = &observer {
+    //         observer.observe_operation_start(source, channels, joins)?;
+    //     }
+    //     Ok(observer)
     fn start_accounting_operation(
         &self,
         source: RSpaceOperationSource<'_>,
         channels: &[C],
         joins: &[Vec<C>],
-    ) -> Result<Option<Arc<dyn RSpaceAccountingObserver<C, P, A, K>>>, RSpaceError> {
+    ) -> Result<crate::rspace::rspace_interface::AccountingStart<C, P, A, K>, RSpaceError> {
         let observer = self
             .accounting_observer
             .read()
             .expect("accounting observer read lock")
             .clone();
-        if let Some(observer) = &observer {
-            observer.observe_operation_start(source, channels, joins)?;
-        }
-        Ok(observer)
+        let name = match &observer {
+            Some(observer) => observer.observe_operation_start(source, channels, joins)?,
+            None => None,
+        };
+        Ok((observer, name))
     }
 
     fn observe_comm(

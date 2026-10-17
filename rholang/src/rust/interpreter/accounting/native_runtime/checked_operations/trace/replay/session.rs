@@ -15,6 +15,7 @@ use rspace_plus_plus::rspace::serializers::cold_store_decode::ColdStoreDecode;
 use serde::Serialize;
 
 use super::*;
+use crate::rust::interpreter::execution_space::EvaluationProgress;
 
 mod operations;
 mod execution;
@@ -83,11 +84,56 @@ impl EpochRestore for NativeReplayRestore {
     fn publish(self) { NativeReplayRestore::publish(self) }
 }
 
+/// Added by DR-132 (D2-B): native replay counts the live tasks of each
+/// evaluation for its stall rule (`progress.rs`).
+impl EvaluationProgress for NativeOperationReplay {
+    /// Only a replay with an idle progress word, no open boundary and no
+    /// reserved slot begins an evaluation. A stalled or cancelled replay
+    /// never begins again.
+    fn begin(&self) -> Result<(), RSpaceError> {
+        let state = self.inner.state.lock().expect("native replay state");
+        state.open().map_err(error)?;
+        if !state.quiescent() || !self.inner.progress.begin() {
+            return Err(error(NativeReplayError::Busy));
+        }
+        Ok(())
+    }
+
+    fn enter(&self) { self.inner.progress.enter(); }
+
+    /// The finish that leaves every live task parked declares the stall
+    /// under the state lock, and the waiters wake after the unlock. The drop
+    /// path tolerates a poisoned lock.
+    fn finish(&self) {
+        if self.inner.progress.finish() {
+            let mut state = self
+                .inner
+                .state
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            if progress::stall(&mut state, &self.inner.progress) {
+                drop(state);
+                self.inner.changed.notify_waiters();
+            }
+        }
+    }
+
+    fn close(&self) { self.inner.progress.close(); }
+
+    fn identity(&self) -> usize { NativeOperationReplay::identity(self) }
+}
+
 // Changed by D-C2c (D-S1, DR-96): the native session's digest-keyed store
 // holds data, continuations and patterns, which need Clone.
 // pub struct NativeRuntimeReplaySession<C, P, A, K> {
 pub struct NativeRuntimeReplaySession<C, P: Clone, A: Clone, K: Clone> {
     inner: NativeReplaySession<C, P, A, K, SessionEpoch>,
+    /// Added by DR-132 (D2-B): the progress of each evaluation on this
+    /// session.
+    progress: Arc<dyn EvaluationProgress>,
+    /// Added by DR-132 (D2-B): the replay, so tests can read its progress.
+    #[cfg(test)]
+    replay: NativeOperationReplay,
 }
 
 pub struct NativeRuntimeReplayCheckpoint<C: Eq + Hash, P: Clone, A: Clone, K: Clone> {
@@ -298,6 +344,19 @@ impl CheckedNativeOperationTrace {
             Some(budget) => replay.bind_runtime(budget).map_err(error)?,
             None => replay,
         };
+        // Changed by DR-132 (D2-B): the session keeps the progress of the
+        // replay.
+        // Ok(NativeRuntimeReplaySession {
+        //     inner: NativeReplaySession::new_with_installs(
+        //         history,
+        //         matcher,
+        //         SessionEpoch { replay },
+        //         installations,
+        //     )?,
+        // })
+        let progress: Arc<dyn EvaluationProgress> = Arc::new(replay.clone());
+        #[cfg(test)]
+        let observed = replay.clone();
         Ok(NativeRuntimeReplaySession {
             inner: NativeReplaySession::new_with_installs(
                 history,
@@ -305,6 +364,9 @@ impl CheckedNativeOperationTrace {
                 SessionEpoch { replay },
                 installations,
             )?,
+            progress,
+            #[cfg(test)]
+            replay: observed,
         })
     }
 }
@@ -351,6 +413,28 @@ where
         + Sync
         + Send,
 {
+    /// Added by DR-132 (D2-B): the progress of each evaluation on this
+    /// session.
+    pub(crate) fn evaluation_progress(&self) -> Arc<dyn EvaluationProgress> {
+        Arc::clone(&self.progress)
+    }
+
+    /// Added by DR-132 (D2-B): the progress word is idle.
+    #[cfg(test)]
+    pub(crate) fn progress_idle(&self) -> bool { self.replay.progress_idle() }
+
+    /// Added by DR-132 (D2-B): replay declared a stall.
+    #[cfg(test)]
+    pub(crate) fn progress_stalled(&self) -> bool { self.replay.progress_stalled() }
+
+    /// Added by DR-132 (D2-B): the live tasks and the parked waiters.
+    #[cfg(test)]
+    pub(crate) fn progress_counts(&self) -> (u64, u64) { self.replay.progress_counts() }
+
+    /// Added by DR-132 (D2-B): poisons the state lock of the replay.
+    #[cfg(test)]
+    pub(crate) fn poison_state(&self) { self.replay.poison_state() }
+
     pub async fn checkpoint(
         &self,
     ) -> Result<NativeRuntimeReplayCheckpoint<C, P, A, K>, RSpaceError> {

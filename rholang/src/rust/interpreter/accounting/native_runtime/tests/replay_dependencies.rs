@@ -42,11 +42,62 @@ fn retry_waits_for_its_exact_accepted_owner_while_independent_work_proceeds() {
     assert_eq!(replay.trace().journal_index(0), Some(2));
     assert_eq!(replay.trace().journal_index(2), Some(0));
     let root = replay.checkpoint().unwrap();
-    assert!(matches!(
-        reserve_slot(&replay, 0),
-        Err(NativeReplayError::Dependency)
-    ));
-    drop(reserve_slot(&replay, 2).unwrap());
+    // Changed by DR-132 (D1-A): native replay gives a live operation the first
+    // open row of its recorded source, in journal order. The retry (slot 0)
+    // has the source of its owner (slot 2), so a live call of that source
+    // takes the owner first. The retry waits for its owner only while the
+    // owner is reserved and not published.
+    // assert!(matches!(
+    //     reserve_slot(&replay, 0),
+    //     Err(NativeReplayError::Dependency)
+    // ));
+    // drop(reserve_slot(&replay, 2).unwrap());
+    // assert!(matches!(
+    //     reserve_slot(&replay, 0),
+    //     Err(NativeReplayError::Dependency)
+    // ));
+    // let mut independent = reserve_slot(&replay, 1).unwrap();
+    // independent.authenticate_footprint(&[1u8], &[]).unwrap();
+    // independent
+    //     .observe_introduction(&observation(
+    //         1,
+    //         AuthorityByteEventKind::ProduceIntroduction,
+    //         2,
+    //     ))
+    //     .unwrap();
+    // independent
+    //     .prepare_completion(NativeReplayOutcome::Stored)
+    //     .unwrap()
+    //     .publish();
+    // assert_eq!(replay.completed_usage(), 2);
+    // assert!(matches!(
+    //     reserve_slot(&replay, 0),
+    //     Err(NativeReplayError::Dependency)
+    // ));
+    // let mut owner = reserve_slot(&replay, 2).unwrap();
+    // owner.authenticate_footprint(&[2u8], &[]).unwrap();
+    // owner
+    //     .observe_introduction(&observation(
+    //         2,
+    //         AuthorityByteEventKind::ProduceIntroduction,
+    //         1,
+    //     ))
+    //     .unwrap();
+    // owner
+    //     .prepare_completion(NativeReplayOutcome::Stored)
+    //     .unwrap()
+    //     .publish();
+    // drop(reserve_slot(&replay, 0).unwrap());
+    // replay.restore(&root).unwrap();
+    // assert!(matches!(
+    //     reserve_slot(&replay, 0),
+    //     Err(NativeReplayError::Dependency)
+    // ));
+    let cancelled = reserve_slot(&replay, 0).expect("the first open row of source 0 reserves");
+    assert_eq!(cancelled.slot(), 2);
+    drop(cancelled);
+    let mut owner = reserve_slot(&replay, 0).expect("the cancelled row reserves again");
+    assert_eq!(owner.slot(), 2);
     assert!(matches!(
         reserve_slot(&replay, 0),
         Err(NativeReplayError::Dependency)
@@ -69,7 +120,6 @@ fn retry_waits_for_its_exact_accepted_owner_while_independent_work_proceeds() {
         reserve_slot(&replay, 0),
         Err(NativeReplayError::Dependency)
     ));
-    let mut owner = reserve_slot(&replay, 2).unwrap();
     owner.authenticate_footprint(&[2u8], &[]).unwrap();
     owner
         .observe_introduction(&observation(
@@ -82,8 +132,12 @@ fn retry_waits_for_its_exact_accepted_owner_while_independent_work_proceeds() {
         .prepare_completion(NativeReplayOutcome::Stored)
         .unwrap()
         .publish();
-    drop(reserve_slot(&replay, 0).unwrap());
+    let retry = reserve_slot(&replay, 0).expect("the next row of source 0 reserves");
+    assert_eq!(retry.slot(), 0);
+    drop(retry);
     replay.restore(&root).unwrap();
+    let owner = reserve_slot(&replay, 0).expect("the restored replay reserves source 0 again");
+    assert_eq!(owner.slot(), 2);
     assert!(matches!(
         reserve_slot(&replay, 0),
         Err(NativeReplayError::Dependency)

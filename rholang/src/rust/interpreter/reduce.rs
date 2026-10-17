@@ -1,6 +1,8 @@
 // See See rholang/src/main/scala/coop/rchain/rholang/interpreter/Reduce.scala
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+// Changed by DR-132: the per-call scope of dev queues task handles.
+// use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -37,6 +39,8 @@ use rspace_plus_plus::rspace::merger::merging_logic::MergeType;
 use rspace_plus_plus::rspace::trace::event::{Consume, Produce};
 use rspace_plus_plus::rspace::util::unpack_option_with_peek;
 use tokio::sync::RwLock;
+// Added by DR-132: the per-call scope of dev holds task handles.
+use tokio::task::{JoinError, JoinHandle};
 
 use super::accounting::authority::{
     cost_region, cost_signature_to_sig, extend_authority, resolve_system_residue,
@@ -55,12 +59,22 @@ use super::accounting::costs::{
     multiplication_cost, new_bindings_cost, op_call_cost, receive_eval_cost, send_eval_cost,
     string_append_cost, subtraction_cost, sum_cost, var_eval_cost,
 };
+// Added by DR-132: the per-call scope records the failure classes.
+use super::accounting::economic_failure::{
+    classify_errors, EvaluationFailureSummary, FailureRecorder,
+};
+use super::accounting::phlo_execution::PhloFailure;
 use super::accounting::RuntimeBudget;
-use super::deterministic_reduction::{self, DeterministicRSpace, ReductionCoordinator};
+// Changed by DR-132: the per-call scope of dev replaces the deterministic
+// scheduler, which D3-A deletes.
+// use super::deterministic_reduction::{self, DeterministicRSpace, ReductionCoordinator};
 use super::dispatch::{DispatchType, RhoDispatch, RholangAndScalaDispatcher};
 use super::env::Env;
 use super::errors::InterpreterError;
-use super::execution_space::ExecutionSpace;
+// Changed by DR-132 (D2-B): the per-call scope counts the tasks of a native
+// replay evaluation.
+// use super::execution_space::ExecutionSpace;
+use super::execution_space::{EvaluationProgress, ExecutionSpace};
 use super::matcher::has_locally_free::HasLocallyFree;
 use super::metering::MeteredMachine;
 use super::metrics_constants::{
@@ -124,6 +138,280 @@ impl<F: Future> Future for StackGrowingFuture<F> {
     }
 }
 
+/// Added by DR-132 (dev `reduce.rs:117-133`): a spawned task handle that
+/// aborts the task when the handle is dropped before the task completes, so
+/// cancelling an owner cancels the tasks it spawned.
+struct AbortOnDrop<T>(JoinHandle<T>);
+
+impl<T> Future for AbortOnDrop<T> {
+    type Output = Result<T, JoinError>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        Pin::new(&mut self.get_mut().0).poll(cx)
+    }
+}
+
+impl<T> Drop for AbortOnDrop<T> {
+    fn drop(&mut self) { self.0.abort(); }
+}
+
+type DispatchHandle = AbortOnDrop<Result<DispatchType, InterpreterError>>;
+
+#[derive(Default)]
+struct DeferredState {
+    handles: VecDeque<DispatchHandle>,
+    closed: bool,
+}
+
+/// Added by DR-132 (dev `reduce.rs:146-187`): the deferred tasks of one `inj`
+/// call.
+///
+/// A task registers the handle of every task it defers before the task itself
+/// completes, so when the queue is empty and the drain in `inj` awaits nothing,
+/// no deferred task is still running. After `close`, the queued handles are
+/// dropped (which aborts their tasks) and a late registration aborts at once.
+///
+/// The scope also holds the failure recorder of the call (§3.5 of the DR-132
+/// plan). A reducer clone cannot carry the recorder, because the dispatcher
+/// evaluates each body through the root reducer cell.
+#[derive(Default)]
+struct DeferredDispatches {
+    state: std::sync::Mutex<DeferredState>,
+    failures: FailureRecorder,
+    /// Added by DR-132 (D2-B): the progress of a native replay evaluation,
+    /// which counts every task of the scope for the stall rule.
+    progress: Option<Arc<dyn EvaluationProgress>>,
+}
+
+impl DeferredDispatches {
+    fn lock(&self) -> std::sync::MutexGuard<'_, DeferredState> {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn push(&self, handle: DispatchHandle) {
+        let mut state = self.lock();
+        if !state.closed {
+            state.handles.push_back(handle);
+        }
+    }
+
+    fn pop(&self) -> Option<DispatchHandle> { self.lock().handles.pop_front() }
+
+    fn close(&self) {
+        // Added by DR-132 (D2-B): the progress word closes before any handle
+        // aborts its task, so the aborts declare no stall.
+        self.close_progress();
+        let handles = {
+            let mut state = self.lock();
+            state.closed = true;
+            std::mem::take(&mut state.handles)
+        };
+        drop(handles);
+    }
+
+    /// Added by DR-132 (D2-B): closes the progress word of a native replay
+    /// evaluation.
+    fn close_progress(&self) {
+        if let Some(progress) = &self.progress {
+            progress.close();
+        }
+    }
+
+    /// Records the failure classes of `errors`, as the session of the
+    /// scheduler did. A classification that cannot allocate counts as a
+    /// platform failure.
+    fn record(&self, errors: &[InterpreterError]) {
+        if errors.is_empty() {
+            return;
+        }
+        let summary = classify_errors(errors)
+            .unwrap_or_else(|_| EvaluationFailureSummary::single(PhloFailure::Platform));
+        self.failures.record(summary);
+    }
+}
+
+struct CloseOnDrop(Arc<DeferredDispatches>);
+
+impl Drop for CloseOnDrop {
+    fn drop(&mut self) { self.0.close(); }
+}
+
+/// Added by DR-132 (D2-B): the live count of one task of a native replay
+/// evaluation. It drops when the future of the task ends: normally, by a
+/// panic or by an abort.
+struct LiveToken(Arc<dyn EvaluationProgress>);
+
+impl Drop for LiveToken {
+    fn drop(&mut self) { self.0.finish(); }
+}
+
+/// Added by DR-132 (D2-B): whether the current task is counted by the
+/// evaluation of the replay `identity`. The root and every task of the
+/// per-call scope are counted.
+pub(crate) fn counted_task(identity: usize) -> bool {
+    DEFERRED_DISPATCHES
+        .try_with(|scope| {
+            scope
+                .progress
+                .as_ref()
+                .is_some_and(|progress| progress.identity() == identity)
+        })
+        .unwrap_or(false)
+}
+
+tokio::task_local! {
+    static DEFERRED_DISPATCHES: Arc<DeferredDispatches>;
+}
+
+/// Added by DR-132 (dev `reduce.rs:199-211`): spawns a task that inherits the
+/// deferred-dispatch scope of the caller, if any. Every spawn in the evaluator
+/// must go through this function: a task without the scope runs COMM bodies
+/// inline and rebuilds the nested-future chain.
+fn spawn_in_dispatch_scope<F>(future: F) -> AbortOnDrop<F::Output>
+where
+    F: Future + std::marker::Send + 'static,
+    F::Output: std::marker::Send + 'static,
+{
+    // Changed by DR-132 (D2-B): a task of a native replay evaluation counts
+    // as live from before its spawn until its future ends. The token is bound
+    // first, so it drops after the future and after any wait inside it.
+    // AbortOnDrop(match DEFERRED_DISPATCHES.try_with(Arc::clone) {
+    //     Ok(scope) => tokio::spawn(DEFERRED_DISPATCHES.scope(scope, future)),
+    //     Err(_) => tokio::spawn(future),
+    // })
+    AbortOnDrop(match DEFERRED_DISPATCHES.try_with(Arc::clone) {
+        Ok(scope) => match scope.progress.clone() {
+            Some(progress) => {
+                progress.enter();
+                let token = LiveToken(progress);
+                tokio::spawn(DEFERRED_DISPATCHES.scope(scope, async move {
+                    let _live = token;
+                    future.await
+                }))
+            }
+            None => tokio::spawn(DEFERRED_DISPATCHES.scope(scope, future)),
+        },
+        Err(_) => tokio::spawn(future),
+    })
+}
+
+/// Added by DR-132 (dev `reduce.rs:213-219`).
+fn join_error(err: JoinError) -> InterpreterError {
+    if err.is_cancelled() {
+        InterpreterError::ReduceError(format!("task cancelled: {}", err))
+    } else {
+        InterpreterError::ReduceError(format!("task panicked: {}", err))
+    }
+}
+
+/// Added by DR-132 (F5): awaits the tasks of `scope` until none is left, and
+/// adds the error of each failed task to `errors`. A task that panicked or
+/// was cancelled adds its join error. Then it records the failure classes of
+/// the whole list into the scope, before an aggregate collapses the list.
+// Changed by DR-132 (D2-B): the drain holds the awaited handle in `InFlight`,
+// so a cancelled drain closes the progress word before the handle aborts its
+// task.
+// async fn drain_dispatch_scope(scope: &DeferredDispatches, errors: &mut Vec<InterpreterError>) {
+//     while let Some(handle) = scope.pop() {
+//         match handle.await {
+//             Ok(Err(err)) => errors.push(err),
+//             Err(join_err) => errors.push(join_error(join_err)),
+//             Ok(Ok(_)) => {}
+//         }
+//     }
+//     scope.record(errors);
+// }
+async fn drain_dispatch_scope(scope: &DeferredDispatches, errors: &mut Vec<InterpreterError>) {
+    while let Some(handle) = scope.pop() {
+        let mut in_flight = InFlight { scope, handle };
+        match (&mut in_flight.handle).await {
+            Ok(Err(err)) => errors.push(err),
+            Err(join_err) => errors.push(join_error(join_err)),
+            Ok(Ok(_)) => {}
+        }
+    }
+    scope.record(errors);
+}
+
+/// Added by DR-132 (D2-B): the handle that the drain awaits. When the drain
+/// is dropped while the task runs, the evaluation is cancelled: the progress
+/// word closes before the handle field aborts the task, so the abort declares
+/// no stall.
+struct InFlight<'a> {
+    scope: &'a DeferredDispatches,
+    handle: DispatchHandle,
+}
+
+impl Drop for InFlight<'_> {
+    fn drop(&mut self) {
+        if !self.handle.0.is_finished() {
+            self.scope.close_progress();
+        }
+    }
+}
+
+/// Added by DR-132 (P13): records the failure classes of `errors` into the
+/// scope of the current call. Without a scope nothing records, as the
+/// scheduler recorded nothing without a session.
+fn record_evaluator_failures(errors: &[InterpreterError]) {
+    let _ = DEFERRED_DISPATCHES.try_with(|scope| scope.record(errors));
+}
+
+/// Added by DR-132 (T6): runs `future` inside a new per-call scope, as
+/// `inj_with_observation` does, and then drains the tasks of the scope. It
+/// returns the result of `future`, the failure classes of the scope and the
+/// errors of the drained tasks.
+#[cfg(test)]
+async fn with_dispatch_scope<T>(
+    future: impl Future<Output = T>,
+) -> (T, EvaluationFailureSummary, Vec<InterpreterError>) {
+    let scope = Arc::new(DeferredDispatches::default());
+    let _close_on_drop = CloseOnDrop(scope.clone());
+    let result = DEFERRED_DISPATCHES.scope(scope.clone(), future).await;
+    let mut errors = Vec::new();
+    drain_dispatch_scope(&scope, &mut errors).await;
+    (result, scope.failures.snapshot(), errors)
+}
+
+/// Added by DR-132 (D2-B): runs `root` as the root of a counted evaluation of
+/// `progress`, as `inj_with_observation` does, and then drains the tasks that
+/// `spawn_counted` started. It returns the result of the root and the errors
+/// of the drained tasks, or the error of `begin`.
+#[cfg(test)]
+pub(crate) async fn with_counted_evaluation<T>(
+    progress: Arc<dyn EvaluationProgress>,
+    root: impl Future<Output = T>,
+) -> Result<(T, Vec<InterpreterError>), rspace_plus_plus::rspace::errors::RSpaceError> {
+    progress.begin()?;
+    let token = LiveToken(progress.clone());
+    let scope = Arc::new(DeferredDispatches {
+        progress: Some(progress),
+        ..DeferredDispatches::default()
+    });
+    let _close_on_drop = CloseOnDrop(scope.clone());
+    let result = DEFERRED_DISPATCHES.scope(scope.clone(), root).await;
+    drop(token);
+    let mut errors = Vec::new();
+    drain_dispatch_scope(&scope, &mut errors).await;
+    Ok((result, errors))
+}
+
+/// Added by DR-132 (D2-B): spawns `task` as a counted task of the current
+/// evaluation of `with_counted_evaluation`. The handle aborts the task.
+#[cfg(test)]
+pub(crate) fn spawn_counted<F>(task: F) -> tokio::task::AbortHandle
+where F: Future<Output = Result<(), InterpreterError>> + std::marker::Send + 'static {
+    DEFERRED_DISPATCHES.with(|scope| {
+        let handle =
+            spawn_in_dispatch_scope(async move { task.await.map(|()| DispatchType::Skip) });
+        let abort = handle.0.abort_handle();
+        scope.push(handle);
+        abort
+    })
+}
+
 /**
  * Reduce is the interface for evaluating Rholang expressions.
  */
@@ -158,7 +446,9 @@ pub struct ReducerCore {
     pub(crate) single_term_evaluations: Arc<AtomicU64>,
     pub(crate) yielded_single_term_evaluations: Arc<AtomicU64>,
     pub(crate) spawned_eval_tasks: Arc<AtomicU64>,
-    pub(crate) reduction_coordinator: ReductionCoordinator,
+    // Changed by DR-132 (P4): the scheduler and its coordinator are gone
+    // (D3-A).
+    // pub(crate) reduction_coordinator: ReductionCoordinator,
     /// DR-101: set while a system body runs, so its residue keeps the system seal.
     pub(crate) residue_seal: bool,
 }
@@ -228,17 +518,22 @@ impl ReducerCore {
             dyn std::future::Future<Output = Result<(), InterpreterError>> + std::marker::Send + 'a,
         >,
     > {
+        // Changed by DR-132 (P5): dev's form. The per-call scope of `inj`
+        // drains the tasks that the evaluation defers.
+        // Box::pin(StackGrowingFuture {
+        //     inner: async move {
+        //         let (result, _, errors) = deterministic_reduction::root_with_observation(
+        //             self.space.clone(),
+        //             self.metering.budget(),
+        //             self.reduction_coordinator.clone(),
+        //             self.eval_inner(par, env, rand, CostAuthority::default()),
+        //         )
+        //         .await;
+        //         self.finish_detached_errors(result, errors)
+        //     },
+        // })
         Box::pin(StackGrowingFuture {
-            inner: async move {
-                let (result, _, errors) = deterministic_reduction::root_with_observation(
-                    self.space.clone(),
-                    self.metering.budget(),
-                    self.reduction_coordinator.clone(),
-                    self.eval_inner(par, env, rand, CostAuthority::default()),
-                )
-                .await;
-                self.finish_detached_errors(result, errors)
-            },
+            inner: self.eval_inner(par, env, rand, CostAuthority::default()),
         })
     }
 
@@ -253,17 +548,21 @@ impl ReducerCore {
             dyn std::future::Future<Output = Result<(), InterpreterError>> + std::marker::Send + 'a,
         >,
     > {
+        // Changed by DR-132 (P5): dev's form, as `eval`.
+        // Box::pin(StackGrowingFuture {
+        //     inner: async move {
+        //         let (result, _, errors) = deterministic_reduction::root_with_observation(
+        //             self.space.clone(),
+        //             self.metering.budget(),
+        //             self.reduction_coordinator.clone(),
+        //             self.eval_inner(par, env, rand, authority),
+        //         )
+        //         .await;
+        //         self.finish_detached_errors(result, errors)
+        //     },
+        // })
         Box::pin(StackGrowingFuture {
-            inner: async move {
-                let (result, _, errors) = deterministic_reduction::root_with_observation(
-                    self.space.clone(),
-                    self.metering.budget(),
-                    self.reduction_coordinator.clone(),
-                    self.eval_inner(par, env, rand, authority),
-                )
-                .await;
-                self.finish_detached_errors(result, errors)
-            },
+            inner: self.eval_inner(par, env, rand, authority),
         })
     }
 
@@ -282,30 +581,49 @@ impl ReducerCore {
                 ..(**self).clone()
             })
         };
-        if deterministic_reduction::current().is_none() {
-            return reducer.eval(par, &env, rand).await;
+        // Changed by DR-132 (F2): inside the per-call scope of `inj`, the body
+        // runs as a task of the scope, so a chain of bodies never nests. This
+        // covers the bodies that system-process replies fire. Without a scope
+        // the body runs inline, as on dev.
+        // if deterministic_reduction::current().is_none() {
+        //     return reducer.eval(par, &env, rand).await;
+        // }
+        // deterministic_reduction::spawn_detached(async move {
+        //     reducer
+        //         .eval_inner(par, &env, rand, CostAuthority::default())
+        //         .await
+        // });
+        // Ok(())
+        match DEFERRED_DISPATCHES.try_with(Arc::clone) {
+            Ok(scope) => {
+                scope.push(spawn_in_dispatch_scope(async move {
+                    reducer
+                        .eval(par, &env, rand)
+                        .await
+                        .map(|()| DispatchType::DeterministicCall)
+                }));
+                Ok(())
+            }
+            Err(_) => reducer.eval(par, &env, rand).await,
         }
-        deterministic_reduction::spawn_detached(async move {
-            reducer
-                .eval_inner(par, &env, rand, CostAuthority::default())
-                .await
-        });
-        Ok(())
     }
 
-    fn finish_detached_errors(
-        &self,
-        result: Result<(), InterpreterError>,
-        mut errors: Vec<InterpreterError>,
-    ) -> Result<(), InterpreterError> {
-        if errors.is_empty() {
-            return result;
-        }
-        if let Err(error) = result {
-            errors.insert(0, error);
-        }
-        self.aggregate_evaluator_errors(errors).map(|_| ())
-    }
+    // Changed by DR-132 (P7): errors return through the drain of `inj`, and
+    // through the joins of a call without a scope, so no detached error list
+    // remains.
+    // fn finish_detached_errors(
+    //     &self,
+    //     result: Result<(), InterpreterError>,
+    //     mut errors: Vec<InterpreterError>,
+    // ) -> Result<(), InterpreterError> {
+    //     if errors.is_empty() {
+    //         return result;
+    //     }
+    //     if let Err(error) = result {
+    //         errors.insert(0, error);
+    //     }
+    //     self.aggregate_evaluator_errors(errors).map(|_| ())
+    // }
 
     async fn eval_inner(
         &self,
@@ -398,20 +716,71 @@ impl ReducerCore {
 
             self.spawned_eval_tasks
                 .fetch_add(futures.len() as u64, Ordering::Relaxed);
-            let parent_context = deterministic_reduction::current()
-                .expect("parallel evaluation requires a reduction context");
-            let child_contexts = parent_context.split(futures.len());
-            for (fut, child_context) in futures.into_iter().zip(child_contexts) {
-                deterministic_reduction::spawn_detached_in_context(child_context, fut);
+            // Changed by DR-132 (A1, A2): inside the per-call scope of `inj`,
+            // each child runs as a task of the scope and the parent returns at
+            // once, so nested errors never aggregate level by level. Without a
+            // scope the parent awaits every child and aggregates, as on dev
+            // (dev `reduce.rs:425-448`).
+            // let parent_context = deterministic_reduction::current()
+            //     .expect("parallel evaluation requires a reduction context");
+            // let child_contexts = parent_context.split(futures.len());
+            // for (fut, child_context) in futures.into_iter().zip(child_contexts) {
+            //     deterministic_reduction::spawn_detached_in_context(child_context, fut);
+            // }
+            // Ok(())
+            match DEFERRED_DISPATCHES.try_with(Arc::clone) {
+                Ok(scope) => {
+                    for future in futures {
+                        scope.push(spawn_in_dispatch_scope(async move {
+                            future.await.map(|()| DispatchType::Skip)
+                        }));
+                    }
+                    Ok(())
+                }
+                Err(_) => {
+                    let spawn_start = std::time::Instant::now();
+                    let handles: Vec<AbortOnDrop<Result<(), InterpreterError>>> =
+                        futures.into_iter().map(spawn_in_dispatch_scope).collect();
+                    metrics::counter!("reducer.eval_par.spawn_ns", "source" => "rholang")
+                        .increment(spawn_start.elapsed().as_nanos() as u64);
+
+                    let join_start = std::time::Instant::now();
+                    let mut flattened_results: Vec<InterpreterError> = Vec::new();
+                    for handle in handles {
+                        match handle.await {
+                            Ok(Err(err)) => flattened_results.push(err),
+                            Err(join_err) => flattened_results.push(InterpreterError::ReduceError(
+                                format!("task panicked: {}", join_err),
+                            )),
+                            Ok(Ok(())) => {}
+                        }
+                    }
+                    metrics::counter!("reducer.eval_par.join_ns", "source" => "rholang")
+                        .increment(join_start.elapsed().as_nanos() as u64);
+
+                    self.aggregate_evaluator_errors(flattened_results)
+                        .map(|_| ())
+                }
             }
-            Ok(())
         }
     }
 
+    // Changed by DR-132 (P9): dev's `inj` runs through the observed form.
+    // pub async fn inj(&self, par: Par, rand: Blake2b512Random) -> Result<(), InterpreterError> {
+    //     self.eval(par, &Env::new(), rand).await
+    // }
     pub async fn inj(&self, par: Par, rand: Blake2b512Random) -> Result<(), InterpreterError> {
-        self.eval(par, &Env::new(), rand).await
+        self.inj_with_observation(par, rand).await.0
     }
 
+    /// Changed by DR-132 (P10, F5): dev's `inj` (dev `reduce.rs:452-483`) with
+    /// the failure recorder of the per-call scope. The deploy term runs inside
+    /// the scope. Each continuation body, re-issue and parallel child runs as
+    /// a task of the scope. After the root evaluation returns, the drain
+    /// awaits the tasks until none is left. The full error list, with each
+    /// task failure, is recorded before the final aggregate, because that
+    /// aggregate runs outside the scope. If this future is dropped, the scope
+    /// closes and every task of the scope is aborted.
     pub(crate) async fn inj_with_observation(
         &self,
         par: Par,
@@ -420,27 +789,65 @@ impl ReducerCore {
         Result<(), InterpreterError>,
         super::accounting::economic_failure::EvaluationFailureSummary,
     ) {
+        // let env = Env::new();
+        // let (result, summary, errors) = StackGrowingFuture {
+        //     inner: deterministic_reduction::root_with_observation(
+        //         self.space.clone(),
+        //         self.metering.budget(),
+        //         self.reduction_coordinator.clone(),
+        //         async {
+        //             let result = self
+        //                 .eval_inner(par, &env, rand, CostAuthority::default())
+        //                 .await;
+        //             if let Err(error) = &result {
+        //                 deterministic_reduction::record_evaluator_failures(std::slice::from_ref(
+        //                     error,
+        //                 ));
+        //             }
+        //             result
+        //         },
+        //     ),
+        // }
+        // .await;
+        // (self.finish_detached_errors(result, errors), summary)
+        // Changed by DR-132 (D2-B): a native replay evaluation begins its
+        // progress word, and the root counts as live until its evaluation
+        // returns. The root token is declared before `_close_on_drop`, so a
+        // cancel closes the word before the root finishes.
+        // let scope = Arc::new(DeferredDispatches::default());
+        let (progress, root) = match self.space.evaluation_progress() {
+            Some(progress) => match progress.begin() {
+                Ok(()) => (Some(progress.clone()), Some(LiveToken(progress))),
+                Err(err) => {
+                    return (
+                        Err(err.into()),
+                        EvaluationFailureSummary::single(PhloFailure::Platform),
+                    );
+                }
+            },
+            None => (None, None),
+        };
+        let scope = Arc::new(DeferredDispatches {
+            progress,
+            ..DeferredDispatches::default()
+        });
+        let _close_on_drop = CloseOnDrop(scope.clone());
         let env = Env::new();
-        let (result, summary, errors) = StackGrowingFuture {
-            inner: deterministic_reduction::root_with_observation(
-                self.space.clone(),
-                self.metering.budget(),
-                self.reduction_coordinator.clone(),
-                async {
-                    let result = self
-                        .eval_inner(par, &env, rand, CostAuthority::default())
-                        .await;
-                    if let Err(error) = &result {
-                        deterministic_reduction::record_evaluator_failures(std::slice::from_ref(
-                            error,
-                        ));
-                    }
-                    result
-                },
-            ),
+
+        let mut errors: Vec<InterpreterError> = Vec::new();
+        if let Err(err) = DEFERRED_DISPATCHES
+            .scope(scope.clone(), self.eval(par, &env, rand))
+            .await
+        {
+            errors.push(err);
         }
-        .await;
-        (self.finish_detached_errors(result, errors), summary)
+        // Added by DR-132 (D2-B): the root stops counting before the drain,
+        // which runs no operation.
+        drop(root);
+
+        drain_dispatch_scope(&scope, &mut errors).await;
+        let summary = scope.failures.snapshot();
+        (self.aggregate_evaluator_errors(errors).map(|_| ()), summary)
     }
 
     /**
@@ -1044,15 +1451,44 @@ impl ReducerCore {
             >,
         >,
     ) -> Result<DispatchType, InterpreterError> {
-        let parent_context = deterministic_reduction::current()
-            .expect("parallel dispatch requires a reduction context");
-        let child_contexts = parent_context.split(futures.len());
-        for (fut, child_context) in futures.into_iter().zip(child_contexts) {
-            deterministic_reduction::spawn_detached_in_context(child_context, async move {
-                fut.await.map(|_| ())
-            });
+        // Changed by DR-132 (F3, A1): inside the per-call scope of `inj`, each
+        // future runs as a task of the scope and the caller returns at once, so
+        // no re-issue parks its parent. Without a scope the caller awaits every
+        // future in order and aggregates, as on dev (dev `reduce.rs:763-777`).
+        // let parent_context = deterministic_reduction::current()
+        //     .expect("parallel dispatch requires a reduction context");
+        // let child_contexts = parent_context.split(futures.len());
+        // for (fut, child_context) in futures.into_iter().zip(child_contexts) {
+        //     deterministic_reduction::spawn_detached_in_context(child_context, async move {
+        //         fut.await.map(|_| ())
+        //     });
+        // }
+        // Ok(DispatchType::Skip)
+        match DEFERRED_DISPATCHES.try_with(Arc::clone) {
+            Ok(scope) => {
+                for future in futures {
+                    scope.push(spawn_in_dispatch_scope(future));
+                }
+                Ok(DispatchType::Skip)
+            }
+            Err(_) => {
+                let handles: Vec<AbortOnDrop<Result<DispatchType, InterpreterError>>> =
+                    futures.into_iter().map(spawn_in_dispatch_scope).collect();
+
+                let mut flattened_results: Vec<InterpreterError> = Vec::new();
+                for handle in handles {
+                    match handle.await {
+                        Ok(Err(err)) => flattened_results.push(err),
+                        Err(join_err) => flattened_results.push(InterpreterError::ReduceError(
+                            format!("task panicked: {}", join_err),
+                        )),
+                        Ok(Ok(_)) => {}
+                    }
+                }
+
+                self.aggregate_evaluator_errors(flattened_results)
+            }
         }
-        Ok(DispatchType::Skip)
     }
 
     /* Collect mergeable channels */
@@ -1123,7 +1559,9 @@ impl ReducerCore {
         &self,
         errors: Vec<InterpreterError>,
     ) -> Result<DispatchType, InterpreterError> {
-        deterministic_reduction::record_evaluator_failures(&errors);
+        // Changed by DR-132 (P13): the per-call scope records the classes.
+        // deterministic_reduction::record_evaluator_failures(&errors);
+        record_evaluator_failures(&errors);
         match errors.as_slice() {
             // No errors
             [] => Ok(DispatchType::Skip),
@@ -7930,18 +8368,27 @@ impl DebruijnInterpreter {
         mergeable_tags: Arc<HashMap<Par, MergeType>>,
         cost: RuntimeBudget,
     ) -> Arc<Self> {
-        let reduction_coordinator = ReductionCoordinator::default();
-        let space: RhoISpace = Arc::new(Box::new(DeterministicRSpace::new(
-            space,
-            reduction_coordinator.clone(),
-        )));
+        // Changed by DR-132 (P4): the reducer uses the space directly, as on
+        // dev. The scheduler space and its coordinator are gone (D3-A).
+        // let reduction_coordinator = ReductionCoordinator::default();
+        // let space: RhoISpace = Arc::new(Box::new(DeterministicRSpace::new(
+        //     space,
+        //     reduction_coordinator.clone(),
+        // )));
+        // let core = ReducerCore::new(
+        //     space.clone().into(),
+        //     urn_map,
+        //     merge_chs,
+        //     mergeable_tags,
+        //     cost,
+        //     reduction_coordinator,
+        // );
         let core = ReducerCore::new(
             space.clone().into(),
             urn_map,
             merge_chs,
             mergeable_tags,
             cost,
-            reduction_coordinator,
         );
         Arc::new(Self { space, core })
     }
@@ -7954,7 +8401,8 @@ impl ReducerCore {
         merge_chs: Arc<RwLock<HashMap<Par, MergeType>>>,
         mergeable_tags: Arc<HashMap<Par, MergeType>>,
         cost: RuntimeBudget,
-        reduction_coordinator: ReductionCoordinator,
+        // Changed by DR-132 (P4): no coordinator (D3-A).
+        // reduction_coordinator: ReductionCoordinator,
     ) -> Arc<Self> {
         let reducer_cell = Arc::new(std::sync::OnceLock::new());
         let dispatcher = Arc::new(RholangAndScalaDispatcher {
@@ -7974,7 +8422,8 @@ impl ReducerCore {
             single_term_evaluations: Arc::new(AtomicU64::new(0)),
             yielded_single_term_evaluations: Arc::new(AtomicU64::new(0)),
             spawned_eval_tasks: Arc::new(AtomicU64::new(0)),
-            reduction_coordinator,
+            // Changed by DR-132 (P4): no coordinator (D3-A).
+            // reduction_coordinator,
             residue_seal: false,
         });
 

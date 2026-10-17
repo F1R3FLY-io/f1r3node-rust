@@ -2697,6 +2697,59 @@ async fn offered_deploy_records_an_external_reply_and_validators_replay_it() {
     }
 }
 
+/// Added by DR-132 (P-5): racing evaluation in the proposer and in the
+/// validators agrees. An offered deploy with parallel branches, two joins
+/// that race for the same data, and a peek runs on four nodes with 16 seeds
+/// (the deploy timestamps). Node 0 proposes each block, and every node
+/// replays it. A validator accepts a block only when its replay reaches the
+/// post-state root of the block. Every node holds one receipt and the same
+/// data on the output channel. The deploy issues no grant request (F7).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn racing_offered_deploys_agree_on_every_validator() {
+    const RACE: &str = r#"@"race a"!(1) | @"race a"!(2) | @"race b"!(3) | @"race b"!(4) |
+        @"race c"!(5) |
+        for (@x <- @"race a" & @y <- @"race b") { @"race out"!(x + y) } |
+        for (@x <- @"race a" & @y <- @"race b") { @"race out"!(x * y) } |
+        for (@z <- @"race c") { @"race out"!(z) } |
+        for (@p <<- @"race out") { @"race peek"!(p) }"#;
+    let genesis = offered_v6_genesis(4).await;
+    let mut nodes = TestNode::create_network(genesis.clone(), 4, None, None, None, None)
+        .await
+        .expect("the four-node test network starts");
+    let payer = genesis.genesis_vaults[3].clone();
+    let out = models::rust::utils::new_gstring_par("race out".to_string(), Vec::new(), false);
+    for seed in 1..=16 {
+        let (block, id) = offered_block(
+            &mut nodes,
+            0,
+            owner_direct_offer(&payer, seed, RACE.to_string()),
+        )
+        .await;
+        let deploy = block.body.deploys[0]
+            .as_offered()
+            .expect("the block holds an offered deploy");
+        assert!(!deploy.is_failed(), "seed {seed}: the deploy succeeds");
+        let receipt = accepted_everywhere_with_one_receipt(&mut nodes, &block, &id).await;
+        assert!(
+            receipt.phlo_used > 0,
+            "seed {seed}: the deploy charges phlo"
+        );
+        let mut outputs = Vec::with_capacity(nodes.len());
+        for node in &nodes {
+            outputs.push(
+                node.runtime_manager
+                    .get_data(block.body.state.post_state_hash.clone(), &out)
+                    .await
+                    .expect("each node reads the output channel at the post-state"),
+            );
+        }
+        assert!(
+            outputs.windows(2).all(|pair| pair[0] == pair[1]),
+            "seed {seed}: every node holds the same output"
+        );
+    }
+}
+
 /// DR-114 (§4.1 option A): a malformed call of a system process depends only
 /// on the deploy's term. The block publishes it as a failed deploy, the payer
 /// pays the granted work and the fee, and every validator accepts the block.

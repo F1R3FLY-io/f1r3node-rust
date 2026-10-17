@@ -565,6 +565,41 @@ async fn native_replay_rejects_a_recorded_call_without_its_record() {
         error.contains("native replay of gpt4 has no recorded output"),
         "{error}"
     );
+    // Added by DR-132 (D2-B): racing play can record the receive on `ack`
+    // after the reply, so the receive waits on the reply that the failed
+    // call never produces. The stall rule ends that wait.
+    assert!(error.contains("native replay stalled"), "{error}");
+    assert!(!stripped.complete, "a stalled replay is not complete");
+}
+
+/// DR-132 (decision D2-B): a recorded reply changed on every copy passes the
+/// slot check. Replay produces the changed reply, which no row records, so
+/// the receive that waits on the recorded reply can never run. Replay rejects
+/// the block when every live task waits on a recorded operation.
+#[tokio::test]
+async fn native_replay_rejects_a_changed_recorded_reply() {
+    let changed = play_and_replay(
+        Call {
+            play: services(
+                OpenAIService::Mock(OpenAIMockConfig::single_completion("A")),
+                GrpcClientService::new_noop(),
+            ),
+            ..Call::new(GPT4_TO_OUT)
+        },
+        |log| {
+            forge_record(log, vec![
+                RhoString::create_par("B".to_owned()).encode_to_vec()
+            ])
+        },
+    )
+    .await;
+    assert_eq!(changed.played.0, Ok(()));
+    assert_eq!(changed.record(), vec![RhoString::create_par(
+        "A".to_owned()
+    )]);
+    let error = format!("{:?}", changed.replayed.0);
+    assert!(error.contains("native replay stalled"), "{error}");
+    assert!(!changed.complete, "a stalled replay is not complete");
 }
 
 proptest! {

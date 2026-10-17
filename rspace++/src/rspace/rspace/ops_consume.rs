@@ -42,21 +42,28 @@ where
         tracing::trace!(target: "f1r3fly.rspace.ops", mark = "started-locked-consume", "locked_consume");
 
         let source = RSpaceOperationSource::Consume(consume_ref);
-        let observer = self.start_accounting_operation(source, channels, &[])?;
-        let result = self.locked_consume_observed(
-            channels,
-            patterns,
-            continuation,
-            persist,
-            peeks,
-            consume_ref,
-            observer.as_deref(),
-        );
-        if let Some(observer) = observer {
-            observer
-                .observe_operation_finish(source, RSpaceOperationCompletion::from_result(&result));
-        }
-        result
+        // Changed by DR-132: the observer names the recorded row, and the rest
+        // of the locked consume runs under that name.
+        // let observer = self.start_accounting_operation(source, channels, &[])?;
+        let (observer, name) = self.start_accounting_operation(source, channels, &[])?;
+        crate::rspace::operation_context::named(name, move || {
+            let result = self.locked_consume_observed(
+                channels,
+                patterns,
+                continuation,
+                persist,
+                peeks,
+                consume_ref,
+                observer.as_deref(),
+            );
+            if let Some(observer) = observer {
+                observer.observe_operation_finish(
+                    source,
+                    RSpaceOperationCompletion::from_result(&result),
+                );
+            }
+            result
+        })
     }
 
     fn locked_consume_observed(

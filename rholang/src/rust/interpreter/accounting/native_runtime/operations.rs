@@ -156,12 +156,14 @@ impl NativeRuntimeConfig {
         Ok(OperationKey(order))
     }
 
+    // Changed by DR-132: the start returns the name of the recorded row.
+    // ) -> Result<(), InterpreterError> {
     fn start_operation(
         &mut self,
         source: RSpaceOperationSource<'_>,
         channels: &[Par],
         joins: &[Vec<Par>],
-    ) -> Result<(), InterpreterError> {
+    ) -> Result<OperationOrder, InterpreterError> {
         if self.recording.invalid.load(Ordering::Acquire)
             || self.operations.rows.len() >= self.limits.attempts
         {
@@ -169,7 +171,18 @@ impl NativeRuntimeConfig {
                 "native operation recording is invalid or full",
             ));
         }
-        let key = self.operation_key()?;
+        // Changed by DR-132 (D1-A): the recorder names each row by its journal
+        // index. Racing evaluation sets no outer name. The row index is the
+        // start order of play, which the record keeps, and replay finds each
+        // row by its source.
+        // let key = self.operation_key()?;
+        let row_index = u64::try_from(self.operations.rows.len())
+            .map_err(|_| recording_error("native operation index overflows"))?;
+        let key = OperationKey(OperationOrder {
+            session: self.session,
+            path: vec![(row_index, 0)].into(),
+        });
+        let name = key.0.clone();
         if self.operations.index.get(&key).is_some() {
             return Err(recording_error("native operation occurrence is duplicated"));
         }
@@ -219,7 +232,7 @@ impl NativeRuntimeConfig {
         self.operations.last_channel.commit_batch(channel_updates);
         self.operations.index.commit(operation);
         self.operations.rows.push(row);
-        Ok(())
+        Ok(name)
     }
 
     fn observe_consume_peeks(&mut self, peeks: &BTreeSet<i32>) -> Result<(), InterpreterError> {
@@ -460,16 +473,23 @@ impl NativeRuntimeConfig {
 }
 
 impl RuntimeBudget {
-    fn update_native_operations(
+    // Changed by DR-132: the update returns a value, so that the start can
+    // return the name of the recorded row. Without native accounting it
+    // returns the default value.
+    // update: impl FnOnce(&mut NativeRuntimeConfig) -> Result<(), InterpreterError>,
+    // ) -> Result<(), InterpreterError> {
+    //     ...
+    //     return Ok(());
+    fn update_native_operations<T: Default>(
         &self,
-        update: impl FnOnce(&mut NativeRuntimeConfig) -> Result<(), InterpreterError>,
-    ) -> Result<(), InterpreterError> {
+        update: impl FnOnce(&mut NativeRuntimeConfig) -> Result<T, InterpreterError>,
+    ) -> Result<T, InterpreterError> {
         if !self.has_comm_accounting_scope() || self.is_unmetered() {
-            return Ok(());
+            return Ok(T::default());
         }
         let mut state = self.authority_state.lock().expect("authority state");
         let Some(native) = state.native.as_mut() else {
-            return Ok(());
+            return Ok(T::default());
         };
         let result = update(native);
         if result.is_err() {
@@ -478,13 +498,19 @@ impl RuntimeBudget {
         result
     }
 
+    // Changed by DR-132: the start returns the name of the recorded row, or
+    // `None` without native accounting.
+    // ) -> Result<(), InterpreterError> {
+    //     self.update_native_operations(|native| native.start_operation(source, channels, joins))
     pub(crate) fn start_native_operation(
         &self,
         source: RSpaceOperationSource<'_>,
         channels: &[Par],
         joins: &[Vec<Par>],
-    ) -> Result<(), InterpreterError> {
-        self.update_native_operations(|native| native.start_operation(source, channels, joins))
+    ) -> Result<Option<OperationOrder>, InterpreterError> {
+        self.update_native_operations(|native| {
+            native.start_operation(source, channels, joins).map(Some)
+        })
     }
 
     pub(crate) fn observe_native_comm_source(&self, source: &COMM) -> Result<(), InterpreterError> {

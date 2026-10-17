@@ -37,6 +37,27 @@ pub trait ExecutionBackend: Send + Sync {
     async fn is_replay(&self) -> bool;
     async fn update_produce(&self, original: &Produce, updated: Produce)
         -> Result<(), RSpaceError>;
+
+    /// Added by DR-132 (D2-B): the evaluation progress of native replay. No
+    /// other backend counts the tasks of an evaluation.
+    fn evaluation_progress(&self) -> Option<Arc<dyn EvaluationProgress>> { None }
+}
+
+/// Added by DR-132 (D2-B): the live tasks of one evaluation, which native
+/// replay counts for its stall rule (`trace/replay/progress.rs`).
+pub trait EvaluationProgress: Send + Sync {
+    /// Starts an evaluation with the root as its one live task.
+    fn begin(&self) -> Result<(), RSpaceError>;
+    /// Counts a task before its spawn.
+    fn enter(&self);
+    /// A counted task ended. When every remaining live task waits on a
+    /// recorded operation, replay declares the stall.
+    fn finish(&self);
+    /// The evaluation is cancelled, so no later finish declares a stall.
+    fn close(&self);
+    /// The identity of the replay. A waiter compares it with the progress
+    /// of its task's evaluation.
+    fn identity(&self) -> usize;
 }
 
 #[derive(Clone)]

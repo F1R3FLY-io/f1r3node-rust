@@ -23,18 +23,28 @@ async fn native_signed_term_preserves_nil_execution() {
             value: Some(CostSignatureValue::Ground(vec![1, 2, 3])),
         }),
     };
-    let result = deterministic_reduction::root(
-        reducer.space.clone(),
-        reducer.metering.budget(),
-        reducer.reduction_coordinator.clone(),
-        reducer.eval_cost_signed_term(
-            &term,
-            &Env::new(),
-            Blake2b512Random::create_from_length(128),
-            &CostAuthority::default(),
-        ),
-    )
-    .await;
+    // Changed by DR-132 (T6): the term runs in a per-call scope, as `inj` runs
+    // it. The scheduler root is gone (D3-A).
+    // let result = deterministic_reduction::root(
+    //     reducer.space.clone(),
+    //     reducer.metering.budget(),
+    //     reducer.reduction_coordinator.clone(),
+    //     reducer.eval_cost_signed_term(
+    //         &term,
+    //         &Env::new(),
+    //         Blake2b512Random::create_from_length(128),
+    //         &CostAuthority::default(),
+    //     ),
+    // )
+    // .await;
+    let result = with_dispatch_scope(reducer.eval_cost_signed_term(
+        &term,
+        &Env::new(),
+        Blake2b512Random::create_from_length(128),
+        &CostAuthority::default(),
+    ))
+    .await
+    .0;
     assert!(result.is_ok());
 }
 
@@ -43,17 +53,25 @@ async fn economic_observation_preserves_fault_hidden_by_legacy_abort() {
     let (_, reducer) =
         create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
             .await;
-    let (legacy, observed, _) = deterministic_reduction::root_with_observation(
-        reducer.space.clone(),
-        reducer.metering.budget(),
-        reducer.reduction_coordinator.clone(),
-        async {
-            reducer.aggregate_evaluator_errors(vec![
-                InterpreterError::UserAbortError,
-                InterpreterError::BugFoundError("injected platform failure".into()),
-            ])
-        },
-    )
+    // Changed by DR-132 (T6): a per-call scope replaces the scheduler root.
+    // let (legacy, observed, _) = deterministic_reduction::root_with_observation(
+    //     reducer.space.clone(),
+    //     reducer.metering.budget(),
+    //     reducer.reduction_coordinator.clone(),
+    //     async {
+    //         reducer.aggregate_evaluator_errors(vec![
+    //             InterpreterError::UserAbortError,
+    //             InterpreterError::BugFoundError("injected platform failure".into()),
+    //         ])
+    //     },
+    // )
+    // .await;
+    let (legacy, observed, _) = with_dispatch_scope(async {
+        reducer.aggregate_evaluator_errors(vec![
+            InterpreterError::UserAbortError,
+            InterpreterError::BugFoundError("injected platform failure".into()),
+        ])
+    })
     .await;
     assert!(matches!(legacy, Err(InterpreterError::UserAbortError)));
     assert_eq!(
@@ -73,12 +91,17 @@ async fn economic_observation_classifies_by_errors_and_keeps_the_legacy_error() 
     let (_, reducer) =
         create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
             .await;
-    let (legacy, observed, _) = deterministic_reduction::root_with_observation(
-        reducer.space.clone(),
-        reducer.metering.budget(),
-        reducer.reduction_coordinator.clone(),
-        async { reducer.aggregate_evaluator_errors(vec![InterpreterError::UserAbortError]) },
-    )
+    // Changed by DR-132 (T6): a per-call scope replaces the scheduler root.
+    // let (legacy, observed, _) = deterministic_reduction::root_with_observation(
+    //     reducer.space.clone(),
+    //     reducer.metering.budget(),
+    //     reducer.reduction_coordinator.clone(),
+    //     async { reducer.aggregate_evaluator_errors(vec![InterpreterError::UserAbortError]) },
+    // )
+    // .await;
+    let (legacy, observed, _) = with_dispatch_scope(async {
+        reducer.aggregate_evaluator_errors(vec![InterpreterError::UserAbortError])
+    })
     .await;
     assert!(matches!(legacy, Err(InterpreterError::UserAbortError)));
     assert_eq!(
@@ -105,13 +128,16 @@ async fn economic_observation_joins_nested_faults_without_reusing_the_previous_r
         if reverse {
             errors.reverse();
         }
-        let (legacy, observed, _) = deterministic_reduction::root_with_observation(
-            reducer.space.clone(),
-            reducer.metering.budget(),
-            reducer.reduction_coordinator.clone(),
-            async { reducer.aggregate_evaluator_errors(errors) },
-        )
-        .await;
+        // Changed by DR-132 (T6): a per-call scope replaces the scheduler root.
+        // let (legacy, observed, _) = deterministic_reduction::root_with_observation(
+        //     reducer.space.clone(),
+        //     reducer.metering.budget(),
+        //     reducer.reduction_coordinator.clone(),
+        //     async { reducer.aggregate_evaluator_errors(errors) },
+        // )
+        // .await;
+        let (legacy, observed, _) =
+            with_dispatch_scope(async { reducer.aggregate_evaluator_errors(errors) }).await;
         assert!(matches!(legacy, Err(InterpreterError::UserAbortError)));
         assert_eq!(
             observed,
@@ -119,13 +145,16 @@ async fn economic_observation_joins_nested_faults_without_reusing_the_previous_r
                 .union(EvaluationFailureSummary::single(PhloFailure::Certificate))
                 .union(EvaluationFailureSummary::single(PhloFailure::Unclassified))
         );
-        let (legacy, next, _) = deterministic_reduction::root_with_observation(
-            reducer.space.clone(),
-            reducer.metering.budget(),
-            reducer.reduction_coordinator.clone(),
-            async { reducer.aggregate_evaluator_errors(Vec::new()) },
-        )
-        .await;
+        // Changed by DR-132 (T6): a per-call scope replaces the scheduler root.
+        // let (legacy, next, _) = deterministic_reduction::root_with_observation(
+        //     reducer.space.clone(),
+        //     reducer.metering.budget(),
+        //     reducer.reduction_coordinator.clone(),
+        //     async { reducer.aggregate_evaluator_errors(Vec::new()) },
+        // )
+        // .await;
+        let (legacy, next, _) =
+            with_dispatch_scope(async { reducer.aggregate_evaluator_errors(Vec::new()) }).await;
         assert!(legacy.is_ok());
         assert_eq!(next, EvaluationFailureSummary::default());
         assert!(!observed.permits_retained_charge());
@@ -139,33 +168,62 @@ async fn economic_observation_keeps_faults_collapsed_inside_parallel_children() 
             .await;
     let child_a = reducer.clone();
     let child_b = reducer.clone();
-    let (legacy, observed, detached_errors) = deterministic_reduction::root_with_observation(
-        reducer.space.clone(),
-        reducer.metering.budget(),
-        reducer.reduction_coordinator.clone(),
-        async {
-            reducer
-                .run_parallel_dispatches(vec![
-                    Box::pin(async move {
-                        tokio::task::yield_now().await;
-                        child_a.aggregate_evaluator_errors(vec![
-                            InterpreterError::UserAbortError,
-                            InterpreterError::BugFoundError("parallel platform fault".into()),
-                        ])
-                    }),
-                    Box::pin(async move {
-                        child_b.aggregate_evaluator_errors(vec![
-                            InterpreterError::UserAbortError,
-                            InterpreterError::OutOfPhlogistonsError,
-                        ])
-                    }),
-                ])
-                .await
-        },
-    )
+    // Changed by DR-132 (T6): a per-call scope replaces the scheduler root.
+    // let (legacy, observed, detached_errors) = deterministic_reduction::root_with_observation(
+    //     reducer.space.clone(),
+    //     reducer.metering.budget(),
+    //     reducer.reduction_coordinator.clone(),
+    //     async {
+    //         reducer
+    //             .run_parallel_dispatches(vec![
+    //                 Box::pin(async move {
+    //                     tokio::task::yield_now().await;
+    //                     child_a.aggregate_evaluator_errors(vec![
+    //                         InterpreterError::UserAbortError,
+    //                         InterpreterError::BugFoundError("parallel platform fault".into()),
+    //                     ])
+    //                 }),
+    //                 Box::pin(async move {
+    //                     child_b.aggregate_evaluator_errors(vec![
+    //                         InterpreterError::UserAbortError,
+    //                         InterpreterError::OutOfPhlogistonsError,
+    //                     ])
+    //                 }),
+    //             ])
+    //             .await
+    //     },
+    // )
+    // .await;
+    let (legacy, observed, detached_errors) = with_dispatch_scope(async {
+        reducer
+            .run_parallel_dispatches(vec![
+                Box::pin(async move {
+                    tokio::task::yield_now().await;
+                    child_a.aggregate_evaluator_errors(vec![
+                        InterpreterError::UserAbortError,
+                        InterpreterError::BugFoundError("parallel platform fault".into()),
+                    ])
+                }),
+                Box::pin(async move {
+                    child_b.aggregate_evaluator_errors(vec![
+                        InterpreterError::UserAbortError,
+                        InterpreterError::OutOfPhlogistonsError,
+                    ])
+                }),
+            ])
+            .await
+    })
     .await;
+    // Changed by DR-132 (T6, P7): inside the scope the parent returns at once,
+    // and the drain returns the task errors. The final aggregate of `inj`
+    // collapses them.
+    // assert!(matches!(
+    //     reducer.finish_detached_errors(legacy.map(|_| ()), detached_errors),
+    //     Err(InterpreterError::UserAbortError)
+    // ));
+    assert!(matches!(legacy, Ok(DispatchType::Skip)));
     assert!(matches!(
-        reducer.finish_detached_errors(legacy.map(|_| ()), detached_errors),
+        reducer.aggregate_evaluator_errors(detached_errors),
         Err(InterpreterError::UserAbortError)
     ));
     assert_eq!(
@@ -178,40 +236,59 @@ async fn economic_observation_keeps_faults_collapsed_inside_parallel_children() 
 
 #[tokio::test]
 async fn economic_observation_cancellation_does_not_leak_into_the_next_root() {
-    let (_, reducer) =
-        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
-            .await;
+    // Changed by DR-132 (T6): a per-call scope replaces the scheduler root,
+    // and the scope needs no reducer.
+    // let (_, reducer) =
+    //     create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+    //         .await;
     let (reported, observed) = tokio::sync::oneshot::channel();
     {
-        let canceled = deterministic_reduction::root_with_observation(
-            reducer.space.clone(),
-            reducer.metering.budget(),
-            reducer.reduction_coordinator.clone(),
-            async {
-                deterministic_reduction::record_evaluator_failures(&[
-                    InterpreterError::BugFoundError("canceled root failure".into()),
-                ]);
-                reported.send(()).unwrap();
-                std::future::pending::<()>().await;
-            },
-        );
+        // let canceled = deterministic_reduction::root_with_observation(
+        //     reducer.space.clone(),
+        //     reducer.metering.budget(),
+        //     reducer.reduction_coordinator.clone(),
+        //     async {
+        //         deterministic_reduction::record_evaluator_failures(&[
+        //             InterpreterError::BugFoundError("canceled root failure".into()),
+        //         ]);
+        //         reported.send(()).unwrap();
+        //         std::future::pending::<()>().await;
+        //     },
+        // );
+        let canceled = with_dispatch_scope(async {
+            record_evaluator_failures(&[InterpreterError::BugFoundError(
+                "canceled root failure".into(),
+            )]);
+            reported
+                .send(())
+                .expect("the test waits for the failure report");
+            std::future::pending::<()>().await;
+        });
         tokio::pin!(canceled);
         tokio::select! {
             _ = &mut canceled => panic!("root must remain pending until cancellation"),
             result = observed => result.unwrap(),
         }
     }
+    // Changed by DR-132 (T6): the scope of each call is new, and no evaluation
+    // guard exists.
+    // let (_, next, _) = tokio::time::timeout(
+    //     std::time::Duration::from_secs(2),
+    //     deterministic_reduction::root_with_observation(
+    //         reducer.space.clone(),
+    //         reducer.metering.budget(),
+    //         reducer.reduction_coordinator.clone(),
+    //         async {},
+    //     ),
+    // )
+    // .await
+    // .expect("canceled root must release its evaluation guard");
     let (_, next, _) = tokio::time::timeout(
         std::time::Duration::from_secs(2),
-        deterministic_reduction::root_with_observation(
-            reducer.space.clone(),
-            reducer.metering.budget(),
-            reducer.reduction_coordinator.clone(),
-            async {},
-        ),
+        with_dispatch_scope(async {}),
     )
     .await
-    .expect("canceled root must release its evaluation guard");
+    .expect("a canceled call leaves nothing that blocks the next call");
     assert_eq!(next, EvaluationFailureSummary::default());
 }
 
@@ -393,6 +470,191 @@ async fn unknown_method_names_are_user_failures_at_both_sites() {
         }
     })
     .await;
+}
+
+// ── Failure classes under racing evaluation (DR-132, P-4) ──────────────────
+
+/// Added by DR-132 (P-4): the error of a generated branch. The kinds cover
+/// each failure class and each error that collapses an aggregate.
+fn generated_branch_error(kind: u8) -> InterpreterError {
+    match kind % 6 {
+        0 => InterpreterError::UserAbortError,
+        1 => InterpreterError::OutOfPhlogistonsError,
+        2 => InterpreterError::BugFoundError("generated platform failure".into()),
+        3 => InterpreterError::ReduceError("generated unclassified failure".into()),
+        4 => InterpreterError::SignedLimitExhausted,
+        _ => InterpreterError::IfConditionTypeError {
+            actual_type: "generated".into(),
+        },
+    }
+}
+
+/// Added by DR-132 (P-4): a failing branch that completes after `delay`
+/// milliseconds, so the branches complete in an order that differs from the
+/// order in which they start.
+fn delayed_failure(
+    error: InterpreterError,
+    delay: u64,
+) -> Pin<Box<dyn Future<Output = Result<DispatchType, InterpreterError>> + std::marker::Send>> {
+    Box::pin(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+        Err(error)
+    })
+}
+
+/// Added by DR-132 (P-4): the debug forms of `errors` in a fixed order, to
+/// compare two error lists as multisets.
+fn sorted_debug(errors: &[InterpreterError]) -> Vec<String> {
+    let mut forms: Vec<String> = errors.iter().map(|error| format!("{error:?}")).collect();
+    forms.sort();
+    forms
+}
+
+proptest::proptest! {
+    #![proptest_config(proptest::prelude::ProptestConfig::with_cases(64))]
+
+    /// Added by DR-132 (P-4): failing branches with random delays run through
+    /// `run_parallel_dispatches`, and failing continuation bodies run through
+    /// `eval_continuation`, inside one per-call scope. Racing evaluation
+    /// completes them in any order. The drain returns every error, and the
+    /// failure classes of the scope equal `classify_errors` over all of them,
+    /// whatever the order.
+    #[test]
+    fn failure_summary_ignores_completion_order(
+        branches in proptest::collection::vec((0_u8..6, 0_u64..3), 1..10),
+        bodies in 0_usize..4,
+    ) {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(4)
+            .enable_all()
+            .build()
+            .expect("a test runtime");
+        let (expected, observed, drained) = runtime.block_on(async {
+            let (_, reducer) =
+                create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+                    .await;
+            let body = crate::rust::interpreter::compiler::compiler::Compiler::source_to_adt(
+                "if (1) { Nil } else { Nil }",
+            )
+            .expect("the body parses");
+            let body_error = reducer
+                .eval(body.clone(), &Env::new(), Blake2b512Random::create_from_length(128))
+                .await
+                .expect_err("the body fails");
+            let mut expected: Vec<InterpreterError> = branches
+                .iter()
+                .map(|(kind, _)| generated_branch_error(*kind))
+                .collect();
+            expected.extend(std::iter::repeat_n(body_error, bodies));
+            let futures = branches
+                .iter()
+                .map(|(kind, delay)| delayed_failure(generated_branch_error(*kind), *delay))
+                .collect();
+            let core = reducer.core.clone();
+            let (dispatched, observed, drained) = with_dispatch_scope(async {
+                for _ in 0..bodies {
+                    core.eval_continuation(
+                        body.clone(),
+                        Env::new(),
+                        Blake2b512Random::create_from_length(128),
+                        false,
+                    )
+                    .await
+                    .expect("a body in a scope returns at once");
+                }
+                reducer.run_parallel_dispatches(futures).await
+            })
+            .await;
+            assert!(matches!(dispatched, Ok(DispatchType::Skip)));
+            (expected, observed, drained)
+        });
+        proptest::prop_assert_eq!(sorted_debug(&drained), sorted_debug(&expected));
+        proptest::prop_assert_eq!(
+            observed,
+            classify_errors(&expected).expect("the classification allocates")
+        );
+    }
+}
+
+/// Added by DR-132 (F5): a user failure in a continuation body is recorded
+/// when phlo exhaustion collapses the error list. The body sends on `go` and
+/// fails on its condition. The receive on `go` starts a loop that runs until
+/// the phlo is spent. The list of the evaluation holds the user failure and
+/// the exhaustion, and the aggregate collapses it to the exhaustion. `inj`
+/// records the whole list before the aggregate, so the summary holds both
+/// classes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_body_failure_is_recorded_when_exhaustion_collapses_the_list() {
+    with_runtime("collapsed-body-failure-", |runtime| async move {
+        let result = runtime
+            .evaluate(
+                "new c, go in { contract c(@x) = { go!(Nil) | if (x) { Nil } else { Nil } } | c!(1) | \
+                 for (_ <- go) { new loop in { contract loop(@n) = { loop!(n + 1) } | loop!(0) } } }",
+                Cost::create(100_000, "collapsed body failure".to_string()),
+                HashMap::new(),
+                Blake2b512Random::create_from_length(128),
+            )
+            .await
+            .expect("the evaluation completes");
+        assert_eq!(result.errors, vec![InterpreterError::OutOfPhlogistonsError]);
+        assert_eq!(
+            result.economic_failures,
+            EvaluationFailureSummary::single(PhloFailure::User)
+                .union(EvaluationFailureSummary::single(PhloFailure::Certificate))
+        );
+    })
+    .await;
+}
+
+/// Added by DR-132 (A1): a direct `eval` without a per-call scope awaits every
+/// task that it starts, as on dev. A persistent send and a peek fire their
+/// bodies through `run_parallel_dispatches`, so the space holds the results of
+/// the bodies when `eval` returns, and the failure of a body returns from
+/// `eval`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_direct_eval_without_a_scope_awaits_persistent_sends_and_peeks() {
+    use rspace_plus_plus::rspace::rspace_interface::ISpace;
+
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let term = crate::rust::interpreter::compiler::compiler::Compiler::source_to_adt(
+        r#"@"x"!!(1) | for (@a <<- @"x") { @"out"!(a) } | @"y"!(2) | for (@b <<- @"y") { @"peeked"!(b) }"#,
+    )
+    .expect("the term parses");
+    reducer
+        .eval(term, &Env::new(), Blake2b512Random::create_from_length(128))
+        .await
+        .expect("the direct evaluation succeeds");
+    for (channel, value) in [("out", 1), ("x", 1), ("peeked", 2), ("y", 2)] {
+        let data = space
+            .get_data(&new_gstring_par(channel.to_string(), Vec::new(), false))
+            .await;
+        assert_eq!(data.len(), 1, "{channel} holds one datum");
+        assert_eq!(
+            data[0].a.pars,
+            vec![new_gint_par(value, Vec::new(), false)],
+            "{channel}"
+        );
+    }
+
+    let (_, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let failing = crate::rust::interpreter::compiler::compiler::Compiler::source_to_adt(
+        r#"@"x"!!(1) | for (@a <<- @"x") { if (a) { Nil } else { Nil } }"#,
+    )
+    .expect("the failing term parses");
+    assert!(matches!(
+        reducer
+            .eval(
+                failing,
+                &Env::new(),
+                Blake2b512Random::create_from_length(128)
+            )
+            .await,
+        Err(InterpreterError::IfConditionTypeError { .. })
+    ));
 }
 
 // ── Deterministic user reducer errors (DR-128, bug 11414) ──────────────────

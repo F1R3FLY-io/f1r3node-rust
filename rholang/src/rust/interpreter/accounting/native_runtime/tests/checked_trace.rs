@@ -547,66 +547,69 @@ proptest! {
     }
 }
 
-proptest! {
-    #![proptest_config(ProptestConfig::with_cases(128))]
-
-    /// C7b (DR-86; `NativePathTrie.occurrence_key_correct`): the replay's
-    /// digest index finds the slot that a binary search over the slots in
-    /// path order finds, for every operation path, and finds no slot for
-    /// prefixes, extensions and other paths.
-    #[test]
-    fn replay_digest_lookup_equals_binary_search(
-        paths in prop::collection::btree_set(
-            prop::collection::vec((0_u64..3, 0_u64..3), 1..6),
-            1..24,
-        ),
-        probes in prop::collection::vec(prop::collection::vec((0_u64..3, 0_u64..3), 0..7), 0..24),
-    ) {
-        let mut trie = NativePathTrie::new(8);
-        let mut rows = Vec::new();
-        let mut attempts = Vec::new();
-        for (index, segments) in paths.iter().enumerate() {
-            let path = trie.intern(PathId::ROOT, segments).expect("path fits");
-            attempts.push(NativeBudgetAttempt {
-                occurrence: NativeBudgetOccurrence {
-                    session: [0; 32],
-                    path,
-                    stage: NativeAttemptStage::ProduceIntroduction,
-                },
-                observation: observation(index as u8, AuthorityByteEventKind::ProduceIntroduction, 0),
-                granted: true,
-            });
-            let mut row = operation(index as u64, index, index + 1, NativeObservationLink::Attempt(index));
-            row.occurrence.path = path;
-            rows.push(row);
-        }
-        let recording = NativeBudgetRecording {
-            session: [0; 32],
-            attempts: attempts.into(),
-            retries: Arc::from([]),
-            used: 0,
-            paths: Arc::new(trie),
-        };
-        let log = events_in(&recording.paths, &rows);
-        let replay = bind(&recording, rows.into(), log)
-            .expect("journal binds")
-            .into_replay()
-            .expect("replay builds");
-        let slots = (0..replay.trace().operation_count())
-            .map(|slot| recording.paths.segments(replay.trace().operation(slot).expect("slot").occurrence.path))
-            .collect::<Vec<_>>();
-        let mut candidates = paths.iter().cloned().collect::<Vec<_>>();
-        for path in &paths {
-            candidates.push(path[..path.len() - 1].to_vec());
-            let mut longer = path.clone();
-            longer.push((2, 2));
-            candidates.push(longer);
-        }
-        candidates.extend(probes);
-        for probe in candidates {
-            let expected = slots.binary_search(&probe).ok();
-            let found = replay.lookup_slot(&CausalPath::from(probe.clone())).ok();
-            prop_assert_eq!(found, expected, "{:?}", probe);
-        }
-    }
-}
+// Changed by DR-132 (D1-A): replay selects each slot by its recorded source,
+// so the digest index of paths and this test of it are gone. The DR-132
+// property test of the source binding replaces it.
+// proptest! {
+//    #![proptest_config(ProptestConfig::with_cases(128))]
+//
+// /// C7b (DR-86; `NativePathTrie.occurrence_key_correct`): the replay's
+// /// digest index finds the slot that a binary search over the slots in
+// /// path order finds, for every operation path, and finds no slot for
+// /// prefixes, extensions and other paths.
+// #[test]
+// fn replay_digest_lookup_equals_binary_search(
+//     paths in prop::collection::btree_set(
+//         prop::collection::vec((0_u64..3, 0_u64..3), 1..6),
+//         1..24,
+//     ),
+//     probes in prop::collection::vec(prop::collection::vec((0_u64..3, 0_u64..3), 0..7), 0..24),
+// ) {
+//     let mut trie = NativePathTrie::new(8);
+//     let mut rows = Vec::new();
+//     let mut attempts = Vec::new();
+//     for (index, segments) in paths.iter().enumerate() {
+//         let path = trie.intern(PathId::ROOT, segments).expect("path fits");
+//         attempts.push(NativeBudgetAttempt {
+//             occurrence: NativeBudgetOccurrence {
+//                 session: [0; 32],
+//                 path,
+//                 stage: NativeAttemptStage::ProduceIntroduction,
+//             },
+//             observation: observation(index as u8, AuthorityByteEventKind::ProduceIntroduction, 0),
+//             granted: true,
+//         });
+//         let mut row = operation(index as u64, index, index + 1, NativeObservationLink::Attempt(index));
+//         row.occurrence.path = path;
+//         rows.push(row);
+//     }
+//     let recording = NativeBudgetRecording {
+//         session: [0; 32],
+//         attempts: attempts.into(),
+//         retries: Arc::from([]),
+//         used: 0,
+//         paths: Arc::new(trie),
+//     };
+//     let log = events_in(&recording.paths, &rows);
+//     let replay = bind(&recording, rows.into(), log)
+//         .expect("journal binds")
+//         .into_replay()
+//         .expect("replay builds");
+//     let slots = (0..replay.trace().operation_count())
+//         .map(|slot| recording.paths.segments(replay.trace().operation(slot).expect("slot").occurrence.path))
+//         .collect::<Vec<_>>();
+//     let mut candidates = paths.iter().cloned().collect::<Vec<_>>();
+//     for path in &paths {
+//         candidates.push(path[..path.len() - 1].to_vec());
+//         let mut longer = path.clone();
+//         longer.push((2, 2));
+//         candidates.push(longer);
+//     }
+//     candidates.extend(probes);
+//     for probe in candidates {
+//         let expected = slots.binary_search(&probe).ok();
+//         let found = replay.lookup_slot(&CausalPath::from(probe.clone())).ok();
+//         prop_assert_eq!(found, expected, "{:?}", probe);
+//     }
+// }
+// }

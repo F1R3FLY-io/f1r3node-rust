@@ -86,24 +86,51 @@ checks remain on `feature/casper-cost-accounting-completion`. This branch's
 production refinement is through the Rholang interpreter and native RSpace
 interfaces.
 
-## Deterministic reducer concurrency
+## Reducer concurrency
 
-[`tlaplus/deterministic_parallel_reduction/DeterministicParallelReduction.tla`](tlaplus/deterministic_parallel_reduction/DeterministicParallelReduction.tla)
+*Changed by DR-132 (decisions D2-B and D4-A), 2026-10-16.* DR-132 returned
+evaluation to dev's racing evaluation and deleted the deterministic reduction
+scheduler. Its TLA+ models under `tlaplus/deterministic_parallel_reduction/`,
+the Rocq theories `CountedDetachedBisimulation.v` and
+`DetachedPathCompaction.v`, and the Loom test
+`loom_deterministic_reduction_frontier.rs` are retired with it. Git keeps
+them.
+[`rocq/cost_accounted_rho/theories/DeterministicParallelReduction.v`](rocq/cost_accounted_rho/theories/DeterministicParallelReduction.v)
+stays with an amended header, because two of its results hold for every
+order: the conflict relation of two intents is symmetric, and intents with
+disjoint footprints commute.
+
+The stall rule of native replay has two TLA+ models.
+[`tlaplus/cost_accounted_rho/NativeReplayStall.tla`](tlaplus/cost_accounted_rho/NativeReplayStall.tla)
+checks the wait, park, publish, notification, boundary and stall protocol of
+one evaluation in nine scenarios.
+[`tlaplus/cost_accounted_rho/NativeReplayStallLifecycle.tla`](tlaplus/cost_accounted_rho/NativeReplayStallLifecycle.tla)
+checks panics, cancellation, the root token and a second evaluation. TLC
+exhausts every scenario, and Apalache refutes each negative control at the
+length of its minimum counterexample.
+[`loom/cost_accounting/tests/loom_native_replay_stall.rs`](loom/cost_accounting/tests/loom_native_replay_stall.rs)
+checks the production state and progress code under Loom. The proofs of
+soundness, completeness and the same verdict on every validator are in
+DR-132.
+
+*Before DR-132.* The text below describes the retired artifacts.
+
+`tlaplus/deterministic_parallel_reduction/DeterministicParallelReduction.tla`
 models a complete intra-deploy communication frontier, transitive channel and
 linear-authority conflict components, canonical conflicting commitment, and
 parallel execution of truly disjoint work. Its five unsafe configurations
 independently remove the complete frontier, canonical order, checkpoint
 quiescence, disjoint parallelism, or authority-region conflicts.
 
-[`tlaplus/deterministic_parallel_reduction/EvaluationBoundary.tla`](tlaplus/deterministic_parallel_reduction/EvaluationBoundary.tla)
+`tlaplus/deterministic_parallel_reduction/EvaluationBoundary.tla`
 models structured cancellation separately. Root cancellation aborts all child
 tasks. A shared evaluation permit remains owned until all children terminate.
 The unsafe configuration detaches the children and checkpoints before their
 mutations complete.
 
-[`tlaplus/deterministic_parallel_reduction/ReductionDriverLifecycle.tla`](tlaplus/deterministic_parallel_reduction/ReductionDriverLifecycle.tla)
+`tlaplus/deterministic_parallel_reduction/ReductionDriverLifecycle.tla`
 models one driver per complete frontier and release before result delivery.
-[`tlaplus/deterministic_parallel_reduction/SingleParticipantFastPath.tla`](tlaplus/deterministic_parallel_reduction/SingleParticipantFastPath.tla)
+`tlaplus/deterministic_parallel_reduction/SingleParticipantFastPath.tla`
 models direct execution after exactly one live participant remains.
 
 TLC exhausts all finite state spaces. Apalache independently checks each
@@ -115,7 +142,7 @@ It proves disjoint commutation, compound-authority overlap independent of
 encoding order, the canonical minimal counterexample, causal path monotonicity,
 and cancellation/checkpoint exclusion without assumptions. Bounded Rust memory
 schedules are exhausted by
-[`loom/cost_accounting/tests/loom_deterministic_reduction_frontier.rs`](loom/cost_accounting/tests/loom_deterministic_reduction_frontier.rs).
+`loom/cost_accounting/tests/loom_deterministic_reduction_frontier.rs`.
 The production contract and regression mapping are documented in
 [`docs/casper/theory/cost-accounting-impl/deterministic-parallel-reduction.md`](../docs/casper/theory/cost-accounting-impl/deterministic-parallel-reduction.md).
 

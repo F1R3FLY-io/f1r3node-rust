@@ -110,6 +110,15 @@ WRAPPED_BY[ValidatorEconomicsLifecycle]=MC_ValidatorEconomicsLifecycle
 # it is deliberately NOT registered here — a counterexample is its intended result,
 # not a pass. Run it explicitly: tlc -config TokenGatedJoinM2Grief.cfg MCTokenGatedJoin.tla
 WRAPPED_BY[TokenGatedJoin]=MCTokenGatedJoin
+# DR-132 (decision D2-B): the scenarios of the stall rule of native replay.
+WRAPPED_BY[NativeReplayStallMissing]=NativeReplayStall
+WRAPPED_BY[NativeReplayStallInverted]=NativeReplayStall
+WRAPPED_BY[NativeReplayStallUncounted]=NativeReplayStall
+WRAPPED_BY[NativeReplayStallSameSource]=NativeReplayStall
+WRAPPED_BY[NativeReplayStallOversubscribed]=NativeReplayStall
+WRAPPED_BY[NativeReplayStallPair]=NativeReplayStall
+WRAPPED_BY[NativeReplayStallMissingPair]=NativeReplayStall
+WRAPPED_BY[NativeReplayStallChain]=NativeReplayStall
 
 declare -A EXPECTED_REFUTATION_WRAPPER
 declare -A EXPECTED_REFUTATION_INVARIANT
@@ -167,6 +176,56 @@ EXPECTED_REFUTATION_WRAPPER[NativeReplayReadinessDirectUnsafe]=NativeReplayReadi
 EXPECTED_REFUTATION_INVARIANT[NativeReplayReadinessDirectUnsafe]=DependencySafety
 EXPECTED_REFUTATION_WRAPPER[NativeReplayReadinessRetryUnsafe]=NativeReplayReadiness
 EXPECTED_REFUTATION_INVARIANT[NativeReplayReadinessRetryUnsafe]=DependencySafety
+# DR-132 (decision D2-B): each control removes one safeguard of the stall rule.
+EXPECTED_REFUTATION_WRAPPER[NativeReplayStallParkAfterUnlockUnsafe]=NativeReplayStall
+EXPECTED_REFUTATION_INVARIANT[NativeReplayStallParkAfterUnlockUnsafe]=NoFalseStall
+EXPECTED_REFUTATION_WRAPPER[NativeReplayStallParkAfterUnlockLeaveUnsafe]=NativeReplayStall
+EXPECTED_REFUTATION_INVARIANT[NativeReplayStallParkAfterUnlockLeaveUnsafe]=NoFreshLeave
+EXPECTED_REFUTATION_WRAPPER[NativeReplayStallSkipResetUnsafe]=NativeReplayStall
+EXPECTED_REFUTATION_INVARIANT[NativeReplayStallSkipResetUnsafe]=NoFalseStall
+EXPECTED_REFUTATION_WRAPPER[NativeReplayStallResetAfterUnlockUnsafe]=NativeReplayStall
+EXPECTED_REFUTATION_INVARIANT[NativeReplayStallResetAfterUnlockUnsafe]=NoHang
+EXPECTED_REFUTATION_WRAPPER[NativeReplayStallSkipVersionUnsafe]=NativeReplayStall
+EXPECTED_REFUTATION_INVARIANT[NativeReplayStallSkipVersionUnsafe]=CountExact
+EXPECTED_REFUTATION_WRAPPER[NativeReplayStallCountInChildUnsafe]=NativeReplayStall
+EXPECTED_REFUTATION_INVARIANT[NativeReplayStallCountInChildUnsafe]=NoFalseStall
+EXPECTED_REFUTATION_WRAPPER[NativeReplayStallNotifiedAfterCheckUnsafe]=NativeReplayStall
+EXPECTED_REFUTATION_INVARIANT[NativeReplayStallNotifiedAfterCheckUnsafe]=NoLostWakeup
+EXPECTED_REFUTATION_WRAPPER[NativeReplayStallRootUncountedUnsafe]=NativeReplayStall
+EXPECTED_REFUTATION_INVARIANT[NativeReplayStallRootUncountedUnsafe]=NoFalseStall
+EXPECTED_REFUTATION_WRAPPER[NativeReplayStallAdmitUncountedUnsafe]=NativeReplayStall
+EXPECTED_REFUTATION_INVARIANT[NativeReplayStallAdmitUncountedUnsafe]=NoFalseStall
+EXPECTED_REFUTATION_WRAPPER[NativeReplayStallBoundaryWhileArmedUnsafe]=NativeReplayStall
+EXPECTED_REFUTATION_INVARIANT[NativeReplayStallBoundaryWhileArmedUnsafe]=NoFalseStall
+# DR-132: the reachability witnesses keep Verdict from holding vacuously.
+EXPECTED_REFUTATION_WRAPPER[NativeReplayStallHonestCompletionReachable]=NativeReplayStall
+EXPECTED_REFUTATION_INVARIANT[NativeReplayStallHonestCompletionReachable]=NoHonestCompletion
+EXPECTED_REFUTATION_WRAPPER[NativeReplayStallSameSourceCompletionReachable]=NativeReplayStall
+EXPECTED_REFUTATION_INVARIANT[NativeReplayStallSameSourceCompletionReachable]=NoHonestCompletion
+EXPECTED_REFUTATION_WRAPPER[NativeReplayStallPairCompletionReachable]=NativeReplayStall
+EXPECTED_REFUTATION_INVARIANT[NativeReplayStallPairCompletionReachable]=NoHonestCompletion
+EXPECTED_REFUTATION_WRAPPER[NativeReplayStallMissingVerdictReachable]=NativeReplayStall
+EXPECTED_REFUTATION_INVARIANT[NativeReplayStallMissingVerdictReachable]=NoStallVerdict
+EXPECTED_REFUTATION_WRAPPER[NativeReplayStallInvertedVerdictReachable]=NativeReplayStall
+EXPECTED_REFUTATION_INVARIANT[NativeReplayStallInvertedVerdictReachable]=NoStallVerdict
+EXPECTED_REFUTATION_WRAPPER[NativeReplayStallUncountedVerdictReachable]=NativeReplayStall
+EXPECTED_REFUTATION_INVARIANT[NativeReplayStallUncountedVerdictReachable]=NoStallVerdict
+EXPECTED_REFUTATION_WRAPPER[NativeReplayStallMissingPairVerdictReachable]=NativeReplayStall
+EXPECTED_REFUTATION_INVARIANT[NativeReplayStallMissingPairVerdictReachable]=NoStallVerdict
+# DR-132: the lifecycle controls (panic, cancel, root token, begin) and the
+# rerun witness.
+EXPECTED_REFUTATION_WRAPPER[NativeReplayStallLifecycleNoLeaveOnDropUnsafe]=NativeReplayStallLifecycle
+EXPECTED_REFUTATION_INVARIANT[NativeReplayStallLifecycleNoLeaveOnDropUnsafe]=CountExact
+EXPECTED_REFUTATION_WRAPPER[NativeReplayStallLifecycleFinishBeforeDropUnsafe]=NativeReplayStallLifecycle
+EXPECTED_REFUTATION_INVARIANT[NativeReplayStallLifecycleFinishBeforeDropUnsafe]=NoFalseStall
+EXPECTED_REFUTATION_WRAPPER[NativeReplayStallLifecycleBeginNonZeroUnsafe]=NativeReplayStallLifecycle
+EXPECTED_REFUTATION_INVARIANT[NativeReplayStallLifecycleBeginNonZeroUnsafe]=LiveExact
+EXPECTED_REFUTATION_WRAPPER[NativeReplayStallLifecycleAbortBeforeCloseUnsafe]=NativeReplayStallLifecycle
+EXPECTED_REFUTATION_INVARIANT[NativeReplayStallLifecycleAbortBeforeCloseUnsafe]=NoLateStall
+EXPECTED_REFUTATION_WRAPPER[NativeReplayStallLifecycleHoldRootThroughDrainUnsafe]=NativeReplayStallLifecycle
+EXPECTED_REFUTATION_INVARIANT[NativeReplayStallLifecycleHoldRootThroughDrainUnsafe]=NoHang
+EXPECTED_REFUTATION_WRAPPER[NativeReplayStallLifecycleRerunReachable]=NativeReplayStallLifecycle
+EXPECTED_REFUTATION_INVARIANT[NativeReplayStallLifecycleRerunReachable]=NoRerun
 EXPECTED_REFUTATION_WRAPPER[GenesisResourcePolicyLatestUnsafe]=GenesisResourcePolicy
 EXPECTED_REFUTATION_INVARIANT[GenesisResourcePolicyLatestUnsafe]=GenesisAuthority
 EXPECTED_REFUTATION_WRAPPER[GenesisResourcePolicyMixedMinimumUnsafe]=GenesisResourcePolicy
@@ -1080,12 +1139,6 @@ for base in "${!EXPECTED_REFUTATION_WRAPPER[@]}"; do
 done
 
 matching_external=0
-if [[ -z "$FILTER" || "DeterministicParallelReduction" == *"$FILTER"* ]]; then
-    matching_external=$((matching_external + 1))
-fi
-if [[ -z "$FILTER" || "CountedDetachedReduction" == *"$FILTER"* ]]; then
-    matching_external=$((matching_external + 1))
-fi
 if [[ -z "$FILTER" || "Validator" == *"$FILTER"* ]]; then
     matching_external=$((matching_external + 1))
 fi
@@ -1162,196 +1215,6 @@ for base in "${!EXPECTED_REFUTATION_WRAPPER[@]}"; do
         echo "$output" | tail -10 | sed 's/^/    /'
     fi
 done
-
-# Deterministic parallel reduction lives beside the runtime-isolation models
-# because it covers the interpreter/RSpace boundary rather than only economic
-# state. It is still a mandatory part of this gate: cost and replay evidence
-# cannot be canonical if competing COMMs commit by Tokio arrival order.
-REDUCTION_TLA_DIR="$REPO_ROOT/formal/tlaplus/deterministic_parallel_reduction"
-if [[ -z "$FILTER" || "DeterministicParallelReduction" == *"$FILTER"* ]]; then
-    reduction_module="$REDUCTION_TLA_DIR/DeterministicParallelReduction.tla"
-    reduction_safe="$REDUCTION_TLA_DIR/MC_DeterministicParallelReduction.cfg"
-    printf "  %-40s " "DeterministicParallelReduction"
-    reduction_output=$(tlc_run "$METADIR_ROOT/DeterministicParallelReduction" \
-        "$reduction_safe" "$reduction_module" -deadlock 2>&1 || true)
-    if grep -q "Model checking completed. No error has been found" <<<"$reduction_output"; then
-        echo "PASS"
-        passes=$((passes + 1))
-    else
-        echo "FAIL"
-        failures=$((failures + 1))
-        failed_specs+=("DeterministicParallelReduction")
-        echo "$reduction_output" | tail -10 | sed 's/^/    /'
-    fi
-
-    declare -A REDUCTION_UNSAFE_INVARIANTS=(
-        [arrival]="Inv_CommitRequiresCompleteFrontier"
-        [order]="Inv_ConflictComponentCommitsInOrder"
-        [checkpoint]="Inv_CheckpointAtQuiescence"
-        [serial]="Inv_FirstCommitRetainsDisjointParallelism"
-        [authority]="Inv_SharedAuthorityNeverRunsAsDisjoint"
-    )
-    for control in arrival order checkpoint serial authority; do
-        invariant="${REDUCTION_UNSAFE_INVARIANTS[$control]}"
-        config="$REDUCTION_TLA_DIR/MC_DeterministicParallelReduction_${control}_unsafe.cfg"
-        printf "  %-40s " "DeterministicParallelReduction_${control} (expected refutation)"
-        reduction_output=$(tlc_run "$METADIR_ROOT/DeterministicParallelReduction_${control}" \
-            "$config" "$reduction_module" -deadlock 2>&1 || true)
-        if grep -Fq "Invariant ${invariant} is violated" <<<"$reduction_output"; then
-            echo "PASS (refuted ${invariant})"
-            passes=$((passes + 1))
-            expected_refutations=$((expected_refutations + 1))
-        else
-            echo "FAIL (expected ${invariant} counterexample)"
-            failures=$((failures + 1))
-            failed_specs+=("DeterministicParallelReduction_${control}(expected-refutation)")
-            echo "$reduction_output" | tail -10 | sed 's/^/    /'
-        fi
-    done
-
-    driver_module="$REDUCTION_TLA_DIR/ReductionDriverLifecycle.tla"
-    for driver_mode in async inline; do
-        if [[ "$driver_mode" == "async" ]]; then
-            driver_config="$REDUCTION_TLA_DIR/MC_ReductionDriverLifecycle.cfg"
-        else
-            driver_config="$REDUCTION_TLA_DIR/MC_ReductionDriverLifecycle_inline.cfg"
-        fi
-        printf "  %-40s " "ReductionDriverLifecycle_${driver_mode}"
-        driver_output=$(tlc_run "$METADIR_ROOT/ReductionDriverLifecycle_${driver_mode}" \
-            "$driver_config" "$driver_module" -deadlock 2>&1 || true)
-        if grep -q "Model checking completed. No error has been found" <<<"$driver_output"; then
-            echo "PASS"
-            passes=$((passes + 1))
-        else
-            echo "FAIL"
-            failures=$((failures + 1))
-            failed_specs+=("ReductionDriverLifecycle_${driver_mode}")
-            echo "$driver_output" | tail -10 | sed 's/^/    /'
-        fi
-    done
-
-    declare -A DRIVER_UNSAFE_INVARIANTS=(
-        [claim]="Inv_ReadyHasDriver"
-        [transfer]="Inv_PendingInlineIsTransferable"
-        [reentry]="Inv_InternalExecutionNeverResubmits"
-    )
-    for control in claim transfer reentry; do
-        invariant="${DRIVER_UNSAFE_INVARIANTS[$control]}"
-        config="$REDUCTION_TLA_DIR/MC_ReductionDriverLifecycle_${control}_unsafe.cfg"
-        printf "  %-40s " "ReductionDriverLifecycle_${control} (expected refutation)"
-        driver_output=$(tlc_run "$METADIR_ROOT/ReductionDriverLifecycle_${control}" \
-            "$config" "$driver_module" -deadlock 2>&1 || true)
-        if grep -Fq "Invariant ${invariant} is violated" <<<"$driver_output"; then
-            echo "PASS (refuted ${invariant})"
-            passes=$((passes + 1))
-            expected_refutations=$((expected_refutations + 1))
-        else
-            echo "FAIL (expected ${invariant} counterexample)"
-            failures=$((failures + 1))
-            failed_specs+=("ReductionDriverLifecycle_${control}(expected-refutation)")
-            echo "$driver_output" | tail -10 | sed 's/^/    /'
-        fi
-    done
-
-    singleton_module="$REDUCTION_TLA_DIR/SingleParticipantFastPath.tla"
-    singleton_safe="$REDUCTION_TLA_DIR/MC_SingleParticipantFastPath.cfg"
-    printf "  %-40s " "SingleParticipantFastPath"
-    singleton_output=$(tlc_run "$METADIR_ROOT/SingleParticipantFastPath" \
-        "$singleton_safe" "$singleton_module" -deadlock 2>&1 || true)
-    if grep -q "Model checking completed. No error has been found" <<<"$singleton_output"; then
-        echo "PASS"
-        passes=$((passes + 1))
-    else
-        echo "FAIL"
-        failures=$((failures + 1))
-        failed_specs+=("SingleParticipantFastPath")
-        echo "$singleton_output" | tail -10 | sed 's/^/    /'
-    fi
-
-    singleton_unsafe="$REDUCTION_TLA_DIR/MC_SingleParticipantFastPath_unsafe.cfg"
-    printf "  %-40s " "SingleParticipantFastPath_unsafe (expected refutation)"
-    singleton_output=$(tlc_run "$METADIR_ROOT/SingleParticipantFastPath_unsafe" \
-        "$singleton_unsafe" "$singleton_module" -deadlock 2>&1 || true)
-    if grep -Fq "Invariant Inv_DirectOwnerRequiresSingleton is violated" <<<"$singleton_output"; then
-        echo "PASS (refuted Inv_DirectOwnerRequiresSingleton)"
-        passes=$((passes + 1))
-        expected_refutations=$((expected_refutations + 1))
-    else
-        echo "FAIL (expected Inv_DirectOwnerRequiresSingleton counterexample)"
-        failures=$((failures + 1))
-        failed_specs+=("SingleParticipantFastPath_unsafe(expected-refutation)")
-        echo "$singleton_output" | tail -10 | sed 's/^/    /'
-    fi
-
-    boundary_module="$REDUCTION_TLA_DIR/EvaluationBoundary.tla"
-    boundary_safe="$REDUCTION_TLA_DIR/MC_EvaluationBoundary.cfg"
-    printf "  %-40s " "EvaluationBoundary"
-    boundary_output=$(tlc_run "$METADIR_ROOT/EvaluationBoundary" \
-        "$boundary_safe" "$boundary_module" -deadlock 2>&1 || true)
-    if grep -q "Model checking completed. No error has been found" <<<"$boundary_output"; then
-        echo "PASS"
-        passes=$((passes + 1))
-    else
-        echo "FAIL"
-        failures=$((failures + 1))
-        failed_specs+=("EvaluationBoundary")
-        echo "$boundary_output" | tail -10 | sed 's/^/    /'
-    fi
-
-    boundary_unsafe="$REDUCTION_TLA_DIR/MC_EvaluationBoundary_cancel_unsafe.cfg"
-    printf "  %-40s " "EvaluationBoundary_cancel (expected refutation)"
-    boundary_output=$(tlc_run "$METADIR_ROOT/EvaluationBoundary_cancel" \
-        "$boundary_unsafe" "$boundary_module" -deadlock 2>&1 || true)
-    if grep -Fq "Invariant Inv_CheckpointAtEvaluationQuiescence is violated" <<<"$boundary_output"; then
-        echo "PASS (refuted Inv_CheckpointAtEvaluationQuiescence)"
-        passes=$((passes + 1))
-        expected_refutations=$((expected_refutations + 1))
-    else
-        echo "FAIL (expected Inv_CheckpointAtEvaluationQuiescence counterexample)"
-        failures=$((failures + 1))
-        failed_specs+=("EvaluationBoundary_cancel(expected-refutation)")
-        echo "$boundary_output" | tail -10 | sed 's/^/    /'
-    fi
-fi
-
-if [[ -z "$FILTER" || "CountedDetachedReduction" == *"$FILTER"* ]]; then
-    counted_module="$REDUCTION_TLA_DIR/CountedDetachedReduction.tla"
-    counted_safe="$REDUCTION_TLA_DIR/MC_CountedDetachedReduction.cfg"
-    printf "  %-40s " "CountedDetachedReduction"
-    counted_output=$(tlc_run "$METADIR_ROOT/CountedDetachedReduction" \
-        "$counted_safe" "$counted_module" -deadlock 2>&1 || true)
-    if grep -q "Model checking completed. No error has been found" <<<"$counted_output"; then
-        echo "PASS"
-        passes=$((passes + 1))
-    else
-        echo "FAIL"
-        failures=$((failures + 1))
-        failed_specs+=("CountedDetachedReduction")
-        echo "$counted_output" | tail -10 | sed 's/^/    /'
-    fi
-
-    for control in count charge permit; do
-        counted_unsafe="$REDUCTION_TLA_DIR/MC_CountedDetachedReduction_${control}_unsafe.cfg"
-        case "$control" in
-            count) expected_invariant="CountExact" ;;
-            charge) expected_invariant="ChargeEqual" ;;
-            permit) expected_invariant="PermitUntilQuiescence" ;;
-        esac
-        printf "  %-40s " "CountedDetachedReduction_${control} (expected refutation)"
-        counted_output=$(tlc_run "$METADIR_ROOT/CountedDetachedReduction_${control}" \
-            "$counted_unsafe" "$counted_module" -deadlock 2>&1 || true)
-        if grep -Fq "Invariant $expected_invariant is violated" <<<"$counted_output"; then
-            echo "PASS (refuted $expected_invariant)"
-            passes=$((passes + 1))
-            expected_refutations=$((expected_refutations + 1))
-        else
-            echo "FAIL (expected $expected_invariant counterexample)"
-            failures=$((failures + 1))
-            failed_specs+=("CountedDetachedReduction_${control}(expected-refutation)")
-            echo "$counted_output" | tail -10 | sed 's/^/    /'
-        fi
-    done
-fi
 
 # ─────────────────────────────────────────────────────────────────────────
 # Validator behavioral contract (Workstream E, stage E5): the arithmetic

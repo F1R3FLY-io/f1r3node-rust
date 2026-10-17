@@ -213,6 +213,22 @@ pub async fn scope<T>(order: OperationOrder, future: impl Future<Output = T>) ->
 
 pub fn current() -> Option<OperationOrder> { OPERATION_ORDER.try_with(Clone::clone).ok() }
 
+/// Added by DR-132: runs `body` with `order` as the current operation name.
+/// RSpace runs the rest of a locked operation this way, under the name that
+/// the accounting observer returns from its start hook.
+pub fn sync_scope<T>(order: OperationOrder, body: impl FnOnce() -> T) -> T {
+    OPERATION_ORDER.sync_scope(order, body)
+}
+
+/// Added by DR-132: runs `body` under `name` when the observer named the
+/// operation, and as it is otherwise.
+pub fn named<T>(name: Option<OperationOrder>, body: impl FnOnce() -> T) -> T {
+    match name {
+        Some(order) => sync_scope(order, body),
+        None => body(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::cmp::Ordering;

@@ -572,7 +572,6 @@ theories/MergeableEvidenceAuthentication.v
 theories/BlockHeapLifecycle.v
 theories/MultiShardConcurrency.v
 theories/DeterministicParallelReduction.v
-theories/CountedDetachedBisimulation.v
 theories/CanonicalCustodyAliasing.v
 theories/EpochMintAtomicity.v
 theories/MintedEpochRetention.v
@@ -658,7 +657,6 @@ theories/MatcherReadsByReference.v
 theories/FreeVariableFastPath.v
 theories/ChannelPositions.v
 theories/IncomingDatumMove.v
-theories/DetachedPathCompaction.v
 theories/NativePathTrie.v
 theories/OfferedOnlyActivation.v
 theories/GenesisVersionAdoption.v

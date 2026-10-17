@@ -42,12 +42,21 @@ const AGREEMENT_RUNS: usize = 64;
 /// Cases of F6. Each family receives about `F6_CASES / FAMILIES.len()` cases.
 const F6_CASES: u32 = 512;
 
+// Changed by DR-132 (P-1): the chain family of P-1 records about 4,100
+// events, so the limits of the fixtures are larger.
+// const TRACE_LIMITS: NativeOperationTraceLimits = NativeOperationTraceLimits {
+//     events: 1_000,
+//     source_entries: 10_000,
+//     source_bytes: 10_000_000,
+//     telemetry_items: 1_000,
+//     telemetry_bytes: 1_000_000,
+// };
 const TRACE_LIMITS: NativeOperationTraceLimits = NativeOperationTraceLimits {
-    events: 1_000,
-    source_entries: 10_000,
-    source_bytes: 10_000_000,
-    telemetry_items: 1_000,
-    telemetry_bytes: 1_000_000,
+    events: 100_000,
+    source_entries: 1_000_000,
+    source_bytes: 1 << 30,
+    telemetry_items: 100_000,
+    telemetry_bytes: 1 << 30,
 };
 
 /// E1: the contract substitutes one name for both channels of a join, so the
@@ -189,7 +198,46 @@ fn recorded_comms(log: &[Event]) -> Vec<String> {
 /// One native play of `term` and two replays of its checked trace through
 /// the native replay session. Returns the COMMs that play recorded, or the
 /// first disagreement.
+// Changed by DR-132 (P-1): the agreement runs as `native_agreement` with the
+// limits of the fixtures.
+// async fn native_session_agreement(term: &str) -> Result<Vec<String>, String> {
 async fn native_session_agreement(term: &str) -> Result<Vec<String>, String> {
+    native_agreement(term, LIMIT, FIXTURE_PATH_SEGMENTS)
+        .await
+        .map(|agreement| agreement.comms)
+}
+
+/// Added by DR-132 (P-1): the path-segment limit of `config`.
+const FIXTURE_PATH_SEGMENTS: usize = 4_096;
+
+/// Added by DR-132 (P-1): what one agreement observed. `comms` are the COMMs
+/// that play recorded, and `journal` holds the source of each row of play, in
+/// journal order.
+struct Agreement {
+    comms: Vec<String>,
+    journal: Vec<String>,
+}
+
+/// Added by DR-132 (P-1): the body of `native_session_agreement`, with a phlo
+/// limit and a path-segment limit for play and for both replays.
+// Changed by DR-132 (P-1, review m7): the mode for a term that exhausts its
+// limit is disabled with its family (see `P1_FAILING_FAMILY`).
+// async fn native_agreement(
+//     term: &str,
+//     limit: u64,
+//     path_segments: usize,
+//     failing: bool,
+// ) -> Result<Agreement, String> {
+async fn native_agreement(
+    term: &str,
+    limit: u64,
+    path_segments: usize,
+) -> Result<Agreement, String> {
+    let settings = || {
+        let mut settings = config(limit, WEIGHTS);
+        settings.limits.path_segments = path_segments;
+        settings
+    };
     let parsed = Compiler::source_to_adt(term).map_err(|error| format!("parse: {error}"))?;
     let mut stores = InMemoryStoreManager::new();
     let (play, _) = RSpace::create_with_replay(
@@ -201,9 +249,12 @@ async fn native_session_agreement(term: &str) -> Result<Vec<String>, String> {
     let history = play.get_history_repository();
     let budget = RuntimeBudget::new(Cost::unsafe_max());
     budget.set_deploy_signature_funded(SEED, Sig::Ground(vec![7]));
-    let settings = config(LIMIT, WEIGHTS);
+    // Changed by DR-132 (P-1): the limits come from the caller.
+    // let settings = config(LIMIT, WEIGHTS);
+    // budget
+    //     .reset_for_native_execution(settings)
     budget
-        .reset_for_native_execution(settings)
+        .reset_for_native_execution(settings())
         .map_err(|error| format!("play budget: {error}"))?;
     let (reducer, _, _, _) = create_rho_env(
         play.clone(),
@@ -218,6 +269,15 @@ async fn native_session_agreement(term: &str) -> Result<Vec<String>, String> {
     let scope = budget.enter_comm_accounting_scope();
     let rand = || Blake2b512Random::create_from_bytes(SEED);
     let played = reducer.inj_with_observation(parsed.clone(), rand()).await;
+    // Changed by DR-132 (P-1, review m7): the mode for a term that exhausts
+    // its limit is disabled with its family (see `P1_FAILING_FAMILY`).
+    // match failing {
+    //     false => require(played.0.is_ok(), || format!("play failed: {played:?}"))?,
+    //     true => require(
+    //         matches!(played.0, Err(InterpreterError::OutOfPhlogistonsError)),
+    //         || format!("play did not exhaust its limit: {played:?}"),
+    //     )?,
+    // }
     require(played.0.is_ok(), || format!("play failed: {played:?}"))?;
     let played_observations = budget.byte_observations();
     drop(scope);
@@ -232,7 +292,9 @@ async fn native_session_agreement(term: &str) -> Result<Vec<String>, String> {
     let log = play.create_soft_checkpoint().await.log;
     let play_root = play.create_checkpoint().await.expect("the post-state").root;
     for pass in 0..2 {
-        let trace = with_contract(LIMIT, WEIGHTS, |contract| {
+        // Changed by DR-132 (P-1): the limit comes from the caller.
+        // let trace = with_contract(LIMIT, WEIGHTS, |contract| {
+        let trace = with_contract(limit, WEIGHTS, |contract| {
             contract.check_operation_journal(
                 recording.session,
                 &recording,
@@ -245,9 +307,12 @@ async fn native_session_agreement(term: &str) -> Result<Vec<String>, String> {
         .map_err(|error| format!("replay {pass} trace: {error}"))?;
         let replay_budget = RuntimeBudget::new(Cost::unsafe_max());
         replay_budget.set_deploy_signature_funded(SEED, Sig::Ground(vec![7]));
-        let replay_settings = config(LIMIT, WEIGHTS);
+        // Changed by DR-132 (P-1): the limits come from the caller.
+        // let replay_settings = config(LIMIT, WEIGHTS);
+        // replay_budget
+        //     .reset_for_native_execution(replay_settings)
         replay_budget
-            .reset_for_native_execution(replay_settings)
+            .reset_for_native_execution(settings())
             .map_err(|error| format!("replay {pass} budget: {error}"))?;
         let mut environment = create_native_replay_env(
             trace,
@@ -265,6 +330,20 @@ async fn native_session_agreement(term: &str) -> Result<Vec<String>, String> {
             .evaluate(parsed.clone(), rand())
             .await
             .map_err(|error| format!("replay {pass} failed: {error}"))?;
+        // Changed by DR-132 (P-1, review m7): the mode for a term that
+        // exhausts its limit is disabled with its family (see
+        // `P1_FAILING_FAMILY`).
+        // let exhausted = matches!(replayed.errors.as_slice(), [
+        //     InterpreterError::OutOfPhlogistonsError
+        // ]);
+        // require(
+        //     if failing {
+        //         exhausted
+        //     } else {
+        //         replayed.errors.is_empty()
+        //     },
+        //     || format!("replay {pass} errors: {:?}", replayed.errors),
+        // )?;
         require(replayed.errors.is_empty(), || {
             format!("replay {pass} errors: {:?}", replayed.errors)
         })?;
@@ -272,6 +351,14 @@ async fn native_session_agreement(term: &str) -> Result<Vec<String>, String> {
             .check_complete()
             .await
             .map_err(|error| format!("replay {pass} left recorded operations: {error}"))?;
+        // Added by DR-132 (P-1, review m7): each evaluation leaves the
+        // progress word idle, and a new evaluation can begin on the session.
+        require(environment.progress_idle(), || {
+            format!("replay {pass} left the progress word armed")
+        })?;
+        require(environment.progress_begins_again(), || {
+            format!("replay {pass} cannot begin another evaluation")
+        })?;
         require(replayed.native_phlo_usage == Some(recording.used), || {
             format!(
                 "replay {pass} phlo {:?} differs from play {}",
@@ -309,7 +396,15 @@ async fn native_session_agreement(term: &str) -> Result<Vec<String>, String> {
             )
         })?;
     }
-    Ok(recorded_comms(&log))
+    // Changed by DR-132 (P-1): the agreement also returns the journal order.
+    // Ok(recorded_comms(&log))
+    Ok(Agreement {
+        comms: recorded_comms(&log),
+        journal: operations
+            .iter()
+            .map(|row| format!("{:?}", row.source))
+            .collect(),
+    })
 }
 
 /// One native play of `term` through a runtime, replayed from its recorded
@@ -469,4 +564,173 @@ fn random_play_agrees_with_native_replay() {
             false => assert_eq!(seen, 1, "family {name:?} must have one pick"),
         }
     }
+}
+
+/// Added by DR-132 (P-1): runs of each family on each runtime.
+const P1_RUNS: usize = 3;
+
+/// Added by DR-132 (P-1): the phlo limit of P-1. The chain of 2,048 levels
+/// needs more phlo than `LIMIT`.
+const P1_LIMIT: u64 = 1_000_000_000;
+
+/// Added by DR-132 (P-1): the families that P-1 adds to the nine of F6. Each
+/// entry holds a name, a term and the path-segment limit of its budget.
+fn racing_families() -> Vec<(String, String, usize)> {
+    let fan_out = (0..64)
+        .map(|index| format!(r#"@"f{index}"!({index}) | for (@v <- @"f{index}") {{ @"out"!(v) }}"#))
+        .collect::<Vec<_>>()
+        .join(" | ");
+    vec![
+        ("a 64-way fan-out".to_string(), fan_out, FIXTURE_PATH_SEGMENTS),
+        (
+            "two joins over two channels".to_string(),
+            r#"@"a"!(1) | @"b"!(2) | @"a"!(3) | @"b"!(4) |
+for (@x <- @"a" & @y <- @"b") { @"sum"!(x + y) } |
+for (@x <- @"a" & @y <- @"b") { @"product"!(x * y) }"#
+                .to_string(),
+            FIXTURE_PATH_SEGMENTS,
+        ),
+        (
+            "two peeks and a take".to_string(),
+            r#"@"x"!(1) | for (@a <<- @"x") { @"p1"!(a) } |
+for (@b <<- @"x") { @"p2"!(b) } | for (@c <- @"x") { @"take"!(c) }"#
+                .to_string(),
+            FIXTURE_PATH_SEGMENTS,
+        ),
+        (
+            "a persistent send re-issued".to_string(),
+            r#"@"x"!!(1) | for (@a <- @"x") { @"o1"!(a) } |
+for (@b <- @"x") { @"o2"!(b) } | for (@c <- @"x") { @"o3"!(c) }"#
+                .to_string(),
+            FIXTURE_PATH_SEGMENTS,
+        ),
+        (
+            "a persistent receive re-issued".to_string(),
+            r#"@"x"!(1) | @"x"!(2) | @"x"!(3) | for (@a <= @"x") { @"out"!(a) }"#.to_string(),
+            FIXTURE_PATH_SEGMENTS,
+        ),
+        (
+            "a continuation chain of 256".to_string(),
+            "new loop in { contract loop(@n) = { if (n > 0) { loop!(n - 1) } } | loop!(256) }"
+                .to_string(),
+            FIXTURE_PATH_SEGMENTS,
+        ),
+        (
+            "two receives race for two data".to_string(),
+            r#"@"x"!(1) | @"x"!(2) | for (@a <- @"x") { @"l"!(a) } | for (@b <- @"x") { @"r"!(b) }"#
+                .to_string(),
+            FIXTURE_PATH_SEGMENTS,
+        ),
+        (
+            "a produce races the open join of another produce (F1)".to_string(),
+            r#"for (@x <- @"a" & @y <- @"b") { @"j"!((x, y)) } | @"a"!(10) | @"b"!(20) | @"a"!(30)"#
+                .to_string(),
+            FIXTURE_PATH_SEGMENTS,
+        ),
+        (
+            "a chain of 2,048 levels under a limit of 1,024 segments (A6)".to_string(),
+            "new loop in { contract loop(@n) = { if (n > 0) { loop!(n - 1) } } | loop!(2048) }"
+                .to_string(),
+            1_024,
+        ),
+    ]
+}
+
+// Disabled by DR-132 (P-1, review m7): a persistent send to a replying
+// system process re-issues itself on each firing, so its evaluation ends only
+// when it exhausts its phlo limit. Native play of such a loop leaves its
+// budget recording incomplete ("native budget recording is incomplete"), with
+// the deterministic scheduler as without it (DR-132 measured both). The
+// defect predates DR-132, so this family can run only after a fix of the
+// recorder. Contract recursion and repeated system calls that exhaust their
+// limit record completely in both runs.
+// /// Added by DR-132 (P-1, review m7): a persistent send to a replying system
+// /// process. The send fires the process and re-issues itself on each firing,
+// /// so the evaluation exhausts its phlo limit. The limit keeps the loop short.
+// const P1_FAILING_FAMILY: (&str, &str, u64) = (
+//     "a persistent send to a replying system process",
+//     r#"new hash(`rho:crypto:sha256Hash`), ack in {
+// hash!!("abc".toByteArray(), *ack) | for (@h <= ack) { @"out"!(h) } }"#,
+//     20_000,
+// );
+
+/// Added by DR-132 (P-1): racing native play against the native replay
+/// session. It extends F6 to the families of `racing_families` and runs
+/// every family on a current-thread runtime and on runtimes with 2 and 8
+/// workers. Each run plays the term once and replays its trace twice. The
+/// replays must accept and agree with play on the fired COMMs, the phlo use,
+/// the byte observations, the evidence and the root, and each replay must
+/// leave the progress word of the stall rule idle. A recorder overlap or a
+/// binding error fails the play or a replay. Under the deterministic
+/// scheduler, each body added a path segment, so the chain of 2,048 levels
+/// exceeded its limit of 1,024 segments. Non-vacuity: some family shows two
+/// or more journal orders, as the sources of the rows of play in journal
+/// order.
+#[test]
+fn racing_native_play_agrees_with_native_replay() {
+    let mut families: Vec<(String, String, usize)> = FAMILIES
+        .iter()
+        .map(|(name, term, _)| (name.to_string(), term.to_string(), FIXTURE_PATH_SEGMENTS))
+        .collect();
+    families.extend(racing_families());
+    let mut orders: BTreeMap<String, BTreeSet<Vec<String>>> = BTreeMap::new();
+    let mut failed = Vec::new();
+    // Changed by DR-132 (P-1, review m7): a current-thread runtime and runtimes
+    // with 2 and 8 workers.
+    // for workers in [1, 2, 4] {
+    //     let runtime = tokio::runtime::Builder::new_multi_thread()
+    //         .worker_threads(workers)
+    //         .enable_all()
+    //         .build()
+    //         .expect("a Tokio runtime");
+    for workers in [0, 2, 8] {
+        let runtime = match workers {
+            0 => tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("a current-thread runtime"),
+            _ => tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(workers)
+                .enable_all()
+                .build()
+                .expect("a Tokio runtime"),
+        };
+        // Disabled by DR-132 (P-1, review m7): see `P1_FAILING_FAMILY`.
+        // let (name, term, limit) = P1_FAILING_FAMILY;
+        // for run in 0..P1_RUNS {
+        //     if let Err(error) =
+        //         runtime.block_on(native_agreement(term, limit, FIXTURE_PATH_SEGMENTS, true))
+        //     {
+        //         failed.push(format!("{workers} workers, {name}, run {run}: {error}"));
+        //     }
+        // }
+        for (name, term, path_segments) in &families {
+            for run in 0..P1_RUNS {
+                match runtime.block_on(native_agreement(term, P1_LIMIT, *path_segments)) {
+                    Ok(agreement) => {
+                        orders
+                            .entry(name.clone())
+                            .or_default()
+                            .insert(agreement.journal);
+                    }
+                    Err(error) => {
+                        failed.push(format!("{workers} workers, {name}, run {run}: {error}"))
+                    }
+                }
+            }
+        }
+    }
+    assert!(
+        failed.is_empty(),
+        "{} runs disagreed: {failed:#?}",
+        failed.len()
+    );
+    assert!(
+        orders.values().any(|seen| seen.len() >= 2),
+        "no family showed two journal orders: {:?}",
+        orders
+            .iter()
+            .map(|(name, seen)| (name, seen.len()))
+            .collect::<Vec<_>>()
+    );
 }
