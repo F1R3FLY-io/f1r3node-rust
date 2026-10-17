@@ -40,27 +40,29 @@ const NUM_ITEMS: usize = 256;
 
 pub fn empty_node() -> Node { vec![Item::EmptyItem; NUM_ITEMS] }
 
-/// Binary codecs for serializing/deserializing Node in Radix tree.
-///
-/// ```text
-/// Coding structure for items:
-///   EmptyItem                   - Empty (not encode)
-///
-///   Leaf(prefix,value)    -> [item index] [second byte] [prefix0]..[prefixM] [value0]..[value31]
-///                               where is: [second byte] -> bit7 = 0 (Leaf identifier)
-///                                                          bit6..bit0 - prefix length = M (from 0 to 127)
-///
-///   NodePtr(prefix,ptr)   -> [item index] [second byte] [prefix0]..[prefixM] [ptr0]..[ptr31]
-///                               where is: [second byte] -> bit7 = 1 (NodePtr identifier)
-///                                                          bit6..bit0 - prefix length = M (from 0 to 127)
-///
-/// For example encode this Node which contains 2 non-empty items (index 1 and index 2):
-/// (0)[Empty] (1)[Leaf(prefix:0xFFFF,value:0x00..0001)] (2)[NodePtr(prefix:empty,value:0xFF..FFFF)] (3)...(255)[Empty].
-/// Encoded data = 0x0102FFFF0000000000000000000000000000000000000000000000000000000000000001
-///                  0280FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF
-/// where: item 1 (index_secondByte_prefix_value) = 01_02_FFFF_00..0001
-///        item 2 (index_secondByte_prefix_value) = 02_80_empty_FF..FFFF
-/// ```
+/**
+ * Binary codecs for serializing/deserializing Node in Radix tree
+ *
+ * ```text
+ * Coding structure for items:
+ *   EmptyItem                   - Empty (not encode)
+ *
+ *   Leaf(prefix,value)    -> [item index] [second byte] [prefix0]..[prefixM] [value0]..[value31]
+ *                               where is: [second byte] -> bit7 = 0 (Leaf identifier)
+ *                                                          bit6..bit0 - prefix length = M (from 0 to 127)
+ *
+ *   NodePtr(prefix,ptr)   -> [item index] [second byte] [prefix0]..[prefixM] [ptr0]..[ptr31]
+ *                               where is: [second byte] -> bit7 = 1 (NodePtr identifier)
+ *                                                          bit6..bit0 - prefix length = M (from 0 to 127)
+ *
+ * For example encode this Node which contains 2 non-empty items (index 1 and index 2):
+ * (0)[Empty] (1)[Leaf(prefix:0xFFFF,value:0x00..0001)] (2)[NodePtr(prefix:empty,value:0xFF..FFFF)] (3)...(255)[Empty].
+ * Encoded data = 0x0102FFFF0000000000000000000000000000000000000000000000000000000000000001
+ *                  0280FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF
+ * where: item 1 (index_secondByte_prefix_value) = 01_02_FFFF_00..0001
+ *        item 2 (index_secondByte_prefix_value) = 02_80_empty_FF..FFFF
+ * ```
+ */
 
 // Default size for non-empty item data
 const DEF_SIZE: usize = 32;
@@ -382,6 +384,17 @@ pub fn sequential_export(
     let init_node_path: Box<
         dyn Fn(NodePathData) -> Result<Either<NodePathData, Path>, RadixTreeError>,
     > = Box::new(|p: NodePathData| {
+        let prefix_not_found = || {
+            let mut node_prefix_cloned = p.node_prefix.clone();
+            let mut rest_prefix_cloned = p.rest_prefix.clone();
+            node_prefix_cloned.append(&mut rest_prefix_cloned);
+
+            RadixTreeError::PrefixError(format!(
+                "Radix Tree - Export error: node with prefix {} not found.",
+                hex::encode(node_prefix_cloned)
+            ))
+        };
+
         let process_child_item = |node: Node| {
             let item_idx = byte_to_int(*p.rest_prefix.first().unwrap());
             match node.get(item_idx) {
@@ -393,22 +406,15 @@ pub fn sequential_export(
                     let (mut prefix_common, prefix_rest, ptr_prefix_rest) =
                         common_prefix(rest_prefix_tail.to_vec(), ptr_prefix.to_vec());
 
-                    assert!(ptr_prefix_rest.is_empty(), "{}", {
-                        let mut node_prefix_cloned = p.node_prefix.clone();
-                        let mut rest_prefix_cloned = p.rest_prefix.clone();
-                        node_prefix_cloned.append(&mut rest_prefix_cloned);
-
-                        format!(
-                            "Radix Tree - Export error: node with prefix {} not found.",
-                            hex::encode(node_prefix_cloned)
-                        )
-                    });
+                    if !ptr_prefix_rest.is_empty() {
+                        return Err(prefix_not_found());
+                    }
 
                     let mut node_prefix_appended = p.node_prefix.clone();
                     node_prefix_appended.push(*p.rest_prefix.first().unwrap());
                     node_prefix_appended.append(&mut prefix_common);
 
-                    Either::Left(NodePathData {
+                    Ok(Either::Left(NodePathData {
                         hash: ptr.to_vec(),
                         node_prefix: node_prefix_appended,
                         rest_prefix: prefix_rest,
@@ -423,22 +429,9 @@ pub fn sequential_export(
                             new_path.extend(p.path.clone());
                             new_path
                         },
-                    })
+                    }))
                 }
-                _ => {
-                    assert!(false, "{}", {
-                        let mut node_prefix_cloned = p.node_prefix.clone();
-                        let mut rest_prefix_cloned = p.rest_prefix.clone();
-                        node_prefix_cloned.append(&mut rest_prefix_cloned);
-
-                        format!(
-                            "Radix Tree - Export error: node with prefix {} not found.",
-                            hex::encode(node_prefix_cloned)
-                        )
-                    });
-
-                    Either::Right(Vec::<NodeData>::new()) // Not found
-                }
+                _ => Err(prefix_not_found()),
             }
         };
 
@@ -457,7 +450,7 @@ pub fn sequential_export(
                 new_path.extend(p.path);
                 Ok(Either::Right(new_path)) // Happy end
             } else {
-                Ok(process_child_item(decoded_node)) // Go dipper
+                process_child_item(decoded_node) // Go dipper
             }
         }
     });
@@ -1230,53 +1223,58 @@ impl RadixTreeImpl {
      */
     fn save_node_and_create_item(&self, node: Node, prefix: ByteVector, compaction: bool) -> Item {
         if compaction {
-            let mut non_empty_items = node
-                .iter()
-                .enumerate()
-                .filter(|(_, item)| **item != Item::EmptyItem);
-            match (non_empty_items.next(), non_empty_items.next()) {
-                (None, _) => Item::EmptyItem,
-                (
-                    Some((
-                        index,
+            let non_empty_items: Vec<Item> = node
+                .clone()
+                .into_iter()
+                .filter(|item| *item != Item::EmptyItem)
+                .take(2)
+                .collect();
+
+            match non_empty_items.len() {
+                0 => Item::EmptyItem, // All items are empty.
+                1 => {
+                    // Only one item is not empty - merge child and parent nodes.
+                    let idx_item = node
+                        .iter()
+                        .position(|item| *item == non_empty_items[0])
+                        .unwrap();
+
+                    match &non_empty_items[0] {
+                        Item::EmptyItem => Item::EmptyItem,
                         Item::Leaf {
                             prefix: leaf_prefix,
                             value,
-                        },
-                    )),
-                    None,
-                ) => {
-                    let mut joined = prefix;
-                    joined.push(index as u8);
-                    joined.extend_from_slice(leaf_prefix);
-                    Item::Leaf {
-                        prefix: joined,
-                        value: value.clone(),
-                    }
-                }
-                (
-                    Some((
-                        index,
+                        } => {
+                            let mut new_prefix = prefix.clone();
+                            new_prefix.push(idx_item as u8);
+                            new_prefix.append(&mut leaf_prefix.clone());
+                            Item::Leaf {
+                                prefix: new_prefix,
+                                value: value.clone(),
+                            }
+                        }
                         Item::NodePtr {
                             prefix: node_ptr_prefix,
                             ptr,
-                        },
-                    )),
-                    None,
-                ) => {
-                    let mut joined = prefix;
-                    joined.push(index as u8);
-                    joined.extend_from_slice(node_ptr_prefix);
-                    Item::NodePtr {
-                        prefix: joined,
-                        ptr: ptr.clone(),
+                        } => {
+                            let mut new_prefix = prefix.clone();
+                            new_prefix.push(idx_item as u8);
+                            new_prefix.append(&mut node_ptr_prefix.clone());
+                            Item::NodePtr {
+                                prefix: new_prefix,
+                                ptr: ptr.to_vec(),
+                            }
+                        }
                     }
                 }
-                (Some(_), Some(_)) => Item::NodePtr {
-                    prefix,
-                    ptr: self.save_node(node),
-                },
-                (Some((_, Item::EmptyItem)), None) => unreachable!(),
+                2 => {
+                    Item::NodePtr {
+                        // 2 or more items are not empty.
+                        prefix,
+                        ptr: self.save_node(node),
+                    }
+                }
+                _ => unreachable!(),
             }
         } else {
             Item::NodePtr {

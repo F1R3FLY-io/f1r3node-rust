@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use shared::rust::{Byte, ByteVector};
 
-use crate::rspace::errors::RootError;
+use crate::rspace::errors::{RadixTreeError, RootError};
 use crate::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use crate::rspace::history::radix_tree::{ExportData, ExportDataSettings, sequential_export};
 use crate::rspace::shared::trie_exporter::{KeyHash, TrieExporter, TrieNode};
@@ -17,12 +17,22 @@ pub trait RSpaceExporter: TrieExporter + Send + Sync {
 pub struct RSpaceExporterInstance;
 
 impl RSpaceExporterInstance {
+    pub fn traverse_history(
+        start_path: Vec<(Blake2b256Hash, Option<Byte>)>,
+        skip: i32,
+        take: i32,
+        get_from_history: Arc<dyn Fn(&ByteVector) -> Option<ByteVector>>,
+    ) -> Vec<TrieNode<Blake2b256Hash>> {
+        Self::try_traverse_history(start_path, skip, take, get_from_history)
+            .expect("RSpace Exporter: Failed to export")
+    }
+
     pub fn try_traverse_history(
         start_path: Vec<(Blake2b256Hash, Option<Byte>)>,
         skip: i32,
         take: i32,
         get_from_history: Arc<dyn Fn(&ByteVector) -> Option<ByteVector>>,
-    ) -> Result<Vec<TrieNode<Blake2b256Hash>>, String> {
+    ) -> Result<Vec<TrieNode<Blake2b256Hash>>, RadixTreeError> {
         let settings = ExportDataSettings {
             flag_node_prefixes: false,
             flag_node_keys: true,
@@ -33,19 +43,20 @@ impl RSpaceExporterInstance {
 
         fn create_last_prefix(
             prefix_vec: Vec<Blake2b256Hash>,
-        ) -> Result<Option<ByteVector>, String> {
+        ) -> Result<Option<ByteVector>, RadixTreeError> {
             if prefix_vec.is_empty() {
-                Ok(None)
+                Ok(None) // Start from root
             } else {
+                // Max prefix length = 127 bytes.
+                // Prefix coded 5 Blake256 elements (0 - size, 1..4 - value of prefix).
                 if prefix_vec.len() < 5 {
-                    return Err("RSpace Exporter: Invalid path during export".to_string());
+                    return Err(RadixTreeError::PrefixError(
+                        "RSpace Exporter: Invalid path during export".to_string(),
+                    ));
                 }
 
                 let (size_prefix, vec): (usize, Vec<Blake2b256Hash>) =
                     (prefix_vec[0].bytes()[0] as usize & 0xff, prefix_vec[1..].to_vec());
-                if size_prefix > 128 {
-                    return Err("RSpace Exporter: Invalid prefix size during export".to_string());
-                }
 
                 let mut prefix128 = vec[0].bytes();
                 prefix128.extend(vec[1].bytes());
@@ -133,8 +144,7 @@ impl RSpaceExporterInstance {
                 take,
                 get_from_history,
                 settings,
-            )
-            .map_err(|error| format!("RSpace Exporter: Failed to export: {error:?}"))?;
+            )?;
 
             let (data, new_last_prefix_opt) = exp_res;
             let ExportData {
@@ -165,16 +175,6 @@ impl RSpaceExporterInstance {
             nodes_without_last.extend(last_history_node);
             Ok(nodes_without_last)
         }
-    }
-
-    pub fn traverse_history(
-        start_path: Vec<(Blake2b256Hash, Option<Byte>)>,
-        skip: i32,
-        take: i32,
-        get_from_history: Arc<dyn Fn(&ByteVector) -> Option<ByteVector>>,
-    ) -> Vec<TrieNode<Blake2b256Hash>> {
-        Self::try_traverse_history(start_path, skip, take, get_from_history)
-            .expect("RSpace Exporter: Failed to traverse history")
     }
 
     pub fn path_pretty(path: &(Blake2b256Hash, Option<u8>)) -> String {

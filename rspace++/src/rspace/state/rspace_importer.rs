@@ -117,7 +117,8 @@ impl RSpaceImporterInstance {
             skip,
             chunk_size,
             get_node_function,
-        )?;
+        )
+        .map_err(|error| error.to_string())?;
 
         // Extract history and data keys.
         let (leafs, non_leafs): (Vec<_>, Vec<_>) = nodes.into_iter().partition(|node| node.is_leaf);

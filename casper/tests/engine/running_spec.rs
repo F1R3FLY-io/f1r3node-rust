@@ -595,6 +595,64 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn store_items_request_for_an_unknown_or_malformed_start_path_is_ignored() {
+        use models::rust::casper::protocol::casper_message::StoreItemsMessageRequest;
+        use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+
+        let fixture = TestFixture::new().await;
+        let root = Blake2b256Hash::from_bytes_prost(&fixture.genesis.body.state.post_state_hash);
+        let filled = |b: u8| Blake2b256Hash::from_bytes(vec![b; 32]);
+        let request = |start_path: Vec<(Blake2b256Hash, Option<u8>)>| {
+            CasperMessage::StoreItemsMessageRequest(StoreItemsMessageRequest {
+                start_path,
+                skip: 0,
+                take: 750,
+            })
+        };
+
+        fixture
+            .engine
+            .handle(fixture.local.clone(), request(vec![(root.clone(), None)]))
+            .await
+            .unwrap();
+        assert_eq!(
+            fixture.transport_layer.request_count(),
+            1,
+            "an honest root request is answered"
+        );
+        fixture.transport_layer.pop_request().unwrap();
+
+        let mut prefix_size = vec![32u8];
+        prefix_size.extend(vec![0u8; 31]);
+        let malformed = [
+            vec![],
+            vec![(filled(0x42), None)],
+            vec![(root.clone(), None), (filled(1), None), (filled(2), None)],
+            vec![
+                (root.clone(), None),
+                (Blake2b256Hash::from_bytes(prefix_size), None),
+                (filled(0xFF), None),
+                (filled(0), None),
+                (filled(0), None),
+                (filled(0), None),
+            ],
+        ];
+        for start_path in malformed {
+            let len = start_path.len();
+            fixture
+                .engine
+                .handle(fixture.local.clone(), request(start_path))
+                .await
+                .unwrap();
+            assert_eq!(
+                fixture.transport_layer.request_count(),
+                0,
+                "a {len}-element bad start path must not panic or produce a response"
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn trimmed_approved_block_request_serves_the_last_finalized_block() {
         let fixture = TestFixture::new().await;
         let genesis_block = fixture.genesis.clone();
