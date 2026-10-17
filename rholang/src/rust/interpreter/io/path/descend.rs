@@ -110,9 +110,74 @@ pub fn safe_descend_verified(
     rel: &str,
     expected_root_id: Option<(u64, u64)>,
 ) -> Result<SafeParent, QuarantineError> {
-    if rel.is_empty() {
-        return Err(QuarantineError::Empty);
+    match descend_impl(root, rel, expected_root_id)? {
+        DescendOutcome::Leaf(parent) => Ok(parent),
+        DescendOutcome::RootSelf(_) if rel.is_empty() => Err(QuarantineError::Empty),
+        DescendOutcome::RootSelf(_) => Err(QuarantineError::RootSelf),
     }
+}
+
+/// Permissive variant of [`safe_descend_verified`] that accepts
+/// root-self-resolving `rel` inputs.  Returns a [`SafeParent`]
+/// whose `dirfd` is the (identity-verified) root fd and whose
+/// `leaf` is the POSIX self-reference `"."`, so every downstream
+/// `*at` call site (`fstatat`, `openat`, `fdopendir`) operates on
+/// the root itself without any syscall-level special-casing.
+///
+/// Accepted root-self forms:
+///   * `rel == ""`
+///   * `rel == "."` / `rel == "./"`
+///
+/// Rejected (same as `safe_descend_verified`):
+///   * ANY `..` segment, including those that would lexically
+///     cancel out (`a/..`).  Keeps the "no `..` ever" rule simple
+///     and uniform; operators can't accidentally construct a path
+///     that is "safely" `..`-cancelling.
+///   * absolute `rel`
+///   * `rel` containing a symlink intermediate (H-5 defense)
+///
+/// Intended for handlers whose semantics are well-defined at
+/// root-self: `fs_stat` (stat the root), `fs_entries_stream_open`
+/// (list the root).  Handlers whose semantics are undefined at
+/// root-self — opening the root as a `File` cap, unlinking the
+/// root, renaming the root — stay on `safe_descend_verified`.
+pub fn safe_descend_or_root_self(
+    root: &Path,
+    rel: &str,
+    expected_root_id: Option<(u64, u64)>,
+) -> Result<SafeParent, QuarantineError> {
+    match descend_impl(root, rel, expected_root_id)? {
+        DescendOutcome::Leaf(parent) => Ok(parent),
+        DescendOutcome::RootSelf(root_fd) => {
+            // POSIX self-reference: `*at(root_fd, ".", ...)` operates
+            // on `root_fd` itself.  Portable across Linux and macOS
+            // without needing `AT_EMPTY_PATH` (Linux-only).
+            let leaf = CString::new(".").expect("`.` is a valid CString");
+            Ok(SafeParent {
+                dirfd: root_fd,
+                leaf,
+            })
+        }
+    }
+}
+
+enum DescendOutcome {
+    Leaf(SafeParent),
+    RootSelf(OwnedFd),
+}
+
+/// Shared descent core.  Shape-independent between the strict
+/// (`safe_descend_verified`) and permissive (`safe_descend_or_root_self`)
+/// entry points: component parsing, root open + H-5 identity check,
+/// intermediate `openat` chain all live here.  Only the final
+/// disposition of a root-self outcome differs between the two
+/// callers — expressed via the `DescendOutcome` sum type returned
+/// here.
+fn descend_impl(
+    root: &Path,
+    rel: &str,
+    expected_root_id: Option<(u64, u64)>,
+) -> Result<DescendOutcome, QuarantineError> {
     let rel_path = Path::new(rel);
     // Belt-and-suspenders: reject leading `/` here on the raw
     // `rel`, and reject `Component::RootDir` again during
@@ -134,9 +199,6 @@ pub fn safe_descend_verified(
             }
         }
     }
-    if comps.is_empty() {
-        return Err(QuarantineError::RootSelf);
-    }
 
     // Open the root itself with `O_NOFOLLOW` so a post-boot
     // symlink-swap on the root path fails cleanly (ELOOP on Linux,
@@ -156,6 +218,10 @@ pub fn safe_descend_verified(
         }
     }
 
+    if comps.is_empty() {
+        return Ok(DescendOutcome::RootSelf(cur));
+    }
+
     let mut cur = cur;
     let leaf_name = comps.last().expect("comps non-empty (checked above)");
     for intermediate in &comps[..comps.len() - 1] {
@@ -164,7 +230,7 @@ pub fn safe_descend_verified(
     }
     let leaf = to_c(leaf_name)?;
 
-    Ok(SafeParent { dirfd: cur, leaf })
+    Ok(DescendOutcome::Leaf(SafeParent { dirfd: cur, leaf }))
 }
 
 /// Fetch a directory's `(dev, inode)` pair via `fstat(2)`.  Used
@@ -737,5 +803,172 @@ mod tests {
             safe_descend_verified(&root_path, "leaf.txt", Some(captured_id)),
             QuarantineError::RootIdentityChanged,
         );
+    }
+
+    // ---- safe_descend_or_root_self (permissive variant) ----
+
+    /// Empty `rel` returns a `SafeParent` whose dirfd is the root
+    /// itself and whose leaf is `.` — the POSIX self-reference.
+    /// `fstatat(root_fd, ".", 0)` and `openat(root_fd, ".",
+    /// O_DIRECTORY)` operate on the root.
+    #[test]
+    fn safe_descend_or_root_self_accepts_empty() {
+        let tmp = TempDir::new().unwrap();
+        let sp = safe_descend_or_root_self(tmp.path(), "", None).expect("empty must succeed");
+        assert_eq!(sp.leaf.to_bytes(), b".", "root-self leaf must be `.`");
+        // fstatat with "." against the returned dirfd should
+        // succeed and return the root's own metadata.
+        // SAFETY: `sp.dirfd` is a live `OwnedFd` for the lifetime of
+        // `sp`; `sp.leaf_ptr()` is a NUL-terminated `*const c_char`
+        // owned by the same `SafeParent`.  `libc::stat` is POD;
+        // `zeroed()` is a well-defined initializer.  `fstatat`
+        // accepts any integer fd and returns -1 with errno on
+        // failure rather than UB.
+        unsafe {
+            let mut sb: libc::stat = std::mem::zeroed();
+            let rc = libc::fstatat(sp.as_raw_fd(), sp.leaf_ptr(), &mut sb, 0);
+            assert_eq!(rc, 0, "fstatat(root_fd, `.`) must succeed");
+            // The st_mode's S_IFMT masked value should be S_IFDIR.
+            assert_eq!(
+                sb.st_mode & libc::S_IFMT,
+                libc::S_IFDIR,
+                "root-self must be a directory"
+            );
+        }
+    }
+
+    /// `rel == "."` resolves to root-self just like empty.
+    #[test]
+    fn safe_descend_or_root_self_accepts_dot() {
+        let tmp = TempDir::new().unwrap();
+        let sp = safe_descend_or_root_self(tmp.path(), ".", None).expect(". must succeed");
+        assert_eq!(sp.leaf.to_bytes(), b".");
+    }
+
+    /// `rel == "./"` resolves to root-self.
+    #[test]
+    fn safe_descend_or_root_self_accepts_dot_slash() {
+        let tmp = TempDir::new().unwrap();
+        let sp = safe_descend_or_root_self(tmp.path(), "./", None).expect("./ must succeed");
+        assert_eq!(sp.leaf.to_bytes(), b".");
+    }
+
+    /// Any `..` segment rejects — including `a/..` that would
+    /// lexically collapse to root.  Keeps the "no `..` ever" rule
+    /// simple; the only root-self spellings are empty, `.`, `./`.
+    #[test]
+    fn safe_descend_or_root_self_rejects_dot_dot_cancellation() {
+        let tmp = TempDir::new().unwrap();
+        match safe_descend_or_root_self(tmp.path(), "a/..", None) {
+            Err(QuarantineError::EscapesRoot) => {}
+            other => panic!("expected EscapesRoot for a/..; got {other:?}"),
+        }
+    }
+
+    /// `..` at the root still escapes — root-self acceptance does
+    /// NOT loosen the containment invariant.
+    #[test]
+    fn safe_descend_or_root_self_rejects_parent_escape() {
+        let tmp = TempDir::new().unwrap();
+        match safe_descend_or_root_self(tmp.path(), "..", None) {
+            Err(QuarantineError::EscapesRoot) => {}
+            other => panic!("expected EscapesRoot; got {other:?}"),
+        }
+        match safe_descend_or_root_self(tmp.path(), "../etc/passwd", None) {
+            Err(QuarantineError::EscapesRoot) => {}
+            other => panic!("expected EscapesRoot; got {other:?}"),
+        }
+    }
+
+    /// Absolute `rel` still escapes under the permissive variant.
+    #[test]
+    fn safe_descend_or_root_self_rejects_absolute() {
+        let tmp = TempDir::new().unwrap();
+        match safe_descend_or_root_self(tmp.path(), "/etc/passwd", None) {
+            Err(QuarantineError::EscapesRoot) => {}
+            other => panic!("expected EscapesRoot; got {other:?}"),
+        }
+    }
+
+    /// `openat(root_fd, ".", O_DIRECTORY)` on the returned
+    /// SafeParent must succeed — this is the operation
+    /// `fs_entries_stream_open` performs to produce the DIR* for
+    /// listing.  Pins that root-self dispatch yields a dirfd
+    /// usable for `openat(... O_DIRECTORY ...)` (not just
+    /// `fstatat`).
+    #[test]
+    fn safe_descend_or_root_self_openat_dot_opens_directory() {
+        let tmp = TempDir::new().unwrap();
+        let sp = safe_descend_or_root_self(tmp.path(), "", None).expect("empty must succeed");
+        // SAFETY: sp.dirfd is a live OwnedFd; sp.leaf is a valid
+        // NUL-terminated CString pointing at `.`.
+        unsafe {
+            let fd = libc::openat(
+                sp.as_raw_fd(),
+                sp.leaf_ptr(),
+                libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC,
+            );
+            assert!(
+                fd >= 0,
+                "openat(root_fd, `.`, O_DIRECTORY) must succeed; got errno={}",
+                io::Error::last_os_error()
+            );
+            libc::close(fd);
+        }
+    }
+
+    /// Non-root-self `rel` ("d/leaf.txt") routes through the leaf
+    /// path identically to `safe_descend_verified` — same leaf
+    /// CString, same descended dirfd.
+    #[test]
+    fn safe_descend_or_root_self_leaf_path_matches_strict() {
+        let tmp = TempDir::new().unwrap();
+        fs::create_dir(tmp.path().join("d")).unwrap();
+        fs::write(tmp.path().join("d/leaf.txt"), b"x").unwrap();
+        let sp = safe_descend_or_root_self(tmp.path(), "d/leaf.txt", None)
+            .expect("leaf path must succeed");
+        assert_eq!(
+            sp.leaf.to_str().unwrap(),
+            "leaf.txt",
+            "non-root-self leaf must be the basename, not `.`"
+        );
+    }
+
+    /// H-5 identity check still applies in the permissive variant:
+    /// a rename-and-recreate between `Root::capture` and the
+    /// descent surfaces `RootIdentityChanged` even on root-self.
+    #[test]
+    fn safe_descend_or_root_self_preserves_h5_identity_check() {
+        let tmp = TempDir::new().unwrap();
+        let root_path = tmp.path().join("victim");
+        fs::create_dir(&root_path).unwrap();
+        let root = Root::capture(&root_path).unwrap();
+        let captured_id = root.identity();
+
+        let backup = tmp.path().join("victim.bak");
+        fs::rename(&root_path, &backup).unwrap();
+        fs::create_dir(&root_path).unwrap();
+
+        match safe_descend_or_root_self(&root_path, "", Some(captured_id)) {
+            Err(QuarantineError::RootIdentityChanged) => {}
+            other => panic!("expected RootIdentityChanged on root-self; got {other:?}"),
+        }
+    }
+
+    /// Symlink intermediate still trips in the permissive variant
+    /// for leaf paths — root-self acceptance does NOT bypass the
+    /// O_NOFOLLOW defense.
+    #[test]
+    fn safe_descend_or_root_self_rejects_symlink_intermediate() {
+        let tmp = TempDir::new().unwrap();
+        let target = tmp.path().join("target");
+        fs::create_dir(&target).unwrap();
+        fs::write(target.join("leaf.txt"), b"x").unwrap();
+        symlink(&target, tmp.path().join("link")).unwrap();
+
+        match safe_descend_or_root_self(tmp.path(), "link/leaf.txt", None) {
+            Err(QuarantineError::SymlinkComponent) => {}
+            other => panic!("expected SymlinkComponent; got {other:?}"),
+        }
     }
 }
