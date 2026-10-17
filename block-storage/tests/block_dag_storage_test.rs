@@ -2304,17 +2304,13 @@ async fn record_directly_finalized_rejects_unknown_hashes_and_propagates_effect_
     assert!(matches!(result, Err(KvStoreError::IoError(_))));
     let dag = dag_storage.get_representation().unwrap();
     assert!(
-        !dag.is_finalized(&b1.block_hash),
-        "a failed finalization effect must leave the block unfinalized"
+        dag.is_finalized(&b1.block_hash),
+        "the commit is durable before its effects run"
     );
-
-    dag_storage
-        .record_directly_finalized(b1.block_hash.clone(), 1.0, |_| async { Ok(()) })
-        .await
-        .unwrap();
-    let dag = dag_storage.get_representation().unwrap();
-    assert!(dag.is_finalized(&b1.block_hash));
     assert_eq!(dag.last_finalized_block(), b1.block_hash);
+    let pending = dag_storage.pending_finalization_events().unwrap();
+    assert_eq!(pending.len(), 1, "a failed effect leaves its marker pending");
+    assert_eq!(pending[0].directly.0, b1.block_hash);
 }
 
 /// Genesis can reach the DAG as an ordinary block before the approved-block
@@ -2394,4 +2390,121 @@ async fn a_restore_anchor_is_finalized_even_when_it_reached_the_dag_as_settled_h
         anchor.block_hash,
         "the anchor is the seed every derived floor descends from"
     );
+}
+
+async fn chain_of_three(
+    kvm: &mut InMemoryStoreManager,
+) -> (BlockDagKeyValueStorage, BlockMessage, BlockMessage, BlockMessage, BlockMessage) {
+    use block_storage::rust::dag::block_dag_key_value_storage::InsertMode;
+    let genesis = genesis_block();
+    let b1 = chain_block(1, vec![genesis.block_hash.clone()]);
+    let b2 = chain_block(2, vec![b1.block_hash.clone()]);
+    let b3 = chain_block(3, vec![b2.block_hash.clone()]);
+    let dag_storage = BlockDagKeyValueStorage::new(kvm).await.unwrap();
+    dag_storage.insert(&genesis, InsertMode::Approved).unwrap();
+    for block in [&b1, &b2, &b3] {
+        dag_storage.insert(block, InsertMode::Normal).unwrap();
+    }
+    (dag_storage, genesis, b1, b2, b3)
+}
+
+#[tokio::test]
+async fn commit_lfb_writes_metadata_marker_and_pointer_together() {
+    use block_storage::rust::dag::finalization_commit::CommitOutcome;
+    let mut kvm = InMemoryStoreManager::new();
+    let (dag_storage, _genesis, b1, b2, _b3) = chain_of_three(&mut kvm).await;
+
+    let outcome = dag_storage
+        .commit_lfb(b2.block_hash.clone(), 0.5, |_| Ok(()))
+        .unwrap();
+    let CommitOutcome::Committed(marker) = outcome else {
+        panic!("expected a commit, got {outcome:?}");
+    };
+    assert_eq!(marker.commit_epoch, 1);
+    assert_eq!(marker.height, 2);
+    assert_eq!(
+        marker.finalized_in_order(),
+        vec![b1.block_hash.clone(), b2.block_hash.clone()]
+    );
+
+    let dag = dag_storage.get_representation().unwrap();
+    assert_eq!(dag.last_finalized_block(), b2.block_hash);
+    assert!(dag.is_finalized(&b1.block_hash));
+    let pointer = dag_storage.lfb_pointer().unwrap().unwrap();
+    assert_eq!(pointer.hash.0, b2.block_hash);
+    assert_eq!(pointer.commit_epoch, 1);
+    assert_eq!(dag_storage.pending_finalization_events().unwrap(), vec![marker]);
+}
+
+#[tokio::test]
+async fn a_refused_commit_changes_nothing() {
+    use block_storage::rust::dag::finalization_commit::{CommitOutcome, CommitRefusal};
+    let mut kvm = InMemoryStoreManager::new();
+    let (dag_storage, genesis, b1, b2, _b3) = chain_of_three(&mut kvm).await;
+
+    let outcome = dag_storage
+        .commit_lfb(b2.block_hash.clone(), 0.5, |_| {
+            Err(CommitRefusal::StateChanged("test".to_string()))
+        })
+        .unwrap();
+    assert_eq!(
+        outcome,
+        CommitOutcome::Refused(CommitRefusal::StateChanged("test".to_string()))
+    );
+    let dag = dag_storage.get_representation().unwrap();
+    assert_eq!(dag.last_finalized_block(), genesis.block_hash);
+    assert!(!dag.is_finalized(&b1.block_hash));
+    assert!(dag_storage.lfb_pointer().unwrap().is_none());
+    assert!(dag_storage.pending_finalization_events().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn an_unpublished_commit_survives_a_restart_with_its_epoch() {
+    use block_storage::rust::dag::finalization_commit::CommitOutcome;
+    let mut kvm = InMemoryStoreManager::new();
+    let (dag_storage, _genesis, _b1, b2, b3) = chain_of_three(&mut kvm).await;
+
+    let CommitOutcome::Committed(first) = dag_storage
+        .commit_lfb(b2.block_hash.clone(), 0.5, |_| Ok(()))
+        .unwrap()
+    else {
+        panic!("expected a commit");
+    };
+    dag_storage.mark_events_published(first.commit_epoch).unwrap();
+    let CommitOutcome::Committed(second) = dag_storage
+        .commit_lfb(b3.block_hash.clone(), 0.5, |_| Ok(()))
+        .unwrap()
+    else {
+        panic!("expected a commit");
+    };
+    assert_eq!(second.commit_epoch, 2);
+    drop(dag_storage);
+
+    let restarted = BlockDagKeyValueStorage::new(&mut kvm).await.unwrap();
+    let pending = restarted.pending_finalization_events().unwrap();
+    assert_eq!(pending, vec![second.clone()]);
+    assert_eq!(
+        restarted.get_representation().unwrap().last_finalized_block(),
+        b3.block_hash
+    );
+    restarted.mark_events_published(second.commit_epoch).unwrap();
+    assert!(restarted.pending_finalization_events().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn the_lfb_pointer_never_moves_down() {
+    use block_storage::rust::dag::finalization_commit::CommitOutcome;
+    let mut kvm = InMemoryStoreManager::new();
+    let (dag_storage, _genesis, b1, _b2, b3) = chain_of_three(&mut kvm).await;
+
+    let committed = |outcome: CommitOutcome| matches!(outcome, CommitOutcome::Committed(_));
+    assert!(committed(
+        dag_storage.commit_lfb(b3.block_hash.clone(), 0.5, |_| Ok(())).unwrap()
+    ));
+    assert!(committed(
+        dag_storage.commit_lfb(b1.block_hash.clone(), 0.5, |_| Ok(())).unwrap()
+    ));
+    let pointer = dag_storage.lfb_pointer().unwrap().unwrap();
+    assert_eq!(pointer.hash.0, b3.block_hash);
+    assert_eq!(pointer.commit_epoch, 2);
 }
