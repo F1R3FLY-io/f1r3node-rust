@@ -1229,8 +1229,10 @@ tasks:
       - "One soak ranks the Track A items by measured cost, and the issue #24 report records the rank."
   - id: TASK-021-18
     title: "Fix the buffer eviction order and the re-fetch cooldown (stall-loop A7)"
-    status: pending
-    claimed_by: null
+    status: in_progress
+    claimed_by: claude-session-dfac55a4
+    claimed_at: 2026-10-16T21:00:00Z
+    branch: fix/issue-24-buffer-eviction-refetch
     pr_base_branch: dev
     blocked_by: []
     notes:
