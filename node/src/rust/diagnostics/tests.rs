@@ -92,6 +92,12 @@ mod tests {
             finalizer_oracle_cache_ancestors:
                 casper::rust::casper_conf::default_finalizer_oracle_cache_ancestors(),
             finalizer_timeout_reruns: casper::rust::casper_conf::default_finalizer_timeout_reruns(),
+            finalizer_derivation_budget:
+                casper::rust::casper_conf::default_finalizer_derivation_budget(),
+            finalizer_step_backstop:
+                casper::rust::casper_conf::default_finalizer_step_backstop(),
+            finalizer_cursor_max_invalidations:
+                casper::rust::casper_conf::default_finalizer_cursor_max_invalidations(),
         }
     }
 

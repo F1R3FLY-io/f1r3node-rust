@@ -1026,6 +1026,18 @@ mod embedded_defaults_tests {
             default_finalizer_oracle_cache_ancestors()
         );
         assert_eq!(cfg.casper.finalizer_timeout_reruns, default_finalizer_timeout_reruns());
+        assert_eq!(
+            cfg.casper.finalizer_derivation_budget,
+            casper::rust::casper_conf::default_finalizer_derivation_budget()
+        );
+        assert_eq!(
+            cfg.casper.finalizer_step_backstop,
+            casper::rust::casper_conf::default_finalizer_step_backstop()
+        );
+        assert_eq!(
+            cfg.casper.finalizer_cursor_max_invalidations,
+            casper::rust::casper_conf::default_finalizer_cursor_max_invalidations()
+        );
     }
 
     /// I5: the stale-recovery interval must exceed the heartbeat tick, or

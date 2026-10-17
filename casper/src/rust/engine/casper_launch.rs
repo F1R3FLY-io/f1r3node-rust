@@ -219,6 +219,9 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
                 ancestor: conf.finalizer_oracle_cache_ancestors,
             },
             finalizer_timeout_reruns: conf.finalizer_timeout_reruns,
+            finalizer_derivation_budget: conf.finalizer_derivation_budget,
+            finalizer_step_backstop: conf.finalizer_step_backstop,
+            finalizer_cursor_max_invalidations: conf.finalizer_cursor_max_invalidations,
         };
 
         Self {

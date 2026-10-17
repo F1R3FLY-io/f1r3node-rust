@@ -53,7 +53,6 @@
 //! each cycle, `settle_after_cycle` writes every verdict the persisted LFB
 //! decides and removes the pool copy of every terminal sig.
 
-use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
@@ -222,10 +221,6 @@ impl FinalizationContext {
     }
 }
 
-/// Backstop only: floor-of-view rides the persisted floor/frontier caches, so a
-/// compute exceeding this is a stall to surface, not pace.
-const FINALIZER_COMPUTE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
-
 type CycleFuture = std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send>>;
 type Cycle = Box<dyn Fn() -> CycleFuture + Send>;
 
@@ -362,18 +357,34 @@ fn finalizer_cycle(ctx: FinalizationContext) -> Cycle {
     let oracle_cache = crate::rust::safety::clique_oracle::CliqueOracle::new_shared_cache(
         ctx.shard_conf.finalizer_oracle_cache_bounds,
     );
+    let cursor = crate::rust::finality::floor_runner::new_shared_cursor(
+        ctx.shard_conf.finalizer_cursor_max_invalidations,
+    );
     Box::new(move || {
         let ctx = ctx.clone();
         let memo = memo.clone();
         let oracle_cache = oracle_cache.clone();
+        let cursor = cursor.clone();
         Box::pin(async move {
-            run_cycle(
-                FINALIZER_COMPUTE_TIMEOUT,
-                || derive_last_finalized_block(&ctx, &oracle_cache),
+            let yielded = AtomicBool::new(false);
+            let budget = crate::rust::finality::floor_runner::Budget::Until(
+                std::time::Instant::now() + ctx.shard_conf.finalizer_derivation_budget,
+            );
+            let timed_out = run_cycle(
+                ctx.shard_conf.finalizer_step_backstop,
+                || async {
+                    let derived =
+                        derive_last_finalized_block(&ctx, &oracle_cache, &cursor, budget).await;
+                    if matches!(derived, Ok(None)) {
+                        yielded.store(true, Ordering::SeqCst);
+                    }
+                    derived
+                },
                 |derived| adopt_derived(&ctx, derived),
                 |advanced| settle_after_cycle(ctx.clone(), memo, advanced),
             )
-            .await
+            .await;
+            timed_out || yielded.load(Ordering::SeqCst)
         })
     })
 }
@@ -519,6 +530,7 @@ fn settle_blocking(
 /// missing settled content.
 pub(crate) struct DerivedLfb {
     current: crate::rust::finality::floor::Floor,
+    sigma: crate::rust::finality::floor_runner::SnapshotId,
     adopt: Option<(crate::rust::finality::floor::Floor, f32)>,
     started: std::time::Instant,
 }
@@ -526,25 +538,66 @@ pub(crate) struct DerivedLfb {
 pub(crate) async fn derive_last_finalized_block(
     ctx: &FinalizationContext,
     oracle_cache: &Arc<crate::rust::safety::clique_oracle::SharedOracleCache>,
-) -> Result<DerivedLfb, CasperError> {
-    use crate::rust::finality::floor::{floor_of_view_metered, Floor};
+    cursor: &Arc<crate::rust::finality::floor_runner::SharedCursor>,
+    budget: crate::rust::finality::floor_runner::Budget,
+) -> Result<Option<DerivedLfb>, CasperError> {
+    use crate::rust::finality::floor::Floor;
+    use crate::rust::finality::floor_runner::{Advance, Preparation};
+    use crate::rust::metrics_constants::{
+        CASPER_METRICS_SOURCE, FINALIZER_CURSOR_FREEZES_METRIC,
+        FINALIZER_CURSOR_INVALIDATIONS_METRIC, FINALIZER_CURSOR_RESUMES_METRIC,
+        FINALIZER_CURSOR_YIELDS_METRIC,
+    };
     use crate::rust::safety::clique_oracle::{CliqueOracle, OracleCacheMeter};
 
     let started = std::time::Instant::now();
-    let observer = ctx.observer.get().cloned();
-    let operation = observer.as_ref().and_then(|observer| observer.operation());
-    let dag = ctx.block_dag_storage.get_representation()?;
-    let current_hash = dag.last_finalized_block();
+    let mut slot = cursor.lock().await;
+    let fresh = ctx.block_dag_storage.get_representation()?;
+    let lfb_hash = fresh.last_finalized_block();
+    let lfb_height = fresh.lookup_unsafe(&lfb_hash)?.block_number;
     let current = Floor {
-        block_number: dag.lookup_unsafe(&current_hash)?.block_number,
-        hash: current_hash,
+        hash: lfb_hash,
+        block_number: lfb_height,
     };
-
+    let metric = match slot.prepare(fresh, current, ctx.ftt())? {
+        Preparation::Fresh => None,
+        Preparation::Resumed => Some(FINALIZER_CURSOR_RESUMES_METRIC),
+        Preparation::Reset => Some(FINALIZER_CURSOR_INVALIDATIONS_METRIC),
+        Preparation::Frozen => Some(FINALIZER_CURSOR_FREEZES_METRIC),
+    };
+    if let Some(metric) = metric {
+        metrics::counter!(metric, "source" => CASPER_METRICS_SOURCE).increment(1);
+    }
     let meter = OracleCacheMeter::new(oracle_cache.clone());
-    let derivation =
-        floor_of_view_metered(&meter, &dag, &ctx.block_store, &current, ctx.ftt()).await;
+    let Some((advance, sigma, current, dag)) = slot.advance(&meter, &ctx.block_store, budget).await
+    else {
+        return Ok(None);
+    };
+    let progress = slot
+        .cursor()
+        .map(|cursor| (cursor.steps_taken(), cursor.phase_name()));
+    let invalidations = slot.invalidations();
+    drop(slot);
+    let derivation = match advance {
+        Advance::Yielded => {
+            metrics::counter!(FINALIZER_CURSOR_YIELDS_METRIC, "source" => CASPER_METRICS_SOURCE)
+                .increment(1);
+            if let Some((steps, phase)) = progress {
+                tracing::debug!(
+                    target: "f1r3fly.finalizer",
+                    steps,
+                    phase,
+                    invalidations,
+                    "finalizer derivation yielded at its budget; the cursor is kept"
+                );
+            }
+            return Ok(None);
+        }
+        Advance::Ready(derivation) => derivation,
+    };
+    let observer = ctx.observer.get().cloned();
     if let Some(observer) = &observer {
-        emit_derivation(observer, operation, &derivation);
+        emit_derivation(observer, observer.operation(), &derivation);
     }
     let adopt = match adoption(ctx, &current, derivation?) {
         Some(new_lfb) => {
@@ -555,24 +608,36 @@ pub(crate) async fn derive_last_finalized_block(
         }
         None => None,
     };
-    Ok(DerivedLfb {
+    Ok(Some(DerivedLfb {
         current,
+        sigma,
         adopt,
         started,
-    })
+    }))
 }
 
 pub(crate) async fn adopt_derived(
     ctx: &FinalizationContext,
-    derived: DerivedLfb,
+    derived: Option<DerivedLfb>,
 ) -> Result<bool, CasperError> {
+    publish_pending_finalizations(ctx)?;
+    let Some(derived) = derived else {
+        return Ok(false);
+    };
     let observer = ctx.observer.get().cloned();
     let operation = observer.as_ref().and_then(|observer| observer.operation());
     let observed = observer.as_ref().map(|observer| (observer, operation));
     let adopted = match &derived.adopt {
         Some((new_lfb, ft_value)) => {
-            adopt(ctx, &derived.current, new_lfb, *ft_value, observed).await?;
-            true
+            adopt(
+                ctx,
+                &derived.current,
+                derived.sigma,
+                new_lfb,
+                *ft_value,
+                observed,
+            )
+            .await?
         }
         None => false,
     };
@@ -665,10 +730,13 @@ fn adoption(
 async fn adopt(
     ctx: &FinalizationContext,
     current: &crate::rust::finality::floor::Floor,
+    sigma: crate::rust::finality::floor_runner::SnapshotId,
     new_lfb: &crate::rust::finality::floor::Floor,
     ft_value: f32,
     observed: Option<(&crate::rust::soak_observer::ObserverBinding, Option<u64>)>,
-) -> Result<(), CasperError> {
+) -> Result<bool, CasperError> {
+    use block_storage::rust::dag::finalization_commit::{CommitOutcome, CommitRefusal};
+
     use crate::rust::soak_observer::EventKind;
     // `extends_previous_lfb` is true by construction (an adoption captures the
     // current LFB); soak dashboards alarm on the field, so it stays.
@@ -697,32 +765,195 @@ async fn adopt(
     };
     emit(EventKind::EffectAttempt, None);
     let effect_started = std::time::Instant::now();
-    let persisted = ctx
+    let ftt = ctx.ftt();
+    let outcome = ctx
         .block_dag_storage
-        .record_directly_finalized(new_lfb.hash.clone(), ft_value, |finalized| {
-            process_finalized(ctx, finalized.clone(), &new_lfb.hash)
-        })
-        .await;
-    emit(EventKind::EffectReturn, Some(persisted.is_ok()));
-    persisted.map_err(CasperError::KvStoreError)?;
+        .commit_lfb(new_lfb.hash.clone(), ft_value, |dag_now| {
+            validate_commit(
+                dag_now,
+                &ctx.block_store,
+                current,
+                sigma,
+                new_lfb,
+                ftt,
+                ALIN_POLICY,
+            )
+        });
+    let persisted: Result<bool, KvStoreError> = match outcome {
+        Ok(CommitOutcome::Committed(marker)) => publish_finalization(ctx, &marker).map(|()| true),
+        Ok(CommitOutcome::Refused(refusal)) => {
+            metrics::counter!(
+                crate::rust::metrics_constants::COMMIT_LFB_REFUSALS_METRIC,
+                "source" => crate::rust::metrics_constants::CASPER_METRICS_SOURCE,
+                "kind" => refusal.kind()
+            )
+            .increment(1);
+            match &refusal {
+                CommitRefusal::ALinViolation(detail) => tracing::error!(
+                    target: "f1r3fly.finalizer",
+                    detail,
+                    "commit refused: A-LIN violation"
+                ),
+                other => tracing::info!(
+                    target: "f1r3fly.finalizer",
+                    refusal = ?other,
+                    candidate = %PrettyPrinter::build_string_bytes(&new_lfb.hash),
+                    "commit refused at validation; the next cycle derives again"
+                ),
+            }
+            Ok(false)
+        }
+        Err(error) => Err(error),
+    };
+    emit(EventKind::EffectReturn, Some(matches!(persisted, Ok(true))));
+    let committed = persisted.map_err(CasperError::KvStoreError)?;
     tracing::debug!(
         target: "f1r3fly.casper.finalizer.effect.timing",
-        "record_directly_finalized_total_ms={}",
+        "commit_lfb_total_ms={}",
         effect_started.elapsed().as_millis()
     );
-    ctx.divergence_monitor.on_advance();
+    if committed {
+        ctx.divergence_monitor.on_advance();
+    }
+    Ok(committed)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ALinPolicy {
+    Halt,
+    Alarm,
+}
+
+pub(crate) const ALIN_POLICY: ALinPolicy = ALinPolicy::Alarm;
+
+pub fn validate_commit(
+    dag_now: &block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation,
+    block_store: &KeyValueBlockStore,
+    derived_against: &crate::rust::finality::floor::Floor,
+    sigma: crate::rust::finality::floor_runner::SnapshotId,
+    candidate: &crate::rust::finality::floor::Floor,
+    ftt: crate::rust::safety::clique_oracle::FtThreshold,
+    alin: ALinPolicy,
+) -> Result<(), block_storage::rust::dag::finalization_commit::CommitRefusal> {
+    use block_storage::rust::dag::finalization_commit::CommitRefusal;
+    let lfb_now = dag_now.last_finalized_block();
+    let lfb_height = dag_now.block_number(&lfb_now).ok_or_else(|| {
+        CommitRefusal::StateChanged("the current LFB is not in the DAG".to_string())
+    })?;
+    if lfb_now == candidate.hash || lfb_height >= candidate.block_number {
+        return Err(CommitRefusal::NotHigher { lfb_height });
+    }
+    if lfb_now != derived_against.hash {
+        let floor_now = crate::rust::finality::floor::Floor {
+            hash: lfb_now.clone(),
+            block_number: lfb_height,
+        };
+        let mut memo = crate::rust::finality::floor::IntroducedSigsMemo::new();
+        match crate::rust::finality::floor::state_contains_metered(
+            &shared::rust::dag::observation_work::NoopWork,
+            dag_now,
+            block_store,
+            candidate,
+            &floor_now,
+            &mut memo,
+        ) {
+            Ok(true) => {}
+            Ok(false) => {
+                return Err(CommitRefusal::StateChanged(format!(
+                    "candidate {} does not contain the settled state of the current LFB {}",
+                    PrettyPrinter::build_string_bytes(&candidate.hash),
+                    PrettyPrinter::build_string_bytes(&lfb_now)
+                )))
+            }
+            Err(error) => {
+                return Err(CommitRefusal::StateChanged(format!(
+                    "containment against the current LFB is undecidable: {error}"
+                )))
+            }
+        }
+    }
+    if ftt.num <= 0 {
+        match crate::rust::finality::floor_runner::snapshot_id(dag_now, ftt) {
+            Ok(now) if now == sigma => {}
+            _ => {
+                return Err(CommitRefusal::StateChanged(
+                    "the snapshot changed under a non-positive fault-tolerance threshold"
+                        .to_string(),
+                ))
+            }
+        }
+    }
+    match dag_now.is_in_main_chain(&lfb_now, &candidate.hash) {
+        Ok(true) => Ok(()),
+        Ok(false) => {
+            let detail = format!(
+                "candidate {} at {} is not on the main-parent chain of the current LFB {} at {}",
+                PrettyPrinter::build_string_bytes(&candidate.hash),
+                candidate.block_number,
+                PrettyPrinter::build_string_bytes(&lfb_now),
+                lfb_height
+            );
+            metrics::counter!(
+                crate::rust::metrics_constants::COMMIT_LFB_ALIN_VIOLATIONS_METRIC,
+                "source" => crate::rust::metrics_constants::CASPER_METRICS_SOURCE
+            )
+            .increment(1);
+            match alin {
+                ALinPolicy::Halt => Err(CommitRefusal::ALinViolation(detail)),
+                ALinPolicy::Alarm => {
+                    tracing::error!(target: "f1r3fly.finalizer", detail, "A-LIN violation at commit");
+                    Ok(())
+                }
+            }
+        }
+        Err(error) => Err(CommitRefusal::StateChanged(format!(
+            "the main-chain walk failed: {error}"
+        ))),
+    }
+}
+
+fn publish_finalization(
+    ctx: &FinalizationContext,
+    marker: &block_storage::rust::dag::finalization_commit::FinalizationCommitMarker,
+) -> Result<(), KvStoreError> {
+    process_finalized(
+        ctx,
+        &marker.finalized_in_order(),
+        &marker.directly.0,
+        marker.commit_epoch,
+    )?;
+    ctx.block_dag_storage
+        .mark_events_published(marker.commit_epoch)
+}
+
+fn publish_pending_finalizations(ctx: &FinalizationContext) -> Result<(), CasperError> {
+    for marker in ctx.block_dag_storage.pending_finalization_events()? {
+        metrics::counter!(
+            crate::rust::metrics_constants::FINALIZATION_EVENTS_REPLAYED_METRIC,
+            "source" => crate::rust::metrics_constants::CASPER_METRICS_SOURCE
+        )
+        .increment(1);
+        tracing::info!(
+            target: "f1r3fly.finalizer",
+            commit_epoch = marker.commit_epoch,
+            lfb = %PrettyPrinter::build_string_bytes(&marker.directly.0),
+            "publishing the events of a committed finalization again"
+        );
+        publish_finalization(ctx, &marker)?;
+    }
     Ok(())
 }
 
 /// The effects of newly finalized blocks: the runtime's block-index cache
 /// entry is dropped and `BlockFinalised` is published for each.
-async fn process_finalized(
+fn process_finalized(
     ctx: &FinalizationContext,
-    finalized: HashSet<BlockHash>,
+    finalized: &[BlockHash],
     directly_finalized: &BlockHash,
+    commit_epoch: u64,
 ) -> Result<(), KvStoreError> {
     let started = std::time::Instant::now();
-    for block_hash in &finalized {
+    for block_hash in finalized {
         let block = ctx.block_store.get(block_hash)?.ok_or_else(|| {
             KvStoreError::KeyNotFound(format!(
                 "finalized block {} not present in store",
@@ -732,7 +963,7 @@ async fn process_finalized(
         ctx.runtime_manager.remove_block_index_cache(block_hash);
         log_finalized_deploys(&block, block_hash == directly_finalized);
         ctx.event_publisher
-            .publish(finalised_event(&block))
+            .publish(finalised_event(&block).with_commit_epoch(commit_epoch))
             .map_err(|e| KvStoreError::IoError(e.to_string()))?;
     }
     tracing::debug!(
