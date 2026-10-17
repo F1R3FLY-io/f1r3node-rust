@@ -18,7 +18,9 @@ This document tracks implementation work through **epics** (logical groupings of
 - Completed work: `docs/CompletedTasks.md`
 - Backlog: `docs/Backlog.md`
 
-**Shared Coordination File:** `/tmp/migrationPlan.md` (read by agents in both f1r3node and f1r3node-rust)
+**Guide:** The [task tracking guide](task-tracking.md) gives the epic, task, claim, and value stream rules.
+
+The migration epics, EPIC-003 through EPIC-008, used a local coordination file, `/tmp/migrationPlan.md`. Other work does not use the file.
 
 ---
 
