@@ -33,37 +33,10 @@ correctness — proved, model-checked, and tested — is the organizing concern.
 
 An AVL index stores keys in a balanced binary search tree.
 At each node, the child heights differ by at most one.
-Native accounting uses stable arena positions and reserves lookup, growth, and insertion work before publication.
+Native accounting uses stable arena positions.
 
 **Preferred usage.** Use this term for the private native-accounting indexes.
 *Distinguish from* the immutable sorted indexes used to check imported budget traces.
-
-**Note (DR-131).** This branch removed host-work metering (`75de2dc39`). The
-three host-work terms below name the host-work API that `dev` keeps. Restore
-the metering of this branch with `git revert 75de2dc39`.
-
-### Host-work unit
-
-A host-work unit measures one deterministic part of node work.
-It does not represent a token, a phlogiston charge, or a wallet debit.
-
-**Preferred usage.** Use this term for one unit in a named host-work dimension.
-*Distinguish from* semantic resource cost, which controls economic settlement.
-
-### Host-work budget
-
-A host-work budget contains independent dimension counters, one limit schedule, and one sticky rejection state for a deployment boundary.
-
-**Preferred usage.** Use this term for deterministic node-work protection across play and replay.
-*Distinguish from* the economic budget that reserves SystemVault custody.
-
-### Host-work limit schedule
-
-A host-work limit schedule maps each host-work dimension to one unsigned integer limit.
-The protocol version must bind one schedule for all validating nodes.
-
-**Preferred usage.** Use this term for the complete versioned mapping.
-*Avoid*: host-work limit, when the text refers to more than one dimension.
 
 ### Soak harness
 

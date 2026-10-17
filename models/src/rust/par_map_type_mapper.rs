@@ -7,7 +7,7 @@ pub struct ParMapTypeMapper;
 
 impl ParMapTypeMapper {
     pub fn emap_to_par_map(emap: EMap) -> ParMap {
-        let ps: Vec<(Par, Par)> = emap.kvs.into_iter().map(Self::unzip).collect();
+        let ps: Vec<(Par, Par)> = emap.kvs.iter().map(Self::unzip).collect();
         ParMap::new(ps, emap.connective_used, emap.locally_free, emap.remainder)
     }
 
@@ -27,7 +27,9 @@ impl ParMapTypeMapper {
         }
     }
 
-    fn unzip(kvp: KeyValuePair) -> (Par, Par) { (kvp.key.unwrap(), kvp.value.unwrap()) }
+    fn unzip(kvp: &KeyValuePair) -> (Par, Par) {
+        (kvp.key.clone().unwrap(), kvp.value.clone().unwrap())
+    }
 
     fn zip(k: Par, v: Par) -> KeyValuePair {
         KeyValuePair {

@@ -236,19 +236,13 @@ fn numeric_merge_zero_difference_does_not_restore_consumed_authority() {
 #[test]
 fn numeric_merge_netted_intermediate_authority_does_not_return() {
     let base = datum(10, None, None);
-    let intermediate = accounted_datum(false, false);
     let final_output = datum(15, Some(CostAuthority::default()), None);
+    // The netted change of a branch that adds and then consumes an accounted
+    // intermediate datum: the intermediate cancels out of both sides.
     let changes = ChannelChange {
-        added: vec![
-            serializers::encode_datum(&intermediate),
-            serializers::encode_datum(&final_output),
-        ],
-        removed: vec![
-            serializers::encode_datum(&base),
-            serializers::encode_datum(&intermediate),
-        ],
-    }
-    .normalized();
+        added: vec![serializers::encode_datum(&final_output)],
+        removed: vec![serializers::encode_datum(&base)],
+    };
     let merged = merge_changes(vec![base], changes, 5, MergeType::IntegerAdd).unwrap();
     assert_eq!(merged.a, final_output.a);
 }

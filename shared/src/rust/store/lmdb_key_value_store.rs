@@ -188,56 +188,6 @@ impl KeyValueStore for LmdbKeyValueStore {
         })
     }
 
-    fn scan_prefix(&self, prefix: &[u8]) -> Result<Vec<(ByteBuffer, ByteBuffer)>, KvStoreError> {
-        in_blocking(|| {
-            let reader = self.env.read_txn()?;
-            let iter = self.db.iter(&reader)?;
-            let mut rows = Vec::new();
-            for result in iter {
-                let (key, value) = result?;
-                if key.starts_with(prefix) {
-                    rows.push((key.to_vec(), value));
-                }
-            }
-            drop(reader);
-            rows.sort_by(|left, right| left.0.cmp(&right.0));
-            Ok(rows)
-        })
-    }
-
-    fn scan_prefix_exact_len(
-        &self,
-        prefix: &[u8],
-        key_length: usize,
-    ) -> Result<Vec<(ByteBuffer, ByteBuffer)>, KvStoreError> {
-        if prefix.len() > key_length {
-            return Ok(Vec::new());
-        }
-        in_blocking(|| {
-            let reader = self.env.read_txn()?;
-            let raw_db = self.db.remap_key_type::<Bytes>();
-            let encoded_key = bincode::serialize(&vec![0u8; key_length])?;
-            let header_length = encoded_key.len().checked_sub(key_length).ok_or_else(|| {
-                KvStoreError::SerializationError(
-                    "LMDB composite key encoding is shorter than its payload".to_string(),
-                )
-            })?;
-            let mut encoded_prefix = encoded_key[..header_length].to_vec();
-            encoded_prefix.extend_from_slice(prefix);
-            let iter = raw_db.prefix_iter(&reader, encoded_prefix.as_slice())?;
-            let mut rows = Vec::new();
-            for result in iter {
-                let (encoded, value) = result?;
-                let key: Vec<u8> = bincode::deserialize(encoded)?;
-                if key.len() == key_length && key.starts_with(prefix) {
-                    rows.push((key, value));
-                }
-            }
-            drop(reader);
-            Ok(rows)
-        })
-    }
-
     fn strict_atomic_mutate(
         &self,
         mutations: &[AtomicStoreMutation<'_>],
@@ -773,40 +723,6 @@ mod batched_put_tests {
             store.get_one(&b"alias".to_vec()).unwrap(),
             Some(b"value".to_vec())
         );
-    }
-
-    #[test]
-    fn prefix_scan_is_isolated_and_lexicographically_ordered() {
-        let env = open_env();
-        let store = open_store(&env, "prefix");
-        store
-            .put(kv(&[("p/2", "two"), ("other", "x"), ("p/1", "one")]))
-            .unwrap();
-
-        let rows = store.scan_prefix(b"p/").unwrap();
-
-        assert_eq!(rows, kv(&[("p/1", "one"), ("p/2", "two")]));
-    }
-
-    #[test]
-    fn exact_length_prefix_scan_uses_the_encoded_composite_key_prefix() {
-        let env = open_env();
-        let store = open_store(&env, "composite-prefix");
-        store
-            .put(vec![
-                (vec![1, 7, 9, 1], vec![1]),
-                (vec![1, 7, 9, 0], vec![2]),
-                (vec![1, 7, 9], vec![3]),
-                (vec![1, 8, 9, 0], vec![4]),
-            ])
-            .unwrap();
-
-        let rows = store.scan_prefix_exact_len(&[1, 7], 4).unwrap();
-
-        assert_eq!(rows, vec![
-            (vec![1, 7, 9, 0], vec![2]),
-            (vec![1, 7, 9, 1], vec![1]),
-        ]);
     }
 
     #[test]
