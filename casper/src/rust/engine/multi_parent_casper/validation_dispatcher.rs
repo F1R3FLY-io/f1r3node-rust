@@ -142,7 +142,7 @@ async fn run_validation_steps<T: TransportLayer + Send + Sync>(
         let (validate_block_checkpoint_result, t2) = timed_step(
             "checkpoint",
             BLOCK_VALIDATION_STEP_CHECKPOINT_TIME_METRIC,
-            validate_block_checkpoint(
+            crate::rust::util::offload::off_async_workers(validate_block_checkpoint(
                 block,
                 &this.block_store,
                 snapshot,
@@ -150,7 +150,7 @@ async fn run_validation_steps<T: TransportLayer + Send + Sync>(
                 Some(&this.rejected_deploy_buffer),
                 floor_ctx.as_ref(),
                 local_validator.as_ref(),
-            ),
+            )),
         )
         .await?;
         tracing::debug!(target: "f1r3fly.casper", "transactions-validated");
