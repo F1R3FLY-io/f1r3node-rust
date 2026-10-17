@@ -1236,7 +1236,7 @@ iteration_lfb_spread() {
 # the soak.
 emit_iteration_metrics() {
 	local iteration_dir="$1" iteration="$2" provider="$3" \
-		iter_started="$4" iter_finished="$5" exit_code="$6"
+		iter_started="$4" iter_finished="$5" exit_code="$6" deadline_truncated="${7:-false}"
 	command -v jq >/dev/null || return 0
 	local summary_line passed failed skipped errors rss_peak cpu_peak latency lat_p50 lat_p95 lat_p99 lat_n too_far_ahead
 	summary_line="$(grep -E '^=+ .* in [0-9.]+s( \([^)]*\))? =+$' "$iteration_dir/pytest.log" 2>/dev/null | tail -1 || true)"
@@ -1287,6 +1287,7 @@ emit_iteration_metrics() {
 		--argjson started "$iter_started" \
 		--argjson finished "$iter_finished" \
 		--argjson exit_code "$exit_code" \
+		--argjson deadline_truncated "$deadline_truncated" \
 		--argjson passed "$passed" \
 		--argjson failed "$failed" \
 		--argjson skipped "$skipped" \
@@ -1303,6 +1304,7 @@ emit_iteration_metrics() {
 		'{iteration: $iteration, provider: $provider,
       started_at: $started, finished_at: $finished,
       duration_s: ($finished - $started), exit_code: $exit_code,
+      deadline_truncated: $deadline_truncated,
       pytest: {passed: $passed, failed: $failed, skipped: $skipped, errors: $errors},
       rss_peak_mb: $rss_peak,
       cpu_peak_pct: $cpu_peak,
@@ -2133,11 +2135,15 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
 		if ! jq -e '.capture_complete == true' "$OUTPUT_DIR/casper-history/$(printf '%08d' "$ITERATIONS").json" >/dev/null; then break; fi
 		continue
 	fi
+	DEADLINE_TRUNCATED=false
+	if [ "$STATUS" -eq 124 ] && [ "$(date +%s)" -ge "$DEADLINE" ]; then
+		DEADLINE_TRUNCATED=true
+	fi
 	emit_iteration_metrics "$ITERATION_DIR" "$ITERATIONS" "$PROVIDER" \
-		"$ITER_STARTED" "$ITER_FINISHED" "$STATUS" || true
+		"$ITER_STARTED" "$ITER_FINISHED" "$STATUS" "$DEADLINE_TRUNCATED" || true
 	INFLIGHT_ITERATION=0
 
-	if [ "$STATUS" -eq 124 ] && [ "$(date +%s)" -ge "$DEADLINE" ]; then
+	if [ "$DEADLINE_TRUNCATED" = true ]; then
 		printf '%s\n' "deadline reached during iteration $ITERATIONS" >"$ITERATION_DIR/deadline.txt"
 		break
 	fi
