@@ -23,7 +23,8 @@ set -euo pipefail
 creator="created by \`just backmerge\`"
 review=""
 if [ -n "${BACKMERGE_TRIGGERED_BY:-}" ]; then
-	[[ "$BACKMERGE_TRIGGERED_BY" =~ ^[A-Za-z0-9](-?[A-Za-z0-9])*(\[bot\])?$ ]] ||
+	login="${BACKMERGE_TRIGGERED_BY%"[bot]"}"
+	[[ ${#login} -le 39 && "$BACKMERGE_TRIGGERED_BY" =~ ^[A-Za-z0-9](-?[A-Za-z0-9])*(\[bot\])?$ ]] ||
 		{ echo "ERROR: BACKMERGE_TRIGGERED_BY is not a GitHub login." >&2; exit 2; }
 	creator="created by the Promote and Back-merge workflow for @$BACKMERGE_TRIGGERED_BY"
 	review="

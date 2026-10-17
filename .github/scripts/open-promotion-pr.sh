@@ -22,7 +22,8 @@ set -euo pipefail
 creator="created by \`just promote\`"
 review=""
 if [ -n "${PROMOTE_TRIGGERED_BY:-}" ]; then
-	[[ "$PROMOTE_TRIGGERED_BY" =~ ^[A-Za-z0-9](-?[A-Za-z0-9])*(\[bot\])?$ ]] ||
+	login="${PROMOTE_TRIGGERED_BY%"[bot]"}"
+	[[ ${#login} -le 39 && "$PROMOTE_TRIGGERED_BY" =~ ^[A-Za-z0-9](-?[A-Za-z0-9])*(\[bot\])?$ ]] ||
 		{ echo "ERROR: PROMOTE_TRIGGERED_BY is not a GitHub login." >&2; exit 2; }
 	creator="created by the Promote and Back-merge workflow for @$PROMOTE_TRIGGERED_BY"
 	review="

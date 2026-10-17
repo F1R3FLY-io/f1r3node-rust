@@ -103,6 +103,8 @@ jobs:
               BACKMERGE_REPOSITORY="$REPOSITORY" BACKMERGE_TRIGGERED_BY="$TRIGGERED_BY" \
                 bash .github/scripts/open-backmerge-pr.sh
               ;;
+            # The form allows only the two choices, but an API dispatch can
+            # send any value. Keep this guard.
             *)
               echo "::error::Unknown operation '$OPERATION'. Use promote or backmerge."
               exit 1
