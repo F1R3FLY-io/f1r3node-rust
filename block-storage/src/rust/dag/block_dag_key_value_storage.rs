@@ -1045,9 +1045,7 @@ impl BlockDagKeyValueStorage {
         let genesis_hash_kv_store = kvm.store("genesis-hash".to_string()).await?;
         let genesis_hash_db: KeyValueTypedStoreImpl<String, BlockHashSerde> =
             KeyValueTypedStoreImpl::new(genesis_hash_kv_store);
-        let commit_marker_kv_store = kvm
-            .store("finalization-commit-marker".to_string())
-            .await?;
+        let commit_marker_kv_store = kvm.store("finalization-commit-marker".to_string()).await?;
         let lfb_pointer_kv_store = kvm.store("lfb-pointer".to_string()).await?;
 
         let store_mirror = DagStoreMirror::load(&latest_messages_db, &invalid_blocks_db)?;
@@ -1723,11 +1721,11 @@ impl BlockDagKeyValueStorage {
                 },
             };
 
-            let _ = self.ft_lower_bound.fetch_update(
-                Ordering::Relaxed,
-                Ordering::Relaxed,
-                |bits| (ft_value < f32::from_bits(bits)).then(|| ft_value.to_bits()),
-            );
+            let _ =
+                self.ft_lower_bound
+                    .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |bits| {
+                        (ft_value < f32::from_bits(bits)).then(|| ft_value.to_bits())
+                    });
 
             let metadata_guard = self.block_metadata_index.write();
             let (metadata_rows, _) =
@@ -1768,11 +1766,8 @@ impl BlockDagKeyValueStorage {
         if !self.commit_marker_index.raw_store().non_empty()? {
             return Ok(Vec::new());
         }
-        let mut markers: Vec<crate::rust::dag::finalization_commit::FinalizationCommitMarker> = self
-            .commit_marker_index
-            .to_map()?
-            .into_values()
-            .collect();
+        let mut markers: Vec<crate::rust::dag::finalization_commit::FinalizationCommitMarker> =
+            self.commit_marker_index.to_map()?.into_values().collect();
         markers.sort_by_key(|marker| marker.commit_epoch);
         Ok(markers)
     }

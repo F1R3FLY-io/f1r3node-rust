@@ -1074,7 +1074,8 @@ pub(crate) fn sound_with_inherited_metered<W: WorkMeter>(
     other: &Floor,
     memo: &mut IntroducedSigsMemo,
 ) -> Result<bool, CasperError> {
-    Ok(if state_contains_metered(meter, dag, block_store, cand, other, memo)? {
+    Ok(
+        if state_contains_metered(meter, dag, block_store, cand, other, memo)? {
             true
         } else if !dag.is_dag_ancestor_metered(meter, &other.hash, &cand.hash)? {
             // `other` is NOT in `cand`'s DAG past, so its chains are
@@ -1119,7 +1120,8 @@ pub(crate) fn sound_with_inherited_metered<W: WorkMeter>(
             }
         } else {
             false
-        })
+        },
+    )
 }
 
 pub(crate) fn incompatible_fork_error(parents: &[BlockHash], candidates: &[Floor]) -> CasperError {
@@ -2535,23 +2537,42 @@ mod frontier_determinism_tests {
     #[test]
     fn commit_validation_rechecks_containment_when_the_lfb_moved() {
         use block_storage::rust::dag::finalization_commit::CommitRefusal;
+
         use crate::rust::engine::multi_parent_casper::finalization_runner::{
             validate_commit, ALinPolicy,
         };
         use crate::rust::finality::floor_runner::snapshot_id;
         let (dag, store, [e, c, _d, _m, t]) = drop_fixture();
         let thr = FtThreshold::from_f32_lossy(0.1);
-        let derived_against = Floor { hash: e.clone(), block_number: 0 };
-        let candidate = Floor { hash: t.clone(), block_number: 3 };
+        let derived_against = Floor {
+            hash: e.clone(),
+            block_number: 0,
+        };
+        let candidate = Floor {
+            hash: t.clone(),
+            block_number: 3,
+        };
         let sigma = snapshot_id(&with_lfb(&dag, &e), thr).unwrap();
 
         let unchanged = validate_commit(
-            &with_lfb(&dag, &e), &store, &derived_against, sigma, &candidate, thr, ALinPolicy::Halt,
+            &with_lfb(&dag, &e),
+            &store,
+            &derived_against,
+            sigma,
+            &candidate,
+            thr,
+            ALinPolicy::Halt,
         );
         assert_eq!(unchanged, Ok(()));
 
         let moved = validate_commit(
-            &with_lfb(&dag, &c), &store, &derived_against, sigma, &candidate, thr, ALinPolicy::Halt,
+            &with_lfb(&dag, &c),
+            &store,
+            &derived_against,
+            sigma,
+            &candidate,
+            thr,
+            ALinPolicy::Halt,
         );
         assert!(
             matches!(moved, Err(CommitRefusal::StateChanged(_))),
@@ -2562,6 +2583,7 @@ mod frontier_determinism_tests {
     #[test]
     fn commit_validation_refuses_a_candidate_not_above_the_lfb() {
         use block_storage::rust::dag::finalization_commit::CommitRefusal;
+
         use crate::rust::engine::multi_parent_casper::finalization_runner::{
             validate_commit, ALinPolicy,
         };
@@ -2570,13 +2592,19 @@ mod frontier_determinism_tests {
         let thr = FtThreshold::from_f32_lossy(0.1);
         let now = with_lfb(&dag, &m);
         let sigma = snapshot_id(&now, thr).unwrap();
-        let derived_against = Floor { hash: m.clone(), block_number: 2 };
+        let derived_against = Floor {
+            hash: m.clone(),
+            block_number: 2,
+        };
         let out = validate_commit(
             &now,
             &store,
             &derived_against,
             sigma,
-            &Floor { hash: c.clone(), block_number: 1 },
+            &Floor {
+                hash: c.clone(),
+                block_number: 1,
+            },
             thr,
             ALinPolicy::Halt,
         );
@@ -2586,6 +2614,7 @@ mod frontier_determinism_tests {
     #[test]
     fn a_candidate_off_the_lfb_main_chain_is_an_alin_violation() {
         use block_storage::rust::dag::finalization_commit::CommitRefusal;
+
         use crate::rust::engine::multi_parent_casper::finalization_runner::{
             validate_commit, ALinPolicy,
         };
@@ -2594,14 +2623,35 @@ mod frontier_determinism_tests {
         let thr = FtThreshold::from_f32_lossy(0.1);
         let now = with_lfb(&dag, &d);
         let sigma = snapshot_id(&now, thr).unwrap();
-        let derived_against = Floor { hash: d.clone(), block_number: 1 };
-        let candidate = Floor { hash: t.clone(), block_number: 3 };
+        let derived_against = Floor {
+            hash: d.clone(),
+            block_number: 1,
+        };
+        let candidate = Floor {
+            hash: t.clone(),
+            block_number: 3,
+        };
         let halted = validate_commit(
-            &now, &store, &derived_against, sigma, &candidate, thr, ALinPolicy::Halt,
+            &now,
+            &store,
+            &derived_against,
+            sigma,
+            &candidate,
+            thr,
+            ALinPolicy::Halt,
         );
-        assert!(matches!(halted, Err(CommitRefusal::ALinViolation(_))), "got {halted:?}");
+        assert!(
+            matches!(halted, Err(CommitRefusal::ALinViolation(_))),
+            "got {halted:?}"
+        );
         let alarmed = validate_commit(
-            &now, &store, &derived_against, sigma, &candidate, thr, ALinPolicy::Alarm,
+            &now,
+            &store,
+            &derived_against,
+            sigma,
+            &candidate,
+            thr,
+            ALinPolicy::Alarm,
         );
         assert_eq!(alarmed, Ok(()));
     }
@@ -2609,13 +2659,20 @@ mod frontier_determinism_tests {
     #[test]
     fn a_changed_snapshot_refuses_the_commit_under_a_non_positive_threshold() {
         use block_storage::rust::dag::finalization_commit::CommitRefusal;
+
         use crate::rust::engine::multi_parent_casper::finalization_runner::{
             validate_commit, ALinPolicy,
         };
         use crate::rust::finality::floor_runner::snapshot_id;
         let (dag, store, [e, _c, _d, m, t]) = drop_fixture();
-        let derived_against = Floor { hash: e.clone(), block_number: 0 };
-        let candidate = Floor { hash: m.clone(), block_number: 2 };
+        let derived_against = Floor {
+            hash: e.clone(),
+            block_number: 0,
+        };
+        let candidate = Floor {
+            hash: m.clone(),
+            block_number: 2,
+        };
         let at_derivation = with_lfb(&dag, &e);
         let mut later = at_derivation.clone();
         later.latest_messages_map.insert(val(), t.clone());
@@ -2638,7 +2695,13 @@ mod frontier_determinism_tests {
                 Ok(())
             );
             let out = validate_commit(
-                &later, &store, &derived_against, sigma, &candidate, thr, ALinPolicy::Halt,
+                &later,
+                &store,
+                &derived_against,
+                sigma,
+                &candidate,
+                thr,
+                ALinPolicy::Halt,
             );
             assert_eq!(
                 matches!(out, Err(CommitRefusal::StateChanged(_))),
@@ -2655,7 +2718,10 @@ mod frontier_determinism_tests {
         };
         let (base, v, (g, _b1, b2, b3)) = mk_dag();
         let thr = FtThreshold::from_f32_lossy(0.1);
-        let current = Floor { hash: g.clone(), block_number: 0 };
+        let current = Floor {
+            hash: g.clone(),
+            block_number: 0,
+        };
         let mut at_b2 = base.clone();
         at_b2.latest_messages_map.insert(v.clone(), b2.clone());
         let mut at_b3 = base.clone();
@@ -2669,9 +2735,16 @@ mod frontier_determinism_tests {
         );
         let mut last_reset_to = at_b2.clone();
         for round in 0..MAX_CONSECUTIVE_INVALIDATIONS {
-            let (advance, ..) = slot.advance(&NoopWork, &store, Budget::Steps(1)).await.unwrap();
+            let (advance, ..) = slot
+                .advance(&NoopWork, &store, Budget::Steps(1))
+                .await
+                .unwrap();
             assert!(matches!(advance, Advance::Yielded));
-            let next = if round % 2 == 0 { at_b3.clone() } else { at_b2.clone() };
+            let next = if round % 2 == 0 {
+                at_b3.clone()
+            } else {
+                at_b2.clone()
+            };
             assert_eq!(
                 slot.prepare(next.clone(), current.clone(), thr).unwrap(),
                 Preparation::Reset
@@ -2679,7 +2752,10 @@ mod frontier_determinism_tests {
             last_reset_to = next;
         }
         assert_eq!(slot.invalidations(), MAX_CONSECUTIVE_INVALIDATIONS);
-        let (advance, ..) = slot.advance(&NoopWork, &store, Budget::Steps(1)).await.unwrap();
+        let (advance, ..) = slot
+            .advance(&NoopWork, &store, Budget::Steps(1))
+            .await
+            .unwrap();
         assert!(matches!(advance, Advance::Yielded));
         let other = if last_reset_to.latest_messages_map == at_b2.latest_messages_map {
             at_b3.clone()
@@ -2690,7 +2766,10 @@ mod frontier_determinism_tests {
             slot.prepare(other, current.clone(), thr).unwrap(),
             Preparation::Frozen
         );
-        let (advance, ..) = slot.advance(&NoopWork, &store, Budget::Unlimited).await.unwrap();
+        let (advance, ..) = slot
+            .advance(&NoopWork, &store, Budget::Unlimited)
+            .await
+            .unwrap();
         let Advance::Ready(frozen) = advance else {
             panic!("an unlimited budget finishes the frozen derivation");
         };

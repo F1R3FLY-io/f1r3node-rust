@@ -2309,7 +2309,11 @@ async fn record_directly_finalized_rejects_unknown_hashes_and_propagates_effect_
     );
     assert_eq!(dag.last_finalized_block(), b1.block_hash);
     let pending = dag_storage.pending_finalization_events().unwrap();
-    assert_eq!(pending.len(), 1, "a failed effect leaves its marker pending");
+    assert_eq!(
+        pending.len(),
+        1,
+        "a failed effect leaves its marker pending"
+    );
     assert_eq!(pending[0].directly.0, b1.block_hash);
 }
 
@@ -2394,7 +2398,13 @@ async fn a_restore_anchor_is_finalized_even_when_it_reached_the_dag_as_settled_h
 
 async fn chain_of_three(
     kvm: &mut InMemoryStoreManager,
-) -> (BlockDagKeyValueStorage, BlockMessage, BlockMessage, BlockMessage, BlockMessage) {
+) -> (
+    BlockDagKeyValueStorage,
+    BlockMessage,
+    BlockMessage,
+    BlockMessage,
+    BlockMessage,
+) {
     use block_storage::rust::dag::block_dag_key_value_storage::InsertMode;
     let genesis = genesis_block();
     let b1 = chain_block(1, vec![genesis.block_hash.clone()]);
@@ -2422,10 +2432,10 @@ async fn commit_lfb_writes_metadata_marker_and_pointer_together() {
     };
     assert_eq!(marker.commit_epoch, 1);
     assert_eq!(marker.height, 2);
-    assert_eq!(
-        marker.finalized_in_order(),
-        vec![b1.block_hash.clone(), b2.block_hash.clone()]
-    );
+    assert_eq!(marker.finalized_in_order(), vec![
+        b1.block_hash.clone(),
+        b2.block_hash.clone()
+    ]);
 
     let dag = dag_storage.get_representation().unwrap();
     assert_eq!(dag.last_finalized_block(), b2.block_hash);
@@ -2433,7 +2443,9 @@ async fn commit_lfb_writes_metadata_marker_and_pointer_together() {
     let pointer = dag_storage.lfb_pointer().unwrap().unwrap();
     assert_eq!(pointer.hash.0, b2.block_hash);
     assert_eq!(pointer.commit_epoch, 1);
-    assert_eq!(dag_storage.pending_finalization_events().unwrap(), vec![marker]);
+    assert_eq!(dag_storage.pending_finalization_events().unwrap(), vec![
+        marker
+    ]);
 }
 
 #[tokio::test]
@@ -2455,7 +2467,10 @@ async fn a_refused_commit_changes_nothing() {
     assert_eq!(dag.last_finalized_block(), genesis.block_hash);
     assert!(!dag.is_finalized(&b1.block_hash));
     assert!(dag_storage.lfb_pointer().unwrap().is_none());
-    assert!(dag_storage.pending_finalization_events().unwrap().is_empty());
+    assert!(dag_storage
+        .pending_finalization_events()
+        .unwrap()
+        .is_empty());
 }
 
 #[tokio::test]
@@ -2470,7 +2485,9 @@ async fn an_unpublished_commit_survives_a_restart_with_its_epoch() {
     else {
         panic!("expected a commit");
     };
-    dag_storage.mark_events_published(first.commit_epoch).unwrap();
+    dag_storage
+        .mark_events_published(first.commit_epoch)
+        .unwrap();
     let CommitOutcome::Committed(second) = dag_storage
         .commit_lfb(b3.block_hash.clone(), 0.5, |_| Ok(()))
         .unwrap()
@@ -2484,10 +2501,15 @@ async fn an_unpublished_commit_survives_a_restart_with_its_epoch() {
     let pending = restarted.pending_finalization_events().unwrap();
     assert_eq!(pending, vec![second.clone()]);
     assert_eq!(
-        restarted.get_representation().unwrap().last_finalized_block(),
+        restarted
+            .get_representation()
+            .unwrap()
+            .last_finalized_block(),
         b3.block_hash
     );
-    restarted.mark_events_published(second.commit_epoch).unwrap();
+    restarted
+        .mark_events_published(second.commit_epoch)
+        .unwrap();
     assert!(restarted.pending_finalization_events().unwrap().is_empty());
 }
 
@@ -2532,10 +2554,14 @@ async fn the_lfb_pointer_never_moves_down() {
 
     let committed = |outcome: CommitOutcome| matches!(outcome, CommitOutcome::Committed(_));
     assert!(committed(
-        dag_storage.commit_lfb(b3.block_hash.clone(), 0.5, |_| Ok(())).unwrap()
+        dag_storage
+            .commit_lfb(b3.block_hash.clone(), 0.5, |_| Ok(()))
+            .unwrap()
     ));
     assert!(committed(
-        dag_storage.commit_lfb(b1.block_hash.clone(), 0.5, |_| Ok(())).unwrap()
+        dag_storage
+            .commit_lfb(b1.block_hash.clone(), 0.5, |_| Ok(()))
+            .unwrap()
     ));
     let pointer = dag_storage.lfb_pointer().unwrap().unwrap();
     assert_eq!(pointer.hash.0, b3.block_hash);
