@@ -1133,6 +1133,9 @@ tasks:
     claimed_by: null
     blocked_by: []
     origin: "On 2026-10-07 two integration preflights on master e6564599c failed in the same test_load phase after PR #653 nearly stopped block parking. The user asked for a task that owns the deploy inclusion delay."
+    notes:
+      - "Plan step 3. Plan update of 2026-10-17 (issue #24 comment 6220936428): the scope depends on the TASK-021-16 soak. If that soak has sustained-phase failures, this task fixes the measured cause of the wait from inclusion to finality. If it meets the gate, this task records that no cause remains, and issue #24 can close under EPIC-021 (adaptive-execution.md Q8)."
+      - "Soak 38995239992 (2026-10-17, master ecb16dbca) had 0 failures in 91 sessions and unfinalized=0 in all 459 phases, so it gives no failing sample to attribute."
     problem: "test_load fails with deploys not finalized within 45 s in two phases. The two preflights of 2026-10-07 showed only the high phase. The 24-hour soak 37640235959 shows failures in the high and sustained phases, and the sustained phase fails more often. In failing iterations, the mean p95 inclusion latency rises most in the high phase, and the mean p95 finalization latency rises most in the sustained phase. These are aggregate values. They do not show if each unfinalized deploy was included, so the stage that holds a deploy is not known yet."
     evidence:
       - "Soak 37579803394, preflight: high phase inclusion p50 9.0 s and p95 21.9 s, finalization p95 33.2 s, 7 unfinalized. The other phases had inclusion p95 5.3 to 13.7 s. Sustained finalization p95 31.2 s, 0 unfinalized."
@@ -1206,10 +1209,11 @@ tasks:
     status: pending
     claimed_by: null
     pr_base_branch: null
-    blocked_by: ["PR #741 on master", "PR #748 on master"]
+    blocked_by: ["PR #759 on master", "sample-node-io.sh traces a node of the iteration's own shard"]
     notes:
       - "Plan step 0 of 2026-10-16 (adaptive-execution.md section 10.4). The stall-loop design (https://github.com/F1R3FLY-io/publications/blob/main/cost-accounting/stall-loop-design.pdf) is a code reading without profiling, so the plan measures first."
-      - "PR #748 removes the 8-hour merge exit, so a daily soak runs its full window."
+      - "PR #748 removes the 8-hour merge exit, so a daily soak runs its full window. On 2026-10-17, master contains PR #741 and PR #748."
+      - "Plan update of 2026-10-17 (issue #24 comment 6220936428): weekend soak 38995239992 on master ecb16dbca had 0 test_load failures in 91 sessions (46 Docker, 45 subprocess). The disk floor stopped it at 16.7 h of 57.5 h, because each iteration kept an uncompressed node-metrics file. PR #759 compresses that file. From iteration 84, the strace sample of sample-node-io.sh traced the validator of the active benchmark shard."
     acceptance:
       - "A full-length soak on current dev with the node I/O sampler gives at least 100 test_load sessions on each provider."
       - "The issue #24 report records the failure rate, the phase of each failure, and the stage metrics as the baseline for TASK-021-23."
@@ -1249,7 +1253,8 @@ tasks:
     pr_base_branch: dev
     blocked_by: [TASK-021-17]
     notes:
-      - "Plan step 4. finalization_runner.rs drops a run that exceeds 15 s, so a later run starts again over a larger cone."
+      - "Plan step 5 (moved from step 4 on 2026-10-17, issue #24 comment 6220936428). finalization_runner.rs drops a run that exceeds 15 s, so a later run starts again over a larger cone."
+      - "Soak 38995239992 (2026-10-17): sustained-phase finalizer runs averaged 20 ms on Docker and 25 ms on subprocess, with a highest phase mean of 70 ms. finalizer.run.timeouts and failures were 0 in 91 sessions over 16.7 h. The item has no measured cost yet, so it waits for its place in the TASK-021-17 rank."
     acceptance:
       - "A run that reaches its deadline adopts the highest candidate proven so far. One oracle run cache is shared across a frontier derivation."
       - "finalizer.run.timeouts stays 0 in a 60-hour soak, and the last finalized block never stalls."

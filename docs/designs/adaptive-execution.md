@@ -315,6 +315,14 @@ The design is a code reading, without profiling. Decisions of 2026-10-16 for iss
 | Files of the cost-accounting merge | Issue #24 fixes avoid the 38 files that Track B step B1 expects to conflict where possible. A fix inside one of them carries a note for the cost-accounting lane. |
 | Cost-accounting scope in `dev` | Not decided. TASK-021-16 records a baseline before it lands, and TASK-021-23 repeats the soak after it lands. |
 
+The [plan update of 2026-10-17](https://github.com/F1R3FLY-io/f1r3node-rust/issues/24#issuecomment-6220936428) uses weekend soak 38995239992 on master `ecb16dbca`. That soak had 0 `test_load` failures in 91 sessions (46 Docker, 45 subprocess). It stopped at 16.7 h of 57.5 h on a defect in the soak harness. The update changes three steps:
+
+| Step | Change |
+|---|---|
+| 0 (TASK-021-16) | Two prerequisites: PR #759 on `master`, and an I/O sampler that traces a node of the iteration's own shard. The gate is unchanged. |
+| 3 (TASK-021-13) | The scope depends on the step 0 soak. If that soak meets the gate, the task records that no cause remains (Q8). |
+| 4 and 5 (TASK-021-19) | A1 moves from step 4 to step 5. Finalizer runs averaged 20 to 25 ms in the sustained phase, with 0 timeouts in 91 sessions. |
+
 v6 shards are outside the scope of this design (section 17). On a v6 shard, structural validity checks the sum of the phlo limits of a block against a per-block demand cap. A future v6 descriptor must therefore keep each admission ceiling at or below that protocol cap. Its replay signal becomes the lag of the executed root behind the last finalized block. Open question Q9 records this.
 
 ---
@@ -553,7 +561,7 @@ No question blocks ratification (section 2.1). The Blocks column names the first
 | Q5 | Is a mixed-tier shard test in CI possible on the current runners, or does it need the test net of EPIC-014? | The mixed-tier test of TASK-027-4 | Run the CI test in one process with the multi-node harness of `casper/tests/multi_node`. Give each node different control values. Run a full mixed-tier shard on the EPIC-014 test net. |
 | Q6 | Who owns the adaptation descriptors and soak profiles of the RGB peer clique, Casanova, and Cordial Miners? EPIC-014 gives each mechanism its own test net and design record. | TASK-027-9 | The owner of each adapter owns its descriptor and its soak profile. EPIC-027 owns the controller and the `cbc-casper` binding. |
 | Q7 | Should F1r3fly CbC Casper reward timely participation? `PoS.rhox` pays epoch rewards in proportion to bond only, but Ethereum makes timely work profitable through rewards (section 16). A timeliness reward changes replicated state, so it needs its own design and a CbC claim (decision A2). | No EPIC-027 task | Leave it open, and start a separate design if the shard needs a timeliness incentive. |
-| Q8 | Does the close-out of issue #24 wait for this design? Decisions A5 and A6 give it to EPIC-027, but soak 38501465484 measured 1.9% without a controller (section 3). | TASK-027-8 | Keep A5 and A6 for ratification, and decide Q8 after the first full-length soak with PR #741. If that soak meets gates 1 and 2 of section 14.1 and TASK-021-13 resolves Q1, close issue #24 under EPIC-021 and keep EPIC-027 for US-012. |
+| Q8 | Does the close-out of issue #24 wait for this design? Decisions A5 and A6 give it to EPIC-027, but soak 38501465484 measured 1.9% without a controller (section 3). | TASK-027-8 | Keep A5 and A6 for ratification, and decide Q8 after the first full-length soak with PR #741 and PR #759 (TASK-021-16). If that soak meets gates 1 and 2 of section 14.1 and TASK-021-13 resolves Q1, close issue #24 under EPIC-021 and keep EPIC-027 for US-012 (section 10.4 gives the step 3 rule for a soak with no sustained-phase failures). |
 | Q9 | Does a v6 shard get its own adaptation descriptor? Under cost-accounted order-then-execute, the per-block demand cap is a validity rule, and replay leaves the consensus path (section 10.4). | A v6 binding, outside EPIC-027 | Decide when the cost-accounting scope in `dev` is decided. A v6 descriptor keeps each admission ceiling at or below the protocol demand cap. |
 
 ---
