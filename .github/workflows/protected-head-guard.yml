@@ -1,0 +1,50 @@
+name: Protected Head Guard
+
+# Closes a pull request from this repository whose head is master or dev.
+#
+# "Update branch" on such a pull request merges the base into the protected
+# head through the admin bypass of the ruleset. On #747 (head master, base dev)
+# it pushed dev onto master outside promotion (bf4915d57, 2026-10-16). A closed
+# pull request has no "Update branch" button and cannot merge.
+#
+# pull_request_target runs this file and the checked-out script from the base
+# branch, never from the pull request, so the write token never meets code
+# that the pull request changed. pull_request_target also runs when the pull
+# request has a merge conflict, which pull_request does not. The Promotion
+# Source job in ci.yml reports the same rule with a read-only token.
+on:
+  pull_request_target:
+    types: [opened, reopened, synchronize, edited]
+
+permissions: {}
+
+jobs:
+  guard:
+    name: Protected Head Guard
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      (github.head_ref == 'master' || github.head_ref == 'dev')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      # No ref: under pull_request_target, checkout fetches the base branch.
+      - name: Checkout base branch scripts
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+
+      - name: Close the pull request
+        shell: bash -euo pipefail {0}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+          HEAD_REF: ${{ github.head_ref }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: .github/scripts/check-promotion-source.sh

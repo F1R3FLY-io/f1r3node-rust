@@ -75,6 +75,13 @@ pub struct CasperLaunchImpl<T: TransportLayer + Send + Sync + Clone + 'static> {
     disable_state_exporter: bool,
     /// Shared reference to heartbeat signal for triggering immediate wake on deploy
     heartbeat_signal_ref: crate::rust::heartbeat_signal::HeartbeatSignalRef,
+    /// Operator-supplied static-provisioning bundle, projected from
+    /// `node::configuration::provisioning_merge::merge_and_validate`
+    /// at boot.  Threaded verbatim into
+    /// `Genesis.fs_bundle` on the ceremony-master path so every
+    /// validator's genesis block carries the same operator-visible
+    /// cap bundle.
+    fs_bundle: Vec<crate::rust::genesis::contracts::fs_genesis::BundleEntry>,
     state_items_tx: Option<
         tokio::sync::mpsc::Sender<
             models::rust::casper::protocol::casper_message::StoreItemsMessage,
@@ -141,6 +148,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
         disable_state_exporter: bool,
         heartbeat_signal_ref: crate::rust::heartbeat_signal::HeartbeatSignalRef,
         standalone: bool,
+        fs_bundle: Vec<crate::rust::genesis::contracts::fs_genesis::BundleEntry>,
         state_items_tx: Option<
             tokio::sync::mpsc::Sender<
                 models::rust::casper::protocol::casper_message::StoreItemsMessage,
@@ -231,6 +239,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             trim_state,
             disable_state_exporter,
             heartbeat_signal_ref,
+            fs_bundle,
             state_items_tx,
         }
     }
@@ -743,6 +752,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             self.conf.genesis_block_data.native_token_name.clone(),
             self.conf.genesis_block_data.native_token_symbol.clone(),
             self.conf.genesis_block_data.native_token_decimals,
+            self.fs_bundle.clone(),
             &self.runtime_manager,
             self.last_approved_block.clone(),
             Some(self.event_publisher.clone()),

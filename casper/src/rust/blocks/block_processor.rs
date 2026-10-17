@@ -734,8 +734,9 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessor<T> {
     }
 
     /// Drop a consumed copy per the verdict: purge for verdicts about the
-    /// block, ack-only for `AlreadyProcessed` — the buffer entry belongs to
-    /// the recovery in flight and must survive the duplicate.
+    /// block, ack-only for an `AlreadyProcessed` block in the DAG, and
+    /// nothing for one that still waits in the buffer — its buffer entry and
+    /// its re-fetch cooldown belong to the recovery in flight.
     pub async fn dispose_not_of_interest(
         &self,
         verdict: OfInterestVerdict,
@@ -747,9 +748,19 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessor<T> {
                 PrettyPrinter::build_string_bytes(&block.block_hash)
             );
             self.purge_from_buffer_and_ack(block).await
+        } else if self
+            .dependencies
+            .casper_buffer
+            .contains(&BlockHashSerde(block.block_hash.clone()))
+        {
+            tracing::info!(
+                "Block {} waits in the buffer. Duplicate copy dropped; its re-fetch tracking stays.",
+                PrettyPrinter::build_string_bytes(&block.block_hash)
+            );
+            Ok(())
         } else {
             tracing::info!(
-                "Block {} is already processed or in recovery. Duplicate copy dropped.",
+                "Block {} is already in the DAG. Duplicate copy dropped.",
                 PrettyPrinter::build_string_bytes(&block.block_hash)
             );
             self.ack_processed(block).await
