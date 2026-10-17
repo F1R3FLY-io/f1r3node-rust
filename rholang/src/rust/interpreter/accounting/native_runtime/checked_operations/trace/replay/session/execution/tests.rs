@@ -22,7 +22,9 @@ use crate::rust::interpreter::compiler::compiler::Compiler;
 use crate::rust::interpreter::errors::InterpreterError;
 use crate::rust::interpreter::external_services::ExternalServices;
 use crate::rust::interpreter::matcher::r#match::Matcher;
-use crate::rust::interpreter::merging::mergeable_tags::default_mergeable_tags;
+use crate::rust::interpreter::merging::mergeable_tags::{
+    default_mergeable_tags, non_negative_mergeable_tag_name,
+};
 use crate::rust::interpreter::rho_runtime::{create_native_replay_env, create_rho_env};
 use crate::rust::interpreter::system_processes::Definition;
 
@@ -93,6 +95,11 @@ fn sorted_errors(errors: &[InterpreterError]) -> Vec<String> {
 /// and some round must deny a COMM.
 const DENIAL_ROUNDS: usize = 32;
 
+/// The runtime binds only the bitmask mergeable tag, as dev does. The two
+/// terms with an IntegerAdd channel name its tag through this test URI, and
+/// the compiler injects the tag.
+const INTEGER_ADD_TAG_URI: &str = "rho:test:integerAddMergeableTag";
+
 async fn replay_process(term: &str, limit: u64) -> (Option<u64>, bool) {
     replay_process_with_context(term, limit, false, false, Interruption::None).await
 }
@@ -134,7 +141,14 @@ async fn replay_process_with_funding(
     funding: FundingFixture,
 ) -> (Option<u64>, bool) {
     let weights = funding.weights;
-    let parsed = Compiler::source_to_adt(term).unwrap();
+    let injection = match term.contains(INTEGER_ADD_TAG_URI) {
+        true => HashMap::from([(
+            INTEGER_ADD_TAG_URI.to_owned(),
+            non_negative_mergeable_tag_name(),
+        )]),
+        false => HashMap::new(),
+    };
+    let parsed = Compiler::source_to_adt_with_normalizer_env(term, injection).unwrap();
     let mut stores = InMemoryStoreManager::new();
     let (play, _) = RSpace::create_with_replay(
         stores.r_space_stores().await.unwrap(),
@@ -819,7 +833,7 @@ async fn native_export_binds_completed_accounting_to_the_recorded_state_root() {
         "Nil",
         r#"@"out"!!(7)"#,
         r#"@"a"!(7) | @"b"!(8) | for (@x <- @"a"; @y <- @"b") { @"out"!(x + y) }"#,
-        r#"new tag(`rho:system:integerAddMergeableTag`) in { @(*tag, "counter")!(1) }"#,
+        r#"new tag(`rho:test:integerAddMergeableTag`) in { @(*tag, "counter")!(1) }"#,
     ] {
         // Changed by DR-132 (DR-129 treatment): the limit of one play denies
         // a COMM in a later play only when both order their attempts alike.
@@ -880,7 +894,7 @@ async fn native_executor_replays_parsed_processes_denied_comms_and_exact_usage()
         r#"@"a"!(7) | for (@x <- @"a") { @"out"!(x) }"#,
         r#"@"a"!(7) | @"b"!(8) | for (@x <- @"a"; @y <- @"b") { @"out"!(x + y) }"#,
         r#"@"left"!(1) | @"right"!(2)"#,
-        r#"new tag(`rho:system:integerAddMergeableTag`) in { @(*tag, "counter")!(1) }"#,
+        r#"new tag(`rho:test:integerAddMergeableTag`) in { @(*tag, "counter")!(1) }"#,
         r#"new tag(`rho:system:bitmaskMergeableTag`) in { @(*tag, "counter")!(1) }"#,
     ] {
         // Changed by DR-132 (DR-129 treatment): the limit of one play denies

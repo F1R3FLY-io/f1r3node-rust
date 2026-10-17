@@ -15,10 +15,10 @@ use crate::rhoapi::{
 const SYSTEM_DEPLOY_ID_URI: &str = "rho:system:deployId";
 const SYSTEM_DEPLOYER_ID_URI: &str = "rho:system:deployerId";
 /// Multi-signer introspection channel. Always a `List[DeployerId]` (one or
-/// more elements). For legacy single-signer deploys the list contains exactly
-/// the primary signer's `DeployerId`. For multi-sig deploys (decoded from
-/// `DeployDataProto.cosigners`), the list contains every signer's `DeployerId`
-/// in canonical ascending `pk.bytes` order.
+/// more elements). For a single-signer cosigned or envelope deploy the list
+/// contains exactly the primary signer's `DeployerId`. For multi-sig deploys
+/// (decoded from `DeployDataProto.cosigners`), the list contains every
+/// signer's `DeployerId` in canonical ascending `pk.bytes` order.
 const SYSTEM_COSIGNERS_URI: &str = "rho:system:cosigners";
 const SYSTEM_AUTHORITY_ID_URI: &str = "rho:system:authorityId";
 const SYSTEM_SIGNERS_URI: &str = "rho:system:signers";
@@ -122,13 +122,6 @@ fn legacy_normalizer_env(public_key: &PublicKey, signature: &[u8]) -> HashMap<St
         SYSTEM_DEPLOYER_ID_URI,
         deployer_id_par,
     );
-
-    // For legacy single-sig deploys the cosigners list contains exactly the
-    // primary signer. In-deploy Rholang code reading `rho:system:cosigners`
-    // gets a uniform `List[DeployerId]` shape across single and multi-sig
-    // deploys — for legacy deploys the list has one element.
-    let cosigners_par = build_cosigners_list_par(&[public_key]);
-    env.insert(SYSTEM_COSIGNERS_URI.to_string(), cosigners_par);
 
     env
 }
@@ -507,32 +500,6 @@ mod tests {
     }
 
     #[test]
-    fn normalizer_env_from_deploy_includes_single_element_cosigners_list() {
-        let deploy = signed_deploy_fixture();
-        let env = normalizer_env_from_deploy(&deploy);
-
-        let cosigners_par = env
-            .get(SYSTEM_COSIGNERS_URI)
-            .expect("Missing rho:system:cosigners");
-
-        // Must be exactly one EList expr, with one Par element holding the
-        // primary GDeployerId.
-        assert_eq!(cosigners_par.exprs.len(), 1);
-        let elist = match &cosigners_par.exprs[0].expr_instance {
-            Some(ExprInstance::EListBody(elist)) => elist,
-            other => panic!("expected EList expr_instance, got {:?}", other),
-        };
-        assert_eq!(elist.ps.len(), 1);
-        let inner_par = &elist.ps[0];
-        assert_eq!(inner_par.unforgeables.len(), 1);
-        let deployer_id = match &inner_par.unforgeables[0].unf_instance {
-            Some(UnfInstance::GDeployerIdBody(d)) => d,
-            other => panic!("expected GDeployerIdBody, got {:?}", other),
-        };
-        assert_eq!(deployer_id.public_key, deploy.pk.bytes.to_vec());
-    }
-
-    #[test]
     fn normalizer_env_from_cosigned_deploy_exposes_full_cosigners_list() {
         use crypto::rust::signatures::secp256k1::Secp256k1;
         use crypto::rust::signatures::signatures_alg::SignaturesAlg;
@@ -608,20 +575,22 @@ mod tests {
 
     #[test]
     fn cosigned_envelope_legacy_uplift_yields_single_element_cosigners() {
-        // The single-signer collapse path should produce an env identical in
-        // shape (single-element cosigners list, primary deployer == sole signer)
-        // to what `normalizer_env_from_deploy` produces for the same Signed.
+        // The single-signer collapse path keeps the deploy and deployer ids
+        // that `normalizer_env_from_deploy` produces for the same Signed, and
+        // adds a single-element cosigners list. The legacy environment binds
+        // no cosigners, as on dev.
         let deploy = signed_deploy_fixture();
         let cosigned = Cosigned::from_single_signer(deploy.clone()).expect("legacy uplift");
 
         let env_legacy = normalizer_env_from_deploy(&deploy);
         let env_cosigned = normalizer_env_from_cosigned_deploy(&cosigned);
 
-        for key in [
-            SYSTEM_DEPLOY_ID_URI,
-            SYSTEM_DEPLOYER_ID_URI,
-            SYSTEM_COSIGNERS_URI,
-        ] {
+        assert!(!env_legacy.contains_key(SYSTEM_COSIGNERS_URI));
+        assert_eq!(
+            env_cosigned.get(SYSTEM_COSIGNERS_URI),
+            Some(&build_cosigners_list_par(&[&deploy.pk]))
+        );
+        for key in [SYSTEM_DEPLOY_ID_URI, SYSTEM_DEPLOYER_ID_URI] {
             assert_eq!(
                 env_legacy.get(key),
                 env_cosigned.get(key),
