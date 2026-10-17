@@ -752,7 +752,17 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessor<T> {
                 "Block {} is already processed or in recovery. Duplicate copy dropped.",
                 PrettyPrinter::build_string_bytes(&block.block_hash)
             );
-            self.ack_processed(block).await
+            let buffered = self
+                .dependencies
+                .casper_buffer()
+                .contains(&BlockHashSerde(block.block_hash.clone()));
+            if buffered {
+                self.dependencies
+                    .block_retriever
+                    .ack_duplicate(&block.block_hash)
+            } else {
+                self.ack_processed(block).await
+            }
         }
     }
 

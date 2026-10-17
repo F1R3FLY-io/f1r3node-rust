@@ -1524,6 +1524,20 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
         Ok(())
     }
 
+    pub fn ack_duplicate(&self, hash: &BlockHash) -> Result<(), CasperError> {
+        let mut state = self.requested_blocks.lock().map_err(|_| {
+            CasperError::RuntimeError("Failed to acquire requested_blocks lock".to_string())
+        })?;
+        if let Some(requested) = state.get(hash) {
+            if !requested.received {
+                let mut updated_request = requested.clone();
+                updated_request.received = true;
+                state.insert(hash.clone(), updated_request);
+            }
+        }
+        Ok(())
+    }
+
     pub async fn ack_in_casper(&self, hash: BlockHash) -> Result<(), CasperError> {
         // Check if block is already received
         let is_received = self.is_received(hash.clone()).await?;

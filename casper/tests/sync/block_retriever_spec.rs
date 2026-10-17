@@ -470,5 +470,61 @@ mod tests {
                 "one recovery re-request increments the recovery counter once"
             );
         }
+
+        #[tokio::test]
+        async fn a_duplicate_reply_keeps_the_recovery_rate_limit() {
+            let fixture = TestFixture::new();
+            fixture
+                .block_retriever
+                .admit_hash(
+                    fixture.hash.clone(),
+                    None,
+                    AdmitHashReason::MissingDependencyRequested,
+                )
+                .await
+                .expect("admit dependency");
+            fixture
+                .block_retriever
+                .recover_dependency(fixture.hash.clone())
+                .await
+                .expect("recover dependency");
+            let attempts = fixture
+                .block_retriever
+                .retry_attempts_for_test(&fixture.hash)
+                .expect("attempts");
+            assert!(attempts >= 1, "the recovery counts as an attempt");
+
+            fixture
+                .block_retriever
+                .ack_duplicate(&fixture.hash)
+                .expect("ack duplicate");
+            assert_eq!(
+                fixture
+                    .block_retriever
+                    .retry_attempts_for_test(&fixture.hash)
+                    .expect("attempts"),
+                attempts,
+                "a duplicate reply must not reset the retry budget"
+            );
+            assert!(fixture
+                .block_retriever
+                .is_received(fixture.hash.clone())
+                .await
+                .expect("received"));
+
+            fixture
+                .block_retriever
+                .recover_dependency(fixture.hash.clone())
+                .await
+                .expect("recover dependency");
+            assert_eq!(
+                fixture
+                    .block_retriever
+                    .retry_attempts_for_test(&fixture.hash)
+                    .expect("attempts"),
+                attempts,
+                "a second recovery inside the cooldown is suppressed"
+            );
+        }
     }
 }

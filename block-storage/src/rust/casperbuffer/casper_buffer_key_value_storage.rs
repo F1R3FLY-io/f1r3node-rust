@@ -327,31 +327,21 @@ impl CasperBufferKeyValueStorage {
 
         let mut overflow_pruned = 0usize;
         let mut approx_nodes = self.approx_node_count();
-        let mut attempts = 0usize;
-        while overflow_pruned < max_prune_batch
-            && attempts < max_prune_batch
-            && approx_nodes > max_approx_nodes
-        {
-            let mut oldest_nodes: Vec<(u64, BlockHashSerde)> = self
-                .dependency_free_nodes_with_age_ms(now)
-                .into_iter()
-                .collect();
-            oldest_nodes.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
-
-            let Some((_, hash)) = oldest_nodes.into_iter().next() else {
-                break;
-            };
-
-            let removed = self.remove(hash);
-            attempts += 1;
-
-            match removed {
-                Ok(_) => {
-                    overflow_pruned += 1;
-                    approx_nodes = self.approx_node_count();
+        if approx_nodes > max_approx_nodes {
+            let mut oldest_first = self.dependency_free_nodes_with_age_ms(now);
+            oldest_first.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+            for (_, hash) in oldest_first.into_iter().take(max_prune_batch) {
+                if approx_nodes <= max_approx_nodes {
+                    break;
                 }
-                Err(KvStoreError::InvalidArgument(_)) => {}
-                Err(e) => return Err(e),
+                match self.remove(hash) {
+                    Ok(_) => {
+                        overflow_pruned += 1;
+                        approx_nodes = self.approx_node_count();
+                    }
+                    Err(KvStoreError::InvalidArgument(_)) => {}
+                    Err(e) => return Err(e),
+                }
             }
         }
 
@@ -382,6 +372,36 @@ mod tests {
 
     fn create_block_hash(data: &[u8]) -> BlockHashSerde {
         BlockHashSerde(Bytes::copy_from_slice(data))
+    }
+
+    #[tokio::test]
+    async fn overflow_eviction_removes_the_oldest_pendant_first() -> Result<(), KvStoreError> {
+        let mut kvm = InMemoryStoreManager::new();
+        let store = kvm.store("parents-map".to_string()).await?;
+        let casper_buffer =
+            CasperBufferKeyValueStorage::new_from_kv_store(KeyValueTypedStoreImpl::new(store))
+                .await?;
+        let (oldest, middle, newest) = (
+            create_block_hash(b"oldest"),
+            create_block_hash(b"middle"),
+            create_block_hash(b"newest"),
+        );
+        let now = CasperBufferKeyValueStorage::now_millis();
+        for (hash, age_ms) in [(&middle, 2_000), (&newest, 1_000), (&oldest, 3_000)] {
+            let mut child = hash.0.to_vec();
+            child.extend_from_slice(b"-child");
+            casper_buffer.add_relation(hash.clone(), BlockHashSerde(Bytes::from(child)))?;
+            casper_buffer.first_seen_ms.insert(hash.clone(), now - age_ms);
+        }
+        let cap = casper_buffer.approx_node_count() - 1;
+
+        let (stale, overflow) = casper_buffer.enforce_limits(cap, u64::MAX, 1, 0)?;
+
+        assert_eq!((stale, overflow), (0, 1));
+        assert!(!casper_buffer.is_pendant(&oldest));
+        assert!(casper_buffer.is_pendant(&middle));
+        assert!(casper_buffer.is_pendant(&newest));
+        Ok(())
     }
 
     #[tokio::test]
