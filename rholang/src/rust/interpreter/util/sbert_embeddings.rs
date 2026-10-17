@@ -2,21 +2,28 @@ use std::sync::Mutex;
 
 use async_trait::async_trait;
 use chroma::embed::EmbeddingFunction;
-use fastembed::{EmbeddingModel, TextEmbedding, TextInitOptions};
+use rust_bert::pipelines::sentence_embeddings::{
+    SentenceEmbeddingsBuilder, SentenceEmbeddingsModel, SentenceEmbeddingsModelType,
+};
+use rust_bert::RustBertError;
 
 // Struct to store the model for embedding documents
 pub struct SBERTEmbeddings {
-    model: Mutex<TextEmbedding>,
+    model: Mutex<SentenceEmbeddingsModel>,
 }
 
 impl SBERTEmbeddings {
+    /// Download the SBERT model and cache it.
     pub fn new() -> Result<Self, SBERTEmbeddingsError> {
-        let options =
-            TextInitOptions::new(EmbeddingModel::AllMiniLML6V2).with_show_download_progress(false);
-        let model = TextEmbedding::try_new(options).map_err(SBERTEmbeddingsError::ModelError)?;
-        Ok(Self {
-            model: Mutex::new(model),
-        })
+        // Since the model cannot be easily shared between threads, we store it
+        // in a Mutex.
+        // See: https://github.com/guillaume-be/rust-bert/issues/389
+        let model = SentenceEmbeddingsBuilder::remote(SentenceEmbeddingsModelType::AllMiniLmL6V2)
+            .create_model()
+            .map_err(SBERTEmbeddingsError::ModelError)?;
+        let model = Mutex::new(model);
+
+        Ok(Self { model })
     }
 }
 
@@ -25,7 +32,7 @@ pub enum SBERTEmbeddingsError {
     #[error("Could not read model: {0}")]
     ThreadingError(String),
     #[error("Could not encode documents: {0}")]
-    ModelError(fastembed::Error),
+    ModelError(RustBertError),
 }
 
 // Helper SBERT embedding function to be used in ChromaDB.
@@ -39,7 +46,7 @@ impl EmbeddingFunction for SBERTEmbeddings {
             .model
             .lock()
             .map_err(|err| SBERTEmbeddingsError::ThreadingError(err.to_string()))?
-            .embed(docs, None)
+            .encode(docs)
             .map_err(SBERTEmbeddingsError::ModelError)?;
         Ok(res)
     }
