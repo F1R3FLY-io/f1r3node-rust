@@ -196,18 +196,11 @@ impl<T: TransportLayer + Send + Sync> MultiParentCasper for MultiParentCasperImp
         &self,
         weights: HashMap<Validator, u64>,
     ) -> Result<f32, CasperError> {
-        let equivocating_weight =
-            self.block_dag_storage
-                .access_equivocations_tracker(|tracker| {
-                    let equivocation_records = tracker.data()?;
-                    let equivocating_weight = initial_fault::equivocating_weight(
-                        &weights,
-                        equivocation_records
-                            .iter()
-                            .map(|record| &record.equivocator),
-                    );
-                    Ok(equivocating_weight)
-                })?;
+        let equivocation_records = self.block_dag_storage.read_equivocations()?;
+        let equivocating_weight = initial_fault::equivocating_weight(
+            &weights,
+            equivocation_records.iter().map(|record| &record.equivocator),
+        );
 
         let total_weight = initial_fault::total_weight(&weights);
         Ok(initial_fault::normalized_initial_fault(

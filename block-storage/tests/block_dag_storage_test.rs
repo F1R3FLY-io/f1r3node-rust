@@ -2541,3 +2541,79 @@ async fn the_lfb_pointer_never_moves_down() {
     assert_eq!(pointer.hash.0, b3.block_hash);
     assert_eq!(pointer.commit_epoch, 2);
 }
+
+#[tokio::test]
+async fn the_in_memory_mirror_matches_a_fresh_load_from_the_stores() {
+    use block_storage::rust::dag::block_dag_key_value_storage::InsertMode;
+    let mut kvm = InMemoryStoreManager::new();
+    let genesis = genesis_block();
+    let validator_a = Validator::from(vec![0xa1; 65]);
+    let validator_b = Validator::from(vec![0xb1; 65]);
+    let block_from = |number: i64, parents: Vec<BlockHash>, sender: &Validator, seq: i32| {
+        let mut block = chain_block(number, parents);
+        block.sender = sender.clone();
+        block.seq_num = seq;
+        block
+    };
+    let a1 = block_from(1, vec![genesis.block_hash.clone()], &validator_a, 1);
+    let b1 = block_from(1, vec![genesis.block_hash.clone()], &validator_b, 1);
+    let a2 = block_from(2, vec![a1.block_hash.clone()], &validator_a, 2);
+    let bad = block_from(2, vec![b1.block_hash.clone()], &validator_b, 2);
+
+    let dag_storage = BlockDagKeyValueStorage::new(&mut kvm).await.unwrap();
+    dag_storage.insert(&genesis, InsertMode::Approved).unwrap();
+    dag_storage.insert(&a1, InsertMode::Normal).unwrap();
+    dag_storage.insert(&b1, InsertMode::Normal).unwrap();
+    dag_storage.insert(&a2, InsertMode::Normal).unwrap();
+    dag_storage.insert(&bad, InsertMode::Invalid).unwrap();
+    let record = EquivocationRecord::new(validator_b.clone(), 1, BTreeSet::from([bad.block_hash.clone()]));
+    dag_storage
+        .access_equivocations_tracker(|tracker| tracker.add(record.clone()))
+        .unwrap();
+
+    let live = dag_storage.get_representation().unwrap();
+    assert_eq!(live.latest_messages_map.get(&validator_a), Some(&a2.block_hash));
+    assert_eq!(
+        live.invalid_blocks_map().unwrap(),
+        HashMap::from([(bad.block_hash.clone(), validator_b.clone())])
+    );
+    assert!(dag_storage.contains_block(&a2.block_hash));
+    assert!(!dag_storage.contains_block(&BlockHash::from(vec![0x42; 32])));
+    assert_eq!(dag_storage.read_equivocations().unwrap(), HashSet::from([record.clone()]));
+    drop(dag_storage);
+
+    let restarted = BlockDagKeyValueStorage::new(&mut kvm).await.unwrap();
+    let loaded = restarted.get_representation().unwrap();
+    assert_eq!(loaded.latest_messages_map, live.latest_messages_map);
+    assert_eq!(loaded.invalid_blocks_set, live.invalid_blocks_set);
+    assert_eq!(restarted.read_equivocations().unwrap(), HashSet::from([record]));
+}
+
+#[tokio::test]
+async fn contains_block_agrees_with_the_representation_through_bootstrap() {
+    use block_storage::rust::dag::block_dag_key_value_storage::InsertMode;
+    let mut kvm = InMemoryStoreManager::new();
+    let dag_storage = BlockDagKeyValueStorage::new(&mut kvm).await.unwrap();
+    let genesis = genesis_block();
+    let b1 = chain_block(1, vec![genesis.block_hash.clone()]);
+    let reference = |hash: &BlockHash| {
+        dag_storage
+            .get_representation()
+            .map(|dag| dag.contains(hash))
+            .unwrap_or(false)
+    };
+    let steps: [Option<(&BlockMessage, InsertMode)>; 3] = [
+        None,
+        Some((&genesis, InsertMode::Approved)),
+        Some((&b1, InsertMode::Normal)),
+    ];
+    for step in steps {
+        if let Some((block, mode)) = step {
+            dag_storage.insert(block, mode).unwrap();
+        }
+        for hash in [&genesis.block_hash, &b1.block_hash] {
+            assert_eq!(dag_storage.contains_block(hash), reference(hash));
+        }
+    }
+    assert!(dag_storage.contains_block(&b1.block_hash));
+}

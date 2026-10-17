@@ -1249,19 +1249,13 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorDependencies<T> {
         let all_deps = proto_util::dependencies_hashes_of(block);
 
         // in addition, equivocation tracker has to be checked, as admissible equivocations are not stored in DAG
-        let equivocation_hashes: HashSet<BlockHash> = {
-            self.block_dag_storage
-                .access_equivocations_tracker(|tracker| {
-                    let equivocation_records = tracker.data()?;
-                    // Use HashSet to ensure uniqueness and O(1) lookup, just like Scala's Set
-                    let hashes: HashSet<BlockHash> = equivocation_records
-                        .iter()
-                        .flat_map(|record| record.equivocation_detected_block_hashes.iter())
-                        .cloned()
-                        .collect();
-                    Ok(hashes)
-                })?
-        };
+        let equivocation_hashes: HashSet<BlockHash> = self
+            .block_dag_storage
+            .read_equivocations()?
+            .iter()
+            .flat_map(|record| record.equivocation_detected_block_hashes.iter())
+            .cloned()
+            .collect();
         // Invalid blocks are already known/built into Casper state and should not be re-fetched
         // as unresolved dependencies.
         let invalid_block_hashes: HashSet<BlockHash> = {
