@@ -253,9 +253,12 @@ pub(crate) async fn run_queued_finalizer(
     // Backstop only: floor-of-view rides the persisted floor/frontier
     // caches, so a cycle exceeding this is a stall to surface, not pace.
     let finalizer_blocking_timeout = std::time::Duration::from_secs(15);
-    drive_finalizer_runs(finalizer_blocking_timeout, &finalizer_task_queued, || {
-        compute_last_finalized_block(ctx.clone())
-    })
+    drive_finalizer_runs(
+        finalizer_blocking_timeout,
+        &finalizer_task_queued,
+        || derive_lfb(ctx.clone()),
+        |derived| adopt_lfb(ctx.clone(), derived),
+    )
     .await;
     tracing::info!(target: "f1r3fly.casper", "finalizer-run-finished");
 }
@@ -264,14 +267,17 @@ pub(crate) async fn run_queued_finalizer(
 /// step so its cycle accounting is testable without a casper instance.
 const MAX_TIMEOUT_RERUNS: u32 = 3;
 
-pub(crate) async fn drive_finalizer_runs<T, E, F, Fut>(
+pub(crate) async fn drive_finalizer_runs<D, T, E, FD, FutD, FC, FutC>(
     timeout: std::time::Duration,
     finalizer_task_queued: &AtomicBool,
-    mut compute: F,
+    mut derive: FD,
+    mut commit: FC,
 ) where
     E: std::fmt::Debug,
-    F: FnMut() -> Fut,
-    Fut: std::future::Future<Output = Result<T, E>>,
+    FD: FnMut() -> FutD,
+    FutD: std::future::Future<Output = Result<D, E>>,
+    FC: FnMut(D) -> FutC,
+    FutC: std::future::Future<Output = Result<T, E>>,
 {
     use crate::rust::metrics_constants::{
         CASPER_METRICS_SOURCE, FINALIZER_RUN_FAILURES_METRIC, FINALIZER_RUN_RERUNS_METRIC,
@@ -280,7 +286,11 @@ pub(crate) async fn drive_finalizer_runs<T, E, F, Fut>(
     let mut timeout_reruns = 0u32;
     loop {
         let cycle_started = std::time::Instant::now();
-        let outcome = tokio::time::timeout(timeout, compute()).await;
+        let outcome = match tokio::time::timeout(timeout, derive()).await {
+            Ok(Ok(derived)) => Ok(commit(derived).await),
+            Ok(Err(err)) => Ok(Err(err)),
+            Err(elapsed) => Err(elapsed),
+        };
         let timed_out = outcome.is_err();
         metrics::histogram!(FINALIZER_RUN_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
             .record(cycle_started.elapsed().as_secs_f64());
@@ -355,8 +365,150 @@ pub(crate) fn note_finalizer_busy(finalizer_task_queued: &AtomicBool) {
     }
 }
 
+pub(crate) struct DerivedLfb {
+    current: crate::rust::finality::floor::Floor,
+    adopt: Option<(crate::rust::finality::floor::Floor, f32)>,
+    started: std::time::Instant,
+}
+
 pub(crate) async fn compute_last_finalized_block(
     ctx: FinalizationContext,
+) -> Result<BlockMessage, CasperError> {
+    let derived = derive_lfb(ctx.clone()).await?;
+    adopt_lfb(ctx, derived).await
+}
+
+pub(crate) async fn derive_lfb(ctx: FinalizationContext) -> Result<DerivedLfb, CasperError> {
+    let FinalizationContext {
+        observer,
+        block_dag_storage,
+        block_store,
+        divergence_monitor,
+        oracle_cache,
+        ftt,
+        ..
+    } = ctx;
+    let observation_operation = observer.as_ref().and_then(|observer| observer.operation());
+    let started = std::time::Instant::now();
+    let dag = block_dag_storage.get_representation()?;
+    let last_finalized_block_hash = dag.last_finalized_block();
+    let last_finalized_block_height = dag.lookup_unsafe(&last_finalized_block_hash)?.block_number;
+
+    // ONE finality clock: the LFB is the floor of the live view — the same
+    // derivation, candidate soundness, and exact `>= θ` decision every block
+    // operation uses (deliberately unifying away the old Finalizer's strict
+    // `> θ` LFB decision: an LFB lagging the floors at the exact threshold
+    // boundary would be a second clock). The derived floor advances the LFB
+    // only when it CAPTURES the current one — the same state-monotonicity
+    // predicate floor candidacy runs — so the read surface can never
+    // designate a state missing settled content.
+    let finalizer_started = std::time::Instant::now();
+    let current = crate::rust::finality::floor::Floor {
+        hash: last_finalized_block_hash.clone(),
+        block_number: last_finalized_block_height,
+    };
+    let meter = crate::rust::safety::clique_oracle::OracleCacheMeter::new(oracle_cache);
+    let derivation = crate::rust::finality::floor::floor_of_view_metered(
+        &meter,
+        &dag,
+        &block_store,
+        &current,
+        ftt,
+    )
+    .await;
+    if let Some(observer) = &observer {
+        use crate::rust::finality::floor::FloorOfView;
+        use crate::rust::soak_observer::{EventKind, FloorOutcome};
+        let (outcome, hash, height) = match &derivation {
+            Ok(FloorOfView::Advance(floor)) => (
+                FloorOutcome::Advance,
+                Some(floor.hash.as_ref()),
+                Some(floor.block_number),
+            ),
+            Ok(FloorOfView::ContainmentHold { derived }) => (
+                FloorOutcome::ContainmentHold,
+                Some(derived.hash.as_ref()),
+                Some(derived.block_number),
+            ),
+            Ok(FloorOfView::AbsenceHold { missing }) => {
+                (FloorOutcome::AbsenceHold, Some(missing.as_ref()), None)
+            }
+            Ok(FloorOfView::NoAdvance) => (FloorOutcome::NoAdvance, None, None),
+            Ok(FloorOfView::IncompatibilityHold { .. }) => {
+                (FloorOutcome::IncompatibilityHold, None, None)
+            }
+            Err(_) => (FloorOutcome::Failed, None, None),
+        };
+        observer.emit(
+            EventKind::LiveDerivation,
+            observation_operation,
+            Some(outcome),
+            hash,
+            height,
+            Some(derivation.is_ok()),
+        );
+    }
+    let new_lfb_opt = match derivation? {
+        // `on_advance` is NOT called here: the alarm tracks the
+        // PERSISTED LFB, so the streak clears only after the adoption
+        // effect below succeeds. Clearing on derivation alone would let
+        // repeated effect failures suppress the divergence alarm.
+        crate::rust::finality::floor::FloorOfView::Advance(floor) => Some(floor),
+        crate::rust::finality::floor::FloorOfView::NoAdvance => None,
+        crate::rust::finality::floor::FloorOfView::ContainmentHold { derived } => {
+            divergence_monitor
+                .on_containment_hold(&last_finalized_block_hash, derived.block_number);
+            None
+        }
+        crate::rust::finality::floor::FloorOfView::AbsenceHold { missing } => {
+            tracing::debug!(
+                missing = %PrettyPrinter::build_string_bytes(&missing),
+                "finalizer holds this cycle: the floor walk needs a block \
+                 this node does not hold. Nothing requests it here, so the \
+                 hold lasts until catch-up fetches it for another reason"
+            );
+            None
+        }
+        crate::rust::finality::floor::FloorOfView::IncompatibilityHold { detail } => {
+            tracing::debug!(
+                detail,
+                "finalizer holds this cycle: incompatible majority-agreement \
+                     candidates under a negative fault-tolerance threshold; the \
+                     next merge spanning both branches reconciles them"
+            );
+            None
+        }
+    };
+
+    let adopt = match new_lfb_opt {
+        Some(new_lfb) => {
+            let ft_value =
+                crate::rust::safety::clique_oracle::CliqueOracle::normalized_fault_tolerance(
+                    &new_lfb.hash,
+                    &dag,
+                )
+                .await
+                .map_err(CasperError::from)?;
+            Some((new_lfb, ft_value))
+        }
+        None => None,
+    };
+    tracing::debug!(
+        target: "f1r3fly.casper.lfb.timing",
+        "last_finalized_block derivation: finalizer_ms={}, adopt={}",
+        finalizer_started.elapsed().as_millis(),
+        adopt.is_some()
+    );
+    Ok(DerivedLfb {
+        current,
+        adopt,
+        started,
+    })
+}
+
+pub(crate) async fn adopt_lfb(
+    ctx: FinalizationContext,
+    derived: DerivedLfb,
 ) -> Result<BlockMessage, CasperError> {
     let FinalizationContext {
         observer,
@@ -366,16 +518,18 @@ pub(crate) async fn compute_last_finalized_block(
         event_publisher,
         finalization_in_progress,
         enable_mergeable_channel_gc,
-        ftt,
         divergence_monitor,
-        oracle_cache,
+        ..
     } = ctx;
     let observation_operation = observer.as_ref().and_then(|observer| observer.operation());
-    let lfb_lookup_started = std::time::Instant::now();
-    // Get current LFB hash and height
-    let dag = block_dag_storage.get_representation()?;
-    let last_finalized_block_hash = dag.last_finalized_block();
-    let last_finalized_block_height = dag.lookup_unsafe(&last_finalized_block_hash)?.block_number;
+    let DerivedLfb {
+        current,
+        adopt,
+        started: lfb_lookup_started,
+    } = derived;
+    let last_finalized_block_hash = current.hash.clone();
+    let last_finalized_block_height = current.block_number;
+    let finalizer_started = std::time::Instant::now();
 
     // Keep effect closure FnMut-compatible by cloning captured state on each invocation.
     let block_dag_storage_for_effect = block_dag_storage.clone();
@@ -498,101 +652,8 @@ pub(crate) async fn compute_last_finalized_block(
         }
     };
 
-    // ONE finality clock: the LFB is the floor of the live view — the same
-    // derivation, candidate soundness, and exact `>= θ` decision every block
-    // operation uses (deliberately unifying away the old Finalizer's strict
-    // `> θ` LFB decision: an LFB lagging the floors at the exact threshold
-    // boundary would be a second clock). The derived floor advances the LFB
-    // only when it CAPTURES the current one — the same state-monotonicity
-    // predicate floor candidacy runs — so the read surface can never
-    // designate a state missing settled content.
-    let finalizer_started = std::time::Instant::now();
-    let current = crate::rust::finality::floor::Floor {
-        hash: last_finalized_block_hash.clone(),
-        block_number: last_finalized_block_height,
-    };
-    let meter = crate::rust::safety::clique_oracle::OracleCacheMeter::new(oracle_cache);
-    let derivation = crate::rust::finality::floor::floor_of_view_metered(
-        &meter,
-        &dag,
-        &block_store,
-        &current,
-        ftt,
-    )
-    .await;
-    if let Some(observer) = &observer {
-        use crate::rust::finality::floor::FloorOfView;
-        use crate::rust::soak_observer::{EventKind, FloorOutcome};
-        let (outcome, hash, height) = match &derivation {
-            Ok(FloorOfView::Advance(floor)) => (
-                FloorOutcome::Advance,
-                Some(floor.hash.as_ref()),
-                Some(floor.block_number),
-            ),
-            Ok(FloorOfView::ContainmentHold { derived }) => (
-                FloorOutcome::ContainmentHold,
-                Some(derived.hash.as_ref()),
-                Some(derived.block_number),
-            ),
-            Ok(FloorOfView::AbsenceHold { missing }) => {
-                (FloorOutcome::AbsenceHold, Some(missing.as_ref()), None)
-            }
-            Ok(FloorOfView::NoAdvance) => (FloorOutcome::NoAdvance, None, None),
-            Ok(FloorOfView::IncompatibilityHold { .. }) => {
-                (FloorOutcome::IncompatibilityHold, None, None)
-            }
-            Err(_) => (FloorOutcome::Failed, None, None),
-        };
-        observer.emit(
-            EventKind::LiveDerivation,
-            observation_operation,
-            Some(outcome),
-            hash,
-            height,
-            Some(derivation.is_ok()),
-        );
-    }
-    let new_lfb_opt = match derivation? {
-        // `on_advance` is NOT called here: the alarm tracks the
-        // PERSISTED LFB, so the streak clears only after the adoption
-        // effect below succeeds. Clearing on derivation alone would let
-        // repeated effect failures suppress the divergence alarm.
-        crate::rust::finality::floor::FloorOfView::Advance(floor) => Some(floor),
-        crate::rust::finality::floor::FloorOfView::NoAdvance => None,
-        crate::rust::finality::floor::FloorOfView::ContainmentHold { derived } => {
-            divergence_monitor
-                .on_containment_hold(&last_finalized_block_hash, derived.block_number);
-            None
-        }
-        crate::rust::finality::floor::FloorOfView::AbsenceHold { missing } => {
-            tracing::debug!(
-                missing = %PrettyPrinter::build_string_bytes(&missing),
-                "finalizer holds this cycle: the floor walk needs a block \
-                 this node does not hold. Nothing requests it here, so the \
-                 hold lasts until catch-up fetches it for another reason"
-            );
-            None
-        }
-        crate::rust::finality::floor::FloorOfView::IncompatibilityHold { detail } => {
-            tracing::debug!(
-                detail,
-                "finalizer holds this cycle: incompatible majority-agreement \
-                     candidates under a negative fault-tolerance threshold; the \
-                     next merge spanning both branches reconciles them"
-            );
-            None
-        }
-    };
-
-    let new_lfb_found = new_lfb_opt.is_some();
-    let final_lfb_hash = if let Some(new_lfb) = new_lfb_opt {
-        let ft_value =
-            crate::rust::safety::clique_oracle::CliqueOracle::normalized_fault_tolerance(
-                &new_lfb.hash,
-                &dag,
-            )
-            .await
-            .map_err(CasperError::from)?;
+    let new_lfb_found = adopt.is_some();
+    let final_lfb_hash = if let Some((new_lfb, ft_value)) = adopt {
         // `floor_of_view` only ever returns an adoption that CAPTURES the
         // current LFB, so `extends_previous_lfb` is true by construction —
         // emitted anyway for parity with soak dashboards that alarm on it.
@@ -855,23 +916,28 @@ mod finalizer_run_metric_tests {
 
         let queued = AtomicBool::new(false);
         let mut cycle = 0u32;
-        drive_finalizer_runs(Duration::from_millis(50), &queued, || {
-            cycle += 1;
-            let this_cycle = cycle;
-            if this_cycle <= 2 {
-                queued.store(true, Ordering::SeqCst);
-            }
-            async move {
-                match this_cycle {
-                    1 => Err::<(), &str>("floor unavailable"),
-                    2 => {
-                        tokio::time::sleep(Duration::from_millis(500)).await;
-                        Ok(())
-                    }
-                    _ => Ok(()),
+        drive_finalizer_runs(
+            Duration::from_millis(50),
+            &queued,
+            || {
+                cycle += 1;
+                let this_cycle = cycle;
+                if this_cycle <= 2 {
+                    queued.store(true, Ordering::SeqCst);
                 }
-            }
-        })
+                async move {
+                    match this_cycle {
+                        1 => Err::<(), &str>("floor unavailable"),
+                        2 => {
+                            tokio::time::sleep(Duration::from_millis(500)).await;
+                            Ok(())
+                        }
+                        _ => Ok(()),
+                    }
+                }
+            },
+            |()| async { Ok::<(), &str>(()) },
+        )
         .await;
 
         let recorded = Recorded::take(&snapshotter);
@@ -890,13 +956,18 @@ mod finalizer_run_metric_tests {
 
         let queued = AtomicBool::new(false);
         let mut cycle = 0u32;
-        drive_finalizer_runs(Duration::from_millis(20), &queued, || {
-            cycle += 1;
-            async move {
-                tokio::time::sleep(Duration::from_millis(200)).await;
-                Ok::<(), &str>(())
-            }
-        })
+        drive_finalizer_runs(
+            Duration::from_millis(20),
+            &queued,
+            || {
+                cycle += 1;
+                async move {
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+                    Ok::<(), &str>(())
+                }
+            },
+            |()| async { Ok::<(), &str>(()) },
+        )
         .await;
 
         let recorded = Recorded::take(&snapshotter);
@@ -919,21 +990,75 @@ mod finalizer_run_metric_tests {
     async fn a_run_that_finishes_after_a_timeout_stops_resuming() {
         let queued = AtomicBool::new(false);
         let mut cycle = 0u32;
-        drive_finalizer_runs(Duration::from_millis(20), &queued, || {
-            cycle += 1;
-            let this_cycle = cycle;
-            async move {
-                if this_cycle == 1 {
-                    tokio::time::sleep(Duration::from_millis(200)).await;
+        drive_finalizer_runs(
+            Duration::from_millis(20),
+            &queued,
+            || {
+                cycle += 1;
+                let this_cycle = cycle;
+                async move {
+                    if this_cycle == 1 {
+                        tokio::time::sleep(Duration::from_millis(200)).await;
+                    }
+                    Ok::<(), &str>(())
                 }
-                Ok::<(), &str>(())
-            }
-        })
+            },
+            |()| async { Ok::<(), &str>(()) },
+        )
         .await;
         assert_eq!(
             cycle, 2,
             "the resumed run finishes and no further cycle runs"
         );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_timed_out_derivation_never_commits() {
+        let queued = AtomicBool::new(false);
+        let commits = std::cell::Cell::new(0u32);
+        drive_finalizer_runs(
+            Duration::from_millis(20),
+            &queued,
+            || async {
+                tokio::time::sleep(Duration::from_millis(200)).await;
+                Ok::<u32, &str>(7)
+            },
+            |_| {
+                commits.set(commits.get() + 1);
+                async { Ok::<(), &str>(()) }
+            },
+        )
+        .await;
+        assert_eq!(commits.get(), 0);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_commit_longer_than_the_deadline_is_never_cancelled() {
+        let recorder = DebuggingRecorder::new();
+        let snapshotter = recorder.snapshotter();
+        let _guard = metrics::set_default_local_recorder(&recorder);
+
+        let queued = AtomicBool::new(false);
+        let finished = std::cell::Cell::new(false);
+        drive_finalizer_runs(
+            Duration::from_millis(20),
+            &queued,
+            || async { Ok::<u32, &str>(7) },
+            |derived| {
+                let finished = &finished;
+                async move {
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+                    assert_eq!(derived, 7);
+                    finished.set(true);
+                    Ok::<(), &str>(())
+                }
+            },
+        )
+        .await;
+        assert!(finished.get());
+        let recorded = Recorded::take(&snapshotter);
+        assert_eq!(recorded.counter(FINALIZER_RUN_TIMEOUTS_METRIC), 0);
+        assert_eq!(recorded.counter(FINALIZER_RUN_RERUNS_METRIC), 0);
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -943,9 +1068,12 @@ mod finalizer_run_metric_tests {
         let _guard = metrics::set_default_local_recorder(&recorder);
 
         let queued = AtomicBool::new(false);
-        drive_finalizer_runs(Duration::from_millis(50), &queued, || async {
-            Ok::<(), &str>(())
-        })
+        drive_finalizer_runs(
+            Duration::from_millis(50),
+            &queued,
+            || async { Ok::<(), &str>(()) },
+            |()| async { Ok::<(), &str>(()) },
+        )
         .await;
 
         let recorded = Recorded::take(&snapshotter);
