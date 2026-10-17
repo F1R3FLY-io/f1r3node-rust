@@ -133,6 +133,14 @@ pub fn rnode_db_mapping(legacy_rspace_paths: Option<bool>) -> Vec<(Db, LmdbEnvCo
             dag_storage_env_config(),
         ),
         (
+            Db::new("finalization-commit-marker".to_string(), None),
+            dag_storage_env_config(),
+        ),
+        (
+            Db::new("lfb-pointer".to_string(), None),
+            dag_storage_env_config(),
+        ),
+        (
             // Single-slot register for the shard's genesis hash (learned during
             // a truncated restore). Opened in BlockDagKeyValueStorage::new like
             // the indices above.

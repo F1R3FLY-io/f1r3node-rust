@@ -5,5 +5,6 @@ pub mod buffer_dag_transition;
 pub mod deploy_lifecycle_types;
 pub mod equivocation_tracker_store;
 pub mod equivocations_access;
+pub mod finalization_commit;
 pub mod soak_snapshot;
 pub mod soak_equivocations;
