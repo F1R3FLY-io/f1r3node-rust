@@ -31,9 +31,9 @@ impl<const N: usize> From<[(String, MetadataValue); N]> for Metadata {
     fn from(x: [(String, MetadataValue); N]) -> Self { Self(HashMap::from(x)) }
 }
 
-impl From<MetadataValue> for Par {
-    fn from(value: MetadataValue) -> Self {
-        match value {
+impl Into<Par> for MetadataValue {
+    fn into(self) -> Par {
+        match self {
             MetadataValue::Boolean(b) => RhoBoolean::create_par(b),
             MetadataValue::Number(i) => RhoNumber::create_par(i),
             MetadataValue::String(s) => RhoString::create_par(s),
@@ -41,9 +41,9 @@ impl From<MetadataValue> for Par {
     }
 }
 
-impl From<Metadata> for Par {
-    fn from(value: Metadata) -> Self {
-        let par_map = value
+impl Into<Par> for Metadata {
+    fn into(self) -> Par {
+        let par_map = self
             .0
             .into_iter()
             .map(|(key, val)| (RhoString::create_par(key), val.into()))
@@ -71,10 +71,10 @@ impl Extractor for Metadata {
     }
 }
 
-impl From<MetadataValue> for chroma::types::MetadataValue {
-    fn from(value: MetadataValue) -> Self {
+impl Into<chroma::types::MetadataValue> for MetadataValue {
+    fn into(self) -> chroma::types::MetadataValue {
         type M = chroma::types::MetadataValue;
-        match value {
+        match self {
             MetadataValue::String(s) => M::Str(s),
             MetadataValue::Number(i) => M::Int(i),
             MetadataValue::Boolean(b) => M::Bool(b),
@@ -82,8 +82,10 @@ impl From<MetadataValue> for chroma::types::MetadataValue {
     }
 }
 
-impl From<Metadata> for chroma::types::Metadata {
-    fn from(value: Metadata) -> Self { value.0.into_iter().map(|(k, v)| (k, v.into())).collect() }
+impl Into<chroma::types::Metadata> for Metadata {
+    fn into(self) -> chroma::types::Metadata {
+        self.0.into_iter().map(|(k, v)| (k, v.into())).collect()
+    }
 }
 
 impl TryFrom<chroma::types::MetadataValue> for MetadataValue {
@@ -139,11 +141,11 @@ impl<'a> Extractor for CollectionEntry {
     }
 }
 
-impl From<CollectionEntry> for Par {
-    fn from(value: CollectionEntry) -> Self {
+impl Into<Par> for CollectionEntry {
+    fn into(self) -> Par {
         RhoTuple2::create_par((
-            RhoString::create_par(value.document),
-            value.metadata.map_or(RhoNil::create_par(), Into::into),
+            RhoString::create_par(self.document),
+            self.metadata.map_or(RhoNil::create_par(), Into::into),
         ))
     }
 }
@@ -160,11 +162,10 @@ impl Extractor for CollectionEntries {
     }
 }
 
-impl From<CollectionEntries> for Par {
-    fn from(value: CollectionEntries) -> Self {
+impl Into<Par> for CollectionEntries {
+    fn into(self) -> Par {
         RhoMap::create_par(
-            value
-                .0
+            self.0
                 .into_iter()
                 .map(|(key, val)| (RhoString::create_par(key), val.into()))
                 .collect(),
@@ -179,6 +180,8 @@ pub struct ChromaDBClient {
 
 impl ChromaDBClient {
     fn new() -> Result<Self, InterpreterError> {
+        // TODO (chase): Do we need custom options? i.e custom database name, authentication method, and url?
+        // If the chroma db is hosted alongside the node locally, custom options don't make much sense.
         let client = ChromaHttpClient::from_env().map_err(|_| {
             InterpreterError::ChromaDBError("Failed to build ChromaDB client".into())
         })?;
@@ -249,11 +252,11 @@ impl ChromaDBService {
     ///
     /// * `name` - The name of the collection to create
     /// * `ignore_or_update_if_exists` -
-    ///   If true and non-empty collection metadata is provided, update existing metadata.
-    ///   If true and no metadata is provided, ignore the existing collection.
-    ///   If false, error if a collection with the same name already exists.
+    ///     If true and a non-empty collection metadata is proivded, update any existing metadata.
+    ///     If true and no metadata is provided, ignore existing collection.
+    ///     If false, error if a collection with the same name already exists.
     /// * `metadata` - Optional metadata to associate with the collection.
-    ///   Must be a JSON object with values that are numbers, strings, or floats.
+    ///         Must be a JSON object with keys and values that are either numbers, strings or floats.
     pub async fn create_collection(
         &self,
         name: &str,

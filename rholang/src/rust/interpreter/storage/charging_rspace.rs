@@ -1,3 +1,5 @@
+// See rholang/src/main/scala/coop/rchain/rholang/interpreter/storage/ChargingRSpace.scala
+
 use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 
@@ -39,6 +41,7 @@ pub enum TriggeredBy {
     },
 }
 
+//TODO: Make ScalaBodyRef-s have their own random state and merge it during its COMMs - OLD
 fn consume_id_bytes(continuation: &TaggedContinuation) -> Result<Vec<u8>, InterpreterError> {
     match continuation.tagged_cont.as_ref().unwrap() {
         TaggedCont::ParBody(par_with_random) => Ok(par_with_random.random_state.clone()),
@@ -308,6 +311,8 @@ fn handle_result(
         Some((cont, data_list)) => {
             let consume_id_bytes = consume_id_bytes(&cont.continuation)?;
 
+            // We refund for non-persistent continuations, and for the persistent continuation triggering the comm.
+            // That persistent continuation is going to be charged for (without refund) once it has no matches in TS.
             let refund_for_consume =
                 if !cont.persistent || consume_id_bytes == triggered_by_id_bytes {
                     storage_cost_consume(&cont.channels, &cont.patterns, &cont.continuation)
@@ -352,6 +357,9 @@ fn refund_for_removing_produces(
     let removed_data: Vec<(RSpaceResult<Par, ListParWithRandom>, Par)> = data_list
         .into_iter()
         .zip(cont.channels.into_iter())
+        // A persistent produce is charged for upfront before reaching the TS, and needs to be refunded
+        // after each iteration it matches an existing consume. We treat it as 'removed' on each such iteration.
+        // It is going to be 'not removed' and charged for on the last iteration, where it doesn't match anything.
         .filter(|(data, _)| {
             !data.persistent || data.removed_datum.random_state == triggered_id_bytes
         })

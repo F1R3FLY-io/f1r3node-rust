@@ -346,8 +346,8 @@ message DeployDataProto {
   int64  timestamp            = 3; //millisecond timestamp
   bytes  sig                  = 4; //signature of (hash(term) + timestamp) using private key
   string sigAlgorithm         = 5; //name of the algorithm used to sign
-  int64 phloPrice              = 7;
-  int64 phloLimit              = 8;
+  int64 phloPrice             = 7; //phlo price
+  int64 phloLimit             = 8; //phlo limit for the deployment
   int64 validAfterBlockNumber = 10;
   string shardId              = 11;//shard ID to prevent replay of deploys between shards
   string language             = 12;//language (rholang or metta) of the source code

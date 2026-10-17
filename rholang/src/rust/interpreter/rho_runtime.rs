@@ -144,12 +144,17 @@ pub trait RhoRuntime: HasCost {
     }
 
     /**
-     * Inject an already-normalized process into the current runtime state.
+     * The function would execute the par regardless setting cost which would possibly cause
+     * [[coop.rchain.rholang.interpreter.errors.OutOfPhlogistonsError]]. Because of that, use this
+     * function in some situation which is not cost sensitive.
      *
-     * Ordinary user deploys must enter through `evaluate`, which constructs the
-     * signed metered process and initializes the token budget. This lower-level
-     * entry point is kept for tests, bootstrap, and system paths that have
-     * already selected their budget mode explicitly.
+     * This function would change the state in the runtime.
+     *
+     * Ideally, this function should be removed or hack the runtime without cost accounting in the future .
+     * @param par [[coop.rchain.models.Par]] for the execution
+     * @param env additional env for execution
+     * @param rand random seed for rholang execution
+     * @return
      */
     async fn inj(
         &self,

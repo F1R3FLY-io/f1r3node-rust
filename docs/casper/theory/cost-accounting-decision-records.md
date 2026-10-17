@@ -16805,3 +16805,107 @@ assumption queries.
 
 **Cross-refs.** DR-74, DR-84 (superseded), DR-85, DR-86, DR-129, DR-130,
 DR-131.
+
+## DR-133 — Divergences from dev that cost accounting does not need return to dev
+
+**Status.** Decided by the user on 2026-10-16 for epic 8946. The user asked:
+"can you check the code for more changes that should be reverted to dev
+like those we've corrected and are correcting? Basically, I want to trim
+off the bits that do not belong in the cost-accounting branch." After the
+audit, the user chose "all nine as separate commits after DR-132". The rule
+behind it is the user's direction of 2026-10-12: keep dev's version of
+everything that is not directly related to the correctness or completeness
+of cost accounting.
+
+**Terms.**
+
+- *Class A*: a difference from dev that a named cost-accounting requirement
+  needs. It stays.
+- *Class B*: a difference with no such requirement. It returns to dev.
+- *Class C*: a fix of a dev bug that the branch carries. It stays until dev
+  fixes the bug (DR-130).
+- *Class D*: a difference whose class needs more evidence. It waits for the
+  user.
+- *Dev's legacy billing*: dev's per-operation phlo, its parse charge and its
+  error table for failed deploys. Only legacy deploys use it. Cost
+  accounting meters COMMs for compute and bytes for storage, nothing else
+  (`consensus_cost_unit`, `accounting/mod.rs:1828-1835`).
+
+**Context.** An audit compared the branch with dev `38dac3c2f` (merge base
+`93e38575e`), in four areas: rspace++, rholang with rho-pure-eval, casper
+with models, and the workspace with shared, crypto, block-storage, node and
+the documents. It updated an audit of 2026-10-13 after DR-131 and DR-132.
+It classified 119 rows and found new ones.
+
+**Decision.** Each group of class B rows returns to dev in its own commit.
+Each commit takes dev's text for exactly its hunks: the merge-base text, or
+dev's later text where dev changed the hunk and the newer text compiles
+alone.
+
+| Trim | Commit | What returns to dev |
+|---|---|---|
+| 1 | `5f91c3263` | rust-bert in place of fastembed (H2, W3, W10), with 44 lock packages at dev's versions |
+| 2 | `d20d4d306` | No cdylib crate type, no unused dashmap or criterion in rholang, no dashmap raw-api, dev's tempfile line (H1, N-H1, N-H2, N-R1, R2) |
+| 3 | pending | Dev's legacy billing (H8, H9, H10, H32, H33, H35, C17, N-C1) |
+| 4 | `4e2857b8f` | No rho:system:cosigners in the legacy environment, only dev's bitmask tag URI in every runtime (M6, H19) |
+| 5 | `c572ba388` | Dead code: merger helpers, four store error variants, scan_prefix, compression and tracing helpers, non_negative_work, two rewrites, the host-work glossary entries (R13-R15, S2, C14, S3 part, S5, S7, H11, N-M3, N-H5, N-S1, N-D1) |
+| 6 | `039c787fa` | Dev's radix compaction text (R20 part) and dev's exporter fix 6418da355 (R17 exporter part) |
+| 7 | `82d9780ff` | Dev's nextest comment, .gitignore, max-number-of-parents = 100, TLC_RSS = 12G (W4, W8, W9, W11 part) |
+| 8 | `32fc31f00` | Dev's test harness: three specs in rholang's aggregate binary, the legacy Schnorr test (H31, M8) |
+| 9 | this commit | Dev's comments, proto comments, doc whitespace and the check_replay_data() diagnostic (H4, H20, H25, M2, C11, C12, D2) |
+
+**What stays.**
+
+- R25 (class C, not B): the checkpoint reads the history reader before the
+  repository swap, so a failed checkpoint stays retryable (`3107eef0d`,
+  `checkpoint_failure_tests.rs:266-332`).
+- S3, in part: the atomic store operations stay, because R22 (class D) uses
+  them.
+- W6: the soak qualification inputs stay, because another session owns
+  `.github/actions/soak-segment/action.yml`.
+- The class C rows of DR-130, and every class A row.
+
+**Effects on behavior.**
+
+- Trim 4 changes legacy costs and genesis state roots. The normalizer copies
+  the whole environment into the `injections` of every `new` term
+  (`p_new_normalizer.rs:75-84`, as on dev). The legacy cosigners entry
+  therefore made every legacy `new` term larger, the genesis terms
+  included. A branch-added cost pin moved from 53,251 to 52,835. A legacy
+  deploy that names rho:system:cosigners fails at evaluation, as on dev.
+  Dev's genesis never had the entry.
+- Trim 6: a malformed state request logs a warning and gets no response, as
+  on dev, instead of a panic.
+
+**Findings on the way.**
+
+- `concurrent_capture_keeps_tuple_metadata_and_ledger_on_the_same_boundary`
+  (rspace++) fails about once in 1,000 runs, at the same rate before and
+  after trim 6 (2,997 of 3,000 each). Its helper `put_at` takes the shared
+  session gate and no channel lock, so two workers race in `data_view`.
+  This is test-only by inference.
+- `cargo deny` reports advisories that predate these commits:
+  RUSTSEC-2024-0384, RUSTSEC-2026-0346 to 0349 and 0367 to 0369.
+- The local `.pgmcp.toml` belongs in each checkout's `.git/info/exclude`.
+
+**Open.**
+
+- Trim 3 waits for its measurement and the user's approval. A legacy deploy
+  that fails on a float `%` is billed the parse charge, where dev bills the
+  full limit, because DR-128 raises `OperatorNotDefined` there. `%` itself
+  is never metered. A dev-only path in the reducer would fix it, and the
+  rule of one execution model rules that out.
+- The class D rows: H24 and N-M2 (the matcher), R4 (the ordered event log),
+  R18 and R22 (the native root record), N-R5 (a serde derive on COMM), C1 and
+  N-N1 (recursion_limit), M3 (previewPrivateNames), N-C2 (a vault-spec
+  timeout), W5 (rho-pure-eval in CI), S6 (finalized-event dedupe), N-D2
+  (three review ledgers) and N-H4 (the reply-body error marking).
+- `DeployDataProto` field 14 is `cosigners` on the branch, and dev uses it
+  for `parameters` (`438218ac3`). One of them must take another number
+  before the next dev merge.
+- Two Python files in the claims gate, and a frontier-guard check that
+  names no code (`reserve_source_step`).
+
+**Restore.** `git revert` of the trim commit restores its group.
+
+**Cross-refs.** DR-66 (item 2), DR-128, DR-129, DR-130, DR-131, DR-132.
