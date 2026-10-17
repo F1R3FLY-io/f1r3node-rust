@@ -46,6 +46,13 @@ pub const FINALIZER_ORACLE_CACHE_BOUNDS_DEFAULT: OracleCacheBounds = OracleCache
 
 pub const FINALIZER_TIMEOUT_RERUNS_DEFAULT: u32 = 3;
 
+pub const FINALIZER_DERIVATION_BUDGET_DEFAULT: Duration = Duration::from_secs(15);
+
+pub const FINALIZER_STEP_BACKSTOP_DEFAULT: Duration = Duration::from_secs(60);
+
+pub const FINALIZER_CURSOR_MAX_INVALIDATIONS_DEFAULT: u32 =
+    crate::rust::finality::floor_runner::MAX_CONSECUTIVE_INVALIDATIONS;
+
 /// Wire convention for `CasperShardConf::max_number_of_parents`: `-1`
 /// disables the parent-count cap. C15 / Smell-3: hoisted from two
 /// duplicate `const UNLIMITED_PARENTS: i32 = -1;` definitions (one in
@@ -575,6 +582,9 @@ pub struct CasperShardConf {
     pub active_validators_cache_max_entries: usize,
     pub finalizer_oracle_cache_bounds: OracleCacheBounds,
     pub finalizer_timeout_reruns: u32,
+    pub finalizer_derivation_budget: Duration,
+    pub finalizer_step_backstop: Duration,
+    pub finalizer_cursor_max_invalidations: u32,
 }
 
 impl CasperShardConf {
@@ -615,6 +625,9 @@ impl CasperShardConf {
             active_validators_cache_max_entries: ACTIVE_VALIDATORS_CACHE_MAX_ENTRIES_DEFAULT,
             finalizer_oracle_cache_bounds: FINALIZER_ORACLE_CACHE_BOUNDS_DEFAULT,
             finalizer_timeout_reruns: FINALIZER_TIMEOUT_RERUNS_DEFAULT,
+            finalizer_derivation_budget: FINALIZER_DERIVATION_BUDGET_DEFAULT,
+            finalizer_step_backstop: FINALIZER_STEP_BACKSTOP_DEFAULT,
+            finalizer_cursor_max_invalidations: FINALIZER_CURSOR_MAX_INVALIDATIONS_DEFAULT,
         }
     }
 }

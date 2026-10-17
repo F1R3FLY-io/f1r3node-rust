@@ -461,6 +461,13 @@ pub const FINALIZER_RUN_TIME_METRIC: &str = "finalizer.run.time";
 pub const FINALIZER_RUN_FAILURES_METRIC: &str = "finalizer.run.failures";
 // Counter: cycles abandoned by the finalizer's backstop compute timeout.
 pub const FINALIZER_RUN_TIMEOUTS_METRIC: &str = "finalizer.run.timeouts";
+pub const FINALIZER_CURSOR_YIELDS_METRIC: &str = "finalizer.cursor.yields";
+pub const FINALIZER_CURSOR_RESUMES_METRIC: &str = "finalizer.cursor.resumes";
+pub const FINALIZER_CURSOR_INVALIDATIONS_METRIC: &str = "finalizer.cursor.invalidations";
+pub const FINALIZER_CURSOR_FREEZES_METRIC: &str = "finalizer.cursor.freezes";
+pub const COMMIT_LFB_REFUSALS_METRIC: &str = "finalizer.commit.refusals";
+pub const COMMIT_LFB_ALIN_VIOLATIONS_METRIC: &str = "finalizer.commit.alin-violations";
+pub const FINALIZATION_EVENTS_REPLAYED_METRIC: &str = "finalizer.events.replayed";
 // Counter: cycles that ended with a trigger pending, so another cycle follows.
 pub const FINALIZER_RUN_RERUNS_METRIC: &str = "finalizer.run.reruns";
 // Counter: triggers that arrived while a finalizer run was in progress.

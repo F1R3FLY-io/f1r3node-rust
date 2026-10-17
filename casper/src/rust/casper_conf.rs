@@ -159,6 +159,26 @@ pub struct CasperConf {
         default = "default_finalizer_timeout_reruns"
     )]
     pub finalizer_timeout_reruns: u32,
+
+    #[serde(
+        rename = "finalizer-derivation-budget",
+        deserialize_with = "de_duration",
+        default = "default_finalizer_derivation_budget"
+    )]
+    pub finalizer_derivation_budget: Duration,
+
+    #[serde(
+        rename = "finalizer-step-backstop",
+        deserialize_with = "de_duration",
+        default = "default_finalizer_step_backstop"
+    )]
+    pub finalizer_step_backstop: Duration,
+
+    #[serde(
+        rename = "finalizer-cursor-max-invalidations",
+        default = "default_finalizer_cursor_max_invalidations"
+    )]
+    pub finalizer_cursor_max_invalidations: u32,
 }
 
 fn default_deploy_play_budget() -> Duration { Duration::ZERO }
@@ -202,6 +222,18 @@ pub fn default_finalizer_oracle_cache_ancestors() -> usize {
 
 pub fn default_finalizer_timeout_reruns() -> u32 {
     crate::rust::casper::FINALIZER_TIMEOUT_RERUNS_DEFAULT
+}
+
+pub fn default_finalizer_derivation_budget() -> Duration {
+    crate::rust::casper::FINALIZER_DERIVATION_BUDGET_DEFAULT
+}
+
+pub fn default_finalizer_step_backstop() -> Duration {
+    crate::rust::casper::FINALIZER_STEP_BACKSTOP_DEFAULT
+}
+
+pub fn default_finalizer_cursor_max_invalidations() -> u32 {
+    crate::rust::casper::FINALIZER_CURSOR_MAX_INVALIDATIONS_DEFAULT
 }
 
 /// Round robin dispatcher configuration
