@@ -39,10 +39,7 @@ pub(crate) fn admit_dag_contains<T: TransportLayer + Send + Sync>(
     // initialized (no approved/last-finalized block), report `false` rather
     // than panicking. Returning `false` here matches the trait's
     // pre-existing semantics for "block not present".
-    match this.block_dag_storage.get_representation() {
-        Ok(dag) => dag.contains(hash),
-        Err(_) => false,
-    }
+    this.block_dag_storage.contains_block(hash)
 }
 
 pub(crate) fn admit_buffer_contains<T: TransportLayer + Send + Sync>(

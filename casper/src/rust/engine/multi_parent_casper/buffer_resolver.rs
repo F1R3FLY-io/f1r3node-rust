@@ -48,15 +48,11 @@ fn scan_dependency_free_from_buffer<T: TransportLayer + Send + Sync>(
 ) -> Result<Vec<BlockMessage>, CasperError> {
     let equivocation_hashes: HashSet<BlockHash> = this
         .block_dag_storage
-        .access_equivocations_tracker(|tracker| {
-            let equivocation_records = tracker.data()?;
-            let hashes: HashSet<BlockHash> = equivocation_records
-                .iter()
-                .flat_map(|record| record.equivocation_detected_block_hashes.iter())
-                .cloned()
-                .collect();
-            Ok(hashes)
-        })?;
+        .read_equivocations()?
+        .iter()
+        .flat_map(|record| record.equivocation_detected_block_hashes.iter())
+        .cloned()
+        .collect();
 
     let invalid_block_hashes: HashSet<BlockHash> = this
         .block_dag_storage
