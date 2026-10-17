@@ -284,6 +284,26 @@ expected_resolution: "When system-integration updates services.yml to point to f
 
 ---
 
+#### BACKLOG-DB-002: Set the CbC evidence directory per path
+
+```yaml
+---
+backlog_id: BACKLOG-DB-002
+title: "Set the evidence directory per path (former TASK-026-6, EPIC-026)"
+category: blocked_external
+priority: p2
+added_at: 2026-10-16
+blocked_by_external: "R7 approval in top-level-gitlab-profile as a separate interface change"
+expected_resolution: "When top-level-gitlab-profile approves and lands R7, the cbc-evidence attribute"
+---
+```
+
+**Description:** EPIC-026 deferred this task on 2026-10-12. R7 is a separate change in top-level-gitlab-profile. The consumer auditors (check-casper-claims.rs, check-casper-soak-bindings.sh) use fixed paths, so the nested-attribute migration does not need R7. The task moved here on 2026-10-16, because the epic parser does not accept the status `deferred`.
+
+**When Unblocked:** Add the task to EPIC-026 again as a `pending` task, or open a new epic for it.
+
+---
+
 ## Promoting Items to Active Work
 
 When a backlog item is ready for active development:
