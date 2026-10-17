@@ -12,10 +12,19 @@ use shared::rust::store::key_value_typed_store::KeyValueTypedStore;
 use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
 use shared::rust::ByteString;
 
+use super::deploy_record_quarantine::DeployRecordQuarantine;
+
+pub const DEPLOY_STORAGE_DB: &str = "deploy_storage";
+pub const DEPLOY_STORAGE_QUARANTINE_DB: &str = "deploy_storage_quarantine";
+pub const REJECTED_DEPLOY_BUFFER_DB: &str = "rejected_deploy_buffer";
+pub const REJECTED_DEPLOY_BUFFER_QUARANTINE_DB: &str = "rejected_deploy_buffer_quarantine";
+
 const DEPLOY_STORE_SIZE_METRIC: &str = "deploy.store.size";
+const DEPLOY_STORE_READ_ALL_DECODED_METRIC: &str = "deploy-store.read-all.decoded";
 
 pub trait DeployStoreName {
     const NAME: &'static str;
+    const QUARANTINE_NAME: &'static str;
     const SIZE_WARNING_THRESHOLD: Option<usize> = None;
 }
 
@@ -23,20 +32,23 @@ pub trait DeployStoreName {
 pub struct DeployStorageName;
 
 impl DeployStoreName for DeployStorageName {
-    const NAME: &'static str = "deploy_storage";
+    const NAME: &'static str = DEPLOY_STORAGE_DB;
+    const QUARANTINE_NAME: &'static str = DEPLOY_STORAGE_QUARANTINE_DB;
 }
 
 #[derive(Clone)]
 pub struct RejectedDeployBufferName;
 
 impl DeployStoreName for RejectedDeployBufferName {
-    const NAME: &'static str = "rejected_deploy_buffer";
+    const NAME: &'static str = REJECTED_DEPLOY_BUFFER_DB;
+    const QUARANTINE_NAME: &'static str = REJECTED_DEPLOY_BUFFER_QUARANTINE_DB;
     const SIZE_WARNING_THRESHOLD: Option<usize> = Some(1_000);
 }
 
 #[derive(Clone)]
 pub struct KeyValueDeployStore<N: DeployStoreName> {
-    store: KeyValueTypedStoreImpl<ByteString, Signed<DeployData>>,
+    pub store: KeyValueTypedStoreImpl<ByteString, Signed<DeployData>>,
+    quarantine: DeployRecordQuarantine,
     _name: PhantomData<N>,
 }
 
@@ -52,18 +64,25 @@ pub type KeyValueRejectedDeployBuffer = KeyValueDeployStore<RejectedDeployBuffer
 impl<N: DeployStoreName> KeyValueDeployStore<N> {
     pub async fn new(kvm: &mut impl KeyValueStoreManager) -> Result<Self, KvStoreError> {
         let kv_store = kvm.store(N::NAME.to_string()).await?;
-        Ok(Self::from_store(kv_store))
+        let quarantine_kv_store = kvm.store(N::QUARANTINE_NAME.to_string()).await?;
+        Self::from_stores(kv_store, quarantine_kv_store)
     }
 
-    pub fn from_store(store: Arc<dyn KeyValueStore>) -> Self {
-        Self {
+    pub fn from_stores(
+        store: Arc<dyn KeyValueStore>,
+        quarantine: Arc<dyn KeyValueStore>,
+    ) -> Result<Self, KvStoreError> {
+        let storage = Self {
             store: KeyValueTypedStoreImpl::with_value_codec(
                 store,
                 super::deploy_codec::encode,
                 super::deploy_codec::decode,
             ),
+            quarantine: DeployRecordQuarantine::new(N::NAME, quarantine),
             _name: PhantomData,
-        }
+        };
+        storage.quarantine.restore_readable(&storage.store)?;
+        Ok(storage)
     }
 
     pub fn add(&mut self, deploys: Vec<Signed<DeployData>>) -> Result<(), KvStoreError> {
@@ -113,13 +132,14 @@ impl<N: DeployStoreName> KeyValueDeployStore<N> {
 
     pub fn any<F>(&self, predicate: F) -> Result<bool, KvStoreError>
     where F: FnMut(&Signed<DeployData>) -> Result<bool, KvStoreError> {
-        self.store.any_value(predicate)
+        self.quarantine.any(&self.store, predicate)
     }
 
     pub fn read_all(&self) -> Result<HashSet<Signed<DeployData>>, KvStoreError> {
-        let all: HashSet<Signed<DeployData>> =
-            self.store.to_map().map(|map| map.into_values().collect())?;
+        let all = self.quarantine.read_all(&self.store)?;
         metrics::gauge!(DEPLOY_STORE_SIZE_METRIC, "store" => N::NAME).set(all.len() as f64);
+        metrics::counter!(DEPLOY_STORE_READ_ALL_DECODED_METRIC, "store" => N::NAME)
+            .increment(all.len() as u64);
         if let Some(limit) = N::SIZE_WARNING_THRESHOLD {
             if all.len() > limit {
                 tracing::warn!(
@@ -275,6 +295,45 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn read_all_counts_each_decoded_deploy_of_each_store() {
+        let mut kvm = InMemoryStoreManager::new();
+        let mut storage = KeyValueDeployStorage::new(&mut kvm).await.unwrap();
+        let mut buffer = KeyValueRejectedDeployBuffer::new(&mut kvm).await.unwrap();
+        storage.add(vec![deploy(1), deploy(2)]).unwrap();
+        buffer.add(vec![deploy(3)]).unwrap();
+
+        let recorder = DebuggingRecorder::new();
+        let snapshotter = recorder.snapshotter();
+        metrics::with_local_recorder(&recorder, || {
+            storage.read_all().unwrap();
+            storage.read_all().unwrap();
+            buffer.read_all().unwrap();
+        });
+
+        let decoded: HashMap<String, u64> = snapshotter
+            .snapshot()
+            .into_vec()
+            .into_iter()
+            .filter(|(key, ..)| key.key().name() == DEPLOY_STORE_READ_ALL_DECODED_METRIC)
+            .filter_map(|(key, _, _, value)| match value {
+                DebugValue::Counter(count) => key
+                    .key()
+                    .labels()
+                    .find(|label| label.key() == "store")
+                    .map(|label| (label.value().to_string(), count)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            decoded,
+            HashMap::from([
+                ("deploy_storage".to_string(), 4),
+                ("rejected_deploy_buffer".to_string(), 1),
+            ])
+        );
+    }
+
+    #[tokio::test]
     async fn add_if_absent_reports_the_duplicate() {
         let mut kvm = InMemoryStoreManager::new();
         let mut storage = KeyValueDeployStorage::new(&mut kvm).await.unwrap();
@@ -297,7 +356,9 @@ mod tests {
     #[test]
     fn add_if_absent_is_atomic_across_storage_handles() {
         let store: Arc<dyn KeyValueStore> = Arc::new(InMemoryKeyValueStore::new());
-        let storage = KeyValueDeployStorage::from_store(store);
+        let storage =
+            KeyValueDeployStorage::from_stores(store, Arc::new(InMemoryKeyValueStore::new()))
+                .unwrap();
         let deploy = Signed::create(
             DeployData {
                 term: "Nil".to_string(),
