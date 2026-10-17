@@ -503,16 +503,12 @@ impl KeyValueDagRepresentation {
     }
 
     pub fn invalid_blocks_map(&self) -> Result<HashMap<BlockHash, Validator>, KvStoreError> {
-        let invalid_blocks = self.invalid_blocks();
-        let mut invalid_block_hashes = HashMap::new();
-        for block in invalid_blocks {
-            if let Some(metadata) = self.lookup(&block.block_hash)? {
-                if metadata.invalid {
-                    invalid_block_hashes.insert(metadata.block_hash, metadata.sender);
-                }
-            }
-        }
-        Ok(invalid_block_hashes)
+        Ok(self
+            .invalid_blocks_set
+            .iter()
+            .filter(|metadata| metadata.invalid)
+            .map(|metadata| (metadata.block_hash.clone(), metadata.sender.clone()))
+            .collect())
     }
 
     pub fn self_justification(
@@ -860,6 +856,7 @@ pub struct BlockDagKeyValueStorage {
     pub(crate) latest_messages_index: KeyValueTypedStoreImpl<ValidatorSerde, BlockHashSerde>,
     pub(crate) block_metadata_index: Arc<PlRwLock<BlockMetadataStore>>,
     pub(crate) invalid_blocks_index: KeyValueTypedStoreImpl<BlockHashSerde, BlockMetadata>,
+    pub(crate) store_mirror: Arc<PlRwLock<DagStoreMirror>>,
     /// Memoized justification-derived floor per block (block hash -> floor hash).
     pub(crate) floor_index: KeyValueTypedStoreImpl<BlockHashSerde, BlockHashSerde>,
     /// Memoized per-block finalized frontier (see `KeyValueDagRepresentation::frontier_index`).
@@ -902,6 +899,28 @@ pub struct BlockDagKeyValueStorage {
     >,
     pub(crate) lfb_pointer_index:
         KeyValueTypedStoreImpl<String, crate::rust::dag::finalization_commit::LfbPointer>,
+}
+
+#[derive(Clone, Default)]
+pub(crate) struct DagStoreMirror {
+    latest: imbl::HashMap<Validator, BlockHash>,
+    invalid: imbl::HashSet<BlockMetadata>,
+}
+
+impl DagStoreMirror {
+    fn load(
+        latest_messages_index: &KeyValueTypedStoreImpl<ValidatorSerde, BlockHashSerde>,
+        invalid_blocks_index: &KeyValueTypedStoreImpl<BlockHashSerde, BlockMetadata>,
+    ) -> Result<Self, KvStoreError> {
+        Ok(Self {
+            latest: latest_messages_index
+                .to_map()?
+                .into_iter()
+                .map(|(k, v)| (k.into(), v.into()))
+                .collect(),
+            invalid: invalid_blocks_index.to_map()?.into_values().collect(),
+        })
+    }
 }
 
 impl BlockDagKeyValueStorage {
@@ -1019,9 +1038,11 @@ impl BlockDagKeyValueStorage {
         let commit_marker_kv_store = kvm.store("finalization-commit-marker".to_string()).await?;
         let lfb_pointer_kv_store = kvm.store("lfb-pointer".to_string()).await?;
 
+        let store_mirror = DagStoreMirror::load(&latest_messages_db, &invalid_blocks_db)?;
         Ok(Self {
             global_lock: Arc::new(PlRwLock::new(())),
             block_metadata_index: Arc::new(PlRwLock::new(block_metadata_store)),
+            store_mirror: Arc::new(PlRwLock::new(store_mirror)),
             invalid_blocks_index: invalid_blocks_db,
             floor_index: floor_index_db,
             frontier_index: frontier_index_db,
@@ -1119,8 +1140,11 @@ impl BlockDagKeyValueStorage {
         equivocation_tracker_index: EquivocationTrackerStore,
         dag_generation: Arc<AtomicU64>,
     ) -> Self {
+        let store_mirror = DagStoreMirror::load(&latest_messages_index, &invalid_blocks_index)
+            .expect("load the latest-message and invalid-block stores");
         Self {
             global_lock,
+            store_mirror: Arc::new(PlRwLock::new(store_mirror)),
             latest_messages_index,
             block_metadata_index,
             invalid_blocks_index,
@@ -1212,15 +1236,10 @@ impl BlockDagKeyValueStorage {
     /// Used when lock is already held by the caller.
     /// Public to allow IndexedBlockDagStorage to use it.
     pub fn get_representation_internal(&self) -> Result<KeyValueDagRepresentation, KvStoreError> {
-        let latest_messages: imbl::HashMap<Validator, BlockHash> = self
-            .latest_messages_index
-            .to_map()?
-            .into_iter()
-            .map(|(k, v)| (k.into(), v.into()))
-            .collect();
-
-        let invalid_blocks: imbl::HashSet<BlockMetadata> =
-            self.invalid_blocks_index.to_map()?.into_values().collect();
+        let (latest_messages, invalid_blocks) = {
+            let mirror = self.store_mirror.read();
+            (mirror.latest.clone(), mirror.invalid.clone())
+        };
 
         let block_metadata_index_guard = self.block_metadata_index.read();
         let dag_state_guard = block_metadata_index_guard.dag_state().read();
@@ -1357,13 +1376,8 @@ impl BlockDagKeyValueStorage {
             let newly_bonded_unseen: Vec<Validator> = newly_bonded_set
                 .difference(&justification_validators)
                 .filter_map(|validator| {
-                    match self
-                        .latest_messages_index
-                        .contains_key(ValidatorSerde((*validator).clone()))
-                    {
-                        Ok(false) => Some((*validator).clone()),
-                        _ => None,
-                    }
+                    (!self.store_mirror.read().latest.contains_key(*validator))
+                        .then(|| (*validator).clone())
                 })
                 .collect();
 
@@ -1506,7 +1520,8 @@ impl BlockDagKeyValueStorage {
 
             if invalid {
                 self.invalid_blocks_index
-                    .put_one(block_hash.clone().into(), block_metadata)?;
+                    .put_one(block_hash.clone().into(), block_metadata.clone())?;
+                self.store_mirror.write().invalid.insert(block_metadata);
             }
 
             // Settled-history blocks never touch latest messages: neither the
@@ -1516,13 +1531,11 @@ impl BlockDagKeyValueStorage {
                 let new_latest_from_sender = if !sender_is_empty {
                     // Add LM either if there is no existing message for the sender, or if sequence number advances
                     // - assumes block sender is not valid hash
-                    if match self
-                        .latest_messages_index
-                        .get_one(&block.sender.clone().into())
-                    {
-                        Ok(Some(latest_message_hash)) => {
+                    let current_latest = self.store_mirror.read().latest.get(&block.sender).cloned();
+                    if match current_latest {
+                        Some(latest_message_hash) => {
                             let block_metadata_index_guard = self.block_metadata_index.read();
-                            match block_metadata_index_guard.get(&latest_message_hash.into()) {
+                            match block_metadata_index_guard.get(&latest_message_hash) {
                                 Ok(Some(metadata)) => block.seq_num >= metadata.sequence_number,
                                 _ => true,
                             }
@@ -1542,10 +1555,14 @@ impl BlockDagKeyValueStorage {
 
                 self.latest_messages_index.put(
                     new_latest_to_add
-                        .into_iter()
-                        .map(|(k, v)| (k.into(), v.into()))
+                        .iter()
+                        .map(|(k, v)| (k.clone().into(), v.clone().into()))
                         .collect(),
                 )?;
+                let mut mirror = self.store_mirror.write();
+                for (validator, hash) in new_latest_to_add {
+                    mirror.latest.insert(validator, hash);
+                }
             }
         }
 
@@ -1560,6 +1577,20 @@ impl BlockDagKeyValueStorage {
         }
 
         self.get_representation_internal()
+    }
+
+    pub fn read_equivocations(
+        &self,
+    ) -> Result<HashSet<models::rust::equivocation_record::EquivocationRecord>, KvStoreError> {
+        let _lock_guard = self.global_lock.read();
+        self.equivocation_tracker_index.data()
+    }
+
+    pub fn contains_block(&self, hash: &BlockHash) -> bool {
+        let _lock_guard = self.global_lock.read();
+        let metadata = self.block_metadata_index.read();
+        let dag_state = metadata.dag_state().read();
+        dag_state.last_finalized_block.is_some() && dag_state.dag_set.contains(hash)
     }
 
     pub fn access_equivocations_tracker<A>(
