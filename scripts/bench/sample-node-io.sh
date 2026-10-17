@@ -9,8 +9,9 @@
 # Output in ITERATION_DIR/io-diagnostics/:
 #   io.tsv          every SOAK_IO_INTERVAL_SECONDS: /proc/<pid>/io and the page
 #                   faults of each node process
-#   nodes.txt       once per node: data directory, its mount, cgroup, and the
-#                   libc, libssl, and jemalloc objects that the process mapped
+#   nodes.txt       once per node: whether it ran at sampler start, data
+#                   directory, its mount, cgroup, and the libc, libssl, and
+#                   jemalloc objects that the process mapped
 #   host.txt        once: the vm.dirty_* settings
 #   strace-<role>.txt  once, SOAK_IO_STRACE_DELAY_SECONDS after the
 #                   "--- Phase: sustained ---" marker (or SOAK_IO_STRACE_AFTER_SECONDS
@@ -19,6 +20,10 @@
 #                   SOAK_IO_STRACE_ROLE, for SOAK_IO_STRACE_SECONDS. It runs in the
 #                   background, so io.tsv sampling continues. strace -f slows the
 #                   traced node, so compare io.tsv rows of other nodes for timing.
+#                   A node that ran at sampler start is never the target: the
+#                   iteration starts its shard after the sampler, and a benchmark
+#                   shard that runs across iterations has the same roles
+#                   (run 38995239992, iterations 84 to 93).
 #
 # Test seams: PROC_ROOT, SOAK_IO_SUDO, SOAK_IO_DOCKER, SOAK_IO_STRACE.
 set -uo pipefail
@@ -123,6 +128,7 @@ describe_node() {
 	local pid="$1" role="$2" data_dir="$3"
 	{
 		printf '== %s (pid %s)\n' "$role" "$pid"
+		case "$PREEXISTING" in *" $pid "*) printf 'running at sampler start: yes\n' ;; *) printf 'running at sampler start: no\n' ;; esac
 		printf 'data_dir: %s\n' "$data_dir"
 		printf 'mount: %s\n' "$(data_dir_mount "$pid" "$data_dir")"
 		printf 'cgroup: %s\n' "$(read_proc "$PROC_ROOT/$pid/cgroup" | tr '\n' ' ')"
@@ -160,6 +166,7 @@ run_strace() {
 
 printf 'ts\tpid\trole\trchar\twchar\tsyscr\tsyscw\tread_bytes\twrite_bytes\tcancelled_write_bytes\tminflt\tmajflt\n' >"$OUT/io.tsv"
 describe_host
+PREEXISTING=" $(discover_nodes | cut -f1 | tr '\n' ' ')"
 started="$(date +%s)"
 described=" "
 straced=0
@@ -177,7 +184,9 @@ while :; do
 			now="$(date +%s)"
 			if [ -z "$sustained_at" ] && grep -q '^--- Phase: sustained ---' "$PYTEST_LOG" 2>/dev/null; then sustained_at="$now"; fi
 			if { [ -n "$sustained_at" ] && [ "$((now - sustained_at))" -ge "$STRACE_DELAY" ]; } || [ "$((now - started))" -ge "$STRACE_AFTER" ]; then
-				pid="$(awk -F'\t' -v r="$STRACE_ROLE" '{ n = split($2, part, "."); if ($2 == r || part[n] == r) { print $1; exit } }' <<<"$nodes")"
+				pid="$(awk -F'\t' -v r="$STRACE_ROLE" -v skip="$PREEXISTING" '
+					index(skip, " " $1 " ") { next }
+					{ n = split($2, part, "."); if ($2 == r || part[n] == r) { print $1; exit } }' <<<"$nodes")"
 				if [ -n "$pid" ]; then
 					if [ -n "$sustained_at" ]; then trigger="sustained phase marker plus ${STRACE_DELAY}s"; else trigger="fallback after ${STRACE_AFTER}s without the marker"; fi
 					run_strace "$pid" "$trigger" &

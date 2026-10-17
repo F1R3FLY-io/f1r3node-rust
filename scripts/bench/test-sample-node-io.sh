@@ -38,6 +38,12 @@ fake_process 303 python3 1 1 1
 printf 'python3\0-m\0pytest\0run\0' >"$PROC/303/cmdline"
 printf '0::/\n' >"$PROC/303/cgroup"
 
+# Node 120 stands for a benchmark shard that runs across iterations: it has
+# the role validator1 too, and it is running before the sampler starts.
+fake_process 120 rnode.bin 2048 6 0
+printf '/tmp/rnode.bin\0run\0--data-dir\0/w/.subprocess-data/bench/validator1\0' >"$PROC/120/cmdline"
+printf '0::/system.slice/cloud-final.service\n' >"$PROC/120/cgroup"
+
 fake_process 150 rnode.bin 1024 5 0
 printf '/tmp/rnode.bin\0run\0--data-dir\0/w/.subprocess-data/s1/validator10\0' >"$PROC/150/cmdline"
 printf '0::/system.slice/cloud-final.service\n' >"$PROC/150/cgroup"
@@ -78,18 +84,31 @@ run_sampler() {  # run_sampler ITERATION_DIR SUDO EXTRA_ENV...
 	SAMPLER=$!
 }
 
+# The iteration starts its shard after the sampler: node 202 appears only after
+# the first sample.
+hide_iteration_node() { mv "$PROC/202" "$TMP/node-202"; }
+start_iteration_node() {  # start_iteration_node IO_TSV
+	for _ in $(seq 1 50); do
+		[ -f "$1" ] && [ "$(wc -l <"$1")" -ge 2 ] && break
+		sleep 0.1
+	done
+	mv "$TMP/node-202" "$PROC/202"
+}
+
 ITER="$TMP/iteration-00001-subprocess"
 mkdir -p "$ITER"
 printf -- '--- Phase: low ---\n--- Phase: sustained ---\n' >"$ITER/pytest.log"
 : >"$TMP/strace.log"
 : >"$TMP/docker.log"
+hide_iteration_node
 run_sampler "$ITER" "" STRACE_SLEEP=6
 OUT="$ITER/io-diagnostics"
+start_iteration_node "$OUT/io.tsv"
 for _ in $(seq 1 50); do
-	[ -s "$TMP/strace.log" ] && [ "$(awk -F'\t' '$3 == "validator1"' "$OUT/io.tsv" | wc -l)" -ge 4 ] && break
+	[ -s "$TMP/strace.log" ] && [ "$(awk -F'\t' '$2 == 202' "$OUT/io.tsv" | wc -l)" -ge 4 ] && break
 	sleep 0.2
 done
-[ "$(awk -F'\t' '$3 == "validator1"' "$OUT/io.tsv" | wc -l)" -ge 4 ] ||
+[ "$(awk -F'\t' '$2 == 202' "$OUT/io.tsv" | wc -l)" -ge 4 ] ||
 	fail "sampling stopped while strace ran: $(cat "$OUT/io.tsv")"
 pgrep -f "$TMP/bin/strace" >/dev/null || fail "strace ended before the sampling check, so the check cannot show that sampling continued"
 stop_started="$(date +%s)"
@@ -114,11 +133,15 @@ grep -Fq 'mount: 40 29 8:1 /w /w rw,relatime - ext4 /dev/sda1 rw' "$OUT/nodes.tx
 grep -Fq 'mount: 36 25 0:31 /volumes/v1/_data /var/lib/rnode rw,relatime - ext4 /dev/sda1 rw' "$OUT/nodes.txt" ||
 	fail "the Docker data directory mount is wrong: $(cat "$OUT/nodes.txt")"
 grep -Fq '/tmp/libjemalloc.so.2' "$OUT/nodes.txt" || fail "the subprocess libraries are missing"
-[ "$(grep -c '^== ' "$OUT/nodes.txt")" -eq 3 ] || fail "each node must be described once: $(grep '^== ' "$OUT/nodes.txt")"
+[ "$(grep -c '^== ' "$OUT/nodes.txt")" -eq 4 ] || fail "each node must be described once: $(grep '^== ' "$OUT/nodes.txt")"
 grep -Fxq 'dirty_ratio = 20' "$OUT/host.txt" || fail "the host dirty settings are missing: $(cat "$OUT/host.txt")"
 [ "$(wc -l <"$TMP/docker.log")" -eq 1 ] || fail "docker inspect must run once for each container: $(cat "$TMP/docker.log")"
 [ "$(wc -l <"$TMP/strace.log")" -eq 1 ] || fail "strace must run once: $(cat "$TMP/strace.log")"
-grep -Fq -- '-p 202 ' "$TMP/strace.log" || fail "strace did not target validator1 exactly: $(cat "$TMP/strace.log")"
+grep -Fq -- '-p 202 ' "$TMP/strace.log" || fail "strace did not target validator1 of the iteration: $(cat "$TMP/strace.log")"
+grep -A1 -Fx '== validator1 (pid 120)' "$OUT/nodes.txt" | grep -Fxq 'running at sampler start: yes' ||
+	fail "the benchmark node is not marked as running at sampler start: $(cat "$OUT/nodes.txt")"
+grep -A1 -Fx '== validator1 (pid 202)' "$OUT/nodes.txt" | grep -Fxq 'running at sampler start: no' ||
+	fail "the iteration node is marked as running at sampler start: $(cat "$OUT/nodes.txt")"
 grep -Fxq 'trigger: sustained phase marker plus 0s' "$OUT/strace-validator1.txt" ||
 	fail "the strace trigger is not recorded: $(cat "$OUT/strace-validator1.txt")"
 
@@ -126,7 +149,9 @@ ITER2="$TMP/iteration-00002-subprocess"
 mkdir -p "$ITER2"
 printf -- '--- Phase: sustained ---\n' >"$ITER2/pytest.log"
 : >"$TMP/strace.log"
+hide_iteration_node
 run_sampler "$ITER2" "$TMP/bin/fake-sudo -n" STRACE_NEEDS_SUDO=1
+start_iteration_node "$ITER2/io-diagnostics/io.tsv"
 for _ in $(seq 1 50); do
 	grep -q fdatasync "$ITER2/io-diagnostics/strace-validator1.txt" 2>/dev/null && break
 	sleep 0.2
@@ -138,4 +163,4 @@ if grep -Fq 'Operation not permitted' "$ITER2/io-diagnostics/strace-validator1.t
 	fail "the failed direct attempt polluted the strace output"
 fi
 
-printf 'PASS: sample-node-io records the I/O, faults, mounts, libraries, and one exact-role strace summary, and keeps sampling during strace.\n'
+printf 'PASS: sample-node-io records the I/O, faults, mounts, libraries, and one exact-role strace summary of a node that started after the sampler, and keeps sampling during strace.\n'
