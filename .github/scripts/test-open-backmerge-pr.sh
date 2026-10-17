@@ -67,6 +67,30 @@ if grep -q -- '--head master' "$TMP/gh.log"; then
 fi
 grep -Fq 'created by `just backmerge`.' "$TMP/gh.log" ||
 	fail "the just backmerge body changed: $(cat "$TMP/gh.log")"
+if grep -q 'A different member' "$TMP/gh.log"; then
+	fail "the just backmerge body asked for a different approver"
+fi
+
+: >"$TMP/gh.log"
+(cd "$TMP/work" && PATH="$TMP/bin:$PATH" GH_LOG="$TMP/gh.log" BACKMERGE_REPOSITORY=example/repo \
+	BACKMERGE_TIMESTAMP=20261016-1607 BACKMERGE_TRIGGERED_BY=octo-cat bash "$TOOL") >/dev/null
+grep -Fq 'created by the Promote and Back-merge workflow for @octo-cat.' "$TMP/gh.log" ||
+	fail "the workflow body does not name the user who started it: $(cat "$TMP/gh.log")"
+grep -Fxq '@octo-cat started this back-merge. A different member of @F1R3FLY-io/ci-maintainers approves it.' "$TMP/gh.log" ||
+	fail "the workflow body does not ask a different maintainer to approve: $(cat "$TMP/gh.log")"
+
+for login in 'x; rm' octo- -octo a--b; do
+	: >"$TMP/gh.log"
+	# A missing remote makes git fetch fail. The login error must come first.
+	if (cd "$TMP/work" && PATH="$TMP/bin:$PATH" GH_LOG="$TMP/gh.log" BACKMERGE_REPOSITORY=example/repo \
+		BACKMERGE_REMOTE=no-such-remote BACKMERGE_TIMESTAMP=20261016-1608 BACKMERGE_TRIGGERED_BY="$login" \
+		bash "$TOOL") >/dev/null 2>"$TMP/err"; then
+		fail "the invalid login '$login' did not fail the command"
+	fi
+	grep -q 'BACKMERGE_TRIGGERED_BY is not a GitHub login' "$TMP/err" ||
+		fail "the invalid login '$login' was not rejected before git fetch: $(cat "$TMP/err")"
+	[[ ! -s "$TMP/gh.log" ]] || fail "the invalid login '$login' still called gh: $(cat "$TMP/gh.log")"
+done
 
 : >"$TMP/gh.log"
 if (cd "$TMP/work" && PATH="$TMP/bin:$PATH" GH_LOG="$TMP/gh.log" GH_FAIL_PR_CREATE=1 BACKMERGE_REPOSITORY=example/repo \
@@ -107,4 +131,4 @@ if grep -q '^pr create' "$TMP/gh.log"; then
 	fail "a failed branch creation still opened a pull request: $(cat "$TMP/gh.log")"
 fi
 
-printf 'PASS: just backmerge opens the dev pull request from backmerge/master-<sha> at the master commit, skips when dev contains master, refuses a second open back-merge, reports a failed branch creation for the same master commit, and deletes the branch when the pull request fails.\n'
+printf 'PASS: just backmerge opens the dev pull request from backmerge/master-<sha> at the master commit, skips when dev contains master, refuses a second open back-merge, reports a failed branch creation for the same master commit, names the user who started the workflow, and deletes the branch when the pull request fails.\n'
