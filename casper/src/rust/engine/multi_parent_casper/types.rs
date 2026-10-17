@@ -105,6 +105,7 @@ pub struct MultiParentCasperImpl<T: TransportLayer + Send + Sync> {
     /// The next queued run will execute immediately after the current one finishes.
     pub finalizer_task_queued: Arc<AtomicBool>,
     pub finalizer_oracle_cache: Arc<crate::rust::safety::clique_oracle::SharedOracleCache>,
+    pub finalizer_cursor: Arc<crate::rust::finality::floor_runner::SharedCursor>,
     /// Shared reference to heartbeat signal for triggering immediate wake on deploy
     pub heartbeat_signal_ref: crate::rust::heartbeat_signal::HeartbeatSignalRef,
     /// Cache for deploys_in_scope BFS result keyed by DAG generation, snapshot LFB, and selected parents.

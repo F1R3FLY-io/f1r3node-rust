@@ -458,7 +458,7 @@ impl FloorOfView {
 /// At or below zero, incompatible majority-agreement candidates are an expected
 /// transient — hold the cycle. Above zero the same error is a genuine safety
 /// alarm and stays loud.
-fn hold_for(error: CasperError, ftt: FtThreshold) -> Result<FloorOfView, CasperError> {
+pub(crate) fn hold_for(error: CasperError, ftt: FtThreshold) -> Result<FloorOfView, CasperError> {
     match error {
         CasperError::BlockNotHeld(missing, _) => Ok(FloorOfView::AbsenceHold { missing }),
         CasperError::IncompatibleFinalizedFork(detail) if ftt.num <= 0 => {
@@ -530,6 +530,44 @@ pub async fn floor_of_view_metered<W: WorkMeter>(
     current: &Floor,
     ftt: FtThreshold,
 ) -> Result<FloorOfView, CasperError> {
+    let Some((tips, live_snapshot)) = live_tips_metered(meter, dag, current)? else {
+        return Ok(FloorOfView::NoAdvance);
+    };
+
+    // Absence means one tip cannot be judged, so find which and abstain it
+    // rather than the cycle. Probing only on failure keeps the healthy path to
+    // one resolution per tip: `parent_frontier` caches nothing, and its cost
+    // grows with the tip-to-frontier distance.
+    let derived = match finalized_floor_metered(meter, dag, block_store, &tips, &live_snapshot, ftt)
+        .await
+    {
+        Ok(derived) => derived,
+        Err(CasperError::BlockNotHeld(missing, _)) => {
+            let decidable =
+                decidable_tips_metered(meter, dag, block_store, &tips, &live_snapshot, ftt).await?;
+            if decidable.is_empty() {
+                return Ok(FloorOfView::NoAdvance);
+            }
+            if decidable.len() == tips.len() {
+                return Ok(FloorOfView::AbsenceHold { missing });
+            }
+            match finalized_floor_metered(meter, dag, block_store, &decidable, &live_snapshot, ftt)
+                .await
+            {
+                Ok(derived) => derived,
+                Err(error) => return hold_for(error, ftt),
+            }
+        }
+        Err(error) => return hold_for(error, ftt),
+    };
+    view_outcome_metered(meter, dag, block_store, derived, current)
+}
+
+pub(crate) fn live_tips_metered<W: WorkMeter>(
+    meter: &W,
+    dag: &KeyValueDagRepresentation,
+    current: &Floor,
+) -> Result<Option<(Vec<BlockHash>, BTreeMap<Validator, BlockHash>)>, CasperError> {
     meter.step(WorkKind::Traversal)?;
     meter.allocate(4, 256)?;
     // A latest-message slot whose held target the validator never signed
@@ -578,40 +616,23 @@ pub async fn floor_of_view_metered<W: WorkMeter>(
         tips.dedup();
     }
     if tips.is_empty() {
-        return Ok(FloorOfView::NoAdvance);
+        return Ok(None);
     }
     let mut live_snapshot = BTreeMap::new();
     for (validator, hash) in testimony {
         meter.step(WorkKind::Traversal)?;
         live_snapshot.insert(validator, hash);
     }
+    Ok(Some((tips, live_snapshot)))
+}
 
-    // Absence means one tip cannot be judged, so find which and abstain it
-    // rather than the cycle. Probing only on failure keeps the healthy path to
-    // one resolution per tip: `parent_frontier` caches nothing, and its cost
-    // grows with the tip-to-frontier distance.
-    let derived = match finalized_floor_metered(meter, dag, block_store, &tips, &live_snapshot, ftt)
-        .await
-    {
-        Ok(derived) => derived,
-        Err(CasperError::BlockNotHeld(missing, _)) => {
-            let decidable =
-                decidable_tips_metered(meter, dag, block_store, &tips, &live_snapshot, ftt).await?;
-            if decidable.is_empty() {
-                return Ok(FloorOfView::NoAdvance);
-            }
-            if decidable.len() == tips.len() {
-                return Ok(FloorOfView::AbsenceHold { missing });
-            }
-            match finalized_floor_metered(meter, dag, block_store, &decidable, &live_snapshot, ftt)
-                .await
-            {
-                Ok(derived) => derived,
-                Err(error) => return hold_for(error, ftt),
-            }
-        }
-        Err(error) => return hold_for(error, ftt),
-    };
+pub(crate) fn view_outcome_metered<W: WorkMeter>(
+    meter: &W,
+    dag: &KeyValueDagRepresentation,
+    block_store: &KeyValueBlockStore,
+    derived: Floor,
+    current: &Floor,
+) -> Result<FloorOfView, CasperError> {
     if derived.hash == current.hash || derived.block_number <= current.block_number {
         return Ok(FloorOfView::NoAdvance);
     }
@@ -987,53 +1008,15 @@ async fn derive_floor_metered<W: WorkMeter>(
             if other.hash == cand.hash {
                 continue;
             }
-            let sound_with_other =
-                if state_contains_metered(meter, dag, block_store, cand, other, &mut memo)? {
-                    true
-                } else if !dag.is_dag_ancestor_metered(meter, &other.hash, &cand.hash)? {
-                    // `other` is NOT in `cand`'s DAG past, so its chains are
-                    // expected back as this merge's diffs, with the merge-time
-                    // settled-rejection tripwire guarding the re-application.
-                    // (That expectation is weaker than it reads since the base
-                    // became the main parent — see the CAVEAT above.) Sound ONLY when
-                    // `cand` is a pure cut — it introduces no sigs of its own
-                    // relative to its meet with `other`. A competing branch
-                    // with content of its own must never become the settled
-                    // position: its content can be exactly what the canonical
-                    // chain rejected, and every future canonical floor would
-                    // then be refused against it (the floor deadlocks instead
-                    // of advancing — observed when the reproduction's eraser R
-                    // slipped in as a floor through the join block's parents).
-                    let mut re_merged = false;
-                    for parent in parents {
-                        meter.step(WorkKind::Traversal)?;
-                        meter.allocate(4, 256)?;
-                        if dag.is_dag_ancestor_metered(meter, &other.hash, parent)?
-                            && dag.is_dag_ancestor_metered(meter, &cand.hash, parent)?
-                        {
-                            re_merged = true;
-                            break;
-                        }
-                    }
-                    if re_merged {
-                        match state_lineage_meet_metered(meter, dag, &cand.hash, &other.hash)? {
-                            StateLineage::Meet(meet) => segment_introduced_sigs_metered(
-                                meter,
-                                dag,
-                                block_store,
-                                &cand.hash,
-                                &meet,
-                                &mut memo,
-                            )?
-                            .is_empty(),
-                            StateLineage::Disconnected => false,
-                        }
-                    } else {
-                        false
-                    }
-                } else {
-                    false
-                };
+            let sound_with_other = sound_with_inherited_metered(
+                meter,
+                dag,
+                block_store,
+                parents,
+                cand,
+                other,
+                &mut memo,
+            )?;
             if !sound_with_other {
                 tracing::debug!(
                     target: "f1r3.trace.floor",
@@ -1050,26 +1033,7 @@ async fn derive_floor_metered<W: WorkMeter>(
         break;
     }
 
-    let floor = chosen.ok_or_else(|| {
-        CasperError::IncompatibleFinalizedFork(format!(
-            "finalized-floor safety violation: no finalized candidate is a sound merge base over \
-             parents [{}] (candidates [{}]) — incompatible finalized fork",
-            parents
-                .iter()
-                .map(|p| PrettyPrinter::build_string_bytes(p))
-                .collect::<Vec<_>>()
-                .join(", "),
-            candidates
-                .iter()
-                .map(|c| format!(
-                    "{}#{}",
-                    PrettyPrinter::build_string_bytes(&c.hash),
-                    c.block_number
-                ))
-                .collect::<Vec<_>>()
-                .join(", "),
-        ))
-    })?;
+    let floor = chosen.ok_or_else(|| incompatible_fork_error(parents, &candidates))?;
 
     tracing::debug!(
         target: "f1r3.trace.floor_walk",
@@ -1089,6 +1053,84 @@ async fn derive_floor_metered<W: WorkMeter>(
     );
 
     Ok((floor, main_parent_frontier))
+}
+
+pub(crate) fn sound_with_inherited_metered<W: WorkMeter>(
+    meter: &W,
+    dag: &KeyValueDagRepresentation,
+    block_store: &KeyValueBlockStore,
+    parents: &[BlockHash],
+    cand: &Floor,
+    other: &Floor,
+    memo: &mut IntroducedSigsMemo,
+) -> Result<bool, CasperError> {
+    Ok(if state_contains_metered(meter, dag, block_store, cand, other, memo)? {
+            true
+        } else if !dag.is_dag_ancestor_metered(meter, &other.hash, &cand.hash)? {
+            // `other` is NOT in `cand`'s DAG past, so its chains are
+            // expected back as this merge's diffs, with the merge-time
+            // settled-rejection tripwire guarding the re-application.
+            // (That expectation is weaker than it reads since the base
+            // became the main parent — see the CAVEAT above.) Sound ONLY when
+            // `cand` is a pure cut — it introduces no sigs of its own
+            // relative to its meet with `other`. A competing branch
+            // with content of its own must never become the settled
+            // position: its content can be exactly what the canonical
+            // chain rejected, and every future canonical floor would
+            // then be refused against it (the floor deadlocks instead
+            // of advancing — observed when the reproduction's eraser R
+            // slipped in as a floor through the join block's parents).
+            let mut re_merged = false;
+            for parent in parents {
+                meter.step(WorkKind::Traversal)?;
+                meter.allocate(4, 256)?;
+                if dag.is_dag_ancestor_metered(meter, &other.hash, parent)?
+                    && dag.is_dag_ancestor_metered(meter, &cand.hash, parent)?
+                {
+                    re_merged = true;
+                    break;
+                }
+            }
+            if re_merged {
+                match state_lineage_meet_metered(meter, dag, &cand.hash, &other.hash)? {
+                    StateLineage::Meet(meet) => segment_introduced_sigs_metered(
+                        meter,
+                        dag,
+                        block_store,
+                        &cand.hash,
+                        &meet,
+                        memo,
+                    )?
+                    .is_empty(),
+                    StateLineage::Disconnected => false,
+                }
+            } else {
+                false
+            }
+        } else {
+            false
+        })
+}
+
+pub(crate) fn incompatible_fork_error(parents: &[BlockHash], candidates: &[Floor]) -> CasperError {
+    CasperError::IncompatibleFinalizedFork(format!(
+        "finalized-floor safety violation: no finalized candidate is a sound merge base over \
+         parents [{}] (candidates [{}]) — incompatible finalized fork",
+        parents
+            .iter()
+            .map(|p| PrettyPrinter::build_string_bytes(p))
+            .collect::<Vec<_>>()
+            .join(", "),
+        candidates
+            .iter()
+            .map(|c| format!(
+                "{}#{}",
+                PrettyPrinter::build_string_bytes(&c.hash),
+                c.block_number
+            ))
+            .collect::<Vec<_>>()
+            .join(", "),
+    ))
 }
 
 /// `floor(B)` for an already-inserted block, resolved through the persisted
@@ -1550,6 +1592,45 @@ mod frontier_determinism_tests {
     use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
 
     use super::*;
+
+    async fn floor_of_view(
+        dag: &KeyValueDagRepresentation,
+        block_store: &KeyValueBlockStore,
+        current: &Floor,
+        ftt: FtThreshold,
+    ) -> Result<FloorOfView, CasperError> {
+        let reference = super::floor_of_view(dag, block_store, current, ftt).await;
+        for budget in [
+            crate::rust::finality::floor_runner::Budget::Steps(1),
+            crate::rust::finality::floor_runner::Budget::Steps(3),
+            crate::rust::finality::floor_runner::Budget::Unlimited,
+        ] {
+            let resumable = run_cursor(dag, block_store, current, ftt, budget).await;
+            assert_eq!(
+                format!("{resumable:?}"),
+                format!("{reference:?}"),
+                "the resumable cursor must agree with the reference derivation at {budget:?}"
+            );
+        }
+        reference
+    }
+
+    pub(crate) async fn run_cursor(
+        dag: &KeyValueDagRepresentation,
+        block_store: &KeyValueBlockStore,
+        current: &Floor,
+        ftt: FtThreshold,
+        budget: crate::rust::finality::floor_runner::Budget,
+    ) -> Result<FloorOfView, CasperError> {
+        use crate::rust::finality::floor_runner::{Advance, FloorCursor};
+        let mut cursor = FloorCursor::new(dag.clone(), current.clone(), ftt)?;
+        loop {
+            match cursor.advance(&NoopWork, block_store, budget).await {
+                Advance::Ready(result) => return result,
+                Advance::Yielded => continue,
+            }
+        }
+    }
 
     fn h(n: u8) -> Bytes { Bytes::from(vec![n; 32]) }
     fn val() -> Bytes { Bytes::from(vec![9; 65]) }
@@ -2335,6 +2416,202 @@ mod frontier_determinism_tests {
         assert!(!state_contains(&dag, &store, &at(&t, 3), &at(&c, 1), &mut memo).unwrap());
         assert!(state_contains(&dag, &store, &at(&m, 2), &at(&d, 1), &mut memo).unwrap());
         assert!(state_contains(&dag, &store, &at(&t, 3), &at(&e, 0), &mut memo).unwrap());
+    }
+
+    fn drop_fixture() -> (KeyValueDagRepresentation, KeyValueBlockStore, [Bytes; 5]) {
+        let v = val();
+        let (e, c, d, m, t) = (h(0), h(1), h(2), h(3), h(4));
+        let sig = Bytes::from_static(b"settled_sig_drop");
+        let dag = build_dag(vec![
+            md(e.clone(), vec![], 0, &v),
+            md(c.clone(), vec![e.clone()], 1, &v),
+            md(d.clone(), vec![e.clone()], 1, &v),
+            based(md(m.clone(), vec![c.clone(), d.clone()], 2, &v), &e),
+            md(t.clone(), vec![m.clone()], 3, &v),
+        ]);
+        let store = store_with(vec![
+            body_block(&e, vec![], 0, vec![], None, vec![]),
+            body_block(&c, vec![e.clone()], 1, vec![sig.clone()], None, vec![]),
+            body_block(&d, vec![e.clone()], 1, vec![], None, vec![]),
+            body_block(
+                &m,
+                vec![c.clone(), d.clone()],
+                2,
+                vec![],
+                Some(e.clone()),
+                vec![],
+            ),
+            body_block(&t, vec![m.clone()], 3, vec![], None, vec![]),
+        ]);
+        (dag, store, [e, c, d, m, t])
+    }
+
+    fn with_lfb(dag: &KeyValueDagRepresentation, lfb: &Bytes) -> KeyValueDagRepresentation {
+        let mut dag = dag.clone();
+        dag.last_finalized_block_hash = lfb.clone();
+        dag
+    }
+
+    #[test]
+    fn commit_validation_rechecks_containment_when_the_lfb_moved() {
+        use block_storage::rust::dag::finalization_commit::CommitRefusal;
+        use crate::rust::engine::multi_parent_casper::finalization_runner::{
+            validate_commit, ALinPolicy,
+        };
+        use crate::rust::finality::floor_runner::snapshot_id;
+        let (dag, store, [e, c, _d, _m, t]) = drop_fixture();
+        let thr = FtThreshold::from_f32_lossy(0.1);
+        let derived_against = Floor { hash: e.clone(), block_number: 0 };
+        let candidate = Floor { hash: t.clone(), block_number: 3 };
+        let sigma = snapshot_id(&with_lfb(&dag, &e), thr).unwrap();
+
+        let unchanged = validate_commit(
+            &with_lfb(&dag, &e), &store, &derived_against, sigma, &candidate, thr, ALinPolicy::Halt,
+        );
+        assert_eq!(unchanged, Ok(()));
+
+        let moved = validate_commit(
+            &with_lfb(&dag, &c), &store, &derived_against, sigma, &candidate, thr, ALinPolicy::Halt,
+        );
+        assert!(
+            matches!(moved, Err(CommitRefusal::StateChanged(_))),
+            "a candidate that dropped the new LFB's settled sig must be refused, got {moved:?}"
+        );
+    }
+
+    #[test]
+    fn commit_validation_refuses_a_candidate_not_above_the_lfb() {
+        use block_storage::rust::dag::finalization_commit::CommitRefusal;
+        use crate::rust::engine::multi_parent_casper::finalization_runner::{
+            validate_commit, ALinPolicy,
+        };
+        use crate::rust::finality::floor_runner::snapshot_id;
+        let (dag, store, [_e, c, _d, m, _t]) = drop_fixture();
+        let thr = FtThreshold::from_f32_lossy(0.1);
+        let now = with_lfb(&dag, &m);
+        let sigma = snapshot_id(&now, thr).unwrap();
+        let derived_against = Floor { hash: m.clone(), block_number: 2 };
+        let out = validate_commit(
+            &now,
+            &store,
+            &derived_against,
+            sigma,
+            &Floor { hash: c.clone(), block_number: 1 },
+            thr,
+            ALinPolicy::Halt,
+        );
+        assert_eq!(out, Err(CommitRefusal::NotHigher { lfb_height: 2 }));
+    }
+
+    #[test]
+    fn a_candidate_off_the_lfb_main_chain_is_an_alin_violation() {
+        use block_storage::rust::dag::finalization_commit::CommitRefusal;
+        use crate::rust::engine::multi_parent_casper::finalization_runner::{
+            validate_commit, ALinPolicy,
+        };
+        use crate::rust::finality::floor_runner::snapshot_id;
+        let (dag, store, [_e, _c, d, _m, t]) = drop_fixture();
+        let thr = FtThreshold::from_f32_lossy(0.1);
+        let now = with_lfb(&dag, &d);
+        let sigma = snapshot_id(&now, thr).unwrap();
+        let derived_against = Floor { hash: d.clone(), block_number: 1 };
+        let candidate = Floor { hash: t.clone(), block_number: 3 };
+        let halted = validate_commit(
+            &now, &store, &derived_against, sigma, &candidate, thr, ALinPolicy::Halt,
+        );
+        assert!(matches!(halted, Err(CommitRefusal::ALinViolation(_))), "got {halted:?}");
+        let alarmed = validate_commit(
+            &now, &store, &derived_against, sigma, &candidate, thr, ALinPolicy::Alarm,
+        );
+        assert_eq!(alarmed, Ok(()));
+    }
+
+    #[test]
+    fn a_changed_snapshot_refuses_the_commit_under_a_non_positive_threshold() {
+        use block_storage::rust::dag::finalization_commit::CommitRefusal;
+        use crate::rust::engine::multi_parent_casper::finalization_runner::{
+            validate_commit, ALinPolicy,
+        };
+        use crate::rust::finality::floor_runner::snapshot_id;
+        let (dag, store, [e, _c, _d, m, t]) = drop_fixture();
+        let derived_against = Floor { hash: e.clone(), block_number: 0 };
+        let candidate = Floor { hash: m.clone(), block_number: 2 };
+        let at_derivation = with_lfb(&dag, &e);
+        let mut later = at_derivation.clone();
+        later.latest_messages_map.insert(val(), t.clone());
+        for (thr, refused) in [
+            (FtThreshold::from_f32_lossy(0.0), true),
+            (FtThreshold::from_f32_lossy(-1.0), true),
+            (FtThreshold::from_f32_lossy(0.1), false),
+        ] {
+            let sigma = snapshot_id(&at_derivation, thr).unwrap();
+            assert_eq!(
+                validate_commit(
+                    &at_derivation, &store, &derived_against, sigma, &candidate, thr, ALinPolicy::Halt,
+                ),
+                Ok(())
+            );
+            let out = validate_commit(
+                &later, &store, &derived_against, sigma, &candidate, thr, ALinPolicy::Halt,
+            );
+            assert_eq!(
+                matches!(out, Err(CommitRefusal::StateChanged(_))),
+                refused,
+                "threshold {thr:?}: {out:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn the_cursor_resets_on_snapshot_change_then_freezes() {
+        use crate::rust::finality::floor_runner::{
+            Advance, Budget, CursorSlot, Preparation, MAX_CONSECUTIVE_INVALIDATIONS,
+        };
+        let (base, v, (g, _b1, b2, b3)) = mk_dag();
+        let thr = FtThreshold::from_f32_lossy(0.1);
+        let current = Floor { hash: g.clone(), block_number: 0 };
+        let mut at_b2 = base.clone();
+        at_b2.latest_messages_map.insert(v.clone(), b2.clone());
+        let mut at_b3 = base.clone();
+        at_b3.latest_messages_map.insert(v.clone(), b3.clone());
+        let store = mk_store();
+
+        let mut slot = CursorSlot::default();
+        assert_eq!(
+            slot.prepare(at_b2.clone(), current.clone(), thr).unwrap(),
+            Preparation::Fresh
+        );
+        let mut last_reset_to = at_b2.clone();
+        for round in 0..MAX_CONSECUTIVE_INVALIDATIONS {
+            let (advance, ..) = slot.advance(&NoopWork, &store, Budget::Steps(1)).await.unwrap();
+            assert!(matches!(advance, Advance::Yielded));
+            let next = if round % 2 == 0 { at_b3.clone() } else { at_b2.clone() };
+            assert_eq!(
+                slot.prepare(next.clone(), current.clone(), thr).unwrap(),
+                Preparation::Reset
+            );
+            last_reset_to = next;
+        }
+        assert_eq!(slot.invalidations(), MAX_CONSECUTIVE_INVALIDATIONS);
+        let (advance, ..) = slot.advance(&NoopWork, &store, Budget::Steps(1)).await.unwrap();
+        assert!(matches!(advance, Advance::Yielded));
+        let other = if last_reset_to.latest_messages_map == at_b2.latest_messages_map {
+            at_b3.clone()
+        } else {
+            at_b2.clone()
+        };
+        assert_eq!(
+            slot.prepare(other, current.clone(), thr).unwrap(),
+            Preparation::Frozen
+        );
+        let (advance, ..) = slot.advance(&NoopWork, &store, Budget::Unlimited).await.unwrap();
+        let Advance::Ready(frozen) = advance else {
+            panic!("an unlimited budget finishes the frozen derivation");
+        };
+        let reference = super::floor_of_view(&last_reset_to, &store, &current, thr).await;
+        assert_eq!(format!("{frozen:?}"), format!("{reference:?}"));
+        assert_eq!(slot.invalidations(), 0);
+        assert!(slot.cursor().is_none());
     }
 
     /// R-COMM: the certifying committee is `bonds_of(floor(B))`, and the bonds a

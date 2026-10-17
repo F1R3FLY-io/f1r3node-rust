@@ -67,6 +67,7 @@ async fn create_engine_cell(node: &TestNode) -> EngineCell {
         finalization_in_progress: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         finalizer_task_in_progress: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         finalizer_task_queued: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        finalizer_cursor: casper::rust::finality::floor_runner::new_shared_cursor(),
         finalizer_oracle_cache: casper::rust::safety::clique_oracle::CliqueOracle::new_shared_cache(
         ),
         heartbeat_signal_ref: casper::rust::heartbeat_signal::new_heartbeat_signal_ref(),
