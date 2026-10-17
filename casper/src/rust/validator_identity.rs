@@ -7,6 +7,7 @@ use crypto::rust::signatures::signatures_alg::{SignaturesAlg, SignaturesAlgFacto
 use models::casper::Signature;
 use models::rust::casper::protocol::casper_message::BlockMessage;
 
+use super::errors::CasperError;
 use super::util::proto_util;
 
 #[derive(Clone)]
@@ -53,20 +54,81 @@ impl ValidatorIdentity {
         new_block
     }
 
-    pub fn from_private_key_with_logging(priv_key: Option<&str>) -> Option<Self> {
+    pub fn from_private_key_with_logging(
+        priv_key: Option<&str>,
+    ) -> Result<Option<Self>, CasperError> {
         match priv_key {
-            Some(priv_key) => Self::from_hex(priv_key),
+            Some(priv_key) => Self::from_hex(priv_key).map(Some),
             None => {
                 tracing::warn!("No private key detected, cannot create validator identification.");
-                None
+                Ok(None)
             }
         }
     }
 
-    fn from_hex(priv_key_hex: &str) -> Option<Self> {
-        let decoded = hex::decode(priv_key_hex).unwrap();
+    fn from_hex(priv_key_hex: &str) -> Result<Self, CasperError> {
+        if priv_key_hex.len() != 64 {
+            return Err(CasperError::SigningError(
+                "Validator private key must contain 64 hexadecimal characters".into(),
+            ));
+        }
+        let decoded = hex::decode(priv_key_hex).map_err(|_| {
+            CasperError::SigningError("Validator private key is not valid hexadecimal".into())
+        })?;
+        k256::SecretKey::from_slice(&decoded).map_err(|_| {
+            CasperError::SigningError(
+                "Validator private key is not a valid secp256k1 scalar".into(),
+            )
+        })?;
         let private_key = PrivateKey::from_bytes(&decoded);
 
-        Some(Self::new(&private_key))
+        Ok(Self::new(&private_key))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn configured_identity_preserves_public_key_and_signing() {
+        let (private_key, public_key) = Secp256k1.new_key_pair();
+        let identity = ValidatorIdentity::from_private_key_with_logging(Some(&hex::encode(
+            &private_key.bytes,
+        )))
+        .unwrap()
+        .unwrap();
+        assert_eq!(identity.public_key, public_key);
+        let message = [42; 32];
+        let signature = identity.signature(&message);
+        assert!(Secp256k1.verify(&message, &signature.sig, &signature.public_key));
+    }
+
+    #[test]
+    fn absent_key_preserves_read_only_identity() {
+        assert!(ValidatorIdentity::from_private_key_with_logging(None)
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn invalid_keys_return_errors_without_key_material() {
+        for key in [
+            String::new(),
+            "1".repeat(63),
+            "11".repeat(31),
+            "11".repeat(33),
+            "zz".repeat(32),
+            "00".repeat(32),
+            "ff".repeat(32),
+        ] {
+            let error = ValidatorIdentity::from_private_key_with_logging(Some(&key))
+                .err()
+                .expect("Invalid validator key must fail");
+            assert!(matches!(error, CasperError::SigningError(_)));
+            if !key.is_empty() {
+                assert!(!error.to_string().contains(&key));
+            }
+        }
     }
 }

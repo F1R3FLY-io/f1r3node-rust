@@ -74,7 +74,7 @@ record_exit() {
 }
 trap record_exit EXIT
 cd "$ROOT"
-find node shared block-storage casper comm crypto models rspace++ rholang rho-pure-eval graphz \
+find node consensus shared block-storage casper comm crypto models rspace++ rholang rho-pure-eval graphz \
     -type f \( -name '*.rs' -o -name '*.proto' -o -name Cargo.toml \) -print0 |
     sort -z | xargs -0 sha256sum > "$OUTPUT/inputs.sha256"
 sha256sum Cargo.toml Cargo.lock rust-toolchain.toml .cargo/config.toml \
