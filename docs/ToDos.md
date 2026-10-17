@@ -3947,6 +3947,25 @@ tasks:
       - "Tag v0.4.12 (or matching version) created on f1r3node-rust"
       - "phase_2_code_sync.status set to 'complete' in /tmp/migrationPlan.md"
       - "phase_2_code_sync.synced_from_commit populated"
+  - id: TASK-004-6
+    title: "Restore the legacy vault and PoS registry URIs that the rust/staging sync dropped"
+    status: review
+    claimed_by: claude-session-dfac55a4
+    claimed_at: 2026-10-15T16:30:00Z
+    branch: fix/resolve-system-vault-current-shard
+    claim: docs/claims/system-vault-uri-aliases.md
+    references:
+      - "F1r3Faucet docs/designs/faucet-architecture.md Section 3.1, design question Q16"
+      - "TASK-014-10 (test net faucet, branch ci/testnet-deployment)"
+    notes:
+      - "2026-10-15: 1214adada (sync from f1r3node rust/staging at 6ee5c390) removed rho:rchain:revVault and rho:rchain:pos from the Registry.rho shorthand map. Upstream f1r3node 4812fce0 had added them for client compatibility, and upstream PR #468 (7fff0901) lost them when it copied the Scala Registry.rho. The Scala file never had them, and the upstream crate overview still lists them."
+      - "f1r3wallet uses rho:rchain:revVault (check-balance.js, transfer-funds.js) and rho:rchain:pos (bond.js). The ASI Chain wallet uses rho:rchain:asiVault, which stays a maintainer decision."
+      - "2026-10-16: jeffrey-l-turner accepted the bounded-by-design classification of CLAIM-REGISTRY-URI-ALIASES-001 (refutation and construction not applicable). vault_uri_aliases_spec now pins all 15 shorthand map entries (S3). The normalizer_env.rs unit tests cover the deploy identity aliases (S4). The claim stays pending until the pull request review."
+    acceptance:
+      - "rho:rchain:revVault and rho:f1r3fly:revVault resolve to the rho:id of rho:vault:system, rho:rchain:pos and rho:f1r3fly:pos to that of rho:system:pos, and rho:f1r3fly:multiSigRevVault to that of rho:vault:multiSig. The rho:rchain forms are deprecated"
+      - "A findOrCreate and transfer through rho:rchain:revVault or rho:f1r3fly:revVault moves the same balance as through rho:vault:system"
+      - "Registry.rho and normalizer_env.rs carry cbc=mandatory, and CLAIM-REGISTRY-URI-ALIASES-001 records the claim"
+      - "The maintainer decides whether F1r3fly shards add rho:rchain:asiVault or the ASI Chain wallet moves to rho:vault:system"
 ---
 ```
 

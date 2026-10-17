@@ -35,6 +35,7 @@ pub mod token_metadata_spec;
 pub mod tree_hash_map_spec;
 pub mod vault_address_spec;
 pub mod vault_issuance_test;
+pub mod vault_uri_aliases_spec;
 
 // See casper/src/test/scala/coop/rchain/casper/genesis/contracts/package.scala
 pub const GENESIS_TEST_TIMEOUT: Duration = Duration::from_secs(60);

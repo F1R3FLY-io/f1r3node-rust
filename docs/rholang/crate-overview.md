@@ -261,13 +261,14 @@ as the async ISpace provides its own interior mutability and per-channel locking
 `registry.rs` -- URI-based name registry using base32 encoding with CRC14 checksum.
 `registry_bootstrap.rs` -- Built-in registry contracts installed at genesis.
 
-**Legacy URI aliases**: For backward compatibility with older clients (e.g., rust-client), the following `rho:rchain:*` URIs are aliased to their canonical `rho:system:*` equivalents:
-- `rho:rchain:pos` -> `rho:system:pos` (PoS contract)
-- `rho:rchain:revVault` -> `rho:vault:system` (SystemVault)
-- `rho:rchain:deployId` -> `rho:system:deployId` (deploy context)
-- `rho:rchain:deployerId` -> `rho:system:deployerId` (deploy context)
+**URI aliases**: The F1r3fly aliases and the deprecated RChain aliases resolve to the same contracts or values as their canonical URIs:
+- `rho:rchain:pos` (deprecated) and `rho:f1r3fly:pos` -> `rho:system:pos` (PoS contract, registry shorthand in `Registry.rho`)
+- `rho:rchain:revVault` (deprecated) and `rho:f1r3fly:revVault` -> `rho:vault:system` (SystemVault, registry shorthand in `Registry.rho`)
+- `rho:f1r3fly:multiSigRevVault` -> `rho:vault:multiSig` (MultiSigSystemVault, registry shorthand in `Registry.rho`)
+- `rho:rchain:deployId` -> `rho:system:deployId` (deploy context, `normalizer_env.rs`)
+- `rho:rchain:deployerId` -> `rho:system:deployerId` (deploy context, `normalizer_env.rs`)
 
-Aliases are resolved at the registry and normalizer level. Usage is logged at debug level (`f1r3fly.legacy-uri`).
+The registry aliases are entries in the shorthand map of `Registry.rho`, which genesis deploys. A shard that started before the aliases came back does not resolve them. The normalizer aliases log at debug level (target `f1r3fly.models.legacy_uri`). New code uses the canonical URIs. See [Vault and system URIs](11-registry.md#vault-and-system-uri-aliases).
 
 ## Tests
 
