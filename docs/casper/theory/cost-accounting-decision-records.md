@@ -4955,6 +4955,8 @@ checks the adopted version against the real `GenesisResourcePolicy::adopt`.
 
 **Note (DR-131).** Host-work metering is removed (`75de2dc39`). The mentions of host work in this record are historical.
 
+**Changed by DR-132.** The deterministic scheduler is removed (`97d020154`). Each causal path now has one segment, `[(r, 0)]`, which names journal row `r`. The delta codec of this record stays and encodes these paths. Restore: `git revert 97d020154`.
+
 **Status.** Implemented 2026-10-04 for register item I7 of epic 8946 (batch
 B0).
 
@@ -6163,6 +6165,8 @@ vectors are unchanged.
 
 ## DR-84 — A split adds one causal-path segment
 
+**Superseded by DR-132.** The deterministic scheduler and its splits are removed (`97d020154`). Each causal path has one segment, which names its journal row, so no split adds a segment. Restore: `git revert 97d020154`.
+
 **Status.** Implemented 2026-10-05 for cap root cause C9 of epic 8946
 (batch B1, phase C).
 
@@ -6260,6 +6264,8 @@ Tests:
 
 **Changed by DR-131.** Host-work metering is removed (`75de2dc39`). The host-work charges of this record no longer apply. Its other parts stay. Restore: `git revert 75de2dc39`.
 
+**Changed by DR-132.** Each causal path has one segment, which names its journal row (`97d020154`). The chained digest and the recording index stay. Native replay no longer finds a row by the digest of its path. It finds each row by its recorded source. Restore: `git revert 97d020154`.
+
 **Status.** Implemented 2026-10-05 for cap root cause C7a of epic 8946
 (batch B1, phase C). Its gate H5 holds: in the phase B probe, the recording
 occurrence index was 33.6% of the producer execution budget's
@@ -6336,6 +6342,8 @@ Tests:
 ## DR-86 — Native evidence interns its causal paths in one hash-consed trie
 
 **Changed by DR-131.** Host-work metering is removed (`75de2dc39`). The host-work charges of this record no longer apply. Its other parts stay. Restore: `git revert 75de2dc39`.
+
+**Changed by DR-132.** Each causal path has one segment, which names its journal row (`97d020154`). The trie stays and holds these paths. Native replay no longer keeps a digest index of the paths. It finds each row by its recorded source. Restore: `git revert 97d020154`.
 
 **Status.** Implemented 2026-10-05 for cap root cause C7b of epic 8946
 (batch B1, phase C).
@@ -15869,6 +15877,8 @@ serves cost accounting.
   random state, so a Rholang run cannot make them.
 - R7. G3 design v7 depends on the shared order: its join residual and its
   Stored detector. The G3 v8 review must account for this record.
+  - Changed by DR-132: the shared order is gone, because evaluation races as
+    on `dev`. The G3 design must record its skips, filters and denials.
 - A comment in the metered tests cites pgmcp bug 10137. After a vetoed
   join on a repeated channel, play and the metered selection could choose
   other data. R3 matches that defect. This record fixes R3 in play, and
@@ -15933,6 +15943,9 @@ serves cost accounting.
   receive. They now replay each run and require the known outcomes.
 - The other two stay canonical in 72 plays each, because the scheduler runs
   the sends first. They have a DR-129 note and no other change.
+  - Changed by DR-132: racing evaluation runs the sends and the receives in
+    any order. These two tests and the persistent-peek half of the guarded
+    match now replay each run and require the known outcomes.
 - Suites (nextest, release), each three times under each cap set:
   - rholang and rspace++: 4246 of 4246 tests pass in all six runs, with 13
     skipped. The baselines at `717a33b16` have 4238 of 4238.
@@ -16007,7 +16020,7 @@ approach".
 |---|---|---|---|---|
 | R6 | A join that takes two data from one channel removes them in ascending index order. The first removal shifts the second index, so the wrong datum goes. | Remove in descending index order (`ops_produce.rs`, `ops_consume.rs`, `replay_rspace.rs`) | Yes. Native replay must agree on joins that repeat a channel. | None |
 | K1 | The DER to R‖S conversion of secp256k1-eth pads R and S at the wrong end. About 1 signature in 128 then fails verification (`6a4c71ec0`). | Left-pad R and S to 32 bytes (`secp256k1_eth.rs`) | Yes. Cosigned envelopes with mixed algorithms need it (DR-2). | None |
-| H16 | `getBlockData` and `getDeployData` hold a read guard across `produce().await`. | Release the guard before `produce` (`system_processes.rs`) | Yes. The reduction scheduler needs it (`1af280644`). | None. `dev` changed other parts of the file. |
+| H16 | `getBlockData` and `getDeployData` hold a read guard across `produce().await`. | Release the guard before `produce` (`system_processes.rs`) | No, since DR-132. The reduction scheduler that needed it (`1af280644`) is removed. The fix stays under decision 1. | None. `dev` changed other parts of the file. |
 | W13 | The formal gate passes the source inventory to `jq` as one argument. Above 128 KiB, the call fails with E2BIG. | Pass the inventory on standard input (`scripts/ci/check-formal-gate.sh`) | Yes. The formal tree of this branch is above the limit. | None |
 | W12 | Two audit scripts scan `docs/theory`, which exists on neither branch. So they check nothing. | Scan `docs/casper/theory` (`scripts/audit/check-rocq-line-refs.sh`, `check-source-line-refs.sh`) | Yes. The scripts then check the cost-accounting documents. | None |
 | R17 | The state importer and exporter panic on a malformed chunk from a peer. | Return errors (`rspace_importer.rs`, `rspace_exporter.rs`, `engine/initializing.rs`) | No | None. `dev` changed other parts of `initializing.rs`. |
@@ -16200,3 +16213,595 @@ DR-100, DR-102, DR-103 and DR-108 to DR-112 adopted host-work charge rules
 that this record removes. DR-128 (the restored test), DR-129 and DR-130.
 DR-132 follows: the deterministic scheduler returns to the racing
 evaluation of `dev`.
+
+## DR-132 — The deterministic scheduler returns to dev's racing evaluation, and native replay finds each recorded operation by its source
+
+**Status.** Decided by the user on 2026-10-14 for epic 8946. The user
+said: "the deterministic scheduler needs to be reverted to dev's version, I
+will coordinate the necessary fileio changes with Mike (the deterministic
+scheduler will have a catastrophic impact on parallelism)". This reverses
+the decision of 2026-10-13 to keep the scheduler (consensus proposal §3.7,
+commit `84cfa5684`). The user approved the plan on 2026-10-16 ("Approve,
+run all steps (Recommended)"), with these choices:
+
+- D1-A: name each native operation by its journal row, inside the current
+  format, and let native replay find each row by its RSpace source, as dev
+  does.
+- D2-A: leave the forged-journal stall out of this record, and record it as
+  a residual risk with an ignored test. Reversed by D2-B.
+- D2-B (2026-10-16): native replay rejects the block when every live task
+  waits on a recorded operation, so every replay ends in a verdict, as on
+  dev. The user chose "Fix the wait in DR-132" after the recorded-call test
+  stalled in step S3, and approved design v2 ("Approve, run all steps
+  (Recommended)").
+- D3-A: delete `deterministic_reduction.rs` and its capability tests. Git
+  keeps them.
+- D4-A: retire the formal artifacts of the scheduler, and keep
+  `DeterministicParallelReduction.v` with an amended header.
+- D5-A: no benchmark.
+
+**Terms.**
+
+- The *deterministic scheduler* is the single-order reduction scheduler of
+  `rholang/src/rust/interpreter/deterministic_reduction.rs` (deleted). It
+  named each native RSpace operation by a causal path and ran the
+  operations of a native frontier one at a time, in path order.
+- *Racing evaluation* is the evaluation of `dev`. Parallel branches run as
+  Tokio tasks, and RSpace operations on disjoint channels run at the same
+  time.
+- The *per-call scope* is dev's `DEFERRED_DISPATCHES` scope of one `inj`
+  call. A continuation body, a re-issue and a parallel child run as tasks of
+  the scope, and `inj` drains the scope before it returns.
+- A *source* of an operation is its RSpace event identity: the channel or
+  channels, the hash of the data or of the patterns and continuation with
+  their random state, and persistence (`operation_sources.rs`).
+- A *row* is one entry of the native operation journal. Its *journal
+  index* is its start order in play.
+- The *committed arm* is a copy of `HEAD` with the changes of this record
+  and the committed size limits. The *working tree* has the provisional size
+  limits, which are not committed.
+- A *live task* is a task of a native replay evaluation, from before its
+  spawn until its future ends. The root is live from `begin` until its
+  evaluation returns.
+- A *parked waiter* is a live task in `wait_ready` whose selected row was
+  not ready at the current version, and that counted itself.
+- The *version* counts the changes that can make a waiter ready: a publish,
+  a cancel, the end of a boundary, an invalidation and a stall.
+- The *progress word* is one `AtomicU64` for each replay. Bits 0 to 30 count
+  the parked waiters, bits 31 to 61 count the live tasks, bit 62 is
+  `STALLED` and bit 63 is `CLOSED`.
+- A *stall* is a state in which every live task is a parked waiter.
+
+**Context.** The scheduler gave four guarantees (proposal §3.7):
+
+1. One canonical order of the operations of a native frontier.
+2. Operation names, by causal path, for the native evidence (DR-74, DR-84
+   to DR-86).
+3. Checkpoints that never see a partial evaluation.
+4. Equal host work in play and replay.
+
+DR-131 removed the fourth with host work. Racing evaluation gives up the
+first. The second and third need replacements, because native play,
+native replay and the evidence keyed every operation by its path.
+
+**Decision.**
+
+1. *Evaluation.* Return to dev's racing evaluation, with dev's per-call
+   scope (`AbortOnDrop`, `DeferredDispatches`, `CloseOnDrop`,
+   `DEFERRED_DISPATCHES`, `spawn_in_dispatch_scope`, `join_error`).
+   `eval` and `eval_with_authority` take dev's form. `inj` drains the scope
+   and aggregates, as on dev.
+2. *Operation names (R-ID, D1-A).* The recorder names row `r` by
+   `(session, [(r, 0)])` and returns the name from
+   `observe_operation_start`. RSpace runs the rest of the locked operation
+   under that name with `operation_context::sync_scope`. Native replay
+   finds the slot of a live operation by its recorded source: the first
+   Available row of that source in journal order, selected again under the
+   state lock at each check. The wire format does not change.
+3. *Locks (F1).* `produce_lock` takes phase B on the produce channel too,
+   in one `acquire_locks` call, in `rspace/locks.rs` and in
+   `replay_rspace.rs`. Every operation then holds phase B on every channel
+   of its footprint.
+4. *Deferral (F2, F3, A1, A2).* Inside a per-call scope,
+   `eval_continuation` runs each body as a task of the scope,
+   `run_parallel_dispatches` runs each re-issue as a task of the scope, and
+   a parallel parent pushes its children into the scope and returns.
+   Without a scope, each of them awaits its work as dev does.
+5. *Failure classes (F5).* `DeferredDispatches` holds the failure
+   recorder of the call. `inj` records the classes of the whole error list,
+   with each task failure, before the final aggregate collapses it.
+6. *Deletions (D3-A, D4-A).* The scheduler, its capability tests and the
+   scheduler-only formal artifacts go. `DeterministicParallelReduction.v`
+   stays, with a header.
+7. *G3 note.* G3 has no code. Its design must record its skips, filters and
+   denials, because racing evaluation decides their order.
+8. *Stall rule (D2-B).* Native replay counts the live tasks of each
+   evaluation and the parked waiters among them, in the progress word
+   (`trace/replay/progress.rs`). When every live task is a parked waiter,
+   replay declares a stall: every waiter fails with "native replay stalled:
+   every live task waits on a recorded operation", the replay closes, and
+   the evaluation ends with a Platform failure. Validators record the block
+   as `InvalidTransaction`, and a producer rejects the deploy, as dev
+   rejects a log with `UnusedCommEvent`. The rule runs in native replay
+   only: `ExecutionBackend::evaluation_progress` returns `None` for every
+   other backend.
+
+**Literate algorithm.**
+
+```text
+⟨play: name a recorded operation⟩ ≡
+  name ← observer.observe_operation_start(source, channels, joins)
+         -- the recorder appends row r and returns (session, [(r, 0)])
+  if name is present:
+      run the observed body and observe_operation_finish
+      inside operation_context::sync_scope(name)
+  else:
+      run them as dev does
+
+⟨replay: find the slot of a live operation⟩ ≡
+  -- under the replay state lock, at each wait check and at the reservation
+  candidates ← the slots whose recorded source equals the live source,
+               in journal order
+  if candidates is empty: fail with Source
+  first ← the first candidate that is not Completed   -- a partition point
+  slot ← the first Available candidate from first onward
+  if no slot exists: fail with Unavailable
+
+⟨begin an evaluation (D2-B)⟩ ≡
+  under the state lock: the replay is open, no boundary is open,
+                        and no slot is reserved
+  word: compare-and-swap from 0 to one live task   -- only an idle word begins
+  the root holds a live token until its evaluation returns, before the drain
+
+⟨spawn a task of the evaluation⟩ ≡
+  word.live ← word.live + 1                        -- before the spawn
+  spawn the task, which binds its live token first, so the token drops last
+
+⟨wait for the recorded predecessors of a live operation⟩ ≡
+  counted ← the task runs in the scope of this replay's evaluation
+  if not counted and the word is armed: fail with Uncounted
+  registration ← none
+  loop:
+      register the notification
+      under the state lock:
+          check ← the replay is open, select the slot, check its predecessors
+          if check is ready:
+              leave the registration
+              return
+          if check is an error:
+              leave the registration
+              fail
+          if counted and the registration is not at the current version:
+              registration ← the current version
+              word.parked ← word.parked + 1
+              if every live task is parked:
+                  declare the stall
+                  after the unlock, notify
+                  fail with Stalled
+      await the notification
+
+⟨end a change⟩ ≡   -- a publish, a cancel, the end of a boundary, an invalidation
+  under the state lock:
+      change the state
+      version ← version + 1
+      word.parked ← 0
+  after the unlock: notify every waiter
+
+⟨a task ends⟩ ≡    -- normally, by a panic, or by an abort
+  its wait, if any, leaves its registration under the state lock
+  word.live ← word.live − 1                        -- the token drops last
+  if every remaining live task is parked:
+      under the state lock, declare the stall
+      after the unlock, notify
+
+⟨declare the stall⟩ ≡
+  set STALLED, unless STALLED or CLOSED is set already
+  state: closed and stalled
+  version ← version + 1
+  word.parked ← 0
+
+⟨cancel the evaluation⟩ ≡
+  set CLOSED while some task is live, before any task aborts
+  -- no later park or finish declares a stall, and the replay never begins again
+```
+
+**Why the parts agree.**
+
+- The source hash covers the whole operation, so two unrelated operations
+  do not share a source. Random states split at every Par and merge at
+  every COMM.
+- All rows of one source share its channel, so each such row lists the
+  row before it as a channel predecessor. Replay completes a row only after
+  its predecessors, so the completed rows of one source form a prefix in
+  journal order, and a binary search finds its end.
+- Replay keeps play's order on each shared channel: an operation waits for
+  its recorded predecessors.
+- One-segment names make the trie preorder equal to journal order, so
+  `bind_trace`, the checker, the codec and Casper's evidence code run
+  unchanged.
+- Play records only operations that its locks serialize. F1 closes the one
+  gap: a produce could start inside the open footprint of a produce that
+  fired a join.
+- The record decides every order-dependent choice: the DR-113 grants, the
+  DR-114 room race and the DR-129 pick. Byte observations need no change.
+
+**Why the stall rule is exact (D2-B).**
+
+*Definitions.*
+
+- An evaluation is *armed* from a successful `begin` until a stall or a
+  cancel sets a flag, or until its last live task ends.
+- A *change* is a publish, a cancel, the end of a boundary, an invalidation
+  or a stall. Each change increments the version `v` under the state lock.
+- A row `r` is *ready* when it is available, each predecessor of `r` is
+  complete, and no boundary is open (`state.rs`, `ready`).
+- A task *can act* when it is outside `wait_ready`, or when it is inside
+  `wait_ready` and its selected row is ready.
+
+*Invariants.* Five invariants hold while an evaluation is armed.
+
+- I1 (`LiveExact`): the live count equals the number of live tasks. A
+  parent counts its child before the spawn, and the token of a task drops
+  after the future of the task (`spawn_in_dispatch_scope`, `LiveToken`).
+- I2 (`CountExact`): the parked count equals the number of waiters
+  registered at the current version. A waiter counts once for each version,
+  each change clears the count in its own critical section, and a dropped
+  wait leaves its registration, also on a poisoned lock (`Registration`,
+  `Wait`).
+- I3 (`CountedAreBlocked`): a waiter registered at the current version
+  waits on a row that is not ready (Lemma 2).
+- I4: only live tasks change the state. An operation from outside the
+  evaluation fails with `Uncounted`, `begin` requires that no boundary is
+  open, and `begin_boundary` refuses.
+- I5: a live task waits on another task only inside `wait_ready`. The
+  evaluation path has no join or select of futures and spawns only through
+  `spawn_in_dispatch_scope` (source guard). A task holds a reservation only
+  between `wait_ready` and the publication or cancel of that reservation,
+  and no await holds the state lock.
+
+TLA+ checks I1, I2, I3 and the absence of lost wakeups
+(`NativeReplayStall.tla`, `NativeReplayStallLifecycle.tla`). Loom checks the
+production `state.rs` and `progress.rs`. Two source guards check the spawns
+and joins of I5 and the order of the critical sections.
+
+*Lemma 1 (only changes make rows ready).* While the evaluation is armed,
+the set of ready rows grows only by a change. A reservation and the start of
+a boundary only remove rows from it.
+
+Proof. Readiness reads three things: the state of the row, the states of
+its predecessors, and the boundary flag. A publish completes a row, a cancel
+makes a reserved row available, the end of a boundary clears the flag, and
+an invalidation or a stall closes the replay. These are the changes. A
+reservation makes a row unavailable, and the start of a boundary sets the
+flag, so both only remove rows. No other step writes these three things. ∎
+
+*Lemma 2 (a counted waiter is blocked).* If a waiter is registered at the
+current version, the row that it would select now is not ready.
+
+Proof. The waiter registered at version `v` in the critical section of a
+check that found its selected row `r` not ready. The version is still `v`,
+so no change has happened since. By Lemma 1, `r` is still not ready. The
+selection can still move, because `select_slot` returns the first open row
+of the source, and another task can reserve `r`. Then the selection moves to
+a later row `r'` of the same source. Rows of one source share a channel
+`c`. The checker makes each row list the last earlier row on each channel of
+its footprint (`checked_operations.rs`), so the rows of `c` form a chain, and
+`r'` depends on `r` through that chain. A row is ready only when its
+predecessors are complete, and `r` is reserved, not complete. So `r'` is not
+ready either. ∎
+
+*Theorem 1 (soundness).* When a park or a task end declares a stall, no
+task of the evaluation can act again, and no row completes again.
+
+Proof.
+
+1. The declaring step reads `parked = live > 0`, and no flag is set. A park
+   holds the state lock. A task end decrements atomically and then takes the
+   lock. Step 4 shows that nothing changes in between.
+2. By I1, `live` is the number of live tasks. By I2, `parked` is the number
+   of waiters registered at the current version. A registration exists only
+   inside `wait_ready`, and each waiter holds at most one. So each live task
+   is a waiter registered at the current version.
+3. By Lemma 2, each of these waiters waits on a row that is not ready.
+4. A change needs an actor. A publish or a cancel needs a task that holds a
+   reservation, and by I5 no waiter holds one. No boundary is open, so none
+   can end (I4). An invalidation comes only from a failing operation of a
+   task (`native_session.rs`, `native_session/operations.rs`), and no task
+   runs an operation. By I4, nothing outside the evaluation changes the
+   state. So no change happens.
+5. A waiter that wakes without a change checks at the same version. By
+   Lemma 2, it finds a row that is not ready, and it parks again without a
+   new count. So no task acts, no row completes, and without the rule the
+   evaluation would never end. ∎
+
+*Theorem 2 (completeness).* Each evaluation ends: every live task ends, or
+a stall is declared, or a cancel closes the evaluation.
+
+Proof.
+
+1. An evaluation makes finitely many changes. Each publish completes one of
+   finitely many rows. A Rholang process repeats only through a COMM, and in
+   native replay each COMM completes a row, so an evaluation runs finitely
+   many tasks and operations. Each cancel and each invalidation follows a
+   failed operation, and a failed operation ends its task with an error.
+2. Let `v*` be the version after the last change. Each live task then ends,
+   or reaches `wait_ready`, after finitely many steps (step 1 and I5).
+3. A waiter registers its notification before its check (source guard,
+   TLA+ `NoLostWakeup`). So the last change wakes every waiter that checked
+   at an earlier version, and that waiter checks again at `v*`.
+4. A waiter that finds its row ready at `v*` reserves it. A reservation
+   leads to a publish or a cancel, which is a change after `v*`, which is a
+   contradiction. A reservation that finds no ready row returns the waiter to
+   `wait_ready`, at `v*`. So each waiter finds its row not ready at `v*`,
+   and counts once (the version rule).
+5. Let `e` be the last of the parks at `v*` and the task ends after the
+   last change. After `e`, each remaining live task is a waiter counted at
+   `v*`, so `parked = live`. If `live > 0`, the step `e` declares the stall,
+   unless a flag is set: `STALLED` means that a stall was declared, and
+   `CLOSED` means that a cancel closed the evaluation. If `live = 0`, every
+   task has ended, and the drain ends the evaluation. ∎
+
+*Theorem 3 (honest replays complete).* For a journal that an honest play
+records, every replay schedule completes every row, and no stall is
+declared.
+
+Proof. Take any reachable state of the replay with an incomplete row. Let
+`r` be the incomplete row with the smallest journal index.
+
+1. The predecessors of `r` have smaller indexes, so they are complete.
+2. Row indexes follow start order in play. The COMM that spawned the task
+   of `r`, and the earlier operations of that task, have smaller indexes, so
+   they are complete. Their outcomes equal the outcomes of play, because
+   replay follows the record. So the task of `r` exists in replay and
+   reaches the operation of `r`.
+3. `select_slot` returns the first open row of the source of `r`. Each
+   earlier row of that source has a smaller index, so it is complete. So the
+   task selects `r`, or another task of the same source has reserved `r` and
+   is about to complete it.
+4. So some task can act, and by Theorem 1 no stall is declared. The
+   operations of each source in replay are the operations of play, so a
+   source never has more live operations than rows, and `Unavailable` never
+   occurs. By Theorem 2, the evaluation ends, and by steps 1 to 3 it ends
+   with every row complete. ∎
+
+*Theorem 4 (the same verdict on every validator).* All replay schedules of
+one journal and one term reach the same verdict. The proof uses three
+premises.
+
+- A1: live operations of one source come only from identical tasks, so it
+  does not matter which of them takes which row of the source.
+- A2: the outcome of an operation depends only on its row and on the store
+  state of its footprint, and the rows before it on those channels fix that
+  state.
+- A3: shared state outside the rows does not depend on the order. Checked
+  for the introduction registry (the produce hash covers the cost authority
+  of the datum, `RhoTypes.proto:123` and
+  `rspace/trace/event.rs:155-157`, so one identity cannot carry two
+  authorities) and for stack transfers (the capacity check runs only with
+  an allocation, `accounting/mod.rs:1148`, and production native play
+  passes none).
+
+Proof. Model a replay as steps of tasks. A step is local work, a spawn, the
+bookkeeping of the stall rule, a failed operation, or the completion of a
+row (its reservation, its operation and its publication under the stripe
+locks of its footprint). Two different steps that are enabled in one state
+belong to different tasks, because a task has one next step. Such steps
+commute: each stays enabled after the other, and both orders reach the same
+state, up to a renaming of identical tasks.
+
+1. Local work, a spawn and the bookkeeping change only the task itself, or
+   add a task, and change no row and no store state.
+2. Two row completions `r1` and `r2`: if their footprints shared a channel,
+   the chain of that channel would make one row an ancestor of the other,
+   and both could not be enabled. So their footprints are disjoint, their
+   store effects touch disjoint channels, and by A2 and A3 each outcome is
+   the same in both orders.
+3. Two operations of one source: by A1 their tasks are identical, so the
+   order in which they take the rows of the source changes the state only
+   by a renaming of those tasks.
+4. A failed operation depends only on its task and its row (A2), so it
+   commutes with each step of another task.
+
+By Theorem 2 step 1, each schedule has finitely many steps. A terminating
+system whose diverging steps commute has one final state for each start
+state, by Newman's lemma (M. H. A. Newman, "On theories with a combinatorial
+definition of 'equivalence'", *Annals of Mathematics* 43(2), 1942,
+[doi:10.2307/1968867](https://doi.org/10.2307/1968867)). The final state
+fixes the verdict: the complete rows, the outcome of each task, and, by
+Theorems 1 and 2, whether a stall is declared. ∎
+
+**Remaining differences from dev in dev files.**
+
+1. Phase B on the produce channel in `locks.rs` and `replay_rspace.rs`
+   (F1).
+2. Deferral in `eval_continuation` (F2).
+3. Re-issues and parallel children are not awaited inside a scope (F3, A2).
+4. An error in a reply body does not flow back through the system process,
+   as on `HEAD` before this record. On dev, the reply of a system process
+   returns the error of its produce (`system_processes.rs:1391-1396` and
+   `dispatch.rs:85-89` at dev `0f3943d64`, the same code as lines 1924-1929
+   and 117-121 at `HEAD`).
+5. In a native replay evaluation, the per-call scope counts its tasks for
+   the stall rule (D2-B): `DeferredDispatches.progress`, `LiveToken`, the
+   count in `spawn_in_dispatch_scope`, `begin` and the root token in
+   `inj_with_observation`, the closed word in `close`, and `InFlight` in the
+   drain. Without a native replay, each of them is dev's code.
+
+Other dev files that keep branch changes: `rspace_interface.rs`,
+`ops_produce.rs`, `ops_consume.rs`, `replay_rspace.rs`, `trace_log.rs`,
+`ispace_impl.rs`, `rspace.rs` and `operation_context.rs` (dev has this
+module since `b5cd551a3`), and the recorder field of `DeferredDispatches`
+in `reduce.rs`.
+
+**Consensus notes.**
+
+- Protocol 6 is unreleased.
+- Every path field holds one segment. The log order follows the rows.
+- The wire format does not change.
+- The path-segment limit no longer binds native evaluation. Under the
+  scheduler, each nested body added one segment.
+
+**Residual risks.**
+
+- *File I/O waits.* No dispatch table registers the file I/O handlers
+  today. When file I/O reaches native execution, a file-lock wait must
+  register as a parked wait, or the stall rule cannot see that task wait.
+- *Repeated replays of a stalled block.* `replay_block` tries a failed
+  replay three more times before the verdict, so a stalled block costs four
+  replays.
+- *Wakes.* Every change wakes every waiter, which checks once and parks
+  again. This costs time, not correctness.
+- *Count width.* The word counts at most `2^31 - 1` live tasks. `enter`
+  panics before an overflow.
+- *Unnamed operations.* An operation that the recorder does not name keeps
+  arrival order in the log. FF-4 and P-1 check that no native operation
+  stays unnamed.
+- *The DR-129 grant lead.* See proposal §11.
+- *Error-list order.* The drain is FIFO by registration, so an aggregate
+  can list its errors in another order. Casper reads the list only through
+  `is_empty` and `classify_errors`.
+- *Cancellation.* `AbortOnDrop` cannot stop a poll that already runs. The
+  only production cancellation of an evaluation is the exploratory-deploy
+  timeout (casper `api/block_api.rs:496-501`), which runs on a fresh
+  runtime.
+
+**Formal artifacts.**
+
+- D4-A retires the formal artifacts of the scheduler (step S5).
+- D2-B adds two TLA+ models of the stall rule under
+  `formal/tlaplus/cost_accounted_rho/`. `NativeReplayStall.tla` models one
+  evaluation: the wait, the park, the publish, the notification, a boundary
+  and the stall. Its nine scenarios have two to five tasks: honest, missing
+  row, inversion, uncounted task, same-source rows, more tasks than rows,
+  and the small scenarios pair, missing pair and chain. Its invariants are
+  `TypeOK`, `NoFalseStall`, `NoFreshLeave`, `LiveExact`, `CountExact`,
+  `CountedAreBlocked`, `NoLostWakeup`, `NoHang` and `Verdict`.
+  `NativeReplayStallLifecycle.tla` models panics, cancellation, the root
+  token and a second evaluation on one replay. Its invariants are `TypeOK`,
+  `LiveExact`, `CountExact`, `NoFalseStall`, `NoLateStall`, `IdleAfterEnd`
+  and `NoHang`.
+- Each negative control removes one safeguard, and TLC reports the expected
+  violation. Core model: `ParkAfterUnlock` breaks `NoFalseStall` and
+  `NoFreshLeave`, `SkipReset` breaks `NoFalseStall`, `ResetAfterUnlock`
+  breaks `NoHang`, `SkipVersion` breaks `CountExact`, `CountInChild` breaks
+  `NoFalseStall`, `NotifiedAfterCheck` breaks `NoLostWakeup`,
+  `RootUncounted`, `AdmitUncounted` and `BoundaryWhileArmed` break
+  `NoFalseStall`. Lifecycle model: `NoLeaveOnDrop` breaks `CountExact`,
+  `FinishBeforeDrop` breaks `NoFalseStall`, `BeginNonZero` breaks
+  `LiveExact`, `AbortBeforeClose` breaks `NoLateStall`, and
+  `HoldRootThroughDrain` breaks `NoHang`.
+- Eight witnesses are expected violations of reachability predicates, so
+  `Verdict` and `IdleAfterEnd` do not hold only because no run ends: honest,
+  same-source and pair replays complete, missing, inverted, uncounted and
+  missing-pair replays end in a stall, and a second evaluation ends
+  normally.
+- The design listed a control that skips the leave on the error path. The
+  model shows that this leave only ever removes a stale registration
+  (`NoFreshLeave` holds in every scenario), so that control cannot fire.
+  `NoFreshLeave` has its own control instead (`ParkAfterUnlock`).
+- Loom (`formal/loom/cost_accounting/tests/loom_native_replay_stall.rs`)
+  includes the production `state.rs` and `progress.rs`. It checks seven
+  scenarios and six negative controls. The ledger Loom tests check that
+  each change bumps the version once and that a stall refuses a racing
+  reservation.
+
+Results. TLC: the nine scenarios and the lifecycle model pass. The honest
+scenario has 7,447 states (depth 34), the missing scenario has 14,174
+states, and the lifecycle model has 4,390 states (depth 23).
+Every control reports its target violation, and every witness is reached.
+Minimum counterexamples, with one TLC worker, have 3 to 13 states. Apalache
+refutes each of the ten core controls at exactly its minimum length, in 10
+to 105 seconds. Apalache needs 1,500 seconds and more for the long witnesses
+on four or more tasks, so those stay in TLC. Loom: the stall model passes
+with its six negative controls, and the Loom gate passes (282 tests within
+preemption bound 3). The first Loom run aborted, because the instrumented
+drop of a Loom `Arc` panicked again during the deadlock of the lost-wakeup
+control. The model therefore shares the replay through `std::sync::Arc`, and
+its notification parks and unparks registered threads.
+The Apalache gate holds 21 stall entries, and each fits its 1,200-second
+limit. The ten core controls and the five lifecycle controls are refuted at
+their minimum lengths, in 3 to 105 seconds each. The three witnesses are
+reached: pair completion in 428 seconds, the missing-pair verdict in 114
+and the uncounted verdict in 321. The three safe checks run to the largest
+lengths that fit half of the limit: pair to length 14 (529 seconds),
+missing pair to 13 (581) and lifecycle to 7 (422). TLC checks every
+reachable state of these configurations, whose depths are 18, 17 and 23.
+
+**Verification.** The tests of the stall rule (D2-B):
+
+- *Failing first.* Before the stall rule, three tests waited until their
+  10-second deadlines: FF-6, the recorded-call test, and the new
+  changed-reply test (`native_replay_rejects_a_changed_recorded_reply`).
+  Each failed with `Elapsed(())` after 10.0 seconds. With the stall rule,
+  each reaches its verdict in 26 to 28 milliseconds.
+- *Forged journals.* FF-6 runs its operations as counted tasks of one
+  evaluation, and its single-root form runs the receive in the root. P-6
+  (`forged_order_reaches_its_verdict`) plays all six orders of the three
+  operations of FF-6, and replays each journal four times on a
+  current-thread runtime and on runtimes with 2 and 8 workers. The two
+  honest orders must be accepted, and the four orders that form a cycle
+  with the term must end in a stall.
+- *Recorded calls.* The recorded-call test and the changed-reply test must
+  end in a stall, with an incomplete replay.
+- *Honest replays.* P-1 checks after each replay that the progress word is
+  idle and that a new evaluation can begin. It runs on a current-thread
+  runtime and on runtimes with 2 and 8 workers. Design v2 (review m7) also
+  asked for a persistent send to a replying system process. Such a send
+  re-issues itself on each firing, so its evaluation ends only when it
+  exhausts its phlo limit, and native play of that loop leaves its budget
+  recording incomplete. The defect predates DR-132. At `4c58a925f`, with
+  the scheduler and the causal-path names and the same 4,096-segment limit,
+  a persistent send to `sha256` and a persistent send to a contract, each
+  with 20,000 phlo, also leave an incomplete recording. Contract recursion,
+  a single call and repeated calls that exhaust their limits record
+  completely there, with the same usage as after DR-132. That family is
+  therefore commented out in P-1, with this reason.
+- *Changed context.* A changed block context ends in a stall when play
+  recorded the reply before the receive. A stalled replay refuses every
+  boundary, so the environment cannot roll its budget back, and Casper drops
+  the environment after the failed evaluation. The context test accepts
+  either path, and a current-thread test
+  (`native_environment_stalls_on_a_changed_context_after_the_reply`) takes the
+  stall path every time.
+- *Aborted reservation.* A task aborted while it holds a reservation
+  cancels the reservation before its live count drops, so the counts stay
+  exact and the slot opens again
+  (`an_aborted_task_releases_its_reservation_before_its_count`).
+- *Racing order.* Four denial tests take a limit from one play and require
+  a denial in another play:
+  `native_system_callbacks_preserve_generated_payloads_and_charges`,
+  `native_environment_replays_system_callbacks_and_rejects_changed_context`,
+  `native_executor_replays_parsed_processes_denied_comms_and_exact_usage`
+  and `native_export_binds_completed_accounting_to_the_recorded_state_root`.
+  Racing evaluation can order the attempts of the two plays differently.
+  So each test repeats the pair of plays up to 32 times (the DR-129
+  treatment), and one pair must deny. Before this treatment, the last two
+  tests failed 4 and 5 times in 300 repetitions. After it, 600 repetitions
+  passed. A sweep of 20 repetitions over the 1,271 accounting tests found no
+  other failure of this kind.
+- *Unit tests.* `progress_tests.rs` checks the word and the decisions:
+  begin and end, one count for each version, the last park and the last
+  finish, an uncounted waiter, a cancel, and a stale leave. `state.rs`
+  checks the version bumps and the closed entries after a stall. A poisoned
+  lock test drops a parked wait, and the count returns to zero.
+- *Source guards.* The native evaluation path spawns only through
+  `spawn_in_dispatch_scope` and has no join or select of futures (I5).
+  `wait_ready` registers its notification before it takes the state lock,
+  and `changed` clears the count before the unlock and notifies after it.
+
+Results. The suites ran on the exact tree of commit 1, in a copy with the
+committed size limits, and in the working tree. crypto (122 tests), shared
+(166), models (493), graphz (48), block-storage (209), rspace++ (640), comm
+(408), rholang (3,268), node (296), the File I/O fixtures (8) and the
+doctests (3, and 2 ignored) pass. Casper passes 1,814 of 1,815 tests. The
+one failure is DR-131's known gateway test
+(`offered_gateway_slot_api_test.rs:555`, `NoNewDeploys`), which G3 fixes.
+Clippy with `-D warnings` and `cargo fmt --check` are clean. The Loom gate
+passes 282 tests. The full TLA+ gate passes 647 checks, with 485 expected
+refutations. The proof gate passes with 285 modules and 3,279 closed
+assumption queries.
+
+**Restore.** `git revert <commit 2> <commit 1>` restores the scheduler.
+
+**Cross-refs.** DR-74, DR-84 (superseded), DR-85, DR-86, DR-129, DR-130,
+DR-131.

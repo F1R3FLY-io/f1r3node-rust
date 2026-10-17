@@ -1,5 +1,7 @@
 # Runtime ownership inventory
 
+**Note (DR-132).** The deterministic scheduler is removed (`97d020154`), and evaluation races as on `dev`. The scheduler content of this document is historical. Restore: `git revert 97d020154`.
+
 ## Status and scope
 
 This inventory records the runtime owners inspected on September 7, 2026.
@@ -219,10 +221,10 @@ Sources:
 | Cost and authority evidence | Budget queues and maps own attempts, byte events, introductions, reservations, and reconciliation results. | Reconciliation transfers ownership. Reset clears contents. Published evidence has its own owner. | A cleared vector can retain capacity. Preserve evidence required by settlement and replay. |
 
 Sources:
-[reduction coordinator](../../../../rholang/src/rust/interpreter/deterministic_reduction.rs) and
+reduction coordinator (`deterministic_reduction.rs`, deleted by DR-132) and
 [accounting runtime](../../../../rholang/src/rust/interpreter/accounting/mod.rs).
-The [Rocq task relation](../../../../formal/rocq/cost_accounted_rho/theories/CountedDetachedBisimulation.v)
-and [TLA+ lifecycle model](../../../../formal/tlaplus/deterministic_parallel_reduction/CountedDetachedReduction.tla)
+The Rocq task relation (`CountedDetachedBisimulation.v`, retired by DR-132)
+and TLA+ lifecycle model (`CountedDetachedReduction.tla`, retired by DR-132)
 check selected-task replay, charges, cancellation, and permit retention.
 
 The runtime constructor stores a weak reducer reference in the dispatcher's `OnceLock`.

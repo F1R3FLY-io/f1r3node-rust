@@ -1,5 +1,7 @@
 # Parallel Runtime, Validator, and Shard Isolation
 
+**Note (DR-132).** The deterministic scheduler is removed (`97d020154`), and evaluation races as on `dev`. The scheduler content of this document is historical. Restore: `git revert 97d020154`.
+
 ## Scope
 
 This document specifies the concurrency boundary connecting cost-accounted

@@ -86,7 +86,7 @@ PR #216 adds about 1,550 files under `formal/`. The table lists the areas that t
 | `tlaplus/deploy_recovery` | 79 added or modified | none | Carrier index soundness, protocol lifecycle, rejection reasons. The directory exists on `dev`. |
 | `tlaplus/slashing` | 62 | 22 (`rocq/slashing`) | Objective evidence, redemption |
 | `tlaplus/block_admission` | 42 | none | Byte-bounded admission, transport residency |
-| `tlaplus/deterministic_parallel_reduction` | 33 | included above | Intra-deploy reduction order |
+| `tlaplus/deterministic_parallel_reduction` | 33 | included above | Intra-deploy reduction order. Retired by DR-132, and git keeps the files. |
 | `tlaplus/fork_choice` | 24 | 15 (`rocq/fork_choice`) | Certified context, eligibility |
 | `loom/cost_accounting` | 35 Rust files | none | Concurrency shadow models, added as a workspace crate |
 

@@ -1,4 +1,5 @@
 @startuml
+footer DR-132: the deterministic scheduler is removed (97d020154), and evaluation races as on dev. This diagram describes the removed design.
 skinparam backgroundColor transparent
 skinparam componentStyle rectangle
 skinparam shadowing false

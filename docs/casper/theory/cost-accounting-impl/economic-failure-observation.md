@@ -2,6 +2,8 @@
 
 **Note (DR-131).** Host-work metering is removed (`75de2dc39`). The host-work content of this document is historical. Restore: `git revert 75de2dc39`.
 
+**Note (DR-132).** The deterministic scheduler is removed (`97d020154`), and evaluation races as on `dev`. The scheduler content of this document is historical. Restore: `git revert 97d020154`.
+
 ## Purpose and compatibility
 
 An evaluation can report several failures from parallel processes.
@@ -108,7 +110,7 @@ Runtime tests cover result propagation and isolation across aborts, parse failur
 Source boundaries:
 
 - [Classifier and atomic recorder](../../../../rholang/src/rust/interpreter/accounting/economic_failure.rs)
-- [Reduction-session ownership](../../../../rholang/src/rust/interpreter/deterministic_reduction.rs)
+- Reduction-session ownership (`deterministic_reduction.rs`, deleted by DR-132)
 - [Reducer regression tests](../../../../rholang/src/rust/interpreter/reduce_economic_failure_tests.rs)
 - [Classification, property, and Loom tests](../../../../rholang/src/rust/interpreter/accounting/economic_failure/tests.rs)
 - [Failure-policy rationale](economic-failure-policy-decisions.md)

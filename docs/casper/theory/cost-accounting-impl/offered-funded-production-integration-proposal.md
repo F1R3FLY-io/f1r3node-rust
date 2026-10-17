@@ -2,6 +2,8 @@
 
 **Note (DR-131).** Host-work metering is removed (`75de2dc39`). The host-work content of this document is historical. Restore: `git revert 75de2dc39`.
 
+**Note (DR-132).** The deterministic scheduler is removed (`97d020154`), and evaluation races as on `dev`. The scheduler content of this document is historical. Restore: `git revert 97d020154`.
+
 **Status:** The direct-REV path connects public ingress, proposal, publication, and independent validator replay in the current worktree. Final aggregate qualification and release approval remain pending. V2 asset conversion is tracked as pgmcp `offered-v2-third-party-conversion`. Direct-REV admission rejects V2 conversion.
 
 **Target:** `feature/cost-accounted-rho` at base commit `e74842683`. Reuse only required cost-accounting changes from saved derivative commit `f9bd3895d`. Leave unrelated Casper consensus, finality, recovery, pruning, and general merge repairs with the Casper team.

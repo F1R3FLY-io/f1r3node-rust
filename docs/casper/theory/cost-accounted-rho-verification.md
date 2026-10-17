@@ -2,6 +2,8 @@
 
 **Note (DR-131).** Host-work metering is removed (`75de2dc39`). The host-work content of this document is historical. Restore: `git revert 75de2dc39`.
 
+**Note (DR-132).** The deterministic scheduler is removed (`97d020154`), and evaluation races as on `dev`. The scheduler content of this document is historical. Restore: `git revert 97d020154`.
+
 > **Branch scope.** This record covers formal and native verification on
 > `feature/cost-accounted-rho`. The current worktree connects direct-REV
 > ingress, guarded publication, the evidence codec, and independent node
@@ -197,6 +199,12 @@ These results establish error transport, not complete runtime failure atomicity 
 The private replay session waits outside its gate and channel guards, then rechecks readiness under the ledger mutex before reservation.
 The direct reservation entry point uses the same atomic dependency check and preserves exclusive checkpoint boundaries.
 `NativeReplayReadiness.tla` checks three slots and one restore, with negative controls for retained waiting leases, omitted rechecks, and direct-entry dependency bypass.
+Added by DR-132 (decision D2-B): the stall rule bounds every native replay wait.
+`NativeReplayStall.tla` checks the wait, park, publish, notification, boundary and stall protocol of one evaluation in nine scenarios. Ten negative controls each remove one safeguard, and seven reachability witnesses show that honest replays complete and forged ones end in a stall.
+`NativeReplayStallLifecycle.tla` checks panics, cancellation, the root token and a second evaluation, with five negative controls and one witness.
+Apalache refutes every control at its minimum counterexample length.
+Loom imports the production `state.rs` and `progress.rs` and checks the protocol with spurious wakes, with six negative controls.
+These checks establish the counting protocol. The verdict of a block rests on the premises A1 to A3 of DR-132.
 Generated direct-entry histories check declared dependencies, cancellation, exact usage, and restoration.
 Loom imports the production ledger to check predecessor publication and cancellation, independent reservations, and restoration between readiness and reservation.
 These checks do not establish stage-level retry provenance or complete funded-runtime integration.
@@ -4936,7 +4944,7 @@ not slash evidence against a remote validator.
 | Rocq | `ParallelValidatorConsensus.v` | sound local replay refines state-preserving eligibility; distinct validator promotions commute; every point update preserves global consistency; equal candidates publish equal roots and effects |
 | Rocq | `CAOSLFSpatialModal.v` and `GSLTOSLFCapstone.v` | finite located formulas are decidable; exact use and post-state are sound; linearity forbids weakening/contraction; conservative sufficiency is sound; local proofs compose |
 | Rust | `rspace++/tests/comm_observer_tests.rs` | observer placement, one-call behavior, stable identity, join charging, and rollback |
-| Rust / Loom | `concurrent_rspace_architecture_repro_spec.rs`, RSpace ordered-log tests, and `loom_deterministic_reduction_frontier.rs` | exact roots and logs for competing sends/receives, joins, persistence, peek, guards, ACI permutations, play/replay, reversed log arrival, soft-checkpoint reversion, metadata updates, compound authorities, cancellation, and every bounded submit schedule |
+| Rust / Loom | `concurrent_rspace_architecture_repro_spec.rs`, RSpace ordered-log tests, and `loom_deterministic_reduction_frontier.rs` (retired by DR-132 with the scheduler) | exact roots and logs for competing sends/receives, joins, persistence, peek, guards, ACI permutations, play/replay, reversed log arrival, soft-checkpoint reversion, metadata updates, compound authorities, cancellation, and every bounded submit schedule |
 | Rust | `accounting/oslf.rs` plus Rholang accounting suites | example and property tests connect generic formulas, native structural bounds, authenticated supply, exact runtime matches, and disjoint surface composition |
 
 The safe models and proofs are promotion gates. The introduction-charging model
