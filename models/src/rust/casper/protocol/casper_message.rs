@@ -1380,6 +1380,19 @@ impl DeployData {
         }
     }
 
+    pub fn from_stored_proto(proto: DeployDataProto) -> Result<Signed<DeployData>, String> {
+        let sig_algorithm = SignaturesAlgFactory::apply(&proto.sig_algorithm)
+            .ok_or_else(|| format!("Unknown signature algorithm: {}", proto.sig_algorithm))?;
+        let sig = proto.sig.clone();
+        let pk = PublicKey::from_bytes(&proto.deployer);
+        Ok(Signed {
+            data: DeployData::_from_proto(proto)?,
+            pk,
+            sig,
+            sig_algorithm,
+        })
+    }
+
     fn _to_proto(dd: DeployData) -> DeployDataProto {
         DeployDataProto {
             term: dd.term,

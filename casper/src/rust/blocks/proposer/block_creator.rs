@@ -1724,18 +1724,49 @@ fn branch_unfinalized_user_deploy_info(
         .transpose()
 }
 
+#[cfg(test)]
 fn storage_has_unresolved_in_scope_deploys(
     casper_snapshot: &CasperSnapshot,
     deploy_storage: &Arc<parking_lot::Mutex<KeyValueDeployStorage>>,
     _rejected_deploy_buffer: &Arc<Mutex<KeyValueRejectedDeployBuffer>>,
 ) -> Result<bool, CasperError> {
     let stored_deploys = deploy_storage.lock().read_all()?;
-    for deploy in stored_deploys {
-        if casper_snapshot.deploys_in_scope.contains(&deploy.sig) {
-            return Ok(true);
-        }
+    Ok(storage_has_unresolved_in_scope_deploys_in(casper_snapshot, &stored_deploys))
+}
+
+fn storage_has_unresolved_in_scope_deploys_in(
+    casper_snapshot: &CasperSnapshot,
+    stored_deploys: &HashSet<Signed<DeployData>>,
+) -> bool {
+    stored_deploys
+        .iter()
+        .any(|deploy| casper_snapshot.deploys_in_scope.contains(&deploy.sig))
+}
+
+pub(crate) struct PoolSnapshot {
+    stored: HashSet<Signed<DeployData>>,
+    buffered: HashSet<Signed<DeployData>>,
+    buffered_sigs: HashSet<Bytes>,
+}
+
+impl PoolSnapshot {
+    fn read(
+        deploy_storage: &Arc<parking_lot::Mutex<KeyValueDeployStorage>>,
+        rejected_deploy_buffer: &Arc<Mutex<KeyValueRejectedDeployBuffer>>,
+    ) -> Result<Self, CasperError> {
+        let storage_guard = deploy_storage.lock();
+        let buffer_guard = rejected_deploy_buffer.lock()?;
+        let stored = storage_guard.read_all()?;
+        let buffered = buffer_guard.read_all()?;
+        drop(buffer_guard);
+        drop(storage_guard);
+        let buffered_sigs = buffered.iter().map(|deploy| deploy.sig.clone()).collect();
+        Ok(Self {
+            stored,
+            buffered,
+            buffered_sigs,
+        })
     }
-    Ok(false)
 }
 
 /// Pure-function filter extracted for unit testing. Keeps an
@@ -2166,6 +2197,7 @@ fn deploy_inclusion_progress_staleness(
     }
 }
 
+#[cfg(test)]
 fn fresh_local_deploy_stats(
     casper_snapshot: &CasperSnapshot,
     block_number: i64,
@@ -2175,22 +2207,36 @@ fn fresh_local_deploy_stats(
     block_store: &KeyValueBlockStore,
     floor_ctx: Option<&FloorContext>,
 ) -> Result<FreshLocalDeployStats, CasperError> {
-    let stored_deploys = deploy_storage.lock().read_all()?;
+    let pool = PoolSnapshot::read(deploy_storage, rejected_deploy_buffer)?;
+    fresh_local_deploy_stats_in(
+        casper_snapshot,
+        block_number,
+        current_time_millis,
+        &pool,
+        block_store,
+        floor_ctx,
+    )
+}
+
+fn fresh_local_deploy_stats_in(
+    casper_snapshot: &CasperSnapshot,
+    block_number: i64,
+    current_time_millis: i64,
+    pool: &PoolSnapshot,
+    block_store: &KeyValueBlockStore,
+    floor_ctx: Option<&FloorContext>,
+) -> Result<FreshLocalDeployStats, CasperError> {
+    let stored_deploys = &pool.stored;
     if stored_deploys.is_empty() {
         return Ok(FreshLocalDeployStats::default());
     }
-    let buffered_sigs: HashSet<Bytes> = rejected_deploy_buffer
-        .lock()?
-        .read_all()?
-        .into_iter()
-        .map(|deploy| deploy.sig)
-        .collect();
+    let buffered_sigs = &pool.buffered_sigs;
     let earliest_block_number = crate::rust::util::deploy_window::earliest_valid_after(
         block_number,
         casper_snapshot.on_chain_state.shard_conf.deploy_lifespan,
     )?;
     let candidates: HashSet<Signed<DeployData>> = stored_deploys
-        .into_iter()
+        .iter()
         .filter(|deploy| {
             !buffered_sigs.contains(&deploy.sig)
                 && !casper_snapshot.deploys_in_scope.contains(&deploy.sig)
@@ -2198,6 +2244,7 @@ fn fresh_local_deploy_stats(
                 && not_expired_deploy(earliest_block_number, &deploy.data)
                 && !deploy.data.is_expired_at(current_time_millis)
         })
+        .cloned()
         .collect();
     if candidates.is_empty() {
         return Ok(FreshLocalDeployStats::default());
@@ -2235,6 +2282,7 @@ fn fresh_local_deploy_stats(
     })
 }
 
+#[cfg(test)]
 fn in_scope_local_deploy_stats(
     casper_snapshot: &CasperSnapshot,
     block_number: i64,
@@ -2244,22 +2292,36 @@ fn in_scope_local_deploy_stats(
     block_store: &KeyValueBlockStore,
     floor_ctx: Option<&FloorContext>,
 ) -> Result<InScopeLocalDeployStats, CasperError> {
-    let stored_deploys = deploy_storage.lock().read_all()?;
+    let pool = PoolSnapshot::read(deploy_storage, rejected_deploy_buffer)?;
+    in_scope_local_deploy_stats_in(
+        casper_snapshot,
+        block_number,
+        current_time_millis,
+        &pool,
+        block_store,
+        floor_ctx,
+    )
+}
+
+fn in_scope_local_deploy_stats_in(
+    casper_snapshot: &CasperSnapshot,
+    block_number: i64,
+    current_time_millis: i64,
+    pool: &PoolSnapshot,
+    block_store: &KeyValueBlockStore,
+    floor_ctx: Option<&FloorContext>,
+) -> Result<InScopeLocalDeployStats, CasperError> {
+    let stored_deploys = &pool.stored;
     if stored_deploys.is_empty() {
         return Ok(InScopeLocalDeployStats::default());
     }
-    let buffered_sigs: HashSet<Bytes> = rejected_deploy_buffer
-        .lock()?
-        .read_all()?
-        .into_iter()
-        .map(|deploy| deploy.sig)
-        .collect();
+    let buffered_sigs = &pool.buffered_sigs;
     let earliest_block_number = crate::rust::util::deploy_window::earliest_valid_after(
         block_number,
         casper_snapshot.on_chain_state.shard_conf.deploy_lifespan,
     )?;
     let candidates: HashSet<Signed<DeployData>> = stored_deploys
-        .into_iter()
+        .iter()
         .filter(|deploy| {
             !buffered_sigs.contains(&deploy.sig)
                 && casper_snapshot.deploys_in_scope.contains(&deploy.sig)
@@ -2268,6 +2330,7 @@ fn in_scope_local_deploy_stats(
                 && not_expired_deploy(earliest_block_number, &deploy.data)
                 && !deploy.data.is_expired_at(current_time_millis)
         })
+        .cloned()
         .collect();
     if candidates.is_empty() {
         return Ok(InScopeLocalDeployStats::default());
@@ -2317,6 +2380,7 @@ fn in_scope_local_deploy_stats(
 /// Cost: O(1) when the buffer is empty (the common steady state); otherwise
 /// one canonical-won scan bounded below by `scan_floor` (never deeper than
 /// the deploy-lifespan window).
+#[cfg(test)]
 fn rejected_buffer_has_recoverable_deploys(
     casper_snapshot: &CasperSnapshot,
     block_number: i64,
@@ -2332,6 +2396,24 @@ fn rejected_buffer_has_recoverable_deploys(
         }
         buffer_guard.read_all()?
     };
+    rejected_buffer_has_recoverable_deploys_in(
+        casper_snapshot,
+        block_number,
+        current_time_millis,
+        &buffered_deploys,
+        block_store,
+        floor_ctx,
+    )
+}
+
+fn rejected_buffer_has_recoverable_deploys_in(
+    casper_snapshot: &CasperSnapshot,
+    block_number: i64,
+    current_time_millis: i64,
+    buffered_deploys: &HashSet<Signed<DeployData>>,
+    block_store: &KeyValueBlockStore,
+    floor_ctx: Option<&FloorContext>,
+) -> Result<bool, CasperError> {
     if buffered_deploys.is_empty() {
         return Ok(false);
     }
@@ -2982,11 +3064,9 @@ pub async fn create_with_progress(
         let t = std::time::Instant::now();
         let user_deploys_in_scope =
             scope_has_unfinalized_user_deploys(casper_snapshot, block_store)?;
-        let storage_deploys_in_scope = storage_has_unresolved_in_scope_deploys(
-            casper_snapshot,
-            &deploy_storage,
-            &rejected_deploy_buffer,
-        )?;
+        let pool = PoolSnapshot::read(&deploy_storage, &rejected_deploy_buffer)?;
+        let storage_deploys_in_scope =
+            storage_has_unresolved_in_scope_deploys_in(casper_snapshot, &pool.stored);
         let stale_in_scope_work = user_deploys_in_scope || storage_deploys_in_scope;
         let user_work_in_flight = stale_in_scope_work;
         // Recovery admission is unconditional: the buffer is OWNER-SCOPED
@@ -3006,21 +3086,19 @@ pub async fn create_with_progress(
             finality_lag_stats(casper_snapshot, block_store)?,
             finality_progress,
         );
-        let fresh_local_stats = fresh_local_deploy_stats(
+        let fresh_local_stats = fresh_local_deploy_stats_in(
             casper_snapshot,
             next_block_num,
             now_millis,
-            &deploy_storage,
-            &rejected_deploy_buffer,
+            &pool,
             block_store,
             floor_ctx.as_ref(),
         )?;
-        let in_scope_local_stats = in_scope_local_deploy_stats(
+        let in_scope_local_stats = in_scope_local_deploy_stats_in(
             casper_snapshot,
             next_block_num,
             now_millis,
-            &deploy_storage,
-            &rejected_deploy_buffer,
+            &pool,
             block_store,
             floor_ctx.as_ref(),
         )?;
@@ -3038,11 +3116,11 @@ pub async fn create_with_progress(
             in_scope_local_stats,
             finality_lag_stats,
         );
-        let rejected_buffer_non_empty = rejected_buffer_has_recoverable_deploys(
+        let rejected_buffer_non_empty = rejected_buffer_has_recoverable_deploys_in(
             casper_snapshot,
             next_block_num,
             now_millis,
-            &rejected_deploy_buffer,
+            &pool.buffered,
             block_store,
             floor_ctx.as_ref(),
         )?;
