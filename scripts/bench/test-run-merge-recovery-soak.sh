@@ -225,6 +225,11 @@ test -e "$TMP/output2/iteration-00001-docker/deadline.txt"
 test ! -e "$TMP/output2/iteration-00001-docker/exit-code.txt"
 test ! -e "$TMP/output2/early-exit.txt"
 grep -q '^early_exit_reason=none$' "$TMP/output2/summary.txt"
+# The node-metrics copy is gzipped once its iteration ends (scenario 1 keeps
+# it plain because the guardian breach runs under the emergency deadline).
+test ! -e "$TMP/output2/iteration-00001-docker/node-metrics-timeseries.csv"
+gzip -dc "$TMP/output2/iteration-00001-docker/node-metrics-timeseries.csv.gz" |
+	grep -q 'replay_cache_retained_bytes,1048576'
 jq -e '
   .iterations == 1
   and .failures == 0
