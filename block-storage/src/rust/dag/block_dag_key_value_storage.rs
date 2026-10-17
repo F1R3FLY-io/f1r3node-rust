@@ -1531,7 +1531,8 @@ impl BlockDagKeyValueStorage {
                 let new_latest_from_sender = if !sender_is_empty {
                     // Add LM either if there is no existing message for the sender, or if sequence number advances
                     // - assumes block sender is not valid hash
-                    let current_latest = self.store_mirror.read().latest.get(&block.sender).cloned();
+                    let current_latest =
+                        self.store_mirror.read().latest.get(&block.sender).cloned();
                     if match current_latest {
                         Some(latest_message_hash) => {
                             let block_metadata_index_guard = self.block_metadata_index.read();

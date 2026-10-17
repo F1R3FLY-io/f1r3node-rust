@@ -2551,27 +2551,40 @@ async fn the_in_memory_mirror_matches_a_fresh_load_from_the_stores() {
     dag_storage.insert(&b1, InsertMode::Normal).unwrap();
     dag_storage.insert(&a2, InsertMode::Normal).unwrap();
     dag_storage.insert(&bad, InsertMode::Invalid).unwrap();
-    let record = EquivocationRecord::new(validator_b.clone(), 1, BTreeSet::from([bad.block_hash.clone()]));
+    let record = EquivocationRecord::new(
+        validator_b.clone(),
+        1,
+        BTreeSet::from([bad.block_hash.clone()]),
+    );
     dag_storage
         .access_equivocations_tracker(|tracker| tracker.add(record.clone()))
         .unwrap();
 
     let live = dag_storage.get_representation().unwrap();
-    assert_eq!(live.latest_messages_map.get(&validator_a), Some(&a2.block_hash));
+    assert_eq!(
+        live.latest_messages_map.get(&validator_a),
+        Some(&a2.block_hash)
+    );
     assert_eq!(
         live.invalid_blocks_map().unwrap(),
         HashMap::from([(bad.block_hash.clone(), validator_b.clone())])
     );
     assert!(dag_storage.contains_block(&a2.block_hash));
     assert!(!dag_storage.contains_block(&BlockHash::from(vec![0x42; 32])));
-    assert_eq!(dag_storage.read_equivocations().unwrap(), HashSet::from([record.clone()]));
+    assert_eq!(
+        dag_storage.read_equivocations().unwrap(),
+        HashSet::from([record.clone()])
+    );
     drop(dag_storage);
 
     let restarted = BlockDagKeyValueStorage::new(&mut kvm).await.unwrap();
     let loaded = restarted.get_representation().unwrap();
     assert_eq!(loaded.latest_messages_map, live.latest_messages_map);
     assert_eq!(loaded.invalid_blocks_set, live.invalid_blocks_set);
-    assert_eq!(restarted.read_equivocations().unwrap(), HashSet::from([record]));
+    assert_eq!(
+        restarted.read_equivocations().unwrap(),
+        HashSet::from([record])
+    );
 }
 
 #[tokio::test]

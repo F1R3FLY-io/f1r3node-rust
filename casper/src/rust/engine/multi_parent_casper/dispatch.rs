@@ -199,7 +199,9 @@ impl<T: TransportLayer + Send + Sync> MultiParentCasper for MultiParentCasperImp
         let equivocation_records = self.block_dag_storage.read_equivocations()?;
         let equivocating_weight = initial_fault::equivocating_weight(
             &weights,
-            equivocation_records.iter().map(|record| &record.equivocator),
+            equivocation_records
+                .iter()
+                .map(|record| &record.equivocator),
         );
 
         let total_weight = initial_fault::total_weight(&weights);

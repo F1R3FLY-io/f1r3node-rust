@@ -198,6 +198,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             deploy_heartbeat_wake_enabled: false,
             disable_validator_progress_check: standalone,
             enable_mergeable_channel_gc: conf.enable_mergeable_channel_gc,
+            rejection_search_cap_from_height: conf.rejection_search_cap_from_height,
             mergeable_channels_gc_depth_buffer: conf.mergeable_channels_gc_depth_buffer,
             synchrony_recovery_stall_window: conf.synchrony_recovery_stall_window,
             synchrony_recovery_cooldown: conf.synchrony_recovery_cooldown,

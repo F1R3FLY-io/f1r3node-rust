@@ -1364,19 +1364,7 @@ pub fn compute_rejection_options<A: Eq + std::hash::Hash + Clone>(
 
         for option in current {
             if option.remaining_conflicts_map.is_empty() {
-                // No more conflicts, this is a valid rejection option
-                // Only add if not already in result
-                let already_exists = result.iter().any(|existing_set: &HashableSet<A>| {
-                    existing_set.0.len() == option.rejected_so_far.0.len() &&
-                        existing_set
-                            .0
-                            .iter()
-                            .all(|item| option.rejected_so_far.0.contains(item))
-                });
-
-                if !already_exists {
-                    result.insert(option.rejected_so_far);
-                }
+                result.insert(option.rejected_so_far);
             } else {
                 // Continue resolving conflicts
                 for mut new_option in gather_rej_options(&option.remaining_conflicts_map) {

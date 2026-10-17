@@ -1731,7 +1731,10 @@ fn storage_has_unresolved_in_scope_deploys(
     _rejected_deploy_buffer: &Arc<Mutex<KeyValueRejectedDeployBuffer>>,
 ) -> Result<bool, CasperError> {
     let stored_deploys = deploy_storage.lock().read_all()?;
-    Ok(storage_has_unresolved_in_scope_deploys_in(casper_snapshot, &stored_deploys))
+    Ok(storage_has_unresolved_in_scope_deploys_in(
+        casper_snapshot,
+        &stored_deploys,
+    ))
 }
 
 fn storage_has_unresolved_in_scope_deploys_in(

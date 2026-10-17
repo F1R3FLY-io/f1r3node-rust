@@ -129,8 +129,10 @@ pub(crate) fn lineage_membership(
 ) -> HashMap<Bytes, Result<bool, CasperError>> {
     let mut answers: HashMap<Bytes, Result<bool, CasperError>> =
         HashMap::with_capacity(probes.len());
-    let mut open: HashMap<Bytes, MembershipProbe> =
-        probes.into_iter().map(|probe| (probe.sig.clone(), probe)).collect();
+    let mut open: HashMap<Bytes, MembershipProbe> = probes
+        .into_iter()
+        .map(|probe| (probe.sig.clone(), probe))
+        .collect();
     let mut cur = top.clone();
     while !open.is_empty() {
         open.retain(|sig, probe| {
@@ -1371,7 +1373,11 @@ mod tests {
                     let side = block_at(h, vec![prev.block_hash.clone()], seq);
                     store.put_block_message(&side).expect("store side");
                     seq += 1;
-                    block_at(h, vec![prev.block_hash.clone(), side.block_hash.clone()], seq)
+                    block_at(
+                        h,
+                        vec![prev.block_hash.clone(), side.block_hash.clone()],
+                        seq,
+                    )
                 } else {
                     block_at(h, vec![prev.block_hash.clone()], seq)
                 };

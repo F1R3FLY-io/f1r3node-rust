@@ -530,6 +530,7 @@ pub struct CasperShardConf {
     /// When enabled, uses safe reachability-based GC (required for multi-parent mode).
     /// When disabled (default), mergeable data is retained.
     pub enable_mergeable_channel_gc: bool,
+    pub rejection_search_cap_from_height: Option<i64>,
     /// Depth buffer for mergeable channels garbage collection.
     /// Additional safety margin beyond max-parent-depth before deleting data.
     pub mergeable_channels_gc_depth_buffer: i32,
@@ -577,6 +578,7 @@ impl CasperShardConf {
             deploy_heartbeat_wake_enabled: false,
             disable_validator_progress_check: false,
             enable_mergeable_channel_gc: false,
+            rejection_search_cap_from_height: None,
             mergeable_channels_gc_depth_buffer: 10,
             synchrony_recovery_stall_window: Duration::from_secs(60),
             synchrony_recovery_cooldown: Duration::from_secs(20),

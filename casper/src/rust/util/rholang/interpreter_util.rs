@@ -1875,6 +1875,10 @@ pub async fn compute_parents_post_state(
                 &sig_settled_in_floor,
                 &base_lineage_blocks,
                 &prior_rejection_counts,
+                crate::rust::merging::conflict_set_merger::RejectionSearch::for_block(
+                    max_parent_block_number + 1,
+                    s.on_chain_state.shard_conf.rejection_search_cap_from_height,
+                ),
             )?;
             let merge_elapsed = merge_started.elapsed();
             let merge_ms = merge_elapsed.as_millis();

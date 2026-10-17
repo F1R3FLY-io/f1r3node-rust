@@ -135,6 +135,9 @@ pub struct CasperConf {
         default = "default_mergeable_channels_gc_depth_buffer"
     )]
     pub mergeable_channels_gc_depth_buffer: i32,
+
+    #[serde(rename = "rejection-search-cap-from-height", default)]
+    pub rejection_search_cap_from_height: Option<i64>,
 }
 
 fn default_deploy_play_budget() -> Duration { Duration::ZERO }

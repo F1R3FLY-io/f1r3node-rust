@@ -391,7 +391,9 @@ mod tests {
             let mut child = hash.0.to_vec();
             child.extend_from_slice(b"-child");
             casper_buffer.add_relation(hash.clone(), BlockHashSerde(Bytes::from(child)))?;
-            casper_buffer.first_seen_ms.insert(hash.clone(), now - age_ms);
+            casper_buffer
+                .first_seen_ms
+                .insert(hash.clone(), now - age_ms);
         }
         let cap = casper_buffer.approx_node_count() - 1;
 
