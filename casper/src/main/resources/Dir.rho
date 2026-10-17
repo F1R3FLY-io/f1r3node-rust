@@ -757,7 +757,17 @@ new Dir, rootP, cmodeP in {
   contract joinRel(@subPath, @rel, ret) = {
     match subPath {
       "" => ret!(rel)
-      _  => ret!(subPath ++ "/" ++ rel)
+      _  => match rel {
+        // Clone-self case: `dirCap!("openDir", "")` mints a fresh
+        // Dir agent at the same (canonRoot, subPath) pair.  Without
+        // this arm, join would yield `subPath ++ "/"` with a
+        // trailing slash; `Path::components` normalizes it for
+        // syscalls, but subsequent `joinRel(subPath_with_slash,
+        // child)` produces `"a/b//child"` with a double-slash.
+        // Preserve the parent's subPath spelling verbatim.
+        "" => ret!(subPath)
+        _  => ret!(subPath ++ "/" ++ rel)
+      }
     }
   } |
 
