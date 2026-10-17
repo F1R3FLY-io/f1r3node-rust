@@ -3140,15 +3140,17 @@ pub async fn create_with_progress(
         .collect();
     let local_validator: Validator =
         prost::bytes::Bytes::copy_from_slice(&validator_identity.public_key.bytes);
-    let merge_pre_info = interpreter_util::compute_parents_post_state(
-        block_store,
-        parents.clone(),
-        casper_snapshot,
-        runtime_manager,
-        &latest_messages,
-        Some(&rejected_deploy_buffer),
-        floor_ctx.as_ref(),
-        Some(&local_validator),
+    let merge_pre_info = crate::rust::util::offload::off_async_workers(
+        interpreter_util::compute_parents_post_state(
+            block_store,
+            parents.clone(),
+            casper_snapshot,
+            runtime_manager,
+            &latest_messages,
+            Some(&rejected_deploy_buffer),
+            floor_ctx.as_ref(),
+            Some(&local_validator),
+        ),
     )
     .await?;
     metrics::histogram!(
@@ -3391,18 +3393,20 @@ pub async fn create_with_progress(
         let attempted_user_deploys = user_deploy_limit;
         let attempted_total_deploys = deploys.len();
 
-        match interpreter_util::compute_deploys_checkpoint(
-            block_store,
-            parents.clone(),
-            deploys,
-            system_deploys_converted.clone(),
-            casper_snapshot,
-            runtime_manager,
-            block_data.clone(),
-            invalid_blocks.clone(),
-            Some(&rejected_deploy_buffer),
-            floor_ctx.as_ref(),
-            Some(&local_validator),
+        match crate::rust::util::offload::off_async_workers(
+            interpreter_util::compute_deploys_checkpoint(
+                block_store,
+                parents.clone(),
+                deploys,
+                system_deploys_converted.clone(),
+                casper_snapshot,
+                runtime_manager,
+                block_data.clone(),
+                invalid_blocks.clone(),
+                Some(&rejected_deploy_buffer),
+                floor_ctx.as_ref(),
+                Some(&local_validator),
+            ),
         )
         .await
         {
