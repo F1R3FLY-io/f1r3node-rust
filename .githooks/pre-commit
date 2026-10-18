@@ -137,7 +137,9 @@ elif ! command -v cargo-deny >/dev/null 2>&1; then
     echo -e "  ${CYAN}[deny]${NC}   ${YELLOW}SKIP${NC} (cargo-deny not installed; \`cargo install cargo-deny\`)"
 else
     deny_out=$(mktemp)
-    if cargo deny check > "$deny_out" 2>&1; then
+    # cargo-deny refreshes its advisory database by running `git reset --hard` and `git fetch` in it; git exports
+    # GIT_DIR to hooks, so the repository-local variables are unset or those commands would act on this repository.
+    if (unset $(git rev-parse --local-env-vars); cargo deny check) > "$deny_out" 2>&1; then
         echo -e "  ${CYAN}[deny]${NC}   ${GREEN}PASS${NC}"
     else
         echo -e "  ${CYAN}[deny]${NC}   ${RED}FAIL${NC}"
