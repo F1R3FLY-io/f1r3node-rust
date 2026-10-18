@@ -8,10 +8,23 @@ that conflicts defers to it.
 
 1. Read the repo's `README.md` (and `DEVELOPER.md` if present).
 2. Check open GitHub Issues and Pull Requests — the work may already be claimed or in progress.
-3. For non-trivial changes, open a GitHub Issue or Discussion first so design can be agreed
+3. Read `docs/ToDos.md` on `dev`. Look for a task that covers the work and for a claim on it.
+4. For non-trivial changes, open a GitHub Issue or Discussion first so design can be agreed
    before implementation.
-4. For protocol- or ecosystem-level proposals, file a [FIP](https://github.com/F1R3FLY-io/FIPS)
+5. For protocol- or ecosystem-level proposals, file a [FIP](https://github.com/F1R3FLY-io/FIPS)
    rather than a PR.
+
+## Planning and Task Tracking
+
+Maintainers, contributors, and AI agents share one task record in the repository.
+The [task tracking guide](docs/task-tracking.md) explains it in full.
+
+- A user story in [docs/UserStories.md](docs/UserStories.md) states the need and names its value stream.
+- An epic in [docs/ToDos.md](docs/ToDos.md) holds the tasks for one story.
+- Each task has a `TASK-NNN-N` identifier and an `acceptance` list of measurable conditions.
+- Claim a task before you work on it. Set `status`, `claimed_by`, and `claimed_at` in the task.
+- A GitHub issue holds the problem and its discussion. The task file on `dev` holds the status and the claims.
+- Link the task to its issue and its pull request.
 
 ## Branching and Commits
 
@@ -160,22 +173,27 @@ The project expects to evolve toward a contributor trust and reputation process.
 
 ---
 
-## Documentation Expectations
-
 ## Documentation
 
 - Update Markdown when commands, ports, flags, paths, or workflows change.
 - Examples should be runnable from the repository root unless stated otherwise.
-- Document significant design changes under `docs/` — `docs/discoveries/` for findings,
-  `docs/plans/` for proposals, or the relevant component directory (`docs/casper/`,
-  `docs/rholang/`, etc.).
+- Document significant design changes under `docs/` — `docs/plans/` for proposals,
+  `docs/designs/` for designs, or the relevant component directory (`docs/casper/`,
+  `docs/rholang/`, etc.). Git ignores new files in `docs/discoveries/` and `docs/work-logs/`,
+  so put shared findings in the task, the issue, or the pull request.
 
 ## AI-Assisted Contributions
 
-AI-assisted contributions are welcome. Repository-wide guidance lives in `AGENTS.md`.
+AI-assisted contributions are welcome. Repository-wide guidance lives in [AGENTS.md](AGENTS.md).
 When committing from an autonomous agentic session, prefix the commit subject with `[agent]`.
 You are responsible for every line you submit — review generated output as you would a human
 colleague's.
+
+The Smart Assets skills automate story, epic, task, review, and commit workflows. They read
+and write the same task files as human contributors. The public mirror is
+[git@github.com:SmartAssets-io/skills.git](https://github.com/SmartAssets-io/skills).
+The [task tracking guide](docs/task-tracking.md#ai-assisted-workflows) maps each workflow step
+to its skill.
 
 ## Security and Privacy
 
