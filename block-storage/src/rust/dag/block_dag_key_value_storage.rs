@@ -248,9 +248,14 @@ impl KeyValueDagRepresentation {
         self.lifecycle.write().put_terminal_if_absent(sig, record)
     }
 
-    /// Lifecycle: every open sig — the register's schedule rebuild input.
-    pub fn open_lifecycle_sigs(&self) -> Result<Vec<DeployId>, KvStoreError> {
-        self.lifecycle.read().open_sigs()
+    /// Lifecycle: every open event row — the work list of a settle pass.
+    pub fn open_lifecycle_rows(&self) -> Result<Vec<(DeployId, LifecycleEvents)>, KvStoreError> {
+        self.lifecycle.read().open_rows()
+    }
+
+    /// Lifecycle: drop an open row that can never reach a terminal verdict.
+    pub fn discard_lifecycle_events(&self, sig: &[u8]) -> Result<(), KvStoreError> {
+        self.lifecycle.write().discard_events(sig)
     }
 
     /// Repeat-deploy carrier index: the height since which every insert
@@ -270,8 +275,7 @@ impl KeyValueDagRepresentation {
     }
 
     /// Repeat-deploy carrier index: drop entries below the cutoff (below
-    /// every future scan window). The finality register drives this on
-    /// floor advances.
+    /// every future scan window). The finalizer drives this on LFB advances.
     pub fn prune_carriers_below(&self, cutoff: i64) -> Result<u64, KvStoreError> {
         self.carrier_index.read().prune_below(cutoff)
     }
@@ -1474,7 +1478,6 @@ impl BlockDagKeyValueStorage {
                             block_hash: block.block_hash.to_vec(),
                             kind: LifecycleEventKind::Rejected {
                                 duplicate: rd.duplicate,
-                                carrier: rd.carrier.to_vec(),
                             },
                         })?;
                     }

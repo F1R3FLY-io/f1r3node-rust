@@ -465,13 +465,6 @@ pub const FINALIZER_RUN_TIMEOUTS_METRIC: &str = "finalizer.run.timeouts";
 pub const FINALIZER_RUN_RERUNS_METRIC: &str = "finalizer.run.reruns";
 // Counter: triggers that arrived while a finalizer run was in progress.
 pub const FINALIZER_RUN_QUEUED_METRIC: &str = "finalizer.run.queued";
-// Counter: LFB computations requested through the API (bond_status,
-// exploratory_deploy), which bypass the single-flight finalizer guard.
-pub const FINALIZER_API_LFB_CALLS_METRIC: &str = "finalizer.api-lfb.calls";
-// Histogram: duration of each API-requested LFB computation.
-pub const FINALIZER_API_LFB_TIME_METRIC: &str = "finalizer.api-lfb.time";
-// Counter: API-requested LFB computations that started during a finalizer run.
-pub const FINALIZER_API_LFB_OVERLAPS_METRIC: &str = "finalizer.api-lfb.overlaps";
 /// A shipped genesis refused during LFS restore (claimed hash or content
 /// re-hash failed against the learned register) — peer equivocation on the
 /// restore channel, visible on dashboards.
@@ -520,7 +513,10 @@ pub const PROPOSER_CONSTRAINTS_TIME_METRIC: &str = "proposer.constraints.time";
 pub const PROPOSER_CREATE_TIME_METRIC: &str = "proposer.create.time";
 pub const PROPOSER_VALIDATE_TIME_METRIC: &str = "proposer.validate.time";
 pub const PROPOSER_EFFECT_TIME_METRIC: &str = "proposer.effect.time";
-// Histograms in seconds: one deploy-lifecycle observe, and the carrier prune
-// inside it when the adopted floor advances.
+// Histograms in seconds: one deploy-lifecycle settle, and the carrier prune
+// that follows it, both once per LFB advance.
 pub const DEPLOY_LIFECYCLE_OBSERVE_TIME_METRIC: &str = "deploy-lifecycle.observe.time";
 pub const DEPLOY_LIFECYCLE_CARRIER_PRUNE_TIME_METRIC: &str = "deploy-lifecycle.carrier-prune.time";
+// Counter: pool copies of terminal deploys whose removal failed; each is
+// retried on the next finalizer cycle.
+pub const DEPLOY_LIFECYCLE_RELEASE_FAILURES_METRIC: &str = "deploy-lifecycle.release.failures";

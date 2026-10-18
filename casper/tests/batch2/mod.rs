@@ -12,6 +12,7 @@ pub mod floor_fork_reproduction_spec;
 pub mod floor_of_view_test;
 pub mod floor_stall_reproduction_spec;
 pub mod limited_parent_depth_spec;
+pub mod low_base_merge_rejection_spec;
 pub mod loss_priority_spec;
 pub mod lmdb_key_value_store_spec;
 pub mod map_cell_convergence_spec;

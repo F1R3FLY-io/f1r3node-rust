@@ -174,6 +174,7 @@ pub trait MultiParentCasper: Casper + Send + Sync {
         weights: HashMap<Validator, u64>,
     ) -> Result<f32, CasperError>;
 
+    /// The persisted LFB. Reading it never advances finality.
     async fn last_finalized_block(&self) -> Result<BlockMessage, CasperError>;
 
     // Equivalent to Scala's blockDag: F[BlockDagRepresentation[F]]
@@ -379,15 +380,12 @@ pub async fn hash_set_casper<T: TransportLayer + Send + Sync>(
         block_dag_storage,
         deploy_storage: Arc::new(parking_lot::Mutex::new(deploy_storage)),
         rejected_deploy_buffer,
-        deploy_lifecycle: Arc::new(
-            crate::rust::finality::deploy_lifecycle::DeployLifecycle::default(),
-        ),
         casper_buffer_storage,
         validator_id,
         casper_shard_conf,
         approved_block,
         finalization_in_progress: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-        finalizer_task_in_progress: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        finalizer_cycle: Arc::new(tokio::sync::Mutex::new(())),
         finalizer_task_queued: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         heartbeat_signal_ref,
         deploys_in_scope_cache: Arc::new(parking_lot::Mutex::new(None)),

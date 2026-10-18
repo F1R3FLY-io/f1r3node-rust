@@ -4,7 +4,6 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use casper::rust::api::block_api::BlockAPI;
-use casper::rust::casper::MultiParentCasper;
 use casper::rust::engine::engine_cell::EngineCell;
 use casper::rust::engine::engine_with_casper::EngineWithCasper;
 use casper::rust::engine::multi_parent_casper::MultiParentCasperImpl;
@@ -59,13 +58,12 @@ async fn create_engine_cell(node: &TestNode) -> EngineCell {
         block_dag_storage: node.casper.block_dag_storage.clone(),
         deploy_storage: node.casper.deploy_storage.clone(),
         rejected_deploy_buffer: node.casper.rejected_deploy_buffer.clone(),
-        deploy_lifecycle: node.casper.deploy_lifecycle.clone(),
         casper_buffer_storage: node.casper.casper_buffer_storage.clone(),
         validator_id: node.casper.validator_id.clone(),
         casper_shard_conf: node.casper.casper_shard_conf.clone(),
         approved_block: node.casper.approved_block.clone(),
         finalization_in_progress: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-        finalizer_task_in_progress: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        finalizer_cycle: node.casper.finalizer_cycle.clone(),
         finalizer_task_queued: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         heartbeat_signal_ref: casper::rust::heartbeat_signal::new_heartbeat_signal_ref(),
         deploys_in_scope_cache: std::sync::Arc::new(parking_lot::Mutex::new(None)),
@@ -137,7 +135,7 @@ async fn is_finalized_should_return_true_for_ancestors_of_last_finalized_block()
         blocks.push(block);
     }
 
-    let last_finalized_block = nodes[0].casper.last_finalized_block().await.unwrap();
+    let last_finalized_block = nodes[0].casper.finalize().await.unwrap();
     let lfb_number = last_finalized_block.body.state.block_number;
     let engine_cell = create_engine_cell(&nodes[0]).await;
 
@@ -250,7 +248,7 @@ async fn should_return_false_for_children_uncles_and_cousins_of_last_finalized_b
         .await
         .unwrap();
 
-    let last_finalized_block = nodes[0].casper.last_finalized_block().await.unwrap();
+    let last_finalized_block = nodes[0].casper.finalize().await.unwrap();
 
     let b4_block_hash = proto_util::hash_string(&b4);
     assert_eq!(

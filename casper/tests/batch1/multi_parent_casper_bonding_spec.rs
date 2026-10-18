@@ -9,7 +9,6 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use casper::rust::api::block_api::BlockAPI;
-use casper::rust::casper::MultiParentCasper;
 use casper::rust::engine::engine_cell::EngineCell;
 use casper::rust::engine::engine_with_casper::EngineWithCasper;
 use casper::rust::engine::multi_parent_casper::MultiParentCasperImpl;
@@ -35,13 +34,12 @@ async fn bonded_status(public_key: &PublicKey, node: &TestNode) -> bool {
         block_dag_storage: node.casper.block_dag_storage.clone(),
         deploy_storage: node.casper.deploy_storage.clone(),
         rejected_deploy_buffer: node.casper.rejected_deploy_buffer.clone(),
-        deploy_lifecycle: node.casper.deploy_lifecycle.clone(),
         casper_buffer_storage: node.casper.casper_buffer_storage.clone(),
         validator_id: node.casper.validator_id.clone(),
         casper_shard_conf: node.casper.casper_shard_conf.clone(),
         approved_block: node.casper.approved_block.clone(),
         finalization_in_progress: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-        finalizer_task_in_progress: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        finalizer_cycle: node.casper.finalizer_cycle.clone(),
         finalizer_task_queued: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         heartbeat_signal_ref: casper::rust::heartbeat_signal::new_heartbeat_signal_ref(),
         deploys_in_scope_cache: Arc::new(parking_lot::Mutex::new(None)),
@@ -230,7 +228,7 @@ async fn a_new_bond_enters_the_lfb_committee_after_an_epoch_boundary() {
     // Sanity: the bond reached PoS `allBonds` (compute_bonds over the LFB state).
     let lfb = nodes[0]
         .casper
-        .last_finalized_block()
+        .finalize()
         .await
         .expect("last finalized block");
     let lfb_state = &lfb.body.state.post_state_hash;
@@ -274,7 +272,7 @@ async fn a_new_bond_enters_the_lfb_committee_after_an_epoch_boundary() {
     // The merge proposer (node 2) must finalize the same committee view.
     let lfb_n2 = nodes[2]
         .casper
-        .last_finalized_block()
+        .finalize()
         .await
         .expect("last finalized block on node 2");
     assert_eq!(

@@ -51,20 +51,18 @@ impl std::error::Error for DeployFinalizationCorruption {}
 /// "no terminal record exists" — this module computes nothing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum DeployFinalizationState {
-    /// The sig's standing clean win is inside the max frozen
-    /// latest-message floor's closure and beyond the adjudication
-    /// horizon. The effects are in every future merge base and no
-    /// still-formable block can adjudicate the carrier. Terminal.
+    /// A successful execution or a re-application of the deploy lies on the
+    /// adopted LFB's state lineage. Terminal.
     Finalized,
-    /// The validity window closed on the floor clock without a winning
-    /// inclusion, and a floor-covered inclusion executed with
-    /// `is_failed=true` (e.g., insufficient phlo, failed payment,
-    /// contract error). Effects will never apply. Terminal.
+    /// Past the contestability bound, the deploy is not on the adopted LFB's
+    /// state lineage, and an execution with `is_failed=true` (e.g.,
+    /// insufficient phlo, failed payment, contract error) lies in the LFB's
+    /// DAG closure. Effects will never apply. Terminal.
     Failed,
     /// Not yet settled: no terminal record has been determined. Covers
-    /// unincluded deploys, wins still climbing toward floor coverage or
-    /// the horizon, and contested histories still inside their validity
-    /// window. Client should keep polling.
+    /// unincluded deploys, inclusions the LFB has not reached yet, and
+    /// contested histories still inside their validity window. Client should
+    /// keep polling.
     Pending,
     /// The validity window closed without a winning inclusion or a failed
     /// execution. The deploy can never land. Terminal.

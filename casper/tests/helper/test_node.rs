@@ -1161,7 +1161,8 @@ impl TestNode {
             sigs: vec![],
         };
         let shard_conf = CasperShardConf {
-            fault_tolerance_threshold: 0.0,
+            fault_tolerance_threshold: 0.1,
+            fault_tolerance_threshold_ppm: 100_000,
             shard_name: shard_id.clone(),
             parent_shard_id: "".to_string(),
             finalization_rate,
@@ -1202,9 +1203,6 @@ impl TestNode {
             block_dag_storage: block_dag_storage.clone(),
             deploy_storage: deploy_storage.clone(),
             rejected_deploy_buffer: rejected_deploy_buffer.clone(),
-            deploy_lifecycle: Arc::new(
-                casper::rust::finality::deploy_lifecycle::DeployLifecycle::default(),
-            ),
             casper_buffer_storage: casper_buffer_storage.clone(),
             validator_id: validator_id_opt.clone(),
             casper_shard_conf: shard_conf,
@@ -1212,9 +1210,7 @@ impl TestNode {
             finalization_in_progress: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(
                 false,
             )),
-            finalizer_task_in_progress: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(
-                false,
-            )),
+            finalizer_cycle: std::sync::Arc::new(tokio::sync::Mutex::new(())),
             finalizer_task_queued: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             heartbeat_signal_ref: casper::rust::heartbeat_signal::new_heartbeat_signal_ref(),
             deploys_in_scope_cache: std::sync::Arc::new(parking_lot::Mutex::new(None)),

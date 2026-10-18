@@ -26,17 +26,8 @@ use shared::rust::ByteString;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum LifecycleEventKind {
-    Included {
-        is_failed: bool,
-    },
-    Rejected {
-        duplicate: bool,
-        /// The CARRIER this record adjudicated — the block whose body held the
-        /// copy the forming merge rejected. Carried through from the block's
-        /// `rejected_deploys` so the register decides coverage by equality
-        /// rather than re-inferring it from ancestry and a distance bound.
-        carrier: ByteString,
-    },
+    Included { is_failed: bool },
+    Rejected { duplicate: bool },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -112,8 +103,7 @@ impl DeployLifecycleTables {
     /// against orphan events from a crash inside `insert`'s ingest-first
     /// window: an event whose block never became DAG-visible must not
     /// resolve as an appearance. The terminal path needs no filter — the
-    /// finality evaluator writes terminals from DAG facts (floor-closure
-    /// guarded), so the frozen block was visible at the write.
+    /// finality evaluator freezes only DAG-visible blocks into the record.
     pub fn canonical_appearance(
         &self,
         sig: &[u8],
@@ -163,11 +153,15 @@ impl DeployLifecycleTables {
         self.events.put_one(sig.to_vec(), row)
     }
 
-    /// Every sig with an open event row — the schedule rebuild's input.
-    /// Rows are pruned at the terminal write, so this enumerates OPEN
-    /// sigs, not history.
-    pub fn open_sigs(&self) -> Result<Vec<ByteString>, KvStoreError> {
-        self.events.to_map().map(|m| m.into_keys().collect())
+    /// Every open event row. Rows are pruned at the terminal write, so this
+    /// enumerates OPEN sigs, not history.
+    pub fn open_rows(&self) -> Result<Vec<(ByteString, LifecycleEvents)>, KvStoreError> {
+        self.events.to_map().map(|m| m.into_iter().collect())
+    }
+
+    /// Drop an open row that can never reach a terminal verdict.
+    pub fn discard_events(&self, sig: &[u8]) -> Result<(), KvStoreError> {
+        self.events.delete(vec![sig.to_vec()]).map(|_| ())
     }
 
     /// Redelivery-idempotent append: a no-op when the row already holds an
@@ -276,7 +270,7 @@ mod tests {
             "the event row is pruned at the terminal write"
         );
         assert!(
-            tables.open_sigs().expect("open").is_empty(),
+            tables.open_rows().expect("open").is_empty(),
             "a terminal sig is no longer open"
         );
     }

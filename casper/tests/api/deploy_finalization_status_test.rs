@@ -6,8 +6,7 @@
 // `finalized_floor::deploy_lifecycle_spec`) and persisted write-once; this
 // file pins the lookup surface — terminal-record mapping, open-row Pending
 // display, the unknown/fallback preludes, and the corruption sentinel —
-// plus one end-to-end pin that the block-admission hook drives verdicts on
-// a real node.
+// plus one end-to-end pin that the finalizer writes verdicts on a real node.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -61,13 +60,12 @@ async fn create_engine_cell(node: &TestNode) -> EngineCell {
         block_dag_storage: node.casper.block_dag_storage.clone(),
         deploy_storage: node.casper.deploy_storage.clone(),
         rejected_deploy_buffer: node.casper.rejected_deploy_buffer.clone(),
-        deploy_lifecycle: node.casper.deploy_lifecycle.clone(),
         casper_buffer_storage: node.casper.casper_buffer_storage.clone(),
         validator_id: node.casper.validator_id.clone(),
         casper_shard_conf: node.casper.casper_shard_conf.clone(),
         approved_block: node.casper.approved_block.clone(),
         finalization_in_progress: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-        finalizer_task_in_progress: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        finalizer_cycle: node.casper.finalizer_cycle.clone(),
         finalizer_task_queued: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         heartbeat_signal_ref: casper::rust::heartbeat_signal::new_heartbeat_signal_ref(),
         deploys_in_scope_cache: std::sync::Arc::new(parking_lot::Mutex::new(None)),
@@ -385,18 +383,16 @@ async fn resolve_uses_known_block_fallback_when_the_register_misses() {
     assert_eq!(with_known_block.rejection_count, 0);
 }
 
-/// End to end through the ADMISSION HOOK: a real node proposes a deploy,
-/// the chain settles past the register's horizon, and the API reports
-/// Finalized — pinning that block admission actually drives the register
-/// (ingest at insert, observe at admission) with no test-side plumbing.
+/// End to end on a real node: the cycle that puts the deploy's effect on the
+/// adopted LFB's state lineage also writes its Finalized verdict. No later
+/// block is needed for the verdict to appear, and the API reports it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn end_to_end_win_finalizes_via_admission_hook() {
+async fn a_finalizer_cycle_writes_the_verdict_it_decides() {
     use casper::rust::util::construct_deploy;
 
-    // A SINGLE-validator genesis: with silent bonded validators the frozen
-    // floor cannot advance (their witnessing weight never arrives — the
-    // known liveness-committee prerequisite), so the one running validator
-    // must hold all the stake for the register's floor clock to move.
+    // A SINGLE-validator genesis: with silent bonded validators the LFB
+    // cannot advance (their witnessing weight never arrives), so the one
+    // running validator must hold all the stake.
     let genesis_parameters = GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(1));
     let genesis = GenesisBuilder::new()
         .build_genesis_with_parameters(Some(genesis_parameters))
@@ -423,17 +419,13 @@ async fn end_to_end_win_finalizes_via_admission_hook() {
         .expect("build deploy")
     };
     let sig = deploy.sig.clone();
-    nodes[0]
+    let carrier = nodes[0]
         .add_block_from_deploys(std::slice::from_ref(&deploy))
         .await
-        .expect("propose the win");
+        .expect("propose the carrier");
 
-    // Settle: single-validator chain; each proposal flows through block
-    // admission on the proposer itself, advancing the register's clocks.
-    // The ladder spans the register's contestability bound: window_end
-    // (lifespan 50) + depth bound (~20).
     let mut finalized = false;
-    for round in 0..90i32 {
+    for round in 0..20i32 {
         let marker = {
             tokio::time::sleep(tokio::time::Duration::from_millis(2)).await;
             construct_deploy::basic_deploy_data(round, None, Some(shard_id.clone()))
@@ -442,21 +434,38 @@ async fn end_to_end_win_finalizes_via_admission_hook() {
         nodes[0]
             .add_block_from_deploys(std::slice::from_ref(&marker))
             .await
-            .expect("settle proposal");
+            .expect("proposal");
+        let lfb = nodes[0].casper.finalize().await.expect("finalizer cycle");
         let dag = nodes[0].casper.block_dag().await.expect("dag");
-        let status =
+        let covered = lfb.block_hash == carrier.block_hash
+            || dag
+                .is_dag_ancestor(&carrier.block_hash, &lfb.block_hash)
+                .expect("ancestry");
+        let state =
             deploy_finalization_status::resolve(&dag, nodes[0].casper.block_store(), &sig, None)
-                .expect("resolve");
-        if status.state == DeployFinalizationState::Finalized {
+                .expect("resolve")
+                .state;
+        assert_eq!(
+            covered,
+            state == DeployFinalizationState::Finalized,
+            "the verdict must be Finalized exactly when the cycle's LFB covers \
+             the single-parent carrier: covered={covered}, state={state:?}"
+        );
+        if covered {
             finalized = true;
             break;
         }
     }
     assert!(
         finalized,
-        "the admission-hook-driven register must finalize the win within \
-         the settle ladder"
+        "the carrier must reach the LFB within the driven rounds"
     );
+
+    let api_status =
+        BlockAPI::deploy_finalization_status(&create_engine_cell(&nodes[0]).await, &sig)
+            .await
+            .expect("API status");
+    assert_eq!(api_status.state, DeployFinalizationState::Finalized);
 }
 
 /// The register's ingest covers every inserted block regardless of how it

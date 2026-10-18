@@ -320,7 +320,7 @@ Finalization determines when a block is **mathematically irreversible**. Once fi
 
 ### Trigger
 
-Finalization runs asynchronously after each valid block is added to the DAG. A single-flight guard (`finalizer_task_in_progress`) prevents concurrent runs. A `finalization_in_progress` flag prevents snapshot creation during finalization (avoids stale proposals).
+Finalization runs asynchronously after each valid block is added to the DAG. Every cycle holds the `finalizer_cycle` lock, so the LFB has one writer; reading the LFB never advances it. After a cycle that advances the LFB, the same task writes the deploy verdicts it decided and releases their pool copies. A `finalization_in_progress` flag prevents snapshot creation during finalization (avoids stale proposals).
 
 ### Algorithm (`floor.rs::floor_of_view` + `finalization_runner.rs`)
 

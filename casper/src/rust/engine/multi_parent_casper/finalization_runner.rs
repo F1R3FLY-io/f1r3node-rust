@@ -1,21 +1,22 @@
-//! Finalization runner — background task, RAII guard,
-//! `compute_last_finalized_block`, `update_last_finalized_block`.
+//! Finalization runner — the one writer of the LFB.
 //!
 //! The LFB DECISION does not live here: it is `floor::floor_of_view` — the
 //! one finality clock, shared with every block operation's floor
-//! derivation. This module hosts only the runner scaffolding around it:
-//! pacing (`finalization_rate`), the queued-run loop with its timeout
-//! backstop, and the finalization effects (`record_directly_finalized`,
-//! event publication) applied when the clock advances.
+//! derivation. This module hosts the runner around it: pacing
+//! (`finalization_rate`), the queued-run loop with its timeout backstop, the
+//! finalization effects (`record_directly_finalized`, event publication)
+//! applied when the clock advances, and the deploy-lifecycle work that
+//! follows each cycle.
 //!
-//! Phase 3 (Commit 2): extracted from `engine::multi_parent_casper`.
-//! The functions here are reachable via:
-//!   * `MultiParentCasper::last_finalized_block` (mod.rs) →
-//!     `compute_last_finalized_block` (here)
-//!   * `block_admission::admit_handle_valid_block` (block_admission.rs) →
-//!     `self.update_last_finalized_block` (inherent method here)
-//!   * background task spawned by `update_last_finalized_block` →
-//!     `run_queued_finalizer` → `compute_last_finalized_block`
+//! Every cycle runs under `MultiParentCasperImpl::finalizer_cycle`, so the
+//! LFB has exactly one writer. A cycle starts from two places:
+//!   * `block_admission::admit_handle_valid_block` →
+//!     `update_last_finalized_block`, which spawns `run_queued_finalizer`
+//!     when the lock is free and queues a rerun when it is held;
+//!   * `MultiParentCasperImpl::finalize`, which waits for the lock.
+//!
+//! Reads of the LFB never compute it: `MultiParentCasper::last_finalized_block`
+//! returns the persisted one.
 //!
 //! ── DO NOT re-add a finalization-time rejected-deploy-buffer purge ──────────
 //!
@@ -46,16 +47,17 @@
 //! If you are here because a static diff told you a fix went missing: it didn't.
 //! Re-run the test above before restoring anything.
 //!
-//! Deploy-STORAGE release does not happen in this module at all: the
-//! deploy-lifecycle register names the moment a deploy stops being
-//! re-proposable (its write-once terminal verdict), and block admission
-//! releases the pool copy against exactly that list.
+//! Deploy-STORAGE release keys on the deploy-lifecycle register's
+//! write-once terminal verdicts, never on the finality marker itself: after
+//! each cycle, `settle_after_cycle` writes the verdicts an advance decided
+//! and removes the pool copy of every terminal sig.
 
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage;
+use block_storage::rust::deploy::key_value_deploy_storage::KeyValueDeployStorage;
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use comm::rust::transport::transport_layer::TransportLayer;
 use models::rust::block_hash::BlockHash;
@@ -211,6 +213,9 @@ pub(crate) struct FinalizationContext {
     pub(crate) enable_mergeable_channel_gc: bool,
     pub(crate) ftt: crate::rust::safety::clique_oracle::FtThreshold,
     pub(crate) divergence_monitor: Arc<DivergenceMonitor>,
+    pub(crate) deploy_storage: Arc<parking_lot::Mutex<KeyValueDeployStorage>>,
+    pub(crate) deploy_lifespan: i64,
+    pub(crate) citability_horizon: Option<i64>,
 }
 
 /// Build a `FinalizationContext` from a `MultiParentCasperImpl`. Single
@@ -236,38 +241,53 @@ pub(crate) fn build_finalization_context<
             this.casper_shard_conf.fault_tolerance_threshold_ppm,
         ),
         divergence_monitor: this.divergence_monitor.clone(),
+        deploy_storage: this.deploy_storage.clone(),
+        deploy_lifespan: this.casper_shard_conf.deploy_lifespan,
+        citability_horizon: crate::rust::finality::deploy_lifecycle::citability_horizon(
+            this.casper_shard_conf.max_parent_depth,
+        ),
     }
 }
 
+/// Runs finalizer cycles until no rerun is queued. `_cycle` is the held
+/// `finalizer_cycle` lock: holding it is what makes this the one LFB writer.
 #[tracing::instrument(level = "info", skip_all)]
 pub(crate) async fn run_queued_finalizer(
     ctx: FinalizationContext,
-    finalizer_task_in_progress: Arc<AtomicBool>,
+    _cycle: tokio::sync::OwnedMutexGuard<()>,
     finalizer_task_queued: Arc<AtomicBool>,
 ) {
-    let _task_guard = FinalizationGuard(finalizer_task_in_progress.as_ref());
     tracing::info!(target: "f1r3fly.casper", "finalizer-run-started");
 
     // Backstop only: floor-of-view rides the persisted floor/frontier
     // caches, so a cycle exceeding this is a stall to surface, not pace.
     let finalizer_blocking_timeout = std::time::Duration::from_secs(15);
-    drive_finalizer_runs(finalizer_blocking_timeout, &finalizer_task_queued, || {
-        compute_last_finalized_block(ctx.clone())
-    })
+    drive_finalizer_runs(
+        finalizer_blocking_timeout,
+        &finalizer_task_queued,
+        || compute_last_finalized_block(ctx.clone()),
+        |advanced| settle_after_cycle(ctx.clone(), advanced),
+    )
     .await;
     tracing::info!(target: "f1r3fly.casper", "finalizer-run-finished");
 }
 
-/// The queued-run loop of `run_queued_finalizer`, generic over the compute
-/// step so its cycle accounting is testable without a casper instance.
-pub(crate) async fn drive_finalizer_runs<T, E, F, Fut>(
+/// The queued-run loop of `run_queued_finalizer`, generic over its two steps
+/// so its cycle accounting is testable without a casper instance. `compute`
+/// runs under the timeout and reports whether the LFB advanced; `after` runs
+/// untimed once each cycle with that answer, so a slow step after the
+/// advance can never be abandoned midway and overlap the next cycle.
+pub(crate) async fn drive_finalizer_runs<E, F, Fut, A, AFut>(
     timeout: std::time::Duration,
     finalizer_task_queued: &AtomicBool,
     mut compute: F,
+    mut after: A,
 ) where
     E: std::fmt::Debug,
     F: FnMut() -> Fut,
-    Fut: std::future::Future<Output = Result<T, E>>,
+    Fut: std::future::Future<Output = Result<bool, E>>,
+    A: FnMut(bool) -> AFut,
+    AFut: std::future::Future<Output = ()>,
 {
     use crate::rust::metrics_constants::{
         CASPER_METRICS_SOURCE, FINALIZER_RUN_FAILURES_METRIC, FINALIZER_RUN_RERUNS_METRIC,
@@ -278,12 +298,13 @@ pub(crate) async fn drive_finalizer_runs<T, E, F, Fut>(
         let outcome = tokio::time::timeout(timeout, compute()).await;
         metrics::histogram!(FINALIZER_RUN_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
             .record(cycle_started.elapsed().as_secs_f64());
-        match outcome {
-            Ok(Ok(_)) => {}
+        let advanced = match outcome {
+            Ok(Ok(advanced)) => advanced,
             Ok(Err(err)) => {
                 metrics::counter!(FINALIZER_RUN_FAILURES_METRIC, "source" => CASPER_METRICS_SOURCE)
                     .increment(1);
                 tracing::warn!("finalizer-run failed: {:?}", err);
+                false
             }
             Err(_) => {
                 metrics::counter!(FINALIZER_RUN_TIMEOUTS_METRIC, "source" => CASPER_METRICS_SOURCE)
@@ -292,8 +313,10 @@ pub(crate) async fn drive_finalizer_runs<T, E, F, Fut>(
                     "finalizer-run timed out after {:?}; skipping this cycle to avoid blocking propose",
                     timeout
                 );
+                false
             }
-        }
+        };
+        after(advanced).await;
 
         if finalizer_task_queued.swap(false, Ordering::SeqCst) {
             metrics::counter!(FINALIZER_RUN_RERUNS_METRIC, "source" => CASPER_METRICS_SOURCE)
@@ -305,31 +328,50 @@ pub(crate) async fn drive_finalizer_runs<T, E, F, Fut>(
     }
 }
 
-/// An LFB computation requested through the API. It runs outside the
-/// single-flight guard, so it can overlap a background finalizer run. The
-/// in-progress flag is read once and never written here.
-pub(crate) async fn observe_api_lfb<T, E, Fut>(
-    finalizer_task_in_progress: &AtomicBool,
-    computation: Fut,
-) -> Result<T, E>
-where
-    Fut: std::future::Future<Output = Result<T, E>>,
-{
-    use crate::rust::metrics_constants::{
-        CASPER_METRICS_SOURCE, FINALIZER_API_LFB_CALLS_METRIC, FINALIZER_API_LFB_OVERLAPS_METRIC,
-        FINALIZER_API_LFB_TIME_METRIC,
-    };
-    metrics::counter!(FINALIZER_API_LFB_CALLS_METRIC, "source" => CASPER_METRICS_SOURCE)
-        .increment(1);
-    if finalizer_task_in_progress.load(Ordering::SeqCst) {
-        metrics::counter!(FINALIZER_API_LFB_OVERLAPS_METRIC, "source" => CASPER_METRICS_SOURCE)
-            .increment(1);
+/// The deploy-lifecycle work after one cycle, on the blocking pool. Verdicts
+/// and the carrier prune can only change when the LFB advanced; the pool
+/// release runs every cycle, so a removal that failed is retried.
+async fn settle_after_cycle(ctx: FinalizationContext, advanced: bool) {
+    match tokio::task::spawn_blocking(move || settle_blocking(&ctx, advanced)).await {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => tracing::error!(
+            target: "f1r3fly.casper.lifecycle",
+            error = %e,
+            "deploy-lifecycle settle failed; verdicts wait for the next advance"
+        ),
+        Err(join_err) => tracing::error!(
+            target: "f1r3fly.casper.lifecycle",
+            "deploy-lifecycle settle task terminated abnormally: {}",
+            join_err
+        ),
     }
-    let started = std::time::Instant::now();
-    let result = computation.await;
-    metrics::histogram!(FINALIZER_API_LFB_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
-        .record(started.elapsed().as_secs_f64());
-    result
+}
+
+fn settle_blocking(ctx: &FinalizationContext, advanced: bool) -> Result<(), CasperError> {
+    use crate::rust::finality::deploy_lifecycle::{record_observe_timing, release_settled, settle};
+
+    let dag = ctx.block_dag_storage.get_representation()?;
+    let settled = if advanced {
+        let settle_started = std::time::Instant::now();
+        let settled = settle(
+            &dag,
+            &ctx.block_store,
+            ctx.deploy_lifespan,
+            ctx.citability_horizon,
+        );
+        let settle_ms = settle_started.elapsed().as_millis();
+        let prune_started = std::time::Instant::now();
+        let lfb_height = dag.block_number_unsafe(&dag.last_finalized_block())?;
+        if let Err(e) = dag.prune_carriers_below(lfb_height - ctx.deploy_lifespan) {
+            tracing::warn!("carrier-index prune failed (retention only): {}", e);
+        }
+        record_observe_timing(settle_ms, Some(prune_started.elapsed().as_millis()));
+        settled.map(|_| ())
+    } else {
+        Ok(())
+    };
+    release_settled(&dag, &ctx.deploy_storage)?;
+    settled
 }
 
 /// A finalization trigger arrived while a run is in progress: queue one
@@ -345,9 +387,11 @@ pub(crate) fn note_finalizer_busy(finalizer_task_queued: &AtomicBool) {
     }
 }
 
+/// One LFB decision and, on an advance, its finalization effects. Returns
+/// whether the LFB advanced.
 pub(crate) async fn compute_last_finalized_block(
     ctx: FinalizationContext,
-) -> Result<BlockMessage, CasperError> {
+) -> Result<bool, CasperError> {
     let FinalizationContext {
         observer,
         block_dag_storage,
@@ -358,6 +402,7 @@ pub(crate) async fn compute_last_finalized_block(
         enable_mergeable_channel_gc,
         ftt,
         divergence_monitor,
+        ..
     } = ctx;
     let observation_operation = observer.as_ref().and_then(|observer| observer.operation());
     let lfb_lookup_started = std::time::Instant::now();
@@ -409,13 +454,6 @@ pub(crate) async fn compute_last_finalized_block(
                                     PrettyPrinter::build_string_bytes(block_hash)
                                 ))
                             })?;
-
-                            // Deploy-storage removal deliberately does NOT
-                            // happen here: node-local finalization of a
-                            // block is not evidence its deploys' effects
-                            // are canonical. The lifecycle register's
-                            // terminal verdicts drive the release, at
-                            // block admission.
 
                             // Remove block index from cache
                             runtime_manager.remove_block_index_cache(block_hash);
@@ -567,7 +605,7 @@ pub(crate) async fn compute_last_finalized_block(
     };
 
     let new_lfb_found = new_lfb_opt.is_some();
-    let final_lfb_hash = if let Some(new_lfb) = new_lfb_opt {
+    if let Some(new_lfb) = new_lfb_opt {
         let ft_value =
             crate::rust::safety::clique_oracle::CliqueOracle::normalized_fault_tolerance(
                 &new_lfb.hash,
@@ -612,39 +650,46 @@ pub(crate) async fn compute_last_finalized_block(
         }
         effect_result.map_err(CasperError::KvStoreError)?;
         divergence_monitor.on_advance();
-        new_lfb.hash
-    } else {
-        last_finalized_block_hash
-    };
-    let finalizer_ms = finalizer_started.elapsed().as_millis();
-
-    // Deploy-pool release is NOT done here. The register
-    // (`finality::deploy_lifecycle`) is the one component that re-evaluates
-    // as the floor advances, so it is the only component that can name the
-    // moment a deploy stops being re-proposable; block admission releases
-    // the pool copy against exactly its write-once terminal list. The
-    // finality marker is never a release edge: a marked block can still be
-    // excluded from every future cone, and an orphaned carrier's pool copy
-    // is its only route back into a live branch.
-
-    // Return the finalized block
-    let read_started = std::time::Instant::now();
-    // P2-7: surface missing LFB as a typed error instead of panicking.
-    let block_message = block_store.get(&final_lfb_hash)?.ok_or_else(|| {
-        CasperError::RuntimeError(format!(
-            "final last-finalized block {} not present in store",
-            PrettyPrinter::build_string_bytes(&final_lfb_hash)
-        ))
-    })?;
+    }
     tracing::debug!(
         target: "f1r3fly.casper.lfb.timing",
-        "last_finalized_block timing: finalizer_ms={}, read_block_ms={}, total_ms={}, new_lfb_found={}",
-        finalizer_ms,
-        read_started.elapsed().as_millis(),
+        "last_finalized_block timing: finalizer_ms={}, total_ms={}, new_lfb_found={}",
+        finalizer_started.elapsed().as_millis(),
         lfb_lookup_started.elapsed().as_millis(),
         new_lfb_found
     );
-    Ok(block_message)
+    Ok(new_lfb_found)
+}
+
+/// The persisted LFB's block.
+pub(crate) fn read_last_finalized_block(
+    block_dag_storage: &BlockDagKeyValueStorage,
+    block_store: &KeyValueBlockStore,
+) -> Result<BlockMessage, CasperError> {
+    let lfb_hash = block_dag_storage
+        .get_representation()?
+        .last_finalized_block();
+    block_store.get(&lfb_hash)?.ok_or_else(|| {
+        CasperError::RuntimeError(format!(
+            "last finalized block {} not present in store",
+            PrettyPrinter::build_string_bytes(&lfb_hash)
+        ))
+    })
+}
+
+impl<T: TransportLayer + Send + Sync> MultiParentCasperImpl<T> {
+    /// Runs finalizer cycles now, waiting for any cycle already in flight,
+    /// and returns the LFB they leave.
+    pub async fn finalize(&self) -> Result<BlockMessage, CasperError> {
+        let cycle = self.finalizer_cycle.clone().lock_owned().await;
+        run_queued_finalizer(
+            build_finalization_context(self),
+            cycle,
+            self.finalizer_task_queued.clone(),
+        )
+        .await;
+        read_last_finalized_block(&self.block_dag_storage, &self.block_store)
+    }
 }
 
 /// Trigger a finalization run if the new block crosses the finalization
@@ -664,26 +709,19 @@ pub(crate) async fn update_last_finalized_block<T: TransportLayer + Send + Sync>
     }
 
     if new_block.body.state.block_number % this.casper_shard_conf.finalization_rate as i64 == 0 {
-        if this
-            .finalizer_task_in_progress
-            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-            .is_err()
-        {
+        let Ok(cycle) = this.finalizer_cycle.clone().try_lock_owned() else {
             note_finalizer_busy(&this.finalizer_task_queued);
             return Ok(());
-        }
+        };
 
         let ctx = build_finalization_context(this);
-        let finalizer_task_in_progress = this.finalizer_task_in_progress.clone();
         let finalizer_task_queued = this.finalizer_task_queued.clone();
 
         // Capture the JoinHandle so a panic inside `run_queued_finalizer`
-        // surfaces in the logs instead of being silently dropped. The
-        // RAII `FinalizationGuard` in run_queued_finalizer prevents the
-        // in-progress flag from sticking even if the task panics, so
-        // there's no deadlock — but silent panics mask real bugs.
+        // surfaces in the logs instead of being silently dropped. The cycle
+        // lock is released when the task ends, panicking or not.
         let handle = tokio::spawn(async move {
-            run_queued_finalizer(ctx, finalizer_task_in_progress, finalizer_task_queued).await;
+            run_queued_finalizer(ctx, cycle, finalizer_task_queued).await;
         });
         tokio::spawn(async move {
             if let Err(join_err) = handle.await {
@@ -801,9 +839,8 @@ mod finalizer_run_metric_tests {
 
     use super::*;
     use crate::rust::metrics_constants::{
-        FINALIZER_API_LFB_CALLS_METRIC, FINALIZER_API_LFB_OVERLAPS_METRIC,
-        FINALIZER_API_LFB_TIME_METRIC, FINALIZER_RUN_FAILURES_METRIC, FINALIZER_RUN_QUEUED_METRIC,
-        FINALIZER_RUN_RERUNS_METRIC, FINALIZER_RUN_TIMEOUTS_METRIC, FINALIZER_RUN_TIME_METRIC,
+        FINALIZER_RUN_FAILURES_METRIC, FINALIZER_RUN_QUEUED_METRIC, FINALIZER_RUN_RERUNS_METRIC,
+        FINALIZER_RUN_TIMEOUTS_METRIC, FINALIZER_RUN_TIME_METRIC,
     };
 
     /// One snapshot per test: the debugging recorder drains histogram
@@ -837,27 +874,42 @@ mod finalizer_run_metric_tests {
 
         let queued = AtomicBool::new(false);
         let mut cycle = 0u32;
-        drive_finalizer_runs(Duration::from_millis(50), &queued, || {
-            cycle += 1;
-            let this_cycle = cycle;
-            if this_cycle <= 2 {
-                queued.store(true, Ordering::SeqCst);
-            }
-            async move {
-                match this_cycle {
-                    1 => Err::<(), &str>("floor unavailable"),
-                    2 => {
-                        tokio::time::sleep(Duration::from_millis(500)).await;
-                        Ok(())
-                    }
-                    _ => Ok(()),
+        let mut advances = Vec::new();
+        drive_finalizer_runs(
+            Duration::from_millis(50),
+            &queued,
+            || {
+                cycle += 1;
+                let this_cycle = cycle;
+                if this_cycle <= 2 {
+                    queued.store(true, Ordering::SeqCst);
                 }
-            }
-        })
+                async move {
+                    match this_cycle {
+                        1 => Err::<bool, &str>("floor unavailable"),
+                        2 => {
+                            tokio::time::sleep(Duration::from_millis(500)).await;
+                            Ok(true)
+                        }
+                        _ => Ok(true),
+                    }
+                }
+            },
+            |advanced| {
+                advances.push(advanced);
+                async {}
+            },
+        )
         .await;
 
         let recorded = Recorded::take(&snapshotter);
         assert_eq!(cycle, 3, "a trigger during cycles 1 and 2 gives two reruns");
+        assert_eq!(
+            advances,
+            vec![false, false, true],
+            "every cycle runs the after-step once; a failed or timed-out \
+             cycle reports no advance"
+        );
         assert_eq!(recorded.samples(FINALIZER_RUN_TIME_METRIC), 3);
         assert_eq!(recorded.counter(FINALIZER_RUN_FAILURES_METRIC), 1);
         assert_eq!(recorded.counter(FINALIZER_RUN_TIMEOUTS_METRIC), 1);
@@ -871,9 +923,12 @@ mod finalizer_run_metric_tests {
         let _guard = metrics::set_default_local_recorder(&recorder);
 
         let queued = AtomicBool::new(false);
-        drive_finalizer_runs(Duration::from_millis(50), &queued, || async {
-            Ok::<(), &str>(())
-        })
+        drive_finalizer_runs(
+            Duration::from_millis(50),
+            &queued,
+            || async { Ok::<bool, &str>(false) },
+            |_| async {},
+        )
         .await;
 
         let recorded = Recorded::take(&snapshotter);
@@ -897,30 +952,5 @@ mod finalizer_run_metric_tests {
         let recorded = Recorded::take(&snapshotter);
         assert!(queued.load(Ordering::SeqCst));
         assert_eq!(recorded.counter(FINALIZER_RUN_QUEUED_METRIC), 3);
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn api_lfb_counts_each_call_and_the_calls_that_overlap_a_run() {
-        let recorder = DebuggingRecorder::new();
-        let snapshotter = recorder.snapshotter();
-        let _guard = metrics::set_default_local_recorder(&recorder);
-
-        let in_progress = AtomicBool::new(false);
-        let idle: Result<u32, &str> = observe_api_lfb(&in_progress, async { Ok(7) }).await;
-        in_progress.store(true, Ordering::SeqCst);
-        let busy: Result<u32, &str> =
-            observe_api_lfb(&in_progress, async { Err("no floor") }).await;
-
-        let recorded = Recorded::take(&snapshotter);
-        assert_eq!(idle, Ok(7), "the API result passes through unchanged");
-        assert_eq!(
-            busy,
-            Err("no floor"),
-            "an API error passes through unchanged"
-        );
-        assert!(in_progress.load(Ordering::SeqCst), "the flag is only read");
-        assert_eq!(recorded.counter(FINALIZER_API_LFB_CALLS_METRIC), 2);
-        assert_eq!(recorded.counter(FINALIZER_API_LFB_OVERLAPS_METRIC), 1);
-        assert_eq!(recorded.samples(FINALIZER_API_LFB_TIME_METRIC), 2);
     }
 }
