@@ -1223,6 +1223,7 @@ tasks:
       - "Plan update of 2026-10-17 (issue #24 comment 6220936428): weekend soak 38995239992 on master ecb16dbca had 0 test_load failures in 91 sessions (46 Docker, 45 subprocess). The disk floor stopped it at 16.7 h of 57.5 h, because each iteration kept an uncompressed node-metrics file. PR #759 compresses that file. From iteration 84, the strace sample of sample-node-io.sh traced the validator of the active benchmark shard."
       - "2026-10-18: both blockers are done (PR #759 and PR #760 on master). Weekend soak 39089710676 runs on master 532e5c696, which dev 5ff390e15 contains through back-merge PR #763. Interim segment 1 (14:38Z, 9.5 h): 52 sessions (26 Docker, 26 subprocess), 1 failure on subprocess, 1.9 percent, no protection breach. The window ends 2026-10-19 14:30Z (adaptive-execution.md section 3)."
       - "2026-10-18 18:35Z (job log): 73 sessions, 2 failures. Subprocess at 14:11Z in the sustained phase (2 deploys not finalized within 45 s). Docker at 17:35Z in the high phase (13 not finalized, LFB at 7.9 blocks per minute). In both, inclusion was normal and finality was slow."
+      - "Interim plan change of 2026-10-18 (issue #24 comment 6220936428): closure is separate from attribution. If this soak meets the gate, issue #24 can close (the answer to Q8 is unchanged), but TASK-021-13 stays open to attribute the wait after inclusion. Step 3 needs a fix only if the gate fails. The final report confirms or replaces this change."
     acceptance:
       - "A full-length soak on current dev with the node I/O sampler gives at least 100 test_load sessions on each provider."
       - "The issue #24 report records the failure rate, the phase of each failure, and the stage metrics as the baseline for TASK-021-23."
@@ -1238,6 +1239,7 @@ tasks:
     notes:
       - "Plan step 1. Issue #24 owns Track A (decision of 2026-10-16). TASK-027-2 reuses these metrics."
       - "Avoid the 38 files that stall-loop step B1 expects to conflict where possible."
+      - "Interim plan change of 2026-10-18 (issue #24 comment 6220936428): the high phases of soak 39089710676 are bimodal on both providers, but ISSUE24_METRICS covers a whole iteration. Add metrics for each phase: the finality pace, the proposer sequence, the floor distance, and the empty-block counts. TASK-021-24 then compares the share of slow high phases with the TASK-021-16 baseline."
     hygiene_note: "2026-10-16 hygiene: PR #751 merged the Track A metrics. Open: one soak that ranks the Track A items, and the issue #24 report of the rank."
     decision: "2026-10-18: stall-loop revision 2 (publications 0b3255fc8) has code for A1 to A9 on three stacked branches before the rank exists (adaptive-execution.md section 10.4.1). The TASK-021-16 soak gives the cost of each item before the fixes, and TASK-021-24 measures each item after them. The rank no longer sets the order of the work."
     acceptance:
