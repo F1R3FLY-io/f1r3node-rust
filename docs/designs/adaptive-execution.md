@@ -63,7 +63,8 @@ The issue #24 history gives seven facts that this design must use.
 | Fact | Source | Effect on the design |
 |---|---|---|
 | In the high phase, non-leader validators used a fixed fallback cap of 8 deploys per block. The cap rose to 16 or 32 only after a wait of 120 s or 300 s, but the test fails at 45 s. PR #695 made the cap follow the local backlog, and the high-phase inclusion p95 fell below 10 s (soak 38300649650). | Issue #24 comments 6094239136 and 6148770562 | A fixed escalation table cannot follow the real arrival rate. The cap must follow measured backlog and capacity. |
-| All three high-phase failures in soak 37996403003 ran on Docker. Docker shards had about twice the left-out deploys and twice the selection age of subprocess shards. After PR #695, Docker had 0 failures in 43 iterations. | Comments 6094531369 and 6148770562 | The same code behaved differently on different hosts. PR #695 removed this difference for the high phase. |
+| All three high-phase failures in soak 37996403003 ran on Docker. Docker shards had about twice the left-out deploys and twice the selection age of subprocess shards. After PR #695, Docker had 0 failures in 43 iterations. | Comments 6094531369 and 6148770562 | The same code behaved differently on different hosts. PR #695 removed the selection cause for the high phase, but not every high-phase failure (next row). |
+| **Interim evidence (soak 39089710676, running):** a Docker iteration failed in the high phase on 2026-10-18 at 17:29Z, with 13 deploys not finalized within 45 s. Inclusion was normal (p95 11.6 s), and the PR #695 backlog rule acted 8 times, but finality slowed to 7.9 blocks per minute. This slow pattern occurs in about half of the high phases of each provider (21 of 36 on Docker, 22 of 39 on subprocess). | Job log of run 39089710676 | A second high-phase failure mode remains after PR #695 on both host classes: deploys enter blocks, and then finality is too slow. TASK-021-13 (Q1) covers the high phase too. |
 | The sustained-phase failures have a different cause. The deploys enter blocks in 2 to 2.6 s and then wait for finalization. | Comment 6094531369 | An admission controller alone does not close issue #24. The delay from inclusion to finality needs its own signal and its own control (section 10.3). |
 | `F1R3FLY-io/f1r3node` PR #473, in the earlier repository, removed an "adaptive deploy cap". | Issue #24 description | That cap was a fixed table. This design uses a closed loop with bounds, hysteresis, and telemetry for each step (section 7). |
 | On Docker, the checkpoint fsync is about 1 percent of the cost, and the replay runtime spawn takes 3.8 ms. On the subprocess provider, the replay checkpoint takes 483 ms against 64 ms on Docker, with jemalloc on both. | Comments 6016872961, 6043103631, and 6171089126 | The controller must not assume that disk or spawn cost is the bottleneck. Storage cost depends on the host class, so the probe measures disk latency (section 6). The controller acts only on measured signals. |
@@ -97,8 +98,9 @@ The soaks of 2026-10-15 and 2026-10-16 stopped on a workflow defect before the f
 | Checkpoint | Elapsed | Sessions (Docker / subprocess) | Failures (Docker / subprocess) | Failure rate | Protection breach |
 |---|---|---|---|---|---|
 | Segment 1, 2026-10-18 14:38Z | 34,281 s (9.5 h) | 52 (26 / 26) | 1 (0 / 1) | 1.9 percent | None |
+| Job log, 2026-10-18 18:35Z (segment 2 running) | About 13.5 h | 73 | 2 (1 / 1) | 2.7 percent | None |
 
-The interim rate is inside gate 1 of section 14.1 (at most 5 failures in 100 sessions on each provider). The rate agrees with soak 38501465484 (1 of 52). At this pace, the window gives about 150 sessions on each provider, more than the gate needs. The checkpoint records only the count of failures. The phase and the cause of the failure come from the raw artifact at the end of the run.
+The interim rate is inside gate 1 of section 14.1 (at most 5 failures in 100 sessions on each provider), and it agrees with soak 38501465484 (1 of 52). At this pace, the window gives about 150 sessions on each provider, more than the gate needs. The subprocess failure (14:11Z) is in the sustained phase, with 2 deploys not finalized within 45 s. The Docker failure (17:35Z) is in the high phase, with 13 deploys not finalized. In both, the deploys entered blocks and then waited for finality (section 10.3). The stage metrics of each phase come from the raw artifact at the end of the run.
 
 ---
 
@@ -359,7 +361,7 @@ The A9 rejection search cap (`casper.rejection-search-cap-from-height`) changes 
 
 ### 10.3 The sustained phase
 
-In the sustained-phase failures, deploys wait after inclusion. Admission controls do not reduce this wait. TASK-021-13 attribution must find the stage first. Then the binding adds a control or a fix for that stage. This design does not choose that fix (open question Q1).
+In the sustained-phase failures, deploys wait after inclusion. Interim evidence of soak 39089710676 (section 3) shows the same wait in one high-phase failure, after PR #695. Admission controls do not reduce this wait. TASK-021-13 attribution must find the stage first. Then the binding adds a control or a fix for that stage. This design does not choose that fix (open question Q1).
 
 ### 10.4 Relation to the stall-loop design
 
@@ -498,7 +500,7 @@ The `cbc-casper` profile closes issue #24 with these gates:
 2. The gate holds separately for the Docker host class and the subprocess host class.
 3. The gate holds on a constrained tier run with cgroup CPU and memory limits.
 4. No run shows an out-of-memory stop, a watchdog stop, or a guardian stop.
-5. On the constrained tier run of gate 3, the controller records show at least one step down and one step up in the high phase. This proves that the loop acts. A run on a larger tier can pass without a controller action. PR #695 already keeps the high phase inside its deadline on both host classes.
+5. On the constrained tier run of gate 3, the controller records show at least one step down and one step up in the high phase. This proves that the loop acts. A run on a larger tier can pass without a controller action. PR #695 removed the selection cause of high-phase failures. The interim evidence of soak 39089710676 (section 3) shows a remaining finality-pace failure in the high phase. A larger tier therefore does not by itself keep the high phase inside its deadline.
 
 The other mechanisms supply their profiles with their adapters:
 
