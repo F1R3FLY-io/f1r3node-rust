@@ -26,6 +26,8 @@ The migration epics, EPIC-003 through EPIC-008, used a local coordination file, 
 
 ## Active Coordination
 
+- **Heartbeat H1 coordination (2026-10-18).** `claude-session-f1r3node-rust-71` owns F1/F2 and H1 runtime integration. `pi-session-heartbeat-h1-cbc` owns TASK-021-26, the [claim revision](claims/heartbeat-proposal-amplification-bound.md), and verification. The [design](designs/deploy-heartbeat-wake.md) remains a draft. Local coordination uses `docs/handoffs/channel-deploy-heartbeat-wake-2026-10-18.md`, which is not a published reference.
+
 - **Casper ratification follow-up (2026-09-16).** EPIC-017 owns the pre-#216 models, baseline conformance, and harness preparation on `formal/soak-casper-consensus`. EPIC-018 owns a separate formal-methods harness PR after PR #216 merges. The [meeting record](https://github.com/F1R3FLY-io/f1r3node-rust/pull/390#pullrequestreview-5227717933) controls both phases. PRs #430 through #433 remain prerequisites in stack order. The [branch plan](https://github.com/F1R3FLY-io/f1r3node-rust/blob/ba9758507194d6e34bc1494d416b87405facd550/docs/plans/casper-ratified-soak-2026-09-16.md) (local Git: `ba9758507194d6e34bc1494d416b87405facd550:docs/plans/casper-ratified-soak-2026-09-16.md`) defines the handoff, separate completion gates, and deferred-policy restrictions.
 
 <!-- Compact, current-state-only. This section replaces the free-form status
@@ -1298,6 +1300,23 @@ tasks:
     acceptance:
       - "The same soak profile as TASK-021-16 runs on dev with cost accounting."
       - "The issue #24 report compares both runs and records new baselines if legacy cost changed."
+  - id: TASK-021-26
+    title: "Revise and verify the H1 heartbeat amplification claim"
+    status: in_progress
+    claimed_by: pi-session-heartbeat-h1-cbc
+    claimed_at: 2026-10-18T21:32:01Z
+    branch: fix/issue-24-deploy-heartbeat-wake
+    pr_base_branch: dev
+    blocked_by: []
+    scope: "Claim revision and source-bound verification only. Runtime and metrics edits remain with claude-session-f1r3node-rust-71."
+    design: docs/designs/deploy-heartbeat-wake.md
+    claim_spec: docs/claims/heartbeat-proposal-amplification-bound.md
+    acceptance:
+      - "The revised claim is pending before H1 code begins, and the prior evidence remains unchanged in history."
+      - "The implementation satisfies the routine-block bound, the request-credit bound, and the nonempty exemption under the configured cooldown."
+      - "Tests cover mode expiry, re-entry, failed requests, actual block classification, and recovery timing after exempt blocks."
+      - "Source-bound evidence covers heartbeat_proposer.rs and the proposer.rs nonempty-request enforcement. No historical discharge is reused for H1."
+      - "Required verification and maintainer acceptance complete before this task is marked complete."
 ---
 ```
 

@@ -38,6 +38,7 @@ struct HeartbeatCheckResult {
     bug_failure: bool,
     refresh_deploy_grace_window: bool,
     finality_recovery_attempted: bool,
+    recheck_after: Option<Duration>,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -241,11 +242,13 @@ impl HeartbeatProposer {
             let mut backoff_until: Option<std::time::Instant> = None;
             let mut deploy_grace_until: Option<std::time::Instant> = None;
             let mut finality_progress = FinalityProgress::new(Instant::now());
+            let mut next_sleep = config.check_interval;
 
             loop {
                 // Race between timer and signal - whichever completes first triggers wake
+                let sleep_for = std::mem::replace(&mut next_sleep, config.check_interval);
                 let wake_source = tokio::select! {
-                    _ = tokio::time::sleep(config.check_interval) => "timer",
+                    _ = tokio::time::sleep(sleep_for) => "timer",
                     _ = notify.notified() => "signal",
                 };
 
@@ -277,6 +280,15 @@ impl HeartbeatProposer {
                     .await
                     {
                         Ok(outcome) => {
+                            next_sleep =
+                                next_heartbeat_sleep(config.check_interval, outcome.recheck_after);
+                            if next_sleep < config.check_interval {
+                                metrics::counter!(
+                                    casper::rust::metrics_constants::HEARTBEAT_COOLDOWN_RECHECK_METRIC,
+                                    "source" => casper::rust::metrics_constants::VALIDATOR_METRICS_SOURCE
+                                )
+                                .increment(1);
+                            }
                             if outcome.refresh_deploy_grace_window {
                                 let grace_ms = config.deploy_finalization_grace.as_millis();
                                 let grace_duration = Duration::from_millis(std::cmp::min(
@@ -641,6 +653,7 @@ async fn check_lfb_and_propose(
     };
     let LaneDecision {
         pending_deploys_due,
+        pending_blocked_by_cooldown,
         pending_deploy_backstop_due,
         frontier_follow_due,
         stale_lfb_recovery_due,
@@ -747,6 +760,7 @@ async fn check_lfb_and_propose(
                     refresh_deploy_grace_window: has_pending_deploys
                         || has_new_parent_with_user_deploys,
                     finality_recovery_attempted: false,
+                    recheck_after: None,
                 })
             }
             ProposerResult::Failure(status, seq_num) => {
@@ -762,6 +776,7 @@ async fn check_lfb_and_propose(
                     refresh_deploy_grace_window: has_pending_deploys
                         || has_new_parent_with_user_deploys,
                     finality_recovery_attempted: false,
+                    recheck_after: None,
                 })
             }
             ProposerResult::Success(_, _) => {
@@ -771,6 +786,7 @@ async fn check_lfb_and_propose(
                     refresh_deploy_grace_window: has_pending_deploys
                         || has_new_parent_with_user_deploys,
                     finality_recovery_attempted: convergence_recovery_selected,
+                    recheck_after: None,
                 })
             }
             ProposerResult::Started(seq_num) => {
@@ -780,6 +796,7 @@ async fn check_lfb_and_propose(
                     refresh_deploy_grace_window: has_pending_deploys
                         || has_new_parent_with_user_deploys,
                     finality_recovery_attempted: convergence_recovery_selected,
+                    recheck_after: None,
                 })
             }
         }
@@ -878,6 +895,11 @@ async fn check_lfb_and_propose(
             bug_failure: false,
             refresh_deploy_grace_window: has_pending_deploys || has_new_parent_with_user_deploys,
             finality_recovery_attempted: false,
+            recheck_after: cooldown_recheck_delay(
+                pending_blocked_by_cooldown,
+                config.self_propose_cooldown.as_millis(),
+                self_latest_block_timestamp_ms.map(|timestamp_ms| now.saturating_sub(timestamp_ms)),
+            ),
         })
     }
 }
@@ -1058,6 +1080,7 @@ struct LaneInputs {
 /// The lane verdicts plus every intermediate the reason ladders report.
 struct LaneDecision {
     pending_deploys_due: bool,
+    pending_blocked_by_cooldown: bool,
     pending_deploy_backstop_due: bool,
     frontier_follow_due: bool,
     stale_lfb_recovery_due: bool,
@@ -1097,6 +1120,9 @@ fn decide_lanes(i: &LaneInputs) -> LaneDecision {
     // for routine churn.
     let pending_deploys_due = i.has_pending_deploys
         && !i.self_proposed_too_recently
+        && (!i.self_recently_proposed || can_propose_pending_deploys_while_ahead);
+    let pending_blocked_by_cooldown = i.has_pending_deploys
+        && i.self_proposed_too_recently
         && (!i.self_recently_proposed || can_propose_pending_deploys_while_ahead);
     // Backstop: even when high lag throttles pending-deploy proposals, force a bounded
     // retry based on local self-proposal cadence so deploys cannot starve indefinitely.
@@ -1161,6 +1187,7 @@ fn decide_lanes(i: &LaneInputs) -> LaneDecision {
     let should_propose = routine_proposal_due || convergence_recovery_selected;
     LaneDecision {
         pending_deploys_due,
+        pending_blocked_by_cooldown,
         pending_deploy_backstop_due,
         frontier_follow_due,
         stale_lfb_recovery_due,
@@ -1171,6 +1198,25 @@ fn decide_lanes(i: &LaneInputs) -> LaneDecision {
         can_follow_frontier_without_pending_deploys,
         allow_frontier_follow_while_ahead_for_deploy_parent,
     }
+}
+
+fn cooldown_recheck_delay(
+    pending_blocked_by_cooldown: bool,
+    cooldown_ms: u128,
+    self_latest_block_age_ms: Option<u128>,
+) -> Option<Duration> {
+    if !pending_blocked_by_cooldown {
+        return None;
+    }
+    let remaining_ms = cooldown_ms.saturating_sub(self_latest_block_age_ms?);
+    (remaining_ms > 0).then(|| Duration::from_millis(remaining_ms.min(u128::from(u64::MAX)) as u64))
+}
+
+fn next_heartbeat_sleep(check_interval: Duration, recheck_after: Option<Duration>) -> Duration {
+    const MIN_RECHECK: Duration = Duration::from_millis(10);
+    recheck_after
+        .map(|delay| delay.max(MIN_RECHECK).min(check_interval))
+        .unwrap_or(check_interval)
 }
 
 fn stale_recovery_window_is_open(
@@ -2976,5 +3022,89 @@ mod tests {
                 "recovery paces on the interval, never on the cooldown"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod cooldown_recheck_tests {
+    use std::time::Duration;
+
+    use super::{cooldown_recheck_delay, decide_lanes, next_heartbeat_sleep, LaneInputs};
+
+    fn pending_in_cooldown() -> LaneInputs {
+        LaneInputs {
+            lfb_is_stale: false,
+            lfb_lag_blocks: 2,
+            has_pending_deploys: true,
+            has_new_parents: false,
+            has_new_parent_with_user_deploys: false,
+            deploy_grace_active: false,
+            self_recently_proposed: true,
+            self_proposed_too_recently: true,
+            self_idle_for_recovery_interval: false,
+            stale_recovery_interval_elapsed: false,
+            cone_has_user_work: false,
+            idle_recovery_window_open: false,
+            lag_recovery_leader: false,
+            empty_frontier_backpressure: false,
+            pending_deploy_max_lag: 20,
+            deploy_recovery_max_lag: 64,
+            effective_frontier_chase_cap: 20,
+        }
+    }
+
+    #[test]
+    fn pending_deploys_held_only_by_the_cooldown_are_reported() {
+        let d = decide_lanes(&pending_in_cooldown());
+        assert!(!d.pending_deploys_due && !d.should_propose);
+        assert!(d.pending_blocked_by_cooldown);
+    }
+
+    #[test]
+    fn pending_deploys_held_by_the_lag_cap_are_not_reported_as_cooldown() {
+        let d = decide_lanes(&LaneInputs {
+            lfb_lag_blocks: 30,
+            ..pending_in_cooldown()
+        });
+        assert!(!d.pending_deploys_due);
+        assert!(!d.pending_blocked_by_cooldown);
+    }
+
+    #[test]
+    fn no_pending_deploys_means_no_cooldown_report() {
+        let d = decide_lanes(&LaneInputs {
+            has_pending_deploys: false,
+            ..pending_in_cooldown()
+        });
+        assert!(!d.pending_blocked_by_cooldown);
+    }
+
+    #[test]
+    fn the_recheck_waits_for_the_rest_of_the_cooldown() {
+        assert_eq!(
+            cooldown_recheck_delay(true, 3_000, Some(1_000)),
+            Some(Duration::from_millis(2_000))
+        );
+        assert_eq!(cooldown_recheck_delay(false, 3_000, Some(1_000)), None);
+        assert_eq!(cooldown_recheck_delay(true, 3_000, None), None);
+        assert_eq!(cooldown_recheck_delay(true, 3_000, Some(3_000)), None);
+    }
+
+    #[test]
+    fn the_next_sleep_stays_inside_the_check_interval() {
+        let interval = Duration::from_secs(5);
+        assert_eq!(next_heartbeat_sleep(interval, None), interval);
+        assert_eq!(
+            next_heartbeat_sleep(interval, Some(Duration::from_secs(2))),
+            Duration::from_secs(2)
+        );
+        assert_eq!(
+            next_heartbeat_sleep(interval, Some(Duration::from_secs(9))),
+            interval
+        );
+        assert_eq!(
+            next_heartbeat_sleep(interval, Some(Duration::from_millis(1))),
+            Duration::from_millis(10)
+        );
     }
 }

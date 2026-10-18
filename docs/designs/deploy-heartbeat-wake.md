@@ -136,5 +136,5 @@ The heartbeat could hold an empty frontier-follow block for a short time, so tha
 | ID | Question |
 |---|---|
 | Q1 | Does a soak shard with `autopropose` show the same slow pattern? If not, F1 alone can be enough. |
-| Q2 | Must the exit window and the exemption bound be configuration keys now, or constants until EPIC-027 owns them? This design proposes constants. |
-| Q3 | Does H1 need a CbC claim? It changes when a validator proposes, but not what other validators check. |
+| Q2 | Must the exit window and the exemption bound be configuration keys now, or constants until EPIC-027 owns them? **Decision of 2026-10-18 (maintainer): constants.** Both derive from the configured `check-interval` and `self-propose-cooldown`. |
+| Q3 | Does H1 need a CbC claim? **Decision of 2026-10-18 (maintainer): yes.** H1 conflicts with the gate rule of `docs/claims/heartbeat-proposal-amplification-bound.md` ("A routine-lane cooldown bypass refutes this claim"). The claim revision is registered as pending before the H1 code. F1 and F2 land first, because they do not bypass the cooldown. |

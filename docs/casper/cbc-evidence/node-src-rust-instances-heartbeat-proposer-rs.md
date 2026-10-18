@@ -1,74 +1,58 @@
 # CbC Evidence: node/src/rust/instances/heartbeat_proposer.rs
 
-- **Status:** discharged
-- **Adapter:** agentic
-- **Commit:** 3fd707102
-- **Verified:** 2026-08-21T05:21:58Z
+- **Status:** pending
+- **Task:** TASK-021-26
+- **Owner:** pi-session-heartbeat-h1-cbc
+- **Phase:** H1 claim registration before implementation
 
-Claim:
+The revised claim is `docs/claims/heartbeat-proposal-amplification-bound.md`. Registration is not verification, discharge, or maintainer acceptance.
 
-> # Heartbeat Proposal Amplification Bound Claim
+The previous record remains byte-identical at `docs/casper/cbc-evidence/history/node-src-rust-instances-heartbeat-proposer-rs-20260821.md`.
+Its historical leader-only discharge does not establish H1 correctness or current recovery correctness.
 
-## Status
+The source digests below identify the registration snapshot with F1/F2 edits. They do not identify a verified H1 implementation.
 
-This claim is mandatory for heartbeat recovery changes.
-
-## Claim
-
-A recent self-proposal must stop all routine heartbeat proposals until the configured cooldown ends.
-
-Deploy grace must not bypass the self-proposal cooldown.
-
-When finality lag exceeds the deploy recovery limit, only the deterministic recovery leader can propose a pending-deploy backstop.
-
-When finality lag exceeds the moderate recovery limit, only the deterministic recovery leader can propose stale-LFB recovery.
-
-The selected recovery leader must retain a bounded high-lag recovery path after the cooldown ends.
-
-A temporally idle validator must retain the empty-frontier deadlock escape after the stale recovery interval ends.
-
-## Formal statement
-
-```text
-recent_self(v) => not routine_proposal(v)
-high_deploy_lag and not leader(v) => not pending_deploy_backstop(v)
-high_stale_lag and not leader(v) => not stale_lfb_recovery(v)
-high_deploy_lag and leader(v) and cooldown_elapsed(v) => pending_deploy_backstop(v)
-idle(v) and stale_lfb and recovery_interval_elapsed(v) => recovery_escape(v)
-```
-
-## Evidence
-
-- `node/src/rust/instances/heartbeat_proposer.rs::deploy_grace_does_not_bypass_self_propose_cooldown`
-- `node/src/rust/instances/heartbeat_proposer.rs::high_lag_pending_deploy_backstop_is_leader_only`
-- `node/src/rust/instances/heartbeat_proposer.rs::high_lag_pending_deploy_backstop_allows_leader`
-- `node/src/rust/instances/heartbeat_proposer.rs::high_lag_stale_recovery_is_leader_only`
-- `node/src/rust/instances/heartbeat_proposer.rs::stale_recovery_breaks_the_empty_frontier_deadlock`
-
-## Gate rule
-
-A cooldown bypass or a non-leader high-lag proposal refutes this claim.
-
-Loss of both bounded recovery paths also refutes this claim.
+The nonempty-request enforcement in `casper/src/rust/blocks/proposer/proposer.rs` also requires source-bound evidence before completion.
 
 ```json
 {
   "artifact": {
     "path": "node/src/rust/instances/heartbeat_proposer.rs",
-    "commit": "3fd707102",
-    "id": "node-src-rust-instances-heartbeat-proposer-rs"
+    "id": "node-src-rust-instances-heartbeat-proposer-rs",
+    "commit": "21ad594a7",
+    "commit_is_base": true,
+    "working_tree": true,
+    "sha256": "c693cdbc1e9f10325bd35aa3deb187372bcb4cba0a3902067258b1fb7aecbadb"
   },
-  "claim": "# Heartbeat Proposal Amplification Bound Claim\n\n## Status\n\nThis claim is mandatory for heartbeat recovery changes.\n\n## Claim\n\nA recent self-proposal must stop all routine heartbeat proposals until the configured cooldown ends.\n\nDeploy grace must not bypass the self-proposal cooldown.\n\nWhen finality lag exceeds the deploy recovery limit, only the deterministic recovery leader can propose a pending-deploy backstop.\n\nWhen finality lag exceeds the moderate recovery limit, only the deterministic recovery leader can propose stale-LFB recovery.\n\nThe selected recovery leader must retain a bounded high-lag recovery path after the cooldown ends.\n\nA temporally idle validator must retain the empty-frontier deadlock escape after the stale recovery interval ends.\n\n## Formal statement\n\n```text\nrecent_self(v) => not routine_proposal(v)\nhigh_deploy_lag and not leader(v) => not pending_deploy_backstop(v)\nhigh_stale_lag and not leader(v) => not stale_lfb_recovery(v)\nhigh_deploy_lag and leader(v) and cooldown_elapsed(v) => pending_deploy_backstop(v)\nidle(v) and stale_lfb and recovery_interval_elapsed(v) => recovery_escape(v)\n```\n\n## Evidence\n\n- `node/src/rust/instances/heartbeat_proposer.rs::deploy_grace_does_not_bypass_self_propose_cooldown`\n- `node/src/rust/instances/heartbeat_proposer.rs::high_lag_pending_deploy_backstop_is_leader_only`\n- `node/src/rust/instances/heartbeat_proposer.rs::high_lag_pending_deploy_backstop_allows_leader`\n- `node/src/rust/instances/heartbeat_proposer.rs::high_lag_stale_recovery_is_leader_only`\n- `node/src/rust/instances/heartbeat_proposer.rs::stale_recovery_breaks_the_empty_frontier_deadlock`\n\n## Gate rule\n\nA cooldown bypass or a non-leader high-lag proposal refutes this claim.\n\nLoss of both bounded recovery paths also refutes this claim.",
-  "adapter": "agentic",
-  "status": "discharged",
+  "claim": "docs/claims/heartbeat-proposal-amplification-bound.md",
+  "claim_digests": {
+    "docs/claims/heartbeat-proposal-amplification-bound.md": "8b70ed654c39dc924a3a947d8a91ce873010781973eb6dcbbb78b8bfe5f03881"
+  },
+  "adapter": null,
+  "status": "pending",
+  "scope": "heartbeat-h1-bounded-nonempty-cooldown-exemption",
   "evidence": {
-    "kind": "proof",
-    "ref": "verify-heartbeat-proposal-bound.sh",
-    "counterexample": null,
-    "detail": "agentic: LLM-proposed annotations, prover-discharged",
-    "proposal": ""
+    "kind": "claim-registration-only",
+    "ref": "docs/claims/heartbeat-proposal-amplification-bound.md",
+    "sha256": "8b70ed654c39dc924a3a947d8a91ce873010781973eb6dcbbb78b8bfe5f03881"
   },
+  "tiers": {
+    "refutation": "pending",
+    "construction": "pending",
+    "binding": "pending"
+  },
+  "registered_at": "2026-10-18T21:34:04Z",
   "waiver": null,
-  "verified_at": "2026-08-21T05:21:58Z"
+  "verified_at": null,
+  "previous_ledger": {
+    "path": "docs/casper/cbc-evidence/history/node-src-rust-instances-heartbeat-proposer-rs-20260821.md",
+    "sha256": "e7ee126e11bf5a83a029bda23216afa7553887462cf1307430eac98d1b9eca7b",
+    "commit": "3fd707102"
+  },
+  "companion_registration_snapshot": {
+    "path": "casper/src/rust/blocks/proposer/proposer.rs",
+    "sha256": "cc098b4893ff97e2a5c9b54db27107ac84f49d4e11ab811b3279b1f7d548265d",
+    "status": "pending"
+  }
 }
 ```
