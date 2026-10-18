@@ -63,7 +63,51 @@ This document captures user stories that drive feature development. User stories
 
 ---
 
+
+#### US-010: Continuously running test net deployment
+
+> As a **release maintainer**, I want **CI to deploy each test net candidate to continuously running test net shards on OCI** so that **releases soak on long-lived state beside earlier releases before stable promotion, and partners can test against a running network**.
+
+**Implemented in:** EPIC-014, EPIC-013
+
+**Status:** In Progress
+
+**Design source:** `docs/release-process.md` Section 12.1 (proposed amendment, 2026-10-06, pending ratification).
+
+**Acceptance Criteria:**
+- [ ] Only a test net candidate deploys to the test net. A test net candidate is a canary release that passed the 60h stability soak on its exact image digest.
+- [ ] A CI workflow deploys the candidate image by digest to the test net on OCI with the existing fleet tooling.
+- [ ] Each shard runs a mix of releases. Soaking nodes on the candidate run beside Anchors on earlier releases.
+- [ ] All shards in one test net use the same consensus/SMR model. A candidate deploys only to the test net of its own model. The F1r3fly CbC Casper test net is the first test net.
+- [ ] A candidate that cannot interoperate with its shard starts a new shard with a fresh genesis in the same test net.
+- [ ] The Shard soak-in result publishes gate evidence, and stable promotion holds until that gate passes.
+- [ ] A failed deployment removes the soaking nodes, keeps the Anchors running, and reports the failure.
+- [ ] The deploy job runs only from protected refs with the release-credentials environment.
+- [ ] Developers and partners get test tokens for each test net shard from [F1r3Faucet](https://github.com/F1R3FLY-io/F1r3Faucet). The genesis of each shard funds a faucet wallet, and the faucet finds shards through a registry that the test net publishes (TASK-014-10).
+
+---
+
 ## Planned Stories
+
+#### US-012: Shards that adapt to the hardware of each node
+
+> As a **node operator running a validator on hardware that is slower or faster than other validators in the shard**, I want **the node to measure its own capacity, adapt its work from continuous telemetry, and degrade gracefully under load** so that **my shard keeps a sustained deploy throughput and finalizes deploys within the deadline on every hardware tier, for any replication mechanism**.
+
+**Implemented in:** EPIC-027
+
+**Design:** [docs/designs/adaptive-execution.md](designs/adaptive-execution.md)
+
+**Status:** In Progress
+
+**Acceptance Criteria:**
+- [ ] A startup hardware probe selects a tier profile, and the operator can name the tier or narrow its bounds.
+- [ ] A closed-loop controller with hysteresis moves node-local controls from measured signals. No control changes block validity or replicated state.
+- [ ] Under overload, the node sheds optional work and limits intake with a typed retryable error. It does not run out of memory or stop on a watchdog.
+- [ ] The controller is consensus-neutral. Each replication mechanism declares its controls and signals. F1r3fly CbC Casper is the first binding, and the RGB peer clique, Casanova, and Cordial Miners have provisions.
+- [ ] Prometheus metrics and soak records carry the tier, the host class, and the protocol, and contain no personal or key data.
+- [ ] The `cbc-casper` soak profile passes on the Docker host class, the subprocess host class, and a constrained tier, and this closes issue #24.
+
+---
 
 #### US-009: Bounded node behavior under resource faults
 

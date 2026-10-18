@@ -1,6 +1,6 @@
 # Adaptive Execution Design
 
-- **Status:** initial draft for maintainer review (TASK-027-1, EPIC-027). Created on 2026-10-13.
+- **Status:** draft for architect ratification (section 2.1, TASK-027-1, EPIC-027). Created on 2026-10-13.
 - **Story:** [US-012](../UserStories.md) Shards that adapt to the hardware of each node
 - **Branch:** `perf/issue-24-adaptive-execution`
 - **Closes:** issue #24, "perf: block replay pipeline bottleneck limits sustained deploy throughput"
@@ -41,6 +41,17 @@ The implementation on this branch closes issue #24 for the F1r3fly CbC Casper me
 | A6 | EPIC-027 owns the close-out of issue #24. EPIC-021 keeps its measurement and fix history. Its open tasks are inputs to EPIC-027. | 2026-10-13 |
 | A7 | The design is written now against decision D7. The implementation starts after PR #651 merges into `dev`. | 2026-10-13 |
 | A8 | The design adopts two node-local practices from Ethereum. They are published hardware targets for each tier (section 14.3) and a probe warning when the host is below a target (section 6). Neither practice enforces a minimum or enters replicated state. Section 16 gives the comparison. | 2026-10-13 |
+
+### 2.1 Ratification
+
+The architects ratify these parts of the design before TASK-027-2 starts:
+
+1. Decisions A1 to A8.
+2. Invariants I1 to I6 (section 12).
+3. The degradation levels and their order (section 8).
+4. The F1r3fly CbC Casper controls and signals (sections 10.1 and 10.2).
+
+The open questions of section 19 do not block ratification. Each question names the task that it blocks and gives a recommended answer. The architects can accept a recommendation, or they can leave the question open until that task starts.
 
 ---
 
@@ -173,6 +184,7 @@ pub struct ControlUpdate {
 - `HostClass` records the container or process context, for example `docker` or `subprocess`. The soak evidence shows that this class changes the result.
 - A `TierProfile` gives the floor and the ceiling of each control for one tier. A mechanism supplies default profiles. An operator can narrow them in the configuration, but cannot widen them.
 - `Direction` states whether a higher value means more work or less work.
+- The least-work bound of a control is its floor when a higher value means more work. It is the ceiling when a higher value means less work. Section 8 uses this bound.
 - The probe compares the `HardwareProfile` with the published targets of section 14.3. With a named tier, the probe uses the targets of that tier. With `tier = "auto"`, it uses the `Constrained` targets.
 - If the host is below the targets, the node writes a warning record and sets the gauge `adaptive_probe_below_target` to 1. The record names each value that is below its target.
 - The node starts normally after the warning. The warning enforces nothing. This follows the informational model of EIP-7870 (section 16).
@@ -208,7 +220,7 @@ N, M, the interval, and the cooldown are tier profile values. Soak data sets the
 
 ## 8. Degradation levels
 
-The levels go from normal operation to the protection of liveness. The node changes level when the controller reaches the floor of every control in the current level.
+The levels go from normal operation to the protection of liveness. The node changes level when every control in the current level is at its least-work bound (section 6).
 
 | Level | Name | Action |
 |---|---|---|
@@ -348,7 +360,8 @@ adaptive {
 ```
 
 - With `enabled = false`, each control keeps the default value of the tier profile. This gives the current behavior for comparison runs.
-- `tier = "auto"` uses the probe result. A named tier skips the probe and records the choice.
+- `tier = "auto"` selects the tier profile from the probe result. A named tier selects that profile, and the node records the choice.
+- The probe runs in both cases, because the probe warning of section 6 needs the measured `HardwareProfile`.
 
 ---
 
@@ -406,7 +419,7 @@ The allocator is part of the host class. Soak 38300649650 showed that the same b
 
 | Step | Task | Change | Condition |
 |---|---|---|---|
-| 1 | TASK-027-1 | This design | Maintainer approval |
+| 1 | TASK-027-1 | This design | Architect ratification (section 2.1) |
 | 2 | TASK-027-2 | Telemetry signals and records, with no control changes | PR #651 merged into `dev` |
 | 3 | TASK-027-3 | Hardware probe, tier profiles, and the probe warning | Step 2 |
 | 4 | TASK-027-4 | Controller and degradation levels, and the CbC claim for I1 to I6 | Step 3 |
@@ -501,15 +514,17 @@ The Ethereum values were checked on 2026-10-13 against the `master` branch of th
 
 ## 19. Open questions
 
-| ID | Question |
-|---|---|
-| Q1 | Which stage causes the sustained-phase wait from inclusion to finality? TASK-021-13 must answer this before TASK-027-6. |
-| Q2 | Which values of N, M, the interval, and the cooldown fit each tier? Step 2 telemetry sets the first values. |
-| Q3 | Does the heartbeat wait belong to the controller, or does a separate fix remove the empty-block cost (issue #24 item 4)? |
-| Q4 | The replication boundary design leaves deploy pool ownership open (its question Q8). If the node owns the pool, API intake and admission are one control. If the adapter owns the pool, they are two controls. |
-| Q5 | Is a mixed-tier shard test in CI possible on the current runners, or does it need the test net of EPIC-014? |
-| Q6 | Who owns the adaptation descriptors and soak profiles of the RGB peer clique, Casanova, and Cordial Miners? EPIC-014 gives each mechanism its own test net and design record. |
-| Q7 | Should F1r3fly CbC Casper reward timely participation? `PoS.rhox` pays epoch rewards in proportion to bond, with no participation term. Ethereum makes timely work profitable through rewards (section 16). A timeliness reward changes replicated state, so it is outside this design (decision A2). It needs its own design and a CbC claim. |
+No question blocks ratification (section 2.1). The Blocks column names the first task that needs the answer.
+
+| ID | Question | Blocks | Recommended answer |
+|---|---|---|---|
+| Q1 | Which stage causes the sustained-phase wait from inclusion to finality? TASK-021-13 must answer this before TASK-027-6. | TASK-027-6 and the close-out | Keep it open. The TASK-021-13 attribution answers it with soak evidence. |
+| Q2 | Which values of N, M, the interval, and the cooldown fit each tier? Step 2 telemetry sets the first values. | The first tier profile values in TASK-027-3 | Keep the values open until the step 2 telemetry exists. Ratify only the rule that M is larger than N. |
+| Q3 | Does the heartbeat wait belong to the controller, or does a separate fix remove the empty-block cost (issue #24 item 4)? | The heartbeat control in TASK-027-5 | Keep the heartbeat wait as a bounded control (section 10.1). Track the empty-block cost as a separate fix under issue #24 item 4. |
+| Q4 | Who owns the deploy pool, which the replication boundary design leaves open (its question Q8)? The owner decides whether API intake and admission are one control or two. | TASK-027-5 | Use two controls. They work for both owners, and the binding moves them together when the node owns the pool. |
+| Q5 | Is a mixed-tier shard test in CI possible on the current runners, or does it need the test net of EPIC-014? | The mixed-tier test of TASK-027-4 | Run the CI test in one process with the multi-node harness of `casper/tests/multi_node`. Give each node different control values. Run a full mixed-tier shard on the EPIC-014 test net. |
+| Q6 | Who owns the adaptation descriptors and soak profiles of the RGB peer clique, Casanova, and Cordial Miners? EPIC-014 gives each mechanism its own test net and design record. | TASK-027-9 | The owner of each adapter owns its descriptor and its soak profile. EPIC-027 owns the controller and the `cbc-casper` binding. |
+| Q7 | Should F1r3fly CbC Casper reward timely participation? `PoS.rhox` pays epoch rewards in proportion to bond only, but Ethereum makes timely work profitable through rewards (section 16). A timeliness reward changes replicated state, so it needs its own design and a CbC claim (decision A2). | No EPIC-027 task | Leave it open, and start a separate design if the shard needs a timeliness incentive. |
 
 ---
 

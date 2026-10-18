@@ -1,7 +1,7 @@
 # Release Process and Deployment Train Strategy
 
-**Status:** Ratified 2026-08-19 (all Section 19 items; two items carry recorded amendments)  
-**Last updated:** 2026-08-19
+**Status:** Ratified 2026-08-19 (all Section 19 items; two items carry recorded amendments). Section 12 carries a proposed amendment dated 2026-10-06 that is pending ratification.  
+**Last updated:** 2026-10-06
 
 ## 1. Purpose
 
@@ -49,10 +49,12 @@ flowchart LR
     D --> F[Slashing test suite]
     D --> G[Feature-specific gates]
     D --> H[60h stability soak]
+    H -->|pass| T[Test net candidate]
+    T --> S[Shard soak-in on the test net]
     E --> I{All exact-SHA gates pass}
     F --> I
     G --> I
-    H --> I
+    S --> I
     I -->|yes| J[Immutable stable tag]
     J --> K[Promote candidate artifacts]
     K --> L[Stable GitHub Release]
@@ -63,6 +65,8 @@ flowchart LR
 A full CI run creates a canary only when the source version is release-eligible. Section 5 defines release eligibility.
 
 The 60h stability soak is the final stable-release gate. A successful soak starts automatic promotion when all other gates pass.
+
+**Proposed amendment (2026-10-06, pending ratification):** A passing 60h stability soak makes the candidate a test net candidate. The Shard soak-in then becomes the final stable-release gate. Section 12 defines this order. The diagram above shows the amended order.
 
 If another gate is incomplete, promotion enters a held state. Promotion resumes automatically after the missing gate passes.
 
@@ -224,6 +228,7 @@ The promotion controller evaluates gates against `source_sha` from the candidate
 | 60h stability soak | Soak artifact and workflow run | The exact candidate completes the full 60-hour profile |
 | Regression verdict (advisory) | `verdict.json` | A `pass` verdict satisfies the gate directly. A `regress` verdict requires documented maintainer review before promotion |
 | Feature gates | Train gate evidence | Every manifest gate succeeds |
+| Shard soak-in (proposed, Section 12) | Shard soak-in evidence | The test net candidate completes its soak period in a test net of its consensus model. The repository variable `RELEASE_SHARD_SOAK_IN_GATE` controls this gate. Unset or `advisory` keeps it advisory until ratification and a running test net. `enforced` makes it binding. Any other value fails the gate |
 
 Optional and nightly slashing jobs do not block a release. The required slashing job catalog remains version-controlled.
 
@@ -263,6 +268,7 @@ Each document binds to the candidate with these fields:
 | `soak-evidence.json` | Integration preflight and 60h stability soak | `soak_kind: weekend`, `requested_duration_seconds: 216000`, `completed`, `artifact_mode: candidate`, `retry_attempt`, `coverage_preserved`, `preflight.status` |
 | `verdict.json` | Regression verdict | `verdict`, `source_sha` |
 | `maintainer-review.json` | Accepts a `regress` verdict | `verdict_accepted`, `reviewer`, `reference`, `reviewed_at` |
+| `test-net-candidate.json` (proposed, Section 12.1) | Test net entry | `consensus_model`, `soak_run`, `soak_evidence_sha256` |
 
 The full CI and heavy integration gates read the CI run recorded in the candidate evidence. The slashing gate reads the newest successful push run of the slashing workflow for the source SHA. `release-required-ci-jobs.txt` and `release-required-slashing-jobs.txt` list the required jobs.
 
@@ -304,6 +310,15 @@ An in-window restart carries `candidate_tag` and `restart_of_run_id` forward. Th
 
 Normal scheduled soak runs continue to build a source target. A release-eligible run uses candidate artifact mode.
 
+**Proposed amendment (2026-10-11, pending ratification):** The Friday scheduled slot selects the candidate automatically. The selection rules are:
+
+1. The slot selects the newest standard canary whose tag target is reachable from `master`.
+2. The canary must have valid `release-evidence.json` and a release-eligible source version (Section 5).
+3. The slot runs the 60h stability soak in candidate artifact mode on that canary.
+4. If no canary is eligible, the slot runs a source-mode soak on `master`. That run is evidence only. It cannot make a test net candidate.
+
+The daily dev integration soak never selects a canary. A maintainer can still dispatch a soak with `candidate_tag`, for example to rerun a candidate or to restart a soak in its window.
+
 After the soak runs its course, the `publish_candidate_evidence` job writes `soak-evidence.json` and `verdict.json` (Section 8.1) from the run state and the report, uploads both to the candidate prerelease, and uploads the `release-candidate` artifact. A `regress` verdict is published as evidence; the existing ONS verdict email alerts the soak-report list, and promotion holds until a maintainer uploads `maintainer-review.json`.
 
 Stable promotion requires all these conditions:
@@ -322,6 +337,8 @@ A dashboard latest verdict does not satisfy this gate. Promotion reads the exact
 ## 11. Stable promotion
 
 The promotion controller runs after a completed 60h stability soak. It can also run after another missing gate completes.
+
+**Proposed amendment (2026-10-06, pending ratification):** The promotion controller runs after a completed Shard soak-in (Section 12.1). A passing 60h stability soak makes the candidate a test net candidate and does not start promotion. The controller can also run after another missing gate completes.
 
 The controller performs these actions:
 
@@ -356,19 +373,155 @@ Promotions run one at a time. `release.yml` uses one concurrency group without c
 
 ## 12. Shard soak-in
 
-A Shard soak-in adds each weekly stable release to the test net, the continuously running network of shards. "Soak-in" is the SRE-style term that already means "run it long enough to trust it."
+A Shard soak-in adds each weekly release to the test net, the continuously running network of shards. "Soak-in" is the SRE-style term that already means "run it long enough to trust it."
 
-New stable nodes enter a soak period inside or adjacent to the test net. The Soak-in measures how the new nodes behave with the current test net members. The Soak-in catches compatibility issues and confirms that the new nodes stay up.
+New nodes enter a soak period inside or adjacent to the test net. The Soak-in measures how the new nodes behave with the current test net members. The Soak-in catches compatibility issues and confirms that the new nodes stay up.
 
 A node becomes a true Anchor only after it completes the soak period. Until that point, the node holds no Anchor role in the test net.
 
-Enrollment has its own schedule. Automation schedules one Shard soak-in for each stable release tag. The trigger is a stable release publication, which has passed the 60h stability soak gate.
+The test net is a set of continuously running shards, unlike the per-iteration shards that the soaks create. EPIC-014 in `docs/ToDos.md` plans the test net: long-lived OCI instances reuse the existing fleet tooling and serve select partners and customers. A follow-on branch carries that work. This document only requires that the test net exists before Phase 6 completes.
 
-Three parameters are deferred to Phase 6, when the test net exists and real behavior can inform them: the soak-in period length, the measurable Anchor promotion criteria, and the test net composition. The scheduling rule, the trigger, and the soaking-node versus Anchor distinction are binding now.
+**Ratified rule (2026-08-19), superseded by the proposed amendment below:** Automation schedules one Shard soak-in for each stable release tag. The trigger is a stable release publication, which has passed the 60h stability soak gate.
 
-The test net is a set of continuously running shards, unlike the per-iteration shards that the soaks create. EPIC-014 in `docs/ToDos.md` plans the test net: long-lived OCI instances run stable releases, reuse the existing fleet tooling, and serve select partners and customers. A follow-on branch carries that work; this document only requires that the test net exists before Phase 6 completes.
+### 12.1 Proposed amendment (2026-10-06, pending ratification)
 
-**Follow-on:** a future change will separate the Casper consensus into its own repository. The test net will then consume consensus releases from that repository.
+The amendment changes the entry point of the Shard soak-in. It also defines the shard composition and the consensus model scope of a test net. Section 19 lists the amendment as a ratification item. The ratified rule above stays in force until a maintainer ratifies the amendment.
+
+```mermaid
+flowchart LR
+    C[Canary release] --> W[60h stability soak]
+    W -->|pass| TC[Test net candidate]
+    TC --> M{Consensus model}
+    M -->|CbC Casper| TN1[CbC Casper test net]
+    M -->|future model| TN2[Test net of that model]
+    TN1 --> K{Compatible with the current shard?}
+    K -->|yes| J[Join a mixed-release shard as a soaking node]
+    K -->|no| G[Start a new shard with a fresh genesis]
+    J --> A[Soak period complete: Anchor role]
+    G --> A
+    A --> P[Stable promotion gate passes]
+```
+
+#### Test net candidate
+
+A test net candidate is a canary release that passed the 60h stability soak (Section 10) on its exact candidate image digest. Only a test net candidate can enroll in the test net.
+
+Enrollment happens before stable promotion. The Shard soak-in result becomes a stable promotion gate (Section 8). Stable promotion therefore waits for the soak period of the test net candidate.
+
+A test net candidate keeps its canary tag. No new Git tag or version format marks the status. Instead, the soak publication step uploads a `test-net-candidate.json` gate document (Section 8.1) to the canary prerelease. The document records these values:
+
+- The candidate tag, source SHA, and image index digest
+- The consensus model of the candidate
+- The 60h stability soak run, attempt, and `soak-evidence.json` digest
+
+`soak-in.yml` enrolls a canary only when this document exists and the controller checks pass for the named soak run. A canary without the document cannot enroll, even if a soak passed for its source SHA. The exact field names are set during implementation.
+
+#### Mixed-release shards
+
+A test net shard runs validators on more than one release at the same time. Anchors run earlier releases. Soaking nodes run the test net candidate.
+
+The Shard soak-in therefore tests cross-version compatibility. A test net candidate must interoperate with the Anchors of its shard. Interoperation includes block exchange, block validation, finalization, and state replay.
+
+#### One consensus model per test net
+
+All shards in one test net use the same consensus and state machine replication (SMR) model. Today, the only implemented model is CbC Casper, so one test net exists: the F1r3fly CbC Casper test net. Its design record is `docs/plans/test-net.md`.
+
+"F1r3fly CbC Casper" names the consensus protocol (`consensus_model: cbc-casper`). CbC stands for correct by construction. Used alone, "CbC" names the verification process in the Glossary.
+
+The roadmap modularizes consensus behind a consensus-neutral boundary (branch `feature/consensus-neutral-boundary`, and `docs/artifacts/f1r3fly-consensus-neutral-sm.md`). Each additional model gets its own test net. A test net candidate enrolls only in the test net of its own model. A test net never mixes models, even across shards.
+
+The roadmap names three further models: Casanova, Cordial Miners, and RGB. Each one gets its own test net design record before its first test net candidate. That record defines what a shard, an Anchor, a soaking slot, and a compatibility check mean for the model. RGB runs as a peer-clique sidecar that anchors to Bitcoin single-use seals and Lightning, so its shard and Anchor meanings differ.
+
+The model-neutral parts of this process stay the same for every model. These parts are the 60h stability soak, the test net candidate, the Shard soak-in gate, and the candidate lifecycle (Section 12.2).
+
+The candidate evidence can carry a `consensus_model` field. An absent field means `cbc-casper`, so existing canary evidence stays valid and regenerates byte for byte. The `test-net-candidate.json` marker always records the model.
+
+#### Incompatible releases
+
+A test net candidate can be incompatible with the current shard state or wire format. That candidate starts a new shard in the same test net with a fresh genesis. Its nodes soak in that new shard.
+
+Existing shards keep running on their releases. A retirement policy removes old shards. Phase 6 sets that policy.
+
+#### First shard
+
+The test net starts after the first stable release under this process. That release promotes in the Section 11 order, with the Shard soak-in gate still advisory.
+
+The image digest of that stable release seeds all three Anchors of the first shard, with a fresh genesis. The next test net candidate is the first soaking node. The first shard therefore mixes releases from its first Shard soak-in.
+
+#### Soaking slot queue
+
+A shard holds one soaking node at a time. A new test net candidate waits when the soaking slot is busy.
+
+The queue keeps the newest waiting test net candidate of each release line. The standard line is one release line, and each Deployment Train is another. When the slot frees, the waiting candidates enroll in arrival order. A newer candidate supersedes only an older waiting candidate of its own line. A superseded candidate keeps its canary tag and its evidence, but it cannot enroll or promote.
+
+When a candidate promotes, each other candidate with the same target version also becomes superseded. The stable version is no longer available to those candidates (Section 5).
+
+#### Gates before enrollment
+
+Full OCI validation and the required slashing suite start when the Friday slot selects the canary. They run while the 60h stability soak runs.
+
+`soak-in.yml` enrolls a test net candidate only after both gates pass on its exact source SHA and image digest. These gates therefore add no delay in the usual case.
+
+#### Deferred parameters
+
+Phase 6 sets these parameters, when the test net exists and real behavior can inform them:
+
+1. The soak-in period length. This length also sets the delay between the 60h stability soak and stable promotion.
+2. The measurable Anchor promotion criteria.
+3. The test net composition: the number of shards, the validators per shard, and the release mix per shard.
+4. The compatibility check that decides between a mixed-release shard and a new shard.
+5. The retirement policy for shards and Anchors on old releases.
+6. Whether other Section 8 gates, such as full OCI validation and the slashing tests, must also pass before test net entry. **Proposed (2026-10-11):** yes, as the "Gates before enrollment" rule above states.
+
+The test net candidate entry point, the mixed-release shard rule, the one-model-per-test-net rule, and the new-shard rule for incompatible releases become binding at ratification. The first-shard rule, the soaking slot queue, and the gates before enrollment become binding at the same ratification. The soaking-node versus Anchor distinction stays binding now.
+
+**Follow-on (decided 2026-10-11):** The modular replication boundary (branch `feature/consensus-neutral-boundary`) lets each model define its own soak. The F1r3fly CbC Casper implementation will move from this repository to a new repository. The system-integration repository then brings it into the soak. The F1r3fly CbC Casper test net will then consume consensus releases from that repository.
+
+### 12.2 Candidate lifecycle (proposed 2026-10-11, pending ratification)
+
+This section collects the candidate states from Sections 8, 10, 11, 12.1, and 15 in one place. The gate documents on the canary prerelease record each state. No other state store exists.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Canary
+    Canary --> StabilitySoak: Friday slot selects it
+    Canary --> Superseded: Friday slot selects a newer canary
+    StabilitySoak --> TestNetCandidate: pass, or regress accepted by a maintainer
+    StabilitySoak --> Rejected: soak fails
+    TestNetCandidate --> Queued: soaking slot busy
+    Queued --> Superseded: a newer candidate of the same line waits
+    TestNetCandidate --> CompatibilityCheck: slot free, enrollment gates pass
+    Queued --> CompatibilityCheck: slot frees
+    CompatibilityCheck --> SoakingIn: joins a shard or starts a new shard
+    CompatibilityCheck --> Rejected: undeclared replay failure
+    SoakingIn --> Stable: soak period and Anchor criteria pass
+    SoakingIn --> Rejected: Shard soak-in fails
+    Stable --> [*]
+```
+
+| State | Gate document on the canary prerelease | Next action |
+|---|---|---|
+| Canary | `release-evidence.json` | The Friday slot can select it |
+| StabilitySoak | Soak window artifact of the run | The 60h stability soak, full OCI validation, and the slashing suite run |
+| TestNetCandidate | `soak-evidence.json`, `verdict.json`, and `test-net-candidate.json` | `soak-in.yml` checks the enrollment gates and the soaking slot |
+| Queued, Superseded | `shard-soak-in-evidence.json` with the state | A queued candidate waits for the slot. A superseded candidate stops |
+| CompatibilityCheck, SoakingIn | `shard-soak-in-evidence.json` | The soaking node runs for the soak period |
+| Stable | `stable-release-evidence.json` | The promotion controller copies the artifacts and opens the next-version pull request |
+| Rejected | The gate document of the failed step | No promotion. A fix needs a new canary |
+
+The exact field names are set during implementation.
+
+The weekly timeline in Pacific time is:
+
+| Day | Event |
+|---|---|
+| Friday 19:30 | The 60h stability soak starts on canary N. Full OCI validation and the slashing suite start |
+| Monday about 07:30 | The soak ends and `test-net-candidate.json` is written. Canary N enrolls |
+| Monday to Saturday | The Shard soak-in of canary N runs for the proposed 5 days |
+| Saturday about 07:30 | Canary N promotes to stable. The next-version pull request opens |
+| Friday 19:30 | Canary N+1 starts its soak. The soaking slot frees before canary N+1 enrolls on Monday |
+
+The timeline leaves about two days of slack. A late Shard soak-in makes the next test net candidate wait in the queue.
 
 ## 13. Deployment Trains
 
@@ -556,6 +709,12 @@ The first planned use is the cost-accounting train from pull request #216.
 | Stack member closes without a merge | Cancel the train |
 | Integration branch advances past the stack head before the `master` merge | Continue with the immutable candidate; the head stays reachable |
 | Stable version becomes unavailable | Assign a new version and create a new candidate |
+| Shard soak-in fails (proposed, Section 12.1) | Do not promote. Remove the soaking nodes from the test net |
+| Test net candidate is incompatible with its shard (proposed, Section 12.1) | Start a new shard with a fresh genesis in the test net of the same consensus model |
+| No eligible canary at the Friday slot (proposed, Section 10) | Run a source-mode soak on `master` as evidence only. No test net candidate results |
+| Soaking slot is busy (proposed, Section 12.1) | Queue the test net candidate. Keep the newest waiting candidate of each release line, and enroll in arrival order |
+| Defect found after stable promotion (proposed, Section 12.1) | Fix forward with a new release. A test net operator can revert an Anchor slot only under the slot revert rule in `docs/plans/test-net.md` |
+| Candidate is superseded (proposed, Section 12.2) | Stop the candidate. Keep its tag and evidence |
 | Promotion stops after tag creation | Resume idempotently and verify every existing object |
 
 No override can replace failed exact-SHA evidence.
@@ -596,7 +755,8 @@ Implementation adds or changes these components.
 | `.github/workflows/oci-validation.yml` | Add trusted exact-candidate dispatch mode |
 | `.github/workflows/reusable-oci-validation.yml` | Consume a candidate image digest without rebuilding |
 | `.github/workflows/deployment-train.yml` | Validate manifests and start independent trains |
-| `.github/workflows/soak-in.yml` | Schedule and enroll stable releases into the test net for the Shard soak-in |
+| `.github/workflows/soak-in.yml` | Schedule and enroll stable releases into the test net for the Shard soak-in. Under Section 12.1, verify each test net candidate after its soak and hold enrollment until the test net runs |
+| `scripts/remote/testnet-slots.sh`, `docker/testnet.vm-*.yml` | Pin the image digest of each test net validator slot (Section 12.1) |
 | `.github/scripts/release-evidence.sh` | Build and validate evidence documents |
 | `.github/scripts/release-gates.sh` | Validate exact-SHA gate runs |
 | `.github/scripts/promote-release.sh` | Perform idempotent artifact promotion |
@@ -621,6 +781,10 @@ flowchart TD
     RP -- "release: published<br/>(stable tag)" --> SI["soak-in.yml<br/>Shard soak-in enrollment"]
     SI --> TN["Test net<br/>soaking node becomes an Anchor"]
 ```
+
+The diagram shows the ratified chain. Under the proposed Section 12.1 amendment, a passing 60h stability soak triggers `soak-in.yml` for the test net candidate. The Shard soak-in result then feeds `release.yml` as a gate, and stable publication no longer triggers enrollment.
+
+Under the proposed Section 10 amendment, the Friday scheduled slot of `merge-recovery-soak.yml` selects the newest eligible `master` canary. That slot runs the 60h stability soak in candidate artifact mode. A maintainer dispatch is then needed only for a rerun or a restart. The upload of `test-net-candidate.json` triggers `soak-in.yml`. `soak-in.yml` applies the soaking slot queue (Section 12.1).
 
 Pull-request runs add a parallel coverage matrix after lint. The matrix measures every in-crate test target with cargo-llvm-cov over nextest, the same runner as the test matrix. The measured denominator excludes src-shipped test scaffolding and node's process bootstrap and wiring (the exact file set is the shared regex in `scripts/coverage.sh` and ci.yml).
 
@@ -714,6 +878,16 @@ The manifest validator and the stack checks (Section 13.2 steps 4 to 6) depend o
 3. Promote soaked nodes to the Anchor role after the soak period.
 4. Document the Shard soak-in enrollment and Anchor promotion evidence.
 
+If maintainers ratify the Section 12.1 amendment, these steps replace steps 1 to 4:
+
+1. Stand up the F1r3fly CbC Casper test net with mixed-release shards. The first stable release seeds the Anchors of the first shard.
+2. Record the consensus model in the candidate evidence.
+3. Enroll each test net candidate after its 60h stability soak passes. The Friday slot selects the newest eligible `master` canary, and the soaking slot queue applies.
+4. Start a new shard with a fresh genesis for an incompatible test net candidate.
+5. Promote soaked nodes to the Anchor role after the soak period.
+6. Publish Shard soak-in evidence and add the Shard soak-in gate to `release.yml`.
+7. Set the Section 12.1 deferred parameters.
+
 ## 19. Ratification checklist
 
 Maintainers must ratify these decisions before stable automation is enabled. All items were ratified on 2026-08-19; amendments are recorded inline and in the affected sections.
@@ -731,3 +905,6 @@ Maintainers must ratify these decisions before stable automation is enabled. All
 - [x] Version reservation and ordering rules — ratified 2026-08-19
 - [x] First Deployment Train selection — ratified 2026-08-19: cost-accounting (PR #216), after the Phase 5 non-publishing rehearsal
 - [x] Shard soak-in and Anchor promotion policy — ratified 2026-08-19 as a skeleton: period length, Anchor criteria, and test net composition deferred to Phase 6
+- [ ] Section 12.1 amendment — proposed 2026-10-06: test net candidate entry after the 60h stability soak, Shard soak-in as a stable promotion gate, mixed-release shards, one consensus model per test net, and a new shard for an incompatible release
+  - Extended 2026-10-11: automatic Friday candidate selection (Section 10), the first-shard rule, the soaking slot queue, and the gates before enrollment (Section 12.1)
+  - Extended 2026-10-11: the candidate lifecycle (Section 12.2)

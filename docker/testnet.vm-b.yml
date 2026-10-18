@@ -1,0 +1,130 @@
+# =================================================================
+# CBC CASPER TEST NET, SHARD 1 - VM B (docs/plans/test-net.md)
+# =================================================================
+# Runs Anchor 3, the soaking slot, and the read-only observer. Each node
+# pins its own image digest from the slot file
+# (scripts/remote/testnet-slots.sh check).
+#
+# The soaking slot is not a genesis validator. It joins with the validator
+# 4 key and starts only with the "soak" profile, when the slot file names
+# a test net candidate.
+#
+# Port bands on VM B:
+#   anchor3:  40430-40435 (genesis validator 3)
+#   soak:     40440-40445 (test net candidate)
+#   readonly: 40450-40455 (observer, follows the Anchor 3 release)
+#
+# Usage (on VM B, env from .env.remote plus the slot file):
+#   docker compose --env-file .env.remote --env-file testnet-slots.env -f testnet.vm-b.yml up -d
+#   docker compose --env-file .env.remote --env-file testnet-slots.env -f testnet.vm-b.yml --profile soak up -d
+
+x-rnode-env: &rnode-env
+  MALLOC_ARENA_MAX: "2"
+  MALLOC_TRIM_THRESHOLD_: "131072"
+  MALLOC_MMAP_THRESHOLD_: "131072"
+  RUST_LOG:
+
+x-rnode-logging: &rnode-logging
+  driver: json-file
+  options:
+    max-size: 100m
+    max-file: "3"
+
+services:
+  anchor3:
+    image: >-
+      ${TESTNET_IMAGE_REPOSITORY:?TESTNET_IMAGE_REPOSITORY must name the image repository}@${ANCHOR3_DIGEST:?ANCHOR3_DIGEST must pin an image digest}
+    user: root
+    restart: always
+    container_name: rnode.anchor3
+    environment: *rnode-env
+    logging: *rnode-logging
+    command:
+      - --log-sink=stdout
+      - run
+      - --host=${VM_B_PUBLIC_HOST}
+      - --allow-private-addresses
+      - --bootstrap=rnode://${BOOTSTRAP_NODE_ID}@${BOOTSTRAP_HOST}?protocol=40400&discovery=40404
+      - --validator-public-key=${VALIDATOR3_PUBLIC_KEY}
+      - --validator-private-key=${VALIDATOR3_PRIVATE_KEY}
+      - --genesis-validator
+    ports:
+      - "40430:40430"
+      - "40431:40431"
+      - "40432:40432"
+      - "40433:40433"
+      - "40434:40434/udp"
+      - "40435:40435"
+    volumes:
+      - anchor3-data:/var/lib/rnode/
+      - ./conf/validator3-remote.conf:/var/lib/rnode/rnode.conf:ro
+      - ./conf/default.conf:/var/lib/rnode/default.conf:ro
+      - ./genesis/wallets.txt:/var/lib/rnode/genesis/wallets.txt:ro
+      - ./genesis/bonds.txt:/var/lib/rnode/genesis/bonds.txt:ro
+      - ./certs/validator3/node.certificate.pem:/var/lib/rnode/node.certificate.pem:ro
+      - ./certs/validator3/node.key.pem:/var/lib/rnode/node.key.pem:ro
+
+  soak:
+    profiles: [soak]
+    image: >-
+      ${TESTNET_IMAGE_REPOSITORY:?TESTNET_IMAGE_REPOSITORY must name the image repository}@${SOAK_DIGEST:-no-test-net-candidate}
+    user: root
+    restart: always
+    container_name: rnode.soak
+    environment: *rnode-env
+    logging: *rnode-logging
+    command:
+      - --log-sink=stdout
+      - run
+      - --host=${VM_B_PUBLIC_HOST}
+      - --allow-private-addresses
+      - --bootstrap=rnode://${BOOTSTRAP_NODE_ID}@${BOOTSTRAP_HOST}?protocol=40400&discovery=40404
+      - --validator-public-key=${VALIDATOR4_PUBLIC_KEY}
+      - --validator-private-key=${VALIDATOR4_PRIVATE_KEY}
+    ports:
+      - "40440:40440"
+      - "40441:40441"
+      - "40442:40442"
+      - "40443:40443"
+      - "40444:40444/udp"
+      - "40445:40445"
+    volumes:
+      - soak-data:/var/lib/rnode/
+      - ./conf/soak-slot-remote.conf:/var/lib/rnode/rnode.conf:ro
+      - ./conf/default.conf:/var/lib/rnode/default.conf:ro
+      - ./genesis/wallets.txt:/var/lib/rnode/genesis/wallets.txt:ro
+      - ./genesis/bonds.txt:/var/lib/rnode/genesis/bonds.txt:ro
+
+  readonly:
+    image: >-
+      ${TESTNET_IMAGE_REPOSITORY:?TESTNET_IMAGE_REPOSITORY must name the image repository}@${ANCHOR3_DIGEST:?ANCHOR3_DIGEST must pin an image digest}
+    user: root
+    restart: always
+    container_name: rnode.readonly
+    environment: *rnode-env
+    logging: *rnode-logging
+    command:
+      - --log-sink=stdout
+      - run
+      - --host=${VM_B_PUBLIC_HOST}
+      - --allow-private-addresses
+      - --bootstrap=rnode://${BOOTSTRAP_NODE_ID}@${BOOTSTRAP_HOST}?protocol=40400&discovery=40404
+      - --no-upnp
+    ports:
+      - "40450:40450"
+      - "40451:40451"
+      - "40452:40452"
+      - "40453:40453"
+      - "40454:40454/udp"
+      - "40455:40455"
+    volumes:
+      - readonly-data:/var/lib/rnode/
+      - ./conf/readonly-remote.conf:/var/lib/rnode/rnode.conf:ro
+      - ./conf/default.conf:/var/lib/rnode/default.conf:ro
+      - ./genesis/wallets.txt:/var/lib/rnode/genesis/wallets.txt:ro
+      - ./genesis/bonds.txt:/var/lib/rnode/genesis/bonds.txt:ro
+
+volumes:
+  anchor3-data:
+  soak-data:
+  readonly-data:

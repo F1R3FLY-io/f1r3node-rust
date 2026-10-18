@@ -373,6 +373,7 @@ validate_evidence() {
 		and (.source_sha | type == "string" and test("^[0-9a-f]{40}$"))
 		and .source_ref == "refs/heads/master"
 		and .train_id == null
+		and ((has("consensus_model") | not) or .consensus_model == "cbc-casper")
 		and (.system_integration_sha | type == "string" and test("^[0-9a-f]{40}$"))
 		and (.ci.run_id | type == "number" and . > 0 and floor == .)
 		and (.ci.run_number | type == "number" and . > 0 and floor == .)

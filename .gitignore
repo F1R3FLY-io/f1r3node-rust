@@ -68,6 +68,9 @@ run-local/data/
 # OCI testbed state (EPOCH-009)
 scripts/remote/testbed-state.json
 scripts/remote/testbed.pem
+scripts/remote/testnet-state.json
+scripts/remote/testnet.pem
+scripts/remote/testnet.pem.pub
 scripts/remote/testbed.pem.pub
 
 # story-manager.sh backup artifacts
