@@ -40,7 +40,12 @@ records() {
 		esac
 	done
 	[ "$#" -gt 0 ] || usage
+	local log
+	for log in "$@"; do
+		[ -r "$log" ] || { echo "cannot read $log" >&2; exit 2; }
+	done
 	awk -v forced="$provider" -v first="$first" '
+	function esc(s) { gsub(/\\/, "\\\\", s); gsub(/"/, "\\\"", s); gsub(/\t/, "\\t", s); return s }
 	function reset_session() { phase = ""; validator = ""; split("", seen) }
 	function start_session() { session++; subprocess = genesis; genesis = 0 }
 	BEGIN { session = first - 1; genesis = 0; subprocess = 0; reset_session() }
@@ -70,14 +75,14 @@ records() {
 			json = substr(line, 17)
 			n = split(head, f, /[ =#(),>-]+/)
 			printf "{\"session\":%d,\"provider\":\"%s\",\"phase\":\"%s\",\"validator\":\"%s\",\"time\":\"%s\",\"line\":\"%s\",\"metrics\":%s}\n", \
-				session, (forced != "" ? forced : (subprocess ? "subprocess" : "docker")), phase, validator, p_stamp, head, json
+				session, (forced != "" ? forced : (subprocess ? "subprocess" : "docker")), esc(phase), esc(validator), esc(p_stamp), esc(head), json
 			validator = ""
 			next
 		}
 		if (line ~ /(PASSED|FAILED|ERROR) +\[ *[0-9]+%\]/) {
 			reset_session()
 		}
-	}' "$@" | jq -cR '
+	}' < <(cat -- "$@") | jq -cR '
 		fromjson? |
 		(.line | capture("inclusion p50=(?<ip50>[0-9.]+)s p95=(?<ip95>[0-9.]+)s, finalization p50=(?<fp50>[0-9.]+)s p95=(?<fp95>[0-9.]+)s, LFB #(?<ls>[0-9]+)->#(?<le>[0-9]+) \\((?<rate>[0-9.]+) blk/min\\), unfinalized=(?<un>[0-9]+)")) as $p |
 		{
@@ -103,6 +108,7 @@ compare() {
 		*) break ;;
 		esac
 	done
+	[[ "$threshold" =~ ^[0-9]+([.][0-9]+)?$ ]] || { echo "--slow-inclusion-p95 must be a number of seconds" >&2; exit 2; }
 	[ "$#" -gt 0 ] || usage
 	jq -rs --arg phase "$phase" --argjson threshold "$threshold" '
 		def group: if .unfinalized > 0 then "failing" elif .inclusion_p95 > $threshold then "slow" else "fast" end;
@@ -124,7 +130,7 @@ compare() {
 		];
 		map(select(.phase == $phase)) as $all |
 		if ($all | length) == 0 then "No \($phase) phases in the records." | halt_error(1) else . end |
-		($all | unique_by([.session, .provider]) ) as $phases |
+		($all | unique_by([.session, .provider, .time, .lfb_start, .lfb_end, .inclusion_p95, .unfinalized])) as $phases |
 		["fast", "slow", "failing"] as $groups |
 		"## Phase \($phase): slow share (inclusion p95 above \($threshold) s)",
 		"",

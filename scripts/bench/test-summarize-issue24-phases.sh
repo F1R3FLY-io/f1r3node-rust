@@ -92,4 +92,21 @@ if "$tool" records --provider other "$tmp/job.log" >/dev/null 2>&1; then
 	fail "an unknown provider must be rejected"
 fi
 
+phase high 5.0 0 | sed 's/$/ "quoted"/' >"$tmp/a=b.log"
+printf '  Node internals (validator1):\n' >>"$tmp/a=b.log"
+metrics 4.0 1.0 1.0 >>"$tmp/a=b.log"
+"$tool" records "$tmp/a=b.log" >"$tmp/quoted.jsonl"
+[ "$(wc -l <"$tmp/quoted.jsonl" | tr -d ' ')" = 1 ] || fail "a quote in the phase line or an = in the file name drops the record"
+
+sed 's/LFB #10->#20/LFB #30->#40/' "$tmp/a=b.log" >"$tmp/second.log"
+{ "$tool" records "$tmp/a=b.log"; "$tool" records "$tmp/second.log"; } >"$tmp/two.jsonl"
+grep -qxF '| docker | 2 | 2 | 0 | 0 |' <("$tool" compare "$tmp/two.jsonl") || fail "two logs with the same session number merge into one phase"
+
+if "$tool" compare --slow-inclusion-p95 abc "$tmp/records.jsonl" >/dev/null 2>&1; then
+	fail "a threshold that is not a number must be rejected"
+fi
+if "$tool" records "$tmp/missing.log" >/dev/null 2>&1; then
+	fail "a missing log must be rejected"
+fi
+
 echo "summarize-issue24-phases: all checks passed"
