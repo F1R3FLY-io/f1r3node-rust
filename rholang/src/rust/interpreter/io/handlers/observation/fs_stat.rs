@@ -53,7 +53,7 @@ use crate::rust::interpreter::io::handler_trait::{
     dispatch_via_trait_owned, spawn_blocking_par, FsHandler, FsHandlerEntry, HandlerFamily,
     HandlerReply, JournalPath, SyscallCtx, FS_HANDLERS,
 };
-use crate::rust::interpreter::io::path::descend::safe_descend_verified;
+use crate::rust::interpreter::io::path::descend::safe_descend_or_root_self;
 use crate::rust::interpreter::io::path::{
     fstatat_meta, io_msg_scrub, leaf_of, quarantine_err_reply,
 };
@@ -122,8 +122,22 @@ impl FsHandler for FsStatHandler {
             // Leaf name extracted BEFORE moving `args.rel` into the
             // closure — `leaf_of` is a lexical string op (no
             // filesystem touch), so this is cheap + keeps the
-            // closure's capture set smaller.
-            let leaf_name = leaf_of(&args.rel);
+            // closure's capture set smaller.  For root-self
+            // dispatch (`rel == ""` / `"."` / `"./"` /
+            // self-collapsing `a/..`), `leaf_of` returns the raw
+            // `rel` which can be `""` or `"."` / `".."`.  Normalize
+            // all root-self spellings to `"."` so the operator-
+            // visible `name` field in the stat record is a stable
+            // POSIX self-reference regardless of which spelling
+            // the Rholang call site used.
+            let leaf_name = {
+                let raw = leaf_of(&args.rel);
+                if raw.is_empty() || raw == "." || raw == ".." {
+                    ".".to_string()
+                } else {
+                    raw
+                }
+            };
             // Ungated resolver — Shape-A gated variant deferred
             // (see module header).
             let logical = PathBuf::from(&args.root);
@@ -132,7 +146,8 @@ impl FsHandler for FsStatHandler {
             let rel = args.rel;
             let cmode = args.cmode;
             let par = spawn_blocking_par(move || -> Par {
-                let parent = match safe_descend_verified(&on_disk_root, &rel, expected_root_id) {
+                let parent = match safe_descend_or_root_self(&on_disk_root, &rel, expected_root_id)
+                {
                     Ok(p) => p,
                     Err(qe) => {
                         let (code, msg) = quarantine_err_reply(&qe);

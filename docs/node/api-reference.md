@@ -91,7 +91,7 @@ curl http://localhost:40403/api/status
   "nativeTokenSymbol": "F1R3",
   "nativeTokenDecimals": 8,
   "lastFinalizedBlockNumber": 28,
-  "isValidator": false,
+  "isValidator": true,
   "isReadOnly": false,
   "isReady": true,
   "currentEpoch": 2,
@@ -113,7 +113,7 @@ curl http://localhost:40403/api/status
 | `nativeTokenSymbol` | string | Token ticker symbol |
 | `nativeTokenDecimals` | int | Decimal places (dust per token = 10^decimals) |
 | `lastFinalizedBlockNumber` | int | LFB block number. `-1` if casper not yet initialized |
-| `isValidator` | bool | `true` if the node can propose blocks |
+| `isValidator` | bool | `true` if the node has a configured validator key; this does not confirm current bond status |
 | `isReadOnly` | bool | `true` if running in read-only mode |
 | `isReady` | bool | `true` after engine enters Running state |
 | `currentEpoch` | int | `lastFinalizedBlockNumber / epochLength` |
@@ -150,6 +150,12 @@ curl "http://localhost:40403/api/block/3bfdf56f...?view=summary"
 ```
 
 Full response includes `blockInfo` (header with `isFinalized`) + `deploys` array. Summary omits `deploys`.
+
+Each deploy includes `parameters` when its signed data contains named values.
+The JSON format matches [`data.parameters`](#deploy-parameters) in deploy submissions.
+The node omits empty parameter arrays.
+Full block lists and trace reports use the same parameter format.
+Summary block responses omit deploy data, including parameters.
 
 | Status | Condition |
 |--------|-----------|
@@ -380,6 +386,7 @@ curl "http://localhost:40403/api/deploy/abc123...?view=summary"
 | `sigAlgorithm` | string | Signature algorithm (full only) |
 | `validAfterBlockNumber` | int | Valid-after constraint (full only) |
 | `transfers` | array/null | Transfer list or null on validators (full only) |
+| `parameters` | array | Named Rholang values from the signed deploy. The node omits this field in summary responses and when no parameters exist. |
 
 **Summary** returns only: `deployId`, `blockHash`, `blockNumber`, `timestamp`, `cost`, `errored`, `isFinalized`.
 
@@ -425,6 +432,9 @@ Possible `state` values: `Finalized`, `Failed`, `Pending`, `Expired`.
 #### `GET /api/pending-deploys`
 
 Bulk snapshot of deploys currently queued in the node's local proposer pools: `deploy_storage` (submitted, not yet proposed) and `rejected_deploy_buffer` (recovering after a merge conflict). Each entry carries an `isRejected` flag so consumers can distinguish fresh deploys from recovery-backlog deploys.
+
+This HTTP response does not include deploy parameters.
+After block inclusion, use the full deploy or block response to read parameters.
 
 The queue is **node-local**: deploys never gossip between nodes, so an observer (read-only) node always answers `{"deploys": [], "totalAvailable": 0}` — it rejects `doDeploy`, so it never holds pending deploys. Route this request to a validator. For deploy status that is consistent across nodes, use `GET /api/deploy-finalization-status/{sig}` instead, which is DAG-derived.
 

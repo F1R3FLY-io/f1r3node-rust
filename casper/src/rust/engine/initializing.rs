@@ -10,8 +10,9 @@ use std::time::{Duration, Instant};
 use async_trait::async_trait;
 use block_storage::rust::casperbuffer::casper_buffer_key_value_storage::CasperBufferKeyValueStorage;
 use block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage;
-use block_storage::rust::deploy::key_value_deploy_storage::KeyValueDeployStorage;
-use block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer;
+use block_storage::rust::deploy::key_value_deploy_storage::{
+    KeyValueDeployStorage, KeyValueRejectedDeployBuffer,
+};
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use comm::rust::peer_node::PeerNode;
 use comm::rust::rp::connect::ConnectionsCell;
@@ -234,12 +235,6 @@ fn receive_shipped_genesis(
         refuse();
         return Ok(false);
     }
-    if block_dag_storage
-        .get_representation()?
-        .contains(&genesis_block.block_hash)
-    {
-        return Ok(true);
-    }
     block_store.put_block_message(&genesis_block)?;
     block_dag_storage.insert(
         &genesis_block,
@@ -424,6 +419,17 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> Engine for Initializing<
                     .map_err(CasperError::CommError)
             }
             CasperMessage::StoreItemsMessage(store_items_message) => {
+                // Tuple-space restore is bootstrap-only: every StoreItemsMessageRequest goes
+                // out through send_to_bootstrap, and with no bootstrap on_approved_block never
+                // starts a restore. `peer` is the node id the message declares, so this filter
+                // only narrows the input. Chunk validation is what rejects bad data.
+                if self.rp_conf_ask.bootstrap.as_ref() != Some(&peer) {
+                    tracing::warn!(
+                        "Dropping StoreItemsMessage from {}: state chunks are requested only from the bootstrap.",
+                        peer
+                    );
+                    return Ok(());
+                }
                 tracing::info!(
                     "Received {} from {}.",
                     store_items_message.clone().pretty(),
@@ -1929,8 +1935,8 @@ impl<T: TransportLayer + Send + Sync> TupleSpaceRequesterOps for TupleSpaceReque
 
     fn validate_tuple_space_items(
         &self,
-        history_items: Vec<(Blake2b256Hash, Vec<u8>)>,
-        data_items: Vec<(Blake2b256Hash, Vec<u8>)>,
+        history_items: &[(Blake2b256Hash, Vec<u8>)],
+        data_items: &[(Blake2b256Hash, Vec<u8>)],
         start_path: StatePartPath,
         page_size: i32,
         skip: i32,
@@ -1943,8 +1949,8 @@ impl<T: TransportLayer + Send + Sync> TupleSpaceRequesterOps for TupleSpaceReque
             page_size,
             skip,
             get_from_history,
-        );
-        Ok(())
+        )
+        .map_err(|e| CasperError::RuntimeError(e.to_string()))
     }
 }
 
@@ -2319,6 +2325,85 @@ mod tests {
             assert!(
                 block_store2.get(&genesis.block_hash).unwrap().is_none(),
                 "a refused copy leaves no trace in the block store"
+            );
+        });
+    }
+
+    /// An anchor just above genesis puts genesis inside the downloaded window,
+    /// so it reaches the DAG as an ordinary block before the shipped copy
+    /// arrives.
+    #[test]
+    fn genesis_inside_the_restore_window_is_finalized() {
+        use block_storage::rust::dag::block_dag_key_value_storage::{
+            BlockDagKeyValueStorage, InsertMode,
+        };
+        use models::rust::block_implicits::get_random_block;
+        use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let mut kvm = InMemoryStoreManager::new();
+            let dag_storage = BlockDagKeyValueStorage::new(&mut kvm).await.unwrap();
+            let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm).await.unwrap();
+
+            let mut genesis = get_random_block(
+                Some(0),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                Some(vec![]),
+                Some(vec![]),
+                None,
+                None,
+                Some(vec![]),
+                None,
+                None,
+            );
+            genesis.block_hash = crate::rust::util::proto_util::hash_block(&genesis);
+
+            let anchor = get_random_block(
+                Some(1),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                Some(vec![genesis.block_hash.clone()]),
+                None,
+                None,
+                None,
+                Some(vec![]),
+                None,
+                None,
+            );
+            dag_storage.insert(&anchor, InsertMode::Approved).unwrap();
+            dag_storage.insert(&genesis, InsertMode::Normal).unwrap();
+            dag_storage
+                .record_genesis_hash(genesis.block_hash.clone())
+                .unwrap();
+
+            let landed = receive_shipped_genesis(
+                &dag_storage,
+                &block_store,
+                &genesis.block_hash.clone(),
+                genesis.clone(),
+            )
+            .expect("receive_shipped_genesis");
+            assert!(landed, "a verified genesis copy must land");
+
+            let dag = dag_storage.get_representation().unwrap();
+            assert!(
+                dag.is_finalized(&genesis.block_hash),
+                "genesis is finalized by definition"
+            );
+            assert_eq!(
+                dag.last_finalized_block(),
+                anchor.block_hash,
+                "landing genesis must not move the LFB off the anchor"
             );
         });
     }

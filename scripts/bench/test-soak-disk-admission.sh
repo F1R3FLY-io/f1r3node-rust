@@ -57,6 +57,8 @@
 #   log-budget-range      SOAK_CONTAINER_LOG_BUDGET_MB above the 64-bit maximum -> configuration rejected, exit 2
 #   log-descriptor-exhaustion a writer at its descriptor limit keeps appending -> the probes sample, breach
 #   log-probe-vanished    the container stops between docker ps and docker inspect -> skipped, one iteration
+#   log-probe-transient-active one node log exec fails during the iteration -> warning, one iteration
+#   log-probe-exec-nonzero-active node log exec prints a partial du size and an error, exits 1 -> breach
 #   log-rotated-unreadable a rotated container log exists but cannot be read  -> breach, log probe unavailable
 #
 # Usage: test-soak-disk-admission.sh [--scenario NAME] [source-directory] [evidence-directory]
@@ -83,7 +85,7 @@ SCENARIOS=(band missing-boundary missing-after-hygiene malformed-boundary missin
     cleanup-error-image cleanup-error-builder cleanup-partial cleanup-sufficient
     log-within-budget log-container-soft log-container-hard log-node-soft log-probe-missing-active
     log-probe-missing-boundary log-sudo-fallback log-budget-disabled log-budget-range log-descriptor-exhaustion
-    log-probe-vanished log-rotated-unreadable)
+    log-probe-vanished log-probe-transient-active log-probe-exec-nonzero-active log-rotated-unreadable)
 
 SCENARIO="${SOAK_DISK_TEST_SCENARIO:-}"
 if [[ "${1:-}" == --scenario ]]; then
@@ -256,6 +258,19 @@ if [[ "${1:-}" == inspect && "${3:-}" == *LogPath* && "${4:-}" == "$owned_id" ]]
     printf '%s /case/clog/json.log\n' "${SOAK_WRITER_OWNER:?}"
     exit 0
 fi
+if [[ "${SOAK_DISK_TEST_SCENARIO:-band}" == log-probe-transient-active && -s /case/evidence/workload-started.txt &&
+    "${1:-}" == exec && "${2:-}" == "$owned_id" ]] && mkdir /case/evidence/exec-fault 2>/dev/null; then
+    printf 'exec-failed-once\n' >>/case/evidence/log-probe-faults.txt
+    printf 'Error response from daemon: fixture exec contention\n' >&2
+    exit 1
+fi
+if [[ "${SOAK_DISK_TEST_SCENARIO:-band}" == log-probe-exec-nonzero-active && -s /case/evidence/workload-started.txt &&
+    "${1:-}" == exec && "${2:-}" == "$owned_id" ]]; then
+    printf 'exec-nonzero\n' >>/case/evidence/log-probe-faults.txt
+    printf '4096\t/var/lib/rnode/logs\n'
+    printf '%s\n' "2048 du: cannot read directory '/var/lib/rnode/logs/locked': Permission denied" >&2
+    exit 1
+fi
 if [[ "${1:-}" == exec && "${2:-}" == "$owned_id" ]]; then
     printf '%s\t/var/lib/rnode/logs\n' "$(cat /case/node-log-bytes)"
     exit 0
@@ -270,13 +285,13 @@ if [[ "${1:-}" == inspect && "${2:-}" == --format && "${4:-}" == "$owned_id" ]];
 fi
 if [[ "${1:-}" == kill && "${2:-}" == "$owned_id" ]]; then set -- kill disk-fixture; fi
 if [[ "${1:-}" == rm && "${3:-}" == "$owned_id" ]]; then set -- rm -f disk-fixture; fi
-if [[ "$*" == 'compose -f /case/node/docker/shard.yml -p soak-bench config --format json' ]]; then
-    printf '{"services":{"fixture":{}}}\n'
+if [[ "$*" == 'compose -f /case/node/docker/shard.yml -f /case/node/docker/ci-ports.shard.yml -p soak-bench config --format json' ]]; then
+    printf '{"services":{"fixture":{},"validator1":{"ports":[{"target":40403,"published":"14413"}]}}}\n'
     exit 0
 fi
-if [[ "${1:-}" == compose && "${6:-}" == -f && "${7:-}" == /case/evidence/output/.docker-owner.*/labels.*.json ]]; then
-    jq -e --arg owner "${SOAK_WRITER_OWNER:?}" '.services.fixture.labels["io.f1r3fly.soak.owner"] == $owner' "$7" >/dev/null || exit 2
-    set -- "${@:1:5}" "${@:8}"
+if [[ "${1:-}" == compose && "${8:-}" == -f && "${9:-}" == /case/evidence/output/.docker-owner.*/labels.*.json ]]; then
+    jq -e --arg owner "${SOAK_WRITER_OWNER:?}" '.services.fixture.labels["io.f1r3fly.soak.owner"] == $owner' "$9" >/dev/null || exit 2
+    set -- "${@:1:7}" "${@:10}"
 fi
 if [[ "${SOAK_DISK_TEST_SCENARIO:-band}" == cleanup-error-* ]]; then
     action=""
@@ -296,13 +311,13 @@ if [[ ( "${SOAK_DISK_TEST_SCENARIO:-band}" == restart-benchmark ||
     ( "${SOAK_DISK_TEST_SCENARIO:-band}" == benchmark-* &&
     "${SOAK_DISK_TEST_SCENARIO:-band}" != benchmark-active-disk &&
     "${SOAK_DISK_TEST_SCENARIO:-band}" != benchmark-cancel-* ) ) &&
-    "$*" == 'compose -f /case/node/docker/shard.yml -p soak-bench up -d' ]]; then
+    "$*" == 'compose -f /case/node/docker/shard.yml -f /case/node/docker/ci-ports.shard.yml -p soak-bench up -d' ]]; then
     printf '%s\n' "$*" >/case/evidence/benchmark-started.txt
     exit 1
 fi
 if [[ "${SOAK_DISK_TEST_SCENARIO:-band}" == benchmark-active-disk ]]; then
     case "$*" in
-        'compose -f /case/node/docker/shard.yml -p soak-bench up -d')
+        'compose -f /case/node/docker/shard.yml -f /case/node/docker/ci-ports.shard.yml -p soak-bench up -d')
             printf '%s\n' "$*" >/case/evidence/benchmark-started.txt
             printf '%s\n' "$$" >/case/evidence/benchmark-client-pid.txt
             printf 'available=1024\n' >/case/evidence/benchmark-disk-fault.txt
@@ -329,7 +344,7 @@ if [[ "${SOAK_DISK_TEST_SCENARIO:-band}" == benchmark-active-disk ]]; then
     esac
 fi
 if [[ "${SOAK_DISK_TEST_SCENARIO:-band}" == benchmark-cancel-* &&
-    "$*" == 'compose -f /case/node/docker/shard.yml -p soak-bench up -d' ]]; then
+    "$*" == 'compose -f /case/node/docker/shard.yml -f /case/node/docker/ci-ports.shard.yml -p soak-bench up -d' ]]; then
     trap '' TERM
     printf '%s\n' "$*" >/case/evidence/benchmark-started.txt
     printf '%s\n' "$$" >/case/evidence/benchmark-client-pid.txt
@@ -416,7 +431,19 @@ case "${SOAK_DISK_TEST_SCENARIO:-band}" in
     log-container-soft) truncate -s 450M /case/clog/json.log && sleep 25 ;;
     log-container-hard) truncate -s 900M /case/clog/json.log && sleep 25 ;;
     log-node-soft) printf '%s\n' 3145728000 >/case/node-log-bytes && sleep 25 ;;
-    log-probe-missing-active) sleep 25 ;;
+    log-probe-missing-active | log-probe-exec-nonzero-active) sleep 25 ;;
+    log-probe-transient-active)
+        for _ in $(seq 1 300); do
+            [[ ! -d /case/evidence/exec-fault ]] || break
+            sleep 0.05
+        done
+        execs="$(grep -c "^exec " /case/evidence/docker-commands.txt 2>/dev/null || true)"
+        for _ in $(seq 1 300); do
+            seen="$(grep -c "^exec " /case/evidence/docker-commands.txt 2>/dev/null || true)"
+            ((${seen:-0} > ${execs:-0})) && break
+            sleep 0.05
+        done
+        ;;
     log-probe-vanished)
         for _ in $(seq 1 500); do
             [[ ! -d /case/evidence/vanish-closed ]] || break
@@ -556,6 +583,7 @@ SH
         run_benchmarks=true
         mkdir -p evidence/output node/docker
         printf 'services: {}\n' >node/docker/shard.yml
+        printf 'services: {}\n' >node/docker/ci-ports.shard.yml
         if [[ "$SCENARIO" == restart-benchmark ]]; then
             printf 'A prior guardian detected a disk breach. Termination remains unconfirmed.\n' >evidence/output/host-guardian-breach.txt
             cp evidence/output/host-guardian-breach.txt evidence/restart-input-breach.txt
@@ -803,7 +831,7 @@ SH
         log_inspects="${log_inspects:-0}"
         log_execs="${log_execs:-0}"
         case "$SCENARIO" in
-        log-within-budget | log-sudo-fallback | log-budget-disabled | log-probe-vanished)
+        log-within-budget | log-sudo-fallback | log-budget-disabled | log-probe-vanished | log-probe-transient-active)
             if [[ "$SCENARIO" == log-budget-disabled ]]; then
                 if [[ "$log_inspects" != 0 || "$log_execs" != 0 ]]; then
                     printf 'FAIL: A disabled log budget still ran its probes.\n' >&2
@@ -816,6 +844,16 @@ SH
             if [[ "$SCENARIO" == log-probe-vanished ]] && ! grep -Fxq inspect-vanished evidence/log-probe-faults.txt; then
                 printf 'ERROR: The fixture did not remove the container between the listing and its probe.\n' >&2
                 exit 2
+            fi
+            if [[ "$SCENARIO" == log-probe-transient-active ]]; then
+                if ! grep -Fxq exec-failed-once evidence/log-probe-faults.txt; then
+                    printf 'ERROR: The fixture did not fail one node log exec.\n' >&2
+                    exit 2
+                fi
+                if ! grep -Fq 'log guardian: probe unavailable (log probe unavailable: node log directory of 000000000000 (docker exec exit 1: Error response from daemon: fixture exec contention)); consecutive failed probes 1 of 2' evidence/driver.log; then
+                    printf 'FAIL: The driver did not warn about one failed log probe with the docker exec error.\n' >&2
+                    exit 1
+                fi
             fi
             if [[ "$SCENARIO" == log-sudo-fallback ]] &&
                 { ! grep -Fxq stat-refused evidence/log-probe-faults.txt ||
@@ -849,11 +887,15 @@ SH
         case "$SCENARIO" in
         log-probe-missing-active)
             [[ -s evidence/log-probe-faults.txt ]] || exit 2
-            expected='The log guardian probe is unavailable during execution (log probe unavailable: docker inspect'
+            expected='The log guardian probe is unavailable during execution (log probe unavailable: docker inspect 000000000000; consecutive failed probes 2)'
+            ;;
+        log-probe-exec-nonzero-active)
+            grep -Fxq exec-nonzero evidence/log-probe-faults.txt || exit 2
+            expected="The log guardian probe is unavailable during execution (log probe unavailable: node log directory of 000000000000 (docker exec exit 1: 2048 du: cannot read directory '/var/lib/rnode/logs/locked': Permission denied); consecutive failed probes 2)"
             ;;
         log-rotated-unreadable)
             grep -Fxq rotated-refused evidence/log-probe-faults.txt || exit 2
-            expected='The log guardian probe is unavailable during execution (log probe unavailable: container log of 000000000000'
+            expected='The log guardian probe is unavailable during execution (log probe unavailable: container log of 000000000000; consecutive failed probes 2)'
             ;;
         log-node-soft) expected='The log guardian detected the node log directory of container 000000000000 at 3000 MiB over budget 2560 MiB (consecutive samples 3).' ;;
         log-container-soft) expected='The log guardian detected the container log of container 000000000000 at 450 MiB over budget 400 MiB (consecutive samples 3).' ;;

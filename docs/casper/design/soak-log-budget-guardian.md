@@ -38,7 +38,7 @@ The log probes run on every third guardian sample (15 s), the cadence of the OOM
 
 ### Probe availability
 
-When a budget is above 0, the driver checks the probes against the running owned containers. The check runs before the opening benchmark and before each iteration. An unreadable probe refuses admission with a message that names the probe and the variable that disables it. This is the disk probe rule. When no owned container runs at the check, the check passes and the first guardian sample with containers performs it. An unreadable probe during execution is a breach with the reason `log probe unavailable`.
+When a budget is above 0, the driver checks the probes against the running owned containers. The check runs before the opening benchmark and before each iteration. An unreadable probe refuses admission with a message that names the probe and the variable that disables it. This is the disk probe rule. When no owned container runs at the check, the check passes and the first guardian sample with containers performs it. During execution, one unreadable probe logs a warning with its reason. Two consecutive unreadable probes are a breach with the reason `log probe unavailable`. The node log probe keeps the stdout and the stderr of `docker exec` apart. Only a zero exit status with exactly one `<bytes>\t<directory>` line on stdout is a sample. A nonzero exit status is a failure, also when `du` printed a partial size. The reason then gives the exit status and the first nonempty stderr line, limited to 160 printable characters.
 
 A container that leaves the running owned set between the listing and one of its probes is skipped. It no longer writes, and the next listing does not include it. The probe asks `docker ps` again with the owner label and the container ID. When that call fails, the probe failure stands.
 
@@ -56,7 +56,9 @@ The disk floor, the memory floor, the hygiene band, the emergency deadline, and 
 | `container-soft` | Container log over budget on 3 consecutive samples | Breach record, writers stopped |
 | `container-hard` | Container log at two times the budget on one sample | Breach on that sample |
 | `node-soft` | Node log directory over budget on 3 consecutive samples | Breach record, writers stopped |
-| `probe-missing-active` | `docker inspect` fails during an iteration | Breach with `log probe unavailable` |
+| `probe-missing-active` | `docker inspect` fails during an iteration | Breach with `log probe unavailable` after two consecutive failed probes |
+| `probe-transient-active` | One node log `docker exec` fails during an iteration | Warning with the `docker exec` error. Iteration completed |
+| `probe-exec-nonzero-active` | The node log `docker exec` prints a partial `du` size and an error, then exits 1 | Breach after two consecutive failed probes. The reason gives the exit status and the error line |
 | `probe-missing-boundary` | `stat` fails at the admission check | Admission refused, exit 2 |
 | `sudo-fallback` | `stat` refuses, `sudo -n stat` answers | Sample accepted |
 | `budget-disabled` | Both budgets 0, probes over any value | Iteration admitted |
@@ -96,5 +98,6 @@ The implementation follows the design with these changes:
 | Strike count | For each probe | For each probe, on the largest value over the owned containers. |
 | Stopped container | Not specified | Added on 2026-10-05 after the PR #622 review. The probe skips a container that stopped during the sample. Before, the failure was a breach, and a normal shard stop in an iteration could end the soak. Scenario `log-probe-vanished`. |
 | Unreadable rotated file | Not specified | Added on 2026-10-05 after the PR #622 review. Before, the probe skipped an unreadable rotated file and reported a total that was too small. Scenario `log-rotated-unreadable`. |
+| Transient probe failure | Not specified | Added on 2026-10-11 after weekend soak 38076682321. The harness reads every node log through `docker exec` at test teardown. One probe `docker exec` failed in that window, and the guardian ended the soak after 6 hours with all iterations green. Now a breach needs two consecutive failed probes, and the reason keeps the `docker exec` error. Scenario `log-probe-transient-active`. The PR #698 review found that the first version merged stderr into stdout and could read a number from an error line. The probe now requires a zero exit status and reads only stdout. Scenario `log-probe-exec-nonzero-active`. |
 
 The breach and refusal scenarios fail against the driver without the log guardian. The two scenarios of 2026-10-05 fail against the driver at 514eb3026. The disk scenarios run with both budgets at 0, so their behavior is unchanged.

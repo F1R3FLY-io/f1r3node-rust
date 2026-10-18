@@ -340,6 +340,9 @@ if ! [[ "$LOG_PROBE_SECONDS" =~ ^[1-4]$ ]]; then
 	printf 'SOAK_LOG_PROBE_SECONDS must be an integer from 1 through 4\n' >&2
 	exit 2
 fi
+# A failed log probe during work is a breach only when the next probe also
+# fails. Admission checks before work still refuse on one failure.
+LOG_PROBE_FAILURES_FOR_BREACH=2
 NODE_LOG_DIR=/var/lib/rnode/logs
 # Where harness sessions leave their compose and genesis files (the
 # `test-*` sweep below), and where the runner keeps _diag and _work. Both are
@@ -519,7 +522,7 @@ log_container_running() {
 # is skipped. A missing node log directory counts as 0: a node on the stdout
 # sink writes no file log. Call it through log_budget_probe.
 log_budget_sample() {
-	local ids cid inspected owner path suffix bytes total container_mb node_mb
+	local ids cid inspected owner path suffix bytes total container_mb node_mb exec_out exec_err exec_err_file exec_status
 	ids="$(docker ps -q --no-trunc --filter "label=io.f1r3fly.soak.owner=$SOAK_WRITER_OWNER" 2>/dev/null)" || {
 		printf 'log probe unavailable: docker ps\n' >&2
 		return 1
@@ -559,11 +562,31 @@ log_budget_sample() {
 			container_mb="$(((total + 1048575) / 1048576))"
 		fi
 		if [ "$NODE_LOG_BUDGET_MB" -gt 0 ]; then
-			bytes="$(docker exec "$cid" sh -c 'if [ -d "$1" ]; then du -sb "$1"; else printf "0\t%s\n" "$1"; fi' sh "$NODE_LOG_DIR" 2>/dev/null |
-				awk 'NR == 1 && $1 ~ /^[0-9]+$/ { print $1 }')"
+			# stdout and stderr are kept apart. Only a zero exit status with
+			# exactly one "<bytes>\t<directory>" line is a sample. A nonzero
+			# status is a failure even when du printed a partial size.
+			exec_err_file="$(mktemp)" || {
+				printf 'log probe unavailable: node log directory of %s (mktemp)\n' "${cid:0:12}" >&2
+				return 1
+			}
+			exec_status=0
+			exec_out="$(docker exec "$cid" sh -c 'if [ -d "$1" ]; then du -sb "$1"; else printf "0\t%s\n" "$1"; fi' sh "$NODE_LOG_DIR" 2>"$exec_err_file")" ||
+				exec_status=$?
+			exec_err="$(awk 'NF { print; exit }' "$exec_err_file" 2>/dev/null | tr -cd '[:print:]' | cut -c1-160)"
+			rm -f "$exec_err_file"
+			bytes=""
+			if [ "$exec_status" -eq 0 ]; then
+				bytes="$(printf '%s\n' "$exec_out" | awk -F '\t' -v dir="$NODE_LOG_DIR" \
+					'NR == 1 && NF == 2 && $1 ~ /^[0-9]+$/ && $2 == dir { size = $1 } END { if (NR == 1 && size != "") print size }')"
+			fi
 			if ! [[ "$bytes" =~ ^[0-9]{1,18}$ ]]; then
 				log_container_running "$cid" || continue
-				printf 'log probe unavailable: node log directory of %s\n' "${cid:0:12}" >&2
+				if [ "$exec_status" -ne 0 ]; then
+					printf 'log probe unavailable: node log directory of %s (docker exec exit %s%s)\n' \
+						"${cid:0:12}" "$exec_status" "${exec_err:+: $exec_err}" >&2
+				else
+					printf 'log probe unavailable: node log directory of %s (unexpected du output)\n' "${cid:0:12}" >&2
+				fi
 				return 1
 			fi
 			node_mb="$(((bytes + 1048575) / 1048576))"
@@ -1213,7 +1236,7 @@ iteration_lfb_spread() {
 # the soak.
 emit_iteration_metrics() {
 	local iteration_dir="$1" iteration="$2" provider="$3" \
-		iter_started="$4" iter_finished="$5" exit_code="$6"
+		iter_started="$4" iter_finished="$5" exit_code="$6" deadline_truncated="${7:-false}"
 	command -v jq >/dev/null || return 0
 	local summary_line passed failed skipped errors rss_peak cpu_peak latency lat_p50 lat_p95 lat_p99 lat_n too_far_ahead
 	summary_line="$(grep -E '^=+ .* in [0-9.]+s( \([^)]*\))? =+$' "$iteration_dir/pytest.log" 2>/dev/null | tail -1 || true)"
@@ -1264,6 +1287,7 @@ emit_iteration_metrics() {
 		--argjson started "$iter_started" \
 		--argjson finished "$iter_finished" \
 		--argjson exit_code "$exit_code" \
+		--argjson deadline_truncated "$deadline_truncated" \
 		--argjson passed "$passed" \
 		--argjson failed "$failed" \
 		--argjson skipped "$skipped" \
@@ -1280,6 +1304,7 @@ emit_iteration_metrics() {
 		'{iteration: $iteration, provider: $provider,
       started_at: $started, finished_at: $finished,
       duration_s: ($finished - $started), exit_code: $exit_code,
+      deadline_truncated: $deadline_truncated,
       pytest: {passed: $passed, failed: $failed, skipped: $skipped, errors: $errors},
       rss_peak_mb: $rss_peak,
       cpu_peak_pct: $cpu_peak,
@@ -1563,6 +1588,7 @@ BENCHMARK_PID=""
 ITERATION_PID=""
 ITERATION_TEE_PID=""
 ITERATION_SNAPSHOT_PID=""
+ITERATION_IO_SAMPLER_PID=""
 ITERATION_FIFO=""
 cleanup_soak_processes() {
 	[ -z "$HOST_GUARDIAN_PID" ] || kill "$HOST_GUARDIAN_PID" 2>/dev/null || true
@@ -1575,6 +1601,7 @@ cleanup_soak_processes() {
 	fi
 	[ -z "$ITERATION_TEE_PID" ] || kill "$ITERATION_TEE_PID" 2>/dev/null || true
 	[ -z "$ITERATION_SNAPSHOT_PID" ] || kill "$ITERATION_SNAPSHOT_PID" 2>/dev/null || true
+	[ -z "$ITERATION_IO_SAMPLER_PID" ] || kill "$ITERATION_IO_SAMPLER_PID" 2>/dev/null || true
 	[ -z "$ITERATION_FIFO" ] || rm -f "$ITERATION_FIFO"
 	if [ -n "$BENCHMARK_PID" ] || [ -n "$ITERATION_PID" ]; then
 		if ! stop_node_writers -q kill >/dev/null 2>&1; then
@@ -1678,6 +1705,7 @@ if { [ "$HOST_FREE_FLOOR_MB" -gt 0 ] && [ -r /proc/meminfo ]; } || [ "$DISK_FREE
 		log_sample_n=0
 		container_log_over=0
 		node_log_over=0
+		log_probe_failures=0
 		# The disk floor rule for one log probe: a sample over the budget is a
 		# strike, and three consecutive strikes or one sample at two times the
 		# budget is a breach. The comparison avoids doubling a 64-bit budget.
@@ -1734,21 +1762,33 @@ if { [ "$HOST_FREE_FLOOR_MB" -gt 0 ] && [ -r /proc/meminfo ]; } || [ "$DISK_FREE
 			# Every LOG_PROBE_EVERY samples (15s by default): each log probe is
 			# a Docker round trip for each owned container.
 			if log_budgets_enabled && [ $((log_sample_n % LOG_PROBE_EVERY)) -eq 0 ]; then
+				# One failed probe is a warning. The harness reads every node log
+				# through docker exec at test teardown, and a probe exec can fail
+				# in that window (soak 38076682321). Two consecutive failed
+				# probes are a breach.
 				if ! log_sample="$(log_budget_probe 2>"$OUTPUT_DIR/.log-probe-error")"; then
 					log_reason="$(head -1 "$OUTPUT_DIR/.log-probe-error" 2>/dev/null)"
-					publish_record "$HOST_GUARDIAN_BREACH" printf 'The log guardian probe is unavailable during execution (%s). Workload termination is unconfirmed.\n' \
-						"${log_reason:-log probe unavailable}"
-					stop_node_writers -q kill || true
-					guardian_stamp_health_tag breach na "log probe unavailable"
-					exit 0
-				fi
-				read -r container_worst container_mb < <(printf '%s\n' "$log_sample" |
-					awk '$2 ~ /^[0-9]+$/ && ($2 + 0 > max + 0 || id == "") { max = $2; id = $1 } END { print (id == "" ? "- -" : id " " max) }')
-				read -r node_worst node_mb < <(printf '%s\n' "$log_sample" |
-					awk '$3 ~ /^[0-9]+$/ && ($3 + 0 > max + 0 || id == "") { max = $3; id = $1 } END { print (id == "" ? "- -" : id " " max) }')
-				if guardian_log_breached 'container log' "$CONTAINER_LOG_BUDGET_MB" "$container_worst" "$container_mb" container_log_over ||
-					guardian_log_breached 'node log directory' "$NODE_LOG_BUDGET_MB" "$node_worst" "$node_mb" node_log_over; then
-					exit 0
+					log_probe_failures=$((log_probe_failures + 1))
+					if [ "$log_probe_failures" -lt "$LOG_PROBE_FAILURES_FOR_BREACH" ]; then
+						printf 'log guardian: probe unavailable (%s); consecutive failed probes %s of %s\n' \
+							"${log_reason:-log probe unavailable}" "$log_probe_failures" "$LOG_PROBE_FAILURES_FOR_BREACH" >&2
+					else
+						publish_record "$HOST_GUARDIAN_BREACH" printf 'The log guardian probe is unavailable during execution (%s; consecutive failed probes %s). Workload termination is unconfirmed.\n' \
+							"${log_reason:-log probe unavailable}" "$log_probe_failures"
+						stop_node_writers -q kill || true
+						guardian_stamp_health_tag breach na "log probe unavailable"
+						exit 0
+					fi
+				else
+					log_probe_failures=0
+					read -r container_worst container_mb < <(printf '%s\n' "$log_sample" |
+						awk '$2 ~ /^[0-9]+$/ && ($2 + 0 > max + 0 || id == "") { max = $2; id = $1 } END { print (id == "" ? "- -" : id " " max) }')
+					read -r node_worst node_mb < <(printf '%s\n' "$log_sample" |
+						awk '$3 ~ /^[0-9]+$/ && ($3 + 0 > max + 0 || id == "") { max = $3; id = $1 } END { print (id == "" ? "- -" : id " " max) }')
+					if guardian_log_breached 'container log' "$CONTAINER_LOG_BUDGET_MB" "$container_worst" "$container_mb" container_log_over ||
+						guardian_log_breached 'node log directory' "$NODE_LOG_BUDGET_MB" "$node_worst" "$node_mb" node_log_over; then
+						exit 0
+					fi
 				fi
 				guardian_record_progress || exit 1
 			fi
@@ -1993,6 +2033,12 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
 	if [ "$CASPER_RUNTIME" -eq 0 ]; then
 		snapshot_iteration_monitor_outputs "$ITERATION_DIR" &
 		ITERATION_SNAPSHOT_PID=$!
+		# Diagnostic for the subprocess checkpoint gap (issue #24). Off by default.
+		# The repository variable SOAK_IO_DIAGNOSTICS=1 turns it on.
+		if [ "${SOAK_IO_DIAGNOSTICS:-0}" = 1 ]; then
+			bash "$SCRIPT_DIR/bench/sample-node-io.sh" "$ITERATION_DIR" &
+			ITERATION_IO_SAMPLER_PID=$!
+		fi
 	fi
 	GUARDIAN_INTERRUPTED=0
 	while kill -0 "$ITERATION_PID" 2>/dev/null; do
@@ -2054,10 +2100,27 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
 		kill "$ITERATION_SNAPSHOT_PID" 2>/dev/null || true
 		wait "$ITERATION_SNAPSHOT_PID" 2>/dev/null || true
 	fi
+	if [ -n "$ITERATION_IO_SAMPLER_PID" ]; then
+		kill "$ITERATION_IO_SAMPLER_PID" 2>/dev/null || true
+		wait "$ITERATION_IO_SAMPLER_PID" 2>/dev/null || true
+	fi
+	# The node-metrics copy is 40-190MB per iteration and nothing reads it
+	# after the snapshot loop stops. Uncompressed, 93 iterations of weekend
+	# run 38995239992 left 10GB in OUTPUT_DIR and tripped the disk floor at
+	# 16.7h of 57.5h; gzip keeps all rows at about 1/20 of the size. It runs
+	# after the I/O sampler stops so its I/O stays out of io.tsv, and it is
+	# skipped under an emergency deadline, which has no seconds to spare. A
+	# failure keeps the soak going but is logged: a silent one would bring
+	# the disk growth back with no trace.
+	if [ -z "$EMERGENCY_DEADLINE_EPOCH" ] && [ -f "$ITERATION_DIR/node-metrics-timeseries.csv" ]; then
+		gzip -6 -f "$ITERATION_DIR/node-metrics-timeseries.csv" ||
+			printf 'node-metrics gzip failed for iteration %s; the uncompressed CSV remains\n' "$ITERATIONS" >&2
+	fi
 	rm -f "$ITERATION_FIFO"
 	ITERATION_PID=""
 	ITERATION_TEE_PID=""
 	ITERATION_SNAPSHOT_PID=""
+	ITERATION_IO_SAMPLER_PID=""
 	ITERATION_FIFO=""
 	# No `set -e` restore: this script never enables errexit (line 2 is
 	# `set -uo pipefail`), and turning it on here made the first failed
@@ -2084,11 +2147,15 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
 		if ! jq -e '.capture_complete == true' "$OUTPUT_DIR/casper-history/$(printf '%08d' "$ITERATIONS").json" >/dev/null; then break; fi
 		continue
 	fi
+	DEADLINE_TRUNCATED=false
+	if [ "$STATUS" -eq 124 ] && [ "$(date +%s)" -ge "$DEADLINE" ]; then
+		DEADLINE_TRUNCATED=true
+	fi
 	emit_iteration_metrics "$ITERATION_DIR" "$ITERATIONS" "$PROVIDER" \
-		"$ITER_STARTED" "$ITER_FINISHED" "$STATUS" || true
+		"$ITER_STARTED" "$ITER_FINISHED" "$STATUS" "$DEADLINE_TRUNCATED" || true
 	INFLIGHT_ITERATION=0
 
-	if [ "$STATUS" -eq 124 ] && [ "$(date +%s)" -ge "$DEADLINE" ]; then
+	if [ "$DEADLINE_TRUNCATED" = true ]; then
 		printf '%s\n' "deadline reached during iteration $ITERATIONS" >"$ITERATION_DIR/deadline.txt"
 		break
 	fi

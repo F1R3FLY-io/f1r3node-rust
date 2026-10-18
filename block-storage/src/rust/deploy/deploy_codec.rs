@@ -66,8 +66,9 @@ mod tests {
     use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
 
     use super::*;
-    use crate::rust::deploy::key_value_deploy_storage::KeyValueDeployStorage;
-    use crate::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer;
+    use crate::rust::deploy::key_value_deploy_storage::{
+        KeyValueDeployStorage, KeyValueRejectedDeployBuffer,
+    };
 
     const LEGACY_DEPLOY_369DBFCC4: &str = concat!(
         "03000000000000004e696c7b000000000000000700000000000000a086010000",

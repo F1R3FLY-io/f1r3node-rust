@@ -8,8 +8,9 @@ use std::time::SystemTime;
 use async_trait::async_trait;
 use block_storage::rust::casperbuffer::casper_buffer_key_value_storage::CasperBufferKeyValueStorage;
 use block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage;
-use block_storage::rust::deploy::key_value_deploy_storage::KeyValueDeployStorage;
-use block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer;
+use block_storage::rust::deploy::key_value_deploy_storage::{
+    KeyValueDeployStorage, KeyValueRejectedDeployBuffer,
+};
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use comm::rust::rp::connect::ConnectionsCell;
 use comm::rust::rp::rp_conf::RPConf;
@@ -74,6 +75,13 @@ pub struct CasperLaunchImpl<T: TransportLayer + Send + Sync + Clone + 'static> {
     disable_state_exporter: bool,
     /// Shared reference to heartbeat signal for triggering immediate wake on deploy
     heartbeat_signal_ref: crate::rust::heartbeat_signal::HeartbeatSignalRef,
+    /// Operator-supplied static-provisioning bundle, projected from
+    /// `node::configuration::provisioning_merge::merge_and_validate`
+    /// at boot.  Threaded verbatim into
+    /// `Genesis.fs_bundle` on the ceremony-master path so every
+    /// validator's genesis block carries the same operator-visible
+    /// cap bundle.
+    fs_bundle: Vec<crate::rust::genesis::contracts::fs_genesis::BundleEntry>,
     state_items_tx: Option<
         tokio::sync::mpsc::Sender<
             models::rust::casper::protocol::casper_message::StoreItemsMessage,
@@ -140,6 +148,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
         disable_state_exporter: bool,
         heartbeat_signal_ref: crate::rust::heartbeat_signal::HeartbeatSignalRef,
         standalone: bool,
+        fs_bundle: Vec<crate::rust::genesis::contracts::fs_genesis::BundleEntry>,
         state_items_tx: Option<
             tokio::sync::mpsc::Sender<
                 models::rust::casper::protocol::casper_message::StoreItemsMessage,
@@ -230,6 +239,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             trim_state,
             disable_state_exporter,
             heartbeat_signal_ref,
+            fs_bundle,
             state_items_tx,
         }
     }
@@ -742,6 +752,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             self.conf.genesis_block_data.native_token_name.clone(),
             self.conf.genesis_block_data.native_token_symbol.clone(),
             self.conf.genesis_block_data.native_token_decimals,
+            self.fs_bundle.clone(),
             &self.runtime_manager,
             self.last_approved_block.clone(),
             Some(self.event_publisher.clone()),

@@ -69,7 +69,7 @@ use crate::rust::interpreter::io::handler_trait::{
     dispatch_via_trait_owned, FsHandler, FsHandlerEntry, HandlerFamily, HandlerReply, SyscallCtx,
     FS_HANDLERS,
 };
-use crate::rust::interpreter::io::path::descend::safe_descend_verified;
+use crate::rust::interpreter::io::path::descend::safe_descend_or_root_self;
 use crate::rust::interpreter::io::path::{
     canonicalize_lexical, io_msg_scrub, quarantine_err_reply,
 };
@@ -161,14 +161,14 @@ impl FsHandler for FsEntriesStreamOpenHandler {
             // sized (sidesteps the clippy::result_large_err issue
             // that fs_chmod handled via #[allow]).
             let opened = spawn_blocking(move || -> Result<DirIter, Box<Par>> {
-                let parent = match safe_descend_verified(&root_pb, &rel_for_open, expected_root_id)
-                {
-                    Ok(p) => p,
-                    Err(qe) => {
-                        let (code, msg) = quarantine_err_reply(&qe);
-                        return Err(Box::new(err(code, msg)));
-                    }
-                };
+                let parent =
+                    match safe_descend_or_root_self(&root_pb, &rel_for_open, expected_root_id) {
+                        Ok(p) => p,
+                        Err(qe) => {
+                            let (code, msg) = quarantine_err_reply(&qe);
+                            return Err(Box::new(err(code, msg)));
+                        }
+                    };
                 // SAFETY: `parent` is a `SafeParent` from
                 // `safe_descend_verified`; the dirfd is open for
                 // `parent`'s lifetime and `parent.leaf_ptr()`

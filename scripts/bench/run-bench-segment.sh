@@ -29,10 +29,15 @@ BENCH_RATE="${BENCH_RATE:-2}"
 SEGMENT_INDEX="${SEGMENT_INDEX:-0}"
 SOAK_STARTED_AT="${SOAK_STARTED_AT:-$(date +%s)}"
 READY_TIMEOUT="${READY_TIMEOUT:-420}"
-HTTP_PORT=40413
 
 SHARD_YML="$NODE_REPO_DIR/docker/shard.yml"
 [ -f "$SHARD_YML" ] || { echo "missing $SHARD_YML" >&2; exit 2; }
+# shard.yml publishes 40400-40455, inside the kernel ephemeral range, where an
+# outbound connection on the soak runner can already hold the port (soak
+# 38184406100 bench segments 11 and 13). The CI override moves every host
+# port below the ephemeral floor; container ports do not change.
+PORTS_YML="$NODE_REPO_DIR/docker/ci-ports.shard.yml"
+[ -f "$PORTS_YML" ] || { echo "missing $PORTS_YML" >&2; exit 2; }
 command -v jq >/dev/null || { echo "jq not found" >&2; exit 2; }
 
 # latency-benchmark.sh needs a funded deployer. Default to the shard's own
@@ -52,7 +57,36 @@ fi
 export DEPLOYER_KEY
 
 mkdir -p "$OUT_DIR"
-COMPOSE=(docker compose -f "$SHARD_YML" -p soak-bench)
+COMPOSE=(docker compose -f "$SHARD_YML" -f "$PORTS_YML" -p soak-bench)
+
+# Check the merged configuration before the shard starts. A later edit of
+# either file must not bring a published host port back into the ephemeral
+# range. The validator1 HTTP port (container 40403) comes from the same
+# configuration, so the probe and the benchmark follow the override file.
+if ! "${COMPOSE[@]}" config --format json > "$OUT_DIR/compose-config.json" 2> "$OUT_DIR/compose-config.err"; then
+  echo "shard compose config failed; compose-config.err tail:" >&2
+  tail -15 "$OUT_DIR/compose-config.err" >&2
+  exit 2
+fi
+EPHEMERAL_FLOOR="$(sysctl -n net.ipv4.ip_local_port_range 2>/dev/null | awk '{print $1}')"
+case "$EPHEMERAL_FLOOR" in
+  ''|*[!0-9]*) EPHEMERAL_FLOOR=32768 ;;
+esac
+EPHEMERAL_PORTS="$(jq -r --argjson floor "$EPHEMERAL_FLOOR" \
+  '[.services[].ports[]? | .published | tonumber | select(. >= $floor)] | unique | map(tostring) | join(" ")' \
+  "$OUT_DIR/compose-config.json")"
+if [ -n "$EPHEMERAL_PORTS" ]; then
+  echo "bench shard publishes host port(s) $EPHEMERAL_PORTS at or above the ephemeral floor $EPHEMERAL_FLOOR" >&2
+  exit 2
+fi
+HTTP_PORT="$(jq -r '[.services.validator1.ports[]? | select(.target == 40403) | .published][0] // empty' \
+  "$OUT_DIR/compose-config.json")"
+if ! [[ "$HTTP_PORT" =~ ^[0-9]+$ ]]; then
+  # A shard without validator1 (the soak test fixtures) keeps the default
+  # remapped port. The readiness probe then shows whether the shard answers.
+  HTTP_PORT=14413
+  echo "bench shard publishes no host port for validator1 HTTP (container 40403); probing default $HTTP_PORT" >&2
+fi
 SAMPLER_PID=""
 
 cleanup() {
@@ -65,7 +99,11 @@ trap cleanup EXIT
 SEGMENT_STARTED_AT="$(date +%s)"
 
 if ! "${COMPOSE[@]}" up -d > "$OUT_DIR/compose-up.log" 2>&1; then
-  echo "shard compose up failed" >&2
+  # The soak driver copies only the segment.log tail into the job log, and
+  # compose-up.log stays on the runner until the run ends. Put the cause in
+  # the copied tail (soak 38184406100 lost it for two segments).
+  echo "shard compose up failed; compose-up.log tail:" >&2
+  tail -15 "$OUT_DIR/compose-up.log" >&2
   exit 1
 fi
 
@@ -109,6 +147,7 @@ SAMPLER_PID=$!
 BENCH_OUT="$OUT_DIR/bench"
 DURATION="$BENCH_DURATION" DEPLOYS_PER_SEC="$BENCH_RATE" OUT_DIR="$BENCH_OUT" \
   "$SCRIPT_DIR/latency-benchmark.sh" --apply \
+  --http-port "$HTTP_PORT" \
   --duration "$BENCH_DURATION" --rate "$BENCH_RATE" --out-dir "$BENCH_OUT" \
   > "$OUT_DIR/bench.log" 2>&1
 BENCH_STATUS=$?

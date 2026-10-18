@@ -10,8 +10,9 @@ use block_storage::rust::casperbuffer::casper_buffer_key_value_storage::CasperBu
 use block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage;
 use block_storage::rust::dag::block_metadata_store::BlockMetadataStore;
 use block_storage::rust::dag::equivocation_tracker_store::EquivocationTrackerStore;
-use block_storage::rust::deploy::key_value_deploy_storage::KeyValueDeployStorage;
-use block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer;
+use block_storage::rust::deploy::key_value_deploy_storage::{
+    KeyValueDeployStorage, KeyValueRejectedDeployBuffer,
+};
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use casper::rust::blocks::block_processor::{BlockQueueItem, InFlightBlocks};
 use casper::rust::casper::{CasperShardConf, MultiParentCasper};
@@ -286,12 +287,20 @@ impl TestFixture {
         let deploy_storage_store = Arc::new(MockKeyValueStore::with_shared_data(
             kvm_deploystorage.clone(),
         ));
-        let deploy_storage = KeyValueDeployStorage::from_store(deploy_storage_store);
+        let deploy_storage = KeyValueDeployStorage::from_stores(
+            deploy_storage_store,
+            Arc::new(MockKeyValueStore::new()),
+        )
+        .unwrap();
 
         // Rejected-deploy buffer: mirrors the deploy storage shape with its own backing store.
         let rejected_buffer_store = Arc::new(MockKeyValueStore::new());
         let rejected_deploy_buffer = Arc::new(std::sync::Mutex::new(
-            KeyValueRejectedDeployBuffer::from_store(rejected_buffer_store),
+            KeyValueRejectedDeployBuffer::from_stores(
+                rejected_buffer_store,
+                Arc::new(MockKeyValueStore::new()),
+            )
+            .unwrap(),
         ));
 
         // Scala: implicit val estimator = Estimator[Task](Estimator.UnlimitedParents, None)
