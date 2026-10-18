@@ -7,7 +7,7 @@
 - **Depends on:** the replication boundary of EPIC-025 (design PR #627, decision D7) and the lifecycle runtime of PR #651
 - **Mechanisms:** F1r3fly CbC Casper (`cbc-casper`) first. The RGB peer clique (`peer-clique`), Casanova (`casanova`), and Cordial Miners (`cordial-miners`) have provisions in section 11.
 - **Evidence source:** EPIC-021 and the issue #24 comments from 2026-08-27 to 2026-10-16
-- **Related design:** [Breaking the Validator Stall Loop](https://github.com/F1R3FLY-io/publications/blob/main/cost-accounting/stall-loop-design.pdf) (draft, 2026-10-16). Section 10.4 gives its effect on this design.
+- **Related design:** [Breaking the Validator Stall Loop](https://github.com/F1R3FLY-io/publications/blob/0b3255fc8/cost-accounting/stall-loop-design.pdf), revision 2 (2026-10-17), and its [finalizer response to section 5.10.1](https://github.com/F1R3FLY-io/publications/blob/0b3255fc8/cost-accounting/stall-loop-design-5-10-1-response.pdf) (2026-10-16). Section 10.4 gives their effect on this design.
 - **Vocabulary:** [docs/Glossary.md](../Glossary.md). The new terms in section 20 go into the glossary when this design is approved.
 
 ---
@@ -256,6 +256,7 @@ Rules:
 | API intake queue depth and age | Node | API layer |
 | Command admission wait and deadline misses | Lifecycle | `ConsensusRuntime` |
 | Mechanism signals | Mechanism | Declared in the `AdaptationDescriptor` |
+| Finalizer cursor yields, resumes, invalidations, and freezes, and commit refusals and A-LIN violations | Mechanism | `finalizer.cursor.*` and `finalizer.commit.*` of stall-loop A1c (section 10.4) |
 
 ### 9.2 Export
 
@@ -278,11 +279,13 @@ The `cbc-casper` adapter supplies the first `AdaptationDescriptor`. The binding 
 | Fresh-deploy escalation delays | 120 s and 300 s | Derived from the measured selection age against the deadline of the active soak profile, or removed if the closed loop replaces them |
 | Heartbeat wait before a proposal | Fixed by configuration | Bounded control. Shorter when deploys wait, longer when the node is idle. |
 | Merge and replay concurrency | Fixed | Bounded control, from the CPU signals |
-| Proposal coalescing and heartbeat debounce | None. Each deploy queues its own proposal (stall-loop A2). | First a fixed rule (TASK-021-20). Later a bounded control, with the measured TASK-021-20 values as tier bounds. |
-| Floor-distance pacing and pool admission cap | None. The 256-block floor cap refuses the merge (stall-loop A3). | First fixed thresholds (TASK-021-21). Later bounded controls, with those thresholds as tier bounds. |
-| Work off the async runtime | Replay, merge, and checkpoint run on tokio workers (stall-loop A6). | First a fixed pool size (TASK-021-22). Later a bounded control from the CPU and scheduler-delay signals. |
+| Proposal coalescing and heartbeat debounce | None on `dev`, where each deploy queues its own proposal (stall-loop A2). The A2 branch coalesces deploy-triggered proposals, without heartbeat debounce. | First the fixed rule of the A2 branch (TASK-021-20). Later a bounded control, with the measured TASK-021-20 values as tier bounds. |
+| Floor-distance pacing and pool admission cap | None on `dev`. The 256-block floor cap refuses the merge (stall-loop A3). The A3 branch stops user deploys above a floor distance of 128 and refuses deploys above 64 times `max-user-deploys-per-block`. | First these fixed values, after a measurement against the TASK-021-16 baseline (TASK-021-21). Later bounded controls, with the measured values as tier bounds. |
+| Work off the async runtime | Replay, merge, and checkpoint run on tokio workers (stall-loop A6). The A6 commit wraps them in `block_in_place`. | Not a control. `block_in_place` has no pool size to bound. The controller reads the tokio scheduler delay as a signal only. |
 
 The deploy cap is a proposer choice. Other validators do not check it. So a change of the cap does not change block validity (decision A2). The design adds a CbC claim for this property (TASK-027-4).
+
+The A9 rejection search cap (`casper.rejection-search-cap-from-height`) changes the merge result from an activation height. Other validators must apply the same cap, so the cap is a validity rule. It is never a controller control (decision A2).
 
 ### 10.2 Signals
 
@@ -293,6 +296,8 @@ The deploy cap is a proposer choice. Other validators do not check it. So a chan
 | Last finalized block lag | Blocks between the tip and the last finalized block |
 | Block replay time | Time to validate a peer block. On a v6 shard, the executed-root lag replaces it (section 10.4). |
 | Inclusion to finality time | Time from the first block that includes a deploy to its finalization |
+| Floor-pacing engagements | `block-creator.floor-pacing-engaged` of stall-loop A3. It counts proposals that carry no user deploys because the floor distance is above the threshold. |
+| Finalizer progress | The `finalizer.cursor.*` and `finalizer.commit.*` counters of stall-loop A1c (section 9.1) |
 
 ### 10.3 The sustained phase
 
@@ -300,7 +305,7 @@ In the sustained-phase failures, deploys wait after inclusion. Admission control
 
 ### 10.4 Relation to the stall-loop design
 
-The draft design [Breaking the Validator Stall Loop](https://github.com/F1R3FLY-io/publications/blob/main/cost-accounting/stall-loop-design.pdf) (2026-10-16) traces stalls under load to one feedback loop on the finality lag. It proposes two tracks:
+The design [Breaking the Validator Stall Loop](https://github.com/F1R3FLY-io/publications/blob/0b3255fc8/cost-accounting/stall-loop-design.pdf) traces stalls under load to one feedback loop on the finality lag. Revision 1 is dated 2026-10-16. Revision 2 (2026-10-17) changes the plan of this section, and section 10.4.1 gives the changes. The design proposes two tracks:
 
 - **Track A** (A1 to A9) fixes the loop on `dev` without cost accounting.
 - **Track B** lands cost-accounted order-then-execute for v6 shards, in about ten months.
@@ -309,11 +314,11 @@ The design is a code reading, without profiling. Decisions of 2026-10-16 for iss
 
 | Topic | Decision |
 |---|---|
-| Ownership of Track A | Issue #24 owns Track A. EPIC-021 holds the tasks (TASK-021-16 to TASK-021-23). |
-| Order of the work | Each Track A item is measured first (TASK-021-17). The measured rank sets the order. Soaks so far measured finalizer runs at 6 to 15 ms with no timeouts, and merger buckets at about 45 ms for each merge. |
+| Ownership of Track A | Issue #24 owns Track A. EPIC-021 holds the tasks (TASK-021-16 to TASK-021-24). |
+| Order of the work | Each Track A item is measured first (TASK-021-17). The measured rank sets the order. Section 10.4.1 replaces this decision. Soaks so far measured finalizer runs at 6 to 15 ms with no timeouts, and merger buckets at about 45 ms for each merge. |
 | Overlapping knobs (A2, A3, A6) | Fixed, measured thresholds land first. This design later puts them under the controller, with those values as tier bounds (section 10.1). |
 | Files of the cost-accounting merge | Issue #24 fixes avoid the 38 files that Track B step B1 expects to conflict where possible. A fix inside one of them carries a note for the cost-accounting lane. |
-| Cost-accounting scope in `dev` | Not decided. TASK-021-16 records a baseline before it lands, and TASK-021-23 repeats the soak after it lands. |
+| Cost-accounting scope in `dev` | Not decided on 2026-10-16. Revision 2 proposes the scope of section 10.4.1. TASK-021-16 records a baseline before it lands, and TASK-021-23 repeats the soak after it lands. |
 
 The [plan update of 2026-10-17](https://github.com/F1R3FLY-io/f1r3node-rust/issues/24#issuecomment-6220936428) uses weekend soak 38995239992 on master `ecb16dbca`. That soak had 0 `test_load` failures in 91 sessions (46 Docker, 45 subprocess). It stopped at 16.7 h of 57.5 h on a defect in the soak harness. The update changes three steps:
 
@@ -322,6 +327,29 @@ The [plan update of 2026-10-17](https://github.com/F1R3FLY-io/f1r3node-rust/issu
 | 0 (TASK-021-16) | Two prerequisites: PR #759 on `master`, and an I/O sampler that traces a node of the iteration's own shard. The gate is unchanged. |
 | 3 (TASK-021-13) | The scope depends on the step 0 soak. If that soak meets the gate, the task records that no cause remains (Q8). |
 | 4 and 5 (TASK-021-19) | A1 moves from step 4 to step 5. Finalizer runs averaged 20 to 25 ms in the sustained phase, with 0 timeouts in 91 sessions. |
+
+#### 10.4.1 Revision 2 and the Track A branches
+
+Revision 2 changes the plan above in three ways.
+
+1. **A1 has a new design.** The [response to section 5.10.1](https://github.com/F1R3FLY-io/publications/blob/0b3255fc8/cost-accounting/stall-loop-design-5-10-1-response.pdf) (2026-10-16) shows that the revision 1 rule is neither safe nor live. A run that adopts "the highest candidate proven so far" can finalize conflicting blocks, regress settled state, or commit after a race between the check and the write. Revision 2 replaces A1 with A1a, A1b, and A1c.
+2. **Track A has code before the measurement.** The rank of TASK-021-17 no longer sets the order of the work. Each item is measured after it lands, against the TASK-021-16 baseline.
+3. **The cost-accounting scope has a proposal.** Order-then-execute applies to v6 shards only. Legacy shards keep the `dev` pipeline byte-identical, within 3 percent of its cost. Track B step B1 brings the cost-accounting core into `dev` without the scheduler.
+
+Revision 2 records its decisions for the Casper Working Group and names no approvers. This design therefore treats them as provisional.
+
+The branches have no pull requests yet. Each branch is 42 to 49 commits behind `dev` and does not contain the PR #751 metrics of TASK-021-17.
+
+| Branch (tip) | Items | Base | Notes for issue #24 |
+|---|---|---|---|
+| `fix/finality-stall-track-a` (`d1c3a970f`) | A1a shared oracle cache with at most 3 reruns of a timed-out run, A2 coalescing, and A3 pacing and pool cap | `dev` | Fixed values: floor distance 128, pool cap 64 times `max-user-deploys-per-block`, HTTP 503 with `Retry-After` |
+| `fix/finalizer-forward-progress` (`8b1b10f2a`) | A1b timeout on the derivation only, and A1c resumable cursor and atomic `commit_lfb` | The branch above | Two new LMDB stores and an optional `commit-epoch` on `BlockFinalised` events |
+| `fix/stall-track-a-rest` (`16c57af9c`) | A4 to A9 | The branch above | Its A7 commit duplicates PR #752 and conflicts with `dev`. A4 skips the signature check for a cached encoding. A9 changes the merge result from an activation height and is off by default. |
+| `feature/cost-accounted-ote` (`e7469fd47`) | v6 tranche 1 behind `casper.v6-order-then-execute`, default off | `dev` | Outside the scope of this design (section 17). It conflicts with `fix/stall-track-a-rest` in three files. |
+
+On legacy multi-parent shards, A-LIN does not hold. The A1c integration run logged commits that contain the previous last finalized block only through a secondary parent. A1c therefore logs and counts an A-LIN violation on a legacy shard, and halts on a v6 shard.
+
+The Track A branches change files that `.gitattributes` tags `cbc=mandatory`, for example `block_creator.rs`, `finalization_runner.rs`, and `conflict_set_merger.rs`. They add no CbC claims. A claim or a recorded waiver for each tagged file is a condition for the merge.
 
 v6 shards are outside the scope of this design (section 17). On a v6 shard, structural validity checks the sum of the phlo limits of a block against a per-block demand cap. A future v6 descriptor must therefore keep each admission ceiling at or below that protocol cap. Its replay signal becomes the lag of the executed root behind the last finalized block. Open question Q9 records this.
 
@@ -455,7 +483,8 @@ The allocator is part of the host class. Soak 38300649650 showed that the same b
 | Step | Task | Change | Condition |
 |---|---|---|---|
 | 1 | TASK-027-1 | This design | Architect ratification (section 2.1) |
-| 2 | TASK-027-2 | Telemetry signals and records, with no control changes. It reuses the Track A metrics of TASK-021-17. | PR #651 merged into `dev` |
+| 1a | TASK-021-24 | Soak of the Track A branches against the TASK-021-16 baseline (section 10.4.1) | The Track A branches merged with `dev`, including the PR #751 metrics |
+| 2 | TASK-027-2 | Telemetry signals and records, with no control changes. It reuses the Track A metrics of TASK-021-17 and the A1c finalizer counters. | PR #651 merged into `dev` |
 | 3 | TASK-027-3 | Hardware probe, tier profiles, and the probe warning | Step 2 |
 | 4 | TASK-027-4 | Controller and degradation levels, and the CbC claim for I1 to I6 | Step 3 |
 | 5 | TASK-027-5 | F1r3fly CbC Casper (`cbc-casper`) binding of the admission controls | Step 4 |
@@ -561,8 +590,8 @@ No question blocks ratification (section 2.1). The Blocks column names the first
 | Q5 | Is a mixed-tier shard test in CI possible on the current runners, or does it need the test net of EPIC-014? | The mixed-tier test of TASK-027-4 | Run the CI test in one process with the multi-node harness of `casper/tests/multi_node`. Give each node different control values. Run a full mixed-tier shard on the EPIC-014 test net. |
 | Q6 | Who owns the adaptation descriptors and soak profiles of the RGB peer clique, Casanova, and Cordial Miners? EPIC-014 gives each mechanism its own test net and design record. | TASK-027-9 | The owner of each adapter owns its descriptor and its soak profile. EPIC-027 owns the controller and the `cbc-casper` binding. |
 | Q7 | Should F1r3fly CbC Casper reward timely participation? `PoS.rhox` pays epoch rewards in proportion to bond only, but Ethereum makes timely work profitable through rewards (section 16). A timeliness reward changes replicated state, so it needs its own design and a CbC claim (decision A2). | No EPIC-027 task | Leave it open, and start a separate design if the shard needs a timeliness incentive. |
-| Q8 | Does the close-out of issue #24 wait for this design? Decisions A5 and A6 give it to EPIC-027, but soak 38501465484 measured 1.9% without a controller (section 3). | TASK-027-8 | Keep A5 and A6 for ratification, and decide Q8 after the first full-length soak with PR #741 and PR #759 (TASK-021-16). If that soak meets gates 1 and 2 of section 14.1 and TASK-021-13 resolves Q1, close issue #24 under EPIC-021 and keep EPIC-027 for US-012 (section 10.4 gives the step 3 rule for a soak with no sustained-phase failures). |
-| Q9 | Does a v6 shard get its own adaptation descriptor? Under cost-accounted order-then-execute, the per-block demand cap is a validity rule, and replay leaves the consensus path (section 10.4). | A v6 binding, outside EPIC-027 | Decide when the cost-accounting scope in `dev` is decided. A v6 descriptor keeps each admission ceiling at or below the protocol demand cap. |
+| Q8 | Does the close-out of issue #24 wait for this design? Decisions A5 and A6 give it to EPIC-027, but soak 38501465484 measured 1.9% without a controller (section 3). | TASK-027-8 | Keep A5 and A6 for ratification, and decide Q8 after the TASK-021-16 soak and, if Track A lands, the TASK-021-24 soak (section 10.4.1). If that soak meets gates 1 and 2 of section 14.1 and TASK-021-13 resolves Q1, close issue #24 under EPIC-021 and keep EPIC-027 for US-012 (section 10.4 gives the step 3 rule for a soak with no sustained-phase failures). |
+| Q9 | Does a v6 shard get its own adaptation descriptor? Under cost-accounted order-then-execute, the per-block demand cap is a validity rule, and replay leaves the consensus path (section 10.4). | A v6 binding, outside EPIC-027 | Decide with the cost-accounting scope in `dev`, which revision 2 proposes (section 10.4.1). A v6 descriptor keeps each admission ceiling at or below the protocol demand cap. |
 
 ---
 

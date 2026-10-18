@@ -792,7 +792,7 @@ status: in_progress
 priority: p0
 user_story: null
 issues: [24]
-closed_out_by: "EPIC-027 (2026-10-13). This epic keeps its measurement and fix history. Its open tasks, TASK-021-13 first, are inputs to EPIC-027. Since 2026-10-16 it also holds the stall-loop Track A plan (TASK-021-16 to TASK-021-23, adaptive-execution.md section 10.4)."
+closed_out_by: "EPIC-027 (2026-10-13). This epic keeps its measurement and fix history. Its open tasks, TASK-021-13 first, are inputs to EPIC-027. Since 2026-10-16 it also holds the stall-loop Track A plan (TASK-021-16 to TASK-021-24, adaptive-execution.md section 10.4)."
 blocked_by: []
 created_at: 2026-10-03
 updated_at: 2026-10-06
@@ -1230,9 +1230,10 @@ tasks:
       - "Plan step 1. Issue #24 owns Track A (decision of 2026-10-16). TASK-027-2 reuses these metrics."
       - "Avoid the 38 files that stall-loop step B1 expects to conflict where possible."
     hygiene_note: "2026-10-16 hygiene: PR #751 merged the Track A metrics. Open: one soak that ranks the Track A items, and the issue #24 report of the rank."
+    decision: "2026-10-18: stall-loop revision 2 (publications 0b3255fc8) has code for A1 to A9 on three stacked branches before the rank exists (adaptive-execution.md section 10.4.1). The TASK-021-16 soak gives the cost of each item before the fixes, and TASK-021-24 measures each item after them. The rank no longer sets the order of the work."
     acceptance:
       - "ISSUE24_METRICS records the deploy-pool lock hold time and the signature checks for each proposal (A4), the proposer queue depth and the empty-block rate (A2), the floor distance (A3), the tokio worker saturation (A6), and the finalizer run time against its 15 s deadline (A1)."
-      - "One soak ranks the Track A items by measured cost, and the issue #24 report records the rank."
+      - "The issue #24 report gives the cost of each Track A item in the TASK-021-16 soak, and the change of each cost in the TASK-021-24 soak."
   - id: TASK-021-18
     title: "Fix the buffer eviction order and the re-fetch cooldown (stall-loop A7)"
     status: in_progress
@@ -1243,29 +1244,35 @@ tasks:
     blocked_by: []
     notes:
       - "Plan step 2. Both defects are independent of load. casper_buffer_key_value_storage.rs computes age as now - first_seen, sorts ascending, and removes the first entry, which is the youngest pendant (verified on dev 555a5e442)."
+      - "PR #752 merged the fix into dev on 2026-10-17. Commit 46d49cb83 on fix/stall-track-a-rest fixes the same defects in a different way and conflicts with dev in casper_buffer_key_value_storage.rs. After a text merge, its ack_duplicate path is dead code under the PR #752 check. The reviewer feedback asks to drop that commit."
+    hygiene_note: "2026-10-18: PR #752 merged. The status stays in_progress until the TASK-021-24 soak confirms linear re-fetch traffic."
     acceptance:
       - "Eviction removes the oldest dependency-free entry. A unit test fails on the old order."
       - "A duplicate reply to a re-fetch keeps the cooldown and the retry counter. A unit test fails on the old behavior."
   - id: TASK-021-19
-    title: "Keep finalizer progress at the run deadline (stall-loop A1)"
+    title: "Keep finalizer progress at the run deadline (stall-loop A1a, A1b, A1c)"
     status: pending
     claimed_by: null
     pr_base_branch: dev
-    blocked_by: [TASK-021-17]
+    blocked_by: ["fix/finality-stall-track-a (d1c3a970f) and fix/finalizer-forward-progress (8b1b10f2a) merged with dev and opened as pull requests"]
     notes:
+      - "2026-10-18: the response to stall-loop section 5.10.1 shows that the revision 1 rule ('adopts the highest candidate proven so far') is neither safe nor live. Revision 2 replaces it with A1a (shared oracle cache, at most 3 reruns), A1b (the timeout covers the derivation only), and A1c (resumable cursor, validation under the write lock, atomic commit_lfb). Lucius Meredith implemented them on the two branches of blocked_by. A-LIN is an alarm on legacy shards (adaptive-execution.md section 10.4.1)."
       - "Plan step 5 (moved from step 4 on 2026-10-17, issue #24 comment 6220936428). finalization_runner.rs drops a run that exceeds 15 s, so a later run starts again over a larger cone."
       - "Soak 38995239992 (2026-10-17): sustained-phase finalizer runs averaged 20 ms on Docker and 25 ms on subprocess, with a highest phase mean of 70 ms. finalizer.run.timeouts and failures were 0 in 91 sessions over 16.7 h. The item has no measured cost yet, so it waits for its place in the TASK-021-17 rank."
     acceptance:
-      - "A run that reaches its deadline adopts the highest candidate proven so far. One oracle run cache is shared across a frontier derivation."
-      - "finalizer.run.timeouts stays 0 in a 60-hour soak, and the last finalized block never stalls."
+      - "A timed-out derivation never commits, and the deadline never cancels a commit."
+      - "The tests of the response section 5 pass: no conflicting finality on a split committee, no settled-state regression, an injected deadline at each cursor state never commits, atomic adoption with exactly-once event delivery, and the A-LIN and TOCTOU injection tests."
+      - "The last finalized block never stalls in a 60-hour soak, and the finalizer.cursor and finalizer.commit counters stay bounded. finalizer.run.timeouts need not be 0."
+      - "The CbC claims or recorded waivers for the cbc=mandatory files that the branches change exist before the merge."
   - id: TASK-021-20
     title: "Coalesce proposals and stop empty deploy-triggered blocks (stall-loop A2, issue #24 item 4)"
     status: pending
     claimed_by: null
     pr_base_branch: dev
-    blocked_by: [TASK-021-17]
+    blocked_by: ["fix/finality-stall-track-a (d1c3a970f) merged with dev and opened as a pull request"]
     notes:
       - "Plan step 4. A fixed rule first. adaptive-execution.md section 10.1 later puts it under the controller, with these values as tier bounds."
+      - "2026-10-18: commit c93cff5ff on fix/finality-stall-track-a coalesces deploy-triggered proposals. Heartbeat debounce is not in it. The TASK-021-24 soak measures the queue depth and the empty-block rate against TASK-021-16."
     acceptance:
       - "Deploy-triggered proposal requests coalesce into one pending proposal, and the proposer queue depth stays at most 1."
       - "A deploy-triggered proposal never builds an empty block, and the empty-block rate under load falls against TASK-021-16."
@@ -1274,9 +1281,10 @@ tasks:
     status: pending
     claimed_by: null
     pr_base_branch: dev
-    blocked_by: [TASK-021-17]
+    blocked_by: ["fix/finality-stall-track-a (d1c3a970f) merged with dev and opened as a pull request"]
     notes:
       - "Plan step 4. Fixed thresholds first, set from TASK-021-17 data. The controller later uses them as tier bounds."
+      - "2026-10-18: commit d1c3a970f sets the thresholds without a measurement: pacing above a floor distance of 128 (half of the 256 backstop), and a pool cap of 64 times max-user-deploys-per-block (8192 at the default) with HTTP 503 deploy_pool_full and Retry-After 5. The pool count is the raw LMDB entry count of the deploy store. The TASK-021-24 soak keeps or changes these values."
     acceptance:
       - "Above a floor-distance threshold well below 256, proposals include no ordinary deploys and only advance finality."
       - "The deploy pool rejects new deploys above a size threshold with a typed, retryable busy error."
@@ -1286,12 +1294,15 @@ tasks:
     status: pending
     claimed_by: null
     pr_base_branch: dev
-    blocked_by: [TASK-021-17]
+    blocked_by: ["fix/stall-track-a-rest (16c57af9c) merged with dev without commit 46d49cb83 and opened as a pull request"]
     notes:
       - "Plan step 5. TASK-021-17 sets the order. A9 (merging_logic.rs) and the hot-channel representation touch files near the cost-accounting merge, so they come last and carry a note for the cost-accounting lane."
+      - "2026-10-18: fix/stall-track-a-rest has code for A4 to A9. A7 is TASK-021-18. Two items need review before the merge. A4 (600689764) keeps a process-wide cache of verified deploy encodings and skips the signature check on a cache hit. A9 (16c57af9c) changes the merge result from casper.rejection-search-cap-from-height, so it is a validity rule with an activation height, off by default (adaptive-execution.md section 10.1)."
     acceptance:
       - "Each item meets the exit criterion of the stall-loop design, for example prepare time flat in pool size for A4."
       - "Each fix outside the 38 conflict files, or a recorded reason with a note to the cost-accounting lane."
+      - "A security review accepts the A4 encoding cache. The cache keys on the Blake2b-256 digest of the whole signed encoding, and a hit skips only the signature check of the same bytes."
+      - "A9 has a recorded activation decision with named approvers before any shard sets its activation height."
   - id: TASK-021-23
     title: "Repeat the baseline soak after cost accounting lands in dev"
     status: pending
@@ -1303,6 +1314,19 @@ tasks:
     acceptance:
       - "The same soak profile as TASK-021-16 runs on dev with cost accounting."
       - "The issue #24 report compares both runs and records new baselines if legacy cost changed."
+  - id: TASK-021-24
+    title: "Soak the Track A branches against the TASK-021-16 baseline"
+    status: pending
+    claimed_by: null
+    pr_base_branch: null
+    blocked_by: [TASK-021-16, "The Track A branches merged with dev, including the PR #751 metrics"]
+    notes:
+      - "Plan step 1a (adaptive-execution.md section 15). Added on 2026-10-18 for stall-loop revision 2 (section 10.4.1). The branches are 42 to 49 commits behind dev and do not contain the PR #751 metrics, so a soak of the branches as they are cannot measure the Track A items."
+      - "Use the TASK-021-16 soak profile, with the node I/O sampler on, so that both runs compare directly."
+    acceptance:
+      - "The soak gives at least 100 test_load sessions on each provider."
+      - "The issue #24 report compares the failure rate, the phase of each failure, and the Track A metrics with TASK-021-16."
+      - "The last finalized block never stalls, and the report gives the finalizer.cursor, finalizer.commit, and block-creator.floor-pacing-engaged counts."
 ---
 ```
 
