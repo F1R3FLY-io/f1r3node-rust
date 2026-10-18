@@ -531,7 +531,7 @@ if [[ "${1:-}" == "--match-preparation" ]]; then
   rspace_preparation_run_tests 5 --test serializer_byte_goldens
   rspace_preparation_run_tests 2 --test bag_spec transaction_delta
   rspace_preparation_run_tests 1 --test bag_spec multiplicity_rejects_zero_and_detects_overflow
-  rspace_preparation_run_tests 22 --test rho_path_spec
+  rspace_preparation_run_tests 24 --test rho_path_spec
   TLC_MEMORY_HIGH=1792M TLC_RSS=2G TLC_CPU_QUOTA=400% TLC_TASKS_MAX=512 \
     rpb3_run_tests 1 --release --locked -j4 --test cold_store_records \
       par_typed_datum_decode_matches_the_derived_oracle

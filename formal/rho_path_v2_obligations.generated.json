@@ -23,6 +23,8 @@
       "rho_path_errors_are_not_mislabeled_by_wire_version",
       "v2_continuation_has_u64_count_and_rejects_empty_groups",
       "v2_continuation_preserves_order_and_zero_escaping",
+      "v2_borrowed_receive_positions_keep_duplicates_and_prefix_boundaries",
+      "v2_borrowed_receive_positions_refine_ordered_channel_occurrences",
       "v2_continuation_rejects_count_mismatch_without_fallback",
       "v2_wide_repeated_channel_positions_preserve_every_occurrence",
       "v2_headers_and_escapes_fail_closed",
@@ -140,7 +142,7 @@
     "formal/tlaplus/stack_safe_pda/RhoPathV2LifecycleOverwriteMutant.cfg": "233a78a56eb2972e46742bdf983cef96cc92bb580a0cc763833a7a4781dc4766",
     "formal/tlaplus/stack_safe_pda/RhoPathV2LifecycleOverwriteMutant.tla": "678019bff3b23322cde42c7cde8482aaecb59188b1af8e338cafd1056455c12a",
     "rspace++/Cargo.toml": "61e3374b61b5ac5bbc9c0b269515e04c3f43d0207f4a5fe32c06f6906b3f725c",
-    "rspace++/tests/rho_path_spec.rs": "9825d393fe2fe2941dd5dfbca74b8b8ffe991101f13ec80553e5f96cad09d068"
+    "rspace++/tests/rho_path_spec.rs": "25d6ed6736474d4bbcd7e678038c459756e53f334f6fa9f53611eff25f2d7eae"
   },
   "tlc": {
     "actions": [

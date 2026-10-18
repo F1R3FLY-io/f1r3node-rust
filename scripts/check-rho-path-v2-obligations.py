@@ -287,7 +287,7 @@ def extract(sources):
         r"^[ \t]*fn[ \t]+([A-Za-z_][A-Za-z_0-9]*)[ \t]*\(",
         "rho_path_spec test name",
     )
-    require(len(test_names) == 22, "rho_path_spec normal-suite count changed")
+    require(len(test_names) == 24, "rho_path_spec normal-suite count changed")
     for name in test_names:
         test_target(tests, name)
     require(
@@ -303,10 +303,10 @@ def extract(sources):
         )
     require(
         re.search(
-            r"rspace_preparation_run_tests[ \t]+22[ \t]+--test[ \t]+rho_path_spec",
+            r"rspace_preparation_run_tests[ \t]+24[ \t]+--test[ \t]+rho_path_spec",
             runner,
         ),
-        "22-test rho_path_spec gate absent from normal proof runner",
+        "24-test rho_path_spec gate absent from normal proof runner",
     )
     require(
         'python3 "$repo_root/scripts/check-rho-path-v2-obligations.py" --check'
@@ -459,7 +459,7 @@ def main():
     else:
         self_test(sources, inventory)
     print(
-        f"RhoPath V2 registry {'mutations passed' if args.self_test else 'current'}: {len(ROCQ_OBLIGATIONS)} Rocq, {len(INVARIANTS)} TLC, {len(MUTANTS)} mutants, 22 normal-suite tests"
+        f"RhoPath V2 registry {'mutations passed' if args.self_test else 'current'}: {len(ROCQ_OBLIGATIONS)} Rocq, {len(INVARIANTS)} TLC, {len(MUTANTS)} mutants, 24 normal-suite tests"
     )
 
 
