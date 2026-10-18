@@ -714,7 +714,8 @@ tasks:
     status: pending
     blocked_by: [TASK-027-2]
     acceptance:
-      - "The probe reads the CPU cores, the cgroup memory limit, the disk write latency, and the host class at startup."
+      - "The probe reads the CPU share from the cgroup CPU limit, the cgroup memory limit, the disk write latency, and the host class at startup. On a host without a CPU limit, it reads the host cores and records that no limit exists."
+      - "The node reads its role (validator or non-validator) from the bonds at the last finalized block and reads it again when the bonds change. A role floor above the tier ceiling keeps the control at the ceiling and writes a probe warning that names the control (design section 6, issue #691)."
       - "tier = auto selects a profile from the probe. A named tier selects that profile, and the node records the choice. The probe runs in both cases."
       - "An operator override can narrow a bound and cannot widen it. A test proves both cases."
       - "The probe compares the host with the published targets of design section 14.3: the named tier, or the Constrained targets when tier = auto."
@@ -739,6 +740,8 @@ tasks:
       - "The PR #695 backlog rule stays, and its bound comes from the profile."
       - "Block validation does not read any controlled value."
       - "A local high-phase run shows a lower deploy age at selection than the fixed cap of 8."
+      - "The block pipeline width replaces MAX_PARALLEL_BLOCKS: the role floor (active validators, minus 1 on a validator), limited by derive_max_concurrent of the cgroup CPU share, with a minimum of 3. The replay lock takes its permits from the same value (design section 10.1, issue #691)."
+      - "A read-only observer under cgroup CPU limits keeps its processing queue and buffer bounded at the validator block rate with 4 validators, and no level of design section 8 slows its block validation."
   - id: TASK-027-6
     title: "Fix the sustained-phase wait from inclusion to finality"
     status: pending

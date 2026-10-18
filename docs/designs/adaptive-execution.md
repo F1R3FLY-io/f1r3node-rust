@@ -72,6 +72,15 @@ The issue #24 history gives seven facts that this design must use.
 
 PR #695 already makes the non-leader fresh-admission cap follow the local backlog. This design keeps that change and puts its bounds under the controller (section 10.1).
 
+Issue #691 gives evidence for the merge and replay concurrency control of section 10.1, on nodes that are not validators.
+
+| Fact | Source | Effect on the design |
+|---|---|---|
+| A height holds about one block for each active validator. A validator replays the blocks of the other validators only, because it creates its own block without a replay. A non-validator replays all of them. With 3 validators and the fixed width `MAX_PARALLEL_BLOCKS` = 2, a non-validator needs two rounds for each height. | Issue #691 description | The floor of the control depends on the role of the node and on the number of active validators (section 6). |
+| With width 2, the read-only observer stayed at 86 to 91 percent of the validator DAG, and the gap grew by about 270 blocks per hour. With width 3, it stayed at 99.7 to 100 percent for 8 hours, with no memory growth and about 5 percent more CPU. | Issue #691 description and its comment of 2026-10-12 | A fixed width does not scale with the validator count. At 4 validators, width 3 is short again. |
+| With width 2 and fast heartbeat settings, the observer buffer reached 16,384 entries, and the observer and the bootstrap node stopped on out-of-memory 31 and 34 times. | Issue #691 description | A non-validator that falls behind also fills its buffer. Catch-up on such a node is a required duty, not optional work (section 8). |
+| Three nodes on one 4-OCPU VM compete for CPU. In a local run with 4 validators, width 3 slowed block creation from 4.4 s to 7.6 s. | Issue #691 comment of 2026-10-13 | The ceiling comes from the CPU share of the node, which the probe reads from the cgroup limit. |
+
 No full-length soak on the code with both PR #695 and the jemalloc hotfix exists yet. The soaks of 2026-10-15 and 2026-10-16 stopped on a workflow defect before the first iteration ([issue #24 comment 6217970582](https://github.com/F1R3FLY-io/f1r3node-rust/issues/24#issuecomment-6217970582)). Hotfix PR #741 repairs that defect.
 
 ---
@@ -150,9 +159,16 @@ pub struct HardwareProfile {
 
 pub struct ControlId(&'static str);
 
+pub enum NodeRole { Validator, NonValidator }
+
+pub enum FloorRule {
+    Fixed(u32),
+    BlocksPerHeight { validator_offset: u32 },
+}
+
 pub struct ControlSpec {
     pub id: ControlId,
-    pub floor: u32,
+    pub floor: FloorRule,
     pub ceiling: u32,
     pub step: u32,
     pub direction: Direction,
@@ -188,6 +204,9 @@ pub struct ControlUpdate {
 
 - `HostClass` records the container or process context, for example `docker` or `subprocess`. The soak evidence shows that this class changes the result.
 - A `TierProfile` gives the floor and the ceiling of each control for one tier. A mechanism supplies default profiles. An operator can narrow them in the configuration, but cannot widen them.
+- `NodeRole` records whether the node is a bonded validator. A read-only observer and a bootstrap node are non-validators. The node reads its role from the bonds at the last finalized block, and it reads the role again when the bonds change.
+- `FloorRule` gives the floor of a control. `Fixed` is a constant. `BlocksPerHeight` is the number of active validators, minus `validator_offset` on a validator node. The `cbc-casper` binding uses an offset of 1, because a validator does not replay its own block (section 10.1).
+- A role floor can be above the ceiling of the tier profile. Then the control stays at the ceiling, and the probe warning of this section names the control and the missing capacity.
 - `Direction` states whether a higher value means more work or less work.
 - The least-work bound of a control is its floor when a higher value means more work. It is the ceiling when a higher value means less work. Section 8 uses this bound.
 - The probe compares the `HardwareProfile` with the published targets of section 14.3. With a named tier, the probe uses the targets of that tier. With `tier = "auto"`, it uses the `Constrained` targets.
@@ -230,13 +249,14 @@ The levels go from normal operation to the protection of liveness. The node chan
 | Level | Name | Action |
 |---|---|---|
 | L0 | Normal | All work runs inside the tier profile bounds. |
-| L1 | Shed optional work | Stop or slow work that does not affect correctness: block report replays, observer catch-up, cache warming, prefetch, and optional metrics collection. |
+| L1 | Shed optional work | Stop or slow work that does not affect correctness: block report replays, cache warming, prefetch, and optional metrics collection. |
 | L2 | Limit intake | Reduce API intake and the mechanism admission controls. A full intake queue rejects new deploys with a typed, retryable overload error. It does not queue without a limit. |
 | L3 | Protect liveness | Keep only the duties that the mechanism marks as required for liveness and safety. Reject new deploys with the overload error. Report the level on the status API. |
 
 Rules:
 
 - No level drops a duty that the mechanism marks as required. Section 11.1 lists the required duties of each mechanism.
+- On a non-validator node, catch-up with the network is a required duty. A read-only observer or a bootstrap node exists to follow the shard. No level slows its block validation, and no level sets a control below its role floor (section 6). Issue #691 shows the result of a short pipeline on such a node: a growing lag, a full buffer, and out-of-memory stops.
 - No level delays a required duty past the protocol deadline that the mechanism declares for it (invariant I6).
 - A deploy that the node accepted is never dropped without a recorded rejection.
 - The node returns to a lower level with the same hysteresis rules as section 7.
@@ -278,7 +298,7 @@ The `cbc-casper` adapter supplies the first `AdaptationDescriptor`. The binding 
 | Non-leader fallback ordinary deploy cap | `NON_LEADER_FALLBACK_ORDINARY_DEPLOY_CAP` = 8, with 4, 16, and 32 as fixed steps | Floor and ceiling from the tier profile. The PR #695 backlog rule stays, and its bound comes from the profile. |
 | Fresh-deploy escalation delays | 120 s and 300 s | Derived from the measured selection age against the deadline of the active soak profile, or removed if the closed loop replaces them |
 | Heartbeat wait before a proposal | Fixed by configuration | Bounded control. Shorter when deploys wait, longer when the node is idle. |
-| Merge and replay concurrency | Fixed | Bounded control, from the CPU signals |
+| Merge and replay concurrency | `MAX_PARALLEL_BLOCKS` = 2 in `block_processor.rs`, with `REPLAY_LOCK_PERMITS` = width + 2 (issue #691) | First a startup value: the role floor (section 6), limited by `derive_max_concurrent` of the cgroup CPU share, with a minimum of 3. The replay lock takes its permits from the same value. Later a bounded control from the CPU and pipeline signals of section 10.2. |
 | Proposal coalescing and heartbeat debounce | None on `dev`, where each deploy queues its own proposal (stall-loop A2). The A2 branch coalesces deploy-triggered proposals, without heartbeat debounce. | First the fixed rule of the A2 branch (TASK-021-20). Later a bounded control, with the measured TASK-021-20 values as tier bounds. |
 | Floor-distance pacing and pool admission cap | None on `dev`. The 256-block floor cap refuses the merge (stall-loop A3). The A3 branch stops user deploys above a floor distance of 128 and refuses deploys above 64 times `max-user-deploys-per-block`. | First these fixed values, after a measurement against the TASK-021-16 baseline (TASK-021-21). Later bounded controls, with the measured values as tier bounds. |
 | Work off the async runtime | Replay, merge, and checkpoint run on tokio workers (stall-loop A6). The A6 commit wraps them in `block_in_place`. | Not a control. `block_in_place` has no pool size to bound. The controller reads the tokio scheduler delay as a signal only. |
@@ -296,6 +316,8 @@ The A9 rejection search cap (`casper.rejection-search-cap-from-height`) changes 
 | Last finalized block lag | Blocks between the tip and the last finalized block |
 | Block replay time | Time to validate a peer block. On a v6 shard, the executed-root lag replaces it (section 10.4). |
 | Inclusion to finality time | Time from the first block that includes a deploy to its finalization |
+| Block pipeline load | `block_processing_active`, the processing queue depth, and `casper_buffer_approx_nodes` (issue #691) |
+| Block validation time | `block_validation_time`, the time to validate one received block |
 | Floor-pacing engagements | `block-creator.floor-pacing-engaged` of stall-loop A3. It counts proposals that carry no user deploys because the floor distance is above the threshold. |
 | Finalizer progress | The `finalizer.cursor.*` and `finalizer.commit.*` counters of stall-loop A1c (section 9.1) |
 
@@ -458,7 +480,7 @@ Each profile also checks gate 4 (no out-of-memory, watchdog, or guardian stop) a
 | Level | Method |
 |---|---|
 | Unit | The controller as a pure function of signal windows and a tier profile. No mocks inside the node. Time is the only boundary. |
-| Integration | A node under cgroup CPU and memory limits in CI. The test checks the degradation level and the absence of out-of-memory stops. |
+| Integration | A node under cgroup CPU and memory limits in CI. The test checks the degradation level and the absence of out-of-memory stops. A read-only observer under the same limits keeps its processing queue and its buffer bounded at the block rate of the validators (issue #691). |
 | Soak | The `cbc-casper` profile on both host classes |
 | Benchmark | A baseline for each tier: deploys per second, inclusion p95, and finalization p95. A regression check runs for each release. |
 
