@@ -724,6 +724,8 @@ tasks:
     title: "Add the adaptive controller and the degradation levels"
     status: pending
     blocked_by: [TASK-027-3]
+    notes:
+      - "2026-10-18: the PR #651 boundary at be3f23cc7 has no channel for control updates in AdapterContext. This task adds it (design section 5.1). Queue bounds are counts only, and packets have no deadline, so the memory and deadline signals need payload bytes and packet age."
     acceptance:
       - "A pending CbC claim states invariants I1 to I6 before the controller code."
       - "Unit tests drive the controller as a function of signal windows and a tier profile, with time as the only boundary."
@@ -1209,14 +1211,16 @@ tasks:
       - "The issue #244 memory ceiling (TASK-012-25) is measured before and after the change."
   - id: TASK-021-16
     title: "Record the pre-cost-accounting baseline soak"
-    status: pending
-    claimed_by: null
+    status: in_progress
+    claimed_by: claude-session-dfac55a4
+    claimed_at: 2026-10-18T19:15:00Z
     pr_base_branch: null
-    blocked_by: ["PR #759 on master", "sample-node-io.sh traces a node of the iteration's own shard"]
+    blocked_by: []
     notes:
       - "Plan step 0 of 2026-10-16 (adaptive-execution.md section 10.4). The stall-loop design (https://github.com/F1R3FLY-io/publications/blob/main/cost-accounting/stall-loop-design.pdf) is a code reading without profiling, so the plan measures first."
       - "PR #748 removes the 8-hour merge exit, so a daily soak runs its full window. On 2026-10-17, master contains PR #741 and PR #748."
       - "Plan update of 2026-10-17 (issue #24 comment 6220936428): weekend soak 38995239992 on master ecb16dbca had 0 test_load failures in 91 sessions (46 Docker, 45 subprocess). The disk floor stopped it at 16.7 h of 57.5 h, because each iteration kept an uncompressed node-metrics file. PR #759 compresses that file. From iteration 84, the strace sample of sample-node-io.sh traced the validator of the active benchmark shard."
+      - "2026-10-18: both blockers are done (PR #759 and PR #760 on master). Weekend soak 39089710676 runs on master 532e5c696, which dev 5ff390e15 contains through back-merge PR #763. Interim segment 1 (14:38Z, 9.5 h): 52 sessions (26 Docker, 26 subprocess), 1 failure on subprocess, 1.9 percent, no protection breach. The window ends 2026-10-19 14:30Z (adaptive-execution.md section 3)."
     acceptance:
       - "A full-length soak on current dev with the node I/O sampler gives at least 100 test_load sessions on each provider."
       - "The issue #24 report records the failure rate, the phase of each failure, and the stage metrics as the baseline for TASK-021-23."

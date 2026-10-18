@@ -90,7 +90,15 @@ Other `testnet-path` issues give evidence for the admission bound, the pool cost
 | The floor derivation cost grows faster than the committee size. At about 19 validators, the validation of one block took 1.5 s instead of 0.1 s, and finality lost agreement. PR #674 removed one cause. | Issue #477 | The committee size is an input to the tier ceiling and to the published tier targets (section 14.3). |
 | Both processing slots stayed held after the merge step for 75 minutes, with an idle CPU and no validation. The node then dropped every block at the in-flight limit of 512. | Issue #744 | A held slot with an idle CPU is a wedge, not overload. The controller reports a wedge and does not step down (section 10.2). |
 
-No full-length soak on the code with both PR #695 and the jemalloc hotfix exists yet. The soaks of 2026-10-15 and 2026-10-16 stopped on a workflow defect before the first iteration ([issue #24 comment 6217970582](https://github.com/F1R3FLY-io/f1r3node-rust/issues/24#issuecomment-6217970582)). Hotfix PR #741 repairs that defect.
+The soaks of 2026-10-15 and 2026-10-16 stopped on a workflow defect before the first iteration ([issue #24 comment 6217970582](https://github.com/F1R3FLY-io/f1r3node-rust/issues/24#issuecomment-6217970582)). Hotfix PR #741 repairs that defect. Weekend soak 38995239992 then stopped at 16.7 h of 57.5 h on the disk floor of the soak runner, a harness defect that PR #759 repairs.
+
+**Step 0 baseline (TASK-021-16), interim.** Weekend soak [39089710676](https://github.com/F1R3FLY-io/f1r3node-rust/actions/runs/39089710676) runs on `master` `532e5c696`, with PR #758, PR #759, and PR #760 and the node I/O sampler. Its window ends on 2026-10-19 at 14:30Z. The table gives the checkpoints that exist. The final row and the stage metrics follow when the run ends.
+
+| Checkpoint | Elapsed | Sessions (Docker / subprocess) | Failures (Docker / subprocess) | Failure rate | Protection breach |
+|---|---|---|---|---|---|
+| Segment 1, 2026-10-18 14:38Z | 34,281 s (9.5 h) | 52 (26 / 26) | 1 (0 / 1) | 1.9 percent | None |
+
+The interim rate is inside gate 1 of section 14.1 (at most 5 failures in 100 sessions on each provider). The rate agrees with soak 38501465484 (1 of 52). At this pace, the window gives about 150 sessions on each provider, more than the gate needs. The checkpoint records only the count of failures. The phase and the cause of the failure come from the raw artifact at the end of the run.
 
 ---
 
@@ -149,6 +157,19 @@ flowchart TB
 | `AdaptationDescriptor`, mechanism controls and signals | Adapter | Each mechanism. F1r3fly CbC Casper first, then the RGB peer clique, Casanova, and Cordial Miners (section 11). |
 
 The controller never reads mechanism state directly. It reads signals from the `TelemetryBus`. It sends control updates through `ConsensusRuntime`. This keeps the controller neutral, as decision D7 requires.
+
+### 5.1 The lifecycle boundary of PR #651 (reviewed 2026-10-18)
+
+The [review of PR #651 at `be3f23cc7`](https://github.com/F1R3FLY-io/f1r3node-rust/pull/651#issuecomment-6253755401) compared its boundary with this design. These facts change the implementation steps of section 15, not the decisions of section 2.
+
+| Fact at `be3f23cc7` | Effect on this design |
+|---|---|
+| `AdapterContext` holds `commands`, `packets`, `control`, and `cleanup`. It has no channel for control updates. | TASK-027-4 adds that channel. The "extended" entry of the table above is new work, not an existing interface. |
+| `ProtocolDescriptor` holds `id`, `version`, and `capabilities`. `ConsensusStatus` adds the phase and the last error. | The `protocol` label of section 9.2 comes from `ProtocolDescriptor.id`. A mechanism written in Rholang also needs its implementation kind and code hash (PR #743, release-process Section 5.11, proposed). |
+| `ChainManifest` holds the protocol, its version, the schema version, the network, the shard, and the genesis identity. The protocol identifier and version are literals in three places. | The manifest is where the shard tuple of PR #743 would live, for example the execution version. One source for the version keeps the tier records of section 9.2 correct. |
+| The execution port of PR #627 section 9 is not part of this boundary. Execution stays inside the CbC Casper adapter. | The merge and replay concurrency control of section 10.1 reaches the execution code through the adapter, not through the host. |
+| The runtime bounds its queues by count only: 128 commands and 256 packets, each with a payload of up to 16 MiB. | The memory pressure signal of section 9.1 must count queued payload bytes. Level L2 can lower these bounds as node-local controls. |
+| A command has a deadline, and the runtime skips an expired command. A packet has no deadline. | The deadline-miss signal of section 9.1 covers commands only. Packet age needs its own signal. |
 
 ---
 
