@@ -21,7 +21,7 @@ The [Casper glossary](./GLOSSARY.md#block) defines these terms. The [platform gl
 
 On current shards, a proposer executes selected deploys and records results in a block. Receiving validators replay the block's deploys and check the state commitment.
 
-For v6 shards, the stall-loop design proposes that a proposer does not execute deploys. One runner executes finalized blocks in a canonical order, and other validators replay its record. The [cost-accounting plan](../plans/cost-accounting-direction.md#provisional-answers-from-the-stall-loop-design) records this proposal and its status.
+For v6 shards, the stall-loop design proposes that a proposer does not execute deploys. One runner executes finalized blocks in a canonical order, and other validators replay its record. The canonical order assumes A-LIN: each new last finalized block descends from the previous one on the main chain. On current multi-parent shards, A-LIN does not hold, so the finalizer of stall-loop A1c logs a violation there and halts on a v6 shard. The [cost-accounting plan](../plans/cost-accounting-direction.md#provisional-answers-from-the-stall-loop-design) records this proposal and its status.
 
 Validators can propose different blocks concurrently. Their validation work overlaps because each validator checks received blocks, rather than trusting another validator's execution alone.
 

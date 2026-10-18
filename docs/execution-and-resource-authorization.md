@@ -21,7 +21,7 @@ The [platform glossary](./Glossary.md#execution-attempt) defines execution attem
 
 On current shards, a node that produces a commit executes its deploys and records the post-state. Other nodes replay the deploys and compare the result with the recorded post-state.
 
-The stall-loop design proposes another order for v6 shards. The mechanism orders commits first, and one runner executes them after finality. The [cost-accounting plan](./plans/cost-accounting-direction.md#provisional-answers-from-the-stall-loop-design) records this proposal and its status.
+The stall-loop design proposes another order for v6 shards. The mechanism orders commits first, and one runner executes them after finality. The canonical order assumes A-LIN: each new finalized commit descends from the previous one on the main chain. The design must still prove A-LIN for v6 shards, and it does not hold on current multi-parent shards. The [cost-accounting plan](./plans/cost-accounting-direction.md#provisional-answers-from-the-stall-loop-design) records this proposal and its status.
 
 ## Completion boundaries
 
@@ -105,7 +105,7 @@ Three draft designs use these terms. None is approved, so this document cites th
 | Design | Relationship |
 |---|---|
 | Replication boundary, PR #627 | The execution port is the only path from a mechanism to Rholang and RSpace++. Its `play` and `replay` operations are execution attempts on a commit. Its `merge` operation is execution code, not mechanism code. The commit and the finality event are the mechanism-neutral units of section [Units of work](#units-of-work). |
-| Stall-loop design, [publications `cost-accounting/stall-loop-design.pdf`](https://github.com/F1R3FLY-io/publications/blob/main/cost-accounting/stall-loop-design.pdf) | For v6 shards, it proposes execution after ordering, concurrent envelopes within one block, and charges that are functions of recorded events. These proposals change the units of work and the completion boundaries of this document for v6 shards only. |
+| Stall-loop design, revision 2, [publications `cost-accounting/stall-loop-design.pdf`](https://github.com/F1R3FLY-io/publications/blob/0b3255fc83be09c6210e9902dbfc495366b72115/cost-accounting/stall-loop-design.pdf) | For v6 shards, it proposes execution after ordering, concurrent envelopes within one block, and charges that are functions of recorded events. These proposals change the units of work and the completion boundaries of this document for v6 shards only. |
 | Adaptive execution, PR #714 | The bound on local replay and merge concurrency and the admission bounds of section [Accounting versus resource protection](#accounting-versus-resource-protection) become node-local controls inside a tier profile. No control may change commit validity. An overload rejection is a typed error, not a successful execution result. |
 
 When a design is approved, its terms replace the descriptions in this section, and its documents become link targets.

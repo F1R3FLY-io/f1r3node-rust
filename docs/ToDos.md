@@ -119,6 +119,7 @@ tasks:
     blocked_by: []
     notes:
       - "2026-10-16: the user identified the stall-loop design (publications cost-accounting/stall-loop-design.pdf, draft of 2026-10-16) as the outcome of the Zoom discussion. Its three recorded decisions name no approvers, so they are provisional evidence. The registry must record its revision and authority scope."
+      - "2026-10-18: the stall-loop design is at revision 2 (publications 0b3255fc83be09c6210e9902dbfc495366b72115, 2026-10-17). It names the reviewed PR #216 head as ccbee928, which matches the pin ccbee9287. A finalizer response to its section 5.10.1 (same commit) is evidence for the finalization boundary only. Branch feature/cost-accounted-ote (e7469fd47c7ec87bd1c957d202e1d28ac5218d0d) is a new candidate implementation of the v6 consensus core, based on dev, not on PR #216 (cost-accounting-direction.md)."
     acceptance:
       - "The registry locates the original paper, historical proposal, current candidate documents, applicable approved FIPs, and any shareable Zoom record."
       - "Each source records its repository or publisher, full revision or version, path, authority scope, owner, and review status."
