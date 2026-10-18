@@ -81,7 +81,7 @@ use crate::rust::interpreter::io::handler_trait::{
 use crate::rust::interpreter::io::handlers::helpers::{
     entry_stat_row, journal_state_read_via_table, read_dir_capped,
 };
-use crate::rust::interpreter::io::path::descend::safe_descend_verified;
+use crate::rust::interpreter::io::path::descend::safe_descend_or_root_self;
 use crate::rust::interpreter::io::path::{io_msg_scrub, quarantine_err_reply};
 use crate::rust::interpreter::io::response::{err, extract_ok_list_len, ok_list};
 use crate::rust::interpreter::io::wal::WalOp;
@@ -157,7 +157,7 @@ impl FsHandler for FsEntriesHandler {
             let rel = args.rel;
             let cmode = args.cmode;
             let par = spawn_blocking_par(move || -> Par {
-                let parent = match safe_descend_verified(&root_pb, &rel, expected_root_id) {
+                let parent = match safe_descend_or_root_self(&root_pb, &rel, expected_root_id) {
                     Ok(p) => p,
                     Err(qe) => {
                         let (code, msg) = quarantine_err_reply(&qe);

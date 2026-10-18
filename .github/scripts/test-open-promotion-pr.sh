@@ -63,12 +63,13 @@ fi
 : >"$TMP/gh.log"
 (cd "$TMP/work" && PATH="$TMP/bin:$PATH" GH_LOG="$TMP/gh.log" PROMOTE_REPOSITORY=example/repo \
 	PROMOTE_TIMESTAMP=20261009-094502 PROMOTE_TRIGGERED_BY=octo-cat bash "$TOOL") >/dev/null
-grep -Fq 'created by the Promote dev to master workflow for @octo-cat.' "$TMP/gh.log" ||
+grep -Fq 'created by the Promote and Back-merge workflow for @octo-cat.' "$TMP/gh.log" ||
 	fail "the workflow body does not name the user who started it: $(cat "$TMP/gh.log")"
 grep -Fxq '@octo-cat started this promotion. A different member of @F1R3FLY-io/ci-maintainers approves it.' "$TMP/gh.log" ||
 	fail "the workflow body does not ask a different maintainer to approve: $(cat "$TMP/gh.log")"
 
-for login in 'x; rm' octo- -octo a--b; do
+# GitHub logins have at most 39 characters.
+for login in 'x; rm' octo- -octo a--b "$(printf 'a%.0s' {1..40})"; do
 	: >"$TMP/gh.log"
 	# A missing remote makes git fetch fail. The login error must come first.
 	if (cd "$TMP/work" && PATH="$TMP/bin:$PATH" GH_LOG="$TMP/gh.log" PROMOTE_REPOSITORY=example/repo \
