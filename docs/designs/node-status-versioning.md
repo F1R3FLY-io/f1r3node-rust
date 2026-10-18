@@ -41,6 +41,18 @@ All fields are additive. Under release-process Section 5.1 they need a PATCH inc
 | `consensusModel` | `Status.consensusModel = 19` | string | The `consensus_model` identifier of the release process. Today `cbc-casper` |
 | `genesisId` | `Status.genesisId = 20` | string | Hex hash of the approved genesis block. Empty until Casper starts |
 
+### 3.0 Protocol fields (proposed 2026-10-18)
+
+Release-process Sections 5.6 to 5.8 add change classes for a running shard. Clients and operators must see the protocol that a shard runs and any activation that is coming. These fields are also additive.
+
+| JSON name | Protobuf | Type | Value |
+|-----------|----------|------|-------|
+| `protocolVersion` | `Status.protocolVersion = 21` | integer (`uint32`) | The running Casper protocol version. The node reads it from the approved block, not from its configuration (Casper decision ledger, D-01). Today `1`, the value of `CASPER_PROTOCOL_VERSION` |
+| `genesisProfile` | `Status.genesisProfile = 22` | string | The profile that the genesis policy selects, for example an order-then-execute profile of protocol 7. Empty for the default profile |
+| `pendingActivations` | `Status.pendingActivations = 23` | list of messages | Each activation that the shard state records and that has not occurred yet: the new rule set and the epoch or block height. Empty today. Only an activation mechanism under decision V7 can fill it |
+
+A client that sees a pending activation can warn its user before the shard changes rules. The field numbers follow the fields of the table above. They are proposals, like the other fields of this section.
+
 ### 3.1 The `version.api` field (decision D1)
 
 The F1r3Faucet proposal asks for an integer `version.api`. The field is a `string` in the protobuf message and in the JSON response. A type change breaks every client that decodes the field. Under release-process Section 5.2, that change itself would need client API version 2.
@@ -97,5 +109,6 @@ Removal of a capability is a breaking change (release-process Section 5.3).
 |----|----------|-------|
 | D1 | Additive `apiVersion` and `apiSupported`, or an integer `version.api` in client API version 2 (Section 3.1) | f1r3node-rust maintainers |
 | V4 | Capability names (Section 4) | f1r3node-rust and F1r3Faucet maintainers |
+| D2 | Add the protocol fields of Section 3.0. `pendingActivations` stays empty until decision V7 ratifies an activation mechanism. | f1r3node-rust maintainers |
 
-Decisions V1 to V3 and V5 are in release-process Section 5.5.
+Decisions V1 to V3 and V5 to V9 are in release-process Section 5.5.

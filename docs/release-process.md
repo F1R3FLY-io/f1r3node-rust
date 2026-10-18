@@ -210,6 +210,78 @@ Commit 1214adada (code sync from f1r3node `rust/staging`) removed `rho:rchain:re
 | V3 | Overlap window for a previous client API version and for a contract alias. The proposal is one MINOR release before 1.0.0 and one MAJOR release from 1.0.0 | f1r3node-rust maintainers |
 | V4 | Capability names (Section 5.3) | f1r3node-rust and F1r3Faucet maintainers |
 | V5 | Node release ranges that each faucet adapter supports at launch | F1r3Faucet maintainer |
+| V6 | Adopt the change classes and the fork rule of Sections 5.6 and 5.7 | f1r3node-rust maintainers, through the Casper decision ledger |
+| V7 | An activation mechanism at a block height or an epoch (Section 5.8). It reopens option C of ledger entry D-01. | Casper decision ledger ratifiers |
+| V8 | A design for contract evolution on a running shard (Section 5.9) | f1r3node-rust maintainers and the owner of the system contracts |
+| V9 | The authority that approves a system contract change on a running shard (Section 5.9) | To be named |
+
+### 5.6 Change classes on a running shard (proposed 2026-10-18)
+
+**Status:** Proposed. Sections 5.6 to 5.10 wait for decisions V6 to V9. A discussion of 2026-10-15 asked whether the node supports soft and hard forks, upgrades at a block height or an epoch, and a recovery procedure. No design existed, so these sections give the requirements. They change no ratified decision.
+
+Sections 5.1 to 5.5 cover the clients of a node. A change can also alter what a running shard computes. Each change of a release belongs to one of five classes:
+
+| Class | Example | What the change needs |
+|-------|---------|-----------------------|
+| A. Node-local | Performance, proposer pacing, deploy pool limits, the bounds of the adaptive execution controller | A release version only. Other nodes see no different result. |
+| B. Client surface | A changed HTTP route, deploy field, or contract method | The version increase rules of Section 5.1 |
+| C. Contract evolution | A new version of a system contract, for example `PoS.rhox`, on a running shard | The design of Section 5.9 (decision V8) |
+| D. Replay-result change | A changed validity rule, merge rule, interpreter, parser, or cost table | The fork rule of Section 5.7 |
+| E. New protocol version | Protocol 7 | A fresh genesis after FIP approval (Casper decision ledger, D-01) |
+
+The class decides how the nodes coordinate. The version number of Section 5.1 tells clients what changed. It does not coordinate the nodes of a running shard.
+
+### 5.7 Soft forks and hard forks (proposed 2026-10-18)
+
+Every node replays the blocks that it receives and compares the result. So a fork in this node is a change of the replay result, not only a change of the block format.
+
+- A **hard fork** is a change where an old node and a new node compute a different result for the same block. The result includes block validity, the merged post-state, the deploy outcomes, and the costs. A change to the interpreter of Rholang or F1r3lang, the parser, or the cost table is a hard fork when it changes such a result.
+- A **soft fork** is a change that only makes the validity rules stricter. An old node still accepts every block that a new node creates. A new node can reject a block that an old node creates, so the old nodes must stop creating such blocks before the activation.
+
+**Rule.** A class D change needs a Casper decision ledger entry and one versioned path:
+
+1. a new protocol version with a fresh genesis (class E), or
+2. an activation mechanism that the ledger ratified (Section 5.8, decision V7).
+
+A class D change must not reach a running shard only through a release. Two changes of 2026-10 show the need for this rule:
+
+- The rejection-search cap of the stall-loop Track A item A9 changes the merge result from a configured block height.
+- Pull request #662 fails a deploy that today succeeds, when the deploy clears BitmaskOr channel bits.
+
+Both are hard forks of the current protocol without a version number.
+
+### 5.8 Activation at a block height or an epoch (proposed 2026-10-18)
+
+The Casper decision ledger entry D-01 (2026-09-16) ratified activation of protocol 7 through a fresh genesis after FIP approval. It did not adopt option C, an upgrade that activates at a block height. Its record DR-34 rejects such a switch, because replay would then depend on an engine that the release removed. An activation at a block height or an epoch therefore needs a new ledger decision (decision V7).
+
+A proposal for such an activation must meet these requirements:
+
+1. The node keeps the old rules and the new rules in one binary. It applies the old rules to every block below the activation point.
+2. The node keeps the old rules until the activation point is below the finalized floor and the restore horizon of last-finalized-state sync. Only then can a release remove the old rules.
+3. The activation point is an epoch boundary of the PoS contract, so that all validators change rules at the same block.
+4. The activation is recorded in shard state or in the approved block, not in a node configuration. The running version comes from one source (D-01, rules R-GENESIS-VERSION to R-VERSION-RECEPTION).
+5. The node reports a pending activation in its status (node status design, Section 3).
+6. A shard that does not reach the activation point stays on the old rules. The proposal states what happens to a node that did not upgrade in time.
+
+### 5.9 Contract evolution on a running shard (proposed 2026-10-18)
+
+Part of the Casper economic layer is Rholang code in system contracts, for example `PoS.rhox` for bonds, rewards, the slashing effect, and epochs. A change to such a contract is a deploy. Every node replays a deploy in the same way, so a contract change needs no new consensus code. This is a possible path for upgrades that does not need a fresh genesis.
+
+Today a running shard keeps the registry of its genesis (Section 5.4, item 4). This document records no mechanism that replaces a system contract on a running shard. A design for such a mechanism (decision V8) must answer these questions:
+
+1. Who can authorize the change? Decision V9 names the authority, for example a vote of the bonded validators or a FIP-approved key.
+2. How does the registry move a URI to a new contract version? How do callers of the old version keep working during the overlap window (decision V3)?
+3. Which consensus parameters live in contracts, and which live in the node? Fork choice, finality, validation, and the merge are node code. Bonds, epochs, rewards, and the slashing effect are contract code.
+4. How does a change of contract state migrate the existing state, for example the bonds and the vault balances?
+5. Which status field tells clients the contract version that a shard runs?
+
+### 5.10 Network recovery (proposed 2026-10-18)
+
+The test net runbook of EPIC-014 (pull request #654) gets the recovery procedure for a consensus stall, a lost validator quorum, or a corrupted node state. The procedure uses the classes of Section 5.6:
+
+- A node-local fault (class A), for example a corrupted store, is repaired on that node. The node restores from last-finalized-state sync.
+- A recovery that changes the replay result of past blocks is a class D change. It follows the rule of Section 5.7.
+- A recovery that starts a new shard from a state snapshot is a class E change, with a fresh genesis.
 
 ## 6. Candidate creation
 
@@ -798,5 +870,7 @@ Maintainers must ratify these decisions before stable automation is enabled. All
 - [x] First Deployment Train selection — ratified 2026-08-19: cost-accounting (PR #216), after the Phase 5 non-publishing rehearsal
 - [x] Shard soak-in and Anchor promotion policy — ratified 2026-08-19 as a skeleton: period length, Anchor criteria, and test net composition deferred to Phase 6
 - [ ] Version increase rules and client compatibility (Sections 5.1 to 5.4, decision V1) — proposed 2026-10-15
+- [ ] Change classes and the fork rule (Sections 5.6 and 5.7, decision V6) — proposed 2026-10-18. It needs a Casper decision ledger entry.
+- [ ] Activation at a block height or an epoch, and contract evolution (Sections 5.8 and 5.9, decisions V7 to V9) — proposed 2026-10-18. These decisions do not block stable automation.
 - [ ] MINOR or PATCH for an additive change before 1.0.0 (Section 5.1, decision V2) — proposed 2026-10-15
 - [ ] Overlap window for a previous client API version and a contract alias (Sections 5.2 and 5.4, decision V3) — proposed 2026-10-15
