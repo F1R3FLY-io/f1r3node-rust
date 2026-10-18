@@ -1288,6 +1288,7 @@ tasks:
     notes:
       - "Plan step 4. Fixed thresholds first, set from TASK-021-17 data. The controller later uses them as tier bounds."
       - "2026-10-18: commit d1c3a970f sets the thresholds without a measurement: pacing above a floor distance of 128 (half of the 256 backstop), and a pool cap of 64 times max-user-deploys-per-block (8192 at the default) with HTTP 503 deploy_pool_full and Retry-After 5. The pool count is the raw LMDB entry count of the deploy store. The TASK-021-24 soak keeps or changes these values."
+      - "2026-10-18: issue #710 measured 36.6 admitted against 1.5 executed deploys per second. At that rate, the cap of 8192 is about 90 minutes of backlog, longer than the deploy lifespan. Measure the cap against the inclusion rate, and record a terminal Expired state when the pool removes an expired deploy (adaptive-execution.md invariant I4)."
     acceptance:
       - "Above a floor-distance threshold well below 256, proposals include no ordinary deploys and only advance finality."
       - "The deploy pool rejects new deploys above a size threshold with a typed, retryable busy error."
@@ -1301,6 +1302,7 @@ tasks:
     notes:
       - "Plan step 5. TASK-021-17 sets the order. A9 (merging_logic.rs) and the hot-channel representation touch files near the cost-accounting merge, so they come last and carry a note for the cost-accounting lane."
       - "2026-10-18: fix/stall-track-a-rest has code for A4 to A9. A7 is TASK-021-18. Two items need review before the merge. A4 (600689764) keeps a process-wide cache of verified deploy encodings and skips the signature check on a cache hit. A9 (16c57af9c) changes the merge result from casper.rejection-search-cap-from-height, so it is a validity rule with an activation height, off by default (adaptive-execution.md section 10.1)."
+      - "2026-10-18: A4 covers issue #711 (four pool reads for each block) and issue #729 (a signature check on each read). PR #730 (verify on write) solves issue #729 in another way in deploy_codec.rs, so the reviewers choose one design. Issue #712 (two deploy-storage mutexes) is in the same files."
     acceptance:
       - "Each item meets the exit criterion of the stall-loop design, for example prepare time flat in pool size for A4."
       - "Each fix outside the 38 conflict files, or a recorded reason with a note to the cost-accounting lane."

@@ -65,7 +65,7 @@ The issue #24 history gives seven facts that this design must use.
 | In the high phase, non-leader validators used a fixed fallback cap of 8 deploys per block. The cap rose to 16 or 32 only after a wait of 120 s or 300 s, but the test fails at 45 s. PR #695 made the cap follow the local backlog, and the high-phase inclusion p95 fell below 10 s (soak 38300649650). | Issue #24 comments 6094239136 and 6148770562 | A fixed escalation table cannot follow the real arrival rate. The cap must follow measured backlog and capacity. |
 | All three high-phase failures in soak 37996403003 ran on Docker. Docker shards had about twice the left-out deploys and twice the selection age of subprocess shards. After PR #695, Docker had 0 failures in 43 iterations. | Comments 6094531369 and 6148770562 | The same code behaved differently on different hosts. PR #695 removed this difference for the high phase. |
 | The sustained-phase failures have a different cause. The deploys enter blocks in 2 to 2.6 s and then wait for finalization. | Comment 6094531369 | An admission controller alone does not close issue #24. The delay from inclusion to finality needs its own signal and its own control (section 10.3). |
-| PR #473 removed an earlier "adaptive deploy cap". | Issue #24 description | That cap was a fixed table. This design uses a closed loop with bounds, hysteresis, and telemetry for each step (section 7). |
+| `F1R3FLY-io/f1r3node` PR #473, in the earlier repository, removed an "adaptive deploy cap". | Issue #24 description | That cap was a fixed table. This design uses a closed loop with bounds, hysteresis, and telemetry for each step (section 7). |
 | On Docker, the checkpoint fsync is about 1 percent of the cost, and the replay runtime spawn takes 3.8 ms. On the subprocess provider, the replay checkpoint takes 483 ms against 64 ms on Docker, with jemalloc on both. | Comments 6016872961, 6043103631, and 6171089126 | The controller must not assume that disk or spawn cost is the bottleneck. Storage cost depends on the host class, so the probe measures disk latency (section 6). The controller acts only on measured signals. |
 | Without jemalloc, the subprocess provider failed 28 of 42 iterations (67%) in soak 38300649650. Its storage stages were 3 to 23 times slower than on Docker. | Comment 6148770562 | The allocator is part of the host class (section 14.3). A configuration defect can look like a slow hardware tier. |
 | With jemalloc on the subprocess provider (`fd3d97a84`), soak 38501465484 failed 1 of 52 iterations (1.9%): 0 of 26 on Docker and 1 of 26 on subprocess. The failure is in the sustained phase, and the soak ran 8 hours only. | Comment 6171089126 | Without a controller, the measured rate is inside the gate of section 14.1, but 26 sessions on each provider cannot prove the gate. Open question Q8 follows from this fact. |
@@ -80,6 +80,15 @@ Issue #691 gives evidence for the merge and replay concurrency control of sectio
 | With width 2, the read-only observer stayed at 86 to 91 percent of the validator DAG, and the gap grew by about 270 blocks per hour. With width 3, it stayed at 99.7 to 100 percent for 8 hours, with no memory growth and about 5 percent more CPU. | Issue #691 description and its comment of 2026-10-12 | A fixed width does not scale with the validator count. At 4 validators, width 3 is short again. |
 | With width 2 and fast heartbeat settings, the observer buffer reached 16,384 entries, and the observer and the bootstrap node stopped on out-of-memory 31 and 34 times. | Issue #691 description | A non-validator that falls behind also fills its buffer. Catch-up on such a node is a required duty, not optional work (section 8). |
 | Three nodes on one 4-OCPU VM compete for CPU. In a local run with 4 validators, width 3 slowed block creation from 4.4 s to 7.6 s. | Issue #691 comment of 2026-10-13 | The ceiling comes from the CPU share of the node, which the probe reads from the cgroup limit. |
+
+Other `testnet-path` issues give evidence for the admission bound, the pool cost, the committee size, and a wedged pipeline.
+
+| Fact | Source | Effect on the design |
+|---|---|---|
+| In 8 hours, a node admitted 36.6 deploys per second and executed about 1.5 per second. About 96 percent of the admitted deploys expired without execution. Block creation clamps its cap, but admission has no bound. | Issue #710 | The L2 intake bound comes from the measured inclusion rate, not from the validity window. At the defaults, the A3 pool cap of 8,192 deploys is about 90 minutes of backlog at that rate, so TASK-021-21 measures the cap against it. |
+| Block creation reads and decodes the whole deploy pool four times for each block. At 15,100 pending deploys, the reads take 3.8 s of 5.82 s. A signature check on each read is 97 percent of the decode cost. | Issues #711 and #729 | The pool size is a cost input of block creation. Section 10.2 adds the pool size and the read time for each proposal. |
+| The floor derivation cost grows faster than the committee size. At about 19 validators, the validation of one block took 1.5 s instead of 0.1 s, and finality lost agreement. PR #674 removed one cause. | Issue #477 | The committee size is an input to the tier ceiling and to the published tier targets (section 14.3). |
+| Both processing slots stayed held after the merge step for 75 minutes, with an idle CPU and no validation. The node then dropped every block at the in-flight limit of 512. | Issue #744 | A held slot with an idle CPU is a wedge, not overload. The controller reports a wedge and does not step down (section 10.2). |
 
 No full-length soak on the code with both PR #695 and the jemalloc hotfix exists yet. The soaks of 2026-10-15 and 2026-10-16 stopped on a workflow defect before the first iteration ([issue #24 comment 6217970582](https://github.com/F1R3FLY-io/f1r3node-rust/issues/24#issuecomment-6217970582)). Hotfix PR #741 repairs that defect.
 
@@ -249,8 +258,8 @@ The levels go from normal operation to the protection of liveness. The node chan
 | Level | Name | Action |
 |---|---|---|
 | L0 | Normal | All work runs inside the tier profile bounds. |
-| L1 | Shed optional work | Stop or slow work that does not affect correctness: block report replays, cache warming, prefetch, and optional metrics collection. |
-| L2 | Limit intake | Reduce API intake and the mechanism admission controls. A full intake queue rejects new deploys with a typed, retryable overload error. It does not queue without a limit. |
+| L1 | Shed optional work | Stop or slow work that does not affect correctness: block report replays, cache warming, prefetch, and optional metrics collection. A client read replays a block report inline today, so L1 can shed these replays only after issue #650 moves them off the read path. |
+| L2 | Limit intake | Reduce API intake and the mechanism admission controls. A full intake queue rejects new deploys with a typed, retryable overload error. It does not queue without a limit. The same error covers a full deploy pool (stall-loop A3), a queue that the inclusion rate cannot clear (issue #710), and an unbonded node (issue #427). |
 | L3 | Protect liveness | Keep only the duties that the mechanism marks as required for liveness and safety. Reject new deploys with the overload error. Report the level on the status API. |
 
 Rules:
@@ -305,6 +314,8 @@ The `cbc-casper` adapter supplies the first `AdaptationDescriptor`. The binding 
 
 The deploy cap is a proposer choice. Other validators do not check it. So a change of the cap does not change block validity (decision A2). The design adds a CbC claim for this property (TASK-027-4).
 
+The play budget (`deploy-play-budget`) is a candidate control. The proposer checks it between deploys, so it is a proposer choice and does not change validity. A budget that stops one deploy during its play changes the recorded result. Such a budget is a validity rule and never a control (issue #541).
+
 The A9 rejection search cap (`casper.rejection-search-cap-from-height`) changes the merge result from an activation height. Other validators must apply the same cap, so the cap is a validity rule. It is never a controller control (decision A2).
 
 ### 10.2 Signals
@@ -318,6 +329,10 @@ The A9 rejection search cap (`casper.rejection-search-cap-from-height`) changes 
 | Inclusion to finality time | Time from the first block that includes a deploy to its finalization |
 | Block pipeline load | `block_processing_active`, the processing queue depth, and `casper_buffer_approx_nodes` (issue #691) |
 | Block validation time | `block_validation_time`, the time to validate one received block |
+| Deploy pool cost | The pending pool size, and the read and decode time of the pool for each proposal (issues #711 and #729) |
+| Floor derivation time | The time of the floor derivation and the clique oracle for each validated block (issue #477) |
+| Oldest processing slot | The age of the oldest in-flight processing slot and its validation stage (issue #744). A slot held past a threshold while the CPU is idle is a wedge, not overload. The controller does not step down on a wedge. It writes a wedge record and reports it on the status API. |
+| Own carriers past the depth horizon | Own blocks whose deploys play again because the block left the parent-depth horizon (issue #541) |
 | Floor-pacing engagements | `block-creator.floor-pacing-engaged` of stall-loop A3. It counts proposals that carry no user deploys because the floor distance is above the threshold. |
 | Finalizer progress | The `finalizer.cursor.*` and `finalizer.commit.*` counters of stall-loop A1c (section 9.1) |
 
@@ -366,7 +381,7 @@ The branches have no pull requests yet. Each branch is 42 to 49 commits behind `
 |---|---|---|---|
 | `fix/finality-stall-track-a` (`d1c3a970f`) | A1a shared oracle cache with at most 3 reruns of a timed-out run, A2 coalescing, and A3 pacing and pool cap | `dev` | Fixed values: floor distance 128, pool cap 64 times `max-user-deploys-per-block`, HTTP 503 with `Retry-After` |
 | `fix/finalizer-forward-progress` (`8b1b10f2a`) | A1b timeout on the derivation only, and A1c resumable cursor and atomic `commit_lfb` | The branch above | Two new LMDB stores and an optional `commit-epoch` on `BlockFinalised` events |
-| `fix/stall-track-a-rest` (`16c57af9c`) | A4 to A9 | The branch above | Its A7 commit duplicates PR #752 and conflicts with `dev`. A4 skips the signature check for a cached encoding. A9 changes the merge result from an activation height and is off by default. |
+| `fix/stall-track-a-rest` (`16c57af9c`) | A4 to A9 | The branch above | Its A7 commit duplicates PR #752 and conflicts with `dev`. A4 skips the signature check for a cached encoding and covers issue #711, but PR #730 solves issue #729 in another way. A9 changes the merge result from an activation height and is off by default. |
 | `feature/cost-accounted-ote` (`e7469fd47`) | v6 tranche 1 behind `casper.v6-order-then-execute`, default off | `dev` | Outside the scope of this design (section 17). It conflicts with `fix/stall-track-a-rest` in three files. |
 
 On legacy multi-parent shards, A-LIN does not hold. The A1c integration run logged commits that contain the previous last finalized block only through a secondary parent. A1c therefore logs and counts an A-LIN violation on a legacy shard, and halts on a v6 shard.
@@ -421,7 +436,7 @@ The controller must not create disagreement between validators. These invariants
 | I1 | No control changes the result of block validation or commit validation. |
 | I2 | Two validators with different tiers or different control values reach the same finalized state from the same blocks. |
 | I3 | No control value, tier, or level is written into a block, a deploy, or replicated state. |
-| I4 | An accepted deploy is either included, rejected with a recorded reason, or expired under the existing lifespan rule. The controller never drops it without a record. |
+| I4 | An accepted deploy is either included, rejected with a recorded reason, or expired under the existing lifespan rule with a recorded terminal state. The controller never drops it without a record. Today the expiry pass removes a deploy without a record, so its status reads Pending (issue #710). |
 | I5 | The controller cannot remove a duty that the mechanism marks as required for safety or liveness. |
 | I6 | No control or degradation level delays a required duty past the protocol deadline that the mechanism declares for it. |
 
@@ -495,6 +510,7 @@ The project publishes a hardware target for each tier in the operator documentat
 | Status | The targets are recommendations. The node does not refuse to start below a target. The probe warning of section 6 is the only effect. |
 | Updates | A release updates the targets when a baseline changes. The document records the release and the soak run that set each value. |
 | Mechanisms | Each mechanism publishes its own targets with its soak profile. The `cbc-casper` targets come first. |
+| Committee size | Each `cbc-casper` target names the number of active validators that it supports. The validation cost of one block grows with the committee size (issue #477), and a non-validator replays one block for each validator (issue #691). |
 
 The allocator is part of the host class. Soak 38300649650 showed that the same binary is 3 to 23 times slower in the storage stages without jemalloc ([issue #24 comment](https://github.com/F1R3FLY-io/f1r3node-rust/issues/24#issuecomment-6148770562)).
 
@@ -614,6 +630,7 @@ No question blocks ratification (section 2.1). The Blocks column names the first
 | Q7 | Should F1r3fly CbC Casper reward timely participation? `PoS.rhox` pays epoch rewards in proportion to bond only, but Ethereum makes timely work profitable through rewards (section 16). A timeliness reward changes replicated state, so it needs its own design and a CbC claim (decision A2). | No EPIC-027 task | Leave it open, and start a separate design if the shard needs a timeliness incentive. |
 | Q8 | Does the close-out of issue #24 wait for this design? Decisions A5 and A6 give it to EPIC-027, but soak 38501465484 measured 1.9% without a controller (section 3). | TASK-027-8 | Keep A5 and A6 for ratification, and decide Q8 after the TASK-021-16 soak and, if Track A lands, the TASK-021-24 soak (section 10.4.1). If that soak meets gates 1 and 2 of section 14.1 and TASK-021-13 resolves Q1, close issue #24 under EPIC-021 and keep EPIC-027 for US-012 (section 10.4 gives the step 3 rule for a soak with no sustained-phase failures). |
 | Q9 | Does a v6 shard get its own adaptation descriptor? Under cost-accounted order-then-execute, the per-block demand cap is a validity rule, and replay leaves the consensus path (section 10.4). | A v6 binding, outside EPIC-027 | Decide with the cost-accounting scope in `dev`, which revision 2 proposes (section 10.4.1). A v6 descriptor keeps each admission ceiling at or below the protocol demand cap. |
+| Q10 | Is block intake from senders without authorization (issue #678) or from an earlier chain with the same network identifier (issue #13) an overload input of the controller? | TASK-027-4 | No. The validity and handshake fixes of PR #731 and PR #709 remove that intake first, and the controller reads the remaining load. PR #731 must still set the limits for each peer with an unknown authorization. |
 
 ---
 
