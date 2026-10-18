@@ -41,15 +41,19 @@ All fields are additive. Under release-process Section 5.1 they need a PATCH inc
 | `consensusModel` | `Status.consensusModel = 19` | string | The `consensus_model` identifier of the release process. Today `cbc-casper` |
 | `genesisId` | `Status.genesisId = 20` | string | Hex hash of the approved genesis block. Empty until Casper starts |
 
-### 3.0 Protocol fields (proposed 2026-10-18)
+### 3.0 Shard tuple fields (proposed 2026-10-18)
 
-Release-process Sections 5.6 to 5.8 add change classes for a running shard. Clients and operators must see the protocol that a shard runs and any activation that is coming. These fields are also additive.
+Release-process Sections 5.6 to 5.11 add change classes and version axes for a running shard. Clients and operators must see the versions that a shard runs and any activation that is coming. The node reads each value from the approved block or the shard state, not from its configuration (Casper decision ledger, D-01). These fields are also additive.
 
 | JSON name | Protobuf | Type | Value |
 |-----------|----------|------|-------|
-| `protocolVersion` | `Status.protocolVersion = 21` | integer (`uint32`) | The running Casper protocol version. The node reads it from the approved block, not from its configuration (Casper decision ledger, D-01). Today `1`, the value of `CASPER_PROTOCOL_VERSION` |
-| `genesisProfile` | `Status.genesisProfile = 22` | string | The profile that the genesis policy selects, for example an order-then-execute profile of protocol 7. Empty for the default profile |
-| `pendingActivations` | `Status.pendingActivations = 23` | list of messages | Each activation that the shard state records and that has not occurred yet: the new rule set and the epoch or block height. Empty today. Only an activation mechanism under decision V7 can fill it |
+| `executionVersion` | `Status.executionVersion = 21` | integer (`uint32`) | The version of the execution engine: RSpace++, the Rholang and F1r3lang interpreter, the parser, the cost table, and the merge (release-process Section 5.11) |
+| `mechanism` | `Status.mechanism = 22` | message | The replication mechanism. Its fields are `id` (equal to `consensusModel`, today `cbc-casper`), `version` (for CbC Casper, the Casper protocol version, today `1`, the value of `CASPER_PROTOCOL_VERSION`), `implementation` (`native` or `rholang`), and `codeHash` (the hash of the mechanism contract, empty for `native`) |
+| `accountingVersion` | `Status.accountingVersion = 23` | integer (`uint32`) | The accounting authority version. D-01 makes it independent of the protocol version |
+| `genesisProfile` | `Status.genesisProfile = 24` | string | The profile that the genesis policy selects, for example an order-then-execute profile of protocol 7. Empty for the default profile |
+| `pendingActivations` | `Status.pendingActivations = 25` | list of messages | Each activation that the shard state records and that has not occurred yet: the axis, the new version, and the epoch or block height. Empty today. Only an activation mechanism under decision V7 can fill it |
+
+`consensusModel` stays for the clients of the current response. A later client API version can remove it when `mechanism.id` replaces it.
 
 A client that sees a pending activation can warn its user before the shard changes rules. The field numbers follow the fields of the table above. They are proposals, like the other fields of this section.
 
@@ -109,6 +113,6 @@ Removal of a capability is a breaking change (release-process Section 5.3).
 |----|----------|-------|
 | D1 | Additive `apiVersion` and `apiSupported`, or an integer `version.api` in client API version 2 (Section 3.1) | f1r3node-rust maintainers |
 | V4 | Capability names (Section 4) | f1r3node-rust and F1r3Faucet maintainers |
-| D2 | Add the protocol fields of Section 3.0. `pendingActivations` stays empty until decision V7 ratifies an activation mechanism. | f1r3node-rust maintainers |
+| D2 | Add the shard tuple fields of Section 3.0. `pendingActivations` stays empty until decision V7 ratifies an activation mechanism. | f1r3node-rust maintainers |
 
-Decisions V1 to V3 and V5 to V9 are in release-process Section 5.5.
+Decisions V1 to V3 and V5 to V10 are in release-process Section 5.5.

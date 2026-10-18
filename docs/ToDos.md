@@ -3311,16 +3311,17 @@ tasks:
   - id: TASK-013-9
     title: "Change classes, the fork rule, and upgrade paths for a running shard"
     status: blocked
-    blocked_by: ["decisions V6 to V9 of release-process Section 5.5", "a Casper decision ledger entry for the fork rule (V6) and for any activation mechanism (V7)"]
+    blocked_by: ["decisions V6 to V10 of release-process Section 5.5", "a Casper decision ledger entry for the fork rule (V6) and for any activation mechanism (V7)"]
     branch: docs/proposed-versioning-standard
     design_doc: docs/release-process.md
     notes:
       - "2026-10-18: proposal only. A discussion of 2026-10-15 asked whether the node supports soft and hard forks, upgrades at a block height or an epoch, and a recovery procedure. No design existed. Release-process Sections 5.6 to 5.10 give the change classes, the fork rule, the requirements for height or epoch activation (it reopens option C of D-01), and the questions for contract evolution. The recovery procedure goes in the test net runbook of EPIC-014 (PR #654)."
       - "Two current changes are hard forks without a version number: the A9 rejection-search cap (fix/stall-track-a-rest 16c57af9c) and PR #662."
+      - "2026-10-18: Section 5.11 adds version axes. Execution (RSpace++, the interpreter, the parser, the cost table, the merge) is versioned apart from the replication mechanism, so that a mechanism written in Rholang or F1r3lang can evolve as contract code. Sources: docs/artifacts/f1r3fly-consensus-neutral-sm.md sections 1 to 3 and the replication boundary design of PR #627 (section 9, decision D2, the manifest). The plan for mechanisms in Rholang is not yet in any document."
     acceptance:
       - "The maintainers record decisions V6 to V9, each with a linked review comment."
       - "Each pull request that changes a replay result names its class (Section 5.6) and its versioned path (Section 5.7) in the description."
-      - "The node status reports protocolVersion from the approved block, and the other protocol fields of node-status-versioning.md Section 3.0 as decision D2 states."
+      - "The node status reports the shard tuple from the approved block or the shard state: executionVersion, mechanism (id, version, implementation, codeHash), and accountingVersion, with the other fields of node-status-versioning.md Section 3.0 as decision D2 states."
 ---
 ```
 

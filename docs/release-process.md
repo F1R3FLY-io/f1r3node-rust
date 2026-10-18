@@ -158,7 +158,9 @@ A client depends on four compatibility surfaces:
 | Client API | HTTP routes, JSON fields, gRPC messages, status values | Faucet, wallets, explorers |
 | Deploy format | Signed `DeployData` fields, signature algorithms, `validAfterBlockNumber` rules | Every client that signs deploys |
 | System contracts | Registry URIs such as `rho:vault:system`, method names, return shapes | Every client that builds Rholang terms |
-| Shard protocol | Wire format, block format, genesis state, storage format, consensus model | Node operators. Clients see a new shard |
+| Execution engine | RSpace++, the Rholang and F1r3lang interpreter, the parser, the cost table, and the merge | Node operators. Clients see changed deploy outcomes or costs |
+| Replication mechanism | The mechanism identifier and its protocol version, its wire messages, the block or commit format, fork choice, and finality | Node operators. Clients see a new shard |
+| Genesis and storage | Genesis state and storage format | Node operators. Clients see a new shard when the genesis changes |
 
 The target version of a candidate must follow this table:
 
@@ -214,19 +216,21 @@ Commit 1214adada (code sync from f1r3node `rust/staging`) removed `rho:rchain:re
 | V7 | An activation mechanism at a block height or an epoch (Section 5.8). It reopens option C of ledger entry D-01. | Casper decision ledger ratifiers |
 | V8 | A design for contract evolution on a running shard (Section 5.9) | f1r3node-rust maintainers and the owner of the system contracts |
 | V9 | The authority that approves a system contract change on a running shard (Section 5.9) | To be named |
+| V10 | Adopt the version axes of Section 5.11, and the shard tuple that the genesis and the node manifest pin | f1r3node-rust maintainers, through the Casper decision ledger |
 
 ### 5.6 Change classes on a running shard (proposed 2026-10-18)
 
-**Status:** Proposed. Sections 5.6 to 5.10 wait for decisions V6 to V9. A discussion of 2026-10-15 asked whether the node supports soft and hard forks, upgrades at a block height or an epoch, and a recovery procedure. No design existed, so these sections give the requirements. They change no ratified decision.
+**Status:** Proposed. Sections 5.6 to 5.11 wait for decisions V6 to V10. A discussion of 2026-10-15 asked whether the node supports soft and hard forks, upgrades at a block height or an epoch, and a recovery procedure. No design existed, so these sections give the requirements. They change no ratified decision.
 
-Sections 5.1 to 5.5 cover the clients of a node. A change can also alter what a running shard computes. Each change of a release belongs to one of five classes:
+Sections 5.1 to 5.5 cover the clients of a node. A change can also alter what a running shard computes. Each change of a release belongs to one of five classes. Class D has two parts, because execution and replication are separate (Section 5.11):
 
 | Class | Example | What the change needs |
 |-------|---------|-----------------------|
 | A. Node-local | Performance, proposer pacing, deploy pool limits, the bounds of the adaptive execution controller | A release version only. Other nodes see no different result. |
 | B. Client surface | A changed HTTP route, deploy field, or contract method | The version increase rules of Section 5.1 |
-| C. Contract evolution | A new version of a system contract, for example `PoS.rhox`, on a running shard | The design of Section 5.9 (decision V8) |
-| D. Replay-result change | A changed validity rule, merge rule, interpreter, parser, or cost table | The fork rule of Section 5.7 |
+| C. Contract evolution | A new version of a system contract, for example `PoS.rhox`, on a running shard | The design of Section 5.9 (decision V8). It is also the upgrade path of a mechanism that is written in Rholang or F1r3lang (Section 5.11). |
+| D1. Execution change | A changed interpreter, parser, cost table, or merge rule | The fork rule of Section 5.7. It is a hard fork for every mechanism that runs on the engine. |
+| D2. Mechanism change | A changed validity rule, fork choice, or finality rule of one replication mechanism | The fork rule of Section 5.7. It is a hard fork only for the shards of that mechanism. |
 | E. New protocol version | Protocol 7 | A fresh genesis after FIP approval (Casper decision ledger, D-01) |
 
 The class decides how the nodes coordinate. The version number of Section 5.1 tells clients what changed. It does not coordinate the nodes of a running shard.
@@ -238,17 +242,17 @@ Every node replays the blocks that it receives and compares the result. So a for
 - A **hard fork** is a change where an old node and a new node compute a different result for the same block. The result includes block validity, the merged post-state, the deploy outcomes, and the costs. A change to the interpreter of Rholang or F1r3lang, the parser, or the cost table is a hard fork when it changes such a result.
 - A **soft fork** is a change that only makes the validity rules stricter. An old node still accepts every block that a new node creates. A new node can reject a block that an old node creates, so the old nodes must stop creating such blocks before the activation.
 
-**Rule.** A class D change needs a Casper decision ledger entry and one versioned path:
+**Rule.** A class D1 or D2 change needs a Casper decision ledger entry and one versioned path:
 
 1. a new protocol version with a fresh genesis (class E), or
 2. an activation mechanism that the ledger ratified (Section 5.8, decision V7).
 
-A class D change must not reach a running shard only through a release. Two changes of 2026-10 show the need for this rule:
+A class D1 or D2 change must not reach a running shard only through a release. Two changes of 2026-10 show the need for this rule:
 
 - The rejection-search cap of the stall-loop Track A item A9 changes the merge result from a configured block height.
 - Pull request #662 fails a deploy that today succeeds, when the deploy clears BitmaskOr channel bits.
 
-Both are hard forks of the current protocol without a version number.
+Both are execution changes (class D1), because the merge is execution code (pull request #627, replication boundary design, section 9). They are hard forks for every mechanism, without a version number.
 
 ### 5.8 Activation at a block height or an epoch (proposed 2026-10-18)
 
@@ -271,7 +275,7 @@ Today a running shard keeps the registry of its genesis (Section 5.4, item 4). T
 
 1. Who can authorize the change? Decision V9 names the authority, for example a vote of the bonded validators or a FIP-approved key.
 2. How does the registry move a URI to a new contract version? How do callers of the old version keep working during the overlap window (decision V3)?
-3. Which consensus parameters live in contracts, and which live in the node? Fork choice, finality, validation, and the merge are node code. Bonds, epochs, rewards, and the slashing effect are contract code.
+3. Which consensus parameters live in contracts, and which live in the node? For CbC Casper today, fork choice, finality, and validation are node code. Bonds, epochs, rewards, and the slashing effect are contract code. The merge is execution code, not mechanism code. The plan to write replication mechanisms in Rholang or F1r3lang moves fork choice and finality into contract code (Section 5.11).
 4. How does a change of contract state migrate the existing state, for example the bonds and the vault balances?
 5. Which status field tells clients the contract version that a shard runs?
 
@@ -280,8 +284,33 @@ Today a running shard keeps the registry of its genesis (Section 5.4, item 4). T
 The test net runbook of EPIC-014 (pull request #654) gets the recovery procedure for a consensus stall, a lost validator quorum, or a corrupted node state. The procedure uses the classes of Section 5.6:
 
 - A node-local fault (class A), for example a corrupted store, is repaired on that node. The node restores from last-finalized-state sync.
-- A recovery that changes the replay result of past blocks is a class D change. It follows the rule of Section 5.7.
+- A recovery that changes the replay result of past blocks is a class D1 or D2 change. It follows the rule of Section 5.7.
 - A recovery that starts a new shard from a state snapshot is a class E change, with a fresh genesis.
+
+### 5.11 Version axes (proposed 2026-10-18)
+
+The architecture of the node separates execution from replication. Execution is Rholang and RSpace++. A replication mechanism orders commits and decides finality. The sources:
+
+- The architecture note [`docs/artifacts/f1r3fly-consensus-neutral-sm.md`](artifacts/f1r3fly-consensus-neutral-sm.md), sections 1 to 3. It says that consensus is "an ordering and uniqueness medium", and that the media sit in front of the same execution layer.
+- The replication boundary design of pull request #627 (`docs/designs/replication-boundary.md`). Its section 9 says that the execution port is "the only path from a medium to Rholang and RSpace++", and that the merge is execution code. Its decision D2 gives each node process one shard with one mechanism. Its manifest records the protocol, its version, the network, the shard, and the genesis identity.
+- Casper decision ledger entry D-01. Accounting authority version 8 is independent of the protocol version.
+
+The project plans replication mechanisms that are written in Rholang or F1r3lang (planning discussion of 2026-10-18). The documents above do not describe that plan yet. The axes below allow it, because they version the mechanism apart from the engine that runs it.
+
+| Axis | It covers | A change of the axis |
+|------|-----------|----------------------|
+| Execution version | RSpace++, the Rholang and F1r3lang interpreter, the parser, the cost table, and the merge | Class D1. A hard fork for every mechanism that runs on the engine |
+| Mechanism identifier and version | Ordering, fork choice, finality, commit validity, and the wire messages of one mechanism | Class D2. A hard fork only for the shards of that mechanism |
+| Mechanism implementation | `native` for a Rust adapter, or `rholang` with the hash of the contract code | For `rholang`, a new version is contract evolution (class C), with no new node code |
+| Accounting authority version | The node accounting module (D-01) | As the ledger decides for that module |
+| Client surfaces | The client API, the deploy format, and the system contract interfaces (Section 5.1) | The version increase rules of Section 5.1 |
+
+The genesis and the node manifest of pull request #627 pin one **shard tuple**. It holds the execution version, the mechanism identifier, version, and implementation, and the accounting authority version. Each axis has its own activation rows (Section 5.8).
+
+Two facts limit a mechanism that is written in Rholang:
+
+1. The mechanism depends on the determinism of the engine. An execution change (class D1) is therefore a hard fork also for such a mechanism, even when no mechanism code changes.
+2. The node still hosts the mechanism. Transport, the start of the shard, and the runtime that runs the mechanism contract stay node code, as the host of pull request #627. The interface between the host and the mechanism therefore needs its own version, which decision V10 includes.
 
 ## 6. Candidate creation
 
@@ -872,5 +901,6 @@ Maintainers must ratify these decisions before stable automation is enabled. All
 - [ ] Version increase rules and client compatibility (Sections 5.1 to 5.4, decision V1) — proposed 2026-10-15
 - [ ] Change classes and the fork rule (Sections 5.6 and 5.7, decision V6) — proposed 2026-10-18. It needs a Casper decision ledger entry.
 - [ ] Activation at a block height or an epoch, and contract evolution (Sections 5.8 and 5.9, decisions V7 to V9) — proposed 2026-10-18. These decisions do not block stable automation.
+- [ ] Version axes and the shard tuple (Section 5.11, decision V10) — proposed 2026-10-18. It does not block stable automation.
 - [ ] MINOR or PATCH for an additive change before 1.0.0 (Section 5.1, decision V2) — proposed 2026-10-15
 - [ ] Overlap window for a previous client API version and a contract alias (Sections 5.2 and 5.4, decision V3) — proposed 2026-10-15
