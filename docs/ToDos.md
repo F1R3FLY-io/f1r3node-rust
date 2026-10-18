@@ -153,6 +153,8 @@ tasks:
     status: pending
     claimed_by: null
     blocked_by: [TASK-028-2]
+    notes:
+      - "2026-10-18: issue #541 gives current-shard evidence. The play budget cannot stop one long deploy, and a carrier past the parent-depth horizon makes the deploy play again without a charge. Its option A (a recorded effective limit for each deploy) is a candidate truncation boundary (cost-accounting-direction.md, section Evidence from current-shard issues)."
     acceptance:
       - "The contract distinguishes completed evaluation, application completion, block validation, finalization, and stored continuations."
       - "Any proposed partial execution states its stopping point, persisted state, resume authority, deterministic replay, and settlement boundary."

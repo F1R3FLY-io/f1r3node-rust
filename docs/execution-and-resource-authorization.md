@@ -81,6 +81,8 @@ Neither function selects CPU workers, removes dependencies, or establishes final
 | Physical execution cost | Interpreter operations, native calls, storage, replay, and scheduling consume physical resources. | Economic authorization does not establish bounded physical execution. |
 | Node protection | Admission bounds, replay permits, and operational resource controls constrain different resource uses. | A host timeout or resource breach is not a successful execution result. |
 
+Issue #541 shows the gap between the two bounds on a current shard. One deploy with a limit of 20 million phlogiston played for 261 to 276 s. The proposer checks its play budget only between deploys, so the budget cannot stop one long deploy. When the block of such a deploy leaves the parent-depth horizon, the deploy returns to the pool and plays again. The orphaned block charges nothing.
+
 The accounting rules apply to every mechanism, because every mechanism executes deploys through the same execution path. The CbC Casper decision ledger records the current decisions on the cost fields (D-12).
 
 The historical token proposal is not the current deploy contract. Its token-per-COMM rule supplies no fixed CPU-time, memory, or elapsed-time bound per COMM.
@@ -117,3 +119,5 @@ For an execution or accounting change, record the exact node revision, configura
 Compare replay outcomes, state commitments, and settlement with the applicable reference path. Retain failure and exhaustion cases, not only successful workloads.
 
 State physical work bounds separately from economic bounds. Do not infer protocol activation, workload partitioning, or application completion from a passing concurrency test.
+
+Record the count of the merge guard for an order-dependent survivor pair (Finding A of D-08) in each comparison. Record each change that alters a replay result, for example a change to a merge channel rule. Issue #746 and issue #534 give current examples.

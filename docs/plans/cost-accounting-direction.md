@@ -68,6 +68,17 @@ The design also changes two execution boundaries for v6 shards. The proposer doe
 
 The platform reference and the Casper binding describe current shards. They identify these v6 differences as proposals, not current behavior.
 
+## Evidence from current-shard issues
+
+Issues with the label `testnet-path` give current-shard evidence for questions 2 and 7 and for the v6 comparison. This evidence describes `dev`, not the v6 proposal.
+
+| Issue | Evidence | Input to |
+|---|---|---|
+| #541 | A deploy can play longer than one proposal, because the play budget is checked only between deploys. Option A of the issue records an effective limit for each deploy, and replay uses the lower of the user limit and that limit. | Question 2 and TASK-028-4. Option A is a candidate truncation boundary, not a stop and resume. It changes the recorded result, so it needs a ledger entry. |
+| #541 | The leaky-bucket soft cap prices long plays, but it does not bound them. A bridge-lock deploy played for 25 to 75 s. | Question 7. The ratio of phlogiston to elapsed time depends on the contract. |
+| #746 | Six concurrent PoS calls fire the guard for an order-dependent survivor pair (Finding A of D-08) on every node. No divergence occurred. | The v6 comparison. Additive composition at protocol 7 is the planned removal of this class (D-08). |
+| #534 | A BitmaskOr merge channel silently discards cleared bits. PR #662 fails such a deploy at execution. | The v6 comparison. PR #662 changes a replay result, so all nodes need the same version. |
+
 ## Evidence states and comparison scope
 
 | Target | Evidence available at planning time | Required follow-up |
