@@ -795,7 +795,7 @@ status: in_progress
 priority: p0
 user_story: null
 issues: [24]
-closed_out_by: "EPIC-027 (2026-10-13). This epic keeps its measurement and fix history. Its open tasks, TASK-021-13 first, are inputs to EPIC-027. Since 2026-10-16 it also holds the stall-loop Track A plan (TASK-021-16 to TASK-021-24, adaptive-execution.md section 10.4)."
+closed_out_by: "EPIC-027 (2026-10-13). This epic keeps its measurement and fix history. Its open tasks, TASK-021-13 first, are inputs to EPIC-027. Since 2026-10-16 it also holds the stall-loop Track A plan (TASK-021-16 to TASK-021-25, adaptive-execution.md section 10.4)."
 blocked_by: []
 created_at: 2026-10-03
 updated_at: 2026-10-06
@@ -1248,7 +1248,7 @@ tasks:
     notes:
       - "Plan step 2. Both defects are independent of load. casper_buffer_key_value_storage.rs computes age as now - first_seen, sorts ascending, and removes the first entry, which is the youngest pendant (verified on dev 555a5e442)."
       - "PR #752 merged the fix into dev on 2026-10-17. Commit 46d49cb83 on fix/stall-track-a-rest fixes the same defects in a different way and conflicts with dev in casper_buffer_key_value_storage.rs. After a text merge, its ack_duplicate path is dead code under the PR #752 check. The reviewer feedback asks to drop that commit."
-    hygiene_note: "2026-10-18: PR #752 merged. The status stays in_progress until the TASK-021-24 soak confirms linear re-fetch traffic."
+    hygiene_note: "2026-10-18: PR #752 merged. The status stays in_progress until the TASK-021-24 soak confirms linear re-fetch traffic. TASK-021-25 holds the remaining buffer defects of issue #690."
     acceptance:
       - "Eviction removes the oldest dependency-free entry. A unit test fails on the old order."
       - "A duplicate reply to a re-fetch keeps the cooldown and the retry counter. A unit test fails on the old behavior."
@@ -1330,7 +1330,23 @@ tasks:
       - "The soak gives at least 100 test_load sessions on each provider."
       - "The issue #24 report compares the failure rate, the phase of each failure, and the Track A metrics with TASK-021-16."
       - "The last finalized block never stalls, and the report gives the finalizer.cursor, finalizer.commit, and block-creator.floor-pacing-engaged counts."
----
+  - id: TASK-021-25
+    title: "Keep a buffer at its size limit live (issue #690)"
+    status: pending
+    claimed_by: null
+    pr_base_branch: dev
+    blocked_by: ["A rerun of issue #690 on dev with PR #752 and PR #692, with the buffer held at its limit"]
+    notes:
+      - "Follow-up to TASK-021-18. PR #752 fixed the eviction order (oldest first). Both stall runs of issue #690 predate PR #752, so the stall is not retested on the current code."
+      - "Three defects remain on dev (casper_buffer_key_value_storage.rs). (1) remove_unlocked_recording deletes first_seen_ms for released blocks, and dependency_free_nodes_with_age_ms reads a missing age as now, so a ready block stays a prune candidate. (2) A pruned missing root is not requested again, and its children look ready. Recovery then depends on the missing-dependency throttle (32 attempts, then a 120 s quarantine). (3) approx_node_count adds the child and parent maps, so the limit of 16,384 is about 8,000 blocks."
+      - "Rerun method from the issue #690 comment of 2026-10-13: lower the limit to about 512 on a testbed image, and log each removal with its reason, age, children, and parents."
+      - "Issue #691 removes the usual trigger, a sustained lag on a non-validator. This task removes the permanent failure mode, which also applies to a node that catches up after downtime. Stage 1 of issue #764."
+    acceptance:
+      - "docs/claims/casper-buffer-release.md registers the new clauses as pending before any code change (EPIC-021 cbc_policy): a buffer held at its limit still drains, a ready block is never pruned, and a pruned missing root leaves the buffer with its descendants."
+      - "The overflow prune never removes a ready block, and released blocks keep their age. A unit test fails on the current dev behavior."
+      - "When the prune removes a missing root, it removes the descendants that wait only for that root. A unit test with a held-at-limit buffer and no peer answers shows no stuck descendants."
+      - "The buffer limit is stated in blocks or bytes, not in adjacency-map entries."
+      - "The issue #690 rerun with the lowered limit shows no stall, and every removal in the log is either a stuck root with its descendants or an entry that peers deliver again."
 ```
 
 **Current state:** Created on 2026-10-03 after soak 37090117438 failed. Soak 37153082817 runs weekend-60h on master f93b72699 with the stage metrics. TASK-021-1 starts from the failed run, and TASK-021-4 waits for the new run.
