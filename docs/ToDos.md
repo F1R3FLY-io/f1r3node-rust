@@ -1239,7 +1239,7 @@ tasks:
     notes:
       - "Plan step 1. Issue #24 owns Track A (decision of 2026-10-16). TASK-027-2 reuses these metrics."
       - "Avoid the 38 files that stall-loop step B1 expects to conflict where possible."
-      - "Interim plan change of 2026-10-18 (issue #24 comment 6220936428): the high phases of soak 39089710676 are bimodal on both providers, but ISSUE24_METRICS covers a whole iteration. Add metrics for each phase: the finality pace, the proposer sequence, the floor distance, and the empty-block counts. TASK-021-24 then compares the share of slow high phases with the TASK-021-16 baseline."
+      - "Interim plan change of 2026-10-18 (issue #24 comment 6220936428): the high phases of soak 39089710676 are bimodal on both providers. ISSUE24_METRICS already reports each phase and validator (corrected 2026-10-18), and every high-phase block came from a heartbeat. Add a summary tool for each phase (PR #767) and a count of deploy-triggered proposals. A test of the heartbeat timing needs a harness change. TASK-021-24 then compares the share of slow high phases with the TASK-021-16 baseline."
     hygiene_note: "2026-10-16 hygiene: PR #751 merged the Track A metrics. Open: one soak that ranks the Track A items, and the issue #24 report of the rank."
     decision: "2026-10-18: stall-loop revision 2 (publications 0b3255fc8) has code for A1 to A9 on three stacked branches before the rank exists (adaptive-execution.md section 10.4.1). The TASK-021-16 soak gives the cost of each item before the fixes, and TASK-021-24 measures each item after them. The rank no longer sets the order of the work."
     acceptance:
@@ -1284,6 +1284,7 @@ tasks:
     notes:
       - "Plan step 4. A fixed rule first. adaptive-execution.md section 10.1 later puts it under the controller, with these values as tier bounds."
       - "2026-10-18: commit c93cff5ff on fix/finality-stall-track-a coalesces deploy-triggered proposals. Heartbeat debounce is not in it. The TASK-021-24 soak measures the queue depth and the empty-block rate against TASK-021-16."
+      - "2026-10-18, soak 39089710676 (interim): deploys trigger proposals only with autopropose, and the soak shard runs without it. Every high-phase block there came from a heartbeat, and slow phases built more empty heartbeat blocks while deploys waited. The empty-block criterion below therefore needs a soak shard with autopropose, or a second measure of empty heartbeat blocks while deploys wait."
     acceptance:
       - "Deploy-triggered proposal requests coalesce into one pending proposal, and the proposer queue depth stays at most 1."
       - "A deploy-triggered proposal never builds an empty block, and the empty-block rate under load falls against TASK-021-16."
@@ -1340,6 +1341,7 @@ tasks:
       - "The soak gives at least 100 test_load sessions on each provider."
       - "The issue #24 report compares the failure rate, the phase of each failure, and the Track A metrics with TASK-021-16."
       - "The last finalized block never stalls, and the report gives the finalizer.cursor, finalizer.commit, and block-creator.floor-pacing-engaged counts."
+      - "The report gives the share of slow high phases for each provider (scripts/bench/summarize-issue24-phases.sh, PR #767) against the TASK-021-16 baseline."
   - id: TASK-021-25
     title: "Keep a buffer at its size limit live (issue #690)"
     status: pending
