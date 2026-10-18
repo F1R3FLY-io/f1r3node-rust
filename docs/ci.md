@@ -130,12 +130,15 @@ The heavy reuse gate in the `build_base` target step and `release-train.sh valid
 
 Run `just promote` to open the promotion pull request. The command runs `.github/scripts/open-promotion-pr.sh`. It creates a temporary `promote/<UTC timestamp>` branch at the `origin/dev` commit and opens the pull request to `master` with your `gh` login.
 
-You can also use the **Promote dev to master** workflow:
+You can also use the **Promote and Back-merge** workflow:
 
-1. Open the **Actions** tab and select **Promote dev to master**.
-2. Click **Run workflow**, keep the `master` branch, and click **Run workflow** again.
+1. Open the **Actions** tab and select **Promote and Back-merge**.
+2. Click **Run workflow** and keep the `master` branch.
+3. Set **operation** to `promote`, and click **Run workflow** again.
 
 The workflow runs the same script, so the rules for the branch and the pull request are the same. GitHub shows the button only for a workflow on `master`. A workflow merged to `dev` gets its button after the next promotion.
+
+The **operation** input selects the direction. The **Use workflow from** branch does not select it. A run from any branch other than `master` fails, because the `release-credentials` environment allows `master` only. Code merged to `dev` therefore never runs with the app token.
 
 A pull request opened with `GITHUB_TOKEN` starts no CI, so the workflow opens the pull request with a dedicated promotion GitHub App. The app installation grants only **Contents: write** and **Pull requests: write**. The app must not be a bypass actor on the `devProtect` or `masterProtect` ruleset. The CI automation app is a bypass actor on both rulesets, so the workflow does not use it. The `release-credentials` environment holds `PROMOTION_APP_ID` and `PROMOTION_APP_PRIVATE_KEY`, and it allows `master` only.
 
@@ -146,6 +149,8 @@ Do not open a promotion with head `dev`. The repository deletes the head branch 
 ## Back-merge from master to dev
 
 After a `hotfix/` pull request merges into `master`, merge `master` back into `dev`. Run `just backmerge` to open the back-merge pull request. The command runs `.github/scripts/open-backmerge-pr.sh`. It creates a temporary `backmerge/master-<12-character SHA>` branch at the `origin/master` commit. It then opens the pull request to `dev` with your `gh` login. If `dev` already contains `master`, the command does nothing.
+
+You can also run the **Promote and Back-merge** workflow from `master` with **operation** set to `backmerge`. It runs the same script with the promotion app token. The pull request body then names the user who started the workflow and asks a different member of `@F1R3FLY-io/ci-maintainers` to approve.
 
 If a `backmerge/*` pull request to `dev` is open, the command names it and does nothing. Merge or close that pull request first. The branch name contains the `master` commit. A second run for the same commit therefore fails at branch creation, also when both runs are concurrent.
 

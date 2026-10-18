@@ -225,13 +225,20 @@ test -e "$TMP/output2/iteration-00001-docker/deadline.txt"
 test ! -e "$TMP/output2/iteration-00001-docker/exit-code.txt"
 test ! -e "$TMP/output2/early-exit.txt"
 grep -q '^early_exit_reason=none$' "$TMP/output2/summary.txt"
+# The node-metrics copy is gzipped once its iteration ends (scenario 1 keeps
+# it plain because the guardian breach runs under the emergency deadline).
+test ! -e "$TMP/output2/iteration-00001-docker/node-metrics-timeseries.csv"
+gzip -dc "$TMP/output2/iteration-00001-docker/node-metrics-timeseries.csv.gz" |
+	grep -q 'replay_cache_retained_bytes,1048576'
 jq -e '
   .iterations == 1
   and .failures == 0
+  and .providers.docker == {iterations: 1, failures: 0, avg_duration_s: .providers.docker.avg_duration_s}
   and .rss_peak_mb == 768
   and .cpu_peak_pct == 30
   and .cpu_peak_core_grid_pct == {"validator1": {"0": 7.5, "1": 42}, "validator2": {"all": 20}}
   and .iteration_metrics[0].exit_code == 124
+  and .iteration_metrics[0].deadline_truncated == true
   and .iteration_metrics[0].rss_peak_mb == 768
   and .iteration_metrics[0].finalization_latency == {p50_ms: 85100, p95_ms: 120600, p99_ms: 133300, samples: 2}
   and .finalization_p50_ms == 85100
