@@ -255,6 +255,10 @@ enum SemanticKind {
     Var,
     Unit,
     ReceiveBind,
+    CostSignature,
+    CostSignatureAtom,
+    CostBoundSignature,
+    CostRegion,
     MatchCase,
     Expr,
     BigRational,
@@ -306,6 +310,8 @@ fn semantic_kind(program: &'static RhoMatchProgram) -> Option<SemanticKind> {
         SemanticKind::Component(ParComponentTag::Bundle)
     } else if program_is!(IF_RHO_MATCH_PROGRAM) {
         SemanticKind::Component(ParComponentTag::If)
+    } else if program_is!(COSTTOKENSTACK_RHO_MATCH_PROGRAM) {
+        SemanticKind::Component(ParComponentTag::CostTokenStack)
     } else if program_is!(VAR_RHO_MATCH_PROGRAM) {
         SemanticKind::Var
     } else if program_is!(VAR_WILDCARDMSG_RHO_MATCH_PROGRAM)
@@ -314,6 +320,14 @@ fn semantic_kind(program: &'static RhoMatchProgram) -> Option<SemanticKind> {
         SemanticKind::Unit
     } else if program_is!(RECEIVEBIND_RHO_MATCH_PROGRAM) {
         SemanticKind::ReceiveBind
+    } else if program_is!(COSTSIGNATURE_RHO_MATCH_PROGRAM) {
+        SemanticKind::CostSignature
+    } else if program_is!(COSTSIGNATUREATOM_RHO_MATCH_PROGRAM) {
+        SemanticKind::CostSignatureAtom
+    } else if program_is!(COSTBOUNDSIGNATURE_RHO_MATCH_PROGRAM) {
+        SemanticKind::CostBoundSignature
+    } else if program_is!(COSTREGION_RHO_MATCH_PROGRAM) {
+        SemanticKind::CostRegion
     } else if program_is!(MATCHCASE_RHO_MATCH_PROGRAM) {
         SemanticKind::MatchCase
     } else if program_is!(GBIGRATIONAL_RHO_MATCH_PROGRAM) {
@@ -473,6 +487,7 @@ enum SemanticSummary<'src> {
         score: Option<CanonicalScoreHandle>,
         source_present: bool,
     },
+    CostScore(CanonicalScoreHandle),
     MatchCase {
         score: Option<CanonicalScoreHandle>,
         required_present: bool,
@@ -824,6 +839,17 @@ fn u32_value<'src>(
     }
 }
 
+fn u64_value<'src>(
+    frame: &MessageFrame<'src>,
+    name: &'static str,
+) -> Result<u64, CanonicalProtobufAdmissionError> {
+    match scalar_value(frame, name)? {
+        None => Ok(0),
+        Some((SemanticScalar::U64(value), _)) => Ok(*value),
+        Some(_) => Err(frame.schema_error(0, "semantic u64 field has a different scalar type")),
+    }
+}
+
 fn bytes_value<'src>(
     frame: &MessageFrame<'src>,
     name: &'static str,
@@ -900,6 +926,20 @@ fn optional_var<'src>(
     Ok(Some(score))
 }
 
+fn cost_score<'src>(
+    frame: &MessageFrame<'src>,
+    name: &'static str,
+) -> Result<Option<CanonicalScoreHandle>, CanonicalProtobufAdmissionError> {
+    let Some(occurrence) = sole_occurrence(frame, name)? else {
+        return Ok(None);
+    };
+    let summary = message_summary(occurrence, frame)?;
+    let SemanticSummary::CostScore(score) = summary.semantic else {
+        return Err(frame.schema_error(0, "cost message returned a different semantic summary"));
+    };
+    Ok(Some(score))
+}
+
 fn empty_par_score<'src>(
     scores: &mut CanonicalScoreArena<'src>,
 ) -> Result<CanonicalScoreHandle, CanonicalProtobufAdmissionError> {
@@ -945,6 +985,12 @@ fn reduce_semantic_kind<'src>(
         SemanticKind::Var => reduce_var(frame, scores),
         SemanticKind::Unit => Ok(SemanticSummary::Unit),
         SemanticKind::ReceiveBind => reduce_receive_bind(frame, scores),
+        SemanticKind::CostSignature => reduce_cost_signature(frame, scores),
+        SemanticKind::CostSignatureAtom => reduce_cost_signature_atom(frame, scores),
+        SemanticKind::CostBoundSignature => Ok(SemanticSummary::CostScore(
+            semantics::cost_bound_score(scores, i32_value(frame, "index")?)?,
+        )),
+        SemanticKind::CostRegion => reduce_cost_region(frame, scores),
         SemanticKind::MatchCase => reduce_match_case(frame, scores),
         SemanticKind::Expr => reduce_expr(frame, scores),
         SemanticKind::BigRational => {
@@ -1043,6 +1089,79 @@ fn reduce_var<'src>(
     Ok(SemanticSummary::Var(semantics::var_score(scores, score)?))
 }
 
+fn reduce_cost_signature<'src>(
+    frame: &MessageFrame<'src>,
+    scores: &mut CanonicalScoreArena<'src>,
+) -> Result<SemanticSummary<'src>, CanonicalProtobufAdmissionError> {
+    let mut atoms = Vec::new();
+    for occurrence in semantic_slot(frame, "atoms")? {
+        let summary = message_summary(occurrence, frame)?;
+        let SemanticSummary::CostScore(score) = summary.semantic else {
+            return Err(frame.schema_error(0, "cost atom returned a different semantic summary"));
+        };
+        atoms.push(score);
+    }
+    Ok(SemanticSummary::CostScore(semantics::cost_signature_score(
+        scores, atoms,
+    )?))
+}
+
+fn reduce_cost_signature_atom<'src>(
+    frame: &MessageFrame<'src>,
+    scores: &mut CanonicalScoreArena<'src>,
+) -> Result<SemanticSummary<'src>, CanonicalProtobufAdmissionError> {
+    let score = match sole_occurrence(frame, "form")? {
+        Some(occurrence) => match occurrence.variant {
+            Some("Ground") => {
+                let SemanticValue::Scalar(SemanticScalar::Bytes(bytes)) = &occurrence.value else {
+                    return Err(frame.schema_error(0, "cost ground is not bytes"));
+                };
+                semantics::cost_ground_score(scores, &bytes.bytes().collect::<Vec<_>>())?
+            }
+            Some("Quote") => {
+                let SemanticValue::Scalar(SemanticScalar::Bytes(bytes)) = &occurrence.value else {
+                    return Err(frame.schema_error(0, "cost quote is not bytes"));
+                };
+                semantics::cost_quote_score(scores, &bytes.bytes().collect::<Vec<_>>())?
+            }
+            Some("RuntimeName") => {
+                let SemanticValue::Scalar(SemanticScalar::Bytes(bytes)) = &occurrence.value else {
+                    return Err(frame.schema_error(0, "cost runtime name is not bytes"));
+                };
+                semantics::cost_runtime_name_score(scores, &bytes.bytes().collect::<Vec<_>>())?
+            }
+            Some("Bound") => {
+                let summary = message_summary(occurrence, frame)?;
+                let SemanticSummary::CostScore(score) = summary.semantic else {
+                    return Err(frame.schema_error(0, "cost bound returned a different summary"));
+                };
+                score
+            }
+            _ => return Err(frame.schema_error(0, "unknown cost signature atom form")),
+        },
+        None => semantics::cost_form_absent_score(scores)?,
+    };
+    Ok(SemanticSummary::CostScore(score))
+}
+
+fn reduce_cost_region<'src>(
+    frame: &MessageFrame<'src>,
+    scores: &mut CanonicalScoreArena<'src>,
+) -> Result<SemanticSummary<'src>, CanonicalProtobufAdmissionError> {
+    let version = u32_value(frame, "version")?;
+    let coordinates = [
+        u64_value(frame, "start_line")?,
+        u64_value(frame, "start_column")?,
+        u64_value(frame, "end_line")?,
+        u64_value(frame, "end_column")?,
+    ];
+    let signer = cost_score(frame, "signer")?;
+    let ordinal = u32_value(frame, "ordinal")?;
+    Ok(SemanticSummary::CostScore(
+        semantics::cost_region_score_parts(scores, version, coordinates, signer, ordinal)?,
+    ))
+}
+
 fn reduce_receive_bind<'src>(
     frame: &MessageFrame<'src>,
     scores: &mut CanonicalScoreArena<'src>,
@@ -1056,11 +1175,13 @@ fn reduce_receive_bind<'src>(
         }
         let remainder =
             optional_var(frame, "remainder")?.unwrap_or(scores.integer(i64::from(Score::ABSENT))?);
+        let region = cost_score(frame, "cost_region")?;
         Some(semantics::receive_bind_score(
             scores,
             source.score,
             patterns,
             remainder,
+            region,
         )?)
     } else {
         None
@@ -1295,11 +1416,32 @@ fn reduce_component<'src>(
         ParComponentTag::Match => reduce_component_match(frame, scores),
         ParComponentTag::Bundle => reduce_component_bundle(frame, scores),
         ParComponentTag::If => reduce_component_if(frame, scores),
+        ParComponentTag::CostTokenStack => reduce_component_cost_token_stack(frame, scores),
         ParComponentTag::Expr | ParComponentTag::Connective | ParComponentTag::GUnforgeable => {
             reduce_component_specialized(frame, family)
         }
     }?;
     Ok(component_summary(family, score, complete, false))
+}
+
+fn reduce_component_cost_token_stack<'src>(
+    frame: &MessageFrame<'src>,
+    scores: &mut CanonicalScoreArena<'src>,
+) -> Result<(bool, CanonicalScoreHandle), CanonicalProtobufAdmissionError> {
+    let mut layers = Vec::new();
+    for occurrence in semantic_slot(frame, "layers")? {
+        let summary = message_summary(occurrence, frame)?;
+        let SemanticSummary::CostScore(score) = summary.semantic else {
+            return Err(
+                frame.schema_error(0, "cost stack layer returned a different semantic summary")
+            );
+        };
+        layers.push(score);
+    }
+    Ok((
+        true,
+        semantics::cost_token_stack_score_parts(scores, layers)?,
+    ))
 }
 
 fn reduce_component_send<'src>(
@@ -1324,6 +1466,7 @@ fn reduce_component_send<'src>(
                     channel.expect("complete Send has a channel").0.score,
                     data,
                     bool_value(frame, "connective_used")?,
+                    cost_score(frame, "cost_region")?,
                 )?,
             )
         }
@@ -1382,6 +1525,7 @@ fn reduce_component_receive<'src>(
                     i32_value(frame, "bind_count")?,
                     bool_value(frame, "connective_used")?,
                     condition_score,
+                    cost_score(frame, "cost_region")?,
                 )?,
             )
         }
@@ -3882,10 +4026,10 @@ mod tests {
 
     #[test]
     fn every_descriptor_message_field_and_oneof_arm_matches_the_recursive_oracle() {
-        assert_eq!(GENERATED_SCHEMA_TEST_MESSAGE_COUNT, 56);
+        assert_eq!(GENERATED_SCHEMA_TEST_MESSAGE_COUNT, 62);
         assert_eq!(GENERATED_SCHEMA_TEST_EXTERN_COUNT, 2);
-        assert_eq!(GENERATED_SCHEMA_TEST_ONEOF_COUNT, 5);
-        assert_eq!(GENERATED_SCHEMA_TEST_ONEOF_ARM_COUNT, 54);
+        assert_eq!(GENERATED_SCHEMA_TEST_ONEOF_COUNT, 6);
+        assert_eq!(GENERATED_SCHEMA_TEST_ONEOF_ARM_COUNT, 58);
         assert_eq!(GENERATED_SCHEMA_TEST_EXTERN_NAMES, &["EPathMap", "Par"]);
 
         let fixtures = schema_fixtures();
@@ -4645,6 +4789,7 @@ mod tests {
             persistent: true,
             locally_free: vec![1, 5, 9],
             connective_used: true,
+            cost_region: None,
         };
         let send_bytes = protobuf_encoder::encode_to_vec(&send);
         let admission = validate(send_bytes, &SEND_RHO_MATCH_PROGRAM);

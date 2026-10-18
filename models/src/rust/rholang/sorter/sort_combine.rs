@@ -71,10 +71,10 @@ use crate::rhoapi::expr::ExprInstance;
 use crate::rhoapi::g_unforgeable::UnfInstance;
 use crate::rhoapi::var::VarInstance;
 use crate::rhoapi::{
-    Bundle, Connective, EAnd, EDiv, EEq, EGt, EGte, EList, ELt, ELte, EMatches, EMethod, EMinus,
-    EMinusMinus, EMod, EMult, ENeg, ENeq, ENot, EOr, EPathMap, EPercentPercent, EPlus, EPlusPlus,
-    ETuple, EVar, EZipper, Expr, GBigRational, GFixedPoint, GUnforgeable, If, Match, MatchCase,
-    New, Par, Receive, ReceiveBind, Send, Var,
+    Bundle, Connective, CostTokenStack, EAnd, EDiv, EEq, EGt, EGte, EList, ELt, ELte, EMatches,
+    EMethod, EMinus, EMinusMinus, EMod, EMult, ENeg, ENeq, ENot, EOr, EPathMap, EPercentPercent,
+    EPlus, EPlusPlus, ETuple, EVar, EZipper, Expr, GBigRational, GFixedPoint, GUnforgeable, If,
+    Match, MatchCase, New, Par, Receive, ReceiveBind, Send, Var,
 };
 use crate::rust::canonical_path::encode_trie_path_with_stability;
 use crate::rust::epathmap_trie_codec::EPathMapMode;
@@ -198,6 +198,13 @@ pub fn sort_unforgeable(unf: &GUnforgeable) -> ScoredTerm<GUnforgeable> {
     ScoredTerm {
         term: unf.clone(),
         score: semantic_score(|algebra| semantics::unforgeable_score(algebra, score)),
+    }
+}
+
+pub fn sort_cost_token_stack(stack: &CostTokenStack) -> ScoredTerm<CostTokenStack> {
+    ScoredTerm {
+        term: stack.clone(),
+        score: semantic_score(|algebra| semantics::cost_token_stack_score(algebra, stack)),
     }
 }
 
@@ -454,15 +461,22 @@ pub fn combine_send(
         persistent: s.persistent,
         locally_free: s.locally_free.clone(),
         connective_used: s.connective_used,
+        cost_region: s.cost_region.clone(),
     };
 
     let send_score = semantic_score(|algebra| {
+        let region_score = s
+            .cost_region
+            .as_ref()
+            .map(|region| semantics::cost_region_score(algebra, region))
+            .transpose()?;
         semantics::send_score(
             algebra,
             s.persistent,
             chan.score,
             data_scores,
             s.connective_used,
+            region_score,
         )
     });
 
@@ -496,13 +510,20 @@ pub fn combine_bind(
             source: Some(channel.term),
             remainder: bind.remainder.clone(),
             free_count: bind.free_count,
+            cost_region: bind.cost_region.clone(),
         },
         score: semantic_score(|algebra| {
+            let region_score = bind
+                .cost_region
+                .as_ref()
+                .map(|region| semantics::cost_region_score(algebra, region))
+                .transpose()?;
             semantics::receive_bind_score(
                 algebra,
                 channel.score,
                 pattern_scores,
                 sorted_remainder_score,
+                region_score,
             )
         }),
     }
@@ -545,8 +566,14 @@ pub fn combine_receive(
             locally_free: r.locally_free.clone(),
             connective_used: r.connective_used,
             condition: condition_term,
+            cost_region: r.cost_region.clone(),
         },
         score: semantic_score(|algebra| {
+            let region_score = r
+                .cost_region
+                .as_ref()
+                .map(|region| semantics::cost_region_score(algebra, region))
+                .transpose()?;
             semantics::receive_score(
                 algebra,
                 r.persistent,
@@ -556,6 +583,7 @@ pub fn combine_receive(
                 r.bind_count,
                 r.connective_used,
                 condition_score,
+                region_score,
             )
         }),
     }

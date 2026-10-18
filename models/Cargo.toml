@@ -183,6 +183,14 @@ name = "bincode_decoder_shapes"
 path = "tests/bincode_decoder_shapes.rs"
 
 [[test]]
+name = "cost_region_bincode"
+path = "tests/cost_region_bincode.rs"
+
+[[test]]
+name = "cost_token_stack_admission"
+path = "tests/cost_token_stack_admission.rs"
+
+[[test]]
 name = "par_bag"
 path = "tests/par_bag.rs"
 

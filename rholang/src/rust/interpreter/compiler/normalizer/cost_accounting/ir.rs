@@ -25,6 +25,10 @@
 //!   the sorted component list.
 
 use crypto::rust::hash::blake2b256::Blake2b256;
+use models::rhoapi::cost_signature_atom::Form;
+use models::rhoapi::{CostBoundSignature, CostSignature, CostSignatureAtom};
+
+use crate::rust::interpreter::errors::InterpreterError;
 
 /// Domain separator for the ground axis `Σ⟦g⟧`. Distinct from
 /// [`DOMAIN_QUOTE`] so a ground principal and a quote principal can never
@@ -80,7 +84,7 @@ pub enum Sig {
     /// A `new`-bound (ring-fenced) ground principal: `content` = the binder's
     /// stable identity (its source span). Unique per `new`-binder, so the fuel is
     /// ring-fenced to that scope and never aliases a free sig of the same name.
-    Bound(Vec<u8>),
+    Bound(i32),
     /// Quote principal `#P`: `content` = canonical, binder-depth-independent
     /// encoding of `𝒫⟦P⟧` (see [`super::sig::canon_quote`]).
     Quote(Vec<u8>),
@@ -138,28 +142,44 @@ impl Sig {
     /// * `Compound([s₁..sₙ])` (key-sorted) → the left-assoc `And`-fold; native
     ///   `from_sig`'s `And` arm sort-matches, so the channel is permutation-
     ///   invariant (commutative `∘`, P8), matching `envelope_sig_compound`.
-    pub fn to_native(&self) -> crate::rust::interpreter::accounting::Sig {
+    pub fn to_native(&self) -> Result<crate::rust::interpreter::accounting::Sig, InterpreterError> {
         use crate::rust::interpreter::accounting::Sig as NativeSig;
         match self {
-            Sig::Ground(content) => NativeSig::Ground(content.clone()),
-            Sig::Quote(content) => NativeSig::Quote(content.clone()),
-            Sig::Bound(content) => {
-                let mut bytes = Vec::with_capacity(DOMAIN_BOUND.len() + content.len());
-                bytes.extend_from_slice(DOMAIN_BOUND);
-                bytes.extend_from_slice(content);
-                NativeSig::Ground(bytes)
-            }
+            Sig::Ground(content) => Ok(NativeSig::Ground(content.clone())),
+            Sig::Quote(content) => Ok(NativeSig::Quote(content.clone())),
+            Sig::Bound(_) => Err(InterpreterError::NormalizerError(
+                "cost-accounting: bound signature requires runtime name substitution".to_string(),
+            )),
             Sig::Compound(components) => {
                 let mut iter = components.iter();
                 let first = iter
                     .next()
                     .expect("Sig::Compound invariant: ≥ 2 components")
-                    .to_native();
-                iter.fold(first, |acc, component| {
-                    NativeSig::And(Box::new(acc), Box::new(component.to_native()))
+                    .to_native()?;
+                iter.try_fold(first, |acc, component| {
+                    Ok(NativeSig::And(
+                        Box::new(acc),
+                        Box::new(component.to_native()?),
+                    ))
                 })
             }
         }
+    }
+
+    pub fn to_cost_signature(&self) -> CostSignature {
+        let atoms = self
+            .atoms()
+            .into_iter()
+            .map(|atom| CostSignatureAtom {
+                form: Some(match atom {
+                    Sig::Ground(content) => Form::Ground(content),
+                    Sig::Quote(content) => Form::Quote(content),
+                    Sig::Bound(index) => Form::Bound(CostBoundSignature { index }),
+                    Sig::Compound(_) => unreachable!(),
+                }),
+            })
+            .collect();
+        CostSignature { atoms }
     }
 }
 
@@ -172,10 +192,10 @@ impl ResourceSignature for Sig {
                 bytes.extend_from_slice(content);
                 bytes
             }
-            Sig::Bound(content) => {
-                let mut bytes = Vec::with_capacity(DOMAIN_BOUND.len() + content.len());
+            Sig::Bound(index) => {
+                let mut bytes = Vec::with_capacity(DOMAIN_BOUND.len() + 4);
                 bytes.extend_from_slice(DOMAIN_BOUND);
-                bytes.extend_from_slice(content);
+                bytes.extend_from_slice(&index.to_le_bytes());
                 bytes
             }
             Sig::Quote(content) => {

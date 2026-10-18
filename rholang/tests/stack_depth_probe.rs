@@ -239,6 +239,7 @@ fn nested_binders(depth: usize) -> Par {
                 source: Some(new_gint_par(0, vec![], false)),
                 remainder: None,
                 free_count: 0,
+                cost_region: None,
             }],
             body: Some(p),
             persistent: false,
@@ -247,6 +248,7 @@ fn nested_binders(depth: usize) -> Par {
             locally_free: vec![],
             connective_used: false,
             condition: None,
+            cost_region: None,
         };
         let inner = models::par_from_default! {
             receives: vec![receive],
@@ -853,6 +855,7 @@ fn run_probe(what: &str, depth: usize) {
                 ListParWithRandom {
                     pars: vec![nested_list(depth)],
                     random_state: Vec::new(),
+                    cost_region: None,
                 },
                 false,
             );

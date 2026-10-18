@@ -114,6 +114,7 @@ fn planned_accounting_new_chain(depth: usize) -> Par {
         persistent: false,
         locally_free: Vec::new(),
         connective_used: false,
+        cost_region: None,
     };
     let send = construction
         .send_component(&send_shell, &[empty])

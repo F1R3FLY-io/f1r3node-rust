@@ -558,6 +558,7 @@ fn send(persistent: bool) -> Send {
         persistent,
         locally_free: vec![1],
         connective_used: true,
+        cost_region: None,
     }
 }
 
@@ -573,6 +574,7 @@ fn receive_bind(with_remainder: bool) -> ReceiveBind {
             None
         },
         free_count: 2,
+        cost_region: None,
     }
 }
 
@@ -586,6 +588,7 @@ fn receive(with_condition: bool, peek: bool, persistent: bool) -> Receive {
         locally_free: vec![2],
         connective_used: false,
         condition: if with_condition { Some(gint(1)) } else { None },
+        cost_region: None,
     }
 }
 

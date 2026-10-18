@@ -1,21 +1,5 @@
-//! Native recognition of cost-accounted surface syntax. Surface forms DECORATE;
-//! they never re-emit metered operations (the reducer meters per-COMM). A signed
-//! term resolves `s` to a native [`accounting::Sig`](crate::rust::interpreter::accounting::Sig)
-//! (validating it) and lowers its inner `P` through the ORDINARY dispatch — it
-//! synthesizes NO `for(t <- Σ⟦s⟧)` fuel gate, so the normalized `Par` of
-//! `{% P %}[s]` has the SAME send/receive-node count as `P` alone (the
-//! double-metering avoidance, design §3/§4 / MAJOR-2).
-//!
-//! The located-stack ATTRIBUTION is a metering-context concern realized at the
-//! REDUCER, not here (Phase 3): `metering::note_channel_lane` matches each COMM's
-//! resolved channel against the deploy's installed signer channels
-//! ([`Sig::signer_channels`](crate::rust::interpreter::accounting::Sig::signer_channels))
-//! and tallies a per-lane projection — the normalizer binds NOTHING (the `Par`
-//! has no signature field — the s₀ collapse — and the normalizer has no signer
-//! context; BLOCKER-1). So recognition here only VALIDATES the signature and
-//! lowers `P`; under s₀ every COMM attributes to the deploy envelope (no COMM
-//! lands on a `Σ⟦s⟧` supply channel — the §5 no-alias audit).
-
+use models::rhoapi::{CostRegion, CostSignature};
+use models::rust::par_construction::ParConstruction;
 use rholang_parser::ast::{AnnProc, Receipts, Signature, TokenStack};
 use rholang_parser::{RholangParser, SourceSpan};
 
@@ -27,6 +11,29 @@ use crate::rust::interpreter::compiler::normalize_drive::{
     NormKont, NormVal, NormWork, ProcVisitInputs, ProcVisitOutputs, SigInput, Step,
 };
 use crate::rust::interpreter::errors::InterpreterError;
+
+fn cost_region(
+    span: SourceSpan,
+    ordinal: u32,
+    signer: CostSignature,
+) -> Result<CostRegion, InterpreterError> {
+    let coordinate = |value| {
+        u64::try_from(value).map_err(|_| {
+            InterpreterError::NormalizerError(
+                "cost-accounting: source coordinate exceeds u64".to_string(),
+            )
+        })
+    };
+    Ok(CostRegion {
+        version: 1,
+        start_line: coordinate(span.start.line)?,
+        start_column: coordinate(span.start.col)?,
+        end_line: coordinate(span.end.line)?,
+        end_column: coordinate(span.end.col)?,
+        signer: Some(signer),
+        ordinal,
+    })
+}
 
 /// `{% P %}[s]`, descend half.
 ///
@@ -46,6 +53,7 @@ use crate::rust::interpreter::errors::InterpreterError;
 pub(crate) fn descend_signed_term<'ast>(
     inner: AnnProc<'ast>,
     sig: &'ast Signature<'ast>,
+    span: SourceSpan,
     input: ProcVisitInputs,
     parser: &'ast RholangParser<'ast>,
 ) -> Result<Step<'ast>, InterpreterError> {
@@ -66,7 +74,11 @@ pub(crate) fn descend_signed_term<'ast>(
     // recognition only validates + lowers `P`; under s₀ every COMM attributes to
     // the deploy envelope.
     Ok(Step::Descend {
-        kont: NormKont::SignedTerm { core_inner, input },
+        kont: NormKont::SignedTerm {
+            core_inner,
+            span,
+            input,
+        },
         work: NormWork::Sig {
             sig: SigInput::Ref(core_sig),
             bound_map_chain,
@@ -83,65 +95,78 @@ pub(crate) fn descend_signed_term<'ast>(
 #[inline(never)]
 pub(crate) fn combine_signed_term<'ast>(
     core_inner: AnnProc<'ast>,
-    input: ProcVisitInputs,
+    span: SourceSpan,
+    mut input: ProcVisitInputs,
     value: NormVal,
 ) -> Result<Step<'ast>, InterpreterError> {
-    let _native: crate::rust::interpreter::accounting::Sig = value.into_sig().to_native();
+    let region = cost_region(span, 0, value.into_sig().to_cost_signature())?;
+    input.bound_map_chain = input.bound_map_chain.with_cost_region(region);
     Ok(Step::Tail(NormWork::Proc {
         proc: core_inner,
         input,
     }))
 }
 
-/// `s :: S` bare token stack at PROC level: resolve each layer's signature
-/// (recognition / validation) and lower to the empty process. It mints NOTHING in
-/// the normalizer — DR-13: only the Rust supply producer writes `Σ⟦s⟧`, and
-/// emitting `Σ⟦s⟧!(…)` sends would add COMM nodes and break the `Δ_s == consumed`
-/// equality. A signed deploy's fuel is its own funded `Σ⟦c⟧` balance (Workstream
-/// C/D), not a per-program send (design §3.3 + BLOCKER-1). In the multi-deploy
-/// re-scoping (Phase 5) a `s :: ()` stack is the deploy BEING signed by `s`; it
-/// carries no in-program mint.
 #[inline(never)]
 pub(crate) fn descend_token_stack<'ast>(
     stack: &'ast TokenStack<'ast>,
     input: ProcVisitInputs,
-) -> Step<'ast> {
-    schedule_layer(&stack.layers, 0, input)
+    construction: &mut ParConstruction,
+) -> Result<Step<'ast>, InterpreterError> {
+    schedule_layer(
+        &stack.layers,
+        0,
+        Vec::with_capacity(stack.layers.len()),
+        input,
+        construction,
+    )
 }
 
-/// `s :: S`, combine half — one layer validated, on to the next.
 #[inline(never)]
 pub(crate) fn combine_token_stack<'ast>(
     layers: &'ast [Signature<'ast>],
     idx: usize,
+    mut ordered: Vec<models::rhoapi::CostSignature>,
     input: ProcVisitInputs,
     value: NormVal,
+    construction: &mut ParConstruction,
 ) -> Result<Step<'ast>, InterpreterError> {
-    let _native: crate::rust::interpreter::accounting::Sig = value.into_sig().to_native();
-    Ok(schedule_layer(layers, idx + 1, input))
+    ordered.push(value.into_sig().to_cost_signature());
+    schedule_layer(layers, idx + 1, ordered, input, construction)
 }
 
 /// Schedule layer `idx`, or finish the stack.
 fn schedule_layer<'ast>(
     layers: &'ast [Signature<'ast>],
     idx: usize,
+    ordered: Vec<models::rhoapi::CostSignature>,
     input: ProcVisitInputs,
-) -> Step<'ast> {
+    construction: &mut ParConstruction,
+) -> Result<Step<'ast>, InterpreterError> {
     match layers.get(idx) {
         Some(layer) => {
             let bound_map_chain = input.bound_map_chain.clone();
-            Step::Descend {
-                kont: NormKont::TokenStack { layers, idx, input },
+            Ok(Step::Descend {
+                kont: NormKont::TokenStack {
+                    layers,
+                    idx,
+                    ordered,
+                    input,
+                },
                 work: NormWork::Sig {
                     sig: SigInput::Ref(layer),
                     bound_map_chain,
                 },
-            }
+            })
         }
-        None => Step::Done(NormVal::Proc(ProcVisitOutputs {
-            par: input.par,
-            free_map: input.free_map,
-        })),
+        None => {
+            let stack = models::rhoapi::CostTokenStack { layers: ordered };
+            let component = construction.cost_token_stack_component(&stack, &[])?;
+            Ok(Step::Done(NormVal::Proc(ProcVisitOutputs {
+                par: construction.append_component(input.par, component, Vec::new(), false)?,
+                free_map: input.free_map,
+            })))
+        }
     }
 }
 
@@ -165,11 +190,28 @@ pub(crate) fn descend_signed_join<'ast>(
     // signatures (source order). The recovered `for` is the natural-arity data
     // join — no fuel bind enters its `ReceiveBind` set.
     let (plain_for, clause_sigs) = desugar::strip_signed_binds(receipts, body, span, parser);
+    let clause_positions = receipts
+        .iter()
+        .flat_map(|receipt| receipt.iter())
+        .enumerate()
+        .filter_map(|(index, bind)| {
+            matches!(bind, rholang_parser::ast::Bind::Signed { .. }).then_some(index)
+        })
+        .collect::<Vec<_>>();
+    let regions = vec![None; receipts.iter().map(|receipt| receipt.len()).sum()];
     debug_assert!(
         !clause_sigs.is_empty(),
         "descend_signed_join is dispatched only when a Bind::Signed is present"
     );
-    schedule_clause(plain_for, clause_sigs, 0, input)
+    schedule_clause(
+        plain_for,
+        clause_sigs,
+        clause_positions,
+        regions,
+        span,
+        0,
+        input,
+    )
 }
 
 /// `for(... {% y <- x %}[s] ...)`, combine half.
@@ -177,13 +219,31 @@ pub(crate) fn descend_signed_join<'ast>(
 pub(crate) fn combine_signed_join<'ast>(
     plain_for: AnnProc<'ast>,
     clause_sigs: Vec<Signature<'ast>>,
+    clause_positions: Vec<usize>,
+    mut regions: Vec<Option<CostRegion>>,
+    span: SourceSpan,
     idx: usize,
     _bound_map_chain: BoundMapChain<VarSort>,
     input: ProcVisitInputs,
     value: NormVal,
 ) -> Result<Step<'ast>, InterpreterError> {
-    let _native: crate::rust::interpreter::accounting::Sig = value.into_sig().to_native();
-    Ok(schedule_clause(plain_for, clause_sigs, idx + 1, input))
+    let ordinal = u32::try_from(clause_positions[idx] + 1).map_err(|_| {
+        InterpreterError::NormalizerError("cost-accounting: clause index exceeds u32".to_string())
+    })?;
+    regions[clause_positions[idx]] = Some(cost_region(
+        span,
+        ordinal,
+        value.into_sig().to_cost_signature(),
+    )?);
+    Ok(schedule_clause(
+        plain_for,
+        clause_sigs,
+        clause_positions,
+        regions,
+        span,
+        idx + 1,
+        input,
+    ))
 }
 
 /// Schedule clause signature `idx`, or lower the recovered plain join.
@@ -196,12 +256,16 @@ pub(crate) fn combine_signed_join<'ast>(
 fn schedule_clause<'ast>(
     plain_for: AnnProc<'ast>,
     mut clause_sigs: Vec<Signature<'ast>>,
+    clause_positions: Vec<usize>,
+    regions: Vec<Option<CostRegion>>,
+    span: SourceSpan,
     idx: usize,
-    input: ProcVisitInputs,
+    mut input: ProcVisitInputs,
 ) -> Step<'ast> {
     if idx >= clause_sigs.len() {
         // Lower the recovered PLAIN join ordinarily: its binds are now linear, so it
         // re-normalizes through `normalize_p_input` with NO signed-bind recursion.
+        input.bound_map_chain = input.bound_map_chain.with_pending_clause_regions(regions);
         return Step::Tail(NormWork::Proc {
             proc: plain_for,
             input,
@@ -223,6 +287,9 @@ fn schedule_clause<'ast>(
         kont: NormKont::SignedJoin {
             plain_for,
             clause_sigs,
+            clause_positions,
+            regions,
+            span,
             idx,
             bound_map_chain: bound_map_chain.clone(),
             input,

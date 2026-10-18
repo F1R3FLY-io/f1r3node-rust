@@ -6267,6 +6267,7 @@ mod differential {
                 persistent: true,
                 locally_free: vec![],
                 connective_used: false,
+                cost_region: None,
             }],
             receives: vec![Receive {
                 binds: vec![ReceiveBind {
@@ -6276,6 +6277,7 @@ mod differential {
                         var_instance: Some(VarInstance::Wildcard(WildcardMsg {})),
                     }),
                     free_count: 1,
+                    cost_region: None,
                 }],
                 body: Some(gint(3)),
                 persistent: false,
@@ -6284,6 +6286,7 @@ mod differential {
                 locally_free: vec![],
                 connective_used: false,
                 condition: None,
+                cost_region: None,
             }],
             news: vec![New {
                 bind_count: 2,
@@ -7131,6 +7134,7 @@ mod differential {
                     source: Some(gstring("first")),
                     remainder: None,
                     free_count: 2,
+                    cost_region: None,
                 },
                 ReceiveBind {
                     patterns: vec![
@@ -7147,12 +7151,14 @@ mod differential {
                     source: Some(new_par(1, gstring("second"))),
                     remainder: None,
                     free_count: 1,
+                    cost_region: None,
                 },
                 ReceiveBind {
                     patterns: vec![free_var(2)],
                     source: Some(gstring("third")),
                     remainder: None,
                     free_count: 5,
+                    cost_region: None,
                 },
             ],
             body: Some(bound_var(0)),
@@ -7162,6 +7168,7 @@ mod differential {
             locally_free: vec![],
             connective_used: false,
             condition: None,
+            cost_region: None,
         };
 
         // ANTI-VACUITY (a)+(b): >= 2 binds, and the free counts differ.
@@ -7271,12 +7278,14 @@ mod differential {
                         source: Some(gstring("left")),
                         remainder: None,
                         free_count: 1,
+                        cost_region: None,
                     },
                     ReceiveBind {
                         patterns: vec![free_var(0)],
                         source: Some(gstring("right")),
                         remainder: None,
                         free_count: 1,
+                        cost_region: None,
                     },
                 ],
                 body: Some(bound_var(0)),
@@ -7289,6 +7298,7 @@ mod differential {
                     p1: Some(bound_var(1)),
                     p2: Some(gint(5)),
                 }))),
+                cost_region: None,
             }],
             ..Default::default()
         };
@@ -8007,6 +8017,7 @@ mod differential {
                 persistent: false,
                 locally_free: vec![],
                 connective_used: false,
+                cost_region: None,
             }],
             ..Default::default()
         };
@@ -8560,6 +8571,7 @@ mod differential {
                         persistent: false,
                         locally_free: vec![],
                         connective_used: false,
+                        cost_region: None,
                     }],
                     ..Default::default()
                 },
@@ -8898,6 +8910,7 @@ mod tests {
                     persistent: false,
                     locally_free: vec![],
                     connective_used: false,
+                    cost_region: None,
                 }],
                 ..Default::default()
             },
@@ -9214,6 +9227,7 @@ mod drive_mutations {
             source: Some(source),
             remainder: None,
             free_count,
+            cost_region: None,
         }
     }
 
@@ -9240,6 +9254,7 @@ mod drive_mutations {
                         locally_free: vec![],
                         connective_used: false,
                         condition: None,
+                        cost_region: None,
                     }],
                     ..Default::default()
                 },
@@ -9283,6 +9298,7 @@ mod drive_mutations {
                     persistent: false,
                     locally_free: vec![],
                     connective_used: false,
+                    cost_region: None,
                 }],
                 ..Default::default()
             }),
@@ -9333,6 +9349,7 @@ mod drive_mutations {
                                 locally_free: vec![],
                                 connective_used: false,
                                 condition: None,
+                                cost_region: None,
                             }],
                             ..Default::default()
                         }),
@@ -9361,6 +9378,7 @@ mod drive_mutations {
                         locally_free: vec![],
                         connective_used: false,
                         condition: Some(bound_var(0)),
+                        cost_region: None,
                     }],
                     ..Default::default()
                 },
@@ -9383,6 +9401,7 @@ mod drive_mutations {
                         locally_free: vec![],
                         connective_used: false,
                         condition: None,
+                        cost_region: None,
                     }],
                     ..Default::default()
                 },

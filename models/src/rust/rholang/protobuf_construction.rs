@@ -247,6 +247,7 @@ ordinary! {
     bundle, Bundle, bundle_component;
     conditional, If, if_component;
     connective, Connective, connective_component;
+    cost_token_stack, CostTokenStack, cost_token_stack_component;
 }
 
 pub(crate) fn unforgeable(

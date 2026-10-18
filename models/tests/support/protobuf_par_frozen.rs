@@ -64,6 +64,10 @@ pub(crate) fn merge_field(
             crate::protobuf_decoder_oracle::frozen::decode_bundle
         ),
         12 => merge_component!(If, crate::protobuf_decoder_oracle::frozen::decode_if),
+        13 => merge_component!(
+            CostTokenStack,
+            crate::protobuf_decoder_oracle::frozen::decode_cost_token_stack
+        ),
         _ => crate::protobuf_decoder_oracle::frozen::skip_unknown_field(wire_type, tag, buf),
     }
 }

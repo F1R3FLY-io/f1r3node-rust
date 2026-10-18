@@ -75,6 +75,7 @@ impl Match<BindPattern, ListParWithRandom, TaggedContinuation> for Matcher {
                 Some(ListParWithRandom {
                     pars: bound_pars,
                     random_state: data.random_state.clone(),
+                    cost_region: data.cost_region.clone(),
                 })
             }
             None => None,

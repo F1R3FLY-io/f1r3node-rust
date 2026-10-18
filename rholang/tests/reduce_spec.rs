@@ -6,11 +6,13 @@ use std::sync::Arc;
 
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
 use models::rhoapi::connective::ConnectiveInstance::{ConnInt, VarRefBody};
+use models::rhoapi::cost_signature_atom::Form;
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::g_unforgeable::UnfInstance;
 use models::rhoapi::tagged_continuation::TaggedCont;
 use models::rhoapi::{
-    BindPattern, Bundle, Connective, EDiv, EEq, EList, EMatches, EMethod, EMinus, EMinusMinus,
+    BindPattern, Bundle, Connective, CostBoundSignature, CostClauseRegion, CostRegion,
+    CostSignature, CostSignatureAtom, EDiv, EEq, EList, EMatches, EMethod, EMinus, EMinusMinus,
     EMod, EMult, ENeg, EPercentPercent, EPlus, EPlusPlus, ETuple, Expr, GDeployId, GPrivate,
     GUnforgeable, ListParWithRandom, Match, MatchCase, New, Par, ParWithRandom, Receive,
     ReceiveBind, Send, TaggedContinuation, VarRef,
@@ -20,6 +22,8 @@ use models::rust::par_map_type_mapper::ParMapTypeMapper;
 use models::rust::par_set::ParSet;
 use models::rust::par_set_type_mapper::ParSetTypeMapper;
 use models::rust::rholang::implicits::GPrivateBuilder;
+use models::rust::rholang::sorter::par_sort_matcher::ParSortMatcher;
+use models::rust::rholang::sorter::sortable::Sortable;
 use models::rust::string_ops::StringOps;
 use models::rust::utils::{
     new_boundvar_par, new_bundle_par, new_elist_expr, new_elist_par, new_eplus_par,
@@ -63,6 +67,7 @@ fn map_data(
                 ListParWithRandom {
                     pars: entry.data.clone(),
                     random_state: entry.rand.to_bytes(),
+                    cost_region: None,
                 },
                 false,
             )],
@@ -90,6 +95,8 @@ fn check_continuation(
             &TaggedContinuation {
                 tagged_cont: Some(TaggedCont::ParBody(body)),
                 guard: None,
+                cost_region: None,
+                clause_regions: Vec::new(),
             },
             false,
             BTreeSet::new(),
@@ -654,6 +661,7 @@ async fn eval_of_bundle_should_evaluate_contents_of_bundle() {
             persistent: false,
             locally_free: Vec::new(),
             connective_used: false,
+            cost_region: None,
         }])),
         write_flag: false,
         read_flag: false,
@@ -693,6 +701,7 @@ async fn eval_of_bundle_should_throw_an_error_if_names_are_used_against_their_po
             source: Some(new_bundle_par(y, true, false)),
             remainder: None,
             free_count: 0,
+            cost_region: None,
         }],
         body: Some(Par::default()),
         persistent: false,
@@ -701,6 +710,7 @@ async fn eval_of_bundle_should_throw_an_error_if_names_are_used_against_their_po
         locally_free: Vec::new(),
         connective_used: false,
         condition: None,
+        cost_region: None,
     }]);
 
     let env: Env<Par> = Env::new();
@@ -731,6 +741,7 @@ async fn eval_of_bundle_should_throw_an_error_if_names_are_used_against_their_po
         persistent: false,
         locally_free: Vec::new(),
         connective_used: false,
+        cost_region: None,
     }]);
 
     let env: Env<Par> = Env::new();
@@ -762,6 +773,7 @@ async fn eval_of_send_should_place_something_in_the_tuplespace() {
         persistent: false,
         locally_free: Vec::new(),
         connective_used: false,
+        cost_region: None,
     }]);
 
     let env: Env<Par> = Env::new();
@@ -807,6 +819,7 @@ async fn eval_of_wide_par_should_not_panic_across_the_split_byte_width_boundary(
                 persistent: false,
                 locally_free: Vec::new(),
                 connective_used: false,
+                cost_region: None,
             })
             .collect();
         let wide_par = Par::default().with_sends(sends);
@@ -852,6 +865,7 @@ async fn eval_of_send_should_verify_that_bundle_is_writeable_before_sending_on_b
         persistent: false,
         locally_free: Vec::new(),
         connective_used: false,
+        cost_region: None,
     }]);
 
     let env: Env<Par> = Env::new();
@@ -885,6 +899,7 @@ async fn eval_of_single_channel_receive_should_place_something_in_the_tuplespace
             source: Some(channel.clone()),
             remainder: None,
             free_count: 0,
+            cost_region: None,
         }],
         body: Some(Par::default()),
         persistent: false,
@@ -893,6 +908,7 @@ async fn eval_of_single_channel_receive_should_place_something_in_the_tuplespace
         locally_free: Vec::new(),
         connective_used: false,
         condition: None,
+        cost_region: None,
     }]);
 
     let env: Env<Par> = Env::new();
@@ -941,6 +957,7 @@ async fn eval_of_single_channel_receive_should_verify_that_bundle_is_readable_if
             source: Some(new_bundle_par(y.clone(), false, true)),
             remainder: None,
             free_count: 0,
+            cost_region: None,
         }],
         body: Some(Par::default()),
         persistent: false,
@@ -949,6 +966,7 @@ async fn eval_of_single_channel_receive_should_verify_that_bundle_is_readable_if
         locally_free: Vec::new(),
         connective_used: false,
         condition: None,
+        cost_region: None,
     }]);
 
     let env: Env<Par> = Env::new();
@@ -992,6 +1010,7 @@ async fn eval_of_send_pipe_receive_should_meet_in_the_tuple_space_and_proceed() 
         persistent: false,
         locally_free: Vec::new(),
         connective_used: false,
+        cost_region: None,
     }]);
 
     let receive = Par::default().with_receives(vec![Receive {
@@ -1004,6 +1023,7 @@ async fn eval_of_send_pipe_receive_should_meet_in_the_tuple_space_and_proceed() 
             source: Some(new_gstring_par("channel".to_string(), Vec::new(), false)),
             remainder: None,
             free_count: 3,
+            cost_region: None,
         }],
         body: Some(Par::default().with_sends(vec![Send {
             chan: Some(new_gstring_par("result".to_string(), Vec::new(), false)),
@@ -1011,6 +1031,7 @@ async fn eval_of_send_pipe_receive_should_meet_in_the_tuple_space_and_proceed() 
             persistent: false,
             locally_free: Vec::new(),
             connective_used: false,
+            cost_region: None,
         }])),
         persistent: false,
         peek: false,
@@ -1018,6 +1039,7 @@ async fn eval_of_send_pipe_receive_should_meet_in_the_tuple_space_and_proceed() 
         locally_free: Vec::new(),
         connective_used: false,
         condition: None,
+        cost_region: None,
     }]);
 
     let env: Env<Par> = Env::new();
@@ -1077,6 +1099,7 @@ async fn eval_of_send_pipe_receive_with_peek_should_meet_in_the_tuple_space_and_
         persistent: false,
         locally_free: Vec::new(),
         connective_used: false,
+        cost_region: None,
     }]);
 
     let receive = Par::default().with_receives(vec![Receive {
@@ -1089,6 +1112,7 @@ async fn eval_of_send_pipe_receive_with_peek_should_meet_in_the_tuple_space_and_
             source: Some(channel.clone()),
             remainder: None,
             free_count: 3,
+            cost_region: None,
         }],
         body: Some(Par::default().with_sends(vec![Send {
             chan: Some(result_channel.clone()),
@@ -1096,6 +1120,7 @@ async fn eval_of_send_pipe_receive_with_peek_should_meet_in_the_tuple_space_and_
             persistent: false,
             locally_free: Vec::new(),
             connective_used: false,
+            cost_region: None,
         }])),
         persistent: false,
         peek: true,
@@ -1103,6 +1128,7 @@ async fn eval_of_send_pipe_receive_with_peek_should_meet_in_the_tuple_space_and_
         locally_free: Vec::new(),
         connective_used: false,
         condition: None,
+        cost_region: None,
     }]);
 
     let mut expected_elements = HashMap::new();
@@ -1182,6 +1208,7 @@ async fn eval_of_send_pipe_receive_when_whole_list_is_bound_to_list_remainder_sh
         persistent: false,
         locally_free: Vec::new(),
         connective_used: false,
+        cost_region: None,
     }]);
 
     let receive = Par::default().with_receives(vec![Receive {
@@ -1197,6 +1224,7 @@ async fn eval_of_send_pipe_receive_when_whole_list_is_bound_to_list_remainder_sh
             source: Some(channel.clone()),
             remainder: None,
             free_count: 1,
+            cost_region: None,
         }],
         body: Some(Par::default().with_sends(vec![Send {
             chan: Some(result_channel.clone()),
@@ -1204,6 +1232,7 @@ async fn eval_of_send_pipe_receive_when_whole_list_is_bound_to_list_remainder_sh
             persistent: false,
             locally_free: Vec::new(),
             connective_used: false,
+            cost_region: None,
         }])),
         persistent: false,
         peek: false,
@@ -1211,6 +1240,7 @@ async fn eval_of_send_pipe_receive_when_whole_list_is_bound_to_list_remainder_sh
         locally_free: Vec::new(),
         connective_used: false,
         condition: None,
+        cost_region: None,
     }]);
 
     let env: Env<Par> = Env::new();
@@ -1269,6 +1299,7 @@ async fn eval_of_send_on_seven_plus_eight_pipe_receive_on_fifteen_should_meet_in
         persistent: false,
         locally_free: Vec::new(),
         connective_used: false,
+        cost_region: None,
     }]);
 
     let receive = Par::default().with_receives(vec![Receive {
@@ -1281,6 +1312,7 @@ async fn eval_of_send_on_seven_plus_eight_pipe_receive_on_fifteen_should_meet_in
             source: Some(new_gint_par(15, Vec::new(), false)),
             remainder: None,
             free_count: 3,
+            cost_region: None,
         }],
         body: Some(Par::default().with_sends(vec![Send {
             chan: Some(new_gstring_par("result".to_string(), Vec::new(), false)),
@@ -1288,6 +1320,7 @@ async fn eval_of_send_on_seven_plus_eight_pipe_receive_on_fifteen_should_meet_in
             persistent: false,
             locally_free: Vec::new(),
             connective_used: false,
+            cost_region: None,
         }])),
         persistent: false,
         peek: false,
@@ -1295,6 +1328,7 @@ async fn eval_of_send_on_seven_plus_eight_pipe_receive_on_fifteen_should_meet_in
         locally_free: Vec::new(),
         connective_used: false,
         condition: None,
+        cost_region: None,
     }]);
 
     let env: Env<Par> = Env::new();
@@ -1349,6 +1383,7 @@ async fn eval_of_send_of_receive_pipe_receive_should_meet_in_the_tuple_space_and
             source: Some(new_gint_par(2, Vec::new(), false)),
             remainder: None,
             free_count: 0,
+            cost_region: None,
         }],
         body: Some(Par::default()),
         persistent: false,
@@ -1357,6 +1392,7 @@ async fn eval_of_send_of_receive_pipe_receive_should_meet_in_the_tuple_space_and
         locally_free: Vec::new(),
         connective_used: false,
         condition: None,
+        cost_region: None,
     }]);
 
     let send = Par::default().with_sends(vec![Send {
@@ -1365,6 +1401,7 @@ async fn eval_of_send_of_receive_pipe_receive_should_meet_in_the_tuple_space_and
         persistent: false,
         locally_free: Vec::new(),
         connective_used: false,
+        cost_region: None,
     }]);
 
     let receive = Par::default().with_receives(vec![Receive {
@@ -1373,6 +1410,7 @@ async fn eval_of_send_of_receive_pipe_receive_should_meet_in_the_tuple_space_and
             source: Some(new_gint_par(1, Vec::new(), false)),
             remainder: None,
             free_count: 1,
+            cost_region: None,
         }],
         body: Some(new_boundvar_par(0, Vec::new(), false)),
         persistent: false,
@@ -1381,6 +1419,7 @@ async fn eval_of_send_of_receive_pipe_receive_should_meet_in_the_tuple_space_and
         locally_free: Vec::new(),
         connective_used: false,
         condition: None,
+        cost_region: None,
     }]);
 
     let env: Env<Par> = Env::new();
@@ -1443,6 +1482,7 @@ async fn eval_of_send_of_receive_pipe_receive_should_meet_in_the_tuple_space_and
             source: Some(new_gint_par(1, Vec::new(), false)),
             remainder: None,
             free_count: 1,
+            cost_region: None,
         }],
         body: Some(new_boundvar_par(0, Vec::new(), false)),
         persistent: false,
@@ -1451,6 +1491,7 @@ async fn eval_of_send_of_receive_pipe_receive_should_meet_in_the_tuple_space_and
         locally_free: Vec::new(),
         connective_used: false,
         condition: None,
+        cost_region: None,
     }]);
     par_param = par_param.with_sends(vec![Send {
         chan: Some(new_gint_par(1, Vec::new(), false)),
@@ -1458,6 +1499,7 @@ async fn eval_of_send_of_receive_pipe_receive_should_meet_in_the_tuple_space_and
         persistent: false,
         locally_free: Vec::new(),
         connective_used: false,
+        cost_region: None,
     }]);
     assert!(reducer.eval(par_param, &env, base_rand).await.is_ok());
 
@@ -1493,6 +1535,7 @@ async fn simple_match_should_capture_and_add_to_the_environment() {
         persistent: false,
         locally_free: Vec::new(),
         connective_used: true,
+        cost_region: None,
     }]);
     pattern.connective_used = true;
 
@@ -1505,6 +1548,7 @@ async fn simple_match_should_capture_and_add_to_the_environment() {
         persistent: false,
         locally_free: vec![0b00000011],
         connective_used: false,
+        cost_region: None,
     }]);
 
     let match_term = Par::default().with_matches(vec![Match {
@@ -1520,6 +1564,7 @@ async fn simple_match_should_capture_and_add_to_the_environment() {
                 persistent: false,
                 locally_free: vec![0b00000011],
                 connective_used: false,
+                cost_region: None,
             }])),
             free_count: 2,
             guard: None,
@@ -1576,6 +1621,7 @@ async fn eval_of_send_pipe_send_pipe_receive_join_should_meet_in_tuplespace_and_
         persistent: false,
         locally_free: Vec::new(),
         connective_used: false,
+        cost_region: None,
     }]);
 
     let send2 = Par::default().with_sends(vec![Send {
@@ -1588,6 +1634,7 @@ async fn eval_of_send_pipe_send_pipe_receive_join_should_meet_in_tuplespace_and_
         persistent: false,
         locally_free: Vec::new(),
         connective_used: false,
+        cost_region: None,
     }]);
 
     let receive = Par::default().with_receives(vec![Receive {
@@ -1601,6 +1648,7 @@ async fn eval_of_send_pipe_send_pipe_receive_join_should_meet_in_tuplespace_and_
                 source: Some(new_gstring_par("channel1".to_string(), Vec::new(), false)),
                 remainder: None,
                 free_count: 3,
+                cost_region: None,
             },
             ReceiveBind {
                 patterns: vec![
@@ -1611,6 +1659,7 @@ async fn eval_of_send_pipe_send_pipe_receive_join_should_meet_in_tuplespace_and_
                 source: Some(new_gstring_par("channel2".to_string(), Vec::new(), false)),
                 remainder: None,
                 free_count: 3,
+                cost_region: None,
             },
         ],
         body: Some(Par::default().with_sends(vec![Send {
@@ -1619,6 +1668,7 @@ async fn eval_of_send_pipe_send_pipe_receive_join_should_meet_in_tuplespace_and_
             persistent: false,
             locally_free: Vec::new(),
             connective_used: false,
+            cost_region: None,
         }])),
         persistent: false,
         peek: false,
@@ -1626,6 +1676,7 @@ async fn eval_of_send_pipe_send_pipe_receive_join_should_meet_in_tuplespace_and_
         locally_free: Vec::new(),
         connective_used: false,
         condition: None,
+        cost_region: None,
     }]);
 
     assert!(reducer
@@ -1711,6 +1762,7 @@ async fn eval_of_send_with_remainder_receive_should_capture_the_remainder() {
         persistent: false,
         locally_free: Vec::new(),
         connective_used: false,
+        cost_region: None,
     }]);
 
     let receive = Par::default().with_receives(vec![Receive {
@@ -1719,6 +1771,7 @@ async fn eval_of_send_with_remainder_receive_should_capture_the_remainder() {
             source: Some(new_gstring_par("channel".to_string(), Vec::new(), false)),
             remainder: Some(new_freevar_var(0)),
             free_count: 1,
+            cost_region: None,
         }],
         body: Some(Par::default().with_sends(vec![Send {
             chan: Some(new_gstring_par("result".to_string(), Vec::new(), false)),
@@ -1726,6 +1779,7 @@ async fn eval_of_send_with_remainder_receive_should_capture_the_remainder() {
             persistent: false,
             locally_free: Vec::new(),
             connective_used: false,
+            cost_region: None,
         }])),
         persistent: false,
         peek: false,
@@ -1733,6 +1787,7 @@ async fn eval_of_send_with_remainder_receive_should_capture_the_remainder() {
         locally_free: Vec::new(),
         connective_used: false,
         condition: None,
+        cost_region: None,
     }]);
 
     let env = Env::new();
@@ -1812,6 +1867,7 @@ async fn eval_of_nth_method_should_pick_out_the_nth_item_from_a_list() {
                         persistent: false,
                         locally_free: Vec::new(),
                         connective_used: false,
+                        cost_region: None,
                     }]),
                     new_gint_par(9, Vec::new(), false),
                     new_gint_par(10, Vec::new(), false),
@@ -2154,6 +2210,7 @@ async fn eval_of_new_should_use_deterministic_names_and_provide_urn_based_resour
                 persistent: false,
                 locally_free: vec![0],
                 connective_used: false,
+                cost_region: None,
             },
             Send {
                 chan: Some(new_gstring_par("result1".to_string(), Vec::new(), false)),
@@ -2161,6 +2218,7 @@ async fn eval_of_new_should_use_deterministic_names_and_provide_urn_based_resour
                 persistent: false,
                 locally_free: vec![1],
                 connective_used: false,
+                cost_region: None,
             },
         ])),
         uri: vec!["rho:test:foo".to_string()],
@@ -2205,6 +2263,7 @@ async fn eval_of_new_should_use_deterministic_names_and_provide_urn_based_resour
                     unf_instance: Some(UnfInstance::GPrivateBody(GPrivate { id: vec![42] })),
                 }])],
                 random_state: result0_rand.to_bytes(),
+                cost_region: None,
             },
             false,
         )],
@@ -2221,6 +2280,7 @@ async fn eval_of_new_should_use_deterministic_names_and_provide_urn_based_resour
                     })),
                 }])],
                 random_state: result1_rand.to_bytes(),
+                cost_region: None,
             },
             false,
         )],
@@ -2249,6 +2309,7 @@ async fn eval_of_nth_method_in_send_position_should_change_what_is_sent() {
                         persistent: false,
                         locally_free: Vec::new(),
                         connective_used: false,
+                        cost_region: None,
                     }]),
                     new_gint_par(9, Vec::new(), false),
                     new_gint_par(10, Vec::new(), false),
@@ -2271,6 +2332,7 @@ async fn eval_of_nth_method_in_send_position_should_change_what_is_sent() {
         persistent: false,
         locally_free: Vec::new(),
         connective_used: false,
+        cost_region: None,
     }]);
 
     let env = Env::new();
@@ -2288,6 +2350,7 @@ async fn eval_of_nth_method_in_send_position_should_change_what_is_sent() {
                 persistent: false,
                 locally_free: Vec::new(),
                 connective_used: false,
+                cost_region: None,
             }])],
             split_rand,
         ),
@@ -2337,6 +2400,7 @@ async fn eval_of_to_byte_array_method_on_any_process_should_return_that_process_
             source: Some(new_gstring_par("channel".to_string(), Vec::new(), false)),
             remainder: None,
             free_count: 0,
+            cost_region: None,
         }],
         body: Some(Par::default()),
         persistent: false,
@@ -2345,6 +2409,7 @@ async fn eval_of_to_byte_array_method_on_any_process_should_return_that_process_
         locally_free: Vec::new(),
         connective_used: false,
         condition: None,
+        cost_region: None,
     }]);
 
     let serialized_process = proc.encode_to_vec();
@@ -2362,6 +2427,7 @@ async fn eval_of_to_byte_array_method_on_any_process_should_return_that_process_
         persistent: false,
         locally_free: Vec::new(),
         connective_used: false,
+        cost_region: None,
     }]);
 
     let env: Env<Par> = Env::new();
@@ -2432,6 +2498,7 @@ async fn eval_of_to_byte_array_method_on_any_process_should_substitute_before_se
         persistent: false,
         locally_free: Vec::new(),
         connective_used: false,
+        cost_region: None,
     }]);
 
     let mut env: Env<Par> = Env::new();
@@ -2483,6 +2550,7 @@ async fn eval_of_to_string_method_on_deploy_id_return_that_id_serialized() {
         persistent: false,
         locally_free: Vec::new(),
         connective_used: false,
+        cost_region: None,
     }]);
 
     let env: Env<Par> = Env::new();
@@ -2561,6 +2629,7 @@ async fn eval_of_hex_to_bytes_should_transform_encoded_string_to_byte_array_not_
         persistent: false,
         locally_free: Vec::new(),
         connective_used: false,
+        cost_region: None,
     }]);
 
     let env: Env<Par> = Env::new();
@@ -2609,6 +2678,7 @@ async fn eval_of_bytes_to_hex_should_transform_byte_array_to_hex_string_not_the_
         persistent: false,
         locally_free: Vec::new(),
         connective_used: false,
+        cost_region: None,
     }]);
 
     let env: Env<Par> = Env::new();
@@ -2652,6 +2722,7 @@ async fn eval_of_to_utf8_bytes_should_transform_string_to_utf8_byte_array_not_th
         persistent: false,
         locally_free: Vec::new(),
         connective_used: false,
+        cost_region: None,
     }]);
 
     let env: Env<Par> = Env::new();
@@ -2756,6 +2827,7 @@ async fn variable_references_should_be_substituted_before_being_used() {
                     persistent: false,
                     locally_free: Vec::new(),
                     connective_used: false,
+                    cost_region: None,
                 }])
                 .with_receives(vec![Receive {
                     binds: vec![ReceiveBind {
@@ -2765,6 +2837,7 @@ async fn variable_references_should_be_substituted_before_being_used() {
                         source: Some(new_boundvar_par(0, Vec::new(), false)),
                         remainder: None,
                         free_count: 0,
+                        cost_region: None,
                     }],
                     body: Some(Par::default().with_sends(vec![Send {
                         chan: Some(new_gstring_par("result".to_string(), Vec::new(), false)),
@@ -2772,6 +2845,7 @@ async fn variable_references_should_be_substituted_before_being_used() {
                         persistent: false,
                         locally_free: Vec::new(),
                         connective_used: false,
+                        cost_region: None,
                     }])),
                     persistent: false,
                     peek: false,
@@ -2779,6 +2853,7 @@ async fn variable_references_should_be_substituted_before_being_used() {
                     locally_free: Vec::new(),
                     connective_used: false,
                     condition: None,
+                    cost_region: None,
                 }]),
         ),
         uri: Vec::new(),
@@ -2830,6 +2905,7 @@ async fn variable_references_should_be_substituted_before_being_used_in_a_match(
                     persistent: false,
                     locally_free: Vec::new(),
                     connective_used: false,
+                    cost_region: None,
                 }])),
                 free_count: 0,
                 guard: None,
@@ -2878,6 +2954,7 @@ async fn variable_references_should_reference_a_variable_that_comes_from_a_match
             persistent: false,
             locally_free: Vec::new(),
             connective_used: false,
+            cost_region: None,
         }])
         .with_receives(vec![Receive {
             binds: vec![ReceiveBind {
@@ -2885,6 +2962,7 @@ async fn variable_references_should_reference_a_variable_that_comes_from_a_match
                 source: Some(new_gint_par(7, Vec::new(), false)),
                 remainder: None,
                 free_count: 1,
+                cost_region: None,
             }],
             body: Some(Par::default().with_matches(vec![Match {
                 target: Some(new_gint_par(10, Vec::new(), false)),
@@ -2898,6 +2976,7 @@ async fn variable_references_should_reference_a_variable_that_comes_from_a_match
                         persistent: false,
                         locally_free: Vec::new(),
                         connective_used: false,
+                        cost_region: None,
                     }])),
                     free_count: 0,
                     guard: None,
@@ -2911,6 +2990,7 @@ async fn variable_references_should_reference_a_variable_that_comes_from_a_match
             locally_free: Vec::new(),
             connective_used: false,
             condition: None,
+            cost_region: None,
         }]);
 
     let env = Env::new();
@@ -5279,6 +5359,7 @@ async fn receive_with_true_guard_should_consume_message() {
         persistent: false,
         locally_free: Vec::new(),
         connective_used: false,
+        cost_region: None,
     }]);
 
     let receive = Par::default().with_receives(vec![Receive {
@@ -5287,6 +5368,7 @@ async fn receive_with_true_guard_should_consume_message() {
             source: Some(chan.clone()),
             remainder: None,
             free_count: 1,
+            cost_region: None,
         }],
         body: Some(Par::default()),
         persistent: false,
@@ -5295,6 +5377,7 @@ async fn receive_with_true_guard_should_consume_message() {
         locally_free: Vec::new(),
         connective_used: false,
         condition: Some(guard_first_bound_gt_zero()),
+        cost_region: None,
     }]);
 
     let env: Env<Par> = Env::new();
@@ -5325,6 +5408,7 @@ async fn receive_with_false_guard_should_leave_data_and_continuation() {
         persistent: false,
         locally_free: Vec::new(),
         connective_used: false,
+        cost_region: None,
     }]);
 
     let receive = Par::default().with_receives(vec![Receive {
@@ -5333,6 +5417,7 @@ async fn receive_with_false_guard_should_leave_data_and_continuation() {
             source: Some(chan.clone()),
             remainder: None,
             free_count: 1,
+            cost_region: None,
         }],
         body: Some(Par::default()),
         persistent: false,
@@ -5341,6 +5426,7 @@ async fn receive_with_false_guard_should_leave_data_and_continuation() {
         locally_free: Vec::new(),
         connective_used: false,
         condition: Some(guard_first_bound_gt_zero()),
+        cost_region: None,
     }]);
 
     let env: Env<Par> = Env::new();
@@ -5374,6 +5460,7 @@ async fn receive_with_guard_filters_among_multiple_messages() {
             source: Some(chan.clone()),
             remainder: None,
             free_count: 1,
+            cost_region: None,
         }],
         body: Some(Par::default()),
         persistent: false,
@@ -5382,6 +5469,7 @@ async fn receive_with_guard_filters_among_multiple_messages() {
         locally_free: Vec::new(),
         connective_used: false,
         condition: Some(guard_first_bound_gt_zero()),
+        cost_region: None,
     }]);
 
     let send_neg = Par::default().with_sends(vec![Send {
@@ -5390,6 +5478,7 @@ async fn receive_with_guard_filters_among_multiple_messages() {
         persistent: false,
         locally_free: Vec::new(),
         connective_used: false,
+        cost_region: None,
     }]);
 
     let send_pos = Par::default().with_sends(vec![Send {
@@ -5398,6 +5487,7 @@ async fn receive_with_guard_filters_among_multiple_messages() {
         persistent: false,
         locally_free: Vec::new(),
         connective_used: false,
+        cost_region: None,
     }]);
 
     let env: Env<Par> = Env::new();
@@ -5500,6 +5590,7 @@ async fn cross_bind_guard_should_commit_when_combined_predicate_holds() {
         persistent: false,
         locally_free: Vec::new(),
         connective_used: false,
+        cost_region: None,
     }]);
     let send_b = Par::default().with_sends(vec![Send {
         chan: Some(chan_b.clone()),
@@ -5507,6 +5598,7 @@ async fn cross_bind_guard_should_commit_when_combined_predicate_holds() {
         persistent: false,
         locally_free: Vec::new(),
         connective_used: false,
+        cost_region: None,
     }]);
 
     let receive = Par::default().with_receives(vec![Receive {
@@ -5516,12 +5608,14 @@ async fn cross_bind_guard_should_commit_when_combined_predicate_holds() {
                 source: Some(chan_a.clone()),
                 remainder: None,
                 free_count: 1,
+                cost_region: None,
             },
             ReceiveBind {
                 patterns: vec![new_freevar_par(0, Vec::new())],
                 source: Some(chan_b.clone()),
                 remainder: None,
                 free_count: 1,
+                cost_region: None,
             },
         ],
         body: Some(Par::default()),
@@ -5531,6 +5625,7 @@ async fn cross_bind_guard_should_commit_when_combined_predicate_holds() {
         locally_free: Vec::new(),
         connective_used: false,
         condition: Some(guard_cross_bind_sum_gt_ten()),
+        cost_region: None,
     }]);
 
     let env: Env<Par> = Env::new();
@@ -5571,6 +5666,7 @@ async fn cross_bind_guard_should_leave_data_when_combined_predicate_fails() {
         persistent: false,
         locally_free: Vec::new(),
         connective_used: false,
+        cost_region: None,
     }]);
     let send_b = Par::default().with_sends(vec![Send {
         chan: Some(chan_b.clone()),
@@ -5578,6 +5674,7 @@ async fn cross_bind_guard_should_leave_data_when_combined_predicate_fails() {
         persistent: false,
         locally_free: Vec::new(),
         connective_used: false,
+        cost_region: None,
     }]);
 
     let receive = Par::default().with_receives(vec![Receive {
@@ -5587,12 +5684,14 @@ async fn cross_bind_guard_should_leave_data_when_combined_predicate_fails() {
                 source: Some(chan_a.clone()),
                 remainder: None,
                 free_count: 1,
+                cost_region: None,
             },
             ReceiveBind {
                 patterns: vec![new_freevar_par(0, Vec::new())],
                 source: Some(chan_b.clone()),
                 remainder: None,
                 free_count: 1,
+                cost_region: None,
             },
         ],
         body: Some(Par::default()),
@@ -5602,6 +5701,7 @@ async fn cross_bind_guard_should_leave_data_when_combined_predicate_fails() {
         locally_free: Vec::new(),
         connective_used: false,
         condition: Some(guard_cross_bind_sum_gt_ten()),
+        cost_region: None,
     }]);
 
     let env: Env<Par> = Env::new();
@@ -5648,12 +5748,14 @@ async fn cross_bind_guard_filters_among_multiple_messages() {
                 source: Some(chan_a.clone()),
                 remainder: None,
                 free_count: 1,
+                cost_region: None,
             },
             ReceiveBind {
                 patterns: vec![new_freevar_par(0, Vec::new())],
                 source: Some(chan_b.clone()),
                 remainder: None,
                 free_count: 1,
+                cost_region: None,
             },
         ],
         body: Some(Par::default()),
@@ -5663,6 +5765,7 @@ async fn cross_bind_guard_filters_among_multiple_messages() {
         locally_free: Vec::new(),
         connective_used: false,
         condition: Some(guard_cross_bind_sum_gt_ten()),
+        cost_region: None,
     }]);
 
     let env: Env<Par> = Env::new();
@@ -5678,6 +5781,7 @@ async fn cross_bind_guard_filters_among_multiple_messages() {
         persistent: false,
         locally_free: Vec::new(),
         connective_used: false,
+        cost_region: None,
     }]);
     let send_b_small = Par::default().with_sends(vec![Send {
         chan: Some(chan_b.clone()),
@@ -5685,6 +5789,7 @@ async fn cross_bind_guard_filters_among_multiple_messages() {
         persistent: false,
         locally_free: Vec::new(),
         connective_used: false,
+        cost_region: None,
     }]);
     reducer
         .eval(send_a_small, &env, rand().split_byte(1))
@@ -5721,6 +5826,7 @@ async fn cross_bind_guard_filters_among_multiple_messages() {
         persistent: false,
         locally_free: Vec::new(),
         connective_used: false,
+        cost_region: None,
     }]);
     reducer
         .eval(send_b_big, &env, rand().split_byte(3))
@@ -5763,6 +5869,7 @@ async fn cross_bind_guard_non_commutative_fires_with_correct_index_assignment() 
         persistent: false,
         locally_free: Vec::new(),
         connective_used: false,
+        cost_region: None,
     }]);
     let send_b = Par::default().with_sends(vec![Send {
         chan: Some(chan_b.clone()),
@@ -5770,6 +5877,7 @@ async fn cross_bind_guard_non_commutative_fires_with_correct_index_assignment() 
         persistent: false,
         locally_free: Vec::new(),
         connective_used: false,
+        cost_region: None,
     }]);
 
     let receive = Par::default().with_receives(vec![Receive {
@@ -5779,12 +5887,14 @@ async fn cross_bind_guard_non_commutative_fires_with_correct_index_assignment() 
                 source: Some(chan_a.clone()),
                 remainder: None,
                 free_count: 1,
+                cost_region: None,
             },
             ReceiveBind {
                 patterns: vec![new_freevar_par(0, Vec::new())],
                 source: Some(chan_b.clone()),
                 remainder: None,
                 free_count: 1,
+                cost_region: None,
             },
         ],
         body: Some(Par::default()),
@@ -5794,6 +5904,7 @@ async fn cross_bind_guard_non_commutative_fires_with_correct_index_assignment() 
         locally_free: Vec::new(),
         connective_used: false,
         condition: Some(guard_cross_bind_x_gt_100_and_y_lt_100()),
+        cost_region: None,
     }]);
 
     let env: Env<Par> = Env::new();
@@ -5836,6 +5947,7 @@ async fn cross_bind_guard_non_commutative_does_not_fire_when_data_violates_per_b
         persistent: false,
         locally_free: Vec::new(),
         connective_used: false,
+        cost_region: None,
     }]);
     let send_b = Par::default().with_sends(vec![Send {
         chan: Some(chan_b.clone()),
@@ -5843,6 +5955,7 @@ async fn cross_bind_guard_non_commutative_does_not_fire_when_data_violates_per_b
         persistent: false,
         locally_free: Vec::new(),
         connective_used: false,
+        cost_region: None,
     }]);
 
     let receive = Par::default().with_receives(vec![Receive {
@@ -5852,12 +5965,14 @@ async fn cross_bind_guard_non_commutative_does_not_fire_when_data_violates_per_b
                 source: Some(chan_a.clone()),
                 remainder: None,
                 free_count: 1,
+                cost_region: None,
             },
             ReceiveBind {
                 patterns: vec![new_freevar_par(0, Vec::new())],
                 source: Some(chan_b.clone()),
                 remainder: None,
                 free_count: 1,
+                cost_region: None,
             },
         ],
         body: Some(Par::default()),
@@ -5867,6 +5982,7 @@ async fn cross_bind_guard_non_commutative_does_not_fire_when_data_violates_per_b
         locally_free: Vec::new(),
         connective_used: false,
         condition: Some(guard_cross_bind_x_gt_100_and_y_lt_100()),
+        cost_region: None,
     }]);
 
     let env: Env<Par> = Env::new();
@@ -5937,6 +6053,7 @@ async fn receive_with_satisfied_spatial_guard_should_consume_message() {
         persistent: false,
         locally_free: Vec::new(),
         connective_used: false,
+        cost_region: None,
     }]);
 
     let receive = Par::default().with_receives(vec![Receive {
@@ -5945,6 +6062,7 @@ async fn receive_with_satisfied_spatial_guard_should_consume_message() {
             source: Some(chan.clone()),
             remainder: None,
             free_count: 1,
+            cost_region: None,
         }],
         body: Some(Par::default()),
         persistent: false,
@@ -5953,6 +6071,7 @@ async fn receive_with_satisfied_spatial_guard_should_consume_message() {
         locally_free: Vec::new(),
         connective_used: false,
         condition: Some(guard_first_bound_matches(int_type_pattern())),
+        cost_region: None,
     }]);
 
     let env: Env<Par> = Env::new();
@@ -5989,6 +6108,7 @@ async fn receive_with_unsatisfied_spatial_guard_should_leave_data_and_continuati
         persistent: false,
         locally_free: Vec::new(),
         connective_used: false,
+        cost_region: None,
     }]);
 
     let receive = Par::default().with_receives(vec![Receive {
@@ -5997,6 +6117,7 @@ async fn receive_with_unsatisfied_spatial_guard_should_leave_data_and_continuati
             source: Some(chan.clone()),
             remainder: None,
             free_count: 1,
+            cost_region: None,
         }],
         body: Some(Par::default()),
         persistent: false,
@@ -6005,6 +6126,7 @@ async fn receive_with_unsatisfied_spatial_guard_should_leave_data_and_continuati
         locally_free: Vec::new(),
         connective_used: false,
         condition: Some(guard_first_bound_matches(int_type_pattern())),
+        cost_region: None,
     }]);
 
     let env: Env<Par> = Env::new();
@@ -6042,6 +6164,7 @@ async fn receive_with_spatial_guard_filters_among_multiple_messages() {
         persistent: false,
         locally_free: Vec::new(),
         connective_used: false,
+        cost_region: None,
     }]);
     let send_int = Par::default().with_sends(vec![Send {
         chan: Some(chan.clone()),
@@ -6049,6 +6172,7 @@ async fn receive_with_spatial_guard_filters_among_multiple_messages() {
         persistent: false,
         locally_free: Vec::new(),
         connective_used: false,
+        cost_region: None,
     }]);
     let receive = Par::default().with_receives(vec![Receive {
         binds: vec![ReceiveBind {
@@ -6056,6 +6180,7 @@ async fn receive_with_spatial_guard_filters_among_multiple_messages() {
             source: Some(chan.clone()),
             remainder: None,
             free_count: 1,
+            cost_region: None,
         }],
         body: Some(Par::default()),
         persistent: false,
@@ -6064,6 +6189,7 @@ async fn receive_with_spatial_guard_filters_among_multiple_messages() {
         locally_free: Vec::new(),
         connective_used: false,
         condition: Some(guard_first_bound_matches(int_type_pattern())),
+        cost_region: None,
     }]);
 
     let env: Env<Par> = Env::new();
@@ -6115,6 +6241,7 @@ async fn match_case_with_satisfied_spatial_guard_should_fire_its_body() {
                 persistent: false,
                 locally_free: Vec::new(),
                 connective_used: false,
+                cost_region: None,
             }])),
             free_count: 1,
             guard: Some(guard_first_bound_matches(int_type_pattern())),
@@ -6164,6 +6291,7 @@ async fn match_case_with_unsatisfied_spatial_guard_should_fall_through() {
                     persistent: false,
                     locally_free: Vec::new(),
                     connective_used: false,
+                    cost_region: None,
                 }])),
                 free_count: 1,
                 guard: Some(guard_first_bound_matches(int_type_pattern())),
@@ -6176,6 +6304,7 @@ async fn match_case_with_unsatisfied_spatial_guard_should_fall_through() {
                     persistent: false,
                     locally_free: Vec::new(),
                     connective_used: false,
+                    cost_region: None,
                 }])),
                 free_count: 0,
                 guard: None,
@@ -6235,6 +6364,7 @@ fn guarded_offer_receive() -> Par {
             source: Some(new_gstring_par("offer".to_string(), Vec::new(), false)),
             remainder: None,
             free_count: 1,
+            cost_region: None,
         }],
         body: Some(Par::default()),
         persistent: false,
@@ -6243,6 +6373,7 @@ fn guarded_offer_receive() -> Par {
         locally_free: Vec::new(),
         connective_used: false,
         condition: Some(guard_first_bound_at_most_45()),
+        cost_region: None,
     }])
 }
 
@@ -6253,6 +6384,7 @@ fn offer_send(amount: i64) -> Par {
         persistent: false,
         locally_free: Vec::new(),
         connective_used: false,
+        cost_region: None,
     }])
 }
 
@@ -6594,6 +6726,245 @@ async fn the_guarded_selection_does_not_depend_on_arrival_order() {
         vec![55],
         "arrival order must not decide which datum settles"
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn stored_comm_values_retain_resolved_signed_regions() {
+    let region = |ordinal, signer: &[u8]| CostRegion {
+        version: 1,
+        signer: Some(CostSignature {
+            atoms: vec![CostSignatureAtom {
+                form: Some(Form::Ground(signer.to_vec())),
+            }],
+        }),
+        ordinal,
+        ..Default::default()
+    };
+    let send_region = region(0, b"send");
+    let receive_region = region(1, b"receive");
+    let bind_region = region(2, b"bind");
+    let send_channel = new_gstring_par("signed-send".to_string(), Vec::new(), false);
+    let receive_channel = new_gstring_par("signed-receive".to_string(), Vec::new(), false);
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let env = Env::new();
+    reducer
+        .eval(
+            Par::default().with_sends(vec![Send {
+                chan: Some(send_channel.clone()),
+                data: vec![new_gint_par(7, Vec::new(), false)],
+                cost_region: Some(send_region.clone()),
+                ..Default::default()
+            }]),
+            &env,
+            rand().split_byte(0),
+        )
+        .await
+        .unwrap();
+    reducer
+        .eval(
+            Par::default().with_receives(vec![Receive {
+                binds: vec![ReceiveBind {
+                    source: Some(receive_channel.clone()),
+                    patterns: vec![new_freevar_par(0, Vec::new())],
+                    free_count: 1,
+                    cost_region: Some(bind_region.clone()),
+                    ..Default::default()
+                }],
+                body: Some(Par::default()),
+                bind_count: 1,
+                persistent: true,
+                cost_region: Some(receive_region.clone()),
+                ..Default::default()
+            }]),
+            &env,
+            rand().split_byte(1),
+        )
+        .await
+        .unwrap();
+
+    let datums = space.get_data(&send_channel).await;
+    assert_eq!(datums.len(), 1);
+    assert_eq!(datums[0].a.cost_region.as_ref(), Some(&send_region));
+    let payer = new_gstring_par("runtime-payer".to_string(), Vec::new(), false);
+    let bound_channel = new_gstring_par("bound-send".to_string(), Vec::new(), false);
+    let bound_env = Env::new().put(payer.clone());
+    reducer
+        .eval(
+            Par::default().with_sends(vec![Send {
+                chan: Some(bound_channel.clone()),
+                cost_region: Some(CostRegion {
+                    version: 1,
+                    signer: Some(CostSignature {
+                        atoms: vec![CostSignatureAtom {
+                            form: Some(Form::Bound(CostBoundSignature { index: 0 })),
+                        }],
+                    }),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }]),
+            &bound_env,
+            rand().split_byte(3),
+        )
+        .await
+        .unwrap();
+    let bound_datums = space.get_data(&bound_channel).await;
+    assert_eq!(bound_datums.len(), 1);
+    assert_eq!(
+        bound_datums[0]
+            .a
+            .cost_region
+            .as_ref()
+            .unwrap()
+            .signer
+            .as_ref()
+            .unwrap()
+            .atoms[0]
+            .form,
+        Some(Form::RuntimeName(
+            ParSortMatcher::sort_match(&payer).term.encode_to_vec()
+        ))
+    );
+    let rows = space.to_map().await;
+    let waiting = &rows[&vec![receive_channel.clone()]].wks;
+    assert_eq!(waiting.len(), 1);
+    assert_eq!(
+        waiting[0].continuation.cost_region.as_ref(),
+        Some(&receive_region)
+    );
+    assert_eq!(waiting[0].continuation.clause_regions, vec![
+        CostClauseRegion {
+            bind_index: 0,
+            region: Some(bind_region.clone()),
+        }
+    ]);
+
+    reducer
+        .eval(
+            Par::default().with_sends(vec![Send {
+                chan: Some(receive_channel.clone()),
+                data: vec![new_gint_par(9, Vec::new(), false)],
+                ..Default::default()
+            }]),
+            &env,
+            rand().split_byte(2),
+        )
+        .await
+        .unwrap();
+    let rows_after = space.to_map().await;
+    let reinstalled = &rows_after[&vec![receive_channel]].wks;
+    assert_eq!(reinstalled.len(), 1);
+    assert_eq!(
+        reinstalled[0].continuation.cost_region.as_ref(),
+        Some(&receive_region)
+    );
+    assert_eq!(reinstalled[0].continuation.clause_regions, vec![
+        CostClauseRegion {
+            bind_index: 0,
+            region: Some(bind_region),
+        }
+    ]);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn malformed_cost_regions_do_not_enter_rspace() {
+    let unresolved = CostRegion {
+        version: 1,
+        signer: Some(CostSignature {
+            atoms: vec![CostSignatureAtom {
+                form: Some(Form::Bound(CostBoundSignature { index: 0 })),
+            }],
+        }),
+        ..Default::default()
+    };
+    let wrong_version = CostRegion {
+        version: 2,
+        signer: Some(CostSignature {
+            atoms: vec![CostSignatureAtom {
+                form: Some(Form::Ground(b"payer".to_vec())),
+            }],
+        }),
+        ..Default::default()
+    };
+    for (region, expected) in [
+        (unresolved.clone(), "unresolved bound name"),
+        (wrong_version, "Unsupported cost region version"),
+        (
+            CostRegion {
+                version: 1,
+                ..Default::default()
+            },
+            "Cost region has no signer",
+        ),
+        (
+            CostRegion {
+                version: 1,
+                signer: Some(CostSignature::default()),
+                ..Default::default()
+            },
+            "Cost region signer is empty",
+        ),
+        (
+            CostRegion {
+                version: 1,
+                signer: Some(CostSignature {
+                    atoms: vec![CostSignatureAtom::default()],
+                }),
+                ..Default::default()
+            },
+            "Cost region signer has an empty atom",
+        ),
+    ] {
+        let (space, reducer) =
+            create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+                .await;
+        let channel = new_gstring_par("invalid-send".to_string(), Vec::new(), false);
+        let error = reducer
+            .eval(
+                Par::default().with_sends(vec![Send {
+                    chan: Some(channel.clone()),
+                    cost_region: Some(region),
+                    ..Default::default()
+                }]),
+                &Env::new(),
+                rand(),
+            )
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains(expected), "{error}");
+        assert!(space.get_data(&channel).await.is_empty());
+    }
+
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let channel = new_gstring_par("invalid-receive".to_string(), Vec::new(), false);
+    let error = reducer
+        .eval(
+            Par::default().with_receives(vec![Receive {
+                binds: vec![ReceiveBind {
+                    source: Some(channel.clone()),
+                    patterns: vec![new_freevar_par(0, Vec::new())],
+                    free_count: 1,
+                    cost_region: Some(unresolved),
+                    ..Default::default()
+                }],
+                body: Some(Par::default()),
+                bind_count: 1,
+                ..Default::default()
+            }]),
+            &Env::new(),
+            rand(),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("unresolved bound name"),
+        "{error}"
+    );
+    assert!(!space.to_map().await.contains_key(&vec![channel]));
 }
 
 /// The negative: when NO resting offer satisfies the guard, the receive rests.

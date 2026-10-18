@@ -1,7 +1,8 @@
-//! Stack-safe, byte-identical event-hash serialization.
+//! Stack-safe event-hash serialization.
 //!
-//! Event hashes cover the legacy bincode bytes of channels, datums, patterns,
-//! and continuations. The former intern-store splice path and its `contains_par`
+//! Event hashes cover the historical bincode bytes of channels, patterns, and
+//! authority-free datums and continuations. Authority-bearing records use the
+//! versioned cold-store format. The former intern-store splice path and its `contains_par`
 //! dispatch scan were deleted with the intern store: EPathMap now stores PathMap
 //! directly and bincode emits its canonical EPM1 snapshot through the generated
 //! schema. Every rhoapi root below therefore has one unconditional explicit-

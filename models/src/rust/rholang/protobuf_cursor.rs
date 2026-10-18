@@ -828,6 +828,7 @@ pub struct CanonicalParProcessIndex<'a> {
     pub matches: Option<CanonicalDelimitedRun<'a>>,
     pub bundles: Option<CanonicalDelimitedRun<'a>>,
     pub conditionals: Option<CanonicalDelimitedRun<'a>>,
+    pub cost_token_stacks: Option<CanonicalDelimitedRun<'a>>,
 }
 
 impl<'a> CanonicalParProcessIndex<'a> {
@@ -881,6 +882,7 @@ impl<'a> CanonicalParProcessIndex<'a> {
                 }
                 "bundles" => extend_run(message, &mut index.bundles, field)?,
                 "conditionals" => extend_run(message, &mut index.conditionals, field)?,
+                "cost_token_stacks" => extend_run(message, &mut index.cost_token_stacks, field)?,
                 other => unreachable!("generated raw Par field `{other}` is not indexed"),
             }
         }
@@ -927,6 +929,7 @@ pub struct CanonicalParRegionIndex {
     pub connectives: Option<CanonicalRegionDelimitedRun>,
     pub bundles: Option<CanonicalRegionDelimitedRun>,
     pub conditionals: Option<CanonicalRegionDelimitedRun>,
+    pub cost_token_stacks: Option<CanonicalRegionDelimitedRun>,
     pub locally_free: Option<ProtobufRegion>,
     pub connective_used: bool,
 }
@@ -981,6 +984,9 @@ impl CanonicalParRegionIndex {
                 }
                 "bundles" => extend_region_run(&message, &mut index.bundles, &field)?,
                 "conditionals" => extend_region_run(&message, &mut index.conditionals, &field)?,
+                "cost_token_stacks" => {
+                    extend_region_run(&message, &mut index.cost_token_stacks, &field)?
+                }
                 other => unreachable!("generated raw Par field `{other}` is not indexed"),
             }
         }

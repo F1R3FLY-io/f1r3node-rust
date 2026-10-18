@@ -44,7 +44,9 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use crate::rhoapi::expr::ExprInstance;
 use crate::rhoapi::g_unforgeable::UnfInstance;
 use crate::rhoapi::var::VarInstance;
-use crate::rhoapi::{Bundle, Connective, Expr, GUnforgeable, If, Match, New, Par, Receive, Send};
+use crate::rhoapi::{
+    Bundle, Connective, CostTokenStack, Expr, GUnforgeable, If, Match, New, Par, Receive, Send,
+};
 pub use crate::rust::rholang::canonical_semantics::ParComponentTag;
 use crate::rust::rholang::canonical_semantics::{
     self, NONSEMANTIC_SCORE_CONSTRUCTOR, PAR_SCORE_TAGS,
@@ -52,10 +54,10 @@ use crate::rust::rholang::canonical_semantics::{
 use crate::rust::rholang::indexed_protobuf::IndexedByteRegion;
 use crate::rust::rholang::match_schema::{RhoMatchFieldKind, RhoMatchProgram};
 use crate::rust::rholang::match_schema_tables::{
-    BUNDLE_RHO_MATCH_PROGRAM, CONNECTIVE_RHO_MATCH_PROGRAM, EXPR_RHO_MATCH_PROGRAM,
-    GUNFORGEABLE_RHO_MATCH_PROGRAM, IF_RHO_MATCH_PROGRAM, MATCH_RHO_MATCH_PROGRAM,
-    NEW_RHO_MATCH_PROGRAM, PAR_PROTOBUF_REGION_PROGRAM, RECEIVE_RHO_MATCH_PROGRAM,
-    SEND_RHO_MATCH_PROGRAM,
+    BUNDLE_RHO_MATCH_PROGRAM, CONNECTIVE_RHO_MATCH_PROGRAM, COSTTOKENSTACK_RHO_MATCH_PROGRAM,
+    EXPR_RHO_MATCH_PROGRAM, GUNFORGEABLE_RHO_MATCH_PROGRAM, IF_RHO_MATCH_PROGRAM,
+    MATCH_RHO_MATCH_PROGRAM, NEW_RHO_MATCH_PROGRAM, PAR_PROTOBUF_REGION_PROGRAM,
+    RECEIVE_RHO_MATCH_PROGRAM, SEND_RHO_MATCH_PROGRAM,
 };
 use crate::rust::rholang::protobuf_admission::{
     validate_canonical_component_protobuf_indexed, CanonicalProtobufAdmissionError,
@@ -97,7 +99,7 @@ const PAR_BAG_FAMILY_PREFIX_LEN: usize = PAR_BAG_KEY_DOMAIN.len() + 1;
 const PAR_BAG_SCORE_LEN_BYTES: usize = std::mem::size_of::<u64>();
 const PAR_BAG_KEY_HEADER_LEN: usize = PAR_BAG_FAMILY_PREFIX_LEN;
 const PAR_BAG_KEY_MIN_LEN: usize = PAR_BAG_KEY_HEADER_LEN + PAR_BAG_SCORE_LEN_BYTES;
-const PAR_COMPONENT_FAMILY_COUNT: usize = 9;
+const PAR_COMPONENT_FAMILY_COUNT: usize = 10;
 
 const fn project_cardinality(exact: u128) -> u64 {
     if exact > u64::MAX as u128 {
@@ -368,6 +370,25 @@ impl_par_bag_component!(
     decode_if_deferred_epathmap_validation,
     canonical_semantics::if_semantic_shape_is_complete
 );
+
+impl sealed::Sealed for CostTokenStack {}
+impl ParBagComponent for CostTokenStack {
+    const TAG: ParComponentTag = ParComponentTag::CostTokenStack;
+
+    fn canonicalize(value: &Self) -> ScoredTerm<Self> {
+        crate::rust::rholang::sorter::sort_combine::sort_cost_token_stack(value)
+    }
+
+    fn decode_protobuf(payload: &[u8]) -> Result<Self, prost::DecodeError> {
+        crate::rust::rholang::protobuf_decoder::decode_cost_token_stack(payload)
+    }
+
+    fn decode_protobuf_deferred_epathmap_validation(
+        payload: &[u8],
+    ) -> Result<Self, prost::DecodeError> {
+        crate::rust::rholang::protobuf_decoder::decode_cost_token_stack(payload)
+    }
+}
 
 /// Append one score atom without first materializing `Tree<ScoreAtom>`.
 /// These are exactly the bytes produced by `score_tree::encode_order_key`.
@@ -2650,7 +2671,9 @@ fn canonical_component_locally_free_is_empty(tag: ParComponentTag, message: &[u8
             let body = canonical_singular_delimited_field(message, 1)??;
             canonical_par_locally_free_is_empty(body)
         }
-        ParComponentTag::GUnforgeable | ParComponentTag::Connective => Some(true),
+        ParComponentTag::GUnforgeable
+        | ParComponentTag::Connective
+        | ParComponentTag::CostTokenStack => Some(true),
     }
 }
 
@@ -3699,6 +3722,7 @@ fn component_match_program(tag: ParComponentTag) -> &'static RhoMatchProgram {
         ParComponentTag::Connective => &CONNECTIVE_RHO_MATCH_PROGRAM,
         ParComponentTag::Bundle => &BUNDLE_RHO_MATCH_PROGRAM,
         ParComponentTag::If => &IF_RHO_MATCH_PROGRAM,
+        ParComponentTag::CostTokenStack => &COSTTOKENSTACK_RHO_MATCH_PROGRAM,
     }
 }
 
@@ -3793,6 +3817,9 @@ fn validate_key(path: &[u8]) -> Result<(ParComponentTag, usize, bool), ParBagCod
         ParComponentTag::Connective => validate_typed_key::<Connective>(path, score, payload)?,
         ParComponentTag::Bundle => validate_typed_key::<Bundle>(path, score, payload)?,
         ParComponentTag::If => validate_typed_key::<If>(path, score, payload)?,
+        ParComponentTag::CostTokenStack => {
+            validate_typed_key::<CostTokenStack>(path, score, payload)?
+        }
     };
     Ok((tag, payload.len(), stable))
 }
@@ -4063,25 +4090,46 @@ impl<T: ParBagComponent> fmt::Debug for CanonicalParBagKey<T> {
 struct ParFamilyMetrics {
     exact_cardinalities: [u128; PAR_COMPONENT_FAMILY_COUNT],
     distinct_lengths: [usize; PAR_COMPONENT_FAMILY_COUNT],
-    /// Exact repeated-message protobuf byte totals by constructor family.
-    ///
-    /// `None` is a real arithmetic-overflow state, not an uninitialized cache.
-    /// Keeping the total beside the multiplicity metrics makes `Par::encoded_len`
-    /// O(1): it never performs nine independent prefix walks over the trie.
-    exact_protobuf_lengths: [Option<u128>; PAR_COMPONENT_FAMILY_COUNT],
+    exact_protobuf_lengths: [u128; PAR_COMPONENT_FAMILY_COUNT],
+    exact_protobuf_overflow: u64,
 }
+
+const _: () = assert!(PAR_COMPONENT_FAMILY_COUNT <= u64::BITS as usize);
 
 impl Default for ParFamilyMetrics {
     fn default() -> Self {
         Self {
             exact_cardinalities: [0; PAR_COMPONENT_FAMILY_COUNT],
             distinct_lengths: [0; PAR_COMPONENT_FAMILY_COUNT],
-            exact_protobuf_lengths: [Some(0); PAR_COMPONENT_FAMILY_COUNT],
+            exact_protobuf_lengths: [0; PAR_COMPONENT_FAMILY_COUNT],
+            exact_protobuf_overflow: 0,
         }
     }
 }
 
 impl ParFamilyMetrics {
+    fn exact_protobuf_length(&self, index: usize) -> Option<u128> {
+        if self.exact_protobuf_overflow & (1u64 << index) == 0 {
+            Some(self.exact_protobuf_lengths[index])
+        } else {
+            None
+        }
+    }
+
+    fn set_exact_protobuf_length(&mut self, index: usize, length: Option<u128>) {
+        let bit = 1u64 << index;
+        match length {
+            Some(length) => {
+                self.exact_protobuf_lengths[index] = length;
+                self.exact_protobuf_overflow &= !bit;
+            }
+            None => {
+                self.exact_protobuf_lengths[index] = 0;
+                self.exact_protobuf_overflow |= bit;
+            }
+        }
+    }
+
     fn framed_occurrence_len(tag: ParComponentTag, body_len: usize) -> u128 {
         key_len(tag.byte().into()) as u128
             + encoded_len_varint(body_len as u64) as u128
@@ -4103,8 +4151,10 @@ impl ParFamilyMetrics {
             .expect("Bag distinct length already fits usize");
         let contribution =
             Self::framed_occurrence_len(tag, body_len).checked_mul(u128::from(multiplicity.get()));
-        self.exact_protobuf_lengths[index] = self.exact_protobuf_lengths[index]
+        let length = self
+            .exact_protobuf_length(index)
             .and_then(|current| contribution.and_then(|add| current.checked_add(add)));
+        self.set_exact_protobuf_length(index, length);
         Ok(())
     }
 
@@ -4567,8 +4617,10 @@ impl ParBag {
         }
         let contribution = ParFamilyMetrics::framed_occurrence_len(tag, body_len)
             .checked_mul(u128::from(amount.get()));
-        metrics.exact_protobuf_lengths[index] = metrics.exact_protobuf_lengths[index]
+        let length = metrics
+            .exact_protobuf_length(index)
             .and_then(|current| contribution.and_then(|add| current.checked_add(add)));
+        metrics.set_exact_protobuf_length(index, length);
     }
 
     #[inline]
@@ -4584,12 +4636,12 @@ impl ParBag {
         // though it is unreachable for ordinary resident terms. If it did
         // occur, subtraction cannot recover the exact value from a sentinel;
         // rebuild once from the already-mutated trie instead.
-        if self.aux.metrics.exact_protobuf_lengths[index].is_none() {
+        if self.aux.metrics.exact_protobuf_length(index).is_none() {
             let rebuilt = ParFamilyMetrics::from_trusted_components(&self.components);
             let metrics = &mut self.aux_for_mutation().metrics;
             metrics.exact_cardinalities[index] = rebuilt.exact_cardinalities[index];
             metrics.distinct_lengths[index] = rebuilt.distinct_lengths[index];
-            metrics.exact_protobuf_lengths[index] = rebuilt.exact_protobuf_lengths[index];
+            metrics.set_exact_protobuf_length(index, rebuilt.exact_protobuf_length(index));
             return;
         }
         let metrics = &mut self.aux_for_mutation().metrics;
@@ -4600,10 +4652,7 @@ impl ParBag {
         let contribution = ParFamilyMetrics::framed_occurrence_len(tag, body_len)
             .checked_mul(u128::from(removed))
             .expect("one resident component's protobuf expansion fits u128");
-        let exact = metrics.exact_protobuf_lengths[index]
-            .as_mut()
-            .expect("the overflow case rebuilt and returned above");
-        *exact = exact
+        metrics.exact_protobuf_lengths[index] = metrics.exact_protobuf_lengths[index]
             .checked_sub(contribution)
             .expect("ParBag protobuf metrics cannot remove absent multiplicity");
     }
@@ -4918,7 +4967,7 @@ impl ParBag {
             let metrics = &mut self.aux_for_mutation().metrics;
             metrics.distinct_lengths[index] = 0;
             metrics.exact_cardinalities[index] = 0;
-            metrics.exact_protobuf_lengths[index] = Some(0);
+            metrics.set_exact_protobuf_length(index, Some(0));
         }
         removed
     }
@@ -5093,6 +5142,9 @@ impl ParBag {
                             self.append_family_score_keys::<GUnforgeable>(&mut out)
                         }
                         ParComponentTag::If => self.append_family_score_keys::<If>(&mut out),
+                        ParComponentTag::CostTokenStack => {
+                            self.append_family_score_keys::<CostTokenStack>(&mut out)
+                        }
                     }
                 }
                 Arc::from(out)
@@ -5192,8 +5244,11 @@ impl ParBag {
                 .checked_mul(u128::from(factor))
                 .expect("scaled resident endpoint multiplicities fit exact u128 cardinality");
         }
-        for exact in &mut metrics.exact_protobuf_lengths {
-            *exact = exact.and_then(|length| length.checked_mul(u128::from(factor)));
+        for index in 0..PAR_COMPONENT_FAMILY_COUNT {
+            let length = metrics
+                .exact_protobuf_length(index)
+                .and_then(|length| length.checked_mul(u128::from(factor)));
+            metrics.set_exact_protobuf_length(index, length);
         }
         Ok(Self {
             components,
@@ -5279,6 +5334,7 @@ impl ParBag {
     ) -> Result<(), ParBagProtobufError> {
         self.add_protobuf_family_len::<Bundle>(total)?;
         self.add_protobuf_family_len::<If>(total)?;
+        self.add_protobuf_family_len::<CostTokenStack>(total)?;
         Ok(())
     }
 
@@ -5482,7 +5538,7 @@ impl ParBag {
     fn add_protobuf_family_len<T>(&self, total: &mut usize) -> Result<(), ParBagProtobufError>
     where T: ParBagComponent {
         let index = T::TAG.index();
-        let exact = self.aux.metrics.exact_protobuf_lengths[index];
+        let exact = self.aux.metrics.exact_protobuf_length(index);
         let exact_cardinality = self.aux.metrics.exact_cardinalities[index];
         let one_occurrence_bytes = match (
             exact,
@@ -5645,6 +5701,9 @@ mod fast_key_tests {
             ParComponentTag::Connective => legacy_typed_key_oracle::<Connective>(path, payload)?,
             ParComponentTag::Bundle => legacy_typed_key_oracle::<Bundle>(path, payload)?,
             ParComponentTag::If => legacy_typed_key_oracle::<If>(path, payload)?,
+            ParComponentTag::CostTokenStack => {
+                legacy_typed_key_oracle::<CostTokenStack>(path, payload)?
+            }
         };
         Ok((tag, payload.len(), stable))
     }
@@ -5698,11 +5757,14 @@ mod fast_key_tests {
             if_false: Some(empty),
             ..If::default()
         });
+        push_key!(CostTokenStack, CostTokenStack {
+            layers: vec![Default::default()],
+        });
         keys
     }
 
     #[test]
-    fn production_component_admission_is_differentially_equivalent_for_all_nine_families() {
+    fn production_component_admission_is_differentially_equivalent_for_all_ten_families() {
         let keys = canonical_family_keys();
         assert_eq!(keys.len(), PAR_COMPONENT_FAMILY_COUNT);
 

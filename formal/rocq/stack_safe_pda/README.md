@@ -2368,7 +2368,7 @@ production-validator differential and the three new C witnesses.
 | RPO-08 | A: `map_entries_follow_btree_order_and_prost_default_omission`; `admission_rejects_native_or_mismatched_schema_tables_without_panicking` | Correct map framing/order/default omission and explicit refusal of inappropriate schema programs. |
 | RPO-09 | A: `canonical_encoder_images_validate_without_constructing_an_ast`; `every_forbidden_cutover_fallback_makes_the_verdict_red` | Successful admission has zero typed decodes, reconstructed keys and endpoint replays, and exactly one byte-native validation; each forbidden counter independently invalidates acceptance. |
 | RPO-10 | A: `depth_20000_validation_uses_the_heap_worklist_on_a_small_native_stack`; `width_4096_validation_uses_counted_occurrences_on_a_small_native_stack` | Concrete fixed-stack depth/width witnesses; not a universal resource theorem. |
-| RPO-11 | B: `production_component_admission_is_differentially_equivalent_for_all_nine_families` | Actual production key validator versus retained typed validator, with nine families, payload-bit mutations, unknown fields and truncation. |
+| RPO-11 | B: `production_component_admission_is_differentially_equivalent_for_all_ten_families` | Actual production key validator versus retained typed validator, with the original nine families and the subsequently added tenth family, payload-bit mutations, unknown fields and truncation. |
 | RPO-12 | C: `admitted_compact_rpb3_preserves_codec_event_and_history_observations` | Actual compact admission followed by root-metadata-preserving Par reconstruction, exact protobuf/bincode, three event-hash preimages, complete Produce/Consume bytes, DATA/CONT/JOIN bytes, selected legacy history root and cold read-back. Explicit nine-family and nonempty-corpus floors prevent scalar-only success after corpus shrinkage. |
 | RPO-13 | C: `admitted_observation_witness_detects_lost_multiplicity_and_root_metadata` | Deliberately losing occurrences changes every measured byte/root observation. Losing root LF can preserve Par equality yet change protobuf, refuting equality-only acceptance. |
 | RPO-14 | C: `admitted_compact_observations_preserve_generated_occurrences` | 32 property cases with bounded duplicate scalar occurrences and root metadata; not arbitrary recursive AST generation. |
@@ -2413,7 +2413,7 @@ results. Representative focused commands, run within those scopes, are:
 
 ```sh
 cargo test --locked -j4 -p models --lib protobuf_admission::tests -- --test-threads=2
-cargo test --locked -j4 -p models --lib production_component_admission_is_differentially_equivalent_for_all_nine_families -- --test-threads=2
+cargo test --locked -j4 -p models --lib production_component_admission_is_differentially_equivalent_for_all_ten_families -- --test-threads=2
 cargo test --locked -j4 -p models --test par_bag admitted_ -- --test-threads=2
 cargo test --locked -j4 -p models --test formal_equivalence_manifest rpb3 -- --test-threads=2
 cargo test --release --locked -j4 -p models --test par_bag --test event_hash_encoder_differential --test event_hash_bytes_differential --test epathmap_canonical_fixtures --test cold_store_records --test formal_equivalence_manifest --test serializer_par_byte_goldens -- --test-threads=2

@@ -144,6 +144,28 @@ where T: BincodeNode
     );
 }
 
+fn assert_versioned_root_properties<T>(label: &str, value: &T)
+where T: BincodeNode
+        + Serialize
+        + for<'de> Deserialize<'de>
+        + ColdStoreEncode
+        + ColdStoreDecode
+        + PartialEq
+        + std::fmt::Debug {
+    let derived_bytes = bincode::serialize(value).expect("oracle: serialize");
+    let machine_bytes = encode(value);
+    if let Err(why) = byte_identity_verdict(label, &machine_bytes, &derived_bytes) {
+        panic!("{why}");
+    }
+
+    let oracle_value: T = bincode::deserialize(&derived_bytes).expect("oracle: deserialize");
+    let stored_bytes = value.cold_encode();
+    let (restored, consumed) =
+        T::cold_decode_prefix(&stored_bytes).expect("machine: decode versioned cold-store bytes");
+    assert_eq!(consumed, stored_bytes.len(), "{label}: consumed prefix");
+    assert_eq!(restored, oracle_value, "{label}: cold-store round-trip");
+}
+
 // ===========================================================================
 // §1  Byte-identical WRITE over the exhaustive corpus
 // ===========================================================================
@@ -209,7 +231,7 @@ fn every_root_and_shape_satisfies_all_four_properties() {
         checked += 1;
     }
     for (label, v) in corpus::list_par_with_random_corpus() {
-        assert_all_properties(&format!("ListParWithRandom::{label}"), &v);
+        assert_versioned_root_properties(&format!("ListParWithRandom::{label}"), &v);
         checked += 1;
     }
     for (label, v) in corpus::bind_pattern_corpus() {
@@ -217,7 +239,7 @@ fn every_root_and_shape_satisfies_all_four_properties() {
         checked += 1;
     }
     for (label, v) in corpus::tagged_continuation_corpus() {
-        assert_all_properties(&format!("TaggedContinuation::{label}"), &v);
+        assert_versioned_root_properties(&format!("TaggedContinuation::{label}"), &v);
         checked += 1;
     }
     assert!(
@@ -304,6 +326,7 @@ fn the_structural_cross_product_writes_identically() {
                                 persistent: i % 2 == 0,
                                 locally_free: vec![i as u8],
                                 connective_used,
+                                cost_region: None,
                             })
                             .collect(),
                         connectives: (0..arity)
@@ -452,6 +475,7 @@ fn the_encode_differential_can_go_red() {
         persistent: true,
         locally_free: vec![],
         connective_used: false,
+        cost_region: None,
     };
     let par = models::par_from_default! {
         sends: vec![send],
@@ -580,11 +604,13 @@ proptest! {
     /// §1 + §2 + §3 through every cold-store root.
     #[test]
     fn all_properties_through_every_root(par in generate_par(2)) {
-        let datum = ListParWithRandom { pars: vec![par.clone()], random_state: vec![1u8, 2, 3] };
+        let datum = ListParWithRandom { pars: vec![par.clone()], random_state: vec![1u8, 2, 3],  cost_region: None, };
         let pattern = BindPattern { patterns: vec![par.clone()], remainder: None, free_count: 3 };
         let cont = TaggedContinuation {
             guard: Some(par.clone()),
             tagged_cont: Some(models::rhoapi::tagged_continuation::TaggedCont::ScalaBodyRef(7)),
+            cost_region: None,
+            clause_regions: Vec::new(),
         };
 
         for (label, bytes, oracle) in [

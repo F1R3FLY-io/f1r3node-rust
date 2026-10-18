@@ -98,6 +98,7 @@ fn legacy_binders(depth: usize) -> Par {
                 source: Some(new_gint_par(0, Vec::new(), false)),
                 remainder: None,
                 free_count: 0,
+                cost_region: None,
             }],
             body: Some(value),
             persistent: false,
@@ -106,6 +107,7 @@ fn legacy_binders(depth: usize) -> Par {
             locally_free: Vec::new(),
             connective_used: false,
             condition: None,
+            cost_region: None,
         };
         value = models::par_from_default! {
             news: vec![New {
@@ -134,6 +136,7 @@ fn legacy_send_chain(depth: usize) -> Par {
                 persistent: false,
                 locally_free: vec![(level % 251) as u8],
                 connective_used: false,
+                cost_region: None,
             }],
             ..Default::default()
         };

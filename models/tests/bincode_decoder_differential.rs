@@ -41,6 +41,7 @@ use models::rhoapi::{
 use models::rust::rholang::bincode_decoder::{
     cold_decode_list_bind_patterns_for_test, cold_decode_par_with_random_for_test,
 };
+use models::rust::rholang::bincode_encoder::ColdStoreEncode;
 use models::rust::test_utils::test_utils::generate_par;
 use proptest::prelude::*;
 use rspace_plus_plus::rspace::serializers::cold_store_decode::ColdStoreDecode;
@@ -417,7 +418,15 @@ fn list_par_with_random_corpus_agrees() {
         cases.iter().flat_map(|(_, v)| v.pars.iter()),
     );
     for (label, v) in cases {
-        agree(&label, &v);
+        let bytes = v.cold_encode();
+        let (pars, random_state): (Vec<Par>, Vec<u8>) = bincode::deserialize(&bytes).unwrap();
+        let oracle = ListParWithRandom {
+            pars,
+            random_state,
+            cost_region: None,
+        };
+        let (machine, consumed) = ListParWithRandom::cold_decode_prefix(&bytes).unwrap();
+        differential_verdict(&label, &machine, consumed, &oracle, bytes.len()).unwrap();
     }
 }
 
@@ -441,7 +450,19 @@ fn tagged_continuation_corpus_agrees() {
         cases.iter().flat_map(|(_, v)| tagged_continuation_pars(v)),
     );
     for (label, v) in cases {
-        agree(&label, &v);
+        let bytes = v.cold_encode();
+        let (guard, tagged_cont): (
+            Option<Par>,
+            Option<models::rhoapi::tagged_continuation::TaggedCont>,
+        ) = bincode::deserialize(&bytes).unwrap();
+        let oracle = TaggedContinuation {
+            guard,
+            tagged_cont,
+            cost_region: None,
+            clause_regions: Vec::new(),
+        };
+        let (machine, consumed) = TaggedContinuation::cold_decode_prefix(&bytes).unwrap();
+        differential_verdict(&label, &machine, consumed, &oracle, bytes.len()).unwrap();
     }
 }
 
@@ -819,9 +840,9 @@ proptest! {
     /// corpus.
     #[test]
     fn round_trip_through_every_root(par in generate_par(2)) {
-        let a = ListParWithRandom { pars: vec![par.clone()], random_state: vec![1u8, 2] };
+        let a = ListParWithRandom { pars: vec![par.clone()], random_state: vec![1u8, 2],  cost_region: None, };
         prop_assert!(ListParWithRandom::cold_decode(
-            &bincode::serialize(&a).expect("serialize")).expect("machine") == a);
+            &a.cold_encode()).expect("machine") == a);
 
         let p = BindPattern { patterns: vec![par.clone()], remainder: None, free_count: 3 };
         prop_assert!(BindPattern::cold_decode(
@@ -830,9 +851,11 @@ proptest! {
         let k = TaggedContinuation {
             guard: Some(par),
             tagged_cont: Some(models::rhoapi::tagged_continuation::TaggedCont::ScalaBodyRef(5)),
+            cost_region: None,
+            clause_regions: Vec::new(),
         };
         prop_assert!(TaggedContinuation::cold_decode(
-            &bincode::serialize(&k).expect("serialize")).expect("machine") == k);
+            &k.cold_encode()).expect("machine") == k);
     }
 }
 

@@ -20,6 +20,7 @@ pub fn pre_sort_binds<T: Clone + std::fmt::Debug>(
                 source: Some(channel),
                 remainder,
                 free_count: known_free.count_no_wildcards() as i32,
+                cost_region: None,
             });
 
             ScoredTerm {
@@ -41,10 +42,16 @@ pub fn pre_sort_binds<T: Clone + std::fmt::Debug>(
 /// finished into a resident `Par` for ordering.
 pub(crate) fn pre_sort_planned_binds<T: Clone + std::fmt::Debug>(
     arena: &mut ParConstruction,
-    binds: Vec<(Vec<PlannedPar>, Option<Var>, PlannedPar, FreeMap<T>)>,
+    binds: Vec<(
+        Vec<PlannedPar>,
+        Option<Var>,
+        PlannedPar,
+        FreeMap<T>,
+        Option<models::rhoapi::CostRegion>,
+    )>,
 ) -> Result<Vec<(PlannedReceiveBind, FreeMap<T>)>, InterpreterError> {
     let mut planned = Vec::with_capacity(binds.len());
-    for (patterns, remainder, source, known_free) in binds {
+    for (patterns, remainder, source, known_free, cost_region) in binds {
         let free_count = i32::try_from(known_free.count_no_wildcards()).map_err(|_| {
             InterpreterError::NormalizerError(
                 "receive-bind free count exceeds the protobuf i32 domain".to_string(),
@@ -55,6 +62,7 @@ pub(crate) fn pre_sort_planned_binds<T: Clone + std::fmt::Debug>(
             source: Some(Par::default()),
             remainder: remainder.clone(),
             free_count,
+            cost_region: cost_region.clone(),
         };
         let order = arena.receive_bind_order(&shell, &patterns, source)?;
         planned.push((
@@ -64,6 +72,7 @@ pub(crate) fn pre_sort_planned_binds<T: Clone + std::fmt::Debug>(
                 source,
                 remainder,
                 free_count,
+                cost_region,
             },
             known_free,
         ));
@@ -120,6 +129,7 @@ mod tests {
                     source: Some(new_gint_par(2, Vec::new(), false)),
                     remainder: None,
                     free_count: 0,
+                    cost_region: None,
                 },
                 empty_map.clone(),
             ),
@@ -129,6 +139,7 @@ mod tests {
                     source: Some(new_gint_par(2, Vec::new(), false)),
                     remainder: Some(new_freevar_var(0)),
                     free_count: 0,
+                    cost_region: None,
                 },
                 empty_map.clone(),
             ),
@@ -138,6 +149,7 @@ mod tests {
                     source: Some(new_gint_par(3, Vec::new(), false)),
                     remainder: None,
                     free_count: 0,
+                    cost_region: None,
                 },
                 empty_map.clone(),
             ),
@@ -147,6 +159,7 @@ mod tests {
                     source: Some(new_gint_par(3, Vec::new(), false)),
                     remainder: None,
                     free_count: 0,
+                    cost_region: None,
                 },
                 empty_map,
             ),

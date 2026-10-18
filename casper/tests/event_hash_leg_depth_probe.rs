@@ -112,6 +112,7 @@ fn datum_of(par: Par) -> ListParWithRandom {
     ListParWithRandom {
         pars: vec![par],
         random_state: vec![0xAB; 32],
+        cost_region: None,
     }
 }
 
@@ -130,6 +131,8 @@ fn continuation_of(par: Par) -> TaggedContinuation {
             body: Some(par),
             random_state: vec![0xCD; 32],
         })),
+        cost_region: None,
+        clause_regions: Vec::new(),
     }
 }
 

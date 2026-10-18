@@ -2177,6 +2177,26 @@ async fn cost_should_be_repeatable_when_generated() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn duplicate_send_cost_replay_preserves_pathmap_lifetime() {
+    let contract = "@0!(0) | @1!(0) | @3!!(0) | @0!(0)".to_string();
+    let phlo = Cost::create(i32::MAX as i64, "max_value".to_string());
+    for iteration in 0..64 {
+        let (play, replay) = evaluate_and_replay(phlo.clone(), contract.clone()).await;
+        assert!(
+            play.errors.is_empty(),
+            "play failed on iteration {iteration}: {:?}",
+            play.errors
+        );
+        assert!(
+            replay.errors.is_empty(),
+            "replay failed on iteration {iteration}: {:?}",
+            replay.errors
+        );
+        assert_eq!(play.cost, replay.cost, "iteration {iteration}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn running_out_of_phlogistons_should_stop_evaluation_upon_cost_depletion_in_a_single_execution_branch(
 ) {
     // D3 (DR-9, OD-3): `@1!(1)` is ONE COMM (cost 1). A 0-COMM budget OOPs on it

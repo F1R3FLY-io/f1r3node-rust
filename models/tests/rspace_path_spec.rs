@@ -49,6 +49,7 @@ fn random_state_changes_identity_without_destroying_structural_sharing() {
     let first = ListParWithRandom {
         pars: vec![integer(1), integer(2)],
         random_state: vec![1, 2, 3],
+        cost_region: None,
     };
     let second = ListParWithRandom {
         random_state: vec![4, 5, 6],
@@ -63,14 +64,17 @@ fn par_sequence_framing_preserves_arity_and_element_boundaries() {
     let one = ListParWithRandom {
         pars: vec![integer(1), integer(2)],
         random_state: Vec::new(),
+        cost_region: None,
     };
     let other = ListParWithRandom {
         pars: vec![integer(12)],
         random_state: Vec::new(),
+        cost_region: None,
     };
     let longer = ListParWithRandom {
         pars: vec![integer(1), integer(2), integer(3)],
         random_state: Vec::new(),
+        cost_region: None,
     };
     assert_ne!(one.rho_path_structure(), other.rho_path_structure());
     assert_ne!(one.rho_path_structure(), longer.rho_path_structure());
@@ -82,6 +86,7 @@ fn data_index_collapses_exact_duplicates_but_not_random_state() {
     let first = ListParWithRandom {
         pars: vec![integer(1), integer(2)],
         random_state: vec![1, 2, 3],
+        cost_region: None,
     };
     let second = ListParWithRandom {
         random_state: vec![4, 5, 6],

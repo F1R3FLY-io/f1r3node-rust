@@ -353,6 +353,7 @@ pub(crate) struct PlannedReceiveBind {
     pub source: PlannedPar,
     pub remainder: Option<ModelsVar>,
     pub free_count: i32,
+    pub cost_region: Option<models::rhoapi::CostRegion>,
 }
 
 /// One normalized match case before the final schema shell is emitted.
@@ -377,6 +378,8 @@ pub(crate) struct InputK<'ast> {
     pub persistent: bool,
     pub peek: bool,
     pub input: ProcVisitInputs,
+    pub clause_regions: Vec<Option<models::rhoapi::CostRegion>>,
+    pub pending_tail: Vec<Option<models::rhoapi::CostRegion>>,
 
     // ---- where we are ---------------------------------------------------
     pub phase: InputPhase,
@@ -634,6 +637,7 @@ pub(crate) enum NormKont<'ast> {
     /// `recognize_signed_term` — validate `s`, then lower `P` ordinarily.
     SignedTerm {
         core_inner: AnnProc<'ast>,
+        span: rholang_parser::SourceSpan,
         input: ProcVisitInputs,
     },
     /// `recognize_signed_join` — validate every clause signature, then lower the
@@ -641,15 +645,17 @@ pub(crate) enum NormKont<'ast> {
     SignedJoin {
         plain_for: AnnProc<'ast>,
         clause_sigs: Vec<Signature<'ast>>,
+        clause_positions: Vec<usize>,
+        regions: Vec<Option<models::rhoapi::CostRegion>>,
+        span: rholang_parser::SourceSpan,
         idx: usize,
         bound_map_chain: BoundMapChain<VarSort>,
         input: ProcVisitInputs,
     },
-    /// `recognize_token_stack` — validate every layer, then lower to the input
-    /// process unchanged.
     TokenStack {
         layers: &'ast [Signature<'ast>],
         idx: usize,
+        ordered: Vec<models::rhoapi::CostSignature>,
         input: ProcVisitInputs,
     },
 }
@@ -1213,25 +1219,36 @@ fn run_combine<'ast>(
             bound_map_chain,
             left,
         } => sig::combine_sig_compound(right, bound_map_chain, left, value),
-        NormKont::SignedTerm { core_inner, input } => {
-            recognize::combine_signed_term(core_inner, input, value)
-        }
+        NormKont::SignedTerm {
+            core_inner,
+            span,
+            input,
+        } => recognize::combine_signed_term(core_inner, span, input, value),
         NormKont::SignedJoin {
             plain_for,
             clause_sigs,
+            clause_positions,
+            regions,
+            span,
             idx,
             bound_map_chain,
             input,
         } => recognize::combine_signed_join(
             plain_for,
             clause_sigs,
+            clause_positions,
+            regions,
+            span,
             idx,
             bound_map_chain,
             input,
             value,
         ),
-        NormKont::TokenStack { layers, idx, input } => {
-            recognize::combine_token_stack(layers, idx, input, value)
-        }
+        NormKont::TokenStack {
+            layers,
+            idx,
+            ordered,
+            input,
+        } => recognize::combine_token_stack(layers, idx, ordered, input, value, construction),
     }
 }

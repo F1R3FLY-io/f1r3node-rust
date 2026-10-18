@@ -41,6 +41,7 @@ message Par {
   repeated Bundle bundles = 11;
   repeated Connective connectives = 8;
   repeated If conditionals = 12;
+  repeated CostTokenStack cost_token_stacks = 13;
   bytes locallyFree = 9
       [(scalapb.field).type =
            "coop.rchain.models.AlwaysEqual[scala.collection.immutable.BitSet]"];
@@ -61,6 +62,8 @@ message TaggedContinuation {
   // every spatial pattern has matched, so cross-channel guards see every
   // bound variable. Empty Par = no guard. See plan §7.12.
   Par guard = 3;
+  CostRegion cost_region = 4;
+  repeated CostClauseRegion clause_regions = 5;
 }
 
 /**
@@ -84,6 +87,7 @@ message ListParWithRandom {
   repeated Par pars = 1;
   bytes randomState = 2
       [(scalapb.field).type = "coop.rchain.crypto.hash.Blake2b512Random"];
+  CostRegion cost_region = 3;
 }
 
 // While we use vars in both positions, when producing the normalized
@@ -111,6 +115,42 @@ message Bundle {
   bool readFlag = 3;   // flag indicating whether bundle is readable
 }
 
+message CostSignature {
+  repeated CostSignatureAtom atoms = 1;
+}
+
+message CostSignatureAtom {
+  oneof form {
+    bytes ground = 1;
+    bytes quote = 2;
+    CostBoundSignature bound = 3;
+    bytes runtime_name = 4;
+  }
+}
+
+message CostBoundSignature {
+  sint32 index = 1;
+}
+
+message CostRegion {
+  uint32 version = 1;
+  uint64 start_line = 2;
+  uint64 start_column = 3;
+  uint64 end_line = 4;
+  uint64 end_column = 5;
+  CostSignature signer = 6;
+  uint32 ordinal = 7;
+}
+
+message CostTokenStack {
+  repeated CostSignature layers = 1;
+}
+
+message CostClauseRegion {
+  uint32 bind_index = 1;
+  CostRegion region = 2;
+}
+
 /**
  * A send is written `chan!(data)` or `chan!!(data)` for a persistent send.
  *
@@ -124,6 +164,7 @@ message Send {
       [(scalapb.field).type =
            "coop.rchain.models.AlwaysEqual[scala.collection.immutable.BitSet]"];
   bool connective_used = 6;
+  CostRegion cost_region = 7;
 }
 
 message ReceiveBind {
@@ -131,6 +172,7 @@ message ReceiveBind {
   Par source = 2 [(scalapb.field).no_box = true];
   Var remainder = 3;
   int32 freeCount = 4;
+  CostRegion cost_region = 5;
 }
 
 message BindPattern {
@@ -165,6 +207,7 @@ message Receive {
   // the condition evaluates to GBool(true) under the bound variables. An
   // empty Par means no guard. See plan §3.3 / §3.5.
   Par condition = 8;
+  CostRegion cost_region = 9;
 }
 
 // Number of variables bound in the new statement.

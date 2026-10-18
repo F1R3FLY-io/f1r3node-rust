@@ -177,6 +177,7 @@ async fn run_with_guard(guard: Par) -> RunOutcome {
         persistent: false,
         locally_free: Vec::new(),
         connective_used: false,
+        cost_region: None,
     }]);
     let receive = Par::default().with_receives(vec![Receive {
         binds: vec![ReceiveBind {
@@ -184,6 +185,7 @@ async fn run_with_guard(guard: Par) -> RunOutcome {
             source: Some(chan),
             remainder: None,
             free_count: 1,
+            cost_region: None,
         }],
         body: Some(Par::default()),
         persistent: false,
@@ -192,6 +194,7 @@ async fn run_with_guard(guard: Par) -> RunOutcome {
         locally_free: Vec::new(),
         connective_used: false,
         condition: Some(guard),
+        cost_region: None,
     }]);
 
     let env: Env<Par> = Env::new();
@@ -795,6 +798,7 @@ async fn the_refusal_fires_before_any_matcher_is_consulted() {
                 persistent: false,
                 locally_free: Vec::new(),
                 connective_used: false,
+                cost_region: None,
             }]),
             &env,
             rand().split_byte(0),
@@ -844,6 +848,7 @@ fn receive_on(chan: Par, guard: Par) -> Par {
             source: Some(chan),
             remainder: None,
             free_count: 1,
+            cost_region: None,
         }],
         body: Some(Par::default()),
         persistent: false,
@@ -852,5 +857,6 @@ fn receive_on(chan: Par, guard: Par) -> Par {
         locally_free: Vec::new(),
         connective_used: false,
         condition: Some(guard),
+        cost_region: None,
     }])
 }

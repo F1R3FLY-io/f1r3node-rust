@@ -1597,6 +1597,7 @@ fn oneof_const_prefix(oneof_ident: &str) -> &'static str {
         "TaggedCont" => "TC_",
         "IoEventType" => "IOE_",
         "EventType" => "EV_",
+        "Form" => "CS_",
         other => panic!(
             "schema: oneof `{other}` has no registered constant prefix. Add one to \
              `oneof_const_prefix` deliberately — an auto-abbreviation could collide with an \
@@ -2572,6 +2573,7 @@ fn bincode_header(src: &mut String) {
          use crate::rhoapi::g_unforgeable::UnfInstance;\n\
          use crate::rhoapi::tagged_continuation::TaggedCont;\n\
          use crate::rhoapi::var::VarInstance;\n\
+         use crate::rhoapi::cost_signature_atom::Form;\n\
          use crate::rust::rhoapi_ext::EPathMap;\n\
          use crate::rust::rholang::bincode_schema::{\n\
          \x20   put_bool, put_bytes, put_bytes_seq, put_empty_bytes, put_i32, put_i64, put_str,\n\
@@ -2960,6 +2962,7 @@ fn emit_protobuf_source(
          use crate::rhoapi::g_unforgeable::UnfInstance;\n\
          use crate::rhoapi::tagged_continuation::TaggedCont;\n\
          use crate::rhoapi::var::VarInstance;\n\
+         use crate::rhoapi::cost_signature_atom::Form;\n\
          use crate::rust::rhoapi_ext::EPathMap;\n\
          use crate::rust::rholang::protobuf_schema::{\n\
          \x20   ProtobufDescent, ProtobufField, ProtobufKind, ProtobufNode, ProtobufOneof, NO_RESUME,\n\
@@ -3192,13 +3195,13 @@ fn expected_publish_root_depth(leaf: &str) -> Option<usize> {
     match leaf {
         "Par" => Some(1),
         "EvaluateResultProto" => Some(2),
-        "SoftCheckpointProto" => Some(7),
+        "SoftCheckpointProto" => Some(10),
         "CheckpointProto" => Some(5),
-        "ConsumeResultReturn" => Some(4),
-        "DatumsProto" => Some(4),
+        "ConsumeResultReturn" => Some(7),
+        "DatumsProto" => Some(7),
         "JoinsProto" => Some(3),
-        "WaitingContinuationsProto" => Some(5),
-        "StoreToMapResult" => Some(7),
+        "WaitingContinuationsProto" => Some(8),
+        "StoreToMapResult" => Some(10),
         _ => None,
     }
 }
@@ -5160,6 +5163,7 @@ fn term_ops_header(
          use crate::rhoapi::g_unforgeable::UnfInstance;\n\
          use crate::rhoapi::tagged_continuation::TaggedCont;\n\
          use crate::rhoapi::var::VarInstance;\n\
+         use crate::rhoapi::cost_signature_atom::Form;\n\
          use crate::rust::rhoapi_ext::EPathMap;\n",
     );
     if !plan.cut.is_empty() {
@@ -11382,6 +11386,7 @@ fn unexpected_end_group_tag() -> DecodeError {
             "Bundle" => "bundle",
             "Connective" => "connective",
             "If" => "conditional",
+            "CostTokenStack" => "cost_token_stack",
             _ => panic!("protobuf component planning: unhandled family {name}"),
         };
         writeln!(src, "impl owned_slots::{name} {{ pub(crate) fn plan(self, arena: &mut crate::rust::par_construction::ParConstruction) -> Result<crate::rust::par_construction::PlannedComponent, crate::rust::par_construction::ParConstructionError> {{ crate::rust::rholang::protobuf_construction::plan(arena, |projection| self.project(projection), crate::rust::rholang::protobuf_construction::{planner}) }} }}")

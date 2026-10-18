@@ -3587,6 +3587,7 @@ mod tests {
             persistent: false,
             locally_free: Vec::new(),
             connective_used: false,
+            cost_region: None,
         }]);
 
         assert!(

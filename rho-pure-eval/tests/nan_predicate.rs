@@ -146,6 +146,7 @@ fn non_collection_children_and_process_families_remain_opaque() {
         persistent: false,
         locally_free: Vec::new(),
         connective_used: false,
+        cost_region: None,
     }]);
 
     for (name, value) in [("operator", operator), ("process", process)] {

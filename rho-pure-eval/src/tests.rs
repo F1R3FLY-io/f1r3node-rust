@@ -309,6 +309,7 @@ fn process_level_par_content_is_preserved() {
             persistent: false,
             locally_free: vec![],
             connective_used: false,
+            cost_region: None,
         }],
         ..Par::default()
     };
@@ -1328,6 +1329,7 @@ fn the_gate_does_not_walk_process_level_fields() {
         persistent: false,
         locally_free: Vec::new(),
         connective_used: false,
+        cost_region: None,
     }]);
     assert!(
         undecidable_nodes(&guard, SpatialSupport::Available).is_empty(),

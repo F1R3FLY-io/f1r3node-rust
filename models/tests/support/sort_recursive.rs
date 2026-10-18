@@ -452,6 +452,7 @@ mod differential_sorter {
             persistent,
             locally_free: vec![1],
             connective_used: true,
+            cost_region: None,
         }
     }
 
@@ -467,6 +468,7 @@ mod differential_sorter {
                 None
             },
             free_count: 2,
+            cost_region: None,
         }
     }
 
@@ -480,6 +482,7 @@ mod differential_sorter {
             locally_free: vec![2],
             connective_used: false,
             condition: if with_condition { Some(gint(1)) } else { None },
+            cost_region: None,
         }
     }
 
@@ -686,6 +689,7 @@ mod differential_sorter {
                         persistent: false,
                         locally_free: vec![],
                         connective_used: false,
+                        cost_region: None,
                     }],
                     bundles: vec![Bundle {
                         body: Some(p.clone()),
@@ -847,6 +851,7 @@ mod differential_sorter {
             persistent: false,
             locally_free: vec![],
             connective_used: false,
+            cost_region: None,
         };
         let sorted_send = super::super::sort_drive::sort_send(&s).term;
         assert_eq!(
@@ -890,6 +895,7 @@ mod differential_sorter {
             source: Some(gstring("src")),
             remainder: None,
             free_count: 0,
+            cost_region: None,
         };
         let sorted_bind = ReceiveSortMatcher::sort_bind(rb).term;
         assert_eq!(

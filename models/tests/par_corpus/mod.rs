@@ -49,15 +49,17 @@ use std::collections::BTreeMap;
 use std::sync::OnceLock;
 
 use models::rhoapi::connective::ConnectiveInstance;
+use models::rhoapi::cost_signature_atom::Form;
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::g_unforgeable::UnfInstance;
 use models::rhoapi::tagged_continuation::TaggedCont;
 use models::rhoapi::var::{VarInstance, WildcardMsg};
 use models::rhoapi::{
-    BindPattern, Bundle, Connective, ConnectiveBody, EAnd, EDiv, EEq, EGt, EGte, EList, ELt, ELte,
-    EMap, EMatches, EMethod, EMinus, EMinusMinus, EMod, EMult, ENeg, ENeq, ENot, EOr,
-    EPercentPercent, EPlus, EPlusPlus, ESet, ETuple, EVar, EZipper, Expr, GBigRational, GDeployId,
-    GDeployerId, GFixedPoint, GPrivate, GSysAuthToken, GUnforgeable, If, KeyValuePair,
+    BindPattern, Bundle, Connective, ConnectiveBody, CostBoundSignature, CostClauseRegion,
+    CostRegion, CostSignature, CostSignatureAtom, CostTokenStack, EAnd, EDiv, EEq, EGt, EGte,
+    EList, ELt, ELte, EMap, EMatches, EMethod, EMinus, EMinusMinus, EMod, EMult, ENeg, ENeq, ENot,
+    EOr, EPercentPercent, EPlus, EPlusPlus, ESet, ETuple, EVar, EZipper, Expr, GBigRational,
+    GDeployId, GDeployerId, GFixedPoint, GPrivate, GSysAuthToken, GUnforgeable, If, KeyValuePair,
     ListBindPatterns, ListParWithRandom, Match, MatchCase, New, Par, ParWithRandom, Receive,
     ReceiveBind, Send, TaggedContinuation, Var, VarRef,
 };
@@ -364,6 +366,7 @@ pub fn all_par_fields() -> Par {
             persistent: true,
             locally_free: vec![0x11, 0x12],
             connective_used: true,
+            cost_region: None,
         },
         Send {
             chan: None,
@@ -371,6 +374,7 @@ pub fn all_par_fields() -> Par {
             persistent: false,
             locally_free: vec![],
             connective_used: false,
+            cost_region: None,
         },
     ]);
     par.replace_receives(vec![Receive {
@@ -380,12 +384,14 @@ pub fn all_par_fields() -> Par {
                 source: Some(gint(6)),
                 remainder: some_var(),
                 free_count: -7,
+                cost_region: None,
             },
             ReceiveBind {
                 patterns: vec![],
                 source: None,
                 remainder: None,
                 free_count: 0,
+                cost_region: None,
             },
         ],
         body: Some(gint(7)),
@@ -396,6 +402,7 @@ pub fn all_par_fields() -> Par {
         connective_used: true,
         // `Receive.condition` — a slot `generate_par` never fills.
         condition: Some(gint(8)),
+        cost_region: None,
     }]);
     par.replace_news(vec![
         New {
@@ -511,6 +518,7 @@ pub fn deep_mixed_par(depth: usize) -> Par {
                     persistent: false,
                     locally_free: vec![level as u8],
                     connective_used: false,
+                    cost_region: None,
                 }]);
                 out
             }
@@ -522,6 +530,7 @@ pub fn deep_mixed_par(depth: usize) -> Par {
                         source: None,
                         remainder: None,
                         free_count: 1,
+                        cost_region: None,
                     }],
                     body: None,
                     persistent: false,
@@ -530,6 +539,7 @@ pub fn deep_mixed_par(depth: usize) -> Par {
                     locally_free: vec![],
                     connective_used: false,
                     condition: None,
+                    cost_region: None,
                 }]);
                 out
             }
@@ -652,6 +662,7 @@ fn build_par_corpus() -> Vec<(String, Par)> {
                 persistent: i % 2 == 0,
                 locally_free: vec![i as u8],
                 connective_used: i % 3 == 0,
+                cost_region: None,
             })
             .collect(),
     );
@@ -678,10 +689,12 @@ pub fn list_par_with_random_corpus() -> Vec<(String, ListParWithRandom)> {
         ("empty".to_string(), ListParWithRandom {
             pars: vec![],
             random_state: vec![],
+            cost_region: None,
         }),
         ("loaded".to_string(), ListParWithRandom {
             pars: vec![all_par_fields(), deep_mixed_par(16), nil()],
             random_state: vec![0xF1, 0xF2, 0xF3],
+            cost_region: None,
         }),
     ]
 }
@@ -707,6 +720,8 @@ pub fn tagged_continuation_corpus() -> Vec<(String, TaggedContinuation)> {
         ("absent_cont".to_string(), TaggedContinuation {
             guard: None,
             tagged_cont: None,
+            cost_region: None,
+            clause_regions: Vec::new(),
         }),
         ("par_body".to_string(), TaggedContinuation {
             guard: Some(all_par_fields()),
@@ -714,6 +729,8 @@ pub fn tagged_continuation_corpus() -> Vec<(String, TaggedContinuation)> {
                 body: Some(deep_mixed_par(12)),
                 random_state: vec![1, 2, 3],
             })),
+            cost_region: None,
+            clause_regions: Vec::new(),
         }),
         ("par_body_absent_inner".to_string(), TaggedContinuation {
             guard: None,
@@ -721,10 +738,14 @@ pub fn tagged_continuation_corpus() -> Vec<(String, TaggedContinuation)> {
                 body: None,
                 random_state: vec![],
             })),
+            cost_region: None,
+            clause_regions: Vec::new(),
         }),
         ("scala_ref".to_string(), TaggedContinuation {
             guard: Some(gint(1)),
             tagged_cont: Some(TaggedCont::ScalaBodyRef(i64::MIN)),
+            cost_region: None,
+            clause_regions: Vec::new(),
         }),
     ]
 }
@@ -752,4 +773,106 @@ pub fn list_bind_patterns_corpus() -> Vec<(String, ListBindPatterns)> {
                 .collect(),
         }),
     ]
+}
+
+// ---------------------------------------------------------------------------
+// Cost-accounting metadata
+// ---------------------------------------------------------------------------
+//
+// The corpora above leave every cost-accounting slot absent, so values that
+// existing byte goldens pin are unchanged. These builders populate those
+// slots separately, for coverage tests that must reach every generated
+// message and oneof arm.
+
+/// Every `cost_signature_atom::Form` arm.
+pub fn every_cost_signature_atom() -> Vec<(&'static str, CostSignatureAtom)> {
+    vec![
+        ("Ground", CostSignatureAtom {
+            form: Some(Form::Ground(vec![0xC1])),
+        }),
+        ("Quote", CostSignatureAtom {
+            form: Some(Form::Quote(vec![0xC2, 0xC3])),
+        }),
+        ("Bound", CostSignatureAtom {
+            form: Some(Form::Bound(CostBoundSignature { index: i32::MIN })),
+        }),
+        ("RuntimeName", CostSignatureAtom {
+            form: Some(Form::RuntimeName(vec![])),
+        }),
+    ]
+}
+
+/// A signature carrying every `Form` arm.
+pub fn every_form_cost_signature() -> CostSignature {
+    CostSignature {
+        atoms: every_cost_signature_atom()
+            .into_iter()
+            .map(|(_, atom)| atom)
+            .collect(),
+    }
+}
+
+/// A region whose every field is populated.
+pub fn cost_region() -> CostRegion {
+    CostRegion {
+        version: 1,
+        start_line: 2,
+        start_column: 3,
+        end_line: u64::MAX,
+        end_column: 5,
+        signer: Some(every_form_cost_signature()),
+        ordinal: u32::MAX,
+    }
+}
+
+/// A `Par` whose `Send`, `Receive` and `ReceiveBind` regions and
+/// `cost_token_stacks` are populated.
+pub fn cost_annotated_par() -> Par {
+    let mut par = Par::default();
+    par.replace_sends(vec![Send {
+        chan: Some(gint(1)),
+        data: vec![gint(2)],
+        cost_region: Some(cost_region()),
+        ..Send::default()
+    }]);
+    par.replace_receives(vec![Receive {
+        binds: vec![ReceiveBind {
+            patterns: vec![gint(3)],
+            source: Some(gint(4)),
+            cost_region: Some(cost_region()),
+            ..ReceiveBind::default()
+        }],
+        body: Some(gint(5)),
+        cost_region: Some(cost_region()),
+        ..Receive::default()
+    }]);
+    par.replace_cost_token_stacks(vec![CostTokenStack {
+        layers: vec![every_form_cost_signature(), CostSignature::default()],
+    }]);
+    par
+}
+
+/// A `ListParWithRandom` whose region is populated.
+pub fn cost_annotated_list_par_with_random() -> ListParWithRandom {
+    ListParWithRandom {
+        pars: vec![gint(6)],
+        random_state: vec![0xC4],
+        cost_region: Some(cost_region()),
+    }
+}
+
+/// A `TaggedContinuation` whose region and per-clause regions are populated.
+pub fn cost_annotated_tagged_continuation() -> TaggedContinuation {
+    TaggedContinuation {
+        guard: None,
+        tagged_cont: Some(TaggedCont::ParBody(ParWithRandom {
+            body: Some(gint(7)),
+            random_state: vec![0xC5],
+        })),
+        cost_region: Some(cost_region()),
+        clause_regions: vec![CostClauseRegion {
+            bind_index: u32::MAX,
+            region: Some(cost_region()),
+        }],
+    }
 }

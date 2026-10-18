@@ -199,7 +199,8 @@ fn the_two_tables_are_permutations_of_one_another() {
 /// An earlier brief in this campaign cited prost-build's struct-writing order —
 /// "plain fields first, then oneofs" — as prost's *emission* order. It is not:
 /// that is the serde/bincode order. The protobuf order is ascending minimum tag,
-/// and for `TaggedContinuation` the two are **exactly reversed**.
+/// and for `TaggedContinuation` the oneof moves from **last** (serde) to
+/// **first** (protobuf).
 ///
 /// ⚠⚠ `TaggedContinuation` is the message whose SERDE order already cost this
 /// campaign "a 95-byte encoding with its halves exchanged" — same length, same
@@ -249,8 +250,8 @@ fn exactly_one_generated_message_orders_differently_under_the_two_formats() {
         .expect("TaggedContinuation is in the bincode registry");
     assert_eq!(
         tc_serde,
-        vec!["guard", "tagged_cont"],
-        "`TaggedContinuation`'s SERDE order puts the plain field FIRST — prost-build writes \
+        vec!["guard", "cost_region", "clause_regions", "tagged_cont"],
+        "`TaggedContinuation`'s SERDE order puts the plain fields FIRST — prost-build writes \
          every plain field before every oneof, whatever the `.proto` declared"
     );
     let tc_protobuf: Vec<&str> = protobuf["TaggedContinuation"]
@@ -259,11 +260,12 @@ fn exactly_one_generated_message_orders_differently_under_the_two_formats() {
         .collect();
     assert_eq!(
         tc_protobuf,
-        vec!["tagged_cont", "guard"],
-        "★★ `TaggedContinuation`'s PROTOBUF order is THE OPPOSITE: the oneof occupies tags \
-         1-2 and `guard` is tag 3, and prost places a oneof at the position of its LOWEST \
-         tag. This is the message whose serde order already produced a 95-byte encoding with \
-         its halves exchanged; here the correct order is the reverse of that fix."
+        vec!["tagged_cont", "guard", "cost_region", "clause_regions"],
+        "★★ `TaggedContinuation`'s PROTOBUF order puts the ONEOF FIRST: the oneof occupies \
+         tags 1-2, `guard`, `cost_region` and `clause_regions` are tags 3-5, and prost places \
+         a oneof at the position of its LOWEST tag. This is the message whose serde order \
+         already produced a 95-byte encoding with its halves exchanged; here the correct \
+         order moves the oneof back to the front."
     );
     assert_eq!(
         protobuf["TaggedContinuation"][0].kind,

@@ -193,6 +193,11 @@ const STRUCTURAL: &[Case] = &[
         binds: 0,
     },
     Case {
+        label: "TokenStack",
+        src: "a :: b :: ()",
+        binds: 0,
+    },
+    Case {
         label: "BoolLiteral",
         src: "true",
         binds: 0,

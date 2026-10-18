@@ -1050,7 +1050,7 @@ pushd "$repo_root" >/dev/null
 rpb3_run_tests 22 --lib protobuf_admission::tests
 epathmap_import_runtime
 rpb3_run_tests 1 --lib \
-  production_component_admission_is_differentially_equivalent_for_all_nine_families
+  production_component_admission_is_differentially_equivalent_for_all_ten_families
 rpb3_run_tests 3 --test par_bag admitted_
 TLC_MEMORY_HIGH=4G TLC_RSS=6G TLC_CPU_QUOTA=400% TLC_TASKS_MAX=512 \
   rpb3_run_tests 23 --release -j4 --lib emission_tests

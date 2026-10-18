@@ -92,11 +92,12 @@
 use std::collections::BTreeMap;
 
 use models::rhoapi::connective::ConnectiveInstance;
+use models::rhoapi::cost_signature_atom::Form;
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::var::VarInstance;
 use models::rhoapi::{
-    Bundle, Connective, ConnectiveBody, EVar, Expr, GUnforgeable, If, Match, MatchCase, New, Par,
-    Receive, ReceiveBind, Send, Var, VarRef,
+    Bundle, Connective, ConnectiveBody, CostRegion, CostSignature, CostTokenStack, EVar, Expr,
+    GUnforgeable, If, Match, MatchCase, New, Par, Receive, ReceiveBind, Send, Var, VarRef,
 };
 use models::rust::canonical_path::{
     tag as path_tag, CanonicalTopLevelPathForm, CanonicalTopLevelSegment,
@@ -109,17 +110,21 @@ use models::rust::par_bag::{
 use models::rust::par_construction::{ParConstruction, PlannedComponent, PlannedPar};
 use models::rust::rhoapi_ext::{OwnedEPathMapEntries, OwnedEPathMapEntry};
 use models::rust::rholang::match_schema_tables::{
-    BUNDLE_RHO_MATCH_PROGRAM, CONNECTIVE_RHO_MATCH_PROGRAM, EXPR_RHO_MATCH_PROGRAM,
-    GUNFORGEABLE_RHO_MATCH_PROGRAM, IF_RHO_MATCH_PROGRAM, MATCH_RHO_MATCH_PROGRAM,
-    NEW_RHO_MATCH_PROGRAM, RECEIVE_RHO_MATCH_PROGRAM, SEND_RHO_MATCH_PROGRAM,
+    BUNDLE_RHO_MATCH_PROGRAM, CONNECTIVE_RHO_MATCH_PROGRAM, COSTTOKENSTACK_RHO_MATCH_PROGRAM,
+    EXPR_RHO_MATCH_PROGRAM, GUNFORGEABLE_RHO_MATCH_PROGRAM, IF_RHO_MATCH_PROGRAM,
+    MATCH_RHO_MATCH_PROGRAM, NEW_RHO_MATCH_PROGRAM, RECEIVE_RHO_MATCH_PROGRAM,
+    SEND_RHO_MATCH_PROGRAM,
 };
 use models::rust::rholang::protobuf_cursor::{
     CanonicalByteRange, CanonicalParRegionIndex, CanonicalRegionDelimitedRun, ProtobufRegion,
 };
 use models::rust::rholang::protobuf_decoder;
 use models::rust::rholang::protobuf_region::{cut_at_par, ProtobufCutPlan};
+use models::rust::rholang::sorter::par_sort_matcher::ParSortMatcher;
+use models::rust::rholang::sorter::sortable::Sortable;
 use models::rust::utils::union;
 use pathmap::PathMap;
+use prost::Message;
 use rspace_plus_plus::rspace::history::Either;
 
 use super::env::Env;
@@ -198,6 +203,36 @@ impl<'e> EnvView<'e> {
     }
 }
 
+pub(crate) fn substitute_cost_signature(
+    signer: &mut CostSignature,
+    ctx: SubCtx,
+    view: EnvView<'_>,
+) {
+    if ctx.depth != 0 {
+        return;
+    }
+    for atom in &mut signer.atoms {
+        let Some(Form::Bound(bound)) = atom.form.as_ref() else {
+            continue;
+        };
+        if let Some(name) = view.get(ctx, bound.index) {
+            atom.form = Some(Form::RuntimeName(
+                ParSortMatcher::sort_match(&name).term.encode_to_vec(),
+            ));
+        }
+    }
+}
+
+pub(crate) fn substitute_cost_region(
+    region: &mut Option<CostRegion>,
+    ctx: SubCtx,
+    view: EnvView<'_>,
+) {
+    if let Some(signer) = region.as_mut().and_then(|region| region.signer.as_mut()) {
+        substitute_cost_signature(signer, ctx, view);
+    }
+}
+
 // ===========================================================================
 // values, work, continuations
 // ===========================================================================
@@ -257,6 +292,7 @@ enum EncodedFamily {
     Match,
     If,
     Unforgeable,
+    CostTokenStack,
 }
 
 pub(crate) struct EncodedOccurrence {
@@ -389,6 +425,7 @@ pub(crate) enum SubKont {
     RegionParK(Box<RegionParSubstitution>),
     RegionComponentK(RegionComponentKont),
     SendK {
+        cost_region: Option<models::rhoapi::CostRegion>,
         persistent: bool,
         locally_free: Vec<u8>,
         connective_used: bool,
@@ -396,11 +433,13 @@ pub(crate) enum SubKont {
         shift: i32,
     },
     BindK {
+        cost_region: Option<models::rhoapi::CostRegion>,
         remainder: Option<Var>,
         free_count: i32,
         n_patterns: usize,
     },
     ReceiveK {
+        cost_region: Option<models::rhoapi::CostRegion>,
         persistent: bool,
         peek: bool,
         bind_count: i32,
@@ -687,7 +726,7 @@ impl Substitute {
                 SubWork::Match(term, ctx) => descend_match(term, ctx, view, &mut work),
                 SubWork::If(term, ctx) => descend_if(term, ctx, view, &mut work),
                 SubWork::Bundle(term, ctx) => descend_bundle(term, ctx, &mut work),
-                SubWork::Bind(term, ctx) => descend_bind(term, ctx, &mut work),
+                SubWork::Bind(term, ctx) => descend_bind(term, ctx, view, &mut work),
                 SubWork::Case(term, ctx) => descend_case(term, ctx, view, &mut work),
                 SubWork::PathMap(state) => {
                     step_pathmap(state, &mut construction, &mut work, &mut vals)?
@@ -841,6 +880,11 @@ fn descend_par(
     append_resident_family::<Match>(&term, EncodedFamily::Match, &mut occurrences);
     append_resident_family::<If>(&term, EncodedFamily::If, &mut occurrences);
     append_resident_family::<GUnforgeable>(&term, EncodedFamily::Unforgeable, &mut occurrences);
+    append_resident_family::<CostTokenStack>(
+        &term,
+        EncodedFamily::CostTokenStack,
+        &mut occurrences,
+    );
     let locally_free = term.locally_free().to_vec();
     let connective_used = term.connective_used();
 
@@ -896,6 +940,11 @@ fn descend_par_region(
     append_region_family(
         index.unforgeables.as_ref(),
         EncodedFamily::Unforgeable,
+        &mut occurrences,
+    )?;
+    append_region_family(
+        index.cost_token_stacks.as_ref(),
+        EncodedFamily::CostTokenStack,
         &mut occurrences,
     )?;
     let locally_free = index
@@ -1322,6 +1371,7 @@ fn descend_region_component(
         EncodedFamily::Match => &MATCH_RHO_MATCH_PROGRAM,
         EncodedFamily::If => &IF_RHO_MATCH_PROGRAM,
         EncodedFamily::Unforgeable => &GUNFORGEABLE_RHO_MATCH_PROGRAM,
+        EncodedFamily::CostTokenStack => &COSTTOKENSTACK_RHO_MATCH_PROGRAM,
     };
     let plan = cut_at_par(region.clone(), program).map_err(region_decode_error)?;
     let shallow = plan.shallow_bytes();
@@ -1334,6 +1384,7 @@ fn descend_region_component(
             }
             if !preserve {
                 shell.locally_free = set_bits_until(shell.locally_free, view.shift(ctx));
+                substitute_cost_region(&mut shell.cost_region, ctx, view);
             }
             let mut cuts = RegionCutCursor::new(&plan);
             let mut children = Vec::with_capacity(shell.data.len() + 1);
@@ -1433,6 +1484,10 @@ fn descend_region_component(
             }
             if !preserve {
                 shell.locally_free = set_bits_until(shell.locally_free, view.shift(ctx));
+                substitute_cost_region(&mut shell.cost_region, ctx, view);
+                for bind in &mut shell.binds {
+                    substitute_cost_region(&mut bind.cost_region, ctx, view);
+                }
             }
             let mut cuts = RegionCutCursor::new(&plan);
             let mut children = Vec::new();
@@ -1779,6 +1834,28 @@ fn descend_region_component(
                 false,
             )?));
         }
+        EncodedFamily::CostTokenStack => {
+            let mut value =
+                protobuf_decoder::decode_cost_token_stack(shallow).map_err(region_decode_error)?;
+            if !plan.cuts().is_empty() {
+                return Err(InterpreterError::DecodeError(
+                    "CostTokenStack unexpectedly retained recursive Par cuts".to_owned(),
+                ));
+            }
+            if !preserve {
+                for layer in &mut value.layers {
+                    substitute_cost_signature(layer, ctx, view);
+                }
+            }
+            let component = construction.cost_token_stack_component(&value, &[])?;
+            vals.push(PlannedSubVal::Par(component_contribution(
+                construction,
+                component,
+                occurrence.multiplicity,
+                Vec::new(),
+                false,
+            )?));
+        }
     }
     Ok(())
 }
@@ -1989,15 +2066,18 @@ fn step_pathmap(
     Ok(())
 }
 
-fn descend_send(term: Send, ctx: SubCtx, view: EnvView<'_>, work: &mut Vec<SubWork>) {
+fn descend_send(mut term: Send, ctx: SubCtx, view: EnvView<'_>, work: &mut Vec<SubWork>) {
+    substitute_cost_region(&mut term.cost_region, ctx, view);
     let Send {
         chan,
         data,
         persistent,
         locally_free,
         connective_used,
+        cost_region,
     } = term;
     work.push(SubWork::Combine(SubKont::SendK {
+        cost_region,
         persistent,
         locally_free,
         connective_used,
@@ -2008,14 +2088,17 @@ fn descend_send(term: Send, ctx: SubCtx, view: EnvView<'_>, work: &mut Vec<SubWo
     work.push(SubWork::Par(chan, ctx));
 }
 
-fn descend_bind(term: ReceiveBind, ctx: SubCtx, work: &mut Vec<SubWork>) {
+fn descend_bind(mut term: ReceiveBind, ctx: SubCtx, view: EnvView<'_>, work: &mut Vec<SubWork>) {
+    substitute_cost_region(&mut term.cost_region, ctx, view);
     let ReceiveBind {
         patterns,
         source,
         remainder,
         free_count,
+        cost_region,
     } = term;
     work.push(SubWork::Combine(SubKont::BindK {
+        cost_region,
         remainder,
         free_count,
         n_patterns: patterns.len(),
@@ -2026,7 +2109,8 @@ fn descend_bind(term: ReceiveBind, ctx: SubCtx, work: &mut Vec<SubWork>) {
     work.push(SubWork::Par(source, ctx));
 }
 
-fn descend_receive(term: Receive, ctx: SubCtx, view: EnvView<'_>, work: &mut Vec<SubWork>) {
+fn descend_receive(mut term: Receive, ctx: SubCtx, view: EnvView<'_>, work: &mut Vec<SubWork>) {
+    substitute_cost_region(&mut term.cost_region, ctx, view);
     let Receive {
         binds,
         body,
@@ -2036,9 +2120,11 @@ fn descend_receive(term: Receive, ctx: SubCtx, view: EnvView<'_>, work: &mut Vec
         locally_free,
         connective_used,
         condition,
+        cost_region,
     } = term;
     let has_condition = condition.is_some();
     work.push(SubWork::Combine(SubKont::ReceiveK {
+        cost_region,
         persistent,
         peek,
         bind_count,
@@ -2575,6 +2661,7 @@ fn combine(
             )?));
         }
         SubKont::SendK {
+            cost_region,
             persistent,
             locally_free,
             connective_used,
@@ -2589,6 +2676,7 @@ fn combine(
                 persistent,
                 locally_free: set_bits_until(locally_free, shift),
                 connective_used,
+                cost_region,
             };
             let children: Vec<_> = std::iter::once(chan).chain(data).collect();
             vals.push(PlannedSubVal::Send(
@@ -2596,6 +2684,7 @@ fn combine(
             ));
         }
         SubKont::BindK {
+            cost_region,
             remainder,
             free_count,
             n_patterns,
@@ -2607,6 +2696,7 @@ fn combine(
                 source: Some(Par::default()),
                 remainder,
                 free_count,
+                cost_region,
             };
             let children = patterns
                 .into_iter()
@@ -2615,6 +2705,7 @@ fn combine(
             vals.push(PlannedSubVal::Bind(PlannedBind { shell, children }));
         }
         SubKont::ReceiveK {
+            cost_region,
             persistent,
             peek,
             bind_count,
@@ -2643,6 +2734,7 @@ fn combine(
                 locally_free: set_bits_until(locally_free, shift),
                 connective_used,
                 condition: has_condition.then(Par::default),
+                cost_region,
             };
             vals.push(PlannedSubVal::Receive(
                 construction.receive_component(&shell, &children)?,

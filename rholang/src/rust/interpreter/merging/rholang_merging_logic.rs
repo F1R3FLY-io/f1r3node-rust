@@ -189,6 +189,7 @@ impl RholangMergingLogic {
         let par_with_rnd = ListParWithRandom {
             pars: vec![num_par],
             random_state: rnd.to_bytes(),
+            cost_region: None,
         };
 
         // Create hash of the data

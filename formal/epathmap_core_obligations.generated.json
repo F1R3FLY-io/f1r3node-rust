@@ -775,7 +775,7 @@
   ],
   "scope": "EPathMap algebra, EPM1 core framing, and generic stack-safe PDA",
   "source_sha256": {
-    "formal/epm1_positional_obligations.generated.json": "ceb66205645724f8fd2850244ac5167b64bae971b3c4930e6be2838d8356c7ff",
+    "formal/epm1_positional_obligations.generated.json": "851a243f4ab70949b39c54e08bb05498430c7678e023e883c061ddc325c697c4",
     "formal/rocq/stack_safe_pda/theories/EPM1.v": "7452544b1e0000a7f41b1808888adfa8f003f29bf2fbb680028f253d0b6bef41",
     "formal/rocq/stack_safe_pda/theories/EPathMap.v": "a0ba6d8381867c02971d94bbb5545f4495b739ed82ab69859da4c109b3b1a6b7",
     "formal/rocq/stack_safe_pda/theories/StackSafePDA.v": "f4f1f04ce2fa4b100e3d7f2657a89658a9bce11fd6023888e694268db7509b58",
@@ -783,7 +783,7 @@
     "formal/tlaplus/stack_safe_pda/PDAEquivalence.cfg": "efa8bbad0b869ea2c14e865120c8cbd4c2060e4b75d0b0549f11645accfb4889",
     "formal/tlaplus/stack_safe_pda/PDAEquivalence.tla": "1b010477e0dde9d836b70183c425a9929d47fb70b5caadc3fa54a7e13e1ae173",
     "formal/verus/epathmap_canonical_worklist.rs": "2bfc8da59684812bc6488f0121d31832d7fddcab6019cc86d3b9182978e9ddfb",
-    "models/Cargo.toml": "dbb49d99a0b64ec5b5d6a6e6507b4b487424ffcbaea7564fb03bb6d6130ce0d8",
+    "models/Cargo.toml": "7b806b6885ded7a05a04f9485364eaa697cd85a1e45e47e2f3a48e4270f9079d",
     "models/tests/epathmap_algebra.rs": "8b9d018d17d15c96be10466ccae11a8ba265512bc2e62091624ad9911113fc67",
     "models/tests/epathmap_epm1_snapshot.rs": "5066167eeb3d240dacc7e873590a28bfa7cc5efe6ae9c943f78be52c0957c561"
   },

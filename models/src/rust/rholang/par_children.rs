@@ -1413,6 +1413,7 @@ mod tests {
                     source: Some(tagged(6)),
                     remainder: None,
                     free_count: 0,
+                    cost_region: None,
                 }],
                 body: Some(tagged(8)),
                 condition: Some(tagged(9)),

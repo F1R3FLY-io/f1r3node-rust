@@ -24,7 +24,7 @@ use models::rust::rholang::sorter::par_sort_matcher::ParSortMatcher;
 use models::rust::rholang::sorter::sortable::Sortable;
 use prost::Message;
 use rholang_parser::ast::{AnnProc, Name, Signature, Var};
-use rholang_parser::{RholangParser, SourceSpan};
+use rholang_parser::RholangParser;
 
 use super::ir::Sig;
 use crate::rust::interpreter::accounting::{Sig as NativeSig, SignatureChannel};
@@ -76,9 +76,13 @@ pub(crate) fn descend_sig<'ast>(
                 // `new`/`for`-binder is RING-FENCED (keyed on the binder's stable
                 // identity); a FREE sig is content-by-spelling (one global channel).
                 Name::NameVar(Var::Id(id)) => match bound_map_chain.get(id.name) {
-                    Some(ctx) => Ok(Step::Done(NormVal::Sig(Sig::Bound(canon_bound(
-                        &ctx.source_span,
-                    ))))),
+                    Some(ctx) => Ok(Step::Done(NormVal::Sig(Sig::Bound(
+                        i32::try_from(ctx.index).map_err(|_| {
+                            InterpreterError::NormalizerError(
+                                "cost-accounting: bound signer index exceeds i32".to_string(),
+                            )
+                        })?,
+                    )))),
                     None => Ok(Step::Done(NormVal::Sig(Sig::Ground(canon_ground(id.name))))),
                 },
                 Name::NameVar(Var::Wildcard) => Err(InterpreterError::NormalizerError(
@@ -210,7 +214,7 @@ pub fn signature_to_native_sig<'ast>(
     env: &HashMap<String, Par>,
     parser: &'ast RholangParser<'ast>,
 ) -> Result<NativeSig, InterpreterError> {
-    Ok(signature_to_ir(sig, bound_map_chain, env, parser)?.to_native())
+    signature_to_ir(sig, bound_map_chain, env, parser)?.to_native()
 }
 
 /// Resolve a surface [`Signature`] to its native supply channel `Σ⟦s⟧` — the
@@ -239,14 +243,6 @@ pub fn signature_to_channel<'ast>(
 /// canonicalise to the same bytes — so they resolve to the same channel — while
 /// two distinct `new`-binders never collide (each `new` has a distinct source
 /// span), which is exactly the ring-fencing guarantee.
-pub fn canon_bound(span: &SourceSpan) -> Vec<u8> {
-    format!(
-        "{}:{}-{}:{}",
-        span.start.line, span.start.col, span.end.line, span.end.col
-    )
-    .into_bytes()
-}
-
 /// Canonical bytes for a ground principal: the wire encoding of the
 /// sort-canonicalized `Par` holding the identifier as a ground string. Depends
 /// only on the spelling, so the same `g` everywhere yields the same channel (and

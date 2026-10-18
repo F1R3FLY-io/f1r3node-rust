@@ -557,6 +557,7 @@ mod tests {
                     source: Some(Par::default()),
                     remainder: None,
                     free_count: 1,
+                    cost_region: None,
                 }],
                 body: Some(Par::default().prepend_match(Match {
                     target: Some(new_boundvar_par(0, create_bit_vector(&vec![0]), false)),
@@ -583,6 +584,7 @@ mod tests {
                 locally_free: Vec::new(),
                 connective_used: false,
                 condition: None,
+                cost_region: None,
             });
 
         assert_eq!(result.clone().unwrap().par, expected_result);
@@ -678,6 +680,7 @@ mod tests {
                 source: Some(Par::default()),
                 remainder: None,
                 free_count: 2,
+                cost_region: None,
             }],
             body: Some(Par::default()),
             persistent: false,
@@ -686,6 +689,7 @@ mod tests {
             locally_free: Vec::new(),
             connective_used: false,
             condition: None,
+            cost_region: None,
         });
 
         assert_eq!(result.clone().unwrap().par, expected_result);

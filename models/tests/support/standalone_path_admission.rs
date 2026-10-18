@@ -887,15 +887,17 @@ fn component_stack_fixture<T: crate::rust::par_bag::ParBagComponent>(
 
 fn component_stack_fixtures() -> Vec<ComponentStackFixture> {
     use crate::rhoapi::connective::ConnectiveInstance;
+    use crate::rhoapi::cost_signature_atom::Form;
     use crate::rhoapi::g_unforgeable::UnfInstance;
     use crate::rhoapi::{
-        Bundle, Connective, ConnectiveBody, GPrivate, GUnforgeable, If, Match, MatchCase, New,
-        Receive, ReceiveBind,
+        Bundle, Connective, ConnectiveBody, CostSignature, CostSignatureAtom, CostTokenStack,
+        GPrivate, GUnforgeable, If, Match, MatchCase, New, Receive, ReceiveBind,
     };
     use crate::rust::rholang::match_schema_tables::{
-        BUNDLE_RHO_MATCH_PROGRAM, CONNECTIVE_RHO_MATCH_PROGRAM, EXPR_RHO_MATCH_PROGRAM,
-        GUNFORGEABLE_RHO_MATCH_PROGRAM, IF_RHO_MATCH_PROGRAM, MATCH_RHO_MATCH_PROGRAM,
-        NEW_RHO_MATCH_PROGRAM, RECEIVE_RHO_MATCH_PROGRAM, SEND_RHO_MATCH_PROGRAM,
+        BUNDLE_RHO_MATCH_PROGRAM, CONNECTIVE_RHO_MATCH_PROGRAM, COSTTOKENSTACK_RHO_MATCH_PROGRAM,
+        EXPR_RHO_MATCH_PROGRAM, GUNFORGEABLE_RHO_MATCH_PROGRAM, IF_RHO_MATCH_PROGRAM,
+        MATCH_RHO_MATCH_PROGRAM, NEW_RHO_MATCH_PROGRAM, RECEIVE_RHO_MATCH_PROGRAM,
+        SEND_RHO_MATCH_PROGRAM,
     };
     let empty = Par::default();
     let fixtures = vec![
@@ -987,6 +989,16 @@ fn component_stack_fixtures() -> Vec<ComponentStackFixture> {
                 ..If::default()
             },
             &IF_RHO_MATCH_PROGRAM,
+        ),
+        component_stack_fixture(
+            &CostTokenStack {
+                layers: vec![CostSignature {
+                    atoms: vec![CostSignatureAtom {
+                        form: Some(Form::Ground(b"cost".to_vec())),
+                    }],
+                }],
+            },
+            &COSTTOKENSTACK_RHO_MATCH_PROGRAM,
         ),
     ];
     let families: Vec<_> = (0..=u8::MAX)

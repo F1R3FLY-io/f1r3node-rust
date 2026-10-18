@@ -178,6 +178,7 @@ pub(crate) fn nested_binders_with_component_metadata(depth: usize, locally_free:
             source: Some(Par::default()),
             remainder: None,
             free_count: 0,
+            cost_region: None,
         }],
         body: Some(Par::default()),
         persistent: false,
@@ -186,6 +187,7 @@ pub(crate) fn nested_binders_with_component_metadata(depth: usize, locally_free:
         locally_free: locally_free.clone(),
         connective_used: false,
         condition: None,
+        cost_region: None,
     };
     let new_shell = New {
         bind_count: 1,
@@ -225,6 +227,7 @@ pub(crate) fn nested_send_chain(depth: usize) -> Par {
             persistent: false,
             locally_free: vec![(level % 251) as u8],
             connective_used: false,
+            cost_region: None,
         };
         let send = arena
             .send_component(&shell, &[planned])

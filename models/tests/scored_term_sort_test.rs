@@ -638,6 +638,7 @@ fn permutation_collapse_survives_nesting() {
                 persistent: false,
                 locally_free: vec![],
                 connective_used: false,
+                cost_region: None,
             }],
             ..Default::default()
         }

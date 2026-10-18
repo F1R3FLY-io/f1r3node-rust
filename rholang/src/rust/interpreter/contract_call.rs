@@ -52,12 +52,14 @@ impl ContractCall {
                 contract_args.1,
                 contract_args.2,
             );
+            let cost_region = contract_args.0[0].cost_region.clone();
 
             let space = self.space.clone();
             let dispatcher = self.dispatcher.clone();
             let produce = Box::new(move |values: &[Par], ch: &Par| {
                 let space = space.clone();
                 let rand = rand.clone();
+                let cost_region = cost_region.clone();
                 // clone inputs locally to satisfy ownership of underlying APIs
                 let values_vec: Vec<Par> = values.to_vec();
                 let ch_cloned: Par = ch.clone();
@@ -68,6 +70,7 @@ impl ContractCall {
                             ListParWithRandom {
                                 pars: values_vec,
                                 random_state: rand,
+                                cost_region,
                             },
                             false,
                         )

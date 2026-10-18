@@ -784,6 +784,8 @@ fn the_protobuf_differential_can_go_red() {
             body: Some(corpus::gint(22)),
             random_state: vec![9, 9, 9],
         })),
+        cost_region: None,
+        clause_regions: Vec::new(),
     };
     let tc_truth = recursive_oracle_encode(&tc);
     assert!(
@@ -801,17 +803,21 @@ fn the_protobuf_differential_can_go_red() {
         .collect();
     assert_eq!(
         generated_tc,
-        vec!["tagged_cont", "guard"],
+        vec!["tagged_cont", "guard", "cost_region", "clause_regions"],
         "the generated `TaggedContinuation` prost program must put the ONEOF first (it holds \
          tags 1-2; `guard` is tag 3), or M2 perturbs the wrong order"
     );
     let guard_only = TaggedContinuation {
         guard: tc.guard.clone(),
         tagged_cont: None,
+        cost_region: None,
+        clause_regions: Vec::new(),
     };
     let cont_only = TaggedContinuation {
         guard: None,
         tagged_cont: tc.tagged_cont.clone(),
+        cost_region: None,
+        clause_regions: Vec::new(),
     };
     let m2 = {
         let mut v = recursive_oracle_encode(&guard_only);
@@ -937,8 +943,8 @@ fn the_generated_protobuf_table_is_not_degenerate() {
     );
     assert_eq!(
         TAGGEDCONTINUATION_PROTOBUF_PROGRAM.len(),
-        2,
-        "`TaggedContinuation` is `guard` plus one oneof"
+        4,
+        "`TaggedContinuation` includes the oneof, guard, and both authority fields"
     );
 }
 
@@ -965,11 +971,13 @@ proptest! {
     /// Both properties through every cold-store root.
     #[test]
     fn all_roots_encode_identically(par in generate_par(2)) {
-        let datum = ListParWithRandom { pars: vec![par.clone()], random_state: vec![1u8, 2, 3] };
+        let datum = ListParWithRandom { pars: vec![par.clone()], random_state: vec![1u8, 2, 3],  cost_region: None, };
         let pattern = BindPattern { patterns: vec![par.clone()], remainder: None, free_count: 3 };
         let cont = TaggedContinuation {
             guard: Some(par.clone()),
             tagged_cont: Some(TaggedCont::ScalaBodyRef(7)),
+            cost_region: None,
+            clause_regions: Vec::new(),
         };
         prop_assert_eq!(protobuf_encoder::encode_to_vec(&par), recursive_oracle_encode(&par));
         prop_assert_eq!(protobuf_encoder::encode_to_vec(&datum), recursive_oracle_encode(&datum));

@@ -483,6 +483,7 @@ fn the_depth_meter_agrees_with_nested_list_units() {
             persistent: false,
             locally_free: vec![],
             connective_used: false,
+            cost_region: None,
         }],
         ..Default::default()
     };

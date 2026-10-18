@@ -129,6 +129,7 @@ fn odd_shapes_par() -> Par {
         // shape 2 — blanked on serialize
         locally_free: vec![0x11, 0x12, 0x13],
         connective_used: true,
+        cost_region: None,
     }]);
     par.replace_receives(vec![Receive {
         binds: vec![ReceiveBind {
@@ -138,6 +139,7 @@ fn odd_shapes_par() -> Par {
                 var_instance: Some(VarInstance::Wildcard(models::rhoapi::var::WildcardMsg {})),
             }),
             free_count: -7,
+            cost_region: None,
         }],
         body: Some(gint(6)),
         persistent: true,
@@ -147,6 +149,7 @@ fn odd_shapes_par() -> Par {
         locally_free: vec![0x21],
         connective_used: true,
         condition: Some(gint(7)),
+        cost_region: None,
     }]);
     par.replace_news(vec![New {
         bind_count: 2,
@@ -331,6 +334,7 @@ fn fixture_datum() -> Datum<ListParWithRandom> {
         a: ListParWithRandom {
             pars: vec![odd_shapes_par(), tagged(0x77)],
             random_state: vec![0xF1, 0xF2, 0xF3, 0xF4],
+            cost_region: None,
         }
         .into(),
         persist: false,
@@ -347,6 +351,7 @@ fn fixture_datum_persist() -> Datum<ListParWithRandom> {
         a: ListParWithRandom {
             pars: vec![],
             random_state: vec![],
+            cost_region: None,
         }
         .into(),
         persist: true,
@@ -382,6 +387,8 @@ fn fixture_continuation_par_body() -> WaitingContinuation<BindPattern, TaggedCon
                 body: Some(gint(42)),
                 random_state: vec![0x01, 0x02],
             })),
+            cost_region: None,
+            clause_regions: Vec::new(),
         }
         .into(),
         persist: true,
@@ -407,6 +414,8 @@ fn fixture_continuation_scala_ref() -> WaitingContinuation<BindPattern, TaggedCo
         continuation: TaggedContinuation {
             guard: None,
             tagged_cont: Some(TaggedCont::ScalaBodyRef(-99)),
+            cost_region: None,
+            clause_regions: Vec::new(),
         }
         .into(),
         persist: false,

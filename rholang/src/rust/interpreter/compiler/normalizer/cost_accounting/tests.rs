@@ -1,61 +1,52 @@
-//! GATE-1 tests for native cost-accounted surface recognition (W1 Phase 1).
-//!
-//! Four properties:
-//!  1. **Double-metering avoidance** — a signed term `{% P %}[s]` normalizes to a
-//!     `Par` *structurally identical* to its unsigned inner `P` (recognition emits
-//!     no `for(t <- Σ⟦s⟧)` gate node; uniform-signing of a `for` continuation
-//!     re-dissolves through recognition). Full `Par` equality is strictly stronger
-//!     than a send/receive node-count comparison.
-//!  2. **Recognition coverage** — every surface form (ground / `#P` / compound /
-//!     lollipop signed terms + bare token stack) normalizes successfully.
-//!  3. **Content-addressed + ring-fenced bridge** — `canon_*` is deterministic and
-//!     key-separated, and the `ir::Sig → accounting::Sig` bridge maps atoms by
-//!     content, folds `Bound` under `DOMAIN_BOUND` (the ring-fence, disjoint from a
-//!     free ground atom by leading byte), and lowers a compound to the `And`-fold.
-//!  4. **Pattern rejection** — cost syntax is rejected in match-case, receive-bind,
-//!     and contract-formal pattern positions.
+use models::rhoapi::{CostTokenStack, New, Par, Receive};
 
-use models::rhoapi::{New, Par, Receive};
-
-use super::ir::{Sig, DOMAIN_BOUND};
-use super::sig::{canon_bound, canon_ground};
+use super::ir::Sig;
+use super::sig::canon_ground;
 use crate::rust::interpreter::accounting::Sig as NativeSig;
 use crate::rust::interpreter::compiler::compiler::Compiler;
 
-// --- (1) double-metering: signed term ≡ unsigned inner --------------------
-
 #[test]
-fn signed_send_normalizes_identically_to_unsigned_send() {
+fn signed_send_preserves_authority_without_extra_comm() {
     let signed = Compiler::source_to_adt(r#"{% @"r"!(42) %}[ s ]"#).expect("signed send compiles");
     let plain = Compiler::source_to_adt(r#"@"r"!(42)"#).expect("plain send compiles");
-    assert_eq!(
-        signed, plain,
-        "recognition must emit NO gate node — `{{% P %}}[s]` normalizes to exactly `P`"
-    );
+    assert_ne!(signed, plain, "the signed region must survive compilation");
+    assert_eq!(signed.decode_occurrences::<models::rhoapi::Send>().len(), 1);
 }
 
 #[test]
-fn signed_for_normalizes_identically_to_unsigned_for() {
+fn signed_for_preserves_authority_without_extra_comm() {
     let signed = Compiler::source_to_adt(r#"{% for(x <- @"ch"){ Nil } %}[ s ]"#)
         .expect("signed for compiles");
     let plain = Compiler::source_to_adt(r#"for(x <- @"ch"){ Nil }"#).expect("plain for compiles");
-    assert_eq!(
+    assert_ne!(
         signed, plain,
-        "uniform-signing of the continuation re-dissolves; no gate node is added"
+        "the receive authority must survive compilation"
     );
+    assert_eq!(signed.decode_occurrences::<Receive>().len(), 1);
 }
 
 #[test]
-fn lollipop_for_normalizes_identically_to_unsigned_for() {
-    // `{ for(R){P} }_{a ⊸ b}` desugars to `{ for(R){ {P}_b } }_a`; both `a` and the
-    // re-signed continuation are recognition-only, so the Par is still just the
-    // bare `for`.
-    let signed = Compiler::source_to_adt(r#"{% for(x <- @"ch"){ Nil } %}[ a -o b ]"#)
+fn lollipop_for_preserves_handoff_without_extra_comm() {
+    let signed = Compiler::source_to_adt(r#"{% for(x <- @"ch"){ @"out"!(42) } %}[ a -o b ]"#)
         .expect("lollipop for compiles");
-    let plain = Compiler::source_to_adt(r#"for(x <- @"ch"){ Nil }"#).expect("plain for compiles");
-    assert_eq!(
-        signed, plain,
-        "a lollipop transfer adds no gate node either"
+    let uniform_a = Compiler::source_to_adt(r#"{% for(x <- @"ch"){ @"out"!(42) } %}[ a ]"#)
+        .expect("uniform a compiles");
+    let uniform_b = Compiler::source_to_adt(r#"{% for(x <- @"ch"){ @"out"!(42) } %}[ b ]"#)
+        .expect("uniform b compiles");
+    assert_ne!(signed, uniform_a, "the continuation must be re-signed by b");
+    assert_ne!(signed, uniform_b, "the rendezvous must remain funded by a");
+    assert_eq!(signed.decode_occurrences::<Receive>().len(), 1);
+}
+
+#[test]
+fn nested_region_overrides_outer_signer() {
+    let inner_b =
+        Compiler::source_to_adt(r#"{% {% @"r"!(42) %}[ b ] %}[ a ]"#).expect("nested b compiles");
+    let inner_c =
+        Compiler::source_to_adt(r#"{% {% @"r"!(42) %}[ c ] %}[ a ]"#).expect("nested c compiles");
+    assert_ne!(
+        inner_b, inner_c,
+        "the inner region's signer must be retained"
     );
 }
 
@@ -68,16 +59,33 @@ fn recognizes_hash_and_compound_signed_terms() {
 }
 
 #[test]
-fn bare_token_stack_mints_nothing() {
-    // A bare token stack `a :: ()` resolves each layer (validation) and lowers to
-    // the EMPTY process — it mints nothing in the normalizer (DR-13: only the Rust
-    // supply producer writes `Σ⟦s⟧`).
+fn bare_token_stack_preserves_directive_without_minting() {
     let stack = Compiler::source_to_adt(r#"a :: ()"#).expect("token stack compiles");
-    assert_eq!(
+    assert_ne!(
         stack,
         Par::default(),
-        "a bare token stack emits no send/receive node and mints nothing"
+        "the ordered stack must survive compilation"
     );
+    assert!(stack
+        .decode_occurrences::<models::rhoapi::Send>()
+        .is_empty());
+    assert!(stack.decode_occurrences::<Receive>().is_empty());
+    assert_eq!(stack.decode_occurrences::<CostTokenStack>().len(), 1);
+    assert_eq!(
+        stack.decode_occurrences::<CostTokenStack>()[0].layers,
+        vec![Sig::Ground(canon_ground("a")).to_cost_signature()],
+    );
+}
+
+#[test]
+fn token_stack_layers_keep_source_order() {
+    let ab = Compiler::source_to_adt(r#"a :: b :: ()"#).expect("ordered stack compiles");
+    let ba = Compiler::source_to_adt(r#"b :: a :: ()"#).expect("reversed stack compiles");
+    assert_ne!(ab, ba);
+    assert_eq!(ab.decode_occurrences::<CostTokenStack>()[0].layers, vec![
+        Sig::Ground(canon_ground("a")).to_cost_signature(),
+        Sig::Ground(canon_ground("b")).to_cost_signature(),
+    ],);
 }
 
 // --- (3) content-addressed + ring-fenced bridge ---------------------------
@@ -97,70 +105,29 @@ fn canon_ground_is_deterministic_and_spelling_keyed() {
 }
 
 #[test]
-fn canon_bound_is_span_keyed() {
-    use rholang_parser::{SourcePos, SourceSpan};
-    let span_a = SourceSpan {
-        start: SourcePos { line: 1, col: 0 },
-        end: SourcePos { line: 1, col: 1 },
-    };
-    let span_b = SourceSpan {
-        start: SourcePos { line: 2, col: 0 },
-        end: SourcePos { line: 2, col: 1 },
-    };
-    assert_eq!(
-        canon_bound(&span_a),
-        canon_bound(&span_a),
-        "deterministic per span"
-    );
-    assert_ne!(
-        canon_bound(&span_a),
-        canon_bound(&span_b),
-        "distinct binders (spans) ⇒ distinct ring-fenced keys"
-    );
-}
-
-#[test]
 fn to_native_maps_atoms_by_content() {
     assert_eq!(
-        Sig::Ground(b"g".to_vec()).to_native(),
+        Sig::Ground(b"g".to_vec()).to_native().unwrap(),
         NativeSig::Ground(b"g".to_vec())
     );
     assert_eq!(
-        Sig::Quote(b"p".to_vec()).to_native(),
+        Sig::Quote(b"p".to_vec()).to_native().unwrap(),
         NativeSig::Quote(b"p".to_vec())
     );
 }
 
 #[test]
-fn to_native_folds_bound_under_domain_bound() {
-    let content = b"1:0-1:1".to_vec();
-    let mut expected = DOMAIN_BOUND.to_vec();
-    expected.extend_from_slice(&content);
-    assert_eq!(
-        Sig::Bound(content).to_native(),
-        NativeSig::Ground(expected),
-        "a ring-fenced bound sig folds into a DOMAIN_BOUND-prefixed native ground atom"
-    );
+fn bound_signer_requires_runtime_substitution() {
+    assert!(Sig::Bound(0).to_native().is_err());
+    assert_eq!(Sig::Bound(0).to_cost_signature().atoms.len(), 1);
 }
 
 #[test]
-fn bound_never_aliases_a_free_ground_of_the_same_name() {
-    // The ring-fence (MINOR-6): a `new`-bound sig's native atom and a free ground
-    // atom of the same identifier are disjoint by LEADING BYTE — `DOMAIN_BOUND`
-    // begins `0x66` ('f'), a `canon_ground` encoding begins `0x2a` (the `Par.exprs`
-    // field-5 protobuf tag).
-    assert_eq!(
-        DOMAIN_BOUND[0], b'f',
-        "DOMAIN_BOUND leading byte is 'f' (0x66)"
+fn bound_signer_wire_is_distinct_from_free_ground() {
+    assert_ne!(
+        Sig::Bound(0).to_cost_signature(),
+        Sig::Ground(canon_ground("s")).to_cost_signature()
     );
-    assert_eq!(
-        canon_ground("s")[0],
-        0x2a,
-        "canon_ground leading byte is the Par.exprs protobuf tag (0x2a)"
-    );
-    let free = Sig::Ground(canon_ground("s")).to_native();
-    let bound = Sig::Bound(b"any-span".to_vec()).to_native();
-    assert_ne!(free, bound, "a bound sig can never alias a free ground sig");
 }
 
 #[test]
@@ -168,7 +135,7 @@ fn to_native_compound_is_the_and_fold_of_its_atoms() {
     let a = Sig::Ground(b"a".to_vec());
     let b = Sig::Ground(b"b".to_vec());
     let compound = Sig::compound(vec![a, b]);
-    let native = compound.to_native();
+    let native = compound.to_native().unwrap();
     match &native {
         NativeSig::And(left, right) => {
             let atoms = [left.as_ref(), right.as_ref()];
@@ -225,7 +192,7 @@ fn rejects_signed_term_in_contract_formal_pattern() {
 use std::collections::HashMap;
 
 use rholang_parser::ast::{Id, Name, Signature, Var};
-use rholang_parser::{RholangParser, SourcePos, SourceSpan};
+use rholang_parser::{RholangParser, SourcePos};
 
 use super::sig::{signature_to_channel, signature_to_native_sig};
 use crate::rust::interpreter::accounting::SignatureChannel;
@@ -270,40 +237,28 @@ fn resolve_top_signed_sig(source: &str) -> crate::rust::interpreter::accounting:
 }
 
 #[test]
-fn ring_fence_free_vs_bound_and_two_bound() {
-    // The §9 rendezvous + ring-fencing trio, through the binding-sensitive
-    // resolver: a FREE `g` is content-by-spelling (one global channel); a
-    // `new`-bound `g` is ring-fenced to its binder span; two distinct binders
-    // never collide.
+fn free_ground_channel_is_spelling_keyed_and_bound_requires_runtime() {
     let empty = BoundMapChain::<VarSort>::new();
     let bound1 =
         BoundMapChain::<VarSort>::new().put_pos(("g".to_string(), VarSort::NameSort, SourcePos {
             line: 1,
             col: 1,
         }));
-    let bound2 =
-        BoundMapChain::<VarSort>::new().put_pos(("g".to_string(), VarSort::NameSort, SourcePos {
-            line: 9,
-            col: 9,
-        }));
 
     let free_a = ground_channel("g", &empty);
     let free_b = ground_channel("g", &empty);
-    let bound_a = ground_channel("g", &bound1);
-    let bound_b = ground_channel("g", &bound2);
 
     assert_eq!(
         free_a, free_b,
         "two FREE `g` ⇒ the SAME channel (§9 rendezvous)"
     );
-    assert_ne!(
-        free_a, bound_a,
-        "a `new`-bound `g` is ring-fenced ⇒ distinct from free `g`"
-    );
-    assert_ne!(
-        bound_a, bound_b,
-        "two distinct `new`-binders ⇒ distinct ring-fenced channels"
-    );
+    let parser = RholangParser::new();
+    let env = HashMap::new();
+    let g = Signature::Ground(Name::NameVar(Var::Id(Id {
+        name: "g",
+        pos: SourcePos { line: 0, col: 0 },
+    })));
+    assert!(signature_to_native_sig(&g, &bound1, &env, &parser).is_err());
 }
 
 #[test]
@@ -336,11 +291,6 @@ fn user_surface_sig_never_aliases_an_envelope_pool() {
 
     let users = [
         NativeSig::Ground(canon_ground("attacker_pool")),
-        Sig::Bound(canon_bound(&SourceSpan {
-            start: SourcePos { line: 3, col: 0 },
-            end: SourcePos { line: 3, col: 4 },
-        }))
-        .to_native(),
         resolve_top_signed_sig(r#"{% Nil %}[ # { @0!(1) } ]"#),
         resolve_top_signed_sig(r#"{% Nil %}[ a (*) b ]"#),
     ];
@@ -367,22 +317,14 @@ fn user_surface_sig_never_aliases_an_envelope_pool() {
 
 // --- (6) Phase 4: signed joins (per-clause signed binds) -------------------
 
-/// A `for` join carrying a per-clause signed bind `{% y <- x %}[s]` normalizes
-/// IDENTICALLY to the unsigned join: the signed bind is demoted to its linear
-/// bind and NO fuel bind is injected into the data join (Greg's rule — fuel is
-/// never folded into a data join; the double-metering avoidance extended to
-/// joins). The data join keeps its natural arity.
 #[test]
-fn signed_join_normalizes_identically_to_unsigned_join() {
+fn signed_join_preserves_clause_authority_at_natural_arity() {
     let signed =
         Compiler::source_to_adt(r#"new x, w in { for( {% y <- x %}[ s ] & @z <- w ){ Nil } }"#)
             .expect("signed-clause join compiles");
     let plain = Compiler::source_to_adt(r#"new x, w in { for( y <- x & @z <- w ){ Nil } }"#)
         .expect("plain join compiles");
-    assert_eq!(
-        signed, plain,
-        "a signed-clause join normalizes to exactly the unsigned join (no fuel bind injected)"
-    );
+    assert_ne!(signed, plain, "the signed clause must survive compilation");
 
     // The data join keeps its NATURAL arity — exactly the two data clauses, with
     // no fuel bind folded in.

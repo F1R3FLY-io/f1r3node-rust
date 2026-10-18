@@ -2,7 +2,6 @@ use std::marker::PhantomData;
 use std::sync::{Arc, Mutex};
 
 use rayon::prelude::*;
-use serde::Serialize;
 use shared::rust::store::key_value_store::KeyValueStore;
 use tracing::{Level, debug};
 
@@ -92,9 +91,9 @@ fn cold_leaf_history_error(error: ColdLeafStoreError) -> HistoryError {
 impl<C, P, A, K> HistoryRepositoryImpl<C, P, A, K>
 where
     C: Clone + Send + Sync + StableHashSerialize,
-    P: Clone + Send + Sync + Serialize,
-    A: Clone + Send + Sync + Serialize,
-    K: Clone + Send + Sync + Serialize,
+    P: Clone + Send + Sync + StableHashSerialize,
+    A: Clone + Send + Sync + StableHashSerialize,
+    K: Clone + Send + Sync + StableHashSerialize,
 {
     pub(crate) fn new(
         history: Box<dyn History>,
@@ -518,9 +517,9 @@ where
 impl<C, P, A, K> HistoryRepository<C, P, A, K> for HistoryRepositoryImpl<C, P, A, K>
 where
     C: Clone + Send + Sync + StableHashSerialize + ColdStoreDecode + 'static,
-    P: Clone + Send + Sync + Serialize + ColdStoreDecode + 'static,
-    A: Clone + Send + Sync + Serialize + ColdStoreDecode + 'static,
-    K: Clone + Send + Sync + Serialize + ColdStoreDecode + 'static,
+    P: Clone + Send + Sync + StableHashSerialize + ColdStoreDecode + 'static,
+    A: Clone + Send + Sync + StableHashSerialize + ColdStoreDecode + 'static,
+    K: Clone + Send + Sync + StableHashSerialize + ColdStoreDecode + 'static,
 {
     fn checkpoint(
         &self,
@@ -698,6 +697,8 @@ pub fn prepend_bytes(element: u8, _bytes: &[u8]) -> Vec<u8> {
 
 #[cfg(test)]
 mod tests {
+    use serde::Serialize;
+
     use super::*;
 
     fn legacy_leaf_hash(leaf: &impl Serialize) -> Blake2b256Hash {

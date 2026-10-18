@@ -87,8 +87,49 @@ where T: ColdStoreEncode + Serialize {
     }
 }
 
+#[derive(Serialize)]
+struct LegacyDatum<'a> {
+    pars: &'a Vec<Par>,
+    random_state: &'a Vec<u8>,
+}
+
+#[derive(Serialize)]
+struct LegacyContinuation<'a> {
+    guard: &'a Option<Par>,
+    tagged_cont: &'a Option<TaggedCont>,
+}
+
+fn legacy_datum_bytes(value: &ListParWithRandom) -> Vec<u8> {
+    bincode::serialize(&LegacyDatum {
+        pars: &value.pars,
+        random_state: &value.random_state,
+    })
+    .expect("legacy datum")
+}
+
+fn legacy_continuation_bytes(value: &TaggedContinuation) -> Vec<u8> {
+    bincode::serialize(&LegacyContinuation {
+        guard: &value.guard,
+        tagged_cont: &value.tagged_cont,
+    })
+    .expect("legacy continuation")
+}
+
+fn assert_cold_matches_legacy_datum(label: &str, value: &ListParWithRandom) {
+    identity_verdict(label, &value.cold_encode(), &legacy_datum_bytes(value)).unwrap();
+}
+
+fn assert_cold_matches_legacy_continuation(label: &str, value: &TaggedContinuation) {
+    identity_verdict(
+        label,
+        &value.cold_encode(),
+        &legacy_continuation_bytes(value),
+    )
+    .unwrap();
+}
+
 fn assert_production_matches_legacy_datum(label: &str, value: &ListParWithRandom) {
-    let oracle = bincode::serialize(value).expect("oracle");
+    let oracle = legacy_datum_bytes(value);
     let leg = event_hash_bytes_list_par_with_random(value);
     if let Err(why) = identity_verdict(&format!("leg/datum::{label}"), &leg, &oracle) {
         panic!("{why}");
@@ -104,7 +145,7 @@ fn assert_production_matches_legacy_pattern(label: &str, value: &BindPattern) {
 }
 
 fn assert_production_matches_legacy_continuation(label: &str, value: &TaggedContinuation) {
-    let oracle = bincode::serialize(value).expect("oracle");
+    let oracle = legacy_continuation_bytes(value);
     let leg = event_hash_bytes_tagged_continuation(value);
     if let Err(why) = identity_verdict(&format!("leg/continuation::{label}"), &leg, &oracle) {
         panic!("{why}");
@@ -147,6 +188,7 @@ fn datum_of(pars: Vec<Par>) -> ListParWithRandom {
     ListParWithRandom {
         pars,
         random_state: vec![0xAA; 32],
+        cost_region: None,
     }
 }
 
@@ -167,6 +209,8 @@ fn continuation_of(body: Par) -> TaggedContinuation {
             body: Some(body),
             random_state: vec![0x5A; 16],
         })),
+        cost_region: None,
+        clause_regions: Vec::new(),
     }
 }
 
@@ -209,7 +253,7 @@ fn epathmap_pars() -> Vec<(&'static str, Par)> {
 fn generated_encoder_matches_legacy_over_the_shared_corpora() {
     let mut root_cases = 0usize;
     for (label, v) in corpus::list_par_with_random_corpus() {
-        assert_generated_matches_legacy(&format!("ListParWithRandom::{label}"), &v);
+        assert_cold_matches_legacy_datum(&format!("ListParWithRandom::{label}"), &v);
         root_cases += 1;
     }
     for (label, v) in corpus::bind_pattern_corpus() {
@@ -217,7 +261,7 @@ fn generated_encoder_matches_legacy_over_the_shared_corpora() {
         root_cases += 1;
     }
     for (label, v) in corpus::tagged_continuation_corpus() {
-        assert_generated_matches_legacy(&format!("TaggedContinuation::{label}"), &v);
+        assert_cold_matches_legacy_continuation(&format!("TaggedContinuation::{label}"), &v);
         root_cases += 1;
     }
 
@@ -225,7 +269,7 @@ fn generated_encoder_matches_legacy_over_the_shared_corpora() {
     let mut lifted = 0usize;
     for (label, par) in corpus::par_corpus() {
         let d = datum_of(vec![par.clone()]);
-        assert_generated_matches_legacy(&format!("lift/datum::{label}"), &d);
+        assert_cold_matches_legacy_datum(&format!("lift/datum::{label}"), &d);
         assert_production_matches_legacy_datum(&label, &d);
 
         let bp = pattern_of(vec![par.clone()]);
@@ -233,7 +277,7 @@ fn generated_encoder_matches_legacy_over_the_shared_corpora() {
         assert_production_matches_legacy_pattern(&label, &bp);
 
         let k = continuation_of(par);
-        assert_generated_matches_legacy(&format!("lift/continuation::{label}"), &k);
+        assert_cold_matches_legacy_continuation(&format!("lift/continuation::{label}"), &k);
         assert_production_matches_legacy_continuation(&label, &k);
         lifted += 3;
     }
@@ -289,7 +333,7 @@ fn generated_encoder_matches_legacy_for_epathmap_shapes() {
             ("in-elist", elist(vec![par.clone()])),
         ] {
             let d = datum_of(vec![p.clone()]);
-            assert_generated_matches_legacy(&format!("datum/{label}/{position}"), &d);
+            assert_cold_matches_legacy_datum(&format!("datum/{label}/{position}"), &d);
             assert_production_matches_legacy_datum(&format!("{label}/{position}"), &d);
 
             let bp = pattern_of(vec![p.clone()]);
@@ -297,7 +341,10 @@ fn generated_encoder_matches_legacy_for_epathmap_shapes() {
             assert_production_matches_legacy_pattern(&format!("{label}/{position}"), &bp);
 
             let k = continuation_of(p);
-            assert_generated_matches_legacy(&format!("continuation/{label}/{position}"), &k);
+            assert_cold_matches_legacy_continuation(
+                &format!("continuation/{label}/{position}"),
+                &k,
+            );
             assert_production_matches_legacy_continuation(&format!("{label}/{position}"), &k);
         }
     }
@@ -309,13 +356,16 @@ fn generated_encoder_matches_legacy_at_bounded_reference_depths() {
         let par = nested_list(depth);
 
         let datum = datum_of(vec![par.clone()]);
-        assert_generated_matches_legacy(&format!("depth/datum/{depth}"), &datum);
+        assert_cold_matches_legacy_datum(&format!("depth/datum/{depth}"), &datum);
 
         let pattern = pattern_of(vec![par.clone()]);
         assert_generated_matches_legacy(&format!("depth/pattern/{depth}"), &pattern);
 
         let continuation = continuation_of(par);
-        assert_generated_matches_legacy(&format!("depth/continuation/{depth}"), &continuation);
+        assert_cold_matches_legacy_continuation(
+            &format!("depth/continuation/{depth}"),
+            &continuation,
+        );
 
         let bytes = datum.cold_encode();
         assert!(
@@ -340,9 +390,9 @@ proptest! {
         random_state in proptest::collection::vec(any::<u8>(), 0..16),
         free_count in 0i32..8,
     ) {
-        let d = ListParWithRandom { pars: vec![par.clone()], random_state: random_state.clone() };
+        let d = ListParWithRandom { pars: vec![par.clone()], random_state: random_state.clone(),  cost_region: None, };
         prop_assert!(identity_verdict("prop/datum", &d.cold_encode(),
-            &bincode::serialize(&d).expect("oracle")).is_ok());
+            &legacy_datum_bytes(&d)).is_ok());
 
         let bp = BindPattern { patterns: vec![par.clone()], remainder: None, free_count };
         prop_assert!(identity_verdict("prop/pattern", &bp.cold_encode(),
@@ -353,9 +403,11 @@ proptest! {
             tagged_cont: Some(TaggedCont::ParBody(ParWithRandom {
                 body: Some(par), random_state,
             })),
+            cost_region: None,
+            clause_regions: Vec::new(),
         };
         prop_assert!(identity_verdict("prop/continuation", &k.cold_encode(),
-            &bincode::serialize(&k).expect("oracle")).is_ok());
+            &legacy_continuation_bytes(&k)).is_ok());
     }
 }
 
@@ -375,7 +427,7 @@ proptest! {
 #[test]
 fn the_identity_differential_can_go_red() {
     let d = datum_of(vec![nested_list(3)]);
-    let oracle = bincode::serialize(&d).expect("oracle");
+    let oracle = legacy_datum_bytes(&d);
     assert!(
         oracle.len() > 8,
         "the RED demonstration needs a non-trivial oracle; got {} B",

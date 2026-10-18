@@ -76,7 +76,7 @@ use super::normalizer::cost_accounting::ir::Sig;
 use super::normalizer::cost_accounting::pattern_guard::{
     reject_cost_syntax_in_name_pattern, reject_cost_syntax_in_pattern,
 };
-use super::normalizer::cost_accounting::sig::{canon_bound, canon_ground};
+use super::normalizer::cost_accounting::sig::canon_ground;
 use super::normalizer::processes::p_ground_normalizer::normalize_p_ground;
 use super::normalizer::processes::p_simple_type_normalizer::normalize_simple_type;
 use super::normalizer::processes::utils::fail_on_invalid_connective;
@@ -1317,6 +1317,7 @@ fn normalize_p_send_recursive<'ast>(
             name_match_result.par.clone(),
         )
             || acc.3,
+        cost_region: None,
     };
 
     let updated_par = input.par.clone().prepend_send(send);
@@ -1920,6 +1921,7 @@ fn normalize_p_contr_recursive<'ast>(
             source: Some(name_match_result.par.clone()),
             remainder: remainder_result.0.clone(),
             free_count: bound_count as i32,
+            cost_region: None,
         }],
         body: Some(body_result.par),
         persistent: true,
@@ -1942,6 +1944,7 @@ fn normalize_p_contr_recursive<'ast>(
         )
             || body_connective_used,
         condition: None,
+        cost_region: None,
     };
     //TODO: I should create new Expr for prepend_expr and provide it instead of receive.clone().into
     let updated_par = input.clone().par.prepend_receive(receive);
@@ -2967,6 +2970,7 @@ fn normalize_p_input_recursive<'ast>(
                     || body_connective_used
                     || guard_connective_used,
                 condition: guard_par,
+                cost_region: None,
             }),
             free_map: proc_visit_outputs.free_map,
         })
@@ -3004,27 +3008,19 @@ fn recognize_signed_term_recursive<'ast>(
     normalize_ann_proc_recursive(&core_inner, input, env, parser)
 }
 
-/// `s :: S` bare token stack at PROC level: resolve each layer's signature
-/// (recognition / validation) and lower to the empty process. It mints NOTHING in
-/// the normalizer — DR-13: only the Rust supply producer writes `Σ⟦s⟧`, and
-/// emitting `Σ⟦s⟧!(…)` sends would add COMM nodes and break the `Δ_s == consumed`
-/// equality. A signed deploy's fuel is its own funded `Σ⟦c⟧` balance (Workstream
-/// C/D), not a per-program send (design §3.3 + BLOCKER-1). In the multi-deploy
-/// re-scoping (Phase 5) a `s :: ()` stack is the deploy BEING signed by `s`; it
-/// carries no in-program mint.
 fn recognize_token_stack_recursive<'ast>(
     stack: &'ast TokenStack<'ast>,
-    input: ProcVisitInputs,
+    mut input: ProcVisitInputs,
     env: &HashMap<String, Par>,
     parser: &'ast RholangParser<'ast>,
 ) -> Result<ProcVisitOutputs, InterpreterError> {
-    for layer in stack.layers.iter() {
-        // Resolve each layer (rejects malformed sigs); the resolved value drives
-        // Phase-3 attribution, here it is validation only.
-        signature_to_native_sig_recursive(layer, &input.bound_map_chain, env, parser)?;
-    }
+    let layers = stack.layers.iter()
+        .map(|layer| signature_to_ir_recursive(layer, &input.bound_map_chain, env, parser).map(|sig| sig.to_cost_signature()))
+        .collect::<Result<Vec<_>, _>>()?;
+    input.par.insert_component(&models::rhoapi::CostTokenStack { layers }, Vec::new(), false)
+        .map_err(|error| InterpreterError::NormalizerError(error.to_string()))?;
     Ok(ProcVisitOutputs {
-        par: input.par.clone(),
+        par: input.par,
         free_map: input.free_map.clone(),
     })
 }
@@ -3083,7 +3079,11 @@ fn signature_to_ir_recursive<'ast>(
             // `new`/`for`-binder is RING-FENCED (keyed on the binder's stable
             // identity); a FREE sig is content-by-spelling (one global channel).
             Name::NameVar(Var::Id(id)) => match bound_map_chain.get(id.name) {
-                Some(ctx) => Ok(Sig::Bound(canon_bound(&ctx.source_span))),
+                Some(ctx) => Ok(Sig::Bound(i32::try_from(ctx.index).map_err(|_| {
+                    InterpreterError::NormalizerError(
+                        "cost-accounting: bound signer index exceeds i32".to_string(),
+                    )
+                })?)),
                 None => Ok(Sig::Ground(canon_ground(id.name))),
             },
             Name::NameVar(Var::Wildcard) => Err(InterpreterError::NormalizerError(
@@ -3122,7 +3122,7 @@ fn signature_to_native_sig_recursive<'ast>(
     env: &HashMap<String, Par>,
     parser: &'ast RholangParser<'ast>,
 ) -> Result<NativeSig, InterpreterError> {
-    Ok(signature_to_ir_recursive(sig, bound_map_chain, env, parser)?.to_native())
+    signature_to_ir_recursive(sig, bound_map_chain, env, parser)?.to_native()
 }
 
 // ==========================================================================

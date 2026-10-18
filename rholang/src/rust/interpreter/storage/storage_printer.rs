@@ -126,6 +126,7 @@ fn to_sends(data: &Vec<Datum<ListParWithRandom>>, channels: &Vec<Par>) -> Par {
                 persistent: datum.persist,
                 locally_free: Vec::new(),
                 connective_used: false,
+                cost_region: None,
             });
         }
     }
@@ -181,6 +182,7 @@ fn to_receives(
                     source: Some(channel.clone()),
                     remainder: pattern.remainder.clone(),
                     free_count: pattern.free_count,
+                    cost_region: None,
                 });
             }
         }
@@ -198,6 +200,7 @@ fn to_receives(
                     locally_free: Vec::new(),
                     connective_used: false,
                     condition: guard,
+                    cost_region: None,
                 });
             }
             _ => {
@@ -210,6 +213,7 @@ fn to_receives(
                     locally_free: Vec::new(),
                     connective_used: false,
                     condition: guard,
+                    cost_region: None,
                 });
             }
         }

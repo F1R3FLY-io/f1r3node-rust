@@ -50,10 +50,12 @@ fn datum() -> ListParWithRandom {
                 persistent: false,
                 locally_free: vec![],
                 connective_used: false,
+                cost_region: None,
             }],
             ..Default::default()
         }],
         random_state: vec![0xa5; 32],
+        cost_region: None,
     }
 }
 

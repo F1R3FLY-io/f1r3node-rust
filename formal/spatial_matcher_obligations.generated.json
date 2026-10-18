@@ -58,7 +58,7 @@
     "formal/tlaplus/stack_safe_pda/SpatialMatcherEquivalence.cfg": "43b98ede952c2fb89fc503c073a9965f609f19646ebcccb96adf65c419660205",
     "formal/tlaplus/stack_safe_pda/SpatialMatcherEquivalence.tla": "33c9d71065829f5ca984ed10d1dde54a36302b3929ec3cdac7d597015ef1fe03",
     "rholang/tests/matcher_connective_isolation.rs": "96c232ae7f41f079f6a072d2c4586dd1ed15b8a95990d0b82f61466066ccb68c",
-    "rholang/tests/support/spatial_matcher_pda_equivalence.rs": "29407529dbb9d066e85abba188d721b315e3cacd63324e5c6131535a4ae5796e"
+    "rholang/tests/support/spatial_matcher_pda_equivalence.rs": "45e6ca69aee2e0dd8aadf5c875024b4aacebfeae072e2e737ce2eaba1f510c3f"
   },
   "tla_invariants": [
     {

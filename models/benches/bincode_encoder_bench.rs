@@ -138,6 +138,7 @@ fn datum(depth: usize) -> ListParWithRandom {
             persistent: false,
             locally_free: vec![],
             connective_used: false,
+            cost_region: None,
         }],
         locally_free: vec![],
         connective_used: false,
@@ -168,6 +169,7 @@ fn datum(depth: usize) -> ListParWithRandom {
         pars: vec![body],
         // The per-produce random state, which every real datum carries.
         random_state: vec![0xa5; 32],
+        cost_region: None,
     }
 }
 
@@ -192,6 +194,7 @@ fn map_datum(entries: usize) -> ListParWithRandom {
             ..Default::default()
         }],
         random_state: vec![0x5a; 32],
+        cost_region: None,
     }
 }
 
@@ -334,6 +337,7 @@ fn main() {
             ListParWithRandom {
                 pars: (0..4096).map(gint).collect(),
                 random_state: vec![1; 32],
+                cost_region: None,
             };
             4
         ]),

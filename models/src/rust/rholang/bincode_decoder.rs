@@ -219,12 +219,14 @@ use rspace_plus_plus::rspace::serializers::cold_store_decode::{
 };
 
 use crate::rhoapi::connective::ConnectiveInstance;
+use crate::rhoapi::cost_signature_atom::Form;
 use crate::rhoapi::expr::ExprInstance;
 use crate::rhoapi::g_unforgeable::UnfInstance;
 use crate::rhoapi::tagged_continuation::TaggedCont;
 use crate::rhoapi::var::{VarInstance, WildcardMsg};
 use crate::rhoapi::{
-    BindPattern, Bundle, Connective, ConnectiveBody, EAnd, EDiv, EEq, EGt, EGte, EList, ELt, ELte,
+    BindPattern, Bundle, Connective, ConnectiveBody, CostBoundSignature, CostClauseRegion,
+    CostRegion, CostSignature, CostSignatureAtom, EAnd, EDiv, EEq, EGt, EGte, EList, ELt, ELte,
     EMap, EMatches, EMethod, EMinus, EMinusMinus, EMod, EMult, ENeg, ENeq, ENot, EOr,
     EPercentPercent, EPlus, EPlusPlus, ESet, ETuple, EVar, EZipper, Expr, GBigRational, GDeployId,
     GDeployerId, GFixedPoint, GPrivate, GSysAuthToken, GUnforgeable, If, KeyValuePair,
@@ -233,6 +235,9 @@ use crate::rhoapi::{
 };
 use crate::rust::par_bag::ParBag;
 use crate::rust::rhoapi_ext::EPathMap;
+use crate::rust::rholang::bincode_encoder::{
+    COST_AUTHORITY_CONTINUATION_MARKER, COST_AUTHORITY_DATUM_MARKER, COST_AUTHORITY_RECORD_VERSION,
+};
 use crate::rust::rholang::par_children::{
     dismantle_all, CONNECTIVE_INSTANCE_VARIANT_COUNT, EXPR_INSTANCE_VARIANT_COUNT,
 };
@@ -533,6 +538,59 @@ impl<'a> Reader<'a> {
         }
     }
 
+    fn opt_cost_region(&mut self) -> Res<Option<CostRegion>> {
+        if !self.option_tag()? {
+            return Ok(None);
+        }
+        let version = self.u32()?;
+        let start_line = self.u64()?;
+        let start_column = self.u64()?;
+        let end_line = self.u64()?;
+        let end_column = self.u64()?;
+        let signer = if self.option_tag()? {
+            let count = self.len()?;
+            let mut atoms = Vec::with_capacity(cautious_capacity::<CostSignatureAtom>(count));
+            for _ in 0..count {
+                let form = if self.option_tag()? {
+                    Some(match self.variant("CostSignatureAtom.Form", 4)? {
+                        0 => Form::Ground(self.byte_seq()?),
+                        1 => Form::Quote(self.byte_seq()?),
+                        2 => Form::Bound(CostBoundSignature { index: self.i32()? }),
+                        _ => Form::RuntimeName(self.byte_seq()?),
+                    })
+                } else {
+                    None
+                };
+                atoms.push(CostSignatureAtom { form });
+            }
+            Some(CostSignature { atoms })
+        } else {
+            None
+        };
+        let ordinal = self.u32()?;
+        Ok(Some(CostRegion {
+            version,
+            start_line,
+            start_column,
+            end_line,
+            end_column,
+            signer,
+            ordinal,
+        }))
+    }
+
+    fn cost_clause_regions(&mut self) -> Res<Vec<CostClauseRegion>> {
+        let count = self.len()?;
+        let mut regions = Vec::with_capacity(cautious_capacity::<CostClauseRegion>(count));
+        for _ in 0..count {
+            regions.push(CostClauseRegion {
+                bind_index: self.u32()?,
+                region: self.opt_cost_region()?,
+            });
+        }
+        Ok(regions)
+    }
+
     fn unforgeable(&mut self) -> Res<GUnforgeable> {
         if !self.option_tag()? {
             return Ok(GUnforgeable { unf_instance: None });
@@ -767,6 +825,10 @@ enum Op {
 
     // ---- TaggedContinuation: guard, tagged_cont
     TaggedContinuationStart,
+    TaggedContinuationAfterGuard {
+        t_guard: bool,
+        extended: bool,
+    },
     TaggedContinuationCont {
         t_guard: bool,
     },
@@ -789,6 +851,7 @@ enum Op {
     ListParWithRandomStart,
     ListParWithRandomBuild {
         n: usize,
+        extended: bool,
     },
 
     // ---- ParWithRandom: body, random_state (standalone entry)
@@ -859,6 +922,7 @@ struct Machine<'a> {
     par_with_randoms: Vec<ParWithRandom>,
     list_par_with_randoms: Vec<ListParWithRandom>,
     tagged_continuations: Vec<TaggedContinuation>,
+    tagged_authorities: Vec<(Option<CostRegion>, Vec<CostClauseRegion>)>,
 
     // side frames
     receive_tails: Vec<ReceiveTail>,
@@ -925,6 +989,7 @@ impl<'a> Machine<'a> {
             par_with_randoms: Vec::new(),
             list_par_with_randoms: Vec::new(),
             tagged_continuations: Vec::new(),
+            tagged_authorities: Vec::new(),
             receive_tails: Vec::new(),
             new_frames: Vec::new(),
             method_names: Vec::new(),
@@ -1022,6 +1087,7 @@ impl<'a> Machine<'a> {
             }
         }
         if !self.receive_tails.is_empty()
+            || !self.tagged_authorities.is_empty()
             || !self.new_frames.is_empty()
             || !self.method_names.is_empty()
             || !self.trie_snapshots.is_empty()
@@ -1083,6 +1149,7 @@ impl<'a> Machine<'a> {
                 let persistent = self.r.bool()?;
                 let locally_free = self.r.byte_seq()?;
                 let connective_used = self.r.bool()?;
+                let cost_region = self.r.opt_cost_region()?;
                 // `chan` was pushed BEFORE the `data` elements, so it must be
                 // taken AFTER them.
                 let data = take_n(&mut self.pars, n_data, "Send.data")?;
@@ -1093,6 +1160,7 @@ impl<'a> Machine<'a> {
                     persistent,
                     locally_free,
                     connective_used,
+                    cost_region,
                 });
             }
 
@@ -1136,6 +1204,7 @@ impl<'a> Machine<'a> {
                     .receive_tails
                     .pop()
                     .ok_or(ColdStoreDecodeError::MachineInvariant("Receive tail"))?;
+                let cost_region = self.r.opt_cost_region()?;
                 let condition = take_opt_par(&mut self.pars, has_condition, "Receive.condition")?;
                 let body = take_opt_par(&mut self.pars, has_body, "Receive.body")?;
                 let binds = take_n(&mut self.binds, n_binds, "Receive.binds")?;
@@ -1148,6 +1217,7 @@ impl<'a> Machine<'a> {
                     locally_free: tail.locally_free,
                     connective_used: tail.connective_used,
                     condition,
+                    cost_region,
                 });
             }
 
@@ -1173,6 +1243,7 @@ impl<'a> Machine<'a> {
             } => {
                 let remainder = self.r.opt_var()?;
                 let free_count = self.r.i32()?;
+                let cost_region = self.r.opt_cost_region()?;
                 // `source` was pushed AFTER the patterns, so it comes off first.
                 let source = take_opt_par(&mut self.pars, has_source, "ReceiveBind.source")?;
                 let patterns = take_n(&mut self.pars, n_patterns, "ReceiveBind.patterns")?;
@@ -1181,6 +1252,7 @@ impl<'a> Machine<'a> {
                     source,
                     remainder,
                     free_count,
+                    cost_region,
                 });
             }
 
@@ -1744,9 +1816,40 @@ impl<'a> Machine<'a> {
             // TaggedContinuation
             // ---------------------------------------------------------------
             Op::TaggedContinuationStart => {
-                let t_guard = self.r.option_tag()?;
-                self.ops.push(Op::TaggedContinuationCont { t_guard });
+                let tag = self.r.byte("a continuation record tag")?;
+                let extended = tag == COST_AUTHORITY_CONTINUATION_MARKER;
+                if extended {
+                    let version = self.r.byte("a continuation record version")?;
+                    if version != COST_AUTHORITY_RECORD_VERSION {
+                        return Err(ColdStoreDecodeError::UnsupportedCostAuthorityVersion(
+                            version,
+                        ));
+                    }
+                } else if tag > 1 {
+                    return Err(ColdStoreDecodeError::InvalidTagEncoding(tag as usize));
+                }
+                let t_guard = if extended {
+                    self.r.option_tag()?
+                } else {
+                    tag == 1
+                };
+                self.ops
+                    .push(Op::TaggedContinuationAfterGuard { t_guard, extended });
                 self.opt_par_child(t_guard);
+            }
+            Op::TaggedContinuationAfterGuard { t_guard, extended } => {
+                let cost_region = if extended {
+                    self.r.opt_cost_region()?
+                } else {
+                    None
+                };
+                let clause_regions = if extended {
+                    self.r.cost_clause_regions()?
+                } else {
+                    Vec::new()
+                };
+                self.tagged_authorities.push((cost_region, clause_regions));
+                self.ops.push(Op::TaggedContinuationCont { t_guard });
             }
             Op::TaggedContinuationCont { t_guard } => {
                 if !self.r.option_tag()? {
@@ -1771,22 +1874,34 @@ impl<'a> Machine<'a> {
                 let random_state = self.r.byte_seq()?;
                 let body = take_opt_par(&mut self.pars, t_body, "ParWithRandom.body")?;
                 let guard = take_opt_par(&mut self.pars, t_guard, "TaggedContinuation.guard")?;
+                let (cost_region, clause_regions) =
+                    take_one(&mut self.tagged_authorities, "TaggedContinuation.authority")?;
                 self.tagged_continuations.push(TaggedContinuation {
                     guard,
+                    cost_region,
+                    clause_regions,
                     tagged_cont: Some(TaggedCont::ParBody(ParWithRandom { body, random_state })),
                 });
             }
             Op::TaggedContinuationScala { t_guard, value } => {
                 let guard = take_opt_par(&mut self.pars, t_guard, "TaggedContinuation.guard")?;
+                let (cost_region, clause_regions) =
+                    take_one(&mut self.tagged_authorities, "TaggedContinuation.authority")?;
                 self.tagged_continuations.push(TaggedContinuation {
                     guard,
+                    cost_region,
+                    clause_regions,
                     tagged_cont: Some(TaggedCont::ScalaBodyRef(value)),
                 });
             }
             Op::TaggedContinuationAbsent { t_guard } => {
                 let guard = take_opt_par(&mut self.pars, t_guard, "TaggedContinuation.guard")?;
+                let (cost_region, clause_regions) =
+                    take_one(&mut self.tagged_authorities, "TaggedContinuation.authority")?;
                 self.tagged_continuations.push(TaggedContinuation {
                     guard,
+                    cost_region,
+                    clause_regions,
                     tagged_cont: None,
                 });
             }
@@ -1795,15 +1910,35 @@ impl<'a> Machine<'a> {
             // ListParWithRandom / ParWithRandom
             // ---------------------------------------------------------------
             Op::ListParWithRandomStart => {
-                let n = self.r.len()?;
-                self.ops.push(Op::ListParWithRandomBuild { n });
+                let raw = self.r.u64()?;
+                let extended = raw == COST_AUTHORITY_DATUM_MARKER;
+                let n = if extended {
+                    let version = self.r.byte("a datum record version")?;
+                    if version != COST_AUTHORITY_RECORD_VERSION {
+                        return Err(ColdStoreDecodeError::UnsupportedCostAuthorityVersion(
+                            version,
+                        ));
+                    }
+                    self.r.len()?
+                } else {
+                    usize::try_from(raw).map_err(|_| ColdStoreDecodeError::LengthOverflow(raw))?
+                };
+                self.ops.push(Op::ListParWithRandomBuild { n, extended });
                 self.repeat(Kind::Par, n);
             }
-            Op::ListParWithRandomBuild { n } => {
+            Op::ListParWithRandomBuild { n, extended } => {
                 let pars = take_n(&mut self.pars, n, "ListParWithRandom.pars")?;
                 let random_state = self.r.byte_seq()?;
-                self.list_par_with_randoms
-                    .push(ListParWithRandom { pars, random_state });
+                let cost_region = if extended {
+                    self.r.opt_cost_region()?
+                } else {
+                    None
+                };
+                self.list_par_with_randoms.push(ListParWithRandom {
+                    pars,
+                    random_state,
+                    cost_region,
+                });
             }
             Op::ParWithRandomStart => {
                 let has_body = self.r.option_tag()?;

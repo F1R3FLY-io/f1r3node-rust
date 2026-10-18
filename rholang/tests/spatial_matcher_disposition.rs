@@ -971,6 +971,7 @@ fn the_rspace_comm_seam_now_fires_on_a_subtraction_pattern() {
     let datum = |instance: ExprInstance| ListParWithRandom {
         pars: vec![par_of(instance)],
         random_state: Vec::new(),
+        cost_region: None,
     };
 
     let subtraction_pattern = bind(ExprInstance::EMinusBody(EMinus {

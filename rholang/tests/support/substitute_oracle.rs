@@ -69,7 +69,8 @@ use super::substitute_combine::{
     rebuild_receive_bind, rebuild_send, set_bits_until, split_expr_instance, ConnArm,
 };
 use super::substitute_drive::{
-    maybe_substitute_evar_view, maybe_substitute_var_ref_view, EnvView, SubCtx,
+    maybe_substitute_evar_view, maybe_substitute_var_ref_view, substitute_cost_region,
+    substitute_cost_signature, EnvView, SubCtx,
 };
 use super::unwrap_option_safe;
 
@@ -91,6 +92,7 @@ pub(crate) fn par_recursive(
     let bundles = term.take_occurrences::<Bundle>();
     let connectives = term.take_occurrences::<Connective>();
     let conditionals = term.take_occurrences::<If>();
+    let mut cost_token_stacks = term.take_occurrences::<models::rhoapi::CostTokenStack>();
     let locally_free = std::mem::take(&mut term.locally_free);
     let connective_used = term.connective_used;
 
@@ -121,6 +123,11 @@ pub(crate) fn par_recursive(
         .into_iter()
         .map(|i| if_recursive(i, ctx, env))
         .collect::<Result<Vec<If>, InterpreterError>>()?;
+    for stack in &mut cost_token_stacks {
+        for layer in &mut stack.layers {
+            substitute_cost_signature(layer, ctx, env);
+        }
+    }
 
     Ok(rebuild_par(
         exprs_par,
@@ -132,6 +139,7 @@ pub(crate) fn par_recursive(
         bundles,
         conditionals,
         unforgeables,
+        cost_token_stacks,
         locally_free,
         connective_used,
         env.shift(ctx),
@@ -320,7 +328,9 @@ pub(crate) fn send_recursive(
         persistent,
         locally_free,
         connective_used,
+        mut cost_region,
     } = term;
+    substitute_cost_region(&mut cost_region, ctx, env);
     let chan_sub = required_par_recursive(chan, ctx, env)?;
     let data_sub = map_pars_recursive(data, ctx, env)?;
     Ok(rebuild_send(
@@ -330,6 +340,7 @@ pub(crate) fn send_recursive(
         locally_free,
         connective_used,
         env.shift(ctx),
+        cost_region,
     ))
 }
 
@@ -343,7 +354,9 @@ fn bind_recursive(
         source,
         remainder,
         free_count,
+        mut cost_region,
     } = term;
+    substitute_cost_region(&mut cost_region, ctx, env);
     let source_sub = required_par_recursive(source, ctx, env)?;
     let patterns_sub = map_pars_recursive(patterns, ctx.deeper(), env)?;
     Ok(rebuild_receive_bind(
@@ -351,6 +364,7 @@ fn bind_recursive(
         patterns_sub,
         remainder,
         free_count,
+        cost_region,
     ))
 }
 
@@ -368,7 +382,9 @@ pub(crate) fn receive_recursive(
         locally_free,
         connective_used,
         condition,
+        mut cost_region,
     } = term;
+    substitute_cost_region(&mut cost_region, ctx, env);
     let binds_sub = binds
         .into_iter()
         .map(|b| bind_recursive(b, ctx, env))
@@ -389,6 +405,7 @@ pub(crate) fn receive_recursive(
         locally_free,
         connective_used,
         env.shift(ctx),
+        cost_region,
     ))
 }
 
@@ -721,6 +738,93 @@ mod differential_substitute_worklist {
                 "differential_substitute_worklist".to_string(),
             ))),
         }
+    }
+
+    #[test]
+    fn bound_cost_signers_resolve_to_fresh_runtime_names() {
+        use models::rhoapi::cost_signature_atom::Form;
+        use models::rhoapi::g_unforgeable::UnfInstance;
+        use models::rhoapi::{
+            CostBoundSignature, CostRegion, CostSignature, CostSignatureAtom, CostTokenStack,
+            GPrivate,
+        };
+        use models::rust::rholang::sorter::par_sort_matcher::ParSortMatcher;
+        use models::rust::rholang::sorter::sortable::Sortable;
+
+        let name = Par::default().with_unforgeables(vec![GUnforgeable {
+            unf_instance: Some(UnfInstance::GPrivateBody(GPrivate { id: vec![7; 32] })),
+        }]);
+        let region = CostRegion {
+            version: 1,
+            start_line: 1,
+            start_column: 0,
+            end_line: 1,
+            end_column: 20,
+            signer: Some(CostSignature {
+                atoms: vec![CostSignatureAtom {
+                    form: Some(Form::Bound(CostBoundSignature { index: 0 })),
+                }],
+            }),
+            ordinal: 0,
+        };
+        let stack = CostTokenStack {
+            layers: vec![region.signer.clone().unwrap()],
+        };
+        let term = Par::default()
+            .with_sends(vec![Send {
+                chan: Some(Par::default()),
+                cost_region: Some(region.clone()),
+                ..Send::default()
+            }])
+            .with_receives(vec![Receive {
+                binds: vec![ReceiveBind {
+                    source: Some(Par::default()),
+                    cost_region: Some(region.clone()),
+                    ..ReceiveBind::default()
+                }],
+                body: Some(Par::default()),
+                cost_region: Some(region),
+                ..Receive::default()
+            }])
+            .with_cost_token_stacks(vec![stack]);
+        let unresolved = subject().substitute(term.clone(), 0, &Env::new()).unwrap();
+        let unresolved_send = unresolved.decode_occurrences::<Send>().remove(0);
+        assert!(matches!(
+            unresolved_send.cost_region.unwrap().signer.unwrap().atoms[0].form,
+            Some(Form::Bound(_))
+        ));
+        assert!(matches!(
+            unresolved.decode_occurrences::<CostTokenStack>()[0].layers[0].atoms[0].form,
+            Some(Form::Bound(_))
+        ));
+
+        let resolved = subject()
+            .substitute(term.clone(), 0, &Env::new().put(name.clone()))
+            .unwrap();
+        let other_name = Par::default().with_unforgeables(vec![GUnforgeable {
+            unf_instance: Some(UnfInstance::GPrivateBody(GPrivate { id: vec![8; 32] })),
+        }]);
+        let other = subject()
+            .substitute(term, 0, &Env::new().put(other_name))
+            .unwrap();
+        assert_ne!(resolved.encode_to_vec(), other.encode_to_vec());
+        let expected = ParSortMatcher::sort_match(&name).term.encode_to_vec();
+        let send = resolved.decode_occurrences::<Send>().remove(0);
+        let receive = resolved.decode_occurrences::<Receive>().remove(0);
+        for region in [
+            send.cost_region.unwrap(),
+            receive.cost_region.unwrap(),
+            receive.binds[0].cost_region.clone().unwrap(),
+        ] {
+            assert_eq!(
+                region.signer.unwrap().atoms[0].form,
+                Some(Form::RuntimeName(expected.clone()))
+            );
+        }
+        assert_eq!(
+            resolved.decode_occurrences::<CostTokenStack>()[0].layers[0].atoms[0].form,
+            Some(Form::RuntimeName(expected))
+        );
     }
 
     /// The observable trace of one substitution path.

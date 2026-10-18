@@ -84,6 +84,7 @@ fn the_broader_reducer_identity_domain_is_rejected_for_substitution() {
         persistent: false,
         locally_free: vec![1],
         connective_used: false,
+        cost_region: None,
     }]);
     assert_eq!(process.family_cardinality::<Expr>(), 0);
     assert!(models::rust::pathmap_crate_type_mapper::reducer_eval_identity(&process));

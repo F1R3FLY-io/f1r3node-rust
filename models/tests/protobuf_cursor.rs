@@ -399,6 +399,7 @@ fn par_index_reorders_runs_semantically_and_delimited_cursors_restart() {
         0x50, 0x01, // connective_used
         0x5a, 0x01, 0xf1, // Bundle
         0x62, 0x01, 0xf2, // If
+        0x6a, 0x01, 0xf3,
     ];
     let index = CanonicalParProcessIndex::parse(&message).unwrap();
 
@@ -426,6 +427,7 @@ fn par_index_reorders_runs_semantically_and_delimited_cursors_restart() {
     assert_eq!(singleton(index.conditionals), 0xf2);
     assert_eq!(singleton(index.bundles), 0xf1);
     assert_eq!(singleton(index.exprs), 0xd1);
+    assert_eq!(singleton(index.cost_token_stacks), 0xf3);
 }
 
 #[test]
@@ -442,6 +444,7 @@ fn owned_par_index_covers_every_family_and_root_metadata_without_decoding() {
         0x50, 0x01, // connective_used
         0x5a, 0x01, 0xf1, // Bundle
         0x62, 0x01, 0xf2, // If
+        0x6a, 0x01, 0xf3,
     ]);
     let index = CanonicalParRegionIndex::parse(ProtobufRegion::from(message)).unwrap();
 
@@ -460,6 +463,7 @@ fn owned_par_index_covers_every_family_and_root_metadata_without_decoding() {
     assert_eq!(singleton(index.connectives.as_ref().unwrap()), 0xe3);
     assert_eq!(singleton(index.bundles.as_ref().unwrap()), 0xf1);
     assert_eq!(singleton(index.conditionals.as_ref().unwrap()), 0xf2);
+    assert_eq!(singleton(index.cost_token_stacks.as_ref().unwrap()), 0xf3);
     assert_eq!(index.locally_free.unwrap().as_bytes(), &[1]);
     assert!(index.connective_used);
 }

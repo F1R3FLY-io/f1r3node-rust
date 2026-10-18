@@ -122,6 +122,7 @@
 use std::cell::RefCell;
 use std::collections::btree_map;
 
+use crate::rhoapi::tagged_continuation::TaggedCont;
 use crate::rhoapi::{BindPattern, ListParWithRandom, Par, TaggedContinuation};
 use crate::rust::rholang::bincode_schema::{
     put_bytes, BincodeNode, BincodeSeq, Descent, NO_RESUME,
@@ -492,11 +493,105 @@ where T: BincodeNode {
 // `bincode_decoder` decodes. Every other schema type is reachable only as a child of
 // one of these.
 
-/// Encode a channel / pattern / datum / continuation byte-identically to
-/// `bincode::serialize`, in one traversal and O(1) native stack.
+/// Encode a channel / pattern / datum / continuation in the cold-store record
+/// layout, preserving historical bytes when cost authority is absent.
 pub trait ColdStoreEncode {
     fn cold_encode(&self) -> Vec<u8>;
     fn cold_encode_into(&self, out: &mut Vec<u8>);
+}
+
+pub(crate) const COST_AUTHORITY_DATUM_MARKER: u64 = u64::MAX;
+pub(crate) const COST_AUTHORITY_CONTINUATION_MARKER: u8 = 2;
+pub(crate) const COST_AUTHORITY_RECORD_VERSION: u8 = 1;
+
+fn encode_byte_vec(value: &[u8], out: &mut Vec<u8>) {
+    out.extend_from_slice(
+        &u64::try_from(value.len())
+            .expect("byte length fits u64")
+            .to_le_bytes(),
+    );
+    out.extend_from_slice(value);
+}
+
+impl ColdStoreEncode for ListParWithRandom {
+    fn cold_encode(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        self.cold_encode_into(&mut out);
+        out
+    }
+
+    fn cold_encode_into(&self, out: &mut Vec<u8>) {
+        #[cfg(feature = "phase7-depth-histograms")]
+        crate::rust::rholang::phase7_depth_histogram::record_list_par_with_random(
+            "bincode_encoder",
+            self,
+        );
+        if self.cost_region.is_some() {
+            out.extend_from_slice(&COST_AUTHORITY_DATUM_MARKER.to_le_bytes());
+            out.push(COST_AUTHORITY_RECORD_VERSION);
+            encode_into(self, out);
+        } else {
+            out.extend_from_slice(
+                &u64::try_from(self.pars.len())
+                    .expect("Par count fits u64")
+                    .to_le_bytes(),
+            );
+            for par in &self.pars {
+                encode_into(par, out);
+            }
+            encode_byte_vec(&self.random_state, out);
+        }
+    }
+}
+
+impl ColdStoreEncode for TaggedContinuation {
+    fn cold_encode(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        self.cold_encode_into(&mut out);
+        out
+    }
+
+    fn cold_encode_into(&self, out: &mut Vec<u8>) {
+        #[cfg(feature = "phase7-depth-histograms")]
+        crate::rust::rholang::phase7_depth_histogram::record_tagged_continuation(
+            "bincode_encoder",
+            self,
+        );
+        if self.cost_region.is_some() || !self.clause_regions.is_empty() {
+            out.push(COST_AUTHORITY_CONTINUATION_MARKER);
+            out.push(COST_AUTHORITY_RECORD_VERSION);
+            encode_into(self, out);
+            return;
+        }
+
+        match &self.guard {
+            Some(guard) => {
+                out.push(1);
+                encode_into(guard, out);
+            }
+            None => out.push(0),
+        }
+        match &self.tagged_cont {
+            Some(TaggedCont::ParBody(body)) => {
+                out.push(1);
+                out.extend_from_slice(&0_u32.to_le_bytes());
+                match &body.body {
+                    Some(par) => {
+                        out.push(1);
+                        encode_into(par, out);
+                    }
+                    None => out.push(0),
+                }
+                encode_byte_vec(&body.random_state, out);
+            }
+            Some(TaggedCont::ScalaBodyRef(value)) => {
+                out.push(1);
+                out.extend_from_slice(&1_u32.to_le_bytes());
+                out.extend_from_slice(&value.to_le_bytes());
+            }
+            None => out.push(0),
+        }
+    }
 }
 
 macro_rules! cold_store_encode {
@@ -518,12 +613,7 @@ macro_rules! cold_store_encode {
     )*};
 }
 
-cold_store_encode!(
-    (Par, record_par),
-    (BindPattern, record_bind_pattern),
-    (ListParWithRandom, record_list_par_with_random),
-    (TaggedContinuation, record_tagged_continuation),
-);
+cold_store_encode!((Par, record_par), (BindPattern, record_bind_pattern),);
 
 // ===========================================================================
 // §F  Introspection for the space gate

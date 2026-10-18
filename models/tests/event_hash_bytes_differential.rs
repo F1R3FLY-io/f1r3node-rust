@@ -28,6 +28,7 @@ use models::rust::event_hash_bytes::{
 };
 use models::rust::pathmap_crate_type_mapper::eval_stable_epathmap;
 use proptest::prelude::*;
+use serde::Serialize;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Helpers
@@ -39,11 +40,40 @@ fn datum(pars: Vec<Par>) -> ListParWithRandom {
     ListParWithRandom {
         pars,
         random_state: vec![0xAA; 32],
+        cost_region: None,
     }
 }
 
+#[derive(Serialize)]
+struct LegacyDatum<'a> {
+    pars: &'a Vec<Par>,
+    random_state: &'a Vec<u8>,
+}
+
+#[derive(Serialize)]
+struct LegacyContinuation<'a> {
+    guard: &'a Option<Par>,
+    tagged_cont: &'a Option<TaggedCont>,
+}
+
+fn legacy_datum_bytes(value: &ListParWithRandom) -> Vec<u8> {
+    bincode::serialize(&LegacyDatum {
+        pars: &value.pars,
+        random_state: &value.random_state,
+    })
+    .expect("legacy datum")
+}
+
+fn legacy_continuation_bytes(value: &TaggedContinuation) -> Vec<u8> {
+    bincode::serialize(&LegacyContinuation {
+        guard: &value.guard,
+        tagged_cont: &value.tagged_cont,
+    })
+    .expect("legacy continuation")
+}
+
 fn assert_event_hash_eq_legacy_datum(label: &str, value: &ListParWithRandom) {
-    let legacy = bincode::serialize(value).expect("legacy bincode");
+    let legacy = legacy_datum_bytes(value);
     let actual = event_hash_bytes_list_par_with_random(value);
     assert_eq!(
         actual, legacy,
@@ -61,7 +91,7 @@ fn assert_event_hash_eq_legacy_pattern(label: &str, value: &BindPattern) {
 }
 
 fn assert_event_hash_eq_legacy_continuation(label: &str, value: &TaggedContinuation) {
-    let legacy = bincode::serialize(value).expect("legacy bincode");
+    let legacy = legacy_continuation_bytes(value);
     let actual = event_hash_bytes_tagged_continuation(value);
     assert_eq!(
         actual, legacy,
@@ -194,6 +224,7 @@ fn event_hash_bytes_match_legacy_bincode_for_every_container_position() {
                 persistent: true,
                 locally_free: vec![4],
                 connective_used: false,
+                cost_region: None,
             }]);
             par
         }),
@@ -205,6 +236,7 @@ fn event_hash_bytes_match_legacy_bincode_for_every_container_position() {
                     source: Some(map_par()),
                     remainder: Some(free_var),
                     free_count: 1,
+                    cost_region: None,
                 }],
                 body: Some(map_par()),
                 persistent: false,
@@ -213,6 +245,7 @@ fn event_hash_bytes_match_legacy_bincode_for_every_container_position() {
                 locally_free: vec![8],
                 connective_used: false,
                 condition: Some(map_par()),
+                cost_region: None,
             }]);
             par
         }),
@@ -297,6 +330,8 @@ fn event_hash_bytes_match_legacy_bincode_for_every_container_position() {
                 body: Some(par),
                 random_state: vec![7; 16],
             })),
+            cost_region: None,
+            clause_regions: Vec::new(),
         });
     }
 }
@@ -313,10 +348,14 @@ fn scala_body_ref_matches_legacy_bincode() {
     assert_event_hash_eq_legacy_continuation("scala-body-ref", &TaggedContinuation {
         guard: Some(epathmap_par(sample_map())),
         tagged_cont: Some(TaggedCont::ScalaBodyRef(42)),
+        cost_region: None,
+        clause_regions: Vec::new(),
     });
     assert_event_hash_eq_legacy_continuation("none-cont", &TaggedContinuation {
         guard: None,
         tagged_cont: None,
+        cost_region: None,
+        clause_regions: Vec::new(),
     });
 }
 
@@ -481,6 +520,7 @@ fn par_strategy() -> impl Strategy<Value = Par> {
                         persistent: false,
                         locally_free: vec![2],
                         connective_used: false,
+                        cost_region: None,
                     }]);
                     par
                 }),
@@ -512,10 +552,11 @@ fn production_gate(pars: &[Par], random_state: Vec<u8>, free_count: i32) {
     let value = ListParWithRandom {
         pars: pars.to_vec(),
         random_state,
+        cost_region: None,
     };
     assert_eq!(
         event_hash_bytes_list_par_with_random(&value),
-        bincode::serialize(&value).expect("direct"),
+        legacy_datum_bytes(&value),
         "datum leg diverged"
     );
 
@@ -536,10 +577,12 @@ fn production_gate(pars: &[Par], random_state: Vec<u8>, free_count: i32) {
             body: pars.last().cloned(),
             random_state: vec![3; 8],
         })),
+        cost_region: None,
+        clause_regions: Vec::new(),
     };
     assert_eq!(
         event_hash_bytes_tagged_continuation(&continuation),
-        bincode::serialize(&continuation).expect("direct"),
+        legacy_continuation_bytes(&continuation),
         "continuation leg diverged"
     );
 }

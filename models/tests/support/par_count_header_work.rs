@@ -85,7 +85,7 @@ fn append_delimited(
     output.extend_from_slice(payload);
 }
 
-fn family_runs(index: CanonicalParRegionIndex) -> [Option<super::CanonicalRegionDelimitedRun>; 9] {
+fn family_runs(index: CanonicalParRegionIndex) -> [Option<super::CanonicalRegionDelimitedRun>; 10] {
     [
         index.sends,
         index.receives,
@@ -96,6 +96,7 @@ fn family_runs(index: CanonicalParRegionIndex) -> [Option<super::CanonicalRegion
         index.connectives,
         index.bundles,
         index.conditionals,
+        index.cost_token_stacks,
     ]
 }
 
@@ -125,7 +126,7 @@ fn par_count_header_index_and_runs_read_each_position_at_most_twice() {
                 }
             }
         }
-        assert_eq!(families, 9);
+        assert_eq!(families, 10);
         let root = ProtobufRegion::from(bytes);
         let retained = root.clone();
         let (counts, reads) = measure(|| {
@@ -144,10 +145,10 @@ fn par_count_header_index_and_runs_read_each_position_at_most_twice() {
                 count
             })
         });
-        assert_eq!(counts, [width; 9]);
+        assert_eq!(counts, [width; 10]);
         reads.assert_exact(&root, &expected);
         assert!(reads.within(&root, 2));
-        assert_eq!(reads.total(), 36 * width + 5);
+        assert_eq!(reads.total(), 4 * families * width + 5);
         assert_eq!(root.as_bytes().as_ptr(), retained.as_bytes().as_ptr());
         eprintln!(
             "PCBN headers index width={width} reads={} positions={} maximum={}",

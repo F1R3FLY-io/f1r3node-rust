@@ -9,16 +9,17 @@ use std::sync::{Arc, Mutex};
 
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
 use futures::FutureExt;
+use models::rhoapi::cost_signature_atom::Form as CostSignatureForm;
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::g_unforgeable::UnfInstance;
 use models::rhoapi::tagged_continuation::TaggedCont;
 use models::rhoapi::var::VarInstance;
 use models::rhoapi::{
-    BindPattern, Bundle, Connective, EAnd, EDiv, EEq, EGt, EGte, EList, ELt, ELte, EMap, EMatches,
-    EMethod, EMinus, EMinusMinus, EMod, EMult, ENeq, EOr, EPathMap, EPercentPercent, EPlus,
-    EPlusPlus, ESet, ETuple, EVar, EZipper, Expr, GPrivate, GUnforgeable, If, KeyValuePair,
-    ListParWithRandom, Match, MatchCase, New, Par, ParWithRandom, Receive, ReceiveBind, Send,
-    TaggedContinuation, Var,
+    BindPattern, Bundle, Connective, CostClauseRegion, CostRegion, EAnd, EDiv, EEq, EGt, EGte,
+    EList, ELt, ELte, EMap, EMatches, EMethod, EMinus, EMinusMinus, EMod, EMult, ENeq, EOr,
+    EPathMap, EPercentPercent, EPlus, EPlusPlus, ESet, ETuple, EVar, EZipper, Expr, GPrivate,
+    GUnforgeable, If, KeyValuePair, ListParWithRandom, Match, MatchCase, New, Par, ParWithRandom,
+    Receive, ReceiveBind, Send, TaggedContinuation, Var,
 };
 use models::rust::canonical_path::{decode_trie_path, encode_trie_path};
 use models::rust::epathmap_trie_codec::EPathMapMode;
@@ -76,6 +77,7 @@ use super::metrics_constants::{
 use super::rho_runtime::RhoISpace;
 use super::rho_type::{RhoExpression, RhoUnforgeable};
 use super::substitute::Substitute;
+use super::substitute_drive::{substitute_cost_region, EnvView, SubCtx};
 use super::unwrap_option_safe;
 use super::util::GeneratedMessage;
 use crate::rust::interpreter::accounting::costs::{
@@ -87,6 +89,45 @@ use crate::rust::interpreter::guard::MATCH_CASE_WHERE;
 use crate::rust::interpreter::matcher::r#match::{guard_disposition_in_env, GuardDisposition};
 use crate::rust::interpreter::matcher::spatial_matcher::SpatialMatcherContext;
 use crate::rust::interpreter::rho_type::RhoTuple2;
+
+fn validate_resolved_cost_region(region: Option<&CostRegion>) -> Result<(), InterpreterError> {
+    let Some(region) = region else {
+        return Ok(());
+    };
+    if region.version != 1 {
+        return Err(InterpreterError::ReduceError(format!(
+            "Unsupported cost region version: {}",
+            region.version
+        )));
+    }
+    let signer = region
+        .signer
+        .as_ref()
+        .ok_or_else(|| InterpreterError::ReduceError("Cost region has no signer".to_string()))?;
+    if signer.atoms.is_empty() {
+        return Err(InterpreterError::ReduceError(
+            "Cost region signer is empty".to_string(),
+        ));
+    }
+    for atom in &signer.atoms {
+        match atom.form.as_ref() {
+            Some(CostSignatureForm::Ground(_))
+            | Some(CostSignatureForm::Quote(_))
+            | Some(CostSignatureForm::RuntimeName(_)) => {}
+            Some(CostSignatureForm::Bound(_)) => {
+                return Err(InterpreterError::ReduceError(
+                    "Cost region signer has an unresolved bound name".to_string(),
+                ));
+            }
+            None => {
+                return Err(InterpreterError::ReduceError(
+                    "Cost region signer has an empty atom".to_string(),
+                ));
+            }
+        }
+    }
+    Ok(())
+}
 
 // Expands only in test builds. Keeping the oracle's source separate lets the
 // derived recursion census classify deliberate reference recursion separately
@@ -1379,10 +1420,9 @@ impl DebruijnInterpreter {
     fn consume<'a>(
         &'a self,
         binds: Vec<(BindPattern, Par)>,
-        body: ParWithRandom,
+        continuation: TaggedContinuation,
         persistent: bool,
         peek: bool,
-        guard: Option<Par>,
         path: SmallVec<[u32; 8]>,
     ) -> Pin<
         Box<
@@ -1391,16 +1431,15 @@ impl DebruijnInterpreter {
                 + 'a,
         >,
     > {
-        Box::pin(self.consume_inner(binds, body, persistent, peek, guard, path))
+        Box::pin(self.consume_inner(binds, continuation, persistent, peek, path))
     }
 
     async fn consume_inner(
         &self,
         binds: Vec<(BindPattern, Par)>,
-        body: ParWithRandom,
+        continuation: TaggedContinuation,
         persistent: bool,
         peek: bool,
-        guard: Option<Par>,
         path: SmallVec<[u32; 8]>,
     ) -> Result<DispatchType, InterpreterError> {
         let (patterns, sources): (Vec<BindPattern>, Vec<Par>) = binds.clone().into_iter().unzip();
@@ -1415,10 +1454,7 @@ impl DebruijnInterpreter {
             .consume(
                 sources.clone(),
                 patterns.clone(),
-                TaggedContinuation {
-                    tagged_cont: Some(TaggedCont::ParBody(body.clone())),
-                    guard: guard.clone(),
-                },
+                continuation.clone(),
                 persistent,
                 if peek {
                     BTreeSet::from_iter((0..sources.len() as i32).collect::<Vec<i32>>())
@@ -1443,12 +1479,11 @@ impl DebruijnInterpreter {
         self.continue_consume_process(
             unpack_option_with_peek(consume_result),
             binds,
-            body,
+            continuation,
             persistent,
             peek,
             is_replay,
             Vec::new(),
-            guard,
             path,
         )
         .await
@@ -1608,12 +1643,11 @@ impl DebruijnInterpreter {
         &self,
         res: Application,
         binds: Vec<(BindPattern, Par)>,
-        body: ParWithRandom,
+        registered_continuation: TaggedContinuation,
         persistent: bool,
         peek: bool,
         is_replay: bool,
         previous_output: Vec<Vec<u8>>,
-        guard: Option<Par>,
         path: SmallVec<[u32; 8]>,
     ) -> Result<DispatchType, InterpreterError> {
         // The SAME read as `continue_produce_process` — literally, now: both go
@@ -1640,11 +1674,10 @@ impl DebruijnInterpreter {
                     let data_list_clone = data_list.clone();
                     let previous_output_clone = previous_output_as_par.clone();
                     let binds_clone = binds.clone();
-                    let body_clone = body.clone();
+                    let registered_continuation_clone = registered_continuation.clone();
                     let persistent_flag = persistent;
                     let peek_flag = peek;
                     let is_replay_flag = is_replay;
-                    let guard_clone = guard.clone();
                     // Coordinate continuity: dispatch + re-install continuations carry the consume's path.
                     let path_dispatch = path.clone();
                     let path_reconsume = path.clone();
@@ -1682,10 +1715,9 @@ impl DebruijnInterpreter {
                         self_clone2
                             .consume(
                                 binds_clone,
-                                body_clone,
+                                registered_continuation_clone,
                                 persistent_flag,
                                 peek_flag,
-                                guard_clone,
                                 path_reconsume,
                             )
                             .await
@@ -2079,6 +2111,7 @@ impl DebruijnInterpreter {
             chan,
             data,
             persistent,
+            mut cost_region,
             ..
         } = send;
 
@@ -2115,11 +2148,15 @@ impl DebruijnInterpreter {
             })
             .collect::<Result<Vec<_>, InterpreterError>>()?;
 
+        substitute_cost_region(&mut cost_region, SubCtx::root(0), EnvView::new(env));
+        validate_resolved_cost_region(cost_region.as_ref())?;
+
         self.produce(
             unbundled,
             ListParWithRandom {
                 pars: subst_data,
                 random_state: rand.to_bytes(),
+                cost_region,
             },
             persistent,
             path,
@@ -2155,6 +2192,7 @@ impl DebruijnInterpreter {
             peek,
             bind_count,
             condition,
+            mut cost_region,
             ..
         } = receive;
 
@@ -2202,47 +2240,62 @@ impl DebruijnInterpreter {
             crate::rust::interpreter::guard::RECEIVE_WHERE,
         )?;
 
-        let binds = binds
-            .into_iter()
-            .map(|rb| {
-                // Destructured by move for the same reason the `Receive` was:
-                // `unbundle_receive` used to take `&ReceiveBind` and open with
-                // `rb.source.clone()`.
-                //
-                // ⚠ ORDER IS LOAD-BEARING. `unbundle_receive` charges (it
-                // evaluates and substitutes the source), and it charged BEFORE
-                // the patterns did. Destructuring moves no evaluation, and the
-                // source is still resolved first.
-                let ReceiveBind {
-                    patterns,
-                    source,
+        let mut resolved_binds = Vec::with_capacity(binds.len());
+        let mut clause_regions = Vec::new();
+        for (bind_index, rb) in binds.into_iter().enumerate() {
+            // Destructured by move for the same reason the `Receive` was:
+            // `unbundle_receive` used to take `&ReceiveBind` and open with
+            // `rb.source.clone()`.
+            //
+            // ⚠ ORDER IS LOAD-BEARING. `unbundle_receive` charges (it
+            // evaluates and substitutes the source), and it charged BEFORE
+            // the patterns did. Destructuring moves no evaluation, and the
+            // source is still resolved first.
+            let ReceiveBind {
+                patterns,
+                source,
+                remainder,
+                free_count,
+                mut cost_region,
+                ..
+            } = rb;
+            let q = self.unbundle_receive(source, env)?;
+            let subst_patterns = patterns
+                .into_iter()
+                .map(|pattern| self.substitute.substitute_and_charge(pattern, 1, env))
+                .collect::<Result<Vec<_>, InterpreterError>>()?;
+
+            substitute_cost_region(&mut cost_region, SubCtx::root(0), EnvView::new(env));
+            validate_resolved_cost_region(cost_region.as_ref())?;
+            if cost_region.is_some() {
+                clause_regions.push(CostClauseRegion {
+                    bind_index: u32::try_from(bind_index).map_err(|_| {
+                        InterpreterError::ReduceError(
+                            "Receive bind index exceeds cost-authority wire range".to_string(),
+                        )
+                    })?,
+                    region: cost_region,
+                });
+            }
+            resolved_binds.push((
+                BindPattern {
+                    patterns: subst_patterns,
                     remainder,
                     free_count,
-                    ..
-                } = rb;
-                let q = self.unbundle_receive(source, env)?;
-                let subst_patterns = patterns
-                    .into_iter()
-                    .map(|pattern| self.substitute.substitute_and_charge(pattern, 1, env))
-                    .collect::<Result<Vec<_>, InterpreterError>>()?;
+                },
+                q,
+            ));
+        }
 
-                Ok((
-                    BindPattern {
-                        patterns: subst_patterns,
-                        remainder,
-                        free_count,
-                    },
-                    q,
-                ))
-            })
-            .collect::<Result<Vec<_>, InterpreterError>>()?;
+        substitute_cost_region(&mut cost_region, SubCtx::root(0), EnvView::new(env));
+        validate_resolved_cost_region(cost_region.as_ref())?;
 
         // W1 Phase 3: per-redex located-stack attribution. A receive is ONE COMM
         // (already charged scalar to the envelope above); record the per-lane VIEW
         // keyed on the FIRST bind's resolved source channel — the SAME bind
         // `delta_sigma::demand_by_sig` attributes on, so the static dual and the
         // runtime agree COMM-for-COMM. No-op on the single-signer fast path.
-        if let Some((_, first_channel)) = binds.first() {
+        if let Some((_, first_channel)) = resolved_binds.first() {
             self.metering.note_channel_lane(first_channel);
         }
 
@@ -2259,14 +2312,18 @@ impl DebruijnInterpreter {
         )?;
 
         self.consume(
-            binds,
-            ParWithRandom {
-                body: Some(subst_body),
-                random_state: rand.to_bytes(),
+            resolved_binds,
+            TaggedContinuation {
+                tagged_cont: Some(TaggedCont::ParBody(ParWithRandom {
+                    body: Some(subst_body),
+                    random_state: rand.to_bytes(),
+                })),
+                guard: subst_guard,
+                cost_region,
+                clause_regions,
             },
             persistent,
             peek,
-            subst_guard,
             path,
         )
         .await?;

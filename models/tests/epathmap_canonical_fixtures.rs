@@ -405,6 +405,7 @@ fn event_hash_goldens_produce() {
     let datum1 = ListParWithRandom {
         pars: vec![epathmap_par(e6a_index_epathmap())],
         random_state: rs1.clone(),
+        cost_region: None,
     };
     let produce1 = Produce::create(&channel, &datum1, true);
 
@@ -428,6 +429,7 @@ fn event_hash_goldens_produce() {
     let datum2 = ListParWithRandom {
         pars: datum1.pars.clone(),
         random_state: rs2,
+        cost_region: None,
     };
     let produce2 = Produce::create(&channel, &datum2, true);
     assert_ne!(
@@ -460,6 +462,7 @@ fn event_hash_goldens_produce() {
         &ListParWithRandom {
             pars: vec![map_tagged_par],
             random_state: rs1.clone(),
+            cost_region: None,
         },
         true,
     );
@@ -501,6 +504,7 @@ fn event_hash_goldens_produce() {
         &ListParWithRandom {
             pars: vec![epathmap_par(entry_tagged_map)],
             random_state: rs1,
+            cost_region: None,
         },
         true,
     );
@@ -527,6 +531,8 @@ fn event_hash_goldens_consume() {
             random_state: fixture_random_state(),
         })),
         guard: None,
+        cost_region: None,
+        clause_regions: Vec::new(),
     };
     let consume = Consume::create(&vec![channel.clone()], &patterns, &continuation, false);
 
@@ -561,6 +567,7 @@ fn event_hash_goldens_produce_with_filled_cell_splices_identically() {
     let datum = ListParWithRandom {
         pars: vec![epathmap_par(interned_map)],
         random_state: rs1,
+        cost_region: None,
     };
     // Sanity: the spliced path is ACTIVE for this datum.
     assert_ne!(
@@ -603,6 +610,8 @@ fn event_hash_goldens_consume_with_filled_cell_splices_identically() {
             random_state: fixture_random_state(),
         })),
         guard: None,
+        cost_region: None,
+        clause_regions: Vec::new(),
     };
     let consume = Consume::create(&vec![channel.clone()], &patterns, &continuation, false);
     check_pinned_hex(
@@ -624,6 +633,8 @@ fn event_hash_goldens_consume_with_filled_cell_splices_identically() {
             random_state: fixture_random_state(),
         })),
         guard: None,
+        cost_region: None,
+        clause_regions: Vec::new(),
     };
     let spliced = Consume::create(
         &vec![channel.clone()],
@@ -645,6 +656,8 @@ fn event_hash_goldens_consume_with_filled_cell_splices_identically() {
             random_state: fixture_random_state(),
         })),
         guard: None,
+        cost_region: None,
+        clause_regions: Vec::new(),
     };
     let direct = Consume::create(&vec![channel], &direct_pattern, &direct_continuation, false);
     assert_eq!(

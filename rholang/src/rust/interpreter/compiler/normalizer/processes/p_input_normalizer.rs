@@ -51,7 +51,7 @@ use crate::rust::interpreter::util::filter_and_adjust_bitset;
 pub(crate) fn descend_p_input<'ast>(
     receipts: &'ast Receipts<'ast>,
     body: AnnProc<'ast>,
-    input: ProcVisitInputs,
+    mut input: ProcVisitInputs,
     parser: &'ast rholang_parser::RholangParser<'ast>,
     construction: &mut ParConstruction,
 ) -> Result<Step<'ast>, InterpreterError> {
@@ -260,6 +260,17 @@ pub(crate) fn descend_p_input<'ast>(
             .iter()
             .flat_map(|receipt_group| receipt_group.iter())
             .collect();
+        let mut pending_tail = input.bound_map_chain.take_pending_clause_regions();
+        let clause_regions = if pending_tail.is_empty() {
+            vec![None; flat_receipts.len()]
+        } else {
+            if pending_tail.len() < flat_receipts.len() {
+                return Err(InterpreterError::BugFoundError(
+                    "signed join clause plan is shorter than its receive binds".to_string(),
+                ));
+            }
+            pending_tail.drain(..flat_receipts.len()).collect()
+        };
 
         let processed_receipts: Result<Vec<_>, InterpreterError> = flat_receipts
             .iter()
@@ -323,6 +334,8 @@ pub(crate) fn descend_p_input<'ast>(
                 persistent,
                 peek,
                 input,
+                clause_regions,
+                pending_tail,
                 phase: InputPhase::Patterns {
                     group_idx: 0,
                     name_idx: 0,
@@ -427,15 +440,19 @@ fn advance_input<'ast>(
                 // body's scope — all of it verbatim from the recursive form.
                 let sources_par = std::mem::take(&mut k.source_pars);
                 let done_patterns = std::mem::take(&mut k.done_patterns);
+                let clause_regions = std::mem::take(&mut k.clause_regions);
                 let mut patterns_locally_free = Vec::new();
                 let bind_inputs = done_patterns
                     .into_iter()
                     .zip(sources_par)
-                    .map(|((patterns, remainder, free_map, locally_free), source)| {
-                        patterns_locally_free =
-                            union(std::mem::take(&mut patterns_locally_free), locally_free);
-                        (patterns, remainder, source, free_map)
-                    })
+                    .zip(clause_regions)
+                    .map(
+                        |(((patterns, remainder, free_map, locally_free), source), cost_region)| {
+                            patterns_locally_free =
+                                union(std::mem::take(&mut patterns_locally_free), locally_free);
+                            (patterns, remainder, source, free_map, cost_region)
+                        },
+                    )
                     .collect();
                 let receive_binds_and_free_maps =
                     pre_sort_planned_binds(construction, bind_inputs)?;
@@ -528,7 +545,10 @@ fn advance_input<'ast>(
                 };
                 let child_input = ProcVisitInputs {
                     par: construction.empty_par()?,
-                    bound_map_chain: k.body_env.clone(),
+                    bound_map_chain: k
+                        .body_env
+                        .clone()
+                        .with_pending_clause_regions(std::mem::take(&mut k.pending_tail)),
                     free_map,
                 };
                 let body = k.body;
@@ -659,6 +679,7 @@ pub(crate) fn combine_p_input<'ast>(
                         source: Some(Par::default()),
                         remainder: bind.remainder.clone(),
                         free_count: bind.free_count,
+                        cost_region: bind.cost_region.clone(),
                     })
                     .collect(),
                 body: Some(Par::default()),
@@ -668,6 +689,7 @@ pub(crate) fn combine_p_input<'ast>(
                 locally_free: locally_free.clone(),
                 connective_used,
                 condition: guard_par.map(|_| Par::default()),
+                cost_region: input.bound_map_chain.cost_region().cloned(),
             };
             let mut children = Vec::with_capacity(
                 receive_binds
@@ -795,6 +817,7 @@ mod tests {
                 source: Some(Par::default()),
                 remainder: None,
                 free_count: 2,
+                cost_region: None,
             }],
             body: Some(new_send_par(
                 new_boundvar_par(1, create_bit_vector(&vec![1]), false),
@@ -811,6 +834,7 @@ mod tests {
             locally_free: Vec::new(),
             connective_used: false,
             condition: None,
+            cost_region: None,
         });
 
         assert_eq!(result.clone().unwrap().par, expected_result);
@@ -895,6 +919,7 @@ mod tests {
                 source: Some(Par::default()),
                 remainder: None,
                 free_count: 1,
+                cost_region: None,
             }],
             body: Some(Par::default()),
             persistent: false,
@@ -903,6 +928,7 @@ mod tests {
             locally_free: Vec::new(),
             connective_used: false,
             condition: None,
+            cost_region: None,
         });
 
         assert_eq!(result.unwrap().par, expected_result);
@@ -1004,6 +1030,7 @@ mod tests {
                 source: Some(Par::default()),
                 remainder: None,
                 free_count: 2,
+                cost_region: None,
             }],
             body: Some({
                 let mut inner_par = Par::default().with_receives(vec![Receive {
@@ -1015,6 +1042,7 @@ mod tests {
                         source: Some(new_gint_par(1, Vec::new(), false)),
                         remainder: None,
                         free_count: 2,
+                        cost_region: None,
                     }],
                     body: Some({
                         let mut par = Par::default().with_sends(vec![
@@ -1042,6 +1070,7 @@ mod tests {
                     locally_free: create_bit_vector(&vec![0, 1]),
                     connective_used: false,
                     condition: None,
+                    cost_region: None,
                 }]);
                 inner_par.locally_free = create_bit_vector(&vec![0, 1]);
                 inner_par
@@ -1052,6 +1081,7 @@ mod tests {
             locally_free: Vec::new(),
             connective_used: false,
             condition: None,
+            cost_region: None,
         });
 
         assert_eq!(result.unwrap().par, expected_result);

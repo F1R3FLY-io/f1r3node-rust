@@ -118,6 +118,7 @@ pub(crate) fn combine_p_contr<'ast>(
                 source: Some(Par::default()),
                 remainder,
                 free_count: bound_count,
+                cost_region: None,
             }],
             body: Some(Par::default()),
             persistent: true,
@@ -126,6 +127,7 @@ pub(crate) fn combine_p_contr<'ast>(
             locally_free: locally_free.clone(),
             connective_used: name_connective_used || body_connective_used,
             condition: None,
+            cost_region: input.bound_map_chain.cost_region().cloned(),
         };
         let mut children = patterns;
         children.push(name_match_result.par);
@@ -272,6 +274,7 @@ mod tests {
                 source: Some(new_boundvar_par(0, create_bit_vector(&vec![0]), false)),
                 remainder: None,
                 free_count: 3,
+                cost_region: None,
             }],
             body: Some(new_send_par(
                 new_boundvar_par(2, create_bit_vector(&vec![2]), false),
@@ -297,6 +300,7 @@ mod tests {
             locally_free: create_bit_vector(&vec![0]),
             connective_used: false,
             condition: None,
+            cost_region: None,
         });
 
         assert_eq!(result.clone().unwrap().par, expected_result);
@@ -362,6 +366,7 @@ mod tests {
                 source: Some(new_boundvar_par(0, create_bit_vector(&vec![0]), false)),
                 remainder: None,
                 free_count: 1,
+                cost_region: None,
             }],
             body: Some(new_send_par(
                 new_boundvar_par(0, create_bit_vector(&vec![0]), false),
@@ -378,6 +383,7 @@ mod tests {
             locally_free: create_bit_vector(&vec![0]),
             connective_used: false,
             condition: None,
+            cost_region: None,
         });
 
         assert_eq!(result.clone().unwrap().par, expected_result);

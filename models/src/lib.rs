@@ -280,6 +280,7 @@ use var::WildcardMsg;
 
 use crate::connective::ConnectiveInstance;
 use crate::expr::ExprInstance;
+use crate::rhoapi::cost_signature_atom::Form;
 use crate::rhoapi::*;
 use crate::servicemodelapi::ServiceError;
 use crate::var::VarInstance;
@@ -333,7 +334,10 @@ use crate::var::VarInstance;
 
 impl PartialEq for TaggedContinuation {
     fn eq(&self, other: &Self) -> bool {
-        self.tagged_cont == other.tagged_cont && self.guard == other.guard
+        self.tagged_cont == other.tagged_cont
+            && self.guard == other.guard
+            && self.cost_region == other.cost_region
+            && self.clause_regions == other.clause_regions
     }
 }
 
@@ -341,6 +345,8 @@ impl Hash for TaggedContinuation {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.tagged_cont.hash(state);
         self.guard.hash(state);
+        self.cost_region.hash(state);
+        self.clause_regions.hash(state);
     }
 }
 
@@ -394,7 +400,9 @@ impl Hash for PCost {
 
 impl PartialEq for ListParWithRandom {
     fn eq(&self, other: &Self) -> bool {
-        self.pars == other.pars && self.random_state == other.random_state
+        self.pars == other.pars
+            && self.random_state == other.random_state
+            && self.cost_region == other.cost_region
     }
 }
 
@@ -402,6 +410,7 @@ impl Hash for ListParWithRandom {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.pars.hash(state);
         self.random_state.hash(state);
+        self.cost_region.hash(state);
     }
 }
 
@@ -464,12 +473,109 @@ impl Hash for Bundle {
     }
 }
 
+impl PartialEq for CostSignature {
+    fn eq(&self, other: &Self) -> bool { self.atoms == other.atoms }
+}
+
+impl Hash for CostSignature {
+    fn hash<H: Hasher>(&self, state: &mut H) { self.atoms.hash(state); }
+}
+
+impl PartialEq for CostSignatureAtom {
+    fn eq(&self, other: &Self) -> bool { self.form == other.form }
+}
+
+impl Hash for CostSignatureAtom {
+    fn hash<H: Hasher>(&self, state: &mut H) { self.form.hash(state); }
+}
+
+impl PartialEq for Form {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Form::Ground(a), Form::Ground(b)) => a == b,
+            (Form::Quote(a), Form::Quote(b)) => a == b,
+            (Form::Bound(a), Form::Bound(b)) => a == b,
+            (Form::RuntimeName(a), Form::RuntimeName(b)) => a == b,
+            (Form::Ground(_), _)
+            | (Form::Quote(_), _)
+            | (Form::Bound(_), _)
+            | (Form::RuntimeName(_), _) => false,
+        }
+    }
+}
+
+impl Hash for Form {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        std::mem::discriminant(self).hash(state);
+        match self {
+            Form::Ground(value) | Form::Quote(value) | Form::RuntimeName(value) => {
+                value.hash(state)
+            }
+            Form::Bound(value) => value.hash(state),
+        }
+    }
+}
+
+impl PartialEq for CostBoundSignature {
+    fn eq(&self, other: &Self) -> bool { self.index == other.index }
+}
+
+impl Hash for CostBoundSignature {
+    fn hash<H: Hasher>(&self, state: &mut H) { self.index.hash(state); }
+}
+
+impl PartialEq for CostRegion {
+    fn eq(&self, other: &Self) -> bool {
+        self.version == other.version
+            && self.start_line == other.start_line
+            && self.start_column == other.start_column
+            && self.end_line == other.end_line
+            && self.end_column == other.end_column
+            && self.signer == other.signer
+            && self.ordinal == other.ordinal
+    }
+}
+
+impl Hash for CostRegion {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.version.hash(state);
+        self.start_line.hash(state);
+        self.start_column.hash(state);
+        self.end_line.hash(state);
+        self.end_column.hash(state);
+        self.signer.hash(state);
+        self.ordinal.hash(state);
+    }
+}
+
+impl PartialEq for CostTokenStack {
+    fn eq(&self, other: &Self) -> bool { self.layers == other.layers }
+}
+
+impl Hash for CostTokenStack {
+    fn hash<H: Hasher>(&self, state: &mut H) { self.layers.hash(state); }
+}
+
+impl PartialEq for CostClauseRegion {
+    fn eq(&self, other: &Self) -> bool {
+        self.bind_index == other.bind_index && self.region == other.region
+    }
+}
+
+impl Hash for CostClauseRegion {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.bind_index.hash(state);
+        self.region.hash(state);
+    }
+}
+
 impl PartialEq for Send {
     fn eq(&self, other: &Self) -> bool {
         self.chan == other.chan
             && self.data == other.data
             && self.persistent == other.persistent
             && self.connective_used == other.connective_used
+            && self.cost_region == other.cost_region
     }
 }
 
@@ -479,6 +585,7 @@ impl Hash for Send {
         self.data.hash(state);
         self.persistent.hash(state);
         self.connective_used.hash(state);
+        self.cost_region.hash(state);
     }
 }
 
@@ -488,6 +595,7 @@ impl PartialEq for ReceiveBind {
             && self.source == other.source
             && self.remainder == other.remainder
             && self.free_count == other.free_count
+            && self.cost_region == other.cost_region
     }
 }
 
@@ -497,6 +605,7 @@ impl Hash for ReceiveBind {
         self.source.hash(state);
         self.remainder.hash(state);
         self.free_count.hash(state);
+        self.cost_region.hash(state);
     }
 }
 
@@ -533,6 +642,7 @@ impl PartialEq for Receive {
             && self.bind_count == other.bind_count
             && self.condition == other.condition
             && self.connective_used == other.connective_used
+            && self.cost_region == other.cost_region
     }
 }
 
@@ -545,6 +655,7 @@ impl Hash for Receive {
         self.bind_count.hash(state);
         self.condition.hash(state);
         self.connective_used.hash(state);
+        self.cost_region.hash(state);
     }
 }
 

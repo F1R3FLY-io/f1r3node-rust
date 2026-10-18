@@ -459,6 +459,7 @@ pub fn substitution_corpus() -> Vec<SubstitutionCase> {
                         var_instance: Some(VarInstance::Wildcard(WildcardMsg {})),
                     }),
                     free_count: 2,
+                    cost_region: None,
                 }],
                 body: Some(models::par_from_default! {
                     exprs: vec![Expr {
@@ -476,6 +477,7 @@ pub fn substitution_corpus() -> Vec<SubstitutionCase> {
                 locally_free: vec![0xff, 0xff, 0xff, 0xff],
                 connective_used: false,
                 condition: Some(bound_var(1)),
+                cost_region: None,
             }],
             ..Default::default()
         },
@@ -576,6 +578,7 @@ pub fn substitution_corpus() -> Vec<SubstitutionCase> {
                 persistent: true,
                 locally_free: vec![0xff, 0xff],
                 connective_used: false,
+                cost_region: None,
             }],
             ..Default::default()
         },
@@ -637,6 +640,7 @@ pub fn substitution_corpus() -> Vec<SubstitutionCase> {
                     source: Some(gint(0)),
                     remainder: None,
                     free_count: 1,
+                    cost_region: None,
                 }],
                 body: Some(bound_var(0)),
                 bind_count: 1,
@@ -772,6 +776,7 @@ pub fn substitution_corpus() -> Vec<SubstitutionCase> {
                             source: Some(bound_var(level)),
                             remainder: None,
                             free_count: 1,
+                            cost_region: None,
                         }],
                         body: Some(binders),
                         persistent: false,
@@ -780,6 +785,7 @@ pub fn substitution_corpus() -> Vec<SubstitutionCase> {
                         locally_free: vec![0xff, 0xff, 0xff, 0xff],
                         connective_used: false,
                         condition: None,
+                        cost_region: None,
                     }],
                     ..Default::default()
                 }),

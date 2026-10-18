@@ -30,6 +30,7 @@ fn deep_new_chain(depth: usize) -> Par {
         persistent: false,
         locally_free: Vec::new(),
         connective_used: false,
+        cost_region: None,
     };
     let send = construction
         .send_component(&send_shell, &[empty])
@@ -137,6 +138,7 @@ fn wide_send_fixture(width: usize, channel_bytes: usize) -> Par {
                 persistent: id % 2 == 0,
                 locally_free: Vec::new(),
                 connective_used: false,
+                cost_region: None,
             })
             .collect(),
     )
@@ -150,6 +152,7 @@ fn compressed_trace_fixture(multiplicity: u64) -> Par {
             source: Some(byte_channel(99, 32)),
             remainder: None,
             free_count: 0,
+            cost_region: None,
         }],
         body: Some(body),
         persistent: false,
@@ -158,6 +161,7 @@ fn compressed_trace_fixture(multiplicity: u64) -> Par {
         locally_free: Vec::new(),
         connective_used: false,
         condition: None,
+        cost_region: None,
     };
     let mut par = Par::default();
     par.insert_component_many(

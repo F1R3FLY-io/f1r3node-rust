@@ -586,6 +586,7 @@ pub(crate) fn rebuild_send(
     locally_free: Vec<u8>,
     connective_used: bool,
     shift: i32,
+    cost_region: Option<models::rhoapi::CostRegion>,
 ) -> Send {
     Send {
         chan: Some(chan),
@@ -593,6 +594,7 @@ pub(crate) fn rebuild_send(
         persistent,
         locally_free: set_bits_until(locally_free, shift),
         connective_used,
+        cost_region,
     }
 }
 
@@ -604,12 +606,14 @@ pub(crate) fn rebuild_receive_bind(
     patterns: Vec<Par>,
     remainder: Option<Var>,
     free_count: i32,
+    cost_region: Option<models::rhoapi::CostRegion>,
 ) -> ReceiveBind {
     ReceiveBind {
         patterns,
         source: Some(source),
         remainder,
         free_count,
+        cost_region,
     }
 }
 
@@ -625,6 +629,7 @@ pub(crate) fn rebuild_receive(
     locally_free: Vec<u8>,
     connective_used: bool,
     shift: i32,
+    cost_region: Option<models::rhoapi::CostRegion>,
 ) -> Receive {
     Receive {
         binds,
@@ -635,6 +640,7 @@ pub(crate) fn rebuild_receive(
         locally_free: set_bits_until(locally_free, shift),
         connective_used,
         condition,
+        cost_region,
     }
 }
 
@@ -742,6 +748,7 @@ pub(crate) fn rebuild_par(
     bundles: Vec<Bundle>,
     conditionals: Vec<If>,
     unforgeables: Vec<models::rhoapi::GUnforgeable>,
+    cost_token_stacks: Vec<models::rhoapi::CostTokenStack>,
     locally_free: Vec<u8>,
     connective_used: bool,
     shift: i32,
@@ -754,6 +761,7 @@ pub(crate) fn rebuild_par(
     shell.replace_unforgeables(unforgeables);
     shell.replace_bundles(bundles);
     shell.replace_conditionals(conditionals);
+    shell.replace_cost_token_stacks(cost_token_stacks);
     shell.replace_locally_free(set_bits_until(locally_free, shift));
     shell.replace_connective_used(connective_used);
     concatenate_pars(exprs_par, concatenate_pars(connectives_par, shell))

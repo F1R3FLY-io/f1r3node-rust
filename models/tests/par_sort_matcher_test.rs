@@ -459,6 +459,7 @@ fn par_should_sort_sends_based_on_persistence_channel_and_data() {
                 persistent: false,
                 locally_free: Vec::new(),
                 connective_used: false,
+                cost_region: None,
             },
             Send {
                 chan: Some(new_gint_par(5, Vec::new(), false)),
@@ -466,6 +467,7 @@ fn par_should_sort_sends_based_on_persistence_channel_and_data() {
                 persistent: true,
                 locally_free: Vec::new(),
                 connective_used: false,
+                cost_region: None,
             },
             Send {
                 chan: Some(new_gint_par(4, Vec::new(), false)),
@@ -473,6 +475,7 @@ fn par_should_sort_sends_based_on_persistence_channel_and_data() {
                 persistent: false,
                 locally_free: Vec::new(),
                 connective_used: false,
+                cost_region: None,
             },
             Send {
                 chan: Some(new_gint_par(5, Vec::new(), false)),
@@ -480,6 +483,7 @@ fn par_should_sort_sends_based_on_persistence_channel_and_data() {
                 persistent: false,
                 locally_free: Vec::new(),
                 connective_used: false,
+                cost_region: None,
             },
         ],
         ..Default::default()
@@ -493,6 +497,7 @@ fn par_should_sort_sends_based_on_persistence_channel_and_data() {
                 persistent: false,
                 locally_free: Vec::new(),
                 connective_used: false,
+                cost_region: None,
             },
             Send {
                 chan: Some(new_gint_par(5, Vec::new(), false)),
@@ -500,6 +505,7 @@ fn par_should_sort_sends_based_on_persistence_channel_and_data() {
                 persistent: false,
                 locally_free: Vec::new(),
                 connective_used: false,
+                cost_region: None,
             },
             Send {
                 chan: Some(new_gint_par(5, Vec::new(), false)),
@@ -507,6 +513,7 @@ fn par_should_sort_sends_based_on_persistence_channel_and_data() {
                 persistent: false,
                 locally_free: Vec::new(),
                 connective_used: false,
+                cost_region: None,
             },
             Send {
                 chan: Some(new_gint_par(5, Vec::new(), false)),
@@ -514,6 +521,7 @@ fn par_should_sort_sends_based_on_persistence_channel_and_data() {
                 persistent: true,
                 locally_free: Vec::new(),
                 connective_used: false,
+                cost_region: None,
             },
         ],
         ..Default::default()
@@ -537,6 +545,7 @@ fn par_should_sort_receives_based_on_persistence_peek_channels_patterns_and_body
                     source: Some(new_gint_par(3, Vec::new(), false)),
                     remainder: None,
                     free_count: 0,
+                    cost_region: None,
                 }],
                 body: Some(Par::default()),
                 persistent: false,
@@ -545,6 +554,7 @@ fn par_should_sort_receives_based_on_persistence_peek_channels_patterns_and_body
                 locally_free: Vec::new(),
                 connective_used: false,
                 condition: None,
+                cost_region: None,
             },
             Receive {
                 binds: vec![ReceiveBind {
@@ -552,6 +562,7 @@ fn par_should_sort_receives_based_on_persistence_peek_channels_patterns_and_body
                     source: Some(new_gint_par(3, Vec::new(), false)),
                     remainder: None,
                     free_count: 0,
+                    cost_region: None,
                 }],
                 body: Some(new_boundvar_par(0, Vec::new(), false)),
                 persistent: false,
@@ -560,6 +571,7 @@ fn par_should_sort_receives_based_on_persistence_peek_channels_patterns_and_body
                 locally_free: Vec::new(),
                 connective_used: false,
                 condition: None,
+                cost_region: None,
             },
             Receive {
                 binds: vec![ReceiveBind {
@@ -567,6 +579,7 @@ fn par_should_sort_receives_based_on_persistence_peek_channels_patterns_and_body
                     source: Some(new_gint_par(3, Vec::new(), false)),
                     remainder: None,
                     free_count: 0,
+                    cost_region: None,
                 }],
                 body: Some(Par::default()),
                 persistent: false,
@@ -575,6 +588,7 @@ fn par_should_sort_receives_based_on_persistence_peek_channels_patterns_and_body
                 locally_free: Vec::new(),
                 connective_used: false,
                 condition: None,
+                cost_region: None,
             },
             Receive {
                 binds: vec![ReceiveBind {
@@ -582,6 +596,7 @@ fn par_should_sort_receives_based_on_persistence_peek_channels_patterns_and_body
                     source: Some(new_gint_par(3, Vec::new(), false)),
                     remainder: None,
                     free_count: 0,
+                    cost_region: None,
                 }],
                 body: Some(Par::default()),
                 persistent: true,
@@ -590,6 +605,7 @@ fn par_should_sort_receives_based_on_persistence_peek_channels_patterns_and_body
                 locally_free: Vec::new(),
                 connective_used: false,
                 condition: None,
+                cost_region: None,
             },
             Receive {
                 binds: vec![ReceiveBind {
@@ -597,6 +613,7 @@ fn par_should_sort_receives_based_on_persistence_peek_channels_patterns_and_body
                     source: Some(new_gint_par(3, Vec::new(), false)),
                     remainder: None,
                     free_count: 0,
+                    cost_region: None,
                 }],
                 body: Some(Par::default()),
                 persistent: true,
@@ -605,6 +622,7 @@ fn par_should_sort_receives_based_on_persistence_peek_channels_patterns_and_body
                 locally_free: Vec::new(),
                 connective_used: false,
                 condition: None,
+                cost_region: None,
             },
             Receive {
                 binds: vec![ReceiveBind {
@@ -612,6 +630,7 @@ fn par_should_sort_receives_based_on_persistence_peek_channels_patterns_and_body
                     source: Some(new_gint_par(2, Vec::new(), false)),
                     remainder: None,
                     free_count: 0,
+                    cost_region: None,
                 }],
                 body: Some(Par::default()),
                 persistent: false,
@@ -620,6 +639,7 @@ fn par_should_sort_receives_based_on_persistence_peek_channels_patterns_and_body
                 locally_free: Vec::new(),
                 connective_used: false,
                 condition: None,
+                cost_region: None,
             },
         ],
         ..Default::default()
@@ -633,6 +653,7 @@ fn par_should_sort_receives_based_on_persistence_peek_channels_patterns_and_body
                     source: Some(new_gint_par(2, Vec::new(), false)),
                     remainder: None,
                     free_count: 0,
+                    cost_region: None,
                 }],
                 body: Some(Par::default()),
                 persistent: false,
@@ -641,6 +662,7 @@ fn par_should_sort_receives_based_on_persistence_peek_channels_patterns_and_body
                 locally_free: Vec::new(),
                 connective_used: false,
                 condition: None,
+                cost_region: None,
             },
             Receive {
                 binds: vec![ReceiveBind {
@@ -648,6 +670,7 @@ fn par_should_sort_receives_based_on_persistence_peek_channels_patterns_and_body
                     source: Some(new_gint_par(3, Vec::new(), false)),
                     remainder: None,
                     free_count: 0,
+                    cost_region: None,
                 }],
                 body: Some(Par::default()),
                 persistent: false,
@@ -656,6 +679,7 @@ fn par_should_sort_receives_based_on_persistence_peek_channels_patterns_and_body
                 locally_free: Vec::new(),
                 connective_used: false,
                 condition: None,
+                cost_region: None,
             },
             Receive {
                 binds: vec![ReceiveBind {
@@ -663,6 +687,7 @@ fn par_should_sort_receives_based_on_persistence_peek_channels_patterns_and_body
                     source: Some(new_gint_par(3, Vec::new(), false)),
                     remainder: None,
                     free_count: 0,
+                    cost_region: None,
                 }],
                 body: Some(new_boundvar_par(0, Vec::new(), false)),
                 persistent: false,
@@ -671,6 +696,7 @@ fn par_should_sort_receives_based_on_persistence_peek_channels_patterns_and_body
                 locally_free: Vec::new(),
                 connective_used: false,
                 condition: None,
+                cost_region: None,
             },
             Receive {
                 binds: vec![ReceiveBind {
@@ -678,6 +704,7 @@ fn par_should_sort_receives_based_on_persistence_peek_channels_patterns_and_body
                     source: Some(new_gint_par(3, Vec::new(), false)),
                     remainder: None,
                     free_count: 0,
+                    cost_region: None,
                 }],
                 body: Some(Par::default()),
                 persistent: false,
@@ -686,6 +713,7 @@ fn par_should_sort_receives_based_on_persistence_peek_channels_patterns_and_body
                 locally_free: Vec::new(),
                 connective_used: false,
                 condition: None,
+                cost_region: None,
             },
             Receive {
                 binds: vec![ReceiveBind {
@@ -693,6 +721,7 @@ fn par_should_sort_receives_based_on_persistence_peek_channels_patterns_and_body
                     source: Some(new_gint_par(3, Vec::new(), false)),
                     remainder: None,
                     free_count: 0,
+                    cost_region: None,
                 }],
                 body: Some(Par::default()),
                 persistent: true,
@@ -701,6 +730,7 @@ fn par_should_sort_receives_based_on_persistence_peek_channels_patterns_and_body
                 locally_free: Vec::new(),
                 connective_used: false,
                 condition: None,
+                cost_region: None,
             },
             Receive {
                 binds: vec![ReceiveBind {
@@ -708,6 +738,7 @@ fn par_should_sort_receives_based_on_persistence_peek_channels_patterns_and_body
                     source: Some(new_gint_par(3, Vec::new(), false)),
                     remainder: None,
                     free_count: 0,
+                    cost_region: None,
                 }],
                 body: Some(Par::default()),
                 persistent: true,
@@ -716,6 +747,7 @@ fn par_should_sort_receives_based_on_persistence_peek_channels_patterns_and_body
                 locally_free: Vec::new(),
                 connective_used: false,
                 condition: None,
+                cost_region: None,
             },
         ],
         ..Default::default()

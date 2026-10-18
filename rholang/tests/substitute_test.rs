@@ -145,6 +145,7 @@ fn bound_var_should_be_substituted_with_expression() {
         persistent: false,
         locally_free: create_bit_vector(&vec![0]),
         connective_used: false,
+        cost_region: None,
     }];
     let source = Par::default().with_sends(new_sends);
     let mut env = Env::new();
@@ -195,6 +196,7 @@ fn send_should_leave_variables_not_in_the_environment_alone() {
         persistent: false,
         locally_free: create_bit_vector(&vec![0]),
         connective_used: false,
+        cost_region: None,
     };
 
     let substitution = substitute_instance().substitute(send.clone(), DEPTH, &env);
@@ -216,11 +218,13 @@ fn send_should_substitute_bound_vars_for_values() {
             persistent: false,
             locally_free: create_bit_vector(&vec![1]),
             connective_used: false,
+            cost_region: None,
         }])),
         data: vec![Par::default()],
         persistent: false,
         locally_free: create_bit_vector(&vec![1]),
         connective_used: false,
+        cost_region: None,
     };
 
     let substitution = substitute_instance().substitute(send, DEPTH, &env);
@@ -232,11 +236,13 @@ fn send_should_substitute_bound_vars_for_values() {
             persistent: false,
             locally_free: Vec::new(),
             connective_used: false,
+            cost_region: None,
         }])),
         data: vec![Par::default()],
         persistent: false,
         locally_free: Vec::new(),
         connective_used: false,
+        cost_region: None,
     })
 }
 
@@ -254,10 +260,12 @@ fn send_should_substitute_all_bound_vars_for_values() {
             persistent: false,
             locally_free: create_bit_vector(&vec![0]),
             connective_used: false,
+            cost_region: None,
         }])],
         persistent: false,
         locally_free: create_bit_vector(&vec![0]),
         connective_used: false,
+        cost_region: None,
     };
 
     let expected_result = Send {
@@ -268,10 +276,12 @@ fn send_should_substitute_all_bound_vars_for_values() {
             persistent: false,
             locally_free: Vec::new(),
             connective_used: false,
+            cost_region: None,
         }])],
         persistent: false,
         locally_free: Vec::new(),
         connective_used: false,
+        cost_region: None,
     };
 
     let substitution = substitute_instance().substitute(target, DEPTH, &env);
@@ -290,6 +300,7 @@ fn send_should_substitute_all_bound_vars_for_values_in_environment() {
             persistent: false,
             locally_free: create_bit_vector(&vec![0]),
             connective_used: false,
+            cost_region: None,
         }])),
         uri: vec![],
         injections: BTreeMap::new(),
@@ -306,10 +317,12 @@ fn send_should_substitute_all_bound_vars_for_values_in_environment() {
             persistent: false,
             locally_free: create_bit_vector(&vec![0]),
             connective_used: false,
+            cost_region: None,
         }])],
         persistent: false,
         locally_free: create_bit_vector(&vec![0]),
         connective_used: false,
+        cost_region: None,
     };
 
     let substitution = substitute_instance().substitute(target, DEPTH, &env);
@@ -321,6 +334,7 @@ fn send_should_substitute_all_bound_vars_for_values_in_environment() {
         persistent: false,
         locally_free: create_bit_vector(&vec![0]),
         connective_used: false,
+        cost_region: None,
     }]));
     assert_eq!(substitution.unwrap(), Send {
         chan: Some(Par::default().with_news(vec![New {
@@ -342,10 +356,12 @@ fn send_should_substitute_all_bound_vars_for_values_in_environment() {
             persistent: false,
             locally_free: Vec::new(),
             connective_used: false,
+            cost_region: None,
         }])],
         persistent: false,
         locally_free: Vec::new(),
         connective_used: false,
+        cost_region: None,
     })
 }
 
@@ -363,6 +379,7 @@ fn new_should_only_substitute_body_of_expression() {
             persistent: false,
             locally_free: create_bit_vector(&vec![1]),
             connective_used: false,
+            cost_region: None,
         }])),
         uri: vec![],
         injections: BTreeMap::new(),
@@ -379,7 +396,8 @@ fn new_should_only_substitute_body_of_expression() {
             data: vec![Par::default()],
             persistent: false,
             locally_free: Vec::new(),
-            connective_used: false
+            connective_used: false,
+            cost_region: None,
         }])),
         uri: vec![],
         injections: BTreeMap::new(),
@@ -405,10 +423,12 @@ fn new_should_only_substitute_all_variables_in_body_of_expression() {
                 persistent: false,
                 locally_free: create_bit_vector(&vec![2]),
                 connective_used: false,
+                cost_region: None,
             }])],
             persistent: false,
             locally_free: create_bit_vector(&vec![2, 3]),
             connective_used: false,
+            cost_region: None,
         }])),
         uri: vec![],
         injections: BTreeMap::new(),
@@ -427,11 +447,13 @@ fn new_should_only_substitute_all_variables_in_body_of_expression() {
                 data: vec![Par::default()],
                 persistent: false,
                 locally_free: vec![],
-                connective_used: false
+                connective_used: false,
+                cost_region: None,
             }])],
             persistent: false,
             locally_free: Vec::new(),
-            connective_used: false
+            connective_used: false,
+            cost_region: None,
         }])),
         uri: vec![],
         injections: BTreeMap::new(),
@@ -469,6 +491,7 @@ fn bundle_should_substitute_within_the_body_of_the_bundle() {
             persistent: false,
             locally_free: create_bit_vector(&vec![0]),
             connective_used: false,
+            cost_region: None,
         }])),
         write_flag: false,
         read_flag: false,
@@ -483,7 +506,8 @@ fn bundle_should_substitute_within_the_body_of_the_bundle() {
             data: vec![Par::default()],
             persistent: false,
             locally_free: vec![],
-            connective_used: false
+            connective_used: false,
+            cost_region: None,
         }])),
         write_flag: false,
         read_flag: false
@@ -507,10 +531,12 @@ fn bundle_should_only_substitute_all_vars_inside_body() {
                 persistent: false,
                 locally_free: create_bit_vector(&vec![0]),
                 connective_used: false,
+                cost_region: None,
             }])],
             persistent: false,
             locally_free: create_bit_vector(&vec![0, 1]),
             connective_used: false,
+            cost_region: None,
         }])),
         write_flag: false,
         read_flag: false,
@@ -528,10 +554,12 @@ fn bundle_should_only_substitute_all_vars_inside_body() {
                 persistent: false,
                 locally_free: Vec::new(),
                 connective_used: false,
+                cost_region: None,
             }])],
             persistent: false,
             locally_free: vec![],
-            connective_used: false
+            connective_used: false,
+            cost_region: None,
         }])),
         write_flag: false,
         read_flag: false
@@ -784,6 +812,7 @@ fn e_plus_plus_should_be_substituted_correctly() {
         persistent: false,
         locally_free: create_bit_vector(&vec![0]),
         connective_used: false,
+        cost_region: None,
     }]);
     source.locally_free = create_bit_vector(&vec![0]);
     let mut env = Env::new();
@@ -819,6 +848,7 @@ fn e_percent_percent_should_be_substituted_correctly() {
         persistent: false,
         locally_free: create_bit_vector(&vec![0]),
         connective_used: false,
+        cost_region: None,
     }]);
     source.locally_free = create_bit_vector(&vec![0]);
     let mut env = Env::new();
@@ -854,6 +884,7 @@ fn e_minus_minus_should_be_substituted_correctly() {
         persistent: false,
         locally_free: create_bit_vector(&vec![0]),
         connective_used: false,
+        cost_region: None,
     }]);
     source.locally_free = create_bit_vector(&vec![0]);
     let mut env = Env::new();

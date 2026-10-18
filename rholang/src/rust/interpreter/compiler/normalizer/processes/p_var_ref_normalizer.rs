@@ -284,6 +284,7 @@ mod tests {
                     source: Some(Par::default()),
                     remainder: None,
                     free_count: 0,
+                    cost_region: None,
                 }],
                 body: Some(Par::default()),
                 persistent: false,
@@ -292,6 +293,7 @@ mod tests {
                 locally_free: create_bit_vector(&vec![0]),
                 connective_used: false,
                 condition: None,
+                cost_region: None,
             }])
             .with_locally_free(create_bit_vector(&vec![0]));
 

@@ -16,9 +16,10 @@ use models::rhoapi::connective::ConnectiveInstance::{
 };
 use models::rhoapi::expr::ExprInstance::EPathmapBody;
 use models::rhoapi::{
-    Bundle, Connective, ConnectiveBody, DeployId, DeployerId, EPathMap, ETuple, Expr, GBigRational,
-    GDeployId, GFixedPoint, GUnforgeable, If, KeyValuePair, Match, MatchCase, New, PCost, Par,
-    Receive, ReceiveBind, Send, Var, VarRef,
+    Bundle, Connective, ConnectiveBody, CostBoundSignature, CostClauseRegion, CostRegion,
+    CostSignature, CostSignatureAtom, CostTokenStack, DeployId, DeployerId, EPathMap, ETuple, Expr,
+    GBigRational, GDeployId, GFixedPoint, GUnforgeable, If, KeyValuePair, Match, MatchCase, New,
+    PCost, Par, Receive, ReceiveBind, Send, Var, VarRef,
 };
 use models::rust::par_bag::ParBag;
 use models::rust::par_construction::ParConstruction;
@@ -393,6 +394,7 @@ fn guarded_concrete_receive(condition: Par, peek: bool, locally_free: Vec<u8>) -
                 source: Some(new_gint_par(1, Vec::new(), false)),
                 remainder: None,
                 free_count: 0,
+                cost_region: None,
             }],
             body: Some(new_gint_par(2, Vec::new(), false)),
             persistent: false,
@@ -401,6 +403,7 @@ fn guarded_concrete_receive(condition: Par, peek: bool, locally_free: Vec<u8>) -
             locally_free,
             connective_used: false,
             condition: Some(condition),
+            cost_region: None,
         }],
         ..Default::default()
     }
@@ -459,6 +462,7 @@ fn concrete_receive_region_route_preserves_legacy_zip_equations() {
         source: Some(new_gint_par(source, Vec::new(), false)),
         remainder: None,
         free_count: 0,
+        cost_region: None,
     };
     let receive = |binds: Vec<ReceiveBind>| {
         models::par_from_default! {
@@ -471,6 +475,7 @@ fn concrete_receive_region_route_preserves_legacy_zip_equations() {
                 locally_free: Vec::new(),
                 connective_used: false,
                 condition: None,
+                cost_region: None,
             }],
             ..Default::default()
         }
@@ -680,6 +685,7 @@ enum OwnedGeneratedQueryRoot {
     Connective(Connective),
     Bundle(Bundle),
     If(If),
+    CostTokenStack(CostTokenStack),
 }
 
 impl OwnedGeneratedQueryRoot {
@@ -694,6 +700,7 @@ impl OwnedGeneratedQueryRoot {
             Self::Connective(value) => ParCursor::from(value),
             Self::Bundle(value) => ParCursor::from(value),
             Self::If(value) => ParCursor::from(value),
+            Self::CostTokenStack(value) => ParCursor::from(value),
         }
     }
 }
@@ -718,6 +725,7 @@ fn enqueue_par_bag_components(bag: &ParBag, pending: &mut Vec<OwnedGeneratedQuer
     enqueue!(Connective, Connective);
     enqueue!(Bundle, Bundle);
     enqueue!(If, If);
+    enqueue!(CostTokenStack, CostTokenStack);
 }
 
 #[test]
@@ -810,6 +818,27 @@ fn compiled_rho_path_query_is_a_superset_of_every_recursive_oracle_success() {
         &mut pending_bag_components,
     );
 
+    // These generated roots are not all reachable from the older Par corpus.
+    // Keep the schema census total as the matcher registry grows.
+    macro_rules! cover_default_root {
+        ($type:ty) => {{
+            let value = <$type>::default();
+            cover_generated_query_root(
+                concat!(stringify!($type), "/default"),
+                ParCursor::from(&value),
+                &mut observed,
+                &mut compiled,
+                &mut pending_bag_components,
+            );
+        }};
+    }
+    cover_default_root!(CostBoundSignature);
+    cover_default_root!(CostClauseRegion);
+    cover_default_root!(CostRegion);
+    cover_default_root!(CostSignature);
+    cover_default_root!(CostSignatureAtom);
+    cover_default_root!(CostTokenStack);
+
     while let Some(root) = pending_bag_components.pop() {
         let case = format!("ParBag/{}", root.cursor().program().type_name);
         cover_generated_query_root(
@@ -894,12 +923,14 @@ fn dynamic_direct_match_value_rows_decline_when_receive_bind_ignored_fields_diff
         source: Some(new_gint_par(7, Vec::new(), false)),
         remainder: Some(Var::default()),
         free_count: 41,
+        cost_region: None,
     };
     let pattern = ReceiveBind {
         patterns: vec![new_gint_par(3, Vec::new(), false)],
         source: Some(new_freevar_par(0, Vec::new())),
         remainder: None,
         free_count: 0,
+        cost_region: None,
     };
 
     let mut oracle = RecursiveContext::new();
@@ -971,6 +1002,7 @@ fn ground_direct_match_value_rows_keep_the_exact_query_lane() {
         source: Some(new_gint_par(7, Vec::new(), false)),
         remainder: None,
         free_count: 0,
+        cost_region: None,
     };
     assert_eq!(
         receive_bind_ac_query_acceptance(bind.clone(), bind),
@@ -1153,6 +1185,7 @@ fn send_value(chan: Par, data: Vec<Par>, connective_used: bool) -> Send {
         persistent: false,
         locally_free: Vec::new(),
         connective_used,
+        cost_region: None,
     }
 }
 
@@ -1172,6 +1205,7 @@ fn receive(source: Par, body: Par, connective_used: bool) -> Par {
                 source: Some(source),
                 remainder: None,
                 free_count: 0,
+                cost_region: None,
             }],
             body: Some(body),
             persistent: false,
@@ -1180,6 +1214,7 @@ fn receive(source: Par, body: Par, connective_used: bool) -> Par {
             locally_free: Vec::new(),
             connective_used,
             condition: None,
+            cost_region: None,
         }],
         connective_used,
         ..Default::default()

@@ -251,6 +251,7 @@ fn deep_new_chain(depth: usize) -> (Par, Vec<u8>, Vec<u8>) {
         persistent: false,
         locally_free: Vec::new(),
         connective_used: false,
+        cost_region: None,
     };
     let first_send = construction
         .send_component(&send_shell, &[first_channel])

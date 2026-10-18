@@ -32,6 +32,7 @@ fn bootstrap(channel: Par) -> New {
                 source: Some(channel.clone()),
                 remainder: None,
                 free_count: 1,
+                cost_region: None,
             }],
             // x!(channel)
             body: Some(Par::default().with_sends(vec![Send {
@@ -40,6 +41,7 @@ fn bootstrap(channel: Par) -> New {
                 persistent: false,
                 locally_free: Vec::new(),
                 connective_used: false,
+                cost_region: None,
             }])),
             persistent: false,
             peek: false,
@@ -47,6 +49,7 @@ fn bootstrap(channel: Par) -> New {
             locally_free: Vec::new(),
             connective_used: false,
             condition: None,
+            cost_region: None,
         }])),
         uri: Vec::new(),
         injections: BTreeMap::default(),

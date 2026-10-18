@@ -26,9 +26,10 @@ fn projection_preserves_presence_order_unknowns_and_metadata() {
         persistent: true,
         locally_free: vec![1, 4, 9],
         connective_used: true,
+        cost_region: None,
     };
     let mut canonical = protobuf_encoder::encode_to_vec(&value);
-    prost::encoding::encode_key(7, WireType::Varint, &mut canonical);
+    prost::encoding::encode_key(8, WireType::Varint, &mut canonical);
     prost::encoding::encode_varint(17, &mut canonical);
 
     let projected = decode_resident_send_projection(&canonical)
@@ -124,6 +125,7 @@ fn deep_unary_data_decodes_through_the_resident_endpoint_on_a_small_stack() {
                 persistent: true,
                 locally_free: vec![1, 2, 3],
                 connective_used: true,
+                cost_region: None,
             };
             let resident = Par::default().with_sends(vec![original.clone()]);
             let mut endpoint = None;

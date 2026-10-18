@@ -176,6 +176,7 @@ pub fn generate_send(depth: usize) -> BoxedStrategy<Send> {
             persistent: false,
             locally_free: vec![],
             connective_used: false,
+            cost_region: None,
         })
         .boxed();
     }
@@ -194,6 +195,7 @@ pub fn generate_send(depth: usize) -> BoxedStrategy<Send> {
                 persistent,
                 locally_free,
                 connective_used,
+                cost_region: None,
             },
         )
         .boxed()
@@ -216,6 +218,7 @@ pub fn generate_receive(depth: usize) -> BoxedStrategy<Receive> {
             locally_free: vec![],
             connective_used: false,
             condition: None,
+            cost_region: None,
         })
         .boxed();
     }
@@ -233,6 +236,7 @@ pub fn generate_receive(depth: usize) -> BoxedStrategy<Receive> {
                     source: Some(source),
                     remainder,
                     free_count,
+                    cost_region: None,
                 }),
             0..=2,
         ),
@@ -253,6 +257,7 @@ pub fn generate_receive(depth: usize) -> BoxedStrategy<Receive> {
                 locally_free,
                 connective_used,
                 condition: None,
+                cost_region: None,
             },
         )
         .boxed()

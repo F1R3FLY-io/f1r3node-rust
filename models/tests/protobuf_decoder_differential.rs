@@ -121,10 +121,8 @@ fn assert_root_equivalent<T>(
 
 #[test]
 fn exhaustive_valid_corpora_decode_identically() {
-    // `.rhoapi.Par` is the one external PathMap-backed feedback vertex; the
-    // generator owns the remaining 56 message programs.
-    assert_eq!(GENERATED_PROTOBUF_MESSAGE_COUNT, 56);
-    assert_eq!(GENERATED_PROTOBUF_ONEOF_COUNT, 5);
+    assert_eq!(GENERATED_PROTOBUF_MESSAGE_COUNT, 62);
+    assert_eq!(GENERATED_PROTOBUF_ONEOF_COUNT, 6);
 
     let pars = corpus::par_corpus();
     assert!(

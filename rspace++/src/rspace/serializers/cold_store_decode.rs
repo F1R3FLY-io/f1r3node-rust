@@ -183,6 +183,7 @@ pub enum ColdStoreDecodeError {
     /// pre-allocation and the element loop then hits the end of the slice.
     /// The arm exists so a 32-bit target agrees too.
     LengthOverflow(u64),
+    UnsupportedCostAuthorityVersion(u8),
     /// The delegating (bincode-backed) decode of a bounded type failed. Carries
     /// bincode's own message.
     Legacy(String),
@@ -224,6 +225,9 @@ impl fmt::Display for ColdStoreDecodeError {
             ColdStoreDecodeError::InvalidUtf8Encoding => write!(f, "string is not valid utf8"),
             ColdStoreDecodeError::LengthOverflow(n) => {
                 write!(f, "invalid size {}: sizes must fit in a usize", n)
+            }
+            ColdStoreDecodeError::UnsupportedCostAuthorityVersion(version) => {
+                write!(f, "unsupported cost-authority record version: {}", version)
             }
             ColdStoreDecodeError::Legacy(msg) => write!(f, "{}", msg),
             ColdStoreDecodeError::MachineInvariant(what) => write!(

@@ -251,6 +251,7 @@ fn canonical_new_and_send_cursors_borrow_children_and_reject_noncanonical_framin
         persistent: true,
         locally_free: vec![1],
         connective_used: true,
+        cost_region: None,
     };
     let send_bytes = models::rust::rholang::protobuf_encoder::encode_to_vec(&send);
     let send_parts = canonical_send_parts(&send_bytes).expect("canonical Send cursor");
@@ -1301,9 +1302,22 @@ fn admitted_legacy_observations(par: &Par) -> AdmittedLegacyObservations {
     };
     use rspace_plus_plus::rspace::state::rspace_state_authority::RSpaceStateAuthority;
 
+    #[derive(serde::Serialize)]
+    struct LegacyDatumHashImage {
+        pars: Vec<Par>,
+        random_state: Vec<u8>,
+    }
+
+    #[derive(serde::Serialize)]
+    struct LegacyContinuationHashImage {
+        guard: Option<Par>,
+        tagged_cont: Option<TaggedCont>,
+    }
+
     let datum_value = ListParWithRandom {
         pars: vec![par.clone(), par.clone()],
         random_state: vec![1, 7, 9],
+        cost_region: None,
     };
     let pattern = BindPattern {
         patterns: vec![par.clone()],
@@ -1316,6 +1330,8 @@ fn admitted_legacy_observations(par: &Par) -> AdmittedLegacyObservations {
             body: Some(par.clone()),
             random_state: vec![2, 8],
         })),
+        cost_region: None,
+        clause_regions: Vec::new(),
     };
     let event_preimages = [
         event_hash_bytes_list_par_with_random(&datum_value),
@@ -1324,10 +1340,21 @@ fn admitted_legacy_observations(par: &Par) -> AdmittedLegacyObservations {
     ];
     assert_eq!(
         event_preimages[0],
-        bincode::serialize(&datum_value).unwrap()
+        bincode::serialize(&LegacyDatumHashImage {
+            pars: datum_value.pars.clone(),
+            random_state: datum_value.random_state.clone(),
+        })
+        .unwrap()
     );
     assert_eq!(event_preimages[1], bincode::serialize(&pattern).unwrap());
-    assert_eq!(event_preimages[2], bincode::serialize(&body).unwrap());
+    assert_eq!(
+        event_preimages[2],
+        bincode::serialize(&LegacyContinuationHashImage {
+            guard: body.guard.clone(),
+            tagged_cont: body.tagged_cont.clone(),
+        })
+        .unwrap()
+    );
     let datum = Datum::create(par, datum_value, false);
     let channels = vec![par.clone()];
     let continuation = WaitingContinuation::create(

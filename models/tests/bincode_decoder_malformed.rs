@@ -58,10 +58,12 @@ use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 use std::sync::{Mutex, MutexGuard};
 
+use models::rhoapi::tagged_continuation::TaggedCont;
 use models::rhoapi::{
-    BindPattern, Bundle, Connective, Expr, GUnforgeable, If, ListParWithRandom, Match, New, Par,
-    Receive, Send, TaggedContinuation,
+    BindPattern, Bundle, Connective, CostClauseRegion, CostRegion, Expr, GUnforgeable, If,
+    ListParWithRandom, Match, New, Par, Receive, Send, TaggedContinuation,
 };
+use models::rust::rholang::bincode_encoder::ColdStoreEncode;
 use rspace_plus_plus::rspace::serializers::cold_store_decode::ColdStoreDecode;
 use serde::Deserialize;
 
@@ -154,6 +156,17 @@ where
     T: ColdStoreDecode + for<'de> Deserialize<'de> + PartialEq + std::fmt::Debug,
     F: FnOnce() -> String,
 {
+    assert_agree_with::<T, F, _>(label, bytes, rejections, |bytes| {
+        bincode::deserialize(bytes).map_err(|error| error.to_string())
+    });
+}
+
+fn assert_agree_with<T, F, O>(label: F, bytes: &[u8], rejections: &mut usize, decode_oracle: O)
+where
+    T: ColdStoreDecode + PartialEq + std::fmt::Debug,
+    F: FnOnce() -> String,
+    O: FnOnce(&[u8]) -> Result<T, String>,
+{
     // The generated machine gets the strict bound. The third-party derived
     // oracle can hold one independent 1 MiB cautious buffer for each nested
     // sequence while it recursively descends, so it receives a wider bound and
@@ -163,7 +176,7 @@ where
 
     reset_max_allocation_request();
     let oracle_baseline = start_heap_window();
-    let oracle: Result<T, _> = bincode::deserialize(bytes);
+    let oracle = decode_oracle(bytes);
     let oracle_max = max_allocation_request();
     let oracle_peak = heap_window_peak(oracle_baseline);
     reset_max_allocation_request();
@@ -212,6 +225,41 @@ where
     }
 }
 
+fn decode_datum_oracle(bytes: &[u8]) -> Result<ListParWithRandom, String> {
+    if bytes.starts_with(&u64::MAX.to_le_bytes()) {
+        if bytes.get(8) != Some(&1) {
+            return Err("unsupported cost-authority datum version".to_string());
+        }
+        bincode::deserialize(&bytes[9..]).map_err(|error| error.to_string())
+    } else {
+        let (pars, random_state): (Vec<Par>, Vec<u8>) =
+            bincode::deserialize(bytes).map_err(|error| error.to_string())?;
+        Ok(ListParWithRandom {
+            pars,
+            random_state,
+            cost_region: None,
+        })
+    }
+}
+
+fn decode_continuation_oracle(bytes: &[u8]) -> Result<TaggedContinuation, String> {
+    if bytes.first() == Some(&2) {
+        if bytes.get(1) != Some(&1) {
+            return Err("unsupported cost-authority continuation version".to_string());
+        }
+        bincode::deserialize(&bytes[2..]).map_err(|error| error.to_string())
+    } else {
+        let (guard, tagged_cont): (Option<Par>, Option<TaggedCont>) =
+            bincode::deserialize(bytes).map_err(|error| error.to_string())?;
+        Ok(TaggedContinuation {
+            guard,
+            tagged_cont,
+            cost_region: None,
+            clause_regions: Vec::new(),
+        })
+    }
+}
+
 /// The seven exhaustive mutation families are deliberately CPU-heavy and each
 /// walks the same allocation-rich corpus. Libtest would otherwise launch them
 /// concurrently in one process, multiplying their allocator high-water marks
@@ -242,7 +290,7 @@ fn encodings() -> Vec<(String, Kind, Vec<u8>)> {
         out.push((
             format!("ListParWithRandom::{label}"),
             Kind::ListParWithRandom,
-            bincode::serialize(&v).expect("serialize"),
+            v.cold_encode(),
         ));
     }
     for (label, v) in corpus::bind_pattern_corpus() {
@@ -256,9 +304,36 @@ fn encodings() -> Vec<(String, Kind, Vec<u8>)> {
         out.push((
             format!("TaggedContinuation::{label}"),
             Kind::TaggedContinuation,
-            bincode::serialize(&v).expect("serialize"),
+            v.cold_encode(),
         ));
     }
+    let authority = CostRegion {
+        version: 1,
+        ..Default::default()
+    };
+    out.push((
+        "ListParWithRandom::authority".to_string(),
+        Kind::ListParWithRandom,
+        ListParWithRandom {
+            pars: vec![Par::default()],
+            cost_region: Some(authority.clone()),
+            ..Default::default()
+        }
+        .cold_encode(),
+    ));
+    out.push((
+        "TaggedContinuation::authority".to_string(),
+        Kind::TaggedContinuation,
+        TaggedContinuation {
+            cost_region: Some(authority.clone()),
+            clause_regions: vec![CostClauseRegion {
+                bind_index: 0,
+                region: Some(authority),
+            }],
+            ..Default::default()
+        }
+        .cold_encode(),
+    ));
     let par = corpus::all_par_fields();
     let send = par.first::<Send>().unwrap().unwrap().0;
     out.push(component_encoding("Send", Kind::Send, &send));
@@ -370,9 +445,19 @@ where F: FnOnce() -> String {
         Kind::Bundle => assert_agree::<Bundle, _>(label, bytes, rejections),
         Kind::Connective => assert_agree::<Connective, _>(label, bytes, rejections),
         Kind::If => assert_agree::<If, _>(label, bytes, rejections),
-        Kind::ListParWithRandom => assert_agree::<ListParWithRandom, _>(label, bytes, rejections),
+        Kind::ListParWithRandom => assert_agree_with::<ListParWithRandom, _, _>(
+            label,
+            bytes,
+            rejections,
+            decode_datum_oracle,
+        ),
         Kind::BindPattern => assert_agree::<BindPattern, _>(label, bytes, rejections),
-        Kind::TaggedContinuation => assert_agree::<TaggedContinuation, _>(label, bytes, rejections),
+        Kind::TaggedContinuation => assert_agree_with::<TaggedContinuation, _, _>(
+            label,
+            bytes,
+            rejections,
+            decode_continuation_oracle,
+        ),
     }
 }
 
@@ -537,9 +622,11 @@ fn run_mutation_batch(
         stdout,
         stderr
     );
+    // Single-threaded libtest writes `test mutation_batch_child ... ` before the
+    // child's own output, on the same line, so the marker need not start it.
     let line = stdout
         .lines()
-        .find(|line| line.starts_with(MUTATION_BATCH_RESULT))
+        .find_map(|line| line.find(MUTATION_BATCH_RESULT).map(|at| &line[at..]))
         .unwrap_or_else(|| {
             panic!(
                 "{} mutation child for {label}[{start}..{end}] returned no result marker\nstdout:\n{stdout}\nstderr:\n{stderr}",

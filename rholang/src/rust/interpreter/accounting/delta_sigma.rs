@@ -1169,6 +1169,7 @@ mod tests {
             persistent: false,
             locally_free: Vec::new(),
             connective_used: false,
+            cost_region: None,
         }
     }
 
@@ -1202,6 +1203,7 @@ mod tests {
                 source: Some(empty_par()),
                 remainder: None,
                 free_count: 0,
+                cost_region: None,
             }],
             body: Some(body),
             persistent: false,
@@ -1210,6 +1212,7 @@ mod tests {
             locally_free: Vec::new(),
             connective_used: false,
             condition: None,
+            cost_region: None,
         };
         let par = Par::default().with_receives(vec![receive]);
         let entry = demand(&par, &atom(1));
@@ -1265,6 +1268,7 @@ mod tests {
                 source: Some(eval_of_bound_var(0)),
                 remainder: None,
                 free_count: 0,
+                cost_region: None,
             }],
             body: Some(empty_par()),
             persistent: false,
@@ -1273,6 +1277,7 @@ mod tests {
             locally_free: Vec::new(),
             connective_used: false,
             condition: None,
+            cost_region: None,
         };
         let par = Par::default().with_receives(vec![receive]);
         let entry = demand(&par, &atom(1));

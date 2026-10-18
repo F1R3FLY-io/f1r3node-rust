@@ -244,6 +244,7 @@ fn tagged_continuation_projects_body_before_guard_in_protobuf_order() {
                 random_state: vec![4, 3, 2, 1],
             },
         )),
+        ..Default::default()
     };
     let result = value.project(&mut context).unwrap();
     assert_eq!(context.bodies, [
@@ -309,6 +310,7 @@ proptest! {
         let owned = owned::ListParWithRandom {
             pars: values.iter().map(|value| integer(&mut context, *value)).collect(),
             random_state: vec![4, 3, 2, 1],
+            ..Default::default()
         };
         let result = owned.project(&mut context).unwrap();
         prop_assert_eq!(result.pars, values.iter().map(|value| resident(*value)).collect::<Vec<_>>());

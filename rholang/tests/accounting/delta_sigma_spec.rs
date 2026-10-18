@@ -859,6 +859,7 @@ fn generated_to_par(process: &GeneratedProcess) -> Par {
             persistent: false,
             locally_free: Vec::new(),
             connective_used: false,
+            cost_region: None,
         }]),
         GeneratedProcess::Receive { channel, body } => {
             Par::default().with_receives(vec![Receive {
@@ -867,6 +868,7 @@ fn generated_to_par(process: &GeneratedProcess) -> Par {
                     source: channel.map(generated_channel),
                     remainder: None,
                     free_count: 0,
+                    cost_region: None,
                 }],
                 body: body.as_deref().map(generated_to_par),
                 persistent: false,
@@ -875,6 +877,7 @@ fn generated_to_par(process: &GeneratedProcess) -> Par {
                 locally_free: Vec::new(),
                 connective_used: false,
                 condition: None,
+                cost_region: None,
             }])
         }
         GeneratedProcess::New(body) => Par::default().with_news(vec![New {
@@ -1030,6 +1033,7 @@ fn byte_pda_preserves_whole_endpoint_replay_and_inert_positions() {
             source: Some(generated_channel(7)),
             remainder: None,
             free_count: 0,
+            cost_region: None,
         }],
         body: Some(generated_to_par(&body)),
         persistent: false,
@@ -1038,6 +1042,7 @@ fn byte_pda_preserves_whole_endpoint_replay_and_inert_positions() {
         locally_free: Vec::new(),
         connective_used: false,
         condition: None,
+        cost_region: None,
     };
     let mut repeated = Par::default();
     repeated
@@ -1085,6 +1090,7 @@ fn byte_pda_preserves_whole_endpoint_replay_and_inert_positions() {
         persistent: false,
         locally_free: Vec::new(),
         connective_used: false,
+        cost_region: None,
     }]);
     let result = demand(&outer, &envelope_sig());
     assert_eq!(result.known_lower_bound, 1);
@@ -1107,12 +1113,14 @@ fn byte_pda_pins_first_receive_source_and_every_inert_schema_slot() {
                 source: Some(generated_channel(1)),
                 remainder: Some(wildcard.clone()),
                 free_count: 1,
+                cost_region: None,
             },
             ReceiveBind {
                 patterns: vec![inert_send.clone()],
                 source: Some(generated_channel(2)),
                 remainder: Some(wildcard),
                 free_count: 2,
+                cost_region: None,
             },
         ],
         body: Some(generated_to_par(&GeneratedProcess::Send(Some(3)))),
@@ -1122,6 +1130,7 @@ fn byte_pda_pins_first_receive_source_and_every_inert_schema_slot() {
         locally_free: vec![0x01],
         connective_used: true,
         condition: Some(inert_send.clone()),
+        cost_region: None,
     };
     let new = New {
         bind_count: 1,
@@ -1206,12 +1215,14 @@ fn byte_pda_tag_contract_matches_the_generated_protobuf_schema() {
         (3, ProtobufKind::Bool, "persistent"),
         (5, ProtobufKind::Bytes, "locally_free"),
         (6, ProtobufKind::Bool, "connective_used"),
+        (7, ProtobufKind::Message, "cost_region"),
     ]);
     assert_program(RECEIVEBIND_PROTOBUF_PROGRAM, &[
         (1, ProtobufKind::RepeatedMessage, "patterns"),
         (2, ProtobufKind::Message, "source"),
         (3, ProtobufKind::Message, "remainder"),
         (4, ProtobufKind::Int32, "free_count"),
+        (5, ProtobufKind::Message, "cost_region"),
     ]);
     assert_program(RECEIVE_PROTOBUF_PROGRAM, &[
         (1, ProtobufKind::RepeatedMessage, "binds"),
@@ -1222,6 +1233,7 @@ fn byte_pda_tag_contract_matches_the_generated_protobuf_schema() {
         (6, ProtobufKind::Bytes, "locally_free"),
         (7, ProtobufKind::Bool, "connective_used"),
         (8, ProtobufKind::Message, "condition"),
+        (9, ProtobufKind::Message, "cost_region"),
     ]);
     assert_program(NEW_PROTOBUF_PROGRAM, &[
         (1, ProtobufKind::Sint32, "bind_count"),
@@ -1330,6 +1342,7 @@ fn scalar_demand_collapses_compressed_multiplicity_with_saturation() {
         persistent: false,
         locally_free: Vec::new(),
         connective_used: false,
+        cost_region: None,
     };
     let mut par = Par::default();
     par.insert_component_many(

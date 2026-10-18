@@ -23,6 +23,7 @@ use models::rhoapi::{
     TaggedContinuation,
 };
 use models::rust::rhoapi_ext::EPathMap;
+use models::rust::rholang::bincode_encoder::ColdStoreEncode;
 use models::rust::rholang::par_children::{
     connective_instance_variant_index, expr_instance_variant_index,
     CONNECTIVE_INSTANCE_VARIANT_COUNT, EXPR_INSTANCE_VARIANT_COUNT,
@@ -488,6 +489,8 @@ fn shape_4_tagged_cont_absent_is_not_variant_zero() {
     let absent = TaggedContinuation {
         guard: None,
         tagged_cont: None,
+        cost_region: None,
+        clause_regions: Vec::new(),
     };
     let par_body = TaggedContinuation {
         guard: None,
@@ -495,34 +498,40 @@ fn shape_4_tagged_cont_absent_is_not_variant_zero() {
             body: None,
             random_state: vec![],
         })),
+        cost_region: None,
+        clause_regions: Vec::new(),
     };
     let scala = TaggedContinuation {
         guard: None,
         tagged_cont: Some(TaggedCont::ScalaBodyRef(0)),
+        cost_region: None,
+        clause_regions: Vec::new(),
     };
 
     for value in [&absent, &par_body, &scala] {
         let bytes = bincode::serialize(value).expect("serialize");
         let oracle: TaggedContinuation = bincode::deserialize(&bytes).expect("oracle");
-        let machine = TaggedContinuation::cold_decode(&bytes).expect("machine");
+        let machine = TaggedContinuation::cold_decode(&value.cold_encode()).expect("machine");
         assert!(machine == oracle);
         assert!(machine == *value);
     }
 
-    // Byte-level: `guard: None` is one byte, then the `tagged_cont` Option tag.
     let a = bincode::serialize(&absent).expect("absent");
-    assert_eq!(a, vec![0u8, 0u8], "guard tag 0, tagged_cont tag 0");
+    assert_eq!(a, vec![0u8; 11]);
+    assert_eq!(absent.cold_encode(), vec![0u8; 2]);
     let p = bincode::serialize(&par_body).expect("par_body");
     assert_eq!(p[0], 0, "guard tag");
-    assert_eq!(p[1], 1, "tagged_cont Some tag");
+    assert_eq!(p[1], 0, "cost_region tag");
+    assert_eq!(&p[2..10], &[0u8; 8], "clause_regions length");
+    assert_eq!(p[10], 1, "tagged_cont Some tag");
     assert_eq!(
-        u32::from_le_bytes(p[2..6].try_into().expect("4 bytes")),
+        u32::from_le_bytes(p[11..15].try_into().expect("4 bytes")),
         0,
         "ParBody is variant index 0"
     );
     let s = bincode::serialize(&scala).expect("scala");
     assert_eq!(
-        u32::from_le_bytes(s[2..6].try_into().expect("4 bytes")),
+        u32::from_le_bytes(s[11..15].try_into().expect("4 bytes")),
         1,
         "ScalaBodyRef is variant index 1"
     );
@@ -742,8 +751,9 @@ fn prefix_extents_let_the_following_field_be_read() {
     let value = ListParWithRandom {
         pars: vec![corpus::all_par_fields()],
         random_state: vec![1, 2, 3],
+        cost_region: None,
     };
-    let mut bytes = bincode::serialize(&value).expect("serialize");
+    let mut bytes = value.cold_encode();
     let extent = bytes.len();
     // Append what `Datum` would put after `a`: `persist` and a marker.
     bytes.push(1);
@@ -753,7 +763,8 @@ fn prefix_extents_let_the_following_field_be_read() {
     // ⚠ Compared against the ORACLE, not against `value`. `all_par_fields`
     // carries non-empty `locally_free`, which shape 2 blanks on serialize, so
     // `decoded != value` is correct behaviour — for the derived decoder too.
-    let oracle: ListParWithRandom = bincode::deserialize(&bytes).expect("oracle");
+    let oracle: ListParWithRandom =
+        bincode::deserialize(&bincode::serialize(&value).expect("serialize")).expect("oracle");
     assert!(decoded == oracle);
     assert_eq!(
         consumed, extent,

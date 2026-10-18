@@ -235,6 +235,7 @@ pub async fn produce_balance(
     let data = ListParWithRandom {
         pars: vec![balance_datum(n)],
         random_state,
+        cost_region: None,
     };
 
     // Bare data write (no continuation on Σ⟦v⟧ ⇒ no COMM, just store_data).

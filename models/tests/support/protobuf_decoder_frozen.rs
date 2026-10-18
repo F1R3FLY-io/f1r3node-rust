@@ -298,6 +298,12 @@ enum Node {
     Var { value: crate::rhoapi::Var, limit: usize },
     WildcardMsg { value: crate::rhoapi::var::WildcardMsg, limit: usize },
     Bundle { value: crate::rhoapi::Bundle, limit: usize },
+    CostSignature { value: crate::rhoapi::CostSignature, limit: usize },
+    CostSignatureAtom { value: crate::rhoapi::CostSignatureAtom, limit: usize },
+    CostBoundSignature { value: crate::rhoapi::CostBoundSignature, limit: usize },
+    CostRegion { value: crate::rhoapi::CostRegion, limit: usize },
+    CostTokenStack { value: crate::rhoapi::CostTokenStack, limit: usize },
+    CostClauseRegion { value: crate::rhoapi::CostClauseRegion, limit: usize },
     Send { value: crate::rhoapi::Send, limit: usize },
     ReceiveBind { value: crate::rhoapi::ReceiveBind, limit: usize },
     BindPattern { value: crate::rhoapi::BindPattern, limit: usize },
@@ -360,6 +366,12 @@ enum Value {
     Var(crate::rhoapi::Var),
     WildcardMsg(crate::rhoapi::var::WildcardMsg),
     Bundle(crate::rhoapi::Bundle),
+    CostSignature(crate::rhoapi::CostSignature),
+    CostSignatureAtom(crate::rhoapi::CostSignatureAtom),
+    CostBoundSignature(crate::rhoapi::CostBoundSignature),
+    CostRegion(crate::rhoapi::CostRegion),
+    CostTokenStack(crate::rhoapi::CostTokenStack),
+    CostClauseRegion(crate::rhoapi::CostClauseRegion),
     Send(crate::rhoapi::Send),
     ReceiveBind(crate::rhoapi::ReceiveBind),
     BindPattern(crate::rhoapi::BindPattern),
@@ -416,22 +428,33 @@ MapStringPar(String, Par),
 
 enum Attach {
     TaggedContinuationGuard { parent: crate::rhoapi::TaggedContinuation, limit: usize },
+    TaggedContinuationCostRegion { parent: crate::rhoapi::TaggedContinuation, limit: usize },
+    TaggedContinuationClauseRegions { parent: crate::rhoapi::TaggedContinuation, limit: usize },
     TaggedContinuationTaggedContParBody { parent: crate::rhoapi::TaggedContinuation, limit: usize },
     ParWithRandomBody { parent: crate::rhoapi::ParWithRandom, limit: usize },
     ListParWithRandomPars { parent: crate::rhoapi::ListParWithRandom, limit: usize },
+    ListParWithRandomCostRegion { parent: crate::rhoapi::ListParWithRandom, limit: usize },
     VarVarInstanceWildcard { parent: crate::rhoapi::Var, limit: usize },
     BundleBody { parent: crate::rhoapi::Bundle, limit: usize },
+    CostSignatureAtoms { parent: crate::rhoapi::CostSignature, limit: usize },
+    CostSignatureAtomFormBound { parent: crate::rhoapi::CostSignatureAtom, limit: usize },
+    CostRegionSigner { parent: crate::rhoapi::CostRegion, limit: usize },
+    CostTokenStackLayers { parent: crate::rhoapi::CostTokenStack, limit: usize },
+    CostClauseRegionRegion { parent: crate::rhoapi::CostClauseRegion, limit: usize },
     SendChan { parent: crate::rhoapi::Send, limit: usize },
     SendData { parent: crate::rhoapi::Send, limit: usize },
+    SendCostRegion { parent: crate::rhoapi::Send, limit: usize },
     ReceiveBindPatterns { parent: crate::rhoapi::ReceiveBind, limit: usize },
     ReceiveBindSource { parent: crate::rhoapi::ReceiveBind, limit: usize },
     ReceiveBindRemainder { parent: crate::rhoapi::ReceiveBind, limit: usize },
+    ReceiveBindCostRegion { parent: crate::rhoapi::ReceiveBind, limit: usize },
     BindPatternPatterns { parent: crate::rhoapi::BindPattern, limit: usize },
     BindPatternRemainder { parent: crate::rhoapi::BindPattern, limit: usize },
     ListBindPatternsPatterns { parent: crate::rhoapi::ListBindPatterns, limit: usize },
     ReceiveBinds { parent: crate::rhoapi::Receive, limit: usize },
     ReceiveBody { parent: crate::rhoapi::Receive, limit: usize },
     ReceiveCondition { parent: crate::rhoapi::Receive, limit: usize },
+    ReceiveCostRegion { parent: crate::rhoapi::Receive, limit: usize },
     NewP { parent: crate::rhoapi::New, limit: usize },
     NewInjections { parent: crate::rhoapi::New, limit: usize },
     MatchCasePattern { parent: crate::rhoapi::MatchCase, limit: usize },
@@ -538,6 +561,7 @@ enum Attach {
     ParBundles { parent: Par, limit: usize },
     ParConnectives { parent: Par, limit: usize },
     ParConditionals { parent: Par, limit: usize },
+    ParCostTokenStacks { parent: Par, limit: usize },
     EPathMapPs { parent: EPathMap, limit: usize },
 EPathMapRemainder { parent: EPathMap, limit: usize },
 EPathMapSnapshotValue { frame: EpmFrame },
@@ -566,6 +590,12 @@ match self {
             Node::Var { value, limit: _ } => Value::Var(value),
             Node::WildcardMsg { value, limit: _ } => Value::WildcardMsg(value),
             Node::Bundle { value, limit: _ } => Value::Bundle(value),
+            Node::CostSignature { value, limit: _ } => Value::CostSignature(value),
+            Node::CostSignatureAtom { value, limit: _ } => Value::CostSignatureAtom(value),
+            Node::CostBoundSignature { value, limit: _ } => Value::CostBoundSignature(value),
+            Node::CostRegion { value, limit: _ } => Value::CostRegion(value),
+            Node::CostTokenStack { value, limit: _ } => Value::CostTokenStack(value),
+            Node::CostClauseRegion { value, limit: _ } => Value::CostClauseRegion(value),
             Node::Send { value, limit: _ } => Value::Send(value),
             Node::ReceiveBind { value, limit: _ } => Value::ReceiveBind(value),
             Node::BindPattern { value, limit: _ } => Value::BindPattern(value),
@@ -632,6 +662,12 @@ match self {
             Value::Var(_) => "Var",
             Value::WildcardMsg(_) => "WildcardMsg",
             Value::Bundle(_) => "Bundle",
+            Value::CostSignature(_) => "CostSignature",
+            Value::CostSignatureAtom(_) => "CostSignatureAtom",
+            Value::CostBoundSignature(_) => "CostBoundSignature",
+            Value::CostRegion(_) => "CostRegion",
+            Value::CostTokenStack(_) => "CostTokenStack",
+            Value::CostClauseRegion(_) => "CostClauseRegion",
             Value::Send(_) => "Send",
             Value::ReceiveBind(_) => "ReceiveBind",
             Value::BindPattern(_) => "BindPattern",
@@ -692,22 +728,33 @@ impl Attach {
 fn location(&self) -> Option<(&'static str, &'static str)> {
 match self {
             Attach::TaggedContinuationGuard { .. } => Some(("TaggedContinuation", "guard")),
+            Attach::TaggedContinuationCostRegion { .. } => Some(("TaggedContinuation", "cost_region")),
+            Attach::TaggedContinuationClauseRegions { .. } => Some(("TaggedContinuation", "clause_regions")),
             Attach::TaggedContinuationTaggedContParBody { .. } => Some(("TaggedContinuation", "tagged_cont")),
             Attach::ParWithRandomBody { .. } => Some(("ParWithRandom", "body")),
             Attach::ListParWithRandomPars { .. } => Some(("ListParWithRandom", "pars")),
+            Attach::ListParWithRandomCostRegion { .. } => Some(("ListParWithRandom", "cost_region")),
             Attach::VarVarInstanceWildcard { .. } => Some(("Var", "var_instance")),
             Attach::BundleBody { .. } => Some(("Bundle", "body")),
+            Attach::CostSignatureAtoms { .. } => Some(("CostSignature", "atoms")),
+            Attach::CostSignatureAtomFormBound { .. } => Some(("CostSignatureAtom", "form")),
+            Attach::CostRegionSigner { .. } => Some(("CostRegion", "signer")),
+            Attach::CostTokenStackLayers { .. } => Some(("CostTokenStack", "layers")),
+            Attach::CostClauseRegionRegion { .. } => Some(("CostClauseRegion", "region")),
             Attach::SendChan { .. } => Some(("Send", "chan")),
             Attach::SendData { .. } => Some(("Send", "data")),
+            Attach::SendCostRegion { .. } => Some(("Send", "cost_region")),
             Attach::ReceiveBindPatterns { .. } => Some(("ReceiveBind", "patterns")),
             Attach::ReceiveBindSource { .. } => Some(("ReceiveBind", "source")),
             Attach::ReceiveBindRemainder { .. } => Some(("ReceiveBind", "remainder")),
+            Attach::ReceiveBindCostRegion { .. } => Some(("ReceiveBind", "cost_region")),
             Attach::BindPatternPatterns { .. } => Some(("BindPattern", "patterns")),
             Attach::BindPatternRemainder { .. } => Some(("BindPattern", "remainder")),
             Attach::ListBindPatternsPatterns { .. } => Some(("ListBindPatterns", "patterns")),
             Attach::ReceiveBinds { .. } => Some(("Receive", "binds")),
             Attach::ReceiveBody { .. } => Some(("Receive", "body")),
             Attach::ReceiveCondition { .. } => Some(("Receive", "condition")),
+            Attach::ReceiveCostRegion { .. } => Some(("Receive", "cost_region")),
             Attach::NewP { .. } => Some(("New", "p")),
             Attach::NewInjections { .. } => Some(("New", "injections")),
             Attach::MatchCasePattern { .. } => Some(("MatchCase", "pattern")),
@@ -814,6 +861,7 @@ match self {
             Attach::ParBundles { .. } => Some(("Par", "bundles")),
             Attach::ParConnectives { .. } => Some(("Par", "connectives")),
             Attach::ParConditionals { .. } => Some(("Par", "conditionals")),
+            Attach::ParCostTokenStacks { .. } => Some(("Par", "cost_token_stacks")),
             Attach::EPathMapPs { .. } => Some(("EPathMap", "ps")),
 Attach::EPathMapRemainder { .. } => Some(("EPathMap", "remainder")),
 Attach::EPathMapSnapshotValue { .. } => Some(("EPathMap", "trie_snapshot")),
@@ -824,22 +872,33 @@ Attach::MapStringParValue { .. } => None,
 fn into_parent_value(self) -> Option<Value> {
 match self {
             Attach::TaggedContinuationGuard { parent, limit: _ } => Some(Value::TaggedContinuation(parent)),
+            Attach::TaggedContinuationCostRegion { parent, limit: _ } => Some(Value::TaggedContinuation(parent)),
+            Attach::TaggedContinuationClauseRegions { parent, limit: _ } => Some(Value::TaggedContinuation(parent)),
             Attach::TaggedContinuationTaggedContParBody { parent, limit: _ } => Some(Value::TaggedContinuation(parent)),
             Attach::ParWithRandomBody { parent, limit: _ } => Some(Value::ParWithRandom(parent)),
             Attach::ListParWithRandomPars { parent, limit: _ } => Some(Value::ListParWithRandom(parent)),
+            Attach::ListParWithRandomCostRegion { parent, limit: _ } => Some(Value::ListParWithRandom(parent)),
             Attach::VarVarInstanceWildcard { parent, limit: _ } => Some(Value::Var(parent)),
             Attach::BundleBody { parent, limit: _ } => Some(Value::Bundle(parent)),
+            Attach::CostSignatureAtoms { parent, limit: _ } => Some(Value::CostSignature(parent)),
+            Attach::CostSignatureAtomFormBound { parent, limit: _ } => Some(Value::CostSignatureAtom(parent)),
+            Attach::CostRegionSigner { parent, limit: _ } => Some(Value::CostRegion(parent)),
+            Attach::CostTokenStackLayers { parent, limit: _ } => Some(Value::CostTokenStack(parent)),
+            Attach::CostClauseRegionRegion { parent, limit: _ } => Some(Value::CostClauseRegion(parent)),
             Attach::SendChan { parent, limit: _ } => Some(Value::Send(parent)),
             Attach::SendData { parent, limit: _ } => Some(Value::Send(parent)),
+            Attach::SendCostRegion { parent, limit: _ } => Some(Value::Send(parent)),
             Attach::ReceiveBindPatterns { parent, limit: _ } => Some(Value::ReceiveBind(parent)),
             Attach::ReceiveBindSource { parent, limit: _ } => Some(Value::ReceiveBind(parent)),
             Attach::ReceiveBindRemainder { parent, limit: _ } => Some(Value::ReceiveBind(parent)),
+            Attach::ReceiveBindCostRegion { parent, limit: _ } => Some(Value::ReceiveBind(parent)),
             Attach::BindPatternPatterns { parent, limit: _ } => Some(Value::BindPattern(parent)),
             Attach::BindPatternRemainder { parent, limit: _ } => Some(Value::BindPattern(parent)),
             Attach::ListBindPatternsPatterns { parent, limit: _ } => Some(Value::ListBindPatterns(parent)),
             Attach::ReceiveBinds { parent, limit: _ } => Some(Value::Receive(parent)),
             Attach::ReceiveBody { parent, limit: _ } => Some(Value::Receive(parent)),
             Attach::ReceiveCondition { parent, limit: _ } => Some(Value::Receive(parent)),
+            Attach::ReceiveCostRegion { parent, limit: _ } => Some(Value::Receive(parent)),
             Attach::NewP { parent, limit: _ } => Some(Value::New(parent)),
             Attach::NewInjections { parent, limit: _ } => Some(Value::New(parent)),
             Attach::MatchCasePattern { parent, limit: _ } => Some(Value::MatchCase(parent)),
@@ -946,6 +1005,7 @@ match self {
             Attach::ParBundles { parent, limit: _ } => Some(Value::Par(parent)),
             Attach::ParConnectives { parent, limit: _ } => Some(Value::Par(parent)),
             Attach::ParConditionals { parent, limit: _ } => Some(Value::Par(parent)),
+            Attach::ParCostTokenStacks { parent, limit: _ } => Some(Value::Par(parent)),
             Attach::EPathMapPs { parent, limit: _ }
 | Attach::EPathMapRemainder { parent, limit: _ } => Some(Value::EPathMap(parent)),
 Attach::EPathMapSnapshotValue { frame } => Some(Value::EPathMap(frame.parent)),
@@ -1098,6 +1158,12 @@ impl<B: Buf> Machine<B> {
             Node::Var { value, limit } => self.step_var(value, limit),
             Node::WildcardMsg { value, limit } => self.step_wildcard_msg(value, limit),
             Node::Bundle { value, limit } => self.step_bundle(value, limit),
+            Node::CostSignature { value, limit } => self.step_cost_signature(value, limit),
+            Node::CostSignatureAtom { value, limit } => self.step_cost_signature_atom(value, limit),
+            Node::CostBoundSignature { value, limit } => self.step_cost_bound_signature(value, limit),
+            Node::CostRegion { value, limit } => self.step_cost_region(value, limit),
+            Node::CostTokenStack { value, limit } => self.step_cost_token_stack(value, limit),
+            Node::CostClauseRegion { value, limit } => self.step_cost_clause_region(value, limit),
             Node::Send { value, limit } => self.step_send(value, limit),
             Node::ReceiveBind { value, limit } => self.step_receive_bind(value, limit),
             Node::BindPattern { value, limit } => self.step_bind_pattern(value, limit),
@@ -1170,6 +1236,8 @@ std::cmp::Ordering::Greater => {}
 let (tag, protobuf_wire_type) = decode_key(&mut self.buf)?;
 match tag {
                 3u32 => self.step_tagged_continuation_tag_3(&mut value, limit, protobuf_wire_type),
+                4u32 => self.step_tagged_continuation_tag_4(&mut value, limit, protobuf_wire_type),
+                5u32 => self.step_tagged_continuation_tag_5(&mut value, limit, protobuf_wire_type),
                 1u32 => self.step_tagged_continuation_tag_1(&mut value, limit, protobuf_wire_type),
                 2u32 => self.step_tagged_continuation_tag_2(&mut value, limit, protobuf_wire_type),
 
@@ -1189,6 +1257,21 @@ let child_limit = self.message_limit(protobuf_wire_type).map_err(|mut error| { e
 let child = value.guard.take().unwrap_or_default();
 self.frames.push(Frame::Attach(Attach::TaggedContinuationGuard { parent: mem::take(value), limit }));
 self.frames.push(Frame::Node(Node::Par { value: child, limit: child_limit }));
+Ok(())
+}
+    #[inline(never)]
+fn step_tagged_continuation_tag_4(&mut self, value: &mut crate::rhoapi::TaggedContinuation, limit: usize, protobuf_wire_type: WireType) -> Result<(), DecodeError> {
+let child_limit = self.message_limit(protobuf_wire_type).map_err(|mut error| { error.push("TaggedContinuation", "cost_region"); error })?;
+let child = value.cost_region.take().unwrap_or_default();
+self.frames.push(Frame::Attach(Attach::TaggedContinuationCostRegion { parent: mem::take(value), limit }));
+self.frames.push(Frame::Node(Node::CostRegion { value: child, limit: child_limit }));
+Ok(())
+}
+    #[inline(never)]
+fn step_tagged_continuation_tag_5(&mut self, value: &mut crate::rhoapi::TaggedContinuation, limit: usize, protobuf_wire_type: WireType) -> Result<(), DecodeError> {
+let child_limit = self.message_limit(protobuf_wire_type).map_err(|mut error| { error.push("TaggedContinuation", "clause_regions"); error })?;
+self.frames.push(Frame::Attach(Attach::TaggedContinuationClauseRegions { parent: mem::take(value), limit }));
+self.frames.push(Frame::Node(Node::CostClauseRegion { value: Default::default(), limit: child_limit }));
 Ok(())
 }
     #[inline(never)]
@@ -1315,6 +1398,7 @@ let (tag, protobuf_wire_type) = decode_key(&mut self.buf)?;
 match tag {
                 1u32 => self.step_list_par_with_random_tag_1(&mut value, limit, protobuf_wire_type),
                 2u32 => self.step_list_par_with_random_tag_2(&mut value, limit, protobuf_wire_type),
+                3u32 => self.step_list_par_with_random_tag_3(&mut value, limit, protobuf_wire_type),
 
 _ => {
 skip_unknown_field(protobuf_wire_type, tag, &mut self.buf)?;
@@ -1340,6 +1424,14 @@ protobuf_wire_type, &mut value.random_state, &mut self.buf,
 DecodeContext::default(),
 ).map_err(|mut error| { error.push("ListParWithRandom", "random_state"); error })?;
 self.frames.push(Frame::Node(Node::ListParWithRandom { value: mem::take(value), limit }));
+Ok(())
+}
+    #[inline(never)]
+fn step_list_par_with_random_tag_3(&mut self, value: &mut crate::rhoapi::ListParWithRandom, limit: usize, protobuf_wire_type: WireType) -> Result<(), DecodeError> {
+let child_limit = self.message_limit(protobuf_wire_type).map_err(|mut error| { error.push("ListParWithRandom", "cost_region"); error })?;
+let child = value.cost_region.take().unwrap_or_default();
+self.frames.push(Frame::Attach(Attach::ListParWithRandomCostRegion { parent: mem::take(value), limit }));
+self.frames.push(Frame::Node(Node::CostRegion { value: child, limit: child_limit }));
 Ok(())
 }
     #[inline(never)]
@@ -1491,6 +1583,333 @@ self.frames.push(Frame::Node(Node::Bundle { value: mem::take(value), limit }));
 Ok(())
 }
     #[inline(never)]
+fn step_cost_signature(
+&mut self,
+mut value: crate::rhoapi::CostSignature,
+limit: usize,
+) -> Result<(), DecodeError> {
+match self.buf.remaining().cmp(&limit) {
+std::cmp::Ordering::Equal => {
+self.values.push(Value::CostSignature(value));
+return Ok(());
+}
+std::cmp::Ordering::Less => return Err(delimited_length_exceeded()),
+std::cmp::Ordering::Greater => {}
+}
+let (tag, protobuf_wire_type) = decode_key(&mut self.buf)?;
+match tag {
+                1u32 => self.step_cost_signature_tag_1(&mut value, limit, protobuf_wire_type),
+
+_ => {
+skip_unknown_field(protobuf_wire_type, tag, &mut self.buf)?;
+self.frames.push(Frame::Node(Node::CostSignature {
+value: mem::take(&mut value), limit,
+}));
+Ok(())
+}
+}
+}
+
+    #[inline(never)]
+fn step_cost_signature_tag_1(&mut self, value: &mut crate::rhoapi::CostSignature, limit: usize, protobuf_wire_type: WireType) -> Result<(), DecodeError> {
+let child_limit = self.message_limit(protobuf_wire_type).map_err(|mut error| { error.push("CostSignature", "atoms"); error })?;
+self.frames.push(Frame::Attach(Attach::CostSignatureAtoms { parent: mem::take(value), limit }));
+self.frames.push(Frame::Node(Node::CostSignatureAtom { value: Default::default(), limit: child_limit }));
+Ok(())
+}
+    #[inline(never)]
+fn step_cost_signature_atom(
+&mut self,
+mut value: crate::rhoapi::CostSignatureAtom,
+limit: usize,
+) -> Result<(), DecodeError> {
+match self.buf.remaining().cmp(&limit) {
+std::cmp::Ordering::Equal => {
+self.values.push(Value::CostSignatureAtom(value));
+return Ok(());
+}
+std::cmp::Ordering::Less => return Err(delimited_length_exceeded()),
+std::cmp::Ordering::Greater => {}
+}
+let (tag, protobuf_wire_type) = decode_key(&mut self.buf)?;
+match tag {
+                1u32 => self.step_cost_signature_atom_tag_1(&mut value, limit, protobuf_wire_type),
+                2u32 => self.step_cost_signature_atom_tag_2(&mut value, limit, protobuf_wire_type),
+                3u32 => self.step_cost_signature_atom_tag_3(&mut value, limit, protobuf_wire_type),
+                4u32 => self.step_cost_signature_atom_tag_4(&mut value, limit, protobuf_wire_type),
+
+_ => {
+skip_unknown_field(protobuf_wire_type, tag, &mut self.buf)?;
+self.frames.push(Frame::Node(Node::CostSignatureAtom {
+value: mem::take(&mut value), limit,
+}));
+Ok(())
+}
+}
+}
+
+    #[inline(never)]
+fn step_cost_signature_atom_tag_1(&mut self, value: &mut crate::rhoapi::CostSignatureAtom, limit: usize, protobuf_wire_type: WireType) -> Result<(), DecodeError> {
+let mut payload = Default::default();
+encoding::bytes::merge(
+protobuf_wire_type, &mut payload, &mut self.buf,
+DecodeContext::default(),
+).map_err(|mut error| { error.push("CostSignatureAtom", "form"); error })?;
+let old = value.form.replace(crate::rhoapi::cost_signature_atom::Form::Ground(payload));
+salvage_cost_signature_atom_form(old, &mut self.garbage);
+self.frames.push(Frame::Node(Node::CostSignatureAtom { value: mem::take(value), limit }));
+Ok(())
+}
+    #[inline(never)]
+fn step_cost_signature_atom_tag_2(&mut self, value: &mut crate::rhoapi::CostSignatureAtom, limit: usize, protobuf_wire_type: WireType) -> Result<(), DecodeError> {
+let mut payload = Default::default();
+encoding::bytes::merge(
+protobuf_wire_type, &mut payload, &mut self.buf,
+DecodeContext::default(),
+).map_err(|mut error| { error.push("CostSignatureAtom", "form"); error })?;
+let old = value.form.replace(crate::rhoapi::cost_signature_atom::Form::Quote(payload));
+salvage_cost_signature_atom_form(old, &mut self.garbage);
+self.frames.push(Frame::Node(Node::CostSignatureAtom { value: mem::take(value), limit }));
+Ok(())
+}
+    #[inline(never)]
+fn step_cost_signature_atom_tag_3(&mut self, value: &mut crate::rhoapi::CostSignatureAtom, limit: usize, protobuf_wire_type: WireType) -> Result<(), DecodeError> {
+let child_limit = self.message_limit(protobuf_wire_type).map_err(|mut error| { error.push("CostSignatureAtom", "form"); error })?;
+let child = match value.form.take() {
+Some(crate::rhoapi::cost_signature_atom::Form::Bound(child)) => child,
+old => { salvage_cost_signature_atom_form(old, &mut self.garbage); Default::default() }
+};
+self.frames.push(Frame::Attach(Attach::CostSignatureAtomFormBound { parent: mem::take(value), limit }));
+self.frames.push(Frame::Node(Node::CostBoundSignature { value: child, limit: child_limit }));
+Ok(())
+}
+    #[inline(never)]
+fn step_cost_signature_atom_tag_4(&mut self, value: &mut crate::rhoapi::CostSignatureAtom, limit: usize, protobuf_wire_type: WireType) -> Result<(), DecodeError> {
+let mut payload = Default::default();
+encoding::bytes::merge(
+protobuf_wire_type, &mut payload, &mut self.buf,
+DecodeContext::default(),
+).map_err(|mut error| { error.push("CostSignatureAtom", "form"); error })?;
+let old = value.form.replace(crate::rhoapi::cost_signature_atom::Form::RuntimeName(payload));
+salvage_cost_signature_atom_form(old, &mut self.garbage);
+self.frames.push(Frame::Node(Node::CostSignatureAtom { value: mem::take(value), limit }));
+Ok(())
+}
+    #[inline(never)]
+fn step_cost_bound_signature(
+&mut self,
+mut value: crate::rhoapi::CostBoundSignature,
+limit: usize,
+) -> Result<(), DecodeError> {
+match self.buf.remaining().cmp(&limit) {
+std::cmp::Ordering::Equal => {
+self.values.push(Value::CostBoundSignature(value));
+return Ok(());
+}
+std::cmp::Ordering::Less => return Err(delimited_length_exceeded()),
+std::cmp::Ordering::Greater => {}
+}
+let (tag, protobuf_wire_type) = decode_key(&mut self.buf)?;
+match tag {
+                1u32 => self.step_cost_bound_signature_tag_1(&mut value, limit, protobuf_wire_type),
+
+_ => {
+skip_unknown_field(protobuf_wire_type, tag, &mut self.buf)?;
+self.frames.push(Frame::Node(Node::CostBoundSignature {
+value: mem::take(&mut value), limit,
+}));
+Ok(())
+}
+}
+}
+
+    #[inline(never)]
+fn step_cost_bound_signature_tag_1(&mut self, value: &mut crate::rhoapi::CostBoundSignature, limit: usize, protobuf_wire_type: WireType) -> Result<(), DecodeError> {
+encoding::sint32::merge(
+protobuf_wire_type, &mut value.index, &mut self.buf,
+DecodeContext::default(),
+).map_err(|mut error| { error.push("CostBoundSignature", "index"); error })?;
+self.frames.push(Frame::Node(Node::CostBoundSignature { value: mem::take(value), limit }));
+Ok(())
+}
+    #[inline(never)]
+fn step_cost_region(
+&mut self,
+mut value: crate::rhoapi::CostRegion,
+limit: usize,
+) -> Result<(), DecodeError> {
+match self.buf.remaining().cmp(&limit) {
+std::cmp::Ordering::Equal => {
+self.values.push(Value::CostRegion(value));
+return Ok(());
+}
+std::cmp::Ordering::Less => return Err(delimited_length_exceeded()),
+std::cmp::Ordering::Greater => {}
+}
+let (tag, protobuf_wire_type) = decode_key(&mut self.buf)?;
+match tag {
+                1u32 => self.step_cost_region_tag_1(&mut value, limit, protobuf_wire_type),
+                2u32 => self.step_cost_region_tag_2(&mut value, limit, protobuf_wire_type),
+                3u32 => self.step_cost_region_tag_3(&mut value, limit, protobuf_wire_type),
+                4u32 => self.step_cost_region_tag_4(&mut value, limit, protobuf_wire_type),
+                5u32 => self.step_cost_region_tag_5(&mut value, limit, protobuf_wire_type),
+                6u32 => self.step_cost_region_tag_6(&mut value, limit, protobuf_wire_type),
+                7u32 => self.step_cost_region_tag_7(&mut value, limit, protobuf_wire_type),
+
+_ => {
+skip_unknown_field(protobuf_wire_type, tag, &mut self.buf)?;
+self.frames.push(Frame::Node(Node::CostRegion {
+value: mem::take(&mut value), limit,
+}));
+Ok(())
+}
+}
+}
+
+    #[inline(never)]
+fn step_cost_region_tag_1(&mut self, value: &mut crate::rhoapi::CostRegion, limit: usize, protobuf_wire_type: WireType) -> Result<(), DecodeError> {
+encoding::uint32::merge(
+protobuf_wire_type, &mut value.version, &mut self.buf,
+DecodeContext::default(),
+).map_err(|mut error| { error.push("CostRegion", "version"); error })?;
+self.frames.push(Frame::Node(Node::CostRegion { value: mem::take(value), limit }));
+Ok(())
+}
+    #[inline(never)]
+fn step_cost_region_tag_2(&mut self, value: &mut crate::rhoapi::CostRegion, limit: usize, protobuf_wire_type: WireType) -> Result<(), DecodeError> {
+encoding::uint64::merge(
+protobuf_wire_type, &mut value.start_line, &mut self.buf,
+DecodeContext::default(),
+).map_err(|mut error| { error.push("CostRegion", "start_line"); error })?;
+self.frames.push(Frame::Node(Node::CostRegion { value: mem::take(value), limit }));
+Ok(())
+}
+    #[inline(never)]
+fn step_cost_region_tag_3(&mut self, value: &mut crate::rhoapi::CostRegion, limit: usize, protobuf_wire_type: WireType) -> Result<(), DecodeError> {
+encoding::uint64::merge(
+protobuf_wire_type, &mut value.start_column, &mut self.buf,
+DecodeContext::default(),
+).map_err(|mut error| { error.push("CostRegion", "start_column"); error })?;
+self.frames.push(Frame::Node(Node::CostRegion { value: mem::take(value), limit }));
+Ok(())
+}
+    #[inline(never)]
+fn step_cost_region_tag_4(&mut self, value: &mut crate::rhoapi::CostRegion, limit: usize, protobuf_wire_type: WireType) -> Result<(), DecodeError> {
+encoding::uint64::merge(
+protobuf_wire_type, &mut value.end_line, &mut self.buf,
+DecodeContext::default(),
+).map_err(|mut error| { error.push("CostRegion", "end_line"); error })?;
+self.frames.push(Frame::Node(Node::CostRegion { value: mem::take(value), limit }));
+Ok(())
+}
+    #[inline(never)]
+fn step_cost_region_tag_5(&mut self, value: &mut crate::rhoapi::CostRegion, limit: usize, protobuf_wire_type: WireType) -> Result<(), DecodeError> {
+encoding::uint64::merge(
+protobuf_wire_type, &mut value.end_column, &mut self.buf,
+DecodeContext::default(),
+).map_err(|mut error| { error.push("CostRegion", "end_column"); error })?;
+self.frames.push(Frame::Node(Node::CostRegion { value: mem::take(value), limit }));
+Ok(())
+}
+    #[inline(never)]
+fn step_cost_region_tag_6(&mut self, value: &mut crate::rhoapi::CostRegion, limit: usize, protobuf_wire_type: WireType) -> Result<(), DecodeError> {
+let child_limit = self.message_limit(protobuf_wire_type).map_err(|mut error| { error.push("CostRegion", "signer"); error })?;
+let child = value.signer.take().unwrap_or_default();
+self.frames.push(Frame::Attach(Attach::CostRegionSigner { parent: mem::take(value), limit }));
+self.frames.push(Frame::Node(Node::CostSignature { value: child, limit: child_limit }));
+Ok(())
+}
+    #[inline(never)]
+fn step_cost_region_tag_7(&mut self, value: &mut crate::rhoapi::CostRegion, limit: usize, protobuf_wire_type: WireType) -> Result<(), DecodeError> {
+encoding::uint32::merge(
+protobuf_wire_type, &mut value.ordinal, &mut self.buf,
+DecodeContext::default(),
+).map_err(|mut error| { error.push("CostRegion", "ordinal"); error })?;
+self.frames.push(Frame::Node(Node::CostRegion { value: mem::take(value), limit }));
+Ok(())
+}
+    #[inline(never)]
+fn step_cost_token_stack(
+&mut self,
+mut value: crate::rhoapi::CostTokenStack,
+limit: usize,
+) -> Result<(), DecodeError> {
+match self.buf.remaining().cmp(&limit) {
+std::cmp::Ordering::Equal => {
+self.values.push(Value::CostTokenStack(value));
+return Ok(());
+}
+std::cmp::Ordering::Less => return Err(delimited_length_exceeded()),
+std::cmp::Ordering::Greater => {}
+}
+let (tag, protobuf_wire_type) = decode_key(&mut self.buf)?;
+match tag {
+                1u32 => self.step_cost_token_stack_tag_1(&mut value, limit, protobuf_wire_type),
+
+_ => {
+skip_unknown_field(protobuf_wire_type, tag, &mut self.buf)?;
+self.frames.push(Frame::Node(Node::CostTokenStack {
+value: mem::take(&mut value), limit,
+}));
+Ok(())
+}
+}
+}
+
+    #[inline(never)]
+fn step_cost_token_stack_tag_1(&mut self, value: &mut crate::rhoapi::CostTokenStack, limit: usize, protobuf_wire_type: WireType) -> Result<(), DecodeError> {
+let child_limit = self.message_limit(protobuf_wire_type).map_err(|mut error| { error.push("CostTokenStack", "layers"); error })?;
+self.frames.push(Frame::Attach(Attach::CostTokenStackLayers { parent: mem::take(value), limit }));
+self.frames.push(Frame::Node(Node::CostSignature { value: Default::default(), limit: child_limit }));
+Ok(())
+}
+    #[inline(never)]
+fn step_cost_clause_region(
+&mut self,
+mut value: crate::rhoapi::CostClauseRegion,
+limit: usize,
+) -> Result<(), DecodeError> {
+match self.buf.remaining().cmp(&limit) {
+std::cmp::Ordering::Equal => {
+self.values.push(Value::CostClauseRegion(value));
+return Ok(());
+}
+std::cmp::Ordering::Less => return Err(delimited_length_exceeded()),
+std::cmp::Ordering::Greater => {}
+}
+let (tag, protobuf_wire_type) = decode_key(&mut self.buf)?;
+match tag {
+                1u32 => self.step_cost_clause_region_tag_1(&mut value, limit, protobuf_wire_type),
+                2u32 => self.step_cost_clause_region_tag_2(&mut value, limit, protobuf_wire_type),
+
+_ => {
+skip_unknown_field(protobuf_wire_type, tag, &mut self.buf)?;
+self.frames.push(Frame::Node(Node::CostClauseRegion {
+value: mem::take(&mut value), limit,
+}));
+Ok(())
+}
+}
+}
+
+    #[inline(never)]
+fn step_cost_clause_region_tag_1(&mut self, value: &mut crate::rhoapi::CostClauseRegion, limit: usize, protobuf_wire_type: WireType) -> Result<(), DecodeError> {
+encoding::uint32::merge(
+protobuf_wire_type, &mut value.bind_index, &mut self.buf,
+DecodeContext::default(),
+).map_err(|mut error| { error.push("CostClauseRegion", "bind_index"); error })?;
+self.frames.push(Frame::Node(Node::CostClauseRegion { value: mem::take(value), limit }));
+Ok(())
+}
+    #[inline(never)]
+fn step_cost_clause_region_tag_2(&mut self, value: &mut crate::rhoapi::CostClauseRegion, limit: usize, protobuf_wire_type: WireType) -> Result<(), DecodeError> {
+let child_limit = self.message_limit(protobuf_wire_type).map_err(|mut error| { error.push("CostClauseRegion", "region"); error })?;
+let child = value.region.take().unwrap_or_default();
+self.frames.push(Frame::Attach(Attach::CostClauseRegionRegion { parent: mem::take(value), limit }));
+self.frames.push(Frame::Node(Node::CostRegion { value: child, limit: child_limit }));
+Ok(())
+}
+    #[inline(never)]
 fn step_send(
 &mut self,
 mut value: crate::rhoapi::Send,
@@ -1511,6 +1930,7 @@ match tag {
                 3u32 => self.step_send_tag_3(&mut value, limit, protobuf_wire_type),
                 5u32 => self.step_send_tag_5(&mut value, limit, protobuf_wire_type),
                 6u32 => self.step_send_tag_6(&mut value, limit, protobuf_wire_type),
+                7u32 => self.step_send_tag_7(&mut value, limit, protobuf_wire_type),
 
 _ => {
 skip_unknown_field(protobuf_wire_type, tag, &mut self.buf)?;
@@ -1565,6 +1985,14 @@ self.frames.push(Frame::Node(Node::Send { value: mem::take(value), limit }));
 Ok(())
 }
     #[inline(never)]
+fn step_send_tag_7(&mut self, value: &mut crate::rhoapi::Send, limit: usize, protobuf_wire_type: WireType) -> Result<(), DecodeError> {
+let child_limit = self.message_limit(protobuf_wire_type).map_err(|mut error| { error.push("Send", "cost_region"); error })?;
+let child = value.cost_region.take().unwrap_or_default();
+self.frames.push(Frame::Attach(Attach::SendCostRegion { parent: mem::take(value), limit }));
+self.frames.push(Frame::Node(Node::CostRegion { value: child, limit: child_limit }));
+Ok(())
+}
+    #[inline(never)]
 fn step_receive_bind(
 &mut self,
 mut value: crate::rhoapi::ReceiveBind,
@@ -1584,6 +2012,7 @@ match tag {
                 2u32 => self.step_receive_bind_tag_2(&mut value, limit, protobuf_wire_type),
                 3u32 => self.step_receive_bind_tag_3(&mut value, limit, protobuf_wire_type),
                 4u32 => self.step_receive_bind_tag_4(&mut value, limit, protobuf_wire_type),
+                5u32 => self.step_receive_bind_tag_5(&mut value, limit, protobuf_wire_type),
 
 _ => {
 skip_unknown_field(protobuf_wire_type, tag, &mut self.buf)?;
@@ -1625,6 +2054,14 @@ protobuf_wire_type, &mut value.free_count, &mut self.buf,
 DecodeContext::default(),
 ).map_err(|mut error| { error.push("ReceiveBind", "free_count"); error })?;
 self.frames.push(Frame::Node(Node::ReceiveBind { value: mem::take(value), limit }));
+Ok(())
+}
+    #[inline(never)]
+fn step_receive_bind_tag_5(&mut self, value: &mut crate::rhoapi::ReceiveBind, limit: usize, protobuf_wire_type: WireType) -> Result<(), DecodeError> {
+let child_limit = self.message_limit(protobuf_wire_type).map_err(|mut error| { error.push("ReceiveBind", "cost_region"); error })?;
+let child = value.cost_region.take().unwrap_or_default();
+self.frames.push(Frame::Attach(Attach::ReceiveBindCostRegion { parent: mem::take(value), limit }));
+self.frames.push(Frame::Node(Node::CostRegion { value: child, limit: child_limit }));
 Ok(())
 }
     #[inline(never)]
@@ -1740,6 +2177,7 @@ match tag {
                 6u32 => self.step_receive_tag_6(&mut value, limit, protobuf_wire_type),
                 7u32 => self.step_receive_tag_7(&mut value, limit, protobuf_wire_type),
                 8u32 => self.step_receive_tag_8(&mut value, limit, protobuf_wire_type),
+                9u32 => self.step_receive_tag_9(&mut value, limit, protobuf_wire_type),
 
 _ => {
 skip_unknown_field(protobuf_wire_type, tag, &mut self.buf)?;
@@ -1817,6 +2255,14 @@ let child_limit = self.message_limit(protobuf_wire_type).map_err(|mut error| { e
 let child = value.condition.take().unwrap_or_default();
 self.frames.push(Frame::Attach(Attach::ReceiveCondition { parent: mem::take(value), limit }));
 self.frames.push(Frame::Node(Node::Par { value: child, limit: child_limit }));
+Ok(())
+}
+    #[inline(never)]
+fn step_receive_tag_9(&mut self, value: &mut crate::rhoapi::Receive, limit: usize, protobuf_wire_type: WireType) -> Result<(), DecodeError> {
+let child_limit = self.message_limit(protobuf_wire_type).map_err(|mut error| { error.push("Receive", "cost_region"); error })?;
+let child = value.cost_region.take().unwrap_or_default();
+self.frames.push(Frame::Attach(Attach::ReceiveCostRegion { parent: mem::take(value), limit }));
+self.frames.push(Frame::Node(Node::CostRegion { value: child, limit: child_limit }));
 Ok(())
 }
     #[inline(never)]
@@ -4573,6 +5019,12 @@ let child_limit = self.message_limit(protobuf_wire_type)
 self.frames.push(Frame::Attach(Attach::ParConditionals { parent: value, limit }));
 self.frames.push(Frame::Node(Node::If { value: Default::default(), limit: child_limit }));
 }
+            13u32 => {
+let child_limit = self.message_limit(protobuf_wire_type)
+.map_err(|mut error| { error.push("Par", "cost_token_stacks"); error })?;
+self.frames.push(Frame::Attach(Attach::ParCostTokenStacks { parent: value, limit }));
+self.frames.push(Frame::Node(Node::CostTokenStack { value: Default::default(), limit: child_limit }));
+}
             _ => {
 skip_unknown_field(protobuf_wire_type, tag, &mut self.buf)?;
 self.frames.push(Frame::Node(Node::Par { value, limit }));
@@ -4804,22 +5256,33 @@ Ok(())
 fn attach(&mut self, attach: Attach) -> Result<(), DecodeError> {
 match attach {
             Attach::TaggedContinuationGuard { parent, limit } => self.attach_tagged_continuation_guard(parent, limit),
+            Attach::TaggedContinuationCostRegion { parent, limit } => self.attach_tagged_continuation_cost_region(parent, limit),
+            Attach::TaggedContinuationClauseRegions { parent, limit } => self.attach_tagged_continuation_clause_regions(parent, limit),
             Attach::TaggedContinuationTaggedContParBody { parent, limit } => self.attach_tagged_continuation_tagged_cont_par_body(parent, limit),
             Attach::ParWithRandomBody { parent, limit } => self.attach_par_with_random_body(parent, limit),
             Attach::ListParWithRandomPars { parent, limit } => self.attach_list_par_with_random_pars(parent, limit),
+            Attach::ListParWithRandomCostRegion { parent, limit } => self.attach_list_par_with_random_cost_region(parent, limit),
             Attach::VarVarInstanceWildcard { parent, limit } => self.attach_var_var_instance_wildcard(parent, limit),
             Attach::BundleBody { parent, limit } => self.attach_bundle_body(parent, limit),
+            Attach::CostSignatureAtoms { parent, limit } => self.attach_cost_signature_atoms(parent, limit),
+            Attach::CostSignatureAtomFormBound { parent, limit } => self.attach_cost_signature_atom_form_bound(parent, limit),
+            Attach::CostRegionSigner { parent, limit } => self.attach_cost_region_signer(parent, limit),
+            Attach::CostTokenStackLayers { parent, limit } => self.attach_cost_token_stack_layers(parent, limit),
+            Attach::CostClauseRegionRegion { parent, limit } => self.attach_cost_clause_region_region(parent, limit),
             Attach::SendChan { parent, limit } => self.attach_send_chan(parent, limit),
             Attach::SendData { parent, limit } => self.attach_send_data(parent, limit),
+            Attach::SendCostRegion { parent, limit } => self.attach_send_cost_region(parent, limit),
             Attach::ReceiveBindPatterns { parent, limit } => self.attach_receive_bind_patterns(parent, limit),
             Attach::ReceiveBindSource { parent, limit } => self.attach_receive_bind_source(parent, limit),
             Attach::ReceiveBindRemainder { parent, limit } => self.attach_receive_bind_remainder(parent, limit),
+            Attach::ReceiveBindCostRegion { parent, limit } => self.attach_receive_bind_cost_region(parent, limit),
             Attach::BindPatternPatterns { parent, limit } => self.attach_bind_pattern_patterns(parent, limit),
             Attach::BindPatternRemainder { parent, limit } => self.attach_bind_pattern_remainder(parent, limit),
             Attach::ListBindPatternsPatterns { parent, limit } => self.attach_list_bind_patterns_patterns(parent, limit),
             Attach::ReceiveBinds { parent, limit } => self.attach_receive_binds(parent, limit),
             Attach::ReceiveBody { parent, limit } => self.attach_receive_body(parent, limit),
             Attach::ReceiveCondition { parent, limit } => self.attach_receive_condition(parent, limit),
+            Attach::ReceiveCostRegion { parent, limit } => self.attach_receive_cost_region(parent, limit),
             Attach::NewP { parent, limit } => self.attach_new_p(parent, limit),
             Attach::NewInjections { parent, limit } => self.attach_new_injections(parent, limit),
             Attach::MatchCasePattern { parent, limit } => self.attach_match_case_pattern(parent, limit),
@@ -4926,6 +5389,7 @@ match attach {
             Attach::ParBundles { parent, limit } => self.attach_par_bundles(parent, limit),
             Attach::ParConnectives { parent, limit } => self.attach_par_connectives(parent, limit),
             Attach::ParConditionals { parent, limit } => self.attach_par_conditionals(parent, limit),
+            Attach::ParCostTokenStacks { parent, limit } => self.attach_par_cost_token_stacks(parent, limit),
             Attach::EPathMapPs { parent, limit } => self.attach_epath_map_ps(parent, limit),
 Attach::EPathMapRemainder { parent, limit } => self.attach_epath_map_remainder(parent, limit),
 Attach::EPathMapSnapshotValue { frame } => self.attach_epath_map_snapshot_value(frame),
@@ -4950,6 +5414,32 @@ self.frames.push(Frame::Node(Node::TaggedContinuation { value: parent, limit }))
 Ok(())
 }
 child => self.attach_mismatch("TaggedContinuation.guard", Some(Value::TaggedContinuation(parent)), child),
+}
+}
+
+    #[inline(never)]
+fn attach_tagged_continuation_cost_region(&mut self, mut parent: crate::rhoapi::TaggedContinuation, limit: usize) -> Result<(), DecodeError> {
+let child = self.pop_attached_value();
+match child {
+Value::CostRegion(child) => {
+                parent.cost_region = Some(child);
+self.frames.push(Frame::Node(Node::TaggedContinuation { value: parent, limit }));
+Ok(())
+}
+child => self.attach_mismatch("TaggedContinuation.cost_region", Some(Value::TaggedContinuation(parent)), child),
+}
+}
+
+    #[inline(never)]
+fn attach_tagged_continuation_clause_regions(&mut self, mut parent: crate::rhoapi::TaggedContinuation, limit: usize) -> Result<(), DecodeError> {
+let child = self.pop_attached_value();
+match child {
+Value::CostClauseRegion(child) => {
+                parent.clause_regions.push(child);
+self.frames.push(Frame::Node(Node::TaggedContinuation { value: parent, limit }));
+Ok(())
+}
+child => self.attach_mismatch("TaggedContinuation.clause_regions", Some(Value::TaggedContinuation(parent)), child),
 }
 }
 
@@ -4993,6 +5483,19 @@ child => self.attach_mismatch("ListParWithRandom.pars", Some(Value::ListParWithR
 }
 
     #[inline(never)]
+fn attach_list_par_with_random_cost_region(&mut self, mut parent: crate::rhoapi::ListParWithRandom, limit: usize) -> Result<(), DecodeError> {
+let child = self.pop_attached_value();
+match child {
+Value::CostRegion(child) => {
+                parent.cost_region = Some(child);
+self.frames.push(Frame::Node(Node::ListParWithRandom { value: parent, limit }));
+Ok(())
+}
+child => self.attach_mismatch("ListParWithRandom.cost_region", Some(Value::ListParWithRandom(parent)), child),
+}
+}
+
+    #[inline(never)]
 fn attach_var_var_instance_wildcard(&mut self, mut parent: crate::rhoapi::Var, limit: usize) -> Result<(), DecodeError> {
 let child = self.pop_attached_value();
 match child {
@@ -5019,6 +5522,71 @@ child => self.attach_mismatch("Bundle.body", Some(Value::Bundle(parent)), child)
 }
 
     #[inline(never)]
+fn attach_cost_signature_atoms(&mut self, mut parent: crate::rhoapi::CostSignature, limit: usize) -> Result<(), DecodeError> {
+let child = self.pop_attached_value();
+match child {
+Value::CostSignatureAtom(child) => {
+                parent.atoms.push(child);
+self.frames.push(Frame::Node(Node::CostSignature { value: parent, limit }));
+Ok(())
+}
+child => self.attach_mismatch("CostSignature.atoms", Some(Value::CostSignature(parent)), child),
+}
+}
+
+    #[inline(never)]
+fn attach_cost_signature_atom_form_bound(&mut self, mut parent: crate::rhoapi::CostSignatureAtom, limit: usize) -> Result<(), DecodeError> {
+let child = self.pop_attached_value();
+match child {
+Value::CostBoundSignature(child) => {
+                parent.form = Some(crate::rhoapi::cost_signature_atom::Form::Bound(child));
+self.frames.push(Frame::Node(Node::CostSignatureAtom { value: parent, limit }));
+Ok(())
+}
+child => self.attach_mismatch("CostSignatureAtom.form", Some(Value::CostSignatureAtom(parent)), child),
+}
+}
+
+    #[inline(never)]
+fn attach_cost_region_signer(&mut self, mut parent: crate::rhoapi::CostRegion, limit: usize) -> Result<(), DecodeError> {
+let child = self.pop_attached_value();
+match child {
+Value::CostSignature(child) => {
+                parent.signer = Some(child);
+self.frames.push(Frame::Node(Node::CostRegion { value: parent, limit }));
+Ok(())
+}
+child => self.attach_mismatch("CostRegion.signer", Some(Value::CostRegion(parent)), child),
+}
+}
+
+    #[inline(never)]
+fn attach_cost_token_stack_layers(&mut self, mut parent: crate::rhoapi::CostTokenStack, limit: usize) -> Result<(), DecodeError> {
+let child = self.pop_attached_value();
+match child {
+Value::CostSignature(child) => {
+                parent.layers.push(child);
+self.frames.push(Frame::Node(Node::CostTokenStack { value: parent, limit }));
+Ok(())
+}
+child => self.attach_mismatch("CostTokenStack.layers", Some(Value::CostTokenStack(parent)), child),
+}
+}
+
+    #[inline(never)]
+fn attach_cost_clause_region_region(&mut self, mut parent: crate::rhoapi::CostClauseRegion, limit: usize) -> Result<(), DecodeError> {
+let child = self.pop_attached_value();
+match child {
+Value::CostRegion(child) => {
+                parent.region = Some(child);
+self.frames.push(Frame::Node(Node::CostClauseRegion { value: parent, limit }));
+Ok(())
+}
+child => self.attach_mismatch("CostClauseRegion.region", Some(Value::CostClauseRegion(parent)), child),
+}
+}
+
+    #[inline(never)]
 fn attach_send_chan(&mut self, mut parent: crate::rhoapi::Send, limit: usize) -> Result<(), DecodeError> {
 let child = self.pop_attached_value();
 match child {
@@ -5041,6 +5609,19 @@ self.frames.push(Frame::Node(Node::Send { value: parent, limit }));
 Ok(())
 }
 child => self.attach_mismatch("Send.data", Some(Value::Send(parent)), child),
+}
+}
+
+    #[inline(never)]
+fn attach_send_cost_region(&mut self, mut parent: crate::rhoapi::Send, limit: usize) -> Result<(), DecodeError> {
+let child = self.pop_attached_value();
+match child {
+Value::CostRegion(child) => {
+                parent.cost_region = Some(child);
+self.frames.push(Frame::Node(Node::Send { value: parent, limit }));
+Ok(())
+}
+child => self.attach_mismatch("Send.cost_region", Some(Value::Send(parent)), child),
 }
 }
 
@@ -5080,6 +5661,19 @@ self.frames.push(Frame::Node(Node::ReceiveBind { value: parent, limit }));
 Ok(())
 }
 child => self.attach_mismatch("ReceiveBind.remainder", Some(Value::ReceiveBind(parent)), child),
+}
+}
+
+    #[inline(never)]
+fn attach_receive_bind_cost_region(&mut self, mut parent: crate::rhoapi::ReceiveBind, limit: usize) -> Result<(), DecodeError> {
+let child = self.pop_attached_value();
+match child {
+Value::CostRegion(child) => {
+                parent.cost_region = Some(child);
+self.frames.push(Frame::Node(Node::ReceiveBind { value: parent, limit }));
+Ok(())
+}
+child => self.attach_mismatch("ReceiveBind.cost_region", Some(Value::ReceiveBind(parent)), child),
 }
 }
 
@@ -5158,6 +5752,19 @@ self.frames.push(Frame::Node(Node::Receive { value: parent, limit }));
 Ok(())
 }
 child => self.attach_mismatch("Receive.condition", Some(Value::Receive(parent)), child),
+}
+}
+
+    #[inline(never)]
+fn attach_receive_cost_region(&mut self, mut parent: crate::rhoapi::Receive, limit: usize) -> Result<(), DecodeError> {
+let child = self.pop_attached_value();
+match child {
+Value::CostRegion(child) => {
+                parent.cost_region = Some(child);
+self.frames.push(Frame::Node(Node::Receive { value: parent, limit }));
+Ok(())
+}
+child => self.attach_mismatch("Receive.cost_region", Some(Value::Receive(parent)), child),
 }
 }
 
@@ -6551,6 +7158,20 @@ child => self.attach_mismatch("Par.conditionals", Some(Value::Par(parent)), chil
 }
 
     #[inline(never)]
+fn attach_par_cost_token_stacks(&mut self, mut parent: Par, limit: usize) -> Result<(), DecodeError> {
+let child = self.pop_attached_value();
+match child {
+Value::CostTokenStack(child) => {
+                parent.merge_protobuf_component(&child)
+.map_err(|mut error| { error.push("Par", "cost_token_stacks"); error })?;
+self.frames.push(Frame::Node(Node::Par { value: parent, limit }));
+Ok(())
+}
+child => self.attach_mismatch("Par.cost_token_stacks", Some(Value::Par(parent)), child),
+}
+}
+
+    #[inline(never)]
 fn attach_epath_map_ps(&mut self, mut parent: EPathMap, limit: usize) -> Result<(), DecodeError> {
 let child = self.pop_attached_value();
 match child {
@@ -6648,6 +7269,16 @@ match value {
         crate::rhoapi::var::VarInstance::BoundVar(_bounded) => {},
         crate::rhoapi::var::VarInstance::FreeVar(_bounded) => {},
         crate::rhoapi::var::VarInstance::Wildcard(child) => work.push(Value::WildcardMsg(child)),
+    }
+}
+
+fn salvage_cost_signature_atom_form(value: Option<crate::rhoapi::cost_signature_atom::Form>, work: &mut Vec<Value>) {
+let Some(value) = value else { return };
+match value {
+        crate::rhoapi::cost_signature_atom::Form::Ground(_bounded) => {},
+        crate::rhoapi::cost_signature_atom::Form::Quote(_bounded) => {},
+        crate::rhoapi::cost_signature_atom::Form::Bound(child) => work.push(Value::CostBoundSignature(child)),
+        crate::rhoapi::cost_signature_atom::Form::RuntimeName(_bounded) => {},
     }
 }
 
@@ -6753,9 +7384,13 @@ impl<B> Machine<B> {
                 Value::TaggedContinuation(value) => {
 let crate::rhoapi::TaggedContinuation {
                         guard,
+                        cost_region,
+                        clause_regions,
                         tagged_cont,
                     } = value;
                     if let Some(child) = guard { work.push(Value::Par(child)); }
+                    if let Some(child) = cost_region { work.push(Value::CostRegion(child)); }
+                    work.extend(clause_regions.into_iter().map(Value::CostClauseRegion));
                     salvage_tagged_continuation_tagged_cont(tagged_cont, &mut work);
                 }
                 Value::ParWithRandom(value) => {
@@ -6774,8 +7409,10 @@ let crate::rhoapi::PCost {
 let crate::rhoapi::ListParWithRandom {
                         pars,
                         random_state: _,
+                        cost_region,
                     } = value;
                     work.extend(pars.into_iter().map(Value::Par));
+                    if let Some(child) = cost_region { work.push(Value::CostRegion(child)); }
                 }
                 Value::Var(value) => {
 let crate::rhoapi::Var {
@@ -6795,6 +7432,48 @@ let crate::rhoapi::Bundle {
                     } = value;
                     if let Some(child) = body { work.push(Value::Par(child)); }
                 }
+                Value::CostSignature(value) => {
+let crate::rhoapi::CostSignature {
+                        atoms,
+                    } = value;
+                    work.extend(atoms.into_iter().map(Value::CostSignatureAtom));
+                }
+                Value::CostSignatureAtom(value) => {
+let crate::rhoapi::CostSignatureAtom {
+                        form,
+                    } = value;
+                    salvage_cost_signature_atom_form(form, &mut work);
+                }
+                Value::CostBoundSignature(value) => {
+let crate::rhoapi::CostBoundSignature {
+                        index: _,
+                    } = value;
+                }
+                Value::CostRegion(value) => {
+let crate::rhoapi::CostRegion {
+                        version: _,
+                        start_line: _,
+                        start_column: _,
+                        end_line: _,
+                        end_column: _,
+                        signer,
+                        ordinal: _,
+                    } = value;
+                    if let Some(child) = signer { work.push(Value::CostSignature(child)); }
+                }
+                Value::CostTokenStack(value) => {
+let crate::rhoapi::CostTokenStack {
+                        layers,
+                    } = value;
+                    work.extend(layers.into_iter().map(Value::CostSignature));
+                }
+                Value::CostClauseRegion(value) => {
+let crate::rhoapi::CostClauseRegion {
+                        bind_index: _,
+                        region,
+                    } = value;
+                    if let Some(child) = region { work.push(Value::CostRegion(child)); }
+                }
                 Value::Send(value) => {
 let crate::rhoapi::Send {
                         chan,
@@ -6802,9 +7481,11 @@ let crate::rhoapi::Send {
                         persistent: _,
                         locally_free: _,
                         connective_used: _,
+                        cost_region,
                     } = value;
                     if let Some(child) = chan { work.push(Value::Par(child)); }
                     work.extend(data.into_iter().map(Value::Par));
+                    if let Some(child) = cost_region { work.push(Value::CostRegion(child)); }
                 }
                 Value::ReceiveBind(value) => {
 let crate::rhoapi::ReceiveBind {
@@ -6812,10 +7493,12 @@ let crate::rhoapi::ReceiveBind {
                         source,
                         remainder,
                         free_count: _,
+                        cost_region,
                     } = value;
                     work.extend(patterns.into_iter().map(Value::Par));
                     if let Some(child) = source { work.push(Value::Par(child)); }
                     if let Some(child) = remainder { work.push(Value::Var(child)); }
+                    if let Some(child) = cost_region { work.push(Value::CostRegion(child)); }
                 }
                 Value::BindPattern(value) => {
 let crate::rhoapi::BindPattern {
@@ -6842,10 +7525,12 @@ let crate::rhoapi::Receive {
                         locally_free: _,
                         connective_used: _,
                         condition,
+                        cost_region,
                     } = value;
                     work.extend(binds.into_iter().map(Value::ReceiveBind));
                     if let Some(child) = body { work.push(Value::Par(child)); }
                     if let Some(child) = condition { work.push(Value::Par(child)); }
+                    if let Some(child) = cost_region { work.push(Value::CostRegion(child)); }
                 }
                 Value::New(value) => {
 let crate::rhoapi::New {
@@ -7382,6 +8067,150 @@ other => {
 let found = other.kind_name();
 machine.values.push(other);
 panic!("protobuf decoder invariant: expected Bundle, found {found}");
+}
+}
+}
+
+pub fn decode_cost_signature<B: Buf>(buf: B) -> Result<crate::rhoapi::CostSignature, DecodeError> {
+decode_cost_signature_with_epathmap_validation(buf, true)
+}
+
+fn decode_cost_signature_with_epathmap_validation<B: Buf>(buf: B, validate_epathmaps: bool) -> Result<crate::rhoapi::CostSignature, DecodeError> {
+let mut machine = Machine::new(
+buf,
+Node::CostSignature { value: Default::default(), limit: 0 },
+validate_epathmaps,
+);
+machine.run()?;
+if machine.values.len() != 1 {
+panic!("protobuf decoder invariant: CostSignature left {} root values", machine.values.len());
+}
+match machine.values.pop().expect("the single checked root value exists") {
+Value::CostSignature(value) => Ok(value),
+other => {
+let found = other.kind_name();
+machine.values.push(other);
+panic!("protobuf decoder invariant: expected CostSignature, found {found}");
+}
+}
+}
+
+pub fn decode_cost_signature_atom<B: Buf>(buf: B) -> Result<crate::rhoapi::CostSignatureAtom, DecodeError> {
+decode_cost_signature_atom_with_epathmap_validation(buf, true)
+}
+
+fn decode_cost_signature_atom_with_epathmap_validation<B: Buf>(buf: B, validate_epathmaps: bool) -> Result<crate::rhoapi::CostSignatureAtom, DecodeError> {
+let mut machine = Machine::new(
+buf,
+Node::CostSignatureAtom { value: Default::default(), limit: 0 },
+validate_epathmaps,
+);
+machine.run()?;
+if machine.values.len() != 1 {
+panic!("protobuf decoder invariant: CostSignatureAtom left {} root values", machine.values.len());
+}
+match machine.values.pop().expect("the single checked root value exists") {
+Value::CostSignatureAtom(value) => Ok(value),
+other => {
+let found = other.kind_name();
+machine.values.push(other);
+panic!("protobuf decoder invariant: expected CostSignatureAtom, found {found}");
+}
+}
+}
+
+pub fn decode_cost_bound_signature<B: Buf>(buf: B) -> Result<crate::rhoapi::CostBoundSignature, DecodeError> {
+decode_cost_bound_signature_with_epathmap_validation(buf, true)
+}
+
+fn decode_cost_bound_signature_with_epathmap_validation<B: Buf>(buf: B, validate_epathmaps: bool) -> Result<crate::rhoapi::CostBoundSignature, DecodeError> {
+let mut machine = Machine::new(
+buf,
+Node::CostBoundSignature { value: Default::default(), limit: 0 },
+validate_epathmaps,
+);
+machine.run()?;
+if machine.values.len() != 1 {
+panic!("protobuf decoder invariant: CostBoundSignature left {} root values", machine.values.len());
+}
+match machine.values.pop().expect("the single checked root value exists") {
+Value::CostBoundSignature(value) => Ok(value),
+other => {
+let found = other.kind_name();
+machine.values.push(other);
+panic!("protobuf decoder invariant: expected CostBoundSignature, found {found}");
+}
+}
+}
+
+pub fn decode_cost_region<B: Buf>(buf: B) -> Result<crate::rhoapi::CostRegion, DecodeError> {
+decode_cost_region_with_epathmap_validation(buf, true)
+}
+
+fn decode_cost_region_with_epathmap_validation<B: Buf>(buf: B, validate_epathmaps: bool) -> Result<crate::rhoapi::CostRegion, DecodeError> {
+let mut machine = Machine::new(
+buf,
+Node::CostRegion { value: Default::default(), limit: 0 },
+validate_epathmaps,
+);
+machine.run()?;
+if machine.values.len() != 1 {
+panic!("protobuf decoder invariant: CostRegion left {} root values", machine.values.len());
+}
+match machine.values.pop().expect("the single checked root value exists") {
+Value::CostRegion(value) => Ok(value),
+other => {
+let found = other.kind_name();
+machine.values.push(other);
+panic!("protobuf decoder invariant: expected CostRegion, found {found}");
+}
+}
+}
+
+pub fn decode_cost_token_stack<B: Buf>(buf: B) -> Result<crate::rhoapi::CostTokenStack, DecodeError> {
+decode_cost_token_stack_with_epathmap_validation(buf, true)
+}
+
+fn decode_cost_token_stack_with_epathmap_validation<B: Buf>(buf: B, validate_epathmaps: bool) -> Result<crate::rhoapi::CostTokenStack, DecodeError> {
+let mut machine = Machine::new(
+buf,
+Node::CostTokenStack { value: Default::default(), limit: 0 },
+validate_epathmaps,
+);
+machine.run()?;
+if machine.values.len() != 1 {
+panic!("protobuf decoder invariant: CostTokenStack left {} root values", machine.values.len());
+}
+match machine.values.pop().expect("the single checked root value exists") {
+Value::CostTokenStack(value) => Ok(value),
+other => {
+let found = other.kind_name();
+machine.values.push(other);
+panic!("protobuf decoder invariant: expected CostTokenStack, found {found}");
+}
+}
+}
+
+pub fn decode_cost_clause_region<B: Buf>(buf: B) -> Result<crate::rhoapi::CostClauseRegion, DecodeError> {
+decode_cost_clause_region_with_epathmap_validation(buf, true)
+}
+
+fn decode_cost_clause_region_with_epathmap_validation<B: Buf>(buf: B, validate_epathmaps: bool) -> Result<crate::rhoapi::CostClauseRegion, DecodeError> {
+let mut machine = Machine::new(
+buf,
+Node::CostClauseRegion { value: Default::default(), limit: 0 },
+validate_epathmaps,
+);
+machine.run()?;
+if machine.values.len() != 1 {
+panic!("protobuf decoder invariant: CostClauseRegion left {} root values", machine.values.len());
+}
+match machine.values.pop().expect("the single checked root value exists") {
+Value::CostClauseRegion(value) => Ok(value),
+other => {
+let found = other.kind_name();
+machine.values.push(other);
+panic!("protobuf decoder invariant: expected CostClauseRegion, found {found}");
 }
 }
 }
@@ -8698,8 +9527,8 @@ fn decode_par_with_epathmap_validation<B: Buf>(
 }
 
 
-pub const GENERATED_PROTOBUF_MESSAGE_COUNT: usize = 56;
-pub const GENERATED_PROTOBUF_ONEOF_COUNT: usize = 5;
+pub const GENERATED_PROTOBUF_MESSAGE_COUNT: usize = 62;
+pub const GENERATED_PROTOBUF_ONEOF_COUNT: usize = 6;
 pub const GENERATED_PROTOBUF_NODE_SIZE: usize = mem::size_of::<Node>();
 pub const GENERATED_PROTOBUF_VALUE_SIZE: usize = mem::size_of::<Value>();
 pub const GENERATED_PROTOBUF_ATTACH_SIZE: usize = mem::size_of::<Attach>();

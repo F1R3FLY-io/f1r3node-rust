@@ -1,8 +1,6 @@
 use std::marker::PhantomData;
 use std::sync::Arc;
 
-use serde::Serialize;
-
 use super::instances::rspace_history_reader_impl::RSpaceHistoryReaderImpl;
 use crate::rspace::errors::{HistoryError, HistoryRepositoryError};
 use crate::rspace::hashing::blake2b256_hash::Blake2b256Hash;
@@ -86,9 +84,9 @@ pub const PREFIX_JOINS: u8 = 0x02;
 impl<C, P, A, K> HistoryRepositoryInstances<C, P, A, K>
 where
     C: Clone + Send + Sync + StableHashSerialize + ColdStoreDecode + 'static,
-    P: Clone + Send + Sync + Serialize + ColdStoreDecode + 'static,
-    A: Clone + Send + Sync + Serialize + ColdStoreDecode + 'static,
-    K: Clone + Send + Sync + Serialize + ColdStoreDecode + 'static,
+    P: Clone + Send + Sync + StableHashSerialize + ColdStoreDecode + 'static,
+    A: Clone + Send + Sync + StableHashSerialize + ColdStoreDecode + 'static,
+    K: Clone + Send + Sync + StableHashSerialize + ColdStoreDecode + 'static,
 {
     pub fn repository(
         authority: Arc<RSpaceStateAuthority>,

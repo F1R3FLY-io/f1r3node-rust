@@ -51,7 +51,7 @@ use rspace_plus_plus::rspace::serializers::serializers::{
     encode_datums,
 };
 use rspace_plus_plus::rspace::trace::event::{Consume, Produce};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 mod par_corpus;
 use par_corpus as corpus;
@@ -76,6 +76,57 @@ struct WaitingContinuationOracle<P, K> {
     source: Consume,
 }
 
+#[derive(Serialize, Deserialize)]
+struct LegacyListParWithRandom {
+    pars: Vec<Par>,
+    random_state: Vec<u8>,
+}
+
+impl From<&ListParWithRandom> for LegacyListParWithRandom {
+    fn from(value: &ListParWithRandom) -> Self {
+        Self {
+            pars: value.pars.clone(),
+            random_state: value.random_state.clone(),
+        }
+    }
+}
+
+impl From<LegacyListParWithRandom> for ListParWithRandom {
+    fn from(value: LegacyListParWithRandom) -> Self {
+        Self {
+            pars: value.pars,
+            random_state: value.random_state,
+            cost_region: None,
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+struct LegacyTaggedContinuation {
+    guard: Option<Par>,
+    tagged_cont: Option<TaggedCont>,
+}
+
+impl From<&TaggedContinuation> for LegacyTaggedContinuation {
+    fn from(value: &TaggedContinuation) -> Self {
+        Self {
+            guard: value.guard.clone(),
+            tagged_cont: value.tagged_cont.clone(),
+        }
+    }
+}
+
+impl From<LegacyTaggedContinuation> for TaggedContinuation {
+    fn from(value: LegacyTaggedContinuation) -> Self {
+        Self {
+            guard: value.guard,
+            tagged_cont: value.tagged_cont,
+            cost_region: None,
+            clause_regions: Vec::new(),
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Fixtures — the production instantiation
 // ---------------------------------------------------------------------------
@@ -86,6 +137,7 @@ fn datum_fixtures() -> Vec<(&'static str, Datum<ListParWithRandom>)> {
             a: ListParWithRandom {
                 pars: vec![corpus::all_par_fields(), corpus::deep_mixed_par(24)],
                 random_state: vec![0xF1, 0xF2, 0xF3, 0xF4],
+                cost_region: None,
             }
             .into(),
             persist: false,
@@ -99,6 +151,7 @@ fn datum_fixtures() -> Vec<(&'static str, Datum<ListParWithRandom>)> {
             a: ListParWithRandom {
                 pars: vec![],
                 random_state: vec![],
+                cost_region: None,
             }
             .into(),
             persist: true,
@@ -108,6 +161,7 @@ fn datum_fixtures() -> Vec<(&'static str, Datum<ListParWithRandom>)> {
             a: ListParWithRandom {
                 pars: vec![corpus::deep_par(48)],
                 random_state: vec![9; 32],
+                cost_region: None,
             }
             .into(),
             persist: false,
@@ -147,6 +201,8 @@ fn continuation_fixtures() -> Vec<(
                     body: Some(corpus::deep_mixed_par(20)),
                     random_state: vec![1, 2],
                 })),
+                cost_region: None,
+                clause_regions: Vec::new(),
             }
             .into(),
             persist: true,
@@ -162,6 +218,8 @@ fn continuation_fixtures() -> Vec<(
             continuation: TaggedContinuation {
                 guard: None,
                 tagged_cont: Some(TaggedCont::ScalaBodyRef(-99)),
+                cost_region: None,
+                clause_regions: Vec::new(),
             }
             .into(),
             persist: false,
@@ -186,13 +244,13 @@ fn par_typed_datum_decode_matches_the_derived_oracle() {
 
     for (label, datum) in datum_fixtures() {
         let bytes = encode_datum(&datum);
-        let oracle: DatumOracle<ListParWithRandom> =
+        let oracle: DatumOracle<LegacyListParWithRandom> =
             bincode::deserialize(&bytes).expect("oracle must decode");
         let machine = decode_datum::<ListParWithRandom>(&bytes)
             .unwrap_or_else(|e| panic!("{label}: machine rejected a well-formed datum: {e}"));
 
         assert!(
-            *machine.a == oracle.a,
+            *machine.a == oracle.a.into(),
             "{label}: the machine and the derived oracle disagree on `a`"
         );
         assert_eq!(
@@ -235,9 +293,10 @@ fn assert_continuation_round_trip(
     let leaf = encode_continuations(&vec![cont.clone()]);
     let encoded: Vec<Vec<u8>> = bincode::deserialize(&leaf).expect("leaf");
     let bytes = &encoded[0];
+    let legacy_continuation = LegacyTaggedContinuation::from(cont.continuation.as_ref());
     let frozen = bincode::serialize(&(
         cont.patterns.as_ref(),
-        cont.continuation.as_ref(),
+        &legacy_continuation,
         cont.persist,
         &cont.peeks,
         &cont.source,
@@ -253,11 +312,11 @@ fn assert_continuation_round_trip(
     }
     assert_eq!(
         cont.continuation.stable_hash_bytes(),
-        bincode::serialize(cont.continuation.as_ref()).unwrap(),
+        bincode::serialize(&legacy_continuation).unwrap(),
         "{label}: generated continuation encoder versus frozen field codec",
     );
 
-    let oracle: WaitingContinuationOracle<BindPattern, TaggedContinuation> =
+    let oracle: WaitingContinuationOracle<BindPattern, LegacyTaggedContinuation> =
         bincode::deserialize(bytes).expect("oracle must decode");
     let mut decoded =
         decode_continuations::<BindPattern, TaggedContinuation>(&leaf).expect("machine");
@@ -269,7 +328,8 @@ fn assert_continuation_round_trip(
         "{label}: oracle patterns"
     );
     assert_eq!(
-        *machine.continuation, oracle.continuation,
+        *machine.continuation,
+        oracle.continuation.into(),
         "{label}: oracle body"
     );
     assert_eq!(
@@ -306,9 +366,10 @@ fn assert_continuation_round_trip(
 }
 
 fn frozen_identity(cont: &WaitingContinuation<BindPattern, TaggedContinuation>) -> Vec<u8> {
+    let legacy_continuation = LegacyTaggedContinuation::from(cont.continuation.as_ref());
     bincode::serialize(&(
         cont.patterns.as_ref(),
-        cont.continuation.as_ref(),
+        &legacy_continuation,
         cont.persist,
         &cont.peeks,
     ))
@@ -498,7 +559,8 @@ fn truncated_par_typed_records_are_rejected_by_both() {
         let bytes = encode_datum(&datum);
         for cut in 0..bytes.len() {
             let slice = &bytes[..cut];
-            let oracle = bincode::deserialize::<DatumOracle<ListParWithRandom>>(slice).is_ok();
+            let oracle =
+                bincode::deserialize::<DatumOracle<LegacyListParWithRandom>>(slice).is_ok();
             let machine = decode_datum::<ListParWithRandom>(slice).is_ok();
             assert_eq!(
                 oracle, machine,
@@ -518,7 +580,7 @@ fn truncated_par_typed_records_are_rejected_by_both() {
         for cut in 0..bytes.len() {
             let slice = &bytes[..cut];
             let oracle = bincode::deserialize::<
-                WaitingContinuationOracle<BindPattern, TaggedContinuation>,
+                WaitingContinuationOracle<BindPattern, LegacyTaggedContinuation>,
             >(slice)
             .is_ok();
             // Re-frame the truncated record as a one-element leaf so it goes
@@ -561,6 +623,7 @@ fn a_datum_too_deep_for_the_derived_decoder_still_reads_back() {
         a: ListParWithRandom {
             pars: vec![corpus::deep_par(4096)],
             random_state: vec![1, 2, 3],
+            cost_region: None,
         }
         .into(),
         persist: true,
@@ -620,8 +683,9 @@ fn step_a_golden_shapes_read_back_through_the_new_path() {
     assert_eq!(decoded.len(), 1);
 
     let encoded: Vec<Vec<u8>> = bincode::deserialize(&leaf).expect("leaf");
-    let oracle: DatumOracle<ListParWithRandom> = bincode::deserialize(&encoded[0]).expect("oracle");
-    assert!(*decoded[0].a == oracle.a);
+    let oracle: DatumOracle<LegacyListParWithRandom> =
+        bincode::deserialize(&encoded[0]).expect("oracle");
+    assert!(*decoded[0].a == oracle.a.into());
 
     // And the `Par` inside is the same one the oracle sees, field for field.
     let par: &Par = &decoded[0].a.pars[0];

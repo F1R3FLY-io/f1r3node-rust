@@ -118,6 +118,16 @@ const ORACLE: &str = "rholang/tests/support/normalize_recursive.rs";
 /// second one, without it appearing here — and [`no_undeclared_deviations`]
 /// fails if an entry stops being needed, so the list cannot rot into a licence
 /// for arbitrary drift either.
+///
+/// The cost-accounting schema adds four entries and extends two. `Send`,
+/// `Receive` and `ReceiveBind` gained a `cost_region` field, which the oracle
+/// sets to `None`; prost omits an unset message field on the wire, so those
+/// messages encode exactly as the cited code's did. The production normalizer
+/// also changed meaning in the same batch: a token stack `s :: S` now becomes a
+/// `CostTokenStack` component of the Par instead of the empty process, a bound
+/// signer is recorded by its binder index instead of `canon_bound`'s source-span
+/// bytes, and `Sig::to_native` became fallible. The oracle follows each of those
+/// changes, because the differential compares the two normalizers' outputs.
 const DECLARED_DEVIATIONS: &[Deviation] = &[
     Deviation {
         path: "normalizer/collection_normalize_matcher.rs",
@@ -158,6 +168,14 @@ const DECLARED_DEVIATIONS: &[Deviation] = &[
         reason: "`Par` now has zero-argument PathMap-backed metadata accessors with the same \
                  names as the legacy consuming `HasLocallyFree` methods. UFCS selects the \
                  cited trait operations explicitly without changing their inputs or results.",
+    },
+    Deviation {
+        path: "normalizer/processes/p_send_normalizer.rs",
+        from: "            || acc.3,\n    };\n",
+        to: "            || acc.3,\n        cost_region: None,\n    };\n",
+        reason: "`Send` gained the cost-accounting schema's `cost_region` field. The oracle \
+                 sets it to `None`, which prost omits on the wire, so the encoded `Send` is \
+                 the one the cited code produced.",
     },
     Deviation {
         path: "normalizer/processes/p_method_normalizer.rs",
@@ -427,6 +445,7 @@ const DECLARED_DEVIATIONS: &[Deviation] = &[
             source: Some(name_match_result.par.clone()),
             remainder: remainder_result.0.clone(),
             free_count: bound_count as i32,
+            cost_region: None,
         }],
         body: Some(body_result.par),
         persistent: true,
@@ -449,12 +468,15 @@ const DECLARED_DEVIATIONS: &[Deviation] = &[
         )
             || body_connective_used,
         condition: None,
+        cost_region: None,
     };
 "#,
         reason: "the cited contract cloned the body into Receive before reading its metadata. \
                  Reading the connective bit and shallow-cloning the cache before moving the \
                  whole body preserves that exact nested representation. UFCS disambiguates \
-                 the legacy consuming trait methods from the new zero-argument accessors.",
+                 the legacy consuming trait methods from the new zero-argument accessors. \
+                 The receive and its bind also set the cost-accounting schema's new \
+                 `cost_region` fields to `None`, which prost omits on the wire.",
     },
     Deviation {
         path: "normalizer/processes/p_input_normalizer.rs",
@@ -573,13 +595,84 @@ const DECLARED_DEVIATIONS: &[Deviation] = &[
                     || body_connective_used
                     || guard_connective_used,
                 condition: guard_par,
+                cost_region: None,
             }),
             free_map: proc_visit_outputs.free_map,
         })
 "#,
         reason: "the cited receive cloned its body into the parent before consuming metadata \
                  from the original, so the nested body retained its cache. Shallow-copying the \
-                 cache before the whole-Par move preserves the exact serialized form.",
+                 cache before the whole-Par move preserves the exact serialized form. The \
+                 receive also sets the cost-accounting schema's new `cost_region` field to \
+                 `None`, which prost omits on the wire.",
+    },
+    Deviation {
+        path: "normalizer/cost_accounting/recognize.rs",
+        from: r#"/// `s :: S` bare token stack at PROC level: resolve each layer's signature
+/// (recognition / validation) and lower to the empty process. It mints NOTHING in
+/// the normalizer — DR-13: only the Rust supply producer writes `Σ⟦s⟧`, and
+/// emitting `Σ⟦s⟧!(…)` sends would add COMM nodes and break the `Δ_s == consumed`
+/// equality. A signed deploy's fuel is its own funded `Σ⟦c⟧` balance (Workstream
+/// C/D), not a per-program send (design §3.3 + BLOCKER-1). In the multi-deploy
+/// re-scoping (Phase 5) a `s :: ()` stack is the deploy BEING signed by `s`; it
+/// carries no in-program mint.
+fn recognize_token_stack_recursive<'ast>(
+    stack: &'ast TokenStack<'ast>,
+    input: ProcVisitInputs,
+    env: &HashMap<String, Par>,
+    parser: &'ast RholangParser<'ast>,
+) -> Result<ProcVisitOutputs, InterpreterError> {
+    for layer in stack.layers.iter() {
+        // Resolve each layer (rejects malformed sigs); the resolved value drives
+        // Phase-3 attribution, here it is validation only.
+        signature_to_native_sig_recursive(layer, &input.bound_map_chain, env, parser)?;
+    }
+    Ok(ProcVisitOutputs {
+        par: input.par.clone(),
+"#,
+        to: r#"fn recognize_token_stack_recursive<'ast>(
+    stack: &'ast TokenStack<'ast>,
+    mut input: ProcVisitInputs,
+    env: &HashMap<String, Par>,
+    parser: &'ast RholangParser<'ast>,
+) -> Result<ProcVisitOutputs, InterpreterError> {
+    let layers = stack.layers.iter()
+        .map(|layer| signature_to_ir_recursive(layer, &input.bound_map_chain, env, parser).map(|sig| sig.to_cost_signature()))
+        .collect::<Result<Vec<_>, _>>()?;
+    input.par.insert_component(&models::rhoapi::CostTokenStack { layers }, Vec::new(), false)
+        .map_err(|error| InterpreterError::NormalizerError(error.to_string()))?;
+    Ok(ProcVisitOutputs {
+        par: input.par,
+"#,
+        reason: "the cost-accounting schema changed what a token stack `s :: S` normalizes \
+                 to. The production normalizer now resolves each layer with `signature_to_ir` \
+                 and inserts the resulting `CostTokenStack` component into the Par; the cited \
+                 code validated the layers and lowered the stack to the empty process. The \
+                 oracle follows the new lowering so the differential still compares equal \
+                 semantics, and the cited doc comment, which describes the superseded \
+                 lowering, is dropped.",
+    },
+    Deviation {
+        path: "normalizer/cost_accounting/sig.rs",
+        from: "                Some(ctx) => Ok(Sig::Bound(canon_bound(&ctx.source_span))),\n",
+        to: r#"                Some(ctx) => Ok(Sig::Bound(i32::try_from(ctx.index).map_err(|_| {
+                    InterpreterError::NormalizerError(
+                        "cost-accounting: bound signer index exceeds i32".to_string(),
+                    )
+                })?)),
+"#,
+        reason: "the cost-accounting schema records a bound signer by its binder index \
+                 (`Sig::Bound(i32)`, carried on the wire as `CostBoundSignature.index`) instead \
+                 of `canon_bound`'s source-span bytes, as the production normalizer does; an \
+                 index beyond `i32` is refused with the production error message.",
+    },
+    Deviation {
+        path: "normalizer/cost_accounting/sig.rs",
+        from: "    Ok(signature_to_ir_recursive(sig, bound_map_chain, env, parser)?.to_native())\n",
+        to: "    signature_to_ir_recursive(sig, bound_map_chain, env, parser)?.to_native()\n",
+        reason: "`Sig::to_native` became fallible because a bound signer has no native ground \
+                 form. The oracle returns that `Result` directly, as the production \
+                 `signature_to_native_sig` does.",
     },
 ];
 

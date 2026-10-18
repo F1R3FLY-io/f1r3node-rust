@@ -74,11 +74,11 @@ fn resident_expr_headers_match_every_generated_variant() {
 use std::collections::BTreeSet;
 
 use models::rhoapi::{
-    Bundle, Connective, DeployId, DeployerId, Expr, GUnforgeable, If, Match, New, PCost, Receive,
-    Send,
+    Bundle, Connective, CostTokenStack, DeployId, DeployerId, Expr, GUnforgeable, If, Match, New,
+    PCost, Receive, Send,
 };
 use models::rust::rholang::bincode_schema_tables::{
-    CONNECTIVE_INSTANCE_VARIANTS, EXPR_INSTANCE_VARIANTS, TAGGED_CONT_VARIANTS,
+    CONNECTIVE_INSTANCE_VARIANTS, EXPR_INSTANCE_VARIANTS, FORM_VARIANTS, TAGGED_CONT_VARIANTS,
     UNF_INSTANCE_VARIANTS, VAR_INSTANCE_VARIANTS,
 };
 use models::rust::rholang::match_schema::{
@@ -371,22 +371,36 @@ fn exhaustive_corpus_visits_every_message_and_oneof_variant() {
     // retain exhaustive test coverage without weakening that production
     // boundary.
     let all = par_corpus::all_par_fields();
+    let cost = par_corpus::cost_annotated_par();
     macro_rules! record_components {
-        ($component:ty) => {
-            for value in all.decode_occurrences::<$component>() {
+        ($source:expr, $component:ty) => {
+            for value in $source.decode_occurrences::<$component>() {
                 record(ParCursor::from(&value), &mut types, &mut variants);
             }
         };
     }
-    record_components!(Send);
-    record_components!(Receive);
-    record_components!(New);
-    record_components!(Expr);
-    record_components!(Match);
-    record_components!(GUnforgeable);
-    record_components!(Bundle);
-    record_components!(Connective);
-    record_components!(If);
+    record_components!(all, Send);
+    record_components!(all, Receive);
+    record_components!(all, New);
+    record_components!(all, Expr);
+    record_components!(all, Match);
+    record_components!(all, GUnforgeable);
+    record_components!(all, Bundle);
+    record_components!(all, Connective);
+    record_components!(all, If);
+    record_components!(cost, Send);
+    record_components!(cost, Receive);
+    record_components!(cost, CostTokenStack);
+    record(
+        ParCursor::from(&par_corpus::cost_annotated_list_par_with_random()),
+        &mut types,
+        &mut variants,
+    );
+    record(
+        ParCursor::from(&par_corpus::cost_annotated_tagged_continuation()),
+        &mut types,
+        &mut variants,
+    );
     record(
         ParCursor::from(&PCost::default()),
         &mut types,
@@ -416,6 +430,7 @@ fn exhaustive_corpus_visits_every_message_and_oneof_variant() {
         ("VarInstance", VAR_INSTANCE_VARIANTS),
         ("UnfInstance", UNF_INSTANCE_VARIANTS),
         ("TaggedCont", TAGGED_CONT_VARIANTS),
+        ("Form", FORM_VARIANTS),
     ] {
         for program in programs {
             expected_variants.insert(format!("{oneof}::{}", program.name));

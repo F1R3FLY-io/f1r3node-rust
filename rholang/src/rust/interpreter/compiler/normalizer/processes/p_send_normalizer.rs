@@ -96,6 +96,7 @@ pub(crate) fn combine_p_send<'ast>(
         acc_locally_free,
         acc_connective_used,
         free_map,
+        bound_map_chain,
         input_par,
         persistent,
         ..
@@ -115,6 +116,7 @@ pub(crate) fn combine_p_send<'ast>(
         persistent,
         locally_free: union(name_locally_free, acc_locally_free),
         connective_used: name_connective_used || acc_connective_used,
+        cost_region: bound_map_chain.cost_region().cloned(),
     };
     let children: Vec<_> = std::iter::once(name_par)
         .chain(acc_pars.iter().copied())

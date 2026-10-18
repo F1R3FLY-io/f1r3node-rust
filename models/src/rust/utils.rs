@@ -372,6 +372,7 @@ pub fn new_send(
         persistent: _persistent,
         locally_free: _locally_free,
         connective_used: _connective_used,
+        cost_region: None,
     }
 }
 
@@ -390,6 +391,7 @@ pub fn new_send_par(
         persistent: _persistent,
         locally_free: _locally_free,
         connective_used: _connective_used,
+        cost_region: None,
     }])
 }
 
@@ -429,6 +431,7 @@ pub fn new_receive_par(
         locally_free: _locally_free,
         connective_used: _connective_used,
         condition: None,
+        cost_region: None,
     }])
 }
 

@@ -99,6 +99,7 @@ fn all_component_families_match_frozen_attachment_for_complete_and_incomplete_sh
         persistent: true,
         connective_used: true,
         locally_free: vec![5],
+        cost_region: None,
     });
     case!(|a: &mut ParConstruction| owned::New {
         p: Some(integer(a, 11)),

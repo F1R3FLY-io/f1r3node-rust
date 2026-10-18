@@ -1,5 +1,9 @@
+use crate::rhoapi::cost_signature_atom::Form;
 use crate::rhoapi::expr::ExprInstance;
-use crate::rhoapi::{Bundle, Connective, Expr, If, Match, New, Receive, Send};
+use crate::rhoapi::{
+    Bundle, Connective, CostRegion, CostSignature, CostTokenStack, Expr, If, Match, New, Receive,
+    Send,
+};
 
 pub struct Score;
 
@@ -71,6 +75,15 @@ impl Score {
     pub const CONNECTIVE_STRING: i32 = 406;
     pub const CONNECTIVE_URI: i32 = 407;
     pub const CONNECTIVE_BYTEARRAY: i32 = 408;
+    pub const COST_REGION: i32 = 500;
+    pub const COST_SIGNATURE: i32 = 501;
+    pub const COST_GROUND: i32 = 502;
+    pub const COST_QUOTE: i32 = 503;
+    pub const COST_BOUND: i32 = 504;
+    pub const COST_FORM_ABSENT: i32 = 505;
+    pub const COST_SIGNER_ABSENT: i32 = 506;
+    pub const COST_RUNTIME_NAME: i32 = 507;
+    pub const COST_TOKEN_STACK: i32 = 508;
     pub const PAR: i32 = 999;
 }
 
@@ -86,6 +99,7 @@ pub enum ParComponentTag {
     Connective = 8,
     Bundle = 11,
     If = 12,
+    CostTokenStack = 13,
 }
 
 impl ParComponentTag {
@@ -102,6 +116,7 @@ impl ParComponentTag {
             Self::Connective => 6,
             Self::Bundle => 7,
             Self::If => 8,
+            Self::CostTokenStack => 9,
         }
     }
 
@@ -116,12 +131,13 @@ impl ParComponentTag {
             8 => Some(Self::Connective),
             11 => Some(Self::Bundle),
             12 => Some(Self::If),
+            13 => Some(Self::CostTokenStack),
             _ => None,
         }
     }
 }
 
-pub const PAR_SCORE_TAGS: [ParComponentTag; 9] = [
+pub const PAR_SCORE_TAGS: [ParComponentTag; 10] = [
     ParComponentTag::Send,
     ParComponentTag::Receive,
     ParComponentTag::Expr,
@@ -131,6 +147,7 @@ pub const PAR_SCORE_TAGS: [ParComponentTag; 9] = [
     ParComponentTag::Connective,
     ParComponentTag::GUnforgeable,
     ParComponentTag::If,
+    ParComponentTag::CostTokenStack,
 ];
 
 pub trait CanonicalScoreAlgebra {
@@ -420,12 +437,136 @@ pub const fn expr_constructor(instance: &ExprInstance) -> i32 {
     }
 }
 
+pub fn cost_signature_score<A: CanonicalScoreAlgebra>(
+    algebra: &mut A,
+    atoms: Vec<A::Score>,
+) -> Result<A::Score, A::Error> {
+    algebra.constructor(Score::COST_SIGNATURE, atoms)
+}
+
+pub fn cost_signature_value_score<A: CanonicalScoreAlgebra>(
+    algebra: &mut A,
+    signer: &CostSignature,
+) -> Result<A::Score, A::Error> {
+    let mut atoms = Vec::with_capacity(signer.atoms.len());
+    for atom in &signer.atoms {
+        atoms.push(match atom.form.as_ref() {
+            Some(Form::Ground(bytes)) => cost_ground_score(algebra, bytes)?,
+            Some(Form::Quote(bytes)) => cost_quote_score(algebra, bytes)?,
+            Some(Form::RuntimeName(bytes)) => cost_runtime_name_score(algebra, bytes)?,
+            Some(Form::Bound(bound)) => cost_bound_score(algebra, bound.index)?,
+            None => cost_form_absent_score(algebra)?,
+        });
+    }
+    cost_signature_score(algebra, atoms)
+}
+
+pub fn cost_token_stack_score<A: CanonicalScoreAlgebra>(
+    algebra: &mut A,
+    stack: &CostTokenStack,
+) -> Result<A::Score, A::Error> {
+    let mut layers = Vec::with_capacity(stack.layers.len());
+    for layer in &stack.layers {
+        layers.push(cost_signature_value_score(algebra, layer)?);
+    }
+    cost_token_stack_score_parts(algebra, layers)
+}
+
+pub fn cost_token_stack_score_parts<A: CanonicalScoreAlgebra>(
+    algebra: &mut A,
+    layers: Vec<A::Score>,
+) -> Result<A::Score, A::Error> {
+    algebra.constructor(Score::COST_TOKEN_STACK, layers)
+}
+
+pub fn cost_ground_score<A: CanonicalScoreAlgebra>(
+    algebra: &mut A,
+    ground: &[u8],
+) -> Result<A::Score, A::Error> {
+    let bytes = algebra.bytes(ground)?;
+    algebra.constructor(Score::COST_GROUND, vec![bytes])
+}
+
+pub fn cost_quote_score<A: CanonicalScoreAlgebra>(
+    algebra: &mut A,
+    quote: &[u8],
+) -> Result<A::Score, A::Error> {
+    let bytes = algebra.bytes(quote)?;
+    algebra.constructor(Score::COST_QUOTE, vec![bytes])
+}
+
+pub fn cost_runtime_name_score<A: CanonicalScoreAlgebra>(
+    algebra: &mut A,
+    name: &[u8],
+) -> Result<A::Score, A::Error> {
+    let bytes = algebra.bytes(name)?;
+    algebra.constructor(Score::COST_RUNTIME_NAME, vec![bytes])
+}
+
+pub fn cost_bound_score<A: CanonicalScoreAlgebra>(
+    algebra: &mut A,
+    index: i32,
+) -> Result<A::Score, A::Error> {
+    let index = algebra.integer(i64::from(index))?;
+    algebra.constructor(Score::COST_BOUND, vec![index])
+}
+
+pub fn cost_form_absent_score<A: CanonicalScoreAlgebra>(
+    algebra: &mut A,
+) -> Result<A::Score, A::Error> {
+    algebra.constructor(Score::COST_FORM_ABSENT, Vec::new())
+}
+
+pub fn cost_region_score_parts<A: CanonicalScoreAlgebra>(
+    algebra: &mut A,
+    version: u32,
+    coordinates: [u64; 4],
+    signer: Option<A::Score>,
+    ordinal: u32,
+) -> Result<A::Score, A::Error> {
+    let mut children = Vec::with_capacity(7);
+    children.push(algebra.integer(i64::from(version))?);
+    for coordinate in coordinates {
+        children.push(algebra.bytes(&coordinate.to_be_bytes())?);
+    }
+    children.push(match signer {
+        Some(score) => score,
+        None => algebra.constructor(Score::COST_SIGNER_ABSENT, Vec::new())?,
+    });
+    children.push(algebra.integer(i64::from(ordinal))?);
+    algebra.constructor(Score::COST_REGION, children)
+}
+
+pub fn cost_region_score<A: CanonicalScoreAlgebra>(
+    algebra: &mut A,
+    region: &CostRegion,
+) -> Result<A::Score, A::Error> {
+    let signer = region
+        .signer
+        .as_ref()
+        .map(|signer| cost_signature_value_score(algebra, signer))
+        .transpose()?;
+    cost_region_score_parts(
+        algebra,
+        region.version,
+        [
+            region.start_line,
+            region.start_column,
+            region.end_line,
+            region.end_column,
+        ],
+        signer,
+        region.ordinal,
+    )
+}
+
 pub fn send_score<A: CanonicalScoreAlgebra>(
     algebra: &mut A,
     persistent: bool,
     channel: A::Score,
     data: Vec<A::Score>,
     connective_used: bool,
+    cost_region: Option<A::Score>,
 ) -> Result<A::Score, A::Error> {
     let persistent = algebra.integer(flag(persistent))?;
     let connective_used = algebra.integer(flag(connective_used))?;
@@ -434,6 +575,9 @@ pub fn send_score<A: CanonicalScoreAlgebra>(
     children.push(channel);
     children.extend(data);
     children.push(connective_used);
+    if let Some(region) = cost_region {
+        children.push(region);
+    }
     algebra.constructor(Score::SEND, children)
 }
 
@@ -442,11 +586,15 @@ pub fn receive_bind_score<A: CanonicalScoreAlgebra>(
     source: A::Score,
     patterns: Vec<A::Score>,
     remainder: A::Score,
+    cost_region: Option<A::Score>,
 ) -> Result<A::Score, A::Error> {
     let mut children = Vec::with_capacity(patterns.len() + 2);
     children.push(source);
     children.extend(patterns);
     children.push(remainder);
+    if let Some(region) = cost_region {
+        children.push(region);
+    }
     algebra.node(children)
 }
 
@@ -459,6 +607,7 @@ pub fn receive_score<A: CanonicalScoreAlgebra>(
     bind_count: i32,
     connective_used: bool,
     condition_or_empty: A::Score,
+    cost_region: Option<A::Score>,
 ) -> Result<A::Score, A::Error> {
     let persistent = algebra.integer(flag(persistent))?;
     let peek = algebra.integer(flag(peek))?;
@@ -468,6 +617,9 @@ pub fn receive_score<A: CanonicalScoreAlgebra>(
     children.extend([persistent, peek]);
     children.extend(binds);
     children.extend([body, bind_count, connective_used, condition_or_empty]);
+    if let Some(region) = cost_region {
+        children.push(region);
+    }
     algebra.constructor(Score::RECEIVE, children)
 }
 
@@ -934,7 +1086,7 @@ mod tests {
 
     #[test]
     fn component_tags_and_score_order_are_exhaustive_and_distinct() {
-        let wire = [1, 2, 4, 5, 6, 7, 8, 11, 12];
+        let wire = [1, 2, 4, 5, 6, 7, 8, 11, 12, 13];
         let tags = [
             ParComponentTag::Send,
             ParComponentTag::Receive,
@@ -945,6 +1097,7 @@ mod tests {
             ParComponentTag::Connective,
             ParComponentTag::Bundle,
             ParComponentTag::If,
+            ParComponentTag::CostTokenStack,
         ];
         assert_eq!(tags.map(ParComponentTag::byte), wire);
         assert_eq!(PAR_SCORE_TAGS.len(), tags.len());

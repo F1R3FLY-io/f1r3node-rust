@@ -296,6 +296,12 @@ fn every_generated_type_matches_serdes_own_field_order() {
         Var,
         var::WildcardMsg,
         Bundle,
+        CostSignature,
+        CostSignatureAtom,
+        CostBoundSignature,
+        CostRegion,
+        CostTokenStack,
+        CostClauseRegion,
         Send,
         ReceiveBind,
         BindPattern,
@@ -419,13 +425,14 @@ fn the_conformance_probe_can_go_red() {
         "the CONTROL must pass, or every rejection below is a statement about the judge"
     );
 
-    // MUTATION 1 — the exact historical bug: the two fields transposed.
+    // MUTATION 1 — the exact historical bug: the oneof placed at the position
+    // of its first declared member, ahead of the plain fields.
     assert_eq!(
         names,
-        &["guard", "tagged_cont"],
+        &["guard", "cost_region", "clause_regions", "tagged_cont"],
         "the fixture must be the type whose order actually surprised the generator"
     );
-    let transposed = ["tagged_cont", "guard"];
+    let transposed = ["tagged_cont", "guard", "cost_region", "clause_regions"];
     let why = conformance_verdict("TaggedContinuation", kinds, &transposed, &observed)
         .expect_err("a TRANSPOSED field order must be REJECTED");
     assert!(

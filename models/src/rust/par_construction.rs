@@ -2851,8 +2851,19 @@ impl ParConstruction {
             .iter()
             .map(|child| self.par_score(*child))
             .collect();
-        let score =
-            semantics::send_score(self, shell.persistent, channel, data, shell.connective_used)?;
+        let region_score = shell
+            .cost_region
+            .as_ref()
+            .map(|region| semantics::cost_region_score(self, region))
+            .transpose()?;
+        let score = semantics::send_score(
+            self,
+            shell.persistent,
+            channel,
+            data,
+            shell.connective_used,
+            region_score,
+        )?;
         self.component(shell, children, score, false)
     }
 
@@ -2920,6 +2931,16 @@ impl ParConstruction {
         let component = self.component(shell, &[], score, stable)?;
         self.components[component.0].canonical_segment = segment;
         Ok(component)
+    }
+
+    pub fn cost_token_stack_component(
+        &mut self,
+        shell: &crate::rhoapi::CostTokenStack,
+        children: &[PlannedPar],
+    ) -> Result<PlannedComponent, ParConstructionError> {
+        Self::require_arity("CostTokenStack", 0, children.len())?;
+        let score = semantics::cost_token_stack_score(self, shell)?;
+        self.component(shell, children, score, false)
     }
 
     /// Plan a connective. And/Or children remain order-preserving, matching
@@ -3121,11 +3142,17 @@ impl ParConstruction {
                 .iter()
                 .map(|pattern| self.par_score(*pattern))
                 .collect();
+            let region_score = bind
+                .cost_region
+                .as_ref()
+                .map(|region| semantics::cost_region_score(self, region))
+                .transpose()?;
             bind_scores.push(semantics::receive_bind_score(
                 self,
                 source_score,
                 pattern_scores,
                 remainder,
+                region_score,
             )?);
             wire_children.extend(patterns.iter().copied());
             wire_children.push(source);
@@ -3143,6 +3170,11 @@ impl ParConstruction {
         }
         let body_score = self.par_score(body);
         let condition_score = self.par_score(condition);
+        let region_score = shell
+            .cost_region
+            .as_ref()
+            .map(|region| semantics::cost_region_score(self, region))
+            .transpose()?;
         let score = semantics::receive_score(
             self,
             shell.persistent,
@@ -3152,6 +3184,7 @@ impl ParConstruction {
             shell.bind_count,
             shell.connective_used,
             condition_score,
+            region_score,
         )?;
         self.component(&canonical_shell, &wire_children, score, false)
     }
@@ -5462,6 +5495,7 @@ mod tests {
             locally_free: Vec::new(),
             connective_used: false,
             condition: Some(lf_only_r.clone()),
+            cost_region: None,
         };
         let receive_component = arena.receive_component(&receive, &[body, lf_only]).unwrap();
         let receive_plan = arena
@@ -5638,6 +5672,7 @@ mod tests {
             persistent: true,
             locally_free: vec![1],
             connective_used: true,
+            cost_region: None,
         };
         let send = arena
             .send_component(&send_shell, &[one, two, three])
@@ -5798,6 +5833,7 @@ mod tests {
                 source: Some(Par::default()),
                 remainder: None,
                 free_count: 2,
+                cost_region: None,
             }],
             body: Some(Par::default()),
             persistent: true,
@@ -5806,6 +5842,7 @@ mod tests {
             locally_free: vec![5],
             connective_used: true,
             condition: Some(Par::default()),
+            cost_region: None,
         };
         let receive = arena
             .receive_component(&receive_shell, &[one, two, three, one, empty])
@@ -5822,6 +5859,7 @@ mod tests {
                     source: Some(three_r),
                     remainder: None,
                     free_count: 2,
+                    cost_region: None,
                 }],
                 body: Some(one_r),
                 condition: None,
@@ -6065,6 +6103,7 @@ mod tests {
                                     persistent: false,
                                     locally_free: Vec::new(),
                                     connective_used: false,
+                                    cost_region: None,
                                 },
                                 &[value],
                             )
@@ -6135,6 +6174,7 @@ mod tests {
                                     locally_free: Vec::new(),
                                     connective_used: false,
                                     condition: None,
+                                    cost_region: None,
                                 },
                                 &[value, empty],
                             )

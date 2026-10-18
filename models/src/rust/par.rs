@@ -25,7 +25,9 @@ use super::par_bag::{
     encode_protobuf_varint_chunk, EncodedParComponent, ParBag, ParBagComponent, ParBagOwnerKey,
     ParBagProtobufError, ParBagVisitError, ParComponentItem, ParProtobufProjectionPreparation,
 };
-use crate::rhoapi::{Bundle, Connective, Expr, GUnforgeable, If, Match, New, Receive, Send};
+use crate::rhoapi::{
+    Bundle, Connective, CostTokenStack, Expr, GUnforgeable, If, Match, New, Receive, Send,
+};
 use crate::rust::rholang::sorter::score_tree::{Score, ScoreAtom, Tree};
 
 #[derive(Debug)]
@@ -441,6 +443,10 @@ impl Par {
 
     pub fn replace_conditionals(&mut self, values: Vec<If>) { self.replace_family(values) }
 
+    pub fn replace_cost_token_stacks(&mut self, values: Vec<CostTokenStack>) {
+        self.replace_family(values)
+    }
+
     pub fn replace_locally_free(&mut self, locally_free: Vec<u8>) {
         self.locally_free = locally_free;
     }
@@ -474,6 +480,10 @@ impl Par {
     pub fn with_connectives(&self, values: Vec<Connective>) -> Self { self.with_replaced(values) }
 
     pub fn with_conditionals(&self, values: Vec<If>) -> Self { self.with_replaced(values) }
+
+    pub fn with_cost_token_stacks(&self, values: Vec<CostTokenStack>) -> Self {
+        self.with_replaced(values)
+    }
 
     pub fn with_locally_free(&self, locally_free: Vec<u8>) -> Self {
         let mut result = self.clone();
@@ -1077,6 +1087,9 @@ impl Par {
                 super::par_bag::ParComponentTag::If => {
                     self.components.append_family_scores::<If>(&mut children)
                 }
+                super::par_bag::ParComponentTag::CostTokenStack => self
+                    .components
+                    .append_family_scores::<CostTokenStack>(&mut children),
             }
         }
         children.push(Tree::<ScoreAtom>::create_leaf_from_i64(i64::from(
@@ -1404,6 +1417,10 @@ impl Message for Par {
                 crate::rust::rholang::protobuf_decoder::decode_bundle
             ),
             12 => merge_component!(If, crate::rust::rholang::protobuf_decoder::decode_if),
+            13 => merge_component!(
+                CostTokenStack,
+                crate::rust::rholang::protobuf_decoder::decode_cost_token_stack
+            ),
             _ => crate::rust::rholang::protobuf_decoder::skip_unknown_field(wire_type, tag, buf),
         }
     }

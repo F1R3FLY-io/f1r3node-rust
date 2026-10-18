@@ -186,6 +186,7 @@ mod tests {
                 ret_unforg,
             ],
             random_state: vec![],
+            cost_region: None,
         };
 
         let comm = ReportCommProto {

@@ -495,6 +495,8 @@ where
         let continuation = TaggedContinuation {
             tagged_cont: Some(TaggedCont::ScalaBodyRef(body_ref)),
             guard: None,
+            cost_region: None,
+            clause_regions: Vec::new(),
         };
 
         for space in &mut spaces {

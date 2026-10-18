@@ -1,3 +1,5 @@
+use models::rhoapi::CostRegion;
+
 use super::bound_context::BoundContext;
 use super::bound_map::BoundMap;
 use super::free_map::FreeMap;
@@ -6,13 +8,33 @@ use super::id_context::{IdContextPos, IdContextSpan};
 #[derive(Debug, Clone, PartialEq)]
 pub struct BoundMapChain<T> {
     pub(crate) chain: Vec<BoundMap<T>>,
+    pub(crate) cost_region: Option<CostRegion>,
+    pub(crate) pending_clause_regions: Vec<Option<CostRegion>>,
 }
 
 impl<T: Clone> BoundMapChain<T> {
     pub fn new() -> Self {
         BoundMapChain {
             chain: vec![BoundMap::new()],
+            cost_region: None,
+            pending_clause_regions: Vec::new(),
         }
+    }
+
+    pub fn cost_region(&self) -> Option<&CostRegion> { self.cost_region.as_ref() }
+
+    pub fn with_cost_region(mut self, region: CostRegion) -> Self {
+        self.cost_region = Some(region);
+        self
+    }
+
+    pub fn with_pending_clause_regions(mut self, regions: Vec<Option<CostRegion>>) -> Self {
+        self.pending_clause_regions = regions;
+        self
+    }
+
+    pub fn take_pending_clause_regions(&mut self) -> Vec<Option<CostRegion>> {
+        std::mem::take(&mut self.pending_clause_regions)
     }
 
     pub fn get(&self, name: &str) -> Option<BoundContext<T>> {
@@ -32,7 +54,11 @@ impl<T: Clone> BoundMapChain<T> {
         if let Some(map) = new_chain.first_mut() {
             new_chain[0] = map.put_span(binding);
         }
-        BoundMapChain { chain: new_chain }
+        BoundMapChain {
+            chain: new_chain,
+            cost_region: self.cost_region.clone(),
+            pending_clause_regions: self.pending_clause_regions.clone(),
+        }
     }
 
     /// Put binding with SourcePos (for Id types) - converts to SourceSpan
@@ -41,7 +67,11 @@ impl<T: Clone> BoundMapChain<T> {
         if let Some(map) = new_chain.first_mut() {
             new_chain[0] = map.put_pos(binding);
         }
-        BoundMapChain { chain: new_chain }
+        BoundMapChain {
+            chain: new_chain,
+            cost_region: self.cost_region.clone(),
+            pending_clause_regions: self.pending_clause_regions.clone(),
+        }
     }
 
     pub fn put_all_span(&self, bindings: Vec<IdContextSpan<T>>) -> BoundMapChain<T> {
@@ -49,7 +79,11 @@ impl<T: Clone> BoundMapChain<T> {
         if let Some(map) = new_chain.first_mut() {
             new_chain[0] = map.put_all_span(bindings);
         }
-        BoundMapChain { chain: new_chain }
+        BoundMapChain {
+            chain: new_chain,
+            cost_region: self.cost_region.clone(),
+            pending_clause_regions: self.pending_clause_regions.clone(),
+        }
     }
 
     pub fn put_all_pos(&self, bindings: Vec<IdContextPos<T>>) -> BoundMapChain<T> {
@@ -57,7 +91,11 @@ impl<T: Clone> BoundMapChain<T> {
         if let Some(map) = new_chain.first_mut() {
             new_chain[0] = map.put_all_pos(bindings);
         }
-        BoundMapChain { chain: new_chain }
+        BoundMapChain {
+            chain: new_chain,
+            cost_region: self.cost_region.clone(),
+            pending_clause_regions: self.pending_clause_regions.clone(),
+        }
     }
 
     pub fn absorb_free_span(&self, free_map: &FreeMap<T>) -> BoundMapChain<T> {
@@ -65,13 +103,21 @@ impl<T: Clone> BoundMapChain<T> {
         if let Some(map) = new_chain.first_mut() {
             new_chain[0] = map.absorb_free_span(free_map);
         }
-        BoundMapChain { chain: new_chain }
+        BoundMapChain {
+            chain: new_chain,
+            cost_region: self.cost_region.clone(),
+            pending_clause_regions: self.pending_clause_regions.clone(),
+        }
     }
 
     pub fn push(&self) -> BoundMapChain<T> {
         let mut new_chain = self.chain.clone();
         new_chain.insert(0, BoundMap::new());
-        BoundMapChain { chain: new_chain }
+        BoundMapChain {
+            chain: new_chain,
+            cost_region: self.cost_region.clone(),
+            pending_clause_regions: self.pending_clause_regions.clone(),
+        }
     }
 
     pub fn get_count(&self) -> usize { self.chain.first().map_or(0, |map| map.get_count()) }

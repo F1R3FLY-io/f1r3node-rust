@@ -25,25 +25,14 @@ use crate::rspace::trace::event::{Consume, Produce};
 // `Datum`/`WaitingContinuation` are Arc-shaped and deliberately non-serde
 // (fail-closed: no serde "rc" feature, so an Arc field reaching
 // `bincode::serialize` cannot compile). This module is where the storage
-// shape materializes back into the historical wire layout, through borrowed
-// SERIALIZE TWINS and owned DESERIALIZE TWINS whose field order replicates
-// the earlier value-shaped struct declarations exactly. bincode 1.3.3 (legacy
-// fixint-LE) is positional — struct/field names never reach the wire and
-// `serialize(&T) == serialize(T)` — so the twin encodings are byte-identical
-// to the old derived impls BY CONSTRUCTION. Pinned by
+// shape materializes into cold-store records. Components without cost
+// authority retain the historical positional bincode layout; authority-bearing
+// components carry a versioned prefix. The bounded tails still use bincode
+// 1.3.3, and test-only derived twins check the legacy byte identity. Pinned by
 // `tests/serializer_byte_goldens.rs` (literal bytes captured at 4e422b6b)
 // and transitively by every history checkpoint-root test: these bytes are
 // cold-store leaves, a consensus surface.
 // ─────────────────────────────────────────────────────────────────────────────
-
-/// Borrowed serialize twin of the value-shaped `Datum<A>` layout
-/// (`a`, `persist`, `source` — declaration order).
-#[derive(Serialize)]
-struct DatumSer<'a, A> {
-    a: &'a A,
-    persist: bool,
-    source: &'a Produce,
-}
 
 /// Owned deserialize twin of the value-shaped `Datum<A>` layout.
 ///
@@ -81,6 +70,7 @@ impl<A: Clone> From<DatumOracleDe<A>> for Datum<A> {
 
 /// Borrowed serialize twin of the value-shaped `WaitingContinuation<P, K>`
 /// layout (`patterns`, `continuation`, `persist`, `peeks`, `source`).
+#[cfg(test)]
 #[derive(Serialize)]
 struct WaitingContinuationSer<'a, P, K> {
     patterns: &'a Vec<P>,
@@ -115,14 +105,7 @@ impl<P: Clone, K: Clone> From<WaitingContinuationOracleDe<P, K>> for WaitingCont
     }
 }
 
-fn datum_ser<'a, A: Clone>(datum: &'a Datum<A>) -> DatumSer<'a, A> {
-    DatumSer {
-        a: &datum.a,
-        persist: datum.persist,
-        source: &datum.source,
-    }
-}
-
+#[cfg(test)]
 fn continuation_ser<'a, P: Clone, K: Clone>(
     wk: &'a WaitingContinuation<P, K>,
 ) -> WaitingContinuationSer<'a, P, K> {
@@ -179,7 +162,6 @@ where
 }
 
 /// Append one complete frozen continuation record.
-#[cfg(test)]
 pub(crate) fn encode_continuation_record_into<P, K>(
     continuation: &WaitingContinuation<P, K>,
     output: &mut Vec<u8>,
@@ -204,7 +186,6 @@ pub(crate) fn encode_continuation_source_into<P: Clone, K: Clone>(
         .expect("Serializers: Unable to serialize continuation source");
 }
 
-#[cfg(test)]
 pub(crate) fn encode_continuation_record<P, K>(continuation: &WaitingContinuation<P, K>) -> Vec<u8>
 where
     P: Clone + StableHashSerialize,
@@ -242,24 +223,23 @@ pub trait CandidateOrderingBytes {
     fn candidate_ordering_bytes(&self) -> Vec<u8>;
 }
 
-impl<A: Clone + Serialize> CandidateOrderingBytes for Datum<A> {
-    fn candidate_ordering_bytes(&self) -> Vec<u8> {
-        bincode::serialize(&datum_ser(self))
-            .expect("Serializers: Unable to serialize datum for candidate ordering")
-    }
+impl<A: Clone + StableHashSerialize> CandidateOrderingBytes for Datum<A> {
+    fn candidate_ordering_bytes(&self) -> Vec<u8> { encode_datum(self) }
 }
 
-impl<P: Clone + Serialize, K: Clone + Serialize> CandidateOrderingBytes
+impl<P: Clone + StableHashSerialize, K: Clone + StableHashSerialize> CandidateOrderingBytes
     for WaitingContinuation<P, K>
 {
-    fn candidate_ordering_bytes(&self) -> Vec<u8> {
-        bincode::serialize(&continuation_ser(self))
-            .expect("Serializers: Unable to serialize continuation for candidate ordering")
-    }
+    fn candidate_ordering_bytes(&self) -> Vec<u8> { encode_continuation_record(self) }
 }
 
-pub fn encode_datum<A: Clone + Serialize>(datum: &Datum<A>) -> Vec<u8> {
-    bincode::serialize(&datum_ser(datum)).expect("Serializers: Unable to serialize datum")
+pub fn encode_datum<A: Clone + StableHashSerialize>(datum: &Datum<A>) -> Vec<u8> {
+    let mut output = Vec::new();
+    datum.a.stable_hash_encode_into(&mut output);
+    output.push(u8::from(datum.persist));
+    bincode::serialize_into(&mut output, &datum.source)
+        .expect("Serializers: Unable to serialize datum source");
+    output
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -296,13 +276,8 @@ pub fn decode_datum<A: Clone + ColdStoreDecode>(
     })
 }
 
-pub fn encode_datums<A: Clone + Serialize>(datums: &Vec<Datum<A>>) -> Vec<u8> {
-    let mut serialized_datums: Vec<Vec<u8>> = datums
-        .iter()
-        .map(|datum| {
-            bincode::serialize(&datum_ser(datum)).expect("Serializers: Unable to serialize datum")
-        })
-        .collect();
+pub fn encode_datums<A: Clone + StableHashSerialize>(datums: &Vec<Datum<A>>) -> Vec<u8> {
+    let mut serialized_datums: Vec<Vec<u8>> = datums.iter().map(encode_datum).collect();
 
     serialized_datums.sort_by(compare_byte_vectors);
     bincode::serialize(&serialized_datums).expect("Serializers: Unable to serialize datums")
@@ -324,16 +299,11 @@ pub fn decode_datums<A: Clone + ColdStoreDecode>(
     Ok(datums)
 }
 
-pub fn encode_continuations<P: Clone + Serialize, K: Clone + Serialize>(
+pub fn encode_continuations<P: Clone + StableHashSerialize, K: Clone + StableHashSerialize>(
     conts: &Vec<WaitingContinuation<P, K>>,
 ) -> Vec<u8> {
-    let mut serialized_continuations: Vec<Vec<u8>> = conts
-        .iter()
-        .map(|wk| {
-            bincode::serialize(&continuation_ser(wk))
-                .expect("Serializers: Unable to serialize continuation")
-        })
-        .collect();
+    let mut serialized_continuations: Vec<Vec<u8>> =
+        conts.iter().map(encode_continuation_record).collect();
 
     serialized_continuations.sort_by(compare_byte_vectors);
     bincode::serialize(&serialized_continuations)

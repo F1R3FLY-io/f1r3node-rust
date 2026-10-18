@@ -1404,7 +1404,7 @@
     "formal/tlaplus/stack_safe_pda/RSpaceCanonicalEgressMutant.cfg": "88f76d0f24068dc757898b080cb294d019ed164801fb8c3c048837f9c9ad0a3d",
     "formal/tlaplus/stack_safe_pda/RSpaceCanonicalEgressValidationMutant.cfg": "c8295658de039605037e58c0c25f1e5fab030d1fe2e0e230fdf3dbddee32126b",
     "formal/verus/rspace_canonical_egress.rs": "92897d041c846ba513d875ea0b1c986ab0841880779107ab3abade4b1bc6c997",
-    "models/Cargo.toml": "dbb49d99a0b64ec5b5d6a6e6507b4b487424ffcbaea7564fb03bb6d6130ce0d8",
+    "models/Cargo.toml": "7b806b6885ded7a05a04f9485364eaa697cd85a1e45e47e2f3a48e4270f9079d",
     "models/tests/par_protobuf_stack_safety.rs": "991d21786b1e463da13a1c6d84b7edcbc83d92f90c9c4bde7bcfc105de65bb35",
     "models/tests/protobuf_encoder_space.rs": "29484d06eee89826cdacbdb716cd5e888c9c961e661e3afdac93d513e6eb7fe0"
   },

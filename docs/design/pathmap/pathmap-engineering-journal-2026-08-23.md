@@ -18588,6 +18588,120 @@ These are agent-run results in a shared dirty worktree; independent review and
 the approved pgmcp verification recipe remain required before task 7913 can be
 claimed complete.
 
+### J-243 — Re-capture the frozen decoder oracle for the cost-accounting schema (2026-10-17)
+
+**Why the reference had to change.** J-203 froze an independent decoder reference,
+the *frozen decoder oracle*: the protobuf decoder that the `fd03054f9` schema emitter
+generated, checked in as `models/tests/support/protobuf_decoder_frozen.rs` and pinned
+by BLAKE2b-512 in `models/tests/formal_equivalence_manifest.rs`. J-203 also fixed its
+boundary. The oracle freezes decoder *execution*; its shared dependencies must stay
+unchanged; and changing one of them requires revisiting the boundary. The
+cost-accounting schema batch changes one of those dependencies, `RhoTypes.proto`:
+
+| Change | Messages and fields |
+|---|---|
+| New messages | `CostSignature`, `CostSignatureAtom` (with the `form` oneof: `ground`, `quote`, `bound`, `runtime_name`), `CostBoundSignature`, `CostRegion`, `CostTokenStack`, `CostClauseRegion` |
+| New fields | `Par.cost_token_stacks` (field 13), `Send.cost_region` (7), `Receive.cost_region` (9), `ReceiveBind.cost_region` (5), `ListParWithRandom.cost_region` (3), `TaggedContinuation.cost_region` (4) and `TaggedContinuation.clause_regions` (5) |
+
+The batch adapted the oracle by hand instead of revisiting the boundary. It added
+five ignored destructuring fields to the frozen file, so the file no longer matched
+its pin. It also stopped routing the six new messages' public decoder entries to the
+oracle. The oracle therefore treated every new field as unknown. For example, it
+skipped `Par` field 13 by its wire type, where the successor merges a
+`CostTokenStack` component, so the two disagreed on inputs that carry cost metadata.
+On the one-byte input `[0x68]` (field 13, varint wire type) the oracle reported
+`InvalidVarint` while the successor reported `UnexpectedWireType`. Three of the
+sixteen failures in the 2026-10-17 classification run came from this: two
+`protobuf_decoder_oracle` differentials and the manifest's frozen-digest check.
+
+**Decision.** Re-capture the oracle with the same baseline emitter, never with the
+treatment emitter. This keeps J-203's rule that "this checked-in snapshot must not
+be regenerated with treatment": only the schema input changes. The baseline emitter
+receives the smallest registration patch the new schema requires, and none of its
+parts changes the decoding logic the emitter writes:
+
+1. the constant prefix `CS_` for the new `Form` oneof, because the emitter refuses a
+   oneof without a registered prefix rather than invent one that could collide;
+2. the `Form` import in the three generated-file headers that name oneof types;
+3. the audited publish-root depths that the emitter asserts against the depths it
+   computes from the schema: `SoftCheckpointProto` 7 → 10, `ConsumeResultReturn`
+   4 → 7, `DatumsProto` 4 → 7, `WaitingContinuationsProto` 5 → 8 and
+   `StoreToMapResult` 7 → 10. These are the values already in the treatment
+   emitter's table in the same batch.
+
+**Positive control first.** A re-capture is only evidence if the pipeline reproduces
+the original. The control ran the *unpatched* baseline emitter over the *baseline*
+protos in an isolated scratch crate outside the workspace, with the build-dependency
+versions pinned exactly (`tonic-prost-build =0.14.6`, `prost =0.14.3`, `prost-types =0.14.3` and `heck =0.5.0`), `libprotoc 36.1` and `rustc 1.95.0-nightly (6efa357bf 2026-02-08)`. It reproduced the
+checked-in oracle byte for byte: SHA-256
+`9b47784f40096e11d3185a9a2d01a8b4b27beef4184f844ca1f90c81ec6bc69c`
+(control build log SHA-256 `8521ba5ff04da2f345563916e2a8163fe4bc4584f33bfbfe83648a97f16beb10`). Only then did the re-capture run, in a second scratch crate
+that differs from the control in exactly two files:
+
+| Input (git blob) | Control | Re-capture |
+|---|---|---|
+| `models/build.rs` | `2b49cefe3e6bc83d84dea4bdb97a5ef923ce1065` (`fd03054f9`) | same |
+| `models/codegen/schema.rs` | `86efa3cba9e26ac8daa9fab40c1b9e9968e8a3e2` (`fd03054f9`) | `94074bc1c13a8b0ac13bff8b94f0291218884c85` (`fd03054f9` plus the registration patch) |
+| `models/src/main/protobuf/RhoTypes.proto` | `b01d484454af7c795655ac6fdb5c40aeaad6246b` (`fd03054f9`, unchanged at `5108d8543`) | `b7e59a768689a0b0269f7ac527700eb16f32357c` (the cost-accounting batch) |
+| Every other `.proto` input | `fd03054f9` | same |
+
+**Result.** The re-captured oracle has 9,535 lines and 411,448 bytes, with SHA-256
+`b987be5faddb2ceba053c141e1033b265299c5234769f4e0735794389b95c052` and BLAKE2b-512
+`866fdb5daf9c1ef96eae0a0a2641b54d5629588337a4e57d0004c78ab743242dd7cdb6c6512ae521d06dbe106d46f0869488e51a93b8c3e2832d50946644634b`
+(re-capture build log SHA-256
+`9dd3c620686fa7efce2548096dc36c7fb1588fae89d5580f91069162542c4421`). Against the
+checked-in oracle the difference is purely additive for the new schema: 66 hunks,
+831 added lines and 2 changed lines. The two changed lines are the generated
+counts, `GENERATED_PROTOBUF_MESSAGE_COUNT` 56 → 62 and
+`GENERATED_PROTOBUF_ONEOF_COUNT` 5 → 6. The public decoder entries grow from 59 to
+65, one for each new message (`decode_cost_signature`, `decode_cost_signature_atom`,
+`decode_cost_bound_signature`, `decode_cost_region`, `decode_cost_token_stack` and
+`decode_cost_clause_region`). The new field arms are exactly the new schema fields:
+`Send` 7, `Receive` 9, `ReceiveBind` 5, `ListParWithRandom` 3, `TaggedContinuation`
+4 and 5, and `Par` 13. No line that decodes a pre-existing field changed.
+
+**Integration.** Three test-support changes complete the boundary revision:
+
+- The handwritten frozen `Par` field adapter (`models/tests/support/protobuf_par_frozen.rs`)
+  gains the field-13 arm, mirroring the successor's dispatch in `models/src/rust/par.rs`
+  with `frozen::decode_cost_token_stack`. Like the other arms, it changes only the
+  decoder path.
+- The generator again routes every public decoder entry through the oracle's
+  `route!`, so the six new messages have an independent reference too. The batch's
+  per-message exclusion in `models/codegen/schema.rs` is removed.
+- The manifest pins the new digest.
+
+**Verification.** The gate ran on the commit's code tree, `e19e36f9`, which differs from
+the committed tree only by this entry, in an isolated export with its own target
+directory. `cargo check --locked --workspace --all-targets` passed (log
+`target/perf/logs/phase0/c1b-gate-check-20261017T210835Z.log`, SHA-256
+`09c7ad4629bb5eccf55b322bae0a4f135bb17736c49c45d2f973994a4a5f43b1`). The release
+nextest run over `models`, `rspace++`, `rho-pure-eval` and `rholang` ran 4,308
+tests: 4,306 passed and 2 failed (log
+`target/perf/logs/phase0/c1b-gate-nextest-20261017T210835Z.log`, SHA-256
+`883e90ab60c2959a1f357af5f2affe64843077c6b45f3ae954483d639fef73d9`). All 14
+`protobuf_decoder_oracle` tests pass, including
+`descriptor_corpus_routes_all_generated_decoders_independently` and
+`arbitrary_buffers_preserve_root_merge_and_consumption`, the two differentials the
+stale oracle failed, and so does the manifest's
+`frozen_decoder_oracle_has_provenance_proof_and_native_bindings`. Neither failure
+involves the oracle:
+`concrete_new_query_correspondence::ground_new_query_retains_spatial_matches_across_ignored_uri`
+is the ground-`New` exact-query false negative that
+`ConcreteNewQueryCorrespondence.v` records, and
+`compressed_navigation_matches_scalar_generated_topology_histories` is the
+PathMap 0.2.2 `create_path` defect PMU-006. The `models` and `rholang` doc tests
+pass (log `target/perf/logs/phase0/c1b-gate-doc-20261017T210835Z.log`, SHA-256
+`85df979871f8f785bfdeb2a96f38b888882172660f49b6fce227560821b03dd2`). These are
+agent-run results in a shared dirty worktree; independent review and the approved
+pgmcp verification recipe remain required.
+
+**Boundary.** This is a test-only change. Production decoding, encoded bytes, hashes,
+matching and persistence are unchanged, so no consensus-register entry is needed.
+`DecoderOracleRouting.v` proves routing and restoration rules that do not depend on
+the schema, so it is unchanged. Inputs and outputs of both captures are reproducible
+from the blobs above.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

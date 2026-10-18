@@ -1784,6 +1784,7 @@ mod certified_egress_tests {
                     ..ParWithRandom::default()
                 })),
                 guard: Some(shared.clone()),
+                ..TaggedContinuation::default()
             }),
             datums: vec![ListParWithRandom {
                 pars: vec![shared],
@@ -1796,7 +1797,7 @@ mod certified_egress_tests {
         assert_eq!(actual, message.encode_to_vec());
         assert_eq!(census.statistics().par_occurrences, 3);
         assert_eq!(census.statistics().repeated_occurrences, 2);
-        assert_eq!(ConsumeResultReturn::MAX_SCHEMA_DEPTH, 4);
+        assert_eq!(ConsumeResultReturn::MAX_SCHEMA_DEPTH, 7);
     }
 
     #[test]
@@ -1849,13 +1850,13 @@ mod certified_egress_tests {
         assert_eq!(CERTIFIED_EGRESS_PUBLISH_ROOTS, &[
             ("Par", 1),
             ("EvaluateResultProto", 2),
-            ("SoftCheckpointProto", 7),
+            ("SoftCheckpointProto", 10),
             ("CheckpointProto", 5),
-            ("ConsumeResultReturn", 4),
-            ("DatumsProto", 4),
+            ("ConsumeResultReturn", 7),
+            ("DatumsProto", 7),
             ("JoinsProto", 3),
-            ("WaitingContinuationsProto", 5),
-            ("StoreToMapResult", 7),
+            ("WaitingContinuationsProto", 8),
+            ("StoreToMapResult", 10),
         ]);
     }
 

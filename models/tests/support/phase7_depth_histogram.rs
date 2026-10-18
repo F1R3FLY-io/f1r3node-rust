@@ -70,13 +70,13 @@ fn output() -> impl Write {
 /// flattening either trie.
 fn max_par_depth<'a>(roots: impl IntoIterator<Item = &'a Par>) -> usize {
     let mut maximum = 0usize;
-    let mut work: Vec<(&Par, usize)> = roots.into_iter().map(|root| (root, 1)).collect();
-    let mut children: Vec<&Par> = Vec::new();
+    let mut work: Vec<(Par, usize)> = roots.into_iter().map(|root| (root.clone(), 1)).collect();
+    let mut children: Vec<Par> = Vec::new();
     while let Some((par, depth)) = work.pop() {
         maximum = maximum.max(depth);
         children.clear();
-        par_child_pars(par, &mut children);
-        work.extend(children.iter().copied().map(|child| (child, depth + 1)));
+        par_child_pars(&par, &mut children);
+        work.extend(children.drain(..).map(|child| (child, depth + 1)));
     }
     maximum
 }

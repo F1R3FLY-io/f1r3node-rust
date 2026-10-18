@@ -579,20 +579,13 @@ pub(crate) fn descend_proc<'ast>(
             ))
         }
 
-        // Cost-accounted surface syntax (W1): recognition + native attribution.
-        // A signed term / token stack resolves its signature(s) to a native `Sig`
-        // and lowers the inner process ORDINARILY — NO synthetic fuel gate (the
-        // reducer meters per-COMM; surface forms decorate). The located-stack
-        // attribution that consumes the resolved `Sig` is a metering-context
-        // concern (Phase 3, at the reducer/gate where the `Cosigned` envelope is
-        // installed — BLOCKER-1). See `normalizer::cost_accounting::recognize`.
         Proc::SignedTerm { proc: inner, sig } => {
             use crate::rust::interpreter::compiler::normalizer::cost_accounting::recognize::descend_signed_term;
-            descend_signed_term(*inner, sig, input, parser)
+            descend_signed_term(*inner, sig, proc.span, input, parser)
         }
         Proc::TokenStack { stack } => {
             use crate::rust::interpreter::compiler::normalizer::cost_accounting::recognize::descend_token_stack;
-            Ok(descend_token_stack(stack, input))
+            descend_token_stack(stack, input, construction)
         }
 
         // Bad - handle parsing errors

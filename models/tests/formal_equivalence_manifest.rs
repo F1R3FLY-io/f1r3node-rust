@@ -1386,7 +1386,7 @@ fn frozen_decoder_oracle_has_provenance_proof_and_native_bindings() {
     use blake2::{Blake2b512, Digest};
     let baseline = include_bytes!("support/protobuf_decoder_frozen.rs");
     assert_eq!(format!("{:x}", Blake2b512::digest(baseline)),
-        "0345508b4e4ee4002f5b17cdb0adc143186fd78cb11846bd733d67ec8940919daac48097e7dafff4cec6e81422d01589ae0e032af198f3c4f9db5c5316f0c10f");
+        "866fdb5daf9c1ef96eae0a0a2641b54d5629588337a4e57d0004c78ab743242dd7cdb6c6512ae521d06dbe106d46f0869488e51a93b8c3e2832d50946644634b");
     let theory = read_repository_file("formal/rocq/stack_safe_pda/theories/DecoderOracleRouting.v");
     for theorem in [
         "legacy_routes_frozen",
@@ -1477,7 +1477,7 @@ fn protobuf_par_accumulation_has_proof_and_native_bindings() {
     assert!(has_runner_command(&runner, &[
         "rocq_compile_with_closed_count",
         "theories/ProtobufParAccumulation.v",
-        "13"
+        "41"
     ]));
     assert!(has_runner_kernel_check(&runner, &[
         "StackSafePDA.ProtobufParAccumulation"
@@ -4084,7 +4084,7 @@ fn rpb3_admission_formal_artifacts_are_manifested() {
         "formal/verus/rpb3_admission_cursor.rs",
         "StackSafePDA.RPB3AdmissionMutants",
         "rpb3_run_tests 22 --lib protobuf_admission::tests",
-        "production_component_admission_is_differentially_equivalent_for_all_nine_families",
+        "production_component_admission_is_differentially_equivalent_for_all_ten_families",
         "rpb3_run_tests 3 --test par_bag admitted_",
     ] {
         assert!(
