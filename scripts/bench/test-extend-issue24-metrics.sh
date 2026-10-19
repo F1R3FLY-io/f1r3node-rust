@@ -55,6 +55,9 @@ for metric in \
     block_creator_empty_block_skipped \
     block_creator_empty_block_built \
     heartbeat_proposals \
+    heartbeat_responsive_mode_entered \
+    heartbeat_responsive_mode_exited \
+    heartbeat_responsive_mode_cooldown_exempt \
     dag_merge_rejection_selection_time \
     dag_merge_apply_trie_actions_time \
     block_replay_phase_user_deploys_work \

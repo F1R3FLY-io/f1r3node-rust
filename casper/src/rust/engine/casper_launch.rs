@@ -42,6 +42,12 @@ use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 use crate::rust::util::vault_parser::VaultParser;
 use crate::rust::validator_identity::ValidatorIdentity;
 
+fn deploy_heartbeat_wake_enabled(
+    propose_f_opt: &Option<Arc<crate::rust::ProposeFunction>>,
+) -> bool {
+    propose_f_opt.is_none()
+}
+
 #[async_trait]
 pub trait CasperLaunch {
     async fn launch(&self) -> Result<(), CasperError>;
@@ -195,7 +201,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             epoch_length: conf.genesis_block_data.epoch_length,
             quarantine_length: conf.genesis_block_data.quarantine_length,
             min_phlo_price: conf.min_phlo_price,
-            deploy_heartbeat_wake_enabled: false,
+            deploy_heartbeat_wake_enabled: deploy_heartbeat_wake_enabled(&propose_f_opt),
             disable_validator_progress_check: standalone,
             enable_mergeable_channel_gc: conf.enable_mergeable_channel_gc,
             mergeable_channels_gc_depth_buffer: conf.mergeable_channels_gc_depth_buffer,
@@ -433,7 +439,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
                     // Clone the Arc and cast to trait object
                     let casper_arc: Arc<dyn MultiParentCasper + Send + Sync> =
                         Arc::clone(&casper) as Arc<dyn MultiParentCasper + Send + Sync>;
-                    propose_f(casper_arc, true).await?;
+                    propose_f(casper_arc, true.into()).await?;
                 }
 
                 Ok(())
@@ -918,5 +924,22 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunch for CasperL
         // Scala equivalent: case (msg, action) => Log[F].info(msg) >> action
         tracing::info!("{}", msg);
         action_result
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use super::deploy_heartbeat_wake_enabled;
+    use crate::rust::blocks::proposer::proposer::ProposerResult;
+    use crate::rust::ProposeFunction;
+
+    #[test]
+    fn a_deploy_wakes_the_heartbeat_only_without_a_propose_function() {
+        assert!(deploy_heartbeat_wake_enabled(&None));
+        let propose: Arc<ProposeFunction> =
+            Arc::new(|_, _| Box::pin(async { Ok(ProposerResult::Empty) }));
+        assert!(!deploy_heartbeat_wake_enabled(&Some(propose)));
     }
 }
