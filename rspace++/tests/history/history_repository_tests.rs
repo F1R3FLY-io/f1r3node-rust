@@ -5,7 +5,7 @@ use std::collections::{BTreeSet, HashSet};
 use std::sync::{Arc, Mutex};
 
 use rand::prelude::SliceRandom;
-use rspace_plus_plus::rspace::errors::{HistoryError, RootError};
+use rspace_plus_plus::rspace::errors::{HistoryError, RadixTreeError, RootError};
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::hashing::stable_hash_provider::{hash, hash_from_vec};
 use rspace_plus_plus::rspace::history::checkpoint_writer::{CheckpointWriter, KvCheckpointWriter};
@@ -871,7 +871,12 @@ impl RSpaceExporter for EmptyExporter {
 }
 
 impl TrieExporter for EmptyExporter {
-    fn get_nodes(&self, _start_path: NodePath, _skip: i32, _take: i32) -> Vec<TrieNode<KeyHash>> {
+    fn get_nodes(
+        &self,
+        _start_path: NodePath,
+        _skip: i32,
+        _take: i32,
+    ) -> Result<Vec<TrieNode<KeyHash>>, RadixTreeError> {
         todo!()
     }
 

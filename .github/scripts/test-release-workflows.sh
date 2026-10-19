@@ -189,7 +189,7 @@ ci_text = File.read(ci_path)
 fail_if(!ci_text.include?("merge_commit_sha"), "CI must validate the current pull request synthetic merge")
 fail_if(!ci_text.include?('run_heavy=$run_heavy'), "CI must persist the Integration Pipeline decision")
 fail_if(!ci_text.include?("ci-target-${{ github.run_attempt }}"), "CI must upload attempt-specific target evidence")
-%w[static_checks script_tests soak_harness_tests deny markdown_link_check test].each do |job_name|
+%w[commit_policy static_checks script_tests soak_harness_tests deny markdown_link_check test].each do |job_name|
   checkout = ci.dig("jobs", job_name, "steps").find { |step| step["name"] == "Checkout" }
   fail_if(checkout&.dig("with", "ref") != "${{ needs.build_base.outputs.TARGET_SHA }}", "#{job_name} must check out the validated target SHA")
 end

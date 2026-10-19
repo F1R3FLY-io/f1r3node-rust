@@ -9,8 +9,9 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
-use block_storage::rust::deploy::key_value_deploy_storage::KeyValueDeployStorage;
-use block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer;
+use block_storage::rust::deploy::key_value_deploy_storage::{
+    KeyValueDeployStorage, KeyValueRejectedDeployBuffer,
+};
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use crypto::rust::private_key::PrivateKey;
 use crypto::rust::public_key::PublicKey;
@@ -277,6 +278,49 @@ fn ordered_user_deploys(deploys: &HashSet<Signed<DeployData>>) -> Vec<Signed<Dep
     ordered
 }
 
+struct TimedDeployPoolGuard<'a> {
+    guard: Option<parking_lot::MutexGuard<'a, KeyValueDeployStorage>>,
+    acquired_at: std::time::Instant,
+}
+
+impl std::ops::Deref for TimedDeployPoolGuard<'_> {
+    type Target = KeyValueDeployStorage;
+    fn deref(&self) -> &Self::Target { self.guard.as_deref().expect("held until drop") }
+}
+
+impl std::ops::DerefMut for TimedDeployPoolGuard<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.guard.as_deref_mut().expect("held until drop")
+    }
+}
+
+impl Drop for TimedDeployPoolGuard<'_> {
+    fn drop(&mut self) {
+        use crate::rust::metrics_constants::{
+            CASPER_METRICS_SOURCE, DEPLOY_POOL_LOCK_HOLD_TIME_METRIC,
+        };
+        let held = self.acquired_at.elapsed();
+        drop(self.guard.take());
+        metrics::histogram!(DEPLOY_POOL_LOCK_HOLD_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
+            .record(held.as_secs_f64());
+    }
+}
+
+fn lock_deploy_pool(pool: &parking_lot::Mutex<KeyValueDeployStorage>) -> TimedDeployPoolGuard<'_> {
+    use crate::rust::metrics_constants::{
+        CASPER_METRICS_SOURCE, DEPLOY_POOL_LOCK_WAIT_TIME_METRIC,
+    };
+    let requested_at = std::time::Instant::now();
+    let guard = pool.lock();
+    let acquired_at = std::time::Instant::now();
+    metrics::histogram!(DEPLOY_POOL_LOCK_WAIT_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
+        .record(acquired_at.duration_since(requested_at).as_secs_f64());
+    TimedDeployPoolGuard {
+        guard: Some(guard),
+        acquired_at,
+    }
+}
+
 /// Ordinary admission accounting for one deploy preparation: a disabled
 /// lane, and the ordinary candidates the selection left out.
 pub(crate) fn record_ordinary_admission(
@@ -475,7 +519,7 @@ pub async fn prepare_user_deploys(
     current_time_millis: i64,
     deploy_storage: Arc<parking_lot::Mutex<KeyValueDeployStorage>>,
     rejected_deploy_buffer: Arc<
-        Mutex<block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer>,
+        Mutex<block_storage::rust::deploy::key_value_deploy_storage::KeyValueRejectedDeployBuffer>,
     >,
     block_store: &KeyValueBlockStore,
     allow_recovered_deploys: bool,
@@ -573,7 +617,7 @@ async fn prepare_user_deploys_with_policy(
     current_time_millis: i64,
     deploy_storage: Arc<parking_lot::Mutex<KeyValueDeployStorage>>,
     rejected_deploy_buffer: Arc<
-        Mutex<block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer>,
+        Mutex<block_storage::rust::deploy::key_value_deploy_storage::KeyValueRejectedDeployBuffer>,
     >,
     block_store: &KeyValueBlockStore,
     allow_recovered_deploys: bool,
@@ -586,7 +630,7 @@ async fn prepare_user_deploys_with_policy(
     let allow_ordinary_deploys = admission_policy.allow_ordinary && ordinary_cap > 0;
     let allow_in_scope_recovery =
         admission_policy.allow_in_scope_recovery && in_scope_recovery_cap > 0;
-    let mut deploy_storage_guard = deploy_storage.lock();
+    let mut deploy_storage_guard = lock_deploy_pool(&deploy_storage);
 
     let stored_unfinalized: HashSet<Signed<DeployData>> =
         if allow_ordinary_deploys || allow_in_scope_recovery {
@@ -2843,7 +2887,9 @@ pub async fn create(
     validator_identity: &ValidatorIdentity,
     dummy_deploy_opt: Option<(PrivateKey, String)>,
     deploy_storage: Arc<parking_lot::Mutex<KeyValueDeployStorage>>,
-    rejected_deploy_buffer: Arc<Mutex<block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer>>,
+    rejected_deploy_buffer: Arc<
+        Mutex<block_storage::rust::deploy::key_value_deploy_storage::KeyValueRejectedDeployBuffer>,
+    >,
     runtime_manager: &RuntimeManager,
     block_store: &mut KeyValueBlockStore,
     selection: super::proposer::DeploySelection,
@@ -2867,7 +2913,9 @@ pub async fn create_with_progress(
     validator_identity: &ValidatorIdentity,
     dummy_deploy_opt: Option<(PrivateKey, String)>,
     deploy_storage: Arc<parking_lot::Mutex<KeyValueDeployStorage>>,
-    rejected_deploy_buffer: Arc<Mutex<block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer>>,
+    rejected_deploy_buffer: Arc<
+        Mutex<block_storage::rust::deploy::key_value_deploy_storage::KeyValueRejectedDeployBuffer>,
+    >,
     runtime_manager: &RuntimeManager,
     block_store: &mut KeyValueBlockStore,
     selection: super::proposer::DeploySelection,
@@ -5716,6 +5764,83 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn prepare_user_deploys_selects_valid_deploys_past_undecodable_records() {
+        use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
+
+        let mut kvm = InMemoryStoreManager::new();
+        let deploy_storage = Arc::new(parking_lot::Mutex::new(
+            KeyValueDeployStorage::new(&mut kvm)
+                .await
+                .expect("deploy storage"),
+        ));
+        let rejected_deploy_buffer = Arc::new(Mutex::new(
+            KeyValueRejectedDeployBuffer::new(&mut kvm)
+                .await
+                .expect("rejected deploy buffer"),
+        ));
+        let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
+            .await
+            .expect("block store");
+        let mut snapshot =
+            crate::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
+        snapshot.on_chain_state.shard_conf.deploy_lifespan = 50;
+        let valid = construct_deploy::basic_deploy_data(141, None, Some("test".to_string()))
+            .expect("deploy");
+        deploy_storage
+            .lock()
+            .add(vec![valid.clone()])
+            .expect("seed deploy storage");
+        let damaged_key = deploy_storage
+            .lock()
+            .store
+            .encode_key(&vec![7u8; 64])
+            .expect("damaged key");
+        for name in ["deploy_storage", "rejected_deploy_buffer"] {
+            kvm.store(name.to_string())
+                .await
+                .expect("raw store")
+                .put_one(damaged_key.clone(), vec![0xff, 0x01])
+                .expect("seed damaged record");
+        }
+
+        let prepared = prepare_user_deploys(
+            &snapshot,
+            20,
+            valid.data.time_stamp,
+            deploy_storage,
+            rejected_deploy_buffer,
+            &block_store,
+            true,
+            true,
+        )
+        .await
+        .expect("prepare deploys");
+
+        assert_eq!(
+            prepared
+                .deploys
+                .iter()
+                .map(|deploy| deploy.sig.clone())
+                .collect::<Vec<_>>(),
+            vec![valid.sig]
+        );
+        for name in [
+            "deploy_storage_quarantine",
+            "rejected_deploy_buffer_quarantine",
+        ] {
+            assert_eq!(
+                kvm.store(name.to_string())
+                    .await
+                    .expect("quarantine store")
+                    .get_one(&damaged_key)
+                    .expect("quarantine read"),
+                Some(vec![0xff, 0x01]),
+                "{name}"
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn ordinary_storage_selection_uses_ordinary_throughput_cap() {
         let mut kvm = InMemoryStoreManager::new();
         let deploy_storage = Arc::new(parking_lot::Mutex::new(
@@ -7447,6 +7572,36 @@ mod stage_metric_tests {
         assert_eq!(count(BLOCK_CREATOR_CAP_SOURCE_HARD_METRIC), 2);
         assert_eq!(count(BLOCK_CREATOR_CAP_SOURCE_SOFT_BACKLOG_METRIC), 1);
         assert_eq!(count(BLOCK_CREATOR_CAP_SOURCE_SOFT_STALLED_METRIC), 0);
+    }
+
+    #[tokio::test]
+    async fn the_deploy_pool_lock_records_one_wait_and_one_hold_for_each_acquire() {
+        use crate::rust::metrics_constants::{
+            DEPLOY_POOL_LOCK_HOLD_TIME_METRIC, DEPLOY_POOL_LOCK_WAIT_TIME_METRIC,
+        };
+        let mut kvm =
+            rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager::new();
+        let pool = parking_lot::Mutex::new(KeyValueDeployStorage::new(&mut kvm).await.unwrap());
+        let recorder = DebuggingRecorder::new();
+        let snapshotter = recorder.snapshotter();
+        let _guard = metrics::set_default_local_recorder(&recorder);
+
+        {
+            let held = lock_deploy_pool(&pool);
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            drop(held);
+        }
+        drop(lock_deploy_pool(&pool));
+
+        let recorded = take(&snapshotter);
+        let samples = |name: &str| recorded.get(name).map(|v| v.1.clone()).unwrap_or_default();
+        assert_eq!(samples(DEPLOY_POOL_LOCK_WAIT_TIME_METRIC).len(), 2);
+        let holds = samples(DEPLOY_POOL_LOCK_HOLD_TIME_METRIC);
+        assert_eq!(holds.len(), 2);
+        assert!(
+            holds[0] >= 0.02,
+            "the first hold covers the 20 ms sleep: {holds:?}"
+        );
     }
 
     #[test]

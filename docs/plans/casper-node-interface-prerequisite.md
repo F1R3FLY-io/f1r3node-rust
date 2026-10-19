@@ -191,9 +191,8 @@ The source review identified these boundaries for the next file-level plan:
 - `block-storage/src/rust/dag/block_dag_key_value_storage.rs`
 - `block-storage/src/rust/dag/deploy_lifecycle_types.rs`
 - `block-storage/src/rust/deploy/key_value_deploy_storage.rs`
-- `block-storage/src/rust/deploy/key_value_rejected_deploy_buffer.rs`
 
-A separate source review must identify every writer needed for a consistent raw inventory. Batch C cannot infer that coverage from these six files alone.
+A separate source review must identify every writer needed for a consistent raw inventory. Batch C cannot infer that coverage from these files alone.
 
 ### Later harness integration
 

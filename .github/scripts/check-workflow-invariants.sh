@@ -6,8 +6,8 @@
 # untrusted fork code, but a comment does not stop a delete — this does.
 #
 # Wired into ci.yml's `static_checks` job rather than `build_base` on purpose:
-# Static Checks is a required status check (through the temporary `Lint` result
-# job until the rulesets name it), so a violation blocks the merge. A job
+# Static Checks is a required status check on both rulesets, so a violation
+# blocks the merge. A job
 # that only fails upstream can surface as `skipped`, which required-check
 # evaluation may treat as satisfied.
 #
@@ -561,6 +561,100 @@ for renderer_wf in \
 		err "$renderer_wf renders charts directly into site/data, risking a partially overwritten chart set on failure"
 	fi
 done
+
+# 9. A fork-only job must not share a check name with a ci.yml job when it is
+#    skipped. ci-fork-pr.yml runs for every pull request, and a job skipped by
+#    its `if` still reports a check. A skipped check with a required name passes
+#    the gate before the real ci.yml job finishes. A ci-heavy pull request then
+#    enters the merge queue early, and the merge group runs the heavy pipeline
+#    again.
+#    A fork-only job has `head.repo.fork == true` in its `if`. Its name is a
+#    literal or `${{ github.event.pull_request.head.repo.fork && 'A' || 'B' }}`.
+#    The skipped job reports B, the literal, or the job id when there is no
+#    name. That value must not be a ci.yml check name. A job that calls a
+#    reusable workflow is exempt. Its skipped check carries the caller name
+#    only, and no ruleset requires a caller name. The scan first tests itself
+#    against a swapped expression and a job without a name.
+fork_name_errors=""
+if ! fork_name_errors="$(
+	ruby -ryaml - .github/workflows/ci.yml .github/workflows/ci-fork-pr.yml 2>&1 <<'RUBY'
+FORK_NAME = /\A\$\{\{\s*github\.event\.pull_request\.head\.repo\.fork\s*&&\s*'([^']+)'\s*\|\|\s*'([^']+)'\s*\}\}\z/
+
+def violations(ci_names, jobs)
+  jobs.each_with_object([]) do |(id, job), found|
+    next unless job["if"].to_s.include?("head.repo.fork == true")
+    next if job.key?("uses")
+    name = job.fetch("name", id.to_s).to_s
+    if name.include?("${{")
+      match = FORK_NAME.match(name)
+      if match.nil?
+        found << "ci-fork-pr.yml job '#{id}' has a computed name that is not \"${{ github.event.pull_request.head.repo.fork && 'A' || 'B' }}\""
+        next
+      end
+      name = match[2]
+    end
+    found << "ci-fork-pr.yml job '#{id}' reports '#{name}' when skipped; that is a ci.yml check name" if ci_names.include?(name)
+  end
+end
+
+guard = "always() && github.event.pull_request.head.repo.fork == true"
+probe = {
+  "swapped" => { "if" => guard, "name" => "${{ github.event.pull_request.head.repo.fork && 'Fork only' || 'Gate' }}" },
+  "Gate" => { "if" => guard },
+  "correct" => { "if" => guard, "name" => "${{ github.event.pull_request.head.repo.fork && 'Gate' || 'Gate (fork PRs only)' }}" }
+}
+flagged = violations(["Gate"], probe).map { |line| line[/job '([^']+)'/, 1] }
+puts "invariant 9 self-test failed: flagged #{flagged.inspect}, expected [\"swapped\", \"Gate\"]" unless flagged == %w[swapped Gate]
+
+ci_names = YAML.load_file(ARGV[0]).fetch("jobs").map { |id, job| job.fetch("name", id.to_s).to_s }.reject { |name| name.include?("${{") }
+puts violations(ci_names, YAML.load_file(ARGV[1]).fetch("jobs"))
+RUBY
+)"; then
+	err "fork check name scan failed: $fork_name_errors"
+elif [ -n "$fork_name_errors" ]; then
+	while IFS= read -r line; do err "$line"; done <<<"$fork_name_errors"
+else
+	ok "skipped fork-only jobs do not report ci.yml check names"
+fi
+
+# 10. A composite action must not read the vars or secrets context. The runner
+#     rejects the expression when it loads the action, not when a workflow is
+#     parsed. Soak 38773128084 passed its 2.5 h preflight and then failed on
+#     `vars.SOAK_IO_DIAGNOSTICS` in soak-segment. Pass the value as an input or
+#     as job-level env. The dot and bracket forms both count. Only full-line
+#     comments are skipped, so a trailing comment that names the context still
+#     fails, which is safe. The scan first tests itself.
+action_context_pattern='\$\{\{([^}]*[^A-Za-z0-9_.])?(vars|secrets)[.[]'
+action_context_hits() {
+	grep -HnE "$action_context_pattern" "$@" | grep -vE '^[^:]+:[0-9]+:[[:space:]]*#' || true
+}
+action_probe="$(mktemp)"
+printf '%s\n' \
+	"  A: \${{ vars.X == '1' && '1' || '0' }}" \
+	"  B: \${{secrets.TOKEN}}" \
+	"  # C: \${{ vars.X }}" \
+	"  D: \${{ inputs.myvars.x }}" \
+	"  E: \${{ vars['X'] }}" \
+	"  F: \${{ secrets[\"TOKEN\"] }}" >"$action_probe"
+action_probe_hits="$(action_context_hits "$action_probe" | cut -d: -f2 | tr '\n' ' ')"
+rm -f "$action_probe"
+if [ "$action_probe_hits" != "1 2 5 6 " ]; then
+	err "invariant 10 self-test failed: flagged lines '$action_probe_hits', expected '1 2 5 6 '"
+else
+	action_files=()
+	while IFS= read -r file; do action_files+=("$file"); done < <(find .github/actions \( -name 'action.yml' -o -name 'action.yaml' \) | sort)
+	action_context_errors=""
+	if [ "${#action_files[@]}" -gt 0 ]; then
+		action_context_errors="$(action_context_hits "${action_files[@]}")"
+	fi
+	if [ -n "$action_context_errors" ]; then
+		while IFS= read -r line; do
+			err "composite action reads a workflow-only context (vars or secrets): $line"
+		done <<<"$action_context_errors"
+	else
+		ok "composite actions do not read the vars or secrets context"
+	fi
+fi
 
 if [ "$fail" -ne 0 ]; then
 	printf '::error::%s\n' "workflow security invariants violated; see errors above"

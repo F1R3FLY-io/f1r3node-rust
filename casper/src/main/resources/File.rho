@@ -4909,7 +4909,7 @@ in {
     // restored to "open"; the file itself remains usable.  Only the
     // LineStream is closed on exit.
     //
-    // Mode gate: requires a write-capable mode ("w" or "rw"); "r"
+    // Mode gate: requires a write-capable mode (e.g. "w" or "r+");
     // returns FSERR_UNSUPPORTED with no side effects.
     //
     // ## Atomicity scope (Phase 8 slice 8a step 4e-1)
