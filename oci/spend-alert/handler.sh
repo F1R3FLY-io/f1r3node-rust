@@ -114,7 +114,11 @@ summarize() {
             threshold: $threshold,
             currency: $rows[0].currency,
             over: ($total > $threshold),
-            top: ($rows | sort_by(-.cost) | .[:5] | map(.cost = ((.cost * 100 | round) / 100)))
+            top: ($rows | sort_by(-.cost) | .[:5] | map(.cost = ((.cost * 100 | round) / 100))),
+            compartments: ($rows | group_by(.compartment)
+                | map({compartment: .[0].compartment, cost: (map(.cost) | add)})
+                | sort_by(-.cost) | map(select(.cost >= 0.01))
+                | map(.cost = ((.cost * 100 | round) / 100)))
         }'
 }
 
@@ -123,6 +127,9 @@ report_body() {
 	jq -r --arg url "$COST_ANALYSIS_URL" --argjson month "$month" --argjson budgets "$budgets" '
         .currency as $currency
         | "OCI tenancy spend for \(.day) (UTC) was \(.total) \(.currency), \(if .over then "above" else "within" end) the \(.threshold) \(.currency) daily threshold.",
+        "",
+        "Tenancy spend by compartment for \(.day):",
+        (.compartments[] | "  \(.cost) \($currency)  \(.compartment)"),
         "",
         "Largest compartment and service costs:",
         (.top[] | "  \(.cost) \(.currency)  \(.compartment) / \(.service)"),
@@ -142,7 +149,7 @@ report_body() {
 publish_report() {
 	local summary="$1" month="$2" budgets="$3" title
 	required_config ONS_TOPIC_OCID
-	title="$(jq -r '"OCI daily cost report \(.day): \(.total) \(.currency), \(if .over then "ABOVE" else "within" end) the \(.threshold) \(.currency) daily threshold"' <<<"$summary")"
+	title="$(jq -r '"OCI daily cost report \(.day): tenancy \(.total) \(.currency), \(if .over then "ABOVE" else "within" end) the \(.threshold) \(.currency) daily threshold"' <<<"$summary")"
 	oci ons message publish \
 		"${OCI_AUTH_ARGS[@]}" \
 		--topic-id "$ONS_TOPIC_OCID" \

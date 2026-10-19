@@ -89,6 +89,7 @@ over="$(main </dev/null)"
 [ "$(wc -l <"$publish_log" | tr -d ' ')" -eq 1 ]
 grep -q -- "--topic-id $ONS_TOPIC_OCID" "$publish_log"
 grep -q -- 'ABOVE' "$publish_log"
+grep -q -- 'tenancy\\ 88.35\\ USD' "$publish_log"
 grep -q -- '--time-usage-started 2026-10-06T00:00:00Z' "$query_log"
 grep -q -- '--time-usage-ended 2026-10-07T00:00:00Z' "$query_log"
 grep -q -- '--time-usage-started 2026-10-01T00:00:00Z --time-usage-ended 2026-10-07T00:00:00Z --granularity MONTHLY' "$query_log"
@@ -99,6 +100,10 @@ summary="$(summarize 2026-10-06 70 <<<"{\"data\":{\"items\":$mock_items}}")"
 month="$(month_summary 2026-10-06 <<<"{\"data\":{\"items\":$mock_month_items}}")"
 budgets="$(budget_summary <<<"{\"data\":$mock_budgets}")"
 body="$(report_body "$summary" "$month" "$budgets")"
+grep -qx 'Tenancy spend by compartment for 2026-10-06:' <<<"$body"
+grep -qx '  60.25 USD  ci-runner' <<<"$body"
+grep -qx '  28.1 USD  f1r3fly-devops' <<<"$body"
+[ "$(grep -n '^  60.25 USD  ci-runner$' <<<"$body" | cut -d: -f1)" -lt "$(grep -n '^  28.1 USD  f1r3fly-devops$' <<<"$body" | cut -d: -f1)" ]
 grep -q 'ci-runner / Compute' <<<"$body"
 [ "$(grep -n 'ci-runner / Compute' <<<"$body" | cut -d: -f1)" -lt "$(grep -n 'f1r3fly-devops / Compute' <<<"$body" | cut -d: -f1)" ]
 grep -qx 'Month to date (2026-10-01 to 2026-10-06): 600.75 USD' <<<"$body"

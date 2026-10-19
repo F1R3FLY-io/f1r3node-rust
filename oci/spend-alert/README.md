@@ -1,6 +1,6 @@
 # OCI daily cost report
 
-This OCI Function sends a cost report email every day. The report gives the tenancy spend for the previous UTC day and its largest costs. It also gives the month-to-date spend by compartment, and the actual and forecast spend of each budget. The title states whether the day was above the daily threshold. The default threshold is 70 USD. OCI budgets reset only monthly, and a budget alert sends one email for each threshold in a month, so neither gives a daily view.
+This OCI Function sends a cost report email every day. The report gives the tenancy spend for the previous UTC day, by compartment, and its largest costs. It also gives the month-to-date spend by compartment, and the actual and forecast spend of each budget. The title states whether the day was above the daily threshold. The default threshold is 70 USD. OCI budgets reset only monthly, and a budget alert sends one email for each threshold in a month, so neither gives a daily view.
 
 ```mermaid
 flowchart LR
