@@ -60,6 +60,9 @@
 #   log-probe-transient-active one node log exec fails during the iteration -> warning, one iteration
 #   log-probe-exec-nonzero-active node log exec prints a partial du size and an error, exits 1 -> breach
 #   log-rotated-unreadable a rotated container log exists but cannot be read  -> breach, log probe unavailable
+#   log-probe-no-logfile-boundary the logging driver writes no log file (empty LogPath) -> refuse, named reason
+#   log-node-dir-override SOAK_NODE_LOG_DIR=/srv/node-logs                    -> the node probe reads that directory
+#   log-node-dir-range    SOAK_NODE_LOG_DIR is a relative path               -> configuration rejected, exit 2
 #
 # Usage: test-soak-disk-admission.sh [--scenario NAME] [source-directory] [evidence-directory]
 #   With no --scenario (and no SOAK_DISK_TEST_SCENARIO) every scenario runs
@@ -85,7 +88,8 @@ SCENARIOS=(band missing-boundary missing-after-hygiene malformed-boundary missin
     cleanup-error-image cleanup-error-builder cleanup-partial cleanup-sufficient
     log-within-budget log-container-soft log-container-hard log-node-soft log-probe-missing-active
     log-probe-missing-boundary log-sudo-fallback log-budget-disabled log-budget-range log-descriptor-exhaustion
-    log-probe-vanished log-probe-transient-active log-probe-exec-nonzero-active log-rotated-unreadable)
+    log-probe-vanished log-probe-transient-active log-probe-exec-nonzero-active log-rotated-unreadable
+    log-probe-no-logfile-boundary log-node-dir-override log-node-dir-range)
 
 SCENARIO="${SOAK_DISK_TEST_SCENARIO:-}"
 if [[ "${1:-}" == --scenario ]]; then
@@ -255,6 +259,10 @@ if [[ "${1:-}" == inspect && "${3:-}" == *LogPath* && "${4:-}" == "$owned_id" ]]
         printf 'inspect-failed\n' >>/case/evidence/log-probe-faults.txt
         exit 1
     fi
+    if [[ "${SOAK_DISK_TEST_SCENARIO:-band}" == log-probe-no-logfile-boundary ]]; then
+        printf '%s \n' "${SOAK_WRITER_OWNER:?}"
+        exit 0
+    fi
     printf '%s /case/clog/json.log\n' "${SOAK_WRITER_OWNER:?}"
     exit 0
 fi
@@ -272,7 +280,8 @@ if [[ "${SOAK_DISK_TEST_SCENARIO:-band}" == log-probe-exec-nonzero-active && -s 
     exit 1
 fi
 if [[ "${1:-}" == exec && "${2:-}" == "$owned_id" ]]; then
-    printf '%s\t/var/lib/rnode/logs\n' "$(cat /case/node-log-bytes)"
+    readlink /proc/$$/fd/0 >>/case/evidence/exec-stdin.txt || printf 'unreadable\n' >>/case/evidence/exec-stdin.txt
+    printf '%s\t%s\n' "$(cat /case/node-log-bytes)" "${!#}"
     exit 0
 fi
 if [[ "${1:-}" == ps && "$*" == *'--filter label=io.f1r3fly.soak.owner='* ]]; then
@@ -510,6 +519,7 @@ SH
     container_budget=0
     node_budget=0
     log_every=3
+    node_log_dir=/var/lib/rnode/logs
     driver_timeout=20
     mkdir -p /case/clog
     truncate -s 10M /case/clog/json.log
@@ -527,6 +537,8 @@ SH
             printf '%s\n' 4194304000 >/case/node-log-bytes
             ;;
         log-budget-range) container_budget=9223372036854775808 ;;
+        log-node-dir-override) node_log_dir=/srv/node-logs ;;
+        log-node-dir-range) node_log_dir=srv/node-logs ;;
         log-descriptor-exhaustion)
             container_budget=1
             : >/case/clog/json.log
@@ -780,6 +792,7 @@ SH
         SOAK_DISK_HYGIENE_BAND_MB="$disk_band" \
         SOAK_CONTAINER_LOG_BUDGET_MB="$container_budget" \
         SOAK_NODE_LOG_BUDGET_MB="$node_budget" \
+        SOAK_NODE_LOG_DIR="$node_log_dir" \
         SOAK_LOG_PROBE_EVERY="$log_every" \
         SOAK_LOG_PROBE_SECONDS=2 \
         SOAK_DISK_DIAGNOSTIC_SECONDS=1 \
@@ -800,7 +813,7 @@ SH
         bash repo/scripts/run-merge-recovery-soak.sh >evidence/driver.log 2>&1 || status=$?
     printf '%s\n' "$status" >evidence/driver-exit.txt
     [[ -z "$observer" ]] || wait "$observer"
-    if [[ "$SCENARIO" == disk-*-range || "$SCENARIO" == log-budget-range ]]; then
+    if [[ "$SCENARIO" == disk-*-range || "$SCENARIO" == log-budget-range || "$SCENARIO" == log-node-dir-range ]]; then
         if [[ "$status" != 2 ]]; then
             if [[ ! -s evidence/workload-started.txt ]]; then
                 printf 'ERROR: The range fixture neither rejected configuration nor reached workload admission.\n' >&2
@@ -810,7 +823,7 @@ SH
             exit 1
         fi
         if [[ -e evidence/workload-started.txt || -e evidence/benchmark-started.txt ]] ||
-            ! grep -Eq '^SOAK_(DISK_|CONTAINER_LOG_BUDGET_MB|NODE_LOG_BUDGET_MB).*must' evidence/driver.log; then
+            ! grep -Eq '^SOAK_(DISK_|CONTAINER_LOG_BUDGET_MB|NODE_LOG_BUDGET_MB|NODE_LOG_DIR).*must' evidence/driver.log; then
             printf 'ERROR: The range fixture did not produce the expected configuration refusal.\n' >&2
             exit 2
         fi
@@ -830,8 +843,17 @@ SH
         log_execs="$(grep -c "^exec $owned_id " evidence/docker-commands.txt 2>/dev/null || true)"
         log_inspects="${log_inspects:-0}"
         log_execs="${log_execs:-0}"
+        for _ in 1 2 3 4 5 6 7 8 9 10; do
+            log_error_left="$(find evidence/output /tmp -maxdepth 1 \( -name .log-probe-error -o -name 'soak-log-probe-error.*' \) 2>/dev/null | head -1)"
+            [[ -n "$log_error_left" ]] || break
+            sleep 0.2
+        done
+        if [[ -n "$log_error_left" ]]; then
+            printf 'FAIL: The log guardian left its probe error file %s (%s).\n' "$log_error_left" "$SCENARIO" >&2
+            exit 1
+        fi
         case "$SCENARIO" in
-        log-within-budget | log-sudo-fallback | log-budget-disabled | log-probe-vanished | log-probe-transient-active)
+        log-within-budget | log-sudo-fallback | log-budget-disabled | log-probe-vanished | log-probe-transient-active | log-node-dir-override)
             if [[ "$SCENARIO" == log-budget-disabled ]]; then
                 if [[ "$log_inspects" != 0 || "$log_execs" != 0 ]]; then
                     printf 'FAIL: A disabled log budget still ran its probes.\n' >&2
@@ -840,6 +862,17 @@ SH
             elif [[ "$log_inspects" -lt 1 || "$log_execs" -lt 1 ]]; then
                 printf 'ERROR: The fixture did not exercise both log probes (%s).\n' "$SCENARIO" >&2
                 exit 2
+            fi
+            if [[ "$SCENARIO" != log-budget-disabled ]] &&
+                { [[ ! -s evidence/exec-stdin.txt ]] || grep -vqx /dev/null evidence/exec-stdin.txt; }; then
+                printf 'FAIL: A node log exec did not get /dev/null as its standard input (%s).\n' "$SCENARIO" >&2
+                exit 1
+            fi
+            if [[ "$SCENARIO" == log-node-dir-override ]] &&
+                { ! grep -q "^exec $owned_id .* /srv/node-logs\$" evidence/docker-commands.txt ||
+                    grep -q "^exec $owned_id .* /var/lib/rnode/logs\$" evidence/docker-commands.txt; }; then
+                printf 'FAIL: The node log probe did not read the SOAK_NODE_LOG_DIR directory.\n' >&2
+                exit 1
             fi
             if [[ "$SCENARIO" == log-probe-vanished ]] && ! grep -Fxq inspect-vanished evidence/log-probe-faults.txt; then
                 printf 'ERROR: The fixture did not remove the container between the listing and its probe.\n' >&2
@@ -877,6 +910,16 @@ SH
                 exit 1
             fi
             printf 'PASS: An unreadable log probe at the admission check refused work.\n'
+            exit 0
+            ;;
+        log-probe-no-logfile-boundary)
+            if [[ -e evidence/workload-started.txt || "$status" != 1 || "$iterations" != 0 ]] ||
+                ! grep -Fq 'The log probe is unavailable before admission (log probe unavailable: container log of 000000000000 (the logging driver writes no log file))' evidence/output/protection-breach.txt ||
+                ! grep -Fxq 'early_exit_reason=host_protection_breach' evidence/output/summary.txt; then
+                printf 'FAIL: A container without a log file did not refuse work with the named reason.\n' >&2
+                exit 1
+            fi
+            printf 'PASS: A container without a log file refused work with the named reason.\n'
             exit 0
             ;;
         esac
