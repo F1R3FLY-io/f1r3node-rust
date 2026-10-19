@@ -19,6 +19,7 @@ use block_storage::rust::dag::block_dag_key_value_storage::{
     BlockDagKeyValueStorage, KeyValueDagRepresentation,
 };
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
+use block_storage::rust::pending_blocks::PendingInsert;
 use comm::rust::rp::connect::ConnectionsCell;
 use comm::rust::rp::rp_conf::RPConf;
 use comm::rust::transport::transport_layer::TransportLayer;
@@ -441,6 +442,7 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessor<T> {
     ) -> Result<SenderAuthorization, CasperError> {
         let authorization = self.dependencies.sender_authorization(block)?;
         if authorization == SenderAuthorization::Unauthorized {
+            self.dependencies.discard_pending(block);
             tracing::warn!(
                 "Ignoring block {} because block creator {} has 0 weight in main parent.",
                 PrettyPrinter::build_string_bytes(&block.block_hash),
@@ -450,24 +452,45 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessor<T> {
         Ok(authorization)
     }
 
-    /// check block format and store if check passed
+    /// Check block format and store the block if the check passed. A block
+    /// whose sender authorization is `Unknown` goes to the bounded in-memory
+    /// pending area instead of disk; it reaches disk when it is re-admitted
+    /// with a known authorization or before it enters the DAG.
     pub async fn check_if_well_formed_and_store(
         &self,
         block: &BlockMessage,
+        authorization: SenderAuthorization,
     ) -> Result<bool, CasperError> {
         let valid_format = Validate::format_of_fields(block);
         let valid_sig = Validate::block_signature(block);
-        let is_valid = valid_format && valid_sig;
-
-        if is_valid {
-            // Time storage operation
-            let storage_start = Instant::now();
-            self.dependencies.store_block(block).await?;
-            metrics::histogram!(BLOCK_PROCESSING_STORAGE_TIME_METRIC, "source" => BLOCK_PROCESSOR_METRICS_SOURCE)
-                .record(storage_start.elapsed().as_secs_f64());
+        if !(valid_format && valid_sig) {
+            return Ok(false);
         }
 
-        Ok(is_valid)
+        let storage_start = Instant::now();
+        let stored = match authorization {
+            SenderAuthorization::Authorized => {
+                self.dependencies.store_block(block).await?;
+                true
+            }
+            SenderAuthorization::Unknown => {
+                let held = self.dependencies.hold_pending(block)?;
+                if held != PendingInsert::Accepted {
+                    tracing::warn!(
+                        "Dropping block {} from {}: pending area refused it ({:?}).",
+                        PrettyPrinter::build_string_bytes(&block.block_hash),
+                        PrettyPrinter::build_string_bytes(&block.sender),
+                        held
+                    );
+                }
+                held == PendingInsert::Accepted
+            }
+            SenderAuthorization::Unauthorized => false,
+        };
+        metrics::histogram!(BLOCK_PROCESSING_STORAGE_TIME_METRIC, "source" => BLOCK_PROCESSOR_METRICS_SOURCE)
+            .record(storage_start.elapsed().as_secs_f64());
+
+        Ok(stored)
     }
 
     /// check if block has all dependencies available and can be validated
@@ -1039,6 +1062,15 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorDependencies<T> {
         Ok(())
     }
 
+    pub fn hold_pending(&self, block: &BlockMessage) -> Result<PendingInsert, CasperError> {
+        let solicited = self.was_requested_as_dependency(&block.block_hash)?;
+        Ok(self.block_store.put_pending(block, solicited)?)
+    }
+
+    pub fn discard_pending(&self, block: &BlockMessage) -> bool {
+        self.block_store.discard_pending(&block.block_hash)
+    }
+
     /// Equivalent to Scala's: getCasperStateSnapshot = (c: Casper[F]) => c.getSnapshot
     pub async fn get_casper_state_snapshot(
         &self,
@@ -1598,6 +1630,10 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorDependencies<T> {
             return Ok(false);
         };
 
+        if let Err(persist_err) = self.block_store.persist_pending(&block.block_hash) {
+            self.settled_admissions.fetch_sub(1, Ordering::Relaxed);
+            return Err(persist_err.into());
+        }
         if let Err(insert_err) = self.block_dag_storage.insert(
             block,
             block_storage::rust::dag::block_dag_key_value_storage::InsertMode::SettledHistory,

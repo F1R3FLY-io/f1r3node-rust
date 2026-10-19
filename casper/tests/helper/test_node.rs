@@ -185,14 +185,14 @@ impl TestNode {
             return Ok(Either::Left(BlockStatus::not_of_interest()));
         }
 
-        if block_processor.check_sender_authorization(&block)? == SenderAuthorization::Unauthorized
-        {
+        let authorization = block_processor.check_sender_authorization(&block)?;
+        if authorization == SenderAuthorization::Unauthorized {
             return Ok(Either::Left(BlockStatus::invalid_sender()));
         }
 
         // Check if well-formed and store
         let is_well_formed = block_processor
-            .check_if_well_formed_and_store(&block)
+            .check_if_well_formed_and_store(&block, authorization)
             .await?;
 
         if !is_well_formed {
