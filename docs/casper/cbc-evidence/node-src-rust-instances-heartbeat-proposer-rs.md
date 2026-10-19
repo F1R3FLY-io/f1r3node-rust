@@ -1,58 +1,49 @@
 # CbC Evidence: node/src/rust/instances/heartbeat_proposer.rs
 
-- **Status:** pending
-- **Task:** TASK-021-26
-- **Owner:** pi-session-heartbeat-h1-cbc
-- **Phase:** H1 claim registration before implementation
+**Status:** pending.
 
-The revised claim is `docs/claims/heartbeat-proposal-amplification-bound.md`. Registration is not verification, discharge, or maintainer acceptance.
+This record identifies H1 at `ab84edf83`. Construction and binding review do not establish discharge or maintainer acceptance.
 
-The previous record remains byte-identical at `docs/casper/cbc-evidence/history/node-src-rust-instances-heartbeat-proposer-rs-20260821.md`.
-Its historical leader-only discharge does not establish H1 correctness or current recovery correctness.
+The claim is `docs/claims/heartbeat-proposal-amplification-bound.md`. The review and test record is `docs/casper/validation/heartbeat-h1-verification-2026-10-19.md`.
 
-The source digests below identify the registration snapshot with F1/F2 edits. They do not identify a verified H1 implementation.
-
-The nonempty-request enforcement in `casper/src/rust/blocks/proposer/proposer.rs` also requires source-bound evidence before completion.
+Both the original leader-only evidence and the pre-implementation pending registration remain unchanged in the history paths below.
 
 ```json
 {
   "artifact": {
     "path": "node/src/rust/instances/heartbeat_proposer.rs",
     "id": "node-src-rust-instances-heartbeat-proposer-rs",
-    "commit": "21ad594a7",
-    "commit_is_base": true,
-    "working_tree": true,
-    "sha256": "c693cdbc1e9f10325bd35aa3deb187372bcb4cba0a3902067258b1fb7aecbadb"
+    "commit": "ab84edf83",
+    "working_tree": false,
+    "sha256": "77328af2cc336e93299f0dbf25100309359b49825e98f3e4dfdfea3bf8f18c5e"
   },
   "claim": "docs/claims/heartbeat-proposal-amplification-bound.md",
   "claim_digests": {
-    "docs/claims/heartbeat-proposal-amplification-bound.md": "8b70ed654c39dc924a3a947d8a91ce873010781973eb6dcbbb78b8bfe5f03881"
+    "docs/claims/heartbeat-proposal-amplification-bound.md": "0f62182a84d4f83eae00e6dab4647d1299ffddedb0e98d5840b42df7e57db44b"
   },
   "adapter": null,
   "status": "pending",
-  "scope": "heartbeat-h1-bounded-nonempty-cooldown-exemption",
+  "scope": "h1-bounded-nonempty-cooldown-exemption",
   "evidence": {
-    "kind": "claim-registration-only",
-    "ref": "docs/claims/heartbeat-proposal-amplification-bound.md",
-    "sha256": "8b70ed654c39dc924a3a947d8a91ce873010781973eb6dcbbb78b8bfe5f03881"
+    "kind": "implementation-review-pending-verification",
+    "ref": "docs/casper/validation/heartbeat-h1-verification-2026-10-19.md",
+    "sha256": "2ec8a9362307056af54418fccc09cd0f198362e61fa51912c0790209a7652848"
   },
   "tiers": {
-    "refutation": "pending",
-    "construction": "pending",
-    "binding": "pending"
+    "refutation": "partial-executable-checks-passed",
+    "construction": "argument-recorded-not-mechanized",
+    "binding": "review-recorded-not-accepted"
   },
-  "registered_at": "2026-10-18T21:34:04Z",
-  "waiver": null,
-  "verified_at": null,
+  "registration_history": {
+    "path": "docs/casper/cbc-evidence/history/node-src-rust-instances-heartbeat-proposer-rs-registration-20261018.md",
+    "sha256": "4ec41bec62214de8dc500e91abd0fd0920f83e21fc4e2dbde15972058d5ae87a"
+  },
   "previous_ledger": {
     "path": "docs/casper/cbc-evidence/history/node-src-rust-instances-heartbeat-proposer-rs-20260821.md",
     "sha256": "e7ee126e11bf5a83a029bda23216afa7553887462cf1307430eac98d1b9eca7b",
     "commit": "3fd707102"
   },
-  "companion_registration_snapshot": {
-    "path": "casper/src/rust/blocks/proposer/proposer.rs",
-    "sha256": "cc098b4893ff97e2a5c9b54db27107ac84f49d4e11ab811b3279b1f7d548265d",
-    "status": "pending"
-  }
+  "waiver": null,
+  "verified_at": null
 }
 ```

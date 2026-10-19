@@ -26,7 +26,7 @@ The [design](../designs/deploy-heartbeat-wake.md) supplies the candidate H1 cont
 
 The [historical evidence](../casper/cbc-evidence/history/node-src-rust-instances-heartbeat-proposer-rs-20260821.md) remains unchanged. It describes a leader-only formulation that later stall evidence refuted. It does not verify H1 or the current all-eligible recovery policy.
 
-The current [heartbeat evidence record](../casper/cbc-evidence/node-src-rust-instances-heartbeat-proposer-rs.md) is pending. The proposer request change also needs source-bound verification before completion.
+The [heartbeat evidence](../casper/cbc-evidence/node-src-rust-instances-heartbeat-proposer-rs.md) and [proposer evidence](../casper/cbc-evidence/casper-src-rust-blocks-proposer-proposer-rs.md) pin the implementation bytes. Both records remain pending.
 
 ## Definitions and scope
 
@@ -127,7 +127,7 @@ not pending_observed_since(v, t-W) => not responsive(v, t)
 recovery_due_under_reference_inputs(v) => recovery_due_with_h1_inputs(v)
 ```
 
-These predicates are verification targets. No passing model or executable binding is recorded for H1 yet.
+The [verification record](../casper/validation/heartbeat-h1-verification-2026-10-19.md) records executable tests and a construction argument. The argument is not a mechanized proof. Claim discharge remains pending.
 
 ## Required evidence
 
