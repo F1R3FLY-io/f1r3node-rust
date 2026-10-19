@@ -48,7 +48,7 @@ records() {
 	done
 	awk -v forced="$provider" -v first="$first" '
 	function esc(s) { gsub(/\\/, "\\\\", s); gsub(/"/, "\\\"", s); gsub(/\t/, "\\t", s); return s }
-	function reset_session() { phase = ""; validator = ""; subprocess = 0; split("", seen) }
+	function reset_session() { phase = ""; validator = ""; subprocess = 0; genesis = 0; split("", seen) }
 	function start_session() { session++; if (genesis) subprocess = 1; genesis = 0 }
 	BEGIN { session = first - 1; genesis = 0; subprocess = 0; reset_session() }
 	{
