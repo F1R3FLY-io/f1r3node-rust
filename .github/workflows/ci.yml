@@ -1156,9 +1156,18 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           OCI_TESTS: ${{ needs.build_base.outputs.OCI_TESTS }}
           REUSED_MERGE_GROUP_RUN: ${{ needs.build_base.outputs.REUSED_MERGE_GROUP_RUN }}
+          PIPELINE_RESULT: ${{ needs.pipeline.result }}
         shell: bash -e {0}
         run: |
           if [ "$OCI_TESTS" = false ]; then
+            if ! [[ "$REUSED_MERGE_GROUP_RUN" =~ ^[1-9][0-9]*$ ]]; then
+              echo "The OCI integration tests were skipped, but no reused merge group run is named."
+              exit 1
+            fi
+            if [ "$PIPELINE_RESULT" != success ]; then
+              echo "The OCI integration tests were reused, but the image build or a smoke test of this run ended $PIPELINE_RESULT."
+              exit 1
+            fi
             echo "The amd64 OCI integration tests were skipped. Merge group run ${REUSED_MERGE_GROUP_RUN} passed them on this commit."
             exit 0
           fi
@@ -1194,9 +1203,18 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           OCI_TESTS: ${{ needs.build_base.outputs.OCI_TESTS }}
           REUSED_MERGE_GROUP_RUN: ${{ needs.build_base.outputs.REUSED_MERGE_GROUP_RUN }}
+          PIPELINE_RESULT: ${{ needs.pipeline.result }}
         shell: bash -e {0}
         run: |
           if [ "$OCI_TESTS" = false ]; then
+            if ! [[ "$REUSED_MERGE_GROUP_RUN" =~ ^[1-9][0-9]*$ ]]; then
+              echo "The OCI integration tests were skipped, but no reused merge group run is named."
+              exit 1
+            fi
+            if [ "$PIPELINE_RESULT" != success ]; then
+              echo "The OCI integration tests were reused, but the image build or a smoke test of this run ended $PIPELINE_RESULT."
+              exit 1
+            fi
             echo "The arm64 OCI integration tests were skipped. Merge group run ${REUSED_MERGE_GROUP_RUN} passed them on this commit."
             exit 0
           fi

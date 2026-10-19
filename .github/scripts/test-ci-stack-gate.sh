@@ -148,6 +148,7 @@ ruby -ryaml -e '
 ruby -ryaml -e '
   ci = YAML.load_file(ARGV[0])
   pipe = YAML.load_file(ARGV[1])
+  # YAML 1.1 reads the unquoted key "on" as true, so the triggers sit under true.
   input = pipe.dig(true, "workflow_call", "inputs", "oci_tests") || pipe.dig("on", "workflow_call", "inputs", "oci_tests")
   abort "the pipeline has no oci_tests input with default true" unless input && input["default"] == true
   abort "the launch job does not depend on inputs.oci_tests" unless pipe.dig("jobs", "launch_ephemeral_runners", "if").to_s.include?("inputs.oci_tests")
@@ -254,6 +255,27 @@ RUNS='{"workflow_runs": []}' push_case dev-push-no-merge-group-run refs/heads/de
 RUNS='{"workflow_runs": [{"id": 20, "path": ".github/workflows/other.yml"}]}' push_case dev-push-other-workflow-only refs/heads/dev true
 FAIL_ON=workflows/ci.yml/runs push_case dev-push-runs-api-error refs/heads/dev true
 FAIL_ON=/jobs push_case dev-push-jobs-api-error refs/heads/dev true
+
+for job in integration_tests_amd64 integration_tests_arm64; do
+  ruby -ryaml -e '
+    step = YAML.load_file(ARGV[0]).dig("jobs", ARGV[1], "steps").first
+    File.write(ARGV[2], step["run"])
+  ' "$ROOT/.github/workflows/ci.yml" "$job" "$TMP/$job.sh"
+  gate_case() {
+    local label="$1" run="$2" result="$3" expected="$4" status=0
+    OCI_TESTS=false REUSED_MERGE_GROUP_RUN="$run" PIPELINE_RESULT="$result" \
+      bash -e "$TMP/$job.sh" >"$TMP/$job-$label.out" 2>&1 || status=$?
+    [ "$status" = "$expected" ] || {
+      printf '%s %s: expected exit %s, got %s\n' "$job" "$label" "$expected" "$status" >&2
+      cat "$TMP/$job-$label.out" >&2
+      exit 1
+    }
+  }
+  gate_case reused-run-passed 20 success 0
+  gate_case reused-pipeline-failed 20 failure 1
+  gate_case reused-pipeline-cancelled 20 cancelled 1
+  gate_case reused-run-missing '' success 1
+done
 
 for label in standalone merge-group exact-merge reuse-newest-ci-run; do
   [ "$(grep '^oci_tests=' "$TMP/output-$label" | cut -d= -f2)" = true ] || {
