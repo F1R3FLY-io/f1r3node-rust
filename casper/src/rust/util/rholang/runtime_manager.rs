@@ -39,7 +39,6 @@ use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
 use shared::rust::ByteVector;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
-use crate::rust::blocks::block_processor::MAX_PARALLEL_BLOCKS;
 use crate::rust::errors::CasperError;
 use crate::rust::merging::block_index::BlockIndex;
 use crate::rust::metrics_constants::{
@@ -150,11 +149,13 @@ impl ExploratoryDeployConfig {
 /// One permit per concurrent replay source: each block-pipeline slot, the
 /// proposer's merge-scope recompute and one report replay; the cold-start routes
 /// are extra. No holder takes a second permit, so the bound cannot deadlock.
-const REPLAY_LOCK_PERMITS: usize = MAX_PARALLEL_BLOCKS + 2;
+const REPLAY_LOCK_PERMITS: usize = 4;
 const REPORTING_REPLAY_WAIT_WARN: Duration = Duration::from_secs(30);
 
 pub struct ReplayLock {
     semaphore: Arc<Semaphore>,
+    initial_permits: usize,
+    configured_permits: std::sync::OnceLock<usize>,
     consensus_waiters: std::sync::atomic::AtomicUsize,
     changed: Arc<tokio::sync::Notify>,
 }
@@ -189,9 +190,25 @@ impl ReplayLock {
     fn with_permits(permits: usize) -> Self {
         Self {
             semaphore: Arc::new(Semaphore::new(permits)),
+            initial_permits: permits,
+            configured_permits: std::sync::OnceLock::new(),
             consensus_waiters: std::sync::atomic::AtomicUsize::new(0),
             changed: Arc::new(tokio::sync::Notify::new()),
         }
+    }
+
+    pub fn configure_permits_once(&self, permits: usize) -> Result<usize, CasperError> {
+        if permits < self.initial_permits || permits > Semaphore::MAX_PERMITS {
+            return Err(CasperError::Other(format!(
+                "Invalid replay permit count: {}",
+                permits
+            )));
+        }
+        Ok(*self.configured_permits.get_or_init(|| {
+            self.semaphore.add_permits(permits - self.initial_permits);
+            self.changed.notify_waiters();
+            permits
+        }))
     }
 
     fn permit(&self, permit: OwnedSemaphorePermit) -> ReplayPermit {
@@ -1967,6 +1984,98 @@ mod tests {
             .expect("Reporting remained blocked")
             .expect("Reporting task failed")
             .expect("Replay lock closed");
+    }
+
+    #[tokio::test]
+    async fn replay_configuration_updates_the_shared_lock_with_live_permits() {
+        let lock = Arc::new(ReplayLock::new());
+        let reporting_reference = lock.clone();
+        let held = reporting_reference.acquire_consensus().await.unwrap();
+
+        assert_eq!(lock.configure_permits_once(8).unwrap(), 8);
+        let mut permits = Vec::new();
+        for _ in 0..7 {
+            permits.push(
+                tokio::time::timeout(
+                    Duration::from_secs(1),
+                    reporting_reference.acquire_consensus(),
+                )
+                .await
+                .expect("The configured replay permits must be available")
+                .unwrap(),
+            );
+        }
+        assert!(lock.semaphore.try_acquire().is_err());
+        drop(held);
+        assert!(lock.semaphore.try_acquire().is_ok());
+        drop(permits);
+    }
+
+    #[tokio::test]
+    async fn replay_configuration_wakes_waiting_reporting() {
+        use std::future::{poll_fn, Future};
+        use std::task::Poll;
+
+        let lock = ReplayLock::new();
+        let mut held = Vec::new();
+        for _ in 0..REPLAY_LOCK_PERMITS {
+            held.push(lock.acquire_consensus().await.unwrap());
+        }
+        let mut reporting = Box::pin(lock.acquire_reporting());
+        poll_fn(|cx| {
+            assert!(reporting.as_mut().poll(cx).is_pending());
+            Poll::Ready(())
+        })
+        .await;
+
+        lock.configure_permits_once(REPLAY_LOCK_PERMITS + 1)
+            .unwrap();
+        let _reporting_permit = tokio::time::timeout(Duration::from_secs(1), reporting)
+            .await
+            .expect("Reporting must wake when replay capacity increases")
+            .unwrap();
+        assert_eq!(lock.semaphore.available_permits(), 0);
+        drop(held);
+    }
+
+    #[test]
+    fn replay_configuration_runs_only_once() {
+        let lock = ReplayLock::new();
+        assert_eq!(lock.configure_permits_once(6).unwrap(), 6);
+        assert_eq!(lock.configure_permits_once(6).unwrap(), 6);
+        assert_eq!(lock.configure_permits_once(8).unwrap(), 6);
+        assert_eq!(lock.semaphore.available_permits(), 6);
+    }
+
+    #[test]
+    fn invalid_replay_permit_counts_leave_the_lock_unchanged() {
+        let lock = ReplayLock::new();
+        for permits in [
+            0,
+            1,
+            REPLAY_LOCK_PERMITS - 1,
+            Semaphore::MAX_PERMITS + 1,
+            usize::MAX,
+        ] {
+            assert!(lock.configure_permits_once(permits).is_err());
+            assert_eq!(lock.semaphore.available_permits(), REPLAY_LOCK_PERMITS);
+        }
+        assert_eq!(
+            lock.configure_permits_once(REPLAY_LOCK_PERMITS).unwrap(),
+            REPLAY_LOCK_PERMITS
+        );
+    }
+
+    #[test]
+    fn concurrent_replay_configuration_adds_permits_once() {
+        let lock = Arc::new(ReplayLock::new());
+        std::thread::scope(|scope| {
+            for _ in 0..8 {
+                let lock = lock.clone();
+                scope.spawn(move || assert_eq!(lock.configure_permits_once(8).unwrap(), 8));
+            }
+        });
+        assert_eq!(lock.semaphore.available_permits(), 8);
     }
 
     #[test]

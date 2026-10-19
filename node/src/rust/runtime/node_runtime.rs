@@ -646,7 +646,7 @@ impl NodeRuntime {
                 );
 
                 // BlockProcessorInstance::create spawns the processing task and returns a result receiver
-                match instance.create() {
+                match instance.create().await {
                     Ok(mut result_rx) => {
                         // Drain results (we're just logging for now)
                         while let Some(_result) = result_rx.recv().await {
