@@ -109,6 +109,10 @@ if [[ "${1:-}" == --inside ]]; then
     dpkg-query -W bash coreutils findutils mawk jq procps 2>/dev/null >evidence/packages.txt || true
     cat >bin/df <<'SH'
 #!/usr/bin/env bash
+if [[ -n "${SOAK_DISK_USAGE_RECORD:-}" ]]; then
+    printf 'Filesystem 1M-blocks Used Available Capacity Mounted on\n/dev/fixture 47000 30616 16384 65%% /\n'
+    exit 0
+fi
 available=7000
 case "${SOAK_DISK_TEST_SCENARIO:-band}" in
     cleanup-error-* | cleanup-partial | cleanup-sufficient)
@@ -721,6 +725,7 @@ SH
         for n in $(seq 1 32); do mkdir -p "/tmp/test-diagnostic-$n"; done
         cat >bin/du <<'SH'
 #!/usr/bin/env bash
+[[ -z "${SOAK_DISK_USAGE_RECORD:-}" ]] || exec /usr/bin/du "$@"
 touch /case/evidence/diagnostic-started
 while [[ ! -e /case/evidence/release-diagnostic ]]; do sleep 0.05; done
 exec /usr/bin/du "$@"
@@ -1193,6 +1198,12 @@ SH
             printf 'FAIL: An allowed opening benchmark admission changed (%s).\n' "$SCENARIO" >&2
             exit 1
         fi
+        if [[ "$SCENARIO" != benchmark-disabled ]] &&
+            { [[ "$(head -1 evidence/output/disk-usage.tsv 2>/dev/null)" != $'time\tlabel\tcomponent\tmb' ]] ||
+                ! awk -F '\t' '$3 == "df_avail" { seen[$2] = 1 } END { exit !(seen["segment-1-start"] && seen["bench-1"] && seen["iteration-1-docker"]) }' evidence/output/disk-usage.tsv; }; then
+            printf 'FAIL: The disk usage record lacks the segment, benchmark, or iteration rows (%s).\n' "$SCENARIO" >&2
+            exit 1
+        fi
         printf 'PASS: Opening benchmark admission preserved the allowed path (%s).\n' "$SCENARIO"
         exit 0
     fi
@@ -1216,6 +1227,10 @@ SH
             [[ ! -s evidence/output/protection-breach.txt || ! -s evidence/output/early-exit.txt ]] ||
             ! jq -e '.iterations == 0 and .failures == 1 and .bench_segments == 0 and .bench_failures == 0' evidence/output/summary.json >/dev/null; then
             printf 'FAIL: Benchmark disk refusal lost the protection failure or admitted later work.\n' >&2
+            exit 1
+        fi
+        if ! grep -q '^Filesystem' evidence/output/disk-floor-breach.txt 2>/dev/null; then
+            printf 'FAIL: The benchmark disk refusal wrote no disk usage snapshot.\n' >&2
             exit 1
         fi
         printf 'PASS: The 7000 MiB sample prevented benchmark and iteration admission and recorded one protection failure.\n'

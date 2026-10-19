@@ -2096,6 +2096,12 @@ jobs:
             --tag "$DOCKER_IMAGE_NAME:latest" \
             --load \
             .
+          # The loaded image is all the soak needs. The build cache stays
+          # unused on the disk for the whole run (6.6 GB reclaimable at the
+          # disk floor stop of soak 38995239992), so free it here.
+          docker system df
+          docker builder prune --all --force
+          docker system df
 
       - name: Resolve candidate image by digest
         if: needs.schedule_gate.outputs.candidate_tag != ''
