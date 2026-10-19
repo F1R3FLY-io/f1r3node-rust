@@ -1,6 +1,6 @@
 # Deploy Heartbeat Wake Design
 
-- **Status:** draft for maintainer review. Created on 2026-10-18.
+- **Status:** implemented. F1 and F2 are at `ed9b3c996`, and H1 is at `ab84edf83`. H1 waits for the comparison run of section 5.1 and for maintainer acceptance of the claim. Created on 2026-10-18.
 - **Branch:** `fix/issue-24-deploy-heartbeat-wake`
 - **Issue:** issue #24, high-phase and sustained-phase `test_load` failures after PR #695
 - **Tasks:** TASK-021-13 (the wait after inclusion), TASK-021-17 (metrics for each phase), TASK-021-26 (H1 implementation and verification)
@@ -95,7 +95,11 @@ stateDiagram-v2
 
 The routine bound covers pending-deploy, pending-backstop, and frontier-follow publications. Stale recovery, convergence, manual proposals, direct autopropose, and synchronous proposer recovery retain their separate authority and pacing.
 
-Three seconds is the configured example, not a second cooldown constant. The implementation uses monotonic publication observations as well as block-header age.
+Three seconds is the configured example, not a second cooldown constant.
+
+The heartbeat measures the cooldown from two times: the header age of its latest own block, and its last routine publication on a monotonic clock. It uses the shorter age. So a request that waits in the queue cannot make two routine publications closer than the cooldown.
+
+A zero check interval does not make a busy loop, because the loop sleeps for at least 10 ms. A zero cooldown grants no exemption. The test `zero_intervals_do_not_grant_an_exemption` covers both cases.
 
 An exempt request carries the expected empty own-block hash and a nonempty requirement through the queue and retries. The proposer rejects a changed predecessor before execution.
 
@@ -111,7 +115,7 @@ The [pending amplification claim](../claims/heartbeat-proposal-amplification-bou
 
 The heartbeat could hold an empty frontier-follow block briefly to include later deploys. That alternative delays witness blocks that finality needs.
 
-H1 does not intentionally hold an empty block for batching. Its publication guard can still delay routine proposals to preserve the configured bound.
+H1 does not hold an empty block for batching. The cooldown from the last routine publication can still delay a routine proposal, so that the configured bound stays true.
 
 ### 3.5 Metrics
 

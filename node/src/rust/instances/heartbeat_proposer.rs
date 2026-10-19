@@ -680,15 +680,16 @@ async fn check_lfb_and_propose(
                 .is_multiple_of(1_000_000),
         ));
     let self_proposed_too_recently = self_cooldown_age_ms.is_some_and(|age| age < self_cooldown_ms);
-    let cooldown_exempt_for_deploys = responsive_mode.as_deref().is_some_and(|mode| {
-        mode.can_exempt(
-            checked_at,
-            config.self_propose_cooldown,
-            self_latest_block
-                .as_ref()
-                .is_some_and(|block| !block_has_user_deploys(block)),
-        )
-    });
+    let exempt_empty_self = self_latest_block
+        .as_ref()
+        .filter(|block| !block_has_user_deploys(block))
+        .filter(|_| {
+            responsive_mode
+                .as_deref()
+                .is_some_and(|mode| mode.can_exempt(checked_at, config.self_propose_cooldown, true))
+        })
+        .map(|block| block.block_hash.clone());
+    let cooldown_exempt_for_deploys = exempt_empty_self.is_some();
 
     // Check if we have new parents (new blocks since our last block) and whether
     // they include user deploys (to keep deploy-driven finality fast).
@@ -892,19 +893,14 @@ async fn check_lfb_and_propose(
             "source" => casper::rust::metrics_constants::VALIDATOR_METRICS_SOURCE
         )
         .increment(1);
-        let request = if pending_cooldown_exempt {
-            if let Some(mode) = responsive_mode.as_deref_mut() {
-                mode.issue_exemption(Instant::now());
+        let request = match exempt_empty_self.filter(|_| pending_cooldown_exempt) {
+            Some(empty_self) => {
+                if let Some(mode) = responsive_mode.as_deref_mut() {
+                    mode.issue_exemption(Instant::now());
+                }
+                ProposeRequest::heartbeat_deploy().after_empty_self(empty_self)
             }
-            ProposeRequest::heartbeat_deploy().after_empty_self(
-                self_latest_block
-                    .as_ref()
-                    .expect("an exemption requires an own block")
-                    .block_hash
-                    .clone(),
-            )
-        } else {
-            true.into()
+            None => true.into(),
         };
         let result = trigger_propose(casper.clone(), request).await?;
         if let ProposerResult::Success(_, block) = &result {
