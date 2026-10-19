@@ -814,8 +814,7 @@ mod tests {
             let error = tokio::time::timeout(Duration::from_secs(10), instance.create())
                 .await
                 .expect("Startup must return its error")
-                .err()
-                .expect("Startup must fail");
+                .expect_err("Startup must fail");
             assert!(tx.is_closed());
             assert!(self.in_flight.is_empty());
             assert!(self.casper.processed.lock().unwrap().is_empty());
