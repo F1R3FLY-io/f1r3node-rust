@@ -361,7 +361,7 @@ fn reports_accept_only_reviewed_package_versions() {
 fn ignored_yanked_crates_are_recorded_and_require_reviewed_versions() {
     let p = policy();
     let yanked = json!({"type":"diagnostic","fields":{"severity":"note","code":"yanked-ignored","graphs":[{"Krate":{"name":"zip","version":"0.6.6"}}]}});
-    let result = report::validate(&report(&[yanked.clone()]), &p.exceptions);
+    let result = report::validate(&report(std::slice::from_ref(&yanked)), &p.exceptions);
     assert!(result.errors.is_empty());
     assert!(result.encountered.contains("zip@0.6.6"));
     let mut malformed = yanked;
