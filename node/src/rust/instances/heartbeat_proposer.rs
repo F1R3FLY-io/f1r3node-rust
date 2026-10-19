@@ -2,7 +2,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use casper::rust::blocks::proposer::propose_result::{ProposeFailure, ProposeStatus};
-use casper::rust::blocks::proposer::proposer::ProposerResult;
+use casper::rust::blocks::proposer::proposer::{
+    block_has_user_deploys, ProposeRequest, ProposerResult,
+};
 use casper::rust::casper::{CasperSnapshot, MultiParentCasper};
 use casper::rust::casper_conf::HeartbeatConf;
 use casper::rust::engine::engine_cell::EngineCell;
@@ -39,6 +41,72 @@ struct HeartbeatCheckResult {
     refresh_deploy_grace_window: bool,
     finality_recovery_attempted: bool,
     recheck_after: Option<Duration>,
+}
+
+const RESPONSIVE_WINDOW_MULTIPLIER: u32 = 2;
+const RESPONSIVE_EXEMPTIONS_PER_COOLDOWN: u8 = 1;
+
+#[derive(Debug, Default)]
+struct ResponsiveMode {
+    active: bool,
+    last_pending_at: Option<Instant>,
+    last_exempt_request_at: Option<Instant>,
+    last_routine_publication_at: Option<Instant>,
+    last_observed_self: Option<BlockHash>,
+}
+
+impl ResponsiveMode {
+    fn observe(&mut self, now: Instant, pending: bool, interval: Duration) -> (bool, bool) {
+        let was_active = self.active;
+        if pending {
+            self.active = true;
+            self.last_pending_at = Some(now);
+        } else if self.last_pending_at.is_none_or(|last| {
+            now.saturating_duration_since(last)
+                >= interval.saturating_mul(RESPONSIVE_WINDOW_MULTIPLIER)
+        }) {
+            self.active = false;
+        }
+        (!was_active && self.active, was_active && !self.active)
+    }
+
+    fn can_exempt(&self, now: Instant, cooldown: Duration, previous_own_empty: bool) -> bool {
+        let used = u8::from(
+            self.last_exempt_request_at
+                .is_some_and(|last| now.saturating_duration_since(last) < cooldown),
+        );
+        self.active
+            && previous_own_empty
+            && !cooldown.is_zero()
+            && used < RESPONSIVE_EXEMPTIONS_PER_COOLDOWN
+    }
+
+    fn issue_exemption(&mut self, now: Instant) { self.last_exempt_request_at = Some(now); }
+
+    fn record_routine_publication(&mut self, now: Instant) {
+        self.last_routine_publication_at = Some(now);
+    }
+
+    fn observe_self(&mut self, hash: &BlockHash, now: Instant) {
+        if self
+            .last_observed_self
+            .as_ref()
+            .is_some_and(|previous| previous != hash)
+        {
+            self.last_routine_publication_at = Some(now);
+        }
+        self.last_observed_self = Some(hash.clone());
+    }
+
+    fn cooldown_age_ms(&self, now: Instant, header_age: Option<u128>) -> Option<u128> {
+        let publication_age = self
+            .last_routine_publication_at
+            .map(|last| now.saturating_duration_since(last).as_millis());
+        match (header_age, publication_age) {
+            (Some(header), Some(publication)) => Some(header.min(publication)),
+            (header, publication) => header.or(publication),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -242,11 +310,15 @@ impl HeartbeatProposer {
             let mut backoff_until: Option<std::time::Instant> = None;
             let mut deploy_grace_until: Option<std::time::Instant> = None;
             let mut finality_progress = FinalityProgress::new(Instant::now());
-            let mut next_sleep = config.check_interval;
+            let mut next_sleep = next_heartbeat_sleep(config.check_interval, None);
+            let mut responsive_mode = ResponsiveMode::default();
 
             loop {
                 // Race between timer and signal - whichever completes first triggers wake
-                let sleep_for = std::mem::replace(&mut next_sleep, config.check_interval);
+                let sleep_for = std::mem::replace(
+                    &mut next_sleep,
+                    next_heartbeat_sleep(config.check_interval, None),
+                );
                 let wake_source = tokio::select! {
                     _ = tokio::time::sleep(sleep_for) => "timer",
                     _ = notify.notified() => "signal",
@@ -268,7 +340,7 @@ impl HeartbeatProposer {
                     }
                     let deploy_grace_active = deploy_grace_until.is_some();
 
-                    match do_heartbeat_check(
+                    match do_heartbeat_check_with_mode(
                         casper.clone(),
                         &*trigger,
                         &validator_identity,
@@ -276,6 +348,7 @@ impl HeartbeatProposer {
                         standalone,
                         deploy_grace_active,
                         &mut finality_progress,
+                        Some(&mut responsive_mode),
                     )
                     .await
                     {
@@ -384,6 +457,7 @@ fn random_initial_delay(check_interval: Duration) -> Duration {
 ///
 /// # Arguments
 /// * `standalone` - If true, skips hasNewParents check (single validator can always propose)
+#[cfg(test)]
 async fn do_heartbeat_check(
     casper: Arc<dyn MultiParentCasper + Send + Sync>,
     trigger_propose: &ProposeFunction,
@@ -392,6 +466,29 @@ async fn do_heartbeat_check(
     standalone: bool,
     deploy_grace_active: bool,
     finality_progress: &mut FinalityProgress,
+) -> Result<HeartbeatCheckResult, casper::rust::errors::CasperError> {
+    do_heartbeat_check_with_mode(
+        casper,
+        trigger_propose,
+        validator_identity,
+        config,
+        standalone,
+        deploy_grace_active,
+        finality_progress,
+        None,
+    )
+    .await
+}
+
+async fn do_heartbeat_check_with_mode(
+    casper: Arc<dyn MultiParentCasper + Send + Sync>,
+    trigger_propose: &ProposeFunction,
+    validator_identity: &ValidatorIdentity,
+    config: &HeartbeatConf,
+    standalone: bool,
+    deploy_grace_active: bool,
+    finality_progress: &mut FinalityProgress,
+    responsive_mode: Option<&mut ResponsiveMode>,
 ) -> Result<HeartbeatCheckResult, casper::rust::errors::CasperError> {
     metrics::counter!(
         casper::rust::metrics_constants::HEARTBEAT_CHECKS_METRIC,
@@ -432,6 +529,7 @@ async fn do_heartbeat_check(
             standalone,
             deploy_grace_active,
             progress_status,
+            responsive_mode,
         )
         .await?;
         if outcome.finality_recovery_attempted {
@@ -450,6 +548,7 @@ async fn check_lfb_and_propose(
     standalone: bool,
     deploy_grace_active: bool,
     finality_progress: FinalityProgressStatus,
+    mut responsive_mode: Option<&mut ResponsiveMode>,
 ) -> Result<HeartbeatCheckResult, casper::rust::errors::CasperError> {
     // Tuning thresholds for lag caps and recovery timing. Read once into
     // locals to keep the predicate sites below readable.
@@ -463,7 +562,22 @@ async fn check_lfb_and_propose(
         .has_pending_deploys_in_storage_for_snapshot(&snapshot)
         .await?;
 
-    // Check if LFB is stale
+    let checked_at = Instant::now();
+    if let Some(mode) = responsive_mode.as_deref_mut() {
+        let (entered, exited) =
+            mode.observe(checked_at, has_pending_deploys, config.check_interval);
+        if entered {
+            metrics::counter!(casper::rust::metrics_constants::HEARTBEAT_RESPONSIVE_ENTERED_METRIC,
+                "source" => casper::rust::metrics_constants::VALIDATOR_METRICS_SOURCE)
+            .increment(1);
+        }
+        if exited {
+            metrics::counter!(casper::rust::metrics_constants::HEARTBEAT_RESPONSIVE_EXITED_METRIC,
+                "source" => casper::rust::metrics_constants::VALIDATOR_METRICS_SOURCE)
+            .increment(1);
+        }
+    }
+
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis())
@@ -540,15 +654,40 @@ async fn check_lfb_and_propose(
         }
         _ => false,
     };
-    let self_latest_block_timestamp_ms = snapshot
+    let self_latest_block = snapshot
         .dag
         .latest_message_hash(&validator_identity.public_key.bytes)
-        .and_then(|hash| match casper.block_store().get(&hash) {
-            Ok(Some(block)) => Some(block.header.timestamp as u128),
-            _ => None,
-        });
-    let self_proposed_too_recently = self_latest_block_timestamp_ms.is_some_and(|timestamp_ms| {
-        now.saturating_sub(timestamp_ms) < config.self_propose_cooldown.as_millis()
+        .and_then(|hash| casper.block_store().get(&hash).ok().flatten());
+    if let (Some(mode), Some(block)) = (responsive_mode.as_deref_mut(), self_latest_block.as_ref())
+    {
+        mode.observe_self(&block.block_hash, checked_at);
+    }
+    let self_latest_block_timestamp_ms = self_latest_block
+        .as_ref()
+        .map(|block| block.header.timestamp as u128);
+    let header_age_ms =
+        self_latest_block_timestamp_ms.map(|timestamp| now.saturating_sub(timestamp));
+    let self_cooldown_age_ms = responsive_mode.as_deref().map_or(header_age_ms, |mode| {
+        mode.cooldown_age_ms(checked_at, header_age_ms)
+    });
+    let self_cooldown_ms = config
+        .self_propose_cooldown
+        .as_millis()
+        .saturating_add(u128::from(
+            !config
+                .self_propose_cooldown
+                .subsec_nanos()
+                .is_multiple_of(1_000_000),
+        ));
+    let self_proposed_too_recently = self_cooldown_age_ms.is_some_and(|age| age < self_cooldown_ms);
+    let cooldown_exempt_for_deploys = responsive_mode.as_deref().is_some_and(|mode| {
+        mode.can_exempt(
+            checked_at,
+            config.self_propose_cooldown,
+            self_latest_block
+                .as_ref()
+                .is_some_and(|block| !block_has_user_deploys(block)),
+        )
     });
 
     // Check if we have new parents (new blocks since our last block) and whether
@@ -635,6 +774,7 @@ async fn check_lfb_and_propose(
         deploy_grace_active,
         self_recently_proposed,
         self_proposed_too_recently,
+        cooldown_exempt_for_deploys,
         self_idle_for_recovery_interval: self_latest_block_timestamp_ms
             .map(|timestamp_ms| now.saturating_sub(timestamp_ms) >= stale_recovery_min_interval_ms)
             .unwrap_or(true),
@@ -653,6 +793,7 @@ async fn check_lfb_and_propose(
     };
     let LaneDecision {
         pending_deploys_due,
+        pending_cooldown_exempt,
         pending_blocked_by_cooldown,
         pending_deploy_backstop_due,
         frontier_follow_due,
@@ -751,7 +892,33 @@ async fn check_lfb_and_propose(
             "source" => casper::rust::metrics_constants::VALIDATOR_METRICS_SOURCE
         )
         .increment(1);
-        let result = trigger_propose(casper.clone(), true).await?;
+        let request = if pending_cooldown_exempt {
+            if let Some(mode) = responsive_mode.as_deref_mut() {
+                mode.issue_exemption(Instant::now());
+            }
+            ProposeRequest::heartbeat_deploy().after_empty_self(
+                self_latest_block
+                    .as_ref()
+                    .expect("an exemption requires an own block")
+                    .block_hash
+                    .clone(),
+            )
+        } else {
+            true.into()
+        };
+        let result = trigger_propose(casper.clone(), request).await?;
+        if let ProposerResult::Success(_, block) = &result {
+            if let Some(mode) = responsive_mode {
+                mode.observe_self(&block.block_hash, Instant::now());
+                if pending_deploys_due || pending_deploy_backstop_due || frontier_follow_due {
+                    mode.record_routine_publication(Instant::now());
+                }
+            }
+            if pending_cooldown_exempt && block_has_user_deploys(block) {
+                metrics::counter!(casper::rust::metrics_constants::HEARTBEAT_RESPONSIVE_EXEMPT_METRIC,
+                    "source" => casper::rust::metrics_constants::VALIDATOR_METRICS_SOURCE).increment(1);
+            }
+        }
         match result {
             ProposerResult::Empty => {
                 tracing::debug!("Heartbeat: Propose already in progress, will retry next check");
@@ -897,8 +1064,8 @@ async fn check_lfb_and_propose(
             finality_recovery_attempted: false,
             recheck_after: cooldown_recheck_delay(
                 pending_blocked_by_cooldown,
-                config.self_propose_cooldown.as_millis(),
-                self_latest_block_timestamp_ms.map(|timestamp_ms| now.saturating_sub(timestamp_ms)),
+                self_cooldown_ms,
+                self_cooldown_age_ms,
             ),
         })
     }
@@ -1060,6 +1227,7 @@ struct LaneInputs {
     self_recently_proposed: bool,
     /// The cooldown key: this validator minted within `self-propose-cooldown`.
     self_proposed_too_recently: bool,
+    cooldown_exempt_for_deploys: bool,
     /// The temporal backstop key: this validator has not minted for a full
     /// `stale-recovery-min-interval` (true when it has never minted).
     self_idle_for_recovery_interval: bool,
@@ -1080,6 +1248,7 @@ struct LaneInputs {
 /// The lane verdicts plus every intermediate the reason ladders report.
 struct LaneDecision {
     pending_deploys_due: bool,
+    pending_cooldown_exempt: bool,
     pending_blocked_by_cooldown: bool,
     pending_deploy_backstop_due: bool,
     frontier_follow_due: bool,
@@ -1110,20 +1279,19 @@ fn decide_lanes(i: &LaneInputs) -> LaneDecision {
     } else {
         i.lfb_lag_blocks <= i.pending_deploy_max_lag
     };
-    // The self-propose cooldown gates every ROUTINE lane unconditionally —
-    // the deploy-grace window widens lag caps but never bypasses the
-    // cooldown (dev PR #308's amplification bound, adopted): a validator
-    // that just minted adds nothing by minting again this tick. The
-    // stale-recovery lane below is deliberately NOT cooldown-gated: it
-    // paces on the stale-recovery interval, which subsumes the cooldown at
-    // shipped values, and recovery must never be hostage to a knob tuned
-    // for routine churn.
-    let pending_deploys_due = i.has_pending_deploys
-        && !i.self_proposed_too_recently
+    let pending_eligible = i.has_pending_deploys
         && (!i.self_recently_proposed || can_propose_pending_deploys_while_ahead);
-    let pending_blocked_by_cooldown = i.has_pending_deploys
+    let recovery_due = (i.lfb_is_stale && i.stale_recovery_interval_elapsed
+        || i.idle_recovery_window_open && i.lag_recovery_leader)
+        && !i.empty_frontier_backpressure;
+    let pending_cooldown_exempt = pending_eligible
         && i.self_proposed_too_recently
-        && (!i.self_recently_proposed || can_propose_pending_deploys_while_ahead);
+        && i.cooldown_exempt_for_deploys
+        && !recovery_due;
+    let pending_deploys_due =
+        pending_eligible && (!i.self_proposed_too_recently || pending_cooldown_exempt);
+    let pending_blocked_by_cooldown =
+        pending_eligible && i.self_proposed_too_recently && !pending_cooldown_exempt;
     // Backstop: even when high lag throttles pending-deploy proposals, force a bounded
     // retry based on local self-proposal cadence so deploys cannot starve indefinitely.
     // Open to EVERY validator: under a pinned floor the backstop firing on
@@ -1187,6 +1355,7 @@ fn decide_lanes(i: &LaneInputs) -> LaneDecision {
     let should_propose = routine_proposal_due || convergence_recovery_selected;
     LaneDecision {
         pending_deploys_due,
+        pending_cooldown_exempt,
         pending_blocked_by_cooldown,
         pending_deploy_backstop_due,
         frontier_follow_due,
@@ -1214,6 +1383,11 @@ fn cooldown_recheck_delay(
 
 fn next_heartbeat_sleep(check_interval: Duration, recheck_after: Option<Duration>) -> Duration {
     const MIN_RECHECK: Duration = Duration::from_millis(10);
+    let check_interval = if check_interval.is_zero() {
+        MIN_RECHECK
+    } else {
+        check_interval
+    };
     recheck_after
         .map(|delay| delay.max(MIN_RECHECK).min(check_interval))
         .unwrap_or(check_interval)
@@ -1383,7 +1557,7 @@ mod tests {
         assert!(!advanced.recovery_round_due);
     }
 
-    fn create_test_validator_identity() -> ValidatorIdentity {
+    pub(super) fn create_test_validator_identity() -> ValidatorIdentity {
         let secp = Secp256k1;
         let (sk, pk) = secp.new_key_pair();
         ValidatorIdentity {
@@ -2791,6 +2965,7 @@ mod tests {
                 deploy_grace_active: false,
                 self_recently_proposed: false,
                 self_proposed_too_recently: false,
+                cooldown_exempt_for_deploys: false,
                 self_idle_for_recovery_interval: true,
                 stale_recovery_interval_elapsed: false,
                 cone_has_user_work: false,
@@ -3041,6 +3216,7 @@ mod cooldown_recheck_tests {
             deploy_grace_active: false,
             self_recently_proposed: true,
             self_proposed_too_recently: true,
+            cooldown_exempt_for_deploys: false,
             self_idle_for_recovery_interval: false,
             stale_recovery_interval_elapsed: false,
             cone_has_user_work: false,
@@ -3108,3 +3284,7 @@ mod cooldown_recheck_tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "heartbeat_responsive_tests.rs"]
+mod responsive_mode_tests;

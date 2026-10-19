@@ -439,7 +439,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
                     // Clone the Arc and cast to trait object
                     let casper_arc: Arc<dyn MultiParentCasper + Send + Sync> =
                         Arc::clone(&casper) as Arc<dyn MultiParentCasper + Send + Sync>;
-                    propose_f(casper_arc, true).await?;
+                    propose_f(casper_arc, true.into()).await?;
                 }
 
                 Ok(())

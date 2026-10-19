@@ -54,6 +54,9 @@ pub const HEARTBEAT_PROPOSALS_METRIC: &str = "heartbeat.proposals";
 pub const HEARTBEAT_DEPLOY_WAKE_METRIC: &str = "heartbeat.deploy-wake";
 // Counter: heartbeat checks rescheduled to the end of the self-propose cooldown.
 pub const HEARTBEAT_COOLDOWN_RECHECK_METRIC: &str = "heartbeat.cooldown-recheck";
+pub const HEARTBEAT_RESPONSIVE_ENTERED_METRIC: &str = "heartbeat.responsive-mode.entered";
+pub const HEARTBEAT_RESPONSIVE_EXITED_METRIC: &str = "heartbeat.responsive-mode.exited";
+pub const HEARTBEAT_RESPONSIVE_EXEMPT_METRIC: &str = "heartbeat.responsive-mode.cooldown-exempt";
 pub const PROPOSER_QUEUE_REJECTED_TOTAL_METRIC: &str = "proposer.queue.rejected.total";
 pub const INIT_BLOCK_MESSAGE_QUEUE_PENDING_METRIC: &str = "init.block-message.queue.pending";
 pub const INIT_TUPLE_SPACE_QUEUE_PENDING_METRIC: &str = "init.tuple-space.queue.pending";

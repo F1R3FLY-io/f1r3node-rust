@@ -26,7 +26,7 @@ The migration epics, EPIC-003 through EPIC-008, used a local coordination file, 
 
 ## Active Coordination
 
-- **Heartbeat H1 coordination (2026-10-18).** `claude-session-f1r3node-rust-71` owns F1/F2 and H1 runtime integration. `pi-session-heartbeat-h1-cbc` owns TASK-021-26, the [claim revision](claims/heartbeat-proposal-amplification-bound.md), and verification. The [design](designs/deploy-heartbeat-wake.md) remains a draft. Local coordination uses `docs/handoffs/channel-deploy-heartbeat-wake-2026-10-18.md`, which is not a published reference.
+- **Heartbeat H1 coordination (2026-10-19).** `pi-session-heartbeat-h1-cbc` owns H1 implementation and TASK-021-26 after the runtime handoff. `claude-session-f1r3node-rust-71` runs the outside-sandbox checks. F1/F2 are the baseline at `ed9b3c996`. The [design](designs/deploy-heartbeat-wake.md) and [claim](claims/heartbeat-proposal-amplification-bound.md) record the H1 contract. Local coordination uses `docs/handoffs/channel-deploy-heartbeat-wake-2026-10-18.md`, not a published reference.
 
 - **Casper ratification follow-up (2026-09-16).** EPIC-017 owns the pre-#216 models, baseline conformance, and harness preparation on `formal/soak-casper-consensus`. EPIC-018 owns a separate formal-methods harness PR after PR #216 merges. The [meeting record](https://github.com/F1R3FLY-io/f1r3node-rust/pull/390#pullrequestreview-5227717933) controls both phases. PRs #430 through #433 remain prerequisites in stack order. The [branch plan](https://github.com/F1R3FLY-io/f1r3node-rust/blob/ba9758507194d6e34bc1494d416b87405facd550/docs/plans/casper-ratified-soak-2026-09-16.md) (local Git: `ba9758507194d6e34bc1494d416b87405facd550:docs/plans/casper-ratified-soak-2026-09-16.md`) defines the handoff, separate completion gates, and deferred-policy restrictions.
 
@@ -1308,7 +1308,7 @@ tasks:
     branch: fix/issue-24-deploy-heartbeat-wake
     pr_base_branch: dev
     blocked_by: []
-    scope: "Claim revision and source-bound verification only. Runtime and metrics edits remain with claude-session-f1r3node-rust-71."
+    scope: "H1 implementation, claim revision, and source-bound verification. The runtime owner transferred H1 on 2026-10-18 after F1/F2 landed at ed9b3c996."
     design: docs/designs/deploy-heartbeat-wake.md
     claim_spec: docs/claims/heartbeat-proposal-amplification-bound.md
     acceptance:

@@ -8,11 +8,19 @@ task: TASK-021-26
 artifacts:
   - node/src/rust/instances/heartbeat_proposer.rs
   - casper/src/rust/blocks/proposer/proposer.rs
+  - casper/src/rust/mod.rs
+  - node/src/rust/runtime/setup.rs
+  - node/src/rust/instances/proposer_instance.rs
+  - node/src/rust/runtime/node_runtime.rs
+  - casper/src/rust/api/block_api.rs
+  - casper/src/rust/engine/casper_launch.rs
+  - node/src/rust/instances/heartbeat_responsive_tests.rs
+  - casper/tests/add_block/h1_proposer_spec.rs
 ```
 
 ## Status
 
-This claim is mandatory for heartbeat recovery changes. The H1 revision is pending before implementation and has no discharge or maintainer acceptance.
+This claim is mandatory for heartbeat recovery changes. The H1 revision was registered as pending before implementation. Discharge and maintainer acceptance remain pending.
 
 The [design](../designs/deploy-heartbeat-wake.md) supplies the candidate H1 contract. This claim defines verification obligations, not evidence that the candidate already satisfies them.
 
@@ -31,7 +39,9 @@ The current [heartbeat evidence record](../casper/cbc-evidence/node-src-rust-ins
 - A user-deploy-bearing block has at least one processed deploy that does not satisfy `is_system_deploy_id`.
 - A failed user deploy still makes its block user-deploy-bearing. System-only and rejection-only blocks are empty for this claim.
 
-The rolling bounds assume `C > 0` and `I > 0`. Zero-valued configurations need explicit handling without panic or an accidental busy loop.
+The rolling bounds assume `C > 0` and `I > 0` within one live heartbeat task. They do not establish durable credit across process restarts.
+
+Zero-valued configurations need explicit handling without panic or an accidental busy loop. Publication timing assumes the production callback awaits publication effects before returning a successful result.
 
 The successful routine-block bound excludes stale recovery, convergence, manual proposals, direct autopropose, and the synchronous proposer recovery path.
 
@@ -78,6 +88,8 @@ An exempt request forbids empty blocks at proposal execution, not only at the he
 If selection finds no user deploy, the request publishes no block. A pending-pool hint cannot authorize an exempt empty block.
 
 Classification uses the actual processed deploy list of the previous successful own block. A failed request never becomes the previous successful block.
+
+The request binds that block's hash. The proposer rejects a changed predecessor in its execution snapshot before creating another block.
 
 ### H1-5: preserved recovery and progress
 

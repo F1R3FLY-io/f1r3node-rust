@@ -3,7 +3,7 @@
 - **Status:** draft for maintainer review. Created on 2026-10-18.
 - **Branch:** `fix/issue-24-deploy-heartbeat-wake`
 - **Issue:** issue #24, high-phase and sustained-phase `test_load` failures after PR #695
-- **Tasks:** TASK-021-13 (the wait after inclusion), TASK-021-17 (metrics for each phase)
+- **Tasks:** TASK-021-13 (the wait after inclusion), TASK-021-17 (metrics for each phase), TASK-021-26 (H1 implementation and verification)
 - **Evidence:** soak 39089710676 (interim), the [issue #24 interim note](https://github.com/F1R3FLY-io/f1r3node-rust/issues/24#issuecomment-6254220778), and the phase summary of PR #767
 - **Related design:** [adaptive-execution.md](adaptive-execution.md), decision A3 (fixed, measured thresholds first, with hysteresis)
 
@@ -72,31 +72,46 @@ The heartbeat check returns one more value: the time until the cooldown ends, wh
 
 ### 3.3 H1: deploy-responsive mode
 
-The mode remembers recent deploys, so one check does not decide alone between an empty block and a deploy block.
+The mode remembers pending work observed at heartbeat checks. Deploy wakes and peer-block wakes share one signal, so a wake does not identify an arrival.
 
 ```mermaid
 stateDiagram-v2
     [*] --> Idle
-    Idle --> Responsive: deploy arrives, or pending deploys at a check
-    Responsive --> Responsive: deploy arrives (exit timer restarts)
-    Responsive --> Idle: no pending deploys and no arrivals for the exit window
+    Idle --> Responsive: check observes pending deploys
+    Responsive --> Responsive: check observes pending deploys and refreshes the timer
+    Responsive --> Idle: no pending observation for twice the check interval
 ```
 
 | Rule | Value |
 |---|---|
-| Enter | A deploy arrives (F1 wake), or a check sees pending deploys. |
-| Exit | No pending deploys and no arrivals for the exit window. The first value is 2 times the check interval (10 s). |
-| Effect in the mode | The cooldown after an **empty** heartbeat block does not block the pending-deploy lane. The cooldown after a deploy block applies as before. |
-| Bound | At most one exemption in each cooldown period. A validator builds at most two blocks in 3 s, and at most one of them is empty. |
-| Outside the mode | The heartbeat works as today. |
+| Enter and refresh | A check observes pending deploys. |
+| Exit | No check observes pending deploys for `2 * check_interval`. Pending work at expiry refreshes the timer. |
+| Effect | The pending-deploy lane can bypass the cooldown after an empty own block. Other proposal constraints still apply. |
+| Exemption credit | One issued exempt request per rolling configured cooldown. Every result consumes credit, including failure, busy, cancellation, and no selected deploys. |
+| Re-entry | Mode exit and re-entry do not reset credit. |
+| Successful-block bound | At most two successful routine heartbeat blocks per rolling cooldown. At most one is empty. |
+| Empty classification | No processed user deploy exists. Failed user deploys count as user deploys. System-only and rejection-only blocks are empty. |
+| Constants | The exit multiplier is two. The exemption limit is one. No configuration key is added. |
 
-The exit window is longer than the time between deploy bursts, so a short pause does not end the mode. That difference is the hysteresis.
+The routine bound covers pending-deploy, pending-backstop, and frontier-follow publications. Stale recovery, convergence, manual proposals, direct autopropose, and synchronous proposer recovery retain their separate authority and pacing.
 
-The stale-recovery and convergence lanes do not change.
+Three seconds is the configured example, not a second cooldown constant. The implementation uses monotonic publication observations as well as block-header age.
+
+An exempt request carries the expected empty own-block hash and a nonempty requirement through the queue and retries. The proposer rejects a changed predecessor before execution.
+
+The block hash binds the body that the heartbeat already classified. The proposer also rejects an actually empty created block before publication effects.
+
+An exemption cannot gain empty-recovery authority past the height constraint. A due stale-recovery or convergence lane takes priority over an exemption.
+
+The cooldown after a successful user block remains enforced. Newly observed own blocks conservatively restore the publication clock if a result was lost.
+
+The [pending amplification claim](../claims/heartbeat-proposal-amplification-bound.md) defines the rolling windows and verification obligations. Its scope is one live heartbeat task, not durable credit across process restarts.
 
 ### 3.4 Alternative not chosen: hold the empty block
 
-The heartbeat could hold an empty frontier-follow block for a short time, so that deploys that arrive soon go into it. That alternative delays the witness blocks that finality needs, and the slow phases already have slow finality. H1 does not delay any block.
+The heartbeat could hold an empty frontier-follow block briefly to include later deploys. That alternative delays witness blocks that finality needs.
+
+H1 does not intentionally hold an empty block for batching. Its publication guard can still delay routine proposals to preserve the configured bound.
 
 ### 3.5 Metrics
 
@@ -117,7 +132,8 @@ The heartbeat could hold an empty frontier-follow block for a short time, so tha
 |---|---|
 | F1 | Without a propose function, `add_deploy` wakes the heartbeat. With a propose function, it does not. |
 | F2 | A lane decision that is blocked only by the cooldown returns the time until the cooldown ends. A decision blocked by a lag cap returns none. |
-| H1 | A pure state machine with fixed time stamps. It enters on arrival, stays through a short pause, and exits after the full window. It gives one exemption in each cooldown, and none after a deploy block. |
+| H1 state | `heartbeat_responsive_tests.rs` covers observed-pending hysteresis, expiry, re-entry, consumed credit, rolling windows, queue delay, and recovery priority. |
+| H1 execution | `h1_proposer_spec.rs` checks actual nonempty publication, failed-user and system-only classification, stale predecessors, and the height constraint. |
 | No regression | The existing `lane_decision_rows` tests pass without change outside the mode. |
 
 ---
@@ -125,9 +141,13 @@ The heartbeat could hold an empty frontier-follow block for a short time, so tha
 ## 5. Measurement
 
 1. Run the unit tests and the integration preflight.
-2. Run a short comparison run on this branch against the step 0 baseline (TASK-021-16). The `canary_hours` option of `ci/soak-diagnostic-window` gives the short window.
-3. Compare with `scripts/bench/summarize-issue24-phases.sh`: the share of slow high phases, the empty blocks, the deploy selection age, and the blocks created.
-4. If the block rate goes up and the finality pace goes down, reduce H1 to F1 and F2 only.
+2. Compare H1 against the F1/F2 baseline `ed9b3c996` with the same profile and environment.
+3. Retain the step 0 baseline from TASK-021-16 as a separate comparison.
+4. Compare slow-phase share, empty-block rate, selection age, finalization p95, and block rate with `scripts/bench/summarize-issue24-phases.sh`.
+5. Obtain maintainer approval for numeric acceptance thresholds before either comparison run.
+6. If H1 increases block rate and slows finalization, retain F1/F2 without H1.
+
+The proposed 30-percent block-rate allowance is not an approved threshold. Cloud dispatch and soak qualification require separate authorization.
 
 ---
 
