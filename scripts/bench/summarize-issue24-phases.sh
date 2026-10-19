@@ -9,9 +9,11 @@ Usage:
 
 records  Read test_load output (an iteration pytest.log or a soak job log) and
          write one JSON line for each phase and validator. Without --provider,
-         a session that writes a subprocess genesis is subprocess, and other
-         sessions are docker. --session sets the number of the first session
-         (default 1), so the records of several iterations stay apart.
+         a test that writes a subprocess genesis is subprocess for all of its
+         sessions, and other tests are docker. A test ends at its PASSED,
+         FAILED, or ERROR line, or when a new pytest session starts. --session
+         sets the number of the first session (default 1), so the records of
+         several iterations stay apart.
 compare  Read records and print the slow-phase share for each provider and the
          mean metrics of the fast, slow, and failing phases. A phase is failing
          when it has unfinalized deploys, and slow when its inclusion p95 is
@@ -46,8 +48,8 @@ records() {
 	done
 	awk -v forced="$provider" -v first="$first" '
 	function esc(s) { gsub(/\\/, "\\\\", s); gsub(/"/, "\\\"", s); gsub(/\t/, "\\t", s); return s }
-	function reset_session() { phase = ""; validator = ""; split("", seen) }
-	function start_session() { session++; subprocess = genesis; genesis = 0 }
+	function reset_session() { phase = ""; validator = ""; subprocess = 0; genesis = 0; split("", seen) }
+	function start_session() { session++; if (genesis) subprocess = 1; genesis = 0 }
 	BEGIN { session = first - 1; genesis = 0; subprocess = 0; reset_session() }
 	{
 		line = $0
@@ -79,7 +81,7 @@ records() {
 			validator = ""
 			next
 		}
-		if (line ~ /(PASSED|FAILED|ERROR) +\[ *[0-9]+%\]/) {
+		if (line ~ /(PASSED|FAILED|ERROR) +\[ *[0-9]+%\]/ || line ~ /^=+ test session starts =+$/) {
 			reset_session()
 		}
 	}' < <(cat -- "$@") | jq -cR '
