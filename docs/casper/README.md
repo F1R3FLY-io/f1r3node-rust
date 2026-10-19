@@ -12,7 +12,7 @@ replication.
 
 | Area | Documents |
 |---|---|
-| Protocol | [Consensus Protocol](./CONSENSUS_PROTOCOL.md) (11-stage walkthrough) · the implementation walkthrough below |
+| Protocol | [Consensus Protocol](./CONSENSUS_PROTOCOL.md) (11-stage walkthrough) · [Execution and Resource Authorization](./execution-and-resource-authorization.md) · the implementation walkthrough below |
 | Safety | [Byzantine Fault Tolerance](./BYZANTINE_FAULT_TOLERANCE.md) · [Synchrony Constraint](./SYNC_CONSTRAINT.md) |
 | Philosophy | [Consensus Philosophy](./CONSENSUS_PHILOSOPHY.md) (principles P1–P6, remedy ladder, CBC relation) |
 | Vocabulary | [Casper Glossary](./GLOSSARY.md) (canonical casper-domain terms; repo-wide terms stay in [docs/Glossary.md](../Glossary.md)) |
@@ -259,10 +259,11 @@ If the visible block count exceeds `MAX_PARENT_MERGE_SCOPE_BLOCKS` (512) or the 
 
 ## Deploy Replay
 
-Deploys within a block are evaluated sequentially (matching Scala's `traverse`, not
-`parTraverse`). Each deploy uses a soft checkpoint for rollback on error. The play path
-records event logs; the replay path uses `ReplayRSpace` with the recorded event log as
-an oracle to force the same COMMs regardless of evaluation order.
+The current play and replay paths evaluate separate user deploys sequentially. Concurrent Rholang branches can run within one execution attempt.
+
+Each deploy uses a soft checkpoint for rollback on error. Play records an event log. `ReplayRSpace` uses that log to reproduce communication choices and check the resulting state.
+
+Bounded local replay concurrency and finalization concurrency are separate mechanisms. See [Execution and Resource Authorization](./execution-and-resource-authorization.md) for their completion boundaries and accounting conditions.
 
 The `RuntimeManager` coordinates play (`compute_state`) and replay (`replay_compute_state`):
 - Play: evaluates user deploys + system deploys, creates checkpoint, returns state hash

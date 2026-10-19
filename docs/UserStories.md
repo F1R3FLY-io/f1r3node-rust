@@ -1,7 +1,7 @@
 ---
 doc_type: user_stories
 version: "1.1"
-last_updated: 2026-09-30
+last_updated: 2026-10-14
 ---
 
 # User Stories
@@ -64,6 +64,26 @@ This document captures user stories that drive feature development. User stories
 ---
 
 ## Planned Stories
+
+#### US-013: Traceable cost-accounting direction
+
+> As a **protocol reviewer**, I want **traceable accounting rules** so that **I can distinguish resource authorization from execution, validation, and finality**.
+
+**Implemented in:** [EPIC-028](ToDos.md#epic-028-cost-accounting-direction-and-reference-authority).
+
+**Status:** Planned
+
+**Reference plan:** [Cost-Accounting Direction and Reference Plan](plans/cost-accounting-direction.md).
+
+**Acceptance Criteria:**
+
+- [ ] The reference registry identifies exact source versions, document owners, authority scope, and unresolved evidence.
+- [ ] The comparison separates the original proposal, recorded requirements, and the pinned current candidate.
+- [ ] The contract distinguishes funding units, signature roles, evaluation completion, and physical work bounds.
+- [ ] D-12's extension or successor has recorded dispositions without silently replacing the existing decision.
+- [ ] Canonical documentation and glossary links reflect accepted rules and explicit deferred questions.
+
+---
 
 #### US-009: Bounded node behavior under resource faults
 

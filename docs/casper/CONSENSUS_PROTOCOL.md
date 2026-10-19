@@ -9,7 +9,7 @@ F1r3fly uses **CBC Casper** (Correct-by-Construction Casper), a proof-of-stake c
 **Properties:**
 - **Multi-parent DAG** — each block can reference multiple parents (one per validator). Forks are merged, not discarded.
 - **Mathematical finality** — blocks are finalized when the clique oracle proves >2/3 of stake agrees and will never disagree. Deterministic, not probabilistic.
-- **Concurrent execution** — RSpace tuple space enables parallel deploy processing within blocks.
+- **Execution concurrency** — Rholang branches can run concurrently within one execution attempt. The current play and replay paths evaluate separate user deploys sequentially.
 
 **Pipeline:**
 1. Deploy arrives → pool
@@ -37,6 +37,8 @@ F1r3fly uses **CBC Casper** (Correct-by-Construction Casper), a proof-of-stake c
 ---
 
 ## Contents
+
+See [Execution and Resource Authorization](./execution-and-resource-authorization.md) for completion boundaries, validator workloads, concurrency levels, and PR #216 accounting conditions.
 
 - [1. Node Startup & Genesis](#1-node-startup--genesis)
 - [2. Block Proposal](#2-block-proposal)
@@ -142,6 +144,14 @@ Before building a block, the proposer verifies:
 **Why deterministic ordering?** All validators must select identical deploys for identical parent sets, or state hashes diverge and blocks get rejected.
 
 ### Step 4: Execute Deploys
+
+The current play path awaits each user deploy before it starts the next deploy. Parallel Rholang branches can overlap within that execution attempt.
+
+Evaluation completion can leave unmatched receives in RSpace. It does not establish application completion or finalization.
+
+The proposal budget can defer unexecuted deploys after an executed prefix. Replay checks the sequence that the block carries.
+
+See the [completion boundaries](./execution-and-resource-authorization.md#completion-boundaries) and [concurrency levels](./execution-and-resource-authorization.md#concurrency-levels).
 
 For each selected deploy:
 1. Execute Rholang via `RhoRuntime` (play runtime)

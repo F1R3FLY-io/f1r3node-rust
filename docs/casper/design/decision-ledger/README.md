@@ -78,6 +78,10 @@ The statuses `accepted and implemented`, `superseded`, and `user-ratified` in th
 | [D-11](./11-cbc-fv-governance.md) | CbC and FV governance | Governance | Yes. Rewrites two ratified rows in prose. | Ratified. Tiers of 2,000, 10,000, and 100,000 cases. |
 | [D-12](./12-deploy-cost-limits.md) | Deploy cost limits, removal of `phloLimit` and `phloPrice` | Protocol and economics boundary | Removes the minimum-price validation rule. | Rejected. Both fields stay. |
 
+D-12 has a [proposed direction follow-up](./12-deploy-cost-limits.md#10-provisional-direction-follow-up) under [EPIC-028](../../../ToDos.md#epic-028-cost-accounting-direction-and-reference-authority).
+The [reference plan](../../../plans/cost-accounting-direction.md) records its provisional conclusion and evidence gaps.
+This follow-up does not change the 2026-09-16 decision or establish a new ratified rule.
+
 ## 5. Merge notes for `feature/cost-accounted-rho`
 
 This branch merges into PR #216's branch as well as into `dev`. Two files conflict textually with that branch.
