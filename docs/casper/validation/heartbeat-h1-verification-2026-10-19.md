@@ -109,14 +109,31 @@ The API bridge's older Batch E source and claim digests differ from the current 
 
 ## Remaining gates
 
-- Create the new proposer compatibility symlink before legacy evidence consumers run.
-- Obtain real CbC verifier results or record an unavailable adapter as a gate.
-- Review the construction argument and the source bindings against the final implementation.
-- Complete any required negative-control, cancellation, or queue-interleaving coverage before discharging the full claim.
-- Obtain the required maintainer acceptance without reusing the historical leader-only discharge.
-- Renew the separate API display-projection evidence for its current source and claim bytes.
-- Approve numeric comparison thresholds before a separately authorized soak against the F1/F2 baseline.
+Each open gate has one accountable owner. A runner executes an authorized operation but does not grant acceptance.
 
-No soak or cloud run was dispatched for this work. H1 does not establish the cause or resolution of the complete 45-second finalization miss.
+| Open gate | Owner | Required result |
+| --- | --- | --- |
+| Current-source evidence digests | `pi-session-heartbeat-h1-cbc` | Refresh the heartbeat source binding for `da1c12ed1` and update the affected evidence digests. Preserve the earlier records. |
+| CbC discharge | Maintainer | Review the current-source verification evidence and record a valid discharge. The adapter's executable-check result alone does not close this gate. |
+| Construction and source-binding review | Maintainer | Review the construction argument, its assumptions, and the bindings against the final implementation. |
+| Additional test coverage | `pi-session-heartbeat-h1-cbc` | Complete any required negative-control, cancellation, or queue-interleaving tests before claim discharge. |
+| Claim acceptance | Maintainer | Record acceptance for the reviewed source, claim, and evidence. Do not reuse the historical leader-only discharge. |
+| API display-projection renewal | `pi-session-heartbeat-h1-cbc` | Renew the separate evidence for the current API source and claim bytes. |
+| Comparison execution and performance acceptance | Maintainer | Complete the authorized comparison and evaluate every threshold in design section 5.1. `f1r3node-rust-71` is the runner. |
 
-No commit, push, stage, or branch operation was performed by this agent.
+### Completed prerequisites
+
+- **Proposer compatibility symlink:** Closed by `14c4c3546`. The maintainer authorized the creation, and `f1r3node-rust-71` created the symlink.
+- **Real adapter execution:** The runner completed both artifact commands on `ab84edf83`. Both commands exited 0. This closes the execution prerequisite only.
+- **Numeric thresholds:** The maintainer approved the thresholds in design section 5.1. Performance thresholds do not discharge the safety claim.
+- **Comparison authorization:** The maintainer authorized the baseline and H1 runs in sequence. The maintainer owns authorization for any additional soak.
+
+The adapter recorded a proposal from a large language model. It did not apply or check that proposal. The tool status depended on the targeted test command's exit status.
+
+The adapter's `discharged` label therefore supplies executable-check evidence, not a mechanized proof of H1-1 through H1-5. Claim acceptance remains open.
+
+The runner reported baseline run `39194089405` at `ed9b3c996` with profile `weekend-60h`. The H1 run is planned for `da1c12ed1` after that baseline.
+
+Comparison results are not recorded here. H1 does not establish the cause or resolution of the complete 45-second finalization miss.
+
+This update changes documentation only. This agent did not create a commit, stage files, push, or switch branches.

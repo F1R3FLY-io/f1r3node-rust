@@ -25,12 +25,20 @@ The claim is `docs/claims/heartbeat-proposal-amplification-bound.md`. The review
   "evidence": {
     "kind": "implementation-review-pending-verification",
     "ref": "docs/casper/validation/heartbeat-h1-verification-2026-10-19.md",
-    "sha256": "2ec8a9362307056af54418fccc09cd0f198362e61fa51912c0790209a7652848"
+    "sha256": "4466cc80f191cad966914af3d94675658e6f3dc63db84658fc82ef7a4b587d4a"
   },
   "tiers": {
     "refutation": "partial-executable-checks-passed",
     "construction": "argument-recorded-not-mechanized",
     "binding": "review-recorded-not-accepted"
+  },
+  "previous_review_record": {
+    "path": "docs/casper/cbc-evidence/history/casper-src-rust-blocks-proposer-proposer-rs-ab84edf83-20261019.md",
+    "sha256": "ef9b9496729d2cfe1cff227f8742c5c30d0e9ce17982155123e70c894094be2b",
+    "report": {
+      "path": "docs/casper/cbc-evidence/history/heartbeat-h1-verification-ab84edf83-20261019.md",
+      "sha256": "2ec8a9362307056af54418fccc09cd0f198362e61fa51912c0790209a7652848"
+    }
   },
   "waiver": null,
   "verified_at": null
