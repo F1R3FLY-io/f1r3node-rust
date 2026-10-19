@@ -136,9 +136,18 @@ The queue-entry test uses the production entry type and a real bounded channel. 
 
 The queued proposer tests execute the real proposer with controlled snapshots, block creation, validation, and effect counters. They are not network integration tests.
 
+### Test-file consolidation
+
+The four additional tests now reside in the inline `additional_tests` module of `heartbeat_responsive_tests.rs`. Their test bodies and full test names are unchanged.
+
+The runner verified the merged working tree on `33c0ac7c4`. Formatting passed, strict node clippy reported no warnings, and all 65 heartbeat tests passed.
+
+The earlier two-file inputs remain in the previous-review Git objects at `33c0ac7c4af184573977b6b5184b81f4d5da4740`. No new history files were added.
+
+The current merged test inputs are:
+
 ```text
-edcc7468032f7edb6f605f2b6028c673f052d033224e0f61b7e2a6d24066835c  node/src/rust/instances/heartbeat_responsive_tests.rs
-fd73cd87c979683de84c3fdf57921e3a16ed6810d26688cc690eb6a43cf2c1e3  node/src/rust/instances/heartbeat_additional_tests.rs
+034ce24f396ee3719013095e10970d3327cf4df5092daf3942dae1f284473ef3  node/src/rust/instances/heartbeat_responsive_tests.rs
 c76ea6698d479db9617bba7cad5f7868a74f217d7582b28ae7ec8c6309aa9431  node/src/rust/instances/proposer_instance.rs
 b9f54549857fa29b0f008210c7e9b685a4304fd88a9eea1a79ec0b00d702b1c9  casper/tests/add_block/h1_proposer_spec.rs
 ```

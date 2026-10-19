@@ -25,7 +25,7 @@ The claim is `docs/claims/heartbeat-proposal-amplification-bound.md`. The review
   "evidence": {
     "kind": "implementation-review-pending-verification",
     "ref": "docs/casper/validation/heartbeat-h1-verification-2026-10-19.md",
-    "sha256": "3d8a73b53e8873d150e90856c20fa4b3fff7d6f2e953c5cd00e79507ce4f24e5"
+    "sha256": "37a9a5b80b2b5f2ceb5f003915acf438192cef771939bdffaba40f2efb21065e"
   },
   "tiers": {
     "refutation": "partial-executable-checks-passed",
@@ -33,16 +33,15 @@ The claim is `docs/claims/heartbeat-proposal-amplification-bound.md`. The review
     "binding": "review-recorded-not-accepted"
   },
   "previous_review_record": {
-    "git_object": "b87d1dfe29ee6d06d1894aec3db872c63ff6829f:docs/casper/cbc-evidence/history/casper-src-rust-blocks-proposer-proposer-rs-renewal-base-f41f2a8ab-20261019.md",
-    "sha256": "7e2f98c2619447cc8a5f973bf1aa5f287efea9675e8c868c6a8e873549dab951",
+    "git_object": "33c0ac7c4af184573977b6b5184b81f4d5da4740:docs/casper/cbc-evidence/casper-src-rust-blocks-proposer-proposer-rs.md",
+    "sha256": "18e03a9a409e1f5d1a6d62a53eb847f63bfed6412a9395efd1ad9a4aaa83f578",
     "report": {
-      "git_object": "b87d1dfe29ee6d06d1894aec3db872c63ff6829f:docs/casper/cbc-evidence/history/heartbeat-h1-verification-renewal-base-f41f2a8ab-20261019.md",
-      "sha256": "97c86f2906fb9588e4ca6afea70a34f92a02ab3eb4925c10925fa2c3b3908d43"
+      "git_object": "33c0ac7c4af184573977b6b5184b81f4d5da4740:docs/casper/validation/heartbeat-h1-verification-2026-10-19.md",
+      "sha256": "3d8a73b53e8873d150e90856c20fa4b3fff7d6f2e953c5cd00e79507ce4f24e5"
     }
   },
   "verification_sources": {
-    "node/src/rust/instances/heartbeat_responsive_tests.rs": "edcc7468032f7edb6f605f2b6028c673f052d033224e0f61b7e2a6d24066835c",
-    "node/src/rust/instances/heartbeat_additional_tests.rs": "fd73cd87c979683de84c3fdf57921e3a16ed6810d26688cc690eb6a43cf2c1e3",
+    "node/src/rust/instances/heartbeat_responsive_tests.rs": "034ce24f396ee3719013095e10970d3327cf4df5092daf3942dae1f284473ef3",
     "node/src/rust/instances/proposer_instance.rs": "c76ea6698d479db9617bba7cad5f7868a74f217d7582b28ae7ec8c6309aa9431",
     "casper/tests/add_block/h1_proposer_spec.rs": "b9f54549857fa29b0f008210c7e9b685a4304fd88a9eea1a79ec0b00d702b1c9"
   },

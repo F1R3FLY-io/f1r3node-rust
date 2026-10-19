@@ -27,7 +27,7 @@ The original leader-only evidence remains unchanged in the retained history file
   "evidence": {
     "kind": "implementation-review-pending-verification",
     "ref": "docs/casper/validation/heartbeat-h1-verification-2026-10-19.md",
-    "sha256": "3d8a73b53e8873d150e90856c20fa4b3fff7d6f2e953c5cd00e79507ce4f24e5"
+    "sha256": "37a9a5b80b2b5f2ceb5f003915acf438192cef771939bdffaba40f2efb21065e"
   },
   "tiers": {
     "refutation": "partial-executable-checks-passed",
@@ -44,16 +44,15 @@ The original leader-only evidence remains unchanged in the retained history file
     "commit": "3fd707102"
   },
   "previous_review_record": {
-    "git_object": "b87d1dfe29ee6d06d1894aec3db872c63ff6829f:docs/casper/cbc-evidence/history/node-src-rust-instances-heartbeat-proposer-rs-renewal-base-f41f2a8ab-20261019.md",
-    "sha256": "c846487b25f6596cb1d2dffea3e1574ff5cf3220d0855cadab3a38cac4e84ca9",
+    "git_object": "33c0ac7c4af184573977b6b5184b81f4d5da4740:docs/casper/cbc-evidence/node-src-rust-instances-heartbeat-proposer-rs.md",
+    "sha256": "8ab1634b099201488ef1e68b0691839ad1aee9450c8757f0a34a4436b1e23bdd",
     "report": {
-      "git_object": "b87d1dfe29ee6d06d1894aec3db872c63ff6829f:docs/casper/cbc-evidence/history/heartbeat-h1-verification-renewal-base-f41f2a8ab-20261019.md",
-      "sha256": "97c86f2906fb9588e4ca6afea70a34f92a02ab3eb4925c10925fa2c3b3908d43"
+      "git_object": "33c0ac7c4af184573977b6b5184b81f4d5da4740:docs/casper/validation/heartbeat-h1-verification-2026-10-19.md",
+      "sha256": "3d8a73b53e8873d150e90856c20fa4b3fff7d6f2e953c5cd00e79507ce4f24e5"
     }
   },
   "verification_sources": {
-    "node/src/rust/instances/heartbeat_responsive_tests.rs": "edcc7468032f7edb6f605f2b6028c673f052d033224e0f61b7e2a6d24066835c",
-    "node/src/rust/instances/heartbeat_additional_tests.rs": "fd73cd87c979683de84c3fdf57921e3a16ed6810d26688cc690eb6a43cf2c1e3",
+    "node/src/rust/instances/heartbeat_responsive_tests.rs": "034ce24f396ee3719013095e10970d3327cf4df5092daf3942dae1f284473ef3",
     "node/src/rust/instances/proposer_instance.rs": "c76ea6698d479db9617bba7cad5f7868a74f217d7582b28ae7ec8c6309aa9431",
     "casper/tests/add_block/h1_proposer_spec.rs": "b9f54549857fa29b0f008210c7e9b685a4304fd88a9eea1a79ec0b00d702b1c9"
   },
