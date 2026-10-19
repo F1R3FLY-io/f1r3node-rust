@@ -49,6 +49,11 @@ impl CasperBufferKeyValueStorage {
             parents_map
                 .into_iter()
                 .fold(BlockDependencyDag::empty(), |bdd, (key, parents)| {
+                    if parents.is_empty() {
+                        let mut bdd = bdd;
+                        bdd.dependency_free.insert(key);
+                        return bdd;
+                    }
                     parents.iter().cloned().fold(bdd, |mut bdd, p| {
                         bdd.add(p, key.clone());
                         bdd
@@ -56,10 +61,20 @@ impl CasperBufferKeyValueStorage {
                 })
         };
 
+        let first_seen_ms = dashmap::DashMap::new();
+        let now_ms = Self::now_millis();
+        for hash in in_mem_store
+            .child_to_parent_adjacency_list
+            .keys()
+            .chain(in_mem_store.dependency_free.iter())
+        {
+            first_seen_ms.insert(hash.clone(), now_ms);
+        }
+
         Ok(Self {
             parents_store: kv_store,
             block_dependency_dag: Arc::new(Mutex::new(in_mem_store)),
-            first_seen_ms: Arc::new(dashmap::DashMap::new()),
+            first_seen_ms: Arc::new(first_seen_ms),
             last_prune_ms: Arc::new(AtomicU64::new(0)),
             released: Arc::new(Mutex::new(HashSet::new())),
             release_scans: Arc::new(AtomicU64::new(0)),
@@ -152,10 +167,10 @@ impl CasperBufferKeyValueStorage {
         let hashes_to_delete: Vec<BlockHashSerde> = hashes_removed.into_iter().collect();
         let mut hashes_to_delete_with_node = hashes_to_delete;
         hashes_to_delete_with_node.push(hash);
-        hashes_to_delete_with_node.extend(orphaned_hashes);
-        for h in &hashes_to_delete_with_node {
+        for h in &orphaned_hashes {
             self.first_seen_ms.remove(h);
         }
+        hashes_to_delete_with_node.extend(orphaned_hashes);
         self.parents_store.delete(hashes_to_delete_with_node)?;
 
         Ok(())
@@ -297,65 +312,182 @@ impl CasperBufferKeyValueStorage {
 
     pub fn enforce_limits(
         &self,
-        max_approx_nodes: usize,
+        max_blocks: usize,
         stale_ttl_ms: u64,
         max_prune_batch: usize,
         prune_interval_ms: u64,
     ) -> Result<(usize, usize), KvStoreError> {
+        let (stale, overflow) = self.enforce_limits_with_readiness(
+            max_blocks,
+            stale_ttl_ms,
+            max_prune_batch,
+            prune_interval_ms,
+            |_| false,
+        )?;
+        Ok((stale.len(), overflow.len()))
+    }
+
+    pub fn block_count(&self) -> usize {
+        let _guard = self.read_guard();
+        self.block_count_unlocked()
+    }
+
+    fn block_count_unlocked(&self) -> usize {
+        let dag = self
+            .block_dependency_dag
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        dag.child_to_parent_adjacency_list.len() + dag.dependency_free.len()
+    }
+
+    fn subtree_postorder_unlocked(&self, root: BlockHashSerde) -> Vec<BlockHashSerde> {
+        let dag = self
+            .block_dependency_dag
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let mut stack = vec![(root, false)];
+        let mut visited = HashSet::new();
+        let mut postorder = Vec::new();
+        while let Some((hash, expanded)) = stack.pop() {
+            if expanded {
+                postorder.push(hash);
+            } else if visited.insert(hash.clone()) {
+                stack.push((hash.clone(), true));
+                if let Some(children) = dag.parent_to_child_adjacency_list.get(&hash) {
+                    let mut children: Vec<_> = children.iter().cloned().collect();
+                    children.sort();
+                    stack.extend(children.into_iter().rev().map(|child| (child, false)));
+                }
+            }
+        }
+        postorder
+    }
+
+    fn prune_leaf_unlocked(&self, hash: &BlockHashSerde) -> Result<bool, KvStoreError> {
+        let mut dag = self
+            .block_dependency_dag
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if dag
+            .parent_to_child_adjacency_list
+            .get(hash)
+            .is_some_and(|children| !children.is_empty())
+            || !(dag.child_to_parent_adjacency_list.contains_key(hash)
+                || dag.dependency_free.contains(hash))
+        {
+            return Ok(false);
+        }
+        let parents = dag
+            .child_to_parent_adjacency_list
+            .get(hash)
+            .cloned()
+            .unwrap_or_default();
+        for parent in &parents {
+            if !dag.child_to_parent_adjacency_list.contains_key(parent)
+                && dag
+                    .parent_to_child_adjacency_list
+                    .get(parent)
+                    .is_some_and(|children| children.len() == 1)
+            {
+                self.parents_store.put_one(parent.clone(), HashSet::new())?;
+            }
+        }
+        self.parents_store.delete(vec![hash.clone()])?;
+        let (_, _, orphaned) = dag.remove(hash.clone())?;
+        for parent in orphaned {
+            if !dag.child_to_parent_adjacency_list.contains_key(&parent) {
+                dag.dependency_free.insert(parent);
+            }
+        }
+        self.first_seen_ms.remove(hash);
+        self.released
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(hash);
+        Ok(true)
+    }
+
+    pub fn enforce_limits_with_readiness<F>(
+        &self,
+        max_blocks: usize,
+        stale_ttl_ms: u64,
+        max_prune_batch: usize,
+        prune_interval_ms: u64,
+        is_ready: F,
+    ) -> Result<(Vec<BlockHashSerde>, Vec<BlockHashSerde>), KvStoreError>
+    where
+        F: Fn(&BlockHashSerde) -> bool,
+    {
+        let _guard = self.write_guard();
         let now = Self::now_millis();
         let last_prune = self.last_prune_ms.load(Ordering::Relaxed);
         if now.saturating_sub(last_prune) < prune_interval_ms {
-            return Ok((0, 0));
+            return Ok((Vec::new(), Vec::new()));
         }
         self.last_prune_ms.store(now, Ordering::Relaxed);
 
-        let mut stale_candidates: Vec<(u64, BlockHashSerde)> = self
-            .dependency_free_nodes_with_age_ms(now)
-            .into_iter()
-            .filter(|(age_ms, _)| *age_ms >= stale_ttl_ms)
-            .collect();
-        stale_candidates.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
-
-        let mut stale_pruned = 0usize;
-        for (_, hash) in stale_candidates.into_iter().take(max_prune_batch) {
-            match self.remove(hash) {
-                Ok(_) => stale_pruned += 1,
-                Err(KvStoreError::InvalidArgument(_)) => {}
-                Err(e) => return Err(e),
-            }
-        }
-
-        let mut overflow_pruned = 0usize;
-        let mut approx_nodes = self.approx_node_count();
-        let mut tried: HashSet<BlockHashSerde> = HashSet::new();
-        while approx_nodes > max_approx_nodes && tried.len() < max_prune_batch {
-            let mut oldest_nodes: Vec<(u64, BlockHashSerde)> = self
-                .dependency_free_nodes_with_age_ms(now)
-                .into_iter()
-                .filter(|(_, hash)| !tried.contains(hash))
-                .collect();
-            if oldest_nodes.is_empty() {
+        let mut roots = self.dependency_free_nodes_with_age_ms(now);
+        roots.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+        let mut stale = Vec::new();
+        let mut overflow = Vec::new();
+        let mut tried = HashSet::new();
+        for (root_age, root) in roots {
+            if stale.len() + overflow.len() >= max_prune_batch {
                 break;
             }
-            oldest_nodes.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
-
-            for (_, hash) in oldest_nodes {
-                if approx_nodes <= max_approx_nodes || tried.len() >= max_prune_batch {
+            let stale_root = root_age >= stale_ttl_ms;
+            if (!stale_root && self.block_count_unlocked() <= max_blocks) || is_ready(&root) {
+                continue;
+            }
+            for hash in self.subtree_postorder_unlocked(root.clone()) {
+                if stale.len() + overflow.len() >= max_prune_batch
+                    || (!stale_root && self.block_count_unlocked() <= max_blocks)
+                {
                     break;
                 }
-                tried.insert(hash.clone());
-                match self.remove(hash) {
-                    Ok(_) => {
-                        overflow_pruned += 1;
-                        approx_nodes = self.approx_node_count();
+                if !tried.insert(hash.clone()) || is_ready(&hash) {
+                    continue;
+                }
+                let (parents, children) = {
+                    let dag = self
+                        .block_dependency_dag
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner());
+                    (
+                        dag.child_to_parent_adjacency_list
+                            .get(&hash)
+                            .map_or(0, |parents| parents.len()),
+                        dag.parent_to_child_adjacency_list
+                            .get(&hash)
+                            .map_or(0, |children| children.len()),
+                    )
+                };
+                if children != 0 {
+                    continue;
+                }
+                let age_ms = self
+                    .first_seen_ms
+                    .get(&hash)
+                    .map_or(0, |seen| now.saturating_sub(*seen));
+                if self.prune_leaf_unlocked(&hash)? {
+                    tracing::info!(
+                        hash = ?hash,
+                        root = ?root,
+                        reason = if stale_root { "stale" } else { "overflow" },
+                        age_ms,
+                        parents,
+                        children,
+                        "Pruned blocked CasperBuffer hash"
+                    );
+                    if stale_root {
+                        stale.push(hash);
+                    } else {
+                        overflow.push(hash);
                     }
-                    Err(KvStoreError::InvalidArgument(_)) => {}
-                    Err(e) => return Err(e),
                 }
             }
         }
-
-        Ok((stale_pruned, overflow_pruned))
+        Ok((stale, overflow))
     }
 
     fn track_hash_first_seen(&self, hash: &BlockHashSerde) {
@@ -371,6 +503,10 @@ impl CasperBufferKeyValueStorage {
             .unwrap_or(0)
     }
 }
+
+#[cfg(test)]
+#[path = "pruning_tests.rs"]
+mod pruning_tests;
 
 #[cfg(test)]
 mod tests {
