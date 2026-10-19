@@ -1133,12 +1133,15 @@ tasks:
       - "The maintainer accepts the soak and CbC evidence. PR #653 is merged, so this acceptance is a post-merge obligation."
   - id: TASK-021-13
     title: "Find why test_load deploys are not finalized within 45 s in the high and sustained phases (issue #24)"
-    status: pending
+    status: in_progress
     priority: p0
-    claimed_by: null
+    claimed_by: claude-session-dfac55a4
+    claimed_at: 2026-10-19T12:30:00Z
     blocked_by: []
     origin: "On 2026-10-07 two integration preflights on master e6564599c failed in the same test_load phase after PR #653 nearly stopped block parking. The user asked for a task that owns the deploy inclusion delay."
     notes:
+      - "2026-10-19, final result of soak 39089710676 (issue #24 comment 6266747397): two high-phase failures (Docker 17:29Z with 13 unfinalized, subprocess 20:28Z with 14) and two sustained-phase failures on subprocess. In each, inclusion was near normal and finality slowed. Slow high phases build more empty heartbeat blocks while deploys wait."
+      - "2026-10-19: PR #768 (deploy heartbeat wake F1 and F2, and the deploy-responsive mode H1) is the candidate fix for the high-phase mechanism. Its CbC claim is discharged. The comparison soak of its design section 5.1 runs: F1 and F2 at ed9b3c996 (run 39194089405), then H1 at da1c12ed1. The plan and the status live in issue #764, stage 1."
       - "2026-10-18, interim evidence of soak 39089710676: a Docker iteration failed in the high phase after PR #695, with normal inclusion (p95 11.6 s) and slow finality (7.9 blocks per minute). About half of the high phases on both providers run in this slow pattern. The wait after inclusion is therefore not only a sustained-phase effect, and this task covers the high phase too (adaptive-execution.md section 3)."
       - "Plan step 3. Plan update of 2026-10-17 (issue #24 comment 6220936428): the scope depends on the TASK-021-16 soak. If that soak has sustained-phase failures, this task fixes the measured cause of the wait from inclusion to finality. If it meets the gate, this task records that no cause remains, and issue #24 can close under EPIC-021 (adaptive-execution.md Q8)."
       - "Soak 38995239992 (2026-10-17, master ecb16dbca) had 0 failures in 91 sessions and unfinalized=0 in all 459 phases, so it gives no failing sample to attribute."
@@ -1223,6 +1226,7 @@ tasks:
       - "Plan update of 2026-10-17 (issue #24 comment 6220936428): weekend soak 38995239992 on master ecb16dbca had 0 test_load failures in 91 sessions (46 Docker, 45 subprocess). The disk floor stopped it at 16.7 h of 57.5 h, because each iteration kept an uncompressed node-metrics file. PR #759 compresses that file. From iteration 84, the strace sample of sample-node-io.sh traced the validator of the active benchmark shard."
       - "2026-10-18: both blockers are done (PR #759 and PR #760 on master). Weekend soak 39089710676 runs on master 532e5c696, which dev 5ff390e15 contains through back-merge PR #763. Interim segment 1 (14:38Z, 9.5 h): 52 sessions (26 Docker, 26 subprocess), 1 failure on subprocess, 1.9 percent, no protection breach. The window ends 2026-10-19 14:30Z (adaptive-execution.md section 3)."
       - "2026-10-18 18:35Z (job log): 73 sessions, 2 failures. Subprocess at 14:11Z in the sustained phase (2 deploys not finalized within 45 s). Docker at 17:35Z in the high phase (13 not finalized, LFB at 7.9 blocks per minute). In both, inclusion was normal and finality was slow."
+      - "2026-10-19, final result (issue #24 comment 6266747397): the host protection stopped soak 39089710676 at 18.2 h on the disk floor (7053 MiB free, 8192 MiB required). 100 sessions (50 Docker, 50 subprocess), 4 failures (1 Docker, 3 subprocess). The gate is not decided, and the subprocess rate (6 percent) is above the gate rate. The disk growth must be fixed before the baseline repeats."
       - "Interim plan change of 2026-10-18 (issue #24 comment 6220936428): closure is separate from attribution. If this soak meets the gate, issue #24 can close (the answer to Q8 is unchanged), but TASK-021-13 stays open to attribute the wait after inclusion. Step 3 needs a fix only if the gate fails. The final report confirms or replaces this change."
     acceptance:
       - "A full-length soak on current dev with the node I/O sampler gives at least 100 test_load sessions on each provider."
@@ -1237,6 +1241,7 @@ tasks:
     pr_base_branch: dev
     blocked_by: []
     notes:
+      - "2026-10-19: PR #767 (merged) adds the per-phase summary scripts/bench/summarize-issue24-phases.sh, and each soak iteration writes issue24-phases.jsonl. PR #770 corrects its provider label for repeated phases and cut-off tests. The final result of soak 39089710676 uses the corrected summary."
       - "Plan step 1. Issue #24 owns Track A (decision of 2026-10-16). TASK-027-2 reuses these metrics."
       - "Avoid the 38 files that stall-loop step B1 expects to conflict where possible."
       - "Interim plan change of 2026-10-18 (issue #24 comment 6220936428): the high phases of soak 39089710676 are bimodal on both providers. ISSUE24_METRICS already reports each phase and validator (corrected 2026-10-18), and every high-phase block came from a heartbeat. Add a summary tool for each phase (PR #767) and a count of deploy-triggered proposals. A test of the heartbeat timing needs a harness change. TASK-021-24 then compares the share of slow high phases with the TASK-021-16 baseline."
