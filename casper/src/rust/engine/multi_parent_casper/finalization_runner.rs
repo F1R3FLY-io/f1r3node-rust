@@ -49,8 +49,8 @@
 //!
 //! Deploy-STORAGE release keys on the deploy-lifecycle register's
 //! write-once terminal verdicts, never on the finality marker itself: after
-//! each cycle, `settle_after_cycle` writes the verdicts an advance decided
-//! and removes the pool copy of every terminal sig.
+//! each cycle, `settle_after_cycle` writes every verdict the persisted LFB
+//! decides and removes the pool copy of every terminal sig.
 
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -249,12 +249,13 @@ pub(crate) fn build_finalization_context<
     }
 }
 
-/// Runs finalizer cycles until no rerun is queued. `_cycle` is the held
+/// Runs finalizer cycles until no rerun is queued. `held` is the
 /// `finalizer_cycle` lock: holding it is what makes this the one LFB writer.
 #[tracing::instrument(level = "info", skip_all)]
 pub(crate) async fn run_queued_finalizer(
     ctx: FinalizationContext,
-    _cycle: tokio::sync::OwnedMutexGuard<()>,
+    finalizer_cycle: Arc<tokio::sync::Mutex<()>>,
+    held: tokio::sync::OwnedMutexGuard<()>,
     finalizer_task_queued: Arc<AtomicBool>,
 ) {
     tracing::info!(target: "f1r3fly.casper", "finalizer-run-started");
@@ -262,14 +263,45 @@ pub(crate) async fn run_queued_finalizer(
     // Backstop only: floor-of-view rides the persisted floor/frontier
     // caches, so a cycle exceeding this is a stall to surface, not pace.
     let finalizer_blocking_timeout = std::time::Duration::from_secs(15);
-    drive_finalizer_runs(
-        finalizer_blocking_timeout,
-        &finalizer_task_queued,
-        || compute_last_finalized_block(ctx.clone()),
-        |advanced| settle_after_cycle(ctx.clone(), advanced),
-    )
+    let ctx = &ctx;
+    let queued: &AtomicBool = &finalizer_task_queued;
+    hold_finalizer_cycles(&finalizer_cycle, held, queued, move || {
+        drive_finalizer_runs(
+            finalizer_blocking_timeout,
+            queued,
+            move || compute_last_finalized_block(ctx.clone()),
+            move |advanced| settle_after_cycle(ctx.clone(), advanced),
+        )
+    })
     .await;
     tracing::info!(target: "f1r3fly.casper", "finalizer-run-finished");
+}
+
+/// Runs `cycles` with the lock held, then releases it. A trigger that lands
+/// after the cycles' last check of `queued` but before the release finds the
+/// lock held and only sets the flag, so the flag is re-checked here once the
+/// lock is free: taken up if the lock can be re-acquired, and otherwise left
+/// to the cycle that now holds it.
+pub(crate) async fn hold_finalizer_cycles<R, RFut>(
+    lock: &Arc<tokio::sync::Mutex<()>>,
+    mut held: tokio::sync::OwnedMutexGuard<()>,
+    queued: &AtomicBool,
+    mut cycles: R,
+) where
+    R: FnMut() -> RFut,
+    RFut: std::future::Future<Output = ()>,
+{
+    loop {
+        cycles().await;
+        drop(held);
+        if !queued.load(Ordering::SeqCst) {
+            return;
+        }
+        match lock.clone().try_lock_owned() {
+            Ok(next) => held = next,
+            Err(_) => return,
+        }
+    }
 }
 
 /// The queued-run loop of `run_queued_finalizer`, generic over its two steps
@@ -328,16 +360,18 @@ pub(crate) async fn drive_finalizer_runs<E, F, Fut, A, AFut>(
     }
 }
 
-/// The deploy-lifecycle work after one cycle, on the blocking pool. Verdicts
-/// and the carrier prune can only change when the LFB advanced; the pool
-/// release runs every cycle, so a removal that failed is retried.
+/// The deploy-lifecycle work after one cycle, on the blocking pool. The
+/// settle and the release run every cycle, not only on an advance: both are
+/// idempotent, and an advance persisted by a cycle that then failed, timed
+/// out or crashed is otherwise never settled until the next advance. The
+/// carrier prune is retention only, so it waits for an advance.
 async fn settle_after_cycle(ctx: FinalizationContext, advanced: bool) {
     match tokio::task::spawn_blocking(move || settle_blocking(&ctx, advanced)).await {
         Ok(Ok(())) => {}
         Ok(Err(e)) => tracing::error!(
             target: "f1r3fly.casper.lifecycle",
             error = %e,
-            "deploy-lifecycle settle failed; verdicts wait for the next advance"
+            "deploy-lifecycle settle failed; the next cycle retries"
         ),
         Err(join_err) => tracing::error!(
             target: "f1r3fly.casper.lifecycle",
@@ -351,27 +385,27 @@ fn settle_blocking(ctx: &FinalizationContext, advanced: bool) -> Result<(), Casp
     use crate::rust::finality::deploy_lifecycle::{record_observe_timing, release_settled, settle};
 
     let dag = ctx.block_dag_storage.get_representation()?;
-    let settled = if advanced {
-        let settle_started = std::time::Instant::now();
-        let settled = settle(
-            &dag,
-            &ctx.block_store,
-            ctx.deploy_lifespan,
-            ctx.citability_horizon,
-        );
-        let settle_ms = settle_started.elapsed().as_millis();
+    let settle_started = std::time::Instant::now();
+    let settled = settle(
+        &dag,
+        &ctx.block_store,
+        ctx.deploy_lifespan,
+        ctx.citability_horizon,
+    );
+    let settle_ms = settle_started.elapsed().as_millis();
+    let prune_ms = if advanced {
         let prune_started = std::time::Instant::now();
         let lfb_height = dag.block_number_unsafe(&dag.last_finalized_block())?;
         if let Err(e) = dag.prune_carriers_below(lfb_height - ctx.deploy_lifespan) {
             tracing::warn!("carrier-index prune failed (retention only): {}", e);
         }
-        record_observe_timing(settle_ms, Some(prune_started.elapsed().as_millis()));
-        settled.map(|_| ())
+        Some(prune_started.elapsed().as_millis())
     } else {
-        Ok(())
+        None
     };
+    record_observe_timing(settle_ms, prune_ms);
     release_settled(&dag, &ctx.deploy_storage)?;
-    settled
+    settled.map(|_| ())
 }
 
 /// A finalization trigger arrived while a run is in progress: queue one
@@ -681,10 +715,11 @@ impl<T: TransportLayer + Send + Sync> MultiParentCasperImpl<T> {
     /// Runs finalizer cycles now, waiting for any cycle already in flight,
     /// and returns the LFB they leave.
     pub async fn finalize(&self) -> Result<BlockMessage, CasperError> {
-        let cycle = self.finalizer_cycle.clone().lock_owned().await;
+        let held = self.finalizer_cycle.clone().lock_owned().await;
         run_queued_finalizer(
             build_finalization_context(self),
-            cycle,
+            self.finalizer_cycle.clone(),
+            held,
             self.finalizer_task_queued.clone(),
         )
         .await;
@@ -709,19 +744,20 @@ pub(crate) async fn update_last_finalized_block<T: TransportLayer + Send + Sync>
     }
 
     if new_block.body.state.block_number % this.casper_shard_conf.finalization_rate as i64 == 0 {
-        let Ok(cycle) = this.finalizer_cycle.clone().try_lock_owned() else {
+        let Ok(held) = this.finalizer_cycle.clone().try_lock_owned() else {
             note_finalizer_busy(&this.finalizer_task_queued);
             return Ok(());
         };
 
         let ctx = build_finalization_context(this);
+        let finalizer_cycle = this.finalizer_cycle.clone();
         let finalizer_task_queued = this.finalizer_task_queued.clone();
 
         // Capture the JoinHandle so a panic inside `run_queued_finalizer`
         // surfaces in the logs instead of being silently dropped. The cycle
         // lock is released when the task ends, panicking or not.
         let handle = tokio::spawn(async move {
-            run_queued_finalizer(ctx, cycle, finalizer_task_queued).await;
+            run_queued_finalizer(ctx, finalizer_cycle, held, finalizer_task_queued).await;
         });
         tokio::spawn(async move {
             if let Err(join_err) = handle.await {
@@ -936,6 +972,34 @@ mod finalizer_run_metric_tests {
         assert_eq!(recorded.counter(FINALIZER_RUN_RERUNS_METRIC), 0);
         assert_eq!(recorded.counter(FINALIZER_RUN_FAILURES_METRIC), 0);
         assert_eq!(recorded.counter(FINALIZER_RUN_TIMEOUTS_METRIC), 0);
+    }
+
+    /// A trigger that lands after a cycle's last check of `queued`, while the
+    /// lock is still held, must still get a cycle once the lock is released.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_trigger_after_the_last_queued_check_still_runs_a_cycle() {
+        let lock = Arc::new(tokio::sync::Mutex::new(()));
+        let queued = AtomicBool::new(false);
+        let held = lock.clone().try_lock_owned().expect("the lock starts free");
+        let mut cycles = 0u32;
+        hold_finalizer_cycles(&lock, held, &queued, || {
+            cycles += 1;
+            if cycles == 1 {
+                assert!(
+                    lock.clone().try_lock_owned().is_err(),
+                    "the trigger must find the lock held"
+                );
+                note_finalizer_busy(&queued);
+            } else {
+                queued.swap(false, Ordering::SeqCst);
+            }
+            async {}
+        })
+        .await;
+
+        assert_eq!(cycles, 2, "the late trigger must get its own cycle");
+        assert!(!queued.load(Ordering::SeqCst));
+        assert!(lock.try_lock().is_ok(), "the lock must end free");
     }
 
     #[test]

@@ -64,8 +64,9 @@ pub enum DeployFinalizationState {
     /// contested histories still inside their validity window. Client should
     /// keep polling.
     Pending,
-    /// The validity window closed without a winning inclusion or a failed
-    /// execution. The deploy can never land. Terminal.
+    /// Past the contestability bound, the deploy is not on the adopted LFB's
+    /// state lineage, and no execution with `is_failed=true` lies in the LFB's
+    /// DAG closure. The deploy can never land. Terminal.
     Expired,
 }
 

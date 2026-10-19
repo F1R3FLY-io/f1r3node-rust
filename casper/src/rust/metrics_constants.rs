@@ -513,8 +513,8 @@ pub const PROPOSER_CONSTRAINTS_TIME_METRIC: &str = "proposer.constraints.time";
 pub const PROPOSER_CREATE_TIME_METRIC: &str = "proposer.create.time";
 pub const PROPOSER_VALIDATE_TIME_METRIC: &str = "proposer.validate.time";
 pub const PROPOSER_EFFECT_TIME_METRIC: &str = "proposer.effect.time";
-// Histograms in seconds: one deploy-lifecycle settle, and the carrier prune
-// that follows it, both once per LFB advance.
+// Histograms in seconds: one deploy-lifecycle settle per finalizer cycle, and
+// the carrier prune, which runs only on a cycle that advanced the LFB.
 pub const DEPLOY_LIFECYCLE_OBSERVE_TIME_METRIC: &str = "deploy-lifecycle.observe.time";
 pub const DEPLOY_LIFECYCLE_CARRIER_PRUNE_TIME_METRIC: &str = "deploy-lifecycle.carrier-prune.time";
 // Counter: pool copies of terminal deploys whose removal failed; each is

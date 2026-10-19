@@ -479,6 +479,83 @@ async fn a_finality_advance_settles_the_verdict_without_another_block() {
     );
 }
 
+/// An advance that was persisted by a cycle that then failed, timed out or
+/// crashed before settling is settled by the next cycle, even one that does
+/// not advance the LFB.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_advance_persisted_without_its_settle_is_settled_by_the_next_cycle() {
+    use casper::rust::util::construct_deploy;
+
+    let genesis_parameters = GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(1));
+    let genesis = GenesisBuilder::new()
+        .build_genesis_with_parameters(Some(genesis_parameters))
+        .await
+        .expect("build single-validator genesis");
+    let shard_id = genesis.genesis_block.shard_id.clone();
+    let mut nodes = TestNode::create_network_with_overrides(genesis, 1, ShardOverrides {
+        max_parent_depth: Some(10),
+        finalization_rate: Some(0),
+        ..Default::default()
+    })
+    .await
+    .expect("create_network");
+    nodes[0].allow_empty_blocks = true;
+
+    let deploy = construct_deploy::source_deploy_now_full(
+        r#"@"unsettled_advance"!(1)"#.to_string(),
+        None,
+        None,
+        None,
+        Some(0),
+        Some(shard_id.clone()),
+    )
+    .expect("build deploy");
+    let sig = deploy.sig.clone();
+    nodes[0]
+        .add_block_from_deploys(std::slice::from_ref(&deploy))
+        .await
+        .expect("propose the carrier");
+    let mut tip = None;
+    for round in 0..3i32 {
+        let marker = {
+            tokio::time::sleep(tokio::time::Duration::from_millis(2)).await;
+            construct_deploy::basic_deploy_data(round, None, Some(shard_id.clone()))
+                .expect("marker")
+        };
+        tip = Some(
+            nodes[0]
+                .add_block_from_deploys(std::slice::from_ref(&marker))
+                .await
+                .expect("proposal"),
+        );
+    }
+
+    // The advance is persisted, but no settle ran after it.
+    nodes[0]
+        .block_dag_storage
+        .record_directly_finalized(tip.expect("tip").block_hash, 1.0, |_| async { Ok(()) })
+        .await
+        .expect("persist the advance");
+    let dag = nodes[0].casper.block_dag().await.expect("dag");
+    assert_eq!(
+        deploy_finalization_status::resolve(&dag, nodes[0].casper.block_store(), &sig, None)
+            .expect("resolve")
+            .state,
+        DeployFinalizationState::Pending,
+        "fixture precondition: nothing has settled the persisted advance yet"
+    );
+
+    nodes[0].casper.finalize().await.expect("finalizer cycle");
+    let dag = nodes[0].casper.block_dag().await.expect("dag");
+    assert_eq!(
+        deploy_finalization_status::resolve(&dag, nodes[0].casper.block_store(), &sig, None)
+            .expect("resolve")
+            .state,
+        DeployFinalizationState::Finalized,
+        "a cycle that does not advance must still settle the persisted LFB"
+    );
+}
+
 /// End to end on a real node: the cycle that puts the deploy's effect on the
 /// adopted LFB's state lineage also writes its Finalized verdict. No later
 /// block is needed for the verdict to appear, and the API reports it.

@@ -4,8 +4,9 @@
 //!
 //! A verdict is a pure function of the adopted LFB, block bodies and the
 //! sig's open event row, so it can change only when the LFB advances. The
-//! finalizer runs [`settle`] right after it persists an advance; nothing
-//! else writes verdicts.
+//! finalizer runs [`settle`] after every cycle, so an advance is settled even
+//! when the cycle that persisted it did not finish; nothing else writes
+//! verdicts.
 //!
 //! Verdict rules, against the adopted LFB:
 //! - **Finalized** ⟺ a successful execution or a re-application of the sig
