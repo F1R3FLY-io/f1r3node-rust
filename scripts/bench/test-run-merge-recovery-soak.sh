@@ -63,6 +63,9 @@ printf 'fake pytest started\n'
 printf 'low      |      30 |    1.0 |    1.9    5.9    5.9 |   90.0  100.0  101.0 |   45.4\r\n'
 printf 'sustained |    1200 |    4.0 |   18.3   87.6  106.6 |   85.1  120.6  133.3 |  -20.2\r\n'
 printf 'All-node LFBs at drain: {validator1: 12, validator2: 9} (spread 3 blocks)\n'
+printf '  Phase high: inclusion p50=6.5s p95=11.6s, finalization p50=27.7s p95=35.6s, LFB #19->#27 (7.9 blk/min), unfinalized=13\n'
+printf '  Node internals (validator1):\n'
+printf 'ISSUE24_METRICS {"counters": {"block_creator_empty_block_built": {"delta": 4.0, "unit": "events"}}, "histograms": {}}\n'
 if [ "${FAKE_EMIT_SOAK_METRIC:-false}" = "true" ]; then
 	printf 'SOAK_METRIC name=lfb_spread value=4 phase=drain\n'
 fi
@@ -177,6 +180,8 @@ jq -e '
 ' "$TMP/output/summary.json" >/dev/null
 grep -q 'replay_cache_retained_bytes,1048576' \
 	"$TMP/output/iteration-00001-docker/node-metrics-timeseries.csv"
+jq -e -s 'length == 1 and .[0].session == 1 and .[0].provider == "docker" and .[0].phase == "high" and .[0].unfinalized == 13 and .[0].counters.block_creator_empty_block_built == 4' \
+	"$TMP/output/iteration-00001-docker/issue24-phases.jsonl" >/dev/null
 test ! -e "$TMP/output/iteration-00001-docker/.pytest-output.fifo"
 test -s "$TMP/fake-poetry.pid"
 ! kill -0 "$(cat "$TMP/fake-poetry.pid")" 2>/dev/null

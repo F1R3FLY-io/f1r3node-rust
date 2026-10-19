@@ -606,6 +606,10 @@ jobs:
         shell: bash -euo pipefail {0}
         run: bash scripts/bench/test-sample-node-io.sh
 
+      - name: Verify issue 24 phase summary
+        shell: bash -euo pipefail {0}
+        run: bash scripts/bench/test-summarize-issue24-phases.sh
+
       - name: Verify integration preflight driver
         shell: bash -euo pipefail {0}
         run: scripts/bench/test-run-integration-preflight.sh
