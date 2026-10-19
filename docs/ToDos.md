@@ -1311,7 +1311,7 @@ tasks:
     scope: "H1 implementation, claim revision, and source-bound verification. The runtime owner transferred H1 on 2026-10-18 after F1/F2 landed at ed9b3c996."
     design: docs/designs/deploy-heartbeat-wake.md
     claim_spec: docs/claims/heartbeat-proposal-amplification-bound.md
-    stage: "Heartbeat evidence is bound to da1c12ed1. Pi now owns additional cancellation, queue, and negative-control tests and the API display-projection renewal. Maintainer acceptance remains pending."
+    stage: "H1 acceptance at 0a4acca7a is recorded from the maintainer handoff with its stated limits. Performance and separate display-projection acceptance remain open. External policy/read-back audit is requested."
     verification_record: docs/casper/validation/heartbeat-h1-verification-2026-10-19.md
     acceptance:
       - "The revised claim is pending before H1 code begins, and the prior evidence remains unchanged in history."

@@ -8,7 +8,7 @@
 
 **Baseline:** `ed9b3c996`, the F1/F2 implementation.
 
-**Status:** The heartbeat source binding is refreshed to `da1c12ed1`. The runner retested the hash-binding refinement. Claim discharge, maintainer acceptance, and performance qualification remain pending.
+**Status:** H1 safety acceptance is recorded for `0a4acca7a179d69e766e65672480390c02b45fe5`, with the limits below. The construction argument is reviewed, not mechanized. Performance qualification remains open.
 
 ## Implementation
 
@@ -32,9 +32,9 @@ Routine cooldown checks include monotonic publication observations. A newly obse
 
 Three counters report mode entry, mode exit, and successful exempt publications. The phase-metric extension includes their exported names.
 
-## Construction argument for review
+## Reviewed construction argument
 
-This argument is not a mechanized proof or maintainer acceptance. It assumes the production request queue and heartbeat loop retain their sequential await behavior.
+The maintainer accepted this reviewed construction argument with its recorded assumptions. It is not a mechanized proof. The production queue and heartbeat loop must retain their sequential await behavior.
 
 Let `C` be the positive configured cooldown. A rolling window is `(t - C, t]`.
 
@@ -108,7 +108,7 @@ ccb01fdcf2027f7698066ed5ad166e260fab043846088fc9939c1a3f640c18ac  casper/src/rus
 21179bcccef9de2b87dfe4c12c9f943295f7d0f6f6218bf9d955cd97aca2b6df  casper/tests/add_block/h1_proposer_spec.rs
 ```
 
-Current pending evidence records identify the heartbeat, proposer, and API bridge. The two replaced `dev` records remain unchanged in the history directories.
+Current evidence records identify the heartbeat, proposer, and API bridge. The two replaced `dev` records remain unchanged in the history directories.
 
 The 13 intermediate PR snapshots remain in checkpoint `b87d1dfe29ee6d06d1894aec3db872c63ff6829f`. Their removal changes no runtime or test source.
 
@@ -154,21 +154,51 @@ b9f54549857fa29b0f008210c7e9b685a4304fd88a9eea1a79ec0b00d702b1c9  casper/tests/a
 
 The heartbeat and proposer runtime digests remain unchanged. The [API renewal report](api-display-projection-renewal-2026-10-19.md) records the source comparison, fresh tests, and declared Linux and Rocq limits.
 
+## H1 maintainer acceptance
+
+The shared maintainer handoff records [acceptance on PR #768](https://github.com/F1R3FLY-io/f1r3node-rust/pull/768#issuecomment-6265326408) by `jeffrey-l-turner` at `2026-10-19T10:40:35Z`.
+
+The acceptance covers H1-1 through H1-5 at revision `0a4acca7a179d69e766e65672480390c02b45fe5`. The accepted claim digest remains `0f62182a84d4f83eae00e6dab4647d1299ffddedb0e98d5840b42df7e57db44b`.
+
+The exact accepted evidence remains immutable:
+
+```text
+37a9a5b80b2b5f2ceb5f003915acf438192cef771939bdffaba40f2efb21065e  0a4acca7a179d69e766e65672480390c02b45fe5:docs/casper/validation/heartbeat-h1-verification-2026-10-19.md
+acfd02d5a6b477d453767a9b6b7871eb3c163b660f41f4c89b8ea613a2d46701  0a4acca7a179d69e766e65672480390c02b45fe5:docs/casper/validation/api-display-projection-renewal-2026-10-19.md
+```
+
+This updated report records that acceptance. It does not replace the accepted inputs with a newly verified proof.
+
+The accepted construction assumptions are:
+
+- One live heartbeat task owns the state.
+- The queue and heartbeat loop await requests sequentially.
+- Block hashes are immutable, and snapshots are consistent.
+- Publication effects precede a successful callback.
+
+The accepted H1 limits remain explicit:
+
+- No bound applies across process restarts or globally across the excluded proposal paths.
+- Linux display admission and the Rocq recheck were not executed. No pass is recorded for either check.
+- The agentic verifier supplies executable-check evidence only. The construction argument is reviewed, not mechanized.
+
+The acceptance closes H1 discharge, construction and binding review, and H1 claim acceptance at that scope. It does not accept performance or the separate display-projection claim.
+
+The acceptance provenance is the shared maintainer handoff and its linked record. This sandbox could not authenticate GitHub or verify an SSH approval.
+
 ## Remaining gates
 
 Each open gate has one accountable owner. A runner executes an authorized operation but does not grant acceptance.
 
 | Open gate | Owner | Required result |
 | --- | --- | --- |
-| CbC discharge | Maintainer | Review the current-source verification evidence and record a valid discharge. The adapter's executable-check result alone does not close this gate. |
-| Construction and source-binding review | Maintainer | Review the construction argument, its assumptions, and the bindings against the final implementation. |
-| Claim acceptance | Maintainer | Record acceptance for the reviewed source, claim, and evidence. Do not reuse the historical leader-only discharge. |
-| Linux admission and Rocq recheck | Maintainer | Authorize the missing local environments or tools. Runner `f1r3node-rust-71` can then execute the outstanding checks. No pass or waiver is recorded. |
+| Separate display-projection acceptance | Maintainer | Review CLAIM-CASPER-NODE-OBSERVATION-005 independently. The H1 acceptance does not accept that claim or establish fresh Linux or Rocq results. |
 | Comparison execution and performance acceptance | Maintainer | Complete the authorized comparison and evaluate every threshold in design section 5.1. `f1r3node-rust-71` is the runner. |
 
 ### Completed prerequisites
 
-- **API-scoped evidence renewal:** `pi-session-heartbeat-h1-cbc` recorded the two-line API comparison, 53 display tests, 3 arithmetic tests, and 36 capture tests. TLC passed 18 positive configurations and detected 96 expected violations. Full-claim acceptance remains open, including the declared Linux and Rocq limits.
+- **H1 discharge, construction and binding review, and claim acceptance:** The maintainer accepted H1-1 through H1-5 at the revision and evidence digests above. The recorded assumptions and limits remain applicable.
+- **API-scoped evidence renewal:** `pi-session-heartbeat-h1-cbc` recorded the two-line API comparison, 53 display tests, 3 arithmetic tests, and 36 capture tests. TLC passed 18 positive configurations and detected 96 expected violations. Separate display-projection acceptance remains open. Linux and Rocq limits are not passing results.
 - **Additional test coverage:** `pi-session-heartbeat-h1-cbc` added nine tests. The runner verified the 65-test, 1-test, and 7-test selections. Broader claim review remains open.
 - **Current-source evidence digests:** `pi-session-heartbeat-h1-cbc` refreshed the heartbeat binding to `da1c12ed1` and updated the affected report digests. Intermediate records remain available in immutable checkpoint `b87d1dfe29ee6d06d1894aec3db872c63ff6829f`.
 - **Proposer compatibility symlink:** Closed by `14c4c3546`. The maintainer authorized the creation, and `f1r3node-rust-71` created the symlink.
@@ -178,7 +208,7 @@ Each open gate has one accountable owner. A runner executes an authorized operat
 
 The adapter recorded a proposal from a large language model. It did not apply or check that proposal. The tool status depended on the targeted test command's exit status.
 
-The adapter's `discharged` label therefore supplies executable-check evidence, not a mechanized proof of H1-1 through H1-5. Claim acceptance remains open.
+The adapter's `discharged` label supplies executable-check evidence, not a mechanized proof of H1-1 through H1-5. H1 acceptance comes from the separate maintainer review recorded above.
 
 The runner reported baseline run `39194089405` at `ed9b3c996` with profile `weekend-60h`. The H1 run is planned for `da1c12ed1` after that baseline.
 
