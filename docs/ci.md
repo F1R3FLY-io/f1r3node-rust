@@ -33,8 +33,8 @@ This page lists the jobs of `.github/workflows/ci.yml`, `.github/workflows/ci-fo
 | `coverage_summary` | Coverage Summary | Gate | `build_base`, `coverage` |
 | `test_casper_gate` | Test Gate (casper) | Gate | `test_casper`, `coverage_summary` |
 | `pipeline` | Integration Pipeline | Build and integration test | `build_base`, `static_checks`, `script_tests`, `soak_harness_tests` |
-| `integration_tests_amd64` | Integration Gate (amd64) | Gate | `pipeline` |
-| `integration_tests_arm64` | Integration Gate (arm64) | Gate | `pipeline` |
+| `integration_tests_amd64` | Integration Gate (amd64) | Gate | `build_base`, `pipeline` |
+| `integration_tests_arm64` | Integration Gate (arm64) | Gate | `build_base`, `pipeline` |
 | `notify_queue_failure` | Notify Queue Failure | Notification | `pipeline`, both integration gates |
 | `release_docker_image` | Release Docker Image | Build | the checks above |
 | `release_packages` | Release Packages | Build | the checks above |
@@ -99,6 +99,8 @@ The job runs 21 script tests:
 | Reclaim Ephemeral Runners | Setup |
 | Smoke Test (Docker Standalone), (Docker Shard), (Local Standalone) | Integration test |
 
+The input `oci_tests` (default `true`) controls Launch Ephemeral Runners. When it is `false`, the integration and UCC tests and Reclaim Ephemeral Runners skip too. The image build and the smoke tests always run.
+
 ## Old and new check names
 
 | Old name | New name | Change |
@@ -123,6 +125,10 @@ The `devProtect` ruleset requires these checks:
 The `masterProtect` ruleset requires Promotion Source, Commit Policy, Static Checks, Script Tests, Soak Harness Tests, cargo-deny, Test (*crate*) for each crate, and Test Gate (casper).
 
 The heavy reuse gate in the `build_base` target step and `release-train.sh validate-ci-evidence` read Integration Gate (amd64) and (arm64). A pull request run from before TASK-023-4 has only the old names. A merge group therefore cannot reuse the heavy result of such a run, and it runs the Integration Pipeline again.
+
+A push to `dev` carries the commit that its merge group tested. The target step finds the newest `ci.yml` merge group run of the pushed commit. If both Integration Gate jobs of that run concluded success, the push run sets `oci_tests` to `false`. The Integration Pipeline then builds the images and runs the smoke tests, but it launches no OCI runners.
+
+When the push run reuses a merge group result, both Integration Gate jobs pass and name the reused run. Release Docker Image still publishes the images. If the target step finds no such run, or an API call fails, the push run runs the OCI tests. A push to `master`, a tag, a pull request, and a merge group always run them.
 
 `ci-fork-pr.yml` also has Integration Gate jobs, and it runs for every pull request. For a pull request from this repository, these jobs are skipped and report as Integration Gate (amd64, fork PRs only) and (arm64, fork PRs only). A skipped check counts as a pass. With the required names, the skipped checks would pass the gate before the `ci.yml` gate finishes. A `ci-heavy` pull request could then enter the merge queue during its own heavy run, and the merge group would run the Integration Pipeline again. `check-workflow-invariants.sh` rejects a fork-only job that reports a `ci.yml` check name when it is skipped.
 

@@ -144,6 +144,27 @@ ruby -ryaml -e '
   end
 ' "$ROOT/.github/workflows/ci.yml"
 
+# shellcheck disable=SC2016 # Ruby reads the literal text $OCI_TESTS in the workflow step.
+ruby -ryaml -e '
+  ci = YAML.load_file(ARGV[0])
+  pipe = YAML.load_file(ARGV[1])
+  input = pipe.dig(true, "workflow_call", "inputs", "oci_tests") || pipe.dig("on", "workflow_call", "inputs", "oci_tests")
+  abort "the pipeline has no oci_tests input with default true" unless input && input["default"] == true
+  abort "the launch job does not depend on inputs.oci_tests" unless pipe.dig("jobs", "launch_ephemeral_runners", "if").to_s.include?("inputs.oci_tests")
+  %w[integration_tests ucc_tests].each do |job|
+    abort "#{job} does not need the launch job" unless Array(pipe.dig("jobs", job, "needs")).include?("launch_ephemeral_runners")
+  end
+  %w[build_docker_image smoke_docker_standalone smoke_docker_shard smoke_local_standalone].each do |job|
+    abort "#{job} must not depend on the OCI tests" if pipe.dig("jobs", job, "if").to_s.include?("oci_tests")
+  end
+  abort "ci.yml does not pass oci_tests to the pipeline" unless ci.dig("jobs", "pipeline", "with", "oci_tests").to_s.include?("OCI_TESTS")
+  %w[integration_tests_amd64 integration_tests_arm64].each do |job|
+    abort "#{job} does not need build_base" unless Array(ci.dig("jobs", job, "needs")).include?("build_base")
+    step = ci.dig("jobs", job, "steps").first
+    abort "#{job} does not honor OCI_TESTS" unless step["env"]["OCI_TESTS"] && step["run"].include?("\"$OCI_TESTS\" = false")
+  end
+' "$ROOT/.github/workflows/ci.yml" "$ROOT/.github/workflows/_integration-pipeline.yml"
+
 GROUP_HEAD=6666666666666666666666666666666666666666
 GROUP_BASE=7777777777777777777777777777777777777777
 PULL_HEAD=8888888888888888888888888888888888888888
@@ -199,5 +220,46 @@ FAIL_ON=compare/ merge_group_case compare-api-error true
 FAIL_ON=git/commits merge_group_case tree-api-error true
 FAIL_ON=workflows/ci.yml/runs merge_group_case runs-api-error true
 FAIL_ON=/jobs merge_group_case jobs-api-error true
+
+push_case() {
+  local label="$1" ref="$2" expected="$3" actual
+  FAKE_WORKFLOW_RUNS="${RUNS:-$WORKFLOW_RUNS}" \
+    FAKE_NEWEST_RUN=20 \
+    FAKE_NEWEST_JOBS="${NEWEST:-$(jobs_json success success)}" \
+    FAKE_OTHER_JOBS="${OTHER:-$(jobs_json failure failure)}" \
+    FAKE_FAIL_ON="${FAIL_ON:-no-failure}" \
+    run_case "$label" push "$ref" '' '' '' '[]' '' '' true
+  actual="$(grep '^oci_tests=' "$TMP/output-$label" | cut -d= -f2)"
+  [ "$actual" = "$expected" ] || {
+    printf '%s: expected oci_tests=%s, got %s\n' "$label" "$expected" "$actual" >&2
+    return 1
+  }
+  if [ "$expected" = false ]; then
+    [ "$(grep '^reused_merge_group_run=' "$TMP/output-$label" | cut -d= -f2)" = 20 ] || {
+      printf '%s: the reused merge group run is not recorded\n' "$label" >&2
+      return 1
+    }
+  fi
+}
+
+push_case dev-push-reuses-merge-group refs/heads/dev false
+push_case master-push-runs-oci-tests refs/heads/master true
+push_case version-tag-runs-oci-tests refs/tags/v0.4.46 true
+NEWEST="$(jobs_json skipped skipped)" push_case dev-push-group-heavy-skipped refs/heads/dev true
+NEWEST="$(jobs_json skipped skipped)" OTHER="$(jobs_json success success)" push_case dev-push-older-group-passed refs/heads/dev true
+NEWEST="$(jobs_json success failure)" push_case dev-push-group-arm64-failed refs/heads/dev true
+NEWEST="$(jobs_json success "")" push_case dev-push-group-arm64-pending refs/heads/dev true
+NEWEST='{"jobs": []}' push_case dev-push-group-no-jobs refs/heads/dev true
+RUNS='{"workflow_runs": []}' push_case dev-push-no-merge-group-run refs/heads/dev true
+RUNS='{"workflow_runs": [{"id": 20, "path": ".github/workflows/other.yml"}]}' push_case dev-push-other-workflow-only refs/heads/dev true
+FAIL_ON=workflows/ci.yml/runs push_case dev-push-runs-api-error refs/heads/dev true
+FAIL_ON=/jobs push_case dev-push-jobs-api-error refs/heads/dev true
+
+for label in standalone merge-group exact-merge reuse-newest-ci-run; do
+  [ "$(grep '^oci_tests=' "$TMP/output-$label" | cut -d= -f2)" = true ] || {
+    printf '%s: a non-push event skipped the OCI tests\n' "$label" >&2
+    exit 1
+  }
+done
 
 printf 'CI stack gate tests passed\n'
