@@ -47,12 +47,42 @@ async fn validator_bond_check_uses_selected_parent_metadata() {
         .unwrap();
 
     snapshot.parents = vec![unbonded_parent.clone()];
-    snapshot.parents[0].body.state.bonds = bonded_parent.body.state.bonds.clone();
     assert!(!snapshot.is_validator_bonded(&validator).unwrap());
 
     snapshot.last_finalized_block = unbonded_parent.block_hash;
     snapshot.parents = vec![bonded_parent];
     assert!(snapshot.is_validator_bonded(&validator).unwrap());
+}
+
+#[tokio::test]
+async fn selected_parent_metadata_matches_block_bonds_after_admission() {
+    fn assert_bonds_match(snapshot: &casper::rust::casper::CasperSnapshot) {
+        let parent = snapshot.parents.first().unwrap();
+        let metadata = snapshot.dag.lookup_unsafe(&parent.block_hash).unwrap();
+        let bonds = parent
+            .body
+            .state
+            .bonds
+            .iter()
+            .map(|bond| (bond.validator.clone(), bond.stake))
+            .collect();
+        assert_eq!(metadata.weight_map, bonds);
+    }
+
+    let genesis = GenesisBuilder::new()
+        .build_genesis_with_parameters(None)
+        .await
+        .unwrap();
+    let mut node = TestNode::standalone(genesis.clone()).await.unwrap();
+    assert_bonds_match(&node.casper.get_snapshot().await.unwrap());
+
+    let deploy =
+        construct_deploy::basic_deploy_data(0, None, Some(genesis.genesis_block.shard_id.clone()))
+            .unwrap();
+    let block = node.add_block_from_deploys(&[deploy]).await.unwrap();
+    let snapshot = node.casper.get_snapshot().await.unwrap();
+    assert_eq!(snapshot.parents[0].block_hash, block.block_hash);
+    assert_bonds_match(&snapshot);
 }
 
 #[tokio::test]
