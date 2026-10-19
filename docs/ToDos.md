@@ -3792,12 +3792,13 @@ tasks:
 
   - id: TASK-012-32
     title: "Reuse the deploy pool snapshot during block creation"
-    status: in_progress
+    status: review
     issues: [711]
+    pr: "https://github.com/F1R3FLY-io/f1r3node-rust/pull/771"
     pr_base_branch: dev
     branch: perf/711-deploy-pool-snapshot
-    claimed_by: codex-session-711
-    claimed_at: 2026-10-19T10:44:00Z
+    claimed_by: null
+    claimed_at: null
     blocked_by: []
     notes:
       - "Implement docs/plans/issue-711-deploy-pool-snapshot.md."
