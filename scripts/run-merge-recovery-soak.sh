@@ -366,7 +366,11 @@ if ! [[ "$DISK_HYGIENE_SECONDS" =~ ^([1-9]|[12][0-9]|30)$ ]]; then
 	exit 2
 fi
 DISK_DIAGNOSTIC_SECONDS="${SOAK_DISK_DIAGNOSTIC_SECONDS:-10}"
-DISK_USAGE_RECORD_SECONDS=60
+DISK_USAGE_RECORD_SECONDS="${SOAK_DISK_USAGE_RECORD_SECONDS:-60}"
+if ! [[ "$DISK_USAGE_RECORD_SECONDS" =~ ^[1-9][0-9]{0,2}$ ]]; then
+	printf 'SOAK_DISK_USAGE_RECORD_SECONDS must be an integer from 1 through 999\n' >&2
+	exit 2
+fi
 if ! [[ "$DISK_DIAGNOSTIC_SECONDS" =~ ^([1-9]|10)$ ]]; then
 	printf 'SOAK_DISK_DIAGNOSTIC_SECONDS must be an integer from 1 through 10\n' >&2
 	exit 2
@@ -2300,6 +2304,7 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
 	fi
 
 done
+record_disk_usage "soak-end"
 
 # A breach during the final iteration (or one that still exited 0) ends the
 # loop by deadline without passing the top-of-loop check, which would let the

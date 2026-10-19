@@ -60,6 +60,7 @@
 #   log-probe-transient-active one node log exec fails during the iteration -> warning, one iteration
 #   log-probe-exec-nonzero-active node log exec prints a partial du size and an error, exits 1 -> breach
 #   log-rotated-unreadable a rotated container log exists but cannot be read  -> breach, log probe unavailable
+#   disk-record-degraded  the disk record meets known Docker sizes, a stalled docker system df, and a failed du -> bounded rows, one iteration
 #
 # Usage: test-soak-disk-admission.sh [--scenario NAME] [source-directory] [evidence-directory]
 #   With no --scenario (and no SOAK_DISK_TEST_SCENARIO) every scenario runs
@@ -85,7 +86,8 @@ SCENARIOS=(band missing-boundary missing-after-hygiene malformed-boundary missin
     cleanup-error-image cleanup-error-builder cleanup-partial cleanup-sufficient
     log-within-budget log-container-soft log-container-hard log-node-soft log-probe-missing-active
     log-probe-missing-boundary log-sudo-fallback log-budget-disabled log-budget-range log-descriptor-exhaustion
-    log-probe-vanished log-probe-transient-active log-probe-exec-nonzero-active log-rotated-unreadable)
+    log-probe-vanished log-probe-transient-active log-probe-exec-nonzero-active log-rotated-unreadable
+    disk-record-degraded)
 
 SCENARIO="${SOAK_DISK_TEST_SCENARIO:-}"
 if [[ "${1:-}" == --scenario ]]; then
@@ -121,6 +123,7 @@ case "${SOAK_DISK_TEST_SCENARIO:-band}" in
             [[ "$SOAK_DISK_TEST_SCENARIO" != cleanup-partial ]] || available=8000
         fi
         ;;
+    disk-record-degraded) available=16384 ;;
     stalled-active)
         if [[ -f /case/evidence/workload-started.txt ]]; then
             printf 'stalled-active\n' >>/case/evidence/probe-samples.txt
@@ -241,6 +244,14 @@ SH
 #!/usr/bin/env bash
 printf '%s\n' "$*" >>/case/evidence/docker-commands.txt
 owned_id=0000000000000000000000000000000000000000000000000000000000000001
+if [[ "${SOAK_DISK_TEST_SCENARIO:-band}" == disk-record-degraded && -n "${SOAK_DISK_USAGE_RECORD:-}" && "$*" == "system df --format "* ]]; then
+    if mkdir /case/evidence/docker-df-sizes 2>/dev/null; then
+        printf 'Images\t3.074GB\nContainers\t122.9kB\nLocal Volumes\t2.248GB\nBuild Cache\t7.006GB\n'
+        exit 0
+    fi
+    sleep 30
+    exit 0
+fi
 if [[ "${SOAK_DISK_TEST_SCENARIO:-band}" == log-probe-vanished && -s /case/evidence/workload-started.txt ]]; then
     if [[ "${1:-}" == inspect && "${3:-}" == *LogPath* && "${4:-}" == "$owned_id" ]] &&
         mkdir /case/evidence/vanish-window 2>/dev/null; then
@@ -514,6 +525,7 @@ SH
     container_budget=0
     node_budget=0
     log_every=3
+    record_seconds=60
     driver_timeout=20
     mkdir -p /case/clog
     truncate -s 10M /case/clog/json.log
@@ -721,6 +733,17 @@ SH
         ) &
         observer=$!
     fi
+    if [[ "$SCENARIO" == disk-record-degraded ]]; then
+        record_seconds=2
+        cat >bin/du <<'SH'
+#!/usr/bin/env bash
+if [[ -n "${SOAK_DISK_USAGE_RECORD:-}" && "${!#}" == /case/evidence/output ]]; then
+    printf 'du: fixture failure\n' >&2
+    exit 1
+fi
+exec /usr/bin/du "$@"
+SH
+    fi
     if [[ "$SCENARIO" == diagnostic-deadline ]]; then
         for n in $(seq 1 32); do mkdir -p "/tmp/test-diagnostic-$n"; done
         cat >bin/du <<'SH'
@@ -788,6 +811,7 @@ SH
         SOAK_LOG_PROBE_EVERY="$log_every" \
         SOAK_LOG_PROBE_SECONDS=2 \
         SOAK_DISK_DIAGNOSTIC_SECONDS=1 \
+        SOAK_DISK_USAGE_RECORD_SECONDS="$record_seconds" \
         SOAK_DISK_STOP_SECONDS=1 \
         SOAK_DISK_HYGIENE_SECONDS=1 \
         SOAK_TMP_ROOT=/tmp \
@@ -923,6 +947,30 @@ SH
             exit 1
         fi
         printf 'PASS: The log guardian recorded the breach and stopped the writers (%s).\n' "$SCENARIO"
+        exit 0
+    fi
+    if [[ "$SCENARIO" == disk-record-degraded ]]; then
+        if [[ ! -d evidence/docker-df-sizes ]] || ! grep -Fxq 'valid=16384' evidence/probe-samples.txt; then
+            printf 'ERROR: The fixture did not serve the Docker sizes or the sufficient disk sample.\n' >&2
+            exit 2
+        fi
+        if [[ "$status" != 0 || "$iterations" != 1 ]] ||
+            ! jq -e '.iterations == 1 and .failures == 0' evidence/output/summary.json >/dev/null; then
+            printf 'FAIL: A degraded disk record changed the run result.\n' >&2
+            exit 1
+        fi
+        if ! awk -F '\t' '
+            $2 == "segment-1-start" && $3 == "docker:Images" && $4 == 2931 { images = 1 }
+            $2 == "segment-1-start" && $3 == "docker:Build_Cache" && $4 == 6681 { cache = 1 }
+            $3 == "/case/evidence/output" && $4 == "?" { unknown = 1 }
+            $3 == "/case/evidence/output" && $4 == "0" { zero = 1 }
+            $2 == "iteration-1-docker" && $3 == "df_avail" { iteration = 1 }
+            $2 == "soak-end" && $3 == "df_avail" { end = 1 }
+            END { exit !(images && cache && unknown && !zero && iteration && end) }' evidence/output/disk-usage.tsv; then
+            printf 'FAIL: The disk record lacks the converted sizes, the unknown marker, or the iteration and end rows.\n' >&2
+            exit 1
+        fi
+        printf 'PASS: A degraded disk record stayed bounded, marked the failed root unknown, and kept the run result.\n'
         exit 0
     fi
     if [[ "$SCENARIO" == cleanup-partial || "$SCENARIO" == cleanup-sufficient ]]; then
