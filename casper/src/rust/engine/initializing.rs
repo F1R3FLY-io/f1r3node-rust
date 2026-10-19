@@ -437,6 +437,17 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> Engine for Initializing<
                     .map_err(CasperError::CommError)
             }
             CasperMessage::StoreItemsMessage(store_items_message) => {
+                // Tuple-space restore is bootstrap-only: every StoreItemsMessageRequest goes
+                // out through send_to_bootstrap, and with no bootstrap on_approved_block never
+                // starts a restore. `peer` is the node id the message declares, so this filter
+                // only narrows the input. Chunk validation is what rejects bad data.
+                if self.rp_conf_ask.bootstrap.as_ref() != Some(&peer) {
+                    tracing::warn!(
+                        "Dropping StoreItemsMessage from {}: state chunks are requested only from the bootstrap.",
+                        peer
+                    );
+                    return Ok(());
+                }
                 tracing::info!(
                     "Received {} from {}.",
                     store_items_message.clone().pretty(),
@@ -1953,8 +1964,8 @@ impl<T: TransportLayer + Send + Sync> TupleSpaceRequesterOps for TupleSpaceReque
 
     fn validate_tuple_space_items(
         &self,
-        history_items: Vec<(Blake2b256Hash, Vec<u8>)>,
-        data_items: Vec<(Blake2b256Hash, Vec<u8>)>,
+        history_items: &[(Blake2b256Hash, Vec<u8>)],
+        data_items: &[(Blake2b256Hash, Vec<u8>)],
         start_path: StatePartPath,
         page_size: i32,
         skip: i32,
@@ -1967,8 +1978,8 @@ impl<T: TransportLayer + Send + Sync> TupleSpaceRequesterOps for TupleSpaceReque
             page_size,
             skip,
             get_from_history,
-        );
-        Ok(())
+        )
+        .map_err(|e| CasperError::RuntimeError(e.to_string()))
     }
 }
 

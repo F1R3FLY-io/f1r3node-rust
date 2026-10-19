@@ -323,28 +323,39 @@ jobs:
             exit 1
           fi
 
-  # A promotion pull request into master must not use dev as its head branch.
-  # The repository deletes the head branch of a merged pull request, and GitHub
-  # then retargets every open pull request based on that branch to master. Two
-  # promotions from dev did that to every open dev pull request (2026-10-04 and
-  # 2026-10-09). `just promote` opens the promotion from a promote/* branch.
+  # A pull request must not use master or dev of this repository as its head
+  # branch. The repository deletes the head branch of a merged pull request,
+  # and GitHub then retargets every open pull request based on that branch
+  # (promotions from dev, 2026-10-04 and 2026-10-09). A protected head also
+  # exposes "Update branch", which merges the base into the head through an
+  # admin bypass: on #747 (head master, base dev) it pushed dev onto master
+  # outside promotion (bf4915d57, 2026-10-16). This job only reports, with a
+  # read-only token: the code it runs comes from the pull request. The
+  # protected-head-guard.yml workflow closes such a pull request with code
+  # from the base branch. `just promote` and `just backmerge` open these pull
+  # requests from temporary promote/* and backmerge/* branches.
   promotion_source:
     name: Promotion Source
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    permissions: {}
+    permissions:
+      contents: read
     steps:
-      - name: Reject a pull request from dev to master
+      - name: Checkout
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+
+      - name: Reject a pull request with head master or dev
+        shell: bash -euo pipefail {0}
         env:
           EVENT_NAME: ${{ github.event_name }}
           BASE_REF: ${{ github.base_ref }}
           HEAD_REF: ${{ github.head_ref }}
-        run: |
-          if [ "$EVENT_NAME" = pull_request ] && [ "$BASE_REF" = master ] && [ "$HEAD_REF" = dev ]; then
-            echo "::error::Do not open a promotion with head dev. Run 'just promote' to open it from a promote/* branch."
-            exit 1
-          fi
-          echo "Promotion source accepted: event=$EVENT_NAME base=${BASE_REF:-none} head=${HEAD_REF:-none}"
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          REPOSITORY: ${{ github.repository }}
+        run: .github/scripts/check-promotion-source.sh
 
   # Commit identity policy for pull requests. This job reads the pull request
   # head SHA, so it has no cache step: a cache step in the same job is the
@@ -536,6 +547,14 @@ jobs:
         shell: bash -euo pipefail {0}
         run: .github/scripts/test-open-promotion-pr.sh
 
+      - name: Verify back-merge pull request opener
+        shell: bash -euo pipefail {0}
+        run: .github/scripts/test-open-backmerge-pr.sh
+
+      - name: Verify Promotion Source check
+        shell: bash -euo pipefail {0}
+        run: .github/scripts/test-check-promotion-source.sh
+
       - name: Verify release promotion
         shell: bash -euo pipefail {0}
         run: .github/scripts/test-promote-release.sh
@@ -586,6 +605,10 @@ jobs:
       - name: Verify node I/O sampler
         shell: bash -euo pipefail {0}
         run: bash scripts/bench/test-sample-node-io.sh
+
+      - name: Verify issue 24 phase summary
+        shell: bash -euo pipefail {0}
+        run: bash scripts/bench/test-summarize-issue24-phases.sh
 
       - name: Verify integration preflight driver
         shell: bash -euo pipefail {0}

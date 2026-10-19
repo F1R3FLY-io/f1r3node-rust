@@ -1236,7 +1236,7 @@ iteration_lfb_spread() {
 # the soak.
 emit_iteration_metrics() {
 	local iteration_dir="$1" iteration="$2" provider="$3" \
-		iter_started="$4" iter_finished="$5" exit_code="$6"
+		iter_started="$4" iter_finished="$5" exit_code="$6" deadline_truncated="${7:-false}"
 	command -v jq >/dev/null || return 0
 	local summary_line passed failed skipped errors rss_peak cpu_peak latency lat_p50 lat_p95 lat_p99 lat_n too_far_ahead
 	summary_line="$(grep -E '^=+ .* in [0-9.]+s( \([^)]*\))? =+$' "$iteration_dir/pytest.log" 2>/dev/null | tail -1 || true)"
@@ -1287,6 +1287,7 @@ emit_iteration_metrics() {
 		--argjson started "$iter_started" \
 		--argjson finished "$iter_finished" \
 		--argjson exit_code "$exit_code" \
+		--argjson deadline_truncated "$deadline_truncated" \
 		--argjson passed "$passed" \
 		--argjson failed "$failed" \
 		--argjson skipped "$skipped" \
@@ -1303,6 +1304,7 @@ emit_iteration_metrics() {
 		'{iteration: $iteration, provider: $provider,
       started_at: $started, finished_at: $finished,
       duration_s: ($finished - $started), exit_code: $exit_code,
+      deadline_truncated: $deadline_truncated,
       pytest: {passed: $passed, failed: $failed, skipped: $skipped, errors: $errors},
       rss_peak_mb: $rss_peak,
       cpu_peak_pct: $cpu_peak,
@@ -1312,6 +1314,8 @@ emit_iteration_metrics() {
       too_far_ahead_errors: $too_far_ahead,
       metrics: $metrics,
       ok: ($exit_code == 0)}' >"$iteration_dir/metrics.json" 2>/dev/null || true
+	"$SCRIPT_DIR/bench/summarize-issue24-phases.sh" records --provider "$provider" --session "$iteration" \
+		"$iteration_dir/pytest.log" >"$iteration_dir/issue24-phases.jsonl" 2>/dev/null || true
 }
 
 # True once the branch under test has advanced past the SHA this soak pinned
@@ -2102,6 +2106,18 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
 		kill "$ITERATION_IO_SAMPLER_PID" 2>/dev/null || true
 		wait "$ITERATION_IO_SAMPLER_PID" 2>/dev/null || true
 	fi
+	# The node-metrics copy is 40-190MB per iteration and nothing reads it
+	# after the snapshot loop stops. Uncompressed, 93 iterations of weekend
+	# run 38995239992 left 10GB in OUTPUT_DIR and tripped the disk floor at
+	# 16.7h of 57.5h; gzip keeps all rows at about 1/20 of the size. It runs
+	# after the I/O sampler stops so its I/O stays out of io.tsv, and it is
+	# skipped under an emergency deadline, which has no seconds to spare. A
+	# failure keeps the soak going but is logged: a silent one would bring
+	# the disk growth back with no trace.
+	if [ -z "$EMERGENCY_DEADLINE_EPOCH" ] && [ -f "$ITERATION_DIR/node-metrics-timeseries.csv" ]; then
+		gzip -6 -f "$ITERATION_DIR/node-metrics-timeseries.csv" ||
+			printf 'node-metrics gzip failed for iteration %s; the uncompressed CSV remains\n' "$ITERATIONS" >&2
+	fi
 	rm -f "$ITERATION_FIFO"
 	ITERATION_PID=""
 	ITERATION_TEE_PID=""
@@ -2133,11 +2149,15 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
 		if ! jq -e '.capture_complete == true' "$OUTPUT_DIR/casper-history/$(printf '%08d' "$ITERATIONS").json" >/dev/null; then break; fi
 		continue
 	fi
+	DEADLINE_TRUNCATED=false
+	if [ "$STATUS" -eq 124 ] && [ "$(date +%s)" -ge "$DEADLINE" ]; then
+		DEADLINE_TRUNCATED=true
+	fi
 	emit_iteration_metrics "$ITERATION_DIR" "$ITERATIONS" "$PROVIDER" \
-		"$ITER_STARTED" "$ITER_FINISHED" "$STATUS" || true
+		"$ITER_STARTED" "$ITER_FINISHED" "$STATUS" "$DEADLINE_TRUNCATED" || true
 	INFLIGHT_ITERATION=0
 
-	if [ "$STATUS" -eq 124 ] && [ "$(date +%s)" -ge "$DEADLINE" ]; then
+	if [ "$DEADLINE_TRUNCATED" = true ]; then
 		printf '%s\n' "deadline reached during iteration $ITERATIONS" >"$ITERATION_DIR/deadline.txt"
 		break
 	fi

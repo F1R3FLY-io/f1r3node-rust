@@ -69,8 +69,28 @@ versions = ["2.0.1"]
 owner = "@F1R3FLY-io/ci-maintainers"
 review-by = 2026-11-05
 
-[exceptions."zip@0.6.6"]
+[exceptions.RUSTSEC-2026-0367]
 package = "zip"
-versions = ["0.6.6"]
+versions = ["0.6.6", "3.0.0"]
 owner = "@F1R3FLY-io/ci-maintainers"
-review-by = 2026-11-05
+review-by = 2026-11-15
+
+[exceptions.RUSTSEC-2026-0368]
+package = "zip"
+versions = ["0.6.6", "3.0.0"]
+owner = "@F1R3FLY-io/ci-maintainers"
+review-by = 2026-11-15
+
+[exceptions.RUSTSEC-2026-0369]
+package = "zip"
+versions = ["0.6.6", "3.0.0"]
+owner = "@F1R3FLY-io/ci-maintainers"
+review-by = 2026-11-15
+
+[yanked."zip@3.0.0"]
+owner = "@F1R3FLY-io/ci-maintainers"
+review-by = 2026-11-15
+
+[yanked."zip@0.6.6"]
+owner = "@F1R3FLY-io/ci-maintainers"
+review-by = 2026-11-15

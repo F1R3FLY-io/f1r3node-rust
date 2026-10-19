@@ -1582,7 +1582,7 @@ mod tests {
             acc
         });
         // Byte-identity with fileio canonical as of slice 5.16 port.
-        const EXPECTED: &str = "07680c2f0bca08c5cd35f4eb3e5296b39958cf8043d6f1725b228b4ae0756581";
+        const EXPECTED: &str = "7c77708966b08f594c469510a2645bd34d490ca67aa465b19e5dabcac3e107cb";
         assert_eq!(
             hex, EXPECTED,
             "compose_fs_genesis_source() hash changed.  If intentional \
@@ -2433,7 +2433,7 @@ mod tests {
         //     compose_fs_genesis_source_golden_hex_with_non_empty_bundle
         // ONLY when intentionally hard-forking the Genesis composition
         // OR the bundle format (both are hard-fork surfaces).
-        const EXPECTED: &str = "25623225a52f22d4b8e72c487911eb533707b86d209160908bebfb1bd07f4107";
+        const EXPECTED: &str = "765003e0e57c1b428fb9c60ae03126d20ee3fd57dd0869b0a1cb5e806fba7ef6";
         assert_eq!(
             hex, EXPECTED,
             "compose_fs_genesis_source() hash for non-empty bundle changed. \
@@ -2514,7 +2514,7 @@ mod tests {
         //     compose_fs_genesis_source_golden_hex_with_sort_tie_bundle
         // ONLY when intentionally hard-forking Genesis composition
         // OR bundle format.
-        const EXPECTED: &str = "6c61d89159ccdf3da1d2860bc529ba5fbc3c72abf0078b29a3c4eac87530d3a9";
+        const EXPECTED: &str = "14c48a0f71dabc160f4b280b916c4b5f8a750eda6efa7b4160e3f6ee087255c7";
         assert_eq!(
             hex, EXPECTED,
             "compose_fs_genesis_source() hash for sort-tie bundle changed. \

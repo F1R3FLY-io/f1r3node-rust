@@ -9,6 +9,7 @@ use crate::CHECKS;
 pub struct Report {
     pub errors: Vec<String>,
     pub encountered: BTreeSet<String>,
+    pub yanked_present: BTreeSet<String>,
 }
 
 fn advisory(
@@ -16,34 +17,19 @@ fn advisory(
     exceptions: &BTreeMap<String, Exception>,
     result: &mut Report,
 ) {
-    let id = if fields.get("code").and_then(Value::as_str) == Some("yanked-ignored") {
-        fields
-            .get("graphs")
-            .and_then(|g| g.get(0))
-            .and_then(|g| g.get("Krate"))
-            .and_then(|k| {
-                Some(format!(
-                    "{}@{}",
-                    k.get("name")?.as_str()?,
-                    k.get("version")?.as_str()?
-                ))
-            })
-    } else if let Some(advisory) = fields.get("advisory") {
-        advisory
-            .get("id")
-            .and_then(Value::as_str)
-            .filter(|id| !id.is_empty())
-            .map(str::to_owned)
-    } else {
+    let Some(advisory) = fields.get("advisory") else {
         return;
     };
-    let Some(id) = id else {
+    let Some(id) = advisory
+        .get("id")
+        .and_then(Value::as_str)
+        .filter(|id| !id.is_empty())
+    else {
         result
             .errors
             .push("The scanner produced an invalid advisory record.".into());
         return;
     };
-    let id = id.as_str();
     let Some(exception) = exceptions.get(id) else {
         return;
     };
